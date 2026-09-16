@@ -1,0 +1,68 @@
+version: "3"
+
+vars:
+  CLEAN_PATHS:
+    - dist
+    - coverage.out
+    - coverage.html
+
+tasks:
+  default:
+    cmds:
+      - task --list --sort none
+    silent: true
+
+  _require-prek:
+    internal: true
+    preconditions:
+      - sh: command -v prek
+        msg: "prek is required — install: https://github.com/j178/pre-commit-rs"
+
+  _require-dprint:
+    internal: true
+    preconditions:
+      - sh: command -v dprint
+        msg: "dprint is required — install: https://dprint.dev/install/"
+
+  install:
+    desc: Install pre-commit hooks
+    deps: [_require-prek]
+    cmds:
+      - prek install
+
+  test:
+    desc: "Run the test suite (pass extra args after --)"
+    cmds:
+      - go test -race ./... {{.CLI_ARGS}}
+
+  cov:
+    desc: Run tests with coverage
+    cmds:
+      - go test -race -covermode=atomic -coverprofile=coverage.out ./...
+      - go tool cover -html=coverage.out -o coverage.html
+
+  check:
+    desc: Run every pre-commit hook across the repo
+    deps: [_require-prek, _require-dprint]
+    vars:
+      GIT_FILES:
+        sh: git ls-files --cached --others --exclude-standard
+      PREK_FILES: "{{range $f := .GIT_FILES | splitLines}}{{$f | shellQuote}} {{end}}"
+    cmds:
+      - prek run --files {{.PREK_FILES}}
+
+  tidy:
+    desc: Tidy module dependencies
+    cmds:
+      - go mod tidy
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - cmd: rm -rf {{.CLEAN_PATHS | join " "}}
+        platforms: [darwin, linux]
+      - cmd: >-
+          powershell -NoProfile -Command
+          "Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          -Path {{.CLEAN_PATHS | join ","}}"
+        platforms: [windows]

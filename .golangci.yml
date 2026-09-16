@@ -1,0 +1,39 @@
+version: "2"
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+
+linters:
+  enable:
+    - errcheck
+    - funlen
+    - gocognit
+    - gocritic
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - modernize
+    - nestif
+    - revive
+    - staticcheck
+    - unused
+  settings:
+    errcheck:
+      exclude-functions:
+        - (io.ReadCloser).Close
+        - (*database/sql.Rows).Close
+    gocognit:
+      min-complexity: 15
+    govet:
+      enable-all: true
+    misspell:
+      locale: US
+    nestif:
+      min-complexity: 3
+    revive:
+      rules:
+        - name: argument-limit
+          arguments: [4]
