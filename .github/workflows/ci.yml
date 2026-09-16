@@ -33,6 +33,9 @@ jobs:
     name: Test / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
