@@ -27,5 +27,5 @@ jobs:
           go-version-file: go.mod
       - uses: ./.github/actions/setup-dprint # zizmor: ignore[self-repository] — actionlint rejects $/
       - name: Install prek
-        run: go install github.com/j178/pre-commit-rs/cmd/prek@latest
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/j178/prek/releases/download/v0.5.3/prek-installer.sh | sh
       - run: prek run -a --show-diff-on-failure
