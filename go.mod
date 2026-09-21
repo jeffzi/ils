@@ -7,6 +7,7 @@ toolchain go1.27.1
 tool (
 	github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 	golang.org/x/vuln/cmd/govulncheck
+	ils
 )
 
 require (
