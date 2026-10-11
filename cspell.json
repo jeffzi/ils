@@ -37,6 +37,7 @@
     "gittest",
     "gpgsign",
     "symref",
+    "synctest",
     "ghtest",
     "GORACE",
     "atexit",
