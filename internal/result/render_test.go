@@ -7,7 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/google/go-cmp/cmp"
+	"gotest.tools/v3/assert"
+	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/result"
 )
@@ -213,9 +214,7 @@ func decode(t *testing.T, out string) shown {
 	t.Helper()
 
 	var got shown
-	if err := json.Unmarshal([]byte(out), &got); err != nil {
-		t.Fatalf("RenderJSON output is not one JSON object: %v\n%s", err, out)
-	}
+	assert.NilError(t, json.Unmarshal([]byte(out), &got), "RenderJSON output is not one JSON object:\n%s", out)
 
 	return got
 }
@@ -296,13 +295,9 @@ func TestRenderText(t *testing.T) {
 			t.Parallel()
 
 			got, err := result.RenderText(tt.result, gitDir)
-			if err != nil {
-				t.Fatalf("RenderText() error = %v, want nil", err)
-			}
+			assert.NilError(t, err)
 
-			if diff := cmp.Diff(tt.want, got); diff != "" {
-				t.Errorf("RenderText() mismatch (-want +got):\n%s", diff)
-			}
+			assert.Check(t, is.DeepEqual(got, tt.want))
 		})
 	}
 }
@@ -385,13 +380,9 @@ func TestRenderJSON_PrintsOneObjectOnOneLineWithExactKeys(t *testing.T) {
 			t.Parallel()
 
 			got, err := result.RenderJSON(tt.result, gitDir)
-			if err != nil {
-				t.Fatalf("RenderJSON() error = %v, want nil", err)
-			}
+			assert.NilError(t, err)
 
-			if diff := cmp.Diff(tt.want, got); diff != "" {
-				t.Errorf("RenderJSON() mismatch (-want +got):\n%s", diff)
-			}
+			assert.Check(t, is.DeepEqual(got, tt.want))
 		})
 	}
 }
@@ -410,14 +401,11 @@ func TestRenderJSON_WhenFailedLogIsLarge_CarriesItWhole(t *testing.T) {
 	pushed, log := largeLogPush()
 
 	out, err := result.RenderJSON(pushed, gitDir)
-	if err != nil {
-		t.Fatalf("RenderJSON() error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
 	got := decode(t, out).Payload.Push.FailedLog
-	if got != log {
-		t.Errorf("RenderJSON() failed log has %d bytes and differs, want the %d bytes handed in", len(got), len(log))
-	}
+	assert.Check(t, got == log,
+		"RenderJSON() failed log has %d bytes and differs, want the %d bytes handed in", len(got), len(log))
 }
 
 func TestRenderText_WhenFailedLogIsLarge_LeavesItOut(t *testing.T) {
@@ -425,13 +413,9 @@ func TestRenderText_WhenFailedLogIsLarge_LeavesItOut(t *testing.T) {
 	pushed, _ := largeLogPush()
 
 	got, err := result.RenderText(pushed, gitDir)
-	if err != nil {
-		t.Fatalf("RenderText() error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
-	if diff := cmp.Diff(redBody+"Next: "+redNext+"\n", got); diff != "" {
-		t.Errorf("RenderText() mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(got, redBody+"Next: "+redNext+"\n"))
 }
 
 func TestRenderJSON(t *testing.T) {
@@ -442,13 +426,9 @@ func TestRenderJSON(t *testing.T) {
 			t.Parallel()
 
 			out, err := result.RenderJSON(tt.result, gitDir)
-			if err != nil {
-				t.Fatalf("RenderJSON() error = %v, want nil", err)
-			}
+			assert.NilError(t, err)
 
-			if diff := cmp.Diff(tt.want, decode(t, out)); diff != "" {
-				t.Errorf("RenderJSON() mismatch (-want +got):\n%s", diff)
-			}
+			assert.Check(t, is.DeepEqual(decode(t, out), tt.want))
 		})
 	}
 }
@@ -462,18 +442,14 @@ func TestRender_ForEveryOutcome_TextLinesAppearInJSON(t *testing.T) {
 
 			text, textErr := result.RenderText(tt.result, gitDir)
 			out, jsonErr := result.RenderJSON(tt.result, gitDir)
-			if err := errors.Join(textErr, jsonErr); err != nil {
-				t.Fatalf("rendering error = %v, want nil", err)
-			}
+			assert.NilError(t, errors.Join(textErr, jsonErr))
 
 			got := decode(t, out)
 			carried := append(strings.Split(got.Excerpt, "\n"), got.Lines...)
 			carried = append(carried, "Next: "+got.Next, "Refused: "+got.Reason)
 			for line := range strings.Lines(text) {
 				line = strings.TrimSuffix(line, "\n")
-				if !slices.Contains(carried, line) {
-					t.Errorf("text line %q is not carried by the JSON:\n%s", line, out)
-				}
+				assert.Check(t, is.Contains(carried, line), "JSON:\n%s", out)
 			}
 		})
 	}
@@ -598,15 +574,9 @@ func TestRender_WhenOwnWordingNamesHookOrGitDir_ReturnsErrorNamingLine(t *testin
 				out, err := r.render(tt.result, tt.gitDir)
 
 				wordingErr, ok := errors.AsType[*result.WordingError](err)
-				if !ok {
-					t.Fatalf("render error = %v, want a *result.WordingError; output %q", err, out)
-				}
-				if wordingErr.Line != tt.wantLine {
-					t.Errorf("WordingError.Line = %q, want %q", wordingErr.Line, tt.wantLine)
-				}
-				if out != "" {
-					t.Errorf("render printed %q beside the error, want nothing", out)
-				}
+				assert.Assert(t, ok, "render error = %v, want a *result.WordingError; output %q", err, out)
+				assert.Check(t, is.Equal(wordingErr.Line, tt.wantLine))
+				assert.Check(t, is.Equal(out, ""))
 			})
 		}
 	}
@@ -646,15 +616,9 @@ func TestRender_WhenOwnWordingIsRejected_ErrorNamesLineAndWord(t *testing.T) {
 				_, err := r.render(tt.result, gitDir)
 
 				wordingErr, ok := errors.AsType[*result.WordingError](err)
-				if !ok {
-					t.Fatalf("render error = %v, want a *result.WordingError", err)
-				}
-				if wordingErr.Word != tt.wantWord {
-					t.Errorf("WordingError.Word = %q, want %q", wordingErr.Word, tt.wantWord)
-				}
-				if got := err.Error(); got != tt.wantMsg {
-					t.Errorf("render error message = %q, want %q", got, tt.wantMsg)
-				}
+				assert.Assert(t, ok, "render error = %v, want a *result.WordingError", err)
+				assert.Check(t, is.Equal(wordingErr.Word, tt.wantWord))
+				assert.Check(t, is.Equal(err.Error(), tt.wantMsg))
 			})
 		}
 	}
@@ -777,13 +741,9 @@ func TestRenderText_ThirdPartyTextAndNames(t *testing.T) {
 			t.Parallel()
 
 			got, err := result.RenderText(tt.result, tt.gitDir)
-			if err != nil {
-				t.Fatalf("RenderText() error = %v, want nil", err)
-			}
+			assert.NilError(t, err)
 
-			if diff := cmp.Diff(tt.wantText, got); diff != "" {
-				t.Errorf("RenderText() mismatch (-want +got):\n%s", diff)
-			}
+			assert.Check(t, is.DeepEqual(got, tt.wantText))
 		})
 	}
 }
@@ -796,13 +756,9 @@ func TestRenderJSON_ThirdPartyTextAndNames(t *testing.T) {
 			t.Parallel()
 
 			out, err := result.RenderJSON(tt.result, tt.gitDir)
-			if err != nil {
-				t.Fatalf("RenderJSON() error = %v, want nil", err)
-			}
+			assert.NilError(t, err)
 
-			if diff := cmp.Diff(tt.want, decode(t, out)); diff != "" {
-				t.Errorf("RenderJSON() mismatch (-want +got):\n%s", diff)
-			}
+			assert.Check(t, is.DeepEqual(decode(t, out), tt.want))
 		})
 	}
 }
@@ -817,13 +773,9 @@ func TestRender_WhenRenderedTwice_IsByteIdentical(t *testing.T) {
 
 				first, firstErr := r.render(tt.result, gitDir)
 				second, secondErr := r.render(tt.result, gitDir)
-				if err := errors.Join(firstErr, secondErr); err != nil {
-					t.Fatalf("render error = %v, want nil", err)
-				}
+				assert.NilError(t, errors.Join(firstErr, secondErr))
 
-				if diff := cmp.Diff(first, second); diff != "" {
-					t.Errorf("two renders differ (-first +second):\n%s", diff)
-				}
+				assert.Check(t, is.DeepEqual(first, second))
 			})
 		}
 	}
@@ -870,12 +822,8 @@ func TestRender_WhenResultIsMalformed_ReturnsError(t *testing.T) {
 
 				_, err := r.render(tt.result, gitDir)
 
-				if !errors.Is(err, tt.wantErr) {
-					t.Fatalf("render error = %v, want %v", err, tt.wantErr)
-				}
-				if got := err.Error(); got != tt.wantMsg {
-					t.Errorf("render error message = %q, want %q", got, tt.wantMsg)
-				}
+				assert.ErrorIs(t, err, tt.wantErr)
+				assert.Check(t, is.Equal(err.Error(), tt.wantMsg))
 			})
 		}
 	}

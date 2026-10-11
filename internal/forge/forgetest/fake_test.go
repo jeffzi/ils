@@ -6,7 +6,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/google/go-cmp/cmp"
+	"gotest.tools/v3/assert"
+	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
@@ -124,9 +125,8 @@ func callEach(t *testing.T, fake *forgetest.Fake) {
 	t.Helper()
 
 	for _, op := range operations() {
-		if _, err := op.call(t.Context(), fake); err != nil {
-			t.Fatalf("%s error = %v, want nil", op.name, err)
-		}
+		_, err := op.call(t.Context(), fake)
+		assert.NilError(t, err, "%s", op.name)
 	}
 }
 
@@ -138,9 +138,7 @@ func read[T any](t *testing.T, times int, call func() (T, error)) []T {
 
 	for range times {
 		value, err := call()
-		if err != nil {
-			t.Fatalf("read error = %v, want nil", err)
-		}
+		assert.NilError(t, err)
 
 		values = append(values, value)
 	}
@@ -158,13 +156,9 @@ func TestFake_AnswersScriptedValue(t *testing.T) {
 			fake := forgetest.New(t, script(nil))
 
 			got, err := tt.call(t.Context(), fake)
-			if err != nil {
-				t.Fatalf("%s error = %v, want nil", tt.name, err)
-			}
+			assert.NilError(t, err)
 
-			if diff := cmp.Diff(tt.want, got); diff != "" {
-				t.Errorf("%s answer mismatch (-want +got):\n%s", tt.name, diff)
-			}
+			assert.Check(t, is.DeepEqual(got, tt.want))
 		})
 	}
 }
@@ -182,9 +176,8 @@ func TestFake_WhenAnswerIsError_ReturnsItUnchanged(t *testing.T) {
 			_, err := tt.call(t.Context(), fake)
 
 			got, ok := errors.AsType[*forge.ToolMissingError](err)
-			if !ok || got != scripted {
-				t.Errorf("%s error = %v, want the scripted %v", tt.name, err, scripted)
-			}
+			assert.Check(t, ok, "error = %v, want a *forge.ToolMissingError", err)
+			assert.Check(t, is.Equal(got, scripted))
 		})
 	}
 }
@@ -197,13 +190,9 @@ func TestFake_Identity_WhenNotLoggedIn_ErrorCarriesHost(t *testing.T) {
 	_, err := fake.Identity(t.Context(), repo)
 
 	got, ok := errors.AsType[*forge.NotLoggedInError](err)
-	if !ok {
-		t.Fatalf("Identity error = %v, want a *forge.NotLoggedInError", err)
-	}
+	assert.Assert(t, ok, "Identity error = %v, want a *forge.NotLoggedInError", err)
 
-	if got.Host != "example.com" {
-		t.Errorf("NotLoggedInError.Host = %q, want %q", got.Host, "example.com")
-	}
+	assert.Check(t, is.Equal(got.Host, "example.com"))
 }
 
 func TestFake_OpenChange_WhenChangeExists_ErrorMatchesSentinel(t *testing.T) {
@@ -213,9 +202,7 @@ func TestFake_OpenChange_WhenChangeExists_ErrorMatchesSentinel(t *testing.T) {
 
 	_, err := fake.OpenChange(t.Context(), repo, newChange)
 
-	if !errors.Is(err, forge.ErrChangeExists) {
-		t.Errorf("OpenChange error = %v, want forge.ErrChangeExists", err)
-	}
+	assert.Check(t, is.ErrorIs(err, forge.ErrChangeExists))
 }
 
 func TestFake_WhenOperationIsNotScripted_FailsTheTestNamingTheOperation(t *testing.T) {
@@ -230,18 +217,12 @@ func TestFake_WhenOperationIsNotScripted_FailsTheTestNamingTheOperation(t *testi
 
 			_, err := tt.call(t.Context(), fake)
 
-			if !errors.Is(err, forgetest.ErrUnscripted) {
-				t.Errorf("%s error = %v, want forgetest.ErrUnscripted", tt.name, err)
-			}
+			assert.Check(t, is.ErrorIs(err, forgetest.ErrUnscripted))
 
 			wantFailures := []string{fmt.Sprintf("forgetest: unexpected call %+v: the script has no answer for %s", tt.made, tt.made.Op)}
-			if diff := cmp.Diff(wantFailures, stub.failures); diff != "" {
-				t.Errorf("%s failures reported mismatch (-want +got):\n%s", tt.name, diff)
-			}
+			assert.Check(t, is.DeepEqual(stub.failures, wantFailures))
 
-			if diff := cmp.Diff([]forgetest.Call{tt.made}, fake.Calls()); diff != "" {
-				t.Errorf("%s recorded calls mismatch (-want +got):\n%s", tt.name, diff)
-			}
+			assert.Check(t, is.DeepEqual(fake.Calls(), []forgetest.Call{tt.made}))
 		})
 	}
 }
@@ -261,9 +242,7 @@ func TestFake_Calls_RecordsEveryCallInOrder(t *testing.T) {
 		{Op: forgetest.OpTrunkProtection, Repo: repo, Branch: trunk},
 		{Op: forgetest.OpVerdict, Repo: repo, Query: query},
 	}
-	if diff := cmp.Diff(want, fake.Calls()); diff != "" {
-		t.Errorf("Calls() mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(fake.Calls(), want))
 }
 
 func TestFake_Head_AdvancesOneStepPerReadThenRepeatsTheLast(t *testing.T) {
@@ -279,9 +258,7 @@ func TestFake_Head_AdvancesOneStepPerReadThenRepeatsTheLast(t *testing.T) {
 	got := read(t, 6, func() (forge.Head, error) { return fake.Head(t.Context(), repo, headQuery) })
 
 	want := []forge.Head{stale, stale, unknown, clean, clean, clean}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("Head reads mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(got, want))
 }
 
 func TestFake_Verdict_AdvancesOneStepPerReadThenRepeatsTheLast(t *testing.T) {
@@ -302,9 +279,7 @@ func TestFake_Verdict_AdvancesOneStepPerReadThenRepeatsTheLast(t *testing.T) {
 	got := read(t, 3, func() (forge.Verdict, error) { return fake.Verdict(t.Context(), repo, query) })
 
 	want := []forge.Verdict{pending, green, green}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("Verdict reads mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(got, want))
 }
 
 func TestFake_OnRead_RunsOncePerRead(t *testing.T) {
@@ -325,7 +300,5 @@ func TestFake_OnRead_RunsOncePerRead(t *testing.T) {
 		forgetest.OpTrunkProtection,
 		forgetest.OpVerdict,
 	}
-	if diff := cmp.Diff(want, seen); diff != "" {
-		t.Errorf("OnRead calls mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(seen, want))
 }

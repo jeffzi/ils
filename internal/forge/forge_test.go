@@ -3,8 +3,9 @@ package forge_test
 import (
 	"testing"
 
-	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"gotest.tools/v3/assert"
+	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/forge"
 )
@@ -88,9 +89,7 @@ func TestVerdict_State(t *testing.T) {
 
 			got := tt.verdict.State()
 
-			if got != tt.want {
-				t.Errorf("State() = %q, want %q", got, tt.want)
-			}
+			assert.Check(t, is.Equal(got, tt.want))
 		})
 	}
 }
@@ -118,13 +117,9 @@ func TestVerdict_Failed(t *testing.T) {
 			t.Parallel()
 
 			got, ok := tt.verdict.Failed()
-			if !ok {
-				t.Fatalf("Failed() = %+v, false, want a failed check", got)
-			}
+			assert.Assert(t, ok, "Failed() = %+v, false, want a failed check", got)
 
-			if diff := cmp.Diff(tt.want, got); diff != "" {
-				t.Errorf("Failed() mismatch (-want +got):\n%s", diff)
-			}
+			assert.Check(t, is.DeepEqual(got, tt.want))
 		})
 	}
 }
@@ -157,9 +152,7 @@ func TestVerdict_Failed_WhenNoDecidingCheckFailed_ReportsNone(t *testing.T) {
 
 			got, ok := tt.verdict.Failed()
 
-			if ok {
-				t.Errorf("Failed() = %+v, true, want no failed check", got)
-			}
+			assert.Check(t, !ok, "Failed() = %+v, true, want no failed check", got)
 		})
 	}
 }
@@ -207,9 +200,7 @@ func TestVerdict_Pending(t *testing.T) {
 
 			got := tt.verdict.Pending()
 
-			if diff := cmp.Diff(tt.want, got, cmpopts.EquateEmpty()); diff != "" {
-				t.Errorf("Pending() mismatch (-want +got):\n%s", diff)
-			}
+			assert.Check(t, is.DeepEqual(got, tt.want, cmpopts.EquateEmpty()))
 		})
 	}
 }

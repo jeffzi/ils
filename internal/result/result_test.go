@@ -3,6 +3,9 @@ package result_test
 import (
 	"testing"
 
+	"gotest.tools/v3/assert"
+	is "gotest.tools/v3/assert/cmp"
+
 	"github.com/jeffzi/ils/internal/result"
 )
 
@@ -29,9 +32,7 @@ func TestOutcome_ExitCode(t *testing.T) {
 
 			got := tt.outcome.ExitCode()
 
-			if got != tt.want {
-				t.Errorf("Outcome(%v).ExitCode() = %d, want %d", tt.outcome, got, tt.want)
-			}
+			assert.Check(t, is.Equal(got, tt.want), "Outcome(%d)", int(tt.outcome))
 		})
 	}
 }
@@ -53,9 +54,7 @@ func TestOutcome_String(t *testing.T) {
 
 			got := tt.outcome.String()
 
-			if got != tt.want {
-				t.Errorf("Outcome(%d).String() = %q, want %q", int(tt.outcome), got, tt.want)
-			}
+			assert.Check(t, is.Equal(got, tt.want), "Outcome(%d)", int(tt.outcome))
 		})
 	}
 }

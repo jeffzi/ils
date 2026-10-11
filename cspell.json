@@ -41,7 +41,8 @@
     "ghtest",
     "GORACE",
     "atexit",
-    "cmpopts"
+    "cmpopts",
+    "gotest"
   ],
   "ignorePaths": [
     ".planning",
