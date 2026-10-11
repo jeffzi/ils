@@ -19,13 +19,21 @@ import (
 
 // isolatedEnv returns a child environment whose global git config is the
 // given file, with the system config and the user's home out of reach.
+//
+// The child gets a temporary directory of its own under every name a platform
+// reads it from: git writes the files it hands an external diff program there,
+// and Git for Windows has no usable default when none of the names is set.
 func isolatedEnv(t *testing.T, globalConfig string) []string {
 	t.Helper()
 
 	home := t.TempDir()
+	scratch := t.TempDir()
 	env := []string{
 		"HOME=" + home,
 		"USERPROFILE=" + home,
+		"TMPDIR=" + scratch,
+		"TMP=" + scratch,
+		"TEMP=" + scratch,
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL=" + globalConfig,
 		"PATH=" + os.Getenv("PATH"),
