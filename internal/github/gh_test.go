@@ -9,7 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/go-cmp/cmp"
+	"gotest.tools/v3/assert"
+	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/github"
@@ -40,14 +41,10 @@ func TestRunner_Run_WhenGhExitsZero_ReturnsOutput(t *testing.T) {
 	})
 
 	got, err := github.Runner{}.Run(t.Context(), "pr", "view", "--json", "number")
-	if err != nil {
-		t.Fatalf("Run(pr view) error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
 	want := github.Result{Stdout: "{\"number\":7}\n", Stderr: "notice\n"}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("Run(pr view) mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(got, want))
 }
 
 func TestRunner_Run_WhenArgHoldsShellSyntax_PassesItVerbatim(t *testing.T) {
@@ -58,9 +55,7 @@ func TestRunner_Run_WhenArgHoldsShellSyntax_PassesItVerbatim(t *testing.T) {
 	})
 
 	_, err := github.Runner{}.Run(t.Context(), "api", value)
-	if err != nil {
-		t.Fatalf("Run(api) error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
 	assertCalls(t, fake, [][]string{{"gh", "api", value}})
 }
@@ -74,20 +69,14 @@ func TestRunner_Run_WhenGhExitsNonZero_ReturnsExitErrorAndStdout(t *testing.T) {
 	got, err := github.Runner{}.Run(t.Context(), "pr", "checks", "7")
 
 	exitErr, ok := errors.AsType[*github.ExitError](err)
-	if !ok {
-		t.Fatalf("Run(pr checks) error = %v, want *github.ExitError", err)
-	}
+	assert.Assert(t, ok, "Run(pr checks) error = %v, want *github.ExitError", err)
 	wantErr := github.ExitError{
 		Argv:   []string{"gh", "pr", "checks", "7"},
 		Stderr: "still running\n",
 		Code:   8,
 	}
-	if diff := cmp.Diff(wantErr, *exitErr); diff != "" {
-		t.Errorf("Run(pr checks) exit error mismatch (-want +got):\n%s", diff)
-	}
-	if got.Stdout != "build\tpending\n" {
-		t.Errorf("Run(pr checks).Stdout = %q, want %q", got.Stdout, "build\tpending\n")
-	}
+	assert.Check(t, is.DeepEqual(*exitErr, wantErr))
+	assert.Check(t, is.Equal(got.Stdout, "build\tpending\n"))
 }
 
 func TestRunner_Run_WhenArgvNotScripted_FakeExitsOneNamingArgv(t *testing.T) {
@@ -99,15 +88,9 @@ func TestRunner_Run_WhenArgvNotScripted_FakeExitsOneNamingArgv(t *testing.T) {
 	_, err := github.Runner{}.Run(t.Context(), "release", "view", "v1.2.3")
 
 	exitErr, ok := errors.AsType[*github.ExitError](err)
-	if !ok {
-		t.Fatalf("Run(release view) error = %v, want *github.ExitError", err)
-	}
-	if exitErr.Code != 1 {
-		t.Errorf("Run(release view) exit code = %d, want 1", exitErr.Code)
-	}
-	if !strings.Contains(exitErr.Stderr, "release view v1.2.3") {
-		t.Errorf("Run(release view) stderr = %q, want it to name the argv", exitErr.Stderr)
-	}
+	assert.Assert(t, ok, "Run(release view) error = %v, want *github.ExitError", err)
+	assert.Check(t, is.Equal(exitErr.Code, 1))
+	assert.Check(t, is.Contains(exitErr.Stderr, "release view v1.2.3"))
 }
 
 func TestRunner_Run_WhenArgvDiffersInLengthFromTheScriptedOne_FakeExitsOneNamingArgv(t *testing.T) {
@@ -128,30 +111,20 @@ func TestRunner_Run_WhenArgvDiffersInLengthFromTheScriptedOne_FakeExitsOneNaming
 			_, err := github.Runner{}.Run(t.Context(), tt.args...)
 
 			exitErr, ok := errors.AsType[*github.ExitError](err)
-			if !ok {
-				t.Fatalf("Run(%q) error = %v, want *github.ExitError", tt.args, err)
-			}
-			if exitErr.Code != 1 {
-				t.Errorf("Run(%q) exit code = %d, want 1", tt.args, exitErr.Code)
-			}
-			if !strings.Contains(exitErr.Stderr, strings.Join(tt.args, " ")) {
-				t.Errorf("Run(%q) stderr = %q, want it to name the argv", tt.args, exitErr.Stderr)
-			}
+			assert.Assert(t, ok, "Run(%q) error = %v, want *github.ExitError", tt.args, err)
+			assert.Check(t, is.Equal(exitErr.Code, 1))
+			assert.Check(t, is.Contains(exitErr.Stderr, strings.Join(tt.args, " ")))
 		})
 	}
 }
 
 func TestSetup_PointsGhPathAtTheTestBinary(t *testing.T) {
 	want, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable() error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
 	ghtest.Setup(t)
 
-	if got := os.Getenv("GH_PATH"); got != want {
-		t.Errorf("GH_PATH after Setup = %q, want the test binary %q", got, want)
-	}
+	assert.Check(t, is.Equal(os.Getenv("GH_PATH"), want))
 }
 
 func TestRunner_Run_WhenArgvScriptedWithSequence_AnswersInOrderThenRepeatsLast(t *testing.T) {
@@ -164,16 +137,12 @@ func TestRunner_Run_WhenArgvScriptedWithSequence_AnswersInOrderThenRepeatsLast(t
 	var got []string
 	for range 3 {
 		result, err := runner.Run(t.Context(), "pr", "checks", "7")
-		if err != nil {
-			t.Fatalf("Run(pr checks) error = %v, want nil", err)
-		}
+		assert.NilError(t, err)
 		got = append(got, result.Stdout)
 	}
 
 	want := []string{"pending\n", "pass\n", "pass\n"}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("Run(pr checks) answers mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(got, want))
 }
 
 func TestRunner_Run_WhenContextCanceled_ReturnsContextError(t *testing.T) {
@@ -186,9 +155,7 @@ func TestRunner_Run_WhenContextCanceled_ReturnsContextError(t *testing.T) {
 
 	_, err := github.Runner{}.Run(ctx, "pr", "view")
 
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("Run(pr view) error = %v, want context.Canceled", err)
-	}
+	assert.Check(t, is.ErrorIs(err, context.Canceled))
 }
 
 func TestRunner_Run_WhenAnswerIsDelayed_ReturnsItAfterTheDelay(t *testing.T) {
@@ -200,13 +167,11 @@ func TestRunner_Run_WhenAnswerIsDelayed_ReturnsItAfterTheDelay(t *testing.T) {
 	start := time.Now()
 
 	got, err := github.Runner{}.Run(t.Context(), "pr", "checks", "7")
-	if err != nil {
-		t.Fatalf("Run(pr checks) error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
-	if elapsed := time.Since(start); elapsed < delay || got.Stdout != "pass\n" {
-		t.Errorf("Run(pr checks) = %q after %s, want %q no sooner than %s", got.Stdout, elapsed, "pass\n", delay)
-	}
+	elapsed := time.Since(start)
+	assert.Check(t, elapsed >= delay, "Run(pr checks) answered after %s, want no sooner than %s", elapsed, delay)
+	assert.Check(t, is.Equal(got.Stdout, "pass\n"))
 }
 
 func TestRunner_Run_WhenContextEndsDuringTheDelay_ReturnsContextErrorPromptly(t *testing.T) {
@@ -221,12 +186,9 @@ func TestRunner_Run_WhenContextEndsDuringTheDelay_ReturnsContextErrorPromptly(t 
 
 	_, err := github.Runner{}.Run(ctx, "pr", "checks", "7")
 
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("Run(pr checks) error = %v, want context.DeadlineExceeded", err)
-	}
-	if elapsed := time.Since(start); elapsed > prompt {
-		t.Errorf("Run(pr checks) returned after %s, want it back within %s", elapsed, prompt)
-	}
+	assert.Check(t, is.ErrorIs(err, context.DeadlineExceeded))
+	elapsed := time.Since(start)
+	assert.Check(t, elapsed <= prompt, "Run(pr checks) returned after %s, want it back within %s", elapsed, prompt)
 }
 
 func TestRunner_Run_WhenRecorderAttached_RecordsEachArgvTheFakeReceived(t *testing.T) {
@@ -236,19 +198,14 @@ func TestRunner_Run_WhenRecorderAttached_RecordsEachArgvTheFakeReceived(t *testi
 	)
 	recorder := &github.Recorder{}
 	runner := github.Runner{Recorder: recorder}
-	if _, err := runner.Run(t.Context(), "pr", "view", "7"); err != nil {
-		t.Fatalf("Run(pr view) error = %v, want nil", err)
-	}
+	_, err := runner.Run(t.Context(), "pr", "view", "7")
+	assert.NilError(t, err)
 
-	_, err := runner.Run(t.Context(), "pr", "merge", "7", "--squash")
-	if err != nil {
-		t.Fatalf("Run(pr merge) error = %v, want nil", err)
-	}
+	_, err = runner.Run(t.Context(), "pr", "merge", "7", "--squash")
+	assert.NilError(t, err)
 
 	want := [][]string{{"gh", "pr", "view", "7"}, {"gh", "pr", "merge", "7", "--squash"}}
-	if diff := cmp.Diff(want, recorder.Calls()); diff != "" {
-		t.Errorf("Recorder.Calls() mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(recorder.Calls(), want))
 	assertCalls(t, fake, want)
 }
 
@@ -269,15 +226,9 @@ func TestRunner_Run_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
 			_, err := github.Runner{}.Run(t.Context(), "pr", "view")
 
 			missing, ok := errors.AsType[*forge.ToolMissingError](err)
-			if !ok {
-				t.Fatalf("Run(pr view) error = %v, want *forge.ToolMissingError", err)
-			}
-			if diff := cmp.Diff(missingTool(), missing); diff != "" {
-				t.Errorf("Run(pr view) error mismatch (-want +got):\n%s", diff)
-			}
-			if missing.Error() != missingToolText {
-				t.Errorf("Run(pr view) error text = %q, want %q", missing.Error(), missingToolText)
-			}
+			assert.Assert(t, ok, "Run(pr view) error = %v, want *forge.ToolMissingError", err)
+			assert.Check(t, is.DeepEqual(missing, missingTool()))
+			assert.Check(t, is.Equal(missing.Error(), missingToolText))
 		})
 	}
 }
@@ -289,14 +240,10 @@ func TestRunJSON_WhenStdoutIsJSON_DecodesIntoValue(t *testing.T) {
 	})
 
 	got, err := github.RunJSON[pullView](t.Context(), github.Runner{}, "pr", "view", "--json", "number,title")
-	if err != nil {
-		t.Fatalf("RunJSON(pr view) error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
 	want := pullView{Number: 7, Title: "Add the runner"}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("RunJSON(pr view) mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(got, want))
 }
 
 func TestRunJSON_WhenStdoutMalformed_ReturnsDecodeErrorNamingCommand(t *testing.T) {
@@ -308,16 +255,10 @@ func TestRunJSON_WhenStdoutMalformed_ReturnsDecodeErrorNamingCommand(t *testing.
 	_, err := github.RunJSON[pullView](t.Context(), github.Runner{}, "pr", "view", "--json", "number")
 
 	decodeErr, ok := errors.AsType[*github.DecodeError](err)
-	if !ok {
-		t.Fatalf("RunJSON(pr view) error = %v, want *github.DecodeError", err)
-	}
+	assert.Assert(t, ok, "RunJSON(pr view) error = %v, want *github.DecodeError", err)
 	wantArgv := []string{"gh", "pr", "view", "--json", "number"}
-	if diff := cmp.Diff(wantArgv, decodeErr.Argv); diff != "" {
-		t.Errorf("RunJSON(pr view) decode error argv mismatch (-want +got):\n%s", diff)
-	}
-	if !strings.Contains(err.Error(), "gh pr view --json number") {
-		t.Errorf("RunJSON(pr view) error = %q, want it to name the command", err.Error())
-	}
+	assert.Check(t, is.DeepEqual(decodeErr.Argv, wantArgv))
+	assert.Check(t, is.Contains(err.Error(), "gh pr view --json number"))
 }
 
 func TestRunJSON_WhenGhExitsNonZero_ReturnsExitError(t *testing.T) {
@@ -329,12 +270,8 @@ func TestRunJSON_WhenGhExitsNonZero_ReturnsExitError(t *testing.T) {
 	_, err := github.RunJSON[pullView](t.Context(), github.Runner{}, "api", "repos/ada/engine")
 
 	exitErr, ok := errors.AsType[*github.ExitError](err)
-	if !ok {
-		t.Fatalf("RunJSON(api) error = %v, want *github.ExitError", err)
-	}
-	if exitErr.Stderr != "gh: Forbidden (HTTP 403)\n" {
-		t.Errorf("RunJSON(api) stderr = %q, want gh's HTTP 403 line", exitErr.Stderr)
-	}
+	assert.Assert(t, ok, "RunJSON(api) error = %v, want *github.ExitError", err)
+	assert.Check(t, is.Equal(exitErr.Stderr, "gh: Forbidden (HTTP 403)\n"))
 }
 
 func TestRunner_CheckLogin_WhenAuthStatusExitsZero_ReturnsNil(t *testing.T) {
@@ -344,9 +281,7 @@ func TestRunner_CheckLogin_WhenAuthStatusExitsZero_ReturnsNil(t *testing.T) {
 	})
 
 	err := github.Runner{}.CheckLogin(t.Context(), "github.com")
-	if err != nil {
-		t.Errorf("CheckLogin(github.com) error = %v, want nil", err)
-	}
+	assert.Check(t, err)
 
 	assertCalls(t, fake, [][]string{{"gh", "auth", "status", "--hostname", "github.com"}})
 }
@@ -360,16 +295,10 @@ func TestRunner_CheckLogin_WhenAuthStatusExitsNonZero_ReturnsNotLoggedInError(t 
 	err := github.Runner{}.CheckLogin(t.Context(), "git.example.com")
 
 	notLoggedIn, ok := errors.AsType[*forge.NotLoggedInError](err)
-	if !ok {
-		t.Fatalf("CheckLogin(git.example.com) error = %v, want *forge.NotLoggedInError", err)
-	}
-	if notLoggedIn.Host != "git.example.com" {
-		t.Errorf("CheckLogin(git.example.com) host = %q, want %q", notLoggedIn.Host, "git.example.com")
-	}
+	assert.Assert(t, ok, "CheckLogin(git.example.com) error = %v, want *forge.NotLoggedInError", err)
+	assert.Check(t, is.Equal(notLoggedIn.Host, "git.example.com"))
 	wantText := "not logged in to git.example.com"
-	if notLoggedIn.Error() != wantText {
-		t.Errorf("CheckLogin(git.example.com) error text = %q, want %q", notLoggedIn.Error(), wantText)
-	}
+	assert.Check(t, is.Equal(notLoggedIn.Error(), wantText))
 }
 
 func TestRunner_CheckLogin_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
@@ -380,10 +309,6 @@ func TestRunner_CheckLogin_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
 	err := github.Runner{}.CheckLogin(t.Context(), "github.com")
 
 	missing, ok := errors.AsType[*forge.ToolMissingError](err)
-	if !ok {
-		t.Fatalf("CheckLogin(github.com) error = %v, want *forge.ToolMissingError", err)
-	}
-	if diff := cmp.Diff(missingTool(), missing); diff != "" {
-		t.Errorf("CheckLogin(github.com) error mismatch (-want +got):\n%s", diff)
-	}
+	assert.Assert(t, ok, "CheckLogin(github.com) error = %v, want *forge.ToolMissingError", err)
+	assert.Check(t, is.DeepEqual(missing, missingTool()))
 }

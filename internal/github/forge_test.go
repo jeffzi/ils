@@ -7,8 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"gotest.tools/v3/assert"
+	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/github"
@@ -78,9 +79,7 @@ func received(calls ...[]string) [][]string {
 func assertCalls(t *testing.T, fake *ghtest.Fake, want [][]string) {
 	t.Helper()
 
-	if diff := cmp.Diff(want, fake.Calls()); diff != "" {
-		t.Errorf("argv the fake gh received mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(fake.Calls(), want))
 }
 
 // featureChange is the change every OpenChange test asks for.
@@ -236,12 +235,8 @@ func TestForge_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
 			err := tt.run(t.Context(), newForge())
 
 			missing, ok := errors.AsType[*forge.ToolMissingError](err)
-			if !ok {
-				t.Fatalf("%s error = %v, want *forge.ToolMissingError", tt.name, err)
-			}
-			if diff := cmp.Diff(missingTool(), missing); diff != "" {
-				t.Errorf("%s error mismatch (-want +got):\n%s", tt.name, diff)
-			}
+			assert.Assert(t, ok, "%s error = %v, want *forge.ToolMissingError", tt.name, err)
+			assert.Check(t, is.DeepEqual(missing, missingTool()))
 		})
 	}
 }
@@ -255,9 +250,7 @@ func TestForge_WhenContextCanceled_ReturnsContextError(t *testing.T) {
 
 			err := tt.run(ctx, newForge())
 
-			if !errors.Is(err, context.Canceled) {
-				t.Errorf("%s error = %v, want context.Canceled", tt.name, err)
-			}
+			assert.Check(t, is.ErrorIs(err, context.Canceled))
 		})
 	}
 }
@@ -271,13 +264,9 @@ func TestForge_WhenReadExitsNonZero_ReturnsExitErrorNamingCall(t *testing.T) {
 			err := tt.run(t.Context(), newForge())
 
 			exitErr, ok := errors.AsType[*github.ExitError](err)
-			if !ok {
-				t.Fatalf("error = %v, want *github.ExitError", err)
-			}
+			assert.Assert(t, ok, "error = %v, want *github.ExitError", err)
 			want := github.ExitError{Argv: received(tt.args)[0], Stderr: serverDown, Code: 1}
-			if diff := cmp.Diff(want, *exitErr); diff != "" {
-				t.Errorf("exit error mismatch (-want +got):\n%s", diff)
-			}
+			assert.Check(t, is.DeepEqual(*exitErr, want))
 		})
 	}
 }
@@ -290,12 +279,8 @@ func TestForge_WhenReadPrintsMalformedJSON_ReturnsDecodeErrorNamingCall(t *testi
 			err := tt.run(t.Context(), newForge())
 
 			decodeErr, ok := errors.AsType[*github.DecodeError](err)
-			if !ok {
-				t.Fatalf("error = %v, want *github.DecodeError", err)
-			}
-			if diff := cmp.Diff(received(tt.args)[0], decodeErr.Argv); diff != "" {
-				t.Errorf("decode error argv mismatch (-want +got):\n%s", diff)
-			}
+			assert.Assert(t, ok, "error = %v, want *github.DecodeError", err)
+			assert.Check(t, is.DeepEqual(decodeErr.Argv, received(tt.args)[0]))
 		})
 	}
 }
@@ -306,12 +291,8 @@ func TestForge_Identity_WhenNotLoggedIn_ReturnsNotLoggedInError(t *testing.T) {
 	_, err := newForge().Identity(t.Context(), engine())
 
 	notLoggedIn, ok := errors.AsType[*forge.NotLoggedInError](err)
-	if !ok {
-		t.Fatalf("Identity error = %v, want *forge.NotLoggedInError", err)
-	}
-	if notLoggedIn.Host != engineHost {
-		t.Errorf("Identity error host = %q, want %q", notLoggedIn.Host, engineHost)
-	}
+	assert.Assert(t, ok, "Identity error = %v, want *forge.NotLoggedInError", err)
+	assert.Check(t, is.Equal(notLoggedIn.Host, engineHost))
 	assertCalls(t, fake, received(loginArgs()))
 }
 
@@ -337,13 +318,9 @@ func TestForge_Identity(t *testing.T) {
 			want.Fork, want.CanPush = tt.want.Fork, tt.want.CanPush
 
 			got, err := newForge().Identity(t.Context(), engine())
-			if err != nil {
-				t.Fatalf("Identity error = %v, want nil", err)
-			}
+			assert.NilError(t, err)
 
-			if diff := cmp.Diff(want, got); diff != "" {
-				t.Errorf("Identity mismatch (-want +got):\n%s", diff)
-			}
+			assert.Check(t, is.DeepEqual(got, want))
 			assertCalls(t, fake, received(loginArgs(), repoViewArgs()))
 		})
 	}
@@ -355,13 +332,9 @@ func TestForge_Identity_WhenRepoUnreadable_ErrorStartsByNamingRepository(t *test
 
 	_, err := newForge().Identity(t.Context(), engine())
 
-	if err == nil {
-		t.Fatal("Identity error = nil, want an error naming the repository")
-	}
+	assert.Assert(t, err != nil, "Identity error = nil, want an error naming the repository")
 	wantPrefix := "read the repository " + engineSlug + ": "
-	if !strings.HasPrefix(err.Error(), wantPrefix) {
-		t.Errorf("Identity error = %q, want it to start with %q", err.Error(), wantPrefix)
-	}
+	assert.Check(t, strings.HasPrefix(err.Error(), wantPrefix), "Identity error = %q, want it to start with %q", err.Error(), wantPrefix)
 }
 
 func TestForge_FindChanges_ReturnsOpenThenMergedChanges(t *testing.T) {
@@ -371,9 +344,7 @@ func TestForge_FindChanges_ReturnsOpenThenMergedChanges(t *testing.T) {
 	fake := ghtest.Setup(t, ok(open, listArgs("open")...), ok(merged, listArgs("merged")...))
 
 	got, err := newForge().FindChanges(t.Context(), engine(), "feature")
-	if err != nil {
-		t.Fatalf("FindChanges error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
 	want := []forge.Change{
 		{Number: 7, URL: pullURL, Title: "feature", Base: "main", HeadSHA: headSHA, Draft: true, State: forge.ChangeOpen},
@@ -382,9 +353,7 @@ func TestForge_FindChanges_ReturnsOpenThenMergedChanges(t *testing.T) {
 			Base: "release", HeadSHA: "0a1b2c3", State: forge.ChangeMerged,
 		},
 	}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("FindChanges mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(got, want))
 	assertCalls(t, fake, received(listArgs("open"), listArgs("merged")))
 }
 
@@ -392,27 +361,19 @@ func TestForge_FindChanges_WhenBranchHasNone_ReturnsNoChanges(t *testing.T) {
 	ghtest.Setup(t, ok("[]", listArgs("open")...), ok("[]", listArgs("merged")...))
 
 	got, err := newForge().FindChanges(t.Context(), engine(), "feature")
-	if err != nil {
-		t.Fatalf("FindChanges error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
-	if len(got) != 0 {
-		t.Errorf("FindChanges = %v, want no changes", got)
-	}
+	assert.Check(t, is.Len(got, 0))
 }
 
 func TestForge_OpenChange_WhenCreated_ReturnsNumberAndURL(t *testing.T) {
 	fake := ghtest.Setup(t, ok(pullURL+"\n", createArgs()...))
 
 	got, err := newForge().OpenChange(t.Context(), engine(), featureChange())
-	if err != nil {
-		t.Fatalf("OpenChange error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
 	want := forge.ChangeRef{Number: 7, URL: pullURL}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("OpenChange mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(got, want))
 	assertCalls(t, fake, received(createArgs()))
 }
 
@@ -425,9 +386,7 @@ func TestForge_OpenChange_WhenPullRequestExists_ReturnsErrChangeExists(t *testin
 
 	_, err := newForge().OpenChange(t.Context(), engine(), featureChange())
 
-	if !errors.Is(err, forge.ErrChangeExists) {
-		t.Errorf("OpenChange error = %v, want forge.ErrChangeExists", err)
-	}
+	assert.Check(t, is.ErrorIs(err, forge.ErrChangeExists))
 }
 
 func TestForge_OpenChange_WhenGhFailsForAnotherReason_ReturnsExitErrorCarryingStderr(t *testing.T) {
@@ -450,16 +409,10 @@ func TestForge_OpenChange_WhenGhFailsForAnotherReason_ReturnsExitErrorCarryingSt
 
 			_, err := newForge().OpenChange(t.Context(), engine(), featureChange())
 
-			if errors.Is(err, forge.ErrChangeExists) {
-				t.Fatalf("OpenChange error = %v, want an error other than forge.ErrChangeExists", err)
-			}
+			assert.Assert(t, !errors.Is(err, forge.ErrChangeExists), "OpenChange error = %v, want an error other than forge.ErrChangeExists", err)
 			exitErr, ok := errors.AsType[*github.ExitError](err)
-			if !ok {
-				t.Fatalf("OpenChange error = %v, want *github.ExitError", err)
-			}
-			if exitErr.Stderr != tt.stderr {
-				t.Errorf("OpenChange error stderr = %q, want %q", exitErr.Stderr, tt.stderr)
-			}
+			assert.Assert(t, ok, "OpenChange error = %v, want *github.ExitError", err)
+			assert.Check(t, is.Equal(exitErr.Stderr, tt.stderr))
 		})
 	}
 }
@@ -487,12 +440,8 @@ func TestForge_OpenChange_WhenStdoutHoldsNoUsablePullURL_ReturnsError(t *testing
 
 			got, err := newForge().OpenChange(t.Context(), engine(), featureChange())
 
-			if err == nil {
-				t.Fatalf("OpenChange = %+v with a nil error, want an error", got)
-			}
-			if err.Error() != tt.want {
-				t.Errorf("OpenChange error = %q, want %q", err.Error(), tt.want)
-			}
+			assert.Assert(t, err != nil, "OpenChange = %+v with a nil error, want an error", got)
+			assert.Check(t, is.Equal(err.Error(), tt.want))
 		})
 	}
 }
@@ -523,13 +472,9 @@ func TestForge_Head_WhenStateNeedsNoCheck_AsksOnlyForThePullRequest(t *testing.T
 			fake := ghtest.Setup(t, ok(tt.view, headArgs()...))
 
 			got, err := newForge().Head(t.Context(), engine(), headQuery(tt.required...))
-			if err != nil {
-				t.Fatalf("Head error = %v, want nil", err)
-			}
+			assert.NilError(t, err)
 
-			if diff := cmp.Diff(tt.want, got); diff != "" {
-				t.Errorf("Head mismatch (-want +got):\n%s", diff)
-			}
+			assert.Check(t, is.DeepEqual(got, tt.want))
 			assertCalls(t, fake, received(headArgs()))
 		})
 	}
@@ -582,14 +527,10 @@ func TestForge_Head_WhenBlockedAndTrunkRequiresChecks(t *testing.T) {
 			)
 
 			got, err := newForge().Head(t.Context(), engine(), headQuery("build", "test"))
-			if err != nil {
-				t.Fatalf("Head error = %v, want nil", err)
-			}
+			assert.NilError(t, err)
 
 			want := forge.Head{SHA: headSHA, MergeState: tt.want, RawMergeState: "BLOCKED"}
-			if diff := cmp.Diff(want, got); diff != "" {
-				t.Errorf("Head mismatch (-want +got):\n%s", diff)
-			}
+			assert.Check(t, is.DeepEqual(got, want))
 			assertCalls(t, fake, received(headArgs(), checksArgs(), runsArgs()))
 		})
 	}
@@ -620,14 +561,10 @@ func TestForge_TrunkProtection(t *testing.T) {
 			fake := ghtest.Setup(t, answered(tt.answer, rulesArgs()...))
 
 			got, err := newForge().TrunkProtection(t.Context(), engine(), "main")
-			if err != nil {
-				t.Fatalf("TrunkProtection error = %v, want nil", err)
-			}
+			assert.NilError(t, err)
 
 			want := forge.Protection{RequiredChecks: tt.want}
-			if diff := cmp.Diff(want, got, cmpopts.EquateEmpty()); diff != "" {
-				t.Errorf("TrunkProtection mismatch (-want +got):\n%s", diff)
-			}
+			assert.Check(t, is.DeepEqual(got, want, cmpopts.EquateEmpty()))
 			assertCalls(t, fake, received(rulesArgs()))
 		})
 	}
@@ -653,14 +590,10 @@ func TestForge_Verdict_ReadsEachBucketWhateverGhExitsWith(t *testing.T) {
 			fake := ghtest.Setup(t, answered(checks, checksArgs()...), ok("[]", runsArgs()...))
 
 			got, err := newForge().Verdict(t.Context(), engine(), verdictQuery())
-			if err != nil {
-				t.Fatalf("Verdict error = %v, want nil", err)
-			}
+			assert.NilError(t, err)
 
 			want := []forge.Check{{Name: "build", Bucket: tt.want, Workflow: "CI", Link: statusLink}}
-			if diff := cmp.Diff(want, got.Checks); diff != "" {
-				t.Errorf("Verdict checks mismatch (-want +got):\n%s", diff)
-			}
+			assert.Check(t, is.DeepEqual(got.Checks, want))
 			assertCalls(t, fake, received(checksArgs(), runsArgs()))
 		})
 	}
@@ -671,13 +604,9 @@ func TestForge_Verdict_WhenNoCheckReported_ReturnsZeroChecks(t *testing.T) {
 	ghtest.Setup(t, answered(none, checksArgs()...), ok("[]", runsArgs()...))
 
 	got, err := newForge().Verdict(t.Context(), engine(), verdictQuery())
-	if err != nil {
-		t.Fatalf("Verdict error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
-	if diff := cmp.Diff(forge.Verdict{}, got, cmpopts.EquateEmpty()); diff != "" {
-		t.Errorf("Verdict mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(got, forge.Verdict{}, cmpopts.EquateEmpty()))
 }
 
 func TestForge_Verdict_ReadsTheStatusOfEachRunOnTheCommit(t *testing.T) {
@@ -693,9 +622,7 @@ func TestForge_Verdict_ReadsTheStatusOfEachRunOnTheCommit(t *testing.T) {
 	ghtest.Setup(t, ok("[]", checksArgs()...), ok(runs, runsArgs()...))
 
 	got, err := newForge().Verdict(t.Context(), engine(), verdictQuery())
-	if err != nil {
-		t.Fatalf("Verdict error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
 	want := []forge.Run{
 		{Name: "CI", Status: forge.RunQueued},
@@ -706,23 +633,17 @@ func TestForge_Verdict_ReadsTheStatusOfEachRunOnTheCommit(t *testing.T) {
 		{Name: "Build", Status: forge.RunCompleted},
 		{Name: "Scan", Status: forge.RunCompleted},
 	}
-	if diff := cmp.Diff(want, got.Runs); diff != "" {
-		t.Errorf("Verdict runs mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(got.Runs, want))
 }
 
 func TestForge_Verdict_WhenRunStatusIsNotKnown_CarriesTheRunAsInProgress(t *testing.T) {
 	ghtest.Setup(t, ok("[]", checksArgs()...), ok("["+runJSON("paused")+"]", runsArgs()...))
 
 	got, err := newForge().Verdict(t.Context(), engine(), verdictQuery())
-	if err != nil {
-		t.Fatalf("Verdict error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
 	want := []forge.Run{{Name: "CI", Status: forge.RunInProgress}}
-	if diff := cmp.Diff(want, got.Runs); diff != "" {
-		t.Errorf("Verdict runs mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(got.Runs, want))
 }
 
 func TestForge_Verdict_WhenQueryNamesRequiredChecks_CarriesEveryCheckAndListsTheMissing(t *testing.T) {
@@ -730,9 +651,7 @@ func TestForge_Verdict_WhenQueryNamesRequiredChecks_CarriesEveryCheckAndListsThe
 	fake := ghtest.Setup(t, answered(ghtest.Answer{Stdout: checks, Code: 1}, checksArgs()...), ok("[]", runsArgs()...))
 
 	got, err := newForge().Verdict(t.Context(), engine(), verdictQuery("build", "test", "deploy"))
-	if err != nil {
-		t.Fatalf("Verdict error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
 	want := forge.Verdict{
 		Checks: []forge.Check{
@@ -741,9 +660,7 @@ func TestForge_Verdict_WhenQueryNamesRequiredChecks_CarriesEveryCheckAndListsThe
 		},
 		MissingRequired: []string{"build", "deploy"},
 	}
-	if diff := cmp.Diff(want, got, cmpopts.EquateEmpty()); diff != "" {
-		t.Errorf("Verdict mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(got, want, cmpopts.EquateEmpty()))
 	assertCalls(t, fake, received(checksArgs(), runsArgs()))
 }
 
@@ -777,16 +694,10 @@ func TestForge_Verdict_FailedLog(t *testing.T) {
 			fake := ghtest.Setup(t, ok("["+tt.checks+"]", checksArgs()...), ok("[]", runsArgs()...), answered(tt.log, logArgs()...))
 
 			got, err := newForge().Verdict(t.Context(), engine(), verdictQuery())
-			if err != nil {
-				t.Fatalf("Verdict error = %v, want nil", err)
-			}
+			assert.NilError(t, err)
 
-			if diff := cmp.Diff(tt.want, got.FailedLog); diff != "" {
-				t.Errorf("Verdict failed log mismatch (-want +got):\n%s", diff)
-			}
-			if got.State() != tt.state {
-				t.Errorf("Verdict state = %q, want %q", got.State(), tt.state)
-			}
+			assert.Check(t, is.DeepEqual(got.FailedLog, tt.want))
+			assert.Check(t, is.Equal(got.State(), tt.state))
 			wantCalls := received(checksArgs(), runsArgs())
 			if tt.wantCall {
 				wantCalls = received(checksArgs(), runsArgs(), logArgs())
@@ -801,18 +712,12 @@ func TestForge_Verdict_WhenRed_FailedLogBelongsToTheCheckFailedNames(t *testing.
 	fake := ghtest.Setup(t, answered(ghtest.Answer{Stdout: checks, Code: 1}, checksArgs()...), ok("[]", runsArgs()...), ok("log\n", logArgs()...))
 
 	got, err := newForge().Verdict(t.Context(), engine(), verdictQuery("scan", "build"))
-	if err != nil {
-		t.Fatalf("Verdict error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
 	failed, _ := got.Failed()
 	want := forge.FailedLog{Check: "scan", State: forge.FailedLogNoRun}
-	if diff := cmp.Diff(want, got.FailedLog); diff != "" {
-		t.Errorf("Verdict failed log mismatch (-want +got):\n%s", diff)
-	}
-	if failed.Name != got.FailedLog.Check {
-		t.Errorf("Verdict.Failed() names %q, the failed log names %q, want the same check", failed.Name, got.FailedLog.Check)
-	}
+	assert.Check(t, is.DeepEqual(got.FailedLog, want))
+	assert.Check(t, is.Equal(failed.Name, got.FailedLog.Check))
 	assertCalls(t, fake, received(checksArgs(), runsArgs()))
 }
 
@@ -821,13 +726,9 @@ func TestForge_Verdict_WhenFailingCheckIsNotRequired_ReadsNoLog(t *testing.T) {
 	fake := ghtest.Setup(t, answered(ghtest.Answer{Stdout: checks, Code: 1}, checksArgs()...), ok("[]", runsArgs()...))
 
 	got, err := newForge().Verdict(t.Context(), engine(), verdictQuery("build"))
-	if err != nil {
-		t.Fatalf("Verdict error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
-	if diff := cmp.Diff(forge.FailedLog{}, got.FailedLog); diff != "" {
-		t.Errorf("Verdict failed log mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(got.FailedLog, forge.FailedLog{}))
 	assertCalls(t, fake, received(checksArgs(), runsArgs()))
 }
 
@@ -876,19 +777,13 @@ func TestForge_NamesTheRepositoryOnEveryCall(t *testing.T) {
 	)
 	target := newForge()
 	for _, op := range operations() {
-		if err := op.run(t.Context(), target); err != nil {
-			t.Fatalf("%s error = %v, want nil", op.name, err)
-		}
+		assert.NilError(t, op.run(t.Context(), target), "%s", op.name)
 	}
 
 	calls := fake.Calls()
 
-	if len(calls) < len(operations()) {
-		t.Fatalf("the fake gh received %d calls, want at least one per operation", len(calls))
-	}
+	assert.Assert(t, len(calls) >= len(operations()), "the fake gh received %d calls, want at least one per operation", len(calls))
 	for _, argv := range calls {
-		if !namesRepository(argv) {
-			t.Errorf("gh call %q does not name the repository %s in its form", argv, engineSlug)
-		}
+		assert.Check(t, namesRepository(argv), "gh call %q does not name the repository %s in its form", argv, engineSlug)
 	}
 }

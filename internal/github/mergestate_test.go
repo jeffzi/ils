@@ -3,6 +3,9 @@ package github_test
 import (
 	"testing"
 
+	"gotest.tools/v3/assert"
+	is "gotest.tools/v3/assert/cmp"
+
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/github"
 )
@@ -57,9 +60,7 @@ func TestMergeStateOf(t *testing.T) {
 
 			got := github.MergeStateOf(tt.facts)
 
-			if got != tt.want {
-				t.Errorf("MergeStateOf(%+v) = %q, want %q", tt.facts, got, tt.want)
-			}
+			assert.Check(t, is.Equal(got, tt.want), "MergeStateOf(%+v)", tt.facts)
 		})
 	}
 }
