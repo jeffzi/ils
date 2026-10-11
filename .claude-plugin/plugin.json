@@ -1,0 +1,5 @@
+{
+  "name": "ils",
+  "description": "Land a change on GitHub with ils: push the branch, open its pull request, and wait for the checks.",
+  "version": "0.1.0"
+}
