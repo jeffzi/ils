@@ -13,6 +13,8 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"gotest.tools/v3/assert"
+	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/cli"
 	"github.com/jeffzi/ils/internal/git"
@@ -91,9 +93,7 @@ func decode(t *testing.T, out string) shown {
 	var got shown
 
 	err := json.Unmarshal([]byte(out), &got)
-	if err != nil {
-		t.Fatalf("stdout is not one JSON object: %v\n%s", err, out)
-	}
+	assert.NilError(t, err, "stdout is not one JSON object:\n%s", out)
 
 	return got
 }
@@ -151,9 +151,7 @@ func timed(t *testing.T, sc scenario) (*scene, ran, time.Duration) {
 	got := launch(t, app, "push")
 	late := time.Since(app.Launch.Add(bound))
 
-	if got.code != sc.want {
-		t.Fatalf("ils push exit code = %d, want %d; stdout:\n%s\nstderr:\n%s", got.code, sc.want, got.stdout, got.stderr)
-	}
+	assert.Equal(t, got.code, sc.want, "stdout:\n%s\nstderr:\n%s", got.stdout, got.stderr)
 
 	return s, got, late
 }
@@ -201,9 +199,7 @@ func TestRun_WhenWordsBreakTheGrammar_RefusesNamingTheWord(t *testing.T) {
 			got := launch(t, outside(t), tt.args...)
 
 			want := ran{stdout: "Refused: " + tt.reason + "\nNext: " + nextHelp + "\n", code: exitRefused}
-			if diff := cmp.Diff(want, got, cmp.AllowUnexported(ran{})); diff != "" {
-				t.Errorf("ils %s mismatch (-want +got):\n%s", strings.Join(tt.args, " "), diff)
-			}
+			assert.Check(t, is.DeepEqual(got, want, cmp.AllowUnexported(ran{})), "ils %s", strings.Join(tt.args, " "))
 		})
 	}
 }
@@ -218,14 +214,11 @@ func TestRun_WhenAskedForHelp_PrintsUsageWithTheByHandSequenceAndExitsZero(t *te
 
 			got := launch(t, outside(t), args...)
 
-			if got.code != exitDone || got.stderr != "" {
-				t.Errorf("exit code = %d, stderr = %q, want 0 and nothing on stderr", got.code, got.stderr)
-			}
+			assert.Check(t, is.Equal(got.code, exitDone))
+			assert.Check(t, is.Equal(got.stderr, ""))
 
 			for _, want := range []string{"\nBy hand:\n", "  git push -u origin <name>\n", "\nThen, by hand:\n"} {
-				if !strings.Contains(got.stdout, want) {
-					t.Errorf("stdout = %q, want it to contain %q", got.stdout, want)
-				}
+				assert.Check(t, is.Contains(got.stdout, want))
 			}
 		})
 	}
@@ -254,13 +247,9 @@ func TestRun_Help_ListsEachCommandAndSaysWhichAreNotInThisVersion(t *testing.T) 
 
 			listed := slices.Collect(strings.Lines(got.stdout))
 			at := slices.IndexFunc(listed, func(line string) bool { return strings.HasPrefix(line, "  ils "+tt.command) })
-			if at < 0 {
-				t.Fatalf("usage lists no command %q:\n%s", tt.command, got.stdout)
-			}
+			assert.Assert(t, at >= 0, "usage lists no command %q:\n%s", tt.command, got.stdout)
 
-			if strings.Contains(listed[at], absent) != tt.absent {
-				t.Errorf("usage line %q, want it to say %q: %t", listed[at], absent, tt.absent)
-			}
+			assert.Check(t, is.Equal(strings.Contains(listed[at], absent), tt.absent))
 		})
 	}
 }
@@ -288,13 +277,10 @@ func TestRun_WhenJSONFlagIsAmongTheWords_RendersJSONWithoutTheFlagInTheWords(t *
 
 			got := launch(t, outside(t), tt.args...)
 
-			if got.code != exitRefused || got.stderr != "" {
-				t.Errorf("exit code = %d, stderr = %q, want %d and nothing on stderr", got.code, got.stderr, exitRefused)
-			}
+			assert.Check(t, is.Equal(got.code, exitRefused))
+			assert.Check(t, is.Equal(got.stderr, ""))
 
-			if diff := cmp.Diff(tt.want, decode(t, got.stdout), cmpopts.EquateEmpty()); diff != "" {
-				t.Errorf("JSON on stdout mismatch (-want +got):\n%s", diff)
-			}
+			assert.Check(t, is.DeepEqual(decode(t, got.stdout), tt.want, cmpopts.EquateEmpty()))
 		})
 	}
 }
@@ -321,13 +307,11 @@ func TestRun_Push_OutsideARepository_RendersTheResultOfPush(t *testing.T) {
 
 			got := launch(t, app, tt.args...)
 
-			if got.code != exitBroke || got.stderr != "" {
-				t.Errorf("exit code = %d, stderr = %q, want %d and nothing on stderr", got.code, got.stderr, exitBroke)
-			}
+			assert.Check(t, is.Equal(got.code, exitBroke))
+			assert.Check(t, is.Equal(got.stderr, ""))
 
-			if !strings.Contains(got.stdout, tt.want) || tt.whole && got.stdout != tt.want {
-				t.Errorf("stdout = %q, want %q (the whole of it: %t)", got.stdout, tt.want, tt.whole)
-			}
+			assert.Check(t, is.Contains(got.stdout, tt.want))
+			assert.Check(t, !tt.whole || got.stdout == tt.want, "stdout = %q, want the whole of it to be %q", got.stdout, tt.want)
 		})
 	}
 }
@@ -352,13 +336,10 @@ func TestRun_WhenRendererRejectsTheResult_ExitsOneWithTheErrorOnStderrAndNothing
 
 			got := launch(t, app, args...)
 
-			if got.code != exitBroke || got.stdout != "" {
-				t.Errorf("exit code = %d, stdout = %q, want %d and nothing on stdout", got.code, got.stdout, exitBroke)
-			}
+			assert.Check(t, is.Equal(got.code, exitBroke))
+			assert.Check(t, is.Equal(got.stdout, ""))
 
-			if !strings.Contains(got.stderr, hookLine) {
-				t.Errorf("stderr = %q, want it to name the line %q", got.stderr, hookLine)
-			}
+			assert.Check(t, is.Contains(got.stderr, hookLine))
 		})
 	}
 }
@@ -376,13 +357,10 @@ func TestRun_WhenALineNamesAPathUnderTheGitDirOfTheRepository_ExitsOneWithNothin
 
 			got := launch(t, app, args...)
 
-			if got.code != exitBroke || got.stdout != "" {
-				t.Errorf("exit code = %d, stdout = %q, want %d and nothing on stdout", got.code, got.stdout, exitBroke)
-			}
+			assert.Check(t, is.Equal(got.code, exitBroke))
+			assert.Check(t, is.Equal(got.stdout, ""))
 
-			if !strings.Contains(got.stderr, "Wrote "+under) {
-				t.Errorf("stderr = %q, want it to name the line %q", got.stderr, "Wrote "+under)
-			}
+			assert.Check(t, is.Contains(got.stderr, "Wrote "+under))
 		})
 	}
 }
@@ -397,9 +375,7 @@ func TestRun_WhenALineNamesAPathUnderTheGitDirOfAnotherDirectory_RendersTheLine(
 	got := launch(t, app, "push")
 
 	want := ran{stdout: "Wrote " + under + "\nNext: none\n", code: exitDone}
-	if diff := cmp.Diff(want, got, cmp.AllowUnexported(ran{})); diff != "" {
-		t.Errorf("ils push outside a repository mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(got, want, cmp.AllowUnexported(ran{})))
 }
 
 func TestRun_Push_GivesTheCommandADeadlineOneHundredSecondsAfterLaunch(t *testing.T) {
@@ -420,13 +396,11 @@ func TestRun_Push_GivesTheCommandADeadlineOneHundredSecondsAfterLaunch(t *testin
 
 	got := launch(t, app, "push")
 
-	if got.code != exitDone {
-		t.Fatalf("exit code = %d, want 0; stderr:\n%s", got.code, got.stderr)
-	}
+	assert.Equal(t, got.code, exitDone, "stderr:\n%s", got.stderr)
 
-	if want := app.Launch.Add(bound); !bounded || !deadline.Equal(want) {
-		t.Errorf("deadline of the command's context = %v (set: %t), want %v", deadline, bounded, want)
-	}
+	want := app.Launch.Add(bound)
+	assert.Check(t, bounded, "the command's context has no deadline")
+	assert.Check(t, deadline.Equal(want), "deadline of the command's context = %v, want %v", deadline, want)
 }
 
 func TestRun_Push_NamesTheRequestByTheWordsTypedWithoutTheJSONFlag(t *testing.T) {
@@ -443,14 +417,10 @@ func TestRun_Push_NamesTheRequestByTheWordsTypedWithoutTheJSONFlag(t *testing.T)
 
 	got := launch(t, app, "--json", "push")
 
-	if got.code != exitDone {
-		t.Fatalf("exit code = %d, want 0; stderr:\n%s", got.code, got.stderr)
-	}
+	assert.Equal(t, got.code, exitDone, "stderr:\n%s", got.stderr)
 
 	want := landing.Request{Command: "push", Words: []string{"push"}}
-	if diff := cmp.Diff(want, asked); diff != "" {
-		t.Errorf("request handed to push mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(asked, want))
 }
 
 func TestRun_Push_WhenTheBoundEndedBeforeAnyRead_RefusesAndPushesNothing(t *testing.T) {
@@ -460,25 +430,19 @@ func TestRun_Push_WhenTheBoundEndedBeforeAnyRead_RefusesAndPushesNothing(t *test
 
 	got := launch(t, app, "push")
 
-	if got.code != exitRefused || !strings.HasPrefix(got.stdout, "Refused: the time limit ended ") {
-		t.Errorf("exit code = %d, stdout = %q, want %d and a refusal naming the time limit", got.code, got.stdout, exitRefused)
-	}
+	assert.Check(t, is.Equal(got.code, exitRefused))
+	assert.Check(t, strings.HasPrefix(got.stdout, "Refused: the time limit ended "), "stdout = %q, want a refusal naming the time limit", got.stdout)
 
-	if on := s.fixture.OriginGit("for-each-ref", "refs/heads/"+topic); on != "" {
-		t.Errorf("origin's copy of %s = %q, want none", topic, on)
-	}
+	assert.Check(t, is.Equal(s.fixture.OriginGit("for-each-ref", "refs/heads/"+topic), ""))
 }
 
 func TestRun_Push_WhenChecksStillRunAtTheBound_EndsPendingWithoutOutlastingIt(t *testing.T) {
 	_, got, late := timed(t, pendingAtTheBound())
 
-	if late > grace {
-		t.Errorf("ils push returned %s past the bound, want it back no later than %s past it", late, grace)
-	}
+	assert.Check(t, late <= grace, "ils push returned %s past the bound, want it back no later than %s past it", late, grace)
 
-	if want := "\nNext: ils push\n"; !strings.HasSuffix(got.stdout, want) {
-		t.Errorf("stdout = %q, want it to end with %q", got.stdout, want)
-	}
+	want := "\nNext: ils push\n"
+	assert.Check(t, strings.HasSuffix(got.stdout, want), "stdout = %q, want it to end with %q", got.stdout, want)
 }
 
 func TestRun_Push_WhenACallIsStillOpenAtTheBound_CancelsItAndEndsByTheBound(t *testing.T) {
@@ -499,22 +463,18 @@ func TestRun_Push_WhenACallIsStillOpenAtTheBound_CancelsItAndEndsByTheBound(t *t
 		t.Run(tt.scenario.name, func(t *testing.T) {
 			s, got, late := timed(t, tt.scenario)
 
-			if late > grace {
-				t.Errorf("ils push returned %s past the bound, want it back no later than %s past it", late, grace)
-			}
+			assert.Check(t, late <= grace, "ils push returned %s past the bound, want it back no later than %s past it", late, grace)
 
-			if !strings.HasPrefix(got.stdout, tt.wantStart) || !strings.HasSuffix(got.stdout, tt.wantEnd) {
-				t.Errorf("stdout = %q, want it to start with %q and end with %q", got.stdout, tt.wantStart, tt.wantEnd)
-			}
+			assert.Check(t, strings.HasPrefix(got.stdout, tt.wantStart), "stdout = %q, want it to start with %q", got.stdout, tt.wantStart)
+			assert.Check(t, strings.HasSuffix(got.stdout, tt.wantEnd), "stdout = %q, want it to end with %q", got.stdout, tt.wantEnd)
 
 			onOrigin := s.fixture.OriginGit("for-each-ref", "--points-at", tipOf(s.fixture), "refs/heads/"+topic)
 			opening := slices.ContainsFunc(s.fake.Calls(), func(argv []string) bool {
 				return slices.Equal(argv[:min(3, len(argv))], []string{"gh", "pr", "create"})
 			})
-			if pushed := onOrigin != ""; pushed != tt.delivered || opening != tt.delivered {
-				t.Errorf("origin's copy of %s = %q and pull request opened = %t, want both delivered: %t",
-					topic, onOrigin, opening, tt.delivered)
-			}
+			pushed := onOrigin != ""
+			assert.Check(t, is.Equal(pushed, tt.delivered))
+			assert.Check(t, is.Equal(opening, tt.delivered))
 		})
 	}
 }
@@ -550,9 +510,7 @@ func assertCarried(t *testing.T, text string, got shown) {
 
 	for line := range strings.Lines(text) {
 		line = strings.TrimSuffix(line, "\n")
-		if !slices.Contains(carried, line) {
-			t.Errorf("text line %q is not carried by the JSON: %+v", line, got)
-		}
+		assert.Check(t, is.Contains(carried, line), "JSON: %+v", got)
 	}
 }
 
@@ -573,14 +531,12 @@ func TestRun_Push_ForEveryOutcome_JSONCarriesWhatTheTextShows(t *testing.T) {
 
 			text, encoded := both(t, s)
 
-			if text.code != tt.scenario.want || encoded.code != tt.scenario.want {
-				t.Errorf("exit codes = %d as text and %d as JSON, want %d for both", text.code, encoded.code, tt.scenario.want)
-			}
+			assert.Check(t, is.Equal(text.code, tt.scenario.want))
+			assert.Check(t, is.Equal(encoded.code, tt.scenario.want))
 
 			got := decode(t, encoded.stdout)
-			if got.Outcome != tt.outcome || got.ExitCode != tt.scenario.want {
-				t.Errorf("JSON outcome = %q (exit %d), want %q (exit %d)", got.Outcome, got.ExitCode, tt.outcome, tt.scenario.want)
-			}
+			assert.Check(t, is.Equal(got.Outcome, tt.outcome))
+			assert.Check(t, is.Equal(got.ExitCode, tt.scenario.want))
 
 			assertCarried(t, text.stdout, got)
 		})

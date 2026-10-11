@@ -9,7 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/go-cmp/cmp"
+	"gotest.tools/v3/assert"
+	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/cli"
 	"github.com/jeffzi/ils/internal/git"
@@ -408,9 +409,7 @@ func section(t *testing.T, usage, heading string) []string {
 	t.Helper()
 
 	_, after, ok := strings.Cut(usage, "\n"+heading+"\n")
-	if !ok {
-		t.Fatalf("usage has no line %q:\n%s", heading, usage)
-	}
+	assert.Assert(t, ok, "usage has no line %q:\n%s", heading, usage)
 
 	var lines []string
 
@@ -499,9 +498,7 @@ func pushUsage(t *testing.T) string {
 	t.Helper()
 
 	got := launch(t, outside(t), "push", "--help")
-	if got.code != 0 {
-		t.Fatalf("ils push --help exit code = %d, want 0; stderr:\n%s", got.code, got.stderr)
-	}
+	assert.Equal(t, got.code, 0, "stderr:\n%s", got.stderr)
 
 	return got.stdout
 }
@@ -513,9 +510,7 @@ func pushed(t *testing.T, sc scenario) (*scene, ran) {
 	s := newScene(t, sc)
 
 	got := launch(t, s.app(), "push")
-	if got.code != sc.want {
-		t.Fatalf("ils push exit code = %d, want %d; stdout:\n%s\nstderr:\n%s", got.code, sc.want, got.stdout, got.stderr)
-	}
+	assert.Equal(t, got.code, sc.want, "stdout:\n%s\nstderr:\n%s", got.stdout, got.stderr)
 
 	return s, got
 }
@@ -533,24 +528,18 @@ func TestUsage_Push_ByHandIsTheSequencePushRan(t *testing.T) {
 	}
 
 	for _, argv := range calls {
-		if !slices.ContainsFunc(lines, func(line string) bool { return stands(line, argv) }) {
-			t.Errorf("push ran %q, which no line under \"By hand:\" stands for", argv)
-		}
+		assert.Check(t, slices.ContainsFunc(lines, func(line string) bool { return stands(line, argv) }), "push ran %q, which no line under \"By hand:\" stands for", argv)
 	}
 
 	for _, line := range lines {
-		if !slices.ContainsFunc(calls, func(argv []string) bool { return stands(line, argv) }) {
-			t.Errorf("usage line %q under \"By hand:\" stands for no call push ran", line)
-		}
+		assert.Check(t, slices.ContainsFunc(calls, func(argv []string) bool { return stands(line, argv) }), "usage line %q under \"By hand:\" stands for no call push ran", line)
 	}
 }
 
 func TestUsage_Push_ByHandNamesTheReadOfTheGitDir(t *testing.T) {
 	lines := section(t, pushUsage(t), "By hand:")
 
-	if want := "git rev-parse --absolute-git-dir"; !slices.Contains(lines, want) {
-		t.Errorf("lines under \"By hand:\" = %q, want them to hold %q", lines, want)
-	}
+	assert.Check(t, is.Contains(lines, "git rev-parse --absolute-git-dir"))
 }
 
 func TestUsage_Push_ThenByHandIsWhatTheGreenNextNames(t *testing.T) {
@@ -569,21 +558,16 @@ func TestUsage_Push_ThenByHandIsWhatTheGreenNextNames(t *testing.T) {
 		}
 	}
 
-	if diff := cmp.Diff(named, lines); diff != "" {
-		t.Errorf("lines under \"Then, by hand:\" differ from the commands of the green Next (-next +usage):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(lines, named))
 
 	wantStarts := []string{
 		"gh pr edit --repo <r> <N> --title ",
 		"gh pr merge --repo <r> <N> --squash --delete-branch --match-head-commit <sha> --subject ",
 	}
-	if len(lines) != len(wantStarts) {
-		t.Fatalf("lines under \"Then, by hand:\" = %q, want %d of them", lines, len(wantStarts))
-	}
+	assert.Assert(t, is.Len(lines, len(wantStarts)))
 
 	for i, line := range lines {
-		if !strings.HasPrefix(line, wantStarts[i]) || !strings.Contains(line, " --body ") {
-			t.Errorf("line %q under \"Then, by hand:\", want it to start with %q and carry --body", line, wantStarts[i])
-		}
+		assert.Check(t, strings.HasPrefix(line, wantStarts[i]), "line %q under \"Then, by hand:\", want it to start with %q", line, wantStarts[i])
+		assert.Check(t, is.Contains(line, " --body "))
 	}
 }
