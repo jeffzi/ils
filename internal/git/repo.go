@@ -19,7 +19,8 @@ const (
 	absentCode = 2
 	// noRemoteCode is the exit of `git remote get-url` for a remote that is not configured.
 	noRemoteCode = 2
-	// falseCode is the exit of `git symbolic-ref --quiet` on a detached HEAD and of
+	// falseCode is the exit of `git symbolic-ref --quiet` on a detached HEAD, of
+	// `git show-ref --verify --quiet` for a ref that does not exist, and of
 	// `git merge-base --is-ancestor` when the answer is no.
 	falseCode = 1
 
@@ -134,6 +135,17 @@ func (r Repo) Standing(ctx context.Context) (Standing, error) {
 // HeadSHA returns the sha of the commit HEAD is on.
 func (r Repo) HeadSHA(ctx context.Context) (string, error) {
 	return r.line(ctx, "rev-parse", "HEAD")
+}
+
+// HasCommits reports whether the local branch has a commit; one made with `git switch --orphan`
+// has none until the first commit on it.
+func (r Repo) HasCommits(ctx context.Context, branch string) (bool, error) {
+	_, err := r.Runner.Run(ctx, "show-ref", "--verify", "--quiet", headsRef+branch)
+	if exited(err, falseCode) {
+		return false, nil
+	}
+
+	return err == nil, err
 }
 
 // GitDir returns the absolute path of the repository's git directory.

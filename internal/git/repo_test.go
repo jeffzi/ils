@@ -1006,3 +1006,43 @@ func TestRepo_WhenContextCanceled_ReturnsContextError(t *testing.T) {
 		})
 	}
 }
+
+func TestRepo_HasCommits(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, "develop")
+	f.Commits("team/topic", "first change")
+	f.Git("switch", "--quiet", "--orphan", "spare")
+	repo := newRepo(f)
+	tests := []struct {
+		name   string
+		branch string
+		want   bool
+	}{
+		{name: "branch with a commit", branch: "team/topic", want: true},
+		{name: "branch made with switch --orphan", branch: "spare", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := repo.HasCommits(t.Context(), tt.branch)
+			if err != nil {
+				t.Fatalf("HasCommits(%q) error = %v, want nil", tt.branch, err)
+			}
+			if got != tt.want {
+				t.Errorf("HasCommits(%q) = %t, want %t", tt.branch, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRepo_HasCommits_WhenNotARepository_ReturnsExitError(t *testing.T) {
+	t.Parallel()
+	repo := outsideRepo(t)
+
+	_, err := repo.HasCommits(t.Context(), "topic")
+
+	if _, ok := errors.AsType[*git.ExitError](err); !ok {
+		t.Errorf("HasCommits(topic) error = %v, want a *git.ExitError", err)
+	}
+}
