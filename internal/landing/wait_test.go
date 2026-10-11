@@ -478,8 +478,16 @@ func requiredRows() []vigilRow {
 	held := forge.Verdict{Checks: []forge.Check{lint, needed("test", forge.BucketPending)}, Runs: ran(forge.RunCompleted)}
 	holding := concluded(landing.WaitPending, held, 1, 0)
 	holding.Stage = landing.StageVerdict
+	aside := forge.Verdict{Checks: []forge.Check{checked("docs", forge.BucketPass)}, MissingRequired: []string{"test"}}
+	unmet := concluded(landing.WaitNeverReported, aside, 0, 0)
+	unmet.Deciding = nil
 
 	return []vigilRow{
+		{
+			name:     "required name absent beside a check that is not required, no run going",
+			verdicts: says(aside),
+			want:     unmet, ops: readsOf(1, 1, 1),
+		},
 		{
 			// A third wait would end three seconds past the deadline.
 			name:     "required check pending after every run completed, until the deadline",

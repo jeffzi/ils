@@ -176,6 +176,8 @@ type pushRefusal struct {
 	script  forgetest.Script
 	// ops are the forge operations made before the refusal.
 	ops []forgetest.Op
+	// answered is how many calls origin answers before it stops; zero is every call.
+	answered int
 	// fetches is whether git fetches from origin before the refusal.
 	fetches bool
 }
@@ -317,6 +319,20 @@ func cutRefusals() []pushRefusal {
 					" and not from the trunk, and has no commit of its own\n" + nextBranch + "\n"
 			},
 		},
+		{
+			// Origin answers about its trunk and the fetch of it, and nothing after: asked whether it
+			// has the branch, it would be what refuses.
+			name: "cut from another branch and behind origin's copy", script: allowed(),
+			ops: identityRead(), fetches: true, answered: 2,
+			arrange: func(f *gittest.Fixture) string {
+				own := f.Sibling(side, topic)
+				publish(f, side)
+				f.AdvanceOrigin(side)
+
+				return cutFrom(topic) + own + " change on " + side + "\n" +
+					nextBranch + ", then bring this branch's own commits over with `git cherry-pick " + own + "`\n"
+			},
+		},
 	}
 }
 
@@ -367,15 +383,27 @@ func changeRefusals() []pushRefusal {
 	number := strconv.Itoa(merged)
 	landed := finding(change(merged, trunk, forge.ChangeMerged))
 
+	const elsewhere = "Refused: pull request #12 from " + topic + " is open against " + otherBase +
+		" and not against the trunk " + trunk + "\n" +
+		"Next: close it or change its base with `gh pr edit 12 --base " + trunk +
+		"`, then run ils push again\n"
+
 	return []pushRefusal{
 		{
 			name:   "open pull request against another base",
 			script: finding(change(opened, otherBase, forge.ChangeOpen)), ops: changesRead(), fetches: true,
-			arrange: func(*gittest.Fixture) string {
-				return "Refused: pull request #12 from " + topic + " is open against " + otherBase +
-					" and not against the trunk " + trunk + "\n" +
-					"Next: close it or change its base with `gh pr edit 12 --base " + trunk +
-					"`, then run ils push again\n"
+			arrange: func(*gittest.Fixture) string { return elsewhere },
+		},
+		{
+			// Origin answers about its trunk, the fetch of it, and whether it has the branch, and
+			// nothing after: a fetch of the merged head would be what refuses.
+			name:   "open pull request against another base beside a merged one that shares a commit",
+			script: finding(change(merged, trunk, forge.ChangeMerged), change(opened, otherBase, forge.ChangeOpen)),
+			ops:    changesRead(), fetches: true, answered: 3,
+			arrange: func(f *gittest.Fixture) string {
+				squash(f)
+
+				return elsewhere
 			},
 		},
 		{
@@ -436,6 +464,10 @@ func TestPush_WhenBranchCannotBePushed_RefusesAtTheFirstAndWritesNothing(t *test
 			var want string
 
 			s := newScene(t, func(f *gittest.Fixture) { want = tt.arrange(f) }, tt.script, false)
+			if tt.answered > 0 {
+				s.deps.Repo.Runner.Env = answering(t, s.fixture, tt.answered, "true")
+			}
+
 			before := s.written()
 
 			got := landing.Push(t.Context(), s.deps, pushRequest())
@@ -529,6 +561,11 @@ func TestPush_WhenOriginStopsAnsweringBeforeAFetch_RefusesAndWritesNothing(t *te
 		// answered is how many calls origin answers before it stops.
 		answered int
 	}{
+		{
+			// Origin answers the question about its trunk, and nothing after.
+			name: "of its trunk", script: allowed(), ops: identityRead(), answered: 1,
+			want: "origin could not be reached to fetch its trunk " + trunk,
+		},
 		{
 			name: "of origin's copy of the branch", script: allowed(), ops: identityRead(), answered: 3,
 			arrange: func(f *gittest.Fixture) { publish(f, topic) },
@@ -1551,7 +1588,23 @@ func pushPendingRows() []pushRow {
 		}
 	}
 
+	started := forge.Verdict{Runs: ran(forge.RunInProgress)}
+
 	return []pushRow{
+		{
+			// Twelve seconds end inside the 20 seconds a silent commit is given.
+			name: "nothing has reported yet", left: 12 * time.Second, script: reusing(forge.Verdict{}),
+			want: pending("no check or status had reported at the time limit",
+				"No check or status has reported for "+tipMark+" on pull request #12 yet\n"+cleanLine,
+				detail(forge.VerdictNone, forge.MergeClean)),
+		},
+		{
+			name: "a workflow run is going and no check has reported yet", left: 12 * time.Second,
+			script: reusing(started),
+			want: pending("the checks had not reported at the time limit",
+				"No check has reported for "+tipMark+" on pull request #12 yet; a workflow run is still going\n"+cleanLine,
+				detail(forge.VerdictNone, forge.MergeClean)),
+		},
 		{
 			// A third wait would end a second past the deadline.
 			name: "the pull request still shows an earlier commit", left: 5 * time.Second,
