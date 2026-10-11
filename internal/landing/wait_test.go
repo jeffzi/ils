@@ -583,6 +583,8 @@ func TestAwaitVerdict_WhenChecksRunWithFiveSecondsLeft_EndsPendingAfterOneVerdic
 
 		verdicts := slices.DeleteFunc(v.opsOf(), func(op forgetest.Op) bool { return op != forgetest.OpVerdict })
 		assert.Check(t, is.Len(verdicts, 1))
+		// The one poll ends on the deadline, and is taken.
+		assert.Check(t, is.DeepEqual(v.pauses(), polls(1, verdictPoll)))
 		assert.Check(t, !v.ended.After(v.deadline), "AwaitVerdict() returned at %v, want it no later than the deadline %v",
 			v.ended, v.deadline)
 	})

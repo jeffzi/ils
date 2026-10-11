@@ -1579,8 +1579,10 @@ func pushPendingRows() []pushRow {
 				"GitHub has not said whether pull request #12 can merge yet\n", detail(forge.VerdictNone, forge.MergeUnknown)),
 		},
 		{
-			// Two polls of five seconds pass; a third would end three seconds past the deadline.
-			name: "a check still runs", left: 12 * time.Second, script: reusing(running()),
+			// The head catches up after one poll of two seconds, which the count leaves out; then
+			// two polls of five seconds pass, and a third would end three seconds past the deadline.
+			name: "a check still runs", left: 14 * time.Second,
+			script: reusing(running()).showing(stale(), inState(forge.MergeClean, "CLEAN")),
 			want: pending("the checks were still running at the time limit",
 				"Still running after 10 seconds: test\n"+cleanLine,
 				detail(forge.VerdictPending, forge.MergeClean, running().Checks...)),
