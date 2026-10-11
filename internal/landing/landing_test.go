@@ -57,14 +57,18 @@ type scene struct {
 	deps     landing.Deps
 }
 
+// serving returns the command that stands in for ssh: it runs, on the repository at dir, the
+// service git asked the host for, which is upload-pack for a fetch and receive-pack for a push.
+func serving(dir string) string {
+	// Git hands the stand-in the host and then the remote command, such as `git-upload-pack '<path>'`.
+	// The service is the first word of that command, and the trailing # turns both into a shell comment.
+	return `service="${2%% *}"; git "${service#git-}" '` + filepath.ToSlash(dir) + `' #`
+}
+
 // served returns the fixture's environment with ssh replaced by a command that serves the
 // repository at dir, so that origin's GitHub URLs reach a local repository and never the network.
 func served(f *gittest.Fixture, dir string) []string {
-	return append(f.Env(),
-		"GIT_SSH_VARIANT=simple",
-		// The trailing # turns the host and the command git appends into a shell comment.
-		"GIT_SSH_COMMAND=git upload-pack '"+filepath.ToSlash(dir)+"' #",
-	)
+	return append(f.Env(), "GIT_SSH_VARIANT=simple", "GIT_SSH_COMMAND="+serving(dir))
 }
 
 // newScene returns a repository on the topic branch whose origin URLs name Acme/Widgets on
