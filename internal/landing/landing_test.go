@@ -9,11 +9,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"testing/synctest"
 	"time"
 
-	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"gotest.tools/v3/assert"
+	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
@@ -102,7 +102,6 @@ func newScene(t *testing.T, arrange func(*gittest.Fixture), script forgetest.Scr
 		deps: landing.Deps{
 			Repo:  git.Repo{Runner: git.Runner{Dir: f.Dir(), Env: served(f, dir), Recorder: recorder}},
 			Forge: fake,
-			Clock: landing.SystemClock{},
 		},
 	}
 }
@@ -137,9 +136,7 @@ func assertAsked(t *testing.T, s *scene, ops []forgetest.Op) {
 	// What the forge said of the repository is no part of which repository a call is about.
 	which := cmpopts.IgnoreFields(forge.Repo{}, "Fork", "CanPush")
 
-	if diff := cmp.Diff(asked(ops), s.forge.Calls(), which); diff != "" {
-		t.Errorf("forge calls mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(s.forge.Calls(), asked(ops), which))
 }
 
 // askedOrigin reports whether a git call went to origin.
@@ -174,23 +171,17 @@ func shown(t *testing.T, r result.Result, gitDir string) (text, reason string) {
 	t.Helper()
 
 	text, err := result.RenderText(r, gitDir)
-	if err != nil {
-		t.Fatalf("RenderText() error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
 	out, err := result.RenderJSON(r, gitDir)
-	if err != nil {
-		t.Fatalf("RenderJSON() error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
 	var decoded struct {
 		Reason string `json:"reason"`
 	}
 
 	err = json.Unmarshal([]byte(out), &decoded)
-	if err != nil {
-		t.Fatalf("RenderJSON() output is not one JSON object: %v\n%s", err, out)
-	}
+	assert.NilError(t, err, "RenderJSON() output is not one JSON object:\n%s", out)
 
 	return text, decoded.Reason
 }
@@ -200,18 +191,12 @@ func shown(t *testing.T, r result.Result, gitDir string) (text, reason string) {
 func assertStopped(t *testing.T, got result.Result, want result.Outcome, exit int) {
 	t.Helper()
 
-	if got.Outcome != want || got.Outcome.ExitCode() != exit {
-		t.Errorf("Preconditions() outcome = %s (exit %d), want %s (exit %d)",
-			got.Outcome, got.Outcome.ExitCode(), want, exit)
-	}
+	assert.Check(t, is.Equal(got.Outcome, want))
+	assert.Check(t, is.Equal(got.Outcome.ExitCode(), exit))
 
-	if got.Command != "push" {
-		t.Errorf("Preconditions() result command = %q, want %q", got.Command, "push")
-	}
+	assert.Check(t, is.Equal(got.Command, "push"))
 
-	if diff := cmp.Diff([]string{"push"}, got.Words); diff != "" {
-		t.Errorf("Preconditions() result words mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(got.Words, []string{"push"}))
 }
 
 // assertBrokeRead fails unless got is broke on the read named read, says nothing was written,
@@ -225,26 +210,19 @@ func assertBrokeRead(t *testing.T, got result.Result, read, detail string) {
 	prefix := "Could not read " + read + ": "
 	suffix := "\nNothing was written.\n" + nextFixed
 
-	if !strings.HasPrefix(text, prefix) || !strings.HasSuffix(text, suffix) {
-		t.Errorf("RenderText() = %q, want it to start with %q and end with %q", text, prefix, suffix)
-	}
+	assert.Check(t, strings.HasPrefix(text, prefix), "RenderText() = %q, want it to start with %q", text, prefix)
+	assert.Check(t, strings.HasSuffix(text, suffix), "RenderText() = %q, want it to end with %q", text, suffix)
 
-	if !strings.Contains(text, detail) {
-		t.Errorf("RenderText() = %q, want it to contain %q", text, detail)
-	}
+	assert.Check(t, is.Contains(text, detail))
 
-	if want := "could not read " + read; reason != want {
-		t.Errorf("RenderJSON() reason = %q, want %q", reason, want)
-	}
+	assert.Check(t, is.Equal(reason, "could not read "+read))
 }
 
 // assertRefsUnchanged fails unless every ref of the scene is as it was in before.
 func assertRefsUnchanged(t *testing.T, s *scene, before string) {
 	t.Helper()
 
-	if after := s.refs(); after != before {
-		t.Errorf("refs after Preconditions() = %q, want them unchanged from %q", after, before)
-	}
+	assert.Check(t, is.Equal(s.refs(), before))
 }
 
 // refusal is one state that the preconditions refuse, with what they print and how far they read.
@@ -361,15 +339,11 @@ func TestPreconditions_WhenOneFails_RefusesAtTheFirstAndWritesNothing(t *testing
 
 			_, got, ok := landing.Preconditions(t.Context(), s.deps, pushRequest())
 
-			if ok {
-				t.Fatal("Preconditions() ok = true, want a refusal")
-			}
+			assert.Assert(t, !ok, "Preconditions() ok = true, want a refusal")
 			assertStopped(t, got, result.Refused, exitRefused)
 
 			text, _ := shown(t, got, s.gitDir)
-			if diff := cmp.Diff(tt.want, text); diff != "" {
-				t.Errorf("RenderText() mismatch (-want +got):\n%s", diff)
-			}
+			assert.Check(t, is.DeepEqual(text, tt.want))
 
 			assertRefsUnchanged(t, s, before)
 			assertReadsStoppedAt(t, s, tt)
@@ -387,9 +361,7 @@ func assertReadsStoppedAt(t *testing.T, s *scene, tt refusal) {
 
 	assertAsked(t, s, ops)
 
-	if asked := s.askedOrigin(); asked != tt.asksOrigin {
-		t.Errorf("origin asked for its trunk = %t, want %t", asked, tt.asksOrigin)
-	}
+	assert.Check(t, is.Equal(s.askedOrigin(), tt.asksOrigin))
 }
 
 func TestPreconditions_WhenAllHold_ReturnsStandingRepositoryAndTrunk(t *testing.T) {
@@ -414,16 +386,12 @@ func TestPreconditions_WhenAllHold_ReturnsStandingRepositoryAndTrunk(t *testing.
 			}
 
 			want := landing.Ready{Standing: tt.want, Repo: widgets(false, true), Trunk: trunk}
-			if diff := cmp.Diff(want, got); diff != "" {
-				t.Errorf("Preconditions() mismatch (-want +got):\n%s", diff)
-			}
+			assert.Check(t, is.DeepEqual(got, want))
 
 			wantCalls := []forgetest.Call{
 				{Op: forgetest.OpIdentity, Repo: forge.Repo{Host: host, Owner: owner, Name: repoName}},
 			}
-			if diff := cmp.Diff(wantCalls, s.forge.Calls()); diff != "" {
-				t.Errorf("forge calls mismatch (-want +got):\n%s", diff)
-			}
+			assert.Check(t, is.DeepEqual(s.forge.Calls(), wantCalls))
 		})
 	}
 }
@@ -435,23 +403,17 @@ func TestPreconditions_WhenForgeIdentityFailsUntyped_BrokeNamingTheRead(t *testi
 
 	_, got, ok := landing.Preconditions(t.Context(), s.deps, pushRequest())
 
-	if ok {
-		t.Fatal("Preconditions() ok = true, want a broke result")
-	}
+	assert.Assert(t, !ok, "Preconditions() ok = true, want a broke result")
 	assertBrokeRead(t, got, readIdentity, "HTTP 502")
 
 	text, _ := shown(t, got, s.gitDir)
 	want := "Could not read the repository's identity on GitHub: HTTP 502\nNothing was written.\n" + nextFixed
-	if diff := cmp.Diff(want, text); diff != "" {
-		t.Errorf("RenderText() mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(text, want))
 
 	assertRefsUnchanged(t, s, before)
 	assertAsked(t, s, identityRead())
 
-	if s.askedOrigin() {
-		t.Error("origin was asked for its trunk after the identity read failed, want no later read")
-	}
+	assert.Check(t, !s.askedOrigin(), "origin was asked for its trunk after the identity read failed, want no later read")
 }
 
 func TestPreconditions_WhenDirectoryIsNotARepository_BrokeNamingTheRead(t *testing.T) {
@@ -459,14 +421,11 @@ func TestPreconditions_WhenDirectoryIsNotARepository_BrokeNamingTheRead(t *testi
 	deps := landing.Deps{
 		Repo:  git.Repo{Runner: git.Runner{Dir: t.TempDir(), Env: gittest.New(t, trunk).Env()}},
 		Forge: forgetest.New(t, forgetest.Script{}),
-		Clock: landing.SystemClock{},
 	}
 
 	_, got, ok := landing.Preconditions(t.Context(), deps, pushRequest())
 
-	if ok {
-		t.Fatal("Preconditions() ok = true, want a broke result")
-	}
+	assert.Assert(t, !ok, "Preconditions() ok = true, want a broke result")
 	assertBrokeRead(t, got, readStanding, "not a git repository")
 }
 
@@ -477,14 +436,11 @@ func TestPreconditions_WhenGitMissingFromPath_BrokeNamingTheRead(t *testing.T) {
 	deps := landing.Deps{
 		Repo:  git.Repo{Runner: git.Runner{Dir: t.TempDir()}},
 		Forge: forgetest.New(t, forgetest.Script{}),
-		Clock: landing.SystemClock{},
 	}
 
 	_, got, ok := landing.Preconditions(t.Context(), deps, pushRequest())
 
-	if ok {
-		t.Fatal("Preconditions() ok = true, want a broke result")
-	}
+	assert.Assert(t, !ok, "Preconditions() ok = true, want a broke result")
 	assertBrokeRead(t, got, readStanding, "git not found on PATH")
 }
 
@@ -575,97 +531,15 @@ func TestPreconditions_WhenDeadlineEndsDuringRead_RefusesNamingTheRead(t *testin
 
 			_, got, ok := landing.Preconditions(ctx, s.deps, pushRequest())
 
-			if ok {
-				t.Fatal("Preconditions() ok = true, want a refusal")
-			}
+			assert.Assert(t, !ok, "Preconditions() ok = true, want a refusal")
 			assertStopped(t, got, result.Refused, exitRefused)
 
 			text, _ := shown(t, got, s.gitDir)
 			want := "Refused: the time limit ended while reading " + tt.read + "; nothing was written\n" + nextPush
-			if diff := cmp.Diff(want, text); diff != "" {
-				t.Errorf("RenderText() mismatch (-want +got):\n%s", diff)
-			}
+			assert.Check(t, is.DeepEqual(text, want))
 
 			assertRefsUnchanged(t, s, before)
 			assertAsked(t, s, tt.ops)
-		})
-	}
-}
-
-func TestSystemClock_Now_ReturnsCurrentTime(t *testing.T) {
-	t.Parallel()
-	synctest.Test(t, func(t *testing.T) {
-		want := time.Now()
-
-		got := landing.SystemClock{}.Now()
-
-		if !got.Equal(want) {
-			t.Errorf("Now() = %v, want %v", got, want)
-		}
-	})
-}
-
-func TestSystemClock_Wait_WhenDurationPasses_ReturnsNil(t *testing.T) {
-	t.Parallel()
-	synctest.Test(t, func(t *testing.T) {
-		start := time.Now()
-
-		err := landing.SystemClock{}.Wait(t.Context(), time.Minute)
-		if err != nil {
-			t.Fatalf("Wait(1m) error = %v, want nil", err)
-		}
-
-		if waited := time.Since(start); waited != time.Minute {
-			t.Errorf("Wait(1m) returned after %v, want %v", waited, time.Minute)
-		}
-	})
-}
-
-func TestSystemClock_Wait_WhenContextEndsFirst_ReturnsItsErrorEarly(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		arrange func(context.Context) (context.Context, context.CancelFunc)
-		want    error
-		name    string
-		after   time.Duration
-	}{
-		{
-			name: "deadline",
-			arrange: func(ctx context.Context) (context.Context, context.CancelFunc) {
-				return context.WithTimeout(ctx, 10*time.Second)
-			},
-			want:  context.DeadlineExceeded,
-			after: 10 * time.Second,
-		},
-		{
-			name: "already canceled",
-			arrange: func(ctx context.Context) (context.Context, context.CancelFunc) {
-				ctx, cancel := context.WithCancel(ctx)
-				cancel()
-
-				return ctx, cancel
-			},
-			want: context.Canceled,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			synctest.Test(t, func(t *testing.T) {
-				ctx, cancel := tt.arrange(t.Context())
-				defer cancel()
-
-				start := time.Now()
-
-				err := landing.SystemClock{}.Wait(ctx, time.Minute)
-
-				if !errors.Is(err, tt.want) {
-					t.Errorf("Wait(1m) error = %v, want %v", err, tt.want)
-				}
-				if waited := time.Since(start); waited != tt.after {
-					t.Errorf("Wait(1m) returned after %v, want %v", waited, tt.after)
-				}
-			})
 		})
 	}
 }

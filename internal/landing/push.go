@@ -468,7 +468,7 @@ func deliver(ctx context.Context, deps Deps, req Request, p pushReady) result.Re
 
 	d.waited = waited
 
-	return *d.report(deps.Clock.Now())
+	return *d.report()
 }
 
 // waitRead returns the read a failed wait names and the error of that read.
@@ -659,8 +659,8 @@ func (d *delivery) mergeState() {
 	d.lines = append(d.lines, result.Say("GitHub: %s (%s)", d.waited.RawMergeState, d.waited.MergeState))
 }
 
-// report returns the result the wait's outcome maps to; now is when the wait ended.
-func (d *delivery) report(now time.Time) *result.Result {
+// report returns the result the wait's outcome maps to.
+func (d *delivery) report() *result.Result {
 	switch d.waited.Outcome {
 	case WaitGreen:
 		return d.green()
@@ -675,7 +675,7 @@ func (d *delivery) report(now time.Time) *result.Result {
 	case WaitNothingReported:
 		return d.nothingReported()
 	default:
-		return d.pending(now)
+		return d.pending()
 	}
 }
 
@@ -765,8 +765,8 @@ func (d *delivery) nothingReported() *result.Result {
 		result.NextStep("report that no check or status reported for the pushed commit, and stop"))
 }
 
-// pending is a wait the deadline ended, at the stage it was in; now is when it ended.
-func (d *delivery) pending(now time.Time) *result.Result {
+// pending is a wait the deadline ended, at the stage it was in.
+func (d *delivery) pending() *result.Result {
 	var reason result.Phrase
 
 	switch d.waited.Stage {
@@ -778,16 +778,15 @@ func (d *delivery) pending(now time.Time) *result.Result {
 			result.Say("GitHub has not said whether pull request #%s can merge yet", d.number))
 		reason = result.Say("GitHub did not say whether the pull request can merge before the time limit")
 	default:
-		reason = d.unconcluded(now)
+		reason = d.unconcluded()
 	}
 
 	return d.ended(result.Pending, reason, result.NextCommand("push"))
 }
 
 // unconcluded says what the checks stage had found when the deadline ended it, and returns the
-// reason: nothing at all, a workflow run with no check yet, or the checks still running; now
-// is when it ended.
-func (d *delivery) unconcluded(now time.Time) result.Phrase {
+// reason: nothing at all, a workflow run with no check yet, or the checks still running.
+func (d *delivery) unconcluded() result.Phrase {
 	verdict := d.waited.Verdict
 	reason := result.Say("the checks were still running at the time limit")
 
@@ -801,7 +800,7 @@ func (d *delivery) unconcluded(now time.Time) result.Phrase {
 			"No check has reported for %s on pull request #%s yet; a workflow run is still going", d.tip, d.number))
 		reason = result.Say("the checks had not reported at the time limit")
 	default:
-		seconds := int(now.Sub(d.waited.Since) / time.Second)
+		seconds := int(time.Since(d.waited.Since) / time.Second)
 		for _, check := range verdict.Pending() {
 			d.lines = append(d.lines, result.Say("Still running after %s seconds: %s", seconds, check.Name))
 		}

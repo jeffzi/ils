@@ -108,7 +108,7 @@ func (a App) push(ctx context.Context, words []string) (r result.Result, gitDir 
 		run = landing.Push
 	}
 
-	deps := landing.Deps{Forge: github.NewForge(github.Runner{}), Clock: landing.SystemClock{}, Repo: repo}
+	deps := landing.Deps{Forge: github.NewForge(github.Runner{}), Repo: repo}
 
 	return run(ctx, deps, landing.Request{Command: words[0], Words: words}), gitDir
 }

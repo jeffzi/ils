@@ -6,7 +6,6 @@ package landing
 import (
 	"context"
 	"errors"
-	"time"
 
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/git"
@@ -21,44 +20,9 @@ const (
 	readTrunk    = "origin's trunk"
 )
 
-// Clock tells the time and waits, so that a command's polling and its bound can be tested
-// without sleeping.
-type Clock interface {
-	// Now returns the current time. The time left under a context's deadline is that
-	// deadline less Now.
-	Now() time.Time
-	// Wait returns nil once d has passed, or the context's error as soon as ctx ends,
-	// whichever comes first.
-	Wait(ctx context.Context, d time.Duration) error
-}
-
-// SystemClock is the Clock of the running process.
-type SystemClock struct{}
-
-var _ Clock = SystemClock{}
-
-// Now returns the current time.
-func (SystemClock) Now() time.Time {
-	return time.Now()
-}
-
-// Wait returns nil once d has passed, or the context's error as soon as ctx ends.
-func (SystemClock) Wait(ctx context.Context, d time.Duration) error {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
-}
-
-// Deps is what a command takes: the forge, a clock, and the repository it runs in.
+// Deps is what a command takes: the forge and the repository it runs in.
 type Deps struct {
 	Forge forge.Forge
-	Clock Clock
 	Repo  git.Repo
 }
 

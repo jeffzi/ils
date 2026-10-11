@@ -14,10 +14,12 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
-	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"gotest.tools/v3/assert"
+	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
@@ -124,22 +126,15 @@ func assertEnded(t *testing.T, s *scene, got result.Result, end finish) {
 
 	want, exit, text := end.outcome, end.exit, end.text
 
-	if got.Outcome != want || got.Outcome.ExitCode() != exit {
-		t.Errorf("Push() outcome = %s (exit %d), want %s (exit %d)", got.Outcome, got.Outcome.ExitCode(), want, exit)
-	}
+	assert.Check(t, is.Equal(got.Outcome, want))
+	assert.Check(t, is.Equal(got.Outcome.ExitCode(), exit))
 
-	if got.Command != "push" {
-		t.Errorf("Push() result command = %q, want %q", got.Command, "push")
-	}
+	assert.Check(t, is.Equal(got.Command, "push"))
 
-	if diff := cmp.Diff([]string{"push"}, got.Words); diff != "" {
-		t.Errorf("Push() result words mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(got.Words, []string{"push"}))
 
 	rendered, _ := shown(t, got, s.gitDir)
-	if diff := cmp.Diff(text, rendered); diff != "" {
-		t.Errorf("RenderText() mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(rendered, text))
 }
 
 // reads is what a refusing Push may have done: the refs before it, the forge operations it made,
@@ -157,15 +152,11 @@ func assertOnlyRead(t *testing.T, s *scene, read reads) {
 
 	before, ops, fetches := read.before, read.ops, read.fetches
 
-	if after := s.written(); after != before {
-		t.Errorf("refs after Push() = %q, want them unchanged from %q", after, before)
-	}
+	assert.Check(t, is.Equal(s.written(), before))
 
 	assertAsked(t, s, ops)
 
-	if fetched := s.fetched(); fetched != fetches {
-		t.Errorf("git fetched from origin = %t, want %t", fetched, fetches)
-	}
+	assert.Check(t, is.Equal(s.fetched(), fetches))
 }
 
 // pushRefusal is one state of the branch that Push refuses, and how far Push reads to refuse it.
@@ -505,9 +496,7 @@ func silent(t *testing.T) (addr string, connected chan struct{}) {
 	var config net.ListenConfig
 
 	listener, err := config.Listen(t.Context(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen on a local port: %v", err)
-	}
+	assert.NilError(t, err)
 
 	connected = make(chan struct{})
 	released := make(chan struct{})
@@ -515,9 +504,7 @@ func silent(t *testing.T) (addr string, connected chan struct{}) {
 	t.Cleanup(func() {
 		close(released)
 
-		if closeErr := listener.Close(); closeErr != nil {
-			t.Errorf("close the local listener: %v", closeErr)
-		}
+		assert.Check(t, listener.Close())
 	})
 
 	go func() {
@@ -605,9 +592,7 @@ func spoil(t *testing.T, f *gittest.Fixture, path string) {
 	garbage := []byte(strings.Repeat("not what git wrote here\n", 4))
 
 	err := os.WriteFile(filepath.Join(f.Dir(), ".git", filepath.FromSlash(path)), garbage, 0o600)
-	if err != nil {
-		t.Fatalf("overwrite %s: %v", path, err)
-	}
+	assert.NilError(t, err)
 }
 
 // lose deletes the commit sha from the working repository's object store, where the fixture keeps
@@ -616,9 +601,7 @@ func lose(t *testing.T, f *gittest.Fixture, sha string) {
 	t.Helper()
 
 	err := os.Remove(filepath.Join(f.Dir(), ".git", "objects", sha[:2], sha[2:]))
-	if err != nil {
-		t.Fatalf("delete the object %s: %v", sha, err)
-	}
+	assert.NilError(t, err)
 }
 
 // brokenRead is one local read of Push that the repository's own state breaks.
@@ -795,9 +778,7 @@ func TestPush_WhenBranchHasNoCommitAtAll_RefusesAsNoCommitPastTheTrunkAndWritesN
 		"Next: commit the work, then run ils push again\n"
 	assertEnded(t, s, got, finish{outcome: result.Refused, exit: exitRefused, text: want})
 
-	if after := standing(); after != before {
-		t.Errorf("refs after Push() = %q, want them unchanged from %q", after, before)
-	}
+	assert.Check(t, is.Equal(standing(), before))
 
 	assertAsked(t, s, identityRead())
 }
@@ -816,9 +797,7 @@ func TestPush_WhenBranchRefCannotBeRead_BrokeNamingTheTipReadAndWritesNothing(t 
 		strconv.Itoa(failingGitExit) + ": " + failingGitSaid + "\nNothing was written.\n" + nextFixed
 	assertEnded(t, s, got, finish{outcome: result.Broke, exit: exitBroke, text: want})
 
-	if after := s.refs(); after != before {
-		t.Errorf("refs after Push() = %q, want them unchanged from %q", after, before)
-	}
+	assert.Check(t, is.Equal(s.refs(), before))
 
 	assertAsked(t, s, identityRead())
 }
@@ -829,14 +808,10 @@ func failGit(t *testing.T, s *scene, words []string) {
 	t.Helper()
 
 	realGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Fatalf("find git: %v", err)
-	}
+	assert.NilError(t, err)
 
 	self, err := os.Executable()
-	if err != nil {
-		t.Fatalf("find the test binary: %v", err)
-	}
+	assert.NilError(t, err)
 
 	name := "git"
 	if runtime.GOOS == "windows" {
@@ -844,9 +819,8 @@ func failGit(t *testing.T, s *scene, words []string) {
 	}
 
 	dir := t.TempDir()
-	if err = os.Link(self, filepath.Join(dir, name)); err != nil {
-		t.Fatalf("link the test binary as git: %v", err)
-	}
+	err = os.Link(self, filepath.Join(dir, name))
+	assert.NilError(t, err)
 
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -1117,18 +1091,15 @@ func assertDelivered(t *testing.T, s *scene, got result.Result, end finish) {
 
 	assertEnded(t, s, got, end)
 
-	if _, reason := shown(t, got, s.gitDir); reason != end.reason {
-		t.Errorf("RenderJSON() reason = %q, want %q", reason, end.reason)
-	}
+	_, reason := shown(t, got, s.gitDir)
+	assert.Check(t, is.Equal(reason, end.reason))
 
 	var payload *result.Push
 	if got.Payload != nil {
 		payload = got.Payload.Push
 	}
 
-	if diff := cmp.Diff(end.payload, payload, cmpopts.EquateEmpty()); diff != "" {
-		t.Errorf("Push() payload mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(payload, end.payload, cmpopts.EquateEmpty()))
 }
 
 // pushes reports whether a git call pushed to origin.
@@ -1162,56 +1133,51 @@ type pushRow struct {
 	quiet bool
 }
 
-// delivery is a scene whose branch Push can push: the tip, the clock the wait runs on, and the
-// deadline it runs under.
+// delivery is a scene whose branch Push can push: the tip, the times of the forge reads, and the
+// deadline the push runs under.
 type delivery struct {
 	*scene
 
-	ctx   context.Context
-	clock *fakeClock
-	tip   string
+	ctx context.Context
+	log *readLog
+	tip string
 }
 
-// newDelivery returns the scene of tt on the topic branch, with a clock at epoch that moves only
-// when the wait polls, and a deadline the time tt has left away.
+// newDelivery returns the scene of tt on the topic branch, with a deadline the time tt has left
+// away from now: inside a bubble that is fake time, which passes only while the wait polls.
 func newDelivery(t *testing.T, tt pushRow) *delivery {
 	t.Helper()
 
 	s := newScene(t, tt.arrange, forgetest.Script{}, false)
 	sha := s.fixture.Git("rev-parse", topic)
-	clock := &fakeClock{now: epoch}
+	log := &readLog{}
 
-	s.forge = forgetest.New(t, tt.script(sha))
+	s.forge = forgetest.New(t, log.timed(tt.script(sha)))
 	s.deps.Forge = s.forge
-	s.deps.Clock = clock
 
-	return &delivery{
-		scene: s, clock: clock, tip: sha,
-		ctx: bounded{Context: t.Context(), deadline: epoch.Add(orBound(tt.left))},
-	}
+	ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(orBound(tt.left)))
+	t.Cleanup(cancel)
+
+	return &delivery{scene: s, ctx: ctx, log: log, tip: sha}
 }
 
-// runPushes runs each row as a test of its own: the push ends as the row wants, origin's copy of
-// the branch is at the tip, and git pushed unless the row is quiet.
+// runPushes runs each row as a test in a bubble of its own: the push ends as the row wants,
+// origin's copy of the branch is at the tip, and git pushed unless the row is quiet.
 func runPushes(t *testing.T, rows []pushRow) {
 	t.Helper()
 
 	for _, tt := range rows {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			d := newDelivery(t, tt)
+			synctest.Test(t, func(t *testing.T) {
+				d := newDelivery(t, tt)
 
-			got := landing.Push(d.ctx, d.deps, pushRequest())
+				got := landing.Push(d.ctx, d.deps, pushRequest())
 
-			assertDelivered(t, d.scene, got, tt.want.at(d.tip))
-
-			if at := d.onOrigin(); at != d.tip {
-				t.Errorf("origin's copy of %s after Push() = %q, want the tip %q", topic, at, d.tip)
-			}
-
-			if pushed := d.pushes(); pushed == tt.quiet {
-				t.Errorf("git pushed = %t, want %t", pushed, !tt.quiet)
-			}
+				assertDelivered(t, d.scene, got, tt.want.at(d.tip))
+				assert.Check(t, is.Equal(d.onOrigin(), d.tip))
+				assert.Check(t, is.Equal(d.pushes(), !tt.quiet))
+			})
 		})
 	}
 }
@@ -1272,29 +1238,28 @@ func TestPush_WhenEveryPreconditionHolds_PushesAndReportsTheVerdictOfThePullRequ
 
 func TestPush_AsksTheForgeToOpenThePullRequestAndForTheChecksTheTrunkRequires(t *testing.T) {
 	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		required := []string{"lint", "test"}
+		d := newDelivery(t, pushRow{script: opening(requiredPassing()).requiring(required...)})
 
-	required := []string{"lint", "test"}
-	d := newDelivery(t, pushRow{script: opening(requiredPassing()).requiring(required...)})
+		landing.Push(d.ctx, d.deps, pushRequest())
 
-	landing.Push(d.ctx, d.deps, pushRequest())
+		repo := forge.Repo{Host: host, Owner: owner, Name: repoName}
+		head := forgetest.Call{Op: forgetest.OpHead, Repo: repo, Head: forge.HeadQuery{Number: opened, Required: required}}
+		want := []forgetest.Call{
+			{Op: forgetest.OpIdentity, Repo: repo},
+			{Op: forgetest.OpFindChanges, Repo: repo, Branch: topic},
+			{Op: forgetest.OpOpenChange, Repo: repo, Change: forge.NewChange{Title: topic, Base: trunk, Head: topic}},
+			{Op: forgetest.OpTrunkProtection, Repo: repo, Branch: trunk},
+			head,
+			{Op: forgetest.OpVerdict, Repo: repo, Query: forge.VerdictQuery{SHA: d.tip, Number: opened, Required: required}},
+			head,
+		}
+		// What the forge said of the repository is no part of which repository a call is about.
+		which := cmpopts.IgnoreFields(forge.Repo{}, "Fork", "CanPush")
 
-	repo := forge.Repo{Host: host, Owner: owner, Name: repoName}
-	head := forgetest.Call{Op: forgetest.OpHead, Repo: repo, Head: forge.HeadQuery{Number: opened, Required: required}}
-	want := []forgetest.Call{
-		{Op: forgetest.OpIdentity, Repo: repo},
-		{Op: forgetest.OpFindChanges, Repo: repo, Branch: topic},
-		{Op: forgetest.OpOpenChange, Repo: repo, Change: forge.NewChange{Title: topic, Base: trunk, Head: topic}},
-		{Op: forgetest.OpTrunkProtection, Repo: repo, Branch: trunk},
-		head,
-		{Op: forgetest.OpVerdict, Repo: repo, Query: forge.VerdictQuery{SHA: d.tip, Number: opened, Required: required}},
-		head,
-	}
-	// What the forge said of the repository is no part of which repository a call is about.
-	which := cmpopts.IgnoreFields(forge.Repo{}, "Fork", "CanPush")
-
-	if diff := cmp.Diff(want, d.forge.Calls(), which); diff != "" {
-		t.Errorf("forge calls mismatch (-want +got):\n%s", diff)
-	}
+		assert.Check(t, is.DeepEqual(d.forge.Calls(), want, which))
+	})
 }
 
 // pushExistsRows are the pushes whose open-change reports a pull request that already exists.
@@ -1342,9 +1307,7 @@ func TestPush_WhenGitRefusesThePush_BrokeSayingNothingWasPushed(t *testing.T) {
 	err := d.deps.Repo.Push(t.Context(), topic)
 
 	refused, ok := errors.AsType[*git.PushError](err)
-	if !ok {
-		t.Fatalf("Repo.Push() error = %v, want a *git.PushError", err)
-	}
+	assert.Assert(t, ok, "Repo.Push() error = %v, want a *git.PushError", err)
 
 	said := lineBreaks.ReplaceAllString(strings.TrimSpace(refused.Stderr), " ")
 
@@ -1353,9 +1316,7 @@ func TestPush_WhenGitRefusesThePush_BrokeSayingNothingWasPushed(t *testing.T) {
 		text: "Git refused the push of " + topic + ", so nothing was pushed: " + said + "\n" + nextFixed,
 	})
 
-	if at := d.onOrigin(); at != "" {
-		t.Errorf("origin's copy of %s after Push() = %q, want no such branch", topic, at)
-	}
+	assert.Check(t, is.Equal(d.onOrigin(), ""))
 
 	assertAsked(t, d.scene, changesRead())
 }
@@ -1465,18 +1426,17 @@ func TestPush_WhenTipIsAlreadyOnOrigin_PushesNothingAndReportsTheVerdict(t *test
 
 func TestPush_WhenTipIsOnOriginAndChecksStillRun_WaitsAgainForTheVerdict(t *testing.T) {
 	t.Parallel()
-	d := newDelivery(t, pushRow{
-		arrange: func(f *gittest.Fixture) { publish(f, topic) },
-		script:  reusing(running(), running(), passing()),
+	synctest.Test(t, func(t *testing.T) {
+		d := newDelivery(t, pushRow{
+			arrange: func(f *gittest.Fixture) { publish(f, topic) },
+			script:  reusing(running(), running(), passing()),
+		})
+
+		got := landing.Push(d.ctx, d.deps, pushRequest())
+
+		assertDelivered(t, d.scene, got, greenAfter(alreadyLine+foundLine).at(d.tip))
+		assert.Check(t, is.DeepEqual(d.log.pauses(time.Now()), polls(2, verdictPoll)))
 	})
-
-	got := landing.Push(d.ctx, d.deps, pushRequest())
-
-	assertDelivered(t, d.scene, got, greenAfter(alreadyLine+foundLine).at(d.tip))
-
-	if diff := cmp.Diff(polls(2, verdictPoll), d.clock.waits); diff != "" {
-		t.Errorf("clock waits mismatch (-want +got):\n%s", diff)
-	}
 }
 
 // steps returns the lines "step <first>" to "step <last>", each ended by a line break.
@@ -1606,7 +1566,7 @@ func pushPendingRows() []pushRow {
 				detail(forge.VerdictNone, forge.MergeClean)),
 		},
 		{
-			// A third wait would end a second past the deadline.
+			// A third poll would end a second past the deadline.
 			name: "the pull request still shows an earlier commit", left: 5 * time.Second,
 			script: reusing().showing(stale()),
 			want: pending("GitHub did not show the pushed commit on the pull request before the time limit",

@@ -128,7 +128,7 @@ var errOutOfTime = errors.New("the deadline leaves no time for another read")
 // and stops there on a conflict or a branch behind its trunk. Otherwise it reads the verdict
 // every 5 seconds until the checks conclude, and then reads the merge state once more.
 //
-// Every poll goes through deps.Clock, and none is started that would end past ctx's deadline.
+// No poll is started that would end past ctx's deadline.
 // A deadline that ends a stage, inside a read or a poll or between two, is the outcome
 // WaitPending with that stage and no error. A read that fails for any other reason is a
 // *WaitError naming its stage. The read of the merge state made after the checks belongs to
@@ -190,7 +190,7 @@ func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 	default:
 	}
 
-	waited.Since = w.deps.Clock.Now()
+	waited.Since = time.Now()
 
 	verdict, outcome, err := w.concluded(ctx, waited.Since)
 	waited.Outcome = outcome
@@ -200,7 +200,7 @@ func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 
 	// The merge state is read again only when the checks concluded or ran out of time with
 	// some left: a verdict read that failed is the failure to report.
-	if w.ended(ctx) || (err != nil && !errors.Is(err, errOutOfTime)) {
+	if ctxEnded(ctx) || (err != nil && !errors.Is(err, errOutOfTime)) {
 		return waited, StageVerdict, err
 	}
 
@@ -240,7 +240,7 @@ func (w waiter) caughtUp(ctx context.Context) (forge.Head, error) {
 			return last, nil
 		}
 
-		if err = w.pause(ctx, headPoll); err != nil {
+		if err = pause(ctx, headPoll); err != nil {
 			return last, err
 		}
 	}
@@ -249,14 +249,14 @@ func (w waiter) caughtUp(ctx context.Context) (forge.Head, error) {
 // mergeKnown polls the head, starting from the one just read, until its merge state is known
 // or mergeWindow has passed, and returns the last head it read.
 func (w waiter) mergeKnown(ctx context.Context, head forge.Head) (forge.Head, error) {
-	began := w.deps.Clock.Now()
+	began := time.Now()
 
 	for head.MergeState == forge.MergeUnknown {
-		if w.deps.Clock.Now().Add(mergePoll).Sub(began) > mergeWindow {
+		if time.Since(began)+mergePoll > mergeWindow {
 			return head, errOutOfTime
 		}
 
-		if err := w.pause(ctx, mergePoll); err != nil {
+		if err := pause(ctx, mergePoll); err != nil {
 			return head, err
 		}
 
@@ -288,7 +288,7 @@ func (w waiter) concluded(ctx context.Context, began time.Time) (forge.Verdict, 
 
 		outcome, done := w.judge(verdict)
 		// Runs appear some seconds after a push, so silence is only believed once it has lasted.
-		if done && silent(verdict) && !w.deps.Clock.Now().Add(verdictPoll).After(began.Add(silentRetry)) {
+		if done && silent(verdict) && time.Since(began)+verdictPoll <= silentRetry {
 			done = false
 		}
 
@@ -296,7 +296,7 @@ func (w waiter) concluded(ctx context.Context, began time.Time) (forge.Verdict, 
 			return last, outcome, nil
 		}
 
-		if err = w.pause(ctx, verdictPoll); err != nil {
+		if err = pause(ctx, verdictPoll); err != nil {
 			return last, "", err
 		}
 	}
@@ -342,31 +342,35 @@ func (w waiter) deciding(verdict forge.Verdict) []forge.Check {
 	return deciding
 }
 
-// ended reports whether ctx has ended or its deadline is no longer ahead of the clock.
-func (w waiter) ended(ctx context.Context) bool {
+// ctxEnded reports whether ctx has ended or its deadline is no longer ahead of the current time.
+func ctxEnded(ctx context.Context) bool {
 	if ctx.Err() != nil {
 		return true
 	}
 
 	deadline, ok := ctx.Deadline()
 
-	return ok && !w.deps.Clock.Now().Before(deadline)
+	return ok && time.Until(deadline) <= 0
 }
 
-// pause waits d on the clock. It returns errOutOfTime, without waiting, when the wait would
-// end past ctx's deadline, and after waiting when it ended on the deadline, which leaves no
-// time for a read.
-func (w waiter) pause(ctx context.Context, d time.Duration) error {
-	if deadline, ok := ctx.Deadline(); ok && w.deps.Clock.Now().Add(d).After(deadline) {
+// pause waits until d has passed, or returns ctx's error as soon as ctx ends. It returns
+// errOutOfTime, without waiting, when the wait would end past ctx's deadline, and after
+// waiting when it ended on the deadline, which leaves no time for a read.
+func pause(ctx context.Context, d time.Duration) error {
+	if deadline, ok := ctx.Deadline(); ok && d > time.Until(deadline) {
 		return errOutOfTime
 	}
 
-	err := w.deps.Clock.Wait(ctx, d)
-	if err != nil {
-		return fmt.Errorf("wait %s: %w", d, err)
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("wait %s: %w", d, ctx.Err())
+	case <-timer.C:
 	}
 
-	if w.ended(ctx) {
+	if ctxEnded(ctx) {
 		return errOutOfTime
 	}
 
