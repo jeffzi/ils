@@ -226,8 +226,11 @@ func (f *Forge) TrunkProtection(ctx context.Context, repo forge.Repo, trunk stri
 	return forge.Protection{RequiredChecks: required}, nil
 }
 
-// Verdict returns the deciding checks of the pull request, the workflow runs on
-// the commit, and the failed log of the check the verdict's Failed names.
+// Verdict returns every check of the pull request, the workflow runs on the
+// commit, and the failed log of the check the verdict's Failed names.
+//
+// A check the query requires carries Required, so that the others are reported
+// without deciding.
 func (f *Forge) Verdict(ctx context.Context, repo forge.Repo, query forge.VerdictQuery) (forge.Verdict, error) {
 	verdict, err := f.checksAndRuns(ctx, repo, query)
 	if err != nil {
@@ -259,13 +262,8 @@ func (f *Forge) checksAndRuns(ctx context.Context, repo forge.Repo, query forge.
 		return verdict, nil
 	}
 
-	verdict.Checks = nil
-
-	for _, check := range checks {
-		if slices.Contains(query.Required, check.Name) {
-			check.Required = true
-			verdict.Checks = append(verdict.Checks, check)
-		}
+	for i := range checks {
+		checks[i].Required = slices.Contains(query.Required, checks[i].Name)
 	}
 
 	for _, name := range query.Required {

@@ -29,6 +29,11 @@ func verdictOf(checks ...forge.Check) forge.Verdict {
 	return forge.Verdict{Checks: checks}
 }
 
+// missingBuild is a verdict over the given checks, with the required name "build" missing.
+func missingBuild(checks ...forge.Check) forge.Verdict {
+	return forge.Verdict{Checks: checks, MissingRequired: []string{"build"}}
+}
+
 func TestVerdict_State(t *testing.T) {
 	t.Parallel()
 
@@ -62,6 +67,19 @@ func TestVerdict_State(t *testing.T) {
 			name:    "every required name missing, optional passing",
 			verdict: forge.Verdict{Checks: []forge.Check{optional("lint", forge.BucketPass)}, MissingRequired: []string{"build"}},
 			want:    forge.VerdictNone,
+		},
+		{name: "every required name missing, optional failing", verdict: missingBuild(optional("lint", forge.BucketFail)), want: forge.VerdictNone},
+		{name: "every required name missing, optional canceled", verdict: missingBuild(optional("lint", forge.BucketCanceled)), want: forge.VerdictNone},
+		{name: "every required name missing, optional pending", verdict: missingBuild(optional("lint", forge.BucketPending)), want: forge.VerdictNone},
+		{
+			name:    "required passing beside a missing name, optional failing",
+			verdict: missingBuild(optional("lint", forge.BucketFail), required("test", forge.BucketPass)),
+			want:    forge.VerdictGreen,
+		},
+		{
+			name:    "required passing beside a missing name, optional pending",
+			verdict: missingBuild(optional("lint", forge.BucketPending), required("test", forge.BucketPass)),
+			want:    forge.VerdictGreen,
 		},
 	}
 	for _, tt := range tests {
@@ -126,6 +144,12 @@ func TestVerdict_Failed_WhenNoDecidingCheckFailed_ReportsNone(t *testing.T) {
 			name:    "optional failing, every required name missing",
 			verdict: forge.Verdict{Checks: []forge.Check{optional("lint", forge.BucketFail)}, MissingRequired: []string{"build"}},
 		},
+		{name: "only an optional check canceled", verdict: verdictOf(optional("lint", forge.BucketCanceled), required("test", forge.BucketPass))},
+		{name: "optional canceled, every required name missing", verdict: missingBuild(optional("lint", forge.BucketCanceled))},
+		{
+			name:    "optional failing, required passing beside a missing name",
+			verdict: missingBuild(optional("lint", forge.BucketFail), required("test", forge.BucketPass)),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -168,6 +192,12 @@ func TestVerdict_Pending(t *testing.T) {
 		{
 			name:    "optional pending left out",
 			verdict: verdictOf(optional("lint", forge.BucketPending), required("test", forge.BucketPending), required("build", forge.BucketPass)),
+			want:    []forge.Check{required("test", forge.BucketPending)},
+		},
+		{name: "optional pending, every required name missing", verdict: missingBuild(optional("lint", forge.BucketPending))},
+		{
+			name:    "optional pending, required pending beside a missing name",
+			verdict: missingBuild(optional("lint", forge.BucketPending), required("test", forge.BucketPending)),
 			want:    []forge.Check{required("test", forge.BucketPending)},
 		},
 	}

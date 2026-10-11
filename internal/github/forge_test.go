@@ -553,6 +553,12 @@ func TestForge_Head_WhenBlockedAndTrunkRequiresChecks(t *testing.T) {
 		{name: "required name absent, run pending", checks: ghtest.Answer{Stdout: passing}, runs: "[" + runJSON("pending") + "]", want: forge.MergeBlockedOther},
 		{name: "required name absent, run in a status this version does not know", checks: ghtest.Answer{Stdout: passing}, runs: "[" + runJSON("paused") + "]", want: forge.MergeBlockedOther},
 		{name: "required name absent, only an optional check running", checks: ghtest.Answer{Stdout: optionalPending, Code: 8}, runs: "[" + runJSON("completed") + "]", want: forge.MergeBlockedByMissingCheck},
+		{
+			name:   "every required name absent, only an optional check running",
+			checks: ghtest.Answer{Stdout: "[" + checkJSON("lint", "pending", runLink) + "]", Code: 8},
+			runs:   "[" + runJSON("completed") + "]",
+			want:   forge.MergeBlockedByMissingCheck,
+		},
 		{name: "no check reported, no run", checks: noChecks, runs: "[]", want: forge.MergeBlockedByMissingCheck},
 		{
 			name:   "required name absent, other required check still running",
@@ -719,7 +725,7 @@ func TestForge_Verdict_WhenRunStatusIsNotKnown_CarriesTheRunAsInProgress(t *test
 	}
 }
 
-func TestForge_Verdict_WhenQueryNamesRequiredChecks_KeepsThemAndListsTheMissing(t *testing.T) {
+func TestForge_Verdict_WhenQueryNamesRequiredChecks_CarriesEveryCheckAndListsTheMissing(t *testing.T) {
 	checks := "[" + checkJSON("lint", "fail", runLink) + "," + checkJSON("test", "pass", statusLink) + "]"
 	fake := ghtest.Setup(t, answered(ghtest.Answer{Stdout: checks, Code: 1}, checksArgs()...), ok("[]", runsArgs()...))
 
@@ -729,7 +735,10 @@ func TestForge_Verdict_WhenQueryNamesRequiredChecks_KeepsThemAndListsTheMissing(
 	}
 
 	want := forge.Verdict{
-		Checks:          []forge.Check{{Name: "test", Bucket: forge.BucketPass, Workflow: "CI", Link: statusLink, Required: true}},
+		Checks: []forge.Check{
+			{Name: "lint", Bucket: forge.BucketFail, Workflow: "CI", Link: runLink},
+			{Name: "test", Bucket: forge.BucketPass, Workflow: "CI", Link: statusLink, Required: true},
+		},
 		MissingRequired: []string{"build", "deploy"},
 	}
 	if diff := cmp.Diff(want, got, cmpopts.EquateEmpty()); diff != "" {
