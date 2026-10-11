@@ -51,7 +51,7 @@ tasks:
           cp {{.BIN}} "$target.new"
           mv -f "$target.new" "$target"
           echo "Installed $target"
-          if ! printf '%s' ":$PATH:" | sed 's|/:|:|g' | grep -qF ":$dir:"; then
+          if ! printf '%s' ":$PATH:" | sed 's|//*:|:|g' | grep -qF ":$dir:"; then
             echo "warning: $dir is not on PATH" >&2
           fi
         platforms: [darwin, linux]
