@@ -3,6 +3,7 @@ package ghtest
 
 import (
 	"bytes"
+	legacy "encoding/json"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -30,7 +32,9 @@ const (
 type Answer struct {
 	Stdout string
 	Stderr string
-	Code   int
+	// Delay is how long the fake holds the call open before it prints and exits.
+	Delay time.Duration
+	Code  int
 }
 
 // Call scripts the answers to one argv.
@@ -71,7 +75,7 @@ func Setup(tb testing.TB, script ...Call) *Fake {
 		tb.Fatalf("ghtest: find the test binary: %v", err)
 	}
 
-	encoded, err := json.Marshal(script)
+	encoded, err := json.Marshal(script, legacy.FormatDurationAsNano(true))
 	if err != nil {
 		tb.Fatalf("ghtest: encode the script: %v", err)
 	}
@@ -153,6 +157,8 @@ func serve(scriptPath, recordPath string, args []string) int {
 	}
 
 	answer := answers[min(earlier, len(answers)-1)]
+	time.Sleep(answer.Delay)
+
 	if _, err := os.Stdout.WriteString(answer.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "ghtest: write stdout: %v\n", err)
 
@@ -172,7 +178,7 @@ func readScript(path string) ([]Call, error) {
 	}
 
 	var script []Call
-	if err := json.Unmarshal(encoded, &script); err != nil {
+	if err := json.Unmarshal(encoded, &script, legacy.FormatDurationAsNano(true)); err != nil {
 		return nil, fmt.Errorf("decode the script %s: %w", path, err)
 	}
 

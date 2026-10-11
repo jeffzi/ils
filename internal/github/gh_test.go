@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 
@@ -187,6 +188,44 @@ func TestRunner_Run_WhenContextCanceled_ReturnsContextError(t *testing.T) {
 
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("Run(pr view) error = %v, want context.Canceled", err)
+	}
+}
+
+func TestRunner_Run_WhenAnswerIsDelayed_ReturnsItAfterTheDelay(t *testing.T) {
+	const delay = 300 * time.Millisecond
+	ghtest.Setup(t, ghtest.Call{
+		Args:    []string{"pr", "checks", "7"},
+		Answers: []ghtest.Answer{{Stdout: "pass\n", Delay: delay}},
+	})
+	start := time.Now()
+
+	got, err := github.Runner{}.Run(t.Context(), "pr", "checks", "7")
+	if err != nil {
+		t.Fatalf("Run(pr checks) error = %v, want nil", err)
+	}
+
+	if elapsed := time.Since(start); elapsed < delay || got.Stdout != "pass\n" {
+		t.Errorf("Run(pr checks) = %q after %s, want %q no sooner than %s", got.Stdout, elapsed, "pass\n", delay)
+	}
+}
+
+func TestRunner_Run_WhenContextEndsDuringTheDelay_ReturnsContextErrorPromptly(t *testing.T) {
+	const prompt = 5 * time.Second
+	ghtest.Setup(t, ghtest.Call{
+		Args:    []string{"pr", "checks", "7"},
+		Answers: []ghtest.Answer{{Stdout: "pass\n", Delay: 30 * time.Second}},
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	t.Cleanup(cancel)
+	start := time.Now()
+
+	_, err := github.Runner{}.Run(ctx, "pr", "checks", "7")
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Run(pr checks) error = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed > prompt {
+		t.Errorf("Run(pr checks) returned after %s, want it back within %s", elapsed, prompt)
 	}
 }
 

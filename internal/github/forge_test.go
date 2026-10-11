@@ -598,8 +598,8 @@ func TestForge_TrunkProtection(t *testing.T) {
 	]`
 	tests := []struct {
 		name   string
-		answer ghtest.Answer
 		want   []string
+		answer ghtest.Answer
 	}{
 		{name: "contexts of every status-check rule, once each", answer: ghtest.Answer{Stdout: rules}, want: []string{"build", "test", "lint"}},
 		{name: "no rule on the trunk", answer: ghtest.Answer{Stdout: "[]"}},
