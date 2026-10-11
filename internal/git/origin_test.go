@@ -4,7 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/google/go-cmp/cmp"
+	"gotest.tools/v3/assert"
+	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/git"
 )
@@ -38,13 +39,9 @@ func TestParseOrigin(t *testing.T) {
 			t.Parallel()
 
 			got, err := git.ParseOrigin(tt.in)
-			if err != nil {
-				t.Fatalf("ParseOrigin(%q) error = %v, want nil", tt.in, err)
-			}
+			assert.NilError(t, err, "ParseOrigin(%q)", tt.in)
 
-			if diff := cmp.Diff(tt.want, got); diff != "" {
-				t.Errorf("ParseOrigin(%q) mismatch (-want +got):\n%s", tt.in, diff)
-			}
+			assert.Check(t, is.DeepEqual(got, tt.want), "ParseOrigin(%q)", tt.in)
 		})
 	}
 }
@@ -79,12 +76,8 @@ func TestParseOrigin_WhenShapeUnknown_ReturnsOriginErrorNamingURL(t *testing.T) 
 			_, err := git.ParseOrigin(tt.in)
 
 			originErr, ok := errors.AsType[*git.OriginError](err)
-			if !ok {
-				t.Fatalf("ParseOrigin(%q) error = %v, want *git.OriginError", tt.in, err)
-			}
-			if originErr.URL != tt.in {
-				t.Errorf("ParseOrigin(%q) error names %q, want the input", tt.in, originErr.URL)
-			}
+			assert.Assert(t, ok, "ParseOrigin(%q) error = %v, want *git.OriginError", tt.in, err)
+			assert.Check(t, is.Equal(originErr.URL, tt.in))
 		})
 	}
 }
@@ -93,15 +86,11 @@ func TestOriginError_Error_NamesURLAndAcceptedForms(t *testing.T) {
 	t.Parallel()
 
 	_, err := git.ParseOrigin(localPath)
-	if err == nil {
-		t.Fatalf("ParseOrigin(%q) error = nil, want a parse error", localPath)
-	}
+	assert.Assert(t, err != nil, "ParseOrigin(%q) error = nil, want a parse error", localPath)
 
 	want := `remote URL "/srv/project" is not https://<host>/<owner>/<name>, ` +
 		"ssh://git@<host>/<owner>/<name>, or git@<host>:<owner>/<name>"
-	if got := err.Error(); got != want {
-		t.Errorf("ParseOrigin(%q) error text = %q, want %q", localPath, got, want)
-	}
+	assert.Check(t, is.Equal(err.Error(), want))
 }
 
 func TestOrigin_Same(t *testing.T) {
@@ -126,9 +115,7 @@ func TestOrigin_Same(t *testing.T) {
 
 			got := base.Same(tt.other)
 
-			if got != tt.want {
-				t.Errorf("%+v.Same(%+v) = %t, want %t", base, tt.other, got, tt.want)
-			}
+			assert.Check(t, is.Equal(got, tt.want), "%+v.Same(%+v)", base, tt.other)
 		})
 	}
 }
@@ -144,8 +131,8 @@ func FuzzParseOrigin(f *testing.F) {
 			return
 		}
 
-		if got.Host == "" || got.Owner == "" || got.Name == "" {
-			t.Errorf("ParseOrigin(%q) = %+v with nil error, want every part set", in, got)
-		}
+		assert.Check(t, got.Host != "", "ParseOrigin(%q) = %+v with nil error", in, got)
+		assert.Check(t, got.Owner != "", "ParseOrigin(%q) = %+v with nil error", in, got)
+		assert.Check(t, got.Name != "", "ParseOrigin(%q) = %+v with nil error", in, got)
 	})
 }

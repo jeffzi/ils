@@ -12,7 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/go-cmp/cmp"
+	"gotest.tools/v3/assert"
+	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/git"
 )
@@ -90,9 +91,7 @@ func silentListener(t *testing.T) (addr string, connected <-chan struct{}) {
 	var config net.ListenConfig
 
 	listener, err := config.Listen(t.Context(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen on a local port: %v", err)
-	}
+	assert.NilError(t, err)
 
 	reached := make(chan struct{})
 	released := make(chan struct{})
@@ -100,9 +99,7 @@ func silentListener(t *testing.T) (addr string, connected <-chan struct{}) {
 	t.Cleanup(func() {
 		close(released)
 
-		if closeErr := listener.Close(); closeErr != nil {
-			t.Errorf("close the local listener: %v", closeErr)
-		}
+		assert.Check(t, listener.Close())
 	})
 
 	go func() {
@@ -124,9 +121,7 @@ func silentListener(t *testing.T) (addr string, connected <-chan struct{}) {
 func writeFile(t *testing.T, dir, name, content string) {
 	t.Helper()
 
-	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
-		t.Fatalf("write %s: %v", name, err)
-	}
+	assert.NilError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600))
 }
 
 // helperDiff returns a runner in a repository with two changed tracked files, and the arguments of a
@@ -139,9 +134,7 @@ func helperDiff(t *testing.T) (runner git.Runner, args []string) {
 	const plain, driven = "first-plain.txt", "second-driven.txt"
 
 	binary, err := os.Executable()
-	if err != nil {
-		t.Fatalf("find the test binary: %v", err)
-	}
+	assert.NilError(t, err)
 
 	runner = newRunner(t)
 	steps := [][]string{{"init", "--quiet"}, {"add", "--", plain, driven}}
@@ -151,9 +144,8 @@ func helperDiff(t *testing.T) (runner git.Runner, args []string) {
 	writeFile(t, runner.Dir, ".gitattributes", driven+" diff=helper\n")
 
 	for _, step := range steps {
-		if _, err = runner.Run(t.Context(), step...); err != nil {
-			t.Fatalf("Run(%s) error = %v, want nil", step[0], err)
-		}
+		_, err = runner.Run(t.Context(), step...)
+		assert.NilError(t, err)
 	}
 
 	writeFile(t, runner.Dir, plain, "after\n")
@@ -164,13 +156,10 @@ func helperDiff(t *testing.T) (runner git.Runner, args []string) {
 	control.Env = append(slices.Clone(runner.Env), helperModeEnv+"="+helperLeave)
 
 	printed, err := control.Run(t.Context(), args...)
-	if err != nil {
-		t.Fatalf("Run(diff) with a helper that exits at once: error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
-	if !strings.Contains(printed.Stdout, plain) || strings.Contains(printed.Stdout, driven) {
-		t.Fatalf("Run(diff) with a helper that exits at once: stdout = %q, want only the diff of %s", printed.Stdout, plain)
-	}
+	assert.Assert(t, is.Contains(printed.Stdout, plain))
+	assert.Assert(t, !strings.Contains(printed.Stdout, driven), "stdout = %q, want only the diff of %s", printed.Stdout, plain)
 
 	return runner, args
 }
@@ -180,13 +169,10 @@ func TestRunner_Run_WhenCallSucceeds_RunsInRunnerDir(t *testing.T) {
 	runner := newRunner(t)
 
 	_, err := runner.Run(t.Context(), "init")
-	if err != nil {
-		t.Fatalf("Run(init) error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
-	if _, statErr := os.Stat(filepath.Join(runner.Dir, ".git")); statErr != nil {
-		t.Errorf("Run(init) left no .git in the runner's directory: %v", statErr)
-	}
+	_, statErr := os.Stat(filepath.Join(runner.Dir, ".git"))
+	assert.Check(t, statErr)
 }
 
 func TestRunner_Run_WhenArgHoldsShellSyntax_PassesItVerbatim(t *testing.T) {
@@ -195,32 +181,22 @@ func TestRunner_Run_WhenArgHoldsShellSyntax_PassesItVerbatim(t *testing.T) {
 	value := "first && second; $HOME `third` > fourth"
 
 	got, err := runner.Run(t.Context(), "-c", "user.name="+value, "config", "--get", "user.name")
-	if err != nil {
-		t.Fatalf("Run(config --get) error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
 	want := git.Result{Stdout: value + "\n"}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("Run(config --get) mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(got, want))
 }
 
 func TestRunner_Run_WhenEnvNamesGlobalConfig_ReadsThatConfig(t *testing.T) {
 	t.Parallel()
 	config := filepath.Join(t.TempDir(), "config")
-	if err := os.WriteFile(config, []byte("[user]\n\tname = Ada\n"), 0o600); err != nil {
-		t.Fatalf("write global config: %v", err)
-	}
+	assert.NilError(t, os.WriteFile(config, []byte("[user]\n\tname = Ada\n"), 0o600))
 	runner := git.Runner{Dir: t.TempDir(), Env: isolatedEnv(t, config)}
 
 	got, err := runner.Run(t.Context(), "config", "--global", "--get", "user.name")
-	if err != nil {
-		t.Fatalf("Run(config --global --get) error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
-	if got.Stdout != "Ada\n" {
-		t.Errorf("Run(config --global --get).Stdout = %q, want %q", got.Stdout, "Ada\n")
-	}
+	assert.Check(t, is.Equal(got.Stdout, "Ada\n"))
 }
 
 func TestRunner_Run_WhenGitExitsNonZero_ReturnsExitError(t *testing.T) {
@@ -230,21 +206,11 @@ func TestRunner_Run_WhenGitExitsNonZero_ReturnsExitError(t *testing.T) {
 	_, err := runner.Run(t.Context(), "nonsense")
 
 	exitErr, ok := errors.AsType[*git.ExitError](err)
-	if !ok {
-		t.Fatalf("Run(nonsense) error = %v, want *git.ExitError", err)
-	}
-	if exitErr.Code != 1 {
-		t.Errorf("Run(nonsense) exit code = %d, want 1", exitErr.Code)
-	}
-	if !strings.Contains(exitErr.Stderr, "nonsense") {
-		t.Errorf("Run(nonsense) stderr = %q, want git's complaint about nonsense", exitErr.Stderr)
-	}
-	if diff := cmp.Diff([]string{"git", "nonsense"}, exitErr.Argv); diff != "" {
-		t.Errorf("Run(nonsense) error argv mismatch (-want +got):\n%s", diff)
-	}
-	if want := "git nonsense: exit status 1: " + strings.TrimSpace(exitErr.Stderr); err.Error() != want {
-		t.Errorf("Run(nonsense) error text = %q, want %q", err.Error(), want)
-	}
+	assert.Assert(t, ok, "Run(nonsense) error = %v, want *git.ExitError", err)
+	assert.Check(t, is.Equal(exitErr.Code, 1))
+	assert.Check(t, is.Contains(exitErr.Stderr, "nonsense"))
+	assert.Check(t, is.DeepEqual(exitErr.Argv, []string{"git", "nonsense"}))
+	assert.Check(t, is.Equal(err.Error(), "git nonsense: exit status 1: "+strings.TrimSpace(exitErr.Stderr)))
 }
 
 func TestRunner_Run_WhenGitMissingFromPath_ReturnsNotFoundError(t *testing.T) {
@@ -255,18 +221,10 @@ func TestRunner_Run_WhenGitMissingFromPath_ReturnsNotFoundError(t *testing.T) {
 	_, err := runner.Run(t.Context(), "version")
 
 	notFound, ok := errors.AsType[*git.NotFoundError](err)
-	if !ok {
-		t.Fatalf("Run(version) error = %v, want *git.NotFoundError", err)
-	}
-	if notFound.Name != "git" {
-		t.Errorf("Run(version) missing program = %q, want %q", notFound.Name, "git")
-	}
-	if !errors.Is(err, exec.ErrNotFound) {
-		t.Errorf("Run(version) error = %v, want it to wrap exec.ErrNotFound", err)
-	}
-	if want := "git not found on PATH"; err.Error() != want {
-		t.Errorf("Run(version) error text = %q, want %q", err.Error(), want)
-	}
+	assert.Assert(t, ok, "Run(version) error = %v, want *git.NotFoundError", err)
+	assert.Check(t, is.Equal(notFound.Name, "git"))
+	assert.Check(t, is.ErrorIs(err, exec.ErrNotFound))
+	assert.Check(t, is.Equal(err.Error(), "git not found on PATH"))
 }
 
 func TestRunner_Run_WhenContextCanceled_ReturnsContextErrorAndNoOutput(t *testing.T) {
@@ -277,12 +235,8 @@ func TestRunner_Run_WhenContextCanceled_ReturnsContextErrorAndNoOutput(t *testin
 
 	got, err := runner.Run(ctx, "version")
 
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("Run(version) error = %v, want context.Canceled", err)
-	}
-	if diff := cmp.Diff(git.Result{}, got); diff != "" {
-		t.Errorf("Run(version) result mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.ErrorIs(err, context.Canceled))
+	assert.Check(t, is.DeepEqual(got, git.Result{}))
 }
 
 func TestRunner_Run_WhenContextEndsWhileGitRuns_ReturnsContextErrorAndNoOutput(t *testing.T) {
@@ -305,15 +259,10 @@ func TestRunner_Run_WhenContextEndsWhileGitRuns_ReturnsContextErrorAndNoOutput(t
 
 			got, err := runner.Run(ctx, "ls-remote", url)
 
-			if !errors.Is(err, tt.cause) {
-				t.Errorf("Run(ls-remote) error = %v, want %v", err, tt.cause)
-			}
-			if exitErr, ok := errors.AsType[*git.ExitError](err); ok {
-				t.Errorf("Run(ls-remote) error = %#v, want no *git.ExitError for a killed git", exitErr)
-			}
-			if diff := cmp.Diff(git.Result{}, got); diff != "" {
-				t.Errorf("Run(ls-remote) result mismatch (-want +got):\n%s", diff)
-			}
+			assert.Check(t, is.ErrorIs(err, tt.cause))
+			exitErr, ok := errors.AsType[*git.ExitError](err)
+			assert.Check(t, !ok, "Run(ls-remote) error = %#v, want no *git.ExitError for a killed git", exitErr)
+			assert.Check(t, is.DeepEqual(got, git.Result{}))
 		})
 	}
 }
@@ -329,18 +278,12 @@ func TestRunner_Run_WhenContextEndsAfterOutputWhileChildHoldsPipes_ReturnsPrompt
 
 	got, err := runner.Run(ctx, args...)
 
-	if took := time.Since(begun); took > prompt {
-		t.Errorf("Run(diff) took %v, want under %v with the helper still alive", took, prompt)
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("Run(diff) error = %v, want context.Canceled", err)
-	}
-	if exitErr, ok := errors.AsType[*git.ExitError](err); ok {
-		t.Errorf("Run(diff) error = %#v, want no *git.ExitError for a killed git", exitErr)
-	}
-	if diff := cmp.Diff(git.Result{}, got); diff != "" {
-		t.Errorf("Run(diff) result mismatch (-want +got):\n%s", diff)
-	}
+	took := time.Since(begun)
+	assert.Check(t, took <= prompt, "Run(diff) took %v, want under %v with the helper still alive", took, prompt)
+	assert.Check(t, is.ErrorIs(err, context.Canceled))
+	exitErr, ok := errors.AsType[*git.ExitError](err)
+	assert.Check(t, !ok, "Run(diff) error = %#v, want no *git.ExitError for a killed git", exitErr)
+	assert.Check(t, is.DeepEqual(got, git.Result{}))
 }
 
 func TestRunner_Run_WhenGitExitsZeroWhileChildHoldsPipes_ReturnsOutputPromptly(t *testing.T) {
@@ -353,15 +296,10 @@ func TestRunner_Run_WhenGitExitsZeroWhileChildHoldsPipes_ReturnsOutputPromptly(t
 
 	got, err := runner.Run(t.Context(), args...)
 
-	if took := time.Since(begun); took > prompt {
-		t.Errorf("Run(diff) took %v, want under %v with the helper's child still alive", took, prompt)
-	}
-	if err != nil {
-		t.Fatalf("Run(diff) error = %v, want nil for a git that exited zero", err)
-	}
-	if !strings.Contains(got.Stdout, "first-plain.txt") {
-		t.Errorf("Run(diff) stdout = %q, want the diff git printed before it exited", got.Stdout)
-	}
+	took := time.Since(begun)
+	assert.Check(t, took <= prompt, "Run(diff) took %v, want under %v with the helper's child still alive", took, prompt)
+	assert.NilError(t, err)
+	assert.Check(t, is.Contains(got.Stdout, "first-plain.txt"))
 	select {
 	case <-lingering:
 	case <-time.After(prompt):
@@ -374,19 +312,14 @@ func TestRunner_Run_WhenRecorderAttached_RecordsEachArgv(t *testing.T) {
 	recorder := &git.Recorder{}
 	runner := newRunner(t)
 	runner.Recorder = recorder
-	if _, err := runner.Run(t.Context(), "init", "--quiet"); err != nil {
-		t.Fatalf("Run(init) error = %v, want nil", err)
-	}
+	_, err := runner.Run(t.Context(), "init", "--quiet")
+	assert.NilError(t, err)
 
-	_, err := runner.Run(t.Context(), "status", "--short")
-	if err != nil {
-		t.Fatalf("Run(status) error = %v, want nil", err)
-	}
+	_, err = runner.Run(t.Context(), "status", "--short")
+	assert.NilError(t, err)
 
 	want := [][]string{{"git", "init", "--quiet"}, {"git", "status", "--short"}}
-	if diff := cmp.Diff(want, recorder.Calls()); diff != "" {
-		t.Errorf("Recorder.Calls() mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(recorder.Calls(), want))
 }
 
 func TestRunner_Run_WhenGitExitsNonZero_StillRecordsCall(t *testing.T) {
@@ -396,13 +329,9 @@ func TestRunner_Run_WhenGitExitsNonZero_StillRecordsCall(t *testing.T) {
 	runner.Recorder = recorder
 
 	_, err := runner.Run(t.Context(), "nonsense")
-	if err == nil {
-		t.Fatal("Run(nonsense) error = nil, want a failing call")
-	}
+	assert.Assert(t, err != nil, "Run(nonsense) error = nil, want a failing call")
 
-	if diff := cmp.Diff([][]string{{"git", "nonsense"}}, recorder.Calls()); diff != "" {
-		t.Errorf("Recorder.Calls() mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(recorder.Calls(), [][]string{{"git", "nonsense"}}))
 }
 
 func TestRecorder_Calls_WhenReturnedSliceMutated_LaterCallsUnchanged(t *testing.T) {
@@ -410,19 +339,15 @@ func TestRecorder_Calls_WhenReturnedSliceMutated_LaterCallsUnchanged(t *testing.
 	recorder := &git.Recorder{}
 	runner := newRunner(t)
 	runner.Recorder = recorder
-	if _, err := runner.Run(t.Context(), "version"); err != nil {
-		t.Fatalf("Run(version) error = %v, want nil", err)
-	}
-	if _, err := runner.Run(t.Context(), "init", "--quiet"); err != nil {
-		t.Fatalf("Run(init) error = %v, want nil", err)
-	}
+	_, err := runner.Run(t.Context(), "version")
+	assert.NilError(t, err)
+	_, err = runner.Run(t.Context(), "init", "--quiet")
+	assert.NilError(t, err)
 	calls := recorder.Calls()
 
 	calls[0][1] = "changed"
 	calls[1] = nil
 
 	want := [][]string{{"git", "version"}, {"git", "init", "--quiet"}}
-	if diff := cmp.Diff(want, recorder.Calls()); diff != "" {
-		t.Errorf("Recorder.Calls() after mutating an earlier answer mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(recorder.Calls(), want))
 }

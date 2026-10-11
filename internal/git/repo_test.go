@@ -8,8 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"gotest.tools/v3/assert"
+	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/gittest"
@@ -55,9 +56,8 @@ func decoyHead(t *testing.T, f *gittest.Fixture) {
 	f.OriginGit("symbolic-ref", name, target)
 
 	listed := f.Git("ls-remote", "--symref", "origin", "HEAD")
-	if line := "ref: " + target + "\t" + name; !strings.Contains(listed, line) {
-		t.Fatalf("git ls-remote --symref origin HEAD printed %q, want it to hold %q", listed, line)
-	}
+	line := "ref: " + target + "\t" + name
+	assert.Assert(t, is.Contains(listed, line))
 }
 
 // landed returns a fixture whose topic branch was squashed onto origin's trunk as pull request 7 and
@@ -82,9 +82,7 @@ func renameTracked(t *testing.T, f *gittest.Fixture) string {
 	t.Helper()
 
 	const before, after = "before.txt", "moved.txt"
-	if err := os.WriteFile(filepath.Join(f.Dir(), before), []byte("kept as is\n"), 0o600); err != nil {
-		t.Fatalf("write %s: %v", before, err)
-	}
+	assert.NilError(t, os.WriteFile(filepath.Join(f.Dir(), before), []byte("kept as is\n"), 0o600))
 	f.Git("add", before)
 	f.Git("commit", "--quiet", "--message", "add "+before)
 	f.Git("mv", before, after)
@@ -170,13 +168,9 @@ func TestRepo_Standing(t *testing.T) {
 			tt.arrange(f)
 
 			got, err := newRepo(f).Standing(t.Context())
-			if err != nil {
-				t.Fatalf("Standing() error = %v, want nil", err)
-			}
+			assert.NilError(t, err)
 
-			if diff := cmp.Diff(tt.want, got); diff != "" {
-				t.Errorf("Standing() mismatch (-want +got):\n%s", diff)
-			}
+			assert.Check(t, is.DeepEqual(got, tt.want))
 		})
 	}
 }
@@ -187,13 +181,9 @@ func TestRepo_HeadSHA_WhenOnBranch_ReturnsTipSHA(t *testing.T) {
 	want := f.Commits(topic, "one")[0]
 
 	got, err := newRepo(f).HeadSHA(t.Context())
-	if err != nil {
-		t.Fatalf("HeadSHA() error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
-	if got != want {
-		t.Errorf("HeadSHA() = %q, want %q", got, want)
-	}
+	assert.Check(t, is.Equal(got, want))
 }
 
 func TestRepo_GitDir_WhenInRepository_ReturnsAbsoluteGitDir(t *testing.T) {
@@ -202,13 +192,9 @@ func TestRepo_GitDir_WhenInRepository_ReturnsAbsoluteGitDir(t *testing.T) {
 	want := filepath.Join(f.Dir(), ".git")
 
 	got, err := newRepo(f).GitDir(t.Context())
-	if err != nil {
-		t.Fatalf("GitDir() error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
-	if got != want {
-		t.Errorf("GitDir() = %q, want %q", got, want)
-	}
+	assert.Check(t, is.Equal(got, want))
 }
 
 func TestRepo_RunsExactGitCall(t *testing.T) {
@@ -237,13 +223,9 @@ func TestRepo_RunsExactGitCall(t *testing.T) {
 			repo := git.Repo{Runner: git.Runner{Dir: f.Dir(), Env: f.Env(), Recorder: recorder}}
 
 			err := tt.call(t.Context(), repo)
-			if err != nil {
-				t.Fatalf("%s() error = %v, want nil", tt.name, err)
-			}
+			assert.NilError(t, err)
 
-			if diff := cmp.Diff([][]string{tt.want}, recorder.Calls()); diff != "" {
-				t.Errorf("%s() recorded calls mismatch (-want +got):\n%s", tt.name, diff)
-			}
+			assert.Check(t, is.DeepEqual(recorder.Calls(), [][]string{tt.want}))
 		})
 	}
 }
@@ -265,9 +247,8 @@ func TestRepo_WhenNotARepository_ReturnsExitError(t *testing.T) {
 
 			err := tt.call(t.Context(), repo)
 
-			if _, ok := errors.AsType[*git.ExitError](err); !ok {
-				t.Errorf("%s() error = %v, want *git.ExitError", tt.name, err)
-			}
+			_, ok := errors.AsType[*git.ExitError](err)
+			assert.Check(t, ok, "%s() error = %v, want *git.ExitError", tt.name, err)
 		})
 	}
 }
@@ -298,13 +279,9 @@ func TestRepo_DirtyFiles(t *testing.T) {
 			want := tt.arrange(f)
 
 			got, err := newRepo(f).DirtyFiles(t.Context())
-			if err != nil {
-				t.Fatalf("DirtyFiles() error = %v, want nil", err)
-			}
+			assert.NilError(t, err)
 
-			if diff := cmp.Diff(want, got, cmpopts.EquateEmpty()); diff != "" {
-				t.Errorf("DirtyFiles() mismatch (-want +got):\n%s", diff)
-			}
+			assert.Check(t, is.DeepEqual(got, want, cmpopts.EquateEmpty()))
 		})
 	}
 }
@@ -341,13 +318,9 @@ func TestRepo_DirtyFiles_WhenTrackedFileRenamedInIndex_ListsNewNameOnly(t *testi
 			want := tt.arrange(t, f)
 
 			got, err := newRepo(f).DirtyFiles(t.Context())
-			if err != nil {
-				t.Fatalf("DirtyFiles() error = %v, want nil", err)
-			}
+			assert.NilError(t, err)
 
-			if diff := cmp.Diff(want, got); diff != "" {
-				t.Errorf("DirtyFiles() mismatch (-want +got):\n%s", diff)
-			}
+			assert.Check(t, is.DeepEqual(got, want))
 		})
 	}
 }
@@ -365,9 +338,7 @@ func TestRepo_DirtyFiles_WhenStatusCannotRead_ReturnsExitError(t *testing.T) {
 				t.Helper()
 
 				f := gittest.New(t, trunk)
-				if err := os.WriteFile(filepath.Join(f.Dir(), ".git", "index"), []byte("corrupt"), 0o600); err != nil {
-					t.Fatalf("overwrite index: %v", err)
-				}
+				assert.NilError(t, os.WriteFile(filepath.Join(f.Dir(), ".git", "index"), []byte("corrupt"), 0o600))
 
 				return newRepo(f)
 			},
@@ -380,9 +351,8 @@ func TestRepo_DirtyFiles_WhenStatusCannotRead_ReturnsExitError(t *testing.T) {
 
 			got, err := repo.DirtyFiles(t.Context())
 
-			if _, ok := errors.AsType[*git.ExitError](err); !ok {
-				t.Errorf("DirtyFiles() = %v, error = %v, want *git.ExitError", got, err)
-			}
+			_, ok := errors.AsType[*git.ExitError](err)
+			assert.Check(t, ok, "DirtyFiles() = %v, error = %v, want *git.ExitError", got, err)
 		})
 	}
 }
@@ -394,9 +364,7 @@ func TestRepo_OriginURLs_WhenFetchAndPushDiffer_ReturnsBothParsedAndRaw(t *testi
 	f.SetPushURL(sshURL)
 
 	got, err := newRepo(f).OriginURLs(t.Context())
-	if err != nil {
-		t.Fatalf("OriginURLs() error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
 	want := git.OriginURLs{
 		Fetch:    git.Origin{Host: "github.com", Owner: "jeffzi", Name: "ils"},
@@ -404,9 +372,7 @@ func TestRepo_OriginURLs_WhenFetchAndPushDiffer_ReturnsBothParsedAndRaw(t *testi
 		FetchURL: httpsURL,
 		PushURL:  sshURL,
 	}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("OriginURLs() mismatch (-want +got):\n%s", diff)
-	}
+	assert.Check(t, is.DeepEqual(got, want))
 }
 
 func TestRepo_OriginURLs_WhenURLDoesNotParse_ReturnsOriginErrorWithRawURLsAndParsedSide(t *testing.T) {
@@ -446,15 +412,9 @@ func TestRepo_OriginURLs_WhenURLDoesNotParse_ReturnsOriginErrorWithRawURLsAndPar
 			got, err := newRepo(f).OriginURLs(t.Context())
 
 			originErr, ok := errors.AsType[*git.OriginError](err)
-			if !ok {
-				t.Fatalf("OriginURLs() error = %v, want *git.OriginError", err)
-			}
-			if originErr.URL != tt.named {
-				t.Errorf("OriginURLs() error names %q, want %q", originErr.URL, tt.named)
-			}
-			if diff := cmp.Diff(tt.want, got); diff != "" {
-				t.Errorf("OriginURLs() mismatch (-want +got):\n%s", diff)
-			}
+			assert.Assert(t, ok, "OriginURLs() error = %v, want *git.OriginError", err)
+			assert.Check(t, is.Equal(originErr.URL, tt.named))
+			assert.Check(t, is.DeepEqual(got, tt.want))
 		})
 	}
 }
@@ -474,13 +434,9 @@ func TestRepo_Trunk_WhenOriginAnswers_ReturnsDefaultBranch(t *testing.T) {
 			f := gittest.New(t, tt.trunk)
 
 			got, err := newRepo(f).Trunk(t.Context())
-			if err != nil {
-				t.Fatalf("Trunk() error = %v, want nil", err)
-			}
+			assert.NilError(t, err)
 
-			if got != tt.trunk {
-				t.Errorf("Trunk() = %q, want %q", got, tt.trunk)
-			}
+			assert.Check(t, is.Equal(got, tt.trunk))
 		})
 	}
 }
@@ -492,12 +448,9 @@ func TestRepo_Trunk_WhenOriginDoesNotAnswer_ReturnsRemoteError(t *testing.T) {
 
 	got, err := newRepo(f).Trunk(t.Context())
 
-	if _, ok := errors.AsType[*git.RemoteError](err); !ok {
-		t.Fatalf("Trunk() = %q, error = %v, want *git.RemoteError", got, err)
-	}
-	if phrase := "origin could not be reached"; !strings.Contains(err.Error(), phrase) {
-		t.Errorf("Trunk() error text = %q, want it to contain %q", err.Error(), phrase)
-	}
+	_, ok := errors.AsType[*git.RemoteError](err)
+	assert.Assert(t, ok, "Trunk() = %q, error = %v, want *git.RemoteError", got, err)
+	assert.Check(t, is.Contains(err.Error(), "origin could not be reached"))
 }
 
 func TestRepo_Trunk_WhenContextEnded_ReturnsRemoteError(t *testing.T) {
@@ -508,9 +461,8 @@ func TestRepo_Trunk_WhenContextEnded_ReturnsRemoteError(t *testing.T) {
 
 	got, err := newRepo(f).Trunk(ctx)
 
-	if _, ok := errors.AsType[*git.RemoteError](err); !ok {
-		t.Errorf("Trunk() = %q, error = %v, want *git.RemoteError", got, err)
-	}
+	_, ok := errors.AsType[*git.RemoteError](err)
+	assert.Check(t, ok, "Trunk() = %q, error = %v, want *git.RemoteError", got, err)
 }
 
 func TestRepo_Trunk_WhenOriginHeadIsNotSymbolic_ReturnsErrNoSymref(t *testing.T) {
@@ -518,15 +470,11 @@ func TestRepo_Trunk_WhenOriginHeadIsNotSymbolic_ReturnsErrNoSymref(t *testing.T)
 	f := gittest.New(t, trunk)
 	f.OriginGit("update-ref", "--no-deref", "HEAD", f.OriginGit("rev-parse", "HEAD"))
 
-	got, err := newRepo(f).Trunk(t.Context())
+	_, err := newRepo(f).Trunk(t.Context())
 
-	if !errors.Is(err, git.ErrNoSymref) {
-		t.Fatalf("Trunk() = %q, error = %v, want git.ErrNoSymref", got, err)
-	}
+	assert.ErrorIs(t, err, git.ErrNoSymref)
 	want := "git ls-remote --symref origin HEAD: origin's HEAD names no branch"
-	if err.Error() != want {
-		t.Errorf("Trunk() error text = %q, want %q", err.Error(), want)
-	}
+	assert.Check(t, is.Equal(err.Error(), want))
 }
 
 func TestRepo_Trunk_WhenOriginListsAnotherSymbolicHead_ReturnsOwnDefaultBranch(t *testing.T) {
@@ -535,13 +483,9 @@ func TestRepo_Trunk_WhenOriginListsAnotherSymbolicHead_ReturnsOwnDefaultBranch(t
 	decoyHead(t, f)
 
 	got, err := newRepo(f).Trunk(t.Context())
-	if err != nil {
-		t.Fatalf("Trunk() error = %v, want nil", err)
-	}
+	assert.NilError(t, err)
 
-	if got != trunk {
-		t.Errorf("Trunk() = %q, want %q", got, trunk)
-	}
+	assert.Check(t, is.Equal(got, trunk))
 }
 
 func TestRepo_Trunk_WhenOnlyAnotherHeadIsSymbolic_ReturnsErrNoSymref(t *testing.T) {
@@ -552,9 +496,8 @@ func TestRepo_Trunk_WhenOnlyAnotherHeadIsSymbolic_ReturnsErrNoSymref(t *testing.
 
 	got, err := newRepo(f).Trunk(t.Context())
 
-	if !errors.Is(err, git.ErrNoSymref) || got != "" {
-		t.Errorf("Trunk() = %q, error = %v, want no branch and git.ErrNoSymref", got, err)
-	}
+	assert.Check(t, is.ErrorIs(err, git.ErrNoSymref))
+	assert.Check(t, is.Equal(got, ""))
 }
 
 func TestRepo_Trunk_WhenOriginHeadPointsOutsideBranches_ReturnsError(t *testing.T) {
@@ -565,9 +508,8 @@ func TestRepo_Trunk_WhenOriginHeadPointsOutsideBranches_ReturnsError(t *testing.
 
 	got, err := newRepo(f).Trunk(t.Context())
 
-	if err == nil || got != "" {
-		t.Errorf("Trunk() = %q, error = %v, want no branch and an error", got, err)
-	}
+	assert.Check(t, err != nil, "Trunk() = %q, error = %v, want no branch and an error", got, err)
+	assert.Check(t, is.Equal(got, ""))
 }
 
 func TestRepo_RemoteBranch_WhenOnOrigin_ReturnsItsSHA(t *testing.T) {
@@ -577,13 +519,10 @@ func TestRepo_RemoteBranch_WhenOnOrigin_ReturnsItsSHA(t *testing.T) {
 	f.Push(topic)
 
 	got, found, err := newRepo(f).RemoteBranch(t.Context(), topic)
-	if err != nil {
-		t.Fatalf("RemoteBranch(%q) error = %v, want nil", topic, err)
-	}
+	assert.NilError(t, err)
 
-	if !found || got != want {
-		t.Errorf("RemoteBranch(%q) = %q, %t, want %q, true", topic, got, found, want)
-	}
+	assert.Check(t, found, "RemoteBranch(%q) = %q, %t, want %q, true", topic, got, found, want)
+	assert.Check(t, is.Equal(got, want))
 }
 
 func TestRepo_RemoteBranch_WhenNotOnOrigin_ReportsAbsent(t *testing.T) {
@@ -610,13 +549,10 @@ func TestRepo_RemoteBranch_WhenNotOnOrigin_ReportsAbsent(t *testing.T) {
 			tt.arrange(f)
 
 			got, found, err := newRepo(f).RemoteBranch(t.Context(), asked)
-			if err != nil {
-				t.Fatalf("RemoteBranch(%q) error = %v, want nil", asked, err)
-			}
+			assert.NilError(t, err)
 
-			if found || got != "" {
-				t.Errorf("RemoteBranch(%q) = %q, %t, want absent", asked, got, found)
-			}
+			assert.Check(t, !found, "RemoteBranch(%q) = %q, %t, want absent", asked, got, found)
+			assert.Check(t, is.Equal(got, ""))
 		})
 	}
 }
@@ -628,9 +564,8 @@ func TestRepo_RemoteBranch_WhenOriginDoesNotAnswer_ReturnsRemoteError(t *testing
 
 	_, found, err := newRepo(f).RemoteBranch(t.Context(), trunk)
 
-	if _, ok := errors.AsType[*git.RemoteError](err); !ok {
-		t.Errorf("RemoteBranch(%q) found = %t, error = %v, want *git.RemoteError", trunk, found, err)
-	}
+	_, ok := errors.AsType[*git.RemoteError](err)
+	assert.Check(t, ok, "RemoteBranch(%q) found = %t, error = %v, want *git.RemoteError", trunk, found, err)
 }
 
 func TestRepo_Fetch_WhenRefOnOrigin_ReturnsFetchedSHA(t *testing.T) {
@@ -668,13 +603,9 @@ func TestRepo_Fetch_WhenRefOnOrigin_ReturnsFetchedSHA(t *testing.T) {
 			want := tt.arrange(f)
 
 			got, err := newRepo(f).Fetch(t.Context(), tt.ref)
-			if err != nil {
-				t.Fatalf("Fetch(%q) error = %v, want nil", tt.ref, err)
-			}
+			assert.NilError(t, err, "Fetch(%q)", tt.ref)
 
-			if got != want {
-				t.Errorf("Fetch(%q) = %q, want %q", tt.ref, got, want)
-			}
+			assert.Check(t, is.Equal(got, want), "Fetch(%q)", tt.ref)
 		})
 	}
 }
@@ -685,13 +616,9 @@ func TestRepo_Fetch_WhenTrunkMovedOnOrigin_MovesItsRemoteTrackingRef(t *testing.
 	want := f.AdvanceOrigin(trunk)
 
 	_, err := newRepo(f).Fetch(t.Context(), trunk)
-	if err != nil {
-		t.Fatalf("Fetch(%q) error = %v, want nil", trunk, err)
-	}
+	assert.NilError(t, err)
 
-	if got := f.Git("rev-parse", "origin/"+trunk); got != want {
-		t.Errorf("origin/%s after Fetch(%q) = %q, want %q", trunk, trunk, got, want)
-	}
+	assert.Check(t, is.Equal(f.Git("rev-parse", "origin/"+trunk), want))
 }
 
 func TestRepo_Fetch_WhenRefNotOnOrigin_ReturnsRemoteError(t *testing.T) {
@@ -700,9 +627,8 @@ func TestRepo_Fetch_WhenRefNotOnOrigin_ReturnsRemoteError(t *testing.T) {
 
 	got, err := newRepo(f).Fetch(t.Context(), pullRef)
 
-	if _, ok := errors.AsType[*git.RemoteError](err); !ok {
-		t.Errorf("Fetch(%q) = %q, error = %v, want *git.RemoteError", pullRef, got, err)
-	}
+	_, ok := errors.AsType[*git.RemoteError](err)
+	assert.Check(t, ok, "Fetch(%q) = %q, error = %v, want *git.RemoteError", pullRef, got, err)
 }
 
 func TestRepo_Divergence(t *testing.T) {
@@ -724,13 +650,9 @@ func TestRepo_Divergence(t *testing.T) {
 			t.Parallel()
 
 			got, err := shas.repo.Divergence(t.Context(), tt.a, tt.b)
-			if err != nil {
-				t.Fatalf("Divergence(%s, %s) error = %v, want nil", tt.a, tt.b, err)
-			}
+			assert.NilError(t, err, "Divergence(%s, %s)", tt.a, tt.b)
 
-			if diff := cmp.Diff(tt.want, got); diff != "" {
-				t.Errorf("Divergence(%s, %s) mismatch (-want +got):\n%s", tt.a, tt.b, diff)
-			}
+			assert.Check(t, is.DeepEqual(got, tt.want), "Divergence(%s, %s)", tt.a, tt.b)
 		})
 	}
 }
@@ -754,13 +676,9 @@ func TestRepo_Contains(t *testing.T) {
 			t.Parallel()
 
 			got, err := shas.repo.Contains(t.Context(), tt.a, tt.b)
-			if err != nil {
-				t.Fatalf("Contains(%s, %s) error = %v, want nil", tt.a, tt.b, err)
-			}
+			assert.NilError(t, err, "Contains(%s, %s)", tt.a, tt.b)
 
-			if got != tt.want {
-				t.Errorf("Contains(%s, %s) = %t, want %t", tt.a, tt.b, got, tt.want)
-			}
+			assert.Check(t, is.Equal(got, tt.want), "Contains(%s, %s)", tt.a, tt.b)
 		})
 	}
 }
@@ -771,9 +689,8 @@ func TestRepo_Contains_WhenCommitUnknown_ReturnsExitError(t *testing.T) {
 
 	got, err := shas.repo.Contains(t.Context(), shas.local, unknownSHA)
 
-	if _, ok := errors.AsType[*git.ExitError](err); !ok {
-		t.Errorf("Contains(%s, %s) = %t, error = %v, want *git.ExitError", shas.local, unknownSHA, got, err)
-	}
+	_, ok := errors.AsType[*git.ExitError](err)
+	assert.Check(t, ok, "Contains(%s, %s) = %t, error = %v, want *git.ExitError", shas.local, unknownSHA, got, err)
 }
 
 func TestRepo_CommitsPast_WhenTrunkMergedIn_ListsOwnCommitsOldestFirst(t *testing.T) {
@@ -786,14 +703,10 @@ func TestRepo_CommitsPast_WhenTrunkMergedIn_ListsOwnCommitsOldestFirst(t *testin
 	tip := f.Git("rev-parse", "HEAD")
 
 	got, err := newRepo(f).CommitsPast(t.Context(), tip, trunk)
-	if err != nil {
-		t.Fatalf("CommitsPast(%s, %q) error = %v, want nil", tip, trunk, err)
-	}
+	assert.NilError(t, err)
 
 	want := []git.Commit{{SHA: shas[0], Subject: "one"}, {SHA: shas[1], Subject: "two"}}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("CommitsPast(%s, %q) mismatch (-want +got):\n%s", tip, trunk, diff)
-	}
+	assert.Check(t, is.DeepEqual(got, want))
 }
 
 func TestRepo_CommitsPast_WhenNothingPastTrunk_ReturnsNoCommits(t *testing.T) {
@@ -802,13 +715,9 @@ func TestRepo_CommitsPast_WhenNothingPastTrunk_ReturnsNoCommits(t *testing.T) {
 	tip := f.Git("rev-parse", "HEAD")
 
 	got, err := newRepo(f).CommitsPast(t.Context(), tip, trunk)
-	if err != nil {
-		t.Fatalf("CommitsPast(%s, %q) error = %v, want nil", tip, trunk, err)
-	}
+	assert.NilError(t, err)
 
-	if len(got) != 0 {
-		t.Errorf("CommitsPast(%s, %q) = %v, want no commits", tip, trunk, got)
-	}
+	assert.Check(t, is.Len(got, 0))
 }
 
 func TestRepo_BranchesContaining_WhenAnotherBranchCarriesCommit_ListsOnlyTheOtherBranch(t *testing.T) {
@@ -819,13 +728,9 @@ func TestRepo_BranchesContaining_WhenAnotherBranchCarriesCommit_ListsOnlyTheOthe
 	f.Git("switch", "--quiet", topic)
 
 	got, err := newRepo(f).BranchesContaining(t.Context(), first)
-	if err != nil {
-		t.Fatalf("BranchesContaining(%s) error = %v, want nil", first, err)
-	}
+	assert.NilError(t, err)
 
-	if diff := cmp.Diff([]string{"team/other"}, got); diff != "" {
-		t.Errorf("BranchesContaining(%s) mismatch (-want +got):\n%s", first, diff)
-	}
+	assert.Check(t, is.DeepEqual(got, []string{"team/other"}))
 }
 
 func TestRepo_BranchesContaining_WhenHeadDetached_ListsEveryBranchCarryingCommit(t *testing.T) {
@@ -837,13 +742,9 @@ func TestRepo_BranchesContaining_WhenHeadDetached_ListsEveryBranchCarryingCommit
 	f.Detach()
 
 	got, err := newRepo(f).BranchesContaining(t.Context(), first)
-	if err != nil {
-		t.Fatalf("BranchesContaining(%s) error = %v, want nil", first, err)
-	}
+	assert.NilError(t, err)
 
-	if diff := cmp.Diff([]string{"team/other", topic}, got); diff != "" {
-		t.Errorf("BranchesContaining(%s) mismatch (-want +got):\n%s", first, diff)
-	}
+	assert.Check(t, is.DeepEqual(got, []string{"team/other", topic}))
 }
 
 func TestRepo_Unlanded(t *testing.T) {
@@ -886,13 +787,9 @@ func TestRepo_Unlanded(t *testing.T) {
 			tip := f.Git("rev-parse", "HEAD")
 
 			got, err := newRepo(f).Unlanded(t.Context(), merged, tip, trunk)
-			if err != nil {
-				t.Fatalf("Unlanded(%s, %s, %q) error = %v, want nil", merged, tip, trunk, err)
-			}
+			assert.NilError(t, err)
 
-			if diff := cmp.Diff(want, got, cmpopts.EquateEmpty()); diff != "" {
-				t.Errorf("Unlanded(%s, %s, %q) mismatch (-want +got):\n%s", merged, tip, trunk, diff)
-			}
+			assert.Check(t, is.DeepEqual(got, want, cmpopts.EquateEmpty()))
 		})
 	}
 }
@@ -910,13 +807,9 @@ func TestRepo_Unlanded_WhenMergedHeadHasCommitTheTipLacks_ListsNothing(t *testin
 	f.Git("fetch", "--quiet", "origin", trunk)
 
 	got, err := newRepo(f).Unlanded(t.Context(), merged, tip, trunk)
-	if err != nil {
-		t.Fatalf("Unlanded(%s, %s, %q) error = %v, want nil", merged, tip, trunk, err)
-	}
+	assert.NilError(t, err)
 
-	if len(got) != 0 {
-		t.Errorf("Unlanded(%s, %s, %q) = %v, want no commits", merged, tip, trunk, got)
-	}
+	assert.Check(t, is.Len(got, 0))
 }
 
 func TestRepo_Push_WhenBranchIsNew_PushesNamedBranchWithoutForce(t *testing.T) {
@@ -927,17 +820,11 @@ func TestRepo_Push_WhenBranchIsNew_PushesNamedBranchWithoutForce(t *testing.T) {
 	repo := git.Repo{Runner: git.Runner{Dir: f.Dir(), Env: f.Env(), Recorder: recorder}}
 
 	err := repo.Push(t.Context(), topic)
-	if err != nil {
-		t.Fatalf("Push(%q) error = %v, want nil", topic, err)
-	}
+	assert.NilError(t, err)
 
 	want := [][]string{{"git", "push", "-u", "origin", topic}}
-	if diff := cmp.Diff(want, recorder.Calls()); diff != "" {
-		t.Errorf("Push(%q) recorded calls mismatch (-want +got):\n%s", topic, diff)
-	}
-	if got := f.OriginGit("rev-parse", "refs/heads/"+topic); got != tip {
-		t.Errorf("origin's %s after Push = %q, want %q", topic, got, tip)
-	}
+	assert.Check(t, is.DeepEqual(recorder.Calls(), want))
+	assert.Check(t, is.Equal(f.OriginGit("rev-parse", "refs/heads/"+topic), tip))
 }
 
 func TestRepo_Push_WhenOriginHasCommitsTheBranchLacks_ReturnsPushErrorAndLeavesOrigin(t *testing.T) {
@@ -950,21 +837,11 @@ func TestRepo_Push_WhenOriginHasCommitsTheBranchLacks_ReturnsPushErrorAndLeavesO
 	err := newRepo(f).Push(t.Context(), topic)
 
 	pushErr, ok := errors.AsType[*git.PushError](err)
-	if !ok {
-		t.Fatalf("Push(%q) error = %v, want *git.PushError", topic, err)
-	}
-	if !strings.Contains(pushErr.Stderr, "rejected") {
-		t.Errorf("Push(%q) error stderr = %q, want git's rejection", topic, pushErr.Stderr)
-	}
-	if pushErr.Branch != topic {
-		t.Errorf("Push(%q) error names branch %q, want %q", topic, pushErr.Branch, topic)
-	}
-	if want := "push of " + topic + " refused: " + strings.TrimSpace(pushErr.Stderr); err.Error() != want {
-		t.Errorf("Push(%q) error text = %q, want %q", topic, err.Error(), want)
-	}
-	if got := f.OriginGit("rev-parse", "refs/heads/"+topic); got != remote {
-		t.Errorf("origin's %s after rejected Push = %q, want %q", topic, got, remote)
-	}
+	assert.Assert(t, ok, "Push(%q) error = %v, want *git.PushError", topic, err)
+	assert.Check(t, is.Contains(pushErr.Stderr, "rejected"))
+	assert.Check(t, is.Equal(pushErr.Branch, topic))
+	assert.Check(t, is.Equal(err.Error(), "push of "+topic+" refused: "+strings.TrimSpace(pushErr.Stderr)))
+	assert.Check(t, is.Equal(f.OriginGit("rev-parse", "refs/heads/"+topic), remote))
 }
 
 func TestRepo_WhenContextCanceled_ReturnsContextError(t *testing.T) {
@@ -1000,9 +877,7 @@ func TestRepo_WhenContextCanceled_ReturnsContextError(t *testing.T) {
 
 			err := tt.call(ctx)
 
-			if !errors.Is(err, context.Canceled) {
-				t.Errorf("%s() error = %v, want context.Canceled", tt.name, err)
-			}
+			assert.Check(t, is.ErrorIs(err, context.Canceled))
 		})
 	}
 }
@@ -1026,12 +901,8 @@ func TestRepo_HasCommits(t *testing.T) {
 			t.Parallel()
 
 			got, err := repo.HasCommits(t.Context(), tt.branch)
-			if err != nil {
-				t.Fatalf("HasCommits(%q) error = %v, want nil", tt.branch, err)
-			}
-			if got != tt.want {
-				t.Errorf("HasCommits(%q) = %t, want %t", tt.branch, got, tt.want)
-			}
+			assert.NilError(t, err, "HasCommits(%q)", tt.branch)
+			assert.Check(t, is.Equal(got, tt.want), "HasCommits(%q)", tt.branch)
 		})
 	}
 }
@@ -1042,7 +913,6 @@ func TestRepo_HasCommits_WhenNotARepository_ReturnsExitError(t *testing.T) {
 
 	_, err := repo.HasCommits(t.Context(), "topic")
 
-	if _, ok := errors.AsType[*git.ExitError](err); !ok {
-		t.Errorf("HasCommits(topic) error = %v, want a *git.ExitError", err)
-	}
+	_, ok := errors.AsType[*git.ExitError](err)
+	assert.Check(t, ok, "HasCommits(topic) error = %v, want a *git.ExitError", err)
 }
