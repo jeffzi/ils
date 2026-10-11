@@ -6,6 +6,7 @@
   "words": [
     "dprint",
     "errcheck",
+    "forgetest",
     "gocognit",
     "gocritic",
     "gofmt",
@@ -17,6 +18,7 @@
     "govulncheck",
     "ineffassign",
     "jeffzi",
+    "lefthook",
     "misspell",
     "modernize",
     "nestif",
@@ -29,7 +31,16 @@
     "taskkill",
     "zizmor",
     "covermode",
-    "coverprofile"
+    "coverprofile",
+    "NOSYSTEM",
+    "USERPROFILE",
+    "gittest",
+    "gpgsign",
+    "symref",
+    "ghtest",
+    "GORACE",
+    "atexit",
+    "cmpopts"
   ],
   "ignorePaths": [
     ".planning",
