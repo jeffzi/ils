@@ -1,7 +1,9 @@
 version: "3"
 
 vars:
+  BIN: bin/ils{{exeExt}}
   CLEAN_PATHS:
+    - bin
     - dist
     - coverage.out
     - coverage.html
@@ -24,7 +26,50 @@ tasks:
       - sh: command -v dprint
         msg: "dprint is required — install: https://dprint.dev/install/"
 
+  build:
+    desc: Build the binary into bin/
+    cmds:
+      - go build -o {{.BIN}} .
+
+  # The binary is copied, never linked: a linked development build would swap
+  # the binary under every concurrent session on the next `task build`. The
+  # copy lands beside the target and is renamed over it, so a session already
+  # running the old binary keeps it.
   install:
+    desc: Build the binary and copy it to the directory `go install` writes to
+    deps: [build]
+    vars:
+      # `go list` resolves the path `go install` would write, with the
+      # platform's executable suffix.
+      INSTALL_TARGET:
+        sh: go list -f '{{`{{.Target}}`}}' .
+    cmds:
+      - cmd: |
+          target='{{.INSTALL_TARGET}}'
+          dir=$(dirname "$target")
+          mkdir -p "$dir"
+          cp {{.BIN}} "$target.new"
+          mv -f "$target.new" "$target"
+          echo "Installed $target"
+          if ! printf '%s' ":$PATH:" | sed 's|/:|:|g' | grep -qF ":$dir:"; then
+            echo "warning: $dir is not on PATH" >&2
+          fi
+        platforms: [darwin, linux]
+      - cmd: >-
+          powershell -NoProfile -Command
+          "\$target = '{{.INSTALL_TARGET}}';
+          \$dir = Split-Path -Parent \$target;
+          New-Item -ItemType Directory -Force -Path \$dir | Out-Null;
+          Copy-Item -Force -Path '{{.BIN}}' -Destination (\$target + '.new');
+          Move-Item -Force -Path (\$target + '.new') -Destination \$target;
+          Write-Output ('Installed ' + \$target);
+          \$entries = \$env:PATH -split ';' | ForEach-Object { \$_.TrimEnd('\\', '/') };
+          if (-not (\$entries -eq \$dir))
+          { [Console]::Error.WriteLine('warning: ' + \$dir + ' is not on PATH') }"
+        platforms: [windows]
+    silent: true
+
+  hooks:
     desc: Install pre-commit hooks
     deps: [_require-prek]
     cmds:

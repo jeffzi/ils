@@ -11,12 +11,14 @@ this file. It is gitignored for personal, machine-specific preferences and never
 entrypoints; never bypass them by calling `go` directly for tasks that `task` covers — the tasks
 manage flags and tool invocations.
 
-- `task fmt` — format all Go source files via golangci-lint fmt.
-- `task test` — run the test suite with race detection (append args after `--`).
-- `task cov` — run tests with coverage and generate an HTML report.
-- `task check` — run every check (fmt, lint, test, vuln).
-- `task tidy` — tidy module dependencies.
-- `task clean` — remove build artifacts.
+- `task build` — Build the binary into bin/
+- `task install` — Build the binary and copy it to the directory `go install` writes to
+- `task hooks` — Install pre-commit hooks
+- `task test` — Run the test suite (pass extra args after --)
+- `task cov` — Run tests with coverage
+- `task check` — Run every pre-commit hook across the repo
+- `task tidy` — Tidy module dependencies
+- `task clean` — Remove build artifacts
 
 ## Git hygiene
 
