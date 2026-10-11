@@ -3,6 +3,7 @@ package result_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -209,6 +210,17 @@ func with[T any](base T, edit func(*T)) T {
 	return base
 }
 
+// inputOf prints a row's result for the log of a failing row, with the push payload that the
+// result holds behind pointers written out.
+func inputOf(r result.Result) string {
+	text := fmt.Sprintf("%+v", r)
+	if r.Payload != nil && r.Payload.Push != nil {
+		text += fmt.Sprintf(", its payload push %+v", *r.Payload.Push)
+	}
+
+	return text
+}
+
 // decode parses the JSON renderer's output, which must be exactly one object.
 func decode(t *testing.T, out string) shown {
 	t.Helper()
@@ -293,6 +305,7 @@ func TestRenderText(t *testing.T) {
 	for _, tt := range textCases() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			t.Logf("row: result %s", inputOf(tt.result))
 
 			got, err := result.RenderText(tt.result, gitDir)
 			assert.NilError(t, err)
@@ -378,6 +391,7 @@ func TestRenderJSON_PrintsOneObjectOnOneLineWithExactKeys(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			t.Logf("row: result %s", inputOf(tt.result))
 
 			got, err := result.RenderJSON(tt.result, gitDir)
 			assert.NilError(t, err)
@@ -424,6 +438,7 @@ func TestRenderJSON(t *testing.T) {
 	for _, tt := range jsonCases() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			t.Logf("row: result %s", inputOf(tt.result))
 
 			out, err := result.RenderJSON(tt.result, gitDir)
 			assert.NilError(t, err)
@@ -439,6 +454,7 @@ func TestRender_ForEveryOutcome_TextLinesAppearInJSON(t *testing.T) {
 	for _, tt := range fixtures() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			t.Logf("row: result %s", inputOf(tt.result))
 
 			text, textErr := result.RenderText(tt.result, gitDir)
 			out, jsonErr := result.RenderJSON(tt.result, gitDir)
@@ -570,6 +586,7 @@ func TestRender_WhenOwnWordingNamesHookOrGitDir_ReturnsErrorNamingLine(t *testin
 		for _, r := range renderers() {
 			t.Run(tt.name+"/"+r.name, func(t *testing.T) {
 				t.Parallel()
+				t.Logf("row: git dir %q, result %s", tt.gitDir, inputOf(tt.result))
 
 				out, err := r.render(tt.result, tt.gitDir)
 
@@ -612,11 +629,12 @@ func TestRender_WhenOwnWordingIsRejected_ErrorNamesLineAndWord(t *testing.T) {
 		for _, r := range renderers() {
 			t.Run(tt.name+"/"+r.name, func(t *testing.T) {
 				t.Parallel()
+				t.Logf("row: result %s", inputOf(tt.result))
 
-				_, err := r.render(tt.result, gitDir)
+				out, err := r.render(tt.result, gitDir)
 
 				wordingErr, ok := errors.AsType[*result.WordingError](err)
-				assert.Assert(t, ok, "render error = %v, want a *result.WordingError", err)
+				assert.Assert(t, ok, "render error = %v, want a *result.WordingError; output %q", err, out)
 				assert.Check(t, is.Equal(wordingErr.Word, tt.wantWord))
 				assert.Check(t, is.Equal(err.Error(), tt.wantMsg))
 			})
@@ -739,6 +757,7 @@ func TestRenderText_ThirdPartyTextAndNames(t *testing.T) {
 	for _, tt := range slices.Concat(exemptCases(), nameCases()) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			t.Logf("row: git dir %q, result %s", tt.gitDir, inputOf(tt.result))
 
 			got, err := result.RenderText(tt.result, tt.gitDir)
 			assert.NilError(t, err)
@@ -754,6 +773,7 @@ func TestRenderJSON_ThirdPartyTextAndNames(t *testing.T) {
 	for _, tt := range slices.Concat(exemptCases(), nameCases()) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			t.Logf("row: git dir %q, result %s", tt.gitDir, inputOf(tt.result))
 
 			out, err := result.RenderJSON(tt.result, tt.gitDir)
 			assert.NilError(t, err)
@@ -770,6 +790,7 @@ func TestRender_WhenRenderedTwice_IsByteIdentical(t *testing.T) {
 		for _, r := range renderers() {
 			t.Run(tt.name+"/"+r.name, func(t *testing.T) {
 				t.Parallel()
+				t.Logf("row: result %s", inputOf(tt.result))
 
 				first, firstErr := r.render(tt.result, gitDir)
 				second, secondErr := r.render(tt.result, gitDir)
@@ -819,10 +840,11 @@ func TestRender_WhenResultIsMalformed_ReturnsError(t *testing.T) {
 		for _, r := range renderers() {
 			t.Run(tt.name+"/"+r.name, func(t *testing.T) {
 				t.Parallel()
+				t.Logf("row: result %s", inputOf(tt.result))
 
-				_, err := r.render(tt.result, gitDir)
+				out, err := r.render(tt.result, gitDir)
 
-				assert.ErrorIs(t, err, tt.wantErr)
+				assert.ErrorIs(t, err, tt.wantErr, "output %q", out)
 				assert.Check(t, is.Equal(err.Error(), tt.wantMsg))
 			})
 		}
