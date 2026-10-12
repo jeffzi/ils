@@ -29,11 +29,6 @@ func (e *WordingError) Error() string {
 	return fmt.Sprintf("line %q names a hook or a path under the git dir: %q", e.Line, e.Word)
 }
 
-// hookNames are the words that name a hook or a tool that runs hooks.
-var hookNames = []string{
-	"pre-commit", "commit-msg", "pre-push", "post-commit", "prek", "lefthook", "hooks/",
-}
-
 // shown is a checked result with every phrase rendered. Both renderers print
 // from it and from nothing else, so the two cannot drift.
 type shown struct {
@@ -216,6 +211,11 @@ func endsInName(text string) bool {
 
 // namesHook reports whether word holds a hook name, in any case.
 func namesHook(word string) bool {
+	// hookNames are the words that name a hook or a tool that runs hooks.
+	hookNames := []string{
+		"pre-commit", "commit-msg", "pre-push", "post-commit", "prek", "lefthook", "hooks/",
+	}
+
 	lowered := strings.ToLower(word)
 	for _, hook := range hookNames {
 		if strings.Contains(lowered, hook) {

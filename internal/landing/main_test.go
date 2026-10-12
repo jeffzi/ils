@@ -43,12 +43,12 @@ func failingGit(words, args []string) int {
 	}
 
 	//nolint:gosec // G204: the test names the real git and passes on the arguments it was given.
-	real := exec.CommandContext(context.Background(), os.Getenv(realGitEnv), args...)
-	real.Stdin = os.Stdin
-	real.Stdout = os.Stdout
-	real.Stderr = os.Stderr
+	cmd := exec.CommandContext(context.Background(), os.Getenv(realGitEnv), args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 
-	err := real.Run()
+	err := cmd.Run()
 	if err == nil {
 		return 0
 	}

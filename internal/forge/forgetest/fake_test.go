@@ -24,10 +24,16 @@ const (
 	pullURL   = "https://example.com/acme/widgets/pull/12"
 )
 
-var (
-	repo     = forge.Repo{Host: "example.com", Owner: "acme", Name: "widgets"}
-	identity = forge.Repo{Host: "example.com", Owner: "acme", Name: "widgets", CanPush: true}
-	changes  = []forge.Change{{
+func repo() forge.Repo {
+	return forge.Repo{Host: "example.com", Owner: "acme", Name: "widgets"}
+}
+
+func identity() forge.Repo {
+	return forge.Repo{Host: "example.com", Owner: "acme", Name: "widgets", CanPush: true}
+}
+
+func changes() []forge.Change {
+	return []forge.Change{{
 		Number:  number,
 		URL:     pullURL,
 		Title:   branch,
@@ -35,13 +41,34 @@ var (
 		HeadSHA: oldCommit,
 		State:   forge.ChangeOpen,
 	}}
-	newChange  = forge.NewChange{Title: branch, Base: trunk, Head: branch}
-	opened     = forge.ChangeRef{Number: number, URL: pullURL}
-	head       = forge.Head{SHA: newCommit, MergeState: forge.MergeClean, RawMergeState: "CLEAN"}
-	protection = forge.Protection{RequiredChecks: []string{"lint", "test"}}
-	headQuery  = forge.HeadQuery{Number: number, Required: []string{"lint", "test"}}
-	query      = forge.VerdictQuery{Number: number, SHA: newCommit, Required: []string{"lint", "test"}}
-	verdict    = forge.Verdict{
+}
+
+func newChange() forge.NewChange {
+	return forge.NewChange{Title: branch, Base: trunk, Head: branch}
+}
+
+func opened() forge.ChangeRef {
+	return forge.ChangeRef{Number: number, URL: pullURL}
+}
+
+func head() forge.Head {
+	return forge.Head{SHA: newCommit, MergeState: forge.MergeClean, RawMergeState: "CLEAN"}
+}
+
+func protection() forge.Protection {
+	return forge.Protection{RequiredChecks: []string{"lint", "test"}}
+}
+
+func headQuery() forge.HeadQuery {
+	return forge.HeadQuery{Number: number, Required: []string{"lint", "test"}}
+}
+
+func query() forge.VerdictQuery {
+	return forge.VerdictQuery{Number: number, SHA: newCommit, Required: []string{"lint", "test"}}
+}
+
+func verdict() forge.Verdict {
+	return forge.Verdict{
 		Checks: []forge.Check{{
 			Name:     "lint",
 			Bucket:   forge.BucketFail,
@@ -53,7 +80,7 @@ var (
 		Runs:            []forge.Run{{Name: "ci", Status: forge.RunCompleted}},
 		FailedLog:       forge.FailedLog{Check: "lint", Text: "lint: unused variable", State: forge.FailedLogRead},
 	}
-)
+}
 
 // recorder stands in for the testing.TB the fake reports to, keeping each failure.
 type recorder struct {
@@ -78,23 +105,23 @@ type operation struct {
 // operations lists every operation of the forge seam.
 func operations() []operation {
 	return []operation{
-		{name: "identity", made: forgetest.Call{Op: forgetest.OpIdentity, Repo: repo}, want: identity, call: func(ctx context.Context, f forge.Forge) (any, error) {
-			return f.Identity(ctx, repo)
+		{name: "identity", made: forgetest.Call{Op: forgetest.OpIdentity, Repo: repo()}, want: identity(), call: func(ctx context.Context, f forge.Forge) (any, error) {
+			return f.Identity(ctx, repo())
 		}},
-		{name: "find changes", made: forgetest.Call{Op: forgetest.OpFindChanges, Repo: repo, Branch: branch}, want: changes, call: func(ctx context.Context, f forge.Forge) (any, error) {
-			return f.FindChanges(ctx, repo, branch)
+		{name: "find changes", made: forgetest.Call{Op: forgetest.OpFindChanges, Repo: repo(), Branch: branch}, want: changes(), call: func(ctx context.Context, f forge.Forge) (any, error) {
+			return f.FindChanges(ctx, repo(), branch)
 		}},
-		{name: "open change", made: forgetest.Call{Op: forgetest.OpOpenChange, Repo: repo, Change: newChange}, want: opened, call: func(ctx context.Context, f forge.Forge) (any, error) {
-			return f.OpenChange(ctx, repo, newChange)
+		{name: "open change", made: forgetest.Call{Op: forgetest.OpOpenChange, Repo: repo(), Change: newChange()}, want: opened(), call: func(ctx context.Context, f forge.Forge) (any, error) {
+			return f.OpenChange(ctx, repo(), newChange())
 		}},
-		{name: "head", made: forgetest.Call{Op: forgetest.OpHead, Repo: repo, Head: headQuery}, want: head, call: func(ctx context.Context, f forge.Forge) (any, error) {
-			return f.Head(ctx, repo, headQuery)
+		{name: "head", made: forgetest.Call{Op: forgetest.OpHead, Repo: repo(), Head: headQuery()}, want: head(), call: func(ctx context.Context, f forge.Forge) (any, error) {
+			return f.Head(ctx, repo(), headQuery())
 		}},
-		{name: "trunk protection", made: forgetest.Call{Op: forgetest.OpTrunkProtection, Repo: repo, Branch: trunk}, want: protection, call: func(ctx context.Context, f forge.Forge) (any, error) {
-			return f.TrunkProtection(ctx, repo, trunk)
+		{name: "trunk protection", made: forgetest.Call{Op: forgetest.OpTrunkProtection, Repo: repo(), Branch: trunk}, want: protection(), call: func(ctx context.Context, f forge.Forge) (any, error) {
+			return f.TrunkProtection(ctx, repo(), trunk)
 		}},
-		{name: "verdict", made: forgetest.Call{Op: forgetest.OpVerdict, Repo: repo, Query: query}, want: verdict, call: func(ctx context.Context, f forge.Forge) (any, error) {
-			return f.Verdict(ctx, repo, query)
+		{name: "verdict", made: forgetest.Call{Op: forgetest.OpVerdict, Repo: repo(), Query: query()}, want: verdict(), call: func(ctx context.Context, f forge.Forge) (any, error) {
+			return f.Verdict(ctx, repo(), query())
 		}},
 	}
 }
@@ -111,12 +138,12 @@ func steps[T any](value T, err error) []forgetest.Answer[T] {
 // script answers every operation with err when it is set, and with the fixture values otherwise.
 func script(err error) forgetest.Script {
 	return forgetest.Script{
-		Identity:        steps(identity, err),
-		FindChanges:     steps(changes, err),
-		OpenChange:      steps(opened, err),
-		Head:            steps(head, err),
-		TrunkProtection: steps(protection, err),
-		Verdict:         steps(verdict, err),
+		Identity:        steps(identity(), err),
+		FindChanges:     steps(changes(), err),
+		OpenChange:      steps(opened(), err),
+		Head:            steps(head(), err),
+		TrunkProtection: steps(protection(), err),
+		Verdict:         steps(verdict(), err),
 	}
 }
 
@@ -187,7 +214,7 @@ func TestFake_Identity_WhenNotLoggedIn_ErrorCarriesHost(t *testing.T) {
 
 	fake := forgetest.New(t, script(fmt.Errorf("identity: %w", &forge.NotLoggedInError{Host: "example.com"})))
 
-	_, err := fake.Identity(t.Context(), repo)
+	_, err := fake.Identity(t.Context(), repo())
 
 	got, ok := errors.AsType[*forge.NotLoggedInError](err)
 	assert.Assert(t, ok, "Identity error = %v, want a *forge.NotLoggedInError", err)
@@ -200,7 +227,7 @@ func TestFake_OpenChange_WhenChangeExists_ErrorMatchesSentinel(t *testing.T) {
 
 	fake := forgetest.New(t, script(fmt.Errorf("open: %w", forge.ErrChangeExists)))
 
-	_, err := fake.OpenChange(t.Context(), repo, newChange)
+	_, err := fake.OpenChange(t.Context(), repo(), newChange())
 
 	assert.Check(t, is.ErrorIs(err, forge.ErrChangeExists))
 }
@@ -235,12 +262,12 @@ func TestFake_Calls_RecordsEveryCallInOrder(t *testing.T) {
 	callEach(t, fake)
 
 	want := []forgetest.Call{
-		{Op: forgetest.OpIdentity, Repo: repo},
-		{Op: forgetest.OpFindChanges, Repo: repo, Branch: branch},
-		{Op: forgetest.OpOpenChange, Repo: repo, Change: newChange},
-		{Op: forgetest.OpHead, Repo: repo, Head: headQuery},
-		{Op: forgetest.OpTrunkProtection, Repo: repo, Branch: trunk},
-		{Op: forgetest.OpVerdict, Repo: repo, Query: query},
+		{Op: forgetest.OpIdentity, Repo: repo()},
+		{Op: forgetest.OpFindChanges, Repo: repo(), Branch: branch},
+		{Op: forgetest.OpOpenChange, Repo: repo(), Change: newChange()},
+		{Op: forgetest.OpHead, Repo: repo(), Head: headQuery()},
+		{Op: forgetest.OpTrunkProtection, Repo: repo(), Branch: trunk},
+		{Op: forgetest.OpVerdict, Repo: repo(), Query: query()},
 	}
 	assert.Check(t, is.DeepEqual(fake.Calls(), want))
 }
@@ -255,7 +282,7 @@ func TestFake_Head_AdvancesOneStepPerReadThenRepeatsTheLast(t *testing.T) {
 		Head: []forgetest.Answer[forge.Head]{{Value: stale}, {Value: stale}, {Value: unknown}, {Value: clean}},
 	})
 
-	got := read(t, 6, func() (forge.Head, error) { return fake.Head(t.Context(), repo, headQuery) })
+	got := read(t, 6, func() (forge.Head, error) { return fake.Head(t.Context(), repo(), headQuery()) })
 
 	want := []forge.Head{stale, stale, unknown, clean, clean, clean}
 	assert.Check(t, is.DeepEqual(got, want))
@@ -276,7 +303,7 @@ func TestFake_Verdict_AdvancesOneStepPerReadThenRepeatsTheLast(t *testing.T) {
 		Verdict: []forgetest.Answer[forge.Verdict]{{Value: pending}, {Value: green}},
 	})
 
-	got := read(t, 3, func() (forge.Verdict, error) { return fake.Verdict(t.Context(), repo, query) })
+	got := read(t, 3, func() (forge.Verdict, error) { return fake.Verdict(t.Context(), repo(), query()) })
 
 	want := []forge.Verdict{pending, green, green}
 	assert.Check(t, is.DeepEqual(got, want))

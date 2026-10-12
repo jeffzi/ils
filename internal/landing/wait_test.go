@@ -9,6 +9,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -35,7 +36,9 @@ const (
 )
 
 // ignoreSince leaves out the time the verdict wait began.
-var ignoreSince = cmpopts.IgnoreFields(landing.Waited{}, "Since")
+func ignoreSince() cmp.Option {
+	return cmpopts.IgnoreFields(landing.Waited{}, "Since")
+}
 
 // orBound returns left, or the whole bound when left is zero.
 func orBound(left time.Duration) time.Duration {
@@ -298,7 +301,7 @@ func runVigils(t *testing.T, rows []vigilRow) {
 
 				got := v.await(t, tt.required...)
 
-				assert.Check(t, is.DeepEqual(got, tt.want, ignoreSince, cmpopts.EquateEmpty()))
+				assert.Check(t, is.DeepEqual(got, tt.want, ignoreSince(), cmpopts.EquateEmpty()))
 				assert.Check(t, is.DeepEqual(v.opsOf(), tt.ops, cmpopts.EquateEmpty()))
 				assert.Check(t, is.DeepEqual(v.pauses(), tt.waits, cmpopts.EquateEmpty()))
 			})
@@ -598,7 +601,7 @@ func TestAwaitVerdict_WhenMergeStateChangedDuringTheWait_ReturnsTheStateReadAfte
 
 		got := v.await(t)
 
-		assert.Check(t, is.DeepEqual(got, stateOf(green(), reviewed), ignoreSince))
+		assert.Check(t, is.DeepEqual(got, stateOf(green(), reviewed), ignoreSince()))
 	})
 }
 
@@ -620,7 +623,7 @@ func TestAwaitVerdict_WhenDeadlineEndedDuringTheWait_ReturnsTheEarlierMergeState
 
 		got := v.await(t)
 
-		assert.Check(t, is.DeepEqual(got, green(), ignoreSince))
+		assert.Check(t, is.DeepEqual(got, green(), ignoreSince()))
 	})
 }
 

@@ -51,16 +51,17 @@ type Fake struct {
 	record string
 }
 
-// Main makes the test binary act as gh when Setup arranged for it, and returns otherwise.
+// Main makes the test binary act as gh when Setup arranged for it, and reports whether it did.
 //
-// A package's TestMain calls it before anything else.
-func Main() {
+// A package's TestMain calls it before anything else and, when served is true, exits with code
+// without running a test.
+func Main() (code int, served bool) {
 	script := os.Getenv(scriptEnv)
 	if script == "" {
-		return
+		return 0, false
 	}
 
-	os.Exit(serve(script, os.Getenv(recordEnv), os.Args[1:]))
+	return serve(script, os.Getenv(recordEnv), os.Args[1:]), true
 }
 
 // Setup points GH_PATH at the test binary for the rest of the test and scripts its answers.

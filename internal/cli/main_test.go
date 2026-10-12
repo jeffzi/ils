@@ -8,7 +8,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	ghtest.Main()
+	if code, served := ghtest.Main(); served {
+		os.Exit(code)
+	}
 
 	os.Exit(m.Run())
 }
