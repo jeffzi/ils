@@ -175,7 +175,6 @@ agent how to react to each exit code. The merge stays the user's decision.
 The tasks need [Task](https://taskfile.dev), [prek](https://github.com/j178/prek), and
 [dprint](https://dprint.dev/install/). `task --list` shows them all. `task check` runs every
 pre-commit hook (format, lint, spelling) and `task test` runs the tests; run both before pushing.
-`task hooks` installs the hooks.
 
 ## License
 
