@@ -1,7 +1,8 @@
 # ils
 
-`ils` (Instrument Landing System) lands a change on GitHub in fixed, checked steps, so that a large
-language model (LLM) agent cannot skip one, merge on red, or push to the wrong place. Each command
+`ils` (Instrument Landing System) lands a change on GitHub in fixed, checked steps. A large
+language model (LLM) agent that runs it cannot skip a step, merge on red, or push to the wrong
+place. Each command
 runs only standard `git` and `gh` commands, prints what it did and what to do next, and keeps no
 state of its own.
 
@@ -11,6 +12,8 @@ until `merge` exists, merge by hand with the line shown under
 
 - [Example](#example)
 - [Install](#install)
+  - [Requirements](#requirements)
+  - [Build the binary](#build-the-binary)
 - [Start a repository](#start-a-repository)
 - [Usage](#usage)
   - [What it refuses](#what-it-refuses)
@@ -38,7 +41,25 @@ reacts correctly.
 
 ## Install
 
-From a tag:
+### Requirements
+
+To build:
+
+- Go 1.27 or later.
+- [Task](https://taskfile.dev), to install from a clone.
+
+To run:
+
+- `git` on `PATH`.
+- [`gh`](https://cli.github.com), installed and logged in to the host of `origin`
+  (`gh auth login --hostname <host>`). `ils` owns no token and no login flow.
+- A remote named `origin` on GitHub that you can push to and that is not a fork.
+
+`ils` runs on macOS, Linux, and Windows.
+
+### Build the binary
+
+With Go:
 
 ```bash
 go install github.com/jeffzi/ils@latest
@@ -50,17 +71,6 @@ to:
 ```bash
 task install
 ```
-
-### Requirements
-
-- Go 1.27 or later, to build.
-- [Task](https://taskfile.dev), to install from a clone.
-- `git` on `PATH`.
-- [`gh`](https://cli.github.com), installed and logged in to the host of `origin`
-  (`gh auth login --hostname <host>`). `ils` owns no token and no login flow.
-- A remote named `origin` on GitHub that you can push to and that is not a fork.
-
-`ils` runs on macOS, Linux, and Windows.
 
 ## Start a repository
 
@@ -80,9 +90,13 @@ task install
    ```
 
 3. Protect the default branch with a ruleset. In the repository on GitHub, open Settings, then
-   Rules, then Rulesets, and create a branch ruleset that targets the default branch with these
-   rules: require a pull request before merging, with squash as the only merge method; require
-   status checks to pass; block force pushes. GitHub's guide to
+   Rules, then Rulesets. Create a branch ruleset that targets the default branch with these rules:
+
+   - require a pull request before merging, with squash as the only merge method;
+   - require status checks to pass;
+   - block force pushes.
+
+   GitHub's guide to
    [creating rulesets for a repository](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/creating-rulesets-for-a-repository)
    has the details. Rulesets need a public repository or a paid GitHub plan; on a free private
    repository skip this step. `ils` works either way, and the ruleset is what holds when something
@@ -120,11 +134,12 @@ or file; at most it has fetched from origin. It refuses:
 - a branch cut from another local branch instead of the default branch;
 - a branch that is behind, or has diverged from, its copy on GitHub;
 - a branch whose pull request already merged, or is open against another base;
-- a repository with no remote named `origin`, an `origin` that cannot be reached, or one whose
-  fetch and push URLs do not name one repository (they differ, or one is not an `https://`,
-  `ssh://git@`, or `git@host:` repository URL);
-- a missing `gh`, a `gh` that is not logged in to origin's host (which is also how a host that
-  is not GitHub is refused), a fork, or a repository you cannot push to;
+- a repository with no remote named `origin`, or an `origin` that cannot be reached;
+- an `origin` whose fetch and push URLs do not name one repository (they differ, or one is not an
+  `https://`, `ssh://git@`, or `git@host:` repository URL);
+- a missing `git` or `gh`, a `gh` that is not logged in to origin's host (which is also how a
+  host that is not GitHub is refused), a fork, or a repository you cannot push to;
+- any word after `push` other than `--json`, `--help`, or `-h`;
 - a precondition read that the time limit cut short: run `ils push` again.
 
 ### Exit codes
@@ -157,17 +172,19 @@ gh pr merge --repo <host>/<owner>/<name> <N> --squash --delete-branch \
   --match-head-commit <sha> --subject "<title> (#<N>)" --body "<body>"
 ```
 
-`ils push` prints both lines with the repository, number, and commit filled in.
+`ils push` prints both commands on its `Next:` line with the repository, number, and commit filled
+in. The title and body stay placeholders for you to write.
 
 ## Use with Claude Code
 
-The repository is a Claude Code plugin with one skill, `ils`. Load it from a clone:
+The repository ships one agent skill, `ils`. Install it with
+[`skills`](https://github.com/vercel-labs/skills):
 
 ```bash
-claude --plugin-dir /path/to/ils
+npx skills add jeffzi/ils
 ```
 
-With the plugin loaded, `/ils push` runs the binary and relays its output, and the skill tells an
+With the skill installed, `/ils push` runs the binary and relays its output, and the skill tells an
 agent how to react to each exit code. The merge stays the user's decision.
 
 ## Contributing
