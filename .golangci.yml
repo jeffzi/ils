@@ -7,8 +7,11 @@ formatters:
 
 linters:
   enable:
+    - depguard
     - errcheck
+    - errorlint
     - funlen
+    - gochecknoglobals
     - gocognit
     - gocritic
     - gosec
@@ -17,16 +20,31 @@ linters:
     - misspell
     - modernize
     - nestif
+    - nilerr
+    - noctx
     - revive
     - staticcheck
     - unused
   settings:
+    depguard:
+      rules:
+        errors:
+          deny:
+            - pkg: github.com/pkg/errors
+              desc: use the standard library errors package and %w wrapping
     errcheck:
       exclude-functions:
         - (io.ReadCloser).Close
         - (*database/sql.Rows).Close
+    funlen:
+      lines: 60
+      statements: 40
+      ignore-comments: true
     gocognit:
       min-complexity: 15
+    gocritic:
+      enabled-checks:
+        - todoCommentWithoutDetail
     govet:
       enable-all: true
     misspell:
@@ -34,6 +52,27 @@ linters:
     nestif:
       min-complexity: 3
     revive:
+      enable-default-rules: true
       rules:
         - name: argument-limit
           arguments: [4]
+        - name: deep-exit
+        - name: early-return
+          arguments: [preserve-scope]
+        - name: file-length-limit
+          arguments:
+            - max: 600
+              skip-comments: true
+              skip-blank-lines: true
+        - name: import-shadowing
+        - name: package-directory-mismatch
+        - name: package-naming
+          arguments:
+            - check-extra-bad-name: true
+              user-defined-bad-names: [base]
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - revive
+        text: "^file-length-limit:"
