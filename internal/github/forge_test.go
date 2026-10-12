@@ -737,7 +737,7 @@ type pullView struct {
 
 // missingTool is the error every call returns when `gh` is not installed.
 func missingTool() *forge.ToolMissingError {
-	return &forge.ToolMissingError{Tool: "gh", InstallHint: "brew install gh"}
+	return &forge.ToolMissingError{Tool: "gh", InstallURL: "https://cli.github.com"}
 }
 
 func TestRunner_Run_WhenGhExitsZero_ReturnsOutput(t *testing.T) {

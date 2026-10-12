@@ -484,7 +484,7 @@ func argv(args []string) []string {
 	return append([]string{Program}, args...)
 }
 
-const installHint = "brew install gh"
+const installURL = "https://cli.github.com"
 
 // Runner runs gh, found through GH_PATH and then PATH.
 type Runner struct{}
@@ -520,7 +520,7 @@ func (e *DecodeError) Unwrap() error {
 func (Runner) Run(ctx context.Context, args ...string) (Result, error) {
 	stdout, stderr, err := gh.ExecContext(ctx, args...)
 	if isMissing(err) {
-		return Result{}, &forge.ToolMissingError{Tool: Program, InstallHint: installHint, Err: err}
+		return Result{}, &forge.ToolMissingError{Tool: Program, InstallURL: installURL, Err: err}
 	}
 
 	result := Result{Stdout: stdout.String(), Stderr: stderr.String()}

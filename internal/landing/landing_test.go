@@ -283,7 +283,7 @@ func originRefusals() []refusal {
 // forgeRefusals are the refusals decided from the forge's answer about the repository.
 func forgeRefusals() []refusal {
 	const (
-		noTool = "Refused: gh is not installed; install it with `brew install gh`\n" +
+		noTool = "Refused: gh is not installed; install it from https://cli.github.com\n" +
 			"Next: install gh, then run ils push again\n"
 		noLogin = "Refused: gh is not logged in to github.com; log in with " +
 			"`gh auth login --hostname github.com`, or push by hand if github.com is not GitHub\n" +
@@ -294,7 +294,7 @@ func forgeRefusals() []refusal {
 			"the user pushes by hand\n" + nextByHand
 	)
 
-	missing := fails(&forge.ToolMissingError{Tool: "gh", InstallHint: "brew install gh"})
+	missing := fails(&forge.ToolMissingError{Tool: "gh", InstallURL: "https://cli.github.com"})
 
 	return []refusal{
 		{name: "gh is not installed", script: missing, asksForge: true, want: noTool},
@@ -426,7 +426,7 @@ func TestPreconditions_WhenDirectoryIsNotARepository_BrokeNamingTheRead(t *testi
 }
 
 // noGit is the whole text of the refusal of a git that is missing from PATH.
-const noGit = "Refused: git is not installed; install it with `brew install git`\n" +
+const noGit = "Refused: git is not installed; install it from https://git-scm.com/downloads\n" +
 	"Next: install git, then run ils push again\n"
 
 // hideGit empties PATH for the whole process until the test ends, so that the next git call finds

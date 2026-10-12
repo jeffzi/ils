@@ -176,7 +176,7 @@ func trunkOf(ctx context.Context, deps Deps, req Request) (string, *result.Resul
 func (r Request) identityFailure(err error) *result.Result {
 	if missing, ok := errors.AsType[*forge.ToolMissingError](err); ok {
 		return r.refused(
-			result.Say("%s is not installed; install it with `%s`", missing.Tool, missing.InstallHint),
+			result.Say("%s is not installed; install it from %s", missing.Tool, missing.InstallURL),
 			result.NextStep("install %s, then run ils push again", missing.Tool),
 		)
 	}
@@ -212,6 +212,9 @@ func (r Request) refused(reason result.Phrase, next result.Next) *result.Result 
 	return r.ends(result.Refused, reason, next)
 }
 
+// gitInstallURL is the page git is installed from on every operating system.
+const gitInstallURL = "https://git-scm.com/downloads"
+
 // gitMissing returns the refusal for a read that failed with err because git is not on PATH,
 // and nil for any other failure.
 func (r Request) gitMissing(err error) *result.Result {
@@ -221,7 +224,7 @@ func (r Request) gitMissing(err error) *result.Result {
 	}
 
 	return r.refused(
-		result.Say("%s is not installed; install it with `brew install %s`", missing.Name, missing.Name),
+		result.Say("%s is not installed; install it from %s", missing.Name, gitInstallURL),
 		result.NextStep("install %s, then run ils push again", missing.Name),
 	)
 }

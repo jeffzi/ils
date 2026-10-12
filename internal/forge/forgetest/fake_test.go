@@ -214,7 +214,7 @@ func TestFake_WhenAnswerIsError_ReturnsItUnchanged(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scripted := &forge.ToolMissingError{Tool: "gh", InstallHint: "https://example.com/install"}
+			scripted := &forge.ToolMissingError{Tool: "gh", InstallURL: "https://example.com/install"}
 			fake := forgetest.New(t, script(scripted))
 
 			_, err := tt.call(t.Context(), fake)
