@@ -16,7 +16,7 @@ import (
 	"github.com/jeffzi/ils/internal/github/ghtest"
 )
 
-// No test in this file is parallel: the fake `gh` is found through `GH_PATH`,
+// No test that scripts `gh` is parallel: the fake `gh` is found through `GH_PATH`,
 // which `go-gh` reads from the environment of the whole process.
 
 const (
