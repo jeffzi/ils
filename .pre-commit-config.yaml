@@ -35,6 +35,13 @@ repos:
         types: [go]
         pass_filenames: false
 
+      - id: golangci-lint-test-size
+        name: golangci-lint test file size
+        entry: go tool golangci-lint run --config .golangci.tests.yml
+        language: system
+        types: [go]
+        pass_filenames: false
+
       - id: go-mod-tidy
         name: go mod tidy
         entry: go mod tidy -diff

@@ -49,5 +49,8 @@ jobs:
           go-version-file: go.mod
       - name: Run tests
         run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+      - name: Check coverage floor
+        if: matrix.os == 'ubuntu-latest'
+        run: go tool go-test-coverage --config=.coverage.yml
       - name: Build
         run: go build ./...

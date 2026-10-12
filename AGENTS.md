@@ -13,19 +13,22 @@ manage flags and tool invocations.
 
 - `task build` — Build the binary into bin/
 - `task install` — Build the binary and copy it to the directory `go install` writes to
-- `task hooks` — Install pre-commit hooks
-- `task test` — Run the test suite (pass extra args after --)
-- `task cov` — Run tests with coverage
+- `task test` — Run the test suite with coverage; fails under the floor in `.coverage.yml` (extra
+  args after -- skip coverage and the floor)
 - `task check` — Run every pre-commit hook across the repo
-- `task tidy` — Tidy module dependencies
+- `task check:fix` — auto-fix everything that supports it: `go mod tidy`, `go tool golangci-lint
+  run --fix`, `go tool golangci-lint fmt`, `dprint fmt`, markdownlint (`prek run -a
+  markdownlint-cli2`).
 - `task clean` — Remove build artifacts
 
 ## Git hygiene
 
 - Never run `git commit --no-verify`, `git commit -n`, or anything else that skips the prek hooks —
   the hooks are the gate, not an obstacle.
-- Fix a failing check at its source. Never edit a test to make it pass; never widen a lint ignore to
-  silence a real finding.
+- Fix a failing check at its source. Never weaken a test to make it pass; never widen a lint ignore
+  to silence a real finding. A test whose assertion is right but whose input is wrong (a sample
+  value that collides with a fixture, a typo, a bad import) is a test bug: fix the input and say
+  so in one line.
 
 ## Linter and type-checker configuration
 
@@ -37,13 +40,113 @@ a reason — not in the shared config. When the same inline directive keeps recu
 rule, that is a signal the rule may deserve a config-level ignore — propose it to the user and wait
 for explicit approval; never promote a suppression into config on your own.
 
+## Project layout
+
+- A single command keeps `package main` in the module root. Move commands to `cmd/<name>/main.go`
+  only when the module ships several commands or also exports importable packages.
+- Supporting packages live under `internal/` until another module needs them.
+- Default to not creating a package. Never add a directory that holds no `.go` files except `cmd/`
+  and `internal/`.
+- `main()` parses flags, builds dependencies, and calls one testable entry point — nothing else.
+
+## Package and file layout
+
+A line-count check caps a file's code lines and a function's. The cap marks a file that holds more
+than one concern; it is not a budget. These rules decide where code lives. A reason that is not
+written here does not move code and does not keep it apart: apply the rules as written and report
+the reason in one line, so it can become a rule. A reason becomes a rule by becoming checkable: a
+blocker under rule 4, or a fact under Project facts. The numbers the rules refer to are listed under
+Project facts.
+
+Code is placed at two levels: a file inside its package, and a package inside the project. A file's
+**users** are the other files of its package that refer to a name it declares. A package's **users**
+are the project packages that import it. `_test.go` files and package `main` are never users. To
+**fold** a file is to move all of it into another file of its package and delete it; to fold a
+package is to move its files into another package and delete its directory.
+
+**Registration is not use.** A file that only registers another file's code (adds its command to
+the root command, lists its handler in a table) and never otherwise calls it is neither its user
+nor its home. A file that nothing but its registrar refers to is a file of its own at any size; one
+that other files also use is placed by those users alone. The same holds between packages.
+
+1. **New code goes in the file that uses it**, with the types, errors and constants it declares.
+   One user: that file. No new file until rule 2 or rule 6 calls for one, and no new package until
+   rule 2 calls for one. That the new code is a concern of its own, or that sibling concerns have
+   files of their own, calls for nothing.
+2. **Shared code goes to its home.**
+   - When two or more files of one package use it, the first of these that applies:
+     - It is a rule about one type (a method, a constructor, a predicate, a conversion): the file
+       that declares the type.
+     - Otherwise: an existing file you have read that already owns that concern, or a file of its
+       own, named for what it does, whatever its size.
+   - When two or more packages use it, the first of these that applies:
+     - One of its users is already imported by every other user, and uses the code itself: that
+       package is the home, because nobody loads the code without loading it.
+     - It is a rule about one project type and every user already imports the package that
+       declares the type: beside the type. Code that merely mentions the type does not qualify.
+     - Otherwise: an existing package you have read that already owns that concern, or a package
+       of its own, named for what it provides, whatever its size.
+3. **A file that has a home folds into it.** A file with one user folds into that user, and a
+   package with one user folds into that user. When several could fold into the same target and
+   not all fit, fold the smallest first and stop before the first that does not fit. A file or
+   package with no users (the package's entry point, `main`) stands.
+4. **Only five things block a fold**, and each one can be checked:
+   - **Size.** The target would land above the fold limit, summing the code lines of everything
+     that goes into it. The fold limit sits below the cap so that a fold is not undone by the next
+     edit. A file may grow past the fold limit afterwards; only the cap forces a move.
+   - **Standing.** The file, or the package as a whole, holds at least the stand floor of code
+     lines and its name says what everything in it does (rule 5). Below the floor, or under a name
+     that fits only because it is wide, it folds.
+   - **Build.** The file carries a build constraint its target does not (a `//go:build` line, an
+     operating-system or architecture suffix in its name), or it is generated.
+   - **Layer.** Code stays in the layer its subject belongs to, even when every caller is in
+     another layer. A package whose only user is in another layer stands in its own.
+   - **Seam.** A seam test would fail after the fold. A seam without a test is a preference: write
+     the test first if the property matters.
+
+   None of these block a fold: "it is a distinct concern", "it is pure logic", "it is easier to
+   test alone", "a reviewer asked to keep it apart", "it is one of several alike", "reusable
+   later", "keeps the user small", "matches the existing small files". Small files and packages
+   already in the tree are debt, not precedent: report one that has a home and no block, and fold
+   it when asked.
+5. **Never pool.** Merging two files when neither uses the other is pooling, whatever the file
+   count gained. A file's or package's name says what everything in it does. A name that fits only
+   because it is wide (`helpers`, `util`, `common`, `shared`, `core`, `misc`, `support`) marks a
+   pool, and so does a name for the kind of declaration inside (`types`, `errors`, `constants`,
+   `interfaces`, `models`): a declaration lives with the code it belongs to, under rules 1 and 2.
+   A pool already in the tree is debt, not precedent: add nothing to it, whatever the package's
+   existing layout suggests, and report it. Asked to consolidate, take each pool apart by rules 1
+   and 2, apply rule 3 until nothing more folds, and report every other file with the block or the
+   lack of a home that keeps it.
+6. **At the cap, move one whole concern**: the code least tied to the rest that changes together
+   for one reason. The code just added is never the concern that moves. It goes to a new file of
+   the same package named for what it does, or to an existing file you have read that already owns
+   that concern. The file must land at or below the fold limit; if it does not, pick a different,
+   larger concern. When no single concern is large enough, move a second whole concern as well, to
+   a file of its own. Never move just enough to pass, never top up the move with unrelated code,
+   and never compress code to fit. A file carved out stands for as long as folding it back would
+   exceed the fold limit.
+7. **Tests follow the code.** The tests of `x.go` live in `x_test.go`. When code moves, its tests
+   move to the test file of its new home in the same change. A `_test.go` file has its own cap and
+   fold limit, and rules 5 and 6 apply to it unchanged.
+
+### Project facts
+
+- **Cap:** 600 code lines per file, 1000 per `_test.go` file; 60 lines and 40 statements per
+  function.
+- **Fold limit:** 540 code lines; 900 for a `_test.go` file.
+- **Stand floor:** 120 code lines.
+- **Layers:** none. Every package is in the same layer.
+- **Seam test:** none. No fold is blocked by a seam.
+
 ## Doc comments
 
 Go doc comments (`//` before declarations). None required on unexported functions. A one-line doc
 comment is complete on its own when the name says the rest — the comment always starts with the
-declared name: `// FuncName does X.` Package comments use `// Package name does X.` A function you
-edit gets its doc comment brought to this shape even if you did not write it. Tests: no doc comments
-on test functions; the name carries the intent.
+declared name: `// FuncName does X.` Package comments use `// Package name does X.`; for `package
+main` the comment starts with the program name instead: `// Name does X.` A function you edit gets
+its doc comment brought to this shape even if you did not write it. Tests: no doc comments on test
+functions; the name carries the intent.
 
 ## Spelling (cspell)
 

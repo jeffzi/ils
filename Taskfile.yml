@@ -18,7 +18,7 @@ tasks:
     internal: true
     preconditions:
       - sh: command -v prek
-        msg: "prek is required — install: https://github.com/j178/pre-commit-rs"
+        msg: "prek is required — install: https://github.com/j178/prek"
 
   _require-dprint:
     internal: true
@@ -26,21 +26,25 @@ tasks:
       - sh: command -v dprint
         msg: "dprint is required — install: https://dprint.dev/install/"
 
+  _hooks:
+    internal: true
+    deps: [_require-prek]
+    status:
+      - test -f "$(git rev-parse --git-path hooks/pre-commit)"
+      - test -f "$(git rev-parse --git-path hooks/commit-msg)"
+      - test -f "$(git rev-parse --git-path hooks/pre-push)"
+    cmds:
+      - prek install
+
   build:
     desc: Build the binary into bin/
     cmds:
       - go build -o {{.BIN}} .
 
-  # The binary is copied, never linked: a linked development build would swap
-  # the binary under every concurrent session on the next `task build`. The
-  # copy lands beside the target and is renamed over it, so a session already
-  # running the old binary keeps it.
   install:
     desc: Build the binary and copy it to the directory `go install` writes to
     deps: [build]
     vars:
-      # `go list` resolves the path `go install` would write, with the
-      # platform's executable suffix.
       INSTALL_TARGET:
         sh: go list -f '{{`{{.Target}}`}}' .
     cmds:
@@ -51,7 +55,7 @@ tasks:
           cp {{.BIN}} "$target.new"
           mv -f "$target.new" "$target"
           echo "Installed $target"
-          if ! printf '%s' ":$PATH:" | sed 's|/:|:|g' | grep -qF ":$dir:"; then
+          if ! printf '%s' ":$PATH:" | sed 's|//*:|:|g' | grep -qF ":$dir:"; then
             echo "warning: $dir is not on PATH" >&2
           fi
         platforms: [darwin, linux]
@@ -69,26 +73,16 @@ tasks:
         platforms: [windows]
     silent: true
 
-  hooks:
-    desc: Install pre-commit hooks
-    deps: [_require-prek]
-    cmds:
-      - prek install
-
   test:
-    desc: "Run the test suite (pass extra args after --)"
+    desc: "Run the test suite with coverage (extra args after -- skip coverage)"
     cmds:
-      - go test -race ./... {{.CLI_ARGS}}
-
-  cov:
-    desc: Run tests with coverage
-    cmds:
-      - go test -race -covermode=atomic -coverprofile=coverage.out ./...
-      - go tool cover -html=coverage.out -o coverage.html
+      - go test -race {{if not .CLI_ARGS}}-coverprofile=coverage.out {{end}}./... {{.CLI_ARGS}}
+      - "{{if not .CLI_ARGS}}go tool cover -html=coverage.out -o coverage.html{{end}}"
+      - "{{if not .CLI_ARGS}}go tool go-test-coverage --config=.coverage.yml{{end}}"
 
   check:
     desc: Run every pre-commit hook across the repo
-    deps: [_require-prek, _require-dprint]
+    deps: [_require-prek, _require-dprint, _hooks]
     vars:
       GIT_FILES:
         sh: git ls-files --cached --others --exclude-standard
@@ -96,18 +90,17 @@ tasks:
     cmds:
       - prek run --files {{.PREK_FILES}}
 
-  tidy:
-    desc: Tidy module dependencies
+  check:fix:
+    desc: Auto-fix everything that supports it (go mod tidy, golangci-lint, dprint, markdownlint)
+    deps: [_require-prek, _require-dprint]
     cmds:
       - go mod tidy
+      - go tool golangci-lint run --fix
+      - go tool golangci-lint fmt
+      - dprint fmt
+      - prek run -a markdownlint-cli2
 
   clean:
     desc: Remove build artifacts
     cmds:
-      - cmd: rm -rf {{.CLEAN_PATHS | join " "}}
-        platforms: [darwin, linux]
-      - cmd: >-
-          powershell -NoProfile -Command
-          "Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-          -Path {{.CLEAN_PATHS | join ","}}"
-        platforms: [windows]
+      - rm -rf {{.CLEAN_PATHS | join " "}}
