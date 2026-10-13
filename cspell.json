@@ -48,7 +48,10 @@
     "atexit",
     "cmpopts",
     "gotest",
-    "resulttest"
+    "resulttest",
+    "pflag",
+    "Shortnames",
+    "CLICOLOR"
   ],
   "ignorePaths": [
     ".planning",

@@ -107,7 +107,9 @@ task install
 ```bash
 ils push          # push the branch, open its pull request on the first push, wait for the checks
 ils push --json   # the same result as one JSON object
-ils push --help   # usage, with every git and gh command the binary runs
+ils push --help   # usage of push
+ils help          # usage of ils and its commands
+ils help push     # the same as ils push --help
 ```
 
 Run `ils push` on a work branch with everything committed. It:
@@ -139,7 +141,8 @@ or file; at most it has fetched from origin. It refuses:
   `https://`, `ssh://git@`, or `git@host:` repository URL);
 - a missing `git` or `gh`, a `gh` that is not logged in to origin's host (which is also how a
   host that is not GitHub is refused), a fork, or a repository you cannot push to;
-- any word after `push` other than `--json`, `--help`, or `-h`;
+- any word after `push` other than `--json`, `--help`, or `-h`, and a `--json=<value>` whose value
+  is not `true` or `false`;
 - a precondition read that the time limit cut short: run `ils push` again.
 
 ### Exit codes

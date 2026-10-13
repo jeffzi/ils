@@ -13,5 +13,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   for the checks of the pushed commit, and prints the verdict with the next step.
 - Add the `ils` agent skill, which tells an agent when to run `ils push` and how to act on its
   output.
+- Add usage help, printed by `--help` on `ils` and on each command and by `ils help [command]`.
 
 [Unreleased]: https://github.com/jeffzi/ils/commits/main

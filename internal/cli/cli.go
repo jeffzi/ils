@@ -1,13 +1,18 @@
-// Package cli holds the grammar and the usage text of ils: it parses the words, runs the command
-// they name under the one deadline, and renders its result.
+// Package cli holds the grammar and the help of ils: it parses the words, runs the command they
+// name under the one deadline, and renders its result.
 package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
 	"time"
+
+	"charm.land/fang/v2"
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/github"
@@ -35,27 +40,47 @@ type App struct {
 }
 
 // Run parses args, the words after the program name, runs the command they name, prints its
-// result on Stdout, and returns the exit code.
+// result on Stdout, and returns the exit code. Words that break the grammar are a refusal naming
+// the word, and a request for help prints the help of the command and runs nothing.
 //
 // A result the renderer rejects is printed nowhere: the error goes to Stderr and the code is 1.
 func (a App) Run(ctx context.Context, args []string) int {
-	asJSON := slices.Contains(args, flagJSON)
-	help := slices.Contains(args, flagHelp) || slices.Contains(args, flagHelpShort)
-	words := slices.DeleteFunc(slices.Clone(args), func(word string) bool {
-		return word == flagJSON || word == flagHelp || word == flagHelpShort
-	})
-
-	if help {
-		return a.print(usage(words), result.Done.ExitCode())
-	}
-
 	ctx, cancel := context.WithDeadline(ctx, a.Launch.Add(bound))
 	defer cancel()
 
-	r, gitDir := a.run(ctx, words)
+	p := &parse{app: a, words: slices.DeleteFunc(slices.Clone(args), isJSONFlag)}
 
+	root := p.root()
+	// Cobra reads the words of the process itself when it is given none.
+	root.SetArgs(append([]string{}, args...))
+	root.SetOut(a.Stdout)
+	root.SetErr(a.Stderr)
+
+	// The error comes back from Execute, and is reported below as a result or on Stderr.
+	silent := func(io.Writer, fang.Styles, error) {}
+	err := fang.Execute(ctx, root,
+		fang.WithoutCompletions(), fang.WithoutManpage(), fang.WithoutVersion(), fang.WithErrorHandler(silent),
+		fang.WithColorSchemeFunc(fang.AnsiColorScheme))
+
+	refusal, isRefusal := errors.AsType[*refusedError](err)
+	encoded := asJSON(args)
+
+	switch {
+	case isRefusal:
+		return a.show(refusal.result, "", encoded)
+	case err != nil:
+		return a.fail(err)
+	case p.result == nil:
+		return result.Done.ExitCode()
+	default:
+		return a.show(*p.result, p.gitDir, encoded)
+	}
+}
+
+// show prints r on Stdout as text or as JSON and returns the exit code of its outcome.
+func (a App) show(r result.Result, gitDir string, encoded bool) int {
 	render := result.RenderText
-	if asJSON {
+	if encoded {
 		render = result.RenderJSON
 	}
 
@@ -67,25 +92,181 @@ func (a App) Run(ctx context.Context, args []string) int {
 	return a.print(out, r.Outcome.ExitCode())
 }
 
-// run returns the result of the command the words name, and the resolved git dir when the
-// command ran in a repository. Words that break the grammar are a refusal naming the word.
-func (a App) run(ctx context.Context, words []string) (r result.Result, gitDir string) {
-	if len(words) == 0 {
-		return refused(words, result.Say("no command was given")), ""
-	}
+// isJSONFlag reports whether word is the JSON flag in one of the forms the grammar takes.
+func isJSONFlag(word string) bool {
+	return word == flagJSON || word == flagJSONTrue || word == flagJSONFalse
+}
 
-	switch words[0] {
-	case wordPush:
-		if len(words) > 1 {
-			return refused(words, result.Say("push takes no other word, and %s was given", words[1])), ""
+// asJSON reports whether the words typed select the JSON renderer: the last form of the flag
+// among them decides.
+//
+// It reads the words and not the parsed flag, since parsing stops at the first unknown flag and
+// a refusal for that flag is still rendered as the words after it ask.
+func asJSON(args []string) bool {
+	for _, word := range slices.Backward(args) {
+		if isJSONFlag(word) {
+			return word != flagJSONFalse
 		}
-
-		return a.push(ctx, words)
-	case wordBranch, wordMerge, wordRelease, wordStatus:
-		return refused(words, result.Say("%s is not in this version", words[0])), ""
-	default:
-		return refused(words, result.Say("%s is not a command", words[0])), ""
 	}
+
+	return false
+}
+
+// parse is one parse of the words typed: the commands it builds refuse through an error and
+// leave the result of the command that ran here.
+type parse struct {
+	// result is the result of the command that ran; nil when none did.
+	result *result.Result
+	// gitDir is the resolved git dir when the command ran in a repository.
+	gitDir string
+	// words are the words typed, without the JSON flag.
+	words []string
+	app   App
+}
+
+// refusedError carries a refusal up through Cobra, which only knows errors.
+type refusedError struct {
+	result result.Result
+}
+
+func (e *refusedError) Error() string {
+	return "the words were refused"
+}
+
+func (p *parse) refuse(reason result.Phrase) error {
+	return &refusedError{result: refused(p.words, reason)}
+}
+
+// root returns the command of no word, with every other command under it.
+func (p *parse) root() *cobra.Command {
+	root := &cobra.Command{
+		Use:  "ils",
+		Long: rootLong,
+		// Cobra needs a command to be runnable before it asks Args, which refuses every run.
+		Args: func(c *cobra.Command, args []string) error {
+			if c.ArgsLenAtDash() == 0 {
+				return p.refuse(notCommand(wordDash))
+			}
+
+			if len(args) == 0 {
+				return p.refuse(result.Say("no command was given"))
+			}
+
+			return p.refuse(notCommand(args[0]))
+		},
+		RunE:    func(*cobra.Command, []string) error { return nil },
+		Example: "ils push",
+	}
+
+	jsonFlag := root.PersistentFlags().VarPF(new(strictBool), flagJSON[len("--"):], "", "Print the result as one JSON object")
+	jsonFlag.NoOptDefVal = "true"
+
+	// Cobra adds the help flag only after it has found the command, and until then takes the
+	// word after a flag it does not know for that flag's value: `ils --help push` would print
+	// the help of the root.
+	root.InitDefaultHelpFlag()
+	root.SetFlagErrorFunc(p.flagRefusal)
+	root.AddCommand(p.push())
+
+	for _, later := range []string{wordBranch, wordMerge, wordRelease, wordStatus} {
+		root.AddCommand(&cobra.Command{
+			Use:    later,
+			Hidden: true,
+			Args:   cobra.ArbitraryArgs,
+			// The command is refused whatever follows it, an unknown flag included.
+			FParseErrWhitelist: cobra.FParseErrWhitelist{UnknownFlags: true},
+			RunE: func(c *cobra.Command, _ []string) error {
+				return p.refuse(result.Say("%s is not in this version", c.Name()))
+			},
+		})
+	}
+
+	return root
+}
+
+// push returns the command that pushes the branch and opens its pull request.
+func (p *parse) push() *cobra.Command {
+	return &cobra.Command{
+		Use:     wordPush,
+		Short:   "Push the branch, open its pull request, wait for the checks",
+		Long:    pushLong,
+		Example: pushExamples,
+		Args: func(c *cobra.Command, args []string) error {
+			if c.ArgsLenAtDash() == 0 {
+				return p.refuse(extraWord(wordDash))
+			}
+
+			if len(args) > 0 {
+				return p.refuse(extraWord(args[0]))
+			}
+
+			return nil
+		},
+		RunE: func(c *cobra.Command, _ []string) error {
+			r, gitDir := p.app.push(c.Context(), p.words)
+			p.result, p.gitDir = &r, gitDir
+
+			return nil
+		},
+	}
+}
+
+func extraWord(word string) result.Phrase {
+	return result.Say("push takes no other word, and %s was given", word)
+}
+
+func notCommand(word string) result.Phrase {
+	return result.Say("%s is not a command", word)
+}
+
+// flagRefusal turns a flag Cobra could not parse on c into a refusal that names the flag as it
+// was typed. Any other error is returned as it is.
+func (p *parse) flagRefusal(c *cobra.Command, err error) error {
+	if invalid, ok := errors.AsType[*pflag.InvalidValueError](err); ok {
+		return p.refuse(result.Say("--%s takes true or false, and %s was given", invalid.GetFlag().Name, invalid.GetValue()))
+	}
+
+	unknown, ok := errors.AsType[*pflag.NotExistError](err)
+	if !ok {
+		return err
+	}
+
+	// pflag names an unknown flag without its dashes; a group of short flags is named whole.
+	typed := "--" + unknown.GetSpecifiedName()
+	if group := unknown.GetSpecifiedShortnames(); group != "" {
+		typed = "-" + group
+	}
+
+	if c.Name() == wordPush {
+		return p.refuse(extraWord(typed))
+	}
+
+	return p.refuse(notCommand(typed))
+}
+
+// strictBool is the value of a flag that takes no value but true and false.
+type strictBool bool
+
+func (b *strictBool) String() string {
+	return fmt.Sprint(bool(*b))
+}
+
+func (b *strictBool) Set(value string) error {
+	switch value {
+	case "true":
+		*b = true
+	case "false":
+		*b = false
+	default:
+		return errors.New("neither true nor false")
+	}
+
+	return nil
+}
+
+// Type returns "bool" so pflag's help shows the flag without a value placeholder.
+func (*strictBool) Type() string {
+	return "bool"
 }
 
 func (a App) push(ctx context.Context, words []string) (r result.Result, gitDir string) {
@@ -102,7 +283,7 @@ func (a App) push(ctx context.Context, words []string) (r result.Result, gitDir 
 
 	deps := landing.Deps{Forge: github.NewForge(github.Runner{}), Repo: repo}
 
-	return run(ctx, deps, landing.Request{Command: words[0], Words: words}), gitDir
+	return run(ctx, deps, landing.Request{Command: wordPush, Words: words}), gitDir
 }
 
 func refused(words []string, reason result.Phrase) result.Result {
@@ -146,85 +327,35 @@ const (
 	wordStatus  = "status"
 
 	flagJSON      = "--json"
+	flagJSONTrue  = flagJSON + "=true"
+	flagJSONFalse = flagJSON + "=false"
 	flagHelp      = "--help"
-	flagHelpShort = "-h"
+
+	// wordDash is the terminator after which every word is a positional argument.
+	wordDash = "--"
 )
 
-// summary lists every command, the ones of later versions included, so that typing one gets an
-// answer.
-const summary = `ils lands a branch on GitHub, one command per step.
+// The help says how to call a command and nothing else: what to do with an exit code and with
+// the next step is said by the result of each run.
+const (
+	rootLong = `ils lands a branch on GitHub in fixed, checked steps: push, pull request,
+CI verdict. It exists so that a coding agent cannot push to the wrong
+place, skip the checks, or call a red build done.
 
-Commands:
-  ils push            push the branch, open its pull request on the first push, wait for the checks
-  ils branch <name>   not in this version
-  ils merge           not in this version
-  ils release <X.Y.Z> not in this version
-  ils status          not in this version
+Docs: https://github.com/jeffzi/ils`
 
-Flags, anywhere among the words:
-  --json              print the result as one JSON object
-  -h, --help          print this text, or a command's own after its name
+	pushLong = `Push the current branch, open its pull request on the first push, and
+wait up to 100 seconds for the checks of the pushed commit. It never
+forces a push and it does not merge.
 
-Exit codes: 0 done, 1 broke, 2 refused, 4 pending, 5 delivered and not green.
-Every command ends within 100 seconds of its launch.
-`
+It refuses before pushing anything when the branch is not ready, for
+example on the trunk (origin's default branch), with uncommitted
+changes, or behind origin's copy of it. The output gives the reason and
+the next step.`
 
-// pushUsage names, under "By hand:", every git and gh call `ils push` makes, one line per call.
-// A test runs push and holds the lines to the calls it recorded, in both directions: a call
-// added to push without its line here fails, and so does a line no call stands behind.
-const pushUsage = `ils push
+	pushExamples = `# Push and wait for the checks
+ils push
 
-Pushes the current branch to origin under its own name, never forced, opens its pull
-request against the trunk on the first push, and waits for the checks of the pushed commit.
-It refuses the trunk, a detached HEAD, a changed tracked file, a branch with no commit past
-origin's trunk, a branch cut from another branch, a branch behind or diverged from origin's
-copy, and a branch whose pull request already merged.
-
-In the lines below <name> is the branch, <trunk> is origin's default branch, and <r> is the
-repository as <host>/<owner>/<repo>, read from origin's URL.
-
-By hand:
-  git rev-parse --absolute-git-dir
-  git remote get-url origin
-  git remote get-url --push origin
-  git symbolic-ref --quiet HEAD
-  gh auth status --hostname <host>
-  gh repo view <r> --json isFork,viewerPermission
-  git ls-remote --symref origin HEAD
-  git status --porcelain=v1 -z --untracked-files=no
-  git fetch origin refs/heads/<trunk>
-  git rev-parse FETCH_HEAD
-  git rev-parse HEAD
-  git show-ref --verify --quiet refs/heads/<name>
-  git log --reverse --topo-order --format='%H %s' --no-merges <sha> ^origin/<trunk>
-  git for-each-ref --format='%(refname)' refs/heads/ --contains <sha>
-  git merge-base --is-ancestor <sha> <name>
-  git ls-remote --exit-code origin refs/heads/<name>
-  git fetch origin refs/heads/<name>
-  git rev-list --left-right --count <sha>...<sha>
-  gh pr list --repo <r> --head <name> --state open --json number,url,title,baseRefName,headRefOid,isDraft,isCrossRepository
-  gh pr list --repo <r> --head <name> --state merged --json number,url,title,baseRefName,headRefOid,isDraft,isCrossRepository
-  git fetch origin refs/pull/<N>/head
-  git log --reverse --topo-order --format='%H %s' --no-merges --cherry-pick --right-only <sha>...<sha> ^origin/<trunk>
-  git push -u origin <name>
-  gh pr create --repo <r> --title <name> --body '' --base <trunk> --head <name>
-  gh api --hostname <host> --paginate repos/<owner>/<repo>/rules/branches/<trunk>
-  gh pr view --repo <r> <N> --json headRefOid,mergeable,mergeStateStatus,isDraft,reviewDecision
-  gh pr checks --repo <r> <N> --json name,bucket,workflow,link
-  gh run list --repo <r> --commit <sha> --limit 1000 --json status,name,workflowName
-  gh run view --repo <r> <id> --log-failed
-
-Then, by hand:
-  gh pr edit --repo <r> <N> --title … --body …
-  gh pr merge --repo <r> <N> --squash --delete-branch --match-head-commit <sha> --subject "<title> (#<N>)" --body "<body>"
-`
-
-// usage returns the text for the words typed beside a help flag: the command's own after its
-// name, and otherwise the summary followed by the text of each command of this version.
-func usage(words []string) string {
-	if len(words) > 0 && words[0] == wordPush {
-		return pushUsage
-	}
-
-	return summary + "\n" + pushUsage
-}
+# The same result as one JSON object
+ils push --json`
+)

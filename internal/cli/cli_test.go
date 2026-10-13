@@ -3,9 +3,8 @@ package cli_test
 import (
 	"bytes"
 	"context"
-	"os"
+	"errors"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -25,6 +24,10 @@ import (
 	"github.com/jeffzi/ils/internal/result"
 	"github.com/jeffzi/ils/internal/result/resulttest"
 )
+
+// ---------------------------------------------------------------------------
+// Run helpers
+// ---------------------------------------------------------------------------
 
 const (
 	nextHelp = "ils --help"
@@ -53,13 +56,18 @@ type ran struct {
 	code   int
 }
 
-// launch runs app with args, launched now unless app says when, and returns what it printed.
+// launch runs app with args, launched now unless app says when, and returns what it printed; a
+// stdout app already has is left in place, and nothing is returned for it.
 func launch(t *testing.T, app cli.App, args ...string) ran {
 	t.Helper()
 
 	var stdout, stderr bytes.Buffer
 
-	app.Stdout, app.Stderr = &stdout, &stderr
+	app.Stderr = &stderr
+	if app.Stdout == nil {
+		app.Stdout = &stdout
+	}
+
 	if app.Launch.IsZero() {
 		app.Launch = time.Now()
 	}
@@ -73,7 +81,7 @@ func launch(t *testing.T, app cli.App, args ...string) ran {
 func outside(t *testing.T) cli.App {
 	t.Helper()
 
-	return cli.App{Git: git.Runner{Dir: t.TempDir()}}
+	return cli.App{Git: git.Runner{Dir: t.TempDir(), Env: gittest.Env(t)}}
 }
 
 // refusal is the grammar refusal of the words typed, for reason, as the JSON renderer shows it.
@@ -126,6 +134,14 @@ func endsWith(t *testing.T, stdout, want string) {
 	assert.Check(t, strings.HasSuffix(stdout, want), "stdout = %q, want it to end with %q", stdout, want)
 }
 
+// plain checks, without stopping the test, that text carries no escape sequence; what names the
+// text in the failure message.
+func plain(t *testing.T, what, text string) {
+	t.Helper()
+
+	assert.Check(t, !strings.Contains(text, escape), "%s carries an escape sequence:\n%q", what, text)
+}
+
 // stored returns a repository whose git dir is no `.git`, so that a path under it is a git dir
 // path to the one who resolved it and to no one else, and a path under that git dir.
 func stored(t *testing.T) (f *gittest.Fixture, under string) {
@@ -174,6 +190,10 @@ func heldIdentity() scenario {
 	return scenario{name: "the read of the identity", script: only(calls...), left: heldLeft, want: exitRefused}
 }
 
+// ---------------------------------------------------------------------------
+// Grammar, help and rendering
+// ---------------------------------------------------------------------------
+
 func TestApp_Run_WhenWordsBreakTheGrammar_RefusesNamingTheWord(t *testing.T) {
 	t.Parallel()
 
@@ -189,6 +209,26 @@ func TestApp_Run_WhenWordsBreakTheGrammar_RefusesNamingTheWord(t *testing.T) {
 		{name: "merge", args: []string{"merge"}, reason: "merge is not in this version"},
 		{name: "release", args: []string{"release", "1.2.3"}, reason: "release is not in this version"},
 		{name: "status", args: []string{"status"}, reason: "status is not in this version"},
+		{name: "prefix of a command", args: []string{"pus"}, reason: "pus is not a command"},
+		{name: "completion", args: []string{"completion"}, reason: "completion is not a command"},
+		{name: "man", args: []string{"man"}, reason: "man is not a command"},
+		{name: "later command with an unknown flag", args: []string{"merge", "--bogus"}, reason: "merge is not in this version"},
+		{name: "later command with a word and a short flag", args: []string{"branch", "tidy", "-x"}, reason: "branch is not in this version"},
+		{name: "later command with an unknown flag after a word", args: []string{"status", "tidy", "--bogus"}, reason: "status is not in this version"},
+		{name: "later command with a short flag", args: []string{"release", "-x"}, reason: "release is not in this version"},
+		{name: "unknown flag", args: []string{"--bogus"}, reason: "--bogus is not a command"},
+		{name: "unknown short flag", args: []string{"-x"}, reason: "-x is not a command"},
+		{name: "version flag", args: []string{"--version"}, reason: "--version is not a command"},
+		{name: "short version flag", args: []string{"-v"}, reason: "-v is not a command"},
+		{name: "unknown flag after push", args: []string{"push", "--bogus"}, reason: "push takes no other word, and --bogus was given"},
+		{name: "unknown short flag after push", args: []string{"push", "-x"}, reason: "push takes no other word, and -x was given"},
+		{name: "group of short flags after push", args: []string{"push", "-xyz"}, reason: "push takes no other word, and -xyz was given"},
+		{name: "version flag after push", args: []string{"push", "--version"}, reason: "push takes no other word, and --version was given"},
+		{name: "short version flag after push", args: []string{"push", "-v"}, reason: "push takes no other word, and -v was given"},
+		{name: "unknown flag after an extra word", args: []string{"push", "extra", "--bogus"}, reason: "push takes no other word, and --bogus was given"},
+		{name: "unknown flag after an unknown word", args: []string{"pish", "--bogus"}, reason: "--bogus is not a command"},
+		{name: "flag set to false", args: []string{"pish", "--json=false"}, reason: "pish is not a command"},
+		{name: "flag set to neither", args: []string{"push", "--json=maybe"}, reason: "--json takes true or false, and maybe was given"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -197,58 +237,163 @@ func TestApp_Run_WhenWordsBreakTheGrammar_RefusesNamingTheWord(t *testing.T) {
 			got := launch(t, outside(t), tt.args...)
 
 			want := ran{stdout: "Refused: " + tt.reason + "\nNext: " + nextHelp + "\n", code: exitRefused}
-			assert.Check(t, is.DeepEqual(got, want, cmp.AllowUnexported(ran{})), "ils %s", strings.Join(tt.args, " "))
+			assert.Check(t, is.DeepEqual(got, want, sameRun()), "ils %s", strings.Join(tt.args, " "))
 		})
 	}
 }
 
-func TestApp_Run_WhenAskedForHelp_PrintsUsageWithTheByHandSequence(t *testing.T) {
+const (
+	// rootHelp and pushHelp are how the help of ils and the help of push each start.
+	rootHelp = "ils lands a branch on GitHub in fixed, checked steps"
+	pushHelp = "Push the current branch, open its pull request on the first push"
+
+	escape = "\x1b"
+
+	// encodedEscape is escape as the JSON encoder writes it inside a string.
+	encodedEscape = `\u001b`
+
+	// forceColor is the variable that makes Fang style help on a stdout that is no terminal.
+	forceColor = "CLICOLOR_FORCE"
+)
+
+// flat returns the words of text in order, one space apart: Fang spaces the lines of styled help
+// differently from those of plain help.
+func flat(text string) string {
+	return strings.Join(strings.Fields(text), " ")
+}
+
+// entries returns the first word of each line the help lists under heading.
+func entries(help, heading string) []string {
+	var found []string
+
+	_, rest, _ := strings.Cut(help, heading)
+	for line := range strings.SplitSeq(strings.TrimLeft(rest, " \n"), "\n") {
+		words := strings.Fields(line)
+		if len(words) == 0 {
+			break
+		}
+
+		found = append(found, words[0])
+	}
+
+	return found
+}
+
+// errReaderGone is the error a stdout that cannot be written fails with.
+var errReaderGone = errors.New("the reader went away")
+
+// sameRun lets cmp compare the unexported fields of ran.
+func sameRun() cmp.Option {
+	return cmp.AllowUnexported(ran{})
+}
+
+// shut is a stdout whose every write fails with err.
+type shut struct {
+	err error
+}
+
+func (s shut) Write([]byte) (int, error) {
+	return 0, s.err
+}
+
+func TestApp_Run_WhenAskedForHelp_PrintsTheHelpOfTheCommand(t *testing.T) {
 	t.Parallel()
 
-	tests := [][]string{{"-h"}, {"--help"}, {"push", "-h"}, {"push", "--help"}}
-	for _, args := range tests {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
+	own := []string{"-h", "--json"}
+	tests := []struct {
+		want string
+		args []string
+		// commands and flags are every entry the help lists, checked on the rows that name them.
+		commands []string
+		flags    []string
+	}{
+		{args: []string{"-h"}, want: rootHelp},
+		{args: []string{"--help"}, want: rootHelp, commands: []string{"help", "push"}, flags: own},
+		{args: []string{"help"}, want: rootHelp},
+		{args: []string{"pish", "--help"}, want: rootHelp},
+		{args: []string{"-h", "pish"}, want: rootHelp},
+		{args: []string{"help", "pish"}, want: rootHelp},
+		{args: []string{"--json", "-h"}, want: rootHelp},
+		{args: []string{"--help", "--json"}, want: rootHelp},
+		{args: []string{"help", "--json"}, want: rootHelp},
+		{args: []string{"help", "pish", "--json"}, want: rootHelp},
+		{args: []string{"push", "-h"}, want: pushHelp},
+		{args: []string{"push", "--help"}, want: pushHelp, flags: own},
+		{args: []string{"--help", "push"}, want: pushHelp},
+		{args: []string{"help", "push"}, want: pushHelp},
+		{args: []string{"push", "extra", "--help"}, want: pushHelp},
+		{args: []string{"push", "--json", "-h"}, want: pushHelp},
+		{args: []string{"--json", "push", "--help"}, want: pushHelp},
+		{args: []string{"help", "push", "--json"}, want: pushHelp},
+	}
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
 			t.Parallel()
 
-			got := launch(t, outside(t), args...)
+			got := launch(t, outside(t), tt.args...)
 
 			assert.Check(t, is.Equal(got.code, exitDone))
 			assert.Check(t, is.Equal(got.stderr, ""))
+			assert.Check(t, is.Contains(flat(got.stdout), tt.want))
 
-			for _, want := range []string{"\nBy hand:\n", "  git push -u origin <name>\n", "\nThen, by hand:\n"} {
-				assert.Check(t, is.Contains(got.stdout, want))
+			if tt.flags != nil {
+				assert.Check(t, is.DeepEqual(entries(got.stdout, "COMMANDS"), tt.commands))
+				assert.Check(t, is.DeepEqual(entries(got.stdout, "FLAGS"), tt.flags))
 			}
 		})
 	}
 }
 
-func TestApp_Run_WhenAskedForHelp_MarksTheCommandsNotInThisVersion(t *testing.T) {
+func TestApp_Run_WhenAskedForHelpInARepository_CallsNeitherGitNorGh(t *testing.T) {
+	s := newScene(t, scenario{})
+
+	got := launch(t, s.app(), "push", "--help")
+
+	assert.Check(t, is.Equal(got.code, exitDone))
+	assert.Check(t, is.Len(s.recorder.Calls(), 0))
+	assert.Check(t, is.Len(s.fake.Calls(), 0))
+}
+
+func TestApp_Run_WhenColorIsForced_RefusalCarriesNoEscapeSequence(t *testing.T) {
+	t.Setenv(forceColor, "1")
+
+	tests := [][]string{{"pish"}, {"pish", "--json"}}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			got := launch(t, outside(t), args...)
+
+			assert.Check(t, is.Equal(got.code, exitRefused))
+			plain(t, "the refusal", got.stdout)
+			assert.Check(t, !strings.Contains(strings.ToLower(got.stdout), encodedEscape), "a value of the refusal carries an escape sequence:\n%s", got.stdout)
+		})
+	}
+}
+
+func TestApp_Run_WhenColorIsForced_PushResultCarriesNoEscapeSequence(t *testing.T) {
+	t.Setenv(forceColor, "1")
+
+	text, encoded := both(t, newScene(t, redWithLog()))
+
+	plain(t, "the text", text.stdout)
+	plain(t, "the JSON", encoded.stdout)
+	assert.Check(t, !strings.Contains(strings.ToLower(encoded.stdout), encodedEscape), "a value of the JSON carries an escape sequence:\n%s", encoded.stdout)
+}
+
+func TestApp_Run_WhenAResultCannotBeWrittenToStdout_ExitsOneWithTheErrorOnStderr(t *testing.T) {
 	t.Parallel()
 
-	const absent = "not in this version"
-
-	tests := []struct {
-		command string
-		absent  bool
-	}{
-		{command: "push"},
-		{command: "branch", absent: true},
-		{command: "merge", absent: true},
-		{command: "release", absent: true},
-		{command: "status", absent: true},
-	}
-
-	got := launch(t, outside(t), "--help")
-	usageLines := slices.Collect(strings.Lines(got.stdout))
-
-	for _, tt := range tests {
-		t.Run(tt.command, func(t *testing.T) {
+	tests := [][]string{{"push"}, {"push", "--json"}, {"pish"}, {"pish", "--json"}}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			t.Parallel()
 
-			at := slices.IndexFunc(usageLines, func(line string) bool { return strings.HasPrefix(line, "  ils "+tt.command) })
-			assert.Assert(t, at >= 0, "usage lists no command %q:\n%s", tt.command, got.stdout)
+			app := outside(t)
+			app.Stdout = shut{err: errReaderGone}
 
-			assert.Check(t, is.Equal(strings.Contains(usageLines[at], absent), tt.absent))
+			got := launch(t, app, args...)
+
+			assert.Check(t, is.Equal(got.code, exitBroke))
+			assert.Check(t, is.Contains(got.stderr, errReaderGone.Error()))
 		})
 	}
 }
@@ -269,6 +414,23 @@ func TestApp_Run_WhenJSONFlagIsAmongTheWords_RendersJSONWithoutTheFlagInTheWords
 			want: refusal("push takes no other word, and extra was given", "push", "extra"),
 		},
 		{name: "command of a later version", args: []string{"merge", "--json"}, want: refusal("merge is not in this version", "merge")},
+		{name: "unknown short flag", args: []string{"--json", "-x"}, want: refusal("-x is not a command", "-x")},
+		{name: "unknown flag", args: []string{"--bogus", "--json"}, want: refusal("--bogus is not a command", "--bogus")},
+		{name: "unknown short flag after push", args: []string{"--json", "push", "-x"}, want: refusal("push takes no other word, and -x was given", "push", "-x")},
+		{name: "flag set to neither, then set", args: []string{"push", "--json=maybe", "--json"}, want: refusal("--json takes true or false, and maybe was given", "push", "--json=maybe")},
+		{name: "flag set to true", args: []string{"--json=true", "pish"}, want: refusal("pish is not a command", "pish")},
+		{
+			name: "flag after an unknown flag", args: []string{"push", "--bogus", "--json"},
+			want: refusal("push takes no other word, and --bogus was given", "push", "--bogus"),
+		},
+		{
+			name: "flag after an unknown flag and an unknown word", args: []string{"pish", "--bogus", "--json"},
+			want: refusal("--bogus is not a command", "pish", "--bogus"),
+		},
+		{
+			name: "flag among the words of a later command", args: []string{"branch", "--json", "tidy", "-x"},
+			want: refusal("branch is not in this version", "branch", "tidy", "-x"),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -289,20 +451,27 @@ func lost(t *testing.T) cli.App {
 	t.Helper()
 
 	app := outside(t)
-	app.Git.Env = append(os.Environ(), "LC_ALL=C")
+	app.Git.Env = append(app.Git.Env, "LC_ALL=C")
 
 	return app
 }
 
-func TestApp_Run_WhenPushRunsOutsideARepository_RendersTheResultOfPush(t *testing.T) {
+func TestApp_Run_WhenPushRunsOutsideARepositoryWithoutTheJSONFlag_RendersTheResultAsText(t *testing.T) {
 	t.Parallel()
 
-	got := launch(t, lost(t), "push")
+	tests := [][]string{{"push"}, {"push", "--json=false"}, {"--json=false", "push"}}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			t.Parallel()
 
-	assert.Check(t, is.Equal(got.code, exitBroke))
-	assert.Check(t, is.Equal(got.stderr, ""))
-	startsWith(t, got.stdout, outsideStart)
-	endsWith(t, got.stdout, outsideEnd)
+			got := launch(t, lost(t), args...)
+
+			assert.Check(t, is.Equal(got.code, exitBroke))
+			assert.Check(t, is.Equal(got.stderr, ""))
+			startsWith(t, got.stdout, outsideStart)
+			endsWith(t, got.stdout, outsideEnd)
+		})
+	}
 }
 
 func TestApp_Run_WhenPushRunsOutsideARepositoryWithTheJSONFlag_RendersTheResultWithoutTheFlagInTheWords(t *testing.T) {
@@ -387,33 +556,12 @@ func TestApp_Run_WhenALineNamesAPathUnderTheGitDirOfAnotherDirectory_RendersTheL
 	got := launch(t, app, "push")
 
 	want := ran{stdout: "Wrote " + under + "\nNext: none\n", code: exitDone}
-	assert.Check(t, is.DeepEqual(got, want, cmp.AllowUnexported(ran{})))
+	assert.Check(t, is.DeepEqual(got, want, sameRun()))
 }
 
-func TestApp_Run_WhenPushRuns_GivesTheCommandADeadlineOneHundredSecondsAfterLaunch(t *testing.T) {
-	t.Parallel()
-
-	var (
-		deadline time.Time
-		bounded  bool
-	)
-
-	app := outside(t)
-	app.Launch = time.Now().Add(-30 * time.Second)
-	app.SetPush(func(ctx context.Context, _ landing.Deps, req landing.Request) result.Result {
-		deadline, bounded = ctx.Deadline()
-
-		return finished(req)
-	})
-
-	got := launch(t, app, "push")
-
-	assert.Equal(t, got.code, exitDone, "stderr:\n%s", got.stderr)
-
-	want := app.Launch.Add(bound)
-	assert.Check(t, bounded, "the command's context has no deadline")
-	assert.Check(t, deadline.Equal(want), "deadline of the command's context = %v, want %v", deadline, want)
-}
+// ---------------------------------------------------------------------------
+// Deadline
+// ---------------------------------------------------------------------------
 
 func TestApp_Run_WhenTheBoundEndedBeforeAnyReadOfPush_RefusesBeforePushing(t *testing.T) {
 	s := newScene(t, greenFirstPush())
@@ -423,7 +571,7 @@ func TestApp_Run_WhenTheBoundEndedBeforeAnyReadOfPush_RefusesBeforePushing(t *te
 	got := launch(t, app, "push")
 
 	assert.Check(t, is.Equal(got.code, exitRefused))
-	assert.Check(t, strings.HasPrefix(got.stdout, "Refused: the time limit ended "), "stdout = %q, want a refusal naming the time limit", got.stdout)
+	startsWith(t, got.stdout, "Refused: the time limit ended ")
 
 	assert.Check(t, is.Equal(s.fixture.OriginGit("for-each-ref", "refs/heads/"+topic), ""))
 }
@@ -437,6 +585,8 @@ func TestApp_Run_WhenChecksStillRunAtTheBound_EndsPendingWithoutOutlastingIt(t *
 
 func TestApp_Run_WhenACallIsStillOpenAtTheBound_EndsByTheBound(t *testing.T) {
 	const cut = "Refused: the time limit ended while reading the repository's identity on GitHub; nothing was written\n"
+
+	createPR := []string{"gh", "pr", "create"}
 
 	tests := []struct {
 		// wantStart and wantEnd are how stdout starts and ends.
@@ -458,14 +608,18 @@ func TestApp_Run_WhenACallIsStillOpenAtTheBound_EndsByTheBound(t *testing.T) {
 
 			onOrigin := s.fixture.OriginGit("for-each-ref", "--points-at", tipOf(s.fixture), "refs/heads/"+topic)
 			opening := slices.ContainsFunc(s.fake.Calls(), func(argv []string) bool {
-				return slices.Equal(argv[:min(3, len(argv))], []string{"gh", "pr", "create"})
+				return slices.Equal(argv[:min(len(createPR), len(argv))], createPR)
 			})
-			pushed := onOrigin != ""
-			assert.Check(t, is.Equal(pushed, tt.delivered))
+			atTip := onOrigin != ""
+			assert.Check(t, is.Equal(atTip, tt.delivered))
 			assert.Check(t, is.Equal(opening, tt.delivered))
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Scenes and scenarios
+// ---------------------------------------------------------------------------
 
 // both runs `ils push` once in the scene and returns its one result as the text renderer and
 // as the JSON renderer print it.
@@ -523,21 +677,14 @@ func TestApp_Run_WhenPushEndsInAnyOutcome_JSONCarriesWhatTheTextShows(t *testing
 const (
 	trunk     = "develop"
 	topic     = "tidy-readme"
-	spare     = "spare"
-	otherBase = "release"
 	host      = "github.com"
 	owner     = "acme"
 	widgets   = "widgets"
 	slug      = host + "/" + owner + "/" + widgets
 	originURL = "ssh://git@" + slug + ".git"
-	otherURL  = "ssh://git@" + host + "/" + owner + "/gadgets.git"
 
-	// strayHead is a head sha that no commit of the fixture has.
-	strayHead = "0a1b2c3"
-
-	// opened and merged are the numbers of the open and of the merged pull request.
+	// opened is the number of the open pull request.
 	opened = 12
-	merged = 9
 
 	pullURL = "https://" + slug + "/pull/12"
 	// runID is the workflow run that stands behind a check, and runLink is that check's link.
@@ -572,7 +719,9 @@ type scene struct {
 	fixture  *gittest.Fixture
 	recorder *git.Recorder
 	fake     *ghtest.Fake
-	left     time.Duration
+	// env reaches origin, whose URL names GitHub over ssh, through the stand-in for ssh.
+	env  []string
+	left time.Duration
 }
 
 // newScene returns a repository on the topic branch whose origin names acme/widgets on GitHub,
@@ -580,9 +729,7 @@ type scene struct {
 func newScene(t *testing.T, sc scenario) *scene {
 	t.Helper()
 
-	f := gittest.New(t, trunk)
-	f.Commits(topic, "tidy the readme")
-	f.SetOriginURL(originURL)
+	f, env := gittest.NewServed(t, trunk, topic, originURL)
 
 	if sc.arrange != nil {
 		sc.arrange(f)
@@ -593,24 +740,18 @@ func newScene(t *testing.T, sc scenario) *scene {
 		script = sc.script(f)
 	}
 
-	return &scene{fixture: f, recorder: &git.Recorder{}, fake: ghtest.Setup(t, script...), left: sc.left}
+	return &scene{fixture: f, recorder: &git.Recorder{}, fake: ghtest.Setup(t, script...), env: env, left: sc.left}
 }
 
 // app returns the cli over the scene's repository, launched so that the scene's time is left.
 func (s *scene) app() cli.App {
-	// Origin's URL names GitHub over ssh, which the stand-in for ssh serves from the local origin.
-	env := s.fixture.ServedEnv(s.fixture.OriginDir())
-	app := cli.App{Git: git.Runner{Dir: s.fixture.Dir(), Env: env, Recorder: s.recorder}}
+	app := cli.App{Git: git.Runner{Dir: s.fixture.Dir(), Env: s.env, Recorder: s.recorder}}
 
 	if s.left > 0 {
 		app.Launch = time.Now().Add(s.left - bound)
 	}
 
 	return app
-}
-
-func (s *scene) calls() [][]string {
-	return slices.Concat(s.recorder.Calls(), s.fake.Calls())
 }
 
 func tipOf(f *gittest.Fixture) string {
@@ -624,11 +765,9 @@ func login(answer ghtest.Answer) ghtest.Call {
 
 // identity scripts a logged-in gh and a repository that is a fork or not, with permission.
 func identity(fork bool, permission string) []ghtest.Call {
-	view := `{"isFork":` + strconv.FormatBool(fork) + `,"viewerPermission":"` + permission + `"}`
-
 	return []ghtest.Call{
 		login(ghtest.Answer{Stdout: "Logged in\n"}),
-		ghtest.Says(view, ghtest.RepoViewArgs(slug)...),
+		ghtest.Says(ghtest.RepoViewJSON(fork, permission), ghtest.RepoViewArgs(slug)...),
 	}
 }
 
@@ -644,10 +783,9 @@ func listed(state, body string) ghtest.Call {
 
 // changeJSON is one pull request of the topic branch as `gh pr list` prints it.
 func changeJSON(number int, base, sha string) string {
-	n := strconv.Itoa(number)
+	url := "https://" + slug + "/pull/" + strconv.Itoa(number)
 
-	return `[{"number":` + n + `,"url":"https://` + slug + `/pull/` + n + `","title":"` + topic +
-		`","baseRefName":"` + base + `","headRefOid":"` + sha + `","isDraft":false}]`
+	return "[" + ghtest.ChangeJSON(ghtest.Change{Number: number, URL: url, Title: topic, Base: base, SHA: sha}) + "]"
 }
 
 // found scripts the pull requests of the topic branch: the open ones, then the merged ones.
@@ -727,10 +865,6 @@ func greenFirstPush() scenario {
 	return scenario{name: "green on a first push", script: firstPush(passing), want: exitDone}
 }
 
-func greenSecondRun() scenario {
-	return scenario{name: "second run on a pushed tip", arrange: func(f *gittest.Fixture) { f.Publish(topic) }, script: laterPush(passing), want: exitDone}
-}
-
 func redWithLog() scenario {
 	red := func(sha string) verdict {
 		v := passing(sha)
@@ -741,29 +875,6 @@ func redWithLog() scenario {
 	}
 
 	return scenario{name: "red with a failed log", script: firstPush(red), want: exitDelivered}
-}
-
-func blockedByMissingCheck() scenario {
-	blocked := func(sha string) verdict {
-		v := passing(sha)
-		v.rules = `[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"build"},{"context":"test"}]}}]`
-		v.head = headJSON(sha, "MERGEABLE", "BLOCKED")
-
-		return v
-	}
-
-	return scenario{name: "blocked by a required check that never reported", script: firstPush(blocked), want: exitDelivered}
-}
-
-func conflicting() scenario {
-	conflict := func(sha string) verdict {
-		v := passing(sha)
-		v.head = headJSON(sha, "CONFLICTING", "DIRTY")
-
-		return v
-	}
-
-	return scenario{name: "conflicting with the trunk", script: firstPush(conflict), want: exitDelivered}
 }
 
 func pendingAtTheBound() scenario {
@@ -793,251 +904,4 @@ func failedRead() scenario {
 	down.Answers = []ghtest.Answer{{Stderr: "gh: Server Error (HTTP 500)\n", Code: 1}}
 
 	return scenario{name: "a read of GitHub fails", script: only(append(allowed(), down)...), want: exitBroke}
-}
-
-// standingRefusals are the refusals decided before the branch's commits are read.
-func standingRefusals() []scenario {
-	loggedOut := login(ghtest.Answer{Stderr: "You are not logged into any GitHub hosts.\n", Code: 1})
-
-	return []scenario{
-		{name: "no origin", arrange: (*gittest.Fixture).RemoveOrigin, want: exitRefused},
-		{
-			name: "origin's two addresses differ", want: exitRefused,
-			arrange: func(f *gittest.Fixture) { f.SetPushURL(otherURL) },
-		},
-		{name: "not logged in", script: only(loggedOut), want: exitRefused},
-		{name: "a fork", script: only(identity(true, "WRITE")...), want: exitRefused},
-		{name: "no right to push", script: only(identity(false, "READ")...), want: exitRefused},
-		onTheTrunk(),
-		{name: "detached", arrange: (*gittest.Fixture).Detach, script: only(allowed()...), want: exitRefused},
-		{
-			name: "tracked file changed", script: only(allowed()...), want: exitRefused,
-			arrange: func(f *gittest.Fixture) { f.DirtyFile() },
-		},
-	}
-}
-
-// commitRefusals are the refusals decided from the branch's commits and origin's copy of it.
-func commitRefusals() []scenario {
-	refused := func(name string, arrange func(f *gittest.Fixture)) scenario {
-		return scenario{name: name, arrange: arrange, script: only(allowed()...), want: exitRefused}
-	}
-
-	return []scenario{
-		refused("no commit past the trunk", func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--create", spare, trunk) }),
-		refused("no commit at all", func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--orphan", spare) }),
-		refused("cut from another branch", func(f *gittest.Fixture) { f.Sibling(spare, topic) }),
-		refused("behind origin's copy", func(f *gittest.Fixture) {
-			f.Publish(topic)
-			f.AdvanceOrigin(topic)
-		}),
-		refused("diverged from origin's copy", func(f *gittest.Fixture) {
-			f.Publish(topic)
-			f.Diverge(topic)
-		}),
-	}
-}
-
-// changeRefusals are the refusals decided from the pull requests GitHub finds for the branch.
-func changeRefusals() []scenario {
-	landed := only(found("[]", changeJSON(merged, trunk, strayHead))...)
-
-	return []scenario{
-		{
-			name: "open pull request against another base", want: exitRefused,
-			script: only(found(changeJSON(opened, otherBase, strayHead), "[]")...),
-		},
-		{
-			name: "merged pull request with nothing unlanded", script: landed, want: exitRefused,
-			arrange: func(f *gittest.Fixture) { f.LandPull(merged, topic) },
-		},
-		{
-			name: "merged pull request with commits made since", script: landed, want: exitRefused,
-			arrange: func(f *gittest.Fixture) {
-				f.LandPull(merged, topic)
-				f.Commits(topic, "fix a typo")
-			},
-		},
-	}
-}
-
-// scenarios are the runs of `ils push` whose calls the usage must name.
-func scenarios() []scenario {
-	ends := []scenario{
-		greenFirstPush(), greenSecondRun(), redWithLog(), blockedByMissingCheck(), conflicting(),
-		pendingAtTheBound(), failedRead(),
-	}
-
-	return slices.Concat(ends, standingRefusals(), commitRefusals(), changeRefusals())
-}
-
-// section returns the indented lines of usage under heading, trimmed, up to the first line
-// that is not indented.
-func section(t *testing.T, usage, heading string) []string {
-	t.Helper()
-
-	_, after, ok := strings.Cut(usage, "\n"+heading+"\n")
-	assert.Assert(t, ok, "usage has no line %q:\n%s", heading, usage)
-
-	var lines []string
-
-	for line := range strings.Lines(after) {
-		if !strings.HasPrefix(line, "  ") {
-			break
-		}
-
-		lines = append(lines, strings.TrimSpace(line))
-	}
-
-	return lines
-}
-
-// named returns the backtick-quoted commands on the Next line of stdout, with blank restoring
-// the placeholders of a usage line.
-func named(t *testing.T, stdout string, blank *strings.Replacer) []string {
-	t.Helper()
-
-	_, next, ok := strings.Cut(stdout, "\nNext: ")
-	assert.Assert(t, ok, "stdout has no Next line:\n%s", stdout)
-
-	var commands []string
-
-	for i, part := range strings.Split(next, "`") {
-		if i%2 == 1 {
-			commands = append(commands, blank.Replace(part))
-		}
-	}
-
-	return commands
-}
-
-// placeholder is a name that stands, in a usage line, for a value known only at run time.
-var placeholder = regexp.MustCompile(`<(name|trunk|N|sha|r|host|owner|repo|id)>`)
-
-// shape returns the pattern of the texts that printed stands for: itself, with each
-// placeholder open only to the values of its own kind.
-func shape(printed string) string {
-	// kinds holds, for each placeholder, the pattern of the values of its kind that the scenarios
-	// hold.
-	kinds := map[string]string{
-		"<name>":  "(?:" + topic + "|" + spare + ")",
-		"<trunk>": trunk,
-		"<N>":     "(?:" + strconv.Itoa(opened) + "|" + strconv.Itoa(merged) + ")",
-		"<sha>":   "[0-9a-f]{40}",
-		"<r>":     regexp.QuoteMeta(slug),
-		"<host>":  regexp.QuoteMeta(host),
-		"<owner>": owner,
-		"<repo>":  widgets,
-		"<id>":    runID,
-	}
-
-	return placeholder.ReplaceAllStringFunc(regexp.QuoteMeta(printed), func(name string) string { return kinds[name] })
-}
-
-// words splits a usage line into its arguments as a shell would: at the spaces outside single
-// quotes, with the quotes dropped, so that two quotes alone are the empty argument.
-func words(line string) []string {
-	var (
-		all     []string
-		word    strings.Builder
-		quoted  bool
-		started bool
-	)
-
-	for _, r := range line + " " {
-		switch {
-		case r == '\'':
-			quoted, started = !quoted, true
-		case r != ' ' || quoted:
-			word.WriteRune(r)
-
-			started = true
-		case started:
-			all = append(all, word.String())
-			word.Reset()
-
-			started = false
-		}
-	}
-
-	return all
-}
-
-// stands reports whether the usage line stands for argv: as many arguments, each one equal to
-// its argument or matching it once the placeholders are filled.
-func stands(line string, argv []string) bool {
-	printed := words(line)
-	if len(printed) != len(argv) {
-		return false
-	}
-
-	for i, word := range printed {
-		if !regexp.MustCompile("^(?:" + shape(word) + ")$").MatchString(argv[i]) {
-			return false
-		}
-	}
-
-	return true
-}
-
-// pushUsage returns what `ils push --help` prints.
-func pushUsage(t *testing.T) string {
-	t.Helper()
-
-	got := launch(t, outside(t), "push", "--help")
-	assert.Equal(t, got.code, exitDone, "stderr:\n%s", got.stderr)
-
-	return got.stdout
-}
-
-// pushed runs `ils push` in a scene of sc, and fails the test unless it exits as sc wants.
-func pushed(t *testing.T, sc scenario) (*scene, ran) {
-	t.Helper()
-
-	s := newScene(t, sc)
-
-	got := launch(t, s.app(), "push")
-	assert.Equal(t, got.code, sc.want, "%s\nstdout:\n%s\nstderr:\n%s", sc.name, got.stdout, got.stderr)
-
-	return s, got
-}
-
-func TestApp_Run_WhenAskedForPushHelp_ByHandNamesExactlyTheCallsPushRan(t *testing.T) {
-	lines := section(t, pushUsage(t), "By hand:")
-
-	var calls [][]string
-
-	for _, sc := range scenarios() {
-		s, _ := pushed(t, sc)
-		calls = append(calls, s.calls()...)
-	}
-
-	for _, argv := range calls {
-		assert.Check(t, slices.ContainsFunc(lines, func(line string) bool { return stands(line, argv) }), "push ran %q, which no line under \"By hand:\" stands for", argv)
-	}
-
-	for _, line := range lines {
-		assert.Check(t, slices.ContainsFunc(calls, func(argv []string) bool { return stands(line, argv) }), "usage line %q under \"By hand:\" stands for no call push ran", line)
-	}
-}
-
-func TestApp_Run_WhenAskedForPushHelp_ThenByHandIsWhatTheGreenNextNames(t *testing.T) {
-	lines := section(t, pushUsage(t), "Then, by hand:")
-
-	s, green := pushed(t, greenFirstPush())
-
-	blank := strings.NewReplacer(slug, "<r>", tipOf(s.fixture), "<sha>", strconv.Itoa(opened), "<N>")
-
-	assert.Check(t, is.DeepEqual(lines, named(t, green.stdout, blank)))
-
-	wantStarts := []string{
-		"gh pr edit --repo <r> <N> --title ",
-		"gh pr merge --repo <r> <N> --squash --delete-branch --match-head-commit <sha> --subject ",
-	}
-	assert.Assert(t, is.Len(lines, len(wantStarts)))
-
-	for i, line := range lines {
-		assert.Check(t, strings.HasPrefix(line, wantStarts[i]), "line %q under \"Then, by hand:\", want it to start with %q", line, wantStarts[i])
-		assert.Check(t, is.Contains(line, " --body "))
-	}
 }
