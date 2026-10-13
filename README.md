@@ -141,7 +141,7 @@ or file; at most it has fetched from origin. It refuses:
   `https://`, `ssh://git@`, or `git@host:` repository URL);
 - a missing `git` or `gh`, a `gh` that is not logged in to origin's host (which is also how a
   host that is not GitHub is refused), a fork, or a repository you cannot push to;
-- any word after `push` other than `--json`, `--help`, or `-h`, and any value of `--json` that
+- any word after `push` other than `--json`, `--help`, or `-h`, and a `--json=<value>` whose value
   is not `true` or `false`;
 - a precondition read that the time limit cut short: run `ils push` again.
 
