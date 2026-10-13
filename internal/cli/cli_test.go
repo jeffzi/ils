@@ -18,6 +18,7 @@ import (
 
 	"github.com/jeffzi/ils/internal/cli"
 	"github.com/jeffzi/ils/internal/git"
+	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/github/ghtest"
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/landing"
@@ -134,6 +135,22 @@ func endsWith(t *testing.T, stdout, want string) {
 	assert.Check(t, strings.HasSuffix(stdout, want), "stdout = %q, want it to end with %q", stdout, want)
 }
 
+// nothingPushed checks, without stopping the test, that the topic branch is not on origin.
+func nothingPushed(t *testing.T, s *scene) {
+	t.Helper()
+
+	assert.Check(t, is.Equal(s.fixture.OriginGit("for-each-ref", "refs/heads/"+topic), ""))
+}
+
+// opensPullRequest reports whether the fake gh was asked to create a pull request.
+func opensPullRequest(s *scene) bool {
+	createPR := []string{"gh", "pr", "create"}
+
+	return slices.ContainsFunc(s.fake.Calls(), func(argv []string) bool {
+		return slices.Equal(argv[:min(len(createPR), len(argv))], createPR)
+	})
+}
+
 // plain checks, without stopping the test, that text carries no escape sequence; what names the
 // text in the failure message.
 func plain(t *testing.T, what, text string) {
@@ -188,6 +205,23 @@ func heldIdentity() scenario {
 	calls[1].Answers[0].Delay = held
 
 	return scenario{name: "the read of the identity", script: only(calls...), left: heldLeft, want: exitRefused}
+}
+
+// heldVersion is a push whose read of gh's version is still open at the bound.
+func heldVersion() scenario {
+	slow := ghtest.Exits(ghtest.Answer{Stdout: "gh version 2.100.0 (2026-09-03)\n", Delay: held}, ghtest.VersionArgs()...)
+
+	return scenario{name: "the read of gh's version", script: only(slow), left: heldLeft, want: exitRefused}
+}
+
+// outdated is a first push with a gh that is logged out and prints line for its version.
+func outdated(name, line string) scenario {
+	calls := []ghtest.Call{
+		ghtest.Says(line+"\n", ghtest.VersionArgs()...),
+		login(ghtest.Answer{Stderr: "You are not logged into any GitHub hosts.\n", Code: 1}),
+	}
+
+	return scenario{name: name, script: only(calls...), want: exitRefused}
 }
 
 // ---------------------------------------------------------------------------
@@ -573,7 +607,7 @@ func TestApp_Run_WhenTheBoundEndedBeforeAnyReadOfPush_RefusesBeforePushing(t *te
 	assert.Check(t, is.Equal(got.code, exitRefused))
 	startsWith(t, got.stdout, "Refused: the time limit ended ")
 
-	assert.Check(t, is.Equal(s.fixture.OriginGit("for-each-ref", "refs/heads/"+topic), ""))
+	nothingPushed(t, s)
 }
 
 func TestApp_Run_WhenChecksStillRunAtTheBound_EndsPendingWithoutOutlastingIt(t *testing.T) {
@@ -586,8 +620,6 @@ func TestApp_Run_WhenChecksStillRunAtTheBound_EndsPendingWithoutOutlastingIt(t *
 func TestApp_Run_WhenACallIsStillOpenAtTheBound_EndsByTheBound(t *testing.T) {
 	const cut = "Refused: the time limit ended while reading the repository's identity on GitHub; nothing was written\n"
 
-	createPR := []string{"gh", "pr", "create"}
-
 	tests := []struct {
 		// wantStart and wantEnd are how stdout starts and ends.
 		wantStart string
@@ -598,6 +630,7 @@ func TestApp_Run_WhenACallIsStillOpenAtTheBound_EndsByTheBound(t *testing.T) {
 	}{
 		{scenario: heldChecks(), wantStart: "Pushed " + topic + " at ", wantEnd: "\nNext: ils push\n", delivered: true},
 		{scenario: heldIdentity(), wantStart: cut, wantEnd: cut + "Next: ils push\n"},
+		{scenario: heldVersion(), wantStart: cut, wantEnd: cut + "Next: ils push\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.scenario.name, func(t *testing.T) {
@@ -607,12 +640,9 @@ func TestApp_Run_WhenACallIsStillOpenAtTheBound_EndsByTheBound(t *testing.T) {
 			endsWith(t, got.stdout, tt.wantEnd)
 
 			onOrigin := s.fixture.OriginGit("for-each-ref", "--points-at", tipOf(s.fixture), "refs/heads/"+topic)
-			opening := slices.ContainsFunc(s.fake.Calls(), func(argv []string) bool {
-				return slices.Equal(argv[:min(len(createPR), len(argv))], createPR)
-			})
 			atTip := onOrigin != ""
 			assert.Check(t, is.Equal(atTip, tt.delivered))
-			assert.Check(t, is.Equal(opening, tt.delivered))
+			assert.Check(t, is.Equal(opensPullRequest(s), tt.delivered))
 		})
 	}
 }
@@ -669,6 +699,75 @@ func TestApp_Run_WhenPushEndsInAnyOutcome_JSONCarriesWhatTheTextShows(t *testing
 			resulttest.AssertCarried(t, text.stdout, got)
 		})
 	}
+}
+
+func TestApp_Run_WhenGhIsTooOldToJudge_RefusesWithNothingPushedOrOpened(t *testing.T) {
+	const (
+		next = "upgrade gh, then run ils push again"
+		from = "https://cli.github.com"
+	)
+
+	older := " is older than " + github.MinimumVersion + ", the oldest version ils works with; upgrade it from " + from
+	tests := []struct {
+		reason   string
+		scenario scenario
+	}{
+		{scenario: outdated("an older release", "gh version 2.49.0 (2024-05-13)"), reason: "gh 2.49.0" + older},
+		{scenario: outdated("a pre-release of the minimum", "gh version 2.50.0-pre.1 (2024-05-20)"), reason: "gh 2.50.0-pre.1" + older},
+		{
+			scenario: outdated("a development build", "gh version DEV"),
+			reason: "gh printed `gh version DEV`, which names no version ils can read; ils needs gh " +
+				github.MinimumVersion + " or newer, from " + from,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.scenario.name, func(t *testing.T) {
+			s := newScene(t, tt.scenario)
+
+			text, encoded := both(t, s)
+
+			want := ran{stdout: "Refused: " + tt.reason + "\nNext: " + next + "\n", code: exitRefused}
+			assert.Check(t, is.DeepEqual(text, want, sameRun()))
+			assert.Check(t, is.Equal(encoded.code, exitRefused))
+			got := resulttest.Decode(t, encoded.stdout)
+			assert.Check(t, is.Equal(got.Outcome, "refused"))
+			assert.Check(t, is.Equal(got.Reason, tt.reason))
+			assert.Check(t, is.Equal(got.Next, next))
+			nothingPushed(t, s)
+			assert.Check(t, !opensPullRequest(s), "gh was asked to create a pull request")
+		})
+	}
+}
+
+func TestApp_Run_WhenGhIsNotInstalled_RefusesNamingTheInstallPage(t *testing.T) {
+	s := newScene(t, scenario{})
+	t.Setenv("GH_PATH", filepath.Join(t.TempDir(), "gh"))
+
+	text, encoded := both(t, s)
+
+	want := ran{
+		stdout: "Refused: gh is not installed; install it from https://cli.github.com\nNext: install gh, then run ils push again\n",
+		code:   exitRefused,
+	}
+	assert.Check(t, is.DeepEqual(text, want, sameRun()))
+	assert.Check(t, is.Equal(encoded.code, exitRefused))
+	assert.Check(t, is.Equal(resulttest.Decode(t, encoded.stdout).Outcome, "refused"))
+	nothingPushed(t, s)
+}
+
+func TestApp_Run_WhenGhFailsToPrintItsVersion_BreaksNamingTheIdentityRead(t *testing.T) {
+	failing := ghtest.Exits(ghtest.Answer{Stderr: "unknown flag\n", Code: 1}, ghtest.VersionArgs()...)
+	s := newScene(t, scenario{script: only(failing)})
+
+	text, encoded := both(t, s)
+
+	assert.Check(t, is.Equal(text.code, exitBroke))
+	startsWith(t, text.stdout, "Could not read the repository's identity on GitHub: ")
+	assert.Check(t, is.Contains(text.stdout, "\nNothing was written.\n"))
+	assert.Check(t, is.Equal(encoded.code, exitBroke))
+	assert.Check(t, is.Equal(resulttest.Decode(t, encoded.stdout).Outcome, "broke"))
+	nothingPushed(t, s)
+	assert.Check(t, !opensPullRequest(s), "gh was asked to create a pull request")
 }
 
 // No test that builds a scene is parallel: the fake `gh` is found through `GH_PATH`, which

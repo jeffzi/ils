@@ -51,7 +51,7 @@ To build:
 To run:
 
 - `git` on `PATH`.
-- [`gh`](https://cli.github.com), installed and logged in to the host of `origin`
+- [`gh`](https://cli.github.com) 2.50.0 or later, installed and logged in to the host of `origin`
   (`gh auth login --hostname <host>`). `ils` owns no token and no login flow.
 - A remote named `origin` on GitHub that you can push to and that is not a fork.
 
@@ -139,8 +139,9 @@ or file; at most it has fetched from origin. It refuses:
 - a repository with no remote named `origin`, or an `origin` that cannot be reached;
 - an `origin` whose fetch and push URLs do not name one repository (they differ, or one is not an
   `https://`, `ssh://git@`, or `git@host:` repository URL);
-- a missing `git` or `gh`, a `gh` that is not logged in to origin's host (which is also how a
-  host that is not GitHub is refused), a fork, or a repository you cannot push to;
+- a missing `git` or `gh`, a `gh` older than 2.50.0 or one whose version cannot be read, a `gh`
+  that is not logged in to origin's host (which is also how a host that is not GitHub is refused),
+  a fork, or a repository you cannot push to;
 - any word after `push` other than `--json`, `--help`, or `-h`, and a `--json=<value>` whose value
   is not `true` or `false`;
 - a precondition read that the time limit cut short: run `ils push` again.

@@ -1,0 +1,103 @@
+name: Live
+
+# The live suite runs `ils push` with the real git and gh against a test repository on GitHub.
+# It starts weekly and by hand, and on no push and no pull request, so it never gates a merge.
+on:
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# The suite resets its test repositories, so two runs never overlap: a run started while
+# another is in progress waits for it, and a run in progress is never canceled by a newer one.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  live:
+    name: Live / gh ${{ matrix.leg }}
+    runs-on: ubuntu-latest
+    # Six scenarios of at most eight minutes each.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest gh that ils accepts; the suite fails unless it is the minimum ils enforces.
+          - leg: minimum
+            version: "2.50.0"
+          # The newest release of cli/cli, resolved when the leg runs.
+          - leg: latest
+            version: ""
+    env:
+      PINNED: ${{ matrix.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+      - name: Install task
+        run: go install github.com/go-task/task/v3/cmd/task@v3.53.1
+      - name: Install the leg's gh
+        id: gh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$PINNED"
+          if [ -z "$version" ]; then
+            tag=$(gh api repos/cli/cli/releases/latest --jq .tag_name)
+            version="${tag#v}"
+          fi
+          if [ -z "$version" ]; then
+            echo "could not resolve the newest release of cli/cli" >&2
+            exit 1
+          fi
+          archive="gh_${version}_linux_amd64.tar.gz"
+          base="https://github.com/cli/cli/releases/download/v${version}"
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location --remote-name "$base/$archive"
+          curl --fail --silent --show-error --location --remote-name "$base/gh_${version}_checksums.txt"
+          grep " ${archive}\$" "gh_${version}_checksums.txt" > "$archive.sha256"
+          sha256sum --check --strict "$archive.sha256"
+          tar --extract --gzip --file "$archive"
+          echo "$RUNNER_TEMP/gh_${version}_linux_amd64/bin" >> "$GITHUB_PATH"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "path=$RUNNER_TEMP/gh_${version}_linux_amd64/bin/gh" >> "$GITHUB_OUTPUT"
+      - name: Let git push with the token gh uses
+        run: |
+          git config --global credential.https://github.com.helper \
+            "!f() { echo username=x-access-token; echo \"password=\$GH_TOKEN\"; }; f"
+      - name: Run the live suite
+        env:
+          GH_TOKEN: ${{ secrets.LIVE_TOKEN }}
+          ILS_LIVE_GH: ${{ matrix.leg }}
+          ILS_LIVE_GH_VERSION: ${{ steps.gh.outputs.version }}
+          # Each leg has a repository of its own, so that the two never reset each other's.
+          LIVE_ORIGIN_MINIMUM: ${{ vars.LIVE_ORIGIN_MINIMUM }}
+          LIVE_ORIGIN_LATEST: ${{ vars.LIVE_ORIGIN_LATEST }}
+          # ils and the suite find gh through GH_PATH first, so neither can end up on the runner's own.
+          GH_PATH: ${{ steps.gh.outputs.path }}
+        run: |
+          set -euo pipefail
+          case "$ILS_LIVE_GH" in
+            minimum) variable=LIVE_ORIGIN_MINIMUM ;;
+            latest) variable=LIVE_ORIGIN_LATEST ;;
+            *) echo "no test repository for the leg $ILS_LIVE_GH" >&2; exit 1 ;;
+          esac
+          export ILS_LIVE_ORIGIN="${!variable}"
+          if [ -z "$ILS_LIVE_ORIGIN" ]; then
+            echo "the variable $variable is unset or empty; run task test:setup-live" >&2
+            exit 1
+          fi
+          if [ "$(command -v gh)" != "$GH_PATH" ]; then
+            echo "gh on PATH is $(command -v gh), want the one this leg installed, $GH_PATH" >&2
+            exit 1
+          fi
+          gh --version
+          task test:live

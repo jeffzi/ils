@@ -15,6 +15,17 @@ manage flags and tool invocations.
 - `task install` — Build the binary and copy it to the directory `go install` writes to
 - `task test` — Run the test suite with coverage; fails under the floor in `.coverage.yml` (extra
   args after -- skip coverage and the floor)
+- `task test:setup-live` — Create the three private test repositories of the live suite on your
+  GitHub account (`ils-live-minimum`, `ils-live-latest`, `ils-live-local`) and record the clone
+  URLs of the first two as the GitHub Actions variables `LIVE_ORIGIN_MINIMUM` and
+  `LIVE_ORIGIN_LATEST` of this repository, which the Live workflow reads. Safe to run again.
+- `task test:live` — Run the live suite (`internal/cli/live_test.go`, build tag `live`): `ils push`
+  with the real `git` and `gh` against a test repository, which the suite resets first. It reads:
+  - `ILS_LIVE_ORIGIN` — the clone URL of the repository to reset and write to; its name must start
+    with `ils-live-`. Unset, the task uses your `ils-live-local`.
+  - `ILS_LIVE_GH` — `minimum` requires the `gh` the suite finds (`GH_PATH`, then `PATH`) to be
+    exactly the minimum `ils` enforces; `latest` or unset accepts that version or newer.
+  - `ILS_LIVE_GH_VERSION` — when set, the exact `gh` version the suite must find.
 - `task check` — Run every pre-commit hook across the repo
 - `task check:fix` — auto-fix everything that supports it: `go mod tidy`, `go tool golangci-lint
   run --fix`, `go tool golangci-lint fmt`, `dprint fmt`, markdownlint (`prek run -a

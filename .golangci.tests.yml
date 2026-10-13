@@ -1,5 +1,9 @@
 version: "2"
 
+run:
+  build-tags:
+    - live
+
 linters:
   default: none
   enable:

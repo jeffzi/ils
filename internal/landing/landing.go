@@ -20,6 +20,10 @@ const (
 	readTrunk    = "origin's trunk"
 )
 
+// thenPushAgain is the ending of a next step that names what to do before running ils push again.
+// It stays untyped because result.NextStep accepts only constant expressions.
+const thenPushAgain = ", then run ils push again"
+
 // Deps is what a command takes: the forge and the repository it runs in.
 type Deps struct {
 	Forge Forge
@@ -129,7 +133,7 @@ func originRepo(ctx context.Context, deps Deps, req Request) (forge.Repo, *resul
 }
 
 // identity returns origin with the forge's fork and can-push flags, once the forge's tool is
-// installed and logged in, the repository is not a fork, and the user can push to it.
+// installed, recent enough and logged in, the repository is not a fork, and the user can push to it.
 func identity(ctx context.Context, deps Deps, req Request, origin forge.Repo) (forge.Repo, *result.Result) {
 	repo, err := deps.Forge.Identity(ctx, origin)
 	if err != nil {
@@ -177,8 +181,19 @@ func (r Request) identityFailure(err error) *result.Result {
 	if missing, ok := errors.AsType[*forge.ToolMissingError](err); ok {
 		return r.refused(
 			result.Say("%s is not installed; install it from %s", missing.Tool, missing.InstallURL),
-			result.NextStep("install %s, then run ils push again", missing.Tool),
+			result.NextStep("install %s"+thenPushAgain, missing.Tool),
 		)
+	}
+
+	if old, ok := errors.AsType[*forge.ToolTooOldError](err); ok {
+		reason := result.Say("%s %s is older than %s, the oldest version ils works with; upgrade it from %s",
+			old.Tool, old.Version, old.Minimum, old.InstallURL)
+		if old.Version == "" {
+			reason = result.Say("%s printed `%s`, which names no version ils can read; ils needs %s %s or newer, from %s",
+				old.Tool, old.Line, old.Tool, old.Minimum, old.InstallURL)
+		}
+
+		return r.refused(reason, result.NextStep("upgrade %s"+thenPushAgain, old.Tool))
 	}
 
 	if loggedOut, ok := errors.AsType[*forge.NotLoggedInError](err); ok {
@@ -187,7 +202,7 @@ func (r Request) identityFailure(err error) *result.Result {
 		return r.refused(
 			result.Say("gh is not logged in to %s; log in with `gh auth login --hostname %s`, "+
 				"or push by hand if %s is not GitHub", host, host, host),
-			result.NextStep("log in to %s, then run ils push again", host),
+			result.NextStep("log in to %s"+thenPushAgain, host),
 		)
 	}
 
@@ -225,7 +240,7 @@ func (r Request) gitMissing(err error) *result.Result {
 
 	return r.refused(
 		result.Say("%s is not installed; install it from %s", missing.Name, gitInstallURL),
-		result.NextStep("install %s, then run ils push again", missing.Name),
+		result.NextStep("install %s"+thenPushAgain, missing.Name),
 	)
 }
 
@@ -259,7 +274,7 @@ func couldNotRead(read string, err error) (line, reason result.Phrase) {
 
 // onceFixed is the judgment step after a failure the user has to look at.
 func onceFixed() result.Next {
-	return result.NextStep("fix what failed, then run ils push again")
+	return result.NextStep("fix what failed" + thenPushAgain)
 }
 
 // pushAgain is the command step that runs ils push again.

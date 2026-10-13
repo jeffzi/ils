@@ -31,6 +31,8 @@ const (
 	runLink    = "https://git.example.com/ada/engine/actions/runs/" + runID + "/job/42"
 	statusLink = "https://ci.example.com/builds/15"
 	serverDown = "gh: Server Error (HTTP 500)\n"
+	program    = "gh"
+	installURL = "https://cli.github.com"
 
 	pullNumber    = 7
 	featureBranch = "feature"
@@ -82,6 +84,13 @@ func featureChange() forge.NewChange {
 	return forge.NewChange{Title: "feature", Base: trunk, Head: featureBranch}
 }
 
+func versionArgs() []string { return ghtest.VersionArgs() }
+
+// versionAnswer is what `gh --version` prints when line is its first line.
+func versionAnswer(line string) string {
+	return line + "\nhttps://github.com/cli/cli/releases/tag/v2.0.0\n"
+}
+
 func loginArgs() []string { return ghtest.LoginArgs(engineHost) }
 
 func repoViewArgs() []string { return ghtest.RepoViewArgs(engineSlug) }
@@ -129,6 +138,11 @@ func jsonArray(items ...string) string {
 // noChecksAnswer is what `gh pr checks` says when the branch has no check.
 func noChecksAnswer() ghtest.Answer {
 	return ghtest.Answer{Stderr: "no checks reported on the 'feature' branch\n", Code: 1}
+}
+
+// loggedOutAnswer is what `gh auth status` says when no host is logged in.
+func loggedOutAnswer() ghtest.Answer {
+	return ghtest.Answer{Stderr: "You are not logged into any GitHub hosts.\n", Code: 1}
 }
 
 func headQuery(required ...string) forge.HeadQuery {
@@ -215,8 +229,9 @@ func TestForge_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
 
 			err := tt.run(t.Context(), newForge())
 
-			_, ok := errors.AsType[*forge.ToolMissingError](err)
-			assert.Check(t, ok, "%s error = %v, want *forge.ToolMissingError", tt.name, err)
+			missing, ok := errors.AsType[*forge.ToolMissingError](err)
+			assert.Assert(t, ok, "%s error = %v, want *forge.ToolMissingError", tt.name, err)
+			assert.Check(t, is.DeepEqual(missing, missingTool(), cmpopts.IgnoreFields(forge.ToolMissingError{}, "Err")))
 		})
 	}
 }
@@ -266,7 +281,7 @@ func TestForge_WhenReadPrintsMalformedJSON_ReturnsDecodeErrorNamingCall(t *testi
 }
 
 func TestForge_Identity_WhenNotLoggedIn_ReturnsNotLoggedInError(t *testing.T) {
-	fake := ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stderr: "You are not logged into any GitHub hosts.\n", Code: 1}, loginArgs()...))
+	fake := ghtest.Setup(t, ghtest.Exits(loggedOutAnswer(), loginArgs()...))
 
 	_, err := newForge().Identity(t.Context(), engine())
 
@@ -276,7 +291,79 @@ func TestForge_Identity_WhenNotLoggedIn_ReturnsNotLoggedInError(t *testing.T) {
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 	assert.Assert(t, ok, "Identity error = %v, want it to wrap the *child.ExitError", err)
 	assert.Check(t, is.Equal(exitErr.Code, 1))
-	assertCalls(t, fake, received(loginArgs()))
+	assertCalls(t, fake, received(versionArgs(), loginArgs()))
+}
+
+func TestForge_Identity_WhenGhIsOlderThanTheMinimum_ReturnsToolTooOldErrorBeforeTheLogin(t *testing.T) {
+	tests := []struct {
+		name string
+		// line is the first line `gh --version` prints.
+		line string
+		// version is the version the error carries; a line with none carries none.
+		version string
+	}{
+		{name: "one minor release older", line: "gh version 2.49.0 (2024-05-13)", version: "2.49.0"},
+		{name: "one major release older", line: "gh version 1.14.0 (2021-08-04)", version: "1.14.0"},
+		{name: "pre-release of the minimum", line: "gh version 2.50.0-pre.1 (2024-05-20)", version: "2.50.0-pre.1"},
+		{name: "development build", line: "gh version DEV"},
+		{name: "empty first line"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := ghtest.Setup(t, ghtest.Says(versionAnswer(tt.line), versionArgs()...), ghtest.Exits(loggedOutAnswer(), loginArgs()...))
+
+			_, err := newForge().Identity(t.Context(), engine())
+
+			tooOld, ok := errors.AsType[*forge.ToolTooOldError](err)
+			assert.Assert(t, ok, "Identity error = %v, want *forge.ToolTooOldError", err)
+			want := forge.ToolTooOldError{
+				Tool: program, Version: tt.version, Line: tt.line, Minimum: github.MinimumVersion, InstallURL: installURL,
+			}
+			assert.Check(t, is.DeepEqual(*tooOld, want))
+			assertCalls(t, fake, received(versionArgs()))
+		})
+	}
+}
+
+func TestForge_Identity_WhenGhIsAtOrAboveTheMinimum_GoesOnToTheLogin(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+	}{
+		{name: "minor number with more digits", line: "gh version 2.100.0 (2026-09-03)"},
+		{name: "next major release", line: "gh version 3.0.0 (2027-01-12)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := ghtest.Setup(t,
+				ghtest.Says(versionAnswer(tt.line), versionArgs()...),
+				ghtest.Says("Logged in\n", loginArgs()...),
+				ghtest.Says(ghtest.RepoViewJSON(false, "WRITE"), repoViewArgs()...),
+			)
+
+			_, err := newForge().Identity(t.Context(), engine())
+
+			assert.NilError(t, err)
+			assertCalls(t, fake, received(versionArgs(), loginArgs(), repoViewArgs()))
+		})
+	}
+}
+
+func TestForge_Identity_WhenVersionReadExitsNonZero_ReturnsExitErrorNamingCall(t *testing.T) {
+	const unknownFlag = "unknown flag\n"
+	fake := ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stderr: unknownFlag, Code: 1}, versionArgs()...))
+
+	_, err := newForge().Identity(t.Context(), engine())
+
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "Identity error = %v, want *child.ExitError", err)
+	want := child.ExitError{Argv: received(versionArgs())[0], Stderr: unknownFlag, Code: 1}
+	assert.Check(t, is.DeepEqual(*exitErr, want))
+	_, tooOld := errors.AsType[*forge.ToolTooOldError](err)
+	assert.Check(t, !tooOld, "Identity error = %v, want one that is no *forge.ToolTooOldError", err)
+	_, loggedOut := errors.AsType[*forge.NotLoggedInError](err)
+	assert.Check(t, !loggedOut, "Identity error = %v, want one that is no *forge.NotLoggedInError", err)
+	assertCalls(t, fake, received(versionArgs()))
 }
 
 func TestForge_Identity(t *testing.T) {
@@ -304,7 +391,7 @@ func TestForge_Identity(t *testing.T) {
 			assert.NilError(t, err)
 
 			assert.Check(t, is.DeepEqual(got, want))
-			assertCalls(t, fake, received(loginArgs(), repoViewArgs()))
+			assertCalls(t, fake, received(versionArgs(), loginArgs(), repoViewArgs()))
 		})
 	}
 }
@@ -742,7 +829,7 @@ func TestMergeStateOf(t *testing.T) {
 
 // missingTool is the error every call returns when `gh` is not installed.
 func missingTool() *forge.ToolMissingError {
-	return &forge.ToolMissingError{Tool: "gh", InstallURL: "https://cli.github.com"}
+	return &forge.ToolMissingError{Tool: program, InstallURL: installURL}
 }
 
 func TestRunner_Run_WhenGhExitsZero_ReturnsOutput(t *testing.T) {

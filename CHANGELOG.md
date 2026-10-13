@@ -14,5 +14,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Add the `ils` agent skill, which tells an agent when to run `ils push` and how to act on its
   output.
 - Add usage help, printed by `--help` on `ils` and on each command and by `ils help [command]`.
+- Add a minimum `gh` version, 2.50.0: `ils push` refuses an older `gh` before it pushes or opens
+  anything.
 
 [Unreleased]: https://github.com/jeffzi/ils/commits/main

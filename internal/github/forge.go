@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	gh "github.com/cli/go-gh/v2"
+	"golang.org/x/mod/semver"
 
 	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
@@ -96,8 +97,13 @@ type workflowRun struct {
 	Workflow string `json:"workflowName"`
 }
 
-// Identity fills the fork and can-push flags of repo, after checking that gh is logged in to its host.
+// Identity fills the fork and can-push flags of repo, after checking that gh is no older than
+// MinimumVersion and then that it is logged in to the host of repo.
 func (f *Forge) Identity(ctx context.Context, repo forge.Repo) (forge.Repo, error) {
+	if err := f.runner.checkVersion(ctx); err != nil {
+		return forge.Repo{}, err
+	}
+
 	if err := f.runner.CheckLogin(ctx, repo.Host); err != nil {
 		return forge.Repo{}, err
 	}
@@ -486,6 +492,15 @@ func argv(args []string) []string {
 
 const installURL = "https://cli.github.com"
 
+// MinimumVersion is the oldest release of gh that ils works with.
+const MinimumVersion = "2.50.0"
+
+// versionPrefix is what the first line of `gh --version` reads ahead of the version.
+const versionPrefix = "gh version "
+
+// semverPrefix is what the semver package wants ahead of a version.
+const semverPrefix = "v"
+
 // Runner runs gh, found through GH_PATH and then PATH.
 type Runner struct{}
 
@@ -544,6 +559,35 @@ func isMissing(err error) bool {
 	}
 
 	return errors.Is(err, fs.ErrNotExist)
+}
+
+// checkVersion reports whether gh is MinimumVersion or newer.
+//
+// A gh that is older, or whose first line of `gh --version` carries no version that can be
+// read, is a *forge.ToolTooOldError; a pre-release of MinimumVersion is older than it.
+func (r Runner) checkVersion(ctx context.Context) error {
+	result, err := r.Run(ctx, "--version")
+	if err != nil {
+		return err
+	}
+
+	line, _, _ := strings.Cut(result.Stdout, "\n")
+	tooOld := &forge.ToolTooOldError{Tool: Program, Line: line, Minimum: MinimumVersion, InstallURL: installURL}
+
+	rest, _ := strings.CutPrefix(line, versionPrefix)
+
+	version, _, _ := strings.Cut(rest, " ")
+	canonical := semverPrefix + version
+	if !semver.IsValid(canonical) {
+		return tooOld
+	}
+
+	tooOld.Version = version
+	if semver.Compare(canonical, semverPrefix+MinimumVersion) < 0 {
+		return tooOld
+	}
+
+	return nil
 }
 
 // CheckLogin reports whether gh is logged in to host.

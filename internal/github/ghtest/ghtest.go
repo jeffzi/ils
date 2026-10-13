@@ -44,6 +44,10 @@ type Answer struct {
 	Code  int
 }
 
+// installed is what the fake prints for its version when the script holds no answer to
+// VersionArgs: a release every command accepts, so that a script need not answer the version read.
+const installed = "gh version " + github.MinimumVersion + " (2024-05-29)\n"
+
 // Call scripts the answers to one argv.
 type Call struct {
 	// Args is the argv after gh, matched exactly.
@@ -65,6 +69,11 @@ func Exits(answer Answer, args ...string) Call {
 // ---------------------------------------------------------------------------
 // Argv of gh calls
 // ---------------------------------------------------------------------------
+
+// VersionArgs is the argv of the read of gh's version.
+func VersionArgs() []string {
+	return []string{"--version"}
+}
 
 // LoginArgs is the argv of the login check on host.
 func LoginArgs(host string) []string {
@@ -260,6 +269,9 @@ func serve(scriptPath, recordPath string, args []string) int {
 	if err != nil {
 		return broken(err)
 	}
+
+	// Last, so that a scripted answer to the version read is the one found.
+	script = append(script, Says(installed, VersionArgs()...))
 
 	matches := func(other []string) bool { return slices.Equal(other, args) }
 

@@ -80,6 +80,43 @@ tasks:
       - "{{if not .CLI_ARGS}}go tool cover -html=coverage.out -o coverage.html{{end}}"
       - "{{if not .CLI_ARGS}}go tool go-test-coverage --config=.coverage.yml{{end}}"
 
+  test:setup-live:
+    desc: Create the live suite's test repositories on GitHub and record their URLs (safe to run again)
+    cmds:
+      - cmd: |
+          set -eu
+          user=$(gh api user --jq .login)
+          for name in ils-live-minimum ils-live-latest ils-live-local; do
+            if ! gh repo view "$user/$name" --json name >/dev/null 2>&1; then
+              gh repo create "$user/$name" --private --add-readme
+            fi
+          done
+          minimum=$(gh repo view "$user/ils-live-minimum" --json url --jq .url)
+          latest=$(gh repo view "$user/ils-live-latest" --json url --jq .url)
+          local=$(gh repo view "$user/ils-live-local" --json url --jq .url)
+          gh variable set LIVE_ORIGIN_MINIMUM --body "$minimum"
+          gh variable set LIVE_ORIGIN_LATEST --body "$latest"
+          echo "LIVE_ORIGIN_MINIMUM $minimum"
+          echo "LIVE_ORIGIN_LATEST  $latest"
+          echo "task test:live      $local"
+    silent: true
+
+  test:live:
+    desc: "Run the live suite against a test repository on GitHub (ILS_LIVE_ORIGIN, or your ils-live-local)"
+    cmds:
+      - cmd: |
+          set -eu
+          origin="${ILS_LIVE_ORIGIN:-}"
+          if [ -z "$origin" ]; then
+            origin=$(gh repo view ils-live-local --json url --jq .url) || origin=""
+          fi
+          if [ -z "$origin" ]; then
+            echo "ILS_LIVE_ORIGIN is unset and the clone URL of your ils-live-local could not be read; run task test:setup-live first" >&2
+            exit 1
+          fi
+          ILS_LIVE_ORIGIN="$origin" go test -tags live -count=1 -timeout 60m -v -run '^TestLive$' ./internal/cli {{.CLI_ARGS}}
+    silent: true
+
   check:
     desc: Run every pre-commit hook across the repo
     deps: [_require-prek, _require-dprint, _hooks]

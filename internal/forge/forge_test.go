@@ -226,6 +226,36 @@ func TestVerdict_Running(t *testing.T) {
 	}
 }
 
+func TestToolTooOldError_Error(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  forge.ToolTooOldError
+		want string
+	}{
+		{
+			name: "version read",
+			err:  forge.ToolTooOldError{Tool: "gh", Version: "2.49.0", Line: "gh version 2.49.0 (2024-05-13)", Minimum: "2.50.0"},
+			want: "gh 2.49.0 is older than 2.50.0",
+		},
+		{
+			name: "line with no version",
+			err:  forge.ToolTooOldError{Tool: "gh", Line: "gh version DEV", Minimum: "2.50.0"},
+			want: `gh printed "gh version DEV", which names no version; 2.50.0 or newer is needed`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := tt.err.Error()
+
+			assert.Check(t, is.Equal(got, tt.want))
+		})
+	}
+}
+
 func TestRepo_Slug_WhenHostOwnerAndNameSet_JoinsThemWithSlashes(t *testing.T) {
 	t.Parallel()
 	repo := forge.Repo{Host: "git.example.com", Owner: "ada", Name: "engine"}

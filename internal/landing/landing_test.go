@@ -285,6 +285,11 @@ func forgeRefusals() []refusal {
 		noLogin = "Refused: gh is not logged in to github.com; log in with " +
 			"`gh auth login --hostname github.com`, or push by hand if github.com is not GitHub\n" +
 			"Next: log in to github.com, then run ils push again\n"
+		upgrade = "Next: upgrade gh, then run ils push again\n"
+		tooOld  = "Refused: gh 2.49.0 is older than 2.50.0, the oldest version ils works with; " +
+			"upgrade it from https://cli.github.com\n" + upgrade
+		noVersion = "Refused: gh printed `gh version DEV`, which names no version ils can read; " +
+			"ils needs gh 2.50.0 or newer, from https://cli.github.com\n" + upgrade
 		isFork = "Refused: Acme/Widgets is a fork, which ils does not push to; the user pushes by hand\n" +
 			nextByHand
 		noPush = "Refused: the logged-in user has no push permission on Acme/Widgets; " +
@@ -292,10 +297,16 @@ func forgeRefusals() []refusal {
 	)
 
 	missing := fails(&forge.ToolMissingError{Tool: "gh", InstallURL: "https://cli.github.com"})
+	old := forge.ToolTooOldError{Tool: "gh", Minimum: "2.50.0", InstallURL: "https://cli.github.com"}
+	outdated, unread := old, old
+	outdated.Version, outdated.Line = "2.49.0", "gh version 2.49.0 (2024-05-13)"
+	unread.Line = "gh version DEV"
 
 	return []refusal{
 		{name: "gh is not installed", script: missing, asksForge: true, want: noTool},
 		{name: "gh is not installed and origin does not answer", script: missing, offline: true, asksForge: true, want: noTool},
+		{name: "gh is older than the minimum", script: fails(&outdated), asksForge: true, want: tooOld},
+		{name: "gh prints no version", script: fails(&unread), asksForge: true, want: noVersion},
 		{name: "gh is not logged in", script: fails(&forge.NotLoggedInError{Host: host}), asksForge: true, want: noLogin},
 		{name: "fork", script: answers(widgets(true, true)), asksForge: true, want: isFork},
 		{name: "fork without push permission", script: answers(widgets(true, false)), asksForge: true, want: isFork},
