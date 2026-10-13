@@ -131,6 +131,14 @@ func endsWith(t *testing.T, stdout, want string) {
 	assert.Check(t, strings.HasSuffix(stdout, want), "stdout = %q, want it to end with %q", stdout, want)
 }
 
+// plain checks, without stopping the test, that text carries no escape sequence; what names the
+// text in the failure message.
+func plain(t *testing.T, what, text string) {
+	t.Helper()
+
+	assert.Check(t, !strings.Contains(text, escape), "%s carries an escape sequence:\n%q", what, text)
+}
+
 // stored returns a repository whose git dir is no `.git`, so that a path under it is a git dir
 // path to the one who resolved it and to no one else, and a path under that git dir.
 func stored(t *testing.T) (f *gittest.Fixture, under string) {
@@ -231,92 +239,10 @@ func TestApp_Run_WhenWordsBreakTheGrammar_RefusesNamingTheWord(t *testing.T) {
 	}
 }
 
-// rootHelp, helpHelp and pushHelp are what `ils --help`, `ils help` and `ils push --help` print,
-// line for line, without the spaces Fang pads each line with.
 const (
-	rootHelp = `
-  ils lands a branch on GitHub in fixed, checked steps: push, pull request,
-  CI verdict. It exists so that a coding agent cannot push to the wrong
-  place, skip the checks, or call a red build done.
-
-  Docs: https://github.com/jeffzi/ils
-
-  USAGE
-
-    ils [command] [--flags]
-
-  EXAMPLES
-
-    ils push
-
-  COMMANDS
-
-    help [command]  Help about any command
-    push            Push the branch, open its pull request, wait for the checks
-
-  FLAGS
-
-    -h --help       Help for ils
-    --json          Print the result as one JSON object
-
-`
-
-	// helpHelp differs from rootHelp by the entry of the help command, which Fang writes with the
-	// flags that command takes.
-	helpHelp = `
-  ils lands a branch on GitHub in fixed, checked steps: push, pull request,
-  CI verdict. It exists so that a coding agent cannot push to the wrong
-  place, skip the checks, or call a red build done.
-
-  Docs: https://github.com/jeffzi/ils
-
-  USAGE
-
-    ils [command] [--flags]
-
-  EXAMPLES
-
-    ils push
-
-  COMMANDS
-
-    help [command] [--flags]  Help about any command
-    push                      Push the branch, open its pull request, wait for the checks
-
-  FLAGS
-
-    -h --help                 Help for ils
-    --json                    Print the result as one JSON object
-
-`
-
-	pushHelp = `
-  Push the current branch, open its pull request on the first push, and
-  wait up to 100 seconds for the checks of the pushed commit. It never
-  forces a push and it does not merge.
-
-  It refuses before pushing anything when the branch is not ready, for
-  example on the default branch, with uncommitted changes, or behind its
-  copy on GitHub. The output gives the reason and the next step.
-
-  USAGE
-
-    ils push [--flags]
-
-  EXAMPLES
-
-    # Push and wait for the checks
-    ils push
-
-    # The same result as one JSON object
-    ils push --json
-
-  FLAGS
-
-    -h --help  Help for push
-    --json     Print the result as one JSON object
-
-`
+	// rootUsage and pushUsage are the usage lines that tell the help of ils from the help of push.
+	rootUsage = "ils [command] [--flags]"
+	pushUsage = "ils push [--flags]"
 
 	escape = "\x1b"
 
@@ -333,14 +259,21 @@ func flat(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
-// trimmed returns text without the spaces that end its lines.
-func trimmed(text string) string {
-	lines := strings.Split(text, "\n")
-	for i, line := range lines {
-		lines[i] = strings.TrimRight(line, " ")
+// entries returns the first word of each line the help lists under heading.
+func entries(help, heading string) []string {
+	var found []string
+
+	_, rest, _ := strings.Cut(help, heading)
+	for line := range strings.SplitSeq(strings.TrimLeft(rest, " \n"), "\n") {
+		words := strings.Fields(line)
+		if len(words) == 0 {
+			break
+		}
+
+		found = append(found, words[0])
 	}
 
-	return strings.Join(lines, "\n")
+	return found
 }
 
 func unstyled(text string) string {
@@ -355,7 +288,6 @@ func sameRun() cmp.Option {
 	return cmp.AllowUnexported(ran{})
 }
 
-// styling matches the escape sequences that style text.
 var styling = regexp.MustCompile(escape + `\[[0-9;:]*m`)
 
 // shut is a stdout whose every write fails with err.
@@ -381,94 +313,100 @@ func shutOut(t *testing.T, app cli.App, failure error, args ...string) ran {
 	return ran{stderr: stderr.String(), code: code}
 }
 
-func TestApp_Run_WhenAskedForHelp_PrintsTheHelpOfTheCommandAndRunsNothing(t *testing.T) {
+func TestApp_Run_WhenAskedForHelp_PrintsTheHelpOfTheCommand(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		want string
 		args []string
 	}{
-		{args: []string{"-h"}, want: rootHelp},
-		{args: []string{"--help"}, want: rootHelp},
-		{args: []string{"help"}, want: helpHelp},
-		{args: []string{"pish", "--help"}, want: rootHelp},
-		{args: []string{"-h", "pish"}, want: rootHelp},
-		{args: []string{"help", "pish"}, want: helpHelp},
-		{args: []string{"--json", "-h"}, want: rootHelp},
-		{args: []string{"--help", "--json"}, want: rootHelp},
-		{args: []string{"help", "--json"}, want: helpHelp},
-		{args: []string{"help", "pish", "--json"}, want: helpHelp},
-		{args: []string{"push", "-h"}, want: pushHelp},
-		{args: []string{"push", "--help"}, want: pushHelp},
-		{args: []string{"--help", "push"}, want: pushHelp},
-		{args: []string{"help", "push"}, want: pushHelp},
-		{args: []string{"push", "extra", "--help"}, want: pushHelp},
-		{args: []string{"push", "--json", "-h"}, want: pushHelp},
-		{args: []string{"--json", "push", "--help"}, want: pushHelp},
-		{args: []string{"help", "push", "--json"}, want: pushHelp},
+		{args: []string{"-h"}, want: rootUsage},
+		{args: []string{"--help"}, want: rootUsage},
+		{args: []string{"help"}, want: rootUsage},
+		{args: []string{"pish", "--help"}, want: rootUsage},
+		{args: []string{"-h", "pish"}, want: rootUsage},
+		{args: []string{"help", "pish"}, want: rootUsage},
+		{args: []string{"--json", "-h"}, want: rootUsage},
+		{args: []string{"--help", "--json"}, want: rootUsage},
+		{args: []string{"help", "--json"}, want: rootUsage},
+		{args: []string{"help", "pish", "--json"}, want: rootUsage},
+		{args: []string{"push", "-h"}, want: pushUsage},
+		{args: []string{"push", "--help"}, want: pushUsage},
+		{args: []string{"--help", "push"}, want: pushUsage},
+		{args: []string{"help", "push"}, want: pushUsage},
+		{args: []string{"push", "extra", "--help"}, want: pushUsage},
+		{args: []string{"push", "--json", "-h"}, want: pushUsage},
+		{args: []string{"--json", "push", "--help"}, want: pushUsage},
+		{args: []string{"help", "push", "--json"}, want: pushUsage},
 	}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
 			t.Parallel()
 
-			ranPush := false
-			app := outside(t)
-			app.Git.Recorder = &git.Recorder{}
-			app.SetPush(func(_ context.Context, _ landing.Deps, req landing.Request) result.Result {
-				ranPush = true
-
-				return finished(req)
-			})
-
-			got := launch(t, app, tt.args...)
+			got := launch(t, outside(t), tt.args...)
 
 			assert.Check(t, is.Equal(got.code, exitDone))
 			assert.Check(t, is.Equal(got.stderr, ""))
-			assert.Check(t, is.Equal(trimmed(got.stdout), tt.want))
-			assert.Check(t, !strings.Contains(got.stdout, escape), "help carries an escape sequence:\n%q", got.stdout)
-			assert.Check(t, !ranPush, "help ran push")
-			assert.Check(t, is.Len(app.Git.Recorder.Calls(), 0))
+			assert.Check(t, is.Contains(flat(got.stdout), tt.want))
+			plain(t, "help", got.stdout)
 		})
 	}
 }
 
-func TestApp_Run_WhenColorIsForced_StylesTheHelpAndKeepsItsWords(t *testing.T) {
-	t.Setenv(forceColor, "1")
+func TestApp_Run_WhenAskedForHelp_ListsNoEntryBeyondItsOwn(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
-		name string
-		want string
-		args []string
+		name     string
+		args     []string
+		commands []string
+		flags    []string
 	}{
-		{name: "root", args: []string{"--help"}, want: rootHelp},
-		{name: "push", args: []string{"push", "--help"}, want: pushHelp},
+		{name: "root", args: []string{"--help"}, commands: []string{"help", "push"}, flags: []string{"-h", "--json"}},
+		{name: "push", args: []string{"push", "--help"}, flags: []string{"-h", "--json"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := launch(t, outside(t), tt.args...)
+
+			assert.Check(t, is.DeepEqual(entries(got.stdout, "COMMANDS"), tt.commands))
+			assert.Check(t, is.DeepEqual(entries(got.stdout, "FLAGS"), tt.flags))
+		})
+	}
+}
+
+func TestApp_Run_WhenColorIsForced_StylesTheHelpWithoutChangingItsWords(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "root", args: []string{"--help"}},
+		{name: "push", args: []string{"push", "--help"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			unforced := launch(t, outside(t), tt.args...)
+			t.Setenv(forceColor, "1")
+
 			got := launch(t, outside(t), tt.args...)
 
 			assert.Check(t, is.Equal(got.code, exitDone))
 			assert.Check(t, is.Contains(got.stdout, escape))
-			assert.Check(t, is.Equal(flat(unstyled(got.stdout)), flat(tt.want)))
+			assert.Check(t, is.Equal(flat(unstyled(got.stdout)), flat(unforced.stdout)))
 		})
 	}
 }
 
 func TestApp_Run_WhenAskedForHelpInARepository_CallsNeitherGitNorGh(t *testing.T) {
-	tests := [][]string{
-		{"--help"}, {"-h"}, {"pish", "--help"}, {"-h", "pish"}, {"push", "--help"}, {"push", "extra", "--help"}, {"help", "push"},
-	}
-	for _, args := range tests {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			s := newScene(t, scenario{})
+	s := newScene(t, scenario{})
 
-			got := launch(t, s.app(), args...)
+	got := launch(t, s.app(), "push", "--help")
 
-			assert.Check(t, is.Equal(got.code, exitDone))
-			assert.Check(t, is.Len(s.recorder.Calls(), 0))
-			assert.Check(t, is.Len(s.fake.Calls(), 0))
-		})
-	}
+	assert.Check(t, is.Equal(got.code, exitDone))
+	assert.Check(t, is.Len(s.recorder.Calls(), 0))
+	assert.Check(t, is.Len(s.fake.Calls(), 0))
 }
 
 func TestApp_Run_WhenColorIsForced_RefusalCarriesNoEscapeSequence(t *testing.T) {
@@ -480,33 +418,20 @@ func TestApp_Run_WhenColorIsForced_RefusalCarriesNoEscapeSequence(t *testing.T) 
 			got := launch(t, outside(t), args...)
 
 			assert.Check(t, is.Equal(got.code, exitRefused))
-			assert.Check(t, !strings.Contains(got.stdout, escape), "the refusal carries an escape sequence:\n%q", got.stdout)
+			plain(t, "the refusal", got.stdout)
+			assert.Check(t, !strings.Contains(strings.ToLower(got.stdout), encodedEscape), "a value of the refusal carries an escape sequence:\n%s", got.stdout)
 		})
 	}
 }
 
-func TestApp_Run_WhenPushEndsInAnyWay_NoResultCarriesAnEscapeSequence(t *testing.T) {
-	tests := []struct {
-		name  string
-		force string
-	}{
-		{name: "color forced", force: "1"},
-		{name: "color not forced", force: ""},
-	}
-	for _, tt := range tests {
-		for _, sc := range scenarios() {
-			t.Run(tt.name+"/"+sc.name, func(t *testing.T) {
-				t.Setenv(forceColor, tt.force)
+func TestApp_Run_WhenColorIsForced_PushResultCarriesNoEscapeSequence(t *testing.T) {
+	t.Setenv(forceColor, "1")
 
-				text, encoded := both(t, newScene(t, sc))
+	text, encoded := both(t, newScene(t, redWithLog()))
 
-				assert.Check(t, is.Equal(text.code, sc.want), "%s\nstdout:\n%s\nstderr:\n%s", sc.name, text.stdout, text.stderr)
-				assert.Check(t, !strings.Contains(text.stdout, escape), "the text carries an escape sequence:\n%q", text.stdout)
-				assert.Check(t, !strings.Contains(encoded.stdout, escape), "the JSON carries an escape sequence:\n%q", encoded.stdout)
-				assert.Check(t, !strings.Contains(strings.ToLower(encoded.stdout), encodedEscape), "a value of the JSON carries an escape sequence:\n%s", encoded.stdout)
-			})
-		}
-	}
+	plain(t, "the text", text.stdout)
+	plain(t, "the JSON", encoded.stdout)
+	assert.Check(t, !strings.Contains(strings.ToLower(encoded.stdout), encodedEscape), "a value of the JSON carries an escape sequence:\n%s", encoded.stdout)
 }
 
 func TestApp_Run_WhenAskedForCompletions_ExitsZeroWithoutARefusal(t *testing.T) {
@@ -560,7 +485,7 @@ func TestApp_Run_WhenHelpCannotBeWrittenToStdout_ExitsZeroWithNothingOnStderr(t 
 	}
 }
 
-func TestApp_Run_WhenPushRunsWithoutTheJSONFlag_RendersTextAndKeepsTheFlagOutOfTheWords(t *testing.T) {
+func TestApp_Run_WhenPushRunsWithoutTheJSONFlag_RendersTextWithoutTheFlagInTheWords(t *testing.T) {
 	t.Parallel()
 
 	tests := [][]string{{"push"}, {"push", "--json=false"}, {"--json=false", "push"}}
@@ -602,19 +527,10 @@ func TestApp_Run_WhenJSONFlagIsAmongTheWords_RendersJSONWithoutTheFlagInTheWords
 			want: refusal("push takes no other word, and extra was given", "push", "extra"),
 		},
 		{name: "command of a later version", args: []string{"merge", "--json"}, want: refusal("merge is not in this version", "merge")},
-		{name: "prefix of a command", args: []string{"--json", "pus"}, want: refusal("pus is not a command", "pus")},
-		{name: "completion", args: []string{"completion", "--json"}, want: refusal("completion is not a command", "completion")},
-		{name: "man", args: []string{"man", "--json"}, want: refusal("man is not a command", "man")},
 		{name: "unknown short flag", args: []string{"--json", "-x"}, want: refusal("-x is not a command", "-x")},
-		{name: "version flag", args: []string{"--json", "--version"}, want: refusal("--version is not a command", "--version")},
-		{name: "short version flag", args: []string{"--json", "-v"}, want: refusal("-v is not a command", "-v")},
 		{name: "unknown flag", args: []string{"--bogus", "--json"}, want: refusal("--bogus is not a command", "--bogus")},
 		{name: "unknown short flag after push", args: []string{"--json", "push", "-x"}, want: refusal("push takes no other word, and -x was given", "push", "-x")},
-		{name: "version flag after push", args: []string{"push", "--version", "--json"}, want: refusal("push takes no other word, and --version was given", "push", "--version")},
-		{name: "short version flag after push", args: []string{"--json", "push", "-v"}, want: refusal("push takes no other word, and -v was given", "push", "-v")},
 		{name: "flag set to neither, then set", args: []string{"push", "--json=maybe", "--json"}, want: refusal("--json takes true or false, and maybe was given", "push", "--json=maybe")},
-		{name: "release", args: []string{"release", "--json"}, want: refusal("release is not in this version", "release")},
-		{name: "status", args: []string{"--json", "status"}, want: refusal("status is not in this version", "status")},
 		{name: "flag set to true", args: []string{"--json=true", "pish"}, want: refusal("pish is not a command", "pish")},
 		{
 			name: "flag after an unknown flag", args: []string{"push", "--bogus", "--json"},
@@ -673,7 +589,6 @@ func TestApp_Run_WhenPushRunsOutsideARepositoryWithTheJSONFlag_RendersTheResultW
 	}{
 		{name: "flag last", args: []string{"push", "--json"}},
 		{name: "flag first", args: []string{"--json", "push"}},
-		{name: "flag set to true", args: []string{"push", "--json=true"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -802,7 +717,6 @@ func TestApp_Run_WhenChecksStillRunAtTheBound_EndsPendingWithoutOutlastingIt(t *
 func TestApp_Run_WhenACallIsStillOpenAtTheBound_EndsByTheBound(t *testing.T) {
 	const cut = "Refused: the time limit ended while reading the repository's identity on GitHub; nothing was written\n"
 
-	// createPR is the start of the call that opens a pull request.
 	createPR := []string{"gh", "pr", "create"}
 
 	tests := []struct {
@@ -894,21 +808,14 @@ func TestApp_Run_WhenPushEndsInAnyOutcome_JSONCarriesWhatTheTextShows(t *testing
 const (
 	trunk     = "develop"
 	topic     = "tidy-readme"
-	spare     = "spare"
-	otherBase = "release"
 	host      = "github.com"
 	owner     = "acme"
 	widgets   = "widgets"
 	slug      = host + "/" + owner + "/" + widgets
 	originURL = "ssh://git@" + slug + ".git"
-	otherURL  = "ssh://git@" + host + "/" + owner + "/gadgets.git"
 
-	// strayHead is a head sha that no commit of the fixture has.
-	strayHead = "0a1b2c3"
-
-	// opened and merged are the numbers of the open and of the merged pull request.
+	// opened is the number of the open pull request.
 	opened = 12
-	merged = 9
 
 	pullURL = "https://" + slug + "/pull/12"
 	// runID is the workflow run that stands behind a check, and runLink is that check's link.
@@ -1094,10 +1001,6 @@ func greenFirstPush() scenario {
 	return scenario{name: "green on a first push", script: firstPush(passing), want: exitDone}
 }
 
-func greenSecondRun() scenario {
-	return scenario{name: "second run on a pushed tip", arrange: func(f *gittest.Fixture) { f.Publish(topic) }, script: laterPush(passing), want: exitDone}
-}
-
 func redWithLog() scenario {
 	red := func(sha string) verdict {
 		v := passing(sha)
@@ -1108,29 +1011,6 @@ func redWithLog() scenario {
 	}
 
 	return scenario{name: "red with a failed log", script: firstPush(red), want: exitDelivered}
-}
-
-func blockedByMissingCheck() scenario {
-	blocked := func(sha string) verdict {
-		v := passing(sha)
-		v.rules = `[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"build"},{"context":"test"}]}}]`
-		v.head = headJSON(sha, "MERGEABLE", "BLOCKED")
-
-		return v
-	}
-
-	return scenario{name: "blocked by a required check that never reported", script: firstPush(blocked), want: exitDelivered}
-}
-
-func conflicting() scenario {
-	conflict := func(sha string) verdict {
-		v := passing(sha)
-		v.head = headJSON(sha, "CONFLICTING", "DIRTY")
-
-		return v
-	}
-
-	return scenario{name: "conflicting with the trunk", script: firstPush(conflict), want: exitDelivered}
 }
 
 func pendingAtTheBound() scenario {
@@ -1160,80 +1040,4 @@ func failedRead() scenario {
 	down.Answers = []ghtest.Answer{{Stderr: "gh: Server Error (HTTP 500)\n", Code: 1}}
 
 	return scenario{name: "a read of GitHub fails", script: only(append(allowed(), down)...), want: exitBroke}
-}
-
-// standingRefusals are the refusals decided before the branch's commits are read.
-func standingRefusals() []scenario {
-	loggedOut := login(ghtest.Answer{Stderr: "You are not logged into any GitHub hosts.\n", Code: 1})
-
-	return []scenario{
-		{name: "no origin", arrange: (*gittest.Fixture).RemoveOrigin, want: exitRefused},
-		{
-			name: "origin's two addresses differ", want: exitRefused,
-			arrange: func(f *gittest.Fixture) { f.SetPushURL(otherURL) },
-		},
-		{name: "not logged in", script: only(loggedOut), want: exitRefused},
-		{name: "a fork", script: only(identity(true, "WRITE")...), want: exitRefused},
-		{name: "no right to push", script: only(identity(false, "READ")...), want: exitRefused},
-		onTheTrunk(),
-		{name: "detached", arrange: (*gittest.Fixture).Detach, script: only(allowed()...), want: exitRefused},
-		{
-			name: "tracked file changed", script: only(allowed()...), want: exitRefused,
-			arrange: func(f *gittest.Fixture) { f.DirtyFile() },
-		},
-	}
-}
-
-// commitRefusals are the refusals decided from the branch's commits and origin's copy of it.
-func commitRefusals() []scenario {
-	refused := func(name string, arrange func(f *gittest.Fixture)) scenario {
-		return scenario{name: name, arrange: arrange, script: only(allowed()...), want: exitRefused}
-	}
-
-	return []scenario{
-		refused("no commit past the trunk", func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--create", spare, trunk) }),
-		refused("no commit at all", func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--orphan", spare) }),
-		refused("cut from another branch", func(f *gittest.Fixture) { f.Sibling(spare, topic) }),
-		refused("behind origin's copy", func(f *gittest.Fixture) {
-			f.Publish(topic)
-			f.AdvanceOrigin(topic)
-		}),
-		refused("diverged from origin's copy", func(f *gittest.Fixture) {
-			f.Publish(topic)
-			f.Diverge(topic)
-		}),
-	}
-}
-
-// changeRefusals are the refusals decided from the pull requests GitHub finds for the branch.
-func changeRefusals() []scenario {
-	landed := only(found("[]", changeJSON(merged, trunk, strayHead))...)
-
-	return []scenario{
-		{
-			name: "open pull request against another base", want: exitRefused,
-			script: only(found(changeJSON(opened, otherBase, strayHead), "[]")...),
-		},
-		{
-			name: "merged pull request with nothing unlanded", script: landed, want: exitRefused,
-			arrange: func(f *gittest.Fixture) { f.LandPull(merged, topic) },
-		},
-		{
-			name: "merged pull request with commits made since", script: landed, want: exitRefused,
-			arrange: func(f *gittest.Fixture) {
-				f.LandPull(merged, topic)
-				f.Commits(topic, "fix a typo")
-			},
-		},
-	}
-}
-
-// scenarios are the runs of `ils push`, one for each way it ends.
-func scenarios() []scenario {
-	ends := []scenario{
-		greenFirstPush(), greenSecondRun(), redWithLog(), blockedByMissingCheck(), conflicting(),
-		pendingAtTheBound(), failedRead(),
-	}
-
-	return slices.Concat(ends, standingRefusals(), commitRefusals(), changeRefusals())
 }

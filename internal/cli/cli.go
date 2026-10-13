@@ -93,7 +93,7 @@ func (a App) show(r result.Result, gitDir string, encoded bool) int {
 
 // isJSONFlag reports whether word is the JSON flag in one of the forms the grammar takes.
 func isJSONFlag(word string) bool {
-	return word == flagJSON || word == flagJSON+"=true" || word == flagJSON+"=false"
+	return word == flagJSON || word == flagJSONTrue || word == flagJSONFalse
 }
 
 // asJSON reports whether the words typed select the JSON renderer: the last form of the flag
@@ -104,7 +104,7 @@ func isJSONFlag(word string) bool {
 func asJSON(args []string) bool {
 	for _, word := range slices.Backward(args) {
 		if isJSONFlag(word) {
-			return word != flagJSON+"=false"
+			return word != flagJSONFalse
 		}
 	}
 
@@ -142,12 +142,16 @@ func (p *parse) root() *cobra.Command {
 		Use:  "ils",
 		Long: rootLong,
 		// Cobra needs a command to be runnable before it asks Args, which refuses every run.
-		Args: func(_ *cobra.Command, args []string) error {
+		Args: func(c *cobra.Command, args []string) error {
+			if c.ArgsLenAtDash() == 0 {
+				return p.refuse(notCommand(wordDash))
+			}
+
 			if len(args) == 0 {
 				return p.refuse(result.Say("no command was given"))
 			}
 
-			return p.refuse(result.Say("%s is not a command", args[0]))
+			return p.refuse(notCommand(args[0]))
 		},
 		RunE:    func(*cobra.Command, []string) error { return nil },
 		Example: "ils push",
@@ -179,13 +183,18 @@ func (p *parse) root() *cobra.Command {
 	return root
 }
 
+// push returns the command that pushes the branch and opens its pull request.
 func (p *parse) push() *cobra.Command {
 	return &cobra.Command{
 		Use:     wordPush,
 		Short:   "Push the branch, open its pull request, wait for the checks",
 		Long:    pushLong,
 		Example: pushExamples,
-		Args: func(_ *cobra.Command, args []string) error {
+		Args: func(c *cobra.Command, args []string) error {
+			if c.ArgsLenAtDash() == 0 {
+				return p.refuse(extraWord(wordDash))
+			}
+
 			if len(args) > 0 {
 				return p.refuse(extraWord(args[0]))
 			}
@@ -203,6 +212,10 @@ func (p *parse) push() *cobra.Command {
 
 func extraWord(word string) result.Phrase {
 	return result.Say("push takes no other word, and %s was given", word)
+}
+
+func notCommand(word string) result.Phrase {
+	return result.Say("%s is not a command", word)
 }
 
 // flagRefusal turns a flag Cobra could not parse on c into a refusal that names the flag as it
@@ -227,7 +240,7 @@ func (p *parse) flagRefusal(c *cobra.Command, err error) error {
 		return p.refuse(extraWord(typed))
 	}
 
-	return p.refuse(result.Say("%s is not a command", typed))
+	return p.refuse(notCommand(typed))
 }
 
 // strictBool is the value of a flag that takes no value but true and false.
@@ -312,8 +325,13 @@ const (
 	wordRelease = "release"
 	wordStatus  = "status"
 
-	flagJSON = "--json"
-	flagHelp = "--help"
+	flagJSON      = "--json"
+	flagJSONTrue  = flagJSON + "=true"
+	flagJSONFalse = flagJSON + "=false"
+	flagHelp      = "--help"
+
+	// wordDash is the terminator after which every word is a positional argument.
+	wordDash = "--"
 )
 
 // The help says how to call a command and nothing else: what to do with an exit code and with
@@ -330,8 +348,9 @@ wait up to 100 seconds for the checks of the pushed commit. It never
 forces a push and it does not merge.
 
 It refuses before pushing anything when the branch is not ready, for
-example on the default branch, with uncommitted changes, or behind its
-copy on GitHub. The output gives the reason and the next step.`
+example on the trunk (origin's default branch), with uncommitted
+changes, or behind origin's copy of it. The output gives the reason and
+the next step.`
 
 	pushExamples = `# Push and wait for the checks
 ils push
