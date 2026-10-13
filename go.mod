@@ -11,8 +11,11 @@ tool (
 )
 
 require (
+	charm.land/fang/v2 v2.0.1
 	github.com/cli/go-gh/v2 v2.16.2
 	github.com/google/go-cmp v0.7.0
+	github.com/spf13/cobra v1.10.2
+	github.com/spf13/pflag v1.0.10
 	gotest.tools/v3 v3.5.2
 )
 
@@ -77,6 +80,7 @@ require (
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260811164956-006e29f97886 // indirect
 	github.com/charmbracelet/x/ansi v0.11.8 // indirect
+	github.com/charmbracelet/x/exp/charmtone v0.0.0-20250603201427-c31516f43444 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
@@ -169,6 +173,10 @@ require (
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/moricho/tparallel v0.3.2 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
+	github.com/muesli/mango v0.1.0 // indirect
+	github.com/muesli/mango-cobra v1.2.0 // indirect
+	github.com/muesli/mango-pflag v0.1.0 // indirect
+	github.com/muesli/roff v0.1.0 // indirect
 	github.com/nakabonne/nestif v0.3.1 // indirect
 	github.com/narqo/go-badge v0.0.0-20230821190521-c9a75c019a59 // indirect
 	github.com/nishanths/exhaustive v0.12.0 // indirect
@@ -203,9 +211,7 @@ require (
 	github.com/sourcegraph/go-diff v0.8.0 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.7.0 // indirect
-	github.com/spf13/cobra v1.10.2 // indirect
 	github.com/spf13/jwalterweatherman v1.1.0 // indirect
-	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/spf13/viper v1.12.0 // indirect
 	github.com/ssgreg/nlreturn/v2 v2.2.1 // indirect
 	github.com/stbenjam/no-sprintf-host-port v0.3.1 // indirect
