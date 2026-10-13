@@ -397,6 +397,7 @@ func TestApp_Run_WhenAskedForHelp_PrintsTheHelpOfTheCommandAndRunsNothing(t *tes
 		{args: []string{"--json", "-h"}, want: rootHelp},
 		{args: []string{"--help", "--json"}, want: rootHelp},
 		{args: []string{"help", "--json"}, want: helpHelp},
+		{args: []string{"help", "pish", "--json"}, want: helpHelp},
 		{args: []string{"push", "-h"}, want: pushHelp},
 		{args: []string{"push", "--help"}, want: pushHelp},
 		{args: []string{"--help", "push"}, want: pushHelp},
@@ -454,7 +455,9 @@ func TestApp_Run_WhenColorIsForced_StylesTheHelpAndKeepsItsWords(t *testing.T) {
 }
 
 func TestApp_Run_WhenAskedForHelpInARepository_CallsNeitherGitNorGh(t *testing.T) {
-	tests := [][]string{{"--help"}, {"push", "--help"}, {"help", "push"}}
+	tests := [][]string{
+		{"--help"}, {"-h"}, {"pish", "--help"}, {"-h", "pish"}, {"push", "--help"}, {"push", "extra", "--help"}, {"help", "push"},
+	}
 	for _, args := range tests {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			s := newScene(t, scenario{})
@@ -605,6 +608,11 @@ func TestApp_Run_WhenJSONFlagIsAmongTheWords_RendersJSONWithoutTheFlagInTheWords
 		{name: "unknown short flag", args: []string{"--json", "-x"}, want: refusal("-x is not a command", "-x")},
 		{name: "version flag", args: []string{"--json", "--version"}, want: refusal("--version is not a command", "--version")},
 		{name: "short version flag", args: []string{"--json", "-v"}, want: refusal("-v is not a command", "-v")},
+		{name: "unknown flag", args: []string{"--bogus", "--json"}, want: refusal("--bogus is not a command", "--bogus")},
+		{name: "unknown short flag after push", args: []string{"--json", "push", "-x"}, want: refusal("push takes no other word, and -x was given", "push", "-x")},
+		{name: "version flag after push", args: []string{"push", "--version", "--json"}, want: refusal("push takes no other word, and --version was given", "push", "--version")},
+		{name: "short version flag after push", args: []string{"--json", "push", "-v"}, want: refusal("push takes no other word, and -v was given", "push", "-v")},
+		{name: "flag set to neither, then set", args: []string{"push", "--json=maybe", "--json"}, want: refusal("--json takes true or false, and maybe was given", "push", "--json=maybe")},
 		{name: "release", args: []string{"release", "--json"}, want: refusal("release is not in this version", "release")},
 		{name: "status", args: []string{"--json", "status"}, want: refusal("status is not in this version", "status")},
 		{name: "flag set to true", args: []string{"--json=true", "pish"}, want: refusal("pish is not a command", "pish")},
