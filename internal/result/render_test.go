@@ -363,7 +363,7 @@ const (
 		`"lines":["Pushed tidy-readme to origin.","Every check is green."],"exit_code":0}` + "\n"
 )
 
-func TestRenderJSON_WhenRendered_PrintsExactBytes(t *testing.T) {
+func TestRenderJSON_WhenResultIsWellFormed_PrintsExactBytes(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {

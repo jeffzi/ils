@@ -15,8 +15,6 @@ const (
 	// helperAddrEnv holds the local address a lingering helper connects to once it has started.
 	helperAddrEnv = "ILS_GIT_TEST_DIFF_HELPER_ADDR"
 
-	// helperLeave makes the helper exit at once, as a diff program that prints nothing.
-	helperLeave = "leave"
 	// helperLinger makes the helper outlive git, holding the output pipes it inherited.
 	helperLinger = "linger"
 	// helperSpawn makes the helper start a lingering copy of itself and exit at once, so that git
@@ -38,12 +36,8 @@ func TestMain(m *testing.M) {
 // diffHelper plays git's external diff program and returns its exit code. In the lingering mode it
 // connects to the address in the environment, then stays until that connection closes or its life is up.
 func diffHelper(mode string) int {
-	switch mode {
-	case helperLinger:
-	case helperSpawn:
+	if mode == helperSpawn {
 		return spawnLingerer()
-	default:
-		return 0
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), helperLife)

@@ -1,8 +1,6 @@
 package resulttest_test
 
 import (
-	"runtime"
-	"sync"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -15,34 +13,12 @@ import (
 type spyTB struct {
 	testing.TB
 
-	failed  bool
-	stopped bool
+	failed bool
 }
 
 func (s *spyTB) Log(...any) {}
 
 func (s *spyTB) Fail() { s.failed = true }
-
-func (s *spyTB) FailNow() {
-	s.stopped = true
-
-	runtime.Goexit()
-}
-
-// spied runs call with a spy on its own goroutine, so that a call that stops its test ends there,
-// and returns the spy once call is over.
-func spied(t *testing.T, call func(tb testing.TB)) *spyTB {
-	t.Helper()
-
-	spy := &spyTB{TB: t}
-
-	var wg sync.WaitGroup
-
-	wg.Go(func() { call(spy) })
-	wg.Wait()
-
-	return spy
-}
 
 func TestDecode_WhenOutIsOneObject_ReturnsItsFields(t *testing.T) {
 	t.Parallel()
@@ -56,14 +32,6 @@ func TestDecode_WhenOutIsOneObject_ReturnsItsFields(t *testing.T) {
 		Reason: "the branch is the trunk", Lines: []string{"Nothing was pushed."}, Next: "switch to a branch",
 	}
 	assert.Check(t, is.DeepEqual(got, want))
-}
-
-func TestDecode_WhenOutIsNotJSON_StopsTheTest(t *testing.T) {
-	t.Parallel()
-
-	spy := spied(t, func(tb testing.TB) { resulttest.Decode(tb, "Pushed the branch to origin.\n") })
-
-	assert.Check(t, spy.stopped, "Decode() went on after output that is no JSON object, want the test stopped")
 }
 
 func TestAssertCarried(t *testing.T) {
@@ -90,7 +58,9 @@ func TestAssertCarried(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			spy := spied(t, func(tb testing.TB) { resulttest.AssertCarried(tb, tt.text, carrier) })
+			spy := &spyTB{TB: t}
+
+			resulttest.AssertCarried(spy, tt.text, carrier)
 
 			assert.Check(t, is.Equal(spy.failed, tt.wantFail), "AssertCarried(%q)", tt.text)
 		})

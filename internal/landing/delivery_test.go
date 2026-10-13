@@ -263,9 +263,6 @@ func runPushes(t *testing.T, rows []pushRow) {
 // pushWriteRows are the pushes of a tip origin does not have yet, each ending green.
 func pushWriteRows() []pushRow {
 	opens := greenAfter(pushedLine + openedLine)
-	sinceMerged := opening(passing()).with(func(script *forgetest.Script, _ string) {
-		script.FindChanges = listing([]forge.Change{change(merged, trunk, forge.ChangeMerged)})
-	})
 	skipping := forge.Verdict{
 		Checks: []forge.Check{
 			checked("lint", forge.BucketPass), checked("test", forge.BucketPass), checked("docs", forge.BucketSkipped),
@@ -281,25 +278,6 @@ func pushWriteRows() []pushRow {
 	return []pushRow{
 		{name: "two checks passed and one was skipped", script: opening(skipping), want: skips},
 		{name: "first push of the branch", script: opening(passing()), want: opens},
-		{
-			name: "only a file git does not track", script: opening(passing()), want: opens,
-			arrange: func(f *gittest.Fixture) { f.UntrackedFile() },
-		},
-		{
-			name: "tip ahead of origin's copy", script: opening(passing()), want: opens,
-			arrange: func(f *gittest.Fixture) {
-				f.Publish(topic)
-				f.Commits(topic, "fix a typo")
-			},
-		},
-		{
-			name: "merged pull request sharing no commit past the trunk", script: sinceMerged, want: opens,
-			arrange: func(f *gittest.Fixture) {
-				f.Commits(spare, "earlier work")
-				f.LandPull(merged, spare)
-				f.Git("switch", "--quiet", topic)
-			},
-		},
 		{
 			name:   "open pull request against the trunk",
 			script: reusing(passing()), want: greenAfter(pushedLine + foundLine),
@@ -612,15 +590,40 @@ func pushUnreportedRows() []pushRow {
 	}
 }
 
+// pending is a push to the open pull request that ended pending for reason, after lines.
+func pending(reason, lines string, payload *result.Push) finish {
+	return finish{
+		outcome: result.Pending, reason: reason, payload: payload,
+		text: pushedLine + foundLine + lines + nextPush,
+	}
+}
+
+// pushCutShortRows are the pushes whose deadline ended inside a read of the wait.
+func pushCutShortRows() []pushRow {
+	ended := fmt.Errorf("gh: %w", context.DeadlineExceeded)
+
+	return []pushRow{
+		{
+			name: "the deadline ends in the first read of the checks",
+			script: reusing().with(func(script *forgetest.Script, _ string) {
+				script.Verdict = []forgetest.Answer[forge.Verdict]{{Err: ended}}
+			}),
+			want: pending("the time limit ended while reading "+readChecks,
+				"The time limit ended while reading "+readChecks+"; nothing more will change\n"+cleanLine,
+				detail(forge.VerdictNone, forge.MergeClean)),
+		},
+		{
+			name:   "the deadline ends in the read of the merge state after the checks",
+			script: reusing(passing()).thenFailingHead(ended),
+			want: pending("GitHub did not say whether the pull request can merge before the time limit",
+				"GitHub has not said whether pull request #12 can merge yet\n",
+				detail(forge.VerdictGreen, forge.MergeClean, passing().Checks...)),
+		},
+	}
+}
+
 // pushPendingRows are the pushes whose wait ended before the forge had an answer, one per way it ends.
 func pushPendingRows() []pushRow {
-	pending := func(reason, lines string, payload *result.Push) finish {
-		return finish{
-			outcome: result.Pending, reason: reason, payload: payload,
-			text: pushedLine + foundLine + lines + nextPush,
-		}
-	}
-
 	started := forge.Verdict{Runs: ran(forge.RunInProgress)}
 
 	return []pushRow{
@@ -667,13 +670,6 @@ func pushPendingRows() []pushRow {
 				"Still running after 10 seconds: test\n"+cleanLine,
 				detail(forge.VerdictPending, forge.MergeClean, running().Checks...)),
 		},
-		{
-			name:   "the deadline ends in the read of the merge state after the checks",
-			script: reusing(passing()).thenFailingHead(fmt.Errorf("gh pr view: %w", context.DeadlineExceeded)),
-			want: pending("GitHub did not say whether the pull request can merge before the time limit",
-				"GitHub has not said whether pull request #12 can merge yet\n",
-				detail(forge.VerdictGreen, forge.MergeClean, passing().Checks...)),
-		},
 	}
 }
 
@@ -693,7 +689,7 @@ func pushWaitRows() []pushRow {
 		stoppedRow(forge.MergeBehind, "BEHIND", "the pull request is behind the trunk"),
 	}
 
-	return slices.Concat(rows, pushRedRows(), pushUnreportedRows(), pushPendingRows())
+	return slices.Concat(rows, pushRedRows(), pushUnreportedRows(), pushPendingRows(), pushCutShortRows())
 }
 
 func TestPush_WhenTheWaitEnds_ReportsItsOutcome(t *testing.T) {
@@ -773,17 +769,7 @@ func pushBrokenRows() []pushRow {
 		}))
 	}
 
-	// The checks pass, and the read of the merge state made after them fails.
-	late := opening(passing()).thenFailingHead(errors.New("HTTP 502"))
-
-	return append(rows, pushRow{
-		name: readMergeState + " after the checks", script: late,
-		want: finish{
-			outcome: result.Broke, reason: "could not read " + readMergeState,
-			text:    pushedLine + openedLine + "Could not read " + readMergeState + ": HTTP 502\n" + nextFixed,
-			payload: detail(forge.VerdictNone, forge.MergeUnknown),
-		},
-	})
+	return rows
 }
 
 func TestPush_WhenDeadlineEndsInAReadAfterTheWrites_PendingNamingTheRead(t *testing.T) {

@@ -78,13 +78,43 @@ func New(tb testing.TB, trunk string) *Fixture {
 	f.Git("config", "--local", "user.email", AuthorEmail)
 	f.Git("config", "--local", "commit.gpgsign", "false")
 	f.Git("remote", "add", origin, f.originURL())
-	f.write(f.dir, dirtyPath, "fixture\n")
-	f.write(f.dir, stagedPath, "fixture\n")
+	WriteFile(f.tb, f.dir, dirtyPath, "fixture\n")
+	WriteFile(f.tb, f.dir, stagedPath, "fixture\n")
 	f.Git("add", "--", dirtyPath, stagedPath)
 	f.Git("commit", "--quiet", "--message", "initial commit")
 	f.Push(trunk)
 
 	return f
+}
+
+// NewServed builds a fixture standing on branch with one commit past trunk, whose origin URL is
+// url, and returns it with the environment that serves ssh URLs of origin from the bare origin.
+func NewServed(tb testing.TB, trunk, branch, url string) (*Fixture, []string) {
+	tb.Helper()
+
+	f := New(tb, trunk)
+	f.Commits(branch, "work on "+branch)
+	f.SetOriginURL(url)
+
+	return f, f.ServedEnv(f.OriginDir())
+}
+
+// Env returns an environment cut off from the user's git setup, with a home in a temporary
+// directory of its own, for a git runner that needs no fixture.
+func Env(tb testing.TB) []string {
+	tb.Helper()
+
+	return isolatedEnv(tb.TempDir())
+}
+
+// WriteFile writes content to the file name in dir, and fails the test when it cannot.
+func WriteFile(tb testing.TB, dir, name, content string) {
+	tb.Helper()
+
+	err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600)
+	if err != nil {
+		tb.Fatalf("write %s: %v", name, err)
+	}
 }
 
 // isolatedEnv returns the process environment with everything that could bring in the user's git
@@ -117,6 +147,10 @@ func (f *Fixture) Dir() string { return f.dir }
 
 // OriginDir returns the bare origin's directory.
 func (f *Fixture) OriginDir() string { return f.originDir }
+
+// MissingOriginDir returns a location beside the bare origin that holds no repository, for an
+// origin that does not answer.
+func (f *Fixture) MissingOriginDir() string { return f.originDir + "-missing" }
 
 // Env returns the environment every fixture git call runs with, for a caller's own git runner.
 func (f *Fixture) Env() []string { return slices.Clone(f.env) }
@@ -206,10 +240,22 @@ func (f *Fixture) Detach() {
 	f.Git("switch", "--quiet", "--detach")
 }
 
+// DetachOriginHead turns origin's HEAD into a plain ref that names no branch.
+func (f *Fixture) DetachOriginHead() {
+	f.tb.Helper()
+	f.OriginGit("update-ref", "--no-deref", "HEAD", f.OriginGit("rev-parse", "HEAD"))
+}
+
+// CorruptIndex overwrites the working repository's index with bytes git cannot parse.
+func (f *Fixture) CorruptIndex() {
+	f.tb.Helper()
+	WriteFile(f.tb, filepath.Join(f.dir, ".git"), "index", strings.Repeat("not what git wrote here\n", 4))
+}
+
 // DirtyFile leaves an unstaged change in a tracked file and returns its path relative to Dir.
 func (f *Fixture) DirtyFile() string {
 	f.tb.Helper()
-	f.write(f.dir, dirtyPath, "dirty\n")
+	WriteFile(f.tb, f.dir, dirtyPath, "dirty\n")
 
 	return dirtyPath
 }
@@ -217,7 +263,7 @@ func (f *Fixture) DirtyFile() string {
 // StagedFile stages a change to a tracked file and returns its path relative to Dir.
 func (f *Fixture) StagedFile() string {
 	f.tb.Helper()
-	f.write(f.dir, stagedPath, "staged\n")
+	WriteFile(f.tb, f.dir, stagedPath, "staged\n")
 	f.Git("add", "--", stagedPath)
 
 	return stagedPath
@@ -226,7 +272,7 @@ func (f *Fixture) StagedFile() string {
 // UntrackedFile creates a file git does not track and returns its path relative to Dir.
 func (f *Fixture) UntrackedFile() string {
 	f.tb.Helper()
-	f.write(f.dir, untrackedPath, "untracked\n")
+	WriteFile(f.tb, f.dir, untrackedPath, "untracked\n")
 
 	return untrackedPath
 }
@@ -333,20 +379,11 @@ func (f *Fixture) commit(dir, subject string) string {
 	f.serial++
 	name := fmt.Sprintf("change-%d.txt", f.serial)
 
-	f.write(dir, name, subject+"\n")
+	WriteFile(f.tb, dir, name, subject+"\n")
 	f.run(dir, "add", "--", name)
 	f.run(dir, "commit", "--quiet", "--message", subject)
 
 	return f.run(dir, "rev-parse", "HEAD")
-}
-
-func (f *Fixture) write(dir, name, content string) {
-	f.tb.Helper()
-
-	err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600)
-	if err != nil {
-		f.tb.Fatalf("write %s: %v", name, err)
-	}
 }
 
 func (f *Fixture) run(dir string, args ...string) string {

@@ -190,7 +190,7 @@ func callTimes[T any](t *testing.T, times int, call func() (T, error)) []T {
 	return values
 }
 
-func TestFake_AnswersScriptedValue(t *testing.T) {
+func TestFake_WhenOperationIsScripted_ReturnsItsValue(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range operations() {
@@ -253,14 +253,22 @@ func TestFake_Calls_WhenEveryOperationIsCalled_RecordsThemInOrder(t *testing.T) 
 
 	fake := forgetest.New(t, script(nil))
 
-	var want []forgetest.Call
-	for _, op := range operations() {
-		want = append(want, op.made)
-	}
-
 	callEach(t, fake)
 
-	assert.Check(t, is.DeepEqual(fake.Calls(), want))
+	var got []forgetest.Op
+	for _, call := range fake.Calls() {
+		got = append(got, call.Op)
+	}
+
+	want := []forgetest.Op{
+		forgetest.OpIdentity,
+		forgetest.OpFindChanges,
+		forgetest.OpOpenChange,
+		forgetest.OpHead,
+		forgetest.OpTrunkProtection,
+		forgetest.OpVerdict,
+	}
+	assert.Check(t, is.DeepEqual(got, want))
 }
 
 func TestFake_Head_WhenCalledPastTheLastStep_AdvancesOneStepPerCallThenRepeatsTheLast(t *testing.T) {

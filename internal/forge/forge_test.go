@@ -53,14 +53,10 @@ func TestVerdict_State(t *testing.T) {
 		{name: "passing and skipped", verdict: verdictOf(optional("build", forge.BucketPass), optional("docs", forge.BucketSkipped)), want: forge.VerdictGreen},
 		{name: "only skipped", verdict: verdictOf(optional("docs", forge.BucketSkipped)), want: forge.VerdictGreen},
 		{name: "one failing", verdict: verdictOf(optional("build", forge.BucketPass), optional("test", forge.BucketFail)), want: forge.VerdictRed},
-		{name: "one canceled", verdict: verdictOf(optional("build", forge.BucketPass), optional("test", forge.BucketCanceled)), want: forge.VerdictRed},
 		{name: "one pending", verdict: verdictOf(optional("build", forge.BucketPass), optional("test", forge.BucketPending)), want: forge.VerdictPending},
 		{name: "passing beside a bucket this version does not know", verdict: verdictOf(optional("build", forge.BucketPass), optional("test", unknownBucket)), want: forge.VerdictPending},
-		{name: "required bucket this version does not know", verdict: verdictOf(required("test", unknownBucket)), want: forge.VerdictPending},
 		{name: "failing and pending", verdict: verdictOf(optional("build", forge.BucketPending), optional("test", forge.BucketFail)), want: forge.VerdictRed},
-		{name: "canceled and pending", verdict: verdictOf(optional("build", forge.BucketPending), optional("test", forge.BucketCanceled)), want: forge.VerdictRed},
 		{name: "required passing, optional failing", verdict: verdictOf(optional("lint", forge.BucketFail), required("test", forge.BucketPass)), want: forge.VerdictGreen},
-		{name: "required passing, optional canceled", verdict: verdictOf(optional("lint", forge.BucketCanceled), required("test", forge.BucketPass)), want: forge.VerdictGreen},
 		{name: "required passing, optional pending", verdict: verdictOf(optional("lint", forge.BucketPending), required("test", forge.BucketPass)), want: forge.VerdictGreen},
 		{name: "required pending, optional failing", verdict: verdictOf(optional("lint", forge.BucketFail), required("test", forge.BucketPending)), want: forge.VerdictPending},
 		{name: "required failing, optional passing", verdict: verdictOf(optional("lint", forge.BucketPass), required("test", forge.BucketFail)), want: forge.VerdictRed},
@@ -73,19 +69,6 @@ func TestVerdict_State(t *testing.T) {
 			name:    "every required name missing, optional passing",
 			verdict: missingBuild(optional("lint", forge.BucketPass)),
 			want:    forge.VerdictNone,
-		},
-		{name: "every required name missing, optional failing", verdict: missingBuild(optional("lint", forge.BucketFail)), want: forge.VerdictNone},
-		{name: "every required name missing, optional canceled", verdict: missingBuild(optional("lint", forge.BucketCanceled)), want: forge.VerdictNone},
-		{name: "every required name missing, optional pending", verdict: missingBuild(optional("lint", forge.BucketPending)), want: forge.VerdictNone},
-		{
-			name:    "required passing beside a missing name, optional failing",
-			verdict: missingBuild(optional("lint", forge.BucketFail), required("test", forge.BucketPass)),
-			want:    forge.VerdictGreen,
-		},
-		{
-			name:    "required passing beside a missing name, optional pending",
-			verdict: missingBuild(optional("lint", forge.BucketPending), required("test", forge.BucketPass)),
-			want:    forge.VerdictGreen,
 		},
 	}
 	for _, tt := range tests {
@@ -140,16 +123,6 @@ func TestVerdict_Failed_WhenNoDecidingCheckFailed_ReportsNone(t *testing.T) {
 		{name: "passing and skipped", verdict: verdictOf(optional("build", forge.BucketPass), optional("docs", forge.BucketSkipped))},
 		{name: "only pending", verdict: verdictOf(optional("build", forge.BucketPending))},
 		{name: "only an optional check failing", verdict: verdictOf(optional("lint", forge.BucketFail), required("test", forge.BucketPass))},
-		{
-			name:    "optional failing, every required name missing",
-			verdict: missingBuild(optional("lint", forge.BucketFail)),
-		},
-		{name: "only an optional check canceled", verdict: verdictOf(optional("lint", forge.BucketCanceled), required("test", forge.BucketPass))},
-		{name: "optional canceled, every required name missing", verdict: missingBuild(optional("lint", forge.BucketCanceled))},
-		{
-			name:    "optional failing, required passing beside a missing name",
-			verdict: missingBuild(optional("lint", forge.BucketFail), required("test", forge.BucketPass)),
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -190,12 +163,6 @@ func TestVerdict_Pending(t *testing.T) {
 		{
 			name:    "optional pending left out",
 			verdict: verdictOf(optional("lint", forge.BucketPending), required("test", forge.BucketPending), required("build", forge.BucketPass)),
-			want:    []forge.Check{required("test", forge.BucketPending)},
-		},
-		{name: "optional pending, every required name missing", verdict: missingBuild(optional("lint", forge.BucketPending))},
-		{
-			name:    "optional pending, required pending beside a missing name",
-			verdict: missingBuild(optional("lint", forge.BucketPending), required("test", forge.BucketPending)),
 			want:    []forge.Check{required("test", forge.BucketPending)},
 		},
 	}

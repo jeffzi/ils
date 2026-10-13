@@ -152,14 +152,7 @@ const (
 func unreachable(t *testing.T, f *gittest.Fixture) {
 	t.Helper()
 
-	f.SetOriginURL(filepath.ToSlash(f.OriginDir()) + "-missing")
-}
-
-// detachOriginHead turns origin's HEAD into a plain ref that names no branch.
-func detachOriginHead(t *testing.T, f *gittest.Fixture) {
-	t.Helper()
-
-	f.OriginGit("update-ref", "--no-deref", "HEAD", f.OriginGit("rev-parse", "HEAD"))
+	f.SetOriginURL(filepath.ToSlash(f.MissingOriginDir()))
 }
 
 // decoyHead gives origin a symbolic ref outside its own HEAD whose name ends in HEAD and that names
@@ -263,10 +256,7 @@ func TestRepo_Trunk_WhenOriginAnswers_ReturnsDefaultBranch(t *testing.T) {
 
 func TestRepo_OriginMethods_WhenOriginDoesNotAnswer_ReturnsRemoteError(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		call func(ctx context.Context, repo git.Repo) error
-		name string
-	}{
+	tests := []repoCall{
 		{name: "Trunk", call: func(ctx context.Context, repo git.Repo) error { _, err := repo.Trunk(ctx); return err }},
 		{name: "RemoteBranch", call: func(ctx context.Context, repo git.Repo) error {
 			_, _, err := repo.RemoteBranch(ctx, trunk)
@@ -316,12 +306,12 @@ func TestRepo_Trunk_WhenHeadNamesNoBranch_ReturnsErrNoSymref(t *testing.T) {
 		arrange func(t *testing.T, f *gittest.Fixture)
 		name    string
 	}{
-		{name: "head is not symbolic", arrange: detachOriginHead},
+		{name: "head is not symbolic", arrange: func(_ *testing.T, f *gittest.Fixture) { f.DetachOriginHead() }},
 		{
 			name: "only another head is symbolic",
 			arrange: func(t *testing.T, f *gittest.Fixture) {
 				t.Helper()
-				detachOriginHead(t, f)
+				f.DetachOriginHead()
 				decoyHead(t, f)
 			},
 		},
@@ -500,23 +490,9 @@ func TestRepo_Push_WhenOriginHasCommitsTheBranchLacks_RefusesWithPushError(t *te
 
 func TestRepo_OriginMethods_WhenContextCanceled_ReturnsContextError(t *testing.T) {
 	t.Parallel()
-	repo := newRepo(gittest.New(t, trunk))
-	tests := []struct {
-		call func(ctx context.Context) error
-		name string
-	}{
-		{name: "OriginURLs", call: func(ctx context.Context) error { _, err := repo.OriginURLs(ctx); return err }},
-		{name: "Push", call: func(ctx context.Context) error { return repo.Push(ctx, topic) }},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			ctx, cancel := context.WithCancel(t.Context())
-			cancel()
 
-			err := tt.call(ctx)
-
-			assert.Check(t, is.ErrorIs(err, context.Canceled))
-		})
-	}
+	checkCanceled(t, []repoCall{
+		{name: "OriginURLs", call: func(ctx context.Context, repo git.Repo) error { _, err := repo.OriginURLs(ctx); return err }},
+		{name: "Push", call: func(ctx context.Context, repo git.Repo) error { return repo.Push(ctx, topic) }},
+	})
 }

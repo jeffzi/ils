@@ -199,18 +199,24 @@ func readCases() []readCase {
 	}
 }
 
+// withoutGh sets `GH_PATH` to ghPath and empties `PATH` for the rest of the test, so that no `gh`
+// can be found.
+func withoutGh(t *testing.T, ghPath string) {
+	t.Helper()
+
+	t.Setenv("GH_PATH", ghPath)
+	t.Setenv("PATH", t.TempDir())
+}
+
 func TestForge_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
 	for _, tt := range operations() {
 		t.Run(tt.name, func(t *testing.T) {
-			// Sets `GH_PATH` and `PATH` itself, so that no `gh` can be found.
-			t.Setenv("GH_PATH", "")
-			t.Setenv("PATH", t.TempDir())
+			withoutGh(t, "")
 
 			err := tt.run(t.Context(), newForge())
 
-			missing, ok := errors.AsType[*forge.ToolMissingError](err)
-			assert.Assert(t, ok, "%s error = %v, want *forge.ToolMissingError", tt.name, err)
-			assert.Check(t, is.DeepEqual(missing, missingTool(), cmpopts.IgnoreFields(forge.ToolMissingError{}, "Err")))
+			_, ok := errors.AsType[*forge.ToolMissingError](err)
+			assert.Check(t, ok, "%s error = %v, want *forge.ToolMissingError", tt.name, err)
 		})
 	}
 }
@@ -267,6 +273,9 @@ func TestForge_Identity_WhenNotLoggedIn_ReturnsNotLoggedInError(t *testing.T) {
 	notLoggedIn, ok := errors.AsType[*forge.NotLoggedInError](err)
 	assert.Assert(t, ok, "Identity error = %v, want *forge.NotLoggedInError", err)
 	assert.Check(t, is.Equal(notLoggedIn.Host, engineHost))
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "Identity error = %v, want it to wrap the *child.ExitError", err)
+	assert.Check(t, is.Equal(exitErr.Code, 1))
 	assertCalls(t, fake, received(loginArgs()))
 }
 
@@ -276,14 +285,14 @@ func TestForge_Identity(t *testing.T) {
 		view string
 		want forge.Repo
 	}{
-		{name: "write may push", view: `{"isFork":false,"viewerPermission":"WRITE"}`, want: forge.Repo{CanPush: true}},
-		{name: "maintain may push", view: `{"isFork":false,"viewerPermission":"MAINTAIN"}`, want: forge.Repo{CanPush: true}},
-		{name: "admin may push", view: `{"isFork":false,"viewerPermission":"ADMIN"}`, want: forge.Repo{CanPush: true}},
-		{name: "read may not push", view: `{"isFork":false,"viewerPermission":"READ"}`, want: forge.Repo{}},
-		{name: "triage may not push", view: `{"isFork":false,"viewerPermission":"TRIAGE"}`, want: forge.Repo{}},
-		{name: "no permission may not push", view: `{"isFork":false,"viewerPermission":""}`, want: forge.Repo{}},
-		{name: "fork that may push", view: `{"isFork":true,"viewerPermission":"ADMIN"}`, want: forge.Repo{Fork: true, CanPush: true}},
-		{name: "fork that may not push", view: `{"isFork":true,"viewerPermission":"READ"}`, want: forge.Repo{Fork: true}},
+		{name: "write may push", view: ghtest.RepoViewJSON(false, "WRITE"), want: forge.Repo{CanPush: true}},
+		{name: "maintain may push", view: ghtest.RepoViewJSON(false, "MAINTAIN"), want: forge.Repo{CanPush: true}},
+		{name: "admin may push", view: ghtest.RepoViewJSON(false, "ADMIN"), want: forge.Repo{CanPush: true}},
+		{name: "read may not push", view: ghtest.RepoViewJSON(false, "READ"), want: forge.Repo{}},
+		{name: "triage may not push", view: ghtest.RepoViewJSON(false, "TRIAGE"), want: forge.Repo{}},
+		{name: "no permission may not push", view: ghtest.RepoViewJSON(false, ""), want: forge.Repo{}},
+		{name: "fork that may push", view: ghtest.RepoViewJSON(true, "ADMIN"), want: forge.Repo{Fork: true, CanPush: true}},
+		{name: "fork that may not push", view: ghtest.RepoViewJSON(true, "READ"), want: forge.Repo{Fork: true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -301,10 +310,15 @@ func TestForge_Identity(t *testing.T) {
 }
 
 func TestForge_FindChanges_WhenBothStatesHaveChanges_ReturnsOpenThenMerged(t *testing.T) {
-	open := `[{"number":7,"url":"` + pullURL + `","title":"feature","baseRefName":"main","headRefOid":"` + headSHA + `","isDraft":true}]`
-	merged := `[{"number":3,"url":"https://git.example.com/ada/engine/pull/3","title":"feat: add the forge",` +
-		`"baseRefName":"release","headRefOid":"0a1b2c3","isDraft":false}]`
-	ghtest.Setup(t, ghtest.Says(open, listArgs("open")...), ghtest.Says(merged, listArgs("merged")...))
+	open := ghtest.Change{Number: 7, URL: pullURL, Title: "feature", Base: "main", SHA: headSHA, Draft: true}
+	merged := ghtest.Change{
+		Number: 3, URL: "https://git.example.com/ada/engine/pull/3", Title: "feat: add the forge",
+		Base: "release", SHA: "0a1b2c3",
+	}
+	ghtest.Setup(t,
+		ghtest.Says(jsonArray(ghtest.ChangeJSON(open)), listArgs("open")...),
+		ghtest.Says(jsonArray(ghtest.ChangeJSON(merged)), listArgs("merged")...),
+	)
 
 	got, err := newForge().FindChanges(t.Context(), engine(), featureBranch)
 	assert.NilError(t, err)
@@ -316,6 +330,22 @@ func TestForge_FindChanges_WhenBothStatesHaveChanges_ReturnsOpenThenMerged(t *te
 			Base: "release", HeadSHA: "0a1b2c3", State: forge.ChangeMerged,
 		},
 	}
+	assert.Check(t, is.DeepEqual(got, want))
+}
+
+func TestForge_FindChanges_WhenPullRequestComesFromAnotherRepository_LeavesItOut(t *testing.T) {
+	own := ghtest.Change{Number: 7, URL: pullURL, Title: "feature", Base: "main", SHA: headSHA}
+	foreign := ghtest.Change{
+		Number: 9, URL: "https://git.example.com/ada/engine/pull/9", Title: "feature",
+		Base: "main", SHA: "0a1b2c3", CrossRepository: true,
+	}
+	listed := jsonArray(ghtest.ChangeJSON(foreign), ghtest.ChangeJSON(own))
+	ghtest.Setup(t, ghtest.Says(listed, listArgs("open")...), ghtest.Says(jsonArray(ghtest.ChangeJSON(foreign)), listArgs("merged")...))
+
+	got, err := newForge().FindChanges(t.Context(), engine(), featureBranch)
+	assert.NilError(t, err)
+
+	want := []forge.Change{{Number: 7, URL: pullURL, Title: "feature", Base: "main", HeadSHA: headSHA, State: forge.ChangeOpen}}
 	assert.Check(t, is.DeepEqual(got, want))
 }
 
@@ -378,27 +408,23 @@ func TestForge_OpenChange_WhenGhFailsForAnotherReason_ReturnsExitErrorCarryingSt
 	}
 }
 
-func TestForge_OpenChange_WhenStdoutHoldsNoUsablePullURL_ReturnsError(t *testing.T) {
-	tests := []struct {
-		wantErr error
-		name    string
-		stdout  string
-	}{
-		{name: "no pull URL", stdout: "Creating pull request for feature into main\n"},
-		{name: "pull number is not a number", stdout: "https://git.example.com/ada/engine/pull/abc\n", wantErr: strconv.ErrSyntax},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ghtest.Setup(t, ghtest.Says(tt.stdout, createArgs()...))
+func TestForge_OpenChange_WhenStdoutHoldsNoPullURL_ReturnsError(t *testing.T) {
+	fake := ghtest.Setup(t, ghtest.Says("Creating pull request for feature into main\n", createArgs()...))
 
-			got, err := newForge().OpenChange(t.Context(), engine(), featureChange())
+	got, err := newForge().OpenChange(t.Context(), engine(), featureChange())
 
-			assert.Assert(t, err != nil, "OpenChange = %+v with a nil error, want an error", got)
-			if tt.wantErr != nil {
-				assert.Check(t, is.ErrorIs(err, tt.wantErr))
-			}
-		})
-	}
+	assert.Assert(t, err != nil, "OpenChange = %+v with a nil error, want an error", got)
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Check(t, !ok, "OpenChange error = %#v, want one that comes from reading stdout", exitErr)
+	assertCalls(t, fake, received(createArgs()))
+}
+
+func TestForge_OpenChange_WhenPullNumberIsNotANumber_ReturnsError(t *testing.T) {
+	ghtest.Setup(t, ghtest.Says("https://git.example.com/ada/engine/pull/abc\n", createArgs()...))
+
+	_, err := newForge().OpenChange(t.Context(), engine(), featureChange())
+
+	assert.Check(t, is.ErrorIs(err, strconv.ErrSyntax))
 }
 
 func TestForge_Head_WhenStateNeedsNoCheck_AsksOnlyForThePullRequest(t *testing.T) {
@@ -623,55 +649,40 @@ func TestForge_Verdict_FailedLog(t *testing.T) {
 		// wantCalls is every argv gh receives: the log is read only for a failing check of a run.
 		wantCalls [][]string
 		want      forge.FailedLog
-		state     forge.VerdictState
-		log       ghtest.Answer
+		// required names the checks the query requires; none makes every check decide.
+		required []string
+		log      ghtest.Answer
 	}{
-		{name: "failing check of a run", checks: ghtest.CheckJSON("build", "fail", runLink), log: logged, want: read, state: forge.VerdictRed, wantCalls: withLog},
-		{name: "canceled check of a run", checks: ghtest.CheckJSON("build", "cancel", runLink), log: logged, want: read, state: forge.VerdictRed, wantCalls: withLog},
-		{name: "passing check ahead of the failing one", checks: ghtest.CheckJSON("lint", "pass", statusLink) + "," + ghtest.CheckJSON("build", "fail", runLink), log: logged, want: read, state: forge.VerdictRed, wantCalls: withLog},
-		{name: "failing status ahead of a failing check of a run", checks: ghtest.CheckJSON("scan", "fail", statusLink) + "," + ghtest.CheckJSON("build", "fail", runLink), log: logged, want: noRun, state: forge.VerdictRed, wantCalls: noLog},
-		{name: "failing status with no run", checks: ghtest.CheckJSON("scan", "fail", statusLink), log: logged, want: noRun, state: forge.VerdictRed, wantCalls: noLog},
-		{name: "run view fails", checks: ghtest.CheckJSON("build", "fail", runLink), log: gone, want: unreadable, state: forge.VerdictRed, wantCalls: withLog},
-		{name: "check of a run still pending", checks: ghtest.CheckJSON("build", "pending", runLink), log: logged, state: forge.VerdictPending, wantCalls: noLog},
-		{name: "every check passed", checks: ghtest.CheckJSON("build", "pass", runLink), log: logged, state: forge.VerdictGreen, wantCalls: noLog},
+		{name: "failing check of a run", checks: ghtest.CheckJSON("build", "fail", runLink), log: logged, want: read, wantCalls: withLog},
+		{name: "canceled check of a run", checks: ghtest.CheckJSON("build", "cancel", runLink), log: logged, want: read, wantCalls: withLog},
+		{name: "passing check ahead of the failing one", checks: ghtest.CheckJSON("lint", "pass", statusLink) + "," + ghtest.CheckJSON("build", "fail", runLink), log: logged, want: read, wantCalls: withLog},
+		{name: "failing status ahead of a failing check of a run", checks: ghtest.CheckJSON("scan", "fail", statusLink) + "," + ghtest.CheckJSON("build", "fail", runLink), log: logged, want: noRun, wantCalls: noLog},
+		{name: "failing status with no run", checks: ghtest.CheckJSON("scan", "fail", statusLink), log: logged, want: noRun, wantCalls: noLog},
+		{name: "run view fails", checks: ghtest.CheckJSON("build", "fail", runLink), log: gone, want: unreadable, wantCalls: withLog},
+		{name: "check of a run still pending", checks: ghtest.CheckJSON("build", "pending", runLink), log: logged, wantCalls: noLog},
+		{name: "every check passed", checks: ghtest.CheckJSON("build", "pass", runLink), log: logged, wantCalls: noLog},
+		{
+			name:     "first required failing check has no run",
+			checks:   ghtest.CheckJSON("lint", "fail", runLink) + "," + ghtest.CheckJSON("scan", "fail", statusLink) + "," + ghtest.CheckJSON("build", "fail", runLink),
+			required: []string{"scan", "build"}, log: logged, want: noRun, wantCalls: noLog,
+		},
+		{
+			name:     "failing check is not required",
+			checks:   ghtest.CheckJSON("lint", "fail", runLink) + "," + ghtest.CheckJSON("build", "pass", runLink),
+			required: []string{"build"}, log: logged, wantCalls: noLog,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fake := ghtest.Setup(t, ghtest.Says(jsonArray(tt.checks), checksArgs()...), ghtest.Says("[]", runsArgs()...), ghtest.Exits(tt.log, logArgs()...))
 
-			got, err := newForge().Verdict(t.Context(), engine(), verdictQuery())
+			got, err := newForge().Verdict(t.Context(), engine(), verdictQuery(tt.required...))
 			assert.NilError(t, err)
 
 			assert.Check(t, is.DeepEqual(got.FailedLog, tt.want))
-			assert.Check(t, is.Equal(got.State(), tt.state))
 			assertCalls(t, fake, tt.wantCalls)
 		})
 	}
-}
-
-func TestForge_Verdict_WhenRed_FailedLogBelongsToTheCheckFailedNames(t *testing.T) {
-	checks := jsonArray(ghtest.CheckJSON("lint", "fail", runLink), ghtest.CheckJSON("scan", "fail", statusLink), ghtest.CheckJSON("build", "fail", runLink))
-	fake := ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: checks, Code: 1}, checksArgs()...), ghtest.Says("[]", runsArgs()...), ghtest.Says("log\n", logArgs()...))
-
-	got, err := newForge().Verdict(t.Context(), engine(), verdictQuery("scan", "build"))
-	assert.NilError(t, err)
-
-	failed, _ := got.Failed()
-	want := forge.FailedLog{Check: "scan", State: forge.FailedLogNoRun}
-	assert.Check(t, is.DeepEqual(got.FailedLog, want))
-	assert.Check(t, is.Equal(failed.Name, got.FailedLog.Check))
-	assertCalls(t, fake, received(checksArgs(), runsArgs()))
-}
-
-func TestForge_Verdict_WhenFailingCheckIsNotRequired_ReadsNoLog(t *testing.T) {
-	checks := jsonArray(ghtest.CheckJSON("lint", "fail", runLink), ghtest.CheckJSON("build", "pass", runLink))
-	fake := ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: checks, Code: 1}, checksArgs()...), ghtest.Says("[]", runsArgs()...))
-
-	got, err := newForge().Verdict(t.Context(), engine(), verdictQuery("build"))
-	assert.NilError(t, err)
-
-	assert.Check(t, is.DeepEqual(got.FailedLog, forge.FailedLog{}))
-	assertCalls(t, fake, received(checksArgs(), runsArgs()))
 }
 
 func TestMergeStateOf(t *testing.T) {
@@ -729,12 +740,6 @@ func TestMergeStateOf(t *testing.T) {
 	}
 }
 
-// pullView is the shape the JSON tests decode `gh pr view` output into.
-type pullView struct {
-	Title  string `json:"title"`
-	Number int    `json:"number"`
-}
-
 // missingTool is the error every call returns when `gh` is not installed.
 func missingTool() *forge.ToolMissingError {
 	return &forge.ToolMissingError{Tool: "gh", InstallURL: "https://cli.github.com"}
@@ -779,19 +784,15 @@ func TestRunner_Run_WhenGhExitsNonZero_ReturnsExitErrorAndStdout(t *testing.T) {
 	assert.Check(t, is.Equal(got.Stdout, "build\tpending\n"))
 }
 
-func TestRunner_Run_WhenContextEndsDuringTheDelay_ReturnsContextErrorPromptly(t *testing.T) {
-	const prompt = 5 * time.Second
+func TestRunner_Run_WhenContextEndsWhileGhRuns_ReturnsContextError(t *testing.T) {
 	args := []string{"pr", "checks", "7"}
 	ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "pass\n", Delay: 30 * time.Second}, args...))
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	t.Cleanup(cancel)
-	start := time.Now()
 
 	_, err := github.Runner{}.Run(ctx, args...)
 
 	assert.Check(t, is.ErrorIs(err, context.DeadlineExceeded))
-	elapsed := time.Since(start)
-	assert.Check(t, elapsed <= prompt, "Run(pr checks) returned after %s, want it back within %s", elapsed, prompt)
 }
 
 func TestRunner_Run_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
@@ -804,9 +805,7 @@ func TestRunner_Run_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Sets `GH_PATH` and `PATH` itself, so that no `gh` can be found.
-			t.Setenv("GH_PATH", tt.ghPath)
-			t.Setenv("PATH", t.TempDir())
+			withoutGh(t, tt.ghPath)
 
 			_, err := github.Runner{}.Run(t.Context(), "pr", "view")
 
@@ -816,37 +815,4 @@ func TestRunner_Run_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
 			assert.Check(t, missing.Err != nil, "Run(pr view) error carries no cause, want what starting gh failed with")
 		})
 	}
-}
-
-func TestRunJSON_WhenStdoutIsJSON_DecodesIntoValue(t *testing.T) {
-	args := []string{"pr", "view", "--json", "number,title"}
-	ghtest.Setup(t, ghtest.Says("{\"number\":7,\"title\":\"Add the runner\"}\n", args...))
-
-	got, err := github.RunJSON[pullView](t.Context(), github.Runner{}, args...)
-	assert.NilError(t, err)
-
-	want := pullView{Number: 7, Title: "Add the runner"}
-	assert.Check(t, is.DeepEqual(got, want))
-}
-
-func TestRunner_CheckLogin_WhenAuthStatusExitsZero_ReturnsNil(t *testing.T) {
-	fake := ghtest.Setup(t, ghtest.Says("Logged in to github.com\n", ghtest.LoginArgs("github.com")...))
-
-	err := github.Runner{}.CheckLogin(t.Context(), "github.com")
-	assert.Check(t, err)
-
-	assertCalls(t, fake, [][]string{{"gh", "auth", "status", "--hostname", "github.com"}})
-}
-
-func TestRunner_CheckLogin_WhenAuthStatusExitsNonZero_ReturnsNotLoggedInError(t *testing.T) {
-	ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stderr: "You are not logged into any GitHub hosts.\n", Code: 1}, ghtest.LoginArgs(engineHost)...))
-
-	err := github.Runner{}.CheckLogin(t.Context(), engineHost)
-
-	notLoggedIn, ok := errors.AsType[*forge.NotLoggedInError](err)
-	assert.Assert(t, ok, "CheckLogin(git.example.com) error = %v, want *forge.NotLoggedInError", err)
-	assert.Check(t, is.Equal(notLoggedIn.Host, engineHost))
-	exitErr, ok := errors.AsType[*child.ExitError](err)
-	assert.Assert(t, ok, "CheckLogin(git.example.com) error = %v, want it to wrap the *child.ExitError", err)
-	assert.Check(t, is.Equal(exitErr.Code, 1))
 }

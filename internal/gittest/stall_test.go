@@ -18,10 +18,9 @@ const (
 	patience = 10 * time.Second
 )
 
-func TestSilentListener_WhenClientConnects_SendsNothing(t *testing.T) {
-	t.Parallel()
-
-	addr, connected := gittest.SilentListener(t)
+// dial connects a client to addr and closes the connection when the test ends.
+func dial(t *testing.T, addr string) net.Conn {
+	t.Helper()
 
 	var dialer net.Dialer
 
@@ -29,14 +28,32 @@ func TestSilentListener_WhenClientConnects_SendsNothing(t *testing.T) {
 	assert.NilError(t, err)
 	t.Cleanup(func() { assert.Check(t, conn.Close()) })
 
+	return conn
+}
+
+func TestSilentListener_WhenClientConnects_ClosesConnected(t *testing.T) {
+	t.Parallel()
+
+	addr, connected := gittest.SilentListener(t)
+
+	dial(t, addr)
+
 	select {
 	case <-connected:
 	case <-time.After(patience):
 		t.Fatal("connected stayed open after a client connected, want it closed")
 	}
+}
 
+func TestSilentListener_WhenClientConnects_SendsNothing(t *testing.T) {
+	t.Parallel()
+
+	addr, _ := gittest.SilentListener(t)
+	conn := dial(t, addr)
 	assert.NilError(t, conn.SetReadDeadline(time.Now().Add(quiet)))
-	_, err = conn.Read(make([]byte, 1))
+
+	_, err := conn.Read(make([]byte, 1))
+
 	assert.Check(t, is.ErrorIs(err, os.ErrDeadlineExceeded))
 }
 

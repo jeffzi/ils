@@ -66,18 +66,15 @@ type scene struct {
 func newScene(t *testing.T, arrange func(*gittest.Fixture), script forgetest.Script, offline bool) *scene {
 	t.Helper()
 
-	f := gittest.New(t, trunk)
-	f.Commits(topic, "tidy the readme")
-	f.SetOriginURL(fetchURL)
+	f, env := gittest.NewServed(t, trunk, topic, fetchURL)
 	f.SetPushURL(pushURL)
 
 	if arrange != nil {
 		arrange(f)
 	}
 
-	dir := f.OriginDir()
 	if offline {
-		dir += "-missing"
+		env = f.ServedEnv(f.MissingOriginDir())
 	}
 
 	recorder := &git.Recorder{}
@@ -89,7 +86,7 @@ func newScene(t *testing.T, arrange func(*gittest.Fixture), script forgetest.Scr
 		recorder: recorder,
 		gitDir:   f.Git("rev-parse", "--absolute-git-dir"),
 		deps: landing.Deps{
-			Repo:  git.Repo{Runner: git.Runner{Dir: f.Dir(), Env: f.ServedEnv(dir), Recorder: recorder}},
+			Repo:  git.Repo{Runner: git.Runner{Dir: f.Dir(), Env: env, Recorder: recorder}},
 			Forge: fake,
 		},
 	}
@@ -318,11 +315,9 @@ func trunkRefusals() []refusal {
 			script: allowed(), offline: true, asksForge: true, asksOrigin: true, want: unreachedText,
 		},
 		{
-			name: "origin's answer names no branch",
-			arrange: func(f *gittest.Fixture) {
-				f.OriginGit("update-ref", "--no-deref", "HEAD", f.OriginGit("rev-parse", "HEAD"))
-			},
-			script: allowed(), asksForge: true, asksOrigin: true, want: unreachedText,
+			name:    "origin's answer names no branch",
+			arrange: (*gittest.Fixture).DetachOriginHead,
+			script:  allowed(), asksForge: true, asksOrigin: true, want: unreachedText,
 		},
 	}
 }
@@ -415,7 +410,7 @@ func TestPreconditions_WhenForgeIdentityFailsUntyped_BrokeNamingTheRead(t *testi
 func TestPreconditions_WhenDirectoryIsNotARepository_BrokeNamingTheRead(t *testing.T) {
 	t.Parallel()
 	deps := landing.Deps{
-		Repo:  git.Repo{Runner: git.Runner{Dir: t.TempDir(), Env: gittest.New(t, trunk).Env()}},
+		Repo:  git.Repo{Runner: git.Runner{Dir: t.TempDir(), Env: gittest.Env(t)}},
 		Forge: forgetest.New(t, forgetest.Script{}),
 	}
 

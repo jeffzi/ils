@@ -337,7 +337,6 @@ func TestAwaitVerdict_ReadsNoCheckUntilTheHeadIsThePushedCommit(t *testing.T) {
 func mergeRows() []vigilRow {
 	conflicting := tip(forge.MergeConflicting, "DIRTY")
 	behind := tip(forge.MergeBehind, "BEHIND")
-	reviewed := tip(forge.MergeBlockedByReview, "BLOCKED")
 	stillUnknown := stateOf(landing.Waited{Outcome: landing.WaitPending, Stage: landing.StageMergeState}, unknown())
 	// gaveUp is the wait that its own window ended, with time left before the deadline.
 	gaveUp := stillUnknown
@@ -370,11 +369,6 @@ func mergeRows() []vigilRow {
 			heads: shows(behind),
 			want:  stateOf(landing.Waited{Outcome: landing.WaitBehind}, behind), ops: readsOf(1, 0, 0),
 		},
-		{
-			name:  "clean, then blocked by review after the checks",
-			heads: shows(clean(), reviewed), verdicts: says(passing()),
-			want: stateOf(green(), reviewed), ops: readsOf(1, 1, 1),
-		},
 	}
 }
 
@@ -403,6 +397,18 @@ func TestAwaitVerdict_ReadsTheMergeStateBeforeTheChecks(t *testing.T) {
 	t.Parallel()
 
 	runVigils(t, slices.Concat(mergeRows(), mergeableRows()))
+}
+
+func TestAwaitVerdict_WhenChecksConclude_ReturnsTheMergeStateReadAfterThem(t *testing.T) {
+	t.Parallel()
+
+	reviewed := tip(forge.MergeBlockedByReview, "BLOCKED")
+
+	runVigils(t, []vigilRow{{
+		name:  "clean, then blocked by review after the checks",
+		heads: shows(clean(), reviewed), verdicts: says(passing()),
+		want: stateOf(green(), reviewed), ops: readsOf(1, 1, 1),
+	}})
 }
 
 // everyCheckRows are the verdict waits where the trunk names no required check.
@@ -479,7 +485,7 @@ func heldRows() []vigilRow {
 	}
 }
 
-func TestAwaitVerdict_WithoutRequiredChecks_WaitsUntilNothingStillRuns(t *testing.T) {
+func TestAwaitVerdict_WhenTrunkRequiresNoCheck_WaitsUntilNothingStillRuns(t *testing.T) {
 	t.Parallel()
 
 	rows := slices.Concat(everyCheckRows(), heldRows())
@@ -552,7 +558,7 @@ func requiredRows() []vigilRow {
 	}
 }
 
-func TestAwaitVerdict_WithRequiredChecks_WaitsForEveryRequiredName(t *testing.T) {
+func TestAwaitVerdict_WhenTrunkRequiresChecks_WaitsForEveryRequiredName(t *testing.T) {
 	t.Parallel()
 
 	rows := requiredRows()

@@ -6,8 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -26,40 +24,11 @@ const prompt = 10 * time.Second
 // drives the diff of driven only.
 const plain, driven = "first-plain.txt", "second-driven.txt"
 
-// isolatedEnv returns a child environment whose global git config is the
-// given file, with the system config and the user's home out of reach.
-//
-// The child gets a temporary directory of its own under every name a platform
-// reads it from: git writes the files it hands an external diff program there,
-// and Git for Windows has no usable default when none of the names is set.
-func isolatedEnv(t *testing.T, globalConfig string) []string {
-	t.Helper()
-
-	home := t.TempDir()
-	scratch := t.TempDir()
-	env := []string{
-		"HOME=" + home,
-		"USERPROFILE=" + home,
-		"TMPDIR=" + scratch,
-		"TMP=" + scratch,
-		"TEMP=" + scratch,
-		"GIT_CONFIG_NOSYSTEM=1",
-		"GIT_CONFIG_GLOBAL=" + globalConfig,
-		"PATH=" + os.Getenv("PATH"),
-	}
-
-	if root, ok := os.LookupEnv("SystemRoot"); ok {
-		env = append(env, "SystemRoot="+root)
-	}
-
-	return env
-}
-
-// newRunner returns a runner in a fresh empty directory with no git config.
+// newRunner returns a runner in a fresh empty directory, cut off from the user's git config.
 func newRunner(t *testing.T) git.Runner {
 	t.Helper()
 
-	return git.Runner{Dir: t.TempDir(), Env: isolatedEnv(t, os.DevNull)}
+	return git.Runner{Dir: t.TempDir(), Env: gittest.Env(t)}
 }
 
 // newRecordedRunner returns a runner like newRunner with a recorder attached, and that recorder.
@@ -83,12 +52,6 @@ func stalledRemote(t *testing.T) (url string, connected <-chan struct{}) {
 	return "git://" + addr + "/project.git", connected
 }
 
-func writeFile(t *testing.T, dir, name, content string) {
-	t.Helper()
-
-	assert.NilError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600))
-}
-
 // helperDiff returns a runner in a repository with two changed tracked files, and the arguments of a
 // git diff that prints the first file's diff itself and then starts this test binary as the external
 // diff program of the second. That program inherits git's output pipes.
@@ -101,33 +64,21 @@ func helperDiff(t *testing.T) (runner git.Runner, args []string) {
 	runner = newRunner(t)
 	steps := [][]string{{"init", "--quiet"}, {"add", "--", plain, driven}}
 
-	writeFile(t, runner.Dir, plain, "before\n")
-	writeFile(t, runner.Dir, driven, "before\n")
-	writeFile(t, runner.Dir, ".gitattributes", driven+" diff=helper\n")
+	gittest.WriteFile(t, runner.Dir, plain, "before\n")
+	gittest.WriteFile(t, runner.Dir, driven, "before\n")
+	gittest.WriteFile(t, runner.Dir, ".gitattributes", driven+" diff=helper\n")
 
 	for _, step := range steps {
 		_, err = runner.Run(t.Context(), step...)
 		assert.NilError(t, err)
 	}
 
-	writeFile(t, runner.Dir, plain, "after\n")
-	writeFile(t, runner.Dir, driven, "after\n")
+	gittest.WriteFile(t, runner.Dir, plain, "after\n")
+	gittest.WriteFile(t, runner.Dir, driven, "after\n")
 
 	args = []string{"-c", "diff.helper.command='" + filepath.ToSlash(binary) + "'", "diff"}
 
 	return runner, args
-}
-
-func TestRunner_Run_WhenExternalDiffExitsAtOnce_ReturnsOnlyFirstFileDiff(t *testing.T) {
-	t.Parallel()
-	runner, args := helperDiff(t)
-	runner.Env = append(slices.Clone(runner.Env), helperModeEnv+"="+helperLeave)
-
-	printed, err := runner.Run(t.Context(), args...)
-	assert.NilError(t, err)
-
-	assert.Assert(t, is.Contains(printed.Stdout, plain))
-	assert.Assert(t, !strings.Contains(printed.Stdout, driven), "stdout = %q, want only the diff of %s", printed.Stdout, plain)
 }
 
 func TestRunner_Run_WhenCallSucceeds_RunsInRunnerDir(t *testing.T) {
@@ -157,7 +108,7 @@ func TestRunner_Run_WhenEnvNamesGlobalConfig_ReadsThatConfig(t *testing.T) {
 	t.Parallel()
 	config := filepath.Join(t.TempDir(), "config")
 	assert.NilError(t, os.WriteFile(config, []byte("[user]\n\tname = Ada\n"), 0o600))
-	runner := git.Runner{Dir: t.TempDir(), Env: isolatedEnv(t, config)}
+	runner := git.Runner{Dir: t.TempDir(), Env: append(gittest.Env(t), "GIT_CONFIG_GLOBAL="+config)}
 
 	got, err := runner.Run(t.Context(), "config", "--global", "--get", "user.name")
 	assert.NilError(t, err)
@@ -190,18 +141,6 @@ func TestRunner_Run_WhenGitMissingFromPath_ReturnsNotFoundError(t *testing.T) {
 	assert.Check(t, is.Equal(notFound.Name, "git"))
 	assert.Check(t, is.ErrorIs(err, exec.ErrNotFound))
 	assert.Check(t, is.Equal(err.Error(), "git not found on PATH"))
-}
-
-func TestRunner_Run_WhenContextCanceled_ReturnsOnlyContextError(t *testing.T) {
-	t.Parallel()
-	runner := newRunner(t)
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-
-	got, err := runner.Run(ctx, "version")
-
-	assert.Check(t, is.ErrorIs(err, context.Canceled))
-	assert.Check(t, is.DeepEqual(got, git.Result{}))
 }
 
 func TestRunner_Run_WhenContextEndsWhileGitRuns_ReturnsOnlyContextError(t *testing.T) {

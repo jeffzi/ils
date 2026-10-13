@@ -404,6 +404,43 @@ func changeRefusals() []pushRefusal {
 	}
 }
 
+// pushAccepted are the states of the branch that pass a check of Push another state fails, each
+// pushed and opened as a first push that ends green.
+func pushAccepted() []pushRow {
+	opens := greenAfter(pushedLine + openedLine)
+	sinceMerged := opening(passing()).with(func(script *forgetest.Script, _ string) {
+		script.FindChanges = listing([]forge.Change{change(merged, trunk, forge.ChangeMerged)})
+	})
+
+	return []pushRow{
+		{
+			name: "only a file git does not track", script: opening(passing()), want: opens,
+			arrange: func(f *gittest.Fixture) { f.UntrackedFile() },
+		},
+		{
+			name: "tip ahead of origin's copy", script: opening(passing()), want: opens,
+			arrange: func(f *gittest.Fixture) {
+				f.Publish(topic)
+				f.Commits(topic, "fix a typo")
+			},
+		},
+		{
+			name: "merged pull request sharing no commit past the trunk", script: sinceMerged, want: opens,
+			arrange: func(f *gittest.Fixture) {
+				f.Commits(spare, "earlier work")
+				f.LandPull(merged, spare)
+				f.Git("switch", "--quiet", topic)
+			},
+		},
+	}
+}
+
+func TestPush_WhenBranchPassesACheckAnotherStateFails_PushesIt(t *testing.T) {
+	t.Parallel()
+
+	runPushes(t, pushAccepted())
+}
+
 func TestPush_WhenSharedPreconditionFails_ReturnsItsRefusal(t *testing.T) {
 	t.Parallel()
 	s := newScene(t, (*gittest.Fixture).RemoveOrigin, forgetest.Script{}, false)
@@ -510,17 +547,6 @@ func TestPush_WhenOriginStopsAnswering_RefusesNamingWhatItWasAskedFor(t *testing
 	}
 }
 
-// spoil overwrites the file at the slash-separated path under the fixture's git directory with
-// bytes that git cannot parse.
-func spoil(t *testing.T, f *gittest.Fixture, path string) {
-	t.Helper()
-
-	garbage := []byte(strings.Repeat("not what git wrote here\n", 4))
-
-	err := os.WriteFile(filepath.Join(f.Dir(), ".git", filepath.FromSlash(path)), garbage, 0o600)
-	assert.NilError(t, err)
-}
-
 // lose deletes the commit sha from the working repository's object store, where the fixture keeps
 // every object in a file of its own.
 func lose(t *testing.T, f *gittest.Fixture, sha string) {
@@ -547,7 +573,7 @@ func brokenReads() []brokenRead {
 			name: "the index is corrupt", read: readTree,
 			arrange: func(t *testing.T, f *gittest.Fixture) string {
 				t.Helper()
-				spoil(t, f, "index")
+				f.CorruptIndex()
 
 				return "git status --porcelain=v1 -z --untracked-files=no: exit status 128: "
 			},
@@ -684,24 +710,6 @@ func TestPush_WhenDeadlineEndsDuringRead_RefusesNamingTheRead(t *testing.T) {
 			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
 		})
 	}
-}
-
-func TestPush_WhenGitGoesMissingAfterThePreconditions_RefusesWithAnInstallHint(t *testing.T) {
-	// Not parallel: the forge's hook empties PATH for the whole process.
-	s := newScene(t, landAndPublish, forgetest.Script{}, false)
-	before, path := s.written(), os.Getenv("PATH")
-	// Git is hidden once the pull requests are asked for, so the fetch of the merged head finds none.
-	script := hidingGitAt(t, landedScript(), forgetest.OpFindChanges)
-	s.useForge(t, script)
-
-	got := landing.Push(t.Context(), s.deps, pushRequest())
-
-	assertEnded(t, s, got, finish{outcome: result.Refused, text: noGit})
-	assertAsked(t, s, changesRead())
-
-	// The refs are read with git back on PATH.
-	t.Setenv("PATH", path)
-	assert.Check(t, is.Equal(s.written(), before))
 }
 
 func TestPush_WhenBranchHasNoCommitAtAll_RefusesAsNoCommitPastTheTrunk(t *testing.T) {

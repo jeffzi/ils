@@ -28,6 +28,31 @@ func newRepo(f *gittest.Fixture) git.Repo {
 	return git.Repo{Runner: git.Runner{Dir: f.Dir(), Env: f.Env()}}
 }
 
+// repoCall is one call on the repository, reduced to its error.
+type repoCall struct {
+	call func(ctx context.Context, repo git.Repo) error
+	name string
+}
+
+// checkCanceled runs each call on one repository under a context that has already ended, and fails
+// unless the call returns the context's error.
+func checkCanceled(t *testing.T, calls []repoCall) {
+	t.Helper()
+
+	repo := newRepo(gittest.New(t, trunk))
+	for _, tt := range calls {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+
+			err := tt.call(ctx, repo)
+
+			assert.Check(t, is.ErrorIs(err, context.Canceled))
+		})
+	}
+}
+
 func fetch(f *gittest.Fixture, ref string) {
 	f.Git("fetch", "--quiet", "origin", ref)
 }
@@ -47,8 +72,7 @@ func landed(t *testing.T) (f *gittest.Fixture, merged string) {
 	f = gittest.New(t, trunk)
 	shas := f.Commits(topic, "one", "two")
 	f.Push(topic)
-	f.PullRef(pullNumber, shas[1])
-	f.SquashOnOrigin(shas[1], "topic (#7)")
+	f.LandPull(pullNumber, shas[1])
 	f.RemoveFromOrigin(topic)
 	fetch(f, trunk)
 	fetch(f, pullRef)
@@ -61,7 +85,7 @@ func renameTracked(t *testing.T, f *gittest.Fixture) string {
 	t.Helper()
 
 	const before, after = "before.txt", "moved.txt"
-	writeFile(t, f.Dir(), before, "kept as is\n")
+	gittest.WriteFile(t, f.Dir(), before, "kept as is\n")
 	f.Git("add", before)
 	f.Git("commit", "--quiet", "--message", "add "+before)
 	f.Git("mv", before, after)
@@ -182,10 +206,7 @@ func TestRepo_GitDir_WhenInRepository_ReturnsAbsoluteGitDir(t *testing.T) {
 
 func TestRepo_WhenNotARepository_ReturnsExitError(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		call func(ctx context.Context, repo git.Repo) error
-		name string
-	}{
+	tests := []repoCall{
 		{name: "Standing", call: func(ctx context.Context, repo git.Repo) error { _, err := repo.Standing(ctx); return err }},
 		{name: "HeadSHA", call: func(ctx context.Context, repo git.Repo) error { _, err := repo.HeadSHA(ctx); return err }},
 		{name: "GitDir", call: func(ctx context.Context, repo git.Repo) error { _, err := repo.GitDir(ctx); return err }},
@@ -280,36 +301,15 @@ func TestRepo_DirtyFiles_WhenTrackedFileRenamedInIndex_ListsNewNameOnly(t *testi
 	}
 }
 
-func TestRepo_DirtyFiles_WhenStatusCannotRead_ReturnsExitError(t *testing.T) {
+func TestRepo_DirtyFiles_WhenIndexIsCorrupt_ReturnsExitError(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		arrange func(t *testing.T) git.Repo
-		name    string
-	}{
-		{name: "not a repository", arrange: outsideRepo},
-		{
-			name: "corrupt index",
-			arrange: func(t *testing.T) git.Repo {
-				t.Helper()
+	f := gittest.New(t, trunk)
+	f.CorruptIndex()
 
-				f := gittest.New(t, trunk)
-				writeFile(t, filepath.Join(f.Dir(), ".git"), "index", "corrupt")
+	got, err := newRepo(f).DirtyFiles(t.Context())
 
-				return newRepo(f)
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			repo := tt.arrange(t)
-
-			got, err := repo.DirtyFiles(t.Context())
-
-			_, ok := errors.AsType[*child.ExitError](err)
-			assert.Check(t, ok, "DirtyFiles() = %v, error = %v, want *child.ExitError", got, err)
-		})
-	}
+	_, ok := errors.AsType[*child.ExitError](err)
+	assert.Check(t, ok, "DirtyFiles() = %v, error = %v, want *child.ExitError", got, err)
 }
 
 func TestRepo_Divergence(t *testing.T) {
@@ -500,30 +500,25 @@ func TestRepo_Unlanded_WhenMergedHeadHasCommitTheTipLacks_ListsNothing(t *testin
 
 func TestRepo_WhenContextCanceled_ReturnsContextError(t *testing.T) {
 	t.Parallel()
-	repo := newRepo(gittest.New(t, trunk))
-	tests := []struct {
-		call func(ctx context.Context) error
-		name string
-	}{
-		{name: "Divergence", call: func(ctx context.Context) error { _, err := repo.Divergence(ctx, unknownSHA, unknownSHA); return err }},
-		{name: "CommitsPast", call: func(ctx context.Context) error { _, err := repo.CommitsPast(ctx, unknownSHA, trunk); return err }},
-		{name: "BranchesContaining", call: func(ctx context.Context) error { _, err := repo.BranchesContaining(ctx, unknownSHA); return err }},
-		{name: "Unlanded", call: func(ctx context.Context) error {
+
+	checkCanceled(t, []repoCall{
+		{name: "Divergence", call: func(ctx context.Context, repo git.Repo) error {
+			_, err := repo.Divergence(ctx, unknownSHA, unknownSHA)
+			return err
+		}},
+		{name: "CommitsPast", call: func(ctx context.Context, repo git.Repo) error {
+			_, err := repo.CommitsPast(ctx, unknownSHA, trunk)
+			return err
+		}},
+		{name: "BranchesContaining", call: func(ctx context.Context, repo git.Repo) error {
+			_, err := repo.BranchesContaining(ctx, unknownSHA)
+			return err
+		}},
+		{name: "Unlanded", call: func(ctx context.Context, repo git.Repo) error {
 			_, err := repo.Unlanded(ctx, unknownSHA, unknownSHA, trunk)
 			return err
 		}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			ctx, cancel := context.WithCancel(t.Context())
-			cancel()
-
-			err := tt.call(ctx)
-
-			assert.Check(t, is.ErrorIs(err, context.Canceled))
-		})
-	}
+	})
 }
 
 func TestRepo_HasCommits(t *testing.T) {

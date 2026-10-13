@@ -3,6 +3,7 @@ package gittest_test
 import (
 	"bytes"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,19 +36,8 @@ type spyTB struct {
 	stopped  bool
 }
 
-func (s *spyTB) Log(args ...any) { s.messages = append(s.messages, fmt.Sprint(args...)) }
-
 func (s *spyTB) Logf(format string, args ...any) {
 	s.messages = append(s.messages, fmt.Sprintf(format, args...))
-}
-
-func (s *spyTB) Error(args ...any) { s.Log(args...) }
-
-func (s *spyTB) Errorf(format string, args ...any) { s.Logf(format, args...) }
-
-func (s *spyTB) Fatal(args ...any) {
-	s.Log(args...)
-	s.FailNow()
 }
 
 func (s *spyTB) Fatalf(format string, args ...any) {
@@ -177,6 +167,75 @@ func TestNew_PushesTrunkCommitToBareOrigin(t *testing.T) {
 	assert.Check(t, is.Equal(git(t, f, f.OriginDir(), "rev-parse", "--is-bare-repository"), "true"))
 }
 
+func TestNewServed_StandsOnTheBranchWithOriginServedFromTheBareOrigin(t *testing.T) {
+	t.Parallel()
+
+	f, env := gittest.NewServed(t, mainBranch, work, elsewhere)
+
+	assert.Check(t, is.Equal(git(t, f, f.Dir(), "symbolic-ref", "--short", "HEAD"), work))
+	assert.Check(t, is.Len(logged(t, f, "%H"), 1))
+	assert.Check(t, is.Equal(git(t, f, f.Dir(), "remote", "get-url", origin), elsewhere))
+	assert.Check(t, is.DeepEqual(env, f.ServedEnv(f.OriginDir())))
+}
+
+func TestEnv_PointsGitAwayFromUserConfigWithAHomeOfItsOwn(t *testing.T) {
+	t.Parallel()
+
+	env := gittest.Env(t)
+
+	global, _ := envValue(env, "GIT_CONFIG_GLOBAL")
+	home, _ := envValue(env, "HOME")
+	parent := filepath.Dir(t.TempDir())
+	assert.Check(t, is.Equal(global, os.DevNull))
+	assert.Check(t, isUnder(t, parent, home), "HOME = %q, want a directory under %q", home, parent)
+}
+
+func TestWriteFile_PutsContentInTheNamedFileOfDir(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	gittest.WriteFile(t, dir, "notes.txt", "first line\n")
+
+	got, err := fs.ReadFile(os.DirFS(dir), "notes.txt")
+	assert.NilError(t, err)
+	assert.Check(t, is.Equal(string(got), "first line\n"))
+}
+
+func TestFixture_MissingOriginDir_NamesNoRepositoryBesideTheOrigin(t *testing.T) {
+	t.Parallel()
+
+	f := gittest.New(t, mainBranch)
+
+	got := f.MissingOriginDir()
+
+	_, err := os.Stat(got)
+	assert.Check(t, is.ErrorIs(err, os.ErrNotExist))
+	assert.Check(t, is.Equal(filepath.Dir(got), filepath.Dir(f.OriginDir())))
+}
+
+func TestFixture_DetachOriginHead_LeavesOriginHeadNamingNoBranch(t *testing.T) {
+	t.Parallel()
+
+	f := gittest.New(t, mainBranch)
+
+	f.DetachOriginHead()
+
+	got := git(t, f, f.Dir(), "ls-remote", "--symref", origin, "HEAD")
+	assert.Check(t, !strings.Contains(got, "ref: "), "ls-remote --symref origin HEAD = %q, want no symbolic ref", got)
+}
+
+func TestFixture_CorruptIndex_LeavesAnIndexGitCannotRead(t *testing.T) {
+	t.Parallel()
+
+	f := gittest.New(t, mainBranch)
+
+	f.CorruptIndex()
+
+	_, _, err := runGit(t, f, f.Dir(), "status")
+	assert.Check(t, err != nil, "git status succeeded, want it to fail on the index")
+}
+
 func TestFixture_Commits_ReturnsShasOldestFirstWithGivenSubjects(t *testing.T) {
 	t.Parallel()
 
@@ -232,16 +291,6 @@ func TestFixture_RemoveFromOrigin_WhenBranchIsOnOrigin_LeavesOriginWithoutIt(t *
 	f.Push(work)
 
 	f.RemoveFromOrigin(work)
-
-	assert.Check(t, is.Equal(git(t, f, f.Dir(), "ls-remote", "--heads", origin, work), ""))
-}
-
-func TestFixture_Commits_LeavesBranchOffOrigin(t *testing.T) {
-	t.Parallel()
-
-	f := gittest.New(t, mainBranch)
-
-	f.Commits(work, "first change")
 
 	assert.Check(t, is.Equal(git(t, f, f.Dir(), "ls-remote", "--heads", origin, work), ""))
 }
@@ -483,13 +532,13 @@ func TestFixture_Env_PointsGitAwayFromUserConfig(t *testing.T) {
 		{key: "GIT_AUTHOR_DATE", want: fixedDate},
 		{key: "GIT_COMMITTER_DATE", want: fixedDate},
 	}
+	env := gittest.New(t, mainBranch).Env()
+
 	for _, tt := range tests {
 		t.Run(tt.key, func(t *testing.T) {
 			t.Parallel()
 
-			f := gittest.New(t, mainBranch)
-
-			got, ok := envValue(f.Env(), tt.key)
+			got, ok := envValue(env, tt.key)
 
 			assert.Check(t, ok, "Env() does not set %s", tt.key)
 			assert.Check(t, is.Equal(got, tt.want), "Env() %s", tt.key)
@@ -530,12 +579,12 @@ func TestFixture_KeepsEveryPathUnderTempDir(t *testing.T) {
 		{name: "USERPROFILE", path: fromEnv("USERPROFILE")},
 	}
 
+	f := gittest.New(t, mainBranch)
+	parent := filepath.Dir(t.TempDir())
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-
-			f := gittest.New(t, mainBranch)
-			parent := filepath.Dir(t.TempDir())
 
 			got := tt.path(f)
 
@@ -556,11 +605,11 @@ func TestNew_SetsIdentityAndSigningInLocalConfig(t *testing.T) {
 		{key: "user.email", want: gittest.AuthorEmail},
 		{key: "commit.gpgsign", want: "false"},
 	}
+	f := gittest.New(t, mainBranch)
+
 	for _, tt := range tests {
 		t.Run(tt.key, func(t *testing.T) {
 			t.Parallel()
-
-			f := gittest.New(t, mainBranch)
 
 			got, _, err := runGit(t, f, f.Dir(), "config", "--local", "--get", tt.key)
 

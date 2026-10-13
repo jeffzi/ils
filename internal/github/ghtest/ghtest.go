@@ -127,6 +127,33 @@ func LogArgs(slug, run string) []string {
 // workflow is the workflow every scripted check and run belongs to.
 const workflow = "CI"
 
+// RepoViewJSON is `gh repo view`'s answer for a repository that is a fork or not, on which the
+// viewer holds permission.
+func RepoViewJSON(fork bool, permission string) string {
+	return `{"isFork":` + strconv.FormatBool(fork) + `,"viewerPermission":"` + permission + `"}`
+}
+
+// Change is one pull request as `gh pr list` prints it.
+type Change struct {
+	URL   string
+	Title string
+	Base  string
+	SHA   string
+	// Number is the pull request's number.
+	Number int
+	Draft  bool
+	// CrossRepository says the head branch lives in another repository, as a fork's does.
+	CrossRepository bool
+}
+
+// ChangeJSON is one entry of `gh pr list`'s answer, with every field ListArgs asks for.
+func ChangeJSON(change Change) string {
+	return `{"number":` + strconv.Itoa(change.Number) + `,"url":"` + change.URL + `","title":"` + change.Title +
+		`","baseRefName":"` + change.Base + `","headRefOid":"` + change.SHA +
+		`","isDraft":` + strconv.FormatBool(change.Draft) +
+		`,"isCrossRepository":` + strconv.FormatBool(change.CrossRepository) + `}`
+}
+
 // HeadJSON is `gh pr view`'s answer for a pull request at sha that is not a draft.
 func HeadJSON(sha, mergeable, status, review string) string {
 	return `{"headRefOid":"` + sha + `","mergeable":"` + mergeable + `","mergeStateStatus":"` + status +
