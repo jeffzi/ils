@@ -531,13 +531,42 @@ func redRow(name string, bucket forge.Bucket, log forge.FailedLog, excerpt strin
 	}
 }
 
+// runningOn returns row with its one verdict read while the workflow run still goes on.
+func runningOn(row pushRow) pushRow {
+	row.script = row.script.with(func(script *forgetest.Script, _ string) {
+		script.Verdict[0].Value.Runs = ran(forge.RunInProgress)
+	})
+
+	return row
+}
+
+// heldBack returns row with a verdict read ahead of its own: the same failed check, with its
+// workflow run still going and its log not yet available.
+func heldBack(row pushRow) pushRow {
+	row.script = row.script.with(func(script *forgetest.Script, _ string) {
+		early := script.Verdict[0].Value
+		early.Runs = ran(forge.RunInProgress)
+		early.FailedLog = forge.FailedLog{Check: early.FailedLog.Check, State: forge.FailedLogInProgress}
+		script.Verdict = append(says(early), script.Verdict...)
+	})
+
+	return row
+}
+
 // pushRedRows are the pushes whose deciding check failed or was canceled.
 func pushRedRows() []pushRow {
 	// The log is one line longer than the excerpt may be.
 	read := forge.FailedLog{Text: steps(1, 61), State: forge.FailedLogRead}
 	short := forge.FailedLog{Text: steps(1, 3), State: forge.FailedLogRead}
+	// unfinished stays held back up to the time limit: a third poll would end three seconds past it.
+	unfinished := runningOn(redRow("a check failed and its workflow run had not finished at the time limit", forge.BucketFail,
+		forge.FailedLog{State: forge.FailedLogInProgress}, "no log: the log of lint was not available yet; its workflow run had not finished\n"))
+	unfinished.left = 12 * time.Second
 
 	return []pushRow{
+		heldBack(redRow("a check failed before its workflow run finished, and its log was read once it had", forge.BucketFail,
+			short, steps(1, 3))),
+		unfinished,
 		redRow("a check failed and its log is longer than the excerpt", forge.BucketFail, read, steps(2, 61)),
 		redRow("a check failed and its log is shorter than the excerpt", forge.BucketFail, short, steps(1, 3)),
 		redRow("a check failed that no workflow run stands behind", forge.BucketFail,

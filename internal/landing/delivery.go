@@ -337,6 +337,8 @@ func excerpt(check string, log forge.FailedLog) string {
 		return strings.Join(lines[max(0, len(lines)-excerptLines):], "\n")
 	case forge.FailedLogNoRun:
 		return "no log: " + check + " is not a workflow run"
+	case forge.FailedLogInProgress:
+		return "no log: the log of " + check + " was not available yet; its workflow run had not finished"
 	default:
 		return "no log: the log of " + check + " could not be read"
 	}

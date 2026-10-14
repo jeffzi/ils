@@ -416,14 +416,6 @@ func everyCheckRows() []vigilRow {
 	started := forge.Verdict{Runs: ran(forge.RunInProgress)}
 	finishing := forge.Verdict{Checks: passing().Checks, Runs: ran(forge.RunInProgress)}
 	approving := forge.Verdict{Checks: passing().Checks, Runs: ran(forge.RunAwaitingPerson)}
-	failing := forge.Verdict{
-		Checks: []forge.Check{
-			{Name: "lint", Bucket: forge.BucketFail, Workflow: "ci", Link: "https://example.com/acme/widgets/runs/7"},
-			checked("test", forge.BucketPending),
-		},
-		Runs:      ran(forge.RunInProgress),
-		FailedLog: forge.FailedLog{Check: "lint", Text: "lint: unused variable", State: forge.FailedLogRead},
-	}
 
 	return []vigilRow{
 		{
@@ -447,11 +439,6 @@ func everyCheckRows() []vigilRow {
 			want:     concluded(landing.WaitGreen, approving, 1, 0), ops: readsOf(1, 1, 1),
 		},
 		{
-			name:     "a check failed while another runs",
-			verdicts: says(failing),
-			want:     concluded(landing.WaitRed, failing, 0, 0), ops: readsOf(1, 1, 1),
-		},
-		{
 			name:     "nothing reported for 20 seconds",
 			verdicts: says(forge.Verdict{}),
 			want:     concluded(landing.WaitNothingReported, forge.Verdict{}, 0, 0),
@@ -463,6 +450,90 @@ func everyCheckRows() []vigilRow {
 			want:     green(), ops: readsOf(1, 3, 1), waits: polls(2, verdictPoll),
 		},
 	}
+}
+
+// lintFailed is the failed lint check of the ci workflow, which the trunk does not require.
+func lintFailed() forge.Check {
+	return forge.Check{Name: "lint", Bucket: forge.BucketFail, Workflow: "ci", Link: "https://example.com/acme/widgets/runs/7"}
+}
+
+// redRows are the verdict waits where a check failed: they end once its log is settled, or at
+// the deadline.
+func redRows() []vigilRow {
+	// unfinished is lint failed while test still runs: the run has not completed, so the
+	// forge holds lint's log back.
+	unfinished := forge.Verdict{
+		Checks:    []forge.Check{lintFailed(), checked("test", forge.BucketPending)},
+		Runs:      ran(forge.RunInProgress),
+		FailedLog: forge.FailedLog{Check: "lint", State: forge.FailedLogInProgress},
+	}
+	completed := forge.Verdict{
+		Checks:    []forge.Check{lintFailed(), checked("test", forge.BucketPass)},
+		Runs:      ran(forge.RunCompleted),
+		FailedLog: forge.FailedLog{Check: "lint", Text: "lint: unused variable", State: forge.FailedLogRead},
+	}
+	gone := forge.Verdict{
+		Checks:    unfinished.Checks,
+		Runs:      ran(forge.RunInProgress),
+		FailedLog: forge.FailedLog{Check: "lint", State: forge.FailedLogUnreadable},
+	}
+	status := forge.Verdict{
+		Checks:    []forge.Check{{Name: "scan", Bucket: forge.BucketFail}, checked("test", forge.BucketPending)},
+		Runs:      ran(forge.RunInProgress),
+		FailedLog: forge.FailedLog{Check: "scan", State: forge.FailedLogNoRun},
+	}
+
+	return []vigilRow{
+		{
+			name:     "a check failed while another runs, then its run completed",
+			verdicts: says(unfinished, completed),
+			want:     concluded(landing.WaitRed, completed, 1, 0), ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
+		},
+		{
+			// A third poll would end three seconds past the deadline.
+			name:     "a check failed and its run had not completed at the deadline",
+			verdicts: says(unfinished), left: 12 * time.Second,
+			want: concluded(landing.WaitRed, unfinished, 0, 0), ops: readsOf(1, 3, 1), waits: polls(2, verdictPoll),
+		},
+		{
+			name: "a check failed and the deadline ended inside the read after it",
+			verdicts: []forgetest.Answer[forge.Verdict]{
+				{Value: unfinished}, {Err: fmt.Errorf("gh: %w", context.DeadlineExceeded)},
+			},
+			want: concluded(landing.WaitRed, unfinished, 0, 0), ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
+		},
+		{
+			name:     "a check failed while its run goes on, then its log could not be read",
+			verdicts: says(unfinished, gone),
+			want:     concluded(landing.WaitRed, gone, 0, 0), ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
+		},
+		{
+			name:     "a check failed and its log was read",
+			verdicts: says(completed),
+			want:     concluded(landing.WaitRed, completed, 1, 0), ops: readsOf(1, 1, 1),
+		},
+		{
+			name:     "a check failed and its log could not be read while its run goes on",
+			verdicts: says(gone),
+			want:     concluded(landing.WaitRed, gone, 0, 0), ops: readsOf(1, 1, 1),
+		},
+		{
+			name:     "a check failed that no run stands behind while a run goes on",
+			verdicts: says(status),
+			want:     concluded(landing.WaitRed, status, 0, 0), ops: readsOf(1, 1, 1),
+		},
+	}
+}
+
+func TestAwaitVerdict_WhenACheckFailed_EndsRedOnceItsLogIsSettled(t *testing.T) {
+	t.Parallel()
+
+	rows := redRows()
+	for i := range rows {
+		rows[i].heads = shows(clean())
+	}
+
+	runVigils(t, rows)
 }
 
 // heldRows are the verdict waits a check that reported and still runs holds, though no run does.

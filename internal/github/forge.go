@@ -36,6 +36,9 @@ func NewForge(runner Runner) *Forge {
 // runOfLink finds the Actions run a check's link belongs to.
 var runOfLink = regexp.MustCompile(`/actions/runs/(\d+)`)
 
+// runUnfinished matches what `gh run view --log-failed` prints when the run has not completed.
+var runUnfinished = regexp.MustCompile(`run \d+ is still in progress; logs will be available when it is complete`)
+
 // pullExists matches what `gh pr create` prints when the branch already has a pull request.
 var pullExists = regexp.MustCompile(`a pull request for branch "[^"\n]*" into branch "[^"\n]*" already exists`)
 
@@ -400,8 +403,9 @@ func runStatusOf(status string) forge.RunStatus {
 // failedLog reads the failed log of the check the verdict's Failed names, so
 // that the named check and the log always belong together.
 //
-// A check with no Actions run behind it has no log, and a gh that cannot give
-// the log leaves it unreadable: the verdict is red either way.
+// A check with no Actions run behind it has no log, a run that has not completed
+// holds its log back, and a gh that cannot give the log for any other reason
+// leaves it unreadable: the verdict is red either way.
 func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Verdict) (forge.FailedLog, error) {
 	failed, ok := verdict.Failed()
 	if !ok {
@@ -414,7 +418,11 @@ func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Ve
 	}
 
 	result, err := f.runner.Run(ctx, "run", "view", "--repo", repo.Slug(), match[1], "--log-failed")
-	if _, exited := errors.AsType[*child.ExitError](err); exited {
+	if exitErr, exited := errors.AsType[*child.ExitError](err); exited {
+		if runUnfinished.MatchString(exitErr.Stderr) {
+			return forge.FailedLog{Check: failed.Name, State: forge.FailedLogInProgress}, nil
+		}
+
 		return forge.FailedLog{Check: failed.Name, State: forge.FailedLogUnreadable}, nil
 	}
 

@@ -166,13 +166,15 @@ var errWindowPassed = errors.New("the merge state stayed unknown for the whole w
 // It reads the pull request's head every 2 seconds until that is the pushed commit, reads the
 // merge state from the same read, every 2 seconds for up to 30 seconds while it is unknown,
 // and stops there on a conflict or a branch behind its trunk. Otherwise it reads the verdict
-// every 5 seconds until the checks conclude, and then reads the merge state once more; a
+// every 5 seconds until the checks conclude, a red verdict concluding once the forge has
+// settled its failed log, and then reads the merge state once more; a
 // conflict or a branch behind its trunk found by that read ends green checks as WaitConflicting
 // or WaitBehind.
 //
 // No poll is started that would end past ctx's deadline.
 // A deadline that ends a stage, inside a read or a poll or between two, is the outcome
-// WaitPending with that stage and no error. A merge state still unknown after its 30 seconds,
+// WaitPending with that stage and no error, but for a red verdict still waiting for its failed
+// log, which stays WaitRed. A merge state still unknown after its 30 seconds,
 // with time left before the deadline, is WaitPending too, with Waited.Window set. A read that
 // fails for any other reason is a *WaitError naming its stage. The read of the merge state
 // made after the checks belongs to StageMergeState: its failure is a *WaitError, and the
@@ -322,18 +324,24 @@ func (w waiter) concluded(ctx context.Context, waited *Waited) (forge.Verdict, W
 	query := forge.VerdictQuery{SHA: w.pushed.SHA, Number: w.pushed.Number, Required: w.pushed.Required}
 	began := time.Now()
 
-	var last forge.Verdict
+	var (
+		last    forge.Verdict
+		outcome WaitOutcome
+		done    bool
+	)
 
 	for {
 		verdict, err := w.deps.Forge.Verdict(ctx, w.pushed.Repo, query)
 		if err != nil {
-			return last, "", err
+			outcome, err = cutShort(outcome, err)
+
+			return last, outcome, err
 		}
 
 		last = verdict
 		waited.Since = began
 
-		outcome, done := w.judge(verdict)
+		outcome, done = w.judge(verdict)
 		// Runs appear some seconds after a push, so silence is only believed once it has lasted.
 		if done && silent(verdict) && time.Since(began)+verdictPoll <= silentRetry {
 			done = false
@@ -344,9 +352,22 @@ func (w waiter) concluded(ctx context.Context, waited *Waited) (forge.Verdict, W
 		}
 
 		if err = pause(ctx, verdictPoll); err != nil {
-			return last, "", err
+			outcome, err = cutShort(outcome, err)
+
+			return last, outcome, err
 		}
 	}
+}
+
+// cutShort returns how a wait for the verdict that err ended concluded: a red verdict still
+// waiting for its failed log stays red when the deadline ends the wait, since the log is all it
+// lacked, and anything else is err with no outcome.
+func cutShort(outcome WaitOutcome, err error) (WaitOutcome, error) {
+	if outcome == WaitRed && (errors.Is(err, errOutOfTime) || errors.Is(err, context.DeadlineExceeded)) {
+		return WaitRed, nil
+	}
+
+	return "", err
 }
 
 // judge returns how the checks concluded, and false while the wait for them goes on.
@@ -355,6 +376,10 @@ func (w waiter) judge(verdict forge.Verdict) (WaitOutcome, bool) {
 	missing := len(verdict.MissingRequired) > 0
 
 	switch {
+	// The forge gives a failed log only once the run completes, and the excerpt is what the
+	// fix starts from, so a red verdict waits for it like a pending one would.
+	case state == forge.VerdictRed && verdict.FailedLog.State == forge.FailedLogInProgress:
+		return WaitRed, false
 	case state == forge.VerdictRed:
 		return WaitRed, true
 	case state == forge.VerdictPending:

@@ -150,6 +150,9 @@ const (
 	FailedLogNoRun FailedLogState = "no-run"
 	// FailedLogUnreadable is a failing check with a workflow run whose log could not be read.
 	FailedLogUnreadable FailedLogState = "unreadable"
+	// FailedLogInProgress is a failing check whose workflow run has not completed: the
+	// forge gives a run's log only once every job of it has, so the log is not available yet.
+	FailedLogInProgress FailedLogState = "in-progress"
 )
 
 // FailedLog is the log of the check Verdict.Failed names; it is the zero value

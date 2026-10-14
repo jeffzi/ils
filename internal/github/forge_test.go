@@ -725,9 +725,12 @@ func TestForge_Verdict_FailedLog(t *testing.T) {
 
 	logged := ghtest.Answer{Stdout: logText}
 	gone := ghtest.Answer{Stderr: "run " + runID + " not found\n", Code: 1}
+	// unfinished is what gh run view --log-failed says of a run that has not completed.
+	unfinished := ghtest.Answer{Stderr: "run " + runID + " is still in progress; logs will be available when it is complete\n", Code: 1}
 	read := forge.FailedLog{Check: "build", Text: logText, State: forge.FailedLogRead}
 	noRun := forge.FailedLog{Check: "scan", State: forge.FailedLogNoRun}
 	unreadable := forge.FailedLog{Check: "build", State: forge.FailedLogUnreadable}
+	inProgress := forge.FailedLog{Check: "build", State: forge.FailedLogInProgress}
 	withLog := received(checksArgs(), runsArgs(), logArgs())
 	noLog := received(checksArgs(), runsArgs())
 	tests := []struct {
@@ -746,6 +749,7 @@ func TestForge_Verdict_FailedLog(t *testing.T) {
 		{name: "failing status ahead of a failing check of a run", checks: ghtest.CheckJSON("scan", "fail", statusLink) + "," + ghtest.CheckJSON("build", "fail", runLink), log: logged, want: noRun, wantCalls: noLog},
 		{name: "failing status with no run", checks: ghtest.CheckJSON("scan", "fail", statusLink), log: logged, want: noRun, wantCalls: noLog},
 		{name: "run view fails", checks: ghtest.CheckJSON("build", "fail", runLink), log: gone, want: unreadable, wantCalls: withLog},
+		{name: "run of the failing check still in progress", checks: ghtest.CheckJSON("build", "fail", runLink), log: unfinished, want: inProgress, wantCalls: withLog},
 		{name: "check of a run still pending", checks: ghtest.CheckJSON("build", "pending", runLink), log: logged, wantCalls: noLog},
 		{name: "every check passed", checks: ghtest.CheckJSON("build", "pass", runLink), log: logged, wantCalls: noLog},
 		{
