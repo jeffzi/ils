@@ -75,8 +75,21 @@ tasks:
 
   test:
     desc: "Run the test suite with coverage (extra args after -- skip coverage)"
+    vars:
+      # The macOS, Linux, and Windows platforms the race detector supports, as Go's
+      # internal/platform.RaceDetectorSupported lists them.
+      RACE_PLATFORMS:
+        - darwin/amd64
+        - darwin/arm64
+        - linux/amd64
+        - linux/arm64
+        - linux/loong64
+        - linux/ppc64le
+        - linux/riscv64
+        - linux/s390x
+        - windows/amd64
     cmds:
-      - go test -race {{if not .CLI_ARGS}}-coverprofile=coverage.out {{end}}./... {{.CLI_ARGS}}
+      - go test {{if has (printf "%s/%s" OS ARCH) .RACE_PLATFORMS}}-race {{end}}{{if not .CLI_ARGS}}-coverprofile=coverage.out {{end}}./... {{.CLI_ARGS}}
       - "{{if not .CLI_ARGS}}go tool cover -html=coverage.out -o coverage.html{{end}}"
       - "{{if not .CLI_ARGS}}go tool go-test-coverage --config=.coverage.yml{{end}}"
 
