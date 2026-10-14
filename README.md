@@ -62,8 +62,11 @@ To run:
 With Go:
 
 ```bash
-go install github.com/jeffzi/ils@latest
+GOPRIVATE=github.com/jeffzi/ils go install github.com/jeffzi/ils@latest
 ```
+
+The repository is private, so the Go module proxy and checksum database cannot serve it.
+`GOPRIVATE` makes `go` fetch it with `git` directly, which needs read access to the repository.
 
 From a clone, `task install` builds the binary and copies it to the directory `go install` writes
 to:
