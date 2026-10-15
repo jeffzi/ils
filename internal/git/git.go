@@ -62,25 +62,9 @@ type Result struct {
 	Stderr string
 }
 
-// NotFoundError reports a program that is missing from PATH.
-type NotFoundError struct {
-	Err  error
-	Name string
-}
-
-// Error names the program that is missing from PATH.
-func (e *NotFoundError) Error() string {
-	return e.Name + " not found on PATH"
-}
-
-// Unwrap returns the error exec.LookPath reported.
-func (e *NotFoundError) Unwrap() error {
-	return e.Err
-}
-
 // Run runs git with args and returns its output once it has exited zero.
 //
-// A git missing from PATH is a *NotFoundError and a non-zero exit is a
+// A git missing from PATH is a *child.ToolMissingError and a non-zero exit is a
 // *child.ExitError. When ctx ends before git does, the error is the context's and
 // the Result is empty, so a half-written stdout is never read.
 //
@@ -90,7 +74,7 @@ func (e *NotFoundError) Unwrap() error {
 func (r Runner) Run(ctx context.Context, args ...string) (Result, error) {
 	path, err := exec.LookPath(program)
 	if err != nil {
-		return Result{}, &NotFoundError{Name: program, Err: err}
+		return Result{}, &child.ToolMissingError{Tool: program, InstallURL: InstallURL, Err: err}
 	}
 
 	argv := append([]string{program}, args...)

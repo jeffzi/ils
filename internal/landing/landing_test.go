@@ -292,15 +292,13 @@ func forgeRefusals() []refusal {
 			"upgrade it from https://cli.github.com\n" + upgrade
 		noVersion = "Refused: gh printed `gh version DEV`, which names no version ils can read; " +
 			"ils needs gh 2.50.0 or newer, from https://cli.github.com\n" + upgrade
-		blankVersion = "Refused: gh printed ``, which names no version ils can read; " +
-			"ils needs gh 2.50.0 or newer, from https://cli.github.com\n" + upgrade
 		isFork = "Refused: Acme/Widgets is a fork, which ils does not push to; the user pushes by hand\n" +
 			nextByHand
 		noPush = "Refused: the logged-in user has no push permission on Acme/Widgets; " +
 			"the user pushes by hand\n" + nextByHand
 	)
 
-	missing := fails(&forge.ToolMissingError{Tool: "gh", InstallURL: "https://cli.github.com"})
+	missing := fails(&child.ToolMissingError{Tool: "gh", InstallURL: "https://cli.github.com"})
 	old := child.ToolTooOldError{Tool: "gh", Minimum: "2.50.0", InstallURL: "https://cli.github.com"}
 	outdated, unread := old, old
 	outdated.Version, outdated.Line = "2.49.0", "gh version 2.49.0 (2024-05-13)"
@@ -311,7 +309,6 @@ func forgeRefusals() []refusal {
 		{name: "gh is not installed and origin does not answer", script: missing, offline: true, asksForge: true, want: noTool},
 		{name: "gh is older than the minimum", script: fails(&outdated), asksForge: true, want: tooOld},
 		{name: "gh prints no version", script: fails(&unread), asksForge: true, want: noVersion},
-		{name: "gh prints an empty version line", script: fails(&old), asksForge: true, want: blankVersion},
 		{name: "gh is not logged in", script: fails(&forge.NotLoggedInError{Host: host}), asksForge: true, want: noLogin},
 		{name: "fork", script: answers(widgets(true, true)), asksForge: true, want: isFork},
 		{name: "fork without push permission", script: answers(widgets(true, false)), asksForge: true, want: isFork},
@@ -526,16 +523,11 @@ func TestPreconditions_WhenGitIsTooOld_RefusesBeforeAnyOtherRead(t *testing.T) {
 			want: "Refused: git printed `git version DEV`, which names no version ils can read; " +
 				"ils needs git 2.34.1 or newer, from https://git-scm.com/downloads\n" + upgrade,
 		},
-		{
-			name: "an empty first line", line: "",
-			want: "Refused: git printed ``, which names no version ils can read; " +
-				"ils needs git 2.34.1 or newer, from https://git-scm.com/downloads\n" + upgrade,
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := newScene(t, nil, forgetest.Script{}, false)
-			fakeGit(t, s, versionLineEnv+"="+tt.line)
+			fakeGit(t, s, gittest.Fake{Version: tt.line})
 			before := s.refs()
 
 			_, got, ok := landing.Preconditions(t.Context(), s.deps, pushRequest())
@@ -562,7 +554,7 @@ func TestPreconditions_WhenGitVersionFails_BrokeNamingTheRead(t *testing.T) {
 	_, got, ok := landing.Preconditions(t.Context(), s.deps, pushRequest())
 
 	assert.Assert(t, !ok, "Preconditions() ok = true, want a broke result")
-	assertBrokeRead(t, got, readGitVersion, failingGitSaid)
+	assertBrokeRead(t, got, readGitVersion, gittest.FailedSaid)
 	assertAsked(t, s, nil)
 }
 

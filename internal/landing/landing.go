@@ -191,11 +191,8 @@ func trunkOf(ctx context.Context, deps Deps, req Request) (string, *result.Resul
 
 // identityFailure returns the result for a forge identity call that failed with err.
 func (r Request) identityFailure(err error) *result.Result {
-	if missing, ok := errors.AsType[*forge.ToolMissingError](err); ok {
-		return r.refused(
-			result.Say("%s is not installed; install it from %s", missing.Tool, missing.InstallURL),
-			result.NextStep("install %s"+thenPushAgain, missing.Tool),
-		)
+	if stop := r.notInstalled(err); stop != nil {
+		return stop
 	}
 
 	if stop := r.tooOld(err); stop != nil {
@@ -233,6 +230,20 @@ func (r Request) tooOld(err error) *result.Result {
 	return r.refused(reason, result.NextStep("upgrade %s"+thenPushAgain, old.Tool))
 }
 
+// notInstalled returns the refusal for a call that failed with err because the tool it runs is
+// not installed, naming where to get the tool, and nil for any other failure.
+func (r Request) notInstalled(err error) *result.Result {
+	missing, ok := errors.AsType[*child.ToolMissingError](err)
+	if !ok {
+		return nil
+	}
+
+	return r.refused(
+		result.Say("%s is not installed; install it from %s", missing.Tool, missing.InstallURL),
+		result.NextStep("install %s"+thenPushAgain, missing.Tool),
+	)
+}
+
 // ends returns the result that ends the request as outcome, with reason and next and no lines
 // or payload.
 func (r Request) ends(outcome result.Outcome, reason result.Phrase, next result.Next) *result.Result {
@@ -251,25 +262,11 @@ func (r Request) refused(reason result.Phrase, next result.Next) *result.Result 
 	return r.ends(result.Refused, reason, next)
 }
 
-// gitMissing returns the refusal for a read that failed with err because git is not on PATH,
-// and nil for any other failure.
-func (r Request) gitMissing(err error) *result.Result {
-	missing, ok := errors.AsType[*git.NotFoundError](err)
-	if !ok {
-		return nil
-	}
-
-	return r.refused(
-		result.Say("%s is not installed; install it from %s", missing.Name, git.InstallURL),
-		result.NextStep("install %s"+thenPushAgain, missing.Name),
-	)
-}
-
 // unread returns the result for a read made before the push that failed with err: a refusal
 // when git is not installed or the context's deadline cut the read short, since nothing was
 // written and running again is safe, and broke otherwise.
 func (r Request) unread(read string, err error) *result.Result {
-	if stop := r.gitMissing(err); stop != nil {
+	if stop := r.notInstalled(err); stop != nil {
 		return stop
 	}
 

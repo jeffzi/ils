@@ -296,9 +296,9 @@ func TestForge_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
 
 			err := tt.run(t.Context(), newForge())
 
-			missing, ok := errors.AsType[*forge.ToolMissingError](err)
-			assert.Assert(t, ok, "%s error = %v, want *forge.ToolMissingError", tt.name, err)
-			assert.Check(t, is.DeepEqual(missing, missingTool(), cmpopts.IgnoreFields(forge.ToolMissingError{}, "Err")))
+			missing, ok := errors.AsType[*child.ToolMissingError](err)
+			assert.Assert(t, ok, "%s error = %v, want *child.ToolMissingError", tt.name, err)
+			assert.Check(t, is.DeepEqual(missing, missingTool(), cmpopts.IgnoreFields(child.ToolMissingError{}, "Err")))
 		})
 	}
 }
@@ -1010,9 +1010,34 @@ func TestMergeStateOf(t *testing.T) {
 // Runner
 // ---------------------------------------------------------------------------
 
+func TestVersionOf(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{name: "release with a date", line: "gh version 2.50.0 (2024-05-29)", want: "2.50.0"},
+		{name: "release without a date", line: "gh version 2.100.3", want: "2.100.3"},
+		{name: "pre-release keeps its suffix", line: "gh version 2.50.0-rc.1", want: "2.50.0-rc.1"},
+		{name: "development build", line: "gh version DEV"},
+		{name: "no gh version prefix", line: "2.50.0"},
+		{name: "empty line"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := github.VersionOf(tt.line)
+
+			assert.Check(t, is.Equal(got, tt.want), "VersionOf(%q)", tt.line)
+		})
+	}
+}
+
 // missingTool is the error every call returns when `gh` is not installed.
-func missingTool() *forge.ToolMissingError {
-	return &forge.ToolMissingError{Tool: program, InstallURL: installURL}
+func missingTool() *child.ToolMissingError {
+	return &child.ToolMissingError{Tool: program, InstallURL: installURL}
 }
 
 func TestRunner_Run_WhenGhExitsZero_ReturnsOutput(t *testing.T) {
@@ -1079,10 +1104,11 @@ func TestRunner_Run_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
 
 			_, err := github.Runner{}.Run(t.Context(), "pr", "view")
 
-			missing, ok := errors.AsType[*forge.ToolMissingError](err)
-			assert.Assert(t, ok, "Run(pr view) error = %v, want *forge.ToolMissingError", err)
-			assert.Check(t, is.DeepEqual(missing, missingTool(), cmpopts.IgnoreFields(forge.ToolMissingError{}, "Err")))
+			missing, ok := errors.AsType[*child.ToolMissingError](err)
+			assert.Assert(t, ok, "Run(pr view) error = %v, want *child.ToolMissingError", err)
+			assert.Check(t, is.DeepEqual(missing, missingTool(), cmpopts.IgnoreFields(child.ToolMissingError{}, "Err")))
 			assert.Check(t, missing.Err != nil, "Run(pr view) error carries no cause, want what starting gh failed with")
+			assert.Check(t, is.Equal(err.Error(), "gh is not installed: install it from https://cli.github.com"))
 		})
 	}
 }

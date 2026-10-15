@@ -12,11 +12,13 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/mod/semver"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
+	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/git"
+	"github.com/jeffzi/ils/internal/gittest"
+	"github.com/jeffzi/ils/internal/testtarget"
 )
 
 const (
@@ -34,20 +36,21 @@ const (
 	// helperLife bounds how long a lingering helper stays when nothing releases it.
 	helperLife = 30 * time.Second
 
-	// versionLineEnv makes the test binary act as a git whose `git --version` prints the line it
-	// holds, followed by a second line, instead of running tests.
-	versionLineEnv = "ILS_GIT_TEST_VERSION_LINE"
-	// versionSecondLine follows the version line so that a read of more than the first line shows
-	// up as a wrong version.
+	// versionSecondLine follows the line a fake git prints for `git --version`, so that a read of
+	// more than the first line shows up as a wrong version.
 	versionSecondLine = "cpu: x86_64"
 
-	// testGitVar names the git the tests must find on PATH: testGitMinimum asks for exactly the
-	// minimum ils enforces, and testGitLatest or unset for that version or newer.
-	testGitVar     = "ILS_TEST_GIT"
-	testGitMinimum = "minimum"
-	testGitLatest  = "latest"
+	// testGitVar names the git the tests must find on PATH: testtarget.Minimum asks for exactly the
+	// minimum ils enforces, and testtarget.Latest or unset for that version or newer.
+	testGitVar = "ILS_TEST_GIT"
 	// testGitVersionVar, when set, is the exact version of git the tests must find on PATH.
 	testGitVersionVar = "ILS_TEST_GIT_VERSION"
+
+	// raceEnv names the environment variable that configures the race detector.
+	raceEnv = "GORACE"
+	// raceNoExitPause removes the race detector's pause at exit, which would otherwise cost a second
+	// per run of the test binary.
+	raceNoExitPause = "atexit_sleep_ms=0"
 )
 
 func TestMain(m *testing.M) {
@@ -55,9 +58,8 @@ func TestMain(m *testing.M) {
 		os.Exit(diffHelper(mode))
 	}
 
-	if line, ok := os.LookupEnv(versionLineEnv); ok {
-		fmt.Println(line + "\n" + versionSecondLine)
-		os.Exit(0)
+	if code, served := gittest.Main(); served {
+		os.Exit(code)
 	}
 
 	if err := guardTestGit(); err != nil {
@@ -81,30 +83,20 @@ func guardTestGit() error {
 }
 
 // checkTestGit returns why a git whose `git --version` prints line first does not suit the tests,
-// or nil when it does. A version that is not empty is the exact one the git must be, and is checked
-// before the target that testGitVar names.
+// or nil when it does. The line must name a version that ils reads, and that version must suit the
+// target testGitVar names and the version testGitVersionVar names, as testtarget.Tool.Check
+// decides.
 func checkTestGit(target, version, line string) error {
 	found := git.VersionOf(line)
-
-	if version != "" && found != version {
-		return fmt.Errorf("the git found prints %q, and %s wants %s", line, testGitVersionVar, version)
+	if found == "" {
+		return fmt.Errorf("git --version printed %q, which names no version the suite can read", line)
 	}
 
-	switch target {
-	case testGitMinimum:
-		if found != git.MinimumVersion {
-			return fmt.Errorf("%s is %s and the git found prints %q, want the minimum ils enforces, %s",
-				testGitVar, target, line, git.MinimumVersion)
-		}
-	case "", testGitLatest:
-		if semver.Compare("v"+found, "v"+git.MinimumVersion) < 0 {
-			return fmt.Errorf("the git found prints %q, older than the minimum ils enforces, %s", line, git.MinimumVersion)
-		}
-	default:
-		return fmt.Errorf("%s is %q, want %s, %s, or unset", testGitVar, target, testGitMinimum, testGitLatest)
+	tool := testtarget.Tool{
+		Name: "git", TargetVar: testGitVar, VersionVar: testGitVersionVar, Minimum: git.MinimumVersion,
 	}
 
-	return nil
+	return tool.Check(target, version, found)
 }
 
 func TestCheckTestGit_WhenGitSuitsTarget_ReturnsNil(t *testing.T) {
@@ -115,20 +107,18 @@ func TestCheckTestGit_WhenGitSuitsTarget_ReturnsNil(t *testing.T) {
 		version string
 		line    string
 	}{
-		{name: "minimum target and the minimum", target: testGitMinimum, line: "git version " + git.MinimumVersion},
-		{name: "latest target and the minimum", target: testGitLatest, line: "git version " + git.MinimumVersion},
-		{name: "latest target and a newer git", target: testGitLatest, line: "git version 2.56.0.windows.2"},
+		{name: "minimum target and the minimum", target: testtarget.Minimum, line: "git version " + git.MinimumVersion},
+		{name: "latest target and the minimum", target: testtarget.Latest, line: "git version " + git.MinimumVersion},
 		{name: "unset target and the minimum", line: "git version " + git.MinimumVersion},
-		{name: "unset target and a newer git", line: "git version 2.54.0 (Apple Git-157)"},
 		{
-			name: "version wanted is the minimum found on the minimum target", target: testGitMinimum,
-			version: git.MinimumVersion, line: "git version " + git.MinimumVersion + ".windows.1",
+			name: "version wanted is the minimum found on the minimum target", target: testtarget.Minimum,
+			version: git.MinimumVersion, line: "git version " + git.MinimumVersion,
 		},
 		{
-			name: "version wanted is the Git for Windows found on the latest target", target: testGitLatest,
-			version: "2.56.0", line: "git version 2.56.0.windows.2",
+			name: "version wanted is the git found on the latest target", target: testtarget.Latest,
+			version: "2.56.0", line: "git version 2.56.0",
 		},
-		{name: "version wanted is the git found on the unset target", version: "2.54.0", line: "git version 2.54.0 (Apple Git-157)"},
+		{name: "version wanted is the git found on the unset target", version: "2.54.0", line: "git version 2.54.0"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -152,57 +142,42 @@ type unsuitedTestGit struct {
 
 func unsuitedTestGits() []unsuitedTestGit {
 	const (
-		notMinimum = "ILS_TEST_GIT is minimum and the git found prints %q, want the minimum ils enforces, 2.34.1"
-		older      = "the git found prints %q, older than the minimum ils enforces, 2.34.1"
-		notWanted  = "the git found prints %q, and ILS_TEST_GIT_VERSION wants %s"
+		notMinimum = "ILS_TEST_GIT is minimum and the git found is %s, want the minimum ils enforces, 2.34.1"
+		older      = "the git found is %s, older than the minimum ils enforces, 2.34.1"
+		notWanted  = "the git found is %s, and ILS_TEST_GIT_VERSION wants %s"
+		unreadable = "git --version printed %q, which names no version the suite can read"
 	)
 
 	return []unsuitedTestGit{
 		{
-			name: "minimum target and a newer git", target: testGitMinimum, line: "git version 2.56.0",
-			want: fmt.Sprintf(notMinimum, "git version 2.56.0"),
+			name: "minimum target and a newer git", target: testtarget.Minimum, line: "git version 2.56.0",
+			want: fmt.Sprintf(notMinimum, "2.56.0"),
 		},
 		{
-			name: "minimum target and an older git", target: testGitMinimum, line: "git version 2.30.2",
-			want: fmt.Sprintf(notMinimum, "git version 2.30.2"),
+			name: "minimum target and an older git", target: testtarget.Minimum, line: "git version 2.30.2",
+			want: fmt.Sprintf(notMinimum, "2.30.2"),
 		},
 		{
-			name: "minimum target and no readable version", target: testGitMinimum, line: "git version DEV",
-			want: fmt.Sprintf(notMinimum, "git version DEV"),
+			name: "latest target and an older git", target: testtarget.Latest, line: "git version 2.30.2",
+			want: fmt.Sprintf(older, "2.30.2"),
 		},
-		{
-			name: "latest target and an older git", target: testGitLatest, line: "git version 2.30.2",
-			want: fmt.Sprintf(older, "git version 2.30.2"),
-		},
-		{
-			name: "latest target and no readable version", target: testGitLatest, line: "git version DEV",
-			want: fmt.Sprintf(older, "git version DEV"),
-		},
-		{name: "unset target and an older git", line: "git version 2.30.2", want: fmt.Sprintf(older, "git version 2.30.2")},
-		{name: "unset target and no readable version", line: "git version DEV", want: fmt.Sprintf(older, "git version DEV")},
+		{name: "unset target and an older git", line: "git version 2.30.2", want: fmt.Sprintf(older, "2.30.2")},
 		{
 			name: "unknown target", target: "newest", line: "git version 2.56.0",
 			want: `ILS_TEST_GIT is "newest", want minimum, latest, or unset`,
 		},
 		{
-			name: "version wanted is not the git found on the latest target", target: testGitLatest, version: "2.43.0",
-			line: "git version 2.42.0", want: fmt.Sprintf(notWanted, "git version 2.42.0", "2.43.0"),
+			name: "version wanted is not the git found", target: testtarget.Latest, version: "2.43.0",
+			line: "git version 2.42.0", want: fmt.Sprintf(notWanted, "2.42.0", "2.43.0"),
+		},
+		{name: "development build", line: "git version DEV", want: fmt.Sprintf(unreadable, "git version DEV")},
+		{
+			name: "no readable version is refused before the minimum target", target: testtarget.Minimum,
+			line: "git version DEV", want: fmt.Sprintf(unreadable, "git version DEV"),
 		},
 		{
-			name: "version wanted is not the git found on the unset target", version: "2.43.0",
-			line: "git version 2.56.0", want: fmt.Sprintf(notWanted, "git version 2.56.0", "2.43.0"),
-		},
-		{
-			name: "version wanted and no readable version", version: "2.43.0",
-			line: "git version DEV", want: fmt.Sprintf(notWanted, "git version DEV", "2.43.0"),
-		},
-		{
-			name: "version wanted is checked before the minimum target", target: testGitMinimum, version: git.MinimumVersion,
-			line: "git version 2.56.0", want: fmt.Sprintf(notWanted, "git version 2.56.0", git.MinimumVersion),
-		},
-		{
-			name: "version wanted is checked before an unknown target", target: "newest", version: "2.56.0",
-			line: "git version 2.55.0", want: fmt.Sprintf(notWanted, "git version 2.55.0", "2.56.0"),
+			name: "no readable version is refused before the version wanted", version: "2.43.0",
+			line: "git version DEV", want: fmt.Sprintf(unreadable, "git version DEV"),
 		},
 	}
 }
@@ -227,45 +202,43 @@ func TestCheckTestGit_WhenGitDoesNotSuitTarget_ReturnsError(t *testing.T) {
 func guardSees(t *testing.T, target, version, line string) {
 	t.Helper()
 
-	fakeGitRepo(t, line)
-	t.Setenv(versionLineEnv, line)
+	gittest.FakeGit(t, gittest.Fake{Version: line + "\n" + versionSecondLine})
 	t.Setenv(testGitVar, target)
 	t.Setenv(testGitVersionVar, version)
-	t.Setenv("GORACE", "atexit_sleep_ms=0")
 }
 
-func TestGuardTestGit_WhenTheMinimumTargetFindsTheMinimum_ReturnsNil(t *testing.T) {
-	guardSees(t, testGitMinimum, "", "git version "+git.MinimumVersion)
+func TestGuardTestGit_WhenGitOnPathIsTheMinimum_ReturnsNil(t *testing.T) {
+	guardSees(t, "", "", "git version "+git.MinimumVersion)
 
 	err := guardTestGit()
 
 	assert.NilError(t, err)
 }
 
-func TestGuardTestGit_WhenGitOnPathIsOlder_ReturnsErrorQuotingItsFirstLine(t *testing.T) {
-	guardSees(t, "", "", "git version 2.30.2")
+func TestGuardTestGit_WhenTheMinimumTargetFindsANewerGit_ReturnsNotMinimumError(t *testing.T) {
+	guardSees(t, testtarget.Minimum, "", "git version 2.56.0")
 
 	err := guardTestGit()
 
-	assert.Error(t, err, `the git found prints "git version 2.30.2", older than the minimum ils enforces, 2.34.1`)
+	assert.Error(t, err, "ILS_TEST_GIT is minimum and the git found is 2.56.0, want the minimum ils enforces, 2.34.1")
 }
 
 func TestGuardTestGit_WhenVersionWantedIsNotTheGitOnPath_ReturnsErrorNamingBoth(t *testing.T) {
-	guardSees(t, testGitLatest, "2.43.0", "git version 2.42.0")
+	guardSees(t, testtarget.Latest, "2.43.0", "git version 2.42.0")
 
 	err := guardTestGit()
 
-	assert.Error(t, err, `the git found prints "git version 2.42.0", and ILS_TEST_GIT_VERSION wants 2.43.0`)
+	assert.Error(t, err, "the git found is 2.42.0, and ILS_TEST_GIT_VERSION wants 2.43.0")
 }
 
-func TestGuardTestGit_WhenGitMissingFromPath_ReturnsNotFoundError(t *testing.T) {
+func TestGuardTestGit_WhenGitMissingFromPath_ReturnsToolMissingError(t *testing.T) {
 	// Not parallel: this empties PATH for the whole process while it runs.
 	t.Setenv("PATH", t.TempDir())
 
 	err := guardTestGit()
 
-	_, ok := errors.AsType[*git.NotFoundError](err)
-	assert.Check(t, ok, "guardTestGit error = %v, want a *git.NotFoundError", err)
+	_, ok := errors.AsType[*child.ToolMissingError](err)
+	assert.Check(t, ok, "guardTestGit error = %v, want a *child.ToolMissingError", err)
 	assert.Check(t, is.ErrorContains(err, "read the version of the git on PATH: "))
 }
 
@@ -278,7 +251,7 @@ func TestMain_WhenTestGitTargetIsUnknown_ExitsBeforeTheTests(t *testing.T) {
 
 	//nolint:gosec // G204: the test binary starts itself; nothing here comes from outside the test.
 	cmd := exec.CommandContext(t.Context(), binary, "-test.run=^$")
-	cmd.Env = append(os.Environ(), testGitVar+"=newest", "GORACE=atexit_sleep_ms=0")
+	cmd.Env = append(os.Environ(), testGitVar+"=newest", raceEnv+"="+raceNoExitPause)
 	cmd.Stderr = &stderr
 
 	err = cmd.Run()

@@ -5,9 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -732,50 +730,27 @@ func TestPush_WhenBranchRefCannotBeRead_BrokeNamingTheTipRead(t *testing.T) {
 	assertAsked(t, s, identityRead())
 }
 
-// failGit makes the scene's next git call whose arguments start with words fail as failingGit does,
-// by putting a copy of the test binary named git first on PATH. It cannot run in a parallel test.
+// failGit makes the scene's git calls whose arguments start with words fail as gittest.FakeGit
+// makes them. It cannot run in a parallel test.
 func failGit(t *testing.T, s *scene, words []string) {
 	t.Helper()
 
-	fakeGit(t, s, failingWordsEnv+"="+strings.Join(words, failingWordsSep))
+	fakeGit(t, s, gittest.Fake{FailOn: words})
 }
 
-// fakeGit puts a copy of the test binary named git first on PATH and gives the scene's git calls
-// setting, the variable that says how the copy plays git; every call it does not change runs the
-// real git. It cannot run in a parallel test.
-func fakeGit(t *testing.T, s *scene, setting string) {
+// fakeGit puts a git first on PATH that answers the scene's git calls as fake says; every call it
+// does not fake runs the real git. It cannot run in a parallel test.
+func fakeGit(t *testing.T, s *scene, fake gittest.Fake) {
 	t.Helper()
 
-	realGit, err := exec.LookPath("git")
-	assert.NilError(t, err)
-
-	self, err := os.Executable()
-	assert.NilError(t, err)
-
-	name := "git"
-	if runtime.GOOS == "windows" {
-		name = "git.exe"
-	}
-
-	dir := t.TempDir()
-	err = os.Link(self, filepath.Join(dir, name))
-	assert.NilError(t, err)
-
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	s.deps.Repo.Runner.Env = append(s.deps.Repo.Runner.Env,
-		setting,
-		realGitEnv+"="+realGit,
-		// The race detector's exit pause would otherwise cost a second per git call.
-		"GORACE=atexit_sleep_ms=0",
-	)
+	s.deps.Repo.Runner.Env = append(s.deps.Repo.Runner.Env, gittest.FakeGit(t, fake)...)
 }
 
 // failedGitText is the whole text of the result for the read named read when the git call with
 // the arguments words fails as failGit makes it.
 func failedGitText(read string, words []string) string {
 	return "Could not read " + read + ": git " + strings.Join(words, " ") + ": exit status " +
-		strconv.Itoa(failingGitExit) + ": " + failingGitSaid + "\nNothing was written.\n" + nextFixed
+		strconv.Itoa(gittest.FailedCode) + ": " + gittest.FailedSaid + "\nNothing was written.\n" + nextFixed
 }
 
 // failedRead is one git read of Push that fails for a reason no precondition covers.

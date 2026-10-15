@@ -4,7 +4,6 @@ package forge
 
 import (
 	"errors"
-	"fmt"
 	"slices"
 )
 
@@ -301,26 +300,6 @@ func (v Verdict) Running() bool {
 
 // ErrChangeExists reports that the branch already has an open change.
 var ErrChangeExists = errors.New("a change already exists for the branch")
-
-// ToolMissingError reports that the command-line tool the forge is driven through is not installed.
-type ToolMissingError struct {
-	// Err is what starting the tool failed with.
-	Err  error
-	Tool string
-	// InstallURL is the page the tool is installed from on every operating system, never a
-	// command, since no package manager is common to all of them.
-	InstallURL string
-}
-
-// Error names the missing tool and the page to install it from.
-func (e *ToolMissingError) Error() string {
-	return fmt.Sprintf("%s is not installed: install it from %s", e.Tool, e.InstallURL)
-}
-
-// Unwrap returns what starting the tool failed with.
-func (e *ToolMissingError) Unwrap() error {
-	return e.Err
-}
 
 // NotLoggedInError reports that the user is not logged in to the forge's host.
 type NotLoggedInError struct {

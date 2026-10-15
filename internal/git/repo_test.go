@@ -3,9 +3,7 @@ package git_test
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -558,23 +556,7 @@ const installURL = "https://git-scm.com/downloads"
 func fakeGitRepo(t *testing.T, line string) git.Repo {
 	t.Helper()
 
-	self, err := os.Executable()
-	assert.NilError(t, err)
-
-	name := "git"
-	if runtime.GOOS == "windows" {
-		name = "git.exe"
-	}
-
-	dir := t.TempDir()
-	assert.NilError(t, os.Link(self, filepath.Join(dir, name)))
-	t.Setenv("PATH", dir)
-
-	env := append(gittest.Env(t),
-		versionLineEnv+"="+line,
-		// The race detector's exit pause would otherwise cost a second per git call.
-		"GORACE=atexit_sleep_ms=0",
-	)
+	env := append(gittest.Env(t), gittest.FakeGit(t, gittest.Fake{Version: line + "\n" + versionSecondLine})...)
 
 	return git.Repo{Runner: git.Runner{Dir: t.TempDir(), Env: env}}
 }
@@ -586,8 +568,6 @@ func TestRepo_CheckVersion_WhenGitIsAtOrAboveTheMinimum_ReturnsNil(t *testing.T)
 	}{
 		{name: "exactly the minimum", line: "git version " + git.MinimumVersion},
 		{name: "minor number with more digits", line: "git version 2.100.0"},
-		{name: "Git for Windows", line: "git version 2.56.0.windows.2"},
-		{name: "Apple", line: "git version 2.54.0 (Apple Git-157)"},
 		{name: "release candidate newer than the minimum", line: "git version 2.35.0.rc0"},
 		{name: "next major release", line: "git version 3.0.0"},
 	}
@@ -613,12 +593,8 @@ func TestRepo_CheckVersion_WhenGitIsOlderThanTheMinimum_ReturnsToolTooOldError(t
 	}{
 		{name: "one patch release older", line: "git version 2.34.0", version: "2.34.0"},
 		{name: "one major release older", line: "git version 1.9.5", version: "1.9.5"},
-		{name: "Git for Windows", line: "git version 2.30.2.windows.1", version: "2.30.2"},
-		{name: "Apple", line: "git version 2.24.3 (Apple Git-128)", version: "2.24.3"},
 		{name: "release candidate of the minimum", line: "git version 2.34.1.rc0", version: "2.34.1-rc0"},
 		{name: "development build", line: "git version DEV"},
-		{name: "no git version prefix", line: "2.40.0"},
-		{name: "empty first line"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -648,16 +624,16 @@ func TestRepo_CheckVersion_WhenGitIsInstalled_RunsGitVersion(t *testing.T) {
 	assert.Check(t, is.DeepEqual(recorder.Calls(), [][]string{{"git", "--version"}}))
 }
 
-func TestRepo_CheckVersion_WhenGitMissingFromPath_ReturnsNotFoundError(t *testing.T) {
+func TestRepo_CheckVersion_WhenGitMissingFromPath_ReturnsToolMissingError(t *testing.T) {
 	repo := git.Repo{Runner: newRunner(t)}
 	// Not parallel: this empties PATH for the whole process while it runs.
 	t.Setenv("PATH", t.TempDir())
 
 	err := repo.CheckVersion(t.Context())
 
-	notFound, ok := errors.AsType[*git.NotFoundError](err)
-	assert.Assert(t, ok, "CheckVersion error = %v, want *git.NotFoundError", err)
-	assert.Check(t, is.Equal(notFound.Name, "git"))
+	missing, ok := errors.AsType[*child.ToolMissingError](err)
+	assert.Assert(t, ok, "CheckVersion error = %v, want *child.ToolMissingError", err)
+	assert.Check(t, is.Equal(missing.Tool, "git"))
 }
 
 func TestVersionOf(t *testing.T) {

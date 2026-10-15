@@ -227,7 +227,7 @@ func (r Repo) Unlanded(ctx context.Context, mergedHead, tip, trunk string) ([]Co
 //
 // A git that is older, or whose first line of `git --version` names no version that can be read,
 // is a *child.ToolTooOldError; a release candidate of a version is older than that version. A git
-// missing from PATH is a *NotFoundError.
+// missing from PATH is a *child.ToolMissingError.
 func (r Repo) CheckVersion(ctx context.Context) error {
 	result, err := r.Runner.Run(ctx, "--version")
 	if err != nil {
@@ -236,12 +236,9 @@ func (r Repo) CheckVersion(ctx context.Context) error {
 
 	line, _, _ := strings.Cut(result.Stdout, "\n")
 
-	version := VersionOf(line)
-	if version != "" && semver.Compare("v"+version, "v"+MinimumVersion) >= 0 {
-		return nil
-	}
+	requirement := child.Requirement{Tool: program, Minimum: MinimumVersion, InstallURL: InstallURL}
 
-	return &child.ToolTooOldError{Tool: program, Version: version, Line: line, Minimum: MinimumVersion, InstallURL: InstallURL}
+	return requirement.Check(line, VersionOf(line))
 }
 
 // VersionOf returns the version that a first line of `git --version` names, as semver without the
@@ -267,7 +264,7 @@ func VersionOf(line string) string {
 		version += "-" + parts[3]
 	}
 
-	if !semver.IsValid("v" + version) {
+	if !semver.IsValid(child.SemverPrefix + version) {
 		return ""
 	}
 

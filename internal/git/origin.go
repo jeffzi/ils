@@ -256,7 +256,7 @@ func (r Repo) remote(ctx context.Context, args ...string) (Result, error) {
 // remoteFailure wraps the failure of a call to origin, leaving a missing git program as it is:
 // that failure says nothing about origin.
 func remoteFailure(err error) error {
-	if _, ok := errors.AsType[*NotFoundError](err); ok {
+	if _, ok := errors.AsType[*child.ToolMissingError](err); ok {
 		return err
 	}
 
