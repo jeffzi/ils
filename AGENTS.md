@@ -18,6 +18,8 @@ manage flags and tool invocations.
   - `ILS_TEST_GIT` — `minimum` makes the `git` package's tests fail unless the `git` on `PATH` is
     exactly the minimum `ils` enforces; `latest` or unset fails them on an older `git` or one whose
     version `ils` cannot read; any other value fails them.
+  - `ILS_TEST_GIT_VERSION` — when set, the exact `git` version the `git` package's tests must find
+    on `PATH`.
 - `task test:setup-live` — Create the three private test repositories of the live suite on your
   GitHub account (`ils-live-minimum`, `ils-live-latest`, `ils-live-local`) and record the clone
   URLs of the first two as the GitHub Actions variables `LIVE_ORIGIN_MINIMUM` and

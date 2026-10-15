@@ -58,7 +58,7 @@ jobs:
   # The suite on the oldest git ils accepts and on the newest git release, so that a git release
   # that changes behavior fails here instead of whenever a runner image updates its git.
   test-git:
-    name: Test / git ${{ matrix.target }}
+    name: Test / git ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -66,10 +66,17 @@ jobs:
       matrix:
         include:
           # git.MinimumVersion; the suite fails unless the git it finds is exactly this.
-          - target: minimum
+          - name: minimum
+            target: minimum
             version: "2.34.1"
+          # The git of Ubuntu 24.04, AlmaLinux 8, and openSUSE Leap 15.6: the most common pinned
+          # LTS git above the minimum.
+          - name: "2.43.0"
+            target: ""
+            version: "2.43.0"
           # The newest stable release on kernel.org, resolved when the job runs.
-          - target: latest
+          - name: latest
+            target: latest
             version: ""
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -95,4 +102,5 @@ jobs:
       - name: Run tests
         env:
           ILS_TEST_GIT: ${{ matrix.target }}
+          ILS_TEST_GIT_VERSION: ${{ steps.git.outputs.version }}
         run: go test -race ./...
