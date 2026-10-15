@@ -127,7 +127,6 @@ func (e *RemoteError) Unwrap() error {
 type PushError struct {
 	Err    error
 	Branch string
-	// Stderr is what git printed about the refusal.
 	Stderr string
 }
 

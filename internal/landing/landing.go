@@ -44,6 +44,9 @@ type Forge interface {
 	Head(ctx context.Context, repo forge.Repo, query forge.HeadQuery) (forge.Head, error)
 	TrunkProtection(ctx context.Context, repo forge.Repo, trunk string) (forge.Protection, error)
 	Verdict(ctx context.Context, repo forge.Repo, query forge.VerdictQuery) (forge.Verdict, error)
+	// HasTrunkCI reports whether the repository runs CI on the trunk: a workflow the forge runs
+	// whose file is on the trunk. A trunk with no workflow file has none; it is not an error.
+	HasTrunkCI(ctx context.Context, repo forge.Repo, trunk string) (bool, error)
 }
 
 // Request is the command a result is for and the words it was given.
@@ -277,7 +280,6 @@ func onceFixed() result.Next {
 	return result.NextStep("fix what failed" + thenPushAgain)
 }
 
-// pushAgain is the command step that runs ils push again.
 func pushAgain() result.Next {
 	return result.NextCommand("push")
 }

@@ -591,19 +591,6 @@ func brokenReads() []brokenRead {
 					": exit status 128: "
 			},
 		},
-		{
-			name: "a commit of another branch is missing", read: readCommits, fetches: true,
-			arrange: func(t *testing.T, f *gittest.Fixture) string {
-				t.Helper()
-
-				middle := f.Sibling(side, topic)
-				f.Commits(side, "sharpen the wording")
-				f.Git("switch", "--quiet", topic)
-				lose(t, f, middle)
-
-				return "git merge-base --is-ancestor " + f.Git("rev-parse", topic) + " " + side + ": exit status 128: "
-			},
-		},
 	}
 }
 
@@ -820,6 +807,16 @@ func failedReads() []failedRead {
 				return []string{
 					"for-each-ref", "--format=%(refname)", "refs/heads/", "--contains", f.Git("rev-parse", topic),
 				}
+			},
+		},
+		{
+			name: "whether another branch carries a commit", read: readCommits, script: allowed(), ops: identityRead(),
+			arrange: func(f *gittest.Fixture) []string {
+				first := f.Git("rev-parse", topic)
+				f.Sibling(side, topic)
+				f.Git("switch", "--quiet", topic)
+
+				return []string{"merge-base", "--is-ancestor", first, side}
 			},
 		},
 		{

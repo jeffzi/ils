@@ -79,7 +79,6 @@ type Phrase struct {
 	names   []string
 }
 
-// lineBreaks matches a run of line breaks in a name.
 var lineBreaks = regexp.MustCompile(`[\r\n]+`)
 
 // Say builds a Phrase from wording and the names that fill its %s

@@ -49,6 +49,8 @@ const (
 	liveScenarioLimit = 8 * time.Minute
 	// liveCleanupLimit is how long the cancels after a scenario may take.
 	liveCleanupLimit = time.Minute
+	// liveRegistryPoll is how long to wait between two reads of the workflows GitHub has registered.
+	liveRegistryPoll = 5 * time.Second
 
 	// liveListLimit is the most pull requests or runs one list of gh returns.
 	liveListLimit = "1000"
@@ -56,7 +58,11 @@ const (
 	// another's.
 	liveTokenLength = 10
 
-	liveWorkflowPath = ".github/workflows/live.yml"
+	// liveWorkflowDir is the directory GitHub reads workflows from.
+	liveWorkflowDir  = ".github/workflows/"
+	liveWorkflowPath = liveWorkflowDir + "live.yml"
+	// liveDispatchedPath is the workflow the trunk carries in the scenario whose CI does not fire.
+	liveDispatchedPath = liveWorkflowDir + "dispatched.yml"
 	// liveNote is the file every commit of the suite writes, so that no two runs share a commit.
 	liveNote = "live.txt"
 	// liveContested is the file the conflict scenario changes on the branch and on the trunk.
@@ -211,6 +217,26 @@ func (l *liveSuite) slug() string {
 	return l.origin.Host + "/" + l.origin.Owner + "/" + l.origin.Name
 }
 
+// apiPath is the path of gh api for rest, a path under the repository.
+func (l *liveSuite) apiPath(rest string) string {
+	return "repos/" + l.origin.Owner + "/" + l.origin.Name + "/" + rest
+}
+
+// apiArgs is the argument list of gh api for rest, a path under the repository, followed by extra.
+func (l *liveSuite) apiArgs(rest string, extra ...string) []string {
+	return append([]string{"api", "--hostname", l.origin.Host, "--paginate", l.apiPath(rest)}, extra...)
+}
+
+// remoteCommit is the commit ref stands on in the repository on GitHub, and empty when the ref is
+// missing.
+func (l *liveSuite) remoteCommit(t *testing.T, ref string) string {
+	t.Helper()
+
+	sha, _, _ := strings.Cut(mustGit(t, "", "ls-remote", l.url, ref), "\t")
+
+	return sha
+}
+
 // trunkRef is the full name of the default branch's ref.
 func (l *liveSuite) trunkRef() string {
 	return "refs/heads/" + l.trunk
@@ -297,8 +323,9 @@ func (l *liveSuite) completed(ctx context.Context, id string) bool {
 func (l *liveSuite) checkRulesRead(t *testing.T) {
 	t.Helper()
 
-	path := "repos/" + l.origin.Owner + "/" + l.origin.Name + "/rules/branches/" + l.trunk
-	_, err := liveGh(t.Context(), "api", "--hostname", l.origin.Host, "--paginate", path)
+	rest := "rules/branches/" + l.trunk
+	path := l.apiPath(rest)
+	_, err := liveGh(t.Context(), l.apiArgs(rest)...)
 
 	exit, exited := errors.AsType[*child.ExitError](err)
 	assert.Assert(t, exited && strings.Contains(exit.Stderr, "HTTP 403"),
@@ -333,8 +360,7 @@ func (l *liveSuite) branch(t *testing.T, scenario string) *liveBranch {
 	mustGit(t, b.dir, "switch", "--quiet", "-c", b.name)
 
 	t.Cleanup(func() {
-		// The test's own context has ended by the time a cleanup runs.
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), liveCleanupLimit)
+		ctx, cancel := liveCleanupContext(t)
 		defer cancel()
 
 		if err := l.cancelRuns(ctx); err != nil {
@@ -343,6 +369,14 @@ func (l *liveSuite) branch(t *testing.T, scenario string) *liveBranch {
 	})
 
 	return b
+}
+
+// liveCleanupContext returns a context limited to liveCleanupLimit that outlives the test's own,
+// which has ended by the time a cleanup runs.
+func liveCleanupContext(t *testing.T) (context.Context, context.CancelFunc) {
+	t.Helper()
+
+	return context.WithTimeout(context.WithoutCancel(t.Context()), liveCleanupLimit)
 }
 
 // liveCommit writes files, each a slash-separated path and its content, into the clone at dir
@@ -422,9 +456,44 @@ func (b *liveBranch) tip(t *testing.T) string {
 func (b *liveBranch) remoteTip(t *testing.T) string {
 	t.Helper()
 
-	sha, _, _ := strings.Cut(mustGit(t, b.dir, "ls-remote", b.suite.url, "refs/heads/"+b.name), "\t")
+	return b.suite.remoteCommit(t, "refs/heads/"+b.name)
+}
 
-	return sha
+// checkFreshPull returns the branch's open pull request, which must be the only one, and checks
+// that it is the one ils opens: against the trunk, on tip, titled with the branch's name.
+func (b *liveBranch) checkFreshPull(t *testing.T, tip string) livePull {
+	t.Helper()
+
+	pull := b.onePull(t)
+	want := livePull{Number: pull.Number, Title: b.name, Base: b.suite.trunk, Head: tip}
+	assert.Check(t, is.DeepEqual(pull, want))
+
+	return pull
+}
+
+// waitWorkflowActive stops the test unless GitHub lists the workflow at path as active before the
+// deadline of the scenario.
+func (b *liveBranch) waitWorkflowActive(t *testing.T, path string) {
+	t.Helper()
+
+	for {
+		state := mustGh(t, b.suite.apiArgs("actions/workflows",
+			"--jq", `.workflows[] | select(.path == "`+path+`") | .state`)...)
+		if state == "active" {
+			return
+		}
+
+		if !time.Now().Before(b.deadline) {
+			t.Fatalf("GitHub does not list %s as active", path)
+		}
+
+		time.Sleep(liveRegistryPoll)
+	}
+}
+
+// lines is the result's shown lines joined by newlines, so one Contains check can match across them.
+func (r liveRun) lines() string {
+	return strings.Join(r.shown.Lines, "\n")
 }
 
 // check returns the first check of the result in bucket, and the zero Check when there is none.
@@ -441,11 +510,11 @@ func (r liveRun) check(bucket string) result.Check {
 	return result.Check{}
 }
 
-// liveWorkflow is a workflow that runs script, one line of shell, on every pull request. It
-// travels on the scenario's branch: for a pull request GitHub runs the workflows of its head.
-func liveWorkflow(script string) map[string]string {
-	return map[string]string{liveWorkflowPath: "name: live\n" +
-		"on: pull_request\n" +
+// liveWorkflowFile is the workflow file at path that GitHub runs on trigger, and whose one job
+// runs script, one line of shell.
+func liveWorkflowFile(path, name, trigger, script string) map[string]string {
+	return map[string]string{path: "name: " + name + "\n" +
+		"on: " + trigger + "\n" +
 		"permissions: {}\n" +
 		"jobs:\n" +
 		"  " + liveJob + ":\n" +
@@ -455,6 +524,18 @@ func liveWorkflow(script string) map[string]string {
 		"      - run: " + script + "\n"}
 }
 
+// liveWorkflow is a workflow that runs script, one line of shell, on every pull request. It
+// travels on the scenario's branch: for a pull request GitHub runs the workflows of its head.
+func liveWorkflow(script string) map[string]string {
+	return liveWorkflowFile(liveWorkflowPath, "live", "pull_request", script)
+}
+
+// liveDispatchedWorkflow is a workflow GitHub runs only when someone starts it by hand: on the
+// trunk it is CI that no pull request starts.
+func liveDispatchedWorkflow() map[string]string {
+	return liveWorkflowFile(liveDispatchedPath, "dispatched", "workflow_dispatch", "echo started by hand")
+}
+
 // ---------------------------------------------------------------------------
 // Scenarios
 // ---------------------------------------------------------------------------
@@ -462,7 +543,7 @@ func liveWorkflow(script string) map[string]string {
 func TestLive(t *testing.T) {
 	l := newLiveSuite(t)
 
-	// The two scenarios that write to the default branch run last.
+	// The scenarios that write to the default branch run last.
 	scenarios := []struct {
 		run  func(t *testing.T, l *liveSuite)
 		name string
@@ -470,10 +551,11 @@ func TestLive(t *testing.T) {
 		{name: "green", run: liveGreen},
 		{name: "green pushed again", run: liveGreenAgain},
 		{name: "red", run: liveRed},
-		{name: "no checks", run: liveNoChecks},
+		{name: "no CI", run: liveNoCI},
 		{name: "pending", run: livePending},
 		{name: "already landed", run: liveAlreadyLanded},
 		{name: "conflict", run: liveConflict},
+		{name: "CI that did not fire", run: liveCIDidNotFire},
 	}
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) { sc.run(t, l) })
@@ -488,9 +570,7 @@ func liveGreen(t *testing.T, l *liveSuite) {
 
 	assert.Equal(t, got.code, exitDone, "%s", got.raw)
 
-	pull := b.onePull(t)
-	want := livePull{Number: pull.Number, Title: b.name, Base: l.trunk, Head: b.tip(t)}
-	assert.Check(t, is.DeepEqual(pull, want))
+	b.checkFreshPull(t, b.tip(t))
 	assert.Check(t, is.Equal(got.check("pass").Name, liveJob), "no passed check named %s in:\n%s", liveJob, got.raw)
 	assert.Check(t, is.Contains(got.shown.Next, "write the pull request's title and body"))
 }
@@ -520,20 +600,28 @@ func liveRed(t *testing.T, l *liveSuite) {
 	assert.Assert(t, failed.Name != "" && failed.Link != "", "no failing check with a link in:\n%s", got.raw)
 	assert.Check(t, is.Equal(failed.Name, liveJob))
 	assert.Check(t, is.Equal(got.shown.Reason, "the check "+liveJob+" failed"))
-	assert.Check(t, is.Contains(strings.Join(got.shown.Lines, "\n"), failed.Link))
+	assert.Check(t, is.Contains(got.lines(), failed.Link))
 	assert.Check(t, is.Contains(got.shown.Excerpt, marker))
 	assert.Check(t, is.Contains(got.shown.Next, "fix the failing check, commit, and run ils push again"))
 }
 
-func liveNoChecks(t *testing.T, l *liveSuite) {
-	b := l.branch(t, "no-checks")
+func liveNoCI(t *testing.T, l *liveSuite) {
+	b := l.branch(t, "no-ci")
 	b.commit(t, nil)
+	workflows := mustGit(t, b.dir, "ls-tree", "--name-only", "HEAD", liveWorkflowDir)
+	assert.Assert(t, is.Equal(workflows, ""), "the trunk carries a workflow, so the scenario has CI to find")
 
 	got := b.push(t)
+	tip := b.tip(t)
 
-	assert.Equal(t, got.code, exitDelivered, "%s", got.raw)
-	assert.Check(t, is.Contains(got.shown.Reason, "no check or status reported for "+b.tip(t)+" on pull request #"))
-	assert.Check(t, is.Contains(got.shown.Next, "report that no check or status reported for the pushed commit, and stop"))
+	assert.Equal(t, got.code, exitDone, "%s", got.raw)
+
+	pull := b.checkFreshPull(t, tip)
+	assert.Check(t, is.Equal(got.shown.Reason, ""))
+	assert.Check(t, is.Contains(got.lines(), "No CI is configured on "+l.trunk+", so nothing verified "+tip))
+	repo, number := l.slug(), strconv.Itoa(pull.Number)
+	assert.Check(t, is.Contains(got.shown.Next, "gh pr merge --repo "+repo+" "+number+" "))
+	assert.Check(t, is.Contains(got.shown.Next, "--match-head-commit "+tip))
 }
 
 func livePending(t *testing.T, l *liveSuite) {
@@ -579,4 +667,39 @@ func liveConflict(t *testing.T, l *liveSuite) {
 	assert.Check(t, is.Contains(got.shown.Reason, "the pull request conflicts with the trunk"))
 	assert.Check(t, is.Contains(got.shown.Next, "merge the trunk into the branch"))
 	assert.Check(t, is.Contains(got.shown.Next, "resolve the conflicts, commit, and run ils push again"))
+}
+
+func liveCIDidNotFire(t *testing.T, l *liveSuite) {
+	before := l.remoteCommit(t, l.trunkRef())
+	assert.Assert(t, before != "", "%s has no commit on %s to put back", l.url, l.trunkRef())
+
+	l.changeTrunk(t, liveDispatchedWorkflow())
+	b := l.branch(t, "ci-did-not-fire")
+
+	t.Cleanup(func() {
+		ctx, cancel := liveCleanupContext(t)
+		defer cancel()
+
+		// The branch's clone holds the commit the trunk stood on before the scenario changed it.
+		if _, err := liveGit(ctx, b.dir, "push", "--quiet", "--force", l.url, before+":"+l.trunkRef()); err != nil {
+			t.Errorf("could not put the trunk back on %s: %v", before, err)
+		}
+	})
+
+	b.commit(t, nil)
+	// ils reads the trunk's workflows once; one GitHub has not registered by then would read as no
+	// CI, and the scenario would test nothing.
+	b.waitWorkflowActive(t, liveDispatchedPath)
+
+	got := b.push(t)
+	tip := b.tip(t)
+
+	assert.Equal(t, got.code, exitDelivered, "%s", got.raw)
+
+	pull := b.onePull(t)
+	unreported := " or status reported for " + tip + " on pull request #" + strconv.Itoa(pull.Number)
+	assert.Check(t, is.Equal(pull.Head, tip))
+	assert.Check(t, is.Equal(got.shown.Reason, "no check"+unreported))
+	assert.Check(t, is.Contains(got.lines(), "No check"+unreported))
+	assert.Check(t, is.Contains(got.shown.Next, "report that no check or status reported for the pushed commit, and stop"))
 }

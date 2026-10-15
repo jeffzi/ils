@@ -39,10 +39,12 @@ const (
 	// WaitRed is a deciding check that failed or was canceled.
 	WaitRed WaitOutcome = "red"
 	// WaitConflicting is a pull request that conflicts with the trunk, found before the checks
-	// were read or by the merge state read after they were green.
+	// were read, by the merge state read after they were green, or by the merge state read after
+	// nothing reported, when the trunk has no CI.
 	WaitConflicting WaitOutcome = "conflicting"
 	// WaitBehind is a pull request behind a trunk it must be up to date with, found before the
-	// checks were read or by the merge state read after they were green.
+	// checks were read, by the merge state read after they were green, or by the merge state read
+	// after nothing reported, when the trunk has no CI.
 	WaitBehind WaitOutcome = "behind"
 	// WaitNeverReported is a required check with no check on the commit and no run that
 	// could still start one, while something else did report; Waited.Verdict.MissingRequired
@@ -118,9 +120,28 @@ func (w *Waited) apartAfterGreen(state forge.MergeState) {
 		return
 	}
 
-	if outcome, apart := apartOutcome(state); apart {
+	w.takeApart(state)
+}
+
+// apartWithoutCI turns nothing reported into WaitConflicting or WaitBehind when state, read after
+// the wait, says the pull request cannot merge and the trunk has no CI, and reports whether it did.
+func (w *Waited) apartWithoutCI(state forge.MergeState) bool {
+	if w.Outcome != WaitNothingReported {
+		return false
+	}
+
+	return w.takeApart(state)
+}
+
+// takeApart sets the outcome to WaitConflicting or WaitBehind when state says the pull request
+// cannot merge, and reports whether it did.
+func (w *Waited) takeApart(state forge.MergeState) bool {
+	outcome, apart := apartOutcome(state)
+	if apart {
 		w.Outcome = outcome
 	}
+
+	return apart
 }
 
 // apartOutcome returns the outcome for a merge state that says the pull request cannot merge, and
@@ -139,8 +160,7 @@ func apartOutcome(state forge.MergeState) (WaitOutcome, bool) {
 // WaitError reports a read of the wait after a push that failed for a reason other than the
 // context's deadline.
 type WaitError struct {
-	Err error
-	// Stage names the read that failed.
+	Err   error
 	Stage WaitStage
 }
 
@@ -169,7 +189,9 @@ var errWindowPassed = errors.New("the merge state stayed unknown for the whole w
 // every 5 seconds until the checks conclude, a red verdict concluding once the forge has
 // settled its failed log, and then reads the merge state once more; a
 // conflict or a branch behind its trunk found by that read ends green checks as WaitConflicting
-// or WaitBehind.
+// or WaitBehind. AwaitVerdict does not make the third route to those outcomes: a caller turns
+// WaitNothingReported into them by the merge state it reads after nothing reported, when the
+// trunk has no CI.
 //
 // No poll is started that would end past ctx's deadline.
 // A deadline that ends a stage, inside a read or a poll or between two, is the outcome
@@ -229,9 +251,7 @@ func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 	}
 
 	// A conflicting pull request runs no workflow, so its missing checks say nothing.
-	if outcome, apart := apartOutcome(head.MergeState); apart {
-		waited.Outcome = outcome
-
+	if waited.takeApart(head.MergeState) {
 		return waited, "", nil
 	}
 
@@ -437,7 +457,6 @@ func silent(verdict forge.Verdict) bool {
 	return len(verdict.Checks) == 0 && len(verdict.Runs) == 0
 }
 
-// tally counts the checks that passed and those that were skipped.
 func tally(checks []forge.Check) (passed, skipped int) {
 	for _, check := range checks {
 		switch check.Bucket {

@@ -25,6 +25,7 @@ const (
 	OpHead            Op = "Head"
 	OpTrunkProtection Op = "TrunkProtection"
 	OpVerdict         Op = "Verdict"
+	OpHasTrunkCI      Op = "HasTrunkCI"
 )
 
 // ErrUnscripted is returned for a call the script has no answer for.
@@ -50,12 +51,13 @@ type Script struct {
 	Head            []Answer[forge.Head]
 	TrunkProtection []Answer[forge.Protection]
 	Verdict         []Answer[forge.Verdict]
+	HasTrunkCI      []Answer[bool]
 }
 
 // Call is one recorded call with the arguments that its operation takes.
 type Call struct {
 	Op Op
-	// Branch is the branch of FindChanges and the trunk of TrunkProtection.
+	// Branch is the branch of FindChanges and the trunk of TrunkProtection and HasTrunkCI.
 	Branch string
 	Change forge.NewChange
 	Repo   forge.Repo
@@ -122,6 +124,13 @@ func (f *Fake) Verdict(_ context.Context, repo forge.Repo, query forge.VerdictQu
 	f.tb.Helper()
 
 	return answer(f, f.script.Verdict, Call{Op: OpVerdict, Repo: repo, Query: query})
+}
+
+// HasTrunkCI answers from the script's HasTrunkCI sequence.
+func (f *Fake) HasTrunkCI(_ context.Context, repo forge.Repo, trunk string) (bool, error) {
+	f.tb.Helper()
+
+	return answer(f, f.script.HasTrunkCI, Call{Op: OpHasTrunkCI, Repo: repo, Branch: trunk})
 }
 
 func answer[T any](f *Fake, sequence []Answer[T], call Call) (T, error) {

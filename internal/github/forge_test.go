@@ -3,6 +3,7 @@ package github_test
 import (
 	"context"
 	"errors"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -22,6 +23,10 @@ import (
 // No test that scripts `gh` is parallel: the fake `gh` is found through `GH_PATH`,
 // which `go-gh` reads from the environment of the whole process.
 
+// ---------------------------------------------------------------------------
+// Fixtures and helpers
+// ---------------------------------------------------------------------------
+
 const (
 	engineHost = "git.example.com"
 	engineSlug = engineHost + "/ada/engine"
@@ -37,6 +42,11 @@ const (
 	pullNumber    = 7
 	featureBranch = "feature"
 	trunk         = "main"
+
+	ciFile      = ".github/workflows/ci.yml"
+	releaseFile = ".github/workflows/release.yml"
+	// dependabotPath is where GitHub lists its own Dependabot workflow, which has no file.
+	dependabotPath = "dynamic/dependabot/dependabot-updates"
 )
 
 // operation is one call on the forge, reduced to its error.
@@ -111,6 +121,49 @@ func runsArgs() []string { return ghtest.RunsArgs(engineSlug, headSHA) }
 
 func logArgs() []string { return ghtest.LogArgs(engineSlug, runID) }
 
+func workflowsArgs() []string {
+	return []string{"api", "--hostname", engineHost, "--paginate", "repos/ada/engine/actions/workflows"}
+}
+
+func workflowFilesArgs() []string { return workflowFilesArgsAt(trunk) }
+
+func workflowFilesArgsAt(ref string) []string {
+	return []string{"api", "--hostname", engineHost, "repos/ada/engine/contents/.github/workflows?ref=" + ref}
+}
+
+// workflowJSON is one entry of the workflow list's answer: the workflow at file, in state.
+func workflowJSON(file, state string) string {
+	return `{"id":1,"name":"` + path.Base(file) + `","path":"` + file + `","state":"` + state + `"}`
+}
+
+// workflowsPage is one page of the workflow list's answer, holding workflows.
+func workflowsPage(workflows ...string) string {
+	return `{"total_count":` + strconv.Itoa(len(workflows)) + `,"workflows":` + jsonArray(workflows...) + `}`
+}
+
+// fileJSON is one entry of the directory read's answer: the file at file.
+func fileJSON(file string) string {
+	return `{"name":"` + path.Base(file) + `","path":"` + file + `","type":"file"}`
+}
+
+// activeCIList is the workflow list's answer holding the active CI workflow.
+func activeCIList() string { return workflowsPage(workflowJSON(ciFile, "active")) }
+
+// ciOnTrunkJSON is the directory read's answer holding the CI workflow's file.
+func ciOnTrunkJSON() string { return jsonArray(fileJSON(ciFile)) }
+
+// notFoundAnswer is what `gh api` says of a path GitHub does not find.
+func notFoundAnswer() ghtest.Answer { return notFound404("Not Found") }
+
+// notFound404 is what `gh api` says of a 404 GitHub explains with message.
+func notFound404(message string) ghtest.Answer {
+	return ghtest.Answer{
+		Stdout: `{"message":"` + message + `","documentation_url":"https://docs.github.com/rest","status":"404"}`,
+		Stderr: "gh: " + message + " (HTTP 404)\n",
+		Code:   1,
+	}
+}
+
 // headJSON is `gh pr view`'s answer for a mergeable pull request in the given state.
 func headJSON(status, review string) string {
 	return pullJSON("MERGEABLE", status, review)
@@ -179,6 +232,10 @@ func operations() []operation {
 			_, err := f.Verdict(ctx, engine(), verdictQuery())
 			return err
 		}},
+		{name: "HasTrunkCI", run: func(ctx context.Context, f *github.Forge) error {
+			_, err := f.HasTrunkCI(ctx, engine(), trunk)
+			return err
+		}},
 	}
 }
 
@@ -189,6 +246,7 @@ func readCases() []readCase {
 	}
 
 	identity, find, head, protection, verdict := byName["Identity"], byName["FindChanges"], byName["Head"], byName["TrunkProtection"], byName["Verdict"]
+	hasCI := byName["HasTrunkCI"]
 	blocked := func(ctx context.Context, f *github.Forge) error {
 		_, err := f.Head(ctx, engine(), headQuery("build", "test"))
 		return err
@@ -210,6 +268,11 @@ func readCases() []readCase {
 		{name: "api rules", run: protection, args: rulesArgs()},
 		{name: "pr checks", run: verdict, args: checksArgs()},
 		{name: "run list", run: verdict, args: runsArgs(), before: []ghtest.Call{ghtest.Says("[]", checksArgs()...)}},
+		{name: "api workflows", run: hasCI, args: workflowsArgs()},
+		{
+			name: "api workflow files", run: hasCI, args: workflowFilesArgs(),
+			before: []ghtest.Call{ghtest.Says(activeCIList(), workflowsArgs()...)},
+		},
 	}
 }
 
@@ -221,6 +284,10 @@ func withoutGh(t *testing.T, ghPath string) {
 	t.Setenv("GH_PATH", ghPath)
 	t.Setenv("PATH", t.TempDir())
 }
+
+// ---------------------------------------------------------------------------
+// Forge operations
+// ---------------------------------------------------------------------------
 
 func TestForge_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
 	for _, tt := range operations() {
@@ -637,6 +704,32 @@ func TestForge_TrunkProtection(t *testing.T) {
 	}
 }
 
+func TestForge_TrunkProtection_ReadsRulesOfExactlyTheTrunk(t *testing.T) {
+	rules := `[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"build"}]}}]`
+	tests := []struct {
+		name   string
+		branch string
+		path   string
+	}{
+		{name: "plain name", branch: "main", path: "repos/ada/engine/rules/branches/main"},
+		{name: "slash keeps separating segments", branch: "release/v1", path: "repos/ada/engine/rules/branches/release/v1"},
+		{name: "hash is escaped, not a fragment", branch: "release#1", path: "repos/ada/engine/rules/branches/release%231"},
+		{name: "percent is escaped, not an escape", branch: "100%", path: "repos/ada/engine/rules/branches/100%25"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := []string{"api", "--hostname", engineHost, "--paginate", tt.path}
+			fake := ghtest.Setup(t, ghtest.Says(rules, args...))
+
+			got, err := newForge().TrunkProtection(t.Context(), engine(), tt.branch)
+			assert.NilError(t, err)
+
+			assert.Check(t, is.Contains(fake.Calls(), received(args)[0]))
+			assert.Check(t, is.DeepEqual(got, forge.Protection{RequiredChecks: []string{"build"}}))
+		})
+	}
+}
+
 func TestForge_Verdict_WhenChecksAreReported_ReadsEachBucketWhateverGhExitsWith(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -776,6 +869,88 @@ func TestForge_Verdict_FailedLog(t *testing.T) {
 	}
 }
 
+func TestForge_HasTrunkCI(t *testing.T) {
+	ci := workflowJSON(ciFile, "active")
+	dependabot := workflowJSON(dependabotPath, "active")
+	autoSubmission := workflowJSON("dynamic/dependency-graph/auto-submission", "active")
+	ciOnTrunk := ghtest.Answer{Stdout: ciOnTrunkJSON()}
+	releaseOnTrunk := ghtest.Answer{Stdout: jsonArray(fileJSON(releaseFile))}
+	// filesFail is a trunk read that fails: a row scripting it answers without reading the trunk.
+	filesFail := ghtest.Answer{Stderr: serverDown, Code: 1}
+	tests := []struct {
+		name      string
+		workflows string
+		files     ghtest.Answer
+		want      bool
+	}{
+		{name: "active workflow whose file is on the trunk", workflows: workflowsPage(dependabot, ci), files: ciOnTrunk, want: true},
+		{name: "active workflow on the second page", workflows: workflowsPage(dependabot) + workflowsPage(ci), files: ciOnTrunk, want: true},
+		{name: "workflow disabled by hand", workflows: workflowsPage(workflowJSON(ciFile, "disabled_manually")), files: ciOnTrunk},
+		{name: "workflow disabled for inactivity", workflows: workflowsPage(workflowJSON(ciFile, "disabled_inactivity")), files: ciOnTrunk},
+		{name: "only dynamic workflows", workflows: workflowsPage(dependabot, autoSubmission), files: filesFail},
+		{name: "active workflow whose file is not on the trunk", workflows: workflowsPage(ci), files: releaseOnTrunk},
+		{name: "no workflow", workflows: workflowsPage(), files: ciOnTrunk},
+		{name: "trunk without a workflows directory", workflows: workflowsPage(ci), files: notFoundAnswer()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ghtest.Setup(t, ghtest.Says(tt.workflows, workflowsArgs()...), ghtest.Exits(tt.files, workflowFilesArgs()...))
+
+			got, err := newForge().HasTrunkCI(t.Context(), engine(), trunk)
+			assert.NilError(t, err)
+
+			assert.Check(t, is.Equal(got, tt.want))
+		})
+	}
+}
+
+func TestForge_HasTrunkCI_WhenWorkflowListAnswers404_ReturnsExitError(t *testing.T) {
+	ghtest.Setup(t, ghtest.Exits(notFoundAnswer(), workflowsArgs()...))
+
+	_, err := newForge().HasTrunkCI(t.Context(), engine(), trunk)
+
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "HasTrunkCI error = %v, want *child.ExitError", err)
+	assert.Check(t, is.DeepEqual(exitErr.Argv, received(workflowsArgs())[0]))
+}
+
+func TestForge_HasTrunkCI_WhenTrunkRefIsMissing_ReturnsExitError(t *testing.T) {
+	noCommit := notFound404("No commit found for the ref " + trunk)
+	ghtest.Setup(t, ghtest.Says(activeCIList(), workflowsArgs()...), ghtest.Exits(noCommit, workflowFilesArgs()...))
+
+	got, err := newForge().HasTrunkCI(t.Context(), engine(), trunk)
+
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "HasTrunkCI error = %v, want *child.ExitError", err)
+	assert.Check(t, is.DeepEqual(exitErr.Argv, received(workflowFilesArgs())[0]))
+	assert.Check(t, is.Equal(exitErr.Stderr, noCommit.Stderr))
+	assert.Check(t, !got, "HasTrunkCI = CI alongside an error, want false")
+}
+
+func TestForge_HasTrunkCI_WhenWorkflowListPrintsNothing_ReturnsDecodeError(t *testing.T) {
+	ghtest.Setup(t, ghtest.Says("", workflowsArgs()...))
+
+	_, err := newForge().HasTrunkCI(t.Context(), engine(), trunk)
+
+	decodeErr, ok := errors.AsType[*github.DecodeError](err)
+	assert.Assert(t, ok, "HasTrunkCI error = %v, want *github.DecodeError", err)
+	assert.Check(t, is.DeepEqual(decodeErr.Argv, received(workflowsArgs())[0]))
+}
+
+func TestForge_HasTrunkCI_WhenTrunkNameHoldsQuerySyntax_SendsItEscaped(t *testing.T) {
+	const release = "release/1.0+2"
+	ghtest.Setup(t, ghtest.Says(activeCIList(), workflowsArgs()...), ghtest.Says(ciOnTrunkJSON(), workflowFilesArgsAt("release%2F1.0%2B2")...))
+
+	got, err := newForge().HasTrunkCI(t.Context(), engine(), release)
+	assert.NilError(t, err)
+
+	assert.Check(t, got)
+}
+
+// ---------------------------------------------------------------------------
+// Merge state mapping
+// ---------------------------------------------------------------------------
+
 func TestMergeStateOf(t *testing.T) {
 	t.Parallel()
 
@@ -830,6 +1005,10 @@ func TestMergeStateOf(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Runner
+// ---------------------------------------------------------------------------
 
 // missingTool is the error every call returns when `gh` is not installed.
 func missingTool() *forge.ToolMissingError {

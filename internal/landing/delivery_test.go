@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -53,6 +54,9 @@ const (
 	readHead       = "the pull request's head"
 	readMergeState = "whether the pull request can merge"
 	readChecks     = "the checks of the pushed commit"
+	readCI         = "whether the repository has CI"
+
+	noCILine = "No CI is configured on " + trunk + ", so nothing verified " + tipMark + "\n"
 )
 
 // forgeFor builds the forge's answers once the branch's tip is known.
@@ -94,6 +98,14 @@ func (build forgeFor) thenFailingHead(err error) forgeFor {
 func (build forgeFor) requiring(names ...string) forgeFor {
 	return build.with(func(script *forgetest.Script, _ string) {
 		script.TrunkProtection = []forgetest.Answer[forge.Protection]{{Value: forge.Protection{RequiredChecks: names}}}
+	})
+}
+
+// answeringCI returns build with a forge that answers the read of whether the repository has CI
+// on its trunk with answer.
+func (build forgeFor) answeringCI(answer forgetest.Answer[bool]) forgeFor {
+	return build.with(func(script *forgetest.Script, _ string) {
+		script.HasTrunkCI = []forgetest.Answer[bool]{answer}
 	})
 }
 
@@ -594,6 +606,13 @@ func pushUnreportedRows() []pushRow {
 	lint := needed("lint", forge.BucketPass)
 	never := forge.Verdict{Checks: []forge.Check{lint}, MissingRequired: []string{"test"}, Runs: ran(forge.RunCompleted)}
 	missing := inState(forge.MergeBlockedByMissingCheck, "BLOCKED")
+	nothing := finish{
+		outcome: result.DeliveredNotGreen,
+		reason:  "no check or status reported for " + tipMark + " on pull request #12",
+		text: pushedLine + openedLine + "No check or status reported for " + tipMark +
+			" on pull request #12\n" + cleanLine + nextNothing,
+		payload: detail(forge.VerdictNone, forge.MergeClean),
+	}
 
 	return []pushRow{
 		{
@@ -607,16 +626,158 @@ func pushUnreportedRows() []pushRow {
 			},
 		},
 		{
-			name: "nothing reported", script: opening(forge.Verdict{}),
+			name:   "nothing reported in a repository with CI on its trunk",
+			script: opening(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{Value: true}),
+			want:   nothing,
+		},
+		{
+			// A trunk that requires checks has CI, so the forge has no answer for the CI read.
+			name:   "nothing reported though the trunk requires checks",
+			script: opening(forge.Verdict{MissingRequired: []string{"lint", "test"}}).requiring("lint", "test"),
+			want:   nothing,
+		},
+	}
+}
+
+// pushNoCIRows are the pushes whose commit nothing reported for, in a repository with no CI on its
+// trunk, and those whose read of that fails or is cut short.
+func pushNoCIRows() []pushRow {
+	silent := opening(forge.Verdict{})
+	unverified := silent.answeringCI(forgetest.Answer[bool]{})
+	cut := reusing(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{Err: fmt.Errorf("gh: %w", context.DeadlineExceeded)})
+	reviewed := inState(forge.MergeBlockedByReview, "BLOCKED")
+	// unreadable is the push whose read of whether the repository has CI fails with err, which the
+	// push prints as said.
+	unreadable := func(name string, err error, said string) pushRow {
+		return pushRow{
+			name:   name,
+			script: silent.answeringCI(forgetest.Answer[bool]{Err: err}),
 			want: finish{
-				outcome: result.DeliveredNotGreen,
-				reason:  "no check or status reported for " + tipMark + " on pull request #12",
-				text: pushedLine + openedLine + "No check or status reported for " + tipMark +
-					" on pull request #12\n" + cleanLine + nextNothing,
+				outcome: result.Broke, reason: "could not read " + readCI,
+				text:    pushedLine + openedLine + "Could not read " + readCI + ": " + said + "\n" + nextFixed,
+				payload: detail(forge.VerdictNone, forge.MergeClean),
+			},
+		}
+	}
+
+	return []pushRow{
+		// A merge state after the checks that keeps the push from the trunk ends as a green push in
+		// that state does.
+		{
+			name:   "on a pull request that turns " + string(forge.MergeConflicting) + " after the checks",
+			script: unverified.showing(inState(forge.MergeClean, "CLEAN"), inState(forge.MergeConflicting, "DIRTY")),
+			want: finish{
+				outcome: result.DeliveredNotGreen, reason: "the pull request conflicts with the trunk",
+				text:    pushedLine + openedLine + noCILine + "GitHub: DIRTY (" + string(forge.MergeConflicting) + ")\n" + nextTrunk,
+				payload: detail(forge.VerdictNone, forge.MergeConflicting),
+			},
+		},
+		{
+			name: "on a clean pull request", script: unverified,
+			want: finish{
+				outcome: result.Done, text: pushedLine + openedLine + noCILine + cleanLine + nextMerge,
 				payload: detail(forge.VerdictNone, forge.MergeClean),
 			},
 		},
+		{
+			name:   "on a pull request that needs a review",
+			script: unverified.showing(inState(forge.MergeClean, "CLEAN"), reviewed),
+			want: finish{
+				outcome: result.Done,
+				text:    pushedLine + openedLine + noCILine + "GitHub: BLOCKED (blocked-by-review)\n" + nextReview,
+				payload: detail(forge.VerdictNone, forge.MergeBlockedByReview),
+			},
+		},
+		unreadable("and the CI read fails", errors.New("HTTP 502"), "HTTP 502"),
+		// Only the bound's end is pending: a read canceled for any other reason failed.
+		unreadable("and the CI read is canceled", fmt.Errorf("gh: %w", context.Canceled), "gh: context canceled"),
+		{
+			name: "and the deadline ends in the CI read", script: cut,
+			want: cutShortRead(readCI),
+		},
 	}
+}
+
+func TestPush_WhenNothingReportedForTheCommit_EndsByWhatTheCIReadAnswers(t *testing.T) {
+	t.Parallel()
+
+	runPushes(t, pushNoCIRows())
+}
+
+func TestPush_WhenTheDeadlineEndsBeforeTheCIRead_PendingWithoutAskingIt(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		ended := make(chan struct{})
+		// The deadline ends once the merge state after the checks is read; the forge has no
+		// answer for the CI read.
+		ending := reusing(forge.Verdict{}).with(func(script *forgetest.Script, _ string) {
+			checksRead := false
+			once := sync.OnceFunc(func() { close(ended) })
+			script.OnRead = func(call forgetest.Call) {
+				if call.Op == forgetest.OpVerdict {
+					checksRead = true
+				}
+
+				if call.Op == forgetest.OpHead && checksRead {
+					once()
+				}
+			}
+		})
+		d := newDelivery(t, pushRow{script: ending})
+		ctx := gittest.Ending(d.ctx, ended, context.DeadlineExceeded)
+
+		got := landing.Push(ctx, d.deps, pushRequest())
+
+		assertDelivered(t, d.scene, got, cutShortRead(readCI).at(d.tip))
+		assert.Check(t, is.Equal(d.onOrigin(), d.tip))
+	})
+}
+
+// ciReading is a forge that keeps what its CI read's context was: its deadline, and whether it
+// ends with the push's. The wrapped forge records the repository and trunk the read was about.
+type ciReading struct {
+	landing.Forge
+
+	deadline time.Time
+	// endPush ends the push's context while the read is in flight.
+	endPush       context.CancelFunc
+	endedWithPush bool
+}
+
+// HasTrunkCI keeps what its context was, then answers as the forge it wraps.
+func (f *ciReading) HasTrunkCI(ctx context.Context, repo forge.Repo, trunk string) (bool, error) {
+	f.deadline, _ = ctx.Deadline()
+	f.endPush()
+	f.endedWithPush = ctx.Err() != nil
+
+	return f.Forge.HasTrunkCI(ctx, repo, trunk)
+}
+
+func TestPush_WhenNothingReportedForTheCommit_AsksAboutTheTrunkOfOriginWithinTheDeadline(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		d := newDelivery(t, pushRow{script: opening(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{})})
+		ctx, cancel := context.WithCancel(d.ctx)
+		t.Cleanup(cancel)
+		reading := &ciReading{Forge: d.deps.Forge, endPush: cancel}
+		d.deps.Forge = reading
+		deadline, _ := d.ctx.Deadline()
+
+		landing.Push(ctx, d.deps, pushRequest())
+
+		var asks []forgetest.Call
+
+		for _, call := range d.forge.Calls() {
+			if call.Op == forgetest.OpHasTrunkCI {
+				asks = append(asks, call)
+			}
+		}
+
+		wantAsk := forgetest.Call{Op: forgetest.OpHasTrunkCI, Repo: origin(), Branch: trunk}
+		assert.Check(t, is.DeepEqual(asks, []forgetest.Call{wantAsk}, whichRepo()))
+		assert.Check(t, reading.deadline.Equal(deadline), "CI read deadline = %v, want the push's %v", reading.deadline, deadline)
+		assert.Check(t, reading.endedWithPush, "CI read context outlived the push's context")
+	})
 }
 
 // pending is a push to the open pull request that ended pending for reason, after lines.
@@ -625,6 +786,14 @@ func pending(reason, lines string, payload *result.Push) finish {
 		outcome: result.Pending, reason: reason, payload: payload,
 		text: pushedLine + foundLine + lines + nextPush,
 	}
+}
+
+// cutShortRead is a push to the open pull request that ended pending because the time limit ended
+// while reading read.
+func cutShortRead(read string) finish {
+	return pending("the time limit ended while reading "+read,
+		"The time limit ended while reading "+read+"; nothing more will change\n"+cleanLine,
+		detail(forge.VerdictNone, forge.MergeClean))
 }
 
 // pushCutShortRows are the pushes whose deadline ended inside a read of the wait.
@@ -637,9 +806,7 @@ func pushCutShortRows() []pushRow {
 			script: reusing().with(func(script *forgetest.Script, _ string) {
 				script.Verdict = []forgetest.Answer[forge.Verdict]{{Err: ended}}
 			}),
-			want: pending("the time limit ended while reading "+readChecks,
-				"The time limit ended while reading "+readChecks+"; nothing more will change\n"+cleanLine,
-				detail(forge.VerdictNone, forge.MergeClean)),
+			want: cutShortRead(readChecks),
 		},
 		{
 			name:   "the deadline ends in the read of the merge state after the checks",

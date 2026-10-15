@@ -144,11 +144,10 @@ func RepoViewJSON(fork bool, permission string) string {
 
 // Change is one pull request as `gh pr list` prints it.
 type Change struct {
-	URL   string
-	Title string
-	Base  string
-	SHA   string
-	// Number is the pull request's number.
+	URL    string
+	Title  string
+	Base   string
+	SHA    string
 	Number int
 	Draft  bool
 	// CrossRepository says the head branch lives in another repository, as a fork's does.

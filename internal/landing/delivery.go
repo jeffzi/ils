@@ -17,6 +17,7 @@ const (
 	readHead       = "the pull request's head"
 	readMergeState = "whether the pull request can merge"
 	readChecks     = "the checks of the pushed commit"
+	readCI         = "whether the repository has CI"
 )
 
 // excerptLines is how many lines of a failing check's log a red push prints, counted from the
@@ -48,7 +49,9 @@ type delivery struct {
 }
 
 // deliver pushes the branch, finds or opens its pull request, and reports the verdict of the
-// pushed commit.
+// pushed commit. When nothing reported for the commit and the trunk requires no check, it also
+// asks the forge whether the repository has CI on its trunk: without CI, the push ends as a green
+// push does.
 func deliver(ctx context.Context, deps Deps, req Request, p pushReady) result.Result {
 	d := &delivery{req: req, pushReady: p}
 
@@ -73,6 +76,13 @@ func deliver(ctx context.Context, deps Deps, req Request, p pushReady) result.Re
 	}
 
 	d.waited = waited
+
+	// A trunk that requires checks has CI, so only one that requires none is asked about.
+	if waited.Outcome == WaitNothingReported && len(protection.RequiredChecks) == 0 {
+		if stop := d.withoutCI(ctx, deps); stop != nil {
+			return *stop
+		}
+	}
 
 	return *d.report()
 }
@@ -181,7 +191,6 @@ func (d *delivery) findAgain(ctx context.Context, deps Deps) *result.Result {
 		result.Broke, result.Say("no pull request was opened or found"), onceFixed())
 }
 
-// found takes change as the branch's pull request.
 func (d *delivery) found(change forge.Change) {
 	d.number, d.url = change.Number, change.URL
 	d.lines = append(d.lines, result.Say("Pull request #%s: %s", change.Number, change.URL))
@@ -291,18 +300,65 @@ func (d *delivery) report() *result.Result {
 // green is every deciding check passed or skipped.
 func (d *delivery) green() *result.Result {
 	d.sayChecks()
+
+	return d.doneMerging()
+}
+
+// doneMerging says the merge state and ends the push done, with merging by hand as the next step.
+func (d *delivery) doneMerging() *result.Result {
 	d.sayMergeState()
 
+	return d.ended(result.Done, result.Phrase{}, d.mergeNext())
+}
+
+// mergeNext is the step after a push that is done: merge by hand, once a review is in when the
+// merge state asks for one.
+func (d *delivery) mergeNext() result.Next {
 	repo := d.Repo.Slug()
 	names := []any{repo, d.number, repo, d.number, d.tip, d.number}
-	next := result.NextStep(mergeByHand, names...)
 
 	// A review is not the agent's to give, so it is asked for and the push is still done.
 	if d.waited.MergeState == forge.MergeBlockedByReview {
-		next = result.NextStep("request a review of the pull request first, then "+mergeByHand, names...)
+		return result.NextStep("request a review of the pull request first, then "+mergeByHand, names...)
 	}
 
-	return d.ended(result.Done, result.Phrase{}, next)
+	return result.NextStep(mergeByHand, names...)
+}
+
+// withoutCI asks the forge whether the repository has CI on its trunk, for a pushed commit that
+// nothing reported for. It returns nil when the repository has CI; otherwise the push ends as a
+// green push does, with a line saying nothing verified the commit: done, unless the merge state
+// read after the checks says the pull request conflicts with the trunk or is behind it. A deadline
+// that ends before or inside the read ends the push pending, and any other failure of the read
+// ends it broke.
+func (d *delivery) withoutCI(ctx context.Context, deps Deps) *result.Result {
+	hasCI := false
+
+	err := ctx.Err()
+	if err == nil {
+		hasCI, err = deps.Forge.HasTrunkCI(ctx, d.Repo, d.Trunk)
+	}
+
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		line, reason := cutShortReading(readCI)
+		d.lines = append(d.lines, line)
+		d.sayMergeState()
+
+		return d.ended(result.Pending, reason, pushAgain())
+	case err != nil:
+		return d.unread(readCI, err)
+	case hasCI:
+		return nil
+	}
+
+	d.lines = append(d.lines, result.Say("No CI is configured on %s, so nothing verified %s", d.Trunk, d.tip))
+
+	if d.waited.apartWithoutCI(d.waited.MergeState) {
+		return d.report()
+	}
+
+	return d.doneMerging()
 }
 
 // red is a deciding check that failed or was canceled, with the end of its log as the excerpt.
@@ -345,9 +401,10 @@ func excerpt(check string, log forge.FailedLog) string {
 }
 
 // apart is a pull request that cannot merge until the trunk is merged into the branch. The
-// checks are said only when they were read: the merge state read after them found it apart.
+// checks are said only when some decided: they were green, and the merge state read after them
+// found it apart.
 func (d *delivery) apart(reason result.Phrase) *result.Result {
-	if !d.waited.Since.IsZero() {
+	if len(d.waited.Deciding) > 0 {
 		d.sayChecks()
 	}
 

@@ -14,16 +14,17 @@ import (
 )
 
 const (
-	branch    = "feature"
-	trunk     = "main"
-	number    = 12
-	oldCommit = "1111111"
-	newCommit = "2222222"
-	pullURL   = "https://example.com/acme/widgets/pull/12"
-	lintCheck = "lint"
-	testCheck = "test"
-	workflow  = "ci"
-	rawClean  = "CLEAN"
+	branch     = "feature"
+	trunk      = "main"
+	number     = 12
+	oldCommit  = "1111111"
+	newCommit  = "2222222"
+	pullURL    = "https://example.com/acme/widgets/pull/12"
+	lintCheck  = "lint"
+	testCheck  = "test"
+	workflow   = "ci"
+	rawClean   = "CLEAN"
+	hasTrunkCI = true
 )
 
 // repo is the repository every call is made against.
@@ -142,6 +143,9 @@ func operations() []operation {
 		{name: "verdict", made: forgetest.Call{Op: forgetest.OpVerdict, Repo: repo(), Query: verdictQuery()}, want: verdict(), call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
 			return f.Verdict(ctx, repo(), verdictQuery())
 		}},
+		{name: "has trunk CI", made: forgetest.Call{Op: forgetest.OpHasTrunkCI, Repo: repo(), Branch: trunk}, want: hasTrunkCI, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
+			return f.HasTrunkCI(ctx, repo(), trunk)
+		}},
 	}
 }
 
@@ -163,6 +167,7 @@ func script(err error) forgetest.Script {
 		Head:            steps(head(), err),
 		TrunkProtection: steps(protection(), err),
 		Verdict:         steps(verdict(), err),
+		HasTrunkCI:      steps(hasTrunkCI, err),
 	}
 }
 
@@ -267,6 +272,7 @@ func TestFake_Calls_WhenEveryOperationIsCalled_RecordsThemInOrder(t *testing.T) 
 		forgetest.OpHead,
 		forgetest.OpTrunkProtection,
 		forgetest.OpVerdict,
+		forgetest.OpHasTrunkCI,
 	}
 	assert.Check(t, is.DeepEqual(got, want))
 }
@@ -304,6 +310,7 @@ func TestFake_WhenOnReadIsSet_RunsItOncePerRead(t *testing.T) {
 		forgetest.OpHead,
 		forgetest.OpTrunkProtection,
 		forgetest.OpVerdict,
+		forgetest.OpHasTrunkCI,
 	}
 	assert.Check(t, is.DeepEqual(seen, want))
 }

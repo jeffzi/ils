@@ -9,7 +9,6 @@ import (
 )
 
 const (
-	// fangWidth is the variable that sets the width of the help.
 	fangWidth = "__FANG_TEST_WIDTH"
 
 	// helpWidth keeps every entry of the help on one line, which entries in cli_test.go relies on.

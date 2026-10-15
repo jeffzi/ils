@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os/exec"
 	"regexp"
 	"slices"
@@ -22,6 +23,10 @@ import (
 	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
 )
+
+// ---------------------------------------------------------------------------
+// GitHub forge
+// ---------------------------------------------------------------------------
 
 // Forge is GitHub seen through the operations landing asks of a forge, each one a call of gh.
 type Forge struct {
@@ -47,6 +52,14 @@ const freePlanRefusal = "Upgrade to GitHub Pro"
 
 // forbiddenStatus is the status line gh prints on stderr when GitHub answers 403.
 const forbiddenStatus = "HTTP 403"
+
+// pathNotFound is what gh prints on stderr when GitHub answers 404 for a path that does not exist
+// on a ref that does. A ref that does not exist also answers 404, with another message.
+const pathNotFound = "Not Found (HTTP 404)"
+
+// workflowsDir is the directory GitHub Actions reads workflow files from. GitHub lists its own
+// dynamic workflows (Dependabot, the dependency graph) under other paths, with no file behind them.
+const workflowsDir = ".github/workflows"
 
 // noChecksReported is what gh prints on stderr when a pull request has no checks.
 const noChecksReported = "no checks reported"
@@ -92,6 +105,17 @@ type pullCheck struct {
 	Bucket   string `json:"bucket"`
 	Workflow string `json:"workflow"`
 	Link     string `json:"link"`
+}
+
+type workflowsPage struct {
+	Workflows []struct {
+		Path  string `json:"path"`
+		State string `json:"state"`
+	} `json:"workflows"`
+}
+
+type repoFile struct {
+	Path string `json:"path"`
 }
 
 type workflowRun struct {
@@ -164,19 +188,19 @@ func (f *Forge) OpenChange(ctx context.Context, repo forge.Repo, change forge.Ne
 		return forge.ChangeRef{}, err
 	}
 
-	url := strings.TrimSpace(result.Stdout)
+	link := strings.TrimSpace(result.Stdout)
 
-	_, numberText, found := strings.Cut(url, "/pull/")
+	_, numberText, found := strings.Cut(link, "/pull/")
 	if !found {
 		return forge.ChangeRef{}, fmt.Errorf("gh pr create: no pull request URL in its output %q", result.Stdout)
 	}
 
 	number, err := strconv.Atoi(numberText)
 	if err != nil {
-		return forge.ChangeRef{}, fmt.Errorf("gh pr create: no pull request number in %q: %w", url, err)
+		return forge.ChangeRef{}, fmt.Errorf("gh pr create: no pull request number in %q: %w", link, err)
 	}
 
-	return forge.ChangeRef{Number: number, URL: url}, nil
+	return forge.ChangeRef{Number: number, URL: link}, nil
 }
 
 // Head returns the pull request's head commit and whether GitHub can merge it.
@@ -228,8 +252,14 @@ func (f *Forge) missingCheck(ctx context.Context, repo forge.Repo, query forge.V
 // A free private repository answers 403 with an upgrade message to the read,
 // which counts as no required check. Any other 403 is an error.
 func (f *Forge) TrunkProtection(ctx context.Context, repo forge.Repo, trunk string) (forge.Protection, error) {
-	path := fmt.Sprintf("repos/%s/%s/rules/branches/%s", repo.Owner, repo.Name, trunk)
-	args := []string{"api", "--hostname", repo.Host, "--paginate", path}
+	// Each segment is escaped on its own: `#`, `%` and `?` would otherwise cut or corrupt the
+	// path, while `/` is kept literal so that a name like release/v1 keeps its slash in the path.
+	segments := strings.Split(trunk, "/")
+	for i, segment := range segments {
+		segments[i] = url.PathEscape(segment)
+	}
+
+	args := paginatedAPIArgs(repo, "rules/branches/"+strings.Join(segments, "/"))
 
 	result, err := f.runner.Run(ctx, args...)
 	if exitErr, ok := errors.AsType[*child.ExitError](err); ok &&
@@ -261,6 +291,82 @@ func (f *Forge) TrunkProtection(ctx context.Context, repo forge.Repo, trunk stri
 	}
 
 	return forge.Protection{RequiredChecks: required}, nil
+}
+
+// HasTrunkCI reports whether a workflow that GitHub runs, one in the active state,
+// has its file under .github/workflows on trunk.
+//
+// A trunk with no .github/workflows directory has no CI; any other failure of a read is an error.
+func (f *Forge) HasTrunkCI(ctx context.Context, repo forge.Repo, trunk string) (bool, error) {
+	active, err := f.activeWorkflows(ctx, repo)
+	if err != nil || len(active) == 0 {
+		return false, err
+	}
+
+	files, err := f.workflowFiles(ctx, repo, trunk)
+	if err != nil {
+		return false, err
+	}
+
+	isActiveWorkflow := func(file repoFile) bool { return slices.Contains(active, file.Path) }
+
+	return slices.ContainsFunc(files, isActiveWorkflow), nil
+}
+
+// repoAPIPath returns the REST path of rest under the repository, relative to the API root.
+func repoAPIPath(repo forge.Repo, rest string) string {
+	return fmt.Sprintf("repos/%s/%s/%s", repo.Owner, repo.Name, rest)
+}
+
+// paginatedAPIArgs returns the gh arguments that read rest under the repository, following every page.
+func paginatedAPIArgs(repo forge.Repo, rest string) []string {
+	return []string{"api", "--hostname", repo.Host, "--paginate", repoAPIPath(repo, rest)}
+}
+
+// activeWorkflows returns the paths of the active workflows that have a file under .github/workflows.
+func (f *Forge) activeWorkflows(ctx context.Context, repo forge.Repo) ([]string, error) {
+	args := paginatedAPIArgs(repo, "actions/workflows")
+
+	result, err := f.runner.Run(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	pages, err := decodeEachPage[workflowsPage](result.Stdout, args)
+	if err != nil {
+		return nil, err
+	}
+
+	var active []string
+
+	for _, page := range pages {
+		for _, workflow := range page.Workflows {
+			if workflow.State == "active" && strings.HasPrefix(workflow.Path, workflowsDir+"/") {
+				active = append(active, workflow.Path)
+			}
+		}
+	}
+
+	return active, nil
+}
+
+// workflowFiles returns the entries of the .github/workflows directory on trunk; a trunk
+// without the directory, which GitHub answers 404 Not Found for, has none. A trunk that does not
+// exist is an error.
+func (f *Forge) workflowFiles(ctx context.Context, repo forge.Repo, trunk string) ([]repoFile, error) {
+	path := repoAPIPath(repo, "contents/"+workflowsDir+"?ref="+url.QueryEscape(trunk))
+	args := []string{"api", "--hostname", repo.Host, path}
+
+	result, err := f.runner.Run(ctx, args...)
+	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && strings.Contains(exitErr.Stderr, pathNotFound) {
+		return nil, nil
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return decodeOutput[[]repoFile](result.Stdout, args)
 }
 
 // Verdict returns every check of the pull request, the workflow runs on the
@@ -433,6 +539,10 @@ func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Ve
 	return forge.FailedLog{Check: failed.Name, Text: result.Stdout, State: forge.FailedLogRead}, nil
 }
 
+// ---------------------------------------------------------------------------
+// Merge state
+// ---------------------------------------------------------------------------
+
 // MergeFacts is what GitHub says about whether a pull request can merge.
 type MergeFacts struct {
 	// Mergeable is GitHub's `mergeable`: MERGEABLE, CONFLICTING, or UNKNOWN.
@@ -490,6 +600,10 @@ func blockedState(facts MergeFacts) forge.MergeState {
 		return forge.MergeBlockedOther
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Running gh and decoding output
+// ---------------------------------------------------------------------------
 
 // Program is the name gh is run under, and the first word of every argv a call is named by.
 const Program = "gh"
@@ -640,17 +754,28 @@ func decodeOutput[T any](stdout string, args []string) (T, error) {
 // decodePages decodes the JSON arrays that `gh api --paginate` prints, one per
 // page and concatenated, into one slice; a single array decodes as itself.
 func decodePages[T any](stdout string, args []string) ([]T, error) {
+	pages, err := decodeEachPage[[]T](stdout, args)
+	if err != nil {
+		return nil, err
+	}
+
+	return slices.Concat(pages...), nil
+}
+
+// decodeEachPage decodes the JSON values that `gh api --paginate` prints, one per
+// page and concatenated, each into a P; stdout holding no value is a *DecodeError.
+func decodeEachPage[P any](stdout string, args []string) ([]P, error) {
 	decoder := legacy.NewDecoder(strings.NewReader(stdout))
 
-	var all []T
+	var pages []P
 
-	for pages := 0; ; pages++ {
+	for {
 		var raw legacy.RawMessage
 
 		err := decoder.Decode(&raw)
 		if errors.Is(err, io.EOF) {
-			if pages > 0 {
-				return all, nil
+			if len(pages) > 0 {
+				return pages, nil
 			}
 
 			err = io.ErrUnexpectedEOF
@@ -660,11 +785,11 @@ func decodePages[T any](stdout string, args []string) ([]T, error) {
 			return nil, &DecodeError{Argv: argv(args), Err: err}
 		}
 
-		page, err := decodeOutput[[]T](string(raw), args)
+		page, err := decodeOutput[P](string(raw), args)
 		if err != nil {
 			return nil, err
 		}
 
-		all = append(all, page...)
+		pages = append(pages, page)
 	}
 }

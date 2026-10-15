@@ -28,6 +28,10 @@ const (
 	scratchRef    = "refs/gittest/squash"
 )
 
+// ---------------------------------------------------------------------------
+// Construction and environment
+// ---------------------------------------------------------------------------
+
 // Fixture is a working repository with a bare origin, both inside the test's temporary directory.
 type Fixture struct {
 	tb        testing.TB
@@ -142,6 +146,10 @@ func isolatedEnv(home string) []string {
 	)
 }
 
+// ---------------------------------------------------------------------------
+// Accessors and git runners
+// ---------------------------------------------------------------------------
+
 // Dir returns the working repository's directory.
 func (f *Fixture) Dir() string { return f.dir }
 
@@ -170,6 +178,10 @@ func (f *Fixture) OriginGit(args ...string) string {
 
 	return f.run(f.originDir, args...)
 }
+
+// ---------------------------------------------------------------------------
+// Repository and origin scenarios
+// ---------------------------------------------------------------------------
 
 // Commits checks out branch, cutting it from the trunk when it does not exist yet, adds one commit
 // per subject, and returns the new shas, oldest first.
@@ -353,6 +365,10 @@ func (f *Fixture) LandPull(number int, rev string) {
 	f.PullRef(number, tip)
 	f.SquashOnOrigin(tip, subject+" (#"+strconv.Itoa(number)+")")
 }
+
+// ---------------------------------------------------------------------------
+// Serving over ssh and running git
+// ---------------------------------------------------------------------------
 
 // Serving returns the command that stands in for ssh: it runs, on the repository at dir, the
 // service git asked the host for, which is upload-pack for a fetch and receive-pack for a push.

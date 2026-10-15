@@ -189,7 +189,6 @@ func inputOf(r result.Result) string {
 	return text
 }
 
-// textCase pairs a result with the text the text renderer must print for it.
 type textCase struct {
 	name   string
 	gitDir string
@@ -304,7 +303,6 @@ func TestRenderText(t *testing.T) {
 	}
 }
 
-// jsonCase pairs a result with the object the JSON renderer must show for it.
 type jsonCase struct {
 	name   string
 	gitDir string
@@ -566,7 +564,6 @@ func TestWordingError_Error_WhenLineNamesHook_QuotesLineAndWord(t *testing.T) {
 		`line "The pre-commit step ran." names a hook or a path under the git dir: "pre-commit"`))
 }
 
-// pair is a result with what each renderer must show for it.
 type pair struct {
 	name     string
 	gitDir   string

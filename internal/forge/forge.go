@@ -8,6 +8,10 @@ import (
 	"slices"
 )
 
+// ---------------------------------------------------------------------------
+// Changes
+// ---------------------------------------------------------------------------
+
 // Repo identifies a repository on a forge.
 type Repo struct {
 	Host  string
@@ -98,6 +102,10 @@ type Protection struct {
 	RequiredChecks []string
 }
 
+// ---------------------------------------------------------------------------
+// Checks and runs
+// ---------------------------------------------------------------------------
+
 // Bucket is the outcome of one check.
 type Bucket string
 
@@ -137,6 +145,10 @@ type Run struct {
 	Name   string
 	Status RunStatus
 }
+
+// ---------------------------------------------------------------------------
+// Verdicts
+// ---------------------------------------------------------------------------
 
 // FailedLogState is whether the log of a failing check was read, and why not when it was not.
 type FailedLogState string
@@ -282,6 +294,10 @@ func (v Verdict) Running() bool {
 		return run.Status == RunQueued || run.Status == RunInProgress
 	})
 }
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
 
 // ErrChangeExists reports that the branch already has an open change.
 var ErrChangeExists = errors.New("a change already exists for the branch")

@@ -281,7 +281,6 @@ func endsInName(text string) bool {
 
 // namesHook reports whether word holds a hook name, in any case.
 func namesHook(word string) bool {
-	// hookNames are the words that name a hook or a tool that runs hooks.
 	hookNames := []string{
 		"pre-commit", "commit-msg", "pre-push", "post-commit", "prek", "lefthook", "hooks/",
 	}

@@ -1,14 +1,13 @@
 # ils
 
 `ils` (Instrument Landing System) lands a change on GitHub in fixed, checked steps. A large
-language model (LLM) agent that runs it cannot skip a step, merge on red, or push to the wrong
-place. Each command
-runs only standard `git` and `gh` commands, prints what it did and what to do next, and keeps no
-state of its own.
+language model (LLM) agent that runs it cannot skip a step or push to the wrong place. Each
+command runs only standard `git` and `gh` commands, prints what it did and what to do next, and
+keeps no state of its own.
 
-This version has one command, `ils push`. `merge`, `branch`, `status`, and `release` are coming;
-until `merge` exists, merge by hand with the line shown under
-[After a green push](#after-a-green-push).
+This version has one command, `ils push`. `merge`, `branch`, `status`, and `release` are coming,
+and `merge` will refuse a pull request whose checks are not green. Until then, merge by hand with
+the line shown under [After a green push](#after-a-green-push).
 
 - [Example](#example)
 - [Install](#install)
@@ -18,6 +17,8 @@ until `merge` exists, merge by hand with the line shown under
 - [Usage](#usage)
   - [What it refuses](#what-it-refuses)
   - [Exit codes](#exit-codes)
+    - [When no check reports](#when-no-check-reports)
+  - [JSON output](#json-output)
   - [After a green push](#after-a-green-push)
 - [Use with Claude Code](#use-with-claude-code)
 - [Contributing](#contributing)
@@ -85,25 +86,21 @@ task install
    gh repo create --source . --push
    ```
 
-2. Fetch once. With git 2.48 or later this also records, in the clone, which branch is origin's
-   default:
-
-   ```bash
-   git fetch origin
-   ```
-
-3. Protect the default branch with a ruleset. In the repository on GitHub, open Settings, then
+2. Protect the default branch with a ruleset. In the repository on GitHub, open Settings, then
    Rules, then Rulesets. Create a branch ruleset that targets the default branch with these rules:
 
    - require a pull request before merging, with squash as the only merge method;
    - require status checks to pass;
    - block force pushes.
 
+   If your CI runs outside GitHub Actions, make the ruleset require its checks. Without that,
+   `ils` treats the repository as having no CI.
+
    GitHub's guide to
    [creating rulesets for a repository](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/creating-rulesets-for-a-repository)
    has the details. Rulesets need a public repository or a paid GitHub plan; on a free private
-   repository skip this step. `ils` works either way, and the ruleset is what holds when something
-   other than `ils` merges.
+   repository skip this step. `ils` works either way. Since you merge by hand, the ruleset is what
+   blocks a merge on red.
 
 ## Usage
 
@@ -142,26 +139,66 @@ or file; at most it has fetched from origin. It refuses:
 - a repository with no remote named `origin`, or an `origin` that cannot be reached;
 - an `origin` whose fetch and push URLs do not name one repository (they differ, or one is not an
   `https://`, `ssh://git@`, or `git@host:` repository URL);
-- a missing `git` or `gh`, a `gh` older than 2.50.0 or one whose version cannot be read, a `gh`
-  that is not logged in to origin's host (which is also how a host that is not GitHub is refused),
-  a fork, or a repository you cannot push to;
+- a missing `git` or `gh`;
+- a `gh` older than 2.50.0, or one whose version `ils` cannot read;
+- a `gh` not logged in to origin's host (this is also how `ils` refuses a host that is not GitHub);
+- a fork, or a repository you cannot push to;
 - any word after `push` other than `--json`, `--help`, or `-h`, and a `--json=<value>` whose value
   is not `true` or `false`;
 - a precondition read that the time limit cut short: run `ils push` again.
 
 ### Exit codes
 
-| Exit | Means                | Reaction                                                                                                                             |
-| ---- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| 0    | done                 | The checks are green. Write the pull request's title and body.                                                                       |
-| 1    | broke                | The output says what was done and what was not. Fix what failed, then follow `Next:`.                                                |
-| 2    | refused              | Nothing was pushed or opened. The reason says why; `Next:` says what to do.                                                          |
-| 3    | ask                  | Reserved; not used by this version.                                                                                                  |
-| 4    | pending              | GitHub had not finished when `ils push` stopped waiting, for example checks still running or not yet reported. Run `ils push` again. |
-| 5    | delivered, not green | The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.          |
+| Exit | Means                | Reaction                                                                                                                                                         |
+| ---- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | done                 | The checks are green, or the repository has no continuous integration (CI) and a line says nothing verified the commit. Write the pull request's title and body. |
+| 1    | broke                | The output says what was done and what was not. Fix what failed, then follow `Next:`.                                                                            |
+| 2    | refused              | Nothing was pushed or opened. The reason says why; `Next:` says what to do.                                                                                      |
+| 3    | ask                  | Reserved; not used by this version.                                                                                                                              |
+| 4    | pending              | GitHub had not finished when `ils push` stopped waiting, for example checks still running or not yet reported. Run `ils push` again.                             |
+| 5    | delivered, not green | The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                      |
 
-A verdict with no checks at all is not green: a change that nothing verified does not count as
-verified.
+#### When no check reports
+
+A repository has CI when GitHub has an active Actions workflow whose file is on the default
+branch, or when a ruleset on the default branch requires checks. An external CI that no ruleset
+requires counts as no CI.
+
+When no check reports for the pushed commit, the exit depends on whether the repository has CI:
+
+- **No CI on the default branch:** it prints a line saying that nothing verified the commit. It
+  then ends as a green push does: exit 0, or exit 5 when the branch conflicts with or is behind the
+  default branch.
+- **CI on the default branch:** it stops at exit 5 when no check reported for the pushed commit,
+  since the CI did not run for the pull request.
+
+### JSON output
+
+`ils push --json` prints one JSON object with these fields:
+
+| Field       | Type             | Meaning                                                                                                                              |
+| ----------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `command`   | string           | The command that ran, such as `push`.                                                                                                |
+| `words`     | array of strings | The command-line words `ils` received. Absent when empty.                                                                            |
+| `outcome`   | string           | `done`, `broke`, `refused`, `ask`, `pending`, or `delivered-not-green`: the Means column of [Exit codes](#exit-codes), with hyphens. |
+| `next`      | string           | What to do next, as on the `Next:` line.                                                                                             |
+| `reason`    | string           | Why the command did not end as `done`. Present on every other outcome.                                                               |
+| `excerpt`   | string           | Third-party text, such as part of a failed check's log. Absent when empty.                                                           |
+| `lines`     | array of strings | What happened, in order. Absent when empty.                                                                                          |
+| `exit_code` | integer          | The process exit code.                                                                                                               |
+| `payload`   | object           | The command's structured detail; a push puts it under `payload.push`. Absent when empty.                                             |
+
+`payload.push` has these fields:
+
+| Field         | Type             | Meaning                                                                                                                    |
+| ------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `url`         | string           | The pull request's URL.                                                                                                    |
+| `number`      | integer          | The pull request's number.                                                                                                 |
+| `sha`         | string           | The pushed commit.                                                                                                         |
+| `verdict`     | string           | `green`, `red`, `pending`, or `none`.                                                                                      |
+| `merge_state` | string           | `clean`, `behind`, `conflicting`, `draft`, `blocked-by-review`, `blocked-by-missing-check`, `blocked-other`, or `unknown`. |
+| `checks`      | array of objects | One per check, with `name`, `bucket` (`pass`, `fail`, `pending`, `skipped`, or `canceled`), `workflow`, and `link`.        |
+| `failed_log`  | string           | The log of a failed check. Absent when empty.                                                                              |
 
 ### After a green push
 

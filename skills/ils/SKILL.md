@@ -42,11 +42,15 @@ Then show the output to the user and act on `Next:`.
 
 | Exit | Means                | What you do                                                               |
 | ---- | -------------------- | ------------------------------------------------------------------------- |
-| 0    | done, checks green   | Do the pull request step under `Next:`, then stop. Do not merge.          |
+| 0    | done: green or no CI | Do the pull request step under `Next:`, then stop. Do not merge.          |
 | 1    | broke                | Report what the output says was done and what was not, then stop.         |
 | 2    | refused              | Nothing was pushed or opened. The reason is the answer; follow `Next:`.   |
 | 4    | pending              | GitHub had not finished when `ils` stopped waiting. Run `ils push` again. |
 | 5    | delivered, not green | The push happened; the result is not green. Follow `Next:`.               |
+
+When the repository has no CI, `ils` prints a line saying that no CI is configured and nothing
+verified the commit. Pass that line on to the user as it is. Never call the change tested or
+verified when nothing ran.
 
 **Only exit 4 is run again on its own.** On exit 2 or 5, `ils push` runs again only when `Next:`
 names it, after any step `Next:` puts first. On exit 1 the fix is the user's: `ils push` runs again
@@ -73,8 +77,9 @@ Two steps are yours, each entered from a `Next:` line. Each has an end.
    the log excerpt, fix the cause, commit, and run `ils push` again. For a conflict with the
    trunk, or a branch behind it, merge the trunk into the branch as `Next:` says, resolve,
    commit, and run `ils push` again. Either way the step ends at that `ils push`. When `Next:`
-   says to report and stop instead (no check reported, a required check never reported), report
-   and stop: there is nothing to fix from here.
+   says to report and stop instead, report and stop: there is nothing to fix from here. `Next:`
+   says so when no check reported in a repository that has CI, or when a required check never
+   reported.
 2. **The pull request's title and body** (exit 0). They become the squash commit's message. Write
    them with the `gh pr edit` command `Next:` prints, show the title and body to the user, and
    stop. The step ends at `gh pr edit`. When `Next:` says to request a review first, tell the

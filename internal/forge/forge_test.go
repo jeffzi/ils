@@ -10,14 +10,14 @@ import (
 	"github.com/jeffzi/ils/internal/forge"
 )
 
-// unknownBucket is a bucket this version does not know.
+// unknownBucket must match no forge.Bucket constant, or the tests that use it stop reaching the
+// unknown-bucket case.
 const unknownBucket = forge.Bucket("stale")
 
 func link(name string) string {
 	return "https://ci.example.com/checks/" + name
 }
 
-// optional is a check no rule requires.
 func optional(name string, bucket forge.Bucket) forge.Check {
 	return forge.Check{Name: name, Bucket: bucket, Workflow: "ci", Link: link(name)}
 }
