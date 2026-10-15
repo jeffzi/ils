@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/mod/semver"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
@@ -34,10 +33,6 @@ import (
 const (
 	// liveOriginVar holds the clone URL of the test repository the suite resets and writes to.
 	liveOriginVar = "ILS_LIVE_ORIGIN"
-	// liveLegVar says which gh the suite must find: liveMinimum, liveLatest, or unset for latest.
-	liveLegVar = "ILS_LIVE_GH"
-	// liveVersionVar, when set, is the exact version of gh the suite must find.
-	liveVersionVar = "ILS_LIVE_GH_VERSION"
 
 	// liveNamePrefix starts the name of every repository the suite agrees to reset.
 	liveNamePrefix = "ils-live-"
@@ -168,46 +163,12 @@ func newLiveSuite(t *testing.T) *liveSuite {
 
 	l.origin = origin
 
-	checkLiveLeg(t, liveGhVersion(t))
+	assert.NilError(t, checkLiveGh(os.Getenv(liveGhLegVar), os.Getenv(liveGhVersionVar), mustGh(t, "--version")))
 	assert.NilError(t, checkLiveGit(os.Getenv(liveGitLegVar), os.Getenv(liveGitVersionVar), mustGit(t, "", "--version")))
 	l.reset(t)
 	l.checkRulesRead(t)
 
 	return l
-}
-
-// liveGhVersion returns the version of the gh the suite runs, which liveVersionVar must name when set.
-func liveGhVersion(t *testing.T) string {
-	t.Helper()
-
-	out := mustGh(t, "--version")
-	line, _, _ := strings.Cut(out, "\n")
-	rest, _ := strings.CutPrefix(line, "gh version ")
-	found, _, _ := strings.Cut(rest, " ")
-	assert.Assert(t, semver.IsValid("v"+found), "gh --version printed %q, which names no version the suite can read", out)
-
-	if want := os.Getenv(liveVersionVar); want != "" {
-		assert.Assert(t, found == want, "the gh found is %s, and %s wants %s", found, liveVersionVar, want)
-	}
-
-	return found
-}
-
-// checkLiveLeg stops the test unless found is the version liveLegVar asks for: the minimum ils
-// enforces on the minimum leg, and that or newer otherwise.
-func checkLiveLeg(t *testing.T, found string) {
-	t.Helper()
-
-	switch leg := os.Getenv(liveLegVar); leg {
-	case liveMinimum:
-		assert.Assert(t, found == github.MinimumVersion,
-			"%s is %s and the gh found is %s, want the minimum ils enforces, %s", liveLegVar, leg, found, github.MinimumVersion)
-	case "", liveLatest:
-		assert.Assert(t, semver.Compare("v"+found, "v"+github.MinimumVersion) >= 0,
-			"the gh found is %s, older than the minimum ils enforces, %s", found, github.MinimumVersion)
-	default:
-		t.Fatalf("%s is %q, want %s, %s, or unset", liveLegVar, leg, liveMinimum, liveLatest)
-	}
 }
 
 // slug is the repository as gh's --repo flag names it.
