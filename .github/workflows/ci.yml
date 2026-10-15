@@ -58,7 +58,7 @@ jobs:
   # The suite on the oldest git ils accepts and on the newest git release, so that a git release
   # that changes behavior fails here instead of whenever a runner image updates its git.
   test-git:
-    name: Test / git ${{ matrix.leg }}
+    name: Test / git ${{ matrix.target }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -66,10 +66,10 @@ jobs:
       matrix:
         include:
           # git.MinimumVersion; the suite fails unless the git it finds is exactly this.
-          - leg: minimum
+          - target: minimum
             version: "2.34.1"
-          # The newest stable release on kernel.org, resolved when the leg runs.
-          - leg: latest
+          # The newest stable release on kernel.org, resolved when the job runs.
+          - target: latest
             version: ""
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -82,17 +82,17 @@ jobs:
         id: git
         with:
           version: ${{ matrix.version }}
-      - name: Check that git on PATH is the one the leg built
+      - name: Check that git on PATH is the one this job built
         env:
           GIT_BUILT: ${{ steps.git.outputs.path }}
         run: |
           set -euo pipefail
           if [ "$(command -v git)" != "$GIT_BUILT" ]; then
-            echo "git on PATH is $(command -v git), want the one this leg built, $GIT_BUILT" >&2
+            echo "git on PATH is $(command -v git), want the one this job built, $GIT_BUILT" >&2
             exit 1
           fi
           git --version
       - name: Run tests
         env:
-          ILS_TEST_GIT: ${{ matrix.leg }}
+          ILS_TEST_GIT: ${{ matrix.target }}
         run: go test -race ./...

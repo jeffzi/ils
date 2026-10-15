@@ -163,8 +163,8 @@ func newLiveSuite(t *testing.T) *liveSuite {
 
 	l.origin = origin
 
-	assert.NilError(t, checkLiveGh(os.Getenv(liveGhLegVar), os.Getenv(liveGhVersionVar), mustGh(t, "--version")))
-	assert.NilError(t, checkLiveGit(os.Getenv(liveGitLegVar), os.Getenv(liveGitVersionVar), mustGit(t, "", "--version")))
+	assert.NilError(t, checkLiveGh(os.Getenv(liveGhTargetVar), os.Getenv(liveGhVersionVar), mustGh(t, "--version")))
+	assert.NilError(t, checkLiveGit(os.Getenv(liveGitTargetVar), os.Getenv(liveGitVersionVar), mustGit(t, "", "--version")))
 	l.reset(t)
 	l.checkRulesRead(t)
 

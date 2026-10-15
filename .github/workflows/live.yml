@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   live:
-    name: Live / ${{ matrix.leg }}
+    name: Live / ${{ matrix.target }}
     runs-on: ubuntu-latest
     # Six scenarios of at most eight minutes each.
     timeout-minutes: 60
@@ -28,11 +28,11 @@ jobs:
         include:
           # The oldest gh and git that ils accepts; the suite fails unless each is the minimum ils
           # enforces.
-          - leg: minimum
+          - target: minimum
             version: "2.50.0"
             git: "2.34.1"
-          # The newest release of cli/cli and of git, resolved when the leg runs.
-          - leg: latest
+          # The newest release of cli/cli and of git, resolved when the job runs.
+          - target: latest
             version: ""
             git: ""
     env:
@@ -46,7 +46,7 @@ jobs:
           go-version-file: go.mod
       - name: Install task
         run: go install github.com/go-task/task/v3/cmd/task@v3.53.1
-      - name: Install the leg's gh
+      - name: Install the job's gh
         id: gh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -84,12 +84,12 @@ jobs:
       - name: Run the live suite
         env:
           GH_TOKEN: ${{ secrets.LIVE_TOKEN }}
-          ILS_LIVE_GH: ${{ matrix.leg }}
+          ILS_LIVE_GH: ${{ matrix.target }}
           ILS_LIVE_GH_VERSION: ${{ steps.gh.outputs.version }}
-          ILS_LIVE_GIT: ${{ matrix.leg }}
+          ILS_LIVE_GIT: ${{ matrix.target }}
           ILS_LIVE_GIT_VERSION: ${{ steps.git.outputs.version }}
           GIT_BUILT: ${{ steps.git.outputs.path }}
-          # Each leg has a repository of its own, so that the two never reset each other's.
+          # Each matrix job has a repository of its own, so that the two never reset each other's.
           LIVE_ORIGIN_MINIMUM: ${{ vars.LIVE_ORIGIN_MINIMUM }}
           LIVE_ORIGIN_LATEST: ${{ vars.LIVE_ORIGIN_LATEST }}
           # ils and the suite find gh through GH_PATH first, so neither can end up on the runner's own.
@@ -99,7 +99,7 @@ jobs:
           case "$ILS_LIVE_GH" in
             minimum) variable=LIVE_ORIGIN_MINIMUM ;;
             latest) variable=LIVE_ORIGIN_LATEST ;;
-            *) echo "no test repository for the leg $ILS_LIVE_GH" >&2; exit 1 ;;
+            *) echo "no test repository for the target $ILS_LIVE_GH" >&2; exit 1 ;;
           esac
           export ILS_LIVE_ORIGIN="${!variable}"
           if [ -z "$ILS_LIVE_ORIGIN" ]; then
@@ -107,11 +107,11 @@ jobs:
             exit 1
           fi
           if [ "$(command -v gh)" != "$GH_PATH" ]; then
-            echo "gh on PATH is $(command -v gh), want the one this leg installed, $GH_PATH" >&2
+            echo "gh on PATH is $(command -v gh), want the one this job installed, $GH_PATH" >&2
             exit 1
           fi
           if [ "$(command -v git)" != "$GIT_BUILT" ]; then
-            echo "git on PATH is $(command -v git), want the one this leg built, $GIT_BUILT" >&2
+            echo "git on PATH is $(command -v git), want the one this job built, $GIT_BUILT" >&2
             exit 1
           fi
           gh --version
