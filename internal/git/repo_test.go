@@ -672,6 +672,7 @@ func TestVersionOf(t *testing.T) {
 		{name: "Apple", line: "git version 2.54.0 (Apple Git-157)", want: "2.54.0"},
 		{name: "release candidate", line: "git version 2.35.0.rc0", want: "2.35.0-rc0"},
 		{name: "development build", line: "git version DEV"},
+		{name: "three components, one not a number", line: "git version 2.x.1"},
 		{name: "no git version prefix", line: "2.40.0"},
 		{name: "empty line"},
 	}

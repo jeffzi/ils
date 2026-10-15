@@ -14,7 +14,10 @@ manage flags and tool invocations.
 - `task build` — Build the binary into bin/
 - `task install` — Build the binary and copy it to the directory `go install` writes to
 - `task test` — Run the test suite with coverage; fails under the floor in `.coverage.yml` (extra
-  args after -- skip coverage and the floor)
+  args after -- skip coverage and the floor). It reads:
+  - `ILS_TEST_GIT` — `minimum` makes the `git` package's tests fail unless the `git` on `PATH` is
+    exactly the minimum `ils` enforces; `latest` or unset fails them on an older `git` or one whose
+    version `ils` cannot read; any other value fails them.
 - `task test:setup-live` — Create the three private test repositories of the live suite on your
   GitHub account (`ils-live-minimum`, `ils-live-latest`, `ils-live-local`) and record the clone
   URLs of the first two as the GitHub Actions variables `LIVE_ORIGIN_MINIMUM` and

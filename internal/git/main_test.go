@@ -1,6 +1,7 @@
 package git_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 
 	"golang.org/x/mod/semver"
 	"gotest.tools/v3/assert"
+	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/git"
 )
@@ -210,6 +212,27 @@ func TestGuardTestGit_WhenGitMissingFromPath_ReturnsNotFoundError(t *testing.T) 
 
 	_, ok := errors.AsType[*git.NotFoundError](err)
 	assert.Check(t, ok, "guardTestGit error = %v, want a *git.NotFoundError", err)
+	assert.Check(t, is.ErrorContains(err, "read the version of the git on PATH: "))
+}
+
+func TestMain_WhenTestGitLegIsUnknown_ExitsBeforeTheTests(t *testing.T) {
+	t.Parallel()
+	binary, err := os.Executable()
+	assert.NilError(t, err)
+
+	var stderr bytes.Buffer
+
+	//nolint:gosec // G204: the test binary starts itself; nothing here comes from outside the test.
+	cmd := exec.CommandContext(t.Context(), binary, "-test.run=^$")
+	cmd.Env = append(os.Environ(), testGitVar+"=newest", "GORACE=atexit_sleep_ms=0")
+	cmd.Stderr = &stderr
+
+	err = cmd.Run()
+
+	exitErr, ok := errors.AsType[*exec.ExitError](err)
+	assert.Assert(t, ok, "test binary error = %v, want it to exit non-zero", err)
+	assert.Check(t, is.Equal(exitErr.ExitCode(), 1))
+	assert.Check(t, is.Contains(stderr.String(), `ILS_TEST_GIT is "newest", want minimum, latest, or unset`))
 }
 
 // diffHelper plays git's external diff program and returns its exit code. In the lingering mode it
