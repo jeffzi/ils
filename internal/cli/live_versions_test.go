@@ -195,7 +195,7 @@ func unsuitedLiveGits() []unsuitedLiveTool {
 	}
 }
 
-func TestCheckLiveGit_WhenGitDoesNotSuitLeg_ReturnsError(t *testing.T) {
+func TestCheckLiveGit_WhenGitDoesNotSuitTarget_ReturnsError(t *testing.T) {
 	t.Parallel()
 	for _, tt := range unsuitedLiveGits() {
 		t.Run(tt.name, func(t *testing.T) {
@@ -289,7 +289,7 @@ func unsuitedLiveGhs() []unsuitedLiveTool {
 	}
 }
 
-func TestCheckLiveGh_WhenGhDoesNotSuitLeg_ReturnsError(t *testing.T) {
+func TestCheckLiveGh_WhenGhDoesNotSuitTarget_ReturnsError(t *testing.T) {
 	t.Parallel()
 	for _, tt := range unsuitedLiveGhs() {
 		t.Run(tt.name, func(t *testing.T) {
