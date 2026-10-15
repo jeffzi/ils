@@ -6,9 +6,25 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"golang.org/x/mod/semver"
+
+	"github.com/jeffzi/ils/internal/child"
 )
 
+// MinimumVersion is the oldest git ils works with: the git of Ubuntu 22.04 LTS.
+const MinimumVersion = "2.34.1"
+
+// InstallURL is the page git is installed from on every operating system.
+const InstallURL = "https://git-scm.com/downloads"
+
 const (
+	// versionPrefix starts the first line of `git --version`.
+	versionPrefix = "git version "
+	// releaseCandidate starts the component git puts after a release candidate's version: its
+	// version script turns a tag's -rcN into .rcN.
+	releaseCandidate = "rc"
+
 	origin   = "origin"
 	headsRef = "refs/heads/"
 
@@ -205,6 +221,57 @@ func (r Repo) BranchesContaining(ctx context.Context, sha string) ([]string, err
 // It reads origin/<trunk>, which is current only after a fetch of trunk.
 func (r Repo) Unlanded(ctx context.Context, mergedHead, tip, trunk string) ([]Commit, error) {
 	return r.commits(ctx, "--no-merges", "--cherry-pick", "--right-only", mergedHead+"..."+tip, excludeTrunk(trunk))
+}
+
+// CheckVersion reports whether git is MinimumVersion or newer.
+//
+// A git that is older, or whose first line of `git --version` names no version that can be read,
+// is a *child.ToolTooOldError; a release candidate of a version is older than that version. A git
+// missing from PATH is a *NotFoundError.
+func (r Repo) CheckVersion(ctx context.Context) error {
+	result, err := r.Runner.Run(ctx, "--version")
+	if err != nil {
+		return err
+	}
+
+	line, _, _ := strings.Cut(result.Stdout, "\n")
+
+	version := versionOf(line)
+	if version != "" && semver.Compare("v"+version, "v"+MinimumVersion) >= 0 {
+		return nil
+	}
+
+	return &child.ToolTooOldError{Tool: program, Version: version, Line: line, Minimum: MinimumVersion, InstallURL: InstallURL}
+}
+
+// versionOf returns the version that a first line of `git --version` names, as semver without the
+// leading v, or "" when it names none or does not start with "git version ".
+//
+// The version is the first three numeric components. A release candidate's .rcN component becomes
+// the pre-release -rcN; any other trailing component, such as Git for Windows' .windows.N, is dropped.
+func versionOf(line string) string {
+	rest, ok := strings.CutPrefix(line, versionPrefix)
+	if !ok {
+		return ""
+	}
+
+	token, _, _ := strings.Cut(rest, " ")
+
+	parts := strings.Split(token, ".")
+	if len(parts) < 3 {
+		return ""
+	}
+
+	version := strings.Join(parts[:3], ".")
+	if len(parts) > 3 && strings.HasPrefix(parts[3], releaseCandidate) {
+		version += "-" + parts[3]
+	}
+
+	if !semver.IsValid("v" + version) {
+		return ""
+	}
+
+	return version
 }
 
 // line runs git with args and returns its stdout without the trailing line break.

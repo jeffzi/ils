@@ -3,7 +3,9 @@ package git_test
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -546,4 +548,114 @@ func TestRepo_HasCommits(t *testing.T) {
 			assert.Check(t, is.Equal(got, tt.want), "HasCommits(%q)", tt.branch)
 		})
 	}
+}
+
+// installURL is where the error for a git that is too old sends the user.
+const installURL = "https://git-scm.com/downloads"
+
+// fakeGitRepo returns a repository whose git, first on PATH, prints line as the first line of
+// `git --version`. It cannot run in a parallel test: it sets PATH for the whole process.
+func fakeGitRepo(t *testing.T, line string) git.Repo {
+	t.Helper()
+
+	self, err := os.Executable()
+	assert.NilError(t, err)
+
+	name := "git"
+	if runtime.GOOS == "windows" {
+		name = "git.exe"
+	}
+
+	dir := t.TempDir()
+	assert.NilError(t, os.Link(self, filepath.Join(dir, name)))
+	t.Setenv("PATH", dir)
+
+	env := append(gittest.Env(t),
+		versionLineEnv+"="+line,
+		// The race detector's exit pause would otherwise cost a second per git call.
+		"GORACE=atexit_sleep_ms=0",
+	)
+
+	return git.Repo{Runner: git.Runner{Dir: t.TempDir(), Env: env}}
+}
+
+func TestRepo_CheckVersion_WhenGitIsAtOrAboveTheMinimum_ReturnsNil(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+	}{
+		{name: "exactly the minimum", line: "git version " + git.MinimumVersion},
+		{name: "minor number with more digits", line: "git version 2.100.0"},
+		{name: "Git for Windows", line: "git version 2.56.0.windows.2"},
+		{name: "Apple", line: "git version 2.54.0 (Apple Git-157)"},
+		{name: "release candidate newer than the minimum", line: "git version 2.35.0.rc0"},
+		{name: "next major release", line: "git version 3.0.0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Not parallel: fakeGitRepo sets PATH for the whole process.
+			repo := fakeGitRepo(t, tt.line)
+
+			err := repo.CheckVersion(t.Context())
+
+			assert.NilError(t, err, "CheckVersion with %q", tt.line)
+		})
+	}
+}
+
+func TestRepo_CheckVersion_WhenGitIsOlderThanTheMinimum_ReturnsToolTooOldError(t *testing.T) {
+	tests := []struct {
+		name string
+		// line is the first line `git --version` prints.
+		line string
+		// version is the version the error carries; a line with none carries none.
+		version string
+	}{
+		{name: "one patch release older", line: "git version 2.34.0", version: "2.34.0"},
+		{name: "one major release older", line: "git version 1.9.5", version: "1.9.5"},
+		{name: "Git for Windows", line: "git version 2.30.2.windows.1", version: "2.30.2"},
+		{name: "Apple", line: "git version 2.24.3 (Apple Git-128)", version: "2.24.3"},
+		{name: "release candidate of the minimum", line: "git version 2.34.1.rc0", version: "2.34.1-rc0"},
+		{name: "development build", line: "git version DEV"},
+		{name: "no git version prefix", line: "2.40.0"},
+		{name: "empty first line"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Not parallel: fakeGitRepo sets PATH for the whole process.
+			repo := fakeGitRepo(t, tt.line)
+
+			err := repo.CheckVersion(t.Context())
+
+			tooOld, ok := errors.AsType[*child.ToolTooOldError](err)
+			assert.Assert(t, ok, "CheckVersion with %q error = %v, want *child.ToolTooOldError", tt.line, err)
+			want := child.ToolTooOldError{
+				Tool: "git", Version: tt.version, Line: tt.line, Minimum: git.MinimumVersion, InstallURL: installURL,
+			}
+			assert.Check(t, is.DeepEqual(*tooOld, want))
+		})
+	}
+}
+
+func TestRepo_CheckVersion_WhenGitIsInstalled_RunsGitVersion(t *testing.T) {
+	t.Parallel()
+	runner, recorder := newRecordedRunner(t)
+	repo := git.Repo{Runner: runner}
+
+	err := repo.CheckVersion(t.Context())
+	assert.NilError(t, err)
+
+	assert.Check(t, is.DeepEqual(recorder.Calls(), [][]string{{"git", "--version"}}))
+}
+
+func TestRepo_CheckVersion_WhenGitMissingFromPath_ReturnsNotFoundError(t *testing.T) {
+	repo := git.Repo{Runner: newRunner(t)}
+	// Not parallel: this empties PATH for the whole process while it runs.
+	t.Setenv("PATH", t.TempDir())
+
+	err := repo.CheckVersion(t.Context())
+
+	notFound, ok := errors.AsType[*git.NotFoundError](err)
+	assert.Assert(t, ok, "CheckVersion error = %v, want *git.NotFoundError", err)
+	assert.Check(t, is.Equal(notFound.Name, "git"))
 }
