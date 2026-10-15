@@ -47,10 +47,16 @@ const (
 	bound = 100 * time.Second
 	// grace is how long past the bound a run may come back.
 	grace = 2 * time.Second
-	// held is how long a held call stays open, far past the bound, and heldLeft is the time left
-	// under the bound when a run with a held call is launched.
-	held     = 30 * time.Second
-	heldLeft = 3 * time.Second
+	// held is how long a held call stays open, far past the bound.
+	held = 30 * time.Second
+	// readsLeft and checksLeft are the time left under the bound when a run with a held call is
+	// launched. Each must cover, several times over, the git and gh processes a slow, loaded
+	// runner spawns before the held call starts, or the bound falls on an earlier read:
+	//   - readsLeft is for a held read of the preconditions, a few processes in.
+	//   - checksLeft is for the held read of the checks, which comes after the reads of the
+	//     preconditions and of the pull requests, the push, and the opening of the pull request.
+	readsLeft  = 6 * time.Second
+	checksLeft = 15 * time.Second
 )
 
 // ran is what one run of the cli printed and the code it exited with.
@@ -199,7 +205,7 @@ func heldChecks() scenario {
 		return v
 	}
 
-	return scenario{name: "the read of the checks", script: firstPush(slow), left: heldLeft, want: exitPending}
+	return scenario{name: "the read of the checks", script: firstPush(slow), left: checksLeft, want: exitPending}
 }
 
 // heldIdentity is a push whose read of the repository's identity is still open at the bound.
@@ -207,14 +213,14 @@ func heldIdentity() scenario {
 	calls := allowed()
 	calls[1].Answers[0].Delay = held
 
-	return scenario{name: "the read of the identity", script: only(calls...), left: heldLeft, want: exitRefused}
+	return scenario{name: "the read of the identity", script: only(calls...), left: readsLeft, want: exitRefused}
 }
 
 // heldVersion is a push whose read of gh's version is still open at the bound.
 func heldVersion() scenario {
 	slow := ghtest.Exits(ghtest.Answer{Stdout: "gh version 2.100.0 (2026-09-03)\n", Delay: held}, ghtest.VersionArgs()...)
 
-	return scenario{name: "the read of gh's version", script: only(slow), left: heldLeft, want: exitRefused}
+	return scenario{name: "the read of gh's version", script: only(slow), left: readsLeft, want: exitRefused}
 }
 
 // outdated is a first push with a gh that is logged out and prints line for its version.
