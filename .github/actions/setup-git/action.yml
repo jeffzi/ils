@@ -1,0 +1,115 @@
+# Builds git from kernel.org's release tarball, checksum-verified against the release listing's
+# sha256sums.asc, whose signature is checked with kernel.org's checksum autosigner key
+# (kernel-autosigner.asc, from https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git, fingerprint
+# B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1). Caches the build per version and runner image, and puts
+# it first on PATH.
+name: Setup git
+description: Build a given git release, or the newest stable one, and put it first on PATH.
+
+inputs:
+  version:
+    description: The git release to build, such as 2.34.1; empty builds the newest stable release.
+    required: false
+    default: ""
+
+outputs:
+  version:
+    description: The git release that was installed.
+    value: ${{ steps.resolve.outputs.version }}
+  path:
+    description: The absolute path of the installed git binary.
+    value: ${{ steps.resolve.outputs.path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve the git release
+      id: resolve
+      shell: bash
+      env:
+        PINNED: ${{ inputs.version }}
+        RELEASES: https://mirrors.edge.kernel.org/pub/software/scm/git
+      run: |
+        set -euo pipefail
+        version="$PINNED"
+        if [ -z "$version" ]; then
+          if ! listing=$(curl --fail --silent --show-error --location "$RELEASES/"); then
+            echo "could not read the git release listing at $RELEASES/" >&2
+            exit 1
+          fi
+          # Release candidates are named git-X.Y.Z.rcN.tar.xz; only stable releases match. grep exits
+          # non-zero when nothing matches, which ends the pipeline under pipefail.
+          if ! version=$(grep --only-matching --extended-regexp 'git-[0-9]+\.[0-9]+\.[0-9]+\.tar\.xz' <<<"$listing" \
+            | sed -e 's/^git-//' -e 's/\.tar\.xz$//' | sort --unique --version-sort | tail --lines=1); then
+            echo "the git release listing at $RELEASES/ names no stable release" >&2
+            exit 1
+          fi
+        fi
+        # A build links the image's libraries, so it is cached per image, not just per OS.
+        if [ -z "${ImageOS:-}" ]; then
+          echo "ImageOS is unset, so the runner image the build is cached for is unknown" >&2
+          exit 1
+        fi
+        prefix="$HOME/.local/git-$version"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "image=$ImageOS" >> "$GITHUB_OUTPUT"
+        echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+        echo "path=$prefix/bin/git" >> "$GITHUB_OUTPUT"
+
+    - name: Restore the cached build
+      id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.resolve.outputs.prefix }}
+        key: git-${{ steps.resolve.outputs.version }}-${{ steps.resolve.outputs.image }}-${{ runner.arch }}
+
+    - name: Build git
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        VERSION: ${{ steps.resolve.outputs.version }}
+        PREFIX: ${{ steps.resolve.outputs.prefix }}
+        RELEASES: https://mirrors.edge.kernel.org/pub/software/scm/git
+      run: |
+        set -euo pipefail
+        sudo apt-get update --quiet
+        # curl and openssl give git its HTTPS transport; expat lets it push over HTTP.
+        sudo apt-get install --yes --quiet --no-install-recommends \
+          gnupg libcurl4-openssl-dev libssl-dev zlib1g-dev libexpat1-dev
+        archive="git-$VERSION.tar.xz"
+        work="$RUNNER_TEMP/git-build"
+        mkdir -p "$work"
+        gpg --dearmor < "$GITHUB_ACTION_PATH/kernel-autosigner.asc" > "$work/autosigner.gpg"
+        cd "$work"
+        curl --fail --silent --show-error --location --remote-name "$RELEASES/$archive"
+        curl --fail --silent --show-error --location --remote-name "$RELEASES/sha256sums.asc"
+        # Only the signed text is searched, so a line added outside the signature cannot match.
+        gpgv --keyring "$work/autosigner.gpg" --output sha256sums.txt sha256sums.asc
+        if ! grep " ${archive}\$" sha256sums.txt > "$archive.sha256"; then
+          echo "sha256sums.asc at $RELEASES/ has no entry for $archive" >&2
+          exit 1
+        fi
+        sha256sum --check --strict "$archive.sha256"
+        tar --extract --xz --file "$archive"
+        cd "git-$VERSION"
+        make --jobs="$(nproc)" prefix="$PREFIX" NO_TCLTK=1 NO_GETTEXT=1 all
+        make prefix="$PREFIX" NO_TCLTK=1 NO_GETTEXT=1 install
+
+    - name: Put git first on PATH
+      shell: bash
+      env:
+        PREFIX: ${{ steps.resolve.outputs.prefix }}
+        VERSION: ${{ steps.resolve.outputs.version }}
+      run: | # zizmor: ignore[github-env] — the entry is the prefix this action built under $HOME from a version read from kernel.org, not attacker-controlled input
+        set -euo pipefail
+        printed=$("$PREFIX/bin/git" --version)
+        if [ "$printed" != "git version $VERSION" ]; then
+          echo "the git built at $PREFIX prints $printed, want git version $VERSION" >&2
+          exit 1
+        fi
+        # Runs git-remote-https, which links libcurl and openssl, against kernel.org's git repository.
+        if ! "$PREFIX/bin/git" ls-remote --exit-code https://git.kernel.org/pub/scm/git/git.git HEAD > /dev/null; then
+          echo "the git built at $PREFIX cannot read a repository over HTTPS" >&2
+          exit 1
+        fi
+        echo "$PREFIX/bin" >> "$GITHUB_PATH"
