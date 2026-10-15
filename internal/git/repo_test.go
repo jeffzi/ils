@@ -659,3 +659,29 @@ func TestRepo_CheckVersion_WhenGitMissingFromPath_ReturnsNotFoundError(t *testin
 	assert.Assert(t, ok, "CheckVersion error = %v, want *git.NotFoundError", err)
 	assert.Check(t, is.Equal(notFound.Name, "git"))
 }
+
+func TestVersionOf(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{name: "plain release", line: "git version 2.34.1", want: "2.34.1"},
+		{name: "Git for Windows", line: "git version 2.56.0.windows.2", want: "2.56.0"},
+		{name: "Apple", line: "git version 2.54.0 (Apple Git-157)", want: "2.54.0"},
+		{name: "release candidate", line: "git version 2.35.0.rc0", want: "2.35.0-rc0"},
+		{name: "development build", line: "git version DEV"},
+		{name: "no git version prefix", line: "2.40.0"},
+		{name: "empty line"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := git.VersionOf(tt.line)
+
+			assert.Check(t, is.Equal(got, tt.want), "VersionOf(%q)", tt.line)
+		})
+	}
+}

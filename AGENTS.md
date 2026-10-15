@@ -26,6 +26,9 @@ manage flags and tool invocations.
   - `ILS_LIVE_GH` — `minimum` requires the `gh` the suite finds (`GH_PATH`, then `PATH`) to be
     exactly the minimum `ils` enforces; `latest` or unset accepts that version or newer.
   - `ILS_LIVE_GH_VERSION` — when set, the exact `gh` version the suite must find.
+  - `ILS_LIVE_GIT` — `minimum` requires the `git` the suite finds on `PATH` to be exactly the
+    minimum `ils` enforces; `latest` or unset accepts that version or newer.
+  - `ILS_LIVE_GIT_VERSION` — when set, the exact `git` version the suite must find.
 - `task check` — Run every pre-commit hook across the repo
 - `task check:fix` — auto-fix everything that supports it: `go mod tidy`, `go tool golangci-lint
   run --fix`, `go tool golangci-lint fmt`, `dprint fmt`, markdownlint (`prek run -a

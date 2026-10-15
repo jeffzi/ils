@@ -236,7 +236,7 @@ func (r Repo) CheckVersion(ctx context.Context) error {
 
 	line, _, _ := strings.Cut(result.Stdout, "\n")
 
-	version := versionOf(line)
+	version := VersionOf(line)
 	if version != "" && semver.Compare("v"+version, "v"+MinimumVersion) >= 0 {
 		return nil
 	}
@@ -244,12 +244,12 @@ func (r Repo) CheckVersion(ctx context.Context) error {
 	return &child.ToolTooOldError{Tool: program, Version: version, Line: line, Minimum: MinimumVersion, InstallURL: InstallURL}
 }
 
-// versionOf returns the version that a first line of `git --version` names, as semver without the
+// VersionOf returns the version that a first line of `git --version` names, as semver without the
 // leading v, or "" when it names none or does not start with "git version ".
 //
 // The version is the first three numeric components. A release candidate's .rcN component becomes
 // the pre-release -rcN; any other trailing component, such as Git for Windows' .windows.N, is dropped.
-func versionOf(line string) string {
+func VersionOf(line string) string {
 	rest, ok := strings.CutPrefix(line, versionPrefix)
 	if !ok {
 		return ""

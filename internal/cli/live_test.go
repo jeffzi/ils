@@ -39,9 +39,6 @@ const (
 	// liveVersionVar, when set, is the exact version of gh the suite must find.
 	liveVersionVar = "ILS_LIVE_GH_VERSION"
 
-	liveMinimum = "minimum"
-	liveLatest  = "latest"
-
 	// liveNamePrefix starts the name of every repository the suite agrees to reset.
 	liveNamePrefix = "ils-live-"
 
@@ -155,8 +152,8 @@ func mustGit(t *testing.T, dir string, args ...string) string {
 // ---------------------------------------------------------------------------
 
 // newLiveSuite returns the repository liveOriginVar names, reset to its first commit, once the
-// name, the gh found, and GitHub's refusal of the rules read are what the suite needs. Nothing
-// is written before the name and gh are checked.
+// name, the gh and git found, and GitHub's refusal of the rules read are what the suite needs.
+// Nothing is written before the name, gh, and git are checked.
 func newLiveSuite(t *testing.T) *liveSuite {
 	t.Helper()
 
@@ -172,6 +169,7 @@ func newLiveSuite(t *testing.T) *liveSuite {
 	l.origin = origin
 
 	checkLiveLeg(t, liveGhVersion(t))
+	assert.NilError(t, checkLiveGit(os.Getenv(liveGitLegVar), os.Getenv(liveGitVersionVar), mustGit(t, "", "--version")))
 	l.reset(t)
 	l.checkRulesRead(t)
 
