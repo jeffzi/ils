@@ -10,7 +10,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - Add `ils push`, which pushes the current branch, opens its pull request on the first push, and
-  reports whether its checks passed; it requires `gh` 2.50.0 or later.
+  reports whether its checks passed; it requires `git` 2.34.1 or later and `gh` 2.50.0 or
+  later.
 - Add the `ils` agent skill, which tells an agent when to run `ils push` and how to act on its
   output.
 - Add usage help, printed by `--help` on `ils` and on each command and by `ils help [command]`.

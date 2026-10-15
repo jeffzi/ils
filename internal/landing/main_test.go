@@ -17,6 +17,9 @@ const (
 	failingWordsEnv = "ILS_LANDING_TEST_GIT_FAILS_ON"
 	// failingWordsSep separates the words in failingWordsEnv; no git argument holds a line break.
 	failingWordsSep = "\n"
+	// versionLineEnv makes the test binary act as git instead of running tests: `git --version`
+	// prints the line it holds, and every other call runs as failingGit says.
+	versionLineEnv = "ILS_LANDING_TEST_GIT_VERSION_LINE"
 	// realGitEnv holds the absolute path of the real git.
 	realGitEnv = "ILS_LANDING_TEST_REAL_GIT"
 
@@ -26,17 +29,27 @@ const (
 )
 
 func TestMain(m *testing.M) {
-	if words := os.Getenv(failingWordsEnv); words != "" {
+	line, versioned := os.LookupEnv(versionLineEnv)
+	words := os.Getenv(failingWordsEnv)
+
+	switch {
+	case versioned && slices.Equal(os.Args[1:], []string{"--version"}):
+		fmt.Println(line)
+		os.Exit(0)
+	case words != "":
 		os.Exit(failingGit(strings.Split(words, failingWordsSep), os.Args[1:]))
+	case versioned:
+		os.Exit(failingGit(nil, os.Args[1:]))
 	}
 
 	os.Exit(m.Run())
 }
 
-// failingGit plays git and returns its exit code: it fails when args start with words, and
-// otherwise runs the real git with the same arguments, environment, and standard streams.
+// failingGit plays git and returns its exit code: it fails when args start with words, which
+// may be none, and otherwise runs the real git with the same arguments, environment, and standard
+// streams.
 func failingGit(words, args []string) int {
-	if len(args) >= len(words) && slices.Equal(args[:len(words)], words) {
+	if len(words) > 0 && len(args) >= len(words) && slices.Equal(args[:len(words)], words) {
 		fmt.Fprintln(os.Stderr, failingGitSaid)
 
 		return failingGitExit

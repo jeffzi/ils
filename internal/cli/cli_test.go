@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -753,6 +756,75 @@ func TestApp_Run_WhenGhIsNotInstalled_RefusesNamingTheInstallPage(t *testing.T) 
 	assert.Check(t, is.Equal(encoded.code, exitRefused))
 	assert.Check(t, is.Equal(resulttest.Decode(t, encoded.stdout).Outcome, "refused"))
 	nothingPushed(t, s)
+}
+
+// gitPrints makes the scene's `git --version` print line, by putting a copy of the test binary
+// named git first on PATH. It cannot run in a parallel test.
+func gitPrints(t *testing.T, s *scene, line string) {
+	t.Helper()
+
+	realGit, err := exec.LookPath("git")
+	assert.NilError(t, err)
+
+	self, err := os.Executable()
+	assert.NilError(t, err)
+
+	name := "git"
+	if runtime.GOOS == "windows" {
+		name = "git.exe"
+	}
+
+	dir := t.TempDir()
+	assert.NilError(t, os.Link(self, filepath.Join(dir, name)))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	s.env = append(s.env,
+		gitVersionEnv+"="+line,
+		realGitEnv+"="+realGit,
+		// The race detector's exit pause would otherwise cost a second per git call.
+		"GORACE=atexit_sleep_ms=0",
+	)
+}
+
+func TestApp_Run_WhenGitIsTooOld_RefusesWithNothingPushedOrOpened(t *testing.T) {
+	const (
+		next = "upgrade git, then run ils push again"
+		from = "https://git-scm.com/downloads"
+	)
+
+	tests := []struct {
+		name string
+		// line is what `git --version` prints.
+		line   string
+		reason string
+	}{
+		{
+			name: "an older release", line: "git version 2.34.0",
+			reason: "git 2.34.0 is older than 2.34.1, the oldest version ils works with; upgrade it from " + from,
+		},
+		{
+			name: "a development build", line: "git version DEV",
+			reason: "git printed `git version DEV`, which names no version ils can read; ils needs git 2.34.1 or newer, from " + from,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newScene(t, scenario{})
+			gitPrints(t, s, tt.line)
+
+			text, encoded := both(t, s)
+
+			want := ran{stdout: "Refused: " + tt.reason + "\nNext: " + next + "\n", code: exitRefused}
+			assert.Check(t, is.DeepEqual(text, want, sameRun()))
+			assert.Check(t, is.Equal(encoded.code, exitRefused))
+			got := resulttest.Decode(t, encoded.stdout)
+			assert.Check(t, is.Equal(got.Outcome, "refused"))
+			assert.Check(t, is.Equal(got.Reason, tt.reason))
+			assert.Check(t, is.Equal(got.Next, next))
+			nothingPushed(t, s)
+			assert.Check(t, !opensPullRequest(s), "gh was asked to create a pull request")
+		})
+	}
 }
 
 func TestApp_Run_WhenGhFailsToPrintItsVersion_BreaksNamingTheIdentityRead(t *testing.T) {

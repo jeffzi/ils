@@ -737,6 +737,15 @@ func TestPush_WhenBranchRefCannotBeRead_BrokeNamingTheTipRead(t *testing.T) {
 func failGit(t *testing.T, s *scene, words []string) {
 	t.Helper()
 
+	fakeGit(t, s, failingWordsEnv+"="+strings.Join(words, failingWordsSep))
+}
+
+// fakeGit puts a copy of the test binary named git first on PATH and gives the scene's git calls
+// setting, the variable that says how the copy plays git; every call it does not change runs the
+// real git. It cannot run in a parallel test.
+func fakeGit(t *testing.T, s *scene, setting string) {
+	t.Helper()
+
 	realGit, err := exec.LookPath("git")
 	assert.NilError(t, err)
 
@@ -755,7 +764,7 @@ func failGit(t *testing.T, s *scene, words []string) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	s.deps.Repo.Runner.Env = append(s.deps.Repo.Runner.Env,
-		failingWordsEnv+"="+strings.Join(words, failingWordsSep),
+		setting,
 		realGitEnv+"="+realGit,
 		// The race detector's exit pause would otherwise cost a second per git call.
 		"GORACE=atexit_sleep_ms=0",

@@ -15,10 +15,11 @@ import (
 
 // The reads of the preconditions, as a result names them.
 const (
-	readStanding = "where HEAD stands"
-	readURLs     = "origin's URLs"
-	readIdentity = "the repository's identity on GitHub"
-	readTrunk    = "origin's trunk"
+	readGitVersion = "git's version"
+	readStanding   = "where HEAD stands"
+	readURLs       = "origin's URLs"
+	readIdentity   = "the repository's identity on GitHub"
+	readTrunk      = "origin's trunk"
 )
 
 // thenPushAgain is the ending of a next step that names what to do before running ils push again.
@@ -69,12 +70,12 @@ type Ready struct {
 // Preconditions checks what every landing command needs, in a fixed order, and stops at the
 // first that fails, having written nothing.
 //
-// The order is: there is an origin; its fetch and push URLs name one repository; the forge's
-// tool is installed; it is logged in to origin's host; the repository is not a fork; the user
-// can push; origin answers for its trunk. When all hold it returns the Ready and true.
-// Otherwise it returns false and the result to end the command with: a refusal for a
-// precondition that fails or a read the context's deadline cut short, and broke for a read
-// that fails for any other reason.
+// The order is: git is installed and recent enough; there is an origin; its fetch and push URLs
+// name one repository; the forge's tool is installed; it is logged in to origin's host; the
+// repository is not a fork; the user can push; origin answers for its trunk. When all hold it
+// returns the Ready and true. Otherwise it returns false and the result to end the command with:
+// a refusal for a precondition that fails or a read the context's deadline cut short, and broke
+// for a read that fails for any other reason.
 func Preconditions(ctx context.Context, deps Deps, req Request) (Ready, result.Result, bool) {
 	ready, stop := sharedChecks(ctx, deps, req)
 	if stop != nil {
@@ -87,6 +88,14 @@ func Preconditions(ctx context.Context, deps Deps, req Request) (Ready, result.R
 // sharedChecks runs the shared preconditions in order and returns the result that stops at the
 // first that fails.
 func sharedChecks(ctx context.Context, deps Deps, req Request) (Ready, *result.Result) {
+	if err := deps.Repo.CheckVersion(ctx); err != nil {
+		if stop := req.tooOld(err); stop != nil {
+			return Ready{}, stop
+		}
+
+		return Ready{}, req.unread(readGitVersion, err)
+	}
+
 	standing, err := deps.Repo.Standing(ctx)
 	if err != nil {
 		return Ready{}, req.unread(readStanding, err)
@@ -189,15 +198,8 @@ func (r Request) identityFailure(err error) *result.Result {
 		)
 	}
 
-	if old, ok := errors.AsType[*child.ToolTooOldError](err); ok {
-		reason := result.Say("%s %s is older than %s, the oldest version ils works with; upgrade it from %s",
-			old.Tool, old.Version, old.Minimum, old.InstallURL)
-		if old.Version == "" {
-			reason = result.Say("%s printed `%s`, which names no version ils can read; ils needs %s %s or newer, from %s",
-				old.Tool, old.Line, old.Tool, old.Minimum, old.InstallURL)
-		}
-
-		return r.refused(reason, result.NextStep("upgrade %s"+thenPushAgain, old.Tool))
+	if stop := r.tooOld(err); stop != nil {
+		return stop
 	}
 
 	if loggedOut, ok := errors.AsType[*forge.NotLoggedInError](err); ok {
@@ -211,6 +213,24 @@ func (r Request) identityFailure(err error) *result.Result {
 	}
 
 	return r.unread(readIdentity, err)
+}
+
+// tooOld returns the refusal for a tool whose version check failed with err because the tool
+// is older than the minimum or names no readable version, and nil for any other failure.
+func (r Request) tooOld(err error) *result.Result {
+	old, ok := errors.AsType[*child.ToolTooOldError](err)
+	if !ok {
+		return nil
+	}
+
+	reason := result.Say("%s %s is older than %s, the oldest version ils works with; upgrade it from %s",
+		old.Tool, old.Version, old.Minimum, old.InstallURL)
+	if old.Version == "" {
+		reason = result.Say("%s printed `%s`, which names no version ils can read; ils needs %s %s or newer, from %s",
+			old.Tool, old.Line, old.Tool, old.Minimum, old.InstallURL)
+	}
+
+	return r.refused(reason, result.NextStep("upgrade %s"+thenPushAgain, old.Tool))
 }
 
 // ends returns the result that ends the request as outcome, with reason and next and no lines
@@ -231,9 +251,6 @@ func (r Request) refused(reason result.Phrase, next result.Next) *result.Result 
 	return r.ends(result.Refused, reason, next)
 }
 
-// gitInstallURL is the page git is installed from on every operating system.
-const gitInstallURL = "https://git-scm.com/downloads"
-
 // gitMissing returns the refusal for a read that failed with err because git is not on PATH,
 // and nil for any other failure.
 func (r Request) gitMissing(err error) *result.Result {
@@ -243,7 +260,7 @@ func (r Request) gitMissing(err error) *result.Result {
 	}
 
 	return r.refused(
-		result.Say("%s is not installed; install it from %s", missing.Name, gitInstallURL),
+		result.Say("%s is not installed; install it from %s", missing.Name, git.InstallURL),
 		result.NextStep("install %s"+thenPushAgain, missing.Name),
 	)
 }
