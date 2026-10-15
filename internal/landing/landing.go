@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/result"
@@ -188,7 +189,7 @@ func (r Request) identityFailure(err error) *result.Result {
 		)
 	}
 
-	if old, ok := errors.AsType[*forge.ToolTooOldError](err); ok {
+	if old, ok := errors.AsType[*child.ToolTooOldError](err); ok {
 		reason := result.Say("%s %s is older than %s, the oldest version ils works with; upgrade it from %s",
 			old.Tool, old.Version, old.Minimum, old.InstallURL)
 		if old.Version == "" {

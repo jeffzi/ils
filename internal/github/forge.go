@@ -686,7 +686,7 @@ func isMissing(err error) bool {
 // checkVersion reports whether gh is MinimumVersion or newer.
 //
 // A gh that is older, or whose first line of `gh --version` carries no version that can be
-// read, is a *forge.ToolTooOldError; a pre-release of MinimumVersion is older than it.
+// read, is a *child.ToolTooOldError; a pre-release of MinimumVersion is older than it.
 func (r Runner) checkVersion(ctx context.Context) error {
 	result, err := r.Run(ctx, "--version")
 	if err != nil {
@@ -694,7 +694,7 @@ func (r Runner) checkVersion(ctx context.Context) error {
 	}
 
 	line, _, _ := strings.Cut(result.Stdout, "\n")
-	tooOld := &forge.ToolTooOldError{Tool: Program, Line: line, Minimum: MinimumVersion, InstallURL: installURL}
+	tooOld := &child.ToolTooOldError{Tool: Program, Line: line, Minimum: MinimumVersion, InstallURL: installURL}
 
 	rest, _ := strings.CutPrefix(line, versionPrefix)
 

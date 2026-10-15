@@ -381,9 +381,9 @@ func TestForge_Identity_WhenGhIsOlderThanTheMinimum_ReturnsToolTooOldErrorBefore
 
 			_, err := newForge().Identity(t.Context(), engine())
 
-			tooOld, ok := errors.AsType[*forge.ToolTooOldError](err)
-			assert.Assert(t, ok, "Identity error = %v, want *forge.ToolTooOldError", err)
-			want := forge.ToolTooOldError{
+			tooOld, ok := errors.AsType[*child.ToolTooOldError](err)
+			assert.Assert(t, ok, "Identity error = %v, want *child.ToolTooOldError", err)
+			want := child.ToolTooOldError{
 				Tool: program, Version: tt.version, Line: tt.line, Minimum: github.MinimumVersion, InstallURL: installURL,
 			}
 			assert.Check(t, is.DeepEqual(*tooOld, want))
@@ -426,8 +426,8 @@ func TestForge_Identity_WhenVersionReadExitsNonZero_ReturnsExitErrorNamingCall(t
 	assert.Assert(t, ok, "Identity error = %v, want *child.ExitError", err)
 	want := child.ExitError{Argv: received(versionArgs())[0], Stderr: unknownFlag, Code: 1}
 	assert.Check(t, is.DeepEqual(*exitErr, want))
-	_, tooOld := errors.AsType[*forge.ToolTooOldError](err)
-	assert.Check(t, !tooOld, "Identity error = %v, want one that is no *forge.ToolTooOldError", err)
+	_, tooOld := errors.AsType[*child.ToolTooOldError](err)
+	assert.Check(t, !tooOld, "Identity error = %v, want one that is no *child.ToolTooOldError", err)
 	_, loggedOut := errors.AsType[*forge.NotLoggedInError](err)
 	assert.Check(t, !loggedOut, "Identity error = %v, want one that is no *forge.NotLoggedInError", err)
 	assertCalls(t, fake, received(versionArgs()))
