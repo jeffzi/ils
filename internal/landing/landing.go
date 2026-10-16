@@ -191,10 +191,6 @@ func trunkOf(ctx context.Context, deps Deps, req Request) (string, *result.Resul
 
 // identityFailure returns the result for a forge identity call that failed with err.
 func (r Request) identityFailure(err error) *result.Result {
-	if stop := r.notInstalled(err); stop != nil {
-		return stop
-	}
-
 	if stop := r.tooOld(err); stop != nil {
 		return stop
 	}
