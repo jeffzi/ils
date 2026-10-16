@@ -11,7 +11,7 @@ import (
 // hammer is a tool whose minimum compares differently as text and as a version: 1.10.0 is newer
 // than 1.4.0 though it sorts before it.
 func hammer() testtarget.Tool {
-	return testtarget.Tool{Name: "hammer", TargetVar: "HAMMER_TARGET", VersionVar: "HAMMER_VERSION", Minimum: "1.4.0"}
+	return testtarget.Tool{Name: "hammer", TargetVar: "HAMMER_TARGET", VersionVar: "HAMMER_VERSION", MinimumVersion: "1.4.0"}
 }
 
 func TestTool_Check_WhenFoundSuitsTarget_ReturnsNil(t *testing.T) {

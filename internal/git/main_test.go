@@ -88,7 +88,7 @@ func checkTestGit(target, version, line string) error {
 	}
 
 	tool := testtarget.Tool{
-		Name: "git", TargetVar: testGitVar, VersionVar: testGitVersionVar, Minimum: git.MinimumVersion,
+		Name: "git", TargetVar: testGitVar, VersionVar: testGitVersionVar, MinimumVersion: git.MinimumVersion,
 	}
 
 	return tool.Check(target, version, found)

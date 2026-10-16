@@ -26,8 +26,8 @@ type Tool struct {
 	TargetVar string
 	// VersionVar names the variable that holds, when set, the exact version the suite must find.
 	VersionVar string
-	// Minimum is the oldest version ils works with, as semver without the leading v.
-	Minimum string
+	// MinimumVersion is the oldest version ils works with, as semver without the leading v.
+	MinimumVersion string
 }
 
 // Check returns why found, a version of the tool as semver without the leading v, does not suit
@@ -41,13 +41,13 @@ func (t Tool) Check(target, want, found string) error {
 
 	switch target {
 	case Minimum:
-		if found != t.Minimum {
+		if found != t.MinimumVersion {
 			return fmt.Errorf("%s is %s and the %s found is %s, want the minimum ils enforces, %s",
-				t.TargetVar, target, t.Name, found, t.Minimum)
+				t.TargetVar, target, t.Name, found, t.MinimumVersion)
 		}
 	case "", Latest:
-		if semver.Compare(child.SemverPrefix+found, child.SemverPrefix+t.Minimum) < 0 {
-			return fmt.Errorf("the %s found is %s, older than the minimum ils enforces, %s", t.Name, found, t.Minimum)
+		if semver.Compare(child.SemverPrefix+found, child.SemverPrefix+t.MinimumVersion) < 0 {
+			return fmt.Errorf("the %s found is %s, older than the minimum ils enforces, %s", t.Name, found, t.MinimumVersion)
 		}
 	default:
 		return fmt.Errorf("%s is %q, want %s, %s, or unset", t.TargetVar, target, Minimum, Latest)

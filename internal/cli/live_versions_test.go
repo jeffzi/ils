@@ -34,7 +34,7 @@ func checkLiveGit(target, want, out string) error {
 	return liveTool{
 		versionOf: git.VersionOf,
 		tool: testtarget.Tool{
-			Name: "git", TargetVar: liveGitTargetVar, VersionVar: liveGitVersionVar, Minimum: git.MinimumVersion,
+			Name: "git", TargetVar: liveGitTargetVar, VersionVar: liveGitVersionVar, MinimumVersion: git.MinimumVersion,
 		},
 	}.check(target, want, out)
 }
@@ -44,7 +44,7 @@ func checkLiveGh(target, want, out string) error {
 	return liveTool{
 		versionOf: github.VersionOf,
 		tool: testtarget.Tool{
-			Name: "gh", TargetVar: liveGhTargetVar, VersionVar: liveGhVersionVar, Minimum: github.MinimumVersion,
+			Name: "gh", TargetVar: liveGhTargetVar, VersionVar: liveGhVersionVar, MinimumVersion: github.MinimumVersion,
 		},
 	}.check(target, want, out)
 }
