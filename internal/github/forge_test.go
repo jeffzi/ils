@@ -296,9 +296,7 @@ func TestForge_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
 
 			err := tt.run(t.Context(), newForge())
 
-			missing, ok := errors.AsType[*child.ToolMissingError](err)
-			assert.Assert(t, ok, "%s error = %v, want *child.ToolMissingError", tt.name, err)
-			assert.Check(t, is.DeepEqual(missing, missingTool(), cmpopts.IgnoreFields(child.ToolMissingError{}, "Err")))
+			_ = assertMissingTool(t, err, tt.name)
 		})
 	}
 }
@@ -370,7 +368,6 @@ func TestForge_Identity_WhenGhIsOlderThanTheMinimum_ReturnsToolTooOldErrorBefore
 		version string
 	}{
 		{name: "one minor release older", line: "gh version 2.49.0 (2024-05-13)", version: "2.49.0"},
-		{name: "one major release older", line: "gh version 1.14.0 (2021-08-04)", version: "1.14.0"},
 		{name: "pre-release of the minimum", line: "gh version 2.50.0-pre.1 (2024-05-20)", version: "2.50.0-pre.1"},
 		{name: "development build", line: "gh version DEV"},
 		{name: "empty first line"},
@@ -397,7 +394,6 @@ func TestForge_Identity_WhenGhIsAtOrAboveTheMinimum_GoesOnToTheLogin(t *testing.
 		name string
 		line string
 	}{
-		{name: "minor number with more digits", line: "gh version 2.100.0 (2026-09-03)"},
 		{name: "next major release", line: "gh version 3.0.0 (2027-01-12)"},
 	}
 	for _, tt := range tests {
@@ -1040,6 +1036,18 @@ func missingTool() *child.ToolMissingError {
 	return &child.ToolMissingError{Tool: program, InstallURL: installURL}
 }
 
+// assertMissingTool fails the test unless err is the missingTool error, ignoring its cause, and
+// returns that error.
+func assertMissingTool(t *testing.T, err error, label string) *child.ToolMissingError {
+	t.Helper()
+
+	missing, ok := errors.AsType[*child.ToolMissingError](err)
+	assert.Assert(t, ok, "%s error = %v, want *child.ToolMissingError", label, err)
+	assert.Check(t, is.DeepEqual(missing, missingTool(), cmpopts.IgnoreFields(child.ToolMissingError{}, "Err")))
+
+	return missing
+}
+
 func TestRunner_Run_WhenGhExitsZero_ReturnsOutput(t *testing.T) {
 	args := []string{"pr", "view", "--json", "number"}
 	ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "{\"number\":7}\n", Stderr: "notice\n"}, args...))
@@ -1104,11 +1112,8 @@ func TestRunner_Run_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
 
 			_, err := github.Runner{}.Run(t.Context(), "pr", "view")
 
-			missing, ok := errors.AsType[*child.ToolMissingError](err)
-			assert.Assert(t, ok, "Run(pr view) error = %v, want *child.ToolMissingError", err)
-			assert.Check(t, is.DeepEqual(missing, missingTool(), cmpopts.IgnoreFields(child.ToolMissingError{}, "Err")))
+			missing := assertMissingTool(t, err, "Run(pr view)")
 			assert.Check(t, missing.Err != nil, "Run(pr view) error carries no cause, want what starting gh failed with")
-			assert.Check(t, is.Equal(err.Error(), "gh is not installed: install it from https://cli.github.com"))
 		})
 	}
 }

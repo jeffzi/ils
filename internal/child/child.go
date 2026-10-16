@@ -104,13 +104,13 @@ type Requirement struct {
 func (r Requirement) Check(line, version string) error {
 	tooOld := &ToolTooOldError{Tool: r.Tool, Line: line, Minimum: r.Minimum, InstallURL: r.InstallURL}
 
-	canonical := SemverPrefix + version
-	if !semver.IsValid(canonical) {
+	prefixed := SemverPrefix + version
+	if !semver.IsValid(prefixed) {
 		return tooOld
 	}
 
 	tooOld.Version = version
-	if semver.Compare(canonical, SemverPrefix+r.Minimum) < 0 {
+	if semver.Compare(prefixed, SemverPrefix+r.Minimum) < 0 {
 		return tooOld
 	}
 

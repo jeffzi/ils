@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -64,7 +65,8 @@ func launch(t *testing.T, app cli.App, args ...string) ran {
 	return launchUnder(t.Context(), t, app, args...)
 }
 
-// launchUnder is launch under ctx.
+// launchUnder is launch with the run bound to ctx rather than t.Context(), so a caller can end it
+// early.
 func launchUnder(ctx context.Context, t *testing.T, app cli.App, args ...string) ran {
 	t.Helper()
 
@@ -203,16 +205,23 @@ func cutWhileHeld(t *testing.T, sc scenario) (*scene, ran) {
 	cut := make(chan struct{})
 	cutAt := make(chan time.Time, 1)
 
-	go func() {
+	ctx, cancel := context.WithCancel(t.Context())
+
+	var wg sync.WaitGroup
+
+	wg.Go(func() {
 		select {
 		case <-s.fake.Holding():
 			cutAt <- time.Now()
 			close(cut)
-		case <-t.Context().Done():
+		case <-ctx.Done():
 		}
-	}()
+	})
 
 	got := launchUnder(gittest.Ending(t.Context(), cut, context.DeadlineExceeded), t, s.app(), "push")
+
+	cancel()
+	wg.Wait()
 
 	assert.Equal(t, got.code, sc.want, "stdout:\n%s\nstderr:\n%s", got.stdout, got.stderr)
 

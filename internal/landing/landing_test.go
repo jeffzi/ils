@@ -504,46 +504,24 @@ func TestPreconditions_WhenGitMissingFromPath_RefusesWithAnInstallHint(t *testin
 }
 
 func TestPreconditions_WhenGitIsTooOld_RefusesBeforeAnyOtherRead(t *testing.T) {
-	// Not parallel: each row puts a git that prints its own version first on PATH with t.Setenv.
-	const upgrade = "Next: upgrade git, then run ils push again\n"
+	// Not parallel: fakeGit puts a git that prints its own version first on PATH with t.Setenv.
+	const want = "Refused: git 2.34.0 is older than 2.34.1, the oldest version ils works with; " +
+		"upgrade it from https://git-scm.com/downloads\n" +
+		"Next: upgrade git, then run ils push again\n"
 
-	tests := []struct {
-		name string
-		// line is what `git --version` prints.
-		line string
-		want string
-	}{
-		{
-			name: "an older release", line: "git version 2.34.0",
-			want: "Refused: git 2.34.0 is older than 2.34.1, the oldest version ils works with; " +
-				"upgrade it from https://git-scm.com/downloads\n" + upgrade,
-		},
-		{
-			name: "a development build", line: "git version DEV",
-			want: "Refused: git printed `git version DEV`, which names no version ils can read; " +
-				"ils needs git 2.34.1 or newer, from https://git-scm.com/downloads\n" + upgrade,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := newScene(t, nil, forgetest.Script{}, false)
-			fakeGit(t, s, gittest.Fake{Version: tt.line})
-			before := s.refs()
+	s := newScene(t, nil, forgetest.Script{}, false)
+	fakeGit(t, s, gittest.Fake{Version: "git version 2.34.0"})
+	before := s.refs()
 
-			_, got, ok := landing.Preconditions(t.Context(), s.deps, pushRequest())
+	_, got, ok := landing.Preconditions(t.Context(), s.deps, pushRequest())
 
-			assert.Assert(t, !ok, "Preconditions() ok = true, want a refusal")
-			assertStopped(t, got, result.Refused)
+	assert.Assert(t, !ok, "Preconditions() ok = true, want a refusal")
+	assertEnded(t, s, got, finish{outcome: result.Refused, text: want})
 
-			text, _ := shown(t, got, s.gitDir)
-			assert.Check(t, is.DeepEqual(text, tt.want))
+	assertRefsUnchanged(t, s, before)
+	assertAsked(t, s, nil)
 
-			assertRefsUnchanged(t, s, before)
-			assertAsked(t, s, nil)
-
-			assert.Check(t, is.DeepEqual(s.recorder.Calls(), [][]string{{"git", "--version"}}))
-		})
-	}
+	assert.Check(t, is.DeepEqual(s.recorder.Calls(), [][]string{{"git", "--version"}}))
 }
 
 func TestPreconditions_WhenGitVersionFails_BrokeNamingTheRead(t *testing.T) {

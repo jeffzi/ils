@@ -263,8 +263,8 @@ func (r Request) refused(reason result.Phrase, next result.Next) *result.Result 
 }
 
 // unread returns the result for a read made before the push that failed with err: a refusal
-// when git is not installed or the context's deadline cut the read short, since nothing was
-// written and running again is safe, and broke otherwise.
+// when the tool the read runs is not installed or the context's deadline cut the read short,
+// since nothing was written and running again is safe, and broke otherwise.
 func (r Request) unread(read string, err error) *result.Result {
 	if stop := r.notInstalled(err); stop != nil {
 		return stop

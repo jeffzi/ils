@@ -255,9 +255,9 @@ func TestRepo_Trunk_WhenOriginAnswers_ReturnsDefaultBranch(t *testing.T) {
 	}
 }
 
-func TestRepo_OriginMethods_WhenOriginDoesNotAnswer_ReturnsRemoteError(t *testing.T) {
-	t.Parallel()
-	tests := []repoCall{
+// originCalls returns the repository calls that read from origin without changing the repository.
+func originCalls() []repoCall {
+	return []repoCall{
 		{name: "Trunk", call: func(ctx context.Context, repo git.Repo) error { _, err := repo.Trunk(ctx); return err }},
 		{name: "RemoteBranch", call: func(ctx context.Context, repo git.Repo) error {
 			_, _, err := repo.RemoteBranch(ctx, trunk)
@@ -265,7 +265,11 @@ func TestRepo_OriginMethods_WhenOriginDoesNotAnswer_ReturnsRemoteError(t *testin
 			return err
 		}},
 	}
-	for _, tt := range tests {
+}
+
+func TestRepo_OriginMethods_WhenOriginDoesNotAnswer_ReturnsRemoteError(t *testing.T) {
+	t.Parallel()
+	for _, tt := range originCalls() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			f := gittest.New(t, trunk)
@@ -280,15 +284,9 @@ func TestRepo_OriginMethods_WhenOriginDoesNotAnswer_ReturnsRemoteError(t *testin
 }
 
 func TestRepo_OriginMethods_WhenGitMissingFromPath_ReturnsToolMissingError(t *testing.T) {
-	tests := []repoCall{
-		{name: "Trunk", call: func(ctx context.Context, repo git.Repo) error { _, err := repo.Trunk(ctx); return err }},
-		{name: "RemoteBranch", call: func(ctx context.Context, repo git.Repo) error {
-			_, _, err := repo.RemoteBranch(ctx, trunk)
-
-			return err
-		}},
-		{name: "Fetch", call: func(ctx context.Context, repo git.Repo) error { _, err := repo.Fetch(ctx, trunk); return err }},
-	}
+	tests := append(originCalls(), repoCall{
+		name: "Fetch", call: func(ctx context.Context, repo git.Repo) error { _, err := repo.Fetch(ctx, trunk); return err },
+	})
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := newRepo(gittest.New(t, trunk))

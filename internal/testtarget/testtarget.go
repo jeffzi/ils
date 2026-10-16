@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"golang.org/x/mod/semver"
+
+	"github.com/jeffzi/ils/internal/child"
 )
 
 // The targets a test suite can be asked to run against. An unset target means Latest.
@@ -44,7 +46,7 @@ func (t Tool) Check(target, want, found string) error {
 				t.TargetVar, target, t.Name, found, t.Minimum)
 		}
 	case "", Latest:
-		if semver.Compare("v"+found, "v"+t.Minimum) < 0 {
+		if semver.Compare(child.SemverPrefix+found, child.SemverPrefix+t.Minimum) < 0 {
 			return fmt.Errorf("the %s found is %s, older than the minimum ils enforces, %s", t.Name, found, t.Minimum)
 		}
 	default:

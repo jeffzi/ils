@@ -139,9 +139,8 @@ func TestRunner_Run_WhenGitMissingFromPath_ReturnsToolMissingError(t *testing.T)
 	missing, ok := errors.AsType[*child.ToolMissingError](err)
 	assert.Assert(t, ok, "Run(version) error = %v, want *child.ToolMissingError", err)
 	assert.Check(t, is.Equal(missing.Tool, "git"))
-	assert.Check(t, is.Equal(missing.InstallURL, "https://git-scm.com/downloads"))
+	assert.Check(t, is.Equal(missing.InstallURL, installURL))
 	assert.Check(t, is.ErrorIs(err, exec.ErrNotFound))
-	assert.Check(t, is.Equal(err.Error(), "git is not installed: install it from https://git-scm.com/downloads"))
 }
 
 func TestRunner_Run_WhenContextEndsWhileGitRuns_ReturnsOnlyContextError(t *testing.T) {

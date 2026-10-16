@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/jeffzi/ils/internal/quiet"
 )
 
 const (
@@ -48,7 +50,7 @@ func Main() (code int, served bool) {
 		return 0, false
 	}
 
-	return serveGit(realGit, os.Args[1:]), true
+	return serveGit(context.Background(), realGit, os.Args[1:]), true
 }
 
 // FakeGit puts the test binary first on PATH under git's name for the rest of the test, acting as
@@ -80,23 +82,23 @@ func FakeGit(tb testing.TB, fake Fake) []string {
 		tb.Fatalf("gittest: link the test binary as git: %v", err)
 	}
 
-	settings := []string{
-		realGitEnv + "=" + realGit,
-		// A binary built with -race sleeps a second before every exit unless told not to, which
-		// each git call would pay.
-		"GORACE=" + strings.TrimSpace(os.Getenv("GORACE")+" atexit_sleep_ms=0"),
+	var settings []string
+
+	set := func(key, value string) {
+		tb.Setenv(key, value)
+
+		settings = append(settings, key+"="+value)
 	}
+
+	set(realGitEnv, realGit)
+	set("GORACE", quiet.Setting())
+
 	if fake.Version != "" {
-		settings = append(settings, versionEnv+"="+fake.Version)
+		set(versionEnv, fake.Version)
 	}
 
 	if len(fake.FailOn) > 0 {
-		settings = append(settings, failOnEnv+"="+strings.Join(fake.FailOn, failOnSep))
-	}
-
-	for _, setting := range settings {
-		key, value, _ := strings.Cut(setting, "=")
-		tb.Setenv(key, value)
+		set(failOnEnv, strings.Join(fake.FailOn, failOnSep))
 	}
 
 	tb.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -105,7 +107,7 @@ func FakeGit(tb testing.TB, fake Fake) []string {
 }
 
 // serveGit answers one call of the fake git with args and returns its exit code.
-func serveGit(realGit string, args []string) int {
+func serveGit(ctx context.Context, realGit string, args []string) int {
 	if version, ok := os.LookupEnv(versionEnv); ok && slices.Equal(args, []string{"--version"}) {
 		if _, err := fmt.Fprintln(os.Stdout, version); err != nil {
 			return 1
@@ -123,14 +125,14 @@ func serveGit(realGit string, args []string) int {
 		}
 	}
 
-	return runRealGit(realGit, args)
+	return runRealGit(ctx, realGit, args)
 }
 
 // runRealGit runs the real git with args, the environment, and the standard streams, and returns
 // its exit code.
-func runRealGit(realGit string, args []string) int {
+func runRealGit(ctx context.Context, realGit string, args []string) int {
 	//nolint:gosec // G204: the fake names the real git and passes on the arguments it was given.
-	cmd := exec.CommandContext(context.Background(), realGit, args...)
+	cmd := exec.CommandContext(ctx, realGit, args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

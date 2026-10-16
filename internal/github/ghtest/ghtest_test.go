@@ -107,9 +107,10 @@ func TestFake_WhenAnswerIsDelayed_AnswersAfterTheDelay(t *testing.T) {
 	assert.Check(t, is.Equal(got.Stdout, "pass\n"))
 }
 
-func TestFake_WhenAnAnswerIsHeld_ReportsHoldingOnceTheCallIsRecorded(t *testing.T) {
+func TestFake_Holding_WhenAnAnswerIsHeld_ClosesOnceTheCallIsRecorded(t *testing.T) {
+	const longerThanTheTest = 30 * time.Second
 	args := []string{"pr", "checks", "7"}
-	fake := ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "pass\n", Delay: 30 * time.Second}, args...))
+	fake := ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "pass\n", Delay: longerThanTheTest}, args...))
 	ctx, cancel := context.WithCancel(t.Context())
 	returned := make(chan struct{})
 
@@ -133,7 +134,7 @@ func TestFake_WhenAnAnswerIsHeld_ReportsHoldingOnceTheCallIsRecorded(t *testing.
 	assert.Check(t, is.DeepEqual(fake.Calls(), [][]string{{"gh", "pr", "checks", "7"}}))
 }
 
-func TestFake_WhenNoAnswerIsHeld_LeavesHoldingOpen(t *testing.T) {
+func TestFake_Holding_WhenNoAnswerIsHeld_StaysOpen(t *testing.T) {
 	args := []string{"pr", "checks", "7"}
 	fake := ghtest.Setup(t, ghtest.Says("pass\n", args...))
 

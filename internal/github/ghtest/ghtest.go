@@ -18,10 +18,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/jeffzi/ils/internal/github"
+	"github.com/jeffzi/ils/internal/quiet"
 )
 
 const (
@@ -31,6 +33,10 @@ const (
 	recordEnv = "ILS_GHTEST_RECORD"
 	// holdEnv names the local address the fake dials once it starts holding an answer open.
 	holdEnv = "ILS_GHTEST_HOLD"
+
+	// acknowledgement is the byte the test process sends back once it has checked a hold; the fake
+	// waits for it before it holds its answer open.
+	acknowledgement byte = '\n'
 
 	// brokenExit is the exit code of a fake that could not read its script or write its record.
 	brokenExit = 2
@@ -206,7 +212,9 @@ func Main() (code int, served bool) {
 		return 0, false
 	}
 
-	return serve(script, os.Getenv(recordEnv), os.Getenv(holdEnv), os.Args[1:]), true
+	places := servePlaces{script: script, record: os.Getenv(recordEnv), holdAddr: os.Getenv(holdEnv)}
+
+	return serve(context.Background(), places, os.Args[1:]), true
 }
 
 // Setup points GH_PATH at the test binary for the rest of the test and scripts its answers.
@@ -236,9 +244,7 @@ func Setup(tb testing.TB, script ...Call) *Fake {
 	holdAddr, holding := listenForHolds(tb, record)
 	fake := &Fake{tb: tb, holding: holding, record: record}
 
-	// A binary built with -race sleeps a second before every exit 0 unless told not to,
-	// which a test that polls the fake would pay on each call.
-	tb.Setenv("GORACE", strings.TrimSpace(os.Getenv("GORACE")+" atexit_sleep_ms=0"))
+	tb.Setenv("GORACE", quiet.Setting())
 	tb.Setenv("GH_PATH", exe)
 	tb.Setenv(scriptEnv, scriptPath)
 	tb.Setenv(recordEnv, fake.record)
@@ -274,7 +280,7 @@ func listenForHolds(tb testing.TB, record string) (addr string, holding <-chan s
 
 	var accepting sync.WaitGroup
 
-	held := make(chan struct{})
+	firstHold := make(chan struct{})
 
 	tb.Cleanup(func() {
 		if err := listener.Close(); err != nil {
@@ -287,7 +293,7 @@ func listenForHolds(tb testing.TB, record string) (addr string, holding <-chan s
 	accepting.Go(func() {
 		var once sync.Once
 
-		announced := func() { once.Do(func() { close(held) }) }
+		announced := func() { once.Do(func() { close(firstHold) }) }
 
 		for {
 			conn, acceptErr := listener.Accept()
@@ -299,7 +305,7 @@ func listenForHolds(tb testing.TB, record string) (addr string, holding <-chan s
 		}
 	})
 
-	return listener.Addr().String(), held
+	return listener.Addr().String(), firstHold
 }
 
 // acknowledgeHold reads the hold the fake sends over conn, fails the test unless record already
@@ -311,6 +317,12 @@ func acknowledgeHold(tb testing.TB, conn net.Conn, record string, announced func
 
 	line, err := bufio.NewReader(conn).ReadBytes('\n')
 	if err != nil {
+		// A fake killed after it dialed but before it finished its line never started holding, so
+		// there is no recorded call to check.
+		if errors.Is(err, io.EOF) || isReset(err) {
+			return
+		}
+
 		tb.Errorf("ghtest: read the held call: %v", err)
 
 		return
@@ -325,7 +337,22 @@ func acknowledgeHold(tb testing.TB, conn net.Conn, record string, announced func
 	// Closing the channel lets the test cut the run, which kills the fake: a fake gone before the
 	// acknowledgement reaches it was going to be killed anyway, and one still there that misses
 	// it exits broken on its own.
-	_, _ = conn.Write([]byte{'\n'})
+	_, _ = conn.Write([]byte{acknowledgement})
+}
+
+// isReset reports whether err is a peer resetting the connection. On Windows a read from a killed
+// peer fails with either the connection-reset code Windows sockets use (Errno 10054) or the code for
+// a network name that no longer exists (Errno 64), and Errno.Is maps neither to Go's synthetic
+// ECONNRESET there, so all three are checked. Elsewhere both numbers are plain Errno values nothing
+// reports.
+func isReset(err error) bool {
+	const (
+		windowsReset    = syscall.Errno(10054)
+		windowsPeerGone = syscall.Errno(64)
+	)
+
+	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, windowsReset) ||
+		errors.Is(err, windowsPeerGone)
 }
 
 // checkRecorded returns an error unless record holds the call that line, an encoded hold, names.
@@ -372,17 +399,23 @@ func (f *Fake) Calls() [][]string {
 	return calls
 }
 
+// servePlaces is where the fake finds its script and keeps its record, and the address of the test
+// process it tells of a hold.
+type servePlaces struct {
+	script, record, holdAddr string
+}
+
 // serve answers one call of the fake and returns its exit code; before it holds an answer open,
-// it tells the test process at holdAddr and waits for its acknowledgement.
-func serve(scriptPath, recordPath, holdAddr string, args []string) int {
-	script, err := readScript(scriptPath)
+// it tells the test process at places.holdAddr and waits for its acknowledgement.
+func serve(ctx context.Context, places servePlaces, args []string) int {
+	script, err := readScript(places.script)
 	if err != nil {
 		return broken(err)
 	}
 
-	recorded, err := readRecord(recordPath)
+	recorded, err := readRecord(places.record)
 	if err == nil {
-		err = appendRecord(recordPath, args)
+		err = appendRecord(places.record, args)
 	}
 
 	if err != nil {
@@ -408,7 +441,7 @@ func serve(scriptPath, recordPath, holdAddr string, args []string) int {
 
 	answer := answers[min(earlier, len(answers)-1)]
 	if answer.Delay > 0 {
-		if err := announceHold(holdAddr, hold{Args: args, Earlier: earlier}); err != nil {
+		if err := announceHold(ctx, places.holdAddr, hold{Args: args, Earlier: earlier}); err != nil {
 			return broken(err)
 		}
 
@@ -425,8 +458,9 @@ func serve(scriptPath, recordPath, holdAddr string, args []string) int {
 }
 
 // announceHold tells the test process, listening at addr, that the fake is about to hold its
-// answer to held's call open, and returns once the test process has acknowledged it.
-func announceHold(addr string, held hold) (err error) {
+// answer to held's call open, and returns once the test process has acknowledged it or ctx's
+// deadline, when it has one, passes.
+func announceHold(ctx context.Context, addr string, held hold) (err error) {
 	line, err := json.Marshal(held)
 	if err != nil {
 		return fmt.Errorf("encode the held call: %w", err)
@@ -434,7 +468,7 @@ func announceHold(addr string, held hold) (err error) {
 
 	var dialer net.Dialer
 
-	conn, err := dialer.DialContext(context.Background(), "tcp", addr)
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("announce the held answer to %s: %w", addr, err)
 	}
@@ -445,11 +479,18 @@ func announceHold(addr string, held hold) (err error) {
 		}
 	}()
 
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := conn.SetDeadline(deadline); err != nil {
+			return fmt.Errorf("bound the announcement of the held answer to %s: %w", addr, err)
+		}
+	}
+
 	if _, err := conn.Write(append(line, '\n')); err != nil {
 		return fmt.Errorf("announce the held answer to %s: %w", addr, err)
 	}
 
-	if _, err := io.ReadFull(conn, make([]byte, 1)); err != nil {
+	var ack [1]byte
+	if _, err := io.ReadFull(conn, ack[:]); err != nil {
 		return fmt.Errorf("wait for %s to acknowledge the held answer: %w", addr, err)
 	}
 

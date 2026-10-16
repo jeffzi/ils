@@ -15,6 +15,8 @@ import (
 
 const (
 	program = "git"
+	// installURL is the page git is installed from on every operating system.
+	installURL = "https://git-scm.com/downloads"
 
 	// pipeGrace is how long a call waits for git's output pipes to close once git itself is gone. A
 	// process git started, such as ssh or a credential helper, can outlive it holding those pipes.
@@ -74,7 +76,7 @@ type Result struct {
 func (r Runner) Run(ctx context.Context, args ...string) (Result, error) {
 	path, err := exec.LookPath(program)
 	if err != nil {
-		return Result{}, &child.ToolMissingError{Tool: program, InstallURL: InstallURL, Err: err}
+		return Result{}, &child.ToolMissingError{Tool: program, InstallURL: installURL, Err: err}
 	}
 
 	argv := append([]string{program}, args...)

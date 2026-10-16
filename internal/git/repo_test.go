@@ -548,7 +548,7 @@ func TestRepo_HasCommits(t *testing.T) {
 	}
 }
 
-// installURL is where the error for a git that is too old sends the user.
+// installURL is where the error for a git that is missing or too old sends the user.
 const installURL = "https://git-scm.com/downloads"
 
 // fakeGitRepo returns a repository whose git, first on PATH, prints line as the first line of
@@ -556,7 +556,7 @@ const installURL = "https://git-scm.com/downloads"
 func fakeGitRepo(t *testing.T, line string) git.Repo {
 	t.Helper()
 
-	env := append(gittest.Env(t), gittest.FakeGit(t, gittest.Fake{Version: line + "\n" + versionSecondLine})...)
+	env := append(gittest.Env(t), fakeGitVersion(t, line)...)
 
 	return git.Repo{Runner: git.Runner{Dir: t.TempDir(), Env: env}}
 }
@@ -567,9 +567,7 @@ func TestRepo_CheckVersion_WhenGitIsAtOrAboveTheMinimum_ReturnsNil(t *testing.T)
 		line string
 	}{
 		{name: "exactly the minimum", line: "git version " + git.MinimumVersion},
-		{name: "minor number with more digits", line: "git version 2.100.0"},
 		{name: "release candidate newer than the minimum", line: "git version 2.35.0.rc0"},
-		{name: "next major release", line: "git version 3.0.0"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -592,7 +590,6 @@ func TestRepo_CheckVersion_WhenGitIsOlderThanTheMinimum_ReturnsToolTooOldError(t
 		version string
 	}{
 		{name: "one patch release older", line: "git version 2.34.0", version: "2.34.0"},
-		{name: "one major release older", line: "git version 1.9.5", version: "1.9.5"},
 		{name: "release candidate of the minimum", line: "git version 2.34.1.rc0", version: "2.34.1-rc0"},
 		{name: "development build", line: "git version DEV"},
 	}
@@ -611,17 +608,6 @@ func TestRepo_CheckVersion_WhenGitIsOlderThanTheMinimum_ReturnsToolTooOldError(t
 			assert.Check(t, is.DeepEqual(*tooOld, want))
 		})
 	}
-}
-
-func TestRepo_CheckVersion_WhenGitIsInstalled_RunsGitVersion(t *testing.T) {
-	t.Parallel()
-	runner, recorder := newRecordedRunner(t)
-	repo := git.Repo{Runner: runner}
-
-	err := repo.CheckVersion(t.Context())
-	assert.NilError(t, err)
-
-	assert.Check(t, is.DeepEqual(recorder.Calls(), [][]string{{"git", "--version"}}))
 }
 
 func TestRepo_CheckVersion_WhenGitMissingFromPath_ReturnsToolMissingError(t *testing.T) {

@@ -15,15 +15,14 @@ import (
 // MinimumVersion is the oldest git ils works with: the git of Ubuntu 22.04 LTS.
 const MinimumVersion = "2.34.1"
 
-// InstallURL is the page git is installed from on every operating system.
-const InstallURL = "https://git-scm.com/downloads"
-
 const (
 	// versionPrefix starts the first line of `git --version`.
 	versionPrefix = "git version "
 	// releaseCandidate starts the component git puts after a release candidate's version: its
 	// version script turns a tag's -rcN into .rcN.
 	releaseCandidate = "rc"
+	// versionComponents counts the numeric components of a version: major, minor, patch.
+	versionComponents = 3
 
 	origin   = "origin"
 	headsRef = "refs/heads/"
@@ -236,7 +235,7 @@ func (r Repo) CheckVersion(ctx context.Context) error {
 
 	line, _, _ := strings.Cut(result.Stdout, "\n")
 
-	requirement := child.Requirement{Tool: program, Minimum: MinimumVersion, InstallURL: InstallURL}
+	requirement := child.Requirement{Tool: program, Minimum: MinimumVersion, InstallURL: installURL}
 
 	return requirement.Check(line, VersionOf(line))
 }
@@ -255,13 +254,13 @@ func VersionOf(line string) string {
 	token, _, _ := strings.Cut(rest, " ")
 
 	parts := strings.Split(token, ".")
-	if len(parts) < 3 {
+	if len(parts) < versionComponents {
 		return ""
 	}
 
-	version := strings.Join(parts[:3], ".")
-	if len(parts) > 3 && strings.HasPrefix(parts[3], releaseCandidate) {
-		version += "-" + parts[3]
+	version := strings.Join(parts[:versionComponents], ".")
+	if len(parts) > versionComponents && strings.HasPrefix(parts[versionComponents], releaseCandidate) {
+		version += "-" + parts[versionComponents]
 	}
 
 	if !semver.IsValid(child.SemverPrefix + version) {
