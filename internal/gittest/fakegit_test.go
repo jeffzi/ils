@@ -118,7 +118,8 @@ func TestFakeGit_WhenCallIsAPrefixOfFailingWords_RunsTheRealGit(t *testing.T) {
 
 	got := callGit(t, env, dir, "show-ref")
 
-	assert.Check(t, is.Equal(got.Stderr, ""), "git show-ref printed %+v", got)
+	// The real git finds no refs in a fresh repository: it prints nothing and exits 1.
+	assert.Check(t, is.DeepEqual(got, faked{Code: 1}))
 }
 
 func TestFakeGit_WhenRealGitFails_ExitsWithItsCode(t *testing.T) {
