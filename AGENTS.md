@@ -14,7 +14,12 @@ manage flags and tool invocations.
 - `task build` — Build the binary into bin/
 - `task install` — Build the binary and copy it to the directory `go install` writes to
 - `task test` — Run the test suite with coverage; fails under the floor in `.coverage.yml` (extra
-  args after -- skip coverage and the floor)
+  args after -- skip coverage and the floor). It reads:
+  - `ILS_TEST_GIT` — `minimum` makes the `git` package's tests fail unless the `git` on `PATH` is
+    exactly the minimum `ils` enforces; `latest` or unset fails them on an older `git` or one whose
+    version `ils` cannot read; any other value fails them.
+  - `ILS_TEST_GIT_VERSION` — when set, the exact `git` version the `git` package's tests must find
+    on `PATH`.
 - `task test:setup-live` — Create the three private test repositories of the live suite on your
   GitHub account (`ils-live-minimum`, `ils-live-latest`, `ils-live-local`) and record the clone
   URLs of the first two as the GitHub Actions variables `LIVE_ORIGIN_MINIMUM` and
@@ -23,9 +28,14 @@ manage flags and tool invocations.
   with the real `git` and `gh` against a test repository, which the suite resets first. It reads:
   - `ILS_LIVE_ORIGIN` — the clone URL of the repository to reset and write to; its name must start
     with `ils-live-`. Unset, the task uses your `ils-live-local`.
-  - `ILS_LIVE_GH` — `minimum` requires the `gh` the suite finds (`GH_PATH`, then `PATH`) to be
-    exactly the minimum `ils` enforces; `latest` or unset accepts that version or newer.
+  - `ILS_LIVE_GH` — `minimum` fails the suite unless the `gh` it finds (`GH_PATH`, then `PATH`) is
+    exactly the minimum `ils` enforces; `latest` or unset fails it on an older `gh` or one whose
+    version `ils` cannot read; any other value fails it.
   - `ILS_LIVE_GH_VERSION` — when set, the exact `gh` version the suite must find.
+  - `ILS_LIVE_GIT` — `minimum` fails the suite unless the `git` it finds on `PATH` is exactly the
+    minimum `ils` enforces; `latest` or unset fails it on an older `git` or one whose version `ils`
+    cannot read; any other value fails it.
+  - `ILS_LIVE_GIT_VERSION` — when set, the exact `git` version the suite must find.
 - `task check` — Run every pre-commit hook across the repo
 - `task check:fix` — auto-fix everything that supports it: `go mod tidy`, `go tool golangci-lint
   run --fix`, `go tool golangci-lint fmt`, `dprint fmt`, markdownlint (`prek run -a
