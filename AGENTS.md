@@ -28,11 +28,13 @@ manage flags and tool invocations.
   with the real `git` and `gh` against a test repository, which the suite resets first. It reads:
   - `ILS_LIVE_ORIGIN` — the clone URL of the repository to reset and write to; its name must start
     with `ils-live-`. Unset, the task uses your `ils-live-local`.
-  - `ILS_LIVE_GH` — `minimum` requires the `gh` the suite finds (`GH_PATH`, then `PATH`) to be
-    exactly the minimum `ils` enforces; `latest` or unset accepts that version or newer.
+  - `ILS_LIVE_GH` — `minimum` fails the suite unless the `gh` it finds (`GH_PATH`, then `PATH`) is
+    exactly the minimum `ils` enforces; `latest` or unset fails it on an older `gh` or one whose
+    version `ils` cannot read; any other value fails it.
   - `ILS_LIVE_GH_VERSION` — when set, the exact `gh` version the suite must find.
-  - `ILS_LIVE_GIT` — `minimum` requires the `git` the suite finds on `PATH` to be exactly the
-    minimum `ils` enforces; `latest` or unset accepts that version or newer.
+  - `ILS_LIVE_GIT` — `minimum` fails the suite unless the `git` it finds on `PATH` is exactly the
+    minimum `ils` enforces; `latest` or unset fails it on an older `git` or one whose version `ils`
+    cannot read; any other value fails it.
   - `ILS_LIVE_GIT_VERSION` — when set, the exact `git` version the suite must find.
 - `task check` — Run every pre-commit hook across the repo
 - `task check:fix` — auto-fix everything that supports it: `go mod tidy`, `go tool golangci-lint
