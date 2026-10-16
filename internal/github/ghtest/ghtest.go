@@ -267,7 +267,8 @@ type hold struct {
 // The fake waits for the server's acknowledgement before it holds its answer, and the server
 // sends it only once it has checked the held call against record and closed the channel. So the
 // channel is closed before the held call can end, and a fake that dials before recording the
-// call fails the test, whatever the scheduling.
+// call fails the test, whatever the scheduling. The server stops accepting when the test's
+// cleanup closes it; any other accept failure fails the test.
 func listenForHolds(tb testing.TB, record string) (addr string, holding <-chan struct{}) {
 	tb.Helper()
 
@@ -297,7 +298,15 @@ func listenForHolds(tb testing.TB, record string) (addr string, holding <-chan s
 
 		for {
 			conn, acceptErr := listener.Accept()
+			if errors.Is(acceptErr, net.ErrClosed) {
+				return
+			}
+
+			// Any other failure leaves the next delayed fake connecting through the backlog with
+			// nobody to acknowledge it, so it would block until the test's timeout.
 			if acceptErr != nil {
+				tb.Errorf("ghtest: accept a held answer: %v", acceptErr)
+
 				return
 			}
 
