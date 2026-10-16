@@ -20,6 +20,11 @@ const (
 	FailedCode = 128
 	// FailedSaid is the line a call the fake git fails prints to stderr.
 	FailedSaid = "fatal: this read was made to fail"
+	// BrokenCode is the exit code of a fake git that could not do its own work: start the real git
+	// or print the faked version. It is none of the codes internal/git reads as an answer (0, 1 and
+	// 2) and not FailedCode, the code of a failed git read, so a broken fake never passes for git's
+	// reply.
+	BrokenCode = 125
 
 	// realGitEnv holds the path of the real git; its presence makes the test binary act as git.
 	realGitEnv = "ILS_GITTEST_REAL_GIT"
@@ -110,7 +115,7 @@ func FakeGit(tb testing.TB, fake Fake) []string {
 func serveGit(ctx context.Context, realGit string, args []string) int {
 	if version, ok := os.LookupEnv(versionEnv); ok && slices.Equal(args, []string{"--version"}) {
 		if _, err := fmt.Fprintln(os.Stdout, version); err != nil {
-			return 1
+			return broken(fmt.Errorf("print the faked version: %w", err))
 		}
 
 		return 0
@@ -129,7 +134,7 @@ func serveGit(ctx context.Context, realGit string, args []string) int {
 }
 
 // runRealGit runs the real git with args, the environment, and the standard streams, and returns
-// its exit code.
+// its exit code, or BrokenCode when it cannot start it.
 func runRealGit(ctx context.Context, realGit string, args []string) int {
 	//nolint:gosec // G204: the fake names the real git and passes on the arguments it was given.
 	cmd := exec.CommandContext(ctx, realGit, args...)
@@ -146,7 +151,12 @@ func runRealGit(ctx context.Context, realGit string, args []string) int {
 		return exitErr.ExitCode()
 	}
 
-	_, _ = fmt.Fprintln(os.Stderr, err)
+	return broken(fmt.Errorf("start the real git: %w", err))
+}
 
-	return 1
+// broken prints why the fake git could not do its own work to stderr and returns BrokenCode.
+func broken(err error) int {
+	_, _ = fmt.Fprintf(os.Stderr, "gittest: %v\n", err)
+
+	return BrokenCode
 }

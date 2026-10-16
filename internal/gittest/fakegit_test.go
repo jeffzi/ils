@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strings"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -109,10 +111,52 @@ func TestFakeGit_WhenCallIsNotFaked_RunsTheRealGit(t *testing.T) {
 	assert.Check(t, err, "git init made no repository in %s", dir)
 }
 
+func TestFakeGit_WhenCallIsAPrefixOfFailingWords_RunsTheRealGit(t *testing.T) {
+	gittest.FakeGit(t, gittest.Fake{FailOn: []string{"show-ref", "--verify"}})
+	env := gittest.Env(t)
+	dir := initRepo(t, env)
+
+	got := callGit(t, env, dir, "show-ref")
+
+	assert.Check(t, is.Equal(got.Stderr, ""), "git show-ref printed %+v", got)
+}
+
 func TestFakeGit_WhenRealGitFails_ExitsWithItsCode(t *testing.T) {
 	gittest.FakeGit(t, gittest.Fake{FailOn: []string{"show-ref"}})
+	env := gittest.Env(t)
+	dir := initRepo(t, env)
 
-	got := callGit(t, gittest.Env(t), t.TempDir(), "config", "--get", "absent.key")
+	got := callGit(t, env, dir, "remote", "get-url", "absent")
 
-	assert.Check(t, is.Equal(got.Code, 1), "git config --get absent.key printed %+v", got)
+	assert.Check(t, is.Equal(got.Code, 2), "git remote get-url absent printed %+v", got)
+}
+
+func TestFakeGit_WhenRealGitCannotStart_ExitsBroken(t *testing.T) {
+	name := "git"
+	if runtime.GOOS == "windows" {
+		name = "git.exe"
+	}
+
+	notRunnable := t.TempDir()
+	path := filepath.Join(notRunnable, name)
+	assert.NilError(t, os.WriteFile(path, []byte("not a program\n"), 0o755)) //nolint:gosec // must be executable to be found as git
+	t.Setenv("PATH", notRunnable+string(os.PathListSeparator)+os.Getenv("PATH"))
+	gittest.FakeGit(t, gittest.Fake{FailOn: []string{"show-ref"}})
+
+	got := callGit(t, nil, t.TempDir(), "status")
+
+	assert.Check(t, is.Equal(got.Code, gittest.BrokenCode), "git status printed %+v", got)
+	assert.Check(t, strings.HasPrefix(got.Stderr, "gittest: "), "git status printed %+v", got)
+}
+
+// initRepo makes a repository in a new temporary directory with the git first on PATH, and
+// returns its directory.
+func initRepo(t *testing.T, env []string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	got := callGit(t, env, dir, "init", "--quiet")
+	assert.Assert(t, is.DeepEqual(got, faked{}), "git init in %s", dir)
+
+	return dir
 }
