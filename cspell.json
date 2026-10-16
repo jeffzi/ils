@@ -52,6 +52,7 @@
     "cmpopts",
     "gotest",
     "resulttest",
+    "testtarget",
     "pflag",
     "Shortnames",
     "CLICOLOR"

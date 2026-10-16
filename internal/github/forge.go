@@ -620,9 +620,6 @@ const MinimumVersion = "2.50.0"
 // versionPrefix is what the first line of `gh --version` reads ahead of the version.
 const versionPrefix = "gh version "
 
-// semverPrefix is what the semver package wants ahead of a version.
-const semverPrefix = "v"
-
 // Runner runs gh, found through GH_PATH and then PATH.
 type Runner struct{}
 
@@ -650,14 +647,14 @@ func (e *DecodeError) Unwrap() error {
 
 // Run runs gh with args and returns what it printed.
 //
-// A gh that cannot be found is a *forge.ToolMissingError. A non-zero exit is a
+// A gh that cannot be found is a *child.ToolMissingError. A non-zero exit is a
 // *child.ExitError, returned together with the Result, since gh prints to stdout
 // before some of its non-zero exits. When ctx ends before gh does, the error is
 // the context's and the Result is empty, so a half-written stdout is never read.
 func (Runner) Run(ctx context.Context, args ...string) (Result, error) {
 	stdout, stderr, err := gh.ExecContext(ctx, args...)
 	if isMissing(err) {
-		return Result{}, &forge.ToolMissingError{Tool: Program, InstallURL: installURL, Err: err}
+		return Result{}, &child.ToolMissingError{Tool: Program, InstallURL: installURL, Err: err}
 	}
 
 	result := Result{Stdout: stdout.String(), Stderr: stderr.String()}
@@ -683,38 +680,41 @@ func isMissing(err error) bool {
 	return errors.Is(err, fs.ErrNotExist)
 }
 
-// checkVersion reports whether gh is MinimumVersion or newer.
+// checkVersion returns nil when gh is MinimumVersion or newer.
 //
 // A gh that is older, or whose first line of `gh --version` carries no version that can be
-// read, is a *forge.ToolTooOldError; a pre-release of MinimumVersion is older than it.
+// read, is a *child.ToolTooOldError; a pre-release of MinimumVersion is older than it.
 func (r Runner) checkVersion(ctx context.Context) error {
 	result, err := r.Run(ctx, "--version")
 	if err != nil {
 		return err
 	}
 
-	line, _, _ := strings.Cut(result.Stdout, "\n")
-	tooOld := &forge.ToolTooOldError{Tool: Program, Line: line, Minimum: MinimumVersion, InstallURL: installURL}
+	requirement := child.Requirement{Tool: Program, Minimum: MinimumVersion, InstallURL: installURL}
 
-	rest, _ := strings.CutPrefix(line, versionPrefix)
+	return requirement.CheckOutput(result.Stdout, VersionOf)
+}
+
+// VersionOf returns the version that a first line of `gh --version` names, as semver without the
+// leading v, or "" when it names none or does not start with "gh version ". A pre-release keeps
+// its suffix, so that it reads as older than its release.
+func VersionOf(line string) string {
+	rest, ok := strings.CutPrefix(line, versionPrefix)
+	if !ok {
+		return ""
+	}
 
 	version, _, _ := strings.Cut(rest, " ")
-	canonical := semverPrefix + version
-	if !semver.IsValid(canonical) {
-		return tooOld
+	if !semver.IsValid(child.SemverPrefix + version) {
+		return ""
 	}
 
-	tooOld.Version = version
-	if semver.Compare(canonical, semverPrefix+MinimumVersion) < 0 {
-		return tooOld
-	}
-
-	return nil
+	return version
 }
 
 // CheckLogin reports whether gh is logged in to host.
 //
-// A gh that cannot be found is a *forge.ToolMissingError and a gh that is not
+// A gh that cannot be found is a *child.ToolMissingError and a gh that is not
 // logged in to host is a *forge.NotLoggedInError.
 func (r Runner) CheckLogin(ctx context.Context, host string) error {
 	_, err := r.Run(ctx, "auth", "status", "--hostname", host)

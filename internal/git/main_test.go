@@ -1,12 +1,25 @@
 package git_test
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
+
+	"gotest.tools/v3/assert"
+	is "gotest.tools/v3/assert/cmp"
+
+	"github.com/jeffzi/ils/internal/child"
+	"github.com/jeffzi/ils/internal/git"
+	"github.com/jeffzi/ils/internal/gittest"
+	"github.com/jeffzi/ils/internal/quiet"
+	"github.com/jeffzi/ils/internal/testtarget"
 )
 
 const (
@@ -23,6 +36,16 @@ const (
 
 	// helperLife bounds how long a lingering helper stays when nothing releases it.
 	helperLife = 30 * time.Second
+
+	// versionSecondLine follows the line a fake git prints for `git --version`, so that a read of
+	// more than the first line shows up as a wrong version.
+	versionSecondLine = "cpu: x86_64"
+
+	// testGitVar names the git the tests must find on PATH: testtarget.Minimum asks for exactly the
+	// minimum ils enforces, and testtarget.Latest or unset for that version or newer.
+	testGitVar = "ILS_TEST_GIT"
+	// testGitVersionVar, when set, is the exact version of git the tests must find on PATH.
+	testGitVersionVar = "ILS_TEST_GIT_VERSION"
 )
 
 func TestMain(m *testing.M) {
@@ -30,7 +53,168 @@ func TestMain(m *testing.M) {
 		os.Exit(diffHelper(mode))
 	}
 
+	if code, served := gittest.Main(); served {
+		os.Exit(code)
+	}
+
+	if err := guardTestGit(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
 	os.Exit(m.Run())
+}
+
+// guardTestGit returns why the git on PATH does not suit the tests, or nil when it does.
+func guardTestGit() error {
+	got, err := git.Runner{}.Run(context.Background(), "--version")
+	if err != nil {
+		return fmt.Errorf("read the version of the git on PATH: %w", err)
+	}
+
+	line, _, _ := strings.Cut(got.Stdout, "\n")
+
+	return checkTestGit(os.Getenv(testGitVar), os.Getenv(testGitVersionVar), line)
+}
+
+// checkTestGit returns why a git whose `git --version` prints line first does not suit the tests,
+// or nil when it does. The line must name a version that ils reads, and that version must suit the
+// target testGitVar names and the version testGitVersionVar names, as testtarget.Tool.Check
+// decides.
+func checkTestGit(target, version, line string) error {
+	found := git.VersionOf(line)
+	if found == "" {
+		return fmt.Errorf("git --version printed %q, which names no version the suite can read", line)
+	}
+
+	tool := testtarget.Tool{
+		Name: "git", TargetVar: testGitVar, VersionVar: testGitVersionVar, MinimumVersion: git.MinimumVersion,
+	}
+
+	return tool.Check(target, version, found)
+}
+
+func TestCheckTestGit_WhenGitSuitsTarget_ReturnsNil(t *testing.T) {
+	t.Parallel()
+	line := "git version " + git.MinimumVersion
+
+	err := checkTestGit(testtarget.Minimum, "", line)
+
+	assert.NilError(t, err, "checkTestGit(%q, %q, %q)", testtarget.Minimum, "", line)
+}
+
+func TestCheckTestGit_WhenGitDoesNotSuitTarget_ReturnsError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		target  string
+		version string
+		line    string
+		// want is the text of the error checkTestGit returns.
+		want string
+	}{
+		{
+			name: "minimum target and a newer git", target: testtarget.Minimum, line: "git version 2.56.0",
+			want: "ILS_TEST_GIT is minimum and the git found is 2.56.0, want the minimum ils enforces, 2.34.1",
+		},
+		{
+			name: "version wanted is not the git found", target: testtarget.Latest, version: "2.43.0",
+			line: "git version 2.42.0", want: "the git found is 2.42.0, and ILS_TEST_GIT_VERSION wants 2.43.0",
+		},
+		{
+			name: "development build", line: "git version DEV",
+			want: `git --version printed "git version DEV", which names no version the suite can read`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := checkTestGit(tt.target, tt.version, tt.line)
+
+			assert.Error(t, err, tt.want, "checkTestGit(%q, %q, %q)", tt.target, tt.version, tt.line)
+		})
+	}
+}
+
+// fakeGitVersion puts a git first on PATH that prints line, then versionSecondLine, for `git --version`,
+// and returns the settings that make it so. It cannot run in a parallel test: it sets PATH for the
+// whole process.
+func fakeGitVersion(t *testing.T, line string) []string {
+	t.Helper()
+
+	return gittest.FakeGit(t, gittest.Fake{Version: line + "\n" + versionSecondLine})
+}
+
+func TestGuardTestGit(t *testing.T) {
+	// Not parallel: each row sets the environment of the whole process, which the git the guard
+	// starts inherits.
+	tests := []struct {
+		name    string
+		target  string
+		version string
+		line    string
+		// want is the text of the error guardTestGit returns; "" means nil.
+		want string
+	}{
+		{name: "git on PATH is the minimum", line: "git version " + git.MinimumVersion},
+		{
+			name: "minimum target finds a newer git", target: testtarget.Minimum, line: "git version 2.56.0",
+			want: "ILS_TEST_GIT is minimum and the git found is 2.56.0, want the minimum ils enforces, 2.34.1",
+		},
+		{
+			name: "version wanted is not the git on PATH", target: testtarget.Latest, version: "2.43.0",
+			line: "git version 2.42.0", want: "the git found is 2.42.0, and ILS_TEST_GIT_VERSION wants 2.43.0",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeGitVersion(t, tt.line)
+			t.Setenv(testGitVar, tt.target)
+			t.Setenv(testGitVersionVar, tt.version)
+
+			err := guardTestGit()
+
+			if tt.want == "" {
+				assert.NilError(t, err)
+
+				return
+			}
+
+			assert.Error(t, err, tt.want)
+		})
+	}
+}
+
+func TestGuardTestGit_WhenGitMissingFromPath_ReturnsToolMissingError(t *testing.T) {
+	// Not parallel: this empties PATH for the whole process while it runs.
+	t.Setenv("PATH", t.TempDir())
+
+	err := guardTestGit()
+
+	_, ok := errors.AsType[*child.ToolMissingError](err)
+	assert.Check(t, ok, "guardTestGit error = %v, want a *child.ToolMissingError", err)
+	assert.Check(t, is.ErrorContains(err, "read the version of the git on PATH: "))
+}
+
+func TestMain_WhenTestGitTargetIsUnknown_ExitsBeforeTheTests(t *testing.T) {
+	t.Parallel()
+	binary, err := os.Executable()
+	assert.NilError(t, err)
+
+	var stderr bytes.Buffer
+
+	//nolint:gosec // G204: the test binary starts itself; nothing here comes from outside the test.
+	cmd := exec.CommandContext(t.Context(), binary, "-test.run=^$")
+	cmd.Env = append(os.Environ(), testGitVar+"=newest", "GORACE="+quiet.Setting())
+	cmd.Stderr = &stderr
+
+	err = cmd.Run()
+
+	exitErr, ok := errors.AsType[*exec.ExitError](err)
+	assert.Assert(t, ok, "test binary error = %v, want it to exit non-zero", err)
+	assert.Check(t, is.Equal(exitErr.ExitCode(), 1))
+	assert.Check(t, is.Contains(stderr.String(), `ILS_TEST_GIT is "newest", want minimum, latest, or unset`))
 }
 
 // diffHelper plays git's external diff program and returns its exit code. In the lingering mode it

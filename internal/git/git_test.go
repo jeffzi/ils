@@ -129,18 +129,18 @@ func TestRunner_Run_WhenGitExitsNonZero_ReturnsExitError(t *testing.T) {
 	assert.Check(t, is.DeepEqual(exitErr.Argv, []string{"git", "nonsense"}))
 }
 
-func TestRunner_Run_WhenGitMissingFromPath_ReturnsNotFoundError(t *testing.T) {
+func TestRunner_Run_WhenGitMissingFromPath_ReturnsToolMissingError(t *testing.T) {
 	runner := newRunner(t)
 	// Not parallel: this empties PATH for the whole process while it runs.
 	t.Setenv("PATH", t.TempDir())
 
 	_, err := runner.Run(t.Context(), "version")
 
-	notFound, ok := errors.AsType[*git.NotFoundError](err)
-	assert.Assert(t, ok, "Run(version) error = %v, want *git.NotFoundError", err)
-	assert.Check(t, is.Equal(notFound.Name, "git"))
+	missing, ok := errors.AsType[*child.ToolMissingError](err)
+	assert.Assert(t, ok, "Run(version) error = %v, want *child.ToolMissingError", err)
+	assert.Check(t, is.Equal(missing.Tool, "git"))
+	assert.Check(t, is.Equal(missing.InstallURL, installURL))
 	assert.Check(t, is.ErrorIs(err, exec.ErrNotFound))
-	assert.Check(t, is.Equal(err.Error(), "git not found on PATH"))
 }
 
 func TestRunner_Run_WhenContextEndsWhileGitRuns_ReturnsOnlyContextError(t *testing.T) {

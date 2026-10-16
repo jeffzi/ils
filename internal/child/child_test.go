@@ -82,3 +82,164 @@ func TestFailure_WhenProgramNeverExited_WrapsRunErrorNamingCommand(t *testing.T)
 	assert.Check(t, is.ErrorIs(err, exec.ErrNotFound))
 	assert.Check(t, is.Equal(err.Error(), "gh pr view: "+exec.ErrNotFound.Error()))
 }
+
+func TestToolTooOldError_Error(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  child.ToolTooOldError
+		want string
+	}{
+		{
+			name: "version read",
+			err:  child.ToolTooOldError{Tool: "gh", Version: "2.49.0", Line: "gh version 2.49.0 (2024-05-13)", Minimum: "2.50.0"},
+			want: "gh 2.49.0 is older than 2.50.0",
+		},
+		{
+			name: "line with no version",
+			err:  child.ToolTooOldError{Tool: "gh", Line: "gh version DEV", Minimum: "2.50.0"},
+			want: `gh printed "gh version DEV", which names no version; 2.50.0 or newer is needed`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := tt.err.Error()
+
+			assert.Check(t, is.Equal(got, tt.want))
+		})
+	}
+}
+
+func TestToolMissingError_WhenToolNotFound_NamesToolAndInstallPage(t *testing.T) {
+	t.Parallel()
+	err := &child.ToolMissingError{Tool: "gh", InstallURL: "https://cli.github.com", Err: exec.ErrNotFound}
+
+	got := err.Error()
+
+	assert.Check(t, is.Equal(got, "gh is not installed: install it from https://cli.github.com"))
+}
+
+func TestToolMissingError_WhenLookupFailed_MatchesTheLookupError(t *testing.T) {
+	t.Parallel()
+	err := &child.ToolMissingError{Tool: "git", InstallURL: "https://git-scm.com/downloads", Err: exec.ErrNotFound}
+
+	assert.Check(t, is.ErrorIs(err, exec.ErrNotFound))
+}
+
+func requirement() child.Requirement {
+	return child.Requirement{Tool: "gh", Minimum: "2.50.0", InstallURL: "https://cli.github.com"}
+}
+
+func TestRequirement_Check_WhenVersionIsTheMinimumOrNewer_ReturnsNil(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		version string
+	}{
+		{name: "the minimum", version: "2.50.0"},
+		{name: "a minor number with more digits", version: "2.100.0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := requirement().Check("gh version "+tt.version, tt.version)
+
+			assert.NilError(t, err, "Check(%q)", tt.version)
+		})
+	}
+}
+
+func TestRequirement_Check_WhenVersionIsOlderOrUnreadable_ReturnsToolTooOldError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		line    string
+		version string
+		// a version that is not semver carries none
+		wantVersion string
+	}{
+		{name: "an older minor release", line: "gh version 2.49.0", version: "2.49.0", wantVersion: "2.49.0"},
+		{name: "a release candidate of the minimum", line: "gh version 2.50.0-rc.1", version: "2.50.0-rc.1", wantVersion: "2.50.0-rc.1"},
+		{name: "a development build", line: "gh version DEV", version: "DEV"},
+		{name: "no version at all", line: "", version: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := requirement().Check(tt.line, tt.version)
+
+			tooOld, ok := errors.AsType[*child.ToolTooOldError](err)
+			assert.Assert(t, ok, "Check(%q) error = %v, want *child.ToolTooOldError", tt.version, err)
+			want := child.ToolTooOldError{
+				Tool: "gh", Version: tt.wantVersion, Line: tt.line, Minimum: "2.50.0", InstallURL: "https://cli.github.com",
+			}
+			assert.Check(t, is.DeepEqual(*tooOld, want))
+		})
+	}
+}
+
+// versionOf reads the version of the gh lines the output tests print, and none from any other line.
+func versionOf(line string) string {
+	versions := map[string]string{
+		"gh version 2.49.0": "2.49.0",
+		"gh version 2.50.0": "2.50.0",
+		"gh version 2.60.0": "2.60.0",
+	}
+
+	return versions[line]
+}
+
+func TestRequirement_CheckOutput_WhenFirstLineIsTheMinimumOrNewer_ReturnsNil(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		stdout string
+	}{
+		{name: "one line with no newline", stdout: "gh version 2.50.0"},
+		{name: "later lines name no version", stdout: "gh version 2.50.0\nhttps://github.com/cli/cli/releases/tag/v2.50.0\n"},
+		{name: "a later line names an older version", stdout: "gh version 2.60.0\ngh version 2.49.0\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := requirement().CheckOutput(tt.stdout, versionOf)
+
+			assert.NilError(t, err, "CheckOutput(%q)", tt.stdout)
+		})
+	}
+}
+
+func TestRequirement_CheckOutput_WhenFirstLineIsOlderOrUnreadable_ReturnsToolTooOldError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		stdout      string
+		wantLine    string
+		wantVersion string
+	}{
+		{name: "an older first line", stdout: "gh version 2.49.0\n", wantLine: "gh version 2.49.0", wantVersion: "2.49.0"},
+		{name: "a later line names a newer version", stdout: "gh version 2.49.0\ngh version 2.60.0\n", wantLine: "gh version 2.49.0", wantVersion: "2.49.0"},
+		{name: "a first line the parser reads no version from", stdout: "gh version DEV\ngh version 2.60.0\n", wantLine: "gh version DEV"},
+		{name: "no output at all", stdout: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := requirement().CheckOutput(tt.stdout, versionOf)
+
+			tooOld, ok := errors.AsType[*child.ToolTooOldError](err)
+			assert.Assert(t, ok, "CheckOutput(%q) error = %v, want *child.ToolTooOldError", tt.stdout, err)
+			want := child.ToolTooOldError{
+				Tool: "gh", Version: tt.wantVersion, Line: tt.wantLine, Minimum: "2.50.0", InstallURL: "https://cli.github.com",
+			}
+			assert.Check(t, is.DeepEqual(*tooOld, want))
+		})
+	}
+}

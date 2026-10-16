@@ -296,9 +296,7 @@ func TestForge_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
 
 			err := tt.run(t.Context(), newForge())
 
-			missing, ok := errors.AsType[*forge.ToolMissingError](err)
-			assert.Assert(t, ok, "%s error = %v, want *forge.ToolMissingError", tt.name, err)
-			assert.Check(t, is.DeepEqual(missing, missingTool(), cmpopts.IgnoreFields(forge.ToolMissingError{}, "Err")))
+			_ = assertMissingTool(t, err, tt.name)
 		})
 	}
 }
@@ -370,7 +368,6 @@ func TestForge_Identity_WhenGhIsOlderThanTheMinimum_ReturnsToolTooOldErrorBefore
 		version string
 	}{
 		{name: "one minor release older", line: "gh version 2.49.0 (2024-05-13)", version: "2.49.0"},
-		{name: "one major release older", line: "gh version 1.14.0 (2021-08-04)", version: "1.14.0"},
 		{name: "pre-release of the minimum", line: "gh version 2.50.0-pre.1 (2024-05-20)", version: "2.50.0-pre.1"},
 		{name: "development build", line: "gh version DEV"},
 		{name: "empty first line"},
@@ -381,9 +378,9 @@ func TestForge_Identity_WhenGhIsOlderThanTheMinimum_ReturnsToolTooOldErrorBefore
 
 			_, err := newForge().Identity(t.Context(), engine())
 
-			tooOld, ok := errors.AsType[*forge.ToolTooOldError](err)
-			assert.Assert(t, ok, "Identity error = %v, want *forge.ToolTooOldError", err)
-			want := forge.ToolTooOldError{
+			tooOld, ok := errors.AsType[*child.ToolTooOldError](err)
+			assert.Assert(t, ok, "Identity error = %v, want *child.ToolTooOldError", err)
+			want := child.ToolTooOldError{
 				Tool: program, Version: tt.version, Line: tt.line, Minimum: github.MinimumVersion, InstallURL: installURL,
 			}
 			assert.Check(t, is.DeepEqual(*tooOld, want))
@@ -397,7 +394,6 @@ func TestForge_Identity_WhenGhIsAtOrAboveTheMinimum_GoesOnToTheLogin(t *testing.
 		name string
 		line string
 	}{
-		{name: "minor number with more digits", line: "gh version 2.100.0 (2026-09-03)"},
 		{name: "next major release", line: "gh version 3.0.0 (2027-01-12)"},
 	}
 	for _, tt := range tests {
@@ -426,8 +422,8 @@ func TestForge_Identity_WhenVersionReadExitsNonZero_ReturnsExitErrorNamingCall(t
 	assert.Assert(t, ok, "Identity error = %v, want *child.ExitError", err)
 	want := child.ExitError{Argv: received(versionArgs())[0], Stderr: unknownFlag, Code: 1}
 	assert.Check(t, is.DeepEqual(*exitErr, want))
-	_, tooOld := errors.AsType[*forge.ToolTooOldError](err)
-	assert.Check(t, !tooOld, "Identity error = %v, want one that is no *forge.ToolTooOldError", err)
+	_, tooOld := errors.AsType[*child.ToolTooOldError](err)
+	assert.Check(t, !tooOld, "Identity error = %v, want one that is no *child.ToolTooOldError", err)
 	_, loggedOut := errors.AsType[*forge.NotLoggedInError](err)
 	assert.Check(t, !loggedOut, "Identity error = %v, want one that is no *forge.NotLoggedInError", err)
 	assertCalls(t, fake, received(versionArgs()))
@@ -1010,9 +1006,46 @@ func TestMergeStateOf(t *testing.T) {
 // Runner
 // ---------------------------------------------------------------------------
 
+func TestVersionOf(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{name: "release with a date", line: "gh version 2.50.0 (2024-05-29)", want: "2.50.0"},
+		{name: "release without a date", line: "gh version 2.100.3", want: "2.100.3"},
+		{name: "pre-release keeps its suffix", line: "gh version 2.50.0-rc.1", want: "2.50.0-rc.1"},
+		{name: "development build", line: "gh version DEV"},
+		{name: "no gh version prefix", line: "2.50.0"},
+		{name: "empty line"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := github.VersionOf(tt.line)
+
+			assert.Check(t, is.Equal(got, tt.want), "VersionOf(%q)", tt.line)
+		})
+	}
+}
+
 // missingTool is the error every call returns when `gh` is not installed.
-func missingTool() *forge.ToolMissingError {
-	return &forge.ToolMissingError{Tool: program, InstallURL: installURL}
+func missingTool() *child.ToolMissingError {
+	return &child.ToolMissingError{Tool: program, InstallURL: installURL}
+}
+
+// assertMissingTool fails the test unless err is the missingTool error, ignoring its cause, and
+// returns that error.
+func assertMissingTool(t *testing.T, err error, label string) *child.ToolMissingError {
+	t.Helper()
+
+	missing, ok := errors.AsType[*child.ToolMissingError](err)
+	assert.Assert(t, ok, "%s error = %v, want *child.ToolMissingError", label, err)
+	assert.Check(t, is.DeepEqual(missing, missingTool(), cmpopts.IgnoreFields(child.ToolMissingError{}, "Err")))
+
+	return missing
 }
 
 func TestRunner_Run_WhenGhExitsZero_ReturnsOutput(t *testing.T) {
@@ -1079,9 +1112,7 @@ func TestRunner_Run_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
 
 			_, err := github.Runner{}.Run(t.Context(), "pr", "view")
 
-			missing, ok := errors.AsType[*forge.ToolMissingError](err)
-			assert.Assert(t, ok, "Run(pr view) error = %v, want *forge.ToolMissingError", err)
-			assert.Check(t, is.DeepEqual(missing, missingTool(), cmpopts.IgnoreFields(forge.ToolMissingError{}, "Err")))
+			missing := assertMissingTool(t, err, "Run(pr view)")
 			assert.Check(t, missing.Err != nil, "Run(pr view) error carries no cause, want what starting gh failed with")
 		})
 	}

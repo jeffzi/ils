@@ -6,9 +6,24 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"golang.org/x/mod/semver"
+
+	"github.com/jeffzi/ils/internal/child"
 )
 
+// MinimumVersion is the oldest git ils works with: the git of Ubuntu 22.04 LTS.
+const MinimumVersion = "2.34.1"
+
 const (
+	// versionPrefix starts the first line of `git --version`.
+	versionPrefix = "git version "
+	// releaseCandidate starts the component git puts after a release candidate's version: its
+	// version script turns a tag's -rcN into .rcN.
+	releaseCandidate = "rc"
+	// versionComponents counts the numeric components of a version: major, minor, patch.
+	versionComponents = 3
+
 	origin   = "origin"
 	headsRef = "refs/heads/"
 
@@ -205,6 +220,52 @@ func (r Repo) BranchesContaining(ctx context.Context, sha string) ([]string, err
 // It reads origin/<trunk>, which is current only after a fetch of trunk.
 func (r Repo) Unlanded(ctx context.Context, mergedHead, tip, trunk string) ([]Commit, error) {
 	return r.commits(ctx, "--no-merges", "--cherry-pick", "--right-only", mergedHead+"..."+tip, excludeTrunk(trunk))
+}
+
+// CheckVersion returns nil when git is MinimumVersion or newer.
+//
+// A git that is older, or whose first line of `git --version` names no version that can be read,
+// is a *child.ToolTooOldError; a release candidate of a version is older than that version. A git
+// missing from PATH is a *child.ToolMissingError.
+func (r Repo) CheckVersion(ctx context.Context) error {
+	result, err := r.Runner.Run(ctx, "--version")
+	if err != nil {
+		return err
+	}
+
+	requirement := child.Requirement{Tool: program, Minimum: MinimumVersion, InstallURL: installURL}
+
+	return requirement.CheckOutput(result.Stdout, VersionOf)
+}
+
+// VersionOf returns the version that a first line of `git --version` names, as semver without the
+// leading v, or "" when it names none or does not start with "git version ".
+//
+// The version is the first three numeric components. A release candidate's .rcN component becomes
+// the pre-release -rcN; any other trailing component, such as Git for Windows' .windows.N, is dropped.
+func VersionOf(line string) string {
+	rest, ok := strings.CutPrefix(line, versionPrefix)
+	if !ok {
+		return ""
+	}
+
+	token, _, _ := strings.Cut(rest, " ")
+
+	parts := strings.Split(token, ".")
+	if len(parts) < versionComponents {
+		return ""
+	}
+
+	version := strings.Join(parts[:versionComponents], ".")
+	if len(parts) > versionComponents && strings.HasPrefix(parts[versionComponents], releaseCandidate) {
+		version += "-" + parts[versionComponents]
+	}
+
+	if !semver.IsValid(child.SemverPrefix + version) {
+		return ""
+	}
+
+	return version
 }
 
 // line runs git with args and returns its stdout without the trailing line break.

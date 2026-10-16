@@ -547,3 +547,104 @@ func TestRepo_HasCommits(t *testing.T) {
 		})
 	}
 }
+
+// installURL is where the error for a git that is missing or too old sends the user.
+const installURL = "https://git-scm.com/downloads"
+
+// fakeGitRepo returns a repository whose git, first on PATH, prints line as the first line of
+// `git --version`. It cannot run in a parallel test: it sets PATH for the whole process.
+func fakeGitRepo(t *testing.T, line string) git.Repo {
+	t.Helper()
+
+	env := append(gittest.Env(t), fakeGitVersion(t, line)...)
+
+	return git.Repo{Runner: git.Runner{Dir: t.TempDir(), Env: env}}
+}
+
+func TestRepo_CheckVersion_WhenGitIsAtOrAboveTheMinimum_ReturnsNil(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+	}{
+		{name: "exactly the minimum", line: "git version " + git.MinimumVersion},
+		{name: "release candidate newer than the minimum", line: "git version 2.35.0.rc0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Not parallel: fakeGitRepo sets PATH for the whole process.
+			repo := fakeGitRepo(t, tt.line)
+
+			err := repo.CheckVersion(t.Context())
+
+			assert.NilError(t, err, "CheckVersion with %q", tt.line)
+		})
+	}
+}
+
+func TestRepo_CheckVersion_WhenGitIsOlderThanTheMinimum_ReturnsToolTooOldError(t *testing.T) {
+	tests := []struct {
+		name string
+		// line is the first line `git --version` prints.
+		line string
+		// version is the version the error carries; a line with none carries none.
+		version string
+	}{
+		{name: "one patch release older", line: "git version 2.34.0", version: "2.34.0"},
+		{name: "release candidate of the minimum", line: "git version 2.34.1.rc0", version: "2.34.1-rc0"},
+		{name: "development build", line: "git version DEV"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Not parallel: fakeGitRepo sets PATH for the whole process.
+			repo := fakeGitRepo(t, tt.line)
+
+			err := repo.CheckVersion(t.Context())
+
+			tooOld, ok := errors.AsType[*child.ToolTooOldError](err)
+			assert.Assert(t, ok, "CheckVersion with %q error = %v, want *child.ToolTooOldError", tt.line, err)
+			want := child.ToolTooOldError{
+				Tool: "git", Version: tt.version, Line: tt.line, Minimum: git.MinimumVersion, InstallURL: installURL,
+			}
+			assert.Check(t, is.DeepEqual(*tooOld, want))
+		})
+	}
+}
+
+func TestRepo_CheckVersion_WhenGitMissingFromPath_ReturnsToolMissingError(t *testing.T) {
+	repo := git.Repo{Runner: newRunner(t)}
+	// Not parallel: this empties PATH for the whole process while it runs.
+	t.Setenv("PATH", t.TempDir())
+
+	err := repo.CheckVersion(t.Context())
+
+	missing, ok := errors.AsType[*child.ToolMissingError](err)
+	assert.Assert(t, ok, "CheckVersion error = %v, want *child.ToolMissingError", err)
+	assert.Check(t, is.Equal(missing.Tool, "git"))
+}
+
+func TestVersionOf(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{name: "plain release", line: "git version 2.34.1", want: "2.34.1"},
+		{name: "Git for Windows", line: "git version 2.56.0.windows.2", want: "2.56.0"},
+		{name: "Apple", line: "git version 2.54.0 (Apple Git-157)", want: "2.54.0"},
+		{name: "release candidate", line: "git version 2.35.0.rc0", want: "2.35.0-rc0"},
+		{name: "development build", line: "git version DEV"},
+		{name: "three components, one not a number", line: "git version 2.x.1"},
+		{name: "no git version prefix", line: "2.40.0"},
+		{name: "empty line"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := git.VersionOf(tt.line)
+
+			assert.Check(t, is.Equal(got, tt.want), "VersionOf(%q)", tt.line)
+		})
+	}
+}

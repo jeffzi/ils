@@ -14,6 +14,7 @@ import (
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
+	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
 	"github.com/jeffzi/ils/internal/git"
@@ -41,9 +42,10 @@ const (
 	nextOneURL = "Next: point both of origin's URLs at one GitHub repository with `git remote set-url`, by hand\n"
 	nextFixed  = "Next: fix what failed, then run ils push again\n"
 
-	readStanding = "where HEAD stands"
-	readIdentity = "the repository's identity on GitHub"
-	readTrunk    = "origin's trunk"
+	readGitVersion = "git's version"
+	readStanding   = "where HEAD stands"
+	readIdentity   = "the repository's identity on GitHub"
+	readTrunk      = "origin's trunk"
 
 	unreachedText = "Refused: origin could not be reached to ask for its trunk\n" + nextPush
 
@@ -296,8 +298,8 @@ func forgeRefusals() []refusal {
 			"the user pushes by hand\n" + nextByHand
 	)
 
-	missing := fails(&forge.ToolMissingError{Tool: "gh", InstallURL: "https://cli.github.com"})
-	old := forge.ToolTooOldError{Tool: "gh", Minimum: "2.50.0", InstallURL: "https://cli.github.com"}
+	missing := fails(&child.ToolMissingError{Tool: "gh", InstallURL: "https://cli.github.com"})
+	old := child.ToolTooOldError{Tool: "gh", Minimum: "2.50.0", InstallURL: "https://cli.github.com"}
 	outdated, unread := old, old
 	outdated.Version, outdated.Line = "2.49.0", "gh version 2.49.0 (2024-05-13)"
 	unread.Line = "gh version DEV"
@@ -501,6 +503,39 @@ func TestPreconditions_WhenGitMissingFromPath_RefusesWithAnInstallHint(t *testin
 	}
 }
 
+func TestPreconditions_WhenGitIsTooOld_RefusesBeforeAnyOtherRead(t *testing.T) {
+	// Not parallel: fakeGit puts a git that prints its own version first on PATH with t.Setenv.
+	const want = "Refused: git 2.34.0 is older than 2.34.1, the oldest version ils works with; " +
+		"upgrade it from https://git-scm.com/downloads\n" +
+		"Next: upgrade git, then run ils push again\n"
+
+	s := newScene(t, nil, forgetest.Script{}, false)
+	fakeGit(t, s, gittest.Fake{Version: "git version 2.34.0"})
+	before := s.refs()
+
+	_, got, ok := landing.Preconditions(t.Context(), s.deps, pushRequest())
+
+	assert.Assert(t, !ok, "Preconditions() ok = true, want a refusal")
+	assertEnded(t, s, got, finish{outcome: result.Refused, text: want})
+
+	assertRefsUnchanged(t, s, before)
+	assertAsked(t, s, nil)
+
+	assert.Check(t, is.DeepEqual(s.recorder.Calls(), [][]string{{"git", "--version"}}))
+}
+
+func TestPreconditions_WhenGitVersionFails_BrokeNamingTheRead(t *testing.T) {
+	// Not parallel: failGit puts a git that fails first on PATH with t.Setenv.
+	s := newScene(t, nil, forgetest.Script{}, false)
+	failGit(t, s, []string{"--version"})
+
+	_, got, ok := landing.Preconditions(t.Context(), s.deps, pushRequest())
+
+	assert.Assert(t, !ok, "Preconditions() ok = true, want a broke result")
+	assertBrokeRead(t, got, readGitVersion, gittest.FailedSaid)
+	assertAsked(t, s, nil)
+}
+
 // unfinished is a deadline that ends during one read of the preconditions.
 type unfinished struct {
 	// arrange returns the context to run under and the forge's script.
@@ -515,7 +550,7 @@ func unfinishedReads() []unfinished {
 	return []unfinished{
 		{
 			name: "before the first read",
-			read: readStanding,
+			read: readGitVersion,
 			arrange: func(t *testing.T) (context.Context, forgetest.Script) {
 				t.Helper()
 

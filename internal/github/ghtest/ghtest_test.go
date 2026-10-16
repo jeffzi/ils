@@ -1,6 +1,7 @@
 package ghtest_test
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
@@ -104,4 +105,45 @@ func TestFake_WhenAnswerIsDelayed_AnswersAfterTheDelay(t *testing.T) {
 	elapsed := time.Since(start)
 	assert.Check(t, elapsed >= delay, "Run(pr checks) answered after %s, want no sooner than %s", elapsed, delay)
 	assert.Check(t, is.Equal(got.Stdout, "pass\n"))
+}
+
+func TestFake_Holding_WhenAnAnswerIsHeld_ClosesOnceTheCallIsRecorded(t *testing.T) {
+	const longerThanTheTest = 30 * time.Second
+	args := []string{"pr", "checks", "7"}
+	fake := ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "pass\n", Delay: longerThanTheTest}, args...))
+	ctx, cancel := context.WithCancel(t.Context())
+	returned := make(chan struct{})
+
+	go func() {
+		defer close(returned)
+
+		// The run is cut once the answer is held, so its error says only that it was cut.
+		_, _ = github.Runner{}.Run(ctx, args...)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-returned
+	})
+
+	select {
+	case <-fake.Holding():
+	case <-returned:
+		t.Fatal("Run(pr checks) returned before the fake reported holding its answer")
+	}
+
+	assert.Check(t, is.DeepEqual(fake.Calls(), [][]string{{"gh", "pr", "checks", "7"}}))
+}
+
+func TestFake_Holding_WhenNoAnswerIsHeld_StaysOpen(t *testing.T) {
+	args := []string{"pr", "checks", "7"}
+	fake := ghtest.Setup(t, ghtest.Says("pass\n", args...))
+
+	_, err := github.Runner{}.Run(t.Context(), args...)
+	assert.NilError(t, err)
+
+	select {
+	case <-fake.Holding():
+		t.Error("Holding() closed, want it open since no answer was held")
+	default:
+	}
 }

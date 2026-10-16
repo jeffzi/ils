@@ -219,14 +219,12 @@ func TestFake_WhenAnswerIsError_ReturnsItUnchanged(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scripted := &forge.ToolMissingError{Tool: "gh", InstallURL: "https://example.com/install"}
+			scripted := errors.New("gh is not installed")
 			fake := forgetest.New(t, script(scripted))
 
 			_, err := tt.call(t.Context(), fake)
 
-			got, ok := errors.AsType[*forge.ToolMissingError](err)
-			assert.Check(t, ok, "error = %v, want a *forge.ToolMissingError", err)
-			assert.Check(t, is.Equal(got, scripted))
+			assert.Check(t, is.Equal(err, scripted))
 		})
 	}
 }

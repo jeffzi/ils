@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,12 +43,11 @@ const (
 	outsideEnd   = "Nothing was written.\nNext: fix what failed, then run ils push again\n"
 
 	bound = 100 * time.Second
-	// grace is how long past the bound a run may come back.
+	// grace is how long a run may take to come back after the moment it is due: past the bound for
+	// timed, after the held call starts for cutWhileHeld.
 	grace = 2 * time.Second
-	// held is how long a held call stays open, far past the bound, and heldLeft is the time left
-	// under the bound when a run with a held call is launched.
-	held     = 30 * time.Second
-	heldLeft = 3 * time.Second
+	// held is how long a held call stays open, far past the moment the run is cut.
+	held = 30 * time.Second
 )
 
 // ran is what one run of the cli printed and the code it exited with.
@@ -62,6 +62,14 @@ type ran struct {
 func launch(t *testing.T, app cli.App, args ...string) ran {
 	t.Helper()
 
+	return launchUnder(t.Context(), t, app, args...)
+}
+
+// launchUnder is launch with the run bound to ctx rather than t.Context(), so a caller can end it
+// early.
+func launchUnder(ctx context.Context, t *testing.T, app cli.App, args ...string) ran {
+	t.Helper()
+
 	var stdout, stderr bytes.Buffer
 
 	app.Stderr = &stderr
@@ -73,7 +81,7 @@ func launch(t *testing.T, app cli.App, args ...string) ran {
 		app.Launch = time.Now()
 	}
 
-	code := app.Run(t.Context(), args)
+	code := app.Run(ctx, args)
 
 	return ran{stdout: stdout.String(), stderr: stderr.String(), code: code}
 }
@@ -187,7 +195,48 @@ func timed(t *testing.T, sc scenario) (*scene, ran) {
 	return s, got
 }
 
-// heldChecks is a first push whose read of the checks is still open at the bound.
+// cutWhileHeld runs `ils push` in a scene of sc under a context that ends with
+// [context.DeadlineExceeded] the moment the fake gh starts holding an answer, and fails the test
+// unless it exits as sc wants and comes back no later than grace after that moment.
+func cutWhileHeld(t *testing.T, sc scenario) (*scene, ran) {
+	t.Helper()
+
+	s := newScene(t, sc)
+	cut := make(chan struct{})
+	cutAt := make(chan time.Time, 1)
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	var wg sync.WaitGroup
+
+	wg.Go(func() {
+		select {
+		case <-s.fake.Holding():
+			cutAt <- time.Now()
+			close(cut)
+		case <-ctx.Done():
+		}
+	})
+
+	got := launchUnder(gittest.Ending(t.Context(), cut, context.DeadlineExceeded), t, s.app(), "push")
+
+	cancel()
+	wg.Wait()
+
+	assert.Equal(t, got.code, sc.want, "stdout:\n%s\nstderr:\n%s", got.stdout, got.stderr)
+
+	select {
+	case at := <-cutAt:
+		late := time.Since(at)
+		assert.Check(t, late <= grace, "ils push returned %s after the held call started, want it back no later than %s after", late, grace)
+	default:
+		t.Error("ils push returned without the fake gh holding an answer")
+	}
+
+	return s, got
+}
+
+// heldChecks is a first push whose read of the checks is held open.
 func heldChecks() scenario {
 	slow := func(sha string) verdict {
 		v := passing(sha)
@@ -196,22 +245,22 @@ func heldChecks() scenario {
 		return v
 	}
 
-	return scenario{name: "the read of the checks", script: firstPush(slow), left: heldLeft, want: exitPending}
+	return scenario{name: "the read of the checks", script: firstPush(slow), want: exitPending}
 }
 
-// heldIdentity is a push whose read of the repository's identity is still open at the bound.
+// heldIdentity is a push whose read of the repository's identity is held open.
 func heldIdentity() scenario {
 	calls := allowed()
 	calls[1].Answers[0].Delay = held
 
-	return scenario{name: "the read of the identity", script: only(calls...), left: heldLeft, want: exitRefused}
+	return scenario{name: "the read of the identity", script: only(calls...), want: exitRefused}
 }
 
-// heldVersion is a push whose read of gh's version is still open at the bound.
+// heldVersion is a push whose read of gh's version is held open.
 func heldVersion() scenario {
 	slow := ghtest.Exits(ghtest.Answer{Stdout: "gh version 2.100.0 (2026-09-03)\n", Delay: held}, ghtest.VersionArgs()...)
 
-	return scenario{name: "the read of gh's version", script: only(slow), left: heldLeft, want: exitRefused}
+	return scenario{name: "the read of gh's version", script: only(slow), want: exitRefused}
 }
 
 // outdated is a first push with a gh that is logged out and prints line for its version.
@@ -617,34 +666,32 @@ func TestApp_Run_WhenChecksStillRunAtTheBound_EndsPendingWithoutOutlastingIt(t *
 	endsWith(t, got.stdout, want)
 }
 
-func TestApp_Run_WhenACallIsStillOpenAtTheBound_EndsByTheBound(t *testing.T) {
-	const cut = "Refused: the time limit ended while reading the repository's identity on GitHub; nothing was written\n"
+func TestApp_Run_WhenTheTimeLimitEndsDuringAHeldReadBeforeThePush_RefusesWithinGraceWithNothingPushed(t *testing.T) {
+	const want = "Refused: the time limit ended while reading the repository's identity on GitHub; nothing was written\n" +
+		"Next: ils push\n"
 
-	tests := []struct {
-		// wantStart and wantEnd are how stdout starts and ends.
-		wantStart string
-		wantEnd   string
-		scenario  scenario
-		// delivered says whether the branch is on origin at its tip and its pull request opened.
-		delivered bool
-	}{
-		{scenario: heldChecks(), wantStart: "Pushed " + topic + " at ", wantEnd: "\nNext: ils push\n", delivered: true},
-		{scenario: heldIdentity(), wantStart: cut, wantEnd: cut + "Next: ils push\n"},
-		{scenario: heldVersion(), wantStart: cut, wantEnd: cut + "Next: ils push\n"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.scenario.name, func(t *testing.T) {
-			s, got := timed(t, tt.scenario)
+	for _, sc := range []scenario{heldIdentity(), heldVersion()} {
+		t.Run(sc.name, func(t *testing.T) {
+			s, got := cutWhileHeld(t, sc)
 
-			startsWith(t, got.stdout, tt.wantStart)
-			endsWith(t, got.stdout, tt.wantEnd)
-
-			onOrigin := s.fixture.OriginGit("for-each-ref", "--points-at", tipOf(s.fixture), "refs/heads/"+topic)
-			atTip := onOrigin != ""
-			assert.Check(t, is.Equal(atTip, tt.delivered))
-			assert.Check(t, is.Equal(opensPullRequest(s), tt.delivered))
+			assert.Check(t, is.Equal(got.stdout, want))
+			assert.Check(t, is.Equal(got.stderr, ""))
+			nothingPushed(t, s)
+			assert.Check(t, !opensPullRequest(s), "gh was asked to create a pull request")
 		})
 	}
+}
+
+func TestApp_Run_WhenTheTimeLimitEndsDuringTheHeldReadOfTheChecks_EndsPendingWithinGraceWithThePullRequestOpen(t *testing.T) {
+	s, got := cutWhileHeld(t, heldChecks())
+
+	startsWith(t, got.stdout, "Pushed "+topic+" at ")
+	assert.Check(t, is.Contains(got.stdout, pullURL))
+	endsWith(t, got.stdout, "\nNext: ils push\n")
+	assert.Check(t, is.Equal(got.stderr, ""))
+	onOrigin := s.fixture.OriginGit("for-each-ref", "--points-at", tipOf(s.fixture), "refs/heads/"+topic)
+	assert.Check(t, onOrigin != "", "%s is not on origin at its tip", topic)
+	assert.Check(t, opensPullRequest(s), "gh was not asked to create a pull request")
 }
 
 // ---------------------------------------------------------------------------

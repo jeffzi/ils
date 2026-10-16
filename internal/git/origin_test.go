@@ -10,6 +10,7 @@ import (
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
+	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/gittest"
 )
@@ -254,9 +255,9 @@ func TestRepo_Trunk_WhenOriginAnswers_ReturnsDefaultBranch(t *testing.T) {
 	}
 }
 
-func TestRepo_OriginMethods_WhenOriginDoesNotAnswer_ReturnsRemoteError(t *testing.T) {
-	t.Parallel()
-	tests := []repoCall{
+// originCalls returns the repository calls that read from origin without changing the repository.
+func originCalls() []repoCall {
+	return []repoCall{
 		{name: "Trunk", call: func(ctx context.Context, repo git.Repo) error { _, err := repo.Trunk(ctx); return err }},
 		{name: "RemoteBranch", call: func(ctx context.Context, repo git.Repo) error {
 			_, _, err := repo.RemoteBranch(ctx, trunk)
@@ -264,7 +265,11 @@ func TestRepo_OriginMethods_WhenOriginDoesNotAnswer_ReturnsRemoteError(t *testin
 			return err
 		}},
 	}
-	for _, tt := range tests {
+}
+
+func TestRepo_OriginMethods_WhenOriginDoesNotAnswer_ReturnsRemoteError(t *testing.T) {
+	t.Parallel()
+	for _, tt := range originCalls() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			f := gittest.New(t, trunk)
@@ -274,6 +279,27 @@ func TestRepo_OriginMethods_WhenOriginDoesNotAnswer_ReturnsRemoteError(t *testin
 
 			_, ok := errors.AsType[*git.RemoteError](err)
 			assert.Check(t, ok, "%s() error = %v, want *git.RemoteError", tt.name, err)
+		})
+	}
+}
+
+func TestRepo_OriginMethods_WhenGitMissingFromPath_ReturnsToolMissingError(t *testing.T) {
+	tests := append(originCalls(), repoCall{
+		name: "Fetch", call: func(ctx context.Context, repo git.Repo) error { _, err := repo.Fetch(ctx, trunk); return err },
+	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newRepo(gittest.New(t, trunk))
+			// Not parallel: this empties PATH for the whole process while it runs.
+			t.Setenv("PATH", t.TempDir())
+
+			err := tt.call(t.Context(), repo)
+
+			missing, ok := errors.AsType[*child.ToolMissingError](err)
+			assert.Assert(t, ok, "%s() error = %v, want *child.ToolMissingError", tt.name, err)
+			assert.Check(t, is.Equal(missing.Tool, "git"))
+			_, remote := errors.AsType[*git.RemoteError](err)
+			assert.Check(t, !remote, "%s() error = %v, want it not to read as origin not answering", tt.name, err)
 		})
 	}
 }
