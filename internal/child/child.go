@@ -117,6 +117,15 @@ func (r Requirement) Check(line, version string) error {
 	return nil
 }
 
+// CheckOutput returns nil when the version that versionOf reads from the first line of stdout,
+// the whole output of the tool's --version, is r.Minimum or newer. Otherwise it returns the
+// *ToolTooOldError of Check for that line. Lines after the first are never read.
+func (r Requirement) CheckOutput(stdout string, versionOf func(line string) string) error {
+	line, _, _ := strings.Cut(stdout, "\n")
+
+	return r.Check(line, versionOf(line))
+}
+
 func commandLine(argv []string) string {
 	return strings.Join(argv, " ")
 }

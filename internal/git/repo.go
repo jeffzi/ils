@@ -222,7 +222,7 @@ func (r Repo) Unlanded(ctx context.Context, mergedHead, tip, trunk string) ([]Co
 	return r.commits(ctx, "--no-merges", "--cherry-pick", "--right-only", mergedHead+"..."+tip, excludeTrunk(trunk))
 }
 
-// CheckVersion reports whether git is MinimumVersion or newer.
+// CheckVersion returns nil when git is MinimumVersion or newer.
 //
 // A git that is older, or whose first line of `git --version` names no version that can be read,
 // is a *child.ToolTooOldError; a release candidate of a version is older than that version. A git
@@ -233,11 +233,9 @@ func (r Repo) CheckVersion(ctx context.Context) error {
 		return err
 	}
 
-	line, _, _ := strings.Cut(result.Stdout, "\n")
-
 	requirement := child.Requirement{Tool: program, Minimum: MinimumVersion, InstallURL: installURL}
 
-	return requirement.Check(line, VersionOf(line))
+	return requirement.CheckOutput(result.Stdout, VersionOf)
 }
 
 // VersionOf returns the version that a first line of `git --version` names, as semver without the

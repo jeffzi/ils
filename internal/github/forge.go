@@ -680,7 +680,7 @@ func isMissing(err error) bool {
 	return errors.Is(err, fs.ErrNotExist)
 }
 
-// checkVersion reports whether gh is MinimumVersion or newer.
+// checkVersion returns nil when gh is MinimumVersion or newer.
 //
 // A gh that is older, or whose first line of `gh --version` carries no version that can be
 // read, is a *child.ToolTooOldError; a pre-release of MinimumVersion is older than it.
@@ -690,11 +690,9 @@ func (r Runner) checkVersion(ctx context.Context) error {
 		return err
 	}
 
-	line, _, _ := strings.Cut(result.Stdout, "\n")
-
 	requirement := child.Requirement{Tool: Program, Minimum: MinimumVersion, InstallURL: installURL}
 
-	return requirement.Check(line, VersionOf(line))
+	return requirement.CheckOutput(result.Stdout, VersionOf)
 }
 
 // VersionOf returns the version that a first line of `gh --version` names, as semver without the
