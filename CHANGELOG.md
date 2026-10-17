@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-17
+
 ### Added
 
 - Add `ils push`, which pushes the current branch, opens its pull request on the first push, and
@@ -16,4 +18,5 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   output.
 - Add usage help, printed by `--help` on `ils` and on each command and by `ils help [command]`.
 
-[Unreleased]: https://github.com/jeffzi/ils/commits/main
+[Unreleased]: https://github.com/jeffzi/ils/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/jeffzi/ils/releases/tag/v0.1.0
