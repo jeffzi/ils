@@ -44,7 +44,7 @@ const (
 	// liveRegistryPoll is how long to wait between two reads of the workflows GitHub has registered.
 	liveRegistryPoll = 5 * time.Second
 
-	// liveListLimit is the most pull requests or runs one list of gh returns.
+	// liveListLimit is the most pull requests one list of gh returns.
 	liveListLimit = "1000"
 	// liveTokenLength is how many characters of random text tell one run's branch and commits from
 	// another's.
@@ -252,11 +252,12 @@ func (l *liveSuite) reset(t *testing.T) {
 func (l *liveSuite) cancelRuns(ctx context.Context) error {
 	var failed []error
 
-	// One list per status GitHub gives a run that has not completed, so that the limit of a list
-	// counts unfinished runs only.
+	// One list per status GitHub gives a run that has not completed. The REST API takes each of
+	// them as a filter on every gh version, where `gh run list --status` rejects `pending` on the
+	// minimum gh.
 	for _, status := range []string{"requested", "waiting", "pending", "queued", "in_progress"} {
-		running, err := liveGh(ctx, "run", "list", "--repo", l.slug(), "--status", status, "--limit", liveListLimit,
-			"--json", "databaseId", "--jq", ".[].databaseId")
+		running, err := liveGh(ctx, l.apiArgs("actions/runs?per_page=100&status="+status,
+			"--jq", ".workflow_runs[].id")...)
 		if err != nil {
 			return err
 		}
@@ -277,14 +278,22 @@ func (l *liveSuite) completed(ctx context.Context, id string) bool {
 	return err == nil && status == "completed"
 }
 
-// checkRulesRead stops the test unless GitHub refuses the read of the default branch's rules
-// with a 403, the read `ils push` makes and the refusal it takes for "no required check".
+// checkRulesRead stops the test unless GitHub answers the read of the default branch's rules, the
+// read `ils push` makes, the way the repository's visibility calls for: the rules on a public
+// repository, and a 403 on a private one, which `ils push` takes for "no required check".
 func (l *liveSuite) checkRulesRead(t *testing.T) {
 	t.Helper()
 
+	private := mustGh(t, "repo", "view", l.slug(), "--json", "isPrivate", "--jq", ".isPrivate") == "true"
 	rest := "rules/branches/" + l.trunk
 	path := l.apiPath(rest)
 	_, err := liveGh(t.Context(), l.apiArgs(rest)...)
+
+	if !private {
+		assert.NilError(t, err, "the read of %s on a public repository", path)
+
+		return
+	}
 
 	exit, exited := errors.AsType[*child.ExitError](err)
 	assert.Assert(t, exited && strings.Contains(exit.Stderr, "HTTP 403"),
