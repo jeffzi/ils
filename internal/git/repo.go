@@ -70,9 +70,6 @@ type Commit struct {
 
 // Repo makes typed git calls in the repository its runner stands in.
 type Repo struct {
-	// SSH reads the host each ssh URL of origin connects to; its zero value reads the user's ssh
-	// config.
-	SSH    SSH
 	Runner Runner
 }
 

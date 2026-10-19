@@ -24,9 +24,9 @@ const (
 	unknownSHA = "0123456789012345678901234567890123456789"
 )
 
-// newRepo returns the repository of f, with an ssh that reads a config naming no host.
+// newRepo returns the repository of f, whose ssh reads the fixture's ssh config alone.
 func newRepo(f *gittest.Fixture) git.Repo {
-	return git.Repo{Runner: git.Runner{Dir: f.Dir(), Env: f.Env()}, SSH: git.SSH{Config: f.SSHConfig("")}}
+	return git.Repo{Runner: git.Runner{Dir: f.Dir(), Env: f.Env()}}
 }
 
 // repoCall is one call on the repository, reduced to its error.

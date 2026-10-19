@@ -65,7 +65,7 @@ type scene struct {
 
 // newScene returns a repository on the topic branch whose origin URLs name Acme/Widgets on
 // GitHub, once arrange has changed it, and a forge that answers from script. An offline scene
-// has an origin that does not answer. Its ssh reads a config that names no host.
+// has an origin that does not answer. Its ssh reads the fixture's ssh config, which names no host.
 func newScene(t *testing.T, arrange func(*gittest.Fixture), script forgetest.Script, offline bool) *scene {
 	t.Helper()
 
@@ -89,10 +89,7 @@ func newScene(t *testing.T, arrange func(*gittest.Fixture), script forgetest.Scr
 		recorder: recorder,
 		gitDir:   f.Git("rev-parse", "--absolute-git-dir"),
 		deps: landing.Deps{
-			Repo: git.Repo{
-				Runner: git.Runner{Dir: f.Dir(), Env: env, Recorder: recorder},
-				SSH:    git.SSH{Config: f.SSHConfig("")},
-			},
+			Repo:  git.Repo{Runner: git.Runner{Dir: f.Dir(), Env: env, Recorder: recorder}},
 			Forge: fake,
 		},
 	}
@@ -418,7 +415,7 @@ func TestPreconditions_WhenFetchURLUsesAnSSHAliasOfThePushURLHost_AsksTheForgeAb
 	const alias = "Host github-personal\n  HostName github.com\n"
 	arrange := func(f *gittest.Fixture) { f.SetOriginURL("git@github-personal:Acme/Widgets.git") }
 	s := newScene(t, arrange, allowed(), false)
-	s.deps.Repo.SSH.Config = s.fixture.SSHConfig(alias)
+	s.fixture.SetSSHConfig(alias)
 
 	ready(t, s)
 
@@ -428,7 +425,7 @@ func TestPreconditions_WhenFetchURLUsesAnSSHAliasOfThePushURLHost_AsksTheForgeAb
 func TestPreconditions_WhenSSHFails_BrokeNamingTheRead(t *testing.T) {
 	t.Parallel()
 	s := newScene(t, nil, forgetest.Script{}, false)
-	s.deps.Repo.SSH.Config = s.fixture.MissingSSHConfig()
+	s.fixture.RemoveSSHConfig()
 
 	_, got, ok := landing.Preconditions(t.Context(), s.deps, pushRequest())
 

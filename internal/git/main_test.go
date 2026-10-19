@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +40,19 @@ const (
 	fakeSSHEnv    = "ILS_GIT_TEST_FAKE_SSH"
 	fakeSSHConfig = "user git\nport 22\n"
 
+	// sshStandInEnv makes the test binary act as an ssh command a user configured: standInAnswer
+	// followed by a name answers `-G <host>` with a config whose hostname is that name, and
+	// standInRefuse exits non-zero with standInRefusal on stderr.
+	sshStandInEnv  = "ILS_GIT_TEST_SSH_STAND_IN"
+	standInAnswer  = "hostname="
+	standInRefuse  = "refuse"
+	standInRefusal = "stand-in refused the call"
+
+	// originHostEnv makes the test binary print the host OriginURLs reports for the fetch URL of the
+	// repository its value names, read by a runner that sets no environment and so inherits this
+	// process's.
+	originHostEnv = "ILS_GIT_TEST_ORIGIN_HOST"
+
 	// helperLife bounds how long a lingering helper stays when nothing releases it.
 	helperLife = 30 * time.Second
 
@@ -61,6 +75,14 @@ func TestMain(m *testing.M) {
 	if os.Getenv(fakeSSHEnv) != "" {
 		fmt.Print(fakeSSHConfig)
 		os.Exit(0)
+	}
+
+	if mode, ok := os.LookupEnv(sshStandInEnv); ok {
+		os.Exit(sshStandIn(mode, os.Args[1:]))
+	}
+
+	if dir := os.Getenv(originHostEnv); dir != "" {
+		os.Exit(printOriginHost(dir))
 	}
 
 	if code, served := gittest.Main(); served {
@@ -225,6 +247,44 @@ func TestMain_WhenTestGitTargetIsUnknown_ExitsBeforeTheTests(t *testing.T) {
 	assert.Assert(t, ok, "test binary error = %v, want it to exit non-zero", err)
 	assert.Check(t, is.Equal(exitErr.ExitCode(), 1))
 	assert.Check(t, is.Contains(stderr.String(), `ILS_TEST_GIT is "newest", want minimum, latest, or unset`))
+}
+
+// sshStandIn plays the ssh command mode names, called with args, and returns its exit code. It
+// answers `-G <host>`, the call of a configured command, and `-G -- <host>`, the call of plain ssh.
+func sshStandIn(mode string, args []string) int {
+	if mode == standInRefuse {
+		fmt.Fprintln(os.Stderr, standInRefusal)
+
+		return 3
+	}
+
+	args = slices.DeleteFunc(slices.Clone(args), func(arg string) bool { return arg == "--" })
+
+	name, answers := strings.CutPrefix(mode, standInAnswer)
+	if !answers || len(args) != 2 || args[0] != "-G" {
+		fmt.Fprintf(os.Stderr, "stand-in in mode %q called with %q, want -G [--] <host>\n", mode, args)
+
+		return 2
+	}
+
+	fmt.Printf("user git\nhostname %s\nport 22\n", name)
+
+	return 0
+}
+
+// printOriginHost prints the host OriginURLs reports for the fetch URL of the repository at dir,
+// read by a runner with no environment of its own, and returns the exit code.
+func printOriginHost(dir string) int {
+	urls, err := git.Repo{Runner: git.Runner{Dir: dir}}.OriginURLs(context.Background())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+
+		return 1
+	}
+
+	fmt.Print(urls.Fetch.Host)
+
+	return 0
 }
 
 // diffHelper plays git's external diff program and returns its exit code. In the lingering mode it

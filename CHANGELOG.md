@@ -9,7 +9,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- Fix `ils push` when the ssh config maps origin's host to another `HostName`.
+- Fix `ils push` when an ssh config maps origin's host to another `HostName`, including a config
+  named by `core.sshCommand`, `GIT_SSH_COMMAND` or `GIT_SSH`: it now reads the host through the
+  ssh command git uses.
 
 ## [0.1.0] - 2026-10-18
 

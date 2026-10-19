@@ -476,7 +476,8 @@ func TestPush_WhenBranchCannotBePushed_RefusesAtTheFirst(t *testing.T) {
 }
 
 // answering returns the fixture's environment with ssh replaced by a command that serves origin
-// for the first times calls git makes to it, and then runs after instead.
+// for the first times calls git makes to it, and then runs after instead. A read of ssh's config
+// never reaches that command, so it takes none of those turns.
 func answering(t *testing.T, f *gittest.Fixture, times int, after string) []string {
 	t.Helper()
 
@@ -488,10 +489,7 @@ func answering(t *testing.T, f *gittest.Fixture, times int, after string) []stri
 		fmt.Fprintf(&counted, "mkdir '%s/%d' 2>/dev/null || ", tally, i)
 	}
 
-	return append(f.Env(),
-		"GIT_SSH_VARIANT=simple",
-		"GIT_SSH_COMMAND="+counted.String()+"{ "+after+"; exit 1; }; "+gittest.Serving(f.OriginDir()),
-	)
+	return f.ServedBy(counted.String() + "{ " + after + "; exit 1; }; " + gittest.Serving(f.OriginDir()))
 }
 
 func TestPush_WhenOriginStopsAnswering_RefusesNamingWhatItWasAskedFor(t *testing.T) {

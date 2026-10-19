@@ -11,8 +11,3 @@ func (a *App) SetPush(run Command) {
 func (a *App) SetGit(runner git.Runner) {
 	a.git = runner
 }
-
-// SetSSH makes a run read the host of an ssh URL through ssh in place of the user's ssh config.
-func (a *App) SetSSH(ssh git.SSH) {
-	a.ssh = ssh
-}
