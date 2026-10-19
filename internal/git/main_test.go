@@ -34,6 +34,11 @@ const (
 	// exits zero while a process it started still holds its output pipes.
 	helperSpawn = "spawn"
 
+	// fakeSSHEnv makes the test binary act as an ssh whose `ssh -G` prints a config with no
+	// hostname line.
+	fakeSSHEnv    = "ILS_GIT_TEST_FAKE_SSH"
+	fakeSSHConfig = "user git\nport 22\n"
+
 	// helperLife bounds how long a lingering helper stays when nothing releases it.
 	helperLife = 30 * time.Second
 
@@ -51,6 +56,11 @@ const (
 func TestMain(m *testing.M) {
 	if mode := os.Getenv(helperModeEnv); mode != "" {
 		os.Exit(diffHelper(mode))
+	}
+
+	if os.Getenv(fakeSSHEnv) != "" {
+		fmt.Print(fakeSSHConfig)
+		os.Exit(0)
 	}
 
 	if code, served := gittest.Main(); served {

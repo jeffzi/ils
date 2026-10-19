@@ -44,6 +44,7 @@ const (
 
 	readGitVersion = "git's version"
 	readStanding   = "where HEAD stands"
+	readURLs       = "origin's URLs"
 	readIdentity   = "the repository's identity on GitHub"
 	readTrunk      = "origin's trunk"
 
@@ -64,7 +65,7 @@ type scene struct {
 
 // newScene returns a repository on the topic branch whose origin URLs name Acme/Widgets on
 // GitHub, once arrange has changed it, and a forge that answers from script. An offline scene
-// has an origin that does not answer.
+// has an origin that does not answer. Its ssh reads a config that names no host.
 func newScene(t *testing.T, arrange func(*gittest.Fixture), script forgetest.Script, offline bool) *scene {
 	t.Helper()
 
@@ -88,7 +89,10 @@ func newScene(t *testing.T, arrange func(*gittest.Fixture), script forgetest.Scr
 		recorder: recorder,
 		gitDir:   f.Git("rev-parse", "--absolute-git-dir"),
 		deps: landing.Deps{
-			Repo:  git.Repo{Runner: git.Runner{Dir: f.Dir(), Env: env, Recorder: recorder}},
+			Repo: git.Repo{
+				Runner: git.Runner{Dir: f.Dir(), Env: env, Recorder: recorder},
+				SSH:    git.SSH{Config: f.SSHConfig("")},
+			},
 			Forge: fake,
 		},
 	}
@@ -217,6 +221,19 @@ func assertBrokeRead(t *testing.T, got result.Result, read, detail string) {
 	assert.Check(t, is.Contains(text, detail))
 
 	assert.Check(t, is.Equal(reason, "could not read "+read))
+}
+
+// ready runs the preconditions of a push on the scene and fails unless every one holds.
+func ready(t *testing.T, s *scene) landing.Ready {
+	t.Helper()
+
+	got, stop, ok := landing.Preconditions(t.Context(), s.deps, pushRequest())
+	if !ok {
+		text, _ := shown(t, stop, s.gitDir)
+		t.Fatalf("Preconditions() ok = false with %q, want every precondition to hold", text)
+	}
+
+	return got
 }
 
 // assertRefsUnchanged fails unless every ref of the scene is as it was in before.
@@ -386,11 +403,7 @@ func TestPreconditions_WhenAllHold_ReturnsReady(t *testing.T) {
 			t.Parallel()
 			s := newScene(t, tt.arrange, allowed(), false)
 
-			got, stop, ok := landing.Preconditions(t.Context(), s.deps, pushRequest())
-			if !ok {
-				text, _ := shown(t, stop, s.gitDir)
-				t.Fatalf("Preconditions() ok = false with %q, want every precondition to hold", text)
-			}
+			got := ready(t, s)
 
 			want := landing.Ready{Standing: tt.want, Repo: widgets(false, true), Trunk: trunk}
 			assert.Check(t, is.DeepEqual(got, want))
@@ -398,6 +411,30 @@ func TestPreconditions_WhenAllHold_ReturnsReady(t *testing.T) {
 			assertAsked(t, s, identityRead())
 		})
 	}
+}
+
+func TestPreconditions_WhenFetchURLUsesAnSSHAliasOfThePushURLHost_AsksTheForgeAboutThatHost(t *testing.T) {
+	t.Parallel()
+	const alias = "Host github-personal\n  HostName github.com\n"
+	arrange := func(f *gittest.Fixture) { f.SetOriginURL("git@github-personal:Acme/Widgets.git") }
+	s := newScene(t, arrange, allowed(), false)
+	s.deps.Repo.SSH.Config = s.fixture.SSHConfig(alias)
+
+	ready(t, s)
+
+	assertAsked(t, s, identityRead())
+}
+
+func TestPreconditions_WhenSSHFails_BrokeNamingTheRead(t *testing.T) {
+	t.Parallel()
+	s := newScene(t, nil, forgetest.Script{}, false)
+	s.deps.Repo.SSH.Config = s.fixture.MissingSSHConfig()
+
+	_, got, ok := landing.Preconditions(t.Context(), s.deps, pushRequest())
+
+	assert.Assert(t, !ok, "Preconditions() ok = true, want a broke result")
+	assertBrokeRead(t, got, readURLs, readURLs+": ssh ")
+	assertAsked(t, s, nil)
 }
 
 func TestPreconditions_WhenForgeIdentityFailsUntyped_BrokeNamingTheRead(t *testing.T) {

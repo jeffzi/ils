@@ -26,7 +26,7 @@ const bound = 100 * time.Second
 // Command runs one landing command and returns its result.
 type Command func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result
 
-// App is one launch of ils: where it prints, when it was launched, and the git it runs.
+// App is one launch of ils: where it prints, when it was launched, and the git and ssh it runs.
 type App struct {
 	Stdout io.Writer
 	Stderr io.Writer
@@ -34,9 +34,12 @@ type App struct {
 	runPush Command
 	// Launch is when the process started; the deadline of every command counts from it.
 	Launch time.Time
-	// Git runs every git call: its Dir is the working directory, and a nil Env inherits the
-	// process's.
-	Git git.Runner
+	// ssh reads the host an ssh URL of origin connects to; its zero value reads the user's ssh
+	// config.
+	ssh git.SSH
+	// git runs every git call; its zero value runs in the working directory with the process's
+	// environment.
+	git git.Runner
 }
 
 // Run parses args, the words after the program name, runs the command they name, prints its
@@ -270,7 +273,7 @@ func (*strictBool) Type() string {
 }
 
 func (a App) push(ctx context.Context, words []string) (r result.Result, gitDir string) {
-	repo := git.Repo{Runner: a.Git}
+	repo := git.Repo{Runner: a.git, SSH: a.ssh}
 
 	// Outside a repository there is no git dir for a line to name, and whatever else stops
 	// this read stops the command's own first read too, whose result says so.

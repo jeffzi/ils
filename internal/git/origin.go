@@ -43,43 +43,53 @@ func (e *OriginError) Error() string {
 // and `git@<host>:<owner>/<name>`, each with an optional trailing `.git` and
 // slash. Any other shape is an *OriginError.
 func ParseOrigin(raw string) (Origin, error) {
-	host, path, ok := splitOrigin(raw)
+	parsed, _, err := parseRemote(raw)
+
+	return parsed, err
+}
+
+// parseRemote parses raw as ParseOrigin does and also reports whether the URL reaches origin over
+// ssh.
+func parseRemote(raw string) (parsed Origin, overSSH bool, err error) {
+	host, path, overSSH, ok := splitOrigin(raw)
 	if !ok {
-		return Origin{}, &OriginError{URL: raw}
+		return Origin{}, false, &OriginError{URL: raw}
 	}
 
 	path = strings.TrimSuffix(strings.TrimSuffix(path, "/"), ".git")
 
 	owner, name, found := strings.Cut(path, "/")
 	if !found || host == "" || owner == "" || name == "" || strings.Contains(name, "/") {
-		return Origin{}, &OriginError{URL: raw}
+		return Origin{}, false, &OriginError{URL: raw}
 	}
 
-	return Origin{Host: host, Owner: owner, Name: name}, nil
+	return Origin{Host: host, Owner: owner, Name: name}, overSSH, nil
 }
 
-// splitOrigin returns the host and the owner/name path of a remote URL.
-func splitOrigin(raw string) (host, path string, ok bool) {
-	if strings.HasPrefix(raw, httpsPrefix) || strings.HasPrefix(raw, sshPrefix) {
+// splitOrigin returns the host and the owner/name path of a remote URL, and whether the URL reaches
+// origin over ssh.
+func splitOrigin(raw string) (host, path string, overSSH, ok bool) {
+	overHTTPS := strings.HasPrefix(raw, httpsPrefix)
+	if overHTTPS || strings.HasPrefix(raw, sshPrefix) {
 		parsed, err := url.Parse(raw)
 		if err != nil {
-			return "", "", false
+			return "", "", false, false
 		}
 
-		return parsed.Hostname(), strings.TrimPrefix(parsed.Path, "/"), true
+		return parsed.Hostname(), strings.TrimPrefix(parsed.Path, "/"), !overHTTPS, true
 	}
 
 	rest, found := strings.CutPrefix(raw, shortSSHPrefix)
 	if !found {
-		return "", "", false
+		return "", "", false, false
 	}
 
 	host, path, ok = strings.Cut(rest, ":")
 	if strings.Contains(host, "/") {
-		return "", "", false
+		return "", "", false, false
 	}
 
-	return host, path, ok
+	return host, path, true, ok
 }
 
 // Same reports whether o and other name the same repository, ignoring case.
@@ -140,9 +150,68 @@ func (e *PushError) Unwrap() error {
 	return e.Err
 }
 
+const (
+	sshProgram = "ssh"
+	// sshInstallURL is the home of OpenSSH, whose client ships with every operating system ils runs on.
+	sshInstallURL = "https://www.openssh.com"
+	// hostnameKey leads the line of `ssh -G` that names the host a connection goes to.
+	hostnameKey = "hostname "
+	// gitHubHost is the host gh files every host under it as.
+	gitHubHost = "github.com"
+)
+
+// SSH reads, with `ssh -G`, the host an ssh connection goes to, which an ssh config can give
+// another name.
+type SSH struct {
+	// Config, when not empty, is the one config file ssh reads, in place of the user's and the
+	// system's.
+	Config string
+}
+
+// hostname returns the host ssh connects to when asked for host, with every host under github.com
+// read as github.com, as gh files it.
+//
+// An ssh missing from PATH is a *child.ToolMissingError and a non-zero exit is a *child.ExitError.
+func (s SSH) hostname(ctx context.Context, host string) (string, error) {
+	args := []string{"-G"}
+	if s.Config != "" {
+		args = append(args, "-F", s.Config)
+	}
+
+	// The host comes from a URL: after "--", one that starts with a dash is never read as an option.
+	args = append(args, "--", host)
+
+	result, err := invocation{program: sshProgram, installURL: sshInstallURL, args: args}.run(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	for line := range strings.SplitSeq(result.Stdout, "\n") {
+		if name, found := strings.CutPrefix(line, hostnameKey); found {
+			return foldGitHubHost(strings.TrimSpace(name)), nil
+		}
+	}
+
+	return "", fmt.Errorf("%s printed no hostname", strings.Join(append([]string{sshProgram}, args...), " "))
+}
+
+// foldGitHubHost returns github.com for any host under it, such as ssh.github.com, matched without
+// regard to case. The dot in the suffix keeps lookalikes such as fake-github.com as they are.
+func foldGitHubHost(host string) string {
+	if strings.HasSuffix(strings.ToLower(host), "."+gitHubHost) {
+		return gitHubHost
+	}
+
+	return host
+}
+
 // OriginURLs returns origin's fetch and push URLs, raw and parsed.
 //
-// A URL that does not parse is an *OriginError, and both raw URLs are still returned.
+// The host of a URL that reaches origin over ssh is the host ssh connects to for it, so a Host
+// alias of the user's ssh config reads as the HostName it stands for, and a host under github.com
+// reads as github.com, as gh files it. An ssh that fails is a *child.ToolMissingError or a
+// *child.ExitError. A URL that does not parse is an *OriginError, and both raw URLs are still
+// returned.
 func (r Repo) OriginURLs(ctx context.Context) (OriginURLs, error) {
 	fetchURL, err := r.line(ctx, "remote", "get-url", origin)
 	if err != nil {
@@ -154,10 +223,26 @@ func (r Repo) OriginURLs(ctx context.Context) (OriginURLs, error) {
 		return OriginURLs{}, err
 	}
 
-	fetch, fetchErr := ParseOrigin(fetchURL)
-	push, pushErr := ParseOrigin(pushURL)
+	fetch, fetchErr := r.parseOrigin(ctx, fetchURL)
+	push, pushErr := r.parseOrigin(ctx, pushURL)
 
 	return OriginURLs{Fetch: fetch, Push: push, FetchURL: fetchURL, PushURL: pushURL}, errors.Join(fetchErr, pushErr)
+}
+
+// parseOrigin parses raw as ParseOrigin does, then replaces the host of an ssh URL with the host
+// ssh connects to for it. An https URL never goes through ssh: an ssh config does not apply to it.
+func (r Repo) parseOrigin(ctx context.Context, raw string) (Origin, error) {
+	parsed, overSSH, err := parseRemote(raw)
+	if err != nil || !overSSH {
+		return parsed, err
+	}
+
+	parsed.Host, err = r.SSH.hostname(ctx, parsed.Host)
+	if err != nil {
+		return Origin{}, err
+	}
+
+	return parsed, nil
 }
 
 // Trunk returns origin's default branch, asked of origin.

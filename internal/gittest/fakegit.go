@@ -72,21 +72,6 @@ func FakeGit(tb testing.TB, fake Fake) []string {
 		tb.Fatalf("gittest: find the real git: %v", err)
 	}
 
-	self, err := os.Executable()
-	if err != nil {
-		tb.Fatalf("gittest: find the test binary: %v", err)
-	}
-
-	name := "git"
-	if runtime.GOOS == "windows" {
-		name = "git.exe"
-	}
-
-	dir := tb.TempDir()
-	if err := os.Link(self, filepath.Join(dir, name)); err != nil {
-		tb.Fatalf("gittest: link the test binary as git: %v", err)
-	}
-
 	var settings []string
 
 	set := func(key, value string) {
@@ -106,9 +91,34 @@ func FakeGit(tb testing.TB, fake Fake) []string {
 		set(failOnEnv, strings.Join(fake.FailOn, failOnSep))
 	}
 
-	tb.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	LinkAs(tb, "git")
 
 	return settings
+}
+
+// LinkAs puts the test binary first on PATH under the name of tool for the rest of the test, so
+// that a call of tool runs the test binary, whose TestMain decides how it answers.
+//
+// It sets the process environment, so the test cannot be parallel.
+func LinkAs(tb testing.TB, tool string) {
+	tb.Helper()
+
+	self, err := os.Executable()
+	if err != nil {
+		tb.Fatalf("gittest: find the test binary: %v", err)
+	}
+
+	name := tool
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+
+	dir := tb.TempDir()
+	if err := os.Link(self, filepath.Join(dir, name)); err != nil {
+		tb.Fatalf("gittest: link the test binary as %s: %v", tool, err)
+	}
+
+	tb.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 // serveGit answers one call of the fake git with args and returns its exit code.

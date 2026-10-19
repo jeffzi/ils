@@ -387,6 +387,23 @@ func (f *Fixture) ServedEnv(dir string) []string {
 	return append(f.Env(), "GIT_SSH_VARIANT=simple", "GIT_SSH_COMMAND="+Serving(dir))
 }
 
+// SSHConfig writes content to an ssh config file of its own and returns its path, for an ssh that
+// reads that file alone and nothing of the user's or the system's setup.
+func (f *Fixture) SSHConfig(content string) string {
+	f.tb.Helper()
+
+	const name = "config"
+
+	dir := f.tb.TempDir()
+	WriteFile(f.tb, dir, name, content)
+
+	return filepath.Join(dir, name)
+}
+
+// MissingSSHConfig returns the path of an ssh config file that does not exist, for an ssh that
+// reads it and exits non-zero.
+func (f *Fixture) MissingSSHConfig() string { return filepath.Join(f.tb.TempDir(), "missing") }
+
 // originURL returns the bare origin's location in the slash form git accepts on every platform.
 func (f *Fixture) originURL() string { return filepath.ToSlash(f.originDir) }
 

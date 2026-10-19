@@ -429,6 +429,22 @@ func TestFixture_SetOriginURL_StoresURLVerbatim(t *testing.T) {
 	assert.Check(t, is.Equal(git(t, f, f.Dir(), "remote", "get-url", origin), url))
 }
 
+func TestFixture_SSHConfig_WhenCalledTwice_KeepsEachContentInItsOwnFile(t *testing.T) {
+	t.Parallel()
+
+	f := gittest.New(t, mainBranch)
+
+	first := f.SSHConfig("Host one\n")
+	second := f.SSHConfig("Host two\n")
+
+	for _, c := range []struct{ path, want string }{{first, "Host one\n"}, {second, "Host two\n"}} {
+		//nolint:gosec // G304: the path is the one SSHConfig wrote into the fixture's temporary directory.
+		got, err := os.ReadFile(c.path)
+		assert.NilError(t, err)
+		assert.Check(t, is.Equal(string(got), c.want))
+	}
+}
+
 func TestFixture_RemoveOrigin_LeavesNoRemoteNamedOrigin(t *testing.T) {
 	t.Parallel()
 

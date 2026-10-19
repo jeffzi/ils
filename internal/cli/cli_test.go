@@ -90,7 +90,15 @@ func launchUnder(ctx context.Context, t *testing.T, app cli.App, args ...string)
 func outside(t *testing.T) cli.App {
 	t.Helper()
 
-	return cli.App{Git: git.Runner{Dir: t.TempDir(), Env: gittest.Env(t)}}
+	return over(git.Runner{Dir: t.TempDir(), Env: gittest.Env(t)})
+}
+
+// over returns the cli with every git call made through runner.
+func over(runner git.Runner) cli.App {
+	var app cli.App
+	app.SetGit(runner)
+
+	return app
 }
 
 // refusal is the grammar refusal of the words typed, for reason, as the JSON renderer shows it.
@@ -533,10 +541,7 @@ func TestApp_Run_WhenJSONFlagIsAmongTheWords_RendersJSONWithoutTheFlagInTheWords
 func lost(t *testing.T) cli.App {
 	t.Helper()
 
-	app := outside(t)
-	app.Git.Env = append(app.Git.Env, "LC_ALL=C")
-
-	return app
+	return over(git.Runner{Dir: t.TempDir(), Env: append(gittest.Env(t), "LC_ALL=C")})
 }
 
 func TestApp_Run_WhenPushRunsOutsideARepositoryWithoutTheJSONFlag_RendersTheResultAsText(t *testing.T) {
@@ -616,7 +621,7 @@ func TestApp_Run_WhenALineNamesAPathUnderTheGitDirOfTheRepository_ExitsOneWithNo
 			t.Parallel()
 
 			f, under := stored(t)
-			app := cli.App{Git: git.Runner{Dir: f.Dir(), Env: f.Env()}}
+			app := over(git.Runner{Dir: f.Dir(), Env: f.Env()})
 			app.SetPush(wrote(under))
 
 			got := launch(t, app, args...)
@@ -748,6 +753,20 @@ func TestApp_Run_WhenPushEndsInAnyOutcome_JSONCarriesWhatTheTextShows(t *testing
 	}
 }
 
+func TestApp_Run_WhenOriginNamesAnSSHAlias_AsksGhAboutTheHostItStandsFor(t *testing.T) {
+	const alias = "github-personal"
+
+	sc := greenFirstPush()
+	sc.ssh = "Host " + alias + "\n  HostName " + host + "\n"
+	sc.arrange = func(f *gittest.Fixture) { f.SetOriginURL("git@" + alias + ":" + owner + "/" + widgets + ".git") }
+	s := newScene(t, sc)
+
+	got := launch(t, s.app(), "push")
+
+	assert.Check(t, is.Equal(got.code, exitDone), "ils push printed %q", got.stdout)
+	assert.Check(t, is.Contains(s.fake.Calls(), append([]string{"gh"}, ghtest.LoginArgs(host)...)))
+}
+
 func TestApp_Run_WhenGhIsTooOldToJudge_RefusesWithNothingPushedOrOpened(t *testing.T) {
 	const (
 		next = "upgrade gh, then run ils push again"
@@ -855,6 +874,8 @@ type scenario struct {
 	// script returns what gh answers, read once arrange has run.
 	script func(f *gittest.Fixture) []ghtest.Call
 	name   string
+	// ssh is the ssh config ils reads; empty names no host.
+	ssh string
 	// left is the time left under the bound at launch; zero leaves the whole bound.
 	left time.Duration
 	want int
@@ -865,6 +886,7 @@ type scene struct {
 	fixture  *gittest.Fixture
 	recorder *git.Recorder
 	fake     *ghtest.Fake
+	ssh      git.SSH
 	// env reaches origin, whose URL names GitHub over ssh, through the stand-in for ssh.
 	env  []string
 	left time.Duration
@@ -886,12 +908,20 @@ func newScene(t *testing.T, sc scenario) *scene {
 		script = sc.script(f)
 	}
 
-	return &scene{fixture: f, recorder: &git.Recorder{}, fake: ghtest.Setup(t, script...), env: env, left: sc.left}
+	return &scene{
+		fixture:  f,
+		recorder: &git.Recorder{},
+		fake:     ghtest.Setup(t, script...),
+		env:      env,
+		ssh:      git.SSH{Config: f.SSHConfig(sc.ssh)},
+		left:     sc.left,
+	}
 }
 
 // app returns the cli over the scene's repository, launched so that the scene's time is left.
 func (s *scene) app() cli.App {
-	app := cli.App{Git: git.Runner{Dir: s.fixture.Dir(), Env: s.env, Recorder: s.recorder}}
+	app := over(git.Runner{Dir: s.fixture.Dir(), Env: s.env, Recorder: s.recorder})
+	app.SetSSH(s.ssh)
 
 	if s.left > 0 {
 		app.Launch = time.Now().Add(s.left - bound)

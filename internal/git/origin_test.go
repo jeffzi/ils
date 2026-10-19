@@ -3,6 +3,7 @@ package git_test
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -187,6 +188,133 @@ func TestRepo_OriginURLs_WhenFetchAndPushDiffer_ReturnsEachSideParsedWithRawURL(
 		PushURL:  sshURL,
 	}
 	assert.Check(t, is.DeepEqual(got, want))
+}
+
+// renames is an ssh config that gives hosts other names: an alias of github.com, an alias of
+// ssh.github.com, github.com reached through ssh.github.com on port 443, and an alias of a host
+// outside GitHub.
+const renames = "Host github-personal\n  HostName github.com\n" +
+	"Host github-work\n  HostName ssh.github.com\n  Port 443\n" +
+	"Host github.com\n  HostName ssh.github.com\n  Port 443\n" +
+	"Host example.com\n  HostName git.example.org\n"
+
+func TestRepo_OriginURLs_WhenURLIsSSH_ReturnsTheHostSSHConnectsTo(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		url  string
+		host string
+	}{
+		{name: "scp-like url with an alias", url: "git@github-personal:jeffzi/ils.git", host: "github.com"},
+		{name: "ssh url with an alias", url: "ssh://git@github-personal/jeffzi/ils.git", host: "github.com"},
+		{name: "ssh url with an alias and a port", url: "ssh://git@github-personal:2222/jeffzi/ils.git", host: "github.com"},
+		{name: "ssh url whose host has an alias", url: "ssh://git@example.com/jeffzi/ils.git", host: "git.example.org"},
+		{name: "host with no alias", url: "git@example.net:jeffzi/ils.git", host: "example.net"},
+		{name: "alias of a host under github.com", url: "git@github-work:jeffzi/ils.git", host: "github.com"},
+		{name: "github.com reached through a host under it", url: "git@github.com:jeffzi/ils.git", host: "github.com"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			f.SetOriginURL(tt.url)
+			f.SetPushURL(tt.url)
+			repo := newRepo(f)
+			repo.SSH.Config = f.SSHConfig(renames)
+
+			got, err := repo.OriginURLs(t.Context())
+			assert.NilError(t, err, "OriginURLs() of %q", tt.url)
+
+			named := git.Origin{Host: tt.host, Owner: "jeffzi", Name: "ils"}
+			want := git.OriginURLs{Fetch: named, Push: named, FetchURL: tt.url, PushURL: tt.url}
+			assert.Check(t, is.DeepEqual(got, want), "OriginURLs() of %q", tt.url)
+		})
+	}
+}
+
+func TestRepo_OriginURLs_WhenURLIsHTTPS_RunsNoSSH(t *testing.T) {
+	t.Parallel()
+	const url = "https://example.com/jeffzi/ils.git"
+	f := gittest.New(t, trunk)
+	f.SetOriginURL(url)
+	f.SetPushURL(url)
+	repo := newRepo(f)
+	repo.SSH.Config = f.MissingSSHConfig()
+
+	got, err := repo.OriginURLs(t.Context())
+	assert.NilError(t, err)
+
+	named := git.Origin{Host: "example.com", Owner: "jeffzi", Name: "ils"}
+	assert.Check(t, is.DeepEqual(got, git.OriginURLs{Fetch: named, Push: named, FetchURL: url, PushURL: url}))
+}
+
+func TestRepo_OriginURLs_WhenSSHFails_ReturnsExitErrorOfSSH(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.SetOriginURL(httpsURL)
+	f.SetPushURL(sshURL)
+	repo := newRepo(f)
+	repo.SSH.Config = f.MissingSSHConfig()
+
+	_, err := repo.OriginURLs(t.Context())
+
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "OriginURLs() error = %v, want *child.ExitError", err)
+	assert.Check(t, is.Equal(exitErr.Argv[0], "ssh"))
+}
+
+// hideSSH leaves only a git on PATH until the test ends, so that the next ssh call finds no ssh,
+// and returns repo with what that git reads added to its environment. It cannot run in a parallel
+// test.
+func hideSSH(t *testing.T, repo git.Repo) git.Repo {
+	t.Helper()
+
+	repo.Runner.Env = append(repo.Runner.Env, gittest.FakeGit(t, gittest.Fake{})...)
+
+	fake, err := exec.LookPath("git")
+	assert.NilError(t, err)
+	t.Setenv("PATH", filepath.Dir(fake))
+
+	return repo
+}
+
+func TestRepo_OriginURLs_WhenSSHMissingFromPath_ReturnsToolMissingError(t *testing.T) {
+	// Not parallel: hideSSH sets PATH for the whole process while it runs.
+	f := gittest.New(t, trunk)
+	f.SetOriginURL(sshURL)
+	repo := hideSSH(t, newRepo(f))
+
+	_, err := repo.OriginURLs(t.Context())
+
+	missing, ok := errors.AsType[*child.ToolMissingError](err)
+	assert.Assert(t, ok, "OriginURLs() error = %v, want *child.ToolMissingError", err)
+	assert.Check(t, is.Equal(missing.Tool, "ssh"))
+	assert.Check(t, is.Equal(missing.InstallURL, "https://www.openssh.com"))
+}
+
+func TestRepo_OriginURLs_WhenSSHPrintsNoHostname_ReturnsErrorNamingNoHostname(t *testing.T) {
+	// Not parallel: fakeSSH sets PATH for the whole process while it runs.
+	f := gittest.New(t, trunk)
+	f.SetOriginURL(sshURL)
+	repo := newRepo(f)
+	fakeSSH(t)
+
+	_, err := repo.OriginURLs(t.Context())
+
+	assert.Check(t, is.ErrorContains(err, "printed no hostname"))
+	_, exited := errors.AsType[*child.ExitError](err)
+	assert.Check(t, !exited, "OriginURLs() error = %v, want an error from ssh's output, not its exit", err)
+	_, missing := errors.AsType[*child.ToolMissingError](err)
+	assert.Check(t, !missing, "OriginURLs() error = %v, want an error from ssh's output, not a missing ssh", err)
+}
+
+// fakeSSH puts the test binary first on PATH under ssh's name until the test ends, acting as an ssh
+// whose `ssh -G` prints no hostname line. It cannot run in a parallel test.
+func fakeSSH(t *testing.T) {
+	t.Helper()
+
+	t.Setenv(fakeSSHEnv, "1")
+	gittest.LinkAs(t, "ssh")
 }
 
 func TestRepo_OriginURLs_WhenURLDoesNotParse_ReturnsOriginErrorWithWhatParsed(t *testing.T) {

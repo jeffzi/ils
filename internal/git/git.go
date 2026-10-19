@@ -74,28 +74,64 @@ type Result struct {
 // exited or been killed, output pipes still held open are closed after a short
 // grace, so a context that ended never turns into a hang.
 func (r Runner) Run(ctx context.Context, args ...string) (Result, error) {
-	path, err := exec.LookPath(program)
-	if err != nil {
-		return Result{}, &child.ToolMissingError{Tool: program, InstallURL: installURL, Err: err}
+	inv := invocation{
+		program:    program,
+		installURL: installURL,
+		args:       args,
+		dir:        r.Dir,
+		env:        r.Env,
+		waitDelay:  pipeGrace,
+	}
+	if r.Recorder != nil {
+		inv.record = r.Recorder.record
 	}
 
-	argv := append([]string{program}, args...)
-	if r.Recorder != nil {
-		r.Recorder.record(argv)
+	return inv.run(ctx)
+}
+
+// invocation is one run of a tool as a child process, started from an argv and never through a
+// shell.
+type invocation struct {
+	// record, when set, receives the argv once the tool is found and before it starts.
+	record     func(argv []string)
+	program    string
+	installURL string
+	dir        string
+	args       []string
+	env        []string
+	// waitDelay is how long to wait for the output pipes to close once the tool is gone; zero waits
+	// for them for as long as it takes.
+	waitDelay time.Duration
+}
+
+// run runs the tool and returns its output once it has exited zero.
+//
+// A tool missing from PATH is a *child.ToolMissingError and a failed run is the error of
+// child.Failure. With a waitDelay, a process the tool left holding the output pipes does not fail
+// a run that exited zero.
+func (inv invocation) run(ctx context.Context) (Result, error) {
+	path, err := exec.LookPath(inv.program)
+	if err != nil {
+		return Result{}, &child.ToolMissingError{Tool: inv.program, InstallURL: inv.installURL, Err: err}
+	}
+
+	argv := append([]string{inv.program}, inv.args...)
+	if inv.record != nil {
+		inv.record(argv)
 	}
 
 	var stdout, stderr bytes.Buffer
 
-	//nolint:gosec // G204: running git with the caller's argv is this package's purpose; no shell is involved.
-	cmd := exec.CommandContext(ctx, path, args...)
-	cmd.Dir = r.Dir
-	cmd.Env = r.Env
+	//nolint:gosec // G204: running a tool with the caller's argv is this package's purpose; no shell is involved.
+	cmd := exec.CommandContext(ctx, path, inv.args...)
+	cmd.Dir = inv.dir
+	cmd.Env = inv.env
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	cmd.WaitDelay = pipeGrace
+	cmd.WaitDelay = inv.waitDelay
 
-	// ErrWaitDelay means git exited zero and a process it started still holds the pipes: git's own
-	// output is complete, so the call succeeded.
+	// ErrWaitDelay means the tool exited zero and a process it started still holds the pipes: the
+	// tool's own output is complete, so the call succeeded.
 	runErr := cmd.Run()
 	if runErr == nil || errors.Is(runErr, exec.ErrWaitDelay) {
 		return Result{Stdout: stdout.String(), Stderr: stderr.String()}, nil

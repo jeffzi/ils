@@ -7,6 +7,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Fix `ils push` when the ssh config maps origin's host to another `HostName`.
+
 ## [0.1.0] - 2026-10-18
 
 ### Added

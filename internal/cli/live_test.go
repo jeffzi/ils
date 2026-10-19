@@ -20,7 +20,6 @@ import (
 	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/child"
-	"github.com/jeffzi/ils/internal/cli"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/result"
@@ -377,7 +376,7 @@ func (b *liveBranch) commit(t *testing.T, files map[string]string) {
 func (b *liveBranch) pushOnce(t *testing.T) liveRun {
 	t.Helper()
 
-	got := launch(t, cli.App{Git: git.Runner{Dir: b.dir}}, "push", "--json")
+	got := launch(t, over(git.Runner{Dir: b.dir}), "push", "--json")
 	t.Logf("ils push --json on %s exited %d:\n%s%s", b.name, got.code, got.stdout, got.stderr)
 
 	return liveRun{code: got.code, raw: got.stdout, shown: resulttest.Decode(t, got.stdout)}
