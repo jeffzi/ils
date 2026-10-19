@@ -41,10 +41,12 @@ const (
 	fakeSSHConfig = "user git\nport 22\n"
 
 	// sshStandInEnv makes the test binary act as an ssh command a user configured: standInAnswer
-	// followed by a name answers `-G <host>` with a config whose hostname is that name, and
+	// followed by a name answers `-G <host>` with a config whose hostname is that name,
+	// standInSuffix followed by a suffix answers with the host it was asked for and that suffix, and
 	// standInRefuse exits non-zero with standInRefusal on stderr.
 	sshStandInEnv  = "ILS_GIT_TEST_SSH_STAND_IN"
 	standInAnswer  = "hostname="
+	standInSuffix  = "suffix="
 	standInRefuse  = "refuse"
 	standInRefusal = "stand-in refused the call"
 
@@ -261,10 +263,15 @@ func sshStandIn(mode string, args []string) int {
 	args = slices.DeleteFunc(slices.Clone(args), func(arg string) bool { return arg == "--" })
 
 	name, answers := strings.CutPrefix(mode, standInAnswer)
-	if !answers || len(args) != 2 || args[0] != "-G" {
+	suffix, suffixes := strings.CutPrefix(mode, standInSuffix)
+	if !answers && !suffixes || len(args) != 2 || args[0] != "-G" {
 		fmt.Fprintf(os.Stderr, "stand-in in mode %q called with %q, want -G [--] <host>\n", mode, args)
 
 		return 2
+	}
+
+	if suffixes {
+		name = args[1] + suffix
 	}
 
 	fmt.Printf("user git\nhostname %s\nport 22\n", name)

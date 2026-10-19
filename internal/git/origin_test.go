@@ -2,7 +2,6 @@ package git_test
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -155,28 +154,6 @@ const (
 	sshURL    = "git@github.com:jeffzi/tools.git"
 	localPath = "/srv/project"
 )
-
-// unreachable points the fixture's origin at a location that holds no repository.
-func unreachable(t *testing.T, f *gittest.Fixture) {
-	t.Helper()
-
-	f.SetOriginURL(filepath.ToSlash(f.MissingOriginDir()))
-}
-
-// decoyHead gives origin a symbolic ref outside its own HEAD whose name ends in HEAD and that names
-// a branch called decoy. The test fails here unless origin lists that ref when asked for HEAD.
-func decoyHead(t *testing.T, f *gittest.Fixture) {
-	t.Helper()
-
-	const name, target = "refs/remotes/upstream/HEAD", "refs/heads/decoy"
-
-	f.OriginGit("update-ref", target, f.OriginGit("rev-parse", "HEAD"))
-	f.OriginGit("symbolic-ref", name, target)
-
-	listed := f.Git("ls-remote", "--symref", "origin", "HEAD")
-	line := "ref: " + target + "\t" + name
-	assert.Assert(t, is.Contains(listed, line))
-}
 
 func TestRepo_OriginURLs_WhenFetchAndPushDiffer_ReturnsEachSideParsedWithRawURL(t *testing.T) {
 	t.Parallel()
@@ -456,11 +433,11 @@ func sourceCases() []sourceCase {
 			},
 		},
 		{
-			name: "GIT_SSH program whose path holds a space", url: aliasURL, host: "git.example.org",
+			name: "GIT_SSH program whose path holds a space", url: aliasURL, host: "work.example.org",
 			arrange: func(t *testing.T, _ *gittest.Fixture) []string {
 				t.Helper()
 
-				return []string{"GIT_SSH=" + standIn(t, "ssh"), answering("git.example.org")}
+				return []string{"GIT_SSH=" + standIn(t, "ssh"), sshStandInEnv + "=" + standInSuffix + ".example.org"}
 			},
 		},
 		{
@@ -557,6 +534,38 @@ func TestRepo_OriginURLs_WhenRunnerSetsNoEnvironment_ReadsTheProcessEnvironment(
 	assert.Check(t, is.Equal(stdout.String(), "git.example.org"))
 }
 
+func TestRepo_OriginURLs_WhenRunnerNamesGitSSHCommandInLowerCase_MatchesTheKeyAsTheSystemDoes(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.SetOriginURL(aliasURL)
+	repo := newRepo(f)
+	repo.Runner.Env = append(repo.Runner.Env, "git_ssh_command="+sshReading(t, aliases))
+	// Windows matches environment keys without regard to case; other systems keep the fixture's own
+	// GIT_SSH_COMMAND, whose empty config leaves the alias as it is.
+	want := "work"
+	if runtime.GOOS == "windows" {
+		want = "git.example.org"
+	}
+
+	got, err := repo.OriginURLs(t.Context())
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Equal(got.Fetch.Host, want))
+}
+
+func TestRepo_OriginURLs_WhenPlainSSHAnswersAHostUnderGitHub_ReportsGitHub(t *testing.T) {
+	// Not parallel: plainSSH sets PATH for the whole process while it runs.
+	plainSSH(t, standInAnswer+"ssh.github.com")
+	f := gittest.New(t, trunk)
+	f.SetOriginURL(aliasURL)
+	repo := noSSHCommand(newRepo(f))
+
+	got, err := repo.OriginURLs(t.Context())
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Equal(got.Fetch.Host, "github.com"))
+}
+
 func TestRepo_OriginURLs_WhenSSHCommandNeedsTheShell_RunsItAsGitDoes(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -619,6 +628,9 @@ func TestRepo_OriginURLs_WhenSSHCommandNeedsTheShell_RunsItAsGitDoes(t *testing.
 
 // variantCase is one ssh command a user configured, run as its ssh variant says.
 type variantCase struct {
+	// line, when set, writes the command line that names the stand-in at a path; quoted does
+	// otherwise.
+	line func(path string) string
 	name string
 	// command is the name of the stand-in ssh the user configured.
 	command string
@@ -635,6 +647,12 @@ type variantCase struct {
 	program bool
 }
 
+// escapedSpaces returns path with a backslash before each space, one word to a shell.
+func escapedSpaces(path string) string { return strings.ReplaceAll(path, " ", `\ `) }
+
+// unclosed returns path after a single quote that nothing closes, a line git cannot split.
+func unclosed(path string) string { return "'" + path }
+
 // variantEnv returns the setting that gives git's ssh variant as name.
 func variantEnv(name string) []string { return []string{"GIT_SSH_VARIANT=" + name} }
 
@@ -643,7 +661,10 @@ func variantCases() []variantCase {
 		{name: "command named ssh", command: "ssh", want: standInHost},
 		{name: "command named SSH.EXE", command: "SSH.EXE", want: standInHost},
 		{name: "command named plink", command: "plink", want: plainHost},
+		{name: "command named plink.exe", command: "plink.exe", want: plainHost},
 		{name: "command named PLINK.EXE", command: "PLINK.EXE", want: plainHost},
+		{name: "command named plink, spaces escaped", command: "plink", line: escapedSpaces, want: plainHost},
+		{name: "command line with an unclosed quote", command: "ssh", line: unclosed, want: plainHost},
 		{name: "command named TortoisePlink", command: "TortoisePlink", want: plainHost},
 		{name: "command named tortoiseplink.exe", command: "tortoiseplink.exe", want: plainHost},
 		{name: "unrecognized command that answers", command: "connect", want: standInHost},
@@ -680,7 +701,11 @@ func TestRepo_OriginURLs_BySSHVariant(t *testing.T) {
 				f.Git("config", "ssh.variant", tt.variant)
 			}
 			path := standIn(t, tt.command)
-			setting := "GIT_SSH_COMMAND=" + quoted(path)
+			line := quoted
+			if tt.line != nil {
+				line = tt.line
+			}
+			setting := "GIT_SSH_COMMAND=" + line(path)
 			if tt.program {
 				setting = "GIT_SSH=" + path
 			}
@@ -719,6 +744,10 @@ func TestRepo_OriginURLs_WhenConfiguredSSHFails_ReturnsErrorNamingIt(t *testing.
 			mode: refusing, want: standInRefusal,
 		},
 		{
+			name: "command named ssh.exe exits non-zero", command: "ssh.exe", key: "GIT_SSH_COMMAND", configure: quoted,
+			mode: refusing, want: standInRefusal,
+		},
+		{
 			name: "command prints no hostname", command: "ssh", key: "GIT_SSH_COMMAND", configure: quoted,
 			mode: fakeSSHEnv + "=1", want: "printed no hostname",
 		},
@@ -750,13 +779,27 @@ func TestRepo_OriginURLs_WhenConfiguredSSHFails_ReturnsErrorNamingIt(t *testing.
 }
 
 func TestRepo_OriginURLs_WhenSSHHostStartsWithDash_RefusesWithOriginError(t *testing.T) {
-	t.Parallel()
+	// Not parallel: plainSSH sets PATH for the whole process while it runs. A plain ssh or a GIT_SSH
+	// program that ran would refuse, which is no *git.OriginError.
+	plainSSH(t, standInRefuse)
+	const scpLike = "git@-example.com:acme/widgets.git"
+	command := func(_ *testing.T, line string) []string { return []string{"GIT_SSH_COMMAND=" + line} }
 	tests := []struct {
-		name string
-		url  string
+		arrange func(t *testing.T, line string) []string
+		name    string
+		url     string
 	}{
-		{name: "scp-like url", url: "git@-example.com:acme/widgets.git"},
-		{name: "ssh url", url: "ssh://git@-example.com/acme/widgets.git"},
+		{name: "scp-like url", url: scpLike, arrange: command},
+		{name: "ssh url", url: "ssh://git@-example.com/acme/widgets.git", arrange: command},
+		{
+			name: "GIT_SSH program", url: scpLike,
+			arrange: func(t *testing.T, _ string) []string {
+				t.Helper()
+
+				return []string{"GIT_SSH=" + standIn(t, "ssh"), refusing}
+			},
+		},
+		{name: "plain ssh", url: scpLike, arrange: func(_ *testing.T, _ string) []string { return nil }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -765,7 +808,8 @@ func TestRepo_OriginURLs_WhenSSHHostStartsWithDash_RefusesWithOriginError(t *tes
 			f.SetOriginURL(tt.url)
 			marker := filepath.Join(t.TempDir(), "ran")
 			repo := noSSHCommand(newRepo(f))
-			repo.Runner.Env = append(repo.Runner.Env, "GIT_SSH_VARIANT=ssh", "GIT_SSH_COMMAND="+marking(marker))
+			repo.Runner.Env = append(repo.Runner.Env, "GIT_SSH_VARIANT=ssh")
+			repo.Runner.Env = append(repo.Runner.Env, tt.arrange(t, marking(marker))...)
 
 			_, err := repo.OriginURLs(t.Context())
 
@@ -874,294 +918,4 @@ func TestRepo_OriginURLs_WhenURLDoesNotParse_ReturnsOriginErrorWithWhatParsed(t 
 			assert.Check(t, is.DeepEqual(got, tt.want))
 		})
 	}
-}
-
-func TestRepo_Trunk_WhenOriginAnswers_ReturnsDefaultBranch(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name  string
-		trunk string
-	}{
-		{name: "plain name", trunk: trunk},
-		{name: "name with a slash", trunk: "release/next"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			f := gittest.New(t, tt.trunk)
-
-			got, err := newRepo(f).Trunk(t.Context())
-			assert.NilError(t, err)
-
-			assert.Check(t, is.Equal(got, tt.trunk))
-		})
-	}
-}
-
-// originCalls returns the repository calls that read from origin without changing the repository.
-func originCalls() []repoCall {
-	return []repoCall{
-		{name: "Trunk", call: func(ctx context.Context, repo git.Repo) error { _, err := repo.Trunk(ctx); return err }},
-		{name: "RemoteBranch", call: func(ctx context.Context, repo git.Repo) error {
-			_, _, err := repo.RemoteBranch(ctx, trunk)
-
-			return err
-		}},
-	}
-}
-
-func TestRepo_OriginMethods_WhenOriginDoesNotAnswer_ReturnsRemoteError(t *testing.T) {
-	t.Parallel()
-	for _, tt := range originCalls() {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			f := gittest.New(t, trunk)
-			unreachable(t, f)
-
-			err := tt.call(t.Context(), newRepo(f))
-
-			_, ok := errors.AsType[*git.RemoteError](err)
-			assert.Check(t, ok, "%s() error = %v, want *git.RemoteError", tt.name, err)
-		})
-	}
-}
-
-func TestRepo_OriginMethods_WhenGitMissingFromPath_ReturnsToolMissingError(t *testing.T) {
-	tests := append(originCalls(), repoCall{
-		name: "Fetch", call: func(ctx context.Context, repo git.Repo) error { _, err := repo.Fetch(ctx, trunk); return err },
-	})
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			repo := newRepo(gittest.New(t, trunk))
-			// Not parallel: this empties PATH for the whole process while it runs.
-			t.Setenv("PATH", t.TempDir())
-
-			err := tt.call(t.Context(), repo)
-
-			missing, ok := errors.AsType[*child.ToolMissingError](err)
-			assert.Assert(t, ok, "%s() error = %v, want *child.ToolMissingError", tt.name, err)
-			assert.Check(t, is.Equal(missing.Tool, "git"))
-			_, remote := errors.AsType[*git.RemoteError](err)
-			assert.Check(t, !remote, "%s() error = %v, want it not to read as origin not answering", tt.name, err)
-		})
-	}
-}
-
-func TestRepo_Trunk_WhenContextEnded_ReturnsRemoteError(t *testing.T) {
-	t.Parallel()
-	f := gittest.New(t, trunk)
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-
-	got, err := newRepo(f).Trunk(ctx)
-
-	_, ok := errors.AsType[*git.RemoteError](err)
-	assert.Check(t, ok, "Trunk() = %q, error = %v, want *git.RemoteError", got, err)
-	assert.Check(t, is.ErrorIs(err, context.Canceled))
-}
-
-func TestRemoteError_Error_WhenCauseSet_PrefixesCauseWithOriginUnreachable(t *testing.T) {
-	t.Parallel()
-	err := &git.RemoteError{Err: errors.New("exit status 128")}
-
-	got := err.Error()
-
-	assert.Check(t, is.Equal(got, "origin could not be reached: exit status 128"))
-}
-
-func TestRepo_Trunk_WhenHeadNamesNoBranch_ReturnsErrNoSymref(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		arrange func(t *testing.T, f *gittest.Fixture)
-		name    string
-	}{
-		{name: "head is not symbolic", arrange: func(_ *testing.T, f *gittest.Fixture) { f.DetachOriginHead() }},
-		{
-			name: "only another head is symbolic",
-			arrange: func(t *testing.T, f *gittest.Fixture) {
-				t.Helper()
-				f.DetachOriginHead()
-				decoyHead(t, f)
-			},
-		},
-		{
-			name: "head points outside the branches",
-			arrange: func(_ *testing.T, f *gittest.Fixture) {
-				f.OriginGit("update-ref", "refs/odd/place", f.OriginGit("rev-parse", "HEAD"))
-				f.OriginGit("symbolic-ref", "HEAD", "refs/odd/place")
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			f := gittest.New(t, trunk)
-			tt.arrange(t, f)
-
-			got, err := newRepo(f).Trunk(t.Context())
-
-			assert.Check(t, is.ErrorIs(err, git.ErrNoSymref))
-			assert.Check(t, is.Equal(got, ""))
-			want := "git ls-remote --symref origin HEAD: origin's HEAD names no branch"
-			assert.Check(t, is.Error(err, want))
-		})
-	}
-}
-
-func TestRepo_Trunk_WhenOriginListsAnotherSymbolicHead_ReturnsOwnDefaultBranch(t *testing.T) {
-	t.Parallel()
-	f := gittest.New(t, trunk)
-	decoyHead(t, f)
-
-	got, err := newRepo(f).Trunk(t.Context())
-	assert.NilError(t, err)
-
-	assert.Check(t, is.Equal(got, trunk))
-}
-
-func TestRepo_RemoteBranch_WhenOnOrigin_ReturnsItsSHA(t *testing.T) {
-	t.Parallel()
-	f := gittest.New(t, trunk)
-	want := f.Commits(topic, "one")[0]
-	f.Push(topic)
-
-	got, found, err := newRepo(f).RemoteBranch(t.Context(), topic)
-	assert.NilError(t, err)
-
-	assert.Check(t, found, "RemoteBranch(%q) = %q, %t, want %q, true", topic, got, found, want)
-	assert.Check(t, is.Equal(got, want))
-}
-
-func TestRepo_RemoteBranch_WhenNotOnOrigin_ReportsAbsent(t *testing.T) {
-	t.Parallel()
-	const asked = "topic"
-	tests := []struct {
-		arrange func(f *gittest.Fixture)
-		name    string
-	}{
-		{name: "never pushed", arrange: func(*gittest.Fixture) {}},
-		{name: "only a longer name ending the same", arrange: func(f *gittest.Fixture) { f.Push(topic) }},
-		{
-			name: "only a ref outside the branches ending the same",
-			arrange: func(f *gittest.Fixture) {
-				f.OriginGit("update-ref", "refs/odd/refs/heads/"+asked, f.OriginGit("rev-parse", "HEAD"))
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			f := gittest.New(t, trunk)
-			f.Commits(topic, "one")
-			tt.arrange(f)
-
-			got, found, err := newRepo(f).RemoteBranch(t.Context(), asked)
-			assert.NilError(t, err)
-
-			assert.Check(t, !found, "RemoteBranch(%q) = %q, %t, want absent", asked, got, found)
-			assert.Check(t, is.Equal(got, ""))
-		})
-	}
-}
-
-func TestRepo_Fetch_WhenRefOnOrigin_ReturnsFetchedSHA(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		arrange func(f *gittest.Fixture) string
-		name    string
-		ref     string
-	}{
-		{
-			name: "branch origin moved",
-			ref:  topic,
-			arrange: func(f *gittest.Fixture) string {
-				f.Commits(topic, "one")
-				f.Push(topic)
-
-				return f.AdvanceOrigin(topic)
-			},
-		},
-		{
-			name: "pull request head",
-			ref:  pullRef,
-			arrange: func(f *gittest.Fixture) string {
-				sha := f.Commits(topic, "one")[0]
-				f.PullRef(pullNumber, sha)
-
-				return sha
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			f := gittest.New(t, trunk)
-			want := tt.arrange(f)
-
-			got, err := newRepo(f).Fetch(t.Context(), tt.ref)
-			assert.NilError(t, err, "Fetch(%q)", tt.ref)
-
-			assert.Check(t, is.Equal(got, want), "Fetch(%q)", tt.ref)
-		})
-	}
-}
-
-func TestRepo_Fetch_WhenTrunkMovedOnOrigin_MovesItsRemoteTrackingRef(t *testing.T) {
-	t.Parallel()
-	f := gittest.New(t, trunk)
-	want := f.AdvanceOrigin(trunk)
-
-	_, err := newRepo(f).Fetch(t.Context(), trunk)
-	assert.NilError(t, err)
-
-	assert.Check(t, is.Equal(f.Git("rev-parse", "origin/"+trunk), want))
-}
-
-func TestRepo_Fetch_WhenRefNotOnOrigin_ReturnsRemoteError(t *testing.T) {
-	t.Parallel()
-	f := gittest.New(t, trunk)
-
-	got, err := newRepo(f).Fetch(t.Context(), pullRef)
-
-	_, ok := errors.AsType[*git.RemoteError](err)
-	assert.Check(t, ok, "Fetch(%q) = %q, error = %v, want *git.RemoteError", pullRef, got, err)
-}
-
-func TestRepo_Push_WhenBranchIsNew_PublishesItAsTheUpstream(t *testing.T) {
-	t.Parallel()
-	f := gittest.New(t, trunk)
-	tip := f.Commits(topic, "one")[0]
-
-	err := newRepo(f).Push(t.Context(), topic)
-	assert.NilError(t, err)
-
-	assert.Check(t, is.Equal(f.OriginGit("rev-parse", "refs/heads/"+topic), tip))
-	assert.Check(t, is.Equal(f.Git("config", "branch."+topic+".remote"), "origin"))
-	assert.Check(t, is.Equal(f.Git("config", "branch."+topic+".merge"), "refs/heads/"+topic))
-}
-
-func TestRepo_Push_WhenOriginHasCommitsTheBranchLacks_RefusesWithPushError(t *testing.T) {
-	t.Parallel()
-	f := gittest.New(t, trunk)
-	f.Commits(topic, "one")
-	f.Push(topic)
-	_, remote := f.Diverge(topic)
-
-	err := newRepo(f).Push(t.Context(), topic)
-
-	pushErr, ok := errors.AsType[*git.PushError](err)
-	assert.Assert(t, ok, "Push(%q) error = %v, want *git.PushError", topic, err)
-	assert.Check(t, is.Contains(pushErr.Stderr, "rejected"))
-	assert.Check(t, is.Equal(pushErr.Branch, topic))
-	assert.Check(t, is.Equal(err.Error(), "push of "+topic+" refused: "+strings.TrimSpace(pushErr.Stderr)))
-	assert.Check(t, is.Equal(f.OriginGit("rev-parse", "refs/heads/"+topic), remote))
-}
-
-func TestRepo_OriginMethods_WhenContextCanceled_ReturnsContextError(t *testing.T) {
-	t.Parallel()
-
-	checkCanceled(t, []repoCall{
-		{name: "OriginURLs", call: func(ctx context.Context, repo git.Repo) error { _, err := repo.OriginURLs(ctx); return err }},
-		{name: "Push", call: func(ctx context.Context, repo git.Repo) error { return repo.Push(ctx, topic) }},
-	})
 }

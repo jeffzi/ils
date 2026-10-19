@@ -511,14 +511,38 @@ func TestFixture_ServedBy_WhenAskedForConfig_NeverRunsTheServingScript(t *testin
 	assert.Check(t, is.ErrorIs(statErr, fs.ErrNotExist), "the serving script ran for a config read")
 }
 
-func TestNew_WhenSSHConfigNeverSet_MapsNoHost(t *testing.T) {
+// fixtureEnvs are the environments of a fixture whose ssh command reads the fixture's ssh config.
+func fixtureEnvs() []struct {
+	env  func(f *gittest.Fixture) []string
+	name string
+} {
+	return []struct {
+		env  func(f *gittest.Fixture) []string
+		name string
+	}{
+		{name: "Env", env: (*gittest.Fixture).Env},
+		{name: "ServedEnv", env: func(f *gittest.Fixture) []string { return f.ServedEnv(f.OriginDir()) }},
+	}
+}
+
+func TestNew_WhenSSHConfigNeverSet_AnswersAsAnEmptyConfig(t *testing.T) {
 	t.Parallel()
+	for _, tt := range fixtureEnvs() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, mainBranch)
+			dir := t.TempDir()
+			gittest.WriteFile(t, dir, "config", "")
+			reading := "GIT_SSH_COMMAND=ssh -F '" + filepath.ToSlash(filepath.Join(dir, "config")) + "'"
+			want, stderr, err := askedForConfig(t, f, append(tt.env(f), reading), "work")
+			assert.NilError(t, err, "stderr: %s", stderr)
 
-	f := gittest.New(t, mainBranch)
+			got, stderr, err := askedForConfig(t, f, tt.env(f), "work")
+			assert.NilError(t, err, "stderr: %s", stderr)
 
-	stdout, stderr, err := askedForConfig(t, f, f.Env(), "work")
-	assert.NilError(t, err, "stderr: %s", stderr)
-	assert.Check(t, is.Equal(hostnameIn(stdout), "work"))
+			assert.Check(t, is.Equal(got, want))
+		})
+	}
 }
 
 func TestFixture_ServedEnv_SetsSSHVariantSSH(t *testing.T) {
@@ -547,13 +571,17 @@ func TestFixture_SetSSHConfig_WhenCalledTwice_KeepsTheSecondContentOnly(t *testi
 
 func TestFixture_RemoveSSHConfig_MakesTheConfigReadExitNonZero(t *testing.T) {
 	t.Parallel()
+	for _, tt := range fixtureEnvs() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, mainBranch)
 
-	f := gittest.New(t, mainBranch)
+			f.RemoveSSHConfig()
 
-	f.RemoveSSHConfig()
-
-	_, _, err := askedForConfig(t, f, f.Env(), "work")
-	assert.Check(t, err != nil, "ssh -G succeeded with its config file removed, want a non-zero exit")
+			_, _, err := askedForConfig(t, f, tt.env(f), "work")
+			assert.Check(t, err != nil, "ssh -G succeeded with its config file removed, want a non-zero exit")
+		})
+	}
 }
 
 func TestFixture_RemoveOrigin_LeavesNoRemoteNamedOrigin(t *testing.T) {
