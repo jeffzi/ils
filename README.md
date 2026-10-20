@@ -130,8 +130,12 @@ or file; at most it has fetched from origin. It refuses:
 - the default branch, and a detached HEAD;
 - a tracked file with uncommitted changes (untracked files are fine);
 - a branch with no commit past origin's default branch;
-- a branch cut from another local branch instead of the default branch;
 - a branch that is behind, or has diverged from, its copy on GitHub;
+- a branch whose first commit past the default branch is also on another local branch, unless its
+  copy on GitHub already carries that commit. `ils` cannot tell which branch was cut from which. It
+  tells you to land each branch that shares the commit first, or to remove each one that was cut
+  from this branch. `ils` reads the copy on GitHub first, so a branch that is also behind or
+  diverged from that copy gets that refusal instead;
 - a branch whose pull request already merged, or is open against another base;
 - a repository with no remote named `origin`, or an `origin` that cannot be reached;
 - an `origin` whose fetch and push URLs do not name one repository (they differ, or one is not an

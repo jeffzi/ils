@@ -246,17 +246,37 @@ func commitRefusals() []pushRefusal {
 	}
 }
 
-// cutRefusals are the refusals decided from the other local branches that carry the branch's
-// first commit past the trunk.
+const (
+	// nextEither is the Next line of the refusal of a branch that shares its first commit past the
+	// trunk with one other local branch.
+	nextEither = "Next: run ils push on the other branch and get it merged first when this branch builds on it, " +
+		"or remove the other branch when it was cut from this one, then run ils push again\n"
+	// nextEitherMany is the Next line of the refusal of a branch that shares its first commit past
+	// the trunk with several other local branches.
+	nextEitherMany = "Next: run ils push on the other branches and get them merged first when this branch builds " +
+		"on them, or remove the other branches when they were cut from this one, then run ils push again\n"
+	ownListed    = "its own commits are listed here"
+	noOwn        = "it has no commit of its own"
+	changeOnSide = " change on " + side + "\n"
+	sharpen      = "sharpen the wording"
+)
+
+// shares is the first line of the refusal of the branch side, which shares its first commit past
+// the trunk with others, and ends with rest.
+func shares(others, rest string) string {
+	return "Refused: the branch " + side + " shares its first commit past the trunk with " + others +
+		"; ils cannot tell which was cut from which, and " + rest + "\n"
+}
+
+// publishAtTrunk puts origin's copy of branch at the trunk.
+func publishAtTrunk(f *gittest.Fixture, branch string) {
+	f.Git("push", "--quiet", filepath.ToSlash(f.OriginDir()), trunk+":refs/heads/"+branch)
+}
+
+// cutRefusals are the refusals of a branch whose copy on origin, if any, does not carry its first
+// commit past the trunk, decided from the one other local branch that carries that commit.
 func cutRefusals() []pushRefusal {
-	cutFrom := func(parent string) string {
-		return "Refused: the branch " + side + " was cut from the branch " + parent +
-			" and not from the trunk; its own commits are listed here\n"
-	}
-	bringOver := func(shas ...string) string {
-		return nextBranch + ", then bring this branch's own commits over with `git cherry-pick " +
-			strings.Join(shas, " ") + "`\n"
-	}
+	const other = "the branch " + topic
 
 	return []pushRefusal{
 		{
@@ -264,22 +284,10 @@ func cutRefusals() []pushRefusal {
 			ops: identityRead(), fetches: true,
 			arrange: func(f *gittest.Fixture) string {
 				first := f.Sibling(side, topic)
-				second := f.Commits(side, "sharpen the wording")[0]
+				second := f.Commits(side, sharpen)[0]
 
-				return cutFrom(topic) + first + " change on " + side + "\n" + second + " sharpen the wording\n" +
-					bringOver(first, second)
-			},
-		},
-		{
-			// In the order they were created the branches are neither sorted nor sorted backwards.
-			name: "first commit past the trunk is on three other branches", script: allowed(),
-			ops: identityRead(), fetches: true,
-			arrange: func(f *gittest.Fixture) string {
-				f.Git("branch", early, topic)
-				f.Git("branch", yearly, topic)
-				own := f.Sibling(side, topic)
-
-				return cutFrom(early) + own + " change on " + side + "\n" + bringOver(own)
+				return shares(other, ownListed) +
+					first + changeOnSide + second + " " + sharpen + "\n" + nextEither
 			},
 		},
 		{
@@ -288,35 +296,70 @@ func cutRefusals() []pushRefusal {
 			arrange: func(f *gittest.Fixture) string {
 				f.Git("switch", "--quiet", "--create", side, topic)
 
-				return "Refused: the branch " + side + " was cut from the branch " + topic +
-					" and not from the trunk, and has no commit of its own\n" + nextBranch + "\n"
+				return shares(other, noOwn) + nextEither
 			},
 		},
 		{
-			// Origin answers about its trunk and the fetch of it, and nothing after: asked whether it
-			// has the branch, it would be what refuses.
-			name: "cut from another branch and behind origin's copy", script: allowed(),
-			ops: identityRead(), fetches: true, answered: 2,
+			name: "first commit past the trunk is on another branch and origin's copy is at the trunk", script: allowed(),
+			ops: identityRead(), fetches: true,
 			arrange: func(f *gittest.Fixture) string {
 				own := f.Sibling(side, topic)
-				f.Publish(side)
-				f.AdvanceOrigin(side)
+				publishAtTrunk(f, side)
 
-				return cutFrom(topic) + own + " change on " + side + "\n" + bringOver(own)
+				return shares(other, ownListed) + own + changeOnSide + nextEither
 			},
 		},
 	}
 }
 
+// manyCutRefusals are the refusals of an unpublished branch whose first commit past the trunk
+// several other local branches carry.
+func manyCutRefusals() []pushRefusal {
+	// In the order they were created the branches are neither sorted nor sorted backwards.
+	const others = "the branches " + early + ", " + topic + " and " + yearly
+
+	return []pushRefusal{
+		{
+			// The second commit is on the last of the other branches alone, so it is not the branch's own.
+			name: "first commit past the trunk is on three other branches", script: allowed(),
+			ops: identityRead(), fetches: true,
+			arrange: func(f *gittest.Fixture) string {
+				f.Git("branch", early, topic)
+				f.Sibling(side, topic)
+				f.Git("branch", yearly, side)
+				own := f.Commits(side, sharpen)[0]
+
+				return shares(others, ownListed) + own + " " + sharpen + "\n" + nextEitherMany
+			},
+		},
+		{
+			name: "cut from three other branches with no commit of its own", script: allowed(),
+			ops: identityRead(), fetches: true,
+			arrange: func(f *gittest.Fixture) string {
+				f.Git("branch", early, topic)
+				f.Git("branch", yearly, topic)
+				f.Git("switch", "--quiet", "--create", side, topic)
+
+				return shares(others, noOwn) + nextEitherMany
+			},
+		},
+	}
+}
+
+// behind is the whole text of the refusal of branch, which is behind origin's copy of it.
+func behind(branch string) string {
+	return "Refused: the branch " + branch + " is behind origin's copy of it\n" +
+		"Next: run `git pull --ff-only origin " + branch + "`, then run ils push again\n"
+}
+
+// diverged is the whole text of the refusal of branch, which has diverged from origin's copy of it.
+func diverged(branch string) string {
+	return "Refused: the branch " + branch + " and origin's copy of it have diverged\n" +
+		"Next: run `git merge origin/" + branch + "`, then run ils push again\n"
+}
+
 // copyRefusals are the refusals decided from origin's copy of the branch.
 func copyRefusals() []pushRefusal {
-	const (
-		behind = "Refused: the branch " + topic + " is behind origin's copy of it\n" +
-			"Next: run `git pull --ff-only origin " + topic + "`, then run ils push again\n"
-		diverged = "Refused: the branch " + topic + " and origin's copy of it have diverged\n" +
-			"Next: run `git merge origin/" + topic + "`, then run ils push again\n"
-	)
-
 	return []pushRefusal{
 		{
 			name: "behind origin's copy", script: allowed(), ops: identityRead(), fetches: true,
@@ -324,7 +367,7 @@ func copyRefusals() []pushRefusal {
 				f.Publish(topic)
 				f.AdvanceOrigin(topic)
 
-				return behind
+				return behind(topic)
 			},
 		},
 		{
@@ -335,7 +378,7 @@ func copyRefusals() []pushRefusal {
 				f.Publish(topic)
 				f.AdvanceOrigin(topic)
 
-				return behind
+				return behind(topic)
 			},
 		},
 		{
@@ -344,7 +387,27 @@ func copyRefusals() []pushRefusal {
 				f.Publish(topic)
 				f.Diverge(topic)
 
-				return diverged
+				return diverged(topic)
+			},
+		},
+	}
+}
+
+// copyBeforeCutRefusals are the refusals decided from origin's copy of a branch whose first
+// commit past the trunk another local branch also carries: origin's copy is read first.
+func copyBeforeCutRefusals() []pushRefusal {
+	return []pushRefusal{
+		{
+			// Origin's copy lacks the first commit past the trunk, so the other branch that carries it
+			// would refuse the branch too.
+			name:   "diverged from origin's copy at the trunk with its first commit past the trunk on another branch",
+			script: allowed(), ops: identityRead(), fetches: true,
+			arrange: func(f *gittest.Fixture) string {
+				publishAtTrunk(f, side)
+				f.AdvanceOrigin(side)
+				f.Sibling(side, topic)
+
+				return diverged(side)
 			},
 		},
 	}
@@ -423,6 +486,19 @@ func pushAccepted() []pushRow {
 			},
 		},
 		{
+			// Another branch was cut from the published branch at an earlier commit, and each has a
+			// commit since.
+			name: "published branch whose first commit past the trunk is on another branch", script: opening(passing()),
+			want: opens,
+			arrange: func(f *gittest.Fixture) {
+				f.Commits(topic, "second step")
+				f.Publish(topic)
+				f.Git("branch", spare, topic+"~1")
+				f.Commits(spare, "earlier work")
+				f.Commits(topic, "fix a typo")
+			},
+		},
+		{
 			name: "merged pull request sharing no commit past the trunk", script: sinceMerged, want: opens,
 			arrange: func(f *gittest.Fixture) {
 				f.Commits(spare, "earlier work")
@@ -453,7 +529,10 @@ func TestPush_WhenSharedPreconditionFails_ReturnsItsRefusal(t *testing.T) {
 func TestPush_WhenBranchCannotBePushed_RefusesAtTheFirst(t *testing.T) {
 	t.Parallel()
 
-	refusals := slices.Concat(standingRefusals(), commitRefusals(), cutRefusals(), copyRefusals(), changeRefusals())
+	refusals := slices.Concat(
+		standingRefusals(), commitRefusals(), cutRefusals(), manyCutRefusals(), copyRefusals(),
+		copyBeforeCutRefusals(), changeRefusals(),
+	)
 	for _, tt := range refusals {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -769,16 +848,8 @@ func history() []string {
 	return []string{"log", "--reverse", "--topo-order", "--format=%H %s", "--no-merges"}
 }
 
-func failedReads() []failedRead {
-	// since lands the branch as the merged pull request, adds a commit, and returns the pull
-	// request's head and the branch's tip.
-	since := func(f *gittest.Fixture) (head, tip string) {
-		head = f.Git("rev-parse", topic)
-		f.LandPull(merged, topic)
-
-		return head, f.Commits(topic, "fix a typo")[0]
-	}
-
+// branchFailedReads are the failed reads of the branch and of the other local branches.
+func branchFailedReads() []failedRead {
 	return []failedRead{
 		{
 			name: "the branch's tip", read: readTip, script: allowed(), ops: identityRead(),
@@ -796,11 +867,26 @@ func failedReads() []failedRead {
 		{
 			name: "whether another branch carries a commit", read: readCommits, script: allowed(), ops: identityRead(),
 			arrange: func(f *gittest.Fixture) []string {
-				first := f.Git("rev-parse", topic)
+				tip := f.Git("rev-parse", topic)
 				f.Sibling(side, topic)
 				f.Git("switch", "--quiet", topic)
 
-				return []string{"merge-base", "--is-ancestor", first, side}
+				return append(history(), tip, "^origin/"+trunk, "^refs/heads/"+side)
+			},
+		},
+	}
+}
+
+// copyFailedReads are the failed reads of origin's copy of the branch, fetched before they run.
+func copyFailedReads() []failedRead {
+	return []failedRead{
+		{
+			name: "whether origin's copy carries the first commit", read: readCopy, script: allowed(), ops: identityRead(),
+			arrange: func(f *gittest.Fixture) []string {
+				f.Publish(topic)
+				first := f.Git("rev-parse", topic)
+
+				return []string{"merge-base", "--is-ancestor", first, first}
 			},
 		},
 		{
@@ -813,6 +899,22 @@ func failedReads() []failedRead {
 				return []string{"rev-list", "--left-right", "--count", tip + "..." + copied}
 			},
 		},
+	}
+}
+
+// mergedFailedReads are the failed reads of the commits a merged pull request from the branch
+// already carries.
+func mergedFailedReads() []failedRead {
+	// since lands the branch as the merged pull request, adds a commit, and returns the pull
+	// request's head and the branch's tip.
+	since := func(f *gittest.Fixture) (head, tip string) {
+		head = f.Git("rev-parse", topic)
+		f.LandPull(merged, topic)
+
+		return head, f.Commits(topic, "fix a typo")[0]
+	}
+
+	return []failedRead{
 		{
 			name: "the merged head's commits past the trunk", read: readMergedHead, script: landedScript(), ops: changesRead(),
 			arrange: func(f *gittest.Fixture) []string {
@@ -834,7 +936,7 @@ func failedReads() []failedRead {
 
 func TestPush_WhenGitReadFailsForNoPrecondition_BrokeNamingTheRead(t *testing.T) {
 	// Not parallel: each row puts a failing git first on PATH with t.Setenv.
-	for _, tt := range failedReads() {
+	for _, tt := range slices.Concat(branchFailedReads(), copyFailedReads(), mergedFailedReads()) {
 		t.Run(tt.name, func(t *testing.T) {
 			var words []string
 

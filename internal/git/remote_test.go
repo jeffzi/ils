@@ -59,14 +59,20 @@ func TestRepo_Trunk_WhenOriginAnswers_ReturnsDefaultBranch(t *testing.T) {
 	}
 }
 
+// remoteBranch is what RemoteBranch returns besides its error.
+type remoteBranch struct {
+	sha   string
+	found bool
+}
+
 // originCalls returns the repository calls that read from origin without changing the repository.
 func originCalls() []repoCall {
 	return []repoCall{
-		{name: "Trunk", call: func(ctx context.Context, repo git.Repo) error { _, err := repo.Trunk(ctx); return err }},
-		{name: "RemoteBranch", call: func(ctx context.Context, repo git.Repo) error {
-			_, _, err := repo.RemoteBranch(ctx, trunk)
+		{name: "Trunk", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.Trunk(ctx) }},
+		{name: "RemoteBranch", call: func(ctx context.Context, repo git.Repo) (any, error) {
+			sha, found, err := repo.RemoteBranch(ctx, trunk)
 
-			return err
+			return remoteBranch{sha, found}, err
 		}},
 	}
 }
@@ -79,17 +85,18 @@ func TestRepo_OriginMethods_WhenOriginDoesNotAnswer_ReturnsRemoteError(t *testin
 			f := gittest.New(t, trunk)
 			unreachable(t, f)
 
-			err := tt.call(t.Context(), newRepo(f))
+			got, err := tt.call(t.Context(), newRepo(f))
 
 			_, ok := errors.AsType[*git.RemoteError](err)
 			assert.Check(t, ok, "%s() error = %v, want *git.RemoteError", tt.name, err)
+			checkNoResult(t, tt.name, got)
 		})
 	}
 }
 
 func TestRepo_OriginMethods_WhenGitMissingFromPath_ReturnsToolMissingError(t *testing.T) {
 	tests := append(originCalls(), repoCall{
-		name: "Fetch", call: func(ctx context.Context, repo git.Repo) error { _, err := repo.Fetch(ctx, trunk); return err },
+		name: "Fetch", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.Fetch(ctx, trunk) },
 	})
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -97,13 +104,14 @@ func TestRepo_OriginMethods_WhenGitMissingFromPath_ReturnsToolMissingError(t *te
 			// Not parallel: this empties PATH for the whole process while it runs.
 			t.Setenv("PATH", t.TempDir())
 
-			err := tt.call(t.Context(), repo)
+			got, err := tt.call(t.Context(), repo)
 
 			missing, ok := errors.AsType[*child.ToolMissingError](err)
 			assert.Assert(t, ok, "%s() error = %v, want *child.ToolMissingError", tt.name, err)
 			assert.Check(t, is.Equal(missing.Tool, "git"))
 			_, remote := errors.AsType[*git.RemoteError](err)
 			assert.Check(t, !remote, "%s() error = %v, want it not to read as origin not answering", tt.name, err)
+			checkNoResult(t, tt.name, got)
 		})
 	}
 }
@@ -322,7 +330,7 @@ func TestRepo_OriginMethods_WhenContextCanceled_ReturnsContextError(t *testing.T
 	t.Parallel()
 
 	checkCanceled(t, []repoCall{
-		{name: "OriginURLs", call: func(ctx context.Context, repo git.Repo) error { _, err := repo.OriginURLs(ctx); return err }},
-		{name: "Push", call: func(ctx context.Context, repo git.Repo) error { return repo.Push(ctx, topic) }},
+		{name: "OriginURLs", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.OriginURLs(ctx) }},
+		{name: "Push", call: func(ctx context.Context, repo git.Repo) (any, error) { return nil, repo.Push(ctx, topic) }},
 	})
 }
