@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -309,7 +310,6 @@ func TestApp_Run_WhenWordsBreakTheGrammar_RefusesNamingTheWord(t *testing.T) {
 		{name: "later command with a short flag", args: []string{"release", "-x"}, reason: "release is not in this version"},
 		{name: "unknown flag", args: []string{"--bogus"}, reason: "--bogus is not a command"},
 		{name: "unknown short flag", args: []string{"-x"}, reason: "-x is not a command"},
-		{name: "version flag", args: []string{"--version"}, reason: "--version is not a command"},
 		{name: "short version flag", args: []string{"-v"}, reason: "-v is not a command"},
 		{name: "unknown flag after push", args: []string{"push", "--bogus"}, reason: "push takes no other word, and --bogus was given"},
 		{name: "unknown short flag after push", args: []string{"push", "-x"}, reason: "push takes no other word, and -x was given"},
@@ -391,6 +391,7 @@ func TestApp_Run_WhenAskedForHelp_PrintsTheHelpOfTheCommand(t *testing.T) {
 	t.Parallel()
 
 	own := []string{"-h", "--json"}
+	rootFlags := []string{"-h", "--json", "--version"}
 	tests := []struct {
 		want string
 		args []string
@@ -399,7 +400,7 @@ func TestApp_Run_WhenAskedForHelp_PrintsTheHelpOfTheCommand(t *testing.T) {
 		flags    []string
 	}{
 		{args: []string{"-h"}, want: rootHelp},
-		{args: []string{"--help"}, want: rootHelp, commands: []string{"help", "push"}, flags: own},
+		{args: []string{"--help"}, want: rootHelp, commands: []string{"help", "push"}, flags: rootFlags},
 		{args: []string{"help"}, want: rootHelp},
 		{args: []string{"pish", "--help"}, want: rootHelp},
 		{args: []string{"-h", "pish"}, want: rootHelp},
@@ -433,6 +434,59 @@ func TestApp_Run_WhenAskedForHelp_PrintsTheHelpOfTheCommand(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestApp_Run_WhenAskedForTheVersion_PrintsTheVersionOfIls(t *testing.T) {
+	t.Parallel()
+
+	tests := [][]string{{"--version"}, {"--json", "--version"}, {"--version", "--json"}}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			t.Parallel()
+
+			app := outside(t)
+			app.Version = "0.2.0"
+
+			got := launch(t, app, args...)
+
+			want := ran{stdout: "ils version 0.2.0\n", code: exitDone}
+			assert.Check(t, is.DeepEqual(got, want, sameRun()))
+		})
+	}
+}
+
+func TestVersion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		info *debug.BuildInfo
+		want string
+		ok   bool
+	}{
+		{name: "release", info: built("v0.2.0"), ok: true, want: "0.2.0"},
+		{
+			name: "pseudo-version", info: built("v0.2.1-0.20261020093000-abcdef123456+dirty"), ok: true,
+			want: "0.2.1-0.20261020093000-abcdef123456+dirty",
+		},
+		{name: "build info not readable", want: "(devel)"},
+		{name: "empty version", info: built(""), ok: true, want: "(devel)"},
+		{name: "development build", info: built("(devel)"), ok: true, want: "(devel)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := cli.Version(tt.info, tt.ok)
+
+			assert.Check(t, is.Equal(got, tt.want))
+		})
+	}
+}
+
+// built is a build info whose main module path is fixed; only its version varies.
+func built(version string) *debug.BuildInfo {
+	return &debug.BuildInfo{Main: debug.Module{Path: "github.com/jeffzi/ils", Version: version}}
 }
 
 func TestApp_Run_WhenAskedForHelpInARepository_CallsNeitherGitNorGh(t *testing.T) {
@@ -473,7 +527,7 @@ func TestApp_Run_WhenColorIsForced_PushResultCarriesNoEscapeSequence(t *testing.
 func TestApp_Run_WhenAResultCannotBeWrittenToStdout_ExitsOneWithTheErrorOnStderr(t *testing.T) {
 	t.Parallel()
 
-	tests := [][]string{{"push"}, {"push", "--json"}, {"pish"}, {"pish", "--json"}}
+	tests := [][]string{{"push"}, {"push", "--json"}, {"pish"}, {"pish", "--json"}, {"--version"}}
 	for _, args := range tests {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			t.Parallel()
