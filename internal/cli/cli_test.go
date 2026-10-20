@@ -886,7 +886,6 @@ type scene struct {
 	fixture  *gittest.Fixture
 	recorder *git.Recorder
 	fake     *ghtest.Fake
-	ssh      git.SSH
 	// env reaches origin, whose URL names GitHub over ssh, through the stand-in for ssh.
 	env  []string
 	left time.Duration
@@ -898,6 +897,7 @@ func newScene(t *testing.T, sc scenario) *scene {
 	t.Helper()
 
 	f, env := gittest.NewServed(t, trunk, topic, originURL)
+	f.SetSSHConfig(sc.ssh)
 
 	if sc.arrange != nil {
 		sc.arrange(f)
@@ -913,7 +913,6 @@ func newScene(t *testing.T, sc scenario) *scene {
 		recorder: &git.Recorder{},
 		fake:     ghtest.Setup(t, script...),
 		env:      env,
-		ssh:      git.SSH{Config: f.SSHConfig(sc.ssh)},
 		left:     sc.left,
 	}
 }
@@ -921,7 +920,6 @@ func newScene(t *testing.T, sc scenario) *scene {
 // app returns the cli over the scene's repository, launched so that the scene's time is left.
 func (s *scene) app() cli.App {
 	app := over(git.Runner{Dir: s.fixture.Dir(), Env: s.env, Recorder: s.recorder})
-	app.SetSSH(s.ssh)
 
 	if s.left > 0 {
 		app.Launch = time.Now().Add(s.left - bound)

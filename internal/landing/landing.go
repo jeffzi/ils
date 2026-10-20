@@ -13,7 +13,8 @@ import (
 	"github.com/jeffzi/ils/internal/result"
 )
 
-// The reads of the preconditions, as a result names them.
+// Each read names what a precondition reads as it follows "read" in a result, as in "Could not read
+// origin's URLs", so it stays a noun phrase.
 const (
 	readGitVersion = "git's version"
 	readStanding   = "where HEAD stands"
@@ -227,8 +228,16 @@ func (r Request) tooOld(err error) *result.Result {
 }
 
 // notInstalled returns the refusal for a call that failed with err because the tool it runs is
-// not installed, naming where to get the tool, and nil for any other failure.
+// not installed, and nil for any other failure. A tool the user configured git to run as its ssh
+// command is refused naming the setting to fix; any other tool, naming where to get it.
 func (r Request) notInstalled(err error) *result.Result {
+	if command, ok := errors.AsType[*git.SSHCommandMissingError](err); ok {
+		return r.refused(
+			result.Say("%s, the ssh command %s names, is not found", command.Program, command.Setting),
+			result.NextStep("fix %s"+thenPushAgain, command.Setting),
+		)
+	}
+
 	missing, ok := errors.AsType[*child.ToolMissingError](err)
 	if !ok {
 		return nil

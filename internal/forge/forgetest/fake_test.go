@@ -32,7 +32,7 @@ func repo() forge.Repo {
 	return forge.Repo{Host: "example.com", Owner: "acme", Name: "widgets"}
 }
 
-// identity is the scripted answer of Identity: repo with push access.
+// identity is the scripted answer of Identity.
 func identity() forge.Repo {
 	resolved := repo()
 	resolved.CanPush = true
@@ -45,7 +45,7 @@ func requiredChecks() []string {
 	return []string{lintCheck, testCheck}
 }
 
-// changes is the scripted answer of FindChanges: one open change on the feature branch.
+// changes is the scripted answer of FindChanges.
 func changes() []forge.Change {
 	return []forge.Change{{
 		Number:  number,
@@ -57,37 +57,37 @@ func changes() []forge.Change {
 	}}
 }
 
-// newChange is the argument of OpenChange: a change from the feature branch to trunk.
+// newChange is the argument of OpenChange.
 func newChange() forge.NewChange {
 	return forge.NewChange{Title: branch, Base: trunk, Head: branch}
 }
 
-// opened is the scripted answer of OpenChange: the reference to the new change.
+// opened is the scripted answer of OpenChange.
 func opened() forge.ChangeRef {
 	return forge.ChangeRef{Number: number, URL: pullURL}
 }
 
-// head is the scripted answer of Head: the new commit with a clean merge state.
+// head is the scripted answer of Head.
 func head() forge.Head {
 	return forge.Head{SHA: newCommit, MergeState: forge.MergeClean, RawMergeState: rawClean}
 }
 
-// protection is the scripted answer of TrunkProtection: the required checks.
+// protection is the scripted answer of TrunkProtection.
 func protection() forge.Protection {
 	return forge.Protection{RequiredChecks: requiredChecks()}
 }
 
-// headQuery is the argument of Head: the change number and the required checks.
+// headQuery is the argument of Head.
 func headQuery() forge.HeadQuery {
 	return forge.HeadQuery{Number: number, Required: requiredChecks()}
 }
 
-// verdictQuery is the argument of Verdict: the change number, the new commit and the required checks.
+// verdictQuery is the argument of Verdict.
 func verdictQuery() forge.VerdictQuery {
 	return forge.VerdictQuery{Number: number, SHA: newCommit, Required: requiredChecks()}
 }
 
-// verdict is the scripted answer of Verdict: a failed lint check and a missing test check.
+// verdict is the scripted answer of Verdict.
 func verdict() forge.Verdict {
 	return forge.Verdict{
 		Checks: []forge.Check{{
@@ -149,7 +149,6 @@ func operations() []operation {
 	}
 }
 
-// steps is a one-step sequence answering with err when it is set, and with value otherwise.
 func steps[T any](value T, err error) []forgetest.Answer[T] {
 	if err != nil {
 		return []forgetest.Answer[T]{{Err: err}}
@@ -158,7 +157,6 @@ func steps[T any](value T, err error) []forgetest.Answer[T] {
 	return []forgetest.Answer[T]{{Value: value}}
 }
 
-// script answers every operation with err when it is set, and with the fixture values otherwise.
 func script(err error) forgetest.Script {
 	return forgetest.Script{
 		Identity:        steps(identity(), err),

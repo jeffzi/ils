@@ -65,7 +65,7 @@ type scene struct {
 
 // newScene returns a repository on the topic branch whose origin URLs name Acme/Widgets on
 // GitHub, once arrange has changed it, and a forge that answers from script. An offline scene
-// has an origin that does not answer. Its ssh reads a config that names no host.
+// has an origin that does not answer. Its ssh reads the fixture's ssh config, which names no host.
 func newScene(t *testing.T, arrange func(*gittest.Fixture), script forgetest.Script, offline bool) *scene {
 	t.Helper()
 
@@ -89,10 +89,7 @@ func newScene(t *testing.T, arrange func(*gittest.Fixture), script forgetest.Scr
 		recorder: recorder,
 		gitDir:   f.Git("rev-parse", "--absolute-git-dir"),
 		deps: landing.Deps{
-			Repo: git.Repo{
-				Runner: git.Runner{Dir: f.Dir(), Env: env, Recorder: recorder},
-				SSH:    git.SSH{Config: f.SSHConfig("")},
-			},
+			Repo:  git.Repo{Runner: git.Runner{Dir: f.Dir(), Env: env, Recorder: recorder}},
 			Forge: fake,
 		},
 	}
@@ -418,7 +415,7 @@ func TestPreconditions_WhenFetchURLUsesAnSSHAliasOfThePushURLHost_AsksTheForgeAb
 	const alias = "Host github-personal\n  HostName github.com\n"
 	arrange := func(f *gittest.Fixture) { f.SetOriginURL("git@github-personal:Acme/Widgets.git") }
 	s := newScene(t, arrange, allowed(), false)
-	s.deps.Repo.SSH.Config = s.fixture.SSHConfig(alias)
+	s.fixture.SetSSHConfig(alias)
 
 	ready(t, s)
 
@@ -428,13 +425,114 @@ func TestPreconditions_WhenFetchURLUsesAnSSHAliasOfThePushURLHost_AsksTheForgeAb
 func TestPreconditions_WhenSSHFails_BrokeNamingTheRead(t *testing.T) {
 	t.Parallel()
 	s := newScene(t, nil, forgetest.Script{}, false)
-	s.deps.Repo.SSH.Config = s.fixture.MissingSSHConfig()
+	s.fixture.RemoveSSHConfig()
 
 	_, got, ok := landing.Preconditions(t.Context(), s.deps, pushRequest())
 
 	assert.Assert(t, !ok, "Preconditions() ok = true, want a broke result")
 	assertBrokeRead(t, got, readURLs, readURLs+": ssh ")
 	assertAsked(t, s, nil)
+}
+
+// httpsURL names Acme/Widgets over HTTPS, which git reads without asking ssh.
+const httpsURL = "https://github.com/acme/widgets.git"
+
+// missingProgram is an ssh command that no PATH holds.
+const missingProgram = "no-such-ssh"
+
+// sshCommandVar is the environment variable the fixture sets to an ssh command of its own.
+const sshCommandVar = "GIT_SSH_COMMAND"
+
+// without returns a copy of env with every entry of key removed.
+func without(env []string, key string) []string {
+	return slices.DeleteFunc(slices.Clone(env), func(entry string) bool {
+		name, _, _ := strings.Cut(entry, "=")
+
+		return strings.EqualFold(name, key)
+	})
+}
+
+// commandMissing is the whole text of the refusal of an ssh command, configured by setting, that
+// runs missingProgram.
+func commandMissing(setting string) string {
+	return "Refused: " + missingProgram + ", the ssh command " + setting + " names, is not found\n" +
+		"Next: fix " + setting + ", then run ils push again\n"
+}
+
+// sshMissing is a refusal of a push whose ssh command, or ssh itself, is not installed.
+type sshMissing struct {
+	arrange func(*gittest.Fixture)
+	// env receives the scene's runner environment and returns the one the runner is given. A row
+	// removes or replaces GIT_SSH_COMMAND or PATH in it to set up the case.
+	env  func(t *testing.T, env []string) []string
+	name string
+	want string
+}
+
+// sshMissingRefusals are the refusals of a push whose ssh command, or ssh itself, is not installed.
+func sshMissingRefusals() []sshMissing {
+	return []sshMissing{
+		{
+			name:    "GIT_SSH_COMMAND runs a missing program for the push URL",
+			arrange: func(f *gittest.Fixture) { f.SetOriginURL(httpsURL) },
+			env: func(_ *testing.T, env []string) []string {
+				return append(without(env, sshCommandVar), sshCommandVar+"="+missingProgram)
+			},
+			want: commandMissing(sshCommandVar),
+		},
+		{
+			name: "core.sshCommand runs a missing program for the fetch URL",
+			arrange: func(f *gittest.Fixture) {
+				f.SetPushURL(httpsURL)
+				f.Git("config", "--local", "core.sshCommand", missingProgram)
+			},
+			env: func(_ *testing.T, env []string) []string {
+				return without(env, sshCommandVar)
+			},
+			want: commandMissing("core.sshCommand"),
+		},
+		{
+			name: "GIT_SSH runs a missing program for both URLs",
+			env: func(_ *testing.T, env []string) []string {
+				return append(without(env, sshCommandVar), "GIT_SSH="+missingProgram)
+			},
+			want: commandMissing("GIT_SSH"),
+		},
+		{
+			name: "plain ssh is not installed",
+			env: func(t *testing.T, env []string) []string {
+				t.Helper()
+
+				return append(without(without(env, sshCommandVar), "PATH"), "PATH="+t.TempDir())
+			},
+			want: "Refused: ssh is not installed; install it from https://www.openssh.com\n" +
+				"Next: install ssh, then run ils push again\n",
+		},
+	}
+}
+
+func TestPreconditions_WhenSSHIsMissing_RefusesNamingWhatToFix(t *testing.T) {
+	t.Parallel()
+	tests := sshMissingRefusals()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := newScene(t, tt.arrange, forgetest.Script{}, false)
+			s.deps.Repo.Runner.Env = tt.env(t, s.deps.Repo.Runner.Env)
+			before := s.refs()
+
+			_, got, ok := landing.Preconditions(t.Context(), s.deps, pushRequest())
+
+			assert.Assert(t, !ok, "Preconditions() ok = true, want a refusal")
+			assertStopped(t, got, result.Refused)
+
+			text, _ := shown(t, got, s.gitDir)
+			assert.Check(t, is.DeepEqual(text, tt.want))
+
+			assertRefsUnchanged(t, s, before)
+			assertAsked(t, s, nil)
+		})
+	}
 }
 
 func TestPreconditions_WhenForgeIdentityFailsUntyped_BrokeNamingTheRead(t *testing.T) {

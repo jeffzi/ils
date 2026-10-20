@@ -5,8 +5,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -89,6 +93,56 @@ func (r Runner) Run(ctx context.Context, args ...string) (Result, error) {
 	return inv.run(ctx)
 }
 
+// getenv returns the value key has in the environment git runs with, and whether it is set. A key
+// set twice has its last value, as it does for the child; on Windows keys match without regard to
+// case, as they do there.
+func (r Runner) getenv(key string) (string, bool) {
+	if r.Env == nil {
+		return os.LookupEnv(key)
+	}
+
+	var (
+		value string
+		set   bool
+	)
+
+	for _, entry := range r.Env {
+		name, entryValue, ok := strings.Cut(entry, "=")
+		matches := name == key || (runtime.GOOS == "windows" && strings.EqualFold(name, key))
+		if ok && matches {
+			value, set = entryValue, true
+		}
+	}
+
+	return value, set
+}
+
+// lookPath finds name as exec.LookPath does, on the PATH of the environment git runs with: the
+// PATH on which git, and the shell it starts, find a program. With no environment of its own, that
+// is this process's PATH.
+//
+// A name that holds a path separator is not searched for. Each absolute directory of PATH is tried
+// as exec.LookPath tries a path, which on Windows adds the extensions of the programs it runs; a
+// relative one is skipped, as exec.LookPath refuses a program it finds there.
+func (r Runner) lookPath(name string) (string, error) {
+	if r.Env == nil || filepath.Base(name) != name {
+		return exec.LookPath(name)
+	}
+
+	path, _ := r.getenv("PATH")
+	for _, dir := range filepath.SplitList(path) {
+		if !filepath.IsAbs(dir) {
+			continue
+		}
+
+		if found, err := exec.LookPath(filepath.Join(dir, name)); err == nil {
+			return found, nil
+		}
+	}
+
+	return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
+}
+
 // invocation is one run of a tool as a child process, started from an argv and never through a
 // shell.
 type invocation struct {
@@ -102,15 +156,24 @@ type invocation struct {
 	// waitDelay is how long to wait for the output pipes to close once the tool is gone; zero waits
 	// for them for as long as it takes.
 	waitDelay time.Duration
+	// onEnvPath finds the tool on the PATH of env, as Runner.lookPath does, the way git would find a
+	// program it starts with env. Otherwise the tool is found on this process's PATH, which is how
+	// git itself is found whatever env holds.
+	onEnvPath bool
 }
 
 // run runs the tool and returns its output once it has exited zero.
 //
-// A tool missing from PATH is a *child.ToolMissingError and a failed run is the error of
-// child.Failure. With a waitDelay, a process the tool left holding the output pipes does not fail
-// a run that exited zero.
+// A tool missing from the PATH it is looked up on is a *child.ToolMissingError and a failed run is
+// the error of child.Failure. With a waitDelay, a process the tool left holding the output pipes
+// does not fail a run that exited zero.
 func (inv invocation) run(ctx context.Context) (Result, error) {
-	path, err := exec.LookPath(inv.program)
+	lookPath := exec.LookPath
+	if inv.onEnvPath {
+		lookPath = Runner{Env: inv.env}.lookPath
+	}
+
+	path, err := lookPath(inv.program)
 	if err != nil {
 		return Result{}, &child.ToolMissingError{Tool: inv.program, InstallURL: inv.installURL, Err: err}
 	}

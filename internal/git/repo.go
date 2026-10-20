@@ -31,7 +31,8 @@ const (
 	noRemoteCode = 2
 	// falseCode is the exit of `git symbolic-ref --quiet` on a detached HEAD, of
 	// `git show-ref --verify --quiet` for a ref that does not exist, and of
-	// `git merge-base --is-ancestor` when the answer is no.
+	// `git merge-base --is-ancestor` when the answer is no, and of `git config --get` for a key that
+	// is not set.
 	falseCode = 1
 
 	commitFormat = "--format=%H %s"
@@ -70,9 +71,6 @@ type Commit struct {
 
 // Repo makes typed git calls in the repository its runner stands in.
 type Repo struct {
-	// SSH reads the host each ssh URL of origin connects to; its zero value reads the user's ssh
-	// config.
-	SSH    SSH
 	Runner Runner
 }
 
@@ -291,14 +289,22 @@ func (r Repo) holds(ctx context.Context, args ...string) (bool, error) {
 	return err == nil, err
 }
 
-// currentBranch returns the branch HEAD is on; onBranch is false on a detached HEAD.
-func (r Repo) currentBranch(ctx context.Context) (branch string, onBranch bool, err error) {
-	ref, err := r.line(ctx, "symbolic-ref", "--quiet", "HEAD")
+// optionalLine runs git with args and returns its stdout without the trailing line break, as line
+// does; an exit of falseCode means there is no line, which returns an empty value and found false
+// rather than an error.
+func (r Repo) optionalLine(ctx context.Context, args ...string) (value string, found bool, err error) {
+	value, err = r.line(ctx, args...)
 	if exited(err, falseCode) {
 		return "", false, nil
 	}
 
-	if err != nil {
+	return value, err == nil, err
+}
+
+// currentBranch returns the branch HEAD is on; onBranch is false on a detached HEAD.
+func (r Repo) currentBranch(ctx context.Context) (branch string, onBranch bool, err error) {
+	ref, onBranch, err := r.optionalLine(ctx, "symbolic-ref", "--quiet", "HEAD")
+	if err != nil || !onBranch {
 		return "", false, err
 	}
 

@@ -276,7 +276,7 @@ type vigilRow struct {
 	name     string
 	heads    []forgetest.Answer[forge.Head]
 	verdicts []forgetest.Answer[forge.Verdict]
-	// required names the checks the trunk requires.
+	// required names the checks that decide; when empty, every check decides.
 	required []string
 	// ops are the forge reads the wait makes, in order.
 	ops []forgetest.Op

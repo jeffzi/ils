@@ -33,7 +33,10 @@ runs:
         set -euo pipefail
         version="$PINNED"
         if [ -z "$version" ]; then
-          if ! listing=$(curl --fail --silent --show-error --location "$RELEASES/"); then
+          # kernel.org drops a connection now and then. --retry alone skips a reset connection;
+          # --retry-all-errors retries it too, as it does every download in this action.
+          if ! listing=$(curl --fail --silent --show-error --location --retry 4 --retry-all-errors \
+            "$RELEASES/"); then
             echo "could not read the git release listing at $RELEASES/" >&2
             exit 1
           fi
@@ -81,8 +84,10 @@ runs:
         mkdir -p "$work"
         gpg --dearmor < "$GITHUB_ACTION_PATH/kernel-autosigner.asc" > "$work/autosigner.gpg"
         cd "$work"
-        curl --fail --silent --show-error --location --remote-name "$RELEASES/$archive"
-        curl --fail --silent --show-error --location --remote-name "$RELEASES/sha256sums.asc"
+        curl --fail --silent --show-error --location --retry 4 --retry-all-errors \
+          --remote-name "$RELEASES/$archive"
+        curl --fail --silent --show-error --location --retry 4 --retry-all-errors \
+          --remote-name "$RELEASES/sha256sums.asc"
         # Only the signed text is searched, so a line added outside the signature cannot match.
         gpgv --keyring "$work/autosigner.gpg" --output sha256sums.txt sha256sums.asc
         if ! grep " ${archive}\$" sha256sums.txt > "$archive.sha256"; then
@@ -108,8 +113,14 @@ runs:
           exit 1
         fi
         # Runs git-remote-https, which links libcurl and openssl, against kernel.org's git repository.
-        if ! "$PREFIX/bin/git" ls-remote --exit-code https://git.kernel.org/pub/scm/git/git.git HEAD > /dev/null; then
-          echo "the git built at $PREFIX cannot read a repository over HTTPS" >&2
-          exit 1
-        fi
+        # A dropped connection fails it the same way a broken transport does, so it gets five tries.
+        attempt=1
+        until "$PREFIX/bin/git" ls-remote --exit-code https://git.kernel.org/pub/scm/git/git.git HEAD > /dev/null; do
+          if [ "$attempt" -ge 5 ]; then
+            echo "the git built at $PREFIX cannot read a repository over HTTPS" >&2
+            exit 1
+          fi
+          sleep "$((attempt * 2))"
+          attempt=$((attempt + 1))
+        done
         echo "$PREFIX/bin" >> "$GITHUB_PATH"

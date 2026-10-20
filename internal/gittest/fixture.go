@@ -29,6 +29,11 @@ const (
 	stagedPath    = "LICENSE"
 	untrackedPath = "untracked.txt"
 	scratchRef    = "refs/gittest/squash"
+
+	sshConfigName = "ssh_config"
+	standInDir    = "ssh-stand-in"
+	// servingEnv holds the script the stand-in for ssh runs for every call but a read of its config.
+	servingEnv = "ILS_GITTEST_SERVING"
 )
 
 // ---------------------------------------------------------------------------
@@ -48,7 +53,8 @@ type Fixture struct {
 	serial    int
 }
 
-// New builds a working repository whose trunk has one commit pushed to a bare origin whose HEAD names trunk.
+// New builds a working repository whose trunk has one commit pushed to a bare origin whose HEAD names
+// trunk, and an empty ssh config of its own that the ssh command of its environment reads alone.
 func New(tb testing.TB, trunk string) *Fixture {
 	tb.Helper()
 
@@ -64,9 +70,12 @@ func New(tb testing.TB, trunk string) *Fixture {
 	}
 
 	home := filepath.Join(root, "home")
+	// The fixture's ssh reads this file alone, through the -F in GIT_SSH_COMMAND below, so no ssh
+	// reads the user's or the system's config.
+	sshConfig := filepath.Join(root, sshConfigName)
 	f := &Fixture{
 		tb:        tb,
-		env:       isolatedEnv(home),
+		env:       append(isolatedEnv(home), "GIT_SSH_COMMAND=ssh -F '"+filepath.ToSlash(sshConfig)+"'"),
 		git:       git,
 		root:      root,
 		dir:       filepath.Join(root, "repo"),
@@ -78,6 +87,8 @@ func New(tb testing.TB, trunk string) *Fixture {
 	if err != nil {
 		tb.Fatalf("create home directory: %v", err)
 	}
+
+	f.SetSSHConfig("")
 
 	f.run(root, "init", "--quiet", "--bare", "--initial-branch="+trunk, f.originDir)
 	f.run(root, "init", "--quiet", "--initial-branch="+trunk, f.dir)
@@ -113,6 +124,10 @@ func Env(tb testing.TB) []string {
 
 	return isolatedEnv(tb.TempDir())
 }
+
+// Marking returns a command line that creates the file at marker when a shell runs it, whatever
+// arguments follow it.
+func Marking(marker string) string { return "echo ran > '" + filepath.ToSlash(marker) + "' #" }
 
 // WriteFile writes content to the file name in dir, and fails the test when it cannot.
 func WriteFile(tb testing.TB, dir, name, content string) {
@@ -163,7 +178,8 @@ func (f *Fixture) OriginDir() string { return f.originDir }
 // origin that does not answer.
 func (f *Fixture) MissingOriginDir() string { return f.originDir + "-missing" }
 
-// Env returns the environment every fixture git call runs with, for a caller's own git runner.
+// Env returns the environment every fixture git call runs with, for a caller's own git runner. Its
+// GIT_SSH_COMMAND runs ssh with the fixture's ssh config as its one config file.
 func (f *Fixture) Env() []string { return slices.Clone(f.env) }
 
 // Git runs git with args in the working repository and returns its trimmed stdout; a non-zero exit
@@ -373,36 +389,103 @@ func (f *Fixture) LandPull(number int, rev string) {
 // Serving over ssh and running git
 // ---------------------------------------------------------------------------
 
-// Serving returns the command that stands in for ssh: it runs, on the repository at dir, the
-// service git asked the host for, which is upload-pack for a fetch and receive-pack for a push.
+// Serving returns a script that serves the repository at dir: it runs the service git asked the host
+// for, which is upload-pack for a fetch and receive-pack for a push. It reads the arguments git
+// passes ssh, so it suits ServedBy.
 func Serving(dir string) string {
-	// Git hands the stand-in the host and then the remote command, such as `git-upload-pack '<path>'`.
-	// The service is the first word of that command, and the trailing # turns both into a shell comment.
-	return `service="${2%% *}"; git "${service#git-}" '` + filepath.ToSlash(dir) + `' #`
+	// Git passes the remote command last, after the options and the host, such as `git-upload-pack
+	// '<path>'`. The loop leaves the last argument in remote, and the service is its first word.
+	return `for remote do :; done; service="${remote%% *}"; git "${service#git-}" '` + filepath.ToSlash(dir) + `'`
 }
 
-// ServedEnv returns the fixture's environment with ssh replaced by a command that serves the
+// ServedEnv returns the fixture's environment with ssh replaced by a stand-in that serves the
 // repository at dir, so that ssh URLs of origin reach a local repository and never the network.
 func (f *Fixture) ServedEnv(dir string) []string {
-	return append(f.Env(), "GIT_SSH_VARIANT=simple", "GIT_SSH_COMMAND="+Serving(dir))
-}
-
-// SSHConfig writes content to an ssh config file of its own and returns its path, for an ssh that
-// reads that file alone and nothing of the user's or the system's setup.
-func (f *Fixture) SSHConfig(content string) string {
 	f.tb.Helper()
 
-	const name = "config"
-
-	dir := f.tb.TempDir()
-	WriteFile(f.tb, dir, name, content)
-
-	return filepath.Join(dir, name)
+	return f.ServedBy(Serving(dir))
 }
 
-// MissingSSHConfig returns the path of an ssh config file that does not exist, for an ssh that
-// reads it and exits non-zero.
-func (f *Fixture) MissingSSHConfig() string { return filepath.Join(f.tb.TempDir(), "missing") }
+// ServedBy returns the fixture's environment with ssh replaced by a stand-in that takes the
+// options OpenSSH takes. Asked for its config with `-G`, the stand-in answers through the real ssh
+// from the fixture's ssh config; every other call runs serving, a shell script that reads the
+// arguments git passed ssh.
+//
+// The ssh command stays the one Env names: the stand-in comes first on PATH under ssh's name.
+func (f *Fixture) ServedBy(serving string) []string {
+	f.tb.Helper()
+
+	dir := f.standIn()
+	env := f.Env()
+
+	found := false
+
+	for i, entry := range env {
+		key, value, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(key, "PATH") {
+			env[i] = key + "=" + dir + string(os.PathListSeparator) + value
+			found = true
+		}
+	}
+
+	if !found {
+		env = append(env, "PATH="+dir)
+	}
+
+	return append(env, "GIT_SSH_VARIANT=ssh", servingEnv+"="+serving)
+}
+
+// standIn writes the stand-in for ssh into a directory of its own and returns that directory.
+func (f *Fixture) standIn() string {
+	f.tb.Helper()
+
+	const name = "ssh"
+
+	ssh, err := exec.LookPath("ssh")
+	if err != nil {
+		f.tb.Fatalf("find ssh: %v", err)
+	}
+
+	script := "#!/bin/sh\n" +
+		"for arg do\n" +
+		"\tif [ \"$arg\" = -G ]; then exec '" + filepath.ToSlash(ssh) + "' \"$@\"; fi\n" +
+		"done\n" +
+		"eval \"$" + servingEnv + "\"\n"
+
+	dir := filepath.Join(f.root, standInDir)
+
+	err = os.MkdirAll(dir, 0o750)
+	if err != nil {
+		f.tb.Fatalf("create the directory of the stand-in for ssh: %v", err)
+	}
+
+	path := filepath.Join(dir, name)
+	WriteFile(f.tb, dir, name, script)
+
+	// Git's shell runs the stand-in as a program, which it can only do once it is executable.
+	err = os.Chmod(path, 0o700) //nolint:gosec // G302: the stand-in is a script a shell must execute.
+	if err != nil {
+		f.tb.Fatalf("make the stand-in for ssh executable: %v", err)
+	}
+
+	return dir
+}
+
+// SetSSHConfig replaces the content of the fixture's ssh config with content.
+func (f *Fixture) SetSSHConfig(content string) {
+	f.tb.Helper()
+	WriteFile(f.tb, f.root, sshConfigName, content)
+}
+
+// RemoveSSHConfig deletes the fixture's ssh config, so that an ssh that reads it exits non-zero.
+func (f *Fixture) RemoveSSHConfig() {
+	f.tb.Helper()
+
+	err := os.Remove(filepath.Join(f.root, sshConfigName))
+	if err != nil {
+		f.tb.Fatalf("remove the ssh config: %v", err)
+	}
+}
 
 // originURL returns the bare origin's location in the slash form git accepts on every platform.
 func (f *Fixture) originURL() string { return filepath.ToSlash(f.originDir) }
