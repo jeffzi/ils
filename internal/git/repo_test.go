@@ -427,6 +427,22 @@ func TestRepo_BranchesContaining_WhenHeadDetached_ListsEveryBranchCarryingCommit
 	assert.Check(t, is.DeepEqual(got, []string{"team/other", topic}))
 }
 
+func TestRepo_BranchesContaining_WhenCurrentBranchReadFails_ReturnsItsExitError(t *testing.T) {
+	// Not parallel: gittest.FakeGit sets PATH for the whole process.
+	f := gittest.New(t, trunk)
+	first := f.Commits(topic, "one", "two")[0]
+	f.Sibling("team/other", topic)
+	f.Git("switch", "--quiet", topic)
+	repo := newRepo(f)
+	repo.Runner.Env = append(repo.Runner.Env, gittest.FakeGit(t, gittest.Fake{FailOn: []string{"symbolic-ref"}})...)
+
+	got, err := repo.BranchesContaining(t.Context(), first)
+
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "BranchesContaining() = %v, error = %v, want *child.ExitError", got, err)
+	assert.Check(t, is.Equal(exitErr.Code, gittest.FailedCode))
+}
+
 func TestRepo_Unlanded(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
