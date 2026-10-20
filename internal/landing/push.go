@@ -41,6 +41,8 @@ type pushReady struct {
 	Ready
 	branch string
 	tip    string
+	// copied is the commit origin's copy of the branch is on, empty when origin has none.
+	copied string
 	// past are the branch's commits that origin's trunk lacks, oldest first.
 	past []git.Commit
 	// onOrigin is whether origin's copy of the branch is already at tip.
@@ -51,12 +53,13 @@ type pushReady struct {
 //
 // After the shared preconditions it checks, in this order and stopping at the first that
 // fails: HEAD is on a branch other than the trunk; no tracked file is changed; the branch has
-// a commit past origin's trunk, which it fetches; the first such commit is on no other local
-// branch; the tip is not behind origin's copy of the branch and has not diverged from it; no
-// open pull request from the branch has a base other than the trunk; no merged pull request
-// from the branch already carries its commits. A precondition that fails, an origin that
-// cannot be reached, and a read the context's deadline cut short are refusals; a read that
-// fails for any other reason is broke.
+// a commit past origin's trunk, which it fetches; the tip is not behind origin's copy of the
+// branch and has not diverged from it; unless origin's copy carries the branch's first commit
+// past the trunk, that commit is on no other local branch; no open pull request from the
+// branch has a base other than the trunk; no merged pull request from the branch already
+// carries its commits. A precondition that fails, an origin that cannot be reached, and a read
+// the context's deadline cut short are refusals; a read that fails for any other reason is
+// broke.
 //
 // When all hold it pushes the branch to origin, unless origin's copy is already at the tip,
 // and opens the branch's pull request against the trunk, unless one is open. It then reads the
@@ -96,12 +99,12 @@ func pushChecks(ctx context.Context, deps Deps, req Request, ready Ready) (pushR
 		return pushReady{}, stop
 	}
 
-	if stop = cutFromTrunk(ctx, deps, req, p); stop != nil {
+	p.copied, p.onOrigin, stop = originCopy(ctx, deps, req, p)
+	if stop != nil {
 		return pushReady{}, stop
 	}
 
-	p.onOrigin, stop = originCopy(ctx, deps, req, p)
-	if stop != nil {
+	if stop = cutFromTrunk(ctx, deps, req, p); stop != nil {
 		return pushReady{}, stop
 	}
 
@@ -203,9 +206,25 @@ func (r Request) nothingPast(p pushReady) *result.Result {
 }
 
 // cutFromTrunk refuses a branch whose first commit past the trunk another local branch also
-// carries, and lists the commits that other branch lacks.
+// carries, and lists the commits none of those branches carry. Origin's copy of the branch, if
+// any, settles it when it carries that commit: the branch is already published with it, so
+// another branch that shares it does not stop the push. Without that, git cannot tell which
+// branch was cut from which, so the refusal names both ways out.
 func cutFromTrunk(ctx context.Context, deps Deps, req Request, p pushReady) *result.Result {
-	others, err := deps.Repo.BranchesContaining(ctx, p.past[0].SHA)
+	first := p.past[0].SHA
+
+	if p.copied != "" {
+		published, err := deps.Repo.Contains(ctx, p.copied, first)
+		if err != nil {
+			return req.unread(readCopy, err)
+		}
+
+		if published {
+			return nil
+		}
+	}
+
+	others, err := deps.Repo.BranchesContaining(ctx, first)
 	if err != nil {
 		return req.unread(readBranches, err)
 	}
@@ -214,78 +233,113 @@ func cutFromTrunk(ctx context.Context, deps Deps, req Request, p pushReady) *res
 		return nil
 	}
 
-	other := others[0]
-
-	var own []git.Commit
-
-	for _, commit := range p.past {
-		carried, err := deps.Repo.Contains(ctx, other, commit.SHA)
-		if err != nil {
-			return req.unread(readCommits, err)
-		}
-
-		if !carried {
-			own = append(own, commit)
-		}
-	}
-
-	if len(own) == 0 {
-		return req.refused(
-			result.Say("the branch %s was cut from the branch %s and not from the trunk, and has no commit of its own",
-				p.branch, other),
-			startBranchStep(p.Trunk),
-		)
+	own, err := ownCommits(ctx, deps, p.past, others)
+	if err != nil {
+		return req.unread(readCommits, err)
 	}
 
 	stop := req.refused(
-		result.Say("the branch %s was cut from the branch %s and not from the trunk; its own commits are listed here",
-			p.branch, other),
-		result.NextStep(startBranch+", then bring this branch's own commits over with `git cherry-pick %s`",
-			p.Trunk, p.Trunk, shas(own)),
+		sharedFirst(p.branch, others, len(own) > 0),
+		result.NextStep("run ils push on the other branch and get it merged first when this branch builds on it, "+
+			"or remove the other branch when it was cut from this one, then run ils push again"),
 	)
 	stop.Lines = listed(own)
 
 	return stop
 }
 
-// originCopy asks origin whether it has the branch and reports whether its copy is at the
-// tip, refusing a tip that is behind that copy or has diverged from it.
-func originCopy(ctx context.Context, deps Deps, req Request, p pushReady) (bool, *result.Result) {
+// ownCommits returns the commits of past that none of the branches others carry, in order.
+func ownCommits(ctx context.Context, deps Deps, past []git.Commit, others []string) ([]git.Commit, error) {
+	var own []git.Commit
+
+commits:
+	for _, commit := range past {
+		for _, other := range others {
+			carried, err := deps.Repo.Contains(ctx, other, commit.SHA)
+			if err != nil {
+				return nil, err
+			}
+
+			if carried {
+				continue commits
+			}
+		}
+
+		own = append(own, commit)
+	}
+
+	return own, nil
+}
+
+// sharedFirst says that the branch shares its first commit past the trunk with the branches
+// others, in the order git lists them, and whether it has commits of its own.
+func sharedFirst(branch string, others []string, hasOwn bool) result.Phrase {
+	const (
+		withOne = "the branch %s shares its first commit past the trunk with the branch %s; " +
+			"ils cannot tell which was cut from which, and "
+		withMany = "the branch %s shares its first commit past the trunk with the branches %s; " +
+			"ils cannot tell which was cut from which, and "
+		ownListed = "its own commits are listed here"
+		noOwn     = "it has no commit of its own"
+	)
+
+	if len(others) == 1 {
+		if hasOwn {
+			return result.Say(withOne+ownListed, branch, others[0])
+		}
+
+		return result.Say(withOne+noOwn, branch, others[0])
+	}
+
+	last := len(others) - 1
+	named := strings.Join(others[:last], ", ") + " and " + others[last]
+
+	if hasOwn {
+		return result.Say(withMany+ownListed, branch, named)
+	}
+
+	return result.Say(withMany+noOwn, branch, named)
+}
+
+// originCopy asks origin whether it has the branch and returns the commit its fetched copy is
+// on, empty when origin has none, and whether that copy is at the tip. It refuses a tip that is
+// behind that copy or has diverged from it.
+func originCopy(ctx context.Context, deps Deps, req Request, p pushReady) (theirs string, atTip bool, stop *result.Result) {
 	_, found, err := deps.Repo.RemoteBranch(ctx, p.branch)
 	if err != nil {
-		return false, req.unreached(readOnOrigin, err,
+		return "", false, req.unreached(readOnOrigin, err,
 			result.Say("origin could not be reached to ask whether it has the branch %s", p.branch))
 	}
 
 	if !found {
-		return false, nil
+		return "", false, nil
 	}
 
-	theirs, err := deps.Repo.Fetch(ctx, p.branch)
+	theirs, err = deps.Repo.Fetch(ctx, p.branch)
 	if err != nil {
-		return false, req.unreached(readCopy, err,
+		return "", false, req.unreached(readCopy, err,
 			result.Say("origin could not be reached to fetch its copy of the branch %s", p.branch))
 	}
 
 	apart, err := deps.Repo.Divergence(ctx, p.tip, theirs)
 	if err != nil {
-		return false, req.unread(readCopy, err)
+		return "", false, req.unread(readCopy, err)
 	}
 
 	switch {
 	case apart.Behind > 0 && apart.Ahead > 0:
-		return false, req.refused(
+		return "", false, req.refused(
 			result.Say("the branch %s and origin's copy of it have diverged", p.branch),
 			result.NextStep("run `git merge origin/%s`, then run ils push again", p.branch),
 		)
 	case apart.Behind > 0:
-		return false, req.refused(
+		return "", false, req.refused(
 			result.Say("the branch %s is behind origin's copy of it", p.branch),
 			result.NextStep("run `git pull --ff-only origin %s`, then run ils push again", p.branch),
 		)
 	}
 
-	return apart.Ahead == 0, nil
+	return theirs, apart.Ahead == 0, nil
 }
 
 // pullRequest returns the branch's open pull request against the trunk, nil when it has none,

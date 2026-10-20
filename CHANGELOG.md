@@ -13,6 +13,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   git connects through `core.sshCommand`, `GIT_SSH_COMMAND` or `GIT_SSH`.
 - Fix `ils push` to name the setting to fix when the ssh command git is configured with is not
   installed, instead of pointing at OpenSSH.
+- Fix `ils push` refusing a published branch because another local branch was cut from it, and
+  advising a `git cherry-pick` that dropped commits the default branch lacks.
 
 ## [0.1.0] - 2026-10-18
 
