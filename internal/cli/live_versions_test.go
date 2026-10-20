@@ -115,8 +115,7 @@ type unsuitedLiveToolCase struct {
 	target string
 	want   string
 	out    string
-	// err is the text of the error the check returns.
-	err string
+	err    string
 }
 
 // unsuitedGitCases returns the outputs of `git --version` the live suite rejects.
