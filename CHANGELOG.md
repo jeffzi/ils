@@ -7,6 +7,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Add `ils --version`, which prints the version of `ils`.
+
 ## [0.1.1] - 2026-10-20
 
 ### Fixed
