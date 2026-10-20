@@ -311,6 +311,10 @@ func TestApp_Run_WhenWordsBreakTheGrammar_RefusesNamingTheWord(t *testing.T) {
 		{name: "unknown flag", args: []string{"--bogus"}, reason: "--bogus is not a command"},
 		{name: "unknown short flag", args: []string{"-x"}, reason: "-x is not a command"},
 		{name: "short version flag", args: []string{"-v"}, reason: "-v is not a command"},
+		{name: "version flag set to false", args: []string{"--version=false"}, reason: "no command was given"},
+		{name: "version flag set to neither", args: []string{"--version=maybe"}, reason: "--version takes true or false, and maybe was given"},
+		{name: "version flag before push", args: []string{"--version", "push"}, reason: "push takes no other word, and --version was given"},
+		{name: "version flag before an extra word", args: []string{"--version", "extra"}, reason: "extra is not a command"},
 		{name: "unknown flag after push", args: []string{"push", "--bogus"}, reason: "push takes no other word, and --bogus was given"},
 		{name: "unknown short flag after push", args: []string{"push", "-x"}, reason: "push takes no other word, and -x was given"},
 		{name: "group of short flags after push", args: []string{"push", "-xyz"}, reason: "push takes no other word, and -xyz was given"},
@@ -401,6 +405,7 @@ func TestApp_Run_WhenAskedForHelp_PrintsTheHelpOfTheCommand(t *testing.T) {
 	}{
 		{args: []string{"-h"}, want: rootHelp},
 		{args: []string{"--help"}, want: rootHelp, commands: []string{"help", "push"}, flags: rootFlags},
+		{args: []string{"--help"}, want: "--version Print the version of ils"},
 		{args: []string{"help"}, want: rootHelp},
 		{args: []string{"pish", "--help"}, want: rootHelp},
 		{args: []string{"-h", "pish"}, want: rootHelp},
