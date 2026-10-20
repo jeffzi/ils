@@ -233,52 +233,37 @@ func cutFromTrunk(ctx context.Context, deps Deps, req Request, p pushReady) *res
 		return nil
 	}
 
-	own, err := ownCommits(ctx, deps, p.past, others)
+	own, err := deps.Repo.OwnCommits(ctx, p.tip, p.Trunk, others)
 	if err != nil {
 		return req.unread(readCommits, err)
 	}
 
-	stop := req.refused(
-		sharedFirst(p.branch, others, len(own) > 0),
-		result.NextStep("run ils push on the other branch and get it merged first when this branch builds on it, "+
-			"or remove the other branch when it was cut from this one, then run ils push again"),
-	)
+	stop := req.refused(sharedFirst(p.branch, others, len(own) > 0), eitherWayOut(len(others)))
 	stop.Lines = listed(own)
 
 	return stop
 }
 
-// ownCommits returns the commits of past that none of the branches others carry, in order.
-func ownCommits(ctx context.Context, deps Deps, past []git.Commit, others []string) ([]git.Commit, error) {
-	var own []git.Commit
-
-commits:
-	for _, commit := range past {
-		for _, other := range others {
-			carried, err := deps.Repo.Contains(ctx, other, commit.SHA)
-			if err != nil {
-				return nil, err
-			}
-
-			if carried {
-				continue commits
-			}
-		}
-
-		own = append(own, commit)
+// eitherWayOut is the Next step of a branch that shares its first commit past the trunk with count
+// other local branches: land them first, or remove them.
+func eitherWayOut(count int) result.Next {
+	if count == 1 {
+		return result.NextStep("run ils push on the other branch and get it merged first when this branch builds " +
+			"on it, or remove the other branch when it was cut from this one, then run ils push again")
 	}
 
-	return own, nil
+	return result.NextStep("run ils push on the other branches and get them merged first when this branch builds " +
+		"on them, or remove the other branches when they were cut from this one, then run ils push again")
 }
 
 // sharedFirst says that the branch shares its first commit past the trunk with the branches
 // others, in the order git lists them, and whether it has commits of its own.
 func sharedFirst(branch string, others []string, hasOwn bool) result.Phrase {
 	const (
-		withOne = "the branch %s shares its first commit past the trunk with the branch %s; " +
-			"ils cannot tell which was cut from which, and "
-		withMany = "the branch %s shares its first commit past the trunk with the branches %s; " +
-			"ils cannot tell which was cut from which, and "
+		opening   = "the branch %s shares its first commit past the trunk with the "
+		undecided = "; ils cannot tell which was cut from which, and "
+		withOne   = opening + "branch %s" + undecided
+		withMany  = opening + "branches %s" + undecided
 		ownListed = "its own commits are listed here"
 		noOwn     = "it has no commit of its own"
 	)

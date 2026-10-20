@@ -191,6 +191,19 @@ func (r Repo) CommitsPast(ctx context.Context, tip, trunk string) ([]Commit, err
 	return r.commits(ctx, "--no-merges", tip, excludeTrunk(trunk))
 }
 
+// OwnCommits returns the commits on tip that origin's trunk lacks and that none of the local
+// branches named by branches carries, merges left out, oldest first.
+//
+// It reads origin/<trunk>, which is current only after a fetch of trunk.
+func (r Repo) OwnCommits(ctx context.Context, tip, trunk string, branches []string) ([]Commit, error) {
+	revisions := []string{"--no-merges", tip, excludeTrunk(trunk)}
+	for _, branch := range branches {
+		revisions = append(revisions, "^"+headsRef+branch)
+	}
+
+	return r.commits(ctx, revisions...)
+}
+
 // BranchesContaining returns the local branches that contain sha, the current branch left out.
 func (r Repo) BranchesContaining(ctx context.Context, sha string) ([]string, error) {
 	current, _, err := r.currentBranch(ctx)
