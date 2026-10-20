@@ -1,4 +1,4 @@
-// Package main is the entry point for ils.
+// Ils lands a branch on GitHub in fixed, checked steps: push, pull request, CI verdict.
 package main
 
 import (
