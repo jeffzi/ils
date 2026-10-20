@@ -304,6 +304,29 @@ func hideSSH(t *testing.T, repo git.Repo) git.Repo {
 	return withRunnerPath(noSSHCommand(repo), t.TempDir())
 }
 
+// hideFromShell returns repo with no ssh command, and as the PATH of its runner's environment an
+// empty directory and, on Windows, the directory of git's shell, so that a command line naming
+// program finds no program of that name while the process PATH still holds one. Git for Windows'
+// shell crashes when its PATH lacks its own directory, which also holds ssh, so program must be a
+// program found elsewhere.
+func hideFromShell(t *testing.T, repo git.Repo, program string) git.Repo {
+	t.Helper()
+
+	_, err := exec.LookPath(program)
+	assert.NilError(t, err, "the process PATH holds no %s, so a lookup on it would find none either", program)
+
+	dirs := []string{t.TempDir()}
+	if runtime.GOOS == "windows" {
+		shell, err := exec.LookPath("sh")
+		assert.NilError(t, err, "the process PATH holds no sh, so git's shell is not found")
+		dirs = append(dirs, filepath.Dir(shell))
+		_, err = exec.LookPath(filepath.Join(filepath.Dir(shell), program))
+		assert.Assert(t, err != nil, "the directory of git's shell holds %s, so the shell would find it", program)
+	}
+
+	return withRunnerPath(noSSHCommand(repo), dirs...)
+}
+
 func TestRepo_OriginURLs_WhenSSHMissingFromRunnerPath_ReturnsToolMissingError(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -787,7 +810,7 @@ type missingCase struct {
 	variant string
 	// env holds the settings added to the runner's environment.
 	env []string
-	// hide leaves the PATH of the runner's environment empty while the process PATH stays.
+	// hide leaves program off the PATH of the runner's environment while the process PATH stays.
 	hide bool
 }
 
@@ -807,8 +830,8 @@ func missingCases() []missingCase {
 			value: "no-such-wrapper -v", program: "no-such-wrapper",
 		},
 		{
-			name: "GIT_SSH_COMMAND name found only on the process PATH", setting: "GIT_SSH_COMMAND", value: "ssh -v",
-			program: "ssh", hide: true,
+			name: "GIT_SSH_COMMAND name found only on the process PATH", setting: "GIT_SSH_COMMAND", value: "go -v",
+			program: "go", hide: true,
 		},
 		{
 			name: "GIT_SSH_COMMAND assignment before a name", setting: "GIT_SSH_COMMAND", value: "AUDIT=1 no-such-wrapper -v",
@@ -861,8 +884,11 @@ func missingRepo(t *testing.T, tt missingCase) git.Repo {
 		f.Git("config", "ssh.variant", tt.variant)
 	}
 	repo := plainSSH(t, newRepo(f), plainAnswer)
-	if tt.hide {
+	switch {
+	case tt.hide && tt.setting == "GIT_SSH":
 		repo = hideSSH(t, repo)
+	case tt.hide:
+		repo = hideFromShell(t, repo, tt.program)
 	}
 	if tt.setting == "core.sshCommand" {
 		f.Git("config", "core.sshCommand", tt.value)
