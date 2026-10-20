@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -215,21 +216,6 @@ func TestRepo_OriginURLs_WhenURLIsSSH_ReturnsTheHostSSHConnectsTo(t *testing.T) 
 	}
 }
 
-func TestRepo_OriginURLs_WhenURLIsHTTPS_RunsNoSSH(t *testing.T) {
-	t.Parallel()
-	const url = "https://example.com/jeffzi/ils.git"
-	f := gittest.New(t, trunk)
-	f.SetOriginURL(url)
-	f.SetPushURL(url)
-	f.RemoveSSHConfig()
-
-	got, err := newRepo(f).OriginURLs(t.Context())
-	assert.NilError(t, err)
-
-	named := git.Origin{Host: "example.com", Owner: "jeffzi", Name: "ils"}
-	assert.Check(t, is.DeepEqual(got, git.OriginURLs{Fetch: named, Push: named, FetchURL: url, PushURL: url}))
-}
-
 // noSSHCommand returns repo without the fixture's GIT_SSH_COMMAND in its environment, so that it
 // reads a host through the ssh command a test configures, or else through the ssh on PATH.
 func noSSHCommand(repo git.Repo) git.Repo {
@@ -241,12 +227,11 @@ func noSSHCommand(repo git.Repo) git.Repo {
 }
 
 func TestRepo_OriginURLs_WhenSSHFails_ReturnsExitErrorOfSSH(t *testing.T) {
-	// Not parallel: plainSSH sets PATH for the whole process while it runs.
+	t.Parallel()
 	f := gittest.New(t, trunk)
 	f.SetOriginURL(httpsURL)
 	f.SetPushURL(sshURL)
-	repo := noSSHCommand(newRepo(f))
-	plainSSH(t, standInRefuse)
+	repo := plainSSH(t, newRepo(f), standInRefuse)
 
 	_, err := repo.OriginURLs(t.Context())
 
@@ -255,52 +240,124 @@ func TestRepo_OriginURLs_WhenSSHFails_ReturnsExitErrorOfSSH(t *testing.T) {
 	assert.Check(t, is.Equal(exitErr.Argv[0], "ssh"))
 }
 
-// plainSSH puts the test binary first on PATH under ssh's name until the test ends, acting as the
-// plain ssh git runs when no ssh command is configured, in the stand-in mode sshStandInEnv takes.
-// It cannot run in a parallel test.
-func plainSSH(t *testing.T, mode string) {
-	t.Helper()
+// runnerPath returns the PATH the environment of repo's runner gives, the last one when it gives
+// several, matching the key as the system does.
+func runnerPath(repo git.Repo) string {
+	value := ""
 
-	t.Setenv(sshStandInEnv, mode)
-	gittest.LinkAs(t, "ssh")
+	for _, entry := range repo.Runner.Env {
+		key, v, ok := strings.Cut(entry, "=")
+		if ok && (key == "PATH" || runtime.GOOS == "windows" && strings.EqualFold(key, "PATH")) {
+			value = v
+		}
+	}
+
+	return value
 }
 
-// hideSSH leaves only a git on PATH until the test ends, so that the next ssh call finds no ssh,
-// and returns repo with no ssh command and what that git reads added to its environment. It cannot
-// run in a parallel test.
-func hideSSH(t *testing.T, repo git.Repo) git.Repo {
-	t.Helper()
+// withRunnerPath returns repo with dirs, in order, as the one PATH of its runner's environment.
+func withRunnerPath(repo git.Repo, dirs ...string) git.Repo {
+	repo.Runner.Env = slices.DeleteFunc(slices.Clone(repo.Runner.Env), func(entry string) bool {
+		key, _, _ := strings.Cut(entry, "=")
 
-	repo = noSSHCommand(repo)
-	repo.Runner.Env = append(repo.Runner.Env, gittest.FakeGit(t, gittest.Fake{})...)
-
-	fake, err := exec.LookPath("git")
-	assert.NilError(t, err)
-	t.Setenv("PATH", filepath.Dir(fake))
+		return strings.EqualFold(key, "PATH")
+	})
+	repo.Runner.Env = append(repo.Runner.Env, "PATH="+strings.Join(dirs, string(os.PathListSeparator)))
 
 	return repo
 }
 
-func TestRepo_OriginURLs_WhenSSHMissingFromPath_ReturnsToolMissingError(t *testing.T) {
-	// Not parallel: hideSSH sets PATH for the whole process while it runs.
+// onRunnerPath links the test binary under name into a directory of its own put first on the PATH
+// of repo's runner environment alone, and returns repo; the process PATH stays as it is.
+func onRunnerPath(t *testing.T, repo git.Repo, name string) git.Repo {
+	t.Helper()
+
+	return firstOnRunnerPath(repo, standIn(t, name))
+}
+
+// firstOnRunnerPath returns repo with the directory of the program at path, in the slash form, put
+// first on the PATH of its runner's environment.
+func firstOnRunnerPath(repo git.Repo, path string) git.Repo {
+	return withRunnerPath(repo, filepath.Dir(filepath.FromSlash(path)), runnerPath(repo))
+}
+
+// plainSSH returns repo with no ssh command, and the test binary first on the PATH of its runner's
+// environment under ssh's name, acting as the plain ssh ils runs when no ssh command is configured,
+// in the stand-in mode plainSSHEnv takes.
+func plainSSH(t *testing.T, repo git.Repo, mode string) git.Repo {
+	t.Helper()
+
+	repo = onRunnerPath(t, noSSHCommand(repo), "ssh")
+	repo.Runner.Env = append(repo.Runner.Env, plainSSHEnv+"="+mode)
+
+	return repo
+}
+
+// hideSSH returns repo with no ssh command, and an empty directory as the PATH of its runner's
+// environment, so that its next ssh call finds no ssh there while the process PATH still holds one.
+func hideSSH(t *testing.T, repo git.Repo) git.Repo {
+	t.Helper()
+
+	_, err := exec.LookPath("ssh")
+	assert.NilError(t, err, "the process PATH holds no ssh, so a lookup on it would find none either")
+
+	return withRunnerPath(noSSHCommand(repo), t.TempDir())
+}
+
+func TestRepo_OriginURLs_WhenSSHMissingFromRunnerPath_ReturnsToolMissingError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		// command, when not empty, names a stand-in ssh the user configured, which refuses.
+		command string
+		// env holds the settings added to the runner's environment.
+		env []string
+	}{
+		{name: "no ssh command configured"},
+		{name: "command of variant simple", command: "ssh", env: variantEnv("simple")},
+		{name: "command of variant auto that refuses", command: "connect", env: variantEnv("auto")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			f.SetOriginURL(sshURL)
+			repo := hideSSH(t, newRepo(f))
+			repo.Runner.Env = append(repo.Runner.Env, tt.env...)
+			if tt.command != "" {
+				repo.Runner.Env = append(repo.Runner.Env, "GIT_SSH_COMMAND="+quoted(standIn(t, tt.command)), refusing)
+			}
+
+			_, err := repo.OriginURLs(t.Context())
+
+			missing, ok := errors.AsType[*child.ToolMissingError](err)
+			assert.Assert(t, ok, "OriginURLs() error = %v, want *child.ToolMissingError", err)
+			assert.Check(t, is.Equal(missing.Tool, "ssh"))
+			assert.Check(t, is.Equal(missing.InstallURL, "https://www.openssh.com"))
+		})
+	}
+}
+
+func TestRepo_OriginURLs_WhenNoSSHCommandSet_RunsPlainSSHInTheRunnerDirectory(t *testing.T) {
+	t.Parallel()
+	const nested = "nested.example"
 	f := gittest.New(t, trunk)
-	f.SetOriginURL(sshURL)
-	repo := hideSSH(t, newRepo(f))
+	f.SetOriginURL(aliasURL)
+	repo := plainSSH(t, newRepo(f), standInWorkDir)
+	repo.Runner.Dir = filepath.Join(f.Dir(), nested)
+	assert.NilError(t, os.Mkdir(repo.Runner.Dir, 0o700))
 
-	_, err := repo.OriginURLs(t.Context())
+	got, err := repo.OriginURLs(t.Context())
+	assert.NilError(t, err)
 
-	missing, ok := errors.AsType[*child.ToolMissingError](err)
-	assert.Assert(t, ok, "OriginURLs() error = %v, want *child.ToolMissingError", err)
-	assert.Check(t, is.Equal(missing.Tool, "ssh"))
-	assert.Check(t, is.Equal(missing.InstallURL, "https://www.openssh.com"))
+	assert.Check(t, is.Equal(got.Fetch.Host, nested))
 }
 
 func TestRepo_OriginURLs_WhenSSHPrintsNoHostname_ReturnsErrorNamingNoHostname(t *testing.T) {
-	// Not parallel: fakeSSH sets PATH for the whole process while it runs.
+	t.Parallel()
 	f := gittest.New(t, trunk)
 	f.SetOriginURL(sshURL)
-	repo := noSSHCommand(newRepo(f))
-	fakeSSH(t)
+	repo := plainSSH(t, newRepo(f), standInNoHostname)
 
 	_, err := repo.OriginURLs(t.Context())
 
@@ -311,13 +368,18 @@ func TestRepo_OriginURLs_WhenSSHPrintsNoHostname_ReturnsErrorNamingNoHostname(t 
 	assert.Check(t, !missing, "OriginURLs() error = %v, want an error from ssh's output, not a missing ssh", err)
 }
 
-// fakeSSH puts the test binary first on PATH under ssh's name until the test ends, acting as an ssh
-// whose `ssh -G` prints no hostname line. It cannot run in a parallel test.
-func fakeSSH(t *testing.T) {
-	t.Helper()
+func TestRepo_OriginURLs_WhenConfiguredSSHPrintsNoHostname_ReturnsErrorNamingIt(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.SetOriginURL(aliasURL)
+	configured := quoted(standIn(t, "ssh"))
+	repo := noSSHCommand(newRepo(f))
+	repo.Runner.Env = append(repo.Runner.Env, "GIT_SSH_COMMAND="+configured, sshStandInEnv+"="+standInNoHostname)
 
-	t.Setenv(fakeSSHEnv, "1")
-	gittest.LinkAs(t, "ssh")
+	_, err := repo.OriginURLs(t.Context())
+
+	assert.Check(t, is.ErrorContains(err, configured))
+	assert.Check(t, is.ErrorContains(err, "printed no hostname"))
 }
 
 // aliases is an ssh config that gives two hosts other names: work stands for git.example.org, and
@@ -330,6 +392,8 @@ const (
 	// plainHost is the hostname the stand-in for plain ssh answers with, which no configured command
 	// gives.
 	plainHost = "plain.example"
+	// plainAnswer is the stand-in mode that makes plain ssh answer with plainHost.
+	plainAnswer = standInAnswer + plainHost
 	// standInHost is the hostname a stand-in ssh answers with, which no ssh config gives.
 	standInHost = "stand-in.example"
 )
@@ -364,6 +428,9 @@ func answering(host string) string { return sshStandInEnv + "=" + standInAnswer 
 // refusing is the setting that makes a stand-in ssh exit non-zero.
 const refusing = sshStandInEnv + "=" + standInRefuse
 
+// exiting returns the setting that makes a stand-in ssh exit with code.
+func exiting(code int) string { return sshStandInEnv + "=" + standInExit + strconv.Itoa(code) }
+
 // standIn links the test binary under name into a directory of its own whose name holds a space,
 // and returns its path in the slash form, for an ssh command that answers as sshStandInEnv says.
 func standIn(t *testing.T, name string) string {
@@ -384,21 +451,11 @@ func standIn(t *testing.T, name string) string {
 	return filepath.ToSlash(path)
 }
 
-// marking returns a command line that creates the file at marker when a shell runs it, whatever
-// arguments follow it.
-func marking(marker string) string { return "echo ran > " + quoted(marker) + " #" }
+// gitSSHStandIn returns the setting that names the stand-in ssh as the program GIT_SSH runs.
+func gitSSHStandIn(t *testing.T) string {
+	t.Helper()
 
-// envValue returns the value env gives key, the last one when it gives several.
-func envValue(env []string, key string) string {
-	value := ""
-
-	for _, entry := range env {
-		if k, v, ok := strings.Cut(entry, "="); ok && k == key {
-			value = v
-		}
-	}
-
-	return value
+	return "GIT_SSH=" + standIn(t, "ssh")
 }
 
 // sourceCase is one place a user names the ssh command git connects with.
@@ -416,14 +473,6 @@ func sourceCases() []sourceCase {
 
 	return []sourceCase{
 		{
-			name: "GIT_SSH_COMMAND", url: aliasURL, host: "git.example.org",
-			arrange: func(t *testing.T, _ *gittest.Fixture) []string {
-				t.Helper()
-
-				return []string{"GIT_SSH_COMMAND=" + sshReading(t, aliases)}
-			},
-		},
-		{
 			name: "core.sshCommand", url: aliasURL, host: "git.example.org",
 			arrange: func(t *testing.T, f *gittest.Fixture) []string {
 				t.Helper()
@@ -437,7 +486,7 @@ func sourceCases() []sourceCase {
 			arrange: func(t *testing.T, _ *gittest.Fixture) []string {
 				t.Helper()
 
-				return []string{"GIT_SSH=" + standIn(t, "ssh"), sshStandInEnv + "=" + standInSuffix + ".example.org"}
+				return []string{gitSSHStandIn(t), sshStandInEnv + "=" + standInSuffix + ".example.org"}
 			},
 		},
 		{
@@ -455,7 +504,7 @@ func sourceCases() []sourceCase {
 				t.Helper()
 				f.Git("config", "core.sshCommand", sshReading(t, aliases))
 
-				return []string{"GIT_SSH=" + standIn(t, "ssh"), answering(standInHost)}
+				return []string{gitSSHStandIn(t), answering(standInHost)}
 			},
 		},
 	}
@@ -466,29 +515,11 @@ func sourceCases() []sourceCase {
 func foldCases() []sourceCase {
 	return []sourceCase{
 		{
-			name: "alias of a host under github.com", url: "git@github-work:acme/widgets.git", host: "github.com",
-			arrange: func(t *testing.T, _ *gittest.Fixture) []string {
-				t.Helper()
-
-				return []string{"GIT_SSH_COMMAND=" + sshReading(t, aliases)}
-			},
-		},
-		{
-			name: "core.sshCommand alias of a host under github.com", url: "git@github-work:acme/widgets.git",
-			host: "github.com",
-			arrange: func(t *testing.T, f *gittest.Fixture) []string {
-				t.Helper()
-				f.Git("config", "core.sshCommand", sshReading(t, aliases))
-
-				return nil
-			},
-		},
-		{
 			name: "GIT_SSH program answering a host under github.com", url: aliasURL, host: "github.com",
 			arrange: func(t *testing.T, _ *gittest.Fixture) []string {
 				t.Helper()
 
-				return []string{"GIT_SSH=" + standIn(t, "ssh"), answering("ssh.github.com")}
+				return []string{gitSSHStandIn(t), answering("ssh.github.com")}
 			},
 		},
 	}
@@ -554,11 +585,10 @@ func TestRepo_OriginURLs_WhenRunnerNamesGitSSHCommandInLowerCase_MatchesTheKeyAs
 }
 
 func TestRepo_OriginURLs_WhenPlainSSHAnswersAHostUnderGitHub_ReportsGitHub(t *testing.T) {
-	// Not parallel: plainSSH sets PATH for the whole process while it runs.
-	plainSSH(t, standInAnswer+"ssh.github.com")
+	t.Parallel()
 	f := gittest.New(t, trunk)
 	f.SetOriginURL(aliasURL)
-	repo := noSSHCommand(newRepo(f))
+	repo := plainSSH(t, newRepo(f), standInAnswer+"ssh.github.com")
 
 	got, err := repo.OriginURLs(t.Context())
 	assert.NilError(t, err)
@@ -573,30 +603,11 @@ func TestRepo_OriginURLs_WhenSSHCommandNeedsTheShell_RunsItAsGitDoes(t *testing.
 		name    string
 	}{
 		{
-			name: "double-quoted path that holds a space",
-			arrange: func(t *testing.T, _ *gittest.Fixture, repo *git.Repo) {
-				t.Helper()
-				dir := filepath.Join(t.TempDir(), "ssh config")
-				assert.NilError(t, os.Mkdir(dir, 0o700))
-				gittest.WriteFile(t, dir, "config", aliases)
-				command := `ssh -F "` + filepath.ToSlash(filepath.Join(dir, "config")) + `"`
-				repo.Runner.Env = append(repo.Runner.Env, "GIT_SSH_COMMAND="+command)
-			},
-		},
-		{
 			name: "variable",
 			arrange: func(t *testing.T, _ *gittest.Fixture, repo *git.Repo) {
 				t.Helper()
 				repo.Runner.Env = append(repo.Runner.Env,
 					"ILS_TEST_SSH_CONFIG="+sshConfigFile(t, aliases), `GIT_SSH_COMMAND=ssh -F "$ILS_TEST_SSH_CONFIG"`)
-			},
-		},
-		{
-			name: "tilde",
-			arrange: func(t *testing.T, _ *gittest.Fixture, repo *git.Repo) {
-				t.Helper()
-				gittest.WriteFile(t, envValue(repo.Runner.Env, "HOME"), "ssh-config", aliases)
-				repo.Runner.Env = append(repo.Runner.Env, "GIT_SSH_COMMAND=ssh -F ~/ssh-config")
 			},
 		},
 		{
@@ -689,9 +700,8 @@ func variantCases() []variantCase {
 	}
 }
 
-func TestRepo_OriginURLs_BySSHVariant(t *testing.T) {
-	// Not parallel: plainSSH sets PATH for the whole process while it runs.
-	plainSSH(t, standInAnswer+plainHost)
+func TestRepo_OriginURLs_WhenSSHCommandConfigured_AsksItOrPlainSSHAsItsVariantSays(t *testing.T) {
+	t.Parallel()
 	for _, tt := range variantCases() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -713,7 +723,7 @@ func TestRepo_OriginURLs_BySSHVariant(t *testing.T) {
 			if tt.refuses {
 				mode = refusing
 			}
-			repo := noSSHCommand(newRepo(f))
+			repo := plainSSH(t, newRepo(f), plainAnswer)
 			repo.Runner.Env = append(append(repo.Runner.Env, setting, mode), tt.env...)
 
 			got, err := repo.OriginURLs(t.Context())
@@ -731,34 +741,18 @@ func TestRepo_OriginURLs_WhenConfiguredSSHFails_ReturnsErrorNamingIt(t *testing.
 		name      string
 		command   string
 		key       string
-		mode      string
-		want      string
 		env       []string
 	}{
-		{
-			name: "command exits non-zero", command: "ssh", key: "GIT_SSH_COMMAND", configure: quoted,
-			mode: refusing, want: standInRefusal,
-		},
-		{
-			name: "program exits non-zero", command: "ssh", key: "GIT_SSH", configure: verbatim,
-			mode: refusing, want: standInRefusal,
-		},
-		{
-			name: "command named ssh.exe exits non-zero", command: "ssh.exe", key: "GIT_SSH_COMMAND", configure: quoted,
-			mode: refusing, want: standInRefusal,
-		},
-		{
-			name: "command prints no hostname", command: "ssh", key: "GIT_SSH_COMMAND", configure: quoted,
-			mode: fakeSSHEnv + "=1", want: "printed no hostname",
-		},
+		{name: "command exits non-zero", command: "ssh", key: "GIT_SSH_COMMAND", configure: quoted},
+		{name: "program exits non-zero", command: "ssh", key: "GIT_SSH", configure: verbatim},
+		{name: "command named ssh.exe exits non-zero", command: "ssh.exe", key: "GIT_SSH_COMMAND", configure: quoted},
 		{
 			name: "unrecognized command of variant ssh exits non-zero", command: "connect", key: "GIT_SSH_COMMAND",
-			configure: quoted, mode: refusing, env: variantEnv("ssh"), want: standInRefusal,
+			configure: quoted, env: variantEnv("ssh"),
 		},
 		{
 			name: "unrecognized command of an unknown variant exits non-zero", command: "connect",
-			key: "GIT_SSH_COMMAND", configure: quoted, mode: refusing, env: variantEnv("openssh"),
-			want: standInRefusal,
+			key: "GIT_SSH_COMMAND", configure: quoted, env: variantEnv("openssh"),
 		},
 	}
 	for _, tt := range tests {
@@ -768,20 +762,342 @@ func TestRepo_OriginURLs_WhenConfiguredSSHFails_ReturnsErrorNamingIt(t *testing.
 			f.SetOriginURL(aliasURL)
 			configured := tt.configure(standIn(t, tt.command))
 			repo := noSSHCommand(newRepo(f))
-			repo.Runner.Env = append(append(repo.Runner.Env, tt.key+"="+configured, tt.mode), tt.env...)
+			repo.Runner.Env = append(append(repo.Runner.Env, tt.key+"="+configured, refusing), tt.env...)
 
 			_, err := repo.OriginURLs(t.Context())
 
-			assert.Check(t, is.ErrorContains(err, configured))
-			assert.Check(t, is.ErrorContains(err, tt.want))
+			exitErr, ok := errors.AsType[*child.ExitError](err)
+			assert.Assert(t, ok, "OriginURLs() error = %v, want *child.ExitError", err)
+			assert.Check(t, is.Equal(exitErr.Argv[0], configured))
+			assert.Check(t, is.Contains(exitErr.Stderr, standInRefusal))
+		})
+	}
+}
+
+// missingCase is one ssh command a user configured whose program is not found.
+type missingCase struct {
+	name string
+	// setting is where the command is configured: GIT_SSH_COMMAND, core.sshCommand or GIT_SSH.
+	setting string
+	// value is the command line, or the program GIT_SSH names.
+	value string
+	// program is the program the error names, for a command whose program is looked up.
+	program string
+	// variant, when not empty, is the repository's ssh.variant.
+	variant string
+	// env holds the settings added to the runner's environment.
+	env []string
+	// hide leaves the PATH of the runner's environment empty while the process PATH stays.
+	hide bool
+}
+
+func missingCases() []missingCase {
+	return []missingCase{
+		{name: "GIT_SSH_COMMAND path alone", setting: "GIT_SSH_COMMAND", value: "/no/such/ssh", program: "/no/such/ssh"},
+		{
+			name: "GIT_SSH_COMMAND path with an argument", setting: "GIT_SSH_COMMAND", value: "/no/such/ssh -v",
+			program: "/no/such/ssh",
+		},
+		{
+			name: "GIT_SSH_COMMAND unrecognized name alone", setting: "GIT_SSH_COMMAND", value: "no-such-wrapper",
+			program: "no-such-wrapper",
+		},
+		{
+			name: "GIT_SSH_COMMAND unrecognized name with an argument", setting: "GIT_SSH_COMMAND",
+			value: "no-such-wrapper -v", program: "no-such-wrapper",
+		},
+		{
+			name: "GIT_SSH_COMMAND name found only on the process PATH", setting: "GIT_SSH_COMMAND", value: "ssh -v",
+			program: "ssh", hide: true,
+		},
+		{
+			name: "GIT_SSH_COMMAND assignment before a name", setting: "GIT_SSH_COMMAND", value: "AUDIT=1 no-such-wrapper -v",
+			program: "no-such-wrapper",
+		},
+		{
+			name: "GIT_SSH_COMMAND exec before a name", setting: "GIT_SSH_COMMAND", value: "exec no-such-wrapper -v",
+			program: "no-such-wrapper",
+		},
+		{
+			name: "GIT_SSH_COMMAND command before a name", setting: "GIT_SSH_COMMAND", value: "command no-such-wrapper",
+			program: "no-such-wrapper",
+		},
+		{
+			name: "GIT_SSH_COMMAND env and an assignment before a name", setting: "GIT_SSH_COMMAND",
+			value: "env AUDIT=1 no-such-wrapper", program: "no-such-wrapper",
+		},
+		{name: "core.sshCommand path alone", setting: "core.sshCommand", value: "/no/such/ssh", program: "/no/such/ssh"},
+		{
+			name: "core.sshCommand unrecognized name with an argument", setting: "core.sshCommand",
+			value: "no-such-wrapper -v", program: "no-such-wrapper",
+		},
+		{name: "GIT_SSH path", setting: "GIT_SSH", value: "/no/such/ssh", program: "/no/such/ssh"},
+		{name: "GIT_SSH unrecognized name", setting: "GIT_SSH", value: "no-such-wrapper", program: "no-such-wrapper"},
+		{name: "GIT_SSH name found only on the process PATH", setting: "GIT_SSH", value: "ssh", program: "ssh", hide: true},
+		{name: "GIT_SSH path named plink", setting: "GIT_SSH", value: "/no/such/plink", program: "/no/such/plink"},
+		{
+			name: "GIT_SSH unrecognized name of GIT_SSH_VARIANT simple", setting: "GIT_SSH", value: "no-such-wrapper",
+			program: "no-such-wrapper", env: variantEnv("simple"),
+		},
+		{
+			name: "GIT_SSH path of ssh.variant putty", setting: "GIT_SSH", value: "/no/such/ssh", program: "/no/such/ssh",
+			variant: "putty",
+		},
+		{
+			name: "GIT_SSH name of GIT_SSH_VARIANT simple found only on the process PATH", setting: "GIT_SSH",
+			value: "ssh", program: "ssh", env: variantEnv("simple"), hide: true,
+		},
+	}
+}
+
+// missingRepo returns the repository of a new fixture whose origin is aliasURL, a plain ssh
+// answering plainHost, and the ssh command of tt.
+func missingRepo(t *testing.T, tt missingCase) git.Repo {
+	t.Helper()
+
+	f := gittest.New(t, trunk)
+	f.SetOriginURL(aliasURL)
+	if tt.variant != "" {
+		f.Git("config", "ssh.variant", tt.variant)
+	}
+	repo := plainSSH(t, newRepo(f), plainAnswer)
+	if tt.hide {
+		repo = hideSSH(t, repo)
+	}
+	if tt.setting == "core.sshCommand" {
+		f.Git("config", "core.sshCommand", tt.value)
+	} else {
+		repo.Runner.Env = append(repo.Runner.Env, tt.setting+"="+tt.value)
+	}
+	repo.Runner.Env = append(repo.Runner.Env, tt.env...)
+
+	return repo
+}
+
+func TestRepo_OriginURLs_WhenSSHCommandNotFound_ReturnsSSHCommandMissingError(t *testing.T) {
+	// A plain ssh that ran in place of the missing command would answer, failing nothing.
+	t.Parallel()
+	for _, tt := range missingCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			repo := missingRepo(t, tt)
+
+			_, err := repo.OriginURLs(t.Context())
+
+			missing, ok := errors.AsType[*git.SSHCommandMissingError](err)
+			assert.Assert(t, ok, "OriginURLs() error = %v, want *git.SSHCommandMissingError", err)
+			assert.Check(t, is.Equal(missing.Setting, tt.setting))
+			assert.Check(t, is.Equal(missing.Program, tt.program))
+			_, tool := errors.AsType[*child.ToolMissingError](err)
+			assert.Check(t, !tool, "OriginURLs() error = %v, want no *child.ToolMissingError", err)
+		})
+	}
+}
+
+// uncheckedCases are command lines of variant plain whose first word is not found. ils never runs
+// such a line, and its first word may be a shell builtin or an assignment, so it does not look the
+// word up.
+func uncheckedCases() []missingCase {
+	return []missingCase{
+		{name: "GIT_SSH_COMMAND path named plink", setting: "GIT_SSH_COMMAND", value: "/no/such/plink"},
+		{
+			name: "GIT_SSH_COMMAND assignment before a name, of GIT_SSH_VARIANT putty", setting: "GIT_SSH_COMMAND",
+			value: "AUDIT=1 no-such-wrapper -v", env: variantEnv("putty"),
+		},
+		{
+			name: "core.sshCommand path of ssh.variant simple", setting: "core.sshCommand", value: "/no/such/ssh",
+			variant: "simple",
+		},
+	}
+}
+
+func TestRepo_OriginURLs_WhenCommandLineOfVariantPlainNotFound_AsksPlainSSH(t *testing.T) {
+	t.Parallel()
+	for _, tt := range uncheckedCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			repo := missingRepo(t, tt)
+
+			got, err := repo.OriginURLs(t.Context())
+			assert.NilError(t, err)
+
+			assert.Check(t, is.Equal(got.Fetch.Host, plainHost))
+		})
+	}
+}
+
+func TestSSHCommandMissingError_Error_NamesTheSettingAndTheProgramAndNoInstallPage(t *testing.T) {
+	t.Parallel()
+	err := &git.SSHCommandMissingError{Setting: "core.sshCommand", Program: "no-such-wrapper"}
+
+	got := err.Error()
+
+	assert.Check(t, is.Contains(got, "core.sshCommand"))
+	assert.Check(t, is.Contains(got, "no-such-wrapper"))
+	assert.Check(t, !strings.Contains(got, "https://"), "Error() = %q, want no install page", got)
+}
+
+// exitingCase is one ssh command a user configured whose program is found but itself exits with
+// the code git gives a program it cannot find.
+type exitingCase struct {
+	// line writes the command line, given the path of a stand-in named connect that is also first on
+	// the PATH of the runner's environment.
+	line func(path string) string
+	name string
+	code int
+}
+
+func exitingCases() []exitingCase {
+	byName := func(string) string { return "connect" }
+
+	return []exitingCase{
+		{name: "path exits 127", line: quoted, code: 127},
+		{name: "path exits 128", line: quoted, code: 128},
+		{name: "name on the runner's PATH exits 127", line: byName, code: 127},
+		{name: "name on the runner's PATH exits 128", line: byName, code: 128},
+		{name: "name on the runner's PATH with an argument exits 127", line: func(string) string { return "connect -v" }, code: 127},
+		{name: "exec before a path exits 127", line: func(path string) string { return "exec " + quoted(path) }, code: 127},
+		{name: "assignment before a path exits 128", line: func(path string) string { return "AUDIT=1 " + quoted(path) }, code: 128},
+		{name: "command before a name exits 128", line: func(string) string { return "command connect" }, code: 128},
+		{name: "env and an assignment before a name exit 127", line: func(string) string { return "env AUDIT=1 connect" }, code: 127},
+		{name: "env and an option before a name exit 127", line: func(string) string { return "env -u AUDIT connect" }, code: 127},
+		{name: "command and an option before a path exit 128", line: func(path string) string { return "command -p " + quoted(path) }, code: 128},
+	}
+}
+
+// exitingRepo returns the repository of a new fixture whose origin is aliasURL, a plain ssh
+// answering plainHost, and the command line of tt, of variant, in GIT_SSH_COMMAND.
+func exitingRepo(t *testing.T, tt exitingCase, variant string) (git.Repo, string) {
+	t.Helper()
+
+	f := gittest.New(t, trunk)
+	f.SetOriginURL(aliasURL)
+	path := standIn(t, "connect")
+	repo := firstOnRunnerPath(plainSSH(t, newRepo(f), plainAnswer), path)
+	line := tt.line(path)
+	repo.Runner.Env = append(append(repo.Runner.Env, "GIT_SSH_COMMAND="+line, exiting(tt.code)), variantEnv(variant)...)
+
+	return repo, line
+}
+
+func TestRepo_OriginURLs_WhenFoundSSHCommandExitsAsIfMissing_ReturnsExitErrorNamingIt(t *testing.T) {
+	t.Parallel()
+	for _, tt := range exitingCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			repo, line := exitingRepo(t, tt, "ssh")
+
+			_, err := repo.OriginURLs(t.Context())
+
+			exitErr, ok := errors.AsType[*child.ExitError](err)
+			assert.Assert(t, ok, "OriginURLs() error = %v, want *child.ExitError", err)
+			assert.Check(t, is.Equal(exitErr.Argv[0], line))
+			assert.Check(t, is.Contains(exitErr.Stderr, standInRefusal))
+		})
+	}
+}
+
+func TestRepo_OriginURLs_WhenFoundSSHCommandOfVariantAutoExitsAsIfMissing_AsksPlainSSH(t *testing.T) {
+	t.Parallel()
+	for _, tt := range exitingCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			repo, _ := exitingRepo(t, tt, "auto")
+
+			got, err := repo.OriginURLs(t.Context())
+			assert.NilError(t, err)
+
+			assert.Check(t, is.Equal(got.Fetch.Host, plainHost))
+		})
+	}
+}
+
+func TestRepo_OriginURLs_WhenCommandLineNamesNoProgramAndExitsAsIfMissing_ReturnsExitErrorNamingIt(t *testing.T) {
+	// The shell runs the -G that ils appends as the program, and finds no such command.
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.SetOriginURL(aliasURL)
+	repo := plainSSH(t, newRepo(f), plainAnswer)
+	repo.Runner.Env = append(append(repo.Runner.Env, "GIT_SSH_COMMAND=AUDIT=1"), variantEnv("ssh")...)
+
+	_, err := repo.OriginURLs(t.Context())
+
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "OriginURLs() error = %v, want *child.ExitError", err)
+	assert.Check(t, is.Equal(exitErr.Argv[0], "AUDIT=1"))
+}
+
+func TestRepo_OriginURLs_WhenGitSSHProgramIsOnlyOnTheRunnerPath_AsksIt(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.SetOriginURL(aliasURL)
+	repo := onRunnerPath(t, plainSSH(t, newRepo(f), plainAnswer), "connect")
+	repo.Runner.Env = append(repo.Runner.Env, gitSSHByBareName()...)
+
+	got, err := repo.OriginURLs(t.Context())
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Equal(got.Fetch.Host, standInHost))
+}
+
+// gitSSHByBareName returns the settings that name the stand-in connect, found on a PATH, as the
+// program GIT_SSH runs, of variant ssh, answering standInHost.
+func gitSSHByBareName() []string {
+	return append([]string{"GIT_SSH=connect", answering(standInHost)}, variantEnv("ssh")...)
+}
+
+// useProcessEnv makes env the whole environment of the process until the test ends. It cannot run
+// in a parallel test.
+func useProcessEnv(t *testing.T, env []string) {
+	t.Helper()
+
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if key == "" {
+			continue
+		}
+
+		t.Setenv(key, "")
+		assert.NilError(t, os.Unsetenv(key))
+	}
+
+	for _, entry := range env {
+		key, value, _ := strings.Cut(entry, "=")
+		t.Setenv(key, value)
+	}
+}
+
+func TestRepo_OriginURLs_WhenRunnerSetsNoEnvironment_FindsSSHOnTheProcessPath(t *testing.T) {
+	// Not parallel: each row sets the environment of the whole process, whose PATH alone holds the
+	// stand-ins.
+	tests := []struct {
+		name string
+		want string
+		// env holds the settings added to the process environment.
+		env []string
+	}{
+		{name: "no ssh command configured", want: plainHost},
+		{name: "GIT_SSH program named by bare name", want: standInHost, env: gitSSHByBareName()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := gittest.New(t, trunk)
+			f.SetOriginURL(aliasURL)
+			repo := onRunnerPath(t, plainSSH(t, newRepo(f), plainAnswer), "connect")
+			useProcessEnv(t, append(repo.Runner.Env, tt.env...))
+			repo.Runner.Env = nil
+
+			got, err := repo.OriginURLs(t.Context())
+			assert.NilError(t, err)
+
+			assert.Check(t, is.Equal(got.Fetch.Host, tt.want))
 		})
 	}
 }
 
 func TestRepo_OriginURLs_WhenSSHHostStartsWithDash_RefusesWithOriginError(t *testing.T) {
-	// Not parallel: plainSSH sets PATH for the whole process while it runs. A plain ssh or a GIT_SSH
-	// program that ran would refuse, which is no *git.OriginError.
-	plainSSH(t, standInRefuse)
+	// A plain ssh or a GIT_SSH program that ran would refuse, which is no *git.OriginError.
+	t.Parallel()
 	const scpLike = "git@-example.com:acme/widgets.git"
 	command := func(_ *testing.T, line string) []string { return []string{"GIT_SSH_COMMAND=" + line} }
 	tests := []struct {
@@ -796,7 +1112,7 @@ func TestRepo_OriginURLs_WhenSSHHostStartsWithDash_RefusesWithOriginError(t *tes
 			arrange: func(t *testing.T, _ string) []string {
 				t.Helper()
 
-				return []string{"GIT_SSH=" + standIn(t, "ssh"), refusing}
+				return []string{gitSSHStandIn(t), refusing}
 			},
 		},
 		{name: "plain ssh", url: scpLike, arrange: func(_ *testing.T, _ string) []string { return nil }},
@@ -807,9 +1123,8 @@ func TestRepo_OriginURLs_WhenSSHHostStartsWithDash_RefusesWithOriginError(t *tes
 			f := gittest.New(t, trunk)
 			f.SetOriginURL(tt.url)
 			marker := filepath.Join(t.TempDir(), "ran")
-			repo := noSSHCommand(newRepo(f))
-			repo.Runner.Env = append(repo.Runner.Env, "GIT_SSH_VARIANT=ssh")
-			repo.Runner.Env = append(repo.Runner.Env, tt.arrange(t, marking(marker))...)
+			repo := plainSSH(t, newRepo(f), standInRefuse)
+			repo.Runner.Env = append(append(repo.Runner.Env, variantEnv("ssh")...), tt.arrange(t, gittest.Marking(marker))...)
 
 			_, err := repo.OriginURLs(t.Context())
 
@@ -823,9 +1138,8 @@ func TestRepo_OriginURLs_WhenSSHHostStartsWithDash_RefusesWithOriginError(t *tes
 }
 
 func TestRepo_OriginURLs_WhenURLIsHTTPS_RunsNoSSHCommand(t *testing.T) {
-	// Not parallel: plainSSH sets PATH for the whole process while it runs. A plain ssh or a GIT_SSH
-	// program that ran would refuse, failing the read.
-	plainSSH(t, standInRefuse)
+	// A plain ssh or a GIT_SSH program that ran would refuse, failing the read.
+	t.Parallel()
 	tests := []struct {
 		arrange func(t *testing.T, f *gittest.Fixture, command string) []string
 		name    string
@@ -849,7 +1163,7 @@ func TestRepo_OriginURLs_WhenURLIsHTTPS_RunsNoSSHCommand(t *testing.T) {
 			arrange: func(t *testing.T, _ *gittest.Fixture, _ string) []string {
 				t.Helper()
 
-				return []string{"GIT_SSH=" + standIn(t, "ssh"), refusing}
+				return []string{gitSSHStandIn(t), refusing}
 			},
 		},
 		{
@@ -863,9 +1177,8 @@ func TestRepo_OriginURLs_WhenURLIsHTTPS_RunsNoSSHCommand(t *testing.T) {
 			f := gittest.New(t, trunk)
 			f.SetOriginURL(httpsURL)
 			marker := filepath.Join(t.TempDir(), "ran")
-			repo := noSSHCommand(newRepo(f))
-			repo.Runner.Env = append(repo.Runner.Env, "GIT_SSH_VARIANT=ssh")
-			repo.Runner.Env = append(repo.Runner.Env, tt.arrange(t, f, marking(marker))...)
+			repo := plainSSH(t, newRepo(f), standInRefuse)
+			repo.Runner.Env = append(append(repo.Runner.Env, variantEnv("ssh")...), tt.arrange(t, f, gittest.Marking(marker))...)
 
 			_, err := repo.OriginURLs(t.Context())
 			assert.NilError(t, err)

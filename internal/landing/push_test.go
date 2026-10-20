@@ -489,7 +489,9 @@ func answering(t *testing.T, f *gittest.Fixture, times int, after string) []stri
 		fmt.Fprintf(&counted, "mkdir '%s/%d' 2>/dev/null || ", tally, i)
 	}
 
-	return f.ServedBy(counted.String() + "{ " + after + "; exit 1; }; " + gittest.Serving(f.OriginDir()))
+	serving := counted.String() + "{ " + after + "; exit 1; }; " + gittest.Serving(f.OriginDir())
+
+	return f.ServedBy(serving)
 }
 
 func TestPush_WhenOriginStopsAnswering_RefusesNamingWhatItWasAskedFor(t *testing.T) {

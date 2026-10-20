@@ -49,7 +49,6 @@ type Fixture struct {
 	originDir string
 	peerDir   string
 	trunk     string
-	sshConfig string
 	env       []string
 	serial    int
 }
@@ -82,7 +81,6 @@ func New(tb testing.TB, trunk string) *Fixture {
 		dir:       filepath.Join(root, "repo"),
 		originDir: filepath.Join(root, "origin.git"),
 		trunk:     trunk,
-		sshConfig: sshConfig,
 	}
 
 	err = os.MkdirAll(home, 0o750)
@@ -126,6 +124,10 @@ func Env(tb testing.TB) []string {
 
 	return isolatedEnv(tb.TempDir())
 }
+
+// Marking returns a command line that creates the file at marker when a shell runs it, whatever
+// arguments follow it.
+func Marking(marker string) string { return "echo ran > '" + filepath.ToSlash(marker) + "' #" }
 
 // WriteFile writes content to the file name in dir, and fails the test when it cannot.
 func WriteFile(tb testing.TB, dir, name, content string) {
@@ -437,6 +439,8 @@ func (f *Fixture) ServedBy(serving string) []string {
 func (f *Fixture) standIn() string {
 	f.tb.Helper()
 
+	const name = "ssh"
+
 	ssh, err := exec.LookPath("ssh")
 	if err != nil {
 		f.tb.Fatalf("find ssh: %v", err)
@@ -455,8 +459,8 @@ func (f *Fixture) standIn() string {
 		f.tb.Fatalf("create the directory of the stand-in for ssh: %v", err)
 	}
 
-	path := filepath.Join(dir, "ssh")
-	WriteFile(f.tb, dir, "ssh", script)
+	path := filepath.Join(dir, name)
+	WriteFile(f.tb, dir, name, script)
 
 	// Git's shell runs the stand-in as a program, which it can only do once it is executable.
 	err = os.Chmod(path, 0o700) //nolint:gosec // G302: the stand-in is a script a shell must execute.
@@ -477,7 +481,7 @@ func (f *Fixture) SetSSHConfig(content string) {
 func (f *Fixture) RemoveSSHConfig() {
 	f.tb.Helper()
 
-	err := os.Remove(f.sshConfig)
+	err := os.Remove(filepath.Join(f.root, sshConfigName))
 	if err != nil {
 		f.tb.Fatalf("remove the ssh config: %v", err)
 	}

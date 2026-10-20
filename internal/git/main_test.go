@@ -8,7 +8,9 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -35,20 +37,25 @@ const (
 	// exits zero while a process it started still holds its output pipes.
 	helperSpawn = "spawn"
 
-	// fakeSSHEnv makes the test binary act as an ssh whose `ssh -G` prints a config with no
-	// hostname line.
-	fakeSSHEnv    = "ILS_GIT_TEST_FAKE_SSH"
-	fakeSSHConfig = "user git\nport 22\n"
-
 	// sshStandInEnv makes the test binary act as an ssh command a user configured: standInAnswer
 	// followed by a name answers `-G <host>` with a config whose hostname is that name,
-	// standInSuffix followed by a suffix answers with the host it was asked for and that suffix, and
-	// standInRefuse exits non-zero with standInRefusal on stderr.
-	sshStandInEnv  = "ILS_GIT_TEST_SSH_STAND_IN"
-	standInAnswer  = "hostname="
-	standInSuffix  = "suffix="
-	standInRefuse  = "refuse"
-	standInRefusal = "stand-in refused the call"
+	// standInSuffix followed by a suffix answers with the host it was asked for and that suffix,
+	// standInWorkDir answers with the name of the directory it runs in, standInNoHostname answers
+	// with a config that has no hostname line, standInRefuse exits non-zero with standInRefusal on
+	// stderr, and standInExit followed by a number exits with that code and standInRefusal on stderr.
+	sshStandInEnv     = "ILS_GIT_TEST_SSH_STAND_IN"
+	standInAnswer     = "hostname="
+	standInSuffix     = "suffix="
+	standInWorkDir    = "work-dir"
+	standInNoHostname = "no-hostname"
+	standInRefuse     = "refuse"
+	standInExit       = "exit="
+	standInRefusal    = "stand-in refused the call"
+
+	// plainSSHEnv makes the test binary act as plain ssh in the stand-in mode it names when called as
+	// plain ssh is, `-G -- <host>`, so that a configured command and plain ssh that share one
+	// environment answer apart; any other call takes its mode from sshStandInEnv.
+	plainSSHEnv = "ILS_GIT_TEST_PLAIN_SSH"
 
 	// originHostEnv makes the test binary print the host OriginURLs reports for the fetch URL of the
 	// repository its value names, read by a runner that sets no environment and so inherits this
@@ -74,12 +81,7 @@ func TestMain(m *testing.M) {
 		os.Exit(diffHelper(mode))
 	}
 
-	if os.Getenv(fakeSSHEnv) != "" {
-		fmt.Print(fakeSSHConfig)
-		os.Exit(0)
-	}
-
-	if mode, ok := os.LookupEnv(sshStandInEnv); ok {
+	if mode, ok := standInMode(os.Args[1:]); ok {
 		os.Exit(sshStandIn(mode, os.Args[1:]))
 	}
 
@@ -251,8 +253,26 @@ func TestMain_WhenTestGitTargetIsUnknown_ExitsBeforeTheTests(t *testing.T) {
 	assert.Check(t, is.Contains(stderr.String(), `ILS_TEST_GIT is "newest", want minimum, latest, or unset`))
 }
 
+// standInMode returns the stand-in mode of a call of the test binary with args, and whether the
+// environment makes the call one of a stand-in ssh: plainSSHEnv for a call shaped as plain ssh's,
+// and sshStandInEnv for any other. A call that only plainSSHEnv marks gets no mode, which the
+// stand-in refuses.
+func standInMode(args []string) (string, bool) {
+	plain, plainSet := os.LookupEnv(plainSSHEnv)
+	if plainSet && slices.Contains(args, "--") {
+		return plain, true
+	}
+
+	if mode, ok := os.LookupEnv(sshStandInEnv); ok {
+		return mode, true
+	}
+
+	return "", plainSet
+}
+
 // sshStandIn plays the ssh command mode names, called with args, and returns its exit code. It
-// answers `-G <host>`, the call of a configured command, and `-G -- <host>`, the call of plain ssh.
+// answers `-G <host>`, the call of a configured command, and `-G -- <host>`, the call of plain ssh;
+// the modes that refuse, exit, print no hostname or print the directory answer any call.
 func sshStandIn(mode string, args []string) int {
 	if mode == standInRefuse {
 		fmt.Fprintln(os.Stderr, standInRefusal)
@@ -260,11 +280,41 @@ func sshStandIn(mode string, args []string) int {
 		return 3
 	}
 
+	if code, exits := strings.CutPrefix(mode, standInExit); exits {
+		fmt.Fprintln(os.Stderr, standInRefusal)
+
+		n, err := strconv.Atoi(code)
+		if err != nil {
+			return 2
+		}
+
+		return n
+	}
+
+	if mode == standInNoHostname {
+		fmt.Print("user git\nport 22\n")
+
+		return 0
+	}
+
+	if mode == standInWorkDir {
+		dir, err := os.Getwd()
+		if err != nil {
+			return 2
+		}
+
+		fmt.Printf("user git\nhostname %s\nport 22\n", filepath.Base(dir))
+
+		return 0
+	}
+
 	args = slices.DeleteFunc(slices.Clone(args), func(arg string) bool { return arg == "--" })
 
 	name, answers := strings.CutPrefix(mode, standInAnswer)
 	suffix, suffixes := strings.CutPrefix(mode, standInSuffix)
-	if !answers && !suffixes || len(args) != 2 || args[0] != "-G" {
+	known := answers || suffixes
+	wellFormed := len(args) == 2 && args[0] == "-G"
+	if !known || !wellFormed {
 		fmt.Fprintf(os.Stderr, "stand-in in mode %q called with %q, want -G [--] <host>\n", mode, args)
 
 		return 2

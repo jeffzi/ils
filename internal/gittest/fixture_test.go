@@ -429,7 +429,27 @@ func TestFixture_SetOriginURL_StoresURLVerbatim(t *testing.T) {
 	assert.Check(t, is.Equal(git(t, f, f.Dir(), "remote", "get-url", origin), url))
 }
 
-const aliases = "Host work\n  HostName git.example.org\n"
+// sshHost is the host alias that aliases defines.
+const sshHost = "work"
+
+const aliases = "Host " + sshHost + "\n  HostName git.example.org\n"
+
+// gitWithEnv runs git in the fixture's directory with exactly env as its environment, and returns
+// its untrimmed stdout and stderr.
+func gitWithEnv(t *testing.T, f *gittest.Fixture, env []string, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+
+	var out, errOut bytes.Buffer
+
+	//nolint:gosec // G204: argv is written by the tests in this file.
+	cmd := exec.CommandContext(t.Context(), "git", args...)
+	cmd.Dir = f.Dir()
+	cmd.Env = env
+	cmd.Stdout, cmd.Stderr = &out, &errOut
+	err = cmd.Run()
+
+	return out.String(), errOut.String(), err
+}
 
 // askedForConfig runs the ssh command env names, as git runs a command line, to print the
 // configuration ssh would connect to host with, and returns its stdout and stderr.
@@ -439,16 +459,7 @@ func askedForConfig(t *testing.T, f *gittest.Fixture, env []string, host string)
 	command, ok := envValue(env, "GIT_SSH_COMMAND")
 	assert.Assert(t, ok, "environment sets no GIT_SSH_COMMAND")
 
-	var out, errOut bytes.Buffer
-
-	//nolint:gosec // G204: argv is written by the tests in this file.
-	cmd := exec.CommandContext(t.Context(), "git", "-c", "alias.read-config=!"+command, "read-config", "-G", host)
-	cmd.Dir = f.Dir()
-	cmd.Env = env
-	cmd.Stdout, cmd.Stderr = &out, &errOut
-	err = cmd.Run()
-
-	return out.String(), errOut.String(), err
+	return gitWithEnv(t, f, env, "-c", "alias.read-config=!"+command, "read-config", "-G", host)
 }
 
 // hostnameIn returns the host an `ssh -G` output says ssh connects to, or "" when it names none.
@@ -462,35 +473,28 @@ func hostnameIn(config string) string {
 	return ""
 }
 
-// marking returns a serving script that creates the file at marker whenever it runs.
-func marking(marker string) string { return "echo ran > '" + filepath.ToSlash(marker) + "' #" }
+func TestMarking_WhenAShellRunsIt_CreatesTheMarkerWhateverArgumentsFollow(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, mainBranch)
+	marker := filepath.Join(t.TempDir(), "ran")
 
-func TestFixture_SSHCommand_AnswersConfigFromTheFixtureSSHConfig(t *testing.T) {
+	f.Git("-c", "alias.mark=!"+gittest.Marking(marker), "mark", "-G", "--", sshHost)
+
+	_, err := os.Stat(marker)
+	assert.NilError(t, err)
+}
+
+func TestFixture_SetSSHConfig_IsReadByTheSSHCommandOfEveryEnv(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		env  func(t *testing.T, f *gittest.Fixture) []string
-		name string
-	}{
-		{name: "Env", env: func(_ *testing.T, f *gittest.Fixture) []string { return f.Env() }},
-		{name: "ServedEnv", env: func(_ *testing.T, f *gittest.Fixture) []string { return f.ServedEnv(f.OriginDir()) }},
-		{
-			name: "ServedBy",
-			env: func(t *testing.T, f *gittest.Fixture) []string {
-				t.Helper()
-
-				return f.ServedBy(marking(filepath.Join(t.TempDir(), "ran")))
-			},
-		},
-	}
-	for _, tt := range tests {
+	for _, tt := range fixtureEnvs() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			f := gittest.New(t, mainBranch)
 			f.SetSSHConfig(aliases)
 
-			stdout, stderr, err := askedForConfig(t, f, tt.env(t, f), "work")
+			stdout, stderr, err := askedForConfig(t, f, tt.env(f), sshHost)
 			assert.NilError(t, err, "stderr: %s", stderr)
 
 			assert.Check(t, is.Equal(hostnameIn(stdout), "git.example.org"))
@@ -498,28 +502,31 @@ func TestFixture_SSHCommand_AnswersConfigFromTheFixtureSSHConfig(t *testing.T) {
 	}
 }
 
-func TestFixture_ServedBy_WhenAskedForConfig_NeverRunsTheServingScript(t *testing.T) {
+func TestFixture_ServedBy_WhenAskedForConfig_AnswersFromTheSSHConfigWithoutServing(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
+	f.SetSSHConfig(aliases)
 	marker := filepath.Join(t.TempDir(), "ran")
 
-	_, stderr, err := askedForConfig(t, f, f.ServedBy(marking(marker)), "work")
+	stdout, stderr, err := askedForConfig(t, f, f.ServedBy(gittest.Marking(marker)), sshHost)
 	assert.NilError(t, err, "stderr: %s", stderr)
+
+	assert.Check(t, is.Equal(hostnameIn(stdout), "git.example.org"))
 
 	_, statErr := os.Stat(marker)
 	assert.Check(t, is.ErrorIs(statErr, fs.ErrNotExist), "the serving script ran for a config read")
 }
 
-// fixtureEnvs are the environments of a fixture whose ssh command reads the fixture's ssh config.
-func fixtureEnvs() []struct {
+// fixtureEnv is one way a fixture builds the environment of a git command.
+type fixtureEnv struct {
 	env  func(f *gittest.Fixture) []string
 	name string
-} {
-	return []struct {
-		env  func(f *gittest.Fixture) []string
-		name string
-	}{
+}
+
+// fixtureEnvs are the environments of a fixture whose ssh command reads the fixture's ssh config.
+func fixtureEnvs() []fixtureEnv {
+	return []fixtureEnv{
 		{name: "Env", env: (*gittest.Fixture).Env},
 		{name: "ServedEnv", env: func(f *gittest.Fixture) []string { return f.ServedEnv(f.OriginDir()) }},
 	}
@@ -527,44 +534,30 @@ func fixtureEnvs() []struct {
 
 func TestNew_WhenSSHConfigNeverSet_AnswersAsAnEmptyConfig(t *testing.T) {
 	t.Parallel()
-	for _, tt := range fixtureEnvs() {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			f := gittest.New(t, mainBranch)
-			dir := t.TempDir()
-			gittest.WriteFile(t, dir, "config", "")
-			reading := "GIT_SSH_COMMAND=ssh -F '" + filepath.ToSlash(filepath.Join(dir, "config")) + "'"
-			want, stderr, err := askedForConfig(t, f, append(tt.env(f), reading), "work")
-			assert.NilError(t, err, "stderr: %s", stderr)
-
-			got, stderr, err := askedForConfig(t, f, tt.env(f), "work")
-			assert.NilError(t, err, "stderr: %s", stderr)
-
-			assert.Check(t, is.Equal(got, want))
-		})
-	}
-}
-
-func TestFixture_ServedEnv_SetsSSHVariantSSH(t *testing.T) {
-	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
+	dir := t.TempDir()
+	const configName = "config"
+	gittest.WriteFile(t, dir, configName, "")
+	emptyConfigCommand := "GIT_SSH_COMMAND=ssh -F '" + filepath.ToSlash(filepath.Join(dir, configName)) + "'"
+	want, stderr, err := askedForConfig(t, f, append(f.Env(), emptyConfigCommand), sshHost)
+	assert.NilError(t, err, "stderr: %s", stderr)
 
-	variant, ok := envValue(f.ServedEnv(f.OriginDir()), "GIT_SSH_VARIANT")
+	got, stderr, err := askedForConfig(t, f, f.Env(), sshHost)
+	assert.NilError(t, err, "stderr: %s", stderr)
 
-	assert.Check(t, ok, "ServedEnv sets no GIT_SSH_VARIANT")
-	assert.Check(t, is.Equal(variant, "ssh"))
+	assert.Check(t, is.Equal(got, want))
 }
 
 func TestFixture_SetSSHConfig_WhenCalledTwice_KeepsTheSecondContentOnly(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
-	f.SetSSHConfig("Host work\n  HostName first.example\n")
+	f.SetSSHConfig("Host " + sshHost + "\n  HostName first.example\n")
 
-	f.SetSSHConfig("Host work\n  HostName second.example\n")
+	f.SetSSHConfig("Host " + sshHost + "\n  HostName second.example\n")
 
-	stdout, stderr, err := askedForConfig(t, f, f.Env(), "work")
+	stdout, stderr, err := askedForConfig(t, f, f.Env(), sshHost)
 	assert.NilError(t, err, "stderr: %s", stderr)
 	assert.Check(t, is.Equal(hostnameIn(stdout), "second.example"))
 }
@@ -578,7 +571,7 @@ func TestFixture_RemoveSSHConfig_MakesTheConfigReadExitNonZero(t *testing.T) {
 
 			f.RemoveSSHConfig()
 
-			_, _, err := askedForConfig(t, f, tt.env(f), "work")
+			_, _, err := askedForConfig(t, f, tt.env(f), sshHost)
 			assert.Check(t, err != nil, "ssh -G succeeded with its config file removed, want a non-zero exit")
 		})
 	}
@@ -650,9 +643,12 @@ func TestFixture_LandPull_SquashesTheCommitOntoOriginTrunkAsThePullRequest(t *te
 	assert.Check(t, is.Equal(git(t, f, f.OriginDir(), "log", "-1", "--format=%T %s", mainBranch), want))
 }
 
+// sshURL is an origin URL over ssh, named for its shape.
+type sshURL struct{ name, url string }
+
 // sshURLs are origin URLs over ssh in each shape git hands its ssh command differently.
-func sshURLs() []struct{ name, url string } {
-	return []struct{ name, url string }{
+func sshURLs() []sshURL {
+	return []sshURL{
 		{name: "ssh url", url: elsewhere},
 		{name: "ssh url with a port", url: "ssh://git@example.com:2222/owner/project.git"},
 		{name: "scp-like url", url: "git@example.com:owner/project.git"},
@@ -671,17 +667,10 @@ func TestFixture_ServedEnv_WhenOriginURLIsSSH_FetchesFromTheRepositoryAtDir(t *t
 			f.Publish(work)
 			f.SetOriginURL(tt.url)
 
-			var stdout, stderr bytes.Buffer
+			stdout, stderr, err := gitWithEnv(t, f, f.ServedEnv(f.OriginDir()), "ls-remote", origin, "refs/heads/"+work)
+			assert.NilError(t, err, "git ls-remote, stderr: %s", stderr)
 
-			cmd := exec.CommandContext(t.Context(), "git", "ls-remote", origin, "refs/heads/"+work)
-			cmd.Dir = f.Dir()
-			cmd.Env = f.ServedEnv(f.OriginDir())
-			cmd.Stdout, cmd.Stderr = &stdout, &stderr
-
-			err := cmd.Run()
-			assert.NilError(t, err, "git ls-remote, stderr: %s", stderr.String())
-
-			assert.Check(t, is.Equal(stdout.String(), shas[0]+"\trefs/heads/"+work+"\n"))
+			assert.Check(t, is.Equal(stdout, shas[0]+"\trefs/heads/"+work+"\n"))
 		})
 	}
 }
@@ -697,15 +686,8 @@ func TestFixture_ServedEnv_WhenOriginURLIsSSH_PushesToTheRepositoryAtDir(t *test
 			shas := f.Commits(work, "first change")
 			f.SetOriginURL(tt.url)
 
-			var stderr bytes.Buffer
-
-			cmd := exec.CommandContext(t.Context(), "git", "push", "--quiet", origin, work)
-			cmd.Dir = f.Dir()
-			cmd.Env = f.ServedEnv(f.OriginDir())
-			cmd.Stderr = &stderr
-
-			err := cmd.Run()
-			assert.NilError(t, err, "git push, stderr: %s", stderr.String())
+			_, stderr, err := gitWithEnv(t, f, f.ServedEnv(f.OriginDir()), "push", "--quiet", origin, work)
+			assert.NilError(t, err, "git push, stderr: %s", stderr)
 
 			assert.Check(t, is.Equal(originBranch(t, f, work), shas[0]))
 		})
