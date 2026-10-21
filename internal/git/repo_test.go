@@ -609,7 +609,7 @@ func TestRepo_Unlanded_WhenMergedHeadHasCommitTheTipLacks_ListsNothing(t *testin
 	f.OriginGit("update-ref", pullRef, f.AdvanceOrigin(topic))
 	fetch(f, pullRef)
 	merged := f.Git("rev-parse", "FETCH_HEAD")
-	f.SquashOnOrigin(merged, "topic (#7)")
+	f.SquashOnOrigin(merged, "topic (#7)", "")
 	f.RemoveFromOrigin(topic)
 	fetch(f, trunk)
 

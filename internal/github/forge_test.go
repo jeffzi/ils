@@ -132,10 +132,12 @@ func featureLanding() forge.Landing {
 	return forge.Landing{Number: pullNumber, HeadSHA: headSHA, Subject: "feat: read the message (#7)", Body: "Lands the change."}
 }
 
-// pullRequestRule is one `pull_request` rule of the rules read's answer, allowing methods, a JSON
-// array.
-func pullRequestRule(methods string) string {
-	return `{"type":"pull_request","parameters":{"required_approving_review_count":0,"allowed_merge_methods":` + methods + `}}`
+// pullRequestRule is one `pull_request` rule of the rules read's answer, from the ruleset with the
+// id id, allowing methods, a JSON array.
+func pullRequestRule(id int, methods string) string {
+	return `{"type":"pull_request","ruleset_source_type":"Repository","ruleset_source":"ada/engine",` +
+		`"ruleset_id":` + strconv.Itoa(id) +
+		`,"parameters":{"required_approving_review_count":0,"allowed_merge_methods":` + methods + `}}`
 }
 
 func workflowsArgs() []string {
@@ -739,18 +741,33 @@ func TestForge_TrunkProtection_SquashAllowed(t *testing.T) {
 	tests := []struct {
 		name  string
 		rules string
-		want  bool
+		// forbidding is the ids of the rulesets whose rule forbids squash merges.
+		forbidding []int
+		want       bool
 	}{
 		{name: "no pull request rule", rules: `[{"type":"deletion"}]`, want: true},
-		{name: "pull request rule listing squash", rules: jsonArray(pullRequestRule(`["merge","squash","rebase"]`)), want: true},
-		{name: "pull request rule without squash", rules: jsonArray(pullRequestRule(`["merge"]`))},
-		{name: "every pull request rule lists squash", rules: jsonArray(pullRequestRule(`["squash"]`), pullRequestRule(`["squash","rebase"]`)), want: true},
-		{name: "one of two pull request rules without squash", rules: jsonArray(pullRequestRule(`["squash"]`), pullRequestRule(`["rebase"]`))},
-		{name: "the rule without squash ahead of one with it", rules: jsonArray(pullRequestRule(`["rebase"]`), pullRequestRule(`["squash"]`))},
-		{name: "pull request rule with an empty methods list", rules: jsonArray(pullRequestRule(`[]`))},
+		{name: "pull request rule listing squash", rules: jsonArray(pullRequestRule(42, `["merge","squash","rebase"]`)), want: true},
+		{name: "pull request rule without squash", rules: jsonArray(pullRequestRule(42, `["merge"]`)), forbidding: []int{42}},
+		{
+			name:  "every pull request rule lists squash",
+			rules: jsonArray(pullRequestRule(42, `["squash"]`), pullRequestRule(51, `["squash","rebase"]`)), want: true,
+		},
+		{
+			name:  "one of two pull request rules without squash",
+			rules: jsonArray(pullRequestRule(42, `["squash"]`), pullRequestRule(51, `["rebase"]`)), forbidding: []int{51},
+		},
+		{
+			name:  "the rule without squash ahead of one with it",
+			rules: jsonArray(pullRequestRule(42, `["rebase"]`), pullRequestRule(51, `["squash"]`)), forbidding: []int{42},
+		},
+		{
+			name:  "two pull request rules without squash",
+			rules: jsonArray(pullRequestRule(42, `["merge"]`), pullRequestRule(51, `["rebase"]`)), forbidding: []int{42, 51},
+		},
+		{name: "pull request rule with an empty methods list", rules: jsonArray(pullRequestRule(42, `[]`)), forbidding: []int{42}},
 		{
 			name:  "pull request rule with no allowed methods field",
-			rules: `[{"type":"pull_request","parameters":{"required_approving_review_count":1}}]`,
+			rules: `[{"type":"pull_request","ruleset_id":42,"parameters":{"required_approving_review_count":1}}]`,
 			want:  true,
 		},
 	}
@@ -762,6 +779,7 @@ func TestForge_TrunkProtection_SquashAllowed(t *testing.T) {
 			assert.NilError(t, err)
 
 			assert.Check(t, is.Equal(got.SquashAllowed, tt.want))
+			assert.Check(t, is.DeepEqual(got.SquashForbiddenBy, tt.forbidding, cmpopts.EquateEmpty()))
 		})
 	}
 }

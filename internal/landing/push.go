@@ -71,6 +71,10 @@ func pushChecks(ctx context.Context, deps Deps, req Request, ready Ready) (pushR
 		return pushReady{}, stop
 	}
 
+	if stop := fetchTrunk(ctx, deps, req, ready.Trunk); stop != nil {
+		return pushReady{}, stop
+	}
+
 	var stop *result.Result
 
 	p.tip, p.past, stop = commitsPast(ctx, deps, req, p.onBranch)

@@ -119,13 +119,7 @@ func envValue(env []string, key string) (string, bool) {
 func isUnder(t *testing.T, parent, child string) bool {
 	t.Helper()
 
-	resolvedParent, err := filepath.EvalSymlinks(parent)
-	assert.NilError(t, err)
-
-	resolvedChild, err := filepath.EvalSymlinks(child)
-	assert.NilError(t, err)
-
-	rel, err := filepath.Rel(resolvedParent, resolvedChild)
+	rel, err := filepath.Rel(resolved(t, parent), resolved(t, child))
 
 	return err == nil && filepath.IsLocal(rel)
 }
@@ -606,14 +600,133 @@ func TestFixture_SquashOnOrigin_AddsTrunkCommitTheCloneLacks(t *testing.T) {
 	shas := f.Commits(work, "first change", "second change")
 	tree := git(t, f, f.Dir(), "rev-parse", shas[1]+"^{tree}")
 
-	squash := f.SquashOnOrigin(shas[1], "squash of work")
+	squash := f.SquashOnOrigin(shas[1], "squash of work", "first paragraph\n\nsecond paragraph")
 
 	assert.Check(t, is.Equal(originBranch(t, f, mainBranch), squash))
 
 	want := trunk + " " + tree + " squash of work"
 	assert.Check(t, is.Equal(git(t, f, f.OriginDir(), "log", "-1", "--format=%P %T %s", squash), want))
 
+	assert.Check(t, is.Equal(git(t, f, f.OriginDir(), "log", "-1", "--format=%b", squash), "first paragraph\n\nsecond paragraph"))
+
 	assert.Check(t, !hasCommit(t, f, f.Dir(), squash))
+}
+
+func TestFixture_SquashOnOrigin_WhenBodyIsEmpty_WritesSubjectAlone(t *testing.T) {
+	t.Parallel()
+
+	f := gittest.New(t, mainBranch)
+	shas := f.Commits(work, "first change")
+
+	squash := f.SquashOnOrigin(shas[0], "squash of work", "")
+
+	assert.Check(t, is.Equal(git(t, f, f.OriginDir(), "log", "-1", "--format=%B", squash), "squash of work"))
+}
+
+func TestFixture_SquashOnOrigin_IsWhatAFastForwardPullOfTheTrunkReaches(t *testing.T) {
+	t.Parallel()
+
+	f := gittest.New(t, mainBranch)
+	shas := f.Commits(work, "first change")
+	squash := f.SquashOnOrigin(shas[0], "squash of work", "")
+	git(t, f, f.Dir(), "switch", mainBranch)
+
+	git(t, f, f.Dir(), "pull", "--ff-only", origin, mainBranch)
+
+	assert.Check(t, is.Equal(git(t, f, f.Dir(), "rev-parse", "HEAD"), squash))
+}
+
+// worktrees returns, for each worktree `git worktree list` run in dir names, the branch it has
+// checked out, keyed by its directory with symbolic links resolved.
+func worktrees(t *testing.T, f *gittest.Fixture, dir string) map[string]string {
+	t.Helper()
+
+	got := map[string]string{}
+	path := ""
+
+	for line := range strings.Lines(git(t, f, dir, "worktree", "list", "--porcelain")) {
+		line = strings.TrimRight(line, "\n")
+		if rest, ok := strings.CutPrefix(line, "worktree "); ok {
+			path = resolved(t, rest)
+		}
+
+		if rest, ok := strings.CutPrefix(line, "branch "); ok {
+			got[path] = rest
+		}
+	}
+
+	return got
+}
+
+// resolved returns path with its symbolic links resolved.
+func resolved(t *testing.T, path string) string {
+	t.Helper()
+
+	got, err := filepath.EvalSymlinks(path)
+	assert.NilError(t, err)
+
+	return got
+}
+
+func TestFixture_TrunkWorktree_ChecksOutTheTrunkInALinkedWorktree(t *testing.T) {
+	t.Parallel()
+
+	f := gittest.New(t, mainBranch)
+	f.Commits(work, "first change")
+
+	dir := f.TrunkWorktree()
+
+	want := map[string]string{
+		resolved(t, f.Dir()): "refs/heads/" + work,
+		resolved(t, dir):     "refs/heads/" + mainBranch,
+	}
+	assert.Check(t, is.DeepEqual(worktrees(t, f, f.Dir()), want))
+}
+
+func TestFixture_BranchWorktree_LeavesTheTrunkInTheMainCheckoutSeenFromTheLinkedOne(t *testing.T) {
+	t.Parallel()
+
+	f := gittest.New(t, mainBranch)
+	f.Commits(work, "first change")
+
+	dir := f.BranchWorktree(work)
+
+	want := map[string]string{
+		resolved(t, f.Dir()): "refs/heads/" + mainBranch,
+		resolved(t, dir):     "refs/heads/" + work,
+	}
+	assert.Check(t, is.DeepEqual(worktrees(t, f, dir), want))
+}
+
+func TestFixture_AdvanceTrunk_AddsLocalTrunkCommitOriginLacksAndStaysOnTheBranch(t *testing.T) {
+	t.Parallel()
+
+	f := gittest.New(t, mainBranch)
+	f.Commits(work, "first change")
+
+	ahead := f.AdvanceTrunk()
+
+	assert.Check(t, is.Equal(git(t, f, f.Dir(), "log", "--format=%H", origin+"/"+mainBranch+".."+mainBranch), ahead))
+
+	assert.Check(t, is.Equal(git(t, f, f.Dir(), "symbolic-ref", "--short", "HEAD"), work))
+}
+
+func TestFixture_UntrackedOnTrunk_MakesSwitchingToTheTrunkRefuseToOverwriteIt(t *testing.T) {
+	t.Parallel()
+
+	f := gittest.New(t, mainBranch)
+	f.Commits(work, "first change")
+
+	path := f.UntrackedOnTrunk()
+
+	assert.Check(t, is.Equal(git(t, f, f.Dir(), "status", "--porcelain=v1", "--untracked-files=all"), "?? "+path))
+
+	_, _, err := runGit(t, f, f.OriginDir(), "cat-file", "-e", mainBranch+":"+path)
+	assert.Check(t, err, "origin's %s does not track %s", mainBranch, path)
+
+	_, stderr, err := runGit(t, f, f.Dir(), "switch", mainBranch)
+	assert.Check(t, err != nil, "git switch %s succeeded, want it refused", mainBranch)
+	assert.Check(t, is.Contains(stderr, "would be overwritten"))
 }
 
 func TestFixture_Publish_WhenOriginURLNamesAnotherPlace_PutsLocalTipOnOrigin(t *testing.T) {

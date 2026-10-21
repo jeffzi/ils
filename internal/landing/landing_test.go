@@ -120,7 +120,7 @@ func origin() forge.Repo {
 // whichRepo compares the repository of a forge call by host, owner, and name alone: what the
 // forge said of the repository is no part of which repository a call is about.
 func whichRepo() cmp.Option {
-	return cmpopts.IgnoreFields(forge.Repo{}, "Fork", "CanPush")
+	return cmpopts.IgnoreFields(forge.Repo{}, "Fork", "CanPush", "SquashAllowed")
 }
 
 // asked returns the calls that ops stand for: each about the repository origin's URLs name, and

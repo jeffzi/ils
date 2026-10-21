@@ -122,6 +122,9 @@ type HeadQuery struct {
 type Protection struct {
 	// RequiredChecks names the checks a change must pass to land; it may be empty.
 	RequiredChecks []string
+	// SquashForbiddenBy holds the ids of the rulesets whose rules on the trunk forbid a squash
+	// merge, in the order the forge lists them; it is empty when SquashAllowed is true.
+	SquashForbiddenBy []int
 	// SquashAllowed reports whether the rules on the trunk allow a squash merge. The repository's
 	// settings can still forbid one: see Repo.
 	SquashAllowed bool

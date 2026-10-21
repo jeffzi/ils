@@ -92,6 +92,7 @@ type branchRule struct {
 		// MergeMethods is nil when the rule names none, which allows every method.
 		MergeMethods []string `json:"allowed_merge_methods"`
 	} `json:"parameters"`
+	RulesetID int `json:"ruleset_id"`
 }
 
 type pullMessage struct {
@@ -256,7 +257,8 @@ func (f *Forge) missingCheck(ctx context.Context, repo forge.Repo, query forge.V
 }
 
 // TrunkProtection returns the status checks the rules on trunk require, and whether they allow a
-// squash merge: they do unless a pull_request rule names merge methods without squash.
+// squash merge: they do unless a pull_request rule names merge methods without squash, whose
+// ruleset it then names.
 //
 // A free private repository answers 403 with an upgrade message to the read,
 // which counts as no rule. Any other 403 is an error.
@@ -282,7 +284,7 @@ func (f *Forge) TrunkProtection(ctx context.Context, repo forge.Repo, trunk stri
 }
 
 // protectionOf folds the rules on a branch into the checks they require, each named once, and
-// whether every pull_request rule allows a squash merge.
+// whether every pull_request rule allows a squash merge, with the rulesets of those that do not.
 func protectionOf(rules []branchRule) forge.Protection {
 	protection := forge.Protection{SquashAllowed: true}
 
@@ -291,6 +293,7 @@ func protectionOf(rules []branchRule) forge.Protection {
 		case "pull_request":
 			if rule.Parameters.MergeMethods != nil && !slices.Contains(rule.Parameters.MergeMethods, "squash") {
 				protection.SquashAllowed = false
+				protection.SquashForbiddenBy = append(protection.SquashForbiddenBy, rule.RulesetID)
 			}
 		case "required_status_checks":
 			for _, check := range rule.Parameters.Required {

@@ -2,6 +2,7 @@ package gittest_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -148,6 +149,19 @@ func TestFakeGit_WhenRealGitCannotStart_ExitsBroken(t *testing.T) {
 
 	assert.Check(t, is.Equal(got.Code, gittest.BrokenCode), "git status printed %+v", got)
 	assert.Check(t, strings.HasPrefix(got.Stderr, "gittest: "), "git status printed %+v", got)
+}
+
+func TestFakeGit_WhenCallStartsWithStallingWords_WaitsAtTheAddressUntilKilled(t *testing.T) {
+	addr, connected := gittest.SilentListener(t)
+	gittest.FakeGit(t, gittest.Fake{StallOn: []string{"show-ref", "--verify"}, StallAt: addr})
+	ctx := gittest.Ending(t.Context(), connected, context.Canceled)
+	cmd := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/main")
+	cmd.Dir = t.TempDir()
+
+	err := cmd.Run()
+
+	assert.Check(t, is.ErrorIs(ctx.Err(), context.Canceled), "git show-ref ended with %v before it connected", err)
+	assert.Check(t, err != nil, "git show-ref exited 0, want it killed while it waited")
 }
 
 // initRepo makes a repository in a new temporary directory with the git first on PATH, and

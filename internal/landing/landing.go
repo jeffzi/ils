@@ -37,9 +37,10 @@ type Deps struct {
 	Repo  git.Repo
 }
 
-// Forge is the host of a repository, seen through the operations `push` needs.
+// Forge is the host of a repository, seen through the operations `push` and `merge` need.
 type Forge interface {
-	// Identity fills the fork and can-push flags of the repository named by host, owner, and name.
+	// Identity fills the fork, can-push and squash-allowed flags of the repository named by host,
+	// owner, and name.
 	Identity(ctx context.Context, repo forge.Repo) (forge.Repo, error)
 	// FindChanges returns the open changes whose head is the branch, and the merged ones;
 	// a change that was closed without merging is never returned.
@@ -54,6 +55,14 @@ type Forge interface {
 	// HasTrunkCI reports whether the repository runs CI on the trunk: a workflow the forge runs
 	// whose file is on the trunk. A trunk with no workflow file has none; it is not an error.
 	HasTrunkCI(ctx context.Context, repo forge.Repo, trunk string) (bool, error)
+	// Message returns the change's title and body, and the trailer block the forge would end its
+	// squash commit with.
+	Message(ctx context.Context, repo forge.Repo, number int) (forge.Message, error)
+	// Land squash-merges the change with the landing's message, refused by the forge once the
+	// change's head has moved past the landing's. It never deletes the change's branch.
+	Land(ctx context.Context, repo forge.Repo, landing forge.Landing) error
+	// DeleteBranch deletes the branch on the forge.
+	DeleteBranch(ctx context.Context, repo forge.Repo, branch string) error
 }
 
 // Request is the command a result is for and the words it was given.
@@ -68,7 +77,7 @@ type Ready struct {
 	Trunk string
 	// Standing is the branch the command stands on, or a detached HEAD.
 	Standing git.Standing
-	// Repo is the repository origin names, with the forge's fork and can-push flags.
+	// Repo is the repository origin names, with the forge's fork, can-push and squash-allowed flags.
 	Repo forge.Repo
 }
 
@@ -150,8 +159,9 @@ func originRepo(ctx context.Context, deps Deps, req Request) (forge.Repo, *resul
 	return forge.Repo{Host: urls.Fetch.Host, Owner: urls.Fetch.Owner, Name: urls.Fetch.Name}, nil
 }
 
-// identity returns origin with the forge's fork and can-push flags, once the forge's tool is
-// installed, recent enough and logged in, the repository is not a fork, and the user can push to it.
+// identity returns origin with the forge's fork, can-push and squash-allowed flags, once the
+// forge's tool is installed, recent enough and logged in, the repository is not a fork, and the user
+// can push to it.
 func identity(ctx context.Context, deps Deps, req Request, origin forge.Repo) (forge.Repo, *result.Result) {
 	repo, err := deps.Forge.Identity(ctx, origin)
 	if err != nil {
@@ -390,23 +400,25 @@ func cleanTree(ctx context.Context, deps Deps, req Request) *result.Result {
 	return nil
 }
 
-// commitsPast fetches origin's trunk and returns the branch's tip and its commits past that
-// trunk, refusing a branch that has none or has no commit at all.
-func commitsPast(ctx context.Context, deps Deps, req Request, b onBranch) (tip string, past []git.Commit, stop *result.Result) {
-	trunk := b.Trunk
-
-	_, err := deps.Repo.Fetch(ctx, trunk)
-	if err != nil {
-		return "", nil, req.unreached(readFetchedTrunk, err,
+// fetchTrunk fetches origin's trunk, so that the reads of origin/<trunk> that follow are current.
+func fetchTrunk(ctx context.Context, deps Deps, req Request, trunk string) *result.Result {
+	if _, err := deps.Repo.Fetch(ctx, trunk); err != nil {
+		return req.unreached(readFetchedTrunk, err,
 			result.Say("origin could not be reached to fetch its trunk %s", trunk))
 	}
 
+	return nil
+}
+
+// commitsPast returns the branch's tip and its commits past origin's trunk, which fetchTrunk
+// must have fetched, refusing a branch that has none or has no commit at all.
+func commitsPast(ctx context.Context, deps Deps, req Request, b onBranch) (tip string, past []git.Commit, stop *result.Result) {
 	tip, stop = tipOf(ctx, deps, req, b)
 	if stop != nil {
 		return "", nil, stop
 	}
 
-	past, err = deps.Repo.CommitsPast(ctx, tip, trunk)
+	past, err := deps.Repo.CommitsPast(ctx, tip, b.Trunk)
 	if err != nil {
 		return "", nil, req.unread(readCommits, err)
 	}
@@ -439,18 +451,25 @@ func tipOf(ctx context.Context, deps Deps, req Request, b onBranch) (string, *re
 	return "", req.unread(readTip, err)
 }
 
-// nothingPast refuses a branch with no commit that origin's trunk lacks.
+// mergeCommand is the command word of `ils merge`.
+const mergeCommand = "merge"
+
+// nothingPast refuses a branch with no commit that origin's trunk lacks. Its next step is the push
+// of the new work, which for `ils merge` is a first push and not a run again.
 func (r Request) nothingPast(b onBranch) *result.Result {
-	return r.refused(
-		result.Say("the branch %s has no commit past origin's trunk %s", b.branch, b.Trunk),
-		result.NextStep("commit the work, then run ils push again"),
-	)
+	next := result.NextStep("commit the work, then run ils push again")
+	if r.Command == mergeCommand {
+		next = result.NextStep("commit the work, then run ils push")
+	}
+
+	return r.refused(result.Say("the branch %s has no commit past origin's trunk %s", b.branch, b.Trunk), next)
 }
 
 // pullRequest returns the branch's open pull request against the trunk, nil when it has none,
 // and the first merged pull request from the branch whose commits all landed, nil when none
-// did. It refuses an open pull request against another base, and a merged one that carries
-// some of the branch's commits but not the ones listed.
+// did, with its HeadSHA the head fetched from origin. It refuses an open pull request against
+// another base, and a merged one that carries some of the branch's commits but not the ones
+// listed; with that refusal, landed is that merged pull request.
 func pullRequest(ctx context.Context, deps Deps, req Request, b onBranch) (open, landed *forge.Change, stop *result.Result) {
 	changes, err := deps.Forge.FindChanges(ctx, b.Repo, b.branch)
 	if err != nil {
@@ -479,12 +498,15 @@ func pullRequest(ctx context.Context, deps Deps, req Request, b onBranch) (open,
 			continue
 		}
 
-		all, refusal := b.landedWith(ctx, deps, req, change)
-		if refusal != nil {
-			return nil, nil, refusal
-		}
+		head, all, refusal := b.landedWith(ctx, deps, req, change)
+		change.HeadSHA = head
 
-		if all {
+		switch {
+		case refusal != nil && head == "":
+			return nil, nil, refusal
+		case refusal != nil:
+			return nil, &change, refusal
+		case all:
 			return open, &change, nil
 		}
 	}
@@ -494,33 +516,34 @@ func pullRequest(ctx context.Context, deps Deps, req Request, b onBranch) (open,
 
 // landedWith reports whether the merged pull request change carries every commit of the branch
 // past the trunk, by patch: false when it shares none of them. It refuses a branch that shares a
-// commit with it and has commits it lacks, listing those.
-func (b onBranch) landedWith(ctx context.Context, deps Deps, req Request, change forge.Change) (bool, *result.Result) {
+// commit with it and has commits it lacks, listing those. It returns the pull request's head as
+// fetched from origin, or nothing when a read failed.
+func (b onBranch) landedWith(ctx context.Context, deps Deps, req Request, change forge.Change) (string, bool, *result.Result) {
 	head, err := deps.Repo.Fetch(ctx, "refs/pull/"+strconv.Itoa(change.Number)+"/head")
 	if err != nil {
-		return false, req.unreached(readMergedHead, err,
+		return "", false, req.unreached(readMergedHead, err,
 			result.Say("origin could not be reached to fetch the head of pull request #%s", change.Number))
 	}
 
 	theirs, err := deps.Repo.CommitsPast(ctx, head, b.Trunk)
 	if err != nil {
-		return false, req.unread(readMergedHead, err)
+		return "", false, req.unread(readMergedHead, err)
 	}
 
 	shared := slices.ContainsFunc(theirs, func(commit git.Commit) bool {
 		return slices.ContainsFunc(b.past, func(mine git.Commit) bool { return mine.SHA == commit.SHA })
 	})
 	if !shared {
-		return false, nil
+		return head, false, nil
 	}
 
 	unlanded, err := deps.Repo.Unlanded(ctx, head, b.tip, b.Trunk)
 	if err != nil {
-		return false, req.unread(readCommits, err)
+		return "", false, req.unread(readCommits, err)
 	}
 
 	if len(unlanded) == 0 {
-		return true, nil
+		return head, true, nil
 	}
 
 	stop := req.refused(
@@ -530,7 +553,7 @@ func (b onBranch) landedWith(ctx context.Context, deps Deps, req Request, change
 	)
 	stop.Lines = listed(unlanded)
 
-	return false, stop
+	return head, false, stop
 }
 
 // shas returns the shas of commits in order, separated by spaces.
