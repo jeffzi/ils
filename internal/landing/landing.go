@@ -190,7 +190,10 @@ func trunkOf(ctx context.Context, deps Deps, req Request) (string, *result.Resul
 	return "", req.unreached(readTrunk, err, reason)
 }
 
-// identityFailure returns the result for a forge identity call that failed with err.
+// identityFailure returns the result for a forge identity call that failed with err: the
+// refusal tooOld returns for a gh that is older than the minimum or names no readable version,
+// a refusal naming `gh auth login` for a host gh is not logged in to, and what unread returns
+// for any other failure.
 func (r Request) identityFailure(err error) *result.Result {
 	if stop := r.tooOld(err); stop != nil {
 		return stop

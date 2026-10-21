@@ -107,6 +107,7 @@ ils push --json   # the same result as one JSON object
 ils push --help   # usage of push
 ils help          # usage of ils and its commands
 ils help push     # the same as ils push --help
+ils --version     # print the version of ils
 ```
 
 Run `ils push` on a work branch with everything committed. It:

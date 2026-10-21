@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime/debug"
 	"slices"
+	"strings"
 	"time"
 
 	"charm.land/fang/v2"
@@ -26,12 +28,19 @@ const bound = 100 * time.Second
 // Command runs one landing command and returns its result.
 type Command func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result
 
-// App is one launch of ils: where it prints, when it was launched, and the git it runs.
+// App is one launch of ils: where it prints, when it was launched, its version, and the git it
+// runs.
 type App struct {
 	Stdout io.Writer
 	Stderr io.Writer
+	// Version is the version of ils that `ils --version` prints; empty falls back to the version in
+	// the binary's build info.
+	Version string
 	// runPush runs `ils push`; nil runs landing.Push.
 	runPush Command
+	// buildInfo reads the build info that an empty Version falls back to; nil reads
+	// debug.ReadBuildInfo.
+	buildInfo func() (*debug.BuildInfo, bool)
 	// Launch is when the process started; the deadline of every command counts from it.
 	Launch time.Time
 	// git runs every git call; its zero value runs in the working directory with the process's
@@ -75,6 +84,33 @@ func (a App) Run(ctx context.Context, args []string) int {
 	default:
 		return a.show(*p.result, p.gitDir, encoded)
 	}
+}
+
+// Version returns the version of the main module that info, the build info of the running binary,
+// names, without its leading v. It returns "(devel)" when ok is false, as [debug.ReadBuildInfo]
+// reports for a binary built without module support, and when info names no version.
+func Version(info *debug.BuildInfo, ok bool) string {
+	const devel = "(devel)"
+
+	if !ok || info.Main.Version == "" || info.Main.Version == devel {
+		return devel
+	}
+
+	return strings.TrimPrefix(info.Main.Version, "v")
+}
+
+// printedVersion returns the version that ils --version prints: the App.Version field when it is
+// set, otherwise the version of the build info.
+func (a App) printedVersion() string {
+	if a.Version != "" {
+		return a.Version
+	}
+
+	if a.buildInfo == nil {
+		return Version(debug.ReadBuildInfo())
+	}
+
+	return Version(a.buildInfo())
 }
 
 // show prints r on Stdout as text or as JSON and returns the exit code of its outcome.
@@ -122,6 +158,8 @@ type parse struct {
 	// words are the words typed, without the JSON flag.
 	words []string
 	app   App
+	// version is read by root's Args so that `ils --version` passes with no command word.
+	version strictBool
 }
 
 // refusedError carries a refusal up through Cobra, which only knows errors.
@@ -148,15 +186,30 @@ func (p *parse) root() *cobra.Command {
 				return p.refuse(notCommand(wordDash))
 			}
 
-			if len(args) == 0 {
+			if len(args) > 0 {
+				return p.refuse(notCommand(args[0]))
+			}
+
+			if !p.version {
 				return p.refuse(result.Say("no command was given"))
 			}
 
-			return p.refuse(notCommand(args[0]))
+			return nil
 		},
-		RunE:    func(*cobra.Command, []string) error { return nil },
+		RunE: func(c *cobra.Command, _ []string) error {
+			if _, err := fmt.Fprintf(c.OutOrStdout(), "ils version %s\n", p.app.printedVersion()); err != nil {
+				return fmt.Errorf("write the version: %w", err)
+			}
+
+			return nil
+		},
 		Example: "ils push",
 	}
+
+	// The flag has no short form: -v stays free, and it is the root's own, so `ils push --version`
+	// is an extra word of push.
+	versionFlag := root.Flags().VarPF(&p.version, flagVersion[len("--"):], "", "Print the version of ils")
+	versionFlag.NoOptDefVal = "true"
 
 	jsonFlag := root.PersistentFlags().VarPF(new(strictBool), flagJSON[len("--"):], "", "Print the result as one JSON object")
 	jsonFlag.NoOptDefVal = "true"
@@ -330,6 +383,7 @@ const (
 	flagJSONTrue  = flagJSON + "=true"
 	flagJSONFalse = flagJSON + "=false"
 	flagHelp      = "--help"
+	flagVersion   = "--version"
 
 	// wordDash is the terminator after which every word is a positional argument.
 	wordDash = "--"
