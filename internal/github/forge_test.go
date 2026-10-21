@@ -4,11 +4,9 @@ import (
 	"context"
 	"errors"
 	"path"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"gotest.tools/v3/assert"
@@ -120,6 +118,25 @@ func checksArgs() []string { return ghtest.ChecksArgs(engineSlug, pullNumber) }
 func runsArgs() []string { return ghtest.RunsArgs(engineSlug, headSHA) }
 
 func logArgs() []string { return ghtest.LogArgs(engineSlug, runID) }
+
+func messageArgs() []string { return ghtest.MessageArgs(engineHost, "ada", "engine", pullNumber) }
+
+func landArgs(landing forge.Landing) []string { return ghtest.LandArgs(engineSlug, landing) }
+
+func deleteArgs(branch string) []string {
+	return ghtest.DeleteBranchArgs(engineHost, "ada/engine", branch)
+}
+
+// featureLanding is the landing every Land test asks for.
+func featureLanding() forge.Landing {
+	return forge.Landing{Number: pullNumber, HeadSHA: headSHA, Subject: "feat: read the message (#7)", Body: "Lands the change."}
+}
+
+// pullRequestRule is one `pull_request` rule of the rules read's answer, allowing methods, a JSON
+// array.
+func pullRequestRule(methods string) string {
+	return `{"type":"pull_request","parameters":{"required_approving_review_count":0,"allowed_merge_methods":` + methods + `}}`
+}
 
 func workflowsArgs() []string {
 	return []string{"api", "--hostname", engineHost, "--paginate", "repos/ada/engine/actions/workflows"}
@@ -236,17 +253,33 @@ func operations() []operation {
 			_, err := f.HasTrunkCI(ctx, engine(), trunk)
 			return err
 		}},
+		{name: "Message", run: func(ctx context.Context, f *github.Forge) error {
+			_, err := f.Message(ctx, engine(), pullNumber)
+			return err
+		}},
+		{name: "Land", run: func(ctx context.Context, f *github.Forge) error {
+			return f.Land(ctx, engine(), featureLanding())
+		}},
+		{name: "DeleteBranch", run: func(ctx context.Context, f *github.Forge) error {
+			return f.DeleteBranch(ctx, engine(), featureBranch)
+		}},
 	}
 }
 
-func readCases() []readCase {
+func operationsByName() map[string]func(context.Context, *github.Forge) error {
 	byName := map[string]func(context.Context, *github.Forge) error{}
 	for _, op := range operations() {
 		byName[op.name] = op.run
 	}
 
+	return byName
+}
+
+func readCases() []readCase {
+	byName := operationsByName()
+
 	identity, find, head, protection, verdict := byName["Identity"], byName["FindChanges"], byName["Head"], byName["TrunkProtection"], byName["Verdict"]
-	hasCI := byName["HasTrunkCI"]
+	hasCI, message := byName["HasTrunkCI"], byName["Message"]
 	blocked := func(ctx context.Context, f *github.Forge) error {
 		_, err := f.Head(ctx, engine(), headQuery("build", "test"))
 		return err
@@ -273,6 +306,7 @@ func readCases() []readCase {
 			name: "api workflow files", run: hasCI, args: workflowFilesArgs(),
 			before: []ghtest.Call{ghtest.Says(activeCIList(), workflowsArgs()...)},
 		},
+		{name: "api graphql message", run: message, args: messageArgs()},
 	}
 }
 
@@ -435,20 +469,21 @@ func TestForge_Identity(t *testing.T) {
 		view string
 		want forge.Repo
 	}{
-		{name: "write may push", view: ghtest.RepoViewJSON(false, "WRITE"), want: forge.Repo{CanPush: true}},
-		{name: "maintain may push", view: ghtest.RepoViewJSON(false, "MAINTAIN"), want: forge.Repo{CanPush: true}},
-		{name: "admin may push", view: ghtest.RepoViewJSON(false, "ADMIN"), want: forge.Repo{CanPush: true}},
-		{name: "read may not push", view: ghtest.RepoViewJSON(false, "READ"), want: forge.Repo{}},
-		{name: "triage may not push", view: ghtest.RepoViewJSON(false, "TRIAGE"), want: forge.Repo{}},
-		{name: "no permission may not push", view: ghtest.RepoViewJSON(false, ""), want: forge.Repo{}},
-		{name: "fork that may push", view: ghtest.RepoViewJSON(true, "ADMIN"), want: forge.Repo{Fork: true, CanPush: true}},
-		{name: "fork that may not push", view: ghtest.RepoViewJSON(true, "READ"), want: forge.Repo{Fork: true}},
+		{name: "write may push", view: ghtest.RepoViewJSON(false, "WRITE"), want: forge.Repo{CanPush: true, SquashAllowed: true}},
+		{name: "maintain may push", view: ghtest.RepoViewJSON(false, "MAINTAIN"), want: forge.Repo{CanPush: true, SquashAllowed: true}},
+		{name: "admin may push", view: ghtest.RepoViewJSON(false, "ADMIN"), want: forge.Repo{CanPush: true, SquashAllowed: true}},
+		{name: "read may not push", view: ghtest.RepoViewJSON(false, "READ"), want: forge.Repo{SquashAllowed: true}},
+		{name: "triage may not push", view: ghtest.RepoViewJSON(false, "TRIAGE"), want: forge.Repo{SquashAllowed: true}},
+		{name: "no permission may not push", view: ghtest.RepoViewJSON(false, ""), want: forge.Repo{SquashAllowed: true}},
+		{name: "fork that may push", view: ghtest.RepoViewJSON(true, "ADMIN"), want: forge.Repo{Fork: true, CanPush: true, SquashAllowed: true}},
+		{name: "fork that may not push", view: ghtest.RepoViewJSON(true, "READ"), want: forge.Repo{Fork: true, SquashAllowed: true}},
+		{name: "settings forbid squash merges", view: ghtest.RepoViewSquashJSON(false, "WRITE", false), want: forge.Repo{CanPush: true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fake := ghtest.Setup(t, ghtest.Says("Logged in\n", loginArgs()...), ghtest.Says(tt.view, repoViewArgs()...))
 			want := engine()
-			want.Fork, want.CanPush = tt.want.Fork, tt.want.CanPush
+			want.Fork, want.CanPush, want.SquashAllowed = tt.want.Fork, tt.want.CanPush, tt.want.SquashAllowed
 
 			got, err := newForge().Identity(t.Context(), engine())
 			assert.NilError(t, err)
@@ -694,8 +729,60 @@ func TestForge_TrunkProtection(t *testing.T) {
 			got, err := newForge().TrunkProtection(t.Context(), engine(), trunk)
 			assert.NilError(t, err)
 
-			want := forge.Protection{RequiredChecks: tt.want}
+			want := forge.Protection{RequiredChecks: tt.want, SquashAllowed: true}
 			assert.Check(t, is.DeepEqual(got, want, cmpopts.EquateEmpty()))
+		})
+	}
+}
+
+func TestForge_TrunkProtection_SquashAllowed(t *testing.T) {
+	tests := []struct {
+		name  string
+		rules string
+		want  bool
+	}{
+		{name: "no pull request rule", rules: `[{"type":"deletion"}]`, want: true},
+		{name: "pull request rule listing squash", rules: jsonArray(pullRequestRule(`["merge","squash","rebase"]`)), want: true},
+		{name: "pull request rule without squash", rules: jsonArray(pullRequestRule(`["merge"]`))},
+		{name: "every pull request rule lists squash", rules: jsonArray(pullRequestRule(`["squash"]`), pullRequestRule(`["squash","rebase"]`)), want: true},
+		{name: "one of two pull request rules without squash", rules: jsonArray(pullRequestRule(`["squash"]`), pullRequestRule(`["rebase"]`))},
+		{name: "the rule without squash ahead of one with it", rules: jsonArray(pullRequestRule(`["rebase"]`), pullRequestRule(`["squash"]`))},
+		{name: "pull request rule with an empty methods list", rules: jsonArray(pullRequestRule(`[]`))},
+		{
+			name:  "pull request rule with no allowed methods field",
+			rules: `[{"type":"pull_request","parameters":{"required_approving_review_count":1}}]`,
+			want:  true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ghtest.Setup(t, ghtest.Says(tt.rules, rulesArgs()...))
+
+			got, err := newForge().TrunkProtection(t.Context(), engine(), trunk)
+			assert.NilError(t, err)
+
+			assert.Check(t, is.Equal(got.SquashAllowed, tt.want))
+		})
+	}
+}
+
+func TestForge_TrunkProtection_WhenRefusalIsNotTheFreePlans_ReturnsExitError(t *testing.T) {
+	tests := []struct {
+		name   string
+		stderr string
+	}{
+		{name: "403 for another reason", stderr: "gh: Resource not accessible by integration (HTTP 403)\n"},
+		{name: "upgrade wording under another status", stderr: "gh: Upgrade to GitHub Pro (HTTP 404)\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stderr: tt.stderr, Code: 1}, rulesArgs()...))
+
+			_, err := newForge().TrunkProtection(t.Context(), engine(), trunk)
+
+			exitErr, ok := errors.AsType[*child.ExitError](err)
+			assert.Assert(t, ok, "error = %v, want *child.ExitError", err)
+			assert.Check(t, is.Equal(exitErr.Stderr, tt.stderr))
 		})
 	}
 }
@@ -721,146 +808,7 @@ func TestForge_TrunkProtection_ReadsRulesOfExactlyTheTrunk(t *testing.T) {
 			assert.NilError(t, err)
 
 			assert.Check(t, is.Contains(fake.Calls(), received(args)[0]))
-			assert.Check(t, is.DeepEqual(got, forge.Protection{RequiredChecks: []string{"build"}}))
-		})
-	}
-}
-
-func TestForge_Verdict_WhenChecksAreReported_ReadsEachBucketWhateverGhExitsWith(t *testing.T) {
-	tests := []struct {
-		name   string
-		bucket string
-		want   forge.Bucket
-		code   int
-	}{
-		{name: "pass", bucket: "pass", code: 0, want: forge.BucketPass},
-		{name: "fail exits 1", bucket: "fail", code: 1, want: forge.BucketFail},
-		{name: "pending exits 8", bucket: "pending", code: 8, want: forge.BucketPending},
-		{name: "skipping", bucket: "skipping", code: 0, want: forge.BucketSkipped},
-		{name: "cancel exits 0", bucket: "cancel", code: 0, want: forge.BucketCanceled},
-		{name: "bucket this version does not know", bucket: "stale", code: 0, want: forge.BucketPending},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			checks := ghtest.Answer{Stdout: jsonArray(ghtest.CheckJSON("build", tt.bucket, statusLink)), Stderr: "notice\n", Code: tt.code}
-			ghtest.Setup(t, ghtest.Exits(checks, checksArgs()...), ghtest.Says("[]", runsArgs()...))
-
-			got, err := newForge().Verdict(t.Context(), engine(), verdictQuery())
-			assert.NilError(t, err)
-
-			want := []forge.Check{{Name: "build", Bucket: tt.want, Workflow: "CI", Link: statusLink}}
-			assert.Check(t, is.DeepEqual(got.Checks, want))
-		})
-	}
-}
-
-func TestForge_Verdict_WhenNoCheckReported_ReturnsZeroChecks(t *testing.T) {
-	ghtest.Setup(t, ghtest.Exits(noChecksAnswer(), checksArgs()...), ghtest.Says("[]", runsArgs()...))
-
-	got, err := newForge().Verdict(t.Context(), engine(), verdictQuery())
-	assert.NilError(t, err)
-
-	assert.Check(t, is.DeepEqual(got, forge.Verdict{}, cmpopts.EquateEmpty()))
-}
-
-func TestForge_Verdict_WhenCommitHasRuns_ReturnsEachRunStatus(t *testing.T) {
-	runs := `[
-		{"status":"queued","name":"Add the forge","workflowName":"CI"},
-		{"status":"in_progress","name":"Add the forge","workflowName":"Lint"},
-		{"status":"waiting","name":"Add the forge","workflowName":"Preview"},
-		{"status":"requested","name":"Add the forge","workflowName":"Docs"},
-		{"status":"pending","name":"Add the forge","workflowName":"Audit"},
-		{"status":"completed","name":"Add the forge","workflowName":"Build"},
-		{"status":"completed","name":"Scan","workflowName":""},
-		{"status":"paused","name":"Add the forge","workflowName":"Hold"}
-	]`
-	ghtest.Setup(t, ghtest.Says("[]", checksArgs()...), ghtest.Says(runs, runsArgs()...))
-
-	got, err := newForge().Verdict(t.Context(), engine(), verdictQuery())
-	assert.NilError(t, err)
-
-	want := []forge.Run{
-		{Name: "CI", Status: forge.RunQueued},
-		{Name: "Lint", Status: forge.RunInProgress},
-		{Name: "Preview", Status: forge.RunAwaitingPerson},
-		{Name: "Docs", Status: forge.RunAwaitingPerson},
-		{Name: "Audit", Status: forge.RunQueued},
-		{Name: "Build", Status: forge.RunCompleted},
-		{Name: "Scan", Status: forge.RunCompleted},
-		{Name: "Hold", Status: forge.RunInProgress},
-	}
-	assert.Check(t, is.DeepEqual(got.Runs, want))
-}
-
-func TestForge_Verdict_WhenQueryNamesRequiredChecks_CarriesEveryCheckAndListsTheMissing(t *testing.T) {
-	checks := jsonArray(ghtest.CheckJSON("lint", "fail", runLink), ghtest.CheckJSON("test", "pass", statusLink))
-	ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: checks, Code: 1}, checksArgs()...), ghtest.Says("[]", runsArgs()...))
-
-	got, err := newForge().Verdict(t.Context(), engine(), verdictQuery("build", "test", "deploy"))
-	assert.NilError(t, err)
-
-	want := forge.Verdict{
-		Checks: []forge.Check{
-			{Name: "lint", Bucket: forge.BucketFail, Workflow: "CI", Link: runLink},
-			{Name: "test", Bucket: forge.BucketPass, Workflow: "CI", Link: statusLink, Required: true},
-		},
-		MissingRequired: []string{"build", "deploy"},
-	}
-	assert.Check(t, is.DeepEqual(got, want, cmpopts.EquateEmpty()))
-}
-
-func TestForge_Verdict_FailedLog(t *testing.T) {
-	const logText = "build\tRun tests\t--- FAIL: TestForge (0.01s)\nbuild\tRun tests\tFAIL\n"
-
-	logged := ghtest.Answer{Stdout: logText}
-	gone := ghtest.Answer{Stderr: "run " + runID + " not found\n", Code: 1}
-	// unfinished is what gh run view --log-failed says of a run that has not completed.
-	unfinished := ghtest.Answer{Stderr: "run " + runID + " is still in progress; logs will be available when it is complete\n", Code: 1}
-	read := forge.FailedLog{Check: "build", Text: logText, State: forge.FailedLogRead}
-	noRun := forge.FailedLog{Check: "scan", State: forge.FailedLogNoRun}
-	unreadable := forge.FailedLog{Check: "build", State: forge.FailedLogUnreadable}
-	inProgress := forge.FailedLog{Check: "build", State: forge.FailedLogInProgress}
-	withLog := received(checksArgs(), runsArgs(), logArgs())
-	noLog := received(checksArgs(), runsArgs())
-	tests := []struct {
-		name   string
-		checks string
-		// wantCalls is every argv gh receives: the log is read only for a failing check of a run.
-		wantCalls [][]string
-		want      forge.FailedLog
-		// required names the checks the query requires; none makes every check decide.
-		required []string
-		log      ghtest.Answer
-	}{
-		{name: "failing check of a run", checks: ghtest.CheckJSON("build", "fail", runLink), log: logged, want: read, wantCalls: withLog},
-		{name: "canceled check of a run", checks: ghtest.CheckJSON("build", "cancel", runLink), log: logged, want: read, wantCalls: withLog},
-		{name: "passing check ahead of the failing one", checks: ghtest.CheckJSON("lint", "pass", statusLink) + "," + ghtest.CheckJSON("build", "fail", runLink), log: logged, want: read, wantCalls: withLog},
-		{name: "failing status ahead of a failing check of a run", checks: ghtest.CheckJSON("scan", "fail", statusLink) + "," + ghtest.CheckJSON("build", "fail", runLink), log: logged, want: noRun, wantCalls: noLog},
-		{name: "failing status with no run", checks: ghtest.CheckJSON("scan", "fail", statusLink), log: logged, want: noRun, wantCalls: noLog},
-		{name: "run view fails", checks: ghtest.CheckJSON("build", "fail", runLink), log: gone, want: unreadable, wantCalls: withLog},
-		{name: "run of the failing check still in progress", checks: ghtest.CheckJSON("build", "fail", runLink), log: unfinished, want: inProgress, wantCalls: withLog},
-		{name: "check of a run still pending", checks: ghtest.CheckJSON("build", "pending", runLink), log: logged, wantCalls: noLog},
-		{name: "every check passed", checks: ghtest.CheckJSON("build", "pass", runLink), log: logged, wantCalls: noLog},
-		{
-			name:     "first required failing check has no run",
-			checks:   ghtest.CheckJSON("lint", "fail", runLink) + "," + ghtest.CheckJSON("scan", "fail", statusLink) + "," + ghtest.CheckJSON("build", "fail", runLink),
-			required: []string{"scan", "build"}, log: logged, want: noRun, wantCalls: noLog,
-		},
-		{
-			name:     "failing check is not required",
-			checks:   ghtest.CheckJSON("lint", "fail", runLink) + "," + ghtest.CheckJSON("build", "pass", runLink),
-			required: []string{"build"}, log: logged, wantCalls: noLog,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			fake := ghtest.Setup(t, ghtest.Says(jsonArray(tt.checks), checksArgs()...), ghtest.Says("[]", runsArgs()...), ghtest.Exits(tt.log, logArgs()...))
-
-			got, err := newForge().Verdict(t.Context(), engine(), verdictQuery(tt.required...))
-			assert.NilError(t, err)
-
-			assert.Check(t, is.DeepEqual(got.FailedLog, tt.want))
-			assertCalls(t, fake, tt.wantCalls)
+			assert.Check(t, is.DeepEqual(got, forge.Protection{RequiredChecks: []string{"build"}, SquashAllowed: true}))
 		})
 	}
 }
@@ -943,6 +891,161 @@ func TestForge_HasTrunkCI_WhenTrunkNameHoldsQuerySyntax_SendsItEscaped(t *testin
 	assert.Check(t, got)
 }
 
+func TestForge_Message(t *testing.T) {
+	const (
+		title     = "feat: read the message"
+		pullBody  = "Lands the change.\n\nCo-authored-by: Grace Hopper <grace@example.com>"
+		signedOff = "Signed-off-by: Ada Lovelace <ada@example.com>"
+		liveSuite = "Co-authored-by: ils live suite <ils-live@example.com>"
+	)
+	tests := []struct {
+		name string
+		// mergeBody is the body GitHub would compose for a squash merge by the logged-in user.
+		mergeBody string
+		want      []string
+	}{
+		{
+			name:      "commit messages setting",
+			mergeBody: "* Add the forge\n\n* Read the message\n\n---------\n\n" + signedOff + "\n" + liveSuite,
+			want:      []string{signedOff, liveSuite},
+		},
+		{
+			name:      "pull request body setting, the body's own trailer left out",
+			mergeBody: pullBody + "\n\n---------\n\n" + liveSuite,
+			want:      []string{liveSuite},
+		},
+		{name: "blank setting", mergeBody: liveSuite, want: []string{liveSuite}},
+		{name: "empty body text"},
+		{name: "commit messages with no trailer anywhere", mergeBody: "* Add the forge\n\n* fix: read the message"},
+		{name: "last paragraph mixes prose with a trailer", mergeBody: "Lands the change.\n\nThanks to Grace.\n" + liveSuite},
+		{name: "token holding a space", mergeBody: "Lands the change.\n\nThanks to: Grace Hopper"},
+		{name: "token holding an underscore", mergeBody: "Lands the change.\n\nReviewed_by: Grace Hopper"},
+		{name: "token with no value", mergeBody: "Lands the change.\n\nReviewed-by:"},
+		{name: "no space after the colon", mergeBody: "Lands the change.\n\nReviewed-by:Grace Hopper"},
+		{name: "body text ending in a newline", mergeBody: liveSuite + "\n", want: []string{liveSuite}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := ghtest.Setup(t, ghtest.Says(ghtest.MessageJSON(title, pullBody, tt.mergeBody), messageArgs()...))
+
+			got, err := newForge().Message(t.Context(), engine(), pullNumber)
+			assert.NilError(t, err)
+
+			want := forge.Message{Title: title, Body: pullBody, Trailers: tt.want}
+			assert.Check(t, is.DeepEqual(got, want, cmpopts.EquateEmpty()))
+			assertCalls(t, fake, received(messageArgs()))
+		})
+	}
+}
+
+func TestForge_Message_WhenAnswerHoldsNoPullRequest_ReturnsDecodeError(t *testing.T) {
+	tests := []struct {
+		name   string
+		answer string
+	}{
+		{name: "no pull request", answer: `{"data":{"repository":{"pullRequest":null}}}`},
+		{name: "no repository", answer: `{"data":{"repository":null}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ghtest.Setup(t, ghtest.Says(tt.answer, messageArgs()...))
+
+			_, err := newForge().Message(t.Context(), engine(), pullNumber)
+
+			decodeErr, ok := errors.AsType[*github.DecodeError](err)
+			assert.Assert(t, ok, "error = %v, want *github.DecodeError", err)
+			assert.Check(t, is.DeepEqual(decodeErr.Argv, received(messageArgs())[0]))
+			assert.Check(t, is.ErrorContains(err, "no pull request"))
+		})
+	}
+}
+
+func TestForge_Land_SquashMergesWithExactlyTheGivenMessageAtTheReadHead(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "body with a trailer block", body: "Lands the change.\n\nCo-authored-by: ils live suite <ils-live@example.com>"},
+		{name: "empty body still sent", body: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			landing := featureLanding()
+			landing.Body = tt.body
+			args := []string{
+				"pr", "merge", "7", "--repo", engineSlug, "--squash", "--match-head-commit", headSHA,
+				"--subject", landing.Subject, "--body", tt.body,
+			}
+			fake := ghtest.Setup(t, ghtest.Says("", args...))
+
+			err := newForge().Land(t.Context(), engine(), landing)
+			assert.NilError(t, err)
+
+			assertCalls(t, fake, received(args))
+		})
+	}
+}
+
+func TestForge_DeleteBranch_RemovesExactlyTheBranchRef(t *testing.T) {
+	tests := []struct {
+		name   string
+		branch string
+		path   string
+	}{
+		{name: "plain name", branch: "feature", path: "repos/ada/engine/git/refs/heads/feature"},
+		{name: "slash keeps separating segments", branch: "team/fix", path: "repos/ada/engine/git/refs/heads/team/fix"},
+		{name: "hash is escaped, not a fragment", branch: "fix#1", path: "repos/ada/engine/git/refs/heads/fix%231"},
+		{name: "percent is escaped, not an escape", branch: "100%", path: "repos/ada/engine/git/refs/heads/100%25"},
+		{name: "question mark is escaped, not a query", branch: "fix?1", path: "repos/ada/engine/git/refs/heads/fix%3F1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := []string{"api", "--hostname", engineHost, "-X", "DELETE", tt.path}
+			fake := ghtest.Setup(t, ghtest.Says("", args...))
+
+			err := newForge().DeleteBranch(t.Context(), engine(), tt.branch)
+			assert.NilError(t, err)
+
+			assertCalls(t, fake, received(args))
+		})
+	}
+}
+
+func TestForge_WhenWriteExitsNonZero_ReturnsExitErrorCarryingStderr(t *testing.T) {
+	byName := operationsByName()
+	tests := []struct {
+		run    func(ctx context.Context, f *github.Forge) error
+		name   string
+		stderr string
+		args   []string
+	}{
+		{
+			name:   "Land when the head has moved",
+			run:    byName["Land"],
+			args:   landArgs(featureLanding()),
+			stderr: "GraphQL: Head branch was modified. Review and try the merge again. (mergePullRequest)\n",
+		},
+		{
+			name:   "DeleteBranch",
+			run:    byName["DeleteBranch"],
+			args:   deleteArgs(featureBranch),
+			stderr: "gh: Reference does not exist (HTTP 422)\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stderr: tt.stderr, Code: 1}, tt.args...))
+
+			err := tt.run(t.Context(), newForge())
+
+			exitErr, ok := errors.AsType[*child.ExitError](err)
+			assert.Assert(t, ok, "error = %v, want *child.ExitError", err)
+			want := child.ExitError{Argv: received(tt.args)[0], Stderr: tt.stderr, Code: 1}
+			assert.Check(t, is.DeepEqual(*exitErr, want))
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Merge state mapping
 // ---------------------------------------------------------------------------
@@ -998,122 +1101,6 @@ func TestMergeStateOf(t *testing.T) {
 			got := github.MergeStateOf(tt.facts)
 
 			assert.Check(t, is.Equal(got, tt.want), "MergeStateOf(%+v)", tt.facts)
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Runner
-// ---------------------------------------------------------------------------
-
-func TestVersionOf(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		line string
-		want string
-	}{
-		{name: "release with a date", line: "gh version 2.50.0 (2024-05-29)", want: "2.50.0"},
-		{name: "release without a date", line: "gh version 2.100.3", want: "2.100.3"},
-		{name: "pre-release keeps its suffix", line: "gh version 2.50.0-rc.1", want: "2.50.0-rc.1"},
-		{name: "development build", line: "gh version DEV"},
-		{name: "no gh version prefix", line: "2.50.0"},
-		{name: "empty line"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := github.VersionOf(tt.line)
-
-			assert.Check(t, is.Equal(got, tt.want), "VersionOf(%q)", tt.line)
-		})
-	}
-}
-
-// missingTool is the error every call returns when `gh` is not installed.
-func missingTool() *child.ToolMissingError {
-	return &child.ToolMissingError{Tool: program, InstallURL: installURL}
-}
-
-// assertMissingTool fails the test unless err is the missingTool error, ignoring its cause, and
-// returns that error.
-func assertMissingTool(t *testing.T, err error, label string) *child.ToolMissingError {
-	t.Helper()
-
-	missing, ok := errors.AsType[*child.ToolMissingError](err)
-	assert.Assert(t, ok, "%s error = %v, want *child.ToolMissingError", label, err)
-	assert.Check(t, is.DeepEqual(missing, missingTool(), cmpopts.IgnoreFields(child.ToolMissingError{}, "Err")))
-
-	return missing
-}
-
-func TestRunner_Run_WhenGhExitsZero_ReturnsOutput(t *testing.T) {
-	args := []string{"pr", "view", "--json", "number"}
-	ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "{\"number\":7}\n", Stderr: "notice\n"}, args...))
-
-	got, err := github.Runner{}.Run(t.Context(), args...)
-	assert.NilError(t, err)
-
-	want := github.Result{Stdout: "{\"number\":7}\n", Stderr: "notice\n"}
-	assert.Check(t, is.DeepEqual(got, want))
-}
-
-func TestRunner_Run_WhenArgHoldsShellSyntax_PassesItVerbatim(t *testing.T) {
-	value := "first && second; $HOME `third` > fourth"
-	args := []string{"api", value}
-	fake := ghtest.Setup(t, ghtest.Says("matched\n", args...))
-
-	_, err := github.Runner{}.Run(t.Context(), args...)
-	assert.NilError(t, err)
-
-	assertCalls(t, fake, [][]string{{"gh", "api", value}})
-}
-
-func TestRunner_Run_WhenGhExitsNonZero_ReturnsExitErrorAndStdout(t *testing.T) {
-	args := []string{"pr", "checks", "7"}
-	ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "build\tpending\n", Stderr: "still running\n", Code: 8}, args...))
-
-	got, err := github.Runner{}.Run(t.Context(), args...)
-
-	exitErr, ok := errors.AsType[*child.ExitError](err)
-	assert.Assert(t, ok, "Run(pr checks) error = %v, want *child.ExitError", err)
-	wantErr := child.ExitError{
-		Argv:   []string{"gh", "pr", "checks", "7"},
-		Stderr: "still running\n",
-		Code:   8,
-	}
-	assert.Check(t, is.DeepEqual(*exitErr, wantErr))
-	assert.Check(t, is.Equal(got.Stdout, "build\tpending\n"))
-}
-
-func TestRunner_Run_WhenContextEndsWhileGhRuns_ReturnsContextError(t *testing.T) {
-	args := []string{"pr", "checks", "7"}
-	ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "pass\n", Delay: 30 * time.Second}, args...))
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-	t.Cleanup(cancel)
-
-	_, err := github.Runner{}.Run(ctx, args...)
-
-	assert.Check(t, is.ErrorIs(err, context.DeadlineExceeded))
-}
-
-func TestRunner_Run_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
-	tests := []struct {
-		name   string
-		ghPath string
-	}{
-		{name: "GH_PATH names no file", ghPath: filepath.Join(t.TempDir(), "gh")},
-		{name: "no GH_PATH and no gh on PATH", ghPath: ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			withoutGh(t, tt.ghPath)
-
-			_, err := github.Runner{}.Run(t.Context(), "pr", "view")
-
-			missing := assertMissingTool(t, err, "Run(pr view)")
-			assert.Check(t, missing.Err != nil, "Run(pr view) error carries no cause, want what starting gh failed with")
 		})
 	}
 }

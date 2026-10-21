@@ -19,6 +19,9 @@ type Repo struct {
 	Fork  bool
 	// CanPush reports whether the logged-in user may push to the repository.
 	CanPush bool
+	// SquashAllowed reports whether the repository's settings allow squash merges. The rules on a
+	// branch can still forbid them: see Protection.
+	SquashAllowed bool
 }
 
 // Slug names the repository as host/owner/name, the way gh's `--repo` takes it.
@@ -64,6 +67,26 @@ type ChangeRef struct {
 	Number int
 }
 
+// Message is what a change holds toward the commit that lands it.
+type Message struct {
+	Title string
+	Body  string
+	// Trailers is the trailer block the forge would end a squash commit with when the logged-in
+	// user lands the change, one trailer per entry in the forge's order; it may be empty.
+	Trailers []string
+}
+
+// Landing asks the forge to squash a change onto its base.
+type Landing struct {
+	// HeadSHA is the tip whose checks were read: the forge refuses the landing once the change
+	// has moved past it.
+	HeadSHA string
+	Subject string
+	// Body is the commit body, landed as given even when empty.
+	Body   string
+	Number int
+}
+
 // MergeState is whether the forge can land a change, and what stops it when it cannot.
 type MergeState string
 
@@ -99,6 +122,9 @@ type HeadQuery struct {
 type Protection struct {
 	// RequiredChecks names the checks a change must pass to land; it may be empty.
 	RequiredChecks []string
+	// SquashAllowed reports whether the rules on the trunk allow a squash merge. The repository's
+	// settings can still forbid one: see Repo.
+	SquashAllowed bool
 }
 
 // ---------------------------------------------------------------------------

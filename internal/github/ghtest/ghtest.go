@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/quiet"
 )
@@ -95,7 +96,7 @@ func LoginArgs(host string) []string {
 
 // RepoViewArgs is the argv of the read of a repository's identity; slug is host/owner/name.
 func RepoViewArgs(slug string) []string {
-	return []string{"repo", "view", slug, "--json", "isFork,viewerPermission"}
+	return []string{"repo", "view", slug, "--json", "isFork,viewerPermission,squashMergeAllowed"}
 }
 
 // ListArgs is the argv of the list of the pull requests from the branch head that are in state.
@@ -142,6 +143,36 @@ func LogArgs(slug, run string) []string {
 	return []string{"run", "view", "--repo", slug, run, "--log-failed"}
 }
 
+// messageQuery must equal messageQuery in internal/github/forge.go byte for byte: the fake gh
+// matches an argv exactly, and the argv carries this text.
+const messageQuery = "query($owner: String!, $name: String!, $number: Int!) { " +
+	"repository(owner: $owner, name: $name) { " +
+	"pullRequest(number: $number) { title body viewerMergeBodyText(mergeType: SQUASH) } } }"
+
+// MessageArgs is the argv of the read of pull request number's title, body, and the body GitHub
+// would compose for its squash merge, in the repository owner/name on host.
+func MessageArgs(host, owner, name string, number int) []string {
+	return []string{
+		"api", "graphql", "--hostname", host,
+		"-F", "number=" + strconv.Itoa(number), "-f", "owner=" + owner, "-f", "name=" + name,
+		"-f", "query=" + messageQuery,
+	}
+}
+
+// LandArgs is the argv of the squash merge of landing.
+func LandArgs(slug string, landing forge.Landing) []string {
+	return []string{
+		"pr", "merge", strconv.Itoa(landing.Number), "--repo", slug, "--squash",
+		"--match-head-commit", landing.HeadSHA, "--subject", landing.Subject, "--body", landing.Body,
+	}
+}
+
+// DeleteBranchArgs is the argv of the delete of branch on GitHub; repo is owner/name. branch goes
+// into the path as given, so pass it already escaped as the forge escapes it.
+func DeleteBranchArgs(host, repo, branch string) []string {
+	return []string{"api", "--hostname", host, "-X", "DELETE", "repos/" + repo + "/git/refs/heads/" + branch}
+}
+
 // ---------------------------------------------------------------------------
 // Canned JSON answers
 // ---------------------------------------------------------------------------
@@ -150,9 +181,32 @@ func LogArgs(slug, run string) []string {
 const workflow = "CI"
 
 // RepoViewJSON is `gh repo view`'s answer for a repository that is a fork or not, on which the
-// viewer holds permission.
+// viewer holds permission, and whose settings allow squash merges.
 func RepoViewJSON(fork bool, permission string) string {
-	return `{"isFork":` + strconv.FormatBool(fork) + `,"viewerPermission":"` + permission + `"}`
+	return RepoViewSquashJSON(fork, permission, true)
+}
+
+// RepoViewSquashJSON is RepoViewJSON for a repository whose settings allow squash merges or not.
+func RepoViewSquashJSON(fork bool, permission string, squash bool) string {
+	return `{"isFork":` + strconv.FormatBool(fork) + `,"viewerPermission":"` + permission +
+		`","squashMergeAllowed":` + strconv.FormatBool(squash) + `}`
+}
+
+// MessageJSON is the message read's answer for a pull request titled title with body, for which
+// GitHub would compose mergeBody as the body of its squash merge.
+func MessageJSON(title, body, mergeBody string) string {
+	return `{"data":{"repository":{"pullRequest":{"title":` + quoted(title) + `,"body":` + quoted(body) +
+		`,"viewerMergeBodyText":` + quoted(mergeBody) + `}}}}`
+}
+
+// quoted is s as a JSON string.
+func quoted(s string) string {
+	encoded, err := json.Marshal(s)
+	if err != nil {
+		panic(fmt.Sprintf("encode %q as JSON: %v", s, err))
+	}
+
+	return string(encoded)
 }
 
 // Change is one pull request as `gh pr list` prints it.
