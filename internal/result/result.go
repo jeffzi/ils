@@ -117,7 +117,6 @@ func (p Phrase) text() (string, error) {
 	return b.String(), nil
 }
 
-// nextKind says which of its three forms a Next takes.
 type nextKind int
 
 const (

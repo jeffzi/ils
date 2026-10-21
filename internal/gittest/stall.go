@@ -64,7 +64,6 @@ func Ending(parent context.Context, done <-chan struct{}, err error) context.Con
 	return ending{Context: parent, done: done, err: err}
 }
 
-// Done returns the channel whose close ends the context.
 func (e ending) Done() <-chan struct{} { return e.done }
 
 // Err returns the context's error once done closed, and nil before.
