@@ -192,11 +192,15 @@ func localTrunk(ctx context.Context, deps Deps, req Request, trunk string) *resu
 // findPull finds the branch's open pull request against the trunk or, without one, the merged
 // pull request that carries every commit of the branch, which the run resumes. It refuses a
 // branch that has neither, and a merged pull request that lacks commits of the branch, carrying
-// that pull request in the payload.
+// that pull request in the payload. An open pull request beside a merged one that carries every
+// commit is refused as `ils push` refuses it, with no payload: the branch already landed, so
+// neither is a pull request the run takes.
 func (m *mergeReady) findPull(ctx context.Context, deps Deps, req Request) *result.Result {
 	open, landed, stop := pullRequest(ctx, deps, req, m.onBranch)
 
 	switch {
+	case stop == nil && open != nil && landed != nil:
+		return m.alreadyLanded(req, *landed)
 	case stop == nil && open != nil:
 		m.pull = *open
 

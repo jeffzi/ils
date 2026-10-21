@@ -414,9 +414,20 @@ func pullStops() []mergeRow {
 	elsewhere := row("open pull request against another base",
 		merging().findingOnly(change(opened, otherBase, forge.ChangeOpen)), nil)
 	elsewhere.arrange = func(*gittest.Fixture) mergeEnd { return ending(elsewhereText) }
+	landed := row("open pull request against the trunk beside a merged one that carries every commit",
+		merging().with(func(script *forgetest.Script, tip string) {
+			script.FindChanges = listing([]forge.Change{pullAt(tip), change(merged, trunk, forge.ChangeMerged)})
+		}), nil)
+	landed.arrange = func(f *gittest.Fixture) mergeEnd {
+		f.LandPull(merged, topic)
+
+		return ending("Refused: the branch " + topic + " already landed with pull request #" + strconv.Itoa(merged) +
+			"\n" + nextBranch + "\n")
+	}
 
 	return []mergeRow{
 		elsewhere,
+		landed,
 		row("no pull request at all", merging().findingOnly(), nil),
 		row("closed pull request against the trunk", merging().findingOnly(change(opened, trunk, forge.ChangeClosed)), nil),
 		row("merged pull request sharing no commit past the trunk",

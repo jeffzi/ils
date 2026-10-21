@@ -99,10 +99,7 @@ func pushChecks(ctx context.Context, deps Deps, req Request, ready Ready) (pushR
 	}
 
 	if landed != nil {
-		return pushReady{}, req.refused(
-			result.Say("the branch %s already landed with pull request #%s", p.branch, landed.Number),
-			startBranchStep(p.Trunk),
-		)
+		return pushReady{}, p.alreadyLanded(req, *landed)
 	}
 
 	return p, nil

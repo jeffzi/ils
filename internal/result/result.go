@@ -217,17 +217,21 @@ const (
 )
 
 // Merge is the structured detail of a merge. Verdict, MergeState and Checks are in the words of
-// Push; a verdict of none, a merge state of unknown, and no checks mean they were not read.
+// Push.
+//
+// A verdict of none means no deciding check reported, or the checks were not read. A merge state
+// of unknown and no checks mean the checks were not read, or none of them decides.
 type Merge struct {
 	URL string `json:"url"`
 	// SHA is the head that was merged or found merged.
 	SHA        string `json:"sha"`
 	Verdict    string `json:"verdict"`
 	MergeState string `json:"merge_state"`
-	// Subject and Body are the message sent, and empty when no message was sent.
+	// Subject and Body are the squash commit's message once it is composed after the wait, and
+	// empty before. A merge that stops at the 20-second reserve carries them unsent.
 	Subject string `json:"subject"`
 	Body    string `json:"body"`
-	// Ending is trunk or detached once the local ending ran, and empty otherwise.
+	// Ending is trunk or detached once every step of the local ending ran, and empty otherwise.
 	Ending string  `json:"ending"`
 	Checks []Check `json:"checks"`
 	Number int     `json:"number"`

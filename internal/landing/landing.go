@@ -556,6 +556,15 @@ func (b onBranch) landedWith(ctx context.Context, deps Deps, req Request, change
 	return head, false, stop
 }
 
+// alreadyLanded refuses a branch whose every commit landed with the merged pull request landed:
+// its work is on the trunk, so only a new branch has anything left to land.
+func (b onBranch) alreadyLanded(req Request, landed forge.Change) *result.Result {
+	return req.refused(
+		result.Say("the branch %s already landed with pull request #%s", b.branch, landed.Number),
+		startBranchStep(b.Trunk),
+	)
+}
+
 // shas returns the shas of commits in order, separated by spaces.
 func shas(commits []git.Commit) string {
 	list := make([]string, 0, len(commits))
