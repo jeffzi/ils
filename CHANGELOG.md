@@ -10,6 +10,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - Add `ils --version`, which prints the version of `ils`.
+- Add `ils merge`, which squash-merges the branch's pull request once its checks are green, deletes
+  the branch, and leaves the default branch checked out.
+
+### Changed
+
+- Name `ils merge` in the next step of a green `ils push`, in place of a `gh pr merge` command to
+  run by hand.
 
 ## [0.1.1] - 2026-10-20
 

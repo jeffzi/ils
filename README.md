@@ -5,9 +5,9 @@ language model (LLM) agent that runs it cannot skip a step or push to the wrong 
 command runs only standard `git` and `gh` commands, prints what it did and what to do next, and
 keeps no state of its own.
 
-This version has one command, `ils push`. `merge`, `branch`, `status`, and `release` are coming,
-and `merge` will refuse a pull request whose checks are not green. Until then, merge by hand with
-the line shown under [After a green push](#after-a-green-push).
+This version has two commands. `ils push` pushes a branch, opens its pull request, and waits for
+the checks. `ils merge` squash-merges that pull request once its checks are green. `branch`,
+`status`, and `release` are coming.
 
 - [Example](#example)
 - [Install](#install)
@@ -20,6 +20,11 @@ the line shown under [After a green push](#after-a-green-push).
     - [When no check reports](#when-no-check-reports)
   - [JSON output](#json-output)
   - [After a green push](#after-a-green-push)
+- [Merge](#merge)
+  - [What merge refuses](#what-merge-refuses)
+  - [How merge ends](#how-merge-ends)
+  - [A merge made elsewhere](#a-merge-made-elsewhere)
+  - [Merge JSON output](#merge-json-output)
 - [Use with Claude Code](#use-with-claude-code)
 - [Contributing](#contributing)
 - [License](#license)
@@ -35,10 +40,10 @@ GitHub: CLEAN (clean)
 Next: write the pull request's title and body as the squash commit's message with …
 ```
 
-The `Next:` line is cut short here; it goes on to print the two commands under [After a green
-push](#after-a-green-push). Every result ends with one `Next:` line (a `next` field with
-`--json`), and the exit code says which reaction fits, so a caller that reads no prose still
-reacts correctly.
+The `Next:` line is cut short here; it goes on to name the `gh pr edit` command and `ils merge`,
+as [After a green push](#after-a-green-push) shows. Every result ends with one `Next:` line (a
+`next` field with `--json`), and the exit code says which reaction fits, so a caller that reads no
+prose still reacts correctly.
 
 ## Install
 
@@ -96,8 +101,8 @@ task install
    GitHub's guide to
    [creating rulesets for a repository](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/creating-rulesets-for-a-repository)
    has the details. Rulesets need a public repository or a paid GitHub plan; on a free private
-   repository skip this step. `ils` works either way. Since you merge by hand, the ruleset is what
-   blocks a merge on red.
+   repository skip this step. `ils` works either way. `ils merge` refuses a red merge on its own;
+   the ruleset is what blocks one made by hand.
 
 ## Usage
 
@@ -105,6 +110,8 @@ task install
 ils push          # push the branch, open its pull request on the first push, wait for the checks
 ils push --json   # the same result as one JSON object
 ils push --help   # usage of push
+ils merge         # squash-merge the pull request once its checks are green
+ils merge --json  # the same result as one JSON object
 ils help          # usage of ils and its commands
 ils help push     # the same as ils push --help
 ils --version     # print the version of ils
@@ -152,14 +159,14 @@ or file; at most it has fetched from origin. It refuses:
 
 ### Exit codes
 
-| Exit | Means                | Reaction                                                                                                                                                         |
-| ---- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | done                 | The checks are green, or the repository has no continuous integration (CI) and a line says nothing verified the commit. Write the pull request's title and body. |
-| 1    | broke                | The output says what was done and what was not. Fix what failed, then follow `Next:`.                                                                            |
-| 2    | refused              | Nothing was pushed or opened. The reason says why; `Next:` says what to do.                                                                                      |
-| 3    | ask                  | Reserved; not used by this version.                                                                                                                              |
-| 4    | pending              | GitHub had not finished when `ils push` stopped waiting, for example checks still running or not yet reported. Run `ils push` again.                             |
-| 5    | delivered, not green | The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                      |
+| Exit | Means                | Reaction                                                                                                                                                                                                                         |
+| ---- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | done                 | Push: the checks are green, or the repository has no continuous integration (CI) and a line says nothing verified the commit; write the pull request's title and body. Merge: the pull request is merged and the branch deleted. |
+| 1    | broke                | The output says what was done and what was not. Fix what failed, then follow `Next:`.                                                                                                                                            |
+| 2    | refused              | Nothing was pushed, opened, or merged. The reason says why; `Next:` says what to do.                                                                                                                                             |
+| 3    | ask                  | Reserved; not used by this version.                                                                                                                                                                                              |
+| 4    | pending              | GitHub had not finished when the command stopped waiting, for example checks still running or not yet reported. Run `ils push` again; a merge that was already done elsewhere names `ils merge` instead.                         |
+| 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                           |
 
 #### When no check reports
 
@@ -205,22 +212,104 @@ When no check reports for the pushed commit, the exit depends on whether the rep
 
 ### After a green push
 
-The pull request's title and body become the squash commit's message, so write them first:
+The pull request's title and body become the squash commit's message, so write them first. The
+title must be a conventional commit subject, such as `fix(cli): reject an empty name`:
 
 ```bash
 gh pr edit --repo <host>/<owner>/<name> <N> --title "<title>" --body "<body>"
 ```
 
-Then merge by hand. Pass the message explicitly: without `--subject` and `--body`, GitHub composes
-it from the repository setting, and a pull request with one commit keeps that commit's message.
+Then run `ils merge`. `ils push` prints the `gh pr edit` command on its `Next:` line with the
+repository and number filled in; the title and body stay placeholders for you to write. When the
+pull request needs a review, `Next:` says to request one first.
+
+To merge a pull request whose checks are red anyway, merge it by hand. `ils merge` never does:
 
 ```bash
 gh pr merge --repo <host>/<owner>/<name> <N> --squash --delete-branch \
   --match-head-commit <sha> --subject "<title> (#<N>)" --body "<body>"
 ```
 
-`ils push` prints both commands on its `Next:` line with the repository, number, and commit filled
-in. The title and body stay placeholders for you to write.
+## Merge
+
+Run `ils merge` on the branch whose pull request you want to land. It:
+
+1. checks every precondition before it writes anything, and refuses with a reason when one does
+   not hold;
+2. waits for the checks of the pull request's head, as `ils push` does, until 80 seconds have
+   passed since the command started;
+3. squash-merges the pull request, with its title plus `(#<N>)` as the subject and its body as
+   the commit body, followed by the trailer block GitHub adds (`Signed-off-by` and
+   `Co-authored-by` lines);
+4. deletes the branch on origin and in the clone, and leaves the default branch checked out at
+   origin's tip.
+
+`ils merge` never pushes and has no `--force`. A commit that is not on the pull request yet is
+refused: push it with `ils push` first. When the checks are still running, or fewer than 20
+seconds are left for the merge, `ils merge` ends pending with nothing written, and `Next:` says to
+run `ils push`, which waits for the checks and then names `ils merge` again.
+
+### What merge refuses
+
+When `ils merge` refuses, it has merged nothing, deleted nothing, and changed no branch or file;
+at most it has fetched from origin. It refuses everything `ils push` refuses about the tools,
+`origin`, and the repository, and also:
+
+- the default branch, a detached HEAD, and a tracked file with uncommitted changes;
+- a local default branch with commits that origin's lacks;
+- a branch with no commit past origin's default branch, or with no open pull request against it;
+- a branch whose tip is behind, past, or diverged from the head of its pull request;
+- a pull request that is a draft, or open against another base;
+- a pull request whose title is not a conventional commit subject (`<type>(<scope>)!: <summary>`,
+  with the scope and `!` optional);
+- a repository whose settings forbid squash merges, and a default branch whose ruleset forbids
+  them;
+- a red or canceled check, a required check that never reported, and a head no check reported for
+  in a repository with CI;
+- a pull request that conflicts with or is behind the default branch, needs a review, lacks a
+  required check, or that GitHub blocks for another reason.
+
+### How merge ends
+
+After the merge, `ils merge` deletes the branch on origin. It then switches to the default branch,
+deletes the local branch, and fast-forwards the default branch to origin's tip: a fetch, then
+`git merge --ff-only`.
+
+When the default branch is checked out in another worktree, `ils merge` leaves that worktree
+alone. It detaches the current worktree at origin's default branch instead, deletes the local
+branch, and says that the other worktree updates on its next `git pull --ff-only`.
+
+When a step of that local ending fails, the output lists the steps that ran, the one that failed
+with git's message, and the steps not run, and `Next:` gives what is left to run. When the delete
+on origin fails and origin still lists the branch, the output says the merge went through and the
+branch is still on origin, and `Next:` is `ils merge`.
+
+### A merge made elsewhere
+
+When the branch's pull request is already merged, on the web or by a run of `ils merge` that was
+cut short, `ils merge` merges nothing and reads no check. It deletes the branch on origin if it is
+still there, then ends as above. This also covers a pull request that got an "Update branch" or a
+committed suggestion on the web before its merge. When the branch has commits the merge did not
+carry, `ils merge` refuses and lists them, and `Next:` says to start a new branch and cherry-pick
+them.
+
+### Merge JSON output
+
+`ils merge --json` prints the same object as `ils push --json`, with the detail under
+`payload.merge`. A refusal made before the pull request is known has no payload.
+
+| Field         | Type             | Meaning                                                                                                                                                                     |
+| ------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `url`         | string           | The pull request's URL.                                                                                                                                                     |
+| `number`      | integer          | The pull request's number.                                                                                                                                                  |
+| `sha`         | string           | The head that was merged, or found merged.                                                                                                                                  |
+| `verdict`     | string           | As in `payload.push`; `none` when no deciding check reported (the required checks when the default branch requires any, every check otherwise) or the checks were not read. |
+| `merge_state` | string           | As in `payload.push`; `unknown` when it was not read.                                                                                                                       |
+| `checks`      | array of objects | As in `payload.push`, the deciding checks only; empty when none reported or the checks were not read.                                                                       |
+| `subject`     | string           | The squash commit's subject, once composed after the wait; empty before.                                                                                                    |
+| `body`        | string           | The squash commit's body, once composed after the wait; empty before.                                                                                                       |
+| `merged`      | boolean          | Whether this run made the merge.                                                                                                                                            |
+| `ending`      | string           | `trunk` or `detached` once every step of the local ending ran; empty otherwise.                                                                                             |
 
 ## Use with Claude Code
 
@@ -231,8 +320,25 @@ The repository ships one agent skill, `ils`. Install it with
 npx skills add jeffzi/ils
 ```
 
-With the skill installed, `/ils push` runs the binary and relays its output, and the skill tells an
-agent how to react to each exit code. The merge stays the user's decision.
+With the skill installed, `/ils push` and `/ils merge` run the binary and relay its output, and
+the skill tells an agent how to react to each exit code. The merge stays the user's decision: the
+skill runs `ils merge` only when you ask for it.
+
+To make Claude Code ask you before every merge or release, add `ask` rules to your settings
+(`~/.claude/settings.json`, or the project's `.claude/settings.json`):
+
+```json
+{
+  "permissions": {
+    "ask": [
+      "Bash(ils merge:*)",
+      "Bash(ils release:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(gh release create:*)"
+    ]
+  }
+}
+```
 
 ## Contributing
 
