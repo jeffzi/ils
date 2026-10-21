@@ -29,6 +29,11 @@ func (r Repo) Slug() string {
 	return r.Host + "/" + r.Owner + "/" + r.Name
 }
 
+// FullName names the repository as owner/name, the way a result names it to the user.
+func (r Repo) FullName() string {
+	return r.Owner + "/" + r.Name
+}
+
 // ChangeState is where a change stands in its life.
 type ChangeState string
 

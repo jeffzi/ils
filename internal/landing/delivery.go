@@ -14,10 +14,8 @@ import (
 // result names it.
 const readProtection = "the trunk's required checks"
 
-// writeThenMerge is the judgment step after a green push. Its names are the repository and the
-// pull request's number; the title and the body stay placeholders for the agent to write.
-const writeThenMerge = "write the pull request's title and body as the squash commit's message with " +
-	"`gh pr edit --repo %s %s --title … --body …`, then run ils merge"
+// writeThenMerge is the judgment step after a green push: writeMessage, then the merge.
+const writeThenMerge = writeMessage + ", then run ils merge"
 
 // delivery is a push past its preconditions: the lines it has said so far, the pull request
 // it found or opened, and what its wait found.
@@ -63,11 +61,8 @@ func deliver(ctx context.Context, deps Deps, req Request, p pushReady) result.Re
 
 	d.waited = waited
 
-	// A trunk that requires checks has CI, so only one that requires none is asked about.
-	if waited.Outcome == WaitNothingReported && len(protection.RequiredChecks) == 0 {
-		if stop := d.withoutCI(ctx, deps); stop != nil {
-			return *stop
-		}
+	if stop := d.withoutCI(ctx, deps, protection.RequiredChecks); stop != nil {
+		return *stop
 	}
 
 	return *d.report()
@@ -274,13 +269,13 @@ func (d *delivery) mergeNext() result.Next {
 }
 
 // withoutCI asks the forge whether the repository has CI on its trunk, for a pushed commit that
-// nothing reported for. It returns nil when the repository has CI; otherwise the push ends as a
-// green push does, with a line saying nothing verified the commit: done, unless the merge state
-// read after the checks says the pull request conflicts with the trunk or is behind it. A deadline
-// that ends before or inside the read ends the push pending, and any other failure of the read
-// ends it broke.
-func (d *delivery) withoutCI(ctx context.Context, deps Deps) *result.Result {
-	hasCI, err := hasTrunkCI(ctx, deps, d.Repo, d.Trunk)
+// nothing reported for while the trunk requires none of its checks. It returns nil when the
+// question does not arise or the repository has CI; otherwise the push ends as a green push does,
+// with a line saying nothing verified the commit: done, unless the merge state read after the
+// checks says the pull request conflicts with the trunk or is behind it. A deadline that ends
+// before or inside the read ends the push pending, and any other failure of the read ends it broke.
+func (d *delivery) withoutCI(ctx context.Context, deps Deps, required []string) *result.Result {
+	without, err := d.waited.trunkWithoutCI(ctx, deps, d.Ready, required)
 
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
@@ -290,7 +285,7 @@ func (d *delivery) withoutCI(ctx context.Context, deps Deps) *result.Result {
 		return d.ended(result.Pending, report.reason, report.next)
 	case err != nil:
 		return d.unread(readCI, err)
-	case hasCI:
+	case !without:
 		return nil
 	}
 

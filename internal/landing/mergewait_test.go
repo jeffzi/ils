@@ -562,6 +562,27 @@ func TestMerge_WhenTheMergeStateIsUnknownAfterTheWait_ReadsItAgainEveryTwoSecond
 	})
 }
 
+func TestMerge_WhenTheMergeStateStaysUnknownAfterTheWait_StopsOnceItsWindowPassed(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		log := &readLog{}
+		build := waiting(passing()).showing(inState(forge.MergeClean, "CLEAN"), inState(forge.MergeUnknown, "UNKNOWN"))
+		timed := func(tip string) forgetest.Script { return log.timed(build(tip)) }
+
+		// The deadline leaves time for many more polls than the window allows.
+		run := runMergeIn(t, timed, 10*time.Minute)
+
+		assertStoppedBy(t, run.got, result.Pending, mergeRequest())
+
+		text, reason := shown(t, run.got, run.gitDir)
+		assert.Check(t, is.Equal(text,
+			mark(countLine+"GitHub has not said whether pull request #12 can merge yet\n"+nextPush, run.tip)))
+		assert.Check(t, is.Equal(reason, "GitHub did not say whether the pull request can merge within 30 seconds"))
+		assert.Check(t, is.DeepEqual(log.pauses(run.ended), polls(15, mergePoll)))
+		assert.Check(t, is.Equal(run.written(), run.before))
+	})
+}
+
 func TestMerge_WhenTrunkRequiresChecks_WaitsForThoseOfTheHead(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {

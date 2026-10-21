@@ -155,36 +155,20 @@ func mergeChecks(ctx context.Context, deps Deps, req Request, ready Ready) (merg
 // localTrunk refuses a local trunk with commits origin's trunk lacks, since the pull that ends a
 // merge could not fast-forward it. A local trunk that does not exist is not refused.
 func localTrunk(ctx context.Context, deps Deps, req Request, trunk string) *result.Result {
-	local := "refs/heads/" + trunk
-
-	exists, err := deps.Repo.HasCommits(ctx, trunk)
+	ahead, past, err := deps.Repo.LocalTrunkAhead(ctx, trunk)
 	if err != nil {
 		return req.unread(readLocalTrunk, err)
 	}
 
-	if !exists {
+	if !ahead {
 		return nil
 	}
 
-	behind, err := deps.Repo.Contains(ctx, "refs/remotes/origin/"+trunk, local)
-	if err != nil {
-		return req.unread(readLocalTrunk, err)
-	}
-
-	if behind {
-		return nil
-	}
-
-	ahead, err := deps.Repo.CommitsPast(ctx, local, trunk)
-	if err != nil {
-		return req.unread(readLocalTrunk, err)
-	}
-
-	stop := req.refused(
+	stop := req.Refused(
 		result.Say("the local trunk %s has commits that origin's trunk lacks, listed here", trunk),
-		result.NextStep("move those commits off the local trunk by hand"+thenRunAgain, req.Command),
-	)
-	stop.Lines = listed(ahead)
+		result.NextStep("move those commits off the local trunk by hand"+thenRunAgain, req.Command))
+
+	stop.Lines = listed(past)
 
 	return stop
 }
@@ -217,10 +201,9 @@ func (m *mergeReady) findPull(ctx context.Context, deps Deps, req Request) *resu
 		return stop
 	}
 
-	return req.refused(
+	return req.Refused(
 		result.Say("the branch %s has no open pull request against the trunk %s", m.branch, m.Trunk),
-		result.NextCommand("push"),
-	)
+		result.NextCommand(PushCommand))
 }
 
 // pullChecks runs the checks of the open pull request and of the squash merges the repository
@@ -239,10 +222,9 @@ func (m *mergeReady) pullChecks(ctx context.Context, deps Deps, req Request) *re
 	}
 
 	if !m.Repo.SquashAllowed {
-		return req.refused(
-			result.Say("the settings of %s/%s forbid squash merges: Allow squash merging is off", m.Repo.Owner, m.Repo.Name),
-			result.NextStep("allow squash merges in the repository's settings"+thenRunAgain, req.Command),
-		)
+		return req.Refused(
+			result.Say("the settings of %s forbid squash merges: Allow squash merging is off", m.Repo.FullName()),
+			result.NextStep("allow squash merges in the repository's settings"+thenRunAgain, req.Command))
 	}
 
 	protection, err := deps.Forge.TrunkProtection(ctx, m.Repo, m.Trunk)
@@ -251,7 +233,7 @@ func (m *mergeReady) pullChecks(ctx context.Context, deps Deps, req Request) *re
 	}
 
 	if !protection.SquashAllowed {
-		return req.refused(rulesetReason(protection.SquashForbiddenBy, m.Trunk),
+		return req.Refused(rulesetReason(protection.SquashForbiddenBy, m.Trunk),
 			result.NextStep("allow squash merges in the trunk's ruleset"+thenRunAgain, req.Command))
 	}
 
@@ -276,22 +258,19 @@ func rulesetReason(ids []int, trunk string) result.Phrase {
 
 // draftStop refuses a pull request that is a draft.
 func (m *mergeReady) draftStop(req Request) *result.Result {
-	return req.refused(
+	return req.Refused(
 		result.Say("pull request #%s is a draft", m.pull.Number),
-		result.NextStep("mark it ready with `gh pr ready --repo %s %s`"+thenRunAgain, m.Repo.Slug(), m.pull.Number, req.Command),
-	)
+		result.NextStep("mark it ready with `gh pr ready --repo %s %s`"+thenRunAgain, m.Repo.Slug(), m.pull.Number, req.Command))
 }
 
 // titleStop refuses a pull request titled title, which is not a conventional commit subject.
 func (m *mergeReady) titleStop(req Request, title string) *result.Result {
 	number := m.pull.Number
 
-	return req.refused(
+	return req.Refused(
 		result.Say("the title of pull request #%s, \"%s\", is not a conventional commit subject "+
 			"of the form type(scope)!: summary", number, title),
-		result.NextStep("write the pull request's title and body as the squash commit's message with "+
-			"`gh pr edit --repo %s %s --title … --body …`"+thenRunAgain, m.Repo.Slug(), number, req.Command),
-	)
+		result.NextStep(writeMessage+thenRunAgain, m.Repo.Slug(), number, req.Command))
 }
 
 // atHead refuses a tip that is not the head of the pull request, saying whether it is behind
@@ -302,12 +281,9 @@ func (m *mergeReady) atHead(ctx context.Context, deps Deps, req Request) *result
 		return nil
 	}
 
-	number := m.pull.Number
-
-	head, err := deps.Repo.Fetch(ctx, "refs/pull/"+strconv.Itoa(number)+"/head")
-	if err != nil {
-		return req.unreached(readHead, err,
-			result.Say("origin could not be reached to fetch the head of pull request #%s", number))
+	head, stop := req.fetchPullHead(ctx, deps, m.pull.Number, readHead)
+	if stop != nil {
+		return stop
 	}
 
 	apart, err := deps.Repo.Divergence(ctx, m.tip, head)
@@ -315,7 +291,7 @@ func (m *mergeReady) atHead(ctx context.Context, deps Deps, req Request) *result
 		return req.unread(readHead, err)
 	}
 
-	if stop := m.apartFromHead(req, apart); stop != nil {
+	if stop = m.apartFromHead(req, apart); stop != nil {
 		return stop
 	}
 
@@ -326,18 +302,21 @@ func (m *mergeReady) atHead(ctx context.Context, deps Deps, req Request) *result
 
 // apartFromHead refuses a tip apart from the pull request's head, with ils push as the next step.
 func (m *mergeReady) apartFromHead(req Request, apart git.Divergence) *result.Result {
-	push := result.NextCommand("push")
+	push := result.NextCommand(PushCommand)
 
 	switch {
 	case apart.Ahead > 0 && apart.Behind > 0:
-		return req.refused(result.Say("the tip of %s and the head of pull request #%s have diverged: "+
+		return req.Refused(result.Say("the tip of %s and the head of pull request #%s have diverged: "+
 			"each has commits the other lacks", m.branch, m.pull.Number), push)
+
 	case apart.Behind > 0:
-		return req.refused(result.Say("the tip of %s is behind the head of pull request #%s: "+
+		return req.Refused(result.Say("the tip of %s is behind the head of pull request #%s: "+
 			"the pull request has commits the tip lacks", m.branch, m.pull.Number), push)
+
 	case apart.Ahead > 0:
-		return req.refused(result.Say("the tip of %s is past the head of pull request #%s: "+
+		return req.Refused(result.Say("the tip of %s is past the head of pull request #%s: "+
 			"the tip has commits the pull request lacks, so they were never pushed", m.branch, m.pull.Number), push)
+
 	}
 
 	return nil
@@ -390,31 +369,27 @@ func (m *mergeReady) wait(ctx context.Context, deps Deps, req Request) *result.R
 
 	m.waited = waited
 
-	// A trunk that requires checks has CI, so only one that requires none is asked about.
-	if waited.Outcome == WaitNothingReported && len(m.protection.RequiredChecks) == 0 {
-		return m.withoutCI(ctx, deps, req)
-	}
-
-	return m.verdictStop(req)
+	return m.withoutCI(ctx, deps, req)
 }
 
-// withoutCI asks whether the repository has CI on its trunk, for a head that nothing reported for.
-// Without CI the merge goes on as green checks let it, unless the merge state says the pull request
+// withoutCI asks whether the repository has CI on its trunk, for a head that nothing reported for
+// while the trunk requires none of its checks, and returns the stop of the wait's outcome. Without
+// CI the merge goes on as green checks let it, unless the merge state says the pull request
 // conflicts with the trunk or is behind it.
 func (m *mergeReady) withoutCI(ctx context.Context, deps Deps, req Request) *result.Result {
-	hasCI, err := hasTrunkCI(ctx, deps, m.Repo, m.Trunk)
+	without, err := m.waited.trunkWithoutCI(ctx, deps, m.Ready, m.protection.RequiredChecks)
 
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return m.reported(req, m.waited.ciCutShortReport(), nil)
 	case err != nil:
 		return m.carrying(req.unread(readCI, err))
-	case hasCI:
-		return m.verdictStop(req)
 	}
 
-	m.unverified = true
-	m.waited.apartWithoutCI(m.waited.MergeState)
+	if without {
+		m.unverified = true
+		m.waited.apartWithoutCI(m.waited.MergeState)
+	}
 
 	return m.verdictStop(req)
 }
@@ -424,7 +399,7 @@ func (m *mergeReady) withoutCI(ctx context.Context, deps Deps, req Request) *res
 func (m *mergeReady) verdictStop(req Request) *result.Result {
 	if m.waited.Outcome == WaitNothingReported && !m.unverified {
 		_, reason := nothingReported(m.pull.HeadSHA, m.pull.Number)
-		stop := req.refused(reason, result.NextStep("report that no check or status reported for the head, and stop"))
+		stop := req.Refused(reason, result.NextStep("report that no check or status reported for the head, and stop"))
 		stop.Lines = []result.Phrase{m.waited.mergeStateLine()}
 
 		return m.carrying(stop)
@@ -438,32 +413,23 @@ func (m *mergeReady) verdictStop(req Request) *result.Result {
 	return m.reported(req, report, m.unverifiedLine())
 }
 
-// settle reads the merge state again every mergePoll while GitHub has not worked it out, up to
-// ctx's deadline, and then refuses every state but clean.
+// settle reads the merge state again as the wait polls it while GitHub has not worked it out, and
+// then refuses every state but clean. The deadline or mergeWindow ending that poll is pending, as
+// it is for the wait.
 func (m *mergeReady) settle(ctx context.Context, deps Deps, req Request) *result.Result {
 	w := waiter{deps: deps, pushed: Pushed{Repo: m.Repo, Number: m.pull.Number, Required: m.protection.RequiredChecks}}
 
-	for m.waited.MergeState == forge.MergeUnknown {
-		err := pause(ctx, mergePoll)
+	head, err := w.mergeKnown(ctx, forge.Head{MergeState: m.waited.MergeState, RawMergeState: m.waited.RawMergeState})
+	m.waited.takeState(head)
 
-		var head forge.Head
-		if err == nil {
-			head, err = w.head(ctx)
-		}
-
-		switch {
-		case err == nil:
-			m.waited.takeState(head)
-		case endedByDeadline(err):
-			m.waited.Outcome, m.waited.Stage = WaitPending, StageMergeState
-
-			return m.reported(req, m.waited.pendingReport(m.pull.HeadSHA, m.pull.Number), []result.Phrase{m.summary()})
-		default:
-			return m.carrying(req.unread(readMergeState, err))
-		}
+	switch {
+	case err == nil:
+		return m.stateStop(req)
+	case m.waited.endPending(StageMergeState, err):
+		return m.reported(req, m.waited.pendingReport(m.pull.HeadSHA, m.pull.Number), []result.Phrase{m.summary()})
+	default:
+		return m.carrying(req.unread(readMergeState, err))
 	}
-
-	return m.stateStop(req)
 }
 
 // stateStop refuses a merge state other than clean, once the checks let the merge go on: green, or
@@ -481,14 +447,15 @@ func (m *mergeReady) stateStop(req Request) *result.Result {
 	case forge.MergeDraft:
 		return m.stated(m.draftStop(req))
 	case forge.MergeBlockedByReview:
-		return m.stated(req.refused(result.Say("pull request #%s requires a review", number),
+		return m.stated(req.Refused(result.Say("pull request #%s requires a review", number),
 			result.NextStep("request a review, and stop: a review is not the agent's to give")))
 	case forge.MergeBlockedByMissingCheck:
-		return m.stated(req.refused(result.Say("a check the trunk requires has no check on %s", m.pull.HeadSHA),
+		return m.stated(req.Refused(result.Say("a check the trunk requires has no check on %s", m.pull.HeadSHA),
 			result.NextStep("report that the required check has no check on the head, and stop")),
+
 			m.missingLine())
 	default:
-		return m.stated(req.refused(
+		return m.stated(req.Refused(
 			result.Say("GitHub blocks pull request #%s for a reason ils does not read: %s", number, m.pull.URL),
 			result.NextStep("report that GitHub blocks the merge, and stop")))
 	}
@@ -549,7 +516,7 @@ func (m *mergeReady) reserved(ctx context.Context, req Request) *result.Result {
 
 	stop := req.ends(result.Pending,
 		result.Say("fewer than %s seconds of the time limit were left for the merge", reserveSeconds),
-		result.NextCommand("push"))
+		result.NextCommand(PushCommand))
 	stop.Lines = []result.Phrase{
 		m.summary(), m.waited.mergeStateLine(),
 		result.Say("Fewer than %s seconds of the time limit were left for the merge, so nothing was written",
@@ -668,7 +635,9 @@ func (m *mergeReady) merge(ctx context.Context, deps Deps, req Request) *result.
 }
 
 // deleteOnOrigin deletes the branch on origin. A delete that fails while origin no longer lists
-// the branch counts as done, since GitHub can delete a merged branch on its own.
+// the branch counts as done, since GitHub can delete a merged branch on its own. When origin
+// cannot be asked whether it still lists the branch, the result says why instead of where the
+// branch stands.
 func (m *mergeReady) deleteOnOrigin(ctx context.Context, deps Deps, req Request) *result.Result {
 	err := deps.Forge.DeleteBranch(ctx, m.Repo, m.branch)
 	if err == nil {
@@ -677,8 +646,15 @@ func (m *mergeReady) deleteOnOrigin(ctx context.Context, deps Deps, req Request)
 		return nil
 	}
 
-	// An origin that cannot be asked leaves the branch as the failed delete left it: still there.
-	if _, listed, askErr := deps.Repo.RemoteBranch(ctx, m.branch); askErr != nil || listed {
+	_, listed, askErr := deps.Repo.RemoteBranch(ctx, m.branch)
+
+	switch {
+	case askErr != nil:
+		unasked, _ := couldNotRead(readStillOnOrigin, askErr)
+
+		return m.broke(req, result.Say("the branch could not be deleted on origin"), req.again(),
+			result.Say("Could not delete the branch %s on origin: %s", m.branch, err.Error()), unasked)
+	case listed:
 		return m.broke(req, result.Say("the branch is still on origin"), req.again(),
 			result.Say("Could not delete the branch %s on origin, so it is still there: %s", m.branch, err.Error()))
 	}

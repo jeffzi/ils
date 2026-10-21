@@ -613,8 +613,11 @@ func writeStops() []landingRow {
 	listed := row("the delete fails and origin still lists the branch", toLand(nil, failed), result.Broke,
 		mergedLine+stillThere+nextMergeAgain)
 	listed.set.arrange = func(f *gittest.Fixture) { f.Publish(topic) }
+	// The question fails with git's own message, which the text holds on one line before the `Next:` line.
 	unasked := row("the delete fails and origin cannot be asked", toLand(nil, failed), result.Broke,
-		mergedLine+stillThere+nextMergeAgain)
+		mergedLine+"Could not delete the branch "+topic+" on origin: HTTP 502\n"+
+			"Could not read "+readStillOnOrigin+": ")
+	unasked.after = "\n" + nextMergeAgain
 	unasked.set.landed = moveOrigin
 
 	return []landingRow{refused, cut, gone, listed, unasked}

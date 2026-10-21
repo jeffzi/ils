@@ -234,3 +234,12 @@ func TestRepo_Slug_WhenHostOwnerAndNameSet_JoinsThemWithSlashes(t *testing.T) {
 
 	assert.Check(t, is.Equal(got, "git.example.com/ada/engine"))
 }
+
+func TestRepo_FullName_WhenOwnerAndNameSet_JoinsThemWithASlash(t *testing.T) {
+	t.Parallel()
+	repo := forge.Repo{Host: "git.example.com", Owner: "ada", Name: "engine"}
+
+	got := repo.FullName()
+
+	assert.Check(t, is.Equal(got, "ada/engine"))
+}

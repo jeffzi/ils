@@ -31,6 +31,19 @@ const (
 // only constant expressions.
 const thenRunAgain = ", then run ils %s again"
 
+// writeMessage is the judgment step that has the agent write the squash commit's message. Its names
+// are the repository and the pull request's number; the title and the body stay placeholders for
+// the agent to write. It stays untyped because result.NextStep accepts only constant expressions.
+const writeMessage = "write the pull request's title and body as the squash commit's message with " +
+	"`gh pr edit --repo %s %s --title … --body …`"
+
+// PushCommand and MergeCommand are the command words of `ils push` and `ils merge`. They stay
+// untyped so that a next step can name them as result.NextCommand's constant wording.
+const (
+	PushCommand  = "push"
+	MergeCommand = "merge"
+)
+
 // Deps is what a command takes: the forge and the repository it runs in.
 type Deps struct {
 	Forge Forge
@@ -116,10 +129,9 @@ func sharedChecks(ctx context.Context, deps Deps, req Request) (Ready, *result.R
 	}
 
 	if standing.Kind == git.NoOrigin {
-		return Ready{}, req.refused(
+		return Ready{}, req.Refused(
 			result.Say("this repository has no remote named origin"),
-			result.NextStep("create the repository on GitHub and push to it with `gh repo create --source . --push`"),
-		)
+			result.NextStep("create the repository on GitHub and push to it with `gh repo create --source . --push`"))
 	}
 
 	origin, stop := originRepo(ctx, deps, req)
@@ -150,10 +162,9 @@ func originRepo(ctx context.Context, deps Deps, req Request) (forge.Repo, *resul
 	}
 
 	if unparsed || !urls.Fetch.Same(urls.Push) {
-		return forge.Repo{}, req.refused(
+		return forge.Repo{}, req.Refused(
 			result.Say("origin's fetch URL %s and push URL %s do not name one GitHub repository", urls.FetchURL, urls.PushURL),
-			result.NextStep("point both of origin's URLs at one GitHub repository with `git remote set-url`, by hand"),
-		)
+			result.NextStep("point both of origin's URLs at one GitHub repository with `git remote set-url`, by hand"))
 	}
 
 	return forge.Repo{Host: urls.Fetch.Host, Owner: urls.Fetch.Owner, Name: urls.Fetch.Name}, nil
@@ -171,17 +182,15 @@ func identity(ctx context.Context, deps Deps, req Request, origin forge.Repo) (f
 	byHand := result.NextStep("stop and tell the user to push by hand")
 
 	if repo.Fork {
-		return forge.Repo{}, req.refused(
-			result.Say("%s/%s is a fork, which ils does not push to; the user pushes by hand", repo.Owner, repo.Name),
-			byHand,
-		)
+		return forge.Repo{}, req.Refused(
+			result.Say("%s is a fork, which ils does not push to; the user pushes by hand", repo.FullName()),
+			byHand)
 	}
 
 	if !repo.CanPush {
-		return forge.Repo{}, req.refused(
-			result.Say("the logged-in user has no push permission on %s/%s; the user pushes by hand", repo.Owner, repo.Name),
-			byHand,
-		)
+		return forge.Repo{}, req.Refused(
+			result.Say("the logged-in user has no push permission on %s; the user pushes by hand", repo.FullName()),
+			byHand)
 	}
 
 	return repo, nil
@@ -198,7 +207,7 @@ func trunkOf(ctx context.Context, deps Deps, req Request) (string, *result.Resul
 
 	// An origin that answers without naming a trunk is refused like one that did not answer.
 	if errors.Is(err, git.ErrNoSymref) {
-		return "", req.refused(reason, req.again())
+		return "", req.Refused(reason, req.again())
 	}
 
 	return "", req.unreached(readTrunk, err, reason)
@@ -216,11 +225,11 @@ func (r Request) identityFailure(err error) *result.Result {
 	if loggedOut, ok := errors.AsType[*forge.NotLoggedInError](err); ok {
 		host := loggedOut.Host
 
-		return r.refused(
+		return r.Refused(
 			result.Say("gh is not logged in to %s; log in with `gh auth login --hostname %s`, "+
 				"or push by hand if %s is not GitHub", host, host, host),
-			result.NextStep("log in to %s"+thenRunAgain, host, r.Command),
-		)
+			result.NextStep("log in to %s"+thenRunAgain, host, r.Command))
+
 	}
 
 	return r.unread(readIdentity, err)
@@ -241,7 +250,7 @@ func (r Request) tooOld(err error) *result.Result {
 			old.Tool, old.Line, old.Tool, old.Minimum, old.InstallURL)
 	}
 
-	return r.refused(reason, result.NextStep("upgrade %s"+thenRunAgain, old.Tool, r.Command))
+	return r.Refused(reason, result.NextStep("upgrade %s"+thenRunAgain, old.Tool, r.Command))
 }
 
 // notInstalled returns the refusal for a call that failed with err because the tool it runs is
@@ -249,10 +258,9 @@ func (r Request) tooOld(err error) *result.Result {
 // command is refused naming the setting to fix; any other tool, naming where to get it.
 func (r Request) notInstalled(err error) *result.Result {
 	if command, ok := errors.AsType[*git.SSHCommandMissingError](err); ok {
-		return r.refused(
+		return r.Refused(
 			result.Say("%s, the ssh command %s names, is not found", command.Program, command.Setting),
-			result.NextStep("fix %s"+thenRunAgain, command.Setting, r.Command),
-		)
+			result.NextStep("fix %s"+thenRunAgain, command.Setting, r.Command))
 	}
 
 	missing, ok := errors.AsType[*child.ToolMissingError](err)
@@ -260,10 +268,9 @@ func (r Request) notInstalled(err error) *result.Result {
 		return nil
 	}
 
-	return r.refused(
+	return r.Refused(
 		result.Say("%s is not installed; install it from %s", missing.Tool, missing.InstallURL),
-		result.NextStep("install %s"+thenRunAgain, missing.Tool, r.Command),
-	)
+		result.NextStep("install %s"+thenRunAgain, missing.Tool, r.Command))
 }
 
 // ends returns the result that ends the request as outcome, with reason and next and no lines
@@ -278,9 +285,9 @@ func (r Request) ends(outcome result.Outcome, reason result.Phrase, next result.
 	}
 }
 
-// refused returns the result that ends the request as Refused, with reason and next, and no
+// Refused returns the result that ends the request as Refused, with reason and next, and no
 // lines, because nothing was written.
-func (r Request) refused(reason result.Phrase, next result.Next) *result.Result {
+func (r Request) Refused(reason result.Phrase, next result.Next) *result.Result {
 	return r.ends(result.Refused, reason, next)
 }
 
@@ -293,10 +300,9 @@ func (r Request) unread(read string, err error) *result.Result {
 	}
 
 	if errors.Is(err, context.DeadlineExceeded) {
-		return r.refused(
+		return r.Refused(
 			result.Say("the time limit ended while reading %s; nothing was written", read),
-			r.again(),
-		)
+			r.again())
 	}
 
 	line, reason := couldNotRead(read, err)
@@ -332,7 +338,7 @@ func (r Request) unreached(read string, err error, reason result.Phrase) *result
 	}
 
 	if _, ok := errors.AsType[*git.RemoteError](err); ok {
-		return r.refused(reason, r.again())
+		return r.Refused(reason, r.again())
 	}
 
 	return r.unread(read, err)
@@ -373,11 +379,11 @@ func (r Request) onWorkBranch(ready Ready) *result.Result {
 	next := startBranchStep(ready.Trunk)
 
 	if ready.Standing.Kind != git.OnBranch {
-		return r.refused(result.Say("HEAD is detached, so there is no branch to push"), next)
+		return r.Refused(result.Say("HEAD is detached, so there is no branch to push"), next)
 	}
 
 	if ready.Standing.Branch == ready.Trunk {
-		return r.refused(result.Say("HEAD is on the trunk %s, which ils never pushes", ready.Trunk), next)
+		return r.Refused(result.Say("HEAD is on the trunk %s, which ils never pushes", ready.Trunk), next)
 	}
 
 	return nil
@@ -391,10 +397,9 @@ func cleanTree(ctx context.Context, deps Deps, req Request) *result.Result {
 	}
 
 	if len(files) > 0 {
-		return req.refused(
+		return req.Refused(
 			result.Say("tracked files have changes that are not committed: %s", strings.Join(files, ", ")),
-			result.NextStep("commit them"+thenRunAgain, req.Command),
-		)
+			result.NextStep("commit them"+thenRunAgain, req.Command))
 	}
 
 	return nil
@@ -408,6 +413,18 @@ func fetchTrunk(ctx context.Context, deps Deps, req Request, trunk string) *resu
 	}
 
 	return nil
+}
+
+// fetchPullHead fetches the head of pull request number from origin and returns its sha. A failed
+// fetch is the stop of read, a refusal when origin could not be reached.
+func (r Request) fetchPullHead(ctx context.Context, deps Deps, number int, read string) (string, *result.Result) {
+	head, err := deps.Repo.Fetch(ctx, "refs/pull/"+strconv.Itoa(number)+"/head")
+	if err != nil {
+		return "", r.unreached(read, err,
+			result.Say("origin could not be reached to fetch the head of pull request #%s", number))
+	}
+
+	return head, nil
 }
 
 // commitsPast returns the branch's tip and its commits past origin's trunk, which fetchTrunk
@@ -451,18 +468,15 @@ func tipOf(ctx context.Context, deps Deps, req Request, b onBranch) (string, *re
 	return "", req.unread(readTip, err)
 }
 
-// mergeCommand is the command word of `ils merge`.
-const mergeCommand = "merge"
-
 // nothingPast refuses a branch with no commit that origin's trunk lacks. Its next step is the push
 // of the new work, which for `ils merge` is a first push and not a run again.
 func (r Request) nothingPast(b onBranch) *result.Result {
 	next := result.NextStep("commit the work, then run ils push again")
-	if r.Command == mergeCommand {
+	if r.Command == MergeCommand {
 		next = result.NextStep("commit the work, then run ils push")
 	}
 
-	return r.refused(result.Say("the branch %s has no commit past origin's trunk %s", b.branch, b.Trunk), next)
+	return r.Refused(result.Say("the branch %s has no commit past origin's trunk %s", b.branch, b.Trunk), next)
 }
 
 // pullRequest returns the branch's open pull request against the trunk, nil when it has none,
@@ -482,12 +496,11 @@ func pullRequest(ctx context.Context, deps Deps, req Request, b onBranch) (open,
 		}
 
 		if change.Base != b.Trunk {
-			return nil, nil, req.refused(
+			return nil, nil, req.Refused(
 				result.Say("pull request #%s from %s is open against %s and not against the trunk %s",
 					change.Number, b.branch, change.Base, b.Trunk),
 				result.NextStep("close it or change its base with `gh pr edit %s --base %s`"+thenRunAgain,
-					change.Number, b.Trunk, req.Command),
-			)
+					change.Number, b.Trunk, req.Command))
 		}
 
 		open = &change
@@ -519,10 +532,9 @@ func pullRequest(ctx context.Context, deps Deps, req Request, b onBranch) (open,
 // commit with it and has commits it lacks, listing those. It returns the pull request's head as
 // fetched from origin, or nothing when a read failed.
 func (b onBranch) landedWith(ctx context.Context, deps Deps, req Request, change forge.Change) (string, bool, *result.Result) {
-	head, err := deps.Repo.Fetch(ctx, "refs/pull/"+strconv.Itoa(change.Number)+"/head")
-	if err != nil {
-		return "", false, req.unreached(readMergedHead, err,
-			result.Say("origin could not be reached to fetch the head of pull request #%s", change.Number))
+	head, stop := req.fetchPullHead(ctx, deps, change.Number, readMergedHead)
+	if stop != nil {
+		return "", false, stop
 	}
 
 	theirs, err := deps.Repo.CommitsPast(ctx, head, b.Trunk)
@@ -546,11 +558,11 @@ func (b onBranch) landedWith(ctx context.Context, deps Deps, req Request, change
 		return head, true, nil
 	}
 
-	stop := req.refused(
+	stop = req.Refused(
 		result.Say("pull request #%s from %s was merged without the commits listed here", change.Number, b.branch),
 		result.NextStep(startBranch+", then bring those commits over with `git cherry-pick %s`; "+
-			"expect a conflict where the squash touched the same files", b.Trunk, b.Trunk, shas(unlanded)),
-	)
+			"expect a conflict where the squash touched the same files", b.Trunk, b.Trunk, shas(unlanded)))
+
 	stop.Lines = listed(unlanded)
 
 	return head, false, stop
@@ -559,10 +571,9 @@ func (b onBranch) landedWith(ctx context.Context, deps Deps, req Request, change
 // alreadyLanded refuses a branch whose every commit landed with the merged pull request landed:
 // its work is on the trunk, so only a new branch has anything left to land.
 func (b onBranch) alreadyLanded(req Request, landed forge.Change) *result.Result {
-	return req.refused(
+	return req.Refused(
 		result.Say("the branch %s already landed with pull request #%s", b.branch, landed.Number),
-		startBranchStep(b.Trunk),
-	)
+		startBranchStep(b.Trunk))
 }
 
 // shas returns the shas of commits in order, separated by spaces.

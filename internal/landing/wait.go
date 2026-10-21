@@ -216,23 +216,28 @@ func AwaitVerdict(ctx context.Context, deps Deps, pushed Pushed) (Waited, error)
 	w := waiter{deps: deps, pushed: pushed}
 
 	waited, stage, err := w.run(ctx)
-	if err == nil {
-		return waited, nil
-	}
-
-	windowPassed := errors.Is(err, errWindowPassed)
-	if windowPassed || endedByDeadline(err) {
-		waited.Outcome = WaitPending
-		waited.Stage = stage
-
-		if windowPassed {
-			waited.Window = mergeWindow
-		}
-
+	if err == nil || waited.endPending(stage, err) {
 		return waited, nil
 	}
 
 	return Waited{}, &WaitError{Stage: stage, Err: err}
+}
+
+// endPending makes w WaitPending at stage when err is the deadline or mergeWindow ending that
+// stage, with Window set when mergeWindow did, and reports whether it was.
+func (w *Waited) endPending(stage WaitStage, err error) bool {
+	windowPassed := errors.Is(err, errWindowPassed)
+	if !windowPassed && !endedByDeadline(err) {
+		return false
+	}
+
+	w.Outcome, w.Stage = WaitPending, stage
+
+	if windowPassed {
+		w.Window = mergeWindow
+	}
+
+	return true
 }
 
 // waiter is one wait for the checks of a pull request's head: what it reads through and the
@@ -610,7 +615,7 @@ func (w Waited) apartReport(sha, trunk string, reason result.Phrase) waitReport 
 // pendingReport is a wait that ended before the forge had an answer about the commit sha of pull
 // request number, at the stage it was in.
 func (w Waited) pendingReport(sha string, number int) waitReport {
-	report := waitReport{pending: true, next: result.NextCommand("push")}
+	report := waitReport{pending: true, next: result.NextCommand(PushCommand)}
 
 	switch w.Stage {
 	case StageHead:
@@ -668,7 +673,7 @@ func (w Waited) ciCutShortReport() waitReport {
 	line, reason := cutShortReading(readCI)
 
 	return waitReport{
-		lines: []result.Phrase{line, w.mergeStateLine()}, reason: reason, next: result.NextCommand("push"), pending: true,
+		lines: []result.Phrase{line, w.mergeStateLine()}, reason: reason, next: result.NextCommand(PushCommand), pending: true,
 	}
 }
 
@@ -684,14 +689,25 @@ func noCI(trunk, sha string) result.Phrase {
 	return result.Say("No CI is configured on %s, so nothing verified %s", trunk, sha)
 }
 
-// hasTrunkCI asks the forge whether the repository has CI on its trunk, unless ctx has already
-// ended, which it returns as the read's error.
-func hasTrunkCI(ctx context.Context, deps Deps, repo forge.Repo, trunk string) (bool, error) {
+// trunkWithoutCI reports whether ready's trunk has no CI, asked of the forge only when nothing
+// reported for the commit the wait read and the trunk requires none of its checks: a trunk that
+// requires checks has CI. It returns false when the question does not arise. A ctx that has
+// already ended is returned as the read's error, and so is any failure of the read.
+func (w Waited) trunkWithoutCI(ctx context.Context, deps Deps, ready Ready, required []string) (bool, error) {
+	if w.Outcome != WaitNothingReported || len(required) > 0 {
+		return false, nil
+	}
+
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
 
-	return deps.Forge.HasTrunkCI(ctx, repo, trunk)
+	hasCI, err := deps.Forge.HasTrunkCI(ctx, ready.Repo, ready.Trunk)
+	if err != nil {
+		return false, err
+	}
+
+	return !hasCI, nil
 }
 
 // payloadState returns the merge state a payload carries: unknown until the wait has read one.

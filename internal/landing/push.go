@@ -138,22 +138,22 @@ func cutFromTrunk(ctx context.Context, deps Deps, req Request, p pushReady) *res
 		return req.unread(readCommits, err)
 	}
 
-	stop := req.refused(sharedFirst(p.branch, others, len(own) > 0), eitherWayOut(len(others)))
+	stop := req.Refused(sharedFirst(p.branch, others, len(own) > 0), eitherWayOut(len(others), req.Command))
 	stop.Lines = listed(own)
 
 	return stop
 }
 
 // eitherWayOut is the Next step of a branch that shares its first commit past the trunk with count
-// other local branches: land them first, or remove them.
-func eitherWayOut(count int) result.Next {
+// other local branches: land them first, or remove them, then run command again.
+func eitherWayOut(count int, command string) result.Next {
 	if count == 1 {
-		return result.NextStep("run ils push on the other branch and get it merged first when this branch builds " +
-			"on it, or remove the other branch when it was cut from this one, then run ils push again")
+		return result.NextStep("run ils push on the other branch and get it merged first when this branch builds "+
+			"on it, or remove the other branch when it was cut from this one"+thenRunAgain, command)
 	}
 
-	return result.NextStep("run ils push on the other branches and get them merged first when this branch builds " +
-		"on them, or remove the other branches when they were cut from this one, then run ils push again")
+	return result.NextStep("run ils push on the other branches and get them merged first when this branch builds "+
+		"on them, or remove the other branches when they were cut from this one"+thenRunAgain, command)
 }
 
 // sharedFirst says that the branch shares its first commit past the trunk with the branches
@@ -213,15 +213,15 @@ func originCopy(ctx context.Context, deps Deps, req Request, p pushReady) (their
 
 	switch {
 	case apart.Behind > 0 && apart.Ahead > 0:
-		return "", false, req.refused(
+		return "", false, req.Refused(
 			result.Say("the branch %s and origin's copy of it have diverged", p.branch),
-			result.NextStep("run `git merge origin/%s`, then run ils push again", p.branch),
-		)
+			result.NextStep("run `git merge origin/%s`"+thenRunAgain, p.branch, req.Command))
+
 	case apart.Behind > 0:
-		return "", false, req.refused(
+		return "", false, req.Refused(
 			result.Say("the branch %s is behind origin's copy of it", p.branch),
-			result.NextStep("run `git pull --ff-only origin %s`, then run ils push again", p.branch),
-		)
+			result.NextStep("run `git pull --ff-only origin %s`"+thenRunAgain, p.branch, req.Command))
+
 	}
 
 	return theirs, apart.Ahead == 0, nil

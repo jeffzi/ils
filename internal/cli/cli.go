@@ -174,7 +174,14 @@ func (e *refusedError) Error() string {
 }
 
 func (p *parse) refuse(reason result.Phrase) error {
-	return &refusedError{result: refused(p.words, reason)}
+	command := ""
+	if len(p.words) > 0 {
+		command = p.words[0]
+	}
+
+	req := landing.Request{Command: command, Words: p.words}
+
+	return &refusedError{result: *req.Refused(reason, result.NextCommand(flagHelp))}
 }
 
 // root returns the command of no word, with every other command under it.
@@ -182,7 +189,8 @@ func (p *parse) root() *cobra.Command {
 	root := &cobra.Command{
 		Use:  "ils",
 		Long: rootLong,
-		// Cobra needs a command to be runnable before it asks Args, which refuses every run.
+		// Cobra asks Args only of a runnable command. Args refuses every run but `ils --version`,
+		// which RunE prints.
 		Args: func(c *cobra.Command, args []string) error {
 			if c.ArgsLenAtDash() == 0 {
 				return p.refuse(notCommand(wordDash))
@@ -222,8 +230,8 @@ func (p *parse) root() *cobra.Command {
 	root.InitDefaultHelpFlag()
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return p.flagRefusal(err, notCommand) })
 	root.AddCommand(
-		p.landing(landingHelp{word: wordPush, short: pushShort, long: pushLong, examples: pushExamples}, p.app.runPush, landing.Push),
-		p.landing(landingHelp{word: wordMerge, short: mergeShort, long: mergeLong, examples: mergeExamples}, p.app.runMerge, landing.Merge),
+		p.landing(landingHelp{word: landing.PushCommand, short: pushShort, long: pushLong, examples: pushExamples}, p.app.runPush, landing.Push),
+		p.landing(landingHelp{word: landing.MergeCommand, short: mergeShort, long: mergeLong, examples: mergeExamples}, p.app.runMerge, landing.Merge),
 	)
 
 	for _, later := range []string{wordBranch, wordRelease, wordStatus} {
@@ -354,21 +362,6 @@ func (a App) land(ctx context.Context, run Command, req landing.Request) (r resu
 	return run(ctx, deps, req), gitDir
 }
 
-func refused(words []string, reason result.Phrase) result.Result {
-	command := ""
-	if len(words) > 0 {
-		command = words[0]
-	}
-
-	return result.Result{
-		Command: command,
-		Words:   words,
-		Outcome: result.Refused,
-		Reason:  reason,
-		Next:    result.NextCommand(flagHelp),
-	}
-}
-
 // print writes text to Stdout and returns code, or 1 when the write fails.
 func (a App) print(text string, code int) int {
 	_, err := io.WriteString(a.Stdout, text)
@@ -388,9 +381,7 @@ func (a App) fail(err error) int {
 }
 
 const (
-	wordPush    = "push"
 	wordBranch  = "branch"
-	wordMerge   = "merge"
 	wordRelease = "release"
 	wordStatus  = "status"
 
