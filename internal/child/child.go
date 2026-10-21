@@ -20,7 +20,7 @@ type ExitError struct {
 
 // Error joins the argv, the exit status, and the trimmed stderr when there is any.
 func (e *ExitError) Error() string {
-	message := fmt.Sprintf("%s: exit status %d", commandLine(e.Argv), e.Code)
+	message := fmt.Sprintf("%s: exit status %d", CommandLine(e.Argv), e.Code)
 	if stderr := strings.TrimSpace(e.Stderr); stderr != "" {
 		message += ": " + stderr
 	}
@@ -34,7 +34,7 @@ func (e *ExitError) Error() string {
 // program's exit was. A non-zero exit is an *ExitError. Anything else is runErr,
 // named by the command.
 func Failure(ctx context.Context, argv []string, runErr error, stderr string) error {
-	command := commandLine(argv)
+	command := CommandLine(argv)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return fmt.Errorf("%s: %w", command, ctxErr)
 	}
@@ -88,8 +88,19 @@ func (e *ToolTooOldError) Error() string {
 	return fmt.Sprintf("%s %s is older than %s", e.Tool, e.Version, e.Minimum)
 }
 
-// SemverPrefix is what the semver package wants ahead of a version.
-const SemverPrefix = "v"
+// semverPrefix is what the semver package wants ahead of a version.
+const semverPrefix = "v"
+
+// ValidVersion reports whether version is valid semver without the leading v.
+func ValidVersion(version string) bool {
+	return semver.IsValid(semverPrefix + version)
+}
+
+// AtLeast reports whether version is minimum or newer, both as semver without the leading v. A
+// version that is not valid semver is older than any valid one.
+func AtLeast(version, minimum string) bool {
+	return semver.Compare(semverPrefix+version, semverPrefix+minimum) >= 0
+}
 
 // Requirement is the oldest release of a tool that ils works with and where to get it.
 type Requirement struct {
@@ -104,13 +115,12 @@ type Requirement struct {
 func (r Requirement) Check(line, version string) error {
 	tooOld := &ToolTooOldError{Tool: r.Tool, Line: line, Minimum: r.Minimum, InstallURL: r.InstallURL}
 
-	prefixed := SemverPrefix + version
-	if !semver.IsValid(prefixed) {
+	if !ValidVersion(version) {
 		return tooOld
 	}
 
 	tooOld.Version = version
-	if semver.Compare(prefixed, SemverPrefix+r.Minimum) < 0 {
+	if !AtLeast(version, r.Minimum) {
 		return tooOld
 	}
 
@@ -126,6 +136,8 @@ func (r Requirement) CheckOutput(stdout string, versionOf func(line string) stri
 	return r.Check(line, versionOf(line))
 }
 
-func commandLine(argv []string) string {
+// CommandLine returns argv joined by spaces, the way every error about a run of argv names the
+// call.
+func CommandLine(argv []string) string {
 	return strings.Join(argv, " ")
 }

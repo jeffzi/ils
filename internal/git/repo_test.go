@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -359,6 +360,21 @@ func TestRepo_Divergence(t *testing.T) {
 			assert.Check(t, is.DeepEqual(got, tt.want), "Divergence(%s, %s)", tt.a, tt.b)
 		})
 	}
+}
+
+func TestRepo_Divergence_WhenOutputDoesNotParse_ReturnsErrorNamingTheCall(t *testing.T) {
+	// Not parallel: gittest.LinkAs sets PATH for the whole process.
+	shas := diverged(t)
+	_, err := shas.repo.Divergence(t.Context(), shas.local, unknownSHA)
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "Divergence(%s, %s) error = %v, want *child.ExitError", shas.local, unknownSHA, err)
+	gittest.LinkAs(t, "git")
+	repo := shas.repo
+	repo.Runner.Env = append(slices.Clone(repo.Runner.Env), garbledGitEnv+"=not counts")
+
+	_, err = repo.Divergence(t.Context(), shas.local, unknownSHA)
+
+	assert.Check(t, is.ErrorContains(err, child.CommandLine(exitErr.Argv)))
 }
 
 func TestRepo_Contains(t *testing.T) {

@@ -2,18 +2,14 @@ package github
 
 import (
 	"context"
-	legacy "encoding/json"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os/exec"
-	"slices"
 	"strings"
 
 	gh "github.com/cli/go-gh/v2"
-	"golang.org/x/mod/semver"
 
 	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
@@ -22,7 +18,8 @@ import (
 // Program is the name gh is run under, and the first word of every argv a call is named by.
 const Program = "gh"
 
-func argv(args []string) []string {
+// Argv returns the full argv of a call of gh with args.
+func Argv(args []string) []string {
 	return append([]string{Program}, args...)
 }
 
@@ -51,7 +48,7 @@ type DecodeError struct {
 
 // Error names the command whose output could not be decoded.
 func (e *DecodeError) Error() string {
-	return fmt.Sprintf("%s: decode output: %v", strings.Join(e.Argv, " "), e.Err)
+	return fmt.Sprintf("%s: decode output: %v", child.CommandLine(e.Argv), e.Err)
 }
 
 // Unwrap returns Err, so that errors.Is and errors.As reach the decoder's error.
@@ -76,7 +73,7 @@ func (Runner) Run(ctx context.Context, args ...string) (Result, error) {
 		return result, nil
 	}
 
-	failure := child.Failure(ctx, argv(args), err, result.Stderr)
+	failure := child.Failure(ctx, Argv(args), err, result.Stderr)
 	if _, exited := errors.AsType[*child.ExitError](failure); exited {
 		return result, failure
 	}
@@ -119,7 +116,7 @@ func VersionOf(line string) string {
 	}
 
 	version, _, _ := strings.Cut(rest, " ")
-	if !semver.IsValid(child.SemverPrefix + version) {
+	if !child.ValidVersion(version) {
 		return ""
 	}
 
@@ -159,51 +156,8 @@ func decodeOutput[T any](stdout string, args []string) (T, error) {
 	if err := json.Unmarshal([]byte(stdout), &value); err != nil {
 		var zero T
 
-		return zero, &DecodeError{Argv: argv(args), Err: err}
+		return zero, &DecodeError{Argv: Argv(args), Err: err}
 	}
 
 	return value, nil
-}
-
-// decodePages decodes the JSON arrays that `gh api --paginate` prints, one per
-// page and concatenated, into one slice; a single array decodes as itself.
-func decodePages[T any](stdout string, args []string) ([]T, error) {
-	pages, err := decodeEachPage[[]T](stdout, args)
-	if err != nil {
-		return nil, err
-	}
-
-	return slices.Concat(pages...), nil
-}
-
-// decodeEachPage decodes the JSON values that `gh api --paginate` prints, one per
-// page and concatenated, each into a P; stdout holding no value is a *DecodeError.
-func decodeEachPage[P any](stdout string, args []string) ([]P, error) {
-	decoder := legacy.NewDecoder(strings.NewReader(stdout))
-
-	var pages []P
-
-	for {
-		var raw legacy.RawMessage
-
-		err := decoder.Decode(&raw)
-		if errors.Is(err, io.EOF) {
-			if len(pages) > 0 {
-				return pages, nil
-			}
-
-			err = io.ErrUnexpectedEOF
-		}
-
-		if err != nil {
-			return nil, &DecodeError{Argv: argv(args), Err: err}
-		}
-
-		page, err := decodeOutput[P](string(raw), args)
-		if err != nil {
-			return nil, err
-		}
-
-		pages = append(pages, page)
-	}
 }

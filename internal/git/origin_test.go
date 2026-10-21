@@ -3,6 +3,7 @@ package git_test
 import (
 	"errors"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -82,6 +83,31 @@ func TestParseOrigin_WhenShapeUnknown_ReturnsOriginErrorNamingURL(t *testing.T) 
 			originErr, ok := errors.AsType[*git.OriginError](err)
 			assert.Assert(t, ok, "ParseOrigin(%q) error = %v, want *git.OriginError", tt.in, err)
 			assert.Check(t, is.Equal(originErr.URL, tt.in))
+		})
+	}
+}
+
+func TestParseOrigin_WhenURLFailsToParse_ReturnsOriginErrorWrappingTheCause(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   string
+	}{
+		{name: "https url", in: "https://github.com/a/b%zz"},
+		{name: "ssh url", in: "ssh://git@github.com/a/b%zz"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := git.ParseOrigin(tt.in)
+
+			originErr, ok := errors.AsType[*git.OriginError](err)
+			assert.Assert(t, ok, "ParseOrigin(%q) error = %v, want *git.OriginError", tt.in, err)
+			cause, ok := errors.AsType[*url.Error](originErr)
+			assert.Assert(t, ok, "ParseOrigin(%q) error = %v, want it to wrap *url.Error", tt.in, err)
+			want := (&git.OriginError{URL: tt.in}).Error() + ": " + cause.Error()
+			assert.Check(t, is.Equal(originErr.Error(), want))
 		})
 	}
 }

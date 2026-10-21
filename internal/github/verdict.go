@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -11,6 +12,18 @@ import (
 	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
 )
+
+// runOfLink finds the Actions run a check's link belongs to.
+var runOfLink = regexp.MustCompile(`/actions/runs/(\d+)`)
+
+// runUnfinished matches what `gh run view --log-failed` prints when the run has not completed.
+var runUnfinished = regexp.MustCompile(`run \d+ is still in progress; logs will be available when it is complete`)
+
+// noChecksReported is what gh prints on stderr when a pull request has no checks.
+const noChecksReported = "no checks reported"
+
+// RunListLimit is the most runs `gh run list` returns for one commit.
+const RunListLimit = "1000"
 
 type pullCheck struct {
 	Name     string `json:"name"`
@@ -133,7 +146,7 @@ func bucketOf(bucket string) forge.Bucket {
 // runs names a run by its workflow name, falling back to the run name when the workflow name is empty.
 func (f *Forge) runs(ctx context.Context, repo forge.Repo, sha string) ([]forge.Run, error) {
 	listed, err := RunJSON[[]workflowRun](ctx, f.runner,
-		"run", "list", "--repo", repo.Slug(), "--commit", sha, "--limit", runListLimit,
+		"run", "list", "--repo", repo.Slug(), "--commit", sha, "--limit", RunListLimit,
 		"--json", "status,name,workflowName")
 	if err != nil {
 		return nil, err

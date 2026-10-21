@@ -363,6 +363,7 @@ func TestForge_WhenReadExitsNonZero_ReturnsExitErrorNamingCall(t *testing.T) {
 			assert.Assert(t, ok, "error = %v, want *child.ExitError", err)
 			want := child.ExitError{Argv: received(tt.args)[0], Stderr: serverDown, Code: 1}
 			assert.Check(t, is.DeepEqual(*exitErr, want))
+			assert.Check(t, is.Error(err, exitErr.Error()))
 		})
 	}
 }

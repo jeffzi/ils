@@ -42,7 +42,8 @@ const (
 	// standInSuffix followed by a suffix answers with the host it was asked for and that suffix,
 	// standInWorkDir answers with the name of the directory it runs in, standInNoHostname answers
 	// with a config that has no hostname line, standInRefuse exits non-zero with standInRefusal on
-	// stderr, and standInExit followed by a number exits with that code and standInRefusal on stderr.
+	// stderr, standInExit followed by a number exits with that code and standInRefusal on stderr, and
+	// standInLinger starts a lingering helper that inherits its output and waits for it.
 	sshStandInEnv     = "ILS_GIT_TEST_SSH_STAND_IN"
 	standInAnswer     = "hostname="
 	standInSuffix     = "suffix="
@@ -50,12 +51,17 @@ const (
 	standInNoHostname = "no-hostname"
 	standInRefuse     = "refuse"
 	standInExit       = "exit="
+	standInLinger     = "linger"
 	standInRefusal    = "stand-in refused the call"
 
 	// plainSSHEnv makes the test binary act as plain ssh in the stand-in mode it names when called as
 	// plain ssh is, `-G -- <host>`, so that a configured command and plain ssh that share one
 	// environment answer apart; any other call takes its mode from sshStandInEnv.
 	plainSSHEnv = "ILS_GIT_TEST_PLAIN_SSH"
+
+	// garbledGitEnv makes the test binary act as a git that prints the variable's value for any call
+	// and exits zero, an answer no read of git's output can parse.
+	garbledGitEnv = "ILS_GIT_TEST_GARBLED_GIT"
 
 	// originHostEnv makes the test binary print the host OriginURLs reports for the fetch URL of the
 	// repository its value names, read by a runner that sets no environment and so inherits this
@@ -79,6 +85,11 @@ const (
 func TestMain(m *testing.M) {
 	if mode := os.Getenv(helperModeEnv); mode != "" {
 		os.Exit(diffHelper(mode))
+	}
+
+	if garbled, ok := os.LookupEnv(garbledGitEnv); ok {
+		fmt.Println(garbled)
+		os.Exit(0)
 	}
 
 	if mode, ok := standInMode(os.Args[1:]); ok {
@@ -272,8 +283,12 @@ func standInMode(args []string) (string, bool) {
 
 // sshStandIn plays the ssh command mode names, called with args, and returns its exit code. It
 // answers `-G <host>`, the call of a configured command, and `-G -- <host>`, the call of plain ssh;
-// the modes that refuse, exit, print no hostname or print the directory answer any call.
+// the modes that refuse, exit, linger, print no hostname or print the directory answer any call.
 func sshStandIn(mode string, args []string) int {
+	if mode == standInLinger {
+		return waitForLingerer()
+	}
+
 	if mode == standInRefuse {
 		fmt.Fprintln(os.Stderr, standInRefusal)
 
@@ -376,9 +391,33 @@ func diffHelper(mode string) int {
 
 // spawnLingerer starts a lingering helper that inherits this process's output and does not wait for it.
 func spawnLingerer() int {
-	binary, err := os.Executable()
+	if _, err := startLingerer(); err != nil {
+		return 1
+	}
+
+	return 0
+}
+
+// waitForLingerer starts a lingering helper that inherits this process's output and waits for it,
+// so that this process is still running when the helper has connected.
+func waitForLingerer() int {
+	lingerer, err := startLingerer()
 	if err != nil {
 		return 1
+	}
+
+	if err = lingerer.Wait(); err != nil {
+		return 1
+	}
+
+	return 0
+}
+
+// startLingerer starts a lingering copy of the test binary that inherits this process's output.
+func startLingerer() (*exec.Cmd, error) {
+	binary, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("find the test binary: %w", err)
 	}
 
 	//nolint:gosec // G204: the test binary starts itself; nothing here comes from outside the test.
@@ -388,8 +427,8 @@ func spawnLingerer() int {
 	lingerer.Stderr = os.Stderr
 
 	if err = lingerer.Start(); err != nil {
-		return 1
+		return nil, fmt.Errorf("start the lingering helper: %w", err)
 	}
 
-	return 0
+	return lingerer, nil
 }

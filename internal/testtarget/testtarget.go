@@ -5,8 +5,6 @@ package testtarget
 import (
 	"fmt"
 
-	"golang.org/x/mod/semver"
-
 	"github.com/jeffzi/ils/internal/child"
 )
 
@@ -46,7 +44,7 @@ func (t Tool) Check(target, want, found string) error {
 				t.TargetVar, target, t.Name, found, t.MinimumVersion)
 		}
 	case "", Latest:
-		if semver.Compare(child.SemverPrefix+found, child.SemverPrefix+t.MinimumVersion) < 0 {
+		if !child.AtLeast(found, t.MinimumVersion) {
 			return fmt.Errorf("the %s found is %s, older than the minimum ils enforces, %s", t.Name, found, t.MinimumVersion)
 		}
 	default:

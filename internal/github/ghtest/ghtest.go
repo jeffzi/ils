@@ -133,7 +133,7 @@ func ChecksArgs(slug string, number int) []string {
 // RunsArgs is the argv of the list of the workflow runs on the commit sha.
 func RunsArgs(slug, sha string) []string {
 	return []string{
-		"run", "list", "--repo", slug, "--commit", sha, "--limit", "1000",
+		"run", "list", "--repo", slug, "--commit", sha, "--limit", github.RunListLimit,
 		"--json", "status,name,workflowName",
 	}
 }
@@ -143,19 +143,13 @@ func LogArgs(slug, run string) []string {
 	return []string{"run", "view", "--repo", slug, run, "--log-failed"}
 }
 
-// messageQuery must equal messageQuery in internal/github/forge.go byte for byte: the fake gh
-// matches an argv exactly, and the argv carries this text.
-const messageQuery = "query($owner: String!, $name: String!, $number: Int!) { " +
-	"repository(owner: $owner, name: $name) { " +
-	"pullRequest(number: $number) { title body viewerMergeBodyText(mergeType: SQUASH) } } }"
-
 // MessageArgs is the argv of the read of pull request number's title, body, and the body GitHub
 // would compose for its squash merge, in the repository owner/name on host.
 func MessageArgs(host, owner, name string, number int) []string {
 	return []string{
 		"api", "graphql", "--hostname", host,
 		"-F", "number=" + strconv.Itoa(number), "-f", "owner=" + owner, "-f", "name=" + name,
-		"-f", "query=" + messageQuery,
+		"-f", "query=" + github.MessageQuery,
 	}
 }
 
@@ -456,7 +450,7 @@ func (f *Fake) Calls() [][]string {
 
 	calls := make([][]string, len(recorded))
 	for i, args := range recorded {
-		calls[i] = append([]string{github.Program}, args...)
+		calls[i] = github.Argv(args)
 	}
 
 	return calls
@@ -515,7 +509,9 @@ func serve(ctx context.Context, places servePlaces, args []string) int {
 		return broken(fmt.Errorf("write stdout: %w", err))
 	}
 
-	fmt.Fprint(os.Stderr, answer.Stderr)
+	if _, err := os.Stderr.WriteString(answer.Stderr); err != nil {
+		return broken(fmt.Errorf("write stderr: %w", err))
+	}
 
 	return answer.Code
 }

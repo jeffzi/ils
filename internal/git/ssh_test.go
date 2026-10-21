@@ -2,6 +2,7 @@ package git_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -204,6 +206,53 @@ func TestRepo_OriginURLs_WhenSSHMissingFromRunnerPath_ReturnsToolMissingError(t 
 			assert.Assert(t, ok, "OriginURLs() error = %v, want *child.ToolMissingError", err)
 			assert.Check(t, is.Equal(missing.Tool, "ssh"))
 			assert.Check(t, is.Equal(missing.InstallURL, "https://www.openssh.com"))
+		})
+	}
+}
+
+func TestRepo_OriginURLs_WhenContextEndsWhileSSHChildHoldsPipes_ReturnsContextErrorPromptly(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		// arrange returns repo set to run the stand-in ssh, in standInLinger mode, the way name says.
+		arrange func(t *testing.T, repo git.Repo) git.Repo
+		name    string
+	}{
+		{
+			name: "plain ssh",
+			arrange: func(t *testing.T, repo git.Repo) git.Repo {
+				t.Helper()
+
+				return plainSSH(t, repo, standInLinger)
+			},
+		},
+		{
+			name: "GIT_SSH program",
+			arrange: func(t *testing.T, repo git.Repo) git.Repo {
+				t.Helper()
+				repo = noSSHCommand(repo)
+				repo.Runner.Env = append(append(repo.Runner.Env, gitSSHStandIn(t), sshStandInEnv+"="+standInLinger),
+					variantEnv("ssh")...)
+
+				return repo
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			f.SetOriginURL(aliasURL)
+			addr, started := gittest.SilentListener(t)
+			repo := tt.arrange(t, newRepo(f))
+			repo.Runner.Env = append(repo.Runner.Env, helperAddrEnv+"="+addr)
+			ctx := gittest.Ending(t.Context(), started, context.Canceled)
+			begun := time.Now()
+
+			_, err := repo.OriginURLs(ctx)
+
+			took := time.Since(begun)
+			assert.Check(t, took <= prompt, "OriginURLs() took %v, want under %v with ssh's child still alive", took, prompt)
+			assert.Check(t, is.ErrorIs(err, context.Canceled))
 		})
 	}
 }

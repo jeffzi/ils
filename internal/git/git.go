@@ -1,4 +1,3 @@
-// Package git makes typed calls over the git CLI, started from an argv and never through a shell.
 package git
 
 import (
@@ -22,8 +21,9 @@ const (
 	// installURL is the page git is installed from on every operating system.
 	installURL = "https://git-scm.com/downloads"
 
-	// pipeGrace is how long a call waits for git's output pipes to close once git itself is gone. A
-	// process git started, such as ssh or a credential helper, can outlive it holding those pipes.
+	// pipeGrace is how long a call waits for a tool's output pipes to close once the tool itself is
+	// gone. A process the tool started, such as ssh or a credential helper, can outlive it holding
+	// those pipes.
 	pipeGrace = time.Second
 )
 
@@ -84,7 +84,6 @@ func (r Runner) Run(ctx context.Context, args ...string) (Result, error) {
 		args:       args,
 		dir:        r.Dir,
 		env:        r.Env,
-		waitDelay:  pipeGrace,
 	}
 	if r.Recorder != nil {
 		inv.record = r.Recorder.record
@@ -153,9 +152,6 @@ type invocation struct {
 	dir        string
 	args       []string
 	env        []string
-	// waitDelay is how long to wait for the output pipes to close once the tool is gone; zero waits
-	// for them for as long as it takes.
-	waitDelay time.Duration
 	// onEnvPath finds the tool on the PATH of env, as Runner.lookPath does, the way git would find a
 	// program it starts with env. Otherwise the tool is found on this process's PATH, which is how
 	// git itself is found whatever env holds.
@@ -165,8 +161,9 @@ type invocation struct {
 // run runs the tool and returns its output once it has exited zero.
 //
 // A tool missing from the PATH it is looked up on is a *child.ToolMissingError and a failed run is
-// the error of child.Failure. With a waitDelay, a process the tool left holding the output pipes
-// does not fail a run that exited zero.
+// the error of child.Failure. Once the tool has exited or been killed, output pipes a process it
+// started still holds are closed after pipeGrace; such a process does not fail a run that exited
+// zero.
 func (inv invocation) run(ctx context.Context) (Result, error) {
 	lookPath := exec.LookPath
 	if inv.onEnvPath {
@@ -191,7 +188,7 @@ func (inv invocation) run(ctx context.Context) (Result, error) {
 	cmd.Env = inv.env
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	cmd.WaitDelay = inv.waitDelay
+	cmd.WaitDelay = pipeGrace
 
 	// ErrWaitDelay means the tool exited zero and a process it started still holds the pipes: the
 	// tool's own output is complete, so the call succeeded.

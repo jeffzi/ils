@@ -3,8 +3,10 @@ package github
 
 import (
 	"context"
+	legacy "encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"regexp"
 	"slices"
@@ -29,12 +31,6 @@ func NewForge(runner Runner) *Forge {
 	return &Forge{runner: runner}
 }
 
-// runOfLink finds the Actions run a check's link belongs to.
-var runOfLink = regexp.MustCompile(`/actions/runs/(\d+)`)
-
-// runUnfinished matches what `gh run view --log-failed` prints when the run has not completed.
-var runUnfinished = regexp.MustCompile(`run \d+ is still in progress; logs will be available when it is complete`)
-
 // pullExists matches what `gh pr create` prints when the branch already has a pull request.
 var pullExists = regexp.MustCompile(`a pull request for branch "[^"\n]*" into branch "[^"\n]*" already exists`)
 
@@ -51,12 +47,6 @@ const pathNotFound = "Not Found (HTTP 404)"
 // workflowsDir is the directory GitHub Actions reads workflow files from. GitHub lists its own
 // dynamic workflows (Dependabot, the dependency graph) under other paths, with no file behind them.
 const workflowsDir = ".github/workflows"
-
-// noChecksReported is what gh prints on stderr when a pull request has no checks.
-const noChecksReported = "no checks reported"
-
-// runListLimit is the most runs `gh run list` returns for one commit.
-const runListLimit = "1000"
 
 type repoView struct {
 	Permission string `json:"viewerPermission"`
@@ -112,9 +102,10 @@ type pullMessageView struct {
 // errNoPullRequest is why an answer to the message read that names no pull request cannot be read.
 var errNoPullRequest = errors.New("the answer holds no pull request")
 
-// messageQuery reads a pull request's title, its body, and the body GitHub would compose for the
-// viewer's squash merge. The repository and number are variables, never spliced into the query.
-const messageQuery = "query($owner: String!, $name: String!, $number: Int!) { " +
+// MessageQuery is the GraphQL query that reads a pull request's title, its body, and the body
+// GitHub would compose for the viewer's squash merge. The repository and number are variables,
+// never spliced into the query.
+const MessageQuery = "query($owner: String!, $name: String!, $number: Int!) { " +
 	"repository(owner: $owner, name: $name) { " +
 	"pullRequest(number: $number) { title body viewerMergeBodyText(mergeType: SQUASH) } } }"
 
@@ -145,7 +136,7 @@ func (f *Forge) Identity(ctx context.Context, repo forge.Repo) (forge.Repo, erro
 
 	view, err := RunJSON[repoView](ctx, f.runner, "repo", "view", repo.Slug(), "--json", "isFork,viewerPermission,squashMergeAllowed")
 	if err != nil {
-		return forge.Repo{}, fmt.Errorf("read the repository %s: %w", repo.Slug(), err)
+		return forge.Repo{}, err
 	}
 
 	repo.Fork = view.Fork
@@ -352,7 +343,7 @@ func (f *Forge) Message(ctx context.Context, repo forge.Repo, number int) (forge
 	args := []string{
 		"api", "graphql", "--hostname", repo.Host,
 		"-F", "number=" + strconv.Itoa(number), "-f", "owner=" + repo.Owner, "-f", "name=" + repo.Name,
-		"-f", "query=" + messageQuery,
+		"-f", "query=" + MessageQuery,
 	}
 
 	answer, err := RunJSON[pullMessage](ctx, f.runner, args...)
@@ -361,7 +352,7 @@ func (f *Forge) Message(ctx context.Context, repo forge.Repo, number int) (forge
 	}
 
 	if answer.Data.Repository == nil || answer.Data.Repository.PullRequest == nil {
-		return forge.Message{}, &DecodeError{Argv: argv(args), Err: errNoPullRequest}
+		return forge.Message{}, &DecodeError{Argv: Argv(args), Err: errNoPullRequest}
 	}
 
 	view := answer.Data.Repository.PullRequest
@@ -411,6 +402,49 @@ func repoAPIPath(repo forge.Repo, rest string) string {
 // paginatedAPIArgs returns the gh arguments that read rest under the repository, following every page.
 func paginatedAPIArgs(repo forge.Repo, rest string) []string {
 	return []string{"api", "--hostname", repo.Host, "--paginate", repoAPIPath(repo, rest)}
+}
+
+// decodePages decodes the JSON arrays that `gh api --paginate` prints, one per
+// page and concatenated, into one slice; a single array decodes as itself.
+func decodePages[T any](stdout string, args []string) ([]T, error) {
+	pages, err := decodeEachPage[[]T](stdout, args)
+	if err != nil {
+		return nil, err
+	}
+
+	return slices.Concat(pages...), nil
+}
+
+// decodeEachPage decodes the JSON values that `gh api --paginate` prints, one per
+// page and concatenated, each into a P; stdout holding no value is a *DecodeError.
+func decodeEachPage[P any](stdout string, args []string) ([]P, error) {
+	decoder := legacy.NewDecoder(strings.NewReader(stdout))
+
+	var pages []P
+
+	for {
+		var raw legacy.RawMessage
+
+		err := decoder.Decode(&raw)
+		if errors.Is(err, io.EOF) {
+			if len(pages) > 0 {
+				return pages, nil
+			}
+
+			err = io.ErrUnexpectedEOF
+		}
+
+		if err != nil {
+			return nil, &DecodeError{Argv: Argv(args), Err: err}
+		}
+
+		page, err := decodeOutput[P](string(raw), args)
+		if err != nil {
+			return nil, err
+		}
+
+		pages = append(pages, page)
+	}
 }
 
 // activeWorkflows returns the paths of the active workflows that have a file under .github/workflows.

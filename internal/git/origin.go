@@ -26,15 +26,27 @@ type Origin struct {
 
 // OriginError reports a remote URL that names no host, owner, and name.
 type OriginError struct {
+	// Err, when set, is why a URL of the https:// or ssh:// shape failed to parse.
+	Err error
 	URL string
 }
 
-// Error names the rejected URL and the three shapes ParseOrigin accepts.
+// Error names the rejected URL and the three shapes ParseOrigin accepts, followed by Err when set.
 func (e *OriginError) Error() string {
-	return fmt.Sprintf(
+	msg := fmt.Sprintf(
 		"remote URL %q is not https://<host>/<owner>/<name>, ssh://git@<host>/<owner>/<name>, or git@<host>:<owner>/<name>",
 		e.URL,
 	)
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+
+	return msg
+}
+
+// Unwrap returns why the URL failed to parse, or nil when it parsed but named no repository.
+func (e *OriginError) Unwrap() error {
+	return e.Err
 }
 
 // ParseOrigin parses a remote URL into the host, owner, and name it names.
@@ -51,9 +63,9 @@ func ParseOrigin(raw string) (Origin, error) {
 // parseRemote parses raw as ParseOrigin does and also reports whether the URL reaches origin over
 // ssh.
 func parseRemote(raw string) (parsed Origin, overSSH bool, err error) {
-	host, path, overSSH, ok := splitOrigin(raw)
-	if !ok {
-		return Origin{}, false, &OriginError{URL: raw}
+	host, path, overSSH, err := splitOrigin(raw)
+	if err != nil {
+		return Origin{}, false, err
 	}
 
 	path = strings.TrimSuffix(strings.TrimSuffix(path, "/"), ".git")
@@ -67,29 +79,30 @@ func parseRemote(raw string) (parsed Origin, overSSH bool, err error) {
 }
 
 // splitOrigin returns the host and the owner/name path of a remote URL, and whether the URL reaches
-// origin over ssh.
-func splitOrigin(raw string) (host, path string, overSSH, ok bool) {
+// origin over ssh. A URL of none of the three shapes is an *OriginError, which wraps the parse
+// error of a URL of the https:// or ssh:// shape that failed to parse.
+func splitOrigin(raw string) (host, path string, overSSH bool, err error) {
 	overHTTPS := strings.HasPrefix(raw, httpsPrefix)
 	if overHTTPS || strings.HasPrefix(raw, sshPrefix) {
-		parsed, err := url.Parse(raw)
-		if err != nil {
-			return "", "", false, false
+		parsed, parseErr := url.Parse(raw)
+		if parseErr != nil {
+			return "", "", false, &OriginError{URL: raw, Err: parseErr}
 		}
 
-		return parsed.Hostname(), strings.TrimPrefix(parsed.Path, "/"), !overHTTPS, true
+		return parsed.Hostname(), strings.TrimPrefix(parsed.Path, "/"), !overHTTPS, nil
 	}
 
 	rest, found := strings.CutPrefix(raw, shortSSHPrefix)
 	if !found {
-		return "", "", false, false
+		return "", "", false, &OriginError{URL: raw}
 	}
 
-	host, path, ok = strings.Cut(rest, ":")
-	if strings.Contains(host, "/") {
-		return "", "", false, false
+	host, path, found = strings.Cut(rest, ":")
+	if !found || strings.Contains(host, "/") {
+		return "", "", false, &OriginError{URL: raw}
 	}
 
-	return host, path, true, ok
+	return host, path, true, nil
 }
 
 // Same reports whether o and other name the same repository, ignoring case.
@@ -206,7 +219,9 @@ func (r Repo) parseOrigin(ctx context.Context, raw string) (Origin, error) {
 // An origin that does not answer is a *RemoteError, and an answer that names no branch is
 // ErrNoSymref.
 func (r Repo) Trunk(ctx context.Context) (string, error) {
-	result, err := r.remote(ctx, "ls-remote", "--symref", origin, "HEAD")
+	args := []string{"ls-remote", "--symref", origin, "HEAD"}
+
+	result, err := r.remote(ctx, args...)
 	if err != nil {
 		return "", err
 	}
@@ -227,7 +242,7 @@ func (r Repo) Trunk(ctx context.Context) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("git ls-remote --symref %s HEAD: %w", origin, ErrNoSymref)
+	return "", fmt.Errorf("%s: %w", child.CommandLine(append([]string{program}, args...)), ErrNoSymref)
 }
 
 // RemoteBranch reports whether origin has the branch name, and its sha there when it does.

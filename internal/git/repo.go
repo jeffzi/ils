@@ -8,8 +8,6 @@ import (
 	"strconv"
 	"strings"
 
-	"golang.org/x/mod/semver"
-
 	"github.com/jeffzi/ils/internal/child"
 )
 
@@ -155,9 +153,10 @@ func (r Repo) DirtyFiles(ctx context.Context) ([]string, error) {
 
 // Divergence returns how many commits a has that b lacks, and how many b has that a lacks.
 func (r Repo) Divergence(ctx context.Context, a, b string) (Divergence, error) {
-	const call = "git rev-list --left-right --count"
+	args := []string{"rev-list", "--left-right", "--count", a + "..." + b}
+	call := child.CommandLine(append([]string{program}, args...))
 
-	out, err := r.line(ctx, "rev-list", "--left-right", "--count", a+"..."+b)
+	out, err := r.line(ctx, args...)
 	if err != nil {
 		return Divergence{}, err
 	}
@@ -190,6 +189,32 @@ func (r Repo) Contains(ctx context.Context, a, b string) (bool, error) {
 // It reads origin/<trunk>, which is current only after a fetch of trunk.
 func (r Repo) CommitsPast(ctx context.Context, tip, trunk string) ([]Commit, error) {
 	return r.commits(ctx, "--no-merges", tip, excludeTrunk(trunk))
+}
+
+// LocalTrunkAhead reports whether the local trunk has anything origin's trunk lacks, and returns
+// the commits it has past origin's trunk, merges left out, oldest first. A local trunk that does
+// not exist, or that origin's trunk contains, is not ahead.
+//
+// It reads origin/<trunk>, which is current only after a fetch of trunk.
+func (r Repo) LocalTrunkAhead(ctx context.Context, trunk string) (ahead bool, past []Commit, err error) {
+	exists, err := r.HasCommits(ctx, trunk)
+	if err != nil || !exists {
+		return false, nil, err
+	}
+
+	local := headsRef + trunk
+
+	behind, err := r.Contains(ctx, "refs/remotes/"+origin+"/"+trunk, local)
+	if err != nil || behind {
+		return false, nil, err
+	}
+
+	past, err = r.CommitsPast(ctx, local, trunk)
+	if err != nil {
+		return false, nil, err
+	}
+
+	return true, past, nil
 }
 
 // OwnCommits returns the commits on tip that origin's trunk lacks and that none of the local
@@ -359,7 +384,7 @@ func VersionOf(line string) string {
 		version += "-" + parts[versionComponents]
 	}
 
-	if !semver.IsValid(child.SemverPrefix + version) {
+	if !child.ValidVersion(version) {
 		return ""
 	}
 

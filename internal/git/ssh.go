@@ -62,7 +62,7 @@ func hostnameIn(stdout string, argv []string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("%s printed no hostname", strings.Join(argv, " "))
+	return "", fmt.Errorf("%s printed no hostname", child.CommandLine(argv))
 }
 
 // foldGitHubHost returns github.com for any host under it, such as ssh.github.com, matched without
