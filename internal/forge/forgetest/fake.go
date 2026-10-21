@@ -26,6 +26,9 @@ const (
 	OpTrunkProtection Op = "TrunkProtection"
 	OpVerdict         Op = "Verdict"
 	OpHasTrunkCI      Op = "HasTrunkCI"
+	OpMessage         Op = "Message"
+	OpLand            Op = "Land"
+	OpDeleteBranch    Op = "DeleteBranch"
 )
 
 // ErrUnscripted is returned for a call the script has no answer for.
@@ -40,11 +43,15 @@ type Answer[T any] struct {
 // Script states the answers the fake gives.
 //
 // Each operation holds a sequence that advances one step per call, and whose last step
-// repeats on further calls. A call to an operation with no step fails the test.
+// repeats on further calls. A call to an operation with no step fails the test. Land and
+// DeleteBranch answer only an error: a nil step is a call that succeeds.
 type Script struct {
 	// OnRead, when set, runs on each call that reads from the forge, which is every
-	// operation but OpenChange, before the call answers.
-	OnRead          func(Call)
+	// operation but OpenChange, Land and DeleteBranch, before the call answers.
+	OnRead func(Call)
+	// OnLand, when set, runs on each Land call, with the landing it was given, before the
+	// call answers.
+	OnLand          func(Call)
 	Identity        []Answer[forge.Repo]
 	FindChanges     []Answer[[]forge.Change]
 	OpenChange      []Answer[forge.ChangeRef]
@@ -52,17 +59,24 @@ type Script struct {
 	TrunkProtection []Answer[forge.Protection]
 	Verdict         []Answer[forge.Verdict]
 	HasTrunkCI      []Answer[bool]
+	Message         []Answer[forge.Message]
+	Land            []error
+	DeleteBranch    []error
 }
 
 // Call is one recorded call with the arguments that its operation takes.
 type Call struct {
 	Op Op
-	// Branch is the branch of FindChanges and the trunk of TrunkProtection and HasTrunkCI.
-	Branch string
-	Change forge.NewChange
-	Repo   forge.Repo
-	Head   forge.HeadQuery
-	Query  forge.VerdictQuery
+	// Branch is the branch of FindChanges and DeleteBranch, and the trunk of TrunkProtection
+	// and HasTrunkCI.
+	Branch  string
+	Change  forge.NewChange
+	Repo    forge.Repo
+	Landing forge.Landing
+	Head    forge.HeadQuery
+	Query   forge.VerdictQuery
+	// Number is the change of Message.
+	Number int
 }
 
 // Fake is a landing.Forge that answers from a script and records its calls.
@@ -133,6 +147,40 @@ func (f *Fake) HasTrunkCI(_ context.Context, repo forge.Repo, trunk string) (boo
 	return answer(f, f.script.HasTrunkCI, Call{Op: OpHasTrunkCI, Repo: repo, Branch: trunk})
 }
 
+// Message answers from the script's Message sequence.
+func (f *Fake) Message(_ context.Context, repo forge.Repo, number int) (forge.Message, error) {
+	f.tb.Helper()
+
+	return answer(f, f.script.Message, Call{Op: OpMessage, Repo: repo, Number: number})
+}
+
+// Land runs the script's OnLand hook, then answers from its Land sequence.
+func (f *Fake) Land(_ context.Context, repo forge.Repo, landing forge.Landing) error {
+	f.tb.Helper()
+
+	return answerError(f, f.script.Land, Call{Op: OpLand, Repo: repo, Landing: landing})
+}
+
+// DeleteBranch answers from the script's DeleteBranch sequence.
+func (f *Fake) DeleteBranch(_ context.Context, repo forge.Repo, branch string) error {
+	f.tb.Helper()
+
+	return answerError(f, f.script.DeleteBranch, Call{Op: OpDeleteBranch, Repo: repo, Branch: branch})
+}
+
+func answerError(f *Fake, sequence []error, call Call) error {
+	f.tb.Helper()
+
+	answers := make([]Answer[struct{}], len(sequence))
+	for i, err := range sequence {
+		answers[i].Err = err
+	}
+
+	_, err := answer(f, answers, call)
+
+	return err
+}
+
 func answer[T any](f *Fake, sequence []Answer[T], call Call) (T, error) {
 	f.tb.Helper()
 
@@ -140,8 +188,12 @@ func answer[T any](f *Fake, sequence []Answer[T], call Call) (T, error) {
 
 	f.calls = append(f.calls, call)
 
-	if call.Op != OpOpenChange && f.script.OnRead != nil {
+	if reads(call.Op) && f.script.OnRead != nil {
 		f.script.OnRead(call)
+	}
+
+	if call.Op == OpLand && f.script.OnLand != nil {
+		f.script.OnLand(call)
 	}
 
 	if len(sequence) == 0 {
@@ -158,4 +210,14 @@ func answer[T any](f *Fake, sequence []Answer[T], call Call) (T, error) {
 	}
 
 	return sequence[step].Value, nil
+}
+
+// reads reports whether op only reads what the forge holds.
+func reads(op Op) bool {
+	switch op {
+	case OpOpenChange, OpLand, OpDeleteBranch:
+		return false
+	default:
+		return true
+	}
 }
