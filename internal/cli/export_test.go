@@ -11,6 +11,11 @@ func (a *App) SetPush(run Command) {
 	a.runPush = run
 }
 
+// SetMerge makes a run `ils merge` with run in place of landing.Merge.
+func (a *App) SetMerge(run Command) {
+	a.runMerge = run
+}
+
 // SetGit makes a run call git through runner in place of git in the working directory.
 func (a *App) SetGit(runner git.Runner) {
 	a.git = runner

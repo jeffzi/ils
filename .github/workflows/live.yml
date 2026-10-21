@@ -1,6 +1,7 @@
 name: Live
 
-# The live suite runs `ils push` with the real git and gh against a test repository on GitHub.
+# The live suite runs `ils push` and `ils merge` with the real git and gh against a test repository
+# on GitHub.
 # It starts weekly and by hand, and on no push and no pull request, so it never gates a merge.
 on:
   schedule:
@@ -20,8 +21,8 @@ jobs:
   live:
     name: Live / ${{ matrix.target }}
     runs-on: ubuntu-latest
-    # Six scenarios of at most eight minutes each.
-    timeout-minutes: 60
+    # Eleven scenarios of at most eight minutes each.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
