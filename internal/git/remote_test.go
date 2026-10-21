@@ -97,6 +97,10 @@ func TestRepo_OriginMethods_WhenOriginDoesNotAnswer_ReturnsRemoteError(t *testin
 func TestRepo_OriginMethods_WhenGitMissingFromPath_ReturnsToolMissingError(t *testing.T) {
 	tests := append(originCalls(), repoCall{
 		name: "Fetch", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.Fetch(ctx, trunk) },
+	}, repoCall{
+		name: "FastForwardTrunk", call: func(ctx context.Context, repo git.Repo) (any, error) {
+			return nil, repo.FastForwardTrunk(ctx, trunk)
+		},
 	})
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -3,6 +3,7 @@ package git_test
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -637,6 +638,21 @@ func TestRepo_WhenContextCanceled_ReturnsContextError(t *testing.T) {
 		{name: "Unlanded", call: func(ctx context.Context, repo git.Repo) (any, error) {
 			return repo.Unlanded(ctx, unknownSHA, unknownSHA, trunk)
 		}},
+		{name: "Switch", call: func(ctx context.Context, repo git.Repo) (any, error) {
+			return nil, repo.Switch(ctx, topic)
+		}},
+		{name: "DetachAtOrigin", call: func(ctx context.Context, repo git.Repo) (any, error) {
+			return nil, repo.DetachAtOrigin(ctx, trunk)
+		}},
+		{name: "DeleteBranch", call: func(ctx context.Context, repo git.Repo) (any, error) {
+			return nil, repo.DeleteBranch(ctx, topic)
+		}},
+		{name: "CheckedOutElsewhere", call: func(ctx context.Context, repo git.Repo) (any, error) {
+			return repo.CheckedOutElsewhere(ctx, trunk)
+		}},
+		{name: "FastForwardTrunk", call: func(ctx context.Context, repo git.Repo) (any, error) {
+			return nil, repo.FastForwardTrunk(ctx, trunk)
+		}},
 	})
 }
 
@@ -665,6 +681,292 @@ func TestRepo_HasCommits(t *testing.T) {
 			assert.Check(t, is.Equal(got, tt.want), "HasCommits(%q)", tt.branch)
 		})
 	}
+}
+
+// linkWorktree adds a linked worktree of f on branch, with opts before its path, and returns its path.
+func linkWorktree(t *testing.T, f *gittest.Fixture, branch string, opts ...string) string {
+	t.Helper()
+
+	dir := filepath.Join(t.TempDir(), "linked")
+	args := append([]string{"worktree", "add", "--quiet"}, opts...)
+	f.Git(append(args, dir, branch)...)
+
+	return dir
+}
+
+// checkGitRefused fails unless err is a *child.ExitError whose stderr holds message.
+func checkGitRefused(t *testing.T, err error, message string) {
+	t.Helper()
+
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "error = %v, want *child.ExitError", err)
+	assert.Check(t, is.Contains(exitErr.Stderr, message))
+}
+
+func standing(t *testing.T, f *gittest.Fixture) git.Standing {
+	t.Helper()
+
+	got, err := newRepo(f).Standing(t.Context())
+	assert.NilError(t, err)
+
+	return got
+}
+
+func TestRepo_Switch_WhenBranchIsLocal_PutsHeadOnIt(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.Commits(topic, "one")
+
+	err := newRepo(f).Switch(t.Context(), trunk)
+	assert.NilError(t, err)
+
+	assert.Check(t, is.DeepEqual(standing(t, f), git.Standing{Kind: git.OnBranch, Branch: trunk}))
+}
+
+func TestRepo_Switch_WhenOnlyOriginHasBranch_CreatesItFromOriginsCopy(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	want := f.Commits(topic, "one")[0]
+	f.Push(topic)
+	fetch(f, topic)
+	f.Git("switch", "--quiet", trunk)
+	f.Git("branch", "--quiet", "--delete", "--force", topic)
+	f.Git("config", "checkout.guess", "false")
+
+	err := newRepo(f).Switch(t.Context(), topic)
+	assert.NilError(t, err)
+
+	assert.Check(t, is.DeepEqual(standing(t, f), git.Standing{Kind: git.OnBranch, Branch: topic}))
+	assert.Check(t, is.Equal(f.Git("rev-parse", "HEAD"), want))
+}
+
+func TestRepo_Switch_WhenAnotherWorktreeHasBranch_ReturnsGitsMessage(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.Git("branch", topic)
+	linkWorktree(t, f, topic)
+
+	err := newRepo(f).Switch(t.Context(), topic)
+
+	checkGitRefused(t, err, "'"+topic+"' is already")
+	assert.Check(t, is.DeepEqual(standing(t, f), git.Standing{Kind: git.OnBranch, Branch: trunk}))
+}
+
+func TestRepo_Switch_WhenUntrackedFileWouldBeOverwritten_FailsAndLeavesTreeAsItWas(t *testing.T) {
+	t.Parallel()
+	const name, untracked = "notes.txt", "written here\n"
+	f := gittest.New(t, trunk)
+	f.Git("switch", "--quiet", "--create", topic)
+	gittest.WriteFile(t, f.Dir(), name, "committed on topic\n")
+	f.Git("add", name)
+	f.Git("commit", "--quiet", "--message", "add "+name)
+	f.Git("switch", "--quiet", trunk)
+	gittest.WriteFile(t, f.Dir(), name, untracked)
+
+	err := newRepo(f).Switch(t.Context(), topic)
+
+	checkGitRefused(t, err, "would be overwritten")
+	checkGitRefused(t, err, name)
+	content, readErr := os.ReadFile(filepath.Join(f.Dir(), name))
+	assert.NilError(t, readErr)
+	assert.Check(t, is.Equal(string(content), untracked))
+	assert.Check(t, is.DeepEqual(standing(t, f), git.Standing{Kind: git.OnBranch, Branch: trunk}))
+}
+
+func TestRepo_DetachAtOrigin_LeavesHeadDetachedAtFetchedTrunkWithUntrackedFilesKept(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.Commits(topic, "one")
+	fetched := f.AdvanceOrigin(trunk)
+	fetch(f, trunk)
+	f.AdvanceOrigin(trunk)
+	untracked := f.UntrackedFile()
+
+	err := newRepo(f).DetachAtOrigin(t.Context(), trunk)
+	assert.NilError(t, err)
+
+	assert.Check(t, is.DeepEqual(standing(t, f), git.Standing{Kind: git.Detached}))
+	assert.Check(t, is.Equal(f.Git("rev-parse", "HEAD"), fetched))
+	_, statErr := os.Stat(filepath.Join(f.Dir(), untracked))
+	assert.Check(t, statErr, "untracked file %s after the detach", untracked)
+}
+
+func TestRepo_DeleteBranch_WhenNothingMergedIt_RemovesIt(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.Commits(topic, "one")
+	f.Git("switch", "--quiet", trunk)
+
+	err := newRepo(f).DeleteBranch(t.Context(), topic)
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Equal(f.Git("branch", "--list", topic), ""))
+}
+
+func TestRepo_DeleteBranch_WhenHeadIsOnIt_ReturnsGitsMessage(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.Commits(topic, "one")
+
+	err := newRepo(f).DeleteBranch(t.Context(), topic)
+
+	checkGitRefused(t, err, "delete branch '"+topic+"'")
+}
+
+// checkedOutCase is a layout of worktrees and whether the trunk is checked out in one other than
+// the worktree arrange returns.
+type checkedOutCase struct {
+	// arrange sets up the worktrees and returns the one to read from.
+	arrange func(t *testing.T, f *gittest.Fixture) string
+	name    string
+	want    bool
+}
+
+// linkedThroughSymlink leaves the main checkout on topic and links a worktree on the trunk that git
+// records under a path through a symbolic link, as another tool or an older git may record it, and
+// returns the worktree's real path.
+func linkedThroughSymlink(t *testing.T, f *gittest.Fixture) string {
+	t.Helper()
+
+	f.Commits(topic, "one")
+	dir := linkWorktree(t, f, trunk)
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(filepath.Dir(dir), link); err != nil {
+		t.Skipf("symbolic links are not available here: %v", err)
+	}
+
+	admin := filepath.Join(f.Dir(), ".git", "worktrees", filepath.Base(dir))
+	gittest.WriteFile(t, admin, "gitdir", filepath.ToSlash(filepath.Join(link, filepath.Base(dir), ".git"))+"\n")
+
+	return dir
+}
+
+// elsewhereCases returns the layouts in which a worktree other than the one read from has the trunk.
+func elsewhereCases() []checkedOutCase {
+	return []checkedOutCase{
+		{
+			name: "linked worktree on the trunk, seen from the main checkout",
+			arrange: func(t *testing.T, f *gittest.Fixture) string {
+				t.Helper()
+
+				f.Commits(topic, "one")
+				linkWorktree(t, f, trunk)
+
+				return f.Dir()
+			},
+			want: true,
+		},
+		{
+			name: "main checkout on the trunk, seen from a linked worktree",
+			arrange: func(t *testing.T, f *gittest.Fixture) string {
+				t.Helper()
+
+				f.Git("branch", topic)
+
+				return linkWorktree(t, f, topic)
+			},
+			want: true,
+		},
+	}
+}
+
+// notElsewhereCases returns the layouts in which no worktree but the one read from has the trunk.
+func notElsewhereCases() []checkedOutCase {
+	return []checkedOutCase{
+		{
+			name: "only the current worktree on the trunk",
+			arrange: func(t *testing.T, f *gittest.Fixture) string {
+				t.Helper()
+
+				f.Git("branch", topic)
+				linkWorktree(t, f, topic)
+
+				return f.Dir()
+			},
+		},
+		{
+			name: "no worktree on the trunk",
+			arrange: func(t *testing.T, f *gittest.Fixture) string {
+				t.Helper()
+
+				f.Commits(topic, "one")
+				f.Git("branch", side)
+				linkWorktree(t, f, side)
+
+				return f.Dir()
+			},
+		},
+		{
+			name:    "only the current worktree on the trunk, which git lists through a symbolic link",
+			arrange: linkedThroughSymlink,
+		},
+		{
+			name: "linked worktree detached at the trunk's commit",
+			arrange: func(t *testing.T, f *gittest.Fixture) string {
+				t.Helper()
+
+				f.Commits(topic, "one")
+				linkWorktree(t, f, trunk, "--detach")
+
+				return f.Dir()
+			},
+		},
+	}
+}
+
+func TestRepo_CheckedOutElsewhere(t *testing.T) {
+	t.Parallel()
+	for _, tt := range append(elsewhereCases(), notElsewhereCases()...) {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			dir := tt.arrange(t, f)
+			repo := git.Repo{Runner: git.Runner{Dir: dir, Env: f.Env()}}
+
+			got, err := repo.CheckedOutElsewhere(t.Context(), trunk)
+			assert.NilError(t, err)
+
+			assert.Check(t, is.Equal(got, tt.want))
+		})
+	}
+}
+
+func TestRepo_CheckedOutElsewhere_WhenWorktreeListFails_ReturnsItsExitError(t *testing.T) {
+	// Not parallel: gittest.FakeGit sets PATH for the whole process.
+	f := gittest.New(t, trunk)
+	repo := newRepo(f)
+	repo.Runner.Env = append(repo.Runner.Env, gittest.FakeGit(t, gittest.Fake{FailOn: []string{"worktree"}})...)
+
+	got, err := repo.CheckedOutElsewhere(t.Context(), trunk)
+
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "CheckedOutElsewhere() = %t, error = %v, want *child.ExitError", got, err)
+	assert.Check(t, is.Equal(exitErr.Code, gittest.FailedCode))
+}
+
+func TestRepo_CheckedOutElsewhere_WhenOutsideAWorkTree_ReturnsTheExitErrorOfTheTopLevelRead(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	repo := git.Repo{Runner: git.Runner{Dir: filepath.Join(f.Dir(), ".git"), Env: f.Env()}}
+
+	got, err := repo.CheckedOutElsewhere(t.Context(), trunk)
+
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "CheckedOutElsewhere() = %t, error = %v, want *child.ExitError", got, err)
+	assert.Check(t, is.Contains(exitErr.Argv, "--show-toplevel"))
+}
+
+func TestRepo_CheckedOutElsewhere_WhenTheWorktreeOnTheBranchIsGone_ReturnsErrorNamingIt(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.Commits(topic, "one")
+	dir := linkWorktree(t, f, trunk)
+	assert.NilError(t, os.RemoveAll(dir))
+
+	got, err := newRepo(f).CheckedOutElsewhere(t.Context(), trunk)
+
+	assert.Check(t, is.ErrorContains(err, "resolve worktree path"), "CheckedOutElsewhere() = %t", got)
+	assert.Check(t, is.ErrorContains(err, filepath.Base(dir)))
 }
 
 // installURL is where the error for a git that is missing or too old sends the user.

@@ -4,6 +4,10 @@
   "language": "en-US",
   "files": ["**/*.{go,md,yml,yaml,toml,json,jsonc}"],
   "words": [
+    "gitdir",
+    "toplevel",
+    "worktree",
+    "worktrees",
     "depguard",
     "dprint",
     "errcheck",
