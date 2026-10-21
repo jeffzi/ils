@@ -451,10 +451,38 @@ func TestApp_Run_WhenAskedForTheVersion_PrintsTheVersionOfIls(t *testing.T) {
 
 			app := outside(t)
 			app.Version = "0.2.0"
+			app.SetBuildInfo(built("v9.9.9"), true)
 
 			got := launch(t, app, args...)
 
 			want := ran{stdout: "ils version 0.2.0\n", code: exitDone}
+			assert.Check(t, is.DeepEqual(got, want, sameRun()))
+		})
+	}
+}
+
+func TestApp_Run_WhenVersionIsEmpty_PrintsTheVersionTheBuildInfoReaderReports(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		info *debug.BuildInfo
+		want string
+		ok   bool
+	}{
+		{name: "release", info: built("v0.2.0"), ok: true, want: "ils version 0.2.0\n"},
+		{name: "build info not readable", want: "ils version (devel)\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			app := outside(t)
+			app.SetBuildInfo(tt.info, tt.ok)
+
+			got := launch(t, app, "--version")
+
+			want := ran{stdout: tt.want, code: exitDone}
 			assert.Check(t, is.DeepEqual(got, want, sameRun()))
 		})
 	}

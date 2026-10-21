@@ -33,10 +33,14 @@ type Command func(ctx context.Context, deps landing.Deps, req landing.Request) r
 type App struct {
 	Stdout io.Writer
 	Stderr io.Writer
-	// Version is the version of ils that `ils --version` prints.
+	// Version is the version of ils that `ils --version` prints; empty falls back to the version in
+	// the binary's build info.
 	Version string
 	// runPush runs `ils push`; nil runs landing.Push.
 	runPush Command
+	// buildInfo reads the build info that an empty Version falls back to; nil reads
+	// debug.ReadBuildInfo.
+	buildInfo func() (*debug.BuildInfo, bool)
 	// Launch is when the process started; the deadline of every command counts from it.
 	Launch time.Time
 	// git runs every git call; its zero value runs in the working directory with the process's
@@ -93,6 +97,20 @@ func Version(info *debug.BuildInfo, ok bool) string {
 	}
 
 	return strings.TrimPrefix(info.Main.Version, "v")
+}
+
+// printedVersion returns the version that ils --version prints: the App.Version field when it is
+// set, otherwise the version of the build info.
+func (a App) printedVersion() string {
+	if a.Version != "" {
+		return a.Version
+	}
+
+	if a.buildInfo == nil {
+		return Version(debug.ReadBuildInfo())
+	}
+
+	return Version(a.buildInfo())
 }
 
 // show prints r on Stdout as text or as JSON and returns the exit code of its outcome.
@@ -179,7 +197,7 @@ func (p *parse) root() *cobra.Command {
 			return nil
 		},
 		RunE: func(c *cobra.Command, _ []string) error {
-			if _, err := fmt.Fprintf(c.OutOrStdout(), "ils version %s\n", p.app.Version); err != nil {
+			if _, err := fmt.Fprintf(c.OutOrStdout(), "ils version %s\n", p.app.printedVersion()); err != nil {
 				return fmt.Errorf("write the version: %w", err)
 			}
 
