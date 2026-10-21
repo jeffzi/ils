@@ -16,7 +16,7 @@ func SilentListener(tb testing.TB) (addr string, connected <-chan struct{}) {
 
 	listener, err := config.Listen(tb.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
-		tb.Fatalf("listen on a local port: %v", err)
+		tb.Fatalf("gittest: listen on a local port: %v", err)
 	}
 
 	var accepting sync.WaitGroup
@@ -28,7 +28,7 @@ func SilentListener(tb testing.TB) (addr string, connected <-chan struct{}) {
 		close(released)
 
 		if err := listener.Close(); err != nil {
-			tb.Errorf("close the listener: %v", err)
+			tb.Errorf("gittest: close the listener: %v", err)
 		}
 
 		accepting.Wait()
@@ -43,8 +43,10 @@ func SilentListener(tb testing.TB) (addr string, connected <-chan struct{}) {
 		close(reached)
 		<-released
 
-		// The client is a process the test has already ended, so a failed close has no one to tell.
-		_ = conn.Close()
+		// The test's cleanup is still running here, waiting on accepting, so it can still report.
+		if err := conn.Close(); err != nil {
+			tb.Errorf("gittest: close the silent connection: %v", err)
+		}
 	})
 
 	return listener.Addr().String(), reached

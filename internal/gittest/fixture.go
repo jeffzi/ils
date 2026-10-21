@@ -61,13 +61,13 @@ func New(tb testing.TB, trunk string) *Fixture {
 
 	git, err := exec.LookPath("git")
 	if err != nil {
-		tb.Fatalf("find git: %v", err)
+		tb.Fatalf("gittest: find git: %v", err)
 	}
 
 	// Resolved so that Dir matches what git prints for the repository, which follows symbolic links.
 	root, err := filepath.EvalSymlinks(tb.TempDir())
 	if err != nil {
-		tb.Fatalf("resolve temporary directory: %v", err)
+		tb.Fatalf("gittest: resolve temporary directory: %v", err)
 	}
 
 	home := filepath.Join(root, "home")
@@ -86,7 +86,7 @@ func New(tb testing.TB, trunk string) *Fixture {
 
 	err = os.MkdirAll(home, 0o750)
 	if err != nil {
-		tb.Fatalf("create home directory: %v", err)
+		tb.Fatalf("gittest: create home directory: %v", err)
 	}
 
 	f.SetSSHConfig("")
@@ -136,7 +136,7 @@ func WriteFile(tb testing.TB, dir, name, content string) {
 
 	err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600)
 	if err != nil {
-		tb.Fatalf("write %s: %v", name, err)
+		tb.Fatalf("gittest: write %s: %v", name, err)
 	}
 }
 
@@ -316,7 +316,7 @@ func (f *Fixture) Sibling(name, of string) string {
 
 	first, _, _ := strings.Cut(f.Git("rev-list", "--reverse", f.trunk+".."+of), "\n")
 	if first == "" {
-		f.tb.Fatalf("branch %s has no commit past %s to share", of, f.trunk)
+		f.tb.Fatalf("gittest: branch %s has no commit past %s to share", of, f.trunk)
 	}
 
 	f.Git("switch", "--quiet", "--create", name, first)
@@ -503,7 +503,7 @@ func (f *Fixture) ServedBy(serving string) []string {
 	for i, entry := range env {
 		key, value, _ := strings.Cut(entry, "=")
 		if strings.EqualFold(key, "PATH") {
-			env[i] = key + "=" + dir + string(os.PathListSeparator) + value
+			env[i] = key + "=" + firstOnPath(dir, value)
 			found = true
 		}
 	}
@@ -523,7 +523,7 @@ func (f *Fixture) standIn() string {
 
 	ssh, err := exec.LookPath("ssh")
 	if err != nil {
-		f.tb.Fatalf("find ssh: %v", err)
+		f.tb.Fatalf("gittest: find ssh: %v", err)
 	}
 
 	script := "#!/bin/sh\n" +
@@ -536,7 +536,7 @@ func (f *Fixture) standIn() string {
 
 	err = os.MkdirAll(dir, 0o750)
 	if err != nil {
-		f.tb.Fatalf("create the directory of the stand-in for ssh: %v", err)
+		f.tb.Fatalf("gittest: create the directory of the stand-in for ssh: %v", err)
 	}
 
 	path := filepath.Join(dir, name)
@@ -545,7 +545,7 @@ func (f *Fixture) standIn() string {
 	// Git's shell runs the stand-in as a program, which it can only do once it is executable.
 	err = os.Chmod(path, 0o700) //nolint:gosec // G302: the stand-in is a script a shell must execute.
 	if err != nil {
-		f.tb.Fatalf("make the stand-in for ssh executable: %v", err)
+		f.tb.Fatalf("gittest: make the stand-in for ssh executable: %v", err)
 	}
 
 	return dir
@@ -563,7 +563,7 @@ func (f *Fixture) RemoveSSHConfig() {
 
 	err := os.Remove(filepath.Join(f.root, sshConfigName))
 	if err != nil {
-		f.tb.Fatalf("remove the ssh config: %v", err)
+		f.tb.Fatalf("gittest: remove the ssh config: %v", err)
 	}
 }
 
@@ -598,7 +598,7 @@ func (f *Fixture) run(dir string, args ...string) string {
 
 	err := cmd.Run()
 	if err != nil {
-		f.tb.Fatalf("git %s in %s: %v\n%s", strings.Join(args, " "), dir, err, strings.TrimSpace(stderr.String()))
+		f.tb.Fatalf("gittest: git %s in %s: %v\n%s", strings.Join(args, " "), dir, err, strings.TrimSpace(stderr.String()))
 	}
 
 	return strings.TrimSpace(stdout.String())

@@ -135,7 +135,18 @@ func LinkAs(tb testing.TB, tool string) {
 		tb.Fatalf("gittest: link the test binary as %s: %v", tool, err)
 	}
 
-	tb.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	tb.Setenv("PATH", firstOnPath(dir, os.Getenv("PATH")))
+}
+
+// firstOnPath returns the search path path with dir put first. An empty path gives dir alone: a
+// trailing list separator would add an empty entry, which puts the current directory on the search
+// path.
+func firstOnPath(dir, path string) string {
+	if path == "" {
+		return dir
+	}
+
+	return dir + string(os.PathListSeparator) + path
 }
 
 // serveGit answers one call of the fake git with args and returns its exit code.
@@ -149,7 +160,9 @@ func serveGit(ctx context.Context, realGit string, args []string) int {
 	}
 
 	if startsWith(args, failOnEnv) {
-		_, _ = fmt.Fprintln(os.Stderr, FailedSaid)
+		if _, err := fmt.Fprintln(os.Stderr, FailedSaid); err != nil {
+			return broken(fmt.Errorf("print the failure: %w", err))
+		}
 
 		return FailedCode
 	}
@@ -186,10 +199,10 @@ func stall(ctx context.Context, addr string) int {
 	}
 
 	// The server never writes, so the copy returns only once it closes the connection.
-	_, _ = io.Copy(io.Discard, conn)
-	_ = conn.Close()
+	_, copyErr := io.Copy(io.Discard, conn)
+	closeErr := conn.Close()
 
-	return broken(fmt.Errorf("the server at %s closed the stalled call", addr))
+	return broken(errors.Join(fmt.Errorf("the server at %s closed the stalled call", addr), copyErr, closeErr))
 }
 
 // runRealGit runs the real git with args, the environment, and the standard streams, and returns

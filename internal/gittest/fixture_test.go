@@ -512,6 +512,18 @@ func TestFixture_ServedBy_WhenAskedForConfig_AnswersFromTheSSHConfigWithoutServi
 	assert.Check(t, is.ErrorIs(statErr, fs.ErrNotExist), "the serving script ran for a config read")
 }
 
+func TestFixture_ServedBy_PutsTheStandInDirectoryBeforeThePath(t *testing.T) {
+	t.Parallel()
+
+	f := gittest.New(t, mainBranch)
+	before, _ := envValue(f.Env(), "PATH")
+
+	got, _ := envValue(f.ServedBy("exit 0"), "PATH")
+
+	dir := filepath.SplitList(got)[0]
+	assert.Check(t, is.Equal(got, dir+string(os.PathListSeparator)+before))
+}
+
 // fixtureEnv is one way a fixture builds the environment of a git command.
 type fixtureEnv struct {
 	env  func(f *gittest.Fixture) []string

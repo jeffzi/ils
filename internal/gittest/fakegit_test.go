@@ -164,6 +164,43 @@ func TestFakeGit_WhenCallStartsWithStallingWords_WaitsAtTheAddressUntilKilled(t 
 	assert.Check(t, err != nil, "git show-ref exited 0, want it killed while it waited")
 }
 
+func TestLinkAs_PutsTheToolDirectoryFirstOnPath(t *testing.T) {
+	const tool = "linked-tool"
+
+	tests := []struct {
+		// before builds the PATH of the process before the call; unset leaves PATH unset.
+		before func(t *testing.T) (path string, set bool)
+		name   string
+	}{
+		{name: "PATH unset", before: func(*testing.T) (string, bool) { return "", false }},
+		{name: "PATH set", before: func(t *testing.T) (string, bool) { return t.TempDir(), true }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before, set := tt.before(t)
+			t.Setenv("PATH", before)
+
+			if !set {
+				assert.NilError(t, os.Unsetenv("PATH"))
+			}
+
+			gittest.LinkAs(t, tool)
+
+			found, err := exec.LookPath(tool)
+			assert.NilError(t, err)
+
+			dir := filepath.Dir(found)
+			want := dir
+			if set {
+				want = dir + string(os.PathListSeparator) + before
+			}
+
+			got := os.Getenv("PATH")
+			assert.Check(t, is.Equal(got, want), "PATH = %q, want %q", got, want)
+		})
+	}
+}
+
 // initRepo makes a repository in a new temporary directory with the git first on PATH, and
 // returns its directory.
 func initRepo(t *testing.T, env []string) string {
