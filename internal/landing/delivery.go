@@ -11,27 +11,16 @@ import (
 	"github.com/jeffzi/ils/internal/result"
 )
 
-// The reads push makes after its writes, as a result names them.
+// The reads push makes after its writes and outside its wait, as a result names them.
 const (
 	readProtection = "the trunk's required checks"
-	readHead       = "the pull request's head"
-	readMergeState = "whether the pull request can merge"
-	readChecks     = "the checks of the pushed commit"
 	readCI         = "whether the repository has CI"
 )
 
-// excerptLines is how many lines of a failing check's log a red push prints, counted from the
-// log's end: the excerpt is bounded so that the failure stays readable in a terminal, and the
-// payload carries the whole log.
-const excerptLines = 60
-
-// mergeByHand is the judgment step after a green push. Its names are the repository and the
-// pull request's number, twice, then the pushed sha and the number again; the title and the
-// body stay placeholders for the agent to write.
-const mergeByHand = "write the pull request's title and body as the squash commit's message with " +
-	"`gh pr edit --repo %s %s --title … --body …`, then merge by hand with " +
-	"`gh pr merge --repo %s %s --squash --delete-branch --match-head-commit %s " +
-	`--subject "<title> (#%s)" --body "<body>"` + "`"
+// writeThenMerge is the judgment step after a green push. Its names are the repository and the
+// pull request's number; the title and the body stay placeholders for the agent to write.
+const writeThenMerge = "write the pull request's title and body as the squash commit's message with " +
+	"`gh pr edit --repo %s %s --title … --body …`, then run ils merge"
 
 // delivery is a push past its preconditions: the lines it has said so far, the pull request
 // it found or opened, and what its wait found.
@@ -87,23 +76,6 @@ func deliver(ctx context.Context, deps Deps, req Request, p pushReady) result.Re
 	return *d.report()
 }
 
-// waitRead returns the read a failed wait names and the error of that read.
-func waitRead(err error) (string, error) {
-	failed, ok := errors.AsType[*WaitError](err)
-	if !ok {
-		return readChecks, err
-	}
-
-	switch failed.Stage {
-	case StageHead:
-		return readHead, failed.Err
-	case StageMergeState:
-		return readMergeState, failed.Err
-	default:
-		return readChecks, failed.Err
-	}
-}
-
 // pushTip pushes the branch to origin unless origin's copy is already at the tip.
 func (d *delivery) pushTip(ctx context.Context, deps Deps) *result.Result {
 	if d.onOrigin {
@@ -123,18 +95,18 @@ func (d *delivery) pushTip(ctx context.Context, deps Deps) *result.Result {
 		return d.endedSaying(
 			result.Say("Started the push of %s at %s when the time limit ended; it may or may not have taken",
 				d.branch, d.tip),
-			result.Broke, result.Say("the time limit ended during the push"), pushAgain())
+			result.Broke, result.Say("the time limit ended during the push"), d.req.again())
 	}
 
 	if refused, ok := errors.AsType[*git.PushError](err); ok {
 		return d.endedSaying(
 			result.Say("Git refused the push of %s, so nothing was pushed: %s", d.branch, strings.TrimSpace(refused.Stderr)),
-			result.Broke, result.Say("git refused the push"), onceFixed())
+			result.Broke, result.Say("git refused the push"), d.req.onceFixed())
 	}
 
 	return d.endedSaying(
 		result.Say("Could not push %s, so nothing was pushed: %s", d.branch, err.Error()),
-		result.Broke, result.Say("could not push the branch"), onceFixed())
+		result.Broke, result.Say("could not push the branch"), d.req.onceFixed())
 }
 
 // findOrOpen takes the branch's open pull request against the trunk, and opens one titled with
@@ -161,12 +133,12 @@ func (d *delivery) findOrOpen(ctx context.Context, deps Deps) *result.Result {
 		return d.endedSaying(
 			result.Say("Started opening the pull request when the time limit ended; it may or may not have been opened"),
 			result.Broke, result.Say("the time limit ended while opening the pull request"),
-			pushAgain())
+			d.req.again())
 	}
 
 	return d.endedSaying(
 		result.Say("No pull request was opened: %s", err.Error()),
-		result.Broke, result.Say("could not open the pull request"), onceFixed())
+		result.Broke, result.Say("could not open the pull request"), d.req.onceFixed())
 }
 
 // findAgain reads the branch's pull requests once more, after the forge said that one exists,
@@ -188,9 +160,10 @@ func (d *delivery) findAgain(ctx context.Context, deps Deps) *result.Result {
 	return d.endedSaying(
 		result.Say("No pull request was opened or found: GitHub reports one for %s and lists none open against %s",
 			d.branch, d.Trunk),
-		result.Broke, result.Say("no pull request was opened or found"), onceFixed())
+		result.Broke, result.Say("no pull request was opened or found"), d.req.onceFixed())
 }
 
+// found takes change as the branch's pull request and says so.
 func (d *delivery) found(change forge.Change) {
 	d.number, d.url = change.Number, change.URL
 	d.lines = append(d.lines, result.Say("Pull request #%s: %s", change.Number, change.URL))
@@ -203,19 +176,12 @@ func (d *delivery) unread(read string, err error) *result.Result {
 	if errors.Is(err, context.DeadlineExceeded) {
 		line, reason := cutShortReading(read)
 
-		return d.endedSaying(line, result.Pending, reason, pushAgain())
+		return d.endedSaying(line, result.Pending, reason, d.req.again())
 	}
 
 	line, reason := couldNotRead(read, err)
 
-	return d.endedSaying(line, result.Broke, reason, onceFixed())
-}
-
-// cutShortReading returns the line and the reason that say the time limit ended while reading
-// read.
-func cutShortReading(read string) (line, reason result.Phrase) {
-	return result.Say("The time limit ended while reading %s; nothing more will change", read),
-		result.Say("the time limit ended while reading %s", read)
+	return d.endedSaying(line, result.Broke, reason, d.req.onceFixed())
 }
 
 // endedSaying adds line to the lines said so far, then returns what ended returns.
@@ -266,15 +232,14 @@ func (d *delivery) payload() *result.Push {
 	}
 }
 
-// sayMergeState says the merge state as GitHub spells it, with the word ils has for it.
+// sayMergeState adds the merge state line to the lines said so far.
 func (d *delivery) sayMergeState() {
-	d.lines = append(d.lines, result.Say("GitHub: %s (%s)", d.waited.RawMergeState, d.waited.MergeState))
+	d.lines = append(d.lines, d.waited.mergeStateLine())
 }
 
-// sayChecks says how many deciding checks passed and how many were skipped.
+// sayChecks adds the checks line of the pushed commit to the lines said so far.
 func (d *delivery) sayChecks() {
-	d.lines = append(d.lines,
-		result.Say("Checks for %s: %s passed, %s skipped", d.tip, d.waited.Passed, d.waited.Skipped))
+	d.lines = append(d.lines, d.waited.checksLine(d.tip))
 }
 
 // report returns the result the wait's outcome maps to.
@@ -304,25 +269,24 @@ func (d *delivery) green() *result.Result {
 	return d.doneMerging()
 }
 
-// doneMerging says the merge state and ends the push done, with merging by hand as the next step.
+// doneMerging says the merge state and ends the push done, with ils merge as the next step.
 func (d *delivery) doneMerging() *result.Result {
 	d.sayMergeState()
 
 	return d.ended(result.Done, result.Phrase{}, d.mergeNext())
 }
 
-// mergeNext is the step after a push that is done: merge by hand, once a review is in when the
-// merge state asks for one.
+// mergeNext is the step after a push that is done: write the squash commit's message, then
+// run ils merge, once a review is in when the merge state asks for one.
 func (d *delivery) mergeNext() result.Next {
 	repo := d.Repo.Slug()
-	names := []any{repo, d.number, repo, d.number, d.tip, d.number}
 
 	// A review is not the agent's to give, so it is asked for and the push is still done.
 	if d.waited.MergeState == forge.MergeBlockedByReview {
-		return result.NextStep("request a review of the pull request first, then "+mergeByHand, names...)
+		return result.NextStep("request a review of the pull request first, then "+writeThenMerge, repo, d.number)
 	}
 
-	return result.NextStep(mergeByHand, names...)
+	return result.NextStep(writeThenMerge, repo, d.number)
 }
 
 // withoutCI asks the forge whether the repository has CI on its trunk, for a pushed commit that
@@ -345,7 +309,7 @@ func (d *delivery) withoutCI(ctx context.Context, deps Deps) *result.Result {
 		d.lines = append(d.lines, line)
 		d.sayMergeState()
 
-		return d.ended(result.Pending, reason, pushAgain())
+		return d.ended(result.Pending, reason, d.req.again())
 	case err != nil:
 		return d.unread(readCI, err)
 	case hasCI:
@@ -378,26 +342,9 @@ func (d *delivery) red() *result.Result {
 
 	ended := d.ended(result.DeliveredNotGreen, reason,
 		result.NextStep("fix the failing check, commit, and run ils push again"))
-	ended.Excerpt = excerpt(failed.Name, d.waited.Verdict.FailedLog)
+	ended.Excerpt = d.waited.excerpt()
 
 	return ended
-}
-
-// excerpt returns the last excerptLines lines of the failed log of check, or one line saying
-// why there is no log.
-func excerpt(check string, log forge.FailedLog) string {
-	switch log.State {
-	case forge.FailedLogRead:
-		lines := strings.Split(strings.TrimRight(log.Text, "\n"), "\n")
-
-		return strings.Join(lines[max(0, len(lines)-excerptLines):], "\n")
-	case forge.FailedLogNoRun:
-		return "no log: " + check + " is not a workflow run"
-	case forge.FailedLogInProgress:
-		return "no log: the log of " + check + " was not available yet; its workflow run had not finished"
-	default:
-		return "no log: the log of " + check + " could not be read"
-	}
 }
 
 // apart is a pull request that cannot merge until the trunk is merged into the branch. The
@@ -458,7 +405,7 @@ func (d *delivery) pending() *result.Result {
 		reason = d.unconcluded()
 	}
 
-	return d.ended(result.Pending, reason, pushAgain())
+	return d.ended(result.Pending, reason, d.req.again())
 }
 
 // unconcluded says what the checks stage had found when the deadline ended it, and returns the

@@ -39,9 +39,7 @@ const (
 	cleanLine   = "GitHub: CLEAN (clean)\n"
 
 	mergeSteps = "write the pull request's title and body as the squash commit's message with " +
-		"`gh pr edit --repo " + repoArg + " 12 --title … --body …`, then merge by hand with " +
-		"`gh pr merge --repo " + repoArg + " 12 --squash --delete-branch --match-head-commit " + tipMark +
-		` --subject "<title> (#12)" --body "<body>"` + "`\n"
+		"`gh pr edit --repo " + repoArg + " 12 --title … --body …`, then run ils merge\n"
 	nextMerge  = "Next: " + mergeSteps
 	nextReview = "Next: request a review of the pull request first, then " + mergeSteps
 	nextRed    = "Next: fix the failing check, commit, and run ils push again\n"
@@ -51,9 +49,6 @@ const (
 	nextNothing = "Next: report that no check or status reported for the pushed commit, and stop\n"
 
 	readProtection = "the trunk's required checks"
-	readHead       = "the pull request's head"
-	readMergeState = "whether the pull request can merge"
-	readChecks     = "the checks of the pushed commit"
 	readCI         = "whether the repository has CI"
 
 	noCILine = "No CI is configured on " + trunk + ", so nothing verified " + tipMark + "\n"
@@ -502,92 +497,6 @@ func TestPush_WhenTipIsAlreadyOnOrigin_PushesNothing(t *testing.T) {
 	runPushes(t, pushAgainRows())
 }
 
-// steps returns the lines "step <first>" to "step <last>", each ended by a line break.
-func steps(first, last int) string {
-	var lines strings.Builder
-	for i := first; i <= last; i++ {
-		fmt.Fprintf(&lines, "step %d\n", i)
-	}
-
-	return lines.String()
-}
-
-// redRow is a push whose lint check ended in bucket beside a passing test, with log as its failed
-// log: the lines say the check failed, or was canceled, and the excerpt block is excerpt.
-func redRow(name string, bucket forge.Bucket, log forge.FailedLog, excerpt string) pushRow {
-	said := "failed"
-	if bucket == forge.BucketCanceled {
-		said = "was canceled"
-	}
-
-	log.Check = "lint"
-	verdict := forge.Verdict{
-		Checks: []forge.Check{
-			{Name: "lint", Bucket: bucket, Workflow: "ci", Link: lintURL},
-			checked("test", forge.BucketPass),
-		},
-		Runs:      ran(forge.RunCompleted),
-		FailedLog: log,
-	}
-	payload := detail(forge.VerdictRed, forge.MergeBlockedOther, verdict.Checks...)
-	payload.FailedLog = log.Text
-
-	return pushRow{
-		name:   name,
-		script: opening(verdict).showing(inState(forge.MergeBlockedOther, "UNSTABLE")),
-		want: finish{
-			outcome: result.DeliveredNotGreen, reason: "the check lint " + said, payload: payload,
-			text: pushedLine + openedLine + "Check lint " + said + ": " + lintURL + "\n" +
-				"GitHub: UNSTABLE (blocked-other)\n" + excerpt + nextRed,
-		},
-	}
-}
-
-// runningOn returns row with its one verdict read while the workflow run still goes on.
-func runningOn(row pushRow) pushRow {
-	row.script = row.script.with(func(script *forgetest.Script, _ string) {
-		script.Verdict[0].Value.Runs = ran(forge.RunInProgress)
-	})
-
-	return row
-}
-
-// heldBack returns row with a verdict read ahead of its own: the same failed check, with its
-// workflow run still going and its log not yet available.
-func heldBack(row pushRow) pushRow {
-	row.script = row.script.with(func(script *forgetest.Script, _ string) {
-		early := script.Verdict[0].Value
-		early.Runs = ran(forge.RunInProgress)
-		early.FailedLog = forge.FailedLog{Check: early.FailedLog.Check, State: forge.FailedLogInProgress}
-		script.Verdict = append(says(early), script.Verdict...)
-	})
-
-	return row
-}
-
-// pushRedRows are the pushes whose deciding check failed or was canceled.
-func pushRedRows() []pushRow {
-	// The log is one line longer than the excerpt may be.
-	read := forge.FailedLog{Text: steps(1, 61), State: forge.FailedLogRead}
-	short := forge.FailedLog{Text: steps(1, 3), State: forge.FailedLogRead}
-	// unfinished stays held back up to the time limit: a third poll would end three seconds past it.
-	unfinished := runningOn(redRow("a check failed and its workflow run had not finished at the time limit", forge.BucketFail,
-		forge.FailedLog{State: forge.FailedLogInProgress}, "no log: the log of lint was not available yet; its workflow run had not finished\n"))
-	unfinished.left = 12 * time.Second
-
-	return []pushRow{
-		heldBack(redRow("a check failed before its workflow run finished, and its log was read once it had", forge.BucketFail,
-			short, steps(1, 3))),
-		unfinished,
-		redRow("a check failed and its log is longer than the excerpt", forge.BucketFail, read, steps(2, 61)),
-		redRow("a check failed and its log is shorter than the excerpt", forge.BucketFail, short, steps(1, 3)),
-		redRow("a check failed that no workflow run stands behind", forge.BucketFail,
-			forge.FailedLog{State: forge.FailedLogNoRun}, "no log: lint is not a workflow run\n"),
-		redRow("a check was canceled and its log cannot be read", forge.BucketCanceled,
-			forge.FailedLog{State: forge.FailedLogUnreadable}, "no log: the log of lint could not be read\n"),
-	}
-}
-
 // stoppedRow is a push the pull request's merge state stops before any check is read.
 func stoppedRow(state forge.MergeState, raw, reason string) pushRow {
 	return pushRow{
@@ -802,13 +711,6 @@ func pushCutShortRows() []pushRow {
 
 	return []pushRow{
 		{
-			name: "the deadline ends in the first read of the checks",
-			script: reusing().with(func(script *forgetest.Script, _ string) {
-				script.Verdict = []forgetest.Answer[forge.Verdict]{{Err: ended}}
-			}),
-			want: cutShortRead(readChecks),
-		},
-		{
 			name:   "the deadline ends in the read of the merge state after the checks",
 			script: reusing(passing()).thenFailingHead(ended),
 			want: pending("GitHub did not say whether the pull request can merge before the time limit",
@@ -885,7 +787,7 @@ func pushWaitRows() []pushRow {
 		stoppedRow(forge.MergeBehind, "BEHIND", "the pull request is behind the trunk"),
 	}
 
-	return slices.Concat(rows, pushRedRows(), pushUnreportedRows(), pushPendingRows(), pushCutShortRows())
+	return slices.Concat(rows, pushUnreportedRows(), pushPendingRows(), pushCutShortRows())
 }
 
 func TestPush_WhenTheWaitEnds_ReportsItsOutcome(t *testing.T) {
@@ -913,16 +815,15 @@ func (read failingRead) row(want finish) pushRow {
 	return pushRow{name: read.name, script: read.script, want: want}
 }
 
-// readsAfterWrites returns the reads of a push that follow its writes, in the order the push makes
-// them, each failing with err.
-func readsAfterWrites(err error) []failingRead {
-	breaking := func(edit func(*forgetest.Script)) forgeFor {
-		return opening(passing()).with(func(script *forgetest.Script, _ string) { edit(script) })
-	}
-	// undecided shows the tip in a merge state the forge has not worked out, and then fails.
-	undecided := opening(passing()).showing(inState(forge.MergeUnknown, "UNKNOWN")).thenFailingHead(err)
-	opens := pushedLine + openedLine
+// breaking is a first push to a clean pull request whose one check passes, once edit has changed
+// the forge's answers.
+func breaking(edit func(*forgetest.Script)) forgeFor {
+	return opening(passing()).with(func(script *forgetest.Script, _ string) { edit(script) })
+}
 
+// readsAfterWrites returns the reads of a push that follow its writes and come before its wait,
+// in the order the push makes them, each failing with err.
+func readsAfterWrites(err error) []failingRead {
 	return []failingRead{
 		{
 			name: readChanges, before: pushedLine,
@@ -932,30 +833,16 @@ func readsAfterWrites(err error) []failingRead {
 			}),
 		},
 		{
-			name: readProtection, before: opens, known: true,
+			name: readProtection, before: pushedLine + openedLine, known: true,
 			script: breaking(func(script *forgetest.Script) {
 				script.TrunkProtection = []forgetest.Answer[forge.Protection]{{Err: err}}
-			}),
-		},
-		{
-			name: readHead, before: opens, known: true,
-			script: breaking(func(script *forgetest.Script) {
-				script.Head = []forgetest.Answer[forge.Head]{{Err: err}}
-			}),
-		},
-		{name: readMergeState, before: opens, known: true, script: undecided},
-		{
-			name: readChecks, before: opens, known: true,
-			script: breaking(func(script *forgetest.Script) {
-				script.Verdict = []forgetest.Answer[forge.Verdict]{{Err: err}}
 			}),
 		},
 	}
 }
 
-// pushBrokenRows are the pushes one of whose reads fails after the writes.
-func pushBrokenRows() []pushRow {
-	reads := readsAfterWrites(errors.New("HTTP 502"))
+// brokenAfter returns the pushes that end broke on each of reads, failing as HTTP 502.
+func brokenAfter(reads []failingRead) []pushRow {
 	rows := make([]pushRow, 0, len(reads))
 
 	for _, read := range reads {
@@ -971,8 +858,7 @@ func pushBrokenRows() []pushRow {
 func TestPush_WhenDeadlineEndsInAReadAfterTheWrites_PendingNamingTheRead(t *testing.T) {
 	t.Parallel()
 
-	// The deadline ends in the first two reads: the pull requests of the branch and the trunk's protection.
-	reads := readsAfterWrites(fmt.Errorf("gh: %w", context.DeadlineExceeded))[:2]
+	reads := readsAfterWrites(fmt.Errorf("gh: %w", context.DeadlineExceeded))
 	rows := make([]pushRow, 0, len(reads))
 
 	for _, read := range reads {
@@ -988,5 +874,5 @@ func TestPush_WhenDeadlineEndsInAReadAfterTheWrites_PendingNamingTheRead(t *test
 func TestPush_WhenAReadFailsAfterTheWrites_BrokeNamingTheRead(t *testing.T) {
 	t.Parallel()
 
-	runPushes(t, pushBrokenRows())
+	runPushes(t, brokenAfter(readsAfterWrites(errors.New("HTTP 502"))))
 }

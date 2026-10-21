@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/jeffzi/ils/internal/forge/forgetest"
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/landing"
+	"github.com/jeffzi/ils/internal/result"
 )
 
 const (
@@ -873,4 +875,144 @@ func TestAwaitVerdict_WhenAReadFails_ReturnsAnErrorNamingTheRead(t *testing.T) {
 			})
 		})
 	}
+}
+
+const (
+	readHead       = "the pull request's head"
+	readMergeState = "whether the pull request can merge"
+	readChecks     = "the checks of the pushed commit"
+)
+
+// steps returns the lines "step <first>" to "step <last>", each ended by a line break.
+func steps(first, last int) string {
+	var lines strings.Builder
+	for i := first; i <= last; i++ {
+		fmt.Fprintf(&lines, "step %d\n", i)
+	}
+
+	return lines.String()
+}
+
+// redRow is a push whose lint check ended in bucket beside a passing test, with log as its failed
+// log: the lines say the check failed, or was canceled, and the excerpt block is excerpt.
+func redRow(name string, bucket forge.Bucket, log forge.FailedLog, excerpt string) pushRow {
+	said := "failed"
+	if bucket == forge.BucketCanceled {
+		said = "was canceled"
+	}
+
+	log.Check = "lint"
+	verdict := forge.Verdict{
+		Checks: []forge.Check{
+			{Name: "lint", Bucket: bucket, Workflow: "ci", Link: lintURL},
+			checked("test", forge.BucketPass),
+		},
+		Runs:      ran(forge.RunCompleted),
+		FailedLog: log,
+	}
+	payload := detail(forge.VerdictRed, forge.MergeBlockedOther, verdict.Checks...)
+	payload.FailedLog = log.Text
+
+	return pushRow{
+		name:   name,
+		script: opening(verdict).showing(inState(forge.MergeBlockedOther, "UNSTABLE")),
+		want: finish{
+			outcome: result.DeliveredNotGreen, reason: "the check lint " + said, payload: payload,
+			text: pushedLine + openedLine + "Check lint " + said + ": " + lintURL + "\n" +
+				"GitHub: UNSTABLE (blocked-other)\n" + excerpt + nextRed,
+		},
+	}
+}
+
+// runningOn returns row with its one verdict read while the workflow run still goes on.
+func runningOn(row pushRow) pushRow {
+	row.script = row.script.with(func(script *forgetest.Script, _ string) {
+		script.Verdict[0].Value.Runs = ran(forge.RunInProgress)
+	})
+
+	return row
+}
+
+// heldBack returns row with a verdict read ahead of its own: the same failed check, with its
+// workflow run still going and its log not yet available.
+func heldBack(row pushRow) pushRow {
+	row.script = row.script.with(func(script *forgetest.Script, _ string) {
+		early := script.Verdict[0].Value
+		early.Runs = ran(forge.RunInProgress)
+		early.FailedLog = forge.FailedLog{Check: early.FailedLog.Check, State: forge.FailedLogInProgress}
+		script.Verdict = append(says(early), script.Verdict...)
+	})
+
+	return row
+}
+
+// pushRedRows are the pushes whose deciding check failed or was canceled.
+func pushRedRows() []pushRow {
+	// The log is one line longer than the excerpt may be.
+	read := forge.FailedLog{Text: steps(1, 61), State: forge.FailedLogRead}
+	short := forge.FailedLog{Text: steps(1, 3), State: forge.FailedLogRead}
+	// unfinished stays held back up to the time limit: a third poll would end three seconds past it.
+	unfinished := runningOn(redRow("a check failed and its workflow run had not finished at the time limit", forge.BucketFail,
+		forge.FailedLog{State: forge.FailedLogInProgress}, "no log: the log of lint was not available yet; its workflow run had not finished\n"))
+	unfinished.left = 12 * time.Second
+
+	return []pushRow{
+		heldBack(redRow("a check failed before its workflow run finished, and its log was read once it had", forge.BucketFail,
+			short, steps(1, 3))),
+		unfinished,
+		redRow("a check failed and its log is longer than the excerpt", forge.BucketFail, read, steps(2, 61)),
+		redRow("a check failed and its log is shorter than the excerpt", forge.BucketFail, short, steps(1, 3)),
+		redRow("a check failed that no workflow run stands behind", forge.BucketFail,
+			forge.FailedLog{State: forge.FailedLogNoRun}, "no log: lint is not a workflow run\n"),
+		redRow("a check was canceled and its log cannot be read", forge.BucketCanceled,
+			forge.FailedLog{State: forge.FailedLogUnreadable}, "no log: the log of lint could not be read\n"),
+	}
+}
+
+func TestPush_WhenACheckFailed_ReportsTheExcerptOfItsLog(t *testing.T) {
+	t.Parallel()
+
+	runPushes(t, pushRedRows())
+}
+
+// waitReads returns the reads of a push's wait, in the order the wait makes them, each failing
+// with err.
+func waitReads(err error) []failingRead {
+	// undecided shows the tip in a merge state the forge has not worked out, and then fails.
+	undecided := opening(passing()).showing(inState(forge.MergeUnknown, "UNKNOWN")).thenFailingHead(err)
+	opens := pushedLine + openedLine
+
+	return []failingRead{
+		{
+			name: readHead, before: opens, known: true,
+			script: breaking(func(script *forgetest.Script) {
+				script.Head = []forgetest.Answer[forge.Head]{{Err: err}}
+			}),
+		},
+		{name: readMergeState, before: opens, known: true, script: undecided},
+		{
+			name: readChecks, before: opens, known: true,
+			script: breaking(func(script *forgetest.Script) {
+				script.Verdict = []forgetest.Answer[forge.Verdict]{{Err: err}}
+			}),
+		},
+	}
+}
+
+func TestPush_WhenAReadOfTheWaitFails_BrokeNamingTheRead(t *testing.T) {
+	t.Parallel()
+
+	runPushes(t, brokenAfter(waitReads(errors.New("HTTP 502"))))
+}
+
+func TestPush_WhenTheDeadlineEndsInTheFirstReadOfTheChecks_PendingNamingTheRead(t *testing.T) {
+	t.Parallel()
+
+	runPushes(t, []pushRow{{
+		name: "the deadline ends in the first read of the checks",
+		script: reusing().with(func(script *forgetest.Script, _ string) {
+			script.Verdict = []forgetest.Answer[forge.Verdict]{{Err: fmt.Errorf("gh: %w", context.DeadlineExceeded)}}
+		}),
+		want: cutShortRead(readChecks),
+	}})
 }

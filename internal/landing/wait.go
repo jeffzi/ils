@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jeffzi/ils/internal/forge"
+	"github.com/jeffzi/ils/internal/result"
 )
 
 const (
@@ -457,6 +459,7 @@ func silent(verdict forge.Verdict) bool {
 	return len(verdict.Checks) == 0 && len(verdict.Runs) == 0
 }
 
+// tally counts the checks in the pass bucket and the checks in the skipped bucket.
 func tally(checks []forge.Check) (passed, skipped int) {
 	for _, check := range checks {
 		switch check.Bucket {
@@ -469,4 +472,70 @@ func tally(checks []forge.Check) (passed, skipped int) {
 	}
 
 	return passed, skipped
+}
+
+// The reads of the wait after a push, as a result names them.
+const (
+	readHead       = "the pull request's head"
+	readMergeState = "whether the pull request can merge"
+	readChecks     = "the checks of the pushed commit"
+)
+
+// excerptLines is how many lines of a failing check's log a red verdict's excerpt holds, counted from the
+// log's end: the excerpt is bounded so that the failure stays readable in a terminal, and the
+// payload carries the whole log.
+const excerptLines = 60
+
+// waitRead returns the read a failed wait names and the error of that read.
+func waitRead(err error) (string, error) {
+	failed, ok := errors.AsType[*WaitError](err)
+	if !ok {
+		return readChecks, err
+	}
+
+	switch failed.Stage {
+	case StageHead:
+		return readHead, failed.Err
+	case StageMergeState:
+		return readMergeState, failed.Err
+	default:
+		return readChecks, failed.Err
+	}
+}
+
+// cutShortReading returns the line and the reason that say the time limit ended while reading
+// read.
+func cutShortReading(read string) (line, reason result.Phrase) {
+	return result.Say("The time limit ended while reading %s; nothing more will change", read),
+		result.Say("the time limit ended while reading %s", read)
+}
+
+// mergeStateLine says the merge state as GitHub spells it, with the word ils has for it.
+func (w Waited) mergeStateLine() result.Phrase {
+	return result.Say("GitHub: %s (%s)", w.RawMergeState, w.MergeState)
+}
+
+// checksLine says how many deciding checks of the commit sha passed and how many were skipped.
+func (w Waited) checksLine(sha string) result.Phrase {
+	return result.Say("Checks for %s: %s passed, %s skipped", sha, w.Passed, w.Skipped)
+}
+
+// excerpt returns the last excerptLines lines of the failed log of the check that failed, or
+// one line saying why there is no log.
+func (w Waited) excerpt() string {
+	failed, _ := w.Verdict.Failed()
+	check, log := failed.Name, w.Verdict.FailedLog
+
+	switch log.State {
+	case forge.FailedLogRead:
+		lines := strings.Split(strings.TrimRight(log.Text, "\n"), "\n")
+
+		return strings.Join(lines[max(0, len(lines)-excerptLines):], "\n")
+	case forge.FailedLogNoRun:
+		return "no log: " + check + " is not a workflow run"
+	case forge.FailedLogInProgress:
+		return "no log: the log of " + check + " was not available yet; its workflow run had not finished"
+	default:
+		return "no log: the log of " + check + " could not be read"
+	}
 }
