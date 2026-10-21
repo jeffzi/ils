@@ -99,14 +99,28 @@ func withValidUTF8(view shown) shown {
 	view.Words = validUTF8Each(view.Words)
 	view.Lines = validUTF8Each(view.Lines)
 
-	if view.Payload != nil && view.Payload.Push != nil {
-		push := withValidUTF8Push(*view.Payload.Push)
-		payload := *view.Payload
-		payload.Push = &push
+	if view.Payload != nil {
+		payload := withValidUTF8Payload(*view.Payload)
 		view.Payload = &payload
 	}
 
 	return view
+}
+
+// withValidUTF8Payload returns payload with the strings of its push and merge
+// made valid UTF-8, leaving the details it points to untouched.
+func withValidUTF8Payload(payload Payload) Payload {
+	if payload.Push != nil {
+		push := withValidUTF8Push(*payload.Push)
+		payload.Push = &push
+	}
+
+	if payload.Merge != nil {
+		merge := withValidUTF8Merge(*payload.Merge)
+		payload.Merge = &merge
+	}
+
+	return payload
 }
 
 // validUTF8Each returns a fresh slice of items made valid UTF-8, or nil when
@@ -132,22 +146,44 @@ func withValidUTF8Push(push Push) Push {
 	push.Verdict = validUTF8(push.Verdict)
 	push.MergeState = validUTF8(push.MergeState)
 	push.FailedLog = validUTF8(push.FailedLog)
-
-	if push.Checks != nil {
-		checks := make([]Check, len(push.Checks))
-		for i, item := range push.Checks {
-			checks[i] = Check{
-				Name:     validUTF8(item.Name),
-				Bucket:   validUTF8(item.Bucket),
-				Workflow: validUTF8(item.Workflow),
-				Link:     validUTF8(item.Link),
-			}
-		}
-
-		push.Checks = checks
-	}
+	push.Checks = validUTF8Checks(push.Checks)
 
 	return push
+}
+
+// withValidUTF8Merge returns merge with every string made valid UTF-8, leaving
+// the checks slice it holds untouched.
+func withValidUTF8Merge(merge Merge) Merge {
+	merge.URL = validUTF8(merge.URL)
+	merge.SHA = validUTF8(merge.SHA)
+	merge.Verdict = validUTF8(merge.Verdict)
+	merge.MergeState = validUTF8(merge.MergeState)
+	merge.Subject = validUTF8(merge.Subject)
+	merge.Body = validUTF8(merge.Body)
+	merge.Ending = validUTF8(merge.Ending)
+	merge.Checks = validUTF8Checks(merge.Checks)
+
+	return merge
+}
+
+// validUTF8Checks returns a fresh slice of checks with every string made valid
+// UTF-8, or nil when checks is nil.
+func validUTF8Checks(checks []Check) []Check {
+	if checks == nil {
+		return nil
+	}
+
+	valid := make([]Check, len(checks))
+	for i, item := range checks {
+		valid[i] = Check{
+			Name:     validUTF8(item.Name),
+			Bucket:   validUTF8(item.Bucket),
+			Workflow: validUTF8(item.Workflow),
+			Link:     validUTF8(item.Link),
+		}
+	}
+
+	return valid
 }
 
 // validUTF8 returns s with each invalid byte replaced by U+FFFD. strings.Map
