@@ -13,8 +13,9 @@ import (
 	"github.com/jeffzi/ils/internal/forge"
 )
 
-// runOfLink finds the Actions run a check's link belongs to.
-var runOfLink = regexp.MustCompile(`/actions/runs/(\d+)`)
+// runOfLink finds the Actions run a check's link belongs to, and the job of that run when the link
+// names one.
+var runOfLink = regexp.MustCompile(`/actions/runs/(\d+)(?:/job/(\d+))?`)
 
 // runUnfinished matches what `gh run view --log-failed` prints when the run has not completed.
 var runUnfinished = regexp.MustCompile(`run \d+ is still in progress; logs will be available when it is complete`)
@@ -181,6 +182,13 @@ func runStatusOf(status string) forge.RunStatus {
 // A check with no Actions run behind it has no log, a run that has not completed
 // holds its log back, and a gh that cannot give the log for any other reason
 // leaves it unreadable: the verdict is red either way.
+//
+// A failed log that is empty falls back to the log of the job the check's link
+// names: for a few seconds after a run completes, GitHub serves a log archive
+// without its step files, `gh run view --log-failed` prints nothing for it and
+// exits 0, and gh caches that archive, so every later read of the run prints
+// nothing too. When that job log is empty or unreadable as well, the log is
+// still in progress, so that the wait keeps polling.
 func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Verdict) (forge.FailedLog, error) {
 	failed, ok := verdict.Failed()
 	if !ok {
@@ -205,5 +213,36 @@ func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Ve
 		return forge.FailedLog{}, err
 	}
 
-	return forge.FailedLog{Check: failed.Name, Text: result.Stdout, State: forge.FailedLogRead}, nil
+	text := result.Stdout
+	if strings.TrimSpace(text) == "" {
+		text, err = f.jobLog(ctx, repo, match[2])
+		if err != nil {
+			return forge.FailedLog{}, err
+		}
+	}
+
+	if strings.TrimSpace(text) == "" {
+		return forge.FailedLog{Check: failed.Name, State: forge.FailedLogInProgress}, nil
+	}
+
+	return forge.FailedLog{Check: failed.Name, Text: text, State: forge.FailedLogRead}, nil
+}
+
+// jobLog reads the log of the Actions job numbered job. It returns an empty log, and no error,
+// when job is empty or gh exits non-zero: either way failedLog has no log to give yet.
+func (f *Forge) jobLog(ctx context.Context, repo forge.Repo, job string) (string, error) {
+	if job == "" {
+		return "", nil
+	}
+
+	result, err := f.runner.Run(ctx, "api", "--hostname", repo.Host, repoAPIPath(repo, "actions/jobs/"+job+"/logs"))
+	if _, exited := errors.AsType[*child.ExitError](err); exited {
+		return "", nil
+	}
+
+	if err != nil {
+		return "", err
+	}
+
+	return result.Stdout, nil
 }
