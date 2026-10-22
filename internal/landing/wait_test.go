@@ -602,9 +602,47 @@ func heldRows() []vigilRow {
 			want:     green(), ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
 		},
 		{
-			name:     "a check pending that no run stands behind, then green",
+			// deploy passes ten seconds in; no run ever starts, so the wait ends 20 seconds in.
+			name:     "a check pending that no run stands behind, then green once 20 seconds passed",
 			verdicts: says(external, external, deployed),
-			want:     concluded(landing.WaitGreen, deployed, 1, 0), ops: readsOf(1, 3, 1), waits: polls(2, verdictPoll),
+			want:     concluded(landing.WaitGreen, deployed, 1, 0), ops: readsOf(1, 5, 1), waits: polls(4, verdictPoll),
+		},
+	}
+}
+
+// earlyRows are the verdict waits whose checks concluded before any workflow run started.
+func earlyRows() []vigilRow {
+	// scanned is a check of an app, which no workflow run stands behind.
+	scanned := forge.Verdict{Checks: []forge.Check{{Name: "scan", Bucket: forge.BucketPass}}}
+	refused := forge.Verdict{
+		Checks:    []forge.Check{{Name: "scan", Bucket: forge.BucketFail}},
+		FailedLog: forge.FailedLog{Check: "scan", State: forge.FailedLogUnreadable},
+	}
+	failed := lintRed()
+	failed.Checks = append(failed.Checks, scanned.Checks...)
+	started := forge.Verdict{Checks: slices.Concat(scanned.Checks, running().Checks), Runs: ran(forge.RunInProgress)}
+	finished := forge.Verdict{Checks: slices.Concat(scanned.Checks, passing().Checks), Runs: ran(forge.RunCompleted)}
+
+	return []vigilRow{
+		{
+			name:     "a check passed before any run started, then a run failed",
+			verdicts: says(scanned, failed),
+			want:     concluded(landing.WaitRed, failed, 2, 0), ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
+		},
+		{
+			name:     "a check passed before any run started, then a run started and passed",
+			verdicts: says(scanned, scanned, started, finished),
+			want:     concluded(landing.WaitGreen, finished, 2, 0), ops: readsOf(1, 4, 1), waits: polls(3, verdictPoll),
+		},
+		{
+			name:     "a check of an app failed before any run started",
+			verdicts: says(refused),
+			want:     concluded(landing.WaitRed, refused, 0, 0), ops: readsOf(1, 1, 1),
+		},
+		{
+			name:     "a check passed and no run started for 20 seconds",
+			verdicts: says(scanned),
+			want:     concluded(landing.WaitGreen, scanned, 1, 0), ops: readsOf(1, 5, 1), waits: polls(4, verdictPoll),
 		},
 	}
 }
@@ -612,7 +650,7 @@ func heldRows() []vigilRow {
 func TestAwaitVerdict_WhenTrunkRequiresNoCheck_WaitsUntilNothingStillRuns(t *testing.T) {
 	t.Parallel()
 
-	rows := slices.Concat(everyCheckRows(), heldRows())
+	rows := slices.Concat(everyCheckRows(), heldRows(), earlyRows())
 	for i := range rows {
 		rows[i].heads = shows(clean())
 	}
@@ -637,16 +675,8 @@ func requiredRows() []vigilRow {
 	held := forge.Verdict{Checks: []forge.Check{lint, needed("test", forge.BucketPending)}, Runs: ran(forge.RunCompleted)}
 	holding := concluded(landing.WaitPending, held, 1, 0)
 	holding.Stage = landing.StageVerdict
-	aside := forge.Verdict{Checks: []forge.Check{checked("docs", forge.BucketPass)}, MissingRequired: []string{"test"}}
-	unmet := concluded(landing.WaitNeverReported, aside, 0, 0)
-	unmet.Deciding = nil
 
 	return []vigilRow{
-		{
-			name:     "required name absent beside a check that is not required, no run going",
-			verdicts: says(aside),
-			want:     unmet, ops: readsOf(1, 1, 1),
-		},
 		{
 			// A third poll would end three seconds past the deadline.
 			name:     "required check pending after every run completed, until the deadline",
@@ -682,10 +712,32 @@ func requiredRows() []vigilRow {
 	}
 }
 
+// asideRows are the verdict waits where a required name is absent beside a check the trunk does
+// not require, before any run has appeared.
+func asideRows() []vigilRow {
+	aside := forge.Verdict{Checks: []forge.Check{checked("docs", forge.BucketPass)}, MissingRequired: []string{"test"}}
+	unmet := concluded(landing.WaitNeverReported, aside, 0, 0)
+	unmet.Deciding = nil
+	both := requiredPassing()
+
+	return []vigilRow{
+		{
+			name:     "required name absent beside a check that is not required, no run for 20 seconds",
+			verdicts: says(aside),
+			want:     unmet, ops: readsOf(1, 5, 1), waits: polls(4, verdictPoll),
+		},
+		{
+			name:     "required name absent beside a check that is not required, then a run reports it",
+			verdicts: says(aside, both),
+			want:     concluded(landing.WaitGreen, both, 2, 0), ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
+		},
+	}
+}
+
 func TestAwaitVerdict_WhenTrunkRequiresChecks_WaitsForEveryRequiredName(t *testing.T) {
 	t.Parallel()
 
-	rows := requiredRows()
+	rows := slices.Concat(requiredRows(), asideRows())
 	for i := range rows {
 		rows[i].heads = shows(clean())
 		rows[i].required = []string{"lint", "test"}
@@ -1086,13 +1138,14 @@ func pushCutShortRows() []pushRow {
 	}
 }
 
-// pushPendingRows are the pushes whose wait ended before the forge had an answer, one per way it ends.
-func pushPendingRows() []pushRow {
+// pushRunlessRows are the pushes whose deadline ended inside the 20 seconds a commit is given
+// for its workflow runs to appear, before any of them had a check to report.
+func pushRunlessRows() []pushRow {
 	started := forge.Verdict{Runs: ran(forge.RunInProgress)}
+	scanned := forge.Verdict{Checks: []forge.Check{{Name: "scan", Bucket: forge.BucketPass}}}
 
 	return []pushRow{
 		{
-			// Twelve seconds end inside the 20 seconds a silent commit is given.
 			name: "nothing has reported yet", left: 12 * time.Second, script: reusing(forge.Verdict{}),
 			want: pending("no check or status had reported at the time limit",
 				"No check or status has reported for "+tipMark+" on pull request #12 yet\n"+cleanLine,
@@ -1105,6 +1158,19 @@ func pushPendingRows() []pushRow {
 				"No check has reported for "+tipMark+" on pull request #12 yet; a workflow run is still going\n"+cleanLine,
 				detail(forge.VerdictNone, forge.MergeClean)),
 		},
+		{
+			name: "a check passed and no workflow run has started yet", left: 12 * time.Second,
+			script: reusing(scanned),
+			want: pending("no workflow run had started at the time limit",
+				"No workflow run has started for "+tipMark+" on pull request #12 yet\n"+cleanLine,
+				detail(forge.VerdictGreen, forge.MergeClean, scanned.Checks...)),
+		},
+	}
+}
+
+// pushPendingRows are the pushes whose wait ended before the forge had an answer, one per way it ends.
+func pushPendingRows() []pushRow {
+	return []pushRow{
 		{
 			// A third poll would end a second past the deadline.
 			name: "the pull request still shows an earlier commit", left: 5 * time.Second,
@@ -1140,7 +1206,7 @@ func pushPendingRows() []pushRow {
 func TestPush_WhenTheWaitEndsBeforeAnAnswer_PendingSayingWhy(t *testing.T) {
 	t.Parallel()
 
-	runPushes(t, slices.Concat(pushPendingRows(), pushCutShortRows()))
+	runPushes(t, slices.Concat(pushRunlessRows(), pushPendingRows(), pushCutShortRows()))
 }
 
 // waitReads returns the reads of a push's wait, in the order the wait makes them, each failing

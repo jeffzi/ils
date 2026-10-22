@@ -25,9 +25,9 @@ const (
 	// verdictPoll is how often the verdict is read: one read is several calls to GitHub, and
 	// no check concludes faster than a few seconds.
 	verdictPoll = 5 * time.Second
-	// silentRetry is how long the verdict is read again while nothing has reported at all:
-	// GitHub creates a push's workflow runs some seconds after the push, and CI that has not
-	// shown by then did not fire.
+	// silentRetry is how long the verdict is read again while no workflow run has appeared and
+	// nothing failed: GitHub creates a push's workflow runs some seconds after the push, while an
+	// app or a status can report sooner, and CI that has not shown by then did not fire.
 	silentRetry = 20 * time.Second
 )
 
@@ -392,8 +392,9 @@ func (w waiter) concluded(ctx context.Context, waited *Waited) (forge.Verdict, W
 		waited.Since = began
 
 		outcome, done = w.judge(verdict)
-		// Runs appear some seconds after a push, so silence is only believed once it has lasted.
-		if done && silent(verdict) && time.Since(began)+verdictPoll <= silentRetry {
+		// Runs appear some seconds after a push, so a verdict without them is only believed once
+		// that has lasted. A failed check stays failed whatever runs start later.
+		if done && outcome != WaitRed && len(verdict.Runs) == 0 && time.Since(began)+verdictPoll <= silentRetry {
 			done = false
 		}
 
@@ -667,7 +668,7 @@ func (w Waited) pendingReport(sha string, number int) waitReport {
 
 // unconcluded returns what the checks stage had found when the deadline ended it, then the merge
 // state, and the reason: no verdict read at all, nothing reported, a workflow run with no check
-// yet, or the checks still running.
+// yet, checks concluded before any workflow run started, or the checks still running.
 func (w Waited) unconcluded(sha string, number int) ([]result.Phrase, result.Phrase) {
 	var lines []result.Phrase
 
@@ -686,6 +687,10 @@ func (w Waited) unconcluded(sha string, number int) ([]result.Phrase, result.Phr
 		lines = append(lines, result.Say(
 			"No check has reported for %s on pull request #%s yet; a workflow run is still going", sha, number))
 		reason = result.Say("the checks had not reported at the time limit")
+	// The checks concluded, but the deadline ended the wait for workflow runs to appear.
+	case len(w.Verdict.Runs) == 0 && len(w.Verdict.Pending()) == 0:
+		lines = append(lines, result.Say("No workflow run has started for %s on pull request #%s yet", sha, number))
+		reason = result.Say("no workflow run had started at the time limit")
 	default:
 		seconds := int(time.Since(w.Since) / time.Second)
 		for _, check := range w.Verdict.Pending() {
