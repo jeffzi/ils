@@ -28,6 +28,7 @@ const (
 	dirtyPath     = "README.md"
 	stagedPath    = "LICENSE"
 	untrackedPath = "untracked.txt"
+	trunkOnlyPath = "trunk-only.txt"
 	scratchRef    = "refs/gittest/squash"
 
 	sshConfigName = "ssh_config"
@@ -60,13 +61,13 @@ func New(tb testing.TB, trunk string) *Fixture {
 
 	git, err := exec.LookPath("git")
 	if err != nil {
-		tb.Fatalf("find git: %v", err)
+		tb.Fatalf("gittest: find git: %v", err)
 	}
 
 	// Resolved so that Dir matches what git prints for the repository, which follows symbolic links.
 	root, err := filepath.EvalSymlinks(tb.TempDir())
 	if err != nil {
-		tb.Fatalf("resolve temporary directory: %v", err)
+		tb.Fatalf("gittest: resolve temporary directory: %v", err)
 	}
 
 	home := filepath.Join(root, "home")
@@ -85,7 +86,7 @@ func New(tb testing.TB, trunk string) *Fixture {
 
 	err = os.MkdirAll(home, 0o750)
 	if err != nil {
-		tb.Fatalf("create home directory: %v", err)
+		tb.Fatalf("gittest: create home directory: %v", err)
 	}
 
 	f.SetSSHConfig("")
@@ -135,7 +136,7 @@ func WriteFile(tb testing.TB, dir, name, content string) {
 
 	err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600)
 	if err != nil {
-		tb.Fatalf("write %s: %v", name, err)
+		tb.Fatalf("gittest: write %s: %v", name, err)
 	}
 }
 
@@ -315,7 +316,7 @@ func (f *Fixture) Sibling(name, of string) string {
 
 	first, _, _ := strings.Cut(f.Git("rev-list", "--reverse", f.trunk+".."+of), "\n")
 	if first == "" {
-		f.tb.Fatalf("branch %s has no commit past %s to share", of, f.trunk)
+		f.tb.Fatalf("gittest: branch %s has no commit past %s to share", of, f.trunk)
 	}
 
 	f.Git("switch", "--quiet", "--create", name, first)
@@ -349,8 +350,9 @@ func (f *Fixture) PullRef(number int, sha string) {
 }
 
 // SquashOnOrigin adds a commit to origin's trunk whose tree is that of the local commit sha, as a
-// squash merge of sha would, and returns the new sha. The working repository does not fetch it.
-func (f *Fixture) SquashOnOrigin(sha, subject string) string {
+// squash merge of sha would, and returns the new sha. Its message is subject, followed by a blank
+// line and body when body is not empty. The working repository does not fetch it.
+func (f *Fixture) SquashOnOrigin(sha, subject, body string) string {
 	f.tb.Helper()
 
 	// Pushing to a scratch ref carries the objects of sha to origin without creating a branch.
@@ -358,7 +360,12 @@ func (f *Fixture) SquashOnOrigin(sha, subject string) string {
 
 	trunkRef := "refs/heads/" + f.trunk
 	parent := f.OriginGit("rev-parse", "--verify", trunkRef)
-	squash := f.OriginGit("commit-tree", sha+"^{tree}", "-p", parent, "-m", subject)
+	args := []string{"commit-tree", sha + "^{tree}", "-p", parent, "-m", subject}
+	if body != "" {
+		args = append(args, "-m", body)
+	}
+
+	squash := f.OriginGit(args...)
 	f.OriginGit("update-ref", trunkRef, squash, parent)
 	f.OriginGit("update-ref", "-d", scratchRef)
 
@@ -382,7 +389,80 @@ func (f *Fixture) LandPull(number int, rev string) {
 	subject := f.Git("log", "-1", "--format=%s", tip)
 
 	f.PullRef(number, tip)
-	f.SquashOnOrigin(tip, subject+" (#"+strconv.Itoa(number)+")")
+	f.SquashOnOrigin(tip, subject+" (#"+strconv.Itoa(number)+")", "")
+}
+
+// TrunkWorktree adds a linked worktree with the trunk checked out and returns its directory. The
+// trunk must not be checked out in the working repository.
+func (f *Fixture) TrunkWorktree() string {
+	f.tb.Helper()
+
+	dir := filepath.Join(f.root, "trunk-worktree")
+	f.Git("worktree", "add", "--quiet", dir, f.trunk)
+
+	return dir
+}
+
+// BranchWorktree checks out the trunk in the working repository, adds a linked worktree with
+// branch checked out, and returns that worktree's directory. The branch must already exist.
+func (f *Fixture) BranchWorktree(branch string) string {
+	f.tb.Helper()
+
+	f.Git("switch", "--quiet", f.trunk)
+
+	dir := filepath.Join(f.root, "branch-worktree")
+	f.Git("worktree", "add", "--quiet", dir, branch)
+
+	return dir
+}
+
+// AdvanceTrunk adds a commit to the local trunk without checking it out or pushing it, and returns
+// its sha. The trunk must not be checked out in any worktree.
+func (f *Fixture) AdvanceTrunk() string {
+	f.tb.Helper()
+
+	return f.commitOnTrunk(func(dir string) string {
+		return f.commit(dir, "local change on "+f.trunk)
+	})
+}
+
+// UntrackedOnTrunk commits a file to the trunk and pushes it to origin by the bare origin's path,
+// whatever origin's URLs name, then leaves an untracked file with other content at the same path
+// in Dir, so that checking out the trunk would overwrite it. It returns the path relative to Dir.
+// The trunk must not be checked out in any worktree.
+func (f *Fixture) UntrackedOnTrunk() string {
+	f.tb.Helper()
+
+	f.commitOnTrunk(func(dir string) string {
+		WriteFile(f.tb, dir, trunkOnlyPath, "tracked on the trunk\n")
+		f.run(dir, "add", "--", trunkOnlyPath)
+		f.run(dir, "commit", "--quiet", "--message", "track "+trunkOnlyPath)
+
+		return f.run(dir, "rev-parse", "HEAD")
+	})
+	f.Publish(f.trunk)
+	WriteFile(f.tb, f.dir, trunkOnlyPath, "untracked here\n")
+
+	return trunkOnlyPath
+}
+
+// commitOnTrunk runs commit in a scratch worktree detached at the trunk, moves the trunk to the
+// sha commit returns, and returns it. Working detached leaves every other checkout untouched.
+func (f *Fixture) commitOnTrunk(commit func(dir string) string) string {
+	f.tb.Helper()
+
+	trunkRef := "refs/heads/" + f.trunk
+	parent := f.Git("rev-parse", "--verify", trunkRef)
+
+	dir := filepath.Join(f.root, "trunk-scratch")
+	f.Git("worktree", "add", "--quiet", "--detach", dir, parent)
+
+	sha := commit(dir)
+
+	f.Git("worktree", "remove", "--force", dir)
+	f.Git("update-ref", trunkRef, sha, parent)
+
+	return sha
 }
 
 // ---------------------------------------------------------------------------
@@ -423,7 +503,7 @@ func (f *Fixture) ServedBy(serving string) []string {
 	for i, entry := range env {
 		key, value, _ := strings.Cut(entry, "=")
 		if strings.EqualFold(key, "PATH") {
-			env[i] = key + "=" + dir + string(os.PathListSeparator) + value
+			env[i] = key + "=" + firstOnPath(dir, value)
 			found = true
 		}
 	}
@@ -443,7 +523,7 @@ func (f *Fixture) standIn() string {
 
 	ssh, err := exec.LookPath("ssh")
 	if err != nil {
-		f.tb.Fatalf("find ssh: %v", err)
+		f.tb.Fatalf("gittest: find ssh: %v", err)
 	}
 
 	script := "#!/bin/sh\n" +
@@ -456,7 +536,7 @@ func (f *Fixture) standIn() string {
 
 	err = os.MkdirAll(dir, 0o750)
 	if err != nil {
-		f.tb.Fatalf("create the directory of the stand-in for ssh: %v", err)
+		f.tb.Fatalf("gittest: create the directory of the stand-in for ssh: %v", err)
 	}
 
 	path := filepath.Join(dir, name)
@@ -465,7 +545,7 @@ func (f *Fixture) standIn() string {
 	// Git's shell runs the stand-in as a program, which it can only do once it is executable.
 	err = os.Chmod(path, 0o700) //nolint:gosec // G302: the stand-in is a script a shell must execute.
 	if err != nil {
-		f.tb.Fatalf("make the stand-in for ssh executable: %v", err)
+		f.tb.Fatalf("gittest: make the stand-in for ssh executable: %v", err)
 	}
 
 	return dir
@@ -483,7 +563,7 @@ func (f *Fixture) RemoveSSHConfig() {
 
 	err := os.Remove(filepath.Join(f.root, sshConfigName))
 	if err != nil {
-		f.tb.Fatalf("remove the ssh config: %v", err)
+		f.tb.Fatalf("gittest: remove the ssh config: %v", err)
 	}
 }
 
@@ -518,7 +598,7 @@ func (f *Fixture) run(dir string, args ...string) string {
 
 	err := cmd.Run()
 	if err != nil {
-		f.tb.Fatalf("git %s in %s: %v\n%s", strings.Join(args, " "), dir, err, strings.TrimSpace(stderr.String()))
+		f.tb.Fatalf("gittest: git %s in %s: %v\n%s", strings.Join(args, " "), dir, err, strings.TrimSpace(stderr.String()))
 	}
 
 	return strings.TrimSpace(stdout.String())

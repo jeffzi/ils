@@ -171,6 +171,78 @@ func redPush() result.Result {
 	}
 }
 
+// mergedPayload is the merge payload of a pull request this run merged, ending on the trunk, with
+// tail appended to each of its strings.
+func mergedPayload(tail string) *result.Payload {
+	return &result.Payload{Merge: &result.Merge{
+		URL:        pullURL + tail,
+		Number:     12,
+		SHA:        "4f2a9c1" + tail,
+		Verdict:    "green" + tail,
+		MergeState: "clean" + tail,
+		Checks: []result.Check{
+			{Name: "build" + tail, Bucket: "pass" + tail, Workflow: "CI" + tail, Link: checkURL + "0" + tail},
+		},
+		Subject: "Tidy the readme (#12)" + tail,
+		Body:    "Shorter install steps.\n" + tail,
+		Merged:  true,
+		Ending:  result.EndingTrunk + tail,
+	}}
+}
+
+// pushPayload is the payload of redPush with tail appended to each of its strings.
+func pushPayload(tail string) *result.Payload {
+	push := *redPush().Payload.Push
+	push.URL += tail
+	push.SHA += tail
+	push.Verdict += tail
+	push.MergeState += tail
+	push.FailedLog += tail
+	push.Checks = nil
+
+	for _, check := range redPush().Payload.Push.Checks {
+		push.Checks = append(push.Checks, result.Check{
+			Name: check.Name + tail, Bucket: check.Bucket + tail, Workflow: check.Workflow + tail, Link: check.Link + tail,
+		})
+	}
+
+	return &result.Payload{Push: &push}
+}
+
+// doneMerge is a merge this run made, ending on the trunk.
+func doneMerge() result.Result {
+	return result.Result{
+		Command: "merge",
+		Words:   []string{"merge"},
+		Outcome: result.Done,
+		Lines:   []result.Phrase{result.Say("Merged pull request #%s into %s.", 12, "main")},
+		Next:    result.NextNone(),
+		Payload: mergedPayload(""),
+	}
+}
+
+// doneMergeShown is the object the JSON renderer shows for doneMerge.
+func doneMergeShown() resulttest.Shown {
+	return resulttest.Shown{
+		Command: "merge", Words: []string{"merge"}, Outcome: "done", ExitCode: 0, Next: "none",
+		Lines: []string{"Merged pull request #12 into main."}, Payload: mergedPayload(""),
+	}
+}
+
+// brokeMerge is a merge that failed before it read the checks or sent a message.
+func brokeMerge() result.Result {
+	return result.Result{
+		Command: "merge",
+		Words:   []string{"merge"},
+		Outcome: result.Broke,
+		Next:    result.NextCommand("merge"),
+		Reason:  result.Say("GitHub did not answer"),
+		Payload: &result.Payload{Merge: &result.Merge{
+			URL: pullURL, Number: 12, SHA: "4f2a9c1", Verdict: "none", MergeState: "unknown",
+		}},
+	}
+}
+
 // with returns a copy of base that edit has changed, leaving base itself untouched.
 func with[T any](base T, edit func(*T)) T {
 	edit(&base)
@@ -178,12 +250,18 @@ func with[T any](base T, edit func(*T)) T {
 	return base
 }
 
-// inputOf prints a row's result for the log of a failing row, with the push payload that the
-// result holds behind pointers written out.
+// inputOf prints a row's result for the log of a failing row, with the push and merge payloads
+// that the result holds behind pointers written out.
 func inputOf(r result.Result) string {
 	text := fmt.Sprintf("%+v", r)
-	if r.Payload != nil && r.Payload.Push != nil {
+	if r.Payload == nil {
+		return text
+	}
+	if r.Payload.Push != nil {
 		text += fmt.Sprintf(", its payload push %+v", *r.Payload.Push)
+	}
+	if r.Payload.Merge != nil {
+		text += fmt.Sprintf(", its payload merge %+v", *r.Payload.Merge)
 	}
 
 	return text
@@ -240,6 +318,12 @@ func textCases() []textCase {
 			gitDir: gitDir,
 			result: redPush(),
 			want:   redBody + "Next: " + redNext + "\n",
+		},
+		{
+			name:   "merge payload prints nothing",
+			gitDir: gitDir,
+			result: doneMerge(),
+			want:   "Merged pull request #12 into main.\nNext: none\n",
 		},
 	}
 }
@@ -337,6 +421,24 @@ func jsonCases() []jsonCase {
 				s.Words = []string{"stack", "land"}
 			}),
 		},
+		{
+			name:   "merge payload strings print each invalid byte as a replacement character",
+			gitDir: gitDir,
+			result: with(doneMerge(), func(r *result.Result) { r.Payload = mergedPayload("\xff\xfe") }),
+			want:   with(doneMergeShown(), func(s *resulttest.Shown) { s.Payload = mergedPayload("��") }),
+		},
+		{
+			name:   "push payload strings print each invalid byte as a replacement character",
+			gitDir: gitDir,
+			result: with(redPush(), func(r *result.Result) { r.Payload = pushPayload("\xff\xfe") }),
+			want:   with(redShown(), func(s *resulttest.Shown) { s.Payload = pushPayload("��") }),
+		},
+		{
+			name:   "merge that ended detached prints its ending",
+			gitDir: gitDir,
+			result: with(doneMerge(), func(r *result.Result) { r.Payload.Merge.Ending = result.EndingDetached }),
+			want:   with(doneMergeShown(), func(s *resulttest.Shown) { s.Payload.Merge.Ending = "detached" }),
+		},
 	}
 }
 
@@ -359,6 +461,18 @@ const (
 		`"Check prek failed: https://github.com/jeffzi/ils/actions/runs/7/job/9"],"exit_code":5}` + "\n"
 	doneGolden = `{"command":"push","words":["push"],"outcome":"done","next":"none",` +
 		`"lines":["Pushed tidy-readme to origin.","Every check is green."],"exit_code":0}` + "\n"
+	doneMergeGolden = `{"payload":{"merge":{"url":"https://github.com/jeffzi/ils/pull/12","sha":"4f2a9c1",` +
+		`"verdict":"green","merge_state":"clean","subject":"Tidy the readme (#12)",` +
+		`"body":"Shorter install steps.\n","ending":"trunk",` +
+		`"checks":[{"name":"build","bucket":"pass","workflow":"CI",` +
+		`"link":"https://github.com/jeffzi/ils/actions/runs/7/job/90"}],"number":12,"merged":true}},` +
+		`"command":"merge","words":["merge"],"outcome":"done","next":"none",` +
+		`"lines":["Merged pull request #12 into main."],"exit_code":0}` + "\n"
+	brokeMergeGolden = `{"payload":{"merge":{"url":"https://github.com/jeffzi/ils/pull/12","sha":"4f2a9c1",` +
+		`"verdict":"none","merge_state":"unknown","subject":"","body":"","ending":"",` +
+		`"checks":[],"number":12,"merged":false}},` +
+		`"command":"merge","words":["merge"],"outcome":"broke","next":"ils merge",` +
+		`"reason":"GitHub did not answer","exit_code":1}` + "\n"
 )
 
 func TestRenderJSON_WhenResultIsWellFormed_PrintsExactBytes(t *testing.T) {
@@ -371,6 +485,8 @@ func TestRenderJSON_WhenResultIsWellFormed_PrintsExactBytes(t *testing.T) {
 	}{
 		{name: "red push carries every field", result: redPush(), want: redGolden},
 		{name: "bare done leaves unset fields out", result: donePush(), want: doneGolden},
+		{name: "done merge carries every merge field", result: doneMerge(), want: doneMergeGolden},
+		{name: "merge that read and sent nothing prints its empty fields", result: brokeMerge(), want: brokeMergeGolden},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -405,6 +521,19 @@ func TestRenderJSON(t *testing.T) {
 	}
 }
 
+func TestRenderJSON_WhenPayloadHoldsInvalidUTF8_LeavesTheResultAsItWas(t *testing.T) {
+	t.Parallel()
+	invalid := func() *result.Payload {
+		return &result.Payload{Push: pushPayload("\xff").Push, Merge: mergedPayload("\xff").Merge}
+	}
+	r := with(redPush(), func(r *result.Result) { r.Payload = invalid() })
+
+	_, err := result.RenderJSON(r, gitDir)
+	assert.NilError(t, err)
+
+	assert.Check(t, is.DeepEqual(r.Payload, invalid()))
+}
+
 // rejected is a result whose own wording names a hook or a git dir path.
 type rejected struct {
 	name     string
@@ -415,7 +544,7 @@ type rejected struct {
 }
 
 // rejectedLine is a broke push with one more line, whose wording must be
-// rejected against the resolved git dir dir.
+// rejected against the resolved git dir.
 func rejectedLine(name, dir string, p result.Phrase, wantLine string) rejected {
 	return rejected{
 		name:     name,

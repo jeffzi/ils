@@ -39,8 +39,13 @@ func Decode(tb testing.TB, out string) Shown {
 }
 
 // AssertCarried fails unless every line of text is in what the JSON object carries: its lines, its
-// excerpt, its reason, or its next.
-func AssertCarried(tb testing.TB, text string, got Shown) {
+// excerpt, its reason, or its next. It reports through tb only by Helper and the calls of
+// assert.TestingT, so a *testing.T or a stand-in that records them both serve.
+func AssertCarried(tb interface {
+	assert.TestingT
+	Helper()
+}, text string, got Shown,
+) {
 	tb.Helper()
 
 	carried := append(strings.Split(got.Excerpt, "\n"), got.Lines...)

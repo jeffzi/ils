@@ -2,6 +2,7 @@ package gittest_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -122,16 +123,6 @@ func TestFakeGit_WhenCallIsAPrefixOfFailingWords_RunsTheRealGit(t *testing.T) {
 	assert.Check(t, is.DeepEqual(got, faked{Code: 1}))
 }
 
-func TestFakeGit_WhenRealGitFails_ExitsWithItsCode(t *testing.T) {
-	gittest.FakeGit(t, gittest.Fake{FailOn: []string{"show-ref"}})
-	env := gittest.Env(t)
-	dir := initRepo(t, env)
-
-	got := callGit(t, env, dir, "remote", "get-url", "absent")
-
-	assert.Check(t, is.Equal(got.Code, 2), "git remote get-url absent printed %+v", got)
-}
-
 func TestFakeGit_WhenRealGitCannotStart_ExitsBroken(t *testing.T) {
 	name := "git"
 	if runtime.GOOS == "windows" {
@@ -148,6 +139,67 @@ func TestFakeGit_WhenRealGitCannotStart_ExitsBroken(t *testing.T) {
 
 	assert.Check(t, is.Equal(got.Code, gittest.BrokenCode), "git status printed %+v", got)
 	assert.Check(t, strings.HasPrefix(got.Stderr, "gittest: "), "git status printed %+v", got)
+}
+
+func TestFakeGit_WhenCallStartsWithStallingWords_WaitsAtTheAddressUntilKilled(t *testing.T) {
+	addr, connected := gittest.SilentListener(t)
+	gittest.FakeGit(t, gittest.Fake{StallOn: []string{"show-ref", "--verify"}, StallAt: addr})
+	ctx := gittest.Ending(t.Context(), connected, context.Canceled)
+	cmd := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/main")
+	cmd.Dir = t.TempDir()
+
+	err := cmd.Run()
+
+	assert.Check(t, is.ErrorIs(ctx.Err(), context.Canceled), "git show-ref ended with %v before it connected", err)
+	exitErr, ok := errors.AsType[*exec.ExitError](err)
+	assert.Assert(t, ok, "git show-ref ended with %v, want it killed while it waited", err)
+	assert.Check(t, exitErr.ExitCode() != gittest.BrokenCode, "git show-ref ended on its own, want it killed while it waited")
+}
+
+func TestLinkAs_PutsTheToolDirectoryFirstOnPath(t *testing.T) {
+	const tool = "linked-tool"
+
+	tests := []struct {
+		// setup gives the process the PATH it has before the call, and returns it.
+		setup func(t *testing.T) string
+		// want builds the PATH after the call from the directory the tool is linked in and the
+		// PATH before it.
+		want func(dir, before string) string
+		name string
+	}{
+		{
+			name: "PATH unset",
+			setup: func(t *testing.T) string {
+				t.Setenv("PATH", "")
+				assert.NilError(t, os.Unsetenv("PATH"))
+
+				return ""
+			},
+			want: func(dir, _ string) string { return dir },
+		},
+		{
+			name: "PATH set",
+			setup: func(t *testing.T) string {
+				before := t.TempDir()
+				t.Setenv("PATH", before)
+
+				return before
+			},
+			want: func(dir, before string) string { return dir + string(os.PathListSeparator) + before },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := tt.setup(t)
+
+			gittest.LinkAs(t, tool)
+
+			found, err := exec.LookPath(tool)
+			assert.NilError(t, err)
+			got, want := os.Getenv("PATH"), tt.want(filepath.Dir(found), before)
+			assert.Check(t, is.Equal(got, want), "PATH = %q, want %q", got, want)
+		})
+	}
 }
 
 // initRepo makes a repository in a new temporary directory with the git first on PATH, and

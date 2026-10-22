@@ -42,7 +42,8 @@ const (
 	// standInSuffix followed by a suffix answers with the host it was asked for and that suffix,
 	// standInWorkDir answers with the name of the directory it runs in, standInNoHostname answers
 	// with a config that has no hostname line, standInRefuse exits non-zero with standInRefusal on
-	// stderr, and standInExit followed by a number exits with that code and standInRefusal on stderr.
+	// stderr, standInExit followed by a number exits with that code and standInRefusal on stderr, and
+	// standInLinger starts a lingering helper that inherits its output and waits for it.
 	sshStandInEnv     = "ILS_GIT_TEST_SSH_STAND_IN"
 	standInAnswer     = "hostname="
 	standInSuffix     = "suffix="
@@ -50,12 +51,17 @@ const (
 	standInNoHostname = "no-hostname"
 	standInRefuse     = "refuse"
 	standInExit       = "exit="
+	standInLinger     = "linger"
 	standInRefusal    = "stand-in refused the call"
 
 	// plainSSHEnv makes the test binary act as plain ssh in the stand-in mode it names when called as
 	// plain ssh is, `-G -- <host>`, so that a configured command and plain ssh that share one
 	// environment answer apart; any other call takes its mode from sshStandInEnv.
 	plainSSHEnv = "ILS_GIT_TEST_PLAIN_SSH"
+
+	// garbledGitEnv makes the test binary act as a git that prints the variable's value for any call
+	// and exits zero, an answer no read of git's output can parse.
+	garbledGitEnv = "ILS_GIT_TEST_GARBLED_GIT"
 
 	// originHostEnv makes the test binary print the host OriginURLs reports for the fetch URL of the
 	// repository its value names, read by a runner that sets no environment and so inherits this
@@ -79,6 +85,11 @@ const (
 func TestMain(m *testing.M) {
 	if mode := os.Getenv(helperModeEnv); mode != "" {
 		os.Exit(diffHelper(mode))
+	}
+
+	if garbled, ok := os.LookupEnv(garbledGitEnv); ok {
+		fmt.Println(garbled)
+		os.Exit(0)
 	}
 
 	if mode, ok := standInMode(os.Args[1:]); ok {
@@ -108,69 +119,11 @@ func guardTestGit() error {
 		return fmt.Errorf("read the version of the git on PATH: %w", err)
 	}
 
-	line, _, _ := strings.Cut(got.Stdout, "\n")
-
-	return checkTestGit(os.Getenv(testGitVar), os.Getenv(testGitVersionVar), line)
-}
-
-// checkTestGit returns why a git whose `git --version` prints line first does not suit the tests,
-// or nil when it does. The line must name a version that ils reads, and that version must suit the
-// target testGitVar names and the version testGitVersionVar names, as testtarget.Tool.Check
-// decides.
-func checkTestGit(target, version, line string) error {
-	found := git.VersionOf(line)
-	if found == "" {
-		return fmt.Errorf("git --version printed %q, which names no version the suite can read", line)
-	}
-
 	tool := testtarget.Tool{
 		Name: "git", TargetVar: testGitVar, VersionVar: testGitVersionVar, MinimumVersion: git.MinimumVersion,
 	}
 
-	return tool.Check(target, version, found)
-}
-
-func TestCheckTestGit_WhenGitSuitsTarget_ReturnsNil(t *testing.T) {
-	t.Parallel()
-	line := "git version " + git.MinimumVersion
-
-	err := checkTestGit(testtarget.Minimum, "", line)
-
-	assert.NilError(t, err, "checkTestGit(%q, %q, %q)", testtarget.Minimum, "", line)
-}
-
-func TestCheckTestGit_WhenGitDoesNotSuitTarget_ReturnsError(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    string
-		target  string
-		version string
-		line    string
-		// want is the text of the error checkTestGit returns.
-		want string
-	}{
-		{
-			name: "minimum target and a newer git", target: testtarget.Minimum, line: "git version 2.56.0",
-			want: "ILS_TEST_GIT is minimum and the git found is 2.56.0, want the minimum ils enforces, 2.34.1",
-		},
-		{
-			name: "version wanted is not the git found", target: testtarget.Latest, version: "2.43.0",
-			line: "git version 2.42.0", want: "the git found is 2.42.0, and ILS_TEST_GIT_VERSION wants 2.43.0",
-		},
-		{
-			name: "development build", line: "git version DEV",
-			want: `git --version printed "git version DEV", which names no version the suite can read`,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			err := checkTestGit(tt.target, tt.version, tt.line)
-
-			assert.Error(t, err, tt.want, "checkTestGit(%q, %q, %q)", tt.target, tt.version, tt.line)
-		})
-	}
+	return tool.CheckOutput(os.Getenv(testGitVar), os.Getenv(testGitVersionVar), got.Stdout, git.VersionOf)
 }
 
 // fakeGitVersion puts a git first on PATH that prints line, then versionSecondLine, for `git --version`,
@@ -182,7 +135,19 @@ func fakeGitVersion(t *testing.T, line string) []string {
 	return gittest.FakeGit(t, gittest.Fake{Version: line + "\n" + versionSecondLine})
 }
 
-func TestGuardTestGit(t *testing.T) {
+func TestGuardTestGit_WhenGitSuitsTarget_ReturnsNil(t *testing.T) {
+	// Not parallel: this sets the environment of the whole process, which the git the guard starts
+	// inherits.
+	fakeGitVersion(t, "git version "+git.MinimumVersion)
+	t.Setenv(testGitVar, testtarget.Minimum)
+	t.Setenv(testGitVersionVar, "")
+
+	err := guardTestGit()
+
+	assert.NilError(t, err)
+}
+
+func TestGuardTestGit_WhenGitDoesNotSuitTarget_ReturnsError(t *testing.T) {
 	// Not parallel: each row sets the environment of the whole process, which the git the guard
 	// starts inherits.
 	tests := []struct {
@@ -190,10 +155,9 @@ func TestGuardTestGit(t *testing.T) {
 		target  string
 		version string
 		line    string
-		// want is the text of the error guardTestGit returns; "" means nil.
+		// want is the text of the error guardTestGit returns.
 		want string
 	}{
-		{name: "git on PATH is the minimum", line: "git version " + git.MinimumVersion},
 		{
 			name: "minimum target finds a newer git", target: testtarget.Minimum, line: "git version 2.56.0",
 			want: "ILS_TEST_GIT is minimum and the git found is 2.56.0, want the minimum ils enforces, 2.34.1",
@@ -211,12 +175,6 @@ func TestGuardTestGit(t *testing.T) {
 
 			err := guardTestGit()
 
-			if tt.want == "" {
-				assert.NilError(t, err)
-
-				return
-			}
-
 			assert.Error(t, err, tt.want)
 		})
 	}
@@ -233,24 +191,37 @@ func TestGuardTestGit_WhenGitMissingFromPath_ReturnsToolMissingError(t *testing.
 	assert.Check(t, is.ErrorContains(err, "read the version of the git on PATH: "))
 }
 
-func TestMain_WhenTestGitTargetIsUnknown_ExitsBeforeTheTests(t *testing.T) {
-	t.Parallel()
+// runSelf runs the test binary with env and args, quieting the race detector's report in it, and
+// returns what it printed on stdout and stderr and how it ended.
+func runSelf(t *testing.T, env []string, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+
 	binary, err := os.Executable()
 	assert.NilError(t, err)
 
-	var stderr bytes.Buffer
+	var out, errOut bytes.Buffer
 
 	//nolint:gosec // G204: the test binary starts itself; nothing here comes from outside the test.
-	cmd := exec.CommandContext(t.Context(), binary, "-test.run=^$")
-	cmd.Env = append(os.Environ(), testGitVar+"=newest", "GORACE="+quiet.Setting())
-	cmd.Stderr = &stderr
+	cmd := exec.CommandContext(t.Context(), binary, args...)
+	cmd.Env = append(slices.Clip(env), "GORACE="+quiet.Setting())
+	cmd.Stdout = &out
+	cmd.Stderr = &errOut
 
 	err = cmd.Run()
+
+	return out.String(), errOut.String(), err
+}
+
+func TestMain_WhenTestGitTargetIsUnknown_ExitsBeforeTheTests(t *testing.T) {
+	t.Parallel()
+	env := append(os.Environ(), testGitVar+"=newest")
+
+	_, stderr, err := runSelf(t, env, "-test.run=^$")
 
 	exitErr, ok := errors.AsType[*exec.ExitError](err)
 	assert.Assert(t, ok, "test binary error = %v, want it to exit non-zero", err)
 	assert.Check(t, is.Equal(exitErr.ExitCode(), 1))
-	assert.Check(t, is.Contains(stderr.String(), `ILS_TEST_GIT is "newest", want minimum, latest, or unset`))
+	assert.Check(t, is.Contains(stderr, `ILS_TEST_GIT is "newest", want minimum, latest, or unset`))
 }
 
 // standInMode returns the stand-in mode of a call of the test binary with args, and whether the
@@ -272,8 +243,12 @@ func standInMode(args []string) (string, bool) {
 
 // sshStandIn plays the ssh command mode names, called with args, and returns its exit code. It
 // answers `-G <host>`, the call of a configured command, and `-G -- <host>`, the call of plain ssh;
-// the modes that refuse, exit, print no hostname or print the directory answer any call.
+// the modes that refuse, exit, linger, print no hostname or print the directory answer any call.
 func sshStandIn(mode string, args []string) int {
+	if mode == standInLinger {
+		return waitForLingerer()
+	}
+
 	if mode == standInRefuse {
 		fmt.Fprintln(os.Stderr, standInRefusal)
 
@@ -376,9 +351,33 @@ func diffHelper(mode string) int {
 
 // spawnLingerer starts a lingering helper that inherits this process's output and does not wait for it.
 func spawnLingerer() int {
-	binary, err := os.Executable()
+	if _, err := startLingerer(); err != nil {
+		return 1
+	}
+
+	return 0
+}
+
+// waitForLingerer starts a lingering helper that inherits this process's output and waits for it,
+// so that this process is still running when the helper has connected.
+func waitForLingerer() int {
+	lingerer, err := startLingerer()
 	if err != nil {
 		return 1
+	}
+
+	if err = lingerer.Wait(); err != nil {
+		return 1
+	}
+
+	return 0
+}
+
+// startLingerer starts a lingering copy of the test binary that inherits this process's output.
+func startLingerer() (*exec.Cmd, error) {
+	binary, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("find the test binary: %w", err)
 	}
 
 	//nolint:gosec // G204: the test binary starts itself; nothing here comes from outside the test.
@@ -388,8 +387,8 @@ func spawnLingerer() int {
 	lingerer.Stderr = os.Stderr
 
 	if err = lingerer.Start(); err != nil {
-		return 1
+		return nil, fmt.Errorf("start the lingering helper: %w", err)
 	}
 
-	return 0
+	return lingerer, nil
 }

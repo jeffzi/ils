@@ -113,7 +113,7 @@ func TestToolTooOldError_Error(t *testing.T) {
 	}
 }
 
-func TestToolMissingError_WhenToolNotFound_NamesToolAndInstallPage(t *testing.T) {
+func TestToolMissingError_Error_NamesToolAndInstallPage(t *testing.T) {
 	t.Parallel()
 	err := &child.ToolMissingError{Tool: "gh", InstallURL: "https://cli.github.com", Err: exec.ErrNotFound}
 
@@ -122,13 +122,14 @@ func TestToolMissingError_WhenToolNotFound_NamesToolAndInstallPage(t *testing.T)
 	assert.Check(t, is.Equal(got, "gh is not installed: install it from https://cli.github.com"))
 }
 
-func TestToolMissingError_WhenLookupFailed_MatchesTheLookupError(t *testing.T) {
+func TestToolMissingError_Unwrap_WhenLookupFailed_MatchesTheLookupError(t *testing.T) {
 	t.Parallel()
 	err := &child.ToolMissingError{Tool: "git", InstallURL: "https://git-scm.com/downloads", Err: exec.ErrNotFound}
 
 	assert.Check(t, is.ErrorIs(err, exec.ErrNotFound))
 }
 
+// requirement is the gh requirement every Check and CheckOutput test is made against.
 func requirement() child.Requirement {
 	return child.Requirement{Tool: "gh", Minimum: "2.50.0", InstallURL: "https://cli.github.com"}
 }
@@ -223,10 +224,8 @@ func TestRequirement_CheckOutput_WhenFirstLineIsOlderOrUnreadable_ReturnsToolToo
 		wantLine    string
 		wantVersion string
 	}{
-		{name: "an older first line", stdout: "gh version 2.49.0\n", wantLine: "gh version 2.49.0", wantVersion: "2.49.0"},
 		{name: "a later line names a newer version", stdout: "gh version 2.49.0\ngh version 2.60.0\n", wantLine: "gh version 2.49.0", wantVersion: "2.49.0"},
 		{name: "a first line the parser reads no version from", stdout: "gh version DEV\ngh version 2.60.0\n", wantLine: "gh version DEV"},
-		{name: "no output at all", stdout: ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

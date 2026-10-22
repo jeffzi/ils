@@ -2,9 +2,7 @@ package landing_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -30,19 +28,11 @@ const (
 	merged    = 7
 	opened    = 12
 
-	nextBranch = "Next: start a branch from origin's trunk: `git fetch origin " + trunk +
-		" && git switch -c <name> --no-track origin/" + trunk + "`"
-	nextCommitFiles = "Next: commit them, then run ils push again\n"
-
-	readTree         = "the working tree's changes"
-	readFetchedTrunk = "the commits on origin's trunk"
-	readCommits      = "the branch's commits"
-	readOnOrigin     = "whether origin has the branch"
-	readCopy         = "origin's copy of the branch"
-	readChanges      = "the branch's pull requests"
-	readMergedHead   = "the merged pull request's head"
-	readTip          = "the branch's tip"
-	readBranches     = "the local branches"
+	readCommits  = "the branch's commits"
+	readOnOrigin = "whether origin has the branch"
+	readCopy     = "origin's copy of the branch"
+	readChanges  = "the branch's pull requests"
+	readBranches = "the local branches"
 )
 
 // written returns everything a push could change: the local branches, where HEAD is, and every
@@ -150,100 +140,6 @@ type pushRefusal struct {
 	answered int
 	// fetches is whether git fetches from origin before the refusal.
 	fetches bool
-}
-
-// dirtyText is the refusal of a tree whose changed tracked files are files.
-func dirtyText(files ...string) string {
-	slices.Sort(files)
-
-	return "Refused: tracked files have changes that are not committed: " + strings.Join(files, ", ") + "\n" +
-		nextCommitFiles
-}
-
-// standingRefusals are the refusals decided from where HEAD stands and from the working tree,
-// before anything is fetched.
-func standingRefusals() []pushRefusal {
-	const (
-		onTrunk  = "Refused: HEAD is on the trunk " + trunk + ", which ils never pushes\n" + nextBranch + "\n"
-		detached = "Refused: HEAD is detached, so there is no branch to push\n" + nextBranch + "\n"
-	)
-
-	return []pushRefusal{
-		{
-			name: "on the trunk", script: allowed(), ops: identityRead(),
-			arrange: func(f *gittest.Fixture) string {
-				f.Git("switch", "--quiet", trunk)
-
-				return onTrunk
-			},
-		},
-		{
-			name: "on the trunk with a dirty tree", script: allowed(), ops: identityRead(),
-			arrange: func(f *gittest.Fixture) string {
-				f.Git("switch", "--quiet", trunk)
-				f.DirtyFile()
-
-				return onTrunk
-			},
-		},
-		{
-			name: "detached HEAD", script: allowed(), ops: identityRead(),
-			arrange: func(f *gittest.Fixture) string {
-				f.Detach()
-
-				return detached
-			},
-		},
-		{
-			name: "tracked file changed and not staged", script: allowed(), ops: identityRead(),
-			arrange: func(f *gittest.Fixture) string { return dirtyText(f.DirtyFile()) },
-		},
-		{
-			name: "tracked file changed and staged", script: allowed(), ops: identityRead(),
-			arrange: func(f *gittest.Fixture) string { return dirtyText(f.StagedFile()) },
-		},
-		{
-			name: "two tracked files changed", script: allowed(), ops: identityRead(),
-			arrange: func(f *gittest.Fixture) string { return dirtyText(f.DirtyFile(), f.StagedFile()) },
-		},
-		{
-			name: "dirty tree on a branch with no commit past the trunk", script: allowed(), ops: identityRead(),
-			arrange: func(f *gittest.Fixture) string {
-				f.Git("switch", "--quiet", "--create", spare, trunk)
-
-				return dirtyText(f.DirtyFile())
-			},
-		},
-	}
-}
-
-// nothingPast is the refusal of a branch with no commit past origin's trunk.
-func nothingPast(branch string) string {
-	return "Refused: the branch " + branch + " has no commit past origin's trunk " + trunk + "\n" +
-		"Next: commit the work, then run ils push again\n"
-}
-
-// commitRefusals are the refusals decided from the branch's commits past origin's trunk.
-func commitRefusals() []pushRefusal {
-	return []pushRefusal{
-		{
-			name: "no commit past the trunk", script: allowed(), ops: identityRead(), fetches: true,
-			arrange: func(f *gittest.Fixture) string {
-				f.Git("switch", "--quiet", "--create", spare, trunk)
-
-				return nothingPast(spare)
-			},
-		},
-		{
-			name: "every commit landed on origin's trunk since the last fetch", script: allowed(),
-			ops: identityRead(), fetches: true,
-			arrange: func(f *gittest.Fixture) string {
-				f.Git("push", "--quiet", filepath.ToSlash(f.OriginDir()), topic+":"+trunk)
-
-				return nothingPast(topic)
-			},
-		},
-	}
 }
 
 const (
@@ -413,71 +309,12 @@ func copyBeforeCutRefusals() []pushRefusal {
 	}
 }
 
-// changeRefusals are the refusals decided from the pull requests the forge finds for the branch.
-func changeRefusals() []pushRefusal {
-	number := strconv.Itoa(merged)
-
-	const elsewhere = "Refused: pull request #12 from " + topic + " is open against " + otherBase +
-		" and not against the trunk " + trunk + "\n" +
-		"Next: close it or change its base with `gh pr edit 12 --base " + trunk +
-		"`, then run ils push again\n"
-
-	return []pushRefusal{
-		{
-			name:   "open pull request against another base",
-			script: finding(change(opened, otherBase, forge.ChangeOpen)), ops: changesRead(), fetches: true,
-			arrange: func(*gittest.Fixture) string { return elsewhere },
-		},
-		{
-			// Origin answers about its trunk, the fetch of it, and whether it has the branch, and
-			// nothing after: a fetch of the merged head would be what refuses.
-			name:   "open pull request against another base beside a merged one that shares a commit",
-			script: finding(change(merged, trunk, forge.ChangeMerged), change(opened, otherBase, forge.ChangeOpen)),
-			ops:    changesRead(), fetches: true, answered: 3,
-			arrange: func(f *gittest.Fixture) string {
-				f.LandPull(merged, topic)
-
-				return elsewhere
-			},
-		},
-		{
-			name: "merged pull request with nothing unlanded", script: landedScript(), ops: changesRead(), fetches: true,
-			arrange: func(f *gittest.Fixture) string {
-				f.LandPull(merged, topic)
-
-				return "Refused: the branch " + topic + " already landed with pull request #" + number + "\n" +
-					nextBranch + "\n"
-			},
-		},
-		{
-			name: "merged pull request with commits made since", script: landedScript(), ops: changesRead(), fetches: true,
-			arrange: func(f *gittest.Fixture) string {
-				f.LandPull(merged, topic)
-				later := f.Commits(topic, "fix a typo", "add an example")
-
-				return "Refused: pull request #" + number + " from " + topic +
-					" was merged without the commits listed here\n" +
-					later[0] + " fix a typo\n" + later[1] + " add an example\n" +
-					nextBranch + ", then bring those commits over with `git cherry-pick " + later[0] + " " + later[1] +
-					"`; expect a conflict where the squash touched the same files\n"
-			},
-		},
-	}
-}
-
 // pushAccepted are the states of the branch that pass a check of Push another state fails, each
 // pushed and opened as a first push that ends green.
 func pushAccepted() []pushRow {
 	opens := greenAfter(pushedLine + openedLine)
-	sinceMerged := opening(passing()).with(func(script *forgetest.Script, _ string) {
-		script.FindChanges = listing([]forge.Change{change(merged, trunk, forge.ChangeMerged)})
-	})
 
 	return []pushRow{
-		{
-			name: "only a file git does not track", script: opening(passing()), want: opens,
-			arrange: func(f *gittest.Fixture) { f.UntrackedFile() },
-		},
 		{
 			name: "tip ahead of origin's copy", script: opening(passing()), want: opens,
 			arrange: func(f *gittest.Fixture) {
@@ -496,14 +333,6 @@ func pushAccepted() []pushRow {
 				f.Git("branch", spare, topic+"~1")
 				f.Commits(spare, "earlier work")
 				f.Commits(topic, "fix a typo")
-			},
-		},
-		{
-			name: "merged pull request sharing no commit past the trunk", script: sinceMerged, want: opens,
-			arrange: func(f *gittest.Fixture) {
-				f.Commits(spare, "earlier work")
-				f.LandPull(merged, spare)
-				f.Git("switch", "--quiet", topic)
 			},
 		},
 	}
@@ -526,14 +355,12 @@ func TestPush_WhenSharedPreconditionFails_ReturnsItsRefusal(t *testing.T) {
 	assertOnlyRead(t, s, reads{before: before, ops: nil, fetches: false})
 }
 
-func TestPush_WhenBranchCannotBePushed_RefusesAtTheFirst(t *testing.T) {
-	t.Parallel()
+// runPushRefusals runs each row as a test of its own: Push refuses with the text the row's arrange
+// returns, having written nothing and read no further than the row says.
+func runPushRefusals(t *testing.T, rows []pushRefusal) {
+	t.Helper()
 
-	refusals := slices.Concat(
-		standingRefusals(), commitRefusals(), cutRefusals(), manyCutRefusals(), copyRefusals(),
-		copyBeforeCutRefusals(), changeRefusals(),
-	)
-	for _, tt := range refusals {
+	for _, tt := range rows {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -552,6 +379,12 @@ func TestPush_WhenBranchCannotBePushed_RefusesAtTheFirst(t *testing.T) {
 			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: tt.fetches})
 		})
 	}
+}
+
+func TestPush_WhenBranchCannotBePushed_RefusesAtTheFirst(t *testing.T) {
+	t.Parallel()
+
+	runPushRefusals(t, slices.Concat(cutRefusals(), manyCutRefusals(), copyRefusals(), copyBeforeCutRefusals()))
 }
 
 // answering returns the fixture's environment with ssh replaced by a command that serves origin
@@ -573,42 +406,24 @@ func answering(t *testing.T, f *gittest.Fixture, times int, after string) []stri
 	return f.ServedBy(serving)
 }
 
-func TestPush_WhenOriginStopsAnswering_RefusesNamingWhatItWasAskedFor(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		arrange func(*gittest.Fixture)
-		name    string
-		// want is the reason of the refusal.
-		want   string
-		script forgetest.Script
-		ops    []forgetest.Op
-		// answered is how many calls origin answers before it stops.
-		answered int
-	}{
-		{
-			// Origin answers the question about its trunk, and nothing after.
-			name: "asked to fetch its trunk", script: allowed(), ops: identityRead(), answered: 1,
-			want: "origin could not be reached to fetch its trunk " + trunk,
-		},
-		{
-			// Origin answers the question about its trunk and the fetch of it, and nothing after.
-			name: "asked whether it has the branch", script: allowed(), ops: identityRead(), answered: 2,
-			arrange: func(f *gittest.Fixture) { f.Publish(topic) },
-			want:    "origin could not be reached to ask whether it has the branch " + topic,
-		},
-		{
-			name: "asked to fetch its copy of the branch", script: allowed(), ops: identityRead(), answered: 3,
-			arrange: func(f *gittest.Fixture) { f.Publish(topic) },
-			want:    "origin could not be reached to fetch its copy of the branch " + topic,
-		},
-		{
-			name:   "asked to fetch the merged pull request's head",
-			script: landedScript(), ops: changesRead(), answered: 4,
-			arrange: landAndPublish,
-			want:    "origin could not be reached to fetch the head of pull request #" + strconv.Itoa(merged),
-		},
-	}
-	for _, tt := range tests {
+// unanswered is a push that origin stops answering partway through.
+type unanswered struct {
+	arrange func(*gittest.Fixture)
+	name    string
+	// asked is what origin was asked to do when it stopped answering.
+	asked  string
+	script forgetest.Script
+	ops    []forgetest.Op
+	// answered is how many calls origin answers before it stops.
+	answered int
+}
+
+// runUnanswered runs each row as a test of its own: Push refuses naming what origin was asked for
+// when it stopped answering, having written nothing.
+func runUnanswered(t *testing.T, rows []unanswered) {
+	t.Helper()
+
+	for _, tt := range rows {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			s := newScene(t, tt.arrange, tt.script, false)
@@ -617,92 +432,28 @@ func TestPush_WhenOriginStopsAnswering_RefusesNamingWhatItWasAskedFor(t *testing
 
 			got := landing.Push(t.Context(), s.deps, pushRequest())
 
-			want := "Refused: " + tt.want + "\n" + nextPush
-			assertEnded(t, s, got, finish{outcome: result.Refused, text: want})
+			assertEnded(t, s, got, finish{outcome: result.Refused, text: unreached(pushCommand(), tt.asked)})
 			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
 		})
 	}
 }
 
-// lose deletes the commit sha from the working repository's object store, where the fixture keeps
-// every object in a file of its own.
-func lose(t *testing.T, f *gittest.Fixture, sha string) {
-	t.Helper()
-
-	err := os.Remove(filepath.Join(f.Dir(), ".git", "objects", sha[:2], sha[2:]))
-	assert.NilError(t, err)
-}
-
-// brokenRead is one local read of Push that the repository's own state breaks.
-type brokenRead struct {
-	// arrange breaks the repository and returns the git command that failed with its exit status,
-	// as the result prints them ahead of what git said.
-	arrange func(t *testing.T, f *gittest.Fixture) string
-	name    string
-	read    string
-	// fetches is whether git fetches from origin before the read.
-	fetches bool
-}
-
-func brokenReads() []brokenRead {
-	return []brokenRead{
-		{
-			name: "the index is corrupt", read: readTree,
-			arrange: func(t *testing.T, f *gittest.Fixture) string {
-				t.Helper()
-				f.CorruptIndex()
-
-				return "git status --porcelain=v1 -z --untracked-files=no: exit status 128: "
-			},
-		},
-		{
-			name: "a commit of the branch is missing", read: readCommits, fetches: true,
-			arrange: func(t *testing.T, f *gittest.Fixture) string {
-				t.Helper()
-
-				first := f.Git("rev-parse", topic)
-				tip := f.Commits(topic, "fix a typo")[0]
-				lose(t, f, first)
-
-				return "git log --reverse --topo-order --format=%H %s --no-merges " + tip + " ^origin/" + trunk +
-					": exit status 128: "
-			},
-		},
-	}
-}
-
-func TestPush_WhenLocalReadFails_BrokeNamingTheRead(t *testing.T) {
+func TestPush_WhenOriginStopsAnswering_RefusesNamingWhatItWasAskedFor(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range brokenReads() {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			var failed string
-
-			s := newScene(t, func(f *gittest.Fixture) { failed = tt.arrange(t, f) }, allowed(), false)
-			before := s.written()
-
-			got := landing.Push(t.Context(), s.deps, pushRequest())
-
-			assertBrokeRead(t, got, tt.read, failed)
-			// What git said must also render under the repository's own git dir: no line names a path in it.
-			shown(t, got, s.gitDir)
-			assertOnlyRead(t, s, reads{before: before, ops: identityRead(), fetches: tt.fetches})
-		})
-	}
-}
-
-func TestPush_WhenFindChangesFailsUntyped_BrokeNamingTheRead(t *testing.T) {
-	t.Parallel()
-	s := newScene(t, nil, failingToFind(errors.New("HTTP 502")), false)
-	before := s.written()
-
-	got := landing.Push(t.Context(), s.deps, pushRequest())
-
-	want := "Could not read " + readChanges + ": HTTP 502\nNothing was written.\n" + nextFixed
-	assertEnded(t, s, got, finish{outcome: result.Broke, text: want})
-	assertOnlyRead(t, s, reads{before: before, ops: changesRead(), fetches: true})
+	runUnanswered(t, []unanswered{
+		{
+			// Origin answers the question about its trunk and the fetch of it, and nothing after.
+			name: "asked whether it has the branch", script: allowed(), ops: identityRead(), answered: 2,
+			arrange: func(f *gittest.Fixture) { f.Publish(topic) },
+			asked:   "ask whether it has the branch " + topic,
+		},
+		{
+			name: "asked to fetch its copy of the branch", script: allowed(), ops: identityRead(), answered: 3,
+			arrange: func(f *gittest.Fixture) { f.Publish(topic) },
+			asked:   "fetch its copy of the branch " + topic,
+		},
+	})
 }
 
 // stalling returns an arrange under which origin answers the first answered calls git makes to it
@@ -718,23 +469,42 @@ func stalling(answered int) func(t *testing.T, s *scene) context.Context {
 	}
 }
 
+// overtime is a push whose deadline ends during one of its reads.
+type overtime struct {
+	// arrange returns the context to run under, once it has changed how the scene reads.
+	arrange func(t *testing.T, s *scene) context.Context
+	// prepare changes the repository before the scene reads it.
+	prepare func(*gittest.Fixture)
+	name    string
+	read    string
+	script  forgetest.Script
+	ops     []forgetest.Op
+}
+
+// runOvertime runs each row as a test of its own: Push refuses naming the read the deadline ended
+// in, having written nothing.
+func runOvertime(t *testing.T, rows []overtime) {
+	t.Helper()
+
+	for _, tt := range rows {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := newScene(t, tt.prepare, tt.script, false)
+			ctx := tt.arrange(t, s)
+			before := s.written()
+
+			got := landing.Push(ctx, s.deps, pushRequest())
+
+			assertEnded(t, s, got, finish{outcome: result.Refused, text: overtimeText(pushCommand(), tt.read)})
+			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
+		})
+	}
+}
+
 func TestPush_WhenDeadlineEndsDuringRead_RefusesNamingTheRead(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		// arrange returns the context to run under, once it has changed how the scene reads.
-		arrange func(t *testing.T, s *scene) context.Context
-		// prepare changes the repository before the scene reads it.
-		prepare func(*gittest.Fixture)
-		name    string
-		read    string
-		script  forgetest.Script
-		ops     []forgetest.Op
-	}{
-		{
-			// Origin answers the question about its trunk, and nothing after.
-			name: "during the fetch of origin's trunk", read: readFetchedTrunk, script: allowed(), ops: identityRead(),
-			arrange: stalling(1),
-		},
+
+	runOvertime(t, []overtime{
 		{
 			// Origin answers about its trunk and the fetch of it, and nothing after.
 			name: "during the question whether origin has the branch", read: readOnOrigin,
@@ -745,68 +515,7 @@ func TestPush_WhenDeadlineEndsDuringRead_RefusesNamingTheRead(t *testing.T) {
 			script: allowed(), ops: identityRead(), arrange: stalling(3),
 			prepare: func(f *gittest.Fixture) { f.Publish(topic) },
 		},
-		{
-			name: "during the fetch of the merged pull request's head", read: readMergedHead,
-			script: landedScript(), ops: changesRead(), arrange: stalling(4),
-			prepare: landAndPublish,
-		},
-		{
-			name: "during the find-changes read", read: readChanges, ops: changesRead(),
-			script: failingToFind(fmt.Errorf("gh pr list: %w", context.DeadlineExceeded)),
-			arrange: func(t *testing.T, _ *scene) context.Context {
-				t.Helper()
-
-				return t.Context()
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			s := newScene(t, tt.prepare, tt.script, false)
-			ctx := tt.arrange(t, s)
-			before := s.written()
-
-			got := landing.Push(ctx, s.deps, pushRequest())
-
-			want := "Refused: the time limit ended while reading " + tt.read + "; nothing was written\n" + nextPush
-			assertEnded(t, s, got, finish{outcome: result.Refused, text: want})
-			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
-		})
-	}
-}
-
-func TestPush_WhenBranchHasNoCommitAtAll_RefusesAsNoCommitPastTheTrunk(t *testing.T) {
-	t.Parallel()
-	s := newScene(t, func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--orphan", spare) }, allowed(), false)
-	// A branch with no commit has no HEAD commit to read, so the snapshot names the branch instead.
-	standing := func() string { return s.refs() + "\nHEAD: " + s.fixture.Git("symbolic-ref", "HEAD") }
-	before := standing()
-
-	got := landing.Push(t.Context(), s.deps, pushRequest())
-
-	assertEnded(t, s, got, finish{outcome: result.Refused, text: nothingPast(spare)})
-
-	assert.Check(t, is.Equal(standing(), before))
-
-	assertAsked(t, s, identityRead())
-}
-
-func TestPush_WhenBranchRefCannotBeRead_BrokeNamingTheTipRead(t *testing.T) {
-	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
-	s := newScene(t, func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--orphan", spare) }, allowed(), false)
-	words := []string{"show-ref", "--verify", "--quiet", "refs/heads/" + spare}
-	failGit(t, s, words)
-
-	before := s.refs()
-
-	got := landing.Push(t.Context(), s.deps, pushRequest())
-
-	assertEnded(t, s, got, finish{outcome: result.Broke, text: failedGitText(readTip, words)})
-
-	assert.Check(t, is.Equal(s.refs(), before))
-
-	assertAsked(t, s, identityRead())
+	})
 }
 
 // failGit makes the scene's git calls whose arguments start with words fail as gittest.FakeGit
@@ -825,11 +534,11 @@ func fakeGit(t *testing.T, s *scene, fake gittest.Fake) {
 	s.deps.Repo.Runner.Env = append(s.deps.Repo.Runner.Env, gittest.FakeGit(t, fake)...)
 }
 
-// failedGitText is the whole text of the result for the read named read when the git call with
+// failedGitText is the whole text of cmd's result for the read named read when the git call with
 // the arguments words fails as failGit makes it.
-func failedGitText(read string, words []string) string {
-	return "Could not read " + read + ": git " + strings.Join(words, " ") + ": exit status " +
-		strconv.Itoa(gittest.FailedCode) + ": " + gittest.FailedSaid + "\nNothing was written.\n" + nextFixed
+func failedGitText(cmd landingCommand, read string, words []string) string {
+	return unreadText(cmd, read, "git "+strings.Join(words, " ")+": exit status "+
+		strconv.Itoa(gittest.FailedCode)+": "+gittest.FailedSaid)
 }
 
 // failedRead is one git read of Push that fails for a reason no precondition covers.
@@ -848,13 +557,9 @@ func history() []string {
 	return []string{"log", "--reverse", "--topo-order", "--format=%H %s", "--no-merges"}
 }
 
-// branchFailedReads are the failed reads of the branch and of the other local branches.
+// branchFailedReads are the failed reads of the other local branches.
 func branchFailedReads() []failedRead {
 	return []failedRead{
-		{
-			name: "the branch's tip", read: readTip, script: allowed(), ops: identityRead(),
-			arrange: func(*gittest.Fixture) []string { return []string{"rev-parse", "HEAD"} },
-		},
 		{
 			name: "the local branches that contain the first commit", read: readBranches,
 			script: allowed(), ops: identityRead(),
@@ -902,41 +607,12 @@ func copyFailedReads() []failedRead {
 	}
 }
 
-// mergedFailedReads are the failed reads of the commits a merged pull request from the branch
-// already carries.
-func mergedFailedReads() []failedRead {
-	// since lands the branch as the merged pull request, adds a commit, and returns the pull
-	// request's head and the branch's tip.
-	since := func(f *gittest.Fixture) (head, tip string) {
-		head = f.Git("rev-parse", topic)
-		f.LandPull(merged, topic)
+// runFailedReads runs each row as a test of its own: Push ends broke on the row's read once the
+// git call the row names fails, having written nothing. It cannot run in a parallel test.
+func runFailedReads(t *testing.T, rows []failedRead) {
+	t.Helper()
 
-		return head, f.Commits(topic, "fix a typo")[0]
-	}
-
-	return []failedRead{
-		{
-			name: "the merged head's commits past the trunk", read: readMergedHead, script: landedScript(), ops: changesRead(),
-			arrange: func(f *gittest.Fixture) []string {
-				head, _ := since(f)
-
-				return append(history(), head, "^origin/"+trunk)
-			},
-		},
-		{
-			name: "the unlanded commits", read: readCommits, script: landedScript(), ops: changesRead(),
-			arrange: func(f *gittest.Fixture) []string {
-				head, tip := since(f)
-
-				return append(history(), "--cherry-pick", "--right-only", head+"..."+tip, "^origin/"+trunk)
-			},
-		},
-	}
-}
-
-func TestPush_WhenGitReadFailsForNoPrecondition_BrokeNamingTheRead(t *testing.T) {
-	// Not parallel: each row puts a failing git first on PATH with t.Setenv.
-	for _, tt := range slices.Concat(branchFailedReads(), copyFailedReads(), mergedFailedReads()) {
+	for _, tt := range rows {
 		t.Run(tt.name, func(t *testing.T) {
 			var words []string
 
@@ -947,8 +623,13 @@ func TestPush_WhenGitReadFailsForNoPrecondition_BrokeNamingTheRead(t *testing.T)
 
 			got := landing.Push(t.Context(), s.deps, pushRequest())
 
-			assertEnded(t, s, got, finish{outcome: result.Broke, text: failedGitText(tt.read, words)})
+			assertEnded(t, s, got, finish{outcome: result.Broke, text: failedGitText(pushCommand(), tt.read, words)})
 			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
 		})
 	}
+}
+
+func TestPush_WhenGitReadFailsForNoPrecondition_BrokeNamingTheRead(t *testing.T) {
+	// Not parallel: each row puts a failing git first on PATH with t.Setenv.
+	runFailedReads(t, slices.Concat(branchFailedReads(), copyFailedReads()))
 }

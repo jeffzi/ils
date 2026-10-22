@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,29 +22,39 @@ const (
 	FailedCode = 128
 	// FailedSaid is the line a call the fake git fails prints to stderr.
 	FailedSaid = "fatal: this read was made to fail"
-	// BrokenCode is the exit code of a fake git that could not do its own work: start the real git
-	// or print the faked version. It is none of the codes internal/git reads as an answer (0, 1 and
-	// 2) and not FailedCode, the code of a failed git read, so a broken fake never passes for git's
-	// reply.
+	// BrokenCode is the exit code of a fake git that could not do its own work: start the real git,
+	// print the faked version, or stall as asked. It is none of the codes internal/git reads as an
+	// answer (0, 1 and 2) and not FailedCode, the code of a failed git read, so a broken fake never
+	// passes for git's reply.
 	BrokenCode = 125
 
 	// realGitEnv holds the path of the real git; its presence makes the test binary act as git.
 	realGitEnv = "ILS_GITTEST_REAL_GIT"
 	// versionEnv holds what `git --version` prints.
 	versionEnv = "ILS_GITTEST_VERSION"
-	// failOnEnv holds the words a failing call starts with, separated by failOnSep; no git
-	// argument holds a line break.
+	// failOnEnv holds the words a failing call starts with, separated by wordsSep.
 	failOnEnv = "ILS_GITTEST_FAIL_ON"
-	failOnSep = "\n"
+	// stallOnEnv holds the words a stalling call starts with, separated by wordsSep.
+	stallOnEnv = "ILS_GITTEST_STALL_ON"
+	// stallAtEnv holds the address a stalling call connects to.
+	stallAtEnv = "ILS_GITTEST_STALL_AT"
+	// wordsSep separates the words a variable holds; no git argument holds a line break.
+	wordsSep = "\n"
 )
 
 // Fake says how the git FakeGit puts on PATH answers. A call it does not fake runs the real git.
 type Fake struct {
 	// Version, when not empty, is what `git --version` prints, followed by a line break.
 	Version string
+	// StallAt is the address a call StallOn names connects to.
+	StallAt string
 	// FailOn, when not empty, makes a call whose arguments start with these words exit with
 	// FailedCode and print FailedSaid to stderr.
 	FailOn []string
+	// StallOn, when not empty, makes a call whose arguments start with these words connect to the
+	// address StallAt and wait there until it is killed. A test that hands in the address of a
+	// SilentListener learns when the call is under way, and can end its context then.
+	StallOn []string
 }
 
 // Main makes the test binary act as git when FakeGit arranged for it, and reports whether it did.
@@ -88,7 +100,12 @@ func FakeGit(tb testing.TB, fake Fake) []string {
 	}
 
 	if len(fake.FailOn) > 0 {
-		set(failOnEnv, strings.Join(fake.FailOn, failOnSep))
+		set(failOnEnv, strings.Join(fake.FailOn, wordsSep))
+	}
+
+	if len(fake.StallOn) > 0 {
+		set(stallOnEnv, strings.Join(fake.StallOn, wordsSep))
+		set(stallAtEnv, fake.StallAt)
 	}
 
 	LinkAs(tb, "git")
@@ -118,7 +135,18 @@ func LinkAs(tb testing.TB, tool string) {
 		tb.Fatalf("gittest: link the test binary as %s: %v", tool, err)
 	}
 
-	tb.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	tb.Setenv("PATH", firstOnPath(dir, os.Getenv("PATH")))
+}
+
+// firstOnPath returns the search path path with dir put first. An empty path gives dir alone: a
+// trailing list separator would add an empty entry, which puts the current directory on the search
+// path.
+func firstOnPath(dir, path string) string {
+	if path == "" {
+		return dir
+	}
+
+	return dir + string(os.PathListSeparator) + path
 }
 
 // serveGit answers one call of the fake git with args and returns its exit code.
@@ -131,16 +159,50 @@ func serveGit(ctx context.Context, realGit string, args []string) int {
 		return 0
 	}
 
-	if words := os.Getenv(failOnEnv); words != "" {
-		failOn := strings.Split(words, failOnSep)
-		if len(args) >= len(failOn) && slices.Equal(args[:len(failOn)], failOn) {
-			_, _ = fmt.Fprintln(os.Stderr, FailedSaid)
-
-			return FailedCode
+	if startsWith(args, failOnEnv) {
+		if _, err := fmt.Fprintln(os.Stderr, FailedSaid); err != nil {
+			return broken(fmt.Errorf("print the failure: %w", err))
 		}
+
+		return FailedCode
+	}
+
+	if startsWith(args, stallOnEnv) {
+		return stall(ctx, os.Getenv(stallAtEnv))
 	}
 
 	return runRealGit(ctx, realGit, args)
+}
+
+// startsWith reports whether args start with the words the variable key holds, and false when it
+// holds none.
+func startsWith(args []string, key string) bool {
+	words := os.Getenv(key)
+	if words == "" {
+		return false
+	}
+
+	prefix := strings.Split(words, wordsSep)
+
+	return len(args) >= len(prefix) && slices.Equal(args[:len(prefix)], prefix)
+}
+
+// stall connects to addr and waits for the server to close the connection, which a SilentListener
+// does only once the test ends: the caller kills the fake git before then. It returns BrokenCode,
+// since a stalled call that ends on its own did not do what the test asked of it.
+func stall(ctx context.Context, addr string) int {
+	var dialer net.Dialer
+
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return broken(fmt.Errorf("connect to %s to stall: %w", addr, err))
+	}
+
+	// The server never writes, so the copy returns only once it closes the connection.
+	_, copyErr := io.Copy(io.Discard, conn)
+	closeErr := conn.Close()
+
+	return broken(errors.Join(fmt.Errorf("the server at %s closed the stalled call", addr), copyErr, closeErr))
 }
 
 // runRealGit runs the real git with args, the environment, and the standard streams, and returns

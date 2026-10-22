@@ -26,8 +26,8 @@ import (
 	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
-// The live suite runs `ils push` with the real git and the real gh against a test repository on
-// GitHub. `task test:live` runs it, and `task test:setup-live` creates the repositories it needs.
+// The live suite runs `ils push` and `ils merge` with the real git and the real gh against a test
+// repository on GitHub. `task test:live` runs it, and `task test:setup-live` creates the repositories it needs.
 
 const (
 	// liveOriginVar holds the clone URL of the test repository the suite resets and writes to.
@@ -36,7 +36,8 @@ const (
 	// liveNamePrefix starts the name of every repository the suite agrees to reset.
 	liveNamePrefix = "ils-live-"
 
-	// liveScenarioLimit is how long one scenario may run `ils push` again while it is pending.
+	// liveScenarioLimit is how long one scenario may run `ils push` or `ils merge` again while it is
+	// pending.
 	liveScenarioLimit = 8 * time.Minute
 	// liveCleanupLimit is how long the cancels after a scenario may take.
 	liveCleanupLimit = time.Minute
@@ -75,7 +76,7 @@ type liveSuite struct {
 // liveBranch is one scenario's fresh clone, on a branch of its own.
 type liveBranch struct {
 	suite *liveSuite
-	// deadline is when the scenario stops running `ils push` again.
+	// deadline is when the scenario stops running `ils push` or `ils merge` again.
 	deadline time.Time
 	dir      string
 	name     string
@@ -83,7 +84,7 @@ type liveBranch struct {
 	token string
 }
 
-// liveRun is one result of `ils push --json`.
+// liveRun is one result of `ils push --json` or `ils merge --json`.
 type liveRun struct {
 	// raw is the JSON as printed, for failure messages.
 	raw   string
@@ -278,8 +279,8 @@ func (l *liveSuite) completed(ctx context.Context, id string) bool {
 }
 
 // checkRulesRead stops the test unless GitHub answers the read of the default branch's rules, the
-// read `ils push` makes, the way the repository's visibility calls for: the rules on a public
-// repository, and a 403 on a private one, which `ils push` takes for "no required check".
+// read `ils push` and `ils merge` make, the way the repository's visibility calls for: the rules on
+// a public repository, and a 403 on a private one, which both take for no rule.
 func (l *liveSuite) checkRulesRead(t *testing.T) {
 	t.Helper()
 
@@ -372,30 +373,45 @@ func (b *liveBranch) commit(t *testing.T, files map[string]string) {
 	liveCommit(t, b.dir, "live "+b.name, all)
 }
 
-// pushOnce runs `ils push --json` once in the clone, launched now, and returns its result.
-func (b *liveBranch) pushOnce(t *testing.T) liveRun {
+// runOnce runs `ils <command> --json` once in the clone, launched now, and returns its result.
+func (b *liveBranch) runOnce(t *testing.T, command string) liveRun {
 	t.Helper()
 
-	got := launch(t, over(git.Runner{Dir: b.dir}), "push", "--json")
-	t.Logf("ils push --json on %s exited %d:\n%s%s", b.name, got.code, got.stdout, got.stderr)
+	got := launch(t, over(git.Runner{Dir: b.dir}), command, "--json")
+	t.Logf("ils %s --json on %s exited %d:\n%s%s", command, b.name, got.code, got.stdout, got.stderr)
 
 	return liveRun{code: got.code, raw: got.stdout, shown: resulttest.Decode(t, got.stdout)}
 }
 
-// push runs `ils push --json` the way an agent does, again while it exits as pending, and
+// run runs `ils <command> --json` the way an agent does, again while it exits as pending, and
 // returns the last result. It stops the test when the result is still pending at the deadline.
-func (b *liveBranch) push(t *testing.T) liveRun {
+func (b *liveBranch) run(t *testing.T, command string) liveRun {
 	t.Helper()
 
 	for {
-		got := b.pushOnce(t)
+		got := b.runOnce(t, command)
 		if got.code != exitPending {
 			return got
 		}
 
 		assert.Assert(t, time.Now().Before(b.deadline),
-			"ils push on %s is still pending %s after the scenario began; last result:\n%s", b.name, liveScenarioLimit, got.raw)
+			"ils %s on %s is still pending %s after the scenario began; last result:\n%s",
+			command, b.name, liveScenarioLimit, got.raw)
 	}
+}
+
+// push runs `ils push --json` again while it is pending and returns the last result.
+func (b *liveBranch) push(t *testing.T) liveRun {
+	t.Helper()
+
+	return b.run(t, "push")
+}
+
+// merge runs `ils merge --json` again while it is pending and returns the last result.
+func (b *liveBranch) merge(t *testing.T) liveRun {
+	t.Helper()
+
+	return b.run(t, "merge")
 }
 
 // onePull returns the branch's open pull request, and stops the test unless it has exactly one.
@@ -419,11 +435,30 @@ func (b *liveBranch) tip(t *testing.T) string {
 	return mustGit(t, b.dir, "rev-parse", "HEAD")
 }
 
-// remoteTip is the commit the branch stands on in the repository on GitHub.
+// remoteTip is the commit the branch stands on in the repository on GitHub, and empty when GitHub
+// no longer has the branch.
 func (b *liveBranch) remoteTip(t *testing.T) string {
 	t.Helper()
 
 	return b.suite.remoteCommit(t, "refs/heads/"+b.name)
+}
+
+// state is the state GitHub gives the pull request numbered number: OPEN, CLOSED or MERGED.
+func (b *liveBranch) state(t *testing.T, number string) string {
+	t.Helper()
+
+	return mustGh(t, "pr", "view", number, "--repo", b.suite.slug(), "--json", "state", "--jq", ".state")
+}
+
+// checkLanded checks that the clone ended on the trunk at origin's tip, at, and that the branch is
+// gone from the clone and from origin.
+func (b *liveBranch) checkLanded(t *testing.T, at string) {
+	t.Helper()
+
+	assert.Check(t, is.Equal(mustGit(t, b.dir, "branch", "--show-current"), b.suite.trunk))
+	assert.Check(t, is.Equal(b.tip(t), at))
+	assert.Check(t, is.Equal(mustGit(t, b.dir, "branch", "--list", b.name), ""), "%s is still in the clone", b.name)
+	assert.Check(t, is.Equal(b.remoteTip(t), ""), "%s is still on origin", b.name)
 }
 
 // checkFreshPull returns the branch's open pull request, which must be the only one, and checks
@@ -523,6 +558,9 @@ func TestLive(t *testing.T) {
 		{name: "already landed", run: liveAlreadyLanded},
 		{name: "conflict", run: liveConflict},
 		{name: "CI that did not fire", run: liveCIDidNotFire},
+		{name: "title refused", run: liveTitleRefused},
+		{name: "merged", run: liveMerged},
+		{name: "merged on the web", run: liveMergedOnTheWeb},
 	}
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) { sc.run(t, l) })
@@ -539,7 +577,19 @@ func liveGreen(t *testing.T, l *liveSuite) {
 
 	b.checkFreshPull(t, b.tip(t))
 	assert.Check(t, is.Equal(got.check("pass").Name, liveJob), "no passed check named %s in:\n%s", liveJob, got.raw)
+	checkMergeNext(t, l, got, b.onePull(t).Number)
+}
+
+// checkMergeNext checks that a green push's next step writes the title and body of the pull
+// request numbered number with `gh pr edit`, then runs `ils merge`, and names no `gh pr merge`.
+func checkMergeNext(t *testing.T, l *liveSuite, got liveRun, number int) {
+	t.Helper()
+
+	edit := "`gh pr edit --repo " + l.slug() + " " + strconv.Itoa(number) + " --title … --body …`"
 	assert.Check(t, is.Contains(got.shown.Next, "write the pull request's title and body"))
+	assert.Check(t, is.Contains(got.shown.Next, edit))
+	assert.Check(t, strings.HasSuffix(got.shown.Next, "then run ils merge"), "Next = %q, want it to end with ils merge", got.shown.Next)
+	assert.Check(t, !strings.Contains(got.shown.Next, "gh pr merge"), "Next = %q names gh pr merge", got.shown.Next)
 }
 
 func liveGreenAgain(t *testing.T, l *liveSuite) {
@@ -586,16 +636,14 @@ func liveNoCI(t *testing.T, l *liveSuite) {
 	pull := b.checkFreshPull(t, tip)
 	assert.Check(t, is.Equal(got.shown.Reason, ""))
 	assert.Check(t, is.Contains(got.lines(), "No CI is configured on "+l.trunk+", so nothing verified "+tip))
-	repo, number := l.slug(), strconv.Itoa(pull.Number)
-	assert.Check(t, is.Contains(got.shown.Next, "gh pr merge --repo "+repo+" "+number+" "))
-	assert.Check(t, is.Contains(got.shown.Next, "--match-head-commit "+tip))
+	checkMergeNext(t, l, got, pull.Number)
 }
 
 func livePending(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "pending")
 	b.commit(t, liveWorkflow("sleep 600"))
 
-	got := b.pushOnce(t)
+	got := b.runOnce(t, "push")
 
 	assert.Equal(t, got.code, exitPending, "%s", got.raw)
 	assert.Check(t, is.Equal(b.onePull(t).Head, b.tip(t)))
@@ -605,12 +653,9 @@ func livePending(t *testing.T, l *liveSuite) {
 func liveAlreadyLanded(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "landed")
 	b.commit(t, nil)
-
 	b.push(t)
-
 	number := strconv.Itoa(b.onePull(t).Number)
 	mustGh(t, "pr", "merge", number, "--repo", l.slug(), "--squash")
-
 	before := b.remoteTip(t)
 
 	got := b.push(t)
@@ -639,10 +684,8 @@ func liveConflict(t *testing.T, l *liveSuite) {
 func liveCIDidNotFire(t *testing.T, l *liveSuite) {
 	before := l.remoteCommit(t, l.trunkRef())
 	assert.Assert(t, before != "", "%s has no commit on %s to put back", l.url, l.trunkRef())
-
 	l.changeTrunk(t, liveDispatchedWorkflow())
 	b := l.branch(t, "ci-did-not-fire")
-
 	t.Cleanup(func() {
 		ctx, cancel := liveCleanupContext(t)
 		defer cancel()
@@ -652,7 +695,6 @@ func liveCIDidNotFire(t *testing.T, l *liveSuite) {
 			t.Errorf("could not put the trunk back on %s: %v", before, err)
 		}
 	})
-
 	b.commit(t, nil)
 	// ils reads the trunk's workflows once; one GitHub has not registered by then would read as no
 	// CI, and the scenario would test nothing.
@@ -669,4 +711,59 @@ func liveCIDidNotFire(t *testing.T, l *liveSuite) {
 	assert.Check(t, is.Equal(got.shown.Reason, "no check"+unreported))
 	assert.Check(t, is.Contains(got.lines(), "No check"+unreported))
 	assert.Check(t, is.Contains(got.shown.Next, "report that no check or status reported for the pushed commit, and stop"))
+}
+
+func liveTitleRefused(t *testing.T, l *liveSuite) {
+	b := l.branch(t, "title")
+	b.commit(t, liveWorkflow("echo passed"))
+	b.push(t)
+	number := strconv.Itoa(b.onePull(t).Number)
+	before := l.remoteCommit(t, l.trunkRef())
+
+	got := b.merge(t)
+
+	assert.Equal(t, got.code, exitRefused, "%s", got.raw)
+	assert.Check(t, is.Equal(got.shown.Reason, "the title of pull request #"+number+`, "`+b.name+
+		`", is not a conventional commit subject of the form type(scope)!: summary`))
+	assert.Check(t, is.Equal(l.remoteCommit(t, l.trunkRef()), before))
+	assert.Check(t, is.Equal(b.state(t, number), "OPEN"))
+}
+
+func liveMerged(t *testing.T, l *liveSuite) {
+	b := l.branch(t, "merged")
+	b.commit(t, liveWorkflow("echo passed"))
+	b.push(t)
+	number := strconv.Itoa(b.onePull(t).Number)
+	title, body := "feat(live): land "+b.token, "Landed by the live suite as "+b.token+"."
+	mustGh(t, "pr", "edit", number, "--repo", l.slug(), "--title", title, "--body", body)
+	before := l.remoteCommit(t, l.trunkRef())
+
+	got := b.merge(t)
+
+	assert.Equal(t, got.code, exitDone, "%s", got.raw)
+	assert.Check(t, is.Equal(b.state(t, number), "MERGED"))
+
+	after := l.remoteCommit(t, l.trunkRef())
+	assert.Check(t, is.Equal(mustGit(t, b.dir, "rev-parse", after+"^"), before), "origin's trunk gained more than one commit")
+	assert.Check(t, is.Equal(mustGit(t, b.dir, "log", "-1", "--format=%s", after), title+" (#"+number+")"))
+	// GitHub appends the trailer for an author who is not the logged-in user, who merged.
+	want := body + "\n\nCo-authored-by: ils live suite <ils-live@example.com>"
+	assert.Check(t, is.Equal(mustGit(t, b.dir, "log", "-1", "--format=%b", after), want))
+	b.checkLanded(t, after)
+}
+
+func liveMergedOnTheWeb(t *testing.T, l *liveSuite) {
+	b := l.branch(t, "merged-web")
+	b.commit(t, nil)
+	b.push(t)
+	number := strconv.Itoa(b.onePull(t).Number)
+	mustGh(t, "pr", "merge", number, "--repo", l.slug(), "--squash")
+	before := l.remoteCommit(t, l.trunkRef())
+
+	got := b.merge(t)
+
+	assert.Equal(t, got.code, exitDone, "%s", got.raw)
+	assert.Check(t, is.Contains(got.lines(), "Pull request #"+number+" was already merged into "+l.trunk))
+	assert.Check(t, is.Equal(l.remoteCommit(t, l.trunkRef()), before), "ils merge made a second commit on origin's trunk")
+	b.checkLanded(t, before)
 }

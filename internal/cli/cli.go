@@ -38,6 +38,8 @@ type App struct {
 	Version string
 	// runPush runs `ils push`; nil runs landing.Push.
 	runPush Command
+	// runMerge runs `ils merge`; nil runs landing.Merge.
+	runMerge Command
 	// buildInfo reads the build info that an empty Version falls back to; nil reads
 	// debug.ReadBuildInfo.
 	buildInfo func() (*debug.BuildInfo, bool)
@@ -167,12 +169,20 @@ type refusedError struct {
 	result result.Result
 }
 
+// Error returns a fixed text; the refusal itself travels in the result field.
 func (e *refusedError) Error() string {
 	return "the words were refused"
 }
 
 func (p *parse) refuse(reason result.Phrase) error {
-	return &refusedError{result: refused(p.words, reason)}
+	command := ""
+	if len(p.words) > 0 {
+		command = p.words[0]
+	}
+
+	req := landing.Request{Command: command, Words: p.words}
+
+	return &refusedError{result: *req.Refused(reason, result.NextCommand(flagHelp))}
 }
 
 // root returns the command of no word, with every other command under it.
@@ -180,7 +190,8 @@ func (p *parse) root() *cobra.Command {
 	root := &cobra.Command{
 		Use:  "ils",
 		Long: rootLong,
-		// Cobra needs a command to be runnable before it asks Args, which refuses every run.
+		// Cobra asks Args only of a runnable command. Args refuses every run but `ils --version`,
+		// which RunE prints.
 		Args: func(c *cobra.Command, args []string) error {
 			if c.ArgsLenAtDash() == 0 {
 				return p.refuse(notCommand(wordDash))
@@ -218,10 +229,13 @@ func (p *parse) root() *cobra.Command {
 	// word after a flag it does not know for that flag's value: `ils --help push` would print
 	// the help of the root.
 	root.InitDefaultHelpFlag()
-	root.SetFlagErrorFunc(p.flagRefusal)
-	root.AddCommand(p.push())
+	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return p.flagRefusal(err, notCommand) })
+	root.AddCommand(
+		p.landing(landingHelp{word: landing.PushCommand, short: pushShort, long: withBound(pushLong), examples: pushExamples}, p.app.runPush, landing.Push),
+		p.landing(landingHelp{word: landing.MergeCommand, short: mergeShort, long: withBound(mergeLong), examples: mergeExamples}, p.app.runMerge, landing.Merge),
+	)
 
-	for _, later := range []string{wordBranch, wordMerge, wordRelease, wordStatus} {
+	for _, later := range []string{wordBranch, wordRelease, wordStatus} {
 		root.AddCommand(&cobra.Command{
 			Use:    later,
 			Hidden: true,
@@ -237,73 +251,88 @@ func (p *parse) root() *cobra.Command {
 	return root
 }
 
-// push returns the command that pushes the branch and opens its pull request.
-func (p *parse) push() *cobra.Command {
-	return &cobra.Command{
-		Use:     wordPush,
-		Short:   "Push the branch, open its pull request, wait for the checks",
-		Long:    pushLong,
-		Example: pushExamples,
+// landingHelp is the word of a landing command and the help it prints.
+type landingHelp struct {
+	word, short, long, examples string
+}
+
+// landing returns the landing command help names, which takes no other word and runs run, or
+// fallback when run is nil.
+func (p *parse) landing(help landingHelp, run, fallback Command) *cobra.Command {
+	if run == nil {
+		run = fallback
+	}
+
+	extra := func(typed string) result.Phrase { return extraWord(help.word, typed) }
+
+	c := &cobra.Command{
+		Use:     help.word,
+		Short:   help.short,
+		Long:    help.long,
+		Example: help.examples,
 		Args: func(c *cobra.Command, args []string) error {
 			if c.ArgsLenAtDash() == 0 {
-				return p.refuse(extraWord(wordDash))
+				return p.refuse(extra(wordDash))
 			}
 
 			if len(args) > 0 {
-				return p.refuse(extraWord(args[0]))
+				return p.refuse(extra(args[0]))
 			}
 
 			return nil
 		},
 		RunE: func(c *cobra.Command, _ []string) error {
-			r, gitDir := p.app.push(c.Context(), p.words)
+			r, gitDir := p.app.land(c.Context(), run, landing.Request{Command: help.word, Words: p.words})
 			p.result, p.gitDir = &r, gitDir
 
 			return nil
 		},
 	}
+	c.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return p.flagRefusal(err, extra) })
+
+	return c
 }
 
-func extraWord(word string) result.Phrase {
-	return result.Say("push takes no other word, and %s was given", word)
+// extraWord is the reason command refuses word, which it was given besides its own.
+func extraWord(command, word string) result.Phrase {
+	return result.Say("%s takes no other word, and %s was given", command, word)
 }
 
 func notCommand(word string) result.Phrase {
 	return result.Say("%s is not a command", word)
 }
 
-// flagRefusal turns a flag Cobra could not parse on c into a refusal that names the flag as it
-// was typed. Any other error is returned as it is.
-func (p *parse) flagRefusal(c *cobra.Command, err error) error {
+// flagRefusal turns a flag Cobra could not parse into a refusal: a value that is neither true
+// nor false is named with its flag, and an unknown flag gets the reason unknown gives for the flag
+// as it was typed. Any other error is returned as it is.
+func (p *parse) flagRefusal(err error, unknown func(typed string) result.Phrase) error {
 	if invalid, ok := errors.AsType[*pflag.InvalidValueError](err); ok {
 		return p.refuse(result.Say("--%s takes true or false, and %s was given", invalid.GetFlag().Name, invalid.GetValue()))
 	}
 
-	unknown, ok := errors.AsType[*pflag.NotExistError](err)
+	missing, ok := errors.AsType[*pflag.NotExistError](err)
 	if !ok {
 		return err
 	}
 
 	// pflag names an unknown flag without its dashes; a group of short flags is named whole.
-	typed := "--" + unknown.GetSpecifiedName()
-	if group := unknown.GetSpecifiedShortnames(); group != "" {
+	typed := "--" + missing.GetSpecifiedName()
+	if group := missing.GetSpecifiedShortnames(); group != "" {
 		typed = "-" + group
 	}
 
-	if c.Name() == wordPush {
-		return p.refuse(extraWord(typed))
-	}
-
-	return p.refuse(notCommand(typed))
+	return p.refuse(unknown(typed))
 }
 
 // strictBool is the value of a flag that takes no value but true and false.
 type strictBool bool
 
+// String returns "true" or "false".
 func (b *strictBool) String() string {
 	return fmt.Sprint(bool(*b))
 }
 
+// Set accepts only "true" and "false" and returns an error for any other value.
 func (b *strictBool) Set(value string) error {
 	switch value {
 	case "true":
@@ -322,36 +351,18 @@ func (*strictBool) Type() string {
 	return "bool"
 }
 
-func (a App) push(ctx context.Context, words []string) (r result.Result, gitDir string) {
+// land runs the landing command run for req against the repository ils runs in and its GitHub
+// origin, and returns its result with the repository's git dir.
+func (a App) land(ctx context.Context, run Command, req landing.Request) (r result.Result, gitDir string) {
 	repo := git.Repo{Runner: a.git}
 
 	// Outside a repository there is no git dir for a line to name, and whatever else stops
 	// this read stops the command's own first read too, whose result says so.
 	gitDir, _ = repo.GitDir(ctx)
 
-	run := a.runPush
-	if run == nil {
-		run = landing.Push
-	}
+	deps := landing.Deps{Forge: &github.Forge{}, Repo: repo}
 
-	deps := landing.Deps{Forge: github.NewForge(github.Runner{}), Repo: repo}
-
-	return run(ctx, deps, landing.Request{Command: wordPush, Words: words}), gitDir
-}
-
-func refused(words []string, reason result.Phrase) result.Result {
-	command := ""
-	if len(words) > 0 {
-		command = words[0]
-	}
-
-	return result.Result{
-		Command: command,
-		Words:   words,
-		Outcome: result.Refused,
-		Reason:  reason,
-		Next:    result.NextCommand(flagHelp),
-	}
+	return run(ctx, deps, req), gitDir
 }
 
 // print writes text to Stdout and returns code, or 1 when the write fails.
@@ -373,9 +384,7 @@ func (a App) fail(err error) int {
 }
 
 const (
-	wordPush    = "push"
 	wordBranch  = "branch"
-	wordMerge   = "merge"
 	wordRelease = "release"
 	wordStatus  = "status"
 
@@ -389,6 +398,12 @@ const (
 	wordDash = "--"
 )
 
+// withBound returns long with its one %d verb set to bound in seconds, so that the help says the
+// limit the command enforces.
+func withBound(long string) string {
+	return fmt.Sprintf(long, int(bound.Seconds()))
+}
+
 // The help says how to call a command and nothing else: what to do with an exit code and with
 // the next step is said by the result of each run.
 const (
@@ -398,8 +413,9 @@ place, skip the checks, or call a red build done.
 
 Docs: https://github.com/jeffzi/ils`
 
-	pushLong = `Push the current branch, open its pull request on the first push, and
-wait up to 100 seconds for the checks of the pushed commit. It never
+	pushShort = "Push the branch, open its pull request, wait for the checks"
+	pushLong  = `Push the current branch, open its pull request on the first push, and
+wait up to %d seconds for the checks of the pushed commit. It never
 forces a push and it does not merge.
 
 It refuses before pushing anything when the branch is not ready, for
@@ -412,4 +428,23 @@ ils push
 
 # The same result as one JSON object
 ils push --json`
+
+	mergeShort = "Squash and merge the pull request once its checks are green"
+	mergeLong  = `Squash-merge the pull request of the current branch once its checks are
+green, within %d seconds of the launch.
+
+It squash-merges the pull request once its checks are green, deletes the
+branch on origin and in the clone, and leaves the trunk checked out at
+origin's tip. It never pushes: push the branch with ils push first.
+
+It refuses before merging anything when the pull request is not ready,
+for example when a check is red, when it is a draft, or when its title is
+not a conventional commit title. The output gives the reason and the next
+step.`
+
+	mergeExamples = `# Merge once the checks are green
+ils merge
+
+# The same result as one JSON object
+ils merge --json`
 )

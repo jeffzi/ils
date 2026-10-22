@@ -192,7 +192,8 @@ type Result struct {
 
 // Payload is a result's structured detail, one field per command that has any.
 type Payload struct {
-	Push *Push `json:"push,omitempty"`
+	Push  *Push  `json:"push,omitempty"`
+	Merge *Merge `json:"merge,omitempty"`
 }
 
 // Push is the structured detail of a push.
@@ -204,6 +205,39 @@ type Push struct {
 	FailedLog  string  `json:"failed_log,omitempty"`
 	Checks     []Check `json:"checks"`
 	Number     int     `json:"number"`
+}
+
+// The words of Merge.Ending once the local ending ran.
+const (
+	// EndingTrunk is a checkout left on the trunk at origin's tip.
+	EndingTrunk = "trunk"
+	// EndingDetached is a checkout left detached at origin's trunk, the trunk being checked out in
+	// another worktree.
+	EndingDetached = "detached"
+)
+
+// Merge is the structured detail of a merge. Verdict, MergeState and Checks are in the words of
+// Push.
+//
+// A verdict of none means no deciding check reported, or the checks were not read. A merge state
+// of unknown and no checks mean the checks were not read, or none of them decides.
+type Merge struct {
+	URL string `json:"url"`
+	// SHA is the head that was merged or found merged.
+	SHA        string `json:"sha"`
+	Verdict    string `json:"verdict"`
+	MergeState string `json:"merge_state"`
+	// Subject and Body are the squash commit's message once it is composed after the wait, and
+	// empty before. A merge that stops at the 20-second reserve carries them unsent.
+	Subject string `json:"subject"`
+	Body    string `json:"body"`
+	// Ending is trunk or detached once every step of the local ending ran, and empty otherwise.
+	Ending string  `json:"ending"`
+	Checks []Check `json:"checks"`
+	Number int     `json:"number"`
+	// Merged is true when this run made the merge, and false when it found the pull request
+	// merged or did not merge it.
+	Merged bool `json:"merged"`
 }
 
 // Check is one check or status reported on a commit.

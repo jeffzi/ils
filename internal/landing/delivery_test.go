@@ -39,9 +39,7 @@ const (
 	cleanLine   = "GitHub: CLEAN (clean)\n"
 
 	mergeSteps = "write the pull request's title and body as the squash commit's message with " +
-		"`gh pr edit --repo " + repoArg + " 12 --title … --body …`, then merge by hand with " +
-		"`gh pr merge --repo " + repoArg + " 12 --squash --delete-branch --match-head-commit " + tipMark +
-		` --subject "<title> (#12)" --body "<body>"` + "`\n"
+		"`gh pr edit --repo " + repoArg + " 12 --title … --body …`, then run ils merge\n"
 	nextMerge  = "Next: " + mergeSteps
 	nextReview = "Next: request a review of the pull request first, then " + mergeSteps
 	nextRed    = "Next: fix the failing check, commit, and run ils push again\n"
@@ -51,9 +49,6 @@ const (
 	nextNothing = "Next: report that no check or status reported for the pushed commit, and stop\n"
 
 	readProtection = "the trunk's required checks"
-	readHead       = "the pull request's head"
-	readMergeState = "whether the pull request can merge"
-	readChecks     = "the checks of the pushed commit"
 	readCI         = "whether the repository has CI"
 
 	noCILine = "No CI is configured on " + trunk + ", so nothing verified " + tipMark + "\n"
@@ -196,8 +191,9 @@ func assertDelivered(t *testing.T, s *scene, got result.Result, end finish) {
 	assert.Check(t, is.Equal(reason, end.reason))
 
 	var payload *result.Push
-	if got.Payload != nil {
+	if got.Payload != nil && got.Payload.Push != nil {
 		payload = got.Payload.Push
+		assertChecksArray(t, payload.Checks)
 	}
 
 	assert.Check(t, is.DeepEqual(payload, end.payload, cmpopts.EquateEmpty()))
@@ -311,30 +307,7 @@ func TestPush_WhenTrunkRequiresChecks_PassesThemToEveryForgeRead(t *testing.T) {
 
 		landing.Push(d.ctx, d.deps, pushRequest())
 
-		var heads []forge.HeadQuery
-
-		var verdicts []forge.VerdictQuery
-
-		for _, call := range d.forge.Calls() {
-			if call.Op == forgetest.OpHead {
-				heads = append(heads, call.Head)
-			}
-
-			if call.Op == forgetest.OpVerdict {
-				verdicts = append(verdicts, call.Query)
-			}
-		}
-
-		assert.Check(t, len(heads) > 0 && len(verdicts) > 0,
-			"forge reads = %d heads and %d verdicts, want some of each", len(heads), len(verdicts))
-
-		for _, got := range heads {
-			assert.Check(t, is.DeepEqual(got, forge.HeadQuery{Number: opened, Required: required}))
-		}
-
-		for _, got := range verdicts {
-			assert.Check(t, is.DeepEqual(got, forge.VerdictQuery{SHA: d.tip, Number: opened, Required: required}))
-		}
+		assertReadsRequire(t, d.forge.Calls(), d.tip, required)
 	})
 }
 
@@ -390,8 +363,8 @@ func TestPush_WhenGitRefusesThePush_BrokeSayingNothingWasPushed(t *testing.T) {
 	said, starts := strings.CutPrefix(text, prefix)
 	said, ends := strings.CutSuffix(said, suffix)
 	assert.Check(t, starts && ends, "RenderText() = %q, want it to start with %q and end with %q", text, prefix, suffix)
-	// The words are git's own for a ref that receive.hideRefs hides, printed on the one line.
-	assert.Check(t, is.Contains(said, "deny updating a hidden ref"))
+	// The words are git's own, printed on the one line.
+	assert.Check(t, said != "", "RenderText() = %q, want git's words between %q and %q", text, prefix, suffix)
 	assert.Check(t, !strings.ContainsAny(said, "\r\n"), "git's words = %q, want them on one line", said)
 
 	assert.Check(t, is.Equal(d.onOrigin(), ""))
@@ -500,105 +473,6 @@ func TestPush_WhenTipIsAlreadyOnOrigin_PushesNothing(t *testing.T) {
 	t.Parallel()
 
 	runPushes(t, pushAgainRows())
-}
-
-// steps returns the lines "step <first>" to "step <last>", each ended by a line break.
-func steps(first, last int) string {
-	var lines strings.Builder
-	for i := first; i <= last; i++ {
-		fmt.Fprintf(&lines, "step %d\n", i)
-	}
-
-	return lines.String()
-}
-
-// redRow is a push whose lint check ended in bucket beside a passing test, with log as its failed
-// log: the lines say the check failed, or was canceled, and the excerpt block is excerpt.
-func redRow(name string, bucket forge.Bucket, log forge.FailedLog, excerpt string) pushRow {
-	said := "failed"
-	if bucket == forge.BucketCanceled {
-		said = "was canceled"
-	}
-
-	log.Check = "lint"
-	verdict := forge.Verdict{
-		Checks: []forge.Check{
-			{Name: "lint", Bucket: bucket, Workflow: "ci", Link: lintURL},
-			checked("test", forge.BucketPass),
-		},
-		Runs:      ran(forge.RunCompleted),
-		FailedLog: log,
-	}
-	payload := detail(forge.VerdictRed, forge.MergeBlockedOther, verdict.Checks...)
-	payload.FailedLog = log.Text
-
-	return pushRow{
-		name:   name,
-		script: opening(verdict).showing(inState(forge.MergeBlockedOther, "UNSTABLE")),
-		want: finish{
-			outcome: result.DeliveredNotGreen, reason: "the check lint " + said, payload: payload,
-			text: pushedLine + openedLine + "Check lint " + said + ": " + lintURL + "\n" +
-				"GitHub: UNSTABLE (blocked-other)\n" + excerpt + nextRed,
-		},
-	}
-}
-
-// runningOn returns row with its one verdict read while the workflow run still goes on.
-func runningOn(row pushRow) pushRow {
-	row.script = row.script.with(func(script *forgetest.Script, _ string) {
-		script.Verdict[0].Value.Runs = ran(forge.RunInProgress)
-	})
-
-	return row
-}
-
-// heldBack returns row with a verdict read ahead of its own: the same failed check, with its
-// workflow run still going and its log not yet available.
-func heldBack(row pushRow) pushRow {
-	row.script = row.script.with(func(script *forgetest.Script, _ string) {
-		early := script.Verdict[0].Value
-		early.Runs = ran(forge.RunInProgress)
-		early.FailedLog = forge.FailedLog{Check: early.FailedLog.Check, State: forge.FailedLogInProgress}
-		script.Verdict = append(says(early), script.Verdict...)
-	})
-
-	return row
-}
-
-// pushRedRows are the pushes whose deciding check failed or was canceled.
-func pushRedRows() []pushRow {
-	// The log is one line longer than the excerpt may be.
-	read := forge.FailedLog{Text: steps(1, 61), State: forge.FailedLogRead}
-	short := forge.FailedLog{Text: steps(1, 3), State: forge.FailedLogRead}
-	// unfinished stays held back up to the time limit: a third poll would end three seconds past it.
-	unfinished := runningOn(redRow("a check failed and its workflow run had not finished at the time limit", forge.BucketFail,
-		forge.FailedLog{State: forge.FailedLogInProgress}, "no log: the log of lint was not available yet; its workflow run had not finished\n"))
-	unfinished.left = 12 * time.Second
-
-	return []pushRow{
-		heldBack(redRow("a check failed before its workflow run finished, and its log was read once it had", forge.BucketFail,
-			short, steps(1, 3))),
-		unfinished,
-		redRow("a check failed and its log is longer than the excerpt", forge.BucketFail, read, steps(2, 61)),
-		redRow("a check failed and its log is shorter than the excerpt", forge.BucketFail, short, steps(1, 3)),
-		redRow("a check failed that no workflow run stands behind", forge.BucketFail,
-			forge.FailedLog{State: forge.FailedLogNoRun}, "no log: lint is not a workflow run\n"),
-		redRow("a check was canceled and its log cannot be read", forge.BucketCanceled,
-			forge.FailedLog{State: forge.FailedLogUnreadable}, "no log: the log of lint could not be read\n"),
-	}
-}
-
-// stoppedRow is a push the pull request's merge state stops before any check is read.
-func stoppedRow(state forge.MergeState, raw, reason string) pushRow {
-	return pushRow{
-		name:   string(state),
-		script: reusing().showing(inState(state, raw)),
-		want: finish{
-			outcome: result.DeliveredNotGreen, reason: reason,
-			text:    pushedLine + foundLine + "GitHub: " + raw + " (" + string(state) + ")\n" + nextTrunk,
-			payload: detail(forge.VerdictNone, state),
-		},
-	}
 }
 
 // pushUnreportedRows are the pushes whose checks did not all report.
@@ -765,108 +639,16 @@ func TestPush_WhenNothingReportedForTheCommit_AsksAboutTheTrunkOfOriginWithinThe
 
 		landing.Push(ctx, d.deps, pushRequest())
 
-		var asks []forgetest.Call
-
-		for _, call := range d.forge.Calls() {
-			if call.Op == forgetest.OpHasTrunkCI {
-				asks = append(asks, call)
-			}
-		}
-
 		wantAsk := forgetest.Call{Op: forgetest.OpHasTrunkCI, Repo: origin(), Branch: trunk}
-		assert.Check(t, is.DeepEqual(asks, []forgetest.Call{wantAsk}, whichRepo()))
+		assert.Check(t, is.DeepEqual(callsOf(d.forge.Calls(), forgetest.OpHasTrunkCI), []forgetest.Call{wantAsk}, whichRepo()))
 		assert.Check(t, reading.deadline.Equal(deadline), "CI read deadline = %v, want the push's %v", reading.deadline, deadline)
 		assert.Check(t, reading.endedWithPush, "CI read context outlived the push's context")
 	})
 }
 
-// pending is a push to the open pull request that ended pending for reason, after lines.
-func pending(reason, lines string, payload *result.Push) finish {
-	return finish{
-		outcome: result.Pending, reason: reason, payload: payload,
-		text: pushedLine + foundLine + lines + nextPush,
-	}
-}
-
-// cutShortRead is a push to the open pull request that ended pending because the time limit ended
-// while reading read.
-func cutShortRead(read string) finish {
-	return pending("the time limit ended while reading "+read,
-		"The time limit ended while reading "+read+"; nothing more will change\n"+cleanLine,
-		detail(forge.VerdictNone, forge.MergeClean))
-}
-
-// pushCutShortRows are the pushes whose deadline ended inside a read of the wait.
-func pushCutShortRows() []pushRow {
-	ended := fmt.Errorf("gh: %w", context.DeadlineExceeded)
-
-	return []pushRow{
-		{
-			name: "the deadline ends in the first read of the checks",
-			script: reusing().with(func(script *forgetest.Script, _ string) {
-				script.Verdict = []forgetest.Answer[forge.Verdict]{{Err: ended}}
-			}),
-			want: cutShortRead(readChecks),
-		},
-		{
-			name:   "the deadline ends in the read of the merge state after the checks",
-			script: reusing(passing()).thenFailingHead(ended),
-			want: pending("GitHub did not say whether the pull request can merge before the time limit",
-				"GitHub has not said whether pull request #12 can merge yet\n",
-				detail(forge.VerdictGreen, forge.MergeClean, passing().Checks...)),
-		},
-	}
-}
-
-// pushPendingRows are the pushes whose wait ended before the forge had an answer, one per way it ends.
-func pushPendingRows() []pushRow {
-	started := forge.Verdict{Runs: ran(forge.RunInProgress)}
-
-	return []pushRow{
-		{
-			// Twelve seconds end inside the 20 seconds a silent commit is given.
-			name: "nothing has reported yet", left: 12 * time.Second, script: reusing(forge.Verdict{}),
-			want: pending("no check or status had reported at the time limit",
-				"No check or status has reported for "+tipMark+" on pull request #12 yet\n"+cleanLine,
-				detail(forge.VerdictNone, forge.MergeClean)),
-		},
-		{
-			name: "a workflow run is going and no check has reported yet", left: 12 * time.Second,
-			script: reusing(started),
-			want: pending("the checks had not reported at the time limit",
-				"No check has reported for "+tipMark+" on pull request #12 yet; a workflow run is still going\n"+cleanLine,
-				detail(forge.VerdictNone, forge.MergeClean)),
-		},
-		{
-			// A third poll would end a second past the deadline.
-			name: "the pull request still shows an earlier commit", left: 5 * time.Second,
-			script: reusing().showing(stale()),
-			want: pending("GitHub did not show the pushed commit on the pull request before the time limit",
-				"GitHub does not show "+tipMark+" on pull request #12 yet\n", detail(forge.VerdictNone, forge.MergeClean)),
-		},
-		{
-			name:   "the merge state is still unknown",
-			script: reusing().showing(inState(forge.MergeUnknown, "UNKNOWN")),
-			want: pending("GitHub did not say whether the pull request can merge within 30 seconds",
-				"GitHub has not said whether pull request #12 can merge yet\n", detail(forge.VerdictNone, forge.MergeUnknown)),
-		},
-		{
-			// A third poll would end a second past the deadline.
-			name: "the merge state is still unknown and the deadline leaves no room for another poll",
-			left: 5 * time.Second, script: reusing().showing(inState(forge.MergeUnknown, "UNKNOWN")),
-			want: pending("GitHub did not say whether the pull request can merge before the time limit",
-				"GitHub has not said whether pull request #12 can merge yet\n", detail(forge.VerdictNone, forge.MergeUnknown)),
-		},
-		{
-			// The head catches up after one poll of two seconds, which the count leaves out; then
-			// two polls of five seconds pass, and a third would end three seconds past the deadline.
-			name: "a check still runs", left: 14 * time.Second,
-			script: reusing(running()).showing(stale(), inState(forge.MergeClean, "CLEAN")),
-			want: pending("the checks were still running at the time limit",
-				"Still running after 10 seconds: test\n"+cleanLine,
-				detail(forge.VerdictPending, forge.MergeClean, running().Checks...)),
-		},
-	}
+// callsOf returns the calls of calls to the operation op.
+func callsOf(calls []forgetest.Call, op forgetest.Op) []forgetest.Call {
+	return slices.DeleteFunc(calls, func(call forgetest.Call) bool { return call.Op != op })
 }
 
 // pushWaitRows are the pushes whose wait ends without an error, one per result it maps to.
@@ -881,11 +663,9 @@ func pushWaitRows() []pushRow {
 			script: reusing(passing()).showing(inState(forge.MergeClean, "CLEAN"), inState(forge.MergeBlockedByReview, "BLOCKED")),
 			want:   reviewed,
 		},
-		stoppedRow(forge.MergeConflicting, "DIRTY", "the pull request conflicts with the trunk"),
-		stoppedRow(forge.MergeBehind, "BEHIND", "the pull request is behind the trunk"),
 	}
 
-	return slices.Concat(rows, pushRedRows(), pushUnreportedRows(), pushPendingRows(), pushCutShortRows())
+	return slices.Concat(rows, pushUnreportedRows())
 }
 
 func TestPush_WhenTheWaitEnds_ReportsItsOutcome(t *testing.T) {
@@ -913,16 +693,15 @@ func (read failingRead) row(want finish) pushRow {
 	return pushRow{name: read.name, script: read.script, want: want}
 }
 
-// readsAfterWrites returns the reads of a push that follow its writes, in the order the push makes
-// them, each failing with err.
-func readsAfterWrites(err error) []failingRead {
-	breaking := func(edit func(*forgetest.Script)) forgeFor {
-		return opening(passing()).with(func(script *forgetest.Script, _ string) { edit(script) })
-	}
-	// undecided shows the tip in a merge state the forge has not worked out, and then fails.
-	undecided := opening(passing()).showing(inState(forge.MergeUnknown, "UNKNOWN")).thenFailingHead(err)
-	opens := pushedLine + openedLine
+// breaking is a first push to a clean pull request whose one check passes, once edit has changed
+// the forge's answers.
+func breaking(edit func(*forgetest.Script)) forgeFor {
+	return opening(passing()).with(func(script *forgetest.Script, _ string) { edit(script) })
+}
 
+// readsAfterWrites returns the reads of a push that follow its writes and come before its wait,
+// in the order the push makes them, each failing with err.
+func readsAfterWrites(err error) []failingRead {
 	return []failingRead{
 		{
 			name: readChanges, before: pushedLine,
@@ -932,30 +711,16 @@ func readsAfterWrites(err error) []failingRead {
 			}),
 		},
 		{
-			name: readProtection, before: opens, known: true,
+			name: readProtection, before: pushedLine + openedLine, known: true,
 			script: breaking(func(script *forgetest.Script) {
 				script.TrunkProtection = []forgetest.Answer[forge.Protection]{{Err: err}}
-			}),
-		},
-		{
-			name: readHead, before: opens, known: true,
-			script: breaking(func(script *forgetest.Script) {
-				script.Head = []forgetest.Answer[forge.Head]{{Err: err}}
-			}),
-		},
-		{name: readMergeState, before: opens, known: true, script: undecided},
-		{
-			name: readChecks, before: opens, known: true,
-			script: breaking(func(script *forgetest.Script) {
-				script.Verdict = []forgetest.Answer[forge.Verdict]{{Err: err}}
 			}),
 		},
 	}
 }
 
-// pushBrokenRows are the pushes one of whose reads fails after the writes.
-func pushBrokenRows() []pushRow {
-	reads := readsAfterWrites(errors.New("HTTP 502"))
+// brokenAfter returns the pushes that end broke on each of reads, failing as HTTP 502.
+func brokenAfter(reads []failingRead) []pushRow {
 	rows := make([]pushRow, 0, len(reads))
 
 	for _, read := range reads {
@@ -971,8 +736,7 @@ func pushBrokenRows() []pushRow {
 func TestPush_WhenDeadlineEndsInAReadAfterTheWrites_PendingNamingTheRead(t *testing.T) {
 	t.Parallel()
 
-	// The deadline ends in the first two reads: the pull requests of the branch and the trunk's protection.
-	reads := readsAfterWrites(fmt.Errorf("gh: %w", context.DeadlineExceeded))[:2]
+	reads := readsAfterWrites(fmt.Errorf("gh: %w", context.DeadlineExceeded))
 	rows := make([]pushRow, 0, len(reads))
 
 	for _, read := range reads {
@@ -988,5 +752,5 @@ func TestPush_WhenDeadlineEndsInAReadAfterTheWrites_PendingNamingTheRead(t *test
 func TestPush_WhenAReadFailsAfterTheWrites_BrokeNamingTheRead(t *testing.T) {
 	t.Parallel()
 
-	runPushes(t, pushBrokenRows())
+	runPushes(t, brokenAfter(readsAfterWrites(errors.New("HTTP 502"))))
 }

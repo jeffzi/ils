@@ -95,7 +95,7 @@ func LoginArgs(host string) []string {
 
 // RepoViewArgs is the argv of the read of a repository's identity; slug is host/owner/name.
 func RepoViewArgs(slug string) []string {
-	return []string{"repo", "view", slug, "--json", "isFork,viewerPermission"}
+	return []string{"repo", "view", slug, "--json", "isFork,viewerPermission,squashMergeAllowed"}
 }
 
 // ListArgs is the argv of the list of the pull requests from the branch head that are in state.
@@ -132,7 +132,7 @@ func ChecksArgs(slug string, number int) []string {
 // RunsArgs is the argv of the list of the workflow runs on the commit sha.
 func RunsArgs(slug, sha string) []string {
 	return []string{
-		"run", "list", "--repo", slug, "--commit", sha, "--limit", "1000",
+		"run", "list", "--repo", slug, "--commit", sha, "--limit", github.RunListLimit,
 		"--json", "status,name,workflowName",
 	}
 }
@@ -140,6 +140,16 @@ func RunsArgs(slug, sha string) []string {
 // LogArgs is the argv of the read of the failed log of the workflow run numbered run.
 func LogArgs(slug, run string) []string {
 	return []string{"run", "view", "--repo", slug, run, "--log-failed"}
+}
+
+// MessageArgs is the argv of the read of pull request number's title, body, and the body GitHub
+// would compose for its squash merge, in the repository owner/name on host.
+func MessageArgs(host, owner, name string, number int) []string {
+	return []string{
+		"api", "graphql", "--hostname", host,
+		"-F", "number=" + strconv.Itoa(number), "-f", "owner=" + owner, "-f", "name=" + name,
+		"-f", "query=" + github.MessageQuery,
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -150,9 +160,32 @@ func LogArgs(slug, run string) []string {
 const workflow = "CI"
 
 // RepoViewJSON is `gh repo view`'s answer for a repository that is a fork or not, on which the
-// viewer holds permission.
+// viewer holds permission, and whose settings allow squash merges.
 func RepoViewJSON(fork bool, permission string) string {
-	return `{"isFork":` + strconv.FormatBool(fork) + `,"viewerPermission":"` + permission + `"}`
+	return RepoViewSquashJSON(fork, permission, true)
+}
+
+// RepoViewSquashJSON is RepoViewJSON for a repository whose settings allow squash merges or not.
+func RepoViewSquashJSON(fork bool, permission string, squash bool) string {
+	return `{"isFork":` + strconv.FormatBool(fork) + `,"viewerPermission":"` + permission +
+		`","squashMergeAllowed":` + strconv.FormatBool(squash) + `}`
+}
+
+// MessageJSON is the message read's answer for a pull request titled title with body, for which
+// GitHub would compose mergeBody as the body of its squash merge.
+func MessageJSON(title, body, mergeBody string) string {
+	return `{"data":{"repository":{"pullRequest":{"title":` + quoted(title) + `,"body":` + quoted(body) +
+		`,"viewerMergeBodyText":` + quoted(mergeBody) + `}}}}`
+}
+
+// quoted is s as a JSON string.
+func quoted(s string) string {
+	encoded, err := json.Marshal(s)
+	if err != nil {
+		panic(fmt.Sprintf("encode %q as JSON: %v", s, err))
+	}
+
+	return string(encoded)
 }
 
 // Change is one pull request as `gh pr list` prints it.
@@ -402,7 +435,7 @@ func (f *Fake) Calls() [][]string {
 
 	calls := make([][]string, len(recorded))
 	for i, args := range recorded {
-		calls[i] = append([]string{github.Program}, args...)
+		calls[i] = github.Argv(args)
 	}
 
 	return calls
@@ -461,7 +494,9 @@ func serve(ctx context.Context, places servePlaces, args []string) int {
 		return broken(fmt.Errorf("write stdout: %w", err))
 	}
 
-	fmt.Fprint(os.Stderr, answer.Stderr)
+	if _, err := os.Stderr.WriteString(answer.Stderr); err != nil {
+		return broken(fmt.Errorf("write stderr: %w", err))
+	}
 
 	return answer.Code
 }

@@ -1,6 +1,7 @@
 package testtarget_test
 
 import (
+	"strings"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -48,6 +49,7 @@ type unsuited struct {
 	errText string
 }
 
+// unsuitedVersions returns the versions found that do not suit hammer's target, each with its error.
 func unsuitedVersions() []unsuited {
 	return []unsuited{
 		{
@@ -107,6 +109,65 @@ func TestTool_Check_WhenFoundDoesNotSuitTarget_ReturnsError(t *testing.T) {
 			err := hammer().Check(tt.target, tt.want, tt.found)
 
 			assert.Error(t, err, tt.errText, "Check(%q, %q, %q)", tt.target, tt.want, tt.found)
+		})
+	}
+}
+
+// hammerVersionOf reads the version from a line `hammer <version>`, and returns "" for any other
+// line.
+func hammerVersionOf(line string) string {
+	version, ok := strings.CutPrefix(line, "hammer ")
+	if !ok {
+		return ""
+	}
+
+	return version
+}
+
+func TestTool_CheckOutput_WhenFirstLineNamesASuitedVersion_ReturnsNil(t *testing.T) {
+	t.Parallel()
+	out := "hammer 1.4.0\nhammer 1.3.9"
+
+	err := hammer().CheckOutput(testtarget.Minimum, "", out, hammerVersionOf)
+
+	assert.NilError(t, err)
+}
+
+func TestTool_CheckOutput_WhenFirstLineDoesNotSuitTarget_ReturnsError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		target  string
+		want    string
+		out     string
+		errText string
+	}{
+		{
+			name: "first line names no version", out: "built on a bench\nhammer 1.4.0",
+			errText: `hammer --version printed "built on a bench", which names no version the suite can read`,
+		},
+		{
+			name: "no output", target: testtarget.Minimum,
+			errText: `hammer --version printed "", which names no version the suite can read`,
+		},
+		{
+			name: "first line names a version the target rejects", target: testtarget.Minimum,
+			out:     "hammer 1.10.0\nhammer 1.4.0",
+			errText: "HAMMER_TARGET is minimum and the hammer found is 1.10.0, want the minimum ils enforces, 1.4.0",
+		},
+		{
+			name: "first line names a version other than the one wanted", target: testtarget.Latest,
+			want: "1.10.0", out: "hammer 1.9.0",
+			errText: "the hammer found is 1.9.0, and HAMMER_VERSION wants 1.10.0",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := hammer().CheckOutput(tt.target, tt.want, tt.out, hammerVersionOf)
+
+			assert.Error(t, err, tt.errText, "CheckOutput(%q, %q, %q)", tt.target, tt.want, tt.out)
 		})
 	}
 }

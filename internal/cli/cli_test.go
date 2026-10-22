@@ -38,10 +38,13 @@ const (
 	// hookLine is a line the renderers reject, since its own wording names a hook.
 	hookLine = "The pre-push step ran."
 
-	// outsideStart and outsideEnd are how `ils push` starts and ends what it prints in a directory
-	// that is no repository; the middle is git's own wording.
+	// outsideStart is how `ils push` and `ils merge` start what they print in a directory that is no
+	// repository; the middle is git's own wording.
 	outsideStart = "Could not read where HEAD stands: "
-	outsideEnd   = "Nothing was written.\nNext: fix what failed, then run ils push again\n"
+
+	// outsideEnd and outsideMergeEnd are how `ils push` and `ils merge` end it.
+	outsideEnd      = "Nothing was written.\nNext: fix what failed, then run ils push again\n"
+	outsideMergeEnd = "Nothing was written.\nNext: fix what failed, then run ils merge again\n"
 
 	bound = 100 * time.Second
 	// grace is how long a run may take to come back after the moment it is due: past the bound for
@@ -112,7 +115,7 @@ func refusal(reason string, typed ...string) resulttest.Shown {
 	return resulttest.Shown{Command: command, Words: typed, Outcome: "refused", Reason: reason, Next: nextHelp, ExitCode: exitRefused}
 }
 
-// finished is a push that ended as done with nothing to say.
+// finished is a landing command that ended as done with nothing to say.
 func finished(req landing.Request) result.Result {
 	return result.Result{Command: req.Command, Words: req.Words, Outcome: result.Done, Next: result.NextNone()}
 }
@@ -123,7 +126,7 @@ func worded[W ~string](say func(W, ...any) result.Phrase, text string) result.Ph
 	return say(W(text))
 }
 
-// saying is a push that ended as done with line as its one line.
+// saying is a landing command that ended as done with line as its one line.
 func saying(line result.Phrase) cli.Command {
 	return func(_ context.Context, _ landing.Deps, req landing.Request) result.Result {
 		r := finished(req)
@@ -133,7 +136,7 @@ func saying(line result.Phrase) cli.Command {
 	}
 }
 
-// wrote is a push that ended as done with one line, whose own wording names path.
+// wrote is a landing command that ended as done with one line, whose own wording names path.
 func wrote(path string) cli.Command {
 	return saying(worded(result.Say, "Wrote "+path))
 }
@@ -297,14 +300,19 @@ func TestApp_Run_WhenWordsBreakTheGrammar_RefusesNamingTheWord(t *testing.T) {
 		{name: "no word", reason: "no command was given"},
 		{name: "unknown word", args: []string{"pish"}, reason: "pish is not a command"},
 		{name: "extra word", args: []string{"push", "extra"}, reason: "push takes no other word, and extra was given"},
+		{name: "end of flags after push", args: []string{"push", "--", "x"}, reason: "push takes no other word, and -- was given"},
 		{name: "branch", args: []string{"branch", "tidy"}, reason: "branch is not in this version"},
-		{name: "merge", args: []string{"merge"}, reason: "merge is not in this version"},
 		{name: "release", args: []string{"release", "1.2.3"}, reason: "release is not in this version"},
 		{name: "status", args: []string{"status"}, reason: "status is not in this version"},
 		{name: "prefix of a command", args: []string{"pus"}, reason: "pus is not a command"},
 		{name: "completion", args: []string{"completion"}, reason: "completion is not a command"},
 		{name: "man", args: []string{"man"}, reason: "man is not a command"},
-		{name: "later command with an unknown flag", args: []string{"merge", "--bogus"}, reason: "merge is not in this version"},
+		{name: "later command with an unknown flag", args: []string{"branch", "--bogus"}, reason: "branch is not in this version"},
+		{name: "extra word after merge", args: []string{"merge", "extra"}, reason: "merge takes no other word, and extra was given"},
+		{name: "end of flags after merge", args: []string{"merge", "--", "x"}, reason: "merge takes no other word, and -- was given"},
+		{name: "unknown flag after merge", args: []string{"merge", "--bogus"}, reason: "merge takes no other word, and --bogus was given"},
+		{name: "unknown short flag after merge", args: []string{"merge", "-x"}, reason: "merge takes no other word, and -x was given"},
+		{name: "version flag after merge", args: []string{"merge", "--version"}, reason: "merge takes no other word, and --version was given"},
 		{name: "later command with a word and a short flag", args: []string{"branch", "tidy", "-x"}, reason: "branch is not in this version"},
 		{name: "later command with an unknown flag after a word", args: []string{"status", "tidy", "--bogus"}, reason: "status is not in this version"},
 		{name: "later command with a short flag", args: []string{"release", "-x"}, reason: "release is not in this version"},
@@ -338,9 +346,16 @@ func TestApp_Run_WhenWordsBreakTheGrammar_RefusesNamingTheWord(t *testing.T) {
 }
 
 const (
-	// rootHelp and pushHelp are how the help of ils and the help of push each start.
-	rootHelp = "ils lands a branch on GitHub in fixed, checked steps"
-	pushHelp = "Push the current branch, open its pull request on the first push"
+	// rootHelp, pushHelp and mergeHelp are how the help of ils, of push and of merge each start.
+	rootHelp  = "ils lands a branch on GitHub in fixed, checked steps"
+	pushHelp  = "Push the current branch, open its pull request on the first push"
+	mergeHelp = "Squash-merge the pull request of the current branch once its checks are green"
+
+	// mergeSummary is the line that `ils --help` lists merge with.
+	mergeSummary = "merge Squash and merge the pull request once its checks are green"
+	// mergeUsage is the usage and the examples the help of merge ends with, before its flags.
+	mergeUsage = "USAGE ils merge [--flags] EXAMPLES # Merge once the checks are green ils merge " +
+		"# The same result as one JSON object ils merge --json"
 
 	escape = "\x1b"
 
@@ -387,6 +402,7 @@ type shut struct {
 	err error
 }
 
+// Write fails with err and writes nothing.
 func (s shut) Write([]byte) (int, error) {
 	return 0, s.err
 }
@@ -394,34 +410,42 @@ func (s shut) Write([]byte) (int, error) {
 func TestApp_Run_WhenAskedForHelp_PrintsTheHelpOfTheCommand(t *testing.T) {
 	t.Parallel()
 
-	own := []string{"-h", "--json"}
-	rootFlags := []string{"-h", "--json", "--version"}
+	root := []string{rootHelp, "--version Print the version of ils", mergeSummary}
+	merge := []string{mergeHelp, mergeUsage}
 	tests := []struct {
-		want string
 		args []string
-		// commands and flags are every entry the help lists, checked on the rows that name them.
-		commands []string
-		flags    []string
+		want []string
 	}{
-		{args: []string{"-h"}, want: rootHelp},
-		{args: []string{"--help"}, want: rootHelp, commands: []string{"help", "push"}, flags: rootFlags},
-		{args: []string{"--help"}, want: "--version Print the version of ils"},
-		{args: []string{"help"}, want: rootHelp},
-		{args: []string{"pish", "--help"}, want: rootHelp},
-		{args: []string{"-h", "pish"}, want: rootHelp},
-		{args: []string{"help", "pish"}, want: rootHelp},
-		{args: []string{"--json", "-h"}, want: rootHelp},
-		{args: []string{"--help", "--json"}, want: rootHelp},
-		{args: []string{"help", "--json"}, want: rootHelp},
-		{args: []string{"help", "pish", "--json"}, want: rootHelp},
-		{args: []string{"push", "-h"}, want: pushHelp},
-		{args: []string{"push", "--help"}, want: pushHelp, flags: own},
-		{args: []string{"--help", "push"}, want: pushHelp},
-		{args: []string{"help", "push"}, want: pushHelp},
-		{args: []string{"push", "extra", "--help"}, want: pushHelp},
-		{args: []string{"push", "--json", "-h"}, want: pushHelp},
-		{args: []string{"--json", "push", "--help"}, want: pushHelp},
-		{args: []string{"help", "push", "--json"}, want: pushHelp},
+		{args: []string{"-h"}, want: []string{rootHelp}},
+		{args: []string{"--help"}, want: root},
+		{args: []string{"help"}, want: []string{rootHelp, mergeSummary}},
+		{args: []string{"pish", "--help"}, want: []string{rootHelp}},
+		{args: []string{"-h", "pish"}, want: []string{rootHelp}},
+		{args: []string{"help", "pish"}, want: []string{rootHelp}},
+		{args: []string{"--json", "-h"}, want: []string{rootHelp}},
+		{args: []string{"--help", "--json"}, want: []string{rootHelp}},
+		{args: []string{"help", "--json"}, want: []string{rootHelp}},
+		{args: []string{"help", "pish", "--json"}, want: []string{rootHelp}},
+		{args: []string{"push", "-h"}, want: []string{pushHelp}},
+		{args: []string{"push", "--help"}, want: []string{pushHelp}},
+		{args: []string{"--help", "push"}, want: []string{pushHelp}},
+		{args: []string{"help", "push"}, want: []string{pushHelp}},
+		{args: []string{"push", "extra", "--help"}, want: []string{pushHelp}},
+		{args: []string{"push", "--json", "-h"}, want: []string{pushHelp}},
+		{args: []string{"--json", "push", "--help"}, want: []string{pushHelp}},
+		{args: []string{"help", "push", "--json"}, want: []string{pushHelp}},
+		{args: []string{"merge", "-h"}, want: merge},
+		{
+			args: []string{"merge", "--help"},
+			want: append([]string{
+				"squash-merges the pull request once its checks are green",
+				"deletes the branch",
+				"never pushes",
+				"leaves the trunk checked out",
+			}, merge...),
+		},
+		{args: []string{"help", "merge"}, want: merge},
+		{args: []string{"merge", "--json", "--help"}, want: []string{mergeHelp}},
 	}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
@@ -431,14 +455,56 @@ func TestApp_Run_WhenAskedForHelp_PrintsTheHelpOfTheCommand(t *testing.T) {
 
 			assert.Check(t, is.Equal(got.code, exitDone))
 			assert.Check(t, is.Equal(got.stderr, ""))
-			assert.Check(t, is.Contains(flat(got.stdout), tt.want))
-
-			if tt.flags != nil {
-				assert.Check(t, is.DeepEqual(entries(got.stdout, "COMMANDS"), tt.commands))
-				assert.Check(t, is.DeepEqual(entries(got.stdout, "FLAGS"), tt.flags))
+			help := flat(got.stdout)
+			for _, want := range tt.want {
+				assert.Check(t, is.Contains(help, want))
 			}
+			assert.Check(t, is.Len(listedCalls(got.stdout), 0))
 		})
 	}
+}
+
+func TestApp_Run_WhenAskedForHelp_ListsEveryEntryOfTheCommand(t *testing.T) {
+	t.Parallel()
+
+	own := []string{"-h", "--json"}
+	tests := []struct {
+		args     []string
+		commands []string
+		flags    []string
+	}{
+		{args: []string{"--help"}, commands: []string{"help", "merge", "push"}, flags: []string{"-h", "--json", "--version"}},
+		{args: []string{"push", "--help"}, flags: own},
+		{args: []string{"merge", "--help"}, flags: own},
+	}
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
+			t.Parallel()
+
+			got := launch(t, outside(t), tt.args...)
+
+			assert.Check(t, is.DeepEqual(entries(got.stdout, "COMMANDS"), tt.commands))
+			assert.Check(t, is.DeepEqual(entries(got.stdout, "FLAGS"), tt.flags))
+		})
+	}
+}
+
+// listedCalls returns the lines of help that name a `git` or `gh` command, wherever the name
+// stands in the line and however it is marked: in backticks, after a bullet, or bare.
+func listedCalls(help string) []string {
+	var found []string
+
+	for line := range strings.Lines(help) {
+		for word := range strings.FieldsSeq(line) {
+			if name := strings.Trim(word, "`*-•:,.;()"); name == "git" || name == "gh" {
+				found = append(found, strings.TrimSpace(line))
+
+				break
+			}
+		}
+	}
+
+	return found
 }
 
 func TestApp_Run_WhenAskedForTheVersion_PrintsTheVersionOfIls(t *testing.T) {
@@ -464,28 +530,13 @@ func TestApp_Run_WhenAskedForTheVersion_PrintsTheVersionOfIls(t *testing.T) {
 func TestApp_Run_WhenVersionIsEmpty_PrintsTheVersionTheBuildInfoReaderReports(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name string
-		info *debug.BuildInfo
-		want string
-		ok   bool
-	}{
-		{name: "release", info: built("v0.2.0"), ok: true, want: "ils version 0.2.0\n"},
-		{name: "build info not readable", want: "ils version (devel)\n"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	app := outside(t)
+	app.SetBuildInfo(built("v0.2.0"), true)
 
-			app := outside(t)
-			app.SetBuildInfo(tt.info, tt.ok)
+	got := launch(t, app, "--version")
 
-			got := launch(t, app, "--version")
-
-			want := ran{stdout: tt.want, code: exitDone}
-			assert.Check(t, is.DeepEqual(got, want, sameRun()))
-		})
-	}
+	want := ran{stdout: "ils version 0.2.0\n", code: exitDone}
+	assert.Check(t, is.DeepEqual(got, want, sameRun()))
 }
 
 func TestVersion(t *testing.T) {
@@ -523,13 +574,18 @@ func built(version string) *debug.BuildInfo {
 }
 
 func TestApp_Run_WhenAskedForHelpInARepository_CallsNeitherGitNorGh(t *testing.T) {
-	s := newScene(t, scenario{})
+	tests := [][]string{{"push", "--help"}, {"merge", "--help"}, {"merge", "-h"}, {"help", "merge"}}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			s := newScene(t, scenario{})
 
-	got := launch(t, s.app(), "push", "--help")
+			got := launch(t, s.app(), args...)
 
-	assert.Check(t, is.Equal(got.code, exitDone))
-	assert.Check(t, is.Len(s.recorder.Calls(), 0))
-	assert.Check(t, is.Len(s.fake.Calls(), 0))
+			assert.Check(t, is.Equal(got.code, exitDone))
+			assert.Check(t, is.Len(s.recorder.Calls(), 0))
+			assert.Check(t, is.Len(s.fake.Calls(), 0))
+		})
+	}
 }
 
 func TestApp_Run_WhenColorIsForced_RefusalCarriesNoEscapeSequence(t *testing.T) {
@@ -560,7 +616,7 @@ func TestApp_Run_WhenColorIsForced_PushResultCarriesNoEscapeSequence(t *testing.
 func TestApp_Run_WhenAResultCannotBeWrittenToStdout_ExitsOneWithTheErrorOnStderr(t *testing.T) {
 	t.Parallel()
 
-	tests := [][]string{{"push"}, {"push", "--json"}, {"pish"}, {"pish", "--json"}, {"--version"}}
+	tests := [][]string{{"push"}, {"push", "--json"}, {"merge"}, {"merge", "--json"}, {"pish"}, {"pish", "--json"}, {"--version"}}
 	for _, args := range tests {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			t.Parallel()
@@ -591,7 +647,8 @@ func TestApp_Run_WhenJSONFlagIsAmongTheWords_RendersJSONWithoutTheFlagInTheWords
 			name: "flag between", args: []string{"push", "--json", "extra"},
 			want: refusal("push takes no other word, and extra was given", "push", "extra"),
 		},
-		{name: "command of a later version", args: []string{"merge", "--json"}, want: refusal("merge is not in this version", "merge")},
+		{name: "command of a later version", args: []string{"status", "--json"}, want: refusal("status is not in this version", "status")},
+		{name: "unknown short flag after merge", args: []string{"--json", "merge", "-x"}, want: refusal("merge takes no other word, and -x was given", "merge", "-x")},
 		{name: "unknown short flag", args: []string{"--json", "-x"}, want: refusal("-x is not a command", "-x")},
 		{name: "unknown flag", args: []string{"--bogus", "--json"}, want: refusal("--bogus is not a command", "--bogus")},
 		{name: "unknown short flag after push", args: []string{"--json", "push", "-x"}, want: refusal("push takes no other word, and -x was given", "push", "-x")},
@@ -631,36 +688,47 @@ func lost(t *testing.T) cli.App {
 	return over(git.Runner{Dir: t.TempDir(), Env: append(gittest.Env(t), "LC_ALL=C")})
 }
 
-func TestApp_Run_WhenPushRunsOutsideARepositoryWithoutTheJSONFlag_RendersTheResultAsText(t *testing.T) {
+func TestApp_Run_WhenALandingCommandRunsOutsideARepositoryWithoutTheJSONFlag_RendersTheResultAsText(t *testing.T) {
 	t.Parallel()
 
-	tests := [][]string{{"push"}, {"push", "--json=false"}, {"--json=false", "push"}}
-	for _, args := range tests {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
+	tests := []struct {
+		end  string
+		args []string
+	}{
+		{args: []string{"push"}, end: outsideEnd},
+		{args: []string{"push", "--json=false"}, end: outsideEnd},
+		{args: []string{"--json=false", "push"}, end: outsideEnd},
+		{args: []string{"merge"}, end: outsideMergeEnd},
+		{args: []string{"merge", "--json=false"}, end: outsideMergeEnd},
+	}
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
 			t.Parallel()
 
-			got := launch(t, lost(t), args...)
+			got := launch(t, lost(t), tt.args...)
 
 			assert.Check(t, is.Equal(got.code, exitBroke))
 			assert.Check(t, is.Equal(got.stderr, ""))
 			startsWith(t, got.stdout, outsideStart)
-			endsWith(t, got.stdout, outsideEnd)
+			endsWith(t, got.stdout, tt.end)
 		})
 	}
 }
 
-func TestApp_Run_WhenPushRunsOutsideARepositoryWithTheJSONFlag_RendersTheResultWithoutTheFlagInTheWords(t *testing.T) {
+func TestApp_Run_WhenALandingCommandRunsOutsideARepositoryWithTheJSONFlag_RendersTheResultWithoutTheFlagInTheWords(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		args []string
+		command string
+		args    []string
 	}{
-		{name: "flag last", args: []string{"push", "--json"}},
-		{name: "flag first", args: []string{"--json", "push"}},
+		{command: "push", args: []string{"push", "--json"}},
+		{command: "push", args: []string{"--json", "push"}},
+		{command: "merge", args: []string{"merge", "--json"}},
+		{command: "merge", args: []string{"--json", "merge"}},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
 			t.Parallel()
 
 			got := launch(t, lost(t), tt.args...)
@@ -669,11 +737,44 @@ func TestApp_Run_WhenPushRunsOutsideARepositoryWithTheJSONFlag_RendersTheResultW
 			assert.Check(t, is.Equal(got.stderr, ""))
 
 			printed := resulttest.Decode(t, got.stdout)
-			assert.Check(t, is.Equal(printed.Command, "push"))
-			assert.Check(t, is.DeepEqual(printed.Words, []string{"push"}))
+			assert.Check(t, is.Equal(printed.Command, tt.command))
+			assert.Check(t, is.DeepEqual(printed.Words, []string{tt.command}))
 			assert.Check(t, is.Equal(printed.Outcome, "broke"))
 		})
 	}
+}
+
+func TestApp_Run_WhenMergeRuns_EndsItAtTheBoundFromLaunch(t *testing.T) {
+	t.Parallel()
+
+	var (
+		deadline time.Time
+		bounded  bool
+	)
+
+	app := outside(t)
+	app.Launch = time.Now()
+	app.SetMerge(func(ctx context.Context, _ landing.Deps, req landing.Request) result.Result {
+		deadline, bounded = ctx.Deadline()
+
+		return finished(req)
+	})
+
+	got := launch(t, app, "merge")
+
+	assert.Check(t, is.Equal(got.code, exitDone))
+	assert.Check(t, bounded, "ils merge ran with no deadline")
+	assert.Check(t, deadline.Equal(app.Launch.Add(bound)), "deadline = %s, want %s", deadline, app.Launch.Add(bound))
+}
+
+func TestApp_Run_WhenMergeRunsOnABranchWithNoPullRequest_RefusesNamingPush(t *testing.T) {
+	s := newScene(t, scenario{name: "no pull request", script: only(found("[]", "[]")...), want: exitRefused})
+
+	got := launch(t, s.app(), "merge")
+
+	assert.Check(t, is.Equal(got.code, exitRefused))
+	assert.Check(t, is.Equal(got.stdout,
+		"Refused: the branch "+topic+" has no open pull request against the trunk "+trunk+"\nNext: ils push\n"))
 }
 
 func TestApp_Run_WhenRendererRejectsTheResult_PrintsTheErrorOnStderrOnly(t *testing.T) {
@@ -681,13 +782,14 @@ func TestApp_Run_WhenRendererRejectsTheResult_PrintsTheErrorOnStderrOnly(t *test
 
 	hooked := saying(result.Say(hookLine))
 
-	tests := [][]string{{"push"}, {"push", "--json"}}
+	tests := [][]string{{"push"}, {"push", "--json"}, {"merge"}, {"merge", "--json"}}
 	for _, args := range tests {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			t.Parallel()
 
 			app := outside(t)
 			app.SetPush(hooked)
+			app.SetMerge(hooked)
 
 			got := launch(t, app, args...)
 
@@ -702,7 +804,7 @@ func TestApp_Run_WhenRendererRejectsTheResult_PrintsTheErrorOnStderrOnly(t *test
 func TestApp_Run_WhenALineNamesAPathUnderTheGitDirOfTheRepository_ExitsOneWithNothingOnStdout(t *testing.T) {
 	t.Parallel()
 
-	tests := [][]string{{"push"}, {"push", "--json"}}
+	tests := [][]string{{"push"}, {"push", "--json"}, {"merge"}, {"merge", "--json"}}
 	for _, args := range tests {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			t.Parallel()
@@ -710,6 +812,7 @@ func TestApp_Run_WhenALineNamesAPathUnderTheGitDirOfTheRepository_ExitsOneWithNo
 			f, under := stored(t)
 			app := over(git.Runner{Dir: f.Dir(), Env: f.Env()})
 			app.SetPush(wrote(under))
+			app.SetMerge(wrote(under))
 
 			got := launch(t, app, args...)
 
@@ -854,42 +957,26 @@ func TestApp_Run_WhenOriginNamesAnSSHAlias_AsksGhAboutTheHostItStandsFor(t *test
 	assert.Check(t, is.Contains(s.fake.Calls(), append([]string{"gh"}, ghtest.LoginArgs(host)...)))
 }
 
-func TestApp_Run_WhenGhIsTooOldToJudge_RefusesWithNothingPushedOrOpened(t *testing.T) {
+func TestApp_Run_WhenGhIsOlderThanTheMinimum_RefusesWithNothingPushedOrOpened(t *testing.T) {
 	const (
-		next = "upgrade gh, then run ils push again"
-		from = "https://cli.github.com"
+		next   = "upgrade gh, then run ils push again"
+		reason = "gh 2.49.0 is older than " + github.MinimumVersion +
+			", the oldest version ils works with; upgrade it from https://cli.github.com"
 	)
 
-	older := " is older than " + github.MinimumVersion + ", the oldest version ils works with; upgrade it from " + from
-	tests := []struct {
-		reason   string
-		scenario scenario
-	}{
-		{scenario: outdated("an older release", "gh version 2.49.0 (2024-05-13)"), reason: "gh 2.49.0" + older},
-		{scenario: outdated("a pre-release of the minimum", "gh version 2.50.0-pre.1 (2024-05-20)"), reason: "gh 2.50.0-pre.1" + older},
-		{
-			scenario: outdated("a development build", "gh version DEV"),
-			reason: "gh printed `gh version DEV`, which names no version ils can read; ils needs gh " +
-				github.MinimumVersion + " or newer, from " + from,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.scenario.name, func(t *testing.T) {
-			s := newScene(t, tt.scenario)
+	s := newScene(t, outdated("an older release", "gh version 2.49.0 (2024-05-13)"))
 
-			text, encoded := both(t, s)
+	text, encoded := both(t, s)
 
-			want := ran{stdout: "Refused: " + tt.reason + "\nNext: " + next + "\n", code: exitRefused}
-			assert.Check(t, is.DeepEqual(text, want, sameRun()))
-			assert.Check(t, is.Equal(encoded.code, exitRefused))
-			got := resulttest.Decode(t, encoded.stdout)
-			assert.Check(t, is.Equal(got.Outcome, "refused"))
-			assert.Check(t, is.Equal(got.Reason, tt.reason))
-			assert.Check(t, is.Equal(got.Next, next))
-			nothingPushed(t, s)
-			assert.Check(t, !opensPullRequest(s), "gh was asked to create a pull request")
-		})
-	}
+	want := ran{stdout: "Refused: " + reason + "\nNext: " + next + "\n", code: exitRefused}
+	assert.Check(t, is.DeepEqual(text, want, sameRun()))
+	assert.Check(t, is.Equal(encoded.code, exitRefused))
+	got := resulttest.Decode(t, encoded.stdout)
+	assert.Check(t, is.Equal(got.Outcome, "refused"))
+	assert.Check(t, is.Equal(got.Reason, reason))
+	assert.Check(t, is.Equal(got.Next, next))
+	nothingPushed(t, s)
+	assert.Check(t, !opensPullRequest(s), "gh was asked to create a pull request")
 }
 
 func TestApp_Run_WhenGhIsNotInstalled_RefusesNamingTheInstallPage(t *testing.T) {
@@ -906,21 +993,6 @@ func TestApp_Run_WhenGhIsNotInstalled_RefusesNamingTheInstallPage(t *testing.T) 
 	assert.Check(t, is.Equal(encoded.code, exitRefused))
 	assert.Check(t, is.Equal(resulttest.Decode(t, encoded.stdout).Outcome, "refused"))
 	nothingPushed(t, s)
-}
-
-func TestApp_Run_WhenGhFailsToPrintItsVersion_BreaksNamingTheIdentityRead(t *testing.T) {
-	failing := ghtest.Exits(ghtest.Answer{Stderr: "unknown flag\n", Code: 1}, ghtest.VersionArgs()...)
-	s := newScene(t, scenario{script: only(failing)})
-
-	text, encoded := both(t, s)
-
-	assert.Check(t, is.Equal(text.code, exitBroke))
-	startsWith(t, text.stdout, "Could not read the repository's identity on GitHub: ")
-	assert.Check(t, is.Contains(text.stdout, "\nNothing was written.\n"))
-	assert.Check(t, is.Equal(encoded.code, exitBroke))
-	assert.Check(t, is.Equal(resulttest.Decode(t, encoded.stdout).Outcome, "broke"))
-	nothingPushed(t, s)
-	assert.Check(t, !opensPullRequest(s), "gh was asked to create a pull request")
 }
 
 // No test that builds a scene is parallel: the fake `gh` is found through `GH_PATH`, which
@@ -954,7 +1026,7 @@ const (
 	exitDelivered = 5
 )
 
-// scenario is one state of the repository and of GitHub that `ils push` is run in.
+// scenario is one state of the repository and of GitHub that a landing command is run in.
 type scenario struct {
 	// arrange changes the repository, which stands on the topic branch with one commit.
 	arrange func(f *gittest.Fixture)

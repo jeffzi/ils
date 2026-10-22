@@ -212,9 +212,9 @@ func TestRunner_Run_WhenGitExitsZeroWhileChildHoldsPipes_ReturnsOutputPromptly(t
 func TestRunner_Run_WhenRecorderAttached_RecordsEachArgv(t *testing.T) {
 	t.Parallel()
 	runner, recorder := newRecordedRunner(t)
+
 	_, err := runner.Run(t.Context(), "init", "--quiet")
 	assert.NilError(t, err)
-
 	_, err = runner.Run(t.Context(), "status", "--short")
 	assert.NilError(t, err)
 

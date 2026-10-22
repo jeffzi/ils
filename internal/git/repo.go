@@ -2,12 +2,11 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"golang.org/x/mod/semver"
 
 	"github.com/jeffzi/ils/internal/child"
 )
@@ -154,9 +153,10 @@ func (r Repo) DirtyFiles(ctx context.Context) ([]string, error) {
 
 // Divergence returns how many commits a has that b lacks, and how many b has that a lacks.
 func (r Repo) Divergence(ctx context.Context, a, b string) (Divergence, error) {
-	const call = "git rev-list --left-right --count"
+	args := []string{"rev-list", "--left-right", "--count", a + "..." + b}
+	call := child.CommandLine(append([]string{program}, args...))
 
-	out, err := r.line(ctx, "rev-list", "--left-right", "--count", a+"..."+b)
+	out, err := r.line(ctx, args...)
 	if err != nil {
 		return Divergence{}, err
 	}
@@ -189,6 +189,32 @@ func (r Repo) Contains(ctx context.Context, a, b string) (bool, error) {
 // It reads origin/<trunk>, which is current only after a fetch of trunk.
 func (r Repo) CommitsPast(ctx context.Context, tip, trunk string) ([]Commit, error) {
 	return r.commits(ctx, "--no-merges", tip, excludeTrunk(trunk))
+}
+
+// LocalTrunkAhead reports whether the local trunk has anything origin's trunk lacks, and returns
+// the commits it has past origin's trunk, merges left out, oldest first. A local trunk that does
+// not exist, or that origin's trunk contains, is not ahead.
+//
+// It reads origin/<trunk>, which is current only after a fetch of trunk.
+func (r Repo) LocalTrunkAhead(ctx context.Context, trunk string) (ahead bool, past []Commit, err error) {
+	exists, err := r.HasCommits(ctx, trunk)
+	if err != nil || !exists {
+		return false, nil, err
+	}
+
+	local := headsRef + trunk
+
+	behind, err := r.Contains(ctx, "refs/remotes/"+origin+"/"+trunk, local)
+	if err != nil || behind {
+		return false, nil, err
+	}
+
+	past, err = r.CommitsPast(ctx, local, trunk)
+	if err != nil {
+		return false, nil, err
+	}
+
+	return true, past, nil
 }
 
 // OwnCommits returns the commits on tip that origin's trunk lacks and that none of the local
@@ -236,6 +262,89 @@ func (r Repo) Unlanded(ctx context.Context, mergedHead, tip, trunk string) ([]Co
 	return r.commits(ctx, "--no-merges", "--cherry-pick", "--right-only", mergedHead+"..."+tip, excludeTrunk(trunk))
 }
 
+// Switch puts HEAD on branch. A branch that only origin has is created from origin's copy.
+//
+// A branch another worktree has checked out, or an untracked file the switch would overwrite, is a
+// *child.ExitError that carries git's message, and leaves the tree as it was.
+func (r Repo) Switch(ctx context.Context, branch string) error {
+	// --guess makes the creation from origin's copy hold whatever checkout.guess says.
+	_, err := r.Runner.Run(ctx, "switch", "--quiet", "--guess", branch)
+
+	return err
+}
+
+// DetachAtOrigin detaches HEAD at origin/<trunk> as last fetched, keeping untracked files.
+func (r Repo) DetachAtOrigin(ctx context.Context, trunk string) error {
+	_, err := r.Runner.Run(ctx, "switch", "--quiet", "--detach", origin+"/"+trunk)
+
+	return err
+}
+
+// DeleteBranch deletes the local branch even when nothing has merged it, as a squash leaves it.
+//
+// Deleting the branch HEAD is on is a *child.ExitError that carries git's message.
+func (r Repo) DeleteBranch(ctx context.Context, branch string) error {
+	_, err := r.Runner.Run(ctx, "branch", "--quiet", "--delete", "--force", branch)
+
+	return err
+}
+
+// CheckedOutElsewhere reports whether a worktree other than the current one has branch checked out.
+// A worktree detached at the branch's commit does not have it checked out.
+func (r Repo) CheckedOutElsewhere(ctx context.Context, branch string) (bool, error) {
+	current, err := r.line(ctx, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return false, err
+	}
+
+	result, err := r.Runner.Run(ctx, "worktree", "list", "--porcelain")
+	if err != nil {
+		return false, err
+	}
+
+	var worktree string
+
+	for line := range strings.SplitSeq(result.Stdout, "\n") {
+		if path, isWorktree := strings.CutPrefix(line, "worktree "); isWorktree {
+			worktree = path
+
+			continue
+		}
+
+		if line != "branch "+headsRef+branch {
+			continue
+		}
+
+		same, err := sameDirectory(worktree, current)
+		if err != nil {
+			return false, err
+		}
+
+		if !same {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// sameDirectory reports whether the worktree paths a and b, as git prints them, name one
+// directory. Both are compared with their symbolic links resolved, which also cleans them to this
+// system's separators: a temporary directory reaches git as /private/var/... on macOS, git prints
+// forward slashes on Windows, and a worktree recorded by another tool keeps the spelling it was
+// given. A path that cannot be resolved, such as a worktree whose directory was removed, is an
+// error naming it.
+func sameDirectory(a, b string) (bool, error) {
+	resolvedA, errA := filepath.EvalSymlinks(a)
+	resolvedB, errB := filepath.EvalSymlinks(b)
+
+	if err := errors.Join(errA, errB); err != nil {
+		return false, fmt.Errorf("resolve worktree path: %w", err)
+	}
+
+	return resolvedA == resolvedB, nil
+}
+
 // CheckVersion returns nil when git is MinimumVersion or newer.
 //
 // A git that is older, or whose first line of `git --version` names no version that can be read,
@@ -275,7 +384,7 @@ func VersionOf(line string) string {
 		version += "-" + parts[versionComponents]
 	}
 
-	if !semver.IsValid(child.SemverPrefix + version) {
+	if !child.ValidVersion(version) {
 		return ""
 	}
 

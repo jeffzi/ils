@@ -19,11 +19,19 @@ type Repo struct {
 	Fork  bool
 	// CanPush reports whether the logged-in user may push to the repository.
 	CanPush bool
+	// SquashAllowed reports whether the repository's settings allow squash merges. The rules on a
+	// branch can still forbid them: see Protection.
+	SquashAllowed bool
 }
 
 // Slug names the repository as host/owner/name, the way gh's `--repo` takes it.
 func (r Repo) Slug() string {
 	return r.Host + "/" + r.Owner + "/" + r.Name
+}
+
+// FullName names the repository as owner/name, the way a result names it to the user.
+func (r Repo) FullName() string {
+	return r.Owner + "/" + r.Name
 }
 
 // ChangeState is where a change stands in its life.
@@ -40,8 +48,7 @@ const (
 type Change struct {
 	URL   string
 	Title string
-	// Base is the branch the change lands on.
-	Base string
+	Base  string
 	// HeadSHA is the commit the forge holds as the tip of the change.
 	HeadSHA string
 	State   ChangeState
@@ -52,8 +59,7 @@ type Change struct {
 // NewChange describes a change to open; its body is always empty.
 type NewChange struct {
 	Title string
-	// Base is the branch the change lands on.
-	Base string
+	Base  string
 	// Head is the branch that carries the change.
 	Head string
 }
@@ -61,6 +67,26 @@ type NewChange struct {
 // ChangeRef points at a change that was just opened.
 type ChangeRef struct {
 	URL    string
+	Number int
+}
+
+// Message is what a change holds toward the commit that lands it.
+type Message struct {
+	Title string
+	Body  string
+	// Trailers is the trailer block the forge would end a squash commit with when the logged-in
+	// user lands the change, one trailer per entry in the forge's order; it may be empty.
+	Trailers []string
+}
+
+// Landing asks the forge to squash a change onto its base.
+type Landing struct {
+	// HeadSHA is the tip whose checks were read: the forge refuses the landing once the change
+	// has moved past it.
+	HeadSHA string
+	Subject string
+	// Body is the commit body, landed as given even when empty.
+	Body   string
 	Number int
 }
 
@@ -99,6 +125,12 @@ type HeadQuery struct {
 type Protection struct {
 	// RequiredChecks names the checks a change must pass to land; it may be empty.
 	RequiredChecks []string
+	// SquashForbiddenBy holds the ids of the rulesets whose rules on the trunk forbid a squash
+	// merge, in the order the forge lists them; it is empty when SquashAllowed is true.
+	SquashForbiddenBy []int
+	// SquashAllowed reports whether the rules on the trunk allow a squash merge. The repository's
+	// settings can still forbid one: see Repo.
+	SquashAllowed bool
 }
 
 // ---------------------------------------------------------------------------

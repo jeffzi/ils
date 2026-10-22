@@ -2,23 +2,16 @@
 package github
 
 import (
-	"cmp"
 	"context"
 	legacy "encoding/json"
-	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/url"
-	"os/exec"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
-
-	gh "github.com/cli/go-gh/v2"
-	"golang.org/x/mod/semver"
 
 	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
@@ -28,21 +21,11 @@ import (
 // GitHub forge
 // ---------------------------------------------------------------------------
 
-// Forge is GitHub seen through the operations landing asks of a forge, each one a call of gh.
+// Forge is GitHub seen through the operations landing asks of a forge, each one a call of gh. Its
+// zero value is ready to use.
 type Forge struct {
 	runner Runner
 }
-
-// NewForge returns the GitHub forge that runs gh through runner.
-func NewForge(runner Runner) *Forge {
-	return &Forge{runner: runner}
-}
-
-// runOfLink finds the Actions run a check's link belongs to.
-var runOfLink = regexp.MustCompile(`/actions/runs/(\d+)`)
-
-// runUnfinished matches what `gh run view --log-failed` prints when the run has not completed.
-var runUnfinished = regexp.MustCompile(`run \d+ is still in progress; logs will be available when it is complete`)
 
 // pullExists matches what `gh pr create` prints when the branch already has a pull request.
 var pullExists = regexp.MustCompile(`a pull request for branch "[^"\n]*" into branch "[^"\n]*" already exists`)
@@ -61,15 +44,10 @@ const pathNotFound = "Not Found (HTTP 404)"
 // dynamic workflows (Dependabot, the dependency graph) under other paths, with no file behind them.
 const workflowsDir = ".github/workflows"
 
-// noChecksReported is what gh prints on stderr when a pull request has no checks.
-const noChecksReported = "no checks reported"
-
-// runListLimit is the most runs `gh run list` returns for one commit.
-const runListLimit = "1000"
-
 type repoView struct {
 	Permission string `json:"viewerPermission"`
 	Fork       bool   `json:"isFork"`
+	Squash     bool   `json:"squashMergeAllowed"`
 }
 
 type pull struct {
@@ -97,15 +75,38 @@ type branchRule struct {
 		Required []struct {
 			Context string `json:"context"`
 		} `json:"required_status_checks"`
+		// MergeMethods is nil when the rule names none, which allows every method.
+		MergeMethods []string `json:"allowed_merge_methods"`
 	} `json:"parameters"`
+	RulesetID int `json:"ruleset_id"`
 }
 
-type pullCheck struct {
-	Name     string `json:"name"`
-	Bucket   string `json:"bucket"`
-	Workflow string `json:"workflow"`
-	Link     string `json:"link"`
+type pullMessage struct {
+	Data struct {
+		Repository *struct {
+			PullRequest *pullMessageView `json:"pullRequest"`
+		} `json:"repository"`
+	} `json:"data"`
 }
+
+type pullMessageView struct {
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	MergeBody string `json:"viewerMergeBodyText"`
+}
+
+// errNoPullRequest is why an answer to the message read that names no pull request cannot be read.
+var errNoPullRequest = errors.New("the answer holds no pull request")
+
+// MessageQuery is the GraphQL query that reads a pull request's title, its body, and the body
+// GitHub would compose for the viewer's squash merge. The repository and number are variables,
+// never spliced into the query.
+const MessageQuery = "query($owner: String!, $name: String!, $number: Int!) { " +
+	"repository(owner: $owner, name: $name) { " +
+	"pullRequest(number: $number) { title body viewerMergeBodyText(mergeType: SQUASH) } } }"
+
+// trailerLine matches a line of the `Token: value` form, whose token is letters, digits and hyphens.
+var trailerLine = regexp.MustCompile(`^[A-Za-z0-9-]+: \S`)
 
 type workflowsPage struct {
 	Workflows []struct {
@@ -118,13 +119,7 @@ type repoFile struct {
 	Path string `json:"path"`
 }
 
-type workflowRun struct {
-	Status   string `json:"status"`
-	Name     string `json:"name"`
-	Workflow string `json:"workflowName"`
-}
-
-// Identity fills the fork and can-push flags of repo, after checking that gh is no older than
+// Identity fills the fork, can-push and squash-allowed flags of repo, after checking that gh is no older than
 // MinimumVersion and then that it is logged in to the host of repo.
 func (f *Forge) Identity(ctx context.Context, repo forge.Repo) (forge.Repo, error) {
 	if err := f.runner.checkVersion(ctx); err != nil {
@@ -135,13 +130,14 @@ func (f *Forge) Identity(ctx context.Context, repo forge.Repo) (forge.Repo, erro
 		return forge.Repo{}, err
 	}
 
-	view, err := RunJSON[repoView](ctx, f.runner, "repo", "view", repo.Slug(), "--json", "isFork,viewerPermission")
+	view, err := runDecoded[repoView](ctx, f.runner, "repo", "view", repo.Slug(), "--json", "isFork,viewerPermission,squashMergeAllowed")
 	if err != nil {
-		return forge.Repo{}, fmt.Errorf("read the repository %s: %w", repo.Slug(), err)
+		return forge.Repo{}, err
 	}
 
 	repo.Fork = view.Fork
 	repo.CanPush = slices.Contains([]string{"WRITE", "MAINTAIN", "ADMIN"}, view.Permission)
+	repo.SquashAllowed = view.Squash
 
 	return repo, nil
 }
@@ -151,7 +147,7 @@ func (f *Forge) FindChanges(ctx context.Context, repo forge.Repo, branch string)
 	var changes []forge.Change
 
 	for _, state := range []forge.ChangeState{forge.ChangeOpen, forge.ChangeMerged} {
-		pulls, err := RunJSON[[]pull](ctx, f.runner,
+		pulls, err := runDecoded[[]pull](ctx, f.runner,
 			"pr", "list", "--repo", repo.Slug(), "--head", branch, "--state", string(state),
 			"--json", "number,url,title,baseRefName,headRefOid,isDraft,isCrossRepository")
 		if err != nil {
@@ -208,7 +204,7 @@ func (f *Forge) OpenChange(ctx context.Context, repo forge.Repo, change forge.Ne
 // GitHub's BLOCKED does not say what blocks, so for one that no review explains
 // Head also reads the checks on the head commit, when the query names required ones.
 func (f *Forge) Head(ctx context.Context, repo forge.Repo, query forge.HeadQuery) (forge.Head, error) {
-	view, err := RunJSON[pullHead](ctx, f.runner,
+	view, err := runDecoded[pullHead](ctx, f.runner,
 		"pr", "view", "--repo", repo.Slug(), strconv.Itoa(query.Number),
 		"--json", "headRefOid,mergeable,mergeStateStatus,isDraft,reviewDecision")
 	if err != nil {
@@ -247,50 +243,68 @@ func (f *Forge) missingCheck(ctx context.Context, repo forge.Repo, query forge.V
 	return len(verdict.Pending()) == 0 && !verdict.Running(), nil
 }
 
-// TrunkProtection returns the status checks the rules on trunk require.
+// TrunkProtection returns the status checks the rules on trunk require, and whether they allow a
+// squash merge: they do unless a pull_request rule names merge methods without squash, whose
+// ruleset it then names.
 //
 // A free private repository answers 403 with an upgrade message to the read,
-// which counts as no required check. Any other 403 is an error.
+// which counts as no rule. Any other 403 is an error.
 func (f *Forge) TrunkProtection(ctx context.Context, repo forge.Repo, trunk string) (forge.Protection, error) {
-	// Each segment is escaped on its own: `#`, `%` and `?` would otherwise cut or corrupt the
-	// path, while `/` is kept literal so that a name like release/v1 keeps its slash in the path.
-	segments := strings.Split(trunk, "/")
-	for i, segment := range segments {
-		segments[i] = url.PathEscape(segment)
-	}
-
-	args := paginatedAPIArgs(repo, "rules/branches/"+strings.Join(segments, "/"))
+	args := paginatedAPIArgs(repo, "rules/branches/"+branchPath(trunk))
 
 	result, err := f.runner.Run(ctx, args...)
 	if exitErr, ok := errors.AsType[*child.ExitError](err); ok &&
 		strings.Contains(exitErr.Stderr, forbiddenStatus) && strings.Contains(exitErr.Stderr, freePlanRefusal) {
-		return forge.Protection{}, nil
+		return forge.Protection{SquashAllowed: true}, nil
 	}
 
 	if err != nil {
 		return forge.Protection{}, err
 	}
 
-	rules, err := decodePages[branchRule](result.Stdout, args)
+	pages, err := decodeEachPage[[]branchRule](result.Stdout, args)
 	if err != nil {
 		return forge.Protection{}, err
 	}
 
-	var required []string
+	return protectionOf(slices.Concat(pages...)), nil
+}
+
+// protectionOf folds the rules on a branch into the checks they require, each named once, and
+// whether every pull_request rule allows a squash merge, with the rulesets of those that do not.
+func protectionOf(rules []branchRule) forge.Protection {
+	protection := forge.Protection{SquashAllowed: true}
 
 	for _, rule := range rules {
-		if rule.Type != "required_status_checks" {
-			continue
-		}
-
-		for _, check := range rule.Parameters.Required {
-			if !slices.Contains(required, check.Context) {
-				required = append(required, check.Context)
+		switch rule.Type {
+		case "pull_request":
+			if rule.Parameters.MergeMethods != nil && !slices.Contains(rule.Parameters.MergeMethods, "squash") {
+				protection.SquashAllowed = false
+				protection.SquashForbiddenBy = append(protection.SquashForbiddenBy, rule.RulesetID)
+			}
+		case "required_status_checks":
+			for _, check := range rule.Parameters.Required {
+				if !slices.Contains(protection.RequiredChecks, check.Context) {
+					protection.RequiredChecks = append(protection.RequiredChecks, check.Context)
+				}
 			}
 		}
 	}
 
-	return forge.Protection{RequiredChecks: required}, nil
+	return protection
+}
+
+// branchPath returns branch as a REST path.
+//
+// Each segment is escaped on its own: `#`, `%` and `?` would otherwise cut or corrupt the
+// path, while `/` is kept literal so that a name like release/v1 keeps its slash in the path.
+func branchPath(branch string) string {
+	segments := strings.Split(branch, "/")
+	for i, segment := range segments {
+		segments[i] = url.PathEscape(segment)
+	}
+
+	return strings.Join(segments, "/")
 }
 
 // HasTrunkCI reports whether a workflow that GitHub runs, one in the active state,
@@ -313,6 +327,69 @@ func (f *Forge) HasTrunkCI(ctx context.Context, repo forge.Repo, trunk string) (
 	return slices.ContainsFunc(files, isActiveWorkflow), nil
 }
 
+// Message returns pull request number's title and body, and the trailer block GitHub would end
+// its squash commit with when the logged-in user merges it.
+//
+// The block is the last paragraph of the body GitHub composes, taken only when every line of it
+// is a trailer. Under every message setting GitHub puts its trailers there; a last paragraph with
+// any other line, such as a commit's subject, means GitHub added no trailer.
+//
+// An answer that cannot be decoded, or that holds no pull request, is a *DecodeError.
+func (f *Forge) Message(ctx context.Context, repo forge.Repo, number int) (forge.Message, error) {
+	args := []string{
+		"api", "graphql", "--hostname", repo.Host,
+		"-F", "number=" + strconv.Itoa(number), "-f", "owner=" + repo.Owner, "-f", "name=" + repo.Name,
+		"-f", "query=" + MessageQuery,
+	}
+
+	answer, err := runDecoded[pullMessage](ctx, f.runner, args...)
+	if err != nil {
+		return forge.Message{}, err
+	}
+
+	if answer.Data.Repository == nil || answer.Data.Repository.PullRequest == nil {
+		return forge.Message{}, &DecodeError{Argv: Argv(args), Err: errNoPullRequest}
+	}
+
+	view := answer.Data.Repository.PullRequest
+
+	return forge.Message{Title: view.Title, Body: view.Body, Trailers: trailersOf(view.MergeBody)}, nil
+}
+
+// trailersOf returns the lines of the last paragraph of body when every one is a trailer, and
+// nil otherwise.
+func trailersOf(body string) []string {
+	paragraphs := strings.Split(strings.TrimRight(body, "\n"), "\n\n")
+	lines := strings.Split(paragraphs[len(paragraphs)-1], "\n")
+
+	for _, line := range lines {
+		if !trailerLine.MatchString(line) {
+			return nil
+		}
+	}
+
+	return lines
+}
+
+// Land squash-merges the pull request with exactly the subject and body of landing, even an empty
+// body, and leaves its branch in place. GitHub refuses the merge once the head is no longer
+// landing.HeadSHA.
+func (f *Forge) Land(ctx context.Context, repo forge.Repo, landing forge.Landing) error {
+	_, err := f.runner.Run(ctx,
+		"pr", "merge", strconv.Itoa(landing.Number), "--repo", repo.Slug(), "--squash",
+		"--match-head-commit", landing.HeadSHA, "--subject", landing.Subject, "--body", landing.Body)
+
+	return err
+}
+
+// DeleteBranch removes branch from the repository on GitHub.
+func (f *Forge) DeleteBranch(ctx context.Context, repo forge.Repo, branch string) error {
+	_, err := f.runner.Run(ctx,
+		"api", "--hostname", repo.Host, "-X", "DELETE", repoAPIPath(repo, "git/refs/heads/"+branchPath(branch)))
+
+	return err
+}
+
 // repoAPIPath returns the REST path of rest under the repository, relative to the API root.
 func repoAPIPath(repo forge.Repo, rest string) string {
 	return fmt.Sprintf("repos/%s/%s/%s", repo.Owner, repo.Name, rest)
@@ -321,6 +398,38 @@ func repoAPIPath(repo forge.Repo, rest string) string {
 // paginatedAPIArgs returns the gh arguments that read rest under the repository, following every page.
 func paginatedAPIArgs(repo forge.Repo, rest string) []string {
 	return []string{"api", "--hostname", repo.Host, "--paginate", repoAPIPath(repo, rest)}
+}
+
+// decodeEachPage decodes the JSON values that `gh api --paginate` prints, one per
+// page and concatenated, each into a P; stdout holding no value is a *DecodeError.
+func decodeEachPage[P any](stdout string, args []string) ([]P, error) {
+	decoder := legacy.NewDecoder(strings.NewReader(stdout))
+
+	var pages []P
+
+	for {
+		var raw legacy.RawMessage
+
+		err := decoder.Decode(&raw)
+		if errors.Is(err, io.EOF) {
+			if len(pages) > 0 {
+				return pages, nil
+			}
+
+			err = io.ErrUnexpectedEOF
+		}
+
+		if err != nil {
+			return nil, &DecodeError{Argv: Argv(args), Err: err}
+		}
+
+		page, err := decodeOutput[P](string(raw), args)
+		if err != nil {
+			return nil, err
+		}
+
+		pages = append(pages, page)
+	}
 }
 
 // activeWorkflows returns the paths of the active workflows that have a file under .github/workflows.
@@ -367,176 +476,6 @@ func (f *Forge) workflowFiles(ctx context.Context, repo forge.Repo, trunk string
 	}
 
 	return decodeOutput[[]repoFile](result.Stdout, args)
-}
-
-// Verdict returns every check of the pull request, the workflow runs on the
-// commit, and the failed log of the check the verdict's Failed names.
-//
-// A check the query requires carries Required, so that the others are reported
-// without deciding.
-func (f *Forge) Verdict(ctx context.Context, repo forge.Repo, query forge.VerdictQuery) (forge.Verdict, error) {
-	verdict, err := f.checksAndRuns(ctx, repo, query)
-	if err != nil {
-		return forge.Verdict{}, err
-	}
-
-	verdict.FailedLog, err = f.failedLog(ctx, repo, verdict)
-	if err != nil {
-		return forge.Verdict{}, err
-	}
-
-	return verdict, nil
-}
-
-// checksAndRuns is the verdict without its failed log.
-func (f *Forge) checksAndRuns(ctx context.Context, repo forge.Repo, query forge.VerdictQuery) (forge.Verdict, error) {
-	checks, err := f.checks(ctx, repo, query.Number)
-	if err != nil {
-		return forge.Verdict{}, err
-	}
-
-	runs, err := f.runs(ctx, repo, query.SHA)
-	if err != nil {
-		return forge.Verdict{}, err
-	}
-
-	verdict := forge.Verdict{Checks: checks, Runs: runs}
-	if len(query.Required) == 0 {
-		return verdict, nil
-	}
-
-	for i := range checks {
-		checks[i].Required = slices.Contains(query.Required, checks[i].Name)
-	}
-
-	for _, name := range query.Required {
-		reported := func(check forge.Check) bool { return check.Name == name }
-		if !slices.ContainsFunc(checks, reported) {
-			verdict.MissingRequired = append(verdict.MissingRequired, name)
-		}
-	}
-
-	return verdict, nil
-}
-
-// checks ignores gh's exit code once it printed JSON: it exits 8 while a check is
-// pending, 1 when one failed, and 0 for a canceled one. A pull request gh says has
-// no checks reported yields no checks and no error.
-func (f *Forge) checks(ctx context.Context, repo forge.Repo, number int) ([]forge.Check, error) {
-	args := []string{
-		"pr", "checks", "--repo", repo.Slug(), strconv.Itoa(number),
-		"--json", "name,bucket,workflow,link",
-	}
-
-	result, err := f.runner.Run(ctx, args...)
-	if err != nil {
-		exitErr, ok := errors.AsType[*child.ExitError](err)
-
-		switch {
-		case !ok:
-			return nil, err
-		case strings.TrimSpace(result.Stdout) != "":
-		case strings.Contains(exitErr.Stderr, noChecksReported):
-			return nil, nil
-		default:
-			return nil, err
-		}
-	}
-
-	reported, err := decodeOutput[[]pullCheck](result.Stdout, args)
-	if err != nil {
-		return nil, err
-	}
-
-	checks := make([]forge.Check, len(reported))
-	for i, check := range reported {
-		checks[i] = forge.Check{
-			Name: check.Name, Bucket: bucketOf(check.Bucket), Workflow: check.Workflow, Link: check.Link,
-		}
-	}
-
-	return checks, nil
-}
-
-// bucketOf returns BucketPending for a bucket it does not know, so that it never reads as a passed check.
-func bucketOf(bucket string) forge.Bucket {
-	switch bucket {
-	case "pass":
-		return forge.BucketPass
-	case "fail":
-		return forge.BucketFail
-	case "skipping":
-		return forge.BucketSkipped
-	case "cancel":
-		return forge.BucketCanceled
-	default:
-		return forge.BucketPending
-	}
-}
-
-// runs names a run by its workflow name, falling back to the run name when the workflow name is empty.
-func (f *Forge) runs(ctx context.Context, repo forge.Repo, sha string) ([]forge.Run, error) {
-	listed, err := RunJSON[[]workflowRun](ctx, f.runner,
-		"run", "list", "--repo", repo.Slug(), "--commit", sha, "--limit", runListLimit,
-		"--json", "status,name,workflowName")
-	if err != nil {
-		return nil, err
-	}
-
-	runs := make([]forge.Run, len(listed))
-	for i, run := range listed {
-		runs[i] = forge.Run{Name: cmp.Or(run.Workflow, run.Name), Status: runStatusOf(run.Status)}
-	}
-
-	return runs, nil
-}
-
-// runStatusOf returns RunInProgress for a status it does not know, so that the
-// run keeps a wait alive and never ends one.
-func runStatusOf(status string) forge.RunStatus {
-	switch status {
-	case "queued", "pending":
-		return forge.RunQueued
-	case "waiting", "requested":
-		return forge.RunAwaitingPerson
-	case "completed":
-		return forge.RunCompleted
-	default:
-		return forge.RunInProgress
-	}
-}
-
-// failedLog reads the failed log of the check the verdict's Failed names, so
-// that the named check and the log always belong together.
-//
-// A check with no Actions run behind it has no log, a run that has not completed
-// holds its log back, and a gh that cannot give the log for any other reason
-// leaves it unreadable: the verdict is red either way.
-func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Verdict) (forge.FailedLog, error) {
-	failed, ok := verdict.Failed()
-	if !ok {
-		return forge.FailedLog{}, nil
-	}
-
-	match := runOfLink.FindStringSubmatch(failed.Link)
-	if match == nil {
-		return forge.FailedLog{Check: failed.Name, State: forge.FailedLogNoRun}, nil
-	}
-
-	result, err := f.runner.Run(ctx, "run", "view", "--repo", repo.Slug(), match[1], "--log-failed")
-	if exitErr, exited := errors.AsType[*child.ExitError](err); exited {
-		if runUnfinished.MatchString(exitErr.Stderr) {
-			return forge.FailedLog{Check: failed.Name, State: forge.FailedLogInProgress}, nil
-		}
-
-		return forge.FailedLog{Check: failed.Name, State: forge.FailedLogUnreadable}, nil
-	}
-
-	if err != nil {
-		return forge.FailedLog{}, err
-	}
-
-	return forge.FailedLog{Check: failed.Name, Text: result.Stdout, State: forge.FailedLogRead}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -598,198 +537,5 @@ func blockedState(facts MergeFacts) forge.MergeState {
 		return forge.MergeBlockedByMissingCheck
 	default:
 		return forge.MergeBlockedOther
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Running gh and decoding output
-// ---------------------------------------------------------------------------
-
-// Program is the name gh is run under, and the first word of every argv a call is named by.
-const Program = "gh"
-
-func argv(args []string) []string {
-	return append([]string{Program}, args...)
-}
-
-const installURL = "https://cli.github.com"
-
-// MinimumVersion is the oldest release of gh that ils works with.
-const MinimumVersion = "2.50.0"
-
-// versionPrefix is what the first line of `gh --version` reads ahead of the version.
-const versionPrefix = "gh version "
-
-// Runner runs gh, found through GH_PATH and then PATH.
-type Runner struct{}
-
-// Result is what a call printed.
-type Result struct {
-	Stdout string
-	Stderr string
-}
-
-// DecodeError reports a call whose stdout was not the JSON its caller expected.
-type DecodeError struct {
-	Err  error
-	Argv []string
-}
-
-// Error names the command whose output could not be decoded.
-func (e *DecodeError) Error() string {
-	return fmt.Sprintf("%s: decode output: %v", strings.Join(e.Argv, " "), e.Err)
-}
-
-// Unwrap returns Err, so that errors.Is and errors.As reach the decoder's error.
-func (e *DecodeError) Unwrap() error {
-	return e.Err
-}
-
-// Run runs gh with args and returns what it printed.
-//
-// A gh that cannot be found is a *child.ToolMissingError. A non-zero exit is a
-// *child.ExitError, returned together with the Result, since gh prints to stdout
-// before some of its non-zero exits. When ctx ends before gh does, the error is
-// the context's and the Result is empty, so a half-written stdout is never read.
-func (Runner) Run(ctx context.Context, args ...string) (Result, error) {
-	stdout, stderr, err := gh.ExecContext(ctx, args...)
-	if isMissing(err) {
-		return Result{}, &child.ToolMissingError{Tool: Program, InstallURL: installURL, Err: err}
-	}
-
-	result := Result{Stdout: stdout.String(), Stderr: stderr.String()}
-	if err == nil {
-		return result, nil
-	}
-
-	failure := child.Failure(ctx, argv(args), err, result.Stderr)
-	if _, exited := errors.AsType[*child.ExitError](failure); exited {
-		return result, failure
-	}
-
-	return Result{}, failure
-}
-
-// isMissing reports whether err says that no gh could be started: none on PATH,
-// or a GH_PATH that names no file.
-func isMissing(err error) bool {
-	if _, ok := errors.AsType[*exec.Error](err); ok {
-		return true
-	}
-
-	return errors.Is(err, fs.ErrNotExist)
-}
-
-// checkVersion returns nil when gh is MinimumVersion or newer.
-//
-// A gh that is older, or whose first line of `gh --version` carries no version that can be
-// read, is a *child.ToolTooOldError; a pre-release of MinimumVersion is older than it.
-func (r Runner) checkVersion(ctx context.Context) error {
-	result, err := r.Run(ctx, "--version")
-	if err != nil {
-		return err
-	}
-
-	requirement := child.Requirement{Tool: Program, Minimum: MinimumVersion, InstallURL: installURL}
-
-	return requirement.CheckOutput(result.Stdout, VersionOf)
-}
-
-// VersionOf returns the version that a first line of `gh --version` names, as semver without the
-// leading v, or "" when it names none or does not start with "gh version ". A pre-release keeps
-// its suffix, so that it reads as older than its release.
-func VersionOf(line string) string {
-	rest, ok := strings.CutPrefix(line, versionPrefix)
-	if !ok {
-		return ""
-	}
-
-	version, _, _ := strings.Cut(rest, " ")
-	if !semver.IsValid(child.SemverPrefix + version) {
-		return ""
-	}
-
-	return version
-}
-
-// CheckLogin reports whether gh is logged in to host.
-//
-// A gh that cannot be found is a *child.ToolMissingError and a gh that is not
-// logged in to host is a *forge.NotLoggedInError.
-func (r Runner) CheckLogin(ctx context.Context, host string) error {
-	_, err := r.Run(ctx, "auth", "status", "--hostname", host)
-	if _, ok := errors.AsType[*child.ExitError](err); ok {
-		return &forge.NotLoggedInError{Host: host, Err: err}
-	}
-
-	return err
-}
-
-// RunJSON runs gh with args and decodes its stdout into a T.
-//
-// It returns the errors of Runner.Run, and a *DecodeError when stdout is not
-// the JSON of a T.
-func RunJSON[T any](ctx context.Context, r Runner, args ...string) (T, error) {
-	result, err := r.Run(ctx, args...)
-	if err != nil {
-		var zero T
-
-		return zero, err
-	}
-
-	return decodeOutput[T](result.Stdout, args)
-}
-
-func decodeOutput[T any](stdout string, args []string) (T, error) {
-	var value T
-	if err := json.Unmarshal([]byte(stdout), &value); err != nil {
-		var zero T
-
-		return zero, &DecodeError{Argv: argv(args), Err: err}
-	}
-
-	return value, nil
-}
-
-// decodePages decodes the JSON arrays that `gh api --paginate` prints, one per
-// page and concatenated, into one slice; a single array decodes as itself.
-func decodePages[T any](stdout string, args []string) ([]T, error) {
-	pages, err := decodeEachPage[[]T](stdout, args)
-	if err != nil {
-		return nil, err
-	}
-
-	return slices.Concat(pages...), nil
-}
-
-// decodeEachPage decodes the JSON values that `gh api --paginate` prints, one per
-// page and concatenated, each into a P; stdout holding no value is a *DecodeError.
-func decodeEachPage[P any](stdout string, args []string) ([]P, error) {
-	decoder := legacy.NewDecoder(strings.NewReader(stdout))
-
-	var pages []P
-
-	for {
-		var raw legacy.RawMessage
-
-		err := decoder.Decode(&raw)
-		if errors.Is(err, io.EOF) {
-			if len(pages) > 0 {
-				return pages, nil
-			}
-
-			err = io.ErrUnexpectedEOF
-		}
-
-		if err != nil {
-			return nil, &DecodeError{Argv: argv(args), Err: err}
-		}
-
-		page, err := decodeOutput[P](string(raw), args)
-		if err != nil {
-			return nil, err
-		}
-
-		pages = append(pages, page)
 	}
 }

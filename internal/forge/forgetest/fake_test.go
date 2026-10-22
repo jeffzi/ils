@@ -25,6 +25,8 @@ const (
 	workflow   = "ci"
 	rawClean   = "CLEAN"
 	hasTrunkCI = true
+	subject    = "Add the widget list (#12)"
+	body       = "List every widget on the home page."
 )
 
 // repo is the repository every call is made against.
@@ -103,6 +105,20 @@ func verdict() forge.Verdict {
 	}
 }
 
+// message is the scripted answer of Message.
+func message() forge.Message {
+	return forge.Message{
+		Title:    "Add the widget list",
+		Body:     body,
+		Trailers: []string{"Co-authored-by: Ada <ada@example.com>"},
+	}
+}
+
+// landing is the argument of Land.
+func landing() forge.Landing {
+	return forge.Landing{Number: number, HeadSHA: newCommit, Subject: subject, Body: body}
+}
+
 // recorder stands in for the testing.TB the fake reports to, keeping each failure.
 type recorder struct {
 	failures []string
@@ -123,6 +139,7 @@ type operation struct {
 	made forgetest.Call
 }
 
+// operations lists every forge operation, called with the fixture arguments.
 func operations() []operation {
 	return []operation{
 		{name: "identity", made: forgetest.Call{Op: forgetest.OpIdentity, Repo: repo()}, want: identity(), call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
@@ -146,9 +163,19 @@ func operations() []operation {
 		{name: "has trunk CI", made: forgetest.Call{Op: forgetest.OpHasTrunkCI, Repo: repo(), Branch: trunk}, want: hasTrunkCI, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
 			return f.HasTrunkCI(ctx, repo(), trunk)
 		}},
+		{name: "message", made: forgetest.Call{Op: forgetest.OpMessage, Repo: repo(), Number: number}, want: message(), call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
+			return f.Message(ctx, repo(), number)
+		}},
+		{name: "land", made: forgetest.Call{Op: forgetest.OpLand, Repo: repo(), Landing: landing()}, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
+			return nil, f.Land(ctx, repo(), landing())
+		}},
+		{name: "delete branch", made: forgetest.Call{Op: forgetest.OpDeleteBranch, Repo: repo(), Branch: branch}, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
+			return nil, f.DeleteBranch(ctx, repo(), branch)
+		}},
 	}
 }
 
+// steps scripts one answer: the error when err is set, value otherwise.
 func steps[T any](value T, err error) []forgetest.Answer[T] {
 	if err != nil {
 		return []forgetest.Answer[T]{{Err: err}}
@@ -157,6 +184,7 @@ func steps[T any](value T, err error) []forgetest.Answer[T] {
 	return []forgetest.Answer[T]{{Value: value}}
 }
 
+// script scripts every operation to answer its fixture value, or err when err is set.
 func script(err error) forgetest.Script {
 	return forgetest.Script{
 		Identity:        steps(identity(), err),
@@ -166,6 +194,9 @@ func script(err error) forgetest.Script {
 		TrunkProtection: steps(protection(), err),
 		Verdict:         steps(verdict(), err),
 		HasTrunkCI:      steps(hasTrunkCI, err),
+		Message:         steps(message(), err),
+		Land:            []error{err},
+		DeleteBranch:    []error{err},
 	}
 }
 
@@ -256,21 +287,11 @@ func TestFake_Calls_WhenEveryOperationIsCalled_RecordsThemInOrder(t *testing.T) 
 
 	callEach(t, fake)
 
-	var got []forgetest.Op
-	for _, call := range fake.Calls() {
-		got = append(got, call.Op)
+	var want []forgetest.Call
+	for _, op := range operations() {
+		want = append(want, op.made)
 	}
-
-	want := []forgetest.Op{
-		forgetest.OpIdentity,
-		forgetest.OpFindChanges,
-		forgetest.OpOpenChange,
-		forgetest.OpHead,
-		forgetest.OpTrunkProtection,
-		forgetest.OpVerdict,
-		forgetest.OpHasTrunkCI,
-	}
-	assert.Check(t, is.DeepEqual(got, want))
+	assert.Check(t, is.DeepEqual(fake.Calls(), want))
 }
 
 func TestFake_Head_WhenCalledPastTheLastStep_AdvancesOneStepPerCallThenRepeatsTheLast(t *testing.T) {
@@ -307,6 +328,59 @@ func TestFake_WhenOnReadIsSet_RunsItOncePerRead(t *testing.T) {
 		forgetest.OpTrunkProtection,
 		forgetest.OpVerdict,
 		forgetest.OpHasTrunkCI,
+		forgetest.OpMessage,
 	}
 	assert.Check(t, is.DeepEqual(seen, want))
+}
+
+func TestFake_WhenOnLandIsSet_RunsItWithEachLandingBeforeItReturns(t *testing.T) {
+	t.Parallel()
+
+	first := landing()
+	second := landing()
+	second.HeadSHA = oldCommit
+	second.Body = ""
+
+	scripted := errors.New("the head moved")
+
+	var (
+		seen     []forgetest.Call
+		recorded []int
+		fake     *forgetest.Fake
+	)
+
+	fake = forgetest.New(t, forgetest.Script{
+		Land: []error{nil, scripted},
+		OnLand: func(call forgetest.Call) {
+			seen = append(seen, call)
+			recorded = append(recorded, len(fake.Calls()))
+		},
+	})
+
+	firstErr := fake.Land(t.Context(), repo(), first)
+	secondErr := fake.Land(t.Context(), repo(), second)
+
+	assert.Check(t, is.Nil(firstErr))
+	assert.Check(t, is.Equal(secondErr, scripted))
+
+	want := []forgetest.Call{
+		{Op: forgetest.OpLand, Repo: repo(), Landing: first},
+		{Op: forgetest.OpLand, Repo: repo(), Landing: second},
+	}
+	assert.Check(t, is.DeepEqual(seen, want))
+	assert.Check(t, is.DeepEqual(recorded, []int{1, 2}), "calls recorded when the hook ran")
+}
+
+func TestFake_WhenOnLandIsSet_RunsItOnAnUnscriptedLandingToo(t *testing.T) {
+	t.Parallel()
+
+	var seen []forgetest.Call
+
+	stub := &recorder{}
+	fake := forgetest.New(stub, forgetest.Script{OnLand: func(call forgetest.Call) { seen = append(seen, call) }})
+
+	err := fake.Land(t.Context(), repo(), landing())
+
+	assert.Check(t, is.ErrorIs(err, forgetest.ErrUnscripted))
+	assert.Check(t, is.DeepEqual(seen, []forgetest.Call{{Op: forgetest.OpLand, Repo: repo(), Landing: landing()}}))
 }
