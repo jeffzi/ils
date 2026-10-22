@@ -215,12 +215,10 @@ type waitRow struct {
 	outcome result.Outcome
 	// left is the time before the command's deadline; zero is the whole bound.
 	left time.Duration
-	// ready is whether the run reaches its first write, so that only its payload is held to the row.
-	ready bool
 }
 
-// runWaits runs each row as a test in a bubble of its own: the run carries the row's payload, and
-// unless it is ready writes nothing and ends as the row says.
+// runWaits runs each row as a test in a bubble of its own: the run carries the row's payload,
+// writes nothing, and ends as the row says.
 func runWaits(t *testing.T, rows []waitRow) {
 	t.Helper()
 
@@ -233,11 +231,6 @@ func runWaits(t *testing.T, rows []waitRow) {
 				want := *tt.payload
 				want.SHA = run.tip
 				assert.Check(t, is.DeepEqual(mergePayload(run.got), &want, cmpopts.EquateEmpty()))
-
-				if tt.ready {
-					return
-				}
-
 				assert.Check(t, is.Equal(run.written(), run.before))
 				assertStoppedBy(t, run.got, tt.outcome, mergeRequest())
 
@@ -258,13 +251,6 @@ func waitVerdicts() []waitRow {
 		// The log is one line longer than the excerpt may be.
 		FailedLog: forge.FailedLog{Check: "lint", Text: steps(1, 61), State: forge.FailedLogRead},
 	}
-	canceled := forge.Verdict{
-		Checks: []forge.Check{
-			{Name: "lint", Bucket: forge.BucketCanceled, Workflow: "ci", Link: lintURL}, checked("test", forge.BucketPass),
-		},
-		Runs:      ran(forge.RunCompleted),
-		FailedLog: forge.FailedLog{Check: "lint", State: forge.FailedLogUnreadable},
-	}
 	lint := needed("lint", forge.BucketPass)
 	never := forge.Verdict{Checks: []forge.Check{lint}, MissingRequired: []string{"test"}, Runs: ran(forge.RunCompleted)}
 	nothing := "Refused: no check or status reported for " + tipMark + " on pull request #12\n" + cleanLine + nextNothingHead
@@ -283,15 +269,7 @@ func waitVerdicts() []waitRow {
 			text: "Refused: the check lint failed\nCheck lint failed: " + lintURL + "\n" +
 				"GitHub: UNSTABLE (blocked-other)\n" + steps(2, 61) + nextRed,
 		},
-		{
-			name:   "a deciding check was canceled",
-			script: waiting(canceled).showing(inState(forge.MergeBlockedOther, "UNSTABLE")), outcome: result.Refused,
-			payload: mergeDetail(forge.VerdictRed, forge.MergeBlockedOther, canceled.Checks...),
-			text: "Refused: the check lint was canceled\nCheck lint was canceled: " + lintURL + "\n" +
-				"GitHub: UNSTABLE (blocked-other)\nno log: the log of lint could not be read\n" + nextRed,
-		},
 		apart(forge.MergeConflicting, "DIRTY", "the pull request conflicts with the trunk"),
-		apart(forge.MergeBehind, "BEHIND", "the pull request is behind the trunk"),
 		{
 			name:    "a required check never reported",
 			script:  waiting(never).ruling("lint", "test").showing(inState(forge.MergeBlockedByMissingCheck, "BLOCKED")),
@@ -331,22 +309,6 @@ func pendingWaits() []waitRow {
 			payload: mergeDetail(forge.VerdictPending, forge.MergeClean, running().Checks...),
 		},
 		{
-			name: "the pull request still shows an earlier commit", left: 25 * time.Second,
-			script: waiting().showing(stale()), outcome: result.Pending,
-			text:    "GitHub does not show " + tipMark + " on pull request #12 yet\n" + nextPush,
-			payload: mergeDetail(forge.VerdictNone, forge.MergeClean),
-		},
-		{
-			name:   "the merge state is unknown for the whole window",
-			script: waiting().showing(inState(forge.MergeUnknown, "UNKNOWN")), outcome: result.Pending,
-			text:    "GitHub has not said whether pull request #12 can merge yet\n" + nextPush,
-			payload: mergeDetail(forge.VerdictNone, forge.MergeUnknown),
-		},
-		{
-			name: "the deadline ends in the read of the checks", script: waiting().failingChecks(ended),
-			outcome: result.Pending, text: cut(readChecks), payload: mergeDetail(forge.VerdictNone, forge.MergeClean),
-		},
-		{
 			name:    "the deadline ends in the CI read",
 			script:  waiting(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{Err: ended}),
 			outcome: result.Pending, text: cut(readCI), payload: mergeDetail(forge.VerdictNone, forge.MergeClean),
@@ -359,7 +321,7 @@ func waitBreaks() []waitRow {
 	failed := errors.New("HTTP 502")
 	row := func(read string, script forgeFor) waitRow {
 		return waitRow{
-			name: read, script: script, outcome: result.Broke, text: unreadMerge(read, "HTTP 502"),
+			name: read, script: script, outcome: result.Broke, text: unreadText(mergeCommand(), read, "HTTP 502"),
 			payload: mergeDetail(forge.VerdictNone, forge.MergeUnknown),
 		}
 	}
@@ -367,10 +329,6 @@ func waitBreaks() []waitRow {
 	unread.payload = mergeDetail(forge.VerdictNone, forge.MergeClean)
 
 	return []waitRow{
-		row(readHead, merging().with(func(script *forgetest.Script, _ string) {
-			script.Head = []forgetest.Answer[forge.Head]{{Err: failed}}
-		})),
-		row(readMergeState, waiting().showing(inState(forge.MergeUnknown, "UNKNOWN")).thenFailingHead(failed)),
 		row(readChecks, waiting().failingChecks(failed)),
 		unread,
 	}
@@ -466,7 +424,7 @@ func settledStops() []waitRow {
 		{
 			name:    "a poll of the merge state fails",
 			script:  waiting(passing()).showing(clean, unknown).thenFailingHead(errors.New("HTTP 502")),
-			outcome: result.Broke, text: unreadMerge(readMergeState, "HTTP 502"),
+			outcome: result.Broke, text: unreadText(mergeCommand(), readMergeState, "HTTP 502"),
 			payload: mergeDetail(forge.VerdictGreen, forge.MergeUnknown, passing().Checks...),
 		},
 	}
@@ -491,10 +449,10 @@ func messageStops() []waitRow {
 		row("the title no longer parses", forgetest.Answer[forge.Message]{Value: forge.Message{Title: "fix-thing"}},
 			result.Refused, withLines(titleText("fix-thing"), countLine+cleanLine)),
 		row("the message read fails", forgetest.Answer[forge.Message]{Err: errors.New("HTTP 502")},
-			result.Broke, unreadMerge(readMessage, "HTTP 502")),
+			result.Broke, unreadText(mergeCommand(), readMessage, "HTTP 502")),
 		row("the deadline ends in the message read",
 			forgetest.Answer[forge.Message]{Err: fmt.Errorf("gh: %w", context.DeadlineExceeded)},
-			result.Refused, overtimeMerge(readMessage)),
+			result.Refused, overtimeText(mergeCommand(), readMessage)),
 		late,
 	}
 }
@@ -505,35 +463,37 @@ func TestMerge_WhenWhatIsReadAfterTheWaitStopsTheMerge_EndsWithNothingWritten(t 
 	runWaits(t, slices.Concat(afterWaitStops(), settledStops(), messageStops()))
 }
 
+// readyRow is one run of `ils merge` that reaches the merge, and the payload it carries.
+type readyRow struct {
+	script forgeFor
+	// payload is the merge payload the run carries, but for the sha.
+	payload *result.Merge
+	name    string
+}
+
 // readyRows are the runs of `ils merge` that reach the merge, each with the subject and body it
 // composed from the message read after the wait.
-func readyRows() []waitRow {
+func readyRows() []readyRow {
 	const body = "Tidy the readme.\n\n# Notes\nKeep the heading."
 
 	trailers := []string{"Co-authored-by: Sam Smith <sam@example.com>", "Signed-off-by: Kim Lee <kim@example.com>"}
 	block := strings.Join(trailers, "\n")
 	subject := worded + " (#12)"
-	row := func(name string, answer forgetest.Answer[forge.Message], want string) waitRow {
-		return waitRow{
-			name: name, script: waiting(passing()).saying(answer).landing(nil, nil), ready: true,
+	row := func(name string, answer forgetest.Answer[forge.Message], want string) readyRow {
+		return readyRow{
+			name: name, script: waiting(passing()).saying(answer).landing(nil, nil),
 			payload: made(composed(subject, want)),
 		}
 	}
-	unverified := row("nothing reported and no CI on the trunk", titledAfter(""), "")
-	unverified.script = waiting(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{}).saying(titledAfter("")).
-		landing(nil, nil)
-	unverified.payload = made(mergeDetail(forge.VerdictNone, forge.MergeClean))
-	unverified.payload.Subject = subject
 	// The wait's deadline is 80 seconds away: the read ends 20 seconds before the command's.
 	inTime := row("the message read leaves 20 seconds", titledAfter(""), "")
 	inTime.script = inTime.script.messageTaking(80 * time.Second)
 
-	return []waitRow{
+	return []readyRow{
 		row("a body with a line starting with # and trailers", titledAfter(body, trailers...), body+"\n\n"+block),
 		row("an empty body and trailers", titledAfter("", trailers...), block),
 		row("a body and no trailers", titledAfter(body), body),
 		row("neither a body nor trailers", titledAfter(""), ""),
-		unverified,
 		inTime,
 	}
 }
@@ -541,7 +501,20 @@ func readyRows() []waitRow {
 func TestMerge_WhenEveryCheckBeforeTheMergeHolds_ComposesTheMessageFromThePullRequest(t *testing.T) {
 	t.Parallel()
 
-	runWaits(t, readyRows())
+	for _, tt := range readyRows() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				run := runMergeIn(t, tt.script, 0)
+
+				assertStoppedBy(t, run.got, result.Done, mergeRequest())
+
+				want := *tt.payload
+				want.SHA = run.tip
+				assert.Check(t, is.DeepEqual(mergePayload(run.got), &want, cmpopts.EquateEmpty()))
+			})
+		})
+	}
 }
 
 func TestMerge_WhenTheMergeStateIsUnknownAfterTheWait_ReadsItAgainEveryTwoSeconds(t *testing.T) {
@@ -590,29 +563,6 @@ func TestMerge_WhenTrunkRequiresChecks_WaitsForThoseOfTheHead(t *testing.T) {
 
 		run := runMergeIn(t, waiting(requiredPassing()).ruling(required...).saying(titledAfter("")).landing(nil, nil), 0)
 
-		var heads []forge.HeadQuery
-
-		var verdicts []forge.VerdictQuery
-
-		for _, call := range run.forge.Calls() {
-			if call.Op == forgetest.OpHead {
-				heads = append(heads, call.Head)
-			}
-
-			if call.Op == forgetest.OpVerdict {
-				verdicts = append(verdicts, call.Query)
-			}
-		}
-
-		assert.Check(t, len(heads) > 0 && len(verdicts) > 0,
-			"forge reads = %d heads and %d verdicts, want some of each", len(heads), len(verdicts))
-
-		for _, got := range heads {
-			assert.Check(t, is.DeepEqual(got, forge.HeadQuery{Number: opened, Required: required}))
-		}
-
-		for _, got := range verdicts {
-			assert.Check(t, is.DeepEqual(got, forge.VerdictQuery{SHA: run.tip, Number: opened, Required: required}))
-		}
+		assertReadsRequire(t, run.forge.Calls(), run.tip, required)
 	})
 }

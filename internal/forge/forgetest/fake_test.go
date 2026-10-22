@@ -139,6 +139,7 @@ type operation struct {
 	made forgetest.Call
 }
 
+// operations lists every forge operation, called with the fixture arguments.
 func operations() []operation {
 	return []operation{
 		{name: "identity", made: forgetest.Call{Op: forgetest.OpIdentity, Repo: repo()}, want: identity(), call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
@@ -174,6 +175,7 @@ func operations() []operation {
 	}
 }
 
+// steps scripts one answer: the error when err is set, value otherwise.
 func steps[T any](value T, err error) []forgetest.Answer[T] {
 	if err != nil {
 		return []forgetest.Answer[T]{{Err: err}}
@@ -182,6 +184,7 @@ func steps[T any](value T, err error) []forgetest.Answer[T] {
 	return []forgetest.Answer[T]{{Value: value}}
 }
 
+// script scripts every operation to answer its fixture value, or err when err is set.
 func script(err error) forgetest.Script {
 	return forgetest.Script{
 		Identity:        steps(identity(), err),
@@ -197,6 +200,7 @@ func script(err error) forgetest.Script {
 	}
 }
 
+// callEach calls every operation once on fake, failing the test on any error.
 func callEach(t *testing.T, fake *forgetest.Fake) {
 	t.Helper()
 
@@ -206,6 +210,7 @@ func callEach(t *testing.T, fake *forgetest.Fake) {
 	}
 }
 
+// callTimes calls call the given number of times and returns the values in order.
 func callTimes[T any](t *testing.T, times int, call func() (T, error)) []T {
 	t.Helper()
 

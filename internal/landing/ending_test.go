@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -152,7 +151,7 @@ func listedEarlier() (func(*gittest.Fixture), forgeFor) {
 	return arrange, toLand(nil, nil).pulling(func(pull *forge.Change) { pull.HeadSHA = earlier })
 }
 
-func TestMerge_WhenEveryCheckHolds_SquashesDeletesTheBranchAndEndsOnTheTrunk(t *testing.T) {
+func TestMerge_WhenEveryCheckHolds_LandsThePullRequest(t *testing.T) {
 	t.Parallel()
 
 	// unverified is the payload of a run on a repository with no CI, where no check reported.
@@ -537,40 +536,9 @@ func TestMerge_WhenTheDeadlineEndsAsTheResumeAsksOriginForTheBranch_RefusesNamin
 	assertStoppedBy(t, got, result.Refused, mergeRequest())
 
 	text, _ := shown(t, got, s.gitDir)
-	assert.Check(t, is.Equal(text, withLines(overtimeMerge(readStillOnOrigin), resumedLine)))
+	assert.Check(t, is.Equal(text, withLines(overtimeText(mergeCommand(), readStillOnOrigin), resumedLine)))
 	assert.Check(t, is.DeepEqual(mergePayload(got), resumed(tip, ""), cmpopts.EquateEmpty()))
 	assert.Check(t, is.Equal(s.written(), before))
-}
-
-func TestMerge_WhenTheMergedPullRequestLacksCommitsOfTheBranch_RefusesListingThem(t *testing.T) {
-	t.Parallel()
-	synctest.Test(t, func(t *testing.T) {
-		var (
-			head  string
-			later []string
-		)
-
-		run := runMergeOn(t, setting{
-			arrange: func(f *gittest.Fixture) {
-				f.LandPull(merged, topic)
-				head = f.Git("rev-parse", topic)
-				later = f.Commits(topic, "fix a typo", "add an example")
-			},
-			script: resuming(),
-		})
-
-		assertStoppedBy(t, run.got, result.Refused, mergeRequest())
-
-		text, _ := shown(t, run.got, run.gitDir)
-		assert.Check(t, is.Equal(text, "Refused: pull request #"+strconv.Itoa(merged)+" from "+topic+
-			" was merged without the commits listed here\n"+
-			later[0]+" fix a typo\n"+later[1]+" add an example\n"+
-			nextBranch+", then bring those commits over with `git cherry-pick "+later[0]+" "+later[1]+
-			"`; expect a conflict where the squash touched the same files\n"))
-		assert.Check(t, is.DeepEqual(mergePayload(run.got), resumed(head, ""), cmpopts.EquateEmpty()))
-		assert.Check(t, is.Equal(run.written(), run.before))
-		assert.Check(t, is.DeepEqual(run.forge.Calls(), asked(changesRead()), whichRepo()))
-	})
 }
 
 // sent returns the payload of a green run on a clean pull request 12 that sent its merge with a

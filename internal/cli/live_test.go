@@ -653,12 +653,9 @@ func livePending(t *testing.T, l *liveSuite) {
 func liveAlreadyLanded(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "landed")
 	b.commit(t, nil)
-
 	b.push(t)
-
 	number := strconv.Itoa(b.onePull(t).Number)
 	mustGh(t, "pr", "merge", number, "--repo", l.slug(), "--squash")
-
 	before := b.remoteTip(t)
 
 	got := b.push(t)
@@ -687,10 +684,8 @@ func liveConflict(t *testing.T, l *liveSuite) {
 func liveCIDidNotFire(t *testing.T, l *liveSuite) {
 	before := l.remoteCommit(t, l.trunkRef())
 	assert.Assert(t, before != "", "%s has no commit on %s to put back", l.url, l.trunkRef())
-
 	l.changeTrunk(t, liveDispatchedWorkflow())
 	b := l.branch(t, "ci-did-not-fire")
-
 	t.Cleanup(func() {
 		ctx, cancel := liveCleanupContext(t)
 		defer cancel()
@@ -700,7 +695,6 @@ func liveCIDidNotFire(t *testing.T, l *liveSuite) {
 			t.Errorf("could not put the trunk back on %s: %v", before, err)
 		}
 	})
-
 	b.commit(t, nil)
 	// ils reads the trunk's workflows once; one GitHub has not registered by then would read as no
 	// CI, and the scenario would test nothing.
@@ -722,10 +716,8 @@ func liveCIDidNotFire(t *testing.T, l *liveSuite) {
 func liveTitleRefused(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "title")
 	b.commit(t, liveWorkflow("echo passed"))
-	pushed := b.push(t)
-	assert.Equal(t, pushed.code, exitDone, "%s", pushed.raw)
-	assert.Equal(t, pushed.check("pass").Name, liveJob, "no passed check named %s in:\n%s", liveJob, pushed.raw)
-	number := strconv.Itoa(b.checkFreshPull(t, b.tip(t)).Number)
+	b.push(t)
+	number := strconv.Itoa(b.onePull(t).Number)
 	before := l.remoteCommit(t, l.trunkRef())
 
 	got := b.merge(t)

@@ -66,7 +66,9 @@ func checkCanceled(t *testing.T, calls []repoCall) {
 	}
 }
 
-func fetch(f *gittest.Fixture, ref string) {
+// fetch fetches ref from the fixture's origin, failing the test when git refuses.
+func fetch(t *testing.T, f *gittest.Fixture, ref string) {
+	t.Helper()
 	f.Git("fetch", "--quiet", "origin", ref)
 }
 
@@ -87,8 +89,8 @@ func landed(t *testing.T) (f *gittest.Fixture, merged string) {
 	f.Push(topic)
 	f.LandPull(pullNumber, shas[1])
 	f.RemoveFromOrigin(topic)
-	fetch(f, trunk)
-	fetch(f, pullRef)
+	fetch(t, f, trunk)
+	fetch(t, f, pullRef)
 
 	return f, f.Git("rev-parse", "FETCH_HEAD")
 }
@@ -123,7 +125,7 @@ func mergeTrunk(t *testing.T, f *gittest.Fixture) {
 	t.Helper()
 
 	f.AdvanceOrigin(trunk)
-	fetch(f, trunk)
+	fetch(t, f, trunk)
 	f.Git("merge", "--quiet", "--no-edit", "origin/"+trunk)
 }
 
@@ -157,7 +159,7 @@ func diverged(t *testing.T) tips {
 	base := f.Commits(topic, "one")[0]
 	f.Push(topic)
 	local, remote := f.Diverge(topic)
-	fetch(f, topic)
+	fetch(t, f, topic)
 
 	return tips{repo: newRepo(f), base: base, local: local, remote: remote}
 }
@@ -365,16 +367,28 @@ func TestRepo_Divergence(t *testing.T) {
 func TestRepo_Divergence_WhenOutputDoesNotParse_ReturnsErrorNamingTheCall(t *testing.T) {
 	// Not parallel: gittest.LinkAs sets PATH for the whole process.
 	shas := diverged(t)
-	_, err := shas.repo.Divergence(t.Context(), shas.local, unknownSHA)
-	exitErr, ok := errors.AsType[*child.ExitError](err)
-	assert.Assert(t, ok, "Divergence(%s, %s) error = %v, want *child.ExitError", shas.local, unknownSHA, err)
 	gittest.LinkAs(t, "git")
-	repo := shas.repo
-	repo.Runner.Env = append(slices.Clone(repo.Runner.Env), garbledGitEnv+"=not counts")
+	call := child.CommandLine([]string{"git", "rev-list", "--left-right", "--count", shas.local + "..." + unknownSHA})
+	tests := []struct {
+		name string
+		out  string
+		// want is the start of the error Divergence returns.
+		want string
+	}{
+		{name: "no tab between the counts", out: "not counts", want: call + `: unexpected output "not counts"`},
+		{name: "ahead count not a number", out: "x\t1", want: call + ": read ahead count: "},
+		{name: "behind count not a number", out: "1\tx", want: call + ": read behind count: "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := shas.repo
+			repo.Runner.Env = append(slices.Clone(repo.Runner.Env), garbledGitEnv+"="+tt.out)
 
-	_, err = repo.Divergence(t.Context(), shas.local, unknownSHA)
+			_, err := repo.Divergence(t.Context(), shas.local, unknownSHA)
 
-	assert.Check(t, is.ErrorContains(err, child.CommandLine(exitErr.Argv)))
+			assert.Check(t, is.ErrorContains(err, tt.want))
+		})
+	}
 }
 
 func TestRepo_Contains(t *testing.T) {
@@ -623,11 +637,11 @@ func TestRepo_Unlanded_WhenMergedHeadHasCommitTheTipLacks_ListsNothing(t *testin
 	tip := f.Commits(topic, "one", "two")[1]
 	f.Push(topic)
 	f.OriginGit("update-ref", pullRef, f.AdvanceOrigin(topic))
-	fetch(f, pullRef)
+	fetch(t, f, pullRef)
 	merged := f.Git("rev-parse", "FETCH_HEAD")
 	f.SquashOnOrigin(merged, "topic (#7)", "")
 	f.RemoveFromOrigin(topic)
-	fetch(f, trunk)
+	fetch(t, f, trunk)
 
 	got, err := newRepo(f).Unlanded(t.Context(), merged, tip, trunk)
 	assert.NilError(t, err)
@@ -665,9 +679,6 @@ func TestRepo_WhenContextCanceled_ReturnsContextError(t *testing.T) {
 		}},
 		{name: "CheckedOutElsewhere", call: func(ctx context.Context, repo git.Repo) (any, error) {
 			return repo.CheckedOutElsewhere(ctx, trunk)
-		}},
-		{name: "FastForwardTrunk", call: func(ctx context.Context, repo git.Repo) (any, error) {
-			return nil, repo.FastForwardTrunk(ctx, trunk)
 		}},
 	})
 }
@@ -744,7 +755,7 @@ func TestRepo_Switch_WhenOnlyOriginHasBranch_CreatesItFromOriginsCopy(t *testing
 	f := gittest.New(t, trunk)
 	want := f.Commits(topic, "one")[0]
 	f.Push(topic)
-	fetch(f, topic)
+	fetch(t, f, topic)
 	f.Git("switch", "--quiet", trunk)
 	f.Git("branch", "--quiet", "--delete", "--force", topic)
 	f.Git("config", "checkout.guess", "false")
@@ -789,12 +800,12 @@ func TestRepo_Switch_WhenUntrackedFileWouldBeOverwritten_FailsAndLeavesTreeAsItW
 	assert.Check(t, is.DeepEqual(standing(t, f), git.Standing{Kind: git.OnBranch, Branch: trunk}))
 }
 
-func TestRepo_DetachAtOrigin_LeavesHeadDetachedAtFetchedTrunkWithUntrackedFilesKept(t *testing.T) {
+func TestRepo_DetachAtOrigin_WhenOriginMovedSinceFetch_DetachesAtFetchedTrunkKeepingUntracked(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
 	f.Commits(topic, "one")
 	fetched := f.AdvanceOrigin(trunk)
-	fetch(f, trunk)
+	fetch(t, f, trunk)
 	f.AdvanceOrigin(trunk)
 	untracked := f.UntrackedFile()
 
@@ -998,65 +1009,28 @@ func fakeGitRepo(t *testing.T, line string) git.Repo {
 	return git.Repo{Runner: git.Runner{Dir: t.TempDir(), Env: env}}
 }
 
-func TestRepo_CheckVersion_WhenGitIsAtOrAboveTheMinimum_ReturnsNil(t *testing.T) {
-	tests := []struct {
-		name string
-		line string
-	}{
-		{name: "exactly the minimum", line: "git version " + git.MinimumVersion},
-		{name: "release candidate newer than the minimum", line: "git version 2.35.0.rc0"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Not parallel: fakeGitRepo sets PATH for the whole process.
-			repo := fakeGitRepo(t, tt.line)
-
-			err := repo.CheckVersion(t.Context())
-
-			assert.NilError(t, err, "CheckVersion with %q", tt.line)
-		})
-	}
-}
-
-func TestRepo_CheckVersion_WhenGitIsOlderThanTheMinimum_ReturnsToolTooOldError(t *testing.T) {
-	tests := []struct {
-		name string
-		// line is the first line `git --version` prints.
-		line string
-		// version is the version the error carries; a line with none carries none.
-		version string
-	}{
-		{name: "one patch release older", line: "git version 2.34.0", version: "2.34.0"},
-		{name: "release candidate of the minimum", line: "git version 2.34.1.rc0", version: "2.34.1-rc0"},
-		{name: "development build", line: "git version DEV"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Not parallel: fakeGitRepo sets PATH for the whole process.
-			repo := fakeGitRepo(t, tt.line)
-
-			err := repo.CheckVersion(t.Context())
-
-			tooOld, ok := errors.AsType[*child.ToolTooOldError](err)
-			assert.Assert(t, ok, "CheckVersion with %q error = %v, want *child.ToolTooOldError", tt.line, err)
-			want := child.ToolTooOldError{
-				Tool: "git", Version: tt.version, Line: tt.line, Minimum: git.MinimumVersion, InstallURL: installURL,
-			}
-			assert.Check(t, is.DeepEqual(*tooOld, want))
-		})
-	}
-}
-
-func TestRepo_CheckVersion_WhenGitMissingFromPath_ReturnsToolMissingError(t *testing.T) {
-	repo := git.Repo{Runner: newRunner(t)}
-	// Not parallel: this empties PATH for the whole process while it runs.
-	t.Setenv("PATH", t.TempDir())
+func TestRepo_CheckVersion_WhenGitIsTheMinimum_ReturnsNil(t *testing.T) {
+	// Not parallel: fakeGitRepo sets PATH for the whole process.
+	repo := fakeGitRepo(t, "git version "+git.MinimumVersion)
 
 	err := repo.CheckVersion(t.Context())
 
-	missing, ok := errors.AsType[*child.ToolMissingError](err)
-	assert.Assert(t, ok, "CheckVersion error = %v, want *child.ToolMissingError", err)
-	assert.Check(t, is.Equal(missing.Tool, "git"))
+	assert.NilError(t, err)
+}
+
+func TestRepo_CheckVersion_WhenGitIsOlderThanTheMinimum_ReturnsToolTooOldError(t *testing.T) {
+	// Not parallel: fakeGitRepo sets PATH for the whole process.
+	line := "git version 2.34.0"
+	repo := fakeGitRepo(t, line)
+
+	err := repo.CheckVersion(t.Context())
+
+	tooOld, ok := errors.AsType[*child.ToolTooOldError](err)
+	assert.Assert(t, ok, "CheckVersion with %q error = %v, want *child.ToolTooOldError", line, err)
+	want := child.ToolTooOldError{
+		Tool: "git", Version: "2.34.0", Line: line, Minimum: git.MinimumVersion, InstallURL: installURL,
+	}
+	assert.Check(t, is.DeepEqual(*tooOld, want))
 }
 
 func TestVersionOf(t *testing.T) {

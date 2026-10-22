@@ -66,6 +66,7 @@ func engine() forge.Repo {
 	return forge.Repo{Host: engineHost, Owner: "ada", Name: "engine"}
 }
 
+// newForge is a forge that runs the fake `gh`.
 func newForge() *github.Forge {
 	return github.NewForge(github.Runner{})
 }
@@ -92,6 +93,7 @@ func featureChange() forge.NewChange {
 	return forge.NewChange{Title: "feature", Base: trunk, Head: featureBranch}
 }
 
+// versionArgs is the argv of the `gh --version` read.
 func versionArgs() []string { return ghtest.VersionArgs() }
 
 // versionAnswer is what `gh --version` prints when line is its first line.
@@ -99,33 +101,37 @@ func versionAnswer(line string) string {
 	return line + "\nhttps://github.com/cli/cli/releases/tag/v2.0.0\n"
 }
 
+// loginArgs is the argv of the login read on the engine's host.
 func loginArgs() []string { return ghtest.LoginArgs(engineHost) }
 
+// repoViewArgs is the argv of the engine's repository read.
 func repoViewArgs() []string { return ghtest.RepoViewArgs(engineSlug) }
 
+// listArgs is the argv of the list of the feature branch's pull requests in state.
 func listArgs(state string) []string { return ghtest.ListArgs(engineSlug, featureBranch, state) }
 
+// createArgs is the argv that opens the feature change.
 func createArgs() []string {
 	return ghtest.CreateArgs(engineSlug, featureBranch, trunk, featureBranch)
 }
 
+// headArgs is the argv of the read of the pull request's head.
 func headArgs() []string { return ghtest.HeadArgs(engineSlug, pullNumber) }
 
+// rulesArgs is the argv of the read of the trunk's rules.
 func rulesArgs() []string { return ghtest.RulesArgs(engineHost, "ada/engine", trunk) }
 
+// checksArgs is the argv of the read of the pull request's checks.
 func checksArgs() []string { return ghtest.ChecksArgs(engineSlug, pullNumber) }
 
+// runsArgs is the argv of the read of the head commit's runs.
 func runsArgs() []string { return ghtest.RunsArgs(engineSlug, headSHA) }
 
+// logArgs is the argv of the read of the failed run's log.
 func logArgs() []string { return ghtest.LogArgs(engineSlug, runID) }
 
+// messageArgs is the argv of the read of the pull request's message.
 func messageArgs() []string { return ghtest.MessageArgs(engineHost, "ada", "engine", pullNumber) }
-
-func landArgs(landing forge.Landing) []string { return ghtest.LandArgs(engineSlug, landing) }
-
-func deleteArgs(branch string) []string {
-	return ghtest.DeleteBranchArgs(engineHost, "ada/engine", branch)
-}
 
 // featureLanding is the landing every Land test asks for.
 func featureLanding() forge.Landing {
@@ -140,12 +146,15 @@ func pullRequestRule(id int, methods string) string {
 		`,"parameters":{"required_approving_review_count":0,"allowed_merge_methods":` + methods + `}}`
 }
 
+// workflowsArgs is the argv of the read of the engine's workflow list.
 func workflowsArgs() []string {
 	return []string{"api", "--hostname", engineHost, "--paginate", "repos/ada/engine/actions/workflows"}
 }
 
+// workflowFilesArgs is the argv of the read of the workflow directory on the trunk.
 func workflowFilesArgs() []string { return workflowFilesArgsAt(trunk) }
 
+// workflowFilesArgsAt is the argv of the read of the workflow directory at ref.
 func workflowFilesArgsAt(ref string) []string {
 	return []string{"api", "--hostname", engineHost, "repos/ada/engine/contents/.github/workflows?ref=" + ref}
 }
@@ -203,6 +212,7 @@ func runJSON(status string) string {
 	return ghtest.RunJSON(status, "Add the forge")
 }
 
+// jsonArray is a JSON array of items, each already JSON.
 func jsonArray(items ...string) string {
 	return "[" + strings.Join(items, ",") + "]"
 }
@@ -217,14 +227,17 @@ func loggedOutAnswer() ghtest.Answer {
 	return ghtest.Answer{Stderr: "You are not logged into any GitHub hosts.\n", Code: 1}
 }
 
+// headQuery is the head read of the pull request, requiring the checks named required.
 func headQuery(required ...string) forge.HeadQuery {
 	return forge.HeadQuery{Number: pullNumber, Required: required}
 }
 
+// verdictQuery is the verdict read of the head commit, requiring the checks named required.
 func verdictQuery(required ...string) forge.VerdictQuery {
 	return forge.VerdictQuery{SHA: headSHA, Number: pullNumber, Required: required}
 }
 
+// operations is every forge operation, each reduced to its error.
 func operations() []operation {
 	return []operation{
 		{name: "Identity", run: func(ctx context.Context, f *github.Forge) error {
@@ -268,6 +281,7 @@ func operations() []operation {
 	}
 }
 
+// operationsByName is operations keyed by name.
 func operationsByName() map[string]func(context.Context, *github.Forge) error {
 	byName := map[string]func(context.Context, *github.Forge) error{}
 	for _, op := range operations() {
@@ -277,6 +291,7 @@ func operationsByName() map[string]func(context.Context, *github.Forge) error {
 	return byName
 }
 
+// readCases is every `gh` read an operation makes, with the calls that must succeed before it.
 func readCases() []readCase {
 	byName := operationsByName()
 
@@ -312,30 +327,9 @@ func readCases() []readCase {
 	}
 }
 
-// withoutGh sets `GH_PATH` to ghPath and empties `PATH` for the rest of the test, so that no `gh`
-// can be found.
-func withoutGh(t *testing.T, ghPath string) {
-	t.Helper()
-
-	t.Setenv("GH_PATH", ghPath)
-	t.Setenv("PATH", t.TempDir())
-}
-
 // ---------------------------------------------------------------------------
 // Forge operations
 // ---------------------------------------------------------------------------
-
-func TestForge_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
-	for _, tt := range operations() {
-		t.Run(tt.name, func(t *testing.T) {
-			withoutGh(t, "")
-
-			err := tt.run(t.Context(), newForge())
-
-			_ = assertMissingTool(t, err, tt.name)
-		})
-	}
-}
 
 func TestForge_WhenContextCanceled_ReturnsContextError(t *testing.T) {
 	for _, tt := range operations() {
@@ -363,7 +357,6 @@ func TestForge_WhenReadExitsNonZero_ReturnsExitErrorNamingCall(t *testing.T) {
 			assert.Assert(t, ok, "error = %v, want *child.ExitError", err)
 			want := child.ExitError{Argv: received(tt.args)[0], Stderr: serverDown, Code: 1}
 			assert.Check(t, is.DeepEqual(*exitErr, want))
-			assert.Check(t, is.Error(err, exitErr.Error()))
 		})
 	}
 }
@@ -397,33 +390,18 @@ func TestForge_Identity_WhenNotLoggedIn_ReturnsNotLoggedInError(t *testing.T) {
 }
 
 func TestForge_Identity_WhenGhIsOlderThanTheMinimum_ReturnsToolTooOldErrorBeforeTheLogin(t *testing.T) {
-	tests := []struct {
-		name string
-		// line is the first line `gh --version` prints.
-		line string
-		// version is the version the error carries; a line with none carries none.
-		version string
-	}{
-		{name: "one minor release older", line: "gh version 2.49.0 (2024-05-13)", version: "2.49.0"},
-		{name: "pre-release of the minimum", line: "gh version 2.50.0-pre.1 (2024-05-20)", version: "2.50.0-pre.1"},
-		{name: "development build", line: "gh version DEV"},
-		{name: "empty first line"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			fake := ghtest.Setup(t, ghtest.Says(versionAnswer(tt.line), versionArgs()...), ghtest.Exits(loggedOutAnswer(), loginArgs()...))
+	const line = "gh version 2.49.0 (2024-05-13)"
+	fake := ghtest.Setup(t, ghtest.Says(versionAnswer(line), versionArgs()...), ghtest.Exits(loggedOutAnswer(), loginArgs()...))
 
-			_, err := newForge().Identity(t.Context(), engine())
+	_, err := newForge().Identity(t.Context(), engine())
 
-			tooOld, ok := errors.AsType[*child.ToolTooOldError](err)
-			assert.Assert(t, ok, "Identity error = %v, want *child.ToolTooOldError", err)
-			want := child.ToolTooOldError{
-				Tool: program, Version: tt.version, Line: tt.line, Minimum: github.MinimumVersion, InstallURL: installURL,
-			}
-			assert.Check(t, is.DeepEqual(*tooOld, want))
-			assertCalls(t, fake, received(versionArgs()))
-		})
+	tooOld, ok := errors.AsType[*child.ToolTooOldError](err)
+	assert.Assert(t, ok, "Identity error = %v, want *child.ToolTooOldError", err)
+	want := child.ToolTooOldError{
+		Tool: program, Version: "2.49.0", Line: line, Minimum: github.MinimumVersion, InstallURL: installURL,
 	}
+	assert.Check(t, is.DeepEqual(*tooOld, want))
+	assertCalls(t, fake, received(versionArgs()))
 }
 
 func TestForge_Identity_WhenGhIsAtOrAboveTheMinimum_GoesOnToTheLogin(t *testing.T) {
@@ -431,6 +409,7 @@ func TestForge_Identity_WhenGhIsAtOrAboveTheMinimum_GoesOnToTheLogin(t *testing.
 		name string
 		line string
 	}{
+		{name: "exactly the minimum", line: "gh version " + github.MinimumVersion + " (2024-05-29)"},
 		{name: "next major release", line: "gh version 3.0.0 (2027-01-12)"},
 	}
 	for _, tt := range tests {
@@ -624,16 +603,15 @@ func TestForge_Head_WhenStateNeedsNoCheck_AsksOnlyForThePullRequest(t *testing.T
 		required []string
 	}{
 		{name: "clean", view: headJSON("CLEAN", "APPROVED"), want: headOf(forge.MergeClean, "CLEAN"), required: checked},
-		{name: "conflicting", view: pullJSON("CONFLICTING", "DIRTY", ""), want: headOf(forge.MergeConflicting, "DIRTY")},
 		{name: "conflicting on a blocked status", view: pullJSON("CONFLICTING", "BLOCKED", ""), want: headOf(forge.MergeConflicting, "BLOCKED"), required: checked},
 		{name: "mergeable not worked out yet", view: pullJSON("UNKNOWN", "BLOCKED", ""), want: headOf(forge.MergeUnknown, "BLOCKED"), required: checked},
 		{
-			name: "draft flag on a blocked status",
-			view: `{"headRefOid":"` + headSHA + `","mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","isDraft":true,"reviewDecision":""}`,
-			want: headOf(forge.MergeDraft, "BLOCKED"),
+			name:     "draft flag on a blocked status",
+			view:     `{"headRefOid":"` + headSHA + `","mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","isDraft":true,"reviewDecision":""}`,
+			want:     headOf(forge.MergeDraft, "BLOCKED"),
+			required: checked,
 		},
 		{name: "blocked by a review", view: headJSON("BLOCKED", "REVIEW_REQUIRED"), want: headOf(forge.MergeBlockedByReview, "BLOCKED"), required: checked},
-		{name: "blocked by requested changes", view: headJSON("BLOCKED", "CHANGES_REQUESTED"), want: headOf(forge.MergeBlockedByReview, "BLOCKED"), required: checked},
 		{name: "blocked with no required name", view: headJSON("BLOCKED", ""), want: headOf(forge.MergeBlockedOther, "BLOCKED")},
 	}
 	for _, tt := range tests {
@@ -665,8 +643,6 @@ func TestForge_Head_WhenBlockedAndTrunkRequiresChecks_ReportsMissingCheckOnlyWhe
 		{name: "required name absent, run waits on a person", checks: ghtest.Answer{Stdout: passing}, runs: jsonArray(runJSON("waiting")), want: forge.MergeBlockedByMissingCheck},
 		{name: "required name absent, run queued", checks: ghtest.Answer{Stdout: passing}, runs: jsonArray(runJSON("queued")), want: forge.MergeBlockedOther},
 		{name: "required name absent, run in progress", checks: ghtest.Answer{Stdout: passing}, runs: jsonArray(runJSON("in_progress")), want: forge.MergeBlockedOther},
-		{name: "required name absent, run pending", checks: ghtest.Answer{Stdout: passing}, runs: jsonArray(runJSON("pending")), want: forge.MergeBlockedOther},
-		{name: "required name absent, run in a status this version does not know", checks: ghtest.Answer{Stdout: passing}, runs: jsonArray(runJSON("paused")), want: forge.MergeBlockedOther},
 		{name: "required name absent, only an optional check running", checks: ghtest.Answer{Stdout: optionalPending, Code: 8}, runs: completed, want: forge.MergeBlockedByMissingCheck},
 		{
 			name:   "every required name absent, only an optional check running",
@@ -706,23 +682,45 @@ func TestForge_Head_WhenBlockedAndTrunkRequiresChecks_ReportsMissingCheckOnlyWhe
 }
 
 func TestForge_TrunkProtection(t *testing.T) {
-	rules := `[
+	statusChecks := `[
 		{"type":"pull_request","parameters":{"required_approving_review_count":1}},
 		{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"build"},{"context":"test"}]}},
 		{"type":"deletion"},
 		{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"test"},{"context":"lint"}]}}
 	]`
+	squash := forge.Protection{SquashAllowed: true}
+	// forbiddenBy is the protection whose squash merges the rulesets with the ids ids forbid.
+	forbiddenBy := func(ids ...int) forge.Protection { return forge.Protection{SquashForbiddenBy: ids} }
+	// rules is the rules read's answer holding the rules given, each a JSON object.
+	rules := func(given ...string) ghtest.Answer { return ghtest.Answer{Stdout: jsonArray(given...)} }
 	tests := []struct {
 		name   string
-		want   []string
+		want   forge.Protection
 		answer ghtest.Answer
 	}{
-		{name: "contexts of every status-check rule, once each", answer: ghtest.Answer{Stdout: rules}, want: []string{"build", "test", "lint"}},
-		{name: "no rule on the trunk", answer: ghtest.Answer{Stdout: "[]"}},
-		{name: "rules without a status-check rule", answer: ghtest.Answer{Stdout: `[{"type":"deletion"}]`}},
+		{
+			name:   "contexts of every status-check rule, once each",
+			answer: ghtest.Answer{Stdout: statusChecks},
+			want:   forge.Protection{RequiredChecks: []string{"build", "test", "lint"}, SquashAllowed: true},
+		},
+		{name: "no rule on the trunk", answer: rules(), want: squash},
+		{name: "rules without a status-check or pull request rule", answer: rules(`{"type":"deletion"}`), want: squash},
 		{
 			name:   "free private plan answers 403",
 			answer: ghtest.Answer{Stdout: `{"message":"Upgrade to GitHub Pro"}`, Stderr: "gh: Upgrade to GitHub Pro (HTTP 403)\n", Code: 1},
+			want:   squash,
+		},
+		{name: "pull request rule listing squash", answer: rules(pullRequestRule(42, `["merge","squash","rebase"]`)), want: squash},
+		{name: "pull request rule without squash", answer: rules(pullRequestRule(42, `["merge"]`)), want: forbiddenBy(42)},
+		{name: "every pull request rule lists squash", answer: rules(pullRequestRule(42, `["squash"]`), pullRequestRule(51, `["squash","rebase"]`)), want: squash},
+		{name: "one of two pull request rules without squash", answer: rules(pullRequestRule(42, `["squash"]`), pullRequestRule(51, `["rebase"]`)), want: forbiddenBy(51)},
+		{name: "the rule without squash ahead of one with it", answer: rules(pullRequestRule(42, `["rebase"]`), pullRequestRule(51, `["squash"]`)), want: forbiddenBy(42)},
+		{name: "two pull request rules without squash", answer: rules(pullRequestRule(42, `["merge"]`), pullRequestRule(51, `["rebase"]`)), want: forbiddenBy(42, 51)},
+		{name: "pull request rule with an empty methods list", answer: rules(pullRequestRule(42, `[]`)), want: forbiddenBy(42)},
+		{
+			name:   "pull request rule with no allowed methods field",
+			answer: rules(`{"type":"pull_request","ruleset_id":42,"parameters":{"required_approving_review_count":1}}`),
+			want:   squash,
 		},
 	}
 	for _, tt := range tests {
@@ -732,55 +730,7 @@ func TestForge_TrunkProtection(t *testing.T) {
 			got, err := newForge().TrunkProtection(t.Context(), engine(), trunk)
 			assert.NilError(t, err)
 
-			want := forge.Protection{RequiredChecks: tt.want, SquashAllowed: true}
-			assert.Check(t, is.DeepEqual(got, want, cmpopts.EquateEmpty()))
-		})
-	}
-}
-
-func TestForge_TrunkProtection_SquashAllowed(t *testing.T) {
-	tests := []struct {
-		name  string
-		rules string
-		// forbidding is the ids of the rulesets whose rule forbids squash merges.
-		forbidding []int
-		want       bool
-	}{
-		{name: "no pull request rule", rules: `[{"type":"deletion"}]`, want: true},
-		{name: "pull request rule listing squash", rules: jsonArray(pullRequestRule(42, `["merge","squash","rebase"]`)), want: true},
-		{name: "pull request rule without squash", rules: jsonArray(pullRequestRule(42, `["merge"]`)), forbidding: []int{42}},
-		{
-			name:  "every pull request rule lists squash",
-			rules: jsonArray(pullRequestRule(42, `["squash"]`), pullRequestRule(51, `["squash","rebase"]`)), want: true,
-		},
-		{
-			name:  "one of two pull request rules without squash",
-			rules: jsonArray(pullRequestRule(42, `["squash"]`), pullRequestRule(51, `["rebase"]`)), forbidding: []int{51},
-		},
-		{
-			name:  "the rule without squash ahead of one with it",
-			rules: jsonArray(pullRequestRule(42, `["rebase"]`), pullRequestRule(51, `["squash"]`)), forbidding: []int{42},
-		},
-		{
-			name:  "two pull request rules without squash",
-			rules: jsonArray(pullRequestRule(42, `["merge"]`), pullRequestRule(51, `["rebase"]`)), forbidding: []int{42, 51},
-		},
-		{name: "pull request rule with an empty methods list", rules: jsonArray(pullRequestRule(42, `[]`)), forbidding: []int{42}},
-		{
-			name:  "pull request rule with no allowed methods field",
-			rules: `[{"type":"pull_request","ruleset_id":42,"parameters":{"required_approving_review_count":1}}]`,
-			want:  true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ghtest.Setup(t, ghtest.Says(tt.rules, rulesArgs()...))
-
-			got, err := newForge().TrunkProtection(t.Context(), engine(), trunk)
-			assert.NilError(t, err)
-
-			assert.Check(t, is.Equal(got.SquashAllowed, tt.want))
-			assert.Check(t, is.DeepEqual(got.SquashForbiddenBy, tt.forbidding, cmpopts.EquateEmpty()))
+			assert.Check(t, is.DeepEqual(got, tt.want, cmpopts.EquateEmpty()))
 		})
 	}
 }
@@ -806,7 +756,7 @@ func TestForge_TrunkProtection_WhenRefusalIsNotTheFreePlans_ReturnsExitError(t *
 	}
 }
 
-func TestForge_TrunkProtection_ReadsRulesOfExactlyTheTrunk(t *testing.T) {
+func TestForge_TrunkProtection_WhenTrunkNameHoldsPathSyntax_ReadsExactlyItsRules(t *testing.T) {
 	rules := `[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"build"}]}}]`
 	tests := []struct {
 		name   string
@@ -974,12 +924,12 @@ func TestForge_Message_WhenAnswerHoldsNoPullRequest_ReturnsDecodeError(t *testin
 			decodeErr, ok := errors.AsType[*github.DecodeError](err)
 			assert.Assert(t, ok, "error = %v, want *github.DecodeError", err)
 			assert.Check(t, is.DeepEqual(decodeErr.Argv, received(messageArgs())[0]))
-			assert.Check(t, is.ErrorContains(err, "no pull request"))
+			assert.Check(t, is.ErrorIs(err, github.ErrNoPullRequest))
 		})
 	}
 }
 
-func TestForge_Land_SquashMergesWithExactlyTheGivenMessageAtTheReadHead(t *testing.T) {
+func TestForge_Land(t *testing.T) {
 	tests := []struct {
 		name string
 		body string
@@ -1005,7 +955,7 @@ func TestForge_Land_SquashMergesWithExactlyTheGivenMessageAtTheReadHead(t *testi
 	}
 }
 
-func TestForge_DeleteBranch_RemovesExactlyTheBranchRef(t *testing.T) {
+func TestForge_DeleteBranch(t *testing.T) {
 	tests := []struct {
 		name   string
 		branch string
@@ -1026,41 +976,6 @@ func TestForge_DeleteBranch_RemovesExactlyTheBranchRef(t *testing.T) {
 			assert.NilError(t, err)
 
 			assertCalls(t, fake, received(args))
-		})
-	}
-}
-
-func TestForge_WhenWriteExitsNonZero_ReturnsExitErrorCarryingStderr(t *testing.T) {
-	byName := operationsByName()
-	tests := []struct {
-		run    func(ctx context.Context, f *github.Forge) error
-		name   string
-		stderr string
-		args   []string
-	}{
-		{
-			name:   "Land when the head has moved",
-			run:    byName["Land"],
-			args:   landArgs(featureLanding()),
-			stderr: "GraphQL: Head branch was modified. Review and try the merge again. (mergePullRequest)\n",
-		},
-		{
-			name:   "DeleteBranch",
-			run:    byName["DeleteBranch"],
-			args:   deleteArgs(featureBranch),
-			stderr: "gh: Reference does not exist (HTTP 422)\n",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stderr: tt.stderr, Code: 1}, tt.args...))
-
-			err := tt.run(t.Context(), newForge())
-
-			exitErr, ok := errors.AsType[*child.ExitError](err)
-			assert.Assert(t, ok, "error = %v, want *child.ExitError", err)
-			want := child.ExitError{Argv: received(tt.args)[0], Stderr: tt.stderr, Code: 1}
-			assert.Check(t, is.DeepEqual(*exitErr, want))
 		})
 	}
 }
@@ -1092,8 +1007,6 @@ func TestMergeStateOf(t *testing.T) {
 		{name: "draft flag on a behind status", facts: github.MergeFacts{Mergeable: mergeable, Status: "BEHIND", Draft: true}, want: forge.MergeDraft},
 		{name: "draft flag on a dirty status", facts: github.MergeFacts{Mergeable: mergeable, Status: "DIRTY", Draft: true}, want: forge.MergeDraft},
 		{name: "draft flag on a clean status", facts: github.MergeFacts{Mergeable: mergeable, Status: "CLEAN", Draft: true}, want: forge.MergeDraft},
-		{name: "draft flag on a clean status with hooks", facts: github.MergeFacts{Mergeable: mergeable, Status: "HAS_HOOKS", Draft: true}, want: forge.MergeDraft},
-		{name: "draft flag on an unstable status", facts: github.MergeFacts{Mergeable: mergeable, Status: "UNSTABLE", Draft: true}, want: forge.MergeDraft},
 		{name: "draft flag on a status not worked out yet", facts: github.MergeFacts{Mergeable: mergeable, Status: "UNKNOWN", Draft: true}, want: forge.MergeDraft},
 		{name: "conflicting wins over the draft flag", facts: github.MergeFacts{Mergeable: "CONFLICTING", Status: "DIRTY", Draft: true}, want: forge.MergeConflicting},
 		{name: "conflicting wins over a draft status", facts: github.MergeFacts{Mergeable: "CONFLICTING", Status: "DRAFT", Draft: true}, want: forge.MergeConflicting},

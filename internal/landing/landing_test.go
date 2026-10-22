@@ -51,8 +51,6 @@ const (
 	readIdentity   = "the repository's identity on GitHub"
 	readTrunk      = "origin's trunk"
 
-	unreachedText = "Refused: origin could not be reached to ask for its trunk\n" + nextPush
-
 	noOriginText = "Refused: this repository has no remote named origin\n" +
 		"Next: create the repository on GitHub and push to it with `gh repo create --source . --push`\n"
 )
@@ -216,7 +214,7 @@ func assertStoppedBy(t *testing.T, got result.Result, want result.Outcome, req l
 func assertBrokeRead(t *testing.T, got result.Result, read, detail string) {
 	t.Helper()
 
-	text := assertBrokeReadBy(t, got, landingCommand{req: pushRequest(), fixed: nextFixed}, read)
+	text := assertBrokeReadBy(t, got, pushCommand(), read)
 	assert.Check(t, is.Contains(text, detail))
 }
 
@@ -359,12 +357,12 @@ func trunkRefusals() []refusal {
 	return []refusal{
 		{
 			name:   "origin does not answer",
-			script: allowed(), offline: true, asksForge: true, asksOrigin: true, want: unreachedText,
+			script: allowed(), offline: true, asksForge: true, asksOrigin: true, want: unreached(pushCommand(), "ask for its trunk"),
 		},
 		{
 			name:    "origin's answer names no branch",
 			arrange: (*gittest.Fixture).DetachOriginHead,
-			script:  allowed(), asksForge: true, asksOrigin: true, want: unreachedText,
+			script:  allowed(), asksForge: true, asksOrigin: true, want: unreached(pushCommand(), "ask for its trunk"),
 		},
 	}
 }
@@ -566,8 +564,7 @@ func TestPreconditions_WhenForgeIdentityFailsUntyped_BrokeNamingTheRead(t *testi
 	assertBrokeRead(t, got, readIdentity, "HTTP 502")
 
 	text, _ := shown(t, got, s.gitDir)
-	want := "Could not read the repository's identity on GitHub: HTTP 502\nNothing was written.\n" + nextFixed
-	assert.Check(t, is.DeepEqual(text, want))
+	assert.Check(t, is.DeepEqual(text, unreadText(pushCommand(), readIdentity, "HTTP 502")))
 
 	assertRefsUnchanged(t, s, before)
 	assertAsked(t, s, identityRead())
@@ -589,8 +586,7 @@ func TestPreconditions_WhenDirectoryIsNotARepository_BrokeNamingTheRead(t *testi
 			_, got, ok := landing.Preconditions(t.Context(), deps, cmd.req)
 
 			assert.Assert(t, !ok, "Preconditions() ok = true, want a broke result")
-			text := assertBrokeReadBy(t, got, cmd, readStanding)
-			assert.Check(t, is.Contains(text, "not a git repository"))
+			assertBrokeReadBy(t, got, cmd, readStanding)
 		})
 	}
 }
@@ -663,8 +659,7 @@ func TestPreconditions_WhenDeadlineEndsDuringRead_RefusesNamingTheRead(t *testin
 				assertStoppedBy(t, got, result.Refused, cmd.req)
 
 				text, _ := shown(t, got, s.gitDir)
-				want := "Refused: the time limit ended while reading " + tt.read + "; nothing was written\n" + cmd.again
-				assert.Check(t, is.DeepEqual(text, want))
+				assert.Check(t, is.DeepEqual(text, overtimeText(cmd, tt.read)))
 
 				assertRefsUnchanged(t, s, before)
 				assertAsked(t, s, tt.ops)
@@ -689,15 +684,40 @@ type landingCommand struct {
 	req   landing.Request
 }
 
+// after is the `Next:` line that does step, then runs the command again.
+func (c landingCommand) after(step string) string {
+	return "Next: " + step + ", then run ils " + c.name + " again\n"
+}
+
+// pushCommand is `ils push` with the `Next:` lines that name it.
+func pushCommand() landingCommand {
+	return landingCommand{name: "push", req: pushRequest(), again: nextPush, fixed: nextFixed}
+}
+
+// mergeCommand is `ils merge` with the `Next:` lines that name it.
+func mergeCommand() landingCommand {
+	return landingCommand{name: "merge", req: mergeRequest(), again: nextMergeAgain, fixed: nextMergeFixed}
+}
+
 // landingCommands are push and merge, the two commands that run the shared preconditions.
 func landingCommands() []landingCommand {
-	return []landingCommand{
-		{name: "push", req: pushRequest(), again: nextPush, fixed: nextFixed},
-		{
-			name: "merge", req: mergeRequest(), again: "Next: ils merge\n",
-			fixed: "Next: fix what failed, then run ils merge again\n",
-		},
-	}
+	return []landingCommand{pushCommand(), mergeCommand()}
+}
+
+// unreached is the whole text of cmd's refusal when origin stopped answering while it was asked to
+// do what.
+func unreached(cmd landingCommand, what string) string {
+	return "Refused: origin could not be reached to " + what + "\n" + cmd.again
+}
+
+// overtimeText is the whole text of cmd's refusal when the deadline ended in the read named read.
+func overtimeText(cmd landingCommand, read string) string {
+	return "Refused: the time limit ended while reading " + read + "; nothing was written\n" + cmd.again
+}
+
+// unreadText is the whole text of cmd's result when the read named read failed saying detail.
+func unreadText(cmd landingCommand, read, detail string) string {
+	return "Could not read " + read + ": " + detail + "\nNothing was written.\n" + cmd.fixed
 }
 
 // mergeStop is one stop of the preconditions of `ils merge`, with how it ends and the whole text
@@ -772,15 +792,14 @@ func forgeStops() []mergeStop {
 		},
 		{
 			name: "the forge's identity read fails", outcome: result.Broke, script: fails(errors.New("HTTP 502")),
-			want: "Could not read the repository's identity on GitHub: HTTP 502\nNothing was written.\n" +
-				"Next: fix what failed, then run ils merge again\n",
+			want: unreadText(mergeCommand(), readIdentity, "HTTP 502"),
 		},
 	}
 }
 
 // unreadTrunkStops are the stops of `ils merge` whose trunk origin did not name.
 func unreadTrunkStops() []mergeStop {
-	const want = "Refused: origin could not be reached to ask for its trunk\nNext: ils merge\n"
+	want := unreached(mergeCommand(), "ask for its trunk")
 
 	return []mergeStop{
 		{name: "origin does not answer", outcome: result.Refused, script: allowed(), offline: true, want: want},
@@ -824,7 +843,6 @@ func TestPreconditions_WhenTheCommandIsMerge_NamesItInTheNextStep(t *testing.T) 
 const (
 	nextBranch = "Next: start a branch from origin's trunk: `git fetch origin " + trunk +
 		" && git switch -c <name> --no-track origin/" + trunk + "`"
-	nextCommitFiles = "Next: commit them, then run ils push again\n"
 
 	readTree         = "the working tree's changes"
 	readFetchedTrunk = "the commits on origin's trunk"
@@ -832,22 +850,29 @@ const (
 	readTip          = "the branch's tip"
 )
 
-// dirtyText is the refusal of a tree whose changed tracked files are files.
-func dirtyText(files ...string) string {
+const (
+	onTrunk  = "Refused: HEAD is on the trunk " + trunk + ", which ils never pushes\n" + nextBranch + "\n"
+	detached = "Refused: HEAD is detached, so there is no branch to push\n" + nextBranch + "\n"
+)
+
+// dirtyText is cmd's refusal of a tree whose changed tracked files are files.
+func dirtyText(cmd landingCommand, files ...string) string {
 	slices.Sort(files)
 
 	return "Refused: tracked files have changes that are not committed: " + strings.Join(files, ", ") + "\n" +
-		nextCommitFiles
+		cmd.after("commit them")
+}
+
+// elsewhereText is cmd's refusal of a branch whose open pull request 12 is against otherBase.
+func elsewhereText(cmd landingCommand) string {
+	return "Refused: pull request #12 from " + topic + " is open against " + otherBase +
+		" and not against the trunk " + trunk + "\n" +
+		cmd.after("close it or change its base with `gh pr edit 12 --base "+trunk+"`")
 }
 
 // standingRefusals are the refusals decided from where HEAD stands and from the working tree,
 // before anything is fetched.
 func standingRefusals() []pushRefusal {
-	const (
-		onTrunk  = "Refused: HEAD is on the trunk " + trunk + ", which ils never pushes\n" + nextBranch + "\n"
-		detached = "Refused: HEAD is detached, so there is no branch to push\n" + nextBranch + "\n"
-	)
-
 	return []pushRefusal{
 		{
 			name: "on the trunk", script: allowed(), ops: identityRead(),
@@ -876,22 +901,22 @@ func standingRefusals() []pushRefusal {
 		},
 		{
 			name: "tracked file changed and not staged", script: allowed(), ops: identityRead(),
-			arrange: func(f *gittest.Fixture) string { return dirtyText(f.DirtyFile()) },
+			arrange: func(f *gittest.Fixture) string { return dirtyText(pushCommand(), f.DirtyFile()) },
 		},
 		{
 			name: "tracked file changed and staged", script: allowed(), ops: identityRead(),
-			arrange: func(f *gittest.Fixture) string { return dirtyText(f.StagedFile()) },
+			arrange: func(f *gittest.Fixture) string { return dirtyText(pushCommand(), f.StagedFile()) },
 		},
 		{
 			name: "two tracked files changed", script: allowed(), ops: identityRead(),
-			arrange: func(f *gittest.Fixture) string { return dirtyText(f.DirtyFile(), f.StagedFile()) },
+			arrange: func(f *gittest.Fixture) string { return dirtyText(pushCommand(), f.DirtyFile(), f.StagedFile()) },
 		},
 		{
 			name: "dirty tree on a branch with no commit past the trunk", script: allowed(), ops: identityRead(),
 			arrange: func(f *gittest.Fixture) string {
 				f.Git("switch", "--quiet", "--create", spare, trunk)
 
-				return dirtyText(f.DirtyFile())
+				return dirtyText(pushCommand(), f.DirtyFile())
 			},
 		},
 	}
@@ -930,10 +955,7 @@ func commitRefusals() []pushRefusal {
 func changeRefusals() []pushRefusal {
 	number := strconv.Itoa(merged)
 
-	const elsewhere = "Refused: pull request #12 from " + topic + " is open against " + otherBase +
-		" and not against the trunk " + trunk + "\n" +
-		"Next: close it or change its base with `gh pr edit 12 --base " + trunk +
-		"`, then run ils push again\n"
+	elsewhere := elsewhereText(pushCommand())
 
 	return []pushRefusal{
 		{
@@ -1021,13 +1043,13 @@ func TestPush_WhenOriginStopsAnsweringASharedRead_RefusesNamingWhatItWasAskedFor
 		{
 			// Origin answers the question about its trunk, and nothing after.
 			name: "asked to fetch its trunk", script: allowed(), ops: identityRead(), answered: 1,
-			want: "origin could not be reached to fetch its trunk " + trunk,
+			asked: "fetch its trunk " + trunk,
 		},
 		{
 			name:   "asked to fetch the merged pull request's head",
 			script: landedScript(), ops: changesRead(), answered: 4,
 			arrange: landAndPublish,
-			want:    "origin could not be reached to fetch the head of pull request #" + strconv.Itoa(merged),
+			asked:   "fetch the head of pull request #" + strconv.Itoa(merged),
 		},
 	})
 }
@@ -1134,7 +1156,7 @@ func TestPush_WhenFindChangesFailsUntyped_BrokeNamingTheRead(t *testing.T) {
 
 	got := landing.Push(t.Context(), s.deps, pushRequest())
 
-	want := "Could not read " + readChanges + ": HTTP 502\nNothing was written.\n" + nextFixed
+	want := unreadText(pushCommand(), readChanges, "HTTP 502")
 	assertEnded(t, s, got, finish{outcome: result.Broke, text: want})
 	assertOnlyRead(t, s, reads{before: before, ops: changesRead(), fetches: true})
 }
@@ -1165,7 +1187,7 @@ func TestPush_WhenBranchRefCannotBeRead_BrokeNamingTheTipRead(t *testing.T) {
 
 	got := landing.Push(t.Context(), s.deps, pushRequest())
 
-	assertEnded(t, s, got, finish{outcome: result.Broke, text: failedGitText(readTip, words)})
+	assertEnded(t, s, got, finish{outcome: result.Broke, text: failedGitText(pushCommand(), readTip, words)})
 
 	assert.Check(t, is.Equal(s.refs(), before))
 

@@ -61,6 +61,15 @@ func assertMissingTool(t *testing.T, err error, label string) *child.ToolMissing
 	return missing
 }
 
+// withoutGh sets `GH_PATH` to ghPath and empties `PATH` for the rest of the test, so that no `gh`
+// can be found.
+func withoutGh(t *testing.T, ghPath string) {
+	t.Helper()
+
+	t.Setenv("GH_PATH", ghPath)
+	t.Setenv("PATH", t.TempDir())
+}
+
 func TestRunner_Run_WhenGhExitsZero_ReturnsOutput(t *testing.T) {
 	args := []string{"pr", "view", "--json", "number"}
 	ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "{\"number\":7}\n", Stderr: "notice\n"}, args...))
@@ -100,15 +109,26 @@ func TestRunner_Run_WhenGhExitsNonZero_ReturnsExitErrorAndStdout(t *testing.T) {
 	assert.Check(t, is.Equal(got.Stdout, "build\tpending\n"))
 }
 
-func TestRunner_Run_WhenContextEndsWhileGhRuns_ReturnsContextError(t *testing.T) {
+func TestRunner_Run_WhenContextIsCanceledWhileGhRuns_ReturnsContextError(t *testing.T) {
 	args := []string{"pr", "checks", "7"}
-	ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "pass\n", Delay: 30 * time.Second}, args...))
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	fake := ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "pass\n", Delay: 30 * time.Second}, args...))
+	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
+	ran := make(chan error, 1)
+	go func() {
+		_, err := github.Runner{}.Run(ctx, args...)
+		ran <- err
+	}()
+	select {
+	case <-fake.Holding():
+	case err := <-ran:
+		t.Fatalf("Run(pr checks) returned %v before the fake held its answer", err)
+	}
 
-	_, err := github.Runner{}.Run(ctx, args...)
+	cancel()
+	err := <-ran
 
-	assert.Check(t, is.ErrorIs(err, context.DeadlineExceeded))
+	assert.Check(t, is.ErrorIs(err, context.Canceled))
 }
 
 func TestRunner_Run_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {

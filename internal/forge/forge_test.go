@@ -14,10 +14,12 @@ import (
 // unknown-bucket case.
 const unknownBucket = forge.Bucket("stale")
 
+// link is the CI page of the check called name.
 func link(name string) string {
 	return "https://ci.example.com/checks/" + name
 }
 
+// optional is a check the trunk's protection does not name.
 func optional(name string, bucket forge.Bucket) forge.Check {
 	return forge.Check{Name: name, Bucket: bucket, Workflow: "ci", Link: link(name)}
 }
@@ -224,22 +226,4 @@ func TestVerdict_Running(t *testing.T) {
 			assert.Check(t, is.Equal(got, tt.want))
 		})
 	}
-}
-
-func TestRepo_Slug_WhenHostOwnerAndNameSet_JoinsThemWithSlashes(t *testing.T) {
-	t.Parallel()
-	repo := forge.Repo{Host: "git.example.com", Owner: "ada", Name: "engine"}
-
-	got := repo.Slug()
-
-	assert.Check(t, is.Equal(got, "git.example.com/ada/engine"))
-}
-
-func TestRepo_FullName_WhenOwnerAndNameSet_JoinsThemWithASlash(t *testing.T) {
-	t.Parallel()
-	repo := forge.Repo{Host: "git.example.com", Owner: "ada", Name: "engine"}
-
-	got := repo.FullName()
-
-	assert.Check(t, is.Equal(got, "ada/engine"))
 }

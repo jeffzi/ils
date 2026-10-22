@@ -22,7 +22,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/quiet"
 )
@@ -151,20 +150,6 @@ func MessageArgs(host, owner, name string, number int) []string {
 		"-F", "number=" + strconv.Itoa(number), "-f", "owner=" + owner, "-f", "name=" + name,
 		"-f", "query=" + github.MessageQuery,
 	}
-}
-
-// LandArgs is the argv of the squash merge of landing.
-func LandArgs(slug string, landing forge.Landing) []string {
-	return []string{
-		"pr", "merge", strconv.Itoa(landing.Number), "--repo", slug, "--squash",
-		"--match-head-commit", landing.HeadSHA, "--subject", landing.Subject, "--body", landing.Body,
-	}
-}
-
-// DeleteBranchArgs is the argv of the delete of branch on GitHub; repo is owner/name. branch goes
-// into the path as given, so pass it already escaped as the forge escapes it.
-func DeleteBranchArgs(host, repo, branch string) []string {
-	return []string{"api", "--hostname", host, "-X", "DELETE", "repos/" + repo + "/git/refs/heads/" + branch}
 }
 
 // ---------------------------------------------------------------------------

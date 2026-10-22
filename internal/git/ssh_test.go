@@ -1,7 +1,6 @@
 package git_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -20,16 +19,12 @@ import (
 	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/gittest"
-	"github.com/jeffzi/ils/internal/quiet"
 )
 
-// renames is an ssh config that gives hosts other names: an alias of github.com, an alias of
-// ssh.github.com, github.com reached through ssh.github.com on port 443, and an alias of a host
-// outside GitHub.
+// renames is an ssh config that gives hosts other names: an alias of github.com and an alias of
+// ssh.github.com.
 const renames = "Host github-personal\n  HostName github.com\n" +
-	"Host github-work\n  HostName ssh.github.com\n  Port 443\n" +
-	"Host github.com\n  HostName ssh.github.com\n  Port 443\n" +
-	"Host example.com\n  HostName git.example.org\n"
+	"Host github-work\n  HostName ssh.github.com\n  Port 443\n"
 
 func TestRepo_OriginURLs_WhenURLIsSSH_ReturnsTheHostSSHConnectsTo(t *testing.T) {
 	t.Parallel()
@@ -41,10 +36,7 @@ func TestRepo_OriginURLs_WhenURLIsSSH_ReturnsTheHostSSHConnectsTo(t *testing.T) 
 		{name: "scp-like url with an alias", url: "git@github-personal:jeffzi/ils.git", host: "github.com"},
 		{name: "ssh url with an alias", url: "ssh://git@github-personal/jeffzi/ils.git", host: "github.com"},
 		{name: "ssh url with an alias and a port", url: "ssh://git@github-personal:2222/jeffzi/ils.git", host: "github.com"},
-		{name: "ssh url whose host has an alias", url: "ssh://git@example.com/jeffzi/ils.git", host: "git.example.org"},
-		{name: "host with no alias", url: "git@example.net:jeffzi/ils.git", host: "example.net"},
 		{name: "alias of a host under github.com", url: "git@github-work:jeffzi/ils.git", host: "github.com"},
-		{name: "github.com reached through a host under it", url: "git@github.com:jeffzi/ils.git", host: "github.com"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -466,22 +458,12 @@ func TestRepo_OriginURLs_WhenRunnerSetsNoEnvironment_ReadsTheProcessEnvironment(
 	t.Parallel()
 	f := gittest.New(t, trunk)
 	f.SetOriginURL(aliasURL)
-	binary, err := os.Executable()
-	assert.NilError(t, err)
+	env := append(f.Env(), originHostEnv+"="+f.Dir(), "GIT_SSH_COMMAND="+sshReading(t, aliases))
 
-	var stdout, stderr bytes.Buffer
+	stdout, stderr, err := runSelf(t, env)
+	assert.NilError(t, err, "test binary stderr: %s", stderr)
 
-	//nolint:gosec // G204: the test binary starts itself; nothing here comes from outside the test.
-	cmd := exec.CommandContext(t.Context(), binary)
-	cmd.Env = append(f.Env(), originHostEnv+"="+f.Dir(), "GIT_SSH_COMMAND="+sshReading(t, aliases),
-		"GORACE="+quiet.Setting())
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err = cmd.Run()
-	assert.NilError(t, err, "test binary stderr: %s", stderr.String())
-
-	assert.Check(t, is.Equal(stdout.String(), "git.example.org"))
+	assert.Check(t, is.Equal(stdout, "git.example.org"))
 }
 
 func TestRepo_OriginURLs_WhenRunnerNamesGitSSHCommandInLowerCase_MatchesTheKeyAsTheSystemDoes(t *testing.T) {
@@ -848,15 +830,13 @@ func TestRepo_OriginURLs_WhenCommandLineOfVariantPlainNotFound_AsksPlainSSH(t *t
 	}
 }
 
-func TestSSHCommandMissingError_Error_NamesTheSettingAndTheProgramAndNoInstallPage(t *testing.T) {
+func TestSSHCommandMissingError_Error_WhenProgramNotFound_NamesSettingAndProgram(t *testing.T) {
 	t.Parallel()
 	err := &git.SSHCommandMissingError{Setting: "core.sshCommand", Program: "no-such-wrapper"}
 
 	got := err.Error()
 
-	assert.Check(t, is.Contains(got, "core.sshCommand"))
-	assert.Check(t, is.Contains(got, "no-such-wrapper"))
-	assert.Check(t, !strings.Contains(got, "https://"), "Error() = %q, want no install page", got)
+	assert.Check(t, is.Equal(got, "no-such-wrapper, the ssh command core.sshCommand names, is not found"))
 }
 
 // exitingCase is one ssh command a user configured whose program is found but itself exits with

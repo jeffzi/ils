@@ -94,7 +94,7 @@ func TestForge_Verdict_WhenQueryNamesRequiredChecks_CarriesEveryCheckAndListsThe
 	assert.Check(t, is.DeepEqual(got, want, cmpopts.EquateEmpty()))
 }
 
-func TestForge_Verdict_FailedLog(t *testing.T) {
+func TestForge_Verdict(t *testing.T) {
 	const logText = "build\tRun tests\t--- FAIL: TestForge (0.01s)\nbuild\tRun tests\tFAIL\n"
 
 	logged := ghtest.Answer{Stdout: logText}

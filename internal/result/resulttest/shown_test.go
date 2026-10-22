@@ -11,28 +11,16 @@ import (
 
 // spyTB records failures reported through it instead of failing the real test.
 type spyTB struct {
-	testing.TB
-
 	failed bool
 }
 
-func (s *spyTB) Log(...any) {}
+func (*spyTB) Helper() {}
+
+func (*spyTB) Log(...any) {}
 
 func (s *spyTB) Fail() { s.failed = true }
 
-func TestDecode_WhenOutIsOneObject_ReturnsItsFields(t *testing.T) {
-	t.Parallel()
-	out := `{"command":"push","words":["push"],"outcome":"refused","exit_code":2,` +
-		`"reason":"the branch is the trunk","lines":["Nothing was pushed."],"next":"switch to a branch"}`
-
-	got := resulttest.Decode(t, out)
-
-	want := resulttest.Shown{
-		Command: "push", Words: []string{"push"}, Outcome: "refused", ExitCode: 2,
-		Reason: "the branch is the trunk", Lines: []string{"Nothing was pushed."}, Next: "switch to a branch",
-	}
-	assert.Check(t, is.DeepEqual(got, want))
-}
+func (s *spyTB) FailNow() { s.failed = true }
 
 func TestAssertCarried(t *testing.T) {
 	t.Parallel()
@@ -58,7 +46,7 @@ func TestAssertCarried(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			spy := &spyTB{TB: t}
+			spy := &spyTB{}
 
 			resulttest.AssertCarried(spy, tt.text, carrier)
 

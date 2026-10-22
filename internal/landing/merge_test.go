@@ -1,15 +1,14 @@
 package landing_test
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"slices"
 	"strconv"
-	"strings"
 	"testing"
+	"testing/synctest"
 
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"gotest.tools/v3/assert"
@@ -43,9 +42,6 @@ const (
 	rulesetText = "Refused: the ruleset 42 on the trunk " + trunk + " forbids squash merges\n" + nextRuleset
 	noPullText  = "Refused: the branch " + topic + " has no open pull request against the trunk " + trunk + "\n" +
 		nextPush
-	elsewhereText = "Refused: pull request #12 from " + topic + " is open against " + otherBase +
-		" and not against the trunk " + trunk + "\n" +
-		"Next: close it or change its base with `gh pr edit 12 --base " + trunk + "`, then run ils merge again\n"
 	behindHeadText = "Refused: the tip of " + topic +
 		" is behind the head of pull request #12: the pull request has commits the tip lacks\n" + nextPush
 	pastHeadText = "Refused: the tip of " + topic +
@@ -75,24 +71,6 @@ func trunkAheadText(sha string) string {
 func nothingPastMerge(branch string) string {
 	return "Refused: the branch " + branch + " has no commit past origin's trunk " + trunk + "\n" +
 		"Next: commit the work, then run ils push\n"
-}
-
-// unreachedMerge is the whole text of the refusal by `ils merge` when origin stopped answering while
-// it was asked for what.
-func unreachedMerge(what string) string {
-	return "Refused: origin could not be reached to " + what + "\n" + nextMergeAgain
-}
-
-// overtimeMerge is the whole text of the refusal by `ils merge` when the deadline ended in the
-// read named read.
-func overtimeMerge(read string) string {
-	return "Refused: the time limit ended while reading " + read + "; nothing was written\n" + nextMergeAgain
-}
-
-// unreadMerge is the whole text of the result of `ils merge` when the read named read failed
-// saying detail.
-func unreadMerge(read, detail string) string {
-	return "Could not read " + read + ": " + detail + "\nNothing was written.\n" + nextMergeFixed
 }
 
 // squashing is the identity of Acme/Widgets, whose user can push, with settings that allow squash
@@ -173,21 +151,12 @@ func (build forgeFor) failingRules(err error) forgeFor {
 	})
 }
 
-// failingFind returns build with a find-changes read that fails with err.
-func (build forgeFor) failingFind(err error) forgeFor {
-	return build.with(func(script *forgetest.Script, _ string) {
-		script.FindChanges = []forgetest.Answer[[]forge.Change]{{Err: err}}
-	})
-}
-
 // mergeEnd is how a run of `ils merge` must end, as the arrange of a row works it out.
 type mergeEnd struct {
 	// text is the whole text of the result.
 	text string
 	// head is the head of pull request 12, which the payload carries; empty is the tip of the branch.
 	head string
-	// listed is the head the forge lists for pull request 12; empty is head.
-	listed string
 	// from is the forge read from which on the git call fails; empty is the whole run.
 	from forgetest.Op
 	// failing is the arguments of a git call made to fail as gittest.FakeGit makes it; empty fails none.
@@ -254,7 +223,7 @@ func runMerge(t *testing.T, tt mergeRow) {
 		end.head = s.fixture.Git("rev-parse", "HEAD")
 	}
 
-	script := tt.script(cmp.Or(end.listed, end.head))
+	script := tt.script(end.head)
 
 	switch {
 	case end.from != "":
@@ -315,17 +284,6 @@ func rulesRead() []forgetest.Op {
 // standingStops are the refusals of `ils merge` decided from where HEAD stands and from the
 // working tree, before anything is fetched.
 func standingStops() []mergeRow {
-	const (
-		onTrunk  = "Refused: HEAD is on the trunk " + trunk + ", which ils never pushes\n" + nextBranch + "\n"
-		detached = "Refused: HEAD is detached, so there is no branch to push\n" + nextBranch + "\n"
-	)
-
-	dirty := func(files ...string) string {
-		slices.Sort(files)
-
-		return "Refused: tracked files have changes that are not committed: " + strings.Join(files, ", ") + "\n" +
-			"Next: commit them, then run ils merge again\n"
-	}
 	row := func(name string, arrange func(*gittest.Fixture) string) mergeRow {
 		return mergeRow{
 			name: name, script: merging(), ops: identityRead(), outcome: result.Refused,
@@ -334,28 +292,16 @@ func standingStops() []mergeRow {
 	}
 
 	return []mergeRow{
-		row("on the trunk", func(f *gittest.Fixture) string {
-			f.Git("switch", "--quiet", trunk)
-
-			return onTrunk
-		}),
 		row("on the trunk with a dirty tree", func(f *gittest.Fixture) string {
 			f.Git("switch", "--quiet", trunk)
 			f.DirtyFile()
 
 			return onTrunk
 		}),
-		row("detached HEAD", func(f *gittest.Fixture) string {
-			f.Detach()
-
-			return detached
-		}),
-		row("tracked file changed and not staged", func(f *gittest.Fixture) string { return dirty(f.DirtyFile()) }),
-		row("tracked file changed and staged", func(f *gittest.Fixture) string { return dirty(f.StagedFile()) }),
 		row("tracked files changed and a local trunk ahead of origin's", func(f *gittest.Fixture) string {
 			f.AdvanceTrunk()
 
-			return dirty(f.DirtyFile(), f.StagedFile())
+			return dirtyText(mergeCommand(), f.DirtyFile(), f.StagedFile())
 		}),
 	}
 }
@@ -413,7 +359,7 @@ func pullStops() []mergeRow {
 	}
 	elsewhere := row("open pull request against another base",
 		merging().findingOnly(change(opened, otherBase, forge.ChangeOpen)), nil)
-	elsewhere.arrange = func(*gittest.Fixture) mergeEnd { return ending(elsewhereText) }
+	elsewhere.arrange = func(*gittest.Fixture) mergeEnd { return ending(elsewhereText(mergeCommand())) }
 	landed := row("open pull request against the trunk beside a merged one that carries every commit",
 		merging().with(func(script *forgetest.Script, tip string) {
 			script.FindChanges = listing([]forge.Change{pullAt(tip), change(merged, trunk, forge.ChangeMerged)})
@@ -539,6 +485,31 @@ func TestMerge_WhenACheckBeforeTheWaitFails_RefusesAtTheFirst(t *testing.T) {
 	))
 }
 
+func TestMerge_WhenTheMergedPullRequestLacksCommitsOfTheBranch_RefusesListingThem(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		var head string
+
+		run := runMergeOn(t, setting{
+			arrange: func(f *gittest.Fixture) {
+				f.LandPull(merged, topic)
+				head = f.Git("rev-parse", topic)
+				f.Commits(topic, "fix a typo", "add an example")
+			},
+			script: resuming(),
+		})
+
+		assertStoppedBy(t, run.got, result.Refused, mergeRequest())
+
+		_, reason := shown(t, run.got, run.gitDir)
+		assert.Check(t, is.Equal(reason,
+			"pull request #"+strconv.Itoa(merged)+" from "+topic+" was merged without the commits listed here"))
+		assert.Check(t, is.DeepEqual(mergePayload(run.got), resumed(head, ""), cmpopts.EquateEmpty()))
+		assert.Check(t, is.Equal(run.written(), run.before))
+		assert.Check(t, is.DeepEqual(run.forge.Calls(), asked(changesRead()), whichRepo()))
+	})
+}
+
 // mergeAccepted are the states that pass a check before the wait that another state fails: each
 // reaches the read of the trunk's rules, whose ruleset forbids squash merges.
 func mergeAccepted() []mergeRow {
@@ -556,24 +527,13 @@ func mergeAccepted() []mergeRow {
 		}
 	}
 
-	// The forge still lists the trunk's commit as the head, while origin's ref of the pull request
-	// is already the tip, which the run then takes as the head.
-	pulledTip := row("tip at origin's head of a pull request the forge lists at an earlier head", merging(), nil)
-	pulledTip.arrange = func(f *gittest.Fixture) mergeEnd {
-		f.PullRef(opened, f.Git("rev-parse", topic))
-
-		return mergeEnd{text: rulesetText, listed: f.Git("rev-parse", trunk)}
-	}
-
 	return []mergeRow{
-		row("only a file git does not track", merging(), func(f *gittest.Fixture) { f.UntrackedFile() }),
 		row("local trunk behind origin's", merging(), func(f *gittest.Fixture) { f.AdvanceOrigin(trunk) }),
 		row("no local trunk", merging(), func(f *gittest.Fixture) { f.Git("branch", "--quiet", "-D", trunk) }),
 		row("title with a type and a summary", merging().titled("feat: x"), nil),
 		row("title with a scope", merging().titled("fix(cli): x"), nil),
 		row("title with a breaking mark", merging().titled("feat!: x"), nil),
 		row("title with a scope and a breaking mark", merging().titled("refactor(git)!: x"), nil),
-		pulledTip,
 	}
 }
 
@@ -593,19 +553,13 @@ func unansweredMerges() []mergeRow {
 	return []mergeRow{
 		{
 			name: "asked for its trunk", script: merging(), ops: identityRead(), offline: true, outcome: result.Refused,
-			arrange: func(*gittest.Fixture) mergeEnd { return ending(unreachedMerge("ask for its trunk")) },
-		},
-		{
-			// Origin answers the question about its trunk, and nothing after.
-			name: "asked to fetch its trunk", script: merging(), ops: identityRead(), answered: 1,
-			outcome: result.Refused, fetches: true,
-			arrange: func(*gittest.Fixture) mergeEnd { return ending(unreachedMerge("fetch its trunk " + trunk)) },
+			arrange: func(*gittest.Fixture) mergeEnd { return ending(unreached(mergeCommand(), "ask for its trunk")) },
 		},
 		{
 			// Origin answers about its trunk and the fetch of it, and nothing after.
 			name: "asked to fetch the head of the pull request", script: merging(), ops: changesRead(), answered: 2,
 			outcome: result.Refused, fetches: true, known: true,
-			arrange: pastHead(unreachedMerge("fetch the head of pull request #12")),
+			arrange: pastHead(unreached(mergeCommand(), "fetch the head of pull request #12")),
 		},
 	}
 }
@@ -616,24 +570,14 @@ func overtimeMerges() []mergeRow {
 
 	return []mergeRow{
 		{
-			name: "during the fetch of origin's trunk", script: merging(), ops: identityRead(), deadline: stalling(1),
-			outcome: result.Refused, fetches: true,
-			arrange: func(*gittest.Fixture) mergeEnd { return ending(overtimeMerge(readFetchedTrunk)) },
-		},
-		{
 			name: "during the fetch of the head of the pull request", script: merging(), ops: changesRead(),
 			deadline: stalling(2), outcome: result.Refused, fetches: true, known: true,
-			arrange: pastHead(overtimeMerge(readPullHead)),
-		},
-		{
-			name: "during the find-changes read", script: merging().failingFind(deadline), ops: changesRead(),
-			outcome: result.Refused, fetches: true,
-			arrange: func(*gittest.Fixture) mergeEnd { return ending(overtimeMerge(readChanges)) },
+			arrange: pastHead(overtimeText(mergeCommand(), readPullHead)),
 		},
 		{
 			name: "during the read of the trunk's rules", script: merging().failingRules(deadline), ops: rulesRead(),
 			outcome: result.Refused, fetches: true, known: true,
-			arrange: func(*gittest.Fixture) mergeEnd { return ending(overtimeMerge(readRules)) },
+			arrange: func(*gittest.Fixture) mergeEnd { return ending(overtimeText(mergeCommand(), readRules)) },
 		},
 	}
 }
@@ -645,14 +589,9 @@ func failedForgeMerges() []mergeRow {
 
 	return []mergeRow{
 		{
-			name: "the find-changes read", script: merging().failingFind(failed), ops: changesRead(),
-			outcome: result.Broke, fetches: true,
-			arrange: func(*gittest.Fixture) mergeEnd { return ending(unreadMerge(readChanges, "HTTP 502")) },
-		},
-		{
 			name: "the read of the trunk's rules", script: merging().failingRules(failed), ops: rulesRead(),
 			outcome: result.Broke, fetches: true, known: true,
-			arrange: func(*gittest.Fixture) mergeEnd { return ending(unreadMerge(readRules, "HTTP 502")) },
+			arrange: func(*gittest.Fixture) mergeEnd { return ending(unreadText(mergeCommand(), readRules, "HTTP 502")) },
 		},
 	}
 }
@@ -666,8 +605,7 @@ func TestMerge_WhenAReadBeforeTheWaitDoesNotFinish_StopsNamingTheRead(t *testing
 // failedGitMerge is the mergeEnd of a run whose git call with the arguments words fails as
 // failGit makes it, during the read named read, with pull request 12 at head.
 func failedGitMerge(read, head string, words []string) mergeEnd {
-	text := unreadMerge(read, "git "+strings.Join(words, " ")+": exit status "+
-		strconv.Itoa(gittest.FailedCode)+": "+gittest.FailedSaid)
+	text := failedGitText(mergeCommand(), read, words)
 
 	return mergeEnd{text: text, head: head, failing: words}
 }
@@ -792,7 +730,7 @@ func TestMerge_WhenTheDeadlineEndsInAGitRead_RefusesNamingIt(t *testing.T) {
 			runMerge(t, mergeRow{
 				script: merging(), ops: identityRead(), deadline: stallingGit(tt.words),
 				outcome: result.Refused, fetches: true,
-				arrange: func(*gittest.Fixture) mergeEnd { return ending(overtimeMerge(tt.read)) },
+				arrange: func(*gittest.Fixture) mergeEnd { return ending(overtimeText(mergeCommand(), tt.read)) },
 			})
 		})
 	}

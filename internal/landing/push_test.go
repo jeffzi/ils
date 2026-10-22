@@ -410,8 +410,8 @@ func answering(t *testing.T, f *gittest.Fixture, times int, after string) []stri
 type unanswered struct {
 	arrange func(*gittest.Fixture)
 	name    string
-	// want is the reason of the refusal.
-	want   string
+	// asked is what origin was asked to do when it stopped answering.
+	asked  string
 	script forgetest.Script
 	ops    []forgetest.Op
 	// answered is how many calls origin answers before it stops.
@@ -432,8 +432,7 @@ func runUnanswered(t *testing.T, rows []unanswered) {
 
 			got := landing.Push(t.Context(), s.deps, pushRequest())
 
-			want := "Refused: " + tt.want + "\n" + nextPush
-			assertEnded(t, s, got, finish{outcome: result.Refused, text: want})
+			assertEnded(t, s, got, finish{outcome: result.Refused, text: unreached(pushCommand(), tt.asked)})
 			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
 		})
 	}
@@ -447,12 +446,12 @@ func TestPush_WhenOriginStopsAnswering_RefusesNamingWhatItWasAskedFor(t *testing
 			// Origin answers the question about its trunk and the fetch of it, and nothing after.
 			name: "asked whether it has the branch", script: allowed(), ops: identityRead(), answered: 2,
 			arrange: func(f *gittest.Fixture) { f.Publish(topic) },
-			want:    "origin could not be reached to ask whether it has the branch " + topic,
+			asked:   "ask whether it has the branch " + topic,
 		},
 		{
 			name: "asked to fetch its copy of the branch", script: allowed(), ops: identityRead(), answered: 3,
 			arrange: func(f *gittest.Fixture) { f.Publish(topic) },
-			want:    "origin could not be reached to fetch its copy of the branch " + topic,
+			asked:   "fetch its copy of the branch " + topic,
 		},
 	})
 }
@@ -496,8 +495,7 @@ func runOvertime(t *testing.T, rows []overtime) {
 
 			got := landing.Push(ctx, s.deps, pushRequest())
 
-			want := "Refused: the time limit ended while reading " + tt.read + "; nothing was written\n" + nextPush
-			assertEnded(t, s, got, finish{outcome: result.Refused, text: want})
+			assertEnded(t, s, got, finish{outcome: result.Refused, text: overtimeText(pushCommand(), tt.read)})
 			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
 		})
 	}
@@ -536,11 +534,11 @@ func fakeGit(t *testing.T, s *scene, fake gittest.Fake) {
 	s.deps.Repo.Runner.Env = append(s.deps.Repo.Runner.Env, gittest.FakeGit(t, fake)...)
 }
 
-// failedGitText is the whole text of the result for the read named read when the git call with
+// failedGitText is the whole text of cmd's result for the read named read when the git call with
 // the arguments words fails as failGit makes it.
-func failedGitText(read string, words []string) string {
-	return "Could not read " + read + ": git " + strings.Join(words, " ") + ": exit status " +
-		strconv.Itoa(gittest.FailedCode) + ": " + gittest.FailedSaid + "\nNothing was written.\n" + nextFixed
+func failedGitText(cmd landingCommand, read string, words []string) string {
+	return unreadText(cmd, read, "git "+strings.Join(words, " ")+": exit status "+
+		strconv.Itoa(gittest.FailedCode)+": "+gittest.FailedSaid)
 }
 
 // failedRead is one git read of Push that fails for a reason no precondition covers.
@@ -625,7 +623,7 @@ func runFailedReads(t *testing.T, rows []failedRead) {
 
 			got := landing.Push(t.Context(), s.deps, pushRequest())
 
-			assertEnded(t, s, got, finish{outcome: result.Broke, text: failedGitText(tt.read, words)})
+			assertEnded(t, s, got, finish{outcome: result.Broke, text: failedGitText(pushCommand(), tt.read, words)})
 			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
 		})
 	}
