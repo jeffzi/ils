@@ -45,9 +45,9 @@ type pushReady struct {
 // not green; a wait the deadline ended is pending. From the push on nothing is a refusal: a
 // write or a read that fails is broke, and the lines say what was written.
 func Push(ctx context.Context, deps Deps, req Request) result.Result {
-	ready, stop, ok := Preconditions(ctx, deps, req)
-	if !ok {
-		return stop
+	ready, stop := Preconditions(ctx, deps, req)
+	if stop != nil {
+		return *stop
 	}
 
 	p, refusal := pushChecks(ctx, deps, req, ready)

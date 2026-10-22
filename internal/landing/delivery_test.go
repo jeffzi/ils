@@ -191,8 +191,9 @@ func assertDelivered(t *testing.T, s *scene, got result.Result, end finish) {
 	assert.Check(t, is.Equal(reason, end.reason))
 
 	var payload *result.Push
-	if got.Payload != nil {
+	if got.Payload != nil && got.Payload.Push != nil {
 		payload = got.Payload.Push
+		assertChecksArray(t, payload.Checks)
 	}
 
 	assert.Check(t, is.DeepEqual(payload, end.payload, cmpopts.EquateEmpty()))

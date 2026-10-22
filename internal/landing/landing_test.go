@@ -246,10 +246,10 @@ func assertBrokeReadBy(t *testing.T, got result.Result, cmd landingCommand, read
 func ready(t *testing.T, s *scene) landing.Ready {
 	t.Helper()
 
-	got, stop, ok := landing.Preconditions(t.Context(), s.deps, pushRequest())
-	if !ok {
-		text, _ := shown(t, stop, s.gitDir)
-		t.Fatalf("Preconditions() ok = false with %q, want every precondition to hold", text)
+	got, stop := landing.Preconditions(t.Context(), s.deps, pushRequest())
+	if stop != nil {
+		text, _ := shown(t, *stop, s.gitDir)
+		t.Fatalf("Preconditions() stopped with %q, want every precondition to hold", text)
 	}
 
 	return got
@@ -384,9 +384,10 @@ func TestPreconditions_WhenOneFails_RefusesAtTheFirst(t *testing.T) {
 			s := newScene(t, tt.arrange, tt.script, tt.offline)
 			before := s.refs()
 
-			_, got, ok := landing.Preconditions(t.Context(), s.deps, pushRequest())
+			_, stop := landing.Preconditions(t.Context(), s.deps, pushRequest())
 
-			assert.Assert(t, !ok, "Preconditions() ok = true, want a refusal")
+			assert.Assert(t, stop != nil, "Preconditions() stop = nil, want a refusal")
+			got := *stop
 			assertStopped(t, got, result.Refused)
 
 			text, _ := shown(t, got, s.gitDir)
@@ -453,9 +454,10 @@ func TestPreconditions_WhenSSHFails_BrokeNamingTheRead(t *testing.T) {
 	s := newScene(t, nil, forgetest.Script{}, false)
 	s.fixture.RemoveSSHConfig()
 
-	_, got, ok := landing.Preconditions(t.Context(), s.deps, pushRequest())
+	_, stop := landing.Preconditions(t.Context(), s.deps, pushRequest())
 
-	assert.Assert(t, !ok, "Preconditions() ok = true, want a broke result")
+	assert.Assert(t, stop != nil, "Preconditions() stop = nil, want a broke result")
+	got := *stop
 	assertBrokeRead(t, got, readURLs, readURLs+": ssh ")
 	assertAsked(t, s, nil)
 }
@@ -551,9 +553,10 @@ func TestPreconditions_WhenSSHIsMissing_RefusesNamingWhatToFix(t *testing.T) {
 			s.deps.Repo.Runner.Env = tt.env(t, s.deps.Repo.Runner.Env)
 			before := s.refs()
 
-			_, got, ok := landing.Preconditions(t.Context(), s.deps, pushRequest())
+			_, stop := landing.Preconditions(t.Context(), s.deps, pushRequest())
 
-			assert.Assert(t, !ok, "Preconditions() ok = true, want a refusal")
+			assert.Assert(t, stop != nil, "Preconditions() stop = nil, want a refusal")
+			got := *stop
 			assertStopped(t, got, result.Refused)
 
 			text, _ := shown(t, got, s.gitDir)
@@ -574,9 +577,10 @@ func TestPreconditions_WhenForgeIdentityFailsUntyped_BrokeNamingTheRead(t *testi
 	s := newScene(t, nil, fails(errors.New("HTTP 502")), false)
 	before := s.refs()
 
-	_, got, ok := landing.Preconditions(t.Context(), s.deps, pushRequest())
+	_, stop := landing.Preconditions(t.Context(), s.deps, pushRequest())
 
-	assert.Assert(t, !ok, "Preconditions() ok = true, want a broke result")
+	assert.Assert(t, stop != nil, "Preconditions() stop = nil, want a broke result")
+	got := *stop
 	assertBrokeRead(t, got, readIdentity, "HTTP 502")
 
 	text, _ := shown(t, got, s.gitDir)
@@ -599,9 +603,10 @@ func TestPreconditions_WhenDirectoryIsNotARepository_BrokeNamingTheRead(t *testi
 				Forge: forgetest.New(t, forgetest.Script{}),
 			}
 
-			_, got, ok := landing.Preconditions(t.Context(), deps, cmd.req)
+			_, stop := landing.Preconditions(t.Context(), deps, cmd.req)
 
-			assert.Assert(t, !ok, "Preconditions() ok = true, want a broke result")
+			assert.Assert(t, stop != nil, "Preconditions() stop = nil, want a broke result")
+			got := *stop
 			assertBrokeReadBy(t, got, cmd, readStanding)
 		})
 	}
@@ -669,9 +674,10 @@ func TestPreconditions_WhenDeadlineEndsDuringRead_RefusesNamingTheRead(t *testin
 				s := newScene(t, nil, script, false)
 				before := s.refs()
 
-				_, got, ok := landing.Preconditions(ctx, s.deps, cmd.req)
+				_, stop := landing.Preconditions(ctx, s.deps, cmd.req)
 
-				assert.Assert(t, !ok, "Preconditions() ok = true, want a refusal")
+				assert.Assert(t, stop != nil, "Preconditions() stop = nil, want a refusal")
+				got := *stop
 				assertStoppedBy(t, got, result.Refused, cmd.req)
 
 				text, _ := shown(t, got, s.gitDir)
@@ -848,9 +854,10 @@ func TestPreconditions_WhenTheCommandIsMerge_NamesItInTheNextStep(t *testing.T) 
 				ctx = tt.arrange(t, s)
 			}
 
-			_, got, ok := landing.Preconditions(ctx, s.deps, mergeRequest())
+			_, stop := landing.Preconditions(ctx, s.deps, mergeRequest())
 
-			assert.Assert(t, !ok, "Preconditions() ok = true, want a stop")
+			assert.Assert(t, stop != nil, "Preconditions() stop = nil, want a stop")
+			got := *stop
 			assert.Check(t, is.Equal(got.Outcome, tt.outcome))
 			assert.Check(t, is.Equal(got.Command, "merge"))
 

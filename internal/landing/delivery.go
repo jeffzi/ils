@@ -201,13 +201,15 @@ func (d *delivery) ended(outcome result.Outcome, reason result.Phrase, next resu
 // payload returns the structured detail of the push: the pull request, the sha, and what the
 // wait found, which is no verdict and an unknown merge state before the wait has ended.
 func (d *delivery) payload() *result.Push {
+	verdict, mergeState, checks := d.waited.payloadFields()
+
 	return &result.Push{
 		URL:        d.url,
 		Number:     d.number,
 		SHA:        d.tip,
-		Verdict:    string(d.waited.Verdict.State()),
-		MergeState: string(d.waited.payloadState()),
-		Checks:     d.waited.payloadChecks(),
+		Verdict:    verdict,
+		MergeState: mergeState,
+		Checks:     checks,
 		FailedLog:  d.waited.Verdict.FailedLog.Text,
 	}
 }
@@ -216,15 +218,13 @@ func (d *delivery) sayMergeState() {
 	d.lines = append(d.lines, d.waited.mergeStateLine())
 }
 
-func (d *delivery) sayChecks() {
-	d.lines = append(d.lines, d.waited.checksLine(d.tip))
-}
-
 // report returns the result the wait's outcome maps to.
 func (d *delivery) report() *result.Result {
 	switch d.waited.Outcome {
 	case WaitGreen:
-		return d.green()
+		d.lines = append(d.lines, d.waited.checksLine(d.tip))
+
+		return d.doneMerging()
 	case WaitNothingReported:
 		return d.nothingReported()
 	default:
@@ -237,13 +237,6 @@ func (d *delivery) report() *result.Result {
 	ended.Excerpt = report.excerpt
 
 	return ended
-}
-
-// green is every deciding check passed or skipped.
-func (d *delivery) green() *result.Result {
-	d.sayChecks()
-
-	return d.doneMerging()
 }
 
 // doneMerging says the merge state and ends the push done, with ils merge as the next step.

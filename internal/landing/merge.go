@@ -85,9 +85,9 @@ type mergeReady struct {
 // A branch with no open pull request against the trunk, whose merged pull request carries every
 // commit of the branch, is finished without a merge, as resume says.
 func Merge(ctx context.Context, deps Deps, req Request) result.Result {
-	ready, stop, ok := Preconditions(ctx, deps, req)
-	if !ok {
-		return stop
+	ready, stop := Preconditions(ctx, deps, req)
+	if stop != nil {
+		return *stop
 	}
 
 	m, refusal := mergeChecks(ctx, deps, req, ready)
@@ -570,13 +570,15 @@ func (m *mergeReady) stated(stop *result.Result, lines ...result.Phrase) *result
 
 // carrying returns ended with the merge payload of what the run has found and done so far.
 func (m *mergeReady) carrying(ended *result.Result) *result.Result {
+	verdict, mergeState, checks := m.waited.payloadFields()
+
 	ended.Payload = &result.Payload{Merge: &result.Merge{
 		URL:        m.pull.URL,
 		Number:     m.pull.Number,
 		SHA:        m.pull.HeadSHA,
-		Verdict:    string(m.waited.Verdict.State()),
-		MergeState: string(m.waited.payloadState()),
-		Checks:     m.waited.payloadChecks(),
+		Verdict:    verdict,
+		MergeState: mergeState,
+		Checks:     checks,
 		Subject:    m.subject,
 		Body:       m.body,
 		Merged:     m.merged,

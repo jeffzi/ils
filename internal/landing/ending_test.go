@@ -92,7 +92,7 @@ func runLandings(t *testing.T, rows []landingRow) {
 					want.SHA = run.tip
 				}
 
-				assert.Check(t, is.DeepEqual(mergePayload(run.got), &want, cmpopts.EquateEmpty()))
+				assert.Check(t, is.DeepEqual(mergePayload(t, run.got), &want, cmpopts.EquateEmpty()))
 
 				if tt.kept {
 					assert.Check(t, is.Equal(run.written(), run.before))
@@ -198,7 +198,7 @@ func TestMerge_WhenEveryCheckHolds_LandsThePullRequest(t *testing.T) {
 
 				want := *cmp.Or(tt.payload, sent(landedBody, true, result.EndingTrunk))
 				want.SHA = run.tip
-				assert.Check(t, is.DeepEqual(mergePayload(run.got), &want, cmpopts.EquateEmpty()))
+				assert.Check(t, is.DeepEqual(mergePayload(t, run.got), &want, cmpopts.EquateEmpty()))
 				assertChecksReadOn(t, run.forge.Calls(), run.tip)
 
 				landed := forge.Landing{Number: opened, HeadSHA: run.tip, Subject: worded + " (#12)", Body: landedBody}
@@ -296,7 +296,7 @@ func TestMerge_WhenTheTrunkIsCheckedOutInAnotherWorktree_EndsDetachedAtOriginsTr
 
 				want := sent(landedBody, true, result.EndingDetached)
 				want.SHA = run.tip
-				assert.Check(t, is.DeepEqual(mergePayload(run.got), want))
+				assert.Check(t, is.DeepEqual(mergePayload(t, run.got), want))
 				assertDetached(t, run.fixture, dir, was)
 			})
 		})
@@ -458,7 +458,7 @@ func TestMerge_WhenThePullRequestIsAlreadyMerged_FinishesWithoutMerging(t *testi
 
 				text, _ := shown(t, run.got, run.gitDir)
 				assert.Check(t, is.Equal(text, tt.text))
-				assert.Check(t, is.DeepEqual(mergePayload(run.got), resumed(cmp.Or(head, run.tip), tt.ending),
+				assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(cmp.Or(head, run.tip), tt.ending),
 					cmpopts.EquateEmpty()))
 				assert.Check(t, is.DeepEqual(run.forge.Calls(), tt.calls, whichRepo()))
 
@@ -517,7 +517,7 @@ func TestMerge_WhenTheResumeCannotAskOriginForTheBranch_BrokeNamingTheRead(t *te
 	assert.Check(t, strings.HasPrefix(text, prefix), "RenderText() = %q, want it to start with %q", text, prefix)
 	assert.Check(t, strings.HasSuffix(text, suffix), "RenderText() = %q, want it to end with %q", text, suffix)
 	assert.Check(t, is.Equal(reason, "could not read "+readStillOnOrigin))
-	assert.Check(t, is.DeepEqual(mergePayload(got), resumed(tip, ""), cmpopts.EquateEmpty()))
+	assert.Check(t, is.DeepEqual(mergePayload(t, got), resumed(tip, ""), cmpopts.EquateEmpty()))
 	assert.Check(t, is.Equal(s.written(), before))
 }
 
@@ -537,7 +537,7 @@ func TestMerge_WhenTheDeadlineEndsAsTheResumeAsksOriginForTheBranch_RefusesNamin
 
 	text, _ := shown(t, got, s.gitDir)
 	assert.Check(t, is.Equal(text, withLines(overtimeText(mergeCommand(), readStillOnOrigin), resumedLine)))
-	assert.Check(t, is.DeepEqual(mergePayload(got), resumed(tip, ""), cmpopts.EquateEmpty()))
+	assert.Check(t, is.DeepEqual(mergePayload(t, got), resumed(tip, ""), cmpopts.EquateEmpty()))
 	assert.Check(t, is.Equal(s.written(), before))
 }
 

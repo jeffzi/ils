@@ -107,21 +107,10 @@ type Ready struct {
 // The order is: git is installed and recent enough; there is an origin; its fetch and push URLs
 // name one repository; the forge's tool is installed; it is logged in to origin's host; the
 // repository is not a fork; the user can push; origin answers for its trunk. When all hold it
-// returns the Ready and true. Otherwise it returns false and the result to end the command with:
+// returns the Ready and a nil result. Otherwise it returns the result to end the command with:
 // a refusal for a precondition that fails or a read the context's deadline cut short, and broke
 // for a read that fails for any other reason.
-func Preconditions(ctx context.Context, deps Deps, req Request) (Ready, result.Result, bool) {
-	ready, stop := sharedChecks(ctx, deps, req)
-	if stop != nil {
-		return Ready{}, *stop, false
-	}
-
-	return ready, result.Result{}, true
-}
-
-// sharedChecks runs the shared preconditions in order and returns the result that stops at the
-// first that fails.
-func sharedChecks(ctx context.Context, deps Deps, req Request) (Ready, *result.Result) {
+func Preconditions(ctx context.Context, deps Deps, req Request) (Ready, *result.Result) {
 	if err := deps.Repo.CheckVersion(ctx); err != nil {
 		if stop := req.tooOld(err); stop != nil {
 			return Ready{}, stop
@@ -339,12 +328,9 @@ func (r Request) again() result.Next {
 // unreached returns the result for a call to origin that failed with err: the refusal reason
 // when origin did not answer, and what unread returns otherwise.
 func (r Request) unreached(read string, err error, reason result.Phrase) *result.Result {
-	// The deadline comes first: a call to origin that it cut short is also a *git.RemoteError.
-	if errors.Is(err, context.DeadlineExceeded) {
-		return r.unread(read, err)
-	}
-
-	if _, ok := errors.AsType[*git.RemoteError](err); ok {
+	// The deadline is excluded: a call to origin that it cut short is also a *git.RemoteError, and
+	// unread words it as the time limit ending.
+	if _, ok := errors.AsType[*git.RemoteError](err); ok && !errors.Is(err, context.DeadlineExceeded) {
 		return r.Refused(reason, r.again())
 	}
 

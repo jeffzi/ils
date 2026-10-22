@@ -117,16 +117,6 @@ func (w *Waited) takeState(head forge.Head) {
 	w.MergeState, w.RawMergeState = head.MergeState, head.RawMergeState
 }
 
-// apartAfterGreen turns green checks into WaitConflicting or WaitBehind when the merge state, read
-// after them, says the pull request cannot merge: green checks say nothing about that.
-func (w *Waited) apartAfterGreen() {
-	if w.Outcome != WaitGreen {
-		return
-	}
-
-	w.takeApart()
-}
-
 // apartWithoutCI turns nothing reported into WaitConflicting or WaitBehind when the merge state,
 // read after the wait, says the pull request cannot merge and the trunk has no CI, and reports
 // whether it did.
@@ -141,25 +131,16 @@ func (w *Waited) apartWithoutCI() bool {
 // takeApart sets the outcome to WaitConflicting or WaitBehind when the merge state says the pull
 // request cannot merge, and reports whether it did.
 func (w *Waited) takeApart() bool {
-	outcome, apart := apartOutcome(w.MergeState)
-	if apart {
-		w.Outcome = outcome
-	}
-
-	return apart
-}
-
-// apartOutcome returns the outcome for a merge state that says the pull request cannot merge, and
-// false for any other state.
-func apartOutcome(state forge.MergeState) (WaitOutcome, bool) {
-	switch state {
+	switch w.MergeState {
 	case forge.MergeConflicting:
-		return WaitConflicting, true
+		w.Outcome = WaitConflicting
 	case forge.MergeBehind:
-		return WaitBehind, true
+		w.Outcome = WaitBehind
 	default:
-		return "", false
+		return false
 	}
+
+	return true
 }
 
 // WaitError reports a read of the wait for the checks of a pull request's head that failed for
@@ -290,7 +271,11 @@ func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 	switch {
 	case afterErr == nil:
 		waited.takeState(after)
-		waited.apartAfterGreen()
+
+		// Green checks say nothing about whether the pull request can merge.
+		if waited.Outcome == WaitGreen {
+			waited.takeApart()
+		}
 	// A failure of this read is reported whatever the checks said. The deadline ending
 	// inside it matters only when the checks concluded: a pending wait stays pending.
 	case err == nil || !errors.Is(afterErr, context.DeadlineExceeded):
@@ -498,8 +483,9 @@ const (
 )
 
 // excerptLines is how many lines of a failing check's log a red verdict's excerpt holds, counted from the
-// log's end: the excerpt is bounded so that the failure stays readable in a terminal, and the
-// payload carries the whole log.
+// log's end: the excerpt is bounded so that the failure stays readable in a terminal. The push
+// payload carries the whole log; the merge payload carries none of it, so a merge result has only
+// the excerpt.
 const excerptLines = 60
 
 // waitRead returns the read a failed wait names and the error of that read.
@@ -711,25 +697,22 @@ func (w Waited) trunkWithoutCI(ctx context.Context, deps Deps, ready Ready, requ
 	return !hasCI, nil
 }
 
-// payloadState returns the merge state a payload carries: unknown until the wait has read one.
-func (w Waited) payloadState() forge.MergeState {
-	if w.MergeState == "" {
-		return forge.MergeUnknown
+// payloadFields returns the verdict state, the merge state and the deciding checks as the push
+// and merge payloads carry them; the merge state is unknown until the wait has read one.
+func (w Waited) payloadFields() (verdict, mergeState string, checks []result.Check) {
+	state := w.MergeState
+	if state == "" {
+		state = forge.MergeUnknown
 	}
 
-	return w.MergeState
-}
-
-// payloadChecks returns the deciding checks as a payload carries them.
-func (w Waited) payloadChecks() []result.Check {
-	checks := make([]result.Check, 0, len(w.Deciding))
+	checks = make([]result.Check, 0, len(w.Deciding))
 	for _, check := range w.Deciding {
 		checks = append(checks, result.Check{
 			Name: check.Name, Bucket: string(check.Bucket), Workflow: check.Workflow, Link: check.Link,
 		})
 	}
 
-	return checks
+	return string(w.Verdict.State()), string(state), checks
 }
 
 // mergeStateLine says the merge state as GitHub spells it, with the word ils has for it.

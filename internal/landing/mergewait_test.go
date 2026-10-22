@@ -230,7 +230,7 @@ func runWaits(t *testing.T, rows []waitRow) {
 
 				want := *tt.payload
 				want.SHA = run.tip
-				assert.Check(t, is.DeepEqual(mergePayload(run.got), &want, cmpopts.EquateEmpty()))
+				assert.Check(t, is.DeepEqual(mergePayload(t, run.got), &want, cmpopts.EquateEmpty()))
 				assert.Check(t, is.Equal(run.written(), run.before))
 				assertStoppedBy(t, run.got, tt.outcome, mergeRequest())
 
@@ -511,7 +511,7 @@ func TestMerge_WhenEveryCheckBeforeTheMergeHolds_ComposesTheMessageFromThePullRe
 
 				want := *tt.payload
 				want.SHA = run.tip
-				assert.Check(t, is.DeepEqual(mergePayload(run.got), &want, cmpopts.EquateEmpty()))
+				assert.Check(t, is.DeepEqual(mergePayload(t, run.got), &want, cmpopts.EquateEmpty()))
 			})
 		})
 	}
@@ -530,7 +530,7 @@ func TestMerge_WhenTheMergeStateIsUnknownAfterTheWait_ReadsItAgainEveryTwoSecond
 
 		want := made(composed(worded+" (#12)", ""))
 		want.SHA = run.tip
-		assert.Check(t, is.DeepEqual(mergePayload(run.got), want, cmpopts.EquateEmpty()))
+		assert.Check(t, is.DeepEqual(mergePayload(t, run.got), want, cmpopts.EquateEmpty()))
 		assert.Check(t, is.DeepEqual(log.pauses(run.ended), polls(2, mergePoll)))
 	})
 }

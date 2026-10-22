@@ -255,7 +255,7 @@ func runMerge(t *testing.T, tt mergeRow) {
 		want = notMerged(end.head)
 	}
 
-	assert.Check(t, is.DeepEqual(mergePayload(got), want, cmpopts.EquateEmpty()))
+	assert.Check(t, is.DeepEqual(mergePayload(t, got), want, cmpopts.EquateEmpty()))
 
 	assert.Check(t, is.Equal(s.written(), before))
 	assert.Check(t, is.DeepEqual(s.forge.Calls(), mergeAsked(tt.ops), whichRepo()))
@@ -502,7 +502,7 @@ func TestMerge_WhenTheMergedPullRequestLacksCommitsOfTheBranch_RefusesListingThe
 		_, reason := shown(t, run.got, run.gitDir)
 		assert.Check(t, is.Equal(reason,
 			"pull request #"+strconv.Itoa(merged)+" from "+topic+" was merged without the commits listed here"))
-		assert.Check(t, is.DeepEqual(mergePayload(run.got), resumed(head, ""), cmpopts.EquateEmpty()))
+		assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(head, ""), cmpopts.EquateEmpty()))
 		assert.Check(t, is.Equal(run.written(), run.before))
 		assert.Check(t, is.DeepEqual(run.forge.Calls(), asked(changesRead()), whichRepo()))
 	})
@@ -734,11 +734,24 @@ func TestMerge_WhenTheDeadlineEndsInAGitRead_RefusesNamingIt(t *testing.T) {
 	}
 }
 
-// mergePayload returns the merge payload got carries, or nil when it carries none.
-func mergePayload(got result.Result) *result.Merge {
-	if got.Payload == nil {
+// mergePayload returns the merge payload got carries, or nil when it carries none, failing the test
+// when the payload's checks are nil.
+func mergePayload(t *testing.T, got result.Result) *result.Merge {
+	t.Helper()
+
+	if got.Payload == nil || got.Payload.Merge == nil {
 		return nil
 	}
 
+	assertChecksArray(t, got.Payload.Merge.Checks)
+
 	return got.Payload.Merge
+}
+
+// assertChecksArray fails when a payload's checks are nil, which the JSON prints as null where its
+// contract is an array; the payload comparisons equate nil and empty, so they cannot tell.
+func assertChecksArray(t *testing.T, checks []result.Check) {
+	t.Helper()
+
+	assert.Check(t, checks != nil, "payload checks = nil, which prints as null; want an array")
 }

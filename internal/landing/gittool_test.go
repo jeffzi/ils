@@ -73,9 +73,10 @@ func TestPreconditions_WhenGitMissingFromPath_RefusesWithAnInstallHint(t *testin
 				s := newScene(t, nil, forgetest.Script{}, false)
 				s.useForge(t, tt.arrange(t))
 
-				_, got, ok := landing.Preconditions(t.Context(), s.deps, cmd.req)
+				_, stop := landing.Preconditions(t.Context(), s.deps, cmd.req)
 
-				assert.Assert(t, !ok, "Preconditions() ok = true, want a refusal")
+				assert.Assert(t, stop != nil, "Preconditions() stop = nil, want a refusal")
+				got := *stop
 				assertStoppedBy(t, got, result.Refused, cmd.req)
 
 				text, _ := shown(t, got, s.gitDir)
@@ -98,9 +99,10 @@ func TestPreconditions_WhenGitIsTooOld_RefusesBeforeAnyOtherRead(t *testing.T) {
 			fakeGit(t, s, gittest.Fake{Version: "git version 2.34.0"})
 			before := s.refs()
 
-			_, got, ok := landing.Preconditions(t.Context(), s.deps, cmd.req)
+			_, stop := landing.Preconditions(t.Context(), s.deps, cmd.req)
 
-			assert.Assert(t, !ok, "Preconditions() ok = true, want a refusal")
+			assert.Assert(t, stop != nil, "Preconditions() stop = nil, want a refusal")
+			got := *stop
 			assertStoppedBy(t, got, result.Refused, cmd.req)
 
 			text, _ := shown(t, got, s.gitDir)
@@ -119,9 +121,10 @@ func TestPreconditions_WhenGitVersionFails_BrokeNamingTheRead(t *testing.T) {
 	s := newScene(t, nil, forgetest.Script{}, false)
 	failGit(t, s, []string{"--version"})
 
-	_, got, ok := landing.Preconditions(t.Context(), s.deps, pushRequest())
+	_, stop := landing.Preconditions(t.Context(), s.deps, pushRequest())
 
-	assert.Assert(t, !ok, "Preconditions() ok = true, want a broke result")
+	assert.Assert(t, stop != nil, "Preconditions() stop = nil, want a broke result")
+	got := *stop
 	assertBrokeRead(t, got, readGitVersion, gittest.FailedSaid)
 	assertAsked(t, s, nil)
 }
