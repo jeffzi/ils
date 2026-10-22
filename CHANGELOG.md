@@ -25,6 +25,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Fix `ils push` reporting a green verdict from checks that belong to another commit, either one
   pushed while it waited or a fast check that passed before the push's workflow runs started.
 - Fix `ils push` failing when a local tag has the same name as the branch.
+- Fix `ils push` ending red with no log excerpt when GitHub had not yet published the failed
+  check's log.
 
 ## [0.1.1] - 2026-10-20
 
