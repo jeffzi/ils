@@ -20,12 +20,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Name `ils merge` in the next step of a green `ils push`, in place of a `gh pr merge` command to
   run by hand.
 - **Breaking:** Require `gh` 2.73.0 or later, since every older release fails the `gh pr edit` step
-  that a green `ils push` names. Upgrade `gh` from <https://cli.github.com>.
+  that a green `ils push` names.
 
 ### Fixed
 
-- Fix `ils push` reporting a green verdict from checks that belong to another commit, either one
-  pushed while it waited or a fast check that passed before the push's workflow runs started.
+- Fix `ils push` reporting a green verdict from checks that belong to another commit.
 - Fix `ils push` failing when a local tag has the same name as the branch.
 - Fix `ils push` ending red with no log excerpt when GitHub had not yet published the failed
   check's log.
