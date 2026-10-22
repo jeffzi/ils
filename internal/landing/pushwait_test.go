@@ -73,7 +73,7 @@ func pushRedRows() []pushRow {
 	short := forge.FailedLog{Text: steps(1, 3), State: forge.FailedLogRead}
 	// unfinished stays held back up to the time limit: a third poll would end three seconds past it.
 	unfinished := runningOn(redRow("a check failed and its workflow run had not finished at the time limit", forge.BucketFail,
-		forge.FailedLog{State: forge.FailedLogInProgress}, "no log: the log of lint was not available yet; its workflow run had not finished\n"))
+		forge.FailedLog{State: forge.FailedLogInProgress}, "no log: the log of lint was not available yet\n"))
 	unfinished.left = 12 * time.Second
 
 	return []pushRow{

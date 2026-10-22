@@ -445,8 +445,9 @@ func (w waiter) judge(verdict forge.Verdict) (WaitOutcome, bool) {
 	missing := len(verdict.MissingRequired) > 0
 
 	switch {
-	// The forge gives a failed log only once the run completes, and the excerpt is what the
-	// fix starts from, so a red verdict waits for it like a pending one would.
+	// The forge may have no failed log yet, while the run goes on or just after it completes,
+	// and the excerpt is what the fix starts from, so a red verdict waits for it like a
+	// pending one would.
 	case state == forge.VerdictRed && verdict.FailedLog.State == forge.FailedLogInProgress:
 		return WaitRed, false
 	case state == forge.VerdictRed:
@@ -803,7 +804,7 @@ func (w Waited) excerpt() string {
 	case forge.FailedLogNoRun:
 		return "no log: " + check + " is not a workflow run"
 	case forge.FailedLogInProgress:
-		return "no log: the log of " + check + " was not available yet; its workflow run had not finished"
+		return "no log: the log of " + check + " was not available yet"
 	default:
 		return "no log: the log of " + check + " could not be read"
 	}
