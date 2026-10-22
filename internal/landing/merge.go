@@ -405,7 +405,7 @@ func (m *mergeReady) verdictStop(req Request) *result.Result {
 		return m.carrying(stop)
 	}
 
-	report, stops := m.waited.stopReport(m.pull.HeadSHA, m.Trunk, m.pull.Number)
+	report, stops := m.waited.stopReport(req.Command, m.pull.HeadSHA, m.Trunk, m.pull.Number)
 	if !stops {
 		return nil
 	}

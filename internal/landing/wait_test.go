@@ -25,6 +25,8 @@ import (
 const (
 	pushedSHA = "2222222"
 	staleSHA  = "1111111"
+	// movedSHA is a commit pushed to the pull request's branch after the pushed one.
+	movedSHA = "3333333"
 
 	// bound is the time a wait has left unless its test says otherwise.
 	bound = 100 * time.Second
@@ -150,6 +152,12 @@ func clean() forge.Head   { return tip(forge.MergeClean, "CLEAN") }
 func unknown() forge.Head { return tip(forge.MergeUnknown, "UNKNOWN") }
 func stale() forge.Head {
 	return forge.Head{SHA: staleSHA, MergeState: forge.MergeClean, RawMergeState: "CLEAN"}
+}
+
+// moved is the head of a pull request whose branch a commit after the pushed one reached, in a
+// merge state of its own, unlike the pushed commit's.
+func moved() forge.Head {
+	return forge.Head{SHA: movedSHA, MergeState: forge.MergeBlockedByReview, RawMergeState: "BLOCKED"}
 }
 
 // inTurn returns a sequence that answers with each of values in turn.
@@ -414,6 +422,42 @@ func TestAwaitVerdict_WhenChecksConclude_ReturnsTheMergeStateReadAfterThem(t *te
 	}})
 }
 
+func TestAwaitVerdict_WhenTheHeadMovesPastThePushedCommit_EndsMovedToTheNewHead(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		verdicts []forgetest.Answer[forge.Verdict]
+		ops      []forgetest.Op
+		left     time.Duration
+	}{
+		{name: "after a green verdict", verdicts: says(passing()), ops: readsOf(1, 1, 1)},
+		{name: "after a red verdict", verdicts: says(lintRed()), ops: readsOf(1, 1, 1)},
+		{name: "after nothing reported", verdicts: says(forge.Verdict{}), ops: readsOf(1, 5, 1)},
+		{
+			// Seven seconds leave room for one poll and then for the head read.
+			name: "after checks still running at the deadline", verdicts: says(running()), left: 7 * time.Second,
+			ops: readsOf(1, 2, 1),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				v := newVigil(t, forgetest.Script{Head: shows(clean(), moved()), Verdict: tt.verdicts}, orBound(tt.left))
+
+				got := v.await(t)
+
+				want := landing.Waited{
+					Outcome: landing.WaitMoved, MovedTo: movedSHA, MergeState: forge.MergeClean, RawMergeState: "CLEAN",
+				}
+				assert.Check(t, is.DeepEqual(got, want))
+				assert.Check(t, is.DeepEqual(v.opsOf(), tt.ops))
+			})
+		})
+	}
+}
+
 // everyCheckRows are the verdict waits where the trunk names no required check.
 func everyCheckRows() []vigilRow {
 	started := forge.Verdict{Runs: ran(forge.RunInProgress)}
@@ -460,6 +504,16 @@ func lintFailed() forge.Check {
 	return forge.Check{Name: "lint", Bucket: forge.BucketFail, Workflow: "ci", Link: "https://example.com/acme/widgets/runs/7"}
 }
 
+// lintRed is the verdict of a completed run whose lint check failed, its log read, while test
+// passed.
+func lintRed() forge.Verdict {
+	return forge.Verdict{
+		Checks:    []forge.Check{lintFailed(), checked("test", forge.BucketPass)},
+		Runs:      ran(forge.RunCompleted),
+		FailedLog: forge.FailedLog{Check: "lint", Text: "lint: unused variable", State: forge.FailedLogRead},
+	}
+}
+
 // redRows are the verdict waits where a check failed: they end once its log is settled, or at
 // the deadline.
 func redRows() []vigilRow {
@@ -470,11 +524,7 @@ func redRows() []vigilRow {
 		Runs:      ran(forge.RunInProgress),
 		FailedLog: forge.FailedLog{Check: "lint", State: forge.FailedLogInProgress},
 	}
-	completed := forge.Verdict{
-		Checks:    []forge.Check{lintFailed(), checked("test", forge.BucketPass)},
-		Runs:      ran(forge.RunCompleted),
-		FailedLog: forge.FailedLog{Check: "lint", Text: "lint: unused variable", State: forge.FailedLogRead},
-	}
+	completed := lintRed()
 	gone := forge.Verdict{
 		Checks:    unfinished.Checks,
 		Runs:      ran(forge.RunInProgress),

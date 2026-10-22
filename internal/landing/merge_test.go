@@ -734,6 +734,42 @@ func TestMerge_WhenTheDeadlineEndsInAGitRead_RefusesNamingIt(t *testing.T) {
 	}
 }
 
+func TestMerge_WhenTheHeadMovesPastThePushedCommit_RefusesWithoutMerging(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		verdict forge.Verdict
+	}{
+		{name: "after a green verdict", verdict: passing()},
+		{name: "after a red verdict", verdict: lintRed()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				// The forge would compose and land the merge, were it asked to.
+				script := waiting(tt.verdict).showing(inState(forge.MergeClean, "CLEAN"), moved()).
+					saying(titledAfter("Tidy the wording.")).landing(nil, nil)
+
+				run := runMergeIn(t, script, 0)
+
+				assertStoppedBy(t, run.got, result.Refused, mergeRequest())
+
+				text, reason := shown(t, run.got, run.gitDir)
+				assert.Check(t, is.Equal(reason, "the head of pull request #12 moved to "+movedSHA))
+				assert.Check(t, is.Equal(text, "Refused: the head of pull request #12 moved to "+movedSHA+"\n"+
+					"Next: pull the new commit, then run ils merge again\n"))
+				want := mergeDetail(forge.VerdictNone, forge.MergeClean)
+				want.SHA = run.tip
+				assert.Check(t, is.DeepEqual(mergePayload(t, run.got), want, cmpopts.EquateEmpty()))
+
+				assert.Check(t, is.Len(callsOf(run.forge.Calls(), forgetest.OpLand), 0))
+				assert.Check(t, is.Equal(run.written(), run.before))
+			})
+		})
+	}
+}
+
 // mergePayload returns the merge payload got carries, or nil when it carries none, failing the test
 // when the payload's checks are nil.
 func mergePayload(t *testing.T, got result.Result) *result.Merge {

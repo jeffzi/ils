@@ -59,6 +59,10 @@ const (
 	// or the stage's own window did when Waited.Window is set. Waited.Stage says what it was
 	// waiting for.
 	WaitPending WaitOutcome = "pending"
+	// WaitMoved is a pull request whose head, read after the checks, is no longer the pushed
+	// commit; Waited.MovedTo names the commit it is on. The forge reads the checks of the pull
+	// request's current head, so the verdict read may be the new commit's and is not kept.
+	WaitMoved WaitOutcome = "moved"
 )
 
 // WaitStage is one part of the wait for the checks of a pull request's head, named for what it
@@ -91,6 +95,9 @@ type Waited struct {
 	// completed.
 	Since   time.Time
 	Outcome WaitOutcome
+	// MovedTo is the commit the pull request's head is on when Outcome is WaitMoved, and empty
+	// otherwise.
+	MovedTo string
 	// Stage is the stage the wait ended in; it is set only when Outcome is WaitPending.
 	Stage WaitStage
 	// MergeState is the merge state read after the wait for the checks, or the one read
@@ -181,7 +188,9 @@ func endedByDeadline(err error) bool {
 // every 5 seconds until the checks conclude, a red verdict concluding once the forge has
 // settled its failed log, and then reads the merge state once more; a
 // conflict or a branch behind its trunk found by that read ends green checks as WaitConflicting
-// or WaitBehind. AwaitVerdict does not make the third route to those outcomes: a caller turns
+// or WaitBehind. That read finding the head on another commit than the pushed one ends the wait
+// as WaitMoved, whatever the checks said, since the verdict may be that commit's.
+// AwaitVerdict does not make the third route to WaitConflicting and WaitBehind: a caller turns
 // WaitNothingReported into them by the merge state it reads after nothing reported, when the
 // trunk has no CI.
 //
@@ -270,6 +279,10 @@ func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 
 	switch {
 	case afterErr == nil:
+		if w.movedOn(&waited, after) {
+			return waited, "", nil
+		}
+
 		waited.takeState(after)
 
 		// Green checks say nothing about whether the pull request can merge.
@@ -283,6 +296,21 @@ func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 	}
 
 	return waited, StageVerdict, err
+}
+
+// movedOn reports whether head, read after the checks, is on another commit than the pushed one,
+// and makes waited WaitMoved to that commit when it is. Only the merge state read before the
+// checks is kept: the verdict and the merge state head carries may be the other commit's.
+func (w waiter) movedOn(waited *Waited, head forge.Head) bool {
+	if head.SHA == w.pushed.SHA {
+		return false
+	}
+
+	*waited = Waited{
+		Outcome: WaitMoved, MovedTo: head.SHA, MergeState: waited.MergeState, RawMergeState: waited.RawMergeState,
+	}
+
+	return true
 }
 
 // head reads the pull request's head and merge state, naming the trunk's required checks so that
@@ -522,22 +550,29 @@ type waitReport struct {
 	// pending is whether the wait ended before the forge had an answer; otherwise it ended on an
 	// answer that is not green.
 	pending bool
+	// refused is whether the answer is about no commit the command can report on, so that the
+	// command is refused whatever it ends a stop as.
+	refused bool
 }
 
-// outcome returns result.Pending for a pending report, and stopped for any other.
+// outcome returns result.Pending for a pending report, result.Refused for a refused one, and
+// stopped for any other.
 func (r waitReport) outcome(stopped result.Outcome) result.Outcome {
-	if r.pending {
+	switch {
+	case r.pending:
 		return result.Pending
+	case r.refused:
+		return result.Refused
+	default:
+		return stopped
 	}
-
-	return stopped
 }
 
 // stopReport returns the report of a wait that ended red, apart from the trunk, with a required
-// check that never reported, or pending, about the commit sha of pull request number, whose trunk
-// is trunk. It returns false for green checks and for nothing reported, which each command maps
-// on its own.
-func (w Waited) stopReport(sha, trunk string, number int) (waitReport, bool) {
+// check that never reported, pending, or on a head that moved, about the commit sha of pull request
+// number, whose trunk is trunk, for the command named command. It returns false for green checks
+// and for nothing reported, which each command maps on its own.
+func (w Waited) stopReport(command, sha, trunk string, number int) (waitReport, bool) {
 	switch w.Outcome {
 	case WaitGreen, WaitNothingReported:
 		return waitReport{}, false
@@ -555,6 +590,12 @@ func (w Waited) stopReport(sha, trunk string, number int) (waitReport, bool) {
 			},
 			reason: result.Say("a required check never reported"),
 			next:   result.NextStep("report that a required check never reported, and stop"),
+		}, true
+	case WaitMoved:
+		return waitReport{
+			reason:  result.Say("the head of pull request #%s moved to %s", number, w.MovedTo),
+			next:    result.NextStep("pull the new commit"+thenRunAgain, command),
+			refused: true,
 		}, true
 	default:
 		return w.pendingReport(sha, number), true
