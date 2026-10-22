@@ -117,30 +117,31 @@ func (w *Waited) takeState(head forge.Head) {
 	w.MergeState, w.RawMergeState = head.MergeState, head.RawMergeState
 }
 
-// apartAfterGreen turns green checks into WaitConflicting or WaitBehind when state, read after
-// them, says the pull request cannot merge: green checks say nothing about that.
-func (w *Waited) apartAfterGreen(state forge.MergeState) {
+// apartAfterGreen turns green checks into WaitConflicting or WaitBehind when the merge state, read
+// after them, says the pull request cannot merge: green checks say nothing about that.
+func (w *Waited) apartAfterGreen() {
 	if w.Outcome != WaitGreen {
 		return
 	}
 
-	w.takeApart(state)
+	w.takeApart()
 }
 
-// apartWithoutCI turns nothing reported into WaitConflicting or WaitBehind when state, read after
-// the wait, says the pull request cannot merge and the trunk has no CI, and reports whether it did.
-func (w *Waited) apartWithoutCI(state forge.MergeState) bool {
+// apartWithoutCI turns nothing reported into WaitConflicting or WaitBehind when the merge state,
+// read after the wait, says the pull request cannot merge and the trunk has no CI, and reports
+// whether it did.
+func (w *Waited) apartWithoutCI() bool {
 	if w.Outcome != WaitNothingReported {
 		return false
 	}
 
-	return w.takeApart(state)
+	return w.takeApart()
 }
 
-// takeApart sets the outcome to WaitConflicting or WaitBehind when state says the pull request
-// cannot merge, and reports whether it did.
-func (w *Waited) takeApart(state forge.MergeState) bool {
-	outcome, apart := apartOutcome(state)
+// takeApart sets the outcome to WaitConflicting or WaitBehind when the merge state says the pull
+// request cannot merge, and reports whether it did.
+func (w *Waited) takeApart() bool {
+	outcome, apart := apartOutcome(w.MergeState)
 	if apart {
 		w.Outcome = outcome
 	}
@@ -267,7 +268,7 @@ func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 	}
 
 	// A conflicting pull request runs no workflow, so its missing checks say nothing.
-	if waited.takeApart(head.MergeState) {
+	if waited.takeApart() {
 		return waited, "", nil
 	}
 
@@ -289,7 +290,7 @@ func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 	switch {
 	case afterErr == nil:
 		waited.takeState(after)
-		waited.apartAfterGreen(after.MergeState)
+		waited.apartAfterGreen()
 	// A failure of this read is reported whatever the checks said. The deadline ending
 	// inside it matters only when the checks concluded: a pending wait stays pending.
 	case err == nil || !errors.Is(afterErr, context.DeadlineExceeded):

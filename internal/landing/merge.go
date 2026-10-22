@@ -388,7 +388,7 @@ func (m *mergeReady) withoutCI(ctx context.Context, deps Deps, req Request) *res
 
 	if without {
 		m.unverified = true
-		m.waited.apartWithoutCI(m.waited.MergeState)
+		m.waited.apartWithoutCI()
 	}
 
 	return m.verdictStop(req)
@@ -441,7 +441,7 @@ func (m *mergeReady) stateStop(req Request) *result.Result {
 	case forge.MergeClean:
 		return nil
 	case forge.MergeConflicting, forge.MergeBehind:
-		m.waited.takeApart(state)
+		m.waited.takeApart()
 
 		return m.verdictStop(req)
 	case forge.MergeDraft:

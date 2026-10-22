@@ -33,7 +33,8 @@ const (
 	mergePoll   = 2 * time.Second
 	verdictPoll = 5 * time.Second
 
-	// mergeWindow is how long a wait polls a merge state the forge has not worked out.
+	// mergeWindow must equal the unexported window in wait.go: a wait that window ends reports it
+	// as Window.
 	mergeWindow = 30 * time.Second
 
 	// midPoll is how far into its first poll a wait is when its test ends the context: every

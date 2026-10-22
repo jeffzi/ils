@@ -212,12 +212,10 @@ func (d *delivery) payload() *result.Push {
 	}
 }
 
-// sayMergeState adds the merge state line to the lines said so far.
 func (d *delivery) sayMergeState() {
 	d.lines = append(d.lines, d.waited.mergeStateLine())
 }
 
-// sayChecks adds the checks line of the pushed commit to the lines said so far.
 func (d *delivery) sayChecks() {
 	d.lines = append(d.lines, d.waited.checksLine(d.tip))
 }
@@ -291,7 +289,7 @@ func (d *delivery) withoutCI(ctx context.Context, deps Deps, required []string) 
 
 	d.lines = append(d.lines, noCI(d.Trunk, d.tip))
 
-	if d.waited.apartWithoutCI(d.waited.MergeState) {
+	if d.waited.apartWithoutCI() {
 		return d.report()
 	}
 
