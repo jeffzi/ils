@@ -188,8 +188,9 @@ func endedByDeadline(err error) bool {
 // every 5 seconds until the checks conclude, a red verdict concluding once the forge has
 // settled its failed log, and then reads the merge state once more; a
 // conflict or a branch behind its trunk found by that read ends green checks as WaitConflicting
-// or WaitBehind. That read finding the head on another commit than the pushed one ends the wait
-// as WaitMoved, whatever the checks said, since the verdict may be that commit's.
+// or WaitBehind. That read, or a read of the merge state before the checks, finding the head on
+// another commit than the pushed one ends the wait as WaitMoved, whatever the checks said, since
+// the verdict and the merge state may be that commit's.
 // AwaitVerdict does not make the third route to WaitConflicting and WaitBehind: a caller turns
 // WaitNothingReported into them by the merge state it reads after nothing reported, when the
 // trunk has no CI.
@@ -251,6 +252,10 @@ func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 	}
 
 	head, err = w.mergeKnown(ctx, head)
+	if err == nil && w.movedOn(&waited, head) {
+		return waited, "", nil
+	}
+
 	waited.takeState(head)
 
 	if err != nil {
@@ -298,9 +303,10 @@ func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 	return waited, StageVerdict, err
 }
 
-// movedOn reports whether head, read after the checks, is on another commit than the pushed one,
-// and makes waited WaitMoved to that commit when it is. Only the merge state read before the
-// checks is kept: the verdict and the merge state head carries may be the other commit's.
+// movedOn reports whether head, read once the pushed commit was the head, is on another commit
+// than the pushed one, and makes waited WaitMoved to that commit when it is. Only the merge state
+// waited already holds is kept: the verdict and the merge state head carries may be the other
+// commit's.
 func (w waiter) movedOn(waited *Waited, head forge.Head) bool {
 	if head.SHA == w.pushed.SHA {
 		return false
@@ -342,12 +348,13 @@ func (w waiter) caughtUp(ctx context.Context) (forge.Head, error) {
 	}
 }
 
-// mergeKnown polls the head, starting from the one just read, until its merge state is known
-// or mergeWindow has passed, and returns the last head it read.
+// mergeKnown polls the head, starting from the one just read, until its merge state is known,
+// the head is on another commit than the pushed one, or mergeWindow has passed, and returns the
+// last head it read. A head on another commit ends the poll: the state it carries is that commit's.
 func (w waiter) mergeKnown(ctx context.Context, head forge.Head) (forge.Head, error) {
 	began := time.Now()
 
-	for head.MergeState == forge.MergeUnknown {
+	for head.MergeState == forge.MergeUnknown && head.SHA == w.pushed.SHA {
 		if time.Since(began)+mergePoll > mergeWindow {
 			return head, errWindowPassed
 		}

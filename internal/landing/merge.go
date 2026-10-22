@@ -414,12 +414,23 @@ func (m *mergeReady) verdictStop(req Request) *result.Result {
 }
 
 // settle reads the merge state again as the wait polls it while GitHub has not worked it out, and
-// then refuses every state but clean. The deadline or mergeWindow ending that poll is pending, as
-// it is for the wait.
+// then refuses every state but clean. A head read there on another commit than the one the checks
+// were read for is refused as the wait refuses a moved head. The deadline or mergeWindow ending that
+// poll is pending, as it is for the wait.
 func (m *mergeReady) settle(ctx context.Context, deps Deps, req Request) *result.Result {
-	w := waiter{deps: deps, pushed: Pushed{Repo: m.Repo, Number: m.pull.Number, Required: m.protection.RequiredChecks}}
+	w := waiter{deps: deps, pushed: Pushed{
+		SHA: m.pull.HeadSHA, Repo: m.Repo, Number: m.pull.Number, Required: m.protection.RequiredChecks,
+	}}
 
-	head, err := w.mergeKnown(ctx, forge.Head{MergeState: m.waited.MergeState, RawMergeState: m.waited.RawMergeState})
+	head, err := w.mergeKnown(ctx, forge.Head{
+		SHA: m.pull.HeadSHA, MergeState: m.waited.MergeState, RawMergeState: m.waited.RawMergeState,
+	})
+	if err == nil && w.movedOn(&m.waited, head) {
+		report, _ := m.waited.stopReport(req.Command, m.pull.HeadSHA, m.Trunk, m.pull.Number)
+
+		return m.reported(req, report, nil)
+	}
+
 	m.waited.takeState(head)
 
 	switch {

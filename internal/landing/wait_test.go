@@ -458,6 +458,21 @@ func TestAwaitVerdict_WhenTheHeadMovesPastThePushedCommit_EndsMovedToTheNewHead(
 	}
 }
 
+func TestAwaitVerdict_WhenTheHeadMovesBeforeItsMergeStateIsKnown_EndsMovedReadingNoCheck(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		v := newVigil(t, forgetest.Script{Head: shows(unknown(), moved()), Verdict: says(passing())}, orBound(0))
+
+		got := v.await(t)
+
+		want := landing.Waited{
+			Outcome: landing.WaitMoved, MovedTo: movedSHA, MergeState: forge.MergeUnknown, RawMergeState: "UNKNOWN",
+		}
+		assert.Check(t, is.DeepEqual(got, want))
+		assert.Check(t, is.DeepEqual(v.opsOf(), readsOf(2, 0, 0)))
+	})
+}
+
 // everyCheckRows are the verdict waits where the trunk names no required check.
 func everyCheckRows() []vigilRow {
 	started := forge.Verdict{Runs: ran(forge.RunInProgress)}
