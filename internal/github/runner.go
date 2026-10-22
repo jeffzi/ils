@@ -136,11 +136,11 @@ func (r Runner) CheckLogin(ctx context.Context, host string) error {
 	return err
 }
 
-// RunJSON runs gh with args and decodes its stdout into a T.
+// runDecoded runs gh with args and decodes its stdout into a T.
 //
 // It returns the errors of Runner.Run, and a *DecodeError when stdout is not
 // the JSON of a T.
-func RunJSON[T any](ctx context.Context, r Runner, args ...string) (T, error) {
+func runDecoded[T any](ctx context.Context, r Runner, args ...string) (T, error) {
 	result, err := r.Run(ctx, args...)
 	if err != nil {
 		var zero T
