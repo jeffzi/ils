@@ -63,8 +63,8 @@ func TestCheckLiveGit_WhenGitDoesNotSuitTarget_ReturnsError(t *testing.T) {
 		err    string
 	}{
 		{
-			name: "minimum target and a newer git", target: testtarget.Minimum, out: "git version 2.56.0",
-			err: "ILS_LIVE_GIT is minimum and the git found is 2.56.0, want the minimum ils enforces, 2.34.1",
+			name: "minimum target and a newer git", target: testtarget.Minimum, out: "git version 99.0.0",
+			err: "ILS_LIVE_GIT is minimum and the git found is 99.0.0, want the minimum ils enforces, " + git.MinimumVersion,
 		},
 		{
 			name: "version wanted is not the git found", target: testtarget.Latest, want: "2.56.0",
@@ -84,7 +84,7 @@ func TestCheckLiveGit_WhenGitDoesNotSuitTarget_ReturnsError(t *testing.T) {
 
 func TestCheckLiveGh_WhenGhIsTheMinimum_ReturnsNil(t *testing.T) {
 	t.Parallel()
-	out := "gh version " + github.MinimumVersion + " (2024-05-29)"
+	out := "gh version " + github.MinimumVersion
 
 	err := checkLiveGh(testtarget.Minimum, "", out)
 
@@ -101,8 +101,8 @@ func TestCheckLiveGh_WhenGhDoesNotSuitTarget_ReturnsError(t *testing.T) {
 		err    string
 	}{
 		{
-			name: "minimum target and a newer gh", target: testtarget.Minimum, out: "gh version 2.83.2 (2025-12-10)",
-			err: "ILS_LIVE_GH is minimum and the gh found is 2.83.2, want the minimum ils enforces, 2.50.0",
+			name: "minimum target and a newer gh", target: testtarget.Minimum, out: "gh version 99.0.0",
+			err: "ILS_LIVE_GH is minimum and the gh found is 99.0.0, want the minimum ils enforces, " + github.MinimumVersion,
 		},
 		{
 			name: "version wanted is not the gh found", target: testtarget.Latest, want: "2.83.2",

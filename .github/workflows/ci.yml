@@ -65,10 +65,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # git.MinimumVersion; the suite fails unless the git it finds is exactly this.
+          # git.MinimumVersion, which setup-git reads from the code; the suite fails unless the git
+          # it finds is exactly this.
           - name: minimum
             target: minimum
-            version: "2.34.1"
+            version: minimum
           # The git of Ubuntu 24.04, AlmaLinux 8, and openSUSE Leap 15.6: the most common pinned
           # LTS git above the minimum.
           - name: "2.43.0"

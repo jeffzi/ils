@@ -270,7 +270,7 @@ func heldIdentity() scenario {
 
 // heldVersion is a push whose read of gh's version is held open.
 func heldVersion() scenario {
-	slow := ghtest.Exits(ghtest.Answer{Stdout: "gh version 2.100.0 (2026-09-03)\n", Delay: held}, ghtest.VersionArgs()...)
+	slow := ghtest.Exits(ghtest.Answer{Stdout: "gh version 99.0.0\n", Delay: held}, ghtest.VersionArgs()...)
 
 	return scenario{name: "the read of gh's version", script: only(slow), want: exitRefused}
 }
@@ -960,11 +960,11 @@ func TestApp_Run_WhenOriginNamesAnSSHAlias_AsksGhAboutTheHostItStandsFor(t *test
 func TestApp_Run_WhenGhIsOlderThanTheMinimum_RefusesWithNothingPushedOrOpened(t *testing.T) {
 	const (
 		next   = "upgrade gh, then run ils push again"
-		reason = "gh 2.49.0 is older than " + github.MinimumVersion +
+		reason = "gh 1.0.0 is older than " + github.MinimumVersion +
 			", the oldest version ils works with; upgrade it from https://cli.github.com"
 	)
 
-	s := newScene(t, outdated("an older release", "gh version 2.49.0 (2024-05-13)"))
+	s := newScene(t, outdated("an older release", "gh version 1.0.0"))
 
 	text, encoded := both(t, s)
 

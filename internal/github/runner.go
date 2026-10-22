@@ -25,8 +25,10 @@ func Argv(args []string) []string {
 
 const installURL = "https://cli.github.com"
 
-// MinimumVersion is the oldest release of gh that ils works with.
-const MinimumVersion = "2.50.0"
+// MinimumVersion is the oldest release of gh that ils works with. Every older release fails
+// `gh pr edit` against GitHub, even with no project flag, because it still reads the Projects
+// (classic) fields that GitHub's GraphQL API now rejects.
+const MinimumVersion = "2.73.0"
 
 // versionPrefix is what the first line of `gh --version` reads ahead of the version.
 const versionPrefix = "gh version "

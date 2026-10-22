@@ -159,8 +159,8 @@ func TestGuardTestGit_WhenGitDoesNotSuitTarget_ReturnsError(t *testing.T) {
 		want string
 	}{
 		{
-			name: "minimum target finds a newer git", target: testtarget.Minimum, line: "git version 2.56.0",
-			want: "ILS_TEST_GIT is minimum and the git found is 2.56.0, want the minimum ils enforces, 2.34.1",
+			name: "minimum target finds a newer git", target: testtarget.Minimum, line: "git version 99.0.0",
+			want: "ILS_TEST_GIT is minimum and the git found is 99.0.0, want the minimum ils enforces, " + git.MinimumVersion,
 		},
 		{
 			name: "version wanted is not the git on PATH", target: testtarget.Latest, version: "2.43.0",
