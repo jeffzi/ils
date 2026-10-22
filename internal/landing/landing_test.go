@@ -55,6 +55,10 @@ const (
 		"Next: create the repository on GitHub and push to it with `gh repo create --source . --push`\n"
 )
 
+// ---------------------------------------------------------------------------
+// Scenes and assertions
+// ---------------------------------------------------------------------------
+
 // scene is one repository and one forge, with a record of what each was asked.
 type scene struct {
 	fixture  *gittest.Fixture
@@ -258,6 +262,10 @@ func assertRefsUnchanged(t *testing.T, s *scene, before string) {
 	assert.Check(t, is.Equal(s.refs(), before))
 }
 
+// ---------------------------------------------------------------------------
+// Refusals of the shared preconditions
+// ---------------------------------------------------------------------------
+
 // refusal is one state that the preconditions refuse, with what they print and how far they read.
 type refusal struct {
 	arrange func(*gittest.Fixture)
@@ -452,6 +460,10 @@ func TestPreconditions_WhenSSHFails_BrokeNamingTheRead(t *testing.T) {
 	assertAsked(t, s, nil)
 }
 
+// ---------------------------------------------------------------------------
+// Missing ssh
+// ---------------------------------------------------------------------------
+
 // httpsURL names Acme/Widgets over HTTPS, which git reads without asking ssh.
 const httpsURL = "https://github.com/acme/widgets.git"
 
@@ -552,6 +564,10 @@ func TestPreconditions_WhenSSHIsMissing_RefusesNamingWhatToFix(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Failed and unfinished reads of the preconditions
+// ---------------------------------------------------------------------------
 
 func TestPreconditions_WhenForgeIdentityFailsUntyped_BrokeNamingTheRead(t *testing.T) {
 	t.Parallel()
@@ -667,6 +683,10 @@ func TestPreconditions_WhenDeadlineEndsDuringRead_RefusesNamingTheRead(t *testin
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Commands and merge stops
+// ---------------------------------------------------------------------------
 
 // mergeRequest is the command and words of a bare `ils merge`.
 func mergeRequest() landing.Request {
@@ -839,6 +859,10 @@ func TestPreconditions_WhenTheCommandIsMerge_NamesItInTheNextStep(t *testing.T) 
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Checks of the branch
+// ---------------------------------------------------------------------------
 
 const (
 	nextBranch = "Next: start a branch from origin's trunk: `git fetch origin " + trunk +
@@ -1079,6 +1103,10 @@ func TestPush_WhenDeadlineEndsDuringASharedRead_RefusesNamingTheRead(t *testing.
 		},
 	})
 }
+
+// ---------------------------------------------------------------------------
+// Failed local reads
+// ---------------------------------------------------------------------------
 
 // lose deletes the commit sha from the working repository's object store, where the fixture keeps
 // every object in a file of its own.

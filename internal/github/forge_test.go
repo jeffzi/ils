@@ -93,7 +93,6 @@ func featureChange() forge.NewChange {
 	return forge.NewChange{Title: "feature", Base: trunk, Head: featureBranch}
 }
 
-// versionArgs is the argv of the `gh --version` read.
 func versionArgs() []string { return ghtest.VersionArgs() }
 
 // versionAnswer is what `gh --version` prints when line is its first line.
@@ -104,33 +103,25 @@ func versionAnswer(line string) string {
 // loginArgs is the argv of the login read on the engine's host.
 func loginArgs() []string { return ghtest.LoginArgs(engineHost) }
 
-// repoViewArgs is the argv of the engine's repository read.
 func repoViewArgs() []string { return ghtest.RepoViewArgs(engineSlug) }
 
 // listArgs is the argv of the list of the feature branch's pull requests in state.
 func listArgs(state string) []string { return ghtest.ListArgs(engineSlug, featureBranch, state) }
 
-// createArgs is the argv that opens the feature change.
 func createArgs() []string {
 	return ghtest.CreateArgs(engineSlug, featureBranch, trunk, featureBranch)
 }
 
-// headArgs is the argv of the read of the pull request's head.
 func headArgs() []string { return ghtest.HeadArgs(engineSlug, pullNumber) }
 
-// rulesArgs is the argv of the read of the trunk's rules.
 func rulesArgs() []string { return ghtest.RulesArgs(engineHost, "ada/engine", trunk) }
 
-// checksArgs is the argv of the read of the pull request's checks.
 func checksArgs() []string { return ghtest.ChecksArgs(engineSlug, pullNumber) }
 
-// runsArgs is the argv of the read of the head commit's runs.
 func runsArgs() []string { return ghtest.RunsArgs(engineSlug, headSHA) }
 
-// logArgs is the argv of the read of the failed run's log.
 func logArgs() []string { return ghtest.LogArgs(engineSlug, runID) }
 
-// messageArgs is the argv of the read of the pull request's message.
 func messageArgs() []string { return ghtest.MessageArgs(engineHost, "ada", "engine", pullNumber) }
 
 // featureLanding is the landing every Land test asks for.
@@ -146,12 +137,10 @@ func pullRequestRule(id int, methods string) string {
 		`,"parameters":{"required_approving_review_count":0,"allowed_merge_methods":` + methods + `}}`
 }
 
-// workflowsArgs is the argv of the read of the engine's workflow list.
 func workflowsArgs() []string {
 	return []string{"api", "--hostname", engineHost, "--paginate", "repos/ada/engine/actions/workflows"}
 }
 
-// workflowFilesArgs is the argv of the read of the workflow directory on the trunk.
 func workflowFilesArgs() []string { return workflowFilesArgsAt(trunk) }
 
 // workflowFilesArgsAt is the argv of the read of the workflow directory at ref.
@@ -207,7 +196,6 @@ func headOf(state forge.MergeState, raw string) forge.Head {
 	return forge.Head{SHA: headSHA, MergeState: state, RawMergeState: raw}
 }
 
-// runJSON is one entry of `gh run list`'s answer.
 func runJSON(status string) string {
 	return ghtest.RunJSON(status, "Add the forge")
 }
@@ -281,7 +269,6 @@ func operations() []operation {
 	}
 }
 
-// operationsByName is operations keyed by name.
 func operationsByName() map[string]func(context.Context, *github.Forge) error {
 	byName := map[string]func(context.Context, *github.Forge) error{}
 	for _, op := range operations() {

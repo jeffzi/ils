@@ -4,6 +4,7 @@ package forgetest
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/jeffzi/ils/internal/forge"
 )
@@ -95,7 +96,7 @@ func New(tb TB, script Script) *Fake {
 
 // Calls returns every call made so far, in order.
 func (f *Fake) Calls() []Call {
-	return append([]Call(nil), f.calls...)
+	return slices.Clone(f.calls)
 }
 
 // Identity answers from the script's Identity sequence.

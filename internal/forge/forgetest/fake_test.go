@@ -200,7 +200,6 @@ func script(err error) forgetest.Script {
 	}
 }
 
-// callEach calls every operation once on fake, failing the test on any error.
 func callEach(t *testing.T, fake *forgetest.Fake) {
 	t.Helper()
 
@@ -210,7 +209,6 @@ func callEach(t *testing.T, fake *forgetest.Fake) {
 	}
 }
 
-// callTimes calls call the given number of times and returns the values in order.
 func callTimes[T any](t *testing.T, times int, call func() (T, error)) []T {
 	t.Helper()
 

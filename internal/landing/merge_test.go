@@ -22,7 +22,6 @@ import (
 )
 
 const (
-	// conventional is a title that parses as a conventional commit subject.
 	conventional = "docs: tidy the readme"
 
 	nextMergeAgain = "Next: ils merge\n"
@@ -153,7 +152,6 @@ func (build forgeFor) failingRules(err error) forgeFor {
 
 // mergeEnd is how a run of `ils merge` must end, as the arrange of a row works it out.
 type mergeEnd struct {
-	// text is the whole text of the result.
 	text string
 	// head is the head of pull request 12, which the payload carries; empty is the tip of the branch.
 	head string

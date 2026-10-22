@@ -16,6 +16,10 @@ import (
 	"github.com/jeffzi/ils/internal/result"
 )
 
+// ---------------------------------------------------------------------------
+// Requests and dependencies
+// ---------------------------------------------------------------------------
+
 // Each read names what a precondition reads as it follows "read" in a result, as in "Could not read
 // origin's URLs", so it stays a noun phrase.
 const (
@@ -74,7 +78,6 @@ type Forge interface {
 	// Land squash-merges the change with the landing's message, refused by the forge once the
 	// change's head has moved past the landing's. It never deletes the change's branch.
 	Land(ctx context.Context, repo forge.Repo, landing forge.Landing) error
-	// DeleteBranch deletes the branch on the forge.
 	DeleteBranch(ctx context.Context, repo forge.Repo, branch string) error
 }
 
@@ -93,6 +96,10 @@ type Ready struct {
 	// Repo is the repository origin names, with the forge's fork, can-push and squash-allowed flags.
 	Repo forge.Repo
 }
+
+// ---------------------------------------------------------------------------
+// Shared preconditions
+// ---------------------------------------------------------------------------
 
 // Preconditions checks what every landing command needs, in a fixed order, and stops at the
 // first that fails, having written nothing.
@@ -344,6 +351,10 @@ func (r Request) unreached(read string, err error, reason result.Phrase) *result
 	return r.unread(read, err)
 }
 
+// ---------------------------------------------------------------------------
+// Checks of the branch
+// ---------------------------------------------------------------------------
+
 // The reads of the checks of the branch, as a result names them.
 const (
 	readTree         = "the working tree's changes"
@@ -576,7 +587,6 @@ func (b onBranch) alreadyLanded(req Request, landed forge.Change) *result.Result
 		startBranchStep(b.Trunk))
 }
 
-// shas returns the shas of commits in order, separated by spaces.
 func shas(commits []git.Commit) string {
 	list := make([]string, 0, len(commits))
 	for _, commit := range commits {
@@ -586,7 +596,6 @@ func shas(commits []git.Commit) string {
 	return strings.Join(list, " ")
 }
 
-// listed returns one line per commit: its sha and its subject.
 func listed(commits []git.Commit) []result.Phrase {
 	lines := make([]result.Phrase, 0, len(commits))
 	for _, commit := range commits {

@@ -48,8 +48,7 @@ const (
 type Change struct {
 	URL   string
 	Title string
-	// Base is the branch the change lands on.
-	Base string
+	Base  string
 	// HeadSHA is the commit the forge holds as the tip of the change.
 	HeadSHA string
 	State   ChangeState
@@ -60,8 +59,7 @@ type Change struct {
 // NewChange describes a change to open; its body is always empty.
 type NewChange struct {
 	Title string
-	// Base is the branch the change lands on.
-	Base string
+	Base  string
 	// Head is the branch that carries the change.
 	Head string
 }

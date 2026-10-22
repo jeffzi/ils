@@ -119,7 +119,8 @@ type sshCommand struct {
 	line string
 	// program is the program GIT_SSH names, which git runs directly.
 	program string
-	// setting names where the command is configured.
+	// setting is GIT_SSH_COMMAND, core.sshCommand or GIT_SSH, as SSHCommandMissingError.Setting
+	// reports it.
 	setting string
 }
 

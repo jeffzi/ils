@@ -402,6 +402,7 @@ type shut struct {
 	err error
 }
 
+// Write fails with err and writes nothing.
 func (s shut) Write([]byte) (int, error) {
 	return 0, s.err
 }
