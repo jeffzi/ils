@@ -27,11 +27,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The oldest gh and git that ils accepts; the suite fails unless each is the minimum ils
-          # enforces.
+          # The oldest gh and git that ils accepts, read from the code that enforces each; the suite
+          # fails unless each is the minimum ils enforces.
           - target: minimum
-            version: "2.50.0"
-            git: "2.34.1"
+            version: minimum
+            git: minimum
           # The newest release of cli/cli and of git, resolved when the job runs.
           - target: latest
             version: ""
@@ -54,13 +54,20 @@ jobs:
         run: |
           set -euo pipefail
           version="$PINNED"
-          if [ -z "$version" ]; then
+          if [ "$version" = minimum ]; then
+            source=internal/github/runner.go
+            version=$(sed -n 's/^const MinimumVersion = "\(.*\)"$/\1/p' "$source")
+            if [ -z "$version" ]; then
+              echo "found no MinimumVersion constant in $source" >&2
+              exit 1
+            fi
+          elif [ -z "$version" ]; then
             tag=$(gh api repos/cli/cli/releases/latest --jq .tag_name)
             version="${tag#v}"
-          fi
-          if [ -z "$version" ]; then
-            echo "could not resolve the newest release of cli/cli" >&2
-            exit 1
+            if [ -z "$version" ]; then
+              echo "could not resolve the newest release of cli/cli" >&2
+              exit 1
+            fi
           fi
           archive="gh_${version}_linux_amd64.tar.gz"
           base="https://github.com/cli/cli/releases/download/v${version}"

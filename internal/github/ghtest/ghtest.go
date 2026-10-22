@@ -59,7 +59,7 @@ type Answer struct {
 
 // installed is what the fake prints for its version when the script holds no answer to
 // VersionArgs: a release every command accepts, so that a script need not answer the version read.
-const installed = "gh version " + github.MinimumVersion + " (2024-05-29)\n"
+const installed = "gh version " + github.MinimumVersion + "\n"
 
 // Call scripts the answers to one argv.
 type Call struct {

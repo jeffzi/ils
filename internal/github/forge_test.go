@@ -377,7 +377,7 @@ func TestForge_Identity_WhenNotLoggedIn_ReturnsNotLoggedInError(t *testing.T) {
 }
 
 func TestForge_Identity_WhenGhIsOlderThanTheMinimum_ReturnsToolTooOldErrorBeforeTheLogin(t *testing.T) {
-	const line = "gh version 2.49.0 (2024-05-13)"
+	const line = "gh version 1.0.0"
 	fake := ghtest.Setup(t, ghtest.Says(versionAnswer(line), versionArgs()...), ghtest.Exits(loggedOutAnswer(), loginArgs()...))
 
 	_, err := newForge().Identity(t.Context(), engine())
@@ -385,7 +385,7 @@ func TestForge_Identity_WhenGhIsOlderThanTheMinimum_ReturnsToolTooOldErrorBefore
 	tooOld, ok := errors.AsType[*child.ToolTooOldError](err)
 	assert.Assert(t, ok, "Identity error = %v, want *child.ToolTooOldError", err)
 	want := child.ToolTooOldError{
-		Tool: program, Version: "2.49.0", Line: line, Minimum: github.MinimumVersion, InstallURL: installURL,
+		Tool: program, Version: "1.0.0", Line: line, Minimum: github.MinimumVersion, InstallURL: installURL,
 	}
 	assert.Check(t, is.DeepEqual(*tooOld, want))
 	assertCalls(t, fake, received(versionArgs()))
@@ -396,8 +396,8 @@ func TestForge_Identity_WhenGhIsAtOrAboveTheMinimum_GoesOnToTheLogin(t *testing.
 		name string
 		line string
 	}{
-		{name: "exactly the minimum", line: "gh version " + github.MinimumVersion + " (2024-05-29)"},
-		{name: "next major release", line: "gh version 3.0.0 (2027-01-12)"},
+		{name: "exactly the minimum", line: "gh version " + github.MinimumVersion},
+		{name: "a later major release", line: "gh version 99.0.0"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

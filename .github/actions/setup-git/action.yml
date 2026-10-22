@@ -8,7 +8,9 @@ description: Build a given git release, or the newest stable one, and put it fir
 
 inputs:
   version:
-    description: The git release to build, such as 2.34.1; empty builds the newest stable release.
+    description: >-
+      The git release to build, such as 2.43.0; minimum builds the oldest release ils accepts, read
+      from internal/git/repo.go; empty builds the newest stable release.
     required: false
     default: ""
 
@@ -32,7 +34,15 @@ runs:
       run: |
         set -euo pipefail
         version="$PINNED"
-        if [ -z "$version" ]; then
+        if [ "$version" = minimum ]; then
+          # The minimum is read from the code that enforces it, so the two never drift apart.
+          source="$GITHUB_WORKSPACE/internal/git/repo.go"
+          version=$(sed -n 's/^const MinimumVersion = "\(.*\)"$/\1/p' "$source")
+          if [ -z "$version" ]; then
+            echo "found no MinimumVersion constant in $source" >&2
+            exit 1
+          fi
+        elif [ -z "$version" ]; then
           # kernel.org drops a connection now and then. --retry alone skips a reset connection;
           # --retry-all-errors retries it too, as it does every download in this action.
           if ! listing=$(curl --fail --silent --show-error --location --retry 4 --retry-all-errors \
