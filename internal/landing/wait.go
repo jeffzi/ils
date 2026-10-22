@@ -1,6 +1,7 @@
 package landing
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -91,8 +92,8 @@ type Pushed struct {
 
 // Waited is what the wait for the checks of a pull request's head found.
 type Waited struct {
-	// Since is when the wait for the checks began; it is the zero time when no verdict read
-	// completed.
+	// Since is when the wait for the checks began; it is the zero time when Verdict holds no
+	// verdict read.
 	Since   time.Time
 	Outcome WaitOutcome
 	// MovedTo is the commit the pull request's head is on when Outcome is WaitMoved, and empty
@@ -101,8 +102,7 @@ type Waited struct {
 	// Stage is the stage the wait ended in; it is set only when Outcome is WaitPending.
 	Stage WaitStage
 	// MergeState is the merge state read after the wait for the checks, or the one read
-	// before it when the deadline had ended by then, or cut that read short, or no verdict
-	// was read.
+	// before it when no read after it showed the pushed commit.
 	MergeState forge.MergeState
 	// RawMergeState is the forge's own value behind MergeState, kept for printing.
 	RawMergeState string
@@ -122,6 +122,12 @@ type Waited struct {
 // takeState records the merge state head reports and the forge's own value behind it.
 func (w *Waited) takeState(head forge.Head) {
 	w.MergeState, w.RawMergeState = head.MergeState, head.RawMergeState
+}
+
+// unconfirmed returns a Waited holding only the merge state w read before the checks, as the wait
+// ends when no read of the head after the checks showed the pushed commit.
+func (w Waited) unconfirmed() Waited {
+	return Waited{MergeState: w.MergeState, RawMergeState: w.RawMergeState}
 }
 
 // apartWithoutCI turns nothing reported into WaitConflicting or WaitBehind when the merge state,
@@ -185,12 +191,12 @@ func endedByDeadline(err error) bool {
 // It reads the pull request's head every 2 seconds until that is the pushed commit, reads the
 // merge state from the same read, every 2 seconds for up to 30 seconds while it is unknown,
 // and stops there on a conflict or a branch behind its trunk. Otherwise it reads the verdict
-// every 5 seconds until the checks conclude, a red verdict concluding once the forge has
-// settled its failed log, and then reads the merge state once more; a
-// conflict or a branch behind its trunk found by that read ends green checks as WaitConflicting
-// or WaitBehind. That read, or a read of the merge state before the checks, finding the head on
-// another commit than the pushed one ends the wait as WaitMoved, whatever the checks said, since
-// the verdict and the merge state may be that commit's.
+// every 5 seconds until the checks conclude, a red verdict concluding once the forge has settled
+// its failed log, and then reads the merge state once more; a conflict or a branch behind its
+// trunk found by that read ends green checks as WaitConflicting or WaitBehind. That read, or a
+// read of the merge state before the checks, finding the head on another commit than the pushed
+// one ends the wait as WaitMoved, whatever the checks said, since the verdict and the merge state
+// may be that commit's.
 // AwaitVerdict does not make the third route to WaitConflicting and WaitBehind: a caller turns
 // WaitNothingReported into them by the merge state it reads after nothing reported, when the
 // trunk has no CI.
@@ -198,12 +204,15 @@ func endedByDeadline(err error) bool {
 // No poll is started that would end past ctx's deadline.
 // A deadline that ends a stage, inside a read or a poll or between two, is the outcome
 // WaitPending with that stage and no error, but for a red verdict still waiting for its failed
-// log, which stays WaitRed. A merge state still unknown after its 30 seconds,
-// with time left before the deadline, is WaitPending too, with Waited.Window set. A read that
-// fails for any other reason is a *WaitError naming its stage. The read of the merge state
-// made after the checks belongs to StageMergeState: its failure is a *WaitError, and the
-// deadline ending inside it is WaitPending, at that stage when the checks had concluded, with
-// the verdict they gave.
+// log when the deadline leaves no time for another poll and the read of the head after the
+// checks still shows the pushed commit, which stays WaitRed. A merge state
+// still unknown after its 30 seconds, with time left before the deadline, is WaitPending too,
+// with Waited.Window set. A read that fails for any other reason is a *WaitError naming its
+// stage. The read of the merge state made after the checks belongs to StageMergeState: its
+// failure is a *WaitError, and the deadline ending before it is made or inside it is
+// WaitPending at that stage with no verdict, whatever the checks said, since the checks are
+// read for the pull request's current head and only that read shows it is still the pushed
+// commit.
 func AwaitVerdict(ctx context.Context, deps Deps, pushed Pushed) (Waited, error) {
 	w := waiter{deps: deps, pushed: pushed}
 
@@ -275,29 +284,31 @@ func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 
 	// The merge state is read again only when the checks concluded or ran out of time with
 	// some left: a verdict read that failed is the failure to report.
-	verdictFailed := err != nil && !errors.Is(err, errOutOfTime)
-	if ctxEnded(ctx) || verdictFailed {
+	if err != nil && !errors.Is(err, errOutOfTime) {
 		return waited, StageVerdict, err
 	}
 
+	// The checks are read for the pull request's current head, so only a read of the head after
+	// them showing the pushed commit makes the verdict that commit's: without one, it may be a
+	// newer commit's and is dropped.
+	if ctxEnded(ctx) {
+		return waited.unconfirmed(), StageMergeState, cmp.Or(ctx.Err(), errOutOfTime)
+	}
+
 	after, afterErr := w.head(ctx)
+	if afterErr != nil {
+		return waited.unconfirmed(), StageMergeState, afterErr
+	}
 
-	switch {
-	case afterErr == nil:
-		if w.movedOn(&waited, after) {
-			return waited, "", nil
-		}
+	if w.movedOn(&waited, after) {
+		return waited, "", nil
+	}
 
-		waited.takeState(after)
+	waited.takeState(after)
 
-		// Green checks say nothing about whether the pull request can merge.
-		if waited.Outcome == WaitGreen {
-			waited.takeApart()
-		}
-	// A failure of this read is reported whatever the checks said. The deadline ending
-	// inside it matters only when the checks concluded: a pending wait stays pending.
-	case err == nil || !errors.Is(afterErr, context.DeadlineExceeded):
-		return waited, StageMergeState, afterErr
+	// Green checks say nothing about whether the pull request can merge.
+	if waited.Outcome == WaitGreen {
+		waited.takeApart()
 	}
 
 	return waited, StageVerdict, err
