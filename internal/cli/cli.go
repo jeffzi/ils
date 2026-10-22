@@ -169,6 +169,7 @@ type refusedError struct {
 	result result.Result
 }
 
+// Error returns a fixed text; the refusal itself travels in the result field.
 func (e *refusedError) Error() string {
 	return "the words were refused"
 }
@@ -230,8 +231,8 @@ func (p *parse) root() *cobra.Command {
 	root.InitDefaultHelpFlag()
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return p.flagRefusal(err, notCommand) })
 	root.AddCommand(
-		p.landing(landingHelp{word: landing.PushCommand, short: pushShort, long: pushLong, examples: pushExamples}, p.app.runPush, landing.Push),
-		p.landing(landingHelp{word: landing.MergeCommand, short: mergeShort, long: mergeLong, examples: mergeExamples}, p.app.runMerge, landing.Merge),
+		p.landing(landingHelp{word: landing.PushCommand, short: pushShort, long: withBound(pushLong), examples: pushExamples}, p.app.runPush, landing.Push),
+		p.landing(landingHelp{word: landing.MergeCommand, short: mergeShort, long: withBound(mergeLong), examples: mergeExamples}, p.app.runMerge, landing.Merge),
 	)
 
 	for _, later := range []string{wordBranch, wordRelease, wordStatus} {
@@ -326,10 +327,12 @@ func (p *parse) flagRefusal(err error, unknown func(typed string) result.Phrase)
 // strictBool is the value of a flag that takes no value but true and false.
 type strictBool bool
 
+// String returns "true" or "false".
 func (b *strictBool) String() string {
 	return fmt.Sprint(bool(*b))
 }
 
+// Set accepts only "true" and "false" and returns an error for any other value.
 func (b *strictBool) Set(value string) error {
 	switch value {
 	case "true":
@@ -395,6 +398,12 @@ const (
 	wordDash = "--"
 )
 
+// withBound returns long with its one %d verb set to bound in seconds, so that the help says the
+// limit the command enforces.
+func withBound(long string) string {
+	return fmt.Sprintf(long, int(bound.Seconds()))
+}
+
 // The help says how to call a command and nothing else: what to do with an exit code and with
 // the next step is said by the result of each run.
 const (
@@ -406,7 +415,7 @@ Docs: https://github.com/jeffzi/ils`
 
 	pushShort = "Push the branch, open its pull request, wait for the checks"
 	pushLong  = `Push the current branch, open its pull request on the first push, and
-wait up to 100 seconds for the checks of the pushed commit. It never
+wait up to %d seconds for the checks of the pushed commit. It never
 forces a push and it does not merge.
 
 It refuses before pushing anything when the branch is not ready, for
@@ -422,7 +431,7 @@ ils push --json`
 
 	mergeShort = "Squash and merge the pull request once its checks are green"
 	mergeLong  = `Squash-merge the pull request of the current branch once its checks are
-green, within 100 seconds of the launch.
+green, within %d seconds of the launch.
 
 It squash-merges the pull request once its checks are green, deletes the
 branch on origin and in the clone, and leaves the trunk checked out at
