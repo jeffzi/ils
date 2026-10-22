@@ -21,14 +21,10 @@ import (
 // GitHub forge
 // ---------------------------------------------------------------------------
 
-// Forge is GitHub seen through the operations landing asks of a forge, each one a call of gh.
+// Forge is GitHub seen through the operations landing asks of a forge, each one a call of gh. Its
+// zero value is ready to use.
 type Forge struct {
 	runner Runner
-}
-
-// NewForge returns the GitHub forge that runs gh through runner.
-func NewForge(runner Runner) *Forge {
-	return &Forge{runner: runner}
 }
 
 // pullExists matches what `gh pr create` prints when the branch already has a pull request.
@@ -266,12 +262,12 @@ func (f *Forge) TrunkProtection(ctx context.Context, repo forge.Repo, trunk stri
 		return forge.Protection{}, err
 	}
 
-	rules, err := decodePages[branchRule](result.Stdout, args)
+	pages, err := decodeEachPage[[]branchRule](result.Stdout, args)
 	if err != nil {
 		return forge.Protection{}, err
 	}
 
-	return protectionOf(rules), nil
+	return protectionOf(slices.Concat(pages...)), nil
 }
 
 // protectionOf folds the rules on a branch into the checks they require, each named once, and
@@ -402,17 +398,6 @@ func repoAPIPath(repo forge.Repo, rest string) string {
 // paginatedAPIArgs returns the gh arguments that read rest under the repository, following every page.
 func paginatedAPIArgs(repo forge.Repo, rest string) []string {
 	return []string{"api", "--hostname", repo.Host, "--paginate", repoAPIPath(repo, rest)}
-}
-
-// decodePages decodes the JSON arrays that `gh api --paginate` prints, one per
-// page and concatenated, into one slice; a single array decodes as itself.
-func decodePages[T any](stdout string, args []string) ([]T, error) {
-	pages, err := decodeEachPage[[]T](stdout, args)
-	if err != nil {
-		return nil, err
-	}
-
-	return slices.Concat(pages...), nil
 }
 
 // decodeEachPage decodes the JSON values that `gh api --paginate` prints, one per

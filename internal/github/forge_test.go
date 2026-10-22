@@ -68,7 +68,7 @@ func engine() forge.Repo {
 
 // newForge is a forge that runs the fake `gh`.
 func newForge() *github.Forge {
-	return github.NewForge(github.Runner{})
+	return &github.Forge{}
 }
 
 // received is the calls the fake is expected to record, each led by `gh`.
@@ -689,6 +689,12 @@ func TestForge_TrunkProtection(t *testing.T) {
 			name:   "contexts of every status-check rule, once each",
 			answer: ghtest.Answer{Stdout: statusChecks},
 			want:   forge.Protection{RequiredChecks: []string{"build", "test", "lint"}, SquashAllowed: true},
+		},
+		{
+			name: "rules spread over two pages",
+			answer: ghtest.Answer{Stdout: rules(`{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"build"}]}}`).Stdout +
+				rules(pullRequestRule(51, `["rebase"]`)).Stdout},
+			want: forge.Protection{RequiredChecks: []string{"build"}, SquashForbiddenBy: []int{51}},
 		},
 		{name: "no rule on the trunk", answer: rules(), want: squash},
 		{name: "rules without a status-check or pull request rule", answer: rules(`{"type":"deletion"}`), want: squash},

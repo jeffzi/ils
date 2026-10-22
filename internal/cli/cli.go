@@ -360,7 +360,7 @@ func (a App) land(ctx context.Context, run Command, req landing.Request) (r resu
 	// this read stops the command's own first read too, whose result says so.
 	gitDir, _ = repo.GitDir(ctx)
 
-	deps := landing.Deps{Forge: github.NewForge(github.Runner{}), Repo: repo}
+	deps := landing.Deps{Forge: &github.Forge{}, Repo: repo}
 
 	return run(ctx, deps, req), gitDir
 }
