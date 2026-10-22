@@ -681,6 +681,25 @@ func TestRepo_Push_WhenBranchIsNew_PublishesItAsTheUpstream(t *testing.T) {
 	assert.Check(t, is.Equal(f.Git("config", "branch."+topic+".merge"), "refs/heads/"+topic))
 }
 
+func TestRepo_Push_WhenTagSharesTheBranchName_PublishesTheBranchAsTheUpstream(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	tip := f.Commits(topic, "one")[0]
+	// Origin and the clone each hold a tag of the branch's name, on different tag objects, so a
+	// push that names the destination loosely, or that sends tags too, fails or moves origin's tag.
+	trunkTip := f.Git("rev-parse", trunk)
+	f.OriginGit("tag", topic, trunkTip)
+	f.Git("tag", "-a", "-m", "release", topic, trunk)
+
+	err := newRepo(f).Push(t.Context(), topic)
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Equal(f.OriginGit("rev-parse", "refs/heads/"+topic), tip))
+	assert.Check(t, is.Equal(f.OriginGit("rev-parse", "refs/tags/"+topic), trunkTip))
+	assert.Check(t, is.Equal(f.Git("config", "branch."+topic+".remote"), "origin"))
+	assert.Check(t, is.Equal(f.Git("config", "branch."+topic+".merge"), "refs/heads/"+topic))
+}
+
 func TestRepo_Push_WhenOriginHasCommitsTheBranchLacks_RefusesWithPushError(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)

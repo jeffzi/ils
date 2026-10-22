@@ -230,7 +230,7 @@ func (d *delivery) report() *result.Result {
 	default:
 	}
 
-	report, _ := d.waited.stopReport(d.tip, d.Trunk, d.number)
+	report, _ := d.waited.stopReport(d.req.Command, d.tip, d.Trunk, d.number)
 	d.lines = append(d.lines, report.lines...)
 
 	ended := d.ended(report.outcome(result.DeliveredNotGreen), report.reason, report.next)

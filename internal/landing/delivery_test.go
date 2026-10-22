@@ -447,8 +447,8 @@ func TestPush_WhenTheGitPushFailsOtherThanByRefusalOrDeadline_BrokeSayingNothing
 
 	assertDelivered(t, s, got, finish{
 		outcome: result.Broke, reason: "could not push the branch",
-		text: "Could not push " + topic + ", so nothing was pushed: git push -u origin " + topic +
-			": context canceled\n" + nextFixed,
+		text: "Could not push " + topic + ", so nothing was pushed: git push -u origin refs/heads/" + topic +
+			":refs/heads/" + topic + ": context canceled\n" + nextFixed,
 	})
 	assertAsked(t, s, changesRead())
 }
@@ -672,6 +672,36 @@ func TestPush_WhenTheWaitEnds_ReportsItsOutcome(t *testing.T) {
 	t.Parallel()
 
 	runPushes(t, pushWaitRows())
+}
+
+func TestPush_WhenTheHeadMovesPastThePushedCommit_RefusesNamingTheNewHead(t *testing.T) {
+	t.Parallel()
+
+	refused := finish{
+		outcome: result.Refused, reason: "the head of pull request #12 moved to " + movedSHA,
+		text: "Refused: the head of pull request #12 moved to " + movedSHA + "\n" + pushedLine + foundLine +
+			"Next: pull the new commit, then run ils push again\n",
+		payload: detail(forge.VerdictNone, forge.MergeClean),
+	}
+	movedAfter := func(verdict forge.Verdict) forgeFor {
+		return reusing(verdict).showing(inState(forge.MergeClean, "CLEAN"), moved())
+	}
+
+	runPushes(t, []pushRow{
+		{name: "after a green verdict", script: movedAfter(passing()), want: refused},
+		{name: "after a red verdict", script: movedAfter(lintRed()), want: refused},
+		{name: "after nothing reported", script: movedAfter(forge.Verdict{}), want: refused},
+		{
+			// Seven seconds leave room for one poll and then for the head read.
+			name: "after checks still running at the deadline", script: movedAfter(running()), want: refused,
+			left: 7 * time.Second,
+		},
+		{
+			// Twelve seconds end inside the 20 seconds a check with no run behind it is held.
+			name: "after a check with no run behind it, at the deadline", want: refused, left: 12 * time.Second,
+			script: movedAfter(forge.Verdict{Checks: []forge.Check{{Name: "scan", Bucket: forge.BucketPass}}}),
+		},
+	})
 }
 
 // failingRead is a read of the push sequence that follows its writes: the forge that fails it, its

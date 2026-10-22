@@ -317,9 +317,11 @@ func (r Repo) FastForwardTrunk(ctx context.Context, trunk string) error {
 
 // Push pushes the branch name to origin under the same name and sets it as the upstream.
 //
-// It never forces. A push that git or origin refuses is a *PushError.
+// It names the branch by its full ref on both sides, so a tag of the same name is never pushed
+// in its place. It never forces. A push that git or origin refuses is a *PushError.
 func (r Repo) Push(ctx context.Context, name string) error {
-	_, err := r.Runner.Run(ctx, "push", "-u", origin, name)
+	ref := "refs/heads/" + name
+	_, err := r.Runner.Run(ctx, "push", "-u", origin, ref+":"+ref)
 	if exitErr, ok := errors.AsType[*child.ExitError](err); ok {
 		return &PushError{Branch: name, Stderr: exitErr.Stderr, Err: err}
 	}

@@ -130,6 +130,11 @@ Run `ils push` on a work branch with everything committed. It:
 Run it again at any time: on a commit that is already pushed it pushes nothing and reports the
 verdict again.
 
+When another commit reaches the pull request while `ils push` waits, the checks GitHub reports are
+no longer those of the pushed commit. `ils push` then prints no verdict and ends refused, naming
+the pull request's new head, and `Next:` says to pull the new commit, then run `ils push` again.
+The push itself already happened.
+
 ### What it refuses
 
 When `ils push` refuses, it has pushed nothing, opened nothing on GitHub, and changed no branch
@@ -163,7 +168,7 @@ or file; at most it has fetched from origin. It refuses:
 | ---- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 0    | done                 | Push: the checks are green, or the repository has no continuous integration (CI) and a line says nothing verified the commit; write the pull request's title and body. Merge: the pull request is merged and the branch deleted. |
 | 1    | broke                | The output says what was done and what was not. Fix what failed, then follow `Next:`.                                                                                                                                            |
-| 2    | refused              | Nothing was pushed, opened, or merged. The reason says why; `Next:` says what to do.                                                                                                                                             |
+| 2    | refused              | Nothing was pushed, opened, or merged, except by a push whose pull request's head moved during the wait. The reason says why; `Next:` says what to do.                                                                           |
 | 3    | ask                  | Reserved; not used by this version.                                                                                                                                                                                              |
 | 4    | pending              | GitHub had not finished when the command stopped waiting, for example checks still running or not yet reported. Run `ils push` again; a merge that was already done elsewhere names `ils merge` instead.                         |
 | 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                           |
@@ -268,6 +273,8 @@ at most it has fetched from origin. It refuses everything `ils push` refuses abo
   in a repository with CI;
 - a pull request that conflicts with or is behind the default branch, needs a review, lacks a
   required check, or that GitHub blocks for another reason.
+- a pull request whose head moved to another commit while `ils merge` waited for its checks:
+  `Next:` says to pull the new commit, then run `ils merge` again.
 
 ### How merge ends
 

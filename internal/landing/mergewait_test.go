@@ -535,6 +535,42 @@ func TestMerge_WhenTheMergeStateIsUnknownAfterTheWait_ReadsItAgainEveryTwoSecond
 	})
 }
 
+func TestMerge_WhenTheHeadMovesWhileTheMergeStateIsReadAgain_RefusesWithoutMerging(t *testing.T) {
+	t.Parallel()
+
+	movedClean := moved()
+	movedClean.MergeState, movedClean.RawMergeState = forge.MergeClean, "CLEAN"
+	tests := []struct {
+		name  string
+		moved forge.Head
+	}{
+		{name: "to a commit ready to merge", moved: movedClean},
+		{name: "to a commit in a merge state of its own", moved: moved()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				unknownHead := inState(forge.MergeUnknown, "UNKNOWN")
+				// The forge would compose and land the merge, were it asked to.
+				script := waiting(passing()).showing(inState(forge.MergeClean, "CLEAN"), unknownHead, unknownHead, tt.moved).
+					saying(titledAfter("Tidy the wording.")).landing(nil, nil)
+
+				run := runMergeIn(t, script, 0)
+
+				assertStoppedBy(t, run.got, result.Refused, mergeRequest())
+
+				text, reason := shown(t, run.got, run.gitDir)
+				assert.Check(t, is.Equal(reason, "the head of pull request #12 moved to "+movedSHA))
+				assert.Check(t, is.Equal(text, "Refused: the head of pull request #12 moved to "+movedSHA+"\n"+
+					"Next: pull the new commit, then run ils merge again\n"))
+				assert.Check(t, is.Len(callsOf(run.forge.Calls(), forgetest.OpLand), 0))
+				assert.Check(t, is.Equal(run.written(), run.before))
+			})
+		})
+	}
+}
+
 func TestMerge_WhenTheMergeStateStaysUnknownAfterTheWait_StopsOnceItsWindowPassed(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
