@@ -1020,7 +1020,7 @@ func TestRepo_CheckVersion_WhenGitIsTheMinimum_ReturnsNil(t *testing.T) {
 
 func TestRepo_CheckVersion_WhenGitIsOlderThanTheMinimum_ReturnsToolTooOldError(t *testing.T) {
 	// Not parallel: fakeGitRepo sets PATH for the whole process.
-	line := "git version 2.34.0"
+	line := "git version 1.0.0"
 	repo := fakeGitRepo(t, line)
 
 	err := repo.CheckVersion(t.Context())
@@ -1028,7 +1028,7 @@ func TestRepo_CheckVersion_WhenGitIsOlderThanTheMinimum_ReturnsToolTooOldError(t
 	tooOld, ok := errors.AsType[*child.ToolTooOldError](err)
 	assert.Assert(t, ok, "CheckVersion with %q error = %v, want *child.ToolTooOldError", line, err)
 	want := child.ToolTooOldError{
-		Tool: "git", Version: "2.34.0", Line: line, Minimum: git.MinimumVersion, InstallURL: installURL,
+		Tool: "git", Version: "1.0.0", Line: line, Minimum: git.MinimumVersion, InstallURL: installURL,
 	}
 	assert.Check(t, is.DeepEqual(*tooOld, want))
 }

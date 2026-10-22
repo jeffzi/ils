@@ -57,7 +57,7 @@ To build:
 To run:
 
 - [`git`](https://git-scm.com/downloads) 2.34.1 or later, on `PATH`.
-- [`gh`](https://cli.github.com) 2.50.0 or later, installed and logged in to the host of `origin`
+- [`gh`](https://cli.github.com) 2.73.0 or later, installed and logged in to the host of `origin`
   (`gh auth login --hostname <host>`). `ils` owns no token and no login flow.
 - A remote named `origin` on GitHub that you can push to and that is not a fork.
 
@@ -155,7 +155,7 @@ or file; at most it has fetched from origin. It refuses:
   `https://`, `ssh://git@`, or `git@host:` repository URL);
 - a missing `git` or `gh`;
 - a `git` older than 2.34.1, or one whose version `ils` cannot read;
-- a `gh` older than 2.50.0, or one whose version `ils` cannot read;
+- a `gh` older than 2.73.0, or one whose version `ils` cannot read;
 - a `gh` not logged in to origin's host (this is also how `ils` refuses a host that is not GitHub);
 - a fork, or a repository you cannot push to;
 - any word after `push` other than `--json`, `--help`, or `-h`, and a `--json=<value>` whose value

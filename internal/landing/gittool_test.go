@@ -7,6 +7,7 @@ import (
 	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/forge/forgetest"
+	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
@@ -90,13 +91,13 @@ func TestPreconditions_WhenGitMissingFromPath_RefusesWithAnInstallHint(t *testin
 
 func TestPreconditions_WhenGitIsTooOld_RefusesBeforeAnyOtherRead(t *testing.T) {
 	// Not parallel: fakeGit puts a git that prints its own version first on PATH with t.Setenv.
-	const tooOld = "Refused: git 2.34.0 is older than 2.34.1, the oldest version ils works with; " +
+	const tooOld = "Refused: git 1.0.0 is older than " + git.MinimumVersion + ", the oldest version ils works with; " +
 		"upgrade it from https://git-scm.com/downloads\n"
 
 	for _, cmd := range landingCommands() {
 		t.Run(cmd.name, func(t *testing.T) {
 			s := newScene(t, nil, forgetest.Script{}, false)
-			fakeGit(t, s, gittest.Fake{Version: "git version 2.34.0"})
+			fakeGit(t, s, gittest.Fake{Version: "git version 1.0.0"})
 			before := s.refs()
 
 			_, stop := landing.Preconditions(t.Context(), s.deps, cmd.req)
