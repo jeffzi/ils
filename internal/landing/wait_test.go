@@ -712,15 +712,21 @@ func requiredRows() []vigilRow {
 	}
 }
 
-// asideRows are the verdict waits where a required name is absent beside a check the trunk does
-// not require, before any run has appeared.
-func asideRows() []vigilRow {
+// runlessRequiredRows are the verdict waits on a trunk that requires checks, where checks reported
+// before any workflow run appeared.
+func runlessRequiredRows() []vigilRow {
 	aside := forge.Verdict{Checks: []forge.Check{checked("docs", forge.BucketPass)}, MissingRequired: []string{"test"}}
 	unmet := concluded(landing.WaitNeverReported, aside, 0, 0)
 	unmet.Deciding = nil
 	both := requiredPassing()
+	statuses := forge.Verdict{Checks: both.Checks}
 
 	return []vigilRow{
+		{
+			name:     "every required name passed with no run for 20 seconds",
+			verdicts: says(statuses),
+			want:     concluded(landing.WaitGreen, statuses, 2, 0), ops: readsOf(1, 5, 1), waits: polls(4, verdictPoll),
+		},
 		{
 			name:     "required name absent beside a check that is not required, no run for 20 seconds",
 			verdicts: says(aside),
@@ -737,7 +743,7 @@ func asideRows() []vigilRow {
 func TestAwaitVerdict_WhenTrunkRequiresChecks_WaitsForEveryRequiredName(t *testing.T) {
 	t.Parallel()
 
-	rows := slices.Concat(requiredRows(), asideRows())
+	rows := slices.Concat(requiredRows(), runlessRequiredRows())
 	for i := range rows {
 		rows[i].heads = shows(clean())
 		rows[i].required = []string{"lint", "test"}

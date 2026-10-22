@@ -742,6 +742,7 @@ func TestMerge_WhenTheHeadMovesPastThePushedCommit_RefusesWithoutMerging(t *test
 	}{
 		{name: "after a green verdict", verdict: passing()},
 		{name: "after a red verdict", verdict: lintRed()},
+		{name: "after nothing reported", verdict: forge.Verdict{}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

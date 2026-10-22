@@ -696,6 +696,11 @@ func TestPush_WhenTheHeadMovesPastThePushedCommit_RefusesNamingTheNewHead(t *tes
 			name: "after checks still running at the deadline", script: movedAfter(running()), want: refused,
 			left: 7 * time.Second,
 		},
+		{
+			// Twelve seconds end inside the 20 seconds a check with no run behind it is held.
+			name: "after a check with no run behind it, at the deadline", want: refused, left: 12 * time.Second,
+			script: movedAfter(forge.Verdict{Checks: []forge.Check{{Name: "scan", Bucket: forge.BucketPass}}}),
+		},
 	})
 }
 
