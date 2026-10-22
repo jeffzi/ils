@@ -19,6 +19,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Name `ils merge` in the next step of a green `ils push`, in place of a `gh pr merge` command to
   run by hand.
+- **Breaking:** Require `gh` 2.73.0 or later, since every older release fails the `gh pr edit` step
+  that a green `ils push` names. Upgrade `gh` from <https://cli.github.com>.
 
 ### Fixed
 
