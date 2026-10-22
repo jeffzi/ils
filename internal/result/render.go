@@ -1,6 +1,7 @@
 package result
 
 import (
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -78,119 +79,15 @@ func RenderJSON(r Result, gitDir string) (string, error) {
 		return "", err
 	}
 
-	out, err := json.Marshal(withValidUTF8(view), json.Deterministic(true))
+	// Third-party text may hold invalid UTF-8, which RenderText prints as is.
+	// The encoder replaces each invalid byte with U+FFFD rather than failing
+	// the result.
+	out, err := json.Marshal(view, json.Deterministic(true), jsontext.AllowInvalidUTF8(true))
 	if err != nil {
 		return "", fmt.Errorf("encode %s result: %w", r.Command, err)
 	}
 
 	return string(out) + "\n", nil
-}
-
-// withValidUTF8 returns view with every string the JSON encoder sees made valid
-// UTF-8, leaving view and the payload it points to untouched. Third-party text
-// may hold invalid UTF-8, which RenderText prints as is and the encoder would
-// reject, failing the result.
-func withValidUTF8(view shown) shown {
-	view.Command = validUTF8(view.Command)
-	view.Next = validUTF8(view.Next)
-	view.Reason = validUTF8(view.Reason)
-	view.Excerpt = validUTF8(view.Excerpt)
-
-	view.Words = validUTF8Each(view.Words)
-	view.Lines = validUTF8Each(view.Lines)
-
-	if view.Payload != nil {
-		payload := withValidUTF8Payload(*view.Payload)
-		view.Payload = &payload
-	}
-
-	return view
-}
-
-// withValidUTF8Payload returns payload with the strings of its push and merge
-// made valid UTF-8, leaving the details it points to untouched.
-func withValidUTF8Payload(payload Payload) Payload {
-	if payload.Push != nil {
-		push := withValidUTF8Push(*payload.Push)
-		payload.Push = &push
-	}
-
-	if payload.Merge != nil {
-		merge := withValidUTF8Merge(*payload.Merge)
-		payload.Merge = &merge
-	}
-
-	return payload
-}
-
-// validUTF8Each returns a fresh slice of items made valid UTF-8, or nil when
-// items is nil.
-func validUTF8Each(items []string) []string {
-	if items == nil {
-		return nil
-	}
-
-	valid := make([]string, len(items))
-	for i, item := range items {
-		valid[i] = validUTF8(item)
-	}
-
-	return valid
-}
-
-// withValidUTF8Push returns push with every string made valid UTF-8, leaving
-// the checks slice it holds untouched.
-func withValidUTF8Push(push Push) Push {
-	push.URL = validUTF8(push.URL)
-	push.SHA = validUTF8(push.SHA)
-	push.Verdict = validUTF8(push.Verdict)
-	push.MergeState = validUTF8(push.MergeState)
-	push.FailedLog = validUTF8(push.FailedLog)
-	push.Checks = validUTF8Checks(push.Checks)
-
-	return push
-}
-
-// withValidUTF8Merge returns merge with every string made valid UTF-8, leaving
-// the checks slice it holds untouched.
-func withValidUTF8Merge(merge Merge) Merge {
-	merge.URL = validUTF8(merge.URL)
-	merge.SHA = validUTF8(merge.SHA)
-	merge.Verdict = validUTF8(merge.Verdict)
-	merge.MergeState = validUTF8(merge.MergeState)
-	merge.Subject = validUTF8(merge.Subject)
-	merge.Body = validUTF8(merge.Body)
-	merge.Ending = validUTF8(merge.Ending)
-	merge.Checks = validUTF8Checks(merge.Checks)
-
-	return merge
-}
-
-// validUTF8Checks returns a fresh slice of checks with every string made valid
-// UTF-8, or nil when checks is nil.
-func validUTF8Checks(checks []Check) []Check {
-	if checks == nil {
-		return nil
-	}
-
-	valid := make([]Check, len(checks))
-	for i, item := range checks {
-		valid[i] = Check{
-			Name:     validUTF8(item.Name),
-			Bucket:   validUTF8(item.Bucket),
-			Workflow: validUTF8(item.Workflow),
-			Link:     validUTF8(item.Link),
-		}
-	}
-
-	return valid
-}
-
-// validUTF8 returns s with each invalid byte replaced by U+FFFD. strings.Map
-// does this one byte at a time, where strings.ToValidUTF8 would fold a run of
-// bad bytes into one replacement.
-func validUTF8(s string) string {
-	return strings.Map(func(r rune) rune { return r }, s)
 }
 
 // check renders every phrase of r and rejects a result whose own wording

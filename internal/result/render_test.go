@@ -544,7 +544,7 @@ type rejected struct {
 }
 
 // rejectedLine is a broke push with one more line, whose wording must be
-// rejected against the resolved git dir dir.
+// rejected against the resolved git dir.
 func rejectedLine(name, dir string, p result.Phrase, wantLine string) rejected {
 	return rejected{
 		name:     name,

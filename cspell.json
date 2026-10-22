@@ -26,6 +26,7 @@
     "govulncheck",
     "ineffassign",
     "jeffzi",
+    "jsontext",
     "lefthook",
     "loong",
     "misspell",
