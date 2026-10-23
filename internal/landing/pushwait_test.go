@@ -5,11 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
+	"github.com/jeffzi/ils/internal/gittest"
+	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
 )
 
@@ -163,6 +167,13 @@ func pushCutShortRows() []pushRow {
 			script: reusing(running()).thenFailingHead(ended), left: 10 * time.Second,
 			want: cutShortRead(readChecks),
 		},
+		{
+			name: "the deadline ends in a later read of checks still running",
+			script: reusing(running()).with(func(script *forgetest.Script, _ string) {
+				script.Verdict = append(script.Verdict, forgetest.Answer[forge.Verdict]{Err: ended})
+			}),
+			want: cutShortRead(readChecks),
+		},
 	}
 }
 
@@ -298,4 +309,27 @@ func TestPush_WhenAReadOfTheWaitFails_BrokeNamingTheRead(t *testing.T) {
 	t.Parallel()
 
 	runPushes(t, brokenAfter(waitReads(errors.New("HTTP 502"))))
+}
+
+func TestPush_WhenTheDeadlineEndsInsideThePollOfChecksStillRunning_PendingWithoutThem(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		// The deadline ends a second into the poll after the first read of the checks, not known
+		// ahead of it.
+		ended := make(chan struct{})
+		polling := reusing(running()).with(func(script *forgetest.Script, _ string) {
+			once := sync.OnceFunc(func() { time.AfterFunc(midPoll, func() { close(ended) }) })
+			script.OnRead = func(call forgetest.Call) {
+				if call.Op == forgetest.OpVerdict {
+					once()
+				}
+			}
+		})
+		d := newDelivery(t, pushRow{script: polling})
+		ctx := gittest.Ending(d.ctx, ended, context.DeadlineExceeded)
+
+		got := landing.Push(ctx, d.deps, pushRequest())
+
+		assertDelivered(t, d.scene, got, cutShortRead(readChecks).at(d.tip))
+	})
 }

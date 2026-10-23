@@ -65,9 +65,9 @@ const (
 	// or the stage's own window did when Waited.Window is set. Waited.Stage says what it was
 	// waiting for. Checks still running at the deadline end it at StageVerdict, holding their
 	// verdict when the read of the head after them showed the pushed commit, and none, with
-	// Waited.Since zero, when the deadline took that read. Checks that had concluded end it at
-	// StageMergeState, with no verdict, when the deadline took that read. The verdict poll keeps
-	// 3 seconds before the deadline for that read.
+	// Waited.Since zero, when the deadline took that read, a read of the checks, or a poll of
+	// them. Checks that had concluded end it at StageMergeState, with no verdict, when the
+	// deadline took that read. The verdict poll keeps 3 seconds before the deadline for that read.
 	WaitPending WaitOutcome = "pending"
 	// WaitMoved is a pull request whose head, read after the checks, is no longer the pushed
 	// commit; Waited.MovedTo names the commit it is on. The forge reads the checks of the pull
@@ -222,10 +222,11 @@ func endedByDeadline(err error) bool {
 // stage.
 //
 // The read of the head and merge state made after the checks belongs to StageMergeState: its
-// failure is a *WaitError at that stage. The deadline ending before it is made or inside it is
-// WaitPending with no verdict, since the checks are read for the pull request's current head and
-// only that read shows it is still the pushed commit: at StageVerdict when the checks were still
-// running, and at StageMergeState when they had concluded.
+// failure is a *WaitError at that stage. The deadline ending before it is made, inside a read or
+// a poll of the checks or inside it, is WaitPending with no verdict, since the checks are read
+// for the pull request's current head and only that read shows it is still the pushed commit: at
+// StageVerdict when the checks were still running, and at StageMergeState when they had
+// concluded.
 //
 // It tells deps' progress hook when it starts waiting for the checks, and again once it has waited
 // for the merge state, and gives deps' logger a record of each read of the merge state and of the
@@ -336,7 +337,8 @@ type waiter struct {
 }
 
 // run goes through the stages in order and returns what they found; when a stage fails or
-// runs out of time, it returns that stage, the error, and what was found up to there.
+// runs out of time, it returns that stage, the error, and what was found up to there, but for a
+// verdict that no read of the head after the checks showed to be the pushed commit's.
 func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 	var waited Waited
 
@@ -350,15 +352,15 @@ func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 	waited.Deciding = verdict.Deciding()
 	waited.Passed, waited.Skipped = tally(waited.Deciding)
 
-	// The merge state is read again only when the checks concluded or ran out of time with
-	// some left: a verdict read that failed is the failure to report.
-	if err != nil && !errors.Is(err, errOutOfTime) {
-		return waited, StageVerdict, err
-	}
-
 	// The checks are read for the pull request's current head, so only a read of the head after
 	// them showing the pushed commit makes the verdict that commit's: without one, it may be a
-	// newer commit's and is dropped.
+	// newer commit's and is dropped. That read is made only when the checks concluded or ran out of
+	// time with some left: a verdict read that failed, or the deadline ending a read or a poll of
+	// the checks, ends the wait before it.
+	if err != nil && !errors.Is(err, errOutOfTime) {
+		return waited.unconfirmed(), StageVerdict, err
+	}
+
 	if ctxEnded(ctx) {
 		lost := cmp.Or(ctx.Err(), errOutOfTime)
 

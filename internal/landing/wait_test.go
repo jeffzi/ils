@@ -1035,9 +1035,9 @@ func TestAwaitVerdict_WhenDeadlineEndedDuringTheWait_ReturnsTheEarlierMergeState
 // cutShort is one wait whose deadline ends inside a read or a poll.
 type cutShort struct {
 	name     string
-	want     landing.WaitStage
 	heads    []forgetest.Answer[forge.Head]
 	verdicts []forgetest.Answer[forge.Verdict]
+	want     landing.Waited
 	// left is the time before the deadline; zero is the whole bound.
 	left time.Duration
 	// poll is whether the deadline ends inside the first poll, and is not known ahead of it.
@@ -1047,16 +1047,27 @@ type cutShort struct {
 func cutShortWaits() []cutShort {
 	ended := fmt.Errorf("gh: %w", context.DeadlineExceeded)
 	lateHead := forgetest.Answer[forge.Head]{Err: ended}
-	lateVerdict := []forgetest.Answer[forge.Verdict]{{Err: ended}}
+	lateVerdict := forgetest.Answer[forge.Verdict]{Err: ended}
+	atHead := landing.Waited{Outcome: landing.WaitPending, Stage: landing.StageHead}
+	atMergeState := stateOf(landing.Waited{Outcome: landing.WaitPending, Stage: landing.StageMergeState}, unknown())
+	// atVerdict holds no verdict: only a head read after the checks shows they are the pushed commit's.
+	atVerdict := stateOf(landing.Waited{Outcome: landing.WaitPending, Stage: landing.StageVerdict}, clean())
 
 	return []cutShort{
-		{name: "inside the head read", want: landing.StageHead, heads: []forgetest.Answer[forge.Head]{lateHead}},
-		{name: "inside the head poll", want: landing.StageHead, heads: shows(stale()), poll: true},
-		{name: "inside the merge state read", want: landing.StageMergeState, heads: append(shows(unknown()), lateHead)},
-		{name: "inside the merge state poll", want: landing.StageMergeState, heads: shows(unknown()), poll: true},
-		{name: "inside the verdict read", want: landing.StageVerdict, heads: shows(clean()), verdicts: lateVerdict},
+		{name: "inside the head read", want: atHead, heads: []forgetest.Answer[forge.Head]{lateHead}},
+		{name: "inside the head poll", want: stateOf(atHead, stale()), heads: shows(stale()), poll: true},
+		{name: "inside the merge state read", want: atMergeState, heads: append(shows(unknown()), lateHead)},
+		{name: "inside the merge state poll", want: atMergeState, heads: shows(unknown()), poll: true},
 		{
-			name: "inside the verdict poll", want: landing.StageVerdict,
+			name: "inside the first verdict read", want: atVerdict,
+			heads: shows(clean()), verdicts: []forgetest.Answer[forge.Verdict]{lateVerdict},
+		},
+		{
+			name: "inside a later verdict read of checks still running", want: atVerdict,
+			heads: shows(clean()), verdicts: append(says(running()), lateVerdict),
+		},
+		{
+			name: "inside the verdict poll of checks still running", want: atVerdict,
 			heads: shows(clean()), verdicts: says(running()), poll: true,
 		},
 	}
@@ -1089,8 +1100,7 @@ func TestAwaitVerdict_WhenDeadlineEndsInsideAReadOrAPoll_EndsPendingAtThatStage(
 
 				got := v.await(t)
 
-				assert.Check(t, is.Equal(got.Outcome, landing.WaitPending))
-				assert.Check(t, is.Equal(got.Stage, tt.want))
+				assert.Check(t, is.DeepEqual(got, tt.want, cmpopts.EquateEmpty()))
 			})
 		})
 	}
@@ -1169,6 +1179,10 @@ func TestAwaitVerdict_WhenAReadFails_ReturnsAnErrorNamingTheRead(t *testing.T) {
 		{
 			name: "the verdict", want: landing.StageVerdict,
 			heads: shows(clean()), verdicts: []forgetest.Answer[forge.Verdict]{{Err: cause}},
+		},
+		{
+			name: "a later read of the verdict", want: landing.StageVerdict,
+			heads: shows(clean()), verdicts: append(says(running()), forgetest.Answer[forge.Verdict]{Err: cause}),
 		},
 		{
 			name: "the merge state after the checks", want: landing.StageMergeState,
