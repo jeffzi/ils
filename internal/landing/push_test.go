@@ -136,6 +136,9 @@ type pushRefusal struct {
 	script  forgetest.Script
 	// ops are the forge operations made before the refusal.
 	ops []forgetest.Op
+	// drawn are parts of the refusal and how a terminal with color draws them, with tipMark where
+	// the sha of the topic branch's tip is printed.
+	drawn []drawnPart
 	// answered is how many calls origin answers before it stops; zero is every call.
 	answered int
 	// fetches is whether git fetches from origin before the refusal.
@@ -157,7 +160,7 @@ const (
 	sharpen      = "sharpen the wording"
 )
 
-// shares is the first line of the refusal of the branch side, which shares its first commit past
+// shares is the reason line of the refusal of the branch side, which shares its first commit past
 // the trunk with others, and ends with rest.
 func shares(others, rest string) string {
 	return "Refused: the branch " + side + " shares its first commit past the trunk with " + others +
@@ -182,8 +185,8 @@ func cutRefusals() []pushRefusal {
 				first := f.Sibling(side, topic)
 				second := f.Commits(side, sharpen)[0]
 
-				return shares(other, ownListed) +
-					first + changeOnSide + second + " " + sharpen + "\n" + nextEither
+				return first + changeOnSide + second + " " + sharpen + "\n" +
+					shares(other, ownListed) + nextEither
 			},
 		},
 		{
@@ -202,7 +205,7 @@ func cutRefusals() []pushRefusal {
 				own := f.Sibling(side, topic)
 				publishAtTrunk(f, side)
 
-				return shares(other, ownListed) + own + changeOnSide + nextEither
+				return own + changeOnSide + shares(other, ownListed) + nextEither
 			},
 		},
 	}
@@ -213,6 +216,14 @@ func cutRefusals() []pushRefusal {
 func manyCutRefusals() []pushRefusal {
 	// In the order they were created the branches are neither sorted nor sorted backwards.
 	const others = "the branches " + early + ", " + topic + " and " + yearly
+
+	drawn := []drawnPart{
+		{within: others, part: early, want: drawnName()},
+		{within: others, part: ", "},
+		{within: others, part: topic, want: drawnName()},
+		{within: others, part: " and "},
+		{within: others, part: yearly, want: drawnName()},
+	}
 
 	return []pushRefusal{
 		{
@@ -225,8 +236,9 @@ func manyCutRefusals() []pushRefusal {
 				f.Git("branch", yearly, side)
 				own := f.Commits(side, sharpen)[0]
 
-				return shares(others, ownListed) + own + " " + sharpen + "\n" + nextEitherMany
+				return own + " " + sharpen + "\n" + shares(others, ownListed) + nextEitherMany
 			},
+			drawn: drawn,
 		},
 		{
 			name: "cut from three other branches with no commit of its own", script: allowed(),
@@ -238,6 +250,7 @@ func manyCutRefusals() []pushRefusal {
 
 				return shares(others, noOwn) + nextEitherMany
 			},
+			drawn: drawn,
 		},
 	}
 }
@@ -265,6 +278,7 @@ func copyRefusals() []pushRefusal {
 
 				return behind(topic)
 			},
+			drawn: []drawnPart{{within: "origin " + topic + "`", part: topic, want: drawnName()}},
 		},
 		{
 			// The forge would answer find-changes, so the record of its calls is what shows it was not asked.
@@ -285,6 +299,7 @@ func copyRefusals() []pushRefusal {
 
 				return diverged(topic)
 			},
+			drawn: []drawnPart{{within: "origin/" + topic + "`", part: topic, want: drawnName()}},
 		},
 	}
 }
@@ -377,6 +392,7 @@ func runPushRefusals(t *testing.T, rows []pushRefusal) {
 
 			assertEnded(t, s, got, finish{outcome: result.Refused, text: want})
 			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: tt.fetches})
+			assertDrawn(t, got, s.gitDir, atTip(tt.drawn, s.fixture.Git("rev-parse", topic)))
 		})
 	}
 }
@@ -618,7 +634,6 @@ func runFailedReads(t *testing.T, rows []failedRead) {
 
 			s := newScene(t, func(f *gittest.Fixture) { words = tt.arrange(f) }, tt.script, false)
 			failGit(t, s, words)
-
 			before := s.written()
 
 			got := landing.Push(t.Context(), s.deps, pushRequest())

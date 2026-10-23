@@ -85,6 +85,8 @@ type mergeReady struct {
 // A branch with no open pull request against the trunk, whose merged pull request carries every
 // commit of the branch, is finished without a merge, as resume says.
 func Merge(ctx context.Context, deps Deps, req Request) result.Result {
+	deps.startChecking()
+
 	ready, stop := Preconditions(ctx, deps, req)
 	if stop != nil {
 		return *stop
@@ -165,8 +167,8 @@ func localTrunk(ctx context.Context, deps Deps, req Request, trunk string) *resu
 	}
 
 	stop := req.Refused(
-		result.Say("the local trunk %s has commits that origin's trunk lacks, listed here", trunk),
-		result.NextStep("move those commits off the local trunk by hand"+thenRunAgain, req.Command))
+		result.Say("the local trunk %s has commits that origin's trunk lacks, listed here", result.Branch(trunk)),
+		result.NextStep("move those commits off the local trunk by hand"+thenRunAgain, req.ilsCommand()))
 
 	stop.Lines = listed(past)
 
@@ -180,6 +182,8 @@ func localTrunk(ctx context.Context, deps Deps, req Request, trunk string) *resu
 // commit is refused as `ils push` refuses it, with no payload: the branch already landed, so
 // neither is a pull request the run takes.
 func (m *mergeReady) findPull(ctx context.Context, deps Deps, req Request) *result.Result {
+	deps.startFinding()
+
 	open, landed, stop := pullRequest(ctx, deps, req, m.onBranch)
 
 	switch {
@@ -202,7 +206,7 @@ func (m *mergeReady) findPull(ctx context.Context, deps Deps, req Request) *resu
 	}
 
 	return req.Refused(
-		result.Say("the branch %s has no open pull request against the trunk %s", m.branch, m.Trunk),
+		result.Say("the branch %s has no open pull request against the trunk %s", result.Branch(m.branch), result.Branch(m.Trunk)),
 		result.NextCommand(PushCommand))
 }
 
@@ -224,7 +228,7 @@ func (m *mergeReady) pullChecks(ctx context.Context, deps Deps, req Request) *re
 	if !m.Repo.SquashAllowed {
 		return req.Refused(
 			result.Say("the settings of %s forbid squash merges: Allow squash merging is off", m.Repo.FullName()),
-			result.NextStep("allow squash merges in the repository's settings"+thenRunAgain, req.Command))
+			result.NextStep("allow squash merges in the repository's settings"+thenRunAgain, req.ilsCommand()))
 	}
 
 	protection, err := deps.Forge.TrunkProtection(ctx, m.Repo, m.Trunk)
@@ -234,7 +238,7 @@ func (m *mergeReady) pullChecks(ctx context.Context, deps Deps, req Request) *re
 
 	if !protection.SquashAllowed {
 		return req.Refused(rulesetReason(protection.SquashForbiddenBy, m.Trunk),
-			result.NextStep("allow squash merges in the trunk's ruleset"+thenRunAgain, req.Command))
+			result.NextStep("allow squash merges in the trunk's ruleset"+thenRunAgain, req.ilsCommand()))
 	}
 
 	m.protection = protection
@@ -245,7 +249,7 @@ func (m *mergeReady) pullChecks(ctx context.Context, deps Deps, req Request) *re
 // rulesetReason says that the rulesets with the ids ids forbid squash merges on trunk.
 func rulesetReason(ids []int, trunk string) result.Phrase {
 	if len(ids) == 1 {
-		return result.Say("the ruleset %s on the trunk %s forbids squash merges", ids[0], trunk)
+		return result.Say("the ruleset %s on the trunk %s forbids squash merges", ids[0], result.Branch(trunk))
 	}
 
 	named := make([]string, len(ids))
@@ -253,14 +257,16 @@ func rulesetReason(ids []int, trunk string) result.Phrase {
 		named[i] = strconv.Itoa(id)
 	}
 
-	return result.Say("the rulesets %s on the trunk %s forbid squash merges", strings.Join(named, ", "), trunk)
+	return result.Say("the rulesets %s on the trunk %s forbid squash merges", strings.Join(named, ", "), result.Branch(trunk))
 }
 
 // draftStop refuses a pull request that is a draft.
 func (m *mergeReady) draftStop(req Request) *result.Result {
 	return req.Refused(
-		result.Say("pull request #%s is a draft", m.pull.Number),
-		result.NextStep("mark it ready with `gh pr ready --repo %s %s`"+thenRunAgain, m.Repo.Slug(), m.pull.Number, req.Command))
+		result.Say("pull request %s is a draft", result.PullRequest(m.pull.Number)),
+		result.NextStep("mark it ready with `gh pr ready --repo %s %s`"+thenRunAgain, m.Repo.Slug(),
+			result.PullRequestNumber(m.pull.Number),
+			req.ilsCommand()))
 }
 
 // titleStop refuses a pull request titled title, which is not a conventional commit subject.
@@ -268,9 +274,9 @@ func (m *mergeReady) titleStop(req Request, title string) *result.Result {
 	number := m.pull.Number
 
 	return req.Refused(
-		result.Say("the title of pull request #%s, \"%s\", is not a conventional commit subject "+
-			"of the form type(scope)!: summary", number, title),
-		result.NextStep(writeMessage+thenRunAgain, m.Repo.Slug(), number, req.Command))
+		result.Say("the title of pull request %s, \"%s\", is not a conventional commit subject "+
+			"of the form type(scope)!: summary", result.PullRequest(number), title),
+		result.NextStep(writeMessage+thenRunAgain, m.Repo.Slug(), result.PullRequestNumber(number), req.ilsCommand()))
 }
 
 // atHead refuses a tip that is not the head of the pull request, saying whether it is behind
@@ -303,19 +309,20 @@ func (m *mergeReady) atHead(ctx context.Context, deps Deps, req Request) *result
 // apartFromHead refuses a tip apart from the pull request's head, with ils push as the next step.
 func (m *mergeReady) apartFromHead(req Request, apart git.Divergence) *result.Result {
 	push := result.NextCommand(PushCommand)
+	branch, pull := result.Branch(m.branch), result.PullRequest(m.pull.Number)
 
 	switch {
 	case apart.Ahead > 0 && apart.Behind > 0:
-		return req.Refused(result.Say("the tip of %s and the head of pull request #%s have diverged: "+
-			"each has commits the other lacks", m.branch, m.pull.Number), push)
+		return req.Refused(result.Say("the tip of %s and the head of pull request %s have diverged: "+
+			"each has commits the other lacks", branch, pull), push)
 
 	case apart.Behind > 0:
-		return req.Refused(result.Say("the tip of %s is behind the head of pull request #%s: "+
-			"the pull request has commits the tip lacks", m.branch, m.pull.Number), push)
+		return req.Refused(result.Say("the tip of %s is behind the head of pull request %s: "+
+			"the pull request has commits the tip lacks", branch, pull), push)
 
 	case apart.Ahead > 0:
-		return req.Refused(result.Say("the tip of %s is past the head of pull request #%s: "+
-			"the tip has commits the pull request lacks, so they were never pushed", m.branch, m.pull.Number), push)
+		return req.Refused(result.Say("the tip of %s is past the head of pull request %s: "+
+			"the tip has commits the pull request lacks, so they were never pushed", branch, pull), push)
 
 	}
 
@@ -398,14 +405,13 @@ func (m *mergeReady) withoutCI(ctx context.Context, deps Deps, req Request) *res
 // merge go on.
 func (m *mergeReady) verdictStop(req Request) *result.Result {
 	if m.waited.Outcome == WaitNothingReported && !m.unverified {
-		_, reason := nothingReported(m.pull.HeadSHA, m.pull.Number)
-		stop := req.Refused(reason, result.NextStep("report that no check or status reported for the head, and stop"))
+		stop := req.Refused(nothingReported(m.pull.HeadSHA, m.pull.Number), result.NextStep("report that no check or status reported for the head, and stop"))
 		stop.Lines = []result.Phrase{m.waited.mergeStateLine()}
 
 		return m.carrying(stop)
 	}
 
-	report, stops := m.waited.stopReport(req.Command, m.pull.HeadSHA, m.Trunk, m.pull.Number)
+	report, stops := m.waited.stopReport(req.ilsCommand(), m.pull.HeadSHA, m.Trunk, m.pull.Number)
 	if !stops {
 		return nil
 	}
@@ -416,17 +422,19 @@ func (m *mergeReady) verdictStop(req Request) *result.Result {
 // settle reads the merge state again as the wait polls it while GitHub has not worked it out, and
 // then refuses every state but clean. A head read there on another commit than the one the checks
 // were read for is refused as the wait refuses a moved head. The deadline or mergeWindow ending that
-// poll is pending, as it is for the wait.
+// poll is pending, as it is for the wait. Once it polled for a clean state, it tells the progress
+// hook the wait for the checks goes on, so that the checks line is said under that step.
 func (m *mergeReady) settle(ctx context.Context, deps Deps, req Request) *result.Result {
 	w := waiter{deps: deps, pushed: Pushed{
 		SHA: m.pull.HeadSHA, Repo: m.Repo, Number: m.pull.Number, Required: m.protection.RequiredChecks,
 	}}
 
-	head, err := w.mergeKnown(ctx, forge.Head{
-		SHA: m.pull.HeadSHA, MergeState: m.waited.MergeState, RawMergeState: m.waited.RawMergeState,
-	})
+	read := forge.Head{SHA: m.pull.HeadSHA, MergeState: m.waited.MergeState, RawMergeState: m.waited.RawMergeState}
+	polled := w.unknownOnPushed(read)
+
+	head, err := w.mergeKnown(ctx, read)
 	if err == nil && w.movedOn(&m.waited, head) {
-		report, _ := m.waited.stopReport(req.Command, m.pull.HeadSHA, m.Trunk, m.pull.Number)
+		report, _ := m.waited.stopReport(req.ilsCommand(), m.pull.HeadSHA, m.Trunk, m.pull.Number)
 
 		return m.reported(req, report, nil)
 	}
@@ -435,7 +443,12 @@ func (m *mergeReady) settle(ctx context.Context, deps Deps, req Request) *result
 
 	switch {
 	case err == nil:
-		return m.stateStop(req)
+		stop := m.stateStop(req)
+		if stop == nil && polled {
+			w.startChecks(ctx)
+		}
+
+		return stop
 	case m.waited.endPending(StageMergeState, err):
 		return m.reported(req, m.waited.pendingReport(m.pull.HeadSHA, m.pull.Number), []result.Phrase{m.summary()})
 	default:
@@ -446,7 +459,7 @@ func (m *mergeReady) settle(ctx context.Context, deps Deps, req Request) *result
 // stateStop refuses a merge state other than clean, once the checks let the merge go on: green, or
 // nothing reported on a trunk with no CI.
 func (m *mergeReady) stateStop(req Request) *result.Result {
-	number := m.pull.Number
+	pull := result.PullRequest(m.pull.Number)
 
 	switch state := m.waited.MergeState; state {
 	case forge.MergeClean:
@@ -458,16 +471,16 @@ func (m *mergeReady) stateStop(req Request) *result.Result {
 	case forge.MergeDraft:
 		return m.stated(m.draftStop(req))
 	case forge.MergeBlockedByReview:
-		return m.stated(req.Refused(result.Say("pull request #%s requires a review", number),
+		return m.stated(req.Refused(result.Say("pull request %s requires a review", pull),
 			result.NextStep("request a review, and stop: a review is not the agent's to give")))
 	case forge.MergeBlockedByMissingCheck:
-		return m.stated(req.Refused(result.Say("a check the trunk requires has no check on %s", m.pull.HeadSHA),
+		return m.stated(req.Refused(result.Say("a check the trunk requires has no check on %s", result.SHA(m.pull.HeadSHA)),
 			result.NextStep("report that the required check has no check on the head, and stop")),
 
 			m.missingLine())
 	default:
 		return m.stated(req.Refused(
-			result.Say("GitHub blocks pull request #%s for a reason ils does not read: %s", number, m.pull.URL),
+			result.Say("GitHub blocks pull request %s for a reason ils does not read: %s", pull, result.URL(m.pull.URL)),
 			result.NextStep("report that GitHub blocks the merge, and stop")))
 	}
 }
@@ -482,7 +495,7 @@ func (m *mergeReady) missingLine() result.Phrase {
 		return result.Say("Required by the trunk: %s", strings.Join(m.protection.RequiredChecks, ", "))
 	}
 
-	return result.Say("Required by the trunk with no check on %s: %s", m.pull.HeadSHA, strings.Join(missing, ", "))
+	return result.Say("Required by the trunk with no check on %s: %s", result.SHA(m.pull.HeadSHA), strings.Join(missing, ", "))
 }
 
 // compose reads the pull request's message and makes the squash commit's out of it: the title
@@ -600,9 +613,15 @@ func (m *mergeReady) carrying(ended *result.Result) *result.Result {
 }
 
 // land makes the merge, deletes the branch on origin, and runs the local ending, each only once
-// the one before it went through. A write that fails is broke, saying what went through.
+// the one before it went through. A write that fails is broke, saying what went through. Every
+// result from here on holds the checks line, so it is the line the wait's step says.
 func (m *mergeReady) land(ctx context.Context, deps Deps, req Request) *result.Result {
-	m.lines = []result.Phrase{m.summary(), m.waited.mergeStateLine()}
+	summary := m.summary()
+	m.lines = []result.Phrase{summary, m.waited.mergeStateLine()}
+
+	if !m.unverified {
+		deps.said(summary)
+	}
 
 	if stop := m.merge(ctx, deps, req); stop != nil {
 		return stop
@@ -625,24 +644,26 @@ func (m *mergeReady) finish(ctx context.Context, deps Deps, req Request) *result
 // read. A merge that fails or that the deadline cut short may still have gone through, so its
 // next step is ils merge, whose run resumes once it did.
 func (m *mergeReady) merge(ctx context.Context, deps Deps, req Request) *result.Result {
-	number := m.pull.Number
+	pull := result.PullRequest(m.pull.Number)
+
+	deps.started(result.Say("Merging %s", pull), 0)
 
 	err := deps.Forge.Land(ctx, m.Repo, forge.Landing{
-		Number: number, HeadSHA: m.pull.HeadSHA, Subject: m.subject, Body: m.body,
+		Number: m.pull.Number, HeadSHA: m.pull.HeadSHA, Subject: m.subject, Body: m.body,
 	})
 
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return m.broke(req, result.Say("the time limit ended during the merge"), req.again(),
-			result.Say("Started the merge of pull request #%s when the time limit ended; "+
-				"it may or may not have gone through", number))
+			result.Say("Started the merge of pull request %s when the time limit ended; "+
+				"it may or may not have gone through", pull))
 	case err != nil:
 		return m.broke(req, result.Say("GitHub did not report the merge as done"), req.again(),
-			result.Say("GitHub did not report the merge of pull request #%s as done: %s", number, err.Error()))
+			result.Say("GitHub did not report the merge of pull request %s as done: %s", pull, err.Error()))
 	}
 
 	m.merged = true
-	m.lines = append(m.lines, result.Say("Merged pull request #%s into %s: %s", number, m.Trunk, m.subject))
+	deps.say(&m.lines, result.Say("Merged pull request %s into %s: %s", pull, result.Branch(m.Trunk), m.subject))
 
 	return nil
 }
@@ -652,9 +673,11 @@ func (m *mergeReady) merge(ctx context.Context, deps Deps, req Request) *result.
 // cannot be asked whether it still lists the branch, the result says why instead of where the
 // branch stands.
 func (m *mergeReady) deleteOnOrigin(ctx context.Context, deps Deps, req Request) *result.Result {
+	deps.started(result.Say("Deleting %s on origin", result.Branch(m.branch)), 0)
+
 	err := deps.Forge.DeleteBranch(ctx, m.Repo, m.branch)
 	if err == nil {
-		m.lines = append(m.lines, result.Say("Deleted the branch %s on origin", m.branch))
+		deps.say(&m.lines, result.Say("Deleted the branch %s on origin", result.Branch(m.branch)))
 
 		return nil
 	}
@@ -666,20 +689,20 @@ func (m *mergeReady) deleteOnOrigin(ctx context.Context, deps Deps, req Request)
 		unasked, _ := couldNotRead(readStillOnOrigin, askErr)
 
 		return m.broke(req, result.Say("the branch could not be deleted on origin"), req.again(),
-			result.Say("Could not delete the branch %s on origin: %s", m.branch, err.Error()), unasked)
+			result.Say("Could not delete the branch %s on origin: %s", result.Branch(m.branch), err.Error()), unasked)
 	case listed:
 		return m.broke(req, result.Say("the branch is still on origin"), req.again(),
-			result.Say("Could not delete the branch %s on origin, so it is still there: %s", m.branch, err.Error()))
+			result.Say("Could not delete the branch %s on origin, so it is still there: %s", result.Branch(m.branch), err.Error()))
 	}
 
-	m.lines = append(m.lines, m.goneLine())
+	deps.say(&m.lines, m.goneLine())
 
 	return nil
 }
 
 // goneLine says the branch was gone from origin before ils deleted it.
 func (m *mergeReady) goneLine() result.Phrase {
-	return result.Say("The branch %s was already gone from origin", m.branch)
+	return result.Say("The branch %s was already gone from origin", result.Branch(m.branch))
 }
 
 // broke returns the result of a write that failed: broke with reason and next, and the lines said
@@ -695,7 +718,7 @@ func (m *mergeReady) broke(req Request, reason result.Phrase, next result.Next, 
 // the next step when it fails.
 type endStep struct {
 	run     func(ctx context.Context) error
-	command string
+	command result.Name
 	next    result.Next
 }
 
@@ -711,55 +734,60 @@ type localEnding struct {
 // run done, with the lines said so far and where the checkout ended.
 func (m *mergeReady) end(ctx context.Context, deps Deps, req Request) *result.Result {
 	repo, trunk, branch := deps.Repo, m.Trunk, m.branch
+	deps.started(result.Say("Moving to origin's tip of %s", result.Branch(trunk)), 0)
 	drop := endStep{
 		run:     func(ctx context.Context) error { return repo.DeleteBranch(ctx, branch) },
-		command: "git branch -D " + branch,
+		command: result.Concat("git branch -D ", result.Branch(branch)),
 	}
 
 	if m.elsewhere {
-		drop.next = result.NextStep("run `git branch -D %s` by hand", branch)
+		drop.next = result.NextStep("run `git branch -D %s` by hand", result.Branch(branch))
 
-		return m.endSteps(ctx, req, localEnding{ending: result.EndingDetached, steps: []endStep{
+		return m.endSteps(ctx, deps, req, localEnding{ending: result.EndingDetached, steps: []endStep{
 			{
 				run: func(ctx context.Context) error {
 					_, err := repo.Fetch(ctx, trunk)
 
 					return err
 				},
-				command: "git fetch origin " + trunk, next: req.onceFixed(),
+				command: result.Concat("git fetch origin ", result.Branch(trunk)), next: req.onceFixed(),
 			},
 			{
 				run:     func(ctx context.Context) error { return repo.DetachAtOrigin(ctx, trunk) },
-				command: "git switch --detach origin/" + trunk, next: req.onceFixed(),
+				command: result.Concat("git switch --detach origin/", result.Branch(trunk)), next: req.onceFixed(),
 			},
 			drop,
 		}, done: []result.Phrase{
-			result.Say("Detached at origin's tip of %s, with %s deleted locally", trunk, branch),
+			result.Say("Detached at origin's tip of %s, with %s deleted locally", result.Branch(trunk), result.Branch(branch)),
 			result.Say("The trunk %s is checked out in another worktree and updates there on its next "+
-				"`git pull --ff-only`", trunk),
+				"`git pull --ff-only`", result.Branch(trunk)),
 		}})
 	}
 
-	drop.next = result.NextStep("run `git branch -D %s` and `git pull --ff-only origin %s` by hand", branch, trunk)
+	drop.next = result.NextStep("run `git branch -D %s` and `git pull --ff-only origin %s` by hand",
+		result.Branch(branch), result.Branch(trunk))
 
-	return m.endSteps(ctx, req, localEnding{ending: result.EndingTrunk, steps: []endStep{
+	return m.endSteps(ctx, deps, req, localEnding{ending: result.EndingTrunk, steps: []endStep{
 		{
 			run:     func(ctx context.Context) error { return repo.Switch(ctx, trunk) },
-			command: "git switch " + trunk, next: req.onceFixed(),
+			command: result.Concat("git switch ", result.Branch(trunk)), next: req.onceFixed(),
 		},
 		drop,
 		{
 			run:     func(ctx context.Context) error { return repo.FastForwardTrunk(ctx, trunk) },
-			command: "git pull --ff-only origin " + trunk,
-			next:    result.NextStep("run `git pull --ff-only origin %s` by hand", trunk),
+			command: result.Concat("git pull --ff-only origin ", result.Branch(trunk)),
+			next:    result.NextStep("run `git pull --ff-only origin %s` by hand", result.Branch(trunk)),
 		},
-	}, done: []result.Phrase{result.Say("On %s at origin's tip, with %s deleted locally", trunk, branch)}})
+	}, done: []result.Phrase{
+		result.Say("On %s at origin's tip, with %s deleted locally", result.Branch(trunk), result.Branch(branch)),
+	}})
 }
 
 // endSteps runs the steps of local in order and ends the run done where local leaves the checkout,
-// saying what local says once done. A step that fails is broke, with lines that say which steps
-// ran, which failed with its message, and which did not run.
-func (m *mergeReady) endSteps(ctx context.Context, req Request, local localEnding) *result.Result {
+// saying what local says once done, the first of which is the line the ending's step says. A step
+// that fails is broke, with lines that say which steps ran, which failed with its message, and
+// which did not run.
+func (m *mergeReady) endSteps(ctx context.Context, deps Deps, req Request, local localEnding) *result.Result {
 	var ran []result.Phrase
 
 	for i, step := range local.steps {
@@ -776,6 +804,7 @@ func (m *mergeReady) endSteps(ctx context.Context, req Request, local localEndin
 	}
 
 	m.ending = local.ending
+	deps.said(local.done[0])
 	finished := req.ends(result.Done, result.Phrase{}, result.NextNone())
 	finished.Lines = slices.Concat(m.lines, local.done)
 
@@ -788,7 +817,9 @@ func (m *mergeReady) endSteps(ctx context.Context, req Request, local localEndin
 // origin whether it still lists the branch is a read before any write: a failure there is broke,
 // an origin that does not answer included, and a deadline that cut it short is refused.
 func (m *mergeReady) resume(ctx context.Context, deps Deps, req Request) *result.Result {
-	m.lines = []result.Phrase{result.Say("Pull request #%s was already merged into %s", m.pull.Number, m.Trunk)}
+	m.lines = []result.Phrase{
+		result.Say("Pull request %s was already merged into %s", result.PullRequest(m.pull.Number), result.Branch(m.Trunk)),
+	}
 
 	_, listed, err := deps.Repo.RemoteBranch(ctx, m.branch)
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/url"
 	"regexp"
 	"slices"
@@ -22,9 +23,15 @@ import (
 // ---------------------------------------------------------------------------
 
 // Forge is GitHub seen through the operations landing asks of a forge, each one a call of gh. Its
-// zero value is ready to use.
+// zero value is ready to use and logs nothing.
 type Forge struct {
-	runner Runner
+	// Logger, when set, is the Runner.Logger of every gh call.
+	Logger *slog.Logger
+}
+
+// runner builds a Runner carrying f.Logger on each call, so the zero Forge needs no setup.
+func (f *Forge) runner() Runner {
+	return Runner{Logger: f.Logger}
 }
 
 // pullExists matches what `gh pr create` prints when the branch already has a pull request.
@@ -122,15 +129,15 @@ type repoFile struct {
 // Identity fills the fork, can-push and squash-allowed flags of repo, after checking that gh is no older than
 // MinimumVersion and then that it is logged in to the host of repo.
 func (f *Forge) Identity(ctx context.Context, repo forge.Repo) (forge.Repo, error) {
-	if err := f.runner.checkVersion(ctx); err != nil {
+	if err := f.runner().checkVersion(ctx); err != nil {
 		return forge.Repo{}, err
 	}
 
-	if err := f.runner.CheckLogin(ctx, repo.Host); err != nil {
+	if err := f.runner().CheckLogin(ctx, repo.Host); err != nil {
 		return forge.Repo{}, err
 	}
 
-	view, err := runDecoded[repoView](ctx, f.runner, "repo", "view", repo.Slug(), "--json", "isFork,viewerPermission,squashMergeAllowed")
+	view, err := runDecoded[repoView](ctx, f.runner(), "repo", "view", repo.Slug(), "--json", "isFork,viewerPermission,squashMergeAllowed")
 	if err != nil {
 		return forge.Repo{}, err
 	}
@@ -147,7 +154,7 @@ func (f *Forge) FindChanges(ctx context.Context, repo forge.Repo, branch string)
 	var changes []forge.Change
 
 	for _, state := range []forge.ChangeState{forge.ChangeOpen, forge.ChangeMerged} {
-		pulls, err := runDecoded[[]pull](ctx, f.runner,
+		pulls, err := runDecoded[[]pull](ctx, f.runner(),
 			"pr", "list", "--repo", repo.Slug(), "--head", branch, "--state", string(state),
 			"--json", "number,url,title,baseRefName,headRefOid,isDraft,isCrossRepository")
 		if err != nil {
@@ -173,7 +180,7 @@ func (f *Forge) FindChanges(ctx context.Context, repo forge.Repo, branch string)
 //
 // It returns forge.ErrChangeExists when gh says the branch already has one.
 func (f *Forge) OpenChange(ctx context.Context, repo forge.Repo, change forge.NewChange) (forge.ChangeRef, error) {
-	result, err := f.runner.Run(ctx,
+	result, err := f.runner().Run(ctx,
 		"pr", "create", "--repo", repo.Slug(), "--title", change.Title, "--body", "",
 		"--base", change.Base, "--head", change.Head)
 	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && pullExists.MatchString(exitErr.Stderr) {
@@ -204,7 +211,7 @@ func (f *Forge) OpenChange(ctx context.Context, repo forge.Repo, change forge.Ne
 // GitHub's BLOCKED does not say what blocks, so for one that no review explains
 // Head also reads the checks on the head commit, when the query names required ones.
 func (f *Forge) Head(ctx context.Context, repo forge.Repo, query forge.HeadQuery) (forge.Head, error) {
-	view, err := runDecoded[pullHead](ctx, f.runner,
+	view, err := runDecoded[pullHead](ctx, f.runner(),
 		"pr", "view", "--repo", repo.Slug(), strconv.Itoa(query.Number),
 		"--json", "headRefOid,mergeable,mergeStateStatus,isDraft,reviewDecision")
 	if err != nil {
@@ -252,7 +259,7 @@ func (f *Forge) missingCheck(ctx context.Context, repo forge.Repo, query forge.V
 func (f *Forge) TrunkProtection(ctx context.Context, repo forge.Repo, trunk string) (forge.Protection, error) {
 	args := paginatedAPIArgs(repo, "rules/branches/"+branchPath(trunk))
 
-	result, err := f.runner.Run(ctx, args...)
+	result, err := f.runner().Run(ctx, args...)
 	if exitErr, ok := errors.AsType[*child.ExitError](err); ok &&
 		strings.Contains(exitErr.Stderr, forbiddenStatus) && strings.Contains(exitErr.Stderr, freePlanRefusal) {
 		return forge.Protection{SquashAllowed: true}, nil
@@ -342,7 +349,7 @@ func (f *Forge) Message(ctx context.Context, repo forge.Repo, number int) (forge
 		"-f", "query=" + MessageQuery,
 	}
 
-	answer, err := runDecoded[pullMessage](ctx, f.runner, args...)
+	answer, err := runDecoded[pullMessage](ctx, f.runner(), args...)
 	if err != nil {
 		return forge.Message{}, err
 	}
@@ -375,7 +382,7 @@ func trailersOf(body string) []string {
 // body, and leaves its branch in place. GitHub refuses the merge once the head is no longer
 // landing.HeadSHA.
 func (f *Forge) Land(ctx context.Context, repo forge.Repo, landing forge.Landing) error {
-	_, err := f.runner.Run(ctx,
+	_, err := f.runner().Run(ctx,
 		"pr", "merge", strconv.Itoa(landing.Number), "--repo", repo.Slug(), "--squash",
 		"--match-head-commit", landing.HeadSHA, "--subject", landing.Subject, "--body", landing.Body)
 
@@ -384,7 +391,7 @@ func (f *Forge) Land(ctx context.Context, repo forge.Repo, landing forge.Landing
 
 // DeleteBranch removes branch from the repository on GitHub.
 func (f *Forge) DeleteBranch(ctx context.Context, repo forge.Repo, branch string) error {
-	_, err := f.runner.Run(ctx,
+	_, err := f.runner().Run(ctx,
 		"api", "--hostname", repo.Host, "-X", "DELETE", repoAPIPath(repo, "git/refs/heads/"+branchPath(branch)))
 
 	return err
@@ -436,7 +443,7 @@ func decodeEachPage[P any](stdout string, args []string) ([]P, error) {
 func (f *Forge) activeWorkflows(ctx context.Context, repo forge.Repo) ([]string, error) {
 	args := paginatedAPIArgs(repo, "actions/workflows")
 
-	result, err := f.runner.Run(ctx, args...)
+	result, err := f.runner().Run(ctx, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -466,7 +473,7 @@ func (f *Forge) workflowFiles(ctx context.Context, repo forge.Repo, trunk string
 	path := repoAPIPath(repo, "contents/"+workflowsDir+"?ref="+url.QueryEscape(trunk))
 	args := []string{"api", "--hostname", repo.Host, path}
 
-	result, err := f.runner.Run(ctx, args...)
+	result, err := f.runner().Run(ctx, args...)
 	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && strings.Contains(exitErr.Stderr, pathNotFound) {
 		return nil, nil
 	}

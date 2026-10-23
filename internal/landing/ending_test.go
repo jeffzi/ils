@@ -43,13 +43,14 @@ const (
 	// landedBody is the body of the message of pull request 12 that toLand reads.
 	landedBody = "Tidy the readme."
 
-	nextNone = "Next: none\n"
-
 	mergedLine  = "Merged pull request #12 into " + trunk + ": " + worded + " (#12)\n"
 	deletedLine = "Deleted the branch " + topic + " on origin\n"
 	goneLine    = "The branch " + topic + " was already gone from origin\n"
 	onTrunkLine = "On " + trunk + " at origin's tip, with " + topic + " deleted locally\n"
 	stillThere  = "Could not delete the branch " + topic + " on origin, so it is still there: HTTP 502\n"
+
+	stillThereReason = "Broke: the branch is still on origin\n"
+	refusedMerge     = "HTTP 405: Head branch was modified"
 )
 
 // landingRow is one run of `ils merge` that reaches its writes or a resume, and how it ends.
@@ -64,11 +65,25 @@ type landingRow struct {
 	after string
 	// on is where the run leaves HEAD: the name of the branch it is on, or HEAD when it is detached;
 	// empty leaves it unchecked.
-	on      string
-	set     setting
+	on  string
+	set setting
+	// drawn are parts of the text and how a terminal with color draws them; empty leaves them
+	// unchecked.
+	drawn []drawnPart
+	// told is every event the progress hook is told, with tipMark where the sha of the tip is
+	// printed; empty leaves them unchecked.
+	told    []string
 	outcome result.Outcome
 	// kept is whether the run must write nothing.
 	kept bool
+}
+
+// toldAfterWait returns every event the progress hook is told by a run that waits for its one check
+// to pass, ends the wait 20 seconds before the deadline, and then tells after.
+func toldAfterWait(after ...string) []string {
+	waited := []string{checkingStep, findingStep, waitingStep(bound - 20*time.Second), "count 1 of 1", said(countLine)}
+
+	return slices.Concat(waited, after)
 }
 
 // runLandings runs each row as a test in a bubble of its own: the run ends as the row says and
@@ -94,15 +109,29 @@ func runLandings(t *testing.T, rows []landingRow) {
 
 				assert.Check(t, is.DeepEqual(mergePayload(t, run.got), &want, cmpopts.EquateEmpty()))
 
-				if tt.kept {
-					assert.Check(t, is.Equal(run.written(), run.before))
-				}
-
-				if tt.on != "" {
-					assert.Check(t, is.Equal(run.fixture.Git("rev-parse", "--abbrev-ref", "HEAD"), tt.on))
-				}
+				assertOptional(t, &run, &tt)
 			})
 		})
+	}
+}
+
+// assertOptional runs the checks of row that its fields turn on: what the run wrote, where it left
+// HEAD, how the text is drawn and what the progress hook was told.
+func assertOptional(t *testing.T, run *mergeRun, row *landingRow) {
+	t.Helper()
+
+	if row.kept {
+		assert.Check(t, is.Equal(run.written(), run.before))
+	}
+
+	if row.on != "" {
+		assert.Check(t, is.Equal(run.fixture.Git("rev-parse", "--abbrev-ref", "HEAD"), row.on))
+	}
+
+	assertDrawn(t, run.got, run.gitDir, row.drawn)
+
+	if len(row.told) > 0 {
+		assert.Check(t, is.DeepEqual(run.watch.told(t), markAll(row.told, run.tip)))
 	}
 }
 
@@ -151,24 +180,44 @@ func listedEarlier() (func(*gittest.Fixture), forgeFor) {
 	return arrange, toLand(nil, nil).pulling(func(pull *forge.Change) { pull.HeadSHA = earlier })
 }
 
-func TestMerge_WhenEveryCheckHolds_LandsThePullRequest(t *testing.T) {
-	t.Parallel()
+// landedRow is one run of `ils merge` that lands the pull request.
+type landedRow struct {
+	arrange func(*gittest.Fixture)
+	script  forgeFor
+	payload *result.Merge
+	name    string
+	// lead is the text before the line that says the pull request merged.
+	lead string
+	// drawn are parts of the text and how a terminal with color draws them, with tipMark where
+	// the sha of the tip is printed; empty leaves them unchecked.
+	drawn []drawnPart
+	// told is every event the progress hook is told, with tipMark where the sha of the tip is
+	// printed; empty leaves them unchecked.
+	told      []string
+	unbounded bool
+}
 
+// landedRows returns the runs that land the pull request because every check holds.
+func landedRows() []landedRow {
 	// unverified is the payload of a run on a repository with no CI, where no check reported.
 	unverified := sent(landedBody, true, result.EndingTrunk)
 	unverified.Verdict, unverified.Checks = string(forge.VerdictNone), nil
 	earlierArrange, earlierScript := listedEarlier()
 
-	tests := []struct {
-		arrange func(*gittest.Fixture)
-		script  forgeFor
-		payload *result.Merge
-		name    string
-		// lead is the text before the line that says the pull request merged.
-		lead      string
-		unbounded bool
-	}{
-		{name: "under a deadline", script: toLand(nil, nil)},
+	return []landedRow{
+		{
+			name: "under a deadline", script: toLand(nil, nil),
+			drawn: []drawnPart{
+				{within: "Checks for " + tipMark, part: tipMark, want: drawnSHA()},
+				{within: "1 passed", part: "1", want: drawnCount()},
+				{within: "Merged pull request #12", part: "#12", want: drawnName()},
+				{within: "into " + trunk, part: trunk, want: drawnName()},
+				{within: "Deleted the branch " + topic, part: topic, want: drawnName()},
+				{within: "On " + trunk, part: trunk, want: drawnName()},
+				{within: "with " + topic + " deleted", part: topic, want: drawnName()},
+			},
+			told: toldAfterWait(mergingStep, said(mergedLine), deletingStep, said(deletedLine), movingStep, said(onTrunkLine)),
+		},
 		{
 			// The wait polls the check until it passes, with no deadline to end it first.
 			name:   "under a context with no deadline, with a check still running at the first read",
@@ -183,8 +232,25 @@ func TestMerge_WhenEveryCheckHolds_LandsThePullRequest(t *testing.T) {
 			name:    "the forge lists an earlier head while origin's ref of the pull request is the tip",
 			arrange: earlierArrange, script: earlierScript,
 		},
+		{
+			// The poll of the merge state takes the wait's step, so the step of the checks starts again
+			// before their line is said.
+			name: "the merge state unknown after the checks and clean at the next poll",
+			script: toLand(nil, nil).showing(inState(forge.MergeClean, "CLEAN"), inState(forge.MergeUnknown, "UNKNOWN"),
+				inState(forge.MergeClean, "CLEAN")),
+			told: []string{
+				checkingStep, findingStep, waitingStep(bound - 20*time.Second), "count 1 of 1",
+				mergeStateStep, waitingStep(bound - 20*time.Second - mergePoll), said(countLine),
+				mergingStep, said(mergedLine), deletingStep, said(deletedLine), movingStep, said(onTrunkLine),
+			},
+		},
 	}
-	for _, tt := range tests {
+}
+
+func TestMerge_WhenEveryCheckHolds_LandsThePullRequest(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range landedRows() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
@@ -194,7 +260,7 @@ func TestMerge_WhenEveryCheckHolds_LandsThePullRequest(t *testing.T) {
 
 				text, _ := shown(t, run.got, run.gitDir)
 				lead := cmp.Or(tt.lead, countLine+cleanLine)
-				assert.Check(t, is.Equal(text, mark(lead, run.tip)+mergedLine+deletedLine+onTrunkLine+nextNone))
+				assert.Check(t, is.Equal(text, mark(lead, run.tip)+mergedLine+deletedLine+onTrunkLine))
 
 				want := *cmp.Or(tt.payload, sent(landedBody, true, result.EndingTrunk))
 				want.SHA = run.tip
@@ -207,6 +273,12 @@ func TestMerge_WhenEveryCheckHolds_LandsThePullRequest(t *testing.T) {
 					{Op: forgetest.OpDeleteBranch, Repo: origin(), Branch: topic},
 				}, whichRepo()))
 				assertOnTrunk(t, run.fixture, run.fixture.Dir())
+
+				assertDrawn(t, run.got, run.gitDir, atTip(tt.drawn, run.tip))
+
+				if len(tt.told) > 0 {
+					assert.Check(t, is.DeepEqual(run.watch.told(t), markAll(tt.told, run.tip)))
+				}
 			})
 		})
 	}
@@ -292,7 +364,7 @@ func TestMerge_WhenTheTrunkIsCheckedOutInAnotherWorktree_EndsDetachedAtOriginsTr
 
 				text, _ := shown(t, run.got, run.gitDir)
 				assert.Check(t, is.Equal(text, mark(countLine, run.tip)+cleanLine+mergedLine+deletedLine+
-					detachedLine+elsewhereLine+nextNone))
+					detachedLine+elsewhereLine))
 
 				want := sent(landedBody, true, result.EndingDetached)
 				want.SHA = run.tip
@@ -324,23 +396,52 @@ func endingBreaks() []landingRow {
 		}
 	}
 	trunkElsewhere := func(f *gittest.Fixture) { f.TrunkWorktree() }
+	// broke is the reason line of an ending whose step failed.
+	broke := func(step string) string { return "Broke: " + step + " failed\n" }
+
+	switching := row("the switch to the trunk", setting{arrange: func(f *gittest.Fixture) { f.UntrackedOnTrunk() }}, topic,
+		switchStep+failed, "\n"+notRun+dropStep+"\n"+notRun+pullStep+"\n"+broke(switchStep)+nextMergeFixed)
+	switching.told = toldAfterWait(mergingStep, said(mergedLine), deletingStep, said(deletedLine), movingStep)
 
 	return []landingRow{
-		row("the switch to the trunk", setting{arrange: func(f *gittest.Fixture) { f.UntrackedOnTrunk() }}, topic,
-			switchStep+failed, "\n"+notRun+dropStep+"\n"+notRun+pullStep+"\n"+nextMergeFixed),
-		row("the delete of the branch on the trunk", setting{landed: lockRef("refs/heads/" + topic)}, trunk,
+		switching,
+		drawnRow(row("the delete of the branch on the trunk", setting{landed: lockRef("refs/heads/" + topic)}, trunk,
 			"Ran "+switchStep+"\n"+dropStep+failed,
-			"\n"+notRun+pullStep+"\n"+nextHand+dropStep+" and "+pullStep+byHand),
-		row("the pull of the trunk", setting{landed: func(_ *testing.T, f *gittest.Fixture) { f.AdvanceTrunk() }}, trunk,
-			"Ran "+switchStep+"\nRan "+dropStep+"\n"+pullStep+failed, "\n"+nextHand+pullStep+byHand),
+			"\n"+notRun+pullStep+"\n"+broke(dropStep)+nextHand+dropStep+" and "+pullStep+byHand),
+			drawnPart{within: "Ran " + switchStep, part: trunk, want: drawnName()},
+			drawnPart{within: dropStep + failed, part: topic, want: drawnName()},
+			drawnPart{within: notRun + pullStep, part: trunk, want: drawnName()},
+			drawnPart{within: "Broke: " + dropStep, part: topic, want: drawnName()},
+			drawnPart{within: "Broke: " + dropStep, part: "git branch -D "},
+			drawnPart{within: "-D " + topic + "` and", part: topic, want: drawnName()},
+			drawnPart{within: "origin " + trunk + "` by hand", part: trunk, want: drawnName()},
+		),
+		drawnRow(row("the pull of the trunk", setting{landed: func(_ *testing.T, f *gittest.Fixture) { f.AdvanceTrunk() }}, trunk,
+			"Ran "+switchStep+"\nRan "+dropStep+"\n"+pullStep+failed, "\n"+broke(pullStep)+nextHand+pullStep+byHand),
+			drawnPart{within: "origin " + trunk + "` by hand", part: trunk, want: drawnName()},
+		),
 		row("the fetch of origin's trunk", setting{arrange: trunkElsewhere, landed: moveOrigin}, topic,
-			fetchStep+failed, "\n"+notRun+detachStep+"\n"+notRun+dropStep+"\n"+nextMergeFixed),
-		row("the detach at origin's trunk", setting{arrange: trunkElsewhere, landed: lockRef("HEAD")}, topic,
-			"Ran "+fetchStep+"\n"+detachStep+failed, "\n"+notRun+dropStep+"\n"+nextMergeFixed),
-		row("the delete of the branch when detached",
+			fetchStep+failed, "\n"+notRun+detachStep+"\n"+notRun+dropStep+"\n"+broke(fetchStep)+nextMergeFixed),
+		drawnRow(row("the detach at origin's trunk", setting{arrange: trunkElsewhere, landed: lockRef("HEAD")}, topic,
+			"Ran "+fetchStep+"\n"+detachStep+failed, "\n"+notRun+dropStep+"\n"+broke(detachStep)+nextMergeFixed),
+			drawnPart{within: "Ran " + fetchStep, part: trunk, want: drawnName()},
+			drawnPart{within: detachStep + failed, part: trunk, want: drawnName()},
+			drawnPart{within: notRun + dropStep, part: topic, want: drawnName()},
+			drawnPart{within: "Broke: " + detachStep, part: trunk, want: drawnName()},
+		),
+		drawnRow(row("the delete of the branch when detached",
 			setting{arrange: trunkElsewhere, landed: lockRef("refs/heads/" + topic)}, "HEAD",
-			"Ran "+fetchStep+"\nRan "+detachStep+"\n"+dropStep+failed, "\n"+nextHand+dropStep+byHand),
+			"Ran "+fetchStep+"\nRan "+detachStep+"\n"+dropStep+failed, "\n"+broke(dropStep)+nextHand+dropStep+byHand),
+			drawnPart{within: "-D " + topic + "` by hand", part: topic, want: drawnName()},
+		),
 	}
+}
+
+// drawnRow returns row with parts, how a terminal with color draws parts of its text.
+func drawnRow(row landingRow, parts ...drawnPart) landingRow {
+	row.drawn = parts
+
+	return row
 }
 
 func TestMerge_WhenAStepOfTheLocalEndingFails_SaysWhichStepsRan(t *testing.T) {
@@ -395,6 +496,9 @@ type finishedResume struct {
 	text    string
 	ending  string
 	calls   []forgetest.Call
+	// drawn are parts of the text and how a terminal with color draws them; empty leaves them
+	// unchecked.
+	drawn []drawnPart
 }
 
 // finishedResumes are the resumes that run to their end, done.
@@ -407,8 +511,12 @@ func finishedResumes() []finishedResume {
 
 				return ""
 			},
-			text: resumedLine + deletedLine + onTrunkLine + nextNone, ending: result.EndingTrunk,
+			text: resumedLine + deletedLine + onTrunkLine, ending: result.EndingTrunk,
 			calls: append(asked(changesRead()), forgetest.Call{Op: forgetest.OpDeleteBranch, Repo: origin(), Branch: topic}),
+			drawn: []drawnPart{
+				{within: "Pull request #7", part: "#7", want: drawnName()},
+				{within: "merged into " + trunk, part: trunk, want: drawnName()},
+			},
 		},
 		{
 			name: "branch gone from origin and the trunk in a linked worktree", script: resuming(),
@@ -418,7 +526,7 @@ func finishedResumes() []finishedResume {
 
 				return ""
 			},
-			text:   resumedLine + goneLine + detachedLine + elsewhereLine + nextNone,
+			text:   resumedLine + goneLine + detachedLine + elsewhereLine,
 			ending: result.EndingDetached, calls: asked(changesRead()),
 		},
 		{
@@ -432,7 +540,7 @@ func finishedResumes() []finishedResume {
 
 				return head
 			},
-			text: resumedLine + goneLine + onTrunkLine + nextNone, ending: result.EndingTrunk, calls: asked(changesRead()),
+			text: resumedLine + goneLine + onTrunkLine, ending: result.EndingTrunk, calls: asked(changesRead()),
 		},
 	}
 }
@@ -461,6 +569,7 @@ func TestMerge_WhenThePullRequestIsAlreadyMerged_FinishesWithoutMerging(t *testi
 				assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(cmp.Or(head, run.tip), tt.ending),
 					cmpopts.EquateEmpty()))
 				assert.Check(t, is.DeepEqual(run.forge.Calls(), tt.calls, whichRepo()))
+				assertDrawn(t, run.got, run.gitDir, tt.drawn)
 
 				if tt.ending == result.EndingTrunk {
 					assertOnTrunk(t, run.fixture, run.fixture.Dir())
@@ -478,13 +587,14 @@ func resumeStops() []landingRow {
 		{
 			name: "the delete fails and origin still lists the branch", outcome: result.Broke, kept: true,
 			set:  setting{arrange: landAndPublish, script: resuming().deleting(errors.New("HTTP 502"))},
-			text: resumedLine + stillThere + nextMergeAgain, payload: resumed("", ""),
+			text: resumedLine + stillThere + stillThereReason + nextMergeAgain, payload: resumed("", ""),
 		},
 		{
 			name: "fewer than 20 seconds are left before the first write", outcome: result.Pending, kept: true,
 			set: setting{arrange: landAndPublish, script: resuming(), left: 15 * time.Second},
 			text: resumedLine + "Fewer than 20 seconds of the time limit were left to finish the merge, " +
-				"so nothing was written\n" + nextMergeAgain,
+				"so nothing was written\n" + "Pending: fewer than 20 seconds of the time limit were left to finish the merge\n" +
+				nextMergeAgain,
 			payload: resumed("", ""),
 		},
 	}
@@ -513,7 +623,7 @@ func TestMerge_WhenTheResumeCannotAskOriginForTheBranch_BrokeNamingTheRead(t *te
 
 	text, reason := shown(t, got, s.gitDir)
 	prefix := resumedLine + "Could not read " + readStillOnOrigin + ": "
-	suffix := "\nNothing was written.\n" + nextMergeFixed
+	suffix := "\nNothing was written.\nBroke: could not read " + readStillOnOrigin + "\n" + nextMergeFixed
 	assert.Check(t, strings.HasPrefix(text, prefix), "RenderText() = %q, want it to start with %q", text, prefix)
 	assert.Check(t, strings.HasSuffix(text, suffix), "RenderText() = %q, want it to end with %q", text, suffix)
 	assert.Check(t, is.Equal(reason, "could not read "+readStillOnOrigin))
@@ -536,7 +646,7 @@ func TestMerge_WhenTheDeadlineEndsAsTheResumeAsksOriginForTheBranch_RefusesNamin
 	assertStoppedBy(t, got, result.Refused, mergeRequest())
 
 	text, _ := shown(t, got, s.gitDir)
-	assert.Check(t, is.Equal(text, withLines(overtimeText(mergeCommand(), readStillOnOrigin), resumedLine)))
+	assert.Check(t, is.Equal(text, resumedLine+overtimeText(mergeCommand(), readStillOnOrigin)))
 	assert.Check(t, is.DeepEqual(mergePayload(t, got), resumed(tip, ""), cmpopts.EquateEmpty()))
 	assert.Check(t, is.Equal(s.written(), before))
 }
@@ -568,24 +678,26 @@ func writeStops() []landingRow {
 			payload: sent(landedBody, true, ""),
 		}
 	}
-	refused := row("the merge fails", toLand(errors.New("HTTP 405: Head branch was modified"), nil), result.Broke,
-		"GitHub did not report the merge of pull request #12 as done: HTTP 405: Head branch was modified\n"+nextMergeAgain)
+	refused := row("the merge fails", toLand(errors.New(refusedMerge), nil), result.Broke,
+		"GitHub did not report the merge of pull request #12 as done: "+refusedMerge+"\n"+
+			"Broke: GitHub did not report the merge as done\n"+nextMergeAgain)
 	refused.payload, refused.kept = sent(landedBody, false, ""), true
+	refused.told = toldAfterWait(mergingStep)
 	cut := row("the deadline ends in the merge", toLand(fmt.Errorf("gh pr merge: %w", context.DeadlineExceeded), nil),
 		result.Broke, "Started the merge of pull request #12 when the time limit ended; "+
-			"it may or may not have gone through\n"+nextMergeAgain)
+			"it may or may not have gone through\n"+"Broke: the time limit ended during the merge\n"+nextMergeAgain)
 	cut.payload, cut.kept = sent(landedBody, false, ""), true
 	gone := row("the delete fails and origin no longer lists the branch", toLand(nil, failed), result.Done,
-		mergedLine+goneLine+onTrunkLine+nextNone)
+		mergedLine+goneLine+onTrunkLine)
 	gone.payload = sent(landedBody, true, result.EndingTrunk)
 	listed := row("the delete fails and origin still lists the branch", toLand(nil, failed), result.Broke,
-		mergedLine+stillThere+nextMergeAgain)
+		mergedLine+stillThere+stillThereReason+nextMergeAgain)
 	listed.set.arrange = func(f *gittest.Fixture) { f.Publish(topic) }
-	// The question fails with git's own message, which the text holds on one line before the `Next:` line.
+	// The question fails with git's own message, which the text holds on one line before the reason line.
 	unasked := row("the delete fails and origin cannot be asked", toLand(nil, failed), result.Broke,
 		mergedLine+"Could not delete the branch "+topic+" on origin: HTTP 502\n"+
 			"Could not read "+readStillOnOrigin+": ")
-	unasked.after = "\n" + nextMergeAgain
+	unasked.after = "\nBroke: the branch could not be deleted on origin\n" + nextMergeAgain
 	unasked.set.landed = moveOrigin
 
 	return []landingRow{refused, cut, gone, listed, unasked}

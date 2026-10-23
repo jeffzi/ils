@@ -1,5 +1,5 @@
-// Package resulttest provides the JSON renderer's object as a caller decodes it, for the tests of
-// packages that print results.
+// Package resulttest provides the JSON renderer's object as a caller decodes it, and styled text as
+// a terminal draws it, for the tests of packages that print results.
 package resulttest
 
 import (
@@ -39,8 +39,8 @@ func Decode(tb testing.TB, out string) Shown {
 }
 
 // AssertCarried fails unless every line of text is in what the JSON object carries: its lines, its
-// excerpt, its reason, or its next. It reports through tb only by Helper and the calls of
-// assert.TestingT, so a *testing.T or a stand-in that records them both serve.
+// excerpt, its reason behind its outcome's label, or its next. It reports through tb only by Helper
+// and the calls of assert.TestingT, so a *testing.T or a stand-in that records them both serve.
 func AssertCarried(tb interface {
 	assert.TestingT
 	Helper()
@@ -48,8 +48,15 @@ func AssertCarried(tb interface {
 ) {
 	tb.Helper()
 
+	labels := map[string]string{
+		"refused": "Refused", "broke": "Broke", "pending": "Pending", "delivered-not-green": "Delivered, not green",
+	}
+
 	carried := append(strings.Split(got.Excerpt, "\n"), got.Lines...)
-	carried = append(carried, "Next: "+got.Next, "Refused: "+got.Reason)
+	carried = append(carried, "Next: "+got.Next)
+	if label, ok := labels[got.Outcome]; ok {
+		carried = append(carried, label+": "+got.Reason)
+	}
 
 	for line := range strings.Lines(text) {
 		line = strings.TrimSuffix(line, "\n")

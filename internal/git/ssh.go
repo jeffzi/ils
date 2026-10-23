@@ -42,10 +42,10 @@ func (r Repo) plainHostname(ctx context.Context, host string) (string, error) {
 	// The host comes from a URL: after "--", one that starts with a dash is never read as an option.
 	args := []string{printConfigFlag, "--", host}
 
-	result, err := invocation{
-		program: sshProgram, installURL: sshInstallURL, args: args,
-		dir: r.Runner.Dir, env: r.Runner.Env, onEnvPath: true,
-	}.run(ctx)
+	inv := r.Runner.invocation(sshProgram, sshInstallURL, args)
+	inv.onEnvPath = true
+
+	result, err := inv.run(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -376,10 +376,9 @@ func (r Repo) askSSH(ctx context.Context, command sshCommand, host string) (stri
 		named = command.line
 		result, err = r.Runner.Run(ctx, append([]string{"-c", "alias." + sshAlias + "=!" + command.line, sshAlias}, args...)...)
 	} else {
-		result, err = invocation{
-			program: command.program, args: args,
-			dir: r.Runner.Dir, env: r.Runner.Env, onEnvPath: true,
-		}.run(ctx)
+		inv := r.Runner.invocation(command.program, "", args)
+		inv.onEnvPath = true
+		result, err = inv.run(ctx)
 	}
 
 	if notFound, ok := errors.AsType[*child.ToolMissingError](err); ok && command.line == "" {

@@ -1,11 +1,14 @@
 package result_test
 
 import (
-	"errors"
 	"fmt"
+	"regexp"
 	"slices"
+	"strings"
 	"testing"
+	"unicode"
 
+	"github.com/charmbracelet/colorprofile"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
@@ -25,7 +28,11 @@ const (
 	redBody   = "Pushed fix-prek to origin.\nPull request #12: " + pullURL + "\n" +
 		"Latest commit: fix %s parsing in the pre-commit config\n" +
 		"Check prek failed: " + checkURL + "\n" + excerpt + "\n"
-	redNext = "fix the failing check, commit, and run ils push again"
+	redNext   = "fix the failing check, commit, and run ils push again"
+	redReason = "Delivered, not green: the check prek is red\n"
+
+	brokeEnd = "Broke: GitHub did not answer\nNext: ils push\n"
+	redEnd   = redReason + "Next: " + redNext + "\n"
 )
 
 // ofPush returns s as the push command shows it.
@@ -77,7 +84,7 @@ type renderer struct {
 	name   string
 }
 
-// renderers lists both renderers, for behaviors the two must share.
+// renderers lists the text and JSON renderers, for behaviors they must share.
 func renderers() []renderer {
 	return []renderer{
 		{name: "text", render: result.RenderText},
@@ -112,6 +119,11 @@ func brokePush() result.Result {
 		Next:   result.NextCommand("push"),
 		Reason: result.Say("GitHub did not answer"),
 	}
+}
+
+// brokeWithLine is brokePush with p as one more line.
+func brokeWithLine(p result.Phrase) result.Result {
+	return with(brokePush(), func(r *result.Result) { r.Lines = append(r.Lines, p) })
 }
 
 // refusedPush is a refusal whose reason and Next carry interpolated names.
@@ -278,85 +290,86 @@ type textCase struct {
 func textCases() []textCase {
 	return []textCase{
 		{
-			name:   "done prints the lines then Next none",
+			name:   "done prints its lines and no Next line",
 			gitDir: gitDir,
 			result: donePush(),
-			want:   doneBody + "Next: none\n",
+			want:   doneBody,
 		},
 		{
 			name:   "broke prints what was done and what was not",
 			gitDir: gitDir,
 			result: brokePush(),
-			want:   brokeBody + "Next: ils push\n",
+			want:   brokeBody + brokeEnd,
 		},
 		{
-			name:   "refused prints the reason first",
+			name:   "refused with no lines prints only the reason above Next",
 			gitDir: gitDir,
 			result: refusedPush(),
 			want: "Refused: the branch fix-prek already landed with lefthook.yml\n" +
 				"Next: ils branch fix-prek-again\n",
 		},
 		{
-			name:   "refused prints the reason before its lines and excerpt",
+			name:   "refused prints the reason after its lines and excerpt",
 			gitDir: gitDir,
 			result: with(refusedPush(), func(r *result.Result) {
 				r.Lines = []result.Phrase{result.Say("Fetched origin.")}
 				r.Excerpt = "one\ntwo"
 			}),
-			want: "Refused: the branch fix-prek already landed with lefthook.yml\n" +
-				"Fetched origin.\none\ntwo\nNext: ils branch fix-prek-again\n",
+			want: "Fetched origin.\none\ntwo\n" +
+				"Refused: the branch fix-prek already landed with lefthook.yml\n" +
+				"Next: ils branch fix-prek-again\n",
 		},
 		{
-			name:   "pending names the same command again",
+			name:   "pending prints its reason and names the same command again",
 			gitDir: gitDir,
 			result: pendingPush(),
 			want: "Pushed tidy-readme to origin.\nStill running after 100 seconds: build\n" +
-				"Next: ils push\n",
+				"Pending: the checks were still running at the bound\nNext: ils push\n",
 		},
 		{
-			name:   "excerpt sits verbatim between the lines and Next",
+			name:   "excerpt sits verbatim between the lines and the reason",
 			gitDir: gitDir,
 			result: redPush(),
-			want:   redBody + "Next: " + redNext + "\n",
+			want:   redBody + redEnd,
 		},
 		{
 			name:   "merge payload prints nothing",
 			gitDir: gitDir,
 			result: doneMerge(),
-			want:   "Merged pull request #12 into main.\nNext: none\n",
+			want:   "Merged pull request #12 into main.\n",
 		},
 	}
 }
 
-// excerptTextCases returns the cases where the excerpt's own text meets the Next line.
+// excerptTextCases returns the cases where the excerpt's own text meets the reason line.
 func excerptTextCases() []textCase {
 	return []textCase{
 		{
 			name:   "excerpt ending in a newline gains no blank line",
 			gitDir: gitDir,
-			result: with(donePush(), func(r *result.Result) { r.Excerpt = "one\ntwo\n" }),
-			want:   doneBody + "one\ntwo\nNext: none\n",
+			result: with(brokePush(), func(r *result.Result) { r.Excerpt = "one\ntwo\n" }),
+			want:   brokeBody + "one\ntwo\n" + brokeEnd,
 		},
 		{
 			name:   "excerpt holding a Next line stays verbatim above the real one",
 			gitDir: gitDir,
-			result: with(donePush(), func(r *result.Result) { r.Excerpt = "Next: ils land\nmore" }),
-			want:   doneBody + "Next: ils land\nmore\nNext: none\n",
+			result: with(brokePush(), func(r *result.Result) { r.Excerpt = "Next: ils land\nmore" }),
+			want:   brokeBody + "Next: ils land\nmore\n" + brokeEnd,
 		},
 		{
-			name:   "excerpt of only newlines stays above Next",
+			name:   "excerpt of only newlines stays above the reason",
 			gitDir: gitDir,
-			result: with(donePush(), func(r *result.Result) { r.Excerpt = "\n\n\n" }),
-			want:   doneBody + "\n\n\nNext: none\n",
+			result: with(brokePush(), func(r *result.Result) { r.Excerpt = "\n\n\n" }),
+			want:   brokeBody + "\n\n\n" + brokeEnd,
 		},
 		{
-			name:   "excerpt of a result with no lines sits alone above Next",
+			name:   "excerpt of a result with no lines sits alone above the reason",
 			gitDir: gitDir,
-			result: with(donePush(), func(r *result.Result) {
+			result: with(brokePush(), func(r *result.Result) {
 				r.Lines = nil
 				r.Excerpt = "one\ntwo"
 			}),
-			want: "one\ntwo\nNext: none\n",
+			want: "one\ntwo\n" + brokeEnd,
 		},
 	}
 }
@@ -364,17 +377,23 @@ func excerptTextCases() []textCase {
 // pairCases returns the results both renderers must handle, each with the
 // text and the object it shows.
 func pairCases() []pair {
-	return slices.Concat(exemptCases(), nameCases())
+	return slices.Concat(exemptCases(), nameCases(), controlCases())
+}
+
+// allTextCases returns every case with the plain text it prints.
+func allTextCases() []textCase {
+	cases := slices.Concat(textCases(), excerptTextCases())
+	for _, p := range pairCases() {
+		cases = append(cases, textCase{name: p.name, gitDir: p.gitDir, result: p.result, want: p.wantText})
+	}
+
+	return cases
 }
 
 func TestRenderText(t *testing.T) {
 	t.Parallel()
 
-	cases := slices.Concat(textCases(), excerptTextCases())
-	for _, p := range pairCases() {
-		cases = append(cases, textCase{name: p.name, gitDir: p.gitDir, result: p.result, want: p.wantText})
-	}
-	for _, tt := range cases {
+	for _, tt := range allTextCases() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			t.Logf("row: git dir %q, result %s", tt.gitDir, inputOf(tt.result))
@@ -534,165 +553,6 @@ func TestRenderJSON_WhenPayloadHoldsInvalidUTF8_LeavesTheResultAsItWas(t *testin
 	assert.Check(t, is.DeepEqual(r.Payload, invalid()))
 }
 
-// rejected is a result whose own wording names a hook or a git dir path.
-type rejected struct {
-	name     string
-	gitDir   string
-	wantLine string
-	wantWord string
-	result   result.Result
-}
-
-// rejectedLine is a broke push with one more line, whose wording must be
-// rejected against the resolved git dir.
-func rejectedLine(name, dir string, p result.Phrase, wantLine string) rejected {
-	return rejected{
-		name:     name,
-		gitDir:   dir,
-		wantLine: wantLine,
-		result:   with(brokePush(), func(r *result.Result) { r.Lines = append(r.Lines, p) }),
-	}
-}
-
-// naming returns r with word as the word that must break the rule.
-func (r rejected) naming(word string) rejected {
-	r.wantWord = word
-
-	return r
-}
-
-// dirCases returns results whose wording names the resolved git dir in a
-// spelling other than the one handed in. The word that breaks the rule is the
-// git dir as it was handed in.
-func dirCases() []rejected {
-	const (
-		windowsDir = `C:\Work\Store\meta`
-		spacedDir  = "/srv/my store/meta dir"
-		shoutedDir = "/SRV/Store/Meta"
-	)
-
-	return []rejected{
-		rejectedLine("handed-in dir ends in a separator", gitDir+"/",
-			result.Say("Wrote /srv/store/meta/HEAD"), "Wrote /srv/store/meta/HEAD").naming(gitDir + "/"),
-		rejectedLine("handed-in dir ends in a separator, wording names it bare", gitDir+"/",
-			result.Say("Moved /srv/store/meta aside."), "Moved /srv/store/meta aside.").naming(gitDir + "/"),
-		rejectedLine("wording ends in a separator", gitDir,
-			result.Say("Emptied /srv/store/meta/ today."), "Emptied /srv/store/meta/ today.").naming(gitDir),
-		rejectedLine("wording uses backslashes", gitDir,
-			result.Say(`Wrote \srv\store\meta\HEAD`), `Wrote \srv\store\meta\HEAD`).naming(gitDir),
-		rejectedLine("handed-in dir uses backslashes", windowsDir,
-			result.Say("Wrote C:/Work/Store/meta/HEAD"), "Wrote C:/Work/Store/meta/HEAD").naming(windowsDir),
-		rejectedLine("handed-in dir uses backslashes and ends in one", windowsDir+`\`,
-			result.Say("Wrote C:/Work/Store/meta/HEAD"), "Wrote C:/Work/Store/meta/HEAD").naming(windowsDir + `\`),
-		rejectedLine("wording differs in case", gitDir,
-			result.Say("Wrote /SRV/Store/Meta/HEAD"), "Wrote /SRV/Store/Meta/HEAD").naming(gitDir),
-		rejectedLine("handed-in dir differs in case", shoutedDir,
-			result.Say("Wrote /srv/store/meta/HEAD"), "Wrote /srv/store/meta/HEAD").naming(shoutedDir),
-		rejectedLine("resolved git dir holding spaces", spacedDir,
-			result.Say("Wrote /srv/my store/meta dir/HEAD"), "Wrote /srv/my store/meta dir/HEAD").naming(spacedDir),
-	}
-}
-
-// lineCases returns results whose offending wording sits in a line.
-func lineCases() []rejected {
-	line := func(name, wantWord, wantLine string, p result.Phrase) rejected {
-		return rejectedLine(name, gitDir, p, wantLine).naming(wantWord)
-	}
-
-	return []rejected{
-		line("git dir component in backticks", "`.git/config`",
-			"Wrote `.git/config` today.", result.Say("Wrote `.git/config` today.")),
-		line("git dir component in quotes", "'.git/config'",
-			"Wrote '.git/config' today.", result.Say("Wrote '.git/config' today.")),
-		line("git dir component in parentheses", "(.git/config)",
-			"Wrote (.git/config) today.", result.Say("Wrote (.git/config) today.")),
-		line("git dir component after a flag", "--git-dir=.git/x",
-			"Ran with --git-dir=.git/x today.", result.Say("Ran with --git-dir=.git/x today.")),
-		line("pre-commit, capital", "Pre-commit", "Pre-commit ran.", result.Say("Pre-commit ran.")),
-		line("prek, capital", "Prek", "Prek ran.", result.Say("Prek ran.")),
-		line("lefthook, capital", "Lefthook", "Lefthook ran.", result.Say("Lefthook ran.")),
-		line("hooks directory, capital", "Hooks/", "Hooks/ skipped.", result.Say("Hooks/ skipped.")),
-		line("git dir component, slash", ".git/config", "Wrote .git/config", result.Say("Wrote .git/config")),
-		line("git dir component, backslash", `.git\config`, `Wrote .git\config`, result.Say(`Wrote .git\config`)),
-		line("git dir component, nested", "work/.git/index.lock",
-			"Removed work/.git/index.lock", result.Say("Removed work/.git/index.lock")),
-		line("git dir alone", ".git", "Nothing in .git changed.", result.Say("Nothing in .git changed.")),
-		line("resolved git dir", gitDir, "Wrote /srv/store/meta/HEAD", result.Say("Wrote /srv/store/meta/HEAD")),
-		line("pre-commit", "pre-commit", "The pre-commit step ran.", result.Say("The pre-commit step ran.")),
-		line("commit-msg", "commit-msg", "The commit-msg step ran.", result.Say("The commit-msg step ran.")),
-		line("pre-push", "pre-push", "The pre-push step ran.", result.Say("The pre-push step ran.")),
-		line("post-commit", "post-commit", "The post-commit step ran.", result.Say("The post-commit step ran.")),
-		line("prek", "prek", "Ran prek on main.", result.Say("Ran prek on %s.", "main")),
-		line("lefthook with the full stop that ends the line", "lefthook.",
-			"Ran lefthook.", result.Say("Ran lefthook.")),
-		line("hooks directory", "hooks/", "Skipped hooks/ entirely.", result.Say("Skipped hooks/ entirely.")),
-	}
-}
-
-// otherCases returns results whose offending wording sits outside the lines.
-func otherCases() []rejected {
-	reason := func(name, wantWord, wantLine string, p result.Phrase) rejected {
-		return rejected{
-			name: name, gitDir: gitDir, wantLine: wantLine, wantWord: wantWord,
-			result: with(refusedPush(), func(r *result.Result) { r.Reason = p }),
-		}
-	}
-	next := func(name, wantWord, wantLine string, n result.Next) rejected {
-		return rejected{
-			name: name, gitDir: gitDir, wantLine: wantLine, wantWord: wantWord,
-			result: with(redPush(), func(r *result.Result) { r.Next = n }),
-		}
-	}
-
-	return []rejected{
-		reason("reason naming a hook", "pre-push", "the pre-push step failed on main",
-			result.Say("the pre-push step failed on %s", "main")),
-		reason("reason naming the resolved git dir", gitDir, "cannot write /srv/store/meta/HEAD",
-			result.Say("cannot write /srv/store/meta/HEAD")),
-		next("judgment step naming a hook", "prek,", "run prek, then ils push again",
-			result.NextStep("run prek, then ils push again")),
-		next("judgment step naming a git dir path", ".git/index.lock,",
-			"remove .git/index.lock, then run ils push again",
-			result.NextStep("remove .git/index.lock, then run ils push again")),
-		next("command naming a hook", "hooks/", "ils push hooks/", result.NextCommand("push hooks/")),
-		next("command naming a git dir path", ".git/config", "ils push .git/config",
-			result.NextCommand("push .git/config")),
-		next("command naming the resolved git dir", gitDir, "ils push /srv/store/meta",
-			result.NextCommand("push /srv/store/meta")),
-	}
-}
-
-func TestRender_WhenOwnWordingNamesHookOrGitDir_ReturnsWordingError(t *testing.T) {
-	t.Parallel()
-
-	for _, tt := range slices.Concat(lineCases(), dirCases(), otherCases()) {
-		for _, r := range renderers() {
-			t.Run(tt.name+"/"+r.name, func(t *testing.T) {
-				t.Parallel()
-				t.Logf("row: git dir %q, result %s", tt.gitDir, inputOf(tt.result))
-
-				out, err := r.render(tt.result, tt.gitDir)
-
-				wordingErr, ok := errors.AsType[*result.WordingError](err)
-				assert.Assert(t, ok, "render error = %v, want a *result.WordingError; output %q", err, out)
-				assert.Check(t, is.Equal(wordingErr.Line, tt.wantLine))
-				assert.Check(t, is.Equal(wordingErr.Word, tt.wantWord))
-				assert.Check(t, is.Equal(out, ""))
-			})
-		}
-	}
-}
-
-func TestWordingError_Error_WhenLineNamesHook_QuotesLineAndWord(t *testing.T) {
-	t.Parallel()
-	err := &result.WordingError{Line: "The pre-commit step ran.", Word: "pre-commit"}
-
-	got := err.Error()
-
-	assert.Check(t, is.Equal(got,
-		`line "The pre-commit step ran." names a hook or a path under the git dir: "pre-commit"`))
-}
-
 type pair struct {
 	name     string
 	gitDir   string
@@ -707,8 +567,8 @@ func brokeLine(name string, p result.Phrase, want string) pair {
 	return pair{
 		name:     name,
 		gitDir:   gitDir,
-		wantText: brokeBody + want + "\nNext: ils push\n",
-		result:   with(brokePush(), func(r *result.Result) { r.Lines = append(r.Lines, p) }),
+		wantText: brokeBody + want + "\n" + brokeEnd,
+		result:   brokeWithLine(p),
 		want:     with(brokeShown(), func(s *resulttest.Shown) { s.Lines = append(s.Lines, want) }),
 	}
 }
@@ -718,7 +578,7 @@ func doneExcerpt(name, text string) pair {
 	return pair{
 		name:     name,
 		gitDir:   gitDir,
-		wantText: doneBody + text + "\nNext: none\n",
+		wantText: doneBody + text + "\n",
 		result:   with(donePush(), func(r *result.Result) { r.Excerpt = text }),
 		want:     with(doneShown(), func(s *resulttest.Shown) { s.Excerpt = text }),
 	}
@@ -740,10 +600,25 @@ func redThen(name string, n result.Next, want string) pair {
 	return pair{
 		name:     name,
 		gitDir:   gitDir,
-		wantText: redBody + "Next: " + want + "\n",
+		wantText: redBody + redReason + "Next: " + want + "\n",
 		result:   with(redPush(), func(r *result.Result) { r.Next = n }),
 		want:     with(redShown(), func(s *resulttest.Shown) { s.Next = want }),
 	}
+}
+
+// carrying returns p with the object it shows holding raw wherever the text prints visible: the
+// JSON renderer carries third-party text as it was handed in.
+func (p pair) carrying(visible, raw string) pair {
+	swap := func(s string) string { return strings.ReplaceAll(s, visible, raw) }
+	p.want.Next = swap(p.want.Next)
+	p.want.Reason = swap(p.want.Reason)
+	p.want.Excerpt = swap(p.want.Excerpt)
+	p.want.Lines = slices.Clone(p.want.Lines)
+	for i, line := range p.want.Lines {
+		p.want.Lines[i] = swap(line)
+	}
+
+	return p
 }
 
 // exemptCases returns results whose third-party text names a hook or a git
@@ -758,7 +633,7 @@ func exemptCases() []pair {
 		{
 			name:     "failed log naming the resolved git dir and a hook path",
 			gitDir:   gitDir,
-			wantText: redBody + "Next: " + redNext + "\n",
+			wantText: redBody + redEnd,
 			result:   with(redPush(), func(r *result.Result) { r.Payload.Push.FailedLog = log }),
 			want:     with(redShown(), func(s *resulttest.Shown) { s.Payload.Push.FailedLog = log }),
 		},
@@ -775,6 +650,8 @@ func exemptCases() []pair {
 			result.Say("Fetched from ils.git today."), "Fetched from ils.git today."),
 		brokeLine("wording naming a sibling of the resolved git dir",
 			result.Say("Wrote /srv/store/metadata/HEAD"), "Wrote /srv/store/metadata/HEAD"),
+		brokeLine("name marked as a branch holding a hook",
+			result.Say("Kept %s.", result.Branch("pre-commit")), "Kept pre-commit."),
 		with(brokeLine("empty git dir matches nothing",
 			result.Say("Wrote /srv/store/meta/HEAD"), "Wrote /srv/store/meta/HEAD"),
 			func(c *pair) { c.gitDir = "" }),
@@ -798,6 +675,78 @@ func nameCases() []pair {
 		redThen("step name holding a line break prints on one line",
 			result.NextStep("rename %s, then run ils push again", "one\r\ntwo"),
 			"rename one two, then run ils push again"),
+		brokeLine("names marked with a kind print as their plain text",
+			result.Say("Pushed %s at %s to %s: %s, %s checks, run %s.",
+				result.Branch("tidy-readme"), result.SHA("4f2a9c1"), result.PullRequest(12),
+				result.URL(pullURL), result.Count(3), result.Command("push")),
+			"Pushed tidy-readme at 4f2a9c1 to #12: "+pullURL+", 3 checks, run ils push."),
+		brokeLine("marked name holding a line break prints on one line",
+			result.Say("Kept %s as is.", result.Branch("one\r\ntwo")), "Kept one two as is."),
+		brokeLine("marked name holding a placeholder is not filled by the next name",
+			result.Say("Moved %s to %s.", result.Branch("a %s b"), result.Branch("docs")), "Moved a %s b to docs."),
+		brokeLine("list of one branch prints the branch",
+			result.Say("Kept %s.", result.Branches([]string{"docs"})), "Kept docs."),
+		brokeLine("list of two branches prints them joined by and",
+			result.Say("Kept %s.", result.Branches([]string{"docs", "main"})), "Kept docs and main."),
+		brokeLine("list of three branches prints them joined by commas and and",
+			result.Say("Kept %s.", result.Branches([]string{"docs", "main", "tidy-readme"})), "Kept docs, main and tidy-readme."),
+		brokeLine("pull request number marked bare prints without a sign",
+			result.Say("Ran gh pr ready %s.", result.PullRequestNumber(12)), "Ran gh pr ready 12."),
+		brokeLine("list of SHAs prints them joined by spaces",
+			result.Say("Ran git cherry-pick %s.", result.SHAs([]string{"4f2a9c1", "b7e03d2"})),
+			"Ran git cherry-pick 4f2a9c1 b7e03d2."),
+		brokeLine("list of branches holding a line break prints on one line",
+			result.Say("Kept %s.", result.Branches([]string{"one\r\ntwo", "main"})), "Kept one two and main."),
+	}
+}
+
+// tabCaseName and invalidUTF8CaseName name the controlCases rows whose text the renderers print
+// unchanged, so they hold no control rune to look for.
+const (
+	tabCaseName         = "name holding a tab prints it as it is"
+	invalidUTF8CaseName = "name holding invalid UTF-8 prints its bytes as they are"
+)
+
+// controlCases returns results whose third-party text holds control bytes, which the text prints as
+// visible escapes and the object it shows carries as they were handed in.
+func controlCases() []pair {
+	const raw = "one\x1b[1;33m two\b three\x7f four\u009b"
+
+	return []pair{
+		brokeLine("name holding an escape sequence prints the escape as visible text",
+			result.Say("Kept %s as is.", "x\x1b[31m"), `Kept x\x1b[31m as is.`).carrying(`\x1b`, "\x1b"),
+		brokeLine("marked name holding an escape sequence prints the escape as visible text",
+			result.Say("Kept %s as is.", result.Branch("x\x1b[4m")), `Kept x\x1b[4m as is.`).carrying(`\x1b`, "\x1b"),
+		brokeLine("name opening a hyperlink prints the sequence as visible text",
+			result.Say("Kept %s as is.", "x"+openLink+"y"), `Kept x\x1b]8;;https://e.example\x07y as is.`).
+			carrying(`\x1b`, "\x1b").carrying(`\x07`, "\a"),
+		brokeLine("name holding a backspace prints it as visible text",
+			result.Say("Kept %s as is.", "x\by"), `Kept x\x08y as is.`).carrying(`\x08`, "\b"),
+		brokeLine("name holding a bell prints it as visible text",
+			result.Say("Kept %s as is.", "x\ay"), `Kept x\x07y as is.`).carrying(`\x07`, "\a"),
+		brokeLine("name holding a delete prints it as visible text",
+			result.Say("Kept %s as is.", "x\x7fy"), `Kept x\x7fy as is.`).carrying(`\x7f`, "\x7f"),
+		brokeLine("name holding a C1 control prints it as visible text",
+			result.Say("Kept %s as is.", "x\u009by"), `Kept x\u009by as is.`).carrying(`\u009b`, "\u009b"),
+		brokeLine(tabCaseName,
+			result.Say("Kept %s as is.", "x\ty"), "Kept x\ty as is."),
+		brokeLine(invalidUTF8CaseName,
+			result.Say("Kept %s as is.", "x\xff more"), "Kept x\xff more as is.").carrying("\xff", "�"),
+		refusedFor("reason name holding an escape sequence prints the escape as visible text",
+			result.Say("the file %s is in the way", "x\x1b[31m"), `the file x\x1b[31m is in the way`).
+			carrying(`\x1b`, "\x1b"),
+		redThen("command name holding a cursor sequence cannot erase the Next line",
+			result.NextCommand("branch %s", "x\x1b[2K\x1b[1Gy"), `ils branch x\x1b[2K\x1b[1Gy`).carrying(`\x1b`, "\x1b"),
+		redThen("step name holding a backspace prints it as visible text",
+			result.NextStep("rename %s, then run ils push again", "x\by"), `rename x\x08y, then run ils push again`).
+			carrying(`\x08`, "\b"),
+		{
+			name:     "excerpt holding control bytes prints them as visible text",
+			gitDir:   gitDir,
+			wantText: doneBody + `one\x1b[1;33m two\x08 three\x7f four\u009b` + "\n",
+			result:   with(donePush(), func(r *result.Result) { r.Excerpt = raw }),
+			want:     with(doneShown(), func(s *resulttest.Shown) { s.Excerpt = raw }),
+		},
 	}
 }
 
@@ -840,5 +789,249 @@ func TestRender_WhenResultIsMalformed_ReturnsError(t *testing.T) {
 				assert.ErrorIs(t, err, tt.wantErr, "output %q", out)
 			})
 		}
+	}
+}
+
+func TestRenderStyled_WhenProfileIsBelowANSI_PrintsThePlainText(t *testing.T) {
+	t.Parallel()
+	r := markedPush()
+	want, err := result.RenderText(r, gitDir)
+	assert.NilError(t, err)
+
+	got, err := result.RenderStyled(r, gitDir, colorprofile.ASCII)
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Equal(got, want))
+}
+
+func TestRenderStyled_WhenProfileIsTrueColor_DrawsAsAtANSI(t *testing.T) {
+	t.Parallel()
+	r := markedPush()
+	want, err := result.RenderStyled(r, gitDir, colorprofile.ANSI)
+	assert.NilError(t, err)
+
+	got, err := result.RenderStyled(r, gitDir, colorprofile.TrueColor)
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Equal(got, want))
+}
+
+func TestRenderStyled_WhenProfileHasColor_DrawsThePlainText(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range allTextCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			t.Logf("row: git dir %q, result %s", tt.gitDir, inputOf(tt.result))
+
+			out, err := result.RenderStyled(tt.result, tt.gitDir, colorprofile.ANSI)
+			assert.NilError(t, err)
+
+			assert.Check(t, is.Equal(resulttest.Draw(t, out).String(), resulttest.Draw(t, tt.want).String()))
+		})
+	}
+}
+
+// markedPush is a broke push whose lines, reason and next step mark each name with its kind.
+func markedPush() result.Result {
+	return result.Result{
+		Command: "push",
+		Words:   []string{"push"},
+		Outcome: result.Broke,
+		Lines: []result.Phrase{
+			result.Say("Pushed %s at %s to origin.", result.Branch("tidy-readme"), result.SHA("4f2a9c1")),
+			result.Say("Pull request %s: %s", result.PullRequest(12), result.URL(pullURL)),
+			result.Say("%s checks passed.", result.Count(3)),
+		},
+		Reason: result.Say("GitHub did not merge %s into %s", result.PullRequest(12), result.Branch("main")),
+		Next:   result.NextStep("rebase %s, then run %s again", result.Branch("tidy-readme"), result.Command("push")),
+	}
+}
+
+type styledCase struct {
+	name   string
+	within string
+	part   string
+	want   resulttest.Look
+	result result.Result
+}
+
+// nameLook is how the styled renderer draws a branch, a pull request number and a command.
+func nameLook() resulttest.Look {
+	return resulttest.Look{Color: "blue", Bold: true}
+}
+
+// stoppedLabelLook is how it draws the label of an outcome that stopped short of done.
+func stoppedLabelLook() resulttest.Look {
+	return resulttest.Look{Color: "red"}
+}
+
+// shaLook is how it draws a SHA.
+func shaLook() resulttest.Look {
+	return resulttest.Look{Dim: true}
+}
+
+// nextLook is how it draws the Next label.
+func nextLook() resulttest.Look {
+	return resulttest.Look{Bold: true, Underline: true}
+}
+
+// styledCases returns one case per part of a result the styled renderer draws in its own style.
+func styledCases() []styledCase {
+	return []styledCase{
+		{name: "wording", result: markedPush(), within: "Pushed tidy", part: "Pushed "},
+		{name: "branch", result: markedPush(), within: "Pushed tidy-readme", part: "tidy-readme", want: nameLook()},
+		{name: "sha", result: markedPush(), within: "at 4f2a9c1", part: "4f2a9c1", want: shaLook()},
+		{name: "pull request number", result: markedPush(), within: "request #12", part: "#12", want: nameLook()},
+		{name: "url", result: markedPush(), within: pullURL, part: pullURL, want: resulttest.Look{Underline: true}},
+		{name: "count", result: markedPush(), within: "3 checks", part: "3", want: resulttest.Look{Bold: true}},
+		{name: "wording after a name", result: markedPush(), within: "3 checks passed.", part: " checks passed."},
+		{name: "broke label", result: markedPush(), within: "Broke: GitHub", part: "Broke:", want: stoppedLabelLook()},
+		{name: "reason wording", result: markedPush(), within: "Broke: GitHub did", part: " GitHub did"},
+		{name: "pull request number in the reason", result: markedPush(), within: "merge #12", part: "#12", want: nameLook()},
+		{name: "branch in the reason", result: markedPush(), within: "into main", part: "main", want: nameLook()},
+		{name: "Next", result: markedPush(), within: "Next: rebase", part: "Next", want: nextLook()},
+		{name: "Next colon", result: markedPush(), within: "Next: rebase", part: ":"},
+		{name: "step wording", result: markedPush(), within: "Next: rebase", part: " rebase"},
+		{name: "branch in the step", result: markedPush(), within: "rebase tidy-readme", part: "tidy-readme", want: nameLook()},
+		{name: "command in the step", result: markedPush(), within: "run ils push again", part: "ils push", want: nameLook()},
+		{name: "step wording after a command", result: markedPush(), within: "ils push again", part: " again"},
+		{name: "refused label", result: refusedPush(), within: "Refused: the", part: "Refused:", want: stoppedLabelLook()},
+		{name: "command", result: refusedPush(), within: "Next: ils branch fix-prek-again", part: "ils branch fix-prek-again", want: nameLook()},
+		{name: "pending label", result: pendingPush(), within: "Pending: the", part: "Pending:", want: resulttest.Look{Color: "yellow"}},
+		{
+			name: "delivered, not green label", result: redPush(), within: "Delivered, not green: the",
+			part: "Delivered, not green:", want: stoppedLabelLook(),
+		},
+		{name: "excerpt", result: redPush(), within: excerpt, part: excerpt},
+		{name: "unmarked name", result: donePush(), within: "Pushed tidy-readme to origin.", part: "tidy-readme"},
+		{name: "first branch of a list", result: listedBranches(), within: "Kept docs,", part: "docs", want: nameLook()},
+		{name: "comma of a list", result: listedBranches(), within: "docs, main", part: ", "},
+		{name: "middle branch of a list", result: listedBranches(), within: ", main and", part: "main", want: nameLook()},
+		{name: "and of a list", result: listedBranches(), within: "main and tidy-readme", part: " and "},
+		{name: "last branch of a list", result: listedBranches(), within: "and tidy-readme.", part: "tidy-readme", want: nameLook()},
+		{name: "first SHA of a list", result: pickedSHAs(), within: "pick 4f2a9c1", part: "4f2a9c1", want: shaLook()},
+		{name: "space of a list of SHAs", result: pickedSHAs(), within: "4f2a9c1 b7e03d2", part: " "},
+		{name: "last SHA of a list", result: pickedSHAs(), within: "b7e03d2.", part: "b7e03d2", want: shaLook()},
+		{name: "pull request number marked bare", result: pickedSHAs(), within: "ready 12", part: "12", want: nameLook()},
+		{name: "text of a concatenated name", result: joinedCommand(), within: "Ran `git switch main`", part: "git switch "},
+		{name: "branch of a concatenated name", result: joinedCommand(), within: "Ran `git switch main`", part: "main", want: nameLook()},
+	}
+}
+
+// joinedCommand is a broke push with one more line that names a git command whose argument is a
+// branch.
+func joinedCommand() result.Result {
+	return brokeWithLine(result.Say("Ran `%s`", result.Concat("git switch ", result.Branch("main"))))
+}
+
+// pickedSHAs is a broke push whose next step names a pull request by its bare number and a list
+// of two SHAs.
+func pickedSHAs() result.Result {
+	return with(brokePush(), func(r *result.Result) {
+		r.Next = result.NextStep("run gh pr ready %s and git cherry-pick %s.",
+			result.PullRequestNumber(12), result.SHAs([]string{"4f2a9c1", "b7e03d2"}))
+	})
+}
+
+// listedBranches is a broke push with one more line that names a list of three branches.
+func listedBranches() result.Result {
+	return brokeWithLine(result.Say("Kept %s.", result.Branches([]string{"docs", "main", "tidy-readme"})))
+}
+
+// openLink is a hyperlink sequence that third-party text opens and never closes.
+const openLink = "\x1b]8;;https://e.example\x07"
+
+// escapeCases returns results whose third-party text holds an escape sequence, each with a part
+// next to that text that keeps its own style.
+func escapeCases() []styledCase {
+	return []styledCase{
+		{
+			name:   "wording after a name that opens a color",
+			result: brokeWithLine(result.Say("Kept %s as is.", "x\x1b[31m")),
+			within: `x\x1b[31m as is.`, part: " as is.",
+		},
+		{
+			name:   "wording after a marked name that opens an underline",
+			result: brokeWithLine(result.Say("Kept %s as is.", result.Branch("x\x1b[4m"))),
+			within: `x\x1b[4m as is.`, part: " as is.",
+		},
+		{
+			name:   "visible escape inside a marked name",
+			result: brokeWithLine(result.Say("Kept %s as is.", result.Branch("x\x1b[4m"))),
+			within: `x\x1b[4m as is.`, part: `x\x1b[4m`, want: nameLook(),
+		},
+		{
+			name:   "command after a name that resets every style",
+			result: with(redPush(), func(r *result.Result) { r.Next = result.NextCommand("branch %s now", "a\x1b[0mb") }),
+			within: `branch a\x1b[0mb now`, part: " now", want: nameLook(),
+		},
+		{
+			name:   "wording after a name that opens a hyperlink",
+			result: brokeWithLine(result.Say("Kept %s as is.", "x"+openLink+"y")),
+			within: `x\x1b]8;;https://e.example\x07y as is.`, part: " as is.",
+		},
+		{
+			name:   "wording after a marked name that opens a hyperlink",
+			result: brokeWithLine(result.Say("Kept %s as is.", result.Branch("x"+openLink+"y"))),
+			within: `x\x1b]8;;https://e.example\x07y as is.`, part: " as is.",
+		},
+		{
+			name:   "label after an excerpt that opens a hyperlink",
+			result: with(brokePush(), func(r *result.Result) { r.Excerpt = "one" + openLink + " two" }),
+			within: "Broke: GitHub", part: "Broke:", want: stoppedLabelLook(),
+		},
+		{
+			name:   "label after an excerpt that opens bold yellow",
+			result: with(brokePush(), func(r *result.Result) { r.Excerpt = "one\x1b[1;33m" }),
+			within: "Broke: GitHub", part: "Broke:", want: stoppedLabelLook(),
+		},
+		{
+			name:   "Next after an excerpt that opens bold yellow",
+			result: with(brokePush(), func(r *result.Result) { r.Excerpt = "one\x1b[1;33m" }),
+			within: "Next: ils push", part: "Next", want: nextLook(),
+		},
+	}
+}
+
+func TestRenderStyled_WhenProfileHasColor_DrawsEachPartInItsStyle(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range slices.Concat(styledCases(), escapeCases()) {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			t.Logf("row: result %s", inputOf(tt.result))
+
+			out, err := result.RenderStyled(tt.result, gitDir, colorprofile.ANSI)
+			assert.NilError(t, err)
+
+			got := resulttest.Draw(t, out).LookOf(t, tt.within, tt.part)
+			assert.Check(t, is.Equal(got, tt.want), "output %q", out)
+		})
+	}
+}
+
+// ownStyling matches the select graphic rendition and hyperlink sequences the styled renderer
+// draws with.
+var ownStyling = regexp.MustCompile("\x1b\\[[0-9;:]*m|\x1b\\]8;[^\x07\x1b]*(?:\x07|\x1b\\\\)")
+
+func TestRenderStyled_WhenThirdPartyTextHoldsControlBytes_PrintsNoEscapeButItsOwnStyling(t *testing.T) {
+	t.Parallel()
+
+	isControl := func(r rune) bool { return unicode.IsControl(r) && r != '\t' && r != '\n' && r != '\r' }
+	cases := slices.DeleteFunc(controlCases(), func(c pair) bool {
+		return c.name == tabCaseName || c.name == invalidUTF8CaseName
+	})
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			t.Logf("row: result %s", inputOf(tt.result))
+
+			out, err := result.RenderStyled(tt.result, tt.gitDir, colorprofile.ANSI)
+			assert.NilError(t, err)
+
+			assert.Check(t, !strings.ContainsFunc(ownStyling.ReplaceAllString(out, ""), isControl), "output %q", out)
+		})
 	}
 }

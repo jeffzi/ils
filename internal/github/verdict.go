@@ -98,7 +98,7 @@ func (f *Forge) checks(ctx context.Context, repo forge.Repo, number int) ([]forg
 		"--json", "name,bucket,workflow,link",
 	}
 
-	result, err := f.runner.Run(ctx, args...)
+	result, err := f.runner().Run(ctx, args...)
 	if err != nil {
 		exitErr, ok := errors.AsType[*child.ExitError](err)
 
@@ -146,7 +146,7 @@ func bucketOf(bucket string) forge.Bucket {
 
 // runs names a run by its workflow name, falling back to the run name when the workflow name is empty.
 func (f *Forge) runs(ctx context.Context, repo forge.Repo, sha string) ([]forge.Run, error) {
-	listed, err := runDecoded[[]workflowRun](ctx, f.runner,
+	listed, err := runDecoded[[]workflowRun](ctx, f.runner(),
 		"run", "list", "--repo", repo.Slug(), "--commit", sha, "--limit", RunListLimit,
 		"--json", "status,name,workflowName")
 	if err != nil {
@@ -200,7 +200,7 @@ func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Ve
 		return forge.FailedLog{Check: failed.Name, State: forge.FailedLogNoRun}, nil
 	}
 
-	result, err := f.runner.Run(ctx, "run", "view", "--repo", repo.Slug(), match[1], "--log-failed")
+	result, err := f.runner().Run(ctx, "run", "view", "--repo", repo.Slug(), match[1], "--log-failed")
 	if exitErr, exited := errors.AsType[*child.ExitError](err); exited {
 		if runUnfinished.MatchString(exitErr.Stderr) {
 			return forge.FailedLog{Check: failed.Name, State: forge.FailedLogInProgress}, nil
@@ -235,7 +235,7 @@ func (f *Forge) jobLog(ctx context.Context, repo forge.Repo, job string) (string
 		return "", nil
 	}
 
-	result, err := f.runner.Run(ctx, "api", "--hostname", repo.Host, repoAPIPath(repo, "actions/jobs/"+job+"/logs"))
+	result, err := f.runner().Run(ctx, "api", "--hostname", repo.Host, repoAPIPath(repo, "actions/jobs/"+job+"/logs"))
 	if _, exited := errors.AsType[*child.ExitError](err); exited {
 		return "", nil
 	}

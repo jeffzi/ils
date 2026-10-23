@@ -61,8 +61,8 @@ func titleText(title string) string {
 // trunkAheadText is the whole text of the refusal of a local trunk whose one commit origin's trunk
 // lacks is sha.
 func trunkAheadText(sha string) string {
-	return "Refused: the local trunk " + trunk + " has commits that origin's trunk lacks, listed here\n" +
-		sha + " local change on " + trunk + "\n" +
+	return sha + " local change on " + trunk + "\n" +
+		"Refused: the local trunk " + trunk + " has commits that origin's trunk lacks, listed here\n" +
 		"Next: move those commits off the local trunk by hand, then run ils merge again\n"
 }
 
@@ -171,9 +171,12 @@ type mergeRow struct {
 	// deadline returns the context to run under once the scene is built; nil is the test's own.
 	deadline func(t *testing.T, s *scene) context.Context
 	// script returns the forge's answers once the head of pull request 12 is known.
-	script  forgeFor
-	name    string
-	ops     []forgetest.Op
+	script forgeFor
+	name   string
+	ops    []forgetest.Op
+	// drawn are parts of the text and how a terminal with color draws them; empty leaves them
+	// unchecked.
+	drawn   []drawnPart
 	outcome result.Outcome
 	// answered is how many calls origin answers before it stops; zero is every call.
 	answered int
@@ -208,10 +211,46 @@ func notMerged(head string) *result.Merge {
 	}
 }
 
-// runMerge runs tt on a scene of its own: `ils merge` ends as the row's arrange says, carries the
-// merge payload only once the pull request is known, writes nothing, and reads no further than the
-// row says.
+// runMerge runs tt on a scene of its own: `ils merge` ends as the row's arrange says, holds every
+// step line it said, carries the merge payload only once the pull request is known, writes
+// nothing, and reads no further than the row says. A row that names how its result is drawn is
+// held to it too.
 func runMerge(t *testing.T, tt mergeRow) {
+	t.Helper()
+
+	end, s, got := mergeRowOn(t, tt)
+
+	assertStoppedBy(t, got, tt.outcome, mergeRequest())
+
+	text, _ := shown(t, got, s.gitDir)
+	assert.Check(t, is.Equal(text, end.text))
+
+	var want *result.Merge
+	if tt.known {
+		want = notMerged(end.head)
+	}
+
+	assert.Check(t, is.DeepEqual(mergePayload(t, got), want, cmpopts.EquateEmpty()))
+
+	assert.Check(t, is.Equal(s.written(), s.before))
+	assert.Check(t, is.DeepEqual(s.forge.Calls(), mergeAsked(tt.ops), whichRepo()))
+	assert.Check(t, is.Equal(s.gitRan("fetch"), tt.fetches))
+
+	if len(tt.drawn) > 0 {
+		assertDrawn(t, got, s.gitDir, tt.drawn)
+	}
+}
+
+// rowScene is the scene of a merge row, with everything the run could change as it was before.
+type rowScene struct {
+	*scene
+	before string
+}
+
+// mergeRowOn runs `ils merge` on a scene of tt's own, with a progress hook and a logger, and returns
+// how the run must end, the scene and the result. It fails unless every step line the run said is
+// held by its result.
+func mergeRowOn(t *testing.T, tt mergeRow) (mergeEnd, rowScene, result.Result) {
 	t.Helper()
 
 	var end mergeEnd
@@ -232,6 +271,8 @@ func runMerge(t *testing.T, tt mergeRow) {
 
 	s.useForge(t, script)
 
+	w := watchOn(&s.deps)
+
 	if tt.answered > 0 {
 		s.stopAnswering(t, tt.answered)
 	}
@@ -245,21 +286,9 @@ func runMerge(t *testing.T, tt mergeRow) {
 
 	got := landing.Merge(ctx, s.deps, mergeRequest())
 
-	assertStoppedBy(t, got, tt.outcome, mergeRequest())
+	assertHeld(t, w, got)
 
-	text, _ := shown(t, got, s.gitDir)
-	assert.Check(t, is.Equal(text, end.text))
-
-	var want *result.Merge
-	if tt.known {
-		want = notMerged(end.head)
-	}
-
-	assert.Check(t, is.DeepEqual(mergePayload(t, got), want, cmpopts.EquateEmpty()))
-
-	assert.Check(t, is.Equal(s.written(), before))
-	assert.Check(t, is.DeepEqual(s.forge.Calls(), mergeAsked(tt.ops), whichRepo()))
-	assert.Check(t, is.Equal(s.gitRan("fetch"), tt.fetches))
+	return end, rowScene{scene: s, before: before}, got
 }
 
 // runMerges runs each row as a parallel test of its own.
@@ -434,8 +463,11 @@ func pullRequestStops() []mergeRow {
 		}
 	}
 
+	draft := row("draft", draftText, merging().drafted(), changesRead())
+	draft.drawn = []drawnPart{{within: repoArg + " 12`", part: "12", want: drawnName()}}
+
 	return []mergeRow{
-		row("draft", draftText, merging().drafted(), changesRead()),
+		draft,
 		row("draft titled after its branch", draftText, merging().drafted().titled("fix-thing"), changesRead()),
 		row("titled after its branch with squash merges forbidden in the settings", titleText("fix-thing"),
 			merging().titled("fix-thing").forbiddenInSettings(), changesRead()),
@@ -462,6 +494,9 @@ func titleStops() []mergeRow {
 			arrange: func(*gittest.Fixture) mergeEnd { return ending(text) },
 		})
 	}
+
+	// Every title ends on the same next step, so the first row alone checks how it is drawn.
+	rows[0].drawn = []drawnPart{{within: repoArg + " 12 --title", part: "12", want: drawnName()}}
 
 	return rows
 }

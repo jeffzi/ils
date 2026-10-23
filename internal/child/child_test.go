@@ -3,8 +3,11 @@ package child_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"os/exec"
 	"testing"
+	"time"
 
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -66,7 +69,7 @@ func TestFailure_WhenContextEnded_ReturnsContextErrorWhateverTheExit(t *testing.
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	err := child.Failure(ctx, []string{"go", "tool", "nonsense"}, runErr, "")
+	err := child.Failure(ctx, []string{"go", "tool", "nonsense"}, runErr, "secret printed before the end\n")
 
 	assert.Check(t, is.ErrorIs(err, context.Canceled))
 	_, exited := errors.AsType[*child.ExitError](err)
@@ -81,6 +84,83 @@ func TestFailure_WhenProgramNeverExited_WrapsRunErrorNamingCommand(t *testing.T)
 
 	assert.Check(t, is.ErrorIs(err, exec.ErrNotFound))
 	assert.Check(t, is.Equal(err.Error(), "gh pr view: "+exec.ErrNotFound.Error()))
+}
+
+// recordingHandler keeps every record logged through it, at any level.
+type recordingHandler struct {
+	records []slog.Record
+}
+
+func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *recordingHandler) Handle(_ context.Context, record slog.Record) error {
+	h.records = append(h.records, record.Clone())
+
+	return nil
+}
+
+func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h *recordingHandler) WithGroup(string) slog.Handler { return h }
+
+func TestExec_Log(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		err  error
+		want map[string]any
+		name string
+	}{
+		{
+			name: "run that exited zero",
+			want: map[string]any{"tool": "gh", "args": []string{"pr", "view"}, "exit": int64(0)},
+		},
+		{
+			name: "run that exited non-zero",
+			err:  &child.ExitError{Argv: []string{"gh", "pr", "view"}, Code: 3, Stderr: "secret printed before the exit\n"},
+			want: map[string]any{"tool": "gh", "args": []string{"pr", "view"}, "exit": int64(3)},
+		},
+		{
+			name: "run that ended before an exit",
+			err:  fmt.Errorf("gh pr view: %w", exec.ErrNotFound),
+			want: map[string]any{"tool": "gh", "args": []string{"pr", "view"}, "error": "gh pr view: " + exec.ErrNotFound.Error()},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			handler := &recordingHandler{}
+			run := child.Exec{Tool: "gh", Args: []string{"pr", "view"}, Err: tt.err, Took: 5 * time.Millisecond}
+
+			run.Log(t.Context(), slog.New(handler))
+
+			assert.Assert(t, is.Len(handler.records, 1))
+			record := handler.records[0]
+			assert.Check(t, is.Equal(record.Message, "exec"))
+			assert.Check(t, is.Equal(record.Level, slog.LevelDebug))
+			got := map[string]any{}
+			record.Attrs(func(attr slog.Attr) bool {
+				got[attr.Key] = attr.Value.Any()
+
+				return true
+			})
+			assert.Check(t, is.Equal(got["duration"], 5*time.Millisecond))
+			delete(got, "duration")
+			assert.Check(t, is.DeepEqual(got, tt.want))
+		})
+	}
+}
+
+func TestExec_Log_WhenNoLogger_LogsNothingToDefaultLogger(t *testing.T) {
+	// Not parallel: this replaces the process's default logger while it runs.
+	handler := &recordingHandler{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	run := child.Exec{Tool: "gh", Args: []string{"pr", "view"}, Err: errors.New("failed"), Took: time.Millisecond}
+
+	run.Log(t.Context(), nil)
+
+	assert.Check(t, is.Len(handler.records, 0))
 }
 
 func TestToolTooOldError_Error(t *testing.T) {

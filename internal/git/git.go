@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,7 +58,10 @@ func (r *Recorder) record(argv []string) {
 type Runner struct {
 	// Recorder, when set, receives the argv of every call.
 	Recorder *Recorder
-	Dir      string
+	// Logger, when set, receives one debug record per call once the call has ended: the record
+	// child.Exec.Log writes.
+	Logger *slog.Logger
+	Dir    string
 	// Env is the child's whole environment; nil inherits this process's.
 	Env []string
 }
@@ -78,18 +82,26 @@ type Result struct {
 // exited or been killed, output pipes still held open are closed after a short
 // grace, so a context that ended never turns into a hang.
 func (r Runner) Run(ctx context.Context, args ...string) (Result, error) {
+	return r.invocation(program, installURL, args).run(ctx)
+}
+
+// invocation returns the run of program with args on the runner's behalf: from its directory, with
+// its environment, recorded by its recorder and logged by its logger. Every program the package runs
+// for a runner starts from here, so that no run drops a field of the runner.
+func (r Runner) invocation(program, installURL string, args []string) invocation {
 	inv := invocation{
 		program:    program,
 		installURL: installURL,
 		args:       args,
 		dir:        r.Dir,
 		env:        r.Env,
+		logger:     r.Logger,
 	}
 	if r.Recorder != nil {
 		inv.record = r.Recorder.record
 	}
 
-	return inv.run(ctx)
+	return inv
 }
 
 // getenv returns the value key has in the environment git runs with, and whether it is set. A key
@@ -146,7 +158,9 @@ func (r Runner) lookPath(name string) (string, error) {
 // shell.
 type invocation struct {
 	// record, when set, receives the argv once the tool is found and before it starts.
-	record     func(argv []string)
+	record func(argv []string)
+	// logger, when set, receives the record child.Exec.Log writes once the run has ended.
+	logger     *slog.Logger
 	program    string
 	installURL string
 	dir        string
@@ -158,13 +172,24 @@ type invocation struct {
 	onEnvPath bool
 }
 
-// run runs the tool and returns its output once it has exited zero.
+// run runs the tool as invocation.execute does and, when the invocation has a logger, logs the run
+// once it has ended.
+func (inv invocation) run(ctx context.Context) (Result, error) {
+	begun := time.Now()
+	result, err := inv.execute(ctx)
+
+	child.Exec{Tool: inv.program, Args: inv.args, Err: err, Took: time.Since(begun)}.Log(ctx, inv.logger)
+
+	return result, err
+}
+
+// execute runs the tool and returns its output once it has exited zero.
 //
 // A tool missing from the PATH it is looked up on is a *child.ToolMissingError and a failed run is
 // the error of child.Failure. Once the tool has exited or been killed, output pipes a process it
 // started still holds are closed after pipeGrace; such a process does not fail a run that exited
 // zero.
-func (inv invocation) run(ctx context.Context) (Result, error) {
+func (inv invocation) execute(ctx context.Context) (Result, error) {
 	lookPath := exec.LookPath
 	if inv.onEnvPath {
 		lookPath = Runner{Env: inv.env}.lookPath

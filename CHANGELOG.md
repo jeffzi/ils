@@ -7,6 +7,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Add a live progress display at a terminal, with `--no-color` to turn its color off (also honoring
+  `NO_COLOR`, `CLICOLOR_FORCE`, and `TERM=dumb`).
+- Add `-d`/`--debug`, which traces each `git` and `gh` call and each wait decision on stderr.
+
+### Changed
+
+- Print the reason of every outcome but done on the line above `Next:`, so a refusal's reason now
+  follows its lines instead of leading them.
+- Drop the `Next: none` line from the text of a merged result; its JSON still carries
+  `"next": "none"`.
+- Drop result lines that only restated the reason, from the text and from JSON `lines`.
+
+### Fixed
+
+- Fix help and refusals stalling for seconds when color is off.
+
+### Security
+
+- Print control characters in third-party text, such as hook output and file names, as visible
+  text, so they can no longer restyle or rewrite the output, its `Next:` line included.
+
 ## [0.2.0] - 2026-10-22
 
 ### Added

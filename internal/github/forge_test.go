@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -358,6 +359,62 @@ func TestForge_WhenReadPrintsMalformedJSON_ReturnsDecodeErrorNamingCall(t *testi
 			decodeErr, ok := errors.AsType[*github.DecodeError](err)
 			assert.Assert(t, ok, "error = %v, want *github.DecodeError", err)
 			assert.Check(t, is.DeepEqual(decodeErr.Argv, received(tt.args)[0]))
+		})
+	}
+}
+
+// loggedArgv is the argv of every call sink received, each led by `gh`, in order.
+func loggedArgv(sink *logSink) [][]string {
+	var logged [][]string
+	for _, call := range sink.Calls() {
+		args, _ := call.Attrs["args"].([]string)
+		logged = append(logged, args)
+	}
+
+	return received(logged...)
+}
+
+// loggedCases is every `gh` call site of the forge: the reads, the writes, and the two reads of a
+// failed log, which Verdict makes behind a failing check.
+func loggedCases() []readCase {
+	byName := operationsByName()
+	landing := featureLanding()
+	failedChecks := ghtest.Says(jsonArray(ghtest.CheckJSON("build", "fail", runLink)), checksArgs()...)
+	noRuns := ghtest.Says("[]", runsArgs()...)
+
+	return append(readCases(),
+		readCase{name: "pr create", run: byName["OpenChange"], args: createArgs()},
+		readCase{
+			name: "pr merge", run: byName["Land"],
+			args: []string{
+				"pr", "merge", "7", "--repo", engineSlug, "--squash", "--match-head-commit", headSHA,
+				"--subject", landing.Subject, "--body", landing.Body,
+			},
+		},
+		readCase{
+			name: "api delete branch", run: byName["DeleteBranch"],
+			args: []string{"api", "--hostname", engineHost, "-X", "DELETE", "repos/ada/engine/git/refs/heads/" + featureBranch},
+		},
+		readCase{name: "run view behind a failing check", run: byName["Verdict"], args: logArgs(), before: []ghtest.Call{failedChecks, noRuns}},
+		readCase{
+			name: "api job log behind an empty failed log", run: byName["Verdict"], args: jobLogArgs("42"),
+			before: []ghtest.Call{failedChecks, noRuns, ghtest.Says("", logArgs()...)},
+		},
+	)
+}
+
+func TestForge_WhenLoggerSet_LogsEveryCallSite(t *testing.T) {
+	for _, tt := range loggedCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := ghtest.Setup(t, append(tt.before, ghtest.Says("", tt.args...))...)
+			logger, sink := newLogger()
+
+			_ = tt.run(t.Context(), &github.Forge{Logger: logger})
+
+			assert.Check(t, is.DeepEqual(loggedArgv(sink), fake.Calls()))
+			want := received(tt.args)[0]
+			assert.Check(t, slices.ContainsFunc(fake.Calls(), func(argv []string) bool { return slices.Equal(argv, want) }),
+				"the fake never received %v", tt.args)
 		})
 	}
 }

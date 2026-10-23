@@ -3,7 +3,10 @@ package github_test
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -149,4 +152,129 @@ func TestRunner_Run_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
 			assert.Check(t, missing.Err != nil, "Run(pr view) error carries no cause, want what starting gh failed with")
 		})
 	}
+}
+
+// loggedCall is one record a logger received: its message and its attributes by key, a
+// duration standing as measured{}.
+type loggedCall struct {
+	Attrs   map[string]any
+	Message string
+}
+
+// measured stands in a loggedCall for a duration, which no test can predict.
+//
+// Zero counts: a call that fails before gh starts can end within one tick of a coarse clock,
+// such as the one on Windows, and log 0s.
+type measured struct{}
+
+// logSink keeps every record logged through the loggers built on it.
+type logSink struct {
+	calls []loggedCall
+	mu    sync.Mutex
+}
+
+// Calls is every record the sink received, in order.
+func (s *logSink) Calls() []loggedCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return slices.Clone(s.calls)
+}
+
+// newLogger is a logger that sends every record, at any level, to the sink it returns.
+func newLogger() (*slog.Logger, *logSink) {
+	sink := &logSink{}
+
+	return slog.New(sinkHandler{sink: sink}), sink
+}
+
+// sinkHandler is the slog.Handler that feeds a logSink, with the attributes and group added
+// through With and WithGroup.
+type sinkHandler struct {
+	sink   *logSink
+	prefix string
+	attrs  []slog.Attr
+}
+
+func (sinkHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h sinkHandler) Handle(_ context.Context, record slog.Record) error {
+	attrs := map[string]any{}
+	for _, attr := range h.attrs {
+		attrs[attr.Key] = valueOf(attr.Value)
+	}
+	record.Attrs(func(attr slog.Attr) bool {
+		attrs[h.prefix+attr.Key] = valueOf(attr.Value)
+		return true
+	})
+
+	h.sink.mu.Lock()
+	defer h.sink.mu.Unlock()
+	h.sink.calls = append(h.sink.calls, loggedCall{Message: record.Message, Attrs: attrs})
+
+	return nil
+}
+
+func (h sinkHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	h.attrs = slices.Clone(h.attrs)
+	for _, attr := range attrs {
+		attr.Key = h.prefix + attr.Key
+		h.attrs = append(h.attrs, attr)
+	}
+
+	return h
+}
+
+func (h sinkHandler) WithGroup(name string) slog.Handler {
+	h.prefix += name + "."
+
+	return h
+}
+
+// valueOf is what a loggedCall holds for value: measured{} for a duration that is not negative,
+// the value itself otherwise.
+func valueOf(value slog.Value) any {
+	value = value.Resolve()
+	if value.Kind() == slog.KindDuration && value.Duration() >= 0 {
+		return measured{}
+	}
+
+	return value.Any()
+}
+
+// exitedCall is the record Runner logs for a gh call with args that exited with code: message "exec",
+// tool "gh", args and exit, and a measured duration.
+func exitedCall(code int64, args ...string) loggedCall {
+	return loggedCall{
+		Message: "exec",
+		Attrs:   map[string]any{"tool": "gh", "args": args, "exit": code, "duration": measured{}},
+	}
+}
+
+// failedCall is the record of the gh call with args that ended with err instead of an exit code.
+func failedCall(err error, args ...string) loggedCall {
+	return loggedCall{
+		Message: "exec",
+		Attrs:   map[string]any{"tool": "gh", "args": args, "error": err.Error(), "duration": measured{}},
+	}
+}
+
+func TestRunner_Run_WhenLoggerSet_LogsToolArgvExitCodeAndDuration(t *testing.T) {
+	args := []string{"pr", "checks", "7"}
+	ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "build\tpending\n", Stderr: "still running\n", Code: 8}, args...))
+	logger, sink := newLogger()
+
+	_, _ = github.Runner{Logger: logger}.Run(t.Context(), args...)
+
+	assert.Check(t, is.DeepEqual(sink.Calls(), []loggedCall{exitedCall(8, args...)}))
+}
+
+func TestRunner_Run_WhenLoggerSetAndGhMissing_LogsTheFailure(t *testing.T) {
+	withoutGh(t, filepath.Join(t.TempDir(), "gh"))
+	logger, sink := newLogger()
+
+	_, err := github.Runner{Logger: logger}.Run(t.Context(), "pr", "view")
+	assert.Assert(t, err != nil, "Run(pr view) error = nil, want what starting gh failed with")
+
+	assert.Check(t, is.DeepEqual(sink.Calls(), []loggedCall{failedCall(err, "pr", "view")}))
 }

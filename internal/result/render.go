@@ -9,6 +9,9 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/charmbracelet/colorprofile"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // ErrNoReason reports a result that did not end as done and says no reason.
@@ -33,6 +36,9 @@ func (e *WordingError) Error() string {
 // from it and from nothing else, so the two cannot drift.
 type shown struct {
 	Payload  *Payload `json:"payload,omitempty"`
+	lines    [][]span
+	reason   []span
+	next     []span
 	Command  string   `json:"command"`
 	Words    []string `json:"words,omitempty"`
 	Outcome  string   `json:"outcome"`
@@ -41,34 +47,180 @@ type shown struct {
 	Excerpt  string   `json:"excerpt,omitempty"`
 	Lines    []string `json:"lines,omitempty"`
 	ExitCode int      `json:"exit_code"`
-	refused  bool
+	outcome  Outcome
+	nextNone bool
 }
 
 // RenderText returns r as the lines of what happened, the excerpt when there
-// is one, and one Next line. gitDir is the resolved git dir, or empty outside
-// a repository.
+// is one, the reason labeled by the outcome unless r is done, and one Next
+// line unless nothing is left to do. gitDir is the resolved git dir, or empty
+// outside a repository.
 func RenderText(r Result, gitDir string) (string, error) {
+	return RenderStyled(r, gitDir, colorprofile.NoTTY)
+}
+
+// RenderStyled returns r as RenderText does, drawn for a terminal of profile.
+// A profile without color (NoTTY, ASCII) gets exactly what RenderText returns,
+// with no escape sequence of this program's. Any other profile draws the
+// outcome label, the word Next, and each name in the style of its kind; the
+// wording and the excerpt stay unstyled. On every profile, the control
+// characters inside names and the excerpt print spelled out as visible text,
+// such as \x1b for ESC, so that third-party text never drives the terminal
+// and the only escape sequences printed are this program's own styling.
+func RenderStyled(r Result, gitDir string, profile colorprofile.Profile) (string, error) {
 	view, err := check(r, gitDir)
 	if err != nil {
 		return "", err
 	}
 
-	var b strings.Builder
-	if view.refused {
-		b.WriteString("Refused: " + view.Reason + "\n")
-	}
+	pen := PenFor(profile)
 
-	for _, line := range view.Lines {
-		b.WriteString(line + "\n")
+	var b strings.Builder
+	for _, line := range view.lines {
+		b.WriteString(pen.spans(line) + "\n")
 	}
 
 	if view.Excerpt != "" {
-		b.WriteString(strings.TrimSuffix(view.Excerpt, "\n") + "\n")
+		excerpt := strings.TrimSuffix(view.Excerpt, "\n")
+		b.WriteString(visible(excerpt) + "\n")
 	}
 
-	b.WriteString("Next: " + view.Next + "\n")
+	if view.outcome != Done {
+		label, style := view.outcome.label()
+		b.WriteString(pen.Styled(style, label+":") + " " + pen.spans(view.reason) + "\n")
+	}
+
+	if !view.nextNone {
+		nextStyle := ansi.NewStyle().Bold().Underline(true)
+		b.WriteString(pen.Styled(nextStyle, "Next") + ": " + pen.spans(view.next) + "\n")
+	}
 
 	return b.String(), nil
+}
+
+// label returns the word the reason line of o starts with, and its style:
+// yellow for a result that only needs another run, red for one that stopped.
+func (o Outcome) label() (string, ansi.Style) {
+	red := ansi.NewStyle().ForegroundColor(ansi.Red)
+	yellow := ansi.NewStyle().ForegroundColor(ansi.Yellow)
+
+	switch o {
+	case Refused:
+		return "Refused", red
+	case Pending:
+		return "Pending", yellow
+	case DeliveredNotGreen:
+		return "Delivered, not green", red
+	case Ask:
+		return "Ask", yellow
+	case Done, Broke:
+		fallthrough
+	default:
+		return "Broke", red
+	}
+}
+
+// kindStyle returns the style a name of k is drawn in, and false for wording
+// and names of no particular kind, which are drawn unstyled.
+func kindStyle(k kind) (ansi.Style, bool) {
+	switch k {
+	case kindBranch, kindPullRequest, kindCommand:
+		return ansi.NewStyle().Bold().ForegroundColor(ansi.Blue), true
+	case kindSHA:
+		return ansi.NewStyle().Faint(), true
+	case kindURL:
+		return ansi.NewStyle().Underline(true), true
+	case kindCount:
+		return ansi.NewStyle().Bold(), true
+	case kindWording, kindName:
+		fallthrough
+	default:
+		return nil, false
+	}
+}
+
+// Pen draws text with styles when its terminal shows color, and as plain
+// text otherwise.
+type Pen struct {
+	color bool
+}
+
+// PenFor returns the pen of a terminal of profile: one that draws in styles
+// from the ANSI profile up, and as plain text below it.
+func PenFor(profile colorprofile.Profile) Pen {
+	return Pen{color: profile >= colorprofile.ANSI}
+}
+
+// Color reports whether p draws in styles.
+func (p Pen) Color() bool {
+	return p.color
+}
+
+// Styled returns text drawn in style, closed so that the style ends with it,
+// and text as it is when p draws no styles.
+func (p Pen) Styled(style ansi.Style, text string) string {
+	if !p.color {
+		return text
+	}
+
+	return style.Styled(text)
+}
+
+// spans returns spans drawn one by one, each name in the style of its kind and
+// with its control characters spelled out by visible.
+func (p Pen) spans(spans []span) string {
+	var b strings.Builder
+	for _, s := range spans {
+		style, ok := kindStyle(s.kind)
+		switch {
+		case ok:
+			b.WriteString(p.Styled(style, visible(s.text)))
+		case s.kind == kindWording:
+			b.WriteString(s.text)
+		default:
+			b.WriteString(visible(s.text))
+		}
+	}
+
+	return b.String()
+}
+
+// visible returns third-party text with each control character that could
+// drive the terminal spelled out, so that it prints as text and cannot move
+// the cursor, erase a line, or change the style of what follows:
+//
+//   - ESC, DEL and every other C0 control as \x and two lowercase hex digits,
+//     such as \x1b for ESC and \x08 for a backspace;
+//   - each C1 control, U+0080 to U+009F, as \u and four, such as \u009b.
+//
+// Tab, line feed and carriage return stay as they are: a name holds no line
+// break by the time it is rendered, and an excerpt keeps its lines. Bytes that
+// are not valid UTF-8 stay as they are too.
+func visible(text string) string {
+	if !strings.ContainsFunc(text, spelledOut) {
+		return text
+	}
+
+	var b strings.Builder
+	for rest := text; rest != ""; {
+		r, size := utf8.DecodeRuneInString(rest)
+		switch {
+		case !spelledOut(r):
+			b.WriteString(rest[:size])
+		case r < utf8.RuneSelf:
+			fmt.Fprintf(&b, `\x%02x`, r)
+		default:
+			fmt.Fprintf(&b, `\u%04x`, r)
+		}
+
+		rest = rest[size:]
+	}
+
+	return b.String()
+}
+
+func spelledOut(r rune) bool {
+	return unicode.IsControl(r) && r != '\t' && r != '\n' && r != '\r'
 }
 
 // RenderJSON returns r as one JSON object on one line. gitDir is the resolved
@@ -100,26 +252,31 @@ func check(r Result, gitDir string) (shown, error) {
 		ExitCode: r.Outcome.ExitCode(),
 		Excerpt:  r.Excerpt,
 		Payload:  r.Payload,
-		refused:  r.Outcome == Refused,
+		outcome:  r.Outcome,
+		nextNone: r.Next.kind == nextNone,
 	}
 
 	for _, line := range r.Lines {
-		text, err := checked(r.Command, line.wording, gitDir, line.text)
+		spans, err := checked(r.Command, line.wording, gitDir, line.spans)
 		if err != nil {
 			return shown{}, err
 		}
 
-		view.Lines = append(view.Lines, text)
+		view.lines = append(view.lines, spans)
+		view.Lines = append(view.Lines, joined(spans))
 	}
 
 	var err error
-	if view.Reason, err = checked(r.Command, r.Reason.wording, gitDir, r.Reason.text); err != nil {
+	if view.reason, err = checked(r.Command, r.Reason.wording, gitDir, r.Reason.spans); err != nil {
 		return shown{}, err
 	}
 
-	if view.Next, err = checked(r.Command, r.Next.wording(), gitDir, r.Next.text); err != nil {
+	if view.next, err = checked(r.Command, r.Next.wording(), gitDir, r.Next.spans); err != nil {
 		return shown{}, err
 	}
+
+	view.Reason = joined(view.reason)
+	view.Next = joined(view.next)
 
 	if r.Outcome != Done && view.Reason == "" {
 		return shown{}, fmt.Errorf("%w: %s ended as %s", ErrNoReason, r.Command, r.Outcome)
@@ -128,19 +285,20 @@ func check(r Result, gitDir string) (shown, error) {
 	return view, nil
 }
 
-// checked returns the text render gives for the command named command, unless
-// ownWording breaks the rule.
-func checked(command, ownWording, gitDir string, render func() (string, error)) (string, error) {
-	text, err := render()
+// checked returns the spans render gives for the command named command,
+// unless ownWording breaks the rule. The rule reads the unstyled wording, and
+// the error names the line unstyled.
+func checked(command, ownWording, gitDir string, render func() ([]span, error)) ([]span, error) {
+	spans, err := render()
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", command, err)
+		return nil, fmt.Errorf("%s: %w", command, err)
 	}
 
 	if word, found := forbidden(ownWording, gitDir); found {
-		return "", &WordingError{Line: text, Word: word}
+		return nil, &WordingError{Line: joined(spans), Word: word}
 	}
 
-	return text, nil
+	return spans, nil
 }
 
 // forbidden returns the first part of ownWording that names a hook or a path

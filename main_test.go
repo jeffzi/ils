@@ -17,8 +17,10 @@ import (
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
+	main "github.com/jeffzi/ils"
 	"github.com/jeffzi/ils/internal/cli"
 	"github.com/jeffzi/ils/internal/gittest"
+	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
 // ran is what one run of the binary printed and the code it exited with.
@@ -149,10 +151,7 @@ func TestIls(t *testing.T) {
 	})
 
 	t.Run("WhenPushRunsOutsideARepository_ReportsTheFailedReadOfHead", func(t *testing.T) {
-		dir, err := filepath.EvalSymlinks(t.TempDir())
-		assert.NilError(t, err)
-
-		env := append(gittest.Env(t), "GIT_CEILING_DIRECTORIES="+dir, "LC_ALL=C")
+		dir, env := outsideRepository(t)
 
 		got := bin.launch(t, dir, env, "push")
 
@@ -160,7 +159,100 @@ func TestIls(t *testing.T) {
 		assert.Check(t, is.Equal(got.stderr, ""))
 		assert.Check(t, strings.HasPrefix(got.stdout, "Could not read where HEAD stands: "),
 			"stdout = %q", got.stdout)
-		assert.Check(t, strings.HasSuffix(got.stdout, "Nothing was written.\nNext: fix what failed, then run ils push again\n"),
+		assert.Check(t, strings.HasSuffix(got.stdout, "Nothing was written.\nBroke: could not read where HEAD stands\nNext: fix what failed, then run ils push again\n"),
 			"stdout = %q", got.stdout)
 	})
+
+	t.Run("WhenColorIsForcedInTheEnvironment_DrawsTheResultInColor", func(t *testing.T) {
+		dir, env := outsideRepository(t, "CLICOLOR_FORCE=1")
+
+		got := bin.launch(t, dir, env, "push")
+
+		assert.Check(t, is.Equal(got.code, 1))
+		assert.Check(t, is.Equal(resulttest.Draw(t, got.stdout).LookOf(t, "Broke: ", "Broke").Color, "red"), "stdout = %q", got.stdout)
+	})
+
+	t.Run("WhenDebugIsOn_LogsTheGitCallsOnStderr", func(t *testing.T) {
+		dir, env := outsideRepository(t)
+
+		got := bin.launch(t, dir, env, "push", "-d")
+
+		assert.Check(t, strings.HasPrefix(resulttest.Draw(t, got.stderr).String(), "+"), "stderr = %q", got.stderr)
+		assert.Check(t, strings.Contains(got.stderr, " git "), "stderr = %q", got.stderr)
+	})
+}
+
+// opened returns a file of its own under the test's temporary directory, closed at cleanup, so
+// that its descriptor is no other file's.
+func opened(t *testing.T, name string) *os.File {
+	t.Helper()
+
+	f, err := os.CreateTemp(t.TempDir(), name)
+	assert.NilError(t, err)
+	t.Cleanup(func() { assert.Check(t, f.Close()) })
+
+	return f
+}
+
+// outsideRepository returns an empty directory that is in no git repository, and an environment to
+// run git in it: the test's git environment, the extra entries, and a C locale so that git's
+// messages do not depend on the machine.
+//
+// The directory is resolved through symlinks because git ceilings are compared with the path git
+// finds by walking up from the working directory, which is the resolved one (a temporary directory
+// on macOS lies behind a symlink). The ceiling is set at the directory itself so that git stops
+// there instead of finding a repository in one of its parents.
+func outsideRepository(t *testing.T, extra ...string) (dir string, env []string) {
+	t.Helper()
+
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	assert.NilError(t, err)
+
+	env = append(gittest.Env(t), "GIT_CEILING_DIRECTORIES="+dir, "LC_ALL=C")
+
+	return dir, append(env, extra...)
+}
+
+func TestLaunched(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		terminal func(stdout, stderr *os.File) *os.File
+		name     string
+	}{
+		{name: "stdout a terminal", terminal: func(stdout, _ *os.File) *os.File { return stdout }},
+		{name: "stderr a terminal", terminal: func(_, stderr *os.File) *os.File { return stderr }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			stdout, stderr := opened(t, "stdout"), opened(t, "stderr")
+			terminal := tt.terminal(stdout, stderr)
+			isTerminal := func(fd uintptr) bool { return fd == terminal.Fd() }
+			size := func(fd uintptr) (int, int, error) {
+				if fd == stderr.Fd() {
+					return 132, 40, nil
+				}
+
+				return 7, 3, nil
+			}
+
+			app := main.Launched(stdout, stderr, isTerminal, size)
+
+			assert.Check(t, is.Equal(app.StdoutTerminal, terminal == stdout))
+			assert.Check(t, is.Equal(app.StderrTerminal, terminal == stderr))
+			assert.Check(t, is.Equal(app.StderrWidth(), 132))
+		})
+	}
+}
+
+func TestLaunched_WhenTheWidthOfStderrCannotBeRead_CountsItAsNone(t *testing.T) {
+	t.Parallel()
+
+	unread := func(uintptr) (int, int, error) { return 132, 40, errors.New("not a terminal") }
+
+	app := main.Launched(opened(t, "stdout"), opened(t, "stderr"), func(uintptr) bool { return true }, unread)
+
+	assert.Check(t, is.Equal(app.StderrWidth(), 0))
 }
