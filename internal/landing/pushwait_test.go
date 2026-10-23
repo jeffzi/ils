@@ -237,6 +237,27 @@ func pushPendingRows() []pushRow {
 			want: pending("GitHub did not say whether pull request #12 can merge before the time limit", "",
 				detail(forge.VerdictNone, forge.MergeUnknown)),
 		},
+	}
+}
+
+// slowHeadAfterChecks returns a read hook under which each read of the head after the first read
+// of the checks takes d.
+func slowHeadAfterChecks(d time.Duration) func(forgetest.Call) {
+	checked := false
+
+	return func(call forgetest.Call) {
+		switch {
+		case call.Op == forgetest.OpVerdict:
+			checked = true
+		case call.Op == forgetest.OpHead && checked:
+			time.Sleep(d)
+		}
+	}
+}
+
+// pushStillRunningRows are the pushes whose wait ended with checks still running.
+func pushStillRunningRows() []pushRow {
+	return []pushRow{
 		{
 			// The head catches up after one poll of two seconds, which the count leaves out; then two
 			// polls of five seconds pass, and a third would leave too little time for the head read
@@ -272,13 +293,35 @@ func pushPendingRows() []pushRow {
 				}),
 			want: cutShortRead(readChecks),
 		},
+		{
+			// Seven seconds leave no room for a poll and the head read after it, so the head is read at
+			// once after the checks; that read takes the one second the checks are waited on.
+			name: "a check still runs a second into the wait", left: 7 * time.Second,
+			script: reusing(running()).
+				showing(inState(forge.MergeClean, "CLEAN"), inState(forge.MergeBlockedByReview, "BLOCKED")).
+				with(func(script *forgetest.Script, _ string) {
+					script.OnRead = slowHeadAfterChecks(time.Second)
+				}),
+			want: pending("the checks were still running at the time limit",
+				"Still running after 1 second: test\nGitHub: BLOCKED (blocked-by-review)\n",
+				detail(forge.VerdictPending, forge.MergeBlockedByReview, running().Checks...)),
+		},
+		{
+			// Seven seconds leave no room for a poll and the head read after it, so the head is read at
+			// once after the checks, before any time has passed.
+			name: "a check still runs as the wait for it begins", left: 7 * time.Second,
+			script: reusing(running()),
+			want: pending("the checks were still running at the time limit",
+				"Still running after 0 seconds: test\n"+cleanLine,
+				detail(forge.VerdictPending, forge.MergeClean, running().Checks...)),
+		},
 	}
 }
 
 func TestPush_WhenTheWaitEndsBeforeAnAnswer_PendingSayingWhy(t *testing.T) {
 	t.Parallel()
 
-	runPushes(t, slices.Concat(pushRunlessRows(), pushPendingRows(), pushCutShortRows()))
+	runPushes(t, slices.Concat(pushRunlessRows(), pushPendingRows(), pushStillRunningRows(), pushCutShortRows()))
 }
 
 // waitReads returns the reads of a push's wait, in the order the wait makes them, each failing

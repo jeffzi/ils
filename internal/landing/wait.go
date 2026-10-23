@@ -862,7 +862,12 @@ func (w Waited) unconcluded(sha string, number int) ([]result.Phrase, result.Phr
 	default:
 		seconds := int(time.Since(w.Since) / time.Second)
 		for _, check := range w.Verdict.Pending() {
-			lines = append(lines, result.Say("Still running after %s seconds: %s", seconds, check.Name))
+			line := result.Say("Still running after %s seconds: %s", seconds, check.Name)
+			if seconds == 1 {
+				line = result.Say("Still running after %s second: %s", seconds, check.Name)
+			}
+
+			lines = append(lines, line)
 		}
 	}
 
