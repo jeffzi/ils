@@ -19,6 +19,7 @@ import (
 
 	"github.com/jeffzi/ils/internal/cli"
 	"github.com/jeffzi/ils/internal/gittest"
+	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
 // ran is what one run of the binary printed and the code it exited with.
@@ -160,7 +161,21 @@ func TestIls(t *testing.T) {
 		assert.Check(t, is.Equal(got.stderr, ""))
 		assert.Check(t, strings.HasPrefix(got.stdout, "Could not read where HEAD stands: "),
 			"stdout = %q", got.stdout)
-		assert.Check(t, strings.HasSuffix(got.stdout, "Nothing was written.\nNext: fix what failed, then run ils push again\n"),
+		assert.Check(t, strings.HasSuffix(got.stdout, "Nothing was written.\nBroke: could not read where HEAD stands\nNext: fix what failed, then run ils push again\n"),
 			"stdout = %q", got.stdout)
+	})
+
+	t.Run("WhenColorIsForcedInTheEnvironmentWithDebugOn_DrawsTheResultInColorAndLogsEachGitCall", func(t *testing.T) {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		assert.NilError(t, err)
+
+		env := append(gittest.Env(t), "GIT_CEILING_DIRECTORIES="+dir, "LC_ALL=C", "CLICOLOR_FORCE=1")
+
+		got := bin.launch(t, dir, env, "push", "-d")
+
+		assert.Check(t, is.Equal(got.code, 1))
+		assert.Check(t, is.Equal(resulttest.Draw(t, got.stdout).LookOf(t, "Broke: ", "Broke").Color, "red"), "stdout = %q", got.stdout)
+		assert.Check(t, strings.HasPrefix(resulttest.Draw(t, got.stderr).String(), "+"), "stderr = %q", got.stderr)
+		assert.Check(t, strings.Contains(got.stderr, " git "), "stderr = %q", got.stderr)
 	})
 }

@@ -2,7 +2,6 @@ package landing
 
 import (
 	"context"
-	"strings"
 
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/result"
@@ -45,6 +44,8 @@ type pushReady struct {
 // not green; a wait the deadline ended is pending. From the push on nothing is a refusal: a
 // write or a read that fails is broke, and the lines say what was written.
 func Push(ctx context.Context, deps Deps, req Request) result.Result {
+	deps.startChecking()
+
 	ready, stop := Preconditions(ctx, deps, req)
 	if stop != nil {
 		return *stop
@@ -138,7 +139,7 @@ func cutFromTrunk(ctx context.Context, deps Deps, req Request, p pushReady) *res
 		return req.unread(readCommits, err)
 	}
 
-	stop := req.Refused(sharedFirst(p.branch, others, len(own) > 0), eitherWayOut(len(others), req.Command))
+	stop := req.Refused(sharedFirst(p.branch, others, len(own) > 0), eitherWayOut(len(others), req.ilsCommand()))
 	stop.Lines = listed(own)
 
 	return stop
@@ -146,14 +147,16 @@ func cutFromTrunk(ctx context.Context, deps Deps, req Request, p pushReady) *res
 
 // eitherWayOut is the Next step of a branch that shares its first commit past the trunk with count
 // other local branches: land them first, or remove them, then run command again.
-func eitherWayOut(count int, command string) result.Next {
+func eitherWayOut(count int, command result.Name) result.Next {
+	push := result.Command(PushCommand)
+
 	if count == 1 {
-		return result.NextStep("run ils push on the other branch and get it merged first when this branch builds "+
-			"on it, or remove the other branch when it was cut from this one"+thenRunAgain, command)
+		return result.NextStep("run %s on the other branch and get it merged first when this branch builds "+
+			"on it, or remove the other branch when it was cut from this one"+thenRunAgain, push, command)
 	}
 
-	return result.NextStep("run ils push on the other branches and get them merged first when this branch builds "+
-		"on them, or remove the other branches when they were cut from this one"+thenRunAgain, command)
+	return result.NextStep("run %s on the other branches and get them merged first when this branch builds "+
+		"on them, or remove the other branches when they were cut from this one"+thenRunAgain, push, command)
 }
 
 // sharedFirst says that the branch shares its first commit past the trunk with the branches
@@ -168,22 +171,24 @@ func sharedFirst(branch string, others []string, hasOwn bool) result.Phrase {
 		noOwn     = "it has no commit of its own"
 	)
 
+	own := result.Branch(branch)
+
 	if len(others) == 1 {
+		other := result.Branch(others[0])
 		if hasOwn {
-			return result.Say(withOne+ownListed, branch, others[0])
+			return result.Say(withOne+ownListed, own, other)
 		}
 
-		return result.Say(withOne+noOwn, branch, others[0])
+		return result.Say(withOne+noOwn, own, other)
 	}
 
-	last := len(others) - 1
-	named := strings.Join(others[:last], ", ") + " and " + others[last]
+	named := result.Branches(others)
 
 	if hasOwn {
-		return result.Say(withMany+ownListed, branch, named)
+		return result.Say(withMany+ownListed, own, named)
 	}
 
-	return result.Say(withMany+noOwn, branch, named)
+	return result.Say(withMany+noOwn, own, named)
 }
 
 // originCopy asks origin whether it has the branch and returns the commit its fetched copy is
@@ -193,7 +198,7 @@ func originCopy(ctx context.Context, deps Deps, req Request, p pushReady) (their
 	_, found, err := deps.Repo.RemoteBranch(ctx, p.branch)
 	if err != nil {
 		return "", false, req.unreached(readOnOrigin, err,
-			result.Say("origin could not be reached to ask whether it has the branch %s", p.branch))
+			result.Say("origin could not be reached to ask whether it has the branch %s", result.Branch(p.branch)))
 	}
 
 	if !found {
@@ -203,7 +208,7 @@ func originCopy(ctx context.Context, deps Deps, req Request, p pushReady) (their
 	theirs, err = deps.Repo.Fetch(ctx, p.branch)
 	if err != nil {
 		return "", false, req.unreached(readCopy, err,
-			result.Say("origin could not be reached to fetch its copy of the branch %s", p.branch))
+			result.Say("origin could not be reached to fetch its copy of the branch %s", result.Branch(p.branch)))
 	}
 
 	apart, err := deps.Repo.Divergence(ctx, p.tip, theirs)
@@ -214,13 +219,13 @@ func originCopy(ctx context.Context, deps Deps, req Request, p pushReady) (their
 	switch {
 	case apart.Behind > 0 && apart.Ahead > 0:
 		return "", false, req.Refused(
-			result.Say("the branch %s and origin's copy of it have diverged", p.branch),
-			result.NextStep("run `git merge origin/%s`"+thenRunAgain, p.branch, req.Command))
+			result.Say("the branch %s and origin's copy of it have diverged", result.Branch(p.branch)),
+			result.NextStep("run `git merge origin/%s`"+thenRunAgain, result.Branch(p.branch), req.ilsCommand()))
 
 	case apart.Behind > 0:
 		return "", false, req.Refused(
-			result.Say("the branch %s is behind origin's copy of it", p.branch),
-			result.NextStep("run `git pull --ff-only origin %s`"+thenRunAgain, p.branch, req.Command))
+			result.Say("the branch %s is behind origin's copy of it", result.Branch(p.branch)),
+			result.NextStep("run `git pull --ff-only origin %s`"+thenRunAgain, result.Branch(p.branch), req.ilsCommand()))
 
 	}
 

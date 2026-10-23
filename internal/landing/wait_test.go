@@ -421,6 +421,59 @@ func TestAwaitVerdict_WhenChecksConclude_ReturnsTheMergeStateReadAfterThem(t *te
 	}})
 }
 
+func TestAwaitVerdict_WhenGivenALogger_LogsEachDecisionOfTheWait(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		script forgetest.Script
+		want   []string
+		left   time.Duration
+	}{
+		{
+			name:   "a wait that ends green",
+			script: forgetest.Script{Head: shows(unknown(), clean()), Verdict: says(running(), passing())},
+			want: []string{
+				"DEBUG wait read=merge-state state=unknown window=30s",
+				"DEBUG wait read=merge-state state=clean window=28s",
+				"DEBUG wait read=checks done=0 pending=1 verdict=pending",
+				"DEBUG wait read=checks done=1 pending=0 verdict=green",
+				"DEBUG wait read=merge-state state=clean",
+				"DEBUG wait ended=green",
+			},
+		},
+		{
+			// A third poll would end a second past the deadline.
+			name:   "a wait that ends pending on the previous commit",
+			script: forgetest.Script{Head: shows(stale())}, left: 5 * time.Second,
+			want: []string{"DEBUG wait ended=pending stage=head"},
+		},
+		{
+			name: "a wait whose read of the merge state fails",
+			script: forgetest.Script{
+				Head: append(shows(unknown()), forgetest.Answer[forge.Head]{Err: errors.New("HTTP 502")}),
+			},
+			want: []string{
+				"DEBUG wait read=merge-state state=unknown window=30s",
+				"DEBUG wait ended=failed stage=merge-state",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				v := newVigil(t, tt.script, orBound(tt.left))
+				w := watchOn(&v.deps)
+
+				_, _ = landing.AwaitVerdict(v.ctx, v.deps, pushedTip())
+
+				assert.Check(t, is.DeepEqual(w.logged(), tt.want))
+			})
+		})
+	}
+}
+
 func TestAwaitVerdict_WhenTheHeadMovesPastThePushedCommit_EndsMovedToTheNewHead(t *testing.T) {
 	t.Parallel()
 

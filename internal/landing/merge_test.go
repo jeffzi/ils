@@ -61,8 +61,8 @@ func titleText(title string) string {
 // trunkAheadText is the whole text of the refusal of a local trunk whose one commit origin's trunk
 // lacks is sha.
 func trunkAheadText(sha string) string {
-	return "Refused: the local trunk " + trunk + " has commits that origin's trunk lacks, listed here\n" +
-		sha + " local change on " + trunk + "\n" +
+	return sha + " local change on " + trunk + "\n" +
+		"Refused: the local trunk " + trunk + " has commits that origin's trunk lacks, listed here\n" +
 		"Next: move those commits off the local trunk by hand, then run ils merge again\n"
 }
 
@@ -208,10 +208,53 @@ func notMerged(head string) *result.Merge {
 	}
 }
 
-// runMerge runs tt on a scene of its own: `ils merge` ends as the row's arrange says, carries the
-// merge payload only once the pull request is known, writes nothing, and reads no further than the
-// row says.
+// runMerge runs tt on a scene of its own: `ils merge` ends as the row's arrange says, holds every
+// step line it said, carries the merge payload only once the pull request is known, writes
+// nothing, and reads no further than the row says. The row first runs on a scene of its own with no
+// progress hook and no logger, and must end exactly as it does with them.
 func runMerge(t *testing.T, tt mergeRow) {
+	t.Helper()
+
+	// A fake git a row puts on PATH takes the git it finds there as the real one, so the run with
+	// neither is a test of its own, whose cleanup takes its fake off PATH before the next run.
+	var unwatched placedResult
+
+	t.Run("with no progress hook and no logger", func(t *testing.T) {
+		_, bare, got := mergeRowOn(t, tt, false)
+		unwatched = bare.placed(t, got)
+	})
+
+	end, s, got := mergeRowOn(t, tt, true)
+
+	assertStoppedBy(t, got, tt.outcome, mergeRequest())
+
+	text, _ := shown(t, got, s.gitDir)
+	assert.Check(t, is.Equal(text, end.text))
+
+	var want *result.Merge
+	if tt.known {
+		want = notMerged(end.head)
+	}
+
+	assert.Check(t, is.DeepEqual(mergePayload(t, got), want, cmpopts.EquateEmpty()))
+
+	assert.Check(t, is.Equal(s.written(), s.before))
+	assert.Check(t, is.DeepEqual(s.forge.Calls(), mergeAsked(tt.ops), whichRepo()))
+	assert.Check(t, is.Equal(s.gitRan("fetch"), tt.fetches))
+
+	assertSameUnwatched(t, s.placed(t, got), unwatched)
+}
+
+// rowScene is the scene of a merge row, with everything the run could change as it was before.
+type rowScene struct {
+	*scene
+	before string
+}
+
+// mergeRowOn runs `ils merge` on a scene of tt's own, with a progress hook and a logger when
+// watched, and with neither otherwise, and returns how the run must end, the scene and the result.
+// A watched run fails unless every step line it said is held by its result.
+func mergeRowOn(t *testing.T, tt mergeRow, watched bool) (mergeEnd, rowScene, result.Result) {
 	t.Helper()
 
 	var end mergeEnd
@@ -232,6 +275,11 @@ func runMerge(t *testing.T, tt mergeRow) {
 
 	s.useForge(t, script)
 
+	var w *watch
+	if watched {
+		w = watchOn(&s.deps)
+	}
+
 	if tt.answered > 0 {
 		s.stopAnswering(t, tt.answered)
 	}
@@ -245,21 +293,11 @@ func runMerge(t *testing.T, tt mergeRow) {
 
 	got := landing.Merge(ctx, s.deps, mergeRequest())
 
-	assertStoppedBy(t, got, tt.outcome, mergeRequest())
-
-	text, _ := shown(t, got, s.gitDir)
-	assert.Check(t, is.Equal(text, end.text))
-
-	var want *result.Merge
-	if tt.known {
-		want = notMerged(end.head)
+	if watched {
+		assertHeld(t, w, got)
 	}
 
-	assert.Check(t, is.DeepEqual(mergePayload(t, got), want, cmpopts.EquateEmpty()))
-
-	assert.Check(t, is.Equal(s.written(), before))
-	assert.Check(t, is.DeepEqual(s.forge.Calls(), mergeAsked(tt.ops), whichRepo()))
-	assert.Check(t, is.Equal(s.gitRan("fetch"), tt.fetches))
+	return end, rowScene{scene: s, before: before}, got
 }
 
 // runMerges runs each row as a parallel test of its own.

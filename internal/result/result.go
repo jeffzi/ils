@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -72,23 +73,150 @@ const placeholder = "%s"
 // could carry git's or GitHub's words past the wording check, does not compile.
 type wording string
 
+// kind is what a piece of a phrase holds, which decides how the styled
+// renderer draws it.
+type kind int
+
+const (
+	kindWording kind = iota
+	kindName
+	kindBranch
+	kindPullRequest
+	kindSHA
+	kindURL
+	kindCount
+	kindCommand
+)
+
+// Name is a name marked with its kind, for Say and the Next builders to
+// interpolate. Its text prints as an unmarked name does; only the styled
+// renderer tells the kinds apart.
+type Name struct {
+	// spans are the runs the name prints as: one for a single name, and for a
+	// list each name and the wording that joins them.
+	spans []span
+}
+
+// marked returns text as a name of kind k.
+func marked(text string, k kind) Name {
+	return Name{spans: []span{{text: text, kind: k}}}
+}
+
+// Branch marks name as a branch.
+func Branch(name string) Name {
+	return marked(name, kindBranch)
+}
+
+// Branches marks each of names as a branch and joins them as "a, b and c",
+// in the order given.
+func Branches(names []string) Name {
+	return listed(names, kindBranch, func(i int) string {
+		if i == len(names)-1 {
+			return " and "
+		}
+
+		return ", "
+	})
+}
+
+// listed returns texts as names of kind k, each but the first preceded by
+// the wording before(i) gives for its index i.
+func listed(texts []string, k kind, before func(i int) string) Name {
+	var list Name
+	for i, text := range texts {
+		if i > 0 {
+			list.spans = append(list.spans, span{text: before(i), kind: kindWording})
+		}
+
+		list.spans = append(list.spans, span{text: text, kind: k})
+	}
+
+	return list
+}
+
+// PullRequest marks a pull request by its number, printed as "#<number>".
+func PullRequest(number int) Name {
+	return marked("#"+strconv.Itoa(number), kindPullRequest)
+}
+
+// PullRequestNumber marks a pull request by its bare number, printed as
+// "<number>", as a gh command takes it.
+func PullRequestNumber(number int) Name {
+	return marked(strconv.Itoa(number), kindPullRequest)
+}
+
+// SHA marks sha as a commit SHA.
+func SHA(sha string) Name {
+	return marked(sha, kindSHA)
+}
+
+// SHAs marks each of shas as a commit SHA and joins them with spaces, in the
+// order given, as a git command takes them.
+func SHAs(shas []string) Name {
+	return listed(shas, kindSHA, func(int) string { return " " })
+}
+
+// URL marks url as a URL.
+func URL(url string) Name {
+	return marked(url, kindURL)
+}
+
+// Count marks n as a count.
+func Count(n int) Name {
+	return marked(strconv.Itoa(n), kindCount)
+}
+
+// Command marks an ils command by its words after "ils", such as "push",
+// printed as "ils push".
+func Command(words string) Name {
+	return marked("ils "+words, kindCommand)
+}
+
+// span is one run of a rendered phrase: its own wording, or one name.
+type span struct {
+	text string
+	kind kind
+}
+
+// joined returns the text of spans, as the plain renderers print it.
+func joined(spans []span) string {
+	var b strings.Builder
+	for _, s := range spans {
+		b.WriteString(s.text)
+	}
+
+	return b.String()
+}
+
 // Phrase is a piece of output: fixed wording and the names it interpolates,
 // kept apart so that only the wording is checked.
 type Phrase struct {
 	wording string
-	names   []string
+	names   []Name
 }
 
 var lineBreaks = regexp.MustCompile(`[\r\n]+`)
 
 // Say builds a Phrase from wording and the names that fill its %s
 // placeholders, in order. A name is third-party text: a branch, a file, a
-// check, a commit subject, a URL, a count. Each run of line breaks in a name
-// becomes one space, so that a name cannot split a line or forge one.
+// check, a commit subject, a URL, a count. A [Name] keeps the kind it was
+// marked with; any other value is a name of no particular kind. Each run of
+// line breaks in a name becomes one space, so that a name cannot split a line
+// or forge one.
 func Say(w wording, names ...any) Phrase {
-	phrase := Phrase{wording: string(w), names: make([]string, 0, len(names))}
+	phrase := Phrase{wording: string(w), names: make([]Name, 0, len(names))}
 	for _, name := range names {
-		phrase.names = append(phrase.names, lineBreaks.ReplaceAllString(fmt.Sprint(name), " "))
+		given, ok := name.(Name)
+		if !ok {
+			given = marked(fmt.Sprint(name), kindName)
+		}
+
+		oneLine := Name{spans: make([]span, 0, len(given.spans))}
+		for _, s := range given.spans {
+			oneLine.spans = append(oneLine.spans, span{text: lineBreaks.ReplaceAllString(s.text, " "), kind: s.kind})
+		}
+
+		phrase.names = append(phrase.names, oneLine)
 	}
 
 	return phrase
@@ -97,24 +225,25 @@ func Say(w wording, names ...any) Phrase {
 // ErrPlaceholders reports a phrase whose wording and names do not pair up.
 var ErrPlaceholders = errors.New("placeholders and names differ in number")
 
-// text returns the phrase with its names in place.
-func (p Phrase) text() (string, error) {
+// spans returns the phrase with its names in place, as runs of wording and
+// names.
+func (p Phrase) spans() ([]span, error) {
 	parts := strings.Split(p.wording, placeholder)
 	placeholders := len(parts) - 1
 	if placeholders != len(p.names) {
-		return "", fmt.Errorf("%w: %q has %d placeholders and %d names",
+		return nil, fmt.Errorf("%w: %q has %d placeholders and %d names",
 			ErrPlaceholders, p.wording, placeholders, len(p.names))
 	}
 
-	var b strings.Builder
+	spans := make([]span, 0, len(parts)+len(p.names))
 	for i, part := range parts {
-		b.WriteString(part)
+		spans = append(spans, span{text: part, kind: kindWording})
 		if i < len(p.names) {
-			b.WriteString(p.names[i])
+			spans = append(spans, p.names[i].spans...)
 		}
 	}
 
-	return b.String(), nil
+	return spans, nil
 }
 
 type nextKind int
@@ -148,22 +277,28 @@ func NextNone() Next {
 	return Next{}
 }
 
-// text returns the value printed after "Next:".
-func (n Next) text() (string, error) {
+// spans returns the value printed after "Next:". Every span of an ils command
+// is drawn as the command.
+func (n Next) spans() ([]span, error) {
 	if n.kind == nextNone {
-		return "none", nil
+		return []span{{text: "none", kind: kindWording}}, nil
 	}
 
-	text, err := n.phrase.text()
+	spans, err := n.phrase.spans()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	if n.kind == nextCommand {
-		return "ils " + text, nil
+	if n.kind != nextCommand {
+		return spans, nil
 	}
 
-	return text, nil
+	command := []span{{text: "ils ", kind: kindCommand}}
+	for _, s := range spans {
+		command = append(command, span{text: s.text, kind: kindCommand})
+	}
+
+	return command, nil
 }
 
 // wording returns the fixed text of n, as the wording check reads it.

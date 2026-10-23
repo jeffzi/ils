@@ -115,11 +115,9 @@ func (build forgeFor) landing(land, remove error) forgeFor {
 	})
 }
 
-// withLines returns the refusal text with lines printed between its reason and its `Next:` line.
+// withLines returns the refusal text with lines printed above its reason line.
 func withLines(text, lines string) string {
-	reason, next, _ := strings.Cut(text, "\n")
-
-	return reason + "\n" + lines + next
+	return lines + text
 }
 
 // mergeRun is one run of `ils merge` on a scene `setting` describes.
@@ -127,7 +125,9 @@ type mergeRun struct {
 	// ended is the fake time at which Merge returned.
 	ended time.Time
 	*scene
-	tip string
+	// watch is what the run told the progress hook and the logger its deps carry.
+	watch *watch
+	tip   string
 	// before is everything the run could change, as it was before the run.
 	before string
 	got    result.Result
@@ -158,9 +158,25 @@ func runMergeIn(t *testing.T, script forgeFor, left time.Duration) mergeRun {
 }
 
 // runMergeOn runs `ils merge` inside the test's bubble on the scene set describes, under a deadline
-// unless set is unbounded. A landing the forge lets through squashes the tip onto origin's trunk, as
-// GitHub would.
+// unless set is unbounded, and fails unless every step line the run said is held by its result. A
+// landing the forge lets through squashes the tip onto origin's trunk, as GitHub would. The run is
+// first made on a scene of its own with no progress hook and no logger, and must end exactly as it
+// does with them; the run returned is the last, on the last scene set's script was built for.
 func runMergeOn(t *testing.T, set setting) mergeRun {
+	t.Helper()
+
+	unwatched := mergeOn(t, set, false)
+	bare := unwatched.placed(t, unwatched.got)
+
+	run := mergeOn(t, set, true)
+	assertSameUnwatched(t, run.placed(t, run.got), bare)
+
+	return run
+}
+
+// mergeOn runs `ils merge` as runMergeOn does, with a progress hook and a logger when watched, and
+// with neither otherwise.
+func mergeOn(t *testing.T, set setting, watched bool) mergeRun {
 	t.Helper()
 
 	s := newScene(t, set.arrange, forgetest.Script{}, false)
@@ -172,6 +188,11 @@ func runMergeOn(t *testing.T, set setting) mergeRun {
 	}
 
 	s.useForge(t, script)
+
+	var w *watch
+	if watched {
+		w = watchOn(&s.deps)
+	}
 
 	if set.rewire != nil {
 		set.rewire(t, s)
@@ -188,8 +209,13 @@ func runMergeOn(t *testing.T, set setting) mergeRun {
 	before := s.written()
 
 	got := landing.Merge(ctx, s.deps, mergeRequest())
+	ended := time.Now()
 
-	return mergeRun{scene: s, got: got, tip: tip, before: before, ended: time.Now()}
+	if watched {
+		assertHeld(t, w, got)
+	}
+
+	return mergeRun{scene: s, watch: w, got: got, tip: tip, before: before, ended: ended}
 }
 
 // squashOnLand returns a landing hook that squashes tip onto origin's trunk with the landing's subject
@@ -253,11 +279,11 @@ func waitVerdicts() []waitRow {
 	}
 	lint := needed("lint", forge.BucketPass)
 	never := forge.Verdict{Checks: []forge.Check{lint}, MissingRequired: []string{"test"}, Runs: ran(forge.RunCompleted)}
-	nothing := "Refused: no check or status reported for " + tipMark + " on pull request #12\n" + cleanLine + nextNothingHead
+	nothing := cleanLine + "Refused: no check or status reported for " + tipMark + " on pull request #12\n" + nextNothingHead
 	apart := func(state forge.MergeState, raw, reason string) waitRow {
 		return waitRow{
 			name: string(state), script: waiting().showing(inState(state, raw)), outcome: result.Refused,
-			text:    "Refused: " + reason + "\nGitHub: " + raw + " (" + string(state) + ")\n" + nextTrunk,
+			text:    "GitHub: " + raw + " (" + string(state) + ")\nRefused: " + reason + "\n" + nextTrunk,
 			payload: mergeDetail(forge.VerdictNone, state),
 		}
 	}
@@ -266,16 +292,16 @@ func waitVerdicts() []waitRow {
 		{
 			name: "a deciding check failed", script: waiting(red).showing(inState(forge.MergeBlockedOther, "UNSTABLE")),
 			outcome: result.Refused, payload: mergeDetail(forge.VerdictRed, forge.MergeBlockedOther, red.Checks...),
-			text: "Refused: the check lint failed\nCheck lint failed: " + lintURL + "\n" +
-				"GitHub: UNSTABLE (blocked-other)\n" + steps(2, 61) + nextRed,
+			text: "Check lint failed: " + lintURL + "\n" +
+				"GitHub: UNSTABLE (blocked-other)\n" + steps(2, 61) + "Refused: the check lint failed\n" + nextRed,
 		},
 		apart(forge.MergeConflicting, "DIRTY", "the pull request conflicts with the trunk"),
 		{
 			name:    "a required check never reported",
 			script:  waiting(never).ruling("lint", "test").showing(inState(forge.MergeBlockedByMissingCheck, "BLOCKED")),
 			outcome: result.Refused, payload: mergeDetail(forge.VerdictGreen, forge.MergeBlockedByMissingCheck, lint),
-			text: "Refused: a required check never reported\nRequired and never reported: test\n" +
-				"GitHub: BLOCKED (blocked-by-missing-check)\n" + nextNever,
+			text: "Required and never reported: test\n" +
+				"GitHub: BLOCKED (blocked-by-missing-check)\n" + "Refused: a required check never reported\n" + nextNever,
 		},
 		{
 			name:    "nothing reported in a repository with CI on its trunk",
@@ -296,7 +322,7 @@ func waitVerdicts() []waitRow {
 func pendingWaits() []waitRow {
 	ended := fmt.Errorf("gh: %w", context.DeadlineExceeded)
 	cut := func(read string) string {
-		return "The time limit ended while reading " + read + "; nothing more will change\n" + cleanLine + nextPush
+		return cleanLine + "Pending: the time limit ended while reading " + read + "; nothing more will change\n" + nextPush
 	}
 
 	return []waitRow{
@@ -305,7 +331,8 @@ func pendingWaits() []waitRow {
 			// polls of five seconds pass, and a third would end three seconds past the wait's deadline.
 			name: "a check still runs", left: 34 * time.Second,
 			script: waiting(running()).showing(stale(), inState(forge.MergeClean, "CLEAN")), outcome: result.Pending,
-			text:    "Still running after 10 seconds: test\n" + cleanLine + nextPush,
+			text: "Still running after 10 seconds: test\n" + cleanLine +
+				"Pending: the checks were still running at the time limit\n" + nextPush,
 			payload: mergeDetail(forge.VerdictPending, forge.MergeClean, running().Checks...),
 		},
 		{
@@ -355,9 +382,9 @@ func afterWaitStops() []waitRow {
 	// The head has checks named lint and test; named is the line that names the required checks.
 	missing := func(name, named string, required ...string) waitRow {
 		row := greenThen(forge.MergeBlockedByMissingCheck, "BLOCKED",
-			"Refused: a check the trunk requires has no check on "+tipMark+"\n"+
-				"Checks for "+tipMark+": 2 passed, 0 skipped\n"+named+"\n"+
-				"GitHub: BLOCKED (blocked-by-missing-check)\n"+nextMissingStop)
+			"Checks for "+tipMark+": 2 passed, 0 skipped\n"+named+"\n"+
+				"GitHub: BLOCKED (blocked-by-missing-check)\n"+
+				"Refused: a check the trunk requires has no check on "+tipMark+"\n"+nextMissingStop)
 		row.name = name
 		row.script = waiting(requiredPassing()).ruling(required...).
 			showing(inState(forge.MergeClean, "CLEAN"), inState(forge.MergeBlockedByMissingCheck, "BLOCKED"))
@@ -369,22 +396,22 @@ func afterWaitStops() []waitRow {
 	return []waitRow{
 		greenThen(forge.MergeDraft, "DRAFT", withLines(draftText, countLine+"GitHub: DRAFT (draft)\n")),
 		greenThen(forge.MergeBlockedByReview, "BLOCKED",
-			"Refused: pull request #12 requires a review\n"+countLine+"GitHub: BLOCKED (blocked-by-review)\n"+nextReviewStop),
+			countLine+"GitHub: BLOCKED (blocked-by-review)\n"+"Refused: pull request #12 requires a review\n"+nextReviewStop),
 		missing(string(forge.MergeBlockedByMissingCheck), "Required by the trunk with no check on "+tipMark+": build",
 			"lint", "test", "build"),
 		// GitHub expects a check ils cannot tell apart, so every required check is named.
 		missing("blocked-by-missing-check with a check for each required one", "Required by the trunk: lint, test",
 			"lint", "test"),
 		greenThen(forge.MergeBlockedOther, "BLOCKED",
-			"Refused: GitHub blocks pull request #12 for a reason ils does not read: "+pullURL+"\n"+
-				countLine+"GitHub: BLOCKED (blocked-other)\n"+nextBlockedStop),
+			countLine+"GitHub: BLOCKED (blocked-other)\n"+
+				"Refused: GitHub blocks pull request #12 for a reason ils does not read: "+pullURL+"\n"+nextBlockedStop),
 		{
 			name: "blocked by review with nothing reported and no CI on the trunk",
 			script: waiting(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{}).
 				showing(inState(forge.MergeClean, "CLEAN"), reviewed),
 			outcome: result.Refused, payload: mergeDetail(forge.VerdictNone, forge.MergeBlockedByReview),
-			text: "Refused: pull request #12 requires a review\n" + noCILine +
-				"GitHub: BLOCKED (blocked-by-review)\n" + nextReviewStop,
+			text: noCILine + "GitHub: BLOCKED (blocked-by-review)\n" +
+				"Refused: pull request #12 requires a review\n" + nextReviewStop,
 		},
 		{
 			// Polls at two and four seconds find it unknown; a third would end a second past the
@@ -392,7 +419,7 @@ func afterWaitStops() []waitRow {
 			name: "the merge state is still unknown at the wait's deadline", left: 25 * time.Second,
 			script:  waiting(passing()).showing(inState(forge.MergeClean, "CLEAN"), inState(forge.MergeUnknown, "UNKNOWN")),
 			outcome: result.Pending, payload: mergeDetail(forge.VerdictGreen, forge.MergeUnknown, passing().Checks...),
-			text: countLine + "GitHub has not said whether pull request #12 can merge yet\n" + nextPush,
+			text: countLine + "Pending: GitHub did not say whether pull request #12 can merge before the time limit\n" + nextPush,
 		},
 	}
 }
@@ -405,7 +432,7 @@ func settledStops() []waitRow {
 		return waitRow{
 			name:   string(state) + " after an unknown poll",
 			script: waiting(passing()).showing(clean, unknown, inState(state, raw)), outcome: result.Refused,
-			text:    "Refused: " + reason + "\n" + countLine + "GitHub: " + raw + " (" + string(state) + ")\n" + nextTrunk,
+			text:    countLine + "GitHub: " + raw + " (" + string(state) + ")\n" + "Refused: " + reason + "\n" + nextTrunk,
 			payload: mergeDetail(forge.VerdictGreen, state, passing().Checks...),
 		}
 	}
@@ -418,8 +445,8 @@ func settledStops() []waitRow {
 			script: waiting(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{}).
 				showing(clean, inState(forge.MergeConflicting, "DIRTY")),
 			outcome: result.Refused, payload: mergeDetail(forge.VerdictNone, forge.MergeConflicting),
-			text: "Refused: the pull request conflicts with the trunk\n" + noCILine +
-				"GitHub: DIRTY (conflicting)\n" + nextTrunk,
+			text: noCILine + "GitHub: DIRTY (conflicting)\n" +
+				"Refused: the pull request conflicts with the trunk\n" + nextTrunk,
 		},
 		{
 			name:    "a poll of the merge state fails",
@@ -440,7 +467,8 @@ func messageStops() []waitRow {
 		}
 	}
 	late := row("the message read leaves fewer than 20 seconds", titledAfter(""), result.Pending,
-		countLine+cleanLine+"Fewer than 20 seconds of the time limit were left for the merge, so nothing was written\n"+nextPush)
+		countLine+cleanLine+"Fewer than 20 seconds of the time limit were left for the merge, so nothing was written\n"+
+			"Pending: fewer than 20 seconds of the time limit were left for the merge\n"+nextPush)
 	// The wait's deadline is 80 seconds away: the read ends 19 seconds before the command's.
 	late.script = late.script.messageTaking(81 * time.Second)
 	late.payload = composed(worded+" (#12)", "")
@@ -520,11 +548,16 @@ func TestMerge_WhenEveryCheckBeforeTheMergeHolds_ComposesTheMessageFromThePullRe
 func TestMerge_WhenTheMergeStateIsUnknownAfterTheWait_ReadsItAgainEveryTwoSeconds(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-		log := &readLog{}
+		var log *readLog
 		unknownHead := inState(forge.MergeUnknown, "UNKNOWN")
 		build := waiting(passing()).showing(inState(forge.MergeClean, "CLEAN"), unknownHead, unknownHead,
 			inState(forge.MergeClean, "CLEAN")).saying(titledAfter("")).landing(nil, nil)
-		timed := func(tip string) forgetest.Script { return log.timed(build(tip)) }
+		// Each scene's forge keeps a log of its own, so log holds the reads of the run returned.
+		timed := func(tip string) forgetest.Script {
+			log = &readLog{}
+
+			return log.timed(build(tip))
+		}
 
 		run := runMergeIn(t, timed, 0)
 
@@ -574,9 +607,14 @@ func TestMerge_WhenTheHeadMovesWhileTheMergeStateIsReadAgain_RefusesWithoutMergi
 func TestMerge_WhenTheMergeStateStaysUnknownAfterTheWait_StopsOnceItsWindowPassed(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-		log := &readLog{}
+		var log *readLog
 		build := waiting(passing()).showing(inState(forge.MergeClean, "CLEAN"), inState(forge.MergeUnknown, "UNKNOWN"))
-		timed := func(tip string) forgetest.Script { return log.timed(build(tip)) }
+		// Each scene's forge keeps a log of its own, so log holds the reads of the run returned.
+		timed := func(tip string) forgetest.Script {
+			log = &readLog{}
+
+			return log.timed(build(tip))
+		}
 
 		// The deadline leaves time for many more polls than the window allows.
 		run := runMergeIn(t, timed, 10*time.Minute)
@@ -585,11 +623,120 @@ func TestMerge_WhenTheMergeStateStaysUnknownAfterTheWait_StopsOnceItsWindowPasse
 
 		text, reason := shown(t, run.got, run.gitDir)
 		assert.Check(t, is.Equal(text,
-			mark(countLine+"GitHub has not said whether pull request #12 can merge yet\n"+nextPush, run.tip)))
-		assert.Check(t, is.Equal(reason, "GitHub did not say whether the pull request can merge within 30 seconds"))
+			mark(countLine+"Pending: GitHub did not say whether pull request #12 can merge within 30 seconds\n"+nextPush, run.tip)))
+		assert.Check(t, is.Equal(reason, "GitHub did not say whether pull request #12 can merge within 30 seconds"))
 		assert.Check(t, is.DeepEqual(log.pauses(run.ended), polls(15, mergePoll)))
 		assert.Check(t, is.Equal(run.written(), run.before))
 	})
+}
+
+// mergeDrawing is a run of `ils merge` and the parts of its result that a terminal with color draws
+// in the style of their kind, with tipMark where the sha of the tip is printed.
+type mergeDrawing struct {
+	name  string
+	parts []drawnPart
+	set   setting
+}
+
+// mergeDrawings are the runs whose lines and reason name things of each kind.
+func mergeDrawings() []mergeDrawing {
+	return []mergeDrawing{
+		{
+			name: "the pull request lands", set: setting{script: toLand(nil, nil)},
+			parts: []drawnPart{
+				{within: "Checks for " + tipMark, part: tipMark, want: drawnSHA()},
+				{within: "1 passed", part: "1", want: drawnCount()},
+				{within: "Merged pull request #12", part: "#12", want: drawnName()},
+				{within: "into " + trunk, part: trunk, want: drawnName()},
+				{within: "Deleted the branch " + topic, part: topic, want: drawnName()},
+				{within: "On " + trunk, part: trunk, want: drawnName()},
+				{within: "with " + topic + " deleted", part: topic, want: drawnName()},
+			},
+		},
+		{
+			name: "the pull request was already merged",
+			set:  setting{arrange: landAndPublish, script: resuming().deleting(nil)},
+			parts: []drawnPart{
+				{within: "Pull request #7", part: "#7", want: drawnName()},
+				{within: "merged into " + trunk, part: trunk, want: drawnName()},
+			},
+		},
+		{
+			name: "the merge state stays unknown after the wait",
+			set: setting{
+				script: waiting(passing()).showing(inState(forge.MergeClean, "CLEAN"), inState(forge.MergeUnknown, "UNKNOWN")),
+				left:   10 * time.Minute,
+			},
+			parts: []drawnPart{
+				{within: "whether pull request #12", part: "#12", want: drawnName()},
+				{within: "Next: ils push", part: "ils push", want: drawnName()},
+			},
+		},
+		{
+			name: "the message read fails",
+			set:  setting{script: waiting(passing()).saying(forgetest.Answer[forge.Message]{Err: errors.New("HTTP 502")})},
+			parts: []drawnPart{
+				{within: "run ils merge again", part: "ils merge", want: drawnName()},
+			},
+		},
+	}
+}
+
+// mergeStepDrawings are the runs whose next step is a shell command that names a pull request, a
+// branch or the trunk.
+func mergeStepDrawings() []mergeDrawing {
+	return []mergeDrawing{
+		{
+			name: "the pull request is a draft", set: setting{script: merging().drafted()},
+			parts: []drawnPart{{within: repoArg + " 12`", part: "12", want: drawnName()}},
+		},
+		{
+			name: "the title is not a conventional commit subject", set: setting{script: merging().titled("fix-thing")},
+			parts: []drawnPart{{within: repoArg + " 12 --title", part: "12", want: drawnName()}},
+		},
+		{
+			name: "the pull request conflicts with the trunk after the wait",
+			set: setting{script: waiting(passing()).showing(
+				inState(forge.MergeClean, "CLEAN"), inState(forge.MergeConflicting, "DIRTY"))},
+			parts: []drawnPart{{within: "origin/" + trunk + "`, resolve", part: trunk, want: drawnName()}},
+		},
+		{
+			name: "the delete of the branch on the trunk fails",
+			set:  setting{script: toLand(nil, nil), landed: lockRef("refs/heads/" + topic)},
+			parts: []drawnPart{
+				{within: "-D " + topic + "` and", part: topic, want: drawnName()},
+				{within: "origin " + trunk + "` by hand", part: trunk, want: drawnName()},
+			},
+		},
+		{
+			name:  "the pull of the trunk fails",
+			set:   setting{script: toLand(nil, nil), landed: func(_ *testing.T, f *gittest.Fixture) { f.AdvanceTrunk() }},
+			parts: []drawnPart{{within: "origin " + trunk + "` by hand", part: trunk, want: drawnName()}},
+		},
+		{
+			name: "the delete of the branch when detached fails",
+			set: setting{
+				arrange: func(f *gittest.Fixture) { f.TrunkWorktree() }, script: toLand(nil, nil),
+				landed: lockRef("refs/heads/" + topic),
+			},
+			parts: []drawnPart{{within: "-D " + topic + "` by hand", part: topic, want: drawnName()}},
+		},
+	}
+}
+
+func TestMerge_WhenRenderedWithColor_DrawsEachNameInTheStyleOfItsKind(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range slices.Concat(mergeDrawings(), mergeStepDrawings()) {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				run := runMergeOn(t, tt.set)
+
+				assertDrawn(t, run.got, run.gitDir, atTip(tt.parts, run.tip))
+			})
+		})
+	}
 }
 
 func TestMerge_WhenTrunkRequiresChecks_WaitsForThoseOfTheHead(t *testing.T) {

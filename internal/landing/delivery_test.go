@@ -223,12 +223,14 @@ type pushRow struct {
 	quiet bool
 }
 
-// delivery is a scene whose branch Push can push: the tip and the deadline the push runs under.
+// delivery is a scene whose branch Push can push: the tip, the deadline the push runs under, and
+// what the push tells the progress hook and the logger its deps carry.
 type delivery struct {
 	*scene
 
-	ctx context.Context
-	tip string
+	ctx   context.Context
+	watch *watch
+	tip   string
 }
 
 // newDelivery returns the scene of tt on the topic branch, with a deadline the time tt has left
@@ -240,15 +242,18 @@ func newDelivery(t *testing.T, tt pushRow) *delivery {
 	sha := s.fixture.Git("rev-parse", topic)
 
 	s.useForge(t, tt.script(sha))
+	w := watchOn(&s.deps)
 
 	ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(orBound(tt.left)))
 	t.Cleanup(cancel)
 
-	return &delivery{scene: s, ctx: ctx, tip: sha}
+	return &delivery{scene: s, ctx: ctx, watch: w, tip: sha}
 }
 
-// runPushes runs each row as a test in a bubble of its own: the push ends as the row wants,
-// origin's copy of the branch is at the tip, and git pushed unless the row is quiet.
+// runPushes runs each row as a test in a bubble of its own: the push ends as the row wants, with
+// every step line it said held by its result, origin's copy of the branch is at the tip, and git
+// pushed unless the row is quiet. The row first runs on a scene of its own with no progress hook
+// and no logger, and must end exactly as it does with them.
 func runPushes(t *testing.T, rows []pushRow) {
 	t.Helper()
 
@@ -256,13 +261,19 @@ func runPushes(t *testing.T, rows []pushRow) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
+				unwatched := newDelivery(t, tt)
+				unwatched.deps.Progress, unwatched.deps.Logger = nil, nil
+				bare := unwatched.placed(t, landing.Push(unwatched.ctx, unwatched.deps, pushRequest()))
+
 				d := newDelivery(t, tt)
 
 				got := landing.Push(d.ctx, d.deps, pushRequest())
 
 				assertDelivered(t, d.scene, got, tt.want.at(d.tip))
+				assertHeld(t, d.watch, got)
 				assert.Check(t, is.Equal(d.onOrigin(), d.tip))
 				assert.Check(t, is.Equal(d.gitRan("push"), !tt.quiet))
+				assertSameUnwatched(t, d.placed(t, got), bare)
 			})
 		})
 	}
@@ -299,6 +310,143 @@ func TestPush_WhenEveryPreconditionHolds_ReportsTheVerdictOfThePushedBranch(t *t
 	runPushes(t, pushWriteRows())
 }
 
+func TestPush_WhenGivenAProgressHook_ReportsEachStepAndTheLineItSaid(t *testing.T) {
+	t.Parallel()
+
+	hide := func(f *gittest.Fixture) { f.OriginGit("config", "receive.hideRefs", "refs/heads/"+topic) }
+	tests := []struct {
+		arrange func(*gittest.Fixture)
+		script  forgeFor
+		name    string
+		// want is every event the hook is told, with tipMark where the sha of the tip is printed.
+		want []string
+		left time.Duration
+	}{
+		{
+			name: "first push of the branch, with its check still running at the first read", script: opening(running(), passing()),
+			want: []string{
+				checkingStep, pushingStep, said(pushedLine), openingStep, said(openedLine),
+				waitingStep(bound), "count 0 of 1", "count 1 of 1", said(countLine),
+			},
+		},
+		{
+			name:   "open pull request whose merge state is unknown at the first read",
+			script: reusing(passing()).showing(inState(forge.MergeUnknown, "UNKNOWN"), inState(forge.MergeClean, "CLEAN")),
+			want: []string{
+				checkingStep, pushingStep, said(pushedLine), said(foundLine),
+				waitingStep(bound), mergeStateStep, waitingStep(bound - mergePoll), "count 1 of 1", said(countLine),
+			},
+		},
+		{
+			name: "open-change reports a pull request that already exists", script: reporting(nil, []forge.Change{standing()}),
+			want: []string{
+				checkingStep, pushingStep, said(pushedLine), openingStep, findingStep, said(foundLine),
+				waitingStep(bound), "count 1 of 1", said(countLine),
+			},
+		},
+		{
+			name: "git refuses the push", arrange: hide, script: opening(),
+			want: []string{checkingStep, pushingStep},
+		},
+		{
+			// The head catches up after one poll of two seconds; then two polls of five seconds pass,
+			// and a third would end three seconds past the deadline.
+			name: "a check still runs at the deadline", left: 14 * time.Second,
+			script: reusing(running()).showing(stale(), inState(forge.MergeClean, "CLEAN")),
+			want: []string{
+				checkingStep, pushingStep, said(pushedLine), said(foundLine),
+				waitingStep(14 * time.Second), "count 0 of 1", "count 0 of 1", "count 0 of 1",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				d := newDelivery(t, pushRow{arrange: tt.arrange, script: tt.script, left: tt.left})
+
+				landing.Push(d.ctx, d.deps, pushRequest())
+
+				assert.Check(t, is.DeepEqual(d.watch.told(t), markAll(tt.want, d.tip)))
+			})
+		})
+	}
+}
+
+// deliveredDrawing is a push and the parts of its result that a terminal with color draws in the
+// style of their kind.
+type deliveredDrawing struct {
+	script forgeFor
+	name   string
+	parts  []drawnPart
+	left   time.Duration
+}
+
+func deliveredDrawings() []deliveredDrawing {
+	return []deliveredDrawing{
+		{
+			name: "a first push that ends green", script: opening(passing()),
+			parts: []drawnPart{
+				{within: "Pushed " + topic, part: topic, want: drawnName()},
+				{within: "at " + tipMark, part: tipMark, want: drawnSHA()},
+				{within: "Opened pull request #12", part: "#12", want: drawnName()},
+				{within: "against " + trunk, part: trunk, want: drawnName()},
+				{within: "no body: " + pullURL, part: pullURL, want: drawnURL()},
+				{within: "Checks for " + tipMark, part: tipMark, want: drawnSHA()},
+				{within: "1 passed", part: "1", want: drawnCount()},
+				{within: "0 skipped", part: "0", want: drawnCount()},
+				{within: repoArg + " 12 --title", part: "12", want: drawnName()},
+				{within: "then run ils merge", part: "ils merge", want: drawnName()},
+			},
+		},
+		{
+			name: "the pull request still shows an earlier commit", left: 5 * time.Second,
+			script: reusing().showing(stale()),
+			parts: []drawnPart{
+				{within: "Pull request #12:", part: "#12", want: drawnName()},
+				{within: "#12: " + pullURL, part: pullURL, want: drawnURL()},
+				{within: "show " + tipMark, part: tipMark, want: drawnSHA()},
+				{within: "on pull request #12 before", part: "#12", want: drawnName()},
+				{within: "Next: ils push", part: "ils push", want: drawnName()},
+			},
+		},
+		{
+			name:   "nothing reported for the pushed commit",
+			script: opening(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{Value: true}),
+			parts: []drawnPart{
+				{within: "reported for " + tipMark, part: tipMark, want: drawnSHA()},
+				{within: "on pull request #12", part: "#12", want: drawnName()},
+			},
+		},
+		{
+			name: "a check failed",
+			script: redRow("", forge.BucketFail, forge.FailedLog{Text: steps(1, 3), State: forge.FailedLogRead},
+				steps(1, 3)).script,
+			parts: []drawnPart{
+				{within: "failed: " + lintURL, part: lintURL, want: drawnURL()},
+				{within: "run ils push again", part: "ils push", want: drawnName()},
+			},
+		},
+	}
+}
+
+func TestPush_WhenDeliveredAndRenderedWithColor_DrawsEachNameInTheStyleOfItsKind(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range deliveredDrawings() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				d := newDelivery(t, pushRow{script: tt.script, left: tt.left})
+
+				got := landing.Push(d.ctx, d.deps, pushRequest())
+
+				assertDrawn(t, got, d.gitDir, atTip(tt.parts, d.tip))
+			})
+		})
+	}
+}
+
 func TestPush_WhenTrunkRequiresChecks_PassesThemToEveryForgeRead(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
@@ -311,17 +459,19 @@ func TestPush_WhenTrunkRequiresChecks_PassesThemToEveryForgeRead(t *testing.T) {
 	})
 }
 
+// reporting is a forge whose open-change reports a pull request that already exists, whose
+// find-changes answers with each of lists in turn, and whose checks pass.
+func reporting(lists ...[]forge.Change) forgeFor {
+	exists := forgetest.Answer[forge.ChangeRef]{Err: fmt.Errorf("gh pr create: %w", forge.ErrChangeExists)}
+
+	return opening(passing()).with(func(script *forgetest.Script, _ string) {
+		script.OpenChange = []forgetest.Answer[forge.ChangeRef]{exists}
+		script.FindChanges = listing(lists...)
+	})
+}
+
 // pushExistsRows are the pushes whose open-change reports a pull request that already exists.
 func pushExistsRows() []pushRow {
-	exists := forgetest.Answer[forge.ChangeRef]{Err: fmt.Errorf("gh pr create: %w", forge.ErrChangeExists)}
-	// reporting is a forge whose find-changes answers with each of lists in turn.
-	reporting := func(lists ...[]forge.Change) forgeFor {
-		return opening(passing()).with(func(script *forgetest.Script, _ string) {
-			script.OpenChange = []forgetest.Answer[forge.ChangeRef]{exists}
-			script.FindChanges = listing(lists...)
-		})
-	}
-
 	return []pushRow{
 		{
 			name:   "and the branch's pull requests now hold one against the trunk",
@@ -332,7 +482,7 @@ func pushExistsRows() []pushRow {
 			want: finish{
 				outcome: result.Broke, reason: "no pull request was opened or found",
 				text: pushedLine + "No pull request was opened or found: GitHub reports one for " + topic +
-					" and lists none open against " + trunk + "\n" + nextFixed,
+					" and lists none open against " + trunk + "\n" + "Broke: no pull request was opened or found\n" + nextFixed,
 			},
 		},
 	}
@@ -359,7 +509,7 @@ func TestPush_WhenGitRefusesThePush_BrokeSayingNothingWasPushed(t *testing.T) {
 	assert.Check(t, is.Equal(reason, "git refused the push"))
 
 	prefix := "Git refused the push of " + topic + ", so nothing was pushed: "
-	suffix := "\n" + nextFixed
+	suffix := "\nBroke: git refused the push\n" + nextFixed
 	said, starts := strings.CutPrefix(text, prefix)
 	said, ends := strings.CutSuffix(said, suffix)
 	assert.Check(t, starts && ends, "RenderText() = %q, want it to start with %q and end with %q", text, prefix, suffix)
@@ -385,7 +535,7 @@ func pushOpenFailureRows() []pushRow {
 			name: "for a reason of the forge", script: failing(errors.New("HTTP 502")),
 			want: finish{
 				outcome: result.Broke, reason: "could not open the pull request",
-				text: pushedLine + "No pull request was opened: HTTP 502\n" + nextFixed,
+				text: pushedLine + "No pull request was opened: HTTP 502\n" + "Broke: could not open the pull request\n" + nextFixed,
 			},
 		},
 		{
@@ -394,7 +544,7 @@ func pushOpenFailureRows() []pushRow {
 			want: finish{
 				outcome: result.Broke, reason: "the time limit ended while opening the pull request",
 				text: pushedLine + "Started opening the pull request when the time limit ended; " +
-					"it may or may not have been opened\n" + nextPush,
+					"it may or may not have been opened\n" + "Broke: the time limit ended while opening the pull request\n" + nextPush,
 			},
 		},
 	}
@@ -418,7 +568,7 @@ func TestPush_WhenDeadlineEndsDuringTheGitPush_BrokeSayingThePushMayHaveTaken(t 
 	assertDelivered(t, s, got, finish{
 		outcome: result.Broke, reason: "the time limit ended during the push",
 		text: "Started the push of " + topic + " at " + sha + " when the time limit ended; " +
-			"it may or may not have taken\n" + nextPush,
+			"it may or may not have taken\n" + "Broke: the time limit ended during the push\n" + nextPush,
 	})
 	assertAsked(t, s, changesRead())
 }
@@ -448,7 +598,7 @@ func TestPush_WhenTheGitPushFailsOtherThanByRefusalOrDeadline_BrokeSayingNothing
 	assertDelivered(t, s, got, finish{
 		outcome: result.Broke, reason: "could not push the branch",
 		text: "Could not push " + topic + ", so nothing was pushed: git push -u origin refs/heads/" + topic +
-			":refs/heads/" + topic + ": context canceled\n" + nextFixed,
+			":refs/heads/" + topic + ": context canceled\n" + "Broke: could not push the branch\n" + nextFixed,
 	})
 	assertAsked(t, s, changesRead())
 }
@@ -483,8 +633,8 @@ func pushUnreportedRows() []pushRow {
 	nothing := finish{
 		outcome: result.DeliveredNotGreen,
 		reason:  "no check or status reported for " + tipMark + " on pull request #12",
-		text: pushedLine + openedLine + "No check or status reported for " + tipMark +
-			" on pull request #12\n" + cleanLine + nextNothing,
+		text: pushedLine + openedLine + cleanLine +
+			"Delivered, not green: no check or status reported for " + tipMark + " on pull request #12\n" + nextNothing,
 		payload: detail(forge.VerdictNone, forge.MergeClean),
 	}
 
@@ -495,7 +645,7 @@ func pushUnreportedRows() []pushRow {
 			want: finish{
 				outcome: result.DeliveredNotGreen, reason: "a required check never reported",
 				text: pushedLine + openedLine + "Required and never reported: test\n" +
-					"GitHub: BLOCKED (blocked-by-missing-check)\n" + nextNever,
+					"GitHub: BLOCKED (blocked-by-missing-check)\n" + "Delivered, not green: a required check never reported\n" + nextNever,
 				payload: detail(forge.VerdictGreen, forge.MergeBlockedByMissingCheck, lint),
 			},
 		},
@@ -528,7 +678,8 @@ func pushNoCIRows() []pushRow {
 			script: silent.answeringCI(forgetest.Answer[bool]{Err: err}),
 			want: finish{
 				outcome: result.Broke, reason: "could not read " + readCI,
-				text:    pushedLine + openedLine + "Could not read " + readCI + ": " + said + "\n" + nextFixed,
+				text: pushedLine + openedLine + "Could not read " + readCI + ": " + said + "\n" +
+					"Broke: could not read " + readCI + "\n" + nextFixed,
 				payload: detail(forge.VerdictNone, forge.MergeClean),
 			},
 		}
@@ -542,7 +693,8 @@ func pushNoCIRows() []pushRow {
 			script: unverified.showing(inState(forge.MergeClean, "CLEAN"), inState(forge.MergeConflicting, "DIRTY")),
 			want: finish{
 				outcome: result.DeliveredNotGreen, reason: "the pull request conflicts with the trunk",
-				text:    pushedLine + openedLine + noCILine + "GitHub: DIRTY (" + string(forge.MergeConflicting) + ")\n" + nextTrunk,
+				text: pushedLine + openedLine + noCILine + "GitHub: DIRTY (" + string(forge.MergeConflicting) + ")\n" +
+					"Delivered, not green: the pull request conflicts with the trunk\n" + nextTrunk,
 				payload: detail(forge.VerdictNone, forge.MergeConflicting),
 			},
 		},
@@ -679,7 +831,7 @@ func TestPush_WhenTheHeadMovesPastThePushedCommit_RefusesNamingTheNewHead(t *tes
 
 	refused := finish{
 		outcome: result.Refused, reason: "the head of pull request #12 moved to " + movedSHA,
-		text: "Refused: the head of pull request #12 moved to " + movedSHA + "\n" + pushedLine + foundLine +
+		text: pushedLine + foundLine + "Refused: the head of pull request #12 moved to " + movedSHA + "\n" +
 			"Next: pull the new commit, then run ils push again\n",
 		payload: detail(forge.VerdictNone, forge.MergeClean),
 	}
@@ -756,7 +908,7 @@ func brokenAfter(reads []failingRead) []pushRow {
 	for _, read := range reads {
 		rows = append(rows, read.row(finish{
 			outcome: result.Broke, reason: "could not read " + read.name,
-			text: read.before + "Could not read " + read.name + ": HTTP 502\n" + nextFixed,
+			text: read.before + "Could not read " + read.name + ": HTTP 502\n" + "Broke: could not read " + read.name + "\n" + nextFixed,
 		}))
 	}
 
@@ -771,8 +923,9 @@ func TestPush_WhenDeadlineEndsInAReadAfterTheWrites_PendingNamingTheRead(t *test
 
 	for _, read := range reads {
 		rows = append(rows, read.row(finish{
-			outcome: result.Pending, reason: "the time limit ended while reading " + read.name,
-			text: read.before + "The time limit ended while reading " + read.name + "; nothing more will change\n" + nextPush,
+			outcome: result.Pending, reason: "the time limit ended while reading " + read.name + "; nothing more will change",
+			text: read.before + "Pending: the time limit ended while reading " + read.name + "; nothing more will change\n" +
+				nextPush,
 		}))
 	}
 

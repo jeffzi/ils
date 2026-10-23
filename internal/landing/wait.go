@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -213,15 +214,60 @@ func endedByDeadline(err error) bool {
 // WaitPending at that stage with no verdict, whatever the checks said, since the checks are
 // read for the pull request's current head and only that read shows it is still the pushed
 // commit.
+//
+// It tells deps' progress hook when it starts waiting for the checks, and again once it has waited
+// for the merge state, and gives deps' logger a record of each read of the merge state and of the
+// checks, and of how it ended.
 func AwaitVerdict(ctx context.Context, deps Deps, pushed Pushed) (Waited, error) {
 	w := waiter{deps: deps, pushed: pushed}
 
 	waited, stage, err := w.run(ctx)
 	if err == nil || waited.endPending(stage, err) {
+		w.logEnd(ctx, waited)
+
 		return waited, nil
 	}
 
+	deps.logWait(ctx, slog.String("ended", "failed"), slog.String("stage", string(stage)))
+
 	return Waited{}, &WaitError{Stage: stage, Err: err}
+}
+
+// logEnd logs how the wait ended: its outcome, and the stage a pending wait ended in.
+func (w waiter) logEnd(ctx context.Context, waited Waited) {
+	attrs := []slog.Attr{slog.String("ended", string(waited.Outcome))}
+	if waited.Outcome == WaitPending {
+		attrs = append(attrs, slog.String("stage", string(waited.Stage)))
+	}
+
+	w.deps.logWait(ctx, attrs...)
+}
+
+// startChecks tells the progress hook that the wait for the checks began, limited to the time
+// left before ctx's deadline.
+func (w waiter) startChecks(ctx context.Context) {
+	w.deps.started(result.Say("Waiting for checks on %s", result.PullRequest(w.pushed.Number)), timeLeft(ctx))
+}
+
+// logState logs a read of the merge state that showed head. window is the time left to poll an
+// unknown state, or a negative duration for a read no poll follows.
+func (w waiter) logState(ctx context.Context, head forge.Head, window time.Duration) {
+	attrs := []slog.Attr{slog.String("read", "merge-state"), slog.String("state", string(head.MergeState))}
+	if window >= 0 {
+		attrs = append(attrs, slog.Duration("window", window))
+	}
+
+	w.deps.logWait(ctx, attrs...)
+}
+
+// logChecks logs a read of the checks: how many deciding checks concluded, how many still run, and
+// the verdict's state. It tells the progress hook the count.
+func (w waiter) logChecks(ctx context.Context, verdict forge.Verdict) {
+	deciding, pending := len(verdict.Deciding()), len(verdict.Pending())
+
+	w.deps.counted(deciding-pending, deciding)
+	w.deps.logWait(ctx, slog.String("read", "checks"), slog.Int("done", deciding-pending),
+		slog.Int("pending", pending), slog.String("verdict", string(verdict.State())))
 }
 
 // endPending makes w WaitPending at stage when err is the deadline or mergeWindow ending that
@@ -253,27 +299,8 @@ type waiter struct {
 func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 	var waited Waited
 
-	head, err := w.caughtUp(ctx)
-	waited.takeState(head)
-
-	if err != nil {
-		return waited, StageHead, err
-	}
-
-	head, err = w.mergeKnown(ctx, head)
-	if err == nil && w.movedOn(&waited, head) {
-		return waited, "", nil
-	}
-
-	waited.takeState(head)
-
-	if err != nil {
-		return waited, StageMergeState, err
-	}
-
-	// A conflicting pull request runs no workflow, so its missing checks say nothing.
-	if waited.takeApart() {
-		return waited, "", nil
+	if ended, stage, err := w.readied(ctx, &waited); ended {
+		return waited, stage, err
 	}
 
 	verdict, outcome, err := w.concluded(ctx, &waited)
@@ -300,6 +327,8 @@ func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 		return waited.unconfirmed(), StageMergeState, afterErr
 	}
 
+	w.logState(ctx, after, -1)
+
 	if w.movedOn(&waited, after) {
 		return waited, "", nil
 	}
@@ -312,6 +341,48 @@ func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 	}
 
 	return waited, StageVerdict, err
+}
+
+// readied runs the stages before the checks: until the pushed commit is the head, then until its
+// merge state is known. It reports whether they ended the wait, by a stage that failed or ran out of
+// time, which it returns with its error, by a head on another commit, or by a pull request apart
+// from its trunk. Once it waited for the merge state, it tells the progress hook the wait for the
+// checks goes on.
+func (w waiter) readied(ctx context.Context, waited *Waited) (ended bool, stage WaitStage, err error) {
+	w.startChecks(ctx)
+
+	head, err := w.caughtUp(ctx)
+	waited.takeState(head)
+
+	if err != nil {
+		return true, StageHead, err
+	}
+
+	w.logState(ctx, head, mergeWindow)
+
+	polled := head.MergeState == forge.MergeUnknown
+
+	head, err = w.mergeKnown(ctx, head)
+	if err == nil && w.movedOn(waited, head) {
+		return true, "", nil
+	}
+
+	waited.takeState(head)
+
+	if err != nil {
+		return true, StageMergeState, err
+	}
+
+	// A conflicting pull request runs no workflow, so its missing checks say nothing.
+	if waited.takeApart() {
+		return true, "", nil
+	}
+
+	if polled {
+		w.startChecks(ctx)
+	}
+
+	return false, "", nil
 }
 
 // movedOn reports whether head, read once the pushed commit was the head, is on another commit
@@ -362,10 +433,17 @@ func (w waiter) caughtUp(ctx context.Context) (forge.Head, error) {
 // mergeKnown polls the head, starting from the one just read, until its merge state is known,
 // the head is on another commit than the pushed one, or mergeWindow has passed, and returns the
 // last head it read. A head on another commit ends the poll: the state it carries is that commit's.
+//
+// It tells the progress hook when it starts polling, and logs each read it makes.
 func (w waiter) mergeKnown(ctx context.Context, head forge.Head) (forge.Head, error) {
 	began := time.Now()
 
-	for head.MergeState == forge.MergeUnknown && head.SHA == w.pushed.SHA {
+	if w.unknownOnPushed(head) {
+		w.deps.started(result.Say("Waiting for GitHub to say whether %s can merge", result.PullRequest(w.pushed.Number)),
+			mergeWindow)
+	}
+
+	for w.unknownOnPushed(head) {
 		if time.Since(began)+mergePoll > mergeWindow {
 			return head, errWindowPassed
 		}
@@ -380,9 +458,15 @@ func (w waiter) mergeKnown(ctx context.Context, head forge.Head) (forge.Head, er
 		}
 
 		head = next
+		w.logState(ctx, head, mergeWindow-time.Since(began))
 	}
 
 	return head, nil
+}
+
+// unknownOnPushed reports whether head is the pushed commit with its merge state still unknown.
+func (w waiter) unknownOnPushed(head forge.Head) bool {
+	return head.MergeState == forge.MergeUnknown && head.SHA == w.pushed.SHA
 }
 
 // concluded polls the verdict until the checks conclude and returns the last verdict it read
@@ -408,6 +492,7 @@ func (w waiter) concluded(ctx context.Context, waited *Waited) (forge.Verdict, W
 
 		last = verdict
 		waited.Since = began
+		w.logChecks(ctx, verdict)
 
 		outcome, done = w.judge(verdict)
 		// Runs appear some seconds after a push, so a verdict without them is only believed once
@@ -553,11 +638,10 @@ func waitRead(err error) (string, error) {
 	}
 }
 
-// cutShortReading returns the line and the reason that say the time limit ended while reading
-// read.
-func cutShortReading(read string) (line, reason result.Phrase) {
-	return result.Say("The time limit ended while reading %s; nothing more will change", read),
-		result.Say("the time limit ended while reading %s", read)
+// cutShortReading returns the reason that says the time limit ended while reading read, with
+// nothing more to change.
+func cutShortReading(read string) result.Phrase {
+	return result.Say("the time limit ended while reading %s; nothing more will change", read)
 }
 
 // waitReport is what a result says about a wait whose outcome stops the command: its lines, the
@@ -590,9 +674,9 @@ func (r waitReport) outcome(stopped result.Outcome) result.Outcome {
 
 // stopReport returns the report of a wait that ended red, apart from the trunk, with a required
 // check that never reported, pending, or on a head that moved, about the commit sha of pull request
-// number, whose trunk is trunk, for the command named command. It returns false for green checks
+// number, whose trunk is trunk, for the ils command command. It returns false for green checks
 // and for nothing reported, which each command maps on its own.
-func (w Waited) stopReport(command, sha, trunk string, number int) (waitReport, bool) {
+func (w Waited) stopReport(command result.Name, sha, trunk string, number int) (waitReport, bool) {
 	switch w.Outcome {
 	case WaitGreen, WaitNothingReported:
 		return waitReport{}, false
@@ -613,7 +697,7 @@ func (w Waited) stopReport(command, sha, trunk string, number int) (waitReport, 
 		}, true
 	case WaitMoved:
 		return waitReport{
-			reason:  result.Say("the head of pull request #%s moved to %s", number, w.MovedTo),
+			reason:  result.Say("the head of pull request %s moved to %s", result.PullRequest(number), result.SHA(w.MovedTo)),
 			next:    result.NextStep("pull the new commit"+thenRunAgain, command),
 			refused: true,
 		}, true
@@ -627,11 +711,11 @@ func (w Waited) stopReport(command, sha, trunk string, number int) (waitReport, 
 func (w Waited) redReport() waitReport {
 	failed, _ := w.Verdict.Failed()
 
-	line := result.Say("Check %s failed: %s", failed.Name, failed.Link)
+	line := result.Say("Check %s failed: %s", failed.Name, result.URL(failed.Link))
 	reason := result.Say("the check %s failed", failed.Name)
 
 	if failed.Canceled {
-		line = result.Say("Check %s was canceled: %s", failed.Name, failed.Link)
+		line = result.Say("Check %s was canceled: %s", failed.Name, result.URL(failed.Link))
 		reason = result.Say("the check %s was canceled", failed.Name)
 	}
 
@@ -639,7 +723,7 @@ func (w Waited) redReport() waitReport {
 		lines:   []result.Phrase{line, w.mergeStateLine()},
 		excerpt: w.excerpt(),
 		reason:  reason,
-		next:    result.NextStep("fix the failing check, commit, and run ils push again"),
+		next:    result.NextStep("fix the failing check, commit, and run %s again", result.Command(PushCommand)),
 	}
 }
 
@@ -656,7 +740,7 @@ func (w Waited) apartReport(sha, trunk string, reason result.Phrase) waitReport 
 		lines:  append(lines, w.mergeStateLine()),
 		reason: reason,
 		next: result.NextStep("merge the trunk into the branch with `git merge origin/%s`, resolve the conflicts, "+
-			"commit, and run ils push again", trunk),
+			"commit, and run %s again", result.Branch(trunk), result.Command(PushCommand)),
 	}
 }
 
@@ -664,19 +748,18 @@ func (w Waited) apartReport(sha, trunk string, reason result.Phrase) waitReport 
 // request number, at the stage it was in.
 func (w Waited) pendingReport(sha string, number int) waitReport {
 	report := waitReport{pending: true, next: result.NextCommand(PushCommand)}
+	pull := result.PullRequest(number)
 
 	switch w.Stage {
 	case StageHead:
-		report.lines = []result.Phrase{result.Say("GitHub does not show %s on pull request #%s yet", sha, number)}
-		report.reason = result.Say("GitHub did not show the pushed commit on the pull request before the time limit")
+		report.reason = result.Say("GitHub did not show %s on pull request %s before the time limit", result.SHA(sha), pull)
 	case StageMergeState:
-		report.lines = []result.Phrase{result.Say("GitHub has not said whether pull request #%s can merge yet", number)}
-		report.reason = result.Say("GitHub did not say whether the pull request can merge before the time limit")
+		report.reason = result.Say("GitHub did not say whether pull request %s can merge before the time limit", pull)
 
 		// The stage's own window ended the wait: the time limit was not reached.
 		if w.Window > 0 {
-			report.reason = result.Say("GitHub did not say whether the pull request can merge within %s seconds",
-				int(w.Window/time.Second))
+			report.reason = result.Say("GitHub did not say whether pull request %s can merge within %s seconds",
+				pull, int(w.Window/time.Second))
 		}
 	default:
 		report.lines, report.reason = w.unconcluded(sha, number)
@@ -692,24 +775,20 @@ func (w Waited) unconcluded(sha string, number int) ([]result.Phrase, result.Phr
 	var lines []result.Phrase
 
 	reason := result.Say("the checks were still running at the time limit")
+	commit, pull := result.SHA(sha), result.PullRequest(number)
 
 	switch {
 	case w.Since.IsZero():
-		var line result.Phrase
-
-		line, reason = cutShortReading(readChecks)
-		lines = append(lines, line)
+		reason = cutShortReading(readChecks)
 	case silent(w.Verdict):
-		lines = append(lines, result.Say("No check or status has reported for %s on pull request #%s yet", sha, number))
-		reason = result.Say("no check or status had reported at the time limit")
+		reason = result.Say("no check or status had reported for %s on pull request %s at the time limit", commit, pull)
 	case len(w.Verdict.Checks) == 0 && w.Verdict.Running():
 		lines = append(lines, result.Say(
-			"No check has reported for %s on pull request #%s yet; a workflow run is still going", sha, number))
+			"No check has reported for %s on pull request %s yet; a workflow run is still going", commit, pull))
 		reason = result.Say("the checks had not reported at the time limit")
 	// The checks concluded, but the deadline ended the wait for workflow runs to appear.
 	case len(w.Verdict.Runs) == 0 && len(w.Verdict.Pending()) == 0:
-		lines = append(lines, result.Say("No workflow run has started for %s on pull request #%s yet", sha, number))
-		reason = result.Say("no workflow run had started at the time limit")
+		reason = result.Say("no workflow run had started for %s on pull request %s at the time limit", commit, pull)
 	default:
 		seconds := int(time.Since(w.Since) / time.Second)
 		for _, check := range w.Verdict.Pending() {
@@ -722,23 +801,21 @@ func (w Waited) unconcluded(sha string, number int) ([]result.Phrase, result.Phr
 
 // ciCutShortReport is a read of whether the repository has CI that the deadline cut short.
 func (w Waited) ciCutShortReport() waitReport {
-	line, reason := cutShortReading(readCI)
-
 	return waitReport{
-		lines: []result.Phrase{line, w.mergeStateLine()}, reason: reason, next: result.NextCommand(PushCommand), pending: true,
+		lines: []result.Phrase{w.mergeStateLine()}, reason: cutShortReading(readCI), next: result.NextCommand(PushCommand),
+		pending: true,
 	}
 }
 
-// nothingReported returns the line and the reason that say no check or status reported for the
-// commit sha of pull request number.
-func nothingReported(sha string, number int) (line, reason result.Phrase) {
-	return result.Say("No check or status reported for %s on pull request #%s", sha, number),
-		result.Say("no check or status reported for %s on pull request #%s", sha, number)
+// nothingReported returns the reason that says no check or status reported for the commit sha of
+// pull request number.
+func nothingReported(sha string, number int) result.Phrase {
+	return result.Say("no check or status reported for %s on pull request %s", result.SHA(sha), result.PullRequest(number))
 }
 
 // noCI says that the trunk has no CI, so that nothing verified the commit sha.
 func noCI(trunk, sha string) result.Phrase {
-	return result.Say("No CI is configured on %s, so nothing verified %s", trunk, sha)
+	return result.Say("No CI is configured on %s, so nothing verified %s", result.Branch(trunk), result.SHA(sha))
 }
 
 // trunkWithoutCI reports whether ready's trunk has no CI, asked of the forge only when nothing
@@ -787,7 +864,7 @@ func (w Waited) mergeStateLine() result.Phrase {
 
 // checksLine says how many deciding checks of the commit sha passed and how many were skipped.
 func (w Waited) checksLine(sha string) result.Phrase {
-	return result.Say("Checks for %s: %s passed, %s skipped", sha, w.Passed, w.Skipped)
+	return result.Say("Checks for %s: %s passed, %s skipped", result.SHA(sha), result.Count(w.Passed), result.Count(w.Skipped))
 }
 
 // excerpt returns the last excerptLines lines of the failed log of the check that failed, or

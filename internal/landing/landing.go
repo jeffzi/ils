@@ -6,9 +6,11 @@ package landing
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
@@ -31,9 +33,9 @@ const (
 )
 
 // thenRunAgain is the ending of a next step that names what to do before running the request's
-// command again; its one name is the command. It stays untyped because result.NextStep accepts
-// only constant expressions.
-const thenRunAgain = ", then run ils %s again"
+// command again; its one name is the command, as Request.ilsCommand marks it. It stays untyped
+// because result.NextStep accepts only constant expressions.
+const thenRunAgain = ", then run %s again"
 
 // writeMessage is the judgment step that has the agent write the squash commit's message. Its names
 // are the repository and the pull request's number; the title and the body stay placeholders for
@@ -48,10 +50,75 @@ const (
 	MergeCommand = "merge"
 )
 
-// Deps is what a command takes: the forge and the repository it runs in.
+// Deps is what a command takes: the forge and the repository it runs in, and what it tells how it
+// advances to. Neither Progress nor Logger changes the result a command returns; either may be nil.
 type Deps struct {
 	Forge Forge
-	Repo  git.Repo
+	// Progress is told each step as it starts, each step line as its step succeeds, and the checks
+	// counted while the wait reads them.
+	Progress Progress
+	// Logger gets one debug record, with the message "wait", for each decision of the wait for the
+	// checks. It is passed to nothing else: git and the forge take their own.
+	Logger *slog.Logger
+	Repo   git.Repo
+}
+
+// Progress is told how a landing command advances, as it advances. A step runs from one Started
+// to the next, or to the end of the command.
+type Progress interface {
+	// Started is told that the step label names began; limit is the most it can last, zero when
+	// nothing but the command's end limits it.
+	Started(label result.Phrase, limit time.Duration)
+	// Said is told that the running step succeeded, saying line: the exact line the result will
+	// hold. A step that fails or is cut short says nothing.
+	Said(line result.Phrase)
+	// Counted is told, at each read of the checks, that done of the total deciding checks have
+	// concluded. It is not told while no check has reported.
+	Counted(done, total int)
+}
+
+// started tells the progress hook, if any, that the step label names began, limited to limit.
+func (d Deps) started(label result.Phrase, limit time.Duration) {
+	if d.Progress != nil {
+		d.Progress.Started(label, limit)
+	}
+}
+
+// said tells the progress hook, if any, that the running step succeeded saying line.
+func (d Deps) said(line result.Phrase) {
+	if d.Progress != nil {
+		d.Progress.Said(line)
+	}
+}
+
+// counted tells the progress hook, if any, that done of total checks have concluded.
+func (d Deps) counted(done, total int) {
+	if d.Progress != nil && total > 0 {
+		d.Progress.Counted(done, total)
+	}
+}
+
+// logWait gives the logger, if any, a debug record of a decision of the wait, made of attrs.
+func (d Deps) logWait(ctx context.Context, attrs ...slog.Attr) {
+	if d.Logger != nil {
+		d.Logger.LogAttrs(ctx, slog.LevelDebug, "wait", attrs...)
+	}
+}
+
+// timeLeft returns the time before ctx's deadline, or zero when it has none.
+func timeLeft(ctx context.Context) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return 0
+	}
+
+	return time.Until(deadline)
+}
+
+// startChecking tells the progress hook, if any, that the checks a command makes before it writes
+// anything began.
+func (d Deps) startChecking() {
+	d.started(result.Say("Checking the branch and origin"), 0)
 }
 
 // Forge is the host of a repository, seen through the operations `push` and `merge` need.
@@ -85,6 +152,11 @@ type Forge interface {
 type Request struct {
 	Command string
 	Words   []string
+}
+
+// ilsCommand is the request's command marked as an ils command, which prints as "ils <command>".
+func (r Request) ilsCommand() result.Name {
+	return result.Command(r.Command)
 }
 
 // Ready is what the shared preconditions hand to the steps that follow them.
@@ -159,7 +231,8 @@ func originRepo(ctx context.Context, deps Deps, req Request) (forge.Repo, *resul
 
 	if unparsed || !urls.Fetch.Same(urls.Push) {
 		return forge.Repo{}, req.Refused(
-			result.Say("origin's fetch URL %s and push URL %s do not name one GitHub repository", urls.FetchURL, urls.PushURL),
+			result.Say("origin's fetch URL %s and push URL %s do not name one GitHub repository",
+				result.URL(urls.FetchURL), result.URL(urls.PushURL)),
 			result.NextStep("point both of origin's URLs at one GitHub repository with `git remote set-url`, by hand"))
 	}
 
@@ -224,7 +297,7 @@ func (r Request) identityFailure(err error) *result.Result {
 		return r.Refused(
 			result.Say("gh is not logged in to %s; log in with `gh auth login --hostname %s`, "+
 				"or push by hand if %s is not GitHub", host, host, host),
-			result.NextStep("log in to %s"+thenRunAgain, host, r.Command))
+			result.NextStep("log in to %s"+thenRunAgain, host, r.ilsCommand()))
 
 	}
 
@@ -240,13 +313,13 @@ func (r Request) tooOld(err error) *result.Result {
 	}
 
 	reason := result.Say("%s %s is older than %s, the oldest version ils works with; upgrade it from %s",
-		old.Tool, old.Version, old.Minimum, old.InstallURL)
+		old.Tool, old.Version, old.Minimum, result.URL(old.InstallURL))
 	if old.Version == "" {
 		reason = result.Say("%s printed `%s`, which names no version ils can read; ils needs %s %s or newer, from %s",
-			old.Tool, old.Line, old.Tool, old.Minimum, old.InstallURL)
+			old.Tool, old.Line, old.Tool, old.Minimum, result.URL(old.InstallURL))
 	}
 
-	return r.Refused(reason, result.NextStep("upgrade %s"+thenRunAgain, old.Tool, r.Command))
+	return r.Refused(reason, result.NextStep("upgrade %s"+thenRunAgain, old.Tool, r.ilsCommand()))
 }
 
 // notInstalled returns the refusal for a call that failed with err because the tool it runs is
@@ -256,7 +329,7 @@ func (r Request) notInstalled(err error) *result.Result {
 	if command, ok := errors.AsType[*git.SSHCommandMissingError](err); ok {
 		return r.Refused(
 			result.Say("%s, the ssh command %s names, is not found", command.Program, command.Setting),
-			result.NextStep("fix %s"+thenRunAgain, command.Setting, r.Command))
+			result.NextStep("fix %s"+thenRunAgain, command.Setting, r.ilsCommand()))
 	}
 
 	missing, ok := errors.AsType[*child.ToolMissingError](err)
@@ -265,8 +338,8 @@ func (r Request) notInstalled(err error) *result.Result {
 	}
 
 	return r.Refused(
-		result.Say("%s is not installed; install it from %s", missing.Tool, missing.InstallURL),
-		result.NextStep("install %s"+thenRunAgain, missing.Tool, r.Command))
+		result.Say("%s is not installed; install it from %s", missing.Tool, result.URL(missing.InstallURL)),
+		result.NextStep("install %s"+thenRunAgain, missing.Tool, r.ilsCommand()))
 }
 
 // ends returns the result that ends the request as outcome, with reason and next and no lines
@@ -317,7 +390,7 @@ func couldNotRead(read string, err error) (line, reason result.Phrase) {
 // onceFixed is the judgment step after a failure the user has to look at, ending in the
 // request's command.
 func (r Request) onceFixed() result.Next {
-	return result.NextStep("fix what failed"+thenRunAgain, r.Command)
+	return result.NextStep("fix what failed"+thenRunAgain, r.ilsCommand())
 }
 
 // again is the next step that runs the request's command again.
@@ -358,7 +431,7 @@ const startBranch = "start a branch from origin's trunk: " +
 
 // startBranchStep is the startBranch step with both of its names set to the trunk.
 func startBranchStep(trunk string) result.Next {
-	return result.NextStep(startBranch, trunk, trunk)
+	return result.NextStep(startBranch, result.Branch(trunk), result.Branch(trunk))
 }
 
 // onBranch is the work branch a landing command stands on, once the checks of the branch have
@@ -380,7 +453,7 @@ func (r Request) onWorkBranch(ready Ready) *result.Result {
 	}
 
 	if ready.Standing.Branch == ready.Trunk {
-		return r.Refused(result.Say("HEAD is on the trunk %s, which ils never pushes", ready.Trunk), next)
+		return r.Refused(result.Say("HEAD is on the trunk %s, which ils never pushes", result.Branch(ready.Trunk)), next)
 	}
 
 	return nil
@@ -396,7 +469,7 @@ func cleanTree(ctx context.Context, deps Deps, req Request) *result.Result {
 	if len(files) > 0 {
 		return req.Refused(
 			result.Say("tracked files have changes that are not committed: %s", strings.Join(files, ", ")),
-			result.NextStep("commit them"+thenRunAgain, req.Command))
+			result.NextStep("commit them"+thenRunAgain, req.ilsCommand()))
 	}
 
 	return nil
@@ -406,7 +479,7 @@ func cleanTree(ctx context.Context, deps Deps, req Request) *result.Result {
 func fetchTrunk(ctx context.Context, deps Deps, req Request, trunk string) *result.Result {
 	if _, err := deps.Repo.Fetch(ctx, trunk); err != nil {
 		return req.unreached(readFetchedTrunk, err,
-			result.Say("origin could not be reached to fetch its trunk %s", trunk))
+			result.Say("origin could not be reached to fetch its trunk %s", result.Branch(trunk)))
 	}
 
 	return nil
@@ -418,7 +491,7 @@ func (r Request) fetchPullHead(ctx context.Context, deps Deps, number int, read 
 	head, err := deps.Repo.Fetch(ctx, "refs/pull/"+strconv.Itoa(number)+"/head")
 	if err != nil {
 		return "", r.unreached(read, err,
-			result.Say("origin could not be reached to fetch the head of pull request #%s", number))
+			result.Say("origin could not be reached to fetch the head of pull request %s", result.PullRequest(number)))
 	}
 
 	return head, nil
@@ -468,12 +541,15 @@ func tipOf(ctx context.Context, deps Deps, req Request, b onBranch) (string, *re
 // nothingPast refuses a branch with no commit that origin's trunk lacks. Its next step is the push
 // of the new work, which for `ils merge` is a first push and not a run again.
 func (r Request) nothingPast(b onBranch) *result.Result {
-	next := result.NextStep("commit the work, then run ils push again")
+	push := result.Command(PushCommand)
+
+	next := result.NextStep("commit the work"+thenRunAgain, push)
 	if r.Command == MergeCommand {
-		next = result.NextStep("commit the work, then run ils push")
+		next = result.NextStep("commit the work, then run %s", push)
 	}
 
-	return r.Refused(result.Say("the branch %s has no commit past origin's trunk %s", b.branch, b.Trunk), next)
+	return r.Refused(
+		result.Say("the branch %s has no commit past origin's trunk %s", result.Branch(b.branch), result.Branch(b.Trunk)), next)
 }
 
 // pullRequest returns the branch's open pull request against the trunk, nil when it has none,
@@ -494,10 +570,10 @@ func pullRequest(ctx context.Context, deps Deps, req Request, b onBranch) (open,
 
 		if change.Base != b.Trunk {
 			return nil, nil, req.Refused(
-				result.Say("pull request #%s from %s is open against %s and not against the trunk %s",
-					change.Number, b.branch, change.Base, b.Trunk),
+				result.Say("pull request %s from %s is open against %s and not against the trunk %s",
+					result.PullRequest(change.Number), result.Branch(b.branch), result.Branch(change.Base), result.Branch(b.Trunk)),
 				result.NextStep("close it or change its base with `gh pr edit %s --base %s`"+thenRunAgain,
-					change.Number, b.Trunk, req.Command))
+					result.PullRequestNumber(change.Number), result.Branch(b.Trunk), req.ilsCommand()))
 		}
 
 		open = &change
@@ -556,9 +632,11 @@ func (b onBranch) landedWith(ctx context.Context, deps Deps, req Request, change
 	}
 
 	stop = req.Refused(
-		result.Say("pull request #%s from %s was merged without the commits listed here", change.Number, b.branch),
+		result.Say("pull request %s from %s was merged without the commits listed here",
+			result.PullRequest(change.Number), result.Branch(b.branch)),
 		result.NextStep(startBranch+", then bring those commits over with `git cherry-pick %s`; "+
-			"expect a conflict where the squash touched the same files", b.Trunk, b.Trunk, shas(unlanded)))
+			"expect a conflict where the squash touched the same files", result.Branch(b.Trunk), result.Branch(b.Trunk),
+			shas(unlanded)))
 
 	stop.Lines = listed(unlanded)
 
@@ -569,23 +647,23 @@ func (b onBranch) landedWith(ctx context.Context, deps Deps, req Request, change
 // its work is on the trunk, so only a new branch has anything left to land.
 func (b onBranch) alreadyLanded(req Request, landed forge.Change) *result.Result {
 	return req.Refused(
-		result.Say("the branch %s already landed with pull request #%s", b.branch, landed.Number),
+		result.Say("the branch %s already landed with pull request %s", result.Branch(b.branch), result.PullRequest(landed.Number)),
 		startBranchStep(b.Trunk))
 }
 
-func shas(commits []git.Commit) string {
+func shas(commits []git.Commit) result.Name {
 	list := make([]string, 0, len(commits))
 	for _, commit := range commits {
 		list = append(list, commit.SHA)
 	}
 
-	return strings.Join(list, " ")
+	return result.SHAs(list)
 }
 
 func listed(commits []git.Commit) []result.Phrase {
 	lines := make([]result.Phrase, 0, len(commits))
 	for _, commit := range commits {
-		lines = append(lines, result.Say("%s %s", commit.SHA, commit.Subject))
+		lines = append(lines, result.Say("%s %s", result.SHA(commit.SHA), commit.Subject))
 	}
 
 	return lines

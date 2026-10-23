@@ -14,8 +14,9 @@ import (
 // result names it.
 const readProtection = "the trunk's required checks"
 
-// writeThenMerge is the judgment step after a green push: writeMessage, then the merge.
-const writeThenMerge = writeMessage + ", then run ils merge"
+// writeThenMerge is the judgment step after a green push: writeMessage, then the merge. Its last
+// name is the merge command.
+const writeThenMerge = writeMessage + ", then run %s"
 
 // delivery is a push past its preconditions: the lines it has said so far, the pull request
 // it found or opened, and what its wait found.
@@ -65,20 +66,22 @@ func deliver(ctx context.Context, deps Deps, req Request, p pushReady) result.Re
 		return *stop
 	}
 
-	return *d.report()
+	return *d.report(deps)
 }
 
 // pushTip pushes the branch to origin unless origin's copy is already at the tip.
 func (d *delivery) pushTip(ctx context.Context, deps Deps) *result.Result {
 	if d.onOrigin {
-		d.lines = append(d.lines, result.Say("%s is already on origin at %s; nothing pushed", d.branch, d.tip))
+		d.say(deps, result.Say("%s is already on origin at %s; nothing pushed", d.markedBranch(), d.markedTip()))
 
 		return nil
 	}
 
+	deps.started(result.Say("Pushing %s", d.markedBranch()), 0)
+
 	err := deps.Repo.Push(ctx, d.branch)
 	if err == nil {
-		d.lines = append(d.lines, result.Say("Pushed %s at %s", d.branch, d.tip))
+		d.say(deps, result.Say("Pushed %s at %s", d.markedBranch(), d.markedTip()))
 
 		return nil
 	}
@@ -86,18 +89,18 @@ func (d *delivery) pushTip(ctx context.Context, deps Deps) *result.Result {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return d.endedSaying(
 			result.Say("Started the push of %s at %s when the time limit ended; it may or may not have taken",
-				d.branch, d.tip),
+				d.markedBranch(), d.markedTip()),
 			result.Broke, result.Say("the time limit ended during the push"), d.req.again())
 	}
 
 	if refused, ok := errors.AsType[*git.PushError](err); ok {
 		return d.endedSaying(
-			result.Say("Git refused the push of %s, so nothing was pushed: %s", d.branch, strings.TrimSpace(refused.Stderr)),
+			result.Say("Git refused the push of %s, so nothing was pushed: %s", d.markedBranch(), strings.TrimSpace(refused.Stderr)),
 			result.Broke, result.Say("git refused the push"), d.req.onceFixed())
 	}
 
 	return d.endedSaying(
-		result.Say("Could not push %s, so nothing was pushed: %s", d.branch, err.Error()),
+		result.Say("Could not push %s, so nothing was pushed: %s", d.markedBranch(), err.Error()),
 		result.Broke, result.Say("could not push the branch"), d.req.onceFixed())
 }
 
@@ -105,18 +108,20 @@ func (d *delivery) pushTip(ctx context.Context, deps Deps) *result.Result {
 // the branch's name when it has none.
 func (d *delivery) findOrOpen(ctx context.Context, deps Deps) *result.Result {
 	if d.open != nil {
-		d.found(*d.open)
+		d.found(deps, *d.open)
 
 		return nil
 	}
+
+	deps.started(result.Say("Opening a pull request against %s", result.Branch(d.Trunk)), 0)
 
 	opened, err := deps.Forge.OpenChange(ctx, d.Repo, forge.NewChange{Title: d.branch, Base: d.Trunk, Head: d.branch})
 
 	switch {
 	case err == nil:
 		d.number, d.url = opened.Number, opened.URL
-		d.lines = append(d.lines, result.Say("Opened pull request #%s against %s, titled %s with no body: %s",
-			opened.Number, d.Trunk, d.branch, opened.URL))
+		d.say(deps, result.Say("Opened pull request %s against %s, titled %s with no body: %s",
+			result.PullRequest(opened.Number), result.Branch(d.Trunk), d.branch, result.URL(opened.URL)))
 
 		return nil
 	case errors.Is(err, forge.ErrChangeExists):
@@ -136,6 +141,8 @@ func (d *delivery) findOrOpen(ctx context.Context, deps Deps) *result.Result {
 // findAgain reads the branch's pull requests once more, after the forge said that one exists,
 // and takes the open one against the trunk.
 func (d *delivery) findAgain(ctx context.Context, deps Deps) *result.Result {
+	deps.started(result.Say("Finding the pull request"), 0)
+
 	changes, err := deps.Forge.FindChanges(ctx, d.Repo, d.branch)
 	if err != nil {
 		return d.unread(readChanges, err)
@@ -143,7 +150,7 @@ func (d *delivery) findAgain(ctx context.Context, deps Deps) *result.Result {
 
 	for _, change := range changes {
 		if change.State == forge.ChangeOpen && change.Base == d.Trunk {
-			d.found(change)
+			d.found(deps, change)
 
 			return nil
 		}
@@ -151,14 +158,29 @@ func (d *delivery) findAgain(ctx context.Context, deps Deps) *result.Result {
 
 	return d.endedSaying(
 		result.Say("No pull request was opened or found: GitHub reports one for %s and lists none open against %s",
-			d.branch, d.Trunk),
+			d.markedBranch(), result.Branch(d.Trunk)),
 		result.Broke, result.Say("no pull request was opened or found"), d.req.onceFixed())
 }
 
 // found takes change as the branch's pull request and says so.
-func (d *delivery) found(change forge.Change) {
+func (d *delivery) found(deps Deps, change forge.Change) {
 	d.number, d.url = change.Number, change.URL
-	d.lines = append(d.lines, result.Say("Pull request #%s: %s", change.Number, change.URL))
+	d.say(deps, result.Say("Pull request %s: %s", result.PullRequest(change.Number), result.URL(change.URL)))
+}
+
+// say adds line, the line of a step that succeeded, to the lines said so far, and tells the
+// progress hook.
+func (d *delivery) say(deps Deps, line result.Phrase) {
+	d.lines = append(d.lines, line)
+	deps.said(line)
+}
+
+func (d *delivery) markedBranch() result.Name {
+	return result.Branch(d.branch)
+}
+
+func (d *delivery) markedTip() result.Name {
+	return result.SHA(d.tip)
 }
 
 // unread returns the result for a read that failed with err after the writes: pending when the
@@ -166,9 +188,7 @@ func (d *delivery) found(change forge.Change) {
 // commit, and broke otherwise.
 func (d *delivery) unread(read string, err error) *result.Result {
 	if errors.Is(err, context.DeadlineExceeded) {
-		line, reason := cutShortReading(read)
-
-		return d.endedSaying(line, result.Pending, reason, d.req.again())
+		return d.ended(result.Pending, cutShortReading(read), d.req.again())
 	}
 
 	line, reason := couldNotRead(read, err)
@@ -218,11 +238,12 @@ func (d *delivery) sayMergeState() {
 	d.lines = append(d.lines, d.waited.mergeStateLine())
 }
 
-// report returns the result the wait's outcome maps to.
-func (d *delivery) report() *result.Result {
+// report returns the result the wait's outcome maps to, telling the progress hook the checks line
+// of green checks.
+func (d *delivery) report(deps Deps) *result.Result {
 	switch d.waited.Outcome {
 	case WaitGreen:
-		d.lines = append(d.lines, d.waited.checksLine(d.tip))
+		d.say(deps, d.waited.checksLine(d.tip))
 
 		return d.doneMerging()
 	case WaitNothingReported:
@@ -230,7 +251,7 @@ func (d *delivery) report() *result.Result {
 	default:
 	}
 
-	report, _ := d.waited.stopReport(d.req.Command, d.tip, d.Trunk, d.number)
+	report, _ := d.waited.stopReport(d.req.ilsCommand(), d.tip, d.Trunk, d.number)
 	d.lines = append(d.lines, report.lines...)
 
 	ended := d.ended(report.outcome(result.DeliveredNotGreen), report.reason, report.next)
@@ -249,14 +270,14 @@ func (d *delivery) doneMerging() *result.Result {
 // mergeNext is the step after a push that is done: write the squash commit's message, then
 // run ils merge, once a review is in when the merge state asks for one.
 func (d *delivery) mergeNext() result.Next {
-	repo := d.Repo.Slug()
+	repo, number, merge := d.Repo.Slug(), result.PullRequestNumber(d.number), result.Command(MergeCommand)
 
 	// A review is not the agent's to give, so it is asked for and the push is still done.
 	if d.waited.MergeState == forge.MergeBlockedByReview {
-		return result.NextStep("request a review of the pull request first, then "+writeThenMerge, repo, d.number)
+		return result.NextStep("request a review of the pull request first, then "+writeThenMerge, repo, number, merge)
 	}
 
-	return result.NextStep(writeThenMerge, repo, d.number)
+	return result.NextStep(writeThenMerge, repo, number, merge)
 }
 
 // withoutCI asks the forge whether the repository has CI on its trunk, for a pushed commit that
@@ -283,7 +304,7 @@ func (d *delivery) withoutCI(ctx context.Context, deps Deps, required []string) 
 	d.lines = append(d.lines, noCI(d.Trunk, d.tip))
 
 	if d.waited.apartWithoutCI() {
-		return d.report()
+		return d.report(deps)
 	}
 
 	return d.doneMerging()
@@ -291,10 +312,8 @@ func (d *delivery) withoutCI(ctx context.Context, deps Deps, required []string) 
 
 // nothingReported is a pushed commit that no check or status reported for.
 func (d *delivery) nothingReported() *result.Result {
-	line, reason := nothingReported(d.tip, d.number)
-	d.lines = append(d.lines, line)
 	d.sayMergeState()
 
-	return d.ended(result.DeliveredNotGreen, reason,
+	return d.ended(result.DeliveredNotGreen, nothingReported(d.tip, d.number),
 		result.NextStep("report that no check or status reported for the pushed commit, and stop"))
 }

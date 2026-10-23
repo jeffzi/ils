@@ -10,9 +10,12 @@ import (
 	"runtime/debug"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/fang/v2"
+	"github.com/charmbracelet/colorprofile"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
@@ -33,6 +36,9 @@ type Command func(ctx context.Context, deps landing.Deps, req landing.Request) r
 type App struct {
 	Stdout io.Writer
 	Stderr io.Writer
+	// Environ is the process environment, read for the color profile of each stream: NO_COLOR,
+	// CLICOLOR_FORCE and TERM among others.
+	Environ []string
 	// Version is the version of ils that `ils --version` prints; empty falls back to the version in
 	// the binary's build info.
 	Version string
@@ -43,11 +49,18 @@ type App struct {
 	// buildInfo reads the build info that an empty Version falls back to; nil reads
 	// debug.ReadBuildInfo.
 	buildInfo func() (*debug.BuildInfo, bool)
+	// StderrWidth returns the width in columns of the terminal stderr is, read at each frame of the
+	// spinner; nil, or a width below 1, counts as 80.
+	StderrWidth func() int
 	// Launch is when the process started; the deadline of every command counts from it.
 	Launch time.Time
 	// git runs every git call; its zero value runs in the working directory with the process's
 	// environment.
 	git git.Runner
+	// StdoutTerminal and StderrTerminal report whether each stream is a terminal. TERM=dumb makes
+	// either count as none.
+	StdoutTerminal bool
+	StderrTerminal bool
 }
 
 // Run parses args, the words after the program name, runs the command they name, prints its
@@ -59,7 +72,12 @@ func (a App) Run(ctx context.Context, args []string) int {
 	ctx, cancel := context.WithDeadline(ctx, a.Launch.Add(bound))
 	defer cancel()
 
-	p := &parse{app: a, words: slices.DeleteFunc(slices.Clone(args), isJSONFlag)}
+	encoded := lastForm(args, flagJSON)
+	p := &parse{
+		app: a, words: slices.DeleteFunc(slices.Clone(args), isOutputFlag), encoded: encoded,
+		noColor: lastForm(args, flagNoColor),
+	}
+	profile := a.profile(a.StdoutTerminal, p.noColor)
 
 	root := p.root()
 	// Cobra reads the words of the process itself when it is given none.
@@ -74,18 +92,57 @@ func (a App) Run(ctx context.Context, args []string) int {
 		fang.WithColorSchemeFunc(fang.AnsiColorScheme))
 
 	refusal, isRefusal := errors.AsType[*refusedError](err)
-	encoded := asJSON(args)
 
 	switch {
 	case isRefusal:
-		return a.show(refusal.result, "", encoded)
+		return a.show(refusal.result, "", encoded, profile)
 	case err != nil:
 		return a.fail(err)
 	case p.result == nil:
 		return result.Done.ExitCode()
 	default:
-		return a.show(*p.result, p.gitDir, encoded)
+		r := *p.result
+		r.Lines = unprinted(r.Lines, p.printed, p.gitDir)
+
+		return a.show(r, p.gitDir, encoded, profile)
 	}
+}
+
+// terminal reports whether a stream that isTerminal counts as one: TERM=dumb makes it none.
+func (a App) terminal(isTerminal bool) bool {
+	return isTerminal && lookup(a.Environ, "TERM") != "dumb"
+}
+
+// profile returns the color profile of a stream that is a terminal or not, read from Environ: the
+// plain profile when noColor or NO_COLOR asks for it, and colorprofile's reading otherwise, where
+// TERM=dumb makes a terminal count as none.
+//
+// NO_COLOR is checked here because colorprofile honors it only on a terminal, and lets
+// CLICOLOR_FORCE color a stream that is none.
+func (a App) profile(terminal, noColor bool) colorprofile.Profile {
+	if noColor || lookup(a.Environ, "NO_COLOR") != "" {
+		return colorprofile.NoTTY
+	}
+
+	env := a.Environ
+	if a.terminal(terminal) {
+		// colorprofile tells a terminal only by its file descriptor; TTY_FORCE tells it instead.
+		env = append(slices.Clone(env), "TTY_FORCE=1")
+	}
+
+	return colorprofile.Detect(io.Discard, env)
+}
+
+// lookup returns the value of key in env, the last one when env sets it more than once, and ""
+// when env does not set it.
+func lookup(env []string, key string) string {
+	for _, entry := range slices.Backward(env) {
+		if value, ok := strings.CutPrefix(entry, key+"="); ok {
+			return value
+		}
+	}
+
+	return ""
 }
 
 // Version returns the version of the main module that info, the build info of the running binary,
@@ -115,35 +172,62 @@ func (a App) printedVersion() string {
 	return Version(a.buildInfo())
 }
 
-// show prints r on Stdout as text or as JSON and returns the exit code of its outcome.
-func (a App) show(r result.Result, gitDir string, encoded bool) int {
-	render := result.RenderText
+// show prints r on Stdout as JSON, or as text drawn for profile, and returns the exit code of its
+// outcome. On a terminal Stdout, the Next line of a pending result ends with a hint that the next
+// run waits again.
+func (a App) show(r result.Result, gitDir string, encoded bool, profile colorprofile.Profile) int {
 	if encoded {
-		render = result.RenderJSON
+		out, err := result.RenderJSON(r, gitDir)
+		if err != nil {
+			return a.fail(err)
+		}
+
+		return a.print(out, r.Outcome.ExitCode())
 	}
 
-	out, err := render(r, gitDir)
+	out, err := result.RenderStyled(r, gitDir, profile)
 	if err != nil {
 		return a.fail(err)
+	}
+
+	body := strings.TrimSuffix(out, "\n")
+	last := body[strings.LastIndex(body, "\n")+1:]
+	hinted := a.terminal(a.StdoutTerminal) && r.Outcome == result.Pending
+	if hinted && strings.HasPrefix(ansi.Strip(last), "Next: ") {
+		out = body + "  " + paint(profile >= colorprofile.ANSI, ansi.NewStyle().Faint(), pendingHint) + "\n"
 	}
 
 	return a.print(out, r.Outcome.ExitCode())
 }
 
-// isJSONFlag reports whether word is the JSON flag in one of the forms the grammar takes.
-func isJSONFlag(word string) bool {
-	return word == flagJSON || word == flagJSONTrue || word == flagJSONFalse
+// isForm reports whether word is flag in one of the forms the grammar takes: bare, =true or
+// =false.
+func isForm(word, flag string) bool {
+	return word == flag || word == flag+"=true" || word == flag+"=false"
 }
 
-// asJSON reports whether the words typed select the JSON renderer: the last form of the flag
-// among them decides.
+// isOutputFlag reports whether word is the JSON flag in one of the forms the grammar takes, or the
+// debug or no-color flag in any form, a value the grammar refuses included: none of them changes
+// what a command does, so none is among the words of a result.
+func isOutputFlag(word string) bool {
+	for _, flag := range []string{flagDebug, flagDebugShort, flagNoColor} {
+		if word == flag || strings.HasPrefix(word, flag+"=") {
+			return true
+		}
+	}
+
+	return isForm(word, flagJSON)
+}
+
+// lastForm reports whether the words typed turn flag on: the last of its forms the grammar takes
+// among them decides, and none leaves it off.
 //
-// It reads the words and not the parsed flag, since parsing stops at the first unknown flag and
-// a refusal for that flag is still rendered as the words after it ask.
-func asJSON(args []string) bool {
+// It reads the words and not the parsed flag, since parsing stops at the first flag it refuses
+// and a refusal is still rendered as the words after it ask.
+func lastForm(args []string, flag string) bool {
 	for _, word := range slices.Backward(args) {
-		if isJSONFlag(word) {
-			return word != flagJSONFalse
+		if isForm(word, flag) {
+			return word != flag+"=false"
 		}
 	}
 
@@ -157,11 +241,17 @@ type parse struct {
 	result *result.Result
 	// gitDir is the resolved git dir when the command ran in a repository.
 	gitDir string
-	// words are the words typed, without the JSON flag.
+	// words are the words typed, without the JSON, debug and no-color flags.
 	words []string
-	app   App
+	// printed are the plain texts of the step lines the run printed on Stdout as it went.
+	printed []string
+	app     App
 	// version is read by root's Args so that `ils --version` passes with no command word.
 	version strictBool
+	debug   strictBool
+	// encoded is whether the words typed select the JSON renderer, and noColor whether they turn
+	// color off.
+	encoded, noColor bool
 }
 
 // refusedError carries a refusal up through Cobra, which only knows errors.
@@ -222,8 +312,7 @@ func (p *parse) root() *cobra.Command {
 	versionFlag := root.Flags().VarPF(&p.version, flagVersion[len("--"):], "", "Print the version of ils")
 	versionFlag.NoOptDefVal = "true"
 
-	jsonFlag := root.PersistentFlags().VarPF(new(strictBool), flagJSON[len("--"):], "", "Print the result as one JSON object")
-	jsonFlag.NoOptDefVal = "true"
+	p.addOutputFlags(root)
 
 	// Cobra adds the help flag only after it has found the command, and until then takes the
 	// word after a flag it does not know for that flag's value: `ils --help push` would print
@@ -249,6 +338,22 @@ func (p *parse) root() *cobra.Command {
 	}
 
 	return root
+}
+
+// addOutputFlags adds to root, for every command under it, the flags that change how a command
+// prints and nothing it does: --json, -d/--debug and --no-color.
+func (p *parse) addOutputFlags(root *cobra.Command) {
+	flags := root.PersistentFlags()
+
+	jsonFlag := flags.VarPF(new(strictBool), flagJSON[len("--"):], "", "Print the result as one JSON object")
+	jsonFlag.NoOptDefVal = "true"
+
+	debugFlag := flags.VarPF(&p.debug, flagDebug[len("--"):], flagDebugShort[len("-"):],
+		"Trace each program ils runs and each decision of the wait on stderr")
+	debugFlag.NoOptDefVal = "true"
+
+	noColorFlag := flags.VarPF(new(strictBool), flagNoColor[len("--"):], "", "Print without color, as NO_COLOR does")
+	noColorFlag.NoOptDefVal = "true"
 }
 
 // landingHelp is the word of a landing command and the help it prints.
@@ -282,8 +387,7 @@ func (p *parse) landing(help landingHelp, run, fallback Command) *cobra.Command 
 			return nil
 		},
 		RunE: func(c *cobra.Command, _ []string) error {
-			r, gitDir := p.app.land(c.Context(), run, landing.Request{Command: help.word, Words: p.words})
-			p.result, p.gitDir = &r, gitDir
+			p.land(c.Context(), run, landing.Request{Command: help.word, Words: p.words})
 
 			return nil
 		},
@@ -352,17 +456,277 @@ func (*strictBool) Type() string {
 }
 
 // land runs the landing command run for req against the repository ils runs in and its GitHub
-// origin, and returns its result with the repository's git dir.
-func (a App) land(ctx context.Context, run Command, req landing.Request) (r result.Result, gitDir string) {
-	repo := git.Repo{Runner: a.git}
+// origin, and keeps its result, the repository's git dir and the step lines it printed. With debug
+// on, the trace gets every git and gh call, the read of the git dir included, and every decision
+// of the wait. The display is told how the command advances, and is gone from the terminal by the
+// time land returns.
+func (p *parse) land(ctx context.Context, run Command, req landing.Request) {
+	logger := p.logger()
+	runner := p.app.git
+	runner.Logger = logger
+	repo := git.Repo{Runner: runner}
 
 	// Outside a repository there is no git dir for a line to name, and whatever else stops
 	// this read stops the command's own first read too, whose result says so.
-	gitDir, _ = repo.GitDir(ctx)
+	gitDir, _ := repo.GitDir(ctx)
 
-	deps := landing.Deps{Forge: &github.Forge{}, Repo: repo}
+	shown := p.display()
+	deps := landing.Deps{Forge: &github.Forge{Logger: logger}, Repo: repo, Logger: logger, Progress: shown}
 
-	return run(ctx, deps, req), gitDir
+	shown.start(gitDir)
+	r := run(ctx, deps, req)
+	shown.end()
+
+	p.result, p.gitDir, p.printed = &r, gitDir, shown.printed
+}
+
+// display shows how a landing command advances on the terminals ils prints to: one spinner line
+// for the running step on stderr, and each step line on stdout as soon as its step succeeds. A
+// stream that gets neither is left untouched. A failed write is not reported: the display never
+// changes the result or the exit code, and a step line that could not be written is not printed.
+type display struct {
+	// stdout and stderr are nil when the stream gets no step line and no spinner.
+	stdout, stderr io.Writer
+	width          func() int
+	stop           chan struct{}
+	began          time.Time
+	gitDir         string
+	// label is the running step drawn for stderr, and empty while no step runs.
+	label string
+	// printed are the plain texts of the step lines written on stdout.
+	printed                []string
+	limit                  time.Duration
+	frame, done, total     int
+	wg                     sync.WaitGroup
+	mu                     sync.Mutex
+	outProfile, errProfile colorprofile.Profile
+	// drawn is whether a spinner line stands on stderr.
+	drawn bool
+}
+
+const (
+	// frameEvery is how often the spinner turns and its timer is redrawn.
+	frameEvery = 100 * time.Millisecond
+
+	pendingHint = "# waits again; nothing to fix"
+)
+
+// display returns the display of a landing command run with the words typed: the spinner on a
+// terminal stderr unless debug is on, and the step lines on a terminal stdout unless the result is
+// JSON.
+func (p *parse) display() *display {
+	a := p.app
+	d := &display{
+		width:      a.StderrWidth,
+		outProfile: a.profile(a.StdoutTerminal, p.noColor),
+		errProfile: a.profile(a.StderrTerminal, p.noColor),
+	}
+
+	if a.terminal(a.StdoutTerminal) && !p.encoded {
+		d.stdout = a.Stdout
+	}
+
+	if a.terminal(a.StderrTerminal) && !bool(p.debug) {
+		d.stderr = a.Stderr
+	}
+
+	return d
+}
+
+// start turns the spinner, if any, until end; gitDir is the git dir the lines are checked against.
+func (d *display) start(gitDir string) {
+	d.gitDir = gitDir
+	if d.stderr == nil {
+		return
+	}
+
+	d.stop = make(chan struct{})
+	d.wg.Go(func() {
+		ticker := time.NewTicker(frameEvery)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-d.stop:
+				return
+			case <-ticker.C:
+				d.mu.Lock()
+				d.frame++
+				d.draw()
+				d.mu.Unlock()
+			}
+		}
+	})
+}
+
+// end stops the spinner and takes its line off stderr.
+func (d *display) end() {
+	if d.stop != nil {
+		close(d.stop)
+		d.wg.Wait()
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.clear()
+}
+
+// Started draws the spinner line of the step label names, timed from now.
+func (d *display) Started(label result.Phrase, limit time.Duration) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// A label the wording check rejects is not drawn; the landing tests keep every label in it.
+	d.label, _ = renderLine(label, d.gitDir, d.errProfile)
+	d.limit, d.done, d.total, d.began = limit, 0, 0, time.Now()
+	d.draw()
+}
+
+// Said takes the spinner line off stderr and prints line on stdout as the running step's line.
+func (d *display) Said(line result.Phrase) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.clear()
+	d.label = ""
+
+	if d.stdout == nil {
+		return
+	}
+
+	drawn, err := renderLine(line, d.gitDir, d.outProfile)
+	if err != nil {
+		return
+	}
+
+	color := d.outProfile >= colorprofile.ANSI
+	green := ansi.NewStyle().ForegroundColor(ansi.Green)
+	took := time.Since(d.began).Round(frameEvery).String()
+	step := paint(color, green, "✓") + " " + drawn + " " + paint(color, green.Faint(), took) + "\n"
+
+	if _, err := io.WriteString(d.stdout, step); err == nil {
+		d.printed = append(d.printed, plainText(line, d.gitDir))
+	}
+}
+
+// Counted redraws the spinner line with done of total checks concluded.
+func (d *display) Counted(done, total int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.done, d.total = done, total
+	d.draw()
+}
+
+// draw writes the spinner line of the running step over the one stderr shows, cut to one column
+// short of the terminal's width so that it never wraps, and padded with spaces to that width so
+// that nothing of the line before is left. The caller holds mu.
+//
+// It moves the cursor with a carriage return alone: no control sequence, which a plain profile
+// never writes.
+func (d *display) draw() {
+	if d.stderr == nil || d.label == "" {
+		d.clear()
+
+		return
+	}
+
+	color := d.errProfile >= colorprofile.ANSI
+	yellow := ansi.NewStyle().ForegroundColor(ansi.Yellow)
+	frames := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+
+	line := paint(color, yellow, string(frames[d.frame%len(frames)])) + " " + d.label + " " +
+		paint(color, yellow, time.Since(d.began).Truncate(time.Second).String())
+	if d.limit > 0 {
+		line += " " + paint(color, ansi.NewStyle().Faint(), "of "+d.limit.Round(time.Second).String())
+	}
+	if d.total > 0 {
+		line += fmt.Sprintf(", %d of %d done", d.done, d.total)
+	}
+
+	columns := d.columns()
+	line = ansi.Truncate(line, columns, "")
+	padding := strings.Repeat(" ", columns-ansi.StringWidth(line))
+	if color {
+		line += ansi.ResetStyle
+	}
+
+	_, _ = io.WriteString(d.stderr, "\r"+line+padding)
+	d.drawn = true
+}
+
+// clear takes the spinner line off stderr by writing spaces over it, leaving the cursor at the
+// start of its row. The caller holds mu.
+func (d *display) clear() {
+	if !d.drawn {
+		return
+	}
+
+	_, _ = io.WriteString(d.stderr, "\r"+strings.Repeat(" ", d.columns())+"\r")
+	d.drawn = false
+}
+
+// columns returns how many columns the spinner line may take: one short of the terminal's width,
+// read now, so that the cursor never reaches the last column; an unknown width counts as 80.
+func (d *display) columns() int {
+	width := 80
+	if d.width != nil {
+		if w := d.width(); w > 0 {
+			width = w
+		}
+	}
+
+	return width - 1
+}
+
+// renderLine returns line drawn for profile as the result renderer draws it, or the renderer's error.
+func renderLine(line result.Phrase, gitDir string, profile colorprofile.Profile) (string, error) {
+	out, err := result.RenderStyled(result.Result{Lines: []result.Phrase{line}, Next: result.NextNone()}, gitDir, profile)
+	if err != nil {
+		return "", fmt.Errorf("render the line of a step: %w", err)
+	}
+
+	return strings.TrimSuffix(out, "\n"), nil
+}
+
+// plainText returns the text of line as the text renderer prints it, and "" when it rejects it.
+func plainText(line result.Phrase, gitDir string) string {
+	out, _ := renderLine(line, gitDir, colorprofile.NoTTY)
+
+	return out
+}
+
+// unprinted returns lines without the ones already printed: each text in printed takes out the
+// first line left that reads the same, so a line said twice is still printed once more.
+func unprinted(lines []result.Phrase, printed []string, gitDir string) []result.Phrase {
+	if len(printed) == 0 {
+		return lines
+	}
+
+	left := slices.Clone(printed)
+	var kept []result.Phrase
+
+	for _, line := range lines {
+		if i := slices.Index(left, plainText(line, gitDir)); i >= 0 {
+			left = slices.Delete(left, i, i+1)
+
+			continue
+		}
+
+		kept = append(kept, line)
+	}
+
+	return kept
+}
+
+// paint returns text drawn in style when color is on, and text as it is otherwise.
+func paint(color bool, style ansi.Style, text string) string {
+	if !color {
+		return text
+	}
+
+	return style.Styled(text)
 }
 
 // print writes text to Stdout and returns code, or 1 when the write fails.
@@ -388,11 +752,13 @@ const (
 	wordRelease = "release"
 	wordStatus  = "status"
 
-	flagJSON      = "--json"
-	flagJSONTrue  = flagJSON + "=true"
-	flagJSONFalse = flagJSON + "=false"
-	flagHelp      = "--help"
-	flagVersion   = "--version"
+	flagJSON    = "--json"
+	flagHelp    = "--help"
+	flagVersion = "--version"
+
+	flagDebug      = "--debug"
+	flagDebugShort = "-d"
+	flagNoColor    = "--no-color"
 
 	// wordDash is the terminator after which every word is a positional argument.
 	wordDash = "--"

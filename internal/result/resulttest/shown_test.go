@@ -25,6 +25,7 @@ func (s *spyTB) FailNow() { s.failed = true }
 func TestAssertCarried(t *testing.T) {
 	t.Parallel()
 	carrier := resulttest.Shown{
+		Outcome: "refused",
 		Excerpt: "first line of the log\nsecond line of the log",
 		Lines:   []string{"Pushed the branch to origin."},
 		Reason:  "the branch is the trunk",
@@ -32,25 +33,41 @@ func TestAssertCarried(t *testing.T) {
 	}
 	tests := []struct {
 		name     string
+		outcome  string
 		text     string
 		wantFail bool
 	}{
-		{name: "a line of the lines", text: "Pushed the branch to origin.\n"},
-		{name: "each line of the excerpt", text: "first line of the log\nsecond line of the log\n"},
-		{name: "the reason behind its label", text: "Refused: the branch is the trunk\n"},
-		{name: "the next behind its label", text: "Next: switch to a branch\n"},
-		{name: "a line the object lacks", text: "Pushed the branch to origin.\nOpened the pull request.\n", wantFail: true},
-		{name: "the reason without its label", text: "the branch is the trunk\n", wantFail: true},
+		{name: "a line of the lines", outcome: "refused", text: "Pushed the branch to origin.\n"},
+		{name: "each line of the excerpt", outcome: "refused", text: "first line of the log\nsecond line of the log\n"},
+		{name: "a refusal behind its label", outcome: "refused", text: "Refused: the branch is the trunk\n"},
+		{name: "a break behind its label", outcome: "broke", text: "Broke: the branch is the trunk\n"},
+		{name: "a pending reason behind its label", outcome: "pending", text: "Pending: the branch is the trunk\n"},
+		{
+			name: "a delivered, not green reason behind its label", outcome: "delivered-not-green",
+			text: "Delivered, not green: the branch is the trunk\n",
+		},
+		{name: "the next behind its label", outcome: "refused", text: "Next: switch to a branch\n"},
+		{
+			name: "a line the object lacks", outcome: "refused",
+			text: "Pushed the branch to origin.\nOpened the pull request.\n", wantFail: true,
+		},
+		{name: "the reason without its label", outcome: "refused", text: "the branch is the trunk\n", wantFail: true},
+		{
+			name: "the reason behind another outcome's label", outcome: "pending",
+			text: "Refused: the branch is the trunk\n", wantFail: true,
+		},
+		{name: "a done result's reason behind any label", outcome: "done", text: "Refused: the branch is the trunk\n", wantFail: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-
+			shown := carrier
+			shown.Outcome = tt.outcome
 			spy := &spyTB{}
 
-			resulttest.AssertCarried(spy, tt.text, carrier)
+			resulttest.AssertCarried(spy, tt.text, shown)
 
-			assert.Check(t, is.Equal(spy.failed, tt.wantFail), "AssertCarried(%q)", tt.text)
+			assert.Check(t, is.Equal(spy.failed, tt.wantFail), "AssertCarried(%q) of a %s result", tt.text, tt.outcome)
 		})
 	}
 }

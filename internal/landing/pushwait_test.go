@@ -39,7 +39,7 @@ func redRow(name string, bucket forge.Bucket, log forge.FailedLog, excerpt strin
 		want: finish{
 			outcome: result.DeliveredNotGreen, reason: "the check lint " + said, payload: payload,
 			text: pushedLine + openedLine + "Check lint " + said + ": " + lintURL + "\n" +
-				"GitHub: UNSTABLE (blocked-other)\n" + excerpt + nextRed,
+				"GitHub: UNSTABLE (blocked-other)\n" + excerpt + "Delivered, not green: the check lint " + said + "\n" + nextRed,
 		},
 	}
 }
@@ -102,7 +102,8 @@ func stoppedRow(state forge.MergeState, raw, reason string) pushRow {
 		script: reusing().showing(inState(state, raw)),
 		want: finish{
 			outcome: result.DeliveredNotGreen, reason: reason,
-			text:    pushedLine + foundLine + "GitHub: " + raw + " (" + string(state) + ")\n" + nextTrunk,
+			text: pushedLine + foundLine + "GitHub: " + raw + " (" + string(state) + ")\n" +
+				"Delivered, not green: " + reason + "\n" + nextTrunk,
 			payload: detail(forge.VerdictNone, state),
 		},
 	}
@@ -121,15 +122,14 @@ func TestPush_WhenTheMergeStateKeepsThePullRequestApart_DeliveredNotGreen(t *tes
 func pending(reason, lines string, payload *result.Push) finish {
 	return finish{
 		outcome: result.Pending, reason: reason, payload: payload,
-		text: pushedLine + foundLine + lines + nextPush,
+		text: pushedLine + foundLine + lines + "Pending: " + reason + "\n" + nextPush,
 	}
 }
 
 // cutShortRead is a push to the open pull request that ended pending because the time limit ended
 // while reading read.
 func cutShortRead(read string) finish {
-	return pending("the time limit ended while reading "+read,
-		"The time limit ended while reading "+read+"; nothing more will change\n"+cleanLine,
+	return pending("the time limit ended while reading "+read+"; nothing more will change", cleanLine,
 		detail(forge.VerdictNone, forge.MergeClean))
 }
 
@@ -148,8 +148,7 @@ func pushCutShortRows() []pushRow {
 		{
 			name:   "the deadline ends in the read of the merge state after the checks",
 			script: reusing(passing()).thenFailingHead(ended),
-			want: pending("GitHub did not say whether the pull request can merge before the time limit",
-				"GitHub has not said whether pull request #12 can merge yet\n",
+			want: pending("GitHub did not say whether pull request #12 can merge before the time limit", "",
 				detail(forge.VerdictNone, forge.MergeClean)),
 		},
 	}
@@ -164,8 +163,8 @@ func pushRunlessRows() []pushRow {
 	return []pushRow{
 		{
 			name: "nothing has reported yet", left: 12 * time.Second, script: reusing(forge.Verdict{}),
-			want: pending("no check or status had reported at the time limit",
-				"No check or status has reported for "+tipMark+" on pull request #12 yet\n"+cleanLine,
+			want: pending("no check or status had reported for "+tipMark+" on pull request #12 at the time limit",
+				cleanLine,
 				detail(forge.VerdictNone, forge.MergeClean)),
 		},
 		{
@@ -178,8 +177,8 @@ func pushRunlessRows() []pushRow {
 		{
 			name: "a check passed and no workflow run has started yet", left: 12 * time.Second,
 			script: reusing(scanned),
-			want: pending("no workflow run had started at the time limit",
-				"No workflow run has started for "+tipMark+" on pull request #12 yet\n"+cleanLine,
+			want: pending("no workflow run had started for "+tipMark+" on pull request #12 at the time limit",
+				cleanLine,
 				detail(forge.VerdictGreen, forge.MergeClean, scanned.Checks...)),
 		},
 	}
@@ -192,21 +191,21 @@ func pushPendingRows() []pushRow {
 			// A third poll would end a second past the deadline.
 			name: "the pull request still shows an earlier commit", left: 5 * time.Second,
 			script: reusing().showing(stale()),
-			want: pending("GitHub did not show the pushed commit on the pull request before the time limit",
-				"GitHub does not show "+tipMark+" on pull request #12 yet\n", detail(forge.VerdictNone, forge.MergeClean)),
+			want: pending("GitHub did not show "+tipMark+" on pull request #12 before the time limit", "",
+				detail(forge.VerdictNone, forge.MergeClean)),
 		},
 		{
 			name:   "the merge state is still unknown",
 			script: reusing().showing(inState(forge.MergeUnknown, "UNKNOWN")),
-			want: pending("GitHub did not say whether the pull request can merge within 30 seconds",
-				"GitHub has not said whether pull request #12 can merge yet\n", detail(forge.VerdictNone, forge.MergeUnknown)),
+			want: pending("GitHub did not say whether pull request #12 can merge within 30 seconds", "",
+				detail(forge.VerdictNone, forge.MergeUnknown)),
 		},
 		{
 			// A third poll would end a second past the deadline.
 			name: "the merge state is still unknown and the deadline leaves no room for another poll",
 			left: 5 * time.Second, script: reusing().showing(inState(forge.MergeUnknown, "UNKNOWN")),
-			want: pending("GitHub did not say whether the pull request can merge before the time limit",
-				"GitHub has not said whether pull request #12 can merge yet\n", detail(forge.VerdictNone, forge.MergeUnknown)),
+			want: pending("GitHub did not say whether pull request #12 can merge before the time limit", "",
+				detail(forge.VerdictNone, forge.MergeUnknown)),
 		},
 		{
 			// The head catches up after one poll of two seconds, which the count leaves out; then

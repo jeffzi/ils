@@ -7,9 +7,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"slices"
-	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -43,15 +41,15 @@ const (
 	outsideStart = "Could not read where HEAD stands: "
 
 	// outsideEnd and outsideMergeEnd are how `ils push` and `ils merge` end it.
-	outsideEnd      = "Nothing was written.\nNext: fix what failed, then run ils push again\n"
-	outsideMergeEnd = "Nothing was written.\nNext: fix what failed, then run ils merge again\n"
+	outsideEnd      = "Nothing was written.\nBroke: could not read where HEAD stands\nNext: fix what failed, then run ils push again\n"
+	outsideMergeEnd = "Nothing was written.\nBroke: could not read where HEAD stands\nNext: fix what failed, then run ils merge again\n"
+
+	// debugNeither and colorNeither are the reasons a debug and a no-color flag set to maybe are
+	// refused for.
+	debugNeither = "--debug takes true or false, and maybe was given"
+	colorNeither = "--no-color takes true or false, and maybe was given"
 
 	bound = 100 * time.Second
-	// grace is how long a run may take to come back after the moment it is due: past the bound for
-	// timed, after the held call starts for cutWhileHeld.
-	grace = 2 * time.Second
-	// held is how long a held call stays open, far past the moment the run is cut.
-	held = 30 * time.Second
 )
 
 // ran is what one run of the cli printed and the code it exited with.
@@ -62,7 +60,7 @@ type ran struct {
 }
 
 // launch runs app with args, launched now unless app says when, and returns what it printed; a
-// stdout app already has is left in place, and nothing is returned for it.
+// stdout or stderr app already has is left in place, and nothing is returned for it.
 func launch(t *testing.T, app cli.App, args ...string) ran {
 	t.Helper()
 
@@ -76,7 +74,9 @@ func launchUnder(ctx context.Context, t *testing.T, app cli.App, args ...string)
 
 	var stdout, stderr bytes.Buffer
 
-	app.Stderr = &stderr
+	if app.Stderr == nil {
+		app.Stderr = &stderr
+	}
 	if app.Stdout == nil {
 		app.Stdout = &stdout
 	}
@@ -190,91 +190,6 @@ func stored(t *testing.T) (f *gittest.Fixture, under string) {
 	return f, f.Git("rev-parse", "--absolute-git-dir") + "/HEAD"
 }
 
-// timed runs `ils push` in a scene of sc, and fails the test unless it exits as sc wants and
-// comes back no later than grace past the bound.
-func timed(t *testing.T, sc scenario) (*scene, ran) {
-	t.Helper()
-
-	s := newScene(t, sc)
-	app := s.app()
-
-	got := launch(t, app, "push")
-	late := time.Since(app.Launch.Add(bound))
-
-	assert.Equal(t, got.code, sc.want, "stdout:\n%s\nstderr:\n%s", got.stdout, got.stderr)
-	assert.Check(t, late <= grace, "ils push returned %s past the bound, want it back no later than %s past it", late, grace)
-
-	return s, got
-}
-
-// cutWhileHeld runs `ils push` in a scene of sc under a context that ends with
-// [context.DeadlineExceeded] the moment the fake gh starts holding an answer, and fails the test
-// unless it exits as sc wants and comes back no later than grace after that moment.
-func cutWhileHeld(t *testing.T, sc scenario) (*scene, ran) {
-	t.Helper()
-
-	s := newScene(t, sc)
-	cut := make(chan struct{})
-	cutAt := make(chan time.Time, 1)
-
-	ctx, cancel := context.WithCancel(t.Context())
-
-	var wg sync.WaitGroup
-
-	wg.Go(func() {
-		select {
-		case <-s.fake.Holding():
-			cutAt <- time.Now()
-			close(cut)
-		case <-ctx.Done():
-		}
-	})
-
-	got := launchUnder(gittest.Ending(t.Context(), cut, context.DeadlineExceeded), t, s.app(), "push")
-
-	cancel()
-	wg.Wait()
-
-	assert.Equal(t, got.code, sc.want, "stdout:\n%s\nstderr:\n%s", got.stdout, got.stderr)
-
-	select {
-	case at := <-cutAt:
-		late := time.Since(at)
-		assert.Check(t, late <= grace, "ils push returned %s after the held call started, want it back no later than %s after", late, grace)
-	default:
-		t.Error("ils push returned without the fake gh holding an answer")
-	}
-
-	return s, got
-}
-
-// heldChecks is a first push whose read of the checks is held open.
-func heldChecks() scenario {
-	slow := func(sha string) verdict {
-		v := passing(sha)
-		v.checks.Delay = held
-
-		return v
-	}
-
-	return scenario{name: "the read of the checks", script: firstPush(slow), want: exitPending}
-}
-
-// heldIdentity is a push whose read of the repository's identity is held open.
-func heldIdentity() scenario {
-	calls := allowed()
-	calls[1].Answers[0].Delay = held
-
-	return scenario{name: "the read of the identity", script: only(calls...), want: exitRefused}
-}
-
-// heldVersion is a push whose read of gh's version is held open.
-func heldVersion() scenario {
-	slow := ghtest.Exits(ghtest.Answer{Stdout: "gh version 99.0.0\n", Delay: held}, ghtest.VersionArgs()...)
-
-	return scenario{name: "the read of gh's version", script: only(slow), want: exitRefused}
-}
-
 // outdated is a first push with a gh that is logged out and prints line for its version.
 func outdated(name, line string) scenario {
 	calls := []ghtest.Call{
@@ -320,7 +235,6 @@ func TestApp_Run_WhenWordsBreakTheGrammar_RefusesNamingTheWord(t *testing.T) {
 		{name: "unknown short flag", args: []string{"-x"}, reason: "-x is not a command"},
 		{name: "short version flag", args: []string{"-v"}, reason: "-v is not a command"},
 		{name: "version flag set to false", args: []string{"--version=false"}, reason: "no command was given"},
-		{name: "version flag set to neither", args: []string{"--version=maybe"}, reason: "--version takes true or false, and maybe was given"},
 		{name: "version flag before push", args: []string{"--version", "push"}, reason: "push takes no other word, and --version was given"},
 		{name: "version flag before an extra word", args: []string{"--version", "extra"}, reason: "extra is not a command"},
 		{name: "unknown flag after push", args: []string{"push", "--bogus"}, reason: "push takes no other word, and --bogus was given"},
@@ -331,7 +245,38 @@ func TestApp_Run_WhenWordsBreakTheGrammar_RefusesNamingTheWord(t *testing.T) {
 		{name: "unknown flag after an extra word", args: []string{"push", "extra", "--bogus"}, reason: "push takes no other word, and --bogus was given"},
 		{name: "unknown flag after an unknown word", args: []string{"pish", "--bogus"}, reason: "--bogus is not a command"},
 		{name: "flag set to false", args: []string{"pish", "--json=false"}, reason: "pish is not a command"},
-		{name: "flag set to neither", args: []string{"push", "--json=maybe"}, reason: "--json takes true or false, and maybe was given"},
+		{name: "debug flag after an unknown word", args: []string{"pish", "-d"}, reason: "pish is not a command"},
+		{name: "debug flag after an extra word", args: []string{"push", "extra", "--debug"}, reason: "push takes no other word, and extra was given"},
+		{name: "debug and color flags alone", args: []string{"-d", "--no-color"}, reason: "no command was given"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := launch(t, outside(t), tt.args...)
+
+			want := ran{stdout: "Refused: " + tt.reason + "\nNext: " + nextHelp + "\n", code: exitRefused}
+			assert.Check(t, is.DeepEqual(got, want, sameRun()), "ils %s", strings.Join(tt.args, " "))
+		})
+	}
+}
+
+func TestApp_Run_WhenAFlagIsSetToNeitherTrueNorFalse_RefusesNamingTheFlagAndTheValue(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		reason string
+		args   []string
+	}{
+		{name: "version flag", args: []string{"--version=maybe"}, reason: "--version takes true or false, and maybe was given"},
+		{name: "JSON flag after push", args: []string{"push", "--json=maybe"}, reason: "--json takes true or false, and maybe was given"},
+		{name: "debug flag", args: []string{"--debug=maybe"}, reason: debugNeither},
+		{name: "debug flag after push", args: []string{"push", "--debug=maybe"}, reason: debugNeither},
+		{name: "debug flag after merge", args: []string{"merge", "--debug=maybe"}, reason: debugNeither},
+		{name: "color flag", args: []string{"--no-color=maybe"}, reason: colorNeither},
+		{name: "color flag after push", args: []string{"push", "--no-color=maybe"}, reason: colorNeither},
+		{name: "color flag after merge", args: []string{"merge", "--no-color=maybe"}, reason: colorNeither},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -432,6 +377,7 @@ func TestApp_Run_WhenAskedForHelp_PrintsTheHelpOfTheCommand(t *testing.T) {
 		{args: []string{"help", "push"}, want: []string{pushHelp}},
 		{args: []string{"push", "extra", "--help"}, want: []string{pushHelp}},
 		{args: []string{"push", "--json", "-h"}, want: []string{pushHelp}},
+		{args: []string{"push", "-d", "--no-color", "--help"}, want: []string{pushHelp}},
 		{args: []string{"--json", "push", "--help"}, want: []string{pushHelp}},
 		{args: []string{"help", "push", "--json"}, want: []string{pushHelp}},
 		{args: []string{"merge", "-h"}, want: merge},
@@ -467,13 +413,13 @@ func TestApp_Run_WhenAskedForHelp_PrintsTheHelpOfTheCommand(t *testing.T) {
 func TestApp_Run_WhenAskedForHelp_ListsEveryEntryOfTheCommand(t *testing.T) {
 	t.Parallel()
 
-	own := []string{"-h", "--json"}
+	own := []string{"-d", "-h", "--json", "--no-color"}
 	tests := []struct {
 		args     []string
 		commands []string
 		flags    []string
 	}{
-		{args: []string{"--help"}, commands: []string{"help", "merge", "push"}, flags: []string{"-h", "--json", "--version"}},
+		{args: []string{"--help"}, commands: []string{"help", "merge", "push"}, flags: []string{"-d", "-h", "--json", "--no-color", "--version"}},
 		{args: []string{"push", "--help"}, flags: own},
 		{args: []string{"merge", "--help"}, flags: own},
 	}
@@ -510,7 +456,7 @@ func listedCalls(help string) []string {
 func TestApp_Run_WhenAskedForTheVersion_PrintsTheVersionOfIls(t *testing.T) {
 	t.Parallel()
 
-	tests := [][]string{{"--version"}, {"--json", "--version"}, {"--version", "--json"}}
+	tests := [][]string{{"--version"}, {"--json", "--version"}, {"--version", "--json"}, {"-d", "--version"}}
 	for _, args := range tests {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			t.Parallel()
@@ -654,6 +600,13 @@ func TestApp_Run_WhenJSONFlagIsAmongTheWords_RendersJSONWithoutTheFlagInTheWords
 		{name: "unknown short flag after push", args: []string{"--json", "push", "-x"}, want: refusal("push takes no other word, and -x was given", "push", "-x")},
 		{name: "flag set to neither, then set", args: []string{"push", "--json=maybe", "--json"}, want: refusal("--json takes true or false, and maybe was given", "push", "--json=maybe")},
 		{name: "flag set to true", args: []string{"--json=true", "pish"}, want: refusal("pish is not a command", "pish")},
+		{name: "debug flag set to neither", args: []string{"--json", "--debug=maybe"}, want: refusal(debugNeither)},
+		{name: "debug flag set to neither after push", args: []string{"push", "--debug=maybe", "--json"}, want: refusal(debugNeither, "push")},
+		{name: "short debug flag set to neither after merge", args: []string{"merge", "-d=maybe", "--json"}, want: refusal(debugNeither, "merge")},
+		{name: "color flag set to neither", args: []string{"--no-color=maybe", "--json"}, want: refusal(colorNeither)},
+		{name: "color flag set to neither after push", args: []string{"push", "--json", "--no-color=maybe"}, want: refusal(colorNeither, "push")},
+		{name: "color flag set to neither after merge", args: []string{"--json", "merge", "--no-color=maybe"}, want: refusal(colorNeither, "merge")},
+		{name: "debug and color flags", args: []string{"-d", "pish", "--no-color", "--json"}, want: refusal("pish is not a command", "pish")},
 		{
 			name: "flag after an unknown flag", args: []string{"push", "--bogus", "--json"},
 			want: refusal("push takes no other word, and --bogus was given", "push", "--bogus"),
@@ -768,7 +721,7 @@ func TestApp_Run_WhenMergeRuns_EndsItAtTheBoundFromLaunch(t *testing.T) {
 }
 
 func TestApp_Run_WhenMergeRunsOnABranchWithNoPullRequest_RefusesNamingPush(t *testing.T) {
-	s := newScene(t, scenario{name: "no pull request", script: only(found("[]", "[]")...), want: exitRefused})
+	s := newScene(t, noPullRequest())
 
 	got := launch(t, s.app(), "merge")
 
@@ -833,60 +786,182 @@ func TestApp_Run_WhenALineNamesAPathUnderTheGitDirOfAnotherDirectory_RendersTheL
 
 	got := launch(t, app, "push")
 
-	want := ran{stdout: "Wrote " + under + "\nNext: none\n", code: exitDone}
+	want := ran{stdout: "Wrote " + under + "\n", code: exitDone}
 	assert.Check(t, is.DeepEqual(got, want, sameRun()))
 }
 
 // ---------------------------------------------------------------------------
-// Deadline
+// Color and debug
 // ---------------------------------------------------------------------------
 
-func TestApp_Run_WhenTheBoundEndedBeforeAnyReadOfPush_RefusesBeforePushing(t *testing.T) {
-	s := newScene(t, greenFirstPush())
-	app := s.app()
-	app.Launch = time.Now().Add(-2 * bound)
+const (
+	colorTerm = "TERM=xterm-256color"
+	forced    = forceColor + "=1"
+	noColor   = "NO_COLOR=1"
+)
 
-	got := launch(t, app, "push")
+// painted returns the cli outside any repository under env, with stdout and stderr each a
+// terminal or not.
+func painted(t *testing.T, env []string, stdoutTerminal, stderrTerminal bool) cli.App {
+	t.Helper()
 
-	assert.Check(t, is.Equal(got.code, exitRefused))
-	startsWith(t, got.stdout, "Refused: the time limit ended ")
+	app := lost(t)
+	app.Environ = env
+	app.StdoutTerminal = stdoutTerminal
+	app.StderrTerminal = stderrTerminal
 
-	nothingPushed(t, s)
+	return app
 }
 
-func TestApp_Run_WhenChecksStillRunAtTheBound_EndsPendingWithoutOutlastingIt(t *testing.T) {
-	_, got := timed(t, pendingAtTheBound())
+func TestApp_Run_WhenNoStreamHasAColorProfile_WritesNoEscapeSequence(t *testing.T) {
+	t.Parallel()
 
-	want := "\nNext: ils push\n"
-	endsWith(t, got.stdout, want)
-}
+	tests := []struct {
+		name     string
+		env      []string
+		args     []string
+		terminal bool
+	}{
+		{name: "no terminal", args: []string{"push", "-d"}},
+		{name: "dumb terminal", env: []string{"TERM=dumb"}, terminal: true, args: []string{"push", "-d"}},
+		{name: "no color on a terminal", env: []string{colorTerm, noColor}, terminal: true, args: []string{"merge", "--debug"}},
+		{name: "no color over forced color", env: []string{colorTerm, noColor, forced}, args: []string{"push", "-d"}},
+		{name: "no color over forced color on a terminal", env: []string{colorTerm, noColor, forced}, terminal: true, args: []string{"push", "-d"}},
+		{name: "flag over forced color", env: []string{colorTerm, forced}, terminal: true, args: []string{"push", "-d", "--no-color"}},
+		{name: "flag set to true before merge", env: []string{colorTerm, forced}, terminal: true, args: []string{"--no-color=true", "merge", "-d"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-func TestApp_Run_WhenTheTimeLimitEndsDuringAHeldReadBeforeThePush_RefusesWithinGraceWithNothingPushed(t *testing.T) {
-	const want = "Refused: the time limit ended while reading the repository's identity on GitHub; nothing was written\n" +
-		"Next: ils push\n"
+			got := launch(t, painted(t, tt.env, tt.terminal, tt.terminal), tt.args...)
 
-	for _, sc := range []scenario{heldIdentity(), heldVersion()} {
-		t.Run(sc.name, func(t *testing.T) {
-			s, got := cutWhileHeld(t, sc)
-
-			assert.Check(t, is.Equal(got.stdout, want))
-			assert.Check(t, is.Equal(got.stderr, ""))
-			nothingPushed(t, s)
-			assert.Check(t, !opensPullRequest(s), "gh was asked to create a pull request")
+			assert.Check(t, got.stderr != "", "ils %s wrote no debug line", strings.Join(tt.args, " "))
+			plain(t, "stdout", got.stdout)
+			plain(t, "stderr", got.stderr)
 		})
 	}
 }
 
-func TestApp_Run_WhenTheTimeLimitEndsDuringTheHeldReadOfTheChecks_EndsPendingWithinGraceWithThePullRequestOpen(t *testing.T) {
-	s, got := cutWhileHeld(t, heldChecks())
+func TestApp_Run_WhenStdoutHasAColorProfile_DrawsTheOutcomeLabelRed(t *testing.T) {
+	t.Parallel()
 
-	startsWith(t, got.stdout, "Pushed "+topic+" at ")
-	assert.Check(t, is.Contains(got.stdout, pullURL))
-	endsWith(t, got.stdout, "\nNext: ils push\n")
-	assert.Check(t, is.Equal(got.stderr, ""))
-	onOrigin := s.fixture.OriginGit("for-each-ref", "--points-at", tipOf(s.fixture), "refs/heads/"+topic)
-	assert.Check(t, onOrigin != "", "%s is not on origin at its tip", topic)
-	assert.Check(t, opensPullRequest(s), "gh was not asked to create a pull request")
+	tests := []struct {
+		name     string
+		label    string
+		env      []string
+		args     []string
+		terminal bool
+	}{
+		{name: "color terminal", label: "Broke", env: []string{colorTerm}, terminal: true, args: []string{"push"}},
+		{name: "forced color off a terminal", label: "Broke", env: []string{forced}, args: []string{"push"}},
+		{name: "flag set to false", label: "Broke", env: []string{colorTerm}, terminal: true, args: []string{"merge", "--no-color=false"}},
+		{name: "unknown word", label: "Refused", env: []string{colorTerm}, terminal: true, args: []string{"pish"}},
+		{name: "debug flag set to neither", label: "Refused", env: []string{colorTerm}, terminal: true, args: []string{"push", "--debug=maybe"}},
+		{name: "color flag set to neither", label: "Refused", env: []string{forced}, args: []string{"merge", "--no-color=maybe"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := launch(t, painted(t, tt.env, tt.terminal, false), tt.args...)
+
+			look := resulttest.Draw(t, got.stdout).LookOf(t, tt.label+": ", tt.label)
+			assert.Check(t, is.Equal(look.Color, "red"))
+		})
+	}
+}
+
+func TestApp_Run_WhenTheWordsAreRefusedWithColorOff_PrintsTheRefusalPlain(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		env  []string
+		args []string
+	}{
+		{name: "no color", env: []string{colorTerm, noColor}, args: []string{"pish"}},
+		{name: "flag before an unknown word", env: []string{colorTerm}, args: []string{"--no-color", "pish"}},
+		{name: "flag after an unknown flag", env: []string{colorTerm}, args: []string{"push", "--bogus", "--no-color"}},
+		{name: "flag set to neither under no color", env: []string{colorTerm, noColor}, args: []string{"merge", "--no-color=maybe"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := launch(t, painted(t, tt.env, true, false), tt.args...)
+
+			assert.Check(t, is.Equal(got.code, exitRefused))
+			plain(t, "the refusal", got.stdout)
+		})
+	}
+}
+
+func TestApp_Run_WhenOneStreamIsAColorTerminal_DrawsColorOnThatStreamOnly(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		stdout bool
+		stderr bool
+	}{
+		{name: "stdout", stdout: true},
+		{name: "stderr", stderr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := launch(t, painted(t, []string{colorTerm}, tt.stdout, tt.stderr), "push", "-d")
+
+			assert.Check(t, is.Equal(strings.Contains(got.stdout, escape), tt.stdout), "stdout = %q", got.stdout)
+			assert.Check(t, is.Equal(strings.Contains(got.stderr, escape), tt.stderr), "stderr = %q", got.stderr)
+		})
+	}
+}
+
+func TestApp_Run_WhenStdoutIsAColorTerminalAndTheJSONFlagIsAmongTheWords_PrintsNoEscapeSequence(t *testing.T) {
+	t.Parallel()
+
+	got := launch(t, painted(t, []string{colorTerm, forced}, true, false), "push", "--json")
+
+	assert.Check(t, is.Equal(got.code, exitBroke))
+	plain(t, "the JSON", got.stdout)
+	assert.Check(t, !strings.Contains(strings.ToLower(got.stdout), encodedEscape), "a value of the JSON carries an escape sequence:\n%s", got.stdout)
+}
+
+func TestApp_Run_WhenDebugOrColorFlagIsAmongTheWords_PrintsWhatTheSameRunPrintsWithoutIt(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		args    []string
+		flagged []string
+		logs    bool
+	}{
+		{args: []string{"push"}, flagged: []string{"push", "-d"}, logs: true},
+		{args: []string{"push", "--json"}, flagged: []string{"--debug", "push", "--json"}, logs: true},
+		{args: []string{"merge"}, flagged: []string{"merge", "--debug=true"}, logs: true},
+		{args: []string{"merge", "--json"}, flagged: []string{"merge", "-d", "--json"}, logs: true},
+		{args: []string{"push", "--json"}, flagged: []string{"push", "--json", "--debug=false"}},
+		{args: []string{"push", "--json"}, flagged: []string{"--no-color", "push", "--json"}},
+		{args: []string{"merge", "--json"}, flagged: []string{"merge", "--json", "--no-color=true"}},
+		{args: []string{"merge"}, flagged: []string{"merge", "--no-color=false"}},
+	}
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.flagged, " "), func(t *testing.T) {
+			t.Parallel()
+
+			app := lost(t)
+			without := launch(t, app, tt.args...)
+
+			got := launch(t, app, tt.flagged...)
+
+			assert.Check(t, is.Equal(without.stderr, ""))
+			assert.Check(t, is.Equal(got.stdout, without.stdout))
+			assert.Check(t, is.Equal(got.code, without.code))
+			assert.Check(t, is.Equal(got.stderr != "", tt.logs), "stderr = %q", got.stderr)
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -993,248 +1068,4 @@ func TestApp_Run_WhenGhIsNotInstalled_RefusesNamingTheInstallPage(t *testing.T) 
 	assert.Check(t, is.Equal(encoded.code, exitRefused))
 	assert.Check(t, is.Equal(resulttest.Decode(t, encoded.stdout).Outcome, "refused"))
 	nothingPushed(t, s)
-}
-
-// No test that builds a scene is parallel: the fake `gh` is found through `GH_PATH`, which
-// `go-gh` reads from the environment of the whole process.
-
-const (
-	trunk     = "develop"
-	topic     = "tidy-readme"
-	host      = "github.com"
-	owner     = "acme"
-	widgets   = "widgets"
-	slug      = host + "/" + owner + "/" + widgets
-	originURL = "ssh://git@" + slug + ".git"
-
-	// opened is the number of the open pull request.
-	opened = 12
-
-	pullURL = "https://" + slug + "/pull/12"
-	// runID is the workflow run that stands behind a check, and runLink is that check's link.
-	runID   = "9001"
-	runLink = "https://" + slug + "/actions/runs/" + runID + "/job/42"
-
-	// shortLeft is less than one poll of the checks, so that a wait for running checks ends
-	// as pending right after its first read.
-	shortLeft = 4900 * time.Millisecond
-
-	exitDone      = 0
-	exitBroke     = 1
-	exitRefused   = 2
-	exitPending   = 4
-	exitDelivered = 5
-)
-
-// scenario is one state of the repository and of GitHub that a landing command is run in.
-type scenario struct {
-	// arrange changes the repository, which stands on the topic branch with one commit.
-	arrange func(f *gittest.Fixture)
-	// script returns what gh answers, read once arrange has run.
-	script func(f *gittest.Fixture) []ghtest.Call
-	name   string
-	// ssh is the ssh config ils reads; empty names no host.
-	ssh string
-	// left is the time left under the bound at launch; zero leaves the whole bound.
-	left time.Duration
-	want int
-}
-
-// scene is one repository and one scripted gh, with a record of what git was asked.
-type scene struct {
-	fixture  *gittest.Fixture
-	recorder *git.Recorder
-	fake     *ghtest.Fake
-	// env reaches origin, whose URL names GitHub over ssh, through the stand-in for ssh.
-	env  []string
-	left time.Duration
-}
-
-// newScene returns a repository on the topic branch whose origin names acme/widgets on GitHub,
-// once sc has arranged it, and a gh that answers from sc's script.
-func newScene(t *testing.T, sc scenario) *scene {
-	t.Helper()
-
-	f, env := gittest.NewServed(t, trunk, topic, originURL)
-	f.SetSSHConfig(sc.ssh)
-
-	if sc.arrange != nil {
-		sc.arrange(f)
-	}
-
-	var script []ghtest.Call
-	if sc.script != nil {
-		script = sc.script(f)
-	}
-
-	return &scene{
-		fixture:  f,
-		recorder: &git.Recorder{},
-		fake:     ghtest.Setup(t, script...),
-		env:      env,
-		left:     sc.left,
-	}
-}
-
-// app returns the cli over the scene's repository, launched so that the scene's time is left.
-func (s *scene) app() cli.App {
-	app := over(git.Runner{Dir: s.fixture.Dir(), Env: s.env, Recorder: s.recorder})
-
-	if s.left > 0 {
-		app.Launch = time.Now().Add(s.left - bound)
-	}
-
-	return app
-}
-
-func tipOf(f *gittest.Fixture) string {
-	return f.Git("rev-parse", "HEAD")
-}
-
-// login scripts the login check with answer.
-func login(answer ghtest.Answer) ghtest.Call {
-	return ghtest.Exits(answer, ghtest.LoginArgs(host)...)
-}
-
-// identity scripts a logged-in gh and a repository that is a fork or not, with permission.
-func identity(fork bool, permission string) []ghtest.Call {
-	return []ghtest.Call{
-		login(ghtest.Answer{Stdout: "Logged in\n"}),
-		ghtest.Says(ghtest.RepoViewJSON(fork, permission), ghtest.RepoViewArgs(slug)...),
-	}
-}
-
-// allowed scripts a logged-in gh and a repository the user can push to.
-func allowed() []ghtest.Call {
-	return identity(false, "WRITE")
-}
-
-// listed scripts the answer to the list of the topic branch's pull requests in state.
-func listed(state, body string) ghtest.Call {
-	return ghtest.Exits(ghtest.Answer{Stdout: body}, ghtest.ListArgs(slug, topic, state)...)
-}
-
-// changeJSON is one pull request of the topic branch as `gh pr list` prints it.
-func changeJSON(number int, base, sha string) string {
-	url := "https://" + slug + "/pull/" + strconv.Itoa(number)
-
-	return "[" + ghtest.ChangeJSON(ghtest.Change{Number: number, URL: url, Title: topic, Base: base, SHA: sha}) + "]"
-}
-
-// found scripts the pull requests of the topic branch: the open ones, then the merged ones.
-func found(open, landed string) []ghtest.Call {
-	return append(allowed(), listed("open", open), listed("merged", landed))
-}
-
-// headJSON is `gh pr view`'s answer for the pull request at sha, with no review decision.
-func headJSON(sha, mergeable, status string) string {
-	return ghtest.HeadJSON(sha, mergeable, status, "")
-}
-
-// checkJSON is `gh pr checks`'s answer with one check of workflow run 9001.
-func checkJSON(name, bucket string) string {
-	return "[" + ghtest.CheckJSON(name, bucket, runLink) + "]"
-}
-
-// verdict is what GitHub says of pull request 12 once it is open.
-type verdict struct {
-	// rules is the answer to the read of the trunk's rules.
-	rules string
-	// head is the answer to `gh pr view`.
-	head string
-	// run is the status of the one workflow run on the commit.
-	run string
-	// checks is the answer to `gh pr checks`.
-	checks ghtest.Answer
-}
-
-// passing is a mergeable pull request at sha whose one check passed, on a trunk with no rule.
-func passing(sha string) verdict {
-	return verdict{
-		rules: "[]", head: headJSON(sha, "MERGEABLE", "CLEAN"), run: "completed",
-		checks: ghtest.Answer{Stdout: checkJSON("build", "pass")},
-	}
-}
-
-// calls scripts the reads of v for the commit sha.
-func (v verdict) calls(sha string) []ghtest.Call {
-	run := "[" + ghtest.RunJSON(v.run, "Tidy") + "]"
-
-	return []ghtest.Call{
-		ghtest.Says(v.rules, ghtest.RulesArgs(host, owner+"/"+widgets, trunk)...),
-		ghtest.Says(v.head, ghtest.HeadArgs(slug, opened)...),
-		ghtest.Exits(v.checks, ghtest.ChecksArgs(slug, opened)...),
-		ghtest.Says(run, ghtest.RunsArgs(slug, sha)...),
-		ghtest.Says("build\tRun tests\tFAIL\n", ghtest.LogArgs(slug, runID)...),
-	}
-}
-
-// firstPush scripts a branch with no pull request yet, and then the verdict judge gives.
-func firstPush(judge func(sha string) verdict) func(*gittest.Fixture) []ghtest.Call {
-	return func(f *gittest.Fixture) []ghtest.Call {
-		sha := tipOf(f)
-		opening := ghtest.Says(pullURL+"\n", ghtest.CreateArgs(slug, topic, trunk, topic)...)
-
-		return slices.Concat(found("[]", "[]"), []ghtest.Call{opening}, judge(sha).calls(sha))
-	}
-}
-
-// laterPush scripts a branch whose pull request 12 is open at its tip, and then the verdict
-// judge gives.
-func laterPush(judge func(sha string) verdict) func(*gittest.Fixture) []ghtest.Call {
-	return func(f *gittest.Fixture) []ghtest.Call {
-		sha := tipOf(f)
-
-		return slices.Concat(found(changeJSON(opened, trunk, sha), "[]"), judge(sha).calls(sha))
-	}
-}
-
-// only scripts the same answers whatever the repository holds.
-func only(calls ...ghtest.Call) func(*gittest.Fixture) []ghtest.Call {
-	return func(*gittest.Fixture) []ghtest.Call { return calls }
-}
-
-func greenFirstPush() scenario {
-	return scenario{name: "green on a first push", script: firstPush(passing), want: exitDone}
-}
-
-func redWithLog() scenario {
-	red := func(sha string) verdict {
-		v := passing(sha)
-		v.head = headJSON(sha, "MERGEABLE", "UNSTABLE")
-		v.checks = ghtest.Answer{Stdout: checkJSON("build", "fail"), Code: 1}
-
-		return v
-	}
-
-	return scenario{name: "red with a failed log", script: firstPush(red), want: exitDelivered}
-}
-
-func pendingAtTheBound() scenario {
-	running := func(sha string) verdict {
-		v := passing(sha)
-		v.run = "in_progress"
-		v.checks = ghtest.Answer{Stdout: checkJSON("build", "pending"), Code: 8}
-
-		return v
-	}
-
-	return scenario{
-		name: "checks still running at the bound", script: laterPush(running), left: shortLeft, want: exitPending,
-		arrange: func(f *gittest.Fixture) { f.Publish(topic) },
-	}
-}
-
-func onTheTrunk() scenario {
-	return scenario{
-		name: "on the trunk", script: only(allowed()...), want: exitRefused,
-		arrange: func(f *gittest.Fixture) { f.Git("switch", "--quiet", trunk) },
-	}
-}
-
-func failedRead() scenario {
-	down := listed("open", "")
-	down.Answers = []ghtest.Answer{{Stderr: "gh: Server Error (HTTP 500)\n", Code: 1}}
-
-	return scenario{name: "a read of GitHub fails", script: only(append(allowed(), down)...), want: exitBroke}
 }
