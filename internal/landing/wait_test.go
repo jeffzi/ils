@@ -924,6 +924,18 @@ func TestAwaitVerdict_WhenChecksStillRunAtTheDeadline_EndsPendingWithThem(t *tes
 			heads: shows(clean(), reviewed), after: reviewed, left: 5 * time.Second,
 			ops: readsOf(1, 1, 1),
 		},
+		{
+			// A poll of five seconds fits in seven, but not with the head read after it.
+			name:  "with seven seconds left",
+			heads: shows(clean(), reviewed), after: reviewed, left: 7 * time.Second,
+			ops: readsOf(1, 1, 1),
+		},
+		{
+			// Eight seconds hold one poll and the head read after it, and no more.
+			name:  "with eight seconds left",
+			heads: shows(clean(), reviewed), after: reviewed, left: 8 * time.Second,
+			ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

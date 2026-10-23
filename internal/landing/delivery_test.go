@@ -756,7 +756,8 @@ func TestPush_WhenTheHeadMovesPastThePushedCommit_RefusesNamingTheNewHead(t *tes
 		{name: "after a red verdict", script: movedAfter(lintRed()), want: refused},
 		{name: "after nothing reported", script: movedAfter(forge.Verdict{}), want: refused},
 		{
-			// Seven seconds leave room for one poll and then for the head read.
+			// Seven seconds leave no room for a poll with the head read after it, so the head is read at
+			// once.
 			name: "after checks still running at the deadline", script: movedAfter(running()), want: refused,
 			left: 7 * time.Second,
 		},

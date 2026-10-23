@@ -63,9 +63,11 @@ const (
 	WaitNothingReported WaitOutcome = "nothing-reported"
 	// WaitPending is a wait that ended before the forge had an answer: the deadline ended it,
 	// or the stage's own window did when Waited.Window is set. Waited.Stage says what it was
-	// waiting for: checks still running at the deadline end it at StageVerdict, holding their
+	// waiting for. Checks still running at the deadline end it at StageVerdict, holding their
 	// verdict when the read of the head after them showed the pushed commit, and none, with
-	// Waited.Since zero, when the deadline took that read.
+	// Waited.Since zero, when the deadline took that read. Checks that had concluded end it at
+	// StageMergeState, with no verdict, when the deadline took that read. The verdict poll keeps
+	// 3 seconds before the deadline for that read.
 	WaitPending WaitOutcome = "pending"
 	// WaitMoved is a pull request whose head, read after the checks, is no longer the pushed
 	// commit; Waited.MovedTo names the commit it is on. The forge reads the checks of the pull
