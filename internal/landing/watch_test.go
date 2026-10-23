@@ -4,16 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/colorprofile"
 	"gotest.tools/v3/assert"
-	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
@@ -31,10 +28,22 @@ const (
 	mergeStateStep = "start Waiting for GitHub to say whether #12 can merge of 30s"
 )
 
+// eventKind is what a run told its progress hook.
+type eventKind int
+
+const (
+	// eventStart is a step that started, with its limit.
+	eventStart eventKind = iota
+	// eventSaid is a step line the run said as its step succeeded.
+	eventSaid
+	// eventCount is a count of the checks done.
+	eventCount
+)
+
 // watchEvent is one thing a run told its progress hook.
 type watchEvent struct {
-	kind   string
 	phrase result.Phrase
+	kind   eventKind
 	limit  time.Duration
 	done   int
 	total  int
@@ -45,79 +54,6 @@ type watch struct {
 	events  []watchEvent
 	records []string
 	mu      sync.Mutex
-}
-
-// placedResult is a result as both renderers show it, with <scene> where git's messages name the
-// directory of the scene it ran on, so that the results of two scenes built alike compare.
-type placedResult struct {
-	object string
-	drawn  string
-}
-
-// assertSameUnwatched fails unless unwatched, the result of a run on a scene of its own built alike
-// and given no progress hook and no logger, is exactly watched: the same object and the same text
-// drawn with color, so that no name changes its kind either.
-func assertSameUnwatched(t *testing.T, watched, unwatched placedResult) {
-	t.Helper()
-
-	assert.Check(t, is.Equal(unwatched.object, watched.object), "with no progress hook and no logger")
-	assert.Check(t, is.Equal(unwatched.drawn, watched.drawn), "with no progress hook and no logger")
-}
-
-// unwatchedRun returns, as it shows, the result of `ils <cmd>` given req on the scene and under the
-// context build returns, with no progress hook and no logger. The run is a test of its own, so that
-// a fake git build puts on PATH comes off with that test's cleanup before the caller's watched run
-// puts its own: a fake git takes the git it finds on PATH as the real one. A test in a bubble
-// cannot start a test of its own; it runs unwatched on a scene of its own directly instead.
-func unwatchedRun(t *testing.T, build func(t *testing.T) (*scene, context.Context), req landing.Request) placedResult {
-	t.Helper()
-
-	var bare placedResult
-
-	t.Run("with no progress hook and no logger", func(t *testing.T) {
-		s, ctx := build(t)
-		s.deps.Progress, s.deps.Logger = nil, nil
-		bare = s.placed(t, land(ctx, s.deps, req))
-	})
-
-	return bare
-}
-
-// land runs the landing command req names: merge for a merge request, and push otherwise.
-func land(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
-	if req.Command == landing.MergeCommand {
-		return landing.Merge(ctx, deps, req)
-	}
-
-	return landing.Push(ctx, deps, req)
-}
-
-// placed returns r as it shows, with the directory that holds the scene's repository and its
-// origin replaced by <scene>: as given and with its symbolic links resolved, each in the native
-// form and with forward slashes, the form git prints on Windows. The scene must still be on disk.
-func (s *scene) placed(t *testing.T, r result.Result) placedResult {
-	t.Helper()
-
-	root := filepath.Dir(s.fixture.Dir())
-	resolved, err := filepath.EvalSymlinks(root)
-	assert.NilError(t, err)
-
-	// The resolved form goes first: on macOS it holds the given one (/private/var/… holds /var/…).
-	replacer := strings.NewReplacer(
-		resolved, "<scene>",
-		filepath.ToSlash(resolved), "<scene>",
-		root, "<scene>",
-		filepath.ToSlash(root), "<scene>",
-	)
-	place := replacer.Replace
-
-	object, err := result.RenderJSON(r, "")
-	assert.NilError(t, err)
-
-	drawn, err := result.RenderStyled(r, "", colorprofile.ANSI)
-	assert.NilError(t, err)
-
-	return placedResult{object: place(object), drawn: place(drawn)}
 }
 
 // watchOn gives deps a progress hook and a logger that both tell the watch it returns.
@@ -131,17 +67,17 @@ func watchOn(deps *landing.Deps) *watch {
 
 // Started keeps a step that started, with its limit.
 func (w *watch) Started(label result.Phrase, limit time.Duration) {
-	w.keep(watchEvent{kind: "start", phrase: label, limit: limit})
+	w.keep(watchEvent{kind: eventStart, phrase: label, limit: limit})
 }
 
 // Said keeps a step line the run said as its step succeeded.
 func (w *watch) Said(line result.Phrase) {
-	w.keep(watchEvent{kind: "said", phrase: line})
+	w.keep(watchEvent{kind: eventSaid, phrase: line})
 }
 
 // Counted keeps a count of the checks done.
 func (w *watch) Counted(done, total int) {
-	w.keep(watchEvent{kind: "count", done: done, total: total})
+	w.keep(watchEvent{kind: eventCount, done: done, total: total})
 }
 
 func (w *watch) keep(e watchEvent) {
@@ -162,16 +98,16 @@ func (w *watch) told(t *testing.T) []string {
 	told := make([]string, 0, len(w.events))
 	for _, e := range w.events {
 		switch e.kind {
-		case "count":
+		case eventCount:
 			told = append(told, fmt.Sprintf("count %d of %d", e.done, e.total))
-		case "start":
+		case eventStart:
 			step := "start " + plainText(t, e.phrase)
 			if e.limit > 0 {
 				step += " of " + e.limit.String()
 			}
 
 			told = append(told, step)
-		default:
+		case eventSaid:
 			told = append(told, "said "+plainText(t, e.phrase))
 		}
 	}
@@ -192,11 +128,14 @@ func (w *watch) logged() []string {
 func (w *watch) lines(t *testing.T) []string {
 	t.Helper()
 
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	var lines []string
 
-	for _, e := range w.told(t) {
-		if line, ok := strings.CutPrefix(e, "said "); ok {
-			lines = append(lines, line)
+	for _, e := range w.events {
+		if e.kind == eventSaid {
+			lines = append(lines, plainText(t, e.phrase))
 		}
 	}
 

@@ -3,6 +3,7 @@ package git_test
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -993,6 +994,81 @@ func TestRepo_OriginURLs_WhenRunnerSetsNoEnvironment_FindsSSHOnTheProcessPath(t 
 			assert.NilError(t, err)
 
 			assert.Check(t, is.Equal(got.Fetch.Host, tt.want))
+		})
+	}
+}
+
+// callsOf returns the attributes of each exec record in records that names tool, all but the
+// duration.
+func callsOf(records []slog.Record, tool string) []map[string]any {
+	var calls []map[string]any
+
+	for _, record := range records {
+		attrs := map[string]any{}
+		record.Attrs(func(attr slog.Attr) bool {
+			attrs[attr.Key] = attr.Value.Any()
+
+			return true
+		})
+
+		if record.Message != "exec" || attrs["tool"] != tool {
+			continue
+		}
+
+		delete(attrs, "duration")
+		calls = append(calls, attrs)
+	}
+
+	return calls
+}
+
+func TestRepo_OriginURLs_WhenLoggerAttachedAndSSHReadsHost_LogsEachSSHRun(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		// arrange returns repo set to read the host through ssh, and the tool that ssh run is
+		// logged under.
+		arrange func(t *testing.T, repo git.Repo) (git.Repo, string)
+		name    string
+		args    []string
+	}{
+		{
+			name: "plain ssh", args: []string{"-G", "--", "work"},
+			arrange: func(t *testing.T, repo git.Repo) (git.Repo, string) {
+				t.Helper()
+
+				return plainSSH(t, repo, plainAnswer), "ssh"
+			},
+		},
+		{
+			name: "configured ssh program", args: []string{"-G", "work"},
+			arrange: func(t *testing.T, repo git.Repo) (git.Repo, string) {
+				t.Helper()
+				configured := standIn(t, "ssh")
+				repo = noSSHCommand(repo)
+				repo.Runner.Env = append(repo.Runner.Env, "GIT_SSH="+configured, answering(standInHost))
+
+				return repo, configured
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			f.SetOriginURL(aliasURL)
+			repo, tool := tt.arrange(t, newRepo(f))
+			logger, records := newCapture()
+			repo.Runner.Logger = logger
+
+			_, err := repo.OriginURLs(t.Context())
+			assert.NilError(t, err)
+
+			calls := callsOf(records(), tool)
+			assert.Assert(t, len(calls) > 0, "OriginURLs() logged no exec record of %q", tool)
+			want := map[string]any{"tool": tool, "args": tt.args, "exit": int64(0)}
+			for _, call := range calls {
+				assert.Check(t, is.DeepEqual(call, want))
+			}
 		})
 	}
 }

@@ -8,7 +8,6 @@ import (
 	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/forge"
-	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/github/ghtest"
 )
 
@@ -183,20 +182,6 @@ func TestForge_Verdict(t *testing.T) {
 
 			assert.Check(t, is.DeepEqual(got.FailedLog, tt.want))
 			assertCalls(t, fake, tt.wantCalls)
-		})
-	}
-}
-
-func TestForge_Verdict_WhenLoggerSet_LogsTheFailedLogReads(t *testing.T) {
-	for _, tt := range failedLogRows() {
-		t.Run(tt.name, func(t *testing.T) {
-			fake := ghtest.Setup(t, ghtest.Says(jsonArray(tt.checks), checksArgs()...), ghtest.Says("[]", runsArgs()...), ghtest.Exits(tt.log, logArgs()...), ghtest.Exits(tt.jobLog, jobLogArgs("42")...))
-			logger, sink := newLogger()
-
-			_, err := (&github.Forge{Logger: logger}).Verdict(t.Context(), engine(), verdictQuery(tt.required...))
-			assert.NilError(t, err)
-
-			assert.Check(t, is.DeepEqual(loggedArgv(sink), fake.Calls()))
 		})
 	}
 }

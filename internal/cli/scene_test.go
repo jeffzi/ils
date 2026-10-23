@@ -132,10 +132,10 @@ func listed(state, body string) ghtest.Call {
 }
 
 // changeJSON is one pull request of the topic branch as `gh pr list` prints it.
-func changeJSON(number int, base, sha string) string {
+func changeJSON(number int, title, base, sha string) string {
 	url := "https://" + slug + "/pull/" + strconv.Itoa(number)
 
-	return "[" + ghtest.ChangeJSON(ghtest.Change{Number: number, URL: url, Title: topic, Base: base, SHA: sha}) + "]"
+	return "[" + ghtest.ChangeJSON(ghtest.Change{Number: number, URL: url, Title: title, Base: base, SHA: sha}) + "]"
 }
 
 // found scripts the pull requests of the topic branch: the open ones, then the merged ones.
@@ -202,7 +202,7 @@ func laterPush(judge func(sha string) verdict) func(*gittest.Fixture) []ghtest.C
 	return func(f *gittest.Fixture) []ghtest.Call {
 		sha := tipOf(f)
 
-		return slices.Concat(found(changeJSON(opened, trunk, sha), "[]"), judge(sha).calls(sha))
+		return slices.Concat(found(changeJSON(opened, topic, trunk, sha), "[]"), judge(sha).calls(sha))
 	}
 }
 
@@ -268,7 +268,7 @@ const mergeTitle = "docs: tidy the readme"
 func landedMerge() scenario {
 	script := func(f *gittest.Fixture) []ghtest.Call {
 		sha := tipOf(f)
-		open := "[" + ghtest.ChangeJSON(ghtest.Change{Number: opened, URL: pullURL, Title: mergeTitle, Base: trunk, SHA: sha}) + "]"
+		open := changeJSON(opened, mergeTitle, trunk, sha)
 		landing := []string{
 			"pr", "merge", strconv.Itoa(opened), "--repo", slug, "--squash",
 			"--match-head-commit", sha, "--subject", mergeTitle + " (#12)", "--body", "",

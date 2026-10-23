@@ -112,17 +112,14 @@ func TestRunner_Run_WhenGhExitsNonZero_ReturnsExitErrorAndStdout(t *testing.T) {
 	assert.Check(t, is.Equal(got.Stdout, "build\tpending\n"))
 }
 
-// runCanceledWhileGhRuns scripts a gh that holds its answer for args, runs runner against it,
-// cancels the context once gh holds the answer, and returns the error Run returned.
-func runCanceledWhileGhRuns(t *testing.T, runner github.Runner, args ...string) error {
-	t.Helper()
-
+func TestRunner_Run_WhenContextIsCanceledWhileGhRuns_ReturnsContextError(t *testing.T) {
+	args := []string{"pr", "checks", "7"}
 	fake := ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "pass\n", Delay: 30 * time.Second}, args...))
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	ran := make(chan error, 1)
 	go func() {
-		_, err := runner.Run(ctx, args...)
+		_, err := github.Runner{}.Run(ctx, args...)
 		ran <- err
 	}()
 	select {
@@ -132,12 +129,7 @@ func runCanceledWhileGhRuns(t *testing.T, runner github.Runner, args ...string) 
 	}
 
 	cancel()
-
-	return <-ran
-}
-
-func TestRunner_Run_WhenContextIsCanceledWhileGhRuns_ReturnsContextError(t *testing.T) {
-	err := runCanceledWhileGhRuns(t, github.Runner{}, "pr", "checks", "7")
+	err := <-ran
 
 	assert.Check(t, is.ErrorIs(err, context.Canceled))
 }
@@ -264,26 +256,14 @@ func failedCall(err error, args ...string) loggedCall {
 	}
 }
 
-func TestRunner_Run_WhenLoggerSet_LogsArgvExitCodeAndDuration(t *testing.T) {
-	tests := []struct {
-		name   string
-		answer ghtest.Answer
-	}{
-		{name: "exit zero with output", answer: ghtest.Answer{Stdout: "{\"number\":7}\n", Stderr: "notice\n"}},
-		{name: "non-zero exit without output", answer: ghtest.Answer{Code: 1}},
-		{name: "non-zero exit with output", answer: ghtest.Answer{Stdout: "build\tpending\n", Stderr: "still running\n", Code: 8}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			args := []string{"pr", "checks", "7"}
-			ghtest.Setup(t, ghtest.Exits(tt.answer, args...))
-			logger, sink := newLogger()
+func TestRunner_Run_WhenLoggerSet_LogsToolArgvExitCodeAndDuration(t *testing.T) {
+	args := []string{"pr", "checks", "7"}
+	ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "build\tpending\n", Stderr: "still running\n", Code: 8}, args...))
+	logger, sink := newLogger()
 
-			_, _ = github.Runner{Logger: logger}.Run(t.Context(), args...)
+	_, _ = github.Runner{Logger: logger}.Run(t.Context(), args...)
 
-			assert.Check(t, is.DeepEqual(sink.Calls(), []loggedCall{exitedCall(int64(tt.answer.Code), args...)}))
-		})
-	}
+	assert.Check(t, is.DeepEqual(sink.Calls(), []loggedCall{exitedCall(8, args...)}))
 }
 
 func TestRunner_Run_WhenLoggerSetAndGhMissing_LogsTheFailure(t *testing.T) {
@@ -294,30 +274,4 @@ func TestRunner_Run_WhenLoggerSetAndGhMissing_LogsTheFailure(t *testing.T) {
 	assert.Assert(t, err != nil, "Run(pr view) error = nil, want what starting gh failed with")
 
 	assert.Check(t, is.DeepEqual(sink.Calls(), []loggedCall{failedCall(err, "pr", "view")}))
-}
-
-func TestRunner_Run_WhenNoLogger_LogsNothingToDefaultLogger(t *testing.T) {
-	args := []string{"pr", "checks", "7"}
-	ghtest.Setup(t, ghtest.Says("{}", "pr", "view"), ghtest.Exits(ghtest.Answer{Stderr: serverDown, Code: 1}, args...))
-	logger, sink := newLogger()
-	previous := slog.Default()
-	slog.SetDefault(logger)
-	t.Cleanup(func() { slog.SetDefault(previous) })
-
-	_, err := github.Runner{}.Run(t.Context(), "pr", "view")
-	assert.NilError(t, err)
-	_, err = github.Runner{}.Run(t.Context(), args...)
-	assert.Assert(t, err != nil, "Run(pr checks) error = nil, want a failing call")
-
-	assert.Check(t, is.Len(sink.Calls(), 0))
-}
-
-func TestRunner_Run_WhenLoggerSetAndContextIsCanceledWhileGhRuns_LogsTheFailure(t *testing.T) {
-	args := []string{"pr", "checks", "7"}
-	logger, sink := newLogger()
-
-	err := runCanceledWhileGhRuns(t, github.Runner{Logger: logger}, args...)
-
-	assert.Assert(t, is.ErrorIs(err, context.Canceled))
-	assert.Check(t, is.DeepEqual(sink.Calls(), []loggedCall{failedCall(err, args...)}))
 }

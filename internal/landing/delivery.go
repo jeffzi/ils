@@ -72,7 +72,7 @@ func deliver(ctx context.Context, deps Deps, req Request, p pushReady) result.Re
 // pushTip pushes the branch to origin unless origin's copy is already at the tip.
 func (d *delivery) pushTip(ctx context.Context, deps Deps) *result.Result {
 	if d.onOrigin {
-		d.say(deps, result.Say("%s is already on origin at %s; nothing pushed", d.markedBranch(), d.markedTip()))
+		deps.say(&d.lines, result.Say("%s is already on origin at %s; nothing pushed", d.markedBranch(), d.markedTip()))
 
 		return nil
 	}
@@ -81,7 +81,7 @@ func (d *delivery) pushTip(ctx context.Context, deps Deps) *result.Result {
 
 	err := deps.Repo.Push(ctx, d.branch)
 	if err == nil {
-		d.say(deps, result.Say("Pushed %s at %s", d.markedBranch(), d.markedTip()))
+		deps.say(&d.lines, result.Say("Pushed %s at %s", d.markedBranch(), d.markedTip()))
 
 		return nil
 	}
@@ -120,7 +120,7 @@ func (d *delivery) findOrOpen(ctx context.Context, deps Deps) *result.Result {
 	switch {
 	case err == nil:
 		d.number, d.url = opened.Number, opened.URL
-		d.say(deps, result.Say("Opened pull request %s against %s, titled %s with no body: %s",
+		deps.say(&d.lines, result.Say("Opened pull request %s against %s, titled %s with no body: %s",
 			result.PullRequest(opened.Number), result.Branch(d.Trunk), d.branch, result.URL(opened.URL)))
 
 		return nil
@@ -141,7 +141,7 @@ func (d *delivery) findOrOpen(ctx context.Context, deps Deps) *result.Result {
 // findAgain reads the branch's pull requests once more, after the forge said that one exists,
 // and takes the open one against the trunk.
 func (d *delivery) findAgain(ctx context.Context, deps Deps) *result.Result {
-	deps.started(result.Say("Finding the pull request"), 0)
+	deps.startFinding()
 
 	changes, err := deps.Forge.FindChanges(ctx, d.Repo, d.branch)
 	if err != nil {
@@ -165,14 +165,7 @@ func (d *delivery) findAgain(ctx context.Context, deps Deps) *result.Result {
 // found takes change as the branch's pull request and says so.
 func (d *delivery) found(deps Deps, change forge.Change) {
 	d.number, d.url = change.Number, change.URL
-	d.say(deps, result.Say("Pull request %s: %s", result.PullRequest(change.Number), result.URL(change.URL)))
-}
-
-// say adds line, the line of a step that succeeded, to the lines said so far, and tells the
-// progress hook.
-func (d *delivery) say(deps Deps, line result.Phrase) {
-	d.lines = append(d.lines, line)
-	deps.said(line)
+	deps.say(&d.lines, result.Say("Pull request %s: %s", result.PullRequest(change.Number), result.URL(change.URL)))
 }
 
 func (d *delivery) markedBranch() result.Name {
@@ -243,7 +236,7 @@ func (d *delivery) sayMergeState() {
 func (d *delivery) report(deps Deps) *result.Result {
 	switch d.waited.Outcome {
 	case WaitGreen:
-		d.say(deps, d.waited.checksLine(d.tip))
+		deps.say(&d.lines, d.waited.checksLine(d.tip))
 
 		return d.doneMerging()
 	case WaitNothingReported:

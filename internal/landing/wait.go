@@ -249,8 +249,35 @@ func (w waiter) startChecks(ctx context.Context) {
 	w.deps.started(result.Say("Waiting for checks on %s", result.PullRequest(w.pushed.Number)), timeLeft(ctx))
 }
 
+// timeLeft returns the time before ctx's deadline, or zero when it has none.
+func timeLeft(ctx context.Context) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return 0
+	}
+
+	return time.Until(deadline)
+}
+
+// logWait gives the logger, if any, a debug record of a decision of the wait, made of attrs.
+func (d Deps) logWait(ctx context.Context, attrs ...slog.Attr) {
+	if d.Logger != nil {
+		d.Logger.LogAttrs(ctx, slog.LevelDebug, "wait", attrs...)
+	}
+}
+
+// counted tells the progress hook, if any, that done of total checks have concluded.
+func (d Deps) counted(done, total int) {
+	if d.Progress != nil && total > 0 {
+		d.Progress.Counted(done, total)
+	}
+}
+
+// noPoll is the window of a read of the merge state that no poll follows.
+const noPoll time.Duration = -1
+
 // logState logs a read of the merge state that showed head. window is the time left to poll an
-// unknown state, or a negative duration for a read no poll follows.
+// unknown state, or noPoll for a read no poll follows.
 func (w waiter) logState(ctx context.Context, head forge.Head, window time.Duration) {
 	attrs := []slog.Attr{slog.String("read", "merge-state"), slog.String("state", string(head.MergeState))}
 	if window >= 0 {
@@ -265,8 +292,10 @@ func (w waiter) logState(ctx context.Context, head forge.Head, window time.Durat
 func (w waiter) logChecks(ctx context.Context, verdict forge.Verdict) {
 	deciding, pending := len(verdict.Deciding()), len(verdict.Pending())
 
-	w.deps.counted(deciding-pending, deciding)
-	w.deps.logWait(ctx, slog.String("read", "checks"), slog.Int("done", deciding-pending),
+	done := deciding - pending
+
+	w.deps.counted(done, deciding)
+	w.deps.logWait(ctx, slog.String("read", "checks"), slog.Int("done", done),
 		slog.Int("pending", pending), slog.String("verdict", string(verdict.State())))
 }
 
@@ -327,7 +356,7 @@ func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 		return waited.unconfirmed(), StageMergeState, afterErr
 	}
 
-	w.logState(ctx, after, -1)
+	w.logState(ctx, after, noPoll)
 
 	if w.movedOn(&waited, after) {
 		return waited, "", nil
@@ -360,7 +389,7 @@ func (w waiter) readied(ctx context.Context, waited *Waited) (ended bool, stage 
 
 	w.logState(ctx, head, mergeWindow)
 
-	polled := head.MergeState == forge.MergeUnknown
+	polled := w.unknownOnPushed(head)
 
 	head, err = w.mergeKnown(ctx, head)
 	if err == nil && w.movedOn(waited, head) {

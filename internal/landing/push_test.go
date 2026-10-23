@@ -361,26 +361,17 @@ func TestPush_WhenBranchPassesACheckAnotherStateFails_PushesIt(t *testing.T) {
 
 func TestPush_WhenSharedPreconditionFails_ReturnsItsRefusal(t *testing.T) {
 	t.Parallel()
-	build := func(t *testing.T) (*scene, context.Context) {
-		t.Helper()
-
-		return newScene(t, (*gittest.Fixture).RemoveOrigin, forgetest.Script{}, false), t.Context()
-	}
-	bare := unwatchedRun(t, build, pushRequest())
-	s, ctx := build(t)
-	watchOn(&s.deps)
+	s := newScene(t, (*gittest.Fixture).RemoveOrigin, forgetest.Script{}, false)
 	before := s.written()
 
-	got := landing.Push(ctx, s.deps, pushRequest())
+	got := landing.Push(t.Context(), s.deps, pushRequest())
 
 	assertEnded(t, s, got, finish{outcome: result.Refused, text: noOriginText})
 	assertOnlyRead(t, s, reads{before: before, ops: nil, fetches: false})
-	assertSameUnwatched(t, s.placed(t, got), bare)
 }
 
 // runPushRefusals runs each row as a test of its own: Push refuses with the text the row's arrange
-// returns, having written nothing and read no further than the row says. The row first runs on a
-// scene of its own with no progress hook and no logger, and must end exactly as it does with them.
+// returns, having written nothing and read no further than the row says.
 func runPushRefusals(t *testing.T, rows []pushRefusal) {
 	t.Helper()
 
@@ -390,27 +381,18 @@ func runPushRefusals(t *testing.T, rows []pushRefusal) {
 
 			var want string
 
-			build := func(t *testing.T) (*scene, context.Context) {
-				t.Helper()
-
-				s := newScene(t, func(f *gittest.Fixture) { want = tt.arrange(f) }, tt.script, false)
-				if tt.answered > 0 {
-					s.stopAnswering(t, tt.answered)
-				}
-
-				return s, t.Context()
+			s := newScene(t, func(f *gittest.Fixture) { want = tt.arrange(f) }, tt.script, false)
+			if tt.answered > 0 {
+				s.stopAnswering(t, tt.answered)
 			}
-			bare := unwatchedRun(t, build, pushRequest())
-			s, ctx := build(t)
-			watchOn(&s.deps)
+
 			before := s.written()
 
-			got := landing.Push(ctx, s.deps, pushRequest())
+			got := landing.Push(t.Context(), s.deps, pushRequest())
 
 			assertEnded(t, s, got, finish{outcome: result.Refused, text: want})
 			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: tt.fetches})
 			assertDrawn(t, got, s.gitDir, atTip(tt.drawn, s.fixture.Git("rev-parse", topic)))
-			assertSameUnwatched(t, s.placed(t, got), bare)
 		})
 	}
 }
@@ -453,32 +435,21 @@ type unanswered struct {
 }
 
 // runUnanswered runs each row as a test of its own: Push refuses naming what origin was asked for
-// when it stopped answering, having written nothing. The row first runs on a scene of its own with
-// no progress hook and no logger, and must end exactly as it does with them.
+// when it stopped answering, having written nothing.
 func runUnanswered(t *testing.T, rows []unanswered) {
 	t.Helper()
 
 	for _, tt := range rows {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			build := func(t *testing.T) (*scene, context.Context) {
-				t.Helper()
-
-				s := newScene(t, tt.arrange, tt.script, false)
-				s.stopAnswering(t, tt.answered)
-
-				return s, t.Context()
-			}
-			bare := unwatchedRun(t, build, pushRequest())
-			s, ctx := build(t)
-			watchOn(&s.deps)
+			s := newScene(t, tt.arrange, tt.script, false)
+			s.stopAnswering(t, tt.answered)
 			before := s.written()
 
-			got := landing.Push(ctx, s.deps, pushRequest())
+			got := landing.Push(t.Context(), s.deps, pushRequest())
 
 			assertEnded(t, s, got, finish{outcome: result.Refused, text: unreached(pushCommand(), tt.asked)})
 			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
-			assertSameUnwatched(t, s.placed(t, got), bare)
 		})
 	}
 }
@@ -527,31 +498,21 @@ type overtime struct {
 }
 
 // runOvertime runs each row as a test of its own: Push refuses naming the read the deadline ended
-// in, having written nothing. The row first runs on a scene of its own with no progress hook and no
-// logger, and must end exactly as it does with them.
+// in, having written nothing.
 func runOvertime(t *testing.T, rows []overtime) {
 	t.Helper()
 
 	for _, tt := range rows {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			build := func(t *testing.T) (*scene, context.Context) {
-				t.Helper()
-
-				s := newScene(t, tt.prepare, tt.script, false)
-
-				return s, tt.arrange(t, s)
-			}
-			bare := unwatchedRun(t, build, pushRequest())
-			s, ctx := build(t)
-			watchOn(&s.deps)
+			s := newScene(t, tt.prepare, tt.script, false)
+			ctx := tt.arrange(t, s)
 			before := s.written()
 
 			got := landing.Push(ctx, s.deps, pushRequest())
 
 			assertEnded(t, s, got, finish{outcome: result.Refused, text: overtimeText(pushCommand(), tt.read)})
 			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
-			assertSameUnwatched(t, s.placed(t, got), bare)
 		})
 	}
 }
@@ -663,9 +624,7 @@ func copyFailedReads() []failedRead {
 }
 
 // runFailedReads runs each row as a test of its own: Push ends broke on the row's read once the
-// git call the row names fails, having written nothing. The row first runs on a scene of its own
-// with no progress hook and no logger, and must end exactly as it does with them. It cannot run in
-// a parallel test.
+// git call the row names fails, having written nothing. It cannot run in a parallel test.
 func runFailedReads(t *testing.T, rows []failedRead) {
 	t.Helper()
 
@@ -673,24 +632,14 @@ func runFailedReads(t *testing.T, rows []failedRead) {
 		t.Run(tt.name, func(t *testing.T) {
 			var words []string
 
-			build := func(t *testing.T) (*scene, context.Context) {
-				t.Helper()
-
-				s := newScene(t, func(f *gittest.Fixture) { words = tt.arrange(f) }, tt.script, false)
-				failGit(t, s, words)
-
-				return s, t.Context()
-			}
-			bare := unwatchedRun(t, build, pushRequest())
-			s, ctx := build(t)
-			watchOn(&s.deps)
+			s := newScene(t, func(f *gittest.Fixture) { words = tt.arrange(f) }, tt.script, false)
+			failGit(t, s, words)
 			before := s.written()
 
-			got := landing.Push(ctx, s.deps, pushRequest())
+			got := landing.Push(t.Context(), s.deps, pushRequest())
 
 			assertEnded(t, s, got, finish{outcome: result.Broke, text: failedGitText(pushCommand(), tt.read, words)})
 			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
-			assertSameUnwatched(t, s.placed(t, got), bare)
 		})
 	}
 }

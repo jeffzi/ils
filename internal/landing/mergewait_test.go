@@ -115,11 +115,6 @@ func (build forgeFor) landing(land, remove error) forgeFor {
 	})
 }
 
-// withLines returns the refusal text with lines printed above its reason line.
-func withLines(text, lines string) string {
-	return lines + text
-}
-
 // mergeRun is one run of `ils merge` on a scene `setting` describes.
 type mergeRun struct {
 	// ended is the fake time at which Merge returned.
@@ -138,7 +133,8 @@ type mergeRun struct {
 type setting struct {
 	// arrange changes the repository before the scene reads it; nil changes nothing.
 	arrange func(*gittest.Fixture)
-	// rewire changes how the scene reaches git once it is built; nil changes nothing.
+	// rewire changes how the scene reaches git, or what its deps carry, once it is built; nil
+	// changes nothing.
 	rewire func(t *testing.T, s *scene)
 	// landed runs once a landing the forge lets through has squashed the tip onto origin's trunk.
 	landed func(t *testing.T, f *gittest.Fixture)
@@ -159,24 +155,9 @@ func runMergeIn(t *testing.T, script forgeFor, left time.Duration) mergeRun {
 
 // runMergeOn runs `ils merge` inside the test's bubble on the scene set describes, under a deadline
 // unless set is unbounded, and fails unless every step line the run said is held by its result. A
-// landing the forge lets through squashes the tip onto origin's trunk, as GitHub would. The run is
-// first made on a scene of its own with no progress hook and no logger, and must end exactly as it
-// does with them; the run returned is the last, on the last scene set's script was built for.
+// landing the forge lets through squashes the tip onto origin's trunk, as GitHub would. The run has
+// a progress hook and a logger.
 func runMergeOn(t *testing.T, set setting) mergeRun {
-	t.Helper()
-
-	unwatched := mergeOn(t, set, false)
-	bare := unwatched.placed(t, unwatched.got)
-
-	run := mergeOn(t, set, true)
-	assertSameUnwatched(t, run.placed(t, run.got), bare)
-
-	return run
-}
-
-// mergeOn runs `ils merge` as runMergeOn does, with a progress hook and a logger when watched, and
-// with neither otherwise.
-func mergeOn(t *testing.T, set setting, watched bool) mergeRun {
 	t.Helper()
 
 	s := newScene(t, set.arrange, forgetest.Script{}, false)
@@ -189,10 +170,7 @@ func mergeOn(t *testing.T, set setting, watched bool) mergeRun {
 
 	s.useForge(t, script)
 
-	var w *watch
-	if watched {
-		w = watchOn(&s.deps)
-	}
+	w := watchOn(&s.deps)
 
 	if set.rewire != nil {
 		set.rewire(t, s)
@@ -211,9 +189,7 @@ func mergeOn(t *testing.T, set setting, watched bool) mergeRun {
 	got := landing.Merge(ctx, s.deps, mergeRequest())
 	ended := time.Now()
 
-	if watched {
-		assertHeld(t, w, got)
-	}
+	assertHeld(t, w, got)
 
 	return mergeRun{scene: s, watch: w, got: got, tip: tip, before: before, ended: ended}
 }
@@ -237,14 +213,18 @@ type waitRow struct {
 	payload *result.Merge
 	name    string
 	// text is the whole text of the result, with tipMark where the sha of the tip is printed.
-	text    string
+	text string
+	// drawn are parts of the text and how a terminal with color draws them, with tipMark where the
+	// sha of the tip is printed; empty leaves them unchecked.
+	drawn   []drawnPart
 	outcome result.Outcome
 	// left is the time before the command's deadline; zero is the whole bound.
 	left time.Duration
 }
 
 // runWaits runs each row as a test in a bubble of its own: the run carries the row's payload,
-// writes nothing, and ends as the row says.
+// writes nothing, and ends as the row says. A row that names how its result is drawn is held to it
+// too.
 func runWaits(t *testing.T, rows []waitRow) {
 	t.Helper()
 
@@ -262,6 +242,10 @@ func runWaits(t *testing.T, rows []waitRow) {
 
 				text, _ := shown(t, run.got, run.gitDir)
 				assert.Check(t, is.Equal(text, mark(tt.text, run.tip)))
+
+				if len(tt.drawn) > 0 {
+					assertDrawn(t, run.got, run.gitDir, atTip(tt.drawn, run.tip))
+				}
 			})
 		})
 	}
@@ -393,8 +377,14 @@ func afterWaitStops() []waitRow {
 		return row
 	}
 
+	conflicting := greenThen(forge.MergeConflicting, "DIRTY",
+		countLine+"GitHub: DIRTY (conflicting)\n"+"Refused: the pull request conflicts with the trunk\n"+nextTrunk)
+	conflicting.name = "conflicting after the checks"
+	conflicting.drawn = []drawnPart{{within: "origin/" + trunk + "`, resolve", part: trunk, want: drawnName()}}
+
 	return []waitRow{
-		greenThen(forge.MergeDraft, "DRAFT", withLines(draftText, countLine+"GitHub: DRAFT (draft)\n")),
+		greenThen(forge.MergeDraft, "DRAFT", countLine+"GitHub: DRAFT (draft)\n"+draftText),
+		conflicting,
 		greenThen(forge.MergeBlockedByReview, "BLOCKED",
 			countLine+"GitHub: BLOCKED (blocked-by-review)\n"+"Refused: pull request #12 requires a review\n"+nextReviewStop),
 		missing(string(forge.MergeBlockedByMissingCheck), "Required by the trunk with no check on "+tipMark+": build",
@@ -472,12 +462,14 @@ func messageStops() []waitRow {
 	// The wait's deadline is 80 seconds away: the read ends 19 seconds before the command's.
 	late.script = late.script.messageTaking(81 * time.Second)
 	late.payload = composed(worded+" (#12)", "")
+	unread := row("the message read fails", forgetest.Answer[forge.Message]{Err: errors.New("HTTP 502")},
+		result.Broke, unreadText(mergeCommand(), readMessage, "HTTP 502"))
+	unread.drawn = []drawnPart{{within: "run ils merge again", part: "ils merge", want: drawnName()}}
 
 	return []waitRow{
 		row("the title no longer parses", forgetest.Answer[forge.Message]{Value: forge.Message{Title: "fix-thing"}},
-			result.Refused, withLines(titleText("fix-thing"), countLine+cleanLine)),
-		row("the message read fails", forgetest.Answer[forge.Message]{Err: errors.New("HTTP 502")},
-			result.Broke, unreadText(mergeCommand(), readMessage, "HTTP 502")),
+			result.Refused, countLine+cleanLine+titleText("fix-thing")),
+		unread,
 		row("the deadline ends in the message read",
 			forgetest.Answer[forge.Message]{Err: fmt.Errorf("gh: %w", context.DeadlineExceeded)},
 			result.Refused, overtimeText(mergeCommand(), readMessage)),
@@ -548,16 +540,11 @@ func TestMerge_WhenEveryCheckBeforeTheMergeHolds_ComposesTheMessageFromThePullRe
 func TestMerge_WhenTheMergeStateIsUnknownAfterTheWait_ReadsItAgainEveryTwoSeconds(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-		var log *readLog
+		log := &readLog{}
 		unknownHead := inState(forge.MergeUnknown, "UNKNOWN")
 		build := waiting(passing()).showing(inState(forge.MergeClean, "CLEAN"), unknownHead, unknownHead,
 			inState(forge.MergeClean, "CLEAN")).saying(titledAfter("")).landing(nil, nil)
-		// Each scene's forge keeps a log of its own, so log holds the reads of the run returned.
-		timed := func(tip string) forgetest.Script {
-			log = &readLog{}
-
-			return log.timed(build(tip))
-		}
+		timed := func(tip string) forgetest.Script { return log.timed(build(tip)) }
 
 		run := runMergeIn(t, timed, 0)
 
@@ -607,14 +594,9 @@ func TestMerge_WhenTheHeadMovesWhileTheMergeStateIsReadAgain_RefusesWithoutMergi
 func TestMerge_WhenTheMergeStateStaysUnknownAfterTheWait_StopsOnceItsWindowPassed(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-		var log *readLog
+		log := &readLog{}
 		build := waiting(passing()).showing(inState(forge.MergeClean, "CLEAN"), inState(forge.MergeUnknown, "UNKNOWN"))
-		// Each scene's forge keeps a log of its own, so log holds the reads of the run returned.
-		timed := func(tip string) forgetest.Script {
-			log = &readLog{}
-
-			return log.timed(build(tip))
-		}
+		timed := func(tip string) forgetest.Script { return log.timed(build(tip)) }
 
 		// The deadline leaves time for many more polls than the window allows.
 		run := runMergeIn(t, timed, 10*time.Minute)
@@ -627,116 +609,11 @@ func TestMerge_WhenTheMergeStateStaysUnknownAfterTheWait_StopsOnceItsWindowPasse
 		assert.Check(t, is.Equal(reason, "GitHub did not say whether pull request #12 can merge within 30 seconds"))
 		assert.Check(t, is.DeepEqual(log.pauses(run.ended), polls(15, mergePoll)))
 		assert.Check(t, is.Equal(run.written(), run.before))
-	})
-}
-
-// mergeDrawing is a run of `ils merge` and the parts of its result that a terminal with color draws
-// in the style of their kind, with tipMark where the sha of the tip is printed.
-type mergeDrawing struct {
-	name  string
-	parts []drawnPart
-	set   setting
-}
-
-// mergeDrawings are the runs whose lines and reason name things of each kind.
-func mergeDrawings() []mergeDrawing {
-	return []mergeDrawing{
-		{
-			name: "the pull request lands", set: setting{script: toLand(nil, nil)},
-			parts: []drawnPart{
-				{within: "Checks for " + tipMark, part: tipMark, want: drawnSHA()},
-				{within: "1 passed", part: "1", want: drawnCount()},
-				{within: "Merged pull request #12", part: "#12", want: drawnName()},
-				{within: "into " + trunk, part: trunk, want: drawnName()},
-				{within: "Deleted the branch " + topic, part: topic, want: drawnName()},
-				{within: "On " + trunk, part: trunk, want: drawnName()},
-				{within: "with " + topic + " deleted", part: topic, want: drawnName()},
-			},
-		},
-		{
-			name: "the pull request was already merged",
-			set:  setting{arrange: landAndPublish, script: resuming().deleting(nil)},
-			parts: []drawnPart{
-				{within: "Pull request #7", part: "#7", want: drawnName()},
-				{within: "merged into " + trunk, part: trunk, want: drawnName()},
-			},
-		},
-		{
-			name: "the merge state stays unknown after the wait",
-			set: setting{
-				script: waiting(passing()).showing(inState(forge.MergeClean, "CLEAN"), inState(forge.MergeUnknown, "UNKNOWN")),
-				left:   10 * time.Minute,
-			},
-			parts: []drawnPart{
-				{within: "whether pull request #12", part: "#12", want: drawnName()},
-				{within: "Next: ils push", part: "ils push", want: drawnName()},
-			},
-		},
-		{
-			name: "the message read fails",
-			set:  setting{script: waiting(passing()).saying(forgetest.Answer[forge.Message]{Err: errors.New("HTTP 502")})},
-			parts: []drawnPart{
-				{within: "run ils merge again", part: "ils merge", want: drawnName()},
-			},
-		},
-	}
-}
-
-// mergeStepDrawings are the runs whose next step is a shell command that names a pull request, a
-// branch or the trunk.
-func mergeStepDrawings() []mergeDrawing {
-	return []mergeDrawing{
-		{
-			name: "the pull request is a draft", set: setting{script: merging().drafted()},
-			parts: []drawnPart{{within: repoArg + " 12`", part: "12", want: drawnName()}},
-		},
-		{
-			name: "the title is not a conventional commit subject", set: setting{script: merging().titled("fix-thing")},
-			parts: []drawnPart{{within: repoArg + " 12 --title", part: "12", want: drawnName()}},
-		},
-		{
-			name: "the pull request conflicts with the trunk after the wait",
-			set: setting{script: waiting(passing()).showing(
-				inState(forge.MergeClean, "CLEAN"), inState(forge.MergeConflicting, "DIRTY"))},
-			parts: []drawnPart{{within: "origin/" + trunk + "`, resolve", part: trunk, want: drawnName()}},
-		},
-		{
-			name: "the delete of the branch on the trunk fails",
-			set:  setting{script: toLand(nil, nil), landed: lockRef("refs/heads/" + topic)},
-			parts: []drawnPart{
-				{within: "-D " + topic + "` and", part: topic, want: drawnName()},
-				{within: "origin " + trunk + "` by hand", part: trunk, want: drawnName()},
-			},
-		},
-		{
-			name:  "the pull of the trunk fails",
-			set:   setting{script: toLand(nil, nil), landed: func(_ *testing.T, f *gittest.Fixture) { f.AdvanceTrunk() }},
-			parts: []drawnPart{{within: "origin " + trunk + "` by hand", part: trunk, want: drawnName()}},
-		},
-		{
-			name: "the delete of the branch when detached fails",
-			set: setting{
-				arrange: func(f *gittest.Fixture) { f.TrunkWorktree() }, script: toLand(nil, nil),
-				landed: lockRef("refs/heads/" + topic),
-			},
-			parts: []drawnPart{{within: "-D " + topic + "` by hand", part: topic, want: drawnName()}},
-		},
-	}
-}
-
-func TestMerge_WhenRenderedWithColor_DrawsEachNameInTheStyleOfItsKind(t *testing.T) {
-	t.Parallel()
-
-	for _, tt := range slices.Concat(mergeDrawings(), mergeStepDrawings()) {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			synctest.Test(t, func(t *testing.T) {
-				run := runMergeOn(t, tt.set)
-
-				assertDrawn(t, run.got, run.gitDir, atTip(tt.parts, run.tip))
-			})
+		assertDrawn(t, run.got, run.gitDir, []drawnPart{
+			{within: "whether pull request #12", part: "#12", want: drawnName()},
+			{within: "Next: ils push", part: "ils push", want: drawnName()},
 		})
-	}
+	})
 }
 
 func TestMerge_WhenTrunkRequiresChecks_WaitsForThoseOfTheHead(t *testing.T) {

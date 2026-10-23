@@ -25,7 +25,6 @@ func (s *spyTB) FailNow() { s.failed = true }
 func TestAssertCarried(t *testing.T) {
 	t.Parallel()
 	carrier := resulttest.Shown{
-		Outcome: "refused",
 		Excerpt: "first line of the log\nsecond line of the log",
 		Lines:   []string{"Pushed the branch to origin."},
 		Reason:  "the branch is the trunk",
@@ -56,7 +55,7 @@ func TestAssertCarried(t *testing.T) {
 			name: "the reason behind another outcome's label", outcome: "pending",
 			text: "Refused: the branch is the trunk\n", wantFail: true,
 		},
-		{name: "a done result's reason behind any label", outcome: "done", text: "Refused: the branch is the trunk\n", wantFail: true},
+		{name: "a done result's reason behind the refused label", outcome: "done", text: "Refused: the branch is the trunk\n", wantFail: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

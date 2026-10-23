@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/landing"
@@ -73,24 +75,23 @@ func (a App) Run(ctx context.Context, args []string) int {
 	ctx, cancel := context.WithDeadline(ctx, a.Launch.Add(bound))
 	defer cancel()
 
-	encoded := lastForm(args, flagJSON)
 	p := &parse{
-		app: a, words: slices.DeleteFunc(slices.Clone(args), isOutputFlag), encoded: encoded,
+		app: a, words: slices.DeleteFunc(slices.Clone(args), isOutputFlag), encoded: lastForm(args, flagJSON),
 		noColor: lastForm(args, flagNoColor),
 	}
-	profile := a.profile(a.StdoutTerminal, p.noColor)
+	p.outProfile = a.profile(a.StdoutTerminal, p.noColor)
 
 	root := p.root()
 	// Cobra reads the words of the process itself when it is given none.
 	root.SetArgs(append([]string{}, args...))
-	root.SetOut(a.drawnAt(profile))
+	root.SetOut(a.drawnAt(p.outProfile))
 	root.SetErr(a.Stderr)
 
 	// Fang queries the terminal behind the process's stdout for its background before it draws help
 	// or an error, whatever the profile, and waits for the answer: a profile with no color has Cobra
 	// run the words alone, with its own plain help, so that no query is ever written.
 	var err error
-	if profile < colorprofile.ANSI {
+	if !result.PenFor(p.outProfile).Color() {
 		err = root.ExecuteContext(ctx)
 	} else {
 		// The error comes back from Execute, and is reported below as a result or on Stderr.
@@ -104,7 +105,7 @@ func (a App) Run(ctx context.Context, args []string) int {
 
 	switch {
 	case isRefusal:
-		return a.show(refusal.result, "", encoded, profile)
+		return a.show(refusal.result, "", p.encoded, p.outProfile)
 	case err != nil:
 		return a.fail(err)
 	case p.result == nil:
@@ -113,7 +114,7 @@ func (a App) Run(ctx context.Context, args []string) int {
 		r := *p.result
 		r.Lines = unprinted(r.Lines, p.printed, p.gitDir)
 
-		return a.show(r, p.gitDir, encoded, profile)
+		return a.show(r, p.gitDir, p.encoded, p.outProfile)
 	}
 }
 
@@ -239,7 +240,7 @@ func (a App) show(r result.Result, gitDir string, encoded bool, profile colorpro
 	last := body[strings.LastIndex(body, "\n")+1:]
 	hinted := a.terminal(a.StdoutTerminal) && r.Outcome == result.Pending
 	if hinted && strings.HasPrefix(ansi.Strip(last), "Next: ") {
-		out = body + "  " + paint(profile >= colorprofile.ANSI, ansi.NewStyle().Faint(), pendingHint) + "\n"
+		out = body + "  " + result.PenFor(profile).Styled(ansi.NewStyle().Faint(), pendingHint) + "\n"
 	}
 
 	return a.print(out, r.Outcome.ExitCode())
@@ -294,30 +295,11 @@ type parse struct {
 	// version is read by root's Args so that `ils --version` passes with no command word.
 	version strictBool
 	debug   strictBool
+	// outProfile is the color profile of Stdout, read once per run.
+	outProfile colorprofile.Profile
 	// encoded is whether the words typed select the JSON renderer, and noColor whether they turn
 	// color off.
 	encoded, noColor bool
-}
-
-// refusedError carries a refusal up through Cobra, which only knows errors.
-type refusedError struct {
-	result result.Result
-}
-
-// Error returns a fixed text; the refusal itself travels in the result field.
-func (e *refusedError) Error() string {
-	return "the words were refused"
-}
-
-func (p *parse) refuse(reason result.Phrase) error {
-	command := ""
-	if len(p.words) > 0 {
-		command = p.words[0]
-	}
-
-	req := landing.Request{Command: command, Words: p.words}
-
-	return &refusedError{result: *req.Refused(reason, result.NextCommand(flagHelp))}
 }
 
 // root returns the command of no word, with every other command under it.
@@ -360,8 +342,7 @@ func (p *parse) root() *cobra.Command {
 
 	// The flag has no short form: -v stays free, and it is the root's own, so `ils push --version`
 	// is an extra word of push.
-	versionFlag := root.Flags().VarPF(&p.version, flagVersion[len("--"):], "", "Print the version of ils")
-	versionFlag.NoOptDefVal = "true"
+	boolFlag(root.Flags(), &p.version, flagNames{long: flagVersion}, "Print the version of ils")
 
 	p.addOutputFlags(root)
 
@@ -396,15 +377,22 @@ func (p *parse) root() *cobra.Command {
 func (p *parse) addOutputFlags(root *cobra.Command) {
 	flags := root.PersistentFlags()
 
-	jsonFlag := flags.VarPF(new(strictBool), flagJSON[len("--"):], "", "Print the result as one JSON object")
-	jsonFlag.NoOptDefVal = "true"
-
-	debugFlag := flags.VarPF(&p.debug, flagDebug[len("--"):], flagDebugShort[len("-"):],
+	boolFlag(flags, new(strictBool), flagNames{long: flagJSON}, "Print the result as one JSON object")
+	boolFlag(flags, &p.debug, flagNames{long: flagDebug, short: flagDebugShort},
 		"Trace each program ils runs and each decision of the wait on stderr")
-	debugFlag.NoOptDefVal = "true"
+	boolFlag(flags, new(strictBool), flagNames{long: flagNoColor}, "Print without color, as NO_COLOR does")
+}
 
-	noColorFlag := flags.VarPF(new(strictBool), flagNoColor[len("--"):], "", "Print without color, as NO_COLOR does")
-	noColorFlag.NoOptDefVal = "true"
+// flagNames is the long and the short spelling of a flag, with their dashes. short is empty for a
+// flag with no short form.
+type flagNames struct {
+	long, short string
+}
+
+// boolFlag registers value on flags under names as a flag that stands alone for true.
+func boolFlag(flags *pflag.FlagSet, value pflag.Value, names flagNames, usage string) {
+	flag := flags.VarPF(value, strings.TrimPrefix(names.long, "--"), strings.TrimPrefix(names.short, "-"), usage)
+	flag.NoOptDefVal = "true"
 }
 
 // landingHelp is the word of a landing command and the help it prints.
@@ -448,71 +436,14 @@ func (p *parse) landing(help landingHelp, run, fallback Command) *cobra.Command 
 	return c
 }
 
-// extraWord is the reason command refuses word, which it was given besides its own.
-func extraWord(command, word string) result.Phrase {
-	return result.Say("%s takes no other word, and %s was given", command, word)
-}
-
-func notCommand(word string) result.Phrase {
-	return result.Say("%s is not a command", word)
-}
-
-// flagRefusal turns a flag Cobra could not parse into a refusal: a value that is neither true
-// nor false is named with its flag, and an unknown flag gets the reason unknown gives for the flag
-// as it was typed. Any other error is returned as it is.
-func (p *parse) flagRefusal(err error, unknown func(typed string) result.Phrase) error {
-	if invalid, ok := errors.AsType[*pflag.InvalidValueError](err); ok {
-		return p.refuse(result.Say("--%s takes true or false, and %s was given", invalid.GetFlag().Name, invalid.GetValue()))
-	}
-
-	missing, ok := errors.AsType[*pflag.NotExistError](err)
-	if !ok {
-		return err
-	}
-
-	// pflag names an unknown flag without its dashes; a group of short flags is named whole.
-	typed := "--" + missing.GetSpecifiedName()
-	if group := missing.GetSpecifiedShortnames(); group != "" {
-		typed = "-" + group
-	}
-
-	return p.refuse(unknown(typed))
-}
-
-// strictBool is the value of a flag that takes no value but true and false.
-type strictBool bool
-
-// String returns "true" or "false".
-func (b *strictBool) String() string {
-	return fmt.Sprint(bool(*b))
-}
-
-// Set accepts only "true" and "false" and returns an error for any other value.
-func (b *strictBool) Set(value string) error {
-	switch value {
-	case "true":
-		*b = true
-	case "false":
-		*b = false
-	default:
-		return errors.New("neither true nor false")
-	}
-
-	return nil
-}
-
-// Type returns "bool" so pflag's help shows the flag without a value placeholder.
-func (*strictBool) Type() string {
-	return "bool"
-}
-
 // land runs the landing command run for req against the repository ils runs in and its GitHub
 // origin, and keeps its result, the repository's git dir and the step lines it printed. With debug
 // on, the trace gets every git and gh call, the read of the git dir included, and every decision
 // of the wait. The display is told how the command advances, and is gone from the terminal by the
 // time land returns.
 func (p *parse) land(ctx context.Context, run Command, req landing.Request) {
-	logger := p.logger()
+	errProfile := p.app.profile(p.app.StderrTerminal, p.noColor)
+	logger := p.logger(errProfile)
 	runner := p.app.git
 	runner.Logger = logger
 	repo := git.Repo{Runner: runner}
@@ -521,14 +452,142 @@ func (p *parse) land(ctx context.Context, run Command, req landing.Request) {
 	// this read stops the command's own first read too, whose result says so.
 	gitDir, _ := repo.GitDir(ctx)
 
-	shown := p.display()
+	shown := p.display(errProfile)
 	deps := landing.Deps{Forge: &github.Forge{Logger: logger}, Repo: repo, Logger: logger, Progress: shown}
 
-	shown.start(gitDir)
-	r := run(ctx, deps, req)
-	shown.end()
+	r := func() result.Result {
+		shown.start(ctx, gitDir)
+		defer shown.end()
+
+		return run(ctx, deps, req)
+	}()
 
 	p.result, p.gitDir, p.printed = &r, gitDir, shown.printed
+}
+
+// logger returns the logger of the debug trace on Stderr, drawn for profile, when the debug flag is
+// on, and nil when it is off.
+func (p *parse) logger(profile colorprofile.Profile) *slog.Logger {
+	if !p.debug {
+		return nil
+	}
+
+	a := p.app
+
+	return slog.New(trace{w: a.Stderr, launch: a.Launch, pen: result.PenFor(profile), mu: &sync.Mutex{}})
+}
+
+// trace is the log handler of the debug trace: it writes each record as one line on w, timed from
+// launch. A git or gh call reads `<tool> <args> exit <code> <duration>`, with the failure in place
+// of `exit <code>` for a call that did not exit; any other record reads its message, then each
+// attribute as key=value. When styled, the time and the duration are dim.
+type trace struct {
+	w      io.Writer
+	launch time.Time
+	// mu keeps the lines of calls logged at once from interleaving.
+	mu    *sync.Mutex
+	group string
+	attrs []slog.Attr
+	pen   result.Pen
+}
+
+// Enabled reports that every level is written.
+func (trace) Enabled(context.Context, slog.Level) bool {
+	return true
+}
+
+// Handle writes r as one line, and returns the error of the write.
+func (h trace) Handle(_ context.Context, r slog.Record) error {
+	attrs := slices.Clone(h.attrs)
+	r.Attrs(func(attr slog.Attr) bool {
+		attrs = append(attrs, h.grouped(attr))
+
+		return true
+	})
+
+	body := r.Message
+	if call, ok := h.call(r.Message, attrs); ok {
+		body = call
+	} else {
+		for _, attr := range attrs {
+			body += " " + attr.Key + "=" + attr.Value.String()
+		}
+	}
+
+	line := h.dim(fmt.Sprintf("+%.3fs", r.Time.Sub(h.launch).Seconds())) + " " + body + "\n"
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if _, err := io.WriteString(h.w, line); err != nil {
+		return fmt.Errorf("write a debug line: %w", err)
+	}
+
+	return nil
+}
+
+// call returns the line body of a record of one git or gh call, and false when the record is not
+// one.
+func (h trace) call(message string, attrs []slog.Attr) (string, bool) {
+	if message != child.ExecMessage {
+		return "", false
+	}
+
+	var (
+		tool, end string
+		args      []string
+		took      time.Duration
+	)
+
+	for _, attr := range attrs {
+		switch attr.Key {
+		case child.KeyTool:
+			tool = attr.Value.String()
+		case child.KeyArgs:
+			args, _ = attr.Value.Any().([]string)
+		case child.KeyExit:
+			end = "exit " + attr.Value.String()
+		case child.KeyError:
+			end = attr.Value.String()
+		case child.KeyDuration:
+			took, _ = attr.Value.Any().(time.Duration)
+		}
+	}
+
+	return strings.Join(append([]string{tool}, args...), " ") + " " + end + " " + h.dim(took.Round(time.Millisecond).String()), true
+}
+
+// dim returns text drawn dim when the trace is styled.
+func (h trace) dim(text string) string {
+	return h.pen.Styled(ansi.NewStyle().Faint(), text)
+}
+
+// grouped returns attr with its key under the group of h.
+func (h trace) grouped(attr slog.Attr) slog.Attr {
+	attr.Key = h.group + attr.Key
+
+	return attr
+}
+
+// WithAttrs returns a handler that writes attrs on every line after the record's own message.
+func (h trace) WithAttrs(attrs []slog.Attr) slog.Handler {
+	h.attrs = slices.Clone(h.attrs)
+	for _, attr := range attrs {
+		h.attrs = append(h.attrs, h.grouped(attr))
+	}
+
+	return h
+}
+
+// WithGroup returns a handler that writes the key of every attribute after it under name.
+func (h trace) WithGroup(name string) slog.Handler {
+	if name == "" {
+		return h
+	}
+
+	h.group += name + "."
+
+	return h
 }
 
 // display shows how a landing command advances on the terminals ils prints to: one spinner line
@@ -560,18 +619,21 @@ const (
 	// frameEvery is how often the spinner turns and its timer is redrawn.
 	frameEvery = 100 * time.Millisecond
 
+	// fallbackWidth is the width in columns of a terminal whose width is unknown.
+	fallbackWidth = 80
+
 	pendingHint = "# waits again; nothing to fix"
 )
 
-// display returns the display of a landing command run with the words typed: the spinner on a
-// terminal stderr unless debug is on, and the step lines on a terminal stdout unless the result is
-// JSON.
-func (p *parse) display() *display {
+// display returns the display of a landing command run with the words typed, stderr drawn for
+// errProfile: the spinner on a terminal stderr unless debug is on, and the step lines on a terminal
+// stdout unless the result is JSON.
+func (p *parse) display(errProfile colorprofile.Profile) *display {
 	a := p.app
 	d := &display{
 		width:      a.StderrWidth,
-		outProfile: a.profile(a.StdoutTerminal, p.noColor),
-		errProfile: a.profile(a.StderrTerminal, p.noColor),
+		outProfile: p.outProfile,
+		errProfile: errProfile,
 	}
 
 	if a.terminal(a.StdoutTerminal) && !p.encoded {
@@ -585,8 +647,9 @@ func (p *parse) display() *display {
 	return d
 }
 
-// start turns the spinner, if any, until end; gitDir is the git dir the lines are checked against.
-func (d *display) start(gitDir string) {
+// start turns the spinner, if any, until end or until ctx ends; gitDir is the git dir the lines are
+// checked against.
+func (d *display) start(ctx context.Context, gitDir string) {
 	d.gitDir = gitDir
 	if d.stderr == nil {
 		return
@@ -600,6 +663,8 @@ func (d *display) start(gitDir string) {
 		for {
 			select {
 			case <-d.stop:
+				return
+			case <-ctx.Done():
 				return
 			case <-ticker.C:
 				d.mu.Lock()
@@ -653,14 +718,14 @@ func (d *display) Said(line result.Phrase) {
 		return
 	}
 
-	drawn, err := renderLine(line, d.gitDir, d.outProfile)
+	text, err := renderLine(line, d.gitDir, d.outProfile)
 	if err != nil {
 		return
 	}
 
-	color := d.outProfile >= colorprofile.ANSI
+	pen := result.PenFor(d.outProfile)
 	green := ansi.NewStyle().ForegroundColor(ansi.Green)
-	step := paint(color, green, "✓") + " " + drawn + " " + paint(color, green.Faint(), took) + "\n"
+	step := pen.Styled(green, "✓") + " " + text + " " + pen.Styled(green.Faint(), took) + "\n"
 
 	if _, err := io.WriteString(d.stdout, step); err == nil {
 		d.printed = append(d.printed, plainText(line, d.gitDir))
@@ -689,14 +754,14 @@ func (d *display) draw() {
 		return
 	}
 
-	color := d.errProfile >= colorprofile.ANSI
+	pen := result.PenFor(d.errProfile)
 	yellow := ansi.NewStyle().ForegroundColor(ansi.Yellow)
 	frames := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 
-	line := paint(color, yellow, string(frames[d.frame%len(frames)])) + " " + d.label + " " +
-		paint(color, yellow, time.Since(d.began).Truncate(time.Second).String())
+	line := pen.Styled(yellow, string(frames[d.frame%len(frames)])) + " " + d.label + " " +
+		pen.Styled(yellow, time.Since(d.began).Truncate(time.Second).String())
 	if d.limit > 0 {
-		line += " " + paint(color, ansi.NewStyle().Faint(), "of "+d.limit.Round(time.Second).String())
+		line += " " + pen.Styled(ansi.NewStyle().Faint(), "of "+d.limit.Round(time.Second).String())
 	}
 	if d.total > 0 {
 		line += fmt.Sprintf(", %d of %d done", d.done, d.total)
@@ -705,7 +770,7 @@ func (d *display) draw() {
 	columns := d.columns()
 	line = ansi.Truncate(line, columns, "")
 	padding := strings.Repeat(" ", columns-ansi.StringWidth(line))
-	if color {
+	if pen.Color() {
 		line += ansi.ResetStyle
 	}
 
@@ -725,9 +790,10 @@ func (d *display) clear() {
 }
 
 // columns returns how many columns the spinner line may take: one short of the terminal's width,
-// read now, so that the cursor never reaches the last column; an unknown width counts as 80.
+// read now, so that the cursor never reaches the last column; an unknown width counts as
+// fallbackWidth.
 func (d *display) columns() int {
-	width := 80
+	width := fallbackWidth
 	if d.width != nil {
 		if w := d.width(); w > 0 {
 			width = w
@@ -777,15 +843,6 @@ func unprinted(lines []result.Phrase, printed []string, gitDir string) []result.
 	return kept
 }
 
-// paint returns text drawn in style when color is on, and text as it is otherwise.
-func paint(color bool, style ansi.Style, text string) string {
-	if !color {
-		return text
-	}
-
-	return style.Styled(text)
-}
-
 // print writes text to Stdout and returns code, or 1 when the write fails.
 func (a App) print(text string, code int) int {
 	_, err := io.WriteString(a.Stdout, text)
@@ -819,55 +876,4 @@ const (
 
 	// wordDash is the terminator after which every word is a positional argument.
 	wordDash = "--"
-)
-
-// withBound returns long with its one %d verb set to bound in seconds, so that the help says the
-// limit the command enforces.
-func withBound(long string) string {
-	return fmt.Sprintf(long, int(bound.Seconds()))
-}
-
-// The help says how to call a command and nothing else: what to do with an exit code and with
-// the next step is said by the result of each run.
-const (
-	rootLong = `ils lands a branch on GitHub in fixed, checked steps: push, pull request,
-CI verdict. It exists so that a coding agent cannot push to the wrong
-place, skip the checks, or call a red build done.
-
-Docs: https://github.com/jeffzi/ils`
-
-	pushShort = "Push the branch, open its pull request, wait for the checks"
-	pushLong  = `Push the current branch, open its pull request on the first push, and
-wait up to %d seconds for the checks of the pushed commit. It never
-forces a push and it does not merge.
-
-It refuses before pushing anything when the branch is not ready, for
-example on the trunk (origin's default branch), with uncommitted
-changes, or behind origin's copy of it. The output gives the reason and
-the next step.`
-
-	pushExamples = `# Push and wait for the checks
-ils push
-
-# The same result as one JSON object
-ils push --json`
-
-	mergeShort = "Squash and merge the pull request once its checks are green"
-	mergeLong  = `Squash-merge the pull request of the current branch once its checks are
-green, within %d seconds of the launch.
-
-It squash-merges the pull request once its checks are green, deletes the
-branch on origin and in the clone, and leaves the trunk checked out at
-origin's tip. It never pushes: push the branch with ils push first.
-
-It refuses before merging anything when the pull request is not ready,
-for example when a check is red, when it is a draft, or when its title is
-not a conventional commit title. The output gives the reason and the next
-step.`
-
-	mergeExamples = `# Merge once the checks are green
-ils merge
-
-# The same result as one JSON object
-ils merge --json`
 )

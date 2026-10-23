@@ -75,13 +75,18 @@ func pushRedRows() []pushRow {
 	unfinished := runningOn(redRow("a check failed and its workflow run had not finished at the time limit", forge.BucketFail,
 		forge.FailedLog{State: forge.FailedLogInProgress}, "no log: the log of lint was not available yet\n"))
 	unfinished.left = 12 * time.Second
+	shorter := redRow("a check failed and its log is shorter than the excerpt", forge.BucketFail, short, steps(1, 3))
+	shorter.drawn = []drawnPart{
+		{within: "failed: " + lintURL, part: lintURL, want: drawnURL()},
+		{within: "run ils push again", part: "ils push", want: drawnName()},
+	}
 
 	return []pushRow{
 		heldBack(redRow("a check failed before its workflow run finished, and its log was read once it had", forge.BucketFail,
 			short, steps(1, 3))),
 		unfinished,
 		redRow("a check failed and its log is longer than the excerpt", forge.BucketFail, read, steps(2, 61)),
-		redRow("a check failed and its log is shorter than the excerpt", forge.BucketFail, short, steps(1, 3)),
+		shorter,
 		redRow("a check failed that no workflow run stands behind", forge.BucketFail,
 			forge.FailedLog{State: forge.FailedLogNoRun}, "no log: lint is not a workflow run\n"),
 		redRow("a check was canceled and its log cannot be read", forge.BucketCanceled,
@@ -193,6 +198,13 @@ func pushPendingRows() []pushRow {
 			script: reusing().showing(stale()),
 			want: pending("GitHub did not show "+tipMark+" on pull request #12 before the time limit", "",
 				detail(forge.VerdictNone, forge.MergeClean)),
+			drawn: []drawnPart{
+				{within: "Pull request #12:", part: "#12", want: drawnName()},
+				{within: "#12: " + pullURL, part: pullURL, want: drawnURL()},
+				{within: "show " + tipMark, part: tipMark, want: drawnSHA()},
+				{within: "on pull request #12 before", part: "#12", want: drawnName()},
+				{within: "Next: ils push", part: "ils push", want: drawnName()},
+			},
 		},
 		{
 			name:   "the merge state is still unknown",
@@ -215,6 +227,10 @@ func pushPendingRows() []pushRow {
 			want: pending("the checks were still running at the time limit",
 				"Still running after 10 seconds: test\n"+cleanLine,
 				detail(forge.VerdictPending, forge.MergeClean, running().Checks...)),
+			told: []string{
+				checkingStep, pushingStep, said(pushedLine), said(foundLine),
+				waitingStep(14 * time.Second), "count 0 of 1", "count 0 of 1", "count 0 of 1",
+			},
 		},
 	}
 }

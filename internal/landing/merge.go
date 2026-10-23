@@ -182,7 +182,7 @@ func localTrunk(ctx context.Context, deps Deps, req Request, trunk string) *resu
 // commit is refused as `ils push` refuses it, with no payload: the branch already landed, so
 // neither is a pull request the run takes.
 func (m *mergeReady) findPull(ctx context.Context, deps Deps, req Request) *result.Result {
-	deps.started(result.Say("Finding the pull request"), 0)
+	deps.startFinding()
 
 	open, landed, stop := pullRequest(ctx, deps, req, m.onBranch)
 
@@ -422,15 +422,17 @@ func (m *mergeReady) verdictStop(req Request) *result.Result {
 // settle reads the merge state again as the wait polls it while GitHub has not worked it out, and
 // then refuses every state but clean. A head read there on another commit than the one the checks
 // were read for is refused as the wait refuses a moved head. The deadline or mergeWindow ending that
-// poll is pending, as it is for the wait.
+// poll is pending, as it is for the wait. Once it polled for a clean state, it tells the progress
+// hook the wait for the checks goes on, so that the checks line is said under that step.
 func (m *mergeReady) settle(ctx context.Context, deps Deps, req Request) *result.Result {
 	w := waiter{deps: deps, pushed: Pushed{
 		SHA: m.pull.HeadSHA, Repo: m.Repo, Number: m.pull.Number, Required: m.protection.RequiredChecks,
 	}}
 
-	head, err := w.mergeKnown(ctx, forge.Head{
-		SHA: m.pull.HeadSHA, MergeState: m.waited.MergeState, RawMergeState: m.waited.RawMergeState,
-	})
+	read := forge.Head{SHA: m.pull.HeadSHA, MergeState: m.waited.MergeState, RawMergeState: m.waited.RawMergeState}
+	polled := w.unknownOnPushed(read)
+
+	head, err := w.mergeKnown(ctx, read)
 	if err == nil && w.movedOn(&m.waited, head) {
 		report, _ := m.waited.stopReport(req.ilsCommand(), m.pull.HeadSHA, m.Trunk, m.pull.Number)
 
@@ -441,7 +443,12 @@ func (m *mergeReady) settle(ctx context.Context, deps Deps, req Request) *result
 
 	switch {
 	case err == nil:
-		return m.stateStop(req)
+		stop := m.stateStop(req)
+		if stop == nil && polled {
+			w.startChecks(ctx)
+		}
+
+		return stop
 	case m.waited.endPending(StageMergeState, err):
 		return m.reported(req, m.waited.pendingReport(m.pull.HeadSHA, m.pull.Number), []result.Phrase{m.summary()})
 	default:
@@ -452,7 +459,7 @@ func (m *mergeReady) settle(ctx context.Context, deps Deps, req Request) *result
 // stateStop refuses a merge state other than clean, once the checks let the merge go on: green, or
 // nothing reported on a trunk with no CI.
 func (m *mergeReady) stateStop(req Request) *result.Result {
-	number := result.PullRequest(m.pull.Number)
+	pull := result.PullRequest(m.pull.Number)
 
 	switch state := m.waited.MergeState; state {
 	case forge.MergeClean:
@@ -464,7 +471,7 @@ func (m *mergeReady) stateStop(req Request) *result.Result {
 	case forge.MergeDraft:
 		return m.stated(m.draftStop(req))
 	case forge.MergeBlockedByReview:
-		return m.stated(req.Refused(result.Say("pull request %s requires a review", number),
+		return m.stated(req.Refused(result.Say("pull request %s requires a review", pull),
 			result.NextStep("request a review, and stop: a review is not the agent's to give")))
 	case forge.MergeBlockedByMissingCheck:
 		return m.stated(req.Refused(result.Say("a check the trunk requires has no check on %s", result.SHA(m.pull.HeadSHA)),
@@ -473,7 +480,7 @@ func (m *mergeReady) stateStop(req Request) *result.Result {
 			m.missingLine())
 	default:
 		return m.stated(req.Refused(
-			result.Say("GitHub blocks pull request %s for a reason ils does not read: %s", number, result.URL(m.pull.URL)),
+			result.Say("GitHub blocks pull request %s for a reason ils does not read: %s", pull, result.URL(m.pull.URL)),
 			result.NextStep("report that GitHub blocks the merge, and stop")))
 	}
 }
@@ -609,10 +616,11 @@ func (m *mergeReady) carrying(ended *result.Result) *result.Result {
 // the one before it went through. A write that fails is broke, saying what went through. Every
 // result from here on holds the checks line, so it is the line the wait's step says.
 func (m *mergeReady) land(ctx context.Context, deps Deps, req Request) *result.Result {
-	m.lines = []result.Phrase{m.summary(), m.waited.mergeStateLine()}
+	summary := m.summary()
+	m.lines = []result.Phrase{summary, m.waited.mergeStateLine()}
 
 	if !m.unverified {
-		deps.said(m.lines[0])
+		deps.said(summary)
 	}
 
 	if stop := m.merge(ctx, deps, req); stop != nil {
@@ -636,9 +644,9 @@ func (m *mergeReady) finish(ctx context.Context, deps Deps, req Request) *result
 // read. A merge that fails or that the deadline cut short may still have gone through, so its
 // next step is ils merge, whose run resumes once it did.
 func (m *mergeReady) merge(ctx context.Context, deps Deps, req Request) *result.Result {
-	number := result.PullRequest(m.pull.Number)
+	pull := result.PullRequest(m.pull.Number)
 
-	deps.started(result.Say("Merging %s", number), 0)
+	deps.started(result.Say("Merging %s", pull), 0)
 
 	err := deps.Forge.Land(ctx, m.Repo, forge.Landing{
 		Number: m.pull.Number, HeadSHA: m.pull.HeadSHA, Subject: m.subject, Body: m.body,
@@ -648,14 +656,14 @@ func (m *mergeReady) merge(ctx context.Context, deps Deps, req Request) *result.
 	case errors.Is(err, context.DeadlineExceeded):
 		return m.broke(req, result.Say("the time limit ended during the merge"), req.again(),
 			result.Say("Started the merge of pull request %s when the time limit ended; "+
-				"it may or may not have gone through", number))
+				"it may or may not have gone through", pull))
 	case err != nil:
 		return m.broke(req, result.Say("GitHub did not report the merge as done"), req.again(),
-			result.Say("GitHub did not report the merge of pull request %s as done: %s", number, err.Error()))
+			result.Say("GitHub did not report the merge of pull request %s as done: %s", pull, err.Error()))
 	}
 
 	m.merged = true
-	m.say(deps, result.Say("Merged pull request %s into %s: %s", number, result.Branch(m.Trunk), m.subject))
+	deps.say(&m.lines, result.Say("Merged pull request %s into %s: %s", pull, result.Branch(m.Trunk), m.subject))
 
 	return nil
 }
@@ -669,7 +677,7 @@ func (m *mergeReady) deleteOnOrigin(ctx context.Context, deps Deps, req Request)
 
 	err := deps.Forge.DeleteBranch(ctx, m.Repo, m.branch)
 	if err == nil {
-		m.say(deps, result.Say("Deleted the branch %s on origin", result.Branch(m.branch)))
+		deps.say(&m.lines, result.Say("Deleted the branch %s on origin", result.Branch(m.branch)))
 
 		return nil
 	}
@@ -687,16 +695,9 @@ func (m *mergeReady) deleteOnOrigin(ctx context.Context, deps Deps, req Request)
 			result.Say("Could not delete the branch %s on origin, so it is still there: %s", result.Branch(m.branch), err.Error()))
 	}
 
-	m.say(deps, m.goneLine())
+	deps.say(&m.lines, m.goneLine())
 
 	return nil
-}
-
-// say adds line, the line of a step that succeeded, to the lines said so far, and tells the
-// progress hook.
-func (m *mergeReady) say(deps Deps, line result.Phrase) {
-	m.lines = append(m.lines, line)
-	deps.said(line)
 }
 
 // goneLine says the branch was gone from origin before ils deleted it.

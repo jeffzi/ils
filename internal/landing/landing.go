@@ -53,9 +53,7 @@ const (
 // Deps is what a command takes: the forge and the repository it runs in, and what it tells how it
 // advances to. Neither Progress nor Logger changes the result a command returns; either may be nil.
 type Deps struct {
-	Forge Forge
-	// Progress is told each step as it starts, each step line as its step succeeds, and the checks
-	// counted while the wait reads them.
+	Forge    Forge
 	Progress Progress
 	// Logger gets one debug record, with the message "wait", for each decision of the wait for the
 	// checks. It is passed to nothing else: git and the forge take their own.
@@ -91,34 +89,21 @@ func (d Deps) said(line result.Phrase) {
 	}
 }
 
-// counted tells the progress hook, if any, that done of total checks have concluded.
-func (d Deps) counted(done, total int) {
-	if d.Progress != nil && total > 0 {
-		d.Progress.Counted(done, total)
-	}
-}
-
-// logWait gives the logger, if any, a debug record of a decision of the wait, made of attrs.
-func (d Deps) logWait(ctx context.Context, attrs ...slog.Attr) {
-	if d.Logger != nil {
-		d.Logger.LogAttrs(ctx, slog.LevelDebug, "wait", attrs...)
-	}
-}
-
-// timeLeft returns the time before ctx's deadline, or zero when it has none.
-func timeLeft(ctx context.Context) time.Duration {
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		return 0
-	}
-
-	return time.Until(deadline)
+// say adds line, the line of a step that succeeded, to lines, and tells the progress hook, if any.
+func (d Deps) say(lines *[]result.Phrase, line result.Phrase) {
+	*lines = append(*lines, line)
+	d.said(line)
 }
 
 // startChecking tells the progress hook, if any, that the checks a command makes before it writes
 // anything began.
 func (d Deps) startChecking() {
 	d.started(result.Say("Checking the branch and origin"), 0)
+}
+
+// startFinding tells the progress hook, if any, that the search for the branch's pull request began.
+func (d Deps) startFinding() {
+	d.started(result.Say("Finding the pull request"), 0)
 }
 
 // Forge is the host of a repository, seen through the operations `push` and `merge` need.

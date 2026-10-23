@@ -4,13 +4,20 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"path/filepath"
+	"log/slog"
+	"regexp"
 	"runtime/debug"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
+	"unicode/utf8"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"gotest.tools/v3/assert"
@@ -18,8 +25,6 @@ import (
 
 	"github.com/jeffzi/ils/internal/cli"
 	"github.com/jeffzi/ils/internal/git"
-	"github.com/jeffzi/ils/internal/github"
-	"github.com/jeffzi/ils/internal/github/ghtest"
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
@@ -33,21 +38,12 @@ import (
 const (
 	nextHelp = "ils --help"
 
-	// hookLine is a line the renderers reject, since its own wording names a hook.
-	hookLine = "The pre-push step ran."
-
-	// outsideStart is how `ils push` and `ils merge` start what they print in a directory that is no
-	// repository; the middle is git's own wording.
-	outsideStart = "Could not read where HEAD stands: "
-
-	// outsideEnd and outsideMergeEnd are how `ils push` and `ils merge` end it.
-	outsideEnd      = "Nothing was written.\nBroke: could not read where HEAD stands\nNext: fix what failed, then run ils push again\n"
-	outsideMergeEnd = "Nothing was written.\nBroke: could not read where HEAD stands\nNext: fix what failed, then run ils merge again\n"
-
-	// debugNeither and colorNeither are the reasons a debug and a no-color flag set to maybe are
-	// refused for.
-	debugNeither = "--debug takes true or false, and maybe was given"
-	colorNeither = "--no-color takes true or false, and maybe was given"
+	// versionNeither, jsonNeither, debugNeither and colorNeither are the reasons a version, JSON,
+	// debug and no-color flag set to maybe are refused for.
+	versionNeither = "--version takes true or false, and maybe was given"
+	jsonNeither    = "--json takes true or false, and maybe was given"
+	debugNeither   = "--debug takes true or false, and maybe was given"
+	colorNeither   = "--no-color takes true or false, and maybe was given"
 
 	bound = 100 * time.Second
 )
@@ -179,167 +175,33 @@ func plain(t *testing.T, what, text string) {
 	assert.Check(t, !strings.Contains(text, escape), "%s carries an escape sequence:\n%q", what, text)
 }
 
-// stored returns a repository whose git dir is no `.git`, so that a path under it is a git dir
-// path to the one who resolved it and to no one else, and a path under that git dir.
-func stored(t *testing.T) (f *gittest.Fixture, under string) {
+// both runs `ils push` once in the scene and returns its one result as the text renderer and
+// as the JSON renderer print it.
+func both(t *testing.T, s *scene) (text, encoded ran) {
 	t.Helper()
 
-	f = gittest.New(t, trunk)
-	f.Git("init", "--quiet", "--separate-git-dir", filepath.Join(t.TempDir(), "store"))
+	var kept result.Result
 
-	return f, f.Git("rev-parse", "--absolute-git-dir") + "/HEAD"
-}
+	app := s.app()
+	app.SetPush(func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
+		kept = landing.Push(ctx, deps, req)
 
-// outdated is a first push with a gh that is logged out and prints line for its version.
-func outdated(name, line string) scenario {
-	calls := []ghtest.Call{
-		ghtest.Says(line+"\n", ghtest.VersionArgs()...),
-		login(ghtest.Answer{Stderr: "You are not logged into any GitHub hosts.\n", Code: 1}),
-	}
+		return kept
+	})
+	text = launch(t, app, "push")
 
-	return scenario{name: name, script: only(calls...), want: exitRefused}
-}
+	app.SetPush(func(context.Context, landing.Deps, landing.Request) result.Result { return kept })
+	encoded = launch(t, app, "push", "--json")
 
-// ---------------------------------------------------------------------------
-// Grammar, help and rendering
-// ---------------------------------------------------------------------------
-
-func TestApp_Run_WhenWordsBreakTheGrammar_RefusesNamingTheWord(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		reason string
-		args   []string
-	}{
-		{name: "no word", reason: "no command was given"},
-		{name: "unknown word", args: []string{"pish"}, reason: "pish is not a command"},
-		{name: "extra word", args: []string{"push", "extra"}, reason: "push takes no other word, and extra was given"},
-		{name: "end of flags after push", args: []string{"push", "--", "x"}, reason: "push takes no other word, and -- was given"},
-		{name: "branch", args: []string{"branch", "tidy"}, reason: "branch is not in this version"},
-		{name: "release", args: []string{"release", "1.2.3"}, reason: "release is not in this version"},
-		{name: "status", args: []string{"status"}, reason: "status is not in this version"},
-		{name: "prefix of a command", args: []string{"pus"}, reason: "pus is not a command"},
-		{name: "completion", args: []string{"completion"}, reason: "completion is not a command"},
-		{name: "man", args: []string{"man"}, reason: "man is not a command"},
-		{name: "later command with an unknown flag", args: []string{"branch", "--bogus"}, reason: "branch is not in this version"},
-		{name: "extra word after merge", args: []string{"merge", "extra"}, reason: "merge takes no other word, and extra was given"},
-		{name: "end of flags after merge", args: []string{"merge", "--", "x"}, reason: "merge takes no other word, and -- was given"},
-		{name: "unknown flag after merge", args: []string{"merge", "--bogus"}, reason: "merge takes no other word, and --bogus was given"},
-		{name: "unknown short flag after merge", args: []string{"merge", "-x"}, reason: "merge takes no other word, and -x was given"},
-		{name: "version flag after merge", args: []string{"merge", "--version"}, reason: "merge takes no other word, and --version was given"},
-		{name: "later command with a word and a short flag", args: []string{"branch", "tidy", "-x"}, reason: "branch is not in this version"},
-		{name: "later command with an unknown flag after a word", args: []string{"status", "tidy", "--bogus"}, reason: "status is not in this version"},
-		{name: "later command with a short flag", args: []string{"release", "-x"}, reason: "release is not in this version"},
-		{name: "unknown flag", args: []string{"--bogus"}, reason: "--bogus is not a command"},
-		{name: "unknown short flag", args: []string{"-x"}, reason: "-x is not a command"},
-		{name: "short version flag", args: []string{"-v"}, reason: "-v is not a command"},
-		{name: "version flag set to false", args: []string{"--version=false"}, reason: "no command was given"},
-		{name: "version flag before push", args: []string{"--version", "push"}, reason: "push takes no other word, and --version was given"},
-		{name: "version flag before an extra word", args: []string{"--version", "extra"}, reason: "extra is not a command"},
-		{name: "unknown flag after push", args: []string{"push", "--bogus"}, reason: "push takes no other word, and --bogus was given"},
-		{name: "unknown short flag after push", args: []string{"push", "-x"}, reason: "push takes no other word, and -x was given"},
-		{name: "group of short flags after push", args: []string{"push", "-xyz"}, reason: "push takes no other word, and -xyz was given"},
-		{name: "version flag after push", args: []string{"push", "--version"}, reason: "push takes no other word, and --version was given"},
-		{name: "short version flag after push", args: []string{"push", "-v"}, reason: "push takes no other word, and -v was given"},
-		{name: "unknown flag after an extra word", args: []string{"push", "extra", "--bogus"}, reason: "push takes no other word, and --bogus was given"},
-		{name: "unknown flag after an unknown word", args: []string{"pish", "--bogus"}, reason: "--bogus is not a command"},
-		{name: "flag set to false", args: []string{"pish", "--json=false"}, reason: "pish is not a command"},
-		{name: "debug flag after an unknown word", args: []string{"pish", "-d"}, reason: "pish is not a command"},
-		{name: "debug flag after an extra word", args: []string{"push", "extra", "--debug"}, reason: "push takes no other word, and extra was given"},
-		{name: "debug and color flags alone", args: []string{"-d", "--no-color"}, reason: "no command was given"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := launch(t, outside(t), tt.args...)
-
-			want := ran{stdout: "Refused: " + tt.reason + "\nNext: " + nextHelp + "\n", code: exitRefused}
-			assert.Check(t, is.DeepEqual(got, want, sameRun()), "ils %s", strings.Join(tt.args, " "))
-		})
-	}
-}
-
-func TestApp_Run_WhenAFlagIsSetToNeitherTrueNorFalse_RefusesNamingTheFlagAndTheValue(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		reason string
-		args   []string
-	}{
-		{name: "version flag", args: []string{"--version=maybe"}, reason: "--version takes true or false, and maybe was given"},
-		{name: "JSON flag after push", args: []string{"push", "--json=maybe"}, reason: "--json takes true or false, and maybe was given"},
-		{name: "debug flag", args: []string{"--debug=maybe"}, reason: debugNeither},
-		{name: "debug flag after push", args: []string{"push", "--debug=maybe"}, reason: debugNeither},
-		{name: "debug flag after merge", args: []string{"merge", "--debug=maybe"}, reason: debugNeither},
-		{name: "color flag", args: []string{"--no-color=maybe"}, reason: colorNeither},
-		{name: "color flag after push", args: []string{"push", "--no-color=maybe"}, reason: colorNeither},
-		{name: "color flag after merge", args: []string{"merge", "--no-color=maybe"}, reason: colorNeither},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := launch(t, outside(t), tt.args...)
-
-			want := ran{stdout: "Refused: " + tt.reason + "\nNext: " + nextHelp + "\n", code: exitRefused}
-			assert.Check(t, is.DeepEqual(got, want, sameRun()), "ils %s", strings.Join(tt.args, " "))
-		})
-	}
+	return text, encoded
 }
 
 const (
-	// rootHelp, pushHelp and mergeHelp are how the help of ils, of push and of merge each start.
-	rootHelp  = "ils lands a branch on GitHub in fixed, checked steps"
-	pushHelp  = "Push the current branch, open its pull request on the first push"
-	mergeHelp = "Squash-merge the pull request of the current branch once its checks are green"
-
-	// mergeSummary is the line that `ils --help` lists merge with.
-	mergeSummary = "merge Squash and merge the pull request once its checks are green"
-	// mergeUsage is the usage and the examples the plain help of merge ends with, before its flags.
-	mergeUsage = "Usage: ils merge [flags] Examples: # Merge once the checks are green ils merge " +
-		"# The same result as one JSON object ils merge --json"
-
 	escape = "\x1b"
-
-	// encodedEscape is escape as the JSON encoder writes it inside a string.
-	encodedEscape = `\u001b`
 
 	// forceColor is the variable that makes Fang style help on a stdout that is no terminal.
 	forceColor = "CLICOLOR_FORCE"
 )
-
-// flat returns the words of text in order, one space apart, so that a check reads past the padding
-// that help lays its columns out with.
-func flat(text string) string {
-	return strings.Join(strings.Fields(text), " ")
-}
-
-// entries returns the first word of each line the help lists under any of headings, each a line of
-// its own, with the comma that follows a short flag dropped.
-func entries(help string, headings ...string) []string {
-	var found []string
-
-	for _, heading := range headings {
-		_, rest, listed := strings.Cut(help, "\n"+heading+"\n")
-		if !listed {
-			continue
-		}
-
-		for line := range strings.SplitSeq(rest, "\n") {
-			words := strings.Fields(line)
-			if len(words) == 0 {
-				break
-			}
-
-			found = append(found, strings.TrimSuffix(words[0], ","))
-		}
-	}
-
-	return found
-}
 
 // errReaderGone is the error a stdout that cannot be written fails with.
 var errReaderGone = errors.New("the reader went away")
@@ -347,6 +209,11 @@ var errReaderGone = errors.New("the reader went away")
 // sameRun lets cmp compare the unexported fields of ran.
 func sameRun() cmp.Option {
 	return cmp.AllowUnexported(ran{})
+}
+
+// anyOrder lets cmp compare two slices of strings whatever the order of their elements.
+func anyOrder() cmp.Option {
+	return cmpopts.SortSlices(func(a, b string) bool { return a < b })
 }
 
 // shut is a stdout whose every write fails with err.
@@ -357,107 +224,6 @@ type shut struct {
 // Write fails with err and writes nothing.
 func (s shut) Write([]byte) (int, error) {
 	return 0, s.err
-}
-
-func TestApp_Run_WhenAskedForHelp_PrintsTheHelpOfTheCommand(t *testing.T) {
-	t.Parallel()
-
-	root := []string{rootHelp, "--version Print the version of ils", mergeSummary}
-	merge := []string{mergeHelp, mergeUsage}
-	tests := []struct {
-		args []string
-		want []string
-	}{
-		{args: []string{"-h"}, want: []string{rootHelp}},
-		{args: []string{"--help"}, want: root},
-		{args: []string{"help"}, want: []string{rootHelp, mergeSummary}},
-		{args: []string{"pish", "--help"}, want: []string{rootHelp}},
-		{args: []string{"-h", "pish"}, want: []string{rootHelp}},
-		{args: []string{"help", "pish"}, want: []string{rootHelp}},
-		{args: []string{"--json", "-h"}, want: []string{rootHelp}},
-		{args: []string{"--help", "--json"}, want: []string{rootHelp}},
-		{args: []string{"help", "--json"}, want: []string{rootHelp}},
-		{args: []string{"help", "pish", "--json"}, want: []string{rootHelp}},
-		{args: []string{"push", "-h"}, want: []string{pushHelp}},
-		{args: []string{"push", "--help"}, want: []string{pushHelp}},
-		{args: []string{"--help", "push"}, want: []string{pushHelp}},
-		{args: []string{"help", "push"}, want: []string{pushHelp}},
-		{args: []string{"push", "extra", "--help"}, want: []string{pushHelp}},
-		{args: []string{"push", "--json", "-h"}, want: []string{pushHelp}},
-		{args: []string{"push", "-d", "--no-color", "--help"}, want: []string{pushHelp}},
-		{args: []string{"--json", "push", "--help"}, want: []string{pushHelp}},
-		{args: []string{"help", "push", "--json"}, want: []string{pushHelp}},
-		{args: []string{"merge", "-h"}, want: merge},
-		{
-			args: []string{"merge", "--help"},
-			want: append([]string{
-				"squash-merges the pull request once its checks are green",
-				"deletes the branch",
-				"never pushes",
-				"leaves the trunk checked out",
-			}, merge...),
-		},
-		{args: []string{"help", "merge"}, want: merge},
-		{args: []string{"merge", "--json", "--help"}, want: []string{mergeHelp}},
-	}
-	for _, tt := range tests {
-		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
-			t.Parallel()
-
-			got := launch(t, outside(t), tt.args...)
-
-			assert.Check(t, is.Equal(got.code, exitDone))
-			assert.Check(t, is.Equal(got.stderr, ""))
-			help := flat(got.stdout)
-			for _, want := range tt.want {
-				assert.Check(t, is.Contains(help, want))
-			}
-			assert.Check(t, is.Len(listedCalls(got.stdout), 0))
-		})
-	}
-}
-
-func TestApp_Run_WhenAskedForHelp_ListsEveryEntryOfTheCommand(t *testing.T) {
-	t.Parallel()
-
-	own := []string{"-d", "-h", "--json", "--no-color"}
-	tests := []struct {
-		args     []string
-		commands []string
-		flags    []string
-	}{
-		{args: []string{"--help"}, commands: []string{"help", "merge", "push"}, flags: []string{"-d", "-h", "--json", "--no-color", "--version"}},
-		{args: []string{"push", "--help"}, flags: own},
-		{args: []string{"merge", "--help"}, flags: own},
-	}
-	for _, tt := range tests {
-		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
-			t.Parallel()
-
-			got := launch(t, outside(t), tt.args...)
-
-			assert.Check(t, is.DeepEqual(entries(got.stdout, "Available Commands:"), tt.commands))
-			assert.Check(t, is.DeepEqual(entries(got.stdout, "Flags:", "Global Flags:"), tt.flags, cmpopts.SortSlices(func(a, b string) bool { return a < b })))
-		})
-	}
-}
-
-// listedCalls returns the lines of help that name a `git` or `gh` command, wherever the name
-// stands in the line and however it is marked: in backticks, after a bullet, or bare.
-func listedCalls(help string) []string {
-	var found []string
-
-	for line := range strings.Lines(help) {
-		for word := range strings.FieldsSeq(line) {
-			if name := strings.Trim(word, "`*-•:,.;()"); name == "git" || name == "gh" {
-				found = append(found, strings.TrimSpace(line))
-
-				break
-			}
-		}
-	}
-
-	return found
 }
 
 func TestApp_Run_WhenAskedForTheVersion_PrintsTheVersionOfIls(t *testing.T) {
@@ -526,225 +292,11 @@ func built(version string) *debug.BuildInfo {
 	return &debug.BuildInfo{Main: debug.Module{Path: "github.com/jeffzi/ils", Version: version}}
 }
 
-func TestApp_Run_WhenAskedForHelpInARepository_CallsNeitherGitNorGh(t *testing.T) {
-	tests := [][]string{{"push", "--help"}, {"merge", "--help"}, {"merge", "-h"}, {"help", "merge"}}
-	for _, args := range tests {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			s := newScene(t, scenario{})
-
-			got := launch(t, s.app(), args...)
-
-			assert.Check(t, is.Equal(got.code, exitDone))
-			assert.Check(t, is.Len(s.recorder.Calls(), 0))
-			assert.Check(t, is.Len(s.fake.Calls(), 0))
-		})
-	}
-}
-
-func TestApp_Run_WhenColorIsForced_RefusalCarriesNoEscapeSequence(t *testing.T) {
-	t.Setenv(forceColor, "1")
-
-	tests := [][]string{{"pish"}, {"pish", "--json"}}
-	for _, args := range tests {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			got := launch(t, outside(t), args...)
-
-			assert.Check(t, is.Equal(got.code, exitRefused))
-			plain(t, "the refusal", got.stdout)
-			assert.Check(t, !strings.Contains(strings.ToLower(got.stdout), encodedEscape), "a value of the refusal carries an escape sequence:\n%s", got.stdout)
-		})
-	}
-}
-
-func TestApp_Run_WhenColorIsForced_PushResultCarriesNoEscapeSequence(t *testing.T) {
-	t.Setenv(forceColor, "1")
-
-	text, encoded := both(t, newScene(t, redWithLog()))
-
-	plain(t, "the text", text.stdout)
-	plain(t, "the JSON", encoded.stdout)
-	assert.Check(t, !strings.Contains(strings.ToLower(encoded.stdout), encodedEscape), "a value of the JSON carries an escape sequence:\n%s", encoded.stdout)
-}
-
-func TestApp_Run_WhenHelpIsAskedForWithColorOffOnAColorTerminal_PrintsItWithNoEscapeSequence(t *testing.T) {
-	// Fang styles help from the process environment, which forced color would leave styled were Fang
-	// to run.
-	t.Setenv(forceColor, "1")
-
-	tests := []struct {
-		name string
-		env  []string
-		args []string
-	}{
-		{name: "flag on the root", env: []string{colorTerm}, args: []string{"--help", "--no-color"}},
-		{name: "flag on push", env: []string{colorTerm}, args: []string{"push", "--no-color", "--help"}},
-		{name: "flag on merge", env: []string{colorTerm}, args: []string{"merge", "-h", "--no-color=true"}},
-		{name: "no color on the root", env: []string{colorTerm, noColor}, args: []string{"--help"}},
-		{name: "no color on push", env: []string{colorTerm, noColor}, args: []string{"push", "--help"}},
-		{name: "no color on merge", env: []string{colorTerm, noColor}, args: []string{"help", "merge"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := launch(t, painted(t, tt.env, true, true), tt.args...)
-
-			assert.Check(t, is.Equal(got.code, exitDone))
-			assert.Check(t, is.Contains(got.stdout, "Usage:"))
-			plain(t, "the help", got.stdout)
-		})
-	}
-}
-
-func TestApp_Run_WhenHelpIsAskedForOnAColorTerminal_StylesIt(t *testing.T) {
-	// Fang styles help only when the process environment lets it; ils's profile then decides.
-	t.Setenv(forceColor, "1")
-
-	tests := [][]string{{"--help"}, {"push", "--help"}, {"merge", "--no-color=false", "--help"}}
-	for _, args := range tests {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			got := launch(t, painted(t, []string{colorTerm}, true, false), args...)
-
-			assert.Check(t, is.Equal(got.code, exitDone))
-			assert.Check(t, strings.Contains(got.stdout, escape), "the help carries no escape sequence:\n%q", got.stdout)
-		})
-	}
-}
-
-func TestApp_Run_WhenAResultCannotBeWrittenToStdout_ExitsOneWithTheErrorOnStderr(t *testing.T) {
-	t.Parallel()
-
-	tests := [][]string{{"push"}, {"push", "--json"}, {"merge"}, {"merge", "--json"}, {"pish"}, {"pish", "--json"}, {"--version"}}
-	for _, args := range tests {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			t.Parallel()
-
-			app := outside(t)
-			app.Stdout = shut{err: errReaderGone}
-
-			got := launch(t, app, args...)
-
-			assert.Check(t, is.Equal(got.code, exitBroke))
-			assert.Check(t, is.Contains(got.stderr, errReaderGone.Error()))
-		})
-	}
-}
-
-func TestApp_Run_WhenJSONFlagIsAmongTheWords_RendersJSONWithoutTheFlagInTheWords(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		args []string
-		want resulttest.Shown
-	}{
-		{name: "flag alone", args: []string{"--json"}, want: refusal("no command was given")},
-		{name: "flag first", args: []string{"--json", "pish"}, want: refusal("pish is not a command", "pish")},
-		{name: "flag last", args: []string{"pish", "--json"}, want: refusal("pish is not a command", "pish")},
-		{
-			name: "flag between", args: []string{"push", "--json", "extra"},
-			want: refusal("push takes no other word, and extra was given", "push", "extra"),
-		},
-		{name: "command of a later version", args: []string{"status", "--json"}, want: refusal("status is not in this version", "status")},
-		{name: "unknown short flag after merge", args: []string{"--json", "merge", "-x"}, want: refusal("merge takes no other word, and -x was given", "merge", "-x")},
-		{name: "unknown short flag", args: []string{"--json", "-x"}, want: refusal("-x is not a command", "-x")},
-		{name: "unknown flag", args: []string{"--bogus", "--json"}, want: refusal("--bogus is not a command", "--bogus")},
-		{name: "unknown short flag after push", args: []string{"--json", "push", "-x"}, want: refusal("push takes no other word, and -x was given", "push", "-x")},
-		{name: "flag set to neither, then set", args: []string{"push", "--json=maybe", "--json"}, want: refusal("--json takes true or false, and maybe was given", "push", "--json=maybe")},
-		{name: "flag set to true", args: []string{"--json=true", "pish"}, want: refusal("pish is not a command", "pish")},
-		{name: "debug flag set to neither", args: []string{"--json", "--debug=maybe"}, want: refusal(debugNeither)},
-		{name: "debug flag set to neither after push", args: []string{"push", "--debug=maybe", "--json"}, want: refusal(debugNeither, "push")},
-		{name: "short debug flag set to neither after merge", args: []string{"merge", "-d=maybe", "--json"}, want: refusal(debugNeither, "merge")},
-		{name: "color flag set to neither", args: []string{"--no-color=maybe", "--json"}, want: refusal(colorNeither)},
-		{name: "color flag set to neither after push", args: []string{"push", "--json", "--no-color=maybe"}, want: refusal(colorNeither, "push")},
-		{name: "color flag set to neither after merge", args: []string{"--json", "merge", "--no-color=maybe"}, want: refusal(colorNeither, "merge")},
-		{name: "debug and color flags", args: []string{"-d", "pish", "--no-color", "--json"}, want: refusal("pish is not a command", "pish")},
-		{
-			name: "flag after an unknown flag", args: []string{"push", "--bogus", "--json"},
-			want: refusal("push takes no other word, and --bogus was given", "push", "--bogus"),
-		},
-		{
-			name: "flag after an unknown flag and an unknown word", args: []string{"pish", "--bogus", "--json"},
-			want: refusal("--bogus is not a command", "pish", "--bogus"),
-		},
-		{
-			name: "flag among the words of a later command", args: []string{"branch", "--json", "tidy", "-x"},
-			want: refusal("branch is not in this version", "branch", "tidy", "-x"),
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := launch(t, outside(t), tt.args...)
-
-			assert.Check(t, is.Equal(got.code, exitRefused))
-			assert.Check(t, is.Equal(got.stderr, ""))
-
-			assert.Check(t, is.DeepEqual(resulttest.Decode(t, got.stdout), tt.want, cmpopts.EquateEmpty()))
-		})
-	}
-}
-
 // lost returns the cli in a directory that is no repository, with git's own words in English.
 func lost(t *testing.T) cli.App {
 	t.Helper()
 
 	return over(git.Runner{Dir: t.TempDir(), Env: append(gittest.Env(t), "LC_ALL=C")})
-}
-
-func TestApp_Run_WhenALandingCommandRunsOutsideARepositoryWithoutTheJSONFlag_RendersTheResultAsText(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		end  string
-		args []string
-	}{
-		{args: []string{"push"}, end: outsideEnd},
-		{args: []string{"push", "--json=false"}, end: outsideEnd},
-		{args: []string{"--json=false", "push"}, end: outsideEnd},
-		{args: []string{"merge"}, end: outsideMergeEnd},
-		{args: []string{"merge", "--json=false"}, end: outsideMergeEnd},
-	}
-	for _, tt := range tests {
-		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
-			t.Parallel()
-
-			got := launch(t, lost(t), tt.args...)
-
-			assert.Check(t, is.Equal(got.code, exitBroke))
-			assert.Check(t, is.Equal(got.stderr, ""))
-			startsWith(t, got.stdout, outsideStart)
-			endsWith(t, got.stdout, tt.end)
-		})
-	}
-}
-
-func TestApp_Run_WhenALandingCommandRunsOutsideARepositoryWithTheJSONFlag_RendersTheResultWithoutTheFlagInTheWords(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		command string
-		args    []string
-	}{
-		{command: "push", args: []string{"push", "--json"}},
-		{command: "push", args: []string{"--json", "push"}},
-		{command: "merge", args: []string{"merge", "--json"}},
-		{command: "merge", args: []string{"--json", "merge"}},
-	}
-	for _, tt := range tests {
-		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
-			t.Parallel()
-
-			got := launch(t, lost(t), tt.args...)
-
-			assert.Check(t, is.Equal(got.code, exitBroke))
-			assert.Check(t, is.Equal(got.stderr, ""))
-
-			printed := resulttest.Decode(t, got.stdout)
-			assert.Check(t, is.Equal(printed.Command, tt.command))
-			assert.Check(t, is.DeepEqual(printed.Words, []string{tt.command}))
-			assert.Check(t, is.Equal(printed.Outcome, "broke"))
-		})
-	}
 }
 
 func TestApp_Run_WhenMergeRuns_EndsItAtTheBoundFromLaunch(t *testing.T) {
@@ -770,76 +322,6 @@ func TestApp_Run_WhenMergeRuns_EndsItAtTheBoundFromLaunch(t *testing.T) {
 	assert.Check(t, deadline.Equal(app.Launch.Add(bound)), "deadline = %s, want %s", deadline, app.Launch.Add(bound))
 }
 
-func TestApp_Run_WhenMergeRunsOnABranchWithNoPullRequest_RefusesNamingPush(t *testing.T) {
-	s := newScene(t, noPullRequest())
-
-	got := launch(t, s.app(), "merge")
-
-	assert.Check(t, is.Equal(got.code, exitRefused))
-	assert.Check(t, is.Equal(got.stdout,
-		"Refused: the branch "+topic+" has no open pull request against the trunk "+trunk+"\nNext: ils push\n"))
-}
-
-func TestApp_Run_WhenRendererRejectsTheResult_PrintsTheErrorOnStderrOnly(t *testing.T) {
-	t.Parallel()
-
-	hooked := saying(result.Say(hookLine))
-
-	tests := [][]string{{"push"}, {"push", "--json"}, {"merge"}, {"merge", "--json"}}
-	for _, args := range tests {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			t.Parallel()
-
-			app := outside(t)
-			app.SetPush(hooked)
-			app.SetMerge(hooked)
-
-			got := launch(t, app, args...)
-
-			assert.Check(t, is.Equal(got.code, exitBroke))
-			assert.Check(t, is.Equal(got.stdout, ""))
-
-			assert.Check(t, is.Contains(got.stderr, hookLine))
-		})
-	}
-}
-
-func TestApp_Run_WhenALineNamesAPathUnderTheGitDirOfTheRepository_ExitsOneWithNothingOnStdout(t *testing.T) {
-	t.Parallel()
-
-	tests := [][]string{{"push"}, {"push", "--json"}, {"merge"}, {"merge", "--json"}}
-	for _, args := range tests {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			t.Parallel()
-
-			f, under := stored(t)
-			app := over(git.Runner{Dir: f.Dir(), Env: f.Env()})
-			app.SetPush(wrote(under))
-			app.SetMerge(wrote(under))
-
-			got := launch(t, app, args...)
-
-			assert.Check(t, is.Equal(got.code, exitBroke))
-			assert.Check(t, is.Equal(got.stdout, ""))
-
-			assert.Check(t, is.Contains(got.stderr, "Wrote "+under))
-		})
-	}
-}
-
-func TestApp_Run_WhenALineNamesAPathUnderTheGitDirOfAnotherDirectory_RendersTheLine(t *testing.T) {
-	t.Parallel()
-
-	_, under := stored(t)
-	app := outside(t)
-	app.SetPush(wrote(under))
-
-	got := launch(t, app, "push")
-
-	want := ran{stdout: "Wrote " + under + "\n", code: exitDone}
-	assert.Check(t, is.DeepEqual(got, want, sameRun()))
-}
-
 // ---------------------------------------------------------------------------
 // Color and debug
 // ---------------------------------------------------------------------------
@@ -863,67 +345,586 @@ func painted(t *testing.T, env []string, stdoutTerminal, stderrTerminal bool) cl
 	return app
 }
 
-func TestApp_Run_WhenNoStreamHasAColorProfile_WritesNoEscapeSequence(t *testing.T) {
+func TestApp_Run_WhenADebugLineCannotBeWritten_PrintsWhatTheSameRunPrintsWithoutDebug(t *testing.T) {
+	t.Parallel()
+
+	tests := [][]string{{"push"}, {"merge", "--json"}}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			t.Parallel()
+
+			app := lost(t)
+			want := launch(t, app, args...)
+			app.Stderr = shut{err: errReaderGone}
+
+			got := launch(t, app, append(args, "-d")...)
+
+			assert.Check(t, is.Equal(got.stdout, want.stdout))
+			assert.Check(t, is.Equal(got.code, want.code))
+		})
+	}
+}
+
+func TestApp_Run_WhenDebugIsOnDuringALanding_PrintsWhatTheSameRunPrintsWithoutDebug(t *testing.T) {
+	tests := []struct {
+		sc   func() scenario
+		args []string
+	}{
+		{sc: greenFirstPush, args: []string{"push"}},
+		{sc: greenFirstPush, args: []string{"push", "--json"}},
+		{sc: noPullRequest, args: []string{"merge"}},
+		{sc: noPullRequest, args: []string{"merge", "--json"}},
+		{sc: landedMerge, args: []string{"merge"}},
+		{sc: landedMerge, args: []string{"merge", "--json"}},
+	}
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
+			want := launch(t, newScene(t, tt.sc()).app(), tt.args...)
+
+			got := launch(t, newScene(t, tt.sc()).app(), append(tt.args, "-d")...)
+
+			assert.Check(t, is.Equal(got.code, tt.sc().want))
+			assert.Check(t, is.Equal(got.stdout, want.stdout))
+			assert.Check(t, is.Equal(got.code, want.code))
+			assert.Check(t, got.stderr != "", "ils %s -d wrote no debug line", strings.Join(tt.args, " "))
+		})
+	}
+}
+
+func TestApp_Run_WhenDebugIsSetToFalse_PrintsWhatTheSameRunPrintsWithoutIt(t *testing.T) {
+	t.Parallel()
+
+	app := lost(t)
+	want := launch(t, app, "push", "--json")
+
+	got := launch(t, app, "push", "--json", "--debug=false")
+
+	assert.Check(t, is.DeepEqual(got, want, sameRun()))
+	assert.Check(t, is.Equal(got.stderr, ""))
+}
+
+func TestApp_Run_WhenEveryDebugLineOfALandingCannotBeWritten_PrintsWhatTheSameRunPrintsWithoutDebug(t *testing.T) {
+	want := launch(t, newScene(t, greenFirstPush()).app(), "push")
+	app := newScene(t, greenFirstPush()).app()
+	app.Stderr = shut{err: errReaderGone}
+
+	got := launch(t, app, "push", "-d")
+
+	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
+	assert.Check(t, is.Equal(got.stdout, want.stdout))
+	assert.Check(t, is.Equal(got.code, want.code))
+}
+
+var (
+	// execLine is a debug line of one git or gh call that exited: its time since launch, the call,
+	// its exit code and its duration.
+	execLine = regexp.MustCompile(`^\+\d+\.\d{3}s ((?:git|gh) .+) exit \d+ (\S+)$`)
+	// waitLine is a debug line of one decision of a wait.
+	waitLine = regexp.MustCompile(`^\+\d+\.\d{3}s wait \S+=\S+( \S+=\S+)*$`)
+)
+
+func TestApp_Run_WhenDebugIsOn_WritesALineForEachGitAndGhCallAndWaitDecision(t *testing.T) {
+	s := newScene(t, greenFirstPush())
+
+	got := launch(t, s.app(), "push", "-d")
+
+	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
+	var called, waited []string
+	for line := range strings.Lines(got.stderr) {
+		line = strings.TrimSuffix(line, "\n")
+		if m := execLine.FindStringSubmatch(line); m != nil {
+			_, err := time.ParseDuration(m[2])
+			assert.Check(t, err, "duration of %q", line)
+			called = append(called, m[1])
+
+			continue
+		}
+		assert.Check(t, waitLine.MatchString(line), "line %q is neither a call nor a wait decision", line)
+		waited = append(waited, line[strings.Index(line, " wait ")+1:])
+	}
+	var want []string
+	for _, argv := range slices.Concat(s.recorder.Calls(), s.fake.Calls()) {
+		want = append(want, strings.Join(argv, " "))
+	}
+	assert.Check(t, is.DeepEqual(called, want, anyOrder()))
+	assert.Check(t, is.Contains(waited, "wait ended=green"))
+}
+
+// debugRecord returns a debug record of message and attrs made at the moment at.
+func debugRecord(at time.Time, message string, attrs ...slog.Attr) slog.Record {
+	record := slog.NewRecord(at, slog.LevelDebug, message, 0)
+	record.AddAttrs(attrs...)
+
+	return record
+}
+
+func TestApp_Run_WhenDebugIsOn_DrawsEachRecordTimedFromLaunchWithTimesDim(t *testing.T) {
+	t.Parallel()
+
+	app := painted(t, []string{colorTerm}, false, true)
+	app.Launch = time.Now()
+	app.SetPush(func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
+		if deps.Logger == nil {
+			t.Error("push ran with no logger")
+
+			return finished(req)
+		}
+		for _, record := range []slog.Record{
+			debugRecord(app.Launch.Add(1500*time.Millisecond), "wait",
+				slog.String("read", "merge-state"), slog.String("state", "unknown"), slog.Duration("window", 30*time.Second)),
+			debugRecord(app.Launch.Add(2250*time.Millisecond), "exec",
+				slog.String("tool", "gh"), slog.Any("args", []string{"pr", "view", "12"}), slog.Int64("exit", 0),
+				slog.Duration("duration", 1234*time.Millisecond)),
+			debugRecord(app.Launch.Add(3*time.Second), "exec",
+				slog.String("tool", "gh"), slog.Any("args", []string{"pr", "checks", "12"}), slog.String("error", "signal: killed"),
+				slog.Duration("duration", 30*time.Millisecond)),
+		} {
+			assert.Check(t, deps.Logger.Handler().Handle(ctx, record))
+		}
+
+		return finished(req)
+	})
+
+	got := launch(t, app, "push", "-d")
+
+	drawn := resulttest.Draw(t, got.stderr)
+	lines := strings.Split(strings.TrimSuffix(drawn.String(), "\n"), "\n")
+	want := []string{
+		"+1.500s wait read=merge-state state=unknown window=30s",
+		"+2.250s gh pr view 12 exit 0 1.234s",
+		"+3.000s gh pr checks 12 signal: killed 30ms",
+	}
+	assert.Assert(t, len(lines) > len(want), "stderr = %q", drawn.String())
+	assert.Check(t, is.DeepEqual(lines[len(lines)-len(want):], want))
+	dim := resulttest.Look{Dim: true}
+	assert.Check(t, is.Equal(drawn.LookOf(t, want[1], "+2.250s"), dim))
+	assert.Check(t, is.Equal(drawn.LookOf(t, want[1], "1.234s"), dim))
+	assert.Check(t, is.Equal(drawn.LookOf(t, want[1], "gh pr view 12 exit 0"), resulttest.Look{}))
+}
+
+// ---------------------------------------------------------------------------
+// Progress display
+// ---------------------------------------------------------------------------
+
+const (
+	// wide is a terminal wide enough for every line the progress tests print.
+	wide = 80
+	// spun is how long a step runs before the screens are read: past 3 seconds by less than one
+	// frame of the spinner, so that its timer reads 3s whether it rounds or truncates.
+	spun = 3300 * time.Millisecond
+	// limit is the most the step of a test that has a limit can last.
+	limit = 30 * time.Second
+
+	hint = "# waits again; nothing to fix"
+
+	// pushedStep and openedStep are the step lines of a paced command as a terminal stdout shows
+	// them.
+	pushedStep = "✓ Pushed " + topic + " to origin. 1.2s"
+	openedStep = "✓ Opened pull request #12. 2.5s"
+)
+
+// sgr matches one select graphic rendition sequence: the sequences that style text, and the only
+// ones that a stream that is not a terminal may carry.
+var sgr = regexp.MustCompile(`\x1b\[[0-9;:]*m`)
+
+// pacedLines returns the lines a paced command ends with, in order.
+func pacedLines() []string {
+	return []string{
+		"Pushed " + topic + " to origin.", "Checks still running: build.", "Opened pull request #12.", "Pushed " + topic + " to origin.",
+	}
+}
+
+// pacedEnd returns the reason and next that follow the lines of a paced command.
+func pacedEnd() []string {
+	return []string{"Delivered, not green: the checks of #12 are still running", "Next: ils push"}
+}
+
+func pushedLine() result.Phrase { return result.Say("Pushed %s to origin.", result.Branch(topic)) }
+
+func openedLine() result.Phrase {
+	return result.Say("Opened pull request %s.", result.PullRequest(opened))
+}
+
+func waitingLabel() result.Phrase {
+	return result.Say("Waiting for checks on %s", result.PullRequest(opened))
+}
+
+func mergeStateLabel() result.Phrase {
+	return result.Say("Waiting for GitHub to say whether %s can merge", result.PullRequest(opened))
+}
+
+// deaf is a progress that hears nothing, told in place of a run's when it has none.
+type deaf struct{}
+
+func (deaf) Started(result.Phrase, time.Duration) {}
+
+func (deaf) Said(result.Phrase) {}
+
+func (deaf) Counted(int, int) {}
+
+// progress returns what deps tells how the command advances, or deaf when it has nothing.
+func progress(deps landing.Deps) landing.Progress {
+	if deps.Progress == nil {
+		return deaf{}
+	}
+
+	return deps.Progress
+}
+
+// paced is a landing command that pushes for 1.2s and opens a pull request for 2.5s, saying the
+// line of each as it succeeds, then waits spun for checks of which 1 of 3 are done, has peek read
+// the screens once every other goroutine of the run waits, and ends with outcome and pacedLines.
+func paced(peek func(), outcome result.Outcome) cli.Command {
+	return func(_ context.Context, deps landing.Deps, req landing.Request) result.Result {
+		told := progress(deps)
+		told.Started(result.Say("Pushing %s", result.Branch(topic)), 0)
+		time.Sleep(1200 * time.Millisecond)
+		told.Said(pushedLine())
+		told.Started(result.Say("Opening a pull request against %s", result.Branch(trunk)), 0)
+		time.Sleep(2500 * time.Millisecond)
+		told.Said(openedLine())
+		told.Started(waitingLabel(), limit)
+		told.Counted(1, 3)
+		time.Sleep(spun)
+		synctest.Wait()
+		peek()
+
+		return result.Result{
+			Command: req.Command, Words: req.Words, Outcome: outcome,
+			Lines:  []result.Phrase{pushedLine(), result.Say("Checks still running: %s.", "build"), openedLine(), pushedLine()},
+			Reason: result.Say("the checks of %s are still running", result.PullRequest(opened)),
+			Next:   result.NextCommand("push"),
+		}
+	}
+}
+
+// stepping is a landing command that runs one step, begun by start, for spun, has peek read the
+// screens once every other goroutine of the run waits, and ends as done with nothing to say.
+func stepping(start func(landing.Progress), peek func()) cli.Command {
+	return func(_ context.Context, deps landing.Deps, req landing.Request) result.Result {
+		start(progress(deps))
+		time.Sleep(spun)
+		synctest.Wait()
+		peek()
+
+		return finished(req)
+	}
+}
+
+// shown runs app with args inside a bubble, whose clock moves only while every goroutine of the
+// run waits, so that each step of a command lasts exactly as long as the command sleeps.
+func shown(t *testing.T, app cli.App, args ...string) ran {
+	t.Helper()
+
+	var got ran
+
+	synctest.Test(t, func(t *testing.T) { got = launch(t, app, args...) })
+
+	return got
+}
+
+// onTerminals returns the cli outside any repository under env, with stdout and stderr each a
+// terminal or not, and stderr's terminal wide.
+func onTerminals(t *testing.T, env []string, stdoutTerminal, stderrTerminal bool) cli.App {
+	t.Helper()
+
+	app := painted(t, env, stdoutTerminal, stderrTerminal)
+	app.StderrWidth = func() int { return wide }
+
+	return app
+}
+
+// onStderrScreen returns the cli outside any repository under env, with stdout a terminal or not
+// and stderr a terminal that is the returned screen, width columns wide.
+func onStderrScreen(t *testing.T, env []string, stdoutTerminal bool, width int) (cli.App, *screen) {
+	t.Helper()
+
+	stderr := newScreen(t, width)
+	app := onTerminals(t, env, stdoutTerminal, true)
+	app.Stderr = stderr
+	app.StderrWidth = func() int { return width }
+
+	return app, stderr
+}
+
+// onStdoutScreen returns the cli outside any repository under env, with stderr no terminal and
+// stdout a terminal that is the returned screen, wide columns wide.
+func onStdoutScreen(t *testing.T, env []string) (cli.App, *screen) {
+	t.Helper()
+
+	stdout := newScreen(t, wide)
+	app := onTerminals(t, env, true, false)
+	app.Stdout = stdout
+
+	return app, stdout
+}
+
+// startedMerge begins the step of waiting for GitHub to say whether a pull request can merge.
+func startedMerge(p landing.Progress) { p.Started(mergeStateLabel(), limit) }
+
+// cell is one character of a screen and the select graphic rendition sequences it is drawn with.
+type cell struct {
+	pen string
+	r   rune
+}
+
+// screen is a terminal width columns wide, which stdout and stderr may share: it keeps what each
+// row shows once every character, line break and cursor sequence written to it is drawn, and fails
+// the test on a sequence it does not know.
+type screen struct {
+	tb      testing.TB
+	written strings.Builder
+	pending string
+	pen     string
+	rows    [][]cell
+	mu      sync.Mutex
+	width   int
+	row     int
+	col     int
+}
+
+func newScreen(tb testing.TB, width int) *screen {
+	return &screen{tb: tb, width: width}
+}
+
+// Write draws p, keeping a sequence or character it ends inside of until the next write.
+func (s *screen) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.written.Write(p)
+	s.pending += string(p)
+	for s.pending != "" {
+		n := s.draw(s.pending)
+		if n == 0 {
+			break
+		}
+		s.pending = s.pending[n:]
+	}
+
+	return len(p), nil
+}
+
+// draw draws the sequence, control character or character text starts with and returns its
+// length, or 0 when text ends before it does.
+func (s *screen) draw(text string) int {
+	if text == "\x1b" || !utf8.FullRuneInString(text) {
+		return 0
+	}
+	if params, ok := strings.CutPrefix(text, "\x1b["); ok {
+		end := strings.IndexFunc(params, func(r rune) bool { return r >= 0x40 && r <= 0x7e })
+		if end < 0 {
+			return 0
+		}
+		s.control(params[:end], params[end])
+
+		return len("\x1b[") + end + 1
+	}
+
+	r, size := utf8.DecodeRuneInString(text)
+	switch {
+	case r == '\r':
+		s.col = 0
+	case r == '\n':
+		s.row, s.col = s.row+1, 0
+	case r == '\b':
+		s.col = max(s.col-1, 0)
+	case r < ' ' || r == 0x7f:
+		s.tb.Errorf("a terminal draws no %q in %q", r, text)
+	default:
+		s.put(r)
+	}
+
+	return size
+}
+
+// control draws one control sequence: its parameters and its final byte.
+func (s *screen) control(params string, final byte) {
+	if strings.HasPrefix(params, "?") && (final == 'h' || final == 'l') {
+		return
+	}
+	if final == 'm' {
+		if params == "" || params == "0" {
+			s.pen = ""
+		} else {
+			s.pen += "\x1b[" + params + "m"
+		}
+
+		return
+	}
+
+	n := 0
+	if params != "" {
+		var err error
+		n, err = strconv.Atoi(params)
+		assert.Check(s.tb, err, "parameters of %q", params+string(final))
+	}
+	switch final {
+	case 'K':
+		s.erase(n)
+	case 'G':
+		s.col = max(n, 1) - 1
+	case 'A':
+		s.row = max(s.row-max(n, 1), 0)
+	case 'B':
+		s.row += max(n, 1)
+	case 'C':
+		s.col = min(s.col+max(n, 1), s.width-1)
+	case 'D':
+		s.col = max(s.col-max(n, 1), 0)
+	default:
+		s.tb.Errorf("the screen does not draw the control sequence %q", params+string(final))
+	}
+}
+
+// erase blanks the current row from the cursor to its end (0), from its start to the cursor (1),
+// or whole (2).
+func (s *screen) erase(how int) {
+	row := s.line()
+	from, to := 0, len(*row)
+	switch how {
+	case 0:
+		from = min(s.col, to)
+	case 1:
+		to = min(s.col+1, to)
+	}
+	for i := from; i < to; i++ {
+		(*row)[i] = cell{}
+	}
+}
+
+// put draws r at the cursor, first moving to the next row when the cursor stands past the last
+// column, as a terminal that wraps does.
+func (s *screen) put(r rune) {
+	if s.col >= s.width {
+		s.row, s.col = s.row+1, 0
+	}
+	row := s.line()
+	for len(*row) <= s.col {
+		*row = append(*row, cell{})
+	}
+	(*row)[s.col] = cell{pen: s.pen, r: r}
+	s.col++
+}
+
+// line returns the row the cursor is on, adding the rows above it that nothing reached yet.
+func (s *screen) line() *[]cell {
+	for len(s.rows) <= s.row {
+		s.rows = append(s.rows, nil)
+	}
+
+	return &s.rows[s.row]
+}
+
+// lines returns the text of each row the screen shows, without the blanks at the end of each row
+// and the blank rows after the last one that shows anything.
+func (s *screen) lines() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var shown []string
+	for _, row := range s.rows {
+		var b strings.Builder
+		for _, c := range row {
+			b.WriteRune(max(c.r, ' '))
+		}
+		shown = append(shown, strings.TrimRight(b.String(), " "))
+	}
+	for len(shown) > 0 && shown[len(shown)-1] == "" {
+		shown = shown[:len(shown)-1]
+	}
+
+	return shown
+}
+
+// drawn returns row i as the screen draws it, each character in the rendition it was written in.
+func (s *screen) drawn(i int) resulttest.Drawn {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var b strings.Builder
+	for _, c := range s.rows[i] {
+		b.WriteString("\x1b[0m" + c.pen)
+		b.WriteRune(max(c.r, ' '))
+	}
+
+	return resulttest.Draw(s.tb, b.String())
+}
+
+// raw returns every byte written to the screen.
+func (s *screen) raw() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.written.String()
+}
+
+func TestApp_Run_WhenAStepRunsWithStderrATerminal_ShowsOneSpinnerLineForItUntilTheEnd(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		env      []string
-		args     []string
-		terminal bool
+		start func(landing.Progress)
+		want  *regexp.Regexp
+		name  string
+		args  []string
 	}{
-		{name: "no terminal", args: []string{"push", "-d"}},
-		{name: "terminal forced off a terminal", env: []string{colorTerm, "TTY_FORCE=1"}, args: []string{"push", "-d"}},
-		{name: "dumb terminal", env: []string{"TERM=dumb"}, terminal: true, args: []string{"push", "-d"}},
-		{name: "no color on a terminal", env: []string{colorTerm, noColor}, terminal: true, args: []string{"merge", "--debug"}},
-		{name: "no color over forced color", env: []string{colorTerm, noColor, forced}, args: []string{"push", "-d"}},
-		{name: "no color over forced color on a terminal", env: []string{colorTerm, noColor, forced}, terminal: true, args: []string{"push", "-d"}},
-		{name: "flag over forced color", env: []string{colorTerm, forced}, terminal: true, args: []string{"push", "-d", "--no-color"}},
-		{name: "flag set to true before merge", env: []string{colorTerm, forced}, terminal: true, args: []string{"--no-color=true", "merge", "-d"}},
+		{
+			name: "step with no limit", args: []string{"merge"},
+			start: func(p landing.Progress) { p.Started(result.Say("Merging %s", result.PullRequest(opened)), 0) },
+			want:  regexp.MustCompile(`^\S+ Merging #12 3s$`),
+		},
+		{
+			name: "step with a limit", args: []string{"merge"},
+			start: startedMerge,
+			want:  regexp.MustCompile(`^\S+ Waiting for GitHub to say whether #12 can merge 3s of 30s$`),
+		},
+		{
+			name: "checks counted", args: []string{"push"},
+			start: func(p landing.Progress) {
+				p.Started(waitingLabel(), limit)
+				p.Counted(1, 3)
+			},
+			want: regexp.MustCompile(`^\S+ Waiting for checks on #12 (3s of 30s\W+1 of 3 done|1 of 3 done\W+3s of 30s)$`),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := launch(t, painted(t, tt.env, tt.terminal, tt.terminal), tt.args...)
+			app, stderr := onStderrScreen(t, []string{colorTerm}, false, wide)
+			var seen []string
+			run := stepping(tt.start, func() { seen = stderr.lines() })
+			app.SetPush(run)
+			app.SetMerge(run)
 
-			assert.Check(t, got.stderr != "", "ils %s wrote no debug line", strings.Join(tt.args, " "))
-			plain(t, "stdout", got.stdout)
-			plain(t, "stderr", got.stderr)
+			got := shown(t, app, tt.args...)
+
+			assert.Check(t, is.Equal(got.code, exitDone))
+			assert.Assert(t, is.Len(seen, 1), "stderr showed %q", seen)
+			assert.Check(t, tt.want.MatchString(seen[0]), "spinner line = %q, want it to match %s", seen[0], tt.want)
+			assert.Check(t, is.Len(stderr.lines(), 0), "stderr still shows %q", stderr.lines())
 		})
 	}
 }
 
-func TestApp_Run_WhenStdoutHasAColorProfile_DrawsTheOutcomeLabelRed(t *testing.T) {
+func TestApp_Run_WhenAStepRunsOnAColorTerminal_DrawsTheSpinnerAndItsTimerYellowAndTheLimitDim(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name     string
-		label    string
-		env      []string
-		args     []string
-		terminal bool
-	}{
-		{name: "color terminal", label: "Broke", env: []string{colorTerm}, terminal: true, args: []string{"push"}},
-		{name: "forced color off a terminal", label: "Broke", env: []string{forced}, args: []string{"push"}},
-		{name: "flag set to false", label: "Broke", env: []string{colorTerm}, terminal: true, args: []string{"merge", "--no-color=false"}},
-		{name: "unknown word", label: "Refused", env: []string{colorTerm}, terminal: true, args: []string{"pish"}},
-		{name: "debug flag set to neither", label: "Refused", env: []string{colorTerm}, terminal: true, args: []string{"push", "--debug=maybe"}},
-		{name: "color flag set to neither", label: "Refused", env: []string{forced}, args: []string{"merge", "--no-color=maybe"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	app, stderr := onStderrScreen(t, []string{colorTerm}, false, wide)
+	var seen resulttest.Drawn
+	app.SetMerge(stepping(startedMerge, func() { seen = stderr.drawn(0) }))
 
-			got := launch(t, painted(t, tt.env, tt.terminal, false), tt.args...)
+	shown(t, app, "merge")
 
-			look := resulttest.Draw(t, got.stdout).LookOf(t, tt.label+": ", tt.label)
-			assert.Check(t, is.Equal(look.Color, "red"))
-		})
-	}
+	line := strings.TrimRight(seen.String(), " ")
+	spinner, _, _ := strings.Cut(line, " ")
+	yellow := resulttest.Look{Color: "yellow"}
+	assert.Check(t, is.Equal(seen.LookOf(t, line, spinner), yellow))
+	assert.Check(t, is.Equal(seen.LookOf(t, "3s of 30s", "3s"), yellow))
+	assert.Check(t, seen.LookOf(t, "3s of 30s", "of 30s").Dim, "the limit is not dim in %q", line)
 }
 
-func TestApp_Run_WhenTheWordsAreRefusedWithColorOff_PrintsTheRefusalPlain(t *testing.T) {
+func TestApp_Run_WhenColorIsOffOnATerminal_DrawsTheSpinnerWithNoEscapeSequence(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -931,192 +932,362 @@ func TestApp_Run_WhenTheWordsAreRefusedWithColorOff_PrintsTheRefusalPlain(t *tes
 		env  []string
 		args []string
 	}{
-		{name: "no color", env: []string{colorTerm, noColor}, args: []string{"pish"}},
-		{name: "flag before an unknown word", env: []string{colorTerm}, args: []string{"--no-color", "pish"}},
-		{name: "flag after an unknown flag", env: []string{colorTerm}, args: []string{"push", "--bogus", "--no-color"}},
-		{name: "flag set to neither under no color", env: []string{colorTerm, noColor}, args: []string{"merge", "--no-color=maybe"}},
+		{name: "no color", env: []string{colorTerm, noColor}, args: []string{"merge"}},
+		{name: "flag over forced color", env: []string{colorTerm, forced}, args: []string{"merge", "--no-color"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := launch(t, painted(t, tt.env, true, false), tt.args...)
+			app, stderr := onStderrScreen(t, tt.env, false, wide)
+			var seen []string
+			app.SetMerge(stepping(startedMerge, func() { seen = stderr.lines() }))
 
-			assert.Check(t, is.Equal(got.code, exitRefused))
-			plain(t, "the refusal", got.stdout)
+			shown(t, app, tt.args...)
+
+			assert.Check(t, is.Len(seen, 1), "stderr showed %q", seen)
+			plain(t, "stderr", stderr.raw())
 		})
 	}
 }
 
-func TestApp_Run_WhenOneStreamIsAColorTerminal_DrawsColorOnThatStreamOnly(t *testing.T) {
+func TestApp_Run_WhenTheSpinnerLineIsWiderThanTheTerminal_KeepsItOnOneRow(t *testing.T) {
+	t.Parallel()
+
+	const narrow = 24
+
+	tests := []struct {
+		name  string
+		label result.Phrase
+	}{
+		{name: "single-width characters", label: mergeStateLabel()},
+		{name: "double-width characters", label: result.Say("Pushing %s", result.Branch("整理整理整理整理整理整理"))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			app, stderr := onStderrScreen(t, []string{colorTerm}, false, narrow)
+			var seen []string
+			app.SetMerge(stepping(func(p landing.Progress) { p.Started(tt.label, limit) }, func() { seen = stderr.lines() }))
+
+			shown(t, app, "merge")
+
+			assert.Assert(t, is.Len(seen, 1), "stderr showed %q", seen)
+			assert.Check(t, ansi.StringWidth(seen[0]) <= narrow-1, "spinner line %q is wider than %d columns", seen[0], narrow-1)
+			assert.Check(t, regexp.MustCompile(`^\S+ (Waiting|Pushing) `).MatchString(seen[0]), "spinner line = %q", seen[0])
+		})
+	}
+}
+
+func TestApp_Run_WhenTheTerminalIsOneColumnWide_DrawsNoSpinnerCharacter(t *testing.T) {
+	t.Parallel()
+
+	app, stderr := onStderrScreen(t, []string{colorTerm}, false, 1)
+	var seen []string
+	app.SetMerge(stepping(startedMerge, func() { seen = stderr.lines() }))
+
+	got := shown(t, app, "merge")
+
+	assert.Check(t, is.Equal(got.code, exitDone))
+	assert.Check(t, is.Len(seen, 0), "stderr showed %q", seen)
+}
+
+func TestApp_Run_WhenStdoutAndStderrShareATerminalWithColorOff_PrintsEachStepLineAsItSucceedsThenTheOtherLines(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		env  []string
+		args []string
+	}{
+		{name: "no color", env: []string{colorTerm, noColor}, args: []string{"push"}},
+		{name: "flag over forced color", env: []string{colorTerm, forced}, args: []string{"push", "--no-color"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			terminal := newScreen(t, wide)
+			app := onTerminals(t, tt.env, true, true)
+			app.Stdout, app.Stderr = terminal, terminal
+			var seen []string
+			app.SetPush(paced(func() { seen = terminal.lines() }, result.DeliveredNotGreen))
+
+			got := shown(t, app, tt.args...)
+
+			assert.Check(t, is.Equal(got.code, exitDelivered))
+			assert.Assert(t, is.Len(seen, 3), "the terminal showed %q", seen)
+			assert.Check(t, is.DeepEqual(seen[:2], []string{pushedStep, openedStep}))
+			assert.Check(t, regexp.MustCompile(`^\S+ Waiting for checks on #12 `).MatchString(seen[2]), "spinner line = %q", seen[2])
+			lines := pacedLines()
+			want := slices.Concat([]string{pushedStep, openedStep, lines[1], lines[3]}, pacedEnd())
+			assert.Check(t, is.DeepEqual(terminal.lines(), want))
+			plain(t, "the terminal", terminal.raw())
+		})
+	}
+}
+
+func TestApp_Run_WhenStepLinesPrintOnAColorTerminal_DrawsTheCheckGreenAndTheDurationDimGreen(t *testing.T) {
+	t.Parallel()
+
+	app, stdout := onStdoutScreen(t, []string{colorTerm})
+	app.SetPush(paced(func() {}, result.DeliveredNotGreen))
+
+	shown(t, app, "push")
+
+	drawn := stdout.drawn(0)
+	assert.Check(t, is.Equal(drawn.LookOf(t, pushedStep, "✓"), resulttest.Look{Color: "green"}))
+	assert.Check(t, is.Equal(drawn.LookOf(t, pushedStep, "1.2s"), resulttest.Look{Color: "green", Dim: true}))
+}
+
+func TestApp_Run_WhenAStepLineIsSaidWithoutAStepStartedForIt_TimesItFromTheLineBefore(t *testing.T) {
+	t.Parallel()
+
+	app, stdout := onStdoutScreen(t, []string{colorTerm, noColor})
+	app.SetPush(func(_ context.Context, deps landing.Deps, req landing.Request) result.Result {
+		told := progress(deps)
+		told.Started(result.Say("Pushing %s", result.Branch(topic)), 0)
+		time.Sleep(3 * time.Second)
+		told.Said(pushedLine())
+		time.Sleep(2 * time.Second)
+		told.Said(openedLine())
+
+		r := finished(req)
+		r.Lines = []result.Phrase{pushedLine(), openedLine()}
+
+		return r
+	})
+
+	shown(t, app, "push")
+
+	want := []string{"✓ Pushed " + topic + " to origin. 3s", "✓ Opened pull request #12. 2s"}
+	assert.Check(t, is.DeepEqual(stdout.lines(), want))
+}
+
+func TestApp_Run_WhenTheResultIsPendingOnATerminalStdout_EndsNextWithAHintDimOnlyInColor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		env   []string
+		color bool
+	}{
+		{name: "color terminal", env: []string{colorTerm}, color: true},
+		{name: "no color", env: []string{colorTerm, noColor}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			app, stdout := onStdoutScreen(t, tt.env)
+			app.SetPush(paced(func() {}, result.Pending))
+
+			got := shown(t, app, "push")
+
+			assert.Check(t, is.Equal(got.code, exitPending))
+			lines := stdout.lines()
+			last := lines[len(lines)-1]
+			assert.Check(t, strings.HasPrefix(last, "Next: ils push "), "Next line = %q", last)
+			assert.Check(t, strings.HasSuffix(last, " "+hint), "Next line = %q", last)
+			assert.Check(t, is.Equal(stdout.drawn(len(lines)-1).LookOf(t, last, hint).Dim, tt.color), "Next line = %q", last)
+			assert.Check(t, is.Equal(strings.Contains(stdout.raw(), escape), tt.color), "stdout = %q", stdout.raw())
+		})
+	}
+}
+
+func TestApp_Run_WhenTheResultIsPendingOffATerminalStdoutOrAsJSON_PrintsNoHint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		env      []string
+		args     []string
+		terminal bool
+	}{
+		{name: "no terminal", env: []string{colorTerm}, args: []string{"push"}},
+		{name: "dumb terminal", env: []string{"TERM=dumb"}, args: []string{"push"}, terminal: true},
+		{name: "JSON on a terminal", env: []string{colorTerm}, args: []string{"push", "--json"}, terminal: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			app := onTerminals(t, tt.env, tt.terminal, false)
+			app.SetPush(paced(func() {}, result.Pending))
+
+			got := shown(t, app, tt.args...)
+
+			assert.Check(t, is.Equal(got.code, exitPending))
+			assert.Check(t, !strings.Contains(got.stdout, hint), "stdout = %q", got.stdout)
+		})
+	}
+}
+
+func TestApp_Run_WhenNeitherStreamCountsAsATerminal_WritesNothingBeforeTheWholeResult(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		env      []string
+		terminal bool
+	}{
+		{name: "no terminal", env: []string{colorTerm}},
+		{name: "forced color off a terminal", env: []string{colorTerm, forced}},
+		{name: "dumb terminal", env: []string{"TERM=dumb"}, terminal: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			stdout, stderr := newScreen(t, wide), newScreen(t, wide)
+			app := onTerminals(t, tt.env, tt.terminal, tt.terminal)
+			app.Stdout, app.Stderr = stdout, stderr
+			var early string
+			app.SetPush(paced(func() { early = stdout.raw() }, result.DeliveredNotGreen))
+
+			got := shown(t, app, "push")
+
+			assert.Check(t, is.Equal(got.code, exitDelivered))
+			assert.Check(t, is.Equal(early, ""))
+			assert.Check(t, is.Equal(stderr.raw(), ""))
+			assert.Check(t, is.DeepEqual(stdout.lines(), slices.Concat(pacedLines(), pacedEnd())))
+			plain(t, "stdout without its renditions", sgr.ReplaceAllString(stdout.raw(), ""))
+		})
+	}
+}
+
+func TestApp_Run_WhenTheJSONFlagIsAmongTheWordsOnTerminals_PrintsTheWholeResultAfterTheSpinnerIsGone(t *testing.T) {
+	t.Parallel()
+
+	stdout, stderr := newScreen(t, wide), newScreen(t, wide)
+	app := onTerminals(t, []string{colorTerm}, true, true)
+	app.Stdout, app.Stderr = stdout, stderr
+	var (
+		early    string
+		spinning []string
+	)
+	app.SetPush(paced(func() { early, spinning = stdout.raw(), stderr.lines() }, result.DeliveredNotGreen))
+
+	got := shown(t, app, "push", "--json")
+
+	assert.Check(t, is.Equal(got.code, exitDelivered))
+	assert.Check(t, is.Equal(early, ""))
+	assert.Check(t, is.Len(spinning, 1), "stderr showed %q", spinning)
+	assert.Check(t, is.Len(stderr.lines(), 0), "stderr still shows %q", stderr.lines())
+	assert.Check(t, is.DeepEqual(resulttest.Decode(t, stdout.raw()).Lines, pacedLines()))
+}
+
+func TestApp_Run_WhenTheWordsRunNoCommand_LeavesTheDisplaySilent(t *testing.T) {
+	t.Parallel()
+
+	told := func(_ context.Context, deps landing.Deps, req landing.Request) result.Result {
+		progress(deps).Started(waitingLabel(), limit)
+		progress(deps).Said(pushedLine())
+
+		return finished(req)
+	}
+
+	tests := [][]string{{"pish"}, {"push", "extra"}, {"push", "--help"}, {"merge", "--help"}, {"--version"}}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			t.Parallel()
+
+			app := onTerminals(t, []string{colorTerm}, true, true)
+			app.Version = "0.2.0"
+			app.SetPush(told)
+			app.SetMerge(told)
+
+			got := launch(t, app, args...)
+
+			assert.Check(t, is.Equal(got.stderr, ""))
+			assert.Check(t, !strings.Contains(got.stdout, "✓"), "stdout = %q", got.stdout)
+		})
+	}
+}
+
+func TestApp_Run_WhenDebugIsOn_DrawsNoSpinnerButStreamsStepLines(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		terminal bool
+	}{
+		{name: "stderr a terminal", terminal: true},
+		{name: "stderr no terminal"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			stdout, stderr := newScreen(t, wide), newScreen(t, wide)
+			app := onTerminals(t, []string{colorTerm, noColor}, true, tt.terminal)
+			app.Stdout, app.Stderr = stdout, stderr
+			app.SetPush(paced(func() {}, result.DeliveredNotGreen))
+
+			got := shown(t, app, "push", "-d")
+
+			assert.Check(t, is.Equal(got.code, exitDelivered))
+			for _, label := range []string{"Pushing", "Opening", "Waiting"} {
+				assert.Check(t, !strings.Contains(stderr.raw(), label), "stderr = %q", stderr.raw())
+			}
+			lines := stdout.lines()
+			assert.Assert(t, len(lines) > 2, "stdout showed %q", lines)
+			assert.Check(t, is.DeepEqual(lines[:2], []string{pushedStep, openedStep}))
+		})
+	}
+}
+
+// faltering is a stdout whose writes fail while it is down and land in its buffer otherwise.
+type faltering struct {
+	buf  bytes.Buffer
+	mu   sync.Mutex
+	down atomic.Bool
+}
+
+// Write fails with errReaderGone while f is down, and otherwise adds p to its buffer.
+func (f *faltering) Write(p []byte) (int, error) {
+	if f.down.Load() {
+		return 0, errReaderGone
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.buf.Write(p)
+}
+
+func TestApp_Run_WhenTheDisplayCannotBeWritten_PrintsTheResultAndCodeOfARunWithoutIt(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name   string
 		stdout bool
-		stderr bool
 	}{
-		{name: "stdout", stdout: true},
-		{name: "stderr", stderr: true},
+		{name: "spinner"},
+		{name: "step lines", stdout: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := launch(t, painted(t, []string{colorTerm}, tt.stdout, tt.stderr), "push", "-d")
+			env := []string{colorTerm, noColor}
+			without := onTerminals(t, env, false, false)
+			without.SetPush(paced(func() {}, result.DeliveredNotGreen))
+			want := shown(t, without, "push")
+			stdout := &faltering{}
+			app := onTerminals(t, env, tt.stdout, !tt.stdout)
+			app.Stdout, app.Stderr = stdout, shut{err: errReaderGone}
+			app.SetPush(func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
+				stdout.down.Store(true)
+				defer stdout.down.Store(false)
 
-			assert.Check(t, is.Equal(strings.Contains(got.stdout, escape), tt.stdout), "stdout = %q", got.stdout)
-			assert.Check(t, is.Equal(strings.Contains(got.stderr, escape), tt.stderr), "stderr = %q", got.stderr)
+				return paced(func() {}, result.DeliveredNotGreen)(ctx, deps, req)
+			})
+
+			got := shown(t, app, "push")
+
+			assert.Check(t, is.Equal(got.code, want.code))
+			assert.Check(t, is.Equal(stdout.buf.String(), want.stdout))
 		})
 	}
-}
-
-func TestApp_Run_WhenStdoutIsAColorTerminalAndTheJSONFlagIsAmongTheWords_PrintsNoEscapeSequence(t *testing.T) {
-	t.Parallel()
-
-	got := launch(t, painted(t, []string{colorTerm, forced}, true, false), "push", "--json")
-
-	assert.Check(t, is.Equal(got.code, exitBroke))
-	plain(t, "the JSON", got.stdout)
-	assert.Check(t, !strings.Contains(strings.ToLower(got.stdout), encodedEscape), "a value of the JSON carries an escape sequence:\n%s", got.stdout)
-}
-
-func TestApp_Run_WhenDebugOrColorFlagIsAmongTheWords_PrintsWhatTheSameRunPrintsWithoutIt(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		args    []string
-		flagged []string
-		logs    bool
-	}{
-		{args: []string{"push"}, flagged: []string{"push", "-d"}, logs: true},
-		{args: []string{"push", "--json"}, flagged: []string{"--debug", "push", "--json"}, logs: true},
-		{args: []string{"merge"}, flagged: []string{"merge", "--debug=true"}, logs: true},
-		{args: []string{"merge", "--json"}, flagged: []string{"merge", "-d", "--json"}, logs: true},
-		{args: []string{"push", "--json"}, flagged: []string{"push", "--json", "--debug=false"}},
-		{args: []string{"push", "--json"}, flagged: []string{"--no-color", "push", "--json"}},
-		{args: []string{"merge", "--json"}, flagged: []string{"merge", "--json", "--no-color=true"}},
-		{args: []string{"merge"}, flagged: []string{"merge", "--no-color=false"}},
-	}
-	for _, tt := range tests {
-		t.Run(strings.Join(tt.flagged, " "), func(t *testing.T) {
-			t.Parallel()
-
-			app := lost(t)
-			without := launch(t, app, tt.args...)
-
-			got := launch(t, app, tt.flagged...)
-
-			assert.Check(t, is.Equal(without.stderr, ""))
-			assert.Check(t, is.Equal(got.stdout, without.stdout))
-			assert.Check(t, is.Equal(got.code, without.code))
-			assert.Check(t, is.Equal(got.stderr != "", tt.logs), "stderr = %q", got.stderr)
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Scenes and scenarios
-// ---------------------------------------------------------------------------
-
-// both runs `ils push` once in the scene and returns its one result as the text renderer and
-// as the JSON renderer print it.
-func both(t *testing.T, s *scene) (text, encoded ran) {
-	t.Helper()
-
-	var kept result.Result
-
-	app := s.app()
-	app.SetPush(func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
-		kept = landing.Push(ctx, deps, req)
-
-		return kept
-	})
-	text = launch(t, app, "push")
-
-	app.SetPush(func(context.Context, landing.Deps, landing.Request) result.Result { return kept })
-	encoded = launch(t, app, "push", "--json")
-
-	return text, encoded
-}
-
-func TestApp_Run_WhenPushEndsInAnyOutcome_JSONCarriesWhatTheTextShows(t *testing.T) {
-	tests := []struct {
-		outcome  string
-		scenario scenario
-	}{
-		{outcome: "done", scenario: greenFirstPush()},
-		{outcome: "refused", scenario: onTheTrunk()},
-		{outcome: "broke", scenario: failedRead()},
-		{outcome: "pending", scenario: pendingAtTheBound()},
-		{outcome: "delivered-not-green", scenario: redWithLog()},
-	}
-	for _, tt := range tests {
-		t.Run(tt.outcome, func(t *testing.T) {
-			s := newScene(t, tt.scenario)
-
-			text, encoded := both(t, s)
-
-			assert.Check(t, is.Equal(text.code, tt.scenario.want))
-			assert.Check(t, is.Equal(encoded.code, tt.scenario.want))
-
-			got := resulttest.Decode(t, encoded.stdout)
-			assert.Check(t, is.Equal(got.Outcome, tt.outcome))
-			assert.Check(t, is.Equal(got.ExitCode, tt.scenario.want))
-
-			resulttest.AssertCarried(t, text.stdout, got)
-		})
-	}
-}
-
-func TestApp_Run_WhenOriginNamesAnSSHAlias_AsksGhAboutTheHostItStandsFor(t *testing.T) {
-	const alias = "github-personal"
-
-	sc := greenFirstPush()
-	sc.ssh = "Host " + alias + "\n  HostName " + host + "\n"
-	sc.arrange = func(f *gittest.Fixture) { f.SetOriginURL("git@" + alias + ":" + owner + "/" + widgets + ".git") }
-	s := newScene(t, sc)
-
-	got := launch(t, s.app(), "push")
-
-	assert.Check(t, is.Equal(got.code, exitDone), "ils push printed %q", got.stdout)
-	assert.Check(t, is.Contains(s.fake.Calls(), append([]string{"gh"}, ghtest.LoginArgs(host)...)))
-}
-
-func TestApp_Run_WhenGhIsOlderThanTheMinimum_RefusesWithNothingPushedOrOpened(t *testing.T) {
-	const (
-		next   = "upgrade gh, then run ils push again"
-		reason = "gh 1.0.0 is older than " + github.MinimumVersion +
-			", the oldest version ils works with; upgrade it from https://cli.github.com"
-	)
-
-	s := newScene(t, outdated("an older release", "gh version 1.0.0"))
-
-	text, encoded := both(t, s)
-
-	want := ran{stdout: "Refused: " + reason + "\nNext: " + next + "\n", code: exitRefused}
-	assert.Check(t, is.DeepEqual(text, want, sameRun()))
-	assert.Check(t, is.Equal(encoded.code, exitRefused))
-	got := resulttest.Decode(t, encoded.stdout)
-	assert.Check(t, is.Equal(got.Outcome, "refused"))
-	assert.Check(t, is.Equal(got.Reason, reason))
-	assert.Check(t, is.Equal(got.Next, next))
-	nothingPushed(t, s)
-	assert.Check(t, !opensPullRequest(s), "gh was asked to create a pull request")
-}
-
-func TestApp_Run_WhenGhIsNotInstalled_RefusesNamingTheInstallPage(t *testing.T) {
-	s := newScene(t, scenario{})
-	t.Setenv("GH_PATH", filepath.Join(t.TempDir(), "gh"))
-
-	text, encoded := both(t, s)
-
-	want := ran{
-		stdout: "Refused: gh is not installed; install it from https://cli.github.com\nNext: install gh, then run ils push again\n",
-		code:   exitRefused,
-	}
-	assert.Check(t, is.DeepEqual(text, want, sameRun()))
-	assert.Check(t, is.Equal(encoded.code, exitRefused))
-	assert.Check(t, is.Equal(resulttest.Decode(t, encoded.stdout).Outcome, "refused"))
-	nothingPushed(t, s)
 }

@@ -9,9 +9,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Add a live progress display at a terminal: a spinner for the running step, each finished step as
-  it succeeds, and color.
-- Add `--no-color` to turn color off, honoring `NO_COLOR`, `CLICOLOR_FORCE`, and `TERM=dumb`.
+- Add a live progress display at a terminal, with `--no-color` to turn its color off (also honoring
+  `NO_COLOR`, `CLICOLOR_FORCE`, and `TERM=dumb`).
 - Add `-d`/`--debug`, which traces each `git` and `gh` call and each wait decision on stderr.
 
 ### Changed
@@ -24,7 +23,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- Fix help and refusals querying the terminal with color off, which could stall them for seconds.
+- Fix help and refusals stalling for seconds when color is off.
 
 ### Security
 

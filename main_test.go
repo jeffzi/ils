@@ -151,10 +151,7 @@ func TestIls(t *testing.T) {
 	})
 
 	t.Run("WhenPushRunsOutsideARepository_ReportsTheFailedReadOfHead", func(t *testing.T) {
-		dir, err := filepath.EvalSymlinks(t.TempDir())
-		assert.NilError(t, err)
-
-		env := append(gittest.Env(t), "GIT_CEILING_DIRECTORIES="+dir, "LC_ALL=C")
+		dir, env := outsideRepository(t)
 
 		got := bin.launch(t, dir, env, "push")
 
@@ -166,16 +163,20 @@ func TestIls(t *testing.T) {
 			"stdout = %q", got.stdout)
 	})
 
-	t.Run("WhenColorIsForcedInTheEnvironmentWithDebugOn_DrawsTheResultInColorAndLogsEachGitCall", func(t *testing.T) {
-		dir, err := filepath.EvalSymlinks(t.TempDir())
-		assert.NilError(t, err)
+	t.Run("WhenColorIsForcedInTheEnvironment_DrawsTheResultInColor", func(t *testing.T) {
+		dir, env := outsideRepository(t, "CLICOLOR_FORCE=1")
 
-		env := append(gittest.Env(t), "GIT_CEILING_DIRECTORIES="+dir, "LC_ALL=C", "CLICOLOR_FORCE=1")
-
-		got := bin.launch(t, dir, env, "push", "-d")
+		got := bin.launch(t, dir, env, "push")
 
 		assert.Check(t, is.Equal(got.code, 1))
 		assert.Check(t, is.Equal(resulttest.Draw(t, got.stdout).LookOf(t, "Broke: ", "Broke").Color, "red"), "stdout = %q", got.stdout)
+	})
+
+	t.Run("WhenDebugIsOn_LogsTheGitCallsOnStderr", func(t *testing.T) {
+		dir, env := outsideRepository(t)
+
+		got := bin.launch(t, dir, env, "push", "-d")
+
 		assert.Check(t, strings.HasPrefix(resulttest.Draw(t, got.stderr).String(), "+"), "stderr = %q", got.stderr)
 		assert.Check(t, strings.Contains(got.stderr, " git "), "stderr = %q", got.stderr)
 	})
@@ -193,7 +194,26 @@ func opened(t *testing.T, name string) *os.File {
 	return f
 }
 
-func TestLaunched_ReadsEachStreamThroughItsOwnDescriptor(t *testing.T) {
+// outsideRepository returns an empty directory that is in no git repository, and an environment to
+// run git in it: the test's git environment, the extra entries, and a C locale so that git's
+// messages do not depend on the machine.
+//
+// The directory is resolved through symlinks because git ceilings are compared with the path git
+// finds by walking up from the working directory, which is the resolved one (a temporary directory
+// on macOS lies behind a symlink). The ceiling is set at the directory itself so that git stops
+// there instead of finding a repository in one of its parents.
+func outsideRepository(t *testing.T, extra ...string) (dir string, env []string) {
+	t.Helper()
+
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	assert.NilError(t, err)
+
+	env = append(gittest.Env(t), "GIT_CEILING_DIRECTORIES="+dir, "LC_ALL=C")
+
+	return dir, append(env, extra...)
+}
+
+func TestLaunched(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {

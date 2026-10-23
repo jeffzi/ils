@@ -43,13 +43,8 @@ func Draw(tb testing.TB, out string) Drawn {
 
 			continue
 		}
-		if rest, ok := strings.CutPrefix(out, "\x1b["); ok {
-			end := strings.IndexFunc(rest, func(r rune) bool { return r >= 0x40 && r <= 0x7e })
-			assert.Assert(tb, end >= 0, "unterminated sequence in %q", out)
-			if rest[end] == 'm' {
-				pen = rendition(tb, pen, rest[:end])
-			}
-			out = rest[end+1:]
+		if strings.HasPrefix(out, "\x1b[") {
+			pen, out = sequence(tb, pen, out)
 
 			continue
 		}
@@ -62,14 +57,40 @@ func Draw(tb testing.TB, out string) Drawn {
 	return d
 }
 
+// Control sequences end at the first byte in this range.
+const (
+	finalByteFirst = 0x40
+	finalByteLast  = 0x7e
+)
+
+func isFinalByte(r rune) bool {
+	return r >= finalByteFirst && r <= finalByteLast
+}
+
+// sequence returns pen as the control sequence at the start of out changes it, and the rest of out
+// after the sequence. Only a select graphic rendition sequence changes the pen. The test fails on
+// a sequence that is not terminated.
+func sequence(tb testing.TB, pen Look, out string) (Look, string) {
+	tb.Helper()
+
+	rest := out[len("\x1b["):]
+	end := strings.IndexFunc(rest, isFinalByte)
+	assert.Assert(tb, end >= 0, "unterminated sequence in %q", out)
+	if rest[end] == 'm' {
+		pen = rendition(tb, pen, rest[:end])
+	}
+
+	return pen, rest[end+1:]
+}
+
 // rendition returns pen as the parameters of one select graphic rendition sequence change it, and
 // fails the test on a parameter it does not know.
 func rendition(tb testing.TB, pen Look, params string) Look {
 	tb.Helper()
 
-	fields := strings.FieldsFunc(params, func(r rune) bool { return r == ';' || r == ':' })
+	fields := strings.FieldsFunc(params, func(r rune) bool { return r == ';' })
 	if len(fields) == 0 {
-		return Look{Link: pen.Link}
+		fields = []string{"0"}
 	}
 	for i := 0; i < len(fields); i++ {
 		switch code := fields[i]; code {
@@ -89,10 +110,10 @@ func rendition(tb testing.TB, pen Look, params string) Look {
 			pen.Color = ""
 		case "38":
 			assert.Assert(tb, i+2 < len(fields) && fields[i+1] == "5", "color %q is not from the palette", params)
-			pen.Color = colorName(tb, fields[i+2])
+			pen.Color = colorName(tb, fields[i+2], paletteBase, brightPaletteBase)
 			i += 2
 		default:
-			pen.Color = colorName(tb, code)
+			pen.Color = colorName(tb, code, foregroundBase, brightForegroundBase)
 		}
 	}
 
@@ -102,7 +123,7 @@ func rendition(tb testing.TB, pen Look, params string) Look {
 // command returns pen as the operating system command at the start of out changes it, and the
 // rest of out after the command. A hyperlink command links the characters after it to its URI,
 // or ends the link when the URI is empty; any other command changes nothing. The test fails on a
-// command that is not terminated by BEL or ST.
+// command that is not terminated by BEL or ST, and on a hyperlink without its parameters field.
 func command(tb testing.TB, pen Look, out string) (Look, string) {
 	tb.Helper()
 
@@ -116,26 +137,36 @@ func command(tb testing.TB, pen Look, out string) (Look, string) {
 	}
 
 	if link, ok := strings.CutPrefix(body, "8;"); ok {
-		_, pen.Link, _ = strings.Cut(link, ";")
+		var hasParams bool
+		_, pen.Link, hasParams = strings.Cut(link, ";")
+		assert.Assert(tb, hasParams, "hyperlink %q has no parameters field", body)
 	}
 
 	return pen, rest
 }
 
-// colorName returns the name of one of the 16 basic colors, given as a foreground parameter or a
-// palette index, and fails the test on any other color.
-func colorName(tb testing.TB, code string) string {
+// The first parameter or palette index of each run of eight basic colors.
+const (
+	foregroundBase       = 30
+	brightForegroundBase = 90
+	paletteBase          = 0
+	brightPaletteBase    = 8
+)
+
+// colorName returns the name of one of the 16 basic colors, given as code counted from base for
+// the eight colors and from bright for their bright forms, and fails the test on any other code.
+func colorName(tb testing.TB, code string, base, bright int) string {
 	tb.Helper()
 
 	names := []string{"black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"}
 	n, err := strconv.Atoi(code)
 	assert.NilError(tb, err, "parameter %q", code)
-	for _, base := range []int{30, 90, 0, 8} {
-		if n >= base && n < base+len(names) {
-			return names[n-base]
+	for _, first := range []int{base, bright} {
+		if n >= first && n < first+len(names) {
+			return names[n-first]
 		}
 	}
-	tb.Fatalf("parameter %q is not a basic foreground color", code)
+	tb.Fatalf("parameter %q is not a basic color", code)
 
 	return ""
 }

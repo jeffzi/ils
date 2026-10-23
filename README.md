@@ -234,15 +234,19 @@ At a terminal, `ils push` and `ils merge` show their progress as they run:
   the reason, and `Next:`.
 - **Color:** a stream that is a terminal gets color: outcome labels are red or yellow, and branch
   names, pull request numbers, and `ils` commands are bold blue.
+- **Pending hint:** when stdout is a terminal, the `Next:` line of a pending result ends with
+  `# waits again; nothing to fix`.
 
-A stream that is not a terminal gets none of this: stdout prints the whole result at the end, and
-stderr stays empty unless `-d` is on or `ils` cannot print its result, which it then reports there.
-`--json` output is never colored or streamed. `TERM=dumb` counts as no terminal. `NO_COLOR` and
-`--no-color` turn color and bold off on both streams, help included; `CLICOLOR_FORCE` turns color
-on for a stream that is not a terminal, and `NO_COLOR` and `--no-color` win over it.
+A stream that is not a terminal gets none of this. Stdout prints the whole result at the end. Stderr
+stays empty unless `-d` is on, or `ils` cannot print its result and reports that failure there.
+`--json` output is never colored or streamed. `TERM=dumb` counts as no terminal.
 
-`-d` (or `--debug`) prints one line on stderr for each `git` and `gh` call and each decision of
-the wait, timed from launch, in place of the spinner. It changes neither stdout nor the exit code.
+`NO_COLOR` and `--no-color` turn color and bold off on both streams, help included. `CLICOLOR_FORCE`
+turns color on for a stream that is not a terminal; `NO_COLOR` and `--no-color` override it.
+
+`-d` (or `--debug`) prints one line on stderr for each `git` and `gh` call and each wait decision,
+timed from when the command started, in place of the spinner. It changes neither stdout nor the
+exit code.
 
 ### After a green push
 

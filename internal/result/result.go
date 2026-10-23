@@ -68,6 +68,9 @@ func (o Outcome) String() string {
 // placeholder marks where a name goes in a wording.
 const placeholder = "%s"
 
+// commandPrefix is the text an ils command starts with, before its words.
+const commandPrefix = "ils "
+
 // wording is text written in this program's source. The type is unexported so
 // that a caller can pass only a constant: text computed at run time, which
 // could carry git's or GitHub's words past the wording check, does not compile.
@@ -97,7 +100,6 @@ type Name struct {
 	spans []span
 }
 
-// marked returns text as a name of kind k.
 func marked(text string, k kind) Name {
 	return Name{spans: []span{{text: text, kind: k}}}
 }
@@ -169,7 +171,7 @@ func Count(n int) Name {
 // Command marks an ils command by its words after "ils", such as "push",
 // printed as "ils push".
 func Command(words string) Name {
-	return marked("ils "+words, kindCommand)
+	return marked(commandPrefix+words, kindCommand)
 }
 
 // Concat returns parts printed one after another as one name, as a git
@@ -312,7 +314,7 @@ func (n Next) spans() ([]span, error) {
 		return spans, nil
 	}
 
-	command := []span{{text: "ils ", kind: kindCommand}}
+	command := []span{{text: commandPrefix, kind: kindCommand}}
 	for _, s := range spans {
 		command = append(command, span{text: s.text, kind: kindCommand})
 	}

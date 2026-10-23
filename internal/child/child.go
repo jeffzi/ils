@@ -60,24 +60,42 @@ type Exec struct {
 	Took time.Duration
 }
 
-// Log sends logger, when it is not nil, the debug record of e. The message is "exec" and the
-// attributes are "tool"; "args"; "exit", the exit code, when the tool ran to an exit, or else
-// "error", the failure; and "duration". What the tool printed is never logged, since it may hold
+// The message and the attribute keys of the debug record Exec.Log writes, for a handler that
+// reads it back.
+const (
+	// ExecMessage is the message of the record.
+	ExecMessage = "exec"
+	// KeyTool is the key of the tool, a string.
+	KeyTool = "tool"
+	// KeyArgs is the key of the argv after the tool, a []string.
+	KeyArgs = "args"
+	// KeyExit is the key of the exit code, an int, present when the tool ran to an exit.
+	KeyExit = "exit"
+	// KeyError is the key of the failure, a string, present instead of KeyExit when the tool did
+	// not run to an exit.
+	KeyError = "error"
+	// KeyDuration is the key of how long the run took, a time.Duration.
+	KeyDuration = "duration"
+)
+
+// Log sends logger, when it is not nil, the debug record of e: the message ExecMessage and the
+// attributes KeyTool; KeyArgs; KeyExit, the exit code, when the tool ran to an exit, or else
+// KeyError, the failure; and KeyDuration. What the tool printed is never logged, since it may hold
 // secrets.
 func (e Exec) Log(ctx context.Context, logger *slog.Logger) {
 	if logger == nil {
 		return
 	}
 
-	outcome := slog.Int("exit", 0)
+	outcome := slog.Int(KeyExit, 0)
 	if exitErr, exited := errors.AsType[*ExitError](e.Err); exited {
-		outcome = slog.Int("exit", exitErr.Code)
+		outcome.Value = slog.IntValue(exitErr.Code)
 	} else if e.Err != nil {
-		outcome = slog.String("error", e.Err.Error())
+		outcome = slog.String(KeyError, e.Err.Error())
 	}
 
-	logger.LogAttrs(ctx, slog.LevelDebug, "exec",
-		slog.String("tool", e.Tool), slog.Any("args", slices.Clone(e.Args)), outcome, slog.Duration("duration", e.Took))
+	logger.LogAttrs(ctx, slog.LevelDebug, ExecMessage,
+		slog.String(KeyTool, e.Tool), slog.Any(KeyArgs, slices.Clone(e.Args)), outcome, slog.Duration(KeyDuration, e.Took))
 }
 
 // ToolMissingError reports that a command-line tool ils drives is not installed.

@@ -73,7 +73,7 @@ func RenderStyled(r Result, gitDir string, profile colorprofile.Profile) (string
 		return "", err
 	}
 
-	pen := pen{color: profile >= colorprofile.ANSI}
+	pen := PenFor(profile)
 
 	var b strings.Builder
 	for _, line := range view.lines {
@@ -87,11 +87,12 @@ func RenderStyled(r Result, gitDir string, profile colorprofile.Profile) (string
 
 	if view.outcome != Done {
 		label, style := view.outcome.label()
-		b.WriteString(pen.styled(style, label+":") + " " + pen.spans(view.reason) + "\n")
+		b.WriteString(pen.Styled(style, label+":") + " " + pen.spans(view.reason) + "\n")
 	}
 
 	if !view.nextNone {
-		b.WriteString(pen.styled(ansi.NewStyle().Bold().Underline(true), "Next") + ": " + pen.spans(view.next) + "\n")
+		nextStyle := ansi.NewStyle().Bold().Underline(true)
+		b.WriteString(pen.Styled(nextStyle, "Next") + ": " + pen.spans(view.next) + "\n")
 	}
 
 	return b.String(), nil
@@ -138,14 +139,26 @@ func kindStyle(k kind) (ansi.Style, bool) {
 	}
 }
 
-// pen draws text with styles when its terminal shows color, and as plain
+// Pen draws text with styles when its terminal shows color, and as plain
 // text otherwise.
-type pen struct {
+type Pen struct {
 	color bool
 }
 
-// styled returns text drawn in style, closed so that the style ends with it.
-func (p pen) styled(style ansi.Style, text string) string {
+// PenFor returns the pen of a terminal of profile: one that draws in styles
+// from the ANSI profile up, and as plain text below it.
+func PenFor(profile colorprofile.Profile) Pen {
+	return Pen{color: profile >= colorprofile.ANSI}
+}
+
+// Color reports whether p draws in styles.
+func (p Pen) Color() bool {
+	return p.color
+}
+
+// Styled returns text drawn in style, closed so that the style ends with it,
+// and text as it is when p draws no styles.
+func (p Pen) Styled(style ansi.Style, text string) string {
 	if !p.color {
 		return text
 	}
@@ -155,13 +168,13 @@ func (p pen) styled(style ansi.Style, text string) string {
 
 // spans returns spans drawn one by one, each name in the style of its kind and
 // with its control characters spelled out by visible.
-func (p pen) spans(spans []span) string {
+func (p Pen) spans(spans []span) string {
 	var b strings.Builder
 	for _, s := range spans {
 		style, ok := kindStyle(s.kind)
 		switch {
 		case ok:
-			b.WriteString(p.styled(style, visible(s.text)))
+			b.WriteString(p.Styled(style, visible(s.text)))
 		case s.kind == kindWording:
 			b.WriteString(s.text)
 		default:

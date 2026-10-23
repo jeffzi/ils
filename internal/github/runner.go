@@ -37,9 +37,8 @@ const versionPrefix = "gh version "
 
 // Runner runs gh, found through GH_PATH and then PATH. Its zero value logs nothing.
 type Runner struct {
-	// Logger, when set, receives one debug record per call once it ends: its argv, its exit code
-	// or the error that ended it before an exit, and how long it took. What the call printed is
-	// never logged, since it may hold secrets.
+	// Logger, when set, receives one debug record per call once it ends: the record child.Exec.Log
+	// writes.
 	Logger *slog.Logger
 }
 

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 
 	"github.com/charmbracelet/colorprofile"
 	"github.com/google/go-cmp/cmp"
@@ -287,6 +288,16 @@ func assertBrokeReadBy(t *testing.T, got result.Result, cmd landingCommand, read
 	return text
 }
 
+// stopped returns the result the preconditions stopped with, and fails the test when they did not
+// stop; want says what the stop is.
+func stopped(t *testing.T, stop *result.Result, want string) result.Result {
+	t.Helper()
+
+	assert.Assert(t, stop != nil, "Preconditions() stop = nil, want %s", want)
+
+	return *stop
+}
+
 // ready runs the preconditions of a push on the scene and fails unless every one holds.
 func ready(t *testing.T, s *scene) landing.Ready {
 	t.Helper()
@@ -316,7 +327,10 @@ type refusal struct {
 	arrange func(*gittest.Fixture)
 	name    string
 	// want is the whole text of the refusal.
-	want   string
+	want string
+	// drawn are parts of the refusal and how a terminal with color draws them; empty leaves them
+	// unchecked.
+	drawn  []drawnPart
 	script forgetest.Script
 	// offline gives the scene an origin that does not answer.
 	offline bool
@@ -392,7 +406,13 @@ func forgeRefusals() []refusal {
 	return []refusal{
 		{name: "gh is not installed", script: missing, asksForge: true, want: noTool},
 		{name: "gh is not installed and origin does not answer", script: missing, offline: true, asksForge: true, want: noTool},
-		{name: "gh is older than the minimum", script: fails(&outdated), asksForge: true, want: tooOld},
+		{
+			name: "gh is older than the minimum", script: fails(&outdated), asksForge: true, want: tooOld,
+			drawn: []drawnPart{
+				{within: "from https://cli.github.com", part: "https://cli.github.com", want: drawnURL()},
+				{within: "run ils push again", part: "ils push", want: drawnName()},
+			},
+		},
 		{name: "gh prints no version", script: fails(&unread), asksForge: true, want: noVersion},
 		{name: "gh is not logged in", script: fails(&forge.NotLoggedInError{Host: host}), asksForge: true, want: noLogin},
 		{name: "fork", script: answers(widgets(true, true)), asksForge: true, want: isFork},
@@ -431,8 +451,7 @@ func TestPreconditions_WhenOneFails_RefusesAtTheFirst(t *testing.T) {
 
 			_, stop := landing.Preconditions(t.Context(), s.deps, pushRequest())
 
-			assert.Assert(t, stop != nil, "Preconditions() stop = nil, want a refusal")
-			got := *stop
+			got := stopped(t, stop, "a refusal")
 			assertStopped(t, got, result.Refused)
 
 			text, _ := shown(t, got, s.gitDir)
@@ -440,6 +459,10 @@ func TestPreconditions_WhenOneFails_RefusesAtTheFirst(t *testing.T) {
 
 			assertRefsUnchanged(t, s, before)
 			assertReadsStoppedAt(t, s, tt)
+
+			if len(tt.drawn) > 0 {
+				assertDrawn(t, got, s.gitDir, tt.drawn)
+			}
 		})
 	}
 }
@@ -501,8 +524,7 @@ func TestPreconditions_WhenSSHFails_BrokeNamingTheRead(t *testing.T) {
 
 	_, stop := landing.Preconditions(t.Context(), s.deps, pushRequest())
 
-	assert.Assert(t, stop != nil, "Preconditions() stop = nil, want a broke result")
-	got := *stop
+	got := stopped(t, stop, "a broke result")
 	assertBrokeRead(t, got, readURLs, readURLs+": ssh ")
 	assertAsked(t, s, nil)
 }
@@ -673,8 +695,7 @@ func TestPreconditions_WhenTheCommandIsMerge_NamesItInTheNextStep(t *testing.T) 
 
 			_, stop := landing.Preconditions(ctx, s.deps, mergeRequest())
 
-			assert.Assert(t, stop != nil, "Preconditions() stop = nil, want a stop")
-			got := *stop
+			got := stopped(t, stop, "a stop")
 			assert.Check(t, is.Equal(got.Outcome, tt.outcome))
 			assert.Check(t, is.Equal(got.Command, "merge"))
 
@@ -737,7 +758,7 @@ func standingRefusals() []pushRefusal {
 
 				return onTrunk
 			},
-			drawn: startDrawn(),
+			drawn: append(startDrawn(), drawnPart{within: "the trunk " + trunk + ",", part: trunk, want: drawnName()}),
 		},
 		{
 			name: "on the trunk with a dirty tree", script: allowed(), ops: identityRead(),
@@ -795,6 +816,10 @@ func commitRefusals() []pushRefusal {
 
 				return nothingPast(spare)
 			},
+			drawn: []drawnPart{
+				{within: "the branch " + spare, part: spare, want: drawnName()},
+				{within: "trunk " + trunk, part: trunk, want: drawnName()},
+			},
 		},
 		{
 			name: "every commit landed on origin's trunk since the last fetch", script: allowed(),
@@ -820,6 +845,10 @@ func changeRefusals() []pushRefusal {
 			script: finding(change(opened, otherBase, forge.ChangeOpen)), ops: changesRead(), fetches: true,
 			arrange: func(*gittest.Fixture) string { return elsewhere },
 			drawn: []drawnPart{
+				{within: "pull request #12 from", part: "#12", want: drawnName()},
+				{within: "from " + topic, part: topic, want: drawnName()},
+				{within: "against " + otherBase, part: otherBase, want: drawnName()},
+				{within: "the trunk " + trunk, part: trunk, want: drawnName()},
 				{within: "edit 12 --base", part: "12", want: drawnName()},
 				{within: "--base " + trunk + "`", part: trunk, want: drawnName()},
 			},
@@ -870,69 +899,6 @@ func TestPush_WhenASharedCheckOfTheBranchFails_RefusesAtTheFirst(t *testing.T) {
 	t.Parallel()
 
 	runPushRefusals(t, slices.Concat(standingRefusals(), commitRefusals(), changeRefusals()))
-}
-
-func TestPush_WhenRefusedAndRenderedWithColor_DrawsEachNameInTheStyleOfItsKind(t *testing.T) {
-	t.Parallel()
-	outdated := child.ToolTooOldError{
-		Tool: "gh", Minimum: "2.50.0", InstallURL: "https://cli.github.com",
-		Version: "2.49.0", Line: "gh version 2.49.0 (2024-05-13)",
-	}
-	tests := []struct {
-		arrange func(*gittest.Fixture)
-		name    string
-		script  forgetest.Script
-		parts   []drawnPart
-	}{
-		{
-			name: "gh is older than the minimum", script: fails(&outdated),
-			parts: []drawnPart{
-				{within: "from https://cli.github.com", part: "https://cli.github.com", want: drawnURL()},
-				{within: "run ils push again", part: "ils push", want: drawnName()},
-			},
-		},
-		{
-			name: "on the trunk", script: allowed(),
-			arrange: func(f *gittest.Fixture) { f.Git("switch", "--quiet", trunk) },
-			parts:   []drawnPart{{within: "the trunk " + trunk + ",", part: trunk, want: drawnName()}},
-		},
-		{
-			name: "no commit past the trunk", script: allowed(),
-			arrange: func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--create", spare, trunk) },
-			parts: []drawnPart{
-				{within: "the branch " + spare, part: spare, want: drawnName()},
-				{within: "trunk " + trunk, part: trunk, want: drawnName()},
-			},
-		},
-		{
-			name:   "open pull request against another base",
-			script: finding(change(opened, otherBase, forge.ChangeOpen)),
-			parts: []drawnPart{
-				{within: "pull request #12 from", part: "#12", want: drawnName()},
-				{within: "from " + topic, part: topic, want: drawnName()},
-				{within: "against " + otherBase, part: otherBase, want: drawnName()},
-				{within: "the trunk " + trunk, part: trunk, want: drawnName()},
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			build := func(t *testing.T) (*scene, context.Context) {
-				t.Helper()
-
-				return newScene(t, tt.arrange, tt.script, false), t.Context()
-			}
-			bare := unwatchedRun(t, build, pushRequest())
-			s, ctx := build(t)
-			watchOn(&s.deps)
-
-			got := landing.Push(ctx, s.deps, pushRequest())
-
-			assertDrawn(t, got, s.gitDir, tt.parts)
-			assertSameUnwatched(t, s.placed(t, got), bare)
-		})
-	}
 }
 
 // sharedAccepted are the states of the branch that pass a shared check another state fails, each
@@ -1069,95 +1035,123 @@ func TestPush_WhenLocalReadFails_BrokeNamingTheRead(t *testing.T) {
 
 			var failed string
 
-			build := func(t *testing.T) (*scene, context.Context) {
-				t.Helper()
-
-				return newScene(t, func(f *gittest.Fixture) { failed = tt.arrange(t, f) }, allowed(), false), t.Context()
-			}
-			bare := unwatchedRun(t, build, pushRequest())
-			s, ctx := build(t)
-			watchOn(&s.deps)
+			s := newScene(t, func(f *gittest.Fixture) { failed = tt.arrange(t, f) }, allowed(), false)
 			before := s.written()
 
-			got := landing.Push(ctx, s.deps, pushRequest())
+			got := landing.Push(t.Context(), s.deps, pushRequest())
 
 			assertBrokeRead(t, got, tt.read, failed)
 			// What git said must also render under the repository's own git dir: no line names a path in it.
 			shown(t, got, s.gitDir)
 			assertOnlyRead(t, s, reads{before: before, ops: identityRead(), fetches: tt.fetches})
-			assertSameUnwatched(t, s.placed(t, got), bare)
 		})
 	}
 }
 
 func TestPush_WhenFindChangesFailsUntyped_BrokeNamingTheRead(t *testing.T) {
 	t.Parallel()
-	build := func(t *testing.T) (*scene, context.Context) {
-		t.Helper()
-
-		return newScene(t, nil, failingToFind(errors.New("HTTP 502")), false), t.Context()
-	}
-	bare := unwatchedRun(t, build, pushRequest())
-	s, ctx := build(t)
-	watchOn(&s.deps)
+	s := newScene(t, nil, failingToFind(errors.New("HTTP 502")), false)
 	before := s.written()
 
-	got := landing.Push(ctx, s.deps, pushRequest())
+	got := landing.Push(t.Context(), s.deps, pushRequest())
 
 	want := unreadText(pushCommand(), readChanges, "HTTP 502")
 	assertEnded(t, s, got, finish{outcome: result.Broke, text: want})
 	assertOnlyRead(t, s, reads{before: before, ops: changesRead(), fetches: true})
-	assertSameUnwatched(t, s.placed(t, got), bare)
 }
 
 func TestPush_WhenBranchHasNoCommitAtAll_RefusesAsNoCommitPastTheTrunk(t *testing.T) {
 	t.Parallel()
-	build := func(t *testing.T) (*scene, context.Context) {
-		t.Helper()
-
-		return newScene(t, func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--orphan", spare) }, allowed(), false), t.Context()
-	}
-	bare := unwatchedRun(t, build, pushRequest())
-	s, ctx := build(t)
-	watchOn(&s.deps)
+	s := newScene(t, func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--orphan", spare) }, allowed(), false)
 	// A branch with no commit has no HEAD commit to read, so the snapshot names the branch instead.
 	standing := func() string { return s.refs() + "\nHEAD: " + s.fixture.Git("symbolic-ref", "HEAD") }
 	before := standing()
 
-	got := landing.Push(ctx, s.deps, pushRequest())
+	got := landing.Push(t.Context(), s.deps, pushRequest())
 
 	assertEnded(t, s, got, finish{outcome: result.Refused, text: nothingPast(spare)})
 
 	assert.Check(t, is.Equal(standing(), before))
 
 	assertAsked(t, s, identityRead())
-	assertSameUnwatched(t, s.placed(t, got), bare)
 }
 
 func TestPush_WhenBranchRefCannotBeRead_BrokeNamingTheTipRead(t *testing.T) {
 	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
 	words := []string{"show-ref", "--verify", "--quiet", "refs/heads/" + spare}
-	build := func(t *testing.T) (*scene, context.Context) {
-		t.Helper()
-
-		s := newScene(t, func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--orphan", spare) }, allowed(), false)
-		failGit(t, s, words)
-
-		return s, t.Context()
-	}
-	bare := unwatchedRun(t, build, pushRequest())
-	s, ctx := build(t)
-	watchOn(&s.deps)
+	s := newScene(t, func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--orphan", spare) }, allowed(), false)
+	failGit(t, s, words)
 	before := s.refs()
 
-	got := landing.Push(ctx, s.deps, pushRequest())
+	got := landing.Push(t.Context(), s.deps, pushRequest())
 
 	assertEnded(t, s, got, finish{outcome: result.Broke, text: failedGitText(pushCommand(), readTip, words)})
 
 	assert.Check(t, is.Equal(s.refs(), before))
 
 	assertAsked(t, s, identityRead())
-	assertSameUnwatched(t, s.placed(t, got), bare)
+}
+
+func TestPushAndMerge_WhenGivenNoProgressHookOrLogger_EndsAsWithThem(t *testing.T) {
+	t.Parallel()
+
+	// bare is a rewire of the scene's deps that leaves them no progress hook and no logger.
+	bare := func(deps *landing.Deps) { deps.Progress, deps.Logger = nil, nil }
+	push := func(script forgeFor) func(t *testing.T, withoutHooks bool) result.Result {
+		return func(t *testing.T, withoutHooks bool) result.Result {
+			t.Helper()
+
+			d := newDelivery(t, pushRow{script: script})
+			if withoutHooks {
+				bare(&d.deps)
+			}
+
+			return landing.Push(d.ctx, d.deps, pushRequest())
+		}
+	}
+	merge := func(t *testing.T, withoutHooks bool) result.Result {
+		t.Helper()
+
+		set := setting{script: toLand(nil, nil)}
+		if withoutHooks {
+			set.rewire = func(_ *testing.T, s *scene) { bare(&s.deps) }
+		}
+
+		return runMergeOn(t, set).got
+	}
+	tests := []struct {
+		run  func(t *testing.T, withoutHooks bool) result.Result
+		name string
+	}{
+		{
+			name: "a first push whose check is still running at the first read",
+			run:  push(opening(running(), passing())),
+		},
+		{
+			name: "a push that waits through a merge state unknown at the first read",
+			run: push(reusing(passing()).showing(
+				inState(forge.MergeUnknown, "UNKNOWN"), inState(forge.MergeClean, "CLEAN"))),
+		},
+		{name: "a merge that lands", run: merge},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				watched := tt.run(t, false)
+
+				unwatched := tt.run(t, true)
+
+				want, err := result.RenderJSON(watched, "")
+				assert.NilError(t, err)
+
+				got, err := result.RenderJSON(unwatched, "")
+				assert.NilError(t, err)
+
+				assert.Check(t, is.Equal(got, want))
+			})
+		})
+	}
 }
 
 // sharedFailedReads are the failed reads of the branch's tip and of the commits a merged pull

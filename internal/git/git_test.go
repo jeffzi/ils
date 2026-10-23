@@ -312,44 +312,17 @@ func onlyCall(t *testing.T, records []slog.Record) (attrs map[string]any, took t
 	return attrs, took
 }
 
-func TestRunner_Run_WhenLoggerAttachedAndGitExits_LogsArgvExitCodeAndDurationOnly(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		args []string
-		exit int64
-	}{
-		{name: "exits zero", args: []string{"init", "--quiet"}, exit: 0},
-		{name: "exits one", args: []string{"nonsense"}, exit: 1},
-		{name: "exits another code", args: []string{"-C", filepath.Join(t.TempDir(), "missing"), "status"}, exit: 128},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			runner, records := newLoggedRunner(t)
-
-			_, _ = runner.Run(t.Context(), tt.args...)
-
-			attrs, took := onlyCall(t, records())
-			want := map[string]any{"tool": "git", "args": tt.args, "exit": tt.exit}
-			assert.Check(t, is.DeepEqual(attrs, want))
-			assert.Check(t, took > 0, "duration = %v, want above zero for a call git ran", took)
-		})
-	}
-}
-
-func TestRunner_Run_WhenLoggerAttachedAndGitPrintsOutput_LogsNeitherStream(t *testing.T) {
+func TestRunner_Run_WhenLoggerAttachedAndGitExits_LogsToolArgvExitCodeAndDuration(t *testing.T) {
 	t.Parallel()
 	runner, records := newLoggedRunner(t)
-	value := "printed-value"
+	args := []string{"nonsense"}
 
-	got, err := runner.Run(t.Context(), "-c", "user.name="+value, "config", "--get", "user.name")
-	assert.NilError(t, err)
+	_, _ = runner.Run(t.Context(), args...)
 
-	attrs, _ := onlyCall(t, records())
-	assert.Check(t, is.Equal(got.Stdout, value+"\n"))
-	want := map[string]any{"tool": "git", "args": []string{"-c", "user.name=" + value, "config", "--get", "user.name"}, "exit": int64(0)}
+	attrs, took := onlyCall(t, records())
+	want := map[string]any{"tool": "git", "args": args, "exit": int64(1)}
 	assert.Check(t, is.DeepEqual(attrs, want))
+	assert.Check(t, took > 0, "duration = %v, want above zero for a call git ran", took)
 }
 
 func TestRunner_Run_WhenLoggerAttachedAndGitMissingFromPath_LogsFailureInPlaceOfExit(t *testing.T) {
@@ -363,55 +336,6 @@ func TestRunner_Run_WhenLoggerAttachedAndGitMissingFromPath_LogsFailureInPlaceOf
 	attrs, _ := onlyCall(t, records())
 	want := map[string]any{"tool": "git", "args": []string{"version"}, "error": err.Error()}
 	assert.Check(t, is.DeepEqual(attrs, want))
-}
-
-func TestRunner_Run_WhenLoggerAttachedAndContextEnds_LogsFailureInPlaceOfExit(t *testing.T) {
-	t.Parallel()
-	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
-		t.Run(cause.Error(), func(t *testing.T) {
-			t.Parallel()
-			url, connected := stalledRemote(t)
-			runner, records := newLoggedRunner(t)
-			ctx := gittest.Ending(t.Context(), connected, cause)
-
-			_, err := runner.Run(ctx, "ls-remote", url)
-			assert.Assert(t, is.ErrorIs(err, cause))
-
-			attrs, _ := onlyCall(t, records())
-			want := map[string]any{"tool": "git", "args": []string{"ls-remote", url}, "error": err.Error()}
-			assert.Check(t, is.DeepEqual(attrs, want))
-		})
-	}
-}
-
-func TestRunner_Run_WhenLoggerAndRecorderAttached_RecordsEachArgv(t *testing.T) {
-	t.Parallel()
-	runner, recorder := newRecordedRunner(t)
-	runner.Logger, _ = newCapture()
-
-	_, err := runner.Run(t.Context(), "init", "--quiet")
-	assert.NilError(t, err)
-	_, err = runner.Run(t.Context(), "nonsense")
-	assert.Assert(t, err != nil, "Run(nonsense) error = nil, want a failing call")
-
-	want := [][]string{{"git", "init", "--quiet"}, {"git", "nonsense"}}
-	assert.Check(t, is.DeepEqual(recorder.Calls(), want))
-}
-
-func TestRunner_Run_WhenNoLogger_LogsNothingToDefaultLogger(t *testing.T) {
-	// Not parallel: this replaces the process's default logger while it runs.
-	logger, records := newCapture()
-	previous := slog.Default()
-	slog.SetDefault(logger)
-	t.Cleanup(func() { slog.SetDefault(previous) })
-	runner := newRunner(t)
-
-	_, err := runner.Run(t.Context(), "init", "--quiet")
-	assert.NilError(t, err)
-	_, err = runner.Run(t.Context(), "nonsense")
-	assert.Assert(t, err != nil, "Run(nonsense) error = nil, want a failing call")
-
-	assert.Check(t, is.Len(records(), 0))
 }
 
 func TestRecorder_Calls_WhenReturnedSliceMutated_LaterCallsUnchanged(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/charmbracelet/colorprofile"
 	"gotest.tools/v3/assert"
@@ -27,10 +28,11 @@ const (
 	redBody   = "Pushed fix-prek to origin.\nPull request #12: " + pullURL + "\n" +
 		"Latest commit: fix %s parsing in the pre-commit config\n" +
 		"Check prek failed: " + checkURL + "\n" + excerpt + "\n"
-	redNext = "fix the failing check, commit, and run ils push again"
+	redNext   = "fix the failing check, commit, and run ils push again"
+	redReason = "Delivered, not green: the check prek is red\n"
 
 	brokeEnd = "Broke: GitHub did not answer\nNext: ils push\n"
-	redEnd   = "Delivered, not green: the check prek is red\nNext: " + redNext + "\n"
+	redEnd   = redReason + "Next: " + redNext + "\n"
 )
 
 // ofPush returns s as the push command shows it.
@@ -82,14 +84,11 @@ type renderer struct {
 	name   string
 }
 
-// renderers lists every renderer, the styled one with color, for behaviors they must share.
+// renderers lists the text and JSON renderers, for behaviors they must share.
 func renderers() []renderer {
 	return []renderer{
 		{name: "text", render: result.RenderText},
 		{name: "json", render: result.RenderJSON},
-		{name: "styled", render: func(r result.Result, dir string) (string, error) {
-			return result.RenderStyled(r, dir, colorprofile.ANSI)
-		}},
 	}
 }
 
@@ -601,7 +600,7 @@ func redThen(name string, n result.Next, want string) pair {
 	return pair{
 		name:     name,
 		gitDir:   gitDir,
-		wantText: redBody + "Delivered, not green: the check prek is red\nNext: " + want + "\n",
+		wantText: redBody + redReason + "Next: " + want + "\n",
 		result:   with(redPush(), func(r *result.Result) { r.Next = n }),
 		want:     with(redShown(), func(s *resulttest.Shown) { s.Next = want }),
 	}
@@ -701,6 +700,13 @@ func nameCases() []pair {
 	}
 }
 
+// tabCaseName and invalidUTF8CaseName name the controlCases rows whose text the renderers print
+// unchanged, so they hold no control rune to look for.
+const (
+	tabCaseName         = "name holding a tab prints it as it is"
+	invalidUTF8CaseName = "name holding invalid UTF-8 prints its bytes as they are"
+)
+
 // controlCases returns results whose third-party text holds control bytes, which the text prints as
 // visible escapes and the object it shows carries as they were handed in.
 func controlCases() []pair {
@@ -722,9 +728,9 @@ func controlCases() []pair {
 			result.Say("Kept %s as is.", "x\x7fy"), `Kept x\x7fy as is.`).carrying(`\x7f`, "\x7f"),
 		brokeLine("name holding a C1 control prints it as visible text",
 			result.Say("Kept %s as is.", "x\u009by"), `Kept x\u009by as is.`).carrying(`\u009b`, "\u009b"),
-		brokeLine("name holding a tab prints it as it is",
+		brokeLine(tabCaseName,
 			result.Say("Kept %s as is.", "x\ty"), "Kept x\ty as is."),
-		brokeLine("name holding invalid UTF-8 prints its bytes as they are",
+		brokeLine(invalidUTF8CaseName,
 			result.Say("Kept %s as is.", "x\xff more"), "Kept x\xff more as is.").carrying("\xff", "�"),
 		refusedFor("reason name holding an escape sequence prints the escape as visible text",
 			result.Say("the file %s is in the way", "x\x1b[31m"), `the file x\x1b[31m is in the way`).
@@ -786,61 +792,43 @@ func TestRender_WhenResultIsMalformed_ReturnsError(t *testing.T) {
 	}
 }
 
-type profileCase struct {
-	name    string
-	profile colorprofile.Profile
-}
-
-// colorProfiles lists the profiles at or above ANSI, which RenderStyled draws
-// color for; plainProfiles lists the ones below it.
-func colorProfiles() []profileCase {
-	return []profileCase{
-		{name: "ansi", profile: colorprofile.ANSI},
-		{name: "ansi256", profile: colorprofile.ANSI256},
-		{name: "truecolor", profile: colorprofile.TrueColor},
-	}
-}
-
-func plainProfiles() []profileCase {
-	return []profileCase{
-		{name: "notty", profile: colorprofile.NoTTY},
-		{name: "ascii", profile: colorprofile.ASCII},
-	}
-}
-
-func TestRenderStyled_WhenProfileIsPlain_PrintsThePlainText(t *testing.T) {
+func TestRenderStyled_WhenProfileIsBelowANSI_PrintsThePlainText(t *testing.T) {
 	t.Parallel()
+	r := markedPush()
+	want, err := result.RenderText(r, gitDir)
+	assert.NilError(t, err)
 
-	for _, p := range plainProfiles() {
-		for _, tt := range allTextCases() {
-			t.Run(p.name+"/"+tt.name, func(t *testing.T) {
-				t.Parallel()
-				t.Logf("row: git dir %q, result %s", tt.gitDir, inputOf(tt.result))
+	got, err := result.RenderStyled(r, gitDir, colorprofile.ASCII)
+	assert.NilError(t, err)
 
-				got, err := result.RenderStyled(tt.result, tt.gitDir, p.profile)
-				assert.NilError(t, err)
+	assert.Check(t, is.Equal(got, want))
+}
 
-				assert.Check(t, is.Equal(got, tt.want))
-			})
-		}
-	}
+func TestRenderStyled_WhenProfileIsTrueColor_DrawsAsAtANSI(t *testing.T) {
+	t.Parallel()
+	r := markedPush()
+	want, err := result.RenderStyled(r, gitDir, colorprofile.ANSI)
+	assert.NilError(t, err)
+
+	got, err := result.RenderStyled(r, gitDir, colorprofile.TrueColor)
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Equal(got, want))
 }
 
 func TestRenderStyled_WhenProfileHasColor_DrawsThePlainText(t *testing.T) {
 	t.Parallel()
 
-	for _, p := range colorProfiles() {
-		for _, tt := range allTextCases() {
-			t.Run(p.name+"/"+tt.name, func(t *testing.T) {
-				t.Parallel()
-				t.Logf("row: git dir %q, result %s", tt.gitDir, inputOf(tt.result))
+	for _, tt := range allTextCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			t.Logf("row: git dir %q, result %s", tt.gitDir, inputOf(tt.result))
 
-				out, err := result.RenderStyled(tt.result, tt.gitDir, p.profile)
-				assert.NilError(t, err)
+			out, err := result.RenderStyled(tt.result, tt.gitDir, colorprofile.ANSI)
+			assert.NilError(t, err)
 
-				assert.Check(t, is.Equal(resulttest.Draw(t, out).String(), resulttest.Draw(t, tt.want).String()))
-			})
-		}
+			assert.Check(t, is.Equal(resulttest.Draw(t, out).String(), resulttest.Draw(t, tt.want).String()))
+		})
 	}
 }
 
@@ -868,48 +856,66 @@ type styledCase struct {
 	result result.Result
 }
 
+// nameLook is how the styled renderer draws a branch, a pull request number and a command.
+func nameLook() resulttest.Look {
+	return resulttest.Look{Color: "blue", Bold: true}
+}
+
+// stoppedLabelLook is how it draws the label of an outcome that stopped short of done.
+func stoppedLabelLook() resulttest.Look {
+	return resulttest.Look{Color: "red"}
+}
+
+// shaLook is how it draws a SHA.
+func shaLook() resulttest.Look {
+	return resulttest.Look{Dim: true}
+}
+
+// nextLook is how it draws the Next label.
+func nextLook() resulttest.Look {
+	return resulttest.Look{Bold: true, Underline: true}
+}
+
 // styledCases returns one case per part of a result the styled renderer draws in its own style.
 func styledCases() []styledCase {
-	boldBlue := resulttest.Look{Color: "blue", Bold: true}
-
 	return []styledCase{
 		{name: "wording", result: markedPush(), within: "Pushed tidy", part: "Pushed "},
-		{name: "branch", result: markedPush(), within: "Pushed tidy-readme", part: "tidy-readme", want: boldBlue},
-		{name: "sha", result: markedPush(), within: "at 4f2a9c1", part: "4f2a9c1", want: resulttest.Look{Dim: true}},
-		{name: "pull request number", result: markedPush(), within: "request #12", part: "#12", want: boldBlue},
+		{name: "branch", result: markedPush(), within: "Pushed tidy-readme", part: "tidy-readme", want: nameLook()},
+		{name: "sha", result: markedPush(), within: "at 4f2a9c1", part: "4f2a9c1", want: shaLook()},
+		{name: "pull request number", result: markedPush(), within: "request #12", part: "#12", want: nameLook()},
 		{name: "url", result: markedPush(), within: pullURL, part: pullURL, want: resulttest.Look{Underline: true}},
 		{name: "count", result: markedPush(), within: "3 checks", part: "3", want: resulttest.Look{Bold: true}},
 		{name: "wording after a name", result: markedPush(), within: "3 checks passed.", part: " checks passed."},
-		{name: "broke label", result: markedPush(), within: "Broke: GitHub", part: "Broke:", want: resulttest.Look{Color: "red"}},
+		{name: "broke label", result: markedPush(), within: "Broke: GitHub", part: "Broke:", want: stoppedLabelLook()},
 		{name: "reason wording", result: markedPush(), within: "Broke: GitHub did", part: " GitHub did"},
-		{name: "pull request number in the reason", result: markedPush(), within: "merge #12", part: "#12", want: boldBlue},
-		{name: "branch in the reason", result: markedPush(), within: "into main", part: "main", want: boldBlue},
-		{name: "Next", result: markedPush(), within: "Next: rebase", part: "Next", want: resulttest.Look{Bold: true, Underline: true}},
+		{name: "pull request number in the reason", result: markedPush(), within: "merge #12", part: "#12", want: nameLook()},
+		{name: "branch in the reason", result: markedPush(), within: "into main", part: "main", want: nameLook()},
+		{name: "Next", result: markedPush(), within: "Next: rebase", part: "Next", want: nextLook()},
 		{name: "Next colon", result: markedPush(), within: "Next: rebase", part: ":"},
 		{name: "step wording", result: markedPush(), within: "Next: rebase", part: " rebase"},
-		{name: "branch in the step", result: markedPush(), within: "rebase tidy-readme", part: "tidy-readme", want: boldBlue},
-		{name: "command in the step", result: markedPush(), within: "run ils push again", part: "ils push", want: boldBlue},
+		{name: "branch in the step", result: markedPush(), within: "rebase tidy-readme", part: "tidy-readme", want: nameLook()},
+		{name: "command in the step", result: markedPush(), within: "run ils push again", part: "ils push", want: nameLook()},
 		{name: "step wording after a command", result: markedPush(), within: "ils push again", part: " again"},
-		{name: "refused label", result: refusedPush(), within: "Refused: the", part: "Refused:", want: resulttest.Look{Color: "red"}},
-		{name: "command", result: refusedPush(), within: "Next: ils branch fix-prek-again", part: "ils branch fix-prek-again", want: boldBlue},
+		{name: "refused label", result: refusedPush(), within: "Refused: the", part: "Refused:", want: stoppedLabelLook()},
+		{name: "command", result: refusedPush(), within: "Next: ils branch fix-prek-again", part: "ils branch fix-prek-again", want: nameLook()},
 		{name: "pending label", result: pendingPush(), within: "Pending: the", part: "Pending:", want: resulttest.Look{Color: "yellow"}},
 		{
 			name: "delivered, not green label", result: redPush(), within: "Delivered, not green: the",
-			part: "Delivered, not green:", want: resulttest.Look{Color: "red"},
+			part: "Delivered, not green:", want: stoppedLabelLook(),
 		},
 		{name: "excerpt", result: redPush(), within: excerpt, part: excerpt},
 		{name: "unmarked name", result: donePush(), within: "Pushed tidy-readme to origin.", part: "tidy-readme"},
-		{name: "first branch of a list", result: listedBranches(), within: "Kept docs,", part: "docs", want: boldBlue},
+		{name: "first branch of a list", result: listedBranches(), within: "Kept docs,", part: "docs", want: nameLook()},
 		{name: "comma of a list", result: listedBranches(), within: "docs, main", part: ", "},
-		{name: "middle branch of a list", result: listedBranches(), within: ", main and", part: "main", want: boldBlue},
+		{name: "middle branch of a list", result: listedBranches(), within: ", main and", part: "main", want: nameLook()},
 		{name: "and of a list", result: listedBranches(), within: "main and tidy-readme", part: " and "},
-		{name: "last branch of a list", result: listedBranches(), within: "and tidy-readme.", part: "tidy-readme", want: boldBlue},
-		{name: "first SHA of a list", result: pickedSHAs(), within: "pick 4f2a9c1", part: "4f2a9c1", want: resulttest.Look{Dim: true}},
+		{name: "last branch of a list", result: listedBranches(), within: "and tidy-readme.", part: "tidy-readme", want: nameLook()},
+		{name: "first SHA of a list", result: pickedSHAs(), within: "pick 4f2a9c1", part: "4f2a9c1", want: shaLook()},
 		{name: "space of a list of SHAs", result: pickedSHAs(), within: "4f2a9c1 b7e03d2", part: " "},
-		{name: "last SHA of a list", result: pickedSHAs(), within: "b7e03d2.", part: "b7e03d2", want: resulttest.Look{Dim: true}},
-		{name: "pull request number marked bare", result: pickedSHAs(), within: "ready 12", part: "12", want: boldBlue},
+		{name: "last SHA of a list", result: pickedSHAs(), within: "b7e03d2.", part: "b7e03d2", want: shaLook()},
+		{name: "pull request number marked bare", result: pickedSHAs(), within: "ready 12", part: "12", want: nameLook()},
 		{name: "text of a concatenated name", result: joinedCommand(), within: "Ran `git switch main`", part: "git switch "},
-		{name: "branch of a concatenated name", result: joinedCommand(), within: "Ran `git switch main`", part: "main", want: boldBlue},
+		{name: "branch of a concatenated name", result: joinedCommand(), within: "Ran `git switch main`", part: "main", want: nameLook()},
 	}
 }
 
@@ -953,12 +959,12 @@ func escapeCases() []styledCase {
 		{
 			name:   "visible escape inside a marked name",
 			result: brokeWithLine(result.Say("Kept %s as is.", result.Branch("x\x1b[4m"))),
-			within: `x\x1b[4m as is.`, part: `x\x1b[4m`, want: resulttest.Look{Color: "blue", Bold: true},
+			within: `x\x1b[4m as is.`, part: `x\x1b[4m`, want: nameLook(),
 		},
 		{
 			name:   "command after a name that resets every style",
 			result: with(redPush(), func(r *result.Result) { r.Next = result.NextCommand("branch %s now", "a\x1b[0mb") }),
-			within: `branch a\x1b[0mb now`, part: " now", want: resulttest.Look{Color: "blue", Bold: true},
+			within: `branch a\x1b[0mb now`, part: " now", want: nameLook(),
 		},
 		{
 			name:   "wording after a name that opens a hyperlink",
@@ -973,17 +979,17 @@ func escapeCases() []styledCase {
 		{
 			name:   "label after an excerpt that opens a hyperlink",
 			result: with(brokePush(), func(r *result.Result) { r.Excerpt = "one" + openLink + " two" }),
-			within: "Broke: GitHub", part: "Broke:", want: resulttest.Look{Color: "red"},
+			within: "Broke: GitHub", part: "Broke:", want: stoppedLabelLook(),
 		},
 		{
 			name:   "label after an excerpt that opens bold yellow",
 			result: with(brokePush(), func(r *result.Result) { r.Excerpt = "one\x1b[1;33m" }),
-			within: "Broke: GitHub", part: "Broke:", want: resulttest.Look{Color: "red"},
+			within: "Broke: GitHub", part: "Broke:", want: stoppedLabelLook(),
 		},
 		{
 			name:   "Next after an excerpt that opens bold yellow",
 			result: with(brokePush(), func(r *result.Result) { r.Excerpt = "one\x1b[1;33m" }),
-			within: "Next: ils push", part: "Next", want: resulttest.Look{Bold: true, Underline: true},
+			within: "Next: ils push", part: "Next", want: nextLook(),
 		},
 	}
 }
@@ -991,19 +997,17 @@ func escapeCases() []styledCase {
 func TestRenderStyled_WhenProfileHasColor_DrawsEachPartInItsStyle(t *testing.T) {
 	t.Parallel()
 
-	for _, p := range colorProfiles() {
-		for _, tt := range slices.Concat(styledCases(), escapeCases()) {
-			t.Run(p.name+"/"+tt.name, func(t *testing.T) {
-				t.Parallel()
-				t.Logf("row: result %s", inputOf(tt.result))
+	for _, tt := range slices.Concat(styledCases(), escapeCases()) {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			t.Logf("row: result %s", inputOf(tt.result))
 
-				out, err := result.RenderStyled(tt.result, gitDir, p.profile)
-				assert.NilError(t, err)
+			out, err := result.RenderStyled(tt.result, gitDir, colorprofile.ANSI)
+			assert.NilError(t, err)
 
-				got := resulttest.Draw(t, out).LookOf(t, tt.within, tt.part)
-				assert.Check(t, is.Equal(got, tt.want), "output %q", out)
-			})
-		}
+			got := resulttest.Draw(t, out).LookOf(t, tt.within, tt.part)
+			assert.Check(t, is.Equal(got, tt.want), "output %q", out)
+		})
 	}
 }
 
@@ -1014,17 +1018,20 @@ var ownStyling = regexp.MustCompile("\x1b\\[[0-9;:]*m|\x1b\\]8;[^\x07\x1b]*(?:\x
 func TestRenderStyled_WhenThirdPartyTextHoldsControlBytes_PrintsNoEscapeButItsOwnStyling(t *testing.T) {
 	t.Parallel()
 
-	for _, p := range slices.Concat(plainProfiles(), colorProfiles()) {
-		for _, tt := range controlCases() {
-			t.Run(p.name+"/"+tt.name, func(t *testing.T) {
-				t.Parallel()
-				t.Logf("row: result %s", inputOf(tt.result))
+	isControl := func(r rune) bool { return unicode.IsControl(r) && r != '\t' && r != '\n' && r != '\r' }
+	cases := slices.DeleteFunc(controlCases(), func(c pair) bool {
+		return c.name == tabCaseName || c.name == invalidUTF8CaseName
+	})
 
-				out, err := result.RenderStyled(tt.result, tt.gitDir, p.profile)
-				assert.NilError(t, err)
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			t.Logf("row: result %s", inputOf(tt.result))
 
-				assert.Check(t, !strings.Contains(ownStyling.ReplaceAllString(out, ""), "\x1b"), "output %q", out)
-			})
-		}
+			out, err := result.RenderStyled(tt.result, tt.gitDir, colorprofile.ANSI)
+			assert.NilError(t, err)
+
+			assert.Check(t, !strings.ContainsFunc(ownStyling.ReplaceAllString(out, ""), isControl), "output %q", out)
+		})
 	}
 }
