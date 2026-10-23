@@ -236,10 +236,10 @@ At a terminal, `ils push` and `ils merge` show their progress as they run:
   names, pull request numbers, and `ils` commands are bold blue.
 
 A stream that is not a terminal gets none of this: stdout prints the whole result at the end, and
-stderr stays empty unless `-d` is on. `--json` output is never colored or streamed. `TERM=dumb`
-counts as no terminal. `NO_COLOR` and `--no-color` turn color and bold off on both streams, help
-included; `CLICOLOR_FORCE` turns color on for a stream that is not a terminal, and `NO_COLOR` and
-`--no-color` win over it.
+stderr stays empty unless `-d` is on or `ils` cannot print its result, which it then reports there.
+`--json` output is never colored or streamed. `TERM=dumb` counts as no terminal. `NO_COLOR` and
+`--no-color` turn color and bold off on both streams, help included; `CLICOLOR_FORCE` turns color
+on for a stream that is not a terminal, and `NO_COLOR` and `--no-color` win over it.
 
 `-d` (or `--debug`) prints one line on stderr for each `git` and `gh` call and each decision of
 the wait, timed from launch, in place of the spinner. It changes neither stdout nor the exit code.
