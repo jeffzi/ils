@@ -93,8 +93,8 @@ func land(ctx context.Context, deps landing.Deps, req landing.Request) result.Re
 }
 
 // placed returns r as it shows, with the directory that holds the scene's repository and its
-// origin, as given and with its symbolic links resolved, replaced by <scene>. The scene must still
-// be on disk.
+// origin replaced by <scene>: as given and with its symbolic links resolved, each in the native
+// form and with forward slashes, the form git prints on Windows. The scene must still be on disk.
 func (s *scene) placed(t *testing.T, r result.Result) placedResult {
 	t.Helper()
 
@@ -102,9 +102,14 @@ func (s *scene) placed(t *testing.T, r result.Result) placedResult {
 	resolved, err := filepath.EvalSymlinks(root)
 	assert.NilError(t, err)
 
-	place := func(text string) string {
-		return strings.ReplaceAll(strings.ReplaceAll(text, resolved, "<scene>"), root, "<scene>")
-	}
+	// The resolved form goes first: on macOS it holds the given one (/private/var/… holds /var/…).
+	replacer := strings.NewReplacer(
+		resolved, "<scene>",
+		filepath.ToSlash(resolved), "<scene>",
+		root, "<scene>",
+		filepath.ToSlash(root), "<scene>",
+	)
+	place := replacer.Replace
 
 	object, err := result.RenderJSON(r, "")
 	assert.NilError(t, err)
