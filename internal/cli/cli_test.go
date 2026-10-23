@@ -298,8 +298,8 @@ const (
 
 	// mergeSummary is the line that `ils --help` lists merge with.
 	mergeSummary = "merge Squash and merge the pull request once its checks are green"
-	// mergeUsage is the usage and the examples the help of merge ends with, before its flags.
-	mergeUsage = "USAGE ils merge [--flags] EXAMPLES # Merge once the checks are green ils merge " +
+	// mergeUsage is the usage and the examples the plain help of merge ends with, before its flags.
+	mergeUsage = "Usage: ils merge [flags] Examples: # Merge once the checks are green ils merge " +
 		"# The same result as one JSON object ils merge --json"
 
 	escape = "\x1b"
@@ -311,24 +311,31 @@ const (
 	forceColor = "CLICOLOR_FORCE"
 )
 
-// flat returns the words of text in order, one space apart: Fang spaces the lines of styled help
-// differently from those of plain help.
+// flat returns the words of text in order, one space apart, so that a check reads past the padding
+// that help lays its columns out with.
 func flat(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
-// entries returns the first word of each line the help lists under heading.
-func entries(help, heading string) []string {
+// entries returns the first word of each line the help lists under any of headings, each a line of
+// its own, with the comma that follows a short flag dropped.
+func entries(help string, headings ...string) []string {
 	var found []string
 
-	_, rest, _ := strings.Cut(help, heading)
-	for line := range strings.SplitSeq(strings.TrimLeft(rest, " \n"), "\n") {
-		words := strings.Fields(line)
-		if len(words) == 0 {
-			break
+	for _, heading := range headings {
+		_, rest, listed := strings.Cut(help, "\n"+heading+"\n")
+		if !listed {
+			continue
 		}
 
-		found = append(found, words[0])
+		for line := range strings.SplitSeq(rest, "\n") {
+			words := strings.Fields(line)
+			if len(words) == 0 {
+				break
+			}
+
+			found = append(found, strings.TrimSuffix(words[0], ","))
+		}
 	}
 
 	return found
@@ -429,8 +436,8 @@ func TestApp_Run_WhenAskedForHelp_ListsEveryEntryOfTheCommand(t *testing.T) {
 
 			got := launch(t, outside(t), tt.args...)
 
-			assert.Check(t, is.DeepEqual(entries(got.stdout, "COMMANDS"), tt.commands))
-			assert.Check(t, is.DeepEqual(entries(got.stdout, "FLAGS"), tt.flags))
+			assert.Check(t, is.DeepEqual(entries(got.stdout, "Available Commands:"), tt.commands))
+			assert.Check(t, is.DeepEqual(entries(got.stdout, "Flags:", "Global Flags:"), tt.flags, cmpopts.SortSlices(func(a, b string) bool { return a < b })))
 		})
 	}
 }
@@ -560,7 +567,8 @@ func TestApp_Run_WhenColorIsForced_PushResultCarriesNoEscapeSequence(t *testing.
 }
 
 func TestApp_Run_WhenHelpIsAskedForWithColorOffOnAColorTerminal_PrintsItWithNoEscapeSequence(t *testing.T) {
-	// Fang styles help from the process environment, which forced color would leave styled.
+	// Fang styles help from the process environment, which forced color would leave styled were Fang
+	// to run.
 	t.Setenv(forceColor, "1")
 
 	tests := []struct {
@@ -580,7 +588,7 @@ func TestApp_Run_WhenHelpIsAskedForWithColorOffOnAColorTerminal_PrintsItWithNoEs
 			got := launch(t, painted(t, tt.env, true, true), tt.args...)
 
 			assert.Check(t, is.Equal(got.code, exitDone))
-			assert.Check(t, is.Contains(got.stdout, "USAGE"))
+			assert.Check(t, is.Contains(got.stdout, "Usage:"))
 			plain(t, "the help", got.stdout)
 		})
 	}

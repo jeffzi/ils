@@ -86,11 +86,19 @@ func (a App) Run(ctx context.Context, args []string) int {
 	root.SetOut(a.drawnAt(profile))
 	root.SetErr(a.Stderr)
 
-	// The error comes back from Execute, and is reported below as a result or on Stderr.
-	silent := func(io.Writer, fang.Styles, error) {}
-	err := fang.Execute(ctx, root,
-		fang.WithoutCompletions(), fang.WithoutManpage(), fang.WithoutVersion(), fang.WithErrorHandler(silent),
-		fang.WithColorSchemeFunc(fang.AnsiColorScheme))
+	// Fang queries the terminal behind the process's stdout for its background before it draws help
+	// or an error, whatever the profile, and waits for the answer: a profile with no color has Cobra
+	// run the words alone, with its own plain help, so that no query is ever written.
+	var err error
+	if profile < colorprofile.ANSI {
+		err = root.ExecuteContext(ctx)
+	} else {
+		// The error comes back from Execute, and is reported below as a result or on Stderr.
+		silent := func(io.Writer, fang.Styles, error) {}
+		err = fang.Execute(ctx, root,
+			fang.WithoutCompletions(), fang.WithoutManpage(), fang.WithoutVersion(), fang.WithErrorHandler(silent),
+			fang.WithColorSchemeFunc(fang.AnsiColorScheme))
+	}
 
 	refusal, isRefusal := errors.AsType[*refusedError](err)
 
@@ -112,9 +120,9 @@ func (a App) Run(ctx context.Context, args []string) int {
 // drawnAt returns Stdout as Cobra and Fang write to it, help included: every escape sequence a
 // write carries is brought down to profile, so that help is drawn no richer than a result.
 //
-// Fang draws help at the profile it reads from the writer it is given and from the process
-// environment, never from Environ or --no-color. A Stdout that is a file stays one, so that Fang
-// still finds a terminal behind it and styles help there.
+// Fang, which runs only on a profile with color, draws help at the profile it reads from the writer
+// it is given and from the process environment, never from Environ or --no-color. A Stdout that is
+// a file stays one, so that Fang still finds a terminal behind it and styles help there.
 func (a App) drawnAt(profile colorprofile.Profile) io.Writer {
 	out := &colorprofile.Writer{Forward: a.Stdout, Profile: profile}
 	if file, ok := a.Stdout.(term.File); ok {
@@ -124,7 +132,6 @@ func (a App) drawnAt(profile colorprofile.Profile) io.Writer {
 	return out
 }
 
-// drawnFile is a file whose writes go through out, and whose every other method is the file's.
 type drawnFile struct {
 	term.File
 	out *colorprofile.Writer
@@ -318,6 +325,12 @@ func (p *parse) root() *cobra.Command {
 	root := &cobra.Command{
 		Use:  "ils",
 		Long: rootLong,
+		// Every error comes back from Execute and is reported as a result or on Stderr, so Cobra
+		// prints neither the error nor the usage.
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		// `ils completion` is refused as no command.
+		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 		// Cobra asks Args only of a runnable command. Args refuses every run but `ils --version`,
 		// which RunE prints.
 		Args: func(c *cobra.Command, args []string) error {

@@ -11,7 +11,7 @@ import (
 const (
 	fangWidth = "__FANG_TEST_WIDTH"
 
-	// helpWidth keeps every entry of the help on one line, which entries in cli_test.go relies on.
+	// helpWidth fixes the width Fang lays styled help out in, whatever terminal the tests run from.
 	helpWidth = "120"
 )
 
