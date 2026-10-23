@@ -155,13 +155,16 @@ func TestRunner_Run_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
 }
 
 // loggedCall is one record a logger received: its message and its attributes by key, a
-// positive duration standing as measured{}.
+// duration standing as measured{}.
 type loggedCall struct {
 	Attrs   map[string]any
 	Message string
 }
 
-// measured stands in a loggedCall for a positive duration, which no test can predict.
+// measured stands in a loggedCall for a duration, which no test can predict.
+//
+// Zero counts: a call that fails before gh starts can end within one tick of a coarse clock,
+// such as the one on Windows, and log 0s.
 type measured struct{}
 
 // logSink keeps every record logged through the loggers built on it.
@@ -228,11 +231,11 @@ func (h sinkHandler) WithGroup(name string) slog.Handler {
 	return h
 }
 
-// valueOf is what a loggedCall holds for value: measured{} for a positive duration, the value
-// itself otherwise.
+// valueOf is what a loggedCall holds for value: measured{} for a duration that is not negative,
+// the value itself otherwise.
 func valueOf(value slog.Value) any {
 	value = value.Resolve()
-	if value.Kind() == slog.KindDuration && value.Duration() > 0 {
+	if value.Kind() == slog.KindDuration && value.Duration() >= 0 {
 		return measured{}
 	}
 
