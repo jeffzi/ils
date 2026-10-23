@@ -22,6 +22,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `"next": "none"`.
 - Drop result lines that only restated the reason, from the text and from JSON `lines`.
 
+### Fixed
+
+- Fix help and refusals querying the terminal with color off, which could stall them for seconds.
+
+### Security
+
+- Print control characters in third-party text, such as hook output and file names, as visible
+  text, so they can no longer restyle or rewrite the output, its `Next:` line included.
+
 ## [0.2.0] - 2026-10-22
 
 ### Added

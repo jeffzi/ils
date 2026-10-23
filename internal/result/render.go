@@ -63,9 +63,10 @@ func RenderText(r Result, gitDir string) (string, error) {
 // A profile without color (NoTTY, ASCII) gets exactly what RenderText returns,
 // with no escape sequence of this program's. Any other profile draws the
 // outcome label, the word Next, and each name in the style of its kind; the
-// wording and the excerpt stay unstyled. Escape sequences inside names and
-// the excerpt print as they are, and the style and any hyperlink are reset
-// after each, so they never change how the text around them is drawn.
+// wording and the excerpt stay unstyled. On every profile, the control
+// characters inside names and the excerpt print spelled out as visible text,
+// such as \x1b for ESC, so that third-party text never drives the terminal
+// and the only escape sequences printed are this program's own styling.
 func RenderStyled(r Result, gitDir string, profile colorprofile.Profile) (string, error) {
 	view, err := check(r, gitDir)
 	if err != nil {
@@ -81,7 +82,7 @@ func RenderStyled(r Result, gitDir string, profile colorprofile.Profile) (string
 
 	if view.Excerpt != "" {
 		excerpt := strings.TrimSuffix(view.Excerpt, "\n")
-		b.WriteString(excerpt + pen.closing(excerpt) + "\n")
+		b.WriteString(visible(excerpt) + "\n")
 	}
 
 	if view.outcome != Done {
@@ -152,34 +153,61 @@ func (p pen) styled(style ansi.Style, text string) string {
 	return style.Styled(text)
 }
 
-// closing returns what ends the style and the hyperlink an escape sequence in
-// text, which is not this program's, could carry past its end: a reset of
-// both when the terminal shows color and text holds an escape, and nothing
-// otherwise.
-func (p pen) closing(text string) string {
-	if p.color && strings.Contains(text, "\x1b") {
-		return ansi.ResetStyle + ansi.ResetHyperlink()
-	}
-
-	return ""
-}
-
-// spans returns spans drawn one by one, each name in the style of its kind.
+// spans returns spans drawn one by one, each name in the style of its kind and
+// with its control characters spelled out by visible.
 func (p pen) spans(spans []span) string {
 	var b strings.Builder
 	for _, s := range spans {
 		style, ok := kindStyle(s.kind)
 		switch {
 		case ok:
-			b.WriteString(p.styled(style, s.text) + p.closing(s.text))
+			b.WriteString(p.styled(style, visible(s.text)))
 		case s.kind == kindWording:
 			b.WriteString(s.text)
 		default:
-			b.WriteString(s.text + p.closing(s.text))
+			b.WriteString(visible(s.text))
 		}
 	}
 
 	return b.String()
+}
+
+// visible returns third-party text with each control character that could
+// drive the terminal spelled out, so that it prints as text and cannot move
+// the cursor, erase a line, or change the style of what follows:
+//
+//   - ESC, DEL and every other C0 control as \x and two lowercase hex digits,
+//     such as \x1b for ESC and \x08 for a backspace;
+//   - each C1 control, U+0080 to U+009F, as \u and four, such as \u009b.
+//
+// Tab, line feed and carriage return stay as they are: a name holds no line
+// break by the time it is rendered, and an excerpt keeps its lines. Bytes that
+// are not valid UTF-8 stay as they are too.
+func visible(text string) string {
+	if !strings.ContainsFunc(text, spelledOut) {
+		return text
+	}
+
+	var b strings.Builder
+	for rest := text; rest != ""; {
+		r, size := utf8.DecodeRuneInString(rest)
+		switch {
+		case !spelledOut(r):
+			b.WriteString(rest[:size])
+		case r < utf8.RuneSelf:
+			fmt.Fprintf(&b, `\x%02x`, r)
+		default:
+			fmt.Fprintf(&b, `\u%04x`, r)
+		}
+
+		rest = rest[size:]
+	}
+
+	return b.String()
+}
+
+func spelledOut(r rune) bool {
+	return unicode.IsControl(r) && r != '\t' && r != '\n' && r != '\r'
 }
 
 // RenderJSON returns r as one JSON object on one line. gitDir is the resolved

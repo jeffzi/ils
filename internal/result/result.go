@@ -332,7 +332,8 @@ type Result struct {
 	Payload *Payload
 	Command string
 	// Excerpt is third-party text such as a bounded part of a CI log, printed
-	// verbatim between the lines and Next. It is never checked for words.
+	// between the lines and Next with its tabs and line breaks kept and every
+	// other control character spelled out. It is never checked for words.
 	Excerpt string
 	// Reason says why the command did not end as done. It is set on every
 	// outcome but Done.
