@@ -16,6 +16,7 @@ import (
 	"charm.land/fang/v2"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
@@ -82,7 +83,7 @@ func (a App) Run(ctx context.Context, args []string) int {
 	root := p.root()
 	// Cobra reads the words of the process itself when it is given none.
 	root.SetArgs(append([]string{}, args...))
-	root.SetOut(a.Stdout)
+	root.SetOut(a.drawnAt(profile))
 	root.SetErr(a.Stderr)
 
 	// The error comes back from Execute, and is reported below as a result or on Stderr.
@@ -108,10 +109,44 @@ func (a App) Run(ctx context.Context, args []string) int {
 	}
 }
 
+// drawnAt returns Stdout as Cobra and Fang write to it, help included: every escape sequence a
+// write carries is brought down to profile, so that help is drawn no richer than a result.
+//
+// Fang draws help at the profile it reads from the writer it is given and from the process
+// environment, never from Environ or --no-color. A Stdout that is a file stays one, so that Fang
+// still finds a terminal behind it and styles help there.
+func (a App) drawnAt(profile colorprofile.Profile) io.Writer {
+	out := &colorprofile.Writer{Forward: a.Stdout, Profile: profile}
+	if file, ok := a.Stdout.(term.File); ok {
+		return drawnFile{File: file, out: out}
+	}
+
+	return out
+}
+
+// drawnFile is a file whose writes go through out, and whose every other method is the file's.
+type drawnFile struct {
+	term.File
+	out *colorprofile.Writer
+}
+
+// Write writes p to the file through out.
+func (f drawnFile) Write(p []byte) (int, error) {
+	n, err := f.out.Write(p)
+	if err != nil {
+		return n, fmt.Errorf("write to stdout: %w", err)
+	}
+
+	return n, nil
+}
+
 // terminal reports whether a stream that isTerminal counts as one: TERM=dumb makes it none.
 func (a App) terminal(isTerminal bool) bool {
 	return isTerminal && lookup(a.Environ, "TERM") != "dumb"
 }
+
+// ttyForce is the variable through which colorprofile is told that a stream is a terminal.
+const ttyForce = "TTY_FORCE"
 
 // profile returns the color profile of a stream that is a terminal or not, read from Environ: the
 // plain profile when noColor or NO_COLOR asks for it, and colorprofile's reading otherwise, where
@@ -124,10 +159,13 @@ func (a App) profile(terminal, noColor bool) colorprofile.Profile {
 		return colorprofile.NoTTY
 	}
 
-	env := a.Environ
+	// colorprofile tells a terminal by its file descriptor or by TTY_FORCE. Whether the stream is a
+	// terminal is decided by terminal alone, so a TTY_FORCE of the environment never counts.
+	env := slices.DeleteFunc(slices.Clone(a.Environ), func(entry string) bool {
+		return strings.HasPrefix(entry, ttyForce+"=")
+	})
 	if a.terminal(terminal) {
-		// colorprofile tells a terminal only by its file descriptor; TTY_FORCE tells it instead.
-		env = append(slices.Clone(env), "TTY_FORCE=1")
+		env = append(env, ttyForce+"=1")
 	}
 
 	return colorprofile.Detect(io.Discard, env)
@@ -489,8 +527,9 @@ type display struct {
 	stdout, stderr io.Writer
 	width          func() int
 	stop           chan struct{}
-	began          time.Time
-	gitDir         string
+	// began is when the running step began: the last Started, or the last Said after it.
+	began  time.Time
+	gitDir string
 	// label is the running step drawn for stderr, and empty while no step runs.
 	label string
 	// printed are the plain texts of the step lines written on stdout.
@@ -583,13 +622,19 @@ func (d *display) Started(label result.Phrase, limit time.Duration) {
 	d.draw()
 }
 
-// Said takes the spinner line off stderr and prints line on stdout as the running step's line.
+// Said takes the spinner line off stderr and prints line on stdout as the running step's line,
+// with the time since the last Started or Said, whichever came later.
 func (d *display) Said(line result.Phrase) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	d.clear()
 	d.label = ""
+
+	// A line said without a step started for it is timed from the line before it.
+	now := time.Now()
+	took := now.Sub(d.began).Round(frameEvery).String()
+	d.began = now
 
 	if d.stdout == nil {
 		return
@@ -602,7 +647,6 @@ func (d *display) Said(line result.Phrase) {
 
 	color := d.outProfile >= colorprofile.ANSI
 	green := ansi.NewStyle().ForegroundColor(ansi.Green)
-	took := time.Since(d.began).Round(frameEvery).String()
 	step := paint(color, green, "✓") + " " + drawn + " " + paint(color, green.Faint(), took) + "\n"
 
 	if _, err := io.WriteString(d.stdout, step); err == nil {

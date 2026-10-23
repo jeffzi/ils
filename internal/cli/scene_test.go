@@ -259,3 +259,30 @@ func failedRead() scenario {
 func noPullRequest() scenario {
 	return scenario{name: "no pull request", script: only(found("[]", "[]")...), want: exitRefused}
 }
+
+// mergeTitle is the conventional commit title of the pull request a merge lands.
+const mergeTitle = "docs: tidy the readme"
+
+// landedMerge is pull request 12, open at the published tip with its one check passed, which
+// GitHub squash-merges and whose branch it deletes.
+func landedMerge() scenario {
+	script := func(f *gittest.Fixture) []ghtest.Call {
+		sha := tipOf(f)
+		open := "[" + ghtest.ChangeJSON(ghtest.Change{Number: opened, URL: pullURL, Title: mergeTitle, Base: trunk, SHA: sha}) + "]"
+		landing := []string{
+			"pr", "merge", strconv.Itoa(opened), "--repo", slug, "--squash",
+			"--match-head-commit", sha, "--subject", mergeTitle + " (#12)", "--body", "",
+		}
+
+		return slices.Concat(found(open, "[]"), passing(sha).calls(sha), []ghtest.Call{
+			ghtest.Says(ghtest.MessageJSON(mergeTitle, "", ""), ghtest.MessageArgs(host, owner, widgets, opened)...),
+			ghtest.Says("", landing...),
+			ghtest.Says("", "api", "--hostname", host, "-X", "DELETE", "repos/"+owner+"/"+widgets+"/git/refs/heads/"+topic),
+		})
+	}
+
+	return scenario{
+		name: "a merge that lands", script: script, want: exitDone,
+		arrange: func(f *gittest.Fixture) { f.Publish(topic) },
+	}
+}

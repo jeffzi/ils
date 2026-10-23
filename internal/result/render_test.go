@@ -1003,7 +1003,17 @@ func styledCases() []styledCase {
 		{name: "space of a list of SHAs", result: pickedSHAs(), within: "4f2a9c1 b7e03d2", part: " "},
 		{name: "last SHA of a list", result: pickedSHAs(), within: "b7e03d2.", part: "b7e03d2", want: resulttest.Look{Dim: true}},
 		{name: "pull request number marked bare", result: pickedSHAs(), within: "ready 12", part: "12", want: boldBlue},
+		{name: "text of a concatenated name", result: joinedCommand(), within: "Ran `git switch main`", part: "git switch "},
+		{name: "branch of a concatenated name", result: joinedCommand(), within: "Ran `git switch main`", part: "main", want: boldBlue},
 	}
+}
+
+// joinedCommand is a broke push with one more line that names a git command whose argument is a
+// branch.
+func joinedCommand() result.Result {
+	return with(brokePush(), func(r *result.Result) {
+		r.Lines = append(r.Lines, result.Say("Ran `%s`", result.Concat("git switch ", result.Branch("main"))))
+	})
 }
 
 // pickedSHAs is a broke push whose next step names a pull request by its bare number and a list
@@ -1021,6 +1031,9 @@ func listedBranches() result.Result {
 		r.Lines = append(r.Lines, result.Say("Kept %s.", result.Branches([]string{"docs", "main", "tidy-readme"})))
 	})
 }
+
+// openLink is a hyperlink sequence that third-party text opens and never closes.
+const openLink = "\x1b]8;;https://e.example\x07"
 
 // escapeCases returns results whose third-party text holds an escape sequence, each with a part
 // next to that text that keeps its own style.
@@ -1042,6 +1055,25 @@ func escapeCases() []styledCase {
 			name:   "command after a name that resets every style",
 			result: with(redPush(), func(r *result.Result) { r.Next = result.NextCommand("branch %s now", "a\x1b[0mb") }),
 			within: "branch ab now", part: " now", want: resulttest.Look{Color: "blue", Bold: true},
+		},
+		{
+			name: "wording after a name that opens a hyperlink",
+			result: with(brokePush(), func(r *result.Result) {
+				r.Lines = append(r.Lines, result.Say("Kept %s as is.", "x"+openLink+"y"))
+			}),
+			within: "xy as is.", part: " as is.",
+		},
+		{
+			name: "wording after a marked name that opens a hyperlink",
+			result: with(brokePush(), func(r *result.Result) {
+				r.Lines = append(r.Lines, result.Say("Kept %s as is.", result.Branch("x"+openLink+"y")))
+			}),
+			within: "xy as is.", part: " as is.",
+		},
+		{
+			name:   "label after an excerpt that opens a hyperlink",
+			result: with(brokePush(), func(r *result.Result) { r.Excerpt = "one" + openLink + " two" }),
+			within: "Broke: GitHub", part: "Broke:", want: resulttest.Look{Color: "red"},
 		},
 		{
 			name:   "label after an excerpt that opens bold yellow",
@@ -1099,6 +1131,11 @@ func TestRenderStyled_WhenThirdPartyTextHoldsAnEscapeSequence_PrintsItsBytes(t *
 			name:   "excerpt",
 			result: with(brokePush(), func(r *result.Result) { r.Excerpt = "one\x1b[1;33m two" }),
 			want:   "one\x1b[1;33m two",
+		},
+		{
+			name:   "name that opens a hyperlink",
+			result: with(brokePush(), func(r *result.Result) { r.Lines = append(r.Lines, result.Say("Kept %s as is.", "x"+openLink+"y")) }),
+			want:   "x" + openLink + "y",
 		},
 	}
 	profiles := slices.Concat([]profileCase{

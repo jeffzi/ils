@@ -172,6 +172,28 @@ func Command(words string) Name {
 	return marked("ils "+words, kindCommand)
 }
 
+// Concat returns parts printed one after another as one name, as a git
+// command and its arguments are: each [Name] keeps the kind it was marked
+// with, and any other value is a name of no particular kind.
+func Concat(parts ...any) Name {
+	var whole Name
+	for _, part := range parts {
+		whole.spans = append(whole.spans, asName(part).spans...)
+	}
+
+	return whole
+}
+
+// asName returns v as the name Say interpolates: v itself when it is a
+// [Name], and otherwise its text as a name of no particular kind.
+func asName(v any) Name {
+	if given, ok := v.(Name); ok {
+		return given
+	}
+
+	return marked(fmt.Sprint(v), kindName)
+}
+
 // span is one run of a rendered phrase: its own wording, or one name.
 type span struct {
 	text string
@@ -206,10 +228,7 @@ var lineBreaks = regexp.MustCompile(`[\r\n]+`)
 func Say(w wording, names ...any) Phrase {
 	phrase := Phrase{wording: string(w), names: make([]Name, 0, len(names))}
 	for _, name := range names {
-		given, ok := name.(Name)
-		if !ok {
-			given = marked(fmt.Sprint(name), kindName)
-		}
+		given := asName(name)
 
 		oneLine := Name{spans: make([]span, 0, len(given.spans))}
 		for _, s := range given.spans {

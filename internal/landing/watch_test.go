@@ -64,6 +64,34 @@ func assertSameUnwatched(t *testing.T, watched, unwatched placedResult) {
 	assert.Check(t, is.Equal(unwatched.drawn, watched.drawn), "with no progress hook and no logger")
 }
 
+// unwatchedRun returns, as it shows, the result of `ils <cmd>` given req on the scene and under the
+// context build returns, with no progress hook and no logger. The run is a test of its own, so that
+// a fake git build puts on PATH comes off with that test's cleanup before the caller's watched run
+// puts its own: a fake git takes the git it finds on PATH as the real one. A test in a bubble
+// cannot start a test of its own; it runs unwatched on a scene of its own directly instead.
+func unwatchedRun(t *testing.T, build func(t *testing.T) (*scene, context.Context), req landing.Request) placedResult {
+	t.Helper()
+
+	var bare placedResult
+
+	t.Run("with no progress hook and no logger", func(t *testing.T) {
+		s, ctx := build(t)
+		s.deps.Progress, s.deps.Logger = nil, nil
+		bare = s.placed(t, land(ctx, s.deps, req))
+	})
+
+	return bare
+}
+
+// land runs the landing command req names: merge for a merge request, and push otherwise.
+func land(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
+	if req.Command == landing.MergeCommand {
+		return landing.Merge(ctx, deps, req)
+	}
+
+	return landing.Push(ctx, deps, req)
+}
+
 // placed returns r as it shows, with the directory that holds the scene's repository and its
 // origin, as given and with its symbolic links resolved, replaced by <scene>. The scene must still
 // be on disk.

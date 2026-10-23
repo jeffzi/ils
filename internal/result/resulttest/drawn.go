@@ -9,10 +9,11 @@ import (
 	"gotest.tools/v3/assert"
 )
 
-// Look is how a terminal draws a character: its color by name, empty for the default, and its
-// decorations.
+// Look is how a terminal draws a character: its color by name, empty for the default, its
+// decorations, and the URI of the hyperlink it is part of, empty for none.
 type Look struct {
 	Color     string
+	Link      string
 	Bold      bool
 	Dim       bool
 	Underline bool
@@ -30,13 +31,18 @@ func (d Drawn) String() string {
 }
 
 // Draw reads out as a terminal does, drawing each character with the select graphic rendition
-// sequences before it. Other sequences draw nothing.
+// and hyperlink sequences before it. Other sequences draw nothing.
 func Draw(tb testing.TB, out string) Drawn {
 	tb.Helper()
 
 	var d Drawn
 	pen := Look{}
 	for out != "" {
+		if rest, ok := strings.CutPrefix(out, "\x1b]"); ok {
+			pen, out = command(tb, pen, rest)
+
+			continue
+		}
 		if rest, ok := strings.CutPrefix(out, "\x1b["); ok {
 			end := strings.IndexFunc(rest, func(r rune) bool { return r >= 0x40 && r <= 0x7e })
 			assert.Assert(tb, end >= 0, "unterminated sequence in %q", out)
@@ -63,12 +69,12 @@ func rendition(tb testing.TB, pen Look, params string) Look {
 
 	fields := strings.FieldsFunc(params, func(r rune) bool { return r == ';' || r == ':' })
 	if len(fields) == 0 {
-		return Look{}
+		return Look{Link: pen.Link}
 	}
 	for i := 0; i < len(fields); i++ {
 		switch code := fields[i]; code {
 		case "0":
-			pen = Look{}
+			pen = Look{Link: pen.Link}
 		case "1":
 			pen.Bold = true
 		case "2":
@@ -91,6 +97,29 @@ func rendition(tb testing.TB, pen Look, params string) Look {
 	}
 
 	return pen
+}
+
+// command returns pen as the operating system command at the start of out changes it, and the
+// rest of out after the command. A hyperlink command links the characters after it to its URI,
+// or ends the link when the URI is empty; any other command changes nothing. The test fails on a
+// command that is not terminated by BEL or ST.
+func command(tb testing.TB, pen Look, out string) (Look, string) {
+	tb.Helper()
+
+	end := strings.IndexAny(out, "\x07\x1b")
+	assert.Assert(tb, end >= 0, "unterminated command in %q", out)
+	body, rest := out[:end], out[end+1:]
+	if out[end] == '\x1b' {
+		var terminated bool
+		rest, terminated = strings.CutPrefix(rest, "\\")
+		assert.Assert(tb, terminated, "command %q is not terminated by ST", body)
+	}
+
+	if link, ok := strings.CutPrefix(body, "8;"); ok {
+		_, pen.Link, _ = strings.Cut(link, ";")
+	}
+
+	return pen, rest
 }
 
 // colorName returns the name of one of the 16 basic colors, given as a foreground parameter or a

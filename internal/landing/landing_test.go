@@ -918,11 +918,19 @@ func TestPush_WhenRefusedAndRenderedWithColor_DrawsEachNameInTheStyleOfItsKind(t
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			s := newScene(t, tt.arrange, tt.script, false)
+			build := func(t *testing.T) (*scene, context.Context) {
+				t.Helper()
 
-			got := landing.Push(t.Context(), s.deps, pushRequest())
+				return newScene(t, tt.arrange, tt.script, false), t.Context()
+			}
+			bare := unwatchedRun(t, build, pushRequest())
+			s, ctx := build(t)
+			watchOn(&s.deps)
+
+			got := landing.Push(ctx, s.deps, pushRequest())
 
 			assertDrawn(t, got, s.gitDir, tt.parts)
+			assertSameUnwatched(t, s.placed(t, got), bare)
 		})
 	}
 }
@@ -1061,62 +1069,95 @@ func TestPush_WhenLocalReadFails_BrokeNamingTheRead(t *testing.T) {
 
 			var failed string
 
-			s := newScene(t, func(f *gittest.Fixture) { failed = tt.arrange(t, f) }, allowed(), false)
+			build := func(t *testing.T) (*scene, context.Context) {
+				t.Helper()
+
+				return newScene(t, func(f *gittest.Fixture) { failed = tt.arrange(t, f) }, allowed(), false), t.Context()
+			}
+			bare := unwatchedRun(t, build, pushRequest())
+			s, ctx := build(t)
+			watchOn(&s.deps)
 			before := s.written()
 
-			got := landing.Push(t.Context(), s.deps, pushRequest())
+			got := landing.Push(ctx, s.deps, pushRequest())
 
 			assertBrokeRead(t, got, tt.read, failed)
 			// What git said must also render under the repository's own git dir: no line names a path in it.
 			shown(t, got, s.gitDir)
 			assertOnlyRead(t, s, reads{before: before, ops: identityRead(), fetches: tt.fetches})
+			assertSameUnwatched(t, s.placed(t, got), bare)
 		})
 	}
 }
 
 func TestPush_WhenFindChangesFailsUntyped_BrokeNamingTheRead(t *testing.T) {
 	t.Parallel()
-	s := newScene(t, nil, failingToFind(errors.New("HTTP 502")), false)
+	build := func(t *testing.T) (*scene, context.Context) {
+		t.Helper()
+
+		return newScene(t, nil, failingToFind(errors.New("HTTP 502")), false), t.Context()
+	}
+	bare := unwatchedRun(t, build, pushRequest())
+	s, ctx := build(t)
+	watchOn(&s.deps)
 	before := s.written()
 
-	got := landing.Push(t.Context(), s.deps, pushRequest())
+	got := landing.Push(ctx, s.deps, pushRequest())
 
 	want := unreadText(pushCommand(), readChanges, "HTTP 502")
 	assertEnded(t, s, got, finish{outcome: result.Broke, text: want})
 	assertOnlyRead(t, s, reads{before: before, ops: changesRead(), fetches: true})
+	assertSameUnwatched(t, s.placed(t, got), bare)
 }
 
 func TestPush_WhenBranchHasNoCommitAtAll_RefusesAsNoCommitPastTheTrunk(t *testing.T) {
 	t.Parallel()
-	s := newScene(t, func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--orphan", spare) }, allowed(), false)
+	build := func(t *testing.T) (*scene, context.Context) {
+		t.Helper()
+
+		return newScene(t, func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--orphan", spare) }, allowed(), false), t.Context()
+	}
+	bare := unwatchedRun(t, build, pushRequest())
+	s, ctx := build(t)
+	watchOn(&s.deps)
 	// A branch with no commit has no HEAD commit to read, so the snapshot names the branch instead.
 	standing := func() string { return s.refs() + "\nHEAD: " + s.fixture.Git("symbolic-ref", "HEAD") }
 	before := standing()
 
-	got := landing.Push(t.Context(), s.deps, pushRequest())
+	got := landing.Push(ctx, s.deps, pushRequest())
 
 	assertEnded(t, s, got, finish{outcome: result.Refused, text: nothingPast(spare)})
 
 	assert.Check(t, is.Equal(standing(), before))
 
 	assertAsked(t, s, identityRead())
+	assertSameUnwatched(t, s.placed(t, got), bare)
 }
 
 func TestPush_WhenBranchRefCannotBeRead_BrokeNamingTheTipRead(t *testing.T) {
 	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
-	s := newScene(t, func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--orphan", spare) }, allowed(), false)
 	words := []string{"show-ref", "--verify", "--quiet", "refs/heads/" + spare}
-	failGit(t, s, words)
+	build := func(t *testing.T) (*scene, context.Context) {
+		t.Helper()
 
+		s := newScene(t, func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--orphan", spare) }, allowed(), false)
+		failGit(t, s, words)
+
+		return s, t.Context()
+	}
+	bare := unwatchedRun(t, build, pushRequest())
+	s, ctx := build(t)
+	watchOn(&s.deps)
 	before := s.refs()
 
-	got := landing.Push(t.Context(), s.deps, pushRequest())
+	got := landing.Push(ctx, s.deps, pushRequest())
 
 	assertEnded(t, s, got, finish{outcome: result.Broke, text: failedGitText(pushCommand(), readTip, words)})
 
 	assert.Check(t, is.Equal(s.refs(), before))
 
 	assertAsked(t, s, identityRead())
+	assertSameUnwatched(t, s.placed(t, got), bare)
 }
 
 // sharedFailedReads are the failed reads of the branch's tip and of the commits a merged pull

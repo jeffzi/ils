@@ -559,6 +559,48 @@ func TestApp_Run_WhenColorIsForced_PushResultCarriesNoEscapeSequence(t *testing.
 	assert.Check(t, !strings.Contains(strings.ToLower(encoded.stdout), encodedEscape), "a value of the JSON carries an escape sequence:\n%s", encoded.stdout)
 }
 
+func TestApp_Run_WhenHelpIsAskedForWithColorOffOnAColorTerminal_PrintsItWithNoEscapeSequence(t *testing.T) {
+	// Fang styles help from the process environment, which forced color would leave styled.
+	t.Setenv(forceColor, "1")
+
+	tests := []struct {
+		name string
+		env  []string
+		args []string
+	}{
+		{name: "flag on the root", env: []string{colorTerm}, args: []string{"--help", "--no-color"}},
+		{name: "flag on push", env: []string{colorTerm}, args: []string{"push", "--no-color", "--help"}},
+		{name: "flag on merge", env: []string{colorTerm}, args: []string{"merge", "-h", "--no-color=true"}},
+		{name: "no color on the root", env: []string{colorTerm, noColor}, args: []string{"--help"}},
+		{name: "no color on push", env: []string{colorTerm, noColor}, args: []string{"push", "--help"}},
+		{name: "no color on merge", env: []string{colorTerm, noColor}, args: []string{"help", "merge"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := launch(t, painted(t, tt.env, true, true), tt.args...)
+
+			assert.Check(t, is.Equal(got.code, exitDone))
+			assert.Check(t, is.Contains(got.stdout, "USAGE"))
+			plain(t, "the help", got.stdout)
+		})
+	}
+}
+
+func TestApp_Run_WhenHelpIsAskedForOnAColorTerminal_StylesIt(t *testing.T) {
+	// Fang styles help only when the process environment lets it; ils's profile then decides.
+	t.Setenv(forceColor, "1")
+
+	tests := [][]string{{"--help"}, {"push", "--help"}, {"merge", "--no-color=false", "--help"}}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			got := launch(t, painted(t, []string{colorTerm}, true, false), args...)
+
+			assert.Check(t, is.Equal(got.code, exitDone))
+			assert.Check(t, strings.Contains(got.stdout, escape), "the help carries no escape sequence:\n%q", got.stdout)
+		})
+	}
+}
+
 func TestApp_Run_WhenAResultCannotBeWrittenToStdout_ExitsOneWithTheErrorOnStderr(t *testing.T) {
 	t.Parallel()
 
@@ -823,6 +865,7 @@ func TestApp_Run_WhenNoStreamHasAColorProfile_WritesNoEscapeSequence(t *testing.
 		terminal bool
 	}{
 		{name: "no terminal", args: []string{"push", "-d"}},
+		{name: "terminal forced off a terminal", env: []string{colorTerm, "TTY_FORCE=1"}, args: []string{"push", "-d"}},
 		{name: "dumb terminal", env: []string{"TERM=dumb"}, terminal: true, args: []string{"push", "-d"}},
 		{name: "no color on a terminal", env: []string{colorTerm, noColor}, terminal: true, args: []string{"merge", "--debug"}},
 		{name: "no color over forced color", env: []string{colorTerm, noColor, forced}, args: []string{"push", "-d"}},

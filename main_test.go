@@ -17,6 +17,7 @@ import (
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
+	main "github.com/jeffzi/ils"
 	"github.com/jeffzi/ils/internal/cli"
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/result/resulttest"
@@ -178,4 +179,60 @@ func TestIls(t *testing.T) {
 		assert.Check(t, strings.HasPrefix(resulttest.Draw(t, got.stderr).String(), "+"), "stderr = %q", got.stderr)
 		assert.Check(t, strings.Contains(got.stderr, " git "), "stderr = %q", got.stderr)
 	})
+}
+
+// opened returns a file of its own under the test's temporary directory, closed at cleanup, so
+// that its descriptor is no other file's.
+func opened(t *testing.T, name string) *os.File {
+	t.Helper()
+
+	f, err := os.CreateTemp(t.TempDir(), name)
+	assert.NilError(t, err)
+	t.Cleanup(func() { assert.Check(t, f.Close()) })
+
+	return f
+}
+
+func TestLaunched_ReadsEachStreamThroughItsOwnDescriptor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		terminal func(stdout, stderr *os.File) *os.File
+		name     string
+	}{
+		{name: "stdout a terminal", terminal: func(stdout, _ *os.File) *os.File { return stdout }},
+		{name: "stderr a terminal", terminal: func(_, stderr *os.File) *os.File { return stderr }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			stdout, stderr := opened(t, "stdout"), opened(t, "stderr")
+			terminal := tt.terminal(stdout, stderr)
+			isTerminal := func(fd uintptr) bool { return fd == terminal.Fd() }
+			size := func(fd uintptr) (int, int, error) {
+				if fd == stderr.Fd() {
+					return 132, 40, nil
+				}
+
+				return 7, 3, nil
+			}
+
+			app := main.Launched(stdout, stderr, isTerminal, size)
+
+			assert.Check(t, is.Equal(app.StdoutTerminal, terminal == stdout))
+			assert.Check(t, is.Equal(app.StderrTerminal, terminal == stderr))
+			assert.Check(t, is.Equal(app.StderrWidth(), 132))
+		})
+	}
+}
+
+func TestLaunched_WhenTheWidthOfStderrCannotBeRead_CountsItAsNone(t *testing.T) {
+	t.Parallel()
+
+	unread := func(uintptr) (int, int, error) { return 132, 40, errors.New("not a terminal") }
+
+	app := main.Launched(opened(t, "stdout"), opened(t, "stderr"), func(uintptr) bool { return true }, unread)
+
+	assert.Check(t, is.Equal(app.StderrWidth(), 0))
 }

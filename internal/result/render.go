@@ -64,8 +64,8 @@ func RenderText(r Result, gitDir string) (string, error) {
 // with no escape sequence of this program's. Any other profile draws the
 // outcome label, the word Next, and each name in the style of its kind; the
 // wording and the excerpt stay unstyled. Escape sequences inside names and
-// the excerpt print as they are, and the style is reset after each, so they
-// never change how the text around them is drawn.
+// the excerpt print as they are, and the style and any hyperlink are reset
+// after each, so they never change how the text around them is drawn.
 func RenderStyled(r Result, gitDir string, profile colorprofile.Profile) (string, error) {
 	view, err := check(r, gitDir)
 	if err != nil {
@@ -80,7 +80,8 @@ func RenderStyled(r Result, gitDir string, profile colorprofile.Profile) (string
 	}
 
 	if view.Excerpt != "" {
-		b.WriteString(pen.thirdParty(strings.TrimSuffix(view.Excerpt, "\n")) + "\n")
+		excerpt := strings.TrimSuffix(view.Excerpt, "\n")
+		b.WriteString(excerpt + pen.closing(excerpt) + "\n")
 	}
 
 	if view.outcome != Done {
@@ -151,14 +152,16 @@ func (p pen) styled(style ansi.Style, text string) string {
 	return style.Styled(text)
 }
 
-// thirdParty returns text that is not this program's, followed by a reset
-// when it holds an escape sequence that could carry a style past its end.
-func (p pen) thirdParty(text string) string {
+// closing returns what ends the style and the hyperlink an escape sequence in
+// text, which is not this program's, could carry past its end: a reset of
+// both when the terminal shows color and text holds an escape, and nothing
+// otherwise.
+func (p pen) closing(text string) string {
 	if p.color && strings.Contains(text, "\x1b") {
-		return text + ansi.ResetStyle
+		return ansi.ResetStyle + ansi.ResetHyperlink()
 	}
 
-	return text
+	return ""
 }
 
 // spans returns spans drawn one by one, each name in the style of its kind.
@@ -168,11 +171,11 @@ func (p pen) spans(spans []span) string {
 		style, ok := kindStyle(s.kind)
 		switch {
 		case ok:
-			b.WriteString(p.styled(style, s.text))
+			b.WriteString(p.styled(style, s.text) + p.closing(s.text))
 		case s.kind == kindWording:
 			b.WriteString(s.text)
 		default:
-			b.WriteString(p.thirdParty(s.text))
+			b.WriteString(s.text + p.closing(s.text))
 		}
 	}
 

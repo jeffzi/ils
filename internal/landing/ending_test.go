@@ -62,8 +62,11 @@ type landingRow struct {
 	after string
 	// on is where the run leaves HEAD: the name of the branch it is on, or HEAD when it is detached;
 	// empty leaves it unchecked.
-	on      string
-	set     setting
+	on  string
+	set setting
+	// drawn are parts of the text and how a terminal with color draws them; empty leaves them
+	// unchecked.
+	drawn   []drawnPart
 	outcome result.Outcome
 	// kept is whether the run must write nothing.
 	kept bool
@@ -99,6 +102,8 @@ func runLandings(t *testing.T, rows []landingRow) {
 				if tt.on != "" {
 					assert.Check(t, is.Equal(run.fixture.Git("rev-parse", "--abbrev-ref", "HEAD"), tt.on))
 				}
+
+				assertDrawn(t, run.got, run.gitDir, tt.drawn)
 			})
 		})
 	}
@@ -368,19 +373,37 @@ func endingBreaks() []landingRow {
 	return []landingRow{
 		row("the switch to the trunk", setting{arrange: func(f *gittest.Fixture) { f.UntrackedOnTrunk() }}, topic,
 			switchStep+failed, "\n"+notRun+dropStep+"\n"+notRun+pullStep+"\n"+broke(switchStep)+nextMergeFixed),
-		row("the delete of the branch on the trunk", setting{landed: lockRef("refs/heads/" + topic)}, trunk,
+		drawnRow(row("the delete of the branch on the trunk", setting{landed: lockRef("refs/heads/" + topic)}, trunk,
 			"Ran "+switchStep+"\n"+dropStep+failed,
 			"\n"+notRun+pullStep+"\n"+broke(dropStep)+nextHand+dropStep+" and "+pullStep+byHand),
+			drawnPart{within: "Ran " + switchStep, part: trunk, want: drawnName()},
+			drawnPart{within: dropStep + failed, part: topic, want: drawnName()},
+			drawnPart{within: notRun + pullStep, part: trunk, want: drawnName()},
+			drawnPart{within: "Broke: " + dropStep, part: topic, want: drawnName()},
+			drawnPart{within: "Broke: " + dropStep, part: "git branch -D "},
+		),
 		row("the pull of the trunk", setting{landed: func(_ *testing.T, f *gittest.Fixture) { f.AdvanceTrunk() }}, trunk,
 			"Ran "+switchStep+"\nRan "+dropStep+"\n"+pullStep+failed, "\n"+broke(pullStep)+nextHand+pullStep+byHand),
 		row("the fetch of origin's trunk", setting{arrange: trunkElsewhere, landed: moveOrigin}, topic,
 			fetchStep+failed, "\n"+notRun+detachStep+"\n"+notRun+dropStep+"\n"+broke(fetchStep)+nextMergeFixed),
-		row("the detach at origin's trunk", setting{arrange: trunkElsewhere, landed: lockRef("HEAD")}, topic,
+		drawnRow(row("the detach at origin's trunk", setting{arrange: trunkElsewhere, landed: lockRef("HEAD")}, topic,
 			"Ran "+fetchStep+"\n"+detachStep+failed, "\n"+notRun+dropStep+"\n"+broke(detachStep)+nextMergeFixed),
+			drawnPart{within: "Ran " + fetchStep, part: trunk, want: drawnName()},
+			drawnPart{within: detachStep + failed, part: trunk, want: drawnName()},
+			drawnPart{within: notRun + dropStep, part: topic, want: drawnName()},
+			drawnPart{within: "Broke: " + detachStep, part: trunk, want: drawnName()},
+		),
 		row("the delete of the branch when detached",
 			setting{arrange: trunkElsewhere, landed: lockRef("refs/heads/" + topic)}, "HEAD",
 			"Ran "+fetchStep+"\nRan "+detachStep+"\n"+dropStep+failed, "\n"+broke(dropStep)+nextHand+dropStep+byHand),
 	}
+}
+
+// drawnRow returns row with parts, how a terminal with color draws parts of its text.
+func drawnRow(row landingRow, parts ...drawnPart) landingRow {
+	row.drawn = parts
+
+	return row
 }
 
 func TestMerge_WhenAStepOfTheLocalEndingFails_SaysWhichStepsRan(t *testing.T) {
@@ -540,15 +563,24 @@ func TestMerge_WhenAResumeCannotFinish_EndsWithNothingWritten(t *testing.T) {
 func TestMerge_WhenTheResumeCannotAskOriginForTheBranch_BrokeNamingTheRead(t *testing.T) {
 	t.Parallel()
 
-	s := newScene(t, func(f *gittest.Fixture) { f.LandPull(merged, topic) }, forgetest.Script{}, false)
+	build := func(t *testing.T) (*scene, context.Context) {
+		t.Helper()
+
+		s := newScene(t, func(f *gittest.Fixture) { f.LandPull(merged, topic) }, forgetest.Script{}, false)
+		s.useForge(t, resuming()(s.fixture.Git("rev-parse", topic)))
+		// Origin answers about its trunk, the fetch of it, and the fetch of the merged head, and not
+		// whether it still has the branch.
+		s.stopAnswering(t, 3)
+
+		return s, t.Context()
+	}
+	bare := unwatchedRun(t, build, mergeRequest())
+	s, ctx := build(t)
+	watchOn(&s.deps)
 	tip := s.fixture.Git("rev-parse", topic)
-	s.useForge(t, resuming()(tip))
-	// Origin answers about its trunk, the fetch of it, and the fetch of the merged head, and not
-	// whether it still has the branch.
-	s.stopAnswering(t, 3)
 	before := s.written()
 
-	got := landing.Merge(t.Context(), s.deps, mergeRequest())
+	got := landing.Merge(ctx, s.deps, mergeRequest())
 
 	assertStoppedBy(t, got, result.Broke, mergeRequest())
 
@@ -560,16 +592,24 @@ func TestMerge_WhenTheResumeCannotAskOriginForTheBranch_BrokeNamingTheRead(t *te
 	assert.Check(t, is.Equal(reason, "could not read "+readStillOnOrigin))
 	assert.Check(t, is.DeepEqual(mergePayload(t, got), resumed(tip, ""), cmpopts.EquateEmpty()))
 	assert.Check(t, is.Equal(s.written(), before))
+	assertSameUnwatched(t, s.placed(t, got), bare)
 }
 
 func TestMerge_WhenTheDeadlineEndsAsTheResumeAsksOriginForTheBranch_RefusesNamingTheRead(t *testing.T) {
 	t.Parallel()
 
-	s := newScene(t, landAndPublish, forgetest.Script{}, false)
+	build := func(t *testing.T) (*scene, context.Context) {
+		t.Helper()
+
+		s := newScene(t, landAndPublish, forgetest.Script{}, false)
+		s.useForge(t, resuming()(s.fixture.Git("rev-parse", topic)))
+		// Origin answers about its trunk, the fetch of it, and the fetch of the merged head.
+		return s, stalling(3)(t, s)
+	}
+	bare := unwatchedRun(t, build, mergeRequest())
+	s, ctx := build(t)
+	watchOn(&s.deps)
 	tip := s.fixture.Git("rev-parse", topic)
-	s.useForge(t, resuming()(tip))
-	// Origin answers about its trunk, the fetch of it, and the fetch of the merged head.
-	ctx := stalling(3)(t, s)
 	before := s.written()
 
 	got := landing.Merge(ctx, s.deps, mergeRequest())
@@ -580,6 +620,7 @@ func TestMerge_WhenTheDeadlineEndsAsTheResumeAsksOriginForTheBranch_RefusesNamin
 	assert.Check(t, is.Equal(text, withLines(overtimeText(mergeCommand(), readStillOnOrigin), resumedLine)))
 	assert.Check(t, is.DeepEqual(mergePayload(t, got), resumed(tip, ""), cmpopts.EquateEmpty()))
 	assert.Check(t, is.Equal(s.written(), before))
+	assertSameUnwatched(t, s.placed(t, got), bare)
 }
 
 // sent returns the payload of a green run on a clean pull request 12 that sent its merge with a

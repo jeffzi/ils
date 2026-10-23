@@ -437,11 +437,15 @@ func TestPush_WhenDeliveredAndRenderedWithColor_DrawsEachNameInTheStyleOfItsKind
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
+				unwatched := newDelivery(t, pushRow{script: tt.script, left: tt.left})
+				unwatched.deps.Progress, unwatched.deps.Logger = nil, nil
+				bare := unwatched.placed(t, landing.Push(unwatched.ctx, unwatched.deps, pushRequest()))
 				d := newDelivery(t, pushRow{script: tt.script, left: tt.left})
 
 				got := landing.Push(d.ctx, d.deps, pushRequest())
 
 				assertDrawn(t, got, d.gitDir, atTip(tt.parts, d.tip))
+				assertSameUnwatched(t, d.placed(t, got), bare)
 			})
 		})
 	}
@@ -498,9 +502,17 @@ func TestPush_WhenGitRefusesThePush_BrokeSayingNothingWasPushed(t *testing.T) {
 	t.Parallel()
 	// Origin hides the branch from pushes alone, so every read passes and the push is refused.
 	hide := func(f *gittest.Fixture) { f.OriginGit("config", "receive.hideRefs", "refs/heads/"+topic) }
-	d := newDelivery(t, pushRow{arrange: hide, script: opening()})
+	build := func(t *testing.T) (*scene, context.Context) {
+		t.Helper()
 
-	got := landing.Push(d.ctx, d.deps, pushRequest())
+		d := newDelivery(t, pushRow{arrange: hide, script: opening()})
+
+		return d.scene, d.ctx
+	}
+	bare := unwatchedRun(t, build, pushRequest())
+	d, ctx := build(t)
+
+	got := landing.Push(ctx, d.deps, pushRequest())
 
 	assertStopped(t, got, result.Broke)
 	assert.Check(t, got.Payload == nil || got.Payload.Push == nil, "Payload = %+v, want none for a push git refused", got.Payload)
@@ -519,7 +531,8 @@ func TestPush_WhenGitRefusesThePush_BrokeSayingNothingWasPushed(t *testing.T) {
 
 	assert.Check(t, is.Equal(d.onOrigin(), ""))
 
-	assertAsked(t, d.scene, changesRead())
+	assertAsked(t, d, changesRead())
+	assertSameUnwatched(t, d.placed(t, got), bare)
 }
 
 // pushOpenFailureRows are the pushes whose open-change fails once the branch is on origin.
@@ -558,9 +571,16 @@ func TestPush_WhenOpeningThePullRequestFails_BrokeSayingThePushHappened(t *testi
 
 func TestPush_WhenDeadlineEndsDuringTheGitPush_BrokeSayingThePushMayHaveTaken(t *testing.T) {
 	t.Parallel()
-	s := newScene(t, nil, finding(), false)
-	// Origin answers about its trunk, the fetch of it, and whether it has the branch; the push is next.
-	ctx := stalling(3)(t, s)
+	build := func(t *testing.T) (*scene, context.Context) {
+		t.Helper()
+
+		s := newScene(t, nil, finding(), false)
+		// Origin answers about its trunk, the fetch of it, and whether it has the branch; the push is next.
+		return s, stalling(3)(t, s)
+	}
+	bare := unwatchedRun(t, build, pushRequest())
+	s, ctx := build(t)
+	watchOn(&s.deps)
 	sha := s.fixture.Git("rev-parse", topic)
 
 	got := landing.Push(ctx, s.deps, pushRequest())
@@ -571,6 +591,7 @@ func TestPush_WhenDeadlineEndsDuringTheGitPush_BrokeSayingThePushMayHaveTaken(t 
 			"it may or may not have taken\n" + "Broke: the time limit ended during the push\n" + nextPush,
 	})
 	assertAsked(t, s, changesRead())
+	assertSameUnwatched(t, s.placed(t, got), bare)
 }
 
 // revoked is a context that ends when its inner one does, as canceled and not at its deadline.
@@ -589,9 +610,16 @@ func (r revoked) Err() error {
 
 func TestPush_WhenTheGitPushFailsOtherThanByRefusalOrDeadline_BrokeSayingNothingWasPushed(t *testing.T) {
 	t.Parallel()
-	s := newScene(t, nil, finding(), false)
-	// Origin answers about its trunk, the fetch of it, and whether it has the branch; the push is next.
-	ctx := revoked{Context: stalling(3)(t, s)}
+	build := func(t *testing.T) (*scene, context.Context) {
+		t.Helper()
+
+		s := newScene(t, nil, finding(), false)
+		// Origin answers about its trunk, the fetch of it, and whether it has the branch; the push is next.
+		return s, revoked{Context: stalling(3)(t, s)}
+	}
+	bare := unwatchedRun(t, build, pushRequest())
+	s, ctx := build(t)
+	watchOn(&s.deps)
 
 	got := landing.Push(ctx, s.deps, pushRequest())
 
@@ -601,6 +629,7 @@ func TestPush_WhenTheGitPushFailsOtherThanByRefusalOrDeadline_BrokeSayingNothing
 			":refs/heads/" + topic + ": context canceled\n" + "Broke: could not push the branch\n" + nextFixed,
 	})
 	assertAsked(t, s, changesRead())
+	assertSameUnwatched(t, s.placed(t, got), bare)
 }
 
 // pushAgainRows are the pushes of a tip origin already has.
@@ -733,29 +762,37 @@ func TestPush_WhenNothingReportedForTheCommit_EndsByWhatTheCIReadAnswers(t *test
 func TestPush_WhenTheDeadlineEndsBeforeTheCIRead_PendingWithoutAskingIt(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-		ended := make(chan struct{})
-		// The deadline ends once the merge state after the checks is read; the forge has no
-		// answer for the CI read.
-		ending := reusing(forge.Verdict{}).with(func(script *forgetest.Script, _ string) {
-			checksRead := false
-			once := sync.OnceFunc(func() { close(ended) })
-			script.OnRead = func(call forgetest.Call) {
-				if call.Op == forgetest.OpVerdict {
-					checksRead = true
-				}
+		// build returns a delivery whose deadline ends once the merge state after the checks is
+		// read; the forge has no answer for the CI read.
+		build := func() (*delivery, context.Context) {
+			ended := make(chan struct{})
+			ending := reusing(forge.Verdict{}).with(func(script *forgetest.Script, _ string) {
+				checksRead := false
+				once := sync.OnceFunc(func() { close(ended) })
+				script.OnRead = func(call forgetest.Call) {
+					if call.Op == forgetest.OpVerdict {
+						checksRead = true
+					}
 
-				if call.Op == forgetest.OpHead && checksRead {
-					once()
+					if call.Op == forgetest.OpHead && checksRead {
+						once()
+					}
 				}
-			}
-		})
-		d := newDelivery(t, pushRow{script: ending})
-		ctx := gittest.Ending(d.ctx, ended, context.DeadlineExceeded)
+			})
+			d := newDelivery(t, pushRow{script: ending})
+
+			return d, gittest.Ending(d.ctx, ended, context.DeadlineExceeded)
+		}
+		unwatched, unwatchedCtx := build()
+		unwatched.deps.Progress, unwatched.deps.Logger = nil, nil
+		bare := unwatched.placed(t, landing.Push(unwatchedCtx, unwatched.deps, pushRequest()))
+		d, ctx := build()
 
 		got := landing.Push(ctx, d.deps, pushRequest())
 
 		assertDelivered(t, d.scene, got, cutShortRead(readCI).at(d.tip))
 		assert.Check(t, is.Equal(d.onOrigin(), d.tip))
+		assertSameUnwatched(t, d.placed(t, got), bare)
 	})
 }
 

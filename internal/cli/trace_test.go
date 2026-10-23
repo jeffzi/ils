@@ -47,6 +47,8 @@ func TestApp_Run_WhenDebugIsOnDuringALanding_PrintsWhatTheSameRunPrintsWithoutDe
 		{sc: greenFirstPush, args: []string{"push", "--json"}},
 		{sc: noPullRequest, args: []string{"merge"}},
 		{sc: noPullRequest, args: []string{"merge", "--json"}},
+		{sc: landedMerge, args: []string{"merge"}},
+		{sc: landedMerge, args: []string{"merge", "--json"}},
 	}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {

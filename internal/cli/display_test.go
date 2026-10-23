@@ -547,6 +547,32 @@ func TestApp_Run_WhenStepLinesPrintOnAColorTerminal_DrawsTheCheckGreenAndTheDura
 	assert.Check(t, is.Equal(drawn.LookOf(t, pushedStep, "1.2s"), resulttest.Look{Color: "green", Dim: true}))
 }
 
+func TestApp_Run_WhenAStepLineIsSaidWithoutAStepStartedForIt_TimesItFromTheLineBefore(t *testing.T) {
+	t.Parallel()
+
+	stdout := newScreen(t, wide)
+	app := onTerminals(t, []string{colorTerm, noColor}, true, false)
+	app.Stdout = stdout
+	app.SetPush(func(_ context.Context, deps landing.Deps, req landing.Request) result.Result {
+		told := progress(deps)
+		told.Started(result.Say("Pushing %s", result.Branch(topic)), 0)
+		time.Sleep(3 * time.Second)
+		told.Said(pushedLine())
+		time.Sleep(2 * time.Second)
+		told.Said(openedLine())
+
+		r := finished(req)
+		r.Lines = []result.Phrase{pushedLine(), openedLine()}
+
+		return r
+	})
+
+	shown(t, app, "push")
+
+	want := []string{"✓ Pushed " + topic + " to origin. 3s", "✓ Opened pull request #12. 2s"}
+	assert.Check(t, is.DeepEqual(stdout.lines(), want))
+}
+
 func TestApp_Run_WhenTheResultIsPendingOnATerminalStdout_EndsNextWithAHintDimOnlyInColor(t *testing.T) {
 	t.Parallel()
 

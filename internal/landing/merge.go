@@ -717,7 +717,7 @@ func (m *mergeReady) broke(req Request, reason result.Phrase, next result.Next, 
 // the next step when it fails.
 type endStep struct {
 	run     func(ctx context.Context) error
-	command string
+	command result.Name
 	next    result.Next
 }
 
@@ -736,7 +736,7 @@ func (m *mergeReady) end(ctx context.Context, deps Deps, req Request) *result.Re
 	deps.started(result.Say("Moving to origin's tip of %s", result.Branch(trunk)), 0)
 	drop := endStep{
 		run:     func(ctx context.Context) error { return repo.DeleteBranch(ctx, branch) },
-		command: "git branch -D " + branch,
+		command: result.Concat("git branch -D ", result.Branch(branch)),
 	}
 
 	if m.elsewhere {
@@ -749,11 +749,11 @@ func (m *mergeReady) end(ctx context.Context, deps Deps, req Request) *result.Re
 
 					return err
 				},
-				command: "git fetch origin " + trunk, next: req.onceFixed(),
+				command: result.Concat("git fetch origin ", result.Branch(trunk)), next: req.onceFixed(),
 			},
 			{
 				run:     func(ctx context.Context) error { return repo.DetachAtOrigin(ctx, trunk) },
-				command: "git switch --detach origin/" + trunk, next: req.onceFixed(),
+				command: result.Concat("git switch --detach origin/", result.Branch(trunk)), next: req.onceFixed(),
 			},
 			drop,
 		}, done: []result.Phrase{
@@ -769,12 +769,12 @@ func (m *mergeReady) end(ctx context.Context, deps Deps, req Request) *result.Re
 	return m.endSteps(ctx, deps, req, localEnding{ending: result.EndingTrunk, steps: []endStep{
 		{
 			run:     func(ctx context.Context) error { return repo.Switch(ctx, trunk) },
-			command: "git switch " + trunk, next: req.onceFixed(),
+			command: result.Concat("git switch ", result.Branch(trunk)), next: req.onceFixed(),
 		},
 		drop,
 		{
 			run:     func(ctx context.Context) error { return repo.FastForwardTrunk(ctx, trunk) },
-			command: "git pull --ff-only origin " + trunk,
+			command: result.Concat("git pull --ff-only origin ", result.Branch(trunk)),
 			next:    result.NextStep("run `git pull --ff-only origin %s` by hand", result.Branch(trunk)),
 		},
 	}, done: []result.Phrase{
