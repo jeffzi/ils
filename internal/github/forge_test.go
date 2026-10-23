@@ -3,7 +3,9 @@ package github_test
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -360,6 +362,71 @@ func TestForge_WhenReadPrintsMalformedJSON_ReturnsDecodeErrorNamingCall(t *testi
 			assert.Check(t, is.DeepEqual(decodeErr.Argv, received(tt.args)[0]))
 		})
 	}
+}
+
+// loggedArgv is the argv of every call sink received, each led by `gh`, in order.
+func loggedArgv(sink *logSink) [][]string {
+	var argv [][]string
+	for _, call := range sink.Calls() {
+		args, _ := call.Attrs["args"].([]string)
+		argv = append(argv, append([]string{"gh"}, args...))
+	}
+
+	return argv
+}
+
+func TestForge_WhenLoggerSet_LogsEveryGhCall(t *testing.T) {
+	fake := ghtest.Setup(t, ghtest.Says("Logged in\n", loginArgs()...), ghtest.Says(ghtest.RepoViewJSON(false, "WRITE"), repoViewArgs()...))
+	logger, sink := newLogger()
+
+	_, err := (&github.Forge{Logger: logger}).Identity(t.Context(), engine())
+	assert.NilError(t, err)
+
+	want := []loggedCall{exitedCall(0, versionArgs()...), exitedCall(0, loginArgs()...), exitedCall(0, repoViewArgs()...)}
+	assert.Check(t, is.DeepEqual(sink.Calls(), want))
+	assertCalls(t, fake, received(versionArgs(), loginArgs(), repoViewArgs()))
+}
+
+func TestForge_WhenLoggerSet_LogsTheFirstCallOfEveryOperation(t *testing.T) {
+	for _, tt := range operations() {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := ghtest.Setup(t)
+			logger, sink := newLogger()
+
+			_ = tt.run(t.Context(), &github.Forge{Logger: logger})
+
+			assert.Check(t, len(fake.Calls()) > 0, "%s made no gh call", tt.name)
+			assert.Check(t, is.DeepEqual(loggedArgv(sink), fake.Calls()))
+		})
+	}
+}
+
+func TestForge_WhenLoggerSet_LogsEveryRead(t *testing.T) {
+	for _, tt := range readCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := ghtest.Setup(t, append(tt.before, ghtest.Says("", tt.args...))...)
+			logger, sink := newLogger()
+
+			_ = tt.run(t.Context(), &github.Forge{Logger: logger})
+
+			assert.Check(t, is.DeepEqual(loggedArgv(sink), fake.Calls()))
+			assert.Check(t, slices.ContainsFunc(fake.Calls(), func(argv []string) bool { return slices.Equal(argv, received(tt.args)[0]) }),
+				"the fake never received %v", tt.args)
+		})
+	}
+}
+
+func TestForge_WhenNoLogger_LogsNothing(t *testing.T) {
+	ghtest.Setup(t, ghtest.Says("Logged in\n", loginArgs()...), ghtest.Says(ghtest.RepoViewJSON(false, "WRITE"), repoViewArgs()...))
+	logger, sink := newLogger()
+	previous := slog.Default()
+	slog.SetDefault(logger)
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	_, err := newForge().Identity(t.Context(), engine())
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Len(sink.Calls(), 0))
 }
 
 func TestForge_Identity_WhenNotLoggedIn_ReturnsNotLoggedInError(t *testing.T) {

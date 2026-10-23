@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os/exec"
 	"strings"
+	"time"
 
 	gh "github.com/cli/go-gh/v2"
 
@@ -33,8 +35,13 @@ const MinimumVersion = "2.73.0"
 // versionPrefix is what the first line of `gh --version` reads ahead of the version.
 const versionPrefix = "gh version "
 
-// Runner runs gh, found through GH_PATH and then PATH.
-type Runner struct{}
+// Runner runs gh, found through GH_PATH and then PATH. Its zero value logs nothing.
+type Runner struct {
+	// Logger, when set, receives one debug record per call once it ends: its argv, its exit code
+	// or the error that ended it before an exit, and how long it took. What the call printed is
+	// never logged, since it may hold secrets.
+	Logger *slog.Logger
+}
 
 // Result is what a call printed.
 type Result struct {
@@ -64,7 +71,16 @@ func (e *DecodeError) Unwrap() error {
 // *child.ExitError, returned together with the Result, since gh prints to stdout
 // before some of its non-zero exits. When ctx ends before gh does, the error is
 // the context's and the Result is empty, so a half-written stdout is never read.
-func (Runner) Run(ctx context.Context, args ...string) (Result, error) {
+func (r Runner) Run(ctx context.Context, args ...string) (Result, error) {
+	start := time.Now()
+	result, err := run(ctx, args)
+	child.Exec{Tool: Program, Args: args, Err: err, Took: time.Since(start)}.Log(ctx, r.Logger)
+
+	return result, err
+}
+
+// run is Run without the log record.
+func run(ctx context.Context, args []string) (Result, error) {
 	stdout, stderr, err := gh.ExecContext(ctx, args...)
 	if isMissing(err) {
 		return Result{}, &child.ToolMissingError{Tool: Program, InstallURL: installURL, Err: err}

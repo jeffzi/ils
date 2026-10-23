@@ -3,9 +3,12 @@ package git_test
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -230,6 +233,185 @@ func TestRunner_Run_WhenGitExitsNonZero_StillRecordsCall(t *testing.T) {
 	assert.Assert(t, err != nil, "Run(nonsense) error = nil, want a failing call")
 
 	assert.Check(t, is.DeepEqual(recorder.Calls(), [][]string{{"git", "nonsense"}}))
+}
+
+// captureHandler keeps every record logged through it, at any level.
+type captureHandler struct {
+	mu      *sync.Mutex
+	records *[]slog.Record
+	attrs   []slog.Attr
+}
+
+// newCapture returns a logger that keeps what it logs, and a function that returns the records
+// logged so far.
+func newCapture() (*slog.Logger, func() []slog.Record) {
+	handler := captureHandler{mu: &sync.Mutex{}, records: &[]slog.Record{}}
+	records := func() []slog.Record {
+		handler.mu.Lock()
+		defer handler.mu.Unlock()
+
+		return slices.Clone(*handler.records)
+	}
+
+	return slog.New(handler), records
+}
+
+func (h captureHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h captureHandler) Handle(_ context.Context, record slog.Record) error {
+	kept := record.Clone()
+	kept.AddAttrs(h.attrs...)
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	*h.records = append(*h.records, kept)
+
+	return nil
+}
+
+func (h captureHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	h.attrs = append(slices.Clip(h.attrs), attrs...)
+
+	return h
+}
+
+func (h captureHandler) WithGroup(string) slog.Handler { return h }
+
+// newLoggedRunner returns a runner like newRunner with a capturing logger attached, and a function
+// that returns the records logged so far.
+func newLoggedRunner(t *testing.T) (git.Runner, func() []slog.Record) {
+	t.Helper()
+
+	logger, records := newCapture()
+	runner := newRunner(t)
+	runner.Logger = logger
+
+	return runner, records
+}
+
+// onlyCall returns the attributes of the one record in records, all but the duration, after
+// checking that the record is an exec record whose duration is a time.Duration.
+func onlyCall(t *testing.T, records []slog.Record) (attrs map[string]any, took time.Duration) {
+	t.Helper()
+
+	assert.Assert(t, is.Len(records, 1))
+	record := records[0]
+	assert.Check(t, is.Equal(record.Message, "exec"))
+
+	attrs = map[string]any{}
+	record.Attrs(func(attr slog.Attr) bool {
+		attrs[attr.Key] = attr.Value.Any()
+
+		return true
+	})
+
+	took, ok := attrs["duration"].(time.Duration)
+	assert.Assert(t, ok, "duration attribute = %#v, want a time.Duration", attrs["duration"])
+	delete(attrs, "duration")
+
+	return attrs, took
+}
+
+func TestRunner_Run_WhenLoggerAttachedAndGitExits_LogsArgvExitCodeAndDurationOnly(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		args []string
+		exit int64
+	}{
+		{name: "exits zero", args: []string{"init", "--quiet"}, exit: 0},
+		{name: "exits one", args: []string{"nonsense"}, exit: 1},
+		{name: "exits another code", args: []string{"-C", filepath.Join(t.TempDir(), "missing"), "status"}, exit: 128},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			runner, records := newLoggedRunner(t)
+
+			_, _ = runner.Run(t.Context(), tt.args...)
+
+			attrs, took := onlyCall(t, records())
+			want := map[string]any{"tool": "git", "args": tt.args, "exit": tt.exit}
+			assert.Check(t, is.DeepEqual(attrs, want))
+			assert.Check(t, took > 0, "duration = %v, want above zero for a call git ran", took)
+		})
+	}
+}
+
+func TestRunner_Run_WhenLoggerAttachedAndGitPrintsOutput_LogsNeitherStream(t *testing.T) {
+	t.Parallel()
+	runner, records := newLoggedRunner(t)
+	value := "printed-value"
+
+	got, err := runner.Run(t.Context(), "-c", "user.name="+value, "config", "--get", "user.name")
+	assert.NilError(t, err)
+
+	attrs, _ := onlyCall(t, records())
+	assert.Check(t, is.Equal(got.Stdout, value+"\n"))
+	want := map[string]any{"tool": "git", "args": []string{"-c", "user.name=" + value, "config", "--get", "user.name"}, "exit": int64(0)}
+	assert.Check(t, is.DeepEqual(attrs, want))
+}
+
+func TestRunner_Run_WhenLoggerAttachedAndGitMissingFromPath_LogsFailureInPlaceOfExit(t *testing.T) {
+	runner, records := newLoggedRunner(t)
+	// Not parallel: this empties PATH for the whole process while it runs.
+	t.Setenv("PATH", t.TempDir())
+
+	_, err := runner.Run(t.Context(), "version")
+	assert.Assert(t, err != nil, "Run(version) error = nil, want git missing")
+
+	attrs, _ := onlyCall(t, records())
+	want := map[string]any{"tool": "git", "args": []string{"version"}, "error": err.Error()}
+	assert.Check(t, is.DeepEqual(attrs, want))
+}
+
+func TestRunner_Run_WhenLoggerAttachedAndContextEnds_LogsFailureInPlaceOfExit(t *testing.T) {
+	t.Parallel()
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			t.Parallel()
+			url, connected := stalledRemote(t)
+			runner, records := newLoggedRunner(t)
+			ctx := gittest.Ending(t.Context(), connected, cause)
+
+			_, err := runner.Run(ctx, "ls-remote", url)
+			assert.Assert(t, is.ErrorIs(err, cause))
+
+			attrs, _ := onlyCall(t, records())
+			want := map[string]any{"tool": "git", "args": []string{"ls-remote", url}, "error": err.Error()}
+			assert.Check(t, is.DeepEqual(attrs, want))
+		})
+	}
+}
+
+func TestRunner_Run_WhenLoggerAndRecorderAttached_RecordsEachArgv(t *testing.T) {
+	t.Parallel()
+	runner, recorder := newRecordedRunner(t)
+	runner.Logger, _ = newCapture()
+
+	_, err := runner.Run(t.Context(), "init", "--quiet")
+	assert.NilError(t, err)
+	_, err = runner.Run(t.Context(), "nonsense")
+	assert.Assert(t, err != nil, "Run(nonsense) error = nil, want a failing call")
+
+	want := [][]string{{"git", "init", "--quiet"}, {"git", "nonsense"}}
+	assert.Check(t, is.DeepEqual(recorder.Calls(), want))
+}
+
+func TestRunner_Run_WhenNoLogger_LogsNothingToDefaultLogger(t *testing.T) {
+	// Not parallel: this replaces the process's default logger while it runs.
+	logger, records := newCapture()
+	previous := slog.Default()
+	slog.SetDefault(logger)
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	runner := newRunner(t)
+
+	_, err := runner.Run(t.Context(), "init", "--quiet")
+	assert.NilError(t, err)
+	_, err = runner.Run(t.Context(), "nonsense")
+	assert.Assert(t, err != nil, "Run(nonsense) error = nil, want a failing call")
+
+	assert.Check(t, is.Len(records(), 0))
 }
 
 func TestRecorder_Calls_WhenReturnedSliceMutated_LaterCallsUnchanged(t *testing.T) {

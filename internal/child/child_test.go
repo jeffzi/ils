@@ -66,7 +66,7 @@ func TestFailure_WhenContextEnded_ReturnsContextErrorWhateverTheExit(t *testing.
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	err := child.Failure(ctx, []string{"go", "tool", "nonsense"}, runErr, "")
+	err := child.Failure(ctx, []string{"go", "tool", "nonsense"}, runErr, "secret printed before the end\n")
 
 	assert.Check(t, is.ErrorIs(err, context.Canceled))
 	_, exited := errors.AsType[*child.ExitError](err)

@@ -5,8 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os/exec"
+	"slices"
 	"strings"
+	"time"
 
 	"golang.org/x/mod/semver"
 )
@@ -44,6 +47,37 @@ func Failure(ctx context.Context, argv []string, runErr error, stderr string) er
 	}
 
 	return fmt.Errorf("%s: %w", command, runErr)
+}
+
+// Exec is one finished run of a tool, as a debug log records it.
+type Exec struct {
+	// Err is what the run ended with: nil, a *ExitError, or the failure that ended it before an
+	// exit.
+	Err  error
+	Tool string
+	// Args is the argv after the tool.
+	Args []string
+	Took time.Duration
+}
+
+// Log sends logger, when it is not nil, the debug record of e. The message is "exec" and the
+// attributes are "tool"; "args"; "exit", the exit code, when the tool ran to an exit, or else
+// "error", the failure; and "duration". What the tool printed is never logged, since it may hold
+// secrets.
+func (e Exec) Log(ctx context.Context, logger *slog.Logger) {
+	if logger == nil {
+		return
+	}
+
+	outcome := slog.Int("exit", 0)
+	if exitErr, exited := errors.AsType[*ExitError](e.Err); exited {
+		outcome = slog.Int("exit", exitErr.Code)
+	} else if e.Err != nil {
+		outcome = slog.String("error", e.Err.Error())
+	}
+
+	logger.LogAttrs(ctx, slog.LevelDebug, "exec",
+		slog.String("tool", e.Tool), slog.Any("args", slices.Clone(e.Args)), outcome, slog.Duration("duration", e.Took))
 }
 
 // ToolMissingError reports that a command-line tool ils drives is not installed.

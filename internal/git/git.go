@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,7 +58,12 @@ func (r *Recorder) record(argv []string) {
 type Runner struct {
 	// Recorder, when set, receives the argv of every call.
 	Recorder *Recorder
-	Dir      string
+	// Logger, when set, receives one debug record per call once the call has ended. Its message is
+	// "exec" and its attributes are "tool", the program; "args", the argv after the program; "exit",
+	// the exit code, when git ran to an exit, or else "error", the failure, when git could not start
+	// or the context ended; and "duration". Nothing git prints is ever logged.
+	Logger *slog.Logger
+	Dir    string
 	// Env is the child's whole environment; nil inherits this process's.
 	Env []string
 }
@@ -84,6 +90,7 @@ func (r Runner) Run(ctx context.Context, args ...string) (Result, error) {
 		args:       args,
 		dir:        r.Dir,
 		env:        r.Env,
+		logger:     r.Logger,
 	}
 	if r.Recorder != nil {
 		inv.record = r.Recorder.record
@@ -146,7 +153,9 @@ func (r Runner) lookPath(name string) (string, error) {
 // shell.
 type invocation struct {
 	// record, when set, receives the argv once the tool is found and before it starts.
-	record     func(argv []string)
+	record func(argv []string)
+	// logger, when set, receives the record child.Exec.Log writes once the run has ended.
+	logger     *slog.Logger
 	program    string
 	installURL string
 	dir        string
@@ -158,13 +167,24 @@ type invocation struct {
 	onEnvPath bool
 }
 
-// run runs the tool and returns its output once it has exited zero.
+// run runs the tool as invocation.start does and, when the invocation has a logger, logs the run
+// once it has ended.
+func (inv invocation) run(ctx context.Context) (Result, error) {
+	begun := time.Now()
+	result, err := inv.start(ctx)
+
+	child.Exec{Tool: inv.program, Args: inv.args, Err: err, Took: time.Since(begun)}.Log(ctx, inv.logger)
+
+	return result, err
+}
+
+// start runs the tool and returns its output once it has exited zero.
 //
 // A tool missing from the PATH it is looked up on is a *child.ToolMissingError and a failed run is
 // the error of child.Failure. Once the tool has exited or been killed, output pipes a process it
 // started still holds are closed after pipeGrace; such a process does not fail a run that exited
 // zero.
-func (inv invocation) run(ctx context.Context) (Result, error) {
+func (inv invocation) start(ctx context.Context) (Result, error) {
 	lookPath := exec.LookPath
 	if inv.onEnvPath {
 		lookPath = Runner{Env: inv.env}.lookPath
