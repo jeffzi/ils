@@ -156,6 +156,13 @@ func pushCutShortRows() []pushRow {
 			want: pending("GitHub did not say whether pull request #12 can merge before the time limit", "",
 				detail(forge.VerdictNone, forge.MergeClean)),
 		},
+		{
+			// Ten seconds leave room for one poll and then for the head read, but not for a second poll
+			// with the head read after it.
+			name:   "the deadline ends in the read of the merge state after checks still running",
+			script: reusing(running()).thenFailingHead(ended), left: 10 * time.Second,
+			want: cutShortRead(readChecks),
+		},
 	}
 }
 
@@ -220,17 +227,39 @@ func pushPendingRows() []pushRow {
 				detail(forge.VerdictNone, forge.MergeUnknown)),
 		},
 		{
-			// The head catches up after one poll of two seconds, which the count leaves out; then
-			// two polls of five seconds pass, and a third would end three seconds past the deadline.
-			name: "a check still runs", left: 14 * time.Second,
+			// The head catches up after one poll of two seconds, which the count leaves out; then two
+			// polls of five seconds pass, and a third would leave too little time for the head read
+			// after it.
+			name: "a check still runs", left: 17 * time.Second,
 			script: reusing(running()).showing(stale(), inState(forge.MergeClean, "CLEAN")),
 			want: pending("the checks were still running at the time limit",
 				"Still running after 10 seconds: test\n"+cleanLine,
 				detail(forge.VerdictPending, forge.MergeClean, running().Checks...)),
 			told: []string{
 				checkingStep, pushingStep, said(pushedLine), said(foundLine),
-				waitingStep(14 * time.Second), "count 0 of 1", "count 0 of 1", "count 0 of 1",
+				waitingStep(17 * time.Second), "count 0 of 1", "count 0 of 1", "count 0 of 1",
 			},
+		},
+		{
+			// One poll of five seconds passes; another would leave too little time for the head read
+			// after it, so the head is read at once, and its merge state is the one reported.
+			name: "a check still runs with five seconds left", left: 10 * time.Second,
+			script: reusing(running()).showing(inState(forge.MergeClean, "CLEAN"), inState(forge.MergeBlockedByReview, "BLOCKED")),
+			want: pending("the checks were still running at the time limit",
+				"Still running after 5 seconds: test\nGitHub: BLOCKED (blocked-by-review)\n",
+				detail(forge.VerdictPending, forge.MergeBlockedByReview, running().Checks...)),
+		},
+		{
+			// The read of the checks takes all the time left, so the head is never read after them and
+			// the merge state reported is the one read before them.
+			name: "a check still runs and the deadline leaves no time to read the head after it",
+			left: 10 * time.Second,
+			script: reusing(running()).
+				showing(inState(forge.MergeClean, "CLEAN"), inState(forge.MergeBlockedByReview, "BLOCKED")).
+				with(func(script *forgetest.Script, _ string) {
+					script.OnRead = slowVerdict(10 * time.Second)
+				}),
+			want: cutShortRead(readChecks),
 		},
 	}
 }

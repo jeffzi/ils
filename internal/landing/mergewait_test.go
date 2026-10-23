@@ -312,8 +312,9 @@ func pendingWaits() []waitRow {
 	return []waitRow{
 		{
 			// The head catches up after one poll of two seconds, which the count leaves out; then two
-			// polls of five seconds pass, and a third would end three seconds past the wait's deadline.
-			name: "a check still runs", left: 34 * time.Second,
+			// polls of five seconds pass, and a third would leave too little time for the head read
+			// after it.
+			name: "a check still runs", left: 37 * time.Second,
 			script: waiting(running()).showing(stale(), inState(forge.MergeClean, "CLEAN")), outcome: result.Pending,
 			text: "Still running after 10 seconds: test\n" + cleanLine +
 				"Pending: the checks were still running at the time limit\n" + nextPush,

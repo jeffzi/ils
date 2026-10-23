@@ -159,6 +159,9 @@ func moved() forge.Head {
 	return forge.Head{SHA: movedSHA, MergeState: forge.MergeBlockedByReview, RawMergeState: "BLOCKED"}
 }
 
+// blockedByReview is the pushed commit waiting on a review.
+func blockedByReview() forge.Head { return tip(forge.MergeBlockedByReview, "BLOCKED") }
+
 // inTurn returns a sequence that answers with each of values in turn.
 func inTurn[T any](values ...T) []forgetest.Answer[T] {
 	answers := make([]forgetest.Answer[T], 0, len(values))
@@ -412,7 +415,7 @@ func TestAwaitVerdict_WhenTheMergeStateDecides_ReadsItBeforeTheChecks(t *testing
 func TestAwaitVerdict_WhenChecksConclude_ReturnsTheMergeStateReadAfterThem(t *testing.T) {
 	t.Parallel()
 
-	reviewed := tip(forge.MergeBlockedByReview, "BLOCKED")
+	reviewed := blockedByReview()
 
 	runVigils(t, []vigilRow{{
 		name:  "clean, then blocked by review after the checks",
@@ -421,15 +424,30 @@ func TestAwaitVerdict_WhenChecksConclude_ReturnsTheMergeStateReadAfterThem(t *te
 	}})
 }
 
-func TestAwaitVerdict_WhenGivenALogger_LogsEachDecisionOfTheWait(t *testing.T) {
-	t.Parallel()
+// slowVerdict returns a read hook under which each read of the verdict takes d, and answers once
+// the bubble is idle after it: given the time a wait has left, the read answers once its context
+// ended.
+func slowVerdict(d time.Duration) func(forgetest.Call) {
+	return func(call forgetest.Call) {
+		if call.Op == forgetest.OpVerdict {
+			time.Sleep(d)
+			synctest.Wait()
+		}
+	}
+}
 
-	tests := []struct {
-		name   string
-		script forgetest.Script
-		want   []string
-		left   time.Duration
-	}{
+// logRow is a wait and the debug records its logger receives.
+type logRow struct {
+	name   string
+	script forgetest.Script
+	want   []string
+	left   time.Duration
+}
+
+// logRows lists the waits whose debug records are checked, one per way a wait ends but for
+// checks still running at the deadline, which stillRunningLogRows lists.
+func logRows() []logRow {
+	return []logRow{
 		{
 			name:   "a wait that ends green",
 			script: forgetest.Script{Head: shows(unknown(), clean()), Verdict: says(running(), passing())},
@@ -459,7 +477,54 @@ func TestAwaitVerdict_WhenGivenALogger_LogsEachDecisionOfTheWait(t *testing.T) {
 			},
 		},
 	}
-	for _, tt := range tests {
+}
+
+// stillRunningLogRows lists the waits that end with checks still running at the deadline, one per
+// way the read of the head after them goes.
+func stillRunningLogRows() []logRow {
+	return []logRow{
+		{
+			name:   "a wait that ends pending with checks still running",
+			script: forgetest.Script{Head: shows(clean()), Verdict: says(running())}, left: 5 * time.Second,
+			want: []string{
+				"DEBUG wait read=merge-state state=clean window=30s",
+				"DEBUG wait read=checks done=0 pending=1 verdict=pending",
+				"DEBUG wait read=merge-state state=clean",
+				"DEBUG wait ended=pending stage=verdict",
+			},
+		},
+		{
+			name: "a wait whose head read after checks still running is cut short",
+			script: forgetest.Script{
+				Head:    append(shows(clean()), forgetest.Answer[forge.Head]{Err: fmt.Errorf("gh: %w", context.DeadlineExceeded)}),
+				Verdict: says(running()),
+			},
+			left: 5 * time.Second,
+			want: []string{
+				"DEBUG wait read=merge-state state=clean window=30s",
+				"DEBUG wait read=checks done=0 pending=1 verdict=pending",
+				"DEBUG wait ended=pending stage=verdict",
+			},
+		},
+		{
+			name: "a wait whose checks still running leave no time to read the head after them",
+			script: forgetest.Script{
+				Head: shows(clean(), blockedByReview()), Verdict: says(running()), OnRead: slowVerdict(10 * time.Second),
+			},
+			left: 10 * time.Second,
+			want: []string{
+				"DEBUG wait read=merge-state state=clean window=30s",
+				"DEBUG wait read=checks done=0 pending=1 verdict=pending",
+				"DEBUG wait ended=pending stage=verdict",
+			},
+		},
+	}
+}
+
+func TestAwaitVerdict_WhenGivenALogger_LogsEachDecisionOfTheWait(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range slices.Concat(logRows(), stillRunningLogRows()) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
@@ -487,9 +552,15 @@ func TestAwaitVerdict_WhenTheHeadMovesPastThePushedCommit_EndsMovedToTheNewHead(
 		{name: "after a red verdict", verdicts: says(lintRed()), ops: readsOf(1, 1, 1)},
 		{name: "after nothing reported", verdicts: says(forge.Verdict{}), ops: readsOf(1, 5, 1)},
 		{
-			// Seven seconds leave room for one poll and then for the head read.
-			name: "after checks still running at the deadline", verdicts: says(running()), left: 7 * time.Second,
+			// Ten seconds leave room for one poll and then for the head read, but not for a second poll
+			// with the head read after it.
+			name: "after checks still running at the deadline", verdicts: says(running()), left: 10 * time.Second,
 			ops: readsOf(1, 2, 1),
+		},
+		{
+			name:     "after a check failed with its log held back and five seconds left",
+			verdicts: says(lintHeldBack()), left: 5 * time.Second,
+			ops: readsOf(1, 1, 1),
 		},
 	}
 	for _, tt := range tests {
@@ -500,9 +571,7 @@ func TestAwaitVerdict_WhenTheHeadMovesPastThePushedCommit_EndsMovedToTheNewHead(
 
 				got := v.await(t)
 
-				want := landing.Waited{
-					Outcome: landing.WaitMoved, MovedTo: movedSHA, MergeState: forge.MergeClean, RawMergeState: "CLEAN",
-				}
+				want := stateOf(landing.Waited{Outcome: landing.WaitMoved, MovedTo: movedSHA}, clean())
 				assert.Check(t, is.DeepEqual(got, want))
 				assert.Check(t, is.DeepEqual(v.opsOf(), tt.ops))
 			})
@@ -517,9 +586,7 @@ func TestAwaitVerdict_WhenTheHeadMovesBeforeItsMergeStateIsKnown_EndsMovedReadin
 
 		got := v.await(t)
 
-		want := landing.Waited{
-			Outcome: landing.WaitMoved, MovedTo: movedSHA, MergeState: forge.MergeUnknown, RawMergeState: "UNKNOWN",
-		}
+		want := stateOf(landing.Waited{Outcome: landing.WaitMoved, MovedTo: movedSHA}, unknown())
 		assert.Check(t, is.DeepEqual(got, want))
 		assert.Check(t, is.DeepEqual(v.opsOf(), readsOf(2, 0, 0)))
 	})
@@ -614,10 +681,16 @@ func redRows() []vigilRow {
 			want:     concluded(landing.WaitRed, completed, 1, 0), ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
 		},
 		{
-			// A third poll would end three seconds past the deadline.
+			// A third poll would leave too little time for the head read after it.
 			name:     "a check failed and its run had not completed at the deadline",
-			verdicts: says(unfinished), left: 12 * time.Second,
+			verdicts: says(unfinished), left: 15 * time.Second,
 			want: concluded(landing.WaitRed, unfinished, 0, 0), ops: readsOf(1, 3, 1), waits: polls(2, verdictPoll),
+		},
+		{
+			// No poll fits in five seconds with the head read after it: the head is read at once.
+			name:     "a check failed with its log held back and five seconds left",
+			verdicts: says(unfinished), left: 5 * time.Second,
+			want: concluded(landing.WaitRed, unfinished, 0, 0), ops: readsOf(1, 1, 1),
 		},
 		{
 			name: "a check failed and the deadline ended inside the read after it",
@@ -749,9 +822,9 @@ func requiredRows() []vigilRow {
 
 	return []vigilRow{
 		{
-			// A third poll would end three seconds past the deadline.
+			// A third poll would leave too little time for the head read after it.
 			name:     "required check pending after every run completed, until the deadline",
-			verdicts: says(held), left: 12 * time.Second,
+			verdicts: says(held), left: 15 * time.Second,
 			want: holding, ops: readsOf(1, 3, 1), waits: polls(2, verdictPoll),
 		},
 		{
@@ -825,21 +898,51 @@ func TestAwaitVerdict_WhenTrunkRequiresChecks_WaitsForEveryRequiredName(t *testi
 
 func TestAwaitVerdict_WhenChecksStillRunAtTheDeadline_EndsPendingWithThem(t *testing.T) {
 	t.Parallel()
-	synctest.Test(t, func(t *testing.T) {
-		began := time.Now()
-		// One head poll, then two verdict polls; a third would end three seconds past the deadline.
-		v := newVigil(t, forgetest.Script{Head: shows(stale(), clean()), Verdict: says(running())}, 14*time.Second)
 
-		got := v.await(t)
+	reviewed := blockedByReview()
+	tests := []struct {
+		name  string
+		heads []forgetest.Answer[forge.Head]
+		// after is the head read after the checks, whose merge state the wait ends in.
+		after forge.Head
+		ops   []forgetest.Op
+		waits []time.Duration
+		// since is how long after the wait began its verdict wait did.
+		since time.Duration
+		left  time.Duration
+	}{
+		{
+			// One head poll, then two verdict polls; a third would leave too little time for the head
+			// read after it.
+			name:  "after a head poll and two verdict polls",
+			heads: shows(stale(), clean()), after: clean(), since: headPoll, left: 17 * time.Second,
+			ops: readsOf(2, 3, 1), waits: slices.Concat(polls(1, headPoll), polls(2, verdictPoll)),
+		},
+		{
+			// No poll fits in five seconds with the head read after it: the head is read at once.
+			name:  "with five seconds left",
+			heads: shows(clean(), reviewed), after: reviewed, left: 5 * time.Second,
+			ops: readsOf(1, 1, 1),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				began := time.Now()
+				v := newVigil(t, forgetest.Script{Head: tt.heads, Verdict: says(running())}, tt.left)
 
-		want := concluded(landing.WaitPending, running(), 0, 0)
-		want.Stage = landing.StageVerdict
-		want.Since = began.Add(headPoll)
+				got := v.await(t)
 
-		assert.Check(t, is.DeepEqual(got, want))
-		assert.Check(t, is.DeepEqual(v.opsOf(), readsOf(2, 3, 1)))
-		assert.Check(t, is.DeepEqual(v.pauses(), slices.Concat(polls(1, headPoll), polls(2, verdictPoll))))
-	})
+				want := stateOf(concluded(landing.WaitPending, running(), 0, 0), tt.after)
+				want.Stage = landing.StageVerdict
+				want.Since = began.Add(tt.since)
+				assert.Check(t, is.DeepEqual(got, want))
+				assert.Check(t, is.DeepEqual(v.opsOf(), tt.ops))
+				assert.Check(t, is.DeepEqual(v.pauses(), tt.waits, cmpopts.EquateEmpty()))
+			})
+		})
+	}
 }
 
 func TestAwaitVerdict_WhenTheHeadAfterTheChecksIsNotRead_EndsPendingWithoutTheVerdict(t *testing.T) {
@@ -848,6 +951,7 @@ func TestAwaitVerdict_WhenTheHeadAfterTheChecksIsNotRead_EndsPendingWithoutTheVe
 	lateHead := forgetest.Answer[forge.Head]{Err: fmt.Errorf("gh: %w", context.DeadlineExceeded)}
 	tests := []struct {
 		name     string
+		want     landing.WaitStage
 		heads    []forgetest.Answer[forge.Head]
 		verdicts []forgetest.Answer[forge.Verdict]
 		ops      []forgetest.Op
@@ -855,25 +959,15 @@ func TestAwaitVerdict_WhenTheHeadAfterTheChecksIsNotRead_EndsPendingWithoutTheVe
 		left     time.Duration
 	}{
 		{
-			// The one poll ends on the deadline.
-			name:  "checks still running with five seconds left",
-			heads: shows(clean()), verdicts: says(running()), left: 5 * time.Second,
-			ops: readsOf(1, 1, 0), waits: polls(1, verdictPoll),
-		},
-		{
-			name:  "a check failed with its log held back and five seconds left",
-			heads: shows(clean()), verdicts: says(lintHeldBack()), left: 5 * time.Second,
-			ops: readsOf(1, 1, 0), waits: polls(1, verdictPoll),
-		},
-		{
-			name:  "the deadline ends inside the head read after green checks",
+			name: "the deadline ends inside the head read after green checks", want: landing.StageMergeState,
 			heads: append(shows(clean()), lateHead), verdicts: says(passing()),
 			ops: readsOf(1, 1, 1),
 		},
 		{
-			// Seven seconds leave room for one poll and then for the head read.
-			name:  "the deadline ends inside the head read after checks still running",
-			heads: append(shows(clean()), lateHead), verdicts: says(running()), left: 7 * time.Second,
+			// Ten seconds leave room for one poll and then for the head read, but not for a second poll
+			// with the head read after it.
+			name: "the deadline ends inside the head read after checks still running", want: landing.StageVerdict,
+			heads: append(shows(clean()), lateHead), verdicts: says(running()), left: 10 * time.Second,
 			ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
 		},
 	}
@@ -885,7 +979,7 @@ func TestAwaitVerdict_WhenTheHeadAfterTheChecksIsNotRead_EndsPendingWithoutTheVe
 
 				got := v.await(t)
 
-				want := stateOf(landing.Waited{Outcome: landing.WaitPending, Stage: landing.StageMergeState}, clean())
+				want := stateOf(landing.Waited{Outcome: landing.WaitPending, Stage: tt.want}, clean())
 				assert.Check(t, is.DeepEqual(got, want, cmpopts.EquateEmpty()))
 				assert.Check(t, is.DeepEqual(v.opsOf(), tt.ops, cmpopts.EquateEmpty()))
 				assert.Check(t, is.DeepEqual(v.pauses(), tt.waits, cmpopts.EquateEmpty()))
@@ -896,25 +990,34 @@ func TestAwaitVerdict_WhenTheHeadAfterTheChecksIsNotRead_EndsPendingWithoutTheVe
 
 func TestAwaitVerdict_WhenDeadlineEndedDuringTheWait_ReturnsTheEarlierMergeState(t *testing.T) {
 	t.Parallel()
-	synctest.Test(t, func(t *testing.T) {
-		script := forgetest.Script{
-			Head:    shows(clean(), tip(forge.MergeBlockedByReview, "BLOCKED")),
-			Verdict: says(passing()),
-			// The verdict read takes the whole time the wait had left, and answers once the context ended.
-			OnRead: func(call forgetest.Call) {
-				if call.Op == forgetest.OpVerdict {
-					time.Sleep(bound)
-					synctest.Wait()
+
+	tests := []struct {
+		name    string
+		want    landing.WaitStage
+		verdict forge.Verdict
+	}{
+		{name: "green checks", verdict: passing(), want: landing.StageMergeState},
+		{name: "checks still running", verdict: running(), want: landing.StageVerdict},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				script := forgetest.Script{
+					Head:    shows(clean(), blockedByReview()),
+					Verdict: says(tt.verdict),
+					// The verdict read takes the whole time the wait had left.
+					OnRead: slowVerdict(bound),
 				}
-			},
-		}
-		v := newVigil(t, script, bound)
+				v := newVigil(t, script, bound)
 
-		got := v.await(t)
+				got := v.await(t)
 
-		want := stateOf(landing.Waited{Outcome: landing.WaitPending, Stage: landing.StageMergeState}, clean())
-		assert.Check(t, is.DeepEqual(got, want, cmpopts.EquateEmpty()))
-	})
+				want := stateOf(landing.Waited{Outcome: landing.WaitPending, Stage: tt.want}, clean())
+				assert.Check(t, is.DeepEqual(got, want, cmpopts.EquateEmpty()))
+			})
+		})
+	}
 }
 
 // cutShort is one wait whose deadline ends inside a read or a poll.
@@ -1060,9 +1163,10 @@ func TestAwaitVerdict_WhenAReadFails_ReturnsAnErrorNamingTheRead(t *testing.T) {
 			heads: append(shows(clean()), failed), verdicts: says(passing()),
 		},
 		{
-			// Seven seconds leave room for one poll and then for this read, but not for a second poll.
+			// Ten seconds leave room for one poll and then for this read, but not for a second poll
+			// with this read after it.
 			name: "the merge state after checks that were still running", want: landing.StageMergeState,
-			heads: append(shows(clean()), failed), verdicts: says(running()), left: 7 * time.Second,
+			heads: append(shows(clean()), failed), verdicts: says(running()), left: 10 * time.Second,
 		},
 	}
 	for _, tt := range tests {

@@ -27,6 +27,10 @@ const (
 	// verdictPoll is how often the verdict is read: one read is several calls to GitHub, and
 	// no check concludes faster than a few seconds.
 	verdictPoll = 5 * time.Second
+	// headReadReserve is the time a verdict poll leaves before the deadline for the read of the
+	// head after the checks: one gh read of the head, without which a verdict of checks still
+	// running cannot be shown to be the pushed commit's.
+	headReadReserve = 3 * time.Second
 	// silentRetry is how long the verdict is read again while no workflow run has appeared and
 	// nothing failed: GitHub creates a push's workflow runs some seconds after the push, while an
 	// app or a status can report sooner, and CI that has not shown by then did not fire.
@@ -59,7 +63,9 @@ const (
 	WaitNothingReported WaitOutcome = "nothing-reported"
 	// WaitPending is a wait that ended before the forge had an answer: the deadline ended it,
 	// or the stage's own window did when Waited.Window is set. Waited.Stage says what it was
-	// waiting for.
+	// waiting for: checks still running at the deadline end it at StageVerdict, holding their
+	// verdict when the read of the head after them showed the pushed commit, and none, with
+	// Waited.Since zero, when the deadline took that read.
 	WaitPending WaitOutcome = "pending"
 	// WaitMoved is a pull request whose head, read after the checks, is no longer the pushed
 	// commit; Waited.MovedTo names the commit it is on. The forge reads the checks of the pull
@@ -202,18 +208,22 @@ func endedByDeadline(err error) bool {
 // WaitNothingReported into them by the merge state it reads after nothing reported, when the
 // trunk has no CI.
 //
-// No poll is started that would end past ctx's deadline.
+// No poll of the head or of the merge state is started that would end past ctx's deadline, and
+// no poll of the verdict that would leave less than 3 seconds before it: that time is kept for the
+// read of the head after the checks, which is made at once instead.
 // A deadline that ends a stage, inside a read or a poll or between two, is the outcome
 // WaitPending with that stage and no error, but for a red verdict still waiting for its failed
 // log when the deadline leaves no time for another poll and the read of the head after the
 // checks still shows the pushed commit, which stays WaitRed. A merge state
 // still unknown after its 30 seconds, with time left before the deadline, is WaitPending too,
 // with Waited.Window set. A read that fails for any other reason is a *WaitError naming its
-// stage. The read of the merge state made after the checks belongs to StageMergeState: its
-// failure is a *WaitError, and the deadline ending before it is made or inside it is
-// WaitPending at that stage with no verdict, whatever the checks said, since the checks are
-// read for the pull request's current head and only that read shows it is still the pushed
-// commit.
+// stage.
+//
+// The read of the head and merge state made after the checks belongs to StageMergeState: its
+// failure is a *WaitError at that stage. The deadline ending before it is made or inside it is
+// WaitPending with no verdict, since the checks are read for the pull request's current head and
+// only that read shows it is still the pushed commit: at StageVerdict when the checks were still
+// running, and at StageMergeState when they had concluded.
 //
 // It tells deps' progress hook when it starts waiting for the checks, and again once it has waited
 // for the merge state, and gives deps' logger a record of each read of the merge state and of the
@@ -348,12 +358,14 @@ func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 	// them showing the pushed commit makes the verdict that commit's: without one, it may be a
 	// newer commit's and is dropped.
 	if ctxEnded(ctx) {
-		return waited.unconfirmed(), StageMergeState, cmp.Or(ctx.Err(), errOutOfTime)
+		lost := cmp.Or(ctx.Err(), errOutOfTime)
+
+		return waited.unconfirmed(), lostStage(err, lost), lost
 	}
 
 	after, afterErr := w.head(ctx)
 	if afterErr != nil {
-		return waited.unconfirmed(), StageMergeState, afterErr
+		return waited.unconfirmed(), lostStage(err, afterErr), afterErr
 	}
 
 	w.logState(ctx, after, noPoll)
@@ -370,6 +382,18 @@ func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 	}
 
 	return waited, StageVerdict, err
+}
+
+// lostStage returns the stage a wait ends in when the read of the head after the checks was not
+// made or failed with headErr, checksErr being how the wait for the checks ended: StageVerdict when
+// the checks were still running and the deadline took the read, since the time limit is what left
+// them unconcluded, and the read's own StageMergeState otherwise.
+func lostStage(checksErr, headErr error) WaitStage {
+	if checksErr != nil && endedByDeadline(headErr) {
+		return StageVerdict
+	}
+
+	return StageMergeState
 }
 
 // readied runs the stages before the checks: until the pushed commit is the head, then until its
@@ -534,7 +558,7 @@ func (w waiter) concluded(ctx context.Context, waited *Waited) (forge.Verdict, W
 			return last, outcome, nil
 		}
 
-		if err = pause(ctx, verdictPoll); err != nil {
+		if err = pollVerdict(ctx); err != nil {
 			outcome, err = cutShort(outcome, err)
 
 			return last, outcome, err
@@ -594,7 +618,9 @@ func ctxEnded(ctx context.Context) bool {
 
 // pause waits until d has passed, or returns ctx's error as soon as ctx ends. It returns
 // errOutOfTime, without waiting, when the wait would end past ctx's deadline, and after
-// waiting when it ended on the deadline, which leaves no time for a read.
+// waiting when it ended on the deadline, which leaves no time for a read. The polls of the head
+// and of the merge state call it as is; the verdict poll goes through pollVerdict, which keeps
+// headReadReserve on top.
 func pause(ctx context.Context, d time.Duration) error {
 	if deadline, ok := ctx.Deadline(); ok && d > time.Until(deadline) {
 		return errOutOfTime
@@ -614,6 +640,17 @@ func pause(ctx context.Context, d time.Duration) error {
 	}
 
 	return nil
+}
+
+// pollVerdict waits verdictPoll before the next read of the verdict, as pause does, but returns
+// errOutOfTime without waiting when the poll would leave less than headReadReserve before ctx's
+// deadline, so that the read of the head after the checks is still made.
+func pollVerdict(ctx context.Context) error {
+	if deadline, ok := ctx.Deadline(); ok && verdictPoll+headReadReserve > time.Until(deadline) {
+		return errOutOfTime
+	}
+
+	return pause(ctx, verdictPoll)
 }
 
 // silent reports whether nothing has reported on the commit at all: no check and no run.
