@@ -19,6 +19,7 @@ the checks. `ils merge` squash-merges that pull request once its checks are gree
   - [Exit codes](#exit-codes)
     - [When no check reports](#when-no-check-reports)
   - [JSON output](#json-output)
+  - [Terminal output](#terminal-output)
   - [After a green push](#after-a-green-push)
 - [Merge](#merge)
   - [What merge refuses](#what-merge-refuses)
@@ -41,9 +42,10 @@ Next: write the pull request's title and body as the squash commit's message wit
 ```
 
 The `Next:` line is cut short here; it goes on to name the `gh pr edit` command and `ils merge`,
-as [After a green push](#after-a-green-push) shows. Every result ends with one `Next:` line (a
-`next` field with `--json`), and the exit code says which reaction fits, so a caller that reads no
-prose still reacts correctly.
+as [After a green push](#after-a-green-push) shows. Every result that leaves something to do ends
+with one `Next:` line (a `next` field with `--json`). A merged result has nothing left to do: its
+text has no `Next:` line, and its JSON carries `"next": "none"`. The exit code says which reaction
+fits, so a caller that reads no prose still reacts correctly.
 
 ## Install
 
@@ -110,6 +112,8 @@ task install
 ils push          # push the branch, open its pull request on the first push, wait for the checks
 ils push --json   # the same result as one JSON object
 ils push --help   # usage of push
+ils push -d       # the same push, tracing each git and gh call and wait decision on stderr
+ils push --no-color  # the same push, with no color
 ils merge         # squash-merge the pull request once its checks are green
 ils merge --json  # the same result as one JSON object
 ils help          # usage of ils and its commands
@@ -158,8 +162,9 @@ or file; at most it has fetched from origin. It refuses:
 - a `gh` older than 2.73.0, or one whose version `ils` cannot read;
 - a `gh` not logged in to origin's host (this is also how `ils` refuses a host that is not GitHub);
 - a fork, or a repository you cannot push to;
-- any word after `push` other than `--json`, `--help`, or `-h`, and a `--json=<value>` whose value
-  is not `true` or `false`;
+- any word after `push` other than `--json`, `-d` or `--debug`, `--no-color`, `--help`, or `-h`,
+  and a `--json=<value>`, `--debug=<value>`, or `--no-color=<value>` whose value is not `true` or
+  `false`;
 - a precondition read that the time limit cut short: run `ils push` again.
 
 ### Exit codes
@@ -172,6 +177,9 @@ or file; at most it has fetched from origin. It refuses:
 | 3    | ask                  | Reserved; not used by this version.                                                                                                                                                                                              |
 | 4    | pending              | GitHub had not finished when the command stopped waiting, for example checks still running or not yet reported. Run `ils push` again; a merge that was already done elsewhere names `ils merge` instead.                         |
 | 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                           |
+
+Every outcome but done prints its reason on the line above `Next:`, labeled by outcome:
+`Refused:`, `Broke:`, `Pending:`, or `Delivered, not green:`.
 
 #### When no check reports
 
@@ -199,7 +207,7 @@ When no check reports for the pushed commit, the exit depends on whether the rep
 | `next`      | string           | What to do next, as on the `Next:` line.                                                                                             |
 | `reason`    | string           | Why the command did not end as `done`. Present on every other outcome.                                                               |
 | `excerpt`   | string           | Third-party text, such as part of a failed check's log. Absent when empty.                                                           |
-| `lines`     | array of strings | What happened, in order. Absent when empty.                                                                                          |
+| `lines`     | array of strings | What happened, in order; never a line that only restates the reason. Absent when empty.                                              |
 | `exit_code` | integer          | The process exit code.                                                                                                               |
 | `payload`   | object           | The command's structured detail; a push puts it under `payload.push`. Absent when empty.                                             |
 
@@ -214,6 +222,27 @@ When no check reports for the pushed commit, the exit depends on whether the rep
 | `merge_state` | string           | `clean`, `behind`, `conflicting`, `draft`, `blocked-by-review`, `blocked-by-missing-check`, `blocked-other`, or `unknown`. |
 | `checks`      | array of objects | One per check, with `name`, `bucket` (`pass`, `fail`, `pending`, `skipped`, or `canceled`), `workflow`, and `link`.        |
 | `failed_log`  | string           | The log of a failed check. Absent when empty.                                                                              |
+
+### Terminal output
+
+At a terminal, `ils push` and `ils merge` show their progress as they run:
+
+- **Spinner:** when stderr is a terminal and `-d` is off, one line on stderr names the running
+  step and how long it has run, and is erased before anything else prints.
+- **Step lines:** when stdout is a terminal, each step prints on stdout as soon as it succeeds,
+  with a check mark and its duration. The result then prints only its other lines, its excerpt,
+  the reason, and `Next:`.
+- **Color:** a stream that is a terminal gets color: outcome labels are red or yellow, and branch
+  names, pull request numbers, and `ils` commands are bold blue.
+
+A stream that is not a terminal gets none of this: stdout prints the whole result at the end, and
+stderr stays empty unless `-d` is on. `--json` output is never colored or streamed. `TERM=dumb`
+counts as no terminal. `NO_COLOR` and `--no-color` turn color off on both streams;
+`CLICOLOR_FORCE` turns it on for a stream that is not a terminal, and `NO_COLOR` and `--no-color`
+win over it.
+
+`-d` (or `--debug`) prints one line on stderr for each `git` and `gh` call and each decision of
+the wait, timed from launch, in place of the spinner. It changes neither stdout nor the exit code.
 
 ### After a green push
 
