@@ -4,6 +4,7 @@ package forgetest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 
 	"github.com/jeffzi/ils/internal/forge"
@@ -36,9 +37,14 @@ const (
 var ErrUnscripted = errors.New("forgetest: call not in the script")
 
 // Answer is one scripted step of an operation: Err when it is set, Value otherwise.
+//
+// A held answer gives neither: the call returns only once its context has ended, with an
+// error that wraps the context's error, so callers can match it with errors.Is against
+// context.DeadlineExceeded or context.Canceled.
 type Answer[T any] struct {
 	Value T
 	Err   error
+	Hold  bool
 }
 
 // Script states the answers the fake gives.
@@ -100,76 +106,76 @@ func (f *Fake) Calls() []Call {
 }
 
 // Identity answers from the script's Identity sequence.
-func (f *Fake) Identity(_ context.Context, repo forge.Repo) (forge.Repo, error) {
+func (f *Fake) Identity(ctx context.Context, repo forge.Repo) (forge.Repo, error) {
 	f.tb.Helper()
 
-	return answer(f, f.script.Identity, Call{Op: OpIdentity, Repo: repo})
+	return answer(ctx, f, f.script.Identity, Call{Op: OpIdentity, Repo: repo})
 }
 
 // FindChanges answers from the script's FindChanges sequence.
-func (f *Fake) FindChanges(_ context.Context, repo forge.Repo, branch string) ([]forge.Change, error) {
+func (f *Fake) FindChanges(ctx context.Context, repo forge.Repo, branch string) ([]forge.Change, error) {
 	f.tb.Helper()
 
-	return answer(f, f.script.FindChanges, Call{Op: OpFindChanges, Repo: repo, Branch: branch})
+	return answer(ctx, f, f.script.FindChanges, Call{Op: OpFindChanges, Repo: repo, Branch: branch})
 }
 
 // OpenChange answers from the script's OpenChange sequence.
-func (f *Fake) OpenChange(_ context.Context, repo forge.Repo, change forge.NewChange) (forge.ChangeRef, error) {
+func (f *Fake) OpenChange(ctx context.Context, repo forge.Repo, change forge.NewChange) (forge.ChangeRef, error) {
 	f.tb.Helper()
 
-	return answer(f, f.script.OpenChange, Call{Op: OpOpenChange, Repo: repo, Change: change})
+	return answer(ctx, f, f.script.OpenChange, Call{Op: OpOpenChange, Repo: repo, Change: change})
 }
 
 // Head answers from the script's Head sequence.
-func (f *Fake) Head(_ context.Context, repo forge.Repo, query forge.HeadQuery) (forge.Head, error) {
+func (f *Fake) Head(ctx context.Context, repo forge.Repo, query forge.HeadQuery) (forge.Head, error) {
 	f.tb.Helper()
 
-	return answer(f, f.script.Head, Call{Op: OpHead, Repo: repo, Head: query})
+	return answer(ctx, f, f.script.Head, Call{Op: OpHead, Repo: repo, Head: query})
 }
 
 // TrunkProtection answers from the script's TrunkProtection sequence.
-func (f *Fake) TrunkProtection(_ context.Context, repo forge.Repo, trunk string) (forge.Protection, error) {
+func (f *Fake) TrunkProtection(ctx context.Context, repo forge.Repo, trunk string) (forge.Protection, error) {
 	f.tb.Helper()
 
-	return answer(f, f.script.TrunkProtection, Call{Op: OpTrunkProtection, Repo: repo, Branch: trunk})
+	return answer(ctx, f, f.script.TrunkProtection, Call{Op: OpTrunkProtection, Repo: repo, Branch: trunk})
 }
 
 // Verdict answers from the script's Verdict sequence.
-func (f *Fake) Verdict(_ context.Context, repo forge.Repo, query forge.VerdictQuery) (forge.Verdict, error) {
+func (f *Fake) Verdict(ctx context.Context, repo forge.Repo, query forge.VerdictQuery) (forge.Verdict, error) {
 	f.tb.Helper()
 
-	return answer(f, f.script.Verdict, Call{Op: OpVerdict, Repo: repo, Query: query})
+	return answer(ctx, f, f.script.Verdict, Call{Op: OpVerdict, Repo: repo, Query: query})
 }
 
 // HasTrunkCI answers from the script's HasTrunkCI sequence.
-func (f *Fake) HasTrunkCI(_ context.Context, repo forge.Repo, trunk string) (bool, error) {
+func (f *Fake) HasTrunkCI(ctx context.Context, repo forge.Repo, trunk string) (bool, error) {
 	f.tb.Helper()
 
-	return answer(f, f.script.HasTrunkCI, Call{Op: OpHasTrunkCI, Repo: repo, Branch: trunk})
+	return answer(ctx, f, f.script.HasTrunkCI, Call{Op: OpHasTrunkCI, Repo: repo, Branch: trunk})
 }
 
 // Message answers from the script's Message sequence.
-func (f *Fake) Message(_ context.Context, repo forge.Repo, number int) (forge.Message, error) {
+func (f *Fake) Message(ctx context.Context, repo forge.Repo, number int) (forge.Message, error) {
 	f.tb.Helper()
 
-	return answer(f, f.script.Message, Call{Op: OpMessage, Repo: repo, Number: number})
+	return answer(ctx, f, f.script.Message, Call{Op: OpMessage, Repo: repo, Number: number})
 }
 
 // Land runs the script's OnLand hook, then answers from its Land sequence.
-func (f *Fake) Land(_ context.Context, repo forge.Repo, landing forge.Landing) error {
+func (f *Fake) Land(ctx context.Context, repo forge.Repo, landing forge.Landing) error {
 	f.tb.Helper()
 
-	return answerError(f, f.script.Land, Call{Op: OpLand, Repo: repo, Landing: landing})
+	return answerError(ctx, f, f.script.Land, Call{Op: OpLand, Repo: repo, Landing: landing})
 }
 
 // DeleteBranch answers from the script's DeleteBranch sequence.
-func (f *Fake) DeleteBranch(_ context.Context, repo forge.Repo, branch string) error {
+func (f *Fake) DeleteBranch(ctx context.Context, repo forge.Repo, branch string) error {
 	f.tb.Helper()
 
-	return answerError(f, f.script.DeleteBranch, Call{Op: OpDeleteBranch, Repo: repo, Branch: branch})
+	return answerError(ctx, f, f.script.DeleteBranch, Call{Op: OpDeleteBranch, Repo: repo, Branch: branch})
 }
 
-func answerError(f *Fake, sequence []error, call Call) error {
+func answerError(ctx context.Context, f *Fake, sequence []error, call Call) error {
 	f.tb.Helper()
 
 	answers := make([]Answer[struct{}], len(sequence))
@@ -177,12 +183,12 @@ func answerError(f *Fake, sequence []error, call Call) error {
 		answers[i].Err = err
 	}
 
-	_, err := answer(f, answers, call)
+	_, err := answer(ctx, f, answers, call)
 
 	return err
 }
 
-func answer[T any](f *Fake, sequence []Answer[T], call Call) (T, error) {
+func answer[T any](ctx context.Context, f *Fake, sequence []Answer[T], call Call) (T, error) {
 	f.tb.Helper()
 
 	var zero T
@@ -203,14 +209,21 @@ func answer[T any](f *Fake, sequence []Answer[T], call Call) (T, error) {
 		return zero, ErrUnscripted
 	}
 
-	step := min(f.steps[call.Op], len(sequence)-1)
-	f.steps[call.Op] = step + 1
+	index := min(f.steps[call.Op], len(sequence)-1)
+	f.steps[call.Op] = index + 1
+	step := sequence[index]
 
-	if err := sequence[step].Err; err != nil {
-		return zero, err
+	if step.Hold {
+		<-ctx.Done()
+
+		return zero, fmt.Errorf("forgetest: held %s: %w", call.Op, ctx.Err())
 	}
 
-	return sequence[step].Value, nil
+	if step.Err != nil {
+		return zero, step.Err
+	}
+
+	return step.Value, nil
 }
 
 // reads reports whether op only reads what the forge holds.
