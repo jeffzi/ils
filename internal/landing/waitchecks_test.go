@@ -1,8 +1,6 @@
 package landing_test
 
 import (
-	"context"
-	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -107,9 +105,16 @@ func redRows() []vigilRow {
 			want: concluded(landing.WaitRed, unfinished, 0, 0), ops: readsOf(1, 3, 1), waits: polls(2, verdictPoll),
 		},
 		{
-			name: "a check failed and the deadline ended inside the read after it",
+			name: "a check failed and the time limit ended inside the read after it",
 			verdicts: []forgetest.Answer[forge.Verdict]{
-				{Value: unfinished}, {Err: fmt.Errorf("gh: %w", context.DeadlineExceeded)},
+				{Value: unfinished}, {Err: byTimeLimit().of("gh")},
+			},
+			want: concluded(landing.WaitRed, unfinished, 0, 0), ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
+		},
+		{
+			name: "a check failed and an interrupt ended the read after it",
+			verdicts: []forgetest.Answer[forge.Verdict]{
+				{Value: unfinished}, {Err: byInterrupt().of("gh")},
 			},
 			want: concluded(landing.WaitRed, unfinished, 0, 0), ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
 		},

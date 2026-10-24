@@ -86,11 +86,18 @@ func (d *delivery) pushTip(ctx context.Context, deps Deps) *result.Result {
 		return nil
 	}
 
-	if errors.Is(err, context.DeadlineExceeded) {
+	if interrupted(err) {
 		return d.endedSaying(
-			result.Say("Started the push of %s at %s when the time limit ended; it may or may not have taken",
+			result.Say("Started the push of %s at %s when "+runInterrupted+"; it may or may not have taken",
 				d.markedBranch(), d.markedTip()),
-			result.Broke, result.Say("the time limit ended during the push"), d.req.again())
+			result.Broke, result.Say(runInterrupted+" during the push"), d.req.again())
+	}
+
+	if timedOut(err) {
+		return d.endedSaying(
+			result.Say("Started the push of %s at %s when "+timeLimitEnded+"; it may or may not have taken",
+				d.markedBranch(), d.markedTip()),
+			result.Broke, result.Say(timeLimitEnded+" during the push"), d.req.again())
 	}
 
 	if refused, ok := errors.AsType[*git.PushError](err); ok {
@@ -126,10 +133,15 @@ func (d *delivery) findOrOpen(ctx context.Context, deps Deps) *result.Result {
 		return nil
 	case errors.Is(err, forge.ErrChangeExists):
 		return d.findAgain(ctx, deps)
-	case errors.Is(err, context.DeadlineExceeded):
+	case interrupted(err):
 		return d.endedSaying(
-			result.Say("Started opening the pull request when the time limit ended; it may or may not have been opened"),
-			result.Broke, result.Say("the time limit ended while opening the pull request"),
+			result.Say("Started opening the pull request when "+runInterrupted+"; it may or may not have been opened"),
+			result.Broke, result.Say(runInterrupted+" while opening the pull request"),
+			d.req.again())
+	case timedOut(err):
+		return d.endedSaying(
+			result.Say("Started opening the pull request when "+timeLimitEnded+"; it may or may not have been opened"),
+			result.Broke, result.Say(timeLimitEnded+" while opening the pull request"),
 			d.req.again())
 	}
 
@@ -177,11 +189,11 @@ func (d *delivery) markedTip() result.Name {
 }
 
 // unread returns the result for a read that failed with err after the writes: pending when the
-// deadline cut it short, since nothing more will change and the next run resumes on the same
-// commit, and broke otherwise.
+// time limit or an interrupt cut it short, since nothing more will change and the next run
+// resumes on the same commit, and broke otherwise.
 func (d *delivery) unread(read string, err error) *result.Result {
-	if errors.Is(err, context.DeadlineExceeded) {
-		return d.ended(result.Pending, cutShortReading(read), d.req.again())
+	if endedEarly(err) {
+		return d.ended(result.Pending, cutShortReading(interrupted(err), read), d.req.again())
 	}
 
 	line, reason := couldNotRead(read, err)
@@ -277,14 +289,15 @@ func (d *delivery) mergeNext() result.Next {
 // nothing reported for while the trunk requires none of its checks. It returns nil when the
 // question does not arise or the repository has CI; otherwise the push ends as a green push does,
 // with a line saying nothing verified the commit: done, unless the merge state read after the
-// checks says the pull request conflicts with the trunk or is behind it. A deadline that ends
-// before or inside the read ends the push pending, and any other failure of the read ends it broke.
+// checks says the pull request conflicts with the trunk or is behind it. The time limit or an
+// interrupt ending before or inside the read ends the push pending, and any other failure of the
+// read ends it broke.
 func (d *delivery) withoutCI(ctx context.Context, deps Deps, required []string) *result.Result {
 	without, err := d.waited.trunkWithoutCI(ctx, deps, d.Ready, required)
 
 	switch {
-	case errors.Is(err, context.DeadlineExceeded):
-		report := d.waited.ciCutShortReport()
+	case endedEarly(err):
+		report := d.waited.ciCutShortReport(interrupted(err))
 		d.lines = append(d.lines, report.lines...)
 
 		return d.ended(result.Pending, report.reason, report.next)

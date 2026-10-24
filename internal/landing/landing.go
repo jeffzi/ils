@@ -31,6 +31,30 @@ const (
 // because result.NextStep accepts only constant expressions.
 const thenRunAgain = ", then run %s again"
 
+// timeLimitEnded and runInterrupted are the clauses a result says a call or a wait was cut short
+// with: by the end of the time limit, or by an interrupt. They stay untyped so that result.Say
+// accepts wording built on them.
+const (
+	timeLimitEnded = "the time limit ended"
+	runInterrupted = "ils was interrupted"
+)
+
+// interrupted reports whether err says an interrupt cut a call short. Only an interrupt cancels
+// the context a command runs under, so every cancellation is one.
+func interrupted(err error) bool {
+	return errors.Is(err, context.Canceled)
+}
+
+// timedOut reports whether err says the time limit cut a call short.
+func timedOut(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded)
+}
+
+// endedEarly reports whether err says the time limit or an interrupt cut a call short.
+func endedEarly(err error) bool {
+	return timedOut(err) || interrupted(err)
+}
+
 // PushCommand and MergeCommand are the command words of `ils push` and `ils merge`. They stay
 // untyped so that a next step can name them as result.NextCommand's constant wording.
 const (
@@ -330,17 +354,20 @@ func (r Request) Refused(reason result.Phrase, next result.Next) *result.Result 
 }
 
 // unread returns the result for a read made before any write that failed with err: a refusal
-// when the tool the read runs is not installed or the context's deadline cut the read short,
-// since nothing was written and running again is safe, and broke otherwise.
+// when the tool the read runs is not installed or the time limit or an interrupt cut the read
+// short, since nothing was written and running again is safe, and broke otherwise.
 func (r Request) unread(read string, err error) *result.Result {
 	if stop := r.notInstalled(err); stop != nil {
 		return stop
 	}
 
-	if errors.Is(err, context.DeadlineExceeded) {
-		return r.Refused(
-			result.Say("the time limit ended while reading %s; nothing was written", read),
-			r.again())
+	if endedEarly(err) {
+		reason := result.Say(timeLimitEnded+" while reading %s; nothing was written", read)
+		if interrupted(err) {
+			reason = result.Say(runInterrupted+" while reading %s; nothing was written", read)
+		}
+
+		return r.Refused(reason, r.again())
 	}
 
 	line, reason := couldNotRead(read, err)
@@ -370,9 +397,9 @@ func (r Request) again() result.Next {
 // unreached returns the result for a call to origin that failed with err: the refusal reason
 // when origin did not answer, and what unread returns otherwise.
 func (r Request) unreached(read string, err error, reason result.Phrase) *result.Result {
-	// The deadline is excluded: a call to origin that it cut short is also a *git.RemoteError, and
-	// unread words it as the time limit ending.
-	if _, ok := errors.AsType[*git.RemoteError](err); ok && !errors.Is(err, context.DeadlineExceeded) {
+	// The time limit and an interrupt are excluded: a call to origin that either cut short is also a
+	// *git.RemoteError, and unread words it as what cut it short.
+	if _, ok := errors.AsType[*git.RemoteError](err); ok && !endedEarly(err) {
 		return r.Refused(reason, r.again())
 	}
 

@@ -3,10 +3,8 @@ package landing_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -542,78 +540,77 @@ func TestPreconditions_WhenDirectoryIsNotARepository_BrokeNamingTheRead(t *testi
 	assertBrokeReadBy(t, got, pushCommand(), readStanding)
 }
 
-// unfinished is a deadline that ends during one read of the preconditions.
+// unfinished is a cut that ends one read of the preconditions.
 type unfinished struct {
-	// arrange returns the context to run under and the forge's script.
-	arrange func(t *testing.T) (context.Context, forgetest.Script)
+	// arrange returns the context to run under and the forge's script, for the cut c.
+	arrange func(t *testing.T, c cut) (context.Context, forgetest.Script)
 	name    string
 	read    string
 	// ops are the forge operations made before the refusal.
 	ops []forgetest.Op
 }
 
-// unfinishedReads are the deadlines that end during one read of the preconditions, one per read.
+// unfinishedReads are the cuts that end one read of the preconditions, one per read.
 func unfinishedReads() []unfinished {
 	return []unfinished{
 		{
 			name: "before the first read",
 			read: readGitVersion,
-			arrange: func(t *testing.T) (context.Context, forgetest.Script) {
+			arrange: func(t *testing.T, c cut) (context.Context, forgetest.Script) {
 				t.Helper()
 
-				ctx, cancel := context.WithDeadline(t.Context(), time.Unix(0, 0))
-				t.Cleanup(cancel)
-
-				return ctx, forgetest.Script{}
+				return c.spent(t), forgetest.Script{}
 			},
 		},
 		{
 			name: "during the forge's identity read",
 			read: readIdentity,
 			ops:  identityRead(),
-			arrange: func(t *testing.T) (context.Context, forgetest.Script) {
+			arrange: func(t *testing.T, c cut) (context.Context, forgetest.Script) {
 				t.Helper()
 
-				return t.Context(), fails(fmt.Errorf("gh repo view: %w", context.DeadlineExceeded))
+				return t.Context(), fails(c.of("gh repo view"))
 			},
 		},
 		{
 			name: "between the identity read and the trunk read",
 			read: readTrunk,
 			ops:  identityRead(),
-			arrange: func(t *testing.T) (context.Context, forgetest.Script) {
+			arrange: func(t *testing.T, c cut) (context.Context, forgetest.Script) {
 				t.Helper()
 
 				ended := make(chan struct{})
 				script := allowed()
 				script.OnRead = func(forgetest.Call) { close(ended) }
 
-				return gittest.Ending(t.Context(), ended, context.DeadlineExceeded), script
+				return c.once(t.Context(), ended), script
 			},
 		},
 	}
 }
 
-func TestPreconditions_WhenDeadlineEndsDuringRead_RefusesNamingTheRead(t *testing.T) {
+func TestPreconditions_WhenAReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range unfinishedReads() {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			ctx, script := tt.arrange(t)
-			s := newScene(t, nil, script, false)
-			before := s.refs()
+	for _, c := range cuts() {
+		for _, tt := range unfinishedReads() {
+			t.Run(c.name+"/"+tt.name, func(t *testing.T) {
+				t.Parallel()
+				ctx, script := tt.arrange(t, c)
+				s := newScene(t, nil, script, false)
+				before := s.refs()
 
-			_, stop := landing.Preconditions(ctx, s.deps, pushRequest())
+				_, stop := landing.Preconditions(ctx, s.deps, pushRequest())
 
-			got := stopped(t, stop, "a refusal")
-			assertStopped(t, got, result.Refused)
+				got := stopped(t, stop, "a refusal")
+				assertStopped(t, got, result.Refused)
 
-			text, _ := shown(t, got, s.gitDir)
-			assert.Check(t, is.DeepEqual(text, overtimeText(pushCommand(), tt.read)))
+				text, _ := shown(t, got, s.gitDir)
+				assert.Check(t, is.DeepEqual(text, overtimeText(pushCommand(), c, tt.read)))
 
-			assertRefsUnchanged(t, s, before)
-			assertAsked(t, s, tt.ops)
-		})
+				assertRefsUnchanged(t, s, before)
+				assertAsked(t, s, tt.ops)
+			})
+		}
 	}
 }
