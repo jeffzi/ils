@@ -1,9 +1,7 @@
 package landing_test
 
 import (
-	"context"
 	"errors"
-	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -117,25 +115,17 @@ func pending(reason, lines string, payload *result.Push) finish {
 	}
 }
 
-// cutShortRead is a push to the open pull request that ended pending because the time limit ended
-// while reading read.
-func cutShortRead(read string) finish {
-	return pending("the time limit ended while reading "+read+"; nothing more will change", cleanLine(),
+// cutShortRead is a push to the open pull request that ended pending because c ended a read of
+// read.
+func cutShortRead(c cut, read string) finish {
+	return pending(c.ends+" while reading "+read+"; nothing more will change", cleanLine(),
 		detail(forge.VerdictNone, forge.MergeClean))
 }
 
-// pushCutShortRows are the pushes whose deadline ended inside a read of the wait.
+// pushCutShortRows are the pushes whose wait a cut ended inside a read or a poll, for each cut. A
+// cut in a poll is not known ahead of it.
 func pushCutShortRows() []pushRow {
-	ended := fmt.Errorf("gh: %w", context.DeadlineExceeded)
-
-	return []pushRow{
-		{
-			name: "the deadline ends in the first read of the checks",
-			script: reusing().with(func(script *forgetest.Script, _ string) {
-				script.Verdict = []forgetest.Answer[forge.Verdict]{{Err: ended}}
-			}),
-			want: cutShortRead(readChecks),
-		},
+	rows := []pushRow{
 		{
 			// One poll fits in nine seconds with the 3 seconds kept for the head read after it; the time
 			// limit ends the read after the poll a second in, and the head is read with 3 seconds left.
@@ -147,13 +137,40 @@ func pushCutShortRows() []pushRow {
 				"Still running after 6 seconds: test\n"+blockedLine(),
 				detail(forge.VerdictPending, forge.MergeBlockedByReview, running().Checks...)),
 		},
-		{
-			name:   "the deadline ends in the read of the merge state after the checks",
-			script: reusing(passing()).thenFailingHead(ended),
-			want: pending("GitHub did not say whether pull request #12 can merge before the time limit", "",
-				detail(forge.VerdictNone, forge.MergeClean)),
-		},
 	}
+
+	for _, c := range cuts() {
+		unsaid := "GitHub did not say whether pull request #12 can merge " + c.before
+		rows = append(rows,
+			pushRow{
+				name: c.name + " ends the first read of the checks", want: cutShortRead(c, readChecks),
+				script: reusing().with(func(script *forgetest.Script, _ string) {
+					script.Verdict = []forgetest.Answer[forge.Verdict]{{Err: c.of("gh")}}
+				}),
+			},
+			pushRow{
+				name:   c.name + " ends the read of the merge state after the checks",
+				script: reusing(passing()).thenFailingHead(c.of("gh")),
+				want:   pending(unsaid, "", detail(forge.VerdictNone, forge.MergeClean)),
+			},
+			pushRow{
+				name: c.name + " ends a poll of the head", script: reusing().showing(stale()), cut: c.inPoll,
+				want: pending("GitHub did not show "+tipMark+" on pull request #12 "+c.before, "",
+					detail(forge.VerdictNone, forge.MergeClean)),
+			},
+			pushRow{
+				name: c.name + " ends a poll of the merge state", cut: c.inPoll,
+				script: reusing().showing(inState(forge.MergeUnknown, "UNKNOWN")),
+				want:   pending(unsaid, "", detail(forge.VerdictNone, forge.MergeUnknown)),
+			},
+			pushRow{
+				name: c.name + " ends a poll of checks still running", script: reusing(running()), cut: c.inPoll,
+				want: cutShortRead(c, readChecks),
+			},
+		)
+	}
+
+	return rows
 }
 
 // pushRunlessRows are the pushes whose deadline ended inside the 20 seconds a commit is given

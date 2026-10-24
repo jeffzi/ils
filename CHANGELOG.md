@@ -12,6 +12,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Add a live progress display at a terminal, with `--no-color` to turn its color off (also honoring
   `NO_COLOR`, `CLICOLOR_FORCE`, and `TERM=dumb`).
 - Add `-d`/`--debug`, which traces each `git` and `gh` call and each wait decision on stderr.
+- Print the result and exit code of the step in progress when Ctrl-C or SIGTERM stops `ils push` or
+  `ils merge`.
 
 ### Changed
 

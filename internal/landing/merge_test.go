@@ -3,7 +3,6 @@ package landing_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"slices"
 	"strconv"
@@ -170,8 +169,8 @@ func ending(text string) mergeEnd { return mergeEnd{text: text} }
 type mergeRow struct {
 	// arrange changes the repository and returns how the run must end.
 	arrange func(*gittest.Fixture) mergeEnd
-	// deadline returns the context to run under once the scene is built; nil is the test's own.
-	deadline func(t *testing.T, s *scene) context.Context
+	// runCtx returns the context to run under once the scene is built; nil is the test's own.
+	runCtx func(t *testing.T, s *scene) context.Context
 	// script returns the forge's answers once the head of pull request 12 is known.
 	script forgeFor
 	name   string
@@ -281,7 +280,7 @@ func mergeRowOn(t *testing.T, tt mergeRow) (mergeEnd, mergeRun) {
 				s.stopAnswering(t, tt.answered)
 			}
 		},
-		deadline:  tt.deadline,
+		runCtx:    tt.runCtx,
 		offline:   tt.offline,
 		unbounded: true,
 	})
@@ -595,22 +594,26 @@ func unansweredMerges() []mergeRow {
 	}
 }
 
-// overtimeMerges are the runs of `ils merge` whose deadline ends during one of their reads.
+// overtimeMerges are the runs of `ils merge` that a cut ends during one of their reads, for each cut.
 func overtimeMerges() []mergeRow {
-	deadline := fmt.Errorf("gh: %w", context.DeadlineExceeded)
+	var rows []mergeRow
 
-	return []mergeRow{
-		{
-			name: "during the fetch of the head of the pull request", script: merging(), ops: changesRead(),
-			deadline: stalling(2), outcome: result.Refused, fetches: true, known: true,
-			arrange: pastHead(overtimeText(mergeCommand(), readPullHead)),
-		},
-		{
-			name: "during the read of the trunk's rules", script: merging().failingRules(deadline), ops: rulesRead(),
-			outcome: result.Refused, fetches: true, known: true,
-			arrange: func(*gittest.Fixture) mergeEnd { return ending(overtimeText(mergeCommand(), readRules)) },
-		},
+	for _, c := range cuts() {
+		rows = append(rows,
+			mergeRow{
+				name: c.name + " during the fetch of the head of the pull request", script: merging(), ops: changesRead(),
+				runCtx: c.stalling(2), outcome: result.Refused, fetches: true, known: true,
+				arrange: pastHead(overtimeText(mergeCommand(), c, readPullHead)),
+			},
+			mergeRow{
+				name: c.name + " during the read of the trunk's rules", script: merging().failingRules(c.of("gh")),
+				ops: rulesRead(), outcome: result.Refused, fetches: true, known: true,
+				arrange: func(*gittest.Fixture) mergeEnd { return ending(overtimeText(mergeCommand(), c, readRules)) },
+			},
+		)
 	}
+
+	return rows
 }
 
 // failedForgeMerges are the runs of `ils merge` whose read of the forge fails for a reason no
@@ -663,7 +666,7 @@ func failedGitMerges() []mergeRow {
 			name: "where the trunk is checked out", script: merging(), ops: identityRead(),
 			outcome: result.Broke, fetches: true,
 			arrange: func(*gittest.Fixture) mergeEnd {
-				return failedGitMerge(readWorktrees, "", []string{"worktree", "list", "--porcelain"})
+				return failedGitMerge(readWorktrees, "", worktreeList())
 			},
 		},
 		{
@@ -731,37 +734,42 @@ func localAncestry() []string {
 	return []string{"merge-base", "--is-ancestor", "refs/heads/" + trunk, "refs/remotes/origin/" + trunk}
 }
 
-// stallingGit returns a deadline that ends once the scene's git call whose arguments start with
-// words is under way, a call that waits until the deadline kills it. It cannot run in a parallel test.
-func stallingGit(words []string) func(t *testing.T, s *scene) context.Context {
+// worktreeList is the arguments of the git call that asks where the trunk is checked out.
+func worktreeList() []string { return []string{"worktree", "list", "--porcelain"} }
+
+// stallingGit returns a context that c ends once the scene's git call whose arguments start with
+// words is under way, a call that waits until the end kills it. It cannot run in a parallel test.
+func (c cut) stallingGit(words []string) func(t *testing.T, s *scene) context.Context {
 	return func(t *testing.T, s *scene) context.Context {
 		t.Helper()
 
 		addr, connected := gittest.SilentListener(t)
 		fakeGit(t, s, gittest.Fake{StallOn: words, StallAt: addr})
 
-		return gittest.Ending(t.Context(), connected, context.DeadlineExceeded)
+		return c.once(t.Context(), connected)
 	}
 }
 
-func TestMerge_WhenTheDeadlineEndsInAGitRead_RefusesNamingIt(t *testing.T) {
+func TestMerge_WhenAGitReadIsCutShort_RefusesNamingIt(t *testing.T) {
 	tests := []struct {
 		name  string
 		read  string
 		words []string
 	}{
 		{name: "the read of the local trunk", read: readLocalTrunk, words: localAncestry()},
-		{name: "the read of where the trunk is checked out", read: readWorktrees, words: []string{"worktree", "list", "--porcelain"}},
+		{name: "the read of where the trunk is checked out", read: readWorktrees, words: worktreeList()},
 	}
 	// Not parallel: each row puts a stalling git first on PATH with t.Setenv.
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			runMerge(t, mergeRow{
-				script: merging(), ops: identityRead(), deadline: stallingGit(tt.words),
-				outcome: result.Refused, fetches: true,
-				arrange: func(*gittest.Fixture) mergeEnd { return ending(overtimeText(mergeCommand(), tt.read)) },
+	for _, c := range cuts() {
+		for _, tt := range tests {
+			t.Run(c.name+"/"+tt.name, func(t *testing.T) {
+				runMerge(t, mergeRow{
+					script: merging(), ops: identityRead(), runCtx: c.stallingGit(tt.words),
+					outcome: result.Refused, fetches: true,
+					arrange: func(*gittest.Fixture) mergeEnd { return ending(overtimeText(mergeCommand(), c, tt.read)) },
+				})
 			})
-		})
+		}
 	}
 }
 

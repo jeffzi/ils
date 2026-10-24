@@ -40,10 +40,14 @@ func waitRead(err error) (string, error) {
 	}
 }
 
-// cutShortReading returns the reason that says the time limit ended while reading read, with
-// nothing more to change.
-func cutShortReading(read string) result.Phrase {
-	return result.Say("the time limit ended while reading %s; nothing more will change", read)
+// cutShortReading returns the reason that says the time limit, or an interrupt when byInterrupt
+// is true, ended a read of read, with nothing more to change.
+func cutShortReading(byInterrupt bool, read string) result.Phrase {
+	if byInterrupt {
+		return result.Say(runInterrupted+" while reading %s; nothing more will change", read)
+	}
+
+	return result.Say(timeLimitEnded+" while reading %s; nothing more will change", read)
 }
 
 // waitReport is what a result says about a wait whose outcome stops the command: its lines, the
@@ -152,16 +156,20 @@ func (w Waited) pendingReport(sha string, number int) waitReport {
 	report := waitReport{pending: true, next: result.NextCommand(PushCommand)}
 	pull := result.PullRequest(number)
 
-	switch w.Stage {
-	case StageHead:
+	switch {
+	case w.Stage == StageHead && w.Cutoff == CutoffInterrupt:
+		report.reason = result.Say("GitHub did not show %s on pull request %s before "+runInterrupted, result.SHA(sha), pull)
+	case w.Stage == StageHead:
 		report.reason = result.Say("GitHub did not show %s on pull request %s before the time limit", result.SHA(sha), pull)
-	case StageMergeState:
+	case w.Stage == StageMergeState && w.Cutoff == CutoffInterrupt:
+		report.reason = result.Say("GitHub did not say whether pull request %s can merge before "+runInterrupted, pull)
+	case w.Stage == StageMergeState:
 		report.reason = result.Say("GitHub did not say whether pull request %s can merge before the time limit", pull)
 
 		// The stage's own window ended the wait: the time limit was not reached.
-		if w.Window > 0 {
+		if w.Cutoff == CutoffWindow {
 			report.reason = result.Say("GitHub did not say whether pull request %s can merge within %s seconds",
-				pull, int(w.Window/time.Second))
+				pull, int(mergeWindow/time.Second))
 		}
 	default:
 		report.lines, report.reason = w.unconcluded(sha, number)
@@ -170,9 +178,11 @@ func (w Waited) pendingReport(sha string, number int) waitReport {
 	return report
 }
 
-// unconcluded returns what the checks stage had found when the deadline ended it, then the merge
-// state, and the reason: no verdict read at all, nothing reported, a workflow run with no check
-// yet, checks concluded before any workflow run started, or the checks still running.
+// unconcluded returns what the checks stage had found when the deadline or an interrupt ended it,
+// then the merge state, and the reason: no verdict read at all, nothing reported, a workflow run
+// with no check yet, checks concluded before any workflow run started, or the checks still
+// running. A wait an interrupt ended holds no verdict read, since no read of the head after the
+// checks confirmed one.
 func (w Waited) unconcluded(sha string, number int) ([]result.Phrase, result.Phrase) {
 	var lines []result.Phrase
 
@@ -181,7 +191,7 @@ func (w Waited) unconcluded(sha string, number int) ([]result.Phrase, result.Phr
 
 	switch {
 	case w.Since.IsZero():
-		reason = cutShortReading(readChecks)
+		reason = cutShortReading(w.Cutoff == CutoffInterrupt, readChecks)
 	case silent(w.Verdict):
 		reason = result.Say("no check or status had reported for %s on pull request %s at the time limit", commit, pull)
 	case len(w.Verdict.Checks) == 0 && w.Verdict.Running():
@@ -206,11 +216,12 @@ func (w Waited) unconcluded(sha string, number int) ([]result.Phrase, result.Phr
 	return append(lines, w.mergeStateLine()), reason
 }
 
-// ciCutShortReport is a read of whether the repository has CI that the deadline cut short.
-func (w Waited) ciCutShortReport() waitReport {
+// ciCutShortReport is a read of whether the repository has CI that the time limit, or an
+// interrupt when byInterrupt is true, cut short.
+func (w Waited) ciCutShortReport(byInterrupt bool) waitReport {
 	return waitReport{
-		lines: []result.Phrase{w.mergeStateLine()}, reason: cutShortReading(readCI), next: result.NextCommand(PushCommand),
-		pending: true,
+		lines: []result.Phrase{w.mergeStateLine()}, reason: cutShortReading(byInterrupt, readCI),
+		next: result.NextCommand(PushCommand), pending: true,
 	}
 }
 

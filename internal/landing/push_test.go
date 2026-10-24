@@ -477,19 +477,19 @@ func TestPush_WhenOriginStopsAnswering_RefusesNamingWhatItWasAskedFor(t *testing
 }
 
 // stalling returns an arrange under which origin answers the first answered calls git makes to it
-// and the next reaches a server that never answers; the deadline ends once that call connected.
-func stalling(answered int) func(t *testing.T, s *scene) context.Context {
+// and the next reaches a server that never answers; c ends the context once that call connected.
+func (c cut) stalling(answered int) func(t *testing.T, s *scene) context.Context {
 	return func(t *testing.T, s *scene) context.Context {
 		t.Helper()
 
 		addr, connected := gittest.SilentListener(t)
 		s.deps.Repo.Runner.Env = answering(t, s.fixture, answered, "git ls-remote git://"+addr+"/stalled.git")
 
-		return gittest.Ending(t.Context(), connected, context.DeadlineExceeded)
+		return c.once(t.Context(), connected)
 	}
 }
 
-// overtime is a push whose deadline ends during one of its reads.
+// overtime is a push whose context ends during one of its reads.
 type overtime struct {
 	// arrange returns the context to run under, once it has changed how the scene reads.
 	arrange func(t *testing.T, s *scene) context.Context
@@ -501,40 +501,44 @@ type overtime struct {
 	ops     []forgetest.Op
 }
 
-// runOvertime runs each row as a test of its own: Push refuses naming the read the deadline ended
-// in, having written nothing.
-func runOvertime(t *testing.T, rows []overtime) {
+// runOvertime runs each row rows returns for each cut as a test of its own: Push refuses naming the
+// read the cut ended, having written nothing.
+func runOvertime(t *testing.T, rows func(c cut) []overtime) {
 	t.Helper()
 
-	for _, tt := range rows {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			s := newScene(t, tt.prepare, tt.script, false)
-			ctx := tt.arrange(t, s)
-			before := s.written()
+	for _, c := range cuts() {
+		for _, tt := range rows(c) {
+			t.Run(c.name+"/"+tt.name, func(t *testing.T) {
+				t.Parallel()
+				s := newScene(t, tt.prepare, tt.script, false)
+				ctx := tt.arrange(t, s)
+				before := s.written()
 
-			got := landing.Push(ctx, s.deps, pushRequest())
+				got := landing.Push(ctx, s.deps, pushRequest())
 
-			assertEnded(t, s, got, finish{outcome: result.Refused, text: overtimeText(pushCommand(), tt.read)})
-			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
-		})
+				assertEnded(t, s, got, finish{outcome: result.Refused, text: overtimeText(pushCommand(), c, tt.read)})
+				assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
+			})
+		}
 	}
 }
 
-func TestPush_WhenDeadlineEndsDuringRead_RefusesNamingTheRead(t *testing.T) {
+func TestPush_WhenAReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
 	t.Parallel()
 
-	runOvertime(t, []overtime{
-		{
-			// Origin answers about its trunk and the fetch of it, and nothing after.
-			name: "during the question whether origin has the branch", read: readOnOrigin,
-			script: allowed(), ops: identityRead(), arrange: stalling(2),
-		},
-		{
-			name: "during the fetch of origin's copy of the branch", read: readCopy,
-			script: allowed(), ops: identityRead(), arrange: stalling(3),
-			prepare: func(f *gittest.Fixture) { f.Publish(topic) },
-		},
+	runOvertime(t, func(c cut) []overtime {
+		return []overtime{
+			{
+				// Origin answers about its trunk and the fetch of it, and nothing after.
+				name: "during the question whether origin has the branch", read: readOnOrigin,
+				script: allowed(), ops: identityRead(), arrange: c.stalling(2),
+			},
+			{
+				name: "during the fetch of origin's copy of the branch", read: readCopy,
+				script: allowed(), ops: identityRead(), arrange: c.stalling(3),
+				prepare: func(f *gittest.Fixture) { f.Publish(topic) },
+			},
+		}
 	})
 }
 

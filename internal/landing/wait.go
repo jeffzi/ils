@@ -61,9 +61,9 @@ const (
 	// WaitNothingReported is no deciding check on the commit once the wait had nothing left
 	// to wait for.
 	WaitNothingReported WaitOutcome = "nothing-reported"
-	// WaitPending is a wait that ended before the forge had an answer: the deadline ended it,
-	// or the stage's own window did when Waited.Window is set. Waited.Stage says what it was
-	// waiting for. Checks still running at the deadline end it at StageVerdict, holding their
+	// WaitPending is a wait that ended before the forge had an answer: Waited.Cutoff says what
+	// ended it, the deadline, an interrupt, or the stage's own window. Waited.Stage says what it
+	// was waiting for. Checks still running at the deadline end it at StageVerdict, holding their
 	// verdict when the read of the head after them showed the pushed commit, and none, with
 	// Waited.Since zero, when the deadline took that read, the first read of the checks, or a poll
 	// of them. A later read of the checks that the 3 seconds kept for the head read ended keeps
@@ -126,10 +126,23 @@ type Waited struct {
 	// Passed and Skipped count the deciding checks in each of those buckets.
 	Passed  int
 	Skipped int
-	// Window is how long the stage waited when that, and not the deadline, ended the wait; it
-	// is zero when the deadline ended it.
-	Window time.Duration
+	// Cutoff is what ended the wait when Outcome is WaitPending; the zero value is the deadline.
+	Cutoff WaitCutoff
 }
+
+// WaitCutoff is what ended a pending wait.
+type WaitCutoff int
+
+// The causes that end a wait before the forge had an answer.
+const (
+	// CutoffDeadline is the deadline of the wait's context, or too little time left before it.
+	CutoffDeadline WaitCutoff = iota
+	// CutoffWindow is mergeWindow passing with the merge state still unknown, with time left
+	// before the deadline.
+	CutoffWindow
+	// CutoffInterrupt is an interrupt, which cancels the wait's context.
+	CutoffInterrupt
+)
 
 // takeState records the merge state head reports and the forge's own value behind it.
 func (w *Waited) takeState(head forge.Head) {
@@ -169,7 +182,7 @@ func (w *Waited) takeApart() bool {
 }
 
 // WaitError reports a read of the wait for the checks of a pull request's head that failed for
-// a reason other than the context's deadline.
+// a reason other than the context ending.
 type WaitError struct {
 	Err   error
 	Stage WaitStage
@@ -193,9 +206,10 @@ var errOutOfTime = errors.New("the deadline leaves no time for another read")
 // errWindowPassed reports that mergeWindow passed with the merge state still unknown.
 var errWindowPassed = errors.New("the merge state stayed unknown for the whole window")
 
-// endedByDeadline reports whether err says the deadline ended a read or left no time for one.
-func endedByDeadline(err error) bool {
-	return errors.Is(err, errOutOfTime) || errors.Is(err, context.DeadlineExceeded)
+// cutOff reports whether err says the deadline or an interrupt ended a read, or the deadline left
+// no time for one.
+func cutOff(err error) bool {
+	return errors.Is(err, errOutOfTime) || endedEarly(err)
 }
 
 // AwaitVerdict waits for what the forge says about the commit in pushed, the one a push just
@@ -220,12 +234,14 @@ func endedByDeadline(err error) bool {
 // after the first runs under a deadline 3 seconds before ctx's for the same reason; the first
 // runs under ctx's own.
 // A deadline that ends a stage, inside a read or a poll or between two, is the outcome
-// WaitPending with that stage and no error.
+// WaitPending with that stage and no error. So is an interrupt, which cancels ctx, with
+// Waited.Cutoff CutoffInterrupt; it ends the wait at that instant, as a deadline not known ahead does.
 // The exception is a red verdict still waiting for its failed log, which stays WaitRed when the
-// deadline leaves no time for another poll, or the 3 seconds kept end the read after it, and the
-// read of the head after the checks still shows the pushed commit.
+// deadline or an interrupt ends the read after it, the deadline leaves no time for another poll,
+// or the 3 seconds kept end the read after it, and the read of the head after the checks still
+// shows the pushed commit.
 // A merge state still unknown after its 30 seconds, with time left before the deadline,
-// is WaitPending too, with Waited.Window set. A read that fails for any other reason is a
+// is WaitPending too, with Waited.Cutoff CutoffWindow. A read that fails for any other reason is a
 // *WaitError naming its stage.
 //
 // The read of the head and merge state made after the checks belongs to StageMergeState: its
@@ -323,19 +339,21 @@ func (w waiter) logChecks(ctx context.Context, verdict forge.Verdict) {
 		slog.Int("pending", pending), slog.String("verdict", string(verdict.State())))
 }
 
-// endPending makes w WaitPending at stage when err is the deadline or mergeWindow ending that
-// stage, with Window set when mergeWindow did, and reports whether it was.
+// endPending makes w WaitPending at stage when err is the deadline, an interrupt, or mergeWindow
+// ending that stage, with Cutoff saying which did, and reports whether it was.
 func (w *Waited) endPending(stage WaitStage, err error) bool {
-	windowPassed := errors.Is(err, errWindowPassed)
-	if !windowPassed && !endedByDeadline(err) {
+	switch {
+	case errors.Is(err, errWindowPassed):
+		w.Cutoff = CutoffWindow
+	case interrupted(err):
+		w.Cutoff = CutoffInterrupt
+	case cutOff(err):
+		w.Cutoff = CutoffDeadline
+	default:
 		return false
 	}
 
 	w.Outcome, w.Stage = WaitPending, stage
-
-	if windowPassed {
-		w.Window = mergeWindow
-	}
 
 	return true
 }
@@ -403,10 +421,10 @@ func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 
 // lostStage returns the stage a wait ends in when the read of the head after the checks was not
 // made or failed with headErr: StageVerdict when the checks were still running, as stillRunning
-// tells, and the deadline took the read, since the time limit is what left them unconcluded, and
-// the read's own StageMergeState otherwise.
+// tells, and the deadline or an interrupt took the read, since the time limit is what left them
+// unconcluded, and the read's own StageMergeState otherwise.
 func lostStage(stillRunning bool, headErr error) WaitStage {
-	if stillRunning && endedByDeadline(headErr) {
+	if stillRunning && cutOff(headErr) {
 		return StageVerdict
 	}
 
@@ -617,10 +635,10 @@ func (w waiter) readVerdict(ctx context.Context, query forge.VerdictQuery, later
 }
 
 // cutShort returns how a wait for the verdict that err ended concluded: a red verdict still
-// waiting for its failed log stays red when the deadline ends the wait, since the log is all it
-// lacked, and anything else is err with no outcome.
+// waiting for its failed log stays red when the deadline or an interrupt ends the wait, since the
+// log is all it lacked, and anything else is err with no outcome.
 func cutShort(outcome WaitOutcome, err error) (WaitOutcome, error) {
-	if outcome == WaitRed && endedByDeadline(err) {
+	if outcome == WaitRed && cutOff(err) {
 		return WaitRed, nil
 	}
 
@@ -685,9 +703,10 @@ func deadlineWithin(ctx context.Context, d time.Duration) bool {
 	return ok && time.Until(deadline) < d
 }
 
-// pause waits until d has passed, or returns ctx's error as soon as ctx ends. It returns
-// errOutOfTime, without waiting, when the wait would end past ctx's deadline, and after
-// waiting when it ended on the deadline, which leaves no time for a read. The polls of the head
+// pause waits until d has passed, or returns ctx's error as soon as ctx ends, an interrupt found
+// once d has passed included. It returns errOutOfTime, without waiting, when the wait would end
+// past ctx's deadline, and after waiting when it ended on the deadline, which leaves no time for
+// a read. The polls of the head
 // and of the merge state call it as is; the verdict poll goes through pollVerdict, which keeps
 // headReadReserve on top, as readVerdict does for every verdict read after the first.
 func pause(ctx context.Context, d time.Duration) error {
@@ -702,6 +721,12 @@ func pause(ctx context.Context, d time.Duration) error {
 	case <-ctx.Done():
 		return fmt.Errorf("wait %s: %w", d, ctx.Err())
 	case <-timer.C:
+	}
+
+	// An interrupt that lands as the timer fires is still an interrupt: only the deadline makes
+	// the wait out of time.
+	if err := ctx.Err(); interrupted(err) {
+		return fmt.Errorf("wait %s: %w", d, err)
 	}
 
 	if ctxEnded(ctx) {

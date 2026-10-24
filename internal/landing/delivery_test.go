@@ -231,23 +231,15 @@ func (s *scene) onOrigin() string {
 
 // pushRow is one push whose preconditions hold: the repository, the forge, and how it must end.
 type pushRow struct {
-	// arrange changes the repository before the scene reads it.
 	arrange func(*gittest.Fixture)
-	// script returns the forge's answers once the branch's tip is known.
-	script forgeFor
-	name   string
-	// want is how the push must end, with tipMark where the sha of the tip is printed.
-	want finish
-	// told is every event the progress hook is told, with tipMark where the sha of the tip is
-	// printed; empty leaves them unchecked.
-	told []string
-	// drawn are parts of the result and how a terminal with color draws them, with tipMark where the
-	// sha of the tip is printed; empty leaves them unchecked.
-	drawn []drawnPart
-	// left is the time before the deadline; zero is the whole bound.
-	left time.Duration
-	// quiet is whether origin already has the tip, so that no `git push` runs.
-	quiet bool
+	script  forgeFor
+	cut     func(context.Context) context.Context
+	name    string
+	want    finish
+	told    []string
+	drawn   []drawnPart
+	left    time.Duration
+	quiet   bool
 }
 
 // delivery is a scene whose branch Push can push: the tip, the deadline the push runs under, and
@@ -273,6 +265,10 @@ func newDelivery(t *testing.T, tt pushRow) *delivery {
 
 	ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(orBound(tt.left)))
 	t.Cleanup(cancel)
+
+	if tt.cut != nil {
+		ctx = tt.cut(ctx)
+	}
 
 	return &delivery{scene: s, ctx: ctx, watch: w, tip: sha}
 }
@@ -469,7 +465,7 @@ func pushOpenFailureRows() []pushRow {
 		})
 	}
 
-	return []pushRow{
+	rows := []pushRow{
 		{
 			name: "for a reason of the forge", script: failing(errors.New("HTTP 502")),
 			want: finish{
@@ -477,16 +473,21 @@ func pushOpenFailureRows() []pushRow {
 				text: pushedLine + "No pull request was opened: HTTP 502\n" + "Broke: could not open the pull request\n" + nextFixed,
 			},
 		},
-		{
-			name:   "because the deadline ended in it",
-			script: failing(fmt.Errorf("gh pr create: %w", context.DeadlineExceeded)),
-			want: finish{
-				outcome: result.Broke, reason: "the time limit ended while opening the pull request",
-				text: pushedLine + "Started opening the pull request when the time limit ended; " +
-					"it may or may not have been opened\n" + "Broke: the time limit ended while opening the pull request\n" + nextPush,
-			},
-		},
 	}
+
+	for _, c := range cuts() {
+		rows = append(rows, pushRow{
+			name:   "because " + c.name + " ended it",
+			script: failing(c.of("gh pr create")),
+			want: finish{
+				outcome: result.Broke, reason: c.ends + " while opening the pull request",
+				text: pushedLine + "Started opening the pull request when " + c.ends + "; " +
+					"it may or may not have been opened\n" + "Broke: " + c.ends + " while opening the pull request\n" + nextPush,
+			},
+		})
+	}
+
+	return rows
 }
 
 func TestPush_WhenOpeningThePullRequestFails_BrokeSayingThePushHappened(t *testing.T) {
@@ -495,44 +496,41 @@ func TestPush_WhenOpeningThePullRequestFails_BrokeSayingThePushHappened(t *testi
 	runPushes(t, pushOpenFailureRows())
 }
 
-func TestPush_WhenDeadlineEndsDuringTheGitPush_BrokeSayingThePushMayHaveTaken(t *testing.T) {
+func TestPush_WhenTheGitPushIsCutShort_BrokeSayingThePushMayHaveTaken(t *testing.T) {
 	t.Parallel()
-	s := newScene(t, nil, finding(), false)
-	// Origin answers about its trunk, the fetch of it, and whether it has the branch; the push is next.
-	ctx := stalling(3)(t, s)
-	sha := s.fixture.Git("rev-parse", topic)
 
-	got := landing.Push(ctx, s.deps, pushRequest())
+	for _, c := range cuts() {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			s := newScene(t, nil, finding(), false)
+			// Origin answers about its trunk, the fetch of it, and whether it has the branch; the push is next.
+			ctx := c.stalling(3)(t, s)
+			sha := s.fixture.Git("rev-parse", topic)
 
-	assertDelivered(t, s, got, finish{
-		outcome: result.Broke, reason: "the time limit ended during the push",
-		text: "Started the push of " + topic + " at " + sha + " when the time limit ended; " +
-			"it may or may not have taken\n" + "Broke: the time limit ended during the push\n" + nextPush,
-	})
-	assertAsked(t, s, changesRead())
-}
+			got := landing.Push(ctx, s.deps, pushRequest())
 
-// revoked is a context that ends when its inner one does, as canceled and not at its deadline.
-type revoked struct {
-	context.Context
-}
-
-// Err returns context.Canceled once the inner context ended.
-func (r revoked) Err() error {
-	if r.Context.Err() == nil {
-		return nil
+			assertDelivered(t, s, got, finish{
+				outcome: result.Broke, reason: c.ends + " during the push",
+				text: "Started the push of " + topic + " at " + sha + " when " + c.ends + "; " +
+					"it may or may not have taken\n" + "Broke: " + c.ends + " during the push\n" + nextPush,
+			})
+			assertAsked(t, s, changesRead())
+		})
 	}
-
-	return context.Canceled
 }
 
-func TestPush_WhenTheGitPushFailsOtherThanByRefusalOrDeadline_BrokeSayingNothingWasPushed(t *testing.T) {
-	t.Parallel()
-	s := newScene(t, nil, finding(), false)
-	// Origin answers about its trunk, the fetch of it, and whether it has the branch; the push is next.
-	ctx := revoked{Context: stalling(3)(t, s)}
+func TestPush_WhenTheGitPushFailsOtherThanByRefusalOrACut_BrokeSayingNothingWasPushed(t *testing.T) {
+	// Not parallel: git leaves PATH, by t.Setenv, once the pull requests of the branch are read,
+	// which comes just before the push.
+	script := finding()
+	script.OnRead = func(call forgetest.Call) {
+		if call.Op == forgetest.OpFindChanges {
+			t.Setenv("PATH", t.TempDir())
+		}
+	}
+	s := newScene(t, nil, script, false)
 
-	got := landing.Push(ctx, s.deps, pushRequest())
+	got := landing.Push(t.Context(), s.deps, pushRequest())
 
 	assertStopped(t, got, result.Broke)
 	assert.Check(t, got.Payload == nil || got.Payload.Push == nil, "Payload = %+v, want none for a push that failed", got.Payload)
@@ -619,7 +617,6 @@ func pushUnreportedRows() []pushRow {
 func pushNoCIRows() []pushRow {
 	silent := opening(forge.Verdict{})
 	unverified := silent.answeringCI(forgetest.Answer[bool]{})
-	cut := reusing(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{Err: fmt.Errorf("gh: %w", context.DeadlineExceeded)})
 	reviewed := inState(forge.MergeBlockedByReview, "BLOCKED")
 	// unreadable is the push whose read of whether the repository has CI fails with err, which the
 	// push prints as said.
@@ -636,7 +633,7 @@ func pushNoCIRows() []pushRow {
 		}
 	}
 
-	return []pushRow{
+	rows := []pushRow{
 		// A merge state after the checks that keeps the push from the trunk ends as a green push in
 		// that state does.
 		{
@@ -666,13 +663,16 @@ func pushNoCIRows() []pushRow {
 			},
 		},
 		unreadable("and the CI read fails", errors.New("HTTP 502"), "HTTP 502"),
-		// Only the bound's end is pending: a read canceled for any other reason failed.
-		unreadable("and the CI read is canceled", fmt.Errorf("gh: %w", context.Canceled), "gh: context canceled"),
-		{
-			name: "and the deadline ends in the CI read", script: cut,
-			want: cutShortRead(readCI),
-		},
 	}
+
+	for _, c := range cuts() {
+		rows = append(rows, pushRow{
+			name: "and " + c.name + " ends the CI read", want: cutShortRead(c, readCI),
+			script: reusing(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{Err: c.of("gh")}),
+		})
+	}
+
+	return rows
 }
 
 func TestPush_WhenNothingReportedForTheCommit_EndsByWhatTheCIReadAnswers(t *testing.T) {
@@ -681,33 +681,39 @@ func TestPush_WhenNothingReportedForTheCommit_EndsByWhatTheCIReadAnswers(t *test
 	runPushes(t, pushNoCIRows())
 }
 
-func TestPush_WhenTheDeadlineEndsBeforeTheCIRead_PendingWithoutAskingIt(t *testing.T) {
+func TestPush_WhenACutComesBeforeTheCIRead_PendingWithoutAskingIt(t *testing.T) {
 	t.Parallel()
-	synctest.Test(t, func(t *testing.T) {
-		// The deadline ends once the merge state after the checks is read; the forge has no answer for
-		// the CI read.
-		ended := make(chan struct{})
-		ending := reusing(forge.Verdict{}).with(func(script *forgetest.Script, _ string) {
-			checksRead := false
-			once := sync.OnceFunc(func() { close(ended) })
-			script.OnRead = func(call forgetest.Call) {
-				if call.Op == forgetest.OpVerdict {
-					checksRead = true
-				}
 
-				if call.Op == forgetest.OpHead && checksRead {
-					once()
-				}
-			}
+	for _, c := range cuts() {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				// The cut comes once the merge state after the checks is read; the forge has no answer for
+				// the CI read.
+				ended := make(chan struct{})
+				ending := reusing(forge.Verdict{}).with(func(script *forgetest.Script, _ string) {
+					checksRead := false
+					once := sync.OnceFunc(func() { close(ended) })
+					script.OnRead = func(call forgetest.Call) {
+						if call.Op == forgetest.OpVerdict {
+							checksRead = true
+						}
+
+						if call.Op == forgetest.OpHead && checksRead {
+							once()
+						}
+					}
+				})
+				d := newDelivery(t, pushRow{script: ending})
+				ctx := c.once(d.ctx, ended)
+
+				got := landing.Push(ctx, d.deps, pushRequest())
+
+				assertDelivered(t, d.scene, got, cutShortRead(c, readCI).at(d.tip))
+				assert.Check(t, is.Equal(d.onOrigin(), d.tip))
+			})
 		})
-		d := newDelivery(t, pushRow{script: ending})
-		ctx := gittest.Ending(d.ctx, ended, context.DeadlineExceeded)
-
-		got := landing.Push(ctx, d.deps, pushRequest())
-
-		assertDelivered(t, d.scene, got, cutShortRead(readCI).at(d.tip))
-		assert.Check(t, is.Equal(d.onOrigin(), d.tip))
-	})
+	}
 }
 
 // ciReading is a forge that keeps what its CI read's context was: its deadline, and whether it
@@ -853,18 +859,21 @@ func brokenAfter(reads []failingRead) []pushRow {
 	return rows
 }
 
-func TestPush_WhenDeadlineEndsInAReadAfterTheWrites_PendingNamingTheRead(t *testing.T) {
+func TestPush_WhenAReadAfterTheWritesIsCutShort_PendingNamingTheRead(t *testing.T) {
 	t.Parallel()
 
-	reads := readsAfterWrites(fmt.Errorf("gh: %w", context.DeadlineExceeded))
-	rows := make([]pushRow, 0, len(reads))
+	var rows []pushRow
 
-	for _, read := range reads {
-		rows = append(rows, read.row(finish{
-			outcome: result.Pending, reason: "the time limit ended while reading " + read.name + "; nothing more will change",
-			text: read.before + "Pending: the time limit ended while reading " + read.name + "; nothing more will change\n" +
-				nextPush,
-		}))
+	for _, c := range cuts() {
+		for _, read := range readsAfterWrites(c.of("gh")) {
+			reason := c.ends + " while reading " + read.name + "; nothing more will change"
+			row := read.row(finish{
+				outcome: result.Pending, reason: reason,
+				text: read.before + "Pending: " + reason + "\n" + nextPush,
+			})
+			row.name = c.name + " ends " + row.name
+			rows = append(rows, row)
+		}
 	}
 
 	runPushes(t, rows)

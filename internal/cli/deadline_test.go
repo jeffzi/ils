@@ -9,6 +9,7 @@ import (
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
+	"github.com/jeffzi/ils/internal/cli"
 	"github.com/jeffzi/ils/internal/github/ghtest"
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/landing"
@@ -47,6 +48,19 @@ func cutWhileHeld(t *testing.T, sc scenario) (*scene, ran) {
 	t.Helper()
 
 	s := newScene(t, sc)
+	got := s.endWhileHeld(t, s.app(), context.DeadlineExceeded, "push")
+
+	assert.Equal(t, got.code, sc.want, "stdout:\n%s\nstderr:\n%s", got.stdout, got.stderr)
+
+	return s, got
+}
+
+// endWhileHeld runs app with args in s under a context that ends with cause the moment the fake gh
+// of s starts holding an answer, and fails the test unless it comes back no later than grace after
+// that moment.
+func (s *scene) endWhileHeld(t *testing.T, app cli.App, cause error, args ...string) ran {
+	t.Helper()
+
 	cut := make(chan struct{})
 	cutAt := make(chan time.Time, 1)
 
@@ -63,22 +77,20 @@ func cutWhileHeld(t *testing.T, sc scenario) (*scene, ran) {
 		}
 	})
 
-	got := launchUnder(gittest.Ending(t.Context(), cut, context.DeadlineExceeded), t, s.app(), "push")
+	got := launchUnder(gittest.Ending(t.Context(), cut, cause), t, app, args...)
 
 	cancel()
 	wg.Wait()
 
-	assert.Equal(t, got.code, sc.want, "stdout:\n%s\nstderr:\n%s", got.stdout, got.stderr)
-
 	select {
 	case at := <-cutAt:
 		late := time.Since(at)
-		assert.Check(t, late <= grace, "ils push returned %s after the held call started, want it back no later than %s after", late, grace)
+		assert.Check(t, late <= grace, "ils %v returned %s after the held call started, want it back no later than %s after", args, late, grace)
 	default:
-		t.Error("ils push returned without the fake gh holding an answer")
+		t.Errorf("ils %v returned without the fake gh holding an answer", args)
 	}
 
-	return s, got
+	return got
 }
 
 func heldChecks() scenario {
@@ -174,4 +186,37 @@ func TestApp_Run_WhenTheTimeLimitEndsDuringTheHeldReadOfTheChecks_EndsPendingWit
 	onOrigin := s.fixture.OriginGit("for-each-ref", "--points-at", tipOf(s.fixture), "refs/heads/"+topic)
 	assert.Check(t, onOrigin != "", "%s is not on origin at its tip", topic)
 	assert.Check(t, opensPullRequest(s), "gh was not asked to create a pull request")
+}
+
+func TestApp_Run_WhenAnInterruptEndsAHeldRead_PrintsTheInterruptedResultAndEndsTheDisplay(t *testing.T) {
+	const reason = "ils was interrupted while reading the repository's identity on GitHub; nothing was written"
+
+	tests := []struct {
+		name   string
+		stdout string
+		args   []string
+	}{
+		{name: "push", args: []string{"push"}, stdout: "Refused: " + reason + "\nNext: ils push\n"},
+		{name: "merge", args: []string{"merge"}, stdout: "Refused: " + reason + "\nNext: ils merge\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newScene(t, heldIdentity())
+			stderr := newScreen(t, wide)
+			app := s.app()
+			app.Environ = []string{colorTerm}
+			app.StderrTerminal = true
+			app.StderrWidth = func() int { return wide }
+			app.Stderr = stderr
+
+			got := s.endWhileHeld(t, app, context.Canceled, tt.args...)
+
+			assert.Check(t, is.Equal(got.code, exitRefused))
+			assert.Check(t, is.Equal(got.stdout, tt.stdout))
+			assert.Check(t, stderr.raw() != "", "the run drew no progress display on stderr")
+			assert.Check(t, is.Len(stderr.lines(), 0), "stderr still shows %q", stderr.lines())
+			assert.Check(t, !stderr.cursorHidden(), "the cursor is still hidden:\n%q", stderr.raw())
+			nothingPushed(t, s)
+		})
+	}
 }

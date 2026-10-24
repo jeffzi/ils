@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/charmbracelet/colorprofile"
 	"github.com/google/go-cmp/cmp"
@@ -182,7 +183,9 @@ func fails(err error) forgetest.Script {
 	return forgetest.Script{Identity: []forgetest.Answer[forge.Repo]{{Err: err}}}
 }
 
-// shown renders r through both renderers and returns the text and the reason the JSON carries.
+// shown renders r through both renderers and returns the text and the reason the JSON carries. It
+// fails unless the JSON carries every line of the text, so that a caller who reads the JSON is
+// told what one who reads the text is.
 func shown(t *testing.T, r result.Result, gitDir string) (text, reason string) {
 	t.Helper()
 
@@ -192,7 +195,10 @@ func shown(t *testing.T, r result.Result, gitDir string) (text, reason string) {
 	out, err := result.RenderJSON(r, gitDir)
 	assert.NilError(t, err)
 
-	return text, resulttest.Decode(t, out).Reason
+	decoded := resulttest.Decode(t, out)
+	resulttest.AssertCarried(t, text, decoded)
+
+	return text, decoded.Reason
 }
 
 // drawnPart is a part of a result's text and how a terminal with color draws it where it first
@@ -364,9 +370,83 @@ func unreached(cmd landingCommand, what string) string {
 	return "Refused: origin could not be reached to " + what + "\n" + cmd.again
 }
 
-// overtimeText is the whole text of cmd's refusal when the deadline ended in the read named read.
-func overtimeText(cmd landingCommand, read string) string {
-	return "Refused: the time limit ended while reading " + read + "; nothing was written\n" + cmd.again
+// cut is one way the context of a run ends before the run does: the time limit, its deadline, or
+// an interrupt, which cancels it. A result words the two apart and ends alike for both.
+type cut struct {
+	// err is the context's error once it ended, which a call it cut short wraps.
+	err error
+	// spend returns a context over parent that has already ended as the context package ends one
+	// for this cut.
+	spend func(parent context.Context) (context.Context, context.CancelFunc)
+	name  string
+	// ends says the context ended, and before says what had not happened by then.
+	ends   string
+	before string
+}
+
+// byTimeLimit is the cut whose context is already past its deadline, so its error is
+// context.DeadlineExceeded.
+func byTimeLimit() cut {
+	return cut{
+		name: "the time limit", err: context.DeadlineExceeded,
+		spend: func(parent context.Context) (context.Context, context.CancelFunc) {
+			return context.WithDeadline(parent, time.Unix(0, 0))
+		},
+		ends: "the time limit ended", before: "before the time limit",
+	}
+}
+
+// byInterrupt is an interrupt of a run, which cancels its context before the deadline.
+func byInterrupt() cut {
+	return cut{
+		name: "an interrupt", err: context.Canceled,
+		spend: func(parent context.Context) (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(parent)
+			cancel()
+
+			return ctx, cancel
+		},
+		ends: "ils was interrupted", before: "before ils was interrupted",
+	}
+}
+
+// cuts lists every cut. A test that covers one outcome loops over it, so that the time limit and
+// an interrupt are held to the same result.
+func cuts() []cut { return []cut{byTimeLimit(), byInterrupt()} }
+
+// of returns the error the call named call fails with when c cuts it short.
+func (c cut) of(call string) error { return fmt.Errorf("%s: %w", call, c.err) }
+
+// once returns a context over parent that ends as c says once done closes, and not before.
+func (c cut) once(parent context.Context, done <-chan struct{}) context.Context {
+	return gittest.Ending(parent, done, c.err)
+}
+
+// after returns a context over parent that ends as c says once d of fake time has passed, without
+// its end being known ahead.
+func (c cut) after(parent context.Context, d time.Duration) context.Context {
+	done := make(chan struct{})
+	time.AfterFunc(d, func() { close(done) })
+
+	return c.once(parent, done)
+}
+
+// inPoll returns a context over ctx that ends as c says midPoll into the first poll of a wait.
+func (c cut) inPoll(ctx context.Context) context.Context { return c.after(ctx, midPoll) }
+
+// spent returns a context that c ended before it was handed out.
+func (c cut) spent(t *testing.T) context.Context {
+	t.Helper()
+
+	ctx, cancel := c.spend(t.Context())
+	t.Cleanup(cancel)
+
+	return ctx
+}
+
+// overtimeText is the whole text of cmd's refusal when c ended the read named read.
+func overtimeText(cmd landingCommand, c cut, read string) string {
+	return "Refused: " + c.ends + " while reading " + read + "; nothing was written\n" + cmd.again
 }
 
 // unreadText is the whole text of cmd's result when the read named read failed saying detail.
@@ -614,29 +694,31 @@ func TestPush_WhenOriginStopsAnsweringASharedRead_RefusesNamingWhatItWasAskedFor
 	})
 }
 
-func TestPush_WhenDeadlineEndsDuringASharedRead_RefusesNamingTheRead(t *testing.T) {
+func TestPush_WhenASharedReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
 	t.Parallel()
 
-	runOvertime(t, []overtime{
-		{
-			// Origin answers the question about its trunk, and nothing after.
-			name: "during the fetch of origin's trunk", read: readFetchedTrunk, script: allowed(), ops: identityRead(),
-			arrange: stalling(1),
-		},
-		{
-			name: "during the fetch of the merged pull request's head", read: readMergedHead,
-			script: landedScript(), ops: changesRead(), arrange: stalling(4),
-			prepare: landAndPublish,
-		},
-		{
-			name: "during the find-changes read", read: readChanges, ops: changesRead(),
-			script: failingToFind(fmt.Errorf("gh pr list: %w", context.DeadlineExceeded)),
-			arrange: func(t *testing.T, _ *scene) context.Context {
-				t.Helper()
-
-				return t.Context()
+	runOvertime(t, func(c cut) []overtime {
+		return []overtime{
+			{
+				// Origin answers the question about its trunk, and nothing after.
+				name: "during the fetch of origin's trunk", read: readFetchedTrunk, script: allowed(), ops: identityRead(),
+				arrange: c.stalling(1),
 			},
-		},
+			{
+				name: "during the fetch of the merged pull request's head", read: readMergedHead,
+				script: landedScript(), ops: changesRead(), arrange: c.stalling(4),
+				prepare: landAndPublish,
+			},
+			{
+				name: "during the find-changes read", read: readChanges, ops: changesRead(),
+				script: failingToFind(c.of("gh pr list")),
+				arrange: func(t *testing.T, _ *scene) context.Context {
+					t.Helper()
+
+					return t.Context()
+				},
+			},
+		}
 	})
 }
 

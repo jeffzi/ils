@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"runtime"
 	"testing"
 	"time"
 
@@ -16,15 +17,53 @@ import (
 	"github.com/jeffzi/ils/internal/logtest"
 )
 
+// exitErrorOf runs cmd and returns the *exec.ExitError it ends with; what names the command in the
+// failure message.
+func exitErrorOf(t *testing.T, what string, cmd *exec.Cmd) *exec.ExitError {
+	t.Helper()
+
+	err := cmd.Run()
+	exitErr, exited := errors.AsType[*exec.ExitError](err)
+	assert.Assert(t, exited, "%s error = %v, want an *exec.ExitError", what, err)
+
+	return exitErr
+}
+
 // exitOf runs a go command that exits non-zero and returns what exec reports for it.
 func exitOf(t *testing.T) *exec.ExitError {
 	t.Helper()
 
-	err := exec.CommandContext(t.Context(), "go", "tool", "nonsense").Run()
-	exitErr, exited := errors.AsType[*exec.ExitError](err)
-	assert.Assert(t, exited, "go tool nonsense error = %v, want an *exec.ExitError", err)
+	return exitErrorOf(t, "go tool nonsense", exec.CommandContext(t.Context(), "go", "tool", "nonsense"))
+}
 
-	return exitErr
+// killedBy runs a shell that kills itself with signal, named as kill names it, and returns what
+// exec reports for it.
+func killedBy(t *testing.T, signal string) *exec.ExitError {
+	t.Helper()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no signal a process can kill itself with")
+	}
+
+	//nolint:gosec // G204: the test names the shell and the signal; nothing here comes from outside the test.
+	cmd := exec.CommandContext(t.Context(), "sh", "-c", "kill -"+signal+" $$")
+
+	return exitErrorOf(t, "sh killed by "+signal, cmd)
+}
+
+// interruptedChild returns what exec reports for a child that Ctrl-C ended: on Windows a console
+// child that exits with STATUS_CONTROL_C_EXIT, elsewhere a shell that the interrupt signal killed.
+func interruptedChild(t *testing.T) *exec.ExitError {
+	t.Helper()
+
+	if runtime.GOOS != "windows" {
+		return killedBy(t, "INT")
+	}
+
+	// -1073741510 is STATUS_CONTROL_C_EXIT, 0xC000013A, as cmd reads a signed 32-bit exit code.
+	cmd := exec.CommandContext(t.Context(), "cmd", "/c", "exit", "-1073741510")
+
+	return exitErrorOf(t, "cmd exiting with STATUS_CONTROL_C_EXIT", cmd)
 }
 
 func TestExitError_Error(t *testing.T) {
@@ -76,6 +115,49 @@ func TestFailure_WhenContextEnded_ReturnsContextErrorWhateverTheExit(t *testing.
 	_, exited := errors.AsType[*child.ExitError](err)
 	assert.Check(t, !exited, "Failure error = %v, want no *child.ExitError once the context ended", err)
 	assert.Check(t, is.Equal(err.Error(), "go tool nonsense: context canceled"))
+}
+
+func TestFailure_WhenProgramDiedOfTheInterruptBeforeContextEnded_ReturnsContextCanceled(t *testing.T) {
+	t.Parallel()
+	runErr := interruptedChild(t)
+
+	err := child.Failure(t.Context(), []string{"git", "fetch"}, runErr, "secret printed before the interrupt\n")
+
+	assert.Check(t, is.ErrorIs(err, context.Canceled))
+	assert.Check(t, is.Equal(err.Error(), "git fetch: context canceled"))
+}
+
+func TestInterruptedExit(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		code int64
+		want bool
+	}{
+		{name: "STATUS_CONTROL_C_EXIT of a console child that Ctrl-C ended", code: 0xC000013A, want: true},
+		{name: "STATUS_CONTROL_C_EXIT as a 32-bit build reads it", code: -1073741510, want: true},
+		{name: "an ordinary failure", code: 1, want: false},
+		{name: "the code a shell reports for a child the interrupt killed", code: 130, want: false},
+		{name: "a child a signal killed, which reports no code", code: -1, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := child.InterruptedExit(int(tt.code))
+
+			assert.Check(t, is.Equal(got, tt.want), "InterruptedExit(%#x)", tt.code)
+		})
+	}
+}
+
+func TestFailure_WhenProgramDiedOfAnotherSignal_WrapsRunErrorNamingCommand(t *testing.T) {
+	t.Parallel()
+	runErr := killedBy(t, "TERM")
+
+	err := child.Failure(t.Context(), []string{"git", "fetch"}, runErr, "")
+
+	assert.Check(t, is.Equal(err.Error(), "git fetch: "+runErr.Error()))
 }
 
 func TestFailure_WhenProgramNeverExited_WrapsRunErrorNamingCommand(t *testing.T) {

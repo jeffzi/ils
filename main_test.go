@@ -2,9 +2,11 @@ package main_test
 
 import (
 	"bytes"
+	"context"
 	"debug/buildinfo"
 	"errors"
 	"flag"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,16 +14,49 @@ import (
 	"runtime/debug"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
 	main "github.com/jeffzi/ils"
 	"github.com/jeffzi/ils/internal/cli"
+	"github.com/jeffzi/ils/internal/github/ghtest"
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/result/resulttest"
 )
+
+const (
+	trunk     = "develop"
+	topic     = "tidy-readme"
+	host      = "github.com"
+	slug      = host + "/acme/widgets"
+	originURL = "ssh://git@" + slug + ".git"
+
+	// held is how long the fake gh holds the read of the repository's identity open: far past the
+	// moment a test sends its signal.
+	held = 30 * time.Second
+	// patience is how long a test waits for a program or the fake gh before it gives up.
+	patience = time.Minute
+
+	// interruptedReason is why ils refuses a landing command that an interrupt ends during the read
+	// of the repository's identity.
+	interruptedReason = "ils was interrupted while reading the repository's identity on GitHub; nothing was written"
+	// interruptedRead is what `ils push` prints when an interrupt ends the read of the repository's
+	// identity.
+	interruptedRead = "Refused: " + interruptedReason + "\nNext: ils push\n"
+	exitRefused     = 2
+)
+
+func TestMain(m *testing.M) {
+	if code, served := ghtest.Main(); served {
+		os.Exit(code)
+	}
+
+	os.Exit(m.Run())
+}
 
 // ran is what one run of the binary printed and the code it exited with.
 type ran struct {
@@ -93,33 +128,48 @@ func coveredPackages(t *testing.T) string {
 	return strings.Join(strings.Fields(string(out)), ",")
 }
 
+// withCoverDir returns env plus the coverage directory when there is one.
+func withCoverDir(env []string) []string {
+	if covered := coverDir(); covered != "" {
+		return append(env, "GOCOVERDIR="+covered)
+	}
+
+	return env
+}
+
+// exitCode returns the code a program exited with, -1 when a signal ended it, and fails the test
+// when err says anything but an exit. doing and program name the failed step in the message.
+func exitCode(t *testing.T, err error, doing, program string) int {
+	t.Helper()
+
+	if err == nil {
+		return 0
+	}
+
+	exit, ok := errors.AsType[*exec.ExitError](err)
+	if !ok {
+		t.Fatalf("%s %s: %v", doing, program, err)
+	}
+
+	return exit.ExitCode()
+}
+
 // launch runs the binary with args in dir under env, plus the coverage directory when there is one,
 // and returns what it printed.
 func (b binary) launch(t *testing.T, dir string, env []string, args ...string) ran {
 	t.Helper()
 
-	if covered := coverDir(); covered != "" {
-		env = append(env, "GOCOVERDIR="+covered)
-	}
-
 	var stdout, stderr bytes.Buffer
 
 	cmd := exec.CommandContext(t.Context(), string(b), args...) //nolint:gosec // argv is written by the tests in this file
 	cmd.Dir = dir
-	cmd.Env = env
+	cmd.Env = withCoverDir(env)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
 
-	code := 0
-	if exit, ok := errors.AsType[*exec.ExitError](err); ok {
-		code = exit.ExitCode()
-	} else if err != nil {
-		t.Fatalf("run %s: %v", b, err)
-	}
-
-	return ran{stdout: stdout.String(), stderr: stderr.String(), code: code}
+	return ran{stdout: stdout.String(), stderr: stderr.String(), code: exitCode(t, err, "run", string(b))}
 }
 
 func TestIls(t *testing.T) {
@@ -257,4 +307,111 @@ func TestLaunched_WhenTheWidthOfStderrCannotBeRead_CountsItAsNone(t *testing.T) 
 	app := main.Launched(opened(t, "stdout"), opened(t, "stderr"), main.Terminal{IsTerminal: func(uintptr) bool { return true }, Size: unread})
 
 	assert.Check(t, is.Equal(app.StderrWidth(), 0))
+}
+
+// heldIdentityRead returns a repository on the topic branch whose origin names acme/widgets on
+// GitHub, an environment to run ils in it, and a fake gh that holds the read of the repository's
+// identity open for held. The fake is set up first, so that the environment of the repository,
+// read from the process, carries it.
+//
+// It sets process environment, so the test cannot be parallel.
+func heldIdentityRead(t *testing.T) (dir string, env []string, fake *ghtest.Fake) {
+	t.Helper()
+
+	fake = ghtest.Setup(t,
+		ghtest.Says("Logged in\n", ghtest.LoginArgs(host)...),
+		ghtest.Exits(ghtest.Answer{Stdout: ghtest.RepoViewJSON(false, "WRITE"), Delay: held}, ghtest.RepoViewArgs(slug)...),
+	)
+	f, env := gittest.NewServed(t, trunk, topic, originURL)
+
+	return f.Dir(), env, fake
+}
+
+// awaitHold waits until fake holds an answer open, and fails the test when a minute passes first.
+func awaitHold(t *testing.T, fake *ghtest.Fake) {
+	t.Helper()
+
+	select {
+	case <-fake.Holding():
+	case <-time.After(patience):
+		t.Fatal("the fake gh held no answer within a minute")
+	}
+}
+
+// started is a program the test started and can signal.
+type started struct {
+	cmd    *exec.Cmd
+	stdout io.Reader
+	stderr io.Reader
+}
+
+// start starts the program argv names, with its arguments, in dir under env. The end of the
+// test kills it unless the test waited for it, and a minute kills it whatever the test does.
+func start(t *testing.T, dir string, env []string, argv ...string) *started {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), patience)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // argv is written by the tests in this file
+	cmd.Dir = dir
+	cmd.Env = env
+	stdout, err := cmd.StdoutPipe()
+	assert.NilError(t, err)
+	stderr, err := cmd.StderrPipe()
+	assert.NilError(t, err)
+	assert.NilError(t, cmd.Start())
+	t.Cleanup(func() {
+		cancel()
+		if cmd.ProcessState == nil {
+			_ = cmd.Wait() // it reports the kill the cancel sent
+		}
+	})
+
+	return &started{cmd: cmd, stdout: stdout, stderr: stderr}
+}
+
+// end reads the rest of stdout and stderr, waits for the program to end, and returns what it
+// printed and the code it exited with, -1 when a signal ended it.
+func (s *started) end(t *testing.T) ran {
+	t.Helper()
+
+	stdout, err := io.ReadAll(s.stdout)
+	assert.NilError(t, err)
+	stderr, err := io.ReadAll(s.stderr)
+	assert.NilError(t, err)
+
+	err = s.cmd.Wait()
+
+	return ran{stdout: string(stdout), stderr: string(stderr), code: exitCode(t, err, "wait for", s.cmd.Path)}
+}
+
+// signal sends sig to the program, and fails the test when it cannot.
+func (s *started) signal(t *testing.T, sig syscall.Signal) {
+	t.Helper()
+
+	assert.NilError(t, s.cmd.Process.Signal(sig))
+}
+
+// skipWithoutSignals skips the test on Windows, where a signal cannot be sent to a program.
+func skipWithoutSignals(t *testing.T) {
+	t.Helper()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("a signal cannot be sent to a program on Windows")
+	}
+}
+
+func TestIls_WhenASignalLandsDuringALandingCommand_PrintsTheInterruptedResult(t *testing.T) {
+	skipWithoutSignals(t)
+
+	bin := build(t)
+	dir, env, fake := heldIdentityRead(t)
+	run := start(t, dir, withCoverDir(env), string(bin), "push")
+	awaitHold(t, fake)
+
+	run.signal(t, syscall.SIGINT)
+	got := run.end(t)
+
+	assert.Check(t, is.Equal(got.code, exitRefused))
+	assert.Check(t, is.Equal(got.stdout, interruptedRead))
+	assert.Check(t, is.Equal(got.stderr, ""))
 }

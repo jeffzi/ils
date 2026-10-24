@@ -3,7 +3,6 @@ package landing_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -132,29 +131,17 @@ type mergeRun struct {
 // setting is the scene of a run of `ils merge`; by default its branch passes every check before the
 // wait.
 type setting struct {
-	// arrange changes the repository before the scene reads it; nil changes nothing.
-	arrange func(*gittest.Fixture)
-	// tip returns the commit the forge's answers are about once the repository is arranged; nil is
-	// the tip of the topic branch.
-	tip func(f *gittest.Fixture) string
-	// scripted changes the forge's script once it is built, before the scene uses it; nil changes
-	// nothing.
-	scripted func(t *testing.T, s *scene, script *forgetest.Script)
-	// rewire changes how the scene reaches git, or what its deps carry, once it is built; nil
-	// changes nothing.
-	rewire func(t *testing.T, s *scene)
-	// deadline returns the context to run under once the scene is built, in place of the one left
-	// and unbounded describe; nil keeps that one.
-	deadline func(t *testing.T, s *scene) context.Context
-	// landed runs once a landing the forge lets through has squashed the tip onto origin's trunk.
-	landed func(t *testing.T, f *gittest.Fixture)
-	script forgeFor
-	// left is the time before the command's deadline; zero is the whole bound.
-	left time.Duration
-	// unbounded runs under a context with no deadline, which left then has no bearing on.
+	arrange   func(*gittest.Fixture)
+	tip       func(f *gittest.Fixture) string
+	scripted  func(t *testing.T, s *scene, script *forgetest.Script)
+	rewire    func(t *testing.T, s *scene)
+	runCtx    func(t *testing.T, s *scene) context.Context
+	landed    func(t *testing.T, f *gittest.Fixture)
+	script    forgeFor
+	cut       func(context.Context) context.Context
+	left      time.Duration
 	unbounded bool
-	// offline gives the scene an origin that does not answer.
-	offline bool
+	offline   bool
 }
 
 // runMergeIn runs `ils merge` inside the test's bubble with the forge script builds and a deadline
@@ -199,13 +186,17 @@ func runMergeOn(t *testing.T, set setting) mergeRun {
 	ctx := t.Context()
 
 	switch {
-	case set.deadline != nil:
-		ctx = set.deadline(t, s)
+	case set.runCtx != nil:
+		ctx = set.runCtx(t, s)
 	case !set.unbounded:
 		bounded, cancel := context.WithDeadline(ctx, time.Now().Add(orBound(set.left)))
 		t.Cleanup(cancel)
 
 		ctx = bounded
+	}
+
+	if set.cut != nil {
+		ctx = set.cut(ctx)
 	}
 
 	before := s.written()
@@ -232,18 +223,14 @@ func squashOnLand(t *testing.T, f *gittest.Fixture, tip string, landed func(*tes
 
 // waitRow is one run of `ils merge` that passes every check before the wait, and how it ends.
 type waitRow struct {
-	script forgeFor
-	// payload is the merge payload the run carries, but for the sha.
+	script  forgeFor
 	payload *result.Merge
+	cut     func(context.Context) context.Context
 	name    string
-	// text is the whole text of the result, with tipMark where the sha of the tip is printed.
-	text string
-	// drawn are parts of the text and how a terminal with color draws them, with tipMark where the
-	// sha of the tip is printed; empty leaves them unchecked.
+	text    string
 	drawn   []drawnPart
 	outcome result.Outcome
-	// left is the time before the command's deadline; zero is the whole bound.
-	left time.Duration
+	left    time.Duration
 }
 
 // runWaits runs each row as a test in a bubble of its own: the run carries the row's payload,
@@ -256,7 +243,7 @@ func runWaits(t *testing.T, rows []waitRow) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
-				run := runMergeIn(t, tt.script, tt.left)
+				run := runMergeOn(t, setting{script: tt.script, left: tt.left, cut: tt.cut})
 
 				want := *tt.payload
 				want.SHA = run.tip
@@ -310,12 +297,7 @@ func waitVerdicts() []waitRow {
 // pendingWaits are the runs of `ils merge` whose wait, on a deadline 20 seconds before the
 // command's, ends before the forge had an answer.
 func pendingWaits() []waitRow {
-	ended := fmt.Errorf("gh: %w", context.DeadlineExceeded)
-	cut := func(read string) string {
-		return cleanLine() + "Pending: the time limit ended while reading " + read + "; nothing more will change\n" + nextPush
-	}
-
-	return []waitRow{
+	rows := []waitRow{
 		{
 			// The head catches up after one poll of two seconds, which the count leaves out; then two
 			// polls of five seconds pass, and a third would leave too little time for the head read
@@ -326,12 +308,20 @@ func pendingWaits() []waitRow {
 				"Pending: the checks were still running at the time limit\n" + nextPush,
 			payload: mergeDetail(forge.VerdictPending, forge.MergeClean, running().Checks...),
 		},
-		{
-			name:    "the deadline ends in the CI read",
-			script:  waiting(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{Err: ended}),
-			outcome: result.Pending, text: cut(readCI), payload: mergeDetail(forge.VerdictNone, forge.MergeClean),
-		},
 	}
+
+	for _, c := range cuts() {
+		pendingText := func(read string) string {
+			return cleanLine() + "Pending: " + c.ends + " while reading " + read + "; nothing more will change\n" + nextPush
+		}
+		rows = append(rows, waitRow{
+			name:    c.name + " ends the CI read",
+			script:  waiting(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{Err: c.of("gh")}),
+			outcome: result.Pending, text: pendingText(readCI), payload: mergeDetail(forge.VerdictNone, forge.MergeClean),
+		})
+	}
+
+	return rows
 }
 
 // waitBreaks are the runs of `ils merge` whose read during the wait fails.
@@ -434,7 +424,7 @@ func settledStops() []waitRow {
 		}
 	}
 
-	return []waitRow{
+	rows := []waitRow{
 		apart(forge.MergeBehind, "BEHIND", "the pull request is behind the trunk"),
 		apart(forge.MergeConflicting, "DIRTY", "the pull request conflicts with the trunk"),
 		{
@@ -452,6 +442,17 @@ func settledStops() []waitRow {
 			payload: mergeDetail(forge.VerdictGreen, forge.MergeUnknown, passing().Checks...),
 		},
 	}
+
+	for _, c := range cuts() {
+		rows = append(rows, waitRow{
+			name: c.name + " ends the poll of the merge state", script: waiting(passing()).showing(clean, unknown),
+			cut:     c.inPoll,
+			outcome: result.Pending, payload: mergeDetail(forge.VerdictGreen, forge.MergeUnknown, passing().Checks...),
+			text: countLine + "Pending: GitHub did not say whether pull request #12 can merge " + c.before + "\n" + nextPush,
+		})
+	}
+
+	return rows
 }
 
 // messageStops are the runs of `ils merge` whose checks are green on a clean pull request and which
@@ -473,15 +474,18 @@ func messageStops() []waitRow {
 		result.Broke, unreadText(mergeCommand(), readMessage, "HTTP 502"))
 	unread.drawn = []drawnPart{{within: "run ils merge again", part: "ils merge", want: resulttest.NameLook()}}
 
-	return []waitRow{
+	rows := []waitRow{
 		row("the title no longer parses", forgetest.Answer[forge.Message]{Value: forge.Message{Title: "fix-thing"}},
 			result.Refused, countLine+cleanLine()+titleText("fix-thing")),
 		unread,
-		row("the deadline ends in the message read",
-			forgetest.Answer[forge.Message]{Err: fmt.Errorf("gh: %w", context.DeadlineExceeded)},
-			result.Refused, overtimeText(mergeCommand(), readMessage)),
-		late,
 	}
+
+	for _, c := range cuts() {
+		rows = append(rows, row(c.name+" ends the message read", forgetest.Answer[forge.Message]{Err: c.of("gh")},
+			result.Refused, overtimeText(mergeCommand(), c, readMessage)))
+	}
+
+	return append(rows, late)
 }
 
 func TestMerge_WhenWhatIsReadAfterTheWaitStopsTheMerge_EndsWithNothingWritten(t *testing.T) {

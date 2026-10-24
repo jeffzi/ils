@@ -83,6 +83,15 @@ func helperDiff(t *testing.T) (runner git.Runner, args []string) {
 	return runner, args
 }
 
+// checkNotExitError records a failure when err is, or wraps, a *child.ExitError. The format takes the
+// found error as its only argument.
+func checkNotExitError(t *testing.T, err error, format string) {
+	t.Helper()
+
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Check(t, !ok, format, exitErr)
+}
+
 func TestRunner_Run_WhenCallSucceeds_RunsInRunnerDir(t *testing.T) {
 	t.Parallel()
 	runner := newRunner(t)
@@ -166,8 +175,7 @@ func TestRunner_Run_WhenContextEndsWhileGitRuns_ReturnsOnlyContextError(t *testi
 			got, err := runner.Run(ctx, "ls-remote", url)
 
 			assert.Check(t, is.ErrorIs(err, tt.cause))
-			exitErr, ok := errors.AsType[*child.ExitError](err)
-			assert.Check(t, !ok, "Run(ls-remote) error = %#v, want no *child.ExitError for a killed git", exitErr)
+			checkNotExitError(t, err, "Run(ls-remote) error = %#v, want no *child.ExitError for a killed git")
 			assert.Check(t, is.DeepEqual(got, git.Result{}))
 		})
 	}
@@ -186,8 +194,7 @@ func TestRunner_Run_WhenContextEndsAfterOutputWhileChildHoldsPipes_ReturnsContex
 	took := time.Since(begun)
 	assert.Check(t, took <= prompt, "Run(diff) took %v, want under %v with the helper still alive", took, prompt)
 	assert.Check(t, is.ErrorIs(err, context.Canceled))
-	exitErr, ok := errors.AsType[*child.ExitError](err)
-	assert.Check(t, !ok, "Run(diff) error = %#v, want no *child.ExitError for a killed git", exitErr)
+	checkNotExitError(t, err, "Run(diff) error = %#v, want no *child.ExitError for a killed git")
 	assert.Check(t, is.DeepEqual(got, git.Result{}))
 }
 

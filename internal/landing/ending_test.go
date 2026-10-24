@@ -4,11 +4,12 @@ import (
 	"cmp"
 	"context"
 	"errors"
-	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -17,9 +18,11 @@ import (
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
+	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
 	"github.com/jeffzi/ils/internal/gittest"
+	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
 	"github.com/jeffzi/ils/internal/result/resulttest"
 )
@@ -35,6 +38,9 @@ const (
 	elsewhereLine = "The trunk " + trunk + " is checked out in another worktree and updates there on its next " +
 		"`git pull --ff-only`\n"
 	resumedLine = "Pull request #7 was already merged into " + trunk + "\n"
+
+	interruptedResumeText = resumedLine + "ils was interrupted before finishing the merge, so nothing was written\n" +
+		"Pending: ils was interrupted before finishing the merge\n" + nextMergeAgain
 
 	readStillOnOrigin = "whether origin still has the branch"
 
@@ -569,6 +575,11 @@ func TestMerge_WhenThePullRequestIsAlreadyMerged_FinishesWithoutMerging(t *testi
 
 // resumeStops are the resumes that end before their local ending, having written nothing.
 func resumeStops() []landingRow {
+	late := resumedLine + "Fewer than 20 seconds of the time limit were left to finish the merge, " +
+		"so nothing was written\n" + "Pending: fewer than 20 seconds of the time limit were left to finish the merge\n" +
+		nextMergeAgain
+	gone := func(f *gittest.Fixture) { f.LandPull(merged, topic) }
+
 	return []landingRow{
 		{
 			name: "the delete fails and origin still lists the branch", outcome: result.Broke, kept: true,
@@ -577,14 +588,75 @@ func resumeStops() []landingRow {
 		},
 		{
 			name: "fewer than 20 seconds are left before the first write", outcome: result.Pending, kept: true,
-			set: setting{arrange: landAndPublish, script: resuming(), left: 15 * time.Second},
-			text: resumedLine + "Fewer than 20 seconds of the time limit were left to finish the merge, " +
-				"so nothing was written\n" + "Pending: fewer than 20 seconds of the time limit were left to finish the merge\n" +
-				nextMergeAgain,
-			payload: resumed("", ""),
+			set:  setting{arrange: landAndPublish, script: resuming(), left: 15 * time.Second},
+			text: late, payload: resumed("", ""),
+		},
+		{
+			name: "fewer than 20 seconds are left and origin no longer lists the branch", outcome: result.Pending,
+			kept: true, set: setting{arrange: gone, script: resuming(), left: 15 * time.Second},
+			text: late, payload: resumed("", ""),
+		},
+		{
+			name: "an interrupt lands once origin was asked for the branch it still lists", outcome: result.Pending,
+			kept: true, set: setting{arrange: landAndPublish, script: resuming(), runCtx: interruptAfterAskingForTheBranch},
+			text: interruptedResumeText, payload: resumed("", ""),
+		},
+		{
+			name: "an interrupt lands once origin was asked for the branch it no longer lists", outcome: result.Pending,
+			kept: true, set: setting{arrange: gone, script: resuming(), runCtx: interruptAfterAskingForTheBranch},
+			text: interruptedResumeText, payload: resumed("", ""),
 		},
 	}
 }
+
+// interruptAfterAskingForTheBranch returns the context of a run that an interrupt cancels once
+// git's call that asks origin whether it has the branch has ended, and not before.
+func interruptAfterAskingForTheBranch(t *testing.T, s *scene) context.Context {
+	t.Helper()
+
+	done := make(chan struct{})
+	asked := func(args []string) bool {
+		return slices.Contains(args, "ls-remote") &&
+			slices.ContainsFunc(args, func(arg string) bool { return strings.HasSuffix(arg, topic) })
+	}
+	s.deps.Repo.Runner.Logger = slog.New(afterCall{ended: asked, fire: sync.OnceFunc(func() { close(done) })})
+
+	return byInterrupt().once(t.Context(), done)
+}
+
+// afterCall is a log handler for the git calls of a run that calls fire once a call whose
+// arguments ended says yes to has ended.
+type afterCall struct {
+	ended func(args []string) bool
+	fire  func()
+}
+
+// Enabled reports true for every level so that Handle sees each git call's end record regardless
+// of the logger's level.
+func (afterCall) Enabled(context.Context, slog.Level) bool { return true }
+
+// Handle calls fire when record is the end of a call whose arguments ended says yes to.
+func (h afterCall) Handle(_ context.Context, record slog.Record) error {
+	record.Attrs(func(attr slog.Attr) bool {
+		if attr.Key != child.KeyArgs {
+			return true
+		}
+
+		if args, ok := attr.Value.Resolve().Any().([]string); ok && h.ended(args) {
+			h.fire()
+		}
+
+		return false
+	})
+
+	return nil
+}
+
+// WithAttrs returns h, which reads only the attributes of each record.
+func (h afterCall) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+// WithGroup returns h, which reads only the attributes of each record.
+func (h afterCall) WithGroup(string) slog.Handler { return h }
 
 func TestMerge_WhenAResumeCannotFinish_EndsWithNothingWritten(t *testing.T) {
 	t.Parallel()
@@ -617,18 +689,24 @@ func TestMerge_WhenTheResumeCannotAskOriginForTheBranch_BrokeNamingTheRead(t *te
 	assert.Check(t, is.Equal(run.written(), run.before))
 }
 
-func TestMerge_WhenTheDeadlineEndsAsTheResumeAsksOriginForTheBranch_RefusesNamingTheRead(t *testing.T) {
+func TestMerge_WhenTheResumeIsCutShortAskingOriginForTheBranch_RefusesNamingTheRead(t *testing.T) {
 	t.Parallel()
 
-	// Origin answers about its trunk, the fetch of it, and the fetch of the merged head.
-	run := runMergeOn(t, setting{arrange: landAndPublish, script: resuming(), deadline: stalling(3)})
+	for _, c := range cuts() {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 
-	assertStoppedBy(t, run.got, result.Refused, mergeRequest())
+			// Origin answers about its trunk, the fetch of it, and the fetch of the merged head.
+			run := runMergeOn(t, setting{arrange: landAndPublish, script: resuming(), runCtx: c.stalling(3)})
 
-	text, _ := shown(t, run.got, run.gitDir)
-	assert.Check(t, is.Equal(text, resumedLine+overtimeText(mergeCommand(), readStillOnOrigin)))
-	assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(run.tip, ""), cmpopts.EquateEmpty()))
-	assert.Check(t, is.Equal(run.written(), run.before))
+			assertStoppedBy(t, run.got, result.Refused, mergeRequest())
+
+			text, _ := shown(t, run.got, run.gitDir)
+			assert.Check(t, is.Equal(text, resumedLine+overtimeText(mergeCommand(), c, readStillOnOrigin)))
+			assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(run.tip, ""), cmpopts.EquateEmpty()))
+			assert.Check(t, is.Equal(run.written(), run.before))
+		})
+	}
 }
 
 // sent returns the payload of a green run on a clean pull request 12 that sent its merge with a
@@ -663,10 +741,15 @@ func writeStops() []landingRow {
 			"Broke: GitHub did not report the merge as done\n"+nextMergeAgain)
 	refused.payload, refused.kept = sent(landedBody, false, ""), true
 	refused.told = toldAfterWait(mergingStep)
-	cut := row("the deadline ends in the merge", toLand(fmt.Errorf("gh pr merge: %w", context.DeadlineExceeded), nil),
-		result.Broke, "Started the merge of pull request #12 when the time limit ended; "+
-			"it may or may not have gone through\n"+"Broke: the time limit ended during the merge\n"+nextMergeAgain)
-	cut.payload, cut.kept = sent(landedBody, false, ""), true
+	cutRows := make([]landingRow, 0, len(cuts()))
+	for _, c := range cuts() {
+		ended := row(c.name+" ends the merge", toLand(c.of("gh pr merge"), nil),
+			result.Broke, "Started the merge of pull request #12 when "+c.ends+"; "+
+				"it may or may not have gone through\n"+"Broke: "+c.ends+" during the merge\n"+nextMergeAgain)
+		ended.payload, ended.kept = sent(landedBody, false, ""), true
+		cutRows = append(cutRows, ended)
+	}
+
 	gone := row("the delete fails and origin no longer lists the branch", toLand(nil, failed), result.Done,
 		mergedLine+goneLine+onTrunkLine)
 	gone.payload = sent(landedBody, true, result.EndingTrunk)
@@ -679,8 +762,138 @@ func writeStops() []landingRow {
 			"Could not read "+readStillOnOrigin+": ")
 	unasked.after = "\nBroke: the branch could not be deleted on origin\n" + nextMergeAgain
 	unasked.set.landed = moveOrigin
+	interrupted := row("an interrupt ends the delete", toLand(nil, byInterrupt().of("gh")), result.Broke,
+		mergedLine+"Started the delete of the branch "+topic+" on origin when ils was interrupted; "+
+			"it may or may not have gone through\n"+
+			"Broke: ils was interrupted while deleting the branch on origin\n"+nextMergeAgain)
+	interrupted.set.runCtx = interruptOnStart(deletingStep)
 
-	return []landingRow{refused, cut, gone, listed, unasked}
+	return slices.Concat([]landingRow{refused}, cutRows, []landingRow{gone, listed, unasked, interrupted})
+}
+
+// stepHook is a progress hook that tells next everything it is told, and calls fire once the run
+// starts the step whose start reads step as the watch tells it.
+type stepHook struct {
+	landing.Progress
+
+	t    *testing.T
+	fire func()
+	step string
+}
+
+// Started tells the step to next, then calls fire when it is the step of the hook.
+func (h stepHook) Started(label result.Phrase, limit time.Duration) {
+	h.Progress.Started(label, limit)
+
+	if "start "+plainText(h.t, label) == h.step {
+		h.fire()
+	}
+}
+
+// interruptOnStart returns the context of a run that an interrupt cancels once the run starts the
+// step whose start reads step as the watch tells it.
+func interruptOnStart(step string) func(t *testing.T, s *scene) context.Context {
+	return func(t *testing.T, s *scene) context.Context {
+		t.Helper()
+
+		done := make(chan struct{})
+		s.deps.Progress = stepHook{Progress: s.deps.Progress, t: t, step: step, fire: sync.OnceFunc(func() { close(done) })}
+
+		return byInterrupt().once(t.Context(), done)
+	}
+}
+
+// interruptedWrites are the runs of `ils merge` that an interrupt reaches as the first write
+// starts, and which end as the time limit ends them when it leaves too little time for that write.
+func interruptedWrites() []landingRow {
+	return []landingRow{
+		{
+			name: "the merge", outcome: result.Pending, kept: true,
+			set: setting{script: toLand(nil, nil), runCtx: interruptOnStart(mergingStep)},
+			text: countLine + cleanLine() + "ils was interrupted before the merge, so nothing was written\n" +
+				"Pending: ils was interrupted before the merge\n" + nextPush,
+			payload: sent(landedBody, false, ""),
+		},
+		{
+			name: "the delete of a resume", outcome: result.Pending, kept: true,
+			set:     setting{arrange: landAndPublish, script: resuming(), runCtx: interruptOnStart(deletingStep)},
+			text:    interruptedResumeText,
+			payload: resumed("", ""),
+		},
+	}
+}
+
+func TestMerge_WhenAnInterruptLandsAsTheFirstWriteStarts_EndsPendingWithNothingWritten(t *testing.T) {
+	t.Parallel()
+
+	runLandings(t, interruptedWrites())
+}
+
+// stallingAfterLand returns the arrange of a run whose git calls whose arguments start with words
+// stall, as stallingGit makes them, once the merge went through, and the hook that turns that on
+// as the merge lands. An interrupt ends the context once a stalled call is under way. It cannot run
+// in a parallel test.
+func stallingAfterLand(
+	words []string,
+) (runCtx func(*testing.T, *scene) context.Context, landed func(*testing.T, *gittest.Fixture)) {
+	var stalled string
+
+	runCtx = func(t *testing.T, s *scene) context.Context {
+		t.Helper()
+
+		plain := os.Getenv("PATH")
+		ctx := byInterrupt().stallingGit(words)(t, s)
+		stalled = os.Getenv("PATH")
+		t.Setenv("PATH", plain)
+
+		return ctx
+	}
+	landed = func(t *testing.T, _ *gittest.Fixture) {
+		t.Helper()
+		t.Setenv("PATH", stalled)
+	}
+
+	return runCtx, landed
+}
+
+func TestMerge_WhenAnInterruptEndsTheFetchOfTheLocalEnding_BrokeNamingTheInterrupt(t *testing.T) {
+	lead := countLine + cleanLine() + mergedLine + deletedLine
+	tests := []struct {
+		arrange func(*gittest.Fixture)
+		name    string
+		text    string
+		on      string
+	}{
+		{
+			name: "on the trunk", on: trunk,
+			text: lead + "Ran " + switchStep + "\nRan " + dropStep + "\n" + pullStep + " stopped when ils was interrupted\n" +
+				"Broke: ils was interrupted during " + pullStep + "\nNext: run " + pullStep + " by hand\n",
+		},
+		{
+			name: "with the trunk in another worktree", on: topic,
+			arrange: func(f *gittest.Fixture) { f.TrunkWorktree() },
+			text: lead + fetchStep + " stopped when ils was interrupted\nNot run: " + detachStep + "\nNot run: " + dropStep +
+				"\nBroke: ils was interrupted during " + fetchStep + "\n" + nextMergeFixed,
+		},
+	}
+	// Not parallel: each row puts a stalling git first on PATH with t.Setenv.
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runCtx, landed := stallingAfterLand([]string{"fetch"})
+
+			run := runMergeOn(t, setting{arrange: tt.arrange, script: toLand(nil, nil), runCtx: runCtx, landed: landed})
+
+			assertStoppedBy(t, run.got, result.Broke, mergeRequest())
+
+			text, _ := shown(t, run.got, run.gitDir)
+			assert.Check(t, is.Equal(text, mark(tt.text, run.tip)))
+
+			want := sent(landedBody, true, "")
+			want.SHA = run.tip
+			assert.Check(t, is.DeepEqual(mergePayload(t, run.got), want, cmpopts.EquateEmpty()))
+			assert.Check(t, is.Equal(run.fixture.Git("rev-parse", "--abbrev-ref", "HEAD"), tt.on))
+		})
+	}
 }
 
 func TestMerge_WhenAWriteOnGitHubFails_SaysWhatWentThrough(t *testing.T) {

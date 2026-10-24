@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"slices"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -35,14 +38,32 @@ const (
 	stuckUnstoppable = "unstoppable"
 	// stuckReturned lets its landing command return at once, then stays until it is killed.
 	stuckReturned = "returned"
+	// stuckStopping shows the spinner line of its step, and its landing command returns the
+	// result Stopped. once the first interrupt or termination of the process ended its context.
+	stuckStopping = "stopping"
+	// stuckHolding is stuckStopping, except that once the context of its landing command
+	// ended, the command prints canceled on stdout and stays for stayAfterReturn before it
+	// returns, so that a later signal reaches a run still under way.
+	stuckHolding = "holding"
+	// stuckHoldingEarly is stuckHolding, except that the first interrupt or termination lands
+	// before the landing command runs: the Notify of the run waits for it, after printing
+	// listening on stdout, and its landing command prints no ready.
+	stuckHoldingEarly = "holding early"
 
-	// stayAfterReturn is how long a stuckReturned run stays once its landing command returned:
-	// longer than any test waits for it.
+	// stayAfterReturn is how long a stuckReturned run stays once its landing command returned, and
+	// how long the landing command of a holding run stays once its context ended: longer than any
+	// test waits for either.
 	stayAfterReturn = 2 * time.Minute
 
 	// ready is the line a stuck run prints on stdout once its landing command runs, or, for
 	// stuckReturned, once it returned.
 	ready = "ready"
+	// canceled is the line a holding run prints on stdout once the context of its landing command
+	// ended.
+	canceled = "canceled"
+	// listening is the line a stuckHoldingEarly run prints on stdout once it waits, as its landing
+	// starts, for the first interrupt or termination.
+	listening = "listening"
 )
 
 // errUnsent is why a SIGSTOP an unstoppable run sends itself fails.
@@ -68,7 +89,8 @@ func TestMain(m *testing.M) {
 // stuck runs `ils merge` in a step that lasts until the run's deadline, as way says, with stderr
 // a color terminal wide columns wide unless way is stuckPiped, and returns its exit code. Once the
 // landing command runs, it prints ready on stdout; a stuckReturned run prints it once the command
-// returned, and stays for stayAfterReturn.
+// returned, and stays for stayAfterReturn. A stuckStopping, stuckHolding or stuckHoldingEarly run
+// is the one stopping describes instead.
 func stuck(way string) int {
 	app := cli.App{
 		Stdout:         os.Stdout,
@@ -78,6 +100,9 @@ func stuck(way string) int {
 		StderrWidth:    func() int { return wide },
 		Launch:         time.Now(),
 		Notify:         signal.Notify,
+	}
+	if way == stuckStopping || way == stuckHolding || way == stuckHoldingEarly {
+		return stopping(app, way)
 	}
 	if way == stuckUnstoppable {
 		app.SetSuspend(func() error { return errUnsent })
@@ -103,6 +128,57 @@ func stuck(way string) int {
 	})
 
 	return app.Run(context.Background(), []string{"merge"})
+}
+
+// stopping runs `ils merge` with app, which stuck set up, in a step whose spinner line shows on
+// stderr, and returns the exit code. Once the step started, its landing command prints ready on
+// stdout unless way is stuckHoldingEarly, then waits for the first interrupt or termination of the
+// process to end its context; unless way is stuckStopping, it then prints canceled and stays for
+// stayAfterReturn. It returns the result Stopped.
+func stopping(app cli.App, way string) int {
+	if way == stuckHoldingEarly {
+		app.Notify = heldForTheFirstInterrupt()
+	}
+	app.SetMerge(func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
+		startedMerge(progress(deps))
+		if way != stuckHoldingEarly {
+			tell(ready)
+		}
+		<-ctx.Done()
+		if way != stuckStopping {
+			tell(canceled)
+			time.Sleep(stayAfterReturn)
+		}
+
+		stopped := finished(req)
+		stopped.Lines = []result.Phrase{result.Say("Stopped.")}
+
+		return stopped
+	})
+
+	return app.Run(context.Background(), []string{"merge"})
+}
+
+// heldForTheFirstInterrupt returns a notify that relays to c the signals sig, as signal.Notify
+// does. The first time sig holds the interrupt, as ils begins listening for the end of the
+// process, it then prints listening on stdout and returns only once an interrupt or termination
+// has reached the process.
+func heldForTheFirstInterrupt() func(c chan<- os.Signal, sig ...os.Signal) {
+	var once sync.Once
+
+	return func(c chan<- os.Signal, sig ...os.Signal) {
+		signal.Notify(c, sig...)
+		if !slices.Contains(sig, os.Interrupt) {
+			return
+		}
+		once.Do(func() {
+			first := make(chan os.Signal, 1)
+			signal.Notify(first, os.Interrupt, syscall.SIGTERM)
+			tell(listening)
+			<-first
+			signal.Stop(first)
+		})
+	}
 }
 
 // tell prints line on stdout for the test that started the stuck run, and panics when it cannot.
