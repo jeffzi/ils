@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/spf13/cobra"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
@@ -713,5 +715,192 @@ func TestApp_Run_WhenTheResultIsPendingOffATerminalStdoutOrAsJSON_PrintsNoHint(t
 			assert.Check(t, is.Equal(got.code, exitPending))
 			assert.Check(t, !strings.Contains(got.stdout, hint), "stdout = %q", got.stdout)
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Man page and shell completion
+// ---------------------------------------------------------------------------
+
+// outputPath is one of the two ways a run prints: through Fang when stdout shows color, and
+// through Cobra alone when it does not.
+type outputPath struct {
+	name  string
+	color bool
+}
+
+func outputPaths() []outputPath {
+	return []outputPath{{name: "color on", color: true}, {name: "color off"}}
+}
+
+// on returns the cli outside any repository, its stdout showing color when path says so.
+func (path outputPath) on(t *testing.T) cli.App {
+	t.Helper()
+
+	if path.color {
+		return painted(t, []string{colorTerm}, true, false)
+	}
+
+	return outside(t)
+}
+
+func TestApp_Run_WhenAskedForTheManPage_PrintsItInRoffAsSectionOne(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range outputPaths() {
+		for _, args := range [][]string{{"man"}, {"man", "--json"}, {"--json=false", "man"}} {
+			t.Run(path.name+"/"+strings.Join(args, " "), func(t *testing.T) {
+				t.Parallel()
+
+				got := launch(t, path.on(t), args...)
+
+				assert.Check(t, is.Equal(got.code, exitDone))
+				assert.Check(t, is.Equal(got.stderr, ""))
+				startsWith(t, got.stdout, ".TH ILS 1 ")
+				assert.Check(t, is.Contains(got.stdout, "\n.SH NAME\nils - Land a branch on GitHub in fixed, checked steps\n"))
+				lines := strings.Split(got.stdout, "\n")
+				for _, name := range []string{"push", "merge"} {
+					bold := `\fB` + name + `\fP`
+					assert.Check(t, slices.Contains(lines, bold), "the man page has no line %q:\n%s", bold, got.stdout)
+				}
+				page := flat(got.stdout)
+				for _, want := range []string{pushShort, mergeShort, "--json", "--no-color", "--debug", "--version"} {
+					assert.Check(t, is.Contains(page, want))
+				}
+			})
+		}
+	}
+}
+
+// manSection returns the body of the section of the man page headed title, without its heading.
+func manSection(t *testing.T, page, title string) string {
+	t.Helper()
+
+	_, rest, found := strings.Cut(page, "\n.SH "+title+"\n")
+	assert.Assert(t, found, "the man page has no section %s:\n%s", title, page)
+	body, _, _ := strings.Cut(rest, "\n.SH ")
+
+	return body
+}
+
+func TestApp_Run_WhenAskedForTheManPage_KeepsEachParagraphOfTheDescriptionOnOneLine(t *testing.T) {
+	t.Parallel()
+
+	got := launch(t, outside(t), "man")
+
+	paragraphs := strings.Split(manSection(t, got.stdout, "DESCRIPTION"), "\n.PP\n")
+	assert.Assert(t, is.Len(paragraphs, 2), "description paragraphs = %q", paragraphs)
+	for _, paragraph := range paragraphs {
+		assert.Check(t, !strings.Contains(paragraph, "\n"), "the paragraph %q spans several lines", paragraph)
+	}
+	assert.Check(t, is.Contains(paragraphs[0], "push, pull request, CI verdict"))
+	assert.Check(t, strings.HasPrefix(paragraphs[1], "Docs: https://github"), "last paragraph = %q", paragraphs[1])
+}
+
+func TestApp_Run_WhenAskedForTheManPage_ListsEachShorthandWithASingleDash(t *testing.T) {
+	t.Parallel()
+
+	got := launch(t, outside(t), "man")
+
+	lines := strings.Split(manSection(t, got.stdout, "OPTIONS"), "\n")
+	var options []string
+	for i, line := range lines[:len(lines)-1] {
+		if line == ".TP" {
+			options = append(options, lines[i+1])
+		}
+	}
+	bold := func(text string) string { return `\fB` + text + `\fP` }
+	want := []string{bold("-d, --debug"), bold("-h, --help"), bold("--json"), bold("--no-color"), bold("--version")}
+	assert.Check(t, is.DeepEqual(options, want))
+}
+
+// shellScript is a shell ils completes for, the words that ask for its script, and the script
+// Cobra generates for a root command named ils.
+type shellScript struct {
+	generate func(root *cobra.Command, out io.Writer) error
+	args     []string
+}
+
+// shellScripts returns every shell ils completes for, with and without descriptions.
+func shellScripts() []shellScript {
+	return []shellScript{
+		{args: []string{"completion", "bash"}, generate: func(r *cobra.Command, w io.Writer) error { return r.GenBashCompletionV2(w, true) }},
+		{
+			args:     []string{"completion", "bash", "--no-descriptions"},
+			generate: func(r *cobra.Command, w io.Writer) error { return r.GenBashCompletionV2(w, false) },
+		},
+		{args: []string{"completion", "zsh"}, generate: (*cobra.Command).GenZshCompletion},
+		{args: []string{"completion", "zsh", "--no-descriptions"}, generate: (*cobra.Command).GenZshCompletionNoDesc},
+		{args: []string{"completion", "fish"}, generate: func(r *cobra.Command, w io.Writer) error { return r.GenFishCompletion(w, true) }},
+		{
+			args:     []string{"completion", "fish", "--no-descriptions"},
+			generate: func(r *cobra.Command, w io.Writer) error { return r.GenFishCompletion(w, false) },
+		},
+		{args: []string{"completion", "powershell"}, generate: (*cobra.Command).GenPowerShellCompletionWithDesc},
+		{args: []string{"completion", "powershell", "--no-descriptions"}, generate: (*cobra.Command).GenPowerShellCompletion},
+		{args: []string{"completion", "bash", "--json"}, generate: func(r *cobra.Command, w io.Writer) error { return r.GenBashCompletionV2(w, true) }},
+		{args: []string{"--json", "completion", "zsh"}, generate: (*cobra.Command).GenZshCompletion},
+		{args: []string{"completion", "fish", "--json=false"}, generate: func(r *cobra.Command, w io.Writer) error { return r.GenFishCompletion(w, true) }},
+		{args: []string{"--json=false", "completion", "zsh"}, generate: (*cobra.Command).GenZshCompletion},
+	}
+}
+
+func TestApp_Run_WhenAskedForACompletionScript_PrintsTheScriptCobraGeneratesByteForByte(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range outputPaths() {
+		for _, tt := range shellScripts() {
+			t.Run(path.name+"/"+strings.Join(tt.args, " "), func(t *testing.T) {
+				t.Parallel()
+
+				var script bytes.Buffer
+				assert.NilError(t, tt.generate(&cobra.Command{Use: "ils"}, &script))
+
+				got := launch(t, path.on(t), tt.args...)
+
+				want := ran{stdout: script.String(), code: exitDone}
+				assert.Check(t, is.DeepEqual(got, want, sameRun()))
+			})
+		}
+	}
+}
+
+func TestApp_Run_WhenAskedToCompleteTheWordsTyped_PrintsTheCandidatesAndExitsZero(t *testing.T) {
+	t.Parallel()
+
+	// noFiles is the directive that tells the shell to offer no file when no candidate is printed.
+	const noFiles = ":4"
+
+	tests := []struct {
+		name string
+		want []string
+		args []string
+	}{
+		{name: "command", args: []string{"__complete", ""}, want: []string{"completion", "help", "merge", "push"}},
+		{name: "word after push", args: []string{"__complete", "push", ""}},
+		{name: "word after merge", args: []string{"__complete", "merge", ""}},
+		{name: "word after man", args: []string{"__complete", "man", ""}},
+		{name: "flag after push", args: []string{"__complete", "push", "-"}, want: []string{"--debug", "-d", "--json", "--no-color", "--help", "-h"}},
+		{name: "long flag after push", args: []string{"__complete", "push", "--"}, want: []string{"--debug", "--json", "--no-color", "--help"}},
+		{name: "flag after merge", args: []string{"__complete", "merge", "-"}, want: []string{"--debug", "-d", "--json", "--no-color", "--help", "-h"}},
+	}
+	for _, path := range outputPaths() {
+		for _, tt := range tests {
+			t.Run(path.name+"/"+tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				got := launch(t, path.on(t), tt.args...)
+
+				assert.Check(t, is.Equal(got.code, exitDone))
+				lines := strings.Split(strings.TrimSuffix(got.stdout, "\n"), "\n")
+				assert.Check(t, is.Equal(lines[len(lines)-1], noFiles), "stdout = %q", got.stdout)
+				var candidates []string
+				for _, line := range lines[:len(lines)-1] {
+					name, _, _ := strings.Cut(line, "\t")
+					candidates = append(candidates, name)
+				}
+				assert.Check(t, is.DeepEqual(candidates, tt.want, anyOrder(), cmpopts.EquateEmpty()))
+			})
+		}
 	}
 }

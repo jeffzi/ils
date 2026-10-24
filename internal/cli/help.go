@@ -11,7 +11,8 @@ func withBound(long string) string {
 // The help says how to call a command and nothing else: what to do with an exit code and with
 // the next step is said by the result of each run.
 const (
-	rootLong = `ils lands a branch on GitHub in fixed, checked steps: push, pull request,
+	rootShort = "Land a branch on GitHub in fixed, checked steps"
+	rootLong  = `ils lands a branch on GitHub in fixed, checked steps: push, pull request,
 CI verdict. It exists so that a coding agent cannot push to the wrong
 place, skip the checks, or call a red build done.
 

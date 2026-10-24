@@ -58,6 +58,7 @@
     "resulttest",
     "revive",
     "riscv",
+    "roff",
     "semver",
     "Shortnames",
     "staticcheck",

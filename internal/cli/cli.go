@@ -19,6 +19,9 @@ import (
 	"charm.land/fang/v2"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/term"
+	"github.com/muesli/mango"
+	manual "github.com/muesli/mango-cobra"
+	"github.com/muesli/roff"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
@@ -117,7 +120,7 @@ func (a App) Run(ctx context.Context, args []string) int {
 		// The error comes back from Execute, and is reported below as a result or on Stderr.
 		silent := func(io.Writer, fang.Styles, error) {}
 		err = fang.Execute(ctx, root,
-			fang.WithoutCompletions(), fang.WithoutManpage(), fang.WithoutVersion(), fang.WithErrorHandler(silent),
+			fang.WithoutManpage(), fang.WithoutVersion(), fang.WithErrorHandler(silent),
 			fang.WithColorSchemeFunc(fang.AnsiColorScheme))
 	}
 
@@ -314,14 +317,13 @@ type parse struct {
 // root returns the command of no word, with every other command under it.
 func (p *parse) root() *cobra.Command {
 	root := &cobra.Command{
-		Use:  "ils",
-		Long: rootLong,
+		Use:   "ils",
+		Short: rootShort,
+		Long:  rootLong,
 		// Every error comes back from Execute and is reported as a result or on Stderr, so Cobra
 		// prints neither the error nor the usage.
 		SilenceErrors: true,
 		SilenceUsage:  true,
-		// `ils completion` is refused as no command.
-		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 		// Cobra asks Args only of a runnable command. Args refuses every run but `ils --version`,
 		// which RunE prints.
 		Args: func(c *cobra.Command, args []string) error {
@@ -359,11 +361,13 @@ func (p *parse) root() *cobra.Command {
 	// word after a flag it does not know for that flag's value: `ils --help push` would print
 	// the help of the root.
 	root.InitDefaultHelpFlag()
-	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return p.flagRefusal(err, notCommand) })
+	root.SetFlagErrorFunc(p.flagErrorFunc(notCommand))
 	root.AddCommand(
 		p.landing(landingHelp{word: landing.PushCommand, short: pushShort, long: withBound(pushLong), examples: pushExamples}, p.app.runPush, landing.Push),
 		p.landing(landingHelp{word: landing.MergeCommand, short: mergeShort, long: withBound(mergeLong), examples: mergeExamples}, p.app.runMerge, landing.Merge),
+		p.manPage(),
 	)
+	p.addCompletion(root)
 
 	for _, later := range []string{wordBranch, wordRelease, wordStatus} {
 		root.AddCommand(&cobra.Command{
@@ -379,6 +383,143 @@ func (p *parse) root() *cobra.Command {
 	}
 
 	return root
+}
+
+// manPage returns the hidden command that prints the man page of ils, in roff as section 1, and
+// takes no other word.
+//
+// Fang's own man command writes to the process's stdout rather than to the writer Run hands Cobra,
+// so Fang's stays off and this one stands in its place.
+func (p *parse) manPage() *cobra.Command {
+	extra := func(typed string) result.Phrase { return extraWord(wordMan, typed) }
+
+	man := &cobra.Command{
+		Use:               wordMan,
+		Short:             "Print the man page of ils",
+		Hidden:            true,
+		Args:              p.noOtherWord(extra),
+		ValidArgsFunction: cobra.NoFileCompletions,
+		RunE: func(c *cobra.Command, _ []string) error {
+			page, err := manual.NewManPage(1, c.Root())
+			if err != nil {
+				return fmt.Errorf("build the man page: %w", err)
+			}
+
+			oneDashBeforeShorthand(&page.Root)
+			page.WithLongDescription(paragraphs(c.Root().Long))
+
+			if _, err := io.WriteString(c.OutOrStdout(), page.Build(roff.NewDocument())); err != nil {
+				return fmt.Errorf("write the man page: %w", err)
+			}
+
+			return nil
+		},
+	}
+	man.SetFlagErrorFunc(p.flagErrorFunc(extra))
+
+	return man
+}
+
+// paragraphs returns text with each of its paragraphs, which blank lines separate, on a line of its
+// own. mango starts a paragraph at every newline, so a line that only wraps the text would end its
+// paragraph mid-sentence.
+func paragraphs(text string) string {
+	var joined []string
+	for paragraph := range strings.SplitSeq(text, "\n\n") {
+		if words := strings.Fields(paragraph); len(words) > 0 {
+			joined = append(joined, strings.Join(words, " "))
+		}
+	}
+
+	return strings.Join(joined, "\n")
+}
+
+// oneDashBeforeShorthand makes each flag of c, and of every command under c, that has a shorthand
+// read "-d, --debug".
+//
+// mango puts the double dash of the long form before the shorthand as well, and writes a flag as
+// one dash and its name when it is no pflag flag, so the shorthand and the long form both go in the
+// name. The flags stay in the order of their keys, which this leaves alone.
+func oneDashBeforeShorthand(c *mango.Command) {
+	for key, flag := range c.Flags {
+		if flag.Short == "" || !flag.PFlag {
+			continue
+		}
+
+		c.Flags[key] = mango.Flag{Name: flag.Short + ", --" + flag.Name, Usage: flag.Usage}
+	}
+
+	for _, sub := range c.Commands {
+		oneDashBeforeShorthand(sub)
+	}
+}
+
+// addCompletion adds to root Cobra's completion command, with one command under it for each shell
+// it prints the script of, and makes every word these commands do not take a refusal: no shell, a
+// word that is no shell, and a word after the shell.
+//
+// It panics when Cobra adds no completion command, which it does for a root with commands under it.
+func (p *parse) addCompletion(root *cobra.Command) {
+	// Cobra's completion command writes a script to the writer root has when the command is added.
+	// That is Stdout itself, not the writer Run sets later, which brings escape sequences down to the
+	// profile of Stdout: a script must arrive byte for byte.
+	root.SetOut(p.app.Stdout)
+	root.InitDefaultCompletionCmd()
+	root.SetOut(nil)
+
+	commands := root.Commands()
+	i := slices.IndexFunc(commands, func(c *cobra.Command) bool { return c.Name() == wordCompletion })
+	if i < 0 {
+		panic("cobra added no completion command")
+	}
+
+	completion := commands[i]
+	notShell := func(typed string) result.Phrase { return result.Say("%s is not a shell", typed) }
+	extra := func(typed string) result.Phrase {
+		return result.Say("%s takes one shell, and %s was given", wordCompletion, typed)
+	}
+
+	// Cobra finds the command of a shell before it asks for this one, so what reaches RunE is no
+	// shell, or a word that is none. Cobra asks Args only of a runnable command.
+	completion.Args = cobra.ArbitraryArgs
+	completion.RunE = func(c *cobra.Command, args []string) error {
+		switch {
+		case c.ArgsLenAtDash() == 0:
+			return p.refuse(notShell(wordDash))
+		case len(args) == 0:
+			return p.refuse(result.Say("no shell was given"))
+		default:
+			return p.refuse(notShell(args[0]))
+		}
+	}
+	// The command of each shell inherits this function from its parent.
+	completion.SetFlagErrorFunc(p.flagErrorFunc(extra))
+
+	for _, shell := range completion.Commands() {
+		shell.Args = p.noOtherWord(extra)
+	}
+}
+
+// noOtherWord returns the Args of a command that takes no word: the first word typed after it, the
+// terminator -- included, is refused for the reason extra gives.
+func (p *parse) noOtherWord(extra func(typed string) result.Phrase) cobra.PositionalArgs {
+	return func(c *cobra.Command, args []string) error {
+		if c.ArgsLenAtDash() == 0 {
+			return p.refuse(extra(wordDash))
+		}
+
+		if len(args) > 0 {
+			return p.refuse(extra(args[0]))
+		}
+
+		return nil
+	}
+}
+
+// flagErrorFunc returns the flag error function of a command that refuses an unknown flag for the
+// reason unknown gives.
+func (p *parse) flagErrorFunc(unknown func(typed string) result.Phrase) func(*cobra.Command, error) error {
+	return func(_ *cobra.Command, err error) error { return p.flagRefusal(err, unknown) }
 }
 
 // addOutputFlags adds to root, for every command under it, the flags that change how a command
@@ -435,8 +576,8 @@ type landingHelp struct {
 	word, short, long, examples string
 }
 
-// landing returns the landing command help names, which takes no other word and runs run, or
-// fallback when run is nil.
+// landing returns the landing command help names, which takes no other word, so the shell completes
+// no file after it, and runs run, or fallback when run is nil.
 func (p *parse) landing(help landingHelp, run, fallback Command) *cobra.Command {
 	if run == nil {
 		run = fallback
@@ -445,28 +586,19 @@ func (p *parse) landing(help landingHelp, run, fallback Command) *cobra.Command 
 	extra := func(typed string) result.Phrase { return extraWord(help.word, typed) }
 
 	c := &cobra.Command{
-		Use:     help.word,
-		Short:   help.short,
-		Long:    help.long,
-		Example: help.examples,
-		Args: func(c *cobra.Command, args []string) error {
-			if c.ArgsLenAtDash() == 0 {
-				return p.refuse(extra(wordDash))
-			}
-
-			if len(args) > 0 {
-				return p.refuse(extra(args[0]))
-			}
-
-			return nil
-		},
+		Use:               help.word,
+		Short:             help.short,
+		Long:              help.long,
+		Example:           help.examples,
+		Args:              p.noOtherWord(extra),
+		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(c *cobra.Command, _ []string) error {
 			p.land(c.Context(), run, landing.Request{Command: help.word, Words: p.words})
 
 			return nil
 		},
 	}
-	c.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return p.flagRefusal(err, extra) })
+	c.SetFlagErrorFunc(p.flagErrorFunc(extra))
 
 	return c
 }
@@ -665,6 +797,9 @@ const (
 	wordBranch  = "branch"
 	wordRelease = "release"
 	wordStatus  = "status"
+
+	wordMan        = "man"
+	wordCompletion = "completion"
 
 	flagJSON    = "--json"
 	flagHelp    = "--help"
