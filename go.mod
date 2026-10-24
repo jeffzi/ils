@@ -17,9 +17,6 @@ require (
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/cli/go-gh/v2 v2.16.2
 	github.com/google/go-cmp v0.7.0
-	github.com/muesli/mango v0.1.0
-	github.com/muesli/mango-cobra v1.2.0
-	github.com/muesli/roff v0.1.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	golang.org/x/mod v0.42.0
@@ -178,7 +175,10 @@ require (
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/moricho/tparallel v0.3.2 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
+	github.com/muesli/mango v0.1.0 // indirect
+	github.com/muesli/mango-cobra v1.2.0 // indirect
 	github.com/muesli/mango-pflag v0.1.0 // indirect
+	github.com/muesli/roff v0.1.0 // indirect
 	github.com/nakabonne/nestif v0.3.1 // indirect
 	github.com/narqo/go-badge v0.0.0-20230821190521-c9a75c019a59 // indirect
 	github.com/nishanths/exhaustive v0.12.0 // indirect

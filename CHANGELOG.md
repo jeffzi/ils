@@ -14,8 +14,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Add `-d`/`--debug`, which traces each `git` and `gh` call and each wait decision on stderr.
 - End an `ils push` or `ils merge` stopped by Ctrl-C or SIGTERM with the result of the step it
   stopped and that result's exit code; a second signal ends `ils` at once.
-- Add `ils man`, which prints the man page, and `ils completion <shell>`, which prints a completion
-  script for bash, zsh, fish, or PowerShell.
 
 ### Changed
 

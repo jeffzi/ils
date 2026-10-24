@@ -119,8 +119,6 @@ ils merge --json  # the same result as one JSON object
 ils help          # usage of ils and its commands
 ils help push     # the same as ils push --help
 ils --version     # print the version of ils
-ils man           # print the man page of ils
-ils completion zsh  # print the completion script for zsh (or bash, fish, powershell)
 ```
 
 Run `ils push` on a work branch with everything committed. It:
@@ -260,32 +258,6 @@ turns color on for a stream that is not a terminal; `NO_COLOR` and `--no-color` 
 `-d` (or `--debug`) prints one line on stderr for each `git` and `gh` call and each wait decision,
 timed from when the command started, in place of the spinner. It changes neither stdout nor the
 exit code.
-
-### Man page and shell completion
-
-`ils man` prints the man page of `ils` in roff. Read it with:
-
-```bash
-ils man | man -l -
-```
-
-`ils completion <shell>` prints the completion script for `bash`, `zsh`, `fish`, or `powershell`.
-Add `--no-descriptions` to leave out the description of each candidate. Install it for your shell:
-
-```bash
-# bash, with bash-completion installed
-ils completion bash > "${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions/ils"
-# zsh: write it to a directory on your fpath, then start a new shell
-ils completion zsh > "${fpath[1]}/_ils"
-# fish
-ils completion fish > ~/.config/fish/completions/ils.fish
-```
-
-For PowerShell, add this line to your profile:
-
-```powershell
-ils completion powershell | Out-String | Invoke-Expression
-```
 
 ### After a green push
 

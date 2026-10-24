@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/x/ansi"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 )
@@ -15,17 +14,8 @@ const (
 	pushHelp  = "Push the current branch, open its pull request on the first push"
 	mergeHelp = "Squash-merge the pull request of the current branch once its checks are green"
 
-	// pushShort, mergeShort and completionShort are the descriptions that push, merge and completion
-	// are listed with. Cobra gives completion its own.
-	pushShort       = "Push the branch, open its pull request, wait for the checks"
-	mergeShort      = "Squash and merge the pull request once its checks are green"
-	completionShort = "Generate the autocompletion script for the specified shell"
-
-	// mergeSummary and completionSummary are the lines that `ils --help` lists merge and
-	// completion with.
-	mergeSummary      = "merge " + mergeShort
-	completionSummary = "completion " + completionShort
-
+	// mergeSummary is the line that `ils --help` lists merge with.
+	mergeSummary = "merge Squash and merge the pull request once its checks are green"
 	// mergeUsage is the usage and the examples the plain help of merge ends with, before its flags.
 	mergeUsage = "Usage: ils merge [flags] Examples: # Merge once the checks are green ils merge " +
 		"# The same result as one JSON object ils merge --json"
@@ -49,8 +39,8 @@ type shownHelp struct {
 func helpOf() (root, push, merge shownHelp) {
 	own := []string{"-d", "-h", "--json", "--no-color"}
 	root = shownHelp{
-		phrases:  []string{rootHelp, "--version Print the version of ils", mergeSummary, completionSummary},
-		commands: []string{"completion", "help", "merge", "push"},
+		phrases:  []string{rootHelp, "--version Print the version of ils", mergeSummary},
+		commands: []string{"help", "merge", "push"},
 		flags:    []string{"-d", "-h", "--json", "--no-color", "--version"},
 	}
 	push = shownHelp{phrases: []string{pushHelp}, flags: own}
@@ -228,20 +218,4 @@ func TestApp_Run_WhenHelpIsAskedForOnAColorTerminal_StylesIt(t *testing.T) {
 			assert.Check(t, strings.Contains(got.stdout, escape), "the help carries no escape sequence:\n%q", got.stdout)
 		})
 	}
-}
-
-func TestApp_Run_WhenRootHelpIsAskedForWithColorOn_ListsCompletionAndNotMan(t *testing.T) {
-	t.Parallel()
-
-	got := launch(t, painted(t, []string{colorTerm}, true, false), "--help")
-
-	assert.Check(t, is.Equal(got.code, exitDone))
-	help := ansi.Strip(got.stdout)
-	listed := false
-	for line := range strings.Lines(help) {
-		row := flat(line)
-		listed = listed || strings.HasPrefix(row, "completion ") && strings.HasSuffix(row, " "+completionShort)
-	}
-	assert.Check(t, listed, "the help has no row naming completion with %q:\n%s", completionShort, help)
-	assert.Check(t, !strings.Contains(flat(help), " man "), "the help lists man:\n%s", help)
 }

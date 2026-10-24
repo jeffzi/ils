@@ -38,29 +38,15 @@ func stored(t *testing.T) (f *gittest.Fixture, under string) {
 func TestApp_Run_WhenAResultCannotBeWrittenToStdout_ExitsOneWithTheErrorOnStderr(t *testing.T) {
 	t.Parallel()
 
-	colorOff, colorOn := outputPath{name: "color off"}, outputPath{name: "color on", color: true}
-	tests := []struct {
-		path outputPath
-		args []string
-	}{
-		{path: colorOff, args: []string{"push"}},
-		{path: colorOff, args: []string{"push", "--json"}},
-		{path: colorOff, args: []string{"merge"}},
-		{path: colorOff, args: []string{"merge", "--json"}},
-		{path: colorOff, args: []string{"pish"}},
-		{path: colorOff, args: []string{"pish", "--json"}},
-		{path: colorOff, args: []string{"--version"}},
-		{path: colorOff, args: []string{"man"}},
-		{path: colorOn, args: []string{"man"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.path.name+"/"+strings.Join(tt.args, " "), func(t *testing.T) {
+	tests := [][]string{{"push"}, {"push", "--json"}, {"merge"}, {"merge", "--json"}, {"pish"}, {"pish", "--json"}, {"--version"}}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			t.Parallel()
 
-			app := tt.path.on(t)
+			app := outside(t)
 			app.Stdout = shut{err: errReaderGone}
 
-			got := launch(t, app, tt.args...)
+			got := launch(t, app, args...)
 
 			assert.Check(t, is.Equal(got.code, exitBroke))
 			assert.Check(t, is.Contains(got.stderr, errReaderGone.Error()))

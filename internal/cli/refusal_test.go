@@ -1,11 +1,9 @@
 package cli_test
 
 import (
-	"slices"
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/x/ansi"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 )
@@ -17,28 +15,10 @@ type grammarRefusal struct {
 	args   []string
 }
 
-// shellAndManRefusals are the command lines that break the grammar of completion and man: no shell,
-// a word that is no shell, and a word, an end of flags or an unknown flag after completion, after a
-// shell or after man.
-func shellAndManRefusals() []grammarRefusal {
-	return []grammarRefusal{
-		{name: "completion with no shell", args: []string{"completion"}, reason: "no shell was given"},
-		{name: "unknown shell", args: []string{"completion", "teapot"}, reason: "teapot is not a shell"},
-		{name: "extra word after a shell", args: []string{"completion", "bash", "extra"}, reason: "completion takes one shell, and extra was given"},
-		{name: "end of flags after completion", args: []string{"completion", "--"}, reason: "-- is not a shell"},
-		{name: "end of flags after a shell", args: []string{"completion", "bash", "--"}, reason: "completion takes one shell, and -- was given"},
-		{name: "unknown flag after completion", args: []string{"completion", "--bogus"}, reason: "completion takes one shell, and --bogus was given"},
-		{name: "unknown flag after a shell", args: []string{"completion", "zsh", "--bogus"}, reason: "completion takes one shell, and --bogus was given"},
-		{name: "extra word after man", args: []string{"man", "extra"}, reason: "man takes no other word, and extra was given"},
-		{name: "end of flags after man", args: []string{"man", "--"}, reason: "man takes no other word, and -- was given"},
-		{name: "unknown flag after man", args: []string{"man", "--bogus"}, reason: "man takes no other word, and --bogus was given"},
-	}
-}
-
 // grammarRefusals are the command lines that break the grammar: a missing, unknown or extra word,
 // a command not in this version, and a flag that is unknown or set to neither true nor false.
 func grammarRefusals() []grammarRefusal {
-	return slices.Concat(shellAndManRefusals(), []grammarRefusal{
+	return []grammarRefusal{
 		{name: "no word", reason: "no command was given"},
 		{name: "unknown word", args: []string{"pish"}, reason: "pish is not a command"},
 		{name: "extra word", args: []string{"push", "extra"}, reason: "push takes no other word, and extra was given"},
@@ -47,6 +27,8 @@ func grammarRefusals() []grammarRefusal {
 		{name: "release", args: []string{"release", "1.2.3"}, reason: "release is not in this version"},
 		{name: "status", args: []string{"status"}, reason: "status is not in this version"},
 		{name: "prefix of a command", args: []string{"pus"}, reason: "pus is not a command"},
+		{name: "completion", args: []string{"completion"}, reason: "completion is not a command"},
+		{name: "man", args: []string{"man"}, reason: "man is not a command"},
 		{name: "later command with an unknown flag", args: []string{"branch", "--bogus"}, reason: "branch is not in this version"},
 		{name: "extra word after merge", args: []string{"merge", "extra"}, reason: "merge takes no other word, and extra was given"},
 		{name: "end of flags after merge", args: []string{"merge", "--", "x"}, reason: "merge takes no other word, and -- was given"},
@@ -81,7 +63,7 @@ func grammarRefusals() []grammarRefusal {
 		{name: "color flag set to maybe", args: []string{"--no-color=maybe"}, reason: colorNeither},
 		{name: "color flag after push set to maybe", args: []string{"push", "--no-color=maybe"}, reason: colorNeither},
 		{name: "color flag after merge set to maybe", args: []string{"merge", "--no-color=maybe"}, reason: colorNeither},
-	})
+	}
 }
 
 func TestApp_Run_WhenWordsBreakTheGrammar_RefusesNamingWhatBreaksIt(t *testing.T) {
@@ -95,22 +77,6 @@ func TestApp_Run_WhenWordsBreakTheGrammar_RefusesNamingWhatBreaksIt(t *testing.T
 
 			want := ran{stdout: "Refused: " + tt.reason + "\nNext: " + nextHelp + "\n", code: exitRefused}
 			assert.Check(t, is.DeepEqual(got, want, sameRun()), "ils %s", strings.Join(tt.args, " "))
-		})
-	}
-}
-
-func TestApp_Run_WhenCompletionOrManBreaksTheGrammarWithColorOn_RefusesNamingWhatBreaksIt(t *testing.T) {
-	t.Parallel()
-
-	for _, tt := range shellAndManRefusals() {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := launch(t, painted(t, []string{colorTerm}, true, false), tt.args...)
-
-			assert.Check(t, is.Equal(got.code, exitRefused))
-			assert.Check(t, is.Equal(got.stderr, ""))
-			assert.Check(t, is.Equal(ansi.Strip(got.stdout), "Refused: "+tt.reason+"\nNext: "+nextHelp+"\n"))
 		})
 	}
 }
