@@ -18,7 +18,6 @@ import (
 
 	"charm.land/fang/v2"
 	"github.com/charmbracelet/colorprofile"
-	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -78,6 +77,10 @@ type App struct {
 	// either count as none.
 	StdoutTerminal bool
 	StderrTerminal bool
+	// CancelOnInterrupt makes the first interrupt or termination of the process end the run, whenever
+	// it lands, so that ils prints the result of the step it stopped; only a later one, or a quit,
+	// ends the process. It takes Notify to listen.
+	CancelOnInterrupt bool
 }
 
 // Run parses args, the words after the program name, runs the command they name, prints its
@@ -89,9 +92,12 @@ func (a App) Run(ctx context.Context, args []string) int {
 	ctx, cancel := context.WithDeadline(ctx, a.Launch.Add(bound))
 	defer cancel()
 
+	signals, stopListening := a.onSignal(cancel)
+	defer stopListening()
+
 	p := &parse{
 		app: a, words: slices.DeleteFunc(slices.Clone(args), isOutputFlag), encoded: lastForm(args, flagJSON),
-		noColor: lastForm(args, flagNoColor),
+		noColor: lastForm(args, flagNoColor), signals: signals,
 	}
 	p.outProfile = a.profile(a.StdoutTerminal, p.noColor)
 
@@ -286,6 +292,8 @@ func lastForm(args []string, flag string) bool {
 type parse struct {
 	// result is the result of the command that ran; nil when none did.
 	result *result.Result
+	// signals is the run's listener for the signals that end it.
+	signals *endSignals
 	// gitDir is the resolved git dir when the command ran in a repository.
 	gitDir string
 	// words are the words typed, without the JSON, debug and no-color flags.
@@ -486,10 +494,9 @@ func (p *parse) land(ctx context.Context, run Command, req landing.Request) {
 	p.app.onStop(shown)
 
 	r := func() result.Result {
-		// The listener goes first so that it outlives the display: end clears the line before stop
-		// detaches the listener, and no signal in between ends ils with the cursor hidden.
-		stop := p.app.onSignal(shown.drop)
-		defer stop()
+		// The display is handed to the listener before it starts and taken back only after end has
+		// cleared its line, so that no signal in between ends ils with the cursor hidden.
+		defer p.signals.during(shown.drop)()
 
 		shown.start(ctx, gitDir)
 		defer shown.end()
@@ -500,41 +507,101 @@ func (p *parse) land(ctx context.Context, run Command, req landing.Request) {
 	p.result, p.gitDir, p.printed = &r, gitDir, shown.printed
 }
 
-// onSignal calls leave when an interrupt, a termination or a quit reaches the process before the
-// returned stop is called, then ends the process as the signal would have had ils never listened.
-// It listens through Notify, and for nothing when Notify is nil.
-func (a App) onSignal(leave func()) (stop func()) {
+// endSignals is the one listener of a run for the interrupt, the termination and the quit of the
+// process, from the start of Run to its end, so that every one of these signals is counted alike
+// whenever it lands.
+type endSignals struct {
+	// leave takes the spinner line off stderr; nil while no display runs.
+	leave func()
+	mu    sync.Mutex
+}
+
+// onSignal listens through Notify, for nothing when Notify is nil, for the interrupt, the
+// termination and the quit of the process until the returned stop is called. When the App sets
+// CancelOnInterrupt, the first interrupt or termination calls interrupt, which ends the run. Every
+// other of these signals calls the leave of the display that runs, if one does, then ends the
+// process as the signal would have had ils never listened.
+func (a App) onSignal(interrupt func()) (signals *endSignals, stop func()) {
+	signals = &endSignals{}
 	if a.Notify == nil {
-		return func() {}
+		return signals, func() {}
 	}
 
-	signals := make(chan os.Signal, 1)
+	landed := make(chan os.Signal, 1)
 	done := make(chan struct{})
-	a.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
+	a.Notify(landed, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
 
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		var sig os.Signal
-		select {
-		case <-done:
-			// stop detached the channel before closing done, so a signal that reached it before
-			// stop was called is already buffered; select picks at random when both are ready.
-			select {
-			case sig = <-signals:
-			default:
+		spare := a.CancelOnInterrupt
+		for {
+			sig, ok := nextSignal(landed, done)
+			if !ok {
 				return
 			}
-		case sig = <-signals:
+			if spare && sig != syscall.SIGQUIT {
+				spare = false
+				interrupt()
+
+				continue
+			}
+			signals.leaveDisplay()
+			signal.Stop(landed)
+			die(sig)
+
+			return
 		}
-		leave()
-		signal.Stop(signals)
-		die(sig)
 	})
 
-	return func() {
-		signal.Stop(signals)
+	return signals, func() {
+		signal.Stop(landed)
 		close(done)
 		wg.Wait()
+	}
+}
+
+// during makes leave the call that takes the display off stderr before a signal ends the process,
+// until the returned done is called.
+func (s *endSignals) during(leave func()) (done func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.leave = leave
+
+	return func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+
+		s.leave = nil
+	}
+}
+
+// leaveDisplay takes the display that runs, if one does, off stderr.
+func (s *endSignals) leaveDisplay() {
+	s.mu.Lock()
+	leave := s.leave
+	s.mu.Unlock()
+
+	if leave != nil {
+		leave()
+	}
+}
+
+// nextSignal returns the next signal on signals, or false when done is closed first and no signal
+// is left.
+func nextSignal(signals <-chan os.Signal, done <-chan struct{}) (os.Signal, bool) {
+	select {
+	case sig := <-signals:
+		return sig, true
+	case <-done:
+		// stop detached the channel before closing done, so a signal that reached it before
+		// stop was called is already buffered; select picks at random when both are ready.
+		select {
+		case sig := <-signals:
+			return sig, true
+		default:
+			return nil, false
+		}
 	}
 }
 
@@ -551,284 +618,6 @@ func die(sig os.Signal) {
 	if err != nil {
 		panic(fmt.Sprintf("end ils on %v: %v", sig, err))
 	}
-}
-
-// display shows how a landing command advances on the terminals ils prints to: one spinner line
-// for the running step on stderr, and each step line on stdout as soon as its step succeeds. A
-// stream that gets neither is left untouched. A failed write is not reported: the display never
-// changes the result or the exit code, and a step line that could not be written is not printed.
-type display struct {
-	// stdout and stderr are nil when the stream gets no step line and no spinner. drop also sets
-	// stderr to nil, which keeps draw and clear silent once the spinner is gone for good.
-	stdout, stderr io.Writer
-	width          func() int
-	foreground     func() bool
-	stop           chan struct{}
-	// began is when the running step began: the last Started, or the last Said after it.
-	began  time.Time
-	gitDir string
-	// label is the running step drawn for stderr, and empty while no step runs.
-	label string
-	// printed are the plain texts of the step lines written on stdout.
-	printed                []string
-	limit                  time.Duration
-	frame, done, total     int
-	wg                     sync.WaitGroup
-	mu                     sync.Mutex
-	outProfile, errProfile colorprofile.Profile
-	// drawn is whether a spinner line stands on stderr.
-	drawn bool
-}
-
-const (
-	// frameEvery is how often the spinner turns and its timer is redrawn.
-	frameEvery = 100 * time.Millisecond
-
-	// fallbackWidth is the width in columns of a terminal whose width is unknown.
-	fallbackWidth = 80
-
-	pendingHint = "# waits again; nothing to fix"
-)
-
-// display returns the display of a landing command run with the words typed, stderr drawn for
-// errProfile: the spinner on a terminal stderr unless debug is on, and the step lines on a terminal
-// stdout unless the result is JSON.
-func (p *parse) display(errProfile colorprofile.Profile) *display {
-	a := p.app
-	d := &display{
-		width:      a.StderrWidth,
-		foreground: a.StderrForeground,
-		outProfile: p.outProfile,
-		errProfile: errProfile,
-	}
-
-	if a.terminal(a.StdoutTerminal) && !p.encoded {
-		d.stdout = a.Stdout
-	}
-
-	if a.terminal(a.StderrTerminal) && !bool(p.debug) {
-		d.stderr = a.Stderr
-	}
-
-	return d
-}
-
-// start turns the spinner, if any, until end or until ctx ends; gitDir is the git dir the lines are
-// checked against.
-func (d *display) start(ctx context.Context, gitDir string) {
-	// A signal may call drop while start runs, so stderr is read under the lock.
-	d.mu.Lock()
-	d.gitDir = gitDir
-	silent := d.stderr == nil
-	d.mu.Unlock()
-
-	if silent {
-		return
-	}
-
-	d.stop = make(chan struct{})
-	d.wg.Go(func() {
-		ticker := time.NewTicker(frameEvery)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-d.stop:
-				return
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				d.mu.Lock()
-				d.frame++
-				d.draw()
-				d.mu.Unlock()
-			}
-		}
-	})
-}
-
-// end stops the spinner and takes its line off stderr.
-func (d *display) end() {
-	if d.stop != nil {
-		close(d.stop)
-		d.wg.Wait()
-	}
-
-	d.drop()
-}
-
-// drop takes the spinner line off stderr for good, which shows the cursor again. It is safe to call
-// from any goroutine, while the spinner still turns: nothing is drawn on stderr after it.
-func (d *display) drop() {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	d.clear()
-	d.stderr = nil
-}
-
-// suspend takes the spinner line off stderr, if one stands, and stops the process through stop, both
-// under mu so that no frame draws the line between the two: the first frame after the process
-// continues draws it again. It returns the error of stop.
-func (d *display) suspend(stop func() error) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	d.clear()
-
-	return stop()
-}
-
-// Started draws the spinner line of the step label names, timed from now.
-func (d *display) Started(label result.Phrase, limit time.Duration) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	// A label the wording check rejects is not drawn; the landing tests keep every label in it.
-	d.label, _ = renderLine(label, d.gitDir, d.errProfile)
-	d.limit, d.done, d.total, d.began = limit, 0, 0, time.Now()
-	d.draw()
-}
-
-// Said takes the spinner line off stderr and prints line on stdout as the running step's line,
-// with the time since the last Started or Said, whichever came later.
-func (d *display) Said(line result.Phrase) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	d.clear()
-	d.label = ""
-
-	// A line said without a step started for it is timed from the line before it.
-	now := time.Now()
-	took := now.Sub(d.began).Round(frameEvery).String()
-	d.began = now
-
-	if d.stdout == nil {
-		return
-	}
-
-	text, err := renderLine(line, d.gitDir, d.outProfile)
-	if err != nil {
-		return
-	}
-
-	pen := result.PenFor(d.outProfile)
-	green := result.GreenStyle()
-	step := pen.Styled(green, "✓") + " " + text + " " + pen.Styled(green.Faint(), took) + "\n"
-
-	if _, err := io.WriteString(d.stdout, step); err == nil {
-		d.printed = append(d.printed, plainText(line, d.gitDir))
-	}
-}
-
-// Counted redraws the spinner line with done of total checks concluded.
-func (d *display) Counted(done, total int) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	d.done, d.total = done, total
-	d.draw()
-}
-
-// draw writes the spinner line of the running step over the one stderr shows, cut to one column
-// short of the terminal's width so that it never wraps, and padded with spaces to that width so
-// that nothing of the line before is left. The caller holds mu.
-//
-// It moves the cursor with a carriage return. Padding parks the cursor in the terminal's last
-// column, so the first draw of a line hides the cursor, whatever the profile, and clear shows it
-// again: those two are the only control sequences the spinner writes besides its colors. While ils
-// is not the terminal's foreground job, it draws nothing and clears the line that stands.
-func (d *display) draw() {
-	if d.stderr == nil || d.label == "" || !d.inForeground() {
-		d.clear()
-
-		return
-	}
-
-	pen := result.PenFor(d.errProfile)
-	yellow := result.YellowStyle()
-	frames := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
-
-	line := pen.Styled(yellow, string(frames[d.frame%len(frames)])) + " " + d.label + " " +
-		pen.Styled(yellow, time.Since(d.began).Truncate(time.Second).String())
-	if d.limit > 0 {
-		line += " " + pen.Styled(result.FaintStyle(), "of "+d.limit.Round(time.Second).String())
-	}
-	if d.total > 0 {
-		line += fmt.Sprintf(", %d of %d done", d.done, d.total)
-	}
-
-	columns := d.columns()
-	line = ansi.Truncate(line, columns, "")
-	padding := strings.Repeat(" ", columns-ansi.StringWidth(line))
-	if pen.Color() {
-		line += ansi.ResetStyle
-	}
-
-	start := "\r"
-	if !d.drawn {
-		start = ansi.HideCursor + start
-	}
-
-	_, _ = io.WriteString(d.stderr, start+line+padding)
-	d.drawn = true
-}
-
-// clear takes the spinner line off stderr by writing spaces over it, and shows the cursor that
-// draw hid, at the start of its row. The caller holds mu.
-//
-// While ils is not the terminal's foreground job, it only shows the cursor and leaves the line
-// standing: the cursor then stands on the line of the shell, which the spaces would wipe.
-func (d *display) clear() {
-	if !d.drawn {
-		return
-	}
-
-	wipe := "\r" + strings.Repeat(" ", d.columns()) + "\r"
-	if !d.inForeground() {
-		wipe = ""
-	}
-
-	_, _ = io.WriteString(d.stderr, wipe+ansi.ShowCursor)
-	d.drawn = false
-}
-
-// inForeground reports whether ils is the foreground job of the terminal stderr is; with no query
-// of it, ils is.
-func (d *display) inForeground() bool {
-	return d.foreground == nil || d.foreground()
-}
-
-// columns returns how many columns the spinner line may take: one short of the terminal's width,
-// read now, so that the cursor never reaches the last column; an unknown width counts as
-// fallbackWidth.
-func (d *display) columns() int {
-	width := fallbackWidth
-	if d.width != nil {
-		if w := d.width(); w > 0 {
-			width = w
-		}
-	}
-
-	return width - 1
-}
-
-// renderLine returns line drawn for profile as the result renderer draws it, or the renderer's error.
-func renderLine(line result.Phrase, gitDir string, profile colorprofile.Profile) (string, error) {
-	out, err := result.RenderStyled(result.Result{Lines: []result.Phrase{line}, Next: result.NextNone()}, gitDir, profile)
-	if err != nil {
-		return "", fmt.Errorf("render the line of a step: %w", err)
-	}
-
-	return strings.TrimSuffix(out, "\n"), nil
-}
-
-// plainText returns the text of line as the text renderer prints it, and "" when it rejects it.
-func plainText(line result.Phrase, gitDir string) string {
-	out, _ := renderLine(line, gitDir, colorprofile.NoTTY)
-
-	return out
 }
 
 // unprinted returns lines without the ones already printed: each text in printed takes out the
@@ -887,4 +676,6 @@ const (
 
 	// wordDash is the terminator after which every word is a positional argument.
 	wordDash = "--"
+
+	pendingHint = "# waits again; nothing to fix"
 )

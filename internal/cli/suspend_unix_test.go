@@ -75,9 +75,29 @@ func (c *stuckChild) await(t *testing.T, what string, done func() bool) {
 func (c *stuckChild) awaitReady(t *testing.T) {
 	t.Helper()
 
+	c.awaitLine(t, ready)
+}
+
+// awaitLine reads the next line of stdout, and fails the test unless it is want.
+func (c *stuckChild) awaitLine(t *testing.T, want string) {
+	t.Helper()
+
 	line, err := c.stdout.ReadString('\n')
+	assert.NilError(t, err, "stdout ended before %q", want)
+	assert.Assert(t, line == want+"\n", "stdout = %q, want %q", line, want+"\n")
+}
+
+// end draws the rest of stderr onto the screen, reads the rest of stdout, and waits for the run to
+// end; it returns the rest of stdout and what waiting returned.
+func (c *stuckChild) end(t *testing.T) (stdout string, err error) {
+	t.Helper()
+
+	_, err = io.Copy(c.stderr, c.pipe)
 	assert.NilError(t, err)
-	assert.Assert(t, line == ready+"\n", "stdout = %q, want %q", line, ready+"\n")
+	rest, err := io.ReadAll(c.stdout)
+	assert.NilError(t, err)
+
+	return string(rest), c.cmd.Wait()
 }
 
 // drain draws onto the screen everything stderr holds, which is all a stopped run wrote.
