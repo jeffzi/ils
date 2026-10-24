@@ -32,7 +32,8 @@ ils $ARGUMENTS
 - **Bare.** Never piped, never `tee`d, never run in the background, never behind `cd`. A pipe
   hides the exit code, and the exit code is how you know what happened.
 - **No timeout argument.** Every wait ends on its own, under the default limit of one call. A run
-  stopped by Ctrl-C or SIGTERM also ends with a result to act on: its reason and `Next:` as usual.
+  stopped by one Ctrl-C or SIGTERM also ends with a result to act on: its reason and `Next:` as
+  usual. A second signal ends `ils` at once with nothing printed.
 - **Words as given.** Add nothing, fix nothing. A malformed command reaches the binary and the
   binary refuses it with the reason.
 

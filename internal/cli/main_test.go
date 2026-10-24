@@ -38,15 +38,15 @@ const (
 	stuckUnstoppable = "unstoppable"
 	// stuckReturned lets its landing command return at once, then stays until it is killed.
 	stuckReturned = "returned"
-	// stuckCancelOnInterrupt shows the spinner line of its step, and its run ends at the first
-	// interrupt or termination of the process, as the run of ils does.
-	stuckCancelOnInterrupt = "cancel-on-interrupt"
-	// stuckHolding is stuckCancelOnInterrupt, except that once the context of its landing command
+	// stuckStopping shows the spinner line of its step, and its landing command returns the
+	// result Stopped. once the first interrupt or termination of the process ended its context.
+	stuckStopping = "stopping"
+	// stuckHolding is stuckStopping, except that once the context of its landing command
 	// ended, the command prints canceled on stdout and stays for stayAfterReturn before it
 	// returns, so that a later signal reaches a run still under way.
 	stuckHolding = "holding"
 	// stuckHoldingEarly is stuckHolding, except that the first interrupt or termination lands
-	// before the landing command runs: as the landing starts, ils waits for it, after printing
+	// before the landing command runs: the Notify of the run waits for it, after printing
 	// listening on stdout, and its landing command prints no ready.
 	stuckHoldingEarly = "holding early"
 
@@ -89,12 +89,9 @@ func TestMain(m *testing.M) {
 // stuck runs `ils merge` in a step that lasts until the run's deadline, as way says, with stderr
 // a color terminal wide columns wide unless way is stuckPiped, and returns its exit code. Once the
 // landing command runs, it prints ready on stdout; a stuckReturned run prints it once the command
-// returned, and stays for stayAfterReturn.
+// returned, and stays for stayAfterReturn. A stuckStopping, stuckHolding or stuckHoldingEarly run
+// is the one stopping describes instead.
 func stuck(way string) int {
-	if way == stuckCancelOnInterrupt || way == stuckHolding || way == stuckHoldingEarly {
-		return cancelOnInterrupt(way)
-	}
-
 	app := cli.App{
 		Stdout:         os.Stdout,
 		Stderr:         os.Stderr,
@@ -103,6 +100,9 @@ func stuck(way string) int {
 		StderrWidth:    func() int { return wide },
 		Launch:         time.Now(),
 		Notify:         signal.Notify,
+	}
+	if way == stuckStopping || way == stuckHolding || way == stuckHoldingEarly {
+		return stopping(app, way)
 	}
 	if way == stuckUnstoppable {
 		app.SetSuspend(func() error { return errUnsent })
@@ -130,22 +130,12 @@ func stuck(way string) int {
 	return app.Run(context.Background(), []string{"merge"})
 }
 
-// cancelOnInterrupt runs `ils merge` as stuck does, in a step whose spinner line shows on stderr, a
-// color terminal wide columns wide, and its run ends at the first interrupt or termination of the
-// process; it returns the exit code. Once the step started, its landing command prints ready on
-// stdout unless way is stuckHoldingEarly, then waits for its context to end; unless way is
-// stuckCancelOnInterrupt, it then prints canceled and stays for stayAfterReturn before it returns.
-func cancelOnInterrupt(way string) int {
-	app := cli.App{
-		Stdout:            os.Stdout,
-		Stderr:            os.Stderr,
-		Environ:           []string{colorTerm},
-		StderrTerminal:    true,
-		StderrWidth:       func() int { return wide },
-		Launch:            time.Now(),
-		Notify:            signal.Notify,
-		CancelOnInterrupt: true,
-	}
+// stopping runs `ils merge` with app, which stuck set up, in a step whose spinner line shows on
+// stderr, and returns the exit code. Once the step started, its landing command prints ready on
+// stdout unless way is stuckHoldingEarly, then waits for the first interrupt or termination of the
+// process to end its context; unless way is stuckStopping, it then prints canceled and stays for
+// stayAfterReturn. It returns the result Stopped.
+func stopping(app cli.App, way string) int {
 	if way == stuckHoldingEarly {
 		app.Notify = heldForTheFirstInterrupt()
 	}
@@ -155,36 +145,30 @@ func cancelOnInterrupt(way string) int {
 			tell(ready)
 		}
 		<-ctx.Done()
-		if way != stuckCancelOnInterrupt {
+		if way != stuckStopping {
 			tell(canceled)
 			time.Sleep(stayAfterReturn)
 		}
 
-		return interruptedResult(req)
+		stopped := finished(req)
+		stopped.Lines = []result.Phrase{result.Say("Stopped.")}
+
+		return stopped
 	})
 
 	return app.Run(context.Background(), []string{"merge"})
 }
 
-// interruptedResult is what the landing command of a run that cancels on interrupt ends with once
-// its context ended: a merge that says it stopped.
-func interruptedResult(req landing.Request) result.Result {
-	stopped := finished(req)
-	stopped.Lines = []result.Phrase{result.Say("Stopped.")}
-
-	return stopped
-}
-
 // heldForTheFirstInterrupt returns a notify that relays to c the signals sig, as signal.Notify
-// does. The first time sig leaves out the interrupt, as ils begins listening for the stop signal
-// of a terminal at the start of a landing command, it then prints listening on stdout and returns
-// only once an interrupt or termination has reached the process.
+// does. The first time sig holds the interrupt, as ils begins listening for the end of the
+// process, it then prints listening on stdout and returns only once an interrupt or termination
+// has reached the process.
 func heldForTheFirstInterrupt() func(c chan<- os.Signal, sig ...os.Signal) {
 	var once sync.Once
 
 	return func(c chan<- os.Signal, sig ...os.Signal) {
 		signal.Notify(c, sig...)
-		if slices.Contains(sig, os.Interrupt) {
+		if !slices.Contains(sig, os.Interrupt) {
 			return
 		}
 		once.Do(func() {

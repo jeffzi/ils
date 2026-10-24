@@ -92,7 +92,7 @@ func redRows() []vigilRow {
 		FailedLog: forge.FailedLog{Check: "scan", State: forge.FailedLogNoRun},
 	}
 
-	return []vigilRow{
+	rows := []vigilRow{
 		{
 			name:     "a check failed while another runs, then its run completed",
 			verdicts: says(unfinished, completed),
@@ -103,20 +103,6 @@ func redRows() []vigilRow {
 			name:     "a check failed and its run had not completed at the deadline",
 			verdicts: says(unfinished), left: 15 * time.Second,
 			want: concluded(landing.WaitRed, unfinished, 0, 0), ops: readsOf(1, 3, 1), waits: polls(2, verdictPoll),
-		},
-		{
-			name: "a check failed and the time limit ended inside the read after it",
-			verdicts: []forgetest.Answer[forge.Verdict]{
-				{Value: unfinished}, {Err: byTimeLimit().of("gh")},
-			},
-			want: concluded(landing.WaitRed, unfinished, 0, 0), ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
-		},
-		{
-			name: "a check failed and an interrupt ended the read after it",
-			verdicts: []forgetest.Answer[forge.Verdict]{
-				{Value: unfinished}, {Err: byInterrupt().of("gh")},
-			},
-			want: concluded(landing.WaitRed, unfinished, 0, 0), ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
 		},
 		{
 			name:     "a check failed while its run goes on, then its log could not be read",
@@ -139,6 +125,16 @@ func redRows() []vigilRow {
 			want:     concluded(landing.WaitRed, status, 0, 0), ops: readsOf(1, 1, 1),
 		},
 	}
+
+	for _, c := range cuts() {
+		rows = append(rows, vigilRow{
+			name:     "a check failed and " + c.name + " ended inside the read after it",
+			verdicts: []forgetest.Answer[forge.Verdict]{{Value: unfinished}, {Err: c.of("gh")}},
+			want:     concluded(landing.WaitRed, unfinished, 0, 0), ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
+		})
+	}
+
+	return rows
 }
 
 func TestAwaitVerdict_WhenACheckFailed_EndsRedOnceItsLogIsSettled(t *testing.T) {

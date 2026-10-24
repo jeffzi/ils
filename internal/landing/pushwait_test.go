@@ -1,7 +1,6 @@
 package landing_test
 
 import (
-	"context"
 	"errors"
 	"slices"
 	"testing"
@@ -141,7 +140,6 @@ func pushCutShortRows() []pushRow {
 	}
 
 	for _, c := range cuts() {
-		inPoll := func(ctx context.Context) context.Context { return c.after(ctx, midPoll) }
 		unsaid := "GitHub did not say whether pull request #12 can merge " + c.before
 		rows = append(rows,
 			pushRow{
@@ -156,17 +154,17 @@ func pushCutShortRows() []pushRow {
 				want:   pending(unsaid, "", detail(forge.VerdictNone, forge.MergeClean)),
 			},
 			pushRow{
-				name: c.name + " ends a poll of the head", script: reusing().showing(stale()), cut: inPoll,
+				name: c.name + " ends a poll of the head", script: reusing().showing(stale()), cut: c.inPoll,
 				want: pending("GitHub did not show "+tipMark+" on pull request #12 "+c.before, "",
 					detail(forge.VerdictNone, forge.MergeClean)),
 			},
 			pushRow{
-				name: c.name + " ends a poll of the merge state", cut: inPoll,
+				name: c.name + " ends a poll of the merge state", cut: c.inPoll,
 				script: reusing().showing(inState(forge.MergeUnknown, "UNKNOWN")),
 				want:   pending(unsaid, "", detail(forge.VerdictNone, forge.MergeUnknown)),
 			},
 			pushRow{
-				name: c.name + " ends a poll of checks still running", script: reusing(running()), cut: inPoll,
+				name: c.name + " ends a poll of checks still running", script: reusing(running()), cut: c.inPoll,
 				want: cutShortRead(c, readChecks),
 			},
 		)

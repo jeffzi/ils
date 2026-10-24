@@ -34,29 +34,6 @@ func interrupts() []interrupt {
 	}
 }
 
-func TestApp_Run_WhenASignalEndsItWhileTheSpinnerLineShows_ShowsTheCursorAndDiesOfTheSignal(t *testing.T) {
-	t.Parallel()
-
-	for _, tt := range interrupts() {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			run := startStuck(t, stuckSpinning)
-			run.await(t, "the spinner line showed", run.spinnerStarted)
-			hiddenBefore := run.stderr.cursorHidden()
-
-			assert.NilError(t, run.cmd.Process.Signal(tt.signal))
-			_, err := io.Copy(run.stderr, run.pipe)
-			assert.NilError(t, err)
-			err = run.cmd.Wait()
-
-			assert.Check(t, hiddenBefore, "the cursor showed beside the spinner line:\n%q", run.stderr.raw())
-			assert.Check(t, !run.stderr.cursorHidden(), "the cursor is still hidden after the signal:\n%q", run.stderr.raw())
-			diedOf(t, err, tt.signal)
-		})
-	}
-}
-
 func TestApp_Run_WhenQuitWhileTheSpinnerLineShows_ShowsTheCursorThenEndsAsGoEndsAQuit(t *testing.T) {
 	t.Parallel()
 
@@ -80,14 +57,14 @@ func TestApp_Run_WhenQuitWhileTheSpinnerLineShows_ShowsTheCursorThenEndsAsGoEnds
 	assert.Check(t, exit.ExitCode() == exitQuit, "exit code = %d, want %d", exit.ExitCode(), exitQuit)
 }
 
-func TestApp_Run_WhenCancelOnInterruptAndASignalLandsWhileTheSpinnerLineShows_PrintsTheResultWithTheDisplayEnded(t *testing.T) {
+func TestApp_Run_WhenASignalLandsWhileTheSpinnerLineShows_PrintsTheResultWithTheDisplayEnded(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range interrupts() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			run := startStuck(t, stuckCancelOnInterrupt)
+			run := startStuck(t, stuckStopping)
 			run.await(t, "the spinner line showed", run.spinnerShows)
 			run.awaitReady(t)
 
@@ -101,7 +78,22 @@ func TestApp_Run_WhenCancelOnInterruptAndASignalLandsWhileTheSpinnerLineShows_Pr
 	}
 }
 
-func TestApp_Run_WhenCancelOnInterruptAndASecondSignalLands_DiesOfItWithNothingPrintedAndTheDisplayEnded(t *testing.T) {
+func TestApp_Run_WhenStartedWithTheInterruptIgnored_GoesOnIgnoringIt(t *testing.T) {
+	t.Parallel()
+
+	run := startStuckIgnoringTheInterrupt(t, stuckStopping)
+	run.await(t, "the spinner line showed", run.spinnerShows)
+	run.awaitReady(t)
+
+	assert.NilError(t, run.cmd.Process.Signal(syscall.SIGINT))
+	assert.NilError(t, run.cmd.Process.Signal(syscall.SIGTERM))
+	stdout, err := run.end(t)
+
+	assert.Check(t, err, "the run did not end with the result of its landing command")
+	assert.Check(t, is.Equal(stdout, "Stopped.\n"), "the interrupt counted as the first signal of the run")
+}
+
+func TestApp_Run_WhenASecondSignalLands_DiesOfItWithNothingPrintedAndTheDisplayEnded(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {

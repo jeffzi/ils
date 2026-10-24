@@ -626,9 +626,10 @@ func (m *mergeReady) merge(ctx context.Context, deps Deps, req Request) *result.
 
 	deps.started(result.Say("Merging %s", pull), 0)
 
-	pending := req.ends(result.Pending, result.Say(runInterrupted+" before the merge"), result.NextCommand(PushCommand))
-	if stop := m.unwritten(ctx, pending, result.Say(runInterrupted+" before the merge, so nothing was written")); stop != nil {
-		return stop
+	if interrupted(ctx.Err()) {
+		return m.stopped(
+			req.ends(result.Pending, result.Say(runInterrupted+" before the merge"), result.NextCommand(PushCommand)),
+			result.Say(runInterrupted+" before the merge, so nothing was written"))
 	}
 
 	err := deps.Forge.Land(ctx, m.Repo, forge.Landing{
@@ -710,35 +711,31 @@ func (m *mergeReady) goneLine() result.Phrase {
 	return result.Say("The branch %s was already gone from origin", result.Branch(m.branch))
 }
 
-// unwritten returns pending, the result that ends the run before its first write, when an
-// interrupt ended ctx, saying line, which says nothing was written, after the lines said so far.
-// It returns nil while ctx goes on, or when only the deadline ended it: the deadline is checked
-// ahead, against mergeReserve.
-func (m *mergeReady) unwritten(ctx context.Context, pending *result.Result, line result.Phrase) *result.Result {
+// unfinished returns the result that ends a resume pending, with nothing written, when an
+// interrupt ended ctx, and nil otherwise. A deadline that alone ended ctx does not count: the
+// deadline is checked ahead, against mergeReserve.
+func (m *mergeReady) unfinished(ctx context.Context, req Request) *result.Result {
 	if !interrupted(ctx.Err()) {
 		return nil
 	}
 
-	pending.Lines = slices.Concat(m.lines, []result.Phrase{line})
-
-	return m.carrying(pending)
-}
-
-// unfinished returns the result that ends a resume pending, with nothing written, when an
-// interrupt ended ctx, and nil otherwise.
-func (m *mergeReady) unfinished(ctx context.Context, req Request) *result.Result {
-	pending := req.ends(result.Pending, result.Say(runInterrupted+" before finishing the merge"), req.again())
-
-	return m.unwritten(ctx, pending, result.Say(runInterrupted+" before finishing the merge, so nothing was written"))
+	return m.stopped(
+		req.ends(result.Pending, result.Say(runInterrupted+" before finishing the merge"), req.again()),
+		result.Say(runInterrupted+" before finishing the merge, so nothing was written"))
 }
 
 // broke returns the result of a write that failed: broke with reason and next, and the lines said
 // so far followed by lines.
 func (m *mergeReady) broke(req Request, reason result.Phrase, next result.Next, lines ...result.Phrase) *result.Result {
-	stop := req.ends(result.Broke, reason, next)
-	stop.Lines = slices.Concat(m.lines, lines)
+	return m.stopped(req.ends(result.Broke, reason, next), lines...)
+}
 
-	return m.carrying(stop)
+// stopped returns ended, the result that ends the run, with the lines said so far followed by
+// lines.
+func (m *mergeReady) stopped(ended *result.Result, lines ...result.Phrase) *result.Result {
+	ended.Lines = slices.Concat(m.lines, lines)
+
+	return m.carrying(ended)
 }
 
 // endStep is one git call of the local ending: the command a result names it by, the call, and
@@ -852,7 +849,8 @@ func (m *mergeReady) endSteps(ctx context.Context, deps Deps, req Request, local
 // the local ending. Fewer than mergeReserve left before the first write ends it pending, and so
 // does an interrupt before it, whether that write is the delete on origin or the local ending.
 // Asking origin whether it still lists the branch is a read before any write: a failure there is
-// broke, an origin that does not answer included, and a deadline that cut it short is refused.
+// broke, an origin that does not answer included, and the time limit or an interrupt that cut it
+// short is refused.
 func (m *mergeReady) resume(ctx context.Context, deps Deps, req Request) *result.Result {
 	m.lines = []result.Phrase{
 		result.Say("Pull request %s was already merged into %s", result.PullRequest(m.pull.Number), result.Branch(m.Trunk)),
@@ -878,11 +876,12 @@ func (m *mergeReady) resume(ctx context.Context, deps Deps, req Request) *result
 		return m.carrying(stop)
 	}
 
-	if stop := m.unfinished(ctx, req); stop != nil {
-		return stop
-	}
-
+	// The delete on origin checks for an interrupt itself, so only the local ending needs it here.
 	if !listed {
+		if stop := m.unfinished(ctx, req); stop != nil {
+			return stop
+		}
+
 		m.lines = append(m.lines, m.goneLine())
 
 		return m.end(ctx, deps, req)

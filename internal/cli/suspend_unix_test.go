@@ -34,9 +34,25 @@ type stuckChild struct {
 func startStuck(t *testing.T, way string) *stuckChild {
 	t.Helper()
 
+	return startStuckBy(t, way, os.Args[0])
+}
+
+// startStuckIgnoringTheInterrupt is startStuck, except that the run starts with the interrupt
+// ignored, as a background job of a non-interactive shell does: the shell ignores it, and the
+// ignore holds across its exec of the test binary.
+func startStuckIgnoringTheInterrupt(t *testing.T, way string) *stuckChild {
+	t.Helper()
+
+	return startStuckBy(t, way, "sh", "-c", `trap "" INT; exec "$0"`, os.Args[0])
+}
+
+// startStuckBy is startStuck run through argv, whose run ends in an exec of the test binary.
+func startStuckBy(t *testing.T, way string, argv ...string) *stuckChild {
+	t.Helper()
+
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	t.Cleanup(cancel)
-	cmd := exec.CommandContext(ctx, os.Args[0]) //nolint:gosec // argv is this test binary
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // argv ends in this test binary
 	cmd.Env = append(os.Environ(), stuckRun+"="+way)
 	cmd.Dir = t.TempDir()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -178,13 +194,14 @@ func TestApp_Run_WhenSuspendedWhileTheSpinnerLineShows_ClearsTheLineAndShowsTheC
 	assert.Check(t, !run.stderr.cursorHidden(), "the cursor is still hidden while the run is stopped:\n%q", run.stderr.raw())
 }
 
-// suspendedSpinning starts a run whose spinner line shows, suspends it, and returns it once its
-// stopped run shows nothing.
+// suspendedSpinning starts a stuckHolding run, suspends it once its spinner line shows and its
+// landing command runs, and returns it once its stopped run shows nothing.
 func suspendedSpinning(t *testing.T) *stuckChild {
 	t.Helper()
 
-	run := startStuck(t, stuckSpinning)
+	run := startStuck(t, stuckHolding)
 	run.await(t, "the spinner line showed", run.spinnerShows)
+	run.awaitReady(t)
 	status := run.suspend(t)
 	assert.Assert(t, stopped(status), "status = %v, want the run stopped", status)
 	run.drain(t)
@@ -202,11 +219,13 @@ func TestApp_Run_WhenContinuedAfterASuspend_DrawsTheSpinnerLineAgain(t *testing.
 	run.await(t, "the spinner line showed again", run.spinnerShows)
 }
 
-func TestApp_Run_WhenInterruptedAfterASuspendAndContinue_ShowsTheCursorAndDiesOfTheSignal(t *testing.T) {
+func TestApp_Run_WhenInterruptedTwiceAfterASuspendAndContinue_ShowsTheCursorAndDiesOfTheSignal(t *testing.T) {
 	t.Parallel()
 	run := suspendedSpinning(t)
 	assert.NilError(t, run.cmd.Process.Signal(syscall.SIGCONT))
 	run.await(t, "the spinner line showed again", run.spinnerShows)
+	assert.NilError(t, run.cmd.Process.Signal(syscall.SIGINT))
+	run.awaitLine(t, canceled)
 
 	assert.NilError(t, run.cmd.Process.Signal(syscall.SIGINT))
 	_, err := io.Copy(run.stderr, run.pipe)

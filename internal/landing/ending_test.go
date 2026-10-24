@@ -39,6 +39,9 @@ const (
 		"`git pull --ff-only`\n"
 	resumedLine = "Pull request #7 was already merged into " + trunk + "\n"
 
+	interruptedResumeText = resumedLine + "ils was interrupted before finishing the merge, so nothing was written\n" +
+		"Pending: ils was interrupted before finishing the merge\n" + nextMergeAgain
+
 	readStillOnOrigin = "whether origin still has the branch"
 
 	mergedPullURL = "https://github.com/Acme/Widgets/pull/7"
@@ -575,8 +578,6 @@ func resumeStops() []landingRow {
 	late := resumedLine + "Fewer than 20 seconds of the time limit were left to finish the merge, " +
 		"so nothing was written\n" + "Pending: fewer than 20 seconds of the time limit were left to finish the merge\n" +
 		nextMergeAgain
-	interrupted := resumedLine + "ils was interrupted before finishing the merge, so nothing was written\n" +
-		"Pending: ils was interrupted before finishing the merge\n" + nextMergeAgain
 	gone := func(f *gittest.Fixture) { f.LandPull(merged, topic) }
 
 	return []landingRow{
@@ -597,13 +598,13 @@ func resumeStops() []landingRow {
 		},
 		{
 			name: "an interrupt lands once origin was asked for the branch it still lists", outcome: result.Pending,
-			kept: true, set: setting{arrange: landAndPublish, script: resuming(), deadline: interruptAfterAskingForTheBranch},
-			text: interrupted, payload: resumed("", ""),
+			kept: true, set: setting{arrange: landAndPublish, script: resuming(), runCtx: interruptAfterAskingForTheBranch},
+			text: interruptedResumeText, payload: resumed("", ""),
 		},
 		{
 			name: "an interrupt lands once origin was asked for the branch it no longer lists", outcome: result.Pending,
-			kept: true, set: setting{arrange: gone, script: resuming(), deadline: interruptAfterAskingForTheBranch},
-			text: interrupted, payload: resumed("", ""),
+			kept: true, set: setting{arrange: gone, script: resuming(), runCtx: interruptAfterAskingForTheBranch},
+			text: interruptedResumeText, payload: resumed("", ""),
 		},
 	}
 }
@@ -630,7 +631,8 @@ type afterCall struct {
 	fire  func()
 }
 
-// Enabled takes every record.
+// Enabled reports true for every level so that Handle sees each git call's end record regardless
+// of the logger's level.
 func (afterCall) Enabled(context.Context, slog.Level) bool { return true }
 
 // Handle calls fire when record is the end of a call whose arguments ended says yes to.
@@ -695,7 +697,7 @@ func TestMerge_WhenTheResumeIsCutShortAskingOriginForTheBranch_RefusesNamingTheR
 			t.Parallel()
 
 			// Origin answers about its trunk, the fetch of it, and the fetch of the merged head.
-			run := runMergeOn(t, setting{arrange: landAndPublish, script: resuming(), deadline: c.stalling(3)})
+			run := runMergeOn(t, setting{arrange: landAndPublish, script: resuming(), runCtx: c.stalling(3)})
 
 			assertStoppedBy(t, run.got, result.Refused, mergeRequest())
 
@@ -764,7 +766,7 @@ func writeStops() []landingRow {
 		mergedLine+"Started the delete of the branch "+topic+" on origin when ils was interrupted; "+
 			"it may or may not have gone through\n"+
 			"Broke: ils was interrupted while deleting the branch on origin\n"+nextMergeAgain)
-	interrupted.set.deadline = interruptOnStart(deletingStep)
+	interrupted.set.runCtx = interruptOnStart(deletingStep)
 
 	return slices.Concat([]landingRow{refused}, cutRows, []landingRow{gone, listed, unasked, interrupted})
 }
@@ -807,16 +809,15 @@ func interruptedWrites() []landingRow {
 	return []landingRow{
 		{
 			name: "the merge", outcome: result.Pending, kept: true,
-			set: setting{script: toLand(nil, nil), deadline: interruptOnStart(mergingStep)},
+			set: setting{script: toLand(nil, nil), runCtx: interruptOnStart(mergingStep)},
 			text: countLine + cleanLine() + "ils was interrupted before the merge, so nothing was written\n" +
 				"Pending: ils was interrupted before the merge\n" + nextPush,
 			payload: sent(landedBody, false, ""),
 		},
 		{
 			name: "the delete of a resume", outcome: result.Pending, kept: true,
-			set: setting{arrange: landAndPublish, script: resuming(), deadline: interruptOnStart(deletingStep)},
-			text: resumedLine + "ils was interrupted before finishing the merge, so nothing was written\n" +
-				"Pending: ils was interrupted before finishing the merge\n" + nextMergeAgain,
+			set:     setting{arrange: landAndPublish, script: resuming(), runCtx: interruptOnStart(deletingStep)},
+			text:    interruptedResumeText,
 			payload: resumed("", ""),
 		},
 	}
@@ -834,26 +835,25 @@ func TestMerge_WhenAnInterruptLandsAsTheFirstWriteStarts_EndsPendingWithNothingW
 // in a parallel test.
 func stallingAfterLand(
 	words []string,
-) (deadline func(*testing.T, *scene) context.Context, landed func(*testing.T, *gittest.Fixture)) {
+) (runCtx func(*testing.T, *scene) context.Context, landed func(*testing.T, *gittest.Fixture)) {
 	var stalled string
 
-	deadline = func(t *testing.T, s *scene) context.Context {
+	runCtx = func(t *testing.T, s *scene) context.Context {
 		t.Helper()
 
 		plain := os.Getenv("PATH")
-		addr, connected := gittest.SilentListener(t)
-		fakeGit(t, s, gittest.Fake{StallOn: words, StallAt: addr})
+		ctx := byInterrupt().stallingGit(words)(t, s)
 		stalled = os.Getenv("PATH")
 		t.Setenv("PATH", plain)
 
-		return byInterrupt().once(t.Context(), connected)
+		return ctx
 	}
 	landed = func(t *testing.T, _ *gittest.Fixture) {
 		t.Helper()
 		t.Setenv("PATH", stalled)
 	}
 
-	return deadline, landed
+	return runCtx, landed
 }
 
 func TestMerge_WhenAnInterruptEndsTheFetchOfTheLocalEnding_BrokeNamingTheInterrupt(t *testing.T) {
@@ -879,9 +879,9 @@ func TestMerge_WhenAnInterruptEndsTheFetchOfTheLocalEnding_BrokeNamingTheInterru
 	// Not parallel: each row puts a stalling git first on PATH with t.Setenv.
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			deadline, landed := stallingAfterLand([]string{"fetch"})
+			runCtx, landed := stallingAfterLand([]string{"fetch"})
 
-			run := runMergeOn(t, setting{arrange: tt.arrange, script: toLand(nil, nil), deadline: deadline, landed: landed})
+			run := runMergeOn(t, setting{arrange: tt.arrange, script: toLand(nil, nil), runCtx: runCtx, landed: landed})
 
 			assertStoppedBy(t, run.got, result.Broke, mergeRequest())
 

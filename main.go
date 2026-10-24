@@ -28,8 +28,7 @@ type terminal struct {
 
 // launched returns the launch of ils that prints on stdout and stderr, launched now under the
 // process's environment, with tty reading their terminals: whether each is one, and the width of
-// stderr's and whether ils is its foreground job. It sets CancelOnInterrupt, so the first
-// interrupt or termination of the process ends the run with the result of the step it stopped.
+// stderr's and whether ils is its foreground job.
 func launched(stdout, stderr *os.File, tty terminal) cli.App {
 	return cli.App{
 		Stdout:         stdout,
@@ -46,9 +45,8 @@ func launched(stdout, stderr *os.File, tty terminal) cli.App {
 
 			return width
 		},
-		StderrForeground:  func() bool { return tty.Foreground(stderr.Fd()) },
-		Notify:            signal.Notify,
-		CancelOnInterrupt: true,
-		Launch:            time.Now(),
+		StderrForeground: func() bool { return tty.Foreground(stderr.Fd()) },
+		Notify:           signal.Notify,
+		Launch:           time.Now(),
 	}
 }

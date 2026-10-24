@@ -5,10 +5,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"os"
-	"os/exec"
-	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -146,27 +143,6 @@ func TestFake_WhenAnswerIsDelayed_AnswersAfterTheDelay(t *testing.T) {
 	elapsed := time.Since(start)
 	assert.Check(t, elapsed >= delay, "Run(pr checks) answered after %s, want no sooner than %s", elapsed, delay)
 	assert.Check(t, is.Equal(got.Stdout, "pass\n"))
-}
-
-func TestFake_WhenAnswerIsInterrupted_DiesOfTheInterrupt(t *testing.T) {
-	args := []string{"pr", "checks", "7"}
-	ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Interrupted: true}, args...))
-	cmd := exec.CommandContext(t.Context(), os.Getenv("GH_PATH"), args...) //nolint:gosec // GH_PATH is the test binary Setup named
-
-	err := cmd.Run()
-
-	exitErr, ok := errors.AsType[*exec.ExitError](err)
-	assert.Assert(t, ok, "gh pr checks ended with %v, want it to die of the interrupt", err)
-	// Windows reports no signals: a console program that Ctrl-C ended exits with
-	// STATUS_CONTROL_C_EXIT, which ExitCode reads as an int.
-	if runtime.GOOS == "windows" {
-		const statusControlCExit = 0xC000013A
-		assert.Check(t, is.Equal(int64(exitErr.ExitCode())&0xFFFFFFFF, int64(statusControlCExit)))
-	} else {
-		status, waited := exitErr.Sys().(syscall.WaitStatus)
-		assert.Assert(t, waited, "gh pr checks ended with %v, want a wait status", err)
-		assert.Check(t, is.Equal(status.Signal(), syscall.SIGINT), "gh pr checks ended with %v, want SIGINT", err)
-	}
 }
 
 func TestFake_RunHeld_WhenAnAnswerIsHeld_ReturnsOnceTheCallIsRecorded(t *testing.T) {

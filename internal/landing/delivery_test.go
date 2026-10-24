@@ -267,7 +267,7 @@ func newDelivery(t *testing.T, tt pushRow) *delivery {
 	t.Cleanup(cancel)
 
 	if tt.cut != nil {
-		return &delivery{scene: s, ctx: tt.cut(ctx), watch: w, tip: sha}
+		ctx = tt.cut(ctx)
 	}
 
 	return &delivery{scene: s, ctx: ctx, watch: w, tip: sha}

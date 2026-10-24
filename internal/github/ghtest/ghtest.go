@@ -62,10 +62,6 @@ type Answer struct {
 	// Delay is how long the fake holds the call open before it prints and exits.
 	Delay time.Duration
 	Code  int
-	// Interrupted makes the fake end as gittest.Interrupt ends the process once it has recorded the
-	// call, instead of printing and exiting, as gh does when the terminal's Ctrl-C reaches it before
-	// ils has ended its context.
-	Interrupted bool
 }
 
 // installed is what the fake prints for its version when the script holds no answer to
@@ -516,15 +512,6 @@ func serve(ctx context.Context, places servePlaces, args []string) int {
 	earlier := countOf(recorded, args)
 
 	answer := answers[min(earlier, len(answers)-1)]
-	if answer.Interrupted {
-		code, err := gittest.Interrupt()
-		if err != nil {
-			return broken(err)
-		}
-
-		return code
-	}
-
 	if answer.Delay > 0 {
 		if err := announceHold(ctx, places.holdAddr, hold{Args: args, Earlier: earlier}); err != nil {
 			return broken(err)

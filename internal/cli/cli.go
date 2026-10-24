@@ -77,10 +77,6 @@ type App struct {
 	// either count as none.
 	StdoutTerminal bool
 	StderrTerminal bool
-	// CancelOnInterrupt makes the first interrupt or termination of the process end the run, whenever
-	// it lands, so that ils prints the result of the step it stopped; only a later one, or a quit,
-	// ends the process. It takes Notify to listen.
-	CancelOnInterrupt bool
 }
 
 // Run parses args, the words after the program name, runs the command they name, prints its
@@ -291,8 +287,7 @@ func lastForm(args []string, flag string) bool {
 // leave the result of the command that ran here.
 type parse struct {
 	// result is the result of the command that ran; nil when none did.
-	result *result.Result
-	// signals is the run's listener for the signals that end it.
+	result  *result.Result
 	signals *endSignals
 	// gitDir is the resolved git dir when the command ran in a repository.
 	gitDir string
@@ -517,10 +512,14 @@ type endSignals struct {
 }
 
 // onSignal listens through Notify, for nothing when Notify is nil, for the interrupt, the
-// termination and the quit of the process until the returned stop is called. When the App sets
-// CancelOnInterrupt, the first interrupt or termination calls interrupt, which ends the run. Every
-// other of these signals calls the leave of the display that runs, if one does, then ends the
-// process as the signal would have had ils never listened.
+// termination and the quit of the process until the returned stop is called. The first interrupt
+// or termination calls interrupt, which ends the run, so that ils prints the result of the step it
+// stopped. Every other of these signals calls the leave of the display that runs, if one does,
+// then ends the process as the signal would have had ils never listened.
+//
+// A process that started with the interrupt ignored, as a background job of a non-interactive
+// shell does, is not listened to for it: Notify would take the ignore back, so the interrupt is
+// left out and goes on being ignored.
 func (a App) onSignal(interrupt func()) (signals *endSignals, stop func()) {
 	signals = &endSignals{}
 	if a.Notify == nil {
@@ -529,11 +528,17 @@ func (a App) onSignal(interrupt func()) (signals *endSignals, stop func()) {
 
 	landed := make(chan os.Signal, 1)
 	done := make(chan struct{})
-	a.Notify(landed, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
+
+	listened := []os.Signal{syscall.SIGTERM, syscall.SIGQUIT}
+	if !signal.Ignored(os.Interrupt) {
+		listened = append(listened, os.Interrupt)
+	}
+
+	a.Notify(landed, listened...)
 
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		spare := a.CancelOnInterrupt
+		spare := true
 		for {
 			sig, ok := nextSignal(landed, done)
 			if !ok {

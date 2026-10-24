@@ -379,10 +379,8 @@ type cut struct {
 	// for this cut.
 	spend func(parent context.Context) (context.Context, context.CancelFunc)
 	name  string
-	// ends says the context ended, at says what held when it did, and before says what had not
-	// happened by then.
+	// ends says the context ended, and before says what had not happened by then.
 	ends   string
-	at     string
 	before string
 }
 
@@ -394,7 +392,7 @@ func byTimeLimit() cut {
 		spend: func(parent context.Context) (context.Context, context.CancelFunc) {
 			return context.WithDeadline(parent, time.Unix(0, 0))
 		},
-		ends: "the time limit ended", at: "at the time limit", before: "before the time limit",
+		ends: "the time limit ended", before: "before the time limit",
 	}
 }
 
@@ -408,7 +406,7 @@ func byInterrupt() cut {
 
 			return ctx, cancel
 		},
-		ends: "ils was interrupted", at: "when ils was interrupted", before: "before ils was interrupted",
+		ends: "ils was interrupted", before: "before ils was interrupted",
 	}
 }
 
@@ -432,6 +430,9 @@ func (c cut) after(parent context.Context, d time.Duration) context.Context {
 
 	return c.once(parent, done)
 }
+
+// inPoll returns a context over ctx that ends as c says midPoll into the first poll of a wait.
+func (c cut) inPoll(ctx context.Context) context.Context { return c.after(ctx, midPoll) }
 
 // spent returns a context that c ended before it was handed out.
 func (c cut) spent(t *testing.T) context.Context {

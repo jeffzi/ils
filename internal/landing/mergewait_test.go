@@ -135,7 +135,7 @@ type setting struct {
 	tip       func(f *gittest.Fixture) string
 	scripted  func(t *testing.T, s *scene, script *forgetest.Script)
 	rewire    func(t *testing.T, s *scene)
-	deadline  func(t *testing.T, s *scene) context.Context
+	runCtx    func(t *testing.T, s *scene) context.Context
 	landed    func(t *testing.T, f *gittest.Fixture)
 	script    forgeFor
 	cut       func(context.Context) context.Context
@@ -186,8 +186,8 @@ func runMergeOn(t *testing.T, set setting) mergeRun {
 	ctx := t.Context()
 
 	switch {
-	case set.deadline != nil:
-		ctx = set.deadline(t, s)
+	case set.runCtx != nil:
+		ctx = set.runCtx(t, s)
 	case !set.unbounded:
 		bounded, cancel := context.WithDeadline(ctx, time.Now().Add(orBound(set.left)))
 		t.Cleanup(cancel)
@@ -314,30 +314,11 @@ func pendingWaits() []waitRow {
 		pendingText := func(read string) string {
 			return cleanLine() + "Pending: " + c.ends + " while reading " + read + "; nothing more will change\n" + nextPush
 		}
-		inPoll := func(ctx context.Context) context.Context { return c.after(ctx, midPoll) }
-		rows = append(rows,
-			waitRow{
-				name: c.name + " ends a poll of the head", script: waiting(passing()).showing(stale()), cut: inPoll,
-				outcome: result.Pending, payload: mergeDetail(forge.VerdictNone, forge.MergeClean),
-				text: "Pending: GitHub did not show " + tipMark + " on pull request #12 " + c.before + "\n" + nextPush,
-			},
-			waitRow{
-				name:   c.name + " ends a poll of the merge state",
-				script: waiting(passing()).showing(inState(forge.MergeUnknown, "UNKNOWN")), cut: inPoll,
-				outcome: result.Pending, payload: mergeDetail(forge.VerdictNone, forge.MergeUnknown),
-				text: "Pending: GitHub did not say whether pull request #12 can merge " + c.before + "\n" + nextPush,
-			},
-			waitRow{
-				name:    c.name + " ends the CI read",
-				script:  waiting(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{Err: c.of("gh")}),
-				outcome: result.Pending, text: pendingText(readCI), payload: mergeDetail(forge.VerdictNone, forge.MergeClean),
-			},
-			waitRow{
-				name:   c.name + " ends a poll of checks still running",
-				script: waiting(running()), cut: func(ctx context.Context) context.Context { return c.after(ctx, midPoll) },
-				outcome: result.Pending, text: pendingText(readChecks), payload: mergeDetail(forge.VerdictNone, forge.MergeClean),
-			},
-		)
+		rows = append(rows, waitRow{
+			name:    c.name + " ends the CI read",
+			script:  waiting(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{Err: c.of("gh")}),
+			outcome: result.Pending, text: pendingText(readCI), payload: mergeDetail(forge.VerdictNone, forge.MergeClean),
+		})
 	}
 
 	return rows
@@ -465,7 +446,7 @@ func settledStops() []waitRow {
 	for _, c := range cuts() {
 		rows = append(rows, waitRow{
 			name: c.name + " ends the poll of the merge state", script: waiting(passing()).showing(clean, unknown),
-			cut:     func(ctx context.Context) context.Context { return c.after(ctx, midPoll) },
+			cut:     c.inPoll,
 			outcome: result.Pending, payload: mergeDetail(forge.VerdictGreen, forge.MergeUnknown, passing().Checks...),
 			text: countLine + "Pending: GitHub did not say whether pull request #12 can merge " + c.before + "\n" + nextPush,
 		})

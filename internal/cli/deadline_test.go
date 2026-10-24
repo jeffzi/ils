@@ -14,7 +14,6 @@ import (
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
-	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
 const (
@@ -193,30 +192,12 @@ func TestApp_Run_WhenAnInterruptEndsAHeldRead_PrintsTheInterruptedResultAndEndsT
 	const reason = "ils was interrupted while reading the repository's identity on GitHub; nothing was written"
 
 	tests := []struct {
-		printed func(t *testing.T, stdout string)
-		name    string
-		args    []string
+		name   string
+		stdout string
+		args   []string
 	}{
-		{
-			name: "as text", args: []string{"push"},
-			printed: func(t *testing.T, stdout string) {
-				t.Helper()
-
-				assert.Check(t, is.Equal(stdout, "Refused: "+reason+"\nNext: ils push\n"))
-			},
-		},
-		{
-			name: "as JSON", args: []string{"push", "--json"},
-			printed: func(t *testing.T, stdout string) {
-				t.Helper()
-
-				shown := resulttest.Decode(t, stdout)
-				assert.Check(t, is.Equal(shown.Outcome, "refused"))
-				assert.Check(t, is.Equal(shown.Reason, reason))
-				assert.Check(t, is.Equal(shown.Next, "ils push"))
-				assert.Check(t, is.Equal(shown.ExitCode, exitRefused))
-			},
-		},
+		{name: "push", args: []string{"push"}, stdout: "Refused: " + reason + "\nNext: ils push\n"},
+		{name: "merge", args: []string{"merge"}, stdout: "Refused: " + reason + "\nNext: ils merge\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -231,7 +212,7 @@ func TestApp_Run_WhenAnInterruptEndsAHeldRead_PrintsTheInterruptedResultAndEndsT
 			got := s.endWhileHeld(t, app, context.Canceled, tt.args...)
 
 			assert.Check(t, is.Equal(got.code, exitRefused))
-			tt.printed(t, got.stdout)
+			assert.Check(t, is.Equal(got.stdout, tt.stdout))
 			assert.Check(t, stderr.raw() != "", "the run drew no progress display on stderr")
 			assert.Check(t, is.Len(stderr.lines(), 0), "stderr still shows %q", stderr.lines())
 			assert.Check(t, !stderr.cursorHidden(), "the cursor is still hidden:\n%q", stderr.raw())

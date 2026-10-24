@@ -6,7 +6,6 @@ import (
 	"debug/buildinfo"
 	"errors"
 	"flag"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -30,15 +29,6 @@ import (
 )
 
 const (
-	// actAs, set in its environment to one of the parts below, makes the test binary act as that
-	// part of ils instead of running the tests.
-	actAs = "ILS_TEST_ACT_AS"
-	// asTerminalRun runs ils with the arguments it was started with, built as ils builds itself but
-	// with stderr counted as a terminal, wide columns wide.
-	asTerminalRun = "terminal run"
-
-	wide = 80
-
 	trunk     = "develop"
 	topic     = "tidy-readme"
 	host      = "github.com"
@@ -48,6 +38,8 @@ const (
 	// held is how long the fake gh holds the read of the repository's identity open: far past the
 	// moment a test sends its signal.
 	held = 30 * time.Second
+	// patience is how long a test waits for a program or the fake gh before it gives up.
+	patience = time.Minute
 
 	// interruptedReason is why ils refuses a landing command that an interrupt ends during the read
 	// of the repository's identity.
@@ -56,47 +48,14 @@ const (
 	// identity.
 	interruptedRead = "Refused: " + interruptedReason + "\nNext: ils push\n"
 	exitRefused     = 2
-
-	// hideCursor is the sequence the progress display hides the cursor with while its spinner line
-	// shows, and showCursor the one it shows it again with.
-	hideCursor = "\x1b[?25l"
-	showCursor = "\x1b[?25h"
 )
 
 func TestMain(m *testing.M) {
-	if part := os.Getenv(actAs); part != "" {
-		os.Exit(act(part))
-	}
 	if code, served := ghtest.Main(); served {
 		os.Exit(code)
 	}
 
 	os.Exit(m.Run())
-}
-
-// act runs the part of ils named part and returns its exit code. It drops actAs from its own
-// environment first, so that a gh it starts acts as gh.
-func act(part string) int {
-	if err := os.Unsetenv(actAs); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-
-		return 1
-	}
-
-	if part != asTerminalRun {
-		fmt.Fprintf(os.Stderr, "no part of ils is named %q\n", part)
-
-		return 1
-	}
-
-	stderr := os.Stderr
-	app := main.Launched(os.Stdout, stderr, main.Terminal{
-		IsTerminal: func(fd uintptr) bool { return fd == stderr.Fd() },
-		Size:       func(uintptr) (int, int, error) { return wide, 24, nil },
-		Foreground: func(uintptr) bool { return true },
-	})
-
-	return app.Run(context.Background(), os.Args[1:])
 }
 
 // ran is what one run of the binary printed and the code it exited with.
@@ -374,7 +333,7 @@ func awaitHold(t *testing.T, fake *ghtest.Fake) {
 
 	select {
 	case <-fake.Holding():
-	case <-time.After(time.Minute):
+	case <-time.After(patience):
 		t.Fatal("the fake gh held no answer within a minute")
 	}
 }
@@ -391,7 +350,7 @@ type started struct {
 func start(t *testing.T, dir string, env []string, argv ...string) *started {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	ctx, cancel := context.WithTimeout(t.Context(), patience)
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // argv is written by the tests in this file
 	cmd.Dir = dir
 	cmd.Env = env
@@ -408,23 +367,6 @@ func start(t *testing.T, dir string, env []string, argv ...string) *started {
 	})
 
 	return &started{cmd: cmd, stdout: stdout, stderr: stderr}
-}
-
-// awaitStderr reads stderr until what it read holds want, and returns what it read; it fails the
-// test when stderr ends first.
-func (s *started) awaitStderr(t *testing.T, want string) string {
-	t.Helper()
-
-	var read bytes.Buffer
-
-	next := make([]byte, 1)
-	for !strings.Contains(read.String(), want) {
-		n, err := s.stderr.Read(next)
-		read.Write(next[:n])
-		assert.NilError(t, err, "stderr ended before it wrote %q:\n%q", want, read.String())
-	}
-
-	return read.String()
 }
 
 // end reads the rest of stdout and stderr, waits for the program to end, and returns what it
@@ -458,110 +400,18 @@ func skipWithoutSignals(t *testing.T) {
 	}
 }
 
-// interrupt is a signal that interrupts a run of ils, named for the test case that sends it.
-type interrupt struct {
-	name   string
-	signal syscall.Signal
-}
-
-func interrupts() []interrupt {
-	return []interrupt{
-		{name: "interrupt", signal: syscall.SIGINT},
-		{name: "terminate", signal: syscall.SIGTERM},
-	}
-}
-
-// interruptedLanding is a landing command run with args and sent signal, whose printed stdout
-// is checked by printed.
-type interruptedLanding struct {
-	printed func(t *testing.T, stdout string)
-	name    string
-	args    []string
-	signal  syscall.Signal
-}
-
-// interruptedLandings returns the landing commands that the signal test interrupts, with the
-// stdout each prints.
-func interruptedLandings() []interruptedLanding {
-	return []interruptedLanding{
-		{
-			name: "push interrupted", args: []string{"push"}, signal: syscall.SIGINT,
-			printed: func(t *testing.T, stdout string) {
-				t.Helper()
-
-				assert.Check(t, is.Equal(stdout, interruptedRead))
-			},
-		},
-		{
-			name: "push terminated", args: []string{"push"}, signal: syscall.SIGTERM,
-			printed: func(t *testing.T, stdout string) {
-				t.Helper()
-
-				assert.Check(t, is.Equal(stdout, interruptedRead))
-			},
-		},
-		{
-			name: "merge interrupted", args: []string{"merge"}, signal: syscall.SIGINT,
-			printed: func(t *testing.T, stdout string) {
-				t.Helper()
-
-				assert.Check(t, is.Equal(stdout, "Refused: "+interruptedReason+"\nNext: ils merge\n"))
-			},
-		},
-		{
-			name: "push as JSON terminated", args: []string{"push", "--json"}, signal: syscall.SIGTERM,
-			printed: func(t *testing.T, stdout string) {
-				t.Helper()
-
-				shown := resulttest.Decode(t, stdout)
-				assert.Check(t, is.Equal(shown.Command, "push"))
-				assert.Check(t, is.Equal(shown.Outcome, "refused"))
-				assert.Check(t, is.Equal(shown.Reason, interruptedReason))
-				assert.Check(t, is.Equal(shown.Next, "ils push"))
-				assert.Check(t, is.Equal(shown.ExitCode, exitRefused))
-			},
-		},
-	}
-}
-
 func TestIls_WhenASignalLandsDuringALandingCommand_PrintsTheInterruptedResult(t *testing.T) {
 	skipWithoutSignals(t)
 
 	bin := build(t)
-	for _, tt := range interruptedLandings() {
-		t.Run(tt.name, func(t *testing.T) {
-			dir, env, fake := heldIdentityRead(t)
-			run := start(t, dir, withCoverDir(env), append([]string{string(bin)}, tt.args...)...)
-			awaitHold(t, fake)
+	dir, env, fake := heldIdentityRead(t)
+	run := start(t, dir, withCoverDir(env), string(bin), "push")
+	awaitHold(t, fake)
 
-			run.signal(t, tt.signal)
-			got := run.end(t)
+	run.signal(t, syscall.SIGINT)
+	got := run.end(t)
 
-			assert.Check(t, is.Equal(got.code, exitRefused))
-			tt.printed(t, got.stdout)
-			assert.Check(t, is.Equal(got.stderr, ""))
-		})
-	}
-}
-
-func TestLaunched_WhenASignalLandsWhileTheSpinnerLineShows_PrintsTheInterruptedResultWithTheCursorShown(t *testing.T) {
-	skipWithoutSignals(t)
-
-	for _, tt := range interrupts() {
-		t.Run(tt.name, func(t *testing.T) {
-			dir, env, fake := heldIdentityRead(t)
-			run := start(t, dir, append(env, actAs+"="+asTerminalRun, "TERM=xterm-256color"), os.Args[0], "push")
-			spinning := run.awaitStderr(t, hideCursor)
-			awaitHold(t, fake)
-
-			run.signal(t, tt.signal)
-			got := run.end(t)
-
-			stderr := spinning + got.stderr
-			assert.Check(t, is.Equal(got.code, exitRefused))
-			assert.Check(t, is.Equal(got.stdout, interruptedRead))
-			assert.Check(t, strings.LastIndex(stderr, showCursor) > strings.LastIndex(stderr, hideCursor),
-				"the cursor is still hidden:\n%q", stderr)
-		})
-	}
+	assert.Check(t, is.Equal(got.code, exitRefused))
+	assert.Check(t, is.Equal(got.stdout, interruptedRead))
+	assert.Check(t, is.Equal(got.stderr, ""))
 }

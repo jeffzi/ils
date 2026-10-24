@@ -157,19 +157,19 @@ func (w Waited) pendingReport(sha string, number int) waitReport {
 	pull := result.PullRequest(number)
 
 	switch {
-	case w.Stage == StageHead && w.Interrupted:
+	case w.Stage == StageHead && w.Cutoff == CutoffInterrupt:
 		report.reason = result.Say("GitHub did not show %s on pull request %s before "+runInterrupted, result.SHA(sha), pull)
 	case w.Stage == StageHead:
 		report.reason = result.Say("GitHub did not show %s on pull request %s before the time limit", result.SHA(sha), pull)
-	case w.Stage == StageMergeState && w.Interrupted:
+	case w.Stage == StageMergeState && w.Cutoff == CutoffInterrupt:
 		report.reason = result.Say("GitHub did not say whether pull request %s can merge before "+runInterrupted, pull)
 	case w.Stage == StageMergeState:
 		report.reason = result.Say("GitHub did not say whether pull request %s can merge before the time limit", pull)
 
 		// The stage's own window ended the wait: the time limit was not reached.
-		if w.Window > 0 {
+		if w.Cutoff == CutoffWindow {
 			report.reason = result.Say("GitHub did not say whether pull request %s can merge within %s seconds",
-				pull, int(w.Window/time.Second))
+				pull, int(mergeWindow/time.Second))
 		}
 	default:
 		report.lines, report.reason = w.unconcluded(sha, number)
@@ -191,7 +191,7 @@ func (w Waited) unconcluded(sha string, number int) ([]result.Phrase, result.Phr
 
 	switch {
 	case w.Since.IsZero():
-		reason = cutShortReading(w.Interrupted, readChecks)
+		reason = cutShortReading(w.Cutoff == CutoffInterrupt, readChecks)
 	case silent(w.Verdict):
 		reason = result.Say("no check or status had reported for %s on pull request %s at the time limit", commit, pull)
 	case len(w.Verdict.Checks) == 0 && w.Verdict.Running():

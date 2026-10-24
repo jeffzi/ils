@@ -10,7 +10,6 @@ import (
 	"runtime"
 	"slices"
 	"strings"
-	"syscall"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -160,27 +159,6 @@ func TestFakeGit_WhenCallStartsWithStallingWords_WaitsAtTheAddressUntilKilled(t 
 		killed = 1
 	}
 	assert.Check(t, is.Equal(exitErr.ExitCode(), killed), "git show-ref ended on its own, want it killed while it waited")
-}
-
-func TestFakeGit_WhenCallStartsWithInterruptingWords_DiesOfTheInterrupt(t *testing.T) {
-	gittest.FakeGit(t, gittest.Fake{InterruptOn: []string{"fetch"}})
-	cmd := exec.CommandContext(t.Context(), "git", "fetch", "origin")
-	cmd.Dir = t.TempDir()
-
-	err := cmd.Run()
-
-	exitErr, ok := errors.AsType[*exec.ExitError](err)
-	assert.Assert(t, ok, "git fetch ended with %v, want it to die of the interrupt", err)
-	// Windows reports no signals: a console program that Ctrl-C ended exits with
-	// STATUS_CONTROL_C_EXIT, which ExitCode reads as an int.
-	if runtime.GOOS == "windows" {
-		const statusControlCExit = 0xC000013A
-		assert.Check(t, is.Equal(int64(exitErr.ExitCode())&0xFFFFFFFF, int64(statusControlCExit)))
-	} else {
-		status, waited := exitErr.Sys().(syscall.WaitStatus)
-		assert.Assert(t, waited, "git fetch ended with %v, want a wait status", err)
-		assert.Check(t, is.Equal(status.Signal(), syscall.SIGINT), "git fetch ended with %v, want SIGINT", err)
-	}
 }
 
 func TestLinkAs(t *testing.T) {

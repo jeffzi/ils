@@ -169,8 +169,8 @@ func ending(text string) mergeEnd { return mergeEnd{text: text} }
 type mergeRow struct {
 	// arrange changes the repository and returns how the run must end.
 	arrange func(*gittest.Fixture) mergeEnd
-	// deadline returns the context to run under once the scene is built; nil is the test's own.
-	deadline func(t *testing.T, s *scene) context.Context
+	// runCtx returns the context to run under once the scene is built; nil is the test's own.
+	runCtx func(t *testing.T, s *scene) context.Context
 	// script returns the forge's answers once the head of pull request 12 is known.
 	script forgeFor
 	name   string
@@ -280,7 +280,7 @@ func mergeRowOn(t *testing.T, tt mergeRow) (mergeEnd, mergeRun) {
 				s.stopAnswering(t, tt.answered)
 			}
 		},
-		deadline:  tt.deadline,
+		runCtx:    tt.runCtx,
 		offline:   tt.offline,
 		unbounded: true,
 	})
@@ -602,7 +602,7 @@ func overtimeMerges() []mergeRow {
 		rows = append(rows,
 			mergeRow{
 				name: c.name + " during the fetch of the head of the pull request", script: merging(), ops: changesRead(),
-				deadline: c.stalling(2), outcome: result.Refused, fetches: true, known: true,
+				runCtx: c.stalling(2), outcome: result.Refused, fetches: true, known: true,
 				arrange: pastHead(overtimeText(mergeCommand(), c, readPullHead)),
 			},
 			mergeRow{
@@ -764,7 +764,7 @@ func TestMerge_WhenAGitReadIsCutShort_RefusesNamingIt(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(c.name+"/"+tt.name, func(t *testing.T) {
 				runMerge(t, mergeRow{
-					script: merging(), ops: identityRead(), deadline: c.stallingGit(tt.words),
+					script: merging(), ops: identityRead(), runCtx: c.stallingGit(tt.words),
 					outcome: result.Refused, fetches: true,
 					arrange: func(*gittest.Fixture) mergeEnd { return ending(overtimeText(mergeCommand(), c, tt.read)) },
 				})

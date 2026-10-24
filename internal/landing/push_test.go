@@ -507,23 +507,19 @@ func runOvertime(t *testing.T, rows func(c cut) []overtime) {
 	t.Helper()
 
 	for _, c := range cuts() {
-		t.Run(c.name, func(t *testing.T) {
-			t.Parallel()
+		for _, tt := range rows(c) {
+			t.Run(c.name+"/"+tt.name, func(t *testing.T) {
+				t.Parallel()
+				s := newScene(t, tt.prepare, tt.script, false)
+				ctx := tt.arrange(t, s)
+				before := s.written()
 
-			for _, tt := range rows(c) {
-				t.Run(tt.name, func(t *testing.T) {
-					t.Parallel()
-					s := newScene(t, tt.prepare, tt.script, false)
-					ctx := tt.arrange(t, s)
-					before := s.written()
+				got := landing.Push(ctx, s.deps, pushRequest())
 
-					got := landing.Push(ctx, s.deps, pushRequest())
-
-					assertEnded(t, s, got, finish{outcome: result.Refused, text: overtimeText(pushCommand(), c, tt.read)})
-					assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
-				})
-			}
-		})
+				assertEnded(t, s, got, finish{outcome: result.Refused, text: overtimeText(pushCommand(), c, tt.read)})
+				assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
+			})
+		}
 	}
 }
 

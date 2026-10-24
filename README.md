@@ -15,6 +15,7 @@ the checks. `ils merge` squash-merges that pull request once its checks are gree
   - [Build the binary](#build-the-binary)
 - [Start a repository](#start-a-repository)
 - [Usage](#usage)
+  - [Stopping a run](#stopping-a-run)
   - [What it refuses](#what-it-refuses)
   - [Exit codes](#exit-codes)
     - [When no check reports](#when-no-check-reports)
@@ -128,8 +129,8 @@ Run `ils push` on a work branch with everything committed. It:
 2. pushes the branch by name, never with a force flag;
 3. opens a pull request against origin's default branch when the branch has none, titled with the
    branch name and with an empty body;
-4. waits for the checks of the pushed commit, until 100 seconds have passed since the command
-   started or you stop it, and prints the verdict.
+4. waits for the checks of the pushed commit until you stop it or 100 seconds have passed since the
+   command started, then prints the verdict.
 
 Run it again at any time: on a commit that is already pushed it pushes nothing and reports the
 verdict again.
@@ -143,10 +144,12 @@ The push itself already happened.
 
 Ctrl-C or SIGTERM during `ils push` or `ils merge` stops the step in progress. `ils` then prints
 the result of that step, as text or as JSON per `--json`, and exits with that result's code. The
-output says that `ils` was interrupted, and `Next:` says what to run. The progress display ends
-as it does at a normal end.
+output says that `ils` was interrupted, and `Next:` says what to run. As at a normal end, the
+spinner line is erased before the result prints; see [Terminal output](#terminal-output).
 
-A second Ctrl-C or SIGTERM ends `ils` at once, with no result printed.
+A second Ctrl-C or SIGTERM ends `ils` at once, as that signal ends any program: no result is
+printed, and the exit status is the signal's (130 for Ctrl-C and 143 for SIGTERM in most shells),
+not one of the [exit codes](#exit-codes).
 
 ### What it refuses
 
@@ -174,7 +177,7 @@ or file; at most it has fetched from origin. It refuses:
 - any word after `push` other than `--json`, `-d` or `--debug`, `--no-color`, `--help`, or `-h`,
   and a `--json=<value>`, `--debug=<value>`, or `--no-color=<value>` whose value is not `true` or
   `false`;
-- a precondition read that the time limit or an interrupt cut short: run `ils push` again.
+- a precondition read that the time limit, Ctrl-C, or SIGTERM cut short: run `ils push` again.
 
 ### Exit codes
 
@@ -284,8 +287,8 @@ Run `ils merge` on the branch whose pull request you want to land. It:
 
 1. checks every precondition before it writes anything, and refuses with a reason when one does
    not hold;
-2. waits for the checks of the pull request's head, as `ils push` does, until 80 seconds have
-   passed since the command started or you stop it;
+2. waits for the checks of the pull request's head, as `ils push` does, until you stop it or 80
+   seconds have passed since the command started;
 3. squash-merges the pull request, with its title plus `(#<N>)` as the subject and its body as
    the commit body, followed by the trailer block GitHub adds (`Signed-off-by` and
    `Co-authored-by` lines);
