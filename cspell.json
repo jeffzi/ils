@@ -20,6 +20,7 @@
     "errcheck",
     "errorlint",
     "forgetest",
+    "fpath",
     "ghtest",
     "gitdir",
     "gittest",

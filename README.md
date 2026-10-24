@@ -119,6 +119,8 @@ ils merge --json  # the same result as one JSON object
 ils help          # usage of ils and its commands
 ils help push     # the same as ils push --help
 ils --version     # print the version of ils
+ils man           # print the man page of ils
+ils completion zsh  # print the completion script for zsh (or bash, fish, powershell)
 ```
 
 Run `ils push` on a work branch with everything committed. It:
@@ -129,7 +131,7 @@ Run `ils push` on a work branch with everything committed. It:
 3. opens a pull request against origin's default branch when the branch has none, titled with the
    branch name and with an empty body;
 4. waits for the checks of the pushed commit, until 100 seconds have passed since the command
-   started, and prints the verdict.
+   started or you stop it, and prints the verdict.
 
 Run it again at any time: on a commit that is already pushed it pushes nothing and reports the
 verdict again.
@@ -138,6 +140,16 @@ When another commit reaches the pull request while `ils push` waits, the checks 
 no longer those of the pushed commit. `ils push` then prints no verdict and ends refused, naming
 the pull request's new head, and `Next:` says to pull the new commit, then run `ils push` again.
 The push itself already happened.
+
+### Stopping a run
+
+Ctrl-C or SIGTERM during `ils push` or `ils merge` stops the step in progress. `ils` then prints
+the result of that step, as text or as JSON per `--json`, and exits with that result's code. It
+ends as the time limit would at the same point, and its reason says `ils was interrupted`. For
+example, a read cut short is refused with nothing written, and a push in flight is broke because
+the push may or may not have taken. The progress display ends as it does at a normal end.
+
+A second Ctrl-C or SIGTERM ends `ils` at once, with no result printed.
 
 ### What it refuses
 
@@ -165,7 +177,7 @@ or file; at most it has fetched from origin. It refuses:
 - any word after `push` other than `--json`, `-d` or `--debug`, `--no-color`, `--help`, or `-h`,
   and a `--json=<value>`, `--debug=<value>`, or `--no-color=<value>` whose value is not `true` or
   `false`;
-- a precondition read that the time limit cut short: run `ils push` again.
+- a precondition read that the time limit or an interrupt cut short: run `ils push` again.
 
 ### Exit codes
 
@@ -179,7 +191,8 @@ or file; at most it has fetched from origin. It refuses:
 | 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                           |
 
 Every outcome but done prints its reason on the line above `Next:`, labeled by outcome:
-`Refused:`, `Broke:`, `Pending:`, or `Delivered, not green:`.
+`Refused:`, `Broke:`, `Pending:`, or `Delivered, not green:`. A run stopped by Ctrl-C or SIGTERM
+exits with the code of the result it prints; see [Stopping a run](#stopping-a-run).
 
 #### When no check reports
 
@@ -248,6 +261,32 @@ turns color on for a stream that is not a terminal; `NO_COLOR` and `--no-color` 
 timed from when the command started, in place of the spinner. It changes neither stdout nor the
 exit code.
 
+### Man page and shell completion
+
+`ils man` prints the man page of `ils` in roff. Read it with:
+
+```bash
+ils man | man -l -
+```
+
+`ils completion <shell>` prints the completion script for `bash`, `zsh`, `fish`, or `powershell`.
+Add `--no-descriptions` to leave out the description of each candidate. Install it for your shell:
+
+```bash
+# bash, with bash-completion installed
+ils completion bash > "${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions/ils"
+# zsh: write it to a directory on your fpath, then start a new shell
+ils completion zsh > "${fpath[1]}/_ils"
+# fish
+ils completion fish > ~/.config/fish/completions/ils.fish
+```
+
+For PowerShell, add this line to your profile:
+
+```powershell
+ils completion powershell | Out-String | Invoke-Expression
+```
+
 ### After a green push
 
 The pull request's title and body become the squash commit's message, so write them first. The
@@ -275,7 +314,7 @@ Run `ils merge` on the branch whose pull request you want to land. It:
 1. checks every precondition before it writes anything, and refuses with a reason when one does
    not hold;
 2. waits for the checks of the pull request's head, as `ils push` does, until 80 seconds have
-   passed since the command started;
+   passed since the command started or you stop it;
 3. squash-merges the pull request, with its title plus `(#<N>)` as the subject and its body as
    the commit body, followed by the trailer block GitHub adds (`Signed-off-by` and
    `Co-authored-by` lines);
@@ -323,6 +362,10 @@ When a step of that local ending fails, the output lists the steps that ran, the
 with git's message, and the steps not run, and `Next:` gives what is left to run. When the delete
 on origin fails and origin still lists the branch, the output says the merge went through and the
 branch is still on origin, and `Next:` is `ils merge`.
+
+When Ctrl-C or SIGTERM stops `ils merge` before the merge, it ends pending with nothing written.
+After the merge, an interrupt during the delete or the local ending is reported as that step
+failing: the output names the step it stopped, and `Next:` gives what is left to run.
 
 ### A merge made elsewhere
 

@@ -10,7 +10,7 @@ argument-hint: push | merge
 
 # ils
 
-`ils` lands a change on GitHub in fixed steps. This version has two commands. `ils push` pushes
+`ils` lands a change on GitHub in fixed steps. This version has two landing commands. `ils push` pushes
 the current branch, opens its pull request on the first push, waits for the checks of the pushed
 commit, and prints the verdict. `ils merge` squash-merges that pull request once its checks are
 green, deletes the branch, and leaves the trunk checked out.
@@ -31,7 +31,8 @@ ils $ARGUMENTS
 
 - **Bare.** Never piped, never `tee`d, never run in the background, never behind `cd`. A pipe
   hides the exit code, and the exit code is how you know what happened.
-- **No timeout argument.** Every wait ends on its own, under the default limit of one call.
+- **No timeout argument.** Every wait ends on its own, under the default limit of one call. A run
+  stopped by Ctrl-C or SIGTERM also ends with a result to act on: its reason and `Next:` as usual.
 - **Words as given.** Add nothing, fix nothing. A malformed command reaches the binary and the
   binary refuses it with the reason.
 
