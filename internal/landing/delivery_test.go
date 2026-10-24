@@ -37,6 +37,7 @@ const (
 	foundLine   = "Pull request #12: " + pullURL + "\n"
 	countLine   = "Checks for " + tipMark + ": 1 passed, 0 skipped\n"
 	cleanLine   = "GitHub: CLEAN (clean)\n"
+	blockedLine = "GitHub: BLOCKED (blocked-by-review)\n"
 
 	mergeSteps = "write the pull request's title and body as the squash commit's message with " +
 		"`gh pr edit --repo " + repoArg + " 12 --title … --body …`, then run ils merge\n"
@@ -86,6 +87,14 @@ func (build forgeFor) showing(heads ...forge.Head) forgeFor {
 func (build forgeFor) thenFailingHead(err error) forgeFor {
 	return build.with(func(script *forgetest.Script, _ string) {
 		script.Head = append(script.Head, forgetest.Answer[forge.Head]{Err: err})
+	})
+}
+
+// holdingNextRead returns build with a read of the checks, after those it answers, that lasts
+// until its context ends.
+func (build forgeFor) holdingNextRead() forgeFor {
+	return build.with(func(script *forgetest.Script, _ string) {
+		script.Verdict = append(script.Verdict, forgetest.Answer[forge.Verdict]{Hold: true})
 	})
 }
 
@@ -622,7 +631,7 @@ func pushNoCIRows() []pushRow {
 			script: unverified.showing(inState(forge.MergeClean, "CLEAN"), reviewed),
 			want: finish{
 				outcome: result.Done,
-				text:    pushedLine + openedLine + noCILine + "GitHub: BLOCKED (blocked-by-review)\n" + nextReview,
+				text:    pushedLine + openedLine + noCILine + blockedLine + nextReview,
 				payload: detail(forge.VerdictNone, forge.MergeBlockedByReview),
 			},
 		},
@@ -718,7 +727,7 @@ func callsOf(calls []forgetest.Call, op forgetest.Op) []forgetest.Call {
 // pushWaitRows are the pushes whose wait ends without an error, one per result it maps to.
 func pushWaitRows() []pushRow {
 	reviewed := greenAfter(pushedLine + foundLine)
-	reviewed.text = pushedLine + foundLine + countLine + "GitHub: BLOCKED (blocked-by-review)\n" + nextReview
+	reviewed.text = pushedLine + foundLine + countLine + blockedLine + nextReview
 	reviewed.payload = detail(forge.VerdictGreen, forge.MergeBlockedByReview, passing().Checks...)
 
 	rows := []pushRow{
@@ -756,14 +765,15 @@ func TestPush_WhenTheHeadMovesPastThePushedCommit_RefusesNamingTheNewHead(t *tes
 		{name: "after a red verdict", script: movedAfter(lintRed()), want: refused},
 		{name: "after nothing reported", script: movedAfter(forge.Verdict{}), want: refused},
 		{
-			// Seven seconds leave room for one poll and then for the head read.
+			// Seven seconds leave no room for a poll with the head read after it, so the head is read at
+			// once.
 			name: "after checks still running at the deadline", script: movedAfter(running()), want: refused,
 			left: 7 * time.Second,
 		},
 		{
 			// Twelve seconds end inside the 20 seconds a check with no run behind it is held.
 			name: "after a check with no run behind it, at the deadline", want: refused, left: 12 * time.Second,
-			script: movedAfter(forge.Verdict{Checks: []forge.Check{{Name: "scan", Bucket: forge.BucketPass}}}),
+			script: movedAfter(appPassing()),
 		},
 	})
 }

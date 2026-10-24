@@ -534,7 +534,7 @@ func squashBody(message forge.Message) string {
 // reserved ends the merge pending, with nothing written, when less than mergeReserve is left
 // before ctx's deadline.
 func (m *mergeReady) reserved(ctx context.Context, req Request) *result.Result {
-	if !reserveShort(ctx) {
+	if !deadlineWithin(ctx, mergeReserve) {
 		return nil
 	}
 
@@ -548,13 +548,6 @@ func (m *mergeReady) reserved(ctx context.Context, req Request) *result.Result {
 	}
 
 	return m.carrying(stop)
-}
-
-// reserveShort reports whether ctx has a deadline less than mergeReserve away.
-func reserveShort(ctx context.Context) bool {
-	deadline, ok := ctx.Deadline()
-
-	return ok && time.Until(deadline) < mergeReserve
 }
 
 // summary says what let the merge go on: the head's checks, or no CI on the trunk.
@@ -829,7 +822,7 @@ func (m *mergeReady) resume(ctx context.Context, deps Deps, req Request) *result
 		return m.carrying(stop)
 	}
 
-	if reserveShort(ctx) {
+	if deadlineWithin(ctx, mergeReserve) {
 		stop := req.ends(result.Pending,
 			result.Say("fewer than %s seconds of the time limit were left to finish the merge", reserveSeconds),
 			req.again())

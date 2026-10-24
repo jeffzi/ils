@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -369,6 +372,191 @@ func TestFake_WhenOnLandIsSet_RunsItWithEachLandingBeforeItReturns(t *testing.T)
 	}
 	assert.Check(t, is.DeepEqual(seen, want))
 	assert.Check(t, is.DeepEqual(recorded, []int{1, 2}), "calls recorded when the hook ran")
+}
+
+// readOps lists the read operations, called with the fixture arguments.
+func readOps() []operation {
+	var picked []operation
+
+	for _, op := range operations() {
+		switch op.made.Op {
+		case forgetest.OpOpenChange, forgetest.OpLand, forgetest.OpDeleteBranch:
+		default:
+			picked = append(picked, op)
+		}
+	}
+
+	return picked
+}
+
+// hold scripts one held answer whose value would be value.
+func hold[T any](value T) []forgetest.Answer[T] {
+	return []forgetest.Answer[T]{{Value: value, Hold: true}}
+}
+
+// heldScript scripts every read operation to hold its read until the context ends.
+func heldScript() forgetest.Script {
+	return forgetest.Script{
+		Identity:        hold(identity()),
+		FindChanges:     hold(changes()),
+		Head:            hold(head()),
+		TrunkProtection: hold(protection()),
+		Verdict:         hold(verdict()),
+		HasTrunkCI:      hold(hasTrunkCI),
+		Message:         hold(message()),
+	}
+}
+
+// ending is a way a read's context ends after wait.
+type ending struct {
+	start func(t *testing.T, wait time.Duration) context.Context
+	want  error
+	name  string
+}
+
+func endings() []ending {
+	return []ending{
+		{name: "deadline", want: context.DeadlineExceeded, start: func(t *testing.T, wait time.Duration) context.Context {
+			t.Helper()
+
+			ctx, cancel := context.WithTimeout(t.Context(), wait)
+			t.Cleanup(cancel)
+
+			return ctx
+		}},
+		{name: "cancellation", want: context.Canceled, start: func(t *testing.T, wait time.Duration) context.Context {
+			t.Helper()
+
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+
+			time.AfterFunc(wait, cancel)
+
+			return ctx
+		}},
+	}
+}
+
+// ended returns a context canceled before it is returned.
+func ended(t *testing.T) context.Context {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	return ctx
+}
+
+func TestFake_WhenAnswerIsHeld_ReturnsTheContextErrorOnceTheContextEnds(t *testing.T) {
+	t.Parallel()
+
+	const wait = 10 * time.Second
+
+	for _, op := range readOps() {
+		for _, end := range endings() {
+			t.Run(op.name+"/"+end.name, func(t *testing.T) {
+				t.Parallel()
+
+				synctest.Test(t, func(t *testing.T) {
+					fake := forgetest.New(t, heldScript())
+					ctx := end.start(t, wait)
+					start := time.Now()
+
+					got, err := op.call(ctx, fake)
+
+					assert.Check(t, is.ErrorIs(err, end.want))
+					assert.Check(t, is.Equal(time.Since(start), wait), "time the read lasted")
+					assert.Check(t, reflect.ValueOf(got).IsZero(), "value %v, want the zero value", got)
+				})
+			})
+		}
+	}
+}
+
+func TestFake_Verdict_WhenAnswerIsHeldAndTheContextHasEnded_ReturnsTheContextErrorAtOnce(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		fake := forgetest.New(t, heldScript())
+		ctx := ended(t)
+		start := time.Now()
+
+		_, err := fake.Verdict(ctx, repo(), verdictQuery())
+
+		assert.Check(t, is.ErrorIs(err, context.Canceled))
+		assert.Check(t, is.Equal(time.Since(start), time.Duration(0)), "time the read lasted")
+	})
+}
+
+func TestFake_WhenAnswerIsNotHeldAndTheContextHasEnded_ReturnsItsValue(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range operations() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fake := forgetest.New(t, script(nil))
+
+			got, err := tt.call(ended(t), fake)
+			assert.NilError(t, err)
+
+			assert.Check(t, is.DeepEqual(got, tt.want))
+		})
+	}
+}
+
+func TestFake_WhenAnswerIsNotHeldAndTheContextHasEnded_ReturnsItsErrorUnchanged(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range operations() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scripted := errors.New("gh is not installed")
+			fake := forgetest.New(t, script(scripted))
+
+			_, err := tt.call(ended(t), fake)
+
+			assert.Check(t, is.Equal(err, scripted))
+		})
+	}
+}
+
+func TestFake_WhenAnswerIsHeld_RecordsTheCallAndRunsOnRead(t *testing.T) {
+	t.Parallel()
+
+	var seen []forgetest.Call
+
+	scripted := heldScript()
+	scripted.OnRead = func(call forgetest.Call) { seen = append(seen, call) }
+	fake := forgetest.New(t, scripted)
+
+	_, err := fake.Head(ended(t), repo(), headQuery())
+
+	assert.Check(t, is.ErrorIs(err, context.Canceled))
+
+	want := []forgetest.Call{{Op: forgetest.OpHead, Repo: repo(), Head: headQuery()}}
+	assert.Check(t, is.DeepEqual(fake.Calls(), want))
+	assert.Check(t, is.DeepEqual(seen, want))
+}
+
+func TestFake_Head_WhenAnswerIsHeld_TakesOneStep(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		next := forge.Head{SHA: oldCommit, MergeState: forge.MergeClean, RawMergeState: rawClean}
+		last := forge.Head{SHA: newCommit, MergeState: forge.MergeUnknown, RawMergeState: "UNKNOWN"}
+		fake := forgetest.New(t, forgetest.Script{
+			Head: []forgetest.Answer[forge.Head]{{Value: head(), Hold: true}, {Value: next}, {Value: last}},
+		})
+
+		_, heldErr := fake.Head(ended(t), repo(), headQuery())
+		got, err := fake.Head(t.Context(), repo(), headQuery())
+
+		assert.Check(t, is.ErrorIs(heldErr, context.Canceled))
+		assert.NilError(t, err)
+		assert.Check(t, is.DeepEqual(got, next))
+	})
 }
 
 func TestFake_WhenOnLandIsSet_RunsItOnAnUnscriptedLandingToo(t *testing.T) {
