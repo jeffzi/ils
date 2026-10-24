@@ -321,6 +321,19 @@ func pendingWaits() []waitRow {
 			payload: mergeDetail(forge.VerdictPending, forge.MergeClean, running().Checks...),
 		},
 		{
+			// One poll fits in the wait's nine seconds with the 3 seconds kept for the head read after
+			// it; the time limit ends the read after the poll a second in, and the head is read with 3
+			// seconds left.
+			name: "a check still runs and the time limit ends the read after a poll", left: 29 * time.Second,
+			script: waiting(running()).
+				showing(inState(forge.MergeClean, "CLEAN"), inState(forge.MergeBlockedByReview, "BLOCKED")).
+				holdingNextRead(),
+			outcome: result.Pending,
+			text: "Still running after 6 seconds: test\n" + blockedLine +
+				"Pending: the checks were still running at the time limit\n" + nextPush,
+			payload: mergeDetail(forge.VerdictPending, forge.MergeBlockedByReview, running().Checks...),
+		},
+		{
 			name:    "the deadline ends in the CI read",
 			script:  waiting(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{Err: ended}),
 			outcome: result.Pending, text: cut(readCI), payload: mergeDetail(forge.VerdictNone, forge.MergeClean),
@@ -387,7 +400,7 @@ func afterWaitStops() []waitRow {
 		greenThen(forge.MergeDraft, "DRAFT", countLine+"GitHub: DRAFT (draft)\n"+draftText),
 		conflicting,
 		greenThen(forge.MergeBlockedByReview, "BLOCKED",
-			countLine+"GitHub: BLOCKED (blocked-by-review)\n"+"Refused: pull request #12 requires a review\n"+nextReviewStop),
+			countLine+blockedLine+"Refused: pull request #12 requires a review\n"+nextReviewStop),
 		missing(string(forge.MergeBlockedByMissingCheck), "Required by the trunk with no check on "+tipMark+": build",
 			"lint", "test", "build"),
 		// GitHub expects a check ils cannot tell apart, so every required check is named.
@@ -401,7 +414,7 @@ func afterWaitStops() []waitRow {
 			script: waiting(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{}).
 				showing(inState(forge.MergeClean, "CLEAN"), reviewed),
 			outcome: result.Refused, payload: mergeDetail(forge.VerdictNone, forge.MergeBlockedByReview),
-			text: noCILine + "GitHub: BLOCKED (blocked-by-review)\n" +
+			text: noCILine + blockedLine +
 				"Refused: pull request #12 requires a review\n" + nextReviewStop,
 		},
 		{
