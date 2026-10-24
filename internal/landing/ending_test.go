@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,6 +18,7 @@ import (
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
+	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
 	"github.com/jeffzi/ils/internal/gittest"
@@ -570,6 +572,13 @@ func TestMerge_WhenThePullRequestIsAlreadyMerged_FinishesWithoutMerging(t *testi
 
 // resumeStops are the resumes that end before their local ending, having written nothing.
 func resumeStops() []landingRow {
+	late := resumedLine + "Fewer than 20 seconds of the time limit were left to finish the merge, " +
+		"so nothing was written\n" + "Pending: fewer than 20 seconds of the time limit were left to finish the merge\n" +
+		nextMergeAgain
+	interrupted := resumedLine + "ils was interrupted before finishing the merge, so nothing was written\n" +
+		"Pending: ils was interrupted before finishing the merge\n" + nextMergeAgain
+	gone := func(f *gittest.Fixture) { f.LandPull(merged, topic) }
+
 	return []landingRow{
 		{
 			name: "the delete fails and origin still lists the branch", outcome: result.Broke, kept: true,
@@ -578,14 +587,74 @@ func resumeStops() []landingRow {
 		},
 		{
 			name: "fewer than 20 seconds are left before the first write", outcome: result.Pending, kept: true,
-			set: setting{arrange: landAndPublish, script: resuming(), left: 15 * time.Second},
-			text: resumedLine + "Fewer than 20 seconds of the time limit were left to finish the merge, " +
-				"so nothing was written\n" + "Pending: fewer than 20 seconds of the time limit were left to finish the merge\n" +
-				nextMergeAgain,
-			payload: resumed("", ""),
+			set:  setting{arrange: landAndPublish, script: resuming(), left: 15 * time.Second},
+			text: late, payload: resumed("", ""),
+		},
+		{
+			name: "fewer than 20 seconds are left and origin no longer lists the branch", outcome: result.Pending,
+			kept: true, set: setting{arrange: gone, script: resuming(), left: 15 * time.Second},
+			text: late, payload: resumed("", ""),
+		},
+		{
+			name: "an interrupt lands once origin was asked for the branch it still lists", outcome: result.Pending,
+			kept: true, set: setting{arrange: landAndPublish, script: resuming(), deadline: interruptAfterAskingForTheBranch},
+			text: interrupted, payload: resumed("", ""),
+		},
+		{
+			name: "an interrupt lands once origin was asked for the branch it no longer lists", outcome: result.Pending,
+			kept: true, set: setting{arrange: gone, script: resuming(), deadline: interruptAfterAskingForTheBranch},
+			text: interrupted, payload: resumed("", ""),
 		},
 	}
 }
+
+// interruptAfterAskingForTheBranch returns the context of a run that an interrupt cancels once
+// git's call that asks origin whether it has the branch has ended, and not before.
+func interruptAfterAskingForTheBranch(t *testing.T, s *scene) context.Context {
+	t.Helper()
+
+	done := make(chan struct{})
+	asked := func(args []string) bool {
+		return slices.Contains(args, "ls-remote") &&
+			slices.ContainsFunc(args, func(arg string) bool { return strings.HasSuffix(arg, topic) })
+	}
+	s.deps.Repo.Runner.Logger = slog.New(afterCall{ended: asked, fire: sync.OnceFunc(func() { close(done) })})
+
+	return byInterrupt().once(t.Context(), done)
+}
+
+// afterCall is a log handler for the git calls of a run that calls fire once a call whose
+// arguments ended says yes to has ended.
+type afterCall struct {
+	ended func(args []string) bool
+	fire  func()
+}
+
+// Enabled takes every record.
+func (afterCall) Enabled(context.Context, slog.Level) bool { return true }
+
+// Handle calls fire when record is the end of a call whose arguments ended says yes to.
+func (h afterCall) Handle(_ context.Context, record slog.Record) error {
+	record.Attrs(func(attr slog.Attr) bool {
+		if attr.Key != child.KeyArgs {
+			return true
+		}
+
+		if args, ok := attr.Value.Resolve().Any().([]string); ok && h.ended(args) {
+			h.fire()
+		}
+
+		return false
+	})
+
+	return nil
+}
+
+// WithAttrs returns h, which reads only the attributes of each record.
+func (h afterCall) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+// WithGroup returns h, which reads only the attributes of each record.
+func (h afterCall) WithGroup(string) slog.Handler { return h }
 
 func TestMerge_WhenAResumeCannotFinish_EndsWithNothingWritten(t *testing.T) {
 	t.Parallel()
@@ -691,11 +760,10 @@ func writeStops() []landingRow {
 			"Could not read "+readStillOnOrigin+": ")
 	unasked.after = "\nBroke: the branch could not be deleted on origin\n" + nextMergeAgain
 	unasked.set.landed = moveOrigin
-	// The interrupt that ends the delete also ends the question whether origin still has the branch.
 	interrupted := row("an interrupt ends the delete", toLand(nil, byInterrupt().of("gh")), result.Broke,
-		mergedLine+"Could not delete the branch "+topic+" on origin: ")
-	interrupted.after = "\nils was interrupted while reading " + readStillOnOrigin + "\n" +
-		"Broke: the branch could not be deleted on origin\n" + nextMergeAgain
+		mergedLine+"Started the delete of the branch "+topic+" on origin when ils was interrupted; "+
+			"it may or may not have gone through\n"+
+			"Broke: ils was interrupted while deleting the branch on origin\n"+nextMergeAgain)
 	interrupted.set.deadline = interruptOnStart(deletingStep)
 
 	return slices.Concat([]landingRow{refused}, cutRows, []landingRow{gone, listed, unasked, interrupted})

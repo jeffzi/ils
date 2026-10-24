@@ -656,18 +656,17 @@ func (m *mergeReady) merge(ctx context.Context, deps Deps, req Request) *result.
 }
 
 // deleteOnOrigin deletes the branch on origin. A delete that fails while origin no longer lists
-// the branch counts as done, since GitHub can delete a merged branch on its own. When origin
-// cannot be asked whether it still lists the branch, the result says why instead of where the
-// branch stands, naming the interrupt when one ended the question. On a resume, which merged
-// nothing, the delete is the first write: an interrupt before it ends the run pending, with
+// the branch counts as done, since GitHub can delete a merged branch on its own. A delete an
+// interrupt cut short is broke without asking origin, since it may or may not have gone through.
+// When origin cannot be asked whether it still lists the branch, the result says why instead of
+// where the branch stands, naming the interrupt when one ended the question. On a resume, which
+// merged nothing, the delete is the first write: an interrupt before it ends the run pending, with
 // nothing written.
 func (m *mergeReady) deleteOnOrigin(ctx context.Context, deps Deps, req Request) *result.Result {
 	deps.started(result.Say("Deleting %s on origin", result.Branch(m.branch)), 0)
 
 	if !m.merged {
-		pending := req.ends(result.Pending, result.Say(runInterrupted+" before finishing the merge"), req.again())
-		if stop := m.unwritten(ctx, pending,
-			result.Say(runInterrupted+" before finishing the merge, so nothing was written")); stop != nil {
+		if stop := m.unfinished(ctx, req); stop != nil {
 			return stop
 		}
 	}
@@ -677,6 +676,12 @@ func (m *mergeReady) deleteOnOrigin(ctx context.Context, deps Deps, req Request)
 		deps.say(&m.lines, result.Say("Deleted the branch %s on origin", result.Branch(m.branch)))
 
 		return nil
+	}
+
+	if interrupted(err) {
+		return m.broke(req, result.Say(runInterrupted+" while deleting the branch on origin"), req.again(),
+			result.Say("Started the delete of the branch %s on origin when "+runInterrupted+"; "+
+				"it may or may not have gone through", result.Branch(m.branch)))
 	}
 
 	_, listed, askErr := deps.Repo.RemoteBranch(ctx, m.branch)
@@ -717,6 +722,14 @@ func (m *mergeReady) unwritten(ctx context.Context, pending *result.Result, line
 	pending.Lines = slices.Concat(m.lines, []result.Phrase{line})
 
 	return m.carrying(pending)
+}
+
+// unfinished returns the result that ends a resume pending, with nothing written, when an
+// interrupt ended ctx, and nil otherwise.
+func (m *mergeReady) unfinished(ctx context.Context, req Request) *result.Result {
+	pending := req.ends(result.Pending, result.Say(runInterrupted+" before finishing the merge"), req.again())
+
+	return m.unwritten(ctx, pending, result.Say(runInterrupted+" before finishing the merge, so nothing was written"))
 }
 
 // broke returns the result of a write that failed: broke with reason and next, and the lines said
@@ -837,9 +850,9 @@ func (m *mergeReady) endSteps(ctx context.Context, deps Deps, req Request, local
 // resume finishes a branch whose merged pull request carries every commit of it, without a merge
 // and without reading any check: the delete on origin while origin still lists the branch, then
 // the local ending. Fewer than mergeReserve left before the first write ends it pending, and so
-// does an interrupt before the delete on origin. Asking
-// origin whether it still lists the branch is a read before any write: a failure there is broke,
-// an origin that does not answer included, and a deadline that cut it short is refused.
+// does an interrupt before it, whether that write is the delete on origin or the local ending.
+// Asking origin whether it still lists the branch is a read before any write: a failure there is
+// broke, an origin that does not answer included, and a deadline that cut it short is refused.
 func (m *mergeReady) resume(ctx context.Context, deps Deps, req Request) *result.Result {
 	m.lines = []result.Phrase{
 		result.Say("Pull request %s was already merged into %s", result.PullRequest(m.pull.Number), result.Branch(m.Trunk)),
@@ -863,6 +876,10 @@ func (m *mergeReady) resume(ctx context.Context, deps Deps, req Request) *result
 		})
 
 		return m.carrying(stop)
+	}
+
+	if stop := m.unfinished(ctx, req); stop != nil {
+		return stop
 	}
 
 	if !listed {

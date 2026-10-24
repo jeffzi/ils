@@ -142,10 +142,9 @@ The push itself already happened.
 ### Stopping a run
 
 Ctrl-C or SIGTERM during `ils push` or `ils merge` stops the step in progress. `ils` then prints
-the result of that step, as text or as JSON per `--json`, and exits with that result's code. It
-ends as the time limit would at the same point, and its reason says `ils was interrupted`. For
-example, a read cut short is refused with nothing written, and a push in flight is broke because
-the push may or may not have taken. The progress display ends as it does at a normal end.
+the result of that step, as text or as JSON per `--json`, and exits with that result's code. The
+output says that `ils` was interrupted, and `Next:` says what to run. The progress display ends
+as it does at a normal end.
 
 A second Ctrl-C or SIGTERM ends `ils` at once, with no result printed.
 
@@ -335,9 +334,8 @@ with git's message, and the steps not run, and `Next:` gives what is left to run
 on origin fails and origin still lists the branch, the output says the merge went through and the
 branch is still on origin, and `Next:` is `ils merge`.
 
-When Ctrl-C or SIGTERM stops `ils merge` before the merge, it ends pending with nothing written.
-After the merge, an interrupt during the delete or the local ending is reported as that step
-failing: the output names the step it stopped, and `Next:` gives what is left to run.
+When Ctrl-C or SIGTERM stops `ils merge`, the output says that `ils` was interrupted, and `Next:`
+says what to run.
 
 ### A merge made elsewhere
 
