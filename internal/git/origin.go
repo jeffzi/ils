@@ -242,7 +242,7 @@ func (r Repo) Trunk(ctx context.Context) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("%s: %w", child.CommandLine(append([]string{program}, args...)), ErrNoSymref)
+	return "", fmt.Errorf("%s: %w", child.CommandLine(child.Argv(program, args)), ErrNoSymref)
 }
 
 // RemoteBranch reports whether origin has the branch name, and its sha there when it does.
@@ -320,7 +320,7 @@ func (r Repo) FastForwardTrunk(ctx context.Context, trunk string) error {
 // It names the branch by its full ref on both sides, so a tag of the same name is never pushed
 // in its place. It never forces. A push that git or origin refuses is a *PushError.
 func (r Repo) Push(ctx context.Context, name string) error {
-	ref := "refs/heads/" + name
+	ref := headsRef + name
 	_, err := r.Runner.Run(ctx, "push", "-u", origin, ref+":"+ref)
 	if exitErr, ok := errors.AsType[*child.ExitError](err); ok {
 		return &PushError{Branch: name, Stderr: exitErr.Stderr, Err: err}

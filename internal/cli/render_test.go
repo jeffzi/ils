@@ -11,14 +11,10 @@ import (
 
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/gittest"
-	"github.com/jeffzi/ils/internal/result"
 	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
 const (
-	// hookLine is a line the renderers reject, since its own wording names a hook.
-	hookLine = "The pre-push step ran."
-
 	// outsideStart is how `ils push` and `ils merge` start what they print in a directory that is no
 	// repository; the middle is git's own wording.
 	outsideStart = "Could not read where HEAD stands: "
@@ -166,30 +162,6 @@ func TestApp_Run_WhenALandingCommandRunsOutsideARepositoryWithTheJSONFlag_Render
 			assert.Check(t, is.Equal(printed.Command, tt.command))
 			assert.Check(t, is.DeepEqual(printed.Words, []string{tt.command}))
 			assert.Check(t, is.Equal(printed.Outcome, "broke"))
-		})
-	}
-}
-
-func TestApp_Run_WhenRendererRejectsTheResult_PrintsTheErrorOnStderrOnly(t *testing.T) {
-	t.Parallel()
-
-	hooked := saying(result.Say(hookLine))
-
-	tests := [][]string{{"push"}, {"push", "--json"}, {"merge"}, {"merge", "--json"}}
-	for _, args := range tests {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			t.Parallel()
-
-			app := outside(t)
-			app.SetPush(hooked)
-			app.SetMerge(hooked)
-
-			got := launch(t, app, args...)
-
-			assert.Check(t, is.Equal(got.code, exitBroke))
-			assert.Check(t, is.Equal(got.stdout, ""))
-
-			assert.Check(t, is.Contains(got.stderr, hookLine))
 		})
 	}
 }

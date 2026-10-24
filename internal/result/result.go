@@ -10,6 +10,10 @@ import (
 	"strings"
 )
 
+// ---------------------------------------------------------------------------
+// Outcomes
+// ---------------------------------------------------------------------------
+
 // Outcome is how a command ended.
 type Outcome int
 
@@ -65,10 +69,24 @@ func (o Outcome) String() string {
 	}
 }
 
+// ParseOutcome returns the outcome whose String is name, and false when no outcome has that name.
+func ParseOutcome(name string) (Outcome, bool) {
+	for o := range DeliveredNotGreen + 1 {
+		if o.String() == name {
+			return o, true
+		}
+	}
+
+	return Done, false
+}
+
+// ---------------------------------------------------------------------------
+// Marked names
+// ---------------------------------------------------------------------------
+
 // placeholder marks where a name goes in a wording.
 const placeholder = "%s"
 
-// commandPrefix is the text an ils command starts with, before its words.
 const commandPrefix = "ils "
 
 // wording is text written in this program's source. The type is unexported so
@@ -87,8 +105,11 @@ const (
 	kindPullRequest
 	kindSHA
 	kindURL
-	kindCount
 	kindCommand
+	kindPassed
+	kindSkipped
+	kindZero
+	kindTick
 )
 
 // Name is a name marked with its kind, for Say and the Next builders to
@@ -163,9 +184,25 @@ func URL(url string) Name {
 	return marked(url, kindURL)
 }
 
-// Count marks n as a count.
-func Count(n int) Name {
-	return marked(strconv.Itoa(n), kindCount)
+// Passed marks n as a tally of passed checks, printed as "<n> passed".
+func Passed(n int) Name {
+	return tally(n, "passed", kindPassed)
+}
+
+// Skipped marks n as a tally of skipped checks, printed as "<n> skipped".
+func Skipped(n int) Name {
+	return tally(n, "skipped", kindSkipped)
+}
+
+// tally returns n followed by word, with n marked as k and word left as
+// wording. A tally of zero is marked whole as zero, whatever it counts, so that
+// it reads as nothing to look at.
+func tally(n int, word string, k kind) Name {
+	if n == 0 {
+		return marked("0 "+word, kindZero)
+	}
+
+	return Name{spans: []span{{text: strconv.Itoa(n), kind: k}, {text: " " + word, kind: kindWording}}}
 }
 
 // Command marks an ils command by its words after "ils", such as "push",
@@ -196,6 +233,10 @@ func asName(v any) Name {
 	return marked(fmt.Sprint(v), kindName)
 }
 
+// ---------------------------------------------------------------------------
+// Phrases
+// ---------------------------------------------------------------------------
+
 // span is one run of a rendered phrase: its own wording, or one name.
 type span struct {
 	text string
@@ -223,7 +264,7 @@ var lineBreaks = regexp.MustCompile(`[\r\n]+`)
 
 // Say builds a Phrase from wording and the names that fill its %s
 // placeholders, in order. A name is third-party text: a branch, a file, a
-// check, a commit subject, a URL, a count. A [Name] keeps the kind it was
+// check, a commit subject, a URL, a tally of checks. A [Name] keeps the kind it was
 // marked with; any other value is a name of no particular kind. Each run of
 // line breaks in a name becomes one space, so that a name cannot split a line
 // or forge one.
@@ -247,7 +288,7 @@ func Say(w wording, names ...any) Phrase {
 var ErrPlaceholders = errors.New("placeholders and names differ in number")
 
 // spans returns the phrase with its names in place, as runs of wording and
-// names.
+// names, each command inline in the wording marked by inlineCommands.
 func (p Phrase) spans() ([]span, error) {
 	parts := strings.Split(p.wording, placeholder)
 	placeholders := len(parts) - 1
@@ -264,8 +305,76 @@ func (p Phrase) spans() ([]span, error) {
 		}
 	}
 
-	return spans, nil
+	return inlineCommands(spans), nil
 }
+
+// tick opens and closes a command inline in wording.
+const tick = "`"
+
+// inlineCommands returns spans with each command the wording wraps in a pair of
+// ticks marked as a command: every span between the two, wording and names
+// alike, and each tick of the pair as a tick. Only ticks of the wording pair
+// up, in order; a tick left without a partner stays wording, and ticks inside
+// names are third-party text.
+func inlineCommands(spans []span) []span {
+	var ticks int
+	for _, s := range spans {
+		if s.kind == kindWording {
+			ticks += strings.Count(s.text, tick)
+		}
+	}
+
+	// paired counts the ticks still to come that have a partner; an odd last tick has none and
+	// stays wording.
+	paired := ticks - ticks%2
+	if paired == 0 {
+		return spans
+	}
+
+	withCommands := make([]span, 0, len(spans)+paired)
+	inside := false
+	for _, s := range spans {
+		if s.kind != kindWording {
+			withCommands = append(withCommands, commandWhen(inside, s))
+
+			continue
+		}
+
+		rest := s.text
+		for ; paired > 0; paired-- {
+			before, after, found := strings.Cut(rest, tick)
+			if !found {
+				break
+			}
+			withCommands = appendRun(withCommands, commandWhen(inside, span{text: before, kind: kindWording}))
+			withCommands = append(withCommands, span{text: tick, kind: kindTick})
+			inside, rest = !inside, after
+		}
+		withCommands = appendRun(withCommands, commandWhen(inside, span{text: rest, kind: kindWording}))
+	}
+
+	return withCommands
+}
+
+func commandWhen(inside bool, s span) span {
+	if inside {
+		s.kind = kindCommand
+	}
+
+	return s
+}
+
+func appendRun(spans []span, s span) []span {
+	if s.text == "" {
+		return spans
+	}
+
+	return append(spans, s)
+}
+
+// ---------------------------------------------------------------------------
+// Next
+// ---------------------------------------------------------------------------
 
 type nextKind int
 
@@ -298,8 +407,15 @@ func NextNone() Next {
 	return Next{}
 }
 
+// None reports whether n says nothing is left to do, which the text renderers print no Next line
+// for.
+func (n Next) None() bool {
+	return n.kind == nextNone
+}
+
 // spans returns the value printed after "Next:". Every span of an ils command
-// is drawn as the command.
+// is drawn as the command, except the ticks of an inline command, which stay
+// ticks so a color pen can leave them out.
 func (n Next) spans() ([]span, error) {
 	if n.kind == nextNone {
 		return []span{{text: "none", kind: kindWording}}, nil
@@ -316,7 +432,10 @@ func (n Next) spans() ([]span, error) {
 
 	command := []span{{text: commandPrefix, kind: kindCommand}}
 	for _, s := range spans {
-		command = append(command, span{text: s.text, kind: kindCommand})
+		if s.kind != kindTick {
+			s.kind = kindCommand
+		}
+		command = append(command, s)
 	}
 
 	return command, nil
@@ -326,6 +445,10 @@ func (n Next) spans() ([]span, error) {
 func (n Next) wording() string {
 	return n.phrase.wording
 }
+
+// ---------------------------------------------------------------------------
+// Result and payloads
+// ---------------------------------------------------------------------------
 
 // Result is what one command did and what comes next.
 type Result struct {

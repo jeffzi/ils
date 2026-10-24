@@ -127,8 +127,8 @@ func TestIls(t *testing.T) {
 
 	bin := build(t)
 
-	// The two runs below go one after the other: two instrumented binaries that exit at once race
-	// to write the same coverage meta-data file, and the loser prints the failure on its stderr.
+	// The runs below go one after the other: instrumented binaries that exit at once race to write
+	// the same coverage meta-data file, and the loser prints the failure on its stderr.
 	t.Run("WhenAskedForTheVersion_PrintsTheModuleVersionOfTheBinary", func(t *testing.T) {
 		info, err := buildinfo.ReadFile(string(bin))
 		assert.NilError(t, err)
@@ -237,12 +237,14 @@ func TestLaunched(t *testing.T) {
 
 				return 7, 3, nil
 			}
+			foreground := func(fd uintptr) bool { return fd != stderr.Fd() }
 
-			app := main.Launched(stdout, stderr, isTerminal, size)
+			app := main.Launched(stdout, stderr, main.Terminal{IsTerminal: isTerminal, Size: size, Foreground: foreground})
 
 			assert.Check(t, is.Equal(app.StdoutTerminal, terminal == stdout))
 			assert.Check(t, is.Equal(app.StderrTerminal, terminal == stderr))
 			assert.Check(t, is.Equal(app.StderrWidth(), 132))
+			assert.Check(t, !app.StderrForeground(), "the foreground query was not asked of stderr")
 		})
 	}
 }
@@ -252,7 +254,7 @@ func TestLaunched_WhenTheWidthOfStderrCannotBeRead_CountsItAsNone(t *testing.T) 
 
 	unread := func(uintptr) (int, int, error) { return 132, 40, errors.New("not a terminal") }
 
-	app := main.Launched(opened(t, "stdout"), opened(t, "stderr"), func(uintptr) bool { return true }, unread)
+	app := main.Launched(opened(t, "stdout"), opened(t, "stderr"), main.Terminal{IsTerminal: func(uintptr) bool { return true }, Size: unread})
 
 	assert.Check(t, is.Equal(app.StderrWidth(), 0))
 }

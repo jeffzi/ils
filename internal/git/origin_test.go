@@ -407,16 +407,22 @@ func decoyHead(t *testing.T, f *gittest.Fixture) {
 func TestRepo_Trunk_WhenOriginAnswers_ReturnsDefaultBranch(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name  string
-		trunk string
+		// arrange changes origin before the read; nil leaves it as built.
+		arrange func(t *testing.T, f *gittest.Fixture)
+		name    string
+		trunk   string
 	}{
 		{name: "plain name", trunk: trunk},
 		{name: "name with a slash", trunk: "release/next"},
+		{name: "another symbolic head listed beside origin's own", trunk: trunk, arrange: decoyHead},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			f := gittest.New(t, tt.trunk)
+			if tt.arrange != nil {
+				tt.arrange(t, f)
+			}
 
 			got, err := newRepo(f).Trunk(t.Context())
 			assert.NilError(t, err)
@@ -478,9 +484,8 @@ func TestRepo_OriginMethods_WhenGitMissingFromPath_ReturnsToolMissingError(t *te
 
 			got, err := tt.call(t.Context(), repo)
 
-			missing, ok := errors.AsType[*child.ToolMissingError](err)
+			_, ok := errors.AsType[*child.ToolMissingError](err)
 			assert.Assert(t, ok, "%s() error = %v, want *child.ToolMissingError", tt.name, err)
-			assert.Check(t, is.Equal(missing.Tool, "git"))
 			_, remote := errors.AsType[*git.RemoteError](err)
 			assert.Check(t, !remote, "%s() error = %v, want it not to read as origin not answering", tt.name, err)
 			checkNoResult(t, tt.name, got)
@@ -547,17 +552,6 @@ func TestRepo_Trunk_WhenHeadNamesNoBranch_ReturnsErrNoSymref(t *testing.T) {
 			assert.Check(t, is.Error(err, want))
 		})
 	}
-}
-
-func TestRepo_Trunk_WhenOriginListsAnotherSymbolicHead_ReturnsOwnDefaultBranch(t *testing.T) {
-	t.Parallel()
-	f := gittest.New(t, trunk)
-	decoyHead(t, f)
-
-	got, err := newRepo(f).Trunk(t.Context())
-	assert.NilError(t, err)
-
-	assert.Check(t, is.Equal(got, trunk))
 }
 
 func TestRepo_RemoteBranch_WhenOnOrigin_ReturnsItsSHA(t *testing.T) {

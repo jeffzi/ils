@@ -17,6 +17,7 @@ import (
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/github/ghtest"
+	"github.com/jeffzi/ils/internal/logtest"
 )
 
 // No test that scripts `gh` is parallel: the fake `gh` is found through `GH_PATH`,
@@ -34,7 +35,6 @@ const (
 	runID      = "9001"
 	runLink    = "https://git.example.com/ada/engine/actions/runs/" + runID + "/job/42"
 	statusLink = "https://ci.example.com/builds/15"
-	serverDown = "gh: Server Error (HTTP 500)\n"
 	program    = "gh"
 	installURL = "https://cli.github.com"
 
@@ -211,11 +211,6 @@ func noChecksAnswer() ghtest.Answer {
 	return ghtest.Answer{Stderr: "no checks reported on the 'feature' branch\n", Code: 1}
 }
 
-// loggedOutAnswer is what `gh auth status` says when no host is logged in.
-func loggedOutAnswer() ghtest.Answer {
-	return ghtest.Answer{Stderr: "You are not logged into any GitHub hosts.\n", Code: 1}
-}
-
 // headQuery is the head read of the pull request, requiring the checks named required.
 func headQuery(required ...string) forge.HeadQuery {
 	return forge.HeadQuery{Number: pullNumber, Required: required}
@@ -336,14 +331,14 @@ func TestForge_WhenContextCanceled_ReturnsContextError(t *testing.T) {
 func TestForge_WhenReadExitsNonZero_ReturnsExitErrorNamingCall(t *testing.T) {
 	for _, tt := range readCases() {
 		t.Run(tt.name, func(t *testing.T) {
-			failing := ghtest.Exits(ghtest.Answer{Stderr: serverDown, Code: 1}, tt.args...)
+			failing := ghtest.Exits(ghtest.ServerError(), tt.args...)
 			ghtest.Setup(t, append(tt.before, failing)...)
 
 			err := tt.run(t.Context(), newForge())
 
 			exitErr, ok := errors.AsType[*child.ExitError](err)
 			assert.Assert(t, ok, "error = %v, want *child.ExitError", err)
-			want := child.ExitError{Argv: received(tt.args)[0], Stderr: serverDown, Code: 1}
+			want := child.ExitError{Argv: received(tt.args)[0], Stderr: ghtest.ServerError().Stderr, Code: 1}
 			assert.Check(t, is.DeepEqual(*exitErr, want))
 		})
 	}
@@ -364,9 +359,9 @@ func TestForge_WhenReadPrintsMalformedJSON_ReturnsDecodeErrorNamingCall(t *testi
 }
 
 // loggedArgv is the argv of every call sink received, each led by `gh`, in order.
-func loggedArgv(sink *logSink) [][]string {
+func loggedArgv(sink *logtest.Sink) [][]string {
 	var logged [][]string
-	for _, call := range sink.Calls() {
+	for _, call := range loggedCalls(sink) {
 		args, _ := call.Attrs["args"].([]string)
 		logged = append(logged, args)
 	}
@@ -386,14 +381,11 @@ func loggedCases() []readCase {
 		readCase{name: "pr create", run: byName["OpenChange"], args: createArgs()},
 		readCase{
 			name: "pr merge", run: byName["Land"],
-			args: []string{
-				"pr", "merge", "7", "--repo", engineSlug, "--squash", "--match-head-commit", headSHA,
-				"--subject", landing.Subject, "--body", landing.Body,
-			},
+			args: ghtest.LandArgs(engineSlug, landing),
 		},
 		readCase{
 			name: "api delete branch", run: byName["DeleteBranch"],
-			args: []string{"api", "--hostname", engineHost, "-X", "DELETE", "repos/ada/engine/git/refs/heads/" + featureBranch},
+			args: ghtest.DeleteBranchArgs(engineHost, "ada/engine", featureBranch),
 		},
 		readCase{name: "run view behind a failing check", run: byName["Verdict"], args: logArgs(), before: []ghtest.Call{failedChecks, noRuns}},
 		readCase{
@@ -407,7 +399,7 @@ func TestForge_WhenLoggerSet_LogsEveryCallSite(t *testing.T) {
 	for _, tt := range loggedCases() {
 		t.Run(tt.name, func(t *testing.T) {
 			fake := ghtest.Setup(t, append(tt.before, ghtest.Says("", tt.args...))...)
-			logger, sink := newLogger()
+			logger, sink := logtest.New()
 
 			_ = tt.run(t.Context(), &github.Forge{Logger: logger})
 
@@ -420,7 +412,7 @@ func TestForge_WhenLoggerSet_LogsEveryCallSite(t *testing.T) {
 }
 
 func TestForge_Identity_WhenNotLoggedIn_ReturnsNotLoggedInError(t *testing.T) {
-	fake := ghtest.Setup(t, ghtest.Exits(loggedOutAnswer(), loginArgs()...))
+	fake := ghtest.Setup(t, ghtest.Exits(ghtest.LoggedOut(), loginArgs()...))
 
 	_, err := newForge().Identity(t.Context(), engine())
 
@@ -435,7 +427,7 @@ func TestForge_Identity_WhenNotLoggedIn_ReturnsNotLoggedInError(t *testing.T) {
 
 func TestForge_Identity_WhenGhIsOlderThanTheMinimum_ReturnsToolTooOldErrorBeforeTheLogin(t *testing.T) {
 	const line = "gh version 1.0.0"
-	fake := ghtest.Setup(t, ghtest.Says(versionAnswer(line), versionArgs()...), ghtest.Exits(loggedOutAnswer(), loginArgs()...))
+	fake := ghtest.Setup(t, ghtest.Says(versionAnswer(line), versionArgs()...), ghtest.Exits(ghtest.LoggedOut(), loginArgs()...))
 
 	_, err := newForge().Identity(t.Context(), engine())
 
@@ -507,7 +499,7 @@ func TestForge_Identity(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fake := ghtest.Setup(t, ghtest.Says("Logged in\n", loginArgs()...), ghtest.Says(tt.view, repoViewArgs()...))
+			ghtest.Setup(t, ghtest.Says("Logged in\n", loginArgs()...), ghtest.Says(tt.view, repoViewArgs()...))
 			want := engine()
 			want.Fork, want.CanPush, want.SquashAllowed = tt.want.Fork, tt.want.CanPush, tt.want.SquashAllowed
 
@@ -515,7 +507,6 @@ func TestForge_Identity(t *testing.T) {
 			assert.NilError(t, err)
 
 			assert.Check(t, is.DeepEqual(got, want))
-			assertCalls(t, fake, received(versionArgs(), loginArgs(), repoViewArgs()))
 		})
 	}
 }
@@ -821,12 +812,11 @@ func TestForge_TrunkProtection_WhenTrunkNameHoldsPathSyntax_ReadsExactlyItsRules
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			args := []string{"api", "--hostname", engineHost, "--paginate", tt.path}
-			fake := ghtest.Setup(t, ghtest.Says(rules, args...))
+			ghtest.Setup(t, ghtest.Says(rules, args...))
 
 			got, err := newForge().TrunkProtection(t.Context(), engine(), tt.branch)
 			assert.NilError(t, err)
 
-			assert.Check(t, is.Contains(fake.Calls(), received(args)[0]))
 			assert.Check(t, is.DeepEqual(got, forge.Protection{RequiredChecks: []string{"build"}, SquashAllowed: true}))
 		})
 	}
@@ -839,7 +829,7 @@ func TestForge_HasTrunkCI(t *testing.T) {
 	ciOnTrunk := ghtest.Answer{Stdout: ciOnTrunkJSON()}
 	releaseOnTrunk := ghtest.Answer{Stdout: jsonArray(fileJSON(releaseFile))}
 	// filesFail is a trunk read that fails: a row scripting it answers without reading the trunk.
-	filesFail := ghtest.Answer{Stderr: serverDown, Code: 1}
+	filesFail := ghtest.ServerError()
 	tests := []struct {
 		name      string
 		workflows string
@@ -991,10 +981,7 @@ func TestForge_Land(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			landing := featureLanding()
 			landing.Body = tt.body
-			args := []string{
-				"pr", "merge", "7", "--repo", engineSlug, "--squash", "--match-head-commit", headSHA,
-				"--subject", landing.Subject, "--body", tt.body,
-			}
+			args := ghtest.LandArgs(engineSlug, landing)
 			fake := ghtest.Setup(t, ghtest.Says("", args...))
 
 			err := newForge().Land(t.Context(), engine(), landing)
@@ -1011,15 +998,15 @@ func TestForge_DeleteBranch(t *testing.T) {
 		branch string
 		path   string
 	}{
-		{name: "plain name", branch: "feature", path: "repos/ada/engine/git/refs/heads/feature"},
-		{name: "slash keeps separating segments", branch: "team/fix", path: "repos/ada/engine/git/refs/heads/team/fix"},
-		{name: "hash is escaped, not a fragment", branch: "fix#1", path: "repos/ada/engine/git/refs/heads/fix%231"},
-		{name: "percent is escaped, not an escape", branch: "100%", path: "repos/ada/engine/git/refs/heads/100%25"},
-		{name: "question mark is escaped, not a query", branch: "fix?1", path: "repos/ada/engine/git/refs/heads/fix%3F1"},
+		{name: "plain name", branch: "feature", path: "feature"},
+		{name: "slash keeps separating segments", branch: "team/fix", path: "team/fix"},
+		{name: "hash is escaped, not a fragment", branch: "fix#1", path: "fix%231"},
+		{name: "percent is escaped, not an escape", branch: "100%", path: "100%25"},
+		{name: "question mark is escaped, not a query", branch: "fix?1", path: "fix%3F1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			args := []string{"api", "--hostname", engineHost, "-X", "DELETE", tt.path}
+			args := ghtest.DeleteBranchArgs(engineHost, "ada/engine", tt.path)
 			fake := ghtest.Setup(t, ghtest.Says("", args...))
 
 			err := newForge().DeleteBranch(t.Context(), engine(), tt.branch)

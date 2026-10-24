@@ -35,12 +35,6 @@ const (
 	// shortLeft is less than one poll of the checks, so that a wait for running checks ends
 	// as pending right after its first read.
 	shortLeft = 4900 * time.Millisecond
-
-	exitDone      = 0
-	exitBroke     = 1
-	exitRefused   = 2
-	exitPending   = 4
-	exitDelivered = 5
 )
 
 // scenario is one state of the repository and of GitHub that a landing command is run in.
@@ -108,7 +102,6 @@ func tipOf(f *gittest.Fixture) string {
 	return f.Git("rev-parse", "HEAD")
 }
 
-// login scripts the login check with answer.
 func login(answer ghtest.Answer) ghtest.Call {
 	return ghtest.Exits(answer, ghtest.LoginArgs(host)...)
 }
@@ -242,47 +235,6 @@ func pendingAtTheBound() scenario {
 	}
 }
 
-func onTheTrunk() scenario {
-	return scenario{
-		name: "on the trunk", script: only(allowed()...), want: exitRefused,
-		arrange: func(f *gittest.Fixture) { f.Git("switch", "--quiet", trunk) },
-	}
-}
-
-func failedRead() scenario {
-	down := listed("open", "")
-	down.Answers = []ghtest.Answer{{Stderr: "gh: Server Error (HTTP 500)\n", Code: 1}}
-
-	return scenario{name: "a read of GitHub fails", script: only(append(allowed(), down)...), want: exitBroke}
-}
-
 func noPullRequest() scenario {
 	return scenario{name: "no pull request", script: only(found("[]", "[]")...), want: exitRefused}
-}
-
-// mergeTitle is the conventional commit title of the pull request a merge lands.
-const mergeTitle = "docs: tidy the readme"
-
-// landedMerge is pull request 12, open at the published tip with its one check passed, which
-// GitHub squash-merges and whose branch it deletes.
-func landedMerge() scenario {
-	script := func(f *gittest.Fixture) []ghtest.Call {
-		sha := tipOf(f)
-		open := changeJSON(opened, mergeTitle, trunk, sha)
-		landing := []string{
-			"pr", "merge", strconv.Itoa(opened), "--repo", slug, "--squash",
-			"--match-head-commit", sha, "--subject", mergeTitle + " (#12)", "--body", "",
-		}
-
-		return slices.Concat(found(open, "[]"), passing(sha).calls(sha), []ghtest.Call{
-			ghtest.Says(ghtest.MessageJSON(mergeTitle, "", ""), ghtest.MessageArgs(host, owner, widgets, opened)...),
-			ghtest.Says("", landing...),
-			ghtest.Says("", "api", "--hostname", host, "-X", "DELETE", "repos/"+owner+"/"+widgets+"/git/refs/heads/"+topic),
-		})
-	}
-
-	return scenario{
-		name: "a merge that lands", script: script, want: exitDone,
-		arrange: func(f *gittest.Fixture) { f.Publish(topic) },
-	}
 }

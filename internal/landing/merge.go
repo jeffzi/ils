@@ -14,7 +14,8 @@ import (
 	"github.com/jeffzi/ils/internal/result"
 )
 
-// The reads of merge's own checks, as a result names them.
+// Each read of merge's own checks names what it reads as it follows "read" in a result, so it
+// stays a noun phrase.
 const (
 	readLocalTrunk    = "the local trunk"
 	readWorktrees     = "where the trunk is checked out"
@@ -36,6 +37,12 @@ const reserveSeconds = int(mergeReserve / time.Second)
 // break, an optional `!`, then `: ` and a summary that starts with a character other than a space.
 // No list of types is enforced.
 var conventionalTitle = regexp.MustCompile(`^[a-z]+(\([^()\r\n]+\))?!?: \S`)
+
+// writeMessage is the judgment step that has the agent write the squash commit's message. Its names
+// are the repository and the pull request's number; the title and the body stay placeholders for
+// the agent to write. It stays untyped because result.NextStep accepts only constant expressions.
+const writeMessage = "write the pull request's title and body as the squash commit's message with " +
+	"`gh pr edit --repo %s %s --title … --body …`"
 
 // mergeReady is what mergeChecks hands to the sequence that follows them, and what that
 // sequence has found so far.
@@ -111,21 +118,14 @@ func Merge(ctx context.Context, deps Deps, req Request) result.Result {
 // mergeChecks runs merge's checks after the shared preconditions, and returns what the sequence
 // needs or the result of the first that refuses.
 func mergeChecks(ctx context.Context, deps Deps, req Request, ready Ready) (mergeReady, *result.Result) {
-	m := mergeReady{Ready: ready, branch: ready.Standing.Branch}
-
-	if stop := req.onWorkBranch(ready); stop != nil {
+	on, stop := branchChecks(ctx, deps, req, ready)
+	if stop != nil {
 		return mergeReady{}, stop
 	}
 
-	if stop := cleanTree(ctx, deps, req); stop != nil {
-		return mergeReady{}, stop
-	}
+	m := mergeReady{onBranch: on}
 
-	if stop := fetchTrunk(ctx, deps, req, ready.Trunk); stop != nil {
-		return mergeReady{}, stop
-	}
-
-	if stop := localTrunk(ctx, deps, req, ready.Trunk); stop != nil {
+	if stop = localTrunk(ctx, deps, req, ready.Trunk); stop != nil {
 		return mergeReady{}, stop
 	}
 
@@ -135,8 +135,6 @@ func mergeChecks(ctx context.Context, deps Deps, req Request, ready Ready) (merg
 	}
 
 	m.elsewhere = elsewhere
-
-	var stop *result.Result
 
 	m.tip, m.past, stop = commitsPast(ctx, deps, req, m.onBranch)
 	if stop != nil {
@@ -260,7 +258,6 @@ func rulesetReason(ids []int, trunk string) result.Phrase {
 	return result.Say("the rulesets %s on the trunk %s forbid squash merges", strings.Join(named, ", "), result.Branch(trunk))
 }
 
-// draftStop refuses a pull request that is a draft.
 func (m *mergeReady) draftStop(req Request) *result.Result {
 	return req.Refused(
 		result.Say("pull request %s is a draft", result.PullRequest(m.pull.Number)),
@@ -334,7 +331,7 @@ func (m *mergeReady) apartFromHead(req Request, apart git.Divergence) *result.Re
 // pull request's message; then whether mergeReserve is still left. It returns the result that
 // stops the merge, or nil when the merge can be made.
 func (m *mergeReady) toWrite(ctx context.Context, deps Deps, req Request) *result.Result {
-	waitCtx, cancel := beforeReserve(ctx)
+	waitCtx, cancel := beforeDeadline(ctx, mergeReserve)
 	defer cancel()
 
 	if stop := m.wait(waitCtx, deps, req); stop != nil {
@@ -352,24 +349,16 @@ func (m *mergeReady) toWrite(ctx context.Context, deps Deps, req Request) *resul
 	return m.reserved(ctx, req)
 }
 
-// beforeReserve returns a context that ends mergeReserve before ctx's deadline, or with ctx when
-// it has none.
-func beforeReserve(ctx context.Context) (context.Context, context.CancelFunc) {
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		return context.WithCancel(ctx)
-	}
-
-	return context.WithDeadline(ctx, deadline.Add(-mergeReserve))
+// pushed is the pull request's head as the wait for its checks reads it.
+func (m *mergeReady) pushed() Pushed {
+	return Pushed{SHA: m.pull.HeadSHA, Required: m.protection.RequiredChecks, Repo: m.Repo, Number: m.pull.Number}
 }
 
 // wait waits for the checks of the pull request's head as push does, and returns the result their
 // verdict stops the merge with, or nil when they are green or nothing reported in a repository with
 // no CI on its trunk.
 func (m *mergeReady) wait(ctx context.Context, deps Deps, req Request) *result.Result {
-	waited, err := AwaitVerdict(ctx, deps, Pushed{
-		SHA: m.pull.HeadSHA, Required: m.protection.RequiredChecks, Repo: m.Repo, Number: m.pull.Number,
-	})
+	waited, err := AwaitVerdict(ctx, deps, m.pushed())
 	if err != nil {
 		return m.carrying(req.unread(waitRead(err)))
 	}
@@ -425,21 +414,16 @@ func (m *mergeReady) verdictStop(req Request) *result.Result {
 // poll is pending, as it is for the wait. Once it polled for a clean state, it tells the progress
 // hook the wait for the checks goes on, so that the checks line is said under that step.
 func (m *mergeReady) settle(ctx context.Context, deps Deps, req Request) *result.Result {
-	w := waiter{deps: deps, pushed: Pushed{
-		SHA: m.pull.HeadSHA, Repo: m.Repo, Number: m.pull.Number, Required: m.protection.RequiredChecks,
-	}}
+	w := waiter{deps: deps, pushed: m.pushed()}
 
 	read := forge.Head{SHA: m.pull.HeadSHA, MergeState: m.waited.MergeState, RawMergeState: m.waited.RawMergeState}
-	polled := w.unknownOnPushed(read)
 
-	head, err := w.mergeKnown(ctx, read)
-	if err == nil && w.movedOn(&m.waited, head) {
+	moved, polled, err := w.settled(ctx, &m.waited, read)
+	if moved {
 		report, _ := m.waited.stopReport(req.ilsCommand(), m.pull.HeadSHA, m.Trunk, m.pull.Number)
 
 		return m.reported(req, report, nil)
 	}
-
-	m.waited.takeState(head)
 
 	switch {
 	case err == nil:
@@ -747,7 +731,7 @@ func (m *mergeReady) end(ctx context.Context, deps Deps, req Request) *result.Re
 			},
 			{
 				run:     func(ctx context.Context) error { return repo.DetachAtOrigin(ctx, trunk) },
-				command: result.Concat("git switch --detach origin/", result.Branch(trunk)), next: req.onceFixed(),
+				command: result.Concat("git switch --detach refs/remotes/origin/", result.Branch(trunk)), next: req.onceFixed(),
 			},
 			drop,
 		}, done: []result.Phrase{

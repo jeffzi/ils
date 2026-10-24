@@ -62,21 +62,12 @@ func Push(ctx context.Context, deps Deps, req Request) result.Result {
 // pushChecks runs push's checks of the branch after the shared preconditions, and returns what
 // the sequence needs or the result of the first that refuses.
 func pushChecks(ctx context.Context, deps Deps, req Request, ready Ready) (pushReady, *result.Result) {
-	p := pushReady{Ready: ready, branch: ready.Standing.Branch}
-
-	if stop := req.onWorkBranch(ready); stop != nil {
+	on, stop := branchChecks(ctx, deps, req, ready)
+	if stop != nil {
 		return pushReady{}, stop
 	}
 
-	if stop := cleanTree(ctx, deps, req); stop != nil {
-		return pushReady{}, stop
-	}
-
-	if stop := fetchTrunk(ctx, deps, req, ready.Trunk); stop != nil {
-		return pushReady{}, stop
-	}
-
-	var stop *result.Result
+	p := pushReady{onBranch: on}
 
 	p.tip, p.past, stop = commitsPast(ctx, deps, req, p.onBranch)
 	if stop != nil {

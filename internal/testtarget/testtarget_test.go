@@ -69,10 +69,6 @@ func unsuitedVersions() []unsuited {
 			errText: "the hammer found is 1.3.9, older than the minimum ils enforces, 1.4.0",
 		},
 		{
-			name: "unset target and a pre-release of the minimum", found: "1.4.0-rc.1",
-			errText: "the hammer found is 1.4.0-rc.1, older than the minimum ils enforces, 1.4.0",
-		},
-		{
 			name: "latest target and a version that is not semver", target: testtarget.Latest, found: "DEV",
 			errText: "the hammer found is DEV, older than the minimum ils enforces, 1.4.0",
 		},

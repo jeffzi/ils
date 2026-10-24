@@ -19,6 +19,22 @@ type Look struct {
 	Underline bool
 }
 
+// NameLook is how a terminal with color draws a branch, a pull request number and a command.
+func NameLook() Look { return Look{Color: "blue", Bold: true} }
+
+// SHALook is how a terminal with color draws a SHA.
+func SHALook() Look { return Look{Dim: true} }
+
+// SkippedLook is how a terminal with color draws the count of a tally of skipped checks above zero,
+// and a tally of zero as a whole.
+func SkippedLook() Look { return Look{Dim: true} }
+
+// PassedLook is how a terminal with color draws the count of a tally of passed checks above zero.
+func PassedLook() Look { return Look{Color: "green"} }
+
+// URLLook is how a terminal with color draws a URL.
+func URLLook() Look { return Look{Underline: true} }
+
 // Drawn is text as a terminal shows it: the characters, and how each is drawn.
 type Drawn struct {
 	text  []rune

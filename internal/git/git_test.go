@@ -3,12 +3,10 @@ package git_test
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
-	"sync"
+	"runtime"
 	"testing"
 	"time"
 
@@ -18,6 +16,7 @@ import (
 	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/gittest"
+	"github.com/jeffzi/ils/internal/logtest"
 )
 
 // prompt bounds how long a run may take to return once git or its context has ended.
@@ -212,19 +211,6 @@ func TestRunner_Run_WhenGitExitsZeroWhileChildHoldsPipes_ReturnsOutputPromptly(t
 	}
 }
 
-func TestRunner_Run_WhenRecorderAttached_RecordsEachArgv(t *testing.T) {
-	t.Parallel()
-	runner, recorder := newRecordedRunner(t)
-
-	_, err := runner.Run(t.Context(), "init", "--quiet")
-	assert.NilError(t, err)
-	_, err = runner.Run(t.Context(), "status", "--short")
-	assert.NilError(t, err)
-
-	want := [][]string{{"git", "init", "--quiet"}, {"git", "status", "--short"}}
-	assert.Check(t, is.DeepEqual(recorder.Calls(), want))
-}
-
 func TestRunner_Run_WhenGitExitsNonZero_StillRecordsCall(t *testing.T) {
 	t.Parallel()
 	runner, recorder := newRecordedRunner(t)
@@ -235,107 +221,62 @@ func TestRunner_Run_WhenGitExitsNonZero_StillRecordsCall(t *testing.T) {
 	assert.Check(t, is.DeepEqual(recorder.Calls(), [][]string{{"git", "nonsense"}}))
 }
 
-// captureHandler keeps every record logged through it, at any level.
-type captureHandler struct {
-	mu      *sync.Mutex
-	records *[]slog.Record
-	attrs   []slog.Attr
-}
-
-// newCapture returns a logger that keeps what it logs, and a function that returns the records
-// logged so far.
-func newCapture() (*slog.Logger, func() []slog.Record) {
-	handler := captureHandler{mu: &sync.Mutex{}, records: &[]slog.Record{}}
-	records := func() []slog.Record {
-		handler.mu.Lock()
-		defer handler.mu.Unlock()
-
-		return slices.Clone(*handler.records)
-	}
-
-	return slog.New(handler), records
-}
-
-func (h captureHandler) Enabled(context.Context, slog.Level) bool { return true }
-
-func (h captureHandler) Handle(_ context.Context, record slog.Record) error {
-	kept := record.Clone()
-	kept.AddAttrs(h.attrs...)
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	*h.records = append(*h.records, kept)
-
-	return nil
-}
-
-func (h captureHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	h.attrs = append(slices.Clip(h.attrs), attrs...)
-
-	return h
-}
-
-func (h captureHandler) WithGroup(string) slog.Handler { return h }
-
-// newLoggedRunner returns a runner like newRunner with a capturing logger attached, and a function
-// that returns the records logged so far.
-func newLoggedRunner(t *testing.T) (git.Runner, func() []slog.Record) {
+// newLoggedRunner returns a runner like newRunner with a logger attached, and the sink that keeps
+// what it logs.
+func newLoggedRunner(t *testing.T) (git.Runner, *logtest.Sink) {
 	t.Helper()
 
-	logger, records := newCapture()
+	logger, sink := logtest.New()
 	runner := newRunner(t)
 	runner.Logger = logger
 
-	return runner, records
+	return runner, sink
 }
 
-// onlyCall returns the attributes of the one record in records, all but the duration, after
-// checking that the record is an exec record whose duration is a time.Duration.
-func onlyCall(t *testing.T, records []slog.Record) (attrs map[string]any, took time.Duration) {
+// withoutDuration returns the attributes of record by key, all but the duration.
+func withoutDuration(record logtest.Record) map[string]any {
+	attrs := record.Map()
+	delete(attrs, child.KeyDuration)
+
+	return attrs
+}
+
+// execAttrs returns the attributes, all but the duration, of the record run logs.
+func execAttrs(t *testing.T, run child.Exec) map[string]any {
+	t.Helper()
+
+	logger, sink := logtest.New()
+	run.Log(t.Context(), logger)
+
+	records := sink.Records()
+	assert.Assert(t, is.Len(records, 1))
+
+	return withoutDuration(records[0])
+}
+
+// onlyCall returns the attributes of the one record in records, all but the duration, and the
+// duration, after checking that it is a time.Duration.
+func onlyCall(t *testing.T, records []logtest.Record) (attrs map[string]any, took time.Duration) {
 	t.Helper()
 
 	assert.Assert(t, is.Len(records, 1))
-	record := records[0]
-	assert.Check(t, is.Equal(record.Message, "exec"))
 
-	attrs = map[string]any{}
-	record.Attrs(func(attr slog.Attr) bool {
-		attrs[attr.Key] = attr.Value.Any()
+	took, ok := records[0].Map()[child.KeyDuration].(time.Duration)
+	assert.Assert(t, ok, "duration attribute = %#v, want a time.Duration", records[0].Map()[child.KeyDuration])
 
-		return true
-	})
-
-	took, ok := attrs["duration"].(time.Duration)
-	assert.Assert(t, ok, "duration attribute = %#v, want a time.Duration", attrs["duration"])
-	delete(attrs, "duration")
-
-	return attrs, took
+	return withoutDuration(records[0]), took
 }
 
-func TestRunner_Run_WhenLoggerAttachedAndGitExits_LogsToolArgvExitCodeAndDuration(t *testing.T) {
+func TestRunner_Run_WhenLoggerAttachedAndGitExits_LogsToolArgvOutcomeAndDuration(t *testing.T) {
 	t.Parallel()
-	runner, records := newLoggedRunner(t)
+	runner, sink := newLoggedRunner(t)
 	args := []string{"nonsense"}
 
-	_, _ = runner.Run(t.Context(), args...)
+	_, err := runner.Run(t.Context(), args...)
 
-	attrs, took := onlyCall(t, records())
-	want := map[string]any{"tool": "git", "args": args, "exit": int64(1)}
-	assert.Check(t, is.DeepEqual(attrs, want))
+	attrs, took := onlyCall(t, sink.Records())
+	assert.Check(t, is.DeepEqual(attrs, execAttrs(t, child.Exec{Tool: "git", Args: args, Err: err})))
 	assert.Check(t, took > 0, "duration = %v, want above zero for a call git ran", took)
-}
-
-func TestRunner_Run_WhenLoggerAttachedAndGitMissingFromPath_LogsFailureInPlaceOfExit(t *testing.T) {
-	runner, records := newLoggedRunner(t)
-	// Not parallel: this empties PATH for the whole process while it runs.
-	t.Setenv("PATH", t.TempDir())
-
-	_, err := runner.Run(t.Context(), "version")
-	assert.Assert(t, err != nil, "Run(version) error = nil, want git missing")
-
-	attrs, _ := onlyCall(t, records())
-	want := map[string]any{"tool": "git", "args": []string{"version"}, "error": err.Error()}
-	assert.Check(t, is.DeepEqual(attrs, want))
 }
 
 func TestRecorder_Calls_WhenReturnedSliceMutated_LaterCallsUnchanged(t *testing.T) {
@@ -352,4 +293,40 @@ func TestRecorder_Calls_WhenReturnedSliceMutated_LaterCallsUnchanged(t *testing.
 
 	want := [][]string{{"git", "version"}, {"git", "init", "--quiet"}}
 	assert.Check(t, is.DeepEqual(recorder.Calls(), want))
+}
+
+func TestEnvValue(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		key     string
+		want    string
+		env     []string
+		wantSet bool
+	}{
+		{name: "set once", env: []string{"TERM=xterm"}, key: "TERM", want: "xterm", wantSet: true},
+		{name: "set twice keeps the last", env: []string{"TERM=xterm", "TERM=dumb"}, key: "TERM", want: "dumb", wantSet: true},
+		{name: "set to nothing", env: []string{"NO_COLOR="}, key: "NO_COLOR", want: "", wantSet: true},
+		{name: "not set", env: []string{"HOME=/home"}, key: "TERM", wantSet: false},
+		{name: "only a longer key set", env: []string{"TERMINAL=xterm"}, key: "TERM", wantSet: false},
+		{name: "no environment", key: "TERM", wantSet: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, set := git.EnvValue(tt.env, tt.key)
+
+			assert.Check(t, is.Equal(set, tt.wantSet), "EnvValue(%q, %q) set", tt.env, tt.key)
+			assert.Check(t, is.Equal(got, tt.want), "EnvValue(%q, %q)", tt.env, tt.key)
+		})
+	}
+}
+
+func TestSameKey_WhenCaseDiffers_MatchesOnlyOnWindows(t *testing.T) {
+	t.Parallel()
+
+	got := git.SameKey("Path", "PATH")
+
+	assert.Check(t, is.Equal(got, runtime.GOOS == "windows"), "SameKey(%q, %q) on %s", "Path", "PATH", runtime.GOOS)
 }

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"log/slog"
 	"regexp"
 	"runtime/debug"
 	"slices"
@@ -46,6 +45,12 @@ const (
 	colorNeither   = "--no-color takes true or false, and maybe was given"
 
 	bound = 100 * time.Second
+
+	exitDone      = 0
+	exitBroke     = 1
+	exitRefused   = 2
+	exitPending   = 4
+	exitDelivered = 5
 )
 
 // ran is what one run of the cli printed and the code it exited with.
@@ -299,31 +304,8 @@ func lost(t *testing.T) cli.App {
 	return over(git.Runner{Dir: t.TempDir(), Env: append(gittest.Env(t), "LC_ALL=C")})
 }
 
-func TestApp_Run_WhenMergeRuns_EndsItAtTheBoundFromLaunch(t *testing.T) {
-	t.Parallel()
-
-	var (
-		deadline time.Time
-		bounded  bool
-	)
-
-	app := outside(t)
-	app.Launch = time.Now()
-	app.SetMerge(func(ctx context.Context, _ landing.Deps, req landing.Request) result.Result {
-		deadline, bounded = ctx.Deadline()
-
-		return finished(req)
-	})
-
-	got := launch(t, app, "merge")
-
-	assert.Check(t, is.Equal(got.code, exitDone))
-	assert.Check(t, bounded, "ils merge ran with no deadline")
-	assert.Check(t, deadline.Equal(app.Launch.Add(bound)), "deadline = %s, want %s", deadline, app.Launch.Add(bound))
-}
-
 // ---------------------------------------------------------------------------
-// Color and debug
+// Color
 // ---------------------------------------------------------------------------
 
 const (
@@ -343,163 +325,6 @@ func painted(t *testing.T, env []string, stdoutTerminal, stderrTerminal bool) cl
 	app.StderrTerminal = stderrTerminal
 
 	return app
-}
-
-func TestApp_Run_WhenADebugLineCannotBeWritten_PrintsWhatTheSameRunPrintsWithoutDebug(t *testing.T) {
-	t.Parallel()
-
-	tests := [][]string{{"push"}, {"merge", "--json"}}
-	for _, args := range tests {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			t.Parallel()
-
-			app := lost(t)
-			want := launch(t, app, args...)
-			app.Stderr = shut{err: errReaderGone}
-
-			got := launch(t, app, append(args, "-d")...)
-
-			assert.Check(t, is.Equal(got.stdout, want.stdout))
-			assert.Check(t, is.Equal(got.code, want.code))
-		})
-	}
-}
-
-func TestApp_Run_WhenDebugIsOnDuringALanding_PrintsWhatTheSameRunPrintsWithoutDebug(t *testing.T) {
-	tests := []struct {
-		sc   func() scenario
-		args []string
-	}{
-		{sc: greenFirstPush, args: []string{"push"}},
-		{sc: greenFirstPush, args: []string{"push", "--json"}},
-		{sc: noPullRequest, args: []string{"merge"}},
-		{sc: noPullRequest, args: []string{"merge", "--json"}},
-		{sc: landedMerge, args: []string{"merge"}},
-		{sc: landedMerge, args: []string{"merge", "--json"}},
-	}
-	for _, tt := range tests {
-		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
-			want := launch(t, newScene(t, tt.sc()).app(), tt.args...)
-
-			got := launch(t, newScene(t, tt.sc()).app(), append(tt.args, "-d")...)
-
-			assert.Check(t, is.Equal(got.code, tt.sc().want))
-			assert.Check(t, is.Equal(got.stdout, want.stdout))
-			assert.Check(t, is.Equal(got.code, want.code))
-			assert.Check(t, got.stderr != "", "ils %s -d wrote no debug line", strings.Join(tt.args, " "))
-		})
-	}
-}
-
-func TestApp_Run_WhenDebugIsSetToFalse_PrintsWhatTheSameRunPrintsWithoutIt(t *testing.T) {
-	t.Parallel()
-
-	app := lost(t)
-	want := launch(t, app, "push", "--json")
-
-	got := launch(t, app, "push", "--json", "--debug=false")
-
-	assert.Check(t, is.DeepEqual(got, want, sameRun()))
-	assert.Check(t, is.Equal(got.stderr, ""))
-}
-
-func TestApp_Run_WhenEveryDebugLineOfALandingCannotBeWritten_PrintsWhatTheSameRunPrintsWithoutDebug(t *testing.T) {
-	want := launch(t, newScene(t, greenFirstPush()).app(), "push")
-	app := newScene(t, greenFirstPush()).app()
-	app.Stderr = shut{err: errReaderGone}
-
-	got := launch(t, app, "push", "-d")
-
-	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	assert.Check(t, is.Equal(got.stdout, want.stdout))
-	assert.Check(t, is.Equal(got.code, want.code))
-}
-
-var (
-	// execLine is a debug line of one git or gh call that exited: its time since launch, the call,
-	// its exit code and its duration.
-	execLine = regexp.MustCompile(`^\+\d+\.\d{3}s ((?:git|gh) .+) exit \d+ (\S+)$`)
-	// waitLine is a debug line of one decision of a wait.
-	waitLine = regexp.MustCompile(`^\+\d+\.\d{3}s wait \S+=\S+( \S+=\S+)*$`)
-)
-
-func TestApp_Run_WhenDebugIsOn_WritesALineForEachGitAndGhCallAndWaitDecision(t *testing.T) {
-	s := newScene(t, greenFirstPush())
-
-	got := launch(t, s.app(), "push", "-d")
-
-	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	var called, waited []string
-	for line := range strings.Lines(got.stderr) {
-		line = strings.TrimSuffix(line, "\n")
-		if m := execLine.FindStringSubmatch(line); m != nil {
-			_, err := time.ParseDuration(m[2])
-			assert.Check(t, err, "duration of %q", line)
-			called = append(called, m[1])
-
-			continue
-		}
-		assert.Check(t, waitLine.MatchString(line), "line %q is neither a call nor a wait decision", line)
-		waited = append(waited, line[strings.Index(line, " wait ")+1:])
-	}
-	var want []string
-	for _, argv := range slices.Concat(s.recorder.Calls(), s.fake.Calls()) {
-		want = append(want, strings.Join(argv, " "))
-	}
-	assert.Check(t, is.DeepEqual(called, want, anyOrder()))
-	assert.Check(t, is.Contains(waited, "wait ended=green"))
-}
-
-// debugRecord returns a debug record of message and attrs made at the moment at.
-func debugRecord(at time.Time, message string, attrs ...slog.Attr) slog.Record {
-	record := slog.NewRecord(at, slog.LevelDebug, message, 0)
-	record.AddAttrs(attrs...)
-
-	return record
-}
-
-func TestApp_Run_WhenDebugIsOn_DrawsEachRecordTimedFromLaunchWithTimesDim(t *testing.T) {
-	t.Parallel()
-
-	app := painted(t, []string{colorTerm}, false, true)
-	app.Launch = time.Now()
-	app.SetPush(func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
-		if deps.Logger == nil {
-			t.Error("push ran with no logger")
-
-			return finished(req)
-		}
-		for _, record := range []slog.Record{
-			debugRecord(app.Launch.Add(1500*time.Millisecond), "wait",
-				slog.String("read", "merge-state"), slog.String("state", "unknown"), slog.Duration("window", 30*time.Second)),
-			debugRecord(app.Launch.Add(2250*time.Millisecond), "exec",
-				slog.String("tool", "gh"), slog.Any("args", []string{"pr", "view", "12"}), slog.Int64("exit", 0),
-				slog.Duration("duration", 1234*time.Millisecond)),
-			debugRecord(app.Launch.Add(3*time.Second), "exec",
-				slog.String("tool", "gh"), slog.Any("args", []string{"pr", "checks", "12"}), slog.String("error", "signal: killed"),
-				slog.Duration("duration", 30*time.Millisecond)),
-		} {
-			assert.Check(t, deps.Logger.Handler().Handle(ctx, record))
-		}
-
-		return finished(req)
-	})
-
-	got := launch(t, app, "push", "-d")
-
-	drawn := resulttest.Draw(t, got.stderr)
-	lines := strings.Split(strings.TrimSuffix(drawn.String(), "\n"), "\n")
-	want := []string{
-		"+1.500s wait read=merge-state state=unknown window=30s",
-		"+2.250s gh pr view 12 exit 0 1.234s",
-		"+3.000s gh pr checks 12 signal: killed 30ms",
-	}
-	assert.Assert(t, len(lines) > len(want), "stderr = %q", drawn.String())
-	assert.Check(t, is.DeepEqual(lines[len(lines)-len(want):], want))
-	dim := resulttest.Look{Dim: true}
-	assert.Check(t, is.Equal(drawn.LookOf(t, want[1], "+2.250s"), dim))
-	assert.Check(t, is.Equal(drawn.LookOf(t, want[1], "1.234s"), dim))
-	assert.Check(t, is.Equal(drawn.LookOf(t, want[1], "gh pr view 12 exit 0"), resulttest.Look{}))
 }
 
 // ---------------------------------------------------------------------------
@@ -635,7 +460,8 @@ func onTerminals(t *testing.T, env []string, stdoutTerminal, stderrTerminal bool
 }
 
 // onStderrScreen returns the cli outside any repository under env, with stdout a terminal or not
-// and stderr a terminal that is the returned screen, width columns wide.
+// and stderr a terminal that is the returned screen, width columns wide. It gives the cli no query
+// of the terminal's foreground job, so ils counts as that job.
 func onStderrScreen(t *testing.T, env []string, stdoutTerminal bool, width int) (cli.App, *screen) {
 	t.Helper()
 
@@ -659,6 +485,18 @@ func onStdoutScreen(t *testing.T, env []string) (cli.App, *screen) {
 	return app, stdout
 }
 
+// onSharedScreen returns the cli outside any repository under env, with stdout and stderr both
+// terminals that are the returned screen, wide columns wide.
+func onSharedScreen(t *testing.T, env []string) (cli.App, *screen) {
+	t.Helper()
+
+	terminal := newScreen(t, wide)
+	app := onTerminals(t, env, true, true)
+	app.Stdout, app.Stderr = terminal, terminal
+
+	return app, terminal
+}
+
 // startedMerge begins the step of waiting for GitHub to say whether a pull request can merge.
 func startedMerge(p landing.Progress) { p.Started(mergeStateLabel(), limit) }
 
@@ -669,8 +507,8 @@ type cell struct {
 }
 
 // screen is a terminal width columns wide, which stdout and stderr may share: it keeps what each
-// row shows once every character, line break and cursor sequence written to it is drawn, and fails
-// the test on a sequence it does not know.
+// row shows and whether its cursor is hidden once every character, line break and cursor sequence
+// written to it is drawn, and fails the test on a sequence it does not know.
 type screen struct {
 	tb      testing.TB
 	written strings.Builder
@@ -681,6 +519,7 @@ type screen struct {
 	width   int
 	row     int
 	col     int
+	hidden  bool
 }
 
 func newScreen(tb testing.TB, width int) *screen {
@@ -741,6 +580,10 @@ func (s *screen) draw(text string) int {
 // control draws one control sequence: its parameters and its final byte.
 func (s *screen) control(params string, final byte) {
 	if strings.HasPrefix(params, "?") && (final == 'h' || final == 'l') {
+		if params == cursorMode {
+			s.hidden = final == 'l'
+		}
+
 		return
 	}
 	if final == 'm' {
@@ -859,6 +702,27 @@ func (s *screen) raw() string {
 	return s.written.String()
 }
 
+func (s *screen) cursorHidden() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.hidden
+}
+
+// cursorMode is the DEC private mode that sets whether the cursor shows: the final byte h shows it
+// and l hides it.
+const cursorMode = "?25"
+
+var cursorSequence = regexp.MustCompile(regexp.QuoteMeta(ansi.HideCursor) + "|" + regexp.QuoteMeta(ansi.ShowCursor))
+
+// unstyled checks, without stopping the test, that text carries no select graphic rendition
+// sequence; what names the text in the failure.
+func unstyled(t *testing.T, what, text string) {
+	t.Helper()
+
+	assert.Check(t, !sgr.MatchString(text), "%s carries a rendition:\n%q", what, text)
+}
+
 func TestApp_Run_WhenAStepRunsWithStderrATerminal_ShowsOneSpinnerLineForItUntilTheEnd(t *testing.T) {
 	t.Parallel()
 
@@ -907,6 +771,127 @@ func TestApp_Run_WhenAStepRunsWithStderrATerminal_ShowsOneSpinnerLineForItUntilT
 	}
 }
 
+func TestApp_Run_WhenSpinnerLinesShowOnStderr_HidesTheCursorOnceForEachUntilItGoes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		arrange func(t *testing.T, peek func(*screen)) (cli.App, *screen)
+		name    string
+		toggles int
+	}{
+		{
+			name:    "one step",
+			toggles: 1,
+			arrange: func(t *testing.T, peek func(*screen)) (cli.App, *screen) {
+				t.Helper()
+
+				app, stderr := onStderrScreen(t, []string{colorTerm}, false, wide)
+				app.SetPush(stepping(startedMerge, func() { peek(stderr) }))
+
+				return app, stderr
+			},
+		},
+		{
+			name:    "steps whose lines print between them",
+			toggles: 3,
+			arrange: func(t *testing.T, peek func(*screen)) (cli.App, *screen) {
+				t.Helper()
+
+				app, terminal := onSharedScreen(t, []string{colorTerm})
+				app.SetPush(paced(func() { peek(terminal) }, result.DeliveredNotGreen))
+
+				return app, terminal
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var hiddenWhileShown bool
+			app, stderr := tt.arrange(t, func(s *screen) { hiddenWhileShown = s.cursorHidden() })
+
+			shown(t, app, "push")
+
+			assert.Check(t, hiddenWhileShown, "the cursor showed beside the spinner line")
+			toggles := cursorSequence.FindAllString(stderr.raw(), -1)
+			assert.Check(t, is.DeepEqual(toggles, slices.Repeat([]string{ansi.HideCursor, ansi.ShowCursor}, tt.toggles)))
+		})
+	}
+}
+
+func TestApp_Run_WhenNoStepStartsOnAStderrTerminal_NeitherHidesNorShowsTheCursor(t *testing.T) {
+	t.Parallel()
+	app, stderr := onStderrScreen(t, []string{colorTerm}, false, wide)
+	app.SetMerge(saying(pushedLine()))
+
+	got := shown(t, app, "merge")
+
+	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
+	assert.Check(t, is.Len(cursorSequence.FindAllString(stderr.raw(), -1), 0), "stderr = %q", stderr.raw())
+}
+
+func TestApp_Run_WhenIlsIsNotTheForegroundJob_DrawsNothingUntilTheFrameAfterItIs(t *testing.T) {
+	t.Parallel()
+
+	app, stderr := onStderrScreen(t, []string{colorTerm}, false, wide)
+	var foreground atomic.Bool
+	app.StderrForeground = foreground.Load
+	var inBackground string
+	var again []string
+	var hiddenAgain bool
+	app.SetMerge(func(_ context.Context, deps landing.Deps, req landing.Request) result.Result {
+		startedMerge(progress(deps))
+		time.Sleep(spun)
+		synctest.Wait()
+		inBackground = stderr.raw()
+		foreground.Store(true)
+		time.Sleep(cli.FrameEvery)
+		synctest.Wait()
+		again, hiddenAgain = stderr.lines(), stderr.cursorHidden()
+
+		return finished(req)
+	})
+
+	shown(t, app, "merge")
+
+	assert.Check(t, is.Equal(inBackground, ""))
+	assert.Check(t, is.Len(again, 1), "stderr showed %q", again)
+	assert.Check(t, hiddenAgain, "the cursor showed beside the spinner line")
+}
+
+func TestApp_Run_WhenIlsStopsBeingTheForegroundJob_ShowsTheCursorAndDrawsNothingMoreUntilItIsAgain(t *testing.T) {
+	t.Parallel()
+
+	app, stderr := onStderrScreen(t, []string{colorTerm}, false, wide)
+	var foreground atomic.Bool
+	foreground.Store(true)
+	app.StderrForeground = foreground.Load
+	var before, after string
+	var hiddenAgain bool
+	app.SetMerge(func(_ context.Context, deps landing.Deps, req landing.Request) result.Result {
+		startedMerge(progress(deps))
+		time.Sleep(spun)
+		synctest.Wait()
+		before = stderr.raw()
+		foreground.Store(false)
+		time.Sleep(spun)
+		synctest.Wait()
+		after = stderr.raw()
+		foreground.Store(true)
+		time.Sleep(cli.FrameEvery)
+		synctest.Wait()
+		hiddenAgain = stderr.cursorHidden()
+
+		return finished(req)
+	})
+
+	shown(t, app, "merge")
+
+	assert.Check(t, is.Equal(after, before+ansi.ShowCursor))
+	assert.Check(t, hiddenAgain, "the spinner line was not drawn again once ils was the foreground job")
+}
+
 func TestApp_Run_WhenAStepRunsOnAColorTerminal_DrawsTheSpinnerAndItsTimerYellowAndTheLimitDim(t *testing.T) {
 	t.Parallel()
 
@@ -924,7 +909,7 @@ func TestApp_Run_WhenAStepRunsOnAColorTerminal_DrawsTheSpinnerAndItsTimerYellowA
 	assert.Check(t, seen.LookOf(t, "3s of 30s", "of 30s").Dim, "the limit is not dim in %q", line)
 }
 
-func TestApp_Run_WhenColorIsOffOnATerminal_DrawsTheSpinnerWithNoEscapeSequence(t *testing.T) {
+func TestApp_Run_WhenColorIsOffOnATerminal_DrawsTheSpinnerWithNoRendition(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -946,7 +931,7 @@ func TestApp_Run_WhenColorIsOffOnATerminal_DrawsTheSpinnerWithNoEscapeSequence(t
 			shown(t, app, tt.args...)
 
 			assert.Check(t, is.Len(seen, 1), "stderr showed %q", seen)
-			plain(t, "stderr", stderr.raw())
+			unstyled(t, "stderr", stderr.raw())
 		})
 	}
 }
@@ -1008,9 +993,7 @@ func TestApp_Run_WhenStdoutAndStderrShareATerminalWithColorOff_PrintsEachStepLin
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			terminal := newScreen(t, wide)
-			app := onTerminals(t, tt.env, true, true)
-			app.Stdout, app.Stderr = terminal, terminal
+			app, terminal := onSharedScreen(t, tt.env)
 			var seen []string
 			app.SetPush(paced(func() { seen = terminal.lines() }, result.DeliveredNotGreen))
 
@@ -1023,7 +1006,7 @@ func TestApp_Run_WhenStdoutAndStderrShareATerminalWithColorOff_PrintsEachStepLin
 			lines := pacedLines()
 			want := slices.Concat([]string{pushedStep, openedStep, lines[1], lines[3]}, pacedEnd())
 			assert.Check(t, is.DeepEqual(terminal.lines(), want))
-			plain(t, "the terminal", terminal.raw())
+			unstyled(t, "the terminal", terminal.raw())
 		})
 	}
 }
@@ -1228,9 +1211,7 @@ func TestApp_Run_WhenDebugIsOn_DrawsNoSpinnerButStreamsStepLines(t *testing.T) {
 			got := shown(t, app, "push", "-d")
 
 			assert.Check(t, is.Equal(got.code, exitDelivered))
-			for _, label := range []string{"Pushing", "Opening", "Waiting"} {
-				assert.Check(t, !strings.Contains(stderr.raw(), label), "stderr = %q", stderr.raw())
-			}
+			assert.Check(t, !regexp.MustCompile(`Pushing|Opening|Waiting`).MatchString(stderr.raw()), "stderr = %q, want no spinner label", stderr.raw())
 			lines := stdout.lines()
 			assert.Assert(t, len(lines) > 2, "stdout showed %q", lines)
 			assert.Check(t, is.DeepEqual(lines[:2], []string{pushedStep, openedStep}))

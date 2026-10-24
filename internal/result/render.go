@@ -14,6 +14,10 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// ---------------------------------------------------------------------------
+// Text rendering
+// ---------------------------------------------------------------------------
+
 // ErrNoReason reports a result that did not end as done and says no reason.
 var ErrNoReason = errors.New("result has no reason")
 
@@ -55,6 +59,11 @@ type shown struct {
 // is one, the reason labeled by the outcome unless r is done, and one Next
 // line unless nothing is left to do. gitDir is the resolved git dir, or empty
 // outside a repository.
+//
+// It returns ErrNoReason when r is not done and has no reason, a *WordingError
+// when the program's own wording names a hook or a path under gitDir, and an
+// error wrapping ErrPlaceholders when a wording's placeholders and names do not
+// pair up.
 func RenderText(r Result, gitDir string) (string, error) {
 	return RenderStyled(r, gitDir, colorprofile.NoTTY)
 }
@@ -62,11 +71,13 @@ func RenderText(r Result, gitDir string) (string, error) {
 // RenderStyled returns r as RenderText does, drawn for a terminal of profile.
 // A profile without color (NoTTY, ASCII) gets exactly what RenderText returns,
 // with no escape sequence of this program's. Any other profile draws the
-// outcome label, the word Next, and each name in the style of its kind; the
-// wording and the excerpt stay unstyled. On every profile, the control
-// characters inside names and the excerpt print spelled out as visible text,
-// such as \x1b for ESC, so that third-party text never drives the terminal
-// and the only escape sequences printed are this program's own styling.
+// outcome label, the word Next, and each name in the style of its kind, and
+// draws a command the wording wraps in backticks without them, everything
+// between drawn as a command; the rest of the wording and the excerpt stay
+// unstyled. On every profile, the control characters inside names and the
+// excerpt print spelled out as visible text, such as \x1b for ESC, so that
+// third-party text never drives the terminal and the only escape sequences
+// printed are this program's own styling. It returns the errors of RenderText.
 func RenderStyled(r Result, gitDir string, profile colorprofile.Profile) (string, error) {
 	view, err := check(r, gitDir)
 	if err != nil {
@@ -92,27 +103,40 @@ func RenderStyled(r Result, gitDir string, profile colorprofile.Profile) (string
 
 	if !view.nextNone {
 		nextStyle := ansi.NewStyle().Bold().Underline(true)
-		b.WriteString(pen.Styled(nextStyle, "Next") + ": " + pen.spans(view.next) + "\n")
+		b.WriteString(pen.Styled(nextStyle, NextLabel) + ": " + pen.spans(view.next) + "\n")
 	}
 
 	return b.String(), nil
+}
+
+// ---------------------------------------------------------------------------
+// Styles
+// ---------------------------------------------------------------------------
+
+// NextLabel is the word the Next line starts with.
+const NextLabel = "Next"
+
+// Label returns the word the reason line of o starts with.
+func (o Outcome) Label() string {
+	label, _ := o.label()
+
+	return label
 }
 
 // label returns the word the reason line of o starts with, and its style:
 // yellow for a result that only needs another run, red for one that stopped.
 func (o Outcome) label() (string, ansi.Style) {
 	red := ansi.NewStyle().ForegroundColor(ansi.Red)
-	yellow := ansi.NewStyle().ForegroundColor(ansi.Yellow)
 
 	switch o {
 	case Refused:
 		return "Refused", red
 	case Pending:
-		return "Pending", yellow
+		return "Pending", YellowStyle()
 	case DeliveredNotGreen:
 		return "Delivered, not green", red
 	case Ask:
-		return "Ask", yellow
+		return "Ask", YellowStyle()
 	case Done, Broke:
 		fallthrough
 	default:
@@ -120,24 +144,46 @@ func (o Outcome) label() (string, ansi.Style) {
 	}
 }
 
-// kindStyle returns the style a name of k is drawn in, and false for wording
-// and names of no particular kind, which are drawn unstyled.
+// GreenStyle returns the style of what went well, such as the count of passed
+// checks.
+func GreenStyle() ansi.Style {
+	return ansi.NewStyle().ForegroundColor(ansi.Green)
+}
+
+// YellowStyle returns the style of what is in progress or only needs another run, such as the
+// spinner and a pending result's label.
+func YellowStyle() ansi.Style {
+	return ansi.NewStyle().ForegroundColor(ansi.Yellow)
+}
+
+// FaintStyle returns the style of what needs no attention, such as a SHA or a
+// tally of zero.
+func FaintStyle() ansi.Style {
+	return ansi.NewStyle().Faint()
+}
+
+// kindStyle returns the style a name of k is drawn in, and false for wording,
+// ticks and names of no particular kind, which are drawn unstyled.
 func kindStyle(k kind) (ansi.Style, bool) {
 	switch k {
 	case kindBranch, kindPullRequest, kindCommand:
 		return ansi.NewStyle().Bold().ForegroundColor(ansi.Blue), true
-	case kindSHA:
-		return ansi.NewStyle().Faint(), true
+	case kindSHA, kindSkipped, kindZero:
+		return FaintStyle(), true
+	case kindPassed:
+		return GreenStyle(), true
 	case kindURL:
 		return ansi.NewStyle().Underline(true), true
-	case kindCount:
-		return ansi.NewStyle().Bold(), true
-	case kindWording, kindName:
+	case kindWording, kindName, kindTick:
 		fallthrough
 	default:
 		return nil, false
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Pen and visible text
+// ---------------------------------------------------------------------------
 
 // Pen draws text with styles when its terminal shows color, and as plain
 // text otherwise.
@@ -167,12 +213,17 @@ func (p Pen) Styled(style ansi.Style, text string) string {
 }
 
 // spans returns spans drawn one by one, each name in the style of its kind and
-// with its control characters spelled out by visible.
+// with its control characters spelled out by visible. A pen that draws in
+// styles leaves out the ticks around an inline command, whose style shows it.
 func (p Pen) spans(spans []span) string {
 	var b strings.Builder
 	for _, s := range spans {
 		style, ok := kindStyle(s.kind)
 		switch {
+		case s.kind == kindTick:
+			if !p.color {
+				b.WriteString(s.text)
+			}
 		case ok:
 			b.WriteString(p.Styled(style, visible(s.text)))
 		case s.kind == kindWording:
@@ -223,8 +274,13 @@ func spelledOut(r rune) bool {
 	return unicode.IsControl(r) && r != '\t' && r != '\n' && r != '\r'
 }
 
+// ---------------------------------------------------------------------------
+// JSON rendering
+// ---------------------------------------------------------------------------
+
 // RenderJSON returns r as one JSON object on one line. gitDir is the resolved
-// git dir, or empty outside a repository.
+// git dir, or empty outside a repository. It returns the errors of RenderText,
+// and an error wrapping the encoder's when the object cannot be encoded.
 func RenderJSON(r Result, gitDir string) (string, error) {
 	view, err := check(r, gitDir)
 	if err != nil {
@@ -242,6 +298,10 @@ func RenderJSON(r Result, gitDir string) (string, error) {
 	return string(out) + "\n", nil
 }
 
+// ---------------------------------------------------------------------------
+// Wording check
+// ---------------------------------------------------------------------------
+
 // check renders every phrase of r and rejects a result whose own wording
 // names a hook or a path under the git dir.
 func check(r Result, gitDir string) (shown, error) {
@@ -253,7 +313,7 @@ func check(r Result, gitDir string) (shown, error) {
 		Excerpt:  r.Excerpt,
 		Payload:  r.Payload,
 		outcome:  r.Outcome,
-		nextNone: r.Next.kind == nextNone,
+		nextNone: r.Next.None(),
 	}
 
 	for _, line := range r.Lines {
@@ -291,7 +351,7 @@ func check(r Result, gitDir string) (shown, error) {
 func checked(command, ownWording, gitDir string, render func() ([]span, error)) ([]span, error) {
 	spans, err := render()
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", command, err)
+		return nil, fmt.Errorf("render %s result: %w", command, err)
 	}
 
 	if word, found := forbidden(ownWording, gitDir); found {

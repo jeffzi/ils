@@ -63,7 +63,6 @@ type Exec struct {
 // The message and the attribute keys of the debug record Exec.Log writes, for a handler that
 // reads it back.
 const (
-	// ExecMessage is the message of the record.
 	ExecMessage = "exec"
 	// KeyTool is the key of the tool, a string.
 	KeyTool = "tool"
@@ -179,17 +178,30 @@ func (r Requirement) Check(line, version string) error {
 	return nil
 }
 
-// CheckOutput returns nil when the version that versionOf reads from the first line of stdout,
+// CheckOutput returns nil when the version that versionOf reads from the VersionLine of stdout,
 // the whole output of the tool's --version, is r.Minimum or newer. Otherwise it returns the
-// *ToolTooOldError of Check for that line. Lines after the first are never read.
+// *ToolTooOldError of Check for that line.
 func (r Requirement) CheckOutput(stdout string, versionOf func(line string) string) error {
-	line, _, _ := strings.Cut(stdout, "\n")
+	line := VersionLine(stdout)
 
 	return r.Check(line, versionOf(line))
 }
 
-// CommandLine returns argv joined by spaces, the way every error about a run of argv names the
-// call.
+// VersionLine returns the first line of stdout, the output of a tool's --version: the only line a
+// version is read from.
+func VersionLine(stdout string) string {
+	line, _, _ := strings.Cut(stdout, "\n")
+
+	return line
+}
+
+// Argv returns the full argv of a call of tool with args.
+func Argv(tool string, args []string) []string {
+	return append([]string{tool}, args...)
+}
+
+// CommandLine returns argv joined by spaces, the way every error about a run of argv and the debug
+// trace name the call.
 func CommandLine(argv []string) string {
 	return strings.Join(argv, " ")
 }

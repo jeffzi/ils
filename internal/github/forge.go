@@ -3,7 +3,7 @@ package github
 
 import (
 	"context"
-	legacy "encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
@@ -105,10 +105,10 @@ type pullMessageView struct {
 // errNoPullRequest is why an answer to the message read that names no pull request cannot be read.
 var errNoPullRequest = errors.New("the answer holds no pull request")
 
-// MessageQuery is the GraphQL query that reads a pull request's title, its body, and the body
+// messageQuery is the GraphQL query that reads a pull request's title, its body, and the body
 // GitHub would compose for the viewer's squash merge. The repository and number are variables,
 // never spliced into the query.
-const MessageQuery = "query($owner: String!, $name: String!, $number: Int!) { " +
+const messageQuery = "query($owner: String!, $name: String!, $number: Int!) { " +
 	"repository(owner: $owner, name: $name) { " +
 	"pullRequest(number: $number) { title body viewerMergeBodyText(mergeType: SQUASH) } } }"
 
@@ -218,8 +218,8 @@ func (f *Forge) Head(ctx context.Context, repo forge.Repo, query forge.HeadQuery
 		return forge.Head{}, err
 	}
 
-	facts := MergeFacts{Mergeable: view.Mergeable, Status: view.Status, Review: view.Review, Draft: view.Draft}
-	if MergeStateOf(facts) == forge.MergeBlockedOther {
+	facts := mergeFacts{Mergeable: view.Mergeable, Status: view.Status, Review: view.Review, Draft: view.Draft}
+	if mergeStateOf(facts) == forge.MergeBlockedOther {
 		verdictQuery := forge.VerdictQuery{SHA: view.SHA, Number: query.Number, Required: query.Required}
 
 		facts.MissingCheck, err = f.missingCheck(ctx, repo, verdictQuery)
@@ -228,7 +228,7 @@ func (f *Forge) Head(ctx context.Context, repo forge.Repo, query forge.HeadQuery
 		}
 	}
 
-	return forge.Head{SHA: view.SHA, MergeState: MergeStateOf(facts), RawMergeState: view.Status}, nil
+	return forge.Head{SHA: view.SHA, MergeState: mergeStateOf(facts), RawMergeState: view.Status}, nil
 }
 
 // missingCheck reports whether a check the query requires has no check on the
@@ -346,7 +346,7 @@ func (f *Forge) Message(ctx context.Context, repo forge.Repo, number int) (forge
 	args := []string{
 		"api", "graphql", "--hostname", repo.Host,
 		"-F", "number=" + strconv.Itoa(number), "-f", "owner=" + repo.Owner, "-f", "name=" + repo.Name,
-		"-f", "query=" + MessageQuery,
+		"-f", "query=" + messageQuery,
 	}
 
 	answer, err := runDecoded[pullMessage](ctx, f.runner(), args...)
@@ -391,33 +391,38 @@ func (f *Forge) Land(ctx context.Context, repo forge.Repo, landing forge.Landing
 
 // DeleteBranch removes branch from the repository on GitHub.
 func (f *Forge) DeleteBranch(ctx context.Context, repo forge.Repo, branch string) error {
-	_, err := f.runner().Run(ctx,
-		"api", "--hostname", repo.Host, "-X", "DELETE", repoAPIPath(repo, "git/refs/heads/"+branchPath(branch)))
+	_, err := f.runner().Run(ctx, repoAPIArgs(repo, "git/refs/heads/"+branchPath(branch), "-X", "DELETE")...)
 
 	return err
 }
 
 // repoAPIPath returns the REST path of rest under the repository, relative to the API root.
 func repoAPIPath(repo forge.Repo, rest string) string {
-	return fmt.Sprintf("repos/%s/%s/%s", repo.Owner, repo.Name, rest)
+	return "repos/" + repo.FullName() + "/" + rest
+}
+
+// repoAPIArgs returns the gh arguments of a call of rest under the repository, with flags before
+// its path.
+func repoAPIArgs(repo forge.Repo, rest string, flags ...string) []string {
+	args := append([]string{"api", "--hostname", repo.Host}, flags...)
+
+	return append(args, repoAPIPath(repo, rest))
 }
 
 // paginatedAPIArgs returns the gh arguments that read rest under the repository, following every page.
 func paginatedAPIArgs(repo forge.Repo, rest string) []string {
-	return []string{"api", "--hostname", repo.Host, "--paginate", repoAPIPath(repo, rest)}
+	return repoAPIArgs(repo, rest, "--paginate")
 }
 
-// decodeEachPage decodes the JSON values that `gh api --paginate` prints, one per
-// page and concatenated, each into a P; stdout holding no value is a *DecodeError.
+// decodeEachPage decodes the JSON values that `gh api --paginate` prints, one per page and
+// concatenated, each into a P; stdout holding no value is a *DecodeError.
 func decodeEachPage[P any](stdout string, args []string) ([]P, error) {
-	decoder := legacy.NewDecoder(strings.NewReader(stdout))
+	decoder := jsontext.NewDecoder(strings.NewReader(stdout))
 
 	var pages []P
 
 	for {
-		var raw legacy.RawMessage
-
-		err := decoder.Decode(&raw)
+		raw, err := decoder.ReadValue()
 		if errors.Is(err, io.EOF) {
 			if len(pages) > 0 {
 				return pages, nil
@@ -470,8 +475,7 @@ func (f *Forge) activeWorkflows(ctx context.Context, repo forge.Repo) ([]string,
 // without the directory, which GitHub answers 404 Not Found for, has none. A trunk that does not
 // exist is an error.
 func (f *Forge) workflowFiles(ctx context.Context, repo forge.Repo, trunk string) ([]repoFile, error) {
-	path := repoAPIPath(repo, "contents/"+workflowsDir+"?ref="+url.QueryEscape(trunk))
-	args := []string{"api", "--hostname", repo.Host, path}
+	args := repoAPIArgs(repo, "contents/"+workflowsDir+"?ref="+url.QueryEscape(trunk))
 
 	result, err := f.runner().Run(ctx, args...)
 	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && strings.Contains(exitErr.Stderr, pathNotFound) {
@@ -489,8 +493,8 @@ func (f *Forge) workflowFiles(ctx context.Context, repo forge.Repo, trunk string
 // Merge state
 // ---------------------------------------------------------------------------
 
-// MergeFacts is what GitHub says about whether a pull request can merge.
-type MergeFacts struct {
+// mergeFacts is what GitHub says about whether a pull request can merge.
+type mergeFacts struct {
 	// Mergeable is GitHub's `mergeable`: MERGEABLE, CONFLICTING, or UNKNOWN.
 	Mergeable string
 	// Status is GitHub's `mergeStateStatus`.
@@ -503,10 +507,10 @@ type MergeFacts struct {
 	MissingCheck bool
 }
 
-// MergeStateOf maps GitHub's values to the merge state a command switches on.
+// mergeStateOf maps GitHub's values to the merge state a command switches on.
 //
 // A value of `mergeStateStatus` it does not know is forge.MergeUnknown.
-func MergeStateOf(facts MergeFacts) forge.MergeState {
+func mergeStateOf(facts mergeFacts) forge.MergeState {
 	switch facts.Mergeable {
 	case "CONFLICTING":
 		return forge.MergeConflicting
@@ -536,7 +540,7 @@ func MergeStateOf(facts MergeFacts) forge.MergeState {
 }
 
 // blockedState says what blocks a pull request whose status is BLOCKED.
-func blockedState(facts MergeFacts) forge.MergeState {
+func blockedState(facts mergeFacts) forge.MergeState {
 	switch {
 	case facts.Review == "REVIEW_REQUIRED" || facts.Review == "CHANGES_REQUESTED":
 		return forge.MergeBlockedByReview

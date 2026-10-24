@@ -18,7 +18,6 @@ import (
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
-	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/quiet"
@@ -155,16 +154,17 @@ func TestGuardTestGit_WhenGitDoesNotSuitTarget_ReturnsError(t *testing.T) {
 		target  string
 		version string
 		line    string
-		// want is the text of the error guardTestGit returns.
-		want string
+		// named are what the guard hands testtarget and the error must name: the variable that
+		// decides and the versions compared.
+		named []string
 	}{
 		{
 			name: "minimum target finds a newer git", target: testtarget.Minimum, line: "git version 99.0.0",
-			want: "ILS_TEST_GIT is minimum and the git found is 99.0.0, want the minimum ils enforces, " + git.MinimumVersion,
+			named: []string{"ILS_TEST_GIT", "99.0.0", git.MinimumVersion},
 		},
 		{
 			name: "version wanted is not the git on PATH", target: testtarget.Latest, version: "2.43.0",
-			line: "git version 2.42.0", want: "the git found is 2.42.0, and ILS_TEST_GIT_VERSION wants 2.43.0",
+			line: "git version 2.42.0", named: []string{"ILS_TEST_GIT_VERSION", "2.42.0", "2.43.0"},
 		},
 	}
 	for _, tt := range tests {
@@ -175,19 +175,20 @@ func TestGuardTestGit_WhenGitDoesNotSuitTarget_ReturnsError(t *testing.T) {
 
 			err := guardTestGit()
 
-			assert.Error(t, err, tt.want)
+			assert.Assert(t, err != nil, "guardTestGit error = nil, want the git found refused")
+			for _, part := range tt.named {
+				assert.Check(t, is.ErrorContains(err, part))
+			}
 		})
 	}
 }
 
-func TestGuardTestGit_WhenGitMissingFromPath_ReturnsToolMissingError(t *testing.T) {
+func TestGuardTestGit_WhenGitMissingFromPath_ReturnsErrorNamingTheRead(t *testing.T) {
 	// Not parallel: this empties PATH for the whole process while it runs.
 	t.Setenv("PATH", t.TempDir())
 
 	err := guardTestGit()
 
-	_, ok := errors.AsType[*child.ToolMissingError](err)
-	assert.Check(t, ok, "guardTestGit error = %v, want a *child.ToolMissingError", err)
 	assert.Check(t, is.ErrorContains(err, "read the version of the git on PATH: "))
 }
 
@@ -221,7 +222,8 @@ func TestMain_WhenTestGitTargetIsUnknown_ExitsBeforeTheTests(t *testing.T) {
 	exitErr, ok := errors.AsType[*exec.ExitError](err)
 	assert.Assert(t, ok, "test binary error = %v, want it to exit non-zero", err)
 	assert.Check(t, is.Equal(exitErr.ExitCode(), 1))
-	assert.Check(t, is.Contains(stderr, `ILS_TEST_GIT is "newest", want minimum, latest, or unset`))
+	assert.Check(t, is.Contains(stderr, testGitVar))
+	assert.Check(t, is.Contains(stderr, "newest"))
 }
 
 // standInMode returns the stand-in mode of a call of the test binary with args, and whether the

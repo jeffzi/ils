@@ -172,7 +172,7 @@ func failedLogRows() []failedLogRow {
 	}
 }
 
-func TestForge_Verdict(t *testing.T) {
+func TestForge_Verdict_FailedLog(t *testing.T) {
 	for _, tt := range failedLogRows() {
 		t.Run(tt.name, func(t *testing.T) {
 			fake := ghtest.Setup(t, ghtest.Says(jsonArray(tt.checks), checksArgs()...), ghtest.Says("[]", runsArgs()...), ghtest.Exits(tt.log, logArgs()...), ghtest.Exits(tt.jobLog, jobLogArgs("42")...))

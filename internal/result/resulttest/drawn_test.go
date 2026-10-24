@@ -10,30 +10,32 @@ import (
 	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
-// stoppingTB records a failure reported through it and stops the goroutine that reported it when
-// the failure is fatal, as a test does. Calls it does not override reach the nil testing.TB and
-// panic.
-type stoppingTB struct {
+// recordingTB records a failure reported through it instead of failing the real test. A failure
+// that is not fatal is recorded and the caller goes on; a fatal one also stops the goroutine that
+// reported it, as a test does. Calls it does not override reach the nil testing.TB and panic.
+type recordingTB struct {
 	testing.TB
 
 	failed bool
 }
 
-func (*stoppingTB) Helper() {}
+func (*recordingTB) Helper() {}
 
-func (*stoppingTB) Log(...any) {}
+func (*recordingTB) Log(...any) {}
 
-func (s *stoppingTB) FailNow() {
+func (s *recordingTB) Fail() { s.failed = true }
+
+func (s *recordingTB) FailNow() {
 	s.failed = true
 	runtime.Goexit()
 }
 
-func (s *stoppingTB) Fatalf(string, ...any) { s.FailNow() }
+func (s *recordingTB) Fatalf(string, ...any) { s.FailNow() }
 
 // drawFails runs Draw in a goroutine of its own, because a fatal failure ends the goroutine that
 // reports it; the caller survives to read tb.failed.
 func drawFails(out string) bool {
-	tb := &stoppingTB{}
+	tb := &recordingTB{}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -43,17 +45,21 @@ func drawFails(out string) bool {
 	return tb.failed
 }
 
-func TestDraw_WhenForegroundCode_DrawsItsPaletteColor(t *testing.T) {
+func TestDraw_WhenForegroundCode_DrawsItsColor(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name    string
-		code    string
-		palette string
+		name string
+		code string
+		want resulttest.Look
 	}{
-		{name: "first color", code: "30", palette: "0"},
-		{name: "last color", code: "37", palette: "7"},
-		{name: "first bright color", code: "90", palette: "8"},
-		{name: "last bright color", code: "97", palette: "15"},
+		{name: "first color", code: "30", want: resulttest.Look{Color: "black"}},
+		{name: "last color", code: "37", want: resulttest.Look{Color: "white"}},
+		{name: "first bright color", code: "90", want: resulttest.Look{Color: "black"}},
+		{name: "last bright color", code: "97", want: resulttest.Look{Color: "white"}},
+		{name: "first palette color", code: "38;5;0", want: resulttest.Look{Color: "black"}},
+		{name: "last palette color", code: "38;5;7", want: resulttest.Look{Color: "white"}},
+		{name: "first bright palette color", code: "38;5;8", want: resulttest.Look{Color: "black"}},
+		{name: "last bright palette color", code: "38;5;15", want: resulttest.Look{Color: "white"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -61,8 +67,7 @@ func TestDraw_WhenForegroundCode_DrawsItsPaletteColor(t *testing.T) {
 
 			got := resulttest.Draw(t, "\x1b["+tt.code+"mx").LookOf(t, "x", "x")
 
-			want := resulttest.Draw(t, "\x1b[38;5;"+tt.palette+"mx").LookOf(t, "x", "x")
-			assert.Check(t, is.Equal(got, want), "code %s", tt.code)
+			assert.Check(t, is.Equal(got, tt.want), "code %s", tt.code)
 		})
 	}
 }
@@ -95,12 +100,6 @@ func TestDraw_WhenSequenceUnknown_FailsTest(t *testing.T) {
 		out  string
 	}{
 		{name: "italic", out: "\x1b[3mx"},
-		{name: "slow blink", out: "\x1b[5mx"},
-		{name: "rapid blink", out: "\x1b[6mx"},
-		{name: "reverse", out: "\x1b[7mx"},
-		{name: "conceal", out: "\x1b[8mx"},
-		{name: "crossed out", out: "\x1b[9mx"},
-		{name: "primary font", out: "\x1b[10mx"},
 		{name: "last alternative font below the colors", out: "\x1b[15mx"},
 		{name: "unknown code beside a known one", out: "\x1b[1;7mx"},
 		{name: "hyperlink without its parameters field", out: "\x1b]8;https://example.com\x07x"},

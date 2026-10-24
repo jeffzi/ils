@@ -22,7 +22,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/github"
+	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/quiet"
 )
 
@@ -37,11 +39,16 @@ const (
 	// acknowledgement is the byte the test process sends back once it has checked a hold; the fake
 	// waits for it before it holds its answer open.
 	acknowledgement byte = '\n'
+)
 
-	// brokenExit is the exit code of a fake that could not read its script or write its record.
-	brokenExit = 2
-	// unscriptedExit is the exit code of a fake asked for an argv its script does not hold.
-	unscriptedExit = 1
+// The exit codes of a fake that did not answer from its script. Neither is one of gh's own exits
+// (0, 1, 2, 4 and 8), which internal/github reads as answers, nor one of gittest's, so a test can
+// tell a fake that failed from a gh that answered.
+const (
+	// BrokenCode is the exit code of a fake that could not read its script or write its record.
+	BrokenCode = 122
+	// UnscriptedCode is the exit code of a fake asked for an argv its script does not hold.
+	UnscriptedCode = 123
 )
 
 // ---------------------------------------------------------------------------
@@ -77,6 +84,16 @@ func Says(stdout string, args ...string) Call {
 // Exits scripts answer as the one answer to args.
 func Exits(answer Answer, args ...string) Call {
 	return Call{Args: args, Answers: []Answer{answer}}
+}
+
+// LoggedOut is what `gh auth status` answers when no host is logged in.
+func LoggedOut() Answer {
+	return Answer{Stderr: "You are not logged into any GitHub hosts.\n", Code: 1}
+}
+
+// ServerError is what a gh call answers when GitHub fails it with HTTP 500.
+func ServerError() Answer {
+	return Answer{Stderr: "gh: Server Error (HTTP 500)\n", Code: 1}
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +136,21 @@ func HeadArgs(slug string, number int) []string {
 	}
 }
 
+// LandArgs is the argv that squash-merges the pull request landing names, with its subject and
+// body as the commit message, when its head is still landing's HeadSHA.
+func LandArgs(slug string, landing forge.Landing) []string {
+	return []string{
+		"pr", "merge", strconv.Itoa(landing.Number), "--repo", slug, "--squash", "--match-head-commit", landing.HeadSHA,
+		"--subject", landing.Subject, "--body", landing.Body,
+	}
+}
+
+// DeleteBranchArgs is the argv that deletes a branch of the repository owner/name on host;
+// branchPath is the branch as it stands in a URL path, each of its segments escaped.
+func DeleteBranchArgs(host, repo, branchPath string) []string {
+	return []string{"api", "--hostname", host, "-X", "DELETE", "repos/" + repo + "/git/refs/heads/" + branchPath}
+}
+
 // RulesArgs is the argv of the read of the rules on branch; repo is owner/name.
 func RulesArgs(host, repo, branch string) []string {
 	return []string{"api", "--hostname", host, "--paginate", "repos/" + repo + "/rules/branches/" + branch}
@@ -132,7 +164,7 @@ func ChecksArgs(slug string, number int) []string {
 // RunsArgs is the argv of the list of the workflow runs on the commit sha.
 func RunsArgs(slug, sha string) []string {
 	return []string{
-		"run", "list", "--repo", slug, "--commit", sha, "--limit", github.RunListLimit,
+		"run", "list", "--repo", slug, "--commit", sha, "--limit", "1000",
 		"--json", "status,name,workflowName",
 	}
 }
@@ -148,7 +180,9 @@ func MessageArgs(host, owner, name string, number int) []string {
 	return []string{
 		"api", "graphql", "--hostname", host,
 		"-F", "number=" + strconv.Itoa(number), "-f", "owner=" + owner, "-f", "name=" + name,
-		"-f", "query=" + github.MessageQuery,
+		"-f", "query=query($owner: String!, $name: String!, $number: Int!) { " +
+			"repository(owner: $owner, name: $name) { " +
+			"pullRequest(number: $number) { title body viewerMergeBodyText(mergeType: SQUASH) } } }",
 	}
 }
 
@@ -167,8 +201,8 @@ func RepoViewJSON(fork bool, permission string) string {
 
 // RepoViewSquashJSON is RepoViewJSON for a repository whose settings allow squash merges or not.
 func RepoViewSquashJSON(fork bool, permission string, squash bool) string {
-	return `{"isFork":` + strconv.FormatBool(fork) + `,"viewerPermission":"` + permission +
-		`","squashMergeAllowed":` + strconv.FormatBool(squash) + `}`
+	return `{"isFork":` + strconv.FormatBool(fork) + `,"viewerPermission":` + quoted(permission) +
+		`,"squashMergeAllowed":` + strconv.FormatBool(squash) + `}`
 }
 
 // MessageJSON is the message read's answer for a pull request titled title with body, for which
@@ -202,26 +236,27 @@ type Change struct {
 
 // ChangeJSON is one entry of `gh pr list`'s answer, with every field ListArgs asks for.
 func ChangeJSON(change Change) string {
-	return `{"number":` + strconv.Itoa(change.Number) + `,"url":"` + change.URL + `","title":"` + change.Title +
-		`","baseRefName":"` + change.Base + `","headRefOid":"` + change.SHA +
-		`","isDraft":` + strconv.FormatBool(change.Draft) +
+	return `{"number":` + strconv.Itoa(change.Number) + `,"url":` + quoted(change.URL) + `,"title":` + quoted(change.Title) +
+		`,"baseRefName":` + quoted(change.Base) + `,"headRefOid":` + quoted(change.SHA) +
+		`,"isDraft":` + strconv.FormatBool(change.Draft) +
 		`,"isCrossRepository":` + strconv.FormatBool(change.CrossRepository) + `}`
 }
 
 // HeadJSON is `gh pr view`'s answer for a pull request at sha that is not a draft.
 func HeadJSON(sha, mergeable, status, review string) string {
-	return `{"headRefOid":"` + sha + `","mergeable":"` + mergeable + `","mergeStateStatus":"` + status +
-		`","isDraft":false,"reviewDecision":"` + review + `"}`
+	return `{"headRefOid":` + quoted(sha) + `,"mergeable":` + quoted(mergeable) + `,"mergeStateStatus":` + quoted(status) +
+		`,"isDraft":false,"reviewDecision":` + quoted(review) + `}`
 }
 
 // CheckJSON is one entry of `gh pr checks`'s answer, for a check of the workflow CI.
 func CheckJSON(name, bucket, link string) string {
-	return `{"name":"` + name + `","bucket":"` + bucket + `","workflow":"` + workflow + `","link":"` + link + `"}`
+	return `{"name":` + quoted(name) + `,"bucket":` + quoted(bucket) + `,"workflow":` + quoted(workflow) +
+		`,"link":` + quoted(link) + `}`
 }
 
 // RunJSON is one entry of `gh run list`'s answer, for a run named name of the workflow CI.
 func RunJSON(status, name string) string {
-	return `{"status":"` + status + `","name":"` + name + `","workflowName":"` + workflow + `"}`
+	return `{"status":` + quoted(status) + `,"name":` + quoted(name) + `,"workflowName":` + quoted(workflow) + `}`
 }
 
 // ---------------------------------------------------------------------------
@@ -300,54 +335,19 @@ type hold struct {
 // The fake waits for the server's acknowledgement before it holds its answer, and the server
 // sends it only once it has checked the held call against record and closed the channel. So the
 // channel is closed before the held call can end, and a fake that dials before recording the
-// call fails the test, whatever the scheduling. The server stops accepting when the test's
-// cleanup closes it; any other accept failure fails the test.
+// call fails the test, whatever the scheduling.
 func listenForHolds(tb testing.TB, record string) (addr string, holding <-chan struct{}) {
 	tb.Helper()
 
-	var config net.ListenConfig
-
-	listener, err := config.Listen(tb.Context(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		tb.Fatalf("ghtest: listen for held answers: %v", err)
-	}
-
-	var accepting sync.WaitGroup
-
 	firstHold := make(chan struct{})
 
-	tb.Cleanup(func() {
-		if err := listener.Close(); err != nil {
-			tb.Errorf("ghtest: close the listener for held answers: %v", err)
-		}
+	var once sync.Once
 
-		accepting.Wait()
-	})
+	announced := func() { once.Do(func() { close(firstHold) }) }
 
-	accepting.Go(func() {
-		var once sync.Once
+	addr = gittest.Serve(tb, func(conn net.Conn) { acknowledgeHold(tb, conn, record, announced) })
 
-		announced := func() { once.Do(func() { close(firstHold) }) }
-
-		for {
-			conn, acceptErr := listener.Accept()
-			if errors.Is(acceptErr, net.ErrClosed) {
-				return
-			}
-
-			// Any other failure leaves the next delayed fake connecting through the backlog with
-			// nobody to acknowledge it, so it would block until the test's timeout.
-			if acceptErr != nil {
-				tb.Errorf("ghtest: accept a held answer: %v", acceptErr)
-
-				return
-			}
-
-			acknowledgeHold(tb, conn, record, announced)
-		}
-	})
-
-	return listener.Addr().String(), firstHold
+	return addr, firstHold
 }
 
 // acknowledgeHold reads the hold the fake sends over conn, fails the test unless record already
@@ -424,6 +424,36 @@ func (f *Fake) Holding() <-chan struct{} {
 	return f.holding
 }
 
+// RunHeld starts run in a goroutine of its own, under a context that cancel ends, and returns once
+// the fake holds the answer of a call run made; result then delivers what run returns. The test
+// fails when run returns before an answer is held, and its end cancels run and waits for it.
+func (f *Fake) RunHeld(run func(ctx context.Context) error) (cancel context.CancelFunc, result <-chan error) {
+	f.tb.Helper()
+
+	ctx, cancel := context.WithCancel(f.tb.Context())
+	ran := make(chan error, 1)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		ran <- run(ctx)
+	}()
+
+	f.tb.Cleanup(func() {
+		cancel()
+		<-done
+	})
+
+	select {
+	case <-f.holding:
+	case err := <-ran:
+		f.tb.Fatalf("ghtest: the run returned %v before the fake held its answer", err)
+	}
+
+	return cancel, ran
+}
+
 // Calls returns every argv the fake received, each starting with gh, in order.
 func (f *Fake) Calls() [][]string {
 	f.tb.Helper()
@@ -471,7 +501,7 @@ func serve(ctx context.Context, places servePlaces, args []string) int {
 	if index < 0 {
 		fmt.Fprintf(os.Stderr, "ghtest: no scripted answer for %s %s\n", github.Program, strings.Join(args, " "))
 
-		return unscriptedExit
+		return UnscriptedCode
 	}
 
 	answers := script[index].Answers
@@ -558,7 +588,7 @@ func countOf(recorded [][]string, args []string) int {
 func broken(err error) int {
 	fmt.Fprintf(os.Stderr, "ghtest: %v\n", err)
 
-	return brokenExit
+	return BrokenCode
 }
 
 func readScript(path string) ([]Call, error) {

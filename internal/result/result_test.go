@@ -32,6 +32,27 @@ func TestOutcome_ExitCode(t *testing.T) {
 	}
 }
 
+func TestParseOutcome_WhenNameIsAnOutcomeName_ReturnsThatOutcome(t *testing.T) {
+	t.Parallel()
+
+	for _, want := range []result.Outcome{
+		result.Done, result.Broke, result.Refused, result.Ask, result.Pending, result.DeliveredNotGreen,
+	} {
+		got, ok := result.ParseOutcome(want.String())
+
+		assert.Check(t, ok, "ParseOutcome(%q) found nothing", want.String())
+		assert.Check(t, is.Equal(got, want), "ParseOutcome(%q)", want.String())
+	}
+}
+
+func TestParseOutcome_WhenNameIsNoOutcomeName_ReportsNotFound(t *testing.T) {
+	t.Parallel()
+
+	_, ok := result.ParseOutcome("Refused")
+
+	assert.Check(t, !ok, "ParseOutcome(%q) found an outcome, want none", "Refused")
+}
+
 func TestOutcome_String(t *testing.T) {
 	t.Parallel()
 

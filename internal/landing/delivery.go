@@ -240,7 +240,7 @@ func (d *delivery) report(deps Deps) *result.Result {
 
 		return d.doneMerging()
 	case WaitNothingReported:
-		return d.nothingReported()
+		return d.endNothingReported()
 	default:
 	}
 
@@ -303,8 +303,7 @@ func (d *delivery) withoutCI(ctx context.Context, deps Deps, required []string) 
 	return d.doneMerging()
 }
 
-// nothingReported is a pushed commit that no check or status reported for.
-func (d *delivery) nothingReported() *result.Result {
+func (d *delivery) endNothingReported() *result.Result {
 	d.sayMergeState()
 
 	return d.ended(result.DeliveredNotGreen, nothingReported(d.tip, d.number),

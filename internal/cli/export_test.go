@@ -25,3 +25,11 @@ func (a *App) SetGit(runner git.Runner) {
 func (a *App) SetBuildInfo(info *debug.BuildInfo, ok bool) {
 	a.buildInfo = func() (*debug.BuildInfo, bool) { return info, ok }
 }
+
+// SetSuspend makes a run stop its process through suspend in place of sending it SIGSTOP.
+func (a *App) SetSuspend(suspend func() error) {
+	a.suspend = suspend
+}
+
+// FrameEvery is frameEvery, for the tests of package cli_test.
+const FrameEvery = frameEvery

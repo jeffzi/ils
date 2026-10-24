@@ -27,46 +27,69 @@ func flat(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
+// shownHelp is what the help of one command shows: phrases its text holds, and the commands and
+// flags it lists.
+type shownHelp struct {
+	phrases  []string
+	commands []string
+	flags    []string
+}
+
+// helpOf returns the help of ils, of push and of merge.
+func helpOf() (root, push, merge shownHelp) {
+	own := []string{"-d", "-h", "--json", "--no-color"}
+	root = shownHelp{
+		phrases:  []string{rootHelp, "--version Print the version of ils", mergeSummary},
+		commands: []string{"help", "merge", "push"},
+		flags:    []string{"-d", "-h", "--json", "--no-color", "--version"},
+	}
+	push = shownHelp{phrases: []string{pushHelp}, flags: own}
+	merge = shownHelp{
+		phrases: []string{
+			mergeHelp,
+			"squash-merges the pull request once its checks are green",
+			"deletes the branch",
+			"never pushes",
+			"leaves the trunk checked out",
+			mergeUsage,
+		},
+		flags: own,
+	}
+
+	return root, push, merge
+}
+
 func TestApp_Run_WhenAskedForHelp_PrintsTheHelpOfTheCommand(t *testing.T) {
 	t.Parallel()
 
-	root := []string{rootHelp, "--version Print the version of ils", mergeSummary}
-	merge := []string{mergeHelp, mergeUsage}
+	root, push, merge := helpOf()
 	tests := []struct {
 		args []string
-		want []string
+		want shownHelp
 	}{
-		{args: []string{"-h"}, want: []string{rootHelp}},
+		{args: []string{"-h"}, want: root},
 		{args: []string{"--help"}, want: root},
-		{args: []string{"help"}, want: []string{rootHelp, mergeSummary}},
-		{args: []string{"pish", "--help"}, want: []string{rootHelp}},
-		{args: []string{"-h", "pish"}, want: []string{rootHelp}},
-		{args: []string{"help", "pish"}, want: []string{rootHelp}},
-		{args: []string{"--json", "-h"}, want: []string{rootHelp}},
-		{args: []string{"--help", "--json"}, want: []string{rootHelp}},
-		{args: []string{"help", "--json"}, want: []string{rootHelp}},
-		{args: []string{"help", "pish", "--json"}, want: []string{rootHelp}},
-		{args: []string{"push", "-h"}, want: []string{pushHelp}},
-		{args: []string{"push", "--help"}, want: []string{pushHelp}},
-		{args: []string{"--help", "push"}, want: []string{pushHelp}},
-		{args: []string{"help", "push"}, want: []string{pushHelp}},
-		{args: []string{"push", "extra", "--help"}, want: []string{pushHelp}},
-		{args: []string{"push", "--json", "-h"}, want: []string{pushHelp}},
-		{args: []string{"push", "-d", "--no-color", "--help"}, want: []string{pushHelp}},
-		{args: []string{"--json", "push", "--help"}, want: []string{pushHelp}},
-		{args: []string{"help", "push", "--json"}, want: []string{pushHelp}},
+		{args: []string{"help"}, want: root},
+		{args: []string{"pish", "--help"}, want: root},
+		{args: []string{"-h", "pish"}, want: root},
+		{args: []string{"help", "pish"}, want: root},
+		{args: []string{"--json", "-h"}, want: root},
+		{args: []string{"--help", "--json"}, want: root},
+		{args: []string{"help", "--json"}, want: root},
+		{args: []string{"help", "pish", "--json"}, want: root},
+		{args: []string{"push", "-h"}, want: push},
+		{args: []string{"push", "--help"}, want: push},
+		{args: []string{"--help", "push"}, want: push},
+		{args: []string{"help", "push"}, want: push},
+		{args: []string{"push", "extra", "--help"}, want: push},
+		{args: []string{"push", "--json", "-h"}, want: push},
+		{args: []string{"push", "-d", "--no-color", "--help"}, want: push},
+		{args: []string{"--json", "push", "--help"}, want: push},
+		{args: []string{"help", "push", "--json"}, want: push},
 		{args: []string{"merge", "-h"}, want: merge},
-		{
-			args: []string{"merge", "--help"},
-			want: append([]string{
-				"squash-merges the pull request once its checks are green",
-				"deletes the branch",
-				"never pushes",
-				"leaves the trunk checked out",
-			}, merge...),
-		},
+		{args: []string{"merge", "--help"}, want: merge},
 		{args: []string{"help", "merge"}, want: merge},
-		{args: []string{"merge", "--json", "--help"}, want: []string{mergeHelp}},
+		{args: []string{"merge", "--json", "--help"}, want: merge},
 	}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
@@ -77,9 +100,11 @@ func TestApp_Run_WhenAskedForHelp_PrintsTheHelpOfTheCommand(t *testing.T) {
 			assert.Check(t, is.Equal(got.code, exitDone))
 			assert.Check(t, is.Equal(got.stderr, ""))
 			help := flat(got.stdout)
-			for _, want := range tt.want {
+			for _, want := range tt.want.phrases {
 				assert.Check(t, is.Contains(help, want))
 			}
+			assert.Check(t, is.DeepEqual(entries(got.stdout, "Available Commands:"), tt.want.commands))
+			assert.Check(t, is.DeepEqual(entries(got.stdout, "Flags:", "Global Flags:"), tt.want.flags, anyOrder()))
 			assert.Check(t, is.Len(listedCalls(got.stdout), 0))
 		})
 	}
@@ -135,31 +160,6 @@ func entries(help string, headings ...string) []string {
 	}
 
 	return found
-}
-
-func TestApp_Run_WhenAskedForHelp_ListsEveryEntryOfTheCommand(t *testing.T) {
-	t.Parallel()
-
-	own := []string{"-d", "-h", "--json", "--no-color"}
-	tests := []struct {
-		args     []string
-		commands []string
-		flags    []string
-	}{
-		{args: []string{"--help"}, commands: []string{"help", "merge", "push"}, flags: []string{"-d", "-h", "--json", "--no-color", "--version"}},
-		{args: []string{"push", "--help"}, flags: own},
-		{args: []string{"merge", "--help"}, flags: own},
-	}
-	for _, tt := range tests {
-		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
-			t.Parallel()
-
-			got := launch(t, outside(t), tt.args...)
-
-			assert.Check(t, is.DeepEqual(entries(got.stdout, "Available Commands:"), tt.commands))
-			assert.Check(t, is.DeepEqual(entries(got.stdout, "Flags:", "Global Flags:"), tt.flags, anyOrder()))
-		})
-	}
 }
 
 func TestApp_Run_WhenAskedForHelpInARepository_CallsNeitherGitNorGh(t *testing.T) {

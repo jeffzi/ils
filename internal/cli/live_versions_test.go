@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"gotest.tools/v3/assert"
+	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/github"
@@ -44,78 +45,45 @@ func checkLiveGh(target, want, out string) error {
 	return tool.CheckOutput(target, want, out, github.VersionOf)
 }
 
-func TestCheckLiveGit_WhenGitIsTheMinimum_ReturnsNil(t *testing.T) {
-	t.Parallel()
-	out := "git version " + git.MinimumVersion
-
-	err := checkLiveGit(testtarget.Minimum, "", out)
-
-	assert.NilError(t, err)
-}
-
-func TestCheckLiveGit_WhenGitDoesNotSuitTarget_ReturnsError(t *testing.T) {
+func TestCheckLiveTool_WhenToolDoesNotSuitTarget_ReturnsError(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
+		check  func(target, want, out string) error
 		name   string
 		target string
 		want   string
 		out    string
-		err    string
+		// named are what the check hands testtarget and the error must name: the variable that
+		// decides and the versions compared.
+		named []string
 	}{
 		{
-			name: "minimum target and a newer git", target: testtarget.Minimum, out: "git version 99.0.0",
-			err: "ILS_LIVE_GIT is minimum and the git found is 99.0.0, want the minimum ils enforces, " + git.MinimumVersion,
+			name: "minimum target and a newer git", check: checkLiveGit, target: testtarget.Minimum, out: "git version 99.0.0",
+			named: []string{liveGitTargetVar, "99.0.0", git.MinimumVersion},
 		},
 		{
-			name: "version wanted is not the git found", target: testtarget.Latest, want: "2.56.0",
-			out: "git version 2.55.0", err: "the git found is 2.55.0, and ILS_LIVE_GIT_VERSION wants 2.56.0",
+			name: "version wanted is not the git found", check: checkLiveGit, target: testtarget.Latest, want: "2.56.0",
+			out: "git version 2.55.0", named: []string{liveGitVersionVar, "2.55.0", "2.56.0"},
+		},
+		{
+			name: "minimum target and a newer gh", check: checkLiveGh, target: testtarget.Minimum, out: "gh version 99.0.0",
+			named: []string{liveGhTargetVar, "99.0.0", github.MinimumVersion},
+		},
+		{
+			name: "version wanted is not the gh found", check: checkLiveGh, target: testtarget.Latest, want: "2.83.2",
+			out: "gh version 2.83.1 (2025-11-13)", named: []string{liveGhVersionVar, "2.83.1", "2.83.2"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := checkLiveGit(tt.target, tt.want, tt.out)
+			err := tt.check(tt.target, tt.want, tt.out)
 
-			assert.Error(t, err, tt.err, "checkLiveGit(%q, %q, %q)", tt.target, tt.want, tt.out)
-		})
-	}
-}
-
-func TestCheckLiveGh_WhenGhIsTheMinimum_ReturnsNil(t *testing.T) {
-	t.Parallel()
-	out := "gh version " + github.MinimumVersion
-
-	err := checkLiveGh(testtarget.Minimum, "", out)
-
-	assert.NilError(t, err)
-}
-
-func TestCheckLiveGh_WhenGhDoesNotSuitTarget_ReturnsError(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name   string
-		target string
-		want   string
-		out    string
-		err    string
-	}{
-		{
-			name: "minimum target and a newer gh", target: testtarget.Minimum, out: "gh version 99.0.0",
-			err: "ILS_LIVE_GH is minimum and the gh found is 99.0.0, want the minimum ils enforces, " + github.MinimumVersion,
-		},
-		{
-			name: "version wanted is not the gh found", target: testtarget.Latest, want: "2.83.2",
-			out: "gh version 2.83.1 (2025-11-13)", err: "the gh found is 2.83.1, and ILS_LIVE_GH_VERSION wants 2.83.2",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			err := checkLiveGh(tt.target, tt.want, tt.out)
-
-			assert.Error(t, err, tt.err, "checkLiveGh(%q, %q, %q)", tt.target, tt.want, tt.out)
+			assert.Assert(t, err != nil, "check(%q, %q, %q) = nil, want the tool found refused", tt.target, tt.want, tt.out)
+			for _, part := range tt.named {
+				assert.Check(t, is.ErrorContains(err, part))
+			}
 		})
 	}
 }

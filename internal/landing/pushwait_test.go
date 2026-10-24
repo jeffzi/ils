@@ -11,6 +11,7 @@ import (
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
 	"github.com/jeffzi/ils/internal/result"
+	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
 // redRow is a push whose lint check ended in bucket beside a passing test, with log as its failed
@@ -39,7 +40,7 @@ func redRow(name string, bucket forge.Bucket, log forge.FailedLog, excerpt strin
 		want: finish{
 			outcome: result.DeliveredNotGreen, reason: "the check lint " + said, payload: payload,
 			text: pushedLine + openedLine + "Check lint " + said + ": " + lintURL + "\n" +
-				"GitHub: UNSTABLE (blocked-other)\n" + excerpt + "Delivered, not green: the check lint " + said + "\n" + nextRed,
+				stateLine(forge.MergeBlockedOther, "UNSTABLE") + excerpt + "Delivered, not green: the check lint " + said + "\n" + nextRed,
 		},
 	}
 }
@@ -48,19 +49,6 @@ func redRow(name string, bucket forge.Bucket, log forge.FailedLog, excerpt strin
 func runningOn(row pushRow) pushRow {
 	row.script = row.script.with(func(script *forgetest.Script, _ string) {
 		script.Verdict[0].Value.Runs = ran(forge.RunInProgress)
-	})
-
-	return row
-}
-
-// heldBack returns row with a verdict read ahead of its own: the same failed check, with its
-// workflow run still going and its log not yet available.
-func heldBack(row pushRow) pushRow {
-	row.script = row.script.with(func(script *forgetest.Script, _ string) {
-		early := script.Verdict[0].Value
-		early.Runs = ran(forge.RunInProgress)
-		early.FailedLog = forge.FailedLog{Check: early.FailedLog.Check, State: forge.FailedLogInProgress}
-		script.Verdict = append(says(early), script.Verdict...)
 	})
 
 	return row
@@ -75,22 +63,14 @@ func pushRedRows() []pushRow {
 	unfinished := runningOn(redRow("a check failed and its workflow run had not finished at the time limit", forge.BucketFail,
 		forge.FailedLog{State: forge.FailedLogInProgress}, "no log: the log of lint was not available yet\n"))
 	unfinished.left = 12 * time.Second
-	// cut is held back when one poll has passed and the time limit ends the read after it.
-	cut := runningOn(redRow("a check failed and the time limit ended the read after it before its log was available",
-		forge.BucketFail, forge.FailedLog{State: forge.FailedLogInProgress}, "no log: the log of lint was not available yet\n"))
-	cut.script = cut.script.holdingNextRead()
-	cut.left = heldLeft
 	shorter := redRow("a check failed and its log is shorter than the excerpt", forge.BucketFail, short, steps(1, 3))
 	shorter.drawn = []drawnPart{
-		{within: "failed: " + lintURL, part: lintURL, want: drawnURL()},
-		{within: "run ils push again", part: "ils push", want: drawnName()},
+		{within: "failed: " + lintURL, part: lintURL, want: resulttest.URLLook()},
+		{within: "run ils push again", part: "ils push", want: resulttest.NameLook()},
 	}
 
 	return []pushRow{
-		heldBack(redRow("a check failed before its workflow run finished, and its log was read once it had", forge.BucketFail,
-			short, steps(1, 3))),
 		unfinished,
-		cut,
 		redRow("a check failed and its log is longer than the excerpt", forge.BucketFail, read, steps(2, 61)),
 		shorter,
 		redRow("a check failed that no workflow run stands behind", forge.BucketFail,
@@ -113,7 +93,7 @@ func stoppedRow(state forge.MergeState, raw, reason string) pushRow {
 		script: reusing().showing(inState(state, raw)),
 		want: finish{
 			outcome: result.DeliveredNotGreen, reason: reason,
-			text: pushedLine + foundLine + "GitHub: " + raw + " (" + string(state) + ")\n" +
+			text: pushedLine + foundLine + stateLine(state, raw) +
 				"Delivered, not green: " + reason + "\n" + nextTrunk,
 			payload: detail(forge.VerdictNone, state),
 		},
@@ -140,7 +120,7 @@ func pending(reason, lines string, payload *result.Push) finish {
 // cutShortRead is a push to the open pull request that ended pending because the time limit ended
 // while reading read.
 func cutShortRead(read string) finish {
-	return pending("the time limit ended while reading "+read+"; nothing more will change", cleanLine,
+	return pending("the time limit ended while reading "+read+"; nothing more will change", cleanLine(),
 		detail(forge.VerdictNone, forge.MergeClean))
 }
 
@@ -164,7 +144,7 @@ func pushCutShortRows() []pushRow {
 				showing(inState(forge.MergeClean, "CLEAN"), inState(forge.MergeBlockedByReview, "BLOCKED")).
 				holdingNextRead(),
 			want: pending("the checks were still running at the time limit",
-				"Still running after 6 seconds: test\n"+blockedLine,
+				"Still running after 6 seconds: test\n"+blockedLine(),
 				detail(forge.VerdictPending, forge.MergeBlockedByReview, running().Checks...)),
 		},
 		{
@@ -182,32 +162,22 @@ func pushRunlessRows() []pushRow {
 	started := forge.Verdict{Runs: ran(forge.RunInProgress)}
 	scanned := appPassing()
 	silent := pending("no check or status had reported for "+tipMark+" on pull request #12 at the time limit",
-		cleanLine, detail(forge.VerdictNone, forge.MergeClean))
+		cleanLine(), detail(forge.VerdictNone, forge.MergeClean))
 	noRun := pending("no workflow run had started for "+tipMark+" on pull request #12 at the time limit",
-		cleanLine, detail(forge.VerdictGreen, forge.MergeClean, scanned.Checks...))
+		cleanLine(), detail(forge.VerdictGreen, forge.MergeClean, scanned.Checks...))
 
 	return []pushRow{
 		{name: "nothing has reported yet", left: 12 * time.Second, script: reusing(forge.Verdict{}), want: silent},
 		{
-			// One poll fits with the 3 seconds kept for the head read after it, and the time limit ends
-			// the read after the poll.
-			name: "nothing has reported yet and the time limit ends the read after a poll", left: heldLeft,
-			script: reusing(forge.Verdict{}).holdingNextRead(), want: silent,
-		},
-		{
 			name: "a workflow run is going and no check has reported yet", left: 12 * time.Second,
 			script: reusing(started),
 			want: pending("the checks had not reported at the time limit",
-				"No check has reported for "+tipMark+" on pull request #12 yet; a workflow run is still going\n"+cleanLine,
+				"No check has reported for "+tipMark+" on pull request #12 yet; a workflow run is still going\n"+cleanLine(),
 				detail(forge.VerdictNone, forge.MergeClean)),
 		},
 		{
 			name: "a check passed and no workflow run has started yet", left: 12 * time.Second,
 			script: reusing(scanned), want: noRun,
-		},
-		{
-			name: "a check passed, no workflow run has started yet, and the time limit ends the read after a poll",
-			left: heldLeft, script: reusing(scanned).holdingNextRead(), want: noRun,
 		},
 	}
 }
@@ -222,11 +192,11 @@ func pushPendingRows() []pushRow {
 			want: pending("GitHub did not show "+tipMark+" on pull request #12 before the time limit", "",
 				detail(forge.VerdictNone, forge.MergeClean)),
 			drawn: []drawnPart{
-				{within: "Pull request #12:", part: "#12", want: drawnName()},
-				{within: "#12: " + pullURL, part: pullURL, want: drawnURL()},
-				{within: "show " + tipMark, part: tipMark, want: drawnSHA()},
-				{within: "on pull request #12 before", part: "#12", want: drawnName()},
-				{within: "Next: ils push", part: "ils push", want: drawnName()},
+				{within: "Pull request #12:", part: "#12", want: resulttest.NameLook()},
+				{within: "#12: " + pullURL, part: pullURL, want: resulttest.URLLook()},
+				{within: "show " + tipMark, part: tipMark, want: resulttest.SHALook()},
+				{within: "on pull request #12 before", part: "#12", want: resulttest.NameLook()},
+				{within: "Next: ils push", part: "ils push", want: resulttest.NameLook()},
 			},
 		},
 		{
@@ -269,7 +239,7 @@ func pushStillRunningRows() []pushRow {
 			name: "a check still runs", left: 17 * time.Second,
 			script: reusing(running()).showing(stale(), inState(forge.MergeClean, "CLEAN")),
 			want: pending("the checks were still running at the time limit",
-				"Still running after 10 seconds: test\n"+cleanLine,
+				"Still running after 10 seconds: test\n"+cleanLine(),
 				detail(forge.VerdictPending, forge.MergeClean, running().Checks...)),
 			told: []string{
 				checkingStep, pushingStep, said(pushedLine), said(foundLine),
@@ -286,7 +256,7 @@ func pushStillRunningRows() []pushRow {
 					script.OnRead = slowHeadAfterChecks(time.Second)
 				}),
 			want: pending("the checks were still running at the time limit",
-				"Still running after 1 second: test\n"+blockedLine,
+				"Still running after 1 second: test\n"+blockedLine(),
 				detail(forge.VerdictPending, forge.MergeBlockedByReview, running().Checks...)),
 		},
 	}

@@ -104,23 +104,34 @@ func (r Runner) invocation(program, installURL string, args []string) invocation
 	return inv
 }
 
-// getenv returns the value key has in the environment git runs with, and whether it is set. A key
-// set twice has its last value, as it does for the child; on Windows keys match without regard to
-// case, as they do there.
+// getenv returns the value key has in the environment git runs with, and whether it is set, as
+// EnvValue reads it.
 func (r Runner) getenv(key string) (string, bool) {
 	if r.Env == nil {
 		return os.LookupEnv(key)
 	}
 
+	return EnvValue(r.Env, key)
+}
+
+// SameKey reports whether name, the key of an environment entry, is key as the system matches
+// keys: exactly, or without regard to case on Windows.
+func SameKey(name, key string) bool {
+	return name == key || (runtime.GOOS == "windows" && strings.EqualFold(name, key))
+}
+
+// EnvValue returns the value key has in env, a list of key=value entries, and whether env sets it.
+// A key set twice has its last value, as it does for a child started with env, and keys match as
+// SameKey matches them.
+func EnvValue(env []string, key string) (string, bool) {
 	var (
 		value string
 		set   bool
 	)
 
-	for _, entry := range r.Env {
+	for _, entry := range env {
 		name, entryValue, ok := strings.Cut(entry, "=")
-		matches := name == key || (runtime.GOOS == "windows" && strings.EqualFold(name, key))
-		if ok && matches {
+		if ok && SameKey(name, key) {
 			value, set = entryValue, true
 		}
 	}
@@ -159,6 +170,10 @@ func (r Runner) lookPath(name string) (string, error) {
 type invocation struct {
 	// record, when set, receives the argv once the tool is found and before it starts.
 	record func(argv []string)
+	// lookPath, when set, finds the tool; Runner.lookPath finds it on the PATH of env, the way git
+	// would find a program it starts with env. Nil finds it on this process's PATH, which is how git
+	// itself is found whatever env holds.
+	lookPath func(name string) (string, error)
 	// logger, when set, receives the record child.Exec.Log writes once the run has ended.
 	logger     *slog.Logger
 	program    string
@@ -166,10 +181,6 @@ type invocation struct {
 	dir        string
 	args       []string
 	env        []string
-	// onEnvPath finds the tool on the PATH of env, as Runner.lookPath does, the way git would find a
-	// program it starts with env. Otherwise the tool is found on this process's PATH, which is how
-	// git itself is found whatever env holds.
-	onEnvPath bool
 }
 
 // run runs the tool as invocation.execute does and, when the invocation has a logger, logs the run
@@ -190,9 +201,9 @@ func (inv invocation) run(ctx context.Context) (Result, error) {
 // started still holds are closed after pipeGrace; such a process does not fail a run that exited
 // zero.
 func (inv invocation) execute(ctx context.Context) (Result, error) {
-	lookPath := exec.LookPath
-	if inv.onEnvPath {
-		lookPath = Runner{Env: inv.env}.lookPath
+	lookPath := inv.lookPath
+	if lookPath == nil {
+		lookPath = exec.LookPath
 	}
 
 	path, err := lookPath(inv.program)
@@ -200,7 +211,7 @@ func (inv invocation) execute(ctx context.Context) (Result, error) {
 		return Result{}, &child.ToolMissingError{Tool: inv.program, InstallURL: inv.installURL, Err: err}
 	}
 
-	argv := append([]string{inv.program}, inv.args...)
+	argv := child.Argv(inv.program, inv.args)
 	if inv.record != nil {
 		inv.record(argv)
 	}

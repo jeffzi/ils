@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
+	"os"
+	"os/signal"
 	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"charm.land/fang/v2"
@@ -21,7 +23,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
-	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/landing"
@@ -52,9 +53,22 @@ type App struct {
 	// buildInfo reads the build info that an empty Version falls back to; nil reads
 	// debug.ReadBuildInfo.
 	buildInfo func() (*debug.BuildInfo, bool)
+	// suspend stops the process when the stop signal of a terminal reaches it; nil sends the
+	// process SIGSTOP.
+	suspend func() error
 	// StderrWidth returns the width in columns of the terminal stderr is, read at each frame of the
 	// spinner; nil, or a width below 1, counts as 80.
 	StderrWidth func() int
+	// StderrForeground reports whether ils is the foreground job of the terminal stderr is, read at
+	// each frame of the spinner. A job in the background still writes to its terminal, so while ils
+	// is not the foreground job the spinner draws nothing. Nil counts as the foreground job.
+	StderrForeground func() bool
+	// Notify relays to c the signals sig, as signal.Notify does. While the spinner line shows, the
+	// display listens through it for an interrupt, a termination or a quit, so that it can show the
+	// cursor before the signal ends the process. From the start of a landing command on, ils also
+	// listens through it for the stop signal of a terminal, so that it can take the spinner line
+	// off stderr before the process stops. Nil listens for none.
+	Notify func(c chan<- os.Signal, sig ...os.Signal)
 	// Launch is when the process started; the deadline of every command counts from it.
 	Launch time.Time
 	// git runs every git call; its zero value runs in the working directory with the process's
@@ -150,7 +164,9 @@ func (f drawnFile) Write(p []byte) (int, error) {
 
 // terminal reports whether a stream that isTerminal counts as one: TERM=dumb makes it none.
 func (a App) terminal(isTerminal bool) bool {
-	return isTerminal && lookup(a.Environ, "TERM") != "dumb"
+	kind, _ := git.EnvValue(a.Environ, "TERM")
+
+	return isTerminal && kind != "dumb"
 }
 
 // ttyForce is the variable through which colorprofile is told that a stream is a terminal.
@@ -163,7 +179,7 @@ const ttyForce = "TTY_FORCE"
 // NO_COLOR is checked here because colorprofile honors it only on a terminal, and lets
 // CLICOLOR_FORCE color a stream that is none.
 func (a App) profile(terminal, noColor bool) colorprofile.Profile {
-	if noColor || lookup(a.Environ, "NO_COLOR") != "" {
+	if value, _ := git.EnvValue(a.Environ, "NO_COLOR"); noColor || value != "" {
 		return colorprofile.NoTTY
 	}
 
@@ -177,18 +193,6 @@ func (a App) profile(terminal, noColor bool) colorprofile.Profile {
 	}
 
 	return colorprofile.Detect(io.Discard, env)
-}
-
-// lookup returns the value of key in env, the last one when env sets it more than once, and ""
-// when env does not set it.
-func lookup(env []string, key string) string {
-	for _, entry := range slices.Backward(env) {
-		if value, ok := strings.CutPrefix(entry, key+"="); ok {
-			return value
-		}
-	}
-
-	return ""
 }
 
 // Version returns the version of the main module that info, the build info of the running binary,
@@ -236,11 +240,8 @@ func (a App) show(r result.Result, gitDir string, encoded bool, profile colorpro
 		return a.fail(err)
 	}
 
-	body := strings.TrimSuffix(out, "\n")
-	last := body[strings.LastIndex(body, "\n")+1:]
-	hinted := a.terminal(a.StdoutTerminal) && r.Outcome == result.Pending
-	if hinted && strings.HasPrefix(ansi.Strip(last), "Next: ") {
-		out = body + "  " + result.PenFor(profile).Styled(ansi.NewStyle().Faint(), pendingHint) + "\n"
+	if a.terminal(a.StdoutTerminal) && r.Outcome == result.Pending && !r.Next.None() {
+		out = strings.TrimSuffix(out, "\n") + "  " + result.PenFor(profile).Styled(result.FaintStyle(), pendingHint) + "\n"
 	}
 
 	return a.print(out, r.Outcome.ExitCode())
@@ -383,6 +384,33 @@ func (p *parse) addOutputFlags(root *cobra.Command) {
 	boolFlag(flags, new(strictBool), flagNames{long: flagNoColor}, "Print without color, as NO_COLOR does")
 }
 
+// strictBool is the value of a flag that takes no value but true and false.
+type strictBool bool
+
+// String returns "true" or "false".
+func (b *strictBool) String() string {
+	return fmt.Sprint(bool(*b))
+}
+
+// Set accepts only "true" and "false" and returns an error for any other value.
+func (b *strictBool) Set(value string) error {
+	switch value {
+	case "true":
+		*b = true
+	case "false":
+		*b = false
+	default:
+		return errors.New("neither true nor false")
+	}
+
+	return nil
+}
+
+// Type returns "bool" so pflag's help shows the flag without a value placeholder.
+func (*strictBool) Type() string {
+	return "bool"
+}
+
 // flagNames is the long and the short spelling of a flag, with their dashes. short is empty for a
 // flag with no short form.
 type flagNames struct {
@@ -395,7 +423,6 @@ func boolFlag(flags *pflag.FlagSet, value pflag.Value, names flagNames, usage st
 	flag.NoOptDefVal = "true"
 }
 
-// landingHelp is the word of a landing command and the help it prints.
 type landingHelp struct {
 	word, short, long, examples string
 }
@@ -440,7 +467,8 @@ func (p *parse) landing(help landingHelp, run, fallback Command) *cobra.Command 
 // origin, and keeps its result, the repository's git dir and the step lines it printed. With debug
 // on, the trace gets every git and gh call, the read of the git dir included, and every decision
 // of the wait. The display is told how the command advances, and is gone from the terminal by the
-// time land returns.
+// time land returns, or by the time an interrupt, a termination or a quit ends the process, or the
+// stop signal of a terminal stops it.
 func (p *parse) land(ctx context.Context, run Command, req landing.Request) {
 	errProfile := p.app.profile(p.app.StderrTerminal, p.noColor)
 	logger := p.logger(errProfile)
@@ -455,7 +483,14 @@ func (p *parse) land(ctx context.Context, run Command, req landing.Request) {
 	shown := p.display(errProfile)
 	deps := landing.Deps{Forge: &github.Forge{Logger: logger}, Repo: repo, Logger: logger, Progress: shown}
 
+	p.app.onStop(shown)
+
 	r := func() result.Result {
+		// The listener goes first so that it outlives the display: end clears the line before stop
+		// detaches the listener, and no signal in between ends ils with the cursor hidden.
+		stop := p.app.onSignal(shown.drop)
+		defer stop()
+
 		shown.start(ctx, gitDir)
 		defer shown.end()
 
@@ -465,129 +500,57 @@ func (p *parse) land(ctx context.Context, run Command, req landing.Request) {
 	p.result, p.gitDir, p.printed = &r, gitDir, shown.printed
 }
 
-// logger returns the logger of the debug trace on Stderr, drawn for profile, when the debug flag is
-// on, and nil when it is off.
-func (p *parse) logger(profile colorprofile.Profile) *slog.Logger {
-	if !p.debug {
-		return nil
+// onSignal calls leave when an interrupt, a termination or a quit reaches the process before the
+// returned stop is called, then ends the process as the signal would have had ils never listened.
+// It listens through Notify, and for nothing when Notify is nil.
+func (a App) onSignal(leave func()) (stop func()) {
+	if a.Notify == nil {
+		return func() {}
 	}
 
-	a := p.app
+	signals := make(chan os.Signal, 1)
+	done := make(chan struct{})
+	a.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
 
-	return slog.New(trace{w: a.Stderr, launch: a.Launch, pen: result.PenFor(profile), mu: &sync.Mutex{}})
-}
-
-// trace is the log handler of the debug trace: it writes each record as one line on w, timed from
-// launch. A git or gh call reads `<tool> <args> exit <code> <duration>`, with the failure in place
-// of `exit <code>` for a call that did not exit; any other record reads its message, then each
-// attribute as key=value. When styled, the time and the duration are dim.
-type trace struct {
-	w      io.Writer
-	launch time.Time
-	// mu keeps the lines of calls logged at once from interleaving.
-	mu    *sync.Mutex
-	group string
-	attrs []slog.Attr
-	pen   result.Pen
-}
-
-// Enabled reports that every level is written.
-func (trace) Enabled(context.Context, slog.Level) bool {
-	return true
-}
-
-// Handle writes r as one line, and returns the error of the write.
-func (h trace) Handle(_ context.Context, r slog.Record) error {
-	attrs := slices.Clone(h.attrs)
-	r.Attrs(func(attr slog.Attr) bool {
-		attrs = append(attrs, h.grouped(attr))
-
-		return true
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		var sig os.Signal
+		select {
+		case <-done:
+			// stop detached the channel before closing done, so a signal that reached it before
+			// stop was called is already buffered; select picks at random when both are ready.
+			select {
+			case sig = <-signals:
+			default:
+				return
+			}
+		case sig = <-signals:
+		}
+		leave()
+		signal.Stop(signals)
+		die(sig)
 	})
 
-	body := r.Message
-	if call, ok := h.call(r.Message, attrs); ok {
-		body = call
-	} else {
-		for _, attr := range attrs {
-			body += " " + attr.Key + "=" + attr.Value.String()
-		}
+	return func() {
+		signal.Stop(signals)
+		close(done)
+		wg.Wait()
 	}
-
-	line := h.dim(fmt.Sprintf("+%.3fs", r.Time.Sub(h.launch).Seconds())) + " " + body + "\n"
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if _, err := io.WriteString(h.w, line); err != nil {
-		return fmt.Errorf("write a debug line: %w", err)
-	}
-
-	return nil
 }
 
-// call returns the line body of a record of one git or gh call, and false when the record is not
-// one.
-func (h trace) call(message string, attrs []slog.Attr) (string, bool) {
-	if message != child.ExecMessage {
-		return "", false
+// die sends sig, which no channel is notified of any longer, to the process, so that it ends the
+// process as it would have had ils never listened for it; a process that ignored sig before ils
+// listened goes on ignoring it. Where sig cannot be sent, as on Windows, the process is killed.
+//
+// It panics when the process can be neither signaled nor killed.
+func die(sig os.Signal) {
+	self, err := os.FindProcess(os.Getpid())
+	if err == nil && self.Signal(sig) != nil {
+		err = self.Kill()
 	}
-
-	var (
-		tool, end string
-		args      []string
-		took      time.Duration
-	)
-
-	for _, attr := range attrs {
-		switch attr.Key {
-		case child.KeyTool:
-			tool = attr.Value.String()
-		case child.KeyArgs:
-			args, _ = attr.Value.Any().([]string)
-		case child.KeyExit:
-			end = "exit " + attr.Value.String()
-		case child.KeyError:
-			end = attr.Value.String()
-		case child.KeyDuration:
-			took, _ = attr.Value.Any().(time.Duration)
-		}
+	if err != nil {
+		panic(fmt.Sprintf("end ils on %v: %v", sig, err))
 	}
-
-	return strings.Join(append([]string{tool}, args...), " ") + " " + end + " " + h.dim(took.Round(time.Millisecond).String()), true
-}
-
-// dim returns text drawn dim when the trace is styled.
-func (h trace) dim(text string) string {
-	return h.pen.Styled(ansi.NewStyle().Faint(), text)
-}
-
-// grouped returns attr with its key under the group of h.
-func (h trace) grouped(attr slog.Attr) slog.Attr {
-	attr.Key = h.group + attr.Key
-
-	return attr
-}
-
-// WithAttrs returns a handler that writes attrs on every line after the record's own message.
-func (h trace) WithAttrs(attrs []slog.Attr) slog.Handler {
-	h.attrs = slices.Clone(h.attrs)
-	for _, attr := range attrs {
-		h.attrs = append(h.attrs, h.grouped(attr))
-	}
-
-	return h
-}
-
-// WithGroup returns a handler that writes the key of every attribute after it under name.
-func (h trace) WithGroup(name string) slog.Handler {
-	if name == "" {
-		return h
-	}
-
-	h.group += name + "."
-
-	return h
 }
 
 // display shows how a landing command advances on the terminals ils prints to: one spinner line
@@ -595,9 +558,11 @@ func (h trace) WithGroup(name string) slog.Handler {
 // stream that gets neither is left untouched. A failed write is not reported: the display never
 // changes the result or the exit code, and a step line that could not be written is not printed.
 type display struct {
-	// stdout and stderr are nil when the stream gets no step line and no spinner.
+	// stdout and stderr are nil when the stream gets no step line and no spinner. drop also sets
+	// stderr to nil, which keeps draw and clear silent once the spinner is gone for good.
 	stdout, stderr io.Writer
 	width          func() int
+	foreground     func() bool
 	stop           chan struct{}
 	// began is when the running step began: the last Started, or the last Said after it.
 	began  time.Time
@@ -632,6 +597,7 @@ func (p *parse) display(errProfile colorprofile.Profile) *display {
 	a := p.app
 	d := &display{
 		width:      a.StderrWidth,
+		foreground: a.StderrForeground,
 		outProfile: p.outProfile,
 		errProfile: errProfile,
 	}
@@ -650,8 +616,13 @@ func (p *parse) display(errProfile colorprofile.Profile) *display {
 // start turns the spinner, if any, until end or until ctx ends; gitDir is the git dir the lines are
 // checked against.
 func (d *display) start(ctx context.Context, gitDir string) {
+	// A signal may call drop while start runs, so stderr is read under the lock.
+	d.mu.Lock()
 	d.gitDir = gitDir
-	if d.stderr == nil {
+	silent := d.stderr == nil
+	d.mu.Unlock()
+
+	if silent {
 		return
 	}
 
@@ -683,10 +654,29 @@ func (d *display) end() {
 		d.wg.Wait()
 	}
 
+	d.drop()
+}
+
+// drop takes the spinner line off stderr for good, which shows the cursor again. It is safe to call
+// from any goroutine, while the spinner still turns: nothing is drawn on stderr after it.
+func (d *display) drop() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	d.clear()
+	d.stderr = nil
+}
+
+// suspend takes the spinner line off stderr, if one stands, and stops the process through stop, both
+// under mu so that no frame draws the line between the two: the first frame after the process
+// continues draws it again. It returns the error of stop.
+func (d *display) suspend(stop func() error) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.clear()
+
+	return stop()
 }
 
 // Started draws the spinner line of the step label names, timed from now.
@@ -724,7 +714,7 @@ func (d *display) Said(line result.Phrase) {
 	}
 
 	pen := result.PenFor(d.outProfile)
-	green := ansi.NewStyle().ForegroundColor(ansi.Green)
+	green := result.GreenStyle()
 	step := pen.Styled(green, "✓") + " " + text + " " + pen.Styled(green.Faint(), took) + "\n"
 
 	if _, err := io.WriteString(d.stdout, step); err == nil {
@@ -745,23 +735,25 @@ func (d *display) Counted(done, total int) {
 // short of the terminal's width so that it never wraps, and padded with spaces to that width so
 // that nothing of the line before is left. The caller holds mu.
 //
-// It moves the cursor with a carriage return alone: no control sequence, which a plain profile
-// never writes.
+// It moves the cursor with a carriage return. Padding parks the cursor in the terminal's last
+// column, so the first draw of a line hides the cursor, whatever the profile, and clear shows it
+// again: those two are the only control sequences the spinner writes besides its colors. While ils
+// is not the terminal's foreground job, it draws nothing and clears the line that stands.
 func (d *display) draw() {
-	if d.stderr == nil || d.label == "" {
+	if d.stderr == nil || d.label == "" || !d.inForeground() {
 		d.clear()
 
 		return
 	}
 
 	pen := result.PenFor(d.errProfile)
-	yellow := ansi.NewStyle().ForegroundColor(ansi.Yellow)
+	yellow := result.YellowStyle()
 	frames := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 
 	line := pen.Styled(yellow, string(frames[d.frame%len(frames)])) + " " + d.label + " " +
 		pen.Styled(yellow, time.Since(d.began).Truncate(time.Second).String())
 	if d.limit > 0 {
-		line += " " + pen.Styled(ansi.NewStyle().Faint(), "of "+d.limit.Round(time.Second).String())
+		line += " " + pen.Styled(result.FaintStyle(), "of "+d.limit.Round(time.Second).String())
 	}
 	if d.total > 0 {
 		line += fmt.Sprintf(", %d of %d done", d.done, d.total)
@@ -774,19 +766,38 @@ func (d *display) draw() {
 		line += ansi.ResetStyle
 	}
 
-	_, _ = io.WriteString(d.stderr, "\r"+line+padding)
+	start := "\r"
+	if !d.drawn {
+		start = ansi.HideCursor + start
+	}
+
+	_, _ = io.WriteString(d.stderr, start+line+padding)
 	d.drawn = true
 }
 
-// clear takes the spinner line off stderr by writing spaces over it, leaving the cursor at the
-// start of its row. The caller holds mu.
+// clear takes the spinner line off stderr by writing spaces over it, and shows the cursor that
+// draw hid, at the start of its row. The caller holds mu.
+//
+// While ils is not the terminal's foreground job, it only shows the cursor and leaves the line
+// standing: the cursor then stands on the line of the shell, which the spaces would wipe.
 func (d *display) clear() {
 	if !d.drawn {
 		return
 	}
 
-	_, _ = io.WriteString(d.stderr, "\r"+strings.Repeat(" ", d.columns())+"\r")
+	wipe := "\r" + strings.Repeat(" ", d.columns()) + "\r"
+	if !d.inForeground() {
+		wipe = ""
+	}
+
+	_, _ = io.WriteString(d.stderr, wipe+ansi.ShowCursor)
 	d.drawn = false
+}
+
+// inForeground reports whether ils is the foreground job of the terminal stderr is; with no query
+// of it, ils is.
+func (d *display) inForeground() bool {
+	return d.foreground == nil || d.foreground()
 }
 
 // columns returns how many columns the spinner line may take: one short of the terminal's width,

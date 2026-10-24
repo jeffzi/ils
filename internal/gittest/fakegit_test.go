@@ -153,10 +153,15 @@ func TestFakeGit_WhenCallStartsWithStallingWords_WaitsAtTheAddressUntilKilled(t 
 	assert.Check(t, is.ErrorIs(ctx.Err(), context.Canceled), "git show-ref ended with %v before it connected", err)
 	exitErr, ok := errors.AsType[*exec.ExitError](err)
 	assert.Assert(t, ok, "git show-ref ended with %v, want it killed while it waited", err)
-	assert.Check(t, exitErr.ExitCode() != gittest.BrokenCode, "git show-ref ended on its own, want it killed while it waited")
+	// A process killed by a signal reports -1 on Unix; on Windows, Kill terminates it with code 1.
+	killed := -1
+	if runtime.GOOS == "windows" {
+		killed = 1
+	}
+	assert.Check(t, is.Equal(exitErr.ExitCode(), killed), "git show-ref ended on its own, want it killed while it waited")
 }
 
-func TestLinkAs_PutsTheToolDirectoryFirstOnPath(t *testing.T) {
+func TestLinkAs(t *testing.T) {
 	const tool = "linked-tool"
 
 	tests := []struct {

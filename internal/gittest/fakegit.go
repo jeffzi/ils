@@ -120,22 +120,33 @@ func FakeGit(tb testing.TB, fake Fake) []string {
 func LinkAs(tb testing.TB, tool string) {
 	tb.Helper()
 
+	dir := tb.TempDir()
+	Link(tb, dir, tool)
+
+	tb.Setenv("PATH", firstOnPath(dir, os.Getenv("PATH")))
+}
+
+// Link links the test binary into dir under the name of tool, with the .exe suffix Windows runs
+// programs by when tool has no extension, and returns the path of the link.
+func Link(tb testing.TB, dir, tool string) string {
+	tb.Helper()
+
 	self, err := os.Executable()
 	if err != nil {
 		tb.Fatalf("gittest: find the test binary: %v", err)
 	}
 
 	name := tool
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" && filepath.Ext(name) == "" {
 		name += ".exe"
 	}
 
-	dir := tb.TempDir()
-	if err := os.Link(self, filepath.Join(dir, name)); err != nil {
+	path := filepath.Join(dir, name)
+	if err := os.Link(self, path); err != nil {
 		tb.Fatalf("gittest: link the test binary as %s: %v", tool, err)
 	}
 
-	tb.Setenv("PATH", firstOnPath(dir, os.Getenv("PATH")))
+	return path
 }
 
 // firstOnPath returns the search path path with dir put first. An empty path gives dir alone: a

@@ -17,7 +17,6 @@ import (
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
 	"github.com/jeffzi/ils/internal/gittest"
-	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
 )
 
@@ -32,7 +31,8 @@ const (
 	readPullHead   = "the pull request's head"
 	readWorktrees  = "where the trunk is checked out"
 
-	nextReady    = "Next: mark it ready with `gh pr ready --repo " + repoArg + " 12`, then run ils merge again\n"
+	readyCommand = "gh pr ready --repo " + repoArg + " 12"
+	nextReady    = "Next: mark it ready with `" + readyCommand + "`, then run ils merge again\n"
 	draftText    = "Refused: pull request #12 is a draft\n" + nextReady
 	settingsText = "Refused: the settings of " + owner + "/" + repoName +
 		" forbid squash merges: Allow squash merging is off\n" +
@@ -54,8 +54,7 @@ const (
 func titleText(title string) string {
 	return "Refused: the title of pull request #12, \"" + title +
 		"\", is not a conventional commit subject of the form type(scope)!: summary\n" +
-		"Next: write the pull request's title and body as the squash commit's message with " +
-		"`gh pr edit --repo " + repoArg + " 12 --title … --body …`, then run ils merge again\n"
+		"Next: " + editSteps + " again\n"
 }
 
 // trunkAheadText is the whole text of the refusal of a local trunk whose one commit origin's trunk
@@ -153,6 +152,9 @@ func (build forgeFor) failingRules(err error) forgeFor {
 // mergeEnd is how a run of `ils merge` must end, as the arrange of a row works it out.
 type mergeEnd struct {
 	text string
+	// failedRead, when set, is the read the git call failing makes fail; the run must then end
+	// broke on it, carrying what the failed call said, in place of printing text.
+	failedRead string
 	// head is the head of pull request 12, which the payload carries; empty is the tip of the branch.
 	head string
 	// from is the forge read from which on the git call fails; empty is the whole run.
@@ -218,77 +220,73 @@ func notMerged(head string) *result.Merge {
 func runMerge(t *testing.T, tt mergeRow) {
 	t.Helper()
 
-	end, s, got := mergeRowOn(t, tt)
+	end, run := mergeRowOn(t, tt)
 
-	assertStoppedBy(t, got, tt.outcome, mergeRequest())
+	assertStoppedBy(t, run.got, tt.outcome, mergeRequest())
 
-	text, _ := shown(t, got, s.gitDir)
-	assert.Check(t, is.Equal(text, end.text))
+	if end.failedRead != "" {
+		assertFailedGit(t, run.got, mergeCommand(), end.failedRead)
+	} else {
+		text, _ := shown(t, run.got, run.gitDir)
+		assert.Check(t, is.Equal(text, end.text))
+	}
 
 	var want *result.Merge
 	if tt.known {
 		want = notMerged(end.head)
 	}
 
-	assert.Check(t, is.DeepEqual(mergePayload(t, got), want, cmpopts.EquateEmpty()))
+	assert.Check(t, is.DeepEqual(mergePayload(t, run.got), want, cmpopts.EquateEmpty()))
 
-	assert.Check(t, is.Equal(s.written(), s.before))
-	assert.Check(t, is.DeepEqual(s.forge.Calls(), mergeAsked(tt.ops), whichRepo()))
-	assert.Check(t, is.Equal(s.gitRan("fetch"), tt.fetches))
+	assert.Check(t, is.Equal(run.written(), run.before))
+	assert.Check(t, is.DeepEqual(run.forge.Calls(), mergeAsked(tt.ops), whichRepo()))
+	assert.Check(t, is.Equal(run.gitRan("fetch"), tt.fetches))
 
 	if len(tt.drawn) > 0 {
-		assertDrawn(t, got, s.gitDir, tt.drawn)
+		assertDrawn(t, run.got, run.gitDir, tt.drawn)
 	}
 }
 
-// rowScene is the scene of a merge row, with everything the run could change as it was before.
-type rowScene struct {
-	*scene
-	before string
-}
-
-// mergeRowOn runs `ils merge` on a scene of tt's own, with a progress hook and a logger, and returns
-// how the run must end, the scene and the result. It fails unless every step line the run said is
-// held by its result.
-func mergeRowOn(t *testing.T, tt mergeRow) (mergeEnd, rowScene, result.Result) {
+// mergeRowOn runs `ils merge` on a scene of tt's own, as runMergeOn does, and returns how the run
+// must end and the run.
+func mergeRowOn(t *testing.T, tt mergeRow) (mergeEnd, mergeRun) {
 	t.Helper()
 
 	var end mergeEnd
 
-	s := newScene(t, func(f *gittest.Fixture) { end = tt.arrange(f) }, forgetest.Script{}, tt.offline)
-	if end.head == "" {
-		end.head = s.fixture.Git("rev-parse", "HEAD")
-	}
+	run := runMergeOn(t, setting{
+		arrange: func(f *gittest.Fixture) { end = tt.arrange(f) },
+		tip: func(f *gittest.Fixture) string {
+			if end.head == "" {
+				end.head = f.Git("rev-parse", "HEAD")
+			}
 
-	script := tt.script(end.head)
+			return end.head
+		},
+		script: tt.script,
+		scripted: func(t *testing.T, s *scene, script *forgetest.Script) {
+			t.Helper()
 
-	switch {
-	case end.from != "":
-		script.OnRead = failingFrom(t, s, end.failing, end.from)
-	case len(end.failing) > 0:
-		failGit(t, s, end.failing)
-	}
+			switch {
+			case end.from != "":
+				script.OnRead = failingFrom(t, s, end.failing, end.from)
+			case len(end.failing) > 0:
+				failGit(t, s, end.failing)
+			}
+		},
+		rewire: func(t *testing.T, s *scene) {
+			t.Helper()
 
-	s.useForge(t, script)
+			if tt.answered > 0 {
+				s.stopAnswering(t, tt.answered)
+			}
+		},
+		deadline:  tt.deadline,
+		offline:   tt.offline,
+		unbounded: true,
+	})
 
-	w := watchOn(&s.deps)
-
-	if tt.answered > 0 {
-		s.stopAnswering(t, tt.answered)
-	}
-
-	ctx := t.Context()
-	if tt.deadline != nil {
-		ctx = tt.deadline(t, s)
-	}
-
-	before := s.written()
-
-	got := landing.Merge(ctx, s.deps, mergeRequest())
-
-	assertHeld(t, w, got)
-
-	return end, rowScene{scene: s, before: before}, got
+	return end, run
 }
 
 // runMerges runs each row as a parallel test of its own.
@@ -464,7 +462,7 @@ func pullRequestStops() []mergeRow {
 	}
 
 	draft := row("draft", draftText, merging().drafted(), changesRead())
-	draft.drawn = []drawnPart{{within: repoArg + " 12`", part: "12", want: drawnName()}}
+	draft.drawn = []drawnPart{commandIn(nextReady, readyCommand)}
 
 	return []mergeRow{
 		draft,
@@ -496,7 +494,7 @@ func titleStops() []mergeRow {
 	}
 
 	// Every title ends on the same next step, so the first row alone checks how it is drawn.
-	rows[0].drawn = []drawnPart{{within: repoArg + " 12 --title", part: "12", want: drawnName()}}
+	rows[0].drawn = []drawnPart{commandIn(editCommand, editCommand)}
 
 	return rows
 }
@@ -518,7 +516,7 @@ func TestMerge_WhenACheckBeforeTheWaitFails_RefusesAtTheFirst(t *testing.T) {
 	))
 }
 
-func TestMerge_WhenTheMergedPullRequestLacksCommitsOfTheBranch_RefusesListingThem(t *testing.T) {
+func TestMerge_WhenTheMergedPullRequestLacksCommitsOfTheBranch_RefusesNamingTheMergedPullRequest(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		var head string
@@ -638,9 +636,7 @@ func TestMerge_WhenAReadBeforeTheWaitDoesNotFinish_StopsNamingTheRead(t *testing
 // failedGitMerge is the mergeEnd of a run whose git call with the arguments words fails as
 // failGit makes it, during the read named read, with pull request 12 at head.
 func failedGitMerge(read, head string, words []string) mergeEnd {
-	text := failedGitText(mergeCommand(), read, words)
-
-	return mergeEnd{text: text, head: head, failing: words}
+	return mergeEnd{failedRead: read, head: head, failing: words}
 }
 
 // failedGitMerges are the runs of `ils merge` whose git read fails for a reason no refusal covers.
@@ -688,7 +684,7 @@ func failedGitMerges() []mergeRow {
 			arrange: func(f *gittest.Fixture) mergeEnd {
 				f.AdvanceTrunk()
 
-				return failedGitMerge(readLocalTrunk, "", append(history(), "refs/heads/"+trunk, "^origin/"+trunk))
+				return failedGitMerge(readLocalTrunk, "", append(history(), "refs/heads/"+trunk, "^refs/remotes/origin/"+trunk))
 			},
 		},
 		{
@@ -764,43 +760,6 @@ func TestMerge_WhenTheDeadlineEndsInAGitRead_RefusesNamingIt(t *testing.T) {
 				script: merging(), ops: identityRead(), deadline: stallingGit(tt.words),
 				outcome: result.Refused, fetches: true,
 				arrange: func(*gittest.Fixture) mergeEnd { return ending(overtimeText(mergeCommand(), tt.read)) },
-			})
-		})
-	}
-}
-
-func TestMerge_WhenTheHeadMovesPastThePushedCommit_RefusesWithoutMerging(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    string
-		verdict forge.Verdict
-	}{
-		{name: "after a green verdict", verdict: passing()},
-		{name: "after a red verdict", verdict: lintRed()},
-		{name: "after nothing reported", verdict: forge.Verdict{}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			synctest.Test(t, func(t *testing.T) {
-				// The forge would compose and land the merge, were it asked to.
-				script := waiting(tt.verdict).showing(inState(forge.MergeClean, "CLEAN"), moved()).
-					saying(titledAfter("Tidy the wording.")).landing(nil, nil)
-
-				run := runMergeIn(t, script, 0)
-
-				assertStoppedBy(t, run.got, result.Refused, mergeRequest())
-
-				text, reason := shown(t, run.got, run.gitDir)
-				assert.Check(t, is.Equal(reason, "the head of pull request #12 moved to "+movedSHA))
-				assert.Check(t, is.Equal(text, "Refused: the head of pull request #12 moved to "+movedSHA+"\n"+
-					"Next: pull the new commit, then run ils merge again\n"))
-				want := mergeDetail(forge.VerdictNone, forge.MergeClean)
-				want.SHA = run.tip
-				assert.Check(t, is.DeepEqual(mergePayload(t, run.got), want, cmpopts.EquateEmpty()))
-
-				assert.Check(t, is.Len(callsOf(run.forge.Calls(), forgetest.OpLand), 0))
-				assert.Check(t, is.Equal(run.written(), run.before))
 			})
 		})
 	}

@@ -154,7 +154,7 @@ func (r Repo) DirtyFiles(ctx context.Context) ([]string, error) {
 // Divergence returns how many commits a has that b lacks, and how many b has that a lacks.
 func (r Repo) Divergence(ctx context.Context, a, b string) (Divergence, error) {
 	args := []string{"rev-list", "--left-right", "--count", a + "..." + b}
-	call := child.CommandLine(append([]string{program}, args...))
+	call := child.CommandLine(child.Argv(program, args))
 
 	out, err := r.line(ctx, args...)
 	if err != nil {
@@ -204,7 +204,7 @@ func (r Repo) LocalTrunkAhead(ctx context.Context, trunk string) (ahead bool, pa
 
 	local := headsRef + trunk
 
-	behind, err := r.Contains(ctx, "refs/remotes/"+origin+"/"+trunk, local)
+	behind, err := r.Contains(ctx, originTrunk(trunk), local)
 	if err != nil || behind {
 		return false, nil, err
 	}
@@ -273,9 +273,9 @@ func (r Repo) Switch(ctx context.Context, branch string) error {
 	return err
 }
 
-// DetachAtOrigin detaches HEAD at origin/<trunk> as last fetched, keeping untracked files.
+// DetachAtOrigin detaches HEAD at origin's trunk as last fetched, keeping untracked files.
 func (r Repo) DetachAtOrigin(ctx context.Context, trunk string) error {
-	_, err := r.Runner.Run(ctx, "switch", "--quiet", "--detach", origin+"/"+trunk)
+	_, err := r.Runner.Run(ctx, "switch", "--quiet", "--detach", originTrunk(trunk))
 
 	return err
 }
@@ -458,5 +458,12 @@ func (r Repo) commits(ctx context.Context, revisions ...string) ([]Commit, error
 
 // excludeTrunk returns the revision argument that leaves out everything origin's trunk has.
 func excludeTrunk(trunk string) string {
-	return "^" + origin + "/" + trunk
+	return "^" + originTrunk(trunk)
+}
+
+// originTrunk returns the remote-tracking ref of origin's trunk in full. Git resolves the short
+// origin/<trunk> to a local branch of that name when one exists, which would stand in for origin's
+// trunk.
+func originTrunk(trunk string) string {
+	return "refs/remotes/" + origin + "/" + trunk
 }

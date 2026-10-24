@@ -5,8 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"path/filepath"
-	"slices"
-	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +15,7 @@ import (
 	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/github/ghtest"
+	"github.com/jeffzi/ils/internal/logtest"
 )
 
 // No test that scripts `gh` is parallel: the fake `gh` is found through `GH_PATH`,
@@ -115,18 +114,11 @@ func TestRunner_Run_WhenGhExitsNonZero_ReturnsExitErrorAndStdout(t *testing.T) {
 func TestRunner_Run_WhenContextIsCanceledWhileGhRuns_ReturnsContextError(t *testing.T) {
 	args := []string{"pr", "checks", "7"}
 	fake := ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "pass\n", Delay: 30 * time.Second}, args...))
-	ctx, cancel := context.WithCancel(t.Context())
-	t.Cleanup(cancel)
-	ran := make(chan error, 1)
-	go func() {
+	cancel, ran := fake.RunHeld(func(ctx context.Context) error {
 		_, err := github.Runner{}.Run(ctx, args...)
-		ran <- err
-	}()
-	select {
-	case <-fake.Holding():
-	case err := <-ran:
-		t.Fatalf("Run(pr checks) returned %v before the fake held its answer", err)
-	}
+
+		return err
+	})
 
 	cancel()
 	err := <-ran
@@ -167,68 +159,21 @@ type loggedCall struct {
 // such as the one on Windows, and log 0s.
 type measured struct{}
 
-// logSink keeps every record logged through the loggers built on it.
-type logSink struct {
-	calls []loggedCall
-	mu    sync.Mutex
-}
+// loggedCalls is every record sink received, in order, as loggedCalls.
+func loggedCalls(sink *logtest.Sink) []loggedCall {
+	records := sink.Records()
+	calls := make([]loggedCall, 0, len(records))
 
-// Calls is every record the sink received, in order.
-func (s *logSink) Calls() []loggedCall {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	for _, record := range records {
+		attrs := make(map[string]any, len(record.Attrs))
+		for _, attr := range record.Attrs {
+			attrs[attr.Key] = valueOf(attr.Value)
+		}
 
-	return slices.Clone(s.calls)
-}
-
-// newLogger is a logger that sends every record, at any level, to the sink it returns.
-func newLogger() (*slog.Logger, *logSink) {
-	sink := &logSink{}
-
-	return slog.New(sinkHandler{sink: sink}), sink
-}
-
-// sinkHandler is the slog.Handler that feeds a logSink, with the attributes and group added
-// through With and WithGroup.
-type sinkHandler struct {
-	sink   *logSink
-	prefix string
-	attrs  []slog.Attr
-}
-
-func (sinkHandler) Enabled(context.Context, slog.Level) bool { return true }
-
-func (h sinkHandler) Handle(_ context.Context, record slog.Record) error {
-	attrs := map[string]any{}
-	for _, attr := range h.attrs {
-		attrs[attr.Key] = valueOf(attr.Value)
-	}
-	record.Attrs(func(attr slog.Attr) bool {
-		attrs[h.prefix+attr.Key] = valueOf(attr.Value)
-		return true
-	})
-
-	h.sink.mu.Lock()
-	defer h.sink.mu.Unlock()
-	h.sink.calls = append(h.sink.calls, loggedCall{Message: record.Message, Attrs: attrs})
-
-	return nil
-}
-
-func (h sinkHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	h.attrs = slices.Clone(h.attrs)
-	for _, attr := range attrs {
-		attr.Key = h.prefix + attr.Key
-		h.attrs = append(h.attrs, attr)
+		calls = append(calls, loggedCall{Message: record.Message, Attrs: attrs})
 	}
 
-	return h
-}
-
-func (h sinkHandler) WithGroup(name string) slog.Handler {
-	h.prefix += name + "."
-
-	return h
+	return calls
 }
 
 // valueOf is what a loggedCall holds for value: measured{} for a duration that is not negative,
@@ -242,39 +187,25 @@ func valueOf(value slog.Value) any {
 	return value.Any()
 }
 
-// exitedCall is the record Runner logs for a gh call with args that exited with code: message "exec",
-// tool "gh", args and exit, and a measured duration.
-func exitedCall(code int64, args ...string) loggedCall {
-	return loggedCall{
-		Message: "exec",
-		Attrs:   map[string]any{"tool": "gh", "args": args, "exit": code, "duration": measured{}},
-	}
+// execCall is the record run logs, as a loggedCall.
+func execCall(t *testing.T, run child.Exec) loggedCall {
+	t.Helper()
+
+	logger, sink := logtest.New()
+	run.Log(t.Context(), logger)
+
+	calls := loggedCalls(sink)
+	assert.Assert(t, is.Len(calls, 1))
+
+	return calls[0]
 }
 
-// failedCall is the record of the gh call with args that ended with err instead of an exit code.
-func failedCall(err error, args ...string) loggedCall {
-	return loggedCall{
-		Message: "exec",
-		Attrs:   map[string]any{"tool": "gh", "args": args, "error": err.Error(), "duration": measured{}},
-	}
-}
-
-func TestRunner_Run_WhenLoggerSet_LogsToolArgvExitCodeAndDuration(t *testing.T) {
+func TestRunner_Run_WhenLoggerSet_LogsToolArgvOutcomeAndDuration(t *testing.T) {
 	args := []string{"pr", "checks", "7"}
 	ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "build\tpending\n", Stderr: "still running\n", Code: 8}, args...))
-	logger, sink := newLogger()
+	logger, sink := logtest.New()
 
-	_, _ = github.Runner{Logger: logger}.Run(t.Context(), args...)
+	_, err := github.Runner{Logger: logger}.Run(t.Context(), args...)
 
-	assert.Check(t, is.DeepEqual(sink.Calls(), []loggedCall{exitedCall(8, args...)}))
-}
-
-func TestRunner_Run_WhenLoggerSetAndGhMissing_LogsTheFailure(t *testing.T) {
-	withoutGh(t, filepath.Join(t.TempDir(), "gh"))
-	logger, sink := newLogger()
-
-	_, err := github.Runner{Logger: logger}.Run(t.Context(), "pr", "view")
-	assert.Assert(t, err != nil, "Run(pr view) error = nil, want what starting gh failed with")
-
-	assert.Check(t, is.DeepEqual(sink.Calls(), []loggedCall{failedCall(err, "pr", "view")}))
+	assert.Check(t, is.DeepEqual(loggedCalls(sink), []loggedCall{execCall(t, child.Exec{Tool: "gh", Args: args, Err: err})}))
 }

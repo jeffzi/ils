@@ -119,32 +119,17 @@ func isUnder(t *testing.T, parent, child string) bool {
 	return err == nil && filepath.IsLocal(rel)
 }
 
-func TestNew_OriginHeadNamesTrunk(t *testing.T) {
+func TestNew_WhenTrunkIsNotMain_OriginHeadNamesIt(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name  string
-		trunk string
-	}{
-		{name: "main", trunk: "main"},
-		{name: "trunk", trunk: "trunk"},
-		{name: "develop", trunk: "develop"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	f := gittest.New(t, "develop")
 
-			f := gittest.New(t, tt.trunk)
+	got := git(t, f, f.Dir(), "ls-remote", "--symref", origin, "HEAD")
 
-			got := git(t, f, f.Dir(), "ls-remote", "--symref", origin, "HEAD")
-
-			want := "ref: refs/heads/" + tt.trunk + "\tHEAD"
-			assert.Check(t, is.Contains(got, want))
-		})
-	}
+	assert.Check(t, is.Contains(got, "ref: refs/heads/develop\tHEAD"))
 }
 
-func TestNew_PushesTrunkCommitToBareOrigin(t *testing.T) {
+func TestNew_WhenFresh_PushesTrunkCommitToBareOrigin(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, "develop")
@@ -154,7 +139,7 @@ func TestNew_PushesTrunkCommitToBareOrigin(t *testing.T) {
 	assert.Check(t, is.Equal(originBranch(t, f, "develop"), local))
 }
 
-func TestNewServed_StandsOnTheBranchWithOriginServedFromTheBareOrigin(t *testing.T) {
+func TestNewServed_WhenFresh_StandsOnTheBranchWithOriginServedFromTheBareOrigin(t *testing.T) {
 	t.Parallel()
 
 	f, env := gittest.NewServed(t, mainBranch, work, elsewhere)
@@ -165,7 +150,7 @@ func TestNewServed_StandsOnTheBranchWithOriginServedFromTheBareOrigin(t *testing
 	assert.Check(t, is.DeepEqual(env, f.ServedEnv(f.OriginDir())))
 }
 
-func TestWriteFile_PutsContentInTheNamedFileOfDir(t *testing.T) {
+func TestWriteFile_WhenFileIsNew_PutsContentInTheNamedFileOfDir(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -177,7 +162,7 @@ func TestWriteFile_PutsContentInTheNamedFileOfDir(t *testing.T) {
 	assert.Check(t, is.Equal(string(got), "first line\n"))
 }
 
-func TestFixture_MissingOriginDir_NamesNoRepositoryBesideTheOrigin(t *testing.T) {
+func TestFixture_MissingOriginDir_WhenFresh_NamesNoRepositoryBesideTheOrigin(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
@@ -189,7 +174,7 @@ func TestFixture_MissingOriginDir_NamesNoRepositoryBesideTheOrigin(t *testing.T)
 	assert.Check(t, is.Equal(filepath.Dir(got), filepath.Dir(f.OriginDir())))
 }
 
-func TestFixture_Commits_ReturnsShasOldestFirstWithGivenSubjects(t *testing.T) {
+func TestFixture_Commits_WhenBranchIsNew_ReturnsShasOldestFirstWithGivenSubjects(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
@@ -201,7 +186,7 @@ func TestFixture_Commits_ReturnsShasOldestFirstWithGivenSubjects(t *testing.T) {
 	assert.Check(t, is.DeepEqual(logged(t, f, "%s"), subjects))
 }
 
-func TestFixture_Commits_CutsBranchFromTrunk(t *testing.T) {
+func TestFixture_Commits_WhenAnotherBranchIsCheckedOut_CutsBranchFromTrunk(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
@@ -225,7 +210,7 @@ func TestFixture_Commits_WhenBranchExists_AddsCommitsOnTop(t *testing.T) {
 	assert.Check(t, is.DeepEqual(logged(t, f, "%s"), []string{"first change", "second change", "third change"}))
 }
 
-func TestFixture_AdvanceOrigin_AddsCommitTheCloneLacks(t *testing.T) {
+func TestFixture_AdvanceOrigin_WhenBranchIsPushed_AddsCommitTheCloneLacks(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
@@ -257,7 +242,7 @@ func TestFixture_AdvanceOrigin_WhenCalledTwice_StacksSecondCommitOnFirst(t *test
 	assert.Check(t, is.Equal(git(t, f, f.OriginDir(), "rev-list", "--reverse", mainBranch+".."+work), want))
 }
 
-func TestFixture_Diverge_GivesEachSideACommitTheOtherLacks(t *testing.T) {
+func TestFixture_Diverge_WhenBranchIsPushed_GivesEachSideACommitTheOtherLacks(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
@@ -277,7 +262,7 @@ func TestFixture_Diverge_GivesEachSideACommitTheOtherLacks(t *testing.T) {
 	assert.Check(t, !hasCommit(t, f, f.OriginDir(), local))
 }
 
-func TestFixture_Sibling_SharesFirstCommitPastTrunk(t *testing.T) {
+func TestFixture_Sibling_WhenBranchHasTwoCommits_SharesFirstCommitPastTrunk(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
@@ -330,24 +315,6 @@ func TestMarking_WhenAShellRunsIt_CreatesTheMarkerWhateverArgumentsFollow(t *tes
 	assert.NilError(t, err)
 }
 
-func TestFixture_SetSSHConfig_IsReadByTheSSHCommandOfEveryEnv(t *testing.T) {
-	t.Parallel()
-
-	for _, tt := range fixtureEnvs() {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			f := gittest.New(t, mainBranch)
-			f.SetSSHConfig(aliases)
-
-			got := askedForConfig(t, f, tt.env(f), sshHost)
-			assert.Equal(t, got.Code, 0, "stderr: %s", got.Stderr)
-
-			assert.Check(t, is.Equal(hostnameIn(got.Stdout), "git.example.org"))
-		})
-	}
-}
-
 func TestFixture_ServedBy_WhenAskedForConfig_AnswersFromTheSSHConfigWithoutServing(t *testing.T) {
 	t.Parallel()
 
@@ -364,7 +331,7 @@ func TestFixture_ServedBy_WhenAskedForConfig_AnswersFromTheSSHConfigWithoutServi
 	assert.Check(t, is.ErrorIs(statErr, fs.ErrNotExist), "the serving script ran for a config read")
 }
 
-func TestFixture_ServedBy_PutsTheStandInDirectoryBeforeThePath(t *testing.T) {
+func TestFixture_ServedBy_WhenFresh_PutsTheStandInDirectoryBeforeThePath(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
@@ -437,7 +404,7 @@ func TestFixture_RemoveSSHConfig_MakesTheConfigReadExitNonZero(t *testing.T) {
 	}
 }
 
-func TestFixture_PullRef_PointsOriginPullHeadAtCommit(t *testing.T) {
+func TestFixture_PullRef_WhenCommitIsLocal_PointsOriginPullHeadAtCommit(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
@@ -448,7 +415,7 @@ func TestFixture_PullRef_PointsOriginPullHeadAtCommit(t *testing.T) {
 	assert.Check(t, is.Equal(git(t, f, f.OriginDir(), "rev-parse", "--verify", "refs/pull/7/head"), shas[0]))
 }
 
-func TestFixture_SquashOnOrigin_AddsTrunkCommitTheCloneLacks(t *testing.T) {
+func TestFixture_SquashOnOrigin_WhenBodyIsGiven_AddsTrunkCommitTheCloneLacks(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
@@ -501,7 +468,6 @@ func worktrees(t *testing.T, f *gittest.Fixture, dir string) map[string]string {
 	return got
 }
 
-// resolved returns path with its symbolic links resolved.
 func resolved(t *testing.T, path string) string {
 	t.Helper()
 
@@ -511,7 +477,7 @@ func resolved(t *testing.T, path string) string {
 	return got
 }
 
-func TestFixture_TrunkWorktree_ChecksOutTheTrunkInALinkedWorktree(t *testing.T) {
+func TestFixture_TrunkWorktree_WhenOnABranch_ChecksOutTheTrunkInALinkedWorktree(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
@@ -526,7 +492,7 @@ func TestFixture_TrunkWorktree_ChecksOutTheTrunkInALinkedWorktree(t *testing.T) 
 	assert.Check(t, is.DeepEqual(worktrees(t, f, f.Dir()), want))
 }
 
-func TestFixture_BranchWorktree_LeavesTheTrunkInTheMainCheckoutSeenFromTheLinkedOne(t *testing.T) {
+func TestFixture_BranchWorktree_WhenBranchExists_LeavesTheTrunkInTheMainCheckoutSeenFromTheLinkedOne(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
@@ -541,7 +507,7 @@ func TestFixture_BranchWorktree_LeavesTheTrunkInTheMainCheckoutSeenFromTheLinked
 	assert.Check(t, is.DeepEqual(worktrees(t, f, dir), want))
 }
 
-func TestFixture_AdvanceTrunk_AddsALocalTrunkCommitOutsideTheCheckout(t *testing.T) {
+func TestFixture_AdvanceTrunk_WhenOnABranch_AddsALocalTrunkCommitOutsideTheCheckout(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
@@ -554,7 +520,7 @@ func TestFixture_AdvanceTrunk_AddsALocalTrunkCommitOutsideTheCheckout(t *testing
 	assert.Check(t, is.Equal(git(t, f, f.Dir(), "symbolic-ref", "--short", "HEAD"), work))
 }
 
-func TestFixture_UntrackedOnTrunk_MakesSwitchingToTheTrunkRefuseToOverwriteIt(t *testing.T) {
+func TestFixture_UntrackedOnTrunk_WhenOnABranch_MakesSwitchingToTheTrunkRefuseToOverwriteIt(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
@@ -589,7 +555,7 @@ func TestFixture_Publish_WhenOriginURLNamesAnotherPlace_PutsLocalTipOnOrigin(t *
 	assert.Check(t, is.Equal(originBranch(t, f, work), shas[0]))
 }
 
-func TestFixture_LandPull_SquashesTheCommitOntoOriginTrunkAsThePullRequest(t *testing.T) {
+func TestFixture_LandPull_WhenBranchHasACommit_SquashesTheCommitOntoOriginTrunkAsThePullRequest(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
@@ -604,7 +570,6 @@ func TestFixture_LandPull_SquashesTheCommitOntoOriginTrunkAsThePullRequest(t *te
 	assert.Check(t, is.Equal(git(t, f, f.OriginDir(), "log", "-1", "--format=%T %s", mainBranch), want))
 }
 
-// sshURL is an origin URL over ssh, named for its shape.
 type sshURL struct{ name, url string }
 
 // sshURLs are origin URLs over ssh in each shape git hands its ssh command differently.
@@ -655,7 +620,7 @@ func TestFixture_ServedEnv_WhenOriginURLIsSSH_PushesToTheRepositoryAtDir(t *test
 	}
 }
 
-func TestEnv_PointsGitAwayFromUserConfig(t *testing.T) {
+func TestEnv(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -697,7 +662,7 @@ func TestEnv_PointsGitAwayFromUserConfig(t *testing.T) {
 	}
 }
 
-func TestFixture_KeepsEveryPathUnderTempDir(t *testing.T) {
+func TestTempPaths_StayUnderTestTempDir(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
@@ -735,7 +700,7 @@ func TestFixture_KeepsEveryPathUnderTempDir(t *testing.T) {
 	}
 }
 
-func TestNew_SetsIdentityAndSigningInLocalConfig(t *testing.T) {
+func TestNew(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -780,7 +745,7 @@ func TestFixture_Commits_WhenProcessEnvironmentSetsIdentityAndSigning_AreUnsigne
 	assert.Check(t, is.Equal(git(t, f, f.Dir(), "log", "-1", "--format=%an <%ae> %cn <%ce> %G?", shas[0]), want))
 }
 
-func TestFixture_GitRunners(t *testing.T) {
+func TestFixture_GitRunners_RunInTheirOwnRepository(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {

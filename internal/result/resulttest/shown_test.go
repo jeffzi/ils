@@ -9,19 +9,6 @@ import (
 	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
-// spyTB records failures reported through it instead of failing the real test.
-type spyTB struct {
-	failed bool
-}
-
-func (*spyTB) Helper() {}
-
-func (*spyTB) Log(...any) {}
-
-func (s *spyTB) Fail() { s.failed = true }
-
-func (s *spyTB) FailNow() { s.failed = true }
-
 func TestAssertCarried(t *testing.T) {
 	t.Parallel()
 	carrier := resulttest.Shown{
@@ -41,6 +28,7 @@ func TestAssertCarried(t *testing.T) {
 		{name: "a refusal behind its label", outcome: "refused", text: "Refused: the branch is the trunk\n"},
 		{name: "a break behind its label", outcome: "broke", text: "Broke: the branch is the trunk\n"},
 		{name: "a pending reason behind its label", outcome: "pending", text: "Pending: the branch is the trunk\n"},
+		{name: "an ask reason behind its label", outcome: "ask", text: "Ask: the branch is the trunk\n"},
 		{
 			name: "a delivered, not green reason behind its label", outcome: "delivered-not-green",
 			text: "Delivered, not green: the branch is the trunk\n",
@@ -62,7 +50,7 @@ func TestAssertCarried(t *testing.T) {
 			t.Parallel()
 			shown := carrier
 			shown.Outcome = tt.outcome
-			spy := &spyTB{}
+			spy := &recordingTB{}
 
 			resulttest.AssertCarried(spy, tt.text, shown)
 

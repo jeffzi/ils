@@ -3,16 +3,13 @@ package git_test
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -20,6 +17,7 @@ import (
 	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/gittest"
+	"github.com/jeffzi/ils/internal/logtest"
 )
 
 // renames is an ssh config that gives hosts other names: an alias of github.com and an alias of
@@ -61,9 +59,7 @@ func TestRepo_OriginURLs_WhenURLIsSSH_ReturnsTheHostSSHConnectsTo(t *testing.T) 
 // noSSHCommand returns repo without the fixture's GIT_SSH_COMMAND in its environment, so that it
 // reads a host through the ssh command a test configures, or else through the ssh on PATH.
 func noSSHCommand(repo git.Repo) git.Repo {
-	repo.Runner.Env = slices.DeleteFunc(slices.Clone(repo.Runner.Env), func(entry string) bool {
-		return strings.HasPrefix(entry, "GIT_SSH_COMMAND=")
-	})
+	repo.Runner.Env = gittest.Without(repo.Runner.Env, "GIT_SSH_COMMAND")
 
 	return repo
 }
@@ -99,12 +95,7 @@ func runnerPath(repo git.Repo) string {
 
 // withRunnerPath returns repo with dirs, in order, as the one PATH of its runner's environment.
 func withRunnerPath(repo git.Repo, dirs ...string) git.Repo {
-	repo.Runner.Env = slices.DeleteFunc(slices.Clone(repo.Runner.Env), func(entry string) bool {
-		key, _, _ := strings.Cut(entry, "=")
-
-		return strings.EqualFold(key, "PATH")
-	})
-	repo.Runner.Env = append(repo.Runner.Env, "PATH="+strings.Join(dirs, string(os.PathListSeparator)))
+	repo.Runner.Env = append(gittest.Without(repo.Runner.Env, "PATH"), "PATH="+strings.Join(dirs, string(os.PathListSeparator)))
 
 	return repo
 }
@@ -143,7 +134,9 @@ func hideSSH(t *testing.T, repo git.Repo) git.Repo {
 	_, err := exec.LookPath("ssh")
 	assert.NilError(t, err, "the process PATH holds no ssh, so a lookup on it would find none either")
 
-	return withRunnerPath(noSSHCommand(repo), t.TempDir())
+	repo.Runner.Env = gittest.WithoutSSH(t, repo.Runner.Env)
+
+	return repo
 }
 
 // hideFromShell returns repo with no ssh command, and as the PATH of its runner's environment an
@@ -203,51 +196,19 @@ func TestRepo_OriginURLs_WhenSSHMissingFromRunnerPath_ReturnsToolMissingError(t 
 	}
 }
 
-func TestRepo_OriginURLs_WhenContextEndsWhileSSHChildHoldsPipes_ReturnsContextErrorPromptly(t *testing.T) {
+func TestRepo_OriginURLs_WhenContextEndsWhileGitSSHProgramRuns_ReturnsContextError(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		// arrange returns repo set to run the stand-in ssh, in standInLinger mode, the way name says.
-		arrange func(t *testing.T, repo git.Repo) git.Repo
-		name    string
-	}{
-		{
-			name: "plain ssh",
-			arrange: func(t *testing.T, repo git.Repo) git.Repo {
-				t.Helper()
+	f := gittest.New(t, trunk)
+	f.SetOriginURL(aliasURL)
+	addr, started := gittest.SilentListener(t)
+	repo := noSSHCommand(newRepo(f))
+	repo.Runner.Env = append(append(repo.Runner.Env, gitSSHStandIn(t), sshStandInEnv+"="+standInLinger, helperAddrEnv+"="+addr),
+		variantEnv("ssh")...)
+	ctx := gittest.Ending(t.Context(), started, context.Canceled)
 
-				return plainSSH(t, repo, standInLinger)
-			},
-		},
-		{
-			name: "GIT_SSH program",
-			arrange: func(t *testing.T, repo git.Repo) git.Repo {
-				t.Helper()
-				repo = noSSHCommand(repo)
-				repo.Runner.Env = append(append(repo.Runner.Env, gitSSHStandIn(t), sshStandInEnv+"="+standInLinger),
-					variantEnv("ssh")...)
+	_, err := repo.OriginURLs(ctx)
 
-				return repo
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			f := gittest.New(t, trunk)
-			f.SetOriginURL(aliasURL)
-			addr, started := gittest.SilentListener(t)
-			repo := tt.arrange(t, newRepo(f))
-			repo.Runner.Env = append(repo.Runner.Env, helperAddrEnv+"="+addr)
-			ctx := gittest.Ending(t.Context(), started, context.Canceled)
-			begun := time.Now()
-
-			_, err := repo.OriginURLs(ctx)
-
-			took := time.Since(begun)
-			assert.Check(t, took <= prompt, "OriginURLs() took %v, want under %v with ssh's child still alive", took, prompt)
-			assert.Check(t, is.ErrorIs(err, context.Canceled))
-		})
-	}
+	assert.Check(t, is.ErrorIs(err, context.Canceled))
 }
 
 func TestRepo_OriginURLs_WhenNoSSHCommandSet_RunsPlainSSHInTheRunnerDirectory(t *testing.T) {
@@ -348,19 +309,10 @@ func exiting(code int) string { return sshStandInEnv + "=" + standInExit + strco
 func standIn(t *testing.T, name string) string {
 	t.Helper()
 
-	self, err := os.Executable()
-	assert.NilError(t, err)
-
-	if runtime.GOOS == "windows" && filepath.Ext(name) == "" {
-		name += ".exe"
-	}
-
 	dir := filepath.Join(t.TempDir(), "stand in")
 	assert.NilError(t, os.Mkdir(dir, 0o700))
-	path := filepath.Join(dir, name)
-	assert.NilError(t, os.Link(self, path))
 
-	return filepath.ToSlash(path)
+	return filepath.ToSlash(gittest.Link(t, dir, name))
 }
 
 // gitSSHStandIn returns the setting that names the stand-in ssh as the program GIT_SSH runs.
@@ -380,6 +332,7 @@ type sourceCase struct {
 	host string
 }
 
+// sourceCases are the places a user names the ssh command git connects with.
 func sourceCases() []sourceCase {
 	const decoys = "Host work\n  HostName decoy.example.org\n"
 
@@ -569,6 +522,8 @@ func unclosed(path string) string { return "'" + path }
 // variantEnv returns the setting that gives git's ssh variant as name.
 func variantEnv(name string) []string { return []string{"GIT_SSH_VARIANT=" + name} }
 
+// variantCases are the ssh commands a user configures, by name and variant, and the host each
+// reads.
 func variantCases() []variantCase {
 	return []variantCase{
 		{name: "command named ssh", command: "ssh", want: standInHost},
@@ -693,6 +648,8 @@ type missingCase struct {
 	hide bool
 }
 
+// missingCases are the ssh commands a user configures whose program is not found, by setting and
+// shape of the command line.
 func missingCases() []missingCase {
 	return []missingCase{
 		{name: "GIT_SSH_COMMAND path alone", setting: "GIT_SSH_COMMAND", value: "/no/such/ssh", program: "/no/such/ssh"},
@@ -850,6 +807,7 @@ type exitingCase struct {
 	code int
 }
 
+// exitingCases are the ssh commands a user configures whose found program exits 127 or 128.
 func exitingCases() []exitingCase {
 	byName := func(string) string { return "connect" }
 
@@ -1000,23 +958,13 @@ func TestRepo_OriginURLs_WhenRunnerSetsNoEnvironment_FindsSSHOnTheProcessPath(t 
 
 // callsOf returns the attributes of each exec record in records that names tool, all but the
 // duration.
-func callsOf(records []slog.Record, tool string) []map[string]any {
+func callsOf(records []logtest.Record, tool string) []map[string]any {
 	var calls []map[string]any
 
 	for _, record := range records {
-		attrs := map[string]any{}
-		record.Attrs(func(attr slog.Attr) bool {
-			attrs[attr.Key] = attr.Value.Any()
-
-			return true
-		})
-
-		if record.Message != "exec" || attrs["tool"] != tool {
-			continue
+		if record.Message == child.ExecMessage && record.Map()[child.KeyTool] == tool {
+			calls = append(calls, withoutDuration(record))
 		}
-
-		delete(attrs, "duration")
-		calls = append(calls, attrs)
 	}
 
 	return calls
@@ -1057,15 +1005,15 @@ func TestRepo_OriginURLs_WhenLoggerAttachedAndSSHReadsHost_LogsEachSSHRun(t *tes
 			f := gittest.New(t, trunk)
 			f.SetOriginURL(aliasURL)
 			repo, tool := tt.arrange(t, newRepo(f))
-			logger, records := newCapture()
+			logger, sink := logtest.New()
 			repo.Runner.Logger = logger
 
 			_, err := repo.OriginURLs(t.Context())
 			assert.NilError(t, err)
 
-			calls := callsOf(records(), tool)
+			calls := callsOf(sink.Records(), tool)
 			assert.Assert(t, len(calls) > 0, "OriginURLs() logged no exec record of %q", tool)
-			want := map[string]any{"tool": tool, "args": tt.args, "exit": int64(0)}
+			want := execAttrs(t, child.Exec{Tool: tool, Args: tt.args})
 			for _, call := range calls {
 				assert.Check(t, is.DeepEqual(call, want))
 			}

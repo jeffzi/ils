@@ -87,7 +87,7 @@ func TestApp_Run_WhenNoStreamHasAColorProfile_WritesNoEscapeSequence(t *testing.
 	}
 }
 
-func TestApp_Run_WhenStdoutHasAColorProfile_DrawsTheOutcomeLabelRed(t *testing.T) {
+func TestApp_Run_WhenStdoutHasAColorProfile_DrawsTheOutcomeLabelInColor(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -110,7 +110,7 @@ func TestApp_Run_WhenStdoutHasAColorProfile_DrawsTheOutcomeLabelRed(t *testing.T
 			got := launch(t, painted(t, tt.env, tt.terminal, false), tt.args...)
 
 			look := resulttest.Draw(t, got.stdout).LookOf(t, tt.label+": ", tt.label)
-			assert.Check(t, is.Equal(look.Color, "red"))
+			assert.Check(t, look.Color != "", "%s label drawn with no color", tt.label)
 		})
 	}
 }

@@ -2,6 +2,7 @@ package ghtest_test
 
 import (
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"os"
 	"strings"
@@ -27,7 +28,44 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func TestFake_WhenArgvNotScripted_ExitsOneNamingArgv(t *testing.T) {
+func TestJSONHelpers_DecodeEachStringBackToTheValueGiven(t *testing.T) {
+	const value = "say \"hi\" to C:\\home\nthen leave"
+
+	tests := []struct {
+		name  string
+		build func(s string) string
+		key   string
+	}{
+		{name: "ChangeJSON title", build: func(s string) string { return ghtest.ChangeJSON(ghtest.Change{Title: s}) }, key: "title"},
+		{name: "ChangeJSON url", build: func(s string) string { return ghtest.ChangeJSON(ghtest.Change{URL: s}) }, key: "url"},
+		{name: "ChangeJSON base", build: func(s string) string { return ghtest.ChangeJSON(ghtest.Change{Base: s}) }, key: "baseRefName"},
+		{name: "ChangeJSON sha", build: func(s string) string { return ghtest.ChangeJSON(ghtest.Change{SHA: s}) }, key: "headRefOid"},
+		{name: "HeadJSON sha", build: func(s string) string { return ghtest.HeadJSON(s, "MERGEABLE", "CLEAN", "APPROVED") }, key: "headRefOid"},
+		{name: "HeadJSON mergeable", build: func(s string) string { return ghtest.HeadJSON("abc123", s, "CLEAN", "APPROVED") }, key: "mergeable"},
+		{name: "HeadJSON status", build: func(s string) string { return ghtest.HeadJSON("abc123", "MERGEABLE", s, "APPROVED") }, key: "mergeStateStatus"},
+		{name: "HeadJSON review", build: func(s string) string { return ghtest.HeadJSON("abc123", "MERGEABLE", "CLEAN", s) }, key: "reviewDecision"},
+		{name: "CheckJSON name", build: func(s string) string { return ghtest.CheckJSON(s, "pass", "https://example.com") }, key: "name"},
+		{name: "CheckJSON bucket", build: func(s string) string { return ghtest.CheckJSON("lint", s, "https://example.com") }, key: "bucket"},
+		{name: "CheckJSON link", build: func(s string) string { return ghtest.CheckJSON("lint", "pass", s) }, key: "link"},
+		{name: "RunJSON status", build: func(s string) string { return ghtest.RunJSON(s, "lint") }, key: "status"},
+		{name: "RunJSON name", build: func(s string) string { return ghtest.RunJSON("completed", s) }, key: "name"},
+		{name: "RepoViewSquashJSON permission", build: func(s string) string { return ghtest.RepoViewSquashJSON(false, s, true) }, key: "viewerPermission"},
+		{name: "RepoViewJSON permission", build: func(s string) string { return ghtest.RepoViewJSON(false, s) }, key: "viewerPermission"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := tt.build(value)
+
+			var got map[string]any
+			err := json.Unmarshal([]byte(out), &got)
+			assert.NilError(t, err, "decoding %s", out)
+
+			assert.Check(t, is.Equal(got[tt.key], any(value)))
+		})
+	}
+}
+
+func TestFake_WhenArgvNotScripted_ExitsUnscriptedCodeNamingArgv(t *testing.T) {
 	tests := []struct {
 		name string
 		args []string
@@ -44,7 +82,7 @@ func TestFake_WhenArgvNotScripted_ExitsOneNamingArgv(t *testing.T) {
 
 			exitErr, ok := errors.AsType[*child.ExitError](err)
 			assert.Assert(t, ok, "Run(%q) error = %v, want *child.ExitError", tt.args, err)
-			assert.Check(t, is.Equal(exitErr.Code, 1))
+			assert.Check(t, is.Equal(exitErr.Code, ghtest.UnscriptedCode))
 			assert.Check(t, is.Contains(exitErr.Stderr, strings.Join(tt.args, " ")))
 		})
 	}
@@ -107,29 +145,17 @@ func TestFake_WhenAnswerIsDelayed_AnswersAfterTheDelay(t *testing.T) {
 	assert.Check(t, is.Equal(got.Stdout, "pass\n"))
 }
 
-func TestFake_Holding_WhenAnAnswerIsHeld_ClosesOnceTheCallIsRecorded(t *testing.T) {
+func TestFake_RunHeld_WhenAnAnswerIsHeld_ReturnsOnceTheCallIsRecorded(t *testing.T) {
 	const longerThanTheTest = 30 * time.Second
 	args := []string{"pr", "checks", "7"}
 	fake := ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "pass\n", Delay: longerThanTheTest}, args...))
-	ctx, cancel := context.WithCancel(t.Context())
-	returned := make(chan struct{})
 
-	go func() {
-		defer close(returned)
+	// The run is cut once the test ends, so its error says only that it was cut.
+	fake.RunHeld(func(ctx context.Context) error {
+		_, err := github.Runner{}.Run(ctx, args...)
 
-		// The run is cut once the answer is held, so its error says only that it was cut.
-		_, _ = github.Runner{}.Run(ctx, args...)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		<-returned
+		return err
 	})
-
-	select {
-	case <-fake.Holding():
-	case <-returned:
-		t.Fatal("Run(pr checks) returned before the fake reported holding its answer")
-	}
 
 	assert.Check(t, is.DeepEqual(fake.Calls(), [][]string{{"gh", "pr", "checks", "7"}}))
 }

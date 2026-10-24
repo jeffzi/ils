@@ -2,7 +2,6 @@ package cli
 
 import (
 	"errors"
-	"fmt"
 
 	"github.com/spf13/pflag"
 
@@ -60,31 +59,4 @@ func (p *parse) flagRefusal(err error, unknown func(typed string) result.Phrase)
 	}
 
 	return p.refuse(unknown(typed))
-}
-
-// strictBool is the value of a flag that takes no value but true and false.
-type strictBool bool
-
-// String returns "true" or "false".
-func (b *strictBool) String() string {
-	return fmt.Sprint(bool(*b))
-}
-
-// Set accepts only "true" and "false" and returns an error for any other value.
-func (b *strictBool) Set(value string) error {
-	switch value {
-	case "true":
-		*b = true
-	case "false":
-		*b = false
-	default:
-		return errors.New("neither true nor false")
-	}
-
-	return nil
-}
-
-// Type returns "bool" so pflag's help shows the flag without a value placeholder.
-func (*strictBool) Type() string {
-	return "bool"
 }

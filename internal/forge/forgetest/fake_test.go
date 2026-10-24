@@ -154,13 +154,13 @@ func operations() []operation {
 		{name: "open change", made: forgetest.Call{Op: forgetest.OpOpenChange, Repo: repo(), Change: newChange()}, want: opened(), call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
 			return f.OpenChange(ctx, repo(), newChange())
 		}},
-		{name: "head", made: forgetest.Call{Op: forgetest.OpHead, Repo: repo(), Head: headQuery()}, want: head(), call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
+		{name: "head", made: forgetest.Call{Op: forgetest.OpHead, Repo: repo(), HeadQuery: headQuery()}, want: head(), call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
 			return f.Head(ctx, repo(), headQuery())
 		}},
 		{name: "trunk protection", made: forgetest.Call{Op: forgetest.OpTrunkProtection, Repo: repo(), Branch: trunk}, want: protection(), call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
 			return f.TrunkProtection(ctx, repo(), trunk)
 		}},
-		{name: "verdict", made: forgetest.Call{Op: forgetest.OpVerdict, Repo: repo(), Query: verdictQuery()}, want: verdict(), call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
+		{name: "verdict", made: forgetest.Call{Op: forgetest.OpVerdict, Repo: repo(), VerdictQuery: verdictQuery()}, want: verdict(), call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
 			return f.Verdict(ctx, repo(), verdictQuery())
 		}},
 		{name: "has trunk CI", made: forgetest.Call{Op: forgetest.OpHasTrunkCI, Repo: repo(), Branch: trunk}, want: hasTrunkCI, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
@@ -203,6 +203,8 @@ func script(err error) forgetest.Script {
 	}
 }
 
+// callEach calls every operation of fake once with the fixture arguments, failing the test on any
+// error.
 func callEach(t *testing.T, fake *forgetest.Fake) {
 	t.Helper()
 
@@ -212,6 +214,7 @@ func callEach(t *testing.T, fake *forgetest.Fake) {
 	}
 }
 
+// callTimes calls call times times and returns its values in order, failing the test on any error.
 func callTimes[T any](t *testing.T, times int, call func() (T, error)) []T {
 	t.Helper()
 
@@ -227,20 +230,37 @@ func callTimes[T any](t *testing.T, times int, call func() (T, error)) []T {
 	return values
 }
 
+// readContext is a context an answer that is not held is read under.
+type readContext struct {
+	ctx  func(t *testing.T) context.Context
+	name string
+}
+
+// readContexts are the contexts an answer that is not held leaves as it is: the test's own, and
+// one that ended before the read.
+func readContexts() []readContext {
+	return []readContext{
+		{name: "live", ctx: func(t *testing.T) context.Context { return t.Context() }},
+		{name: "ended", ctx: ended},
+	}
+}
+
 func TestFake_WhenOperationIsScripted_ReturnsItsValue(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range operations() {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+		for _, rc := range readContexts() {
+			t.Run(tt.name+"/"+rc.name, func(t *testing.T) {
+				t.Parallel()
 
-			fake := forgetest.New(t, script(nil))
+				fake := forgetest.New(t, script(nil))
 
-			got, err := tt.call(t.Context(), fake)
-			assert.NilError(t, err)
+				got, err := tt.call(rc.ctx(t), fake)
+				assert.NilError(t, err)
 
-			assert.Check(t, is.DeepEqual(got, tt.want))
-		})
+				assert.Check(t, is.DeepEqual(got, tt.want))
+			})
+		}
 	}
 }
 
@@ -248,16 +268,18 @@ func TestFake_WhenAnswerIsError_ReturnsItUnchanged(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range operations() {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+		for _, rc := range readContexts() {
+			t.Run(tt.name+"/"+rc.name, func(t *testing.T) {
+				t.Parallel()
 
-			scripted := errors.New("gh is not installed")
-			fake := forgetest.New(t, script(scripted))
+				scripted := errors.New("gh is not installed")
+				fake := forgetest.New(t, script(scripted))
 
-			_, err := tt.call(t.Context(), fake)
+				_, err := tt.call(rc.ctx(t), fake)
 
-			assert.Check(t, is.Equal(err, scripted))
-		})
+				assert.Check(t, is.Equal(err, scripted))
+			})
+		}
 	}
 }
 
@@ -407,13 +429,18 @@ func heldScript() forgetest.Script {
 	}
 }
 
-// ending is a way a read's context ends after wait.
+// ending is a way a read's context ends: after wait, or before the read starts.
 type ending struct {
 	start func(t *testing.T, wait time.Duration) context.Context
 	want  error
 	name  string
+	// atOnce is whether the context ended before the read starts, so that the read returns at once
+	// in place of after wait.
+	atOnce bool
 }
 
+// endings are the ways a read's context ends: its deadline after wait, a cancellation after wait,
+// and a cancellation before the read starts.
 func endings() []ending {
 	return []ending{
 		{name: "deadline", want: context.DeadlineExceeded, start: func(t *testing.T, wait time.Duration) context.Context {
@@ -433,6 +460,11 @@ func endings() []ending {
 			time.AfterFunc(wait, cancel)
 
 			return ctx
+		}},
+		{name: "already ended", want: context.Canceled, atOnce: true, start: func(t *testing.T, _ time.Duration) context.Context {
+			t.Helper()
+
+			return ended(t)
 		}},
 	}
 }
@@ -464,8 +496,13 @@ func TestFake_WhenAnswerIsHeld_ReturnsTheContextErrorOnceTheContextEnds(t *testi
 
 					got, err := op.call(ctx, fake)
 
+					lasted := wait
+					if end.atOnce {
+						lasted = 0
+					}
+
 					assert.Check(t, is.ErrorIs(err, end.want))
-					assert.Check(t, is.Equal(time.Since(start), wait), "time the read lasted")
+					assert.Check(t, is.Equal(time.Since(start), lasted), "time the read lasted")
 					assert.Check(t, reflect.ValueOf(got).IsZero(), "value %v, want the zero value", got)
 				})
 			})
@@ -473,56 +510,7 @@ func TestFake_WhenAnswerIsHeld_ReturnsTheContextErrorOnceTheContextEnds(t *testi
 	}
 }
 
-func TestFake_Verdict_WhenAnswerIsHeldAndTheContextHasEnded_ReturnsTheContextErrorAtOnce(t *testing.T) {
-	t.Parallel()
-
-	synctest.Test(t, func(t *testing.T) {
-		fake := forgetest.New(t, heldScript())
-		ctx := ended(t)
-		start := time.Now()
-
-		_, err := fake.Verdict(ctx, repo(), verdictQuery())
-
-		assert.Check(t, is.ErrorIs(err, context.Canceled))
-		assert.Check(t, is.Equal(time.Since(start), time.Duration(0)), "time the read lasted")
-	})
-}
-
-func TestFake_WhenAnswerIsNotHeldAndTheContextHasEnded_ReturnsItsValue(t *testing.T) {
-	t.Parallel()
-
-	for _, tt := range operations() {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			fake := forgetest.New(t, script(nil))
-
-			got, err := tt.call(ended(t), fake)
-			assert.NilError(t, err)
-
-			assert.Check(t, is.DeepEqual(got, tt.want))
-		})
-	}
-}
-
-func TestFake_WhenAnswerIsNotHeldAndTheContextHasEnded_ReturnsItsErrorUnchanged(t *testing.T) {
-	t.Parallel()
-
-	for _, tt := range operations() {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			scripted := errors.New("gh is not installed")
-			fake := forgetest.New(t, script(scripted))
-
-			_, err := tt.call(ended(t), fake)
-
-			assert.Check(t, is.Equal(err, scripted))
-		})
-	}
-}
-
-func TestFake_WhenAnswerIsHeld_RecordsTheCallAndRunsOnRead(t *testing.T) {
+func TestFake_WhenAnswerIsHeld_DoesItsBookkeepingBeforeHolding(t *testing.T) {
 	t.Parallel()
 
 	var seen []forgetest.Call
@@ -535,7 +523,7 @@ func TestFake_WhenAnswerIsHeld_RecordsTheCallAndRunsOnRead(t *testing.T) {
 
 	assert.Check(t, is.ErrorIs(err, context.Canceled))
 
-	want := []forgetest.Call{{Op: forgetest.OpHead, Repo: repo(), Head: headQuery()}}
+	want := []forgetest.Call{{Op: forgetest.OpHead, Repo: repo(), HeadQuery: headQuery()}}
 	assert.Check(t, is.DeepEqual(fake.Calls(), want))
 	assert.Check(t, is.DeepEqual(seen, want))
 }

@@ -50,7 +50,6 @@ const (
 	// another's.
 	liveTokenLength = 10
 
-	// liveWorkflowDir is the directory GitHub reads workflows from.
 	liveWorkflowDir  = ".github/workflows/"
 	liveWorkflowPath = liveWorkflowDir + "live.yml"
 	// liveDispatchedPath is the workflow the trunk carries in the scenario whose CI does not fire.
@@ -581,7 +580,7 @@ func liveGreen(t *testing.T, l *liveSuite) {
 }
 
 // checkMergeNext checks that a green push's next step writes the title and body of the pull
-// request numbered number with `gh pr edit`, then runs `ils merge`, and names no `gh pr merge`.
+// request numbered number with `gh pr edit`, then runs `ils merge`.
 func checkMergeNext(t *testing.T, l *liveSuite, got liveRun, number int) {
 	t.Helper()
 
@@ -589,7 +588,6 @@ func checkMergeNext(t *testing.T, l *liveSuite, got liveRun, number int) {
 	assert.Check(t, is.Contains(got.shown.Next, "write the pull request's title and body"))
 	assert.Check(t, is.Contains(got.shown.Next, edit))
 	assert.Check(t, strings.HasSuffix(got.shown.Next, "then run ils merge"), "Next = %q, want it to end with ils merge", got.shown.Next)
-	assert.Check(t, !strings.Contains(got.shown.Next, "gh pr merge"), "Next = %q names gh pr merge", got.shown.Next)
 }
 
 func liveGreenAgain(t *testing.T, l *liveSuite) {

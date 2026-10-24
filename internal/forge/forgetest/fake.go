@@ -76,12 +76,12 @@ type Call struct {
 	Op Op
 	// Branch is the branch of FindChanges and DeleteBranch, and the trunk of TrunkProtection
 	// and HasTrunkCI.
-	Branch  string
-	Change  forge.NewChange
-	Repo    forge.Repo
-	Landing forge.Landing
-	Head    forge.HeadQuery
-	Query   forge.VerdictQuery
+	Branch       string
+	Change       forge.NewChange
+	Repo         forge.Repo
+	Landing      forge.Landing
+	HeadQuery    forge.HeadQuery
+	VerdictQuery forge.VerdictQuery
 	// Number is the change of Message.
 	Number int
 }
@@ -130,7 +130,7 @@ func (f *Fake) OpenChange(ctx context.Context, repo forge.Repo, change forge.New
 func (f *Fake) Head(ctx context.Context, repo forge.Repo, query forge.HeadQuery) (forge.Head, error) {
 	f.tb.Helper()
 
-	return answer(ctx, f, f.script.Head, Call{Op: OpHead, Repo: repo, Head: query})
+	return answer(ctx, f, f.script.Head, Call{Op: OpHead, Repo: repo, HeadQuery: query})
 }
 
 // TrunkProtection answers from the script's TrunkProtection sequence.
@@ -144,7 +144,7 @@ func (f *Fake) TrunkProtection(ctx context.Context, repo forge.Repo, trunk strin
 func (f *Fake) Verdict(ctx context.Context, repo forge.Repo, query forge.VerdictQuery) (forge.Verdict, error) {
 	f.tb.Helper()
 
-	return answer(ctx, f, f.script.Verdict, Call{Op: OpVerdict, Repo: repo, Query: query})
+	return answer(ctx, f, f.script.Verdict, Call{Op: OpVerdict, Repo: repo, VerdictQuery: query})
 }
 
 // HasTrunkCI answers from the script's HasTrunkCI sequence.

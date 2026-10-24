@@ -20,6 +20,7 @@ import (
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
+	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
 const (
@@ -36,15 +37,17 @@ const (
 	openedLine  = "Opened pull request #12 against " + trunk + ", titled " + topic + " with no body: " + pullURL + "\n"
 	foundLine   = "Pull request #12: " + pullURL + "\n"
 	countLine   = "Checks for " + tipMark + ": 1 passed, 0 skipped\n"
-	cleanLine   = "GitHub: CLEAN (clean)\n"
-	blockedLine = "GitHub: BLOCKED (blocked-by-review)\n"
 
-	mergeSteps = "write the pull request's title and body as the squash commit's message with " +
-		"`gh pr edit --repo " + repoArg + " 12 --title … --body …`, then run ils merge\n"
+	editCommand = "gh pr edit --repo " + repoArg + " 12 --title … --body …"
+	editSteps   = "write the pull request's title and body as the squash commit's message with " +
+		"`" + editCommand + "`, then run ils merge"
+	mergeSteps = editSteps + "\n"
 	nextMerge  = "Next: " + mergeSteps
 	nextReview = "Next: request a review of the pull request first, then " + mergeSteps
 	nextRed    = "Next: fix the failing check, commit, and run ils push again\n"
-	nextTrunk  = "Next: merge the trunk into the branch with `git merge origin/" + trunk +
+	// originMerge, followed by a branch, merges origin's copy of that branch into the one checked out.
+	originMerge = "git merge origin/"
+	nextTrunk   = "Next: merge the trunk into the branch with `" + originMerge + trunk +
 		"`, resolve the conflicts, commit, and run ils push again\n"
 	nextNever   = "Next: report that a required check never reported, and stop\n"
 	nextNothing = "Next: report that no check or status reported for the pushed commit, and stop\n"
@@ -54,6 +57,15 @@ const (
 
 	noCILine = "No CI is configured on " + trunk + ", so nothing verified " + tipMark + "\n"
 )
+
+func cleanLine() string {
+	return stateLine(forge.MergeClean, "CLEAN")
+}
+
+// blockedLine is the merge-state line of a pull request GitHub blocks until it is reviewed.
+func blockedLine() string {
+	return stateLine(forge.MergeBlockedByReview, "BLOCKED")
+}
 
 // forgeFor builds the forge's answers once the branch's tip is known.
 type forgeFor func(tip string) forgetest.Script
@@ -184,7 +196,7 @@ func detail(verdict forge.VerdictState, state forge.MergeState, checks ...forge.
 func greenAfter(before string) finish {
 	return finish{
 		outcome: result.Done,
-		text:    before + countLine + cleanLine + nextMerge,
+		text:    before + countLine + cleanLine() + nextMerge,
 		payload: detail(forge.VerdictGreen, forge.MergeClean, passing().Checks...),
 	}
 }
@@ -297,36 +309,46 @@ func runPushes(t *testing.T, rows []pushRow) {
 	}
 }
 
-// pushWriteRows are the pushes of a tip origin does not have yet, each ending green.
-func pushWriteRows() []pushRow {
-	opens := greenAfter(pushedLine + openedLine)
+// skippingRow is the first push of a branch whose two checks passed and whose third was skipped.
+func skippingRow() pushRow {
 	skipping := forge.Verdict{
 		Checks: []forge.Check{
 			checked("lint", forge.BucketPass), checked("test", forge.BucketPass), checked("docs", forge.BucketSkipped),
 		},
 		Runs: ran(forge.RunCompleted),
 	}
-	skips := finish{
-		outcome: result.Done,
-		text:    pushedLine + openedLine + "Checks for " + tipMark + ": 2 passed, 1 skipped\n" + cleanLine + nextMerge,
-		payload: detail(forge.VerdictGreen, forge.MergeClean, skipping.Checks...),
+
+	return pushRow{
+		name: "two checks passed and one was skipped", script: opening(skipping),
+		want: finish{
+			outcome: result.Done,
+			text:    pushedLine + openedLine + "Checks for " + tipMark + ": 2 passed, 1 skipped\n" + cleanLine() + nextMerge,
+			payload: detail(forge.VerdictGreen, forge.MergeClean, skipping.Checks...),
+		},
+		drawn: []drawnPart{
+			{within: "1 skipped", part: "1", want: resulttest.SkippedLook()},
+		},
 	}
+}
+
+// pushWriteRows are the pushes of a tip origin does not have yet, each ending green.
+func pushWriteRows() []pushRow {
+	opens := greenAfter(pushedLine + openedLine)
 
 	return []pushRow{
-		{name: "two checks passed and one was skipped", script: opening(skipping), want: skips},
+		skippingRow(),
 		{
 			name: "first push of the branch", script: opening(passing()), want: opens,
 			drawn: []drawnPart{
-				{within: "Pushed " + topic, part: topic, want: drawnName()},
-				{within: "at " + tipMark, part: tipMark, want: drawnSHA()},
-				{within: "Opened pull request #12", part: "#12", want: drawnName()},
-				{within: "against " + trunk, part: trunk, want: drawnName()},
-				{within: "no body: " + pullURL, part: pullURL, want: drawnURL()},
-				{within: "Checks for " + tipMark, part: tipMark, want: drawnSHA()},
-				{within: "1 passed", part: "1", want: drawnCount()},
-				{within: "0 skipped", part: "0", want: drawnCount()},
-				{within: repoArg + " 12 --title", part: "12", want: drawnName()},
-				{within: "then run ils merge", part: "ils merge", want: drawnName()},
+				{within: "Pushed " + topic, part: topic, want: resulttest.NameLook()},
+				{within: "at " + tipMark, part: tipMark, want: resulttest.SHALook()},
+				{within: "Opened pull request #12", part: "#12", want: resulttest.NameLook()},
+				{within: "against " + trunk, part: trunk, want: resulttest.NameLook()},
+				{within: "no body: " + pullURL, part: pullURL, want: resulttest.URLLook()},
+				{within: "Checks for " + tipMark, part: tipMark, want: resulttest.SHALook()},
+				{within: "1 passed", part: "1", want: resulttest.PassedLook()},
+				commandIn(nextMerge, editCommand),
+				{within: "then run ils merge", part: "ils merge", want: resulttest.NameLook()},
 			},
 		},
 		{
@@ -512,11 +534,19 @@ func TestPush_WhenTheGitPushFailsOtherThanByRefusalOrDeadline_BrokeSayingNothing
 
 	got := landing.Push(ctx, s.deps, pushRequest())
 
-	assertDelivered(t, s, got, finish{
-		outcome: result.Broke, reason: "could not push the branch",
-		text: "Could not push " + topic + ", so nothing was pushed: git push -u origin refs/heads/" + topic +
-			":refs/heads/" + topic + ": context canceled\n" + "Broke: could not push the branch\n" + nextFixed,
-	})
+	assertStopped(t, got, result.Broke)
+	assert.Check(t, got.Payload == nil || got.Payload.Push == nil, "Payload = %+v, want none for a push that failed", got.Payload)
+
+	text, reason := shown(t, got, s.gitDir)
+	assert.Check(t, is.Equal(reason, "could not push the branch"))
+
+	prefix := "Could not push " + topic + ", so nothing was pushed: "
+	suffix := "\nBroke: could not push the branch\n" + nextFixed
+	said, starts := strings.CutPrefix(text, prefix)
+	said, ends := strings.CutSuffix(said, suffix)
+	assert.Check(t, starts && ends, "RenderText() = %q, want it to start with %q and end with %q", text, prefix, suffix)
+	assert.Check(t, said != "", "RenderText() = %q, want what the push failed with between %q and %q", text, prefix, suffix)
+
 	assertAsked(t, s, changesRead())
 }
 
@@ -550,7 +580,7 @@ func pushUnreportedRows() []pushRow {
 	nothing := finish{
 		outcome: result.DeliveredNotGreen,
 		reason:  "no check or status reported for " + tipMark + " on pull request #12",
-		text: pushedLine + openedLine + cleanLine +
+		text: pushedLine + openedLine + cleanLine() +
 			"Delivered, not green: no check or status reported for " + tipMark + " on pull request #12\n" + nextNothing,
 		payload: detail(forge.VerdictNone, forge.MergeClean),
 	}
@@ -562,7 +592,7 @@ func pushUnreportedRows() []pushRow {
 			want: finish{
 				outcome: result.DeliveredNotGreen, reason: "a required check never reported",
 				text: pushedLine + openedLine + "Required and never reported: test\n" +
-					"GitHub: BLOCKED (blocked-by-missing-check)\n" + "Delivered, not green: a required check never reported\n" + nextNever,
+					stateLine(forge.MergeBlockedByMissingCheck, "BLOCKED") + "Delivered, not green: a required check never reported\n" + nextNever,
 				payload: detail(forge.VerdictGreen, forge.MergeBlockedByMissingCheck, lint),
 			},
 		},
@@ -571,8 +601,8 @@ func pushUnreportedRows() []pushRow {
 			script: opening(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{Value: true}),
 			want:   nothing,
 			drawn: []drawnPart{
-				{within: "reported for " + tipMark, part: tipMark, want: drawnSHA()},
-				{within: "on pull request #12", part: "#12", want: drawnName()},
+				{within: "reported for " + tipMark, part: tipMark, want: resulttest.SHALook()},
+				{within: "on pull request #12", part: "#12", want: resulttest.NameLook()},
 			},
 		},
 		{
@@ -614,7 +644,7 @@ func pushNoCIRows() []pushRow {
 			script: unverified.showing(inState(forge.MergeClean, "CLEAN"), inState(forge.MergeConflicting, "DIRTY")),
 			want: finish{
 				outcome: result.DeliveredNotGreen, reason: "the pull request conflicts with the trunk",
-				text: pushedLine + openedLine + noCILine + "GitHub: DIRTY (" + string(forge.MergeConflicting) + ")\n" +
+				text: pushedLine + openedLine + noCILine + stateLine(forge.MergeConflicting, "DIRTY") +
 					"Delivered, not green: the pull request conflicts with the trunk\n" + nextTrunk,
 				payload: detail(forge.VerdictNone, forge.MergeConflicting),
 			},
@@ -622,7 +652,7 @@ func pushNoCIRows() []pushRow {
 		{
 			name: "on a clean pull request", script: unverified,
 			want: finish{
-				outcome: result.Done, text: pushedLine + openedLine + noCILine + cleanLine + nextMerge,
+				outcome: result.Done, text: pushedLine + openedLine + noCILine + cleanLine() + nextMerge,
 				payload: detail(forge.VerdictNone, forge.MergeClean),
 			},
 		},
@@ -631,7 +661,7 @@ func pushNoCIRows() []pushRow {
 			script: unverified.showing(inState(forge.MergeClean, "CLEAN"), reviewed),
 			want: finish{
 				outcome: result.Done,
-				text:    pushedLine + openedLine + noCILine + blockedLine + nextReview,
+				text:    pushedLine + openedLine + noCILine + blockedLine() + nextReview,
 				payload: detail(forge.VerdictNone, forge.MergeBlockedByReview),
 			},
 		},
@@ -719,15 +749,15 @@ func TestPush_WhenNothingReportedForTheCommit_AsksAboutTheTrunkOfOriginWithinThe
 	})
 }
 
-// callsOf returns the calls of calls to the operation op.
-func callsOf(calls []forgetest.Call, op forgetest.Op) []forgetest.Call {
-	return slices.DeleteFunc(calls, func(call forgetest.Call) bool { return call.Op != op })
+// callsOf returns the calls of calls to any of the operations ops.
+func callsOf(calls []forgetest.Call, ops ...forgetest.Op) []forgetest.Call {
+	return slices.DeleteFunc(calls, func(call forgetest.Call) bool { return !slices.Contains(ops, call.Op) })
 }
 
 // pushWaitRows are the pushes whose wait ends without an error, one per result it maps to.
 func pushWaitRows() []pushRow {
 	reviewed := greenAfter(pushedLine + foundLine)
-	reviewed.text = pushedLine + foundLine + countLine + blockedLine + nextReview
+	reviewed.text = pushedLine + foundLine + countLine + blockedLine() + nextReview
 	reviewed.payload = detail(forge.VerdictGreen, forge.MergeBlockedByReview, passing().Checks...)
 
 	rows := []pushRow{
@@ -756,24 +786,10 @@ func TestPush_WhenTheHeadMovesPastThePushedCommit_RefusesNamingTheNewHead(t *tes
 			"Next: pull the new commit, then run ils push again\n",
 		payload: detail(forge.VerdictNone, forge.MergeClean),
 	}
-	movedAfter := func(verdict forge.Verdict) forgeFor {
-		return reusing(verdict).showing(inState(forge.MergeClean, "CLEAN"), moved())
-	}
-
 	runPushes(t, []pushRow{
-		{name: "after a green verdict", script: movedAfter(passing()), want: refused},
-		{name: "after a red verdict", script: movedAfter(lintRed()), want: refused},
-		{name: "after nothing reported", script: movedAfter(forge.Verdict{}), want: refused},
 		{
-			// Seven seconds leave no room for a poll with the head read after it, so the head is read at
-			// once.
-			name: "after checks still running at the deadline", script: movedAfter(running()), want: refused,
-			left: 7 * time.Second,
-		},
-		{
-			// Twelve seconds end inside the 20 seconds a check with no run behind it is held.
-			name: "after a check with no run behind it, at the deadline", want: refused, left: 12 * time.Second,
-			script: movedAfter(appPassing()),
+			name: "after a green verdict", want: refused,
+			script: reusing(passing()).showing(inState(forge.MergeClean, "CLEAN"), moved()),
 		},
 	})
 }

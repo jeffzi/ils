@@ -43,14 +43,14 @@ func (r Repo) plainHostname(ctx context.Context, host string) (string, error) {
 	args := []string{printConfigFlag, "--", host}
 
 	inv := r.Runner.invocation(sshProgram, sshInstallURL, args)
-	inv.onEnvPath = true
+	inv.lookPath = r.Runner.lookPath
 
 	result, err := inv.run(ctx)
 	if err != nil {
 		return "", err
 	}
 
-	return hostnameIn(result.Stdout, append([]string{sshProgram}, args...))
+	return hostnameIn(result.Stdout, child.Argv(sshProgram, args))
 }
 
 // hostnameIn returns the host the `ssh -G` output stdout names, read as foldGitHubHost reads it.
@@ -377,7 +377,7 @@ func (r Repo) askSSH(ctx context.Context, command sshCommand, host string) (stri
 		result, err = r.Runner.Run(ctx, append([]string{"-c", "alias." + sshAlias + "=!" + command.line, sshAlias}, args...)...)
 	} else {
 		inv := r.Runner.invocation(command.program, "", args)
-		inv.onEnvPath = true
+		inv.lookPath = r.Runner.lookPath
 		result, err = inv.run(ctx)
 	}
 
@@ -385,7 +385,7 @@ func (r Repo) askSSH(ctx context.Context, command sshCommand, host string) (stri
 		return "", &SSHCommandMissingError{Setting: command.setting, Program: command.program, Err: notFound.Err}
 	}
 
-	argv := append([]string{named}, args...)
+	argv := child.Argv(named, args)
 	if exitErr, ok := errors.AsType[*child.ExitError](err); ok {
 		if missing := r.Runner.missingLineProgram(command, exitErr); missing != nil {
 			return "", missing

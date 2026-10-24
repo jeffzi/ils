@@ -11,6 +11,8 @@ import (
 
 	"github.com/jeffzi/ils/internal/github/ghtest"
 	"github.com/jeffzi/ils/internal/gittest"
+	"github.com/jeffzi/ils/internal/landing"
+	"github.com/jeffzi/ils/internal/result"
 )
 
 const (
@@ -79,7 +81,6 @@ func cutWhileHeld(t *testing.T, sc scenario) (*scene, ran) {
 	return s, got
 }
 
-// heldChecks is a first push whose read of the checks is held open.
 func heldChecks() scenario {
 	slow := func(sha string) verdict {
 		v := passing(sha)
@@ -91,7 +92,6 @@ func heldChecks() scenario {
 	return scenario{name: "the read of the checks", script: firstPush(slow), want: exitPending}
 }
 
-// heldIdentity is a push whose read of the repository's identity is held open.
 func heldIdentity() scenario {
 	calls := allowed()
 	calls[1].Answers[0].Delay = held
@@ -99,11 +99,33 @@ func heldIdentity() scenario {
 	return scenario{name: "the read of the identity", script: only(calls...), want: exitRefused}
 }
 
-// heldVersion is a push whose read of gh's version is held open.
 func heldVersion() scenario {
 	slow := ghtest.Exits(ghtest.Answer{Stdout: "gh version 99.0.0\n", Delay: held}, ghtest.VersionArgs()...)
 
 	return scenario{name: "the read of gh's version", script: only(slow), want: exitRefused}
+}
+
+func TestApp_Run_WhenMergeRuns_EndsItAtTheBoundFromLaunch(t *testing.T) {
+	t.Parallel()
+
+	var (
+		deadline time.Time
+		bounded  bool
+	)
+
+	app := outside(t)
+	app.Launch = time.Now()
+	app.SetMerge(func(ctx context.Context, _ landing.Deps, req landing.Request) result.Result {
+		deadline, bounded = ctx.Deadline()
+
+		return finished(req)
+	})
+
+	got := launch(t, app, "merge")
+
+	assert.Check(t, is.Equal(got.code, exitDone))
+	assert.Check(t, bounded, "ils merge ran with no deadline")
+	assert.Check(t, deadline.Equal(app.Launch.Add(bound)), "deadline = %s, want %s", deadline, app.Launch.Add(bound))
 }
 
 func TestApp_Run_WhenTheBoundEndedBeforeAnyReadOfPush_RefusesBeforePushing(t *testing.T) {

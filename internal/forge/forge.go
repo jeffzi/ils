@@ -29,7 +29,8 @@ func (r Repo) Slug() string {
 	return r.Host + "/" + r.Owner + "/" + r.Name
 }
 
-// FullName names the repository as owner/name, the way a result names it to the user.
+// FullName names the repository as owner/name, the way a result names it to the user and GitHub's
+// REST paths address it.
 func (r Repo) FullName() string {
 	return r.Owner + "/" + r.Name
 }

@@ -20,8 +20,8 @@ import (
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
 	"github.com/jeffzi/ils/internal/gittest"
-	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
+	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
 const (
@@ -29,7 +29,7 @@ const (
 	dropStep   = "`git branch -D " + topic + "`"
 	pullStep   = "`git pull --ff-only origin " + trunk + "`"
 	fetchStep  = "`git fetch origin " + trunk + "`"
-	detachStep = "`git switch --detach origin/" + trunk + "`"
+	detachStep = "`git switch --detach refs/remotes/origin/" + trunk + "`"
 
 	detachedLine  = "Detached at origin's tip of " + trunk + ", with " + topic + " deleted locally\n"
 	elsewhereLine = "The trunk " + trunk + " is checked out in another worktree and updates there on its next " +
@@ -160,13 +160,6 @@ func moveOrigin(t *testing.T, f *gittest.Fixture) {
 	assert.NilError(t, err)
 }
 
-// writes returns the calls of calls that write on the forge.
-func writes(calls []forgetest.Call) []forgetest.Call {
-	return slices.DeleteFunc(calls, func(call forgetest.Call) bool {
-		return call.Op != forgetest.OpLand && call.Op != forgetest.OpDeleteBranch
-	})
-}
-
 // listedEarlier returns the arrange and the forge of a run whose forge lists pull request 12 at the
 // trunk's commit, while origin's ref of the pull request is already the tip.
 func listedEarlier() (func(*gittest.Fixture), forgeFor) {
@@ -208,13 +201,12 @@ func landedRows() []landedRow {
 		{
 			name: "under a deadline", script: toLand(nil, nil),
 			drawn: []drawnPart{
-				{within: "Checks for " + tipMark, part: tipMark, want: drawnSHA()},
-				{within: "1 passed", part: "1", want: drawnCount()},
-				{within: "Merged pull request #12", part: "#12", want: drawnName()},
-				{within: "into " + trunk, part: trunk, want: drawnName()},
-				{within: "Deleted the branch " + topic, part: topic, want: drawnName()},
-				{within: "On " + trunk, part: trunk, want: drawnName()},
-				{within: "with " + topic + " deleted", part: topic, want: drawnName()},
+				{within: "Checks for " + tipMark, part: tipMark, want: resulttest.SHALook()},
+				{within: "Merged pull request #12", part: "#12", want: resulttest.NameLook()},
+				{within: "into " + trunk, part: trunk, want: resulttest.NameLook()},
+				{within: "Deleted the branch " + topic, part: topic, want: resulttest.NameLook()},
+				{within: "On " + trunk, part: trunk, want: resulttest.NameLook()},
+				{within: "with " + topic + " deleted", part: topic, want: resulttest.NameLook()},
 			},
 			told: toldAfterWait(mergingStep, said(mergedLine), deletingStep, said(deletedLine), movingStep, said(onTrunkLine)),
 		},
@@ -224,7 +216,7 @@ func landedRows() []landedRow {
 			script: waiting(running(), passing()).saying(titledAfter(landedBody)).landing(nil, nil), unbounded: true,
 		},
 		{
-			name: "nothing reported and no CI on the trunk", lead: noCILine + cleanLine, payload: unverified,
+			name: "nothing reported and no CI on the trunk", lead: noCILine + cleanLine(), payload: unverified,
 			script: waiting(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{}).saying(titledAfter(landedBody)).
 				landing(nil, nil),
 		},
@@ -259,7 +251,7 @@ func TestMerge_WhenEveryCheckHolds_LandsThePullRequest(t *testing.T) {
 				assertStoppedBy(t, run.got, result.Done, mergeRequest())
 
 				text, _ := shown(t, run.got, run.gitDir)
-				lead := cmp.Or(tt.lead, countLine+cleanLine)
+				lead := cmp.Or(tt.lead, countLine+cleanLine())
 				assert.Check(t, is.Equal(text, mark(lead, run.tip)+mergedLine+deletedLine+onTrunkLine))
 
 				want := *cmp.Or(tt.payload, sent(landedBody, true, result.EndingTrunk))
@@ -268,7 +260,7 @@ func TestMerge_WhenEveryCheckHolds_LandsThePullRequest(t *testing.T) {
 				assertChecksReadOn(t, run.forge.Calls(), run.tip)
 
 				landed := forge.Landing{Number: opened, HeadSHA: run.tip, Subject: worded + " (#12)", Body: landedBody}
-				assert.Check(t, is.DeepEqual(writes(run.forge.Calls()), []forgetest.Call{
+				assert.Check(t, is.DeepEqual(callsOf(run.forge.Calls(), forgetest.OpLand, forgetest.OpDeleteBranch), []forgetest.Call{
 					{Op: forgetest.OpLand, Repo: origin(), Landing: landed},
 					{Op: forgetest.OpDeleteBranch, Repo: origin(), Branch: topic},
 				}, whichRepo()))
@@ -290,7 +282,7 @@ func assertChecksReadOn(t *testing.T, calls []forgetest.Call, sha string) {
 
 	for _, call := range calls {
 		if call.Op == forgetest.OpVerdict {
-			assert.Check(t, is.Equal(call.Query.SHA, sha))
+			assert.Check(t, is.Equal(call.VerdictQuery.SHA, sha))
 		}
 	}
 }
@@ -363,7 +355,7 @@ func TestMerge_WhenTheTrunkIsCheckedOutInAnotherWorktree_EndsDetachedAtOriginsTr
 				assertStoppedBy(t, run.got, result.Done, mergeRequest())
 
 				text, _ := shown(t, run.got, run.gitDir)
-				assert.Check(t, is.Equal(text, mark(countLine, run.tip)+cleanLine+mergedLine+deletedLine+
+				assert.Check(t, is.Equal(text, mark(countLine, run.tip)+cleanLine()+mergedLine+deletedLine+
 					detachedLine+elsewhereLine))
 
 				want := sent(landedBody, true, result.EndingDetached)
@@ -378,8 +370,8 @@ func TestMerge_WhenTheTrunkIsCheckedOutInAnotherWorktree_EndsDetachedAtOriginsTr
 // endingBreaks are the runs of `ils merge` whose local ending fails after the merge and the delete
 // of the branch on origin went through.
 func endingBreaks() []landingRow {
+	lead := countLine + cleanLine() + mergedLine + deletedLine
 	const (
-		lead     = countLine + cleanLine + mergedLine + deletedLine
 		failed   = " failed: "
 		notRun   = "Not run: "
 		byHand   = " by hand\n"
@@ -408,31 +400,25 @@ func endingBreaks() []landingRow {
 		drawnRow(row("the delete of the branch on the trunk", setting{landed: lockRef("refs/heads/" + topic)}, trunk,
 			"Ran "+switchStep+"\n"+dropStep+failed,
 			"\n"+notRun+pullStep+"\n"+broke(dropStep)+nextHand+dropStep+" and "+pullStep+byHand),
-			drawnPart{within: "Ran " + switchStep, part: trunk, want: drawnName()},
-			drawnPart{within: dropStep + failed, part: topic, want: drawnName()},
-			drawnPart{within: notRun + pullStep, part: trunk, want: drawnName()},
-			drawnPart{within: "Broke: " + dropStep, part: topic, want: drawnName()},
-			drawnPart{within: "Broke: " + dropStep, part: "git branch -D "},
-			drawnPart{within: "-D " + topic + "` and", part: topic, want: drawnName()},
-			drawnPart{within: "origin " + trunk + "` by hand", part: trunk, want: drawnName()},
+			commandIn("Ran "+switchStep, switchStep),
+			commandIn(dropStep+failed, dropStep),
+			commandIn(notRun+pullStep, pullStep),
+			commandIn("Broke: "+dropStep, dropStep),
+			commandIn(nextHand+dropStep, dropStep),
+			commandIn(pullStep+byHand, pullStep),
 		),
 		drawnRow(row("the pull of the trunk", setting{landed: func(_ *testing.T, f *gittest.Fixture) { f.AdvanceTrunk() }}, trunk,
 			"Ran "+switchStep+"\nRan "+dropStep+"\n"+pullStep+failed, "\n"+broke(pullStep)+nextHand+pullStep+byHand),
-			drawnPart{within: "origin " + trunk + "` by hand", part: trunk, want: drawnName()},
+			commandIn(pullStep+byHand, pullStep),
 		),
 		row("the fetch of origin's trunk", setting{arrange: trunkElsewhere, landed: moveOrigin}, topic,
 			fetchStep+failed, "\n"+notRun+detachStep+"\n"+notRun+dropStep+"\n"+broke(fetchStep)+nextMergeFixed),
-		drawnRow(row("the detach at origin's trunk", setting{arrange: trunkElsewhere, landed: lockRef("HEAD")}, topic,
+		row("the detach at origin's trunk", setting{arrange: trunkElsewhere, landed: lockRef("HEAD")}, topic,
 			"Ran "+fetchStep+"\n"+detachStep+failed, "\n"+notRun+dropStep+"\n"+broke(detachStep)+nextMergeFixed),
-			drawnPart{within: "Ran " + fetchStep, part: trunk, want: drawnName()},
-			drawnPart{within: detachStep + failed, part: trunk, want: drawnName()},
-			drawnPart{within: notRun + dropStep, part: topic, want: drawnName()},
-			drawnPart{within: "Broke: " + detachStep, part: trunk, want: drawnName()},
-		),
 		drawnRow(row("the delete of the branch when detached",
 			setting{arrange: trunkElsewhere, landed: lockRef("refs/heads/" + topic)}, "HEAD",
 			"Ran "+fetchStep+"\nRan "+detachStep+"\n"+dropStep+failed, "\n"+broke(dropStep)+nextHand+dropStep+byHand),
-			drawnPart{within: "-D " + topic + "` by hand", part: topic, want: drawnName()},
+			commandIn(dropStep+byHand, dropStep),
 		),
 	}
 }
@@ -514,8 +500,8 @@ func finishedResumes() []finishedResume {
 			text: resumedLine + deletedLine + onTrunkLine, ending: result.EndingTrunk,
 			calls: append(asked(changesRead()), forgetest.Call{Op: forgetest.OpDeleteBranch, Repo: origin(), Branch: topic}),
 			drawn: []drawnPart{
-				{within: "Pull request #7", part: "#7", want: drawnName()},
-				{within: "merged into " + trunk, part: trunk, want: drawnName()},
+				{within: "Pull request #7", part: "#7", want: resulttest.NameLook()},
+				{within: "merged into " + trunk, part: trunk, want: resulttest.NameLook()},
 			},
 		},
 		{
@@ -609,46 +595,40 @@ func TestMerge_WhenAResumeCannotFinish_EndsWithNothingWritten(t *testing.T) {
 func TestMerge_WhenTheResumeCannotAskOriginForTheBranch_BrokeNamingTheRead(t *testing.T) {
 	t.Parallel()
 
-	s := newScene(t, func(f *gittest.Fixture) { f.LandPull(merged, topic) }, forgetest.Script{}, false)
-	tip := s.fixture.Git("rev-parse", topic)
-	s.useForge(t, resuming()(tip))
-	// Origin answers about its trunk, the fetch of it, and the fetch of the merged head, and not
-	// whether it still has the branch.
-	s.stopAnswering(t, 3)
-	before := s.written()
+	run := runMergeOn(t, setting{
+		arrange: func(f *gittest.Fixture) { f.LandPull(merged, topic) }, script: resuming(), unbounded: true,
+		rewire: func(t *testing.T, s *scene) {
+			t.Helper()
+			// Origin answers about its trunk, the fetch of it, and the fetch of the merged head, and not
+			// whether it still has the branch.
+			s.stopAnswering(t, 3)
+		},
+	})
 
-	got := landing.Merge(t.Context(), s.deps, mergeRequest())
+	assertStoppedBy(t, run.got, result.Broke, mergeRequest())
 
-	assertStoppedBy(t, got, result.Broke, mergeRequest())
-
-	text, reason := shown(t, got, s.gitDir)
+	text, reason := shown(t, run.got, run.gitDir)
 	prefix := resumedLine + "Could not read " + readStillOnOrigin + ": "
 	suffix := "\nNothing was written.\nBroke: could not read " + readStillOnOrigin + "\n" + nextMergeFixed
 	assert.Check(t, strings.HasPrefix(text, prefix), "RenderText() = %q, want it to start with %q", text, prefix)
 	assert.Check(t, strings.HasSuffix(text, suffix), "RenderText() = %q, want it to end with %q", text, suffix)
 	assert.Check(t, is.Equal(reason, "could not read "+readStillOnOrigin))
-	assert.Check(t, is.DeepEqual(mergePayload(t, got), resumed(tip, ""), cmpopts.EquateEmpty()))
-	assert.Check(t, is.Equal(s.written(), before))
+	assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(run.tip, ""), cmpopts.EquateEmpty()))
+	assert.Check(t, is.Equal(run.written(), run.before))
 }
 
 func TestMerge_WhenTheDeadlineEndsAsTheResumeAsksOriginForTheBranch_RefusesNamingTheRead(t *testing.T) {
 	t.Parallel()
 
-	s := newScene(t, landAndPublish, forgetest.Script{}, false)
-	tip := s.fixture.Git("rev-parse", topic)
-	s.useForge(t, resuming()(tip))
 	// Origin answers about its trunk, the fetch of it, and the fetch of the merged head.
-	ctx := stalling(3)(t, s)
-	before := s.written()
+	run := runMergeOn(t, setting{arrange: landAndPublish, script: resuming(), deadline: stalling(3)})
 
-	got := landing.Merge(ctx, s.deps, mergeRequest())
+	assertStoppedBy(t, run.got, result.Refused, mergeRequest())
 
-	assertStoppedBy(t, got, result.Refused, mergeRequest())
-
-	text, _ := shown(t, got, s.gitDir)
+	text, _ := shown(t, run.got, run.gitDir)
 	assert.Check(t, is.Equal(text, resumedLine+overtimeText(mergeCommand(), readStillOnOrigin)))
-	assert.Check(t, is.DeepEqual(mergePayload(t, got), resumed(tip, ""), cmpopts.EquateEmpty()))
-	assert.Check(t, is.Equal(s.written(), before))
+	assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(run.tip, ""), cmpopts.EquateEmpty()))
+	assert.Check(t, is.Equal(run.written(), run.before))
 }
 
 // sent returns the payload of a green run on a clean pull request 12 that sent its merge with a
@@ -671,7 +651,7 @@ func toLand(land, remove error) forgeFor {
 // does not go as asked.
 func writeStops() []landingRow {
 	failed := errors.New("HTTP 502")
-	lead := countLine + cleanLine
+	lead := countLine + cleanLine()
 	row := func(name string, script forgeFor, outcome result.Outcome, text string) landingRow {
 		return landingRow{
 			name: name, set: setting{script: script}, outcome: outcome, text: lead + text,

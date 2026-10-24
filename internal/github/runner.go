@@ -22,7 +22,7 @@ const Program = "gh"
 
 // Argv returns the full argv of a call of gh with args.
 func Argv(args []string) []string {
-	return append([]string{Program}, args...)
+	return child.Argv(Program, args)
 }
 
 const installURL = "https://cli.github.com"

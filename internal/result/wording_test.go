@@ -9,6 +9,7 @@ import (
 	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/result"
+	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
 // rejected is a result whose own wording names a hook or a git dir path.
@@ -86,9 +87,6 @@ func lineCases() []rejected {
 		line("git dir component after a flag", "--git-dir=.git/x",
 			"Ran with --git-dir=.git/x today.", result.Say("Ran with --git-dir=.git/x today.")),
 		line("pre-commit, capital", "Pre-commit", "Pre-commit ran.", result.Say("Pre-commit ran.")),
-		line("prek, capital", "Prek", "Prek ran.", result.Say("Prek ran.")),
-		line("lefthook, capital", "Lefthook", "Lefthook ran.", result.Say("Lefthook ran.")),
-		line("hooks directory, capital", "Hooks/", "Hooks/ skipped.", result.Say("Hooks/ skipped.")),
 		line("git dir component, slash", ".git/config", "Wrote .git/config", result.Say("Wrote .git/config")),
 		line("git dir component, backslash", `.git\config`, `Wrote .git\config`, result.Say(`Wrote .git\config`)),
 		line("git dir component, nested", "work/.git/index.lock",
@@ -113,31 +111,59 @@ func otherCases() []rejected {
 	reason := func(name, wantWord, wantLine string, p result.Phrase) rejected {
 		return rejected{
 			name: name, gitDir: gitDir, wantLine: wantLine, wantWord: wantWord,
-			result: with(refusedPush(), func(r *result.Result) { r.Reason = p }),
+			result: refusedWithReason(p),
 		}
 	}
 	next := func(name, wantWord, wantLine string, n result.Next) rejected {
 		return rejected{
 			name: name, gitDir: gitDir, wantLine: wantLine, wantWord: wantWord,
-			result: with(redPush(), func(r *result.Result) { r.Next = n }),
+			result: redWithNext(n),
 		}
 	}
 
 	return []rejected{
 		reason("reason naming a hook", "pre-push", "the pre-push step failed on main",
 			result.Say("the pre-push step failed on %s", "main")),
-		reason("reason naming the resolved git dir", gitDir, "cannot write /srv/store/meta/HEAD",
-			result.Say("cannot write /srv/store/meta/HEAD")),
 		next("judgment step naming a hook", "prek,", "run prek, then ils push again",
 			result.NextStep("run prek, then ils push again")),
-		next("judgment step naming a git dir path", ".git/index.lock,",
-			"remove .git/index.lock, then run ils push again",
-			result.NextStep("remove .git/index.lock, then run ils push again")),
 		next("command naming a hook", "hooks/", "ils push hooks/", result.NextCommand("push hooks/")),
-		next("command naming a git dir path", ".git/config", "ils push .git/config",
-			result.NextCommand("push .git/config")),
-		next("command naming the resolved git dir", gitDir, "ils push /srv/store/meta",
-			result.NextCommand("push /srv/store/meta")),
+	}
+}
+
+// exemptCases returns results whose third-party text names a hook or a git
+// dir path, which the wording check must let through unchanged.
+func exemptCases() []pair {
+	const log = "prek wrote /srv/store/meta/index\nreading .git/hooks/pre-commit\n"
+
+	return []pair{
+		doneExcerpt("excerpt naming a git dir path and a hook",
+			"error: cannot lock .git/index.lock\nthe pre-commit hook of lefthook failed"),
+		doneExcerpt("excerpt naming the resolved git dir", "fatal: /srv/store/meta/HEAD is not valid"),
+		{
+			name:     "failed log naming the resolved git dir and a hook path",
+			gitDir:   gitDir,
+			wantText: redBody + redEnd,
+			result:   with(redPush(), func(r *result.Result) { r.Payload.Push.FailedLog = log }),
+			want:     with(redShown(), func(s *resulttest.Shown) { s.Payload.Push.FailedLog = log }),
+		},
+		brokeLine("name holding a hook, a git dir path, and the resolved git dir",
+			result.Say("Git said: %s", "pre-commit could not lock `.git/index` in /srv/store/meta"),
+			"Git said: pre-commit could not lock `.git/index` in /srv/store/meta"),
+		refusedFor("reason name holding a hook path",
+			result.Say("the file %s is in the way", ".git/hooks/pre-push"),
+			"the file .git/hooks/pre-push is in the way"),
+		redThen("step name holding a hook",
+			result.NextStep("fix %s, then run ils push again", "the pre-commit hook"),
+			"fix the pre-commit hook, then run ils push again"),
+		brokeLine("wording with a repository suffix that is no path component",
+			result.Say("Fetched from ils.git today."), "Fetched from ils.git today."),
+		brokeLine("wording naming a sibling of the resolved git dir",
+			result.Say("Wrote /srv/store/metadata/HEAD"), "Wrote /srv/store/metadata/HEAD"),
+		brokeLine("name marked as a branch holding a hook",
+			result.Say("Kept %s.", result.Branch("pre-commit")), "Kept pre-commit."),
+		with(brokeLine("empty git dir matches nothing",
+			result.Say("Wrote /srv/store/meta/HEAD"), "Wrote /srv/store/meta/HEAD"),
+			func(c *pair) { c.gitDir = "" }),
 	}
 }
 
@@ -145,20 +171,18 @@ func TestRender_WhenOwnWordingNamesHookOrGitDir_ReturnsWordingError(t *testing.T
 	t.Parallel()
 
 	for _, tt := range slices.Concat(lineCases(), dirCases(), otherCases()) {
-		for _, r := range renderers() {
-			t.Run(tt.name+"/"+r.name, func(t *testing.T) {
-				t.Parallel()
-				t.Logf("row: git dir %q, result %s", tt.gitDir, inputOf(tt.result))
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			t.Logf("row: git dir %q, result %s", tt.gitDir, inputOf(tt.result))
 
-				out, err := r.render(tt.result, tt.gitDir)
+			out, err := result.RenderText(tt.result, tt.gitDir)
 
-				wordingErr, ok := errors.AsType[*result.WordingError](err)
-				assert.Assert(t, ok, "render error = %v, want a *result.WordingError; output %q", err, out)
-				assert.Check(t, is.Equal(wordingErr.Line, tt.wantLine))
-				assert.Check(t, is.Equal(wordingErr.Word, tt.wantWord))
-				assert.Check(t, is.Equal(out, ""))
-			})
-		}
+			wordingErr, ok := errors.AsType[*result.WordingError](err)
+			assert.Assert(t, ok, "RenderText error = %v, want a *result.WordingError; output %q", err, out)
+			assert.Check(t, is.Equal(wordingErr.Line, tt.wantLine))
+			assert.Check(t, is.Equal(wordingErr.Word, tt.wantWord))
+			assert.Check(t, is.Equal(out, ""))
+		})
 	}
 }
 

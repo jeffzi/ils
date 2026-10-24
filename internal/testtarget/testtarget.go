@@ -4,7 +4,6 @@ package testtarget
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/jeffzi/ils/internal/child"
 )
@@ -56,11 +55,11 @@ func (t Tool) Check(target, want, found string) error {
 }
 
 // CheckOutput returns why a tool whose `<name> --version` prints out does not suit target, or nil
-// when it does. Only the first line of out is read: versionOf must read a version from it, and that
-// version must suit target and want, as Check decides. A first line that names no version versionOf
-// reads is an error.
+// when it does. Only the child.VersionLine of out is read: versionOf must read a version from it,
+// and that version must suit target and want, as Check decides. A line that names no version
+// versionOf reads is an error.
 func (t Tool) CheckOutput(target, want, out string, versionOf func(line string) string) error {
-	line, _, _ := strings.Cut(out, "\n")
+	line := child.VersionLine(out)
 
 	found := versionOf(line)
 	if found == "" {

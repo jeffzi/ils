@@ -13,6 +13,7 @@ import (
 	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/child"
+	"github.com/jeffzi/ils/internal/logtest"
 )
 
 // exitOf runs a go command that exits non-zero and returns what exec reports for it.
@@ -86,23 +87,6 @@ func TestFailure_WhenProgramNeverExited_WrapsRunErrorNamingCommand(t *testing.T)
 	assert.Check(t, is.Equal(err.Error(), "gh pr view: "+exec.ErrNotFound.Error()))
 }
 
-// recordingHandler keeps every record logged through it, at any level.
-type recordingHandler struct {
-	records []slog.Record
-}
-
-func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
-
-func (h *recordingHandler) Handle(_ context.Context, record slog.Record) error {
-	h.records = append(h.records, record.Clone())
-
-	return nil
-}
-
-func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
-
-func (h *recordingHandler) WithGroup(string) slog.Handler { return h }
-
 func TestExec_Log(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -128,21 +112,17 @@ func TestExec_Log(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			handler := &recordingHandler{}
+			logger, sink := logtest.New()
 			run := child.Exec{Tool: "gh", Args: []string{"pr", "view"}, Err: tt.err, Took: 5 * time.Millisecond}
 
-			run.Log(t.Context(), slog.New(handler))
+			run.Log(t.Context(), logger)
 
-			assert.Assert(t, is.Len(handler.records, 1))
-			record := handler.records[0]
+			records := sink.Records()
+			assert.Assert(t, is.Len(records, 1))
+			record := records[0]
 			assert.Check(t, is.Equal(record.Message, "exec"))
 			assert.Check(t, is.Equal(record.Level, slog.LevelDebug))
-			got := map[string]any{}
-			record.Attrs(func(attr slog.Attr) bool {
-				got[attr.Key] = attr.Value.Any()
-
-				return true
-			})
+			got := record.Map()
 			assert.Check(t, is.Equal(got["duration"], 5*time.Millisecond))
 			delete(got, "duration")
 			assert.Check(t, is.DeepEqual(got, tt.want))
@@ -152,15 +132,15 @@ func TestExec_Log(t *testing.T) {
 
 func TestExec_Log_WhenNoLogger_LogsNothingToDefaultLogger(t *testing.T) {
 	// Not parallel: this replaces the process's default logger while it runs.
-	handler := &recordingHandler{}
+	logger, sink := logtest.New()
 	previous := slog.Default()
-	slog.SetDefault(slog.New(handler))
+	slog.SetDefault(logger)
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	run := child.Exec{Tool: "gh", Args: []string{"pr", "view"}, Err: errors.New("failed"), Took: time.Millisecond}
 
 	run.Log(t.Context(), nil)
 
-	assert.Check(t, is.Len(handler.records, 0))
+	assert.Check(t, is.Len(sink.Records(), 0))
 }
 
 func TestToolTooOldError_Error(t *testing.T) {

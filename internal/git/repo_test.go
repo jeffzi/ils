@@ -72,6 +72,13 @@ func fetch(t *testing.T, f *gittest.Fixture, ref string) {
 	f.Git("fetch", "--quiet", "origin", ref)
 }
 
+// shadowTrunk creates a local branch named origin/<trunk> at rev, whose short name git would read
+// as origin's trunk when it resolved the short ref.
+func shadowTrunk(t *testing.T, f *gittest.Fixture, rev string) {
+	t.Helper()
+	f.Git("branch", "origin/"+trunk, rev)
+}
+
 // outsideRepo returns the typed git calls over a directory that is not a repository.
 func outsideRepo(t *testing.T) git.Repo {
 	t.Helper()
@@ -427,50 +434,78 @@ func TestRepo_Contains_WhenCommitUnknown_ReturnsExitError(t *testing.T) {
 	assert.Check(t, ok, "Contains(%s, %s) = %t, error = %v, want *child.ExitError", shas.local, unknownSHA, got, err)
 }
 
-func TestRepo_CommitsPast_WhenTrunkMergedIn_ListsOwnCommitsOldestFirst(t *testing.T) {
+func TestRepo_CommitsPast(t *testing.T) {
 	t.Parallel()
-	f := gittest.New(t, trunk)
-	shas := f.Commits(topic, "one", "two")
-	mergeTrunk(t, f)
-	tip := f.Git("rev-parse", "HEAD")
+	tests := []struct {
+		// arrange shapes the repository and returns the commits past the trunk, oldest first.
+		arrange func(t *testing.T, f *gittest.Fixture) []git.Commit
+		name    string
+	}{
+		{
+			name: "trunk merged in lists own commits oldest first",
+			arrange: func(t *testing.T, f *gittest.Fixture) []git.Commit {
+				t.Helper()
+				shas := f.Commits(topic, "one", "two")
+				mergeTrunk(t, f)
 
-	got, err := newRepo(f).CommitsPast(t.Context(), tip, trunk)
-	assert.NilError(t, err)
+				return []git.Commit{{SHA: shas[0], Subject: "one"}, {SHA: shas[1], Subject: "two"}}
+			},
+		},
+		{
+			name:    "nothing past the trunk lists no commit",
+			arrange: func(*testing.T, *gittest.Fixture) []git.Commit { return nil },
+		},
+		{
+			name: "local branch named like origin's trunk holding the commits lists them",
+			arrange: func(t *testing.T, f *gittest.Fixture) []git.Commit {
+				t.Helper()
+				sha := f.Commits(topic, "one")[0]
+				shadowTrunk(t, f, sha)
 
-	want := []git.Commit{{SHA: shas[0], Subject: "one"}, {SHA: shas[1], Subject: "two"}}
-	assert.Check(t, is.DeepEqual(got, want))
+				return []git.Commit{{SHA: sha, Subject: "one"}}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			want := tt.arrange(t, f)
+			tip := f.Git("rev-parse", "HEAD")
+
+			got, err := newRepo(f).CommitsPast(t.Context(), tip, trunk)
+			assert.NilError(t, err)
+
+			assert.Check(t, is.DeepEqual(got, want, cmpopts.EquateEmpty()))
+		})
+	}
 }
 
-func TestRepo_CommitsPast_WhenNothingPastTrunk_ReturnsNoCommits(t *testing.T) {
+func TestRepo_BranchesContaining(t *testing.T) {
 	t.Parallel()
-	f := gittest.New(t, trunk)
-	tip := f.Git("rev-parse", "HEAD")
+	tests := []struct {
+		// arrange changes where HEAD stands; nil leaves the topic branch checked out.
+		arrange func(f *gittest.Fixture)
+		name    string
+		want    []string
+	}{
+		{name: "another branch carrying the commit is listed alone", want: []string{sibling}},
+		{name: "head detached lists every branch carrying the commit", arrange: (*gittest.Fixture).Detach, want: []string{sibling, topic}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f, first := topicWithSibling(t)
+			if tt.arrange != nil {
+				tt.arrange(f)
+			}
 
-	got, err := newRepo(f).CommitsPast(t.Context(), tip, trunk)
-	assert.NilError(t, err)
+			got, err := newRepo(f).BranchesContaining(t.Context(), first)
+			assert.NilError(t, err)
 
-	assert.Check(t, is.Len(got, 0))
-}
-
-func TestRepo_BranchesContaining_WhenAnotherBranchCarriesCommit_ListsOnlyTheOtherBranch(t *testing.T) {
-	t.Parallel()
-	f, first := topicWithSibling(t)
-
-	got, err := newRepo(f).BranchesContaining(t.Context(), first)
-	assert.NilError(t, err)
-
-	assert.Check(t, is.DeepEqual(got, []string{sibling}))
-}
-
-func TestRepo_BranchesContaining_WhenHeadDetached_ListsEveryBranchCarryingCommit(t *testing.T) {
-	t.Parallel()
-	f, first := topicWithSibling(t)
-	f.Detach()
-
-	got, err := newRepo(f).BranchesContaining(t.Context(), first)
-	assert.NilError(t, err)
-
-	assert.Check(t, is.DeepEqual(got, []string{sibling, topic}))
+			assert.Check(t, is.DeepEqual(got, tt.want))
+		})
+	}
 }
 
 func TestRepo_BranchesContaining_WhenCurrentBranchReadFails_ReturnsItsExitError(t *testing.T) {
@@ -545,6 +580,23 @@ func TestRepo_OwnCommits(t *testing.T) {
 	}
 }
 
+func TestRepo_OwnCommits_WhenLocalBranchNamedLikeOriginsTrunkHoldsTheCommits_ListsThem(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	shas := f.Commits(topic, "one", "two")
+	f.Commits(sibling, "other change")
+	f.Commits(spare, "spare change")
+	f.Commits(topic)
+	shadowTrunk(t, f, shas[1])
+	tip := f.Git("rev-parse", "HEAD")
+
+	got, err := newRepo(f).OwnCommits(t.Context(), tip, trunk, []string{sibling, spare})
+	assert.NilError(t, err)
+
+	want := []git.Commit{{SHA: shas[0], Subject: "one"}, {SHA: shas[1], Subject: "two"}}
+	assert.Check(t, is.DeepEqual(got, want))
+}
+
 func TestRepo_OwnCommits_WhenSeveralBranchesNamed_ReadsWithOneLogCall(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
@@ -615,6 +667,15 @@ func TestRepo_Unlanded(t *testing.T) {
 			},
 		},
 		{name: "side branch merged into the tip", arrange: mergeSide},
+		{
+			name: "local branch named like origin's trunk holding the commit",
+			arrange: func(t *testing.T, f *gittest.Fixture) []git.Commit {
+				sha := f.Commits(topic, "three")[0]
+				shadowTrunk(t, f, sha)
+
+				return []git.Commit{{SHA: sha, Subject: "three"}}
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -730,6 +791,7 @@ func checkGitRefused(t *testing.T, err error, message string) {
 	assert.Check(t, is.Contains(exitErr.Stderr, message))
 }
 
+// standing returns the standing of f's repository, failing the test when git cannot read it.
 func standing(t *testing.T, f *gittest.Fixture) git.Standing {
 	t.Helper()
 
@@ -816,6 +878,18 @@ func TestRepo_DetachAtOrigin_WhenOriginMovedSinceFetch_DetachesAtFetchedTrunkKee
 	assert.Check(t, is.Equal(f.Git("rev-parse", "HEAD"), fetched))
 	_, statErr := os.Stat(filepath.Join(f.Dir(), untracked))
 	assert.Check(t, statErr, "untracked file %s after the detach", untracked)
+}
+
+func TestRepo_DetachAtOrigin_WhenLocalBranchNamedLikeOriginsTrunk_DetachesAtOriginsTrunk(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	shadowTrunk(t, f, f.Commits(topic, "one")[0])
+	want := f.Git("rev-parse", "refs/remotes/origin/"+trunk)
+
+	err := newRepo(f).DetachAtOrigin(t.Context(), trunk)
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Equal(f.Git("rev-parse", "HEAD"), want))
 }
 
 func TestRepo_DeleteBranch_WhenNothingMergedIt_RemovesIt(t *testing.T) {

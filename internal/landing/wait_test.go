@@ -175,6 +175,7 @@ func moved() forge.Head {
 	return forge.Head{SHA: movedSHA, MergeState: forge.MergeBlockedByReview, RawMergeState: "BLOCKED"}
 }
 
+// blockedByReview is the pushed commit, blocked until a review approves it.
 func blockedByReview() forge.Head { return tip(forge.MergeBlockedByReview, "BLOCKED") }
 
 // lateHead is the answer of a read of the head that the deadline ended.
@@ -604,6 +605,12 @@ func TestAwaitVerdict_WhenTheHeadMovesPastThePushedCommit_EndsMovedToTheNewHead(
 			ops: readsOf(1, 2, 1),
 		},
 		{
+			// Twelve seconds end inside the 20 seconds a check with no run behind it is held.
+			name:     "after a check with no run behind it, at the deadline",
+			verdicts: says(appPassing()), left: 12 * time.Second,
+			ops: readsOf(1, 2, 1),
+		},
+		{
 			name:     "after a check failed with its log held back and five seconds left",
 			verdicts: says(lintHeldBack()), left: 5 * time.Second,
 			ops: readsOf(1, 1, 1),
@@ -896,6 +903,7 @@ type cutShort struct {
 	poll bool
 }
 
+// cutShortWaits are the waits whose deadline ends inside a read or a poll.
 func cutShortWaits() []cutShort {
 	ended := fmt.Errorf("gh: %w", context.DeadlineExceeded)
 	lateVerdict := forgetest.Answer[forge.Verdict]{Err: ended}
@@ -1128,14 +1136,50 @@ func assertReadsRequire(t *testing.T, calls []forgetest.Call, tip string, requir
 	for _, call := range calls {
 		if call.Op == forgetest.OpHead {
 			heads++
-			assert.Check(t, is.DeepEqual(call.Head, forge.HeadQuery{Number: opened, Required: required}))
+			assert.Check(t, is.DeepEqual(call.HeadQuery, forge.HeadQuery{Number: opened, Required: required}))
 		}
 
 		if call.Op == forgetest.OpVerdict {
 			verdicts++
-			assert.Check(t, is.DeepEqual(call.Query, forge.VerdictQuery{SHA: tip, Number: opened, Required: required}))
+			assert.Check(t, is.DeepEqual(call.VerdictQuery, forge.VerdictQuery{SHA: tip, Number: opened, Required: required}))
 		}
 	}
 
 	assert.Check(t, heads > 0 && verdicts > 0, "forge reads = %d heads and %d verdicts, want some of each", heads, verdicts)
+}
+
+// stateLine is the line that prints the merge state GitHub showed as raw and ils read as state.
+func stateLine(state forge.MergeState, raw string) string {
+	if strings.EqualFold(raw, string(state)) {
+		return "GitHub: " + raw + "\n"
+	}
+
+	return "GitHub: " + raw + " (" + string(state) + ")\n"
+}
+
+func TestPush_WhenGitHubShowsAMergeState_NamesIlsReadingOnlyWhereItDiffers(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		raw   string
+		state forge.MergeState
+		want  string
+	}{
+		{name: "CLEAN read as clean", raw: "CLEAN", state: forge.MergeClean, want: "GitHub: CLEAN\n"},
+		{name: "DIRTY read as conflicting", raw: "DIRTY", state: forge.MergeConflicting, want: "GitHub: DIRTY (conflicting)\n"},
+		{name: "HAS_HOOKS read as clean", raw: "HAS_HOOKS", state: forge.MergeClean, want: "GitHub: HAS_HOOKS (clean)\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				d := newDelivery(t, pushRow{script: reusing(passing()).showing(inState(tt.state, tt.raw))})
+
+				got := landing.Push(d.ctx, d.deps, pushRequest())
+
+				text, _ := shown(t, got, d.gitDir)
+				assert.Check(t, is.Contains(text, "\n"+tt.want))
+			})
+		})
+	}
 }

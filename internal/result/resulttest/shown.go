@@ -48,14 +48,10 @@ func AssertCarried(tb interface {
 ) {
 	tb.Helper()
 
-	labels := map[string]string{
-		"refused": "Refused", "broke": "Broke", "pending": "Pending", "delivered-not-green": "Delivered, not green",
-	}
-
 	carried := append(strings.Split(got.Excerpt, "\n"), got.Lines...)
-	carried = append(carried, "Next: "+got.Next)
-	if label, ok := labels[got.Outcome]; ok {
-		carried = append(carried, label+": "+got.Reason)
+	carried = append(carried, result.NextLabel+": "+got.Next)
+	if outcome, ok := result.ParseOutcome(got.Outcome); ok && outcome != result.Done {
+		carried = append(carried, outcome.Label()+": "+got.Reason)
 	}
 
 	for line := range strings.Lines(text) {

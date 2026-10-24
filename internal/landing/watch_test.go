@@ -1,9 +1,7 @@
 package landing_test
 
 import (
-	"context"
 	"fmt"
-	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -13,6 +11,7 @@ import (
 	"gotest.tools/v3/assert"
 
 	"github.com/jeffzi/ils/internal/landing"
+	"github.com/jeffzi/ils/internal/logtest"
 	"github.com/jeffzi/ils/internal/result"
 )
 
@@ -51,16 +50,17 @@ type watchEvent struct {
 
 // watch is what a run told the progress hook and the logger of its Deps, each in the order told.
 type watch struct {
-	events  []watchEvent
-	records []string
-	mu      sync.Mutex
+	log    *logtest.Sink
+	events []watchEvent
+	mu     sync.Mutex
 }
 
 // watchOn gives deps a progress hook and a logger that both tell the watch it returns.
 func watchOn(deps *landing.Deps) *watch {
-	w := &watch{}
+	logger, sink := logtest.New()
+	w := &watch{log: sink}
 	deps.Progress = w
-	deps.Logger = slog.New(watchLog{watch: w})
+	deps.Logger = logger
 
 	return w
 }
@@ -118,10 +118,19 @@ func (w *watch) told(t *testing.T) []string {
 // logged returns each record the logger was given, in order, as its level, its message, and each
 // of its attributes as key=value, apart by spaces.
 func (w *watch) logged() []string {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	records := w.log.Records()
+	logged := make([]string, 0, len(records))
 
-	return slices.Clone(w.records)
+	for _, record := range records {
+		parts := []string{record.Level.String(), record.Message}
+		for _, attr := range record.Attrs {
+			parts = append(parts, attr.String())
+		}
+
+		logged = append(logged, strings.Join(parts, " "))
+	}
+
+	return logged
 }
 
 // lines returns the step lines the hook was told the run said, in order.
@@ -140,57 +149,6 @@ func (w *watch) lines(t *testing.T) []string {
 	}
 
 	return lines
-}
-
-// watchLog is a log handler that keeps every record in its watch.
-type watchLog struct {
-	watch *watch
-	group string
-	attrs []slog.Attr
-}
-
-// Enabled reports that every level is kept.
-func (watchLog) Enabled(context.Context, slog.Level) bool { return true }
-
-// Handle keeps r in the watch.
-func (h watchLog) Handle(_ context.Context, r slog.Record) error {
-	parts := []string{r.Level.String(), r.Message}
-	for _, a := range h.attrs {
-		parts = append(parts, a.String())
-	}
-
-	r.Attrs(func(a slog.Attr) bool {
-		parts = append(parts, h.group+a.String())
-
-		return true
-	})
-
-	h.watch.mu.Lock()
-	defer h.watch.mu.Unlock()
-
-	h.watch.records = append(h.watch.records, strings.Join(parts, " "))
-
-	return nil
-}
-
-// WithAttrs returns a handler that adds attrs to every record it keeps.
-func (h watchLog) WithAttrs(attrs []slog.Attr) slog.Handler {
-	kept := slices.Clone(h.attrs)
-	for _, a := range attrs {
-		a.Key = h.group + a.Key
-		kept = append(kept, a)
-	}
-
-	h.attrs = kept
-
-	return h
-}
-
-// WithGroup returns a handler that keeps the key of every attribute after it under name.
-func (h watchLog) WithGroup(name string) slog.Handler {
-	h.group += name + "."
-
-	return h
 }
 
 // plainText returns the text of phrase on its own, as a line of a result prints it.

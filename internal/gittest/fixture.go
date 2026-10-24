@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/jeffzi/ils/internal/git"
 )
 
 const (
@@ -32,6 +34,7 @@ const (
 	scratchRef    = "refs/gittest/squash"
 
 	sshConfigName = "ssh_config"
+	sshCommandVar = "GIT_SSH_COMMAND"
 	standInDir    = "ssh-stand-in"
 	// servingEnv holds the script the stand-in for ssh runs for every call but a read of its config.
 	servingEnv = "ILS_GITTEST_SERVING"
@@ -59,7 +62,7 @@ type Fixture struct {
 func New(tb testing.TB, trunk string) *Fixture {
 	tb.Helper()
 
-	git, err := exec.LookPath("git")
+	gitPath, err := exec.LookPath("git")
 	if err != nil {
 		tb.Fatalf("gittest: find git: %v", err)
 	}
@@ -76,8 +79,8 @@ func New(tb testing.TB, trunk string) *Fixture {
 	sshConfig := filepath.Join(root, sshConfigName)
 	f := &Fixture{
 		tb:        tb,
-		env:       append(isolatedEnv(home), "GIT_SSH_COMMAND=ssh -F '"+filepath.ToSlash(sshConfig)+"'"),
-		git:       git,
+		env:       append(isolatedEnv(home), sshCommandVar+"=ssh -F '"+filepath.ToSlash(sshConfig)+"'"),
+		git:       gitPath,
 		root:      root,
 		dir:       filepath.Join(root, "repo"),
 		originDir: filepath.Join(root, "origin.git"),
@@ -144,11 +147,13 @@ func WriteFile(tb testing.TB, dir, name, content string) {
 // setup replaced: no system or global config, a home under the fixture, and a fixed identity and date.
 func isolatedEnv(home string) []string {
 	env := slices.DeleteFunc(os.Environ(), func(entry string) bool {
-		key, _, _ := strings.Cut(entry, "=")
-		key = strings.ToUpper(key)
+		name, _, _ := strings.Cut(entry, "=")
 
 		// XDG_CONFIG_HOME goes too: git reads its default ignore file from there.
-		return strings.HasPrefix(key, "GIT_") || key == "HOME" || key == "USERPROFILE" || key == "XDG_CONFIG_HOME"
+		return git.SameKey(name[:min(len(name), len("GIT_"))], "GIT_") ||
+			slices.ContainsFunc([]string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME"}, func(key string) bool {
+				return git.SameKey(name, key)
+			})
 	})
 
 	return append(env,
@@ -497,22 +502,9 @@ func (f *Fixture) ServedBy(serving string) []string {
 
 	dir := f.standIn()
 	env := f.Env()
+	path, _ := git.EnvValue(env, "PATH")
 
-	found := false
-
-	for i, entry := range env {
-		key, value, _ := strings.Cut(entry, "=")
-		if strings.EqualFold(key, "PATH") {
-			env[i] = key + "=" + firstOnPath(dir, value)
-			found = true
-		}
-	}
-
-	if !found {
-		env = append(env, "PATH="+dir)
-	}
-
-	return append(env, "GIT_SSH_VARIANT=ssh", servingEnv+"="+serving)
+	return append(Without(env, "PATH"), "PATH="+firstOnPath(dir, path), "GIT_SSH_VARIANT=ssh", servingEnv+"="+serving)
 }
 
 // standIn writes the stand-in for ssh into a directory of its own and returns that directory.
@@ -565,6 +557,24 @@ func (f *Fixture) RemoveSSHConfig() {
 	if err != nil {
 		f.tb.Fatalf("gittest: remove the ssh config: %v", err)
 	}
+}
+
+// Without returns a copy of env with every entry of key removed, matching the key as the system
+// does: exactly, or regardless of case on Windows.
+func Without(env []string, key string) []string {
+	return slices.DeleteFunc(slices.Clone(env), func(entry string) bool {
+		name, _, _ := strings.Cut(entry, "=")
+
+		return git.SameKey(name, key)
+	})
+}
+
+// WithoutSSH returns a copy of env, the environment of a fixture, with no ssh command and an empty
+// directory as its one PATH, so that git run in it finds no ssh to run.
+func WithoutSSH(tb testing.TB, env []string) []string {
+	tb.Helper()
+
+	return append(Without(Without(env, sshCommandVar), "PATH"), "PATH="+tb.TempDir())
 }
 
 // originURL returns the bare origin's location in the slash form git accepts on every platform.

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -17,6 +16,7 @@ import (
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
+	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
 const (
@@ -218,11 +218,11 @@ func manyCutRefusals() []pushRefusal {
 	const others = "the branches " + early + ", " + topic + " and " + yearly
 
 	drawn := []drawnPart{
-		{within: others, part: early, want: drawnName()},
+		{within: others, part: early, want: resulttest.NameLook()},
 		{within: others, part: ", "},
-		{within: others, part: topic, want: drawnName()},
+		{within: others, part: topic, want: resulttest.NameLook()},
 		{within: others, part: " and "},
-		{within: others, part: yearly, want: drawnName()},
+		{within: others, part: yearly, want: resulttest.NameLook()},
 	}
 
 	return []pushRefusal{
@@ -255,16 +255,20 @@ func manyCutRefusals() []pushRefusal {
 	}
 }
 
+func pullFrom(branch string) string {
+	return "git pull --ff-only origin " + branch
+}
+
 // behind is the whole text of the refusal of branch, which is behind origin's copy of it.
 func behind(branch string) string {
 	return "Refused: the branch " + branch + " is behind origin's copy of it\n" +
-		"Next: run `git pull --ff-only origin " + branch + "`, then run ils push again\n"
+		"Next: run `" + pullFrom(branch) + "`, then run ils push again\n"
 }
 
 // diverged is the whole text of the refusal of branch, which has diverged from origin's copy of it.
 func diverged(branch string) string {
 	return "Refused: the branch " + branch + " and origin's copy of it have diverged\n" +
-		"Next: run `git merge origin/" + branch + "`, then run ils push again\n"
+		"Next: run `" + originMerge + branch + "`, then run ils push again\n"
 }
 
 // copyRefusals are the refusals decided from origin's copy of the branch.
@@ -278,7 +282,7 @@ func copyRefusals() []pushRefusal {
 
 				return behind(topic)
 			},
-			drawn: []drawnPart{{within: "origin " + topic + "`", part: topic, want: drawnName()}},
+			drawn: []drawnPart{commandIn(behind(topic), pullFrom(topic))},
 		},
 		{
 			// The forge would answer find-changes, so the record of its calls is what shows it was not asked.
@@ -299,7 +303,7 @@ func copyRefusals() []pushRefusal {
 
 				return diverged(topic)
 			},
-			drawn: []drawnPart{{within: "origin/" + topic + "`", part: topic, want: drawnName()}},
+			drawn: []drawnPart{commandIn(diverged(topic), originMerge+topic)},
 		},
 	}
 }
@@ -550,11 +554,13 @@ func fakeGit(t *testing.T, s *scene, fake gittest.Fake) {
 	s.deps.Repo.Runner.Env = append(s.deps.Repo.Runner.Env, gittest.FakeGit(t, fake)...)
 }
 
-// failedGitText is the whole text of cmd's result for the read named read when the git call with
-// the arguments words fails as failGit makes it.
-func failedGitText(cmd landingCommand, read string, words []string) string {
-	return unreadText(cmd, read, "git "+strings.Join(words, " ")+": exit status "+
-		strconv.Itoa(gittest.FailedCode)+": "+gittest.FailedSaid)
+// assertFailedGit fails unless got is cmd's broke result on the read named read, carrying what the
+// git call failGit made fail said.
+func assertFailedGit(t *testing.T, got result.Result, cmd landingCommand, read string) {
+	t.Helper()
+
+	said := assertBrokeReadBy(t, got, cmd, read)
+	assert.Check(t, is.Contains(said, gittest.FailedSaid))
 }
 
 // failedRead is one git read of Push that fails for a reason no precondition covers.
@@ -592,7 +598,7 @@ func branchFailedReads() []failedRead {
 				f.Sibling(side, topic)
 				f.Git("switch", "--quiet", topic)
 
-				return append(history(), tip, "^origin/"+trunk, "^refs/heads/"+side)
+				return append(history(), tip, "^refs/remotes/origin/"+trunk, "^refs/heads/"+side)
 			},
 		},
 	}
@@ -638,7 +644,7 @@ func runFailedReads(t *testing.T, rows []failedRead) {
 
 			got := landing.Push(t.Context(), s.deps, pushRequest())
 
-			assertEnded(t, s, got, finish{outcome: result.Broke, text: failedGitText(pushCommand(), tt.read, words)})
+			assertFailedGit(t, got, pushCommand(), tt.read)
 			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
 		})
 	}

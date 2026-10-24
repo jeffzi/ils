@@ -23,8 +23,8 @@ var runUnfinished = regexp.MustCompile(`run \d+ is still in progress; logs will 
 // noChecksReported is what gh prints on stderr when a pull request has no checks.
 const noChecksReported = "no checks reported"
 
-// RunListLimit is the most runs `gh run list` returns for one commit.
-const RunListLimit = "1000"
+// runListLimit is the most runs `gh run list` returns for one commit.
+const runListLimit = "1000"
 
 type pullCheck struct {
 	Name     string `json:"name"`
@@ -147,7 +147,7 @@ func bucketOf(bucket string) forge.Bucket {
 // runs names a run by its workflow name, falling back to the run name when the workflow name is empty.
 func (f *Forge) runs(ctx context.Context, repo forge.Repo, sha string) ([]forge.Run, error) {
 	listed, err := runDecoded[[]workflowRun](ctx, f.runner(),
-		"run", "list", "--repo", repo.Slug(), "--commit", sha, "--limit", RunListLimit,
+		"run", "list", "--repo", repo.Slug(), "--commit", sha, "--limit", runListLimit,
 		"--json", "status,name,workflowName")
 	if err != nil {
 		return nil, err
@@ -235,7 +235,7 @@ func (f *Forge) jobLog(ctx context.Context, repo forge.Repo, job string) (string
 		return "", nil
 	}
 
-	result, err := f.runner().Run(ctx, "api", "--hostname", repo.Host, repoAPIPath(repo, "actions/jobs/"+job+"/logs"))
+	result, err := f.runner().Run(ctx, repoAPIArgs(repo, "actions/jobs/"+job+"/logs")...)
 	if _, exited := errors.AsType[*child.ExitError](err); exited {
 		return "", nil
 	}
