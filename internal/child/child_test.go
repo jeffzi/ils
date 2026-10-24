@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"runtime"
 	"testing"
 	"time"
 
@@ -23,6 +24,40 @@ func exitOf(t *testing.T) *exec.ExitError {
 	err := exec.CommandContext(t.Context(), "go", "tool", "nonsense").Run()
 	exitErr, exited := errors.AsType[*exec.ExitError](err)
 	assert.Assert(t, exited, "go tool nonsense error = %v, want an *exec.ExitError", err)
+
+	return exitErr
+}
+
+// killedBy runs a shell that kills itself with signal, named as kill names it, and returns what
+// exec reports for it.
+func killedBy(t *testing.T, signal string) *exec.ExitError {
+	t.Helper()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no signal a process can kill itself with")
+	}
+
+	//nolint:gosec // G204: the test names the shell and the signal; nothing here comes from outside the test.
+	err := exec.CommandContext(t.Context(), "sh", "-c", "kill -"+signal+" $$").Run()
+	exitErr, exited := errors.AsType[*exec.ExitError](err)
+	assert.Assert(t, exited, "sh killed by %s error = %v, want an *exec.ExitError", signal, err)
+
+	return exitErr
+}
+
+// interruptedChild returns what exec reports for a child that Ctrl-C ended: on Windows a console
+// child that exits with STATUS_CONTROL_C_EXIT, elsewhere a shell that the interrupt signal killed.
+func interruptedChild(t *testing.T) *exec.ExitError {
+	t.Helper()
+
+	if runtime.GOOS != "windows" {
+		return killedBy(t, "INT")
+	}
+
+	// -1073741510 is STATUS_CONTROL_C_EXIT, 0xC000013A, as cmd reads a signed 32-bit exit code.
+	err := exec.CommandContext(t.Context(), "cmd", "/c", "exit", "-1073741510").Run()
+	exitErr, exited := errors.AsType[*exec.ExitError](err)
+	assert.Assert(t, exited, "cmd exiting with STATUS_CONTROL_C_EXIT error = %v, want an *exec.ExitError", err)
 
 	return exitErr
 }
@@ -76,6 +111,51 @@ func TestFailure_WhenContextEnded_ReturnsContextErrorWhateverTheExit(t *testing.
 	_, exited := errors.AsType[*child.ExitError](err)
 	assert.Check(t, !exited, "Failure error = %v, want no *child.ExitError once the context ended", err)
 	assert.Check(t, is.Equal(err.Error(), "go tool nonsense: context canceled"))
+}
+
+func TestFailure_WhenProgramDiedOfTheInterruptBeforeContextEnded_ReturnsContextCanceled(t *testing.T) {
+	t.Parallel()
+	runErr := interruptedChild(t)
+
+	err := child.Failure(t.Context(), []string{"git", "fetch"}, runErr, "secret printed before the interrupt\n")
+
+	assert.Check(t, is.ErrorIs(err, context.Canceled))
+	_, exited := errors.AsType[*child.ExitError](err)
+	assert.Check(t, !exited, "Failure error = %v, want no *child.ExitError for a program the interrupt killed", err)
+	assert.Check(t, is.Equal(err.Error(), "git fetch: context canceled"))
+}
+
+func TestInterruptedExit(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		code int64
+		want bool
+	}{
+		{name: "STATUS_CONTROL_C_EXIT of a console child that Ctrl-C ended", code: 0xC000013A, want: true},
+		{name: "an ordinary failure", code: 1, want: false},
+		{name: "the code a shell reports for a child the interrupt killed", code: 130, want: false},
+		{name: "a child a signal killed, which reports no code", code: -1, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := child.InterruptedExit(int(tt.code))
+
+			assert.Check(t, is.Equal(got, tt.want), "InterruptedExit(%#x)", tt.code)
+		})
+	}
+}
+
+func TestFailure_WhenProgramDiedOfAnotherSignal_WrapsRunErrorNamingCommand(t *testing.T) {
+	t.Parallel()
+	runErr := killedBy(t, "TERM")
+
+	err := child.Failure(t.Context(), []string{"git", "fetch"}, runErr, "")
+
+	assert.Check(t, !errors.Is(err, context.Canceled), "Failure error = %v, want no context.Canceled for a program another signal killed", err)
+	assert.Check(t, is.Equal(err.Error(), "git fetch: "+runErr.Error()))
 }
 
 func TestFailure_WhenProgramNeverExited_WrapsRunErrorNamingCommand(t *testing.T) {

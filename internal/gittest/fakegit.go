@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeffzi/ils/internal/quiet"
 )
@@ -38,6 +39,8 @@ const (
 	stallOnEnv = "ILS_GITTEST_STALL_ON"
 	// stallAtEnv holds the address a stalling call connects to.
 	stallAtEnv = "ILS_GITTEST_STALL_AT"
+	// interruptOnEnv holds the words an interrupted call starts with, separated by wordsSep.
+	interruptOnEnv = "ILS_GITTEST_INTERRUPT_ON"
 	// wordsSep separates the words a variable holds; no git argument holds a line break.
 	wordsSep = "\n"
 )
@@ -55,6 +58,10 @@ type Fake struct {
 	// address StallAt and wait there until it is killed. A test that hands in the address of a
 	// SilentListener learns when the call is under way, and can end its context then.
 	StallOn []string
+	// InterruptOn, when not empty, makes a call whose arguments start with these words end as
+	// Interrupt ends the process, as git does when the terminal's Ctrl-C reaches it before ils has
+	// ended its context.
+	InterruptOn []string
 }
 
 // Main makes the test binary act as git when FakeGit arranged for it, and reports whether it did.
@@ -106,6 +113,10 @@ func FakeGit(tb testing.TB, fake Fake) []string {
 	if len(fake.StallOn) > 0 {
 		set(stallOnEnv, strings.Join(fake.StallOn, wordsSep))
 		set(stallAtEnv, fake.StallAt)
+	}
+
+	if len(fake.InterruptOn) > 0 {
+		set(interruptOnEnv, strings.Join(fake.InterruptOn, wordsSep))
 	}
 
 	LinkAs(tb, "git")
@@ -182,6 +193,15 @@ func serveGit(ctx context.Context, realGit string, args []string) int {
 		return stall(ctx, os.Getenv(stallAtEnv))
 	}
 
+	if startsWith(args, interruptOnEnv) {
+		code, err := Interrupt()
+		if err != nil {
+			return broken(err)
+		}
+
+		return code
+	}
+
 	return runRealGit(ctx, realGit, args)
 }
 
@@ -235,6 +255,42 @@ func runRealGit(ctx context.Context, realGit string, args []string) int {
 	}
 
 	return broken(fmt.Errorf("start the real git: %w", err))
+}
+
+const (
+	// interruptLife bounds how long Interrupt waits for the interrupt it sent to end the process.
+	interruptLife = 30 * time.Second
+	// statusControlCExit is STATUS_CONTROL_C_EXIT, the exit code Windows gives a console program
+	// that Ctrl-C ended.
+	statusControlCExit = 0xC000013A
+)
+
+// Interrupt ends the process as the terminal's Ctrl-C ends a console program, or returns the exit
+// code that does.
+//
+// On Unix it sends the process SIGINT, which the Go runtime answers by ending the process as killed
+// by that signal when nothing asked to be told of it; it returns only with an error, when the send
+// failed or the process outlived interruptLife. On Windows, which reports no signals, it returns
+// the code that, handed to os.Exit, ends the process with STATUS_CONTROL_C_EXIT.
+func Interrupt() (code int, err error) {
+	if runtime.GOOS == "windows" {
+		// os.Exit hands its code to ExitProcess as a uint32, so the code less 1<<32 names the same
+		// exit while fitting the int of every Windows architecture, 32-bit ones included.
+		return statusControlCExit - 1<<32, nil
+	}
+
+	self, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		return 0, fmt.Errorf("find the own process: %w", err)
+	}
+
+	if err := self.Signal(os.Interrupt); err != nil {
+		return 0, fmt.Errorf("interrupt the own process: %w", err)
+	}
+
+	time.Sleep(interruptLife)
+
+	return 0, fmt.Errorf("the process outlived its interrupt by %v", interruptLife)
 }
 
 // broken prints why the fake git could not do its own work to stderr and returns BrokenCode.

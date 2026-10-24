@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/mod/semver"
@@ -34,19 +35,50 @@ func (e *ExitError) Error() string {
 // Failure returns the error of a run of argv that failed with runErr and left stderr behind.
 //
 // When ctx ended before the program did, the error is the context's, whatever the
-// program's exit was. A non-zero exit is an *ExitError. Anything else is runErr,
-// named by the command.
+// program's exit was. A program that died of an interrupt is reported as
+// context.Canceled even while ctx is still live: the terminal sends Ctrl-C to the
+// whole process group, so the program can die of it before ils has canceled its
+// own context, and either order is the same interrupt. On Windows, which reports no
+// signals, that program is one that exited with STATUS_CONTROL_C_EXIT. A non-zero exit is an
+// *ExitError. Anything else is runErr, named by the command.
 func Failure(ctx context.Context, argv []string, runErr error, stderr string) error {
 	command := CommandLine(argv)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return fmt.Errorf("%s: %w", command, ctxErr)
 	}
 
-	if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok && exitErr.Exited() {
+	exitErr, ok := errors.AsType[*exec.ExitError](runErr)
+	if ok && interrupted(exitErr) {
+		return fmt.Errorf("%s: %w", command, context.Canceled)
+	}
+
+	if ok && exitErr.Exited() {
 		return &ExitError{Argv: argv, Code: exitErr.ExitCode(), Stderr: stderr}
 	}
 
 	return fmt.Errorf("%s: %w", command, runErr)
+}
+
+// interrupted reports whether the program exitErr reports on was ended by Ctrl-C: killed by
+// SIGINT, or, on Windows, which reports no signals, exited with STATUS_CONTROL_C_EXIT.
+func interrupted(exitErr *exec.ExitError) bool {
+	status, ok := exitErr.Sys().(syscall.WaitStatus)
+	if ok && status.Signaled() && status.Signal() == syscall.SIGINT {
+		return true
+	}
+
+	return interruptedExit(exitErr.ExitCode())
+}
+
+// statusControlCExit is STATUS_CONTROL_C_EXIT, the exit code Windows gives a console program that
+// Ctrl-C ended. No Unix exit code reaches it: those run from 0 to 255.
+const statusControlCExit = 0xC000013A
+
+// interruptedExit reports whether code, as exec.ExitError.ExitCode returns it, is
+// STATUS_CONTROL_C_EXIT. Windows keeps the code as a uint32 and ExitCode converts it to int, so a
+// 32-bit build sees it negative; only its low 32 bits are compared.
+func interruptedExit(code int) bool {
+	return int64(code)&0xFFFFFFFF == statusControlCExit
 }
 
 // Exec is one finished run of a tool, as a debug log records it.

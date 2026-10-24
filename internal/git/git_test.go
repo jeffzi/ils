@@ -173,6 +173,18 @@ func TestRunner_Run_WhenContextEndsWhileGitRuns_ReturnsOnlyContextError(t *testi
 	}
 }
 
+func TestRunner_Run_WhenGitDiesOfTheInterruptBeforeContextEnds_ReturnsContextCanceled(t *testing.T) {
+	// Not parallel: gittest.FakeGit sets PATH for the whole process.
+	runner := newRunner(t)
+	runner.Env = append(runner.Env, gittest.FakeGit(t, gittest.Fake{InterruptOn: []string{"fetch"}})...)
+
+	_, err := runner.Run(t.Context(), "fetch")
+
+	assert.Check(t, is.ErrorIs(err, context.Canceled))
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Check(t, !ok, "Run(fetch) error = %#v, want no *child.ExitError for a git the interrupt killed", exitErr)
+}
+
 func TestRunner_Run_WhenContextEndsAfterOutputWhileChildHoldsPipes_ReturnsContextErrorPromptly(t *testing.T) {
 	t.Parallel()
 	runner, args := helperDiff(t)

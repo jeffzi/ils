@@ -126,6 +126,17 @@ func TestRunner_Run_WhenContextIsCanceledWhileGhRuns_ReturnsContextError(t *test
 	assert.Check(t, is.ErrorIs(err, context.Canceled))
 }
 
+func TestRunner_Run_WhenGhDiesOfTheInterruptBeforeContextEnds_ReturnsContextCanceled(t *testing.T) {
+	args := []string{"pr", "checks", "7"}
+	ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Interrupted: true}, args...))
+
+	_, err := github.Runner{}.Run(t.Context(), args...)
+
+	assert.Check(t, is.ErrorIs(err, context.Canceled))
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Check(t, !ok, "Run(pr checks) error = %#v, want no *child.ExitError for a gh the interrupt killed", exitErr)
+}
+
 func TestRunner_Run_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
 	tests := []struct {
 		name   string
