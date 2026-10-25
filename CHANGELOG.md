@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-25
+
 ### Added
 
 - Add a live progress display at a terminal, with `--no-color` to turn its color off (also honoring
@@ -26,6 +28,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - Fix help and refusals stalling for seconds when color is off.
+- Fix `ils push` blaming the merge state instead of naming the checks still running when the time
+  limit ends its wait.
 
 ### Security
 
@@ -75,7 +79,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   output.
 - Add usage help, printed by `--help` on `ils` and on each command and by `ils help [command]`.
 
-[Unreleased]: https://github.com/jeffzi/ils/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/jeffzi/ils/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/jeffzi/ils/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jeffzi/ils/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/jeffzi/ils/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/jeffzi/ils/releases/tag/v0.1.0

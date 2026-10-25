@@ -105,7 +105,9 @@ task install
    [creating rulesets for a repository](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/creating-rulesets-for-a-repository)
    has the details. Rulesets need a public repository or a paid GitHub plan; on a free private
    repository skip this step. `ils` works either way. `ils merge` refuses a red merge on its own;
-   the ruleset is what blocks one made by hand.
+   the ruleset is what blocks one made by hand. A repository you share with a team needs the
+   plan, or to be public: without the ruleset nothing stops a teammate pushing to the default
+   branch or merging red, and the gates of `ils` hold only for your own agent.
 
 ## Usage
 
