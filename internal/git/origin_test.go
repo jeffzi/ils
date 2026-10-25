@@ -664,15 +664,6 @@ func TestRepo_Fetch_WhenRefNotOnOrigin_ReturnsRemoteError(t *testing.T) {
 	assert.Check(t, ok, "Fetch(%q) = %q, error = %v, want *git.RemoteError", pullRef, got, err)
 }
 
-// originHook makes script the hook name of f's origin, run by the shell.
-func originHook(t *testing.T, f *gittest.Fixture, name, script string) {
-	t.Helper()
-
-	path := filepath.Join(f.OriginDir(), "hooks", name)
-	//nolint:gosec // G306: a hook is a script git must be able to execute.
-	assert.NilError(t, os.WriteFile(path, []byte("#!/bin/sh\n"+script+"\n"), 0o700))
-}
-
 // killsReceivePack kills the hook's parent: git runs a hook as a child of receive-pack, so `$PPID`
 // is the process that must die mid-push.
 const killsReceivePack = "kill -KILL $PPID"
@@ -704,7 +695,7 @@ func TestRepo_Push_WhenOriginReportsTheRefUpdated_PublishesItAsTheUpstream(t *te
 			arrange: func(t *testing.T, f *gittest.Fixture) {
 				t.Helper()
 				needSignals(t)
-				originHook(t, f, "post-receive", killsReceivePack)
+				f.OriginHook("post-receive", killsReceivePack)
 			},
 		},
 	}
@@ -765,7 +756,7 @@ func TestRepo_Push_WhenOriginRefusesTheRef_ReturnsPushErrorNamingTheReason(t *te
 			name: "pre-receive hook declines",
 			arrange: func(t *testing.T, f *gittest.Fixture) {
 				t.Helper()
-				originHook(t, f, "pre-receive", "echo '"+said+"'\nexit 1")
+				f.OriginHook("pre-receive", "echo '"+said+"'\nexit 1")
 				f.Commits(topic, "two")
 			},
 			want: []string{"pre-receive hook declined", "remote: " + said},
@@ -813,7 +804,7 @@ func TestRepo_Push_WhenOriginGivesNoStatusForTheRef_ReturnsRemoteError(t *testin
 			arrange: func(t *testing.T, f *gittest.Fixture) {
 				t.Helper()
 				needSignals(t)
-				originHook(t, f, "pre-receive", killsReceivePack)
+				f.OriginHook("pre-receive", killsReceivePack)
 			},
 		},
 	}

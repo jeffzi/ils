@@ -289,6 +289,18 @@ func (f *Fixture) CorruptIndex() {
 	WriteFile(f.tb, filepath.Join(f.dir, ".git"), "index", strings.Repeat("not what git wrote here\n", 4))
 }
 
+// OriginHook installs script as the bare origin's hook name, run by sh.
+func (f *Fixture) OriginHook(name, script string) {
+	f.tb.Helper()
+
+	path := filepath.Join(f.originDir, "hooks", name)
+	//nolint:gosec // G306: a hook is a script git must be able to execute.
+	err := os.WriteFile(path, []byte("#!/bin/sh\n"+script+"\n"), 0o700)
+	if err != nil {
+		f.tb.Fatalf("gittest: write hook %s: %v", name, err)
+	}
+}
+
 // DirtyFile leaves an unstaged change in a tracked file and returns its path relative to Dir.
 func (f *Fixture) DirtyFile() string {
 	f.tb.Helper()
