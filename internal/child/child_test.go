@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"runtime"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"gotest.tools/v3/assert"
@@ -127,6 +128,62 @@ func TestFailure_WhenProgramDiedOfTheInterruptBeforeContextEnded_ReturnsContextC
 	assert.Check(t, is.Equal(err.Error(), "git fetch: context canceled"))
 }
 
+func TestFailure_WhenProgramDiedOfTerminateAndContextEndsWithinGrace_ReturnsContextError(t *testing.T) {
+	t.Parallel()
+	runErr := killedBy(t, "TERM")
+
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Nanosecond)
+		defer cancel()
+
+		err := child.Failure(ctx, []string{"git", "fetch"}, runErr, "secret printed before the signal\n")
+
+		assert.Check(t, is.ErrorIs(err, context.DeadlineExceeded))
+		assert.Check(t, is.Equal(err.Error(), "git fetch: "+context.DeadlineExceeded.Error()))
+	})
+}
+
+func TestFailure_WhenProgramDiedOfTerminateAndContextOutlivesGrace_WrapsRunErrorNamingCommand(t *testing.T) {
+	t.Parallel()
+	runErr := killedBy(t, "TERM")
+
+	synctest.Test(t, func(t *testing.T) {
+		err := child.Failure(t.Context(), []string{"git", "fetch"}, runErr, "")
+
+		assert.Check(t, is.Equal(err.Error(), "git fetch: "+runErr.Error()))
+	})
+}
+
+func TestFailure_WhenProgramDidNotDieOfTerminate_ReturnsWithoutWaitingForContext(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		died func(*testing.T) *exec.ExitError
+		name string
+	}{
+		{name: "non-zero exit", died: exitOf},
+		{name: "kill", died: func(t *testing.T) *exec.ExitError {
+			t.Helper()
+
+			return killedBy(t, "KILL")
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			runErr := tt.died(t)
+
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(t.Context(), time.Nanosecond)
+				defer cancel()
+
+				err := child.Failure(ctx, []string{"git", "fetch"}, runErr, "")
+
+				assert.Check(t, !errors.Is(err, context.DeadlineExceeded), "Failure error = %v, want one returned before the context's deadline", err)
+			})
+		})
+	}
+}
+
 func TestInterruptedExit(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -149,15 +206,6 @@ func TestInterruptedExit(t *testing.T) {
 			assert.Check(t, is.Equal(got, tt.want), "InterruptedExit(%#x)", tt.code)
 		})
 	}
-}
-
-func TestFailure_WhenProgramDiedOfAnotherSignal_WrapsRunErrorNamingCommand(t *testing.T) {
-	t.Parallel()
-	runErr := killedBy(t, "TERM")
-
-	err := child.Failure(t.Context(), []string{"git", "fetch"}, runErr, "")
-
-	assert.Check(t, is.Equal(err.Error(), "git fetch: "+runErr.Error()))
 }
 
 func TestFailure_WhenProgramNeverExited_WrapsRunErrorNamingCommand(t *testing.T) {

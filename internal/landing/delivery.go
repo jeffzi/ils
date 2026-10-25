@@ -3,7 +3,7 @@ package landing
 import (
 	"context"
 	"errors"
-	"strings"
+	"os/exec"
 
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/git"
@@ -86,6 +86,17 @@ func (d *delivery) pushTip(ctx context.Context, deps Deps) *result.Result {
 		return nil
 	}
 
+	return d.pushFailed(err)
+}
+
+// originStopped stays untyped so that result.Say accepts wording built on it.
+const originStopped = "origin stopped answering"
+
+// pushFailed returns the result of a push that failed with err, worded for what err says about
+// origin. Only a push git refused, or one whose git never started, surely left origin as it was;
+// one cut short, one origin stopped answering, and one whose git a signal killed may have taken,
+// and running the push again settles which.
+func (d *delivery) pushFailed(err error) *result.Result {
 	if interrupted(err) {
 		return d.endedSaying(
 			result.Say("Started the push of %s at %s when "+runInterrupted+"; it may or may not have taken",
@@ -102,8 +113,25 @@ func (d *delivery) pushTip(ctx context.Context, deps Deps) *result.Result {
 
 	if refused, ok := errors.AsType[*git.PushError](err); ok {
 		return d.endedSaying(
-			result.Say("Git refused the push of %s, so nothing was pushed: %s", d.markedBranch(), strings.TrimSpace(refused.Stderr)),
+			result.Say("Git refused the push of %s, so nothing was pushed: %s", d.markedBranch(),
+				refused.Detail()),
 			result.Broke, result.Say("git refused the push"), d.req.onceFixed())
+	}
+
+	if _, ok := errors.AsType[*git.RemoteError](err); ok {
+		return d.endedSaying(
+			result.Say("Started the push of %s at %s when "+originStopped+"; it may or may not have taken: %s",
+				d.markedBranch(), d.markedTip(), err.Error()),
+			result.Broke, result.Say(originStopped+" during the push"), d.req.again())
+	}
+
+	// An *exec.ExitError left in the chain is a git that ran and never exited: a signal killed it,
+	// perhaps after origin had taken the push.
+	if _, ok := errors.AsType[*exec.ExitError](err); ok {
+		return d.endedSaying(
+			result.Say("The push of %s at %s did not finish, so it may or may not have taken: %s",
+				d.markedBranch(), d.markedTip(), err.Error()),
+			result.Broke, result.Say("the push did not finish"), d.req.again())
 	}
 
 	return d.endedSaying(
