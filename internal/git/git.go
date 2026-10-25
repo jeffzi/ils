@@ -66,7 +66,8 @@ type Runner struct {
 	Env []string
 }
 
-// Result is what a call that exited zero left behind.
+// Result is what a call left behind: both outputs of a call that exited zero, and only the stdout
+// of one that exited non-zero, whose stderr its *child.ExitError holds.
 type Result struct {
 	Stdout string
 	Stderr string
@@ -75,8 +76,9 @@ type Result struct {
 // Run runs git with args and returns its output once it has exited zero.
 //
 // A git missing from PATH is a *child.ToolMissingError and a non-zero exit is a
-// *child.ExitError. When ctx ends before git does, the error is the context's and
-// the Result is empty, so a half-written stdout is never read.
+// *child.ExitError, returned with what git printed on stdout so that a caller can read the output
+// of a failed call. Every other failure returns an empty Result: when ctx ends before git does,
+// the error is the context's, so a half-written stdout is never read.
 //
 // Run does not wait for a process git started and left behind: once git has
 // exited or been killed, output pipes still held open are closed after a short
@@ -197,7 +199,8 @@ func (inv invocation) run(ctx context.Context) (Result, error) {
 // execute runs the tool and returns its output once it has exited zero.
 //
 // A tool missing from the PATH it is looked up on is a *child.ToolMissingError and a failed run is
-// the error of child.Failure. Once the tool has exited or been killed, output pipes a process it
+// the error of child.Failure, with the tool's stdout when that error is a *child.ExitError and an
+// empty Result otherwise. Once the tool has exited or been killed, output pipes a process it
 // started still holds are closed after pipeGrace; such a process does not fail a run that exited
 // zero.
 func (inv invocation) execute(ctx context.Context) (Result, error) {
@@ -233,7 +236,12 @@ func (inv invocation) execute(ctx context.Context) (Result, error) {
 		return Result{Stdout: stdout.String(), Stderr: stderr.String()}, nil
 	}
 
-	return Result{}, child.Failure(ctx, argv, runErr, stderr.String())
+	err = child.Failure(ctx, argv, runErr, stderr.String())
+	if _, exitedNonZero := errors.AsType[*child.ExitError](err); exitedNonZero {
+		return Result{Stdout: stdout.String()}, err
+	}
+
+	return Result{}, err
 }
 
 // exited reports whether err is git exiting with code.

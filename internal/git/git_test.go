@@ -140,6 +140,19 @@ func TestRunner_Run_WhenGitExitsNonZero_ReturnsExitError(t *testing.T) {
 	assert.Check(t, is.DeepEqual(exitErr.Argv, []string{"git", "nonsense"}))
 }
 
+func TestRunner_Run_WhenGitExitsNonZero_ReturnsItsStdoutWithExitError(t *testing.T) {
+	t.Parallel()
+	runner := newRunner(t)
+	gittest.WriteFile(t, runner.Dir, "before.txt", "same\nold\n")
+	gittest.WriteFile(t, runner.Dir, "after.txt", "same\nnew\n")
+
+	got, err := runner.Run(t.Context(), "diff", "--no-index", "--", "before.txt", "after.txt")
+
+	_, ok := errors.AsType[*child.ExitError](err)
+	assert.Check(t, ok, "Run(diff) error = %v, want *child.ExitError", err)
+	assert.Check(t, is.Contains(got.Stdout, "+new\n"))
+}
+
 func TestRunner_Run_WhenGitMissingFromPath_ReturnsToolMissingError(t *testing.T) {
 	runner := newRunner(t)
 	// Not parallel: this empties PATH for the whole process while it runs.

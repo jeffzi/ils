@@ -146,16 +146,27 @@ func (e *RemoteError) Unwrap() error {
 	return e.Err
 }
 
-// PushError reports a push that git or origin refused.
+// PushError reports a push that git or origin refused for the branch's ref: a non-fast-forward, a
+// hook of origin that declined it, a ref origin hides. An origin that never answered, or that hung
+// up before it reported on the ref, is a *RemoteError instead.
 type PushError struct {
 	Err    error
 	Branch string
+	// Reason is the summary git gives for the ref, such as `[rejected] (fetch first)` or
+	// `[remote rejected] (pre-receive hook declined)`.
+	Reason string
+	// Stderr is what git printed on stderr, which holds the lines origin printed (`remote: …`).
 	Stderr string
 }
 
-// Error names the refused branch and git's trimmed stderr.
+// Error names the refused branch and git's reason, followed by git's trimmed stderr.
 func (e *PushError) Error() string {
-	return fmt.Sprintf("push of %s refused: %s", e.Branch, strings.TrimSpace(e.Stderr))
+	message := fmt.Sprintf("push of %s refused: %s", e.Branch, e.Reason)
+	if said := strings.TrimSpace(e.Stderr); said != "" {
+		message += "\n" + said
+	}
+
+	return message
 }
 
 // Unwrap returns the *child.ExitError of the refused push.
@@ -318,15 +329,62 @@ func (r Repo) FastForwardTrunk(ctx context.Context, trunk string) error {
 // Push pushes the branch name to origin under the same name and sets it as the upstream.
 //
 // It names the branch by its full ref on both sides, so a tag of the same name is never pushed
-// in its place. It never forces. A push that git or origin refuses is a *PushError.
+// in its place. It never forces.
+//
+// A git that exits non-zero is classed by the status it reports for the ref:
+//   - a ref git or origin refused is a *PushError naming git's reason;
+//   - a ref reported updated counts as pushed, though origin hung up afterwards;
+//   - a ref with no status, because origin never answered or hung up before its report, is a
+//     *RemoteError.
+//
+// Any other failure, such as a context that ended or a git missing from PATH, is returned as it is.
 func (r Repo) Push(ctx context.Context, name string) error {
 	ref := headsRef + name
-	_, err := r.Runner.Run(ctx, "push", "-u", origin, ref+":"+ref)
-	if exitErr, ok := errors.AsType[*child.ExitError](err); ok {
-		return &PushError{Branch: name, Stderr: exitErr.Stderr, Err: err}
+	result, err := r.Runner.Run(ctx, "push", "--porcelain", "-u", origin, ref+":"+ref)
+
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	if !ok {
+		return err
 	}
 
-	return err
+	status, reported := pushStatus(result.Stdout, ref+":"+ref)
+
+	switch {
+	case !reported:
+		return &RemoteError{Err: err}
+	case status.flag == pushRejected:
+		return &PushError{Branch: name, Reason: status.summary, Stderr: exitErr.Stderr, Err: err}
+	default:
+		return nil
+	}
+}
+
+// pushRejected is the flag `git push --porcelain` gives a ref it did not update.
+const pushRejected = "!"
+
+// refStatus is the status `git push --porcelain` reports for one ref.
+type refStatus struct {
+	flag    string
+	summary string
+}
+
+// pushStatus returns the status the output of `git push --porcelain` reports for spec, the
+// `<source>:<destination>` pair of refs pushed, and whether it reports one. Each such line is the
+// flag, that pair and the summary, separated by tabs.
+func pushStatus(stdout, spec string) (refStatus, bool) {
+	for line := range strings.SplitSeq(stdout, "\n") {
+		flag, rest, ok := strings.Cut(line, "\t")
+		if !ok {
+			continue
+		}
+
+		named, summary, _ := strings.Cut(rest, "\t")
+		if named == spec {
+			return refStatus{flag: flag, summary: summary}, true
+		}
+	}
+
+	return refStatus{}, false
 }
 
 // remote runs a git call that talks to origin, whose failure is a *RemoteError.

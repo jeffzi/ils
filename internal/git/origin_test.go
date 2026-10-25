@@ -7,7 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
+	"runtime"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -475,6 +475,8 @@ func TestRepo_OriginMethods_WhenOriginDoesNotAnswer_ReturnsRemoteError(t *testin
 func TestRepo_OriginMethods_WhenGitMissingFromPath_ReturnsToolMissingError(t *testing.T) {
 	tests := append(originCalls(), repoCall{
 		name: "Fetch", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.Fetch(ctx, trunk) },
+	}, repoCall{
+		name: "Push", call: func(ctx context.Context, repo git.Repo) (any, error) { return nil, repo.Push(ctx, trunk) },
 	})
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -662,17 +664,67 @@ func TestRepo_Fetch_WhenRefNotOnOrigin_ReturnsRemoteError(t *testing.T) {
 	assert.Check(t, ok, "Fetch(%q) = %q, error = %v, want *git.RemoteError", pullRef, got, err)
 }
 
-func TestRepo_Push_WhenBranchIsNew_PublishesItAsTheUpstream(t *testing.T) {
+// originHook makes script the hook name of f's origin, run by the shell.
+func originHook(t *testing.T, f *gittest.Fixture, name, script string) {
+	t.Helper()
+
+	path := filepath.Join(f.OriginDir(), "hooks", name)
+	//nolint:gosec // G306: a hook is a script git must be able to execute.
+	assert.NilError(t, os.WriteFile(path, []byte("#!/bin/sh\n"+script+"\n"), 0o700))
+}
+
+// killsReceivePack kills the hook's parent: git runs a hook as a child of receive-pack, so `$PPID`
+// is the process that must die mid-push.
+const killsReceivePack = "kill -KILL $PPID"
+
+// needSignals skips the test on Windows, where a shell cannot end a git process by a signal.
+func needSignals(t *testing.T) {
+	t.Helper()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no signals for a shell to end a git process with")
+	}
+}
+
+// originTip returns the sha origin holds for branch, or nothing when origin lacks it.
+func originTip(f *gittest.Fixture, branch string) string {
+	return f.OriginGit("for-each-ref", "--format=%(objectname)", "refs/heads/"+branch)
+}
+
+func TestRepo_Push_WhenOriginReportsTheRefUpdated_PublishesItAsTheUpstream(t *testing.T) {
 	t.Parallel()
-	f := gittest.New(t, trunk)
-	tip := f.Commits(topic, "one")[0]
+	tests := []struct {
+		// arrange changes origin before the push; nil leaves it as built.
+		arrange func(t *testing.T, f *gittest.Fixture)
+		name    string
+	}{
+		{name: "origin answers to the end"},
+		{
+			name: "origin hangs up after its report",
+			arrange: func(t *testing.T, f *gittest.Fixture) {
+				t.Helper()
+				needSignals(t)
+				originHook(t, f, "post-receive", killsReceivePack)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			tip := f.Commits(topic, "one")[0]
+			if tt.arrange != nil {
+				tt.arrange(t, f)
+			}
 
-	err := newRepo(f).Push(t.Context(), topic)
-	assert.NilError(t, err)
+			err := newRepo(f).Push(t.Context(), topic)
+			assert.NilError(t, err)
 
-	assert.Check(t, is.Equal(f.OriginGit("rev-parse", "refs/heads/"+topic), tip))
-	assert.Check(t, is.Equal(f.Git("config", "branch."+topic+".remote"), "origin"))
-	assert.Check(t, is.Equal(f.Git("config", "branch."+topic+".merge"), "refs/heads/"+topic))
+			assert.Check(t, is.Equal(originTip(f, topic), tip))
+			assert.Check(t, is.Equal(f.Git("config", "branch."+topic+".remote"), "origin"))
+			assert.Check(t, is.Equal(f.Git("config", "branch."+topic+".merge"), "refs/heads/"+topic))
+		})
+	}
 }
 
 func TestRepo_Push_WhenTagSharesTheBranchName_PublishesTheBranchAsTheUpstream(t *testing.T) {
@@ -694,21 +746,126 @@ func TestRepo_Push_WhenTagSharesTheBranchName_PublishesTheBranchAsTheUpstream(t 
 	assert.Check(t, is.Equal(f.Git("config", "branch."+topic+".merge"), "refs/heads/"+topic))
 }
 
-func TestRepo_Push_WhenOriginHasCommitsTheBranchLacks_RefusesWithPushError(t *testing.T) {
+func TestRepo_Push_WhenOriginRefusesTheRef_ReturnsPushErrorNamingTheReason(t *testing.T) {
 	t.Parallel()
+	const said = "policy forbids this push"
+	tests := []struct {
+		// arrange gives origin a reason to refuse the branch, which is already on origin.
+		arrange func(t *testing.T, f *gittest.Fixture)
+		name    string
+		// want are the parts the error's message must hold: git's reason and what origin printed.
+		want []string
+	}{
+		{
+			name:    "origin has commits the branch lacks",
+			arrange: func(_ *testing.T, f *gittest.Fixture) { f.Diverge(topic) },
+			want:    []string{"fetch first"},
+		},
+		{
+			name: "pre-receive hook declines",
+			arrange: func(t *testing.T, f *gittest.Fixture) {
+				t.Helper()
+				originHook(t, f, "pre-receive", "echo '"+said+"'\nexit 1")
+				f.Commits(topic, "two")
+			},
+			want: []string{"pre-receive hook declined", "remote: " + said},
+		},
+		{
+			name: "origin hides the ref",
+			arrange: func(_ *testing.T, f *gittest.Fixture) {
+				f.OriginGit("config", "receive.hideRefs", "refs/heads/"+topic)
+				f.Commits(topic, "two")
+			},
+			want: []string{"deny updating a hidden ref"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			f.Commits(topic, "one")
+			f.Push(topic)
+			tt.arrange(t, f)
+			before := originTip(f, topic)
+
+			err := newRepo(f).Push(t.Context(), topic)
+
+			pushErr, ok := errors.AsType[*git.PushError](err)
+			assert.Assert(t, ok, "Push(%q) error = %v, want *git.PushError", topic, err)
+			assert.Check(t, is.Equal(pushErr.Branch, topic))
+			for _, part := range tt.want {
+				assert.Check(t, is.ErrorContains(err, part))
+			}
+			assert.Check(t, is.Equal(originTip(f, topic), before))
+		})
+	}
+}
+
+func TestRepo_Push_WhenOriginGivesNoStatusForTheRef_ReturnsRemoteError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		arrange func(t *testing.T, f *gittest.Fixture)
+		name    string
+	}{
+		{name: "origin never answers", arrange: unreachable},
+		{
+			name: "origin hangs up before its report",
+			arrange: func(t *testing.T, f *gittest.Fixture) {
+				t.Helper()
+				needSignals(t)
+				originHook(t, f, "pre-receive", killsReceivePack)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			f.Commits(topic, "one")
+			tt.arrange(t, f)
+
+			err := newRepo(f).Push(t.Context(), topic)
+
+			_, remote := errors.AsType[*git.RemoteError](err)
+			assert.Check(t, remote, "Push(%q) error = %v, want *git.RemoteError", topic, err)
+			_, refused := errors.AsType[*git.PushError](err)
+			assert.Check(t, !refused, "Push(%q) error = %v, want no *git.PushError", topic, err)
+		})
+	}
+}
+
+func TestRepo_Push_WhenSignalKillsGitWithContextLive_ReturnsErrorNamingCommandAndSignal(t *testing.T) {
+	t.Parallel()
+	needSignals(t)
 	f := gittest.New(t, trunk)
 	f.Commits(topic, "one")
-	f.Push(topic)
-	_, remote := f.Diverge(topic)
+	// git starts this receive-pack through the shell, whose parent is the git push itself.
+	f.Git("config", "remote.origin.receivepack", "kill -TERM $PPID #")
 
 	err := newRepo(f).Push(t.Context(), topic)
 
-	pushErr, ok := errors.AsType[*git.PushError](err)
-	assert.Assert(t, ok, "Push(%q) error = %v, want *git.PushError", topic, err)
-	assert.Check(t, is.Contains(pushErr.Stderr, "rejected"))
-	assert.Check(t, is.Equal(pushErr.Branch, topic))
-	assert.Check(t, is.Equal(err.Error(), "push of "+topic+" refused: "+strings.TrimSpace(pushErr.Stderr)))
-	assert.Check(t, is.Equal(f.OriginGit("rev-parse", "refs/heads/"+topic), remote))
+	assert.Check(t, is.ErrorContains(err, "git push "))
+	assert.Check(t, is.ErrorContains(err, "signal: terminated"))
+	_, refused := errors.AsType[*git.PushError](err)
+	assert.Check(t, !refused, "Push(%q) error = %v, want no *git.PushError", topic, err)
+	_, remote := errors.AsType[*git.RemoteError](err)
+	assert.Check(t, !remote, "Push(%q) error = %v, want no *git.RemoteError", topic, err)
+}
+
+func TestRepo_Push_WhenContextCanceled_ReturnsNeitherPushNorRemoteError(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.Commits(topic, "one")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	err := newRepo(f).Push(ctx, topic)
+
+	assert.Check(t, is.ErrorIs(err, context.Canceled))
+	_, refused := errors.AsType[*git.PushError](err)
+	assert.Check(t, !refused, "Push(%q) error = %v, want no *git.PushError", topic, err)
+	_, remote := errors.AsType[*git.RemoteError](err)
+	assert.Check(t, !remote, "Push(%q) error = %v, want no *git.RemoteError", topic, err)
 }
 
 func TestRepo_OriginMethods_WhenContextCanceled_ReturnsContextError(t *testing.T) {
