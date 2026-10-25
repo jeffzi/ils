@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os/exec"
-	"strings"
 
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/git"
@@ -115,14 +114,14 @@ func (d *delivery) pushFailed(err error) *result.Result {
 	if refused, ok := errors.AsType[*git.PushError](err); ok {
 		return d.endedSaying(
 			result.Say("Git refused the push of %s, so nothing was pushed: %s", d.markedBranch(),
-				strings.TrimSpace(refused.Reason+"\n"+refused.Stderr)),
+				refused.Detail()),
 			result.Broke, result.Say("git refused the push"), d.req.onceFixed())
 	}
 
 	if _, ok := errors.AsType[*git.RemoteError](err); ok {
 		return d.endedSaying(
-			result.Say("Started the push of %s at %s when "+originStopped+"; it may or may not have taken",
-				d.markedBranch(), d.markedTip()),
+			result.Say("Started the push of %s at %s when "+originStopped+"; it may or may not have taken: %s",
+				d.markedBranch(), d.markedTip(), err.Error()),
 			result.Broke, result.Say(originStopped+" during the push"), d.req.again())
 	}
 

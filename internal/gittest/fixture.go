@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -140,6 +141,27 @@ func WriteFile(tb testing.TB, dir, name, content string) {
 	err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600)
 	if err != nil {
 		tb.Fatalf("gittest: write %s: %v", name, err)
+	}
+}
+
+// writeScript writes body as the sh script name in dir, executable by its owner, and fails the
+// test when it cannot.
+func writeScript(tb testing.TB, dir, name, body string) {
+	tb.Helper()
+
+	//nolint:gosec // G306: git or a shell must be able to execute the script.
+	err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body), 0o700)
+	if err != nil {
+		tb.Fatalf("gittest: write script %s: %v", name, err)
+	}
+}
+
+// NeedSignals skips the test on Windows, where a shell cannot end a git process by a signal.
+func NeedSignals(tb testing.TB) {
+	tb.Helper()
+
+	if runtime.GOOS == "windows" {
+		tb.Skip("Windows has no signals for a shell to end a git process with")
 	}
 }
 
@@ -289,16 +311,16 @@ func (f *Fixture) CorruptIndex() {
 	WriteFile(f.tb, filepath.Join(f.dir, ".git"), "index", strings.Repeat("not what git wrote here\n", 4))
 }
 
+// Hook installs script as the working repository's hook name, run by sh.
+func (f *Fixture) Hook(name, script string) {
+	f.tb.Helper()
+	writeScript(f.tb, filepath.Join(f.dir, ".git", "hooks"), name, script+"\n")
+}
+
 // OriginHook installs script as the bare origin's hook name, run by sh.
 func (f *Fixture) OriginHook(name, script string) {
 	f.tb.Helper()
-
-	path := filepath.Join(f.originDir, "hooks", name)
-	//nolint:gosec // G306: a hook is a script git must be able to execute.
-	err := os.WriteFile(path, []byte("#!/bin/sh\n"+script+"\n"), 0o700)
-	if err != nil {
-		f.tb.Fatalf("gittest: write hook %s: %v", name, err)
-	}
+	writeScript(f.tb, filepath.Join(f.originDir, "hooks"), name, script+"\n")
 }
 
 // DirtyFile leaves an unstaged change in a tracked file and returns its path relative to Dir.
@@ -530,8 +552,7 @@ func (f *Fixture) standIn() string {
 		f.tb.Fatalf("gittest: find ssh: %v", err)
 	}
 
-	script := "#!/bin/sh\n" +
-		"for arg do\n" +
+	script := "for arg do\n" +
 		"\tif [ \"$arg\" = -G ]; then exec '" + filepath.ToSlash(ssh) + "' \"$@\"; fi\n" +
 		"done\n" +
 		"eval \"$" + servingEnv + "\"\n"
@@ -543,14 +564,7 @@ func (f *Fixture) standIn() string {
 		f.tb.Fatalf("gittest: create the directory of the stand-in for ssh: %v", err)
 	}
 
-	path := filepath.Join(dir, name)
-	WriteFile(f.tb, dir, name, script)
-
-	// Git's shell runs the stand-in as a program, which it can only do once it is executable.
-	err = os.Chmod(path, 0o700) //nolint:gosec // G302: the stand-in is a script a shell must execute.
-	if err != nil {
-		f.tb.Fatalf("gittest: make the stand-in for ssh executable: %v", err)
-	}
+	writeScript(f.tb, dir, name, script)
 
 	return dir
 }

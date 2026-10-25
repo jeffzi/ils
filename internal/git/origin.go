@@ -147,8 +147,8 @@ func (e *RemoteError) Unwrap() error {
 }
 
 // PushError reports a push that git or origin refused for the branch's ref: a non-fast-forward, a
-// hook of origin that declined it, a ref origin hides. An origin that never answered, or that hung
-// up before it reported on the ref, is a *RemoteError instead.
+// hook of origin that declined it, a ref origin hides, a pre-push hook that failed. An origin that
+// never answered, or that hung up before it reported on the ref, is a *RemoteError instead.
 type PushError struct {
 	Err    error
 	Branch string
@@ -159,14 +159,22 @@ type PushError struct {
 	Stderr string
 }
 
-// Error names the refused branch and git's reason, followed by git's trimmed stderr.
+// Error names the refused branch, followed by its Detail.
 func (e *PushError) Error() string {
-	message := fmt.Sprintf("push of %s refused: %s", e.Branch, e.Reason)
-	if said := strings.TrimSpace(e.Stderr); said != "" {
-		message += "\n" + said
+	return fmt.Sprintf("push of %s refused: %s", e.Branch, e.Detail())
+}
+
+// Detail returns git's reason and git's trimmed stderr, one per line, leaving out either when
+// it is empty.
+func (e *PushError) Detail() string {
+	parts := make([]string, 0, 2)
+	for _, part := range []string{e.Reason, strings.TrimSpace(e.Stderr)} {
+		if part != "" {
+			parts = append(parts, part)
+		}
 	}
 
-	return message
+	return strings.Join(parts, "\n")
 }
 
 // Unwrap returns the *child.ExitError of the refused push.
@@ -335,29 +343,37 @@ func (r Repo) FastForwardTrunk(ctx context.Context, trunk string) error {
 //   - a ref git or origin refused is a *PushError naming git's reason;
 //   - a ref reported updated counts as pushed, though origin hung up afterwards;
 //   - a ref with no status, because origin never answered or hung up before its report, is a
-//     *RemoteError.
+//     *RemoteError;
+//   - a ref with no status from a git that refused the push itself, such as for a pre-push hook
+//     that failed, is a *PushError with no reason.
 //
 // Any other failure, such as a context that ended or a git missing from PATH, is returned as it is.
 func (r Repo) Push(ctx context.Context, name string) error {
 	ref := headsRef + name
-	result, err := r.Runner.Run(ctx, "push", "--porcelain", "-u", origin, ref+":"+ref)
+	spec := ref + ":" + ref
+	result, err := r.Runner.Run(ctx, "push", "--porcelain", "-u", origin, spec)
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 	if !ok {
 		return err
 	}
 
-	status, reported := pushStatus(result.Stdout, ref+":"+ref)
+	status, reported := pushStatus(result.Stdout, spec)
 
 	switch {
-	case !reported:
+	case !reported && exitErr.Code == pushFatalCode:
 		return &RemoteError{Err: err}
-	case status.flag == pushRejected:
+	case !reported || status.flag == pushRejected:
 		return &PushError{Branch: name, Reason: status.summary, Stderr: exitErr.Stderr, Err: err}
 	default:
 		return nil
 	}
 }
+
+// pushFatalCode is the exit of a git push that died of a fatal error, as it does when it cannot
+// reach origin or origin hangs up. A push git refuses before it talks to origin, such as for a
+// pre-push hook that failed, exits 1.
+const pushFatalCode = 128
 
 // pushRejected is the flag `git push --porcelain` gives a ref it did not update.
 const pushRejected = "!"

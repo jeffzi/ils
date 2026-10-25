@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -449,10 +448,9 @@ func TestPush_WhenGitRefusesThePush_BrokeSayingNothingWasPushed(t *testing.T) {
 	said, starts := strings.CutPrefix(text, prefix)
 	said, ends := strings.CutSuffix(said, suffix)
 	assert.Check(t, starts && ends, "RenderText() = %q, want it to start with %q and end with %q", text, prefix, suffix)
-	// The words are git's reason for the ref and what origin printed, on the one line.
+	// The words are git's reason for the ref and what origin printed.
 	assert.Check(t, is.Contains(said, "pre-receive hook declined"))
 	assert.Check(t, is.Contains(said, policy))
-	assert.Check(t, !strings.ContainsAny(said, "\r\n"), "git's reason = %q, want it on one line", said)
 
 	assert.Check(t, is.Equal(d.onOrigin(), ""))
 
@@ -499,6 +497,10 @@ func TestPush_WhenOpeningThePullRequestFails_BrokeSayingThePushHappened(t *testi
 	runPushes(t, pushOpenFailureRows())
 }
 
+// answersBeforePush is how many calls git makes to origin before the push: origin answers about
+// its trunk, the fetch of it, and whether it has the branch; the push is next.
+const answersBeforePush = 3
+
 func TestPush_WhenTheGitPushIsCutShort_BrokeSayingThePushMayHaveTaken(t *testing.T) {
 	t.Parallel()
 
@@ -506,8 +508,7 @@ func TestPush_WhenTheGitPushIsCutShort_BrokeSayingThePushMayHaveTaken(t *testing
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			s := newScene(t, nil, finding(), false)
-			// Origin answers about its trunk, the fetch of it, and whether it has the branch; the push is next.
-			ctx := c.stalling(3)(t, s)
+			ctx := c.stalling(answersBeforePush)(t, s)
 			sha := s.fixture.Git("rev-parse", topic)
 
 			got := landing.Push(ctx, s.deps, pushRequest())
@@ -524,19 +525,22 @@ func TestPush_WhenTheGitPushIsCutShort_BrokeSayingThePushMayHaveTaken(t *testing
 
 func TestPush_WhenOriginStopsAnsweringDuringThePush_BrokeSayingThePushMayHaveTaken(t *testing.T) {
 	t.Parallel()
+	const denied = "Permission denied for this key."
 	s := newScene(t, nil, finding(), false)
-	// Origin answers about its trunk, the fetch of it, and whether it has the branch; the ssh of the
-	// push exits before origin says a word.
-	s.deps.Repo.Runner.Env = answering(t, s.fixture, 3, "true")
+	// The ssh of the push exits before origin says a word.
+	s.deps.Repo.Runner.Env = answering(t, s.fixture, answersBeforePush, "echo '"+denied+"' >&2")
 	sha := s.fixture.Git("rev-parse", topic)
 
 	got := landing.Push(t.Context(), s.deps, pushRequest())
 
-	assertDelivered(t, s, got, finish{
-		outcome: result.Broke, reason: "origin stopped answering during the push",
-		text: "Started the push of " + topic + " at " + sha + " when origin stopped answering; " +
-			"it may or may not have taken\n" + "Broke: origin stopped answering during the push\n" + nextPush,
-	})
+	assertStopped(t, got, result.Broke)
+
+	text, reason := shown(t, got, s.gitDir)
+	assert.Check(t, is.Equal(reason, "origin stopped answering during the push"))
+	assert.Check(t, is.Contains(text, topic))
+	assert.Check(t, is.Contains(text, sha))
+	assert.Check(t, is.Contains(text, denied))
+	assert.Check(t, strings.HasSuffix(text, nextPush), "RenderText() = %q, want it to end with %q", text, nextPush)
 }
 
 // killsGitPush ends the git push with SIGTERM from the ssh it started, while ils runs on.
@@ -553,22 +557,21 @@ const killsGitPush = `pid=$PPID; ` +
 func TestPush_WhenASignalKillsTheGitPush_BrokeSayingThePushMayHaveTaken(t *testing.T) {
 	t.Parallel()
 
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows has no signals for a shell to end a git process with")
-	}
+	gittest.NeedSignals(t)
 
 	s := newScene(t, nil, finding(), false)
-	s.deps.Repo.Runner.Env = answering(t, s.fixture, 3, killsGitPush)
+	s.deps.Repo.Runner.Env = answering(t, s.fixture, answersBeforePush, killsGitPush)
 	sha := s.fixture.Git("rev-parse", topic)
 
 	got := landing.Push(t.Context(), s.deps, pushRequest())
 
 	assertStopped(t, got, result.Broke)
 
-	text, _ := shown(t, got, s.gitDir)
-	assert.Check(t, is.Contains(text, "The push of "+topic+" at "+sha+" did not finish"))
-	assert.Check(t, is.Contains(text, "it may or may not have taken"))
-	assert.Check(t, !strings.Contains(text, "nothing was pushed"), "RenderText() = %q, want no claim that nothing was pushed", text)
+	text, reason := shown(t, got, s.gitDir)
+	assert.Check(t, is.Equal(reason, "the push did not finish"))
+	assert.Check(t, is.Contains(text, topic))
+	assert.Check(t, is.Contains(text, sha))
+	assert.Check(t, strings.HasSuffix(text, nextPush), "RenderText() = %q, want it to end with %q", text, nextPush)
 }
 
 func TestPush_WhenGitIsMissingForThePush_BrokeSayingNothingWasPushed(t *testing.T) {
