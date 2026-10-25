@@ -539,6 +539,17 @@ func TestPush_WhenOriginStopsAnsweringDuringThePush_BrokeSayingThePushMayHaveTak
 	})
 }
 
+// killsGitPush ends the git push with SIGTERM from the ssh it started, while ils runs on.
+//
+// Git starts ssh through `sh -c` for the fixture's GIT_SSH_COMMAND. Some shells, such as bash,
+// replace themselves with ssh, so `$PPID` there is the git push; others, such as dash, stay as
+// ssh's parent, and killing them only cuts ssh off. So the script walks up from its parent to the
+// first process named git.
+const killsGitPush = `pid=$PPID; ` +
+	`while [ "${pid:-0}" -gt 1 ] && [ "$(basename "$(ps -o comm= -p "$pid")")" != git ]; ` +
+	`do pid=$(ps -o ppid= -p "$pid" | tr -d ' '); done; ` +
+	`[ "${pid:-0}" -gt 1 ] && kill -TERM "$pid"`
+
 func TestPush_WhenASignalKillsTheGitPush_BrokeSayingThePushMayHaveTaken(t *testing.T) {
 	t.Parallel()
 
@@ -547,9 +558,7 @@ func TestPush_WhenASignalKillsTheGitPush_BrokeSayingThePushMayHaveTaken(t *testi
 	}
 
 	s := newScene(t, nil, finding(), false)
-	// Git starts the ssh of the push itself, so `$PPID` there is the git push, which the signal ends
-	// while ils runs on.
-	s.deps.Repo.Runner.Env = answering(t, s.fixture, 3, "kill -TERM $PPID")
+	s.deps.Repo.Runner.Env = answering(t, s.fixture, 3, killsGitPush)
 	sha := s.fixture.Git("rev-parse", topic)
 
 	got := landing.Push(t.Context(), s.deps, pushRequest())
