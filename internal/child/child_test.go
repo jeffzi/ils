@@ -238,7 +238,7 @@ func TestInterruptedExit(t *testing.T) {
 
 func TestFailure_WhenProgramDiedOfAnotherSignal_WrapsRunErrorNamingCommand(t *testing.T) {
 	t.Parallel()
-	runErr := killedBy(t, "TERM")
+	runErr := killedBy(t, "HUP")
 
 	err := child.Failure(t.Context(), []string{"git", "fetch"}, runErr, "")
 
