@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"runtime"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"gotest.tools/v3/assert"
@@ -125,6 +126,90 @@ func TestFailure_WhenProgramDiedOfTheInterruptBeforeContextEnded_ReturnsContextC
 
 	assert.Check(t, is.ErrorIs(err, context.Canceled))
 	assert.Check(t, is.Equal(err.Error(), "git fetch: context canceled"))
+}
+
+func TestFailure_WhenProgramDiedOfTerminateAndContextEndsWithinGrace_ReturnsContextError(t *testing.T) {
+	t.Parallel()
+	runErr := killedBy(t, "TERM")
+	tests := []struct {
+		end  func(context.Context) (context.Context, context.CancelFunc)
+		want error
+		name string
+	}{
+		{
+			name: "canceled",
+			end: func(ctx context.Context) (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(ctx)
+				time.AfterFunc(time.Second, cancel)
+
+				return ctx, cancel
+			},
+			want: context.Canceled,
+		},
+		{
+			name: "past its deadline",
+			end: func(ctx context.Context) (context.Context, context.CancelFunc) {
+				return context.WithTimeout(ctx, time.Second)
+			},
+			want: context.DeadlineExceeded,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := tt.end(t.Context())
+				defer cancel()
+
+				err := child.FailureWithin(time.Minute)(ctx, []string{"git", "fetch"}, runErr, "secret printed before the signal\n")
+
+				assert.Check(t, is.ErrorIs(err, tt.want))
+				assert.Check(t, is.Equal(err.Error(), "git fetch: "+tt.want.Error()))
+			})
+		})
+	}
+}
+
+func TestFailure_WhenProgramDiedOfTerminateAndContextOutlivesGrace_WrapsRunErrorNamingCommand(t *testing.T) {
+	t.Parallel()
+	runErr := killedBy(t, "TERM")
+
+	synctest.Test(t, func(t *testing.T) {
+		err := child.FailureWithin(time.Second)(t.Context(), []string{"git", "fetch"}, runErr, "")
+
+		assert.Check(t, is.Equal(err.Error(), "git fetch: "+runErr.Error()))
+	})
+}
+
+func TestFailure_WhenProgramDidNotDieOfTerminate_ReturnsWithoutWaitingForContext(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		died func(*testing.T) *exec.ExitError
+		name string
+	}{
+		{name: "non-zero exit", died: exitOf},
+		{name: "interrupt", died: interruptedChild},
+		{name: "kill", died: func(t *testing.T) *exec.ExitError {
+			t.Helper()
+
+			return killedBy(t, "KILL")
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			runErr := tt.died(t)
+
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+				defer cancel()
+
+				err := child.FailureWithin(time.Minute)(ctx, []string{"git", "fetch"}, runErr, "")
+
+				assert.Check(t, !errors.Is(err, context.DeadlineExceeded), "Failure error = %v, want one returned before the context's deadline", err)
+			})
+		})
+	}
 }
 
 func TestInterruptedExit(t *testing.T) {

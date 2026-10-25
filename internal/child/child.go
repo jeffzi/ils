@@ -39,9 +39,29 @@ func (e *ExitError) Error() string {
 // context.Canceled even while ctx is still live: the terminal sends Ctrl-C to the
 // whole process group, so the program can die of it before ils has canceled its
 // own context, and either order is the same interrupt. On Windows, which reports no
-// signals, that program is one that exited with STATUS_CONTROL_C_EXIT. A non-zero exit is an
-// *ExitError. Anything else is runErr, named by the command.
+// signals, that program is one that exited with STATUS_CONTROL_C_EXIT.
+//
+// A program that died of SIGTERM while ctx was still live is given terminateGrace for ctx to
+// end: a SIGTERM sent to the whole process group reaches the program and ils together, and Go
+// delivers the signal to ils asynchronously, so the program can be reaped before ils cancels its
+// context. When ctx ends within the grace period, the error is the context's; otherwise the
+// SIGTERM was the program's alone and is reported like any other signal. Unix only: Windows
+// reports no signals.
+//
+// A non-zero exit is an *ExitError. Anything else is runErr, named by the command.
 func Failure(ctx context.Context, argv []string, runErr error, stderr string) error {
+	return terminateGrace.failure(ctx, argv, runErr, stderr)
+}
+
+// grace is how long a failure waits for the context of a program that died of SIGTERM to end.
+type grace time.Duration
+
+// terminateGrace bounds how long Failure waits for the context of a program that died of SIGTERM
+// to end. It only has to cover the scheduling of ils's own signal goroutine.
+const terminateGrace = grace(100 * time.Millisecond)
+
+// failure is Failure with g as the SIGTERM grace period.
+func (g grace) failure(ctx context.Context, argv []string, runErr error, stderr string) error {
 	command := CommandLine(argv)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return fmt.Errorf("%s: %w", command, ctxErr)
@@ -50,6 +70,12 @@ func Failure(ctx context.Context, argv []string, runErr error, stderr string) er
 	exitErr, ok := errors.AsType[*exec.ExitError](runErr)
 	if ok && interrupted(exitErr) {
 		return fmt.Errorf("%s: %w", command, context.Canceled)
+	}
+
+	if ok && terminated(exitErr) {
+		if ctxErr := endedWithin(ctx, time.Duration(g)); ctxErr != nil {
+			return fmt.Errorf("%s: %w", command, ctxErr)
+		}
 	}
 
 	if ok && exitErr.Exited() {
@@ -68,6 +94,27 @@ func interrupted(exitErr *exec.ExitError) bool {
 	}
 
 	return interruptedExit(exitErr.ExitCode())
+}
+
+// terminated reports whether the program exitErr reports on was killed by SIGTERM.
+func terminated(exitErr *exec.ExitError) bool {
+	status, ok := exitErr.Sys().(syscall.WaitStatus)
+
+	return ok && status.Signaled() && status.Signal() == syscall.SIGTERM
+}
+
+// endedWithin waits up to grace for ctx to end and returns its error, or nil when ctx is still
+// live once grace has passed.
+func endedWithin(ctx context.Context, grace time.Duration) error {
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // statusControlCExit is STATUS_CONTROL_C_EXIT, the exit code Windows gives a console program that
