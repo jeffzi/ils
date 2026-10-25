@@ -50,31 +50,21 @@ func (e *ExitError) Error() string {
 //
 // A non-zero exit is an *ExitError. Anything else is runErr, named by the command.
 func Failure(ctx context.Context, argv []string, runErr error, stderr string) error {
-	return terminateGrace.failure(ctx, argv, runErr, stderr)
-}
-
-// grace is how long a failure waits for the context of a program that died of SIGTERM to end.
-type grace time.Duration
-
-// terminateGrace bounds how long Failure waits for the context of a program that died of SIGTERM
-// to end. It only has to cover the scheduling of ils's own signal goroutine.
-const terminateGrace = grace(100 * time.Millisecond)
-
-// failure is Failure with g as the SIGTERM grace period.
-func (g grace) failure(ctx context.Context, argv []string, runErr error, stderr string) error {
 	command := CommandLine(argv)
+	named := func(err error) error { return fmt.Errorf("%s: %w", command, err) }
+
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return fmt.Errorf("%s: %w", command, ctxErr)
+		return named(ctxErr)
 	}
 
 	exitErr, ok := errors.AsType[*exec.ExitError](runErr)
 	if ok && interrupted(exitErr) {
-		return fmt.Errorf("%s: %w", command, context.Canceled)
+		return named(context.Canceled)
 	}
 
-	if ok && terminated(exitErr) {
-		if ctxErr := endedWithin(ctx, time.Duration(g)); ctxErr != nil {
-			return fmt.Errorf("%s: %w", command, ctxErr)
+	if ok && killedBy(exitErr, syscall.SIGTERM) {
+		if ctxErr := endedWithin(ctx, terminateGrace); ctxErr != nil {
+			return named(ctxErr)
 		}
 	}
 
@@ -82,31 +72,34 @@ func (g grace) failure(ctx context.Context, argv []string, runErr error, stderr 
 		return &ExitError{Argv: argv, Code: exitErr.ExitCode(), Stderr: stderr}
 	}
 
-	return fmt.Errorf("%s: %w", command, runErr)
+	return named(runErr)
 }
+
+// terminateGrace bounds how long Failure waits for the context of a program that died of SIGTERM
+// to end. It only has to cover the scheduling of ils's own signal goroutine.
+const terminateGrace = 100 * time.Millisecond
 
 // interrupted reports whether the program exitErr reports on was ended by Ctrl-C: killed by
 // SIGINT, or, on Windows, which reports no signals, exited with STATUS_CONTROL_C_EXIT.
 func interrupted(exitErr *exec.ExitError) bool {
-	status, ok := exitErr.Sys().(syscall.WaitStatus)
-	if ok && status.Signaled() && status.Signal() == syscall.SIGINT {
+	if killedBy(exitErr, syscall.SIGINT) {
 		return true
 	}
 
 	return interruptedExit(exitErr.ExitCode())
 }
 
-// terminated reports whether the program exitErr reports on was killed by SIGTERM.
-func terminated(exitErr *exec.ExitError) bool {
+// killedBy reports whether the program exitErr reports on was killed by signal.
+func killedBy(exitErr *exec.ExitError, signal syscall.Signal) bool {
 	status, ok := exitErr.Sys().(syscall.WaitStatus)
 
-	return ok && status.Signaled() && status.Signal() == syscall.SIGTERM
+	return ok && status.Signaled() && status.Signal() == signal
 }
 
-// endedWithin waits up to grace for ctx to end and returns its error, or nil when ctx is still
-// live once grace has passed.
-func endedWithin(ctx context.Context, grace time.Duration) error {
-	timer := time.NewTimer(grace)
+// endedWithin waits up to wait for ctx to end and returns its error, or nil when ctx is still
+// live once wait has passed.
+func endedWithin(ctx context.Context, wait time.Duration) error {
+	timer := time.NewTimer(wait)
 	defer timer.Stop()
 
 	select {
