@@ -4,21 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
 
-	"github.com/charmbracelet/colorprofile"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
+	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
 	"github.com/jeffzi/ils/internal/git"
@@ -41,20 +38,38 @@ const (
 	otherURL  = "git@github.com:acme/gadgets.git"
 	localPath = "/srv/project"
 
-	nextPush   = "Next: ils push\n"
-	nextByHand = "Next: stop and tell the user to push by hand\n"
-	nextOneURL = "Next: point both of origin's URLs at one GitHub repository with `git remote set-url`, by hand\n"
-	nextFixed  = "Next: fix what failed, then run ils push again\n"
-
 	readGitVersion = "git's version"
 	readStanding   = "where HEAD stands"
 	readURLs       = "origin's URLs"
 	readIdentity   = "the repository's identity on GitHub"
 	readTrunk      = "origin's trunk"
-
-	noOriginText = "Refused: this repository has no remote named origin\n" +
-		"Next: create the repository on GitHub and push to it with `gh repo create --source . --push`\n"
 )
+
+// partEnd ends each part of an expected text built by expect, so that expected texts concatenate
+// with + and still split into their parts.
+const partEnd = "\x00"
+
+// expect is the expected text made of parts: what the code computes and the phrase that tells its
+// branch apart, in the order the text holds them. The fixed wording around them stays free to
+// change.
+func expect(parts ...string) string {
+	var text strings.Builder
+	for _, part := range parts {
+		text.WriteString(part + partEnd)
+	}
+
+	return text.String()
+}
+
+// nextPush is the `Next:` line that runs `ils push` again as it is, and nextFixed the one that runs
+// it again once what failed is fixed.
+func nextPush() string {
+	return expect("Next: ils push\n")
+}
+
+func nextFixed() string {
+	return expect("fix what failed", "ils push")
+}
 
 // ---------------------------------------------------------------------------
 // Scenes and assertions
@@ -110,11 +125,6 @@ func (s *scene) useForge(t *testing.T, script forgetest.Script) {
 	s.deps.Forge = s.forge
 }
 
-// refs returns every ref of the working repository and of origin with the commit it is on.
-func (s *scene) refs() string {
-	return s.fixture.Git("for-each-ref") + "\norigin:\n" + s.fixture.OriginGit("for-each-ref")
-}
-
 // origin is the repository origin's URLs name, as a call to the forge carries it.
 func origin() forge.Repo {
 	return forge.Repo{Host: host, Owner: owner, Name: repoName}
@@ -158,6 +168,20 @@ func (s *scene) gitRan(word string) bool {
 	})
 }
 
+// written returns everything a push could change: the local branches, where HEAD is, and every
+// ref of origin.
+func (s *scene) written() string {
+	return s.fixture.Git("for-each-ref", "refs/heads") + "\nHEAD: " + s.fixture.Git("rev-parse", "HEAD") +
+		"\norigin:\n" + s.fixture.OriginGit("for-each-ref")
+}
+
+// stopAnswering makes origin answer the first times calls git makes to it and fail every call after.
+func (s *scene) stopAnswering(t *testing.T, times int) {
+	t.Helper()
+
+	s.deps.Repo.Runner.Env = answering(t, s.fixture, times, "true")
+}
+
 // pushRequest is the command and words of a bare `ils push`.
 func pushRequest() landing.Request {
 	return landing.Request{Command: "push", Words: []string{"push"}}
@@ -170,7 +194,7 @@ func widgets(fork, canPush bool) forge.Repo {
 
 // answers is a script whose identity call returns repo.
 func answers(repo forge.Repo) forgetest.Script {
-	return forgetest.Script{Identity: []forgetest.Answer[forge.Repo]{{Value: repo}}}
+	return forgetest.Script{Identity: forgetest.Values(repo)}
 }
 
 // allowed is a script whose identity call says the user can push to Acme/Widgets.
@@ -183,9 +207,7 @@ func fails(err error) forgetest.Script {
 	return forgetest.Script{Identity: []forgetest.Answer[forge.Repo]{{Err: err}}}
 }
 
-// shown renders r through both renderers and returns the text and the reason the JSON carries. It
-// fails unless the JSON carries every line of the text, so that a caller who reads the JSON is
-// told what one who reads the text is.
+// shown renders r through both renderers and returns the text and the reason the JSON carries.
 func shown(t *testing.T, r result.Result, gitDir string) (text, reason string) {
 	t.Helper()
 
@@ -195,52 +217,45 @@ func shown(t *testing.T, r result.Result, gitDir string) (text, reason string) {
 	out, err := result.RenderJSON(r, gitDir)
 	assert.NilError(t, err)
 
-	decoded := resulttest.Decode(t, out)
-	resulttest.AssertCarried(t, text, decoded)
-
-	return text, decoded.Reason
+	return text, resulttest.Decode(t, out).Reason
 }
 
-// drawnPart is a part of a result's text and how a terminal with color draws it where it first
-// appears inside within. tipMark in either stands for the sha of the tip.
-type drawnPart struct {
-	within string
-	part   string
-	want   resulttest.Look
-}
-
-// commandIn is command, which the wording wraps in backticks, where it first appears inside within,
-// as a terminal with color draws it: without the backticks, in the style of a command. Both are
-// given as the plain text prints them.
-func commandIn(within, command string) drawnPart {
-	unquoted := func(text string) string { return strings.ReplaceAll(text, "`", "") }
-
-	return drawnPart{within: unquoted(within), part: unquoted(command), want: resulttest.NameLook()}
-}
-
-// atTip returns parts with the sha tip in place of tipMark in each.
-func atTip(parts []drawnPart, tip string) []drawnPart {
-	placed := slices.Clone(parts)
-	for i := range placed {
-		placed[i].within = mark(placed[i].within, tip)
-		placed[i].part = mark(placed[i].part, tip)
-	}
-
-	return placed
-}
-
-// assertDrawn fails unless got, rendered with color, draws each of parts as it says.
-func assertDrawn(t *testing.T, got result.Result, gitDir string, parts []drawnPart) {
+// assertSays fails unless text holds each part of want, as expect builds it, in order, each after the
+// one before it.
+func assertSays(t *testing.T, text, want string) {
 	t.Helper()
 
-	out, err := result.RenderStyled(got, gitDir, colorprofile.ANSI)
-	assert.NilError(t, err)
+	assert.Check(t, holds(text, want), "text %q, want it to hold %q in order", text, partsOf(want))
+}
 
-	d := resulttest.Draw(t, out)
-	for _, p := range parts {
-		look := d.LookOf(t, p.within, p.part)
-		assert.Check(t, is.Equal(look, p.want), "%q inside %q", p.part, p.within)
+// holds reports whether text holds each part of want in order, each after the one before it.
+func holds(text, want string) bool {
+	_, found := past(text, want)
+
+	return found
+}
+
+// past returns what text holds after the last part of want, once each part of want is found in
+// order, and whether every part was.
+func past(text, want string) (string, bool) {
+	rest := text
+	for _, part := range partsOf(want) {
+		_, after, found := strings.Cut(rest, part)
+		if !found {
+			return "", false
+		}
+
+		rest = after
 	}
+
+	return rest, true
+}
+
+// partsOf returns the parts of want, as expect builds it; a text expect did not build is one part.
+func partsOf(want string) []string {
+	parts := strings.Split(want, partEnd)
+
+	return slices.DeleteFunc(parts, func(part string) bool { return part == "" })
 }
 
 // assertStopped fails unless got ended as want and carries the command and words of pushRequest.
@@ -259,6 +274,24 @@ func assertStoppedBy(t *testing.T, got result.Result, want result.Outcome, req l
 	assert.Check(t, is.Equal(got.Command, req.Command))
 
 	assert.Check(t, is.DeepEqual(got.Words, req.Words))
+}
+
+// ended is how a run must end: the request it ran, its outcome, and the parts its text holds.
+type ended struct {
+	text    string
+	req     landing.Request
+	outcome result.Outcome
+}
+
+// assertEndedBy fails unless got ended as want says, carries the command and words of its request,
+// and renders text in gitDir that holds the parts of its text.
+func assertEndedBy(t *testing.T, got result.Result, gitDir string, want ended) {
+	t.Helper()
+
+	assertStoppedBy(t, got, want.outcome, want.req)
+
+	rendered, _ := shown(t, got, gitDir)
+	assertSays(t, rendered, want.text)
 }
 
 // assertBrokeRead fails unless got is broke on the read named read, says nothing was written,
@@ -280,16 +313,27 @@ func assertBrokeReadBy(t *testing.T, got result.Result, cmd landingCommand, read
 	assertStoppedBy(t, got, result.Broke, cmd.req)
 
 	text, reason := shown(t, got, "")
-	prefix := "Could not read " + read + ": "
-	suffix := "\nNothing was written.\nBroke: could not read " + read + "\n" + cmd.fixed
+	said := between(t, text, read, nothingWritten)
+	assertSays(t, text, expect(read, nothingWritten)+cmd.fixed)
 
-	said, starts := strings.CutPrefix(text, prefix)
-	said, ends := strings.CutSuffix(said, suffix)
-	assert.Check(t, starts, "RenderText() = %q, want it to start with %q", text, prefix)
-	assert.Check(t, ends, "RenderText() = %q, want it to end with %q", text, suffix)
-	assert.Check(t, said != "", "RenderText() = %q, want what failed said between %q and %q", text, prefix, suffix)
+	assert.Check(t, is.Contains(reason, read))
 
-	assert.Check(t, is.Equal(reason, "could not read "+read))
+	return said
+}
+
+// nothingWritten is the phrase of the line that says a run that stopped early wrote nothing.
+const nothingWritten = "Nothing was written"
+
+// between returns what text holds after the first before and ahead of the next after, without the
+// separators around it, and fails unless text holds both and something between them.
+func between(t *testing.T, text, before, after string) string {
+	t.Helper()
+
+	_, rest, starts := strings.Cut(text, before)
+	said, _, ends := strings.Cut(rest, after)
+	said = strings.Trim(said, ":;,. \n")
+	assert.Check(t, starts && ends && said != "",
+		"RenderText() = %q, want %q, then what failed said, then %q", text, before, after)
 
 	return said
 }
@@ -317,13 +361,6 @@ func ready(t *testing.T, s *scene) landing.Ready {
 	return got
 }
 
-// assertRefsUnchanged fails unless every ref of the scene is as it was in before.
-func assertRefsUnchanged(t *testing.T, s *scene, before string) {
-	t.Helper()
-
-	assert.Check(t, is.Equal(s.refs(), before))
-}
-
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
@@ -333,8 +370,8 @@ func mergeRequest() landing.Request {
 	return landing.Request{Command: "merge", Words: []string{"merge"}}
 }
 
-// landingCommand is a command that runs the shared preconditions, with the `Next:` lines that
-// name it.
+// landingCommand is a command that runs the shared preconditions, with the parts of the `Next:`
+// lines that name it.
 type landingCommand struct {
 	name string
 	// again is the `Next:` line that runs the command again.
@@ -346,28 +383,23 @@ type landingCommand struct {
 
 // after is the `Next:` line that does step, then runs the command again.
 func (c landingCommand) after(step string) string {
-	return "Next: " + step + ", then run ils " + c.name + " again\n"
+	return expect(step, "ils "+c.name)
 }
 
 // pushCommand is `ils push` with the `Next:` lines that name it.
 func pushCommand() landingCommand {
-	return landingCommand{name: "push", req: pushRequest(), again: nextPush, fixed: nextFixed}
+	return landingCommand{name: "push", req: pushRequest(), again: nextPush(), fixed: nextFixed()}
 }
 
 // mergeCommand is `ils merge` with the `Next:` lines that name it.
 func mergeCommand() landingCommand {
-	return landingCommand{name: "merge", req: mergeRequest(), again: nextMergeAgain, fixed: nextMergeFixed}
+	return landingCommand{name: "merge", req: mergeRequest(), again: nextMergeAgain(), fixed: nextMergeFixed()}
 }
 
-// landingCommands are push and merge, the two commands that run the shared preconditions.
-func landingCommands() []landingCommand {
-	return []landingCommand{pushCommand(), mergeCommand()}
-}
-
-// unreached is the whole text of cmd's refusal when origin stopped answering while it was asked to
-// do what.
+// unreached is the parts of cmd's refusal when origin stopped answering while it was asked to do
+// what.
 func unreached(cmd landingCommand, what string) string {
-	return "Refused: origin could not be reached to " + what + "\n" + cmd.again
+	return expect("could not be reached", what) + cmd.again
 }
 
 // cut is one way the context of a run ends before the run does: the time limit, its deadline, or
@@ -444,492 +476,347 @@ func (c cut) spent(t *testing.T) context.Context {
 	return ctx
 }
 
-// overtimeText is the whole text of cmd's refusal when c ended the read named read.
+// stalling returns an arrange under which origin answers the first answered calls git makes to it
+// and the next reaches a server that never answers; c ends the context once that call connected.
+func (c cut) stalling(answered int) func(t *testing.T, s *scene) context.Context {
+	return func(t *testing.T, s *scene) context.Context {
+		t.Helper()
+
+		addr, connected := gittest.SilentListener(t)
+		s.deps.Repo.Runner.Env = answering(t, s.fixture, answered, "git ls-remote git://"+addr+"/stalled.git")
+
+		return c.once(t.Context(), connected)
+	}
+}
+
+// overtimeText is the parts of cmd's refusal when c ended the read named read.
 func overtimeText(cmd landingCommand, c cut, read string) string {
-	return "Refused: " + c.ends + " while reading " + read + "; nothing was written\n" + cmd.again
+	return expect(c.ends, read, "nothing was written") + cmd.again
 }
 
-// unreadText is the whole text of cmd's result when the read named read failed saying detail.
+// unreadText is the parts of cmd's result when the read named read failed saying detail.
 func unreadText(cmd landingCommand, read, detail string) string {
-	return "Could not read " + read + ": " + detail + "\nNothing was written.\nBroke: could not read " + read + "\n" + cmd.fixed
+	return expect(read, detail, nothingWritten) + cmd.fixed
 }
 
-// ---------------------------------------------------------------------------
-// Checks of the branch
-// ---------------------------------------------------------------------------
-
-const (
-	startCommand = "git fetch origin " + trunk + " && git switch -c <name> --no-track refs/remotes/origin/" + trunk
-	nextBranch   = "Next: start a branch from origin's trunk: `" + startCommand + "`"
-	baseCommand  = "gh pr edit 12 --base " + trunk
-
-	readTree         = "the working tree's changes"
-	readFetchedTrunk = "the commits on origin's trunk"
-	readMergedHead   = "the merged pull request's head"
-	readTip          = "the branch's tip"
-)
-
-// startDrawn are the parts of nextBranch a terminal with color draws in the style of their kind.
-func startDrawn() []drawnPart {
-	return []drawnPart{commandIn(nextBranch, startCommand)}
-}
-
-const (
-	onTrunk  = "Refused: HEAD is on the trunk " + trunk + ", which ils never pushes\n" + nextBranch + "\n"
-	detached = "Refused: HEAD is detached, so there is no branch to push\n" + nextBranch + "\n"
-)
-
-// dirtyText is cmd's refusal of a tree whose changed tracked files are files.
-func dirtyText(cmd landingCommand, files ...string) string {
-	slices.Sort(files)
-
-	return "Refused: tracked files have changes that are not committed: " + strings.Join(files, ", ") + "\n" +
-		cmd.after("commit them")
-}
-
-// elsewhereText is cmd's refusal of a branch whose open pull request 12 is against otherBase.
-func elsewhereText(cmd landingCommand) string {
-	return "Refused: pull request #12 from " + topic + " is open against " + otherBase +
-		" and not against the trunk " + trunk + "\n" +
-		cmd.after("close it or change its base with `"+baseCommand+"`")
-}
-
-// standingRefusals are the refusals decided from where HEAD stands and from the working tree,
-// before anything is fetched.
-func standingRefusals() []pushRefusal {
-	return []pushRefusal{
-		{
-			name: "on the trunk", script: allowed(), ops: identityRead(),
-			arrange: func(f *gittest.Fixture) string {
-				f.Git("switch", "--quiet", trunk)
-
-				return onTrunk
-			},
-			drawn: append(startDrawn(), drawnPart{within: "the trunk " + trunk + ",", part: trunk, want: resulttest.NameLook()}),
-		},
-		{
-			name: "on the trunk with a dirty tree", script: allowed(), ops: identityRead(),
-			arrange: func(f *gittest.Fixture) string {
-				f.Git("switch", "--quiet", trunk)
-				f.DirtyFile()
-
-				return onTrunk
-			},
-		},
-		{
-			name: "detached HEAD", script: allowed(), ops: identityRead(),
-			arrange: func(f *gittest.Fixture) string {
-				f.Detach()
-
-				return detached
-			},
-		},
-		{
-			name: "tracked file changed and not staged", script: allowed(), ops: identityRead(),
-			arrange: func(f *gittest.Fixture) string { return dirtyText(pushCommand(), f.DirtyFile()) },
-		},
-		{
-			name: "tracked file changed and staged", script: allowed(), ops: identityRead(),
-			arrange: func(f *gittest.Fixture) string { return dirtyText(pushCommand(), f.StagedFile()) },
-		},
-		{
-			name: "two tracked files changed", script: allowed(), ops: identityRead(),
-			arrange: func(f *gittest.Fixture) string { return dirtyText(pushCommand(), f.DirtyFile(), f.StagedFile()) },
-		},
-		{
-			name: "dirty tree on a branch with no commit past the trunk", script: allowed(), ops: identityRead(),
-			arrange: func(f *gittest.Fixture) string {
-				f.Git("switch", "--quiet", "--create", spare, trunk)
-
-				return dirtyText(pushCommand(), f.DirtyFile())
-			},
-		},
-	}
-}
-
-// nothingPast is the refusal of a branch with no commit past origin's trunk.
-func nothingPast(branch string) string {
-	return "Refused: the branch " + branch + " has no commit past origin's trunk " + trunk + "\n" +
-		"Next: commit the work, then run ils push again\n"
-}
-
-// commitRefusals are the refusals decided from the branch's commits past origin's trunk.
-func commitRefusals() []pushRefusal {
-	return []pushRefusal{
-		{
-			name: "no commit past the trunk", script: allowed(), ops: identityRead(), fetches: true,
-			arrange: func(f *gittest.Fixture) string {
-				f.Git("switch", "--quiet", "--create", spare, trunk)
-
-				return nothingPast(spare)
-			},
-			drawn: []drawnPart{
-				{within: "the branch " + spare, part: spare, want: resulttest.NameLook()},
-				{within: "trunk " + trunk, part: trunk, want: resulttest.NameLook()},
-			},
-		},
-		{
-			name: "every commit landed on origin's trunk since the last fetch", script: allowed(),
-			ops: identityRead(), fetches: true,
-			arrange: func(f *gittest.Fixture) string {
-				f.Git("push", "--quiet", filepath.ToSlash(f.OriginDir()), topic+":"+trunk)
-
-				return nothingPast(topic)
-			},
-		},
-	}
-}
-
-// changeRefusals are the refusals decided from the pull requests the forge finds for the branch.
-func changeRefusals() []pushRefusal {
-	number := strconv.Itoa(merged)
-
-	elsewhere := elsewhereText(pushCommand())
-
-	return []pushRefusal{
-		{
-			name:   "open pull request against another base",
-			script: finding(change(opened, otherBase, forge.ChangeOpen)), ops: changesRead(), fetches: true,
-			arrange: func(*gittest.Fixture) string { return elsewhere },
-			drawn: []drawnPart{
-				{within: "pull request #12 from", part: "#12", want: resulttest.NameLook()},
-				{within: "from " + topic, part: topic, want: resulttest.NameLook()},
-				{within: "against " + otherBase, part: otherBase, want: resulttest.NameLook()},
-				{within: "the trunk " + trunk, part: trunk, want: resulttest.NameLook()},
-				commandIn(elsewhere, baseCommand),
-			},
-		},
-		{
-			// Origin answers about its trunk, the fetch of it, and whether it has the branch, and
-			// nothing after: a fetch of the merged head would be what refuses.
-			name:   "open pull request against another base beside a merged one that shares a commit",
-			script: finding(change(merged, trunk, forge.ChangeMerged), change(opened, otherBase, forge.ChangeOpen)),
-			ops:    changesRead(), fetches: true, answered: 3,
-			arrange: func(f *gittest.Fixture) string {
-				f.LandPull(merged, topic)
-
-				return elsewhere
-			},
-		},
-		{
-			name: "merged pull request with nothing unlanded", script: landedScript(), ops: changesRead(), fetches: true,
-			arrange: func(f *gittest.Fixture) string {
-				f.LandPull(merged, topic)
-
-				return "Refused: the branch " + topic + " already landed with pull request #" + number + "\n" +
-					nextBranch + "\n"
-			},
-			drawn: startDrawn(),
-		},
-		{
-			name: "merged pull request with commits made since", script: landedScript(), ops: changesRead(), fetches: true,
-			arrange: func(f *gittest.Fixture) string {
-				f.LandPull(merged, topic)
-				later := f.Commits(topic, "fix a typo", "add an example")
-
-				return later[0] + " fix a typo\n" + later[1] + " add an example\n" +
-					"Refused: pull request #" + number + " from " + topic +
-					" was merged without the commits listed here\n" +
-					nextBranch + ", then bring those commits over with `git cherry-pick " + later[0] + " " + later[1] +
-					"`; expect a conflict where the squash touched the same files\n"
-			},
-			drawn: append(startDrawn(),
-				commandIn(" "+tipMark+"`; expect", " "+tipMark),
-			),
-		},
-	}
-}
-
-func TestPush_WhenASharedCheckOfTheBranchFails_RefusesAtTheFirst(t *testing.T) {
+func TestPush_WhenGivenNoProgressHookOrLogger_EndsAsWithThem(t *testing.T) {
 	t.Parallel()
-
-	runPushRefusals(t, slices.Concat(standingRefusals(), commitRefusals(), changeRefusals()))
-}
-
-// sharedAccepted are the states of the branch that pass a shared check another state fails, each
-// pushed and opened as a first push that ends green.
-func sharedAccepted() []pushRow {
-	opens := greenAfter(pushedLine + openedLine)
-	sinceMerged := opening(passing()).with(func(script *forgetest.Script, _ string) {
-		script.FindChanges = listing([]forge.Change{change(merged, trunk, forge.ChangeMerged)})
-	})
-
-	return []pushRow{
-		{
-			name: "only a file git does not track", script: opening(passing()), want: opens,
-			arrange: func(f *gittest.Fixture) { f.UntrackedFile() },
-		},
-		{
-			name: "merged pull request sharing no commit past the trunk", script: sinceMerged, want: opens,
-			arrange: func(f *gittest.Fixture) {
-				f.Commits(spare, "earlier work")
-				f.LandPull(merged, spare)
-				f.Git("switch", "--quiet", topic)
-			},
-		},
-	}
-}
-
-func TestPush_WhenBranchPassesASharedCheckAnotherStateFails_PushesIt(t *testing.T) {
-	t.Parallel()
-
-	runPushes(t, sharedAccepted())
-}
-
-func TestPush_WhenOriginStopsAnsweringASharedRead_RefusesNamingWhatItWasAskedFor(t *testing.T) {
-	t.Parallel()
-
-	runUnanswered(t, []unanswered{
-		{
-			// Origin answers the question about its trunk, and nothing after.
-			name: "asked to fetch its trunk", script: allowed(), ops: identityRead(), answered: 1,
-			asked: "fetch its trunk " + trunk,
-		},
-		{
-			name:   "asked to fetch the merged pull request's head",
-			script: landedScript(), ops: changesRead(), answered: 4,
-			arrange: landAndPublish,
-			asked:   "fetch the head of pull request #" + strconv.Itoa(merged),
-		},
-	})
-}
-
-func TestPush_WhenASharedReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
-	t.Parallel()
-
-	runOvertime(t, func(c cut) []overtime {
-		return []overtime{
-			{
-				// Origin answers the question about its trunk, and nothing after.
-				name: "during the fetch of origin's trunk", read: readFetchedTrunk, script: allowed(), ops: identityRead(),
-				arrange: c.stalling(1),
-			},
-			{
-				name: "during the fetch of the merged pull request's head", read: readMergedHead,
-				script: landedScript(), ops: changesRead(), arrange: c.stalling(4),
-				prepare: landAndPublish,
-			},
-			{
-				name: "during the find-changes read", read: readChanges, ops: changesRead(),
-				script: failingToFind(c.of("gh pr list")),
-				arrange: func(t *testing.T, _ *scene) context.Context {
-					t.Helper()
-
-					return t.Context()
-				},
-			},
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// Failed local reads
-// ---------------------------------------------------------------------------
-
-// lose deletes the commit sha from the working repository's object store, where the fixture keeps
-// every object in a file of its own.
-func lose(t *testing.T, f *gittest.Fixture, sha string) {
-	t.Helper()
-
-	err := os.Remove(filepath.Join(f.Dir(), ".git", "objects", sha[:2], sha[2:]))
-	assert.NilError(t, err)
-}
-
-// brokenRead is one local read of Push that the repository's own state breaks.
-type brokenRead struct {
-	// arrange breaks the repository.
-	arrange func(t *testing.T, f *gittest.Fixture)
-	name    string
-	read    string
-	// fetches is whether git fetches from origin before the read.
-	fetches bool
-}
-
-func brokenReads() []brokenRead {
-	return []brokenRead{
-		{
-			name: "the index is corrupt", read: readTree,
-			arrange: func(t *testing.T, f *gittest.Fixture) {
-				t.Helper()
-				f.CorruptIndex()
-			},
-		},
-		{
-			name: "a commit of the branch is missing", read: readCommits, fetches: true,
-			arrange: func(t *testing.T, f *gittest.Fixture) {
-				t.Helper()
-
-				first := f.Git("rev-parse", topic)
-				f.Commits(topic, "fix a typo")
-				lose(t, f, first)
-			},
-		},
-	}
-}
-
-func TestPush_WhenLocalReadFails_BrokeNamingTheRead(t *testing.T) {
-	t.Parallel()
-
-	for _, tt := range brokenReads() {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			s := newScene(t, func(f *gittest.Fixture) { tt.arrange(t, f) }, allowed(), false)
-			before := s.written()
-
-			got := landing.Push(t.Context(), s.deps, pushRequest())
-
-			assertBrokeReadBy(t, got, pushCommand(), tt.read)
-			// What git said must also render under the repository's own git dir: no line names a path in it.
-			shown(t, got, s.gitDir)
-			assertOnlyRead(t, s, reads{before: before, ops: identityRead(), fetches: tt.fetches})
-		})
-	}
-}
-
-func TestPush_WhenFindChangesFailsUntyped_BrokeNamingTheRead(t *testing.T) {
-	t.Parallel()
-	s := newScene(t, nil, failingToFind(errors.New("HTTP 502")), false)
-	before := s.written()
-
-	got := landing.Push(t.Context(), s.deps, pushRequest())
-
-	want := unreadText(pushCommand(), readChanges, "HTTP 502")
-	assertEnded(t, s, got, finish{outcome: result.Broke, text: want})
-	assertOnlyRead(t, s, reads{before: before, ops: changesRead(), fetches: true})
-}
-
-func TestPush_WhenBranchHasNoCommitAtAll_RefusesAsNoCommitPastTheTrunk(t *testing.T) {
-	t.Parallel()
-	s := newScene(t, func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--orphan", spare) }, allowed(), false)
-	// A branch with no commit has no HEAD commit to read, so the snapshot names the branch instead.
-	standing := func() string { return s.refs() + "\nHEAD: " + s.fixture.Git("symbolic-ref", "HEAD") }
-	before := standing()
-
-	got := landing.Push(t.Context(), s.deps, pushRequest())
-
-	assertEnded(t, s, got, finish{outcome: result.Refused, text: nothingPast(spare)})
-
-	assert.Check(t, is.Equal(standing(), before))
-
-	assertAsked(t, s, identityRead())
-}
-
-func TestPush_WhenBranchRefCannotBeRead_BrokeNamingTheTipRead(t *testing.T) {
-	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
-	words := []string{"show-ref", "--verify", "--quiet", "refs/heads/" + spare}
-	s := newScene(t, func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--orphan", spare) }, allowed(), false)
-	failGit(t, s, words)
-	before := s.refs()
-
-	got := landing.Push(t.Context(), s.deps, pushRequest())
-
-	assertFailedGit(t, got, pushCommand(), readTip)
-
-	assert.Check(t, is.Equal(s.refs(), before))
-
-	assertAsked(t, s, identityRead())
-}
-
-func TestPushAndMerge_WhenGivenNoProgressHookOrLogger_EndsAsWithThem(t *testing.T) {
-	t.Parallel()
-
-	// bare is a rewire of the scene's deps that leaves them no progress hook and no logger.
-	bare := func(deps *landing.Deps) { deps.Progress, deps.Logger = nil, nil }
-	push := func(script forgeFor) func(t *testing.T, withoutHooks bool) result.Result {
-		return func(t *testing.T, withoutHooks bool) result.Result {
-			t.Helper()
-
-			d := newDelivery(t, pushRow{script: script})
+	synctest.Test(t, func(t *testing.T) {
+		// A first push whose check is still running at the first read reaches every place a hook
+		// or the logger is told something.
+		run := func(withoutHooks bool) result.Result {
+			d := newDelivery(t, pushRow{script: opening(running(), passing())})
 			if withoutHooks {
-				bare(&d.deps)
+				d.deps.Progress, d.deps.Logger = nil, nil
 			}
 
 			return landing.Push(d.ctx, d.deps, pushRequest())
 		}
-	}
-	merge := func(t *testing.T, withoutHooks bool) result.Result {
-		t.Helper()
+		watched := run(false)
 
-		set := setting{script: toLand(nil, nil)}
-		if withoutHooks {
-			set.rewire = func(_ *testing.T, s *scene) { bare(&s.deps) }
-		}
+		unwatched := run(true)
 
-		return runMergeOn(t, set).got
+		want, err := result.RenderJSON(watched, "")
+		assert.NilError(t, err)
+		got, err := result.RenderJSON(unwatched, "")
+		assert.NilError(t, err)
+		assert.Check(t, is.Equal(got, want))
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Refusals of the shared preconditions
+// ---------------------------------------------------------------------------
+
+// refusal is one state that the preconditions refuse, with what they print and how far they read.
+type refusal struct {
+	arrange func(*gittest.Fixture)
+	name    string
+	// want is the parts of the refusal's text.
+	want   string
+	script forgetest.Script
+	// offline gives the scene an origin that does not answer.
+	offline bool
+	// asksForge is whether the forge's identity is read before the refusal.
+	asksForge bool
+	// asksOrigin is whether origin is asked for its trunk before the refusal.
+	asksOrigin bool
+}
+
+// originRefusals are the refusals decided from origin's URLs alone; their forge has no answer,
+// so that any call to it fails the test.
+func originRefusals() []refusal {
+	mismatch := func(fetch, push string) string {
+		return expect(fetch, push, "do not name one GitHub repository", "`git remote set-url`")
 	}
-	tests := []struct {
-		run  func(t *testing.T, withoutHooks bool) result.Result
-		name string
-	}{
+
+	return []refusal{
 		{
-			name: "a first push whose check is still running at the first read",
-			run:  push(opening(running(), passing())),
+			name:    "no remote named origin",
+			arrange: (*gittest.Fixture).RemoveOrigin,
+			want:    expect("no remote named origin", "`gh repo create --source . --push`"),
 		},
 		{
-			name: "a push that waits through a merge state unknown at the first read",
-			run: push(reusing(passing()).showing(
-				inState(forge.MergeUnknown, "UNKNOWN"), inState(forge.MergeClean, "CLEAN"))),
+			name:    "fetch URL does not parse",
+			arrange: func(f *gittest.Fixture) { f.SetOriginURL(localPath) },
+			want:    mismatch(localPath, pushURL),
 		},
-		{name: "a merge that lands", run: merge},
+		{
+			name:    "URLs name different repositories",
+			arrange: func(f *gittest.Fixture) { f.SetPushURL(otherURL) },
+			want:    mismatch(fetchURL, otherURL),
+		},
 	}
-	for _, tt := range tests {
+}
+
+// forgeRefusals are the refusals decided from the forge's answer about the repository.
+func forgeRefusals() []refusal {
+	push := pushCommand()
+	noTool := expect("gh", "not installed", "https://cli.github.com") + push.after("install gh")
+	noLogin := expect("not logged in", host, "`gh auth login --hostname github.com`") + push.after("log in to "+host)
+	tooOld := expect("gh 2.49.0", "older than 2.50.0", "https://cli.github.com") + push.after("upgrade gh")
+	noVersion := expect("`gh version DEV`", "names no version", "2.50.0", "https://cli.github.com") + push.after("upgrade gh")
+	isFork := expect(owner+"/"+repoName, "is a fork", "push by hand")
+	noPush := expect("no push permission", owner+"/"+repoName, "push by hand")
+
+	missing := fails(&child.ToolMissingError{Tool: "gh", InstallURL: "https://cli.github.com"})
+	old := child.ToolTooOldError{Tool: "gh", Minimum: "2.50.0", InstallURL: "https://cli.github.com"}
+	outdated, unread := old, old
+	outdated.Version, outdated.Line = "2.49.0", "gh version 2.49.0 (2024-05-13)"
+	unread.Line = "gh version DEV"
+
+	return []refusal{
+		{name: "gh is not installed", script: missing, asksForge: true, want: noTool},
+		{
+			name: "gh is older than the minimum", script: fails(&outdated), asksForge: true, want: tooOld,
+		},
+		{name: "gh prints no version", script: fails(&unread), asksForge: true, want: noVersion},
+		{name: "gh is not logged in", script: fails(&forge.NotLoggedInError{Host: host}), asksForge: true, want: noLogin},
+		{name: "fork", script: answers(widgets(true, true)), asksForge: true, want: isFork},
+		{name: "fork without push permission", script: answers(widgets(true, false)), asksForge: true, want: isFork},
+		{name: "no push permission", script: answers(widgets(false, false)), asksForge: true, want: noPush},
+	}
+}
+
+// trunkRefusals are the refusals decided from origin's answer about its trunk.
+func trunkRefusals() []refusal {
+	return []refusal{
+		{
+			name:   "origin does not answer",
+			script: allowed(), offline: true, asksForge: true, asksOrigin: true, want: unreached(pushCommand(), "ask for its trunk"),
+		},
+		{
+			name:    "origin's answer names no branch",
+			arrange: (*gittest.Fixture).DetachOriginHead,
+			script:  allowed(), asksForge: true, asksOrigin: true, want: unreached(pushCommand(), "ask for its trunk"),
+		},
+	}
+}
+
+func TestPreconditions_WhenOneFails_RefusesAtTheFirst(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range slices.Concat(originRefusals(), forgeRefusals(), trunkRefusals()) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			synctest.Test(t, func(t *testing.T) {
-				watched := tt.run(t, false)
+			s := newScene(t, tt.arrange, tt.script, tt.offline)
 
-				unwatched := tt.run(t, true)
+			_, stop := landing.Preconditions(t.Context(), s.deps, pushRequest())
 
-				want, err := result.RenderJSON(watched, "")
-				assert.NilError(t, err)
+			got := stopped(t, stop, "a refusal")
+			assertStopped(t, got, result.Refused)
 
-				got, err := result.RenderJSON(unwatched, "")
-				assert.NilError(t, err)
+			text, _ := shown(t, got, s.gitDir)
+			assertSays(t, text, tt.want)
 
-				assert.Check(t, is.Equal(got, want))
-			})
+			assertReadsStoppedAt(t, s, tt)
 		})
 	}
 }
 
-// sharedFailedReads are the failed reads of the branch's tip and of the commits a merged pull
-// request from the branch already carries.
-func sharedFailedReads() []failedRead {
-	// since lands the branch as the merged pull request, adds a commit, and returns the pull
-	// request's head and the branch's tip.
-	since := func(f *gittest.Fixture) (head, tip string) {
-		head = f.Git("rev-parse", topic)
-		f.LandPull(merged, topic)
+func assertReadsStoppedAt(t *testing.T, s *scene, tt refusal) {
+	t.Helper()
 
-		return head, f.Commits(topic, "fix a typo")[0]
+	var ops []forgetest.Op
+	if tt.asksForge {
+		ops = identityRead()
 	}
 
-	return []failedRead{
-		{
-			name: "the branch's tip", read: readTip, script: allowed(), ops: identityRead(),
-			arrange: func(*gittest.Fixture) []string { return []string{"rev-parse", "HEAD"} },
-		},
-		{
-			name: "the merged head's commits past the trunk", read: readMergedHead, script: landedScript(), ops: changesRead(),
-			arrange: func(f *gittest.Fixture) []string {
-				head, _ := since(f)
+	assertAsked(t, s, ops)
 
-				return append(history(), head, "^refs/remotes/origin/"+trunk)
-			},
-		},
-		{
-			name: "the unlanded commits", read: readCommits, script: landedScript(), ops: changesRead(),
-			arrange: func(f *gittest.Fixture) []string {
-				head, tip := since(f)
-
-				return append(history(), "--cherry-pick", "--right-only", head+"..."+tip, "^refs/remotes/origin/"+trunk)
-			},
-		},
-	}
+	assert.Check(t, is.Equal(s.gitRan("ls-remote"), tt.asksOrigin))
 }
 
-func TestPush_WhenASharedGitReadFails_BrokeNamingTheRead(t *testing.T) {
-	// Not parallel: each row puts a failing git first on PATH with t.Setenv.
-	runFailedReads(t, sharedFailedReads())
+func TestPreconditions_WhenAllHold_ReturnsReady(t *testing.T) {
+	t.Parallel()
+	s := newScene(t, nil, allowed(), false)
+	standing := git.Standing{Kind: git.OnBranch, Branch: topic}
+	want := landing.Ready{Standing: standing, Repo: widgets(false, true), Trunk: trunk}
+
+	got := ready(t, s)
+
+	assert.Check(t, is.DeepEqual(got, want))
+	assertAsked(t, s, identityRead())
+}
+
+func TestPreconditions_WhenSSHFails_BrokeNamingTheRead(t *testing.T) {
+	t.Parallel()
+	s := newScene(t, nil, forgetest.Script{}, false)
+	s.fixture.RemoveSSHConfig()
+
+	_, stop := landing.Preconditions(t.Context(), s.deps, pushRequest())
+
+	got := stopped(t, stop, "a broke result")
+	assertBrokeRead(t, got, readURLs, "ssh ")
+}
+
+// ---------------------------------------------------------------------------
+// Missing ssh
+// ---------------------------------------------------------------------------
+
+// missingProgram is an ssh command that no PATH holds.
+const missingProgram = "no-such-ssh"
+
+// sshCommandVar is the environment variable the fixture sets to an ssh command of its own.
+const sshCommandVar = "GIT_SSH_COMMAND"
+
+// commandMissing is the parts of cmd's refusal of an ssh command, configured by setting, that runs
+// missingProgram.
+func commandMissing(cmd landingCommand, setting string) string {
+	return expect(missingProgram, setting, "not found") + cmd.after("fix "+setting)
+}
+
+func TestPreconditions_WhenGitSSHRunsAMissingProgram_RefusesNamingIt(t *testing.T) {
+	t.Parallel()
+	cmd := pushCommand()
+	s := newScene(t, nil, forgetest.Script{}, false)
+	s.deps.Repo.Runner.Env = append(gittest.Without(s.deps.Repo.Runner.Env, sshCommandVar), "GIT_SSH="+missingProgram)
+
+	_, stop := landing.Preconditions(t.Context(), s.deps, cmd.req)
+
+	got := stopped(t, stop, "a refusal")
+	assertStoppedBy(t, got, result.Refused, cmd.req)
+
+	text, _ := shown(t, got, s.gitDir)
+	assertSays(t, text, commandMissing(cmd, "GIT_SSH"))
+}
+
+// ---------------------------------------------------------------------------
+// The git on PATH
+// ---------------------------------------------------------------------------
+
+func TestPreconditions_WhenGitIsTooOld_RefusesBeforeAnyOtherRead(t *testing.T) {
+	// Not parallel: fakeGit puts a git that prints its own version first on PATH with t.Setenv.
+	cmd := pushCommand()
+	s := newScene(t, nil, forgetest.Script{}, false)
+	fakeGit(t, s, gittest.Fake{Version: "git version 1.0.0"})
+
+	_, stop := landing.Preconditions(t.Context(), s.deps, cmd.req)
+
+	got := stopped(t, stop, "a refusal")
+	assertStoppedBy(t, got, result.Refused, cmd.req)
+
+	text, _ := shown(t, got, s.gitDir)
+	assertSays(t, text, expect("git 1.0.0", "older than "+git.MinimumVersion, "https://git-scm.com/downloads")+
+		cmd.after("upgrade git"))
+
+	assert.Check(t, is.Len(s.recorder.Calls(), 1))
+}
+
+func TestPreconditions_WhenGitVersionFails_BrokeNamingTheRead(t *testing.T) {
+	// Not parallel: failGit puts a git that fails first on PATH with t.Setenv.
+	s := newScene(t, nil, forgetest.Script{}, false)
+	failGit(t, s, []string{"--version"})
+
+	_, stop := landing.Preconditions(t.Context(), s.deps, pushRequest())
+
+	got := stopped(t, stop, "a broke result")
+	assertBrokeRead(t, got, readGitVersion, gittest.FailedSaid)
+}
+
+// ---------------------------------------------------------------------------
+// Unread preconditions
+// ---------------------------------------------------------------------------
+
+func TestPreconditions_WhenForgeIdentityFailsUntyped_BrokeNamingTheRead(t *testing.T) {
+	t.Parallel()
+	s := newScene(t, nil, fails(errors.New("HTTP 502")), false)
+
+	_, stop := landing.Preconditions(t.Context(), s.deps, pushRequest())
+
+	got := stopped(t, stop, "a broke result")
+	assertStoppedBy(t, got, result.Broke, pushRequest())
+
+	text, reason := shown(t, got, s.gitDir)
+	assertSays(t, text, unreadText(pushCommand(), readIdentity, "HTTP 502"))
+	assert.Check(t, is.Contains(reason, readIdentity))
+
+	assertAsked(t, s, identityRead())
+}
+
+func TestPreconditions_WhenDirectoryIsNotARepository_BrokeNamingTheRead(t *testing.T) {
+	t.Parallel()
+	deps := landing.Deps{
+		Repo:  git.Repo{Runner: git.Runner{Dir: t.TempDir(), Env: gittest.Env(t)}},
+		Forge: forgetest.New(t, forgetest.Script{}),
+	}
+
+	_, stop := landing.Preconditions(t.Context(), deps, pushRequest())
+
+	got := stopped(t, stop, "a broke result")
+	assertBrokeReadBy(t, got, pushCommand(), readStanding)
+}
+
+// unfinished is a cut that ends one read of the preconditions.
+type unfinished struct {
+	// arrange returns the context to run under and the forge's script, for the cut c.
+	arrange func(t *testing.T, c cut) (context.Context, forgetest.Script)
+	name    string
+	read    string
+	// ops are the forge operations made before the refusal.
+	ops []forgetest.Op
+}
+
+func TestPreconditions_WhenAReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
+	t.Parallel()
+	c := byTimeLimit()
+	tests := []unfinished{
+		{
+			name: "before the first read", read: readGitVersion,
+			arrange: func(t *testing.T, c cut) (context.Context, forgetest.Script) {
+				t.Helper()
+
+				return c.spent(t), forgetest.Script{}
+			},
+		},
+		{
+			name: "between the identity read and the trunk read", read: readTrunk, ops: identityRead(),
+			arrange: func(t *testing.T, c cut) (context.Context, forgetest.Script) {
+				t.Helper()
+
+				ended := make(chan struct{})
+				script := allowed()
+				script.OnRead = func(forgetest.Call) { close(ended) }
+
+				return c.once(t.Context(), ended), script
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, script := tt.arrange(t, c)
+			s := newScene(t, nil, script, false)
+
+			_, stop := landing.Preconditions(ctx, s.deps, pushRequest())
+
+			got := stopped(t, stop, "a refusal")
+			assertStopped(t, got, result.Refused)
+
+			text, _ := shown(t, got, s.gitDir)
+			assertSays(t, text, overtimeText(pushCommand(), c, tt.read))
+
+			assertAsked(t, s, tt.ops)
+		})
+	}
 }

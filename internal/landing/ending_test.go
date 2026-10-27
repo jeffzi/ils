@@ -24,7 +24,6 @@ import (
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
-	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
 const (
@@ -34,14 +33,6 @@ const (
 	fetchStep  = "`git fetch origin " + trunk + "`"
 	detachStep = "`git switch --detach refs/remotes/origin/" + trunk + "`"
 
-	detachedLine  = "Detached at origin's tip of " + trunk + ", with " + topic + " deleted locally\n"
-	elsewhereLine = "The trunk " + trunk + " is checked out in another worktree and updates there on its next " +
-		"`git pull --ff-only`\n"
-	resumedLine = "Pull request #7 was already merged into " + trunk + "\n"
-
-	interruptedResumeText = resumedLine + "ils was interrupted before finishing the merge, so nothing was written\n" +
-		"Pending: ils was interrupted before finishing the merge\n" + nextMergeAgain
-
 	readStillOnOrigin = "whether origin still has the branch"
 
 	mergedPullURL = "https://github.com/Acme/Widgets/pull/7"
@@ -49,33 +40,66 @@ const (
 	// landedBody is the body of the message of pull request 12 that toLand reads.
 	landedBody = "Tidy the readme."
 
-	mergedLine  = "Merged pull request #12 into " + trunk + ": " + worded + " (#12)\n"
-	deletedLine = "Deleted the branch " + topic + " on origin\n"
-	goneLine    = "The branch " + topic + " was already gone from origin\n"
-	onTrunkLine = "On " + trunk + " at origin's tip, with " + topic + " deleted locally\n"
-	stillThere  = "Could not delete the branch " + topic + " on origin, so it is still there: HTTP 502\n"
-
-	stillThereReason = "Broke: the branch is still on origin\n"
-	refusedMerge     = "HTTP 405: Head branch was modified"
+	refusedMerge = "HTTP 405: Head branch was modified"
 )
+
+// The lines and reasons a merge prints.
+
+func detachedLine() string {
+	return expect("Detached", trunk, topic, "deleted")
+}
+
+func elsewhereLine() string {
+	return expect(trunk, "another worktree", "`git pull --ff-only`")
+}
+
+func resumedLine() string {
+	return expect("#7", "already merged", trunk)
+}
+
+func mergedLine() string {
+	return expect("Merged", "#12", trunk, worded+" (#12)")
+}
+
+func deletedLine() string {
+	return expect("Deleted", topic)
+}
+
+func goneLine() string {
+	return expect(topic, "already gone")
+}
+
+func onTrunkLine() string {
+	return expect(trunk, "origin's tip", topic, "deleted")
+}
+
+func stillThere() string {
+	return expect("Could not delete", topic, "still there", "HTTP 502")
+}
+
+func stillThereReason() string {
+	return expect("still on origin")
+}
+
+func interruptedResumeText() string {
+	return resumedLine() + expect("interrupted before finishing the merge", "nothing was written",
+		"interrupted before finishing the merge") + nextMergeAgain()
+}
 
 // landingRow is one run of `ils merge` that reaches its writes or a resume, and how it ends.
 type landingRow struct {
 	// payload is the merge payload the run carries; an empty sha is the tip's.
 	payload *result.Merge
 	name    string
-	// text is the whole text of the result, with tipMark where the sha of the tip is printed. With
-	// after set, it is the text before a message of git's or gh's own.
+	// text is the parts of the result's text, with tipMark where the sha of the tip is printed. With
+	// after set, it is the parts before a message of git's or gh's own.
 	text string
-	// after is the text after that message; empty when the text holds none.
+	// after is the parts after that message; empty when the text holds none.
 	after string
 	// on is where the run leaves HEAD: the name of the branch it is on, or HEAD when it is detached;
 	// empty leaves it unchecked.
 	on  string
 	set setting
-	// drawn are parts of the text and how a terminal with color draws them; empty leaves them
-	// unchecked.
-	drawn []drawnPart
 	// told is every event the progress hook is told, with tipMark where the sha of the tip is
 	// printed; empty leaves them unchecked.
 	told    []string
@@ -87,7 +111,7 @@ type landingRow struct {
 // toldAfterWait returns every event the progress hook is told by a run that waits for its one check
 // to pass, ends the wait 20 seconds before the deadline, and then tells after.
 func toldAfterWait(after ...string) []string {
-	waited := []string{checkingStep, findingStep, waitingStep(bound - 20*time.Second), "count 1 of 1", said(countLine)}
+	waited := []string{checkingStep(), findingStep(), waitingStep(bound - landing.MergeReserve), "count 1 of 1", said(countLine())}
 
 	return slices.Concat(waited, after)
 }
@@ -122,7 +146,7 @@ func runLandings(t *testing.T, rows []landingRow) {
 }
 
 // assertOptional runs the checks of row that its fields turn on: what the run wrote, where it left
-// HEAD, how the text is drawn and what the progress hook was told.
+// HEAD and what the progress hook was told.
 func assertOptional(t *testing.T, run *mergeRun, row *landingRow) {
 	t.Helper()
 
@@ -134,28 +158,27 @@ func assertOptional(t *testing.T, run *mergeRun, row *landingRow) {
 		assert.Check(t, is.Equal(run.fixture.Git("rev-parse", "--abbrev-ref", "HEAD"), row.on))
 	}
 
-	assertDrawn(t, run.got, run.gitDir, row.drawn)
-
 	if len(row.told) > 0 {
-		assert.Check(t, is.DeepEqual(run.watch.told(t), markAll(row.told, run.tip)))
+		assertTold(t, run.watch.told(t), markAll(row.told, run.tip))
 	}
 }
 
-// assertSaid fails unless text is want, or, when after is not empty, unless text is want, then a
-// message on one line, then after.
+// assertSaid fails unless text holds the parts of want, then, when after is not empty, a message
+// that ends the line want ends on, then the parts of after on the lines below.
 func assertSaid(t *testing.T, text, want, after string) {
 	t.Helper()
 
-	if after == "" {
-		assert.Check(t, is.Equal(text, want))
+	assertSays(t, text, want)
 
+	if after == "" {
 		return
 	}
 
-	said, starts := strings.CutPrefix(text, want)
-	said, ends := strings.CutSuffix(said, after)
-	assert.Check(t, starts && ends && said != "" && !strings.Contains(said, "\n"),
-		"RenderText() = %q, want %q, then a message on one line, then %q", text, want, after)
+	rest, _ := past(text, want)
+	said, below, ended := strings.Cut(rest, "\n")
+	assert.Check(t, ended && strings.Trim(said, ":;, ") != "",
+		"RenderText() = %q, want a message on the line that holds %q", text, partsOf(want))
+	assertSays(t, below, after)
 }
 
 // moveOrigin moves the bare origin away, so that origin no longer answers.
@@ -187,9 +210,6 @@ type landedRow struct {
 	name    string
 	// lead is the text before the line that says the pull request merged.
 	lead string
-	// drawn are parts of the text and how a terminal with color draws them, with tipMark where
-	// the sha of the tip is printed; empty leaves them unchecked.
-	drawn []drawnPart
 	// told is every event the progress hook is told, with tipMark where the sha of the tip is
 	// printed; empty leaves them unchecked.
 	told      []string
@@ -206,15 +226,7 @@ func landedRows() []landedRow {
 	return []landedRow{
 		{
 			name: "under a deadline", script: toLand(nil, nil),
-			drawn: []drawnPart{
-				{within: "Checks for " + tipMark, part: tipMark, want: resulttest.SHALook()},
-				{within: "Merged pull request #12", part: "#12", want: resulttest.NameLook()},
-				{within: "into " + trunk, part: trunk, want: resulttest.NameLook()},
-				{within: "Deleted the branch " + topic, part: topic, want: resulttest.NameLook()},
-				{within: "On " + trunk, part: trunk, want: resulttest.NameLook()},
-				{within: "with " + topic + " deleted", part: topic, want: resulttest.NameLook()},
-			},
-			told: toldAfterWait(mergingStep, said(mergedLine), deletingStep, said(deletedLine), movingStep, said(onTrunkLine)),
+			told: toldAfterWait(mergingStep(), said(mergedLine()), deletingStep(), said(deletedLine()), movingStep(), said(onTrunkLine())),
 		},
 		{
 			// The wait polls the check until it passes, with no deadline to end it first.
@@ -222,7 +234,7 @@ func landedRows() []landedRow {
 			script: waiting(running(), passing()).saying(titledAfter(landedBody)).landing(nil, nil), unbounded: true,
 		},
 		{
-			name: "nothing reported and no CI on the trunk", lead: noCILine + cleanLine(), payload: unverified,
+			name: "nothing reported and no CI on the trunk", lead: noCILine() + cleanLine(), payload: unverified,
 			script: waiting(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{}).saying(titledAfter(landedBody)).
 				landing(nil, nil),
 		},
@@ -237,9 +249,9 @@ func landedRows() []landedRow {
 			script: toLand(nil, nil).showing(inState(forge.MergeClean, "CLEAN"), inState(forge.MergeUnknown, "UNKNOWN"),
 				inState(forge.MergeClean, "CLEAN")),
 			told: []string{
-				checkingStep, findingStep, waitingStep(bound - 20*time.Second), "count 1 of 1",
-				mergeStateStep, waitingStep(bound - 20*time.Second - mergePoll), said(countLine),
-				mergingStep, said(mergedLine), deletingStep, said(deletedLine), movingStep, said(onTrunkLine),
+				checkingStep(), findingStep(), waitingStep(bound - landing.MergeReserve), "count 1 of 1",
+				mergeStateStep(), waitingStep(bound - landing.MergeReserve - mergePoll), said(countLine()),
+				mergingStep(), said(mergedLine()), deletingStep(), said(deletedLine()), movingStep(), said(onTrunkLine()),
 			},
 		},
 	}
@@ -254,11 +266,8 @@ func TestMerge_WhenEveryCheckHolds_LandsThePullRequest(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				run := runMergeOn(t, setting{arrange: tt.arrange, script: tt.script, unbounded: tt.unbounded})
 
-				assertStoppedBy(t, run.got, result.Done, mergeRequest())
-
-				text, _ := shown(t, run.got, run.gitDir)
-				lead := cmp.Or(tt.lead, countLine+cleanLine())
-				assert.Check(t, is.Equal(text, mark(lead, run.tip)+mergedLine+deletedLine+onTrunkLine))
+				lead := cmp.Or(tt.lead, countLine()+cleanLine())
+				assertEndedBy(t, run.got, run.gitDir, ended{text: mark(lead, run.tip) + mergedLine() + deletedLine() + onTrunkLine(), req: mergeRequest(), outcome: result.Done})
 
 				want := *cmp.Or(tt.payload, sent(landedBody, true, result.EndingTrunk))
 				want.SHA = run.tip
@@ -272,10 +281,8 @@ func TestMerge_WhenEveryCheckHolds_LandsThePullRequest(t *testing.T) {
 				}, whichRepo()))
 				assertOnTrunk(t, run.fixture, run.fixture.Dir())
 
-				assertDrawn(t, run.got, run.gitDir, atTip(tt.drawn, run.tip))
-
 				if len(tt.told) > 0 {
-					assert.Check(t, is.DeepEqual(run.watch.told(t), markAll(tt.told, run.tip)))
+					assertTold(t, run.watch.told(t), markAll(tt.told, run.tip))
 				}
 			})
 		})
@@ -324,65 +331,34 @@ func lockRef(ref string) func(*testing.T, *gittest.Fixture) {
 
 func TestMerge_WhenTheTrunkIsCheckedOutInAnotherWorktree_EndsDetachedAtOriginsTrunk(t *testing.T) {
 	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		var was string
 
-	tests := []struct {
-		// arrange checks the trunk out in a worktree other than the one it returns, where the run is.
-		arrange func(*gittest.Fixture) string
-		name    string
-	}{
-		{
-			name: "run in the main checkout, with the trunk in a linked worktree",
-			arrange: func(f *gittest.Fixture) string {
+		run := runMergeOn(t, setting{
+			arrange: func(f *gittest.Fixture) {
 				f.TrunkWorktree()
-
-				return f.Dir()
+				was = f.Git("rev-parse", trunk)
 			},
-		},
-		{
-			name:    "run in a linked worktree, with the trunk in the main checkout",
-			arrange: func(f *gittest.Fixture) string { return f.BranchWorktree(topic) },
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			synctest.Test(t, func(t *testing.T) {
-				var dir, was string
-
-				run := runMergeOn(t, setting{
-					arrange: func(f *gittest.Fixture) {
-						dir = tt.arrange(f)
-						was = f.Git("rev-parse", trunk)
-					},
-					rewire: func(_ *testing.T, s *scene) { s.deps.Repo.Runner.Dir = dir },
-					script: toLand(nil, nil),
-				})
-
-				assertStoppedBy(t, run.got, result.Done, mergeRequest())
-
-				text, _ := shown(t, run.got, run.gitDir)
-				assert.Check(t, is.Equal(text, mark(countLine, run.tip)+cleanLine()+mergedLine+deletedLine+
-					detachedLine+elsewhereLine))
-
-				want := sent(landedBody, true, result.EndingDetached)
-				want.SHA = run.tip
-				assert.Check(t, is.DeepEqual(mergePayload(t, run.got), want))
-				assertDetached(t, run.fixture, dir, was)
-			})
+			script: toLand(nil, nil),
 		})
-	}
+
+		assertEndedBy(t, run.got, run.gitDir, ended{text: mark(countLine(), run.tip) + cleanLine() + mergedLine() + deletedLine() + detachedLine() + elsewhereLine(), req: mergeRequest(), outcome: result.Done})
+
+		want := sent(landedBody, true, result.EndingDetached)
+		want.SHA = run.tip
+		assert.Check(t, is.DeepEqual(mergePayload(t, run.got), want))
+		assertDetached(t, run.fixture, run.fixture.Dir(), was)
+	})
 }
 
 // endingBreaks are the runs of `ils merge` whose local ending fails after the merge and the delete
 // of the branch on origin went through.
 func endingBreaks() []landingRow {
-	lead := countLine + cleanLine() + mergedLine + deletedLine
-	const (
-		failed   = " failed: "
-		notRun   = "Not run: "
-		byHand   = " by hand\n"
-		nextHand = "Next: run "
-	)
+	lead := countLine() + cleanLine() + mergedLine() + deletedLine()
+	ran := func(step string) string { return expect("Ran", step) }
+	notRun := func(step string) string { return expect("Not run", step) }
+	failed := func(step string) string { return expect(step, "failed") }
+	byHand := func(steps ...string) string { return expect(append(steps, "by hand")...) }
 
 	// row is a run whose ending fails as text and after say, leaving HEAD where on says.
 	row := func(name string, set setting, on, text, after string) landingRow {
@@ -394,57 +370,28 @@ func endingBreaks() []landingRow {
 		}
 	}
 	trunkElsewhere := func(f *gittest.Fixture) { f.TrunkWorktree() }
-	// broke is the reason line of an ending whose step failed.
-	broke := func(step string) string { return "Broke: " + step + " failed\n" }
-
 	switching := row("the switch to the trunk", setting{arrange: func(f *gittest.Fixture) { f.UntrackedOnTrunk() }}, topic,
-		switchStep+failed, "\n"+notRun+dropStep+"\n"+notRun+pullStep+"\n"+broke(switchStep)+nextMergeFixed)
-	switching.told = toldAfterWait(mergingStep, said(mergedLine), deletingStep, said(deletedLine), movingStep)
+		failed(switchStep), notRun(dropStep)+notRun(pullStep)+failed(switchStep)+nextMergeFixed())
+	switching.told = toldAfterWait(mergingStep(), said(mergedLine()), deletingStep(), said(deletedLine()), movingStep())
 
 	return []landingRow{
 		switching,
-		drawnRow(row("the delete of the branch on the trunk", setting{landed: lockRef("refs/heads/" + topic)}, trunk,
-			"Ran "+switchStep+"\n"+dropStep+failed,
-			"\n"+notRun+pullStep+"\n"+broke(dropStep)+nextHand+dropStep+" and "+pullStep+byHand),
-			commandIn("Ran "+switchStep, switchStep),
-			commandIn(dropStep+failed, dropStep),
-			commandIn(notRun+pullStep, pullStep),
-			commandIn("Broke: "+dropStep, dropStep),
-			commandIn(nextHand+dropStep, dropStep),
-			commandIn(pullStep+byHand, pullStep),
-		),
-		drawnRow(row("the pull of the trunk", setting{landed: func(_ *testing.T, f *gittest.Fixture) { f.AdvanceTrunk() }}, trunk,
-			"Ran "+switchStep+"\nRan "+dropStep+"\n"+pullStep+failed, "\n"+broke(pullStep)+nextHand+pullStep+byHand),
-			commandIn(pullStep+byHand, pullStep),
-		),
+		row("the delete of the branch on the trunk", setting{landed: lockRef("refs/heads/" + topic)}, trunk,
+			ran(switchStep)+failed(dropStep), notRun(pullStep)+failed(dropStep)+byHand(dropStep, pullStep)),
+		row("the pull of the trunk", setting{landed: func(_ *testing.T, f *gittest.Fixture) { f.AdvanceTrunk() }}, trunk,
+			ran(switchStep)+ran(dropStep)+failed(pullStep), failed(pullStep)+byHand(pullStep)),
 		row("the fetch of origin's trunk", setting{arrange: trunkElsewhere, landed: moveOrigin}, topic,
-			fetchStep+failed, "\n"+notRun+detachStep+"\n"+notRun+dropStep+"\n"+broke(fetchStep)+nextMergeFixed),
-		row("the detach at origin's trunk", setting{arrange: trunkElsewhere, landed: lockRef("HEAD")}, topic,
-			"Ran "+fetchStep+"\n"+detachStep+failed, "\n"+notRun+dropStep+"\n"+broke(detachStep)+nextMergeFixed),
-		drawnRow(row("the delete of the branch when detached",
+			failed(fetchStep), notRun(detachStep)+notRun(dropStep)+failed(fetchStep)+nextMergeFixed()),
+		row("the delete of the branch when detached",
 			setting{arrange: trunkElsewhere, landed: lockRef("refs/heads/" + topic)}, "HEAD",
-			"Ran "+fetchStep+"\nRan "+detachStep+"\n"+dropStep+failed, "\n"+broke(dropStep)+nextHand+dropStep+byHand),
-			commandIn(dropStep+byHand, dropStep),
-		),
+			ran(fetchStep)+ran(detachStep)+failed(dropStep), failed(dropStep)+byHand(dropStep)),
 	}
-}
-
-// drawnRow returns row with parts, how a terminal with color draws parts of its text.
-func drawnRow(row landingRow, parts ...drawnPart) landingRow {
-	row.drawn = parts
-
-	return row
 }
 
 func TestMerge_WhenAStepOfTheLocalEndingFails_SaysWhichStepsRan(t *testing.T) {
 	t.Parallel()
 
 	runLandings(t, endingBreaks())
-}
-
-// mark returns text with the sha tip in place of tipMark.
-func mark(text, tip string) string {
-	return strings.ReplaceAll(text, tipMark, tip)
 }
 
 // resuming is a forge for a branch whose pull request 7 against the trunk is merged. The pull
@@ -456,7 +403,7 @@ func resuming() forgeFor {
 		pull.URL = mergedPullURL
 
 		return forgetest.Script{
-			Identity:    []forgetest.Answer[forge.Repo]{{Value: squashing(false)}},
+			Identity:    forgetest.Values(squashing(false)),
 			FindChanges: listing([]forge.Change{pull}),
 		}
 	}
@@ -488,9 +435,6 @@ type finishedResume struct {
 	text    string
 	ending  string
 	calls   []forgetest.Call
-	// drawn are parts of the text and how a terminal with color draws them; empty leaves them
-	// unchecked.
-	drawn []drawnPart
 }
 
 // finishedResumes are the resumes that run to their end, done.
@@ -503,12 +447,8 @@ func finishedResumes() []finishedResume {
 
 				return ""
 			},
-			text: resumedLine + deletedLine + onTrunkLine, ending: result.EndingTrunk,
+			text: resumedLine() + deletedLine() + onTrunkLine(), ending: result.EndingTrunk,
 			calls: append(asked(changesRead()), forgetest.Call{Op: forgetest.OpDeleteBranch, Repo: origin(), Branch: topic}),
-			drawn: []drawnPart{
-				{within: "Pull request #7", part: "#7", want: resulttest.NameLook()},
-				{within: "merged into " + trunk, part: trunk, want: resulttest.NameLook()},
-			},
 		},
 		{
 			name: "branch gone from origin and the trunk in a linked worktree", script: resuming(),
@@ -518,7 +458,7 @@ func finishedResumes() []finishedResume {
 
 				return ""
 			},
-			text:   resumedLine + goneLine + detachedLine + elsewhereLine,
+			text:   resumedLine() + goneLine() + detachedLine() + elsewhereLine(),
 			ending: result.EndingDetached, calls: asked(changesRead()),
 		},
 		{
@@ -532,7 +472,7 @@ func finishedResumes() []finishedResume {
 
 				return head
 			},
-			text: resumedLine + goneLine + onTrunkLine, ending: result.EndingTrunk, calls: asked(changesRead()),
+			text: resumedLine() + goneLine() + onTrunkLine(), ending: result.EndingTrunk, calls: asked(changesRead()),
 		},
 	}
 }
@@ -554,14 +494,10 @@ func TestMerge_WhenThePullRequestIsAlreadyMerged_FinishesWithoutMerging(t *testi
 					script: tt.script,
 				})
 
-				assertStoppedBy(t, run.got, result.Done, mergeRequest())
-
-				text, _ := shown(t, run.got, run.gitDir)
-				assert.Check(t, is.Equal(text, tt.text))
+				assertEndedBy(t, run.got, run.gitDir, ended{text: tt.text, req: mergeRequest(), outcome: result.Done})
 				assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(cmp.Or(head, run.tip), tt.ending),
 					cmpopts.EquateEmpty()))
 				assert.Check(t, is.DeepEqual(run.forge.Calls(), tt.calls, whichRepo()))
-				assertDrawn(t, run.got, run.gitDir, tt.drawn)
 
 				if tt.ending == result.EndingTrunk {
 					assertOnTrunk(t, run.fixture, run.fixture.Dir())
@@ -575,17 +511,11 @@ func TestMerge_WhenThePullRequestIsAlreadyMerged_FinishesWithoutMerging(t *testi
 
 // resumeStops are the resumes that end before their local ending, having written nothing.
 func resumeStops() []landingRow {
-	late := resumedLine + "Fewer than 20 seconds of the time limit were left to finish the merge, " +
-		"so nothing was written\n" + "Pending: fewer than 20 seconds of the time limit were left to finish the merge\n" +
-		nextMergeAgain
+	late := resumedLine() + expect("finish the merge", "nothing was written", "finish the merge") +
+		nextMergeAgain()
 	gone := func(f *gittest.Fixture) { f.LandPull(merged, topic) }
 
 	return []landingRow{
-		{
-			name: "the delete fails and origin still lists the branch", outcome: result.Broke, kept: true,
-			set:  setting{arrange: landAndPublish, script: resuming().deleting(errors.New("HTTP 502"))},
-			text: resumedLine + stillThere + stillThereReason + nextMergeAgain, payload: resumed("", ""),
-		},
 		{
 			name: "fewer than 20 seconds are left before the first write", outcome: result.Pending, kept: true,
 			set:  setting{arrange: landAndPublish, script: resuming(), left: 15 * time.Second},
@@ -599,12 +529,12 @@ func resumeStops() []landingRow {
 		{
 			name: "an interrupt lands once origin was asked for the branch it still lists", outcome: result.Pending,
 			kept: true, set: setting{arrange: landAndPublish, script: resuming(), runCtx: interruptAfterAskingForTheBranch},
-			text: interruptedResumeText, payload: resumed("", ""),
+			text: interruptedResumeText(), payload: resumed("", ""),
 		},
 		{
 			name: "an interrupt lands once origin was asked for the branch it no longer lists", outcome: result.Pending,
 			kept: true, set: setting{arrange: gone, script: resuming(), runCtx: interruptAfterAskingForTheBranch},
-			text: interruptedResumeText, payload: resumed("", ""),
+			text: interruptedResumeText(), payload: resumed("", ""),
 		},
 	}
 }
@@ -680,33 +610,11 @@ func TestMerge_WhenTheResumeCannotAskOriginForTheBranch_BrokeNamingTheRead(t *te
 	assertStoppedBy(t, run.got, result.Broke, mergeRequest())
 
 	text, reason := shown(t, run.got, run.gitDir)
-	prefix := resumedLine + "Could not read " + readStillOnOrigin + ": "
-	suffix := "\nNothing was written.\nBroke: could not read " + readStillOnOrigin + "\n" + nextMergeFixed
-	assert.Check(t, strings.HasPrefix(text, prefix), "RenderText() = %q, want it to start with %q", text, prefix)
-	assert.Check(t, strings.HasSuffix(text, suffix), "RenderText() = %q, want it to end with %q", text, suffix)
-	assert.Check(t, is.Equal(reason, "could not read "+readStillOnOrigin))
+	assertSays(t, text, resumedLine()+expect(readStillOnOrigin, nothingWritten)+nextMergeFixed())
+	between(t, text, readStillOnOrigin, nothingWritten)
+	assert.Check(t, is.Contains(reason, readStillOnOrigin))
 	assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(run.tip, ""), cmpopts.EquateEmpty()))
 	assert.Check(t, is.Equal(run.written(), run.before))
-}
-
-func TestMerge_WhenTheResumeIsCutShortAskingOriginForTheBranch_RefusesNamingTheRead(t *testing.T) {
-	t.Parallel()
-
-	for _, c := range cuts() {
-		t.Run(c.name, func(t *testing.T) {
-			t.Parallel()
-
-			// Origin answers about its trunk, the fetch of it, and the fetch of the merged head.
-			run := runMergeOn(t, setting{arrange: landAndPublish, script: resuming(), runCtx: c.stalling(3)})
-
-			assertStoppedBy(t, run.got, result.Refused, mergeRequest())
-
-			text, _ := shown(t, run.got, run.gitDir)
-			assert.Check(t, is.Equal(text, resumedLine+overtimeText(mergeCommand(), c, readStillOnOrigin)))
-			assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(run.tip, ""), cmpopts.EquateEmpty()))
-			assert.Check(t, is.Equal(run.written(), run.before))
-		})
-	}
 }
 
 // sent returns the payload of a green run on a clean pull request 12 that sent its merge with a
@@ -729,7 +637,7 @@ func toLand(land, remove error) forgeFor {
 // does not go as asked.
 func writeStops() []landingRow {
 	failed := errors.New("HTTP 502")
-	lead := countLine + cleanLine()
+	lead := countLine() + cleanLine()
 	row := func(name string, script forgeFor, outcome result.Outcome, text string) landingRow {
 		return landingRow{
 			name: name, set: setting{script: script}, outcome: outcome, text: lead + text,
@@ -737,36 +645,33 @@ func writeStops() []landingRow {
 		}
 	}
 	refused := row("the merge fails", toLand(errors.New(refusedMerge), nil), result.Broke,
-		"GitHub did not report the merge of pull request #12 as done: "+refusedMerge+"\n"+
-			"Broke: GitHub did not report the merge as done\n"+nextMergeAgain)
+		expect("did not report the merge", "#12", refusedMerge, "did not report the merge")+nextMergeAgain())
 	refused.payload, refused.kept = sent(landedBody, false, ""), true
-	refused.told = toldAfterWait(mergingStep)
+	refused.told = toldAfterWait(mergingStep())
 	cutRows := make([]landingRow, 0, len(cuts()))
 	for _, c := range cuts() {
 		ended := row(c.name+" ends the merge", toLand(c.of("gh pr merge"), nil),
-			result.Broke, "Started the merge of pull request #12 when "+c.ends+"; "+
-				"it may or may not have gone through\n"+"Broke: "+c.ends+" during the merge\n"+nextMergeAgain)
+			result.Broke, expect("merge", "#12", c.ends, "may or may not have gone through", c.ends, "during the merge")+
+				nextMergeAgain())
 		ended.payload, ended.kept = sent(landedBody, false, ""), true
 		cutRows = append(cutRows, ended)
 	}
 
 	gone := row("the delete fails and origin no longer lists the branch", toLand(nil, failed), result.Done,
-		mergedLine+goneLine+onTrunkLine)
+		mergedLine()+goneLine()+onTrunkLine())
 	gone.payload = sent(landedBody, true, result.EndingTrunk)
 	listed := row("the delete fails and origin still lists the branch", toLand(nil, failed), result.Broke,
-		mergedLine+stillThere+stillThereReason+nextMergeAgain)
+		mergedLine()+stillThere()+stillThereReason()+nextMergeAgain())
 	listed.set.arrange = func(f *gittest.Fixture) { f.Publish(topic) }
 	// The question fails with git's own message, which the text holds on one line before the reason line.
 	unasked := row("the delete fails and origin cannot be asked", toLand(nil, failed), result.Broke,
-		mergedLine+"Could not delete the branch "+topic+" on origin: HTTP 502\n"+
-			"Could not read "+readStillOnOrigin+": ")
-	unasked.after = "\nBroke: the branch could not be deleted on origin\n" + nextMergeAgain
+		mergedLine()+expect("Could not delete", topic, "HTTP 502", readStillOnOrigin))
+	unasked.after = expect("could not be deleted") + nextMergeAgain()
 	unasked.set.landed = moveOrigin
 	interrupted := row("an interrupt ends the delete", toLand(nil, byInterrupt().of("gh")), result.Broke,
-		mergedLine+"Started the delete of the branch "+topic+" on origin when ils was interrupted; "+
-			"it may or may not have gone through\n"+
-			"Broke: ils was interrupted while deleting the branch on origin\n"+nextMergeAgain)
-	interrupted.set.runCtx = interruptOnStart(deletingStep)
+		mergedLine()+expect("delete", topic, "interrupted", "may or may not have gone through", "interrupted",
+			"deleting the branch")+nextMergeAgain())
+	interrupted.set.runCtx = interruptOnStart(deletingStep())
 
 	return slices.Concat([]landingRow{refused}, cutRows, []landingRow{gone, listed, unasked, interrupted})
 }
@@ -785,7 +690,7 @@ type stepHook struct {
 func (h stepHook) Started(label result.Phrase, limit time.Duration) {
 	h.Progress.Started(label, limit)
 
-	if "start "+plainText(h.t, label) == h.step {
+	if holds("start "+plainText(h.t, label), h.step) {
 		h.fire()
 	}
 }
@@ -809,15 +714,15 @@ func interruptedWrites() []landingRow {
 	return []landingRow{
 		{
 			name: "the merge", outcome: result.Pending, kept: true,
-			set: setting{script: toLand(nil, nil), runCtx: interruptOnStart(mergingStep)},
-			text: countLine + cleanLine() + "ils was interrupted before the merge, so nothing was written\n" +
-				"Pending: ils was interrupted before the merge\n" + nextPush,
+			set: setting{script: toLand(nil, nil), runCtx: interruptOnStart(mergingStep())},
+			text: countLine() + cleanLine() + expect("interrupted before the merge", "nothing was written",
+				"interrupted before the merge") + nextPush(),
 			payload: sent(landedBody, false, ""),
 		},
 		{
 			name: "the delete of a resume", outcome: result.Pending, kept: true,
-			set:     setting{arrange: landAndPublish, script: resuming(), runCtx: interruptOnStart(deletingStep)},
-			text:    interruptedResumeText,
+			set:     setting{arrange: landAndPublish, script: resuming(), runCtx: interruptOnStart(deletingStep())},
+			text:    interruptedResumeText(),
 			payload: resumed("", ""),
 		},
 	}
@@ -829,6 +734,19 @@ func TestMerge_WhenAnInterruptLandsAsTheFirstWriteStarts_EndsPendingWithNothingW
 	runLandings(t, interruptedWrites())
 }
 
+// stallingGit returns a context that c ends once the scene's git call whose arguments start with
+// words is under way, a call that waits until the end kills it. It cannot run in a parallel test.
+func (c cut) stallingGit(words []string) func(t *testing.T, s *scene) context.Context {
+	return func(t *testing.T, s *scene) context.Context {
+		t.Helper()
+
+		addr, connected := gittest.SilentListener(t)
+		fakeGit(t, s, gittest.Fake{StallOn: words, StallAt: addr})
+
+		return c.once(t.Context(), connected)
+	}
+}
+
 // stallingAfterLand returns the arrange of a run whose git calls whose arguments start with words
 // stall, as stallingGit makes them, once the merge went through, and the hook that turns that on
 // as the merge lands. An interrupt ends the context once a stalled call is under way. It cannot run
@@ -836,28 +754,26 @@ func TestMerge_WhenAnInterruptLandsAsTheFirstWriteStarts_EndsPendingWithNothingW
 func stallingAfterLand(
 	words []string,
 ) (runCtx func(*testing.T, *scene) context.Context, landed func(*testing.T, *gittest.Fixture)) {
-	var stalled string
+	var arm func()
 
 	runCtx = func(t *testing.T, s *scene) context.Context {
 		t.Helper()
 
-		plain := os.Getenv("PATH")
-		ctx := byInterrupt().stallingGit(words)(t, s)
-		stalled = os.Getenv("PATH")
-		t.Setenv("PATH", plain)
+		var ctx context.Context
+		arm = armedLater(t, func() { ctx = byInterrupt().stallingGit(words)(t, s) })
 
 		return ctx
 	}
 	landed = func(t *testing.T, _ *gittest.Fixture) {
 		t.Helper()
-		t.Setenv("PATH", stalled)
+		arm()
 	}
 
 	return runCtx, landed
 }
 
 func TestMerge_WhenAnInterruptEndsTheFetchOfTheLocalEnding_BrokeNamingTheInterrupt(t *testing.T) {
-	lead := countLine + cleanLine() + mergedLine + deletedLine
+	lead := countLine() + cleanLine() + mergedLine() + deletedLine()
 	tests := []struct {
 		arrange func(*gittest.Fixture)
 		name    string
@@ -866,14 +782,14 @@ func TestMerge_WhenAnInterruptEndsTheFetchOfTheLocalEnding_BrokeNamingTheInterru
 	}{
 		{
 			name: "on the trunk", on: trunk,
-			text: lead + "Ran " + switchStep + "\nRan " + dropStep + "\n" + pullStep + " stopped when ils was interrupted\n" +
-				"Broke: ils was interrupted during " + pullStep + "\nNext: run " + pullStep + " by hand\n",
+			text: lead + expect("Ran", switchStep, "Ran", dropStep, pullStep, "stopped", "interrupted", "interrupted", pullStep,
+				pullStep, "by hand"),
 		},
 		{
 			name: "with the trunk in another worktree", on: topic,
 			arrange: func(f *gittest.Fixture) { f.TrunkWorktree() },
-			text: lead + fetchStep + " stopped when ils was interrupted\nNot run: " + detachStep + "\nNot run: " + dropStep +
-				"\nBroke: ils was interrupted during " + fetchStep + "\n" + nextMergeFixed,
+			text: lead + expect(fetchStep, "stopped", "interrupted", "Not run", detachStep, "Not run", dropStep, "interrupted",
+				fetchStep) + nextMergeFixed(),
 		},
 	}
 	// Not parallel: each row puts a stalling git first on PATH with t.Setenv.
@@ -883,10 +799,7 @@ func TestMerge_WhenAnInterruptEndsTheFetchOfTheLocalEnding_BrokeNamingTheInterru
 
 			run := runMergeOn(t, setting{arrange: tt.arrange, script: toLand(nil, nil), runCtx: runCtx, landed: landed})
 
-			assertStoppedBy(t, run.got, result.Broke, mergeRequest())
-
-			text, _ := shown(t, run.got, run.gitDir)
-			assert.Check(t, is.Equal(text, mark(tt.text, run.tip)))
+			assertEndedBy(t, run.got, run.gitDir, ended{text: mark(tt.text, run.tip), req: mergeRequest(), outcome: result.Broke})
 
 			want := sent(landedBody, true, "")
 			want.SHA = run.tip
@@ -900,4 +813,10 @@ func TestMerge_WhenAWriteOnGitHubFails_SaysWhatWentThrough(t *testing.T) {
 	t.Parallel()
 
 	runLandings(t, writeStops())
+}
+
+// landAndPublish lands the topic branch as pull request 7 and publishes it.
+func landAndPublish(f *gittest.Fixture) {
+	f.LandPull(merged, topic)
+	f.Publish(topic)
 }

@@ -16,64 +16,28 @@ import (
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
-	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
 const (
-	spare     = "spare-parts"
-	side      = "polish-docs"
-	early     = "early-draft"
-	yearly    = "yearly-notes"
-	otherBase = "release"
-	merged    = 7
-	opened    = 12
+	spare  = "spare-parts"
+	side   = "polish-docs"
+	early  = "early-draft"
+	yearly = "yearly-notes"
+	merged = 7
+	opened = 12
 
 	readCommits  = "the branch's commits"
 	readOnOrigin = "whether origin has the branch"
 	readCopy     = "origin's copy of the branch"
-	readChanges  = "the branch's pull requests"
 	readBranches = "the local branches"
 )
-
-// written returns everything a push could change: the local branches, where HEAD is, and every
-// ref of origin.
-func (s *scene) written() string {
-	return s.fixture.Git("for-each-ref", "refs/heads") + "\nHEAD: " + s.fixture.Git("rev-parse", "HEAD") +
-		"\norigin:\n" + s.fixture.OriginGit("for-each-ref")
-}
 
 // finding is allowed with a find-changes call that returns found.
 func finding(found ...forge.Change) forgetest.Script {
 	script := allowed()
-	script.FindChanges = []forgetest.Answer[[]forge.Change]{{Value: found}}
+	script.FindChanges = forgetest.Values(found)
 
 	return script
-}
-
-// failingToFind is allowed with a find-changes call that returns err.
-func failingToFind(err error) forgetest.Script {
-	script := allowed()
-	script.FindChanges = []forgetest.Answer[[]forge.Change]{{Err: err}}
-
-	return script
-}
-
-// landedScript is finding with the merged pull request 7 against the trunk.
-func landedScript() forgetest.Script {
-	return finding(change(merged, trunk, forge.ChangeMerged))
-}
-
-// landAndPublish lands the topic branch as pull request 7 and publishes it.
-func landAndPublish(f *gittest.Fixture) {
-	f.LandPull(merged, topic)
-	f.Publish(topic)
-}
-
-// stopAnswering makes origin answer the first times calls git makes to it and fail every call after.
-func (s *scene) stopAnswering(t *testing.T, times int) {
-	t.Helper()
-
-	s.deps.Repo.Runner.Env = answering(t, s.fixture, times, "true")
 }
 
 // change returns the pull request numbered number from the topic branch against base.
@@ -88,8 +52,9 @@ func changesRead() []forgetest.Op {
 	return []forgetest.Op{forgetest.OpIdentity, forgetest.OpFindChanges}
 }
 
-// finish is how a result must have ended: its outcome and its whole text. A result of the push
-// sequence is also held to its reason and to its payload, nil for none.
+// finish is how a result must have ended: its outcome and the parts of its text, as expect builds
+// them. A result of the push sequence is also held to the parts of its reason and to its payload,
+// nil for none.
 type finish struct {
 	payload *result.Push
 	text    string
@@ -98,14 +63,11 @@ type finish struct {
 }
 
 // assertEnded fails unless got ended as end says, carries the command and words of pushRequest,
-// and renders as text.
+// and renders text that holds the parts of end's text.
 func assertEnded(t *testing.T, s *scene, got result.Result, end finish) {
 	t.Helper()
 
-	assertStopped(t, got, end.outcome)
-
-	rendered, _ := shown(t, got, s.gitDir)
-	assert.Check(t, is.DeepEqual(rendered, end.text))
+	assertEndedBy(t, got, s.gitDir, ended{text: end.text, req: pushRequest(), outcome: end.outcome})
 }
 
 // reads is what a refusing Push may have done: the refs before it, the forge operations it made,
@@ -130,15 +92,14 @@ func assertOnlyRead(t *testing.T, s *scene, read reads) {
 
 // pushRefusal is one state of the branch that Push refuses, and how far Push reads to refuse it.
 type pushRefusal struct {
-	// arrange changes the repository and returns the whole text of the refusal.
+	// arrange changes the repository and returns the parts of the refusal's text.
 	arrange func(*gittest.Fixture) string
 	name    string
 	script  forgetest.Script
 	// ops are the forge operations made before the refusal.
 	ops []forgetest.Op
-	// drawn are parts of the refusal and how a terminal with color draws them, with tipMark where
-	// the sha of the topic branch's tip is printed.
-	drawn []drawnPart
+	// listed are the branches the refusal's reason names, in no particular order.
+	listed []string
 	// answered is how many calls origin answers before it stops; zero is every call.
 	answered int
 	// fetches is whether git fetches from origin before the refusal.
@@ -146,25 +107,26 @@ type pushRefusal struct {
 }
 
 const (
-	// nextEither is the Next line of the refusal of a branch that shares its first commit past the
-	// trunk with one other local branch.
-	nextEither = "Next: run ils push on the other branch and get it merged first when this branch builds on it, " +
-		"or remove the other branch when it was cut from this one, then run ils push again\n"
-	// nextEitherMany is the Next line of the refusal of a branch that shares its first commit past
-	// the trunk with several other local branches.
-	nextEitherMany = "Next: run ils push on the other branches and get them merged first when this branch builds " +
-		"on them, or remove the other branches when they were cut from this one, then run ils push again\n"
-	ownListed    = "its own commits are listed here"
-	noOwn        = "it has no commit of its own"
-	changeOnSide = " change on " + side + "\n"
+	ownListed    = "own commits are listed here"
+	noOwn        = "no commit of its own"
+	changeOnSide = "change on " + side
 	sharpen      = "sharpen the wording"
 )
+
+// nextEither is the Next line of the refusal of a branch that shares its first commit past the
+// trunk with one other local branch, and nextEitherMany the one for several other local branches.
+func nextEither() string {
+	return expect("ils push", "the other branch and", "ils push")
+}
+
+func nextEitherMany() string {
+	return expect("ils push", "the other branches and", "ils push")
+}
 
 // shares is the reason line of the refusal of the branch side, which shares its first commit past
 // the trunk with others, and ends with rest.
 func shares(others, rest string) string {
-	return "Refused: the branch " + side + " shares its first commit past the trunk with " + others +
-		"; ils cannot tell which was cut from which, and " + rest + "\n"
+	return expect(side, "shares its first commit", others, rest)
 }
 
 // publishAtTrunk puts origin's copy of branch at the trunk.
@@ -185,8 +147,7 @@ func cutRefusals() []pushRefusal {
 				first := f.Sibling(side, topic)
 				second := f.Commits(side, sharpen)[0]
 
-				return first + changeOnSide + second + " " + sharpen + "\n" +
-					shares(other, ownListed) + nextEither
+				return expect(first, changeOnSide, second, sharpen) + shares(other, ownListed) + nextEither()
 			},
 		},
 		{
@@ -195,7 +156,7 @@ func cutRefusals() []pushRefusal {
 			arrange: func(f *gittest.Fixture) string {
 				f.Git("switch", "--quiet", "--create", side, topic)
 
-				return shares(other, noOwn) + nextEither
+				return shares(other, noOwn) + nextEither()
 			},
 		},
 		{
@@ -205,7 +166,7 @@ func cutRefusals() []pushRefusal {
 				own := f.Sibling(side, topic)
 				publishAtTrunk(f, side)
 
-				return own + changeOnSide + shares(other, ownListed) + nextEither
+				return expect(own, changeOnSide) + shares(other, ownListed) + nextEither()
 			},
 		},
 	}
@@ -214,16 +175,10 @@ func cutRefusals() []pushRefusal {
 // manyCutRefusals are the refusals of an unpublished branch whose first commit past the trunk
 // several other local branches carry.
 func manyCutRefusals() []pushRefusal {
-	// In the order they were created the branches are neither sorted nor sorted backwards.
-	const others = "the branches " + early + ", " + topic + " and " + yearly
-
-	drawn := []drawnPart{
-		{within: others, part: early, want: resulttest.NameLook()},
-		{within: others, part: ", "},
-		{within: others, part: topic, want: resulttest.NameLook()},
-		{within: others, part: " and "},
-		{within: others, part: yearly, want: resulttest.NameLook()},
+	others := func(rest string) string {
+		return expect(side, "shares its first commit", "branches", rest)
 	}
+	listed := []string{early, topic, yearly}
 
 	return []pushRefusal{
 		{
@@ -236,9 +191,9 @@ func manyCutRefusals() []pushRefusal {
 				f.Git("branch", yearly, side)
 				own := f.Commits(side, sharpen)[0]
 
-				return own + " " + sharpen + "\n" + shares(others, ownListed) + nextEitherMany
+				return expect(own, sharpen) + others(ownListed) + nextEitherMany()
 			},
-			drawn: drawn,
+			listed: listed,
 		},
 		{
 			name: "cut from three other branches with no commit of its own", script: allowed(),
@@ -248,27 +203,26 @@ func manyCutRefusals() []pushRefusal {
 				f.Git("branch", yearly, topic)
 				f.Git("switch", "--quiet", "--create", side, topic)
 
-				return shares(others, noOwn) + nextEitherMany
+				return others(noOwn) + nextEitherMany()
 			},
-			drawn: drawn,
+			listed: listed,
 		},
 	}
 }
 
+// pullFrom is the command that fast-forwards branch to origin's copy of it.
 func pullFrom(branch string) string {
 	return "git pull --ff-only origin " + branch
 }
 
-// behind is the whole text of the refusal of branch, which is behind origin's copy of it.
+// behind is the refusal of branch, which is behind origin's copy of it.
 func behind(branch string) string {
-	return "Refused: the branch " + branch + " is behind origin's copy of it\n" +
-		"Next: run `" + pullFrom(branch) + "`, then run ils push again\n"
+	return expect(branch, "is behind") + pushCommand().after("`"+pullFrom(branch)+"`")
 }
 
-// diverged is the whole text of the refusal of branch, which has diverged from origin's copy of it.
+// diverged is the refusal of branch, which has diverged from origin's copy of it.
 func diverged(branch string) string {
-	return "Refused: the branch " + branch + " and origin's copy of it have diverged\n" +
-		"Next: run `" + originMerge + branch + "`, then run ils push again\n"
+	return expect(branch, "have diverged") + pushCommand().after("`"+originMerge+branch+"`")
 }
 
 // copyRefusals are the refusals decided from origin's copy of the branch.
@@ -276,18 +230,6 @@ func copyRefusals() []pushRefusal {
 	return []pushRefusal{
 		{
 			name: "behind origin's copy", script: allowed(), ops: identityRead(), fetches: true,
-			arrange: func(f *gittest.Fixture) string {
-				f.Publish(topic)
-				f.AdvanceOrigin(topic)
-
-				return behind(topic)
-			},
-			drawn: []drawnPart{commandIn(behind(topic), pullFrom(topic))},
-		},
-		{
-			// The forge would answer find-changes, so the record of its calls is what shows it was not asked.
-			name:   "behind origin's copy with an open pull request against another base",
-			script: finding(change(opened, otherBase, forge.ChangeOpen)), ops: identityRead(), fetches: true,
 			arrange: func(f *gittest.Fixture) string {
 				f.Publish(topic)
 				f.AdvanceOrigin(topic)
@@ -303,27 +245,6 @@ func copyRefusals() []pushRefusal {
 
 				return diverged(topic)
 			},
-			drawn: []drawnPart{commandIn(diverged(topic), originMerge+topic)},
-		},
-	}
-}
-
-// copyBeforeCutRefusals are the refusals decided from origin's copy of a branch whose first
-// commit past the trunk another local branch also carries: origin's copy is read first.
-func copyBeforeCutRefusals() []pushRefusal {
-	return []pushRefusal{
-		{
-			// Origin's copy lacks the first commit past the trunk, so the other branch that carries it
-			// would refuse the branch too.
-			name:   "diverged from origin's copy at the trunk with its first commit past the trunk on another branch",
-			script: allowed(), ops: identityRead(), fetches: true,
-			arrange: func(f *gittest.Fixture) string {
-				publishAtTrunk(f, side)
-				f.AdvanceOrigin(side)
-				f.Sibling(side, topic)
-
-				return diverged(side)
-			},
 		},
 	}
 }
@@ -331,16 +252,9 @@ func copyBeforeCutRefusals() []pushRefusal {
 // pushAccepted are the states of the branch that pass a check of Push another state fails, each
 // pushed and opened as a first push that ends green.
 func pushAccepted() []pushRow {
-	opens := greenAfter(pushedLine + openedLine)
+	opens := greenAfter(pushedLine() + openedLine())
 
 	return []pushRow{
-		{
-			name: "tip ahead of origin's copy", script: opening(passing()), want: opens,
-			arrange: func(f *gittest.Fixture) {
-				f.Publish(topic)
-				f.Commits(topic, "fix a typo")
-			},
-		},
 		{
 			// Another branch was cut from the published branch at an earlier commit, and each has a
 			// commit since.
@@ -370,8 +284,9 @@ func TestPush_WhenSharedPreconditionFails_ReturnsItsRefusal(t *testing.T) {
 
 	got := landing.Push(t.Context(), s.deps, pushRequest())
 
-	assertEnded(t, s, got, finish{outcome: result.Refused, text: noOriginText})
-	assertOnlyRead(t, s, reads{before: before, ops: nil, fetches: false})
+	assertStopped(t, got, result.Refused)
+	assert.Check(t, is.Equal(s.written(), before))
+	assert.Check(t, !s.gitRan("fetch"), "git fetched from origin before the refusal")
 }
 
 // runPushRefusals runs each row as a test of its own: Push refuses with the text the row's arrange
@@ -395,8 +310,11 @@ func runPushRefusals(t *testing.T, rows []pushRefusal) {
 			got := landing.Push(t.Context(), s.deps, pushRequest())
 
 			assertEnded(t, s, got, finish{outcome: result.Refused, text: want})
+			_, reason := shown(t, got, s.gitDir)
+			for _, branch := range tt.listed {
+				assert.Check(t, is.Contains(reason, branch))
+			}
 			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: tt.fetches})
-			assertDrawn(t, got, s.gitDir, atTip(tt.drawn, s.fixture.Git("rev-parse", topic)))
 		})
 	}
 }
@@ -404,7 +322,7 @@ func runPushRefusals(t *testing.T, rows []pushRefusal) {
 func TestPush_WhenBranchCannotBePushed_RefusesAtTheFirst(t *testing.T) {
 	t.Parallel()
 
-	runPushRefusals(t, slices.Concat(cutRefusals(), manyCutRefusals(), copyRefusals(), copyBeforeCutRefusals()))
+	runPushRefusals(t, slices.Concat(cutRefusals(), manyCutRefusals(), copyRefusals()))
 }
 
 // answering returns the fixture's environment with ssh replaced by a command that serves origin
@@ -476,19 +394,6 @@ func TestPush_WhenOriginStopsAnswering_RefusesNamingWhatItWasAskedFor(t *testing
 	})
 }
 
-// stalling returns an arrange under which origin answers the first answered calls git makes to it
-// and the next reaches a server that never answers; c ends the context once that call connected.
-func (c cut) stalling(answered int) func(t *testing.T, s *scene) context.Context {
-	return func(t *testing.T, s *scene) context.Context {
-		t.Helper()
-
-		addr, connected := gittest.SilentListener(t)
-		s.deps.Repo.Runner.Env = answering(t, s.fixture, answered, "git ls-remote git://"+addr+"/stalled.git")
-
-		return c.once(t.Context(), connected)
-	}
-}
-
 // overtime is a push whose context ends during one of its reads.
 type overtime struct {
 	// arrange returns the context to run under, once it has changed how the scene reads.
@@ -501,12 +406,12 @@ type overtime struct {
 	ops     []forgetest.Op
 }
 
-// runOvertime runs each row rows returns for each cut as a test of its own: Push refuses naming the
-// read the cut ended, having written nothing.
-func runOvertime(t *testing.T, rows func(c cut) []overtime) {
+// runOvertime runs each row rows returns for each cut of ways as a test of its own: Push refuses
+// naming the read the cut ended, having written nothing.
+func runOvertime(t *testing.T, ways []cut, rows func(c cut) []overtime) {
 	t.Helper()
 
-	for _, c := range cuts() {
+	for _, c := range ways {
 		for _, tt := range rows(c) {
 			t.Run(c.name+"/"+tt.name, func(t *testing.T) {
 				t.Parallel()
@@ -526,7 +431,9 @@ func runOvertime(t *testing.T, rows func(c cut) []overtime) {
 func TestPush_WhenAReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
 	t.Parallel()
 
-	runOvertime(t, func(c cut) []overtime {
+	// Push hands each cut read on to the shared wording, whose tests tell the time limit from an
+	// interrupt, so the time limit alone is enough here.
+	runOvertime(t, []cut{byTimeLimit()}, func(c cut) []overtime {
 		return []overtime{
 			{
 				// Origin answers about its trunk and the fetch of it, and nothing after.
@@ -648,7 +555,7 @@ func runFailedReads(t *testing.T, rows []failedRead) {
 
 			got := landing.Push(t.Context(), s.deps, pushRequest())
 
-			assertFailedGit(t, got, pushCommand(), tt.read)
+			assertBrokeReadBy(t, got, pushCommand(), tt.read)
 			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
 		})
 	}

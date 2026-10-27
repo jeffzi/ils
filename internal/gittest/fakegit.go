@@ -38,6 +38,10 @@ const (
 	stallOnEnv = "ILS_GITTEST_STALL_ON"
 	// stallAtEnv holds the address a stalling call connects to.
 	stallAtEnv = "ILS_GITTEST_STALL_AT"
+	// answerOnEnv holds the words an answered call starts with, separated by wordsSep.
+	answerOnEnv = "ILS_GITTEST_ANSWER_ON"
+	// answerEnv holds what an answered call prints.
+	answerEnv = "ILS_GITTEST_ANSWER"
 	// wordsSep separates the words a variable holds; no git argument holds a line break.
 	wordsSep = "\n"
 )
@@ -48,6 +52,8 @@ type Fake struct {
 	Version string
 	// StallAt is the address a call StallOn names connects to.
 	StallAt string
+	// Answer is what a call AnswerOn names prints, followed by a line break.
+	Answer string
 	// FailOn, when not empty, makes a call whose arguments start with these words exit with
 	// FailedCode and print FailedSaid to stderr.
 	FailOn []string
@@ -55,6 +61,9 @@ type Fake struct {
 	// address StallAt and wait there until it is killed. A test that hands in the address of a
 	// SilentListener learns when the call is under way, and can end its context then.
 	StallOn []string
+	// AnswerOn, when not empty, makes a call whose arguments start with these words print Answer
+	// to stdout and exit zero, an answer the real git might never give.
+	AnswerOn []string
 }
 
 // Main makes the test binary act as git when FakeGit arranged for it, and reports whether it did.
@@ -106,6 +115,11 @@ func FakeGit(tb testing.TB, fake Fake) []string {
 	if len(fake.StallOn) > 0 {
 		set(stallOnEnv, strings.Join(fake.StallOn, wordsSep))
 		set(stallAtEnv, fake.StallAt)
+	}
+
+	if len(fake.AnswerOn) > 0 {
+		set(answerOnEnv, strings.Join(fake.AnswerOn, wordsSep))
+		set(answerEnv, fake.Answer)
 	}
 
 	LinkAs(tb, "git")
@@ -179,7 +193,15 @@ func serveGit(ctx context.Context, realGit string, args []string) int {
 	}
 
 	if startsWith(args, stallOnEnv) {
-		return stall(ctx, os.Getenv(stallAtEnv))
+		return Hold(ctx, os.Getenv(stallAtEnv))
+	}
+
+	if startsWith(args, answerOnEnv) {
+		if _, err := fmt.Fprintln(os.Stdout, os.Getenv(answerEnv)); err != nil {
+			return broken(fmt.Errorf("print the faked answer: %w", err))
+		}
+
+		return 0
 	}
 
 	return runRealGit(ctx, realGit, args)
@@ -198,22 +220,23 @@ func startsWith(args []string, key string) bool {
 	return len(args) >= len(prefix) && slices.Equal(args[:len(prefix)], prefix)
 }
 
-// stall connects to addr and waits for the server to close the connection, which a SilentListener
-// does only once the test ends: the caller kills the fake git before then. It returns BrokenCode,
-// since a stalled call that ends on its own did not do what the test asked of it.
-func stall(ctx context.Context, addr string) int {
+// Hold connects to addr and waits for the server to close the connection, which a SilentListener
+// does only once the test ends, so a process that calls it stays until it is killed or the test
+// ends. It returns BrokenCode, since a held call that ends on its own did not do what the test
+// asked of it, after printing why to stderr.
+func Hold(ctx context.Context, addr string) int {
 	var dialer net.Dialer
 
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return broken(fmt.Errorf("connect to %s to stall: %w", addr, err))
+		return broken(fmt.Errorf("connect to %s to hold: %w", addr, err))
 	}
 
 	// The server never writes, so the copy returns only once it closes the connection.
 	_, copyErr := io.Copy(io.Discard, conn)
 	closeErr := conn.Close()
 
-	return broken(errors.Join(fmt.Errorf("the server at %s closed the stalled call", addr), copyErr, closeErr))
+	return broken(errors.Join(fmt.Errorf("the server at %s closed the held call", addr), copyErr, closeErr))
 }
 
 // runRealGit runs the real git with args, the environment, and the standard streams, and returns

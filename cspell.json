@@ -19,6 +19,7 @@
     "dprint",
     "errcheck",
     "errorlint",
+    "failtest",
     "forgetest",
     "ghtest",
     "gitdir",

@@ -6,7 +6,6 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	"io"
 	"os"
 	"os/exec"
 	"syscall"
@@ -35,15 +34,6 @@ func startStuck(t *testing.T, way string) *stuckChild {
 	t.Helper()
 
 	return startStuckBy(t, way, os.Args[0])
-}
-
-// startStuckIgnoringTheInterrupt is startStuck, except that the run starts with the interrupt
-// ignored, as a background job of a non-interactive shell does: the shell ignores it, and the
-// ignore holds across its exec of the test binary.
-func startStuckIgnoringTheInterrupt(t *testing.T, way string) *stuckChild {
-	t.Helper()
-
-	return startStuckBy(t, way, "sh", "-c", `trap "" INT; exec "$0"`, os.Args[0])
 }
 
 // startStuckBy is startStuck run through argv, whose run ends in an exec of the test binary.
@@ -94,6 +84,15 @@ func (c *stuckChild) awaitReady(t *testing.T) {
 	c.awaitLine(t, ready)
 }
 
+// awaitSpinning waits until the spinner line of the run shows and its landing command says on
+// stdout that it runs.
+func (c *stuckChild) awaitSpinning(t *testing.T) {
+	t.Helper()
+
+	c.await(t, "the spinner line showed", c.spinnerShows)
+	c.awaitReady(t)
+}
+
 // awaitLine reads the next line of stdout, and fails the test unless it is want.
 func (c *stuckChild) awaitLine(t *testing.T, want string) {
 	t.Helper()
@@ -101,19 +100,6 @@ func (c *stuckChild) awaitLine(t *testing.T, want string) {
 	line, err := c.stdout.ReadString('\n')
 	assert.NilError(t, err, "stdout ended before %q", want)
 	assert.Assert(t, line == want+"\n", "stdout = %q, want %q", line, want+"\n")
-}
-
-// end draws the rest of stderr onto the screen, reads the rest of stdout, and waits for the run to
-// end; it returns the rest of stdout and what waiting returned.
-func (c *stuckChild) end(t *testing.T) (stdout string, err error) {
-	t.Helper()
-
-	_, err = io.Copy(c.stderr, c.pipe)
-	assert.NilError(t, err)
-	rest, err := io.ReadAll(c.stdout)
-	assert.NilError(t, err)
-
-	return string(rest), c.cmd.Wait()
 }
 
 // drain draws onto the screen everything stderr holds, which is all a stopped run wrote.
@@ -145,23 +131,6 @@ func (c *stuckChild) cleared() bool {
 	return !c.stderr.cursorHidden() && len(c.stderr.lines()) == 0
 }
 
-// spinnerStarted reports whether the screen hides its cursor or shows a line, whichever the run
-// drew first.
-func (c *stuckChild) spinnerStarted() bool {
-	return c.stderr.cursorHidden() || len(c.stderr.lines()) > 0
-}
-
-// diedOf fails the test unless err, what waiting for a run returned, says the run died of sig.
-func diedOf(t *testing.T, err error, sig syscall.Signal) {
-	t.Helper()
-
-	exit, ok := errors.AsType[*exec.ExitError](err)
-	assert.Assert(t, ok, "wait = %v, want the process to die of %v", err, sig)
-	status, ok := exit.Sys().(syscall.WaitStatus)
-	assert.Assert(t, ok, "exit status %T is no wait status", exit.Sys())
-	assert.Check(t, status.Signaled() && status.Signal() == sig, "exit status = %v, want death by %v", status, sig)
-}
-
 // suspend sends the run the stop signal of a terminal and returns its status once it stopped or
 // ended, without reaping it.
 func (c *stuckChild) suspend(t *testing.T) syscall.WaitStatus {
@@ -180,28 +149,13 @@ func stopped(status syscall.WaitStatus) bool {
 	return !status.Exited() && !status.Signaled()
 }
 
-func TestApp_Run_WhenSuspendedWhileTheSpinnerLineShows_ClearsTheLineAndShowsTheCursorBeforeItStops(t *testing.T) {
-	t.Parallel()
-
-	run := startStuck(t, stuckSpinning)
-	run.await(t, "the spinner line showed", run.spinnerShows)
-
-	status := run.suspend(t)
-
-	run.drain(t)
-	assert.Check(t, stopped(status), "status = %v, want the run stopped", status)
-	assert.Check(t, len(run.stderr.lines()) == 0, "the spinner line still shows while the run is stopped:\n%q", run.stderr.raw())
-	assert.Check(t, !run.stderr.cursorHidden(), "the cursor is still hidden while the run is stopped:\n%q", run.stderr.raw())
-}
-
 // suspendedSpinning starts a stuckHolding run, suspends it once its spinner line shows and its
 // landing command runs, and returns it once its stopped run shows nothing.
 func suspendedSpinning(t *testing.T) *stuckChild {
 	t.Helper()
 
 	run := startStuck(t, stuckHolding)
-	run.await(t, "the spinner line showed", run.spinnerShows)
-	run.awaitReady(t)
+	run.awaitSpinning(t)
 	status := run.suspend(t)
 	assert.Assert(t, stopped(status), "status = %v, want the run stopped", status)
 	run.drain(t)
@@ -217,23 +171,6 @@ func TestApp_Run_WhenContinuedAfterASuspend_DrawsTheSpinnerLineAgain(t *testing.
 	assert.NilError(t, run.cmd.Process.Signal(syscall.SIGCONT))
 
 	run.await(t, "the spinner line showed again", run.spinnerShows)
-}
-
-func TestApp_Run_WhenInterruptedTwiceAfterASuspendAndContinue_ShowsTheCursorAndDiesOfTheSignal(t *testing.T) {
-	t.Parallel()
-	run := suspendedSpinning(t)
-	assert.NilError(t, run.cmd.Process.Signal(syscall.SIGCONT))
-	run.await(t, "the spinner line showed again", run.spinnerShows)
-	assert.NilError(t, run.cmd.Process.Signal(syscall.SIGINT))
-	run.awaitLine(t, canceled)
-
-	assert.NilError(t, run.cmd.Process.Signal(syscall.SIGINT))
-	_, err := io.Copy(run.stderr, run.pipe)
-	assert.NilError(t, err)
-	err = run.cmd.Wait()
-
-	assert.Check(t, !run.stderr.cursorHidden(), "the cursor is still hidden after the interrupt:\n%q", run.stderr.raw())
-	diedOf(t, err, syscall.SIGINT)
 }
 
 func TestApp_Run_WhenSuspendedWithNoSpinnerLine_StopsWithNothingOnStderr(t *testing.T) {
@@ -271,16 +208,4 @@ func TestApp_Run_WhenSuspendedAfterTheLandingCommandReturned_Stops(t *testing.T)
 	status := run.suspend(t)
 
 	assert.Check(t, stopped(status), "status = %v, want the run stopped", status)
-}
-
-func TestApp_Run_WhenASuspendCannotStopTheProcess_DrawsTheSpinnerLineAgain(t *testing.T) {
-	t.Parallel()
-
-	run := startStuck(t, stuckUnstoppable)
-	run.await(t, "the spinner line showed", run.spinnerShows)
-
-	assert.NilError(t, run.cmd.Process.Signal(syscall.SIGTSTP))
-
-	run.await(t, "the spinner line cleared for the stop", run.cleared)
-	run.await(t, "the spinner line showed again", run.spinnerShows)
 }

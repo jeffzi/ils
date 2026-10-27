@@ -534,11 +534,7 @@ func (f *Fixture) ServedEnv(dir string) []string {
 func (f *Fixture) ServedBy(serving string) []string {
 	f.tb.Helper()
 
-	dir := f.standIn()
-	env := f.Env()
-	path, _ := git.EnvValue(env, "PATH")
-
-	return append(Without(env, "PATH"), "PATH="+firstOnPath(dir, path), "GIT_SSH_VARIANT=ssh", servingEnv+"="+serving)
+	return append(FirstOnPath(f.Env(), f.standIn()), "GIT_SSH_VARIANT=ssh", servingEnv+"="+serving)
 }
 
 // standIn writes the stand-in for ssh into a directory of its own and returns that directory.
@@ -593,6 +589,14 @@ func Without(env []string, key string) []string {
 
 		return git.SameKey(name, key)
 	})
+}
+
+// FirstOnPath returns a copy of env whose one PATH is the PATH env gives, the last one when it
+// gives several, with dir put first.
+func FirstOnPath(env []string, dir string) []string {
+	path, _ := git.EnvValue(env, "PATH")
+
+	return append(Without(env, "PATH"), "PATH="+firstOnPath(dir, path))
 }
 
 // WithoutSSH returns a copy of env, the environment of a fixture, with no ssh command and an empty

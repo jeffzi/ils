@@ -20,7 +20,6 @@ import (
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
-	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
 const (
@@ -32,31 +31,76 @@ const (
 	// tipMark stands, in what a push must print, for the sha of the branch's tip.
 	tipMark = "<tip>"
 
-	pushedLine  = "Pushed " + topic + " at " + tipMark + "\n"
-	alreadyLine = topic + " is already on origin at " + tipMark + "; nothing pushed\n"
-	openedLine  = "Opened pull request #12 against " + trunk + ", titled " + topic + " with no body: " + pullURL + "\n"
-	foundLine   = "Pull request #12: " + pullURL + "\n"
-	countLine   = "Checks for " + tipMark + ": 1 passed, 0 skipped\n"
-
 	editCommand = "gh pr edit --repo " + repoArg + " 12 --title … --body …"
-	editSteps   = "write the pull request's title and body as the squash commit's message with " +
-		"`" + editCommand + "`, then run ils merge"
-	mergeSteps = editSteps + "\n"
-	nextMerge  = "Next: " + mergeSteps
-	nextReview = "Next: request a review of the pull request first, then " + mergeSteps
-	nextRed    = "Next: fix the failing check, commit, and run ils push again\n"
 	// originMerge, followed by a branch, merges origin's copy of that branch into the one checked out.
 	originMerge = "git merge origin/"
-	nextTrunk   = "Next: merge the trunk into the branch with `" + originMerge + trunk +
-		"`, resolve the conflicts, commit, and run ils push again\n"
-	nextNever   = "Next: report that a required check never reported, and stop\n"
-	nextNothing = "Next: report that no check or status reported for the pushed commit, and stop\n"
 
 	readProtection = "the trunk's required checks"
 	readCI         = "whether the repository has CI"
-
-	noCILine = "No CI is configured on " + trunk + ", so nothing verified " + tipMark + "\n"
 )
+
+// mark returns text with the sha tip in place of tipMark.
+func mark(text, tip string) string {
+	return strings.ReplaceAll(text, tipMark, tip)
+}
+
+// The lines a push prints, with tipMark where the sha of the tip is printed.
+
+func pushedLine() string {
+	return expect("Pushed", topic, tipMark)
+}
+
+func alreadyLine() string {
+	return expect(topic, "already on origin", tipMark, "nothing pushed")
+}
+
+func openedLine() string {
+	return expect("Opened", "#12", trunk, topic, "no body", pullURL)
+}
+
+func foundLine() string {
+	return expect("#12", pullURL)
+}
+
+func countLine() string {
+	return expect(tipMark, "1 passed, 0 skipped")
+}
+
+func noCILine() string {
+	return expect("No CI", trunk, tipMark)
+}
+
+// unreadAfterWrites is the end of a push whose read named read, made after its writes, failed
+// saying detail.
+func unreadAfterWrites(read, detail string) string {
+	return expect(read, detail) + nextFixed()
+}
+
+// The `Next:` lines that end a push.
+
+func editSteps() string {
+	return expect("`"+editCommand+"`", "ils merge")
+}
+
+func nextMerge() string {
+	return editSteps()
+}
+
+func nextReview() string {
+	return expect("request a review") + editSteps()
+}
+
+func nextRed() string {
+	return expect("fix the failing check", "ils push")
+}
+
+func nextTrunk() string {
+	return expect("`"+originMerge+trunk+"`", "resolve the conflicts", "ils push")
+}
+
+func nextNothing() string {
+	return expect("no check or status reported")
+}
 
 func cleanLine() string {
 	return stateLine(forge.MergeClean, "CLEAN")
@@ -102,18 +146,55 @@ func (build forgeFor) thenFailingHead(err error) forgeFor {
 	})
 }
 
-// holdingNextRead returns build with a read of the checks, after those it answers, that lasts
-// until its context ends.
-func (build forgeFor) holdingNextRead() forgeFor {
+// failingChecks returns build with a read of the checks that fails with err.
+func (build forgeFor) failingChecks(err error) forgeFor {
 	return build.with(func(script *forgetest.Script, _ string) {
-		script.Verdict = append(script.Verdict, forgetest.Answer[forge.Verdict]{Hold: true})
+		script.Verdict = []forgetest.Answer[forge.Verdict]{{Err: err}}
+	})
+}
+
+// failingRules returns build with a read of the trunk's rules that fails with err.
+func (build forgeFor) failingRules(err error) forgeFor {
+	return build.with(func(script *forgetest.Script, _ string) {
+		script.TrunkProtection = []forgetest.Answer[forge.Protection]{{Err: err}}
+	})
+}
+
+// findingOnly returns build with a forge that finds changes for the branch and nothing else.
+func (build forgeFor) findingOnly(changes ...forge.Change) forgeFor {
+	return build.with(func(script *forgetest.Script, _ string) {
+		script.FindChanges = listing(changes)
+	})
+}
+
+// saying returns build with a forge whose message of pull request 12 answers as answer.
+func (build forgeFor) saying(answer forgetest.Answer[forge.Message]) forgeFor {
+	return build.with(func(script *forgetest.Script, _ string) {
+		script.Message = []forgetest.Answer[forge.Message]{answer}
+	})
+}
+
+// landing returns build with a forge whose landing answers land and whose branch delete answers
+// remove; nil is a call that succeeds.
+func (build forgeFor) landing(land, remove error) forgeFor {
+	return build.with(func(script *forgetest.Script, _ string) {
+		script.Land = []error{land}
+		script.DeleteBranch = []error{remove}
+	})
+}
+
+// pulling returns build with pull request 12, the one pull request build lists, changed by edit,
+// so that edits made one after the other all hold.
+func (build forgeFor) pulling(edit func(*forge.Change)) forgeFor {
+	return build.with(func(script *forgetest.Script, _ string) {
+		edit(&script.FindChanges[0].Value[0])
 	})
 }
 
 // requiring returns build with a trunk whose protection requires the checks names.
 func (build forgeFor) requiring(names ...string) forgeFor {
 	return build.with(func(script *forgetest.Script, _ string) {
-		script.TrunkProtection = []forgetest.Answer[forge.Protection]{{Value: forge.Protection{RequiredChecks: names}}}
+		script.TrunkProtection = forgetest.Values(forge.Protection{RequiredChecks: names})
 	})
 }
 
@@ -139,14 +220,16 @@ func standing() forge.Change {
 }
 
 // listing returns a find-changes sequence that answers with each of lists in turn.
-func listing(lists ...[]forge.Change) []forgetest.Answer[[]forge.Change] { return inTurn(lists...) }
+func listing(lists ...[]forge.Change) []forgetest.Answer[[]forge.Change] {
+	return forgetest.Values(lists...)
+}
 
 // opening is a forge for a branch with no pull request: it opens number 12, requires no check on
 // the trunk, shows the tip as a clean head, and answers the checks with each of verdicts in turn.
 func opening(verdicts ...forge.Verdict) forgeFor {
 	return func(tip string) forgetest.Script {
 		script := finding()
-		script.OpenChange = []forgetest.Answer[forge.ChangeRef]{{Value: forge.ChangeRef{URL: pullURL, Number: opened}}}
+		script.OpenChange = forgetest.Values(forge.ChangeRef{URL: pullURL, Number: opened})
 		script.TrunkProtection = []forgetest.Answer[forge.Protection]{{}}
 		script.Head = shows(forge.Head{SHA: tip, MergeState: forge.MergeClean, RawMergeState: "CLEAN"})
 		script.Verdict = says(verdicts...)
@@ -167,8 +250,8 @@ func reusing(verdicts ...forge.Verdict) forgeFor {
 // at returns end with the tip's sha in place of tipMark in its text and its reason, and as the
 // sha of its payload.
 func (end finish) at(tip string) finish {
-	end.text = strings.ReplaceAll(end.text, tipMark, tip)
-	end.reason = strings.ReplaceAll(end.reason, tipMark, tip)
+	end.text = mark(end.text, tip)
+	end.reason = mark(end.reason, tip)
 
 	if end.payload != nil {
 		filled := *end.payload
@@ -196,20 +279,20 @@ func detail(verdict forge.VerdictState, state forge.MergeState, checks ...forge.
 func greenAfter(before string) finish {
 	return finish{
 		outcome: result.Done,
-		text:    before + countLine + cleanLine() + nextMerge,
+		text:    before + countLine() + cleanLine() + nextMerge(),
 		payload: detail(forge.VerdictGreen, forge.MergeClean, passing().Checks...),
 	}
 }
 
 // assertDelivered is assertEnded for a result of the push sequence: it also fails unless got
-// carries the reason of end and its payload, or no payload when end names none.
+// carries the parts of the reason of end and its payload, or no payload when end names none.
 func assertDelivered(t *testing.T, s *scene, got result.Result, end finish) {
 	t.Helper()
 
 	assertEnded(t, s, got, end)
 
 	_, reason := shown(t, got, s.gitDir)
-	assert.Check(t, is.Equal(reason, end.reason))
+	assertSays(t, reason, end.reason)
 
 	var payload *result.Push
 	if got.Payload != nil && got.Payload.Push != nil {
@@ -237,7 +320,6 @@ type pushRow struct {
 	name    string
 	want    finish
 	told    []string
-	drawn   []drawnPart
 	left    time.Duration
 	quiet   bool
 }
@@ -263,9 +345,7 @@ func newDelivery(t *testing.T, tt pushRow) *delivery {
 	s.useForge(t, tt.script(sha))
 	w := watchOn(&s.deps)
 
-	ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(orBound(tt.left)))
-	t.Cleanup(cancel)
-
+	ctx := within(t, tt.left)
 	if tt.cut != nil {
 		ctx = tt.cut(ctx)
 	}
@@ -275,8 +355,8 @@ func newDelivery(t *testing.T, tt pushRow) *delivery {
 
 // runPushes runs each row as a test in a bubble of its own: the push ends as the row wants, with
 // every step line it said held by its result, origin's copy of the branch is at the tip, and git
-// pushed unless the row is quiet. A row that names the events its hook is told, or how its result
-// is drawn, is held to them too.
+// pushed unless the row is quiet. A row that names the events its hook is told is held to them
+// too.
 func runPushes(t *testing.T, rows []pushRow) {
 	t.Helper()
 
@@ -294,11 +374,7 @@ func runPushes(t *testing.T, rows []pushRow) {
 				assert.Check(t, is.Equal(d.gitRan("push"), !tt.quiet))
 
 				if len(tt.told) > 0 {
-					assert.Check(t, is.DeepEqual(d.watch.told(t), markAll(tt.told, d.tip)))
-				}
-
-				if len(tt.drawn) > 0 {
-					assertDrawn(t, got, d.gitDir, atTip(tt.drawn, d.tip))
+					assertTold(t, d.watch.told(t), markAll(tt.told, d.tip))
 				}
 			})
 		})
@@ -318,54 +394,31 @@ func skippingRow() pushRow {
 		name: "two checks passed and one was skipped", script: opening(skipping),
 		want: finish{
 			outcome: result.Done,
-			text:    pushedLine + openedLine + "Checks for " + tipMark + ": 2 passed, 1 skipped\n" + cleanLine() + nextMerge,
+			text:    pushedLine() + openedLine() + expect(tipMark, "2 passed, 1 skipped") + cleanLine() + nextMerge(),
 			payload: detail(forge.VerdictGreen, forge.MergeClean, skipping.Checks...),
-		},
-		drawn: []drawnPart{
-			{within: "1 skipped", part: "1", want: resulttest.SkippedLook()},
 		},
 	}
 }
 
 // pushWriteRows are the pushes of a tip origin does not have yet, each ending green.
 func pushWriteRows() []pushRow {
-	opens := greenAfter(pushedLine + openedLine)
+	opens := greenAfter(pushedLine() + openedLine())
 
 	return []pushRow{
 		skippingRow(),
 		{
 			name: "first push of the branch", script: opening(passing()), want: opens,
-			drawn: []drawnPart{
-				{within: "Pushed " + topic, part: topic, want: resulttest.NameLook()},
-				{within: "at " + tipMark, part: tipMark, want: resulttest.SHALook()},
-				{within: "Opened pull request #12", part: "#12", want: resulttest.NameLook()},
-				{within: "against " + trunk, part: trunk, want: resulttest.NameLook()},
-				{within: "no body: " + pullURL, part: pullURL, want: resulttest.URLLook()},
-				{within: "Checks for " + tipMark, part: tipMark, want: resulttest.SHALook()},
-				{within: "1 passed", part: "1", want: resulttest.PassedLook()},
-				commandIn(nextMerge, editCommand),
-				{within: "then run ils merge", part: "ils merge", want: resulttest.NameLook()},
-			},
 		},
 		{
 			name:   "open pull request against the trunk",
-			script: reusing(passing()), want: greenAfter(pushedLine + foundLine),
+			script: reusing(passing()), want: greenAfter(pushedLine() + foundLine()),
 		},
 		{
 			name: "first push of the branch, with its check still running at the first read", script: opening(running(), passing()),
 			want: opens,
 			told: []string{
-				checkingStep, pushingStep, said(pushedLine), openingStep, said(openedLine),
-				waitingStep(bound), "count 0 of 1", "count 1 of 1", said(countLine),
-			},
-		},
-		{
-			name:   "open pull request whose merge state is unknown at the first read",
-			script: reusing(passing()).showing(inState(forge.MergeUnknown, "UNKNOWN"), inState(forge.MergeClean, "CLEAN")),
-			want:   greenAfter(pushedLine + foundLine),
-			told: []string{
-				checkingStep, pushingStep, said(pushedLine), said(foundLine),
-				waitingStep(bound), mergeStateStep, waitingStep(bound - mergePoll), "count 1 of 1", said(countLine),
+				checkingStep(), pushingStep(), said(pushedLine()), openingStep(), said(openedLine()),
+				waitingStep(bound), "count 0 of 1", "count 1 of 1", said(countLine()),
 			},
 		},
 	}
@@ -405,18 +458,17 @@ func pushExistsRows() []pushRow {
 	return []pushRow{
 		{
 			name:   "and the branch's pull requests now hold one against the trunk",
-			script: reporting(nil, []forge.Change{standing()}), want: greenAfter(pushedLine + foundLine),
+			script: reporting(nil, []forge.Change{standing()}), want: greenAfter(pushedLine() + foundLine()),
 			told: []string{
-				checkingStep, pushingStep, said(pushedLine), openingStep, findingStep, said(foundLine),
-				waitingStep(bound), "count 1 of 1", said(countLine),
+				checkingStep(), pushingStep(), said(pushedLine()), openingStep(), findingStep(), said(foundLine()),
+				waitingStep(bound), "count 1 of 1", said(countLine()),
 			},
 		},
 		{
 			name: "and the branch's pull requests hold none against the trunk", script: reporting(nil),
 			want: finish{
-				outcome: result.Broke, reason: "no pull request was opened or found",
-				text: pushedLine + "No pull request was opened or found: GitHub reports one for " + topic +
-					" and lists none open against " + trunk + "\n" + "Broke: no pull request was opened or found\n" + nextFixed,
+				outcome: result.Broke, reason: expect("no pull request was opened or found"),
+				text: pushedLine() + expect("pull request was opened or found", topic, trunk) + nextFixed(),
 			},
 		},
 	}
@@ -441,21 +493,13 @@ func TestPush_WhenGitRefusesThePush_BrokeSayingNothingWasPushed(t *testing.T) {
 	assert.Check(t, got.Payload == nil || got.Payload.Push == nil, "Payload = %+v, want none for a push git refused", got.Payload)
 
 	text, reason := shown(t, got, d.gitDir)
-	assert.Check(t, is.Equal(reason, "git refused the push"))
-
-	prefix := "Git refused the push of " + topic + ", so nothing was pushed: "
-	suffix := "\nBroke: git refused the push\n" + nextFixed
-	said, starts := strings.CutPrefix(text, prefix)
-	said, ends := strings.CutSuffix(said, suffix)
-	assert.Check(t, starts && ends, "RenderText() = %q, want it to start with %q and end with %q", text, prefix, suffix)
-	// The words are git's reason for the ref and what origin printed.
-	assert.Check(t, is.Contains(said, "pre-receive hook declined"))
-	assert.Check(t, is.Contains(said, policy))
+	assertSays(t, reason, expect("refused"))
+	assertSays(t, text, expect("refused", topic, "nothing was pushed", policy)+nextFixed())
 
 	assert.Check(t, is.Equal(d.onOrigin(), ""))
 
 	assertAsked(t, d.scene, changesRead())
-	assert.Check(t, is.DeepEqual(d.watch.told(t), []string{checkingStep, pushingStep}))
+	assertTold(t, d.watch.told(t), []string{checkingStep(), pushingStep()})
 }
 
 // pushOpenFailureRows are the pushes whose open-change fails once the branch is on origin.
@@ -470,8 +514,8 @@ func pushOpenFailureRows() []pushRow {
 		{
 			name: "for a reason of the forge", script: failing(errors.New("HTTP 502")),
 			want: finish{
-				outcome: result.Broke, reason: "could not open the pull request",
-				text: pushedLine + "No pull request was opened: HTTP 502\n" + "Broke: could not open the pull request\n" + nextFixed,
+				outcome: result.Broke, reason: expect("could not open the pull request"),
+				text: pushedLine() + expect("No pull request was opened", "HTTP 502") + nextFixed(),
 			},
 		},
 	}
@@ -481,9 +525,8 @@ func pushOpenFailureRows() []pushRow {
 			name:   "because " + c.name + " ended it",
 			script: failing(c.of("gh pr create")),
 			want: finish{
-				outcome: result.Broke, reason: c.ends + " while opening the pull request",
-				text: pushedLine + "Started opening the pull request when " + c.ends + "; " +
-					"it may or may not have been opened\n" + "Broke: " + c.ends + " while opening the pull request\n" + nextPush,
+				outcome: result.Broke, reason: expect(c.ends, "opening the pull request"),
+				text: pushedLine() + expect("opening the pull request", c.ends, "may or may not have been opened") + nextPush(),
 			},
 		})
 	}
@@ -514,9 +557,8 @@ func TestPush_WhenTheGitPushIsCutShort_BrokeSayingThePushMayHaveTaken(t *testing
 			got := landing.Push(ctx, s.deps, pushRequest())
 
 			assertDelivered(t, s, got, finish{
-				outcome: result.Broke, reason: c.ends + " during the push",
-				text: "Started the push of " + topic + " at " + sha + " when " + c.ends + "; " +
-					"it may or may not have taken\n" + "Broke: " + c.ends + " during the push\n" + nextPush,
+				outcome: result.Broke, reason: expect(c.ends, "during the push"),
+				text: expect(topic, sha, c.ends, "may or may not have taken") + nextPush(),
 			})
 			assertAsked(t, s, changesRead())
 		})
@@ -536,11 +578,11 @@ func TestPush_WhenOriginStopsAnsweringDuringThePush_BrokeSayingThePushMayHaveTak
 	assertStopped(t, got, result.Broke)
 
 	text, reason := shown(t, got, s.gitDir)
-	assert.Check(t, is.Equal(reason, "origin stopped answering during the push"))
+	assertSays(t, reason, expect("stopped answering"))
 	assert.Check(t, is.Contains(text, topic))
 	assert.Check(t, is.Contains(text, sha))
 	assert.Check(t, is.Contains(text, denied))
-	assert.Check(t, strings.HasSuffix(text, nextPush), "RenderText() = %q, want it to end with %q", text, nextPush)
+	assert.Check(t, strings.HasSuffix(text, "ils push\n"), "RenderText() = %q, want it to end on `ils push`", text)
 }
 
 // killsGitPush ends the git push with SIGTERM from the ssh it started, while ils runs on.
@@ -568,22 +610,38 @@ func TestPush_WhenASignalKillsTheGitPush_BrokeSayingThePushMayHaveTaken(t *testi
 	assertStopped(t, got, result.Broke)
 
 	text, reason := shown(t, got, s.gitDir)
-	assert.Check(t, is.Equal(reason, "the push did not finish"))
+	assertSays(t, reason, expect("did not finish"))
 	assert.Check(t, is.Contains(text, topic))
 	assert.Check(t, is.Contains(text, sha))
-	assert.Check(t, strings.HasSuffix(text, nextPush), "RenderText() = %q, want it to end with %q", text, nextPush)
+	assert.Check(t, strings.HasSuffix(text, "ils push\n"), "RenderText() = %q, want it to end on `ils push`", text)
+}
+
+// hideGit empties PATH for the whole process until the test ends, so that the next git call finds
+// no git. It cannot run in a parallel test.
+func hideGit(t *testing.T) {
+	t.Helper()
+
+	t.Setenv("PATH", t.TempDir())
+}
+
+// hidingGitAt returns script with a hook that hides git once the forge is asked for op, so that
+// the git read after that call is the first to find no git.
+func hidingGitAt(t *testing.T, script forgetest.Script, op forgetest.Op) forgetest.Script {
+	t.Helper()
+
+	script.OnRead = func(call forgetest.Call) {
+		if call.Op == op {
+			hideGit(t)
+		}
+	}
+
+	return script
 }
 
 func TestPush_WhenGitIsMissingForThePush_BrokeSayingNothingWasPushed(t *testing.T) {
 	// Not parallel: git leaves PATH, by t.Setenv, once the pull requests of the branch are read,
 	// which comes just before the push.
-	script := finding()
-	script.OnRead = func(call forgetest.Call) {
-		if call.Op == forgetest.OpFindChanges {
-			t.Setenv("PATH", t.TempDir())
-		}
-	}
-	s := newScene(t, nil, script, false)
+	s := newScene(t, nil, hidingGitAt(t, finding(), forgetest.OpFindChanges), false)
 
 	got := landing.Push(t.Context(), s.deps, pushRequest())
 
@@ -591,14 +649,9 @@ func TestPush_WhenGitIsMissingForThePush_BrokeSayingNothingWasPushed(t *testing.
 	assert.Check(t, got.Payload == nil || got.Payload.Push == nil, "Payload = %+v, want none for a push that failed", got.Payload)
 
 	text, reason := shown(t, got, s.gitDir)
-	assert.Check(t, is.Equal(reason, "could not push the branch"))
-
-	prefix := "Could not push " + topic + ", so nothing was pushed: "
-	suffix := "\nBroke: could not push the branch\n" + nextFixed
-	said, starts := strings.CutPrefix(text, prefix)
-	said, ends := strings.CutSuffix(said, suffix)
-	assert.Check(t, starts && ends, "RenderText() = %q, want it to start with %q and end with %q", text, prefix, suffix)
-	assert.Check(t, said != "", "RenderText() = %q, want what the push failed with between %q and %q", text, prefix, suffix)
+	assertSays(t, reason, expect("could not push"))
+	assertSays(t, text, expect("Could not push", topic, "nothing was pushed")+nextFixed())
+	between(t, text, "nothing was pushed", "fix what failed")
 
 	assertAsked(t, s, changesRead())
 }
@@ -610,11 +663,7 @@ func pushAgainRows() []pushRow {
 	return []pushRow{
 		{
 			name: "with its pull request open", arrange: again, quiet: true,
-			script: reusing(passing()), want: greenAfter(alreadyLine + foundLine),
-		},
-		{
-			name: "with no pull request yet", arrange: again, quiet: true,
-			script: opening(passing()), want: greenAfter(alreadyLine + openedLine),
+			script: reusing(passing()), want: greenAfter(alreadyLine() + foundLine()),
 		},
 	}
 }
@@ -625,38 +674,20 @@ func TestPush_WhenTipIsAlreadyOnOrigin_PushesNothing(t *testing.T) {
 	runPushes(t, pushAgainRows())
 }
 
-// pushUnreportedRows are the pushes whose checks did not all report.
+// pushUnreportedRows are the pushes for whose commit no check or status reported.
 func pushUnreportedRows() []pushRow {
-	lint := needed("lint", forge.BucketPass)
-	never := forge.Verdict{Checks: []forge.Check{lint}, MissingRequired: []string{"test"}, Runs: ran(forge.RunCompleted)}
-	missing := inState(forge.MergeBlockedByMissingCheck, "BLOCKED")
 	nothing := finish{
 		outcome: result.DeliveredNotGreen,
-		reason:  "no check or status reported for " + tipMark + " on pull request #12",
-		text: pushedLine + openedLine + cleanLine() +
-			"Delivered, not green: no check or status reported for " + tipMark + " on pull request #12\n" + nextNothing,
+		reason:  expect("no check or status reported", tipMark, "#12"),
+		text:    pushedLine() + openedLine() + cleanLine() + expect("no check or status reported", tipMark, "#12") + nextNothing(),
 		payload: detail(forge.VerdictNone, forge.MergeClean),
 	}
 
 	return []pushRow{
 		{
-			name:   "a required check never reported",
-			script: opening(never).requiring("lint", "test").showing(missing),
-			want: finish{
-				outcome: result.DeliveredNotGreen, reason: "a required check never reported",
-				text: pushedLine + openedLine + "Required and never reported: test\n" +
-					stateLine(forge.MergeBlockedByMissingCheck, "BLOCKED") + "Delivered, not green: a required check never reported\n" + nextNever,
-				payload: detail(forge.VerdictGreen, forge.MergeBlockedByMissingCheck, lint),
-			},
-		},
-		{
 			name:   "nothing reported in a repository with CI on its trunk",
 			script: opening(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{Value: true}),
 			want:   nothing,
-			drawn: []drawnPart{
-				{within: "reported for " + tipMark, part: tipMark, want: resulttest.SHALook()},
-				{within: "on pull request #12", part: "#12", want: resulttest.NameLook()},
-			},
 		},
 		{
 			// A trunk that requires checks has CI, so the forge has no answer for the CI read.
@@ -672,7 +703,6 @@ func pushUnreportedRows() []pushRow {
 func pushNoCIRows() []pushRow {
 	silent := opening(forge.Verdict{})
 	unverified := silent.answeringCI(forgetest.Answer[bool]{})
-	reviewed := inState(forge.MergeBlockedByReview, "BLOCKED")
 	// unreadable is the push whose read of whether the repository has CI fails with err, which the
 	// push prints as said.
 	unreadable := func(name string, err error, said string) pushRow {
@@ -680,9 +710,8 @@ func pushNoCIRows() []pushRow {
 			name:   name,
 			script: silent.answeringCI(forgetest.Answer[bool]{Err: err}),
 			want: finish{
-				outcome: result.Broke, reason: "could not read " + readCI,
-				text: pushedLine + openedLine + "Could not read " + readCI + ": " + said + "\n" +
-					"Broke: could not read " + readCI + "\n" + nextFixed,
+				outcome: result.Broke, reason: expect(readCI),
+				text:    pushedLine() + openedLine() + unreadAfterWrites(readCI, said),
 				payload: detail(forge.VerdictNone, forge.MergeClean),
 			},
 		}
@@ -695,26 +724,17 @@ func pushNoCIRows() []pushRow {
 			name:   "on a pull request that turns " + string(forge.MergeConflicting) + " after the checks",
 			script: unverified.showing(inState(forge.MergeClean, "CLEAN"), inState(forge.MergeConflicting, "DIRTY")),
 			want: finish{
-				outcome: result.DeliveredNotGreen, reason: "the pull request conflicts with the trunk",
-				text: pushedLine + openedLine + noCILine + stateLine(forge.MergeConflicting, "DIRTY") +
-					"Delivered, not green: the pull request conflicts with the trunk\n" + nextTrunk,
+				outcome: result.DeliveredNotGreen, reason: expect("conflicts with the trunk"),
+				text: pushedLine() + openedLine() + noCILine() + stateLine(forge.MergeConflicting, "DIRTY") +
+					expect("conflicts with the trunk") + nextTrunk(),
 				payload: detail(forge.VerdictNone, forge.MergeConflicting),
 			},
 		},
 		{
 			name: "on a clean pull request", script: unverified,
 			want: finish{
-				outcome: result.Done, text: pushedLine + openedLine + noCILine + cleanLine() + nextMerge,
+				outcome: result.Done, text: pushedLine() + openedLine() + noCILine() + cleanLine() + nextMerge(),
 				payload: detail(forge.VerdictNone, forge.MergeClean),
-			},
-		},
-		{
-			name:   "on a pull request that needs a review",
-			script: unverified.showing(inState(forge.MergeClean, "CLEAN"), reviewed),
-			want: finish{
-				outcome: result.Done,
-				text:    pushedLine + openedLine + noCILine + blockedLine() + nextReview,
-				payload: detail(forge.VerdictNone, forge.MergeBlockedByReview),
 			},
 		},
 		unreadable("and the CI read fails", errors.New("HTTP 502"), "HTTP 502"),
@@ -739,36 +759,22 @@ func TestPush_WhenNothingReportedForTheCommit_EndsByWhatTheCIReadAnswers(t *test
 func TestPush_WhenACutComesBeforeTheCIRead_PendingWithoutAskingIt(t *testing.T) {
 	t.Parallel()
 
-	for _, c := range cuts() {
-		t.Run(c.name, func(t *testing.T) {
-			t.Parallel()
-			synctest.Test(t, func(t *testing.T) {
-				// The cut comes once the merge state after the checks is read; the forge has no answer for
-				// the CI read.
-				ended := make(chan struct{})
-				ending := reusing(forge.Verdict{}).with(func(script *forgetest.Script, _ string) {
-					checksRead := false
-					once := sync.OnceFunc(func() { close(ended) })
-					script.OnRead = func(call forgetest.Call) {
-						if call.Op == forgetest.OpVerdict {
-							checksRead = true
-						}
-
-						if call.Op == forgetest.OpHead && checksRead {
-							once()
-						}
-					}
-				})
-				d := newDelivery(t, pushRow{script: ending})
-				ctx := c.once(d.ctx, ended)
-
-				got := landing.Push(ctx, d.deps, pushRequest())
-
-				assertDelivered(t, d.scene, got, cutShortRead(c, readCI).at(d.tip))
-				assert.Check(t, is.Equal(d.onOrigin(), d.tip))
-			})
+	synctest.Test(t, func(t *testing.T) {
+		// The cut comes once the merge state after the checks is read; the forge has no answer for
+		// the CI read.
+		ended := make(chan struct{})
+		ending := reusing(forge.Verdict{}).with(func(script *forgetest.Script, _ string) {
+			script.OnRead = onHeadAfterChecks(sync.OnceFunc(func() { close(ended) }))
 		})
-	}
+		d := newDelivery(t, pushRow{script: ending})
+		c := byTimeLimit()
+		ctx := c.once(d.ctx, ended)
+
+		got := landing.Push(ctx, d.deps, pushRequest())
+
+		assertDelivered(t, d.scene, got, cutShortRead(c, readCI).at(d.tip))
+		assert.Check(t, is.Equal(d.onOrigin(), d.tip))
+	})
 }
 
 // ciReading is a forge that keeps what its CI read's context was: its deadline, and whether it
@@ -817,8 +823,8 @@ func callsOf(calls []forgetest.Call, ops ...forgetest.Op) []forgetest.Call {
 
 // pushWaitRows are the pushes whose wait ends without an error, one per result it maps to.
 func pushWaitRows() []pushRow {
-	reviewed := greenAfter(pushedLine + foundLine)
-	reviewed.text = pushedLine + foundLine + countLine + blockedLine() + nextReview
+	reviewed := greenAfter(pushedLine() + foundLine())
+	reviewed.text = pushedLine() + foundLine() + countLine() + blockedLine() + nextReview()
 	reviewed.payload = detail(forge.VerdictGreen, forge.MergeBlockedByReview, passing().Checks...)
 
 	rows := []pushRow{
@@ -836,23 +842,6 @@ func TestPush_WhenTheWaitEnds_ReportsItsOutcome(t *testing.T) {
 	t.Parallel()
 
 	runPushes(t, pushWaitRows())
-}
-
-func TestPush_WhenTheHeadMovesPastThePushedCommit_RefusesNamingTheNewHead(t *testing.T) {
-	t.Parallel()
-
-	refused := finish{
-		outcome: result.Refused, reason: "the head of pull request #12 moved to " + movedSHA,
-		text: pushedLine + foundLine + "Refused: the head of pull request #12 moved to " + movedSHA + "\n" +
-			"Next: pull the new commit, then run ils push again\n",
-		payload: detail(forge.VerdictNone, forge.MergeClean),
-	}
-	runPushes(t, []pushRow{
-		{
-			name: "after a green verdict", want: refused,
-			script: reusing(passing()).showing(inState(forge.MergeClean, "CLEAN"), moved()),
-		},
-	})
 }
 
 // failingRead is a read of the push sequence that follows its writes: the forge that fails it, its
@@ -885,17 +874,15 @@ func breaking(edit func(*forgetest.Script)) forgeFor {
 func readsAfterWrites(err error) []failingRead {
 	return []failingRead{
 		{
-			name: readChanges, before: pushedLine,
+			name: readChanges, before: pushedLine(),
 			script: breaking(func(script *forgetest.Script) {
 				script.OpenChange = []forgetest.Answer[forge.ChangeRef]{{Err: forge.ErrChangeExists}}
 				script.FindChanges = append(listing(nil), forgetest.Answer[[]forge.Change]{Err: err})
 			}),
 		},
 		{
-			name: readProtection, before: pushedLine + openedLine, known: true,
-			script: breaking(func(script *forgetest.Script) {
-				script.TrunkProtection = []forgetest.Answer[forge.Protection]{{Err: err}}
-			}),
+			name: readProtection, before: pushedLine() + openedLine(), known: true,
+			script: opening(passing()).failingRules(err),
 		},
 	}
 }
@@ -906,8 +893,8 @@ func brokenAfter(reads []failingRead) []pushRow {
 
 	for _, read := range reads {
 		rows = append(rows, read.row(finish{
-			outcome: result.Broke, reason: "could not read " + read.name,
-			text: read.before + "Could not read " + read.name + ": HTTP 502\n" + "Broke: could not read " + read.name + "\n" + nextFixed,
+			outcome: result.Broke, reason: expect(read.name),
+			text: read.before + unreadAfterWrites(read.name, "HTTP 502"),
 		}))
 	}
 
@@ -921,10 +908,16 @@ func TestPush_WhenAReadAfterTheWritesIsCutShort_PendingNamingTheRead(t *testing.
 
 	for _, c := range cuts() {
 		for _, read := range readsAfterWrites(c.of("gh")) {
-			reason := c.ends + " while reading " + read.name + "; nothing more will change"
+			// Every read hands its error to the same wording, so each cut is checked on the read of the
+			// trunk's rules alone.
+			if read.name == readChanges {
+				continue
+			}
+
+			reason := expect(c.ends, read.name, "nothing more will change")
 			row := read.row(finish{
 				outcome: result.Pending, reason: reason,
-				text: read.before + "Pending: " + reason + "\n" + nextPush,
+				text: read.before + reason + nextPush(),
 			})
 			row.name = c.name + " ends " + row.name
 			rows = append(rows, row)

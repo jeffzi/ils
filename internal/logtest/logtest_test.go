@@ -7,64 +7,73 @@ import (
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
+	"github.com/jeffzi/ils/internal/failtest"
 	"github.com/jeffzi/ils/internal/logtest"
 )
 
-func TestSink_Records(t *testing.T) {
+func TestSink_Records_WhenLoggedAtDebug_HoldsTheRecord(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		log   func(*slog.Logger)
-		name  string
-		want  []string
-		level slog.Level
-	}{
-		{
-			name: "record at debug level",
-			log:  func(l *slog.Logger) { l.Debug("read", "state", "clean") },
-			want: []string{"state=clean"}, level: slog.LevelDebug,
-		},
-		{
-			name: "attributes added through With come first",
-			log:  func(l *slog.Logger) { l.With("run", 1).Info("read", "state", "clean") },
-			want: []string{"run=1", "state=clean"}, level: slog.LevelInfo,
-		},
-		{
-			name: "keys after a group are led by its name",
-			log: func(l *slog.Logger) {
-				l.With("run", 1).WithGroup("wait").With("stage", "head").Info("read", "state", "clean")
-			},
-			want: []string{"run=1", "wait.stage=head", "wait.state=clean"}, level: slog.LevelInfo,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			logger, sink := logtest.New()
+	logger, sink := logtest.New()
 
-			tt.log(logger)
+	logger.Debug("read", "state", "clean")
 
-			records := sink.Records()
-			assert.Assert(t, is.Len(records, 1))
-			attrs := make([]string, 0, len(records[0].Attrs))
-			for _, attr := range records[0].Attrs {
-				attrs = append(attrs, attr.String())
-			}
-			assert.Check(t, is.Equal(records[0].Message, "read"))
-			assert.Check(t, is.Equal(records[0].Level, tt.level))
-			assert.Check(t, is.DeepEqual(attrs, tt.want))
-		})
-	}
+	records := sink.Records()
+	assert.Assert(t, is.Len(records, 1))
+	assert.Check(t, is.Equal(records[0].Message, "read"))
+	assert.Check(t, is.Equal(records[0].Level, slog.LevelDebug))
+	assert.Check(t, is.DeepEqual(records[0].Map(), map[string]any{"state": "clean"}))
 }
 
 func TestRecord_Map_WhenAttributeIsLazy_HoldsItsResolvedValue(t *testing.T) {
 	t.Parallel()
-	logger, sink := logtest.New()
+	record := logtest.Record{Attrs: []slog.Attr{slog.Any("state", lazy("clean"))}}
 
-	logger.Info("read", "state", lazy("clean"))
+	got := record.Map()
 
-	records := sink.Records()
-	assert.Assert(t, is.Len(records, 1))
-	assert.Check(t, is.DeepEqual(records[0].Map(), map[string]any{"state": "clean"}))
+	assert.Check(t, is.DeepEqual(got, map[string]any{"state": "clean"}))
+}
+
+func TestRecord_Without_WhenKeysNamed_HoldsEveryOtherAttribute(t *testing.T) {
+	t.Parallel()
+	record := logtest.Record{Attrs: []slog.Attr{slog.String("state", "clean"), slog.Int("took", 3), slog.Int("run", 1)}}
+
+	got := record.Without("took", "run")
+
+	assert.Check(t, is.DeepEqual(got, map[string]any{"state": "clean"}))
+}
+
+func TestRecordsOf_WhenLogWritesTwice_ReturnsBothRecordsInOrder(t *testing.T) {
+	t.Parallel()
+
+	got := logtest.RecordsOf(func(l *slog.Logger) {
+		l.Info("first")
+		l.Debug("second")
+	})
+
+	assert.Assert(t, is.Len(got, 2))
+	assert.Check(t, is.Equal(got[0].Message, "first"))
+	assert.Check(t, is.Equal(got[1].Message, "second"))
+}
+
+func TestOnly_WhenOneRecord_ReturnsIt(t *testing.T) {
+	t.Parallel()
+	first := logtest.Record{Message: "first"}
+	spy := failtest.New(t)
+	var got logtest.Record
+
+	spy.Run(func() { got = logtest.Only(spy, []logtest.Record{first}) })
+
+	assert.Check(t, !spy.Failed(), "Only failed the test on exactly one record")
+	assert.Check(t, is.DeepEqual(got, first))
+}
+
+func TestOnly_WhenNotExactlyOneRecord_FailsTest(t *testing.T) {
+	t.Parallel()
+	spy := failtest.New(t)
+
+	spy.Run(func() { logtest.Only(spy, []logtest.Record{{Message: "first"}, {Message: "second"}}) })
+
+	assert.Check(t, spy.Stopped(), "Only did not fail the test on two records")
 }
 
 // lazy is a slog.LogValuer, which a record keeps unresolved, so it shows that Record.Map resolves

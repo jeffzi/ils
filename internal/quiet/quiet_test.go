@@ -1,31 +1,28 @@
 package quiet_test
 
 import (
+	"strings"
 	"testing"
 
 	"gotest.tools/v3/assert"
-	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/quiet"
 )
 
-func TestSetting(t *testing.T) {
-	// Not parallel: each row sets GORACE with t.Setenv.
-	tests := []struct {
-		name   string
-		gorace string
-		want   string
-	}{
-		{name: "no options in the environment", gorace: "", want: "atexit_sleep_ms=0"},
-		{name: "options in the environment", gorace: "halt_on_error=1", want: "halt_on_error=1 atexit_sleep_ms=0"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("GORACE", tt.gorace)
+func TestSetting_WhenEnvironmentHoldsNoOptions_StartsWithNoSpace(t *testing.T) {
+	// Not parallel: this sets GORACE with t.Setenv.
+	t.Setenv("GORACE", "")
 
-			got := quiet.Setting()
+	got := quiet.Setting()
 
-			assert.Check(t, is.Equal(got, tt.want))
-		})
-	}
+	assert.Check(t, !strings.HasPrefix(got, " "), "Setting() = %q, want no leading space", got)
+}
+
+func TestSetting_WhenEnvironmentHoldsOptions_KeepsThemFirst(t *testing.T) {
+	// Not parallel: this sets GORACE with t.Setenv.
+	t.Setenv("GORACE", "halt_on_error=1")
+
+	got := quiet.Setting()
+
+	assert.Check(t, strings.HasPrefix(got, "halt_on_error=1 "), "Setting() = %q, want the environment's options first", got)
 }

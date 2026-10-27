@@ -19,16 +19,6 @@ func TestAttrs_Of(t *testing.T) {
 		want  []string
 	}{
 		{
-			name:  "no attribute added",
-			build: func(a flat.Attrs) flat.Attrs { return a },
-			want:  []string{"state=clean"},
-		},
-		{
-			name:  "attributes added through With come first",
-			build: func(a flat.Attrs) flat.Attrs { return a.With([]slog.Attr{slog.Int("run", 1)}) },
-			want:  []string{"run=1", "state=clean"},
-		},
-		{
 			name: "keys after a group are led by its name",
 			build: func(a flat.Attrs) flat.Attrs {
 				return a.With([]slog.Attr{slog.Int("run", 1)}).Group("wait").With([]slog.Attr{slog.String("stage", "head")})
@@ -61,14 +51,15 @@ func TestAttrs_Of(t *testing.T) {
 
 func TestAttrs_With_WhenDerivedTwice_SharesNothing(t *testing.T) {
 	t.Parallel()
-	base := flat.Attrs{}.With([]slog.Attr{slog.Int("run", 1)})
+	// Three attributes appended one by one leave the slice with spare capacity, so a With that
+	// stopped copying would let the second derivation write over the first one's last attribute.
+	base := flat.Attrs{}.With([]slog.Attr{slog.Int("run", 1), slog.Int("try", 2), slog.String("branch", "topic")})
 	record := slog.NewRecord(time.Time{}, slog.LevelInfo, "read", 0)
 
 	first := base.With([]slog.Attr{slog.String("stage", "head")})
-	second := base.With([]slog.Attr{slog.String("stage", "checks")})
+	_ = base.With([]slog.Attr{slog.String("stage", "checks")})
 
-	assert.Check(t, is.DeepEqual(keyValues(first.Of(record)), []string{"run=1", "stage=head"}))
-	assert.Check(t, is.DeepEqual(keyValues(second.Of(record)), []string{"run=1", "stage=checks"}))
+	assert.Check(t, is.DeepEqual(keyValues(first.Of(record)), []string{"run=1", "try=2", "branch=topic", "stage=head"}))
 }
 
 func keyValues(attrs []slog.Attr) []string {

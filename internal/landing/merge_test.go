@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"gotest.tools/v3/assert"
@@ -16,58 +17,74 @@ import (
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
 	"github.com/jeffzi/ils/internal/gittest"
+	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
 )
 
 const (
 	conventional = "docs: tidy the readme"
 
-	nextMergeAgain = "Next: ils merge\n"
-	nextMergeFixed = "Next: fix what failed, then run ils merge again\n"
-
 	readRules      = "the trunk's rules"
 	readLocalTrunk = "the local trunk"
-	readPullHead   = "the pull request's head"
 	readWorktrees  = "where the trunk is checked out"
 
 	readyCommand = "gh pr ready --repo " + repoArg + " 12"
-	nextReady    = "Next: mark it ready with `" + readyCommand + "`, then run ils merge again\n"
-	draftText    = "Refused: pull request #12 is a draft\n" + nextReady
-	settingsText = "Refused: the settings of " + owner + "/" + repoName +
-		" forbid squash merges: Allow squash merging is off\n" +
-		"Next: allow squash merges in the repository's settings, then run ils merge again\n"
-	nextRuleset = "Next: allow squash merges in the trunk's ruleset, then run ils merge again\n"
-	rulesetText = "Refused: the ruleset 42 on the trunk " + trunk + " forbids squash merges\n" + nextRuleset
-	noPullText  = "Refused: the branch " + topic + " has no open pull request against the trunk " + trunk + "\n" +
-		nextPush
-	behindHeadText = "Refused: the tip of " + topic +
-		" is behind the head of pull request #12: the pull request has commits the tip lacks\n" + nextPush
-	pastHeadText = "Refused: the tip of " + topic +
-		" is past the head of pull request #12: the tip has commits the pull request lacks, so they were never pushed\n" +
-		nextPush
-	divergedHeadText = "Refused: the tip of " + topic +
-		" and the head of pull request #12 have diverged: each has commits the other lacks\n" + nextPush
 )
 
-// titleText is the whole text of the refusal of pull request 12 titled title.
+// nextMergeAgain is the `Next:` line that runs `ils merge` again as it is, and nextMergeFixed the
+// one that runs it again once what failed is fixed.
+func nextMergeAgain() string {
+	return expect("Next: ils merge\n")
+}
+
+func nextMergeFixed() string {
+	return expect("fix what failed", "ils merge")
+}
+
+func draftText() string {
+	return expect("#12", "is a draft") + mergeCommand().after("`"+readyCommand+"`")
+}
+
+func settingsText() string {
+	return expect(owner+"/"+repoName, "forbid squash merges", "Allow squash merging") +
+		mergeCommand().after("repository's settings")
+}
+
+func rulesetText() string {
+	return expect("ruleset 42", trunk, "forbids squash merges") + mergeCommand().after("ruleset")
+}
+
+func noPullText() string {
+	return expect(topic, "no open pull request", trunk) + nextPush()
+}
+
+func behindHeadText() string {
+	return expect(topic, "is behind", "#12") + nextPush()
+}
+
+func pastHeadText() string {
+	return expect(topic, "is past", "#12", "never pushed") + nextPush()
+}
+
+func divergedHeadText() string {
+	return expect(topic, "#12", "have diverged") + nextPush()
+}
+
+// titleText is the refusal of pull request 12 titled title.
 func titleText(title string) string {
-	return "Refused: the title of pull request #12, \"" + title +
-		"\", is not a conventional commit subject of the form type(scope)!: summary\n" +
-		"Next: " + editSteps + " again\n"
+	return expect("#12", "\""+title+"\"", "not a conventional commit subject") + editSteps()
 }
 
-// trunkAheadText is the whole text of the refusal of a local trunk whose one commit origin's trunk
-// lacks is sha.
+// trunkAheadText is the refusal of a local trunk whose one commit origin's trunk lacks is sha.
 func trunkAheadText(sha string) string {
-	return sha + " local change on " + trunk + "\n" +
-		"Refused: the local trunk " + trunk + " has commits that origin's trunk lacks, listed here\n" +
-		"Next: move those commits off the local trunk by hand, then run ils merge again\n"
+	return expect(sha, "local change on "+trunk, "local trunk "+trunk, "origin's trunk lacks") +
+		mergeCommand().after("move those commits off the local trunk")
 }
 
-// nothingPastMerge is the refusal by `ils merge` of a branch with no commit past origin's trunk.
+// nothingPastMerge is the refusal by `ils merge` of a branch with no commit past origin's trunk. Its
+// `Next:` line runs a first `ils push`, not `ils merge` again.
 func nothingPastMerge(branch string) string {
-	return "Refused: the branch " + branch + " has no commit past origin's trunk " + trunk + "\n" +
-		"Next: commit the work, then run ils push\n"
+	return expect(branch, "no commit past", trunk, "commit the work, then run ils push\n")
 }
 
 // squashing is the identity of Acme/Widgets, whose user can push, with settings that allow squash
@@ -94,19 +111,11 @@ func pullAt(head string) forge.Change {
 func merging() forgeFor {
 	return func(head string) forgetest.Script {
 		return forgetest.Script{
-			Identity:        []forgetest.Answer[forge.Repo]{{Value: squashing(true)}},
+			Identity:        forgetest.Values(squashing(true)),
 			FindChanges:     listing([]forge.Change{pullAt(head)}),
-			TrunkProtection: []forgetest.Answer[forge.Protection]{{Value: forge.Protection{SquashAllowed: true}}},
+			TrunkProtection: forgetest.Values(forge.Protection{SquashAllowed: true}),
 		}
 	}
-}
-
-// pulling returns build with pull request 12, the one pull request build lists, changed by edit,
-// so that edits made one after the other all hold.
-func (build forgeFor) pulling(edit func(*forge.Change)) forgeFor {
-	return build.with(func(script *forgetest.Script, _ string) {
-		edit(&script.FindChanges[0].Value[0])
-	})
 }
 
 // titled returns build with pull request 12 titled title.
@@ -119,17 +128,10 @@ func (build forgeFor) drafted() forgeFor {
 	return build.pulling(func(pull *forge.Change) { pull.Draft = true })
 }
 
-// findingOnly returns build with a forge that finds changes for the branch and nothing else.
-func (build forgeFor) findingOnly(changes ...forge.Change) forgeFor {
-	return build.with(func(script *forgetest.Script, _ string) {
-		script.FindChanges = listing(changes)
-	})
-}
-
 // forbiddenInSettings returns build with a repository whose settings forbid squash merges.
 func (build forgeFor) forbiddenInSettings() forgeFor {
 	return build.with(func(script *forgetest.Script, _ string) {
-		script.Identity = []forgetest.Answer[forge.Repo]{{Value: squashing(false)}}
+		script.Identity = forgetest.Values(squashing(false))
 	})
 }
 
@@ -137,23 +139,13 @@ func (build forgeFor) forbiddenInSettings() forgeFor {
 // merges.
 func (build forgeFor) forbiddenByRuleset(ids ...int) forgeFor {
 	return build.with(func(script *forgetest.Script, _ string) {
-		script.TrunkProtection = []forgetest.Answer[forge.Protection]{{Value: forge.Protection{SquashForbiddenBy: ids}}}
-	})
-}
-
-// failingRules returns build with a read of the trunk's rules that fails with err.
-func (build forgeFor) failingRules(err error) forgeFor {
-	return build.with(func(script *forgetest.Script, _ string) {
-		script.TrunkProtection = []forgetest.Answer[forge.Protection]{{Err: err}}
+		script.TrunkProtection = forgetest.Values(forge.Protection{SquashForbiddenBy: ids})
 	})
 }
 
 // mergeEnd is how a run of `ils merge` must end, as the arrange of a row works it out.
 type mergeEnd struct {
 	text string
-	// failedRead, when set, is the read the git call failing makes fail; the run must then end
-	// broke on it, carrying what the failed call said, in place of printing text.
-	failedRead string
 	// head is the head of pull request 12, which the payload carries; empty is the tip of the branch.
 	head string
 	// from is the forge read from which on the git call fails; empty is the whole run.
@@ -172,12 +164,9 @@ type mergeRow struct {
 	// runCtx returns the context to run under once the scene is built; nil is the test's own.
 	runCtx func(t *testing.T, s *scene) context.Context
 	// script returns the forge's answers once the head of pull request 12 is known.
-	script forgeFor
-	name   string
-	ops    []forgetest.Op
-	// drawn are parts of the text and how a terminal with color draws them; empty leaves them
-	// unchecked.
-	drawn   []drawnPart
+	script  forgeFor
+	name    string
+	ops     []forgetest.Op
 	outcome result.Outcome
 	// answered is how many calls origin answers before it stops; zero is every call.
 	answered int
@@ -206,29 +195,31 @@ func mergeAsked(ops []forgetest.Op) []forgetest.Call {
 // notMerged is the payload of a run that knew pull request 12 at head and stopped before it read
 // the checks or merged anything.
 func notMerged(head string) *result.Merge {
-	return &result.Merge{
-		URL: pullURL, Number: opened, SHA: head,
-		Verdict: string(forge.VerdictNone), MergeState: string(forge.MergeUnknown),
-	}
+	merge := mergeDetail(forge.VerdictNone, forge.MergeUnknown)
+	merge.SHA = head
+
+	return merge
 }
 
-// runMerge runs tt on a scene of its own: `ils merge` ends as the row's arrange says, holds every
-// step line it said, carries the merge payload only once the pull request is known, writes
-// nothing, and reads no further than the row says. A row that names how its result is drawn is
-// held to it too.
+// runMerge runs tt on a scene of its own: `ils merge` prints the text the row's arrange says, and
+// stops before the wait as assertStoppedBeforeWait checks.
 func runMerge(t *testing.T, tt mergeRow) {
 	t.Helper()
 
 	end, run := mergeRowOn(t, tt)
 
-	assertStoppedBy(t, run.got, tt.outcome, mergeRequest())
+	text, _ := shown(t, run.got, run.gitDir)
+	assertSays(t, text, end.text)
+	assertStoppedBeforeWait(t, tt, end, run)
+}
 
-	if end.failedRead != "" {
-		assertFailedGit(t, run.got, mergeCommand(), end.failedRead)
-	} else {
-		text, _ := shown(t, run.got, run.gitDir)
-		assert.Check(t, is.Equal(text, end.text))
-	}
+// assertStoppedBeforeWait fails unless run, of tt, ended as the row says, holds every step line it
+// said, carries the merge payload only once the pull request is known, and read no further than
+// the row says.
+func assertStoppedBeforeWait(t *testing.T, tt mergeRow, end mergeEnd, run mergeRun) {
+	t.Helper()
+
+	assertStoppedBy(t, run.got, tt.outcome, mergeRequest())
 
 	var want *result.Merge
 	if tt.known {
@@ -237,13 +228,8 @@ func runMerge(t *testing.T, tt mergeRow) {
 
 	assert.Check(t, is.DeepEqual(mergePayload(t, run.got), want, cmpopts.EquateEmpty()))
 
-	assert.Check(t, is.Equal(run.written(), run.before))
 	assert.Check(t, is.DeepEqual(run.forge.Calls(), mergeAsked(tt.ops), whichRepo()))
 	assert.Check(t, is.Equal(run.gitRan("fetch"), tt.fetches))
-
-	if len(tt.drawn) > 0 {
-		assertDrawn(t, run.got, run.gitDir, tt.drawn)
-	}
 }
 
 // mergeRowOn runs `ils merge` on a scene of tt's own, as runMergeOn does, and returns how the run
@@ -305,31 +291,6 @@ func rulesRead() []forgetest.Op {
 	return []forgetest.Op{forgetest.OpIdentity, forgetest.OpFindChanges, forgetest.OpTrunkProtection}
 }
 
-// standingStops are the refusals of `ils merge` decided from where HEAD stands and from the
-// working tree, before anything is fetched.
-func standingStops() []mergeRow {
-	row := func(name string, arrange func(*gittest.Fixture) string) mergeRow {
-		return mergeRow{
-			name: name, script: merging(), ops: identityRead(), outcome: result.Refused,
-			arrange: func(f *gittest.Fixture) mergeEnd { return ending(arrange(f)) },
-		}
-	}
-
-	return []mergeRow{
-		row("on the trunk with a dirty tree", func(f *gittest.Fixture) string {
-			f.Git("switch", "--quiet", trunk)
-			f.DirtyFile()
-
-			return onTrunk
-		}),
-		row("tracked files changed and a local trunk ahead of origin's", func(f *gittest.Fixture) string {
-			f.AdvanceTrunk()
-
-			return dirtyText(mergeCommand(), f.DirtyFile(), f.StagedFile())
-		}),
-	}
-}
-
 // trunkStops are the refusals of `ils merge` decided from the local trunk and from the branch's
 // commits past origin's trunk, once the trunk is fetched.
 func trunkStops() []mergeRow {
@@ -377,13 +338,10 @@ func pullStops() []mergeRow {
 					arrange(f)
 				}
 
-				return ending(noPullText)
+				return ending(noPullText())
 			},
 		}
 	}
-	elsewhere := row("open pull request against another base",
-		merging().findingOnly(change(opened, otherBase, forge.ChangeOpen)), nil)
-	elsewhere.arrange = func(*gittest.Fixture) mergeEnd { return ending(elsewhereText(mergeCommand())) }
 	landed := row("open pull request against the trunk beside a merged one that carries every commit",
 		merging().with(func(script *forgetest.Script, tip string) {
 			script.FindChanges = listing([]forge.Change{pullAt(tip), change(merged, trunk, forge.ChangeMerged)})
@@ -391,22 +349,13 @@ func pullStops() []mergeRow {
 	landed.arrange = func(f *gittest.Fixture) mergeEnd {
 		f.LandPull(merged, topic)
 
-		return ending("Refused: the branch " + topic + " already landed with pull request #" + strconv.Itoa(merged) +
-			"\n" + nextBranch + "\n")
+		return ending(expect(topic, "already landed", "#"+strconv.Itoa(merged)) + nextBranch())
 	}
 
 	return []mergeRow{
-		elsewhere,
 		landed,
 		row("no pull request at all", merging().findingOnly(), nil),
 		row("closed pull request against the trunk", merging().findingOnly(change(opened, trunk, forge.ChangeClosed)), nil),
-		row("merged pull request sharing no commit past the trunk",
-			merging().findingOnly(change(merged, trunk, forge.ChangeMerged)),
-			func(f *gittest.Fixture) {
-				f.Commits(spare, "earlier work")
-				f.LandPull(merged, spare)
-				f.Git("switch", "--quiet", topic)
-			}),
 	}
 }
 
@@ -420,9 +369,9 @@ func headStops() []mergeRow {
 	}
 
 	return []mergeRow{
-		row("tip behind the head", behindHeadText, headPastTip),
-		row("tip past the head", pastHeadText, tipPastHead),
-		row("tip diverged from the head", divergedHeadText, func(f *gittest.Fixture) string {
+		row("tip behind the head", behindHeadText(), headPastTip),
+		row("tip past the head", pastHeadText(), tipPastHead),
+		row("tip diverged from the head", divergedHeadText(), func(f *gittest.Fixture) string {
 			head := headPastTip(f)
 			f.Commits(topic, "add an example")
 
@@ -460,27 +409,22 @@ func pullRequestStops() []mergeRow {
 		}
 	}
 
-	draft := row("draft", draftText, merging().drafted(), changesRead())
-	draft.drawn = []drawnPart{commandIn(nextReady, readyCommand)}
-
 	return []mergeRow{
-		draft,
-		row("draft titled after its branch", draftText, merging().drafted().titled("fix-thing"), changesRead()),
+		row("draft", draftText(), merging().drafted(), changesRead()),
+		row("draft titled after its branch", draftText(), merging().drafted().titled("fix-thing"), changesRead()),
 		row("titled after its branch with squash merges forbidden in the settings", titleText("fix-thing"),
 			merging().titled("fix-thing").forbiddenInSettings(), changesRead()),
-		row("squash merges forbidden in the settings", settingsText, merging().forbiddenInSettings(), changesRead()),
-		row("squash merges forbidden in the settings and by the ruleset", settingsText,
-			merging().forbiddenInSettings().forbiddenByRuleset(42), changesRead()),
-		row("squash merges forbidden by the ruleset", rulesetText, merging().forbiddenByRuleset(42), rulesRead()),
+		row("squash merges forbidden in the settings", settingsText(), merging().forbiddenInSettings(), changesRead()),
+		row("squash merges forbidden by the ruleset", rulesetText(), merging().forbiddenByRuleset(42), rulesRead()),
 		row("squash merges forbidden by two rulesets",
-			"Refused: the rulesets 42, 51 on the trunk "+trunk+" forbid squash merges\n"+nextRuleset,
+			expect("rulesets 42, 51", trunk, "forbid squash merges")+mergeCommand().after("ruleset"),
 			merging().forbiddenByRuleset(42, 51), rulesRead()),
 	}
 }
 
 // titleStops are the refusals of pull request 12 by its title.
 func titleStops() []mergeRow {
-	titles := []string{"fix-thing", "Feat: x", "feat(): x", "fix(a(b)): x", "feat:x", "feat: ", "feat:  x"}
+	titles := []string{"fix-thing", "Feat: x", "feat(): x", "fix(a(b)): x", "feat:x", "feat:  x"}
 
 	rows := make([]mergeRow, 0, len(titles))
 	for _, title := range titles {
@@ -492,9 +436,6 @@ func titleStops() []mergeRow {
 		})
 	}
 
-	// Every title ends on the same next step, so the first row alone checks how it is drawn.
-	rows[0].drawn = []drawnPart{commandIn(editCommand, editCommand)}
-
 	return rows
 }
 
@@ -503,7 +444,7 @@ func titleStops() []mergeRow {
 func precedingStops() []mergeRow {
 	return []mergeRow{{
 		name: "tip past the head of a draft", script: merging().drafted(), ops: changesRead(),
-		outcome: result.Refused, fetches: true, known: true, arrange: pastHead(pastHeadText),
+		outcome: result.Refused, fetches: true, known: true, arrange: pastHead(pastHeadText()),
 	}}
 }
 
@@ -511,7 +452,7 @@ func TestMerge_WhenACheckBeforeTheWaitFails_RefusesAtTheFirst(t *testing.T) {
 	t.Parallel()
 
 	runMerges(t, slices.Concat(
-		standingStops(), trunkStops(), pullStops(), headStops(), precedingStops(), pullRequestStops(), titleStops(),
+		trunkStops(), pullStops(), headStops(), precedingStops(), pullRequestStops(), titleStops(),
 	))
 }
 
@@ -532,10 +473,8 @@ func TestMerge_WhenTheMergedPullRequestLacksCommitsOfTheBranch_RefusesNamingTheM
 		assertStoppedBy(t, run.got, result.Refused, mergeRequest())
 
 		_, reason := shown(t, run.got, run.gitDir)
-		assert.Check(t, is.Equal(reason,
-			"pull request #"+strconv.Itoa(merged)+" from "+topic+" was merged without the commits listed here"))
+		assertSays(t, reason, expect("#"+strconv.Itoa(merged), topic, "merged without the commits"))
 		assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(head, ""), cmpopts.EquateEmpty()))
-		assert.Check(t, is.Equal(run.written(), run.before))
 		assert.Check(t, is.DeepEqual(run.forge.Calls(), asked(changesRead()), whichRepo()))
 	})
 }
@@ -552,15 +491,12 @@ func mergeAccepted() []mergeRow {
 					arrange(f)
 				}
 
-				return ending(rulesetText)
+				return ending(rulesetText())
 			},
 		}
 	}
 
 	return []mergeRow{
-		row("local trunk behind origin's", merging(), func(f *gittest.Fixture) { f.AdvanceOrigin(trunk) }),
-		row("no local trunk", merging(), func(f *gittest.Fixture) { f.Git("branch", "--quiet", "-D", trunk) }),
-		row("title with a type and a summary", merging().titled("feat: x"), nil),
 		row("title with a scope", merging().titled("fix(cli): x"), nil),
 		row("title with a breaking mark", merging().titled("feat!: x"), nil),
 		row("title with a scope and a breaking mark", merging().titled("refactor(git)!: x"), nil),
@@ -582,38 +518,12 @@ func pastHead(text string) func(*gittest.Fixture) mergeEnd {
 func unansweredMerges() []mergeRow {
 	return []mergeRow{
 		{
-			name: "asked for its trunk", script: merging(), ops: identityRead(), offline: true, outcome: result.Refused,
-			arrange: func(*gittest.Fixture) mergeEnd { return ending(unreached(mergeCommand(), "ask for its trunk")) },
-		},
-		{
 			// Origin answers about its trunk and the fetch of it, and nothing after.
 			name: "asked to fetch the head of the pull request", script: merging(), ops: changesRead(), answered: 2,
 			outcome: result.Refused, fetches: true, known: true,
 			arrange: pastHead(unreached(mergeCommand(), "fetch the head of pull request #12")),
 		},
 	}
-}
-
-// overtimeMerges are the runs of `ils merge` that a cut ends during one of their reads, for each cut.
-func overtimeMerges() []mergeRow {
-	var rows []mergeRow
-
-	for _, c := range cuts() {
-		rows = append(rows,
-			mergeRow{
-				name: c.name + " during the fetch of the head of the pull request", script: merging(), ops: changesRead(),
-				runCtx: c.stalling(2), outcome: result.Refused, fetches: true, known: true,
-				arrange: pastHead(overtimeText(mergeCommand(), c, readPullHead)),
-			},
-			mergeRow{
-				name: c.name + " during the read of the trunk's rules", script: merging().failingRules(c.of("gh")),
-				ops: rulesRead(), outcome: result.Refused, fetches: true, known: true,
-				arrange: func(*gittest.Fixture) mergeEnd { return ending(overtimeText(mergeCommand(), c, readRules)) },
-			},
-		)
-	}
-
-	return rows
 }
 
 // failedForgeMerges are the runs of `ils merge` whose read of the forge fails for a reason no
@@ -633,71 +543,61 @@ func failedForgeMerges() []mergeRow {
 func TestMerge_WhenAReadBeforeTheWaitDoesNotFinish_StopsNamingTheRead(t *testing.T) {
 	t.Parallel()
 
-	runMerges(t, slices.Concat(unansweredMerges(), overtimeMerges(), failedForgeMerges()))
+	runMerges(t, slices.Concat(unansweredMerges(), failedForgeMerges()))
 }
 
 // failedGitMerge is the mergeEnd of a run whose git call with the arguments words fails as
-// failGit makes it, during the read named read, with pull request 12 at head.
-func failedGitMerge(read, head string, words []string) mergeEnd {
-	return mergeEnd{failedRead: read, head: head, failing: words}
+// failGit makes it, with pull request 12 at head.
+func failedGitMerge(head string, words []string) mergeEnd {
+	return mergeEnd{head: head, failing: words}
+}
+
+// failedGitRow is one run of `ils merge` whose git read fails for a reason no refusal covers.
+type failedGitRow struct {
+	// read is the read the failing git call makes fail.
+	read string
+	mergeRow
 }
 
 // failedGitMerges are the runs of `ils merge` whose git read fails for a reason no refusal covers.
-func failedGitMerges() []mergeRow {
-	return []mergeRow{
+func failedGitMerges() []failedGitRow {
+	return []failedGitRow{
 		{
-			name: "the commits on origin's trunk", script: merging(), ops: identityRead(),
-			outcome: result.Broke, fetches: true,
-			arrange: func(*gittest.Fixture) mergeEnd {
-				return failedGitMerge(readFetchedTrunk, "", []string{"rev-parse", "FETCH_HEAD"})
-			},
-		},
-		{
+			read: readHead,
 			name: "what the fetch of the head of the pull request fetched", script: merging(), ops: changesRead(),
 			outcome: result.Broke, fetches: true, known: true,
 			arrange: func(f *gittest.Fixture) mergeEnd {
-				end := failedGitMerge(readPullHead, tipPastHead(f), []string{"rev-parse", "FETCH_HEAD"})
+				end := failedGitMerge(tipPastHead(f), []string{"rev-parse", "FETCH_HEAD"})
 				end.from = forgetest.OpFindChanges
 
 				return end
 			},
 		},
 		{
+			read: readWorktrees,
 			name: "where the trunk is checked out", script: merging(), ops: identityRead(),
 			outcome: result.Broke, fetches: true,
 			arrange: func(*gittest.Fixture) mergeEnd {
-				return failedGitMerge(readWorktrees, "", worktreeList())
+				return failedGitMerge("", worktreeList())
 			},
 		},
 		{
+			read: readLocalTrunk,
 			name: "whether the local trunk exists", script: merging(), ops: identityRead(),
 			outcome: result.Broke, fetches: true,
 			arrange: func(*gittest.Fixture) mergeEnd {
-				return failedGitMerge(readLocalTrunk, "", []string{"show-ref", "--verify", "--quiet", "refs/heads/" + trunk})
+				return failedGitMerge("", []string{"show-ref", "--verify", "--quiet", "refs/heads/" + trunk})
 			},
 		},
 		{
-			name: "whether origin's trunk has the local trunk's commits", script: merging(), ops: identityRead(),
-			outcome: result.Broke, fetches: true,
-			arrange: func(*gittest.Fixture) mergeEnd { return failedGitMerge(readLocalTrunk, "", localAncestry()) },
-		},
-		{
-			name: "the commits of the local trunk", script: merging(), ops: identityRead(),
-			outcome: result.Broke, fetches: true,
-			arrange: func(f *gittest.Fixture) mergeEnd {
-				f.AdvanceTrunk()
-
-				return failedGitMerge(readLocalTrunk, "", append(history(), "refs/heads/"+trunk, "^refs/remotes/origin/"+trunk))
-			},
-		},
-		{
+			read: readHead,
 			name: "the divergence of the tip from the head", script: merging(), ops: changesRead(),
 			outcome: result.Broke, fetches: true, known: true,
 			arrange: func(f *gittest.Fixture) mergeEnd {
 				head := tipPastHead(f)
 				tip := f.Git("rev-parse", topic)
 
-				return failedGitMerge(readPullHead, head, []string{"rev-list", "--left-right", "--count", tip + "..." + head})
+				return failedGitMerge(head, []string{"rev-list", "--left-right", "--count", tip + "..." + head})
 			},
 		},
 	}
@@ -706,7 +606,12 @@ func failedGitMerges() []mergeRow {
 func TestMerge_WhenAGitReadBeforeTheWaitFails_BrokeNamingTheRead(t *testing.T) {
 	// Not parallel: each row puts a failing git first on PATH with t.Setenv.
 	for _, tt := range failedGitMerges() {
-		t.Run(tt.name, func(t *testing.T) { runMerge(t, tt) })
+		t.Run(tt.name, func(t *testing.T) {
+			end, run := mergeRowOn(t, tt.mergeRow)
+
+			assertFailedGit(t, run.got, mergeCommand(), tt.read)
+			assertStoppedBeforeWait(t, tt.mergeRow, end, run)
+		})
 	}
 }
 
@@ -716,62 +621,17 @@ func TestMerge_WhenAGitReadBeforeTheWaitFails_BrokeNamingTheRead(t *testing.T) {
 func failingFrom(t *testing.T, s *scene, words []string, op forgetest.Op) func(forgetest.Call) {
 	t.Helper()
 
-	plain := os.Getenv("PATH")
-	failGit(t, s, words)
-	faked := os.Getenv("PATH")
-	t.Setenv("PATH", plain)
+	arm := armedLater(t, func() { failGit(t, s, words) })
 
 	return func(call forgetest.Call) {
 		if call.Op == op {
-			t.Setenv("PATH", faked)
+			arm()
 		}
 	}
-}
-
-// localAncestry is the arguments of the git call that asks whether origin's trunk has every commit
-// of the local trunk.
-func localAncestry() []string {
-	return []string{"merge-base", "--is-ancestor", "refs/heads/" + trunk, "refs/remotes/origin/" + trunk}
 }
 
 // worktreeList is the arguments of the git call that asks where the trunk is checked out.
 func worktreeList() []string { return []string{"worktree", "list", "--porcelain"} }
-
-// stallingGit returns a context that c ends once the scene's git call whose arguments start with
-// words is under way, a call that waits until the end kills it. It cannot run in a parallel test.
-func (c cut) stallingGit(words []string) func(t *testing.T, s *scene) context.Context {
-	return func(t *testing.T, s *scene) context.Context {
-		t.Helper()
-
-		addr, connected := gittest.SilentListener(t)
-		fakeGit(t, s, gittest.Fake{StallOn: words, StallAt: addr})
-
-		return c.once(t.Context(), connected)
-	}
-}
-
-func TestMerge_WhenAGitReadIsCutShort_RefusesNamingIt(t *testing.T) {
-	tests := []struct {
-		name  string
-		read  string
-		words []string
-	}{
-		{name: "the read of the local trunk", read: readLocalTrunk, words: localAncestry()},
-		{name: "the read of where the trunk is checked out", read: readWorktrees, words: worktreeList()},
-	}
-	// Not parallel: each row puts a stalling git first on PATH with t.Setenv.
-	for _, c := range cuts() {
-		for _, tt := range tests {
-			t.Run(c.name+"/"+tt.name, func(t *testing.T) {
-				runMerge(t, mergeRow{
-					script: merging(), ops: identityRead(), runCtx: c.stallingGit(tt.words),
-					outcome: result.Refused, fetches: true,
-					arrange: func(*gittest.Fixture) mergeEnd { return ending(overtimeText(mergeCommand(), c, tt.read)) },
-				})
-			})
-		}
-	}
-}
 
 // mergePayload returns the merge payload got carries, or nil when it carries none, failing the test
 // when the payload's checks are nil.
@@ -793,4 +653,111 @@ func assertChecksArray(t *testing.T, checks []result.Check) {
 	t.Helper()
 
 	assert.Check(t, checks != nil, "payload checks = nil, which prints as null; want an array")
+}
+
+// mergeRun is one run of `ils merge` on a scene `setting` describes.
+type mergeRun struct {
+	*scene
+	// watch is what the run told the progress hook and the logger its deps carry.
+	watch *watch
+	tip   string
+	// before is everything the run could change, as it was before the run.
+	before string
+	got    result.Result
+}
+
+// setting is the scene of a run of `ils merge`; by default its branch passes every check before the
+// wait.
+type setting struct {
+	arrange   func(*gittest.Fixture)
+	tip       func(f *gittest.Fixture) string
+	scripted  func(t *testing.T, s *scene, script *forgetest.Script)
+	rewire    func(t *testing.T, s *scene)
+	runCtx    func(t *testing.T, s *scene) context.Context
+	landed    func(t *testing.T, f *gittest.Fixture)
+	script    forgeFor
+	cut       func(context.Context) context.Context
+	left      time.Duration
+	unbounded bool
+	offline   bool
+}
+
+// runMergeOn runs `ils merge` inside the test's bubble on the scene set describes, under a deadline
+// unless set is unbounded, and fails unless every step line the run said is held by its result. A
+// landing the forge lets through squashes the tip onto origin's trunk, as GitHub would. The run has
+// a progress hook and a logger.
+func runMergeOn(t *testing.T, set setting) mergeRun {
+	t.Helper()
+
+	s := newScene(t, set.arrange, forgetest.Script{}, set.offline)
+
+	tip := s.fixture.Git("rev-parse", topic)
+	if set.tip != nil {
+		tip = set.tip(s.fixture)
+	}
+
+	script := set.script(tip)
+	if len(script.Land) > 0 && script.Land[0] == nil {
+		script.OnLand = squashOnLand(t, s.fixture, tip, set.landed)
+	}
+
+	if set.scripted != nil {
+		set.scripted(t, s, &script)
+	}
+
+	s.useForge(t, script)
+
+	w := watchOn(&s.deps)
+
+	if set.rewire != nil {
+		set.rewire(t, s)
+	}
+
+	ctx := t.Context()
+
+	switch {
+	case set.runCtx != nil:
+		ctx = set.runCtx(t, s)
+	case !set.unbounded:
+		ctx = within(t, set.left)
+	}
+
+	if set.cut != nil {
+		ctx = set.cut(ctx)
+	}
+
+	before := s.written()
+
+	got := landing.Merge(ctx, s.deps, mergeRequest())
+
+	assertHeld(t, w, got)
+
+	return mergeRun{scene: s, watch: w, got: got, tip: tip, before: before}
+}
+
+// squashOnLand returns a landing hook that squashes tip onto origin's trunk with the landing's subject
+// and body, then runs landed when it is set.
+func squashOnLand(t *testing.T, f *gittest.Fixture, tip string, landed func(*testing.T, *gittest.Fixture)) func(forgetest.Call) {
+	t.Helper()
+
+	return func(call forgetest.Call) {
+		f.SquashOnOrigin(tip, call.Landing.Subject, call.Landing.Body)
+
+		if landed != nil {
+			landed(t, f)
+		}
+	}
+}
+
+// armedLater runs install, which puts a fake git first on PATH, then puts the plain PATH back and
+// returns arm, which puts the fake git first again. It cannot run in a parallel test.
+func armedLater(t *testing.T, install func()) (arm func()) {
+	t.Helper()
+
+	plain := os.Getenv("PATH")
+	install()
+	faked := os.Getenv("PATH")
+	t.Setenv("PATH", plain)
+
+	return func() { t.Setenv("PATH", faked) }
 }

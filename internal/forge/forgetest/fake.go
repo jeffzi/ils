@@ -47,6 +47,16 @@ type Answer[T any] struct {
 	Hold  bool
 }
 
+// Values scripts an operation to answer each value in turn.
+func Values[T any](values ...T) []Answer[T] {
+	answers := make([]Answer[T], 0, len(values))
+	for _, value := range values {
+		answers = append(answers, Answer[T]{Value: value})
+	}
+
+	return answers
+}
+
 // Script states the answers the fake gives.
 //
 // Each operation holds a sequence that advances one step per call, and whose last step

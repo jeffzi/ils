@@ -68,12 +68,12 @@ type Answer struct {
 // VersionArgs: a release every command accepts, so that a script need not answer the version read.
 const installed = "gh version " + github.MinimumVersion + "\n"
 
-// Call scripts the answers to one argv.
+// Call scripts the answer to one argv, given to every call of it.
 type Call struct {
 	// Args is the argv after gh, matched exactly.
 	Args []string
-	// Answers are given in order, one per call, and the last one repeats; none answers with a silent exit 0.
-	Answers []Answer
+	// Answer is what the fake answers each call of Args with.
+	Answer Answer
 }
 
 // Says scripts an exit 0 that prints stdout as the one answer to args.
@@ -83,7 +83,7 @@ func Says(stdout string, args ...string) Call {
 
 // Exits scripts answer as the one answer to args.
 func Exits(answer Answer, args ...string) Call {
-	return Call{Args: args, Answers: []Answer{answer}}
+	return Call{Args: args, Answer: answer}
 }
 
 // LoggedOut is what `gh auth status` answers when no host is logged in.
@@ -244,8 +244,24 @@ func ChangeJSON(change Change) string {
 
 // HeadJSON is `gh pr view`'s answer for a pull request at sha that is not a draft.
 func HeadJSON(sha, mergeable, status, review string) string {
-	return `{"headRefOid":` + quoted(sha) + `,"mergeable":` + quoted(mergeable) + `,"mergeStateStatus":` + quoted(status) +
-		`,"isDraft":false,"reviewDecision":` + quoted(review) + `}`
+	return headAnswer{sha: sha, mergeable: mergeable, status: status, review: review}.json()
+}
+
+// HeadDraftJSON is `gh pr view`'s answer for a draft pull request at sha that no review decides.
+func HeadDraftJSON(sha, mergeable, status string) string {
+	return headAnswer{sha: sha, mergeable: mergeable, status: status, draft: true}.json()
+}
+
+// headAnswer is what `gh pr view` reports of a pull request's head.
+type headAnswer struct {
+	sha, mergeable, status, review string
+	draft                          bool
+}
+
+// json is `gh pr view`'s answer for h.
+func (h headAnswer) json() string {
+	return `{"headRefOid":` + quoted(h.sha) + `,"mergeable":` + quoted(h.mergeable) + `,"mergeStateStatus":` +
+		quoted(h.status) + `,"isDraft":` + strconv.FormatBool(h.draft) + `,"reviewDecision":` + quoted(h.review) + `}`
 }
 
 // CheckJSON is one entry of `gh pr checks`'s answer, for a check of the workflow CI.
@@ -257,6 +273,12 @@ func CheckJSON(name, bucket, link string) string {
 // RunJSON is one entry of `gh run list`'s answer, for a run named name of the workflow CI.
 func RunJSON(status, name string) string {
 	return `{"status":` + quoted(status) + `,"name":` + quoted(name) + `,"workflowName":` + quoted(workflow) + `}`
+}
+
+// JSONArray is a JSON array of items, each already JSON, such as the entries ChangeJSON, CheckJSON
+// and RunJSON return.
+func JSONArray(items ...string) string {
+	return "[" + strings.Join(items, ",") + "]"
 }
 
 // ---------------------------------------------------------------------------
@@ -504,14 +526,9 @@ func serve(ctx context.Context, places servePlaces, args []string) int {
 		return UnscriptedCode
 	}
 
-	answers := script[index].Answers
-	if len(answers) == 0 {
-		return 0
-	}
-
 	earlier := countOf(recorded, args)
 
-	answer := answers[min(earlier, len(answers)-1)]
+	answer := script[index].Answer
 	if answer.Delay > 0 {
 		if err := announceHold(ctx, places.holdAddr, hold{Args: args, Earlier: earlier}); err != nil {
 			return broken(err)

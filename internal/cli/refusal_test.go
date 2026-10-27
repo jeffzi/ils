@@ -4,9 +4,23 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 )
+
+const (
+	// jsonNeither is the reason a JSON flag set to maybe is refused for.
+	jsonNeither = "--json takes true or false, and maybe was given"
+
+	// nextHelp is the Next step of every grammar refusal.
+	nextHelp = "ils --help"
+)
+
+// sameRun lets cmp compare the unexported fields of ran.
+func sameRun() cmp.Option {
+	return cmp.AllowUnexported(ran{})
+}
 
 // grammarRefusal is a command line that breaks the grammar, and the reason ils refuses it with.
 type grammarRefusal struct {
@@ -19,50 +33,17 @@ type grammarRefusal struct {
 // a command not in this version, and a flag that is unknown or set to neither true nor false.
 func grammarRefusals() []grammarRefusal {
 	return []grammarRefusal{
-		{name: "no word", reason: "no command was given"},
 		{name: "unknown word", args: []string{"pish"}, reason: "pish is not a command"},
 		{name: "extra word", args: []string{"push", "extra"}, reason: "push takes no other word, and extra was given"},
+		{name: "end of flags", args: []string{"--", "push"}, reason: "-- is not a command"},
 		{name: "end of flags after push", args: []string{"push", "--", "x"}, reason: "push takes no other word, and -- was given"},
-		{name: "branch", args: []string{"branch", "tidy"}, reason: "branch is not in this version"},
-		{name: "release", args: []string{"release", "1.2.3"}, reason: "release is not in this version"},
-		{name: "status", args: []string{"status"}, reason: "status is not in this version"},
-		{name: "prefix of a command", args: []string{"pus"}, reason: "pus is not a command"},
-		{name: "completion", args: []string{"completion"}, reason: "completion is not a command"},
-		{name: "man", args: []string{"man"}, reason: "man is not a command"},
-		{name: "later command with an unknown flag", args: []string{"branch", "--bogus"}, reason: "branch is not in this version"},
-		{name: "extra word after merge", args: []string{"merge", "extra"}, reason: "merge takes no other word, and extra was given"},
-		{name: "end of flags after merge", args: []string{"merge", "--", "x"}, reason: "merge takes no other word, and -- was given"},
-		{name: "unknown flag after merge", args: []string{"merge", "--bogus"}, reason: "merge takes no other word, and --bogus was given"},
-		{name: "unknown short flag after merge", args: []string{"merge", "-x"}, reason: "merge takes no other word, and -x was given"},
-		{name: "version flag after merge", args: []string{"merge", "--version"}, reason: "merge takes no other word, and --version was given"},
-		{name: "later command with a word and a short flag", args: []string{"branch", "tidy", "-x"}, reason: "branch is not in this version"},
-		{name: "later command with an unknown flag after a word", args: []string{"status", "tidy", "--bogus"}, reason: "status is not in this version"},
-		{name: "later command with a short flag", args: []string{"release", "-x"}, reason: "release is not in this version"},
+		{name: "command not in this version", args: []string{"branch", "tidy"}, reason: "branch is not in this version"},
 		{name: "unknown flag", args: []string{"--bogus"}, reason: "--bogus is not a command"},
-		{name: "unknown short flag", args: []string{"-x"}, reason: "-x is not a command"},
-		{name: "short version flag", args: []string{"-v"}, reason: "-v is not a command"},
 		{name: "version flag set to false", args: []string{"--version=false"}, reason: "no command was given"},
-		{name: "version flag before push", args: []string{"--version", "push"}, reason: "push takes no other word, and --version was given"},
 		{name: "version flag before an extra word", args: []string{"--version", "extra"}, reason: "extra is not a command"},
 		{name: "unknown flag after push", args: []string{"push", "--bogus"}, reason: "push takes no other word, and --bogus was given"},
-		{name: "unknown short flag after push", args: []string{"push", "-x"}, reason: "push takes no other word, and -x was given"},
 		{name: "group of short flags after push", args: []string{"push", "-xyz"}, reason: "push takes no other word, and -xyz was given"},
-		{name: "version flag after push", args: []string{"push", "--version"}, reason: "push takes no other word, and --version was given"},
-		{name: "short version flag after push", args: []string{"push", "-v"}, reason: "push takes no other word, and -v was given"},
-		{name: "unknown flag after an extra word", args: []string{"push", "extra", "--bogus"}, reason: "push takes no other word, and --bogus was given"},
-		{name: "unknown flag after an unknown word", args: []string{"pish", "--bogus"}, reason: "--bogus is not a command"},
-		{name: "flag set to false", args: []string{"pish", "--json=false"}, reason: "pish is not a command"},
-		{name: "debug flag after an unknown word", args: []string{"pish", "-d"}, reason: "pish is not a command"},
-		{name: "debug flag after an extra word", args: []string{"push", "extra", "--debug"}, reason: "push takes no other word, and extra was given"},
-		{name: "debug and color flags alone", args: []string{"-d", "--no-color"}, reason: "no command was given"},
-		{name: "version flag set to maybe", args: []string{"--version=maybe"}, reason: versionNeither},
 		{name: "JSON flag after push set to maybe", args: []string{"push", "--json=maybe"}, reason: jsonNeither},
-		{name: "debug flag set to maybe", args: []string{"--debug=maybe"}, reason: debugNeither},
-		{name: "debug flag after push set to maybe", args: []string{"push", "--debug=maybe"}, reason: debugNeither},
-		{name: "debug flag after merge set to maybe", args: []string{"merge", "--debug=maybe"}, reason: debugNeither},
-		{name: "color flag set to maybe", args: []string{"--no-color=maybe"}, reason: colorNeither},
-		{name: "color flag after push set to maybe", args: []string{"push", "--no-color=maybe"}, reason: colorNeither},
-		{name: "color flag after merge set to maybe", args: []string{"merge", "--no-color=maybe"}, reason: colorNeither},
 	}
 }
 

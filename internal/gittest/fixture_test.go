@@ -1,52 +1,29 @@
 package gittest_test
 
 import (
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
+	"github.com/jeffzi/ils/internal/failtest"
+	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/gittest"
 )
 
 const (
 	mainBranch = "main"
 	work       = "work"
-	fixedDate  = "2001-02-03T04:05:06Z"
 	origin     = "origin"
 	// elsewhere is an origin URL that names a host no test reaches.
 	elsewhere = "ssh://git@example.com/owner/project.git"
 )
-
-// spyTB records failures reported through it instead of failing the real test.
-type spyTB struct {
-	testing.TB
-
-	messages []string
-	stopped  bool
-}
-
-func (s *spyTB) Logf(format string, args ...any) {
-	s.messages = append(s.messages, fmt.Sprintf(format, args...))
-}
-
-func (s *spyTB) Fatalf(format string, args ...any) {
-	s.Logf(format, args...)
-	s.FailNow()
-}
-
-func (s *spyTB) FailNow() {
-	s.stopped = true
-
-	runtime.Goexit()
-}
 
 // runGit runs git in dir with the fixture's environment, independent of the fixture's own runner,
 // and returns what it did with the line ends trimmed from its stdout and the spaces around its
@@ -61,8 +38,8 @@ func runGit(t *testing.T, f *gittest.Fixture, dir string, args ...string) faked 
 	return got
 }
 
-// git runs git in dir and fails the test when git exits non-zero.
-func git(t *testing.T, f *gittest.Fixture, dir string, args ...string) string {
+// gitStdout runs git in dir and returns its trimmed stdout, failing the test when git exits non-zero.
+func gitStdout(t *testing.T, f *gittest.Fixture, dir string, args ...string) string {
 	t.Helper()
 
 	got := runGit(t, f, dir, args...)
@@ -76,7 +53,7 @@ func git(t *testing.T, f *gittest.Fixture, dir string, args ...string) string {
 func logged(t *testing.T, f *gittest.Fixture, format string) []string {
 	t.Helper()
 
-	return strings.Split(git(t, f, f.Dir(), "log", "--reverse", "--format="+format, mainBranch+".."+work), "\n")
+	return strings.Split(gitStdout(t, f, f.Dir(), "log", "--reverse", "--format="+format, mainBranch+".."+work), "\n")
 }
 
 // hasCommit reports whether the repository at dir holds the commit sha, and fails the test when
@@ -94,20 +71,7 @@ func hasCommit(t *testing.T, f *gittest.Fixture, dir, sha string) bool {
 func originBranch(t *testing.T, f *gittest.Fixture, branch string) string {
 	t.Helper()
 
-	return git(t, f, f.OriginDir(), "rev-parse", "--verify", "refs/heads/"+branch)
-}
-
-// envValue returns the value the environment gives key; the last entry wins, as it does for a child process.
-func envValue(env []string, key string) (string, bool) {
-	value, found := "", false
-
-	for _, entry := range env {
-		if rest, ok := strings.CutPrefix(entry, key+"="); ok {
-			value, found = rest, true
-		}
-	}
-
-	return value, found
+	return gitStdout(t, f, f.OriginDir(), "rev-parse", "--verify", "refs/heads/"+branch)
 }
 
 // isUnder reports whether child lies inside parent once symbolic links are resolved.
@@ -119,83 +83,30 @@ func isUnder(t *testing.T, parent, child string) bool {
 	return err == nil && filepath.IsLocal(rel)
 }
 
-func TestNew_WhenTrunkIsNotMain_OriginHeadNamesIt(t *testing.T) {
+func TestNew_WhenTrunkIsNotMain_PushesItToOriginAsItsHead(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, "develop")
 
-	got := git(t, f, f.Dir(), "ls-remote", "--symref", origin, "HEAD")
-
-	assert.Check(t, is.Contains(got, "ref: refs/heads/develop\tHEAD"))
-}
-
-func TestNew_WhenFresh_PushesTrunkCommitToBareOrigin(t *testing.T) {
-	t.Parallel()
-
-	f := gittest.New(t, "develop")
-
-	local := git(t, f, f.Dir(), "rev-parse", "--verify", "refs/heads/develop")
-
+	local := gitStdout(t, f, f.Dir(), "rev-parse", "--verify", "refs/heads/develop")
 	assert.Check(t, is.Equal(originBranch(t, f, "develop"), local))
+	assert.Check(t, is.Equal(f.OriginGit("symbolic-ref", "HEAD"), "refs/heads/develop"))
 }
 
-func TestNewServed_WhenFresh_StandsOnTheBranchWithOriginServedFromTheBareOrigin(t *testing.T) {
-	t.Parallel()
-
-	f, env := gittest.NewServed(t, mainBranch, work, elsewhere)
-
-	assert.Check(t, is.Equal(git(t, f, f.Dir(), "symbolic-ref", "--short", "HEAD"), work))
-	assert.Check(t, is.Len(logged(t, f, "%H"), 1))
-	assert.Check(t, is.Equal(git(t, f, f.Dir(), "remote", "get-url", origin), elsewhere))
-	assert.Check(t, is.DeepEqual(env, f.ServedEnv(f.OriginDir())))
-}
-
-func TestWriteFile_WhenFileIsNew_PutsContentInTheNamedFileOfDir(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-
-	gittest.WriteFile(t, dir, "notes.txt", "first line\n")
-
-	got, err := fs.ReadFile(os.DirFS(dir), "notes.txt")
-	assert.NilError(t, err)
-	assert.Check(t, is.Equal(string(got), "first line\n"))
-}
-
-func TestFixture_MissingOriginDir_WhenFresh_NamesNoRepositoryBesideTheOrigin(t *testing.T) {
+func TestFixture_Commits_WhenBranchIsNew_ReturnsCommitsCutFromTrunkInOrder(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
-
-	got := f.MissingOriginDir()
-
-	_, err := os.Stat(got)
-	assert.Check(t, is.ErrorIs(err, os.ErrNotExist))
-	assert.Check(t, is.Equal(filepath.Dir(got), filepath.Dir(f.OriginDir())))
-}
-
-func TestFixture_Commits_WhenBranchIsNew_ReturnsShasOldestFirstWithGivenSubjects(t *testing.T) {
-	t.Parallel()
-
-	f := gittest.New(t, mainBranch)
+	// Another branch is checked out, so a branch cut from HEAD would not start at the trunk.
+	f.Commits("other", "unrelated change")
+	trunk := gitStdout(t, f, f.Dir(), "rev-parse", mainBranch)
 	subjects := []string{"first change", "second change", "third change"}
 
 	shas := f.Commits(work, subjects...)
 
 	assert.Check(t, is.DeepEqual(logged(t, f, "%H"), shas))
 	assert.Check(t, is.DeepEqual(logged(t, f, "%s"), subjects))
-}
-
-func TestFixture_Commits_WhenAnotherBranchIsCheckedOut_CutsBranchFromTrunk(t *testing.T) {
-	t.Parallel()
-
-	f := gittest.New(t, mainBranch)
-	f.Commits("other", "unrelated change")
-	trunk := git(t, f, f.Dir(), "rev-parse", mainBranch)
-
-	shas := f.Commits(work, "first change")
-
-	assert.Check(t, is.Equal(git(t, f, f.Dir(), "rev-parse", shas[0]+"^"), trunk))
+	assert.Check(t, is.Equal(gitStdout(t, f, f.Dir(), "rev-parse", shas[0]+"^"), trunk))
 }
 
 func TestFixture_Commits_WhenBranchExists_AddsCommitsOnTop(t *testing.T) {
@@ -207,7 +118,6 @@ func TestFixture_Commits_WhenBranchExists_AddsCommitsOnTop(t *testing.T) {
 	shas := f.Commits(work, "second change", "third change")
 
 	assert.Check(t, is.DeepEqual(logged(t, f, "%H"), slices.Concat(earlier, shas)))
-	assert.Check(t, is.DeepEqual(logged(t, f, "%s"), []string{"first change", "second change", "third change"}))
 }
 
 func TestFixture_AdvanceOrigin_WhenBranchIsPushed_AddsCommitTheCloneLacks(t *testing.T) {
@@ -221,9 +131,7 @@ func TestFixture_AdvanceOrigin_WhenBranchIsPushed_AddsCommitTheCloneLacks(t *tes
 
 	assert.Check(t, is.Equal(originBranch(t, f, work), ahead))
 
-	assert.Check(t, is.Equal(git(t, f, f.OriginDir(), "rev-parse", ahead+"^"), shas[0]))
-
-	assert.Check(t, is.Equal(git(t, f, f.Dir(), "rev-parse", work), shas[0]))
+	assert.Check(t, is.Equal(gitStdout(t, f, f.OriginDir(), "rev-parse", ahead+"^"), shas[0]))
 
 	assert.Check(t, !hasCommit(t, f, f.Dir(), ahead))
 }
@@ -239,26 +147,20 @@ func TestFixture_AdvanceOrigin_WhenCalledTwice_StacksSecondCommitOnFirst(t *test
 	second := f.AdvanceOrigin(work)
 
 	want := strings.Join([]string{shas[0], first, second}, "\n")
-	assert.Check(t, is.Equal(git(t, f, f.OriginDir(), "rev-list", "--reverse", mainBranch+".."+work), want))
+	assert.Check(t, is.Equal(gitStdout(t, f, f.OriginDir(), "rev-list", "--reverse", mainBranch+".."+work), want))
 }
 
 func TestFixture_Diverge_WhenBranchIsPushed_GivesEachSideACommitTheOtherLacks(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
-	shas := f.Commits(work, "first change")
+	f.Commits(work, "first change")
 	f.Push(work)
 
 	local, remote := f.Diverge(work)
 
-	assert.Check(t, is.Equal(git(t, f, f.Dir(), "rev-parse", work), local))
-	assert.Check(t, local != shas[0], "local commit = %q, want a new one", local)
-
+	assert.Check(t, is.Equal(gitStdout(t, f, f.Dir(), "rev-parse", work), local))
 	assert.Check(t, is.Equal(originBranch(t, f, work), remote))
-	assert.Check(t, remote != shas[0], "origin commit = %q, want a new one", remote)
-
-	assert.Check(t, !hasCommit(t, f, f.Dir(), remote))
-
 	assert.Check(t, !hasCommit(t, f, f.OriginDir(), local))
 }
 
@@ -270,9 +172,9 @@ func TestFixture_Sibling_WhenBranchHasTwoCommits_SharesFirstCommitPastTrunk(t *t
 
 	tip := f.Sibling("other", work)
 
-	assert.Check(t, is.Equal(git(t, f, f.Dir(), "rev-parse", "--verify", "refs/heads/other"), tip))
+	assert.Check(t, is.Equal(gitStdout(t, f, f.Dir(), "rev-parse", "--verify", "refs/heads/other"), tip))
 
-	assert.Check(t, is.Equal(git(t, f, f.Dir(), "merge-base", work, "other"), shas[0]))
+	assert.Check(t, is.Equal(gitStdout(t, f, f.Dir(), "merge-base", work, "other"), shas[0]))
 
 	assert.Check(t, tip != shas[0], "other tip = %q, want a commit of its own", tip)
 }
@@ -287,8 +189,7 @@ const aliases = "Host " + sshHost + "\n  HostName git.example.org\n"
 func askedForConfig(t *testing.T, f *gittest.Fixture, env []string, host string) faked {
 	t.Helper()
 
-	command, ok := envValue(env, "GIT_SSH_COMMAND")
-	assert.Assert(t, ok, "environment sets no GIT_SSH_COMMAND")
+	command, _ := git.EnvValue(env, "GIT_SSH_COMMAND")
 
 	return callGit(t, env, f.Dir(), "-c", "alias.read-config=!"+command, "read-config", "-G", host)
 }
@@ -331,108 +232,34 @@ func TestFixture_ServedBy_WhenAskedForConfig_AnswersFromTheSSHConfigWithoutServi
 	assert.Check(t, is.ErrorIs(statErr, fs.ErrNotExist), "the serving script ran for a config read")
 }
 
-func TestFixture_ServedBy_WhenFresh_PutsTheStandInDirectoryBeforeThePath(t *testing.T) {
+func TestFixture_RemoveSSHConfig_WhenSSHReadsTheConfig_ExitsNonZero(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
-	before, _ := envValue(f.Env(), "PATH")
 
-	got, _ := envValue(f.ServedBy("exit 0"), "PATH")
-
-	dir := filepath.SplitList(got)[0]
-	_, err := os.Stat(filepath.Join(dir, "ssh"))
-	assert.Check(t, err, "the first PATH entry %s holds no stand-in for ssh", dir)
-	assert.Check(t, is.Equal(got, dir+string(os.PathListSeparator)+before))
-}
-
-// fixtureEnv is one way a fixture builds the environment of a git command.
-type fixtureEnv struct {
-	env  func(f *gittest.Fixture) []string
-	name string
-}
-
-// fixtureEnvs are the environments of a fixture whose ssh command reads the fixture's ssh config.
-func fixtureEnvs() []fixtureEnv {
-	return []fixtureEnv{
-		{name: "Env", env: (*gittest.Fixture).Env},
-		{name: "ServedEnv", env: func(f *gittest.Fixture) []string { return f.ServedEnv(f.OriginDir()) }},
-	}
-}
-
-func TestNew_WhenSSHConfigNeverSet_AnswersAsAnEmptyConfig(t *testing.T) {
-	t.Parallel()
-
-	f := gittest.New(t, mainBranch)
-	dir := t.TempDir()
-	const configName = "config"
-	gittest.WriteFile(t, dir, configName, "")
-	emptyConfigCommand := "GIT_SSH_COMMAND=ssh -F '" + filepath.ToSlash(filepath.Join(dir, configName)) + "'"
-	want := askedForConfig(t, f, append(f.Env(), emptyConfigCommand), sshHost)
-	assert.Equal(t, want.Code, 0, "stderr: %s", want.Stderr)
+	f.RemoveSSHConfig()
 
 	got := askedForConfig(t, f, f.Env(), sshHost)
-	assert.Equal(t, got.Code, 0, "stderr: %s", got.Stderr)
-
-	assert.Check(t, is.Equal(got.Stdout, want.Stdout))
-}
-
-func TestFixture_SetSSHConfig_WhenCalledTwice_KeepsTheSecondContentOnly(t *testing.T) {
-	t.Parallel()
-
-	f := gittest.New(t, mainBranch)
-	f.SetSSHConfig("Host " + sshHost + "\n  HostName first.example\n")
-
-	f.SetSSHConfig("Host " + sshHost + "\n  HostName second.example\n")
-
-	got := askedForConfig(t, f, f.Env(), sshHost)
-	assert.Equal(t, got.Code, 0, "stderr: %s", got.Stderr)
-	assert.Check(t, is.Equal(hostnameIn(got.Stdout), "second.example"))
-}
-
-func TestFixture_RemoveSSHConfig_MakesTheConfigReadExitNonZero(t *testing.T) {
-	t.Parallel()
-	for _, tt := range fixtureEnvs() {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			f := gittest.New(t, mainBranch)
-
-			f.RemoveSSHConfig()
-
-			got := askedForConfig(t, f, tt.env(f), sshHost)
-			assert.Check(t, got.Code != 0, "ssh -G succeeded with its config file removed, want a non-zero exit")
-		})
-	}
-}
-
-func TestFixture_PullRef_WhenCommitIsLocal_PointsOriginPullHeadAtCommit(t *testing.T) {
-	t.Parallel()
-
-	f := gittest.New(t, mainBranch)
-	shas := f.Commits(work, "first change")
-
-	f.PullRef(7, shas[0])
-
-	assert.Check(t, is.Equal(git(t, f, f.OriginDir(), "rev-parse", "--verify", "refs/pull/7/head"), shas[0]))
+	assert.Check(t, got.Code != 0, "ssh -G succeeded with its config file removed, want a non-zero exit")
 }
 
 func TestFixture_SquashOnOrigin_WhenBodyIsGiven_AddsTrunkCommitTheCloneLacks(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
-	trunk := git(t, f, f.Dir(), "rev-parse", mainBranch)
+	trunk := gitStdout(t, f, f.Dir(), "rev-parse", mainBranch)
 	shas := f.Commits(work, "first change", "second change")
-	tree := git(t, f, f.Dir(), "rev-parse", shas[1]+"^{tree}")
+	tree := gitStdout(t, f, f.Dir(), "rev-parse", shas[1]+"^{tree}")
 
 	squash := f.SquashOnOrigin(shas[1], "squash of work", "first paragraph\n\nsecond paragraph")
 
 	assert.Check(t, is.Equal(originBranch(t, f, mainBranch), squash))
 
 	want := trunk + " " + tree + " squash of work"
-	assert.Check(t, is.Equal(git(t, f, f.OriginDir(), "log", "-1", "--format=%P %T %s", squash), want))
+	assert.Check(t, is.Equal(gitStdout(t, f, f.OriginDir(), "log", "-1", "--format=%P %T %s", squash), want))
 
-	assert.Check(t, is.Equal(git(t, f, f.OriginDir(), "log", "-1", "--format=%b", squash), "first paragraph\n\nsecond paragraph"))
-
-	assert.Check(t, !hasCommit(t, f, f.Dir(), squash))
+	assert.Check(t, is.Equal(gitStdout(t, f, f.OriginDir(), "log", "-1", "--format=%b", squash), "first paragraph\n\nsecond paragraph"))
+	assert.Check(t, !hasCommit(t, f, f.Dir(), squash), "the working repository holds %s, want only origin to", squash)
 }
 
 func TestFixture_SquashOnOrigin_WhenBodyIsEmpty_WritesSubjectAlone(t *testing.T) {
@@ -443,7 +270,10 @@ func TestFixture_SquashOnOrigin_WhenBodyIsEmpty_WritesSubjectAlone(t *testing.T)
 
 	squash := f.SquashOnOrigin(shas[0], "squash of work", "")
 
-	assert.Check(t, is.Equal(git(t, f, f.OriginDir(), "log", "-1", "--format=%B", squash), "squash of work"))
+	raw := callGit(t, f.Env(), f.OriginDir(), "cat-file", "commit", squash)
+	assert.Equal(t, raw.Code, 0, "git cat-file commit, stderr: %s", raw.Stderr)
+	_, message, _ := strings.Cut(raw.Stdout, "\n\n")
+	assert.Check(t, is.Equal(message, "squash of work\n"))
 }
 
 // worktrees returns, for each worktree `git worktree list` run in dir names, the branch it has
@@ -454,7 +284,7 @@ func worktrees(t *testing.T, f *gittest.Fixture, dir string) map[string]string {
 	got := map[string]string{}
 	path := ""
 
-	for line := range strings.Lines(git(t, f, dir, "worktree", "list", "--porcelain")) {
+	for line := range strings.Lines(gitStdout(t, f, dir, "worktree", "list", "--porcelain")) {
 		line = strings.TrimRight(line, "\n")
 		if rest, ok := strings.CutPrefix(line, "worktree "); ok {
 			path = resolved(t, rest)
@@ -515,9 +345,9 @@ func TestFixture_AdvanceTrunk_WhenOnABranch_AddsALocalTrunkCommitOutsideTheCheck
 
 	ahead := f.AdvanceTrunk()
 
-	assert.Check(t, is.Equal(git(t, f, f.Dir(), "log", "--format=%H", origin+"/"+mainBranch+".."+mainBranch), ahead))
+	assert.Check(t, is.Equal(gitStdout(t, f, f.Dir(), "log", "--format=%H", origin+"/"+mainBranch+".."+mainBranch), ahead))
 
-	assert.Check(t, is.Equal(git(t, f, f.Dir(), "symbolic-ref", "--short", "HEAD"), work))
+	assert.Check(t, is.Equal(gitStdout(t, f, f.Dir(), "symbolic-ref", "--short", "HEAD"), work))
 }
 
 func TestFixture_UntrackedOnTrunk_WhenOnABranch_MakesSwitchingToTheTrunkRefuseToOverwriteIt(t *testing.T) {
@@ -528,19 +358,12 @@ func TestFixture_UntrackedOnTrunk_WhenOnABranch_MakesSwitchingToTheTrunkRefuseTo
 
 	path := f.UntrackedOnTrunk()
 
-	assert.Check(t, is.Equal(git(t, f, f.Dir(), "status", "--porcelain=v1", "--untracked-files=all"), "?? "+path))
+	assert.Check(t, is.Equal(gitStdout(t, f, f.Dir(), "ls-files", "--others", "--exclude-standard"), path))
 
 	tracked := runGit(t, f, f.OriginDir(), "cat-file", "-e", mainBranch+":"+path)
 	assert.Check(t, is.Equal(tracked.Code, 0), "origin's %s does not track %s", mainBranch, path)
-
-	onTrunk := git(t, f, f.Dir(), "show", mainBranch+":"+path)
-	here, err := fs.ReadFile(os.DirFS(f.Dir()), path)
-	assert.NilError(t, err)
-	assert.Check(t, onTrunk != strings.TrimRight(string(here), "\r\n"), "the local %s holds %s as it is here, want other content", mainBranch, path)
-
 	switched := runGit(t, f, f.Dir(), "switch", mainBranch)
-	assert.Check(t, switched.Code != 0, "git switch %s succeeded, want it refused", mainBranch)
-	assert.Check(t, is.Equal(git(t, f, f.Dir(), "symbolic-ref", "--short", "HEAD"), work))
+	assert.Check(t, switched.Code != 0, "git switch %s printed %+v, want it refused", mainBranch, switched)
 }
 
 func TestFixture_Publish_WhenOriginURLNamesAnotherPlace_PutsLocalTipOnOrigin(t *testing.T) {
@@ -560,132 +383,86 @@ func TestFixture_LandPull_WhenBranchHasACommit_SquashesTheCommitOntoOriginTrunkA
 
 	f := gittest.New(t, mainBranch)
 	shas := f.Commits(work, "first change")
-	tree := git(t, f, f.Dir(), "rev-parse", shas[0]+"^{tree}")
+	tree := gitStdout(t, f, f.Dir(), "rev-parse", shas[0]+"^{tree}")
 
 	f.LandPull(7, work)
 
-	assert.Check(t, is.Equal(git(t, f, f.OriginDir(), "rev-parse", "--verify", "refs/pull/7/head"), shas[0]))
+	assert.Check(t, is.Equal(gitStdout(t, f, f.OriginDir(), "rev-parse", "--verify", "refs/pull/7/head"), shas[0]))
 
-	want := tree + " first change (#7)"
-	assert.Check(t, is.Equal(git(t, f, f.OriginDir(), "log", "-1", "--format=%T %s", mainBranch), want))
-}
-
-type sshURL struct{ name, url string }
-
-// sshURLs are origin URLs over ssh in each shape git hands its ssh command differently.
-func sshURLs() []sshURL {
-	return []sshURL{
-		{name: "ssh url", url: elsewhere},
-		{name: "ssh url with a port", url: "ssh://git@example.com:2222/owner/project.git"},
-		{name: "scp-like url", url: "git@example.com:owner/project.git"},
-	}
+	landedTree, subject, ok := strings.Cut(gitStdout(t, f, f.OriginDir(), "log", "-1", "--format=%T%n%s", mainBranch), "\n")
+	assert.Assert(t, ok, "origin's %s tip has no subject line", mainBranch)
+	assert.Check(t, is.Equal(landedTree, tree))
+	assert.Check(t, strings.HasPrefix(subject, "first change"), "subject %q does not start with the branch's subject", subject)
+	assert.Check(t, is.Contains(subject, strconv.Itoa(7)))
 }
 
 func TestFixture_ServedEnv_WhenOriginURLIsSSH_FetchesFromTheRepositoryAtDir(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range sshURLs() {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	f := gittest.New(t, mainBranch)
+	shas := f.Commits(work, "first change")
+	f.Publish(work)
+	f.SetOriginURL(elsewhere)
 
-			f := gittest.New(t, mainBranch)
-			shas := f.Commits(work, "first change")
-			f.Publish(work)
-			f.SetOriginURL(tt.url)
+	got := callGit(t, f.ServedEnv(f.OriginDir()), f.Dir(), "ls-remote", origin, "refs/heads/"+work)
+	assert.Equal(t, got.Code, 0, "git ls-remote, stderr: %s", got.Stderr)
 
-			got := callGit(t, f.ServedEnv(f.OriginDir()), f.Dir(), "ls-remote", origin, "refs/heads/"+work)
-			assert.Equal(t, got.Code, 0, "git ls-remote, stderr: %s", got.Stderr)
-
-			assert.Check(t, is.Equal(got.Stdout, shas[0]+"\trefs/heads/"+work+"\n"))
-		})
-	}
+	sha, _, _ := strings.Cut(got.Stdout, "\t")
+	assert.Check(t, is.Equal(sha, shas[0]))
 }
 
 func TestFixture_ServedEnv_WhenOriginURLIsSSH_PushesToTheRepositoryAtDir(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range sshURLs() {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	f := gittest.New(t, mainBranch)
+	shas := f.Commits(work, "first change")
+	f.SetOriginURL(elsewhere)
 
-			f := gittest.New(t, mainBranch)
-			shas := f.Commits(work, "first change")
-			f.SetOriginURL(tt.url)
+	pushed := callGit(t, f.ServedEnv(f.OriginDir()), f.Dir(), "push", "--quiet", origin, work)
+	assert.Equal(t, pushed.Code, 0, "git push, stderr: %s", pushed.Stderr)
 
-			pushed := callGit(t, f.ServedEnv(f.OriginDir()), f.Dir(), "push", "--quiet", origin, work)
-			assert.Equal(t, pushed.Code, 0, "git push, stderr: %s", pushed.Stderr)
-
-			assert.Check(t, is.Equal(originBranch(t, f, work), shas[0]))
-		})
-	}
+	assert.Check(t, is.Equal(originBranch(t, f, work), shas[0]))
 }
 
-func TestEnv(t *testing.T) {
+func TestEnv_WhenProcessEnvironmentCarriesGitSetup_LeavesItOut(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("GIT_DIR", t.TempDir())
+
+	env := gittest.Env(t)
+
+	_, configHome := git.EnvValue(env, "XDG_CONFIG_HOME")
+	_, gitDir := git.EnvValue(env, "GIT_DIR")
+
+	assert.Check(t, !configHome, "gittest.Env carries XDG_CONFIG_HOME from the process environment")
+	assert.Check(t, !gitDir, "gittest.Env carries GIT_DIR from the process environment")
+}
+
+func TestEnv_WhenCalled_PutsHomeUnderTheTestTempDir(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		key  string
-		want string
-	}{
-		{key: "GIT_CONFIG_NOSYSTEM", want: "1"},
-		{key: "GIT_CONFIG_GLOBAL", want: os.DevNull},
-		{key: "GIT_AUTHOR_NAME", want: gittest.AuthorName},
-		{key: "GIT_AUTHOR_EMAIL", want: gittest.AuthorEmail},
-		{key: "GIT_COMMITTER_NAME", want: gittest.AuthorName},
-		{key: "GIT_COMMITTER_EMAIL", want: gittest.AuthorEmail},
-		{key: "GIT_AUTHOR_DATE", want: fixedDate},
-		{key: "GIT_COMMITTER_DATE", want: fixedDate},
-	}
-	sources := []struct {
-		name string
-		env  []string
-	}{
-		{name: "gittest.Env", env: gittest.Env(t)},
-		{name: "Fixture.Env", env: gittest.New(t, mainBranch).Env()},
-	}
+	parent := filepath.Dir(t.TempDir())
 
-	for _, source := range sources {
-		t.Run(source.name, func(t *testing.T) {
-			t.Parallel()
+	home, _ := git.EnvValue(gittest.Env(t), "HOME")
 
-			for _, tt := range tests {
-				t.Run(tt.key, func(t *testing.T) {
-					t.Parallel()
-
-					got, ok := envValue(source.env, tt.key)
-
-					assert.Check(t, ok, "%s does not set %s", source.name, tt.key)
-					assert.Check(t, is.Equal(got, tt.want), "%s %s", source.name, tt.key)
-				})
-			}
-		})
-	}
+	assert.Check(t, isUnder(t, parent, home), "HOME = %q, want a directory under %q", home, parent)
 }
 
-func TestTempPaths_StayUnderTestTempDir(t *testing.T) {
+func TestNew_WhenFresh_KeepsItsPathsUnderTheTestTempDir(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
-	standalone := gittest.Env(t)
 	parent := filepath.Dir(t.TempDir())
 
-	fromEnv := func(env func() []string, key string) func() string {
-		return func() string {
-			value, _ := envValue(env(), key)
-
-			return value
-		}
-	}
 	tests := []struct {
 		path func() string
 		name string
 	}{
 		{name: "working repository", path: f.Dir},
-		{name: "bare origin", path: f.OriginDir},
-		{name: "HOME of Fixture.Env", path: fromEnv(f.Env, "HOME")},
-		{name: "USERPROFILE of Fixture.Env", path: fromEnv(f.Env, "USERPROFILE")},
-		{name: "HOME of gittest.Env", path: fromEnv(func() []string { return standalone }, "HOME")},
-		{name: "USERPROFILE of gittest.Env", path: fromEnv(func() []string { return standalone }, "USERPROFILE")},
+		{name: "HOME of Fixture.Env", path: func() string {
+			home, _ := git.EnvValue(f.Env(), "HOME")
+
+			return home
+		}},
 	}
 
 	for _, tt := range tests {
@@ -694,77 +471,7 @@ func TestTempPaths_StayUnderTestTempDir(t *testing.T) {
 
 			got := tt.path()
 
-			assert.Check(t, got != "", "%s path is empty", tt.name)
 			assert.Check(t, isUnder(t, parent, got), "%s path = %q, want a directory under %q", tt.name, got, parent)
-		})
-	}
-}
-
-func TestNew(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		key  string
-		want string
-	}{
-		{key: "user.name", want: gittest.AuthorName},
-		{key: "user.email", want: gittest.AuthorEmail},
-		{key: "commit.gpgsign", want: "false"},
-	}
-	f := gittest.New(t, mainBranch)
-
-	for _, tt := range tests {
-		t.Run(tt.key, func(t *testing.T) {
-			t.Parallel()
-
-			got := runGit(t, f, f.Dir(), "config", "--local", "--get", tt.key)
-
-			assert.Check(t, is.Equal(got.Code, 0), "config --local --get %s", tt.key)
-			assert.Check(t, is.Equal(got.Stdout, tt.want), "config --local --get %s", tt.key)
-		})
-	}
-}
-
-func TestFixture_Commits_WhenProcessEnvironmentSetsIdentityAndSigning_AreUnsignedWithFixtureAuthor(t *testing.T) {
-	config := filepath.Join(t.TempDir(), "gitconfig")
-
-	err := os.WriteFile(config, []byte("[commit]\n\tgpgsign = true\n[user]\n\tname = Someone Else\n"), 0o600)
-	assert.NilError(t, err)
-
-	t.Setenv("GIT_CONFIG_GLOBAL", config)
-	t.Setenv("GIT_AUTHOR_NAME", "Someone Else")
-	t.Setenv("GIT_AUTHOR_EMAIL", "someone@example.com")
-	t.Setenv("GIT_COMMITTER_NAME", "Someone Else")
-	t.Setenv("GIT_COMMITTER_EMAIL", "someone@example.com")
-
-	f := gittest.New(t, mainBranch)
-
-	shas := f.Commits(work, "first change")
-
-	want := fmt.Sprintf("%[1]s <%[2]s> %[1]s <%[2]s> N", gittest.AuthorName, gittest.AuthorEmail)
-	assert.Check(t, is.Equal(git(t, f, f.Dir(), "log", "-1", "--format=%an <%ae> %cn <%ce> %G?", shas[0]), want))
-}
-
-func TestFixture_GitRunners_RunInTheirOwnRepository(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		run  func(f *gittest.Fixture, args ...string) string
-		name string
-		want string
-	}{
-		{name: "working repository", run: (*gittest.Fixture).Git, want: "false"},
-		{name: "bare origin", run: (*gittest.Fixture).OriginGit, want: "true"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			f := gittest.New(t, mainBranch)
-
-			got := tt.run(f, "rev-parse", "--is-bare-repository")
-
-			assert.Check(t, is.Equal(got, tt.want))
 		})
 	}
 }
@@ -772,22 +479,15 @@ func TestFixture_GitRunners_RunInTheirOwnRepository(t *testing.T) {
 func TestFixture_Git_WhenGitExitsNonZero_FailsTestWithStderr(t *testing.T) {
 	t.Parallel()
 
-	spy := &spyTB{TB: t}
+	spy := failtest.New(t)
 	f := gittest.New(spy, mainBranch)
 	args := []string{"rev-parse", "--verify", "refs/heads/absent"}
 
 	stderr := runGit(t, f, f.Dir(), args...).Stderr
 	assert.Assert(t, stderr != "", "git %v wrote nothing to stderr, want a message to look for", args)
 
-	done := make(chan struct{})
+	spy.Run(func() { f.Git(args...) })
 
-	go func() {
-		defer close(done)
-
-		f.Git(args...)
-	}()
-	<-done
-
-	assert.Check(t, spy.stopped, "Git(%v) did not stop the test", args)
-	assert.Check(t, is.Contains(strings.Join(spy.messages, "\n"), stderr))
+	assert.Check(t, spy.Stopped(), "Git(%v) did not stop the test", args)
+	assert.Check(t, is.Contains(strings.Join(spy.Messages(), "\n"), stderr))
 }

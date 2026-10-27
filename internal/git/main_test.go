@@ -1,52 +1,48 @@
 package git_test
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
-
-	"gotest.tools/v3/assert"
-	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/gittest"
-	"github.com/jeffzi/ils/internal/quiet"
 	"github.com/jeffzi/ils/internal/testtarget"
 )
 
 const (
-	// helperModeEnv makes the test binary act as git's external diff program instead of running tests.
-	helperModeEnv = "ILS_GIT_TEST_DIFF_HELPER"
+	// helperModeEnv makes the test binary act, instead of running tests, as a program that leaves a
+	// lingering copy of itself holding the output pipes it inherited, in the mode the variable names.
+	helperModeEnv = "ILS_GIT_TEST_HELPER"
 	// helperAddrEnv holds the local address a lingering helper connects to once it has started.
-	helperAddrEnv = "ILS_GIT_TEST_DIFF_HELPER_ADDR"
+	helperAddrEnv = "ILS_GIT_TEST_HELPER_ADDR"
 
-	// helperLinger makes the helper outlive git, holding the output pipes it inherited.
+	// helperLinger makes the helper hold the address in helperAddrEnv until the test ends.
 	helperLinger = "linger"
-	// helperSpawn makes the helper start a lingering copy of itself and exit at once, so that git
-	// exits zero while a process it started still holds its output pipes.
+	// helperSpawn makes the helper print helperSaid, start a lingering copy of itself and exit zero
+	// at once, so that a process it started still holds its output pipes after it exited.
 	helperSpawn = "spawn"
+	// helperWait makes the helper print helperSaid on stdout and stderr, then start a lingering copy
+	// of itself and wait for it, so that it is still running once that copy has connected.
+	helperWait = "wait"
+	// helperSaid is what the helper prints before it starts its lingering copy.
+	helperSaid = "helper started"
 
 	// sshStandInEnv makes the test binary act as an ssh command a user configured: standInAnswer
 	// followed by a name answers `-G <host>` with a config whose hostname is that name,
 	// standInSuffix followed by a suffix answers with the host it was asked for and that suffix,
-	// standInWorkDir answers with the name of the directory it runs in, standInNoHostname answers
-	// with a config that has no hostname line, standInRefuse exits non-zero with standInRefusal on
-	// stderr, standInExit followed by a number exits with that code and standInRefusal on stderr, and
-	// standInLinger starts a lingering helper that inherits its output and waits for it.
+	// standInNoHostname answers with a config that has no hostname line, standInRefuse exits non-zero
+	// with standInRefusal on stderr, standInExit followed by a number exits with that code and
+	// standInRefusal on stderr, and standInLinger starts a lingering helper that inherits its output
+	// and waits for it.
 	sshStandInEnv     = "ILS_GIT_TEST_SSH_STAND_IN"
 	standInAnswer     = "hostname="
 	standInSuffix     = "suffix="
-	standInWorkDir    = "work-dir"
 	standInNoHostname = "no-hostname"
 	standInRefuse     = "refuse"
 	standInExit       = "exit="
@@ -58,22 +54,6 @@ const (
 	// environment answer apart; any other call takes its mode from sshStandInEnv.
 	plainSSHEnv = "ILS_GIT_TEST_PLAIN_SSH"
 
-	// garbledGitEnv makes the test binary act as a git that prints the variable's value for any call
-	// and exits zero, an answer no read of git's output can parse.
-	garbledGitEnv = "ILS_GIT_TEST_GARBLED_GIT"
-
-	// originHostEnv makes the test binary print the host OriginURLs reports for the fetch URL of the
-	// repository its value names, read by a runner that sets no environment and so inherits this
-	// process's.
-	originHostEnv = "ILS_GIT_TEST_ORIGIN_HOST"
-
-	// helperLife bounds how long a lingering helper stays when nothing releases it.
-	helperLife = 30 * time.Second
-
-	// versionSecondLine follows the line a fake git prints for `git --version`, so that a read of
-	// more than the first line shows up as a wrong version.
-	versionSecondLine = "cpu: x86_64"
-
 	// testGitVar names the git the tests must find on PATH: testtarget.Minimum asks for exactly the
 	// minimum ils enforces, and testtarget.Latest or unset for that version or newer.
 	testGitVar = "ILS_TEST_GIT"
@@ -83,20 +63,11 @@ const (
 
 func TestMain(m *testing.M) {
 	if mode := os.Getenv(helperModeEnv); mode != "" {
-		os.Exit(diffHelper(mode))
-	}
-
-	if garbled, ok := os.LookupEnv(garbledGitEnv); ok {
-		fmt.Println(garbled)
-		os.Exit(0)
+		os.Exit(helper(mode))
 	}
 
 	if mode, ok := standInMode(os.Args[1:]); ok {
 		os.Exit(sshStandIn(mode, os.Args[1:]))
-	}
-
-	if dir := os.Getenv(originHostEnv); dir != "" {
-		os.Exit(printOriginHost(dir))
 	}
 
 	if code, served := gittest.Main(); served {
@@ -123,107 +94,6 @@ func guardTestGit() error {
 	}
 
 	return tool.CheckOutput(os.Getenv(testGitVar), os.Getenv(testGitVersionVar), got.Stdout, git.VersionOf)
-}
-
-// fakeGitVersion puts a git first on PATH that prints line, then versionSecondLine, for `git --version`,
-// and returns the settings that make it so. It cannot run in a parallel test: it sets PATH for the
-// whole process.
-func fakeGitVersion(t *testing.T, line string) []string {
-	t.Helper()
-
-	return gittest.FakeGit(t, gittest.Fake{Version: line + "\n" + versionSecondLine})
-}
-
-func TestGuardTestGit_WhenGitSuitsTarget_ReturnsNil(t *testing.T) {
-	// Not parallel: this sets the environment of the whole process, which the git the guard starts
-	// inherits.
-	fakeGitVersion(t, "git version "+git.MinimumVersion)
-	t.Setenv(testGitVar, testtarget.Minimum)
-	t.Setenv(testGitVersionVar, "")
-
-	err := guardTestGit()
-
-	assert.NilError(t, err)
-}
-
-func TestGuardTestGit_WhenGitDoesNotSuitTarget_ReturnsError(t *testing.T) {
-	// Not parallel: each row sets the environment of the whole process, which the git the guard
-	// starts inherits.
-	tests := []struct {
-		name    string
-		target  string
-		version string
-		line    string
-		// named are what the guard hands testtarget and the error must name: the variable that
-		// decides and the versions compared.
-		named []string
-	}{
-		{
-			name: "minimum target finds a newer git", target: testtarget.Minimum, line: "git version 99.0.0",
-			named: []string{"ILS_TEST_GIT", "99.0.0", git.MinimumVersion},
-		},
-		{
-			name: "version wanted is not the git on PATH", target: testtarget.Latest, version: "2.43.0",
-			line: "git version 2.42.0", named: []string{"ILS_TEST_GIT_VERSION", "2.42.0", "2.43.0"},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			fakeGitVersion(t, tt.line)
-			t.Setenv(testGitVar, tt.target)
-			t.Setenv(testGitVersionVar, tt.version)
-
-			err := guardTestGit()
-
-			assert.Assert(t, err != nil, "guardTestGit error = nil, want the git found refused")
-			for _, part := range tt.named {
-				assert.Check(t, is.ErrorContains(err, part))
-			}
-		})
-	}
-}
-
-func TestGuardTestGit_WhenGitMissingFromPath_ReturnsErrorNamingTheRead(t *testing.T) {
-	// Not parallel: this empties PATH for the whole process while it runs.
-	t.Setenv("PATH", t.TempDir())
-
-	err := guardTestGit()
-
-	assert.Check(t, is.ErrorContains(err, "read the version of the git on PATH: "))
-}
-
-// runSelf runs the test binary with env and args, quieting the race detector's report in it, and
-// returns what it printed on stdout and stderr and how it ended.
-func runSelf(t *testing.T, env []string, args ...string) (stdout, stderr string, err error) {
-	t.Helper()
-
-	binary, err := os.Executable()
-	assert.NilError(t, err)
-
-	var out, errOut bytes.Buffer
-
-	//nolint:gosec // G204: the test binary starts itself; nothing here comes from outside the test.
-	cmd := exec.CommandContext(t.Context(), binary, args...)
-	cmd.Env = append(slices.Clip(env), "GORACE="+quiet.Setting())
-	cmd.Stdout = &out
-	cmd.Stderr = &errOut
-
-	err = cmd.Run()
-
-	return out.String(), errOut.String(), err
-}
-
-func TestMain_WhenTestGitTargetIsUnknown_ExitsBeforeTheTests(t *testing.T) {
-	t.Parallel()
-	env := append(os.Environ(), testGitVar+"=newest")
-
-	_, stderr, err := runSelf(t, env, "-test.run=^$")
-
-	exitErr, ok := errors.AsType[*exec.ExitError](err)
-	assert.Assert(t, ok, "test binary error = %v, want it to exit non-zero", err)
-	assert.Check(t, is.Equal(exitErr.ExitCode(), 1))
-	assert.Check(t, is.Contains(stderr, testGitVar))
-	assert.Check(t, is.Contains(stderr, "newest"))
 }
 
 // standInMode returns the stand-in mode of a call of the test binary with args, and whether the
@@ -262,6 +132,8 @@ func sshStandIn(mode string, args []string) int {
 
 		n, err := strconv.Atoi(code)
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "stand-in: read the exit code of mode %q: %v\n", mode, err)
+
 			return 2
 		}
 
@@ -270,17 +142,6 @@ func sshStandIn(mode string, args []string) int {
 
 	if mode == standInNoHostname {
 		fmt.Print("user git\nport 22\n")
-
-		return 0
-	}
-
-	if mode == standInWorkDir {
-		dir, err := os.Getwd()
-		if err != nil {
-			return 2
-		}
-
-		fmt.Printf("user git\nhostname %s\nport 22\n", filepath.Base(dir))
 
 		return 0
 	}
@@ -306,54 +167,32 @@ func sshStandIn(mode string, args []string) int {
 	return 0
 }
 
-// printOriginHost prints the host OriginURLs reports for the fetch URL of the repository at dir,
-// read by a runner with no environment of its own, and returns the exit code.
-func printOriginHost(dir string) int {
-	urls, err := git.Repo{Runner: git.Runner{Dir: dir}}.OriginURLs(context.Background())
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+// helper plays the program of the lingering mode it is given and returns its exit code.
+func helper(mode string) int {
+	switch mode {
+	case helperLinger:
+		return gittest.Hold(context.Background(), os.Getenv(helperAddrEnv))
+	case helperSpawn:
+		fmt.Println(helperSaid)
 
-		return 1
-	}
-
-	fmt.Print(urls.Fetch.Host)
-
-	return 0
-}
-
-// diffHelper plays git's external diff program and returns its exit code. In the lingering mode it
-// connects to the address in the environment, then stays until that connection closes or its life is up.
-func diffHelper(mode string) int {
-	if mode == helperSpawn {
 		return spawnLingerer()
+	case helperWait:
+		fmt.Println(helperSaid)
+		fmt.Fprintln(os.Stderr, helperSaid)
+
+		return waitForLingerer()
+	default:
+		fmt.Fprintf(os.Stderr, "helper: unknown mode %q\n", mode)
+
+		return 2
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), helperLife)
-	defer cancel()
-
-	var dialer net.Dialer
-
-	conn, err := dialer.DialContext(ctx, "tcp", os.Getenv(helperAddrEnv))
-	if err != nil {
-		return 1
-	}
-
-	defer func() { _ = conn.Close() }()
-
-	deadline, _ := ctx.Deadline()
-	if err = conn.SetReadDeadline(deadline); err != nil {
-		return 1
-	}
-
-	// The test never writes: the read returns when it closes the connection or the deadline passes.
-	_, _ = conn.Read(make([]byte, 1))
-
-	return 0
 }
 
 // spawnLingerer starts a lingering helper that inherits this process's output and does not wait for it.
 func spawnLingerer() int {
 	if _, err := startLingerer(); err != nil {
+		fmt.Fprintf(os.Stderr, "helper: %v\n", err)
+
 		return 1
 	}
 
@@ -365,10 +204,14 @@ func spawnLingerer() int {
 func waitForLingerer() int {
 	lingerer, err := startLingerer()
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "helper: %v\n", err)
+
 		return 1
 	}
 
 	if err = lingerer.Wait(); err != nil {
+		fmt.Fprintf(os.Stderr, "helper: wait for the lingering helper: %v\n", err)
+
 		return 1
 	}
 

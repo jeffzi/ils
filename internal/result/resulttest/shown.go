@@ -38,6 +38,17 @@ func Decode(tb testing.TB, out string) Shown {
 	return got
 }
 
+// ReasonLine returns the reason line the text prints for reason, led by the label of outcome,
+// without its line break.
+func ReasonLine(outcome result.Outcome, reason string) string {
+	return outcome.Label() + ": " + reason
+}
+
+// NextLine returns the Next line the text prints for next, without its line break.
+func NextLine(next string) string {
+	return result.NextLabel + ": " + next
+}
+
 // AssertCarried fails unless every line of text is in what the JSON object carries: its lines, its
 // excerpt, its reason behind its outcome's label, or its next. It reports through tb only by Helper
 // and the calls of assert.TestingT, so a *testing.T or a stand-in that records them both serve.
@@ -49,9 +60,9 @@ func AssertCarried(tb interface {
 	tb.Helper()
 
 	carried := append(strings.Split(got.Excerpt, "\n"), got.Lines...)
-	carried = append(carried, result.NextLabel+": "+got.Next)
+	carried = append(carried, NextLine(got.Next))
 	if outcome, ok := result.ParseOutcome(got.Outcome); ok && outcome != result.Done {
-		carried = append(carried, outcome.Label()+": "+got.Reason)
+		carried = append(carried, ReasonLine(outcome, got.Reason))
 	}
 
 	for line := range strings.Lines(text) {

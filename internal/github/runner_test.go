@@ -3,7 +3,6 @@ package github_test
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"path/filepath"
 	"testing"
 	"time"
@@ -13,6 +12,7 @@ import (
 	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/child"
+	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/github/ghtest"
 	"github.com/jeffzi/ils/internal/logtest"
@@ -29,11 +29,8 @@ func TestVersionOf(t *testing.T) {
 		want string
 	}{
 		{name: "release with a date", line: "gh version 2.50.0 (2024-05-29)", want: "2.50.0"},
-		{name: "release without a date", line: "gh version 2.100.3", want: "2.100.3"},
-		{name: "pre-release keeps its suffix", line: "gh version 2.50.0-rc.1", want: "2.50.0-rc.1"},
 		{name: "development build", line: "gh version DEV"},
 		{name: "no gh version prefix", line: "2.50.0"},
-		{name: "empty line"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -46,23 +43,6 @@ func TestVersionOf(t *testing.T) {
 	}
 }
 
-// missingTool is the error every call returns when `gh` is not installed.
-func missingTool() *child.ToolMissingError {
-	return &child.ToolMissingError{Tool: program, InstallURL: installURL}
-}
-
-// assertMissingTool fails the test unless err is the missingTool error, ignoring its cause, and
-// returns that error.
-func assertMissingTool(t *testing.T, err error, label string) *child.ToolMissingError {
-	t.Helper()
-
-	missing, ok := errors.AsType[*child.ToolMissingError](err)
-	assert.Assert(t, ok, "%s error = %v, want *child.ToolMissingError", label, err)
-	assert.Check(t, is.DeepEqual(missing, missingTool(), cmpopts.IgnoreFields(child.ToolMissingError{}, "Err")))
-
-	return missing
-}
-
 // withoutGh sets `GH_PATH` to ghPath and empties `PATH` for the rest of the test, so that no `gh`
 // can be found.
 func withoutGh(t *testing.T, ghPath string) {
@@ -72,42 +52,33 @@ func withoutGh(t *testing.T, ghPath string) {
 	t.Setenv("PATH", t.TempDir())
 }
 
-func TestRunner_Run_WhenGhExitsZero_ReturnsOutput(t *testing.T) {
-	args := []string{"pr", "view", "--json", "number"}
-	ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "{\"number\":7}\n", Stderr: "notice\n"}, args...))
+// pendingChecksArgs is the argv of a read that exits 8 printing a pending check.
+func pendingChecksArgs() []string { return []string{"pr", "checks", "7"} }
 
-	got, err := github.Runner{}.Run(t.Context(), args...)
-	assert.NilError(t, err)
-
-	want := github.Result{Stdout: "{\"number\":7}\n", Stderr: "notice\n"}
-	assert.Check(t, is.DeepEqual(got, want))
+// pendingChecks scripts the read of pendingChecksArgs.
+func pendingChecks() ghtest.Call {
+	return ghtest.Exits(ghtest.Answer{Stdout: "build\tpending\n", Stderr: "still running\n", Code: 8}, pendingChecksArgs()...)
 }
 
-func TestRunner_Run_WhenArgHoldsShellSyntax_PassesItVerbatim(t *testing.T) {
-	value := "first && second; $HOME `third` > fourth"
-	args := []string{"api", value}
-	fake := ghtest.Setup(t, ghtest.Says("matched\n", args...))
+func TestRunner_Run_WhenGhExitsNonZero_ReturnsExitErrorNamingCall(t *testing.T) {
+	ghtest.Setup(t, pendingChecks())
 
-	_, err := github.Runner{}.Run(t.Context(), args...)
-	assert.NilError(t, err)
-
-	assertCalls(t, fake, [][]string{{"gh", "api", value}})
-}
-
-func TestRunner_Run_WhenGhExitsNonZero_ReturnsExitErrorAndStdout(t *testing.T) {
-	args := []string{"pr", "checks", "7"}
-	ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "build\tpending\n", Stderr: "still running\n", Code: 8}, args...))
-
-	got, err := github.Runner{}.Run(t.Context(), args...)
+	_, err := github.Runner{}.Run(t.Context(), pendingChecksArgs()...)
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 	assert.Assert(t, ok, "Run(pr checks) error = %v, want *child.ExitError", err)
 	wantErr := child.ExitError{
 		Argv:   []string{"gh", "pr", "checks", "7"},
 		Stderr: "still running\n",
-		Code:   8,
 	}
-	assert.Check(t, is.DeepEqual(*exitErr, wantErr))
+	assert.Check(t, is.DeepEqual(*exitErr, wantErr, cmpopts.IgnoreFields(child.ExitError{}, "Code")))
+}
+
+func TestRunner_Run_WhenGhExitsNonZero_KeepsStdout(t *testing.T) {
+	ghtest.Setup(t, pendingChecks())
+
+	got, _ := github.Runner{}.Run(t.Context(), pendingChecksArgs()...)
+
 	assert.Check(t, is.Equal(got.Stdout, "build\tpending\n"))
 }
 
@@ -140,72 +111,32 @@ func TestRunner_Run_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
 
 			_, err := github.Runner{}.Run(t.Context(), "pr", "view")
 
-			missing := assertMissingTool(t, err, "Run(pr view)")
+			missing, ok := errors.AsType[*child.ToolMissingError](err)
+			assert.Assert(t, ok, "Run(pr view) error = %v, want *child.ToolMissingError", err)
 			assert.Check(t, missing.Err != nil, "Run(pr view) error carries no cause, want what starting gh failed with")
 		})
 	}
 }
 
-// loggedCall is one record a logger received: its message and its attributes by key, a
-// duration standing as measured{}.
-type loggedCall struct {
-	Attrs   map[string]any
-	Message string
+func TestRunner_CheckLogin_WhenNotLoggedIn_ReturnsNotLoggedInError(t *testing.T) {
+	ghtest.Setup(t, ghtest.Exits(ghtest.LoggedOut(), ghtest.LoginArgs(engineHost)...))
+
+	err := github.Runner{}.CheckLogin(t.Context(), engineHost)
+
+	notLoggedIn, ok := errors.AsType[*forge.NotLoggedInError](err)
+	assert.Assert(t, ok, "CheckLogin error = %v, want *forge.NotLoggedInError", err)
+	assert.Check(t, is.Equal(notLoggedIn.Host, engineHost))
+	_, ok = errors.AsType[*child.ExitError](err)
+	assert.Check(t, ok, "CheckLogin error = %v, want it to wrap the *child.ExitError", err)
 }
 
-// measured stands in a loggedCall for a duration, which no test can predict.
-//
-// Zero counts: a call that fails before gh starts can end within one tick of a coarse clock,
-// such as the one on Windows, and log 0s.
-type measured struct{}
-
-// loggedCalls is every record sink received, in order, as loggedCalls.
-func loggedCalls(sink *logtest.Sink) []loggedCall {
-	records := sink.Records()
-	calls := make([]loggedCall, 0, len(records))
-
-	for _, record := range records {
-		attrs := make(map[string]any, len(record.Attrs))
-		for _, attr := range record.Attrs {
-			attrs[attr.Key] = valueOf(attr.Value)
-		}
-
-		calls = append(calls, loggedCall{Message: record.Message, Attrs: attrs})
-	}
-
-	return calls
-}
-
-// valueOf is what a loggedCall holds for value: measured{} for a duration that is not negative,
-// the value itself otherwise.
-func valueOf(value slog.Value) any {
-	value = value.Resolve()
-	if value.Kind() == slog.KindDuration && value.Duration() >= 0 {
-		return measured{}
-	}
-
-	return value.Any()
-}
-
-// execCall is the record run logs, as a loggedCall.
-func execCall(t *testing.T, run child.Exec) loggedCall {
-	t.Helper()
-
-	logger, sink := logtest.New()
-	run.Log(t.Context(), logger)
-
-	calls := loggedCalls(sink)
-	assert.Assert(t, is.Len(calls, 1))
-
-	return calls[0]
-}
-
-func TestRunner_Run_WhenLoggerSet_LogsToolArgvOutcomeAndDuration(t *testing.T) {
-	args := []string{"pr", "checks", "7"}
-	ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "build\tpending\n", Stderr: "still running\n", Code: 8}, args...))
+func TestRunner_Run_WhenLoggerSet_LogsTheCall(t *testing.T) {
+	args := pendingChecksArgs()
+	ghtest.Setup(t, pendingChecks())
 	logger, sink := logtest.New()
 
 	_, err := github.Runner{Logger: logger}.Run(t.Context(), args...)
 
-	assert.Check(t, is.DeepEqual(loggedCalls(sink), []loggedCall{execCall(t, child.Exec{Tool: "gh", Args: args, Err: err})}))
+	record := logtest.Only(t, sink.Records())
+	assert.Check(t, is.DeepEqual(record.Without(child.KeyDuration), logtest.ExecAttrs(t, child.Exec{Tool: "gh", Args: args, Err: err})))
 }

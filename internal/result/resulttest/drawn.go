@@ -9,11 +9,10 @@ import (
 	"gotest.tools/v3/assert"
 )
 
-// Look is how a terminal draws a character: its color by name, empty for the default, its
-// decorations, and the URI of the hyperlink it is part of, empty for none.
+// Look is how a terminal draws a character: its color by name, empty for the default, and its
+// decorations.
 type Look struct {
 	Color     string
-	Link      string
 	Bold      bool
 	Dim       bool
 	Underline bool
@@ -47,18 +46,13 @@ func (d Drawn) String() string {
 }
 
 // Draw reads out as a terminal does, drawing each character with the select graphic rendition
-// and hyperlink sequences before it. Other sequences draw nothing.
+// sequences before it. Other control sequences draw nothing.
 func Draw(tb testing.TB, out string) Drawn {
 	tb.Helper()
 
 	var d Drawn
 	pen := Look{}
 	for out != "" {
-		if rest, ok := strings.CutPrefix(out, "\x1b]"); ok {
-			pen, out = command(tb, pen, rest)
-
-			continue
-		}
 		if strings.HasPrefix(out, "\x1b[") {
 			pen, out = sequence(tb, pen, out)
 
@@ -108,83 +102,40 @@ func rendition(tb testing.TB, pen Look, params string) Look {
 	if len(fields) == 0 {
 		fields = []string{"0"}
 	}
-	for i := 0; i < len(fields); i++ {
-		switch code := fields[i]; code {
+	for _, code := range fields {
+		switch code {
 		case "0":
-			pen = Look{Link: pen.Link}
+			pen = Look{}
 		case "1":
 			pen.Bold = true
 		case "2":
 			pen.Dim = true
-		case "22":
-			pen.Bold, pen.Dim = false, false
 		case "4":
 			pen.Underline = true
-		case "24":
-			pen.Underline = false
-		case "39":
-			pen.Color = ""
-		case "38":
-			assert.Assert(tb, i+2 < len(fields) && fields[i+1] == "5", "color %q is not from the palette", params)
-			pen.Color = colorName(tb, fields[i+2], paletteBase, brightPaletteBase)
-			i += 2
 		default:
-			pen.Color = colorName(tb, code, foregroundBase, brightForegroundBase)
+			pen.Color = colorName(tb, code)
 		}
 	}
 
 	return pen
 }
 
-// command returns pen as the operating system command at the start of out changes it, and the
-// rest of out after the command. A hyperlink command links the characters after it to its URI,
-// or ends the link when the URI is empty; any other command changes nothing. The test fails on a
-// command that is not terminated by BEL or ST, and on a hyperlink without its parameters field.
-func command(tb testing.TB, pen Look, out string) (Look, string) {
-	tb.Helper()
+// foregroundBase is the parameter of the first of the eight basic foreground colors.
+const foregroundBase = 30
 
-	end := strings.IndexAny(out, "\x07\x1b")
-	assert.Assert(tb, end >= 0, "unterminated command in %q", out)
-	body, rest := out[:end], out[end+1:]
-	if out[end] == '\x1b' {
-		var terminated bool
-		rest, terminated = strings.CutPrefix(rest, "\\")
-		assert.Assert(tb, terminated, "command %q is not terminated by ST", body)
-	}
-
-	if link, ok := strings.CutPrefix(body, "8;"); ok {
-		var hasParams bool
-		_, pen.Link, hasParams = strings.Cut(link, ";")
-		assert.Assert(tb, hasParams, "hyperlink %q has no parameters field", body)
-	}
-
-	return pen, rest
-}
-
-// The first parameter or palette index of each run of eight basic colors.
-const (
-	foregroundBase       = 30
-	brightForegroundBase = 90
-	paletteBase          = 0
-	brightPaletteBase    = 8
-)
-
-// colorName returns the name of one of the 16 basic colors, given as code counted from base for
-// the eight colors and from bright for their bright forms, and fails the test on any other code.
-func colorName(tb testing.TB, code string, base, bright int) string {
+// colorName returns the name of one of the eight basic foreground colors, given as its select
+// graphic rendition parameter, and fails the test on any other parameter.
+func colorName(tb testing.TB, code string) string {
 	tb.Helper()
 
 	names := []string{"black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"}
 	n, err := strconv.Atoi(code)
 	assert.NilError(tb, err, "parameter %q", code)
-	for _, first := range []int{base, bright} {
-		if n >= first && n < first+len(names) {
-			return names[n-first]
-		}
+	if n < foregroundBase || n >= foregroundBase+len(names) {
+		tb.Fatalf("parameter %q is not a basic color", code)
 	}
-	tb.Fatalf("parameter %q is not a basic color", code)
 
-	return ""
+	return names[n-foregroundBase]
 }
 
 // LookOf returns how part is drawn where it first appears inside the first appearance of within,

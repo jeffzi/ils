@@ -2,7 +2,6 @@ package cli_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -34,26 +33,19 @@ const (
 	stuckPiped = "piped"
 	// stuckIdle starts no step.
 	stuckIdle = "idle"
-	// stuckUnstoppable shows the spinner line of its step, and every SIGSTOP it sends itself fails.
-	stuckUnstoppable = "unstoppable"
 	// stuckReturned lets its landing command return at once, then stays until it is killed.
 	stuckReturned = "returned"
 	// stuckStopping shows the spinner line of its step, and its landing command returns the
 	// result Stopped. once the first interrupt or termination of the process ended its context.
 	stuckStopping = "stopping"
 	// stuckHolding is stuckStopping, except that once the context of its landing command
-	// ended, the command prints canceled on stdout and stays for stayAfterReturn before it
-	// returns, so that a later signal reaches a run still under way.
+	// ended, the command prints canceled on stdout and stays until it is killed, so that a later
+	// signal reaches a run still under way.
 	stuckHolding = "holding"
 	// stuckHoldingEarly is stuckHolding, except that the first interrupt or termination lands
 	// before the landing command runs: the Notify of the run waits for it, after printing
 	// listening on stdout, and its landing command prints no ready.
 	stuckHoldingEarly = "holding early"
-
-	// stayAfterReturn is how long a stuckReturned run stays once its landing command returned, and
-	// how long the landing command of a holding run stays once its context ended: longer than any
-	// test waits for either.
-	stayAfterReturn = 2 * time.Minute
 
 	// ready is the line a stuck run prints on stdout once its landing command runs, or, for
 	// stuckReturned, once it returned.
@@ -65,9 +57,6 @@ const (
 	// starts, for the first interrupt or termination.
 	listening = "listening"
 )
-
-// errUnsent is why a SIGSTOP an unstoppable run sends itself fails.
-var errUnsent = errors.New("the stop signal was not sent")
 
 func TestMain(m *testing.M) {
 	if code, served := ghtest.Main(); served {
@@ -89,7 +78,7 @@ func TestMain(m *testing.M) {
 // stuck runs `ils merge` in a step that lasts until the run's deadline, as way says, with stderr
 // a color terminal wide columns wide unless way is stuckPiped, and returns its exit code. Once the
 // landing command runs, it prints ready on stdout; a stuckReturned run prints it once the command
-// returned, and stays for stayAfterReturn. A stuckStopping, stuckHolding or stuckHoldingEarly run
+// returned, and stays until it is killed. A stuckStopping, stuckHolding or stuckHoldingEarly run
 // is the one stopping describes instead.
 func stuck(way string) int {
 	app := cli.App{
@@ -104,22 +93,17 @@ func stuck(way string) int {
 	if way == stuckStopping || way == stuckHolding || way == stuckHoldingEarly {
 		return stopping(app, way)
 	}
-	if way == stuckUnstoppable {
-		app.SetSuspend(func() error { return errUnsent })
-	}
 	if way == stuckReturned {
-		app.SetMerge(func(_ context.Context, _ landing.Deps, req landing.Request) result.Result {
-			return finished(req)
-		})
+		app.SetMerge(finishing)
 		code := app.Run(context.Background(), []string{"merge"})
 		tell(ready)
-		time.Sleep(stayAfterReturn)
+		<-make(chan struct{})
 
 		return code
 	}
 	app.SetMerge(func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
 		if way != stuckIdle {
-			startedMerge(progress(deps))
+			startedMerge(deps.Progress)
 		}
 		tell(ready)
 		<-ctx.Done()
@@ -133,21 +117,21 @@ func stuck(way string) int {
 // stopping runs `ils merge` with app, which stuck set up, in a step whose spinner line shows on
 // stderr, and returns the exit code. Once the step started, its landing command prints ready on
 // stdout unless way is stuckHoldingEarly, then waits for the first interrupt or termination of the
-// process to end its context; unless way is stuckStopping, it then prints canceled and stays for
-// stayAfterReturn. It returns the result Stopped.
+// process to end its context; a stuckStopping run then returns the result Stopped, and any other
+// prints canceled and stays until it is killed.
 func stopping(app cli.App, way string) int {
 	if way == stuckHoldingEarly {
 		app.Notify = heldForTheFirstInterrupt()
 	}
 	app.SetMerge(func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
-		startedMerge(progress(deps))
+		startedMerge(deps.Progress)
 		if way != stuckHoldingEarly {
 			tell(ready)
 		}
 		<-ctx.Done()
 		if way != stuckStopping {
 			tell(canceled)
-			time.Sleep(stayAfterReturn)
+			<-make(chan struct{})
 		}
 
 		stopped := finished(req)

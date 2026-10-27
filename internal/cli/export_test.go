@@ -26,10 +26,11 @@ func (a *App) SetBuildInfo(info *debug.BuildInfo, ok bool) {
 	a.buildInfo = func() (*debug.BuildInfo, bool) { return info, ok }
 }
 
-// SetSuspend makes a run stop its process through suspend in place of sending it SIGSTOP.
-func (a *App) SetSuspend(suspend func() error) {
-	a.suspend = suspend
-}
-
 // FrameEvery is frameEvery, for the tests of package cli_test.
 const FrameEvery = frameEvery
+
+// Bound is bound, for the tests of package cli_test.
+const Bound = bound
+
+// PendingHint is pendingHint, for the tests of package cli_test.
+const PendingHint = pendingHint

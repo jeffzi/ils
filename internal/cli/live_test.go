@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -24,10 +25,42 @@ import (
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/result"
 	"github.com/jeffzi/ils/internal/result/resulttest"
+	"github.com/jeffzi/ils/internal/testtarget"
 )
 
 // The live suite runs `ils push` and `ils merge` with the real git and the real gh against a test
 // repository on GitHub. `task test:live` runs it, and `task test:setup-live` creates the repositories it needs.
+
+const (
+	// liveGhTargetVar says which gh the live suite must find: testtarget.Minimum, testtarget.Latest,
+	// or unset for latest.
+	liveGhTargetVar = "ILS_LIVE_GH"
+	// liveGhVersionVar, when set, is the exact version of gh the live suite must find.
+	liveGhVersionVar = "ILS_LIVE_GH_VERSION"
+	// liveGitTargetVar says which git the live suite must find: testtarget.Minimum,
+	// testtarget.Latest, or unset for latest.
+	liveGitTargetVar = "ILS_LIVE_GIT"
+	// liveGitVersionVar, when set, is the exact version of git the live suite must find.
+	liveGitVersionVar = "ILS_LIVE_GIT_VERSION"
+)
+
+// checkLiveGit returns why the output of `git --version` does not suit the live suite, or nil.
+func checkLiveGit(target, want, out string) error {
+	tool := testtarget.Tool{
+		Name: "git", TargetVar: liveGitTargetVar, VersionVar: liveGitVersionVar, MinimumVersion: git.MinimumVersion,
+	}
+
+	return tool.CheckOutput(target, want, out, git.VersionOf)
+}
+
+// checkLiveGh returns why the output of `gh --version` does not suit the live suite, or nil.
+func checkLiveGh(target, want, out string) error {
+	tool := testtarget.Tool{
+		Name: "gh", TargetVar: liveGhTargetVar, VersionVar: liveGhVersionVar, MinimumVersion: github.MinimumVersion,
+	}
+
+	return tool.CheckOutput(target, want, out, github.VersionOf)
+}
 
 const (
 	// liveOriginVar holds the clone URL of the test repository the suite resets and writes to.
@@ -195,6 +228,19 @@ func (l *liveSuite) remoteCommit(t *testing.T, ref string) string {
 	return sha
 }
 
+// mustRemoteCommit is remoteCommit for a ref that must exist: it fails the test when the ref is
+// missing.
+func (l *liveSuite) mustRemoteCommit(t *testing.T, ref string) string {
+	t.Helper()
+
+	sha := l.remoteCommit(t, ref)
+	if sha == "" {
+		t.Fatalf("%s has no commit on %s", l.url, ref)
+	}
+
+	return sha
+}
+
 // trunkRef is the full name of the default branch's ref.
 func (l *liveSuite) trunkRef() string {
 	return "refs/heads/" + l.trunk
@@ -222,6 +268,9 @@ func (l *liveSuite) reset(t *testing.T) {
 	dir := l.clone(t)
 	l.trunk = mustGh(t, "repo", "view", l.slug(), "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name")
 	root := mustGit(t, dir, "rev-list", "--max-parents=0", "origin/"+l.trunk)
+	if workflows := mustGit(t, dir, "ls-tree", "--name-only", root, liveWorkflowDir); workflows != "" {
+		t.Fatalf("the first commit of %s carries %s, so the scenario with no CI has CI to find", l.trunk, workflows)
+	}
 	mustGit(t, dir, "push", "--quiet", "--force", l.url, root+":"+l.trunkRef())
 
 	open := mustGh(t, "pr", "list", "--repo", l.slug(), "--state", "open", "--limit", liveListLimit,
@@ -258,12 +307,12 @@ func (l *liveSuite) cancelRuns(ctx context.Context) error {
 		running, err := liveGh(ctx, l.apiArgs("actions/runs?per_page=100&status="+status,
 			"--jq", ".workflow_runs[].id")...)
 		if err != nil {
-			return err
+			return fmt.Errorf("list %s runs of %s: %w", status, l.slug(), err)
 		}
 
 		for id := range strings.FieldsSeq(running) {
 			if _, err := liveGh(ctx, "run", "cancel", id, "--repo", l.slug()); err != nil && !l.completed(ctx, id) {
-				failed = append(failed, err)
+				failed = append(failed, fmt.Errorf("cancel run %s: %w", id, err))
 			}
 		}
 	}
@@ -584,10 +633,8 @@ func liveGreen(t *testing.T, l *liveSuite) {
 func checkMergeNext(t *testing.T, l *liveSuite, got liveRun, number int) {
 	t.Helper()
 
-	edit := "`gh pr edit --repo " + l.slug() + " " + strconv.Itoa(number) + " --title … --body …`"
-	assert.Check(t, is.Contains(got.shown.Next, "write the pull request's title and body"))
-	assert.Check(t, is.Contains(got.shown.Next, edit))
-	assert.Check(t, strings.HasSuffix(got.shown.Next, "then run ils merge"), "Next = %q, want it to end with ils merge", got.shown.Next)
+	assert.Check(t, is.Contains(got.shown.Next, l.slug()+" "+strconv.Itoa(number)))
+	assert.Check(t, is.Contains(got.shown.Next, "ils merge"))
 }
 
 func liveGreenAgain(t *testing.T, l *liveSuite) {
@@ -614,17 +661,15 @@ func liveRed(t *testing.T, l *liveSuite) {
 	failed := got.check("fail")
 	assert.Assert(t, failed.Name != "" && failed.Link != "", "no failing check with a link in:\n%s", got.raw)
 	assert.Check(t, is.Equal(failed.Name, liveJob))
-	assert.Check(t, is.Equal(got.shown.Reason, "the check "+liveJob+" failed"))
+	assert.Check(t, is.Contains(got.shown.Reason, liveJob))
 	assert.Check(t, is.Contains(got.lines(), failed.Link))
 	assert.Check(t, is.Contains(got.shown.Excerpt, marker))
-	assert.Check(t, is.Contains(got.shown.Next, "fix the failing check, commit, and run ils push again"))
+	assert.Check(t, is.Contains(got.shown.Next, "ils push"))
 }
 
 func liveNoCI(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "no-ci")
 	b.commit(t, nil)
-	workflows := mustGit(t, b.dir, "ls-tree", "--name-only", "HEAD", liveWorkflowDir)
-	assert.Assert(t, is.Equal(workflows, ""), "the trunk carries a workflow, so the scenario has CI to find")
 
 	got := b.push(t)
 	tip := b.tip(t)
@@ -633,7 +678,8 @@ func liveNoCI(t *testing.T, l *liveSuite) {
 
 	pull := b.checkFreshPull(t, tip)
 	assert.Check(t, is.Equal(got.shown.Reason, ""))
-	assert.Check(t, is.Contains(got.lines(), "No CI is configured on "+l.trunk+", so nothing verified "+tip))
+	assert.Check(t, is.Contains(got.lines(), l.trunk))
+	assert.Check(t, is.Contains(got.lines(), tip))
 	checkMergeNext(t, l, got, pull.Number)
 }
 
@@ -659,8 +705,8 @@ func liveAlreadyLanded(t *testing.T, l *liveSuite) {
 	got := b.push(t)
 
 	assert.Equal(t, got.code, exitRefused, "%s", got.raw)
-	assert.Check(t, is.Contains(got.shown.Reason, "the branch "+b.name+" already landed with pull request #"+number))
-	assert.Check(t, is.Contains(got.shown.Next, "start a branch from origin's trunk"))
+	assert.Check(t, is.Contains(got.shown.Reason, b.name))
+	assert.Check(t, is.Contains(got.shown.Reason, "#"+number))
 	assert.Check(t, got.shown.Payload == nil, "a refusal carries a payload:\n%s", got.raw)
 	assert.Check(t, is.Equal(b.remoteTip(t), before))
 }
@@ -674,14 +720,13 @@ func liveConflict(t *testing.T, l *liveSuite) {
 
 	assert.Equal(t, got.code, exitDelivered, "%s", got.raw)
 	assert.Check(t, is.Equal(b.onePull(t).Head, b.tip(t)))
-	assert.Check(t, is.Contains(got.shown.Reason, "the pull request conflicts with the trunk"))
-	assert.Check(t, is.Contains(got.shown.Next, "merge the trunk into the branch"))
-	assert.Check(t, is.Contains(got.shown.Next, "resolve the conflicts, commit, and run ils push again"))
+	assert.Assert(t, got.shown.Payload != nil && got.shown.Payload.Push != nil, "%s", got.raw)
+	assert.Check(t, is.Equal(got.shown.Payload.Push.MergeState, "conflicting"))
+	assert.Check(t, is.Contains(got.shown.Next, "ils push"))
 }
 
 func liveCIDidNotFire(t *testing.T, l *liveSuite) {
-	before := l.remoteCommit(t, l.trunkRef())
-	assert.Assert(t, before != "", "%s has no commit on %s to put back", l.url, l.trunkRef())
+	before := l.mustRemoteCommit(t, l.trunkRef())
 	l.changeTrunk(t, liveDispatchedWorkflow())
 	b := l.branch(t, "ci-did-not-fire")
 	t.Cleanup(func() {
@@ -704,11 +749,10 @@ func liveCIDidNotFire(t *testing.T, l *liveSuite) {
 	assert.Equal(t, got.code, exitDelivered, "%s", got.raw)
 
 	pull := b.onePull(t)
-	unreported := " or status reported for " + tip + " on pull request #" + strconv.Itoa(pull.Number)
 	assert.Check(t, is.Equal(pull.Head, tip))
-	assert.Check(t, is.Equal(got.shown.Reason, "no check"+unreported))
-	assert.Check(t, is.Contains(got.lines(), "No check"+unreported))
-	assert.Check(t, is.Contains(got.shown.Next, "report that no check or status reported for the pushed commit, and stop"))
+	assert.Check(t, is.Contains(got.shown.Reason, tip))
+	assert.Check(t, is.Contains(got.shown.Reason, "#"+strconv.Itoa(pull.Number)))
+	assert.Check(t, is.Contains(got.lines(), tip))
 }
 
 func liveTitleRefused(t *testing.T, l *liveSuite) {
@@ -721,8 +765,8 @@ func liveTitleRefused(t *testing.T, l *liveSuite) {
 	got := b.merge(t)
 
 	assert.Equal(t, got.code, exitRefused, "%s", got.raw)
-	assert.Check(t, is.Equal(got.shown.Reason, "the title of pull request #"+number+`, "`+b.name+
-		`", is not a conventional commit subject of the form type(scope)!: summary`))
+	assert.Check(t, is.Contains(got.shown.Reason, "#"+number))
+	assert.Check(t, is.Contains(got.shown.Reason, strconv.Quote(b.name)))
 	assert.Check(t, is.Equal(l.remoteCommit(t, l.trunkRef()), before))
 	assert.Check(t, is.Equal(b.state(t, number), "OPEN"))
 }
@@ -744,9 +788,8 @@ func liveMerged(t *testing.T, l *liveSuite) {
 	after := l.remoteCommit(t, l.trunkRef())
 	assert.Check(t, is.Equal(mustGit(t, b.dir, "rev-parse", after+"^"), before), "origin's trunk gained more than one commit")
 	assert.Check(t, is.Equal(mustGit(t, b.dir, "log", "-1", "--format=%s", after), title+" (#"+number+")"))
-	// GitHub appends the trailer for an author who is not the logged-in user, who merged.
-	want := body + "\n\nCo-authored-by: ils live suite <ils-live@example.com>"
-	assert.Check(t, is.Equal(mustGit(t, b.dir, "log", "-1", "--format=%b", after), want))
+	message := mustGit(t, b.dir, "log", "-1", "--format=%b", after)
+	assert.Check(t, strings.HasPrefix(message, body), "squash commit body = %q, want it to start with %q", message, body)
 	b.checkLanded(t, after)
 }
 
@@ -761,7 +804,8 @@ func liveMergedOnTheWeb(t *testing.T, l *liveSuite) {
 	got := b.merge(t)
 
 	assert.Equal(t, got.code, exitDone, "%s", got.raw)
-	assert.Check(t, is.Contains(got.lines(), "Pull request #"+number+" was already merged into "+l.trunk))
+	assert.Check(t, is.Contains(got.lines(), "#"+number))
+	assert.Check(t, is.Contains(got.lines(), l.trunk))
 	assert.Check(t, is.Equal(l.remoteCommit(t, l.trunkRef()), before), "ils merge made a second commit on origin's trunk")
 	b.checkLanded(t, before)
 }

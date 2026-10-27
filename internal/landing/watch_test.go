@@ -15,17 +15,41 @@ import (
 	"github.com/jeffzi/ils/internal/result"
 )
 
-const (
-	checkingStep = "start Checking the branch and origin"
-	pushingStep  = "start Pushing " + topic
-	openingStep  = "start Opening a pull request against " + trunk
-	findingStep  = "start Finding the pull request"
-	mergingStep  = "start Merging #12"
-	deletingStep = "start Deleting " + topic + " on origin"
-	movingStep   = "start Moving to origin's tip of " + trunk
-	// mergeStateStep is the step of the wait for the merge state, with its 30-second limit.
-	mergeStateStep = "start Waiting for GitHub to say whether #12 can merge of 30s"
-)
+// The steps a run starts, as told returns them: the kind of event, the word that names the step,
+// and what the step is about.
+
+func checkingStep() string {
+	return expect("start", "Checking")
+}
+
+func pushingStep() string {
+	return expect("start", "Pushing", topic)
+}
+
+func openingStep() string {
+	return expect("start", "Opening", trunk)
+}
+
+func findingStep() string {
+	return expect("start", "Finding")
+}
+
+func mergingStep() string {
+	return expect("start", "Merging", "#12")
+}
+
+func deletingStep() string {
+	return expect("start", "Deleting", topic)
+}
+
+func movingStep() string {
+	return expect("start", "Moving", trunk)
+}
+
+// mergeStateStep is the step of the wait for the merge state, limited to the merge window.
+func mergeStateStep() string {
+	return expect("start", "#12", "can merge", "of "+landing.MergeWindow.String())
+}
 
 // eventKind is what a run told its progress hook.
 type eventKind int
@@ -168,7 +192,24 @@ func plainText(t *testing.T, phrase result.Phrase) string {
 
 // said is the event of a step that succeeded saying line, a line of a result's text.
 func said(line string) string {
-	return "said " + strings.TrimSuffix(line, "\n")
+	return expect("said") + line
+}
+
+// assertTold fails unless got holds one event for each of want, each holding the parts of its want.
+func assertTold(t *testing.T, got, want []string) {
+	t.Helper()
+
+	matched := len(got) == len(want)
+	for i := 0; matched && i < len(got); i++ {
+		matched = holds(got[i], want[i])
+	}
+
+	wanted := make([][]string, 0, len(want))
+	for _, event := range want {
+		wanted = append(wanted, partsOf(event))
+	}
+
+	assert.Check(t, matched, "told %q, want one event for each of %q", got, wanted)
 }
 
 // markAll returns events with the sha tip in place of tipMark in each.
@@ -183,7 +224,7 @@ func markAll(events []string, tip string) []string {
 
 // waitingStep is the step of the wait for the checks on pull request 12, limited to left.
 func waitingStep(left time.Duration) string {
-	return "start Waiting for checks on #12 of " + left.String()
+	return expect("start", "checks", "#12", "of "+left.String())
 }
 
 // assertHeld fails unless each step line the run said is a line of got, a line of its own for

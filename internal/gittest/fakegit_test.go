@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
-	"strings"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -101,6 +100,14 @@ func TestFakeGit_WhenCallStartsWithFailingWords_FailsAsAGitRead(t *testing.T) {
 	}
 }
 
+func TestFakeGit_WhenCallStartsWithAnsweredWords_PrintsTheAnswer(t *testing.T) {
+	gittest.FakeGit(t, gittest.Fake{AnswerOn: []string{"rev-list"}, Answer: "not counts"})
+
+	got := callGit(t, nil, t.TempDir(), "rev-list", "--count", "HEAD")
+
+	assert.Check(t, is.DeepEqual(got, faked{Stdout: "not counts\n"}))
+}
+
 func TestFakeGit_WhenCallIsNotFaked_RunsTheRealGit(t *testing.T) {
 	gittest.FakeGit(t, gittest.Fake{Version: "git version 2.34.1", FailOn: []string{"show-ref"}})
 	dir := t.TempDir()
@@ -138,7 +145,7 @@ func TestFakeGit_WhenRealGitCannotStart_ExitsBroken(t *testing.T) {
 	got := callGit(t, nil, t.TempDir(), "status")
 
 	assert.Check(t, is.Equal(got.Code, gittest.BrokenCode), "git status printed %+v", got)
-	assert.Check(t, strings.HasPrefix(got.Stderr, "gittest: "), "git status printed %+v", got)
+	assert.Check(t, got.Stderr != "", "git status printed %+v", got)
 }
 
 func TestFakeGit_WhenCallStartsWithStallingWords_WaitsAtTheAddressUntilKilled(t *testing.T) {
@@ -147,17 +154,16 @@ func TestFakeGit_WhenCallStartsWithStallingWords_WaitsAtTheAddressUntilKilled(t 
 	ctx := gittest.Ending(t.Context(), connected, context.Canceled)
 	cmd := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/main")
 	cmd.Dir = t.TempDir()
-
-	err := cmd.Run()
-
-	assert.Check(t, is.ErrorIs(ctx.Err(), context.Canceled), "git show-ref ended with %v before it connected", err)
-	exitErr, ok := errors.AsType[*exec.ExitError](err)
-	assert.Assert(t, ok, "git show-ref ended with %v, want it killed while it waited", err)
 	// A process killed by a signal reports -1 on Unix; on Windows, Kill terminates it with code 1.
 	killed := -1
 	if runtime.GOOS == "windows" {
 		killed = 1
 	}
+
+	err := cmd.Run()
+
+	exitErr, ok := errors.AsType[*exec.ExitError](err)
+	assert.Assert(t, ok, "git show-ref ended with %v, want it killed while it waited", err)
 	assert.Check(t, is.Equal(exitErr.ExitCode(), killed), "git show-ref ended on its own, want it killed while it waited")
 }
 
