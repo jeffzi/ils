@@ -446,7 +446,7 @@ func (r Request) unreached(read string, err error, reason result.Phrase) *result
 
 // onWorkBranch refuses a detached HEAD and the trunk.
 func (r Request) onWorkBranch(ready Ready) *result.Result {
-	next := startBranchStep(ready.Trunk)
+	next := startBranchStep()
 
 	if ready.Standing.Kind != git.OnBranch {
 		return r.Refused(result.Say("HEAD is detached, so there is no branch to push"), next)

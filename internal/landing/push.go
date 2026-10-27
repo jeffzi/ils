@@ -101,7 +101,8 @@ func pushChecks(ctx context.Context, deps Deps, req Request, ready Ready) (pushR
 // carries, and lists the commits none of those branches carry. Origin's copy of the branch, if
 // any, settles it when it carries that commit: the branch is already published with it, so
 // another branch that shares it does not stop the push. Without that, git cannot tell which
-// branch was cut from which, so the refusal names both ways out.
+// branch was cut from which, so the refusal names every way out: land the other branches first,
+// remove them, or start a new branch and bring this branch's own commits over.
 func cutFromTrunk(ctx context.Context, deps Deps, req Request, p pushReady) *result.Result {
 	first := p.past[0].SHA
 
@@ -137,17 +138,20 @@ func cutFromTrunk(ctx context.Context, deps Deps, req Request, p pushReady) *res
 }
 
 // eitherWayOut is the Next step of a branch that shares its first commit past the trunk with count
-// other local branches: land them first, or remove them, then run command again.
+// other local branches: land them first, or remove them, then run command again; or start a branch
+// and bring this branch's own commits over.
 func eitherWayOut(count int, command result.Name) result.Next {
+	const restart = "; or " + startBranch + " and cherry-pick this branch's own commits onto it"
+
 	push := result.Command(PushCommand)
 
 	if count == 1 {
 		return result.NextStep("run %s on the other branch and get it merged first when this branch builds "+
-			"on it, or remove the other branch when it was cut from this one"+thenRunAgain, push, command)
+			"on it, or remove the other branch when it was cut from this one"+thenRunAgain+restart, push, command)
 	}
 
 	return result.NextStep("run %s on the other branches and get them merged first when this branch builds "+
-		"on them, or remove the other branches when they were cut from this one"+thenRunAgain, push, command)
+		"on them, or remove the other branches when they were cut from this one"+thenRunAgain+restart, push, command)
 }
 
 // sharedFirst says that the branch shares its first commit past the trunk with the branches

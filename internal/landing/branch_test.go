@@ -23,7 +23,7 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	startCommand = "git fetch origin " + trunk + " && git switch -c <name> --no-track refs/remotes/origin/" + trunk
+	startCommand = "ils branch <name>"
 	baseCommand  = "gh pr edit 12 --base " + trunk
 	otherBase    = "release"
 

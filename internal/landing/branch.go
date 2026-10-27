@@ -21,13 +21,13 @@ const (
 	readMergedHead   = "the merged pull request's head"
 )
 
-// startBranch is the judgment step out of a branch that cannot land; its two names are the
-// trunk. The new branch's name stays a placeholder for the agent to choose.
-const startBranch = "start a branch from origin's trunk: " +
-	"`git fetch origin %s && git switch -c <name> --no-track refs/remotes/origin/%s`"
+// startBranch is the judgment step out of a branch that cannot land. The new branch's name stays a
+// placeholder for the agent to choose.
+const startBranch = "start a branch with `ils branch <name>`"
 
-func startBranchStep(trunk string) result.Next {
-	return result.NextStep(startBranch, result.Branch(trunk), result.Branch(trunk))
+// startBranchStep is the next step that starts a branch from origin's trunk.
+func startBranchStep() result.Next {
+	return result.NextStep(startBranch)
 }
 
 // onBranch is the work branch a landing command stands on, once the checks of the branch have
@@ -211,8 +211,7 @@ func (b onBranch) landedWith(ctx context.Context, deps Deps, req Request, change
 		result.Say("pull request %s from %s was merged without the commits listed here",
 			result.PullRequest(change.Number), result.Branch(b.branch)),
 		result.NextStep(startBranch+", then bring those commits over with `git cherry-pick %s`; "+
-			"expect a conflict where the squash touched the same files", result.Branch(b.Trunk), result.Branch(b.Trunk),
-			shas(unlanded)))
+			"expect a conflict where the squash touched the same files", shas(unlanded)))
 
 	stop.Lines = listed(unlanded)
 
@@ -224,7 +223,7 @@ func (b onBranch) landedWith(ctx context.Context, deps Deps, req Request, change
 func (b onBranch) alreadyLanded(req Request, landed forge.Change) *result.Result {
 	return req.Refused(
 		result.Say("the branch %s already landed with pull request %s", result.Branch(b.branch), result.PullRequest(landed.Number)),
-		startBranchStep(b.Trunk))
+		startBranchStep())
 }
 
 func shas(commits []git.Commit) result.Name {
