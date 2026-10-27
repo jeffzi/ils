@@ -52,7 +52,7 @@ func branchChecks(ctx context.Context, deps Deps, req Request, ready Ready) (onB
 		return onBranch{}, stop
 	}
 
-	if stop := fetchTrunk(ctx, deps, req, ready.Trunk); stop != nil {
+	if _, stop := fetchTrunk(ctx, deps, req, ready.Trunk); stop != nil {
 		return onBranch{}, stop
 	}
 
@@ -75,14 +75,16 @@ func cleanTree(ctx context.Context, deps Deps, req Request) *result.Result {
 	return nil
 }
 
-// fetchTrunk fetches origin's trunk, so that the reads of origin/<trunk> that follow are current.
-func fetchTrunk(ctx context.Context, deps Deps, req Request, trunk string) *result.Result {
-	if _, err := deps.Repo.Fetch(ctx, trunk); err != nil {
-		return req.unreached(readFetchedTrunk, err,
+// fetchTrunk fetches origin's trunk, so that the reads of origin/<trunk> that follow are current,
+// and returns the sha it fetched.
+func fetchTrunk(ctx context.Context, deps Deps, req Request, trunk string) (string, *result.Result) {
+	sha, err := deps.Repo.Fetch(ctx, trunk)
+	if err != nil {
+		return "", req.unreached(readFetchedTrunk, err,
 			result.Say("origin could not be reached to fetch its trunk %s", result.Branch(trunk)))
 	}
 
-	return nil
+	return sha, nil
 }
 
 // commitsPast returns the branch's tip and its commits past origin's trunk, which fetchTrunk

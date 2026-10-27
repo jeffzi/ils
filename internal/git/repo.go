@@ -192,7 +192,8 @@ func (r Repo) CommitsPast(ctx context.Context, tip, trunk string) ([]Commit, err
 }
 
 // LocalTrunkAhead reports whether the local trunk has anything origin's trunk lacks, and returns
-// the commits it has past origin's trunk, merges left out, oldest first. A local trunk that does
+// the commits it has past origin's trunk, merges included, oldest first, so that a local trunk
+// whose only such commit is a merge still names it. A local trunk that does
 // not exist, or that origin's trunk contains, is not ahead.
 //
 // It reads origin/<trunk>, which is current only after a fetch of trunk.
@@ -209,7 +210,7 @@ func (r Repo) LocalTrunkAhead(ctx context.Context, trunk string) (ahead bool, pa
 		return false, nil, err
 	}
 
-	past, err = r.CommitsPast(ctx, local, trunk)
+	past, err = r.commits(ctx, local, excludeTrunk(trunk))
 	if err != nil {
 		return false, nil, err
 	}

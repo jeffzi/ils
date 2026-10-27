@@ -411,6 +411,7 @@ func TestRepo_LocalTrunkAhead(t *testing.T) {
 			},
 			wantAhead: true,
 		},
+		{name: "local trunk whose only commit origin's lacks is a merge", arrange: mergedOriginTrunk, wantAhead: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -425,6 +426,18 @@ func TestRepo_LocalTrunkAhead(t *testing.T) {
 			assert.Check(t, is.DeepEqual(past, want))
 		})
 	}
+}
+
+// mergedOriginTrunk merges origin's advanced trunk into the local trunk with a merge commit, the one
+// commit the local trunk then has past origin's, and returns it.
+func mergedOriginTrunk(t *testing.T, f *gittest.Fixture) []git.Commit {
+	t.Helper()
+	f.AdvanceOrigin(trunk)
+	fetch(t, f, trunk)
+	f.Git("switch", "--quiet", trunk)
+	f.Git("merge", "--quiet", "--no-ff", "--message", "merge origin", "refs/remotes/origin/"+trunk)
+
+	return []git.Commit{{SHA: f.Git("rev-parse", "HEAD"), Subject: "merge origin"}}
 }
 
 func TestRepo_BranchesContaining(t *testing.T) {

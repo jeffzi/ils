@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jeffzi/ils/internal/child"
@@ -153,9 +154,15 @@ type Request struct {
 	Args []string
 }
 
-// ilsCommand is the request's command marked as an ils command, which prints as "ils <command>".
+// ilsCommand is the request's command and its positional words, marked as an ils command, which
+// prints as "ils <command> <args>": the command to run again as typed.
 func (r Request) ilsCommand() result.Name {
-	return result.Command(r.Command)
+	return result.Command(r.commandLine())
+}
+
+// commandLine is the request's command followed by its positional words.
+func (r Request) commandLine() string {
+	return strings.Join(append([]string{r.Command}, r.Args...), " ")
 }
 
 // Ready is what the shared preconditions hand to the steps that follow them.
@@ -422,7 +429,7 @@ func (r Request) onceFixed() result.Next {
 
 // again is the next step that runs the request's command again.
 func (r Request) again() result.Next {
-	return result.NextCommand("%s", r.Command)
+	return result.NextCommand("%s", r.commandLine())
 }
 
 // unreached returns the result for a call to origin that failed with err: the refusal reason
