@@ -303,14 +303,21 @@ func (d *delivery) doneMerging() *result.Result {
 // mergeNext is the step after a push that is done: write the squash commit's message, then
 // run ils merge, once a review is in when the merge state asks for one.
 func (d *delivery) mergeNext() result.Next {
-	repo, number, merge := d.Repo.Slug(), result.PullRequestNumber(d.number), result.Command(MergeCommand)
+	return mergeStep(d.Repo, d.number, d.waited.MergeState)
+}
+
+// mergeStep is the step once the checks of pull request number in repo are green and its merge
+// state is state: write the squash commit's message, then run ils merge, once a review is in when
+// the merge state asks for one.
+func mergeStep(repo forge.Repo, number int, state forge.MergeState) result.Next {
+	slug, pull, merge := repo.Slug(), result.PullRequestNumber(number), result.Command(MergeCommand)
 
 	// A review is not the agent's to give, so it is asked for and the push is still done.
-	if d.waited.MergeState == forge.MergeBlockedByReview {
-		return result.NextStep("request a review of the pull request first, then "+writeThenMerge, repo, number, merge)
+	if state == forge.MergeBlockedByReview {
+		return result.NextStep("request a review of the pull request first, then "+writeThenMerge, slug, pull, merge)
 	}
 
-	return result.NextStep(writeThenMerge, repo, number, merge)
+	return result.NextStep(writeThenMerge, slug, pull, merge)
 }
 
 // withoutCI asks the forge whether the repository has CI on its trunk, for a pushed commit that

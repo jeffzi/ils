@@ -151,12 +151,21 @@ func detachedKept(ctx context.Context, deps Deps, req Request, trunk string) *re
 		return nil
 	}
 
-	stop := req.Refused(
-		result.Say("HEAD is detached with commits origin's trunk %s lacks, listed here", result.Branch(trunk)),
-		result.NextStep("keep them on a branch with `git switch -c <name>`, then run %s", result.Command(PushCommand)))
+	stop := req.Refused(detachedWith(trunk), keepDetachedStep())
 	stop.Lines = listed(own)
 
 	return stop
+}
+
+// detachedWith says that HEAD is detached with commits origin's trunk lacks, listed after it.
+func detachedWith(trunk string) result.Phrase {
+	return result.Say("HEAD is detached with commits origin's trunk %s lacks, listed here", result.Branch(trunk))
+}
+
+// keepDetachedStep is the next step of a detached HEAD with commits origin's trunk lacks: keep them
+// on a branch, then push it.
+func keepDetachedStep() result.Next {
+	return result.NextStep("keep them on a branch with `git switch -c <name>`, then run %s", result.Command(PushCommand))
 }
 
 // aheadLines returns the lines that name the local trunk's commits origin's trunk lacks, which stay

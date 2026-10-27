@@ -472,8 +472,9 @@ type Result struct {
 
 // Payload is a result's structured detail, one field per command that has any.
 type Payload struct {
-	Push  *Push  `json:"push,omitempty"`
-	Merge *Merge `json:"merge,omitempty"`
+	Push   *Push   `json:"push,omitempty"`
+	Merge  *Merge  `json:"merge,omitempty"`
+	Status *Status `json:"status,omitempty"`
 }
 
 // Push is the structured detail of a push.
@@ -518,6 +519,87 @@ type Merge struct {
 	// Merged is true when this run made the merge, and false when it found the pull request
 	// merged or did not merge it.
 	Merged bool `json:"merged"`
+}
+
+// The words of Status.Standing.
+const (
+	// StandingBranch is HEAD on a work branch.
+	StandingBranch   = "branch"
+	StandingTrunk    = "trunk"
+	StandingDetached = "detached"
+	// StandingNoOrigin is a repository with no remote named origin.
+	StandingNoOrigin = "no-origin"
+	// StandingNoRepository is a directory in no git repository.
+	StandingNoRepository = "no-repository"
+)
+
+// The words of Status.Protection, in the words of the forge's rules.
+const (
+	// ProtectionProtected is a trunk at least one rule applies to.
+	ProtectionProtected = "protected"
+	// ProtectionNone is a trunk no rule applies to.
+	ProtectionNone = "none"
+	// ProtectionUnavailable is a trunk whose repository's plan does not allow rules.
+	ProtectionUnavailable = "unavailable"
+)
+
+// Status is the structured detail of a status: what it read of the branch, origin and GitHub.
+// A fact whose read failed keeps its zero value, and Unread names that read.
+type Status struct {
+	// Standing is one of the Standing words, and empty when where HEAD stands could not be read.
+	Standing string `json:"standing"`
+	Branch   string `json:"branch"`
+	Trunk    string `json:"trunk"`
+	// LastTag is, on the trunk, the highest version tag origin holds whose commit is on origin's
+	// trunk, and empty when there is none.
+	LastTag string `json:"last_tag"`
+	// Protection is, on the trunk, one of the Protection words.
+	Protection string `json:"protection"`
+	// PullRequest is the branch's open pull request against the trunk, nil when it has none.
+	PullRequest *OpenPull `json:"pull_request"`
+	// PastPullRequests are the branch's closed and merged pull requests, in the order GitHub
+	// lists them.
+	PastPullRequests []PastPull `json:"past_pull_requests"`
+	// Unlanded are, on a detached HEAD, the shas of its commits origin's trunk lacks, oldest first.
+	Unlanded []string `json:"unlanded"`
+	Unread   []Unread `json:"unread"`
+	// Ahead and Behind count the commits the branch and origin's copy of it each have that the
+	// other lacks; both are zero when origin has no copy. On the trunk they count against origin's
+	// trunk.
+	Ahead  int `json:"ahead"`
+	Behind int `json:"behind"`
+	// SinceTag is, on the trunk, the number of commits on origin's trunk since LastTag.
+	SinceTag int  `json:"since_tag"`
+	OnOrigin bool `json:"on_origin"`
+	// ReleaseCommit is, on the trunk, whether origin's trunk tip is a release commit, whose subject
+	// is `chore: release v<X.Y.Z>`, with or without a trailing ` (#N)`.
+	ReleaseCommit bool `json:"release_commit"`
+}
+
+// OpenPull is the open pull request of a status. Verdict, MergeState and Checks are in the words of
+// Push, and so are the none and unknown they keep when their read failed.
+type OpenPull struct {
+	URL        string  `json:"url"`
+	Title      string  `json:"title"`
+	Body       string  `json:"body"`
+	Verdict    string  `json:"verdict"`
+	MergeState string  `json:"merge_state"`
+	Checks     []Check `json:"checks"`
+	Number     int     `json:"number"`
+	// TitleOK is whether the title is a conventional commit subject, as `ils merge` requires.
+	TitleOK bool `json:"title_ok"`
+}
+
+// PastPull is a closed or merged pull request of a status.
+type PastPull struct {
+	State  string `json:"state"`
+	Number int    `json:"number"`
+}
+
+// Unread is a read of a status that failed: what it read, as the text names it, and why it failed.
+type Unread struct {
+	Read  string `json:"read"`
+	Error string `json:"error"`
 }
 
 // Check is one check or status reported on a commit.

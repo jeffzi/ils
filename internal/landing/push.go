@@ -215,14 +215,26 @@ func originCopy(ctx context.Context, deps Deps, req Request, p pushReady) (their
 	case apart.Behind > 0 && apart.Ahead > 0:
 		return "", false, req.Refused(
 			result.Say("the branch %s and origin's copy of it have diverged", result.Branch(p.branch)),
-			result.NextStep("run `git merge origin/%s`"+thenRunAgain, result.Branch(p.branch), req.ilsCommand()))
+			divergedStep(p.branch, req.ilsCommand()))
 
 	case apart.Behind > 0:
 		return "", false, req.Refused(
 			result.Say("the branch %s is behind origin's copy of it", result.Branch(p.branch)),
-			result.NextStep("run `git pull --ff-only origin %s`"+thenRunAgain, result.Branch(p.branch), req.ilsCommand()))
+			behindStep(p.branch, req.ilsCommand()))
 
 	}
 
 	return theirs, apart.Ahead == 0, nil
+}
+
+// divergedStep is the next step of a branch that has diverged from origin's copy of it: merge that
+// copy, then run command again.
+func divergedStep(branch string, command result.Name) result.Next {
+	return result.NextStep("run `git merge origin/%s`"+thenRunAgain, result.Branch(branch), command)
+}
+
+// behindStep is the next step of a branch behind origin's copy of it: fast-forward to that copy,
+// then run command again.
+func behindStep(branch string, command result.Name) result.Next {
+	return result.NextStep("run `git pull --ff-only origin %s`"+thenRunAgain, result.Branch(branch), command)
 }

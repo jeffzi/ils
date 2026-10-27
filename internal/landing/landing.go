@@ -243,12 +243,15 @@ func gitStanding(ctx context.Context, deps Deps, req Request) (git.Standing, *re
 	}
 
 	if standing.Kind == git.NoOrigin {
-		return git.Standing{}, req.Refused(
-			result.Say("this repository has no remote named origin"),
-			result.NextStep("create the repository on GitHub and push to it with `gh repo create --source . --push`"))
+		return git.Standing{}, req.Refused(result.Say("this repository has no remote named origin"), createOriginStep())
 	}
 
 	return standing, nil
+}
+
+// createOriginStep is the next step of a repository with no origin: create it on GitHub.
+func createOriginStep() result.Next {
+	return result.NextStep("create the repository on GitHub and push to it with `gh repo create --source . --push`")
 }
 
 // originRepo returns the repository both of origin's URLs name.
@@ -279,21 +282,31 @@ func identity(ctx context.Context, deps Deps, req Request, origin forge.Repo) (f
 		return forge.Repo{}, req.identityFailure(err)
 	}
 
+	if stop := req.repoRefusal(repo); stop != nil {
+		return forge.Repo{}, stop
+	}
+
+	return repo, nil
+}
+
+// repoRefusal returns the refusal of repo, as the forge's identity read filled it, when it is a fork
+// or the user cannot push to it, and nil when ils pushes to it.
+func (r Request) repoRefusal(repo forge.Repo) *result.Result {
 	byHand := result.NextStep("stop and tell the user to push by hand")
 
 	if repo.Fork {
-		return forge.Repo{}, req.Refused(
+		return r.Refused(
 			result.Say("%s is a fork, which ils does not push to; the user pushes by hand", repo.FullName()),
 			byHand)
 	}
 
 	if !repo.CanPush {
-		return forge.Repo{}, req.Refused(
+		return r.Refused(
 			result.Say("the logged-in user has no push permission on %s; the user pushes by hand", repo.FullName()),
 			byHand)
 	}
 
-	return repo, nil
+	return nil
 }
 
 // trunkOf returns origin's default branch, asked of origin.
@@ -313,11 +326,21 @@ func trunkOf(ctx context.Context, deps Deps, req Request) (string, *result.Resul
 	return "", req.unreached(readTrunk, err, reason)
 }
 
-// identityFailure returns the result for a forge identity call that failed with err: the
-// refusal tooOld returns for a gh that is older than the minimum or names no readable version,
-// a refusal naming `gh auth login` for a host gh is not logged in to, and what unread returns
-// for any other failure.
+// identityFailure returns the result for a forge identity call that failed with err: the refusal
+// toolRefusal returns, and what unread returns for any other failure.
 func (r Request) identityFailure(err error) *result.Result {
+	if stop := r.toolRefusal(err); stop != nil {
+		return stop
+	}
+
+	return r.unread(readIdentity, err)
+}
+
+// toolRefusal returns the refusal for a forge call that failed with err because of gh itself: the
+// refusal tooOld returns for a gh that is older than the minimum or names no readable version, a
+// refusal naming `gh auth login` for a host gh is not logged in to, and the refusal notInstalled
+// returns for a gh that is not installed. It returns nil for any other failure.
+func (r Request) toolRefusal(err error) *result.Result {
 	if stop := r.tooOld(err); stop != nil {
 		return stop
 	}
@@ -329,10 +352,9 @@ func (r Request) identityFailure(err error) *result.Result {
 			result.Say("gh is not logged in to %s; log in with `gh auth login --hostname %s`, "+
 				"or push by hand if %s is not GitHub", host, host, host),
 			result.NextStep("log in to %s"+thenRunAgain, host, r.ilsCommand()))
-
 	}
 
-	return r.unread(readIdentity, err)
+	return r.notInstalled(err)
 }
 
 // tooOld returns the refusal for a tool whose version check failed with err because the tool
@@ -474,13 +496,17 @@ func (r Request) fetchPullHead(ctx context.Context, deps Deps, number int, read 
 // nothingPast refuses a branch with no commit that origin's trunk lacks. Its next step is the push
 // of the new work, which for `ils merge` is a first push and not a run again.
 func (r Request) nothingPast(b onBranch) *result.Result {
-	push := result.Command(PushCommand)
-
-	next := result.NextStep("commit the work"+thenRunAgain, push)
+	next := result.NextStep("commit the work"+thenRunAgain, result.Command(PushCommand))
 	if r.Command == MergeCommand {
-		next = result.NextStep("commit the work, then run %s", push)
+		next = firstPushStep()
 	}
 
 	return r.Refused(
 		result.Say("the branch %s has no commit past origin's trunk %s", result.Branch(b.branch), result.Branch(b.Trunk)), next)
+}
+
+// firstPushStep is the next step of a branch with no commit past origin's trunk, for a command
+// other than push: commit the work, then push it for the first time.
+func firstPushStep() result.Next {
+	return result.NextStep("commit the work, then run %s", result.Command(PushCommand))
 }

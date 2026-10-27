@@ -33,6 +33,8 @@ const (
 	// `git merge-base --is-ancestor` when the answer is no, and of `git config --get` for a key that
 	// is not set.
 	falseCode = 1
+	// fatalCode is the exit of a git command that died of a fatal error.
+	fatalCode = 128
 
 	commitFormat = "--format=%H %s"
 )
@@ -96,6 +98,36 @@ func (r Repo) Standing(ctx context.Context) (Standing, error) {
 	}
 
 	return Standing{Kind: OnBranch, Branch: branch}, nil
+}
+
+// NoRepositoryError reports that git found no repository it can work in.
+type NoRepositoryError struct {
+	// Err is git's refusal, a *child.ExitError that carries git's message.
+	Err error
+}
+
+// Error returns git's refusal, which says why it found no repository.
+func (e *NoRepositoryError) Error() string {
+	return e.Err.Error()
+}
+
+// Unwrap returns git's refusal.
+func (e *NoRepositoryError) Unwrap() error {
+	return e.Err
+}
+
+// CheckRepository returns nil when git finds a repository to work in from the runner's directory,
+// and a *NoRepositoryError when it dies of a fatal error looking for one.
+//
+// Git dies the same way when it finds none and when it refuses the one it finds, such as one owned
+// by another user; only its message, which the error carries, tells the two apart.
+func (r Repo) CheckRepository(ctx context.Context) error {
+	_, err := r.Runner.Run(ctx, "rev-parse", "--git-dir")
+	if exited(err, fatalCode) {
+		return &NoRepositoryError{Err: err}
+	}
+
+	return err
 }
 
 // HeadSHA returns the sha of the commit HEAD is on.

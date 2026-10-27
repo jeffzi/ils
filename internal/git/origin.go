@@ -113,6 +113,10 @@ func (o Origin) Same(other Origin) bool {
 }
 
 const (
+	// remotesRef prefixes the remote-tracking refs, where the clone keeps what it last fetched of
+	// origin's branches.
+	remotesRef = "refs/remotes/" + origin + "/"
+
 	symrefLead = "ref: "
 	symrefTail = "\tHEAD"
 
@@ -289,6 +293,24 @@ func (r Repo) RemoteBranch(ctx context.Context, name string) (sha string, found 
 	return "", false, nil
 }
 
+// LastFetchedTrunk returns origin's default branch as the clone last learned it, from origin's HEAD
+// among the remote-tracking refs, without asking origin; found is false when the clone holds no
+// such ref.
+func (r Repo) LastFetchedTrunk(ctx context.Context) (trunk string, found bool, err error) {
+	ref, found, err := r.optionalLine(ctx, "symbolic-ref", "--quiet", remotesRef+"HEAD")
+	if !found {
+		return "", false, err
+	}
+
+	return strings.TrimPrefix(ref, remotesRef), true, nil
+}
+
+// LastFetched returns the sha of origin's branch name as last fetched, without asking origin;
+// found is false when the clone holds no remote-tracking ref for it.
+func (r Repo) LastFetched(ctx context.Context, name string) (sha string, found bool, err error) {
+	return r.optionalLine(ctx, "rev-parse", "--verify", "--quiet", remotesRef+name)
+}
+
 // BranchesTaking returns the branches that take name, locally and on origin, as git lists them: one
 // of that exact name, one whose name is a path prefix of it (fix for fix/x), and one under it (fix/x
 // for fix), none of which git can hold beside a branch called name. A branch whose name only ends
@@ -457,7 +479,9 @@ func (r Repo) Push(ctx context.Context, name string) error {
 	status, reported := pushStatus(result.Stdout, spec)
 
 	switch {
-	case !reported && exitErr.Code == pushFatalCode:
+	// A push dies with fatalCode when it cannot reach origin or origin hangs up; one git refuses
+	// before it talks to origin, such as for a pre-push hook that failed, exits 1.
+	case !reported && exitErr.Code == fatalCode:
 		return &RemoteError{Err: err}
 	case !reported || status.flag == pushRejected:
 		return &PushError{Branch: name, Reason: status.summary, Stderr: exitErr.Stderr, Err: err}
@@ -465,11 +489,6 @@ func (r Repo) Push(ctx context.Context, name string) error {
 		return nil
 	}
 }
-
-// pushFatalCode is the exit of a git push that died of a fatal error, as it does when it cannot
-// reach origin or origin hangs up. A push git refuses before it talks to origin, such as for a
-// pre-push hook that failed, exits 1.
-const pushFatalCode = 128
 
 // pushRejected is the flag `git push --porcelain` gives a ref it did not update.
 const pushRejected = "!"
