@@ -21,6 +21,7 @@ import (
 	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/child"
+	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/result"
@@ -332,7 +333,7 @@ func (l *liveSuite) completed(ctx context.Context, id string) bool {
 func (l *liveSuite) checkRulesRead(t *testing.T) {
 	t.Helper()
 
-	private := mustGh(t, "repo", "view", l.slug(), "--json", "isPrivate", "--jq", ".isPrivate") == "true"
+	private := l.private(t)
 	rest := "rules/branches/" + l.trunk
 	path := l.apiPath(rest)
 	_, err := liveGh(t.Context(), l.apiArgs(rest)...)
@@ -347,6 +348,13 @@ func (l *liveSuite) checkRulesRead(t *testing.T) {
 	assert.Assert(t, exited && strings.Contains(exit.Stderr, "HTTP 403"),
 		"the read of %s ended with %v, want a 403: the account's plan no longer refuses the rules read, "+
 			"so the suite no longer exercises what ils does with that refusal", path, err)
+}
+
+// private reports whether the repository is private, as GitHub shows its visibility.
+func (l *liveSuite) private(t *testing.T) bool {
+	t.Helper()
+
+	return mustGh(t, "repo", "view", l.slug(), "--json", "visibility", "--jq", ".visibility") == "PRIVATE"
 }
 
 // changeTrunk commits files on top of the default branch and pushes it.
@@ -603,6 +611,9 @@ func TestLive(t *testing.T) {
 		{name: "red", run: liveRed},
 		{name: "no CI", run: liveNoCI},
 		{name: "pending", run: livePending},
+		{name: "status of a pull request", run: liveStatusOfPull},
+		{name: "status of the trunk", run: liveStatusOfTrunk},
+		{name: "branch", run: liveStartBranch},
 		{name: "already landed", run: liveAlreadyLanded},
 		{name: "conflict", run: liveConflict},
 		{name: "CI that did not fire", run: liveCIDidNotFire},
@@ -692,6 +703,62 @@ func livePending(t *testing.T, l *liveSuite) {
 	assert.Equal(t, got.code, exitPending, "%s", got.raw)
 	assert.Check(t, is.Equal(b.onePull(t).Head, b.tip(t)))
 	assert.Check(t, is.Contains(got.shown.Next, "ils push"))
+}
+
+// liveStatus runs `ils status --json` in the clone at dir, checks it ended done, and returns its
+// status object.
+func liveStatus(t *testing.T, dir string) *result.Status {
+	t.Helper()
+
+	got := launch(t, over(git.Runner{Dir: dir}), "status", "--json")
+	t.Logf("ils status --json in %s exited %d:\n%s%s", dir, got.code, got.stdout, got.stderr)
+	shown := resulttest.Decode(t, got.stdout)
+	assert.Equal(t, got.code, exitDone, "%s", got.stdout)
+	assert.Assert(t, shown.Payload != nil && shown.Payload.Status != nil, "no status object in:\n%s", got.stdout)
+
+	return shown.Payload.Status
+}
+
+func liveStatusOfPull(t *testing.T, l *liveSuite) {
+	b := l.branch(t, "status")
+	b.commit(t, liveWorkflow("echo passed"))
+	b.push(t)
+	number := b.onePull(t).Number
+
+	got := liveStatus(t, b.dir)
+
+	assert.Assert(t, got.PullRequest != nil, "no open pull request in the status of %s", b.name)
+	assert.Check(t, is.Equal(got.PullRequest.Number, number))
+	assert.Check(t, is.Equal(got.PullRequest.Verdict, string(forge.VerdictGreen)))
+}
+
+func liveStatusOfTrunk(t *testing.T, l *liveSuite) {
+	want := result.ProtectionNone
+	if l.private(t) {
+		want = result.ProtectionUnavailable
+	}
+
+	got := liveStatus(t, l.clone(t))
+
+	assert.Check(t, is.Equal(got.Standing, result.StandingTrunk))
+	assert.Check(t, is.Equal(got.Protection, want))
+}
+
+func liveStartBranch(t *testing.T, l *liveSuite) {
+	dir := l.clone(t)
+	name := "live/branch-" + strings.ToLower(rand.Text())[:liveTokenLength]
+
+	started := launch(t, over(git.Runner{Dir: dir}), "branch", name, "--json")
+
+	assert.Equal(t, started.code, exitDone, "%s", started.stdout)
+	assert.Check(t, is.Equal(mustGit(t, dir, "symbolic-ref", "--short", "HEAD"), name))
+	assert.Check(t, is.Equal(mustGit(t, dir, "rev-parse", "HEAD"), l.mustRemoteCommit(t, l.trunkRef())))
+
+	mustGit(t, dir, "push", "--quiet", l.url, "HEAD:refs/heads/"+name)
+	taken := launch(t, over(git.Runner{Dir: l.clone(t)}), "branch", name, "--json")
+
+	assert.Check(t, is.Equal(taken.code, exitRefused), "%s", taken.stdout)
+	assert.Check(t, is.Contains(taken.stdout, "on origin"))
 }
 
 func liveAlreadyLanded(t *testing.T, l *liveSuite) {
