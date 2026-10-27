@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
@@ -316,6 +317,12 @@ type remoteBranch struct {
 	found bool
 }
 
+// takers is what BranchesTaking returns besides its error.
+type takers struct {
+	local    []string
+	onOrigin []string
+}
+
 // originCalls returns the repository calls that read from origin without changing the repository.
 func originCalls() []repoCall {
 	return []repoCall{
@@ -325,7 +332,96 @@ func originCalls() []repoCall {
 
 			return remoteBranch{sha, found}, err
 		}},
+		{name: "BranchesTaking", call: func(ctx context.Context, repo git.Repo) (any, error) {
+			local, onOrigin, err := repo.BranchesTaking(ctx, topic)
+
+			return takers{local, onOrigin}, err
+		}},
+		{name: "OriginTags", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.OriginTags(ctx) }},
 	}
+}
+
+// takingCase is a ref created before BranchesTaking reads which branches take the name in.
+type takingCase struct {
+	arrange    func(f *gittest.Fixture)
+	name       string
+	in         string
+	wantLocal  []string
+	wantOrigin []string
+}
+
+// localBranch returns an arrangement that creates branch in the working repository alone.
+func localBranch(branch string) func(f *gittest.Fixture) {
+	return func(f *gittest.Fixture) { f.Git("branch", branch) }
+}
+
+// originBranch returns an arrangement that creates branch on origin at its trunk, without the working
+// repository fetching it.
+func originBranch(branch string) func(f *gittest.Fixture) {
+	return func(f *gittest.Fixture) { f.OriginGit("branch", branch, trunk) }
+}
+
+// takingCases returns the branches that take a name, locally or on origin, and the name each takes.
+func takingCases() []takingCase {
+	return []takingCase{
+		{name: "local branch of that name", in: "fix", arrange: localBranch("fix"), wantLocal: []string{"fix"}},
+		{name: "local branch whose name is a path prefix", in: "fix/x/y", arrange: localBranch("fix"), wantLocal: []string{"fix"}},
+		{name: "local branch under the name", in: "fix", arrange: localBranch("fix/x"), wantLocal: []string{"fix/x"}},
+		{name: "origin branch pushed since the last fetch", in: "fix", arrange: originBranch("fix"), wantOrigin: []string{"fix"}},
+		{name: "origin branch whose name is a path prefix", in: "fix/x/y", arrange: originBranch("fix"), wantOrigin: []string{"fix"}},
+		{name: "origin branch under the name", in: "fix", arrange: originBranch("fix/x"), wantOrigin: []string{"fix/x"}},
+	}
+}
+
+// freeCases returns the refs that leave a name free.
+func freeCases() []takingCase {
+	return []takingCase{
+		{name: "local branch whose name only ends with the name", in: "fix", arrange: localBranch("team/fix")},
+		{name: "origin branch whose name only ends with the name", in: "fix", arrange: originBranch("team/fix")},
+		{name: "tag of that name on origin", in: "fix", arrange: func(f *gittest.Fixture) { f.OriginGit("tag", "fix", trunk) }},
+		{
+			name: "branch deleted on origin that the clone still knows",
+			in:   "fix",
+			arrange: func(f *gittest.Fixture) {
+				originBranch("fix")(f)
+				f.Git("fetch", "--quiet", "origin", "fix")
+				f.Git("rev-parse", "--verify", "--quiet", "refs/remotes/origin/fix")
+				f.OriginGit("branch", "--delete", "fix")
+			},
+		},
+	}
+}
+
+func TestRepo_BranchesTaking(t *testing.T) {
+	t.Parallel()
+	for _, tt := range append(takingCases(), freeCases()...) {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			tt.arrange(f)
+
+			local, onOrigin, err := newRepo(f).BranchesTaking(t.Context(), tt.in)
+			assert.NilError(t, err, "BranchesTaking(%q)", tt.in)
+
+			assert.Check(t, is.DeepEqual(local, tt.wantLocal, cmpopts.EquateEmpty()), "BranchesTaking(%q) local", tt.in)
+			assert.Check(t, is.DeepEqual(onOrigin, tt.wantOrigin, cmpopts.EquateEmpty()), "BranchesTaking(%q) on origin", tt.in)
+		})
+	}
+}
+
+func TestRepo_OriginTags_ListsEachTagWithTheCommitItTags(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	first := f.OriginGit("rev-parse", trunk)
+	second := f.AdvanceOrigin(trunk)
+	f.OriginGit("tag", "v1.0.0", first)
+	f.OriginGit("tag", "--annotate", "--message", "release", "v1.1.0", second)
+	want := []git.Tag{{Name: "v1.0.0", SHA: first}, {Name: "v1.1.0", SHA: second}}
+
+	got, err := newRepo(f).OriginTags(t.Context())
+	assert.NilError(t, err)
+
+	assert.Check(t, is.DeepEqual(got, want))
 }
 
 func TestRepo_WhenOriginDoesNotAnswer_ReturnsRemoteError(t *testing.T) {

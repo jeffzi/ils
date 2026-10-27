@@ -549,6 +549,155 @@ func TestRepo_HasCommits(t *testing.T) {
 	}
 }
 
+func TestRepo_Subject_ReturnsTheSubjectOfTheNamedCommit(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.Commits(topic)
+	f.Git("commit", "--quiet", "--allow-empty", "--message", "one", "--message", "why it changed")
+	sha := f.Git("rev-parse", "HEAD")
+	f.Commits(topic, "two")
+
+	got, err := newRepo(f).Subject(t.Context(), sha)
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Equal(got, "one"))
+}
+
+// previousBranch returns a repository checked out on the trunk after topic, so that git reads
+// @{-1} as topic.
+func previousBranch(t *testing.T) git.Repo {
+	t.Helper()
+
+	f := gittest.New(t, trunk)
+	f.Commits(topic, "one")
+	f.Git("switch", "--quiet", trunk)
+
+	return newRepo(f)
+}
+
+func TestRepo_CheckBranchName_WhenGitAcceptsTheName_ReturnsNil(t *testing.T) {
+	t.Parallel()
+	const name = "fix/parser"
+
+	err := previousBranch(t).CheckBranchName(t.Context(), name)
+
+	assert.NilError(t, err, "CheckBranchName(%q)", name)
+}
+
+func TestRepo_CheckBranchName_WhenNameCannotBeABranch_ReturnsBranchNameErrorNamingIt(t *testing.T) {
+	t.Parallel()
+	repo := previousBranch(t)
+	tests := []struct {
+		name string
+		in   string
+	}{
+		{name: "git refuses the name", in: "fix..parser"},
+		{name: "starts with a dash", in: "-parser"},
+		{name: "names the previous branch", in: "@{-1}"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := repo.CheckBranchName(t.Context(), tt.in)
+
+			nameErr, ok := errors.AsType[*git.BranchNameError](err)
+			assert.Assert(t, ok, "CheckBranchName(%q) error = %v, want *git.BranchNameError", tt.in, err)
+			assert.Check(t, is.Equal(nameErr.Name, tt.in))
+		})
+	}
+}
+
+func TestRepo_CheckBranchName_WhenGitRefusesTheName_CarriesGitsMessage(t *testing.T) {
+	t.Parallel()
+	const name = "fix..parser"
+
+	err := previousBranch(t).CheckBranchName(t.Context(), name)
+
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "CheckBranchName(%q) error = %v, want it to carry git's *child.ExitError", name, err)
+	assert.Check(t, exitErr.Stderr != "", "CheckBranchName(%q) carries no message from git", name)
+}
+
+// freshBranch is the name of the branch CreateBranch creates.
+const freshBranch = "fix/parser"
+
+func TestRepo_CreateBranch_WhenTreeIsDirty_SwitchesToABranchAtOriginsFetchedTrunkCarryingTheChanges(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	shadowTrunk(t, f, f.Commits(topic, "one")[0])
+	f.AdvanceTrunk()
+	f.AdvanceOrigin(trunk)
+	want := f.Git("rev-parse", "refs/remotes/origin/"+trunk)
+	dirty := f.DirtyFile()
+	untracked := f.UntrackedFile()
+
+	err := newRepo(f).CreateBranch(t.Context(), freshBranch, trunk)
+	assert.NilError(t, err, "CreateBranch(%q, %q)", freshBranch, trunk)
+
+	assert.Check(t, is.Equal(f.Git("symbolic-ref", "HEAD"), "refs/heads/"+freshBranch))
+	assert.Check(t, is.Equal(f.Git("rev-parse", "refs/heads/"+freshBranch), want))
+	assert.Check(t, is.Equal(f.Git("for-each-ref", "--format=%(upstream)", "refs/heads/"+freshBranch), ""))
+	assert.Check(t, is.Equal(f.Git("diff", "--name-only"), dirty))
+	assert.Check(t, is.Equal(f.Git("ls-files", "--others", "--exclude-standard"), untracked))
+}
+
+// changedOffTrunk commits a file to topic alone and changes it without committing, so that
+// switching to origin's trunk, which lacks the file, would discard the change. It returns its path.
+func changedOffTrunk(t *testing.T, f *gittest.Fixture) string {
+	t.Helper()
+
+	const path = "notes.txt"
+	f.Commits(topic, "one")
+	gittest.WriteFile(t, f.Dir(), path, "first draft\n")
+	f.Git("add", path)
+	f.Git("commit", "--quiet", "--message", "add "+path)
+	gittest.WriteFile(t, f.Dir(), path, "second draft\n")
+
+	return path
+}
+
+func TestRepo_CreateBranch_WhenAFileWouldBeOverwritten_NamesItAndLeavesTheRepositoryAsItWas(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		// arrange leaves a file the switch would overwrite and returns its path.
+		arrange func(t *testing.T, f *gittest.Fixture) string
+		name    string
+	}{
+		{name: "changed tracked file", arrange: changedOffTrunk},
+		{
+			name: "untracked file",
+			arrange: func(t *testing.T, f *gittest.Fixture) string {
+				t.Helper()
+				f.Commits(topic, "one")
+				path := f.UntrackedOnTrunk()
+				fetch(t, f, trunk)
+
+				return path
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			path := tt.arrange(t, f)
+			head := f.Git("symbolic-ref", "HEAD")
+			branches := f.Git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads")
+			status := f.Git("status", "--porcelain", "--untracked-files=all")
+			content := f.Git("hash-object", "--", path)
+
+			err := newRepo(f).CreateBranch(t.Context(), freshBranch, trunk)
+
+			assert.Check(t, is.ErrorContains(err, path))
+			assert.Check(t, is.Equal(f.Git("symbolic-ref", "HEAD"), head))
+			assert.Check(t, is.Equal(f.Git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads"), branches))
+			assert.Check(t, is.Equal(f.Git("status", "--porcelain", "--untracked-files=all"), status))
+			assert.Check(t, is.Equal(f.Git("hash-object", "--", path), content))
+		})
+	}
+}
+
 func TestRepo_DetachAtOrigin_WhenLocalBranchNamedLikeOriginsTrunk_DetachesAtOriginsTrunk(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)

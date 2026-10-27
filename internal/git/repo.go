@@ -273,6 +273,71 @@ func (r Repo) Switch(ctx context.Context, branch string) error {
 	return err
 }
 
+// CreateBranch creates the branch name at origin's trunk as last fetched, with no upstream, and puts
+// HEAD on it, carrying uncommitted changes and untracked files.
+//
+// A changed or untracked file the switch would overwrite is a *child.ExitError that carries git's
+// message, which names the files, and leaves HEAD, the tree and the local branches as they were.
+func (r Repo) CreateBranch(ctx context.Context, name, trunk string) error {
+	_, err := r.Runner.Run(ctx, "switch", "--quiet", "--no-track", "--create", name, originTrunk(trunk))
+
+	return err
+}
+
+// BranchNameError reports a name git cannot hold as a branch.
+type BranchNameError struct {
+	// Err is git's refusal, a *child.ExitError that carries git's message, or nil when git gives
+	// none.
+	Err  error
+	Name string
+}
+
+// Error names the refused name, followed by git's refusal when there is one.
+func (e *BranchNameError) Error() string {
+	message := fmt.Sprintf("%q is not a valid branch name", e.Name)
+	if e.Err != nil {
+		message += ": " + e.Err.Error()
+	}
+
+	return message
+}
+
+// Unwrap returns git's refusal of the name.
+func (e *BranchNameError) Unwrap() error {
+	return e.Err
+}
+
+// CheckBranchName returns nil when git can hold name as a branch, and a *BranchNameError when it
+// cannot. A name that starts with a dash is refused, which git would read as an option, and so is
+// one git reads as another branch's, such as @{-1} for the previous branch.
+func (r Repo) CheckBranchName(ctx context.Context, name string) error {
+	if strings.HasPrefix(name, "-") {
+		return &BranchNameError{Name: name}
+	}
+
+	// --branch expands @{-N} to the name of the Nth branch checked out before, so an answer that
+	// differs from name means name is not a branch name of its own.
+	expanded, err := r.line(ctx, "check-ref-format", "--branch", name)
+	if _, refused := errors.AsType[*child.ExitError](err); refused {
+		return &BranchNameError{Name: name, Err: err}
+	}
+
+	if err != nil {
+		return err
+	}
+
+	if expanded != name {
+		return &BranchNameError{Name: name}
+	}
+
+	return nil
+}
+
+// Subject returns the first line of the message of the commit sha.
+func (r Repo) Subject(ctx context.Context, sha string) (string, error) {
+	return r.line(ctx, "show", "--no-patch", "--format=%s", sha)
+}
+
 // DetachAtOrigin detaches HEAD at origin's trunk as last fetched, keeping untracked files.
 func (r Repo) DetachAtOrigin(ctx context.Context, trunk string) error {
 	_, err := r.Runner.Run(ctx, "switch", "--quiet", "--detach", originTrunk(trunk))
