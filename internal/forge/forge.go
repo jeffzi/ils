@@ -122,8 +122,21 @@ type HeadQuery struct {
 	Number   int
 }
 
+// RulesState says whether rules protect a branch.
+type RulesState string
+
+// The answers to whether rules protect a branch.
+const (
+	// RulesProtect means at least one rule applies to the branch.
+	RulesProtect RulesState = "protected"
+	RulesNone    RulesState = "none"
+	// RulesUnavailable means the repository's plan does not allow rules, so none can apply.
+	RulesUnavailable RulesState = "unavailable"
+)
+
 // Protection is what the forge enforces on the trunk.
 type Protection struct {
+	Rules RulesState
 	// RequiredChecks names the checks a change must pass to land; it may be empty.
 	RequiredChecks []string
 	// SquashForbiddenBy holds the ids of the rulesets whose rules on the trunk forbid a squash

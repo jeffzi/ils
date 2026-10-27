@@ -83,14 +83,9 @@ func allowed() []ghtest.Call {
 	}
 }
 
-// listed scripts the answer to the list of the topic branch's pull requests in state.
-func listed(state, body string) ghtest.Call {
-	return ghtest.Exits(ghtest.Answer{Stdout: body}, ghtest.ListArgs(slug, topic, state)...)
-}
-
-// found scripts the pull requests of the topic branch: the open ones, then the merged ones.
-func found(open, landed string) []ghtest.Call {
-	return append(allowed(), listed("open", open), listed("merged", landed))
+// found scripts body as the list of the topic branch's pull requests.
+func found(body string) []ghtest.Call {
+	return append(allowed(), ghtest.Exits(ghtest.Answer{Stdout: body}, ghtest.ListArgs(slug, topic)...))
 }
 
 // only scripts the same answers whatever the repository holds.
@@ -106,7 +101,7 @@ func greenFirstPush() scenario {
 		run := ghtest.JSONArray(ghtest.RunJSON("completed", "Tidy"))
 		checks := ghtest.JSONArray(ghtest.CheckJSON("build", "pass", runLink))
 
-		return slices.Concat(found("[]", "[]"), []ghtest.Call{
+		return slices.Concat(found("[]"), []ghtest.Call{
 			ghtest.Says(pullURL+"\n", ghtest.CreateArgs(slug, topic, trunk, topic)...),
 			ghtest.Says("[]", ghtest.RulesArgs(host, owner+"/"+widgets, trunk)...),
 			ghtest.Says(ghtest.HeadJSON(sha, "MERGEABLE", "CLEAN", ""), ghtest.HeadArgs(slug, opened)...),

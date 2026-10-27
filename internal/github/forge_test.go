@@ -101,8 +101,8 @@ func loginArgs() []string { return ghtest.LoginArgs(engineHost) }
 // repoViewArgs is the argv of the read of the engine's identity.
 func repoViewArgs() []string { return ghtest.RepoViewArgs(engineSlug) }
 
-// listArgs is the argv of the list of the feature branch's pull requests in state.
-func listArgs(state string) []string { return ghtest.ListArgs(engineSlug, featureBranch, state) }
+// listArgs is the argv of the list of the feature branch's pull requests in every state.
+func listArgs() []string { return ghtest.ListArgs(engineSlug, featureBranch) }
 
 // createArgs is the argv of the creation of featureChange's pull request.
 func createArgs() []string {
@@ -275,7 +275,7 @@ func readCases() []readCase {
 
 	return []readCase{
 		{name: "repo view", run: identity, args: repoViewArgs(), before: []ghtest.Call{ghtest.Says("", loginArgs()...)}},
-		{name: "pr list of open ones", run: find, args: listArgs("open")},
+		{name: "pr list", run: find, args: listArgs()},
 		{name: "pr view", run: head, args: headArgs()},
 		{
 			name: "pr checks behind a blocked head", run: blocked, args: checksArgs(),
@@ -301,7 +301,7 @@ func TestForge_WhenCallExitsNonZero_ReturnsExitErrorNamingCall(t *testing.T) {
 		{name: "pr merge", run: byName["Land"], args: ghtest.LandArgs(engineSlug, featureLanding())},
 	}
 	// Each read left out returns its exit error through a line another test already reaches:
-	// runDecoded's through "pr list of open ones", Identity's through the malformed "repo view",
+	// runDecoded's through "pr list", Identity's through the malformed "repo view",
 	// and TrunkProtection's and HasTrunkCI's through their own tests of a refused read. Verdict's
 	// reads have their own test in verdict_test.go.
 	reads := casesWithout(readCases(), "repo view", "api rules", "api workflows", "api workflow files")
@@ -474,46 +474,68 @@ func TestForge_Identity(t *testing.T) {
 }
 
 func TestForge_FindChanges(t *testing.T) {
-	open := ghtest.Change{Number: 7, URL: pullURL, Title: "feature", Base: "main", SHA: headSHA, Draft: true}
+	open := ghtest.Change{Number: 7, URL: pullURL, Title: "feature", Base: "main", SHA: headSHA, Draft: true, State: "OPEN"}
+	closed := ghtest.Change{
+		Number: 5, URL: "https://git.example.com/ada/engine/pull/5", Title: "feat: try the forge",
+		Base: "main", SHA: "5e6f7a8", State: "CLOSED",
+	}
 	merged := ghtest.Change{
 		Number: 3, URL: "https://git.example.com/ada/engine/pull/3", Title: "feat: add the forge",
-		Base: "release", SHA: "0a1b2c3",
+		Base: "release", SHA: "0a1b2c3", State: "MERGED",
 	}
 	foreign := ghtest.Change{
 		Number: 9, URL: "https://git.example.com/ada/engine/pull/9", Title: "feature",
-		Base: "main", SHA: "0a1b2c3", CrossRepository: true,
+		Base: "main", SHA: "0a1b2c3", State: "OPEN", CrossRepository: true,
 	}
 	openChange := forge.Change{Number: 7, URL: pullURL, Title: "feature", Base: "main", HeadSHA: headSHA, Draft: true, State: forge.ChangeOpen}
 	tests := []struct {
 		name   string
-		open   string
-		merged string
+		answer string
 		want   []forge.Change
 	}{
 		{
-			name: "both states have changes", open: ghtest.JSONArray(ghtest.ChangeJSON(open)), merged: ghtest.JSONArray(ghtest.ChangeJSON(merged)),
-			want: []forge.Change{openChange, {
-				Number: 3, URL: "https://git.example.com/ada/engine/pull/3", Title: "feat: add the forge",
-				Base: "release", HeadSHA: "0a1b2c3", State: forge.ChangeMerged,
-			}},
+			name:   "every state is listed, each marked",
+			answer: ghtest.JSONArray(ghtest.ChangeJSON(open), ghtest.ChangeJSON(closed), ghtest.ChangeJSON(merged)),
+			want: []forge.Change{
+				openChange,
+				{
+					Number: 5, URL: "https://git.example.com/ada/engine/pull/5", Title: "feat: try the forge",
+					Base: "main", HeadSHA: "5e6f7a8", State: forge.ChangeClosed,
+				},
+				{
+					Number: 3, URL: "https://git.example.com/ada/engine/pull/3", Title: "feat: add the forge",
+					Base: "release", HeadSHA: "0a1b2c3", State: forge.ChangeMerged,
+				},
+			},
 		},
 		{
 			name:   "pull request from another repository is left out",
-			open:   ghtest.JSONArray(ghtest.ChangeJSON(foreign), ghtest.ChangeJSON(open)),
-			merged: ghtest.JSONArray(ghtest.ChangeJSON(foreign)),
+			answer: ghtest.JSONArray(ghtest.ChangeJSON(foreign), ghtest.ChangeJSON(open)),
 			want:   []forge.Change{openChange},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ghtest.Setup(t, ghtest.Says(tt.open, listArgs("open")...), ghtest.Says(tt.merged, listArgs("merged")...))
+			fake := ghtest.Setup(t, ghtest.Says(tt.answer, listArgs()...))
 
 			got, err := newForge().FindChanges(t.Context(), engine(), featureBranch)
 			assert.NilError(t, err)
 
 			assert.Check(t, is.DeepEqual(got, tt.want))
+			assertCalls(t, fake, received(listArgs()))
 		})
 	}
+}
+
+func TestForge_FindChanges_WhenStateIsUnknown_ReturnsDecodeError(t *testing.T) {
+	draft := ghtest.Change{Number: 7, URL: pullURL, Title: "feature", Base: "main", SHA: headSHA, State: "DRAFT"}
+	ghtest.Setup(t, ghtest.Says(ghtest.JSONArray(ghtest.ChangeJSON(draft)), listArgs()...))
+
+	_, err := newForge().FindChanges(t.Context(), engine(), featureBranch)
+
+	decodeErr, ok := errors.AsType[*github.DecodeError](err)
+	assert.Assert(t, ok, "FindChanges error = %v, want *github.DecodeError", err)
+	assert.Check(t, is.DeepEqual(decodeErr.Argv, received(listArgs())[0]))
 }
 
 func TestForge_OpenChange_WhenCreated_ReturnsNumberAndURL(t *testing.T) {
@@ -659,9 +681,11 @@ func TestForge_TrunkProtection(t *testing.T) {
 		{"type":"deletion"},
 		{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"test"},{"context":"lint"}]}}
 	]`
-	squash := forge.Protection{SquashAllowed: true}
+	squash := forge.Protection{Rules: forge.RulesProtect, SquashAllowed: true}
 	// forbiddenBy is the protection whose squash merges the rulesets with the ids ids forbid.
-	forbiddenBy := func(ids ...int) forge.Protection { return forge.Protection{SquashForbiddenBy: ids} }
+	forbiddenBy := func(ids ...int) forge.Protection {
+		return forge.Protection{Rules: forge.RulesProtect, SquashForbiddenBy: ids}
+	}
 	// rules is the rules read's answer holding the rules given, each a JSON object.
 	rules := func(given ...string) ghtest.Answer { return ghtest.Answer{Stdout: ghtest.JSONArray(given...)} }
 	tests := []struct {
@@ -672,19 +696,20 @@ func TestForge_TrunkProtection(t *testing.T) {
 		{
 			name:   "contexts of every status-check rule, once each",
 			answer: ghtest.Answer{Stdout: statusChecks},
-			want:   forge.Protection{RequiredChecks: []string{"build", "test", "lint"}, SquashAllowed: true},
+			want:   forge.Protection{Rules: forge.RulesProtect, RequiredChecks: []string{"build", "test", "lint"}, SquashAllowed: true},
 		},
 		{
 			name: "rules spread over two pages",
 			answer: ghtest.Answer{Stdout: rules(`{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"build"}]}}`).Stdout +
 				rules(pullRequestRule(51, `["rebase"]`)).Stdout},
-			want: forge.Protection{RequiredChecks: []string{"build"}, SquashForbiddenBy: []int{51}},
+			want: forge.Protection{Rules: forge.RulesProtect, RequiredChecks: []string{"build"}, SquashForbiddenBy: []int{51}},
 		},
 		{
 			name:   "free private plan answers 403",
 			answer: ghtest.Answer{Stdout: `{"message":"Upgrade to GitHub Pro"}`, Stderr: "gh: Upgrade to GitHub Pro (HTTP 403)\n", Code: 1},
-			want:   squash,
+			want:   forge.Protection{Rules: forge.RulesUnavailable, SquashAllowed: true},
 		},
+		{name: "no rule applies", answer: rules(), want: forge.Protection{Rules: forge.RulesNone, SquashAllowed: true}},
 		{name: "pull request rule listing squash", answer: rules(pullRequestRule(42, `["merge","squash","rebase"]`)), want: squash},
 		{name: "the rule without squash ahead of one with it", answer: rules(pullRequestRule(42, `["rebase"]`), pullRequestRule(51, `["squash"]`)), want: forbiddenBy(42)},
 		{name: "two pull request rules without squash", answer: rules(pullRequestRule(42, `["merge"]`), pullRequestRule(51, `["rebase"]`)), want: forbiddenBy(42, 51)},

@@ -62,10 +62,26 @@ type pull struct {
 	Title   string `json:"title"`
 	Base    string `json:"baseRefName"`
 	HeadSHA string `json:"headRefOid"`
+	State   string `json:"state"`
 	Number  int    `json:"number"`
 	Draft   bool   `json:"isDraft"`
 	// Fork is true when the head branch is in another repository.
 	Fork bool `json:"isCrossRepository"`
+}
+
+// changeState returns the change state of the pull request state gh names, and false for a state
+// gh does not document.
+func changeState(state string) (forge.ChangeState, bool) {
+	switch state {
+	case "OPEN":
+		return forge.ChangeOpen, true
+	case "CLOSED":
+		return forge.ChangeClosed, true
+	case "MERGED":
+		return forge.ChangeMerged, true
+	default:
+		return "", false
+	}
 }
 
 type pullHead struct {
@@ -149,28 +165,40 @@ func (f *Forge) Identity(ctx context.Context, repo forge.Repo) (forge.Repo, erro
 	return repo, nil
 }
 
-// FindChanges returns the open pull requests whose head is branch, then the merged ones.
+// changesLimit is the most pull requests FindChanges asks gh for, far past what one branch ever
+// has, since gh lists only 30 when no limit is given.
+const changesLimit = "1000"
+
+// FindChanges returns the pull requests whose head is branch, open, closed and merged, in the
+// order gh lists them. A pull request whose head is in another repository is left out; one in a
+// state gh does not document is a *DecodeError.
 func (f *Forge) FindChanges(ctx context.Context, repo forge.Repo, branch string) ([]forge.Change, error) {
+	args := []string{
+		"pr", "list", "--repo", repo.Slug(), "--head", branch, "--state", "all", "--limit", changesLimit,
+		"--json", "number,url,title,baseRefName,headRefOid,isDraft,isCrossRepository,state",
+	}
+
+	pulls, err := runDecoded[[]pull](ctx, f.runner(), args...)
+	if err != nil {
+		return nil, err
+	}
+
 	var changes []forge.Change
 
-	for _, state := range []forge.ChangeState{forge.ChangeOpen, forge.ChangeMerged} {
-		pulls, err := runDecoded[[]pull](ctx, f.runner(),
-			"pr", "list", "--repo", repo.Slug(), "--head", branch, "--state", string(state),
-			"--json", "number,url,title,baseRefName,headRefOid,isDraft,isCrossRepository")
-		if err != nil {
-			return nil, err
+	for _, p := range pulls {
+		if p.Fork {
+			continue
 		}
 
-		for _, p := range pulls {
-			if p.Fork {
-				continue
-			}
-
-			changes = append(changes, forge.Change{
-				Number: p.Number, URL: p.URL, Title: p.Title, Base: p.Base,
-				HeadSHA: p.HeadSHA, Draft: p.Draft, State: state,
-			})
+		state, ok := changeState(p.State)
+		if !ok {
+			return nil, &DecodeError{Argv: Argv(args), Err: fmt.Errorf("pull request #%d: unknown state %q", p.Number, p.State)}
 		}
+
+		changes = append(changes, forge.Change{
+			Number: p.Number, URL: p.URL, Title: p.Title, Base: p.Base,
+			HeadSHA: p.HeadSHA, Draft: p.Draft, State: state,
+		})
 	}
 
 	return changes, nil
@@ -250,19 +278,19 @@ func (f *Forge) missingCheck(ctx context.Context, repo forge.Repo, query forge.V
 	return len(verdict.Pending()) == 0 && !verdict.Running(), nil
 }
 
-// TrunkProtection returns the status checks the rules on trunk require, and whether they allow a
-// squash merge: they do unless a pull_request rule names merge methods without squash, whose
-// ruleset it then names.
+// TrunkProtection returns whether rules apply to trunk, the status checks they require, and
+// whether they allow a squash merge: they do unless a pull_request rule names merge methods
+// without squash, whose ruleset it then names.
 //
-// A free private repository answers 403 with an upgrade message to the read,
-// which counts as no rule. Any other 403 is an error.
+// A free private repository answers 403 with an upgrade message to the read: the plan does not
+// allow rules, so none applies and a squash merge is allowed. Any other 403 is an error.
 func (f *Forge) TrunkProtection(ctx context.Context, repo forge.Repo, trunk string) (forge.Protection, error) {
 	args := paginatedAPIArgs(repo, "rules/branches/"+branchPath(trunk))
 
 	result, err := f.runner().Run(ctx, args...)
 	if exitErr, ok := errors.AsType[*child.ExitError](err); ok &&
 		strings.Contains(exitErr.Stderr, forbiddenStatus) && strings.Contains(exitErr.Stderr, freePlanRefusal) {
-		return forge.Protection{SquashAllowed: true}, nil
+		return forge.Protection{Rules: forge.RulesUnavailable, SquashAllowed: true}, nil
 	}
 
 	if err != nil {
@@ -277,10 +305,14 @@ func (f *Forge) TrunkProtection(ctx context.Context, repo forge.Repo, trunk stri
 	return protectionOf(slices.Concat(pages...)), nil
 }
 
-// protectionOf folds the rules on a branch into the checks they require, each named once, and
-// whether every pull_request rule allows a squash merge, with the rulesets of those that do not.
+// protectionOf folds the rules on a branch into whether any applies, the checks they require, each
+// named once, and whether every pull_request rule allows a squash merge, with the rulesets of those
+// that do not.
 func protectionOf(rules []branchRule) forge.Protection {
-	protection := forge.Protection{SquashAllowed: true}
+	protection := forge.Protection{Rules: forge.RulesNone, SquashAllowed: true}
+	if len(rules) > 0 {
+		protection.Rules = forge.RulesProtect
+	}
 
 	for _, rule := range rules {
 		switch rule.Type {

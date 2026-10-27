@@ -115,11 +115,11 @@ func RepoViewArgs(slug string) []string {
 	return []string{"repo", "view", slug, "--json", "isFork,viewerPermission,squashMergeAllowed"}
 }
 
-// ListArgs is the argv of the list of the pull requests from the branch head that are in state.
-func ListArgs(slug, head, state string) []string {
+// ListArgs is the argv of the list of the pull requests from the branch head, whatever their state.
+func ListArgs(slug, head string) []string {
 	return []string{
-		"pr", "list", "--repo", slug, "--head", head, "--state", state,
-		"--json", "number,url,title,baseRefName,headRefOid,isDraft,isCrossRepository",
+		"pr", "list", "--repo", slug, "--head", head, "--state", "all", "--limit", "1000",
+		"--json", "number,url,title,baseRefName,headRefOid,isDraft,isCrossRepository,state",
 	}
 }
 
@@ -224,10 +224,12 @@ func quoted(s string) string {
 
 // Change is one pull request as `gh pr list` prints it.
 type Change struct {
-	URL    string
-	Title  string
-	Base   string
-	SHA    string
+	URL   string
+	Title string
+	Base  string
+	SHA   string
+	// State is GitHub's word for where the pull request stands: OPEN, CLOSED or MERGED.
+	State  string
 	Number int
 	Draft  bool
 	// CrossRepository says the head branch lives in another repository, as a fork's does.
@@ -239,7 +241,7 @@ func ChangeJSON(change Change) string {
 	return `{"number":` + strconv.Itoa(change.Number) + `,"url":` + quoted(change.URL) + `,"title":` + quoted(change.Title) +
 		`,"baseRefName":` + quoted(change.Base) + `,"headRefOid":` + quoted(change.SHA) +
 		`,"isDraft":` + strconv.FormatBool(change.Draft) +
-		`,"isCrossRepository":` + strconv.FormatBool(change.CrossRepository) + `}`
+		`,"isCrossRepository":` + strconv.FormatBool(change.CrossRepository) + `,"state":` + quoted(change.State) + `}`
 }
 
 // HeadJSON is `gh pr view`'s answer for a pull request at sha that is not a draft.

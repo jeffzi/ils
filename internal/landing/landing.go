@@ -123,8 +123,8 @@ type Forge interface {
 	// Identity fills the fork, can-push and squash-allowed flags of the repository named by host,
 	// owner, and name.
 	Identity(ctx context.Context, repo forge.Repo) (forge.Repo, error)
-	// FindChanges returns the open changes whose head is the branch, and the merged ones;
-	// a change that was closed without merging is never returned.
+	// FindChanges returns the changes whose head is the branch, open, closed without merging,
+	// and merged, each marked with its state.
 	FindChanges(ctx context.Context, repo forge.Repo, branch string) ([]forge.Change, error)
 	// OpenChange opens a change with an empty body, and returns forge.ErrChangeExists when the
 	// branch already has one.
@@ -149,6 +149,8 @@ type Forge interface {
 type Request struct {
 	Command string
 	Words   []string
+	// Args are the command's positional words, as typed: for `ils branch`, the name.
+	Args []string
 }
 
 // ilsCommand is the request's command marked as an ils command, which prints as "ils <command>".
@@ -163,6 +165,7 @@ type Ready struct {
 	// Standing is the branch the command stands on, or a detached HEAD.
 	Standing git.Standing
 	// Repo is the repository origin names, with the forge's fork, can-push and squash-allowed flags.
+	// GitPreconditions leaves it empty.
 	Repo forge.Repo
 }
 
@@ -176,23 +179,9 @@ type Ready struct {
 // a refusal for a precondition that fails or a read the context's deadline cut short, and broke
 // for a read that fails for any other reason.
 func Preconditions(ctx context.Context, deps Deps, req Request) (Ready, *result.Result) {
-	if err := deps.Repo.CheckVersion(ctx); err != nil {
-		if stop := req.tooOld(err); stop != nil {
-			return Ready{}, stop
-		}
-
-		return Ready{}, req.unread(readGitVersion, err)
-	}
-
-	standing, err := deps.Repo.Standing(ctx)
-	if err != nil {
-		return Ready{}, req.unread(readStanding, err)
-	}
-
-	if standing.Kind == git.NoOrigin {
-		return Ready{}, req.Refused(
-			result.Say("this repository has no remote named origin"),
-			result.NextStep("create the repository on GitHub and push to it with `gh repo create --source . --push`"))
+	standing, stop := gitStanding(ctx, deps, req)
+	if stop != nil {
+		return Ready{}, stop
 	}
 
 	origin, stop := originRepo(ctx, deps, req)
@@ -211,6 +200,48 @@ func Preconditions(ctx context.Context, deps Deps, req Request) (Ready, *result.
 	}
 
 	return Ready{Trunk: trunk, Standing: standing, Repo: repo}, nil
+}
+
+// GitPreconditions checks the preconditions of Preconditions that need git alone, in the same
+// order and with the same results: git is installed and recent enough; there is an origin; origin
+// answers for its trunk. It never calls the forge, and the Ready it returns has no Repo.
+func GitPreconditions(ctx context.Context, deps Deps, req Request) (Ready, *result.Result) {
+	standing, stop := gitStanding(ctx, deps, req)
+	if stop != nil {
+		return Ready{}, stop
+	}
+
+	trunk, stop := trunkOf(ctx, deps, req)
+	if stop != nil {
+		return Ready{}, stop
+	}
+
+	return Ready{Trunk: trunk, Standing: standing}, nil
+}
+
+// gitStanding returns where HEAD stands once git is installed and recent enough and there is an
+// origin.
+func gitStanding(ctx context.Context, deps Deps, req Request) (git.Standing, *result.Result) {
+	if err := deps.Repo.CheckVersion(ctx); err != nil {
+		if stop := req.tooOld(err); stop != nil {
+			return git.Standing{}, stop
+		}
+
+		return git.Standing{}, req.unread(readGitVersion, err)
+	}
+
+	standing, err := deps.Repo.Standing(ctx)
+	if err != nil {
+		return git.Standing{}, req.unread(readStanding, err)
+	}
+
+	if standing.Kind == git.NoOrigin {
+		return git.Standing{}, req.Refused(
+			result.Say("this repository has no remote named origin"),
+			result.NextStep("create the repository on GitHub and push to it with `gh repo create --source . --push`"))
+	}
+
+	return standing, nil
 }
 
 // originRepo returns the repository both of origin's URLs name.
