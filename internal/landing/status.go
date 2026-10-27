@@ -18,8 +18,9 @@ import (
 // Every read is best-effort. A read that fails becomes a line naming what could not be read and
 // why, and an entry of the payload's unread list; the reads that do not depend on it still run. A
 // read the time limit or an interrupt cut short is such a line, and every read after it is skipped.
-// The only writes are the fetches of origin's trunk and of origin's copy of the branch, which move
-// remote-tracking refs alone.
+// The only writes are fetches from origin: its trunk, the branch's copy, the head of each merged
+// pull request whose commits it checks, and a version tag whose commit the clone lacks. They store
+// objects and move remote-tracking refs and FETCH_HEAD, nothing a user owns.
 //
 // On a work branch `Next:` mirrors the order in which `ils push` refuses and ends, so that it never
 // names a command that would refuse: an open pull request against a base other than the trunk,

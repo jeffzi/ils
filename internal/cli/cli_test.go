@@ -324,6 +324,53 @@ func TestApp_Run_WhenALineNamesAPathUnderTheGitDirOfTheRepository_ExitsOneWithNo
 	}
 }
 
+func TestApp_Run_WhenBranchIsGivenOneName_RunsTheBranchCommandWithTheNameAsTyped(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args []string
+		want landing.Request
+	}{
+		{
+			name: "name alone", args: []string{"branch", "0.4/Fix-help"},
+			want: landing.Request{Command: "branch", Words: []string{"branch", "0.4/Fix-help"}, Args: []string{"0.4/Fix-help"}},
+		},
+		{
+			name: "flag before the name", args: []string{"branch", "--json", "topic"},
+			want: landing.Request{Command: "branch", Words: []string{"branch", "topic"}, Args: []string{"topic"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var seen landing.Request
+
+			app := outside(t)
+			app.SetBranch(func(_ context.Context, _ landing.Deps, req landing.Request) result.Result {
+				seen = req
+
+				return finished(req)
+			})
+
+			got := launch(t, app, tt.args...)
+
+			assert.Check(t, is.Equal(got.code, exitDone))
+			assert.Check(t, is.DeepEqual(seen, tt.want))
+		})
+	}
+}
+
+func TestApp_Run_WhenStatusRunsOutsideARepository_ExitsZero(t *testing.T) {
+	t.Parallel()
+
+	got := launch(t, lost(t), "status")
+
+	assert.Check(t, is.Equal(got.code, exitDone))
+	assert.Check(t, is.Equal(got.stderr, ""))
+}
+
 // ---------------------------------------------------------------------------
 // Color
 // ---------------------------------------------------------------------------

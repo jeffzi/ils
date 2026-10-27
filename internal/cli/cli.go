@@ -49,6 +49,10 @@ type App struct {
 	runPush Command
 	// runMerge runs `ils merge`; nil runs landing.Merge.
 	runMerge Command
+	// runBranch runs `ils branch <name>`; nil runs landing.StartBranch.
+	runBranch Command
+	// runStatus runs `ils status`; nil runs landing.Status.
+	runStatus Command
 	// buildInfo reads the build info that an empty Version falls back to; nil reads
 	// debug.ReadBuildInfo.
 	buildInfo func() (*debug.BuildInfo, bool)
@@ -358,11 +362,10 @@ func (p *parse) root() *cobra.Command {
 	root.AddCommand(
 		p.landing(landingHelp{word: landing.PushCommand, short: pushShort, long: withBound(pushLong), examples: pushExamples}, p.app.runPush, landing.Push),
 		p.landing(landingHelp{word: landing.MergeCommand, short: mergeShort, long: withBound(mergeLong), examples: mergeExamples}, p.app.runMerge, landing.Merge),
-	)
-
-	for _, later := range []string{wordBranch, wordRelease, wordStatus} {
-		root.AddCommand(&cobra.Command{
-			Use:    later,
+		p.landing(landingHelp{word: wordStatus, short: statusShort, long: statusLong, examples: statusExamples}, p.app.runStatus, landing.Status),
+		p.named(landingHelp{word: wordBranch, short: branchShort, long: branchLong, examples: branchExamples}, p.app.runBranch, landing.StartBranch),
+		&cobra.Command{
+			Use:    wordRelease,
 			Hidden: true,
 			Args:   cobra.ArbitraryArgs,
 			// The command is refused whatever follows it, an unknown flag included.
@@ -370,8 +373,8 @@ func (p *parse) root() *cobra.Command {
 			RunE: func(c *cobra.Command, _ []string) error {
 				return p.refuse(result.Say("%s is not in this version", c.Name()))
 			},
-		})
-	}
+		},
+	)
 
 	return root
 }
@@ -457,6 +460,49 @@ func (p *parse) landing(help landingHelp, run, fallback Command) *cobra.Command 
 		},
 		RunE: func(c *cobra.Command, _ []string) error {
 			p.land(c.Context(), run, landing.Request{Command: help.word, Words: p.words})
+
+			return nil
+		},
+	}
+	c.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return p.flagRefusal(err, extra) })
+
+	return c
+}
+
+// named returns the landing command help names, which takes one name and no other word and runs
+// run, or fallback when run is nil, with the name as typed as the one argument of its request.
+func (p *parse) named(help landingHelp, run, fallback Command) *cobra.Command {
+	if run == nil {
+		run = fallback
+	}
+
+	extra := func(typed string) result.Phrase {
+		return result.Say("%s takes one name and no other word, and %s was given", help.word, typed)
+	}
+
+	c := &cobra.Command{
+		Use:     help.word + " <name>",
+		Short:   help.short,
+		Long:    help.long,
+		Example: help.examples,
+		Args: func(c *cobra.Command, args []string) error {
+			// `--` in place of the name, or right after it, is the first word beyond the name.
+			if dash := c.ArgsLenAtDash(); dash == 0 || dash == 1 {
+				return p.refuse(extra(wordDash))
+			}
+
+			if len(args) > 1 {
+				return p.refuse(extra(args[1]))
+			}
+
+			if len(args) == 0 {
+				return p.refuse(result.Say("%s takes one name, and none was given", help.word))
+			}
+
+			return nil
+		},
+		RunE: func(c *cobra.Command, args []string) error {
+			p.land(c.Context(), run, landing.Request{Command: help.word, Words: p.words, Args: args})
 
 			return nil
 		},
