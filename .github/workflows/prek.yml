@@ -3,7 +3,7 @@ name: prek
 on:
   pull_request:
   push:
-    branches: [main, fix-ci/**, plan/**, "v[0-9]*"]
+    branches: [main, fix-ci/**]
   workflow_call:
 
 permissions:
@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: prek-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   prek:
