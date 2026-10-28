@@ -302,16 +302,29 @@ func (v Verdict) State() VerdictState {
 	}
 }
 
-// Failed returns the first deciding check that failed or was canceled, and whether there is one.
+// Failed returns the first of FailedChecks, and whether there is one.
 func (v Verdict) Failed() (FailedCheck, bool) {
+	failed := v.FailedChecks()
+	if len(failed) == 0 {
+		return FailedCheck{}, false
+	}
+
+	check := failed[0]
+
+	return FailedCheck{Name: check.Name, Link: check.Link, Canceled: check.Bucket == BucketCanceled}, true
+}
+
+// FailedChecks returns the deciding checks that failed or were canceled, in the order of Checks.
+func (v Verdict) FailedChecks() []Check {
+	var failed []Check
+
 	for _, check := range v.Deciding() {
-		canceled := check.Bucket == BucketCanceled
-		if check.Bucket == BucketFail || canceled {
-			return FailedCheck{Name: check.Name, Link: check.Link, Canceled: canceled}, true
+		if check.Bucket == BucketFail || check.Bucket == BucketCanceled {
+			failed = append(failed, check)
 		}
 	}
 
-	return FailedCheck{}, false
+	return failed
 }
 
 // Pending returns the deciding checks still running, in the order of Checks.

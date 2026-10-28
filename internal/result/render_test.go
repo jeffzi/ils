@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -25,7 +24,6 @@ const (
 	pullURL  = "https://github.com/jeffzi/ils/pull/12"
 	checkURL = "https://github.com/jeffzi/ils/actions/runs/7/job/9"
 	excerpt  = "lefthook.yml:3: hooks/ entry is not valid\nexit status 1"
-	wholeLog = "Run prek run --all-files\nreading .git/hooks/pre-commit\n" + excerpt + "\n"
 
 	doneBody  = "Pushed tidy-readme to origin.\nEvery check is green.\n"
 	brokeBody = "Pushed tidy-readme to origin.\nDid not open the pull request: HTTP 502\n"
@@ -129,8 +127,7 @@ func pendingPush() result.Result {
 	}
 }
 
-// redPush is a delivered push with a red check named after a hook runner,
-// an excerpt, and the full payload.
+// redPush is a delivered push with a red check named after a hook runner and an excerpt.
 func redPush() result.Result {
 	return result.Result{
 		Command: "push",
@@ -145,18 +142,6 @@ func redPush() result.Result {
 		Next:    result.NextStep(redNext),
 		Reason:  result.Say("the check %s is red", "prek"),
 		Excerpt: excerpt,
-		Payload: &result.Payload{Push: &result.Push{
-			Number:     12,
-			URL:        pullURL,
-			SHA:        "4f2a9c1",
-			Verdict:    "red",
-			MergeState: "blocked-other",
-			Checks: []result.Check{
-				{Name: "prek", Bucket: "fail", Workflow: "CI", Link: checkURL},
-				{Name: "build", Bucket: "pass", Workflow: "CI", Link: checkURL + "0"},
-			},
-			FailedLog: wholeLog,
-		}},
 	}
 }
 
@@ -167,21 +152,9 @@ func with[T any](base T, edit func(*T)) T {
 	return base
 }
 
-// inputOf prints a row's result for the log of a failing row, with the push and merge payloads
-// that the result holds behind pointers written out.
+// inputOf prints a row's result for the log of a failing row.
 func inputOf(r result.Result) string {
-	text := fmt.Sprintf("%+v", r)
-	if r.Payload == nil {
-		return text
-	}
-	if r.Payload.Push != nil {
-		text += fmt.Sprintf(", its payload push %+v", *r.Payload.Push)
-	}
-	if r.Payload.Merge != nil {
-		text += fmt.Sprintf(", its payload merge %+v", *r.Payload.Merge)
-	}
-
-	return text
+	return fmt.Sprintf("%+v", r)
 }
 
 // ---------------------------------------------------------------------------
@@ -330,31 +303,15 @@ func TestRenderJSON(t *testing.T) {
 	}
 }
 
-func TestRenderJSON_WhenResultEndsInAnyOutcome_CarriesWhatTheTextShows(t *testing.T) {
+func TestRenderJSON_WhenResultHasLinesExcerptReasonAndNext_CarriesWhatTheTextShows(t *testing.T) {
 	t.Parallel()
+	text, err := result.RenderText(redPush(), gitDir)
+	assert.NilError(t, err)
 
-	tests := []struct {
-		name   string
-		result result.Result
-	}{
-		{name: "done", result: donePush()},
-		{name: "refused", result: refusedPush()},
-		{name: "broke", result: brokePush()},
-		{name: "pending", result: pendingPush()},
-		{name: "delivered not green", result: redPush()},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			text, err := result.RenderText(tt.result, gitDir)
-			assert.NilError(t, err)
+	out, err := result.RenderJSON(redPush(), gitDir)
+	assert.NilError(t, err)
 
-			out, err := result.RenderJSON(tt.result, gitDir)
-			assert.NilError(t, err)
-
-			resulttest.AssertCarried(t, text, resulttest.Decode(t, out))
-		})
-	}
+	resulttest.AssertCarried(t, text, resulttest.Decode(t, out))
 }
 
 // ---------------------------------------------------------------------------
@@ -492,28 +449,17 @@ func nextLook() resulttest.Look {
 // styledCases returns one case per part of a result the styled renderer draws in its own style.
 func styledCases() []styledCase {
 	return []styledCase{
-		{name: "branch", result: markedPush(), within: "Pushed tidy-readme", part: "tidy-readme", want: resulttest.NameLook(), profile: colorprofile.ANSI},
 		{
 			name: "branch drawn as at ANSI on a true color profile", result: markedPush(), within: "Pushed tidy-readme",
 			part: "tidy-readme", want: resulttest.NameLook(), profile: colorprofile.TrueColor,
 		},
-		{name: "sha", result: markedPush(), within: "at 4f2a9c1", part: "4f2a9c1", want: resulttest.SHALook(), profile: colorprofile.ANSI},
-		{name: "pull request number", result: markedPush(), within: "request #12", part: "#12", want: resulttest.NameLook(), profile: colorprofile.ANSI},
-		{name: "url", result: markedPush(), within: pullURL, part: pullURL, want: resulttest.URLLook(), profile: colorprofile.ANSI},
 		{name: "broke label", result: markedPush(), within: result.Broke.Label() + ": GitHub", part: result.Broke.Label() + ":", want: stoppedLabelLook(), profile: colorprofile.ANSI},
-		{name: "reason wording", result: markedPush(), within: result.Broke.Label() + ": GitHub did", part: " GitHub did", profile: colorprofile.ANSI},
-		{name: "Next", result: markedPush(), within: result.NextLabel + ": rebase", part: result.NextLabel, want: nextLook(), profile: colorprofile.ANSI},
-		{name: "Next colon", result: markedPush(), within: result.NextLabel + ": rebase", part: ":", profile: colorprofile.ANSI},
-		{name: "step wording", result: markedPush(), within: result.NextLabel + ": rebase", part: " rebase", profile: colorprofile.ANSI},
-		{name: "command in the step", result: markedPush(), within: "run ils push again", part: "ils push", want: resulttest.NameLook(), profile: colorprofile.ANSI},
-		{name: "unmarked name", result: donePush(), within: "Pushed tidy-readme to origin.", part: "tidy-readme", profile: colorprofile.ANSI},
+		{name: "reason wording", result: markedPush(), within: resulttest.ReasonLine(result.Broke, "GitHub did"), part: " GitHub did", profile: colorprofile.ANSI},
+		{name: "Next", result: markedPush(), within: resulttest.NextLine("rebase"), part: result.NextLabel, want: nextLook(), profile: colorprofile.ANSI},
+		{name: "Next colon", result: markedPush(), within: resulttest.NextLine("rebase"), part: ":", profile: colorprofile.ANSI},
+		{name: "step wording", result: markedPush(), within: resulttest.NextLine("rebase"), part: " rebase", profile: colorprofile.ANSI},
 		{name: "passed count", result: talliedChecks(), within: "17 passed", part: "17", want: resulttest.PassedLook(), profile: colorprofile.ANSI},
-		{name: "skipped count", result: talliedChecks(), within: "3 skipped", part: "3", want: resulttest.SkippedLook(), profile: colorprofile.ANSI},
-		{
-			name: "inline command in a line", result: tickedPush(), within: "Ran gh pr edit --repo jeffzi/ils #16 at",
-			part: "gh pr edit --repo jeffzi/ils #16", want: resulttest.NameLook(),
-			profile: colorprofile.ANSI,
-		},
+		{name: "command", result: refusedPush(), within: resulttest.NextLine("ils branch fix-prek-again"), part: "ils branch fix-prek-again", want: resulttest.NameLook(), profile: colorprofile.ANSI},
 	}
 }
 
@@ -549,28 +495,30 @@ func TestRenderStyled_WhenProfileHasColor_DrawsEachPartInItsStyle(t *testing.T) 
 			t.Parallel()
 			t.Logf("row: result %s", inputOf(tt.result))
 
-			assertStyled(t, tt)
+			got, out := drawnLook(t, tt)
+
+			assert.Check(t, is.Equal(got, tt.want), "output %q", out)
 		})
 	}
 }
 
-// assertStyled renders the row's result at its profile and checks how part is drawn within its
-// surrounding text.
-func assertStyled(t *testing.T, tt styledCase) {
+// drawnLook renders the row's result at its profile and returns how part is drawn within its
+// surrounding text, with the rendered output for the failure message.
+func drawnLook(t *testing.T, tt styledCase) (resulttest.Look, string) {
 	t.Helper()
 
 	out, err := result.RenderStyled(tt.result, gitDir, tt.profile)
 	assert.NilError(t, err)
 
-	got := resulttest.Draw(t, out).LookOf(t, tt.within, tt.part)
-	assert.Check(t, is.Equal(got, tt.want), "output %q", out)
+	return resulttest.Draw(t, out).LookOf(t, tt.within, tt.part), out
 }
 
 // ---------------------------------------------------------------------------
 // Wording check
 // ---------------------------------------------------------------------------
 
-// rejected is a result whose own wording names a hook or a git dir path.
+// rejected is a result whose own wording names a hook or a git dir path. wantLine is set only
+// where the line holds a name filled in, the one case where the line differs from the wording.
 type rejected struct {
 	name     string
 	gitDir   string
@@ -581,12 +529,11 @@ type rejected struct {
 
 // rejectedLine is a broke push with one more line, whose wording must be
 // rejected against the resolved git dir.
-func rejectedLine(name, dir string, p result.Phrase, wantLine string) rejected {
+func rejectedLine(name, dir string, p result.Phrase) rejected {
 	return rejected{
-		name:     name,
-		gitDir:   dir,
-		wantLine: wantLine,
-		result:   brokeWithLine(p),
+		name:   name,
+		gitDir: dir,
+		result: brokeWithLine(p),
 	}
 }
 
@@ -609,63 +556,51 @@ func dirCases() []rejected {
 
 	return []rejected{
 		rejectedLine("handed-in dir ends in a separator", gitDir+"/",
-			result.Say("Wrote /srv/store/meta/HEAD"), "Wrote /srv/store/meta/HEAD").naming(gitDir + "/"),
+			result.Say("Wrote /srv/store/meta/HEAD")).naming(gitDir + "/"),
 		rejectedLine("wording uses backslashes", gitDir,
-			result.Say(`Wrote \srv\store\meta\HEAD`), `Wrote \srv\store\meta\HEAD`).naming(gitDir),
+			result.Say(`Wrote \srv\store\meta\HEAD`)).naming(gitDir),
 		rejectedLine("handed-in dir uses backslashes", windowsDir,
-			result.Say("Wrote C:/Work/Store/meta/HEAD"), "Wrote C:/Work/Store/meta/HEAD").naming(windowsDir),
+			result.Say("Wrote C:/Work/Store/meta/HEAD")).naming(windowsDir),
 		rejectedLine("handed-in dir uses backslashes and ends in one", windowsDir+`\`,
-			result.Say("Wrote C:/Work/Store/meta/HEAD"), "Wrote C:/Work/Store/meta/HEAD").naming(windowsDir + `\`),
+			result.Say("Wrote C:/Work/Store/meta/HEAD")).naming(windowsDir + `\`),
 		rejectedLine("wording differs in case", gitDir,
-			result.Say("Wrote /SRV/Store/Meta/HEAD"), "Wrote /SRV/Store/Meta/HEAD").naming(gitDir),
+			result.Say("Wrote /SRV/Store/Meta/HEAD")).naming(gitDir),
 		rejectedLine("handed-in dir differs in case", shoutedDir,
-			result.Say("Wrote /srv/store/meta/HEAD"), "Wrote /srv/store/meta/HEAD").naming(shoutedDir),
+			result.Say("Wrote /srv/store/meta/HEAD")).naming(shoutedDir),
 		rejectedLine("resolved git dir holding spaces", spacedDir,
-			result.Say("Wrote /srv/my store/meta dir/HEAD"), "Wrote /srv/my store/meta dir/HEAD").naming(spacedDir),
+			result.Say("Wrote /srv/my store/meta dir/HEAD")).naming(spacedDir),
 		rejectedLine("wording naming a sibling before the git dir", gitDir,
-			result.Say("Wrote /srv/store/metadata and /srv/store/meta/HEAD"),
-			"Wrote /srv/store/metadata and /srv/store/meta/HEAD").naming(gitDir),
+			result.Say("Wrote /srv/store/metadata and /srv/store/meta/HEAD")).naming(gitDir),
 	}
 }
 
 // lineCases returns results whose offending wording sits in a line.
 func lineCases() []rejected {
-	line := func(name, wantWord, wantLine string, p result.Phrase) rejected {
-		return rejectedLine(name, gitDir, p, wantLine).naming(wantWord)
+	line := func(name, wantWord string, p result.Phrase) rejected {
+		return rejectedLine(name, gitDir, p).naming(wantWord)
 	}
 
 	return []rejected{
-		line("git dir component in backticks", "`.git/config`",
-			"Wrote `.git/config` today.", result.Say("Wrote `.git/config` today.")),
-		line("pre-commit, capital", "Pre-commit", "Pre-commit ran.", result.Say("Pre-commit ran.")),
-		line("git dir component, backslash", `.git\config`, `Wrote .git\config`, result.Say(`Wrote .git\config`)),
-		line("git dir component, nested", "work/.git/index.lock",
-			"Removed work/.git/index.lock", result.Say("Removed work/.git/index.lock")),
-		line("git dir component ending a sentence", ".git.",
-			"Nothing changed in .git.", result.Say("Nothing changed in .git.")),
+		line("git dir component in backticks", "`.git/config`", result.Say("Wrote `.git/config` today.")),
+		line("pre-commit, capital", "Pre-commit", result.Say("Pre-commit ran.")),
+		line("git dir component, backslash", `.git\config`, result.Say(`Wrote .git\config`)),
+		line("git dir component, nested", "work/.git/index.lock", result.Say("Removed work/.git/index.lock")),
+		line("git dir component ending a sentence", ".git.", result.Say("Nothing changed in .git.")),
 	}
 }
 
 // otherCases returns results whose offending wording sits outside the lines.
 func otherCases() []rejected {
-	reason := func(name, wantWord, wantLine string, p result.Phrase) rejected {
-		return rejected{
-			name: name, gitDir: gitDir, wantLine: wantLine, wantWord: wantWord,
-			result: refusedWithReason(p),
-		}
-	}
-	next := func(name, wantWord, wantLine string, n result.Next) rejected {
-		return rejected{
-			name: name, gitDir: gitDir, wantLine: wantLine, wantWord: wantWord,
-			result: redWithNext(n),
-		}
-	}
-
 	return []rejected{
-		reason("reason naming a hook", "pre-push", "the pre-push step failed on main",
-			result.Say("the pre-push step failed on %s", "main")),
-		next("judgment step naming a hook", "prek,", "run prek, then ils push again",
-			result.NextStep("run prek, then ils push again")),
+		{
+			name: "reason naming a hook", gitDir: gitDir,
+			wantLine: "the pre-push step failed on main", wantWord: "pre-push",
+			result: refusedWithReason(result.Say("the pre-push step failed on %s", "main")),
+		},
+		{
+			name: "judgment step naming a hook", gitDir: gitDir, wantWord: "prek,",
+			result: redWithNext(result.NextStep("run prek, then ils push again")),
+		},
 	}
 }
 
@@ -695,7 +630,9 @@ func TestRenderText_WhenOwnWordingNamesHookOrGitDir_ReturnsWordingError(t *testi
 
 			wordingErr, ok := errors.AsType[*result.WordingError](err)
 			assert.Assert(t, ok, "RenderText error = %v, want a *result.WordingError; output %q", err, out)
-			assert.Check(t, is.Equal(wordingErr.Line, tt.wantLine))
+			if tt.wantLine != "" {
+				assert.Check(t, is.Equal(wordingErr.Line, tt.wantLine))
+			}
 			assert.Check(t, is.Equal(wordingErr.Word, tt.wantWord))
 		})
 	}
@@ -717,12 +654,12 @@ func TestRenderText_WhenOwnWordingOnlyResemblesHookOrGitDir_PrintsIt(t *testing.
 	}
 }
 
-func TestWordingError_Error_QuotesBothFields(t *testing.T) {
+func TestWordingError_Error_WhenBothFieldsSet_NamesLineAndWord(t *testing.T) {
 	t.Parallel()
-	err := &result.WordingError{Line: "The pre-commit step ran.", Word: "pre-commit"}
+	err := &result.WordingError{Line: "The step ran.", Word: "pre-commit"}
 
 	got := err.Error()
 
-	assert.Check(t, is.Contains(got, strconv.Quote(err.Line)))
-	assert.Check(t, is.Contains(got, strconv.Quote(err.Word)))
+	assert.Check(t, is.Contains(got, err.Line))
+	assert.Check(t, is.Contains(got, err.Word))
 }

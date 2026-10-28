@@ -8,6 +8,7 @@ import (
 	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/forge"
+	"github.com/jeffzi/ils/internal/forge/forgetest"
 )
 
 // unknownBucket must match no forge.Bucket constant, or the tests that use it stop reaching the
@@ -19,15 +20,9 @@ func link(name string) string {
 	return "https://ci.example.com/checks/" + name
 }
 
-// optional is a check the trunk's protection does not name.
-func optional(name string, bucket forge.Bucket) forge.Check {
-	return forge.Check{Name: name, Bucket: bucket, Workflow: "ci", Link: link(name)}
-}
-
-// required is a check the trunk's protection names.
-func required(name string, bucket forge.Bucket) forge.Check {
-	check := optional(name, bucket)
-	check.Required = true
+// linked is check with its CI page set.
+func linked(check forge.Check) forge.Check {
+	check.Link = link(check.Name)
 
 	return check
 }
@@ -51,17 +46,17 @@ func TestVerdict_State(t *testing.T) {
 		verdict forge.Verdict
 	}{
 		{name: "no check", verdict: verdictOf(), want: forge.VerdictNone},
-		{name: "only skipped", verdict: verdictOf(optional("docs", forge.BucketSkipped)), want: forge.VerdictGreen},
-		{name: "one pending", verdict: verdictOf(optional("build", forge.BucketPass), optional("test", forge.BucketPending)), want: forge.VerdictPending},
-		{name: "failing and pending", verdict: verdictOf(optional("build", forge.BucketPending), optional("test", forge.BucketFail)), want: forge.VerdictRed},
+		{name: "only skipped", verdict: verdictOf(forgetest.Check("docs", forge.BucketSkipped)), want: forge.VerdictGreen},
+		{name: "one pending", verdict: verdictOf(forgetest.Check("build", forge.BucketPass), forgetest.Check("test", forge.BucketPending)), want: forge.VerdictPending},
+		{name: "failing and pending", verdict: verdictOf(forgetest.Check("build", forge.BucketPending), forgetest.Check("test", forge.BucketFail)), want: forge.VerdictRed},
 		{
 			name:    "required passing, another required name missing",
-			verdict: missingBuild(required("test", forge.BucketPass)),
+			verdict: missingBuild(forgetest.RequiredCheck("test", forge.BucketPass)),
 			want:    forge.VerdictGreen,
 		},
 		{
 			name:    "every required name missing, optional passing",
-			verdict: missingBuild(optional("lint", forge.BucketPass)),
+			verdict: missingBuild(forgetest.Check("lint", forge.BucketPass)),
 			want:    forge.VerdictNone,
 		},
 	}
@@ -86,10 +81,10 @@ func TestVerdict_Failed(t *testing.T) {
 		want    forge.FailedCheck
 		verdict forge.Verdict
 	}{
-		{name: "passing ahead of failing", verdict: verdictOf(optional("lint", forge.BucketPass), optional("test", forge.BucketFail)), want: failed},
-		{name: "failing ahead of canceled", verdict: verdictOf(optional("test", forge.BucketFail), optional("build", forge.BucketCanceled)), want: failed},
-		{name: "canceled ahead of failing", verdict: verdictOf(optional("build", forge.BucketCanceled), optional("test", forge.BucketFail)), want: canceled},
-		{name: "optional failing ahead of required canceled", verdict: verdictOf(optional("lint", forge.BucketFail), required("build", forge.BucketCanceled)), want: canceled},
+		{name: "passing ahead of failing", verdict: verdictOf(linked(forgetest.Check("lint", forge.BucketPass)), linked(forgetest.Check("test", forge.BucketFail))), want: failed},
+		{name: "failing ahead of canceled", verdict: verdictOf(linked(forgetest.Check("test", forge.BucketFail)), linked(forgetest.Check("build", forge.BucketCanceled))), want: failed},
+		{name: "canceled ahead of failing", verdict: verdictOf(linked(forgetest.Check("build", forge.BucketCanceled)), linked(forgetest.Check("test", forge.BucketFail))), want: canceled},
+		{name: "optional failing ahead of required canceled", verdict: verdictOf(linked(forgetest.Check("lint", forge.BucketFail)), linked(forgetest.RequiredCheck("build", forge.BucketCanceled))), want: canceled},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -111,21 +106,21 @@ func TestVerdict_Pending(t *testing.T) {
 		verdict forge.Verdict
 		want    []forge.Check
 	}{
-		{name: "every check concluded", verdict: verdictOf(optional("build", forge.BucketPass), optional("test", forge.BucketFail))},
+		{name: "every check concluded", verdict: verdictOf(forgetest.Check("build", forge.BucketPass), forgetest.Check("test", forge.BucketFail))},
 		{
 			name:    "pending among concluded, in order",
-			verdict: verdictOf(optional("build", forge.BucketPending), optional("lint", forge.BucketPass), optional("test", forge.BucketPending)),
-			want:    []forge.Check{optional("build", forge.BucketPending), optional("test", forge.BucketPending)},
+			verdict: verdictOf(forgetest.Check("build", forge.BucketPending), forgetest.Check("lint", forge.BucketPass), forgetest.Check("test", forge.BucketPending)),
+			want:    []forge.Check{forgetest.Check("build", forge.BucketPending), forgetest.Check("test", forge.BucketPending)},
 		},
 		{
 			name:    "bucket this version does not know",
-			verdict: verdictOf(optional("build", forge.BucketPass), optional("test", unknownBucket)),
-			want:    []forge.Check{optional("test", unknownBucket)},
+			verdict: verdictOf(forgetest.Check("build", forge.BucketPass), forgetest.Check("test", unknownBucket)),
+			want:    []forge.Check{forgetest.Check("test", unknownBucket)},
 		},
 		{
 			name:    "optional pending left out",
-			verdict: verdictOf(optional("lint", forge.BucketPending), required("test", forge.BucketPending), required("build", forge.BucketPass)),
-			want:    []forge.Check{required("test", forge.BucketPending)},
+			verdict: verdictOf(forgetest.Check("lint", forge.BucketPending), forgetest.RequiredCheck("test", forge.BucketPending), forgetest.RequiredCheck("build", forge.BucketPass)),
+			want:    []forge.Check{forgetest.RequiredCheck("test", forge.BucketPending)},
 		},
 	}
 	for _, tt := range tests {

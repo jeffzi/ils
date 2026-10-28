@@ -49,11 +49,11 @@ func tagReleases(f *gittest.Fixture) {
 	f.Commits(trunk, "wip: local work")
 }
 
-func TestStatus_OnTheTrunk_ReportsTheHighestVersionTagOnOriginsTrunkAndTheCommitsSince(t *testing.T) {
+func TestStatus_WhenOnTheTrunk_ReportsTheLastVersionTagOnOriginsTrunk(t *testing.T) {
 	t.Parallel()
 	s := statusScene(t, tagReleases, ruledBy(forge.RulesProtect))
 
-	got := seeStatus(t.Context(), t, s)
+	got := seeStatus(t, s, (*testing.T).Context)
 
 	assert.Check(t, is.Equal(got.status.Standing, standingTrunk))
 	assert.Check(t, is.Equal(got.status.LastTag, "v1.10.0"))
@@ -61,20 +61,20 @@ func TestStatus_OnTheTrunk_ReportsTheHighestVersionTagOnOriginsTrunkAndTheCommit
 	assertSays(t, got.text, expect("v1.10.0"))
 }
 
-func TestStatus_OnTheTrunk_WhenAHigherTagIsOnACommitOnlyOriginHolds_ReportsTheHighestOnOriginsTrunk(t *testing.T) {
+func TestStatus_WhenOnTheTrunkAndAHigherTagIsOnACommitOnlyOriginHolds_ReportsTheHighestOnOriginsTrunk(t *testing.T) {
 	t.Parallel()
 	s := statusScene(t, func(f *gittest.Fixture) {
 		tagReleases(f)
 		f.OriginGit("tag", "v9.0.0", f.AdvanceOrigin(topic))
 	}, ruledBy(forge.RulesProtect))
 
-	got := seeStatus(t.Context(), t, s)
+	got := seeStatus(t, s, (*testing.T).Context)
 
 	assert.Check(t, is.Equal(got.status.LastTag, "v1.10.0"))
 	assert.Check(t, is.Len(got.status.Unread, 0))
 }
 
-func TestStatus_OnTheTrunk_WhenOriginHoldsNoVersionTag_SaysThereIsNone(t *testing.T) {
+func TestStatus_WhenOnTheTrunkAndOriginHoldsNoVersionTag_SaysThereIsNone(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -95,7 +95,7 @@ func TestStatus_OnTheTrunk_WhenOriginHoldsNoVersionTag_SaysThereIsNone(t *testin
 			t.Parallel()
 			s := statusScene(t, tt.arrange, ruledBy(forge.RulesProtect))
 
-			got := seeStatus(t.Context(), t, s)
+			got := seeStatus(t, s, (*testing.T).Context)
 
 			assert.Check(t, is.Equal(got.status.LastTag, ""))
 			assertSays(t, got.text, expect("no version tag"))
@@ -103,7 +103,7 @@ func TestStatus_OnTheTrunk_WhenOriginHoldsNoVersionTag_SaysThereIsNone(t *testin
 	}
 }
 
-func TestStatus_OnTheTrunk_ReportsHowItStandsAgainstOriginsTrunk(t *testing.T) {
+func TestStatus_WhenOnTheTrunk_ReportsHowItStandsAgainstOriginsTrunk(t *testing.T) {
 	t.Parallel()
 	s := statusScene(t, func(f *gittest.Fixture) {
 		standOnTrunk(f)
@@ -111,7 +111,7 @@ func TestStatus_OnTheTrunk_ReportsHowItStandsAgainstOriginsTrunk(t *testing.T) {
 		f.Commits(trunk, "wip: local work")
 	}, ruledBy(forge.RulesProtect))
 
-	got := seeStatus(t.Context(), t, s)
+	got := seeStatus(t, s, (*testing.T).Context)
 
 	assert.Check(t, is.Equal(got.status.Ahead, 1))
 	assert.Check(t, is.Equal(got.status.Behind, 1))
@@ -124,7 +124,7 @@ type releaseRow struct {
 	want    bool
 }
 
-func TestStatus_OnTheTrunk_ReportsWhetherOriginsTrunkTipIsAReleaseCommit(t *testing.T) {
+func TestStatus_WhenOnTheTrunk_ReportsWhetherOriginsTrunkTipIsAReleaseCommit(t *testing.T) {
 	t.Parallel()
 
 	tests := []releaseRow{
@@ -144,7 +144,7 @@ func TestStatus_OnTheTrunk_ReportsWhetherOriginsTrunkTipIsAReleaseCommit(t *test
 				f.Commits(trunk, "wip: local work")
 			}, ruledBy(forge.RulesProtect))
 
-			got := seeStatus(t.Context(), t, s)
+			got := seeStatus(t, s, (*testing.T).Context)
 
 			assert.Check(t, is.Equal(got.status.ReleaseCommit, tt.want))
 		})
@@ -160,7 +160,7 @@ type protectionRow struct {
 	said string
 }
 
-func TestStatus_OnTheTrunk_ReportsWhetherRulesProtectIt(t *testing.T) {
+func TestStatus_WhenOnTheTrunk_ReportsWhetherRulesProtectIt(t *testing.T) {
 	t.Parallel()
 
 	tests := []protectionRow{
@@ -173,7 +173,7 @@ func TestStatus_OnTheTrunk_ReportsWhetherRulesProtectIt(t *testing.T) {
 			t.Parallel()
 			s := statusScene(t, standOnTrunk, ruledBy(tt.rules))
 
-			got := seeStatus(t.Context(), t, s)
+			got := seeStatus(t, s, (*testing.T).Context)
 
 			assert.Check(t, is.Equal(got.status.Protection, tt.want))
 			assertSays(t, got.text, expect(tt.said))
@@ -181,7 +181,7 @@ func TestStatus_OnTheTrunk_ReportsWhetherRulesProtectIt(t *testing.T) {
 	}
 }
 
-func TestStatus_OnTheTrunk_WhenTheRulesReadFails_ReportsItAndStillReportsTheLastTag(t *testing.T) {
+func TestStatus_WhenOnTheTrunkAndTheRulesReadFails_ReportsTheFailedReadBesideTheLastTag(t *testing.T) {
 	t.Parallel()
 	s := statusScene(t, tagReleases, func(tip string) forgetest.Script {
 		script := viewing(cleanHead(), passing())(tip)
@@ -190,7 +190,7 @@ func TestStatus_OnTheTrunk_WhenTheRulesReadFails_ReportsItAndStillReportsTheLast
 		return script
 	})
 
-	got := seeStatus(t.Context(), t, s)
+	got := seeStatus(t, s, (*testing.T).Context)
 
 	assertSays(t, got.text, expect(readRules, "HTTP 502"))
 	assert.Assert(t, is.Len(got.status.Unread, 1))
@@ -198,22 +198,22 @@ func TestStatus_OnTheTrunk_WhenTheRulesReadFails_ReportsItAndStillReportsTheLast
 	assert.Check(t, is.Equal(got.status.LastTag, "v1.10.0"))
 }
 
-func TestStatus_OnTheTrunk_EndsOnStartingABranch(t *testing.T) {
+func TestStatus_WhenOnTheTrunk_EndsOnStartingABranch(t *testing.T) {
 	t.Parallel()
 	s := statusScene(t, standOnTrunk, ruledBy(forge.RulesProtect))
 
-	got := seeStatus(t.Context(), t, s)
+	got := seeStatus(t, s, (*testing.T).Context)
 
 	_, next, found := strings.Cut(got.text, "Next:")
 	assert.Check(t, found, "text %q, want a Next: line", got.text)
 	assertSays(t, next, nextBranch())
 }
 
-func TestStatus_OnTheTrunk_WhenGhIsMissing_StillReportsWhatGitTells(t *testing.T) {
+func TestStatus_WhenOnTheTrunkAndGhIsMissing_StillReportsWhatGitTells(t *testing.T) {
 	t.Parallel()
 	s := statusScene(t, tagReleases, func(string) forgetest.Script { return ghMissing() })
 
-	got := seeStatus(t.Context(), t, s)
+	got := seeStatus(t, s, (*testing.T).Context)
 
 	assert.Check(t, is.Equal(got.status.Standing, standingTrunk))
 	assert.Check(t, is.Equal(got.status.Ahead, 1))

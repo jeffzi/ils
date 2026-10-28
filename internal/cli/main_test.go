@@ -29,8 +29,6 @@ const (
 
 	// stuckSpinning shows the spinner line of its step on stderr.
 	stuckSpinning = "spinning"
-	// stuckPiped runs its step with stderr no terminal.
-	stuckPiped = "piped"
 	// stuckIdle starts no step.
 	stuckIdle = "idle"
 	// stuckReturned lets its landing command return at once, then stays until it is killed.
@@ -76,7 +74,7 @@ func TestMain(m *testing.M) {
 }
 
 // stuck runs `ils merge` in a step that lasts until the run's deadline, as way says, with stderr
-// a color terminal wide columns wide unless way is stuckPiped, and returns its exit code. Once the
+// a color terminal wide columns wide, and returns its exit code. Once the
 // landing command runs, it prints ready on stdout; a stuckReturned run prints it once the command
 // returned, and stays until it is killed. A stuckStopping, stuckHolding or stuckHoldingEarly run
 // is the one stopping describes instead.
@@ -85,7 +83,7 @@ func stuck(way string) int {
 		Stdout:         os.Stdout,
 		Stderr:         os.Stderr,
 		Environ:        []string{colorTerm},
-		StderrTerminal: way != stuckPiped,
+		StderrTerminal: true,
 		StderrWidth:    func() int { return wide },
 		Launch:         time.Now(),
 		Notify:         signal.Notify,

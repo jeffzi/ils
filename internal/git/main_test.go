@@ -115,7 +115,7 @@ func standInMode(args []string) (string, bool) {
 
 // sshStandIn plays the ssh command mode names, called with args, and returns its exit code. It
 // answers `-G <host>`, the call of a configured command, and `-G -- <host>`, the call of plain ssh;
-// the modes that refuse, exit, linger, print no hostname or print the directory answer any call.
+// the modes that refuse, exit, linger or print no hostname answer any call.
 func sshStandIn(mode string, args []string) int {
 	if mode == standInLinger {
 		return waitForLingerer()

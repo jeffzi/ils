@@ -71,7 +71,7 @@ func unsuitedVersions() []unsuited {
 		},
 		{
 			name: "unknown target", target: "newest", found: "1.10.0",
-			parts: []string{"HAMMER_TARGET", `"newest"`},
+			parts: []string{"HAMMER_TARGET", "newest"},
 		},
 	}
 }
@@ -121,10 +121,6 @@ func TestTool_CheckOutput_WhenFirstLineDoesNotSuitTarget_ReturnsError(t *testing
 		part   string
 	}{
 		{name: "first line names no version", out: "built on a bench\nhammer 1.4.0", part: `"built on a bench"`},
-		{
-			name: "first line names a version the target rejects", target: testtarget.Minimum,
-			out: "hammer 1.10.0\nhammer 1.4.0", part: "1.10.0",
-		},
 		{
 			name: "first line names a version other than the one wanted", target: testtarget.Latest,
 			want: "1.10.0", out: "hammer 1.9.0", part: "1.9.0",

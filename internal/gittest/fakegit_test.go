@@ -54,28 +54,12 @@ func callGit(t *testing.T, env []string, dir string, args ...string) faked {
 
 func TestFakeGit_WhenVersionIsGiven_PrintsItForGitVersion(t *testing.T) {
 	const version = "git version 2.34.1\ncpu: x86_64"
+	base := gittest.Env(t)
+	settings := gittest.FakeGit(t, gittest.Fake{Version: version})
 
-	tests := []struct {
-		// env builds the environment of the call from the variables gittest.FakeGit returned and
-		// the environment from before it; nil inherits this process's.
-		env  func(base, settings []string) []string
-		name string
-	}{
-		{name: "inherited environment", env: func([]string, []string) []string { return nil }},
-		{name: "whole environment from before the fake", env: func(base, settings []string) []string {
-			return append(slices.Clone(base), settings...)
-		}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			base := gittest.Env(t)
-			settings := gittest.FakeGit(t, gittest.Fake{Version: version})
+	got := callGit(t, append(slices.Clone(base), settings...), t.TempDir(), "--version")
 
-			got := callGit(t, tt.env(base, settings), t.TempDir(), "--version")
-
-			assert.Check(t, is.DeepEqual(got, faked{Stdout: version + "\n"}))
-		})
-	}
+	assert.Check(t, is.DeepEqual(got, faked{Stdout: version + "\n"}))
 }
 
 func TestFakeGit_WhenCallStartsWithFailingWords_FailsAsAGitRead(t *testing.T) {
@@ -223,4 +207,25 @@ func initRepo(t *testing.T, env []string) string {
 	assert.Assert(t, is.DeepEqual(got, faked{}), "git init in %s", dir)
 
 	return dir
+}
+
+// Not parallel at either level: each row sets GORACE with t.Setenv.
+func TestRaceSetting(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+		want string
+	}{
+		{name: "no options in the environment", env: "", want: "atexit_sleep_ms=0"},
+		{name: "options in the environment", env: "halt_on_error=1", want: "halt_on_error=1 atexit_sleep_ms=0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("GORACE", tt.env)
+
+			got := gittest.RaceSetting()
+
+			assert.Check(t, is.Equal(got, tt.want))
+		})
+	}
 }

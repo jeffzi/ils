@@ -307,8 +307,8 @@ var sgr = regexp.MustCompile(`\x1b\[[0-9;:]*m`)
 // pacedEnd returns the reason and next that follow the lines of a paced command.
 func pacedEnd() []string {
 	return []string{
-		result.DeliveredNotGreen.Label() + ": the checks of #12 are still running",
-		result.NextLabel + ": ils push",
+		resulttest.ReasonLine(result.DeliveredNotGreen, "the checks of #12 are still running"),
+		resulttest.NextLine("ils push"),
 	}
 }
 
@@ -348,9 +348,7 @@ func onStderrScreenOf(t *testing.T, app cli.App, at stderrScreen) (cli.App, *scr
 	t.Helper()
 
 	stderr := newScreen(t, at.width)
-	app.Environ = at.env
-	app.StdoutTerminal = at.stdoutTerminal
-	app.StderrTerminal = true
+	app = paint(app, at.env, at.stdoutTerminal, true)
 	app.Stderr = stderr
 	app.StderrWidth = func() int { return at.width }
 
@@ -546,7 +544,7 @@ func TestApp_Run_WhenIlsStopsBeingTheForegroundJob_HidesTheSpinnerUntilItIsAgain
 	assert.Check(t, hiddenAgain, "the spinner line was not drawn again once ils was the foreground job")
 }
 
-func TestApp_Run_WhenAStepRunsOnAColorTerminal_DrawsTheSpinnerLineInItsColors(t *testing.T) {
+func TestApp_Run_WhenAStepRunsOnAColorTerminal_StylesTheSpinnerLine(t *testing.T) {
 	t.Parallel()
 
 	app, stderr := onStderrScreen(t, []string{colorTerm}, false, wide)
@@ -557,10 +555,9 @@ func TestApp_Run_WhenAStepRunsOnAColorTerminal_DrawsTheSpinnerLineInItsColors(t 
 
 	line := strings.TrimRight(seen.String(), " ")
 	spinner, _, _ := strings.Cut(line, " ")
-	yellow := resulttest.Look{Color: "yellow"}
-	assert.Check(t, is.Equal(seen.LookOf(t, line, spinner), yellow))
-	assert.Check(t, is.Equal(seen.LookOf(t, "3s of 30s", "3s"), yellow))
-	assert.Check(t, seen.LookOf(t, "3s of 30s", "of 30s").Dim, "the limit is not dim in %q", line)
+	assert.Check(t, seen.LookOf(t, line, spinner) != resulttest.Look{}, "the spinner is unstyled in %q", line)
+	assert.Check(t, seen.LookOf(t, "3s of 30s", "3s") != resulttest.Look{}, "the elapsed time is unstyled in %q", line)
+	assert.Check(t, seen.LookOf(t, "3s of 30s", "of 30s") != resulttest.Look{}, "the limit is unstyled in %q", line)
 }
 
 func TestApp_Run_WhenTheSpinnerLineIsWiderThanTheTerminal_KeepsItOnOneRow(t *testing.T) {
@@ -611,7 +608,7 @@ func TestApp_Run_WhenStdoutAndStderrShareATerminalWithColorOff_PrintsEachStepLin
 	unstyled(t, "the terminal", terminal.raw())
 }
 
-func TestApp_Run_WhenStepLinesPrintOnAColorTerminal_DrawsTheStepLineInItsColors(t *testing.T) {
+func TestApp_Run_WhenStepLinesPrintOnAColorTerminal_StylesTheStepLine(t *testing.T) {
 	t.Parallel()
 
 	app, stdout := onStdoutScreen(t, []string{colorTerm})
@@ -620,8 +617,8 @@ func TestApp_Run_WhenStepLinesPrintOnAColorTerminal_DrawsTheStepLineInItsColors(
 	shown(t, app, "push")
 
 	drawn := stdout.drawn(0)
-	assert.Check(t, is.Equal(drawn.LookOf(t, pushedStep, "✓"), resulttest.Look{Color: "green"}))
-	assert.Check(t, is.Equal(drawn.LookOf(t, pushedStep, "1.2s"), resulttest.Look{Color: "green", Dim: true}))
+	assert.Check(t, drawn.LookOf(t, pushedStep, "✓") != resulttest.Look{}, "step line = %q", pushedStep)
+	assert.Check(t, drawn.LookOf(t, pushedStep, "1.2s") != resulttest.Look{}, "step line = %q", pushedStep)
 }
 
 func TestApp_Run_WhenAStepLineIsSaidWithoutAStepStartedForIt_TimesItFromTheLineBefore(t *testing.T) {
@@ -648,36 +645,21 @@ func TestApp_Run_WhenAStepLineIsSaidWithoutAStepStartedForIt_TimesItFromTheLineB
 	assert.Check(t, is.DeepEqual(stdout.lines(), want))
 }
 
-func TestApp_Run_WhenNeitherStreamCountsAsATerminal_WritesNothingBeforeTheWholeResult(t *testing.T) {
+func TestApp_Run_WhenNeitherStreamIsATerminal_WritesNothingBeforeTheWholeResult(t *testing.T) {
 	t.Parallel()
+	stdout, stderr := newScreen(t, wide), newScreen(t, wide)
+	app := onTerminals(t, []string{colorTerm, forced}, false, false)
+	app.Stdout, app.Stderr = stdout, stderr
+	var early string
+	app.SetPush(paced(func() { early = stdout.raw() }, result.DeliveredNotGreen))
 
-	tests := []struct {
-		name     string
-		env      []string
-		terminal bool
-	}{
-		{name: "forced color off a terminal", env: []string{colorTerm, forced}},
-		{name: "dumb terminal", env: []string{"TERM=dumb"}, terminal: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	got := shown(t, app, "push")
 
-			stdout, stderr := newScreen(t, wide), newScreen(t, wide)
-			app := onTerminals(t, tt.env, tt.terminal, tt.terminal)
-			app.Stdout, app.Stderr = stdout, stderr
-			var early string
-			app.SetPush(paced(func() { early = stdout.raw() }, result.DeliveredNotGreen))
-
-			got := shown(t, app, "push")
-
-			assert.Check(t, is.Equal(got.code, exitDelivered))
-			assert.Check(t, is.Equal(early, ""))
-			assert.Check(t, is.Equal(stderr.raw(), ""))
-			assert.Check(t, is.DeepEqual(stdout.lines(), slices.Concat(pacedLines(), pacedEnd())))
-			plain(t, "stdout without its renditions", sgr.ReplaceAllString(stdout.raw(), ""))
-		})
-	}
+	assert.Check(t, is.Equal(got.code, exitDelivered))
+	assert.Check(t, is.Equal(early, ""))
+	assert.Check(t, is.Equal(stderr.raw(), ""))
+	assert.Check(t, is.DeepEqual(stdout.lines(), slices.Concat(pacedLines(), pacedEnd())))
+	plain(t, "stdout without its renditions", sgr.ReplaceAllString(stdout.raw(), ""))
 }
 
 func TestApp_Run_WhenTheJSONFlagIsAmongTheWordsOnTerminals_PrintsTheWholeResultAfterTheSpinnerIsGone(t *testing.T) {

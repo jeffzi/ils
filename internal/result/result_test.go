@@ -112,16 +112,19 @@ func TestSay_WhenPlaceholdersAndNamesDiffer_ReturnsErrPlaceholders(t *testing.T)
 }
 
 // builtCases returns one case per part of a phrase whose look the building of a name or a phrase
-// decides: lists, concatenated names, tallies, the command of a Next and commands the wording
-// wraps in backticks.
+// decides: lists, concatenated names, tallies and commands the wording wraps in backticks.
 func builtCases() []styledCase {
 	return []styledCase{
-		{name: "command", result: refusedPush(), within: result.NextLabel + ": ils branch fix-prek-again", part: "ils branch fix-prek-again", want: resulttest.NameLook(), profile: colorprofile.ANSI},
 		{name: "first branch of a list", result: listedBranches(), within: "Kept docs,", part: "docs", want: resulttest.NameLook(), profile: colorprofile.ANSI},
 		{name: "comma of a list", result: listedBranches(), within: "docs, main", part: ", ", profile: colorprofile.ANSI},
 		{name: "branch of a concatenated name", result: joinedCommand(), within: "Ran git switch main", part: "main", want: resulttest.NameLook(), profile: colorprofile.ANSI},
 		{name: "word after a passed count", result: talliedChecks(), within: "17 passed", part: " passed", profile: colorprofile.ANSI},
 		{name: "zero passed tally", result: talliedChecks(), within: "then 0 passed", part: "0 passed", want: resulttest.SkippedLook(), profile: colorprofile.ANSI},
+		{
+			name: "inline command in a line", result: tickedPush(), within: "Ran gh pr edit --repo jeffzi/ils #16 at",
+			part: "gh pr edit --repo jeffzi/ils #16", want: resulttest.NameLook(),
+			profile: colorprofile.ANSI,
+		},
 		{name: "wording before an inline command", result: tickedPush(), within: "Ran gh pr edit", part: "Ran ", profile: colorprofile.ANSI},
 		{name: "wording after an inline command", result: tickedPush(), within: "#16 at 4f2a9c1.", part: " at ", profile: colorprofile.ANSI},
 		{name: "sha after an inline command", result: tickedPush(), within: "at 4f2a9c1.", part: "4f2a9c1", want: resulttest.SHALook(), profile: colorprofile.ANSI},
@@ -165,7 +168,9 @@ func TestSay_WhenDrawnInColor_DrawsEachBuiltPartInItsStyle(t *testing.T) {
 			t.Parallel()
 			t.Logf("row: result %s", inputOf(tt.result))
 
-			assertStyled(t, tt)
+			got, out := drawnLook(t, tt)
+
+			assert.Check(t, is.Equal(got, tt.want), "output %q", out)
 		})
 	}
 }

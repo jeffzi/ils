@@ -31,7 +31,7 @@ func TestDraw_WhenForegroundCode_DrawsItsColor(t *testing.T) {
 	}
 }
 
-func TestDraw_WhenSequenceUnknown_FailsTest(t *testing.T) {
+func TestDraw_WhenRenditionParameterUnknown_FailsTest(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string

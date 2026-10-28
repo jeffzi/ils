@@ -13,8 +13,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-
-	"github.com/jeffzi/ils/internal/quiet"
 )
 
 const (
@@ -102,7 +100,7 @@ func FakeGit(tb testing.TB, fake Fake) []string {
 	}
 
 	set(realGitEnv, realGit)
-	set("GORACE", quiet.Setting())
+	set("GORACE", RaceSetting())
 
 	if fake.Version != "" {
 		set(versionEnv, fake.Version)
@@ -125,6 +123,13 @@ func FakeGit(tb testing.TB, fake Fake) []string {
 	LinkAs(tb, "git")
 
 	return settings
+}
+
+// RaceSetting returns the value of GORACE that stops a binary built with -race from sleeping a
+// second before every exit, which each call of a fake that the test binary stands in for would pay.
+// It keeps the options the environment already holds.
+func RaceSetting() string {
+	return strings.TrimSpace(os.Getenv("GORACE") + " atexit_sleep_ms=0")
 }
 
 // LinkAs puts the test binary first on PATH under the name of tool for the rest of the test, so

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -27,9 +29,6 @@ const (
 	printConfigFlag = "-G"
 	// shellNotFoundCode is the exit of a shell for a command it cannot find.
 	shellNotFoundCode = 127
-	// gitCannotRunCode is the exit of git when it cannot start the program of a one-word command
-	// line, which it runs without a shell. It is also git's exit for any fatal error.
-	gitCannotRunCode = 128
 )
 
 // plainHostname returns the host plain ssh connects to when asked for host, the ssh git runs when
@@ -401,6 +400,42 @@ func (r Repo) askSSH(ctx context.Context, command sshCommand, host string) (stri
 	return hostnameIn(result.Stdout, argv)
 }
 
+// getenv returns the value key has in the environment git runs with, and whether it is set, as
+// EnvValue reads it.
+func (r Runner) getenv(key string) (string, bool) {
+	if r.Env == nil {
+		return os.LookupEnv(key)
+	}
+
+	return EnvValue(r.Env, key)
+}
+
+// lookPath finds name as exec.LookPath does, on the PATH of the environment git runs with: the
+// PATH on which git, and the shell it starts, find a program. With no environment of its own, that
+// is this process's PATH.
+//
+// A name that holds a path separator is not searched for. Each absolute directory of PATH is tried
+// as exec.LookPath tries a path, which on Windows adds the extensions of the programs it runs; a
+// relative one is skipped, as exec.LookPath refuses a program it finds there.
+func (r Runner) lookPath(name string) (string, error) {
+	if r.Env == nil || filepath.Base(name) != name {
+		return exec.LookPath(name)
+	}
+
+	path, _ := r.getenv("PATH")
+	for _, dir := range filepath.SplitList(path) {
+		if !filepath.IsAbs(dir) {
+			continue
+		}
+
+		if found, err := exec.LookPath(filepath.Join(dir, name)); err == nil {
+			return found, nil
+		}
+	}
+
+	return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
+}
+
 // missingProgram returns the *SSHCommandMissingError for the GIT_SSH program of command when it is
 // not found on the PATH git searches; otherwise, and for a command line, it returns nil.
 func (r Runner) missingProgram(command sshCommand) *SSHCommandMissingError {
@@ -415,10 +450,10 @@ func (r Runner) missingProgram(command sshCommand) *SSHCommandMissingError {
 // programWord picks past leading assignments and exec, command or env, when git exited as it does
 // for a program it cannot find and no program of that name is found on the PATH git and its shell
 // search; otherwise, and for a line that names no program, it returns nil. A one-word line that git
-// cannot start exits gitCannotRunCode and a longer one exits shellNotFoundCode from git's shell;
+// cannot start exits fatalCode and a longer one exits shellNotFoundCode from git's shell;
 // both codes are also exits of a program that runs, which is why the lookup decides.
 func (r Runner) missingLineProgram(command sshCommand, exitErr *child.ExitError) *SSHCommandMissingError {
-	if command.line == "" || (exitErr.Code != shellNotFoundCode && exitErr.Code != gitCannotRunCode) {
+	if command.line == "" || (exitErr.Code != shellNotFoundCode && exitErr.Code != fatalCode) {
 		return nil
 	}
 

@@ -21,11 +21,6 @@ func (a *App) SetBranch(run Command) {
 	a.runBranch = run
 }
 
-// SetStatus makes a run `ils status` with run in place of landing.Status.
-func (a *App) SetStatus(run Command) {
-	a.runStatus = run
-}
-
 // SetGit makes a run call git through runner in place of git in the working directory.
 func (a *App) SetGit(runner git.Runner) {
 	a.git = runner

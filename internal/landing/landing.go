@@ -1,13 +1,9 @@
-// Package landing runs the landing commands: preconditions first, then the sequence.
-//
-// It returns values and never prints, reads stdin, or exits.
 package landing
 
 import (
 	"context"
 	"errors"
 	"log/slog"
-	"strconv"
 	"strings"
 	"time"
 
@@ -256,18 +252,36 @@ func createOriginStep() result.Next {
 
 // originRepo returns the repository both of origin's URLs name.
 func originRepo(ctx context.Context, deps Deps, req Request) (forge.Repo, *result.Result) {
-	urls, err := deps.Repo.OriginURLs(ctx)
+	urls, repo, oneRepo, err := readOriginRepo(ctx, deps)
 
-	_, unparsed := errors.AsType[*git.OriginError](err)
-	if err != nil && !unparsed {
+	switch {
+	case err != nil:
 		return forge.Repo{}, req.unread(readURLs, err)
-	}
-
-	if unparsed || !urls.Fetch.Same(urls.Push) {
+	case !oneRepo:
 		return forge.Repo{}, req.twoRepositories(urls)
 	}
 
-	return forge.Repo{Host: urls.Fetch.Host, Owner: urls.Fetch.Owner, Name: urls.Fetch.Name}, nil
+	return repo, nil
+}
+
+// readOriginRepo reads origin's URLs and returns them with the repository they name, and whether
+// they name one: both URLs the same GitHub repository. A URL git's answer cannot be parsed into
+// names none rather than failing the read; err is a read of readURLs that failed.
+func readOriginRepo(ctx context.Context, deps Deps) (urls git.OriginURLs, repo forge.Repo, oneRepo bool, err error) {
+	urls, err = deps.Repo.OriginURLs(ctx)
+	if _, unparsed := errors.AsType[*git.OriginError](err); unparsed {
+		return urls, forge.Repo{}, false, nil
+	}
+
+	if err != nil {
+		return urls, forge.Repo{}, false, err
+	}
+
+	if !urls.Fetch.Same(urls.Push) {
+		return urls, forge.Repo{}, false, nil
+	}
+
+	return urls, forge.Repo{Host: urls.Fetch.Host, Owner: urls.Fetch.Owner, Name: urls.Fetch.Name}, true, nil
 }
 
 // twoRepositories refuses origin's URLs urls, which do not name one GitHub repository.
@@ -471,65 +485,14 @@ func (r Request) unreached(read string, err error, reason result.Phrase) *result
 	return r.unread(read, err)
 }
 
-// onWorkBranch refuses a detached HEAD and the trunk. The way out is a new branch, except for a
-// detached HEAD with commits origin's trunk lacks, fetched first, which `ils branch` would refuse
-// in turn: those commits are listed, to keep on a branch of their own.
-func (r Request) onWorkBranch(ctx context.Context, deps Deps, ready Ready) *result.Result {
-	if ready.Standing.Kind == git.OnBranch {
-		if ready.Standing.Branch == ready.Trunk {
-			return r.Refused(result.Say("HEAD is on the trunk %s, which ils never pushes", result.Branch(ready.Trunk)),
-				startBranchStep())
-		}
-
-		return nil
-	}
-
-	if _, stop := fetchTrunk(ctx, deps, r, ready.Trunk); stop != nil {
-		return stop
-	}
-
-	own, err := deps.Repo.CommitsPast(ctx, "HEAD", ready.Trunk)
-	if err != nil {
-		return r.unread(readHeadCommits, err)
-	}
-
-	reason := result.Say("HEAD is detached, so there is no branch to push")
-	if len(own) == 0 {
-		return r.Refused(reason, startBranchStep())
-	}
-
-	stop := r.Refused(reason, keepDetachedStep())
-	stop.Lines = listed(own)
-
-	return stop
-}
-
 // fetchPullHead fetches the head of pull request number from origin and returns its sha. A failed
 // fetch is the stop of read, a refusal when origin could not be reached.
 func (r Request) fetchPullHead(ctx context.Context, deps Deps, number int, read string) (string, *result.Result) {
-	head, err := deps.Repo.Fetch(ctx, "refs/pull/"+strconv.Itoa(number)+"/head")
+	head, err := deps.Repo.FetchPullHead(ctx, number)
 	if err != nil {
 		return "", r.unreached(read, err,
 			result.Say("origin could not be reached to fetch the head of pull request %s", result.PullRequest(number)))
 	}
 
 	return head, nil
-}
-
-// nothingPast refuses a branch with no commit that origin's trunk lacks. Its next step is the push
-// of the new work, which for `ils merge` is a first push and not a run again.
-func (r Request) nothingPast(b onBranch) *result.Result {
-	next := result.NextStep("commit the work"+thenRunAgain, result.Command(PushCommand))
-	if r.Command == MergeCommand {
-		next = firstPushStep()
-	}
-
-	return r.Refused(
-		result.Say("the branch %s has no commit past origin's trunk %s", result.Branch(b.branch), result.Branch(b.Trunk)), next)
-}
-
-// firstPushStep is the next step of a branch with no commit past origin's trunk, for a command
-// other than push: commit the work, then push it for the first time.
-func firstPushStep() result.Next {
-	return result.NextStep("commit the work, then run %s", result.Command(PushCommand))
 }

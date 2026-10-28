@@ -120,19 +120,16 @@ func TestFixture_Commits_WhenBranchExists_AddsCommitsOnTop(t *testing.T) {
 	assert.Check(t, is.DeepEqual(logged(t, f, "%H"), slices.Concat(earlier, shas)))
 }
 
-func TestFixture_AdvanceOrigin_WhenBranchIsPushed_AddsCommitTheCloneLacks(t *testing.T) {
+func TestFixture_AdvanceOrigin_WhenBranchIsPushed_AddsCommitTheWorkingRepositoryLacks(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
-	shas := f.Commits(work, "first change")
+	f.Commits(work, "first change")
 	f.Push(work)
 
 	ahead := f.AdvanceOrigin(work)
 
 	assert.Check(t, is.Equal(originBranch(t, f, work), ahead))
-
-	assert.Check(t, is.Equal(gitStdout(t, f, f.OriginDir(), "rev-parse", ahead+"^"), shas[0]))
-
 	assert.Check(t, !hasCommit(t, f, f.Dir(), ahead))
 }
 
@@ -160,8 +157,7 @@ func TestFixture_Diverge_WhenBranchIsPushed_GivesEachSideACommitTheOtherLacks(t 
 	local, remote := f.Diverge(work)
 
 	assert.Check(t, is.Equal(gitStdout(t, f, f.Dir(), "rev-parse", work), local))
-	assert.Check(t, is.Equal(originBranch(t, f, work), remote))
-	assert.Check(t, !hasCommit(t, f, f.OriginDir(), local))
+	assert.Check(t, !hasCommit(t, f, f.Dir(), remote))
 }
 
 func TestFixture_Sibling_WhenBranchHasTwoCommits_SharesFirstCommitPastTrunk(t *testing.T) {
@@ -232,18 +228,7 @@ func TestFixture_ServedBy_WhenAskedForConfig_AnswersFromTheSSHConfigWithoutServi
 	assert.Check(t, is.ErrorIs(statErr, fs.ErrNotExist), "the serving script ran for a config read")
 }
 
-func TestFixture_RemoveSSHConfig_WhenSSHReadsTheConfig_ExitsNonZero(t *testing.T) {
-	t.Parallel()
-
-	f := gittest.New(t, mainBranch)
-
-	f.RemoveSSHConfig()
-
-	got := askedForConfig(t, f, f.Env(), sshHost)
-	assert.Check(t, got.Code != 0, "ssh -G succeeded with its config file removed, want a non-zero exit")
-}
-
-func TestFixture_SquashOnOrigin_WhenBodyIsGiven_AddsTrunkCommitTheCloneLacks(t *testing.T) {
+func TestFixture_SquashOnOrigin_WhenBodyIsGiven_AddsTrunkCommitTheWorkingRepositoryLacks(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)

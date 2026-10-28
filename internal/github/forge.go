@@ -1,4 +1,3 @@
-// Package github drives the gh CLI, started from an argv and never through a shell.
 package github
 
 import (
@@ -69,9 +68,9 @@ type pull struct {
 	Fork bool `json:"isCrossRepository"`
 }
 
-// changeState returns the change state of the pull request state gh names, and false for a state
+// changeStateOf returns the change state of the pull request state gh names, and false for a state
 // gh does not document.
-func changeState(state string) (forge.ChangeState, bool) {
+func changeStateOf(state string) (forge.ChangeState, bool) {
 	switch state {
 	case "OPEN":
 		return forge.ChangeOpen, true
@@ -190,7 +189,7 @@ func (f *Forge) FindChanges(ctx context.Context, repo forge.Repo, branch string)
 			continue
 		}
 
-		state, ok := changeState(p.State)
+		state, ok := changeStateOf(p.State)
 		if !ok {
 			return nil, &DecodeError{Argv: Argv(args), Err: fmt.Errorf("pull request #%d: unknown state %q", p.Number, p.State)}
 		}
@@ -206,11 +205,15 @@ func (f *Forge) FindChanges(ctx context.Context, repo forge.Repo, branch string)
 
 // OpenChange opens a pull request with an empty body, ready for review.
 //
-// It returns forge.ErrChangeExists when gh says the branch already has one.
+// It returns forge.ErrChangeExists when gh says the branch already has one, and a *DecodeError
+// when gh's output names no pull request.
 func (f *Forge) OpenChange(ctx context.Context, repo forge.Repo, change forge.NewChange) (forge.ChangeRef, error) {
-	result, err := f.runner().Run(ctx,
+	args := []string{
 		"pr", "create", "--repo", repo.Slug(), "--title", change.Title, "--body", "",
-		"--base", change.Base, "--head", change.Head)
+		"--base", change.Base, "--head", change.Head,
+	}
+
+	result, err := f.runner().Run(ctx, args...)
 	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && pullExists.MatchString(exitErr.Stderr) {
 		return forge.ChangeRef{}, fmt.Errorf("%w: %w", forge.ErrChangeExists, err)
 	}
@@ -223,12 +226,12 @@ func (f *Forge) OpenChange(ctx context.Context, repo forge.Repo, change forge.Ne
 
 	_, numberText, found := strings.Cut(link, "/pull/")
 	if !found {
-		return forge.ChangeRef{}, fmt.Errorf("gh pr create: no pull request URL in its output %q", result.Stdout)
+		return forge.ChangeRef{}, &DecodeError{Argv: Argv(args), Err: fmt.Errorf("no pull request URL in %q", result.Stdout)}
 	}
 
 	number, err := strconv.Atoi(numberText)
 	if err != nil {
-		return forge.ChangeRef{}, fmt.Errorf("gh pr create: no pull request number in %q: %w", link, err)
+		return forge.ChangeRef{}, &DecodeError{Argv: Argv(args), Err: fmt.Errorf("no pull request number in %q: %w", link, err)}
 	}
 
 	return forge.ChangeRef{Number: number, URL: link}, nil

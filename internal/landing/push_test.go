@@ -249,32 +249,22 @@ func copyRefusals() []pushRefusal {
 	}
 }
 
-// pushAccepted are the states of the branch that pass a check of Push another state fails, each
-// pushed and opened as a first push that ends green.
-func pushAccepted() []pushRow {
-	opens := greenAfter(pushedLine() + openedLine())
-
-	return []pushRow{
-		{
-			// Another branch was cut from the published branch at an earlier commit, and each has a
-			// commit since.
-			name: "published branch whose first commit past the trunk is on another branch", script: opening(passing()),
-			want: opens,
-			arrange: func(f *gittest.Fixture) {
-				f.Commits(topic, "second step")
-				f.Publish(topic)
-				f.Git("branch", spare, topic+"~1")
-				f.Commits(spare, "earlier work")
-				f.Commits(topic, "fix a typo")
-			},
-		},
-	}
-}
-
-func TestPush_WhenBranchPassesACheckAnotherStateFails_PushesIt(t *testing.T) {
+func TestPush_WhenOriginsCopyCarriesAFirstCommitAnotherBranchShares_PushesIt(t *testing.T) {
 	t.Parallel()
 
-	runPushes(t, pushAccepted())
+	runPushes(t, []pushRow{{
+		// Another branch was cut from the published branch at an earlier commit, and each has a
+		// commit since.
+		name: "published branch whose first commit past the trunk is on another branch", script: opening(passing()),
+		want: greenAfter(pushedLine() + openedLine()),
+		arrange: func(f *gittest.Fixture) {
+			f.Commits(topic, "second step")
+			f.Publish(topic)
+			f.Git("branch", spare, topic+"~1")
+			f.Commits(spare, "earlier work")
+			f.Commits(topic, "fix a typo")
+		},
+	}})
 }
 
 func TestPush_WhenSharedPreconditionFails_ReturnsItsRefusal(t *testing.T) {
@@ -406,34 +396,33 @@ type overtime struct {
 	ops     []forgetest.Op
 }
 
-// runOvertime runs each row rows returns for each cut of ways as a test of its own: Push refuses
-// naming the read the cut ended, having written nothing.
-func runOvertime(t *testing.T, ways []cut, rows func(c cut) []overtime) {
+// runOvertime runs each row rows returns for the time limit as a test of its own: Push refuses
+// naming the read the time limit ended, having written nothing. Push hands each cut read on to the
+// shared wording, whose tests tell the time limit from an interrupt, so the time limit alone is
+// enough here.
+func runOvertime(t *testing.T, rows func(c cut) []overtime) {
 	t.Helper()
 
-	for _, c := range ways {
-		for _, tt := range rows(c) {
-			t.Run(c.name+"/"+tt.name, func(t *testing.T) {
-				t.Parallel()
-				s := newScene(t, tt.prepare, tt.script, false)
-				ctx := tt.arrange(t, s)
-				before := s.written()
+	c := byTimeLimit()
+	for _, tt := range rows(c) {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := newScene(t, tt.prepare, tt.script, false)
+			ctx := tt.arrange(t, s)
+			before := s.written()
 
-				got := landing.Push(ctx, s.deps, pushRequest())
+			got := landing.Push(ctx, s.deps, pushRequest())
 
-				assertEnded(t, s, got, finish{outcome: result.Refused, text: overtimeText(pushCommand(), c, tt.read)})
-				assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
-			})
-		}
+			assertEnded(t, s, got, finish{outcome: result.Refused, text: overtimeText(pushCommand(), c, tt.read)})
+			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
+		})
 	}
 }
 
 func TestPush_WhenAReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
 	t.Parallel()
 
-	// Push hands each cut read on to the shared wording, whose tests tell the time limit from an
-	// interrupt, so the time limit alone is enough here.
-	runOvertime(t, []cut{byTimeLimit()}, func(c cut) []overtime {
+	runOvertime(t, func(c cut) []overtime {
 		return []overtime{
 			{
 				// Origin answers about its trunk and the fetch of it, and nothing after.

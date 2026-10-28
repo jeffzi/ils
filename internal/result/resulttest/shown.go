@@ -1,5 +1,3 @@
-// Package resulttest provides the JSON renderer's object as a caller decodes it, and styled text as
-// a terminal draws it, for the tests of packages that print results.
 package resulttest
 
 import (
@@ -14,17 +12,7 @@ import (
 )
 
 // Shown is the JSON renderer's object as a caller decodes it.
-type Shown struct {
-	Payload  *result.Payload `json:"payload"`
-	Command  string          `json:"command"`
-	Outcome  string          `json:"outcome"`
-	Next     string          `json:"next"`
-	Reason   string          `json:"reason"`
-	Excerpt  string          `json:"excerpt"`
-	Words    []string        `json:"words"`
-	Lines    []string        `json:"lines"`
-	ExitCode int             `json:"exit_code"`
-}
+type Shown = result.Object
 
 // Decode reads the one JSON object out holds, and stops the test when out is anything else.
 func Decode(tb testing.TB, out string) Shown {

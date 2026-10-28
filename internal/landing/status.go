@@ -46,14 +46,11 @@ func Status(ctx context.Context, deps Deps, req Request) result.Result {
 	r := &reading{deps: deps}
 	r.readStanding(ctx)
 
-	return result.Result{
-		Command: req.Command,
-		Words:   req.Words,
-		Outcome: result.Done,
-		Lines:   r.lines,
-		Next:    r.next(),
-		Payload: &result.Payload{Status: &r.status},
-	}
+	done := req.ends(result.Done, result.Phrase{}, r.next())
+	done.Lines = r.lines
+	done.Payload = &result.Payload{Status: &r.status}
+
+	return *done
 }
 
 // reading is a status being read: the facts found so far, the lines that say them, and whether a
@@ -276,17 +273,15 @@ func (r *reading) readDetached(ctx context.Context) {
 
 // readOrigin reads the repository origin's URLs name and origin's trunk, and fetches that trunk.
 func (r *reading) readOrigin(ctx context.Context) {
-	urls, err := r.deps.Repo.OriginURLs(ctx)
-
-	_, unparsed := errors.AsType[*git.OriginError](err)
+	urls, repo, oneRepo, err := readOriginRepo(ctx, r.deps)
 
 	switch {
-	case err != nil && !unparsed:
+	case err != nil:
 		r.failed(readURLs, err)
-	case unparsed || !urls.Fetch.Same(urls.Push):
+	case !oneRepo:
 		r.block(Request{Command: PushCommand}.twoRepositories(urls), "origin's URLs do not name one GitHub repository")
 	default:
-		r.repo = forge.Repo{Host: urls.Fetch.Host, Owner: urls.Fetch.Owner, Name: urls.Fetch.Name}
+		r.repo = repo
 	}
 
 	if r.cut {
@@ -405,9 +400,16 @@ func (r *reading) readCommits(ctx context.Context) {
 		return
 	}
 
-	tip, err := r.deps.Repo.HeadSHA(ctx)
-	if err != nil {
-		r.readNoTip(ctx, err)
+	tip, committed, err := r.on.readTip(ctx, r.deps)
+
+	switch {
+	case err != nil:
+		r.failed(readTip, err)
+
+		return
+	case !committed:
+		r.pastRead = r.on.Trunk != ""
+		r.say(result.Say("The branch %s has no commit", result.Branch(r.on.branch)))
 
 		return
 	}
@@ -429,22 +431,6 @@ func (r *reading) readCommits(ctx context.Context) {
 	if len(past) == 0 {
 		r.say(result.Say("The branch %s has no commit past origin's trunk %s",
 			result.Branch(r.on.branch), result.Branch(r.on.Trunk)))
-	}
-}
-
-// readNoTip settles a read of the tip that failed with err: the read fails on a branch with no
-// commit as it does on a broken repository, so only the branch's ref tells the two apart.
-func (r *reading) readNoTip(ctx context.Context, err error) {
-	committed, refErr := r.deps.Repo.HasCommits(ctx, r.on.branch)
-
-	switch {
-	case refErr != nil:
-		r.failed(readTip, refErr)
-	case committed:
-		r.failed(readTip, err)
-	default:
-		r.pastRead = r.on.Trunk != ""
-		r.say(result.Say("The branch %s has no commit", result.Branch(r.on.branch)))
 	}
 }
 
@@ -586,7 +572,7 @@ func (r *reading) readLanded(ctx context.Context, change forge.Change) {
 		return
 	}
 
-	head, err := r.deps.Repo.Fetch(ctx, "refs/pull/"+strconv.Itoa(change.Number)+"/head")
+	head, err := r.deps.Repo.FetchPullHead(ctx, change.Number)
 	if err != nil {
 		r.failed(readMergedHead, err)
 
@@ -695,7 +681,7 @@ func (r *reading) readChecks(ctx context.Context) {
 // judge records how verdict, read once and judged as the wait judges each read, stands, and says
 // it.
 func (r *reading) judge(verdict forge.Verdict, required []string) {
-	outcome, done := waiter{pushed: Pushed{Required: required}}.judge(verdict)
+	outcome, done := judge(verdict, required)
 
 	w := &r.waited
 	w.Verdict, w.Outcome, w.Deciding = verdict, outcome, verdict.Deciding()
@@ -709,10 +695,8 @@ func (r *reading) judge(verdict forge.Verdict, required []string) {
 	case outcome == WaitRed:
 		var failed []string
 
-		for _, check := range w.Deciding {
-			if check.Bucket == forge.BucketFail || check.Bucket == forge.BucketCanceled {
-				failed = append(failed, check.Name)
-			}
+		for _, check := range verdict.FailedChecks() {
+			failed = append(failed, check.Name)
 		}
 
 		r.say(result.Say("Failed on %s: %s", sha, strings.Join(failed, ", ")))

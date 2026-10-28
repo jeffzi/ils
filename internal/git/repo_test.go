@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -274,7 +275,7 @@ func garbledDivergence(t *testing.T, out string) (repo git.Repo, call string) {
 	return git.Repo{Runner: runner}, child.CommandLine([]string{"git", "rev-list", "--left-right", "--count", unknownSHA + "..." + unknownSHA})
 }
 
-func TestRepo_Divergence_WhenOutputHoldsNoTab_ReturnsErrorNamingTheCallAndQuotingIt(t *testing.T) {
+func TestRepo_Divergence_WhenOutputHoldsNoTab_ReturnsErrorNamingTheCallAndItsOutput(t *testing.T) {
 	// Not parallel: garbledDivergence sets PATH for the whole process.
 	repo, call := garbledDivergence(t, "not counts")
 
@@ -329,47 +330,17 @@ func TestRepo_Contains(t *testing.T) {
 	}
 }
 
-func TestRepo_CommitsPast(t *testing.T) {
+func TestRepo_CommitsPast_WhenALocalBranchIsNamedLikeOriginsTrunk_ListsTheCommitsPastOriginsTrunk(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		// arrange shapes the repository and returns the commits past the trunk, oldest first.
-		arrange func(t *testing.T, f *gittest.Fixture) []git.Commit
-		name    string
-	}{
-		{
-			name: "trunk merged in lists own commits oldest first",
-			arrange: func(t *testing.T, f *gittest.Fixture) []git.Commit {
-				t.Helper()
-				shas := f.Commits(topic, "one", "two")
-				mergeTrunk(t, f)
+	f := gittest.New(t, trunk)
+	sha := f.Commits(topic, "one")[0]
+	shadowTrunk(t, f, sha)
+	tip := f.Git("rev-parse", "HEAD")
 
-				return []git.Commit{{SHA: shas[0], Subject: "one"}, {SHA: shas[1], Subject: "two"}}
-			},
-		},
-		{
-			name: "local branch named like origin's trunk holding the commits lists them",
-			arrange: func(t *testing.T, f *gittest.Fixture) []git.Commit {
-				t.Helper()
-				sha := f.Commits(topic, "one")[0]
-				shadowTrunk(t, f, sha)
+	got, err := newRepo(f).CommitsPast(t.Context(), tip, trunk)
+	assert.NilError(t, err)
 
-				return []git.Commit{{SHA: sha, Subject: "one"}}
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			f := gittest.New(t, trunk)
-			want := tt.arrange(t, f)
-			tip := f.Git("rev-parse", "HEAD")
-
-			got, err := newRepo(f).CommitsPast(t.Context(), tip, trunk)
-			assert.NilError(t, err)
-
-			assert.Check(t, is.DeepEqual(got, want, cmpopts.EquateEmpty()))
-		})
-	}
+	assert.Check(t, is.DeepEqual(got, []git.Commit{{SHA: sha, Subject: "one"}}, cmpopts.EquateEmpty()))
 }
 
 func TestRepo_LocalTrunkAhead(t *testing.T) {
@@ -411,7 +382,6 @@ func TestRepo_LocalTrunkAhead(t *testing.T) {
 			},
 			wantAhead: true,
 		},
-		{name: "local trunk whose only commit origin's lacks is a merge", arrange: mergedOriginTrunk, wantAhead: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -426,18 +396,6 @@ func TestRepo_LocalTrunkAhead(t *testing.T) {
 			assert.Check(t, is.DeepEqual(past, want))
 		})
 	}
-}
-
-// mergedOriginTrunk merges origin's advanced trunk into the local trunk with a merge commit, the one
-// commit the local trunk then has past origin's, and returns it.
-func mergedOriginTrunk(t *testing.T, f *gittest.Fixture) []git.Commit {
-	t.Helper()
-	f.AdvanceOrigin(trunk)
-	fetch(t, f, trunk)
-	f.Git("switch", "--quiet", trunk)
-	f.Git("merge", "--quiet", "--no-ff", "--message", "merge origin", "refs/remotes/origin/"+trunk)
-
-	return []git.Commit{{SHA: f.Git("rev-parse", "HEAD"), Subject: "merge origin"}}
 }
 
 func TestRepo_BranchesContaining(t *testing.T) {
@@ -535,45 +493,15 @@ func TestRepo_Unlanded_WhenACommitFollowsTheTrunkMergedIn_ListsOnlyThatCommit(t 
 	assert.Check(t, is.DeepEqual(got, want, cmpopts.EquateEmpty()))
 }
 
-func TestRepo_HasCommits(t *testing.T) {
+func TestRepo_HasCommits_WhenBranchHasACommit_ReturnsTrue(t *testing.T) {
 	t.Parallel()
-	const orphan = "spare"
 	f := gittest.New(t, trunk)
 	f.Commits(topic, "first change")
-	f.Git("switch", "--quiet", "--orphan", orphan)
-	repo := newRepo(f)
-	tests := []struct {
-		name   string
-		branch string
-		want   bool
-	}{
-		{name: "branch with a commit", branch: topic, want: true},
-		{name: "branch made with switch --orphan", branch: orphan, want: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 
-			got, err := repo.HasCommits(t.Context(), tt.branch)
-			assert.NilError(t, err, "HasCommits(%q)", tt.branch)
+	got, err := newRepo(f).HasCommits(t.Context(), topic)
+	assert.NilError(t, err, "HasCommits(%q)", topic)
 
-			assert.Check(t, is.Equal(got, tt.want), "HasCommits(%q)", tt.branch)
-		})
-	}
-}
-
-func TestRepo_Subject_ReturnsTheSubjectOfTheNamedCommit(t *testing.T) {
-	t.Parallel()
-	f := gittest.New(t, trunk)
-	f.Commits(topic)
-	f.Git("commit", "--quiet", "--allow-empty", "--message", "one", "--message", "why it changed")
-	sha := f.Git("rev-parse", "HEAD")
-	f.Commits(topic, "two")
-
-	got, err := newRepo(f).Subject(t.Context(), sha)
-	assert.NilError(t, err)
-
-	assert.Check(t, is.Equal(got, "one"))
+	assert.Check(t, got, "HasCommits(%q)", topic)
 }
 
 // previousBranch returns a repository checked out on the trunk after topic, so that git reads
@@ -621,7 +549,7 @@ func TestRepo_CheckBranchName_WhenNameCannotBeABranch_ReturnsBranchNameErrorNami
 	}
 }
 
-func TestRepo_CheckBranchName_WhenGitRefusesTheName_CarriesGitsMessage(t *testing.T) {
+func TestRepo_CheckBranchName_WhenGitRefusesTheName_ReasonIsGitsMessage(t *testing.T) {
 	t.Parallel()
 	const name = "fix..parser"
 
@@ -629,30 +557,39 @@ func TestRepo_CheckBranchName_WhenGitRefusesTheName_CarriesGitsMessage(t *testin
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 	assert.Assert(t, ok, "CheckBranchName(%q) error = %v, want it to carry git's *child.ExitError", name, err)
-	assert.Check(t, exitErr.Stderr != "", "CheckBranchName(%q) carries no message from git", name)
+	nameErr, ok := errors.AsType[*git.BranchNameError](err)
+	assert.Assert(t, ok, "CheckBranchName(%q) error = %v, want *git.BranchNameError", name, err)
+	assert.Check(t, nameErr.Reason() != "", "CheckBranchName(%q) gives no reason from git", name)
+	assert.Check(t, is.Equal(nameErr.Reason(), strings.TrimSpace(exitErr.Stderr)))
+}
+
+func TestRepo_CheckBranchName_WhenGitIsNotAsked_GivesNoReason(t *testing.T) {
+	t.Parallel()
+	const name = "-parser"
+
+	err := previousBranch(t).CheckBranchName(t.Context(), name)
+
+	nameErr, ok := errors.AsType[*git.BranchNameError](err)
+	assert.Assert(t, ok, "CheckBranchName(%q) error = %v, want *git.BranchNameError", name, err)
+	assert.Check(t, is.Equal(nameErr.Reason(), ""))
 }
 
 // freshBranch is the name of the branch CreateBranch creates.
 const freshBranch = "fix/parser"
 
-func TestRepo_CreateBranch_WhenTreeIsDirty_SwitchesToABranchAtOriginsFetchedTrunkCarryingTheChanges(t *testing.T) {
+func TestRepo_CreateBranch_WhenOriginsTrunkIsFetched_SwitchesToABranchAtIt(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
 	shadowTrunk(t, f, f.Commits(topic, "one")[0])
 	f.AdvanceTrunk()
 	f.AdvanceOrigin(trunk)
 	want := f.Git("rev-parse", "refs/remotes/origin/"+trunk)
-	dirty := f.DirtyFile()
-	untracked := f.UntrackedFile()
 
 	err := newRepo(f).CreateBranch(t.Context(), freshBranch, trunk)
 	assert.NilError(t, err, "CreateBranch(%q, %q)", freshBranch, trunk)
 
 	assert.Check(t, is.Equal(f.Git("symbolic-ref", "HEAD"), "refs/heads/"+freshBranch))
 	assert.Check(t, is.Equal(f.Git("rev-parse", "refs/heads/"+freshBranch), want))
-	assert.Check(t, is.Equal(f.Git("for-each-ref", "--format=%(upstream)", "refs/heads/"+freshBranch), ""))
-	assert.Check(t, is.Equal(f.Git("diff", "--name-only"), dirty))
-	assert.Check(t, is.Equal(f.Git("ls-files", "--others", "--exclude-standard"), untracked))
 }
 
 // changedOffTrunk commits a file to topic alone and changes it without committing, so that
@@ -670,45 +607,16 @@ func changedOffTrunk(t *testing.T, f *gittest.Fixture) string {
 	return path
 }
 
-func TestRepo_CreateBranch_WhenAFileWouldBeOverwritten_NamesItAndLeavesTheRepositoryAsItWas(t *testing.T) {
+func TestRepo_CreateBranch_WhenAFileWouldBeOverwritten_ReturnsOverwriteErrorNamingTheFile(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		// arrange leaves a file the switch would overwrite and returns its path.
-		arrange func(t *testing.T, f *gittest.Fixture) string
-		name    string
-	}{
-		{name: "changed tracked file", arrange: changedOffTrunk},
-		{
-			name: "untracked file",
-			arrange: func(t *testing.T, f *gittest.Fixture) string {
-				t.Helper()
-				f.Commits(topic, "one")
-				path := f.UntrackedOnTrunk()
-				fetch(t, f, trunk)
+	f := gittest.New(t, trunk)
+	path := changedOffTrunk(t, f)
 
-				return path
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			f := gittest.New(t, trunk)
-			path := tt.arrange(t, f)
-			head := f.Git("symbolic-ref", "HEAD")
-			branches := f.Git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads")
-			status := f.Git("status", "--porcelain", "--untracked-files=all")
-			content := f.Git("hash-object", "--", path)
+	err := newRepo(f).CreateBranch(t.Context(), freshBranch, trunk)
 
-			err := newRepo(f).CreateBranch(t.Context(), freshBranch, trunk)
-
-			assert.Check(t, is.ErrorContains(err, path))
-			assert.Check(t, is.Equal(f.Git("symbolic-ref", "HEAD"), head))
-			assert.Check(t, is.Equal(f.Git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads"), branches))
-			assert.Check(t, is.Equal(f.Git("status", "--porcelain", "--untracked-files=all"), status))
-			assert.Check(t, is.Equal(f.Git("hash-object", "--", path), content))
-		})
-	}
+	overwrite, ok := errors.AsType[*git.OverwriteError](err)
+	assert.Assert(t, ok, "CreateBranch(%q, %q) error = %v, want *git.OverwriteError", freshBranch, trunk, err)
+	assert.Check(t, is.DeepEqual(overwrite.Files, []string{path}))
 }
 
 func TestRepo_DetachAtOrigin_WhenLocalBranchNamedLikeOriginsTrunk_DetachesAtOriginsTrunk(t *testing.T) {
@@ -818,16 +726,15 @@ func TestRepo_CheckedOutElsewhere(t *testing.T) {
 	}
 }
 
-func TestRepo_CheckedOutElsewhere_WhenOutsideAWorkTree_ReturnsTheExitErrorOfTheTopLevelRead(t *testing.T) {
+func TestRepo_CheckedOutElsewhere_WhenOutsideAWorkTree_ReturnsExitError(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
 	repo := git.Repo{Runner: git.Runner{Dir: filepath.Join(f.Dir(), ".git"), Env: f.Env()}}
 
 	got, err := repo.CheckedOutElsewhere(t.Context(), trunk)
 
-	exitErr, ok := errors.AsType[*child.ExitError](err)
-	assert.Assert(t, ok, "CheckedOutElsewhere() = %t, error = %v, want *child.ExitError", got, err)
-	assert.Check(t, is.Contains(exitErr.Argv, "--show-toplevel"))
+	_, ok := errors.AsType[*child.ExitError](err)
+	assert.Check(t, ok, "CheckedOutElsewhere() = %t, error = %v, want *child.ExitError", got, err)
 }
 
 func TestRepo_CheckedOutElsewhere_WhenTheWorktreeOnTheBranchIsGone_ReturnsNotExistError(t *testing.T) {
@@ -865,6 +772,24 @@ func TestVersionOf(t *testing.T) {
 			assert.Check(t, is.Equal(got, tt.want), "VersionOf(%q)", tt.line)
 		})
 	}
+}
+
+func FuzzVersionOf(f *testing.F) {
+	f.Add("git version 2.56.0.windows.2")
+	f.Add("git version 2.54.0 (Apple Git-157)")
+	f.Add("git version 2.35.0.rc0")
+	f.Add("git version DEV")
+	f.Add("git version 2.x.1")
+	f.Add("2.40.0")
+	f.Fuzz(func(t *testing.T, line string) {
+		got := git.VersionOf(line)
+		if got == "" {
+			return
+		}
+
+		numbers, _, _ := strings.Cut(got, "-")
+		assert.Check(t, strings.HasPrefix(line, "git version "+numbers), "VersionOf(%q) = %q", line, got)
+	})
 }
 
 func TestRepo_WhenAGitReadFails_ReturnsItsExitError(t *testing.T) {

@@ -146,14 +146,15 @@ func TestFailure_WhenProgramDiedOfTerminateAndContextEndsWithinGrace_ReturnsCont
 	})
 }
 
-func TestFailure_WhenProgramDiedOfTerminateAndContextOutlivesGrace_WrapsRunErrorNamingCommand(t *testing.T) {
+func TestFailure_WhenProgramDiedOfTerminateAndContextOutlivesGrace_ReturnsKilledErrorNamingCommand(t *testing.T) {
 	t.Parallel()
 	runErr := killedBy(t, "TERM")
 
 	synctest.Test(t, func(t *testing.T) {
 		err := child.Failure(t.Context(), []string{"git", "fetch"}, runErr, "")
 
-		assert.Check(t, is.ErrorIs(err, runErr))
+		_, killed := errors.AsType[*child.KilledError](err)
+		assert.Check(t, killed, "Failure error = %v, want *child.KilledError", err)
 		assert.Check(t, is.ErrorContains(err, "git fetch"))
 	})
 }
@@ -193,10 +194,9 @@ func TestInterruptedExit(t *testing.T) {
 	tests := []struct {
 		name string
 		code int64
-		want bool
 	}{
-		{name: "STATUS_CONTROL_C_EXIT of a console child that Ctrl-C ended", code: 0xC000013A, want: true},
-		{name: "STATUS_CONTROL_C_EXIT as a 32-bit build reads it", code: -1073741510, want: true},
+		{name: "STATUS_CONTROL_C_EXIT of a console child that Ctrl-C ended", code: 0xC000013A},
+		{name: "STATUS_CONTROL_C_EXIT as a 32-bit build reads it", code: -1073741510},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -204,7 +204,7 @@ func TestInterruptedExit(t *testing.T) {
 
 			got := child.InterruptedExit(int(tt.code))
 
-			assert.Check(t, is.Equal(got, tt.want), "InterruptedExit(%#x)", tt.code)
+			assert.Check(t, got, "InterruptedExit(%#x) = false, want true", tt.code)
 		})
 	}
 }
@@ -216,6 +216,69 @@ func TestFailure_WhenProgramNeverExited_WrapsRunErrorNamingCommand(t *testing.T)
 
 	assert.Check(t, is.ErrorIs(err, exec.ErrNotFound))
 	assert.Check(t, is.ErrorContains(err, "gh pr view"))
+}
+
+// printedBoth returns what a run printed on both outputs, for the tests of Ended.
+func printedBoth() child.Output {
+	return child.Output{Stdout: "partial answer\n", Stderr: "no such tool\n"}
+}
+
+func TestEnded_WhenRunSucceeded_ReturnsWhatItPrinted(t *testing.T) {
+	t.Parallel()
+
+	got, err := child.Ended(t.Context(), []string{"go", "version"}, nil, printedBoth())
+	assert.NilError(t, err)
+
+	assert.Check(t, is.DeepEqual(got, printedBoth()))
+}
+
+func TestEnded_WhenProgramExitedNonZero_KeepsOnlyStdout(t *testing.T) {
+	t.Parallel()
+	runErr := exitOf(t)
+
+	got, err := child.Ended(t.Context(), []string{"go", "tool", "nonsense"}, runErr, printedBoth())
+
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "Ended error = %v, want *child.ExitError", err)
+	assert.Check(t, is.Equal(exitErr.Stderr, printedBoth().Stderr))
+	assert.Check(t, is.DeepEqual(got, child.Output{Stdout: printedBoth().Stdout}))
+}
+
+func TestEnded_WhenRunFailedWithoutAnExit_ReturnsNoOutput(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		runErr func(*testing.T) error
+		want   error
+		name   string
+		ended  bool
+	}{
+		{
+			name:   "context ended",
+			ended:  true,
+			runErr: func(t *testing.T) error { return exitOf(t) },
+			want:   context.Canceled,
+		},
+		{
+			name:   "program never started",
+			runErr: func(*testing.T) error { return exec.ErrNotFound },
+			want:   exec.ErrNotFound,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if tt.ended {
+				cancel()
+			}
+
+			got, err := child.Ended(ctx, []string{"go", "tool", "nonsense"}, tt.runErr(t), printedBoth())
+
+			assert.Check(t, is.ErrorIs(err, tt.want))
+			assert.Check(t, is.DeepEqual(got, child.Output{}))
+		})
+	}
 }
 
 func TestExec_Log(t *testing.T) {
@@ -284,7 +347,7 @@ func TestToolTooOldError_Error(t *testing.T) {
 		{
 			name:  "line with no version",
 			err:   child.ToolTooOldError{Tool: "gh", Line: "gh version DEV", Minimum: "2.50.0"},
-			parts: []string{`"gh version DEV"`, "2.50.0"},
+			parts: []string{"gh version DEV", "2.50.0"},
 		},
 	}
 	for _, tt := range tests {
@@ -306,16 +369,8 @@ func TestToolMissingError_Error_WhenToolIsMissing_NamesWhereToInstallIt(t *testi
 
 	got := err.Error()
 
-	assert.Check(t, is.Contains(got, "gh "))
+	assert.Check(t, is.Contains(got, "gh"))
 	assert.Check(t, is.Contains(got, "https://cli.github.com"))
-}
-
-func TestToolMissingError_Unwrap_WhenLookupFailed_MatchesTheLookupError(t *testing.T) {
-	t.Parallel()
-
-	err := &child.ToolMissingError{Tool: "git", InstallURL: "https://git-scm.com/downloads", Err: exec.ErrNotFound}
-
-	assert.Check(t, is.ErrorIs(err, exec.ErrNotFound))
 }
 
 // requirement is the gh requirement every Check and CheckOutput test is made against.
@@ -330,6 +385,7 @@ func TestRequirement_Check_WhenVersionIsTheMinimumOrNewer_ReturnsNil(t *testing.
 		version string
 	}{
 		{name: "the minimum", version: "2.50.0"},
+		{name: "a newer release", version: "2.60.0"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

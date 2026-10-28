@@ -127,7 +127,7 @@ func (r *reading) onOriginTrunk(ctx context.Context, tag git.Tag) (bool, error) 
 	// Fetching origin's trunk brought every commit on it, so a tag whose commit git lacks is not on
 	// it, yet git fails the check of a commit it lacks as it fails on a broken repository. Fetching
 	// the tag brings its commit, after which only a real failure fails the check.
-	if _, err := r.deps.Repo.Fetch(ctx, "refs/tags/"+tag.Name); err != nil {
+	if _, err := r.deps.Repo.FetchTag(ctx, tag.Name); err != nil {
 		return false, err
 	}
 

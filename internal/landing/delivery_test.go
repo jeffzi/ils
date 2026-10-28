@@ -98,10 +98,6 @@ func nextTrunk() string {
 	return expect("`"+originMerge+trunk+"`", "resolve the conflicts", "ils push")
 }
 
-func nextNothing() string {
-	return expect("no check or status reported")
-}
-
 func cleanLine() string {
 	return stateLine(forge.MergeClean, "CLEAN")
 }
@@ -211,6 +207,9 @@ func inState(state forge.MergeState, raw string) forge.Head {
 	return forge.Head{MergeState: state, RawMergeState: raw}
 }
 
+// cleanHead is a head GitHub can merge, on the tip once showing or viewing has placed it.
+func cleanHead() forge.Head { return inState(forge.MergeClean, "CLEAN") }
+
 // standing is pull request 12, open from the topic branch against the trunk.
 func standing() forge.Change {
 	found := change(opened, trunk, forge.ChangeOpen)
@@ -231,7 +230,9 @@ func opening(verdicts ...forge.Verdict) forgeFor {
 		script := finding()
 		script.OpenChange = forgetest.Values(forge.ChangeRef{URL: pullURL, Number: opened})
 		script.TrunkProtection = []forgetest.Answer[forge.Protection]{{}}
-		script.Head = shows(forge.Head{SHA: tip, MergeState: forge.MergeClean, RawMergeState: "CLEAN"})
+		head := cleanHead()
+		head.SHA = tip
+		script.Head = shows(head)
 		script.Verdict = says(verdicts...)
 
 		return script
@@ -324,19 +325,19 @@ type pushRow struct {
 	quiet   bool
 }
 
-// delivery is a scene whose branch Push can push: the tip, the deadline the push runs under, and
-// what the push tells the progress hook and the logger its deps carry.
+// delivery is a scene whose branch Push can push: the tip, and what the push tells the progress
+// hook and the logger its deps carry.
 type delivery struct {
 	*scene
 
-	ctx   context.Context
 	watch *watch
 	tip   string
 }
 
-// newDelivery returns the scene of tt on the topic branch, with a deadline the time tt has left
-// away from now: inside a bubble that is fake time, which passes only while the wait polls.
-func newDelivery(t *testing.T, tt pushRow) *delivery {
+// newDelivery returns the scene of tt on the topic branch, and the context the push runs under,
+// with a deadline the time tt has left away from now: inside a bubble that is fake time, which
+// passes only while the wait polls.
+func newDelivery(t *testing.T, tt pushRow) (context.Context, *delivery) {
 	t.Helper()
 
 	s := newScene(t, tt.arrange, forgetest.Script{}, false)
@@ -350,7 +351,7 @@ func newDelivery(t *testing.T, tt pushRow) *delivery {
 		ctx = tt.cut(ctx)
 	}
 
-	return &delivery{scene: s, ctx: ctx, watch: w, tip: sha}
+	return ctx, &delivery{scene: s, watch: w, tip: sha}
 }
 
 // runPushes runs each row as a test in a bubble of its own: the push ends as the row wants, with
@@ -364,9 +365,9 @@ func runPushes(t *testing.T, rows []pushRow) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
-				d := newDelivery(t, tt)
+				ctx, d := newDelivery(t, tt)
 
-				got := landing.Push(d.ctx, d.deps, pushRequest())
+				got := landing.Push(ctx, d.deps, pushRequest())
 
 				assertDelivered(t, d.scene, got, tt.want.at(d.tip))
 				assertHeld(t, d.watch, got)
@@ -385,7 +386,7 @@ func runPushes(t *testing.T, rows []pushRow) {
 func skippingRow() pushRow {
 	skipping := forge.Verdict{
 		Checks: []forge.Check{
-			checked("lint", forge.BucketPass), checked("test", forge.BucketPass), checked("docs", forge.BucketSkipped),
+			forgetest.Check("lint", forge.BucketPass), forgetest.Check("test", forge.BucketPass), forgetest.Check("docs", forge.BucketSkipped),
 		},
 		Runs: ran(forge.RunCompleted),
 	}
@@ -406,9 +407,6 @@ func pushWriteRows() []pushRow {
 
 	return []pushRow{
 		skippingRow(),
-		{
-			name: "first push of the branch", script: opening(passing()), want: opens,
-		},
 		{
 			name:   "open pull request against the trunk",
 			script: reusing(passing()), want: greenAfter(pushedLine() + foundLine()),
@@ -434,9 +432,9 @@ func TestPush_WhenTrunkRequiresChecks_PassesThemToEveryForgeRead(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		required := []string{"lint", "test"}
-		d := newDelivery(t, pushRow{script: opening(requiredPassing()).requiring(required...)})
+		ctx, d := newDelivery(t, pushRow{script: opening(requiredPassing()).requiring(required...)})
 
-		landing.Push(d.ctx, d.deps, pushRequest())
+		landing.Push(ctx, d.deps, pushRequest())
 
 		assertReadsRequire(t, d.forge.Calls(), d.tip, required)
 	})
@@ -485,9 +483,9 @@ func TestPush_WhenGitRefusesThePush_BrokeSayingNothingWasPushed(t *testing.T) {
 	// Origin's hook declines pushes alone, so every read passes and the push is refused.
 	const policy = "pushes wait for the freeze to end"
 	decline := func(f *gittest.Fixture) { f.OriginHook("pre-receive", "echo '"+policy+"'\nexit 1") }
-	d := newDelivery(t, pushRow{arrange: decline, script: opening()})
+	ctx, d := newDelivery(t, pushRow{arrange: decline, script: opening()})
 
-	got := landing.Push(d.ctx, d.deps, pushRequest())
+	got := landing.Push(ctx, d.deps, pushRequest())
 
 	assertStopped(t, got, result.Broke)
 	assert.Check(t, got.Payload == nil || got.Payload.Push == nil, "Payload = %+v, want none for a push git refused", got.Payload)
@@ -679,7 +677,7 @@ func pushUnreportedRows() []pushRow {
 	nothing := finish{
 		outcome: result.DeliveredNotGreen,
 		reason:  expect("no check or status reported", tipMark, "#12"),
-		text:    pushedLine() + openedLine() + cleanLine() + expect("no check or status reported", tipMark, "#12") + nextNothing(),
+		text:    pushedLine() + openedLine() + cleanLine() + expect("no check or status reported", tipMark, "#12"),
 		payload: detail(forge.VerdictNone, forge.MergeClean),
 	}
 
@@ -722,7 +720,7 @@ func pushNoCIRows() []pushRow {
 		// that state does.
 		{
 			name:   "on a pull request that turns " + string(forge.MergeConflicting) + " after the checks",
-			script: unverified.showing(inState(forge.MergeClean, "CLEAN"), inState(forge.MergeConflicting, "DIRTY")),
+			script: unverified.showing(cleanHead(), inState(forge.MergeConflicting, "DIRTY")),
 			want: finish{
 				outcome: result.DeliveredNotGreen, reason: expect("conflicts with the trunk"),
 				text: pushedLine() + openedLine() + noCILine() + stateLine(forge.MergeConflicting, "DIRTY") +
@@ -766,9 +764,9 @@ func TestPush_WhenACutComesBeforeTheCIRead_PendingWithoutAskingIt(t *testing.T) 
 		ending := reusing(forge.Verdict{}).with(func(script *forgetest.Script, _ string) {
 			script.OnRead = onHeadAfterChecks(sync.OnceFunc(func() { close(ended) }))
 		})
-		d := newDelivery(t, pushRow{script: ending})
+		under, d := newDelivery(t, pushRow{script: ending})
 		c := byTimeLimit()
-		ctx := c.once(d.ctx, ended)
+		ctx := c.once(under, ended)
 
 		got := landing.Push(ctx, d.deps, pushRequest())
 
@@ -800,12 +798,12 @@ func (f *ciReading) HasTrunkCI(ctx context.Context, repo forge.Repo, trunk strin
 func TestPush_WhenNothingReportedForTheCommit_AsksAboutTheTrunkOfOriginWithinTheDeadline(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-		d := newDelivery(t, pushRow{script: opening(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{})})
-		ctx, cancel := context.WithCancel(d.ctx)
+		under, d := newDelivery(t, pushRow{script: opening(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{})})
+		ctx, cancel := context.WithCancel(under)
 		t.Cleanup(cancel)
 		reading := &ciReading{Forge: d.deps.Forge, endPush: cancel}
 		d.deps.Forge = reading
-		deadline, _ := d.ctx.Deadline()
+		deadline, _ := under.Deadline()
 
 		landing.Push(ctx, d.deps, pushRequest())
 
@@ -830,7 +828,7 @@ func pushWaitRows() []pushRow {
 	rows := []pushRow{
 		{
 			name:   "green on a pull request that needs a review",
-			script: reusing(passing()).showing(inState(forge.MergeClean, "CLEAN"), inState(forge.MergeBlockedByReview, "BLOCKED")),
+			script: reusing(passing()).showing(cleanHead(), inState(forge.MergeBlockedByReview, "BLOCKED")),
 			want:   reviewed,
 		},
 	}

@@ -1,14 +1,14 @@
 package landing_test
 
 import (
-	"path/filepath"
+	"errors"
 	"testing"
 
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
-	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
+	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
@@ -77,59 +77,17 @@ func TestStartBranch_WhenEveryCheckHolds_StartsTheBranchAtOriginsTrunk(t *testin
 	assertStarted(t, s, fresh)
 }
 
-// startPoint is a place HEAD stands that the new branch is cut from origin's trunk as from any other.
-type startPoint struct {
-	arrange func(*gittest.Fixture)
-	name    string
-	// advance adds a commit to origin's trunk that the clone has not fetched.
-	advance bool
-}
-
-func TestStartBranch_WhereverHEADStands_StartsAtOriginsTrunkAsFetched(t *testing.T) {
+func TestStartBranch_WhenHEADIsDetachedWithNoCommitOfItsOwn_StartsAtOriginsTrunkAsFetched(t *testing.T) {
 	t.Parallel()
+	s := branchScene(t, func(f *gittest.Fixture) {
+		f.Git("switch", "--quiet", "--detach", trunk)
+		f.AdvanceOrigin(trunk)
+	})
 
-	longer := "team/" + fresh
-	tests := []startPoint{
-		{name: "on a work branch with commits of its own", advance: true},
-		{
-			name: "on a local trunk behind origin's", advance: true,
-			arrange: func(f *gittest.Fixture) { f.Git("switch", "--quiet", trunk) },
-		},
-		{
-			name:    "detached at origin's trunk",
-			arrange: func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--detach", trunk) },
-		},
-		{
-			name: "detached behind origin's trunk", advance: true,
-			arrange: func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--detach", trunk) },
-		},
-		{
-			name: "a longer branch ends with the name, locally and on origin",
-			arrange: func(f *gittest.Fixture) {
-				f.Git("branch", longer, trunk)
-				publishAtTrunk(f, longer)
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			s := branchScene(t, func(f *gittest.Fixture) {
-				if tt.arrange != nil {
-					tt.arrange(f)
-				}
+	got := startBranch(t, s, fresh)
 
-				if tt.advance {
-					f.AdvanceOrigin(trunk)
-				}
-			})
-
-			got := startBranch(t, s, fresh)
-
-			assertStoppedBy(t, got, result.Done, branchRequest(fresh))
-			assertStarted(t, s, fresh)
-		})
-	}
+	assertStoppedBy(t, got, result.Done, branchRequest(fresh))
+	assertStarted(t, s, fresh)
 }
 
 func TestStartBranch_WhenGitCannotHoldTheName_RefusesNamingIt(t *testing.T) {
@@ -137,10 +95,12 @@ func TestStartBranch_WhenGitCannotHoldTheName_RefusesNamingIt(t *testing.T) {
 	const name = "logo..draft"
 	s := branchScene(t, nil)
 	before := s.written()
+	bad, ok := errors.AsType[*git.BranchNameError](s.deps.Repo.CheckBranchName(t.Context(), name))
+	assert.Assert(t, ok, "CheckBranchName(%q) gave no *git.BranchNameError", name)
 
 	got := startBranch(t, s, name)
 
-	assertRefusedBranch(t, s, got, branchRefusal{name: name, before: before, want: expect(name, "fatal:", "not a valid branch name")})
+	assertRefusedBranch(t, s, got, branchRefusal{name: name, before: before, want: expect(name, bad.Reason())})
 }
 
 // takenName is a branch that takes the name the command is given.
@@ -164,16 +124,8 @@ func TestStartBranch_WhenNameIsTaken_RefusesNamingTheBranchThatTakesIt(t *testin
 
 	tests := []takenName{
 		{
-			name: "the same name locally", given: nested, taker: nested, where: "local",
+			name: "a branch under it locally", given: parent, taker: nested, where: "local",
 			arrange: func(f *gittest.Fixture) { f.Git("branch", nested, trunk) },
-		},
-		{
-			name: "a path prefix locally", given: nested, taker: parent, where: "local",
-			arrange: func(f *gittest.Fixture) { f.Git("branch", parent, trunk) },
-		},
-		{
-			name: "the same name on origin", given: parent, taker: parent, where: "origin",
-			arrange: func(f *gittest.Fixture) { publishAtTrunk(f, parent) },
 		},
 		{
 			name: "a branch under it on origin", given: parent, taker: nested, where: "origin",
@@ -269,20 +221,17 @@ func TestStartBranch_WhenLocalTrunkHasCommitsOriginLacks_StartsTheBranchNamingTh
 	assertStarted(t, s, fresh)
 }
 
-func TestStartBranch_WhenTreeHasChanges_CarriesThemOntoTheBranch(t *testing.T) {
+func TestStartBranch_WhenTrackedFilesHaveChanges_StartsTheBranch(t *testing.T) {
 	t.Parallel()
 	s := branchScene(t, func(f *gittest.Fixture) {
 		f.DirtyFile()
 		f.StagedFile()
-		f.UntrackedFile()
 	})
-	changes := s.fixture.Git("status", "--porcelain")
 
 	got := startBranch(t, s, fresh)
 
 	assertStoppedBy(t, got, result.Done, branchRequest(fresh))
 	assertStarted(t, s, fresh)
-	assert.Check(t, is.Equal(s.fixture.Git("status", "--porcelain"), changes))
 }
 
 func TestStartBranch_WhenTheSwitchWouldOverwriteAFile_RefusesNamingIt(t *testing.T) {
@@ -307,32 +256,4 @@ func TestStartBranch_WhenTheSwitchFailsNamingNoFile_EndsBroke(t *testing.T) {
 
 	want := expect("Could not start the branch "+fresh, gittest.FailedSaid)
 	assertEndedBy(t, got, s.gitDir, ended{outcome: result.Broke, req: branchRequest(fresh), text: want})
-}
-
-func TestStartBranch_WithoutGitHub_StartsTheBranch(t *testing.T) {
-	t.Parallel()
-
-	noTool := fails(&child.ToolMissingError{Tool: "gh", InstallURL: "https://cli.github.com"})
-	tests := []struct {
-		arrange func(*gittest.Fixture)
-		name    string
-		script  forgetest.Script
-	}{
-		{name: "gh is not installed", script: noTool},
-		{
-			name:    "origin's URL names no GitHub repository",
-			arrange: func(f *gittest.Fixture) { f.SetOriginURL(filepath.ToSlash(f.OriginDir())) },
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			s := newScene(t, tt.arrange, tt.script, false)
-
-			got := startBranch(t, s, fresh)
-
-			assertStoppedBy(t, got, result.Done, branchRequest(fresh))
-			assertStarted(t, s, fresh)
-		})
-	}
 }

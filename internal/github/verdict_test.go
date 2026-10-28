@@ -4,6 +4,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -181,7 +182,8 @@ func TestForge_Verdict_FailedLog(t *testing.T) {
 
 			assert.Check(t, is.DeepEqual(got.FailedLog, tt.want))
 			byArgv := cmpopts.SortSlices(func(a, b []string) bool { return slices.Compare(a, b) < 0 })
-			assert.Check(t, is.DeepEqual(fake.Calls(), tt.wantCalls, byArgv))
+			scripted := cmp.Comparer(func(a, b []string) bool { return ghtest.Matches(a, b) || ghtest.Matches(b, a) })
+			assert.Check(t, is.DeepEqual(fake.Calls(), tt.wantCalls, byArgv, scripted))
 		})
 	}
 }

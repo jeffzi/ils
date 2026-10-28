@@ -1,5 +1,3 @@
-// Package result holds the one value every command returns and the two
-// renderers that show it.
 package result
 
 import (
@@ -26,6 +24,9 @@ const (
 	Ask
 	Pending
 	DeliveredNotGreen
+	// outcomeEnd follows the last outcome, so that ParseOutcome tries every one; a new outcome goes
+	// before it.
+	outcomeEnd
 )
 
 // ExitCode returns the process exit code for o.
@@ -71,7 +72,7 @@ func (o Outcome) String() string {
 
 // ParseOutcome returns the outcome whose String is name, and false when no outcome has that name.
 func ParseOutcome(name string) (Outcome, bool) {
-	for o := range DeliveredNotGreen + 1 {
+	for o := range outcomeEnd {
 		if o.String() == name {
 			return o, true
 		}
@@ -243,16 +244,6 @@ type span struct {
 	kind kind
 }
 
-// joined returns the text of spans, as the plain renderers print it.
-func joined(spans []span) string {
-	var b strings.Builder
-	for _, s := range spans {
-		b.WriteString(s.text)
-	}
-
-	return b.String()
-}
-
 // Phrase is a piece of output: fixed wording and the names it interpolates,
 // kept apart so that only the wording is checked.
 type Phrase struct {
@@ -411,39 +402,6 @@ func NextNone() Next {
 // for.
 func (n Next) None() bool {
 	return n.kind == nextNone
-}
-
-// spans returns the value printed after "Next:". Every span of an ils command
-// is drawn as the command, except the ticks of an inline command, which stay
-// ticks so a color pen can leave them out.
-func (n Next) spans() ([]span, error) {
-	if n.kind == nextNone {
-		return []span{{text: "none", kind: kindWording}}, nil
-	}
-
-	spans, err := n.phrase.spans()
-	if err != nil {
-		return nil, err
-	}
-
-	if n.kind != nextCommand {
-		return spans, nil
-	}
-
-	command := []span{{text: commandPrefix, kind: kindCommand}}
-	for _, s := range spans {
-		if s.kind != kindTick {
-			s.kind = kindCommand
-		}
-		command = append(command, s)
-	}
-
-	return command, nil
-}
-
-// wording returns the fixed text of n, as the wording check reads it.
-func (n Next) wording() string {
-	return n.phrase.wording
 }
 
 // ---------------------------------------------------------------------------

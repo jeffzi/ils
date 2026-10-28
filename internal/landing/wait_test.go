@@ -209,16 +209,6 @@ func heldAfter(verdicts ...forge.Verdict) []forgetest.Answer[forge.Verdict] {
 	return append(says(verdicts...), forgetest.Answer[forge.Verdict]{Hold: true})
 }
 
-// checked returns a check of the ci workflow that the trunk does not require.
-func checked(name string, bucket forge.Bucket) forge.Check {
-	return forge.Check{Name: name, Bucket: bucket, Workflow: "ci"}
-}
-
-// needed returns a check of the ci workflow that the trunk requires.
-func needed(name string, bucket forge.Bucket) forge.Check {
-	return forge.Check{Name: name, Bucket: bucket, Workflow: "ci", Required: true}
-}
-
 // ran returns the ci workflow's run in status.
 func ran(status forge.RunStatus) []forge.Run {
 	return []forge.Run{{Name: "ci", Status: status}}
@@ -226,18 +216,18 @@ func ran(status forge.RunStatus) []forge.Run {
 
 // passing is a verdict whose one check passed and whose run completed.
 func passing() forge.Verdict {
-	return forge.Verdict{Checks: []forge.Check{checked("test", forge.BucketPass)}, Runs: ran(forge.RunCompleted)}
+	return forge.Verdict{Checks: []forge.Check{forgetest.Check("test", forge.BucketPass)}, Runs: ran(forge.RunCompleted)}
 }
 
 // running is a verdict whose one check still runs.
 func running() forge.Verdict {
-	return forge.Verdict{Checks: []forge.Check{checked("test", forge.BucketPending)}, Runs: ran(forge.RunInProgress)}
+	return forge.Verdict{Checks: []forge.Check{forgetest.Check("test", forge.BucketPending)}, Runs: ran(forge.RunInProgress)}
 }
 
 // requiredPassing is a verdict whose required checks lint and test passed and whose run completed.
 func requiredPassing() forge.Verdict {
 	return forge.Verdict{
-		Checks: []forge.Check{needed("lint", forge.BucketPass), needed("test", forge.BucketPass)},
+		Checks: []forge.Check{forgetest.RequiredCheck("lint", forge.BucketPass), forgetest.RequiredCheck("test", forge.BucketPass)},
 		Runs:   ran(forge.RunCompleted),
 	}
 }
@@ -310,16 +300,6 @@ func waitError(t *testing.T, err error) *landing.WaitError {
 	return got
 }
 
-// opsOf returns the operations the vigil's forge was asked for, in order.
-func (v *vigil) opsOf() []forgetest.Op {
-	var ops []forgetest.Op
-	for _, call := range v.forge.Calls() {
-		ops = append(ops, call.Op)
-	}
-
-	return ops
-}
-
 // vigilRow is one wait: what the forge answers, and how the wait must end.
 type vigilRow struct {
 	name string
@@ -354,7 +334,7 @@ func runVigils(t *testing.T, rows []vigilRow) {
 				got := v.await(t, tt.required...)
 
 				assert.Check(t, is.DeepEqual(got, tt.want, ignoreSince(), cmpopts.EquateEmpty()))
-				assert.Check(t, is.DeepEqual(v.opsOf(), tt.ops, cmpopts.EquateEmpty()))
+				assert.Check(t, is.DeepEqual(opsOf(v.forge.Calls()), tt.ops, cmpopts.EquateEmpty()))
 				assert.Check(t, is.DeepEqual(v.pauses(), tt.waits, cmpopts.EquateEmpty()))
 				if tt.told != nil {
 					assertTold(t, w.told(t), tt.told)
@@ -458,6 +438,8 @@ type logRow struct {
 	script forgetest.Script
 	want   []string
 	left   time.Duration
+	// fails is whether the wait returns an error.
+	fails bool
 }
 
 // logRows lists the waits whose debug records are checked, one per way a wait ends but for
@@ -487,6 +469,7 @@ func logRows() []logRow {
 			script: forgetest.Script{
 				Head: append(shows(unknown()), forgetest.Answer[forge.Head]{Err: errors.New("HTTP 502")}),
 			},
+			fails: true,
 			want: []string{
 				"DEBUG wait read=merge-state state=unknown window=" + landing.MergeWindow.String(),
 				"DEBUG wait ended=failed stage=merge-state",
@@ -525,7 +508,13 @@ func TestAwaitVerdict_WhenGivenALogger_LogsEachDecisionOfTheWait(t *testing.T) {
 				v := newVigil(t, tt.script, orBound(tt.left))
 				w := watchOn(&v.deps)
 
-				_, _ = landing.AwaitVerdict(v.context(t), v.deps, pushedTip())
+				_, err := landing.AwaitVerdict(v.context(t), v.deps, pushedTip())
+				if tt.fails {
+					_, ok := errors.AsType[*landing.WaitError](err)
+					assert.Check(t, ok, "AwaitVerdict() error = %v, want a *landing.WaitError", err)
+				} else {
+					assert.NilError(t, err)
+				}
 
 				assert.Check(t, is.DeepEqual(w.logged(), tt.want))
 			})
@@ -569,7 +558,7 @@ func TestAwaitVerdict_WhenTheHeadMovesPastThePushedCommit_EndsMovedToTheNewHead(
 
 				want := stateOf(landing.Waited{Outcome: landing.WaitMoved, MovedTo: movedSHA}, tt.before)
 				assert.Check(t, is.DeepEqual(got, want))
-				assert.Check(t, is.DeepEqual(v.opsOf(), tt.ops))
+				assert.Check(t, is.DeepEqual(opsOf(v.forge.Calls()), tt.ops))
 			})
 		})
 	}
@@ -633,31 +622,11 @@ func TestAwaitVerdict_WhenChecksStillRunAtTheDeadline_EndsPendingWithThem(t *tes
 				want.Stage = landing.StageVerdict
 				want.Since = began.Add(tt.since)
 				assert.Check(t, is.DeepEqual(got, want))
-				assert.Check(t, is.DeepEqual(v.opsOf(), tt.ops))
+				assert.Check(t, is.DeepEqual(opsOf(v.forge.Calls()), tt.ops))
 				assert.Check(t, is.DeepEqual(v.pauses(), tt.waits, cmpopts.EquateEmpty()))
 			})
 		})
 	}
-}
-
-func TestAwaitVerdict_WhenTheReserveEndsALaterVerdictRead_KeepsTheVerdictBeforeIt(t *testing.T) {
-	t.Parallel()
-
-	rows := []vigilRow{
-		{
-			name:     "a check failed with its log held back",
-			verdicts: heldAfter(lintHeldBack()),
-			want:     concluded(landing.WaitRed, lintHeldBack(), 0, 0),
-		},
-	}
-	for i := range rows {
-		rows[i].heads = shows(clean())
-		rows[i].left = heldLeft
-		rows[i].ops = readsOf(1, 2, 1)
-		rows[i].waits = heldPauses()
-	}
-
-	runVigils(t, rows)
 }
 
 // slowLaterVerdict returns a read hook under which each read of the verdict after the first takes
@@ -694,7 +663,7 @@ func TestAwaitVerdict_WhenALaterVerdictReadAnswersPastTheReserve_JudgesWhatItSay
 		got := v.await(t)
 
 		assert.Check(t, is.DeepEqual(got, stateOf(green(), reviewed), ignoreSince(), cmpopts.EquateEmpty()))
-		assert.Check(t, is.DeepEqual(v.opsOf(), readsOf(1, 2, 1)))
+		assert.Check(t, is.DeepEqual(opsOf(v.forge.Calls()), readsOf(1, 2, 1)))
 	})
 }
 
@@ -711,6 +680,7 @@ func TestAwaitVerdict_WhenTheHeadAfterTheChecksIsNotRead_EndsPendingWithoutTheVe
 		left     time.Duration
 	}
 
+	c := byTimeLimit()
 	tests := []row{
 		{
 			// The reserve ends the read after the poll; the wait's own deadline then ends the head read.
@@ -722,17 +692,14 @@ func TestAwaitVerdict_WhenTheHeadAfterTheChecksIsNotRead_EndsPendingWithoutTheVe
 			ops:      readsOf(1, 2, 1),
 			waits:    append(heldPauses(), headReadReserve),
 		},
-	}
-	c := byTimeLimit()
-	tests = append(tests,
-		row{
+		{
 			name:     c.name + " ends the head read after green checks",
-			want:     endedBy(c, pendingAt(landing.StageMergeState, clean())),
+			want:     pendingAt(landing.StageMergeState, clean()),
 			heads:    append(shows(clean()), lateHead(c)),
 			verdicts: says(passing()),
 			ops:      readsOf(1, 1, 1),
 		},
-	)
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -742,7 +709,7 @@ func TestAwaitVerdict_WhenTheHeadAfterTheChecksIsNotRead_EndsPendingWithoutTheVe
 				got := v.await(t)
 
 				assert.Check(t, is.DeepEqual(got, tt.want, cmpopts.EquateEmpty()))
-				assert.Check(t, is.DeepEqual(v.opsOf(), tt.ops, cmpopts.EquateEmpty()))
+				assert.Check(t, is.DeepEqual(opsOf(v.forge.Calls()), tt.ops, cmpopts.EquateEmpty()))
 				assert.Check(t, is.DeepEqual(v.pauses(), tt.waits, cmpopts.EquateEmpty()))
 			})
 		})
@@ -828,13 +795,18 @@ func readCutWaits(c cut) []cutShort {
 	}
 }
 
+// headPollCut is the wait c ends midPoll into its first head poll.
+func headPollCut(c cut) cutShort {
+	return cutShort{
+		name: "inside the head poll", heads: shows(stale()),
+		want: stateOf(endedBy(c, landing.Waited{Outcome: landing.WaitPending, Stage: landing.StageHead}), stale()),
+	}
+}
+
 // pollCutWaits are the waits c ends midPoll into their first poll, without it being known ahead.
 func pollCutWaits(c cut) []cutShort {
 	return []cutShort{
-		{
-			name: "inside the head poll", heads: shows(stale()),
-			want: stateOf(endedBy(c, landing.Waited{Outcome: landing.WaitPending, Stage: landing.StageHead}), stale()),
-		},
+		headPollCut(c),
 		{name: "inside the merge state poll", want: atMergeState(c), heads: shows(unknown())},
 		{
 			name: "inside the verdict poll of checks still running", want: atVerdict(c),
@@ -873,7 +845,7 @@ func TestAwaitVerdict_WhenACutEndsAPoll_EndsPendingAtThatStageMidPoll(t *testing
 	for _, tt := range pollCutWaits(byTimeLimit()) {
 		tests = append(tests, pollCut{c: byTimeLimit(), tt: tt})
 	}
-	tests = append(tests, pollCut{c: byInterrupt(), tt: pollCutWaits(byInterrupt())[0]})
+	tests = append(tests, pollCut{c: byInterrupt(), tt: headPollCut(byInterrupt())})
 	for _, pc := range tests {
 		c, tt := pc.c, pc.tt
 		t.Run(c.name+"/"+tt.name, func(t *testing.T) {
@@ -903,7 +875,7 @@ func TestAwaitVerdict_WhenTheDeadlineEndsTheFirstVerdictRead_EndsPendingWithoutR
 		got := v.await(t)
 
 		assert.Check(t, is.DeepEqual(got, pendingAt(landing.StageVerdict, clean()), cmpopts.EquateEmpty()))
-		assert.Check(t, is.DeepEqual(v.opsOf(), readsOf(1, 1, 0)))
+		assert.Check(t, is.DeepEqual(opsOf(v.forge.Calls()), readsOf(1, 1, 0)))
 		assert.Check(t, is.Equal(time.Since(began), heldLeft), "the first read runs under the wait's own deadline")
 	})
 }

@@ -31,9 +31,6 @@ func SkippedLook() Look { return Look{Dim: true} }
 // PassedLook is how a terminal with color draws the count of a tally of passed checks above zero.
 func PassedLook() Look { return Look{Color: "green"} }
 
-// URLLook is how a terminal with color draws a URL.
-func URLLook() Look { return Look{Underline: true} }
-
 // Drawn is text as a terminal shows it: the characters, and how each is drawn.
 type Drawn struct {
 	text  []rune

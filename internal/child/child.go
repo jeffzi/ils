@@ -1,4 +1,5 @@
-// Package child names how a program started from an argv failed, or why it is not fit to start.
+// Package child names what a program started from an argv left behind, how it failed, or why it
+// is not fit to start.
 package child
 
 import (
@@ -48,7 +49,8 @@ func (e *ExitError) Error() string {
 // SIGTERM was the program's alone and is reported like any other signal. Unix only: Windows
 // reports no signals.
 //
-// A non-zero exit is an *ExitError. Anything else is runErr, named by the command.
+// A non-zero exit is an *ExitError, and a program a signal ended is a *KilledError. Anything else
+// is runErr, named by the command.
 func Failure(ctx context.Context, argv []string, runErr error, stderr string) error {
 	command := CommandLine(argv)
 	named := func(err error) error { return fmt.Errorf("%s: %w", command, err) }
@@ -72,7 +74,53 @@ func Failure(ctx context.Context, argv []string, runErr error, stderr string) er
 		return &ExitError{Argv: argv, Code: exitErr.ExitCode(), Stderr: stderr}
 	}
 
+	if ok {
+		return &KilledError{Argv: argv, Err: runErr}
+	}
+
 	return named(runErr)
+}
+
+// KilledError reports a program that started and never exited: a signal ended it, after it may
+// have done part of its work.
+type KilledError struct {
+	// Err is the *exec.ExitError the run ended with.
+	Err  error
+	Argv []string
+}
+
+// Error names the command and the signal that ended it.
+func (e *KilledError) Error() string {
+	return CommandLine(e.Argv) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the error the run ended with.
+func (e *KilledError) Unwrap() error {
+	return e.Err
+}
+
+// Output is what a run left behind: both outputs of a run that exited zero, and only the stdout of
+// one that exited non-zero, whose stderr its *ExitError holds.
+type Output struct {
+	Stdout string
+	Stderr string
+}
+
+// Ended returns what a run of argv that printed both outputs of printed and ended with runErr
+// leaves to its caller: printed when runErr is nil, and otherwise the error of Failure, with the
+// stdout when that error is an *ExitError and an empty Output when it is not, so that a
+// half-written stdout is never read.
+func Ended(ctx context.Context, argv []string, runErr error, printed Output) (Output, error) {
+	if runErr == nil {
+		return printed, nil
+	}
+
+	err := Failure(ctx, argv, runErr, printed.Stderr)
+	if _, exitedNonZero := errors.AsType[*ExitError](err); exitedNonZero {
+		return Output{Stdout: printed.Stdout}, err
+	}
+
+	return Output{}, err
 }
 
 // terminateGrace bounds how long Failure waits for the context of a program that died of SIGTERM

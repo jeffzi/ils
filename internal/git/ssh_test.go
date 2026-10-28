@@ -573,7 +573,7 @@ func TestRepo_OriginURLs_WhenCommandLineOfVariantPlainNotFound_AsksPlainSSH(t *t
 	assert.Check(t, is.Equal(got.Fetch.Host, plainHost))
 }
 
-func TestSSHCommandMissingError_Error_WhenProgramNotFound_NamesSettingAndProgram(t *testing.T) {
+func TestSSHCommandMissingError_Error_WhenProgramNotFound_NamesWhatIsMissing(t *testing.T) {
 	t.Parallel()
 	err := &git.SSHCommandMissingError{Setting: "core.sshCommand", Program: "no-such-wrapper"}
 

@@ -1,13 +1,10 @@
 package github_test
 
 import (
-	"context"
 	"errors"
 	"path/filepath"
 	"testing"
-	"time"
 
-	"github.com/google/go-cmp/cmp/cmpopts"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
@@ -60,43 +57,6 @@ func pendingChecks() ghtest.Call {
 	return ghtest.Exits(ghtest.Answer{Stdout: "build\tpending\n", Stderr: "still running\n", Code: 8}, pendingChecksArgs()...)
 }
 
-func TestRunner_Run_WhenGhExitsNonZero_ReturnsExitErrorNamingCall(t *testing.T) {
-	ghtest.Setup(t, pendingChecks())
-
-	_, err := github.Runner{}.Run(t.Context(), pendingChecksArgs()...)
-
-	exitErr, ok := errors.AsType[*child.ExitError](err)
-	assert.Assert(t, ok, "Run(pr checks) error = %v, want *child.ExitError", err)
-	wantErr := child.ExitError{
-		Argv:   []string{"gh", "pr", "checks", "7"},
-		Stderr: "still running\n",
-	}
-	assert.Check(t, is.DeepEqual(*exitErr, wantErr, cmpopts.IgnoreFields(child.ExitError{}, "Code")))
-}
-
-func TestRunner_Run_WhenGhExitsNonZero_KeepsStdout(t *testing.T) {
-	ghtest.Setup(t, pendingChecks())
-
-	got, _ := github.Runner{}.Run(t.Context(), pendingChecksArgs()...)
-
-	assert.Check(t, is.Equal(got.Stdout, "build\tpending\n"))
-}
-
-func TestRunner_Run_WhenContextIsCanceledWhileGhRuns_ReturnsContextError(t *testing.T) {
-	args := []string{"pr", "checks", "7"}
-	fake := ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "pass\n", Delay: 30 * time.Second}, args...))
-	cancel, ran := fake.RunHeld(func(ctx context.Context) error {
-		_, err := github.Runner{}.Run(ctx, args...)
-
-		return err
-	})
-
-	cancel()
-	err := <-ran
-
-	assert.Check(t, is.ErrorIs(err, context.Canceled))
-}
-
 func TestRunner_Run_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -137,6 +97,5 @@ func TestRunner_Run_WhenLoggerSet_LogsTheCall(t *testing.T) {
 
 	_, err := github.Runner{Logger: logger}.Run(t.Context(), args...)
 
-	record := logtest.Only(t, sink.Records())
-	assert.Check(t, is.DeepEqual(record.Without(child.KeyDuration), logtest.ExecAttrs(t, child.Exec{Tool: "gh", Args: args, Err: err})))
+	assert.Check(t, is.DeepEqual(logtest.CallAttrs(t, sink.Records()), logtest.ExecAttrs(t, child.Exec{Tool: "gh", Args: args, Err: err})))
 }

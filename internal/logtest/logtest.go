@@ -59,14 +59,21 @@ func Only(t testing.TB, records []Record) Record {
 	return records[0]
 }
 
+// CallAttrs returns the attributes, all but the duration, of the one record of records, and fails t
+// when there is not exactly one. It is how a logged call is compared with ExecAttrs, whose duration
+// can never match.
+func CallAttrs(t testing.TB, records []Record) map[string]any {
+	t.Helper()
+
+	return Only(t, records).Without(child.KeyDuration)
+}
+
 // ExecAttrs returns the attributes, all but the duration, of the one record run logs, and fails t
 // when run logs other than one record.
 func ExecAttrs(t testing.TB, run child.Exec) map[string]any {
 	t.Helper()
 
-	records := RecordsOf(func(logger *slog.Logger) { run.Log(t.Context(), logger) })
-
-	return Only(t, records).Without(child.KeyDuration)
+	return CallAttrs(t, RecordsOf(func(logger *slog.Logger) { run.Log(t.Context(), logger) }))
 }
 
 // Sink keeps every record the logger built with it is given, at any level, safe for concurrent use.

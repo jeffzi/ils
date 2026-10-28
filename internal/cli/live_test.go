@@ -614,6 +614,7 @@ func TestLive(t *testing.T) {
 		{name: "status of a pull request", run: liveStatusOfPull},
 		{name: "status of the trunk", run: liveStatusOfTrunk},
 		{name: "branch", run: liveStartBranch},
+		{name: "branch taken on origin", run: liveBranchTaken},
 		{name: "already landed", run: liveAlreadyLanded},
 		{name: "conflict", run: liveConflict},
 		{name: "CI that did not fire", run: liveCIDidNotFire},
@@ -639,8 +640,8 @@ func liveGreen(t *testing.T, l *liveSuite) {
 	checkMergeNext(t, l, got, b.onePull(t).Number)
 }
 
-// checkMergeNext checks that a green push's next step writes the title and body of the pull
-// request numbered number with `gh pr edit`, then runs `ils merge`.
+// checkMergeNext checks that a push's next step names the pull request numbered number in l's
+// repository and the merge command, `ils merge`.
 func checkMergeNext(t *testing.T, l *liveSuite, got liveRun, number int) {
 	t.Helper()
 
@@ -753,12 +754,16 @@ func liveStartBranch(t *testing.T, l *liveSuite) {
 	assert.Equal(t, started.code, exitDone, "%s", started.stdout)
 	assert.Check(t, is.Equal(mustGit(t, dir, "symbolic-ref", "--short", "HEAD"), name))
 	assert.Check(t, is.Equal(mustGit(t, dir, "rev-parse", "HEAD"), l.mustRemoteCommit(t, l.trunkRef())))
+}
 
-	mustGit(t, dir, "push", "--quiet", l.url, "HEAD:refs/heads/"+name)
-	taken := launch(t, over(git.Runner{Dir: l.clone(t)}), "branch", name, "--json")
+func liveBranchTaken(t *testing.T, l *liveSuite) {
+	name := "live/branch-" + strings.ToLower(rand.Text())[:liveTokenLength]
+	mustGit(t, l.clone(t), "push", "--quiet", l.url, "HEAD:refs/heads/"+name)
 
-	assert.Check(t, is.Equal(taken.code, exitRefused), "%s", taken.stdout)
-	assert.Check(t, is.Contains(taken.stdout, "on origin"))
+	got := launch(t, over(git.Runner{Dir: l.clone(t)}), "branch", name, "--json")
+
+	assert.Check(t, is.Equal(got.code, exitRefused), "%s", got.stdout)
+	assert.Check(t, is.Contains(got.stdout, "on origin"))
 }
 
 func liveAlreadyLanded(t *testing.T, l *liveSuite) {

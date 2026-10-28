@@ -279,7 +279,8 @@ func TestFake_Land_WhenOnLandIsSet_RunsItWithTheLandingAfterRecordingTheCall(t *
 		},
 	})
 
-	_ = fake.Land(t.Context(), repo(), landing())
+	err := fake.Land(t.Context(), repo(), landing())
+	assert.NilError(t, err)
 
 	assert.Check(t, is.DeepEqual(seen, []forgetest.Call{{Op: forgetest.OpLand, Repo: repo(), Landing: landing()}}))
 	assert.Check(t, is.DeepEqual(recorded, []int{1}), "calls recorded when the hook ran")
@@ -338,6 +339,21 @@ func TestFake_WhenAnswerIsHeld_ReturnsTheContextErrorOnceTheContextEnds(t *testi
 	t.Parallel()
 
 	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), wait)
+		t.Cleanup(cancel)
+		fake := forgetest.New(t, heldScript())
+
+		got, err := fake.Head(ctx, repo(), headQuery())
+
+		assert.Check(t, is.ErrorIs(err, context.DeadlineExceeded))
+		assert.Check(t, reflect.ValueOf(got).IsZero(), "value %v, want the zero value", got)
+	})
+}
+
+func TestFake_WhenAnswerIsHeld_RunsOnReadBeforeHolding(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
 		var elapsed []time.Duration
 
 		ctx, cancel := context.WithTimeout(t.Context(), wait)
@@ -349,10 +365,9 @@ func TestFake_WhenAnswerIsHeld_ReturnsTheContextErrorOnceTheContextEnds(t *testi
 		}
 		fake := forgetest.New(t, scripted)
 
-		got, err := fake.Head(ctx, repo(), headQuery())
+		_, err := fake.Head(ctx, repo(), headQuery())
+		assert.Assert(t, is.ErrorIs(err, context.DeadlineExceeded), "the answer was not held")
 
-		assert.Check(t, is.ErrorIs(err, context.DeadlineExceeded))
-		assert.Check(t, reflect.ValueOf(got).IsZero(), "value %v, want the zero value", got)
 		assert.Check(t, is.DeepEqual(elapsed, []time.Duration{0}), "time held when the hook ran")
 	})
 }

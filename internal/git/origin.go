@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/jeffzi/ils/internal/child"
@@ -422,6 +423,20 @@ func (r Repo) Fetch(ctx context.Context, ref string) (string, error) {
 	}
 
 	return r.line(ctx, "rev-parse", "FETCH_HEAD")
+}
+
+// pullRefs prefixes the refs GitHub keeps on origin for its pull requests, each under its number.
+const pullRefs = "refs/pull/"
+
+// FetchPullHead fetches from origin the head GitHub keeps of the pull request numbered number, as
+// Fetch fetches a ref, and returns its sha.
+func (r Repo) FetchPullHead(ctx context.Context, number int) (string, error) {
+	return r.Fetch(ctx, pullRefs+strconv.Itoa(number)+"/head")
+}
+
+// FetchTag fetches the tag name from origin, as Fetch fetches a ref, and returns its sha.
+func (r Repo) FetchTag(ctx context.Context, name string) (string, error) {
+	return r.Fetch(ctx, tagsRef+name)
 }
 
 // FastForwardTrunk moves the checked-out trunk to origin's tip of trunk, and leaves it where it is

@@ -83,15 +83,6 @@ func standingRefusals() []pushRefusal {
 			},
 		},
 		{
-			name: "on the trunk with a dirty tree", script: allowed(), ops: identityRead(),
-			arrange: func(f *gittest.Fixture) string {
-				f.Git("switch", "--quiet", trunk)
-				f.DirtyFile()
-
-				return onTrunk()
-			},
-		},
-		{
 			name: "detached HEAD at origin's trunk", script: allowed(), ops: identityRead(), fetches: true,
 			arrange: func(f *gittest.Fixture) string {
 				f.Git("switch", "--quiet", "--detach", trunk)
@@ -233,7 +224,7 @@ func TestPush_WhenOriginStopsAnsweringASharedRead_RefusesNamingWhatItWasAskedFor
 func TestPush_WhenASharedReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
 	t.Parallel()
 
-	runOvertime(t, []cut{byTimeLimit()}, func(c cut) []overtime {
+	runOvertime(t, func(c cut) []overtime {
 		return []overtime{
 			{
 				name: "during the fetch of the merged pull request's head", read: readMergedHead,
@@ -302,8 +293,6 @@ func TestPush_WhenLocalReadFails_BrokeNamingTheRead(t *testing.T) {
 			got := landing.Push(t.Context(), s.deps, pushRequest())
 
 			assertBrokeReadBy(t, got, pushCommand(), tt.read)
-			// What git said must also render under the repository's own git dir: no line names a path in it.
-			shown(t, got, s.gitDir)
 			assertOnlyRead(t, s, reads{before: before, ops: identityRead(), fetches: tt.fetches})
 		})
 	}

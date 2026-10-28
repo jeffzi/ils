@@ -49,7 +49,7 @@ func lintFailed() forge.Check {
 // passed.
 func lintRed() forge.Verdict {
 	return forge.Verdict{
-		Checks:    []forge.Check{lintFailed(), checked("test", forge.BucketPass)},
+		Checks:    []forge.Check{lintFailed(), forgetest.Check("test", forge.BucketPass)},
 		Runs:      ran(forge.RunCompleted),
 		FailedLog: forge.FailedLog{Check: "lint", Text: "lint: unused variable", State: forge.FailedLogRead},
 	}
@@ -59,7 +59,7 @@ func lintRed() forge.Verdict {
 // the run has not completed, so the forge holds lint's log back.
 func lintHeldBack() forge.Verdict {
 	return forge.Verdict{
-		Checks:    []forge.Check{lintFailed(), checked("test", forge.BucketPending)},
+		Checks:    []forge.Check{lintFailed(), forgetest.Check("test", forge.BucketPending)},
 		Runs:      ran(forge.RunInProgress),
 		FailedLog: forge.FailedLog{Check: "lint", State: forge.FailedLogInProgress},
 	}
@@ -167,11 +167,11 @@ func TestAwaitVerdict_WhenTrunkRequiresNoCheck_WaitsUntilNothingStillRuns(t *tes
 
 // requiredRows are the verdict waits where the trunk requires the checks lint and test.
 func requiredRows() []vigilRow {
-	lint := needed("lint", forge.BucketPass)
+	lint := forgetest.RequiredCheck("lint", forge.BucketPass)
 	absent := forge.Verdict{Checks: []forge.Check{lint}, MissingRequired: []string{"test"}, Runs: ran(forge.RunQueued)}
 	both := requiredPassing()
 	optional := forge.Verdict{
-		Checks: []forge.Check{lint, needed("test", forge.BucketSkipped), checked("docs", forge.BucketPending)},
+		Checks: []forge.Check{lint, forgetest.RequiredCheck("test", forge.BucketSkipped), forgetest.Check("docs", forge.BucketPending)},
 		Runs:   ran(forge.RunInProgress),
 	}
 	decided := concluded(landing.WaitGreen, optional, 1, 1)
@@ -207,7 +207,7 @@ func requiredRows() []vigilRow {
 // runlessRequiredRows are the verdict waits on a trunk that requires checks, where checks reported
 // before any workflow run appeared.
 func runlessRequiredRows() []vigilRow {
-	aside := forge.Verdict{Checks: []forge.Check{checked("docs", forge.BucketPass)}, MissingRequired: []string{"test"}}
+	aside := forge.Verdict{Checks: []forge.Check{forgetest.Check("docs", forge.BucketPass)}, MissingRequired: []string{"test"}}
 	unmet := concluded(landing.WaitNeverReported, aside, 0, 0)
 	unmet.Deciding = nil
 

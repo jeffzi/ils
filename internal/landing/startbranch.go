@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/result"
 )
@@ -57,13 +56,11 @@ func StartBranch(ctx context.Context, deps Deps, req Request) result.Result {
 	started := result.Say("Started the branch %s at %s, origin's trunk %s, with no upstream",
 		result.Branch(n.name), result.SHA(start), result.Branch(ready.Trunk))
 
-	return result.Result{
-		Command: req.Command,
-		Words:   req.Words,
-		Outcome: result.Done,
-		Lines:   append([]result.Phrase{started}, lines...),
-		Next:    result.NextStep("do the work, commit it, then run %s", result.Command(PushCommand)),
-	}
+	done := req.ends(result.Done, result.Phrase{},
+		result.NextStep("do the work, commit it, then run %s", result.Command(PushCommand)))
+	done.Lines = append([]result.Phrase{started}, lines...)
+
+	return *done
 }
 
 // newBranch is the branch `ils branch` starts: its name, as typed, and what the git-only
@@ -90,7 +87,8 @@ func (n newBranch) checks(ctx context.Context, deps Deps, req Request) (string, 
 	}
 
 	if n.Standing.Kind == git.Detached {
-		if stop := detachedKept(ctx, deps, req, n.Trunk); stop != nil {
+		// The switch would leave those commits on no branch.
+		if stop := req.detachedKept(ctx, deps, n.Trunk, detachedWith(n.Trunk)); stop != nil {
 			return "", stop
 		}
 	}
@@ -115,9 +113,9 @@ func validName(ctx context.Context, deps Deps, req Request, name string) *result
 		return req.unread(readName, err)
 	}
 
-	if exit, said := errors.AsType[*child.ExitError](bad.Err); said && strings.TrimSpace(exit.Stderr) != "" {
-		return req.Refused(result.Say("git cannot hold %s as a branch name: %s", result.Branch(name),
-			strings.TrimSpace(exit.Stderr)), anotherName(req))
+	if reason := bad.Reason(); reason != "" {
+		return req.Refused(result.Say("git cannot hold %s as a branch name: %s", result.Branch(name), reason),
+			anotherName(req))
 	}
 
 	return req.Refused(result.Say("git cannot hold %s as a branch name", result.Branch(name)), anotherName(req))
@@ -145,19 +143,19 @@ func freeName(ctx context.Context, deps Deps, req Request, name string) *result.
 	return nil
 }
 
-// detachedKept refuses a detached HEAD with commits origin's trunk lacks, which the switch would
-// leave on no branch, and lists them.
-func detachedKept(ctx context.Context, deps Deps, req Request, trunk string) *result.Result {
+// detachedKept refuses a detached HEAD with commits origin's trunk lacks, for reason, and lists
+// them. It returns nil when HEAD has none.
+func (r Request) detachedKept(ctx context.Context, deps Deps, trunk string, reason result.Phrase) *result.Result {
 	own, err := deps.Repo.CommitsPast(ctx, "HEAD", trunk)
 	if err != nil {
-		return req.unread(readHeadCommits, err)
+		return r.unread(readHeadCommits, err)
 	}
 
 	if len(own) == 0 {
 		return nil
 	}
 
-	stop := req.Refused(detachedWith(trunk), keepDetachedStep())
+	stop := r.Refused(reason, keepDetachedStep())
 	stop.Lines = listed(own)
 
 	return stop
@@ -200,31 +198,15 @@ func (n newBranch) create(ctx context.Context, deps Deps, req Request) *result.R
 		return nil
 	}
 
-	if exit, ok := errors.AsType[*child.ExitError](err); ok {
-		if files := overwritten(exit.Stderr); len(files) > 0 {
-			return req.Refused(
-				result.Say("the switch to %s would overwrite %s; nothing was written",
-					result.Branch(name), strings.Join(files, ", ")),
-				result.NextStep("commit or move those files"+thenRunAgain, req.ilsCommand()))
-		}
+	if overwrite, ok := errors.AsType[*git.OverwriteError](err); ok {
+		return req.Refused(
+			result.Say("the switch to %s would overwrite %s; nothing was written",
+				result.Branch(name), strings.Join(overwrite.Files, ", ")),
+			result.NextStep("commit or move those files"+thenRunAgain, req.ilsCommand()))
 	}
 
 	broke := req.ends(result.Broke, result.Say("could not start the branch %s", result.Branch(name)), req.onceFixed())
 	broke.Lines = []result.Phrase{result.Say("Could not start the branch %s: %s", result.Branch(name), err.Error())}
 
 	return broke
-}
-
-// overwritten returns the files git lists, each on a line of its own indented by a tab, as the
-// ones a refused switch would overwrite.
-func overwritten(stderr string) []string {
-	var files []string
-
-	for line := range strings.SplitSeq(stderr, "\n") {
-		if file, indented := strings.CutPrefix(line, "\t"); indented {
-			files = append(files, strings.TrimSpace(file))
-		}
-	}
-
-	return files
 }

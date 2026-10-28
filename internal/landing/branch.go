@@ -59,6 +59,31 @@ func branchChecks(ctx context.Context, deps Deps, req Request, ready Ready) (onB
 	return onBranch{Ready: ready, branch: ready.Standing.Branch}, nil
 }
 
+// onWorkBranch refuses a detached HEAD and the trunk. The way out is a new branch, except for a
+// detached HEAD with commits origin's trunk lacks, fetched first, which `ils branch` would refuse
+// in turn: those commits are listed, to keep on a branch of their own.
+func (r Request) onWorkBranch(ctx context.Context, deps Deps, ready Ready) *result.Result {
+	if ready.Standing.Kind == git.OnBranch {
+		if ready.Standing.Branch == ready.Trunk {
+			return r.Refused(result.Say("HEAD is on the trunk %s, which ils never pushes", result.Branch(ready.Trunk)),
+				startBranchStep())
+		}
+
+		return nil
+	}
+
+	if _, stop := fetchTrunk(ctx, deps, r, ready.Trunk); stop != nil {
+		return stop
+	}
+
+	reason := result.Say("HEAD is detached, so there is no branch to push")
+	if stop := r.detachedKept(ctx, deps, ready.Trunk, reason); stop != nil {
+		return stop
+	}
+
+	return r.Refused(reason, startBranchStep())
+}
+
 // cleanTree refuses a tree with a changed tracked file.
 func cleanTree(ctx context.Context, deps Deps, req Request) *result.Result {
 	files, err := deps.Repo.DirtyFiles(ctx)
@@ -114,23 +139,55 @@ func commitsPast(ctx context.Context, deps Deps, req Request, b onBranch) (tip s
 
 // tipOf returns the sha of the branch's tip, refusing a branch that has no commit at all.
 func tipOf(ctx context.Context, deps Deps, req Request, b onBranch) (string, *result.Result) {
-	tip, err := deps.Repo.HeadSHA(ctx)
+	tip, committed, err := b.readTip(ctx, deps)
+
+	switch {
+	case err != nil:
+		return "", req.unread(readTip, err)
+	case !committed:
+		return "", req.nothingPast(b)
+	}
+
+	return tip, nil
+}
+
+// readTip reads the sha of the branch's tip, and whether the branch has a commit at all; a branch
+// with none reads as no tip and no error. err is a read of readTip that failed.
+func (b onBranch) readTip(ctx context.Context, deps Deps) (tip string, committed bool, err error) {
+	tip, err = deps.Repo.HeadSHA(ctx)
 	if err == nil {
-		return tip, nil
+		return tip, true, nil
 	}
 
 	// The read of the tip fails on a branch with no commit as it does on a broken repository, so
 	// only the branch's ref tells the two apart.
 	committed, refErr := deps.Repo.HasCommits(ctx, b.branch)
-	if refErr != nil {
-		return "", req.unread(readTip, refErr)
+	switch {
+	case refErr != nil:
+		return "", false, refErr
+	case !committed:
+		return "", false, nil
 	}
 
-	if !committed {
-		return "", req.nothingPast(b)
+	return "", true, err
+}
+
+// nothingPast refuses a branch with no commit that origin's trunk lacks. Its next step is the push
+// of the new work, which for `ils merge` is a first push and not a run again.
+func (r Request) nothingPast(b onBranch) *result.Result {
+	next := result.NextStep("commit the work"+thenRunAgain, result.Command(PushCommand))
+	if r.Command == MergeCommand {
+		next = firstPushStep()
 	}
 
-	return "", req.unread(readTip, err)
+	return r.Refused(
+		result.Say("the branch %s has no commit past origin's trunk %s", result.Branch(b.branch), result.Branch(b.Trunk)), next)
+}
+
+// firstPushStep is the next step of a branch with no commit past origin's trunk, for a command
+// other than push: commit the work, then push it for the first time.
+func firstPushStep() result.Next {
+	return result.NextStep("commit the work, then run %s", result.Command(PushCommand))
 }
 
 // pullRequest returns the branch's open pull request against the trunk, nil when it has none,

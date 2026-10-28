@@ -18,43 +18,6 @@ import (
 // Text rendering
 // ---------------------------------------------------------------------------
 
-// ErrNoReason reports a result that did not end as done and says no reason.
-var ErrNoReason = errors.New("result has no reason")
-
-// WordingError reports a line whose own wording names a hook or a path under
-// the git dir.
-type WordingError struct {
-	// Line is the offending line, with its names in place.
-	Line string
-	// Word is the field of the wording that broke the rule, punctuation
-	// included, or the git dir as handed in when the wording names it.
-	Word string
-}
-
-// Error returns the offending line and word.
-func (e *WordingError) Error() string {
-	return fmt.Sprintf("line %q names a hook or a path under the git dir: %q", e.Line, e.Word)
-}
-
-// shown is a checked result with every phrase rendered. Both renderers print
-// from it and from nothing else, so the two cannot drift.
-type shown struct {
-	Payload  *Payload `json:"payload,omitempty"`
-	lines    [][]span
-	reason   []span
-	next     []span
-	Command  string   `json:"command"`
-	Words    []string `json:"words,omitempty"`
-	Outcome  string   `json:"outcome"`
-	Next     string   `json:"next"`
-	Reason   string   `json:"reason,omitempty"`
-	Excerpt  string   `json:"excerpt,omitempty"`
-	Lines    []string `json:"lines,omitempty"`
-	ExitCode int      `json:"exit_code"`
-	outcome  Outcome
-	nextNone bool
-}
-
 // RenderText returns r as the lines of what happened, the excerpt when there
 // is one, the reason labeled by the outcome unless r is done, and one Next
 // line unless nothing is left to do. gitDir is the resolved git dir, or empty
@@ -116,7 +79,8 @@ func RenderStyled(r Result, gitDir string, profile colorprofile.Profile) (string
 // NextLabel is the word the Next line starts with.
 const NextLabel = "Next"
 
-// Label returns the word the reason line of o starts with.
+// Label returns the word the reason line of o starts with. Done prints no
+// reason line, and gets the label of Broke.
 func (o Outcome) Label() string {
 	label, _ := o.label()
 
@@ -278,6 +242,20 @@ func spelledOut(r rune) bool {
 // JSON rendering
 // ---------------------------------------------------------------------------
 
+// Object is the one JSON object RenderJSON writes, and what a caller decodes
+// it into. Its fields print in the order they are declared.
+type Object struct {
+	Payload  *Payload `json:"payload,omitempty"`
+	Command  string   `json:"command"`
+	Words    []string `json:"words,omitempty"`
+	Outcome  string   `json:"outcome"`
+	Next     string   `json:"next"`
+	Reason   string   `json:"reason,omitempty"`
+	Excerpt  string   `json:"excerpt,omitempty"`
+	Lines    []string `json:"lines,omitempty"`
+	ExitCode int      `json:"exit_code"`
+}
+
 // RenderJSON returns r as one JSON object on one line. gitDir is the resolved
 // git dir, or empty outside a repository. It returns the errors of RenderText,
 // and an error wrapping the encoder's when the object cannot be encoded.
@@ -301,6 +279,35 @@ func RenderJSON(r Result, gitDir string) (string, error) {
 // ---------------------------------------------------------------------------
 // Wording check
 // ---------------------------------------------------------------------------
+
+// ErrNoReason reports a result that did not end as done and says no reason.
+var ErrNoReason = errors.New("result has no reason")
+
+// WordingError reports a line whose own wording names a hook or a path under
+// the git dir.
+type WordingError struct {
+	// Line is the offending line, with its names in place.
+	Line string
+	// Word is the field of the wording that broke the rule, punctuation
+	// included, or the git dir as handed in when the wording names it.
+	Word string
+}
+
+// Error returns the offending line and word.
+func (e *WordingError) Error() string {
+	return fmt.Sprintf("line %q names a hook or a path under the git dir: %q", e.Line, e.Word)
+}
+
+// shown is a checked result with every phrase rendered. Both renderers print
+// from it and from nothing else, so the two cannot drift.
+type shown struct {
+	lines    [][]span
+	reason   []span
+	next     []span
+	Object   `json:",inline"`
+	outcome  Outcome
+	nextNone bool
+}
 
 // check renders every phrase of r and rejects a result whose own wording
 // names a hook or a path under the git dir.
@@ -359,6 +366,49 @@ func checked(command, ownWording, gitDir string, render func() ([]span, error)) 
 	}
 
 	return spans, nil
+}
+
+// joined returns the text of spans, as the plain renderers print it.
+func joined(spans []span) string {
+	var b strings.Builder
+	for _, s := range spans {
+		b.WriteString(s.text)
+	}
+
+	return b.String()
+}
+
+// spans returns the value printed after "Next:". Every span of an ils command
+// is drawn as the command, except the ticks of an inline command, which stay
+// ticks so a color pen can leave them out.
+func (n Next) spans() ([]span, error) {
+	if n.kind == nextNone {
+		return []span{{text: "none", kind: kindWording}}, nil
+	}
+
+	spans, err := n.phrase.spans()
+	if err != nil {
+		return nil, err
+	}
+
+	if n.kind != nextCommand {
+		return spans, nil
+	}
+
+	command := []span{{text: commandPrefix, kind: kindCommand}}
+	for _, s := range spans {
+		if s.kind != kindTick {
+			s.kind = kindCommand
+		}
+		command = append(command, s)
+	}
+
+	return command, nil
+}
+
+// wording returns the fixed text of n, as the wording check reads it.
+func (n Next) wording() string {
+	return n.phrase.wording
 }
 
 // forbidden returns the first part of ownWording that names a hook or a path

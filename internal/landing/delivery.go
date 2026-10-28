@@ -3,8 +3,8 @@ package landing
 import (
 	"context"
 	"errors"
-	"os/exec"
 
+	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/result"
@@ -125,9 +125,8 @@ func (d *delivery) pushFailed(err error) *result.Result {
 			result.Broke, result.Say(originStopped+" during the push"), d.req.again())
 	}
 
-	// An *exec.ExitError left in the chain is a git that ran and never exited: a signal killed it,
-	// perhaps after origin had taken the push.
-	if _, ok := errors.AsType[*exec.ExitError](err); ok {
+	// A signal killed git, perhaps after origin had taken the push.
+	if _, ok := errors.AsType[*child.KilledError](err); ok {
 		return d.endedSaying(
 			result.Say("The push of %s at %s did not finish, so it may or may not have taken: %s",
 				d.markedBranch(), d.markedTip(), err.Error()),

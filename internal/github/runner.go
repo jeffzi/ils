@@ -42,13 +42,10 @@ type Runner struct {
 	Logger *slog.Logger
 }
 
-// Result is what a call printed.
-type Result struct {
-	Stdout string
-	Stderr string
-}
+// Result is what a call left behind, as child.Output holds it.
+type Result = child.Output
 
-// DecodeError reports a call whose stdout was not the JSON its caller expected.
+// DecodeError reports a call whose stdout was not what its caller expected.
 type DecodeError struct {
 	Err  error
 	Argv []string
@@ -67,9 +64,10 @@ func (e *DecodeError) Unwrap() error {
 // Run runs gh with args and returns what it printed.
 //
 // A gh that cannot be found is a *child.ToolMissingError. A non-zero exit is a
-// *child.ExitError, returned together with the Result, since gh prints to stdout
-// before some of its non-zero exits. When ctx ends before gh does, the error is
-// the context's and the Result is empty, so a half-written stdout is never read.
+// *child.ExitError, returned together with gh's stdout, since gh prints to stdout
+// before some of its non-zero exits; its stderr is the ExitError's. When ctx ends
+// before gh does, the error is the context's and the Result is empty, so a
+// half-written stdout is never read.
 func (r Runner) Run(ctx context.Context, args ...string) (Result, error) {
 	start := time.Now()
 	result, err := run(ctx, args)
@@ -85,17 +83,7 @@ func run(ctx context.Context, args []string) (Result, error) {
 		return Result{}, &child.ToolMissingError{Tool: Program, InstallURL: installURL, Err: err}
 	}
 
-	result := Result{Stdout: stdout.String(), Stderr: stderr.String()}
-	if err == nil {
-		return result, nil
-	}
-
-	failure := child.Failure(ctx, Argv(args), err, result.Stderr)
-	if _, exited := errors.AsType[*child.ExitError](failure); exited {
-		return result, failure
-	}
-
-	return Result{}, failure
+	return child.Ended(ctx, Argv(args), err, Result{Stdout: stdout.String(), Stderr: stderr.String()})
 }
 
 // isMissing reports whether err says that no gh could be started: none on PATH,

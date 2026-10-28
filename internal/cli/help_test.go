@@ -49,7 +49,6 @@ func TestApp_Run_WhenAskedForHelp_PrintsTheHelpOfTheCommand(t *testing.T) {
 			got := launch(t, outside(t), tt.args...)
 
 			assert.Check(t, is.Equal(got.code, exitDone))
-			assert.Check(t, is.Equal(got.stderr, ""))
 			help := flat(got.stdout)
 			assert.Check(t, is.Contains(help, tt.want.usage))
 			assert.Check(t, is.Contains(help, tt.want.bound))

@@ -3,10 +3,12 @@ package logtest_test
 import (
 	"log/slog"
 	"testing"
+	"time"
 
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
+	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/failtest"
 	"github.com/jeffzi/ils/internal/logtest"
 )
@@ -53,6 +55,15 @@ func TestRecordsOf_WhenLogWritesTwice_ReturnsBothRecordsInOrder(t *testing.T) {
 	assert.Assert(t, is.Len(got, 2))
 	assert.Check(t, is.Equal(got[0].Message, "first"))
 	assert.Check(t, is.Equal(got[1].Message, "second"))
+}
+
+func TestCallAttrs_WhenOneRecordCarriesADuration_ReturnsEveryOtherAttribute(t *testing.T) {
+	t.Parallel()
+	record := logtest.Record{Attrs: []slog.Attr{slog.String("tool", "git"), slog.Duration(child.KeyDuration, time.Second)}}
+
+	got := logtest.CallAttrs(t, []logtest.Record{record})
+
+	assert.Check(t, is.DeepEqual(got, map[string]any{"tool": "git"}))
 }
 
 func TestOnly_WhenOneRecord_ReturnsIt(t *testing.T) {
