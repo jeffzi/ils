@@ -57,6 +57,7 @@ func Serve(tb testing.TB, handle func(conn net.Conn)) string {
 
 // SilentListener returns the address of a local server that accepts one client, never answers it,
 // and holds the connection until the test ends, and a channel that closes once the client has connected.
+// It lets the connection go before the test's temporary directories are removed.
 func SilentListener(tb testing.TB) (addr string, connected <-chan struct{}) {
 	tb.Helper()
 
@@ -64,6 +65,14 @@ func SilentListener(tb testing.TB) (addr string, connected <-chan struct{}) {
 	released := make(chan struct{})
 
 	var once sync.Once
+
+	// Cleanups run last registered first, and the test's temporary directories are removed by a
+	// cleanup the first TempDir call registers. Making that call here, before the cleanups below,
+	// lets the held connection go before the directories are removed, whatever order the test
+	// asks for its directories in. A client still holding the connection may run in one of those
+	// directories or from a binary linked into one, and Windows refuses to remove either while it
+	// runs.
+	tb.TempDir()
 
 	addr = Serve(tb, func(conn net.Conn) {
 		once.Do(func() { close(reached) })
