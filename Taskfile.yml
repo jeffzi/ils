@@ -100,12 +100,8 @@ tasks:
           set -eu
           user=$(gh api user --jq .login)
           for name in ils-live-minimum ils-live-latest ils-live-local; do
-            visibility=public
-            if [ "$name" = ils-live-local ]; then
-              visibility=private
-            fi
             if ! gh repo view "$user/$name" --json name >/dev/null 2>&1; then
-              gh repo create "$user/$name" --"$visibility" --add-readme
+              gh repo create "$user/$name" --public --add-readme
             fi
           done
           minimum=$(gh repo view "$user/ils-live-minimum" --json url --jq .url)
