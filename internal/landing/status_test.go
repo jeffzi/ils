@@ -59,11 +59,13 @@ func viewing(head forge.Head, verdict forge.Verdict, found ...forge.Change) forg
 			}
 		}
 
-		head.SHA = tip
+		// Parallel tests may share one script builder, so head is copied, never written.
+		shown := head
+		shown.SHA = tip
 		script := finding(placed...)
 		script.TrunkProtection = forgetest.Values(forge.Protection{})
 		script.HasTrunkCI = forgetest.Values(true)
-		script.Head = shows(head)
+		script.Head = shows(shown)
 		script.Verdict = says(verdict)
 		script.Message = forgetest.Values(forge.Message{Title: title, Body: landedBody})
 
