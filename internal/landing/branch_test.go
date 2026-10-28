@@ -92,11 +92,19 @@ func standingRefusals() []pushRefusal {
 			},
 		},
 		{
-			name: "detached HEAD", script: allowed(), ops: identityRead(),
+			name: "detached HEAD at origin's trunk", script: allowed(), ops: identityRead(), fetches: true,
+			arrange: func(f *gittest.Fixture) string {
+				f.Git("switch", "--quiet", "--detach", trunk)
+
+				return detached()
+			},
+		},
+		{
+			name: "detached HEAD with commits origin's trunk lacks", script: allowed(), ops: identityRead(), fetches: true,
 			arrange: func(f *gittest.Fixture) string {
 				f.Detach()
 
-				return detached()
+				return expect(f.Git("rev-parse", "HEAD"), "detached", "`git switch -c <name>`", "ils push")
 			},
 		},
 		{

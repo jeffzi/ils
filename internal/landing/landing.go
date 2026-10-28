@@ -264,13 +264,18 @@ func originRepo(ctx context.Context, deps Deps, req Request) (forge.Repo, *resul
 	}
 
 	if unparsed || !urls.Fetch.Same(urls.Push) {
-		return forge.Repo{}, req.Refused(
-			result.Say("origin's fetch URL %s and push URL %s do not name one GitHub repository",
-				result.URL(urls.FetchURL), result.URL(urls.PushURL)),
-			result.NextStep("point both of origin's URLs at one GitHub repository with `git remote set-url`, by hand"))
+		return forge.Repo{}, req.twoRepositories(urls)
 	}
 
 	return forge.Repo{Host: urls.Fetch.Host, Owner: urls.Fetch.Owner, Name: urls.Fetch.Name}, nil
+}
+
+// twoRepositories refuses origin's URLs urls, which do not name one GitHub repository.
+func (r Request) twoRepositories(urls git.OriginURLs) *result.Result {
+	return r.Refused(
+		result.Say("origin's fetch URL %s and push URL %s do not name one GitHub repository",
+			result.URL(urls.FetchURL), result.URL(urls.PushURL)),
+		result.NextStep("point both of origin's URLs at one GitHub repository with `git remote set-url`, by hand"))
 }
 
 // identity returns origin with the forge's fork, can-push and squash-allowed flags, once the
@@ -466,19 +471,37 @@ func (r Request) unreached(read string, err error, reason result.Phrase) *result
 	return r.unread(read, err)
 }
 
-// onWorkBranch refuses a detached HEAD and the trunk.
-func (r Request) onWorkBranch(ready Ready) *result.Result {
-	next := startBranchStep()
+// onWorkBranch refuses a detached HEAD and the trunk. The way out is a new branch, except for a
+// detached HEAD with commits origin's trunk lacks, fetched first, which `ils branch` would refuse
+// in turn: those commits are listed, to keep on a branch of their own.
+func (r Request) onWorkBranch(ctx context.Context, deps Deps, ready Ready) *result.Result {
+	if ready.Standing.Kind == git.OnBranch {
+		if ready.Standing.Branch == ready.Trunk {
+			return r.Refused(result.Say("HEAD is on the trunk %s, which ils never pushes", result.Branch(ready.Trunk)),
+				startBranchStep())
+		}
 
-	if ready.Standing.Kind != git.OnBranch {
-		return r.Refused(result.Say("HEAD is detached, so there is no branch to push"), next)
+		return nil
 	}
 
-	if ready.Standing.Branch == ready.Trunk {
-		return r.Refused(result.Say("HEAD is on the trunk %s, which ils never pushes", result.Branch(ready.Trunk)), next)
+	if _, stop := fetchTrunk(ctx, deps, r, ready.Trunk); stop != nil {
+		return stop
 	}
 
-	return nil
+	own, err := deps.Repo.CommitsPast(ctx, "HEAD", ready.Trunk)
+	if err != nil {
+		return r.unread(readHeadCommits, err)
+	}
+
+	reason := result.Say("HEAD is detached, so there is no branch to push")
+	if len(own) == 0 {
+		return r.Refused(reason, startBranchStep())
+	}
+
+	stop := r.Refused(reason, keepDetachedStep())
+	stop.Lines = listed(own)
+
+	return stop
 }
 
 // fetchPullHead fetches the head of pull request number from origin and returns its sha. A failed

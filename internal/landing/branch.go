@@ -44,7 +44,7 @@ type onBranch struct {
 // then origin's trunk fetched. It returns the branch ready stands on, or the result of the first
 // that refuses.
 func branchChecks(ctx context.Context, deps Deps, req Request, ready Ready) (onBranch, *result.Result) {
-	if stop := req.onWorkBranch(ready); stop != nil {
+	if stop := req.onWorkBranch(ctx, deps, ready); stop != nil {
 		return onBranch{}, stop
 	}
 
@@ -67,12 +67,17 @@ func cleanTree(ctx context.Context, deps Deps, req Request) *result.Result {
 	}
 
 	if len(files) > 0 {
-		return req.Refused(
-			result.Say("tracked files have changes that are not committed: %s", strings.Join(files, ", ")),
-			result.NextStep("commit them"+thenRunAgain, req.ilsCommand()))
+		return req.dirtyTree(files)
 	}
 
 	return nil
+}
+
+// dirtyTree refuses a tree whose changed tracked files are files.
+func (r Request) dirtyTree(files []string) *result.Result {
+	return r.Refused(
+		result.Say("tracked files have changes that are not committed: %s", strings.Join(files, ", ")),
+		result.NextStep("commit them"+thenRunAgain, r.ilsCommand()))
 }
 
 // fetchTrunk fetches origin's trunk, so that the reads of origin/<trunk> that follow are current,

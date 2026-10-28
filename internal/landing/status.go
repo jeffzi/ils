@@ -69,12 +69,19 @@ type reading struct {
 	lines     []result.Phrase
 	unlanded  []git.Commit
 	blocked   result.Next
-	waited    Waited
-	status    result.Status
-	pastRead  bool
-	running   bool
-	cut       bool
-	offline   bool
+	// dirty, shared and trunkAhead are the steps push and merge refuse with for changed tracked
+	// files, a first commit another local branch carries, and a local trunk ahead of origin's.
+	dirty, shared, trunkAhead result.Next
+	// copied is the commit origin's copy of the branch is on, as read; empty when origin has none.
+	copied string
+	// unreadPulls, when not empty, is why GitHub was not read for the branch's pull requests.
+	unreadPulls string
+	waited      Waited
+	status      result.Status
+	pastRead    bool
+	running     bool
+	cut         bool
+	offline     bool
 }
 
 // say adds a line that says what was read.
@@ -146,9 +153,75 @@ func (r *reading) readStanding(ctx context.Context) {
 	r.status.Standing, r.status.Branch = result.StandingBranch, standing.Branch
 	r.say(result.Say("On the branch %s", result.Branch(standing.Branch)))
 
+	r.readTree(ctx)
 	r.readCommits(ctx)
 	r.readCopy(ctx)
+	r.readShared(ctx)
+	r.readLocalTrunk(ctx)
 	r.readPulls(ctx)
+}
+
+// readTree reads the changed tracked files, which push and merge refuse.
+func (r *reading) readTree(ctx context.Context) {
+	if r.cut {
+		return
+	}
+
+	files, err := r.deps.Repo.DirtyFiles(ctx)
+	if err != nil {
+		r.failed(readTree, err)
+
+		return
+	}
+
+	if len(files) > 0 {
+		r.dirty = r.refusal(Request{Command: PushCommand}.dirtyTree(files))
+	}
+}
+
+// readShared reads whether the branch's first commit past the trunk stops a push, as push reads it.
+func (r *reading) readShared(ctx context.Context) {
+	if r.cut || len(r.on.past) == 0 {
+		return
+	}
+
+	stop, read, err := sharedFirstCommit(ctx, r.deps, Request{Command: PushCommand},
+		pushReady{onBranch: r.on, copied: r.copied})
+
+	switch {
+	case err != nil:
+		r.failed(read, err)
+	case stop != nil:
+		r.shared = r.refusal(stop)
+	}
+}
+
+// readLocalTrunk reads whether the local trunk has commits origin's trunk lacks, which merge refuses.
+func (r *reading) readLocalTrunk(ctx context.Context) {
+	if r.cut || r.on.Trunk == "" {
+		return
+	}
+
+	ahead, past, err := r.deps.Repo.LocalTrunkAhead(ctx, r.on.Trunk)
+
+	switch {
+	case err != nil:
+		r.failed(readLocalTrunk, err)
+	case ahead:
+		r.trunkAhead = r.refusal(Request{Command: MergeCommand}.trunkAhead(r.on.Trunk, past))
+	}
+}
+
+// refusal says the reason and lines of stop, a refusal push or merge would end on, and returns its
+// step.
+func (r *reading) refusal(stop *result.Result) result.Next {
+	for _, line := range stop.Lines {
+		r.say(line)
+	}
+
+	r.say(stop.Reason)
+
+	return stop.Next
 }
 
 // readNoStanding settles a read of where HEAD stands that failed with err: outside a repository
@@ -211,8 +284,7 @@ func (r *reading) readOrigin(ctx context.Context) {
 	case err != nil && !unparsed:
 		r.failed(readURLs, err)
 	case unparsed || !urls.Fetch.Same(urls.Push):
-		r.say(result.Say("origin's fetch URL %s and push URL %s do not name one GitHub repository",
-			result.URL(urls.FetchURL), result.URL(urls.PushURL)))
+		r.block(Request{Command: PushCommand}.twoRepositories(urls), "origin's URLs do not name one GitHub repository")
 	default:
 		r.repo = forge.Repo{Host: urls.Fetch.Host, Owner: urls.Fetch.Owner, Name: urls.Fetch.Name}
 	}
@@ -269,6 +341,8 @@ func (r *reading) readLastFetch(ctx context.Context, err error) {
 		r.failed(readTrunk, err)
 	default:
 		r.status.Trunk, r.on.Trunk, r.trunkTip = trunk, trunk, tip
+		// The read of origin's trunk still failed, whatever the last fetch stands in for.
+		r.status.Unread = append(r.status.Unread, result.Unread{Read: readTrunk, Error: err.Error()})
 	}
 
 	r.offline = true
@@ -301,14 +375,28 @@ func (r *reading) readIdentity(ctx context.Context) {
 	case stop != nil && err != nil:
 		r.unread(stop.Reason, readIdentity, err.Error())
 		r.blocked = stop.Next
+		r.skippedPulls(err.Error())
 	case stop != nil:
-		r.say(stop.Reason)
-		r.blocked = stop.Next
+		r.block(stop, "ils does not push to "+origin.FullName())
 	case err != nil:
 		r.failed(readIdentity, err)
 	default:
 		r.repo = repo
 	}
+}
+
+// block says the refusal stop that push would end on, takes its step as status's next, and lists
+// the branch's pull requests as unread for the reason why, since GitHub is not read after it.
+func (r *reading) block(stop *result.Result, why string) {
+	r.say(stop.Reason)
+	r.blocked = stop.Next
+	r.skippedPulls(why)
+}
+
+// skippedPulls records why GitHub is not read for the branch's pull requests, which a work branch
+// then lists as unread, so that a payload with no pull request and no such entry means it has none.
+func (r *reading) skippedPulls(why string) {
+	r.unreadPulls = why
 }
 
 // readCommits reads the branch's tip and, once origin's trunk is fetched, its commits past it.
@@ -384,6 +472,8 @@ func (r *reading) readCopy(ctx context.Context) {
 		return
 	}
 
+	r.copied = theirs
+
 	if r.on.tip == "" {
 		return
 	}
@@ -440,7 +530,15 @@ func commitCount(n int) string {
 // readPulls reads the branch's pull requests: the open one against the trunk, and every closed or
 // merged one, each merged one checked for the branch's commits it carries.
 func (r *reading) readPulls(ctx context.Context) {
-	if r.cut || r.repo == (forge.Repo{}) {
+	if r.cut {
+		return
+	}
+
+	if r.repo == (forge.Repo{}) {
+		if r.unreadPulls != "" {
+			r.status.Unread = append(r.status.Unread, result.Unread{Read: readChanges, Error: r.unreadPulls})
+		}
+
 		return
 	}
 
@@ -663,10 +761,16 @@ func (r *reading) next() result.Next {
 		return r.blocked
 	}
 
+	if !r.dirty.None() {
+		return r.dirty
+	}
+
 	s, push := r.status, result.Command(PushCommand)
 	nothingPast := r.pastRead && len(r.on.past) == 0
 
 	switch {
+	case !r.shared.None() && s.Behind == 0 && !nothingPast:
+		return r.shared
 	case r.elsewhere != nil && s.Behind == 0 && !nothingPast:
 		return elsewhereStep(r.elsewhere.Number, s.Trunk, push)
 	case r.landed != nil:
@@ -700,6 +804,9 @@ func (r *reading) pullNext() result.Next {
 		report, _ := w.stopReport(push, r.open.HeadSHA, r.status.Trunk, r.open.Number)
 
 		return report.next
+	case w.Outcome == WaitGreen && (state == forge.MergeClean || state == forge.MergeBlockedByReview) &&
+		!r.trunkAhead.None():
+		return r.trunkAhead
 	case w.Outcome == WaitGreen && (state == forge.MergeClean || state == forge.MergeBlockedByReview):
 		return mergeStep(r.repo, r.open.Number, state)
 	}

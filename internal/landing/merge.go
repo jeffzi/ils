@@ -163,9 +163,14 @@ func localTrunk(ctx context.Context, deps Deps, req Request, trunk string) *resu
 		return nil
 	}
 
-	stop := req.Refused(
+	return req.trunkAhead(trunk, past)
+}
+
+// trunkAhead refuses a local trunk whose commits past are ones origin's trunk lacks.
+func (r Request) trunkAhead(trunk string, past []git.Commit) *result.Result {
+	stop := r.Refused(
 		result.Say("the local trunk %s has commits that origin's trunk lacks, listed here", result.Branch(trunk)),
-		result.NextStep("move those commits off the local trunk by hand"+thenRunAgain, req.ilsCommand()))
+		result.NextStep("move those commits off the local trunk by hand"+thenRunAgain, r.ilsCommand()))
 
 	stop.Lines = listed(past)
 

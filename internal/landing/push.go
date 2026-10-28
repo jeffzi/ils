@@ -104,37 +104,40 @@ func pushChecks(ctx context.Context, deps Deps, req Request, ready Ready) (pushR
 // branch was cut from which, so the refusal names every way out: land the other branches first,
 // remove them, or start a new branch and bring this branch's own commits over.
 func cutFromTrunk(ctx context.Context, deps Deps, req Request, p pushReady) *result.Result {
+	stop, read, err := sharedFirstCommit(ctx, deps, req, p)
+	if err != nil {
+		return req.unread(read, err)
+	}
+
+	return stop
+}
+
+// sharedFirstCommit returns the refusal cutFromTrunk ends on, or nil when the branch's first commit
+// past the trunk does not stop the push; a read that fails is returned with the name of the read.
+func sharedFirstCommit(ctx context.Context, deps Deps, req Request, p pushReady) (*result.Result, string, error) {
 	first := p.past[0].SHA
 
 	if p.copied != "" {
 		published, err := deps.Repo.Contains(ctx, p.copied, first)
-		if err != nil {
-			return req.unread(readCopy, err)
-		}
-
-		if published {
-			return nil
+		if err != nil || published {
+			return nil, readCopy, err
 		}
 	}
 
 	others, err := deps.Repo.BranchesContaining(ctx, first)
-	if err != nil {
-		return req.unread(readBranches, err)
-	}
-
-	if len(others) == 0 {
-		return nil
+	if err != nil || len(others) == 0 {
+		return nil, readBranches, err
 	}
 
 	own, err := deps.Repo.OwnCommits(ctx, p.tip, p.Trunk, others)
 	if err != nil {
-		return req.unread(readCommits, err)
+		return nil, readCommits, err
 	}
 
 	stop := req.Refused(sharedFirst(p.branch, others, len(own) > 0), eitherWayOut(len(others), req.ilsCommand()))
 	stop.Lines = listed(own)
 
-	return stop
+	return stop, "", nil
 }
 
 // eitherWayOut is the Next step of a branch that shares its first commit past the trunk with count

@@ -484,10 +484,46 @@ func precedenceSteps() []nextRow {
 	}
 }
 
+// refusedSteps are the states in which push or merge would refuse a step the list above names, so
+// that status ends on the refusal's own step instead.
+func refusedSteps() []nextRow {
+	open := viewing(cleanHead(), passing(), standing())
+
+	return []nextRow{
+		{
+			name: "changed tracked files", script: open,
+			arrange: func(f *gittest.Fixture) string {
+				f.Publish(topic)
+				f.DirtyFile()
+
+				return expect("commit them", "ils push again")
+			},
+		},
+		{
+			name: "unpublished branch whose first commit another local branch carries", script: viewing(cleanHead(), passing()),
+			arrange: func(f *gittest.Fixture) string {
+				f.Git("switch", "--quiet", "--create", spare, topic)
+				f.Commits(spare, "more work")
+
+				return expect("run ils push on the other branch")
+			},
+		},
+		{
+			name: "green and mergeable with a local trunk ahead of origin's", script: open,
+			arrange: func(f *gittest.Fixture) string {
+				f.Publish(topic)
+				f.AdvanceTrunk()
+
+				return expect("move those commits off the local trunk by hand", "ils merge again")
+			},
+		},
+	}
+}
+
 func TestStatus_OnAWorkBranch_EndsOnTheFirstNextThatHolds(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range slices.Concat(precedenceSteps(), elsewhereSteps(), landedSteps(), copySteps(), pullSteps()) {
+	for _, tt := range slices.Concat(precedenceSteps(), refusedSteps(), elsewhereSteps(), landedSteps(), copySteps(), pullSteps()) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -721,9 +757,23 @@ func TestStatus_OnAWorkBranch_WhenGitHubCannotBeRead_NamesTheFixBesideWhatGitTel
 			assert.Check(t, is.Equal(got.status.Ahead, 1))
 			assert.Check(t, got.status.OnOrigin)
 			assert.Check(t, got.status.PullRequest == nil, "pull request = %+v, want none", got.status.PullRequest)
+			assert.Check(t, hasUnread(got.status, readChanges), "unread %v, want the pull requests listed", got.status.Unread)
 			assert.Check(t, !slices.Contains(s.forgeOps(), forgetest.OpFindChanges), "forge reads = %v, want no find-changes", s.forgeOps())
 		})
 	}
+}
+
+func TestStatus_WhenOriginsURLsNameTwoRepositories_EndsOnPointingThemAtOne(t *testing.T) {
+	t.Parallel()
+	s := statusScene(t, func(f *gittest.Fixture) {
+		f.Publish(topic)
+		f.Git("remote", "set-url", "--push", "origin", "https://github.com/someone/else.git")
+	}, viewing(cleanHead(), passing()))
+
+	got := seeStatus(t.Context(), t, s)
+
+	assertSays(t, got.text, expect("do not name one GitHub repository", "Next:", "`git remote set-url`"))
+	assert.Check(t, hasUnread(got.status, readChanges), "unread %v, want the pull requests listed", got.status.Unread)
 }
 
 func TestStatus_WhenGhCannotRun_ListsTheIdentityReadAsUnread(t *testing.T) {
@@ -732,9 +782,13 @@ func TestStatus_WhenGhCannotRun_ListsTheIdentityReadAsUnread(t *testing.T) {
 
 	got := seeStatus(t.Context(), t, s)
 
-	assert.Assert(t, is.Len(got.status.Unread, 1))
-	assert.Check(t, is.Equal(got.status.Unread[0].Read, "the repository's identity on GitHub"))
+	assert.Check(t, hasUnread(got.status, "the repository's identity on GitHub"), "unread %v", got.status.Unread)
 	assertSays(t, got.text, expect("gh", "not installed"))
+}
+
+// hasUnread reports whether status lists the read named read as unread.
+func hasUnread(status *result.Status, read string) bool {
+	return slices.ContainsFunc(status.Unread, func(u result.Unread) bool { return u.Read == read })
 }
 
 func TestStatus_WhenOriginCannotBeReachedAndItsTrunkWasNeverLearned_CountsTheBranchAgainstTheLastFetch(t *testing.T) {
@@ -773,4 +827,6 @@ func TestStatus_WhenOriginCannotBeReached_CountsAgainstTheLastFetch(t *testing.T
 	assert.Check(t, got.status.OnOrigin)
 	assertSays(t, got.text, expect("could not be reached"))
 	assertSays(t, got.text, expect("last fetch"))
+	assert.Check(t, is.Len(got.status.Unread, 1))
+	assert.Check(t, hasUnread(got.status, "origin's trunk"), "unread %v, want an entry for origin's trunk", got.status.Unread)
 }

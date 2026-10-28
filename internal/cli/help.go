@@ -67,8 +67,8 @@ ils branch fix-help`
 
 	statusShort = "Say where the branch stands, and what to run next"
 	statusLong  = `Say where the current branch stands against origin, its pull requests
-and the verdict of their checks, or on the trunk, its last tag and
-whether a ruleset protects it; then the next command to run.
+and the verdict of the open one's checks, or on the trunk, its last tag
+and whether a ruleset protects it; then the next command to run.
 
 It fetches what it reads from origin (the trunk, the branch's copy, a
 merged pull request's head, a version tag) and writes nothing of yours.

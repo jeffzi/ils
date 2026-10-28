@@ -140,7 +140,7 @@ func TestStartBranch_WhenGitCannotHoldTheName_RefusesNamingIt(t *testing.T) {
 
 	got := startBranch(t, s, name)
 
-	assertRefusedBranch(t, s, got, branchRefusal{name: name, before: before, want: expect(name)})
+	assertRefusedBranch(t, s, got, branchRefusal{name: name, before: before, want: expect(name, "fatal:", "not a valid branch name")})
 }
 
 // takenName is a branch that takes the name the command is given.
