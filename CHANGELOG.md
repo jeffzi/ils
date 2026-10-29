@@ -18,8 +18,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Point every `Next:` line that spelled out cutting a branch by hand at `ils branch <name>`.
 - Shorten the text output of `ils push` and `ils merge`.
 - Suggest the closest command when a command name is mistyped, and point `Next:` at its `--help`.
-- Show how long each check still running at the time limit has run on GitHub, and stop showing
-  the time left on the spinner of the wait for checks.
+- Show how long each check still running at the time limit has run on GitHub.
 
 ### Fixed
 

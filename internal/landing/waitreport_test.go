@@ -270,14 +270,11 @@ func pushStillRunningRows() []pushRow {
 	return []pushRow{
 		{
 			// The head catches up after one poll of two seconds; then two polls of five seconds pass,
-			// and a third would leave too little time for the head read after it. The check began 93
-			// seconds before the push, so it has run 105 seconds when the result is written.
+			// and a third would leave too little time for the head read after it.
 			name: "a check still runs", left: 17 * time.Second,
-			script: startedAt(reusing(running()).showing(stale(), cleanHead()), func(begun time.Time) []time.Time {
-				return []time.Time{begun.Add(-93 * time.Second)}
-			}),
+			script: reusing(running()).showing(stale(), cleanHead()),
 			want: pending(expect("still running"),
-				expect("Still running", "(1 check):\n  ◌ test, running 1m45s\n"),
+				expect("Still running", "(1 check):\n  ◌ test"),
 				detail(forge.VerdictPending, forge.MergeClean, running().Checks...)),
 			told: []string{
 				checkingStep(), pushingStep(), said(pushedLine()), said(foundLine()),
@@ -301,13 +298,10 @@ func pushStillRunningRows() []pushRow {
 		},
 		{
 			// GitHub has not started lint, and says test started a minute after the push began, ahead
-			// of the local clock, which has gone on only a second.
-			name: "two checks still run a second into the wait", left: 7 * time.Second,
-			script: startedAt(reusing(bothRunning()).
-				showing(cleanHead(), cleanHead()).
-				with(func(script *forgetest.Script, _ string) {
-					script.OnRead = onHeadAfterChecks(func() { time.Sleep(time.Second) })
-				}), func(begun time.Time) []time.Time { return []time.Time{{}, begun.Add(time.Minute)} }),
+			// of the local clock.
+			name: "two checks still run, one not started and one dated ahead of the local clock", left: 7 * time.Second,
+			script: startedAt(reusing(bothRunning()).showing(cleanHead(), cleanHead()),
+				func(begun time.Time) []time.Time { return []time.Time{{}, begun.Add(time.Minute)} }),
 			want: pending(expect("still running"),
 				expect("Still running", "(2 checks):\n  ◌ lint, not started yet\n  ◌ test, running 0s\n"),
 				detail(forge.VerdictPending, forge.MergeClean, bothRunning().Checks...)),

@@ -107,7 +107,7 @@ type landingRow struct {
 }
 
 // toldAfterWait returns every event the progress hook is told by a run that waits for its one check
-// to pass, ends the wait 20 seconds before the deadline, and then tells after.
+// to pass, and then tells after.
 func toldAfterWait(after ...string) []string {
 	waited := []string{checkingStep(), findingStep(), waitingStep(), "count 1 of 1", said(countLine())}
 

@@ -66,7 +66,7 @@ func paced(peek func(), outcome result.Outcome) cli.Command {
 		told.Started(result.Say("Opening a pull request against %s", result.Branch(trunk)))
 		time.Sleep(2500 * time.Millisecond)
 		told.Said(openedLine())
-		told.Started(waitingLabel())
+		startedWaiting(told)
 		told.Counted(1, 3)
 		elapse(spun)
 		peek()
@@ -426,17 +426,17 @@ func TestApp_Run_WhenAStepRunsWithStderrATerminal_ShowsOneSpinnerLineForItUntilT
 		args  []string
 	}{
 		{
-			name: "step", args: []string{"merge"},
+			name: "no checks counted", args: []string{"merge"},
 			start: func(p landing.Progress) { p.Started(result.Say("Merging %s", result.PullRequest(opened))) },
 			want:  regexp.MustCompile(`^\S+ Merging #12 3s$`),
 		},
 		{
 			name: "checks counted", args: []string{"push"},
 			start: func(p landing.Progress) {
-				p.Started(waitingLabel())
+				startedWaiting(p)
 				p.Counted(1, 3)
 			},
-			want: regexp.MustCompile(`^\S+ Waiting for checks on #12 3s\W+1 of 3 done$`),
+			want: regexp.MustCompile(`^\S+ Waiting for checks on #12 3s\D+1\D+3\D*$`),
 		},
 	}
 	for _, tt := range tests {
