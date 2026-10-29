@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -160,7 +161,11 @@ type PushError struct {
 	// Reason is the summary git gives for the ref, such as `[rejected] (fetch first)` or
 	// `[remote rejected] (pre-receive hook declined)`.
 	Reason string
-	// Stderr is what git printed on stderr, which holds the lines origin printed (`remote: …`).
+	// Stdout is what git printed on stdout without the porcelain report git writes at its end,
+	// which leaves what a pre-push hook printed there.
+	Stdout string
+	// Stderr is what git printed on stderr, which holds the lines origin printed (`remote: …`) and
+	// those a pre-push hook printed there.
 	Stderr string
 }
 
@@ -169,22 +174,25 @@ func (e *PushError) Error() string {
 	return fmt.Sprintf("push of %s refused: %s", e.Branch, e.Detail())
 }
 
-// Detail returns git's reason and git's trimmed stderr, one per line, leaving out either when
-// it is empty.
+// Detail returns git's reason and the Output, one per line, leaving out either when it is empty.
 func (e *PushError) Detail() string {
-	parts := make([]string, 0, 2)
-	for _, part := range []string{e.Reason, strings.TrimSpace(e.Stderr)} {
-		if part != "" {
-			parts = append(parts, part)
-		}
-	}
+	return joinPresent(e.Reason, e.Output())
+}
 
-	return strings.Join(parts, "\n")
+// Output returns the trimmed Stdout and the trimmed Stderr, one per line, leaving out either when
+// it is empty.
+func (e *PushError) Output() string {
+	return joinPresent(strings.TrimSpace(e.Stdout), strings.TrimSpace(e.Stderr))
 }
 
 // Unwrap returns the *child.ExitError of the refused push.
 func (e *PushError) Unwrap() error {
 	return e.Err
+}
+
+// joinPresent joins the parts that are not empty, one per line.
+func joinPresent(parts ...string) string {
+	return strings.Join(slices.DeleteFunc(parts, func(part string) bool { return part == "" }), "\n")
 }
 
 // OriginURLs returns origin's fetch and push URLs, raw and parsed.
@@ -499,10 +507,46 @@ func (r Repo) Push(ctx context.Context, name string) error {
 	case !reported && exitErr.Code == fatalCode:
 		return &RemoteError{Err: err}
 	case !reported || status.flag == pushRejected:
-		return &PushError{Branch: name, Reason: status.summary, Stderr: exitErr.Stderr, Err: err}
+		return &PushError{
+			Branch: name,
+			Reason: status.summary,
+			Stdout: withoutPushReport(result.Stdout, spec),
+			Stderr: exitErr.Stderr,
+			Err:    err,
+		}
 	default:
 		return nil
 	}
+}
+
+// withoutPushReport returns the stdout of `git push --porcelain` for spec without the report git
+// writes at its end once origin answered: a `To <url>` line, the status line for spec, then `Done`.
+// A pre-push hook runs before git talks to origin, so what precedes the report is the hook's; a
+// push git refused before it reached origin has no report, and all of its stdout is the hook's.
+// Only that trailing block goes: a hook line shaped like a line of the report, even a whole block
+// for another ref at the end of a refusing hook's output, stays.
+func withoutPushReport(stdout, spec string) string {
+	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+	reportStart := len(lines) - 3
+	if reportStart < 0 || !strings.HasPrefix(lines[reportStart], "To ") ||
+		!isStatusLineFor(lines[reportStart+1], spec) || lines[reportStart+2] != "Done" {
+		return stdout
+	}
+
+	hook := strings.Join(lines[:reportStart], "\n")
+	if hook == "" {
+		return ""
+	}
+
+	return hook + "\n"
+}
+
+// isStatusLineFor reports whether line is the status line `git push --porcelain` gives spec: the
+// flag, spec and the summary, separated by tabs.
+func isStatusLineFor(line, spec string) bool {
+	fields := strings.Split(line, "\t")
+
+	return len(fields) == 3 && fields[0] != "" && fields[1] == spec
 }
 
 // pushRejected is the flag `git push --porcelain` gives a ref it did not update.
