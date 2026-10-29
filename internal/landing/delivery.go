@@ -106,8 +106,8 @@ func (d *delivery) pushFailed(err error) *result.Result {
 	if timedOut(err) {
 		return d.endedSaying(
 			result.Say("Started the push of %s at %s when "+timeLimitEnded+"; it may or may not have taken",
-				d.markedBranch(), d.markedTip(), TimeLimit),
-			result.Broke, result.Say(timeLimitEnded+" during the push", TimeLimit), d.req.again())
+				d.markedBranch(), d.markedTip(), timeLimitWords),
+			result.Broke, result.Say(timeLimitEnded+" during the push", timeLimitWords), d.req.again())
 	}
 
 	if refused, ok := errors.AsType[*git.PushError](err); ok {
@@ -166,8 +166,8 @@ func (d *delivery) findOrOpen(ctx context.Context, deps Deps) *result.Result {
 	case timedOut(err):
 		return d.endedSaying(
 			result.Say("Started opening the pull request when "+timeLimitEnded+"; it may or may not have been opened",
-				TimeLimit),
-			result.Broke, result.Say(timeLimitEnded+" while opening the pull request", TimeLimit),
+				timeLimitWords),
+			result.Broke, result.Say(timeLimitEnded+" while opening the pull request", timeLimitWords),
 			d.req.again())
 	}
 
@@ -291,24 +291,37 @@ func (d *delivery) report(deps Deps) *result.Result {
 	return ended
 }
 
-// doneMerging ends the push done, with ils merge as the next step. A done push says no merge
-// state: its next step already says what the state asks for.
+// doneMerging ends the push done, with ils merge as the next step. A done push says its merge
+// state unless its next step already covers it, which only a review block does: mergeStep asks
+// for the review.
 func (d *delivery) doneMerging() *result.Result {
+	if d.waited.MergeState != forge.MergeBlockedByReview {
+		d.sayMergeState()
+	}
+
 	return d.ended(result.Done, result.Phrase{}, mergeStep(d.Repo, d.number, d.waited.MergeState))
 }
 
 // mergeStep is the step once the checks of pull request number in repo are green and its merge
-// state is state: write the squash commit's message, then run ils merge, once a review is in when
-// the merge state asks for one.
+// state is state: write the squash commit's message, then run ils merge, once a review is in or
+// the draft is marked ready when the merge state asks for it. A state ils merge refuses for good
+// gets the step the merge's refusal would give, so the agent never runs a merge bound to fail.
 func mergeStep(repo forge.Repo, number int, state forge.MergeState) result.Next {
 	slug, pull, merge := repo.Slug(), result.PullRequestNumber(number), result.Command(MergeCommand)
 
+	switch state {
 	// A review is not the agent's to give, so it is asked for and the push is still done.
-	if state == forge.MergeBlockedByReview {
+	case forge.MergeBlockedByReview:
 		return result.NextStep("request a review of the pull request first, then "+writeThenMerge, slug, pull, merge)
+	case forge.MergeDraft:
+		return result.NextStep(markReady+", then "+writeThenMerge, slug, pull, slug, pull, merge)
+	case forge.MergeBlockedByMissingCheck:
+		return result.NextStep(reportMissingCheck)
+	case forge.MergeBlockedOther:
+		return result.NextStep(reportBlocked)
+	default:
+		return result.NextStep(writeThenMerge, slug, pull, merge)
 	}
-
-	return result.NextStep(writeThenMerge, slug, pull, merge)
 }
 
 // withoutCI asks the forge whether the repository has CI on its trunk, for a pushed commit that

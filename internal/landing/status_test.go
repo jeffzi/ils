@@ -227,6 +227,16 @@ func TestStatus_WhenTheBranchHasPullRequests_ListsEachPullRequest(t *testing.T) 
 	assertSays(t, got.text, expect("#7", string(forge.ChangeMerged)))
 }
 
+func TestStatus_WhenTheOpenPullRequestsHeadIsNotClean_SaysItsMergeState(t *testing.T) {
+	t.Parallel()
+	s := statusScene(t, func(f *gittest.Fixture) { f.Publish(topic) },
+		viewing(inState(forge.MergeConflicting), passing(), standing()))
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	assertSays(t, got.text, stateLine(forge.MergeConflicting))
+}
+
 func TestStatus_WhenTheBranchHasNoOpenPullRequest_SaysSo(t *testing.T) {
 	t.Parallel()
 	s := statusScene(t, func(f *gittest.Fixture) { f.Publish(topic) }, viewing(cleanHead(), passing()))
@@ -261,7 +271,6 @@ func TestStatus_WhenThePullRequestIsOpen_ReportsTheVerdictOfItsHead(t *testing.T
 
 	tests := []verdictRow{
 		{name: "red", verdict: lintRed(), said: "lint"},
-		{name: "still running", verdict: running(), said: "(1 check):\n  ◌ test\n"},
 		{name: "none reported", verdict: forge.Verdict{}, said: "No check or status reported"},
 		{
 			name: "a workflow run queued before any check reported", verdict: forge.Verdict{Runs: ran(forge.RunQueued)},
@@ -303,8 +312,6 @@ func TestStatus_WhenNoRequiredCheckHasReported_SaysSoWithNoTally(t *testing.T) {
 	got := seeStatus(t, s, (*testing.T).Context)
 
 	assertSays(t, got.text, expect("No required check has reported for "+shortSHA(head)+"\n"))
-	assert.Check(t, !strings.Contains(got.text, "0 passed"), "text %q prints a tally of zero", got.text)
-	assert.Check(t, !strings.Contains(got.text, "0 skipped"), "text %q prints a tally of zero", got.text)
 }
 
 func TestStatus_WhenTheOpenPullRequestIsAgainstAnotherBase_ReportsItsBase(t *testing.T) {

@@ -44,7 +44,7 @@ const (
 )
 
 func detachedLine() string {
-	return expect("Detached", trunk, "deleted", topic)
+	return expect("Detached", trunk, topic)
 }
 
 func elsewhereLine() string {
@@ -68,7 +68,7 @@ func goneLine() string {
 }
 
 func onTrunkLine() string {
-	return expect(trunk, "origin's tip", "deleted", topic)
+	return expect("Switched", trunk, topic)
 }
 
 func stillThere() string {

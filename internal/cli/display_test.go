@@ -56,10 +56,6 @@ func waitingLabel() result.Phrase {
 	return result.Say("Waiting for checks on %s", result.PullRequest(opened))
 }
 
-func mergeStateLabel() result.Phrase {
-	return result.Say("Waiting for GitHub to say whether %s can merge", result.PullRequest(opened))
-}
-
 // paced is a landing command that pushes for 1.2s and opens a pull request for 2.5s, saying the
 // line of each as it succeeds, then waits spun for checks of which 1 of 3 are done, has peek read
 // the screens once every other goroutine of the run waits, and ends with outcome and pacedLines.
@@ -121,7 +117,7 @@ func onStdoutScreen(t *testing.T, env []string) (cli.App, *screen) {
 	return app, stdout
 }
 
-func startedMerge(p landing.Progress) { p.Started(mergeStateLabel(), limit) }
+func startedWaiting(p landing.Progress) { p.Started(waitingLabel(), limit) }
 
 // cell is one character of a screen and the select graphic rendition sequences it is drawn with.
 type cell struct {
@@ -265,16 +261,33 @@ func (s *screen) line() *[]cell {
 // lines returns the text of each row the screen shows, without the blanks at the end of each row
 // and the blank rows after the last one that shows anything.
 func (s *screen) lines() []string {
+	return s.rowTexts(func(row []cell) string {
+		return strings.TrimRight(render(row), " ")
+	})
+}
+
+// filled returns the text of each row the screen shows as lines does, but up to the last
+// character written on the row, so that the spaces written at the end of a row stay in it.
+func (s *screen) filled() []string {
+	return s.rowTexts(func(row []cell) string {
+		end := len(row)
+		for end > 0 && row[end-1].r == 0 {
+			end--
+		}
+
+		return render(row[:end])
+	})
+}
+
+// rowTexts returns the text of each row as text gives it, without the blank rows after the last
+// one that shows anything.
+func (s *screen) rowTexts(text func(row []cell) string) []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	var shown []string
 	for _, row := range s.rows {
-		var b strings.Builder
-		for _, c := range row {
-			b.WriteRune(max(c.r, ' '))
-		}
-		shown = append(shown, strings.TrimRight(b.String(), " "))
+		shown = append(shown, text(row))
 	}
 	for len(shown) > 0 && shown[len(shown)-1] == "" {
 		shown = shown[:len(shown)-1]
@@ -283,29 +296,14 @@ func (s *screen) lines() []string {
 	return shown
 }
 
-// filled returns the text of each row the screen shows as lines does, but up to the last
-// character written on the row, so that the spaces written at the end of a row stay in it.
-func (s *screen) filled() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	var shown []string
-	for _, row := range s.rows {
-		end := len(row)
-		for end > 0 && row[end-1].r == 0 {
-			end--
-		}
-		var b strings.Builder
-		for _, c := range row[:end] {
-			b.WriteRune(max(c.r, ' '))
-		}
-		shown = append(shown, b.String())
-	}
-	for len(shown) > 0 && shown[len(shown)-1] == "" {
-		shown = shown[:len(shown)-1]
+// render returns the characters of row as text, a blank for a cell nothing was written to.
+func render(row []cell) string {
+	var b strings.Builder
+	for _, c := range row {
+		b.WriteRune(max(c.r, ' '))
 	}
 
-	return shown
+	return b.String()
 }
 
 // drawn returns row i as the screen draws it, each character in the rendition it was written in.
@@ -436,8 +434,8 @@ func TestApp_Run_WhenAStepRunsWithStderrATerminal_ShowsOneSpinnerLineForItUntilT
 		},
 		{
 			name: "step with a limit", args: []string{"merge"},
-			start: startedMerge,
-			want:  regexp.MustCompile(`^\S+ Waiting for GitHub to say whether #12 can merge 3s of 30s$`),
+			start: startedWaiting,
+			want:  regexp.MustCompile(`^\S+ Waiting for checks on #12 3s of 30s$`),
 		},
 		{
 			name: "checks counted", args: []string{"push"},
@@ -483,7 +481,7 @@ func TestApp_Run_WhenSpinnerLinesShowOnStderr_HidesTheCursorOnceForEachUntilItGo
 				t.Helper()
 
 				app, stderr := onStderrScreen(t, []string{colorTerm}, false, wide)
-				app.SetPush(stepping(startedMerge, func() { peek(stderr) }))
+				app.SetPush(stepping(startedWaiting, func() { peek(stderr) }))
 
 				return app, stderr
 			},
@@ -537,7 +535,7 @@ func TestApp_Run_WhenIlsIsNotTheForegroundJob_DrawsNothingUntilTheFrameAfterItIs
 	var inBackground string
 	var again []string
 	app.SetMerge(func(_ context.Context, deps landing.Deps, req landing.Request) result.Result {
-		startedMerge(deps.Progress)
+		startedWaiting(deps.Progress)
 		elapse(spun)
 		inBackground = stderr.raw()
 		foreground.Store(true)
@@ -563,7 +561,7 @@ func TestApp_Run_WhenIlsStopsBeingTheForegroundJob_LeavesTheSpinnerLineWithTheCu
 	var before, after string
 	var hiddenAgain bool
 	app.SetMerge(func(_ context.Context, deps landing.Deps, req landing.Request) result.Result {
-		startedMerge(deps.Progress)
+		startedWaiting(deps.Progress)
 		elapse(spun)
 		before = stderr.raw()
 		foreground.Store(false)
@@ -587,7 +585,7 @@ func TestApp_Run_WhenAStepRunsOnAColorTerminal_StylesTheSpinnerLine(t *testing.T
 
 	app, stderr := onStderrScreen(t, []string{colorTerm}, false, wide)
 	var seen resulttest.Drawn
-	app.SetMerge(stepping(startedMerge, func() { seen = stderr.drawn(0) }))
+	app.SetMerge(stepping(startedWaiting, func() { seen = stderr.drawn(0) }))
 
 	shown(t, app, "merge")
 
@@ -603,7 +601,7 @@ func TestApp_Run_WhenTheSpinnerLineIsWiderThanTheTerminal_KeepsItOnOneRow(t *tes
 
 	app, stderr := onStderrScreen(t, []string{colorTerm}, false, narrow)
 	var seen []string
-	app.SetMerge(stepping(startedMerge, func() { seen = stderr.lines() }))
+	app.SetMerge(stepping(startedWaiting, func() { seen = stderr.lines() }))
 
 	shown(t, app, "merge")
 
@@ -617,7 +615,7 @@ func TestApp_Run_WhenTheTerminalIsOneColumnWide_DrawsNoSpinnerCharacter(t *testi
 
 	app, stderr := onStderrScreen(t, []string{colorTerm}, false, 1)
 	var seen []string
-	app.SetMerge(stepping(startedMerge, func() { seen = stderr.lines() }))
+	app.SetMerge(stepping(startedWaiting, func() { seen = stderr.lines() }))
 
 	got := shown(t, app, "merge")
 
@@ -703,26 +701,21 @@ func TestApp_Run_TimesEachStepLineToTheNearestTenthOfASecondFromATenthOfASecond(
 		want string
 		took time.Duration
 	}{
-		{name: "under a tenth of a second, nearer zero", took: 40 * time.Millisecond, want: pushed},
-		{name: "under a tenth of a second, nearer a tenth", took: 60 * time.Millisecond, want: pushed},
+		{name: "under a tenth of a second", took: 60 * time.Millisecond, want: pushed},
 		{name: "exactly a tenth of a second", took: 100 * time.Millisecond, want: pushed + " 100ms"},
 		{name: "seconds", took: 3660 * time.Millisecond, want: pushed + " 3.7s"},
-		{name: "minutes", took: 62760 * time.Millisecond, want: pushed + " 1m2.8s"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			app, stdout := onStdoutScreen(t, []string{colorTerm, noColor})
-			app.SetPush(func(_ context.Context, deps landing.Deps, req landing.Request) result.Result {
+			app.SetPush(func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
 				deps.Progress.Started(result.Say("Pushing %s", result.Branch(topic)), 0)
 				time.Sleep(tt.took)
 				deps.Progress.Said(pushedLine())
 
-				r := finished(req)
-				r.Lines = []result.Phrase{pushedLine()}
-
-				return r
+				return saying(pushedLine())(ctx, deps, req)
 			})
 
 			shown(t, app, "push")

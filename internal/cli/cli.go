@@ -452,8 +452,8 @@ func (p *parse) root() *cobra.Command {
 	root.InitDefaultHelpFlag()
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return p.flagRefusal(err, notCommand) })
 	root.AddCommand(
-		p.landing(landingHelp{word: landing.PushCommand, short: pushShort, long: withBound(pushLong), examples: pushExamples}, p.app.runPush, landing.Push),
-		p.landing(landingHelp{word: landing.MergeCommand, short: mergeShort, long: withBound(mergeLong), examples: mergeExamples}, p.app.runMerge, landing.Merge),
+		p.landing(landingHelp{word: landing.PushCommand, short: pushShort, long: withTimeLimit(pushLong), examples: pushExamples}, p.app.runPush, landing.Push),
+		p.landing(landingHelp{word: landing.MergeCommand, short: mergeShort, long: withTimeLimit(mergeLong), examples: mergeExamples}, p.app.runMerge, landing.Merge),
 		p.landing(landingHelp{word: landing.StatusCommand, short: statusShort, long: statusLong, examples: statusExamples}, p.app.runStatus, landing.Status),
 		p.named(landingHelp{word: landing.BranchCommand, short: branchShort, long: branchLong, examples: branchExamples}, p.app.runBranch, landing.StartBranch),
 		&cobra.Command{

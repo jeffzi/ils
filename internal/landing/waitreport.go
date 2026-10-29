@@ -2,7 +2,6 @@ package landing
 
 import (
 	"errors"
-	"strconv"
 	"strings"
 	"time"
 
@@ -46,7 +45,7 @@ func cutShortReading(byInterrupt bool, read string) result.Phrase {
 		return result.Say(runInterrupted+" while reading %s; nothing more will change", read)
 	}
 
-	return result.Say(timeLimitEnded+" while reading %s; nothing more will change", TimeLimit, read)
+	return result.Say(timeLimitEnded+" while reading %s; nothing more will change", timeLimitWords, read)
 }
 
 // waitReport is what a result says about a wait whose outcome stops the command: its lines, the
@@ -158,18 +157,18 @@ func (w Waited) pendingReport(sha string, number int) waitReport {
 	case w.Stage == StageHead && w.Cutoff == CutoffInterrupt:
 		report.reason = result.Say("GitHub did not show %s on pull request %s before "+runInterrupted, result.SHA(sha), pull)
 	case w.Stage == StageHead:
-		report.reason = result.Say("GitHub did not show %s on pull request %s before the %s time limit",
-			result.SHA(sha), pull, TimeLimit)
+		report.reason = result.Say("GitHub did not show %s on pull request %s "+beforeTimeLimit,
+			result.SHA(sha), pull, timeLimitWords)
 	case w.Stage == StageMergeState && w.Cutoff == CutoffInterrupt:
 		report.reason = result.Say("GitHub did not say whether pull request %s can merge before "+runInterrupted, pull)
 	case w.Stage == StageMergeState:
-		report.reason = result.Say("GitHub did not say whether pull request %s can merge before the %s time limit",
-			pull, TimeLimit)
+		report.reason = result.Say("GitHub did not say whether pull request %s can merge "+beforeTimeLimit,
+			pull, timeLimitWords)
 
 		// The stage's own window ended the wait: the time limit was not reached.
 		if w.Cutoff == CutoffWindow {
-			report.reason = result.Say("GitHub did not say whether pull request %s can merge within %s seconds",
-				pull, int(mergeWindow/time.Second))
+			report.reason = result.Say("GitHub did not say whether pull request %s can merge within %s",
+				pull, seconds(mergeWindow))
 		}
 	default:
 		report.lines, report.reason = w.unconcluded(sha, number)
@@ -186,27 +185,27 @@ func (w Waited) pendingReport(sha string, number int) waitReport {
 func (w Waited) unconcluded(sha string, number int) ([]result.Phrase, result.Phrase) {
 	var lines []result.Phrase
 
-	reason := result.Say("the checks were still running when the %s time limit ran out", TimeLimit)
+	reason := result.Say("the checks were still running "+timeLimitRanOut, timeLimitWords)
 	commit, pull := result.SHA(sha), result.PullRequest(number)
 
 	switch {
 	case w.Since.IsZero():
 		reason = cutShortReading(w.Cutoff == CutoffInterrupt, readChecks)
 	case silent(w.Verdict):
-		reason = result.Say("no check or status had reported for %s on pull request %s when the %s time limit ran out",
-			commit, pull, TimeLimit)
+		reason = result.Say("no check or status had reported for %s on pull request %s "+timeLimitRanOut,
+			commit, pull, timeLimitWords)
 	case len(w.Verdict.Checks) == 0 && w.Verdict.Running():
 		lines = append(lines, result.Say(
 			"No check has reported for %s on pull request %s yet; a workflow run is still going", commit, pull))
-		reason = result.Say("the checks had not reported when the %s time limit ran out", TimeLimit)
+		reason = result.Say("the checks had not reported "+timeLimitRanOut, timeLimitWords)
 	// The checks concluded, but the deadline ended the wait for workflow runs to appear.
 	case len(w.Verdict.Runs) == 0 && len(w.Verdict.Pending()) == 0:
-		reason = result.Say("no workflow run had started for %s on pull request %s when the %s time limit ran out",
-			commit, pull, TimeLimit)
+		reason = result.Say("no workflow run had started for %s on pull request %s "+timeLimitRanOut,
+			commit, pull, timeLimitWords)
 	default:
 		pending := w.Verdict.Pending()
 		elapsed := time.Since(w.Since).Truncate(time.Second)
-		lines = runningList(result.Say("Still running after %s (%s):", elapsed, checkCount(len(pending))), pending)
+		lines = runningList(result.Say("Still running after %s (%s):", elapsed, nounCount(len(pending), "check")), pending)
 	}
 
 	return append(lines, w.mergeStateLines()...), reason
@@ -285,15 +284,6 @@ func runningList(header result.Phrase, pending []forge.Check) []result.Phrase {
 	}
 
 	return lines
-}
-
-// checkCount is n as a count of checks: "1 check", or "<n> checks" for any other n.
-func checkCount(n int) string {
-	if n == 1 {
-		return "1 check"
-	}
-
-	return strconv.Itoa(n) + " checks"
 }
 
 // checksLine says how many deciding checks of the commit sha passed and how many were skipped,

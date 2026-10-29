@@ -104,8 +104,8 @@ func (r *reading) failed(read string, err error) {
 		return
 	}
 
-	r.unread(result.Say("Stopped reading %s: "+timeLimitEnded+", so the reads after it were skipped", read, TimeLimit),
-		read, fmt.Sprintf(timeLimitEnded, TimeLimit))
+	r.unread(result.Say("Stopped reading %s: "+timeLimitEnded+", so the reads after it were skipped", read, timeLimitWords),
+		read, fmt.Sprintf(timeLimitEnded, timeLimitWords))
 }
 
 // unread says line and lists the read named read as unread, for the reason given.
@@ -474,7 +474,7 @@ func (r *reading) readCopy(ctx context.Context) {
 
 	r.status.Ahead, r.status.Behind = apart.Ahead, apart.Behind
 
-	switch ahead, behind := commitCount(apart.Ahead), commitCount(apart.Behind); {
+	switch ahead, behind := nounCount(apart.Ahead, "commit"), nounCount(apart.Behind, "commit"); {
 	case apart.Ahead > 0 && apart.Behind > 0:
 		r.say(result.Say("The branch %s and origin's copy of it have diverged: %s ahead, %s behind", branch, ahead, behind))
 	case apart.Ahead > 0:
@@ -505,12 +505,13 @@ func (r *reading) copyTip(ctx context.Context) (theirs string, found bool, read 
 	return theirs, true, readCopy, err
 }
 
-func commitCount(n int) string {
+// nounCount is n as a count of noun: "1 <noun>", or "<n> <noun>s" for any other n.
+func nounCount(n int, noun string) string {
 	if n == 1 {
-		return "1 commit"
+		return "1 " + noun
 	}
 
-	return strconv.Itoa(n) + " commits"
+	return strconv.Itoa(n) + " " + noun + "s"
 }
 
 // readPulls reads the branch's pull requests: the open one against the trunk, and every closed or
@@ -658,7 +659,7 @@ func (r *reading) readChecks(ctx context.Context) {
 	if headErr != nil {
 		r.failed(readMergeState, headErr)
 	} else {
-		r.waited.takeState(head)
+		r.waited.MergeState = head.MergeState
 	}
 
 	if r.cut {
@@ -710,7 +711,7 @@ func (r *reading) takeVerdict(verdict forge.Verdict, required []string) {
 		r.say(result.Say("A workflow run on %s is still going, so more checks may report", sha))
 	case r.running:
 		pending := verdict.Pending()
-		r.say(runningList(result.Say("Still running on %s (%s):", sha, checkCount(len(pending))), pending)...)
+		r.say(runningList(result.Say("Still running on %s (%s):", sha, nounCount(len(pending), "check")), pending)...)
 	case verdict.State() == forge.VerdictNone:
 		r.say(result.Say("No check or status reported for %s", sha))
 	default:

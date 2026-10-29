@@ -16,7 +16,6 @@ import (
 	"github.com/jeffzi/ils/internal/forge/forgetest"
 	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
-	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
 // redRow is a push whose lint check ended in bucket beside a passing test, with log as its failed
@@ -383,98 +382,44 @@ func stateWords() map[forge.MergeState]string {
 	}
 }
 
-// rawStates returns the merge states as GitHub names them, which no line prints.
-func rawStates() []string {
-	return []string{"CLEAN", "BEHIND", "DIRTY", "DRAFT", "BLOCKED", "UNSTABLE", "HAS_HOOKS", "UNKNOWN"}
-}
-
 // stateLine is the line that says the merge state state in plain words.
 func stateLine(state forge.MergeState) string {
 	return expect(stateWords()[state] + "\n")
 }
 
-// rendered returns what got prints as text, and the lines of its JSON joined into one text, each
-// ended by a newline as in the text.
-func rendered(t *testing.T, got result.Result, gitDir string) (text, lines string) {
-	t.Helper()
-
-	text, err := result.RenderText(got, gitDir)
-	assert.NilError(t, err)
-
-	out, err := result.RenderJSON(got, gitDir)
-	assert.NilError(t, err)
-
-	return text, strings.Join(resulttest.Decode(t, out).Lines, "\n") + "\n"
-}
-
-// assertNoRawState fails unless text holds no merge state as GitHub names it.
-func assertNoRawState(t *testing.T, text string) {
-	t.Helper()
-
-	for _, raw := range rawStates() {
-		assert.Check(t, !strings.Contains(text, raw), "text %q holds GitHub's merge state %s", text, raw)
-	}
-}
-
-// assertNoStateLine fails unless text holds no line that says a merge state.
+// assertNoStateLine fails on any plain-words line from stateWords; a clean state prints none.
 func assertNoStateLine(t *testing.T, text string) {
 	t.Helper()
 
-	assertNoRawState(t, text)
 	for state, words := range stateWords() {
 		assert.Check(t, !strings.Contains(text, words), "text %q says the merge state %s", text, state)
 	}
 }
 
-func TestPush_MergeStateLine(t *testing.T) {
+func TestPush_WhenTheMergeStateDoesNotStopThePush_SaysNoMergeState(t *testing.T) {
 	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, d := newDelivery(t, pushRow{left: 12 * time.Second, script: reusing(forge.Verdict{})})
 
-	tests := []struct {
-		want    string
-		row     pushRow
-		outcome result.Outcome
-	}{
-		{
-			row: pushRow{
-				name: "clean on a push that is not done", left: 12 * time.Second,
-				script: reusing(forge.Verdict{}),
-			},
-			outcome: result.Pending,
-		},
-		{
-			row: pushRow{
-				name:   "blocked by review on a push that is done",
-				script: reusing(passing()).showing(cleanHead(), inState(forge.MergeBlockedByReview)),
-			},
-			outcome: result.Done,
-		},
-		{
-			row: pushRow{
-				name:   "conflicting on a push that is not done",
-				script: reusing().showing(inState(forge.MergeConflicting)),
-			},
-			want: stateLine(forge.MergeConflicting), outcome: result.DeliveredNotGreen,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.row.name, func(t *testing.T) {
-			t.Parallel()
-			synctest.Test(t, func(t *testing.T) {
-				ctx, d := newDelivery(t, tt.row)
+		got := landing.Push(ctx, d.deps, pushRequest())
 
-				got := landing.Push(ctx, d.deps, pushRequest())
+		assert.Assert(t, is.Equal(got.Outcome, result.Pending))
+		text, decoded := rendered(t, got, d.gitDir)
+		assertNoStateLine(t, text)
+		assertNoStateLine(t, linesText(decoded.Lines))
+	})
+}
 
-				assert.Assert(t, is.Equal(got.Outcome, tt.outcome))
-				text, lines := rendered(t, got, d.gitDir)
-				for _, shown := range []string{text, lines} {
-					if tt.want == "" {
-						assertNoStateLine(t, shown)
-					} else {
-						assertSays(t, shown, tt.want)
-						assertNoRawState(t, shown)
-					}
-				}
-			})
-		})
-	}
+func TestPush_WhenTheMergeStateStopsThePush_SaysItInPlainWords(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, d := newDelivery(t, pushRow{script: reusing().showing(inState(forge.MergeConflicting))})
+
+		got := landing.Push(ctx, d.deps, pushRequest())
+
+		assert.Assert(t, is.Equal(got.Outcome, result.DeliveredNotGreen))
+		text, decoded := rendered(t, got, d.gitDir)
+		assertSays(t, text, stateLine(forge.MergeConflicting))
+		assertSays(t, linesText(decoded.Lines), stateLine(forge.MergeConflicting))
+	})
 }

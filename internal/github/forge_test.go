@@ -179,7 +179,6 @@ func draftJSON(mergeable, status string) string {
 	return ghtest.HeadDraftJSON(headSHA, mergeable, status)
 }
 
-// headOf is the head commit in the given merge state.
 func headOf(state forge.MergeState) forge.Head {
 	return forge.Head{SHA: headSHA, MergeState: state}
 }

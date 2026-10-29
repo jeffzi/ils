@@ -326,6 +326,8 @@ type pushRow struct {
 	told    []string
 	left    time.Duration
 	quiet   bool
+	// noStateLine holds the push to say no merge state in its text or in the lines of its JSON.
+	noStateLine bool
 }
 
 // delivery is a scene whose branch Push can push: the tip, and what the push tells the progress
@@ -360,7 +362,7 @@ func newDelivery(t *testing.T, tt pushRow) (context.Context, *delivery) {
 // runPushes runs each row as a test in a bubble of its own: the push ends as the row wants, with
 // every step line it said held by its result, origin's copy of the branch is at the tip, and git
 // pushed unless the row is quiet. A row that names the events its hook is told is held to them
-// too.
+// too, and a row with noStateLine to saying no merge state.
 func runPushes(t *testing.T, rows []pushRow) {
 	t.Helper()
 
@@ -380,43 +382,28 @@ func runPushes(t *testing.T, rows []pushRow) {
 				if len(tt.told) > 0 {
 					assertTold(t, d.watch.told(t), markAll(tt.told, d.tip))
 				}
+
+				if tt.noStateLine {
+					text, decoded := rendered(t, got, d.gitDir)
+					assertNoStateLine(t, text)
+					assertNoStateLine(t, linesText(decoded.Lines))
+				}
 			})
 		})
 	}
 }
 
-// skippingRow is the first push of a branch whose two checks passed and whose third was skipped.
-func skippingRow() pushRow {
-	skipping := forge.Verdict{
-		Checks: []forge.Check{
-			forgetest.Check("lint", forge.BucketPass), forgetest.Check("test", forge.BucketPass), forgetest.Check("docs", forge.BucketSkipped),
-		},
-		Runs: ran(forge.RunCompleted),
-	}
+// openedGreen is the first push of a branch whose checks all ended, ending green with tally as the
+// end of the tally line.
+func openedGreen(name, tally string, checks ...forge.Check) pushRow {
+	verdict := forge.Verdict{Checks: checks, Runs: ran(forge.RunCompleted)}
 
 	return pushRow{
-		name: "two checks passed and one was skipped", script: opening(skipping),
+		name: name, script: opening(verdict),
 		want: finish{
 			outcome: result.Done,
-			text:    pushedLine() + openedLine() + expect(tipMark, "2 passed, 1 skipped") + nextMerge(),
-			payload: detail(forge.VerdictGreen, forge.MergeClean, skipping.Checks...),
-		},
-	}
-}
-
-// skippedRow is the first push of a branch whose two checks were both skipped.
-func skippedRow() pushRow {
-	skipped := forge.Verdict{
-		Checks: []forge.Check{forgetest.Check("lint", forge.BucketSkipped), forgetest.Check("docs", forge.BucketSkipped)},
-		Runs:   ran(forge.RunCompleted),
-	}
-
-	return pushRow{
-		name: "both checks were skipped", script: opening(skipped),
-		want: finish{
-			outcome: result.Done,
-			text:    pushedLine() + openedLine() + expect(tipMark, ": 2 skipped\n") + nextMerge(),
-			payload: detail(forge.VerdictGreen, forge.MergeClean, skipped.Checks...),
+			text:    pushedLine() + openedLine() + expect(tipMark, tally) + nextMerge(),
+			payload: detail(forge.VerdictGreen, forge.MergeClean, verdict.Checks...),
 		},
 	}
 }
@@ -426,8 +413,14 @@ func pushWriteRows() []pushRow {
 	opens := greenAfter(pushedLine() + openedLine())
 
 	return []pushRow{
-		skippingRow(),
-		skippedRow(),
+		openedGreen(
+			"two checks passed and one was skipped", "2 passed, 1 skipped",
+			forgetest.Check("lint", forge.BucketPass), forgetest.Check("test", forge.BucketPass), forgetest.Check("docs", forge.BucketSkipped),
+		),
+		openedGreen(
+			"both checks were skipped", ": 2 skipped\n",
+			forgetest.Check("lint", forge.BucketSkipped), forgetest.Check("docs", forge.BucketSkipped),
+		),
 		{
 			name:   "open pull request against the trunk",
 			script: reusing(passing()), want: greenAfter(pushedLine() + foundLine()),
@@ -857,13 +850,29 @@ func pushWaitRows() []pushRow {
 		text:    pushedLine() + foundLine() + countLine() + nextReview(),
 		payload: detail(forge.VerdictGreen, forge.MergeBlockedByReview, passing().Checks...),
 	}
+	// greenIn is a green push to a pull request in the merge state state, which ils merge would
+	// refuse: the push says the state, and next is the step ils merge would ask for instead.
+	greenIn := func(state forge.MergeState, next string) pushRow {
+		return pushRow{
+			name:   "green on a pull request in the merge state " + string(state),
+			script: reusing(passing()).showing(cleanHead(), inState(state)),
+			want: finish{
+				outcome: result.Done,
+				text:    pushedLine() + foundLine() + countLine() + stateLine(state) + next,
+				payload: detail(forge.VerdictGreen, state, passing().Checks...),
+			},
+		}
+	}
 
 	rows := []pushRow{
 		{
 			name:   "green on a pull request that needs a review",
 			script: reusing(passing()).showing(cleanHead(), inState(forge.MergeBlockedByReview)),
-			want:   reviewed,
+			want:   reviewed, noStateLine: true,
 		},
+		greenIn(forge.MergeDraft, expect("`"+readyCommand+"`")+editSteps()),
+		greenIn(forge.MergeBlockedByMissingCheck, expect("required check has no check on the head")),
+		greenIn(forge.MergeBlockedOther, expect("GitHub blocks the merge")),
 	}
 
 	return slices.Concat(rows, pushUnreportedRows())

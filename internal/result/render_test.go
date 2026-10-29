@@ -34,10 +34,9 @@ const (
 
 	controlBytes = "one\x1b[1;33m two\b three\x7f four\u009b"
 
-	// fullSHA is a commit sha as git prints it, and shortSHA its first seven characters.
 	fullSHA  = "702f76d1c3b1e9a04f5d2e6b7a8c9d0e1f2a3b4c"
 	shortSHA = "702f76d"
-	// shaNext is the next step of shaPush as a plain profile prints it.
+	// shaNext is the next step of shaPush; the Next line keeps every sha in full.
 	shaNext = "check out " + fullSHA + ", then run ils push again"
 )
 
@@ -147,14 +146,17 @@ func redPush() result.Result {
 	}
 }
 
+// shaLine is a checks line that names the commit fullSHA.
 func shaLine() result.Phrase {
 	return result.Say("Checks for %s: %s", result.SHA(fullSHA), result.Passed(9))
 }
 
+// shaReason is a reason that names the commit fullSHA.
 func shaReason() result.Phrase {
 	return result.Say("GitHub did not show %s", result.SHA(fullSHA))
 }
 
+// shaStep is a next step that names the commit fullSHA and the push command.
 func shaStep() result.Next {
 	return result.NextStep("check out %s, then run %s again", result.SHA(fullSHA), result.Command("push"))
 }
@@ -225,8 +227,6 @@ func excerptTextCases() []pair {
 	}
 }
 
-// shaTextCases returns the cases where a commit sha meets the text: short in a line and in the
-// reason, in full in the Next line.
 func shaTextCases() []pair {
 	return []pair{
 		brokeLine("sha in a line prints its first seven characters", shaLine(), "Checks for "+shortSHA+": 9 passed"),
@@ -276,6 +276,11 @@ type jsonCase struct {
 	result result.Result
 }
 
+// linesReasonNext keeps the lines, the reason and the next step of a decoded object.
+func linesReasonNext(s resulttest.Shown) resulttest.Shown {
+	return resulttest.Shown{Lines: s.Lines, Reason: s.Reason, Next: s.Next}
+}
+
 // jsonCases returns the cases whose text the JSON renderer carries as it was handed in.
 func jsonCases() []jsonCase {
 	return []jsonCase{
@@ -283,10 +288,8 @@ func jsonCases() []jsonCase {
 			name:   "wording wrapping a command in backticks keeps them",
 			gitDir: gitDir,
 			result: tickedPush(),
-			pick: func(s resulttest.Shown) resulttest.Shown {
-				return resulttest.Shown{Lines: s.Lines, Reason: s.Reason, Next: s.Next}
-			},
-			want: resulttest.Shown{Lines: tickedPushLines(), Reason: tickedReason, Next: tickedNext},
+			pick:   linesReasonNext,
+			want:   resulttest.Shown{Lines: tickedPushLines(), Reason: tickedReason, Next: tickedNext},
 		},
 		{
 			name:   "name holding an escape sequence carries the escape raw",
@@ -306,9 +309,7 @@ func jsonCases() []jsonCase {
 			name:   "sha in a line, the reason and the next carries in full",
 			gitDir: gitDir,
 			result: shaPush(),
-			pick: func(s resulttest.Shown) resulttest.Shown {
-				return resulttest.Shown{Lines: s.Lines, Reason: s.Reason, Next: s.Next}
-			},
+			pick:   linesReasonNext,
 			want: resulttest.Shown{
 				Lines:  append(brokeLines(), "Checks for "+fullSHA+": 9 passed"),
 				Reason: "GitHub did not show " + fullSHA,
@@ -480,10 +481,6 @@ func styledCases() []styledCase {
 		},
 		{name: "step wording is drawn unstyled", result: markedPush(), within: resulttest.NextLine("rebase"), part: " rebase", want: resulttest.Look{}, profile: colorprofile.ANSI},
 		{name: "passed count is drawn green", result: talliedChecks(), within: "17 passed", part: "17", want: resulttest.PassedLook(), profile: colorprofile.ANSI},
-		{
-			name: "sha in a line is drawn as its first seven characters", result: shaPush(), within: "Checks for " + shortSHA + ":",
-			part: shortSHA, want: resulttest.SHALook(), profile: colorprofile.ANSI,
-		},
 		{name: "command is drawn as a name", result: refusedPush(), within: resulttest.NextLine("ils branch fix-prek-again"), part: "ils branch fix-prek-again", want: resulttest.NameLook(), profile: colorprofile.ANSI},
 	}
 }

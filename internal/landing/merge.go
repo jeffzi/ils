@@ -40,6 +40,16 @@ var conventionalTitle = regexp.MustCompile(`^[a-z]+(\([^()\r\n]+\))?!?: \S`)
 const writeMessage = "write the pull request's title and body as the squash commit's message with " +
 	"`gh pr edit --repo %s %s --title … --body …`"
 
+// markReady, reportMissingCheck and reportBlocked are the steps a merge state that ils merge
+// refuses asks for, so that a green push names the same step the merge would. The names of
+// markReady are the repository and the pull request's number. They stay untyped because
+// result.NextStep accepts only constant expressions.
+const (
+	markReady          = "mark it ready with `gh pr ready --repo %s %s`"
+	reportMissingCheck = "report that the required check has no check on the head, and stop"
+	reportBlocked      = "report that GitHub blocks the merge, and stop"
+)
+
 // mergeReady is what mergeChecks hands to the sequence that follows them, and what that
 // sequence has found so far.
 type mergeReady struct {
@@ -253,7 +263,7 @@ func rulesetReason(ids []int, trunk string) result.Phrase {
 func (m *mergeReady) draftStop(req Request) *result.Result {
 	return req.Refused(
 		result.Say("pull request %s is a draft", result.PullRequest(m.pull.Number)),
-		result.NextStep("mark it ready with `gh pr ready --repo %s %s`"+thenRunAgain, m.Repo.Slug(),
+		result.NextStep(markReady+thenRunAgain, m.Repo.Slug(),
 			result.PullRequestNumber(m.pull.Number),
 			req.ilsCommand()))
 }
@@ -451,12 +461,12 @@ func (m *mergeReady) stateStop(req Request) *result.Result {
 			result.NextStep("request a review, and stop: a review is not the agent's to give")))
 	case forge.MergeBlockedByMissingCheck:
 		return m.stated(req.Refused(result.Say("a check the trunk requires has no check on %s", result.SHA(m.pull.HeadSHA)),
-			result.NextStep("report that the required check has no check on the head, and stop")),
+			result.NextStep(reportMissingCheck)),
 			m.missingLine())
 	default:
 		return m.stated(req.Refused(
 			result.Say("GitHub blocks pull request %s for a reason ils does not read: %s", pull, result.URL(m.pull.URL)),
-			result.NextStep("report that GitHub blocks the merge, and stop")))
+			result.NextStep(reportBlocked)))
 	}
 }
 
@@ -515,11 +525,11 @@ func (m *mergeReady) reserved(ctx context.Context, req Request) *result.Result {
 	}
 
 	stop := req.ends(result.Pending,
-		result.Say("fewer than %s of the %s time limit were left for the merge", mergeReserve, TimeLimit),
+		result.Say("fewer than %s of the time limit of %s were left for the merge", seconds(mergeReserve), timeLimitWords),
 		result.NextCommand(PushCommand))
 	stop.Lines = slices.Concat([]result.Phrase{m.summary()}, m.waited.mergeStateLines(), []result.Phrase{
-		result.Say("Fewer than %s of the %s time limit were left for the merge, so nothing was written",
-			mergeReserve, TimeLimit),
+		result.Say("Fewer than %s of the time limit of %s were left for the merge, so nothing was written",
+			seconds(mergeReserve), timeLimitWords),
 	})
 
 	return m.carrying(stop)
@@ -633,9 +643,9 @@ func (m *mergeReady) merge(ctx context.Context, deps Deps, req Request) *result.
 			result.Say("Started the merge of pull request %s when "+runInterrupted+"; "+
 				"it may or may not have gone through", pull))
 	case timedOut(err):
-		return m.broke(req, result.Say(timeLimitEnded+" during the merge", TimeLimit), req.again(),
+		return m.broke(req, result.Say(timeLimitEnded+" during the merge", timeLimitWords), req.again(),
 			result.Say("Started the merge of pull request %s when "+timeLimitEnded+"; "+
-				"it may or may not have gone through", pull, TimeLimit))
+				"it may or may not have gone through", pull, timeLimitWords))
 	case err != nil:
 		return m.broke(req, result.Say("GitHub did not report the merge as done"), req.again(),
 			result.Say("GitHub did not report the merge of pull request %s as done: %s", pull, err.Error()))
@@ -857,11 +867,11 @@ func (m *mergeReady) resume(ctx context.Context, deps Deps, req Request) *result
 
 	if deadlineWithin(ctx, mergeReserve) {
 		stop := req.ends(result.Pending,
-			result.Say("fewer than %s of the %s time limit were left to finish the merge", mergeReserve, TimeLimit),
+			result.Say("fewer than %s of the time limit of %s were left to finish the merge", seconds(mergeReserve), timeLimitWords),
 			req.again())
 		stop.Lines = slices.Concat(m.lines, []result.Phrase{
-			result.Say("Fewer than %s of the %s time limit were left to finish the merge, so nothing was written",
-				mergeReserve, TimeLimit),
+			result.Say("Fewer than %s of the time limit of %s were left to finish the merge, so nothing was written",
+				seconds(mergeReserve), timeLimitWords),
 		})
 
 		return m.carrying(stop)

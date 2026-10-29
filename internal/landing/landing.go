@@ -29,15 +29,37 @@ const (
 const thenRunAgain = ", then run %s again"
 
 // TimeLimit is how long a command may run before its context reaches its deadline. Every result
-// that says the time limit cut a call or a wait short names this length.
+// that says the time limit cut a call or a wait short names this length, as timeLimitWords.
 const TimeLimit = 100 * time.Second
+
+// timeLimitWords is TimeLimit as every result names it.
+const timeLimitWords = seconds(TimeLimit)
+
+// seconds is a limit that prints in whole seconds, as the help and every result name one:
+// "100 seconds".
+type seconds time.Duration
+
+func (s seconds) String() string {
+	return nounCount(int(time.Duration(s)/time.Second), "second")
+}
+
+// Seconds is d as the help and every result name a limit: in whole seconds, "100 seconds".
+func Seconds(d time.Duration) string {
+	return seconds(d).String()
+}
 
 // timeLimitEnded and runInterrupted are the clauses a result says a call or a wait was cut short
 // with: by the end of the time limit, or by an interrupt. They stay untyped so that result.Say
-// accepts wording built on them. The one placeholder of timeLimitEnded takes TimeLimit.
+// accepts wording built on them. The one placeholder of timeLimitEnded takes timeLimitWords.
+//
+// timeLimitRanOut and beforeTimeLimit are the clauses a wait's reason says the time limit cut it
+// short with, after the thing it was still waiting on, or before the answer it was waiting for.
+// The one placeholder of each takes timeLimitWords.
 const (
-	timeLimitEnded = "the %s time limit ended"
-	runInterrupted = "ils was interrupted"
+	timeLimitEnded  = "the time limit of %s ended"
+	runInterrupted  = "ils was interrupted"
+	timeLimitRanOut = "when the time limit of %s ran out"
+	beforeTimeLimit = "before the time limit of %s"
 )
 
 // interrupted reports whether err says an interrupt cut a call short. Only an interrupt cancels
@@ -449,7 +471,7 @@ func (r Request) unread(read string, err error) *result.Result {
 	}
 
 	if endedEarly(err) {
-		reason := result.Say(timeLimitEnded+" while reading %s; nothing was written", TimeLimit, read)
+		reason := result.Say(timeLimitEnded+" while reading %s; nothing was written", timeLimitWords, read)
 		if interrupted(err) {
 			reason = result.Say(runInterrupted+" while reading %s; nothing was written", read)
 		}
