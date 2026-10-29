@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/jeffzi/ils/internal/child"
@@ -113,6 +114,10 @@ func (o Origin) Same(other Origin) bool {
 }
 
 const (
+	// remotesRef prefixes the remote-tracking refs, where the clone keeps what it last fetched of
+	// origin's branches.
+	remotesRef = "refs/remotes/" + origin + "/"
+
 	symrefLead = "ref: "
 	symrefTail = "\tHEAD"
 
@@ -289,6 +294,120 @@ func (r Repo) RemoteBranch(ctx context.Context, name string) (sha string, found 
 	return "", false, nil
 }
 
+// LastFetchedTrunk returns origin's default branch as the clone last learned it, from origin's HEAD
+// among the remote-tracking refs, without asking origin; found is false when the clone holds no
+// such ref.
+func (r Repo) LastFetchedTrunk(ctx context.Context) (trunk string, found bool, err error) {
+	ref, found, err := r.optionalLine(ctx, "symbolic-ref", "--quiet", remotesRef+"HEAD")
+	if !found {
+		return "", false, err
+	}
+
+	return strings.TrimPrefix(ref, remotesRef), true, nil
+}
+
+// LastFetched returns the sha of origin's branch name as last fetched, without asking origin;
+// found is false when the clone holds no remote-tracking ref for it.
+func (r Repo) LastFetched(ctx context.Context, name string) (sha string, found bool, err error) {
+	return r.optionalLine(ctx, "rev-parse", "--verify", "--quiet", remotesRef+name)
+}
+
+// BranchesTaking returns the branches that take name, locally and on origin, as git lists them: one
+// of that exact name, one whose name is a path prefix of it (fix for fix/x), and one under it (fix/x
+// for fix), none of which git can hold beside a branch called name. A branch whose name only ends
+// with name (team/fix for fix) does not take it.
+//
+// Origin is asked at the time of the call: a branch deleted on origin that the clone still knows
+// does not take the name, and one pushed since the last fetch does. An origin that does not answer
+// is a *RemoteError, never an empty list.
+func (r Repo) BranchesTaking(ctx context.Context, name string) (local, onOrigin []string, err error) {
+	localRefs, err := r.Runner.Run(ctx, "for-each-ref", "--format=%(refname)", headsRef)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	originRefs, err := r.remote(ctx, "ls-remote", "--heads", origin)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	for ref := range strings.SplitSeq(localRefs.Stdout, "\n") {
+		if branch, ok := takes(ref, name); ok {
+			local = append(local, branch)
+		}
+	}
+
+	for line := range strings.SplitSeq(originRefs.Stdout, "\n") {
+		_, ref, _ := strings.Cut(line, "\t")
+		if branch, ok := takes(ref, name); ok {
+			onOrigin = append(onOrigin, branch)
+		}
+	}
+
+	return local, onOrigin, nil
+}
+
+// takes returns the branch the full ref names, and whether that branch takes name: whether it is
+// name, or one of the two is a path prefix of the other.
+func takes(ref, name string) (string, bool) {
+	branch, isBranch := strings.CutPrefix(ref, headsRef)
+	if !isBranch {
+		return "", false
+	}
+
+	return branch, branch == name || strings.HasPrefix(name, branch+"/") || strings.HasPrefix(branch, name+"/")
+}
+
+const (
+	tagsRef = "refs/tags/"
+	// peeledSuffix ends the ref `git ls-remote` lists for the commit an annotated tag points to,
+	// after the line for the tag object itself.
+	peeledSuffix = "^{}"
+)
+
+// Tag is a tag and the sha of the commit it tags.
+type Tag struct {
+	Name string
+	SHA  string
+}
+
+// OriginTags returns origin's tags, asked of origin, in the order git lists them, each with the
+// commit it tags: an annotated tag gives the commit its tag object points to, never the tag object.
+//
+// An origin that does not answer is a *RemoteError.
+func (r Repo) OriginTags(ctx context.Context) ([]Tag, error) {
+	result, err := r.remote(ctx, "ls-remote", "--tags", origin)
+	if err != nil {
+		return nil, err
+	}
+
+	var tags []Tag
+
+	index := map[string]int{}
+
+	for line := range strings.SplitSeq(result.Stdout, "\n") {
+		sha, ref, _ := strings.Cut(line, "\t")
+
+		name, isTag := strings.CutPrefix(ref, tagsRef)
+		if !isTag {
+			continue
+		}
+
+		name, isPeeled := strings.CutSuffix(name, peeledSuffix)
+
+		i, seen := index[name]
+		switch {
+		case !seen:
+			index[name] = len(tags)
+			tags = append(tags, Tag{Name: name, SHA: sha})
+		case isPeeled:
+			tags[i].SHA = sha
+		}
+	}
+
+	return tags, nil
+}
+
 // Fetch fetches one ref from origin, a branch name or a full ref, and returns the fetched sha.
 //
 // A branch name is fetched as the branch, never as a tag of the same name. A fetch that fails is a
@@ -304,6 +423,20 @@ func (r Repo) Fetch(ctx context.Context, ref string) (string, error) {
 	}
 
 	return r.line(ctx, "rev-parse", "FETCH_HEAD")
+}
+
+// pullRefs prefixes the refs GitHub keeps on origin for its pull requests, each under its number.
+const pullRefs = "refs/pull/"
+
+// FetchPullHead fetches from origin the head GitHub keeps of the pull request numbered number, as
+// Fetch fetches a ref, and returns its sha.
+func (r Repo) FetchPullHead(ctx context.Context, number int) (string, error) {
+	return r.Fetch(ctx, pullRefs+strconv.Itoa(number)+"/head")
+}
+
+// FetchTag fetches the tag name from origin, as Fetch fetches a ref, and returns its sha.
+func (r Repo) FetchTag(ctx context.Context, name string) (string, error) {
+	return r.Fetch(ctx, tagsRef+name)
 }
 
 // FastForwardTrunk moves the checked-out trunk to origin's tip of trunk, and leaves it where it is
@@ -361,7 +494,9 @@ func (r Repo) Push(ctx context.Context, name string) error {
 	status, reported := pushStatus(result.Stdout, spec)
 
 	switch {
-	case !reported && exitErr.Code == pushFatalCode:
+	// A push dies with fatalCode when it cannot reach origin or origin hangs up; one git refuses
+	// before it talks to origin, such as for a pre-push hook that failed, exits 1.
+	case !reported && exitErr.Code == fatalCode:
 		return &RemoteError{Err: err}
 	case !reported || status.flag == pushRejected:
 		return &PushError{Branch: name, Reason: status.summary, Stderr: exitErr.Stderr, Err: err}
@@ -369,11 +504,6 @@ func (r Repo) Push(ctx context.Context, name string) error {
 		return nil
 	}
 }
-
-// pushFatalCode is the exit of a git push that died of a fatal error, as it does when it cannot
-// reach origin or origin hangs up. A push git refuses before it talks to origin, such as for a
-// pre-push hook that failed, exits 1.
-const pushFatalCode = 128
 
 // pushRejected is the flag `git push --porcelain` gives a ref it did not update.
 const pushRejected = "!"

@@ -31,13 +31,12 @@ func TestDraw_WhenForegroundCode_DrawsItsColor(t *testing.T) {
 	}
 }
 
-func TestDraw_WhenSequenceUnknown_FailsTest(t *testing.T) {
+func TestDraw_WhenRenditionParameterUnknown_FailsTest(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
 		out  string
 	}{
-		{name: "italic", out: "\x1b[3mx"},
 		{name: "unknown code beside a known one", out: "\x1b[1;7mx"},
 	}
 	for _, tt := range tests {

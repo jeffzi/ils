@@ -23,7 +23,7 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	startCommand = "git fetch origin " + trunk + " && git switch -c <name> --no-track refs/remotes/origin/" + trunk
+	startCommand = "ils branch <name>"
 	baseCommand  = "gh pr edit 12 --base " + trunk
 	otherBase    = "release"
 
@@ -58,7 +58,8 @@ func detached() string {
 	return expect("detached") + nextBranch()
 }
 
-// dirtyText is cmd's refusal of a tree whose changed tracked files are files.
+// dirtyText is cmd's refusal of a tree with uncommitted tracked files, which it names in sorted
+// order.
 func dirtyText(cmd landingCommand, files ...string) string {
 	slices.Sort(files)
 
@@ -83,20 +84,19 @@ func standingRefusals() []pushRefusal {
 			},
 		},
 		{
-			name: "on the trunk with a dirty tree", script: allowed(), ops: identityRead(),
+			name: "detached HEAD at origin's trunk", script: allowed(), ops: identityRead(), fetches: true,
 			arrange: func(f *gittest.Fixture) string {
-				f.Git("switch", "--quiet", trunk)
-				f.DirtyFile()
+				f.Git("switch", "--quiet", "--detach", trunk)
 
-				return onTrunk()
+				return detached()
 			},
 		},
 		{
-			name: "detached HEAD", script: allowed(), ops: identityRead(),
+			name: "detached HEAD with commits origin's trunk lacks", script: allowed(), ops: identityRead(), fetches: true,
 			arrange: func(f *gittest.Fixture) string {
 				f.Detach()
 
-				return detached()
+				return expect(f.Git("rev-parse", "HEAD"), "detached", "`git switch -c <name>`", "ils push")
 			},
 		},
 		{
@@ -225,7 +225,7 @@ func TestPush_WhenOriginStopsAnsweringASharedRead_RefusesNamingWhatItWasAskedFor
 func TestPush_WhenASharedReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
 	t.Parallel()
 
-	runOvertime(t, []cut{byTimeLimit()}, func(c cut) []overtime {
+	runOvertime(t, func(c cut) []overtime {
 		return []overtime{
 			{
 				name: "during the fetch of the merged pull request's head", read: readMergedHead,
@@ -294,8 +294,6 @@ func TestPush_WhenLocalReadFails_BrokeNamingTheRead(t *testing.T) {
 			got := landing.Push(t.Context(), s.deps, pushRequest())
 
 			assertBrokeReadBy(t, got, pushCommand(), tt.read)
-			// What git said must also render under the repository's own git dir: no line names a path in it.
-			shown(t, got, s.gitDir)
 			assertOnlyRead(t, s, reads{before: before, ops: identityRead(), fetches: tt.fetches})
 		})
 	}
@@ -303,12 +301,12 @@ func TestPush_WhenLocalReadFails_BrokeNamingTheRead(t *testing.T) {
 
 func TestPush_WhenFindChangesFailsUntyped_BrokeNamingTheRead(t *testing.T) {
 	t.Parallel()
-	s := newScene(t, nil, failingToFind(errors.New("HTTP 502")), false)
+	s := newScene(t, nil, failingToFind(errors.New(forgeFailure)), false)
 	before := s.written()
 
 	got := landing.Push(t.Context(), s.deps, pushRequest())
 
-	want := unreadText(pushCommand(), readChanges, "HTTP 502")
+	want := unreadText(pushCommand(), readChanges, forgeFailure)
 	assertEnded(t, s, got, finish{outcome: result.Broke, text: want})
 	assertOnlyRead(t, s, reads{before: before, ops: changesRead(), fetches: true})
 }

@@ -5,9 +5,10 @@ language model (LLM) agent that runs it cannot skip a step or push to the wrong 
 command runs only standard `git` and `gh` commands, prints what it did and what to do next, and
 keeps no state of its own.
 
-This version has two commands. `ils push` pushes a branch, opens its pull request, and waits for
-the checks. `ils merge` squash-merges that pull request once its checks are green. `branch`,
-`status`, and `release` are coming.
+This version has four commands. `ils branch <name>` starts a work branch from the default branch
+as origin has it. `ils push` pushes a branch, opens its pull request, and waits for the checks.
+`ils merge` squash-merges that pull request once its checks are green. `ils status` says where the
+checkout stands and what to run next. `release` is coming.
 
 - [Example](#example)
 - [Install](#install)
@@ -27,6 +28,10 @@ the checks. `ils merge` squash-merges that pull request once its checks are gree
   - [How merge ends](#how-merge-ends)
   - [A merge made elsewhere](#a-merge-made-elsewhere)
   - [Merge JSON output](#merge-json-output)
+- [Start a branch](#start-a-branch)
+  - [What branch refuses](#what-branch-refuses)
+- [Status](#status)
+  - [Status JSON output](#status-json-output)
 - [Use with Claude Code](#use-with-claude-code)
 - [Contributing](#contributing)
 - [License](#license)
@@ -119,6 +124,8 @@ ils push -d       # the same push, tracing each git and gh call and wait decisio
 ils push --no-color  # the same push, with no color
 ils merge         # squash-merge the pull request once its checks are green
 ils merge --json  # the same result as one JSON object
+ils branch fix-help  # start the branch fix-help from the default branch as origin has it
+ils status        # where the checkout stands, and what to run next
 ils help          # usage of ils and its commands
 ils help push     # the same as ils push --help
 ils --version     # print the version of ils
@@ -183,14 +190,14 @@ or file; at most it has fetched from origin. It refuses:
 
 ### Exit codes
 
-| Exit | Means                | Reaction                                                                                                                                                                                                                         |
-| ---- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | done                 | Push: the checks are green, or the repository has no continuous integration (CI) and a line says nothing verified the commit; write the pull request's title and body. Merge: the pull request is merged and the branch deleted. |
-| 1    | broke                | The output says what was done and what was not. Fix what failed, then follow `Next:`.                                                                                                                                            |
-| 2    | refused              | Nothing was pushed, opened, or merged, except by a push whose pull request's head moved during the wait. The reason says why; `Next:` says what to do.                                                                           |
-| 3    | ask                  | Reserved; not used by this version.                                                                                                                                                                                              |
-| 4    | pending              | GitHub had not finished when the command stopped waiting, for example checks still running or not yet reported. Run `ils push` again; a merge that was already done elsewhere names `ils merge` instead.                         |
-| 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                           |
+| Exit | Means                | Reaction                                                                                                                                                                                                                                                                                           |
+| ---- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | done                 | Push: the checks are green, or the repository has no continuous integration (CI) and a line says nothing verified the commit; write the pull request's title and body. Merge: the pull request is merged and the branch deleted. Branch: the branch is started. Status: always, whatever it finds. |
+| 1    | broke                | The output says what was done and what was not. Fix what failed, then follow `Next:`.                                                                                                                                                                                                              |
+| 2    | refused              | Nothing was pushed, opened, or merged, except by a push whose pull request's head moved during the wait. The reason says why; `Next:` says what to do.                                                                                                                                             |
+| 3    | ask                  | Reserved; not used by this version.                                                                                                                                                                                                                                                                |
+| 4    | pending              | GitHub had not finished when the command stopped waiting, for example checks still running or not yet reported. Run `ils push` again; a merge that was already done elsewhere names `ils merge` instead.                                                                                           |
+| 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                                                                                             |
 
 Every outcome but done prints its reason on the line above `Next:`, labeled by outcome:
 `Refused:`, `Broke:`, `Pending:`, or `Delivered, not green:`. A run stopped by Ctrl-C or SIGTERM
@@ -368,6 +375,92 @@ them.
 | `body`        | string           | The squash commit's body, once composed after the wait; empty before.                                                                                                       |
 | `merged`      | boolean          | Whether this run made the merge.                                                                                                                                            |
 | `ending`      | string           | `trunk` or `detached` once every step of the local ending ran; empty otherwise.                                                                                             |
+
+## Start a branch
+
+Run `ils branch <name>` before you start new work. It:
+
+1. fetches the default branch from origin;
+2. creates `<name>`, exactly as typed, at origin's copy of the default branch, with no upstream;
+3. switches to it, carrying your uncommitted changes and untracked files along.
+
+The new branch starts at origin's default branch whatever you stand on, so another work branch's
+commits never ride along into the new pull request, and a stale local default branch never holds
+it back. When the local default branch has commits origin lacks, a line names them: they stay on
+the local default branch. `ils branch` needs `git` alone: it runs without `gh`, and with an
+`origin` that is not on GitHub.
+
+By hand, the same steps are:
+
+```bash
+git fetch origin main
+git ls-remote --heads origin   # no branch named fix-help, a path prefix of it, or under it
+git switch -c fix-help --no-track origin/main
+```
+
+### What branch refuses
+
+When `ils branch` refuses, it has created no branch and switched nothing; at most it has fetched
+from origin. It refuses:
+
+- no name, a second word, or `--`;
+- a name git cannot hold as a branch, including one that starts with `-` and `@{-1}`;
+- a name a branch already takes, locally or on origin: one of the same name, or one that collides
+  with it by path (`fix` takes `fix/help`, and `fix/help` takes `fix`), which git cannot hold
+  beside it. A branch whose name only ends with the name (`team/fix` for `fix`) does not take it.
+  Origin is asked at the time of the run, so a branch pushed since the last fetch counts and one
+  deleted on origin does not;
+- a detached HEAD with commits origin's default branch lacks: it lists them, and `Next:` says to
+  keep them on a branch with `git switch -c <name>`, then run `ils push`;
+- a switch git refuses because a changed or untracked file would be overwritten: it names the
+  files;
+- an `origin` that cannot be reached, a missing `origin`, and a `git` older than 2.34.1.
+
+## Status
+
+Run `ils status` to learn where the checkout stands before you act. It always exits 0 once its
+words parse: what it could not read is a line of its output, not a refusal. It fetches what it
+reads from origin (the default branch, the branch's copy, a merged pull request's head, a version
+tag) and writes nothing of yours. When origin cannot be reached, it counts against the last fetch
+and says so.
+
+On a work branch it reports how the branch stands against its copy on origin (up to date, ahead,
+behind, diverged, or not on origin), its open pull request with its title, body, check verdict,
+and merge state, and every closed or merged pull request the branch had. On the default branch it
+reports how it stands against origin's, the last version tag (the highest `v*` version tag origin
+holds on its default branch) and the commits since it, whether the tip is a release commit, and
+whether rules protect the branch. On a detached HEAD it lists the commits origin lacks.
+
+`Next:` names the step the state calls for, in the order `ils push` would refuse or end: start a
+branch with `ils branch <name>` once the work landed, bring origin's copy in when the branch is
+behind or diverged, `ils push` when there is work to push or checks to wait for, the fix for a red
+check or a conflict, a review to request, or the pull request's title and body and `ils merge`
+when it is green and mergeable. With `gh` missing or logged out, it says so, names the fix, and
+still reports what `git` alone can tell.
+
+### Status JSON output
+
+`ils status --json` prints the same object as `ils push --json`, with the detail under
+`payload.status`:
+
+| Field                | Type             | Meaning                                                                                                                                                                         |
+| -------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `standing`           | string           | `branch`, `trunk`, `detached`, `no-origin`, or `no-repository`.                                                                                                                 |
+| `branch`             | string           | The branch HEAD is on; empty on a detached HEAD.                                                                                                                                |
+| `trunk`              | string           | Origin's default branch; empty when it could not be learned.                                                                                                                    |
+| `ahead`, `behind`    | integer          | Commits ahead of and behind origin's copy of the branch, or of origin's default branch on the default branch.                                                                   |
+| `on_origin`          | boolean          | Whether origin has a copy of the branch.                                                                                                                                        |
+| `pull_request`       | object or null   | The open pull request against the default branch: `number`, `url`, `title`, `body`, `title_ok`, `verdict`, `merge_state`, `checks`; null when there is none or it was not read. |
+| `past_pull_requests` | array of objects | Each closed or merged pull request of the branch: `number` and `state`.                                                                                                         |
+| `last_tag`           | string           | On the default branch, the last version tag; empty when there is none.                                                                                                          |
+| `since_tag`          | integer          | On the default branch, the commits on origin's default branch since the last tag.                                                                                               |
+| `release_commit`     | boolean          | On the default branch, whether origin's tip is a release commit (`chore: release v<X.Y.Z>`).                                                                                    |
+| `protection`         | string           | On the default branch, `protected`, `none`, or `unavailable` (the plan does not allow rules).                                                                                   |
+| `unlanded`           | array of strings | On a detached HEAD, the commits origin's default branch lacks.                                                                                                                  |
+| `unread`             | array of objects | One entry per read that failed: `read` names it and `error` says why. A null `pull_request` with an entry here means it was not read.                                           |
+
+`verdict`, `merge_state`, and `checks` use the words of `payload.push`; `title_ok` says whether the
+title is a conventional commit subject, as `ils merge` requires.
 
 ## Use with Claude Code
 

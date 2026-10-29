@@ -26,7 +26,7 @@ type Repo struct {
 
 // Slug names the repository as host/owner/name, the way gh's `--repo` takes it.
 func (r Repo) Slug() string {
-	return r.Host + "/" + r.Owner + "/" + r.Name
+	return r.Host + "/" + r.FullName()
 }
 
 // FullName names the repository as owner/name, the way a result names it to the user and GitHub's
@@ -122,8 +122,21 @@ type HeadQuery struct {
 	Number   int
 }
 
+// RulesState says whether rules protect a branch.
+type RulesState string
+
+// The answers to whether rules protect a branch.
+const (
+	// RulesProtect means at least one rule applies to the branch.
+	RulesProtect RulesState = "protected"
+	RulesNone    RulesState = "none"
+	// RulesUnavailable means the repository's plan does not allow rules, so none can apply.
+	RulesUnavailable RulesState = "unavailable"
+)
+
 // Protection is what the forge enforces on the trunk.
 type Protection struct {
+	Rules RulesState
 	// RequiredChecks names the checks a change must pass to land; it may be empty.
 	RequiredChecks []string
 	// SquashForbiddenBy holds the ids of the rulesets whose rules on the trunk forbid a squash
@@ -260,27 +273,30 @@ func (v Verdict) Deciding() []Check {
 		return v.Checks
 	}
 
-	var deciding []Check
+	return checksWhere(v.Checks, isRequired)
+}
 
-	for _, check := range v.Checks {
-		if check.Required {
-			deciding = append(deciding, check)
+// checksWhere returns the checks keep accepts, in order; the result is nil when none is kept.
+func checksWhere(checks []Check, keep func(Check) bool) []Check {
+	var kept []Check
+
+	for _, check := range checks {
+		if keep(check) {
+			kept = append(kept, check)
 		}
 	}
 
-	return deciding
+	return kept
 }
 
 // State returns the summary of the deciding checks.
 //
 // A required check that is missing does not change it: MissingRequired says so on its own.
 func (v Verdict) State() VerdictState {
-	deciding := v.Deciding()
-
-	switch _, failed := v.Failed(); {
-	case failed:
+	switch {
+	case len(v.FailedChecks()) > 0:
 		return VerdictRed
-	case len(deciding) == 0:
+	case len(v.Deciding()) == 0:
 		return VerdictNone
 	case len(v.Pending()) > 0:
 		return VerdictPending
@@ -289,16 +305,23 @@ func (v Verdict) State() VerdictState {
 	}
 }
 
-// Failed returns the first deciding check that failed or was canceled, and whether there is one.
+// Failed returns the first of FailedChecks, and whether there is one.
 func (v Verdict) Failed() (FailedCheck, bool) {
-	for _, check := range v.Deciding() {
-		canceled := check.Bucket == BucketCanceled
-		if check.Bucket == BucketFail || canceled {
-			return FailedCheck{Name: check.Name, Link: check.Link, Canceled: canceled}, true
-		}
+	failed := v.FailedChecks()
+	if len(failed) == 0 {
+		return FailedCheck{}, false
 	}
 
-	return FailedCheck{}, false
+	check := failed[0]
+
+	return FailedCheck{Name: check.Name, Link: check.Link, Canceled: check.Bucket == BucketCanceled}, true
+}
+
+// FailedChecks returns the deciding checks that failed or were canceled, in the order of Checks.
+func (v Verdict) FailedChecks() []Check {
+	return checksWhere(v.Deciding(), func(check Check) bool {
+		return check.Bucket == BucketFail || check.Bucket == BucketCanceled
+	})
 }
 
 // Pending returns the deciding checks still running, in the order of Checks.
@@ -306,17 +329,14 @@ func (v Verdict) Failed() (FailedCheck, bool) {
 // A check whose bucket is none of the known ones counts as still running, so
 // that an outcome nobody can read never passes for a good one.
 func (v Verdict) Pending() []Check {
-	var pending []Check
-
-	for _, check := range v.Deciding() {
+	return checksWhere(v.Deciding(), func(check Check) bool {
 		switch check.Bucket {
 		case BucketPass, BucketSkipped, BucketFail, BucketCanceled:
+			return false
 		default:
-			pending = append(pending, check)
+			return true
 		}
-	}
-
-	return pending
+	})
 }
 
 // Running reports whether a workflow run is queued or in progress; a run that

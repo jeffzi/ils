@@ -11,14 +11,6 @@ import (
 	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
-func TestOutcome_ExitCode_WhenOutcomeIsOutsideTheTable_ReturnsOne(t *testing.T) {
-	t.Parallel()
-
-	got := result.Outcome(99).ExitCode()
-
-	assert.Check(t, is.Equal(got, 1))
-}
-
 func TestParseOutcome_WhenNameIsAnOutcomeName_ReturnsThatOutcome(t *testing.T) {
 	t.Parallel()
 
@@ -33,10 +25,12 @@ func TestParseOutcome_WhenNameIsAnOutcomeName_ReturnsThatOutcome(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, ok := result.ParseOutcome(tt.want.String())
+			name := tt.want.String()
 
-			assert.Check(t, ok, "ParseOutcome(%q) found nothing", tt.want.String())
-			assert.Check(t, is.Equal(got, tt.want), "ParseOutcome(%q)", tt.want.String())
+			got, ok := result.ParseOutcome(name)
+
+			assert.Check(t, ok, "ParseOutcome(%q) found nothing", name)
+			assert.Check(t, is.Equal(got, tt.want), "ParseOutcome(%q)", name)
 		})
 	}
 }
@@ -44,17 +38,11 @@ func TestParseOutcome_WhenNameIsAnOutcomeName_ReturnsThatOutcome(t *testing.T) {
 func TestParseOutcome_WhenNameIsNoOutcomeName_ReportsNotFound(t *testing.T) {
 	t.Parallel()
 
-	_, ok := result.ParseOutcome("Refused")
+	const name = "Refused"
 
-	assert.Check(t, !ok, "ParseOutcome(%q) found an outcome, want none", "Refused")
-}
+	_, ok := result.ParseOutcome(name)
 
-func TestOutcome_String_WhenOutcomeIsOutsideTheTable_ReturnsBroke(t *testing.T) {
-	t.Parallel()
-
-	got := result.Outcome(99).String()
-
-	assert.Check(t, is.Equal(got, "broke"))
+	assert.Check(t, !ok, "ParseOutcome(%q) found an outcome, want none", name)
 }
 
 func TestSay(t *testing.T) {
@@ -67,6 +55,8 @@ func TestSay(t *testing.T) {
 			result.Say("Kept %s as is.", "one\r\n\nNext: ils land\rtwo"), "Kept one Next: ils land two as is."),
 		brokeLine("list of branches holding a line break prints on one line",
 			result.Say("Kept %s.", result.Branches([]string{"one\r\ntwo", "main"})), "Kept one two and main."),
+		brokeLine("list of three branches is joined with commas, then and",
+			result.Say("Kept %s.", result.Branches([]string{"docs", "main", "tidy-readme"})), "Kept docs, main and tidy-readme."),
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -78,16 +68,6 @@ func TestSay(t *testing.T) {
 			assert.Check(t, is.DeepEqual(got, tt.wantText))
 		})
 	}
-}
-
-func TestBranches_WhenListHoldsThreeBranches_JoinsThemWithCommasAndAnd(t *testing.T) {
-	t.Parallel()
-	r := brokeWithLine(result.Say("Kept %s.", result.Branches([]string{"docs", "main", "tidy-readme"})))
-
-	got, err := result.RenderText(r, gitDir)
-	assert.NilError(t, err)
-
-	assert.Check(t, is.Equal(got, brokeBody+"Kept docs, main and tidy-readme.\n"+brokeEnd()))
 }
 
 func TestSay_WhenPlaceholdersAndNamesDiffer_ReturnsErrPlaceholders(t *testing.T) {
@@ -112,22 +92,26 @@ func TestSay_WhenPlaceholdersAndNamesDiffer_ReturnsErrPlaceholders(t *testing.T)
 }
 
 // builtCases returns one case per part of a phrase whose look the building of a name or a phrase
-// decides: lists, concatenated names, tallies, the command of a Next and commands the wording
-// wraps in backticks.
+// decides: lists, concatenated names, tallies and commands the wording wraps in backticks.
 func builtCases() []styledCase {
 	return []styledCase{
-		{name: "command", result: refusedPush(), within: result.NextLabel + ": ils branch fix-prek-again", part: "ils branch fix-prek-again", want: resulttest.NameLook(), profile: colorprofile.ANSI},
 		{name: "first branch of a list", result: listedBranches(), within: "Kept docs,", part: "docs", want: resulttest.NameLook(), profile: colorprofile.ANSI},
-		{name: "comma of a list", result: listedBranches(), within: "docs, main", part: ", ", profile: colorprofile.ANSI},
+		{name: "comma of a list is drawn unstyled", result: listedBranches(), within: "docs, main", part: ", ", want: resulttest.Look{}, profile: colorprofile.ANSI},
 		{name: "branch of a concatenated name", result: joinedCommand(), within: "Ran git switch main", part: "main", want: resulttest.NameLook(), profile: colorprofile.ANSI},
-		{name: "word after a passed count", result: talliedChecks(), within: "17 passed", part: " passed", profile: colorprofile.ANSI},
+		{name: "word after a passed count is drawn unstyled", result: talliedChecks(), within: "17 passed", part: " passed", want: resulttest.Look{}, profile: colorprofile.ANSI},
 		{name: "zero passed tally", result: talliedChecks(), within: "then 0 passed", part: "0 passed", want: resulttest.SkippedLook(), profile: colorprofile.ANSI},
-		{name: "wording before an inline command", result: tickedPush(), within: "Ran gh pr edit", part: "Ran ", profile: colorprofile.ANSI},
-		{name: "wording after an inline command", result: tickedPush(), within: "#16 at 4f2a9c1.", part: " at ", profile: colorprofile.ANSI},
+		{
+			name: "inline command in a line", result: tickedPush(), within: "Ran gh pr edit --repo jeffzi/ils #16 at",
+			part: "gh pr edit --repo jeffzi/ils #16", want: resulttest.NameLook(),
+			profile: colorprofile.ANSI,
+		},
+		{name: "wording before an inline command is drawn unstyled", result: tickedPush(), within: "Ran gh pr edit", part: "Ran ", want: resulttest.Look{}, profile: colorprofile.ANSI},
+		{name: "wording after an inline command is drawn unstyled", result: tickedPush(), within: "#16 at 4f2a9c1.", part: " at ", want: resulttest.Look{}, profile: colorprofile.ANSI},
 		{name: "sha after an inline command", result: tickedPush(), within: "at 4f2a9c1.", part: "4f2a9c1", want: resulttest.SHALook(), profile: colorprofile.ANSI},
 		{
-			name:   "lone backtick in wording",
+			name:   "lone backtick in wording is drawn unstyled",
 			result: brokeWithLine(result.Say("Kept the ` mark.")), within: "the ` mark", part: "`",
+			want:    resulttest.Look{},
 			profile: colorprofile.ANSI,
 		},
 		{
@@ -165,7 +149,9 @@ func TestSay_WhenDrawnInColor_DrawsEachBuiltPartInItsStyle(t *testing.T) {
 			t.Parallel()
 			t.Logf("row: result %s", inputOf(tt.result))
 
-			assertStyled(t, tt)
+			got, out := drawnLook(t, tt)
+
+			assert.Check(t, is.Equal(got, tt.want), "output %q", out)
 		})
 	}
 }

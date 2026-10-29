@@ -99,18 +99,15 @@ func (f *Forge) checks(ctx context.Context, repo forge.Repo, number int) ([]forg
 	}
 
 	result, err := f.runner().Run(ctx, args...)
-	if err != nil {
-		exitErr, ok := errors.AsType[*child.ExitError](err)
+	exitErr, exited := errors.AsType[*child.ExitError](err)
+	printedJSON := exited && strings.TrimSpace(result.Stdout) != ""
 
-		switch {
-		case !ok:
-			return nil, err
-		case strings.TrimSpace(result.Stdout) != "":
-		case strings.Contains(exitErr.Stderr, noChecksReported):
-			return nil, nil
-		default:
-			return nil, err
-		}
+	if exited && !printedJSON && strings.Contains(exitErr.Stderr, noChecksReported) {
+		return nil, nil
+	}
+
+	if err != nil && !printedJSON {
+		return nil, err
 	}
 
 	reported, err := decodeOutput[[]pullCheck](result.Stdout, args)

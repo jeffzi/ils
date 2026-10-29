@@ -1,8 +1,3 @@
-// Package gittest builds real git repositories for tests: a working repository with a bare origin
-// under the test's temporary directory, isolated from the user's git configuration.
-//
-// It also provides a fake git: FakeGit puts the test binary first on PATH under git's name, and a
-// package whose tests use it calls Main from TestMain before running any test.
 package gittest
 
 import (
@@ -30,7 +25,6 @@ const (
 	origin        = "origin"
 	dirtyPath     = "README.md"
 	stagedPath    = "LICENSE"
-	untrackedPath = "untracked.txt"
 	trunkOnlyPath = "trunk-only.txt"
 	scratchRef    = "refs/gittest/squash"
 
@@ -130,6 +124,76 @@ func Env(tb testing.TB) []string {
 	return isolatedEnv(tb.TempDir())
 }
 
+// NeedSignals skips the test on Windows, where a shell cannot end a git process by a signal.
+func NeedSignals(tb testing.TB) {
+	tb.Helper()
+
+	if runtime.GOOS == "windows" {
+		tb.Skip("Windows has no signals for a shell to end a git process with")
+	}
+}
+
+// isolatedEnv returns the process environment with everything that could bring in the user's git
+// setup replaced: no system or global config, a home under the fixture, and a fixed identity and date.
+func isolatedEnv(home string) []string {
+	env := slices.DeleteFunc(os.Environ(), func(entry string) bool {
+		name, _, _ := strings.Cut(entry, "=")
+
+		const gitPrefix = "GIT_"
+
+		head := name[:min(len(name), len(gitPrefix))]
+
+		// XDG_CONFIG_HOME goes too: git reads its default ignore file from there.
+		return git.SameKey(head, gitPrefix) ||
+			slices.ContainsFunc([]string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME"}, func(key string) bool {
+				return git.SameKey(name, key)
+			})
+	})
+
+	return append(env,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL="+os.DevNull,
+		"HOME="+home,
+		"USERPROFILE="+home,
+		"GIT_AUTHOR_NAME="+AuthorName,
+		"GIT_AUTHOR_EMAIL="+AuthorEmail,
+		"GIT_AUTHOR_DATE="+commitDate,
+		"GIT_COMMITTER_NAME="+AuthorName,
+		"GIT_COMMITTER_EMAIL="+AuthorEmail,
+		"GIT_COMMITTER_DATE="+commitDate,
+	)
+}
+
+// Without returns a copy of env with every entry of key removed, matching the key as the system
+// does: exactly, or regardless of case on Windows.
+func Without(env []string, key string) []string {
+	return slices.DeleteFunc(slices.Clone(env), func(entry string) bool {
+		name, _, _ := strings.Cut(entry, "=")
+
+		return git.SameKey(name, key)
+	})
+}
+
+// FirstOnPath returns a copy of env whose one PATH is the PATH env gives, the last one when it
+// gives several, with dir put first.
+func FirstOnPath(env []string, dir string) []string {
+	path, _ := git.EnvValue(env, "PATH")
+
+	return append(Without(env, "PATH"), "PATH="+firstOnPath(dir, path))
+}
+
+// WithoutSSH returns a copy of env, the environment of a fixture, with no ssh command and an empty
+// directory as its one PATH, so that git run in it finds no ssh to run.
+func WithoutSSH(tb testing.TB, env []string) []string {
+	tb.Helper()
+
+	return append(Without(Without(env, sshCommandVar), "PATH"), "PATH="+tb.TempDir())
+}
+
+// ---------------------------------------------------------------------------
+// Files and scripts
+// ---------------------------------------------------------------------------
+
 // Marking returns a command line that creates the file at marker when a shell runs it, whatever
 // arguments follow it.
 func Marking(marker string) string { return "echo ran > '" + filepath.ToSlash(marker) + "' #" }
@@ -154,42 +218,6 @@ func writeScript(tb testing.TB, dir, name, body string) {
 	if err != nil {
 		tb.Fatalf("gittest: write script %s: %v", name, err)
 	}
-}
-
-// NeedSignals skips the test on Windows, where a shell cannot end a git process by a signal.
-func NeedSignals(tb testing.TB) {
-	tb.Helper()
-
-	if runtime.GOOS == "windows" {
-		tb.Skip("Windows has no signals for a shell to end a git process with")
-	}
-}
-
-// isolatedEnv returns the process environment with everything that could bring in the user's git
-// setup replaced: no system or global config, a home under the fixture, and a fixed identity and date.
-func isolatedEnv(home string) []string {
-	env := slices.DeleteFunc(os.Environ(), func(entry string) bool {
-		name, _, _ := strings.Cut(entry, "=")
-
-		// XDG_CONFIG_HOME goes too: git reads its default ignore file from there.
-		return git.SameKey(name[:min(len(name), len("GIT_"))], "GIT_") ||
-			slices.ContainsFunc([]string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME"}, func(key string) bool {
-				return git.SameKey(name, key)
-			})
-	})
-
-	return append(env,
-		"GIT_CONFIG_NOSYSTEM=1",
-		"GIT_CONFIG_GLOBAL="+os.DevNull,
-		"HOME="+home,
-		"USERPROFILE="+home,
-		"GIT_AUTHOR_NAME="+AuthorName,
-		"GIT_AUTHOR_EMAIL="+AuthorEmail,
-		"GIT_AUTHOR_DATE="+commitDate,
-		"GIT_COMMITTER_NAME="+AuthorName,
-		"GIT_COMMITTER_EMAIL="+AuthorEmail,
-		"GIT_COMMITTER_DATE="+commitDate,
-	)
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +252,30 @@ func (f *Fixture) OriginGit(args ...string) string {
 	f.tb.Helper()
 
 	return f.run(f.originDir, args...)
+}
+
+// originURL returns the bare origin's location in the slash form git accepts on every platform.
+func (f *Fixture) originURL() string { return filepath.ToSlash(f.originDir) }
+
+func (f *Fixture) trunkRef() string { return "refs/heads/" + f.trunk }
+
+func (f *Fixture) run(dir string, args ...string) string {
+	f.tb.Helper()
+
+	var stdout, stderr bytes.Buffer
+
+	cmd := exec.CommandContext(f.tb.Context(), f.git, args...) //nolint:gosec // argv comes from test code, never from input
+	cmd.Dir = dir
+	cmd.Env = f.env
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		f.tb.Fatalf("gittest: git %s in %s: %v\n%s", strings.Join(args, " "), dir, err, strings.TrimSpace(stderr.String()))
+	}
+
+	return strings.TrimSpace(stdout.String())
 }
 
 // ---------------------------------------------------------------------------
@@ -340,14 +392,6 @@ func (f *Fixture) StagedFile() string {
 	return stagedPath
 }
 
-// UntrackedFile creates a file git does not track and returns its path relative to Dir.
-func (f *Fixture) UntrackedFile() string {
-	f.tb.Helper()
-	WriteFile(f.tb, f.dir, untrackedPath, "untracked\n")
-
-	return untrackedPath
-}
-
 // Sibling checks out a new branch cut from the first commit of the branch named by of past the
 // trunk, adds one commit to it, and returns the new tip.
 func (f *Fixture) Sibling(name, of string) string {
@@ -397,7 +441,7 @@ func (f *Fixture) SquashOnOrigin(sha, subject, body string) string {
 	// Pushing to a scratch ref carries the objects of sha to origin without creating a branch.
 	f.Git("push", "--quiet", "--force", f.originURL(), sha+":"+scratchRef)
 
-	trunkRef := "refs/heads/" + f.trunk
+	trunkRef := f.trunkRef()
 	parent := f.OriginGit("rev-parse", "--verify", trunkRef)
 	args := []string{"commit-tree", sha + "^{tree}", "-p", parent, "-m", subject}
 	if body != "" {
@@ -473,11 +517,7 @@ func (f *Fixture) UntrackedOnTrunk() string {
 	f.tb.Helper()
 
 	f.commitOnTrunk(func(dir string) string {
-		WriteFile(f.tb, dir, trunkOnlyPath, "tracked on the trunk\n")
-		f.run(dir, "add", "--", trunkOnlyPath)
-		f.run(dir, "commit", "--quiet", "--message", "track "+trunkOnlyPath)
-
-		return f.run(dir, "rev-parse", "HEAD")
+		return f.commitFile(dir, trunkOnlyPath, "tracked on the trunk\n", "track "+trunkOnlyPath)
 	})
 	f.Publish(f.trunk)
 	WriteFile(f.tb, f.dir, trunkOnlyPath, "untracked here\n")
@@ -490,7 +530,7 @@ func (f *Fixture) UntrackedOnTrunk() string {
 func (f *Fixture) commitOnTrunk(commit func(dir string) string) string {
 	f.tb.Helper()
 
-	trunkRef := "refs/heads/" + f.trunk
+	trunkRef := f.trunkRef()
 	parent := f.Git("rev-parse", "--verify", trunkRef)
 
 	dir := filepath.Join(f.root, "trunk-scratch")
@@ -504,8 +544,31 @@ func (f *Fixture) commitOnTrunk(commit func(dir string) string) string {
 	return sha
 }
 
+// commit adds a commit that creates one new file in the repository at dir and returns its sha.
+// File names are unique across the fixture, so commits made on different sides never conflict.
+func (f *Fixture) commit(dir, subject string) string {
+	f.tb.Helper()
+
+	f.serial++
+	name := fmt.Sprintf("change-%d.txt", f.serial)
+
+	return f.commitFile(dir, name, subject+"\n", subject)
+}
+
+// commitFile writes content to name in the repository at dir, commits it with subject, and returns
+// the new sha.
+func (f *Fixture) commitFile(dir, name, content, subject string) string {
+	f.tb.Helper()
+
+	WriteFile(f.tb, dir, name, content)
+	f.run(dir, "add", "--", name)
+	f.run(dir, "commit", "--quiet", "--message", subject)
+
+	return f.run(dir, "rev-parse", "HEAD")
+}
+
 // ---------------------------------------------------------------------------
-// Serving over ssh and running git
+// Serving over ssh
 // ---------------------------------------------------------------------------
 
 // Serving returns a script that serves the repository at dir: it runs the service git asked the host
@@ -543,7 +606,7 @@ func (f *Fixture) standIn() string {
 
 	const name = "ssh"
 
-	ssh, err := exec.LookPath("ssh")
+	ssh, err := exec.LookPath(name)
 	if err != nil {
 		f.tb.Fatalf("gittest: find ssh: %v", err)
 	}
@@ -579,67 +642,4 @@ func (f *Fixture) RemoveSSHConfig() {
 	if err != nil {
 		f.tb.Fatalf("gittest: remove the ssh config: %v", err)
 	}
-}
-
-// Without returns a copy of env with every entry of key removed, matching the key as the system
-// does: exactly, or regardless of case on Windows.
-func Without(env []string, key string) []string {
-	return slices.DeleteFunc(slices.Clone(env), func(entry string) bool {
-		name, _, _ := strings.Cut(entry, "=")
-
-		return git.SameKey(name, key)
-	})
-}
-
-// FirstOnPath returns a copy of env whose one PATH is the PATH env gives, the last one when it
-// gives several, with dir put first.
-func FirstOnPath(env []string, dir string) []string {
-	path, _ := git.EnvValue(env, "PATH")
-
-	return append(Without(env, "PATH"), "PATH="+firstOnPath(dir, path))
-}
-
-// WithoutSSH returns a copy of env, the environment of a fixture, with no ssh command and an empty
-// directory as its one PATH, so that git run in it finds no ssh to run.
-func WithoutSSH(tb testing.TB, env []string) []string {
-	tb.Helper()
-
-	return append(Without(Without(env, sshCommandVar), "PATH"), "PATH="+tb.TempDir())
-}
-
-// originURL returns the bare origin's location in the slash form git accepts on every platform.
-func (f *Fixture) originURL() string { return filepath.ToSlash(f.originDir) }
-
-// commit adds a commit that creates one new file in the repository at dir and returns its sha.
-// File names are unique across the fixture, so commits made on different sides never conflict.
-func (f *Fixture) commit(dir, subject string) string {
-	f.tb.Helper()
-
-	f.serial++
-	name := fmt.Sprintf("change-%d.txt", f.serial)
-
-	WriteFile(f.tb, dir, name, subject+"\n")
-	f.run(dir, "add", "--", name)
-	f.run(dir, "commit", "--quiet", "--message", subject)
-
-	return f.run(dir, "rev-parse", "HEAD")
-}
-
-func (f *Fixture) run(dir string, args ...string) string {
-	f.tb.Helper()
-
-	var stdout, stderr bytes.Buffer
-
-	cmd := exec.CommandContext(f.tb.Context(), f.git, args...) //nolint:gosec // argv comes from test code, never from input
-	cmd.Dir = dir
-	cmd.Env = f.env
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if err != nil {
-		f.tb.Fatalf("gittest: git %s in %s: %v\n%s", strings.Join(args, " "), dir, err, strings.TrimSpace(stderr.String()))
-	}
-
-	return strings.TrimSpace(stdout.String())
 }

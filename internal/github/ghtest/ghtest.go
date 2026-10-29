@@ -25,7 +25,6 @@ import (
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/gittest"
-	"github.com/jeffzi/ils/internal/quiet"
 )
 
 const (
@@ -68,11 +67,21 @@ type Answer struct {
 // VersionArgs: a release every command accepts, so that a script need not answer the version read.
 const installed = "gh version " + github.MinimumVersion + "\n"
 
+// Any stands in a scripted argv for one argument the fake accepts whatever it holds: a value the
+// code under test writes out by hand, such as a field list or a limit, that no test should copy.
+// No real argument can equal it, since an argument cannot hold a NUL byte.
+const Any = "\x00any"
+
+// Matches reports whether argv is a call pattern scripts: as long as pattern, and equal to it
+// wherever pattern does not hold Any.
+func Matches(pattern, argv []string) bool {
+	return slices.EqualFunc(pattern, argv, func(want, got string) bool { return want == Any || want == got })
+}
+
 // Call scripts the answer to one argv, given to every call of it.
 type Call struct {
-	// Args is the argv after gh, matched exactly.
-	Args []string
-	// Answer is what the fake answers each call of Args with.
+	// Args is the argv after gh, matched by Matches.
+	Args   []string
 	Answer Answer
 }
 
@@ -110,16 +119,15 @@ func LoginArgs(host string) []string {
 	return []string{"auth", "status", "--hostname", host}
 }
 
-// RepoViewArgs is the argv of the read of a repository's identity; slug is host/owner/name.
+// RepoViewArgs is the argv pattern of the read of a repository's identity; slug is host/owner/name.
 func RepoViewArgs(slug string) []string {
-	return []string{"repo", "view", slug, "--json", "isFork,viewerPermission,squashMergeAllowed"}
+	return []string{"repo", "view", slug, "--json", Any}
 }
 
-// ListArgs is the argv of the list of the pull requests from the branch head that are in state.
-func ListArgs(slug, head, state string) []string {
+// ListArgs is the argv pattern of the list of the pull requests from the branch head, whatever their state.
+func ListArgs(slug, head string) []string {
 	return []string{
-		"pr", "list", "--repo", slug, "--head", head, "--state", state,
-		"--json", "number,url,title,baseRefName,headRefOid,isDraft,isCrossRepository",
+		"pr", "list", "--repo", slug, "--head", head, "--state", "all", "--limit", Any, "--json", Any,
 	}
 }
 
@@ -128,12 +136,9 @@ func CreateArgs(slug, title, base, head string) []string {
 	return []string{"pr", "create", "--repo", slug, "--title", title, "--body", "", "--base", base, "--head", head}
 }
 
-// HeadArgs is the argv of the read of pull request number's head commit and merge state.
+// HeadArgs is the argv pattern of the read of pull request number's head commit and merge state.
 func HeadArgs(slug string, number int) []string {
-	return []string{
-		"pr", "view", "--repo", slug, strconv.Itoa(number),
-		"--json", "headRefOid,mergeable,mergeStateStatus,isDraft,reviewDecision",
-	}
+	return []string{"pr", "view", "--repo", slug, strconv.Itoa(number), "--json", Any}
 }
 
 // LandArgs is the argv that squash-merges the pull request landing names, with its subject and
@@ -151,22 +156,20 @@ func DeleteBranchArgs(host, repo, branchPath string) []string {
 	return []string{"api", "--hostname", host, "-X", "DELETE", "repos/" + repo + "/git/refs/heads/" + branchPath}
 }
 
-// RulesArgs is the argv of the read of the rules on branch; repo is owner/name.
-func RulesArgs(host, repo, branch string) []string {
-	return []string{"api", "--hostname", host, "--paginate", "repos/" + repo + "/rules/branches/" + branch}
+// RulesArgs is the argv of the read of the rules on a branch of the repository owner/name on host;
+// branchPath is the branch as it stands in a URL path, each of its segments escaped.
+func RulesArgs(host, repo, branchPath string) []string {
+	return []string{"api", "--hostname", host, "--paginate", "repos/" + repo + "/rules/branches/" + branchPath}
 }
 
-// ChecksArgs is the argv of the read of pull request number's checks.
+// ChecksArgs is the argv pattern of the read of pull request number's checks.
 func ChecksArgs(slug string, number int) []string {
-	return []string{"pr", "checks", "--repo", slug, strconv.Itoa(number), "--json", "name,bucket,workflow,link"}
+	return []string{"pr", "checks", "--repo", slug, strconv.Itoa(number), "--json", Any}
 }
 
-// RunsArgs is the argv of the list of the workflow runs on the commit sha.
+// RunsArgs is the argv pattern of the list of the workflow runs on the commit sha.
 func RunsArgs(slug, sha string) []string {
-	return []string{
-		"run", "list", "--repo", slug, "--commit", sha, "--limit", "1000",
-		"--json", "status,name,workflowName",
-	}
+	return []string{"run", "list", "--repo", slug, "--commit", sha, "--limit", Any, "--json", Any}
 }
 
 // LogArgs is the argv of the read of the failed log of the workflow run numbered run.
@@ -174,15 +177,12 @@ func LogArgs(slug, run string) []string {
 	return []string{"run", "view", "--repo", slug, run, "--log-failed"}
 }
 
-// MessageArgs is the argv of the read of pull request number's title, body, and the body GitHub
+// MessageArgs is the argv pattern of the read of pull request number's title, body, and the body GitHub
 // would compose for its squash merge, in the repository owner/name on host.
 func MessageArgs(host, owner, name string, number int) []string {
 	return []string{
 		"api", "graphql", "--hostname", host,
-		"-F", "number=" + strconv.Itoa(number), "-f", "owner=" + owner, "-f", "name=" + name,
-		"-f", "query=query($owner: String!, $name: String!, $number: Int!) { " +
-			"repository(owner: $owner, name: $name) { " +
-			"pullRequest(number: $number) { title body viewerMergeBodyText(mergeType: SQUASH) } } }",
+		"-F", "number=" + strconv.Itoa(number), "-f", "owner=" + owner, "-f", "name=" + name, "-f", Any,
 	}
 }
 
@@ -224,10 +224,12 @@ func quoted(s string) string {
 
 // Change is one pull request as `gh pr list` prints it.
 type Change struct {
-	URL    string
-	Title  string
-	Base   string
-	SHA    string
+	URL   string
+	Title string
+	Base  string
+	SHA   string
+	// State is GitHub's word for where the pull request stands: OPEN, CLOSED or MERGED.
+	State  string
 	Number int
 	Draft  bool
 	// CrossRepository says the head branch lives in another repository, as a fork's does.
@@ -239,7 +241,7 @@ func ChangeJSON(change Change) string {
 	return `{"number":` + strconv.Itoa(change.Number) + `,"url":` + quoted(change.URL) + `,"title":` + quoted(change.Title) +
 		`,"baseRefName":` + quoted(change.Base) + `,"headRefOid":` + quoted(change.SHA) +
 		`,"isDraft":` + strconv.FormatBool(change.Draft) +
-		`,"isCrossRepository":` + strconv.FormatBool(change.CrossRepository) + `}`
+		`,"isCrossRepository":` + strconv.FormatBool(change.CrossRepository) + `,"state":` + quoted(change.State) + `}`
 }
 
 // HeadJSON is `gh pr view`'s answer for a pull request at sha that is not a draft.
@@ -334,7 +336,7 @@ func Setup(tb testing.TB, script ...Call) *Fake {
 	holdAddr, holding := listenForHolds(tb, record)
 	fake := &Fake{tb: tb, holding: holding, record: record}
 
-	tb.Setenv("GORACE", quiet.Setting())
+	tb.Setenv("GORACE", gittest.RaceSetting())
 	tb.Setenv("GH_PATH", exe)
 	tb.Setenv(scriptEnv, scriptPath)
 	tb.Setenv(recordEnv, fake.record)
@@ -363,9 +365,7 @@ func listenForHolds(tb testing.TB, record string) (addr string, holding <-chan s
 
 	firstHold := make(chan struct{})
 
-	var once sync.Once
-
-	announced := func() { once.Do(func() { close(firstHold) }) }
+	announced := sync.OnceFunc(func() { close(firstHold) })
 
 	addr = gittest.Serve(tb, func(conn net.Conn) { acknowledgeHold(tb, conn, record, announced) })
 
@@ -446,36 +446,6 @@ func (f *Fake) Holding() <-chan struct{} {
 	return f.holding
 }
 
-// RunHeld starts run in a goroutine of its own, under a context that cancel ends, and returns once
-// the fake holds the answer of a call run made; result then delivers what run returns. The test
-// fails when run returns before an answer is held, and its end cancels run and waits for it.
-func (f *Fake) RunHeld(run func(ctx context.Context) error) (cancel context.CancelFunc, result <-chan error) {
-	f.tb.Helper()
-
-	ctx, cancel := context.WithCancel(f.tb.Context())
-	ran := make(chan error, 1)
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-
-		ran <- run(ctx)
-	}()
-
-	f.tb.Cleanup(func() {
-		cancel()
-		<-done
-	})
-
-	select {
-	case <-f.holding:
-	case err := <-ran:
-		f.tb.Fatalf("ghtest: the run returned %v before the fake held its answer", err)
-	}
-
-	return cancel, ran
-}
-
 // Calls returns every argv the fake received, each starting with gh, in order.
 func (f *Fake) Calls() [][]string {
 	f.tb.Helper()
@@ -508,18 +478,18 @@ func serve(ctx context.Context, places servePlaces, args []string) int {
 	}
 
 	recorded, err := readRecord(places.record)
-	if err == nil {
-		err = appendRecord(places.record, args)
+	if err != nil {
+		return broken(err)
 	}
 
-	if err != nil {
+	if err := appendRecord(places.record, args); err != nil {
 		return broken(err)
 	}
 
 	// Last, so that a scripted answer to the version read is the one found.
 	script = append(script, Says(installed, VersionArgs()...))
 
-	index := slices.IndexFunc(script, func(call Call) bool { return slices.Equal(call.Args, args) })
+	index := slices.IndexFunc(script, func(call Call) bool { return Matches(call.Args, args) })
 	if index < 0 {
 		fmt.Fprintf(os.Stderr, "ghtest: no scripted answer for %s %s\n", github.Program, strings.Join(args, " "))
 

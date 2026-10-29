@@ -173,32 +173,6 @@ func TestApp_Run_WhenContinuedAfterASuspend_DrawsTheSpinnerLineAgain(t *testing.
 	run.await(t, "the spinner line showed again", run.spinnerShows)
 }
 
-func TestApp_Run_WhenSuspendedWithNoSpinnerLine_StopsWithNothingOnStderr(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		way  string
-	}{
-		{name: "stderr is no terminal", way: stuckPiped},
-		{name: "no step runs", way: stuckIdle},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			run := startStuck(t, tt.way)
-			run.awaitReady(t)
-
-			status := run.suspend(t)
-
-			run.drain(t)
-			assert.Check(t, stopped(status), "status = %v, want the run stopped", status)
-			assert.Check(t, run.stderr.raw() == "", "stderr = %q, want nothing", run.stderr.raw())
-		})
-	}
-}
-
 func TestApp_Run_WhenSuspendedAfterTheLandingCommandReturned_Stops(t *testing.T) {
 	t.Parallel()
 

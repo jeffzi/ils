@@ -51,4 +51,33 @@ ils merge
 
 # The same result as one JSON object
 ils merge --json`
+
+	branchShort = "Start a branch from the trunk as origin has it"
+	branchLong  = `Fetch the trunk (origin's default branch) and start <name> from origin's
+copy of it, then switch to it. The name is used exactly as typed.
+Uncommitted changes come along to the new branch.
+
+It refuses before creating anything when a branch locally or on origin
+takes the name, by the same name or a path that collides with it, or when
+a detached HEAD has commits the trunk lacks. The output
+gives the reason and the next step.`
+
+	branchExamples = `# Start a branch for new work
+ils branch fix-help`
+
+	statusShort = "Say where the branch stands, and what to run next"
+	statusLong  = `Say where the current branch stands against origin, its pull requests
+and the verdict of the open one's checks, or on the trunk, its last tag
+and whether a ruleset protects it; then the next command to run.
+
+It fetches what it reads from origin (the trunk, the branch's copy, a
+merged pull request's head, a version tag) and writes nothing of yours.
+It always exits 0 once its words parse: what it could not read is a line
+of the output, not a refusal.`
+
+	statusExamples = `# Where the branch stands
+ils status
+
+# The same result as one JSON object
+ils status --json`
 )

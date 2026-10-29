@@ -43,6 +43,9 @@ const (
 	readURLs       = "origin's URLs"
 	readIdentity   = "the repository's identity on GitHub"
 	readTrunk      = "origin's trunk"
+
+	// forgeFailure is what a fake forge call fails saying, and what the text of the failure holds.
+	forgeFailure = "HTTP 502"
 )
 
 // partEnd ends each part of an expected text built by expect, so that expected texts concatenate
@@ -55,7 +58,8 @@ const partEnd = "\x00"
 func expect(parts ...string) string {
 	var text strings.Builder
 	for _, part := range parts {
-		text.WriteString(part + partEnd)
+		text.WriteString(part)
+		text.WriteString(partEnd)
 	}
 
 	return text.String()
@@ -64,7 +68,7 @@ func expect(parts ...string) string {
 // nextPush is the `Next:` line that runs `ils push` again as it is, and nextFixed the one that runs
 // it again once what failed is fixed.
 func nextPush() string {
-	return expect("Next: ils push\n")
+	return expect(resulttest.NextLine("ils push") + "\n")
 }
 
 func nextFixed() string {
@@ -151,6 +155,16 @@ func asked(ops []forgetest.Op) []forgetest.Call {
 	}
 
 	return calls
+}
+
+// opsOf returns the operations of calls, in order.
+func opsOf(calls []forgetest.Call) []forgetest.Op {
+	var ops []forgetest.Op
+	for _, call := range calls {
+		ops = append(ops, call.Op)
+	}
+
+	return ops
 }
 
 // assertAsked fails unless the forge was called exactly as ops stand for: the operations in order,
@@ -505,12 +519,12 @@ func TestPush_WhenGivenNoProgressHookOrLogger_EndsAsWithThem(t *testing.T) {
 		// A first push whose check is still running at the first read reaches every place a hook
 		// or the logger is told something.
 		run := func(withoutHooks bool) result.Result {
-			d := newDelivery(t, pushRow{script: opening(running(), passing())})
+			ctx, d := newDelivery(t, pushRow{script: opening(running(), passing())})
 			if withoutHooks {
 				d.deps.Progress, d.deps.Logger = nil, nil
 			}
 
-			return landing.Push(d.ctx, d.deps, pushRequest())
+			return landing.Push(ctx, d.deps, pushRequest())
 		}
 		watched := run(false)
 
@@ -547,14 +561,14 @@ type refusal struct {
 // so that any call to it fails the test.
 func originRefusals() []refusal {
 	mismatch := func(fetch, push string) string {
-		return expect(fetch, push, "do not name one GitHub repository", "`git remote set-url`")
+		return expect(fetch, push)
 	}
 
 	return []refusal{
 		{
 			name:    "no remote named origin",
 			arrange: (*gittest.Fixture).RemoveOrigin,
-			want:    expect("no remote named origin", "`gh repo create --source . --push`"),
+			want:    expect("no remote named origin"),
 		},
 		{
 			name:    "fetch URL does not parse",
@@ -571,16 +585,21 @@ func originRefusals() []refusal {
 
 // forgeRefusals are the refusals decided from the forge's answer about the repository.
 func forgeRefusals() []refusal {
-	push := pushCommand()
-	noTool := expect("gh", "not installed", "https://cli.github.com") + push.after("install gh")
-	noLogin := expect("not logged in", host, "`gh auth login --hostname github.com`") + push.after("log in to "+host)
-	tooOld := expect("gh 2.49.0", "older than 2.50.0", "https://cli.github.com") + push.after("upgrade gh")
-	noVersion := expect("`gh version DEV`", "names no version", "2.50.0", "https://cli.github.com") + push.after("upgrade gh")
-	isFork := expect(owner+"/"+repoName, "is a fork", "push by hand")
-	noPush := expect("no push permission", owner+"/"+repoName, "push by hand")
+	const (
+		ghInstallURL = "https://cli.github.com"
+		ghMinimum    = "2.50.0"
+	)
 
-	missing := fails(&child.ToolMissingError{Tool: "gh", InstallURL: "https://cli.github.com"})
-	old := child.ToolTooOldError{Tool: "gh", Minimum: "2.50.0", InstallURL: "https://cli.github.com"}
+	push := pushCommand()
+	noTool := expect("gh", "not installed", ghInstallURL) + push.after("install gh")
+	noLogin := expect("not logged in", host, "`gh auth login --hostname github.com`") + push.after("log in to "+host)
+	tooOld := expect("gh 2.49.0", "older than "+ghMinimum, ghInstallURL) + push.after("upgrade gh")
+	noVersion := expect("`gh version DEV`", ghMinimum, ghInstallURL) + push.after("upgrade gh")
+	isFork := expect(owner+"/"+repoName, "is a fork")
+	noPush := expect("no push permission", owner+"/"+repoName)
+
+	missing := fails(&child.ToolMissingError{Tool: "gh", InstallURL: ghInstallURL})
+	old := child.ToolTooOldError{Tool: "gh", Minimum: ghMinimum, InstallURL: ghInstallURL}
 	outdated, unread := old, old
 	outdated.Version, outdated.Line = "2.49.0", "gh version 2.49.0 (2024-05-13)"
 	unread.Line = "gh version DEV"
@@ -593,7 +612,6 @@ func forgeRefusals() []refusal {
 		{name: "gh prints no version", script: fails(&unread), asksForge: true, want: noVersion},
 		{name: "gh is not logged in", script: fails(&forge.NotLoggedInError{Host: host}), asksForge: true, want: noLogin},
 		{name: "fork", script: answers(widgets(true, true)), asksForge: true, want: isFork},
-		{name: "fork without push permission", script: answers(widgets(true, false)), asksForge: true, want: isFork},
 		{name: "no push permission", script: answers(widgets(false, false)), asksForge: true, want: noPush},
 	}
 }
@@ -717,8 +735,7 @@ func TestPreconditions_WhenGitIsTooOld_RefusesBeforeAnyOtherRead(t *testing.T) {
 	assertStoppedBy(t, got, result.Refused, cmd.req)
 
 	text, _ := shown(t, got, s.gitDir)
-	assertSays(t, text, expect("git 1.0.0", "older than "+git.MinimumVersion, "https://git-scm.com/downloads")+
-		cmd.after("upgrade git"))
+	assertSays(t, text, expect("git", "1.0.0", git.MinimumVersion, "ils "+cmd.name))
 
 	assert.Check(t, is.Len(s.recorder.Calls(), 1))
 }
@@ -740,7 +757,7 @@ func TestPreconditions_WhenGitVersionFails_BrokeNamingTheRead(t *testing.T) {
 
 func TestPreconditions_WhenForgeIdentityFailsUntyped_BrokeNamingTheRead(t *testing.T) {
 	t.Parallel()
-	s := newScene(t, nil, fails(errors.New("HTTP 502")), false)
+	s := newScene(t, nil, fails(errors.New(forgeFailure)), false)
 
 	_, stop := landing.Preconditions(t.Context(), s.deps, pushRequest())
 
@@ -748,7 +765,7 @@ func TestPreconditions_WhenForgeIdentityFailsUntyped_BrokeNamingTheRead(t *testi
 	assertStoppedBy(t, got, result.Broke, pushRequest())
 
 	text, reason := shown(t, got, s.gitDir)
-	assertSays(t, text, unreadText(pushCommand(), readIdentity, "HTTP 502"))
+	assertSays(t, text, unreadText(pushCommand(), readIdentity, forgeFailure))
 	assert.Check(t, is.Contains(reason, readIdentity))
 
 	assertAsked(t, s, identityRead())

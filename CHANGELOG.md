@@ -7,6 +7,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Add `ils branch <name>`, which starts a work branch from the default branch as origin has it and
+  refuses a name a branch already takes, locally or on origin.
+- Add `ils status`, which says where the checkout stands and what to run next, and always exits 0.
+
+### Changed
+
+- Point every `Next:` line that spelled out cutting a branch by hand at `ils branch <name>`.
+
 ## [0.3.0] - 2026-10-25
 
 ### Added

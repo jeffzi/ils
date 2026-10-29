@@ -16,6 +16,11 @@ func (a *App) SetMerge(run Command) {
 	a.runMerge = run
 }
 
+// SetBranch makes a run `ils branch <name>` with run in place of landing.StartBranch.
+func (a *App) SetBranch(run Command) {
+	a.runBranch = run
+}
+
 // SetGit makes a run call git through runner in place of git in the working directory.
 func (a *App) SetGit(runner git.Runner) {
 	a.git = runner

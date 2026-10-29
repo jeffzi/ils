@@ -101,53 +101,68 @@ func pushChecks(ctx context.Context, deps Deps, req Request, ready Ready) (pushR
 // carries, and lists the commits none of those branches carry. Origin's copy of the branch, if
 // any, settles it when it carries that commit: the branch is already published with it, so
 // another branch that shares it does not stop the push. Without that, git cannot tell which
-// branch was cut from which, so the refusal names both ways out.
+// branch was cut from which, so the refusal names every way out: land the other branches first,
+// remove them, or start a new branch and bring this branch's own commits over.
 func cutFromTrunk(ctx context.Context, deps Deps, req Request, p pushReady) *result.Result {
+	stop, read, err := sharedFirstCommit(ctx, deps, req, p)
+	if err != nil {
+		return req.unread(read, err)
+	}
+
+	return stop
+}
+
+// sharedFirstCommit returns the refusal cutFromTrunk ends on, or nil when the branch's first commit
+// past the trunk does not stop the push; a read that fails is returned with the name of the read.
+func sharedFirstCommit(ctx context.Context, deps Deps, req Request, p pushReady) (*result.Result, string, error) {
 	first := p.past[0].SHA
 
 	if p.copied != "" {
 		published, err := deps.Repo.Contains(ctx, p.copied, first)
 		if err != nil {
-			return req.unread(readCopy, err)
+			return nil, readCopy, err
 		}
 
 		if published {
-			return nil
+			return nil, readCopy, nil
 		}
 	}
 
 	others, err := deps.Repo.BranchesContaining(ctx, first)
 	if err != nil {
-		return req.unread(readBranches, err)
+		return nil, readBranches, err
 	}
 
 	if len(others) == 0 {
-		return nil
+		return nil, readBranches, nil
 	}
 
 	own, err := deps.Repo.OwnCommits(ctx, p.tip, p.Trunk, others)
 	if err != nil {
-		return req.unread(readCommits, err)
+		return nil, readCommits, err
 	}
 
 	stop := req.Refused(sharedFirst(p.branch, others, len(own) > 0), eitherWayOut(len(others), req.ilsCommand()))
 	stop.Lines = listed(own)
 
-	return stop
+	return stop, "", nil
 }
 
 // eitherWayOut is the Next step of a branch that shares its first commit past the trunk with count
-// other local branches: land them first, or remove them, then run command again.
+// other local branches: land them first, or remove them, then run command again; or start a branch
+// and bring this branch's own commits over.
 func eitherWayOut(count int, command result.Name) result.Next {
+	const restart = "; or " + startBranch + " and cherry-pick this branch's own commits onto it"
+
 	push := result.Command(PushCommand)
 
 	if count == 1 {
 		return result.NextStep("run %s on the other branch and get it merged first when this branch builds "+
-			"on it, or remove the other branch when it was cut from this one"+thenRunAgain, push, command)
+			"on it, or remove the other branch when it was cut from this one"+thenRunAgain+restart, push, command)
 	}
 
 	return result.NextStep("run %s on the other branches and get them merged first when this branch builds "+
-		"on them, or remove the other branches when they were cut from this one"+thenRunAgain, push, command)
+		"on them, or remove the other branches when they were cut from this one"+thenRunAgain+restart, push, command)
 }
 
 // sharedFirst says that the branch shares its first commit past the trunk with the branches
@@ -211,14 +226,26 @@ func originCopy(ctx context.Context, deps Deps, req Request, p pushReady) (their
 	case apart.Behind > 0 && apart.Ahead > 0:
 		return "", false, req.Refused(
 			result.Say("the branch %s and origin's copy of it have diverged", result.Branch(p.branch)),
-			result.NextStep("run `git merge origin/%s`"+thenRunAgain, result.Branch(p.branch), req.ilsCommand()))
+			divergedStep(p.branch, req.ilsCommand()))
 
 	case apart.Behind > 0:
 		return "", false, req.Refused(
 			result.Say("the branch %s is behind origin's copy of it", result.Branch(p.branch)),
-			result.NextStep("run `git pull --ff-only origin %s`"+thenRunAgain, result.Branch(p.branch), req.ilsCommand()))
+			behindStep(p.branch, req.ilsCommand()))
 
 	}
 
 	return theirs, apart.Ahead == 0, nil
+}
+
+// divergedStep is the next step of a branch that has diverged from origin's copy of it: merge that
+// copy, then run command again.
+func divergedStep(branch string, command result.Name) result.Next {
+	return result.NextStep("run `git merge origin/%s`"+thenRunAgain, result.Branch(branch), command)
+}
+
+// behindStep is the next step of a branch behind origin's copy of it: fast-forward to that copy,
+// then run command again.
+func behindStep(branch string, command result.Name) result.Next {
+	return result.NextStep("run `git pull --ff-only origin %s`"+thenRunAgain, result.Branch(branch), command)
 }

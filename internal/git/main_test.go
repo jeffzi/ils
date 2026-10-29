@@ -36,16 +36,15 @@ const (
 	// sshStandInEnv makes the test binary act as an ssh command a user configured: standInAnswer
 	// followed by a name answers `-G <host>` with a config whose hostname is that name,
 	// standInSuffix followed by a suffix answers with the host it was asked for and that suffix,
-	// standInNoHostname answers with a config that has no hostname line, standInRefuse exits non-zero
-	// with standInRefusal on stderr, standInExit followed by a number exits with that code and
-	// standInRefusal on stderr, and standInLinger starts a lingering helper that inherits its output
-	// and waits for it.
+	// standInNoHostname answers with a config that has no hostname line, standInExit followed by a
+	// number exits with that code and standInRefusal on stderr, standInRefuse is standInExit with
+	// code 3, and standInLinger starts a lingering helper that inherits its output and waits for it.
 	sshStandInEnv     = "ILS_GIT_TEST_SSH_STAND_IN"
 	standInAnswer     = "hostname="
 	standInSuffix     = "suffix="
 	standInNoHostname = "no-hostname"
-	standInRefuse     = "refuse"
 	standInExit       = "exit="
+	standInRefuse     = standInExit + "3"
 	standInLinger     = "linger"
 	standInRefusal    = "stand-in refused the call"
 
@@ -115,16 +114,10 @@ func standInMode(args []string) (string, bool) {
 
 // sshStandIn plays the ssh command mode names, called with args, and returns its exit code. It
 // answers `-G <host>`, the call of a configured command, and `-G -- <host>`, the call of plain ssh;
-// the modes that refuse, exit, linger, print no hostname or print the directory answer any call.
+// the modes that refuse, exit, linger or print no hostname answer any call.
 func sshStandIn(mode string, args []string) int {
 	if mode == standInLinger {
 		return waitForLingerer()
-	}
-
-	if mode == standInRefuse {
-		fmt.Fprintln(os.Stderr, standInRefusal)
-
-		return 3
 	}
 
 	if code, exits := strings.CutPrefix(mode, standInExit); exits {

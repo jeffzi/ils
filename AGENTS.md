@@ -23,9 +23,8 @@ manage flags and tool invocations.
 - `task test:setup-live` — Create the three test repositories of the live suite on your GitHub
   account and record the clone URLs of the first two as the GitHub Actions variables
   `LIVE_ORIGIN_MINIMUM` and `LIVE_ORIGIN_LATEST` of this repository, which the Live workflow reads.
-  `ils-live-minimum` and `ils-live-latest` are public, so the Live workflow's runs in them cost no
-  Actions minutes; `ils-live-local` is private, so a local run meets the free plan's refusal of the
-  rules read. Safe to run again.
+  All three are public, so the GitHub Actions runs in them cost no Actions minutes. Safe to run
+  again.
 - `task test:live` — Run the live suite (`internal/cli/live_test.go`, build tag `live`): `ils push`
   with the real `git` and `gh` against a test repository, which the suite resets first. It reads:
   - `ILS_LIVE_ORIGIN` — the clone URL of the repository to reset and write to; its name must start

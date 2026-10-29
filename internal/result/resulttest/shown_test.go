@@ -57,3 +57,17 @@ func TestAssertCarried(t *testing.T) {
 		})
 	}
 }
+
+func TestDecode_WhenOutIsNotOneObject_StopsTheTest(t *testing.T) {
+	t.Parallel()
+	for _, out := range []string{"null", "[]"} {
+		t.Run(out, func(t *testing.T) {
+			t.Parallel()
+			spy := failtest.New(t)
+
+			spy.Run(func() { resulttest.Decode(spy, out) })
+
+			assert.Check(t, spy.Stopped(), "Decode(%q) went on, want the test stopped", out)
+		})
+	}
+}

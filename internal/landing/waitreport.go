@@ -17,10 +17,8 @@ const (
 	readCI         = "whether the repository has CI"
 )
 
-// excerptLines is how many lines of a failing check's log a red verdict's excerpt holds, counted from the
-// log's end: the excerpt is bounded so that the failure stays readable in a terminal. The push
-// payload carries the whole log; the merge payload carries none of it, so a merge result has only
-// the excerpt.
+// excerptLines is how many lines of a failing check's log a red verdict's excerpt holds, counted
+// from the log's end, so that the failure stays readable in a terminal.
 const excerptLines = 60
 
 // waitRead returns the read a failed wait names and the error of that read.
@@ -225,8 +223,6 @@ func (w Waited) ciCutShortReport(byInterrupt bool) waitReport {
 	}
 }
 
-// nothingReported returns the reason that says no check or status reported for the commit sha of
-// pull request number.
 func nothingReported(sha string, number int) result.Phrase {
 	return result.Say("no check or status reported for %s on pull request %s", result.SHA(sha), result.PullRequest(number))
 }

@@ -3,7 +3,6 @@ package landing
 import (
 	"context"
 	"slices"
-	"strings"
 
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/git"
@@ -21,13 +20,13 @@ const (
 	readMergedHead   = "the merged pull request's head"
 )
 
-// startBranch is the judgment step out of a branch that cannot land; its two names are the
-// trunk. The new branch's name stays a placeholder for the agent to choose.
-const startBranch = "start a branch from origin's trunk: " +
-	"`git fetch origin %s && git switch -c <name> --no-track refs/remotes/origin/%s`"
+// startBranch is the judgment step out of a branch that cannot land. The new branch's name stays a
+// placeholder for the agent to choose.
+const startBranch = "start a branch with `ils " + BranchCommand + " <name>`"
 
-func startBranchStep(trunk string) result.Next {
-	return result.NextStep(startBranch, result.Branch(trunk), result.Branch(trunk))
+// startBranchStep is the next step that starts a branch from origin's trunk.
+func startBranchStep() result.Next {
+	return result.NextStep(startBranch)
 }
 
 // onBranch is the work branch a landing command stands on, once the checks of the branch have
@@ -44,7 +43,7 @@ type onBranch struct {
 // then origin's trunk fetched. It returns the branch ready stands on, or the result of the first
 // that refuses.
 func branchChecks(ctx context.Context, deps Deps, req Request, ready Ready) (onBranch, *result.Result) {
-	if stop := req.onWorkBranch(ready); stop != nil {
+	if stop := onWorkBranch(ctx, deps, req, ready); stop != nil {
 		return onBranch{}, stop
 	}
 
@@ -52,11 +51,36 @@ func branchChecks(ctx context.Context, deps Deps, req Request, ready Ready) (onB
 		return onBranch{}, stop
 	}
 
-	if stop := fetchTrunk(ctx, deps, req, ready.Trunk); stop != nil {
+	if _, stop := fetchTrunk(ctx, deps, req, ready.Trunk); stop != nil {
 		return onBranch{}, stop
 	}
 
 	return onBranch{Ready: ready, branch: ready.Standing.Branch}, nil
+}
+
+// onWorkBranch refuses a detached HEAD and the trunk. The way out is a new branch, except for a
+// detached HEAD with commits origin's trunk lacks, fetched first, which `ils branch` would refuse
+// in turn: those commits are listed, to keep on a branch of their own.
+func onWorkBranch(ctx context.Context, deps Deps, req Request, ready Ready) *result.Result {
+	if ready.Standing.Kind == git.OnBranch {
+		if ready.Standing.Branch == ready.Trunk {
+			return req.Refused(result.Say("HEAD is on the trunk %s, which ils never pushes", result.Branch(ready.Trunk)),
+				startBranchStep())
+		}
+
+		return nil
+	}
+
+	if _, stop := fetchTrunk(ctx, deps, req, ready.Trunk); stop != nil {
+		return stop
+	}
+
+	reason := result.Say("HEAD is detached, so there is no branch to push")
+	if stop := req.detachedKept(ctx, deps, ready.Trunk, reason); stop != nil {
+		return stop
+	}
+
+	return req.Refused(reason, startBranchStep())
 }
 
 // cleanTree refuses a tree with a changed tracked file.
@@ -67,22 +91,22 @@ func cleanTree(ctx context.Context, deps Deps, req Request) *result.Result {
 	}
 
 	if len(files) > 0 {
-		return req.Refused(
-			result.Say("tracked files have changes that are not committed: %s", strings.Join(files, ", ")),
-			result.NextStep("commit them"+thenRunAgain, req.ilsCommand()))
+		return req.dirtyTree(files)
 	}
 
 	return nil
 }
 
-// fetchTrunk fetches origin's trunk, so that the reads of origin/<trunk> that follow are current.
-func fetchTrunk(ctx context.Context, deps Deps, req Request, trunk string) *result.Result {
-	if _, err := deps.Repo.Fetch(ctx, trunk); err != nil {
-		return req.unreached(readFetchedTrunk, err,
+// fetchTrunk fetches origin's trunk, so that the reads of origin/<trunk> that follow are current,
+// and returns the sha it fetched.
+func fetchTrunk(ctx context.Context, deps Deps, req Request, trunk string) (string, *result.Result) {
+	sha, err := deps.Repo.Fetch(ctx, trunk)
+	if err != nil {
+		return "", req.unreached(readFetchedTrunk, err,
 			result.Say("origin could not be reached to fetch its trunk %s", result.Branch(trunk)))
 	}
 
-	return nil
+	return sha, nil
 }
 
 // commitsPast returns the branch's tip and its commits past origin's trunk, which fetchTrunk
@@ -107,23 +131,55 @@ func commitsPast(ctx context.Context, deps Deps, req Request, b onBranch) (tip s
 
 // tipOf returns the sha of the branch's tip, refusing a branch that has no commit at all.
 func tipOf(ctx context.Context, deps Deps, req Request, b onBranch) (string, *result.Result) {
-	tip, err := deps.Repo.HeadSHA(ctx)
+	tip, committed, err := b.readTip(ctx, deps)
+
+	switch {
+	case err != nil:
+		return "", req.unread(readTip, err)
+	case !committed:
+		return "", req.nothingPast(b)
+	}
+
+	return tip, nil
+}
+
+// readTip reads the sha of the branch's tip, and whether the branch has a commit at all; a branch
+// with none reads as no tip and no error. err is a read of readTip that failed.
+func (b onBranch) readTip(ctx context.Context, deps Deps) (tip string, committed bool, err error) {
+	tip, err = deps.Repo.HeadSHA(ctx)
 	if err == nil {
-		return tip, nil
+		return tip, true, nil
 	}
 
 	// The read of the tip fails on a branch with no commit as it does on a broken repository, so
 	// only the branch's ref tells the two apart.
 	committed, refErr := deps.Repo.HasCommits(ctx, b.branch)
-	if refErr != nil {
-		return "", req.unread(readTip, refErr)
+	switch {
+	case refErr != nil:
+		return "", false, refErr
+	case !committed:
+		return "", false, nil
 	}
 
-	if !committed {
-		return "", req.nothingPast(b)
+	return "", true, err
+}
+
+// nothingPast refuses a branch with no commit that origin's trunk lacks. Its next step is the push
+// of the new work, which for `ils merge` is a first push and not a run again.
+func (r Request) nothingPast(b onBranch) *result.Result {
+	next := result.NextStep("commit the work"+thenRunAgain, result.Command(PushCommand))
+	if r.Command == MergeCommand {
+		next = firstPushStep()
 	}
 
-	return "", req.unread(readTip, err)
+	return r.Refused(
+		result.Say("the branch %s has no commit past origin's trunk %s", result.Branch(b.branch), result.Branch(b.Trunk)), next)
+}
+
+// firstPushStep is the next step of a branch with no commit past origin's trunk, for a command
+// other than push: commit the work, then push it for the first time.
+func firstPushStep() result.Next {
+	return result.NextStep("commit the work, then run %s", result.Command(PushCommand))
 }
 
 // pullRequest returns the branch's open pull request against the trunk, nil when it has none,
@@ -146,8 +202,7 @@ func pullRequest(ctx context.Context, deps Deps, req Request, b onBranch) (open,
 			return nil, nil, req.Refused(
 				result.Say("pull request %s from %s is open against %s and not against the trunk %s",
 					result.PullRequest(change.Number), result.Branch(b.branch), result.Branch(change.Base), result.Branch(b.Trunk)),
-				result.NextStep("close it or change its base with `gh pr edit %s --base %s`"+thenRunAgain,
-					result.PullRequestNumber(change.Number), result.Branch(b.Trunk), req.ilsCommand()))
+				elsewhereStep(change.Number, b.Trunk, req.ilsCommand()))
 		}
 
 		open = &change
@@ -174,6 +229,13 @@ func pullRequest(ctx context.Context, deps Deps, req Request, b onBranch) (open,
 	return open, nil, nil
 }
 
+// elsewhereStep is the next step of a branch whose open pull request number is against a base
+// other than the trunk: close it or move its base to the trunk, then run command again.
+func elsewhereStep(number int, trunk string, command result.Name) result.Next {
+	return result.NextStep("close it or change its base with `gh pr edit %s --base %s`"+thenRunAgain,
+		result.PullRequestNumber(number), result.Branch(trunk), command)
+}
+
 // landedWith reports whether the merged pull request change carries every commit of the branch
 // past the trunk, by patch: false when it shares none of them. It refuses a branch that shares a
 // commit with it and has commits it lacks, listing those. It returns the pull request's head as
@@ -184,21 +246,13 @@ func (b onBranch) landedWith(ctx context.Context, deps Deps, req Request, change
 		return "", false, stop
 	}
 
-	theirs, err := deps.Repo.CommitsPast(ctx, head, b.Trunk)
+	shared, unlanded, read, err := b.carriedBy(ctx, deps, head)
 	if err != nil {
-		return "", false, req.unread(readMergedHead, err)
+		return "", false, req.unread(read, err)
 	}
 
-	shared := slices.ContainsFunc(theirs, func(commit git.Commit) bool {
-		return slices.ContainsFunc(b.past, func(mine git.Commit) bool { return mine.SHA == commit.SHA })
-	})
 	if !shared {
 		return head, false, nil
-	}
-
-	unlanded, err := deps.Repo.Unlanded(ctx, head, b.tip, b.Trunk)
-	if err != nil {
-		return "", false, req.unread(readCommits, err)
 	}
 
 	if len(unlanded) == 0 {
@@ -208,13 +262,42 @@ func (b onBranch) landedWith(ctx context.Context, deps Deps, req Request, change
 	stop = req.Refused(
 		result.Say("pull request %s from %s was merged without the commits listed here",
 			result.PullRequest(change.Number), result.Branch(b.branch)),
-		result.NextStep(startBranch+", then bring those commits over with `git cherry-pick %s`; "+
-			"expect a conflict where the squash touched the same files", result.Branch(b.Trunk), result.Branch(b.Trunk),
-			shas(unlanded)))
+		unlandedStep(unlanded))
 
 	stop.Lines = listed(unlanded)
 
 	return head, false, stop
+}
+
+// carriedBy reports whether the merged head head shares a commit past the trunk with the branch,
+// and, when it does, the branch's commits it lacks by patch. A read that fails is returned by name
+// with its error.
+func (b onBranch) carriedBy(ctx context.Context, deps Deps, head string) (shared bool, unlanded []git.Commit, read string, err error) {
+	theirs, err := deps.Repo.CommitsPast(ctx, head, b.Trunk)
+	if err != nil {
+		return false, nil, readMergedHead, err
+	}
+
+	shared = slices.ContainsFunc(theirs, func(commit git.Commit) bool {
+		return slices.ContainsFunc(b.past, func(mine git.Commit) bool { return mine.SHA == commit.SHA })
+	})
+	if !shared {
+		return false, nil, "", nil
+	}
+
+	unlanded, err = deps.Repo.Unlanded(ctx, head, b.tip, b.Trunk)
+	if err != nil {
+		return false, nil, readCommits, err
+	}
+
+	return true, unlanded, "", nil
+}
+
+// unlandedStep is the next step of a branch merged without the commits unlanded: start a branch and
+// bring those commits over.
+func unlandedStep(unlanded []git.Commit) result.Next {
+	return result.NextStep(startBranch+", then bring those commits over with `git cherry-pick %s`; "+
+		"expect a conflict where the squash touched the same files", shas(unlanded))
 }
 
 // alreadyLanded refuses a branch whose every commit landed with the merged pull request landed:
@@ -222,7 +305,7 @@ func (b onBranch) landedWith(ctx context.Context, deps Deps, req Request, change
 func (b onBranch) alreadyLanded(req Request, landed forge.Change) *result.Result {
 	return req.Refused(
 		result.Say("the branch %s already landed with pull request %s", result.Branch(b.branch), result.PullRequest(landed.Number)),
-		startBranchStep(b.Trunk))
+		startBranchStep())
 }
 
 func shas(commits []git.Commit) result.Name {

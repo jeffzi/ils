@@ -1,6 +1,7 @@
 package cli_test
 
 import (
+	"fmt"
 	"slices"
 	"testing"
 
@@ -25,11 +26,12 @@ const (
 	// opened is the number of the open pull request.
 	opened = 12
 
-	pullURL = "https://" + slug + "/pull/12"
 	// runID is the workflow run that stands behind a check, and runLink is that check's link.
 	runID   = "9001"
 	runLink = "https://" + slug + "/actions/runs/" + runID + "/job/42"
 )
+
+func pullURL() string { return fmt.Sprintf("https://%s/pull/%d", slug, opened) }
 
 // scenario is one state of the repository and of GitHub that a landing command is run in.
 type scenario struct {
@@ -83,19 +85,9 @@ func allowed() []ghtest.Call {
 	}
 }
 
-// listed scripts the answer to the list of the topic branch's pull requests in state.
-func listed(state, body string) ghtest.Call {
-	return ghtest.Exits(ghtest.Answer{Stdout: body}, ghtest.ListArgs(slug, topic, state)...)
-}
-
-// found scripts the pull requests of the topic branch: the open ones, then the merged ones.
-func found(open, landed string) []ghtest.Call {
-	return append(allowed(), listed("open", open), listed("merged", landed))
-}
-
-// only scripts the same answers whatever the repository holds.
-func only(calls ...ghtest.Call) func(*gittest.Fixture) []ghtest.Call {
-	return func(*gittest.Fixture) []ghtest.Call { return calls }
+// found scripts body as the list of the topic branch's pull requests.
+func found(body string) []ghtest.Call {
+	return append(allowed(), ghtest.Exits(ghtest.Answer{Stdout: body}, ghtest.ListArgs(slug, topic)...))
 }
 
 // greenFirstPush scripts a branch with no pull request yet that GitHub then shows mergeable,
@@ -106,8 +98,8 @@ func greenFirstPush() scenario {
 		run := ghtest.JSONArray(ghtest.RunJSON("completed", "Tidy"))
 		checks := ghtest.JSONArray(ghtest.CheckJSON("build", "pass", runLink))
 
-		return slices.Concat(found("[]", "[]"), []ghtest.Call{
-			ghtest.Says(pullURL+"\n", ghtest.CreateArgs(slug, topic, trunk, topic)...),
+		return slices.Concat(found("[]"), []ghtest.Call{
+			ghtest.Says(pullURL()+"\n", ghtest.CreateArgs(slug, topic, trunk, topic)...),
 			ghtest.Says("[]", ghtest.RulesArgs(host, owner+"/"+widgets, trunk)...),
 			ghtest.Says(ghtest.HeadJSON(sha, "MERGEABLE", "CLEAN", ""), ghtest.HeadArgs(slug, opened)...),
 			ghtest.Says(checks, ghtest.ChecksArgs(slug, opened)...),

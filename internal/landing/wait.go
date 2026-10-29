@@ -144,7 +144,6 @@ const (
 	CutoffInterrupt
 )
 
-// takeState records the merge state head reports and the forge's own value behind it.
 func (w *Waited) takeState(head forge.Head) {
 	w.MergeState, w.RawMergeState = head.MergeState, head.RawMergeState
 }
@@ -495,9 +494,9 @@ func (w waiter) movedOn(waited *Waited, head forge.Head) bool {
 		return false
 	}
 
-	*waited = Waited{
-		Outcome: WaitMoved, MovedTo: head.SHA, MergeState: waited.MergeState, RawMergeState: waited.RawMergeState,
-	}
+	moved := waited.unconfirmed()
+	moved.Outcome, moved.MovedTo = WaitMoved, head.SHA
+	*waited = moved
 
 	return true
 }
@@ -595,10 +594,11 @@ func (w waiter) concluded(ctx context.Context, waited *Waited) (forge.Verdict, W
 		waited.Since = began
 		w.logChecks(ctx, verdict)
 
-		outcome, done = w.judge(verdict)
+		outcome, done = judge(verdict, w.pushed.Required)
 		// Runs appear some seconds after a push, so a verdict without them is only believed once
 		// that has lasted. A failed check stays failed whatever runs start later.
-		if done && outcome != WaitRed && len(verdict.Runs) == 0 && time.Since(began)+verdictPoll <= silentRetry {
+		runsMayStillAppear := len(verdict.Runs) == 0 && time.Since(began)+verdictPoll <= silentRetry
+		if done && outcome != WaitRed && runsMayStillAppear {
 			done = false
 		}
 
@@ -645,8 +645,9 @@ func cutShort(outcome WaitOutcome, err error) (WaitOutcome, error) {
 	return "", err
 }
 
-// judge returns how the checks concluded, and false while the wait for them goes on.
-func (w waiter) judge(verdict forge.Verdict) (WaitOutcome, bool) {
+// judge returns how the checks of verdict concluded, and false while the wait for them goes on.
+// required names the checks the trunk's protection requires; when empty, every check decides.
+func judge(verdict forge.Verdict, required []string) (WaitOutcome, bool) {
 	state := verdict.State()
 	missing := len(verdict.MissingRequired) > 0
 
@@ -662,7 +663,7 @@ func (w waiter) judge(verdict forge.Verdict) (WaitOutcome, bool) {
 		return "", false
 	// Where every check decides, a run still going can create a check that is not there yet;
 	// where required names decide, it matters only while one of them is absent.
-	case verdict.Running() && (missing || len(w.pushed.Required) == 0):
+	case verdict.Running() && (missing || len(required) == 0):
 		return "", false
 	case missing && !silent(verdict):
 		return WaitNeverReported, true
@@ -754,7 +755,6 @@ func silent(verdict forge.Verdict) bool {
 	return len(verdict.Checks) == 0 && len(verdict.Runs) == 0
 }
 
-// tally counts the checks in the pass bucket and the checks in the skipped bucket.
 func tally(checks []forge.Check) (passed, skipped int) {
 	for _, check := range checks {
 		switch check.Bucket {

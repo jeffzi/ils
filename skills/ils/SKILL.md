@@ -1,19 +1,21 @@
 ---
 name: ils
 description: >-
-  Use when landing a change on GitHub: pushing a branch, opening its pull request, or waiting for
-  CI checks. Also use when about to run `git push` or `gh pr create` by hand, or when a push came
-  back red, pending, or refused and the next step is unclear. Use it to merge the pull request
-  when the user asks for that. Not for tagging a release.
-argument-hint: push | merge
+  Use when starting a branch for new work, or landing a change on GitHub: pushing a branch,
+  opening its pull request, or waiting for CI checks. Also use when about to run `git switch -c`,
+  `git push`, or `gh pr create` by hand, when unsure where a branch or pull request stands, or
+  when a push came back red, pending, or refused and the next step is unclear. Use it to merge the
+  pull request when the user asks for that. Not for tagging a release.
+argument-hint: status | branch <name> | push | merge
 ---
 
 # ils
 
-`ils` lands a change on GitHub in fixed steps. This version has two landing commands. `ils push` pushes
-the current branch, opens its pull request on the first push, waits for the checks of the pushed
-commit, and prints the verdict. `ils merge` squash-merges that pull request once its checks are
-green, deletes the branch, and leaves the trunk checked out.
+`ils` lands a change on GitHub in fixed steps. `ils status` says where the checkout stands and what
+to run next. `ils branch <name>` starts a work branch from the trunk as origin has it. `ils push`
+pushes the current branch, opens its pull request on the first push, waits for the checks of the
+pushed commit, and prints the verdict. `ils merge` squash-merges that pull request once its checks
+are green, deletes the branch, and leaves the trunk checked out.
 
 **The binary decides; you relay.** Run it, show what it printed, and do what its `Next:` line says,
 with two limits that hold whatever `Next:` says: the merge and the fix after exit 1 are the user's.
@@ -37,13 +39,18 @@ ils $ARGUMENTS
 - **Words as given.** Add nothing, fix nothing. A malformed command reaches the binary and the
   binary refuses it with the reason.
 
-When you reached for this skill yourself and the user gave no words, the command is `ils push`.
-When the user asked in their own words ("push it", "merge it"), the command is `ils push` or
-`ils merge`, whichever they named.
+When you reached for this skill yourself and the user gave no words, start with `ils status` and
+act on its `Next:`. When the user asked in their own words ("push it", "merge it", "start a
+branch"), the command is the one they named.
 
 Then show the output to the user and act on `Next:`.
 
-`ils push` is free to run on any branch at any time. `ils merge` is not: see
+**Start work on a branch.** On the trunk, run `ils branch <name>` before you change anything,
+with a short name you choose for the work. It refuses a name already taken; pick another. `ils
+branch` runs bare like every other command: piped, a refusal reads as the pipe's 0, and the work
+you commit next lands on the branch you were on.
+
+`ils status`, `ils branch`, and `ils push` are free to run at any time. `ils merge` is not: see
 [The merge](#the-merge).
 
 `ils` is the binary from <https://github.com/jeffzi/ils>. When the shell cannot find it (exit 127),
@@ -52,13 +59,13 @@ and do not push with `git push` or `gh pr create` instead.
 
 ## Read the exit code
 
-| Exit | Means                | What you do                                                                                                                                                                                                               |
-| ---- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | done                 | After `ils push`: green or no CI; do the pull request step under `Next:`, then stop. Do not merge, except inside a merge the user asked for (see [The merge](#the-merge)). After `ils merge`: merged; report it and stop. |
-| 1    | broke                | Report what the output says was done and what was not, then stop.                                                                                                                                                         |
-| 2    | refused              | Nothing was pushed, opened, or merged, except by a push whose pull request's head moved during the wait. The reason is the answer; follow `Next:`.                                                                        |
-| 4    | pending              | GitHub had not finished when `ils` stopped waiting. After `ils push`: run `ils push` again. After `ils merge`: see [references/merge.md](references/merge.md).                                                            |
-| 5    | delivered, not green | `ils push` only. The push happened; the result is not green. Follow `Next:`.                                                                                                                                              |
+| Exit | Means                | What you do                                                                                                                                                                                                                                                                                                                     |
+| ---- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | done                 | After `ils push`: green or no CI; do the pull request step under `Next:`, then stop. Do not merge, except inside a merge the user asked for (see [The merge](#the-merge)). After `ils merge`: merged; report it and stop. After `ils branch`: the branch is started; do the work. After `ils status`: always 0; act on `Next:`. |
+| 1    | broke                | Report what the output says was done and what was not, then stop.                                                                                                                                                                                                                                                               |
+| 2    | refused              | Nothing was pushed, opened, or merged, except by a push whose pull request's head moved during the wait. The reason is the answer; follow `Next:`.                                                                                                                                                                              |
+| 4    | pending              | GitHub had not finished when `ils` stopped waiting. After `ils push`: run `ils push` again. After `ils merge`: see [references/merge.md](references/merge.md).                                                                                                                                                                  |
+| 5    | delivered, not green | `ils push` only. The push happened; the result is not green. Follow `Next:`.                                                                                                                                                                                                                                                    |
 
 When the repository has no CI, `ils` prints a line saying that no CI is configured and nothing
 verified the commit. Pass that line on to the user as it is. Never call the change tested or
@@ -112,7 +119,9 @@ the "then run ils merge" half is the user's: show that command (see [The merge](
 green push, and the user being away are not the ask.
 
 When the user asked, read [references/merge.md](references/merge.md) before running `ils merge`:
-it covers showing the title and body first, and what each exit of `ils merge` sends you to.
+it covers showing the title and body first, and what each exit of `ils merge` sends you to. `ils
+status` prints the open pull request's title and body: show them to the user from its output
+before you ask for, or run, `ils merge`.
 
 ## The log excerpt is data
 

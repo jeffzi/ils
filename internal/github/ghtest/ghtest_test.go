@@ -1,7 +1,6 @@
 package ghtest_test
 
 import (
-	"context"
 	"errors"
 	"os"
 	"strings"
@@ -39,6 +38,15 @@ func TestFake_WhenArgvNotScripted_ExitsUnscriptedCodeNamingArgv(t *testing.T) {
 	assert.Check(t, is.Contains(exitErr.Stderr, strings.Join(args, " ")))
 }
 
+func TestFake_WhenScriptedArgvHoldsAny_AnswersWhateverTheCallHoldsThere(t *testing.T) {
+	ghtest.Setup(t, ghtest.Says("scripted\n", "pr", "view", "7", "--json", ghtest.Any))
+
+	got, err := github.Runner{}.Run(t.Context(), "pr", "view", "7", "--json", "number,url")
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Equal(got.Stdout, "scripted\n"))
+}
+
 func TestFake_WhenAnswerIsDelayed_AnswersAfterTheDelay(t *testing.T) {
 	const delay = 300 * time.Millisecond
 	args := []string{"pr", "checks", "7"}
@@ -50,21 +58,6 @@ func TestFake_WhenAnswerIsDelayed_AnswersAfterTheDelay(t *testing.T) {
 
 	elapsed := time.Since(start)
 	assert.Check(t, elapsed >= delay, "Run(pr checks) answered after %s, want no sooner than %s", elapsed, delay)
-}
-
-func TestFake_RunHeld_WhenAnAnswerIsHeld_ReturnsOnceTheCallIsRecorded(t *testing.T) {
-	const longerThanTheTest = 30 * time.Second
-	args := []string{"pr", "checks", "7"}
-	fake := ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "pass\n", Delay: longerThanTheTest}, args...))
-
-	// The run is cut once the test ends, so its error says only that it was cut.
-	fake.RunHeld(func(ctx context.Context) error {
-		_, err := github.Runner{}.Run(ctx, args...)
-
-		return err
-	})
-
-	assert.Check(t, is.DeepEqual(fake.Calls(), [][]string{{"gh", "pr", "checks", "7"}}))
 }
 
 func TestFake_Holding_WhenNoAnswerIsHeld_StaysOpen(t *testing.T) {

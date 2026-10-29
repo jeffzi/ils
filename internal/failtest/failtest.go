@@ -76,6 +76,9 @@ func (s *TB) Logf(format string, args ...any) { s.record(fmt.Sprintf(format, arg
 // Fail records a failure.
 func (s *TB) Fail() { s.record("", true) }
 
+// Error records its arguments as a message, and a failure.
+func (s *TB) Error(args ...any) { s.record(fmt.Sprint(args...), true) }
+
 // Errorf records the formatted message and a failure.
 func (s *TB) Errorf(format string, args ...any) { s.record(fmt.Sprintf(format, args...), true) }
 
@@ -89,13 +92,19 @@ func (s *TB) FailNow() {
 	runtime.Goexit()
 }
 
+// Fatal records its arguments as a message and a fatal failure, and ends the calling goroutine.
+func (s *TB) Fatal(args ...any) {
+	s.record(fmt.Sprint(args...), false)
+	s.FailNow()
+}
+
 // Fatalf records the formatted message and a fatal failure, and ends the calling goroutine.
 func (s *TB) Fatalf(format string, args ...any) {
 	s.record(fmt.Sprintf(format, args...), false)
 	s.FailNow()
 }
 
-// record keeps message, when there is one, and marks a failure when failed is set.
+// record skips an empty message so Fail, which reports none, adds no blank entry to Messages.
 func (s *TB) record(message string, failed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

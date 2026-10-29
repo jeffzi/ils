@@ -31,20 +31,20 @@ func dial(t *testing.T, addr string) net.Conn {
 	return conn
 }
 
-func TestSilentListener_WhenClientConnects_ClosesConnectedWithoutSending(t *testing.T) {
+func TestSilentListener_WhenClientConnects_SendsNothing(t *testing.T) {
 	t.Parallel()
 
 	addr, connected := gittest.SilentListener(t)
-
 	conn := dial(t, addr)
-
 	select {
 	case <-connected:
 	case <-time.After(patience):
 		t.Fatal("connected stayed open after a client connected, want it closed")
 	}
 	assert.NilError(t, conn.SetReadDeadline(time.Now().Add(quiet)))
+
 	_, err := conn.Read(make([]byte, 1))
+
 	assert.Check(t, is.ErrorIs(err, os.ErrDeadlineExceeded), "the listener sent data, want none")
 }
 
@@ -74,4 +74,14 @@ func TestEnding_WhenDoneCloses_EndsWithTheError(t *testing.T) {
 	default:
 		t.Error("Done() is open after done closed, want it closed")
 	}
+}
+
+func TestEnding_WhenErrIsNil_Panics(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		assert.Check(t, recover() != nil, "Ending with a nil error returned, want a panic")
+	}()
+
+	gittest.Ending(t.Context(), make(chan struct{}), nil)
 }

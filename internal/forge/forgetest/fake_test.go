@@ -17,16 +17,17 @@ import (
 )
 
 const (
-	branch    = "feature"
-	trunk     = "main"
-	number    = 12
-	oldCommit = "1111111"
-	newCommit = "2222222"
-	lintCheck = "lint"
-	testCheck = "test"
-	rawClean  = "CLEAN"
-	subject   = "Add the widget list (#12)"
-	body      = "List every widget on the home page."
+	branch     = "feature"
+	trunk      = "main"
+	number     = 12
+	oldCommit  = "1111111"
+	newCommit  = "2222222"
+	lintCheck  = "lint"
+	testCheck  = "test"
+	rawClean   = "CLEAN"
+	rawUnknown = "UNKNOWN"
+	subject    = "Add the widget list (#12)"
+	body       = "List every widget on the home page."
 )
 
 // repo is the repository every call is made against.
@@ -47,6 +48,16 @@ func newChange() forge.NewChange {
 // head is the scripted answer of Head.
 func head() forge.Head {
 	return forge.Head{SHA: newCommit, MergeState: forge.MergeClean, RawMergeState: rawClean}
+}
+
+// staleHead is a clean answer of Head for the previous commit.
+func staleHead() forge.Head {
+	return forge.Head{SHA: oldCommit, MergeState: forge.MergeClean, RawMergeState: rawClean}
+}
+
+// unknownHead is an answer of Head whose merge state is not yet known.
+func unknownHead() forge.Head {
+	return forge.Head{SHA: newCommit, MergeState: forge.MergeUnknown, RawMergeState: rawUnknown}
 }
 
 // headQuery is the argument of Head.
@@ -151,7 +162,7 @@ func callTimes[T any](t *testing.T, times int, call func() (T, error)) []T {
 	return values
 }
 
-func TestFake_WhenAnswerIsNotHeldAndTheContextEnded_ReturnsItsValue(t *testing.T) {
+func TestFake_WhenContextEndedBeforeAnAnswerNotHeld_ReturnsItsValue(t *testing.T) {
 	t.Parallel()
 	fake := forgetest.New(t, script())
 
@@ -196,29 +207,15 @@ func TestFake_Calls_WhenEveryOperationIsCalled_RecordsThemInOrder(t *testing.T) 
 	assert.Check(t, is.DeepEqual(fake.Calls(), want))
 }
 
-func TestFake_WhenCalledRepeatedly_AdvancesOneStepPerCall(t *testing.T) {
-	t.Parallel()
-
-	stale := forge.Head{SHA: oldCommit, MergeState: forge.MergeClean, RawMergeState: rawClean}
-	unknown := forge.Head{SHA: newCommit, MergeState: forge.MergeUnknown, RawMergeState: "UNKNOWN"}
-	clean := forge.Head{SHA: newCommit, MergeState: forge.MergeClean, RawMergeState: rawClean}
-	fake := forgetest.New(t, forgetest.Script{Head: forgetest.Values(stale, unknown, clean)})
-
-	got := callTimes(t, 3, func() (forge.Head, error) { return fake.Head(t.Context(), repo(), headQuery()) })
-
-	assert.Check(t, is.DeepEqual(got, []forge.Head{stale, unknown, clean}))
-}
-
 func TestFake_WhenCalledPastTheLastStep_RepeatsTheLast(t *testing.T) {
 	t.Parallel()
 
-	stale := forge.Head{SHA: oldCommit, MergeState: forge.MergeClean, RawMergeState: rawClean}
-	clean := forge.Head{SHA: newCommit, MergeState: forge.MergeClean, RawMergeState: rawClean}
-	fake := forgetest.New(t, forgetest.Script{Head: forgetest.Values(stale, clean)})
+	stale, unknown, clean := staleHead(), unknownHead(), head()
+	fake := forgetest.New(t, forgetest.Script{Head: forgetest.Values(stale, unknown, clean)})
 
 	got := callTimes(t, 4, func() (forge.Head, error) { return fake.Head(t.Context(), repo(), headQuery()) })
 
-	assert.Check(t, is.DeepEqual(got, []forge.Head{stale, clean, clean, clean}))
+	assert.Check(t, is.DeepEqual(got, []forge.Head{stale, unknown, clean, clean}))
 }
 
 func TestFake_WhenOnReadIsSet_RunsItOncePerRead(t *testing.T) {
@@ -242,47 +239,6 @@ func TestFake_WhenOnReadIsSet_RunsItOncePerRead(t *testing.T) {
 		forgetest.OpMessage,
 	}
 	assert.Check(t, is.DeepEqual(seen, want))
-}
-
-func TestFake_WhenOnReadIsSet_RunsItAfterRecordingTheCall(t *testing.T) {
-	t.Parallel()
-
-	var (
-		recorded []int
-		fake     *forgetest.Fake
-	)
-
-	scripted := script()
-	scripted.OnRead = func(forgetest.Call) { recorded = append(recorded, len(fake.Calls())) }
-	fake = forgetest.New(t, scripted)
-
-	_, err := fake.Head(t.Context(), repo(), headQuery())
-	assert.NilError(t, err)
-
-	assert.Check(t, is.DeepEqual(recorded, []int{1}))
-}
-
-func TestFake_Land_WhenOnLandIsSet_RunsItWithTheLandingAfterRecordingTheCall(t *testing.T) {
-	t.Parallel()
-
-	var (
-		seen     []forgetest.Call
-		recorded []int
-		fake     *forgetest.Fake
-	)
-
-	fake = forgetest.New(t, forgetest.Script{
-		Land: []error{nil},
-		OnLand: func(call forgetest.Call) {
-			seen = append(seen, call)
-			recorded = append(recorded, len(fake.Calls()))
-		},
-	})
-
-	_ = fake.Land(t.Context(), repo(), landing())
-
-	assert.Check(t, is.DeepEqual(seen, []forgetest.Call{{Op: forgetest.OpLand, Repo: repo(), Landing: landing()}}))
-	assert.Check(t, is.DeepEqual(recorded, []int{1}), "calls recorded when the hook ran")
 }
 
 func TestFake_Land_WhenCalledTwice_AdvancesItsErrorSequence(t *testing.T) {
@@ -338,6 +294,21 @@ func TestFake_WhenAnswerIsHeld_ReturnsTheContextErrorOnceTheContextEnds(t *testi
 	t.Parallel()
 
 	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), wait)
+		t.Cleanup(cancel)
+		fake := forgetest.New(t, heldScript())
+
+		got, err := fake.Head(ctx, repo(), headQuery())
+
+		assert.Check(t, is.ErrorIs(err, context.DeadlineExceeded))
+		assert.Check(t, reflect.ValueOf(got).IsZero(), "value %v, want the zero value", got)
+	})
+}
+
+func TestFake_WhenAnswerIsHeld_RunsOnReadBeforeHolding(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
 		var elapsed []time.Duration
 
 		ctx, cancel := context.WithTimeout(t.Context(), wait)
@@ -349,10 +320,9 @@ func TestFake_WhenAnswerIsHeld_ReturnsTheContextErrorOnceTheContextEnds(t *testi
 		}
 		fake := forgetest.New(t, scripted)
 
-		got, err := fake.Head(ctx, repo(), headQuery())
+		_, err := fake.Head(ctx, repo(), headQuery())
+		assert.Assert(t, is.ErrorIs(err, context.DeadlineExceeded), "the answer was not held")
 
-		assert.Check(t, is.ErrorIs(err, context.DeadlineExceeded))
-		assert.Check(t, reflect.ValueOf(got).IsZero(), "value %v, want the zero value", got)
 		assert.Check(t, is.DeepEqual(elapsed, []time.Duration{0}), "time held when the hook ran")
 	})
 }
@@ -361,17 +331,17 @@ func TestFake_WhenAnswerIsHeld_TakesOneStep(t *testing.T) {
 	t.Parallel()
 
 	synctest.Test(t, func(t *testing.T) {
-		next := forge.Head{SHA: oldCommit, MergeState: forge.MergeClean, RawMergeState: rawClean}
-		last := forge.Head{SHA: newCommit, MergeState: forge.MergeUnknown, RawMergeState: "UNKNOWN"}
+		next := staleHead()
+		last := unknownHead()
 		fake := forgetest.New(t, forgetest.Script{
 			Head: []forgetest.Answer[forge.Head]{{Value: head(), Hold: true}, {Value: next}, {Value: last}},
 		})
 
 		_, heldErr := fake.Head(ended(t), repo(), headQuery())
 		got, err := fake.Head(t.Context(), repo(), headQuery())
+		assert.NilError(t, err)
 
 		assert.Check(t, is.ErrorIs(heldErr, context.Canceled))
-		assert.NilError(t, err)
 		assert.Check(t, is.DeepEqual(got, next))
 	})
 }

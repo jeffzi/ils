@@ -1,8 +1,7 @@
-// Package resulttest provides the JSON renderer's object as a caller decodes it, and styled text as
-// a terminal draws it, for the tests of packages that print results.
 package resulttest
 
 import (
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"strings"
 	"testing"
@@ -14,25 +13,22 @@ import (
 )
 
 // Shown is the JSON renderer's object as a caller decodes it.
-type Shown struct {
-	Payload  *result.Payload `json:"payload"`
-	Command  string          `json:"command"`
-	Outcome  string          `json:"outcome"`
-	Next     string          `json:"next"`
-	Reason   string          `json:"reason"`
-	Excerpt  string          `json:"excerpt"`
-	Words    []string        `json:"words"`
-	Lines    []string        `json:"lines"`
-	ExitCode int             `json:"exit_code"`
-}
+type Shown = result.Object
 
 // Decode reads the one JSON object out holds, and stops the test when out is anything else.
 func Decode(tb testing.TB, out string) Shown {
 	tb.Helper()
 
+	var value jsontext.Value
+
+	err := json.Unmarshal([]byte(out), &value)
+	assert.NilError(tb, err, "output is not one JSON value:\n%s", out)
+	// Unmarshal reads null into a struct as its zero value, so the kind is checked first.
+	assert.Assert(tb, value.Kind() == '{', "output is not one JSON object:\n%s", out)
+
 	var got Shown
 
-	err := json.Unmarshal([]byte(out), &got)
+	err = json.Unmarshal(value, &got)
 	assert.NilError(tb, err, "output is not one JSON object:\n%s", out)
 
 	return got

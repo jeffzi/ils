@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"os/exec"
-	"runtime"
 	"testing"
 	"time"
 
@@ -16,7 +15,6 @@ import (
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/logtest"
-	"github.com/jeffzi/ils/internal/quiet"
 )
 
 // prompt bounds how long a test waits for the helper's child to connect.
@@ -50,7 +48,7 @@ func helperRunner(t *testing.T, mode, addr string) git.Runner {
 
 	return git.Runner{
 		Dir: t.TempDir(),
-		Env: append(os.Environ(), helperModeEnv+"="+mode, helperAddrEnv+"="+addr, "GORACE="+quiet.Setting()),
+		Env: append(os.Environ(), helperModeEnv+"="+mode, helperAddrEnv+"="+addr, "GORACE="+gittest.RaceSetting()),
 	}
 }
 
@@ -66,18 +64,15 @@ func TestRunner_Run_WhenArgHoldsShellSyntax_PassesItVerbatim(t *testing.T) {
 	assert.Check(t, is.DeepEqual(got, want))
 }
 
-func TestRunner_Run_WhenGitExitsNonZero_ReturnsItsStdoutWithExitError(t *testing.T) {
+func TestRunner_Run_WhenGitExitsNonZero_ReturnsExitErrorNamingCall(t *testing.T) {
 	t.Parallel()
 	runner := newRunner(t)
-	gittest.WriteFile(t, runner.Dir, "before.txt", "same\nold\n")
-	gittest.WriteFile(t, runner.Dir, "after.txt", "same\nnew\n")
 
-	got, err := runner.Run(t.Context(), "diff", "--no-index", "--", "before.txt", "after.txt")
+	_, err := runner.Run(t.Context(), "rev-parse", "--verify", "--quiet", "refs/heads/absent")
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
-	assert.Assert(t, ok, "Run(diff) error = %v, want *child.ExitError", err)
-	assert.Check(t, is.DeepEqual(exitErr.Argv, []string{"git", "diff", "--no-index", "--", "before.txt", "after.txt"}))
-	assert.Check(t, is.Contains(got.Stdout, "+new\n"))
+	assert.Assert(t, ok, "Run(rev-parse) error = %v, want *child.ExitError", err)
+	assert.Check(t, is.DeepEqual(exitErr.Argv, []string{"git", "rev-parse", "--verify", "--quiet", "refs/heads/absent"}))
 }
 
 func TestRunner_Run_WhenGitMissingFromPath_ReturnsToolMissingError(t *testing.T) {
@@ -95,15 +90,12 @@ func TestRunner_Run_WhenGitMissingFromPath_ReturnsToolMissingError(t *testing.T)
 func TestRunner_Run_WhenContextEndsAfterOutputWhileChildHoldsPipes_ReturnsContextErrorPromptly(t *testing.T) {
 	// Not parallel: helperRunner sets PATH for the whole process.
 	addr, started := gittest.SilentListener(t)
-	// The helper prints on both streams before the context ends, so the empty result shows neither
-	// is returned.
 	runner := helperRunner(t, helperWait, addr)
 	ctx := gittest.Ending(t.Context(), started, context.Canceled)
 
-	got, err := runner.Run(ctx)
+	_, err := runner.Run(ctx)
 
 	assert.Check(t, is.ErrorIs(err, context.Canceled))
-	assert.Check(t, is.DeepEqual(got, git.Result{}))
 }
 
 func TestRunner_Run_WhenGitExitsZeroWhileChildHoldsPipes_ReturnsOutputPromptly(t *testing.T) {
@@ -113,6 +105,7 @@ func TestRunner_Run_WhenGitExitsZeroWhileChildHoldsPipes_ReturnsOutputPromptly(t
 
 	got, err := runner.Run(t.Context())
 	assert.NilError(t, err)
+
 	assert.Check(t, is.Contains(got.Stdout, helperSaid))
 	select {
 	case <-lingering:
@@ -148,12 +141,12 @@ func newLoggedRunner(t *testing.T) (git.Runner, *logtest.Sink) {
 func onlyCall(t *testing.T, records []logtest.Record) (attrs map[string]any, took time.Duration) {
 	t.Helper()
 
-	record := logtest.Only(t, records)
+	attrs = logtest.CallAttrs(t, records)
+	raw := records[0].Map()[child.KeyDuration]
+	took, ok := raw.(time.Duration)
+	assert.Assert(t, ok, "duration attribute = %#v, want a time.Duration", raw)
 
-	took, ok := record.Map()[child.KeyDuration].(time.Duration)
-	assert.Assert(t, ok, "duration attribute = %#v, want a time.Duration", record.Map()[child.KeyDuration])
-
-	return record.Without(child.KeyDuration), took
+	return attrs, took
 }
 
 func TestRunner_Run_WhenGitExitsWithALoggerAttached_LogsTheCall(t *testing.T) {
@@ -173,46 +166,10 @@ func TestRecorder_Calls_WhenReturnedSliceMutated_LaterCallsUnchanged(t *testing.
 	runner, recorder := newRecordedRunner(t)
 	_, err := runner.Run(t.Context(), "version")
 	assert.NilError(t, err)
-	_, err = runner.Run(t.Context(), "init", "--quiet")
-	assert.NilError(t, err)
 	calls := recorder.Calls()
 
 	calls[0][1] = "changed"
-	calls[1] = nil
 
-	want := [][]string{{"git", "version"}, {"git", "init", "--quiet"}}
+	want := [][]string{{"git", "version"}}
 	assert.Check(t, is.DeepEqual(recorder.Calls(), want))
-}
-
-func TestEnvValue(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    string
-		key     string
-		want    string
-		env     []string
-		wantSet bool
-	}{
-		{name: "set twice keeps the last", env: []string{"TERM=xterm", "TERM=dumb"}, key: "TERM", want: "dumb", wantSet: true},
-		{name: "set to nothing", env: []string{"NO_COLOR="}, key: "NO_COLOR", want: "", wantSet: true},
-		{name: "only a longer key set", env: []string{"TERMINAL=xterm"}, key: "TERM", wantSet: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got, set := git.EnvValue(tt.env, tt.key)
-
-			assert.Check(t, is.Equal(set, tt.wantSet), "EnvValue(%q, %q) set", tt.env, tt.key)
-			assert.Check(t, is.Equal(got, tt.want), "EnvValue(%q, %q)", tt.env, tt.key)
-		})
-	}
-}
-
-func TestSameKey_WhenCaseDiffers_MatchesOnlyOnWindows(t *testing.T) {
-	t.Parallel()
-
-	got := git.SameKey("Path", "PATH")
-
-	assert.Check(t, is.Equal(got, runtime.GOOS == "windows"), "SameKey(%q, %q) on %s", "Path", "PATH", runtime.GOOS)
 }

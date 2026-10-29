@@ -21,6 +21,7 @@ import (
 	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/child"
+	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/result"
@@ -44,22 +45,24 @@ const (
 	liveGitVersionVar = "ILS_LIVE_GIT_VERSION"
 )
 
-// checkLiveGit returns why the output of `git --version` does not suit the live suite, or nil.
-func checkLiveGit(target, want, out string) error {
-	tool := testtarget.Tool{
+// liveGitTool is the git the live suite must find.
+func liveGitTool() testtarget.Tool {
+	return testtarget.Tool{
 		Name: "git", TargetVar: liveGitTargetVar, VersionVar: liveGitVersionVar, MinimumVersion: git.MinimumVersion,
 	}
-
-	return tool.CheckOutput(target, want, out, git.VersionOf)
 }
 
-// checkLiveGh returns why the output of `gh --version` does not suit the live suite, or nil.
-func checkLiveGh(target, want, out string) error {
-	tool := testtarget.Tool{
+// liveGhTool is the gh the live suite must find.
+func liveGhTool() testtarget.Tool {
+	return testtarget.Tool{
 		Name: "gh", TargetVar: liveGhTargetVar, VersionVar: liveGhVersionVar, MinimumVersion: github.MinimumVersion,
 	}
+}
 
-	return tool.CheckOutput(target, want, out, github.VersionOf)
+// checkLiveTool returns why out, the output of `<tool> --version`, does not suit the live suite
+// given the target and version the environment sets for tool, or nil.
+func checkLiveTool(tool testtarget.Tool, out string, versionOf func(string) string) error {
+	return tool.CheckOutput(os.Getenv(tool.TargetVar), os.Getenv(tool.VersionVar), out, versionOf)
 }
 
 const (
@@ -101,8 +104,7 @@ type liveSuite struct {
 	// url is the clone URL liveOriginVar holds, and origin the repository it names.
 	url    string
 	origin git.Origin
-	// trunk is the repository's default branch.
-	trunk string
+	trunk  string
 }
 
 // liveBranch is one scenario's fresh clone, on a branch of its own.
@@ -195,8 +197,8 @@ func newLiveSuite(t *testing.T) *liveSuite {
 
 	l.origin = origin
 
-	assert.NilError(t, checkLiveGh(os.Getenv(liveGhTargetVar), os.Getenv(liveGhVersionVar), mustGh(t, "--version")))
-	assert.NilError(t, checkLiveGit(os.Getenv(liveGitTargetVar), os.Getenv(liveGitVersionVar), mustGit(t, "", "--version")))
+	assert.NilError(t, checkLiveTool(liveGhTool(), mustGh(t, "--version"), github.VersionOf))
+	assert.NilError(t, checkLiveTool(liveGitTool(), mustGit(t, "", "--version"), git.VersionOf))
 	l.reset(t)
 	l.checkRulesRead(t)
 
@@ -243,8 +245,14 @@ func (l *liveSuite) mustRemoteCommit(t *testing.T, ref string) string {
 
 // trunkRef is the full name of the default branch's ref.
 func (l *liveSuite) trunkRef() string {
-	return "refs/heads/" + l.trunk
+	return headRef(l.trunk)
 }
+
+// headRef is the full name of the ref of the branch name.
+func headRef(name string) string { return "refs/heads/" + name }
+
+// liveToken returns random text in no earlier run's branch or commit.
+func liveToken() string { return strings.ToLower(rand.Text())[:liveTokenLength] }
 
 // clone returns a fresh clone of the repository that commits under a name of its own and
 // signs nothing.
@@ -332,7 +340,7 @@ func (l *liveSuite) completed(ctx context.Context, id string) bool {
 func (l *liveSuite) checkRulesRead(t *testing.T) {
 	t.Helper()
 
-	private := mustGh(t, "repo", "view", l.slug(), "--json", "isPrivate", "--jq", ".isPrivate") == "true"
+	private := l.private(t)
 	rest := "rules/branches/" + l.trunk
 	path := l.apiPath(rest)
 	_, err := liveGh(t.Context(), l.apiArgs(rest)...)
@@ -347,6 +355,13 @@ func (l *liveSuite) checkRulesRead(t *testing.T) {
 	assert.Assert(t, exited && strings.Contains(exit.Stderr, "HTTP 403"),
 		"the read of %s ended with %v, want a 403: the account's plan no longer refuses the rules read, "+
 			"so the suite no longer exercises what ils does with that refusal", path, err)
+}
+
+// private reports whether the repository is private, as GitHub shows its visibility.
+func (l *liveSuite) private(t *testing.T) bool {
+	t.Helper()
+
+	return mustGh(t, "repo", "view", l.slug(), "--json", "visibility", "--jq", ".visibility") == "PRIVATE"
 }
 
 // changeTrunk commits files on top of the default branch and pushes it.
@@ -368,7 +383,7 @@ func (l *liveSuite) changeTrunk(t *testing.T, files map[string]string) {
 func (l *liveSuite) branch(t *testing.T, scenario string) *liveBranch {
 	t.Helper()
 
-	token := strings.ToLower(rand.Text())[:liveTokenLength]
+	token := liveToken()
 	b := &liveBranch{
 		suite: l, dir: l.clone(t), name: "live/" + scenario + "-" + token, token: token,
 		deadline: time.Now().Add(liveScenarioLimit),
@@ -477,6 +492,16 @@ func (b *liveBranch) onePull(t *testing.T) livePull {
 	return pulls[0]
 }
 
+// pushedPull commits files, pushes the branch, and returns the number of its pull request.
+func (b *liveBranch) pushedPull(t *testing.T, files map[string]string) string {
+	t.Helper()
+
+	b.commit(t, files)
+	b.push(t)
+
+	return strconv.Itoa(b.onePull(t).Number)
+}
+
 func (b *liveBranch) tip(t *testing.T) string {
 	t.Helper()
 
@@ -488,7 +513,7 @@ func (b *liveBranch) tip(t *testing.T) string {
 func (b *liveBranch) remoteTip(t *testing.T) string {
 	t.Helper()
 
-	return b.suite.remoteCommit(t, "refs/heads/"+b.name)
+	return b.suite.remoteCommit(t, headRef(b.name))
 }
 
 // state is the state GitHub gives the pull request numbered number: OPEN, CLOSED or MERGED.
@@ -590,7 +615,7 @@ func liveDispatchedWorkflow() map[string]string {
 // Scenarios
 // ---------------------------------------------------------------------------
 
-func TestLive(t *testing.T) {
+func TestApp_Run_AgainstALiveRepository_EndsEachScenarioAsGitHubReportsIt(t *testing.T) {
 	l := newLiveSuite(t)
 
 	// The scenarios that write to the default branch run last.
@@ -603,6 +628,10 @@ func TestLive(t *testing.T) {
 		{name: "red", run: liveRed},
 		{name: "no CI", run: liveNoCI},
 		{name: "pending", run: livePending},
+		{name: "status of a pull request", run: liveStatusOfPull},
+		{name: "status of the trunk", run: liveStatusOfTrunk},
+		{name: "branch", run: liveStartBranch},
+		{name: "branch taken on origin", run: liveBranchTaken},
 		{name: "already landed", run: liveAlreadyLanded},
 		{name: "conflict", run: liveConflict},
 		{name: "CI that did not fire", run: liveCIDidNotFire},
@@ -628,8 +657,8 @@ func liveGreen(t *testing.T, l *liveSuite) {
 	checkMergeNext(t, l, got, b.onePull(t).Number)
 }
 
-// checkMergeNext checks that a green push's next step writes the title and body of the pull
-// request numbered number with `gh pr edit`, then runs `ils merge`.
+// checkMergeNext checks that a push's next step names the pull request numbered number in l's
+// repository and the merge command, `ils merge`.
 func checkMergeNext(t *testing.T, l *liveSuite, got liveRun, number int) {
 	t.Helper()
 
@@ -694,11 +723,69 @@ func livePending(t *testing.T, l *liveSuite) {
 	assert.Check(t, is.Contains(got.shown.Next, "ils push"))
 }
 
+// liveStatus runs `ils status --json` in the clone at dir, checks it ended done, and returns its
+// status object.
+func liveStatus(t *testing.T, dir string) *result.Status {
+	t.Helper()
+
+	got := launch(t, over(git.Runner{Dir: dir}), "status", "--json")
+	t.Logf("ils status --json in %s exited %d:\n%s%s", dir, got.code, got.stdout, got.stderr)
+	shown := resulttest.Decode(t, got.stdout)
+	assert.Equal(t, got.code, exitDone, "%s", got.stdout)
+	assert.Assert(t, shown.Payload != nil && shown.Payload.Status != nil, "no status object in:\n%s", got.stdout)
+
+	return shown.Payload.Status
+}
+
+func liveStatusOfPull(t *testing.T, l *liveSuite) {
+	b := l.branch(t, "status")
+	b.commit(t, liveWorkflow("echo passed"))
+	b.push(t)
+	number := b.onePull(t).Number
+
+	got := liveStatus(t, b.dir)
+
+	assert.Assert(t, got.PullRequest != nil, "no open pull request in the status of %s", b.name)
+	assert.Check(t, is.Equal(got.PullRequest.Number, number))
+	assert.Check(t, is.Equal(got.PullRequest.Verdict, string(forge.VerdictGreen)))
+}
+
+func liveStatusOfTrunk(t *testing.T, l *liveSuite) {
+	want := result.ProtectionNone
+	if l.private(t) {
+		want = result.ProtectionUnavailable
+	}
+
+	got := liveStatus(t, l.clone(t))
+
+	assert.Check(t, is.Equal(got.Standing, result.StandingTrunk))
+	assert.Check(t, is.Equal(got.Protection, want))
+}
+
+func liveStartBranch(t *testing.T, l *liveSuite) {
+	dir := l.clone(t)
+	name := "live/branch-" + liveToken()
+
+	started := launch(t, over(git.Runner{Dir: dir}), "branch", name, "--json")
+
+	assert.Equal(t, started.code, exitDone, "%s", started.stdout)
+	assert.Check(t, is.Equal(mustGit(t, dir, "symbolic-ref", "--short", "HEAD"), name))
+	assert.Check(t, is.Equal(mustGit(t, dir, "rev-parse", "HEAD"), l.mustRemoteCommit(t, l.trunkRef())))
+}
+
+func liveBranchTaken(t *testing.T, l *liveSuite) {
+	name := "live/branch-" + liveToken()
+	mustGit(t, l.clone(t), "push", "--quiet", l.url, "HEAD:"+headRef(name))
+
+	got := launch(t, over(git.Runner{Dir: l.clone(t)}), "branch", name, "--json")
+
+	assert.Check(t, is.Equal(got.code, exitRefused), "%s", got.stdout)
+	assert.Check(t, is.Contains(got.stdout, "on origin"))
+}
+
 func liveAlreadyLanded(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "landed")
-	b.commit(t, nil)
-	b.push(t)
-	number := strconv.Itoa(b.onePull(t).Number)
+	number := b.pushedPull(t, nil)
 	mustGh(t, "pr", "merge", number, "--repo", l.slug(), "--squash")
 	before := b.remoteTip(t)
 
@@ -757,9 +844,7 @@ func liveCIDidNotFire(t *testing.T, l *liveSuite) {
 
 func liveTitleRefused(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "title")
-	b.commit(t, liveWorkflow("echo passed"))
-	b.push(t)
-	number := strconv.Itoa(b.onePull(t).Number)
+	number := b.pushedPull(t, liveWorkflow("echo passed"))
 	before := l.remoteCommit(t, l.trunkRef())
 
 	got := b.merge(t)
@@ -773,9 +858,7 @@ func liveTitleRefused(t *testing.T, l *liveSuite) {
 
 func liveMerged(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "merged")
-	b.commit(t, liveWorkflow("echo passed"))
-	b.push(t)
-	number := strconv.Itoa(b.onePull(t).Number)
+	number := b.pushedPull(t, liveWorkflow("echo passed"))
 	title, body := "feat(live): land "+b.token, "Landed by the live suite as "+b.token+"."
 	mustGh(t, "pr", "edit", number, "--repo", l.slug(), "--title", title, "--body", body)
 	before := l.remoteCommit(t, l.trunkRef())
@@ -795,9 +878,7 @@ func liveMerged(t *testing.T, l *liveSuite) {
 
 func liveMergedOnTheWeb(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "merged-web")
-	b.commit(t, nil)
-	b.push(t)
-	number := strconv.Itoa(b.onePull(t).Number)
+	number := b.pushedPull(t, nil)
 	mustGh(t, "pr", "merge", number, "--repo", l.slug(), "--squash")
 	before := l.remoteCommit(t, l.trunkRef())
 

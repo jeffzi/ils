@@ -33,6 +33,9 @@ const (
 	// `git merge-base --is-ancestor` when the answer is no, and of `git config --get` for a key that
 	// is not set.
 	falseCode = 1
+	// fatalCode is the exit of a git command that died of a fatal error, and of git when it cannot
+	// start the program of a one-word command line, which it runs without a shell.
+	fatalCode = 128
 
 	commitFormat = "--format=%H %s"
 )
@@ -96,6 +99,36 @@ func (r Repo) Standing(ctx context.Context) (Standing, error) {
 	}
 
 	return Standing{Kind: OnBranch, Branch: branch}, nil
+}
+
+// NoRepositoryError reports that git found no repository it can work in.
+type NoRepositoryError struct {
+	// Err is git's refusal, a *child.ExitError that carries git's message.
+	Err error
+}
+
+// Error returns git's refusal, which says why it found no repository.
+func (e *NoRepositoryError) Error() string {
+	return e.Err.Error()
+}
+
+// Unwrap returns git's refusal.
+func (e *NoRepositoryError) Unwrap() error {
+	return e.Err
+}
+
+// CheckRepository returns nil when git finds a repository to work in from the runner's directory,
+// and a *NoRepositoryError when it dies of a fatal error looking for one.
+//
+// Git dies the same way when it finds none and when it refuses the one it finds, such as one owned
+// by another user; only its message, which the error carries, tells the two apart.
+func (r Repo) CheckRepository(ctx context.Context) error {
+	_, err := r.Runner.Run(ctx, "rev-parse", "--git-dir")
+	if exited(err, fatalCode) {
+		return &NoRepositoryError{Err: err}
+	}
+
+	return err
 }
 
 // HeadSHA returns the sha of the commit HEAD is on.
@@ -192,7 +225,8 @@ func (r Repo) CommitsPast(ctx context.Context, tip, trunk string) ([]Commit, err
 }
 
 // LocalTrunkAhead reports whether the local trunk has anything origin's trunk lacks, and returns
-// the commits it has past origin's trunk, merges left out, oldest first. A local trunk that does
+// the commits it has past origin's trunk, merges included, oldest first, so that a local trunk
+// whose only such commit is a merge still names it. A local trunk that does
 // not exist, or that origin's trunk contains, is not ahead.
 //
 // It reads origin/<trunk>, which is current only after a fetch of trunk.
@@ -204,12 +238,12 @@ func (r Repo) LocalTrunkAhead(ctx context.Context, trunk string) (ahead bool, pa
 
 	local := headsRef + trunk
 
-	behind, err := r.Contains(ctx, originTrunk(trunk), local)
-	if err != nil || behind {
+	contained, err := r.Contains(ctx, originTrunk(trunk), local)
+	if err != nil || contained {
 		return false, nil, err
 	}
 
-	past, err = r.CommitsPast(ctx, local, trunk)
+	past, err = r.commits(ctx, local, excludeTrunk(trunk))
 	if err != nil {
 		return false, nil, err
 	}
@@ -271,6 +305,117 @@ func (r Repo) Switch(ctx context.Context, branch string) error {
 	_, err := r.Runner.Run(ctx, "switch", "--quiet", "--guess", branch)
 
 	return err
+}
+
+// CreateBranch creates the branch name at origin's trunk as last fetched, with no upstream, and puts
+// HEAD on it, carrying uncommitted changes and untracked files.
+//
+// A changed or untracked file the switch would overwrite is an *OverwriteError naming the files,
+// and leaves HEAD, the tree and the local branches as they were.
+func (r Repo) CreateBranch(ctx context.Context, name, trunk string) error {
+	_, err := r.Runner.Run(ctx, "switch", "--quiet", "--no-track", "--create", name, originTrunk(trunk))
+	if exitErr, ok := errors.AsType[*child.ExitError](err); ok {
+		if files := overwritten(exitErr.Stderr); len(files) > 0 {
+			return &OverwriteError{Branch: name, Files: files, Err: err}
+		}
+	}
+
+	return err
+}
+
+// OverwriteError reports a switch to Branch that git refused because it would overwrite Files.
+type OverwriteError struct {
+	// Err is git's refusal, a *child.ExitError.
+	Err    error
+	Branch string
+	Files  []string
+}
+
+// Error names the branch and the files.
+func (e *OverwriteError) Error() string {
+	return fmt.Sprintf("the switch to %q would overwrite %s", e.Branch, strings.Join(e.Files, ", "))
+}
+
+// Unwrap returns git's refusal.
+func (e *OverwriteError) Unwrap() error {
+	return e.Err
+}
+
+// overwritten returns the files git lists, each on a line of its own indented by a tab, as the
+// ones a refused switch would overwrite.
+func overwritten(stderr string) []string {
+	var files []string
+
+	for line := range strings.SplitSeq(stderr, "\n") {
+		if file, indented := strings.CutPrefix(line, "\t"); indented {
+			files = append(files, strings.TrimSpace(file))
+		}
+	}
+
+	return files
+}
+
+// BranchNameError reports a name git cannot hold as a branch.
+type BranchNameError struct {
+	// Err is git's refusal, a *child.ExitError that carries git's message, or nil when git gives
+	// none.
+	Err  error
+	Name string
+}
+
+// Error names the refused name, followed by git's refusal when there is one.
+func (e *BranchNameError) Error() string {
+	message := fmt.Sprintf("%q is not a valid branch name", e.Name)
+	if e.Err != nil {
+		message += ": " + e.Err.Error()
+	}
+
+	return message
+}
+
+// Unwrap returns git's refusal of the name.
+func (e *BranchNameError) Unwrap() error {
+	return e.Err
+}
+
+// Reason returns git's message refusing the name, trimmed, or empty when git gave none.
+func (e *BranchNameError) Reason() string {
+	if exitErr, ok := errors.AsType[*child.ExitError](e.Err); ok {
+		return strings.TrimSpace(exitErr.Stderr)
+	}
+
+	return ""
+}
+
+// CheckBranchName returns nil when git can hold name as a branch, and a *BranchNameError when it
+// cannot. A name that starts with a dash is refused, which git would read as an option, and so is
+// one git reads as another branch's, such as @{-1} for the previous branch.
+func (r Repo) CheckBranchName(ctx context.Context, name string) error {
+	if strings.HasPrefix(name, "-") {
+		return &BranchNameError{Name: name}
+	}
+
+	// --branch expands @{-N} to the name of the Nth branch checked out before, so an answer that
+	// differs from name means name is not a branch name of its own.
+	expanded, err := r.line(ctx, "check-ref-format", "--branch", name)
+	if _, refused := errors.AsType[*child.ExitError](err); refused {
+		return &BranchNameError{Name: name, Err: err}
+	}
+
+	if err != nil {
+		return err
+	}
+
+	if expanded != name {
+		return &BranchNameError{Name: name}
+	}
+
+	return nil
+}
+
+// Subject returns the first line of the message of the commit sha.
+func (r Repo) Subject(ctx context.Context, sha string) (string, error) {
+	return r.line(ctx, "show", "--no-patch", "--format=%s", sha)
 }
 
 // DetachAtOrigin detaches HEAD at origin's trunk as last fetched, keeping untracked files.
@@ -465,5 +610,5 @@ func excludeTrunk(trunk string) string {
 // origin/<trunk> to a local branch of that name when one exists, which would stand in for origin's
 // trunk.
 func originTrunk(trunk string) string {
-	return "refs/remotes/" + origin + "/" + trunk
+	return remotesRef + trunk
 }

@@ -28,7 +28,7 @@ func redRow(name string, bucket forge.Bucket, log forge.FailedLog, excerpt strin
 	lint := lintFailed()
 	lint.Bucket = bucket
 	verdict := forge.Verdict{
-		Checks:    []forge.Check{lint, checked("test", forge.BucketPass)},
+		Checks:    []forge.Check{lint, forgetest.Check("test", forge.BucketPass)},
 		Runs:      ran(forge.RunCompleted),
 		FailedLog: log,
 	}
@@ -118,7 +118,7 @@ func nextNever() string {
 func TestPush_WhenARequiredCheckNeverReported_DeliveredNotGreen(t *testing.T) {
 	t.Parallel()
 
-	lint := needed("lint", forge.BucketPass)
+	lint := forgetest.RequiredCheck("lint", forge.BucketPass)
 	never := forge.Verdict{Checks: []forge.Check{lint}, MissingRequired: []string{"test"}, Runs: ran(forge.RunCompleted)}
 	runPushes(t, []pushRow{
 		{
@@ -145,7 +145,7 @@ func TestPush_WhenTheHeadMovesPastThePushedCommit_RefusesNamingTheNewHead(t *tes
 	runPushes(t, []pushRow{
 		{
 			name: "after a green verdict", want: refused,
-			script: reusing(passing()).showing(inState(forge.MergeClean, "CLEAN"), moved()),
+			script: reusing(passing()).showing(cleanHead(), moved()),
 		},
 	})
 }
@@ -258,7 +258,7 @@ func pushStillRunningRows() []pushRow {
 			// polls of five seconds pass, and a third would leave too little time for the head read
 			// after it.
 			name: "a check still runs", left: 17 * time.Second,
-			script: reusing(running()).showing(stale(), inState(forge.MergeClean, "CLEAN")),
+			script: reusing(running()).showing(stale(), cleanHead()),
 			want: pending(expect("still running"),
 				expect("Still running", "10 seconds", "test")+cleanLine(),
 				detail(forge.VerdictPending, forge.MergeClean, running().Checks...)),
@@ -272,7 +272,7 @@ func pushStillRunningRows() []pushRow {
 			// once after the checks; that read takes the one second the checks are waited on.
 			name: "a check still runs a second into the wait", left: 7 * time.Second,
 			script: reusing(running()).
-				showing(inState(forge.MergeClean, "CLEAN"), inState(forge.MergeBlockedByReview, "BLOCKED")).
+				showing(cleanHead(), inState(forge.MergeBlockedByReview, "BLOCKED")).
 				with(func(script *forgetest.Script, _ string) {
 					script.OnRead = onHeadAfterChecks(func() { time.Sleep(time.Second) })
 				}),
@@ -314,7 +314,7 @@ func waitReads(err error) []failingRead {
 func TestPush_WhenAReadOfTheWaitFails_BrokeNamingTheRead(t *testing.T) {
 	t.Parallel()
 
-	runPushes(t, brokenAfter(waitReads(errors.New("HTTP 502"))))
+	runPushes(t, brokenAfter(waitReads(errors.New(forgeFailure))))
 }
 
 const (

@@ -29,10 +29,6 @@ const (
 
 	// stuckSpinning shows the spinner line of its step on stderr.
 	stuckSpinning = "spinning"
-	// stuckPiped runs its step with stderr no terminal.
-	stuckPiped = "piped"
-	// stuckIdle starts no step.
-	stuckIdle = "idle"
 	// stuckReturned lets its landing command return at once, then stays until it is killed.
 	stuckReturned = "returned"
 	// stuckStopping shows the spinner line of its step, and its landing command returns the
@@ -76,7 +72,7 @@ func TestMain(m *testing.M) {
 }
 
 // stuck runs `ils merge` in a step that lasts until the run's deadline, as way says, with stderr
-// a color terminal wide columns wide unless way is stuckPiped, and returns its exit code. Once the
+// a color terminal wide columns wide, and returns its exit code. Once the
 // landing command runs, it prints ready on stdout; a stuckReturned run prints it once the command
 // returned, and stays until it is killed. A stuckStopping, stuckHolding or stuckHoldingEarly run
 // is the one stopping describes instead.
@@ -85,15 +81,16 @@ func stuck(way string) int {
 		Stdout:         os.Stdout,
 		Stderr:         os.Stderr,
 		Environ:        []string{colorTerm},
-		StderrTerminal: way != stuckPiped,
+		StderrTerminal: true,
 		StderrWidth:    func() int { return wide },
 		Launch:         time.Now(),
 		Notify:         signal.Notify,
 	}
-	if way == stuckStopping || way == stuckHolding || way == stuckHoldingEarly {
+
+	switch way {
+	case stuckStopping, stuckHolding, stuckHoldingEarly:
 		return stopping(app, way)
-	}
-	if way == stuckReturned {
+	case stuckReturned:
 		app.SetMerge(finishing)
 		code := app.Run(context.Background(), []string{"merge"})
 		tell(ready)
@@ -101,10 +98,9 @@ func stuck(way string) int {
 
 		return code
 	}
+
 	app.SetMerge(func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
-		if way != stuckIdle {
-			startedMerge(deps.Progress)
-		}
+		startedMerge(deps.Progress)
 		tell(ready)
 		<-ctx.Done()
 
