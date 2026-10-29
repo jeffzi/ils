@@ -548,7 +548,8 @@ func refusedBy(t *testing.T, script string) (context.Context, *delivery) {
 func TestPush_WhenAPrePushHookRefusesThePush_MovesWhatItPrintedFromTheLineToTheExcerpt(t *testing.T) {
 	t.Parallel()
 	const onStdout, onStderr = "lint passed", "format failed"
-	ctx, d := refusedBy(t, "echo '"+onStdout+"'\necho '"+onStderr+"' >&2\nexit 1")
+	// The blank line the hook starts with is trimmed from the excerpt.
+	ctx, d := refusedBy(t, "echo\necho '"+onStdout+"'\necho '"+onStderr+"' >&2\nexit 1")
 
 	got := landing.Push(ctx, d.deps, pushRequest())
 
