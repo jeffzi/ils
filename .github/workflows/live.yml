@@ -2,8 +2,11 @@ name: Live
 
 # The live suite runs `ils push` and `ils merge` with the real git and gh against a test repository
 # on GitHub.
-# It starts weekly and by hand, and on no push and no pull request, so it never gates a merge.
+# It starts weekly, by hand, and on a release commit pushed to main, whose checks `ils release`
+# waits for before it tags. It starts on no pull request, so it never gates a merge.
 on:
+  push:
+    branches: [main]
   schedule:
     - cron: "0 5 * * 1"
   workflow_dispatch:
@@ -20,6 +23,9 @@ concurrency:
 jobs:
   live:
     name: Live / ${{ matrix.target }}
+    # On main, only the release commit runs the suite; every other push skips it. A squash merge
+    # appends " (#N)" to the subject, which the prefix match allows.
+    if: "github.event_name != 'push' || startsWith(github.event.head_commit.message, 'chore: release v')"
     runs-on: ubuntu-latest
     # Eleven scenarios of at most eight minutes each.
     timeout-minutes: 90
