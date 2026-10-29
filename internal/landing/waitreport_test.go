@@ -436,3 +436,11 @@ func TestPush_WhenTheMergeStateStopsThePush_SaysItInPlainWords(t *testing.T) {
 		assertSays(t, linesText(decoded.Lines), stateLine(forge.MergeConflicting))
 	})
 }
+
+func TestLastLines_WhenTheTextIsEmpty_ReturnsNoExcerpt(t *testing.T) {
+	t.Parallel()
+
+	got := landing.LastLines("")
+
+	assert.Check(t, is.Equal(got, ""))
+}

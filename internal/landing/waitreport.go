@@ -17,9 +17,16 @@ const (
 	readCI         = "whether the repository has CI"
 )
 
-// excerptLines is how many lines of a failing check's log a red verdict's excerpt holds, counted
-// from the log's end, so that the failure stays readable in a terminal.
+// excerptLines is how many lines an excerpt holds, counted from the end of the text it is cut
+// from, so that the failure stays readable in a terminal.
 const excerptLines = 60
+
+// lastLines returns the last excerptLines lines of text, without the line breaks that end it.
+func lastLines(text string) string {
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+
+	return strings.Join(lines[max(0, len(lines)-excerptLines):], "\n")
+}
 
 // waitRead returns the read a failed wait names and the error of that read.
 func waitRead(err error) (string, error) {
@@ -337,9 +344,7 @@ func (w Waited) excerpt() string {
 
 	switch log.State {
 	case forge.FailedLogRead:
-		lines := strings.Split(strings.TrimRight(log.Text, "\n"), "\n")
-
-		return strings.Join(lines[max(0, len(lines)-excerptLines):], "\n")
+		return lastLines(log.Text)
 	case forge.FailedLogNoRun:
 		return "no log: " + check + " is not a workflow run"
 	case forge.FailedLogInProgress:
