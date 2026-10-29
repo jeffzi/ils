@@ -179,9 +179,9 @@ func draftJSON(mergeable, status string) string {
 	return ghtest.HeadDraftJSON(headSHA, mergeable, status)
 }
 
-// headOf is the head commit in the given merge state, with GitHub's own status behind it.
-func headOf(state forge.MergeState, raw string) forge.Head {
-	return forge.Head{SHA: headSHA, MergeState: state, RawMergeState: raw}
+// headOf is the head commit in the given merge state.
+func headOf(state forge.MergeState) forge.Head {
+	return forge.Head{SHA: headSHA, MergeState: state}
 }
 
 // runJSON is one entry of the run list's answer: a run of the head commit in status.
@@ -562,18 +562,18 @@ func TestForge_Head_WhenStateNeedsNoCheck_ReportsMergeStateFromThePullRequestAlo
 		want     forge.Head
 		required []string
 	}{
-		{name: "conflicting wins over a clean status", view: pullJSON("CONFLICTING", "CLEAN", ""), want: headOf(forge.MergeConflicting, "CLEAN"), required: checked},
-		{name: "conflicting wins over the draft flag", view: draftJSON("CONFLICTING", "DIRTY"), want: headOf(forge.MergeConflicting, "DIRTY"), required: checked},
-		{name: "mergeable not worked out yet", view: pullJSON("UNKNOWN", "BLOCKED", ""), want: headOf(forge.MergeUnknown, "BLOCKED"), required: checked},
-		{name: "mergeable not worked out yet wins over the draft flag", view: draftJSON("UNKNOWN", "UNKNOWN"), want: headOf(forge.MergeUnknown, "UNKNOWN"), required: checked},
-		{name: "clean", view: headJSON("CLEAN", "APPROVED"), want: headOf(forge.MergeClean, "CLEAN"), required: checked},
-		{name: "behind the base", view: headJSON("BEHIND", ""), want: headOf(forge.MergeBehind, "BEHIND"), required: checked},
-		{name: "dirty", view: headJSON("DIRTY", ""), want: headOf(forge.MergeConflicting, "DIRTY"), required: checked},
-		{name: "draft status", view: headJSON("DRAFT", ""), want: headOf(forge.MergeDraft, "DRAFT"), required: checked},
-		{name: "draft flag on a blocked status", view: draftJSON("MERGEABLE", "BLOCKED"), want: headOf(forge.MergeDraft, "BLOCKED"), required: checked},
-		{name: "blocked by a review", view: headJSON("BLOCKED", "REVIEW_REQUIRED"), want: headOf(forge.MergeBlockedByReview, "BLOCKED"), required: checked},
-		{name: "blocked with no required name", view: headJSON("BLOCKED", ""), want: headOf(forge.MergeBlockedOther, "BLOCKED")},
-		{name: "status not worked out yet", view: headJSON("UNKNOWN", ""), want: headOf(forge.MergeUnknown, "UNKNOWN"), required: checked},
+		{name: "conflicting wins over a clean status", view: pullJSON("CONFLICTING", "CLEAN", ""), want: headOf(forge.MergeConflicting), required: checked},
+		{name: "conflicting wins over the draft flag", view: draftJSON("CONFLICTING", "DIRTY"), want: headOf(forge.MergeConflicting), required: checked},
+		{name: "mergeable not worked out yet", view: pullJSON("UNKNOWN", "BLOCKED", ""), want: headOf(forge.MergeUnknown), required: checked},
+		{name: "mergeable not worked out yet wins over the draft flag", view: draftJSON("UNKNOWN", "UNKNOWN"), want: headOf(forge.MergeUnknown), required: checked},
+		{name: "clean", view: headJSON("CLEAN", "APPROVED"), want: headOf(forge.MergeClean), required: checked},
+		{name: "behind the base", view: headJSON("BEHIND", ""), want: headOf(forge.MergeBehind), required: checked},
+		{name: "dirty", view: headJSON("DIRTY", ""), want: headOf(forge.MergeConflicting), required: checked},
+		{name: "draft status", view: headJSON("DRAFT", ""), want: headOf(forge.MergeDraft), required: checked},
+		{name: "draft flag on a blocked status", view: draftJSON("MERGEABLE", "BLOCKED"), want: headOf(forge.MergeDraft), required: checked},
+		{name: "blocked by a review", view: headJSON("BLOCKED", "REVIEW_REQUIRED"), want: headOf(forge.MergeBlockedByReview), required: checked},
+		{name: "blocked with no required name", view: headJSON("BLOCKED", ""), want: headOf(forge.MergeBlockedOther)},
+		{name: "status not worked out yet", view: headJSON("UNKNOWN", ""), want: headOf(forge.MergeUnknown), required: checked},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -622,7 +622,7 @@ func TestForge_Head_WhenBlockedAndTrunkRequiresChecks_ReportsMissingCheckOnlyWhe
 			got, err := newForge().Head(t.Context(), engine(), headQuery("build", "test"))
 			assert.NilError(t, err)
 
-			want := headOf(tt.want, "BLOCKED")
+			want := headOf(tt.want)
 			assert.Check(t, is.DeepEqual(got, want))
 		})
 	}

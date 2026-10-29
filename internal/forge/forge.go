@@ -111,8 +111,6 @@ const (
 type Head struct {
 	SHA        string
 	MergeState MergeState
-	// RawMergeState is the forge's own value behind MergeState, kept for printing.
-	RawMergeState string
 }
 
 // HeadQuery names the change whose tip is wanted.

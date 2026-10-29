@@ -116,8 +116,6 @@ type Waited struct {
 	// MergeState is the merge state read after the wait for the checks, or the one read
 	// before it when no read after it showed the pushed commit.
 	MergeState forge.MergeState
-	// RawMergeState is the forge's own value behind MergeState, kept for printing.
-	RawMergeState string
 	// Deciding are the checks that decide: the required ones when Pushed.Required names
 	// any, and every check otherwise.
 	Deciding []forge.Check
@@ -145,13 +143,13 @@ const (
 )
 
 func (w *Waited) takeState(head forge.Head) {
-	w.MergeState, w.RawMergeState = head.MergeState, head.RawMergeState
+	w.MergeState = head.MergeState
 }
 
 // unconfirmed returns a Waited holding only the merge state w read before the checks, as the wait
 // ends when no read of the head after the checks showed the pushed commit.
 func (w Waited) unconfirmed() Waited {
-	return Waited{MergeState: w.MergeState, RawMergeState: w.RawMergeState}
+	return Waited{MergeState: w.MergeState}
 }
 
 // apartWithoutCI turns nothing reported into WaitConflicting or WaitBehind when the merge state,

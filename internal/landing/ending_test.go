@@ -244,7 +244,7 @@ func landedRows() []landedRow {
 			// The poll of the merge state takes the wait's step, so the step of the checks starts again
 			// before their line is said.
 			name: "the merge state unknown after the checks and clean at the next poll",
-			script: toLand(nil, nil).showing(cleanHead(), inState(forge.MergeUnknown, "UNKNOWN"),
+			script: toLand(nil, nil).showing(cleanHead(), inState(forge.MergeUnknown),
 				cleanHead()),
 			told: []string{
 				checkingStep(), findingStep(), waitingStep(bound - landing.MergeReserve), "count 1 of 1",

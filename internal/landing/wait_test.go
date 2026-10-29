@@ -164,26 +164,26 @@ func pushedTip(required ...string) landing.Pushed {
 }
 
 // tip returns the pull request's head on the pushed commit in the merge state state.
-func tip(state forge.MergeState, raw string) forge.Head {
-	return forge.Head{SHA: pushedSHA, MergeState: state, RawMergeState: raw}
+func tip(state forge.MergeState) forge.Head {
+	return forge.Head{SHA: pushedSHA, MergeState: state}
 }
 
 // clean, unknown, and stale are the heads most waits read: the pushed commit ready to merge, the
 // pushed commit before the forge worked its merge state out, and the commit before the push.
-func clean() forge.Head   { return tip(forge.MergeClean, "CLEAN") }
-func unknown() forge.Head { return tip(forge.MergeUnknown, "UNKNOWN") }
+func clean() forge.Head   { return tip(forge.MergeClean) }
+func unknown() forge.Head { return tip(forge.MergeUnknown) }
 func stale() forge.Head {
-	return forge.Head{SHA: staleSHA, MergeState: forge.MergeClean, RawMergeState: "CLEAN"}
+	return forge.Head{SHA: staleSHA, MergeState: forge.MergeClean}
 }
 
 // moved is the head of a pull request whose branch a commit after the pushed one reached, in a
 // merge state of its own, unlike the pushed commit's.
 func moved() forge.Head {
-	return forge.Head{SHA: movedSHA, MergeState: forge.MergeBlockedByReview, RawMergeState: "BLOCKED"}
+	return forge.Head{SHA: movedSHA, MergeState: forge.MergeBlockedByReview}
 }
 
 // blockedByReview is the pushed commit, blocked until a review approves it.
-func blockedByReview() forge.Head { return tip(forge.MergeBlockedByReview, "BLOCKED") }
+func blockedByReview() forge.Head { return tip(forge.MergeBlockedByReview) }
 
 // lateHead is the answer of a read of the head that c ended.
 func lateHead(c cut) forgetest.Answer[forge.Head] {
@@ -254,13 +254,12 @@ func polls(times int, every time.Duration) []time.Duration {
 // with every check deciding, and passed of them passed and skipped of them skipped.
 func concluded(outcome landing.WaitOutcome, verdict forge.Verdict, passed, skipped int) landing.Waited {
 	return landing.Waited{
-		Outcome:       outcome,
-		MergeState:    forge.MergeClean,
-		RawMergeState: "CLEAN",
-		Verdict:       verdict,
-		Deciding:      verdict.Checks,
-		Passed:        passed,
-		Skipped:       skipped,
+		Outcome:    outcome,
+		MergeState: forge.MergeClean,
+		Verdict:    verdict,
+		Deciding:   verdict.Checks,
+		Passed:     passed,
+		Skipped:    skipped,
 	}
 }
 
@@ -270,7 +269,6 @@ func green() landing.Waited { return concluded(landing.WaitGreen, passing(), 1, 
 // stateOf returns waited with the merge state of head.
 func stateOf(waited landing.Waited, head forge.Head) landing.Waited {
 	waited.MergeState = head.MergeState
-	waited.RawMergeState = head.RawMergeState
 
 	return waited
 }
@@ -377,8 +375,8 @@ func TestAwaitVerdict_WhenTheHeadIsNotYetThePushedCommit_ReadsNoCheck(t *testing
 
 // mergeRows are the waits decided by the merge state the head read carries.
 func mergeRows() []vigilRow {
-	conflicting := tip(forge.MergeConflicting, "DIRTY")
-	behind := tip(forge.MergeBehind, "BEHIND")
+	conflicting := tip(forge.MergeConflicting)
+	behind := tip(forge.MergeBehind)
 	stillUnknown := pendingAt(landing.StageMergeState, unknown())
 	// gaveUp is the wait that its own window ended, with time left before the deadline.
 	gaveUp := stillUnknown

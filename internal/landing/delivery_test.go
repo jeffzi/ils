@@ -206,12 +206,12 @@ func (build forgeFor) answeringCI(answer forgetest.Answer[bool]) forgeFor {
 }
 
 // inState returns a head in the merge state state, on the tip once showing has placed it.
-func inState(state forge.MergeState, raw string) forge.Head {
-	return forge.Head{MergeState: state, RawMergeState: raw}
+func inState(state forge.MergeState) forge.Head {
+	return forge.Head{MergeState: state}
 }
 
 // cleanHead is a head GitHub can merge, on the tip once showing or viewing has placed it.
-func cleanHead() forge.Head { return inState(forge.MergeClean, "CLEAN") }
+func cleanHead() forge.Head { return inState(forge.MergeClean) }
 
 // standing is pull request 12, open from the topic branch against the trunk.
 func standing() forge.Change {
@@ -751,7 +751,7 @@ func pushNoCIRows() []pushRow {
 		// that state does.
 		{
 			name:   "on a pull request that turns " + string(forge.MergeConflicting) + " after the checks",
-			script: unverified.showing(cleanHead(), inState(forge.MergeConflicting, "DIRTY")),
+			script: unverified.showing(cleanHead(), inState(forge.MergeConflicting)),
 			want: finish{
 				outcome: result.DeliveredNotGreen, reason: expect("conflicts with the trunk"),
 				text: pushedLine() + openedLine() + noCILine() + stateLine(forge.MergeConflicting) +
@@ -861,7 +861,7 @@ func pushWaitRows() []pushRow {
 	rows := []pushRow{
 		{
 			name:   "green on a pull request that needs a review",
-			script: reusing(passing()).showing(cleanHead(), inState(forge.MergeBlockedByReview, "BLOCKED")),
+			script: reusing(passing()).showing(cleanHead(), inState(forge.MergeBlockedByReview)),
 			want:   reviewed,
 		},
 	}

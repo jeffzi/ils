@@ -817,7 +817,7 @@ func waitVerdicts() []waitRow {
 
 	return []waitRow{
 		{
-			name: "a deciding check failed", script: waiting(red).showing(inState(forge.MergeBlockedOther, "UNSTABLE")),
+			name: "a deciding check failed", script: waiting(red).showing(inState(forge.MergeBlockedOther)),
 			outcome: result.Refused, payload: mergeDetail(forge.VerdictRed, forge.MergeBlockedOther, red.Checks...),
 			text: expect("lint", "failed", lintURL, partsOf(stateLine(forge.MergeBlockedOther))[0]+steps(1, 3),
 				"lint", "failed") + nextRed(),
@@ -881,44 +881,44 @@ func TestMerge_WhenTheWaitStopsTheMerge_EndsWithNothingWritten(t *testing.T) {
 // afterWaitStops are the runs of `ils merge` whose checks are green and which stop on what they
 // read after the wait.
 func afterWaitStops() []waitRow {
-	greenThen := func(state forge.MergeState, raw, lead, rest string) waitRow {
+	greenThen := func(state forge.MergeState, lead, rest string) waitRow {
 		return waitRow{
 			name:    string(state),
-			script:  waiting(passing()).showing(cleanHead(), inState(state, raw)),
+			script:  waiting(passing()).showing(cleanHead(), inState(state)),
 			outcome: result.Refused, text: lead + stateLine(state) + rest,
 			payload: mergeDetail(forge.VerdictGreen, state, passing().Checks...),
 		}
 	}
-	reviewed := inState(forge.MergeBlockedByReview, "BLOCKED")
+	reviewed := inState(forge.MergeBlockedByReview)
 	// The forge reports no required check missing, so the wait ends green and GitHub's state decides.
 	// The head has checks named lint and test; named is the line that names the required checks.
 	missing := func(name, named string, required ...string) waitRow {
-		row := greenThen(forge.MergeBlockedByMissingCheck, "BLOCKED",
+		row := greenThen(forge.MergeBlockedByMissingCheck,
 			expect(tipMark, ": 2 passed\n")+named,
 			expect("requires has no check", tipMark))
 		row.name = name
 		row.script = waiting(requiredPassing()).requiring(required...).
-			showing(cleanHead(), inState(forge.MergeBlockedByMissingCheck, "BLOCKED"))
+			showing(cleanHead(), inState(forge.MergeBlockedByMissingCheck))
 		row.payload = mergeDetail(forge.VerdictGreen, forge.MergeBlockedByMissingCheck, requiredPassing().Checks...)
 
 		return row
 	}
 
-	conflicting := greenThen(forge.MergeConflicting, "DIRTY",
+	conflicting := greenThen(forge.MergeConflicting,
 		countLine(), expect("conflicts with the trunk")+nextTrunk())
 	conflicting.name = "conflicting after the checks"
 
 	return []waitRow{
-		greenThen(forge.MergeDraft, "DRAFT", countLine(), draftText()),
+		greenThen(forge.MergeDraft, countLine(), draftText()),
 		conflicting,
-		greenThen(forge.MergeBlockedByReview, "BLOCKED",
+		greenThen(forge.MergeBlockedByReview,
 			countLine(), expect("#12", "requires a review")),
 		missing(string(forge.MergeBlockedByMissingCheck), expect("no check on", tipMark, ": build\n"),
 			"lint", "test", "build"),
 		// GitHub expects a check ils cannot tell apart, so every required check is named.
 		missing("blocked-by-missing-check with a check for each required one", expect("Required by the trunk: lint, test\n"),
 			"lint", "test"),
-		greenThen(forge.MergeBlockedOther, "BLOCKED",
+		greenThen(forge.MergeBlockedOther,
 			countLine(), expect("blocks", "#12", "reason ils does not read", pullURL)),
 		{
 			name: "blocked by review with nothing reported and no CI on the trunk",
@@ -933,18 +933,18 @@ func afterWaitStops() []waitRow {
 // settledStops are the runs of `ils merge` whose checks are green and whose merge state, read again
 // after the wait, stops the merge once a poll finds it or fails.
 func settledStops() []waitRow {
-	unknown := inState(forge.MergeUnknown, "UNKNOWN")
+	unknown := inState(forge.MergeUnknown)
 	rows := []waitRow{
 		{
 			name:   "behind after an unknown poll",
-			script: waiting(passing()).showing(cleanHead(), unknown, inState(forge.MergeBehind, "BEHIND")), outcome: result.Refused,
+			script: waiting(passing()).showing(cleanHead(), unknown, inState(forge.MergeBehind)), outcome: result.Refused,
 			text:    countLine() + stateLine(forge.MergeBehind) + expect("behind the trunk") + nextTrunk(),
 			payload: mergeDetail(forge.VerdictGreen, forge.MergeBehind, passing().Checks...),
 		},
 		{
 			name: "conflicting with nothing reported and no CI on the trunk",
 			script: waiting(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{}).
-				showing(cleanHead(), inState(forge.MergeConflicting, "DIRTY")),
+				showing(cleanHead(), inState(forge.MergeConflicting)),
 			outcome: result.Refused, payload: mergeDetail(forge.VerdictNone, forge.MergeConflicting),
 			text: noCILine() + stateLine(forge.MergeConflicting) + expect("conflicts with the trunk") + nextTrunk(),
 		},
@@ -1077,7 +1077,7 @@ func TestMerge_WhenTheHeadMovesPastThePushedCommit_RefusesWithoutMerging(t *test
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		// The head moves while the merge state is read again, to a commit in a merge state of its own.
-		unknownHead := inState(forge.MergeUnknown, "UNKNOWN")
+		unknownHead := inState(forge.MergeUnknown)
 		heads := []forge.Head{cleanHead(), unknownHead, unknownHead, moved()}
 		// The forge would compose and land the merge, were it asked to.
 		script := waiting(passing()).showing(heads...).saying(titledAfter("Tidy the wording.")).landing(nil, nil)

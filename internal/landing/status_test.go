@@ -410,8 +410,8 @@ func copySteps() []nextRow {
 
 // pullSteps are the states whose `Next:` line the open pull request decides.
 func pullSteps() []nextRow {
-	conflicting := inState(forge.MergeConflicting, "DIRTY")
-	review := inState(forge.MergeBlockedByReview, "BLOCKED")
+	conflicting := inState(forge.MergeConflicting)
+	review := inState(forge.MergeBlockedByReview)
 
 	return []nextRow{
 		{name: "checks still running", script: viewing(cleanHead(), running(), standing()), arrange: published(nextPush())},
@@ -421,7 +421,7 @@ func pullSteps() []nextRow {
 		},
 		{
 			name:    "red",
-			script:  viewing(inState(forge.MergeBlockedOther, "UNSTABLE"), lintRed(), standing()),
+			script:  viewing(inState(forge.MergeBlockedOther), lintRed(), standing()),
 			arrange: published(nextRed()),
 		},
 		{name: "red while conflicting with the trunk", script: viewing(conflicting, lintRed(), standing()), arrange: published(nextRed())},

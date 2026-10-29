@@ -408,7 +408,7 @@ func (m *mergeReady) verdictStop(req Request) *result.Result {
 func (m *mergeReady) settle(ctx context.Context, deps Deps, req Request) *result.Result {
 	w := waiter{deps: deps, pushed: m.pushed()}
 
-	read := forge.Head{SHA: m.pull.HeadSHA, MergeState: m.waited.MergeState, RawMergeState: m.waited.RawMergeState}
+	read := forge.Head{SHA: m.pull.HeadSHA, MergeState: m.waited.MergeState}
 
 	moved, polled, err := w.settled(ctx, &m.waited, read)
 	if moved {

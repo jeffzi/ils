@@ -46,7 +46,7 @@ func redRow(name string, bucket forge.Bucket, log forge.FailedLog, excerpt strin
 
 	return pushRow{
 		name:   name,
-		script: opening(verdict).showing(inState(forge.MergeBlockedOther, "UNSTABLE")),
+		script: opening(verdict).showing(inState(forge.MergeBlockedOther)),
 		want: finish{
 			outcome: result.DeliveredNotGreen, reason: expect("lint", said), payload: payload,
 			text: pushedLine() + openedLine() + expect("lint", said, lintURL) +
@@ -93,10 +93,10 @@ func TestPush_WhenACheckFailed_ReportsTheExcerptOfItsLog(t *testing.T) {
 }
 
 // stoppedRow is a push the pull request's merge state stops before any check is read.
-func stoppedRow(state forge.MergeState, raw, reason string) pushRow {
+func stoppedRow(state forge.MergeState, reason string) pushRow {
 	return pushRow{
 		name:   string(state),
-		script: reusing().showing(inState(state, raw)),
+		script: reusing().showing(inState(state)),
 		want: finish{
 			outcome: result.DeliveredNotGreen, reason: expect(reason),
 			text:    pushedLine() + foundLine() + stateLine(state) + expect(reason) + nextTrunk(),
@@ -109,8 +109,8 @@ func TestPush_WhenTheMergeStateKeepsThePullRequestApart_DeliveredNotGreen(t *tes
 	t.Parallel()
 
 	runPushes(t, []pushRow{
-		stoppedRow(forge.MergeConflicting, "DIRTY", "conflicts with the trunk"),
-		stoppedRow(forge.MergeBehind, "BEHIND", "behind the trunk"),
+		stoppedRow(forge.MergeConflicting, "conflicts with the trunk"),
+		stoppedRow(forge.MergeBehind, "behind the trunk"),
 	})
 }
 
@@ -126,7 +126,7 @@ func TestPush_WhenARequiredCheckNeverReported_DeliveredNotGreen(t *testing.T) {
 	runPushes(t, []pushRow{
 		{
 			name:   "a required check never reported",
-			script: opening(never).requiring("lint", "test").showing(inState(forge.MergeBlockedByMissingCheck, "BLOCKED")),
+			script: opening(never).requiring("lint", "test").showing(inState(forge.MergeBlockedByMissingCheck)),
 			want: finish{
 				outcome: result.DeliveredNotGreen, reason: expect("a required check never reported"),
 				text: pushedLine() + openedLine() + expect("never reported", "test") +
@@ -231,7 +231,7 @@ func pushPendingRows() []pushRow {
 	return []pushRow{
 		{
 			name:   "the merge state is still unknown",
-			script: reusing().showing(inState(forge.MergeUnknown, "UNKNOWN")),
+			script: reusing().showing(inState(forge.MergeUnknown)),
 			want: pending(expect("#12", "can merge", "within"), "",
 				detail(forge.VerdictNone, forge.MergeUnknown)),
 		},
@@ -276,7 +276,7 @@ func pushStillRunningRows() []pushRow {
 			// which the result says in whole seconds.
 			name: "a check still runs a second and a half into the wait", left: 7 * time.Second,
 			script: reusing(running()).
-				showing(cleanHead(), inState(forge.MergeBlockedByReview, "BLOCKED")).
+				showing(cleanHead(), inState(forge.MergeBlockedByReview)).
 				with(func(script *forgetest.Script, _ string) {
 					script.OnRead = onHeadAfterChecks(func() { time.Sleep(1500 * time.Millisecond) })
 				}),
@@ -308,7 +308,7 @@ func TestPush_WhenTheWaitEndsBeforeAnAnswer_PendingSayingWhy(t *testing.T) {
 // with err.
 func waitReads(err error) []failingRead {
 	// undecided shows the tip in a merge state the forge has not worked out, and then fails.
-	undecided := opening(passing()).showing(inState(forge.MergeUnknown, "UNKNOWN")).thenFailingHead(err)
+	undecided := opening(passing()).showing(inState(forge.MergeUnknown)).thenFailingHead(err)
 	opens := pushedLine() + openedLine()
 
 	return []failingRead{
@@ -444,14 +444,14 @@ func TestPush_MergeStateLine(t *testing.T) {
 		{
 			row: pushRow{
 				name:   "blocked by review on a push that is done",
-				script: reusing(passing()).showing(cleanHead(), inState(forge.MergeBlockedByReview, "BLOCKED")),
+				script: reusing(passing()).showing(cleanHead(), inState(forge.MergeBlockedByReview)),
 			},
 			outcome: result.Done,
 		},
 		{
 			row: pushRow{
 				name:   "conflicting on a push that is not done",
-				script: reusing().showing(inState(forge.MergeConflicting, "DIRTY")),
+				script: reusing().showing(inState(forge.MergeConflicting)),
 			},
 			want: stateLine(forge.MergeConflicting), outcome: result.DeliveredNotGreen,
 		},
