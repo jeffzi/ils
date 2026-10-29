@@ -102,9 +102,7 @@ type Deps struct {
 // Progress is told how a landing command advances, as it advances. A step runs from one Started
 // to the next, or to the end of the command.
 type Progress interface {
-	// Started is told that the step label names began; limit is the most it can last, zero when
-	// nothing but the command's end limits it.
-	Started(label result.Phrase, limit time.Duration)
+	Started(label result.Phrase)
 	// Said is told that the running step succeeded, saying line: the exact line the result will
 	// hold. A step that fails or is cut short says nothing.
 	Said(line result.Phrase)
@@ -113,13 +111,10 @@ type Progress interface {
 	Counted(done, total int)
 }
 
-// untilTheEnd is the limit of a step started with it: only the command's end limits the step.
-const untilTheEnd time.Duration = 0
-
-// started tells the progress hook, if any, that the step label names began, limited to limit.
-func (d Deps) started(label result.Phrase, limit time.Duration) {
+// started tells the progress hook, if any, that the step label names began.
+func (d Deps) started(label result.Phrase) {
 	if d.Progress != nil {
-		d.Progress.Started(label, limit)
+		d.Progress.Started(label)
 	}
 }
 
@@ -138,12 +133,12 @@ func (d Deps) say(lines *[]result.Phrase, line result.Phrase) {
 // startChecking tells the progress hook, if any, that the checks a command makes before it writes
 // anything began.
 func (d Deps) startChecking() {
-	d.started(result.Say("Checking the branch and origin"), untilTheEnd)
+	d.started(result.Say("Checking the branch and origin"))
 }
 
 // startFinding tells the progress hook, if any, that the search for the branch's pull request began.
 func (d Deps) startFinding() {
-	d.started(result.Say("Finding the pull request"), untilTheEnd)
+	d.started(result.Say("Finding the pull request"))
 }
 
 // Forge is the host of a repository, seen through the operations `push` and `merge` need.

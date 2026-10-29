@@ -204,8 +204,9 @@ func (w Waited) unconcluded(sha string, number int) ([]result.Phrase, result.Phr
 			commit, pull, timeLimitWords)
 	default:
 		pending := w.Verdict.Pending()
-		elapsed := time.Since(w.Since).Truncate(time.Second)
-		lines = runningList(result.Say("Still running after %s (%s):", elapsed, nounCount(len(pending), "check")), pending)
+		now := time.Now()
+		lines = runningList(result.Say("Still running (%s):", nounCount(len(pending), "check")), pending,
+			func(check forge.Check) result.Phrase { return runningAge(check, now) })
 	}
 
 	return append(lines, w.mergeStateLines()...), reason
@@ -265,6 +266,8 @@ func (w Waited) mergeStateLines() []result.Phrase {
 		line = result.Say("The pull request waits for an approving review")
 	case forge.MergeBlockedByMissingCheck:
 		line = result.Say("The pull request waits for a required check")
+	case forge.MergeBlockedByRunningCheck:
+		line = result.Say("The pull request waits for a required check to finish")
 	case forge.MergeBlockedOther:
 		line = result.Say("A branch rule ils cannot name blocks the merge")
 	default:
@@ -274,16 +277,38 @@ func (w Waited) mergeStateLines() []result.Phrase {
 	return []result.Phrase{line}
 }
 
-// runningList returns header, then each check of pending on a line of its own, indented under it.
-func runningList(header result.Phrase, pending []forge.Check) []result.Phrase {
+// pendingBullet is the indent and mark of a check still running, under its list header.
+const pendingBullet = "  ◌ "
+
+// runningList returns header, then each check of pending on a line of its own, as line says it,
+// indented under the header.
+func runningList(header result.Phrase, pending []forge.Check, line func(forge.Check) result.Phrase) []result.Phrase {
 	lines := make([]result.Phrase, 0, len(pending)+1)
 	lines = append(lines, header)
 
 	for _, check := range pending {
-		lines = append(lines, result.Say("  ◌ %s", check.Name))
+		lines = append(lines, line(check))
 	}
 
 	return lines
+}
+
+// runningName is the line of a pending check that says only its name.
+func runningName(check forge.Check) result.Phrase {
+	return result.Say(pendingBullet+"%s", check.Name)
+}
+
+// runningAge is the line of a pending check that says how long it has run at now, from the time
+// GitHub started it, in whole seconds. A start ahead of now, from a clock that runs ahead of the
+// local one, reads as no time at all.
+func runningAge(check forge.Check, now time.Time) result.Phrase {
+	if check.StartedAt.IsZero() {
+		return result.Say(pendingBullet+"%s, not started yet", check.Name)
+	}
+
+	age := max(now.Sub(check.StartedAt), 0).Truncate(time.Second)
+
+	return result.Say(pendingBullet+"%s, running %s", check.Name, age)
 }
 
 // checksLine says how many deciding checks of the commit sha passed and how many were skipped,

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
@@ -27,10 +28,12 @@ const noChecksReported = "no checks reported"
 const runListLimit = "1000"
 
 type pullCheck struct {
-	Name     string `json:"name"`
-	Bucket   string `json:"bucket"`
-	Workflow string `json:"workflow"`
-	Link     string `json:"link"`
+	// StartedAt is the zero time for a check GitHub has not started.
+	StartedAt time.Time `json:"startedAt"`
+	Name      string    `json:"name"`
+	Bucket    string    `json:"bucket"`
+	Workflow  string    `json:"workflow"`
+	Link      string    `json:"link"`
 }
 
 type workflowRun struct {
@@ -95,7 +98,7 @@ func (f *Forge) checksAndRuns(ctx context.Context, repo forge.Repo, query forge.
 func (f *Forge) checks(ctx context.Context, repo forge.Repo, number int) ([]forge.Check, error) {
 	args := []string{
 		"pr", "checks", "--repo", repo.Slug(), strconv.Itoa(number),
-		"--json", "name,bucket,workflow,link",
+		"--json", "name,bucket,workflow,link,startedAt",
 	}
 
 	result, err := f.runner().Run(ctx, args...)
@@ -119,6 +122,7 @@ func (f *Forge) checks(ctx context.Context, repo forge.Repo, number int) ([]forg
 	for i, check := range reported {
 		checks[i] = forge.Check{
 			Name: check.Name, Bucket: bucketOf(check.Bucket), Workflow: check.Workflow, Link: check.Link,
+			StartedAt: check.StartedAt,
 		}
 	}
 

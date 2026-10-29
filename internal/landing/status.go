@@ -711,7 +711,7 @@ func (r *reading) takeVerdict(verdict forge.Verdict, required []string) {
 		r.say(result.Say("A workflow run on %s is still going, so more checks may report", sha))
 	case r.running:
 		pending := verdict.Pending()
-		r.say(runningList(result.Say("Still running on %s (%s):", sha, nounCount(len(pending), "check")), pending)...)
+		r.say(runningList(result.Say("Still running on %s (%s):", sha, nounCount(len(pending), "check")), pending, runningName)...)
 	case verdict.State() == forge.VerdictNone:
 		r.say(result.Say("No check or status reported for %s", sha))
 	default:

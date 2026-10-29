@@ -11,20 +11,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Add `ils branch <name>`, which starts a work branch from the default branch as origin has it and
   refuses a name a branch already takes, locally or on origin.
-- Add `ils status`, which says where the checkout stands and what to run next, and always exits 0.
+- Add `ils status`, which says where the checkout stands and what to run next, and exits 0
+  whatever it finds.
 
 ### Changed
 
 - Point every `Next:` line that spelled out cutting a branch by hand at `ils branch <name>`.
-- Shorten the text output of `ils push` and `ils merge`.
+- Shorten the lines of `ils push` and `ils merge`, JSON `lines` included, by leaving out zero check
+  tallies and a clean merge state.
 - Suggest the closest command when a command name is mistyped, and point `Next:` at its `--help`.
+- Show how long each check still running at the time limit has run on GitHub.
+- End `ils merge` pending instead of refused while a check the default branch requires still runs.
 
 ### Fixed
 
 - Point `Next:` of a green `ils push` to a draft or blocked pull request at the step `ils merge`
   would ask for, instead of a merge it would refuse.
 - Fix `ils push` saying nothing was pushed when origin stopped answering or a signal killed `git`
-  mid-push; it now says the push may have taken and to run it again.
+  mid-push, although the push may have reached origin.
+- Name a required check still running, with the new `merge_state` `blocked-by-running-check`,
+  instead of blaming a branch rule `ils` cannot name.
 
 ## [0.3.0] - 2026-10-25
 
@@ -37,8 +43,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- Move the reason above `Next:`, drop `Next: none` from a merged result's text, and drop lines that
-  only restated the reason, from JSON `lines` too.
+- Drop `Next: none` from a merged result's text, and drop lines that only restated the reason from
+  both the text and JSON `lines`.
 
 ### Fixed
 

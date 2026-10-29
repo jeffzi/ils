@@ -921,6 +921,13 @@ func afterWaitStops() []waitRow {
 		greenThen(forge.MergeBlockedOther,
 			countLine(), expect("blocks", "#12", "reason ils does not read", pullURL)),
 		{
+			name:    string(forge.MergeBlockedByRunningCheck),
+			script:  waiting(passing()).showing(cleanHead(), inState(forge.MergeBlockedByRunningCheck)),
+			outcome: result.Pending, payload: mergeDetail(forge.VerdictGreen, forge.MergeBlockedByRunningCheck, passing().Checks...),
+			text: countLine() + stateLine(forge.MergeBlockedByRunningCheck) +
+				expect("requires still runs on", tipMark) + nextMergeAgain(),
+		},
+		{
 			name: "blocked by review with nothing reported and no CI on the trunk",
 			script: waiting(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{}).
 				showing(cleanHead(), reviewed),
@@ -1049,6 +1056,25 @@ func runMergeIn(t *testing.T, script forgeFor, left time.Duration) mergeRun {
 	t.Helper()
 
 	return runMergeOn(t, setting{script: script, left: left})
+}
+
+func TestMerge_WhenTheChecksNeverConclude_EndsTheWaitTheReserveBeforeTheDeadline(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		started := time.Now()
+
+		run := runMergeIn(t, waiting(running()), 0)
+
+		waited := time.Since(started)
+		latest := bound - landing.MergeReserve
+		// The last poll is the first that leaves less than a poll and the head read's reserve before
+		// the wait's deadline, so the wait ends within that much of it.
+		earliest := latest - verdictPoll - headReadReserve
+
+		assertStoppedBy(t, run.got, result.Pending, mergeRequest())
+		assert.Check(t, waited <= latest, "the wait ended %s in, want at most %s", waited, latest)
+		assert.Check(t, waited > earliest, "the wait ended %s in, want more than %s", waited, earliest)
+	})
 }
 
 func TestMerge_WhenEveryCheckBeforeTheMergeHolds_ComposesTheMessageFromThePullRequest(t *testing.T) {

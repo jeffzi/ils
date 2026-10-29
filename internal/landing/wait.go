@@ -276,20 +276,9 @@ func (w waiter) logEnd(ctx context.Context, waited Waited) {
 	w.deps.logWait(ctx, attrs...)
 }
 
-// startChecks tells the progress hook that the wait for the checks began, limited to the time
-// left before ctx's deadline.
-func (w waiter) startChecks(ctx context.Context) {
-	w.deps.started(result.Say("Waiting for checks on %s", result.PullRequest(w.pushed.Number)), timeLeft(ctx))
-}
-
-// timeLeft returns the time before ctx's deadline, or zero when it has none.
-func timeLeft(ctx context.Context) time.Duration {
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		return 0
-	}
-
-	return time.Until(deadline)
+// startChecks tells the progress hook that the wait for the checks began.
+func (w waiter) startChecks() {
+	w.deps.started(result.Say("Waiting for checks on %s", result.PullRequest(w.pushed.Number)))
 }
 
 // logWait gives the logger, if any, a debug record of a decision of the wait, made of attrs.
@@ -430,7 +419,7 @@ func lostStage(stillRunning bool, headErr error) WaitStage {
 // from its trunk. Once it waited for the merge state, it tells the progress hook the wait for the
 // checks goes on.
 func (w waiter) readied(ctx context.Context, waited *Waited) (ended bool, stage WaitStage, err error) {
-	w.startChecks(ctx)
+	w.startChecks()
 
 	head, err := w.caughtUp(ctx)
 	waited.MergeState = head.MergeState
@@ -456,7 +445,7 @@ func (w waiter) readied(ctx context.Context, waited *Waited) (ended bool, stage 
 	}
 
 	if polled {
-		w.startChecks(ctx)
+		w.startChecks()
 	}
 
 	return false, "", nil
@@ -534,7 +523,7 @@ func (w waiter) mergeKnown(ctx context.Context, head forge.Head) (forge.Head, er
 
 	if w.unknownOnPushed(head) {
 		w.deps.started(result.Say("Waiting up to %s for GitHub to say whether %s can merge", seconds(mergeWindow),
-			result.PullRequest(w.pushed.Number)), untilTheEnd)
+			result.PullRequest(w.pushed.Number)))
 	}
 
 	for w.unknownOnPushed(head) {

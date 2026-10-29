@@ -431,7 +431,7 @@ func (m *mergeReady) settle(ctx context.Context, deps Deps, req Request) *result
 	case err == nil:
 		stop := m.stateStop(req)
 		if stop == nil && polled {
-			w.startChecks(ctx)
+			w.startChecks()
 		}
 
 		return stop
@@ -443,7 +443,8 @@ func (m *mergeReady) settle(ctx context.Context, deps Deps, req Request) *result
 }
 
 // stateStop refuses a merge state other than clean, once the checks let the merge go on: green, or
-// nothing reported on a trunk with no CI.
+// nothing reported on a trunk with no CI. A required check still running ends it pending instead,
+// with ils merge run again as the next step.
 func (m *mergeReady) stateStop(req Request) *result.Result {
 	pull := result.PullRequest(m.pull.Number)
 
@@ -463,6 +464,9 @@ func (m *mergeReady) stateStop(req Request) *result.Result {
 		return m.stated(req.Refused(result.Say("a check the trunk requires has no check on %s", result.SHA(m.pull.HeadSHA)),
 			result.NextStep(reportMissingCheck)),
 			m.missingLine())
+	case forge.MergeBlockedByRunningCheck:
+		return m.stated(req.ends(result.Pending,
+			result.Say("a check the trunk requires still runs on %s", result.SHA(m.pull.HeadSHA)), req.again()))
 	default:
 		return m.stated(req.Refused(
 			result.Say("GitHub blocks pull request %s for a reason ils does not read: %s", pull, result.URL(m.pull.URL)),
@@ -625,7 +629,7 @@ func (m *mergeReady) finish(ctx context.Context, deps Deps, req Request) *result
 func (m *mergeReady) merge(ctx context.Context, deps Deps, req Request) *result.Result {
 	pull := result.PullRequest(m.pull.Number)
 
-	deps.started(result.Say("Merging %s", pull), untilTheEnd)
+	deps.started(result.Say("Merging %s", pull))
 
 	if interrupted(ctx.Err()) {
 		return m.stopped(
@@ -665,7 +669,7 @@ func (m *mergeReady) merge(ctx context.Context, deps Deps, req Request) *result.
 // merged nothing, the delete is the first write: an interrupt before it ends the run pending, with
 // nothing written.
 func (m *mergeReady) deleteOnOrigin(ctx context.Context, deps Deps, req Request) *result.Result {
-	deps.started(result.Say("Deleting %s on origin", result.Branch(m.branch)), untilTheEnd)
+	deps.started(result.Say("Deleting %s on origin", result.Branch(m.branch)))
 
 	if !m.merged {
 		if stop := m.unfinished(ctx, req); stop != nil {
@@ -759,7 +763,7 @@ type localEnding struct {
 // run done, with the lines said so far and where the checkout ended.
 func (m *mergeReady) end(ctx context.Context, deps Deps, req Request) *result.Result {
 	repo, trunk, branch := deps.Repo, m.Trunk, m.branch
-	deps.started(result.Say("Moving to origin's tip of %s", result.Branch(trunk)), untilTheEnd)
+	deps.started(result.Say("Moving to origin's tip of %s", result.Branch(trunk)))
 	drop := endStep{
 		run:     func(ctx context.Context) error { return repo.DeleteBranch(ctx, branch) },
 		command: result.Concat("git branch -D ", result.Branch(branch)),

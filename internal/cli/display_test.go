@@ -29,8 +29,6 @@ const (
 	// spun is how long a step runs before the screens are read: past 3 seconds by less than one
 	// frame of the spinner, so that its timer reads 3s whether it rounds or truncates.
 	spun = 3300 * time.Millisecond
-	// limit is the most the step of a test that has a limit can last.
-	limit = 30 * time.Second
 )
 
 // elapse lets d pass on the bubble's clock, then waits until every other goroutine of the run waits.
@@ -62,13 +60,13 @@ func waitingLabel() result.Phrase {
 func paced(peek func(), outcome result.Outcome) cli.Command {
 	return func(_ context.Context, deps landing.Deps, req landing.Request) result.Result {
 		told := deps.Progress
-		told.Started(result.Say("Pushing %s", result.Branch(topic)), 0)
+		told.Started(result.Say("Pushing %s", result.Branch(topic)))
 		time.Sleep(1200 * time.Millisecond)
 		told.Said(pushedLine())
-		told.Started(result.Say("Opening a pull request against %s", result.Branch(trunk)), 0)
+		told.Started(result.Say("Opening a pull request against %s", result.Branch(trunk)))
 		time.Sleep(2500 * time.Millisecond)
 		told.Said(openedLine())
-		told.Started(waitingLabel(), limit)
+		startedWaiting(told)
 		told.Counted(1, 3)
 		elapse(spun)
 		peek()
@@ -117,7 +115,7 @@ func onStdoutScreen(t *testing.T, env []string) (cli.App, *screen) {
 	return app, stdout
 }
 
-func startedWaiting(p landing.Progress) { p.Started(waitingLabel(), limit) }
+func startedWaiting(p landing.Progress) { p.Started(waitingLabel()) }
 
 // cell is one character of a screen and the select graphic rendition sequences it is drawn with.
 type cell struct {
@@ -428,22 +426,17 @@ func TestApp_Run_WhenAStepRunsWithStderrATerminal_ShowsOneSpinnerLineForItUntilT
 		args  []string
 	}{
 		{
-			name: "step with no limit", args: []string{"merge"},
-			start: func(p landing.Progress) { p.Started(result.Say("Merging %s", result.PullRequest(opened)), 0) },
+			name: "no checks counted", args: []string{"merge"},
+			start: func(p landing.Progress) { p.Started(result.Say("Merging %s", result.PullRequest(opened))) },
 			want:  regexp.MustCompile(`^\S+ Merging #12 3s$`),
-		},
-		{
-			name: "step with a limit", args: []string{"merge"},
-			start: startedWaiting,
-			want:  regexp.MustCompile(`^\S+ Waiting for checks on #12 3s of 30s$`),
 		},
 		{
 			name: "checks counted", args: []string{"push"},
 			start: func(p landing.Progress) {
-				p.Started(waitingLabel(), limit)
+				startedWaiting(p)
 				p.Counted(1, 3)
 			},
-			want: regexp.MustCompile(`^\S+ Waiting for checks on #12 (3s of 30s\W+1 of 3 done|1 of 3 done\W+3s of 30s)$`),
+			want: regexp.MustCompile(`^\S+ Waiting for checks on #12 3s\D+1\D+3\D*$`),
 		},
 	}
 	for _, tt := range tests {
@@ -660,7 +653,7 @@ func TestApp_Run_WhenAStepLineIsSaidWithoutAStepStartedForIt_TimesItFromTheLineB
 	app, stdout := onStdoutScreen(t, []string{colorTerm, noColor})
 	app.SetPush(func(_ context.Context, deps landing.Deps, req landing.Request) result.Result {
 		told := deps.Progress
-		told.Started(result.Say("Pushing %s", result.Branch(topic)), 0)
+		told.Started(result.Say("Pushing %s", result.Branch(topic)))
 		time.Sleep(3 * time.Second)
 		told.Said(pushedLine())
 		time.Sleep(2 * time.Second)
@@ -711,7 +704,7 @@ func TestApp_Run_TimesEachStepLineToTheNearestTenthOfASecondFromATenthOfASecond(
 
 			app, stdout := onStdoutScreen(t, []string{colorTerm, noColor})
 			app.SetPush(func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
-				deps.Progress.Started(result.Say("Pushing %s", result.Branch(topic)), 0)
+				deps.Progress.Started(result.Say("Pushing %s", result.Branch(topic)))
 				time.Sleep(tt.took)
 				deps.Progress.Said(pushedLine())
 

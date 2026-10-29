@@ -586,7 +586,7 @@ func TestForge_Head_WhenStateNeedsNoCheck_ReportsMergeStateFromThePullRequestAlo
 	}
 }
 
-func TestForge_Head_WhenBlockedAndTrunkRequiresChecks_ReportsMissingCheckOnlyWhenNothingCanStillReportIt(t *testing.T) {
+func TestForge_Head_WhenBlockedAndTrunkRequiresChecks_SaysWhetherARequiredCheckIsMissingOrRunning(t *testing.T) {
 	passing := ghtest.JSONArray(ghtest.CheckJSON("test", "pass", runLink))
 	completed := ghtest.JSONArray(runJSON("completed"))
 	tests := []struct {
@@ -596,12 +596,12 @@ func TestForge_Head_WhenBlockedAndTrunkRequiresChecks_ReportsMissingCheckOnlyWhe
 		checks ghtest.Answer
 	}{
 		{name: "required name absent, runs done", checks: ghtest.Answer{Stdout: passing}, runs: completed, want: forge.MergeBlockedByMissingCheck},
-		{name: "required name absent, run queued", checks: ghtest.Answer{Stdout: passing}, runs: ghtest.JSONArray(runJSON("queued")), want: forge.MergeBlockedOther},
+		{name: "required name absent, run queued", checks: ghtest.Answer{Stdout: passing}, runs: ghtest.JSONArray(runJSON("queued")), want: forge.MergeBlockedByRunningCheck},
 		{
 			name:   "required name absent, other required check still running",
 			checks: ghtest.Answer{Stdout: ghtest.JSONArray(ghtest.CheckJSON("test", "pending", runLink)), Code: 8},
 			runs:   completed,
-			want:   forge.MergeBlockedOther,
+			want:   forge.MergeBlockedByRunningCheck,
 		},
 		{
 			name:   "every required name has a check",
