@@ -266,6 +266,8 @@ func (w Waited) mergeStateLines() []result.Phrase {
 		line = result.Say("The pull request waits for an approving review")
 	case forge.MergeBlockedByMissingCheck:
 		line = result.Say("The pull request waits for a required check")
+	case forge.MergeBlockedByRunningCheck:
+		line = result.Say("The pull request waits for a required check to finish")
 	case forge.MergeBlockedOther:
 		line = result.Say("A branch rule ils cannot name blocks the merge")
 	default:

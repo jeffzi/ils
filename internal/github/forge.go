@@ -253,7 +253,7 @@ func (f *Forge) Head(ctx context.Context, repo forge.Repo, query forge.HeadQuery
 	if mergeStateOf(facts) == forge.MergeBlockedOther {
 		verdictQuery := forge.VerdictQuery{SHA: view.SHA, Number: query.Number, Required: query.Required}
 
-		facts.MissingCheck, err = f.missingCheck(ctx, repo, verdictQuery)
+		facts.MissingCheck, facts.RunningCheck, err = f.requiredChecks(ctx, repo, verdictQuery)
 		if err != nil {
 			return forge.Head{}, err
 		}
@@ -262,23 +262,22 @@ func (f *Forge) Head(ctx context.Context, repo forge.Repo, query forge.HeadQuery
 	return forge.Head{SHA: view.SHA, MergeState: mergeStateOf(facts)}, nil
 }
 
-// missingCheck reports whether a check the query requires has no check on the
-// commit while nothing still running could report it.
-func (f *Forge) missingCheck(ctx context.Context, repo forge.Repo, query forge.VerdictQuery) (bool, error) {
+// requiredChecks reports whether a check the query requires has no check on the commit while
+// nothing still running could report it (missing), and whether one is still running or could
+// still be reported by a run in progress (running). At most one of the two is true.
+func (f *Forge) requiredChecks(ctx context.Context, repo forge.Repo, query forge.VerdictQuery) (missing, running bool, err error) {
 	if len(query.Required) == 0 {
-		return false, nil
+		return false, false, nil
 	}
 
 	verdict, err := f.checksAndRuns(ctx, repo, query)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 
-	if len(verdict.MissingRequired) == 0 {
-		return false, nil
-	}
+	running = len(verdict.Pending()) > 0 || len(verdict.MissingRequired) > 0 && verdict.Running()
 
-	return len(verdict.Pending()) == 0 && !verdict.Running(), nil
+	return len(verdict.MissingRequired) > 0 && !running, running, nil
 }
 
 // TrunkProtection returns whether rules apply to trunk, the status checks they require, and
@@ -542,6 +541,9 @@ type mergeFacts struct {
 	// MissingCheck reports that a required check has no check on the head commit
 	// and that nothing still running could report it.
 	MissingCheck bool
+	// RunningCheck reports that a required check is still running, or has no check
+	// yet while a run in progress could still report it.
+	RunningCheck bool
 }
 
 // mergeStateOf maps GitHub's values to the merge state a command switches on.
@@ -583,6 +585,8 @@ func blockedState(facts mergeFacts) forge.MergeState {
 		return forge.MergeBlockedByReview
 	case facts.MissingCheck:
 		return forge.MergeBlockedByMissingCheck
+	case facts.RunningCheck:
+		return forge.MergeBlockedByRunningCheck
 	default:
 		return forge.MergeBlockedOther
 	}

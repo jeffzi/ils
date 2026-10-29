@@ -389,6 +389,7 @@ func stateWords() map[forge.MergeState]string {
 		forge.MergeDraft:                 "still a draft",
 		forge.MergeBlockedByReview:       "waits for an approving review",
 		forge.MergeBlockedByMissingCheck: "waits for a required check",
+		forge.MergeBlockedByRunningCheck: "waits for a required check to finish",
 		forge.MergeBlockedOther:          "ils cannot name blocks the merge",
 		forge.MergeUnknown:               "has not decided yet whether the merge would succeed",
 	}

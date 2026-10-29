@@ -443,7 +443,8 @@ func (m *mergeReady) settle(ctx context.Context, deps Deps, req Request) *result
 }
 
 // stateStop refuses a merge state other than clean, once the checks let the merge go on: green, or
-// nothing reported on a trunk with no CI.
+// nothing reported on a trunk with no CI. A required check still running ends it pending instead,
+// with ils merge run again as the next step.
 func (m *mergeReady) stateStop(req Request) *result.Result {
 	pull := result.PullRequest(m.pull.Number)
 
@@ -463,6 +464,9 @@ func (m *mergeReady) stateStop(req Request) *result.Result {
 		return m.stated(req.Refused(result.Say("a check the trunk requires has no check on %s", result.SHA(m.pull.HeadSHA)),
 			result.NextStep(reportMissingCheck)),
 			m.missingLine())
+	case forge.MergeBlockedByRunningCheck:
+		return m.stated(req.ends(result.Pending,
+			result.Say("a check the trunk requires still runs on %s", result.SHA(m.pull.HeadSHA)), req.again()))
 	default:
 		return m.stated(req.Refused(
 			result.Say("GitHub blocks pull request %s for a reason ils does not read: %s", pull, result.URL(m.pull.URL)),

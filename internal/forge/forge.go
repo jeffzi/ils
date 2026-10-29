@@ -103,6 +103,7 @@ const (
 	MergeDraft                 MergeState = "draft"
 	MergeBlockedByReview       MergeState = "blocked-by-review"
 	MergeBlockedByMissingCheck MergeState = "blocked-by-missing-check"
+	MergeBlockedByRunningCheck MergeState = "blocked-by-running-check"
 	MergeBlockedOther          MergeState = "blocked-other"
 	// MergeUnknown is the answer while the forge has not worked the state out yet.
 	MergeUnknown MergeState = "unknown"

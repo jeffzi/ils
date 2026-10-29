@@ -921,6 +921,13 @@ func afterWaitStops() []waitRow {
 		greenThen(forge.MergeBlockedOther,
 			countLine(), expect("blocks", "#12", "reason ils does not read", pullURL)),
 		{
+			name:    string(forge.MergeBlockedByRunningCheck),
+			script:  waiting(passing()).showing(cleanHead(), inState(forge.MergeBlockedByRunningCheck)),
+			outcome: result.Pending, payload: mergeDetail(forge.VerdictGreen, forge.MergeBlockedByRunningCheck, passing().Checks...),
+			text: countLine() + stateLine(forge.MergeBlockedByRunningCheck) +
+				expect("requires still runs on", tipMark) + nextMergeAgain(),
+		},
+		{
 			name: "blocked by review with nothing reported and no CI on the trunk",
 			script: waiting(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{}).
 				showing(cleanHead(), reviewed),

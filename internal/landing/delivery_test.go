@@ -872,6 +872,7 @@ func pushWaitRows() []pushRow {
 		},
 		greenIn(forge.MergeDraft, expect("`"+readyCommand+"`")+editSteps()),
 		greenIn(forge.MergeBlockedByMissingCheck, expect("required check has no check on the head")),
+		greenIn(forge.MergeBlockedByRunningCheck, nextMerge()),
 		greenIn(forge.MergeBlockedOther, expect("GitHub blocks the merge")),
 	}
 

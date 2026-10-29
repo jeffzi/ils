@@ -217,15 +217,15 @@ gh pr merge --repo <host>/<owner>/<name> <N> --squash --delete-branch \
 `ils push --json` prints the [JSON object](#json-output) every command prints, with the detail
 under `payload.push`:
 
-| Field         | Type             | Meaning                                                                                                                    |
-| ------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `url`         | string           | The pull request's URL.                                                                                                    |
-| `number`      | integer          | The pull request's number.                                                                                                 |
-| `sha`         | string           | The pushed commit.                                                                                                         |
-| `verdict`     | string           | `green`, `red`, `pending`, or `none`.                                                                                      |
-| `merge_state` | string           | `clean`, `behind`, `conflicting`, `draft`, `blocked-by-review`, `blocked-by-missing-check`, `blocked-other`, or `unknown`. |
-| `checks`      | array of objects | One per check, with `name`, `bucket` (`pass`, `fail`, `pending`, `skipped`, or `canceled`), `workflow`, and `link`.        |
-| `failed_log`  | string           | The log of a failed check. Absent when empty.                                                                              |
+| Field         | Type             | Meaning                                                                                                                                                |
+| ------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `url`         | string           | The pull request's URL.                                                                                                                                |
+| `number`      | integer          | The pull request's number.                                                                                                                             |
+| `sha`         | string           | The pushed commit.                                                                                                                                     |
+| `verdict`     | string           | `green`, `red`, `pending`, or `none`.                                                                                                                  |
+| `merge_state` | string           | `clean`, `behind`, `conflicting`, `draft`, `blocked-by-review`, `blocked-by-missing-check`, `blocked-by-running-check`, `blocked-other`, or `unknown`. |
+| `checks`      | array of objects | One per check, with `name`, `bucket` (`pass`, `fail`, `pending`, `skipped`, or `canceled`), `workflow`, and `link`.                                    |
+| `failed_log`  | string           | The log of a failed check. Absent when empty.                                                                                                          |
 
 ## Merge
 
