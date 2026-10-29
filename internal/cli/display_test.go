@@ -216,8 +216,27 @@ func (s *screen) control(params string, final byte) {
 
 		return
 	}
+	if final == 'K' {
+		s.erase(params)
+
+		return
+	}
 
 	s.tb.Errorf("the screen does not draw the control sequence %q", params+string(final))
+}
+
+// erase blanks the cursor's row from the cursor to its end when params is empty or 0, and the
+// whole row when params is 2, leaving the cursor where it stands.
+func (s *screen) erase(params string) {
+	row := s.line()
+	switch params {
+	case "", "0":
+		*row = (*row)[:min(s.col, len(*row))]
+	case "2":
+		*row = nil
+	default:
+		s.tb.Errorf("the screen does not erase in line with the parameter %q", params)
+	}
 }
 
 // put draws r at the cursor, first moving to the next row when the cursor stands past the last
@@ -256,6 +275,31 @@ func (s *screen) lines() []string {
 			b.WriteRune(max(c.r, ' '))
 		}
 		shown = append(shown, strings.TrimRight(b.String(), " "))
+	}
+	for len(shown) > 0 && shown[len(shown)-1] == "" {
+		shown = shown[:len(shown)-1]
+	}
+
+	return shown
+}
+
+// filled returns the text of each row the screen shows as lines does, but up to the last
+// character written on the row, so that the spaces written at the end of a row stay in it.
+func (s *screen) filled() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var shown []string
+	for _, row := range s.rows {
+		end := len(row)
+		for end > 0 && row[end-1].r == 0 {
+			end--
+		}
+		var b strings.Builder
+		for _, c := range row[:end] {
+			b.WriteRune(max(c.r, ' '))
+		}
+		shown = append(shown, b.String())
 	}
 	for len(shown) > 0 && shown[len(shown)-1] == "" {
 		shown = shown[:len(shown)-1]
@@ -634,6 +678,58 @@ func TestApp_Run_WhenAStepLineIsSaidWithoutAStepStartedForIt_TimesItFromTheLineB
 
 	want := []string{"✓ Pushed " + topic + " to origin. 3s", "✓ Opened pull request #12. 2s"}
 	assert.Check(t, is.DeepEqual(stdout.lines(), want))
+}
+
+func TestApp_Run_WhenLinesPrintOverTheSpinnerLine_LeavesNoSpacesWrittenAfterAnyOfThem(t *testing.T) {
+	t.Parallel()
+
+	app, terminal := onSharedScreen(t, []string{colorTerm, noColor})
+	var spinning, spinningFilled []string
+	app.SetPush(paced(func() { spinning, spinningFilled = terminal.lines(), terminal.filled() }, result.DeliveredNotGreen))
+
+	shown(t, app, "push")
+
+	assert.Check(t, is.DeepEqual(spinningFilled, spinning), "while the spinner line showed")
+	assert.Check(t, is.DeepEqual(terminal.filled(), terminal.lines()), "once the run ended")
+}
+
+func TestApp_Run_TimesEachStepLineToTheNearestTenthOfASecondFromATenthOfASecond(t *testing.T) {
+	t.Parallel()
+
+	const pushed = "✓ Pushed " + topic + " to origin."
+
+	tests := []struct {
+		name string
+		want string
+		took time.Duration
+	}{
+		{name: "under a tenth of a second, nearer zero", took: 40 * time.Millisecond, want: pushed},
+		{name: "under a tenth of a second, nearer a tenth", took: 60 * time.Millisecond, want: pushed},
+		{name: "exactly a tenth of a second", took: 100 * time.Millisecond, want: pushed + " 100ms"},
+		{name: "seconds", took: 3660 * time.Millisecond, want: pushed + " 3.7s"},
+		{name: "minutes", took: 62760 * time.Millisecond, want: pushed + " 1m2.8s"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			app, stdout := onStdoutScreen(t, []string{colorTerm, noColor})
+			app.SetPush(func(_ context.Context, deps landing.Deps, req landing.Request) result.Result {
+				deps.Progress.Started(result.Say("Pushing %s", result.Branch(topic)), 0)
+				time.Sleep(tt.took)
+				deps.Progress.Said(pushedLine())
+
+				r := finished(req)
+				r.Lines = []result.Phrase{pushedLine()}
+
+				return r
+			})
+
+			shown(t, app, "push")
+
+			assert.Check(t, is.DeepEqual(stdout.lines(), []string{tt.want}))
+		})
+	}
 }
 
 func TestApp_Run_WhenNeitherStreamIsATerminal_WritesNothingBeforeTheWholeResult(t *testing.T) {

@@ -150,7 +150,8 @@ func (d *display) Started(label result.Phrase, limit time.Duration) {
 }
 
 // Said takes the spinner line off stderr and prints line on stdout as the running step's line,
-// with the time since the last Started or Said, whichever came later.
+// with the time since the last Started or Said, whichever came later, rounded to frameEvery; a step
+// that took less than frameEvery prints no time.
 func (d *display) Said(line result.Phrase) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -160,7 +161,7 @@ func (d *display) Said(line result.Phrase) {
 
 	// A line said without a step started for it is timed from the line before it.
 	now := time.Now()
-	took := now.Sub(d.began).Round(frameEvery).String()
+	took := now.Sub(d.began)
 	d.began = now
 
 	if d.stdout == nil {
@@ -174,7 +175,11 @@ func (d *display) Said(line result.Phrase) {
 
 	pen := result.PenFor(d.outProfile)
 	green := result.GreenStyle()
-	step := pen.Styled(green, "✓") + " " + text + " " + pen.Styled(green.Faint(), took) + "\n"
+	step := pen.Styled(green, "✓") + " " + text
+	if took >= frameEvery {
+		step += " " + pen.Styled(green.Faint(), took.Round(frameEvery).String())
+	}
+	step += "\n"
 
 	if _, err := io.WriteString(d.stdout, step); err == nil {
 		d.printed = append(d.printed, plainText(line, d.gitDir))
@@ -191,13 +196,16 @@ func (d *display) Counted(done, total int) {
 }
 
 // draw writes the spinner line of the running step over the one stderr shows, cut to one column
-// short of the terminal's width so that it never wraps, and padded with spaces to that width so
-// that nothing of the line before is left. The caller holds mu.
+// short of the terminal's width so that it never wraps, then erases the rest of the row so that
+// nothing of the line before is left. The caller holds mu.
 //
-// It moves the cursor with a carriage return. Padding parks the cursor in the terminal's last
-// column, so the first draw of a line hides the cursor, whatever the profile, and clear shows it
-// again: those two are the only control sequences the spinner writes besides its colors. While ils
-// is not the terminal's foreground job, it draws nothing and clears the line that stands.
+// It never pads the row with spaces: a terminal keeps written spaces as part of the row, so a
+// shorter line printed over it later would keep them, and they would wrap into a blank row once
+// the terminal narrows. The first draw of a line hides the cursor, whatever the profile, so that it
+// does not blink after the timer, and clear shows it again. Besides its colors, the spinner writes
+// no control sequence other than the carriage return, those two, and the erasures of draw and
+// clear. While ils is not the terminal's foreground job, it draws nothing and clears the line that
+// stands.
 func (d *display) draw() {
 	if d.stderr == nil || d.label == "" || !d.inForeground() {
 		d.clear()
@@ -218,9 +226,7 @@ func (d *display) draw() {
 		line += fmt.Sprintf(", %d of %d done", d.done, d.total)
 	}
 
-	columns := d.columns()
-	line = ansi.Truncate(line, columns, "")
-	padding := strings.Repeat(" ", columns-ansi.StringWidth(line))
+	line = ansi.Truncate(line, d.columns(), "")
 	if pen.Color() {
 		line += ansi.ResetStyle
 	}
@@ -230,21 +236,21 @@ func (d *display) draw() {
 		start = ansi.HideCursor + start
 	}
 
-	_, _ = io.WriteString(d.stderr, start+line+padding)
+	_, _ = io.WriteString(d.stderr, start+line+ansi.EraseLineRight)
 	d.drawn = true
 }
 
-// clear takes the spinner line off stderr by writing spaces over it, and shows the cursor that
-// draw hid, at the start of its row. The caller holds mu.
+// clear takes the spinner line off stderr by erasing its row, never by writing spaces over it, and
+// shows the cursor that draw hid, at the start of the row. The caller holds mu.
 //
 // While ils is not the terminal's foreground job, it only shows the cursor and leaves the line
-// standing: the cursor then stands on the line of the shell, which the spaces would wipe.
+// standing: the cursor then stands on the line of the shell, which the erasure would wipe.
 func (d *display) clear() {
 	if !d.drawn {
 		return
 	}
 
-	wipe := "\r" + strings.Repeat(" ", d.columns()) + "\r"
+	wipe := "\r" + ansi.EraseEntireLine
 	if !d.inForeground() {
 		wipe = ""
 	}
@@ -260,7 +266,7 @@ func (d *display) inForeground() bool {
 }
 
 // columns returns how many columns the spinner line may take: one short of the terminal's width,
-// read now, so that the cursor never reaches the last column; an unknown width counts as
+// read now, so that the line never fills its row and wraps; an unknown width counts as
 // fallbackWidth.
 func (d *display) columns() int {
 	width := fallbackWidth
