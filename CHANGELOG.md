@@ -16,6 +16,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - Point every `Next:` line that spelled out cutting a branch by hand at `ils branch <name>`.
+- Shorten the text output of `ils push`, `ils merge` and `ils status`: commits print as their first
+  7 characters (JSON keeps them in full), checks still running are listed under one header, a zero
+  tally is left out, the merge state is said in plain words and only when it explains the result,
+  and every message about the time limit names its length.
+- Drop the timing of a step that took under 100ms instead of printing `0s` or `100ms`.
+- Answer a mistyped command such as `ils pish` with `did you mean push?` and point `Next:` at that
+  command's `--help`.
+
+### Fixed
+
+- Stop blank rows from appearing after each step line when the terminal is narrowed or reflowed:
+  the progress line was wiped by writing spaces across the row, and those spaces wrapped onto rows of
+  their own. It is now erased instead.
 
 ## [0.3.0] - 2026-10-25
 

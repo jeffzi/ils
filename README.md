@@ -40,10 +40,9 @@ checkout stands and what to run next. `release` is coming.
 
 ```console
 $ ils push
-Pushed tidy-readme at 4f2a9c1d0e5b7a8c6f3e2d1b0a9c8e7f6d5b4a39
+Pushed tidy-readme at 4f2a9c1
 Opened pull request #12 against main, titled tidy-readme with no body: https://github.com/you/repo/pull/12
-Checks for 4f2a9c1d0e5b7a8c6f3e2d1b0a9c8e7f6d5b4a39: 3 passed, 0 skipped
-GitHub: CLEAN (clean)
+Checks for 4f2a9c1: 3 passed
 Next: write the pull request's title and body as the squash commit's message with …
 ```
 
