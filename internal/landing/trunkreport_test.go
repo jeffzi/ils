@@ -25,7 +25,6 @@ func ruledBy(rules forge.RulesState) forgeFor {
 	}
 }
 
-// standOnTrunk switches the working repository to the trunk.
 func standOnTrunk(f *gittest.Fixture) {
 	f.Git("switch", "--quiet", trunk)
 }

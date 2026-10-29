@@ -510,7 +510,6 @@ func failedGitMerge(head string, words []string) mergeEnd {
 
 // failedGitRow is one run of `ils merge` whose git read fails for a reason no refusal covers.
 type failedGitRow struct {
-	// read is the read the failing git call makes fail.
 	read string
 	mergeRow
 }

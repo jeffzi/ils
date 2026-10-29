@@ -51,22 +51,30 @@ func RenderStyled(r Result, gitDir string, profile colorprofile.Profile) (string
 
 	var b strings.Builder
 	for _, line := range view.lines {
-		b.WriteString(pen.spans(line) + "\n")
+		b.WriteString(pen.spans(line))
+		b.WriteString("\n")
 	}
 
 	if view.Excerpt != "" {
 		excerpt := strings.TrimSuffix(view.Excerpt, "\n")
-		b.WriteString(visible(excerpt) + "\n")
+		b.WriteString(visible(excerpt))
+		b.WriteString("\n")
 	}
 
 	if view.outcome != Done {
 		label, style := view.outcome.label()
-		b.WriteString(pen.Styled(style, label+":") + " " + pen.spans(view.reason) + "\n")
+		b.WriteString(pen.Styled(style, label+":"))
+		b.WriteString(" ")
+		b.WriteString(pen.spans(view.reason))
+		b.WriteString("\n")
 	}
 
 	if !view.noNext {
 		nextStyle := ansi.NewStyle().Bold().Underline(true)
-		b.WriteString(pen.Styled(nextStyle, NextLabel) + ": " + pen.spans(view.next) + "\n")
+		b.WriteString(pen.Styled(nextStyle, NextLabel))
+		b.WriteString(": ")
+		b.WriteString(pen.spans(view.next))
+		b.WriteString("\n")
 	}
 
 	return b.String(), nil

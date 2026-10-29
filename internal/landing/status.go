@@ -617,7 +617,6 @@ func (r *reading) readOpen(ctx context.Context) {
 	pull.Verdict, pull.MergeState, pull.Checks = r.waited.payloadFields()
 }
 
-// readBody reads the body of the open pull request pull.
 func (r *reading) readBody(ctx context.Context, pull *result.OpenPull) {
 	if r.cut {
 		return
@@ -677,7 +676,6 @@ func (r *reading) readChecks(ctx context.Context) {
 	}
 }
 
-// checkNames returns the names of checks, joined by commas.
 func checkNames(checks []forge.Check) string {
 	var names []string
 	for _, check := range checks {

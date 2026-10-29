@@ -117,7 +117,6 @@ func (r *reading) lastTag(ctx context.Context, tags []git.Tag) (git.Tag, bool, e
 	return git.Tag{}, false, nil
 }
 
-// onOriginTrunk reports whether the commit tag tags is on origin's trunk.
 func (r *reading) onOriginTrunk(ctx context.Context, tag git.Tag) (bool, error) {
 	on, err := r.deps.Repo.Contains(ctx, r.trunkTip, tag.SHA)
 	if err == nil || endedEarly(err) {
@@ -134,7 +133,6 @@ func (r *reading) onOriginTrunk(ctx context.Context, tag git.Tag) (bool, error) 
 	return r.deps.Repo.Contains(ctx, r.trunkTip, tag.SHA)
 }
 
-// readRelease reads whether origin's trunk tip is a release commit.
 func (r *reading) readRelease(ctx context.Context) {
 	if r.cut || r.trunkTip == "" {
 		return
@@ -155,7 +153,6 @@ func (r *reading) readRelease(ctx context.Context) {
 	}
 }
 
-// readRules reads whether rules protect the trunk.
 func (r *reading) readRules(ctx context.Context) {
 	if r.cut || r.repo == (forge.Repo{}) {
 		return

@@ -121,7 +121,6 @@ func onStdoutScreen(t *testing.T, env []string) (cli.App, *screen) {
 	return app, stdout
 }
 
-// startedMerge begins the step of waiting for GitHub to say whether a pull request can merge.
 func startedMerge(p landing.Progress) { p.Started(mergeStateLabel(), limit) }
 
 // cell is one character of a screen and the select graphic rendition sequences it is drawn with.
@@ -272,14 +271,14 @@ func (s *screen) drawn(i int) resulttest.Drawn {
 
 	var b strings.Builder
 	for _, c := range s.rows[i] {
-		b.WriteString("\x1b[0m" + c.pen)
+		b.WriteString("\x1b[0m")
+		b.WriteString(c.pen)
 		b.WriteRune(max(c.r, ' '))
 	}
 
 	return resulttest.Draw(s.tb, b.String())
 }
 
-// raw returns every byte written to the screen.
 func (s *screen) raw() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

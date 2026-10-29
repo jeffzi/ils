@@ -64,7 +64,6 @@ func Draw(tb testing.TB, out string) Drawn {
 	return d
 }
 
-// controlSequenceIntroducer starts every control sequence.
 const controlSequenceIntroducer = "\x1b["
 
 // Control sequences end at the first byte in this range.

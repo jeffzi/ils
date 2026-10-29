@@ -147,7 +147,6 @@ func newVigil(t *testing.T, script forgetest.Script, left time.Duration) *vigil 
 	return newVigilOn(t, script, func(context.Context) context.Context { return within(t, left) })
 }
 
-// context returns the context the wait runs under, made from the test's.
 func (v *vigil) context(t *testing.T) context.Context {
 	t.Helper()
 

@@ -58,7 +58,8 @@ const partEnd = "\x00"
 func expect(parts ...string) string {
 	var text strings.Builder
 	for _, part := range parts {
-		text.WriteString(part + partEnd)
+		text.WriteString(part)
+		text.WriteString(partEnd)
 	}
 
 	return text.String()

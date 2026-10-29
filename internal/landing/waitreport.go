@@ -223,8 +223,6 @@ func (w Waited) ciCutShortReport(byInterrupt bool) waitReport {
 	}
 }
 
-// nothingReported returns the reason that says no check or status reported for the commit sha of
-// pull request number.
 func nothingReported(sha string, number int) result.Phrase {
 	return result.Say("no check or status reported for %s on pull request %s", result.SHA(sha), result.PullRequest(number))
 }

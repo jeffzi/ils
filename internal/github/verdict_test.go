@@ -42,10 +42,8 @@ func TestForge_Verdict_WhenChecksAreReported_ReadsEachBucketWhateverGhExitsWith(
 
 const statusLink = "https://ci.example.com/builds/15"
 
-// logArgs is the argv of the read of the failed log of the run runID.
 func logArgs() []string { return ghtest.LogArgs(engineSlug, runID) }
 
-// jobLogArgs is the argv of the read of the log of the job runLink names.
 func jobLogArgs() []string {
 	return []string{"api", "--hostname", engineHost, "repos/ada/engine/actions/jobs/" + jobID + "/logs"}
 }

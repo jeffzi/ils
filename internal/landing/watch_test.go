@@ -55,11 +55,8 @@ func mergeStateStep() string {
 type eventKind int
 
 const (
-	// eventStart is a step that started, with its limit.
 	eventStart eventKind = iota
-	// eventSaid is a step line the run said as its step succeeded.
 	eventSaid
-	// eventCount is a count of the checks done.
 	eventCount
 )
 
@@ -89,17 +86,14 @@ func watchOn(deps *landing.Deps) *watch {
 	return w
 }
 
-// Started keeps a step that started, with its limit.
 func (w *watch) Started(label result.Phrase, limit time.Duration) {
 	w.keep(watchEvent{kind: eventStart, phrase: label, limit: limit})
 }
 
-// Said keeps a step line the run said as its step succeeded.
 func (w *watch) Said(line result.Phrase) {
 	w.keep(watchEvent{kind: eventSaid, phrase: line})
 }
 
-// Counted keeps a count of the checks done.
 func (w *watch) Counted(done, total int) {
 	w.keep(watchEvent{kind: eventCount, done: done, total: total})
 }

@@ -720,7 +720,6 @@ func TestStatus_WhenOriginsURLsNameTwoRepositories_EndsOnPointingThemAtOne(t *te
 	assert.Check(t, hasUnread(got.status, readChanges), "unread %v, want the pull requests listed", got.status.Unread)
 }
 
-// hasUnread reports whether status lists the read named read as unread.
 func hasUnread(status *result.Status, read string) bool {
 	return slices.ContainsFunc(status.Unread, func(u result.Unread) bool { return u.Read == read })
 }

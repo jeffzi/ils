@@ -97,7 +97,6 @@ func (d Deps) started(label result.Phrase, limit time.Duration) {
 	}
 }
 
-// said tells the progress hook, if any, that the running step succeeded saying line.
 func (d Deps) said(line result.Phrase) {
 	if d.Progress != nil {
 		d.Progress.Said(line)
@@ -162,7 +161,6 @@ func (r Request) ilsCommand() result.Name {
 	return result.Command(r.commandLine())
 }
 
-// commandLine is the request's command followed by its positional words.
 func (r Request) commandLine() string {
 	return strings.Join(append([]string{r.Command}, r.Args...), " ")
 }

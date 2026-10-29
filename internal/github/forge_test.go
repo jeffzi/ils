@@ -95,7 +95,6 @@ func loginArgs() []string { return ghtest.LoginArgs(engineHost) }
 
 func repoViewArgs() []string { return ghtest.RepoViewArgs(engineSlug) }
 
-// listArgs is the argv of the list of the feature branch's pull requests in every state.
 func listArgs() []string { return ghtest.ListArgs(engineSlug, featureBranch) }
 
 func createArgs() []string {
@@ -149,10 +148,8 @@ func fileJSON(file string) string {
 	return `{"name":"` + path.Base(file) + `","path":"` + file + `","type":"file"}`
 }
 
-// activeCIList is the workflow list's answer holding the active CI workflow.
 func activeCIList() string { return workflowsPage(workflowJSON(ciFile, "active")) }
 
-// ciOnTrunkJSON is the directory read's answer holding the CI workflow's file.
 func ciOnTrunkJSON() string { return ghtest.JSONArray(fileJSON(ciFile)) }
 
 // notFoundAnswer is what `gh api` says of a path GitHub does not find.
@@ -192,12 +189,10 @@ func runJSON(status string) string {
 	return ghtest.RunJSON(status, "Add the forge")
 }
 
-// headQuery is the head read of the pull request, requiring the checks named required.
 func headQuery(required ...string) forge.HeadQuery {
 	return forge.HeadQuery{Number: pullNumber, Required: required}
 }
 
-// verdictQuery is the verdict read of the head commit, requiring the checks named required.
 func verdictQuery(required ...string) forge.VerdictQuery {
 	return forge.VerdictQuery{SHA: headSHA, Number: pullNumber, Required: required}
 }

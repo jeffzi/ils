@@ -31,7 +31,6 @@ const (
 	runLink = "https://" + slug + "/actions/runs/" + runID + "/job/42"
 )
 
-// pullURL is the address of the open pull request.
 func pullURL() string { return fmt.Sprintf("https://%s/pull/%d", slug, opened) }
 
 // scenario is one state of the repository and of GitHub that a landing command is run in.
