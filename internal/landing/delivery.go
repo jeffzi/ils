@@ -106,8 +106,8 @@ func (d *delivery) pushFailed(err error) *result.Result {
 	if timedOut(err) {
 		return d.endedSaying(
 			result.Say("Started the push of %s at %s when "+timeLimitEnded+"; it may or may not have taken",
-				d.markedBranch(), d.markedTip()),
-			result.Broke, result.Say(timeLimitEnded+" during the push"), d.req.again())
+				d.markedBranch(), d.markedTip(), TimeLimit),
+			result.Broke, result.Say(timeLimitEnded+" during the push", TimeLimit), d.req.again())
 	}
 
 	if refused, ok := errors.AsType[*git.PushError](err); ok {
@@ -165,8 +165,9 @@ func (d *delivery) findOrOpen(ctx context.Context, deps Deps) *result.Result {
 			d.req.again())
 	case timedOut(err):
 		return d.endedSaying(
-			result.Say("Started opening the pull request when "+timeLimitEnded+"; it may or may not have been opened"),
-			result.Broke, result.Say(timeLimitEnded+" while opening the pull request"),
+			result.Say("Started opening the pull request when "+timeLimitEnded+"; it may or may not have been opened",
+				TimeLimit),
+			result.Broke, result.Say(timeLimitEnded+" while opening the pull request", TimeLimit),
 			d.req.again())
 	}
 
@@ -265,7 +266,7 @@ func (d *delivery) payload() *result.Push {
 }
 
 func (d *delivery) sayMergeState() {
-	d.lines = append(d.lines, d.waited.mergeStateLine())
+	d.lines = append(d.lines, d.waited.mergeStateLines()...)
 }
 
 // report returns the result the wait's outcome maps to, telling the progress hook the checks line
@@ -290,10 +291,9 @@ func (d *delivery) report(deps Deps) *result.Result {
 	return ended
 }
 
-// doneMerging says the merge state and ends the push done, with ils merge as the next step.
+// doneMerging ends the push done, with ils merge as the next step. A done push says no merge
+// state: its next step already says what the state asks for.
 func (d *delivery) doneMerging() *result.Result {
-	d.sayMergeState()
-
 	return d.ended(result.Done, result.Phrase{}, mergeStep(d.Repo, d.number, d.waited.MergeState))
 }
 

@@ -39,9 +39,15 @@ const (
 	readCI         = "whether the repository has CI"
 )
 
-// mark returns text with the sha tip in place of tipMark.
+// shortSHA returns the first seven characters of sha, which is how a line or a reason of the text
+// prints a commit.
+func shortSHA(sha string) string {
+	return sha[:7]
+}
+
+// mark returns text with the sha tip in place of tipMark, as the text prints it: short.
 func mark(text, tip string) string {
-	return strings.ReplaceAll(text, tipMark, tip)
+	return strings.ReplaceAll(text, tipMark, shortSHA(tip))
 }
 
 // The lines a push prints, with tipMark where the sha of the tip is printed.
@@ -63,7 +69,7 @@ func foundLine() string {
 }
 
 func countLine() string {
-	return expect(tipMark, "1 passed, 0 skipped")
+	return expect(tipMark, ": 1 passed\n")
 }
 
 func noCILine() string {
@@ -96,13 +102,9 @@ func nextTrunk() string {
 	return expect("`"+originMerge+trunk+"`", "resolve the conflicts", "ils push")
 }
 
-func cleanLine() string {
-	return stateLine(forge.MergeClean, "CLEAN")
-}
-
 // blockedLine is the merge-state line of a pull request GitHub blocks until it is reviewed.
 func blockedLine() string {
-	return stateLine(forge.MergeBlockedByReview, "BLOCKED")
+	return stateLine(forge.MergeBlockedByReview)
 }
 
 // forgeFor builds the forge's answers once the branch's tip is known.
@@ -249,11 +251,11 @@ func reusing(verdicts ...forge.Verdict) forgeFor {
 	})
 }
 
-// at returns end with the tip's sha in place of tipMark in its text and its reason, and as the
-// sha of its payload.
+// at returns end with the tip's sha in place of tipMark in its text, short as the text prints it,
+// and in its reason and as the sha of its payload, in full as the JSON carries them.
 func (end finish) at(tip string) finish {
 	end.text = mark(end.text, tip)
-	end.reason = mark(end.reason, tip)
+	end.reason = strings.ReplaceAll(end.reason, tipMark, tip)
 
 	if end.payload != nil {
 		filled := *end.payload
@@ -281,7 +283,7 @@ func detail(verdict forge.VerdictState, state forge.MergeState, checks ...forge.
 func greenAfter(before string) finish {
 	return finish{
 		outcome: result.Done,
-		text:    before + countLine() + cleanLine() + nextMerge(),
+		text:    before + countLine() + nextMerge(),
 		payload: detail(forge.VerdictGreen, forge.MergeClean, passing().Checks...),
 	}
 }
@@ -396,8 +398,25 @@ func skippingRow() pushRow {
 		name: "two checks passed and one was skipped", script: opening(skipping),
 		want: finish{
 			outcome: result.Done,
-			text:    pushedLine() + openedLine() + expect(tipMark, "2 passed, 1 skipped") + cleanLine() + nextMerge(),
+			text:    pushedLine() + openedLine() + expect(tipMark, "2 passed, 1 skipped") + nextMerge(),
 			payload: detail(forge.VerdictGreen, forge.MergeClean, skipping.Checks...),
+		},
+	}
+}
+
+// skippedRow is the first push of a branch whose two checks were both skipped.
+func skippedRow() pushRow {
+	skipped := forge.Verdict{
+		Checks: []forge.Check{forgetest.Check("lint", forge.BucketSkipped), forgetest.Check("docs", forge.BucketSkipped)},
+		Runs:   ran(forge.RunCompleted),
+	}
+
+	return pushRow{
+		name: "both checks were skipped", script: opening(skipped),
+		want: finish{
+			outcome: result.Done,
+			text:    pushedLine() + openedLine() + expect(tipMark, ": 2 skipped\n") + nextMerge(),
+			payload: detail(forge.VerdictGreen, forge.MergeClean, skipped.Checks...),
 		},
 	}
 }
@@ -408,6 +427,7 @@ func pushWriteRows() []pushRow {
 
 	return []pushRow{
 		skippingRow(),
+		skippedRow(),
 		{
 			name:   "open pull request against the trunk",
 			script: reusing(passing()), want: greenAfter(pushedLine() + foundLine()),
@@ -557,7 +577,7 @@ func TestPush_WhenTheGitPushIsCutShort_BrokeSayingThePushMayHaveTaken(t *testing
 
 			assertDelivered(t, s, got, finish{
 				outcome: result.Broke, reason: expect(c.ends, "during the push"),
-				text: expect(topic, sha, c.ends, "may or may not have taken") + nextPush(),
+				text: expect(topic, shortSHA(sha), c.ends, "may or may not have taken") + nextPush(),
 			})
 			assertAsked(t, s, changesRead())
 		})
@@ -571,7 +591,7 @@ type cutPush struct {
 }
 
 // assertMayHaveTaken fails unless got is a broke push whose reason holds cut.reason, and whose text
-// names the topic branch and cut.sha and ends on `ils push`. It returns the text.
+// names the topic branch and cut.sha, short, and ends on `ils push`. It returns the text.
 func assertMayHaveTaken(t *testing.T, s *scene, got result.Result, cut cutPush) string {
 	t.Helper()
 
@@ -580,7 +600,7 @@ func assertMayHaveTaken(t *testing.T, s *scene, got result.Result, cut cutPush) 
 	text, why := shown(t, got, s.gitDir)
 	assertSays(t, why, expect(cut.reason))
 	assert.Check(t, is.Contains(text, topic))
-	assert.Check(t, is.Contains(text, cut.sha))
+	assert.Check(t, is.Contains(text, shortSHA(cut.sha)))
 	assert.Check(t, strings.HasSuffix(text, "ils push\n"), "RenderText() = %q, want it to end on `ils push`", text)
 
 	return text
@@ -688,7 +708,7 @@ func pushUnreportedRows() []pushRow {
 	nothing := finish{
 		outcome: result.DeliveredNotGreen,
 		reason:  expect("no check or status reported", tipMark, "#12"),
-		text:    pushedLine() + openedLine() + cleanLine() + expect("no check or status reported", tipMark, "#12"),
+		text:    pushedLine() + openedLine() + expect("no check or status reported", tipMark, "#12"),
 		payload: detail(forge.VerdictNone, forge.MergeClean),
 	}
 
@@ -734,7 +754,7 @@ func pushNoCIRows() []pushRow {
 			script: unverified.showing(cleanHead(), inState(forge.MergeConflicting, "DIRTY")),
 			want: finish{
 				outcome: result.DeliveredNotGreen, reason: expect("conflicts with the trunk"),
-				text: pushedLine() + openedLine() + noCILine() + stateLine(forge.MergeConflicting, "DIRTY") +
+				text: pushedLine() + openedLine() + noCILine() + stateLine(forge.MergeConflicting) +
 					expect("conflicts with the trunk") + nextTrunk(),
 				payload: detail(forge.VerdictNone, forge.MergeConflicting),
 			},
@@ -742,7 +762,7 @@ func pushNoCIRows() []pushRow {
 		{
 			name: "on a clean pull request", script: unverified,
 			want: finish{
-				outcome: result.Done, text: pushedLine() + openedLine() + noCILine() + cleanLine() + nextMerge(),
+				outcome: result.Done, text: pushedLine() + openedLine() + noCILine() + nextMerge(),
 				payload: detail(forge.VerdictNone, forge.MergeClean),
 			},
 		},
@@ -834,7 +854,7 @@ func callsOf(calls []forgetest.Call, ops ...forgetest.Op) []forgetest.Call {
 func pushWaitRows() []pushRow {
 	reviewed := finish{
 		outcome: result.Done,
-		text:    pushedLine() + foundLine() + countLine() + blockedLine() + nextReview(),
+		text:    pushedLine() + foundLine() + countLine() + nextReview(),
 		payload: detail(forge.VerdictGreen, forge.MergeBlockedByReview, passing().Checks...),
 	}
 

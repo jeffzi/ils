@@ -28,9 +28,6 @@ const (
 // a write the deadline cuts short leaves the run halfway.
 const mergeReserve = 20 * time.Second
 
-// reserveSeconds is mergeReserve in the whole seconds a result says.
-const reserveSeconds = int(mergeReserve / time.Second)
-
 // conventionalTitle is a conventional commit subject, `<type>(<scope>)!: <summary>`: a type of
 // lowercase ASCII letters, an optional scope that is not empty and holds no parenthesis or line
 // break, an optional `!`, then `: ` and a summary that starts with a character other than a space.
@@ -50,7 +47,9 @@ type mergeReady struct {
 	// pull is the branch's open pull request against the trunk, or on a resume its merged one.
 	pull       forge.Change
 	protection forge.Protection
-	// subject and body are the squash commit's message; both are empty until it is composed.
+	// title is the pull request's title, and subject and body the squash commit's message; all
+	// three are empty until the message is composed.
+	title   string
 	subject string
 	body    string
 	// ending is result.EndingTrunk or result.EndingDetached once the local ending ran, and empty
@@ -388,7 +387,7 @@ func (m *mergeReady) withoutCI(ctx context.Context, deps Deps, req Request) *res
 func (m *mergeReady) verdictStop(req Request) *result.Result {
 	if m.waited.Outcome == WaitNothingReported && !m.unverified {
 		stop := req.Refused(nothingReported(m.pull.HeadSHA, m.pull.Number), result.NextStep("report that no check or status reported for the head, and stop"))
-		stop.Lines = []result.Phrase{m.waited.mergeStateLine()}
+		stop.Lines = m.waited.mergeStateLines()
 
 		return m.carrying(stop)
 	}
@@ -486,6 +485,7 @@ func (m *mergeReady) compose(ctx context.Context, deps Deps, req Request) *resul
 		return m.stated(m.titleStop(req, message.Title))
 	}
 
+	m.title = message.Title
 	m.subject = message.Title + " (#" + strconv.Itoa(m.pull.Number) + ")"
 	m.body = squashBody(message)
 
@@ -515,13 +515,12 @@ func (m *mergeReady) reserved(ctx context.Context, req Request) *result.Result {
 	}
 
 	stop := req.ends(result.Pending,
-		result.Say("fewer than %s seconds of the time limit were left for the merge", reserveSeconds),
+		result.Say("fewer than %s of the %s time limit were left for the merge", mergeReserve, TimeLimit),
 		result.NextCommand(PushCommand))
-	stop.Lines = []result.Phrase{
-		m.summary(), m.waited.mergeStateLine(),
-		result.Say("Fewer than %s seconds of the time limit were left for the merge, so nothing was written",
-			reserveSeconds),
-	}
+	stop.Lines = slices.Concat([]result.Phrase{m.summary()}, m.waited.mergeStateLines(), []result.Phrase{
+		result.Say("Fewer than %s of the %s time limit were left for the merge, so nothing was written",
+			mergeReserve, TimeLimit),
+	})
 
 	return m.carrying(stop)
 }
@@ -553,9 +552,9 @@ func (m *mergeReady) reported(req Request, report waitReport, lead []result.Phra
 }
 
 // stated returns stop with the lines that say what let the merge go on, then lines, then the merge
-// state.
+// state unless it is clean.
 func (m *mergeReady) stated(stop *result.Result, lines ...result.Phrase) *result.Result {
-	stop.Lines = slices.Concat([]result.Phrase{m.summary()}, lines, []result.Phrase{m.waited.mergeStateLine()})
+	stop.Lines = slices.Concat([]result.Phrase{m.summary()}, lines, m.waited.mergeStateLines())
 
 	return m.carrying(stop)
 }
@@ -585,7 +584,7 @@ func (m *mergeReady) carrying(ended *result.Result) *result.Result {
 // result from here on holds the checks line, so it is the line the wait's step says.
 func (m *mergeReady) land(ctx context.Context, deps Deps, req Request) *result.Result {
 	summary := m.summary()
-	m.lines = []result.Phrase{summary, m.waited.mergeStateLine()}
+	m.lines = append([]result.Phrase{summary}, m.waited.mergeStateLines()...)
 
 	if !m.unverified {
 		deps.said(summary)
@@ -634,16 +633,16 @@ func (m *mergeReady) merge(ctx context.Context, deps Deps, req Request) *result.
 			result.Say("Started the merge of pull request %s when "+runInterrupted+"; "+
 				"it may or may not have gone through", pull))
 	case timedOut(err):
-		return m.broke(req, result.Say(timeLimitEnded+" during the merge"), req.again(),
+		return m.broke(req, result.Say(timeLimitEnded+" during the merge", TimeLimit), req.again(),
 			result.Say("Started the merge of pull request %s when "+timeLimitEnded+"; "+
-				"it may or may not have gone through", pull))
+				"it may or may not have gone through", pull, TimeLimit))
 	case err != nil:
 		return m.broke(req, result.Say("GitHub did not report the merge as done"), req.again(),
 			result.Say("GitHub did not report the merge of pull request %s as done: %s", pull, err.Error()))
 	}
 
 	m.merged = true
-	deps.say(&m.lines, result.Say("Merged pull request %s into %s: %s", pull, result.Branch(m.Trunk), m.subject))
+	deps.say(&m.lines, result.Say("Merged pull request %s into %s: \"%s\"", pull, result.Branch(m.Trunk), m.title))
 
 	return nil
 }
@@ -774,7 +773,7 @@ func (m *mergeReady) end(ctx context.Context, deps Deps, req Request) *result.Re
 			},
 			drop,
 		}, done: []result.Phrase{
-			result.Say("Detached at origin's tip of %s, with %s deleted locally", result.Branch(trunk), result.Branch(branch)),
+			result.Say("Detached at origin's tip of %s; deleted local %s", result.Branch(trunk), result.Branch(branch)),
 			result.Say("The trunk %s is checked out in another worktree and updates there on its next "+
 				"`git pull --ff-only`", result.Branch(trunk)),
 		}})
@@ -795,7 +794,7 @@ func (m *mergeReady) end(ctx context.Context, deps Deps, req Request) *result.Re
 			next:    result.NextStep("run `git pull --ff-only origin %s` by hand", result.Branch(trunk)),
 		},
 	}, done: []result.Phrase{
-		result.Say("On %s at origin's tip, with %s deleted locally", result.Branch(trunk), result.Branch(branch)),
+		result.Say("Switched to %s at origin's tip; deleted local %s", result.Branch(trunk), result.Branch(branch)),
 	}})
 }
 
@@ -858,11 +857,11 @@ func (m *mergeReady) resume(ctx context.Context, deps Deps, req Request) *result
 
 	if deadlineWithin(ctx, mergeReserve) {
 		stop := req.ends(result.Pending,
-			result.Say("fewer than %s seconds of the time limit were left to finish the merge", reserveSeconds),
+			result.Say("fewer than %s of the %s time limit were left to finish the merge", mergeReserve, TimeLimit),
 			req.again())
 		stop.Lines = slices.Concat(m.lines, []result.Phrase{
-			result.Say("Fewer than %s seconds of the time limit were left to finish the merge, so nothing was written",
-				reserveSeconds),
+			result.Say("Fewer than %s of the %s time limit were left to finish the merge, so nothing was written",
+				mergeReserve, TimeLimit),
 		})
 
 		return m.carrying(stop)

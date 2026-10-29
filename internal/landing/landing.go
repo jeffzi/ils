@@ -28,11 +28,15 @@ const (
 // because result.NextStep accepts only constant expressions.
 const thenRunAgain = ", then run %s again"
 
+// TimeLimit is how long a command may run before its context reaches its deadline. Every result
+// that says the time limit cut a call or a wait short names this length.
+const TimeLimit = 100 * time.Second
+
 // timeLimitEnded and runInterrupted are the clauses a result says a call or a wait was cut short
 // with: by the end of the time limit, or by an interrupt. They stay untyped so that result.Say
-// accepts wording built on them.
+// accepts wording built on them. The one placeholder of timeLimitEnded takes TimeLimit.
 const (
-	timeLimitEnded = "the time limit ended"
+	timeLimitEnded = "the %s time limit ended"
 	runInterrupted = "ils was interrupted"
 )
 
@@ -445,7 +449,7 @@ func (r Request) unread(read string, err error) *result.Result {
 	}
 
 	if endedEarly(err) {
-		reason := result.Say(timeLimitEnded+" while reading %s; nothing was written", read)
+		reason := result.Say(timeLimitEnded+" while reading %s; nothing was written", TimeLimit, read)
 		if interrupted(err) {
 			reason = result.Say(runInterrupted+" while reading %s; nothing was written", read)
 		}

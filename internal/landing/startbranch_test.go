@@ -70,7 +70,7 @@ func TestStartBranch_WhenEveryCheckHolds_StartsTheBranchAtOriginsTrunk(t *testin
 
 	got := startBranch(t, s, fresh)
 
-	want := expect(fresh, tip, "Next:", "ils push")
+	want := expect(fresh, shortSHA(tip), "Next:", "ils push")
 	assertEndedBy(t, got, s.gitDir, ended{outcome: result.Done, req: branchRequest(fresh), text: want})
 	assertStarted(t, s, fresh)
 }
@@ -201,7 +201,7 @@ func TestStartBranch_WhenDetachedHEADHasCommitsOriginsTrunkLacks_RefusesListingT
 
 	got := startBranch(t, s, fresh)
 
-	want := expect(own[0], sharpen, "`git switch -c <name>`", "ils push")
+	want := expect(shortSHA(own[0]), sharpen, "`git switch -c <name>`", "ils push")
 	assertRefusedBranch(t, s, got, branchRefusal{name: fresh, before: before, want: want})
 }
 
@@ -214,7 +214,7 @@ func TestStartBranch_WhenLocalTrunkHasCommitsOriginLacks_StartsTheBranchNamingTh
 
 	got := startBranch(t, s, fresh)
 
-	want := expect(ahead, "local trunk "+trunk)
+	want := expect(shortSHA(ahead), "local trunk "+trunk)
 	assertEndedBy(t, got, s.gitDir, ended{outcome: result.Done, req: branchRequest(fresh), text: want})
 	assertStarted(t, s, fresh)
 }

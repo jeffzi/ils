@@ -146,7 +146,7 @@ func cutRefusals() []pushRefusal {
 				first := f.Sibling(side, topic)
 				second := f.Commits(side, sharpen)[0]
 
-				return expect(first, changeOnSide, second, sharpen) + shares(other, ownListed) + nextEither()
+				return expect(shortSHA(first), changeOnSide, shortSHA(second), sharpen) + shares(other, ownListed) + nextEither()
 			},
 		},
 		{
@@ -165,7 +165,7 @@ func cutRefusals() []pushRefusal {
 				own := f.Sibling(side, topic)
 				publishAtTrunk(f, side)
 
-				return expect(own, changeOnSide) + shares(other, ownListed) + nextEither()
+				return expect(shortSHA(own), changeOnSide) + shares(other, ownListed) + nextEither()
 			},
 		},
 	}
@@ -187,7 +187,7 @@ func manyCutRefusals() []pushRefusal {
 				f.Git("branch", yearly, side)
 				own := f.Commits(side, sharpen)[0]
 
-				return expect(own, sharpen) + shares("branches", ownListed) + nextEitherMany()
+				return expect(shortSHA(own), sharpen) + shares("branches", ownListed) + nextEitherMany()
 			},
 			listed: listed,
 		},

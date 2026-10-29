@@ -96,7 +96,7 @@ func standingRefusals() []pushRefusal {
 			arrange: func(f *gittest.Fixture) string {
 				f.Detach()
 
-				return expect(f.Git("rev-parse", "HEAD"), "detached", "`git switch -c <name>`", "ils push")
+				return expect(shortSHA(f.Git("rev-parse", "HEAD")), "detached", "`git switch -c <name>`", "ils push")
 			},
 		},
 		{
@@ -173,7 +173,7 @@ func changeRefusals() []pushRefusal {
 				f.LandPull(merged, topic)
 				later := f.Commits(topic, "fix a typo", "add an example")
 
-				return expect(later[0], "fix a typo", later[1], "add an example", "#"+number, topic, "merged without the commits") +
+				return expect(shortSHA(later[0]), "fix a typo", shortSHA(later[1]), "add an example", "#"+number, topic, "merged without the commits") +
 					nextBranch() + expect("`git cherry-pick "+later[0]+" "+later[1]+"`")
 			},
 		},

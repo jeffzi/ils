@@ -44,7 +44,7 @@ const (
 )
 
 func detachedLine() string {
-	return expect("Detached", trunk, topic, "deleted")
+	return expect("Detached", trunk, "deleted", topic)
 }
 
 func elsewhereLine() string {
@@ -56,7 +56,7 @@ func resumedLine() string {
 }
 
 func mergedLine() string {
-	return expect("Merged", "#12", trunk, squashSubject)
+	return expect("Merged", "#12", trunk, "\""+worded+"\"")
 }
 
 func deletedLine() string {
@@ -68,7 +68,7 @@ func goneLine() string {
 }
 
 func onTrunkLine() string {
-	return expect(trunk, "origin's tip", topic, "deleted")
+	return expect(trunk, "origin's tip", "deleted", topic)
 }
 
 func stillThere() string {
@@ -232,7 +232,7 @@ func landedRows() []landedRow {
 			script: waiting(running(), passing()).saying(titledAfter(landedBody)).landing(nil, nil), unbounded: true,
 		},
 		{
-			name: "nothing reported and no CI on the trunk", lead: noCILine() + cleanLine(), payload: unverified,
+			name: "nothing reported and no CI on the trunk", lead: noCILine(), payload: unverified,
 			script: waiting(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{}).saying(titledAfter(landedBody)).
 				landing(nil, nil),
 		},
@@ -264,7 +264,7 @@ func TestMerge_WhenEveryCheckHolds_LandsThePullRequest(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				run := runMergeOn(t, setting{arrange: tt.arrange, script: tt.script, unbounded: tt.unbounded})
 
-				lead := cmp.Or(tt.lead, countLine()+cleanLine())
+				lead := cmp.Or(tt.lead, countLine())
 				assertEndedBy(t, run.got, run.gitDir, ended{text: mark(lead, run.tip) + mergedLine() + deletedLine() + onTrunkLine(), req: mergeRequest(), outcome: result.Done})
 
 				want := *cmp.Or(tt.payload, sent(landedBody, true, result.EndingTrunk))
@@ -340,7 +340,7 @@ func TestMerge_WhenTheTrunkIsCheckedOutInAnotherWorktree_EndsDetachedAtOriginsTr
 			script: toLand(nil, nil),
 		})
 
-		assertEndedBy(t, run.got, run.gitDir, ended{text: mark(countLine(), run.tip) + cleanLine() + mergedLine() + deletedLine() + detachedLine() + elsewhereLine(), req: mergeRequest(), outcome: result.Done})
+		assertEndedBy(t, run.got, run.gitDir, ended{text: mark(countLine(), run.tip) + mergedLine() + deletedLine() + detachedLine() + elsewhereLine(), req: mergeRequest(), outcome: result.Done})
 
 		want := sent(landedBody, true, result.EndingDetached)
 		want.SHA = run.tip
@@ -352,7 +352,7 @@ func TestMerge_WhenTheTrunkIsCheckedOutInAnotherWorktree_EndsDetachedAtOriginsTr
 // endingBreaks are the runs of `ils merge` whose local ending fails after the merge and the delete
 // of the branch on origin went through.
 func endingBreaks() []landingRow {
-	lead := countLine() + cleanLine() + mergedLine() + deletedLine()
+	lead := countLine() + mergedLine() + deletedLine()
 	ran := func(step string) string { return expect("Ran", step) }
 	notRun := func(step string) string { return expect("Not run", step) }
 	failed := func(step string) string { return expect(step, "failed") }
@@ -634,7 +634,7 @@ func toLand(land, remove error) forgeFor {
 // does not go as asked.
 func writeStops() []landingRow {
 	failed := errors.New(forgeFailure)
-	lead := countLine() + cleanLine()
+	lead := countLine()
 	row := func(name string, script forgeFor, outcome result.Outcome, text string) landingRow {
 		return landingRow{
 			name: name, set: setting{script: script}, outcome: outcome, text: lead + text,
@@ -712,7 +712,7 @@ func interruptedWrites() []landingRow {
 		{
 			name: "the merge", outcome: result.Pending, kept: true,
 			set: setting{script: toLand(nil, nil), runCtx: interruptOnStart(mergingStep())},
-			text: countLine() + cleanLine() + expect("interrupted before the merge", "interrupted before the merge") +
+			text: countLine() + expect("interrupted before the merge", "interrupted before the merge") +
 				nextPush(),
 			payload: sent(landedBody, false, ""),
 		},
@@ -765,7 +765,7 @@ func stallingAfterLand(
 
 func TestMerge_WhenAnInterruptEndsTheFetchOfTheLocalEnding_BrokeNamingTheInterrupt(t *testing.T) {
 	// Not parallel: it puts a stalling git first on PATH with t.Setenv.
-	text := countLine() + cleanLine() + mergedLine() + deletedLine() + expect("Ran", switchStep, "Ran", dropStep, pullStep,
+	text := countLine() + mergedLine() + deletedLine() + expect("Ran", switchStep, "Ran", dropStep, pullStep,
 		"stopped", "interrupted", "interrupted", pullStep, pullStep, "by hand")
 	runCtx, landed := stallingAfterLand([]string{"fetch"})
 

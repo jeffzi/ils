@@ -431,14 +431,16 @@ type cut struct {
 }
 
 // byTimeLimit is the cut whose context is already past its deadline, so its error is
-// context.DeadlineExceeded.
+// context.DeadlineExceeded. What it says names the length of the time limit.
 func byTimeLimit() cut {
+	limit := landing.TimeLimit.String() + partEnd
+
 	return cut{
 		name: "the time limit", err: context.DeadlineExceeded,
 		spend: func(parent context.Context) (context.Context, context.CancelFunc) {
 			return context.WithDeadline(parent, time.Unix(0, 0))
 		},
-		ends: "the time limit ended", before: "before the time limit",
+		ends: limit + "time limit ended", before: limit + "time limit",
 	}
 }
 

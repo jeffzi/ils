@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"gotest.tools/v3/assert"
@@ -13,7 +14,9 @@ import (
 
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
+	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
+	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
 // redRow is a push whose lint check ended in bucket beside a passing test, with log as its failed
@@ -35,7 +38,7 @@ func redRow(name string, bucket forge.Bucket, log forge.FailedLog, excerpt strin
 	payload := detail(forge.VerdictRed, forge.MergeBlockedOther, verdict.Checks...)
 	payload.FailedLog = log.Text
 
-	state := stateLine(forge.MergeBlockedOther, "UNSTABLE")
+	state := stateLine(forge.MergeBlockedOther)
 	if !strings.Contains(excerpt, partEnd) {
 		// An excerpt of the log follows the state line at once, so that its first line is held too.
 		state, excerpt = expect(partsOf(state)[0]+excerpt), ""
@@ -96,7 +99,7 @@ func stoppedRow(state forge.MergeState, raw, reason string) pushRow {
 		script: reusing().showing(inState(state, raw)),
 		want: finish{
 			outcome: result.DeliveredNotGreen, reason: expect(reason),
-			text:    pushedLine() + foundLine() + stateLine(state, raw) + expect(reason) + nextTrunk(),
+			text:    pushedLine() + foundLine() + stateLine(state) + expect(reason) + nextTrunk(),
 			payload: detail(forge.VerdictNone, state),
 		},
 	}
@@ -127,7 +130,7 @@ func TestPush_WhenARequiredCheckNeverReported_DeliveredNotGreen(t *testing.T) {
 			want: finish{
 				outcome: result.DeliveredNotGreen, reason: expect("a required check never reported"),
 				text: pushedLine() + openedLine() + expect("never reported", "test") +
-					stateLine(forge.MergeBlockedByMissingCheck, "BLOCKED") + expect("a required check never reported") + nextNever(),
+					stateLine(forge.MergeBlockedByMissingCheck) + expect("a required check never reported") + nextNever(),
 				payload: detail(forge.VerdictGreen, forge.MergeBlockedByMissingCheck, lint),
 			},
 		},
@@ -161,7 +164,7 @@ func pending(reason, lines string, payload *result.Push) finish {
 // cutShortRead is a push to the open pull request that ended pending because c ended a read of
 // read.
 func cutShortRead(c cut, read string) finish {
-	return pending(expect(c.ends, read, "nothing more will change"), cleanLine(),
+	return pending(expect(c.ends, read, "nothing more will change"), "",
 		detail(forge.VerdictNone, forge.MergeClean))
 }
 
@@ -203,9 +206,9 @@ func pushRunlessRows() []pushRow {
 	started := forge.Verdict{Runs: ran(forge.RunInProgress)}
 	scanned := appPassing()
 	silent := pending(expect("no check or status", tipMark, "#12"),
-		cleanLine(), detail(forge.VerdictNone, forge.MergeClean))
+		"", detail(forge.VerdictNone, forge.MergeClean))
 	noRun := pending(expect("no workflow run", tipMark, "#12"),
-		cleanLine(), detail(forge.VerdictGreen, forge.MergeClean, scanned.Checks...))
+		"", detail(forge.VerdictGreen, forge.MergeClean, scanned.Checks...))
 
 	return []pushRow{
 		{name: "nothing has reported yet", left: 12 * time.Second, script: reusing(forge.Verdict{}), want: silent},
@@ -213,7 +216,7 @@ func pushRunlessRows() []pushRow {
 			name: "a workflow run is going and no check has reported yet", left: 12 * time.Second,
 			script: reusing(started),
 			want: pending(expect("had not reported"),
-				expect("No check has reported", tipMark, "#12", "workflow run is still going")+cleanLine(),
+				expect("No check has reported", tipMark, "#12", "workflow run is still going"),
 				detail(forge.VerdictNone, forge.MergeClean)),
 		},
 		{
@@ -260,7 +263,7 @@ func pushStillRunningRows() []pushRow {
 			name: "a check still runs", left: 17 * time.Second,
 			script: reusing(running()).showing(stale(), cleanHead()),
 			want: pending(expect("still running"),
-				expect("Still running", "10 seconds", "test")+cleanLine(),
+				expect("Still running", "10s", "(1 check):\n  ◌ test\n"),
 				detail(forge.VerdictPending, forge.MergeClean, running().Checks...)),
 			told: []string{
 				checkingStep(), pushingStep(), said(pushedLine()), said(foundLine()),
@@ -269,16 +272,28 @@ func pushStillRunningRows() []pushRow {
 		},
 		{
 			// Seven seconds leave no room for a poll and the head read after it, so the head is read at
-			// once after the checks; that read takes the one second the checks are waited on.
-			name: "a check still runs a second into the wait", left: 7 * time.Second,
+			// once after the checks; that read takes the second and a half the checks are waited on,
+			// which the result says in whole seconds.
+			name: "a check still runs a second and a half into the wait", left: 7 * time.Second,
 			script: reusing(running()).
 				showing(cleanHead(), inState(forge.MergeBlockedByReview, "BLOCKED")).
+				with(func(script *forgetest.Script, _ string) {
+					script.OnRead = onHeadAfterChecks(func() { time.Sleep(1500 * time.Millisecond) })
+				}),
+			want: pending(expect("still running"),
+				expect("Still running", "1s", "(1 check):\n  ◌ test\n")+blockedLine(),
+				detail(forge.VerdictPending, forge.MergeBlockedByReview, running().Checks...)),
+		},
+		{
+			name: "two checks still run a second into the wait", left: 7 * time.Second,
+			script: reusing(bothRunning()).
+				showing(cleanHead(), cleanHead()).
 				with(func(script *forgetest.Script, _ string) {
 					script.OnRead = onHeadAfterChecks(func() { time.Sleep(time.Second) })
 				}),
 			want: pending(expect("still running"),
-				expect("Still running", "1 second", "test")+blockedLine(),
-				detail(forge.VerdictPending, forge.MergeBlockedByReview, running().Checks...)),
+				expect("Still running", "1s", "(2 checks):\n  ◌ lint\n  ◌ test\n"),
+				detail(forge.VerdictPending, forge.MergeClean, bothRunning().Checks...)),
 		},
 	}
 }
@@ -355,12 +370,111 @@ func assertReadsRequire(t *testing.T, calls []forgetest.Call, tip string, requir
 	assert.Check(t, heads > 0 && verdicts > 0, "forge reads = %d heads and %d verdicts, want some of each", heads, verdicts)
 }
 
-// stateLine is the line that prints the merge state GitHub showed as raw and ils read as state:
-// raw alone when the two name one state, and ils's reading after it otherwise.
-func stateLine(state forge.MergeState, raw string) string {
-	if strings.EqualFold(raw, string(state)) {
-		return expect(" " + raw + "\n")
+// stateWords returns the end of the line that says each merge state but clean in plain words.
+func stateWords() map[forge.MergeState]string {
+	return map[forge.MergeState]string{
+		forge.MergeBehind:                "out of date with the trunk",
+		forge.MergeConflicting:           "has merge conflicts",
+		forge.MergeDraft:                 "still a draft",
+		forge.MergeBlockedByReview:       "waits for an approving review",
+		forge.MergeBlockedByMissingCheck: "waits for a required check",
+		forge.MergeBlockedOther:          "ils cannot name blocks the merge",
+		forge.MergeUnknown:               "has not decided yet whether the merge would succeed",
 	}
+}
 
-	return expect(" " + raw + " (" + string(state) + ")\n")
+// rawStates returns the merge states as GitHub names them, which no line prints.
+func rawStates() []string {
+	return []string{"CLEAN", "BEHIND", "DIRTY", "DRAFT", "BLOCKED", "UNSTABLE", "HAS_HOOKS", "UNKNOWN"}
+}
+
+// stateLine is the line that says the merge state state in plain words.
+func stateLine(state forge.MergeState) string {
+	return expect(stateWords()[state] + "\n")
+}
+
+// rendered returns what got prints as text, and the lines of its JSON joined into one text, each
+// ended by a newline as in the text.
+func rendered(t *testing.T, got result.Result, gitDir string) (text, lines string) {
+	t.Helper()
+
+	text, err := result.RenderText(got, gitDir)
+	assert.NilError(t, err)
+
+	out, err := result.RenderJSON(got, gitDir)
+	assert.NilError(t, err)
+
+	return text, strings.Join(resulttest.Decode(t, out).Lines, "\n") + "\n"
+}
+
+// assertNoRawState fails unless text holds no merge state as GitHub names it.
+func assertNoRawState(t *testing.T, text string) {
+	t.Helper()
+
+	for _, raw := range rawStates() {
+		assert.Check(t, !strings.Contains(text, raw), "text %q holds GitHub's merge state %s", text, raw)
+	}
+}
+
+// assertNoStateLine fails unless text holds no line that says a merge state.
+func assertNoStateLine(t *testing.T, text string) {
+	t.Helper()
+
+	assertNoRawState(t, text)
+	for state, words := range stateWords() {
+		assert.Check(t, !strings.Contains(text, words), "text %q says the merge state %s", text, state)
+	}
+}
+
+func TestPush_MergeStateLine(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		want    string
+		row     pushRow
+		outcome result.Outcome
+	}{
+		{
+			row: pushRow{
+				name: "clean on a push that is not done", left: 12 * time.Second,
+				script: reusing(forge.Verdict{}),
+			},
+			outcome: result.Pending,
+		},
+		{
+			row: pushRow{
+				name:   "blocked by review on a push that is done",
+				script: reusing(passing()).showing(cleanHead(), inState(forge.MergeBlockedByReview, "BLOCKED")),
+			},
+			outcome: result.Done,
+		},
+		{
+			row: pushRow{
+				name:   "conflicting on a push that is not done",
+				script: reusing().showing(inState(forge.MergeConflicting, "DIRTY")),
+			},
+			want: stateLine(forge.MergeConflicting), outcome: result.DeliveredNotGreen,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.row.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				ctx, d := newDelivery(t, tt.row)
+
+				got := landing.Push(ctx, d.deps, pushRequest())
+
+				assert.Assert(t, is.Equal(got.Outcome, tt.outcome))
+				text, lines := rendered(t, got, d.gitDir)
+				for _, shown := range []string{text, lines} {
+					if tt.want == "" {
+						assertNoStateLine(t, shown)
+					} else {
+						assertSays(t, shown, tt.want)
+						assertNoRawState(t, shown)
+					}
+				}
+			})
+		})
+	}
 }

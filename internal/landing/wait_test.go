@@ -219,6 +219,14 @@ func running() forge.Verdict {
 	return forge.Verdict{Checks: []forge.Check{forgetest.Check("test", forge.BucketPending)}, Runs: ran(forge.RunInProgress)}
 }
 
+// bothRunning is a verdict whose two checks, lint and test, still run.
+func bothRunning() forge.Verdict {
+	return forge.Verdict{
+		Checks: []forge.Check{forgetest.Check("lint", forge.BucketPending), forgetest.Check("test", forge.BucketPending)},
+		Runs:   ran(forge.RunInProgress),
+	}
+}
+
 // requiredPassing is a verdict whose required checks lint and test passed and whose run completed.
 func requiredPassing() forge.Verdict {
 	return forge.Verdict{

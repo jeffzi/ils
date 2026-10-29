@@ -33,6 +33,12 @@ const (
 	redNext = "fix the failing check, commit, and run ils push again"
 
 	controlBytes = "one\x1b[1;33m two\b three\x7f four\u009b"
+
+	// fullSHA is a commit sha as git prints it, and shortSHA its first seven characters.
+	fullSHA  = "702f76d1c3b1e9a04f5d2e6b7a8c9d0e1f2a3b4c"
+	shortSHA = "702f76d"
+	// shaNext is the next step of shaPush as a plain profile prints it.
+	shaNext = "check out " + fullSHA + ", then run ils push again"
 )
 
 func redReason() string { return labeled(result.DeliveredNotGreen, "the check prek is red") }
@@ -141,6 +147,26 @@ func redPush() result.Result {
 	}
 }
 
+func shaLine() result.Phrase {
+	return result.Say("Checks for %s: %s", result.SHA(fullSHA), result.Passed(9))
+}
+
+func shaReason() result.Phrase {
+	return result.Say("GitHub did not show %s", result.SHA(fullSHA))
+}
+
+func shaStep() result.Next {
+	return result.NextStep("check out %s, then run %s again", result.SHA(fullSHA), result.Command("push"))
+}
+
+// shaPush is a broke push whose last line, reason and next step each name the commit fullSHA.
+func shaPush() result.Result {
+	return with(brokeWithLine(shaLine()), func(r *result.Result) {
+		r.Reason = shaReason()
+		r.Next = shaStep()
+	})
+}
+
 // with returns a copy of base that edit has changed, leaving base itself untouched.
 func with[T any](base T, edit func(*T)) T {
 	edit(&base)
@@ -199,9 +225,26 @@ func excerptTextCases() []pair {
 	}
 }
 
+// shaTextCases returns the cases where a commit sha meets the text: short in a line and in the
+// reason, in full in the Next line.
+func shaTextCases() []pair {
+	return []pair{
+		brokeLine("sha in a line prints its first seven characters", shaLine(), "Checks for "+shortSHA+": 9 passed"),
+		{
+			name:     "sha in the reason prints its first seven characters",
+			gitDir:   gitDir,
+			result:   with(brokePush(), func(r *result.Result) { r.Reason = shaReason() }),
+			wantText: brokeBody + labeled(result.Broke, "GitHub did not show "+shortSHA) + nextLine("ils push"),
+		},
+		redThen("sha in the Next line prints in full", shaStep(), shaNext),
+		brokeLine("sha shorter than seven characters prints as it is",
+			result.Say("Checks for %s.", result.SHA("4f2a9")), "Checks for 4f2a9."),
+	}
+}
+
 // allTextCases returns every case with the plain text it prints.
 func allTextCases() []pair {
-	return slices.Concat(textCases(), excerptTextCases(), controlCases())
+	return slices.Concat(textCases(), excerptTextCases(), controlCases(), shaTextCases())
 }
 
 func TestRenderText(t *testing.T) {
@@ -258,6 +301,19 @@ func jsonCases() []jsonCase {
 			result: with(donePush(), func(r *result.Result) { r.Excerpt = controlBytes }),
 			pick:   func(s resulttest.Shown) resulttest.Shown { return resulttest.Shown{Excerpt: s.Excerpt} },
 			want:   resulttest.Shown{Excerpt: controlBytes},
+		},
+		{
+			name:   "sha in a line, the reason and the next carries in full",
+			gitDir: gitDir,
+			result: shaPush(),
+			pick: func(s resulttest.Shown) resulttest.Shown {
+				return resulttest.Shown{Lines: s.Lines, Reason: s.Reason, Next: s.Next}
+			},
+			want: resulttest.Shown{
+				Lines:  append(brokeLines(), "Checks for "+fullSHA+": 9 passed"),
+				Reason: "GitHub did not show " + fullSHA,
+				Next:   shaNext,
+			},
 		},
 		{
 			name:   "done carries none as its next",
@@ -424,6 +480,10 @@ func styledCases() []styledCase {
 		},
 		{name: "step wording is drawn unstyled", result: markedPush(), within: resulttest.NextLine("rebase"), part: " rebase", want: resulttest.Look{}, profile: colorprofile.ANSI},
 		{name: "passed count is drawn green", result: talliedChecks(), within: "17 passed", part: "17", want: resulttest.PassedLook(), profile: colorprofile.ANSI},
+		{
+			name: "sha in a line is drawn as its first seven characters", result: shaPush(), within: "Checks for " + shortSHA + ":",
+			part: shortSHA, want: resulttest.SHALook(), profile: colorprofile.ANSI,
+		},
 		{name: "command is drawn as a name", result: refusedPush(), within: resulttest.NextLine("ils branch fix-prek-again"), part: "ils branch fix-prek-again", want: resulttest.NameLook(), profile: colorprofile.ANSI},
 	}
 }

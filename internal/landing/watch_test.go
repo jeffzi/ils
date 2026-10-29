@@ -184,8 +184,13 @@ func plainText(t *testing.T, phrase result.Phrase) string {
 	return strings.TrimSuffix(text, "\n")
 }
 
-// said is the event of a step that succeeded saying line, a line of a result's text.
+// said is the event of a step that succeeded saying line, a line of a result's text. The event
+// holds the line without the newline that ends it in the text.
 func said(line string) string {
+	if trimmed, ok := strings.CutSuffix(line, "\n"+partEnd); ok {
+		line = trimmed + partEnd
+	}
+
 	return expect("said") + line
 }
 

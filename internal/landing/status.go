@@ -3,6 +3,7 @@ package landing
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -81,8 +82,8 @@ type reading struct {
 	offline     bool
 }
 
-func (r *reading) say(line result.Phrase) {
-	r.lines = append(r.lines, line)
+func (r *reading) say(lines ...result.Phrase) {
+	r.lines = append(r.lines, lines...)
 }
 
 // failed records that the read named read failed with err. A cut ends every read after it.
@@ -103,8 +104,8 @@ func (r *reading) failed(read string, err error) {
 		return
 	}
 
-	r.unread(result.Say("Stopped reading %s: "+timeLimitEnded+", so the reads after it were skipped", read),
-		read, timeLimitEnded)
+	r.unread(result.Say("Stopped reading %s: "+timeLimitEnded+", so the reads after it were skipped", read, TimeLimit),
+		read, fmt.Sprintf(timeLimitEnded, TimeLimit))
 }
 
 // unread says line and lists the read named read as unread, for the reason given.
@@ -672,7 +673,7 @@ func (r *reading) readChecks(ctx context.Context) {
 	}
 
 	if headErr == nil {
-		r.say(r.waited.mergeStateLine())
+		r.say(r.waited.mergeStateLines()...)
 	}
 }
 
@@ -708,7 +709,8 @@ func (r *reading) takeVerdict(verdict forge.Verdict, required []string) {
 		r.say(w.checksLine(r.open.HeadSHA))
 		r.say(result.Say("A workflow run on %s is still going, so more checks may report", sha))
 	case r.running:
-		r.say(result.Say("Still running on %s: %s", sha, checkNames(verdict.Pending())))
+		pending := verdict.Pending()
+		r.say(runningList(result.Say("Still running on %s (%s):", sha, checkCount(len(pending))), pending)...)
 	case verdict.State() == forge.VerdictNone:
 		r.say(result.Say("No check or status reported for %s", sha))
 	default:

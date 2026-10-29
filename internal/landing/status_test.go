@@ -222,7 +222,7 @@ func TestStatus_WhenTheBranchHasPullRequests_ListsEachPullRequest(t *testing.T) 
 	assertSays(t, got.text, expect("#12", pullURL))
 	assertSays(t, got.text, expect(conventional))
 	assertSays(t, got.text, expect(landedBody))
-	assertSays(t, got.text, cleanLine())
+	assertNoStateLine(t, got.text)
 	assertSays(t, got.text, expect("#5", string(forge.ChangeClosed)))
 	assertSays(t, got.text, expect("#7", string(forge.ChangeMerged)))
 }
@@ -261,7 +261,7 @@ func TestStatus_WhenThePullRequestIsOpen_ReportsTheVerdictOfItsHead(t *testing.T
 
 	tests := []verdictRow{
 		{name: "red", verdict: lintRed(), said: "lint"},
-		{name: "still running", verdict: running(), said: ": test\n"},
+		{name: "still running", verdict: running(), said: "(1 check):\n  ◌ test\n"},
 		{name: "none reported", verdict: forge.Verdict{}, said: "No check or status reported"},
 		{
 			name: "a workflow run queued before any check reported", verdict: forge.Verdict{Runs: ran(forge.RunQueued)},
@@ -279,6 +279,32 @@ func TestStatus_WhenThePullRequestIsOpen_ReportsTheVerdictOfItsHead(t *testing.T
 			assertSays(t, got.text, expect(tt.said))
 		})
 	}
+}
+
+func TestStatus_WhenChecksOfTheOpenPullRequestStillRun_ListsEachUnderItsHead(t *testing.T) {
+	t.Parallel()
+	s := statusScene(t, func(f *gittest.Fixture) { f.Publish(topic) }, viewing(cleanHead(), bothRunning(), standing()))
+	head := s.fixture.Git("rev-parse", "HEAD")
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	assertSays(t, got.text, expect("Still running", shortSHA(head)+" (2 checks):\n  ◌ lint\n  ◌ test\n"))
+}
+
+func TestStatus_WhenNoRequiredCheckHasReported_SaysSoWithNoTally(t *testing.T) {
+	t.Parallel()
+	aside := forge.Verdict{
+		Checks:          []forge.Check{forgetest.Check("docs", forge.BucketPass)},
+		MissingRequired: []string{"test"}, Runs: ran(forge.RunInProgress),
+	}
+	s := statusScene(t, func(f *gittest.Fixture) { f.Publish(topic) }, viewing(cleanHead(), aside, standing()))
+	head := s.fixture.Git("rev-parse", "HEAD")
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	assertSays(t, got.text, expect("No required check has reported for "+shortSHA(head)+"\n"))
+	assert.Check(t, !strings.Contains(got.text, "0 passed"), "text %q prints a tally of zero", got.text)
+	assert.Check(t, !strings.Contains(got.text, "0 skipped"), "text %q prints a tally of zero", got.text)
 }
 
 func TestStatus_WhenTheOpenPullRequestIsAgainstAnotherBase_ReportsItsBase(t *testing.T) {
@@ -621,7 +647,7 @@ func TestStatus_WhenDetachedHEADHasCommitsOriginsTrunkLacks_ListsThemToKeepOnABr
 
 	assert.Check(t, is.Equal(got.status.Standing, standingDetached))
 	assert.Check(t, is.DeepEqual(got.status.Unlanded, own))
-	assertSays(t, got.text, expect(own[0], sharpen, "`git switch -c <name>`", "ils push"))
+	assertSays(t, got.text, expect(shortSHA(own[0]), sharpen, "`git switch -c <name>`", "ils push"))
 }
 
 func TestStatus_WhenThereIsNoOrigin_EndsOnCreatingIt(t *testing.T) {
