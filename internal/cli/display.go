@@ -32,7 +32,6 @@ type display struct {
 	label string
 	// printed are the plain texts of the step lines written on stdout.
 	printed                []string
-	limit                  time.Duration
 	frame, done, total     int
 	wg                     sync.WaitGroup
 	mu                     sync.Mutex
@@ -139,13 +138,13 @@ func (d *display) suspend(stop func() error) error {
 }
 
 // Started draws the spinner line of the step label names, timed from now.
-func (d *display) Started(label result.Phrase, limit time.Duration) {
+func (d *display) Started(label result.Phrase) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	// A label the wording check rejects is not drawn; the landing tests keep every label in it.
 	d.label, _ = renderLine(label, d.gitDir, d.errProfile)
-	d.limit, d.done, d.total, d.began = limit, 0, 0, time.Now()
+	d.done, d.total, d.began = 0, 0, time.Now()
 	d.draw()
 }
 
@@ -219,9 +218,6 @@ func (d *display) draw() {
 
 	line := pen.Styled(yellow, string(frames[d.frame%len(frames)])) + " " + d.label + " " +
 		pen.Styled(yellow, time.Since(d.began).Truncate(time.Second).String())
-	if d.limit > 0 {
-		line += " " + pen.Styled(result.FaintStyle(), "of "+d.limit.Round(time.Second).String())
-	}
 	if d.total > 0 {
 		line += fmt.Sprintf(", %d of %d done", d.done, d.total)
 	}

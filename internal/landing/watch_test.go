@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"gotest.tools/v3/assert"
 
@@ -64,7 +63,6 @@ const (
 type watchEvent struct {
 	phrase result.Phrase
 	kind   eventKind
-	limit  time.Duration
 	done   int
 	total  int
 }
@@ -86,8 +84,8 @@ func watchOn(deps *landing.Deps) *watch {
 	return w
 }
 
-func (w *watch) Started(label result.Phrase, limit time.Duration) {
-	w.keep(watchEvent{kind: eventStart, phrase: label, limit: limit})
+func (w *watch) Started(label result.Phrase) {
+	w.keep(watchEvent{kind: eventStart, phrase: label})
 }
 
 func (w *watch) Said(line result.Phrase) {
@@ -105,8 +103,8 @@ func (w *watch) keep(e watchEvent) {
 	w.events = append(w.events, e)
 }
 
-// told returns each event the hook was told, in order, as `start <label>` (with ` of <limit>` for a
-// step with a limit), `said <line>`, or `count <done> of <total>`.
+// told returns each event the hook was told, in order, as `start <label>`, `said <line>`, or
+// `count <done> of <total>`.
 func (w *watch) told(t *testing.T) []string {
 	t.Helper()
 
@@ -119,12 +117,7 @@ func (w *watch) told(t *testing.T) []string {
 		case eventCount:
 			told = append(told, fmt.Sprintf("count %d of %d", e.done, e.total))
 		case eventStart:
-			step := "start " + plainText(t, e.phrase)
-			if e.limit > 0 {
-				step += " of " + e.limit.String()
-			}
-
-			told = append(told, step)
+			told = append(told, "start "+plainText(t, e.phrase))
 		case eventSaid:
 			told = append(told, "said "+plainText(t, e.phrase))
 		}
@@ -221,9 +214,9 @@ func markAll(events []string, tip string) []string {
 	return marked
 }
 
-// waitingStep is the step of the wait for the checks on pull request 12, limited to left.
-func waitingStep(left time.Duration) string {
-	return expect("start", "checks", "#12", "of "+left.String())
+// waitingStep is the step of the wait for the checks on pull request 12.
+func waitingStep() string {
+	return expect("start", "checks", "#12")
 }
 
 // assertHeld fails unless each step line the run said is a line of got, a line of its own for

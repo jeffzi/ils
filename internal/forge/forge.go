@@ -5,6 +5,7 @@ package forge
 import (
 	"errors"
 	"slices"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -163,10 +164,12 @@ const (
 
 // Check is one check on a commit.
 type Check struct {
-	Name     string
-	Bucket   Bucket
-	Workflow string
-	Link     string
+	// StartedAt is when GitHub started the check; the zero time for a check it has not started.
+	StartedAt time.Time
+	Name      string
+	Bucket    Bucket
+	Workflow  string
+	Link      string
 	// Required reports whether the trunk's protection names the check.
 	Required bool
 }

@@ -252,46 +252,64 @@ func onHeadAfterChecks(do func()) func(forgetest.Call) {
 	}
 }
 
+// startedAt returns build with the checks of every verdict it answers started at the times starts
+// gives for the moment the push begins, in order; the zero time leaves a check not started.
+func startedAt(build forgeFor, starts func(begun time.Time) []time.Time) forgeFor {
+	return build.with(func(script *forgetest.Script, _ string) {
+		at := starts(time.Now())
+		for _, answer := range script.Verdict {
+			for i := range answer.Value.Checks {
+				answer.Value.Checks[i].StartedAt = at[i]
+			}
+		}
+	})
+}
+
 // pushStillRunningRows are the pushes whose wait ended with a check still running at the time limit.
 func pushStillRunningRows() []pushRow {
 	return []pushRow{
 		{
-			// The head catches up after one poll of two seconds, which the count leaves out; then two
-			// polls of five seconds pass, and a third would leave too little time for the head read
-			// after it.
+			// The head catches up after one poll of two seconds; then two polls of five seconds pass,
+			// and a third would leave too little time for the head read after it. The check began 93
+			// seconds before the push, so it has run 105 seconds when the result is written.
 			name: "a check still runs", left: 17 * time.Second,
-			script: reusing(running()).showing(stale(), cleanHead()),
+			script: startedAt(reusing(running()).showing(stale(), cleanHead()), func(begun time.Time) []time.Time {
+				return []time.Time{begun.Add(-93 * time.Second)}
+			}),
 			want: pending(expect("still running"),
-				expect("Still running", "10s", "(1 check):\n  ◌ test\n"),
+				expect("Still running", "(1 check):\n  ◌ test, running 1m45s\n"),
 				detail(forge.VerdictPending, forge.MergeClean, running().Checks...)),
 			told: []string{
 				checkingStep(), pushingStep(), said(pushedLine()), said(foundLine()),
-				waitingStep(17 * time.Second), "count 0 of 1", "count 0 of 1", "count 0 of 1",
+				waitingStep(), "count 0 of 1", "count 0 of 1", "count 0 of 1",
 			},
 		},
 		{
 			// Seven seconds leave no room for a poll and the head read after it, so the head is read at
 			// once after the checks; that read takes the second and a half the checks are waited on,
-			// which the result says in whole seconds.
+			// so a check begun a minute before the push has run a minute and a second and a half, which
+			// the result says in whole seconds.
 			name: "a check still runs a second and a half into the wait", left: 7 * time.Second,
-			script: reusing(running()).
+			script: startedAt(reusing(running()).
 				showing(cleanHead(), inState(forge.MergeBlockedByReview)).
 				with(func(script *forgetest.Script, _ string) {
 					script.OnRead = onHeadAfterChecks(func() { time.Sleep(1500 * time.Millisecond) })
-				}),
+				}), func(begun time.Time) []time.Time { return []time.Time{begun.Add(-time.Minute)} }),
 			want: pending(expect("still running"),
-				expect("Still running", "1s", "(1 check):\n  ◌ test\n")+blockedLine(),
+				expect("Still running", "(1 check):\n  ◌ test, running 1m1s\n")+blockedLine(),
 				detail(forge.VerdictPending, forge.MergeBlockedByReview, running().Checks...)),
 		},
 		{
+			// GitHub has not started lint, and says test started a minute after the push began, ahead
+			// of the local clock, which has gone on only a second.
 			name: "two checks still run a second into the wait", left: 7 * time.Second,
-			script: reusing(bothRunning()).
+			script: startedAt(reusing(bothRunning()).
 				showing(cleanHead(), cleanHead()).
 				with(func(script *forgetest.Script, _ string) {
 					script.OnRead = onHeadAfterChecks(func() { time.Sleep(time.Second) })
-				}),
+				}), func(begun time.Time) []time.Time { return []time.Time{{}, begun.Add(time.Minute)} }),
 			want: pending(expect("still running"),
-				expect("Still running", "1s", "(2 checks):\n  ◌ lint\n  ◌ test\n"),
+				expect("Still running", "(2 checks):\n  ◌ lint, not started yet\n  ◌ test, running 0s\n"),
 				detail(forge.VerdictPending, forge.MergeClean, bothRunning().Checks...)),
 		},
 	}

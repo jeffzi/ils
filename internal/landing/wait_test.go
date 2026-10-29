@@ -387,7 +387,7 @@ func mergeRows() []vigilRow {
 			name:  "unknown then clean",
 			heads: shows(unknown(), clean()), verdicts: says(passing()),
 			want: green(), ops: readsOf(2, 1, 1), waits: polls(1, mergePoll),
-			told: []string{waitingStep(bound), mergeStateStep(), waitingStep(bound - mergePoll), "count 1 of 1"},
+			told: []string{waitingStep(), mergeStateStep(), waitingStep(), "count 1 of 1"},
 		},
 		{
 			name:  "unknown for 30 seconds",

@@ -431,7 +431,7 @@ func (m *mergeReady) settle(ctx context.Context, deps Deps, req Request) *result
 	case err == nil:
 		stop := m.stateStop(req)
 		if stop == nil && polled {
-			w.startChecks(ctx)
+			w.startChecks()
 		}
 
 		return stop
@@ -625,7 +625,7 @@ func (m *mergeReady) finish(ctx context.Context, deps Deps, req Request) *result
 func (m *mergeReady) merge(ctx context.Context, deps Deps, req Request) *result.Result {
 	pull := result.PullRequest(m.pull.Number)
 
-	deps.started(result.Say("Merging %s", pull), untilTheEnd)
+	deps.started(result.Say("Merging %s", pull))
 
 	if interrupted(ctx.Err()) {
 		return m.stopped(
@@ -665,7 +665,7 @@ func (m *mergeReady) merge(ctx context.Context, deps Deps, req Request) *result.
 // merged nothing, the delete is the first write: an interrupt before it ends the run pending, with
 // nothing written.
 func (m *mergeReady) deleteOnOrigin(ctx context.Context, deps Deps, req Request) *result.Result {
-	deps.started(result.Say("Deleting %s on origin", result.Branch(m.branch)), untilTheEnd)
+	deps.started(result.Say("Deleting %s on origin", result.Branch(m.branch)))
 
 	if !m.merged {
 		if stop := m.unfinished(ctx, req); stop != nil {
@@ -759,7 +759,7 @@ type localEnding struct {
 // run done, with the lines said so far and where the checkout ended.
 func (m *mergeReady) end(ctx context.Context, deps Deps, req Request) *result.Result {
 	repo, trunk, branch := deps.Repo, m.Trunk, m.branch
-	deps.started(result.Say("Moving to origin's tip of %s", result.Branch(trunk)), untilTheEnd)
+	deps.started(result.Say("Moving to origin's tip of %s", result.Branch(trunk)))
 	drop := endStep{
 		run:     func(ctx context.Context) error { return repo.DeleteBranch(ctx, branch) },
 		command: result.Concat("git branch -D ", result.Branch(branch)),

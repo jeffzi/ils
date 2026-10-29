@@ -109,7 +109,7 @@ type landingRow struct {
 // toldAfterWait returns every event the progress hook is told by a run that waits for its one check
 // to pass, ends the wait 20 seconds before the deadline, and then tells after.
 func toldAfterWait(after ...string) []string {
-	waited := []string{checkingStep(), findingStep(), waitingStep(bound - landing.MergeReserve), "count 1 of 1", said(countLine())}
+	waited := []string{checkingStep(), findingStep(), waitingStep(), "count 1 of 1", said(countLine())}
 
 	return slices.Concat(waited, after)
 }
@@ -247,8 +247,8 @@ func landedRows() []landedRow {
 			script: toLand(nil, nil).showing(cleanHead(), inState(forge.MergeUnknown),
 				cleanHead()),
 			told: []string{
-				checkingStep(), findingStep(), waitingStep(bound - landing.MergeReserve), "count 1 of 1",
-				mergeStateStep(), waitingStep(bound - landing.MergeReserve - mergePoll), said(countLine()),
+				checkingStep(), findingStep(), waitingStep(), "count 1 of 1",
+				mergeStateStep(), waitingStep(), said(countLine()),
 				mergingStep(), said(mergedLine()), deletingStep(), said(deletedLine()), movingStep(), said(onTrunkLine()),
 			},
 		},
@@ -684,8 +684,8 @@ type stepHook struct {
 }
 
 // Started tells the step to next, then calls fire when it is the step of the hook.
-func (h stepHook) Started(label result.Phrase, limit time.Duration) {
-	h.Progress.Started(label, limit)
+func (h stepHook) Started(label result.Phrase) {
+	h.Progress.Started(label)
 
 	if holds("start "+plainText(h.t, label), h.step) {
 		h.fire()

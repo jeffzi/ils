@@ -204,8 +204,12 @@ func (w Waited) unconcluded(sha string, number int) ([]result.Phrase, result.Phr
 			commit, pull, timeLimitWords)
 	default:
 		pending := w.Verdict.Pending()
-		elapsed := time.Since(w.Since).Truncate(time.Second)
-		lines = runningList(result.Say("Still running after %s (%s):", elapsed, nounCount(len(pending), "check")), pending)
+		lines = append(lines, result.Say("Still running (%s):", nounCount(len(pending), "check")))
+
+		now := time.Now()
+		for _, check := range pending {
+			lines = append(lines, runningAge(check, now))
+		}
 	}
 
 	return append(lines, w.mergeStateLines()...), reason
@@ -284,6 +288,19 @@ func runningList(header result.Phrase, pending []forge.Check) []result.Phrase {
 	}
 
 	return lines
+}
+
+// runningAge is the line of a pending check that says how long it has run at now, from the time
+// GitHub started it, in whole seconds. A start ahead of now, from a clock that runs ahead of the
+// local one, reads as no time at all.
+func runningAge(check forge.Check, now time.Time) result.Phrase {
+	if check.StartedAt.IsZero() {
+		return result.Say("  ◌ %s, not started yet", check.Name)
+	}
+
+	age := max(now.Sub(check.StartedAt), 0).Truncate(time.Second)
+
+	return result.Say("  ◌ %s, running %s", check.Name, age)
 }
 
 // checksLine says how many deciding checks of the commit sha passed and how many were skipped,

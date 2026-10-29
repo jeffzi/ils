@@ -76,7 +76,7 @@ func (d *delivery) pushTip(ctx context.Context, deps Deps) *result.Result {
 		return nil
 	}
 
-	deps.started(result.Say("Pushing %s", d.markedBranch()), untilTheEnd)
+	deps.started(result.Say("Pushing %s", d.markedBranch()))
 
 	err := deps.Repo.Push(ctx, d.branch)
 	if err == nil {
@@ -145,7 +145,7 @@ func (d *delivery) findOrOpen(ctx context.Context, deps Deps) *result.Result {
 		return nil
 	}
 
-	deps.started(result.Say("Opening a pull request against %s", result.Branch(d.Trunk)), untilTheEnd)
+	deps.started(result.Say("Opening a pull request against %s", result.Branch(d.Trunk)))
 
 	opened, err := deps.Forge.OpenChange(ctx, d.Repo, forge.NewChange{Title: d.branch, Base: d.Trunk, Head: d.branch})
 

@@ -430,7 +430,7 @@ func pushWriteRows() []pushRow {
 			want: opens,
 			told: []string{
 				checkingStep(), pushingStep(), said(pushedLine()), openingStep(), said(openedLine()),
-				waitingStep(bound), "count 0 of 1", "count 1 of 1", said(countLine()),
+				waitingStep(), "count 0 of 1", "count 1 of 1", said(countLine()),
 			},
 		},
 	}
@@ -473,7 +473,7 @@ func pushExistsRows() []pushRow {
 			script: reporting(nil, []forge.Change{standing()}), want: greenAfter(pushedLine() + foundLine()),
 			told: []string{
 				checkingStep(), pushingStep(), said(pushedLine()), openingStep(), findingStep(), said(foundLine()),
-				waitingStep(bound), "count 1 of 1", said(countLine()),
+				waitingStep(), "count 1 of 1", said(countLine()),
 			},
 		},
 		{
