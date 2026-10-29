@@ -34,8 +34,5 @@ func (a *App) SetBuildInfo(info *debug.BuildInfo, ok bool) {
 // FrameEvery is frameEvery, for the tests of package cli_test.
 const FrameEvery = frameEvery
 
-// Bound is bound, for the tests of package cli_test.
-const Bound = bound
-
 // PendingHint is pendingHint, for the tests of package cli_test.
 const PendingHint = pendingHint

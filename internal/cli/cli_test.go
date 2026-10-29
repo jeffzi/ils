@@ -27,7 +27,7 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	bound = cli.Bound
+	bound = landing.TimeLimit
 
 	exitDone      = 0
 	exitBroke     = 1
@@ -595,6 +595,35 @@ func grammarRefusals() []grammarRefusal {
 		{name: "unknown flag after push", args: []string{"push", "--bogus"}, reason: "push takes no other word, and --bogus was given"},
 		{name: "group of short flags after push", args: []string{"push", "-xyz"}, reason: "push takes no other word, and -xyz was given"},
 		{name: "JSON flag after push set to maybe", args: []string{"push", "--json=maybe"}, reason: jsonNeither},
+	}
+}
+
+func TestApp_Run_WhenTheFirstWordIsNoCommand_SuggestsOnlyTheOneCommandItIsCloseTo(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		word   string
+		reason string
+		next   string
+	}{
+		{name: "close to one command", word: "merge.", reason: "merge. is not a command; did you mean merge?", next: "ils merge --help"},
+		{name: "close to no command", word: "extra", reason: "extra is not a command", next: "ils --help"},
+		{name: "close to every command", word: "", reason: " is not a command", next: "ils --help"},
+		{name: "unknown flag close to one command", word: "--push", reason: "--push is not a command", next: "ils --help"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := launch(t, outside(t), tt.word, "--json")
+
+			assert.Check(t, is.Equal(got.code, exitRefused))
+
+			printed := resulttest.Decode(t, got.stdout)
+			assert.Check(t, is.Equal(printed.Reason, tt.reason))
+			assert.Check(t, is.Equal(printed.Next, tt.next))
+		})
 	}
 }
 

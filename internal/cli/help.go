@@ -1,11 +1,15 @@
 package cli
 
-import "fmt"
+import (
+	"fmt"
 
-// withBound returns long with its one %d verb set to bound in seconds, so that the help says the
-// limit the command enforces.
+	"github.com/jeffzi/ils/internal/landing"
+)
+
+// withBound returns long with its one %d verb set to the time limit in seconds, so that the help
+// says the limit the command enforces.
 func withBound(long string) string {
-	return fmt.Sprintf(long, int(bound.Seconds()))
+	return fmt.Sprintf(long, int(landing.TimeLimit.Seconds()))
 }
 
 // The help says how to call a command and nothing else: what to do with an exit code and with
