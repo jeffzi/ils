@@ -594,6 +594,9 @@ func TestRepo_Fetch_WhenRefOnOrigin_ReturnsFetchedSHA(t *testing.T) {
 // is the process that must die mid-push.
 const killsReceivePack = "kill -KILL $PPID"
 
+// topicSpec is the pair of refs Push hands git for topic, which git's report names on its status line.
+const topicSpec = "refs/heads/" + topic + ":refs/heads/" + topic
+
 // originTip returns the sha origin holds for branch, or nothing when origin lacks it.
 func originTip(f *gittest.Fixture, branch string) string {
 	return f.OriginGit("for-each-ref", "--format=%(objectname)", "refs/heads/"+branch)
@@ -699,6 +702,11 @@ func TestRepo_Push_WhenThePrePushHookRefusesAfterPrintingOnStdout(t *testing.T) 
 			script: "printf 'To elsewhere\\n*\\trefs/heads/other:refs/heads/other\\t[new branch]\\nDone\\n'\nexit 1",
 			want:   "To elsewhere\n*\trefs/heads/other:refs/heads/other\t[new branch]\nDone\n",
 		},
+		{
+			name:   "stdout holds a rejected status line for the pushed ref",
+			script: "printf '!\\t" + topicSpec + "\\tblocked by policy\\n'\nexit 1",
+			want:   "!\t" + topicSpec + "\tblocked by policy\n",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -733,6 +741,16 @@ func TestRepo_Push_WhenOriginRefusesTheRef_KeepsOnlyThePrePushHookLinesInStdout(
 			script: "printf 'Done\\nTo elsewhere\\n*\\trefs/heads/other:refs/heads/other\\t[new branch]\\n'",
 			want:   "Done\nTo elsewhere\n*\trefs/heads/other:refs/heads/other\t[new branch]",
 		},
+		{
+			name:   "pre-push hook prints a new-branch status line for the pushed ref",
+			script: "printf '*\\t" + topicSpec + "\\t[new branch]\\n'",
+			want:   "*\t" + topicSpec + "\t[new branch]",
+		},
+		{
+			name:   "pre-push hook prints an up-to-date status line for the pushed ref",
+			script: "printf '=\\t" + topicSpec + "\\t[up to date]\\n'",
+			want:   "=\t" + topicSpec + "\t[up to date]",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -750,6 +768,7 @@ func TestRepo_Push_WhenOriginRefusesTheRef_KeepsOnlyThePrePushHookLinesInStdout(
 
 			pushErr, ok := errors.AsType[*git.PushError](err)
 			assert.Assert(t, ok, "Push(%q) error = %v, want *git.PushError", topic, err)
+			assert.Check(t, is.Contains(pushErr.Reason, "pre-receive hook declined"))
 			assert.Check(t, is.Equal(strings.TrimSpace(pushErr.Stdout), tt.want))
 		})
 	}

@@ -499,7 +499,7 @@ func (r Repo) Push(ctx context.Context, name string) error {
 		return err
 	}
 
-	status, reported := pushStatus(result.Stdout, spec)
+	hook, status, reported := splitPushReport(result.Stdout, spec)
 
 	switch {
 	// A push dies with fatalCode when it cannot reach origin or origin hangs up; one git refuses
@@ -510,43 +510,13 @@ func (r Repo) Push(ctx context.Context, name string) error {
 		return &PushError{
 			Branch: name,
 			Reason: status.summary,
-			Stdout: withoutPushReport(result.Stdout, spec),
+			Stdout: hook,
 			Stderr: exitErr.Stderr,
 			Err:    err,
 		}
 	default:
 		return nil
 	}
-}
-
-// withoutPushReport returns the stdout of `git push --porcelain` for spec without the report git
-// writes at its end once origin answered: a `To <url>` line, the status line for spec, then `Done`.
-// A pre-push hook runs before git talks to origin, so what precedes the report is the hook's; a
-// push git refused before it reached origin has no report, and all of its stdout is the hook's.
-// Only that trailing block goes: a hook line shaped like a line of the report, even a whole block
-// for another ref at the end of a refusing hook's output, stays.
-func withoutPushReport(stdout, spec string) string {
-	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
-	reportStart := len(lines) - 3
-	if reportStart < 0 || !strings.HasPrefix(lines[reportStart], "To ") ||
-		!isStatusLineFor(lines[reportStart+1], spec) || lines[reportStart+2] != "Done" {
-		return stdout
-	}
-
-	hook := strings.Join(lines[:reportStart], "\n")
-	if hook == "" {
-		return ""
-	}
-
-	return hook + "\n"
-}
-
-// isStatusLineFor reports whether line is the status line `git push --porcelain` gives spec: the
-// flag, spec and the summary, separated by tabs.
-func isStatusLineFor(line, spec string) bool {
-	fields := strings.Split(line, "\t")
-
-	return len(fields) == 3 && fields[0] != "" && fields[1] == spec
 }
 
 // pushRejected is the flag `git push --porcelain` gives a ref it did not update.
@@ -558,23 +528,57 @@ type refStatus struct {
 	summary string
 }
 
-// pushStatus returns the status the output of `git push --porcelain` reports for spec, the
-// `<source>:<destination>` pair of refs pushed, and whether it reports one. Each such line is the
-// flag, that pair and the summary, separated by tabs.
-func pushStatus(stdout, spec string) (refStatus, bool) {
-	for line := range strings.SplitSeq(stdout, "\n") {
-		flag, rest, ok := strings.Cut(line, "\t")
-		if !ok {
+// splitPushReport splits the stdout of `git push --porcelain` for spec, the `<source>:<destination>`
+// pair of refs pushed, into what precedes the report git writes at its end once origin answered and
+// the status that report gives spec. The report is a `To <url>` line, then the status line for spec
+// (the flag, spec and the summary, separated by tabs), then the line telling the upstream `-u` set
+// for a ref it updated, then `Done`, which git leaves out when origin hung up after its report. The
+// upstream line is never matched by its text, which git translates.
+//
+// A pre-push hook runs before git talks to origin, so what precedes the report is the hook's; a
+// push git refused before it reached origin has no report, so all of its stdout is the hook's and
+// reported is false. Only that trailing block is the report: a hook line shaped like a line of the
+// report, even the status line of spec itself or a whole block for another ref at the end of a
+// refusing hook's output, stays in hook and never decides the status. Stdout alone cannot tell a
+// whole report for spec that a refusing hook printed last from git's own, so that one is read as
+// git's.
+func splitPushReport(stdout, spec string) (hook string, status refStatus, reported bool) {
+	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+	if lines[len(lines)-1] == "Done" {
+		lines = lines[:len(lines)-1]
+	}
+
+	for _, upstreamLines := range []int{0, 1} {
+		statusAt := len(lines) - 1 - upstreamLines
+		if statusAt < 1 || !strings.HasPrefix(lines[statusAt-1], "To ") {
 			continue
 		}
 
-		named, summary, _ := strings.Cut(rest, "\t")
-		if named == spec {
-			return refStatus{flag: flag, summary: summary}, true
+		status, reported = statusFor(lines[statusAt], spec)
+		if !reported || (upstreamLines > 0 && status.flag == pushRejected) {
+			continue
 		}
+
+		hook = strings.Join(lines[:statusAt-1], "\n")
+		if hook != "" {
+			hook += "\n"
+		}
+
+		return hook, status, true
 	}
 
-	return refStatus{}, false
+	return stdout, refStatus{}, false
+}
+
+// statusFor returns the status line reports for spec, and whether line is the status line `git push
+// --porcelain` gives spec: the flag, spec and the summary, separated by tabs.
+func statusFor(line, spec string) (refStatus, bool) {
+	fields := strings.Split(line, "\t")
+	if len(fields) != 3 || fields[0] == "" || fields[1] != spec {
+		return refStatus{}, false
+	}
+
+	return refStatus{flag: fields[0], summary: fields[2]}, true
 }
 
 // remote runs a git call that talks to origin, whose failure is a *RemoteError.
