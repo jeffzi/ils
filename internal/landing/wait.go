@@ -116,8 +116,6 @@ type Waited struct {
 	// MergeState is the merge state read after the wait for the checks, or the one read
 	// before it when no read after it showed the pushed commit.
 	MergeState forge.MergeState
-	// RawMergeState is the forge's own value behind MergeState, kept for printing.
-	RawMergeState string
 	// Deciding are the checks that decide: the required ones when Pushed.Required names
 	// any, and every check otherwise.
 	Deciding []forge.Check
@@ -144,14 +142,10 @@ const (
 	CutoffInterrupt
 )
 
-func (w *Waited) takeState(head forge.Head) {
-	w.MergeState, w.RawMergeState = head.MergeState, head.RawMergeState
-}
-
 // unconfirmed returns a Waited holding only the merge state w read before the checks, as the wait
 // ends when no read of the head after the checks showed the pushed commit.
 func (w Waited) unconfirmed() Waited {
-	return Waited{MergeState: w.MergeState, RawMergeState: w.RawMergeState}
+	return Waited{MergeState: w.MergeState}
 }
 
 // apartWithoutCI turns nothing reported into WaitConflicting or WaitBehind when the merge state,
@@ -408,7 +402,7 @@ func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 		return waited, "", nil
 	}
 
-	waited.takeState(after)
+	waited.MergeState = after.MergeState
 
 	// Green checks say nothing about whether the pull request can merge.
 	if waited.Outcome == WaitGreen {
@@ -439,7 +433,7 @@ func (w waiter) readied(ctx context.Context, waited *Waited) (ended bool, stage 
 	w.startChecks(ctx)
 
 	head, err := w.caughtUp(ctx)
-	waited.takeState(head)
+	waited.MergeState = head.MergeState
 
 	if err != nil {
 		return true, StageHead, err
@@ -480,7 +474,7 @@ func (w waiter) settled(ctx context.Context, waited *Waited, head forge.Head) (m
 		return true, polled, nil
 	}
 
-	waited.takeState(head)
+	waited.MergeState = head.MergeState
 
 	return false, polled, err
 }
@@ -539,8 +533,8 @@ func (w waiter) mergeKnown(ctx context.Context, head forge.Head) (forge.Head, er
 	began := time.Now()
 
 	if w.unknownOnPushed(head) {
-		w.deps.started(result.Say("Waiting for GitHub to say whether %s can merge", result.PullRequest(w.pushed.Number)),
-			mergeWindow)
+		w.deps.started(result.Say("Waiting up to %s for GitHub to say whether %s can merge", seconds(mergeWindow),
+			result.PullRequest(w.pushed.Number)), untilTheEnd)
 	}
 
 	for w.unknownOnPushed(head) {

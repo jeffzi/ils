@@ -259,7 +259,7 @@ func (f *Forge) Head(ctx context.Context, repo forge.Repo, query forge.HeadQuery
 		}
 	}
 
-	return forge.Head{SHA: view.SHA, MergeState: mergeStateOf(facts), RawMergeState: view.Status}, nil
+	return forge.Head{SHA: view.SHA, MergeState: mergeStateOf(facts)}, nil
 }
 
 // missingCheck reports whether a check the query requires has no check on the

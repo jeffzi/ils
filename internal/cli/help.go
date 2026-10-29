@@ -1,11 +1,15 @@
 package cli
 
-import "fmt"
+import (
+	"fmt"
 
-// withBound returns long with its one %d verb set to bound in seconds, so that the help says the
-// limit the command enforces.
-func withBound(long string) string {
-	return fmt.Sprintf(long, int(bound.Seconds()))
+	"github.com/jeffzi/ils/internal/landing"
+)
+
+// withTimeLimit returns long with its one %s verb set to the time limit as results name it, so that
+// the help says the limit the command enforces.
+func withTimeLimit(long string) string {
+	return fmt.Sprintf(long, landing.Seconds(landing.TimeLimit))
 }
 
 // The help says how to call a command and nothing else: what to do with an exit code and with
@@ -19,7 +23,7 @@ Docs: https://github.com/jeffzi/ils`
 
 	pushShort = "Push the branch, open its pull request, wait for the checks"
 	pushLong  = `Push the current branch, open its pull request on the first push, and
-wait up to %d seconds for the checks of the pushed commit. It never
+wait up to %s for the checks of the pushed commit. It never
 forces a push and it does not merge.
 
 It refuses before pushing anything when the branch is not ready, for
@@ -35,7 +39,7 @@ ils push --json`
 
 	mergeShort = "Squash and merge the pull request once its checks are green"
 	mergeLong  = `Squash-merge the pull request of the current branch once its checks are
-green, within %d seconds of the launch.
+green, within %s of the launch.
 
 It squash-merges the pull request once its checks are green, deletes the
 branch on origin and in the clone, and leaves the trunk checked out at

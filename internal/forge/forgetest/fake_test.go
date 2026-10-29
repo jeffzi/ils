@@ -17,17 +17,15 @@ import (
 )
 
 const (
-	branch     = "feature"
-	trunk      = "main"
-	number     = 12
-	oldCommit  = "1111111"
-	newCommit  = "2222222"
-	lintCheck  = "lint"
-	testCheck  = "test"
-	rawClean   = "CLEAN"
-	rawUnknown = "UNKNOWN"
-	subject    = "Add the widget list (#12)"
-	body       = "List every widget on the home page."
+	branch    = "feature"
+	trunk     = "main"
+	number    = 12
+	oldCommit = "1111111"
+	newCommit = "2222222"
+	lintCheck = "lint"
+	testCheck = "test"
+	subject   = "Add the widget list (#12)"
+	body      = "List every widget on the home page."
 )
 
 // repo is the repository every call is made against.
@@ -47,17 +45,17 @@ func newChange() forge.NewChange {
 
 // head is the scripted answer of Head.
 func head() forge.Head {
-	return forge.Head{SHA: newCommit, MergeState: forge.MergeClean, RawMergeState: rawClean}
+	return forge.Head{SHA: newCommit, MergeState: forge.MergeClean}
 }
 
 // staleHead is a clean answer of Head for the previous commit.
 func staleHead() forge.Head {
-	return forge.Head{SHA: oldCommit, MergeState: forge.MergeClean, RawMergeState: rawClean}
+	return forge.Head{SHA: oldCommit, MergeState: forge.MergeClean}
 }
 
 // unknownHead is an answer of Head whose merge state is not yet known.
 func unknownHead() forge.Head {
-	return forge.Head{SHA: newCommit, MergeState: forge.MergeUnknown, RawMergeState: rawUnknown}
+	return forge.Head{SHA: newCommit, MergeState: forge.MergeUnknown}
 }
 
 // headQuery is the argument of Head.

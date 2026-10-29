@@ -28,9 +28,6 @@ import (
 	"github.com/jeffzi/ils/internal/result"
 )
 
-// bound is the time a whole command may take, counted from launch.
-const bound = 100 * time.Second
-
 // Command runs one landing command and returns its result.
 type Command func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result
 
@@ -89,7 +86,7 @@ type App struct {
 //
 // A result the renderer rejects is printed nowhere: the error goes to Stderr and the code is 1.
 func (a App) Run(ctx context.Context, args []string) int {
-	ctx, cancel := context.WithDeadline(ctx, a.Launch.Add(bound))
+	ctx, cancel := context.WithDeadline(ctx, a.Launch.Add(landing.TimeLimit))
 	defer cancel()
 
 	signals, stopListening := a.onSignal(cancel)
@@ -325,7 +322,13 @@ func (e *refusedError) Error() string {
 	return "the words were refused"
 }
 
+// refuse refuses the words typed for reason, with the help of ils as the next step.
 func (p *parse) refuse(reason result.Phrase) error {
+	return p.refuseWith(reason, result.NextCommand(flagHelp))
+}
+
+// refuseWith refuses the words typed for reason, with next as the next step.
+func (p *parse) refuseWith(reason result.Phrase, next result.Next) error {
 	command := ""
 	if len(p.words) > 0 {
 		command = p.words[0]
@@ -333,23 +336,47 @@ func (p *parse) refuse(reason result.Phrase) error {
 
 	req := landing.Request{Command: command, Words: p.words}
 
-	return &refusedError{result: *req.Refused(reason, result.NextCommand(flagHelp))}
+	return &refusedError{result: *req.Refused(reason, next)}
 }
 
 func notCommand(word string) result.Phrase {
 	return result.Say("%s is not a command", word)
 }
 
-// noWords refuses the words c was given when it takes none: a leading `--` first, then the first
-// word typed. Each refusal gives the reason that reason builds for the word. It returns nil when c
-// was given no word.
-func (p *parse) noWords(c *cobra.Command, args []string, reason func(string) result.Phrase) error {
+// notRootCommand refuses word as no command of root. A word close to exactly one command, as
+// Cobra's suggestions judge it, names that command in the reason and its help as the next step:
+// the help runs nothing, so following the next step after a typo cannot start a push or a merge.
+func (p *parse) notRootCommand(root *cobra.Command, word string) error {
+	suggested := root.SuggestionsFor(word)
+	if len(suggested) != 1 {
+		return p.refuse(notCommand(word))
+	}
+
+	return p.refuseWith(
+		result.Say("%s is not a command; did you mean %s?", word, suggested[0]),
+		result.NextCommand("%s "+flagHelp, suggested[0]),
+	)
+}
+
+// firstWord returns the first word c was given: a leading `--` first, then the first word typed.
+// It reports false when c was given no word.
+func firstWord(c *cobra.Command, args []string) (string, bool) {
 	if c.ArgsLenAtDash() == 0 {
-		return p.refuse(reason(wordDash))
+		return wordDash, true
 	}
 
 	if len(args) > 0 {
-		return p.refuse(reason(args[0]))
+		return args[0], true
+	}
+
+	return "", false
+}
+
+// noWords refuses the first word c was given when it takes none, for the reason that reason
+// builds for the word. It returns nil when c was given no word.
+func (p *parse) noWords(c *cobra.Command, args []string, reason func(string) result.Phrase) error {
+	if word, ok := firstWord(c, args); ok {
+		return p.refuse(reason(word))
 	}
 
 	return nil
@@ -391,8 +418,8 @@ func (p *parse) root() *cobra.Command {
 		// Cobra asks Args only of a runnable command. Args refuses every run but `ils --version`,
 		// which RunE prints.
 		Args: func(c *cobra.Command, args []string) error {
-			if err := p.noWords(c, args, notCommand); err != nil {
-				return err
+			if word, ok := firstWord(c, args); ok {
+				return p.notRootCommand(c, word)
 			}
 
 			if !p.version {
@@ -409,6 +436,8 @@ func (p *parse) root() *cobra.Command {
 			return nil
 		},
 		Example: "ils push",
+		// Cobra defaults the distance only on the path ils bypasses, so SuggestionsFor needs it set.
+		SuggestionsMinimumDistance: 2,
 	}
 
 	// The flag has no short form: -v stays free, and it is the root's own, so `ils push --version`
@@ -423,8 +452,8 @@ func (p *parse) root() *cobra.Command {
 	root.InitDefaultHelpFlag()
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return p.flagRefusal(err, notCommand) })
 	root.AddCommand(
-		p.landing(landingHelp{word: landing.PushCommand, short: pushShort, long: withBound(pushLong), examples: pushExamples}, p.app.runPush, landing.Push),
-		p.landing(landingHelp{word: landing.MergeCommand, short: mergeShort, long: withBound(mergeLong), examples: mergeExamples}, p.app.runMerge, landing.Merge),
+		p.landing(landingHelp{word: landing.PushCommand, short: pushShort, long: withTimeLimit(pushLong), examples: pushExamples}, p.app.runPush, landing.Push),
+		p.landing(landingHelp{word: landing.MergeCommand, short: mergeShort, long: withTimeLimit(mergeLong), examples: mergeExamples}, p.app.runMerge, landing.Merge),
 		p.landing(landingHelp{word: landing.StatusCommand, short: statusShort, long: statusLong, examples: statusExamples}, p.app.runStatus, landing.Status),
 		p.named(landingHelp{word: landing.BranchCommand, short: branchShort, long: branchLong, examples: branchExamples}, p.app.runBranch, landing.StartBranch),
 		&cobra.Command{

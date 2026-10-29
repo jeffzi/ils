@@ -48,7 +48,7 @@ func (r *reading) readTrunkApart(ctx context.Context) {
 
 	r.status.Ahead, r.status.Behind = apart.Ahead, apart.Behind
 
-	switch ahead, behind := commitCount(apart.Ahead), commitCount(apart.Behind); {
+	switch ahead, behind := nounCount(apart.Ahead, "commit"), nounCount(apart.Behind, "commit"); {
 	case apart.Ahead > 0 && apart.Behind > 0:
 		r.say(result.Say("The trunk and origin's trunk have diverged: %s ahead, %s behind", ahead, behind))
 	case apart.Ahead > 0:
@@ -94,7 +94,7 @@ func (r *reading) readLastTag(ctx context.Context) {
 	}
 
 	r.status.LastTag, r.status.SinceTag = last.Name, since.Behind
-	r.say(result.Say("Origin's trunk has %s since the last version tag %s", commitCount(since.Behind), last.Name))
+	r.say(result.Say("Origin's trunk has %s since the last version tag %s", nounCount(since.Behind, "commit"), last.Name))
 }
 
 // lastTag returns the tag of tags with the highest version whose commit is on origin's trunk, and

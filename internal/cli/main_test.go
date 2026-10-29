@@ -100,7 +100,7 @@ func stuck(way string) int {
 	}
 
 	app.SetMerge(func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
-		startedMerge(deps.Progress)
+		startedWaiting(deps.Progress)
 		tell(ready)
 		<-ctx.Done()
 
@@ -120,7 +120,7 @@ func stopping(app cli.App, way string) int {
 		app.Notify = heldForTheFirstInterrupt()
 	}
 	app.SetMerge(func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
-		startedMerge(deps.Progress)
+		startedWaiting(deps.Progress)
 		if way != stuckHoldingEarly {
 			tell(ready)
 		}

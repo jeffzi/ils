@@ -20,8 +20,9 @@ import (
 
 // RenderText returns r as the lines of what happened, the excerpt when there
 // is one, the reason labeled by the outcome unless r is done, and one Next
-// line unless nothing is left to do. gitDir is the resolved git dir, or empty
-// outside a repository.
+// line unless nothing is left to do. A commit SHA in a line or in the reason
+// prints as its first seven characters; the Next line prints every SHA in
+// full. gitDir is the resolved git dir, or empty outside a repository.
 //
 // It returns ErrNoReason when r is not done and has no reason, a *WordingError
 // when the program's own wording names a hook or a path under gitDir, and an
@@ -51,7 +52,7 @@ func RenderStyled(r Result, gitDir string, profile colorprofile.Profile) (string
 
 	var b strings.Builder
 	for _, line := range view.lines {
-		b.WriteString(pen.spans(line))
+		b.WriteString(pen.spans(shortSHAs(line)))
 		b.WriteString("\n")
 	}
 
@@ -65,7 +66,7 @@ func RenderStyled(r Result, gitDir string, profile colorprofile.Profile) (string
 		label, style := view.outcome.label()
 		b.WriteString(pen.Styled(style, label+":"))
 		b.WriteString(" ")
-		b.WriteString(pen.spans(view.reason))
+		b.WriteString(pen.spans(shortSHAs(view.reason)))
 		b.WriteString("\n")
 	}
 
@@ -206,6 +207,24 @@ func (p Pen) spans(spans []span) string {
 	}
 
 	return b.String()
+}
+
+// shaWidth is how many characters of a commit SHA a line or a reason prints,
+// git's own shortest abbreviation.
+const shaWidth = 7
+
+// shortSHAs returns spans with each commit SHA cut to its first shaWidth
+// characters. The Next line does not go through it: a command it names, such
+// as a cherry-pick, keeps every SHA as the commit's full name.
+func shortSHAs(spans []span) []span {
+	short := slices.Clone(spans)
+	for i, s := range short {
+		if s.kind == kindSHA && len(s.text) > shaWidth {
+			short[i].text = s.text[:shaWidth]
+		}
+	}
+
+	return short
 }
 
 // visible returns third-party text with each control character that could

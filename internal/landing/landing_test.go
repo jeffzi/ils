@@ -221,8 +221,8 @@ func fails(err error) forgetest.Script {
 	return forgetest.Script{Identity: []forgetest.Answer[forge.Repo]{{Err: err}}}
 }
 
-// shown renders r through both renderers and returns the text and the reason the JSON carries.
-func shown(t *testing.T, r result.Result, gitDir string) (text, reason string) {
+// rendered renders r through both renderers and returns the text and the object the JSON decodes to.
+func rendered(t *testing.T, r result.Result, gitDir string) (text string, decoded resulttest.Shown) {
 	t.Helper()
 
 	text, err := result.RenderText(r, gitDir)
@@ -231,7 +231,21 @@ func shown(t *testing.T, r result.Result, gitDir string) (text, reason string) {
 	out, err := result.RenderJSON(r, gitDir)
 	assert.NilError(t, err)
 
-	return text, resulttest.Decode(t, out).Reason
+	return text, resulttest.Decode(t, out)
+}
+
+// shown renders r through both renderers and returns the text and the reason the JSON carries.
+func shown(t *testing.T, r result.Result, gitDir string) (text, reason string) {
+	t.Helper()
+
+	text, decoded := rendered(t, r, gitDir)
+
+	return text, decoded.Reason
+}
+
+// linesText joins lines into one text, each ended by a newline as in the rendered text.
+func linesText(lines []string) string {
+	return strings.Join(lines, "\n") + "\n"
 }
 
 // assertSays fails unless text holds each part of want, as expect builds it, in order, each after the
@@ -304,8 +318,8 @@ func assertEndedBy(t *testing.T, got result.Result, gitDir string, want ended) {
 
 	assertStoppedBy(t, got, want.outcome, want.req)
 
-	rendered, _ := shown(t, got, gitDir)
-	assertSays(t, rendered, want.text)
+	text, _ := shown(t, got, gitDir)
+	assertSays(t, text, want.text)
 }
 
 // assertBrokeRead fails unless got is broke on the read named read, says nothing was written,
@@ -431,14 +445,17 @@ type cut struct {
 }
 
 // byTimeLimit is the cut whose context is already past its deadline, so its error is
-// context.DeadlineExceeded.
+// context.DeadlineExceeded. What it says names the length of the time limit in whole seconds, as
+// the help does.
 func byTimeLimit() cut {
+	limitPart := "time limit" + partEnd + fmt.Sprintf("%d seconds", int(landing.TimeLimit.Seconds()))
+
 	return cut{
 		name: "the time limit", err: context.DeadlineExceeded,
 		spend: func(parent context.Context) (context.Context, context.CancelFunc) {
 			return context.WithDeadline(parent, time.Unix(0, 0))
 		},
-		ends: "the time limit ended", before: "before the time limit",
+		ends: limitPart + partEnd + "ended", before: limitPart,
 	}
 }
 

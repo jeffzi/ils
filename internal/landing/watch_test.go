@@ -46,9 +46,9 @@ func movingStep() string {
 	return expect("start", "Moving", trunk)
 }
 
-// mergeStateStep is the step of the wait for the merge state, limited to the merge window.
+// mergeStateStep is the step of the wait for the merge state, which names the merge window.
 func mergeStateStep() string {
-	return expect("start", "#12", "can merge", "of "+landing.MergeWindow.String())
+	return expect("start", landing.Seconds(landing.MergeWindow), "#12", "can merge")
 }
 
 // eventKind is what a run told its progress hook.
@@ -184,8 +184,13 @@ func plainText(t *testing.T, phrase result.Phrase) string {
 	return strings.TrimSuffix(text, "\n")
 }
 
-// said is the event of a step that succeeded saying line, a line of a result's text.
+// said is the event of a step that succeeded saying line, a line of a result's text. The event
+// holds the line without the newline that ends it in the text.
 func said(line string) string {
+	if trimmed, ok := strings.CutSuffix(line, "\n"+partEnd); ok {
+		line = trimmed + partEnd
+	}
+
 	return expect("said") + line
 }
 

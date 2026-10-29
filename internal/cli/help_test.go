@@ -7,6 +7,8 @@ import (
 
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
+
+	"github.com/jeffzi/ils/internal/landing"
 )
 
 // flat returns the words of text in order, one space apart, so that a check reads past the padding
@@ -18,7 +20,7 @@ func flat(text string) string {
 func TestApp_Run_WhenAskedForHelp_PrintsTheHelpOfTheCommand(t *testing.T) {
 	t.Parallel()
 
-	seconds := fmt.Sprintf("%d seconds", int(bound.Seconds()))
+	seconds := fmt.Sprintf("%d seconds", int(landing.TimeLimit.Seconds()))
 	tests := [][]string{{"--help", "push"}, {"merge", "--help"}}
 	for _, args := range tests {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {

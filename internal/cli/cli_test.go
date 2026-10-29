@@ -27,8 +27,6 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	bound = cli.Bound
-
 	exitDone      = 0
 	exitBroke     = 1
 	exitRefused   = 2
@@ -546,7 +544,7 @@ func TestApp_Run_WhenMergeRuns_EndsItAtTheBoundFromLaunch(t *testing.T) {
 	got := launch(t, app, "merge")
 
 	assert.Check(t, is.Equal(got.code, exitDone))
-	assert.Check(t, deadline.Equal(app.Launch.Add(bound)), "deadline = %s, want %s", deadline, app.Launch.Add(bound))
+	assert.Check(t, deadline.Equal(app.Launch.Add(landing.TimeLimit)), "deadline = %s, want %s", deadline, app.Launch.Add(landing.TimeLimit))
 }
 
 func TestApp_Run_WhenHelpIsAskedForOnAColorTerminal_StylesIt(t *testing.T) {
@@ -596,6 +594,47 @@ func grammarRefusals() []grammarRefusal {
 		{name: "group of short flags after push", args: []string{"push", "-xyz"}, reason: "push takes no other word, and -xyz was given"},
 		{name: "JSON flag after push set to maybe", args: []string{"push", "--json=maybe"}, reason: jsonNeither},
 	}
+}
+
+func TestApp_Run_WhenTheFirstWordIsNoCommand_SuggestsOnlyTheOneCommandItIsCloseTo(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		word      string
+		suggested string
+		next      string
+	}{
+		{name: "close to one command", word: "verge", suggested: "merge", next: "ils merge --help"},
+		{name: "close to no command", word: "extra", next: "ils --help"},
+		{name: "close to every command", word: "", next: "ils --help"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := launch(t, outside(t), tt.word, "--json")
+
+			assert.Check(t, is.Equal(got.code, exitRefused))
+
+			printed := resulttest.Decode(t, got.stdout)
+			assert.Check(t, is.Contains(printed.Reason, tt.word))
+			assert.Check(t, is.Contains(printed.Reason, tt.suggested))
+			assert.Check(t, is.Equal(printed.Next, tt.next))
+		})
+	}
+}
+
+func TestApp_Run_WhenTheFirstWordIsAnUnknownFlag_SuggestsNoCommand(t *testing.T) {
+	t.Parallel()
+
+	got := launch(t, outside(t), "--push", "--json")
+
+	assert.Check(t, is.Equal(got.code, exitRefused))
+
+	printed := resulttest.Decode(t, got.stdout)
+	assert.Check(t, is.Contains(printed.Reason, "--push"))
+	assert.Check(t, is.Equal(printed.Next, "ils --help"))
 }
 
 func TestApp_Run_WhenWordsBreakTheGrammar_RefusesNamingWhatBreaksIt(t *testing.T) {

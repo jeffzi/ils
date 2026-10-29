@@ -222,9 +222,19 @@ func TestStatus_WhenTheBranchHasPullRequests_ListsEachPullRequest(t *testing.T) 
 	assertSays(t, got.text, expect("#12", pullURL))
 	assertSays(t, got.text, expect(conventional))
 	assertSays(t, got.text, expect(landedBody))
-	assertSays(t, got.text, cleanLine())
+	assertNoStateLine(t, got.text)
 	assertSays(t, got.text, expect("#5", string(forge.ChangeClosed)))
 	assertSays(t, got.text, expect("#7", string(forge.ChangeMerged)))
+}
+
+func TestStatus_WhenTheOpenPullRequestsHeadIsNotClean_SaysItsMergeState(t *testing.T) {
+	t.Parallel()
+	s := statusScene(t, func(f *gittest.Fixture) { f.Publish(topic) },
+		viewing(inState(forge.MergeConflicting), passing(), standing()))
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	assertSays(t, got.text, stateLine(forge.MergeConflicting))
 }
 
 func TestStatus_WhenTheBranchHasNoOpenPullRequest_SaysSo(t *testing.T) {
@@ -261,7 +271,6 @@ func TestStatus_WhenThePullRequestIsOpen_ReportsTheVerdictOfItsHead(t *testing.T
 
 	tests := []verdictRow{
 		{name: "red", verdict: lintRed(), said: "lint"},
-		{name: "still running", verdict: running(), said: ": test\n"},
 		{name: "none reported", verdict: forge.Verdict{}, said: "No check or status reported"},
 		{
 			name: "a workflow run queued before any check reported", verdict: forge.Verdict{Runs: ran(forge.RunQueued)},
@@ -279,6 +288,30 @@ func TestStatus_WhenThePullRequestIsOpen_ReportsTheVerdictOfItsHead(t *testing.T
 			assertSays(t, got.text, expect(tt.said))
 		})
 	}
+}
+
+func TestStatus_WhenChecksOfTheOpenPullRequestStillRun_ListsEachUnderItsHead(t *testing.T) {
+	t.Parallel()
+	s := statusScene(t, func(f *gittest.Fixture) { f.Publish(topic) }, viewing(cleanHead(), bothRunning(), standing()))
+	head := s.fixture.Git("rev-parse", "HEAD")
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	assertSays(t, got.text, expect("Still running", shortSHA(head)+" (2 checks):\n  ◌ lint\n  ◌ test\n"))
+}
+
+func TestStatus_WhenNoRequiredCheckHasReported_SaysSoWithNoTally(t *testing.T) {
+	t.Parallel()
+	aside := forge.Verdict{
+		Checks:          []forge.Check{forgetest.Check("docs", forge.BucketPass)},
+		MissingRequired: []string{"test"}, Runs: ran(forge.RunInProgress),
+	}
+	s := statusScene(t, func(f *gittest.Fixture) { f.Publish(topic) }, viewing(cleanHead(), aside, standing()))
+	head := s.fixture.Git("rev-parse", "HEAD")
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	assertSays(t, got.text, expect("No required check has reported for "+shortSHA(head)+"\n"))
 }
 
 func TestStatus_WhenTheOpenPullRequestIsAgainstAnotherBase_ReportsItsBase(t *testing.T) {
@@ -384,8 +417,8 @@ func copySteps() []nextRow {
 
 // pullSteps are the states whose `Next:` line the open pull request decides.
 func pullSteps() []nextRow {
-	conflicting := inState(forge.MergeConflicting, "DIRTY")
-	review := inState(forge.MergeBlockedByReview, "BLOCKED")
+	conflicting := inState(forge.MergeConflicting)
+	review := inState(forge.MergeBlockedByReview)
 
 	return []nextRow{
 		{name: "checks still running", script: viewing(cleanHead(), running(), standing()), arrange: published(nextPush())},
@@ -395,7 +428,7 @@ func pullSteps() []nextRow {
 		},
 		{
 			name:    "red",
-			script:  viewing(inState(forge.MergeBlockedOther, "UNSTABLE"), lintRed(), standing()),
+			script:  viewing(inState(forge.MergeBlockedOther), lintRed(), standing()),
 			arrange: published(nextRed()),
 		},
 		{name: "red while conflicting with the trunk", script: viewing(conflicting, lintRed(), standing()), arrange: published(nextRed())},
@@ -621,7 +654,7 @@ func TestStatus_WhenDetachedHEADHasCommitsOriginsTrunkLacks_ListsThemToKeepOnABr
 
 	assert.Check(t, is.Equal(got.status.Standing, standingDetached))
 	assert.Check(t, is.DeepEqual(got.status.Unlanded, own))
-	assertSays(t, got.text, expect(own[0], sharpen, "`git switch -c <name>`", "ils push"))
+	assertSays(t, got.text, expect(shortSHA(own[0]), sharpen, "`git switch -c <name>`", "ils push"))
 }
 
 func TestStatus_WhenThereIsNoOrigin_EndsOnCreatingIt(t *testing.T) {
