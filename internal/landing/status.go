@@ -81,7 +81,6 @@ type reading struct {
 	offline     bool
 }
 
-// say adds a line that says what was read.
 func (r *reading) say(line result.Phrase) {
 	r.lines = append(r.lines, line)
 }
@@ -358,26 +357,27 @@ func (r *reading) readIdentity(ctx context.Context) {
 	push := Request{Command: PushCommand}
 
 	repo, err := r.deps.Forge.Identity(ctx, origin)
-
-	var stop *result.Result
 	if err != nil {
-		stop = push.toolRefusal(err)
-	} else {
-		stop = push.repoRefusal(repo)
+		if stop := push.toolRefusal(err); stop != nil {
+			r.unread(stop.Reason, readIdentity, err.Error())
+			r.blocked = stop.Next
+			r.skippedPulls(err.Error())
+
+			return
+		}
+
+		r.failed(readIdentity, err)
+
+		return
 	}
 
-	switch {
-	case stop != nil && err != nil:
-		r.unread(stop.Reason, readIdentity, err.Error())
-		r.blocked = stop.Next
-		r.skippedPulls(err.Error())
-	case stop != nil:
+	if stop := push.repoRefusal(repo); stop != nil {
 		r.block(stop, "ils does not push to "+origin.FullName())
-	case err != nil:
-		r.failed(readIdentity, err)
-	default:
-		r.repo = repo
+
+		return
 	}
+
+	r.repo = repo
 }
 
 // block says the refusal stop that push would end on, takes its step as status's next, and lists
@@ -504,7 +504,6 @@ func (r *reading) copyTip(ctx context.Context) (theirs string, found bool, read 
 	return theirs, true, readCopy, err
 }
 
-// commitCount is n commits, in words.
 func commitCount(n int) string {
 	if n == 1 {
 		return "1 commit"
@@ -670,7 +669,7 @@ func (r *reading) readChecks(ctx context.Context) {
 	if err != nil {
 		r.failed(readChecks, err)
 	} else {
-		r.judge(verdict, required)
+		r.takeVerdict(verdict, required)
 	}
 
 	if headErr == nil {
@@ -678,9 +677,19 @@ func (r *reading) readChecks(ctx context.Context) {
 	}
 }
 
-// judge records how verdict, read once and judged as the wait judges each read, stands, and says
-// it.
-func (r *reading) judge(verdict forge.Verdict, required []string) {
+// checkNames returns the names of checks, joined by commas.
+func checkNames(checks []forge.Check) string {
+	var names []string
+	for _, check := range checks {
+		names = append(names, check.Name)
+	}
+
+	return strings.Join(names, ", ")
+}
+
+// takeVerdict records how verdict, read once and judged as the wait judges each read, stands, and
+// says it.
+func (r *reading) takeVerdict(verdict forge.Verdict, required []string) {
 	outcome, done := judge(verdict, required)
 
 	w := &r.waited
@@ -693,13 +702,7 @@ func (r *reading) judge(verdict forge.Verdict, required []string) {
 
 	switch {
 	case outcome == WaitRed:
-		var failed []string
-
-		for _, check := range verdict.FailedChecks() {
-			failed = append(failed, check.Name)
-		}
-
-		r.say(result.Say("Failed on %s: %s", sha, strings.Join(failed, ", ")))
+		r.say(result.Say("Failed on %s: %s", sha, checkNames(verdict.FailedChecks())))
 	case r.running && len(verdict.Checks) == 0:
 		r.say(result.Say("No check has reported for %s yet; a workflow run is still going", sha))
 	case r.running && len(verdict.Pending()) == 0:
@@ -707,12 +710,7 @@ func (r *reading) judge(verdict forge.Verdict, required []string) {
 		r.say(w.checksLine(r.open.HeadSHA))
 		r.say(result.Say("A workflow run on %s is still going, so more checks may report", sha))
 	case r.running:
-		var names []string
-		for _, check := range verdict.Pending() {
-			names = append(names, check.Name)
-		}
-
-		r.say(result.Say("Still running on %s: %s", sha, strings.Join(names, ", ")))
+		r.say(result.Say("Still running on %s: %s", sha, checkNames(verdict.Pending())))
 	case verdict.State() == forge.VerdictNone:
 		r.say(result.Say("No check or status reported for %s", sha))
 	default:
@@ -780,18 +778,19 @@ func (r *reading) next() result.Next {
 func (r *reading) pullNext() result.Next {
 	w := r.waited
 	push := result.Command(PushCommand)
+	state := w.MergeState
+	mergeable := w.Outcome == WaitGreen && (state == forge.MergeClean || state == forge.MergeBlockedByReview)
 
-	switch state := w.MergeState; {
+	switch {
 	case r.running:
 		return result.NextCommand(PushCommand)
 	case w.Outcome == WaitRed || w.takeApart():
 		report, _ := w.stopReport(push, r.open.HeadSHA, r.status.Trunk, r.open.Number)
 
 		return report.next
-	case w.Outcome == WaitGreen && (state == forge.MergeClean || state == forge.MergeBlockedByReview) &&
-		!r.trunkAhead.None():
+	case mergeable && !r.trunkAhead.None():
 		return r.trunkAhead
-	case w.Outcome == WaitGreen && (state == forge.MergeClean || state == forge.MergeBlockedByReview):
+	case mergeable:
 		return mergeStep(r.repo, r.open.Number, state)
 	}
 

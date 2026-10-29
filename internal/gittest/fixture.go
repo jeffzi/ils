@@ -1,8 +1,3 @@
-// Package gittest builds real git repositories for tests: a working repository with a bare origin
-// under the test's temporary directory, isolated from the user's git configuration.
-//
-// It also provides a fake git: FakeGit puts the test binary first on PATH under git's name, and a
-// package whose tests use it calls Main from TestMain before running any test.
 package gittest
 
 import (
@@ -30,7 +25,6 @@ const (
 	origin        = "origin"
 	dirtyPath     = "README.md"
 	stagedPath    = "LICENSE"
-	untrackedPath = "untracked.txt"
 	trunkOnlyPath = "trunk-only.txt"
 	scratchRef    = "refs/gittest/squash"
 
@@ -145,8 +139,12 @@ func isolatedEnv(home string) []string {
 	env := slices.DeleteFunc(os.Environ(), func(entry string) bool {
 		name, _, _ := strings.Cut(entry, "=")
 
+		const gitPrefix = "GIT_"
+
+		head := name[:min(len(name), len(gitPrefix))]
+
 		// XDG_CONFIG_HOME goes too: git reads its default ignore file from there.
-		return git.SameKey(name[:min(len(name), len("GIT_"))], "GIT_") ||
+		return git.SameKey(head, gitPrefix) ||
 			slices.ContainsFunc([]string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME"}, func(key string) bool {
 				return git.SameKey(name, key)
 			})
@@ -258,6 +256,8 @@ func (f *Fixture) OriginGit(args ...string) string {
 
 // originURL returns the bare origin's location in the slash form git accepts on every platform.
 func (f *Fixture) originURL() string { return filepath.ToSlash(f.originDir) }
+
+func (f *Fixture) trunkRef() string { return "refs/heads/" + f.trunk }
 
 func (f *Fixture) run(dir string, args ...string) string {
 	f.tb.Helper()
@@ -392,14 +392,6 @@ func (f *Fixture) StagedFile() string {
 	return stagedPath
 }
 
-// UntrackedFile creates a file git does not track and returns its path relative to Dir.
-func (f *Fixture) UntrackedFile() string {
-	f.tb.Helper()
-	WriteFile(f.tb, f.dir, untrackedPath, "untracked\n")
-
-	return untrackedPath
-}
-
 // Sibling checks out a new branch cut from the first commit of the branch named by of past the
 // trunk, adds one commit to it, and returns the new tip.
 func (f *Fixture) Sibling(name, of string) string {
@@ -449,7 +441,7 @@ func (f *Fixture) SquashOnOrigin(sha, subject, body string) string {
 	// Pushing to a scratch ref carries the objects of sha to origin without creating a branch.
 	f.Git("push", "--quiet", "--force", f.originURL(), sha+":"+scratchRef)
 
-	trunkRef := "refs/heads/" + f.trunk
+	trunkRef := f.trunkRef()
 	parent := f.OriginGit("rev-parse", "--verify", trunkRef)
 	args := []string{"commit-tree", sha + "^{tree}", "-p", parent, "-m", subject}
 	if body != "" {
@@ -525,11 +517,7 @@ func (f *Fixture) UntrackedOnTrunk() string {
 	f.tb.Helper()
 
 	f.commitOnTrunk(func(dir string) string {
-		WriteFile(f.tb, dir, trunkOnlyPath, "tracked on the trunk\n")
-		f.run(dir, "add", "--", trunkOnlyPath)
-		f.run(dir, "commit", "--quiet", "--message", "track "+trunkOnlyPath)
-
-		return f.run(dir, "rev-parse", "HEAD")
+		return f.commitFile(dir, trunkOnlyPath, "tracked on the trunk\n", "track "+trunkOnlyPath)
 	})
 	f.Publish(f.trunk)
 	WriteFile(f.tb, f.dir, trunkOnlyPath, "untracked here\n")
@@ -542,7 +530,7 @@ func (f *Fixture) UntrackedOnTrunk() string {
 func (f *Fixture) commitOnTrunk(commit func(dir string) string) string {
 	f.tb.Helper()
 
-	trunkRef := "refs/heads/" + f.trunk
+	trunkRef := f.trunkRef()
 	parent := f.Git("rev-parse", "--verify", trunkRef)
 
 	dir := filepath.Join(f.root, "trunk-scratch")
@@ -564,7 +552,15 @@ func (f *Fixture) commit(dir, subject string) string {
 	f.serial++
 	name := fmt.Sprintf("change-%d.txt", f.serial)
 
-	WriteFile(f.tb, dir, name, subject+"\n")
+	return f.commitFile(dir, name, subject+"\n", subject)
+}
+
+// commitFile writes content to name in the repository at dir, commits it with subject, and returns
+// the new sha.
+func (f *Fixture) commitFile(dir, name, content, subject string) string {
+	f.tb.Helper()
+
+	WriteFile(f.tb, dir, name, content)
 	f.run(dir, "add", "--", name)
 	f.run(dir, "commit", "--quiet", "--message", subject)
 
@@ -610,7 +606,7 @@ func (f *Fixture) standIn() string {
 
 	const name = "ssh"
 
-	ssh, err := exec.LookPath("ssh")
+	ssh, err := exec.LookPath(name)
 	if err != nil {
 		f.tb.Fatalf("gittest: find ssh: %v", err)
 	}

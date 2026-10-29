@@ -52,11 +52,14 @@ func endedEarly(err error) bool {
 	return timedOut(err) || interrupted(err)
 }
 
-// PushCommand and MergeCommand are the command words of `ils push` and `ils merge`. They stay
-// untyped so that a next step can name them as result.NextCommand's constant wording.
+// PushCommand, MergeCommand, StatusCommand and BranchCommand are the command words of `ils push`,
+// `ils merge`, `ils status` and `ils branch`. They stay untyped so that a next step can name them
+// as result.NextCommand's constant wording.
 const (
-	PushCommand  = "push"
-	MergeCommand = "merge"
+	PushCommand   = "push"
+	MergeCommand  = "merge"
+	StatusCommand = "status"
+	BranchCommand = "branch"
 )
 
 // Deps is what a command takes: the forge and the repository it runs in, and what it tells how it
@@ -84,6 +87,9 @@ type Progress interface {
 	Counted(done, total int)
 }
 
+// untilTheEnd is the limit of a step started with it: only the command's end limits the step.
+const untilTheEnd time.Duration = 0
+
 // started tells the progress hook, if any, that the step label names began, limited to limit.
 func (d Deps) started(label result.Phrase, limit time.Duration) {
 	if d.Progress != nil {
@@ -107,12 +113,12 @@ func (d Deps) say(lines *[]result.Phrase, line result.Phrase) {
 // startChecking tells the progress hook, if any, that the checks a command makes before it writes
 // anything began.
 func (d Deps) startChecking() {
-	d.started(result.Say("Checking the branch and origin"), 0)
+	d.started(result.Say("Checking the branch and origin"), untilTheEnd)
 }
 
 // startFinding tells the progress hook, if any, that the search for the branch's pull request began.
 func (d Deps) startFinding() {
-	d.started(result.Say("Finding the pull request"), 0)
+	d.started(result.Say("Finding the pull request"), untilTheEnd)
 }
 
 // Forge is the host of a repository, seen through the operations `push` and `merge` need.
@@ -495,4 +501,45 @@ func (r Request) fetchPullHead(ctx context.Context, deps Deps, number int, read 
 	}
 
 	return head, nil
+}
+
+func (r Request) dirtyTree(files []string) *result.Result {
+	return r.Refused(
+		result.Say("tracked files have changes that are not committed: %s", strings.Join(files, ", ")),
+		result.NextStep("commit them"+thenRunAgain, r.ilsCommand()))
+}
+
+// trunkAhead refuses a local trunk whose commits past are ones origin's trunk lacks.
+func (r Request) trunkAhead(trunk string, past []git.Commit) *result.Result {
+	stop := r.Refused(
+		result.Say("the local trunk %s has commits that origin's trunk lacks, listed here", result.Branch(trunk)),
+		result.NextStep("move those commits off the local trunk by hand"+thenRunAgain, r.ilsCommand()))
+
+	stop.Lines = listed(past)
+
+	return stop
+}
+
+// detachedKept refuses a detached HEAD with commits origin's trunk lacks, for reason, and lists
+// them. It returns nil when HEAD has none.
+func (r Request) detachedKept(ctx context.Context, deps Deps, trunk string, reason result.Phrase) *result.Result {
+	own, err := deps.Repo.CommitsPast(ctx, "HEAD", trunk)
+	if err != nil {
+		return r.unread(readHeadCommits, err)
+	}
+
+	if len(own) == 0 {
+		return nil
+	}
+
+	stop := r.Refused(reason, keepDetachedStep())
+	stop.Lines = listed(own)
+
+	return stop
+}
+
+// keepDetachedStep is the next step of a detached HEAD with commits origin's trunk lacks: keep them
+// on a branch, then push it.
+func keepDetachedStep() result.Next {
+	return result.NextStep("keep them on a branch with `git switch -c <name>`, then run %s", result.Command(PushCommand))
 }

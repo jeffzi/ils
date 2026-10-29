@@ -1,6 +1,7 @@
 package resulttest
 
 import (
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"strings"
 	"testing"
@@ -18,9 +19,16 @@ type Shown = result.Object
 func Decode(tb testing.TB, out string) Shown {
 	tb.Helper()
 
+	var value jsontext.Value
+
+	err := json.Unmarshal([]byte(out), &value)
+	assert.NilError(tb, err, "output is not one JSON value:\n%s", out)
+	// Unmarshal reads null into a struct as its zero value, so the kind is checked first.
+	assert.Assert(tb, value.Kind() == '{', "output is not one JSON object:\n%s", out)
+
 	var got Shown
 
-	err := json.Unmarshal([]byte(out), &got)
+	err = json.Unmarshal(value, &got)
 	assert.NilError(tb, err, "output is not one JSON object:\n%s", out)
 
 	return got

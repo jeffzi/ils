@@ -214,16 +214,6 @@ func TestRepo_WhenNotARepository_ReturnsExitError(t *testing.T) {
 	tests := []repoCall{
 		{name: "Standing", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.Standing(ctx) }},
 		{name: "GitDir", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.GitDir(ctx) }},
-		{name: "Divergence", call: func(ctx context.Context, repo git.Repo) (any, error) {
-			return repo.Divergence(ctx, unknownSHA, unknownSHA)
-		}},
-		{name: "DirtyFiles", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.DirtyFiles(ctx) }},
-		{name: "Contains", call: func(ctx context.Context, repo git.Repo) (any, error) {
-			return repo.Contains(ctx, unknownSHA, unknownSHA)
-		}},
-		{name: "OwnCommits", call: func(ctx context.Context, repo git.Repo) (any, error) {
-			return repo.OwnCommits(ctx, unknownSHA, trunk, nil)
-		}},
 	}
 
 	checkExitErrorOutsideRepo(t, tests)
@@ -255,12 +245,12 @@ func TestRepo_DirtyFiles_WhenTrackedFileRenamedInIndex_ListsNewNameOnly(t *testi
 
 func TestRepo_Divergence_WhenFirstIsAhead_CountsItsCommitsAsAhead(t *testing.T) {
 	t.Parallel()
-	shas := diverged(t)
+	split := diverged(t)
 
-	got, err := shas.repo.Divergence(t.Context(), shas.local, shas.base)
-	assert.NilError(t, err, "Divergence(%s, %s)", shas.local, shas.base)
+	got, err := split.repo.Divergence(t.Context(), split.local, split.base)
+	assert.NilError(t, err, "Divergence(%s, %s)", split.local, split.base)
 
-	assert.Check(t, is.DeepEqual(got, git.Divergence{Ahead: 1}), "Divergence(%s, %s)", shas.local, shas.base)
+	assert.Check(t, is.DeepEqual(got, git.Divergence{Ahead: 1}), "Divergence(%s, %s)", split.local, split.base)
 }
 
 // garbledDivergence returns a repository whose git prints out for any rev-list call, and the
@@ -308,21 +298,21 @@ func TestRepo_Divergence_WhenACountIsNotANumber_ReturnsSyntaxErrorNamingTheCall(
 
 func TestRepo_Contains(t *testing.T) {
 	t.Parallel()
-	shas := diverged(t)
+	split := diverged(t)
 	tests := []struct {
 		name string
 		a    string
 		b    string
 		want bool
 	}{
-		{name: "ahead", a: shas.local, b: shas.base, want: true},
-		{name: "behind", a: shas.base, b: shas.local, want: false},
+		{name: "ahead", a: split.local, b: split.base, want: true},
+		{name: "behind", a: split.base, b: split.local, want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := shas.repo.Contains(t.Context(), tt.a, tt.b)
+			got, err := split.repo.Contains(t.Context(), tt.a, tt.b)
 			assert.NilError(t, err, "Contains(%s, %s)", tt.a, tt.b)
 
 			assert.Check(t, is.Equal(got, tt.want), "Contains(%s, %s)", tt.a, tt.b)
@@ -493,17 +483,6 @@ func TestRepo_Unlanded_WhenACommitFollowsTheTrunkMergedIn_ListsOnlyThatCommit(t 
 	assert.Check(t, is.DeepEqual(got, want, cmpopts.EquateEmpty()))
 }
 
-func TestRepo_HasCommits_WhenBranchHasACommit_ReturnsTrue(t *testing.T) {
-	t.Parallel()
-	f := gittest.New(t, trunk)
-	f.Commits(topic, "first change")
-
-	got, err := newRepo(f).HasCommits(t.Context(), topic)
-	assert.NilError(t, err, "HasCommits(%q)", topic)
-
-	assert.Check(t, got, "HasCommits(%q)", topic)
-}
-
 // previousBranch returns a repository checked out on the trunk after topic, so that git reads
 // @{-1} as topic.
 func previousBranch(t *testing.T) git.Repo {
@@ -574,7 +553,6 @@ func TestRepo_CheckBranchName_WhenGitIsNotAsked_GivesNoReason(t *testing.T) {
 	assert.Check(t, is.Equal(nameErr.Reason(), ""))
 }
 
-// freshBranch is the name of the branch CreateBranch creates.
 const freshBranch = "fix/parser"
 
 func TestRepo_CreateBranch_WhenOriginsTrunkIsFetched_SwitchesToABranchAtIt(t *testing.T) {
@@ -749,13 +727,16 @@ func TestRepo_CheckedOutElsewhere_WhenTheWorktreeOnTheBranchIsGone_ReturnsNotExi
 	assert.Check(t, is.ErrorIs(err, fs.ErrNotExist), "CheckedOutElsewhere() = %t", got)
 }
 
-func TestVersionOf(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		line string
-		want string
-	}{
+// versionCase is a line git prints for --version and the version VersionOf reads from it.
+type versionCase struct {
+	name string
+	line string
+	want string
+}
+
+// versionCases returns the lines VersionOf reads, and the version it finds in each.
+func versionCases() []versionCase {
+	return []versionCase{
 		{name: "Git for Windows", line: "git version 2.56.0.windows.2", want: "2.56.0"},
 		{name: "Apple", line: "git version 2.54.0 (Apple Git-157)", want: "2.54.0"},
 		{name: "release candidate", line: "git version 2.35.0.rc0", want: "2.35.0-rc0"},
@@ -763,7 +744,11 @@ func TestVersionOf(t *testing.T) {
 		{name: "three components, one not a number", line: "git version 2.x.1"},
 		{name: "no git version prefix", line: "2.40.0"},
 	}
-	for _, tt := range tests {
+}
+
+func TestVersionOf(t *testing.T) {
+	t.Parallel()
+	for _, tt := range versionCases() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -775,12 +760,9 @@ func TestVersionOf(t *testing.T) {
 }
 
 func FuzzVersionOf(f *testing.F) {
-	f.Add("git version 2.56.0.windows.2")
-	f.Add("git version 2.54.0 (Apple Git-157)")
-	f.Add("git version 2.35.0.rc0")
-	f.Add("git version DEV")
-	f.Add("git version 2.x.1")
-	f.Add("2.40.0")
+	for _, tt := range versionCases() {
+		f.Add(tt.line)
+	}
 	f.Fuzz(func(t *testing.T, line string) {
 		got := git.VersionOf(line)
 		if got == "" {

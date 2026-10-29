@@ -104,7 +104,7 @@ func (s *TB) Fatalf(format string, args ...any) {
 	s.FailNow()
 }
 
-// record keeps message, when there is one, and marks a failure when failed is set.
+// record skips an empty message so Fail, which reports none, adds no blank entry to Messages.
 func (s *TB) record(message string, failed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

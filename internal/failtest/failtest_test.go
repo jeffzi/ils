@@ -12,28 +12,23 @@ import (
 func TestTB_WhenAReportIsNotFatal_RecordsItWithoutEndingTheGoroutine(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		report     func(spy *failtest.TB)
-		name       string
-		messages   []string
-		wantFailed bool
+		report       func(spy *failtest.TB)
+		name         string
+		wantMessages []string
+		wantFailed   bool
 	}{
-		{name: "Log", report: func(spy *failtest.TB) { spy.Log("logged") }, messages: []string{"logged"}},
+		{name: "Log", report: func(spy *failtest.TB) { spy.Log("logged") }, wantMessages: []string{"logged"}},
 		{
-			name:     "Logf",
-			report:   func(spy *failtest.TB) { spy.Logf("logged %d", 2) },
-			messages: []string{"logged 2"},
+			name:         "Error",
+			report:       func(spy *failtest.TB) { spy.Error("failed") },
+			wantMessages: []string{"failed"},
+			wantFailed:   true,
 		},
 		{
-			name:       "Error",
-			report:     func(spy *failtest.TB) { spy.Error("failed") },
-			messages:   []string{"failed"},
-			wantFailed: true,
-		},
-		{
-			name:       "Errorf",
-			report:     func(spy *failtest.TB) { spy.Errorf("failed %d", 2) },
-			messages:   []string{"failed 2"},
-			wantFailed: true,
+			name:         "Errorf",
+			report:       func(spy *failtest.TB) { spy.Errorf("failed %d", 2) },
+			wantMessages: []string{"failed 2"},
+			wantFailed:   true,
 		},
 		{name: "Fail", report: func(spy *failtest.TB) { spy.Fail() }, wantFailed: true},
 	}
@@ -51,7 +46,7 @@ func TestTB_WhenAReportIsNotFatal_RecordsItWithoutEndingTheGoroutine(t *testing.
 			assert.Check(t, returned, "%s ended the goroutine", tt.name)
 			assert.Check(t, !spy.Stopped())
 			assert.Check(t, is.Equal(spy.Failed(), tt.wantFailed))
-			assert.Check(t, is.DeepEqual(spy.Messages(), tt.messages))
+			assert.Check(t, is.DeepEqual(spy.Messages(), tt.wantMessages))
 		})
 	}
 }
@@ -70,9 +65,9 @@ func TestTB_WhenAFailureIsFatal_EndsTheGoroutineThatReportedIt(t *testing.T) {
 			t.Parallel()
 			spy := failtest.New(t)
 			returned := false
+			spy.Logf("logged %s", "before")
 
 			spy.Run(func() {
-				spy.Logf("logged %s", "before")
 				tt.fatal(spy)
 				returned = true
 			})

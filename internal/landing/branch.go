@@ -3,7 +3,6 @@ package landing
 import (
 	"context"
 	"slices"
-	"strings"
 
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/git"
@@ -23,7 +22,7 @@ const (
 
 // startBranch is the judgment step out of a branch that cannot land. The new branch's name stays a
 // placeholder for the agent to choose.
-const startBranch = "start a branch with `ils branch <name>`"
+const startBranch = "start a branch with `ils " + BranchCommand + " <name>`"
 
 // startBranchStep is the next step that starts a branch from origin's trunk.
 func startBranchStep() result.Next {
@@ -44,7 +43,7 @@ type onBranch struct {
 // then origin's trunk fetched. It returns the branch ready stands on, or the result of the first
 // that refuses.
 func branchChecks(ctx context.Context, deps Deps, req Request, ready Ready) (onBranch, *result.Result) {
-	if stop := req.onWorkBranch(ctx, deps, ready); stop != nil {
+	if stop := onWorkBranch(ctx, deps, req, ready); stop != nil {
 		return onBranch{}, stop
 	}
 
@@ -62,26 +61,26 @@ func branchChecks(ctx context.Context, deps Deps, req Request, ready Ready) (onB
 // onWorkBranch refuses a detached HEAD and the trunk. The way out is a new branch, except for a
 // detached HEAD with commits origin's trunk lacks, fetched first, which `ils branch` would refuse
 // in turn: those commits are listed, to keep on a branch of their own.
-func (r Request) onWorkBranch(ctx context.Context, deps Deps, ready Ready) *result.Result {
+func onWorkBranch(ctx context.Context, deps Deps, req Request, ready Ready) *result.Result {
 	if ready.Standing.Kind == git.OnBranch {
 		if ready.Standing.Branch == ready.Trunk {
-			return r.Refused(result.Say("HEAD is on the trunk %s, which ils never pushes", result.Branch(ready.Trunk)),
+			return req.Refused(result.Say("HEAD is on the trunk %s, which ils never pushes", result.Branch(ready.Trunk)),
 				startBranchStep())
 		}
 
 		return nil
 	}
 
-	if _, stop := fetchTrunk(ctx, deps, r, ready.Trunk); stop != nil {
+	if _, stop := fetchTrunk(ctx, deps, req, ready.Trunk); stop != nil {
 		return stop
 	}
 
 	reason := result.Say("HEAD is detached, so there is no branch to push")
-	if stop := r.detachedKept(ctx, deps, ready.Trunk, reason); stop != nil {
+	if stop := req.detachedKept(ctx, deps, ready.Trunk, reason); stop != nil {
 		return stop
 	}
 
-	return r.Refused(reason, startBranchStep())
+	return req.Refused(reason, startBranchStep())
 }
 
 // cleanTree refuses a tree with a changed tracked file.
@@ -96,13 +95,6 @@ func cleanTree(ctx context.Context, deps Deps, req Request) *result.Result {
 	}
 
 	return nil
-}
-
-// dirtyTree refuses a tree whose changed tracked files are files.
-func (r Request) dirtyTree(files []string) *result.Result {
-	return r.Refused(
-		result.Say("tracked files have changes that are not committed: %s", strings.Join(files, ", ")),
-		result.NextStep("commit them"+thenRunAgain, r.ilsCommand()))
 }
 
 // fetchTrunk fetches origin's trunk, so that the reads of origin/<trunk> that follow are current,

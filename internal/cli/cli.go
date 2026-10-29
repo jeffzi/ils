@@ -95,9 +95,13 @@ func (a App) Run(ctx context.Context, args []string) int {
 	signals, stopListening := a.onSignal(cancel)
 	defer stopListening()
 
+	words := slices.DeleteFunc(slices.Clone(args), isOutputFlag)
 	p := &parse{
-		app: a, words: slices.DeleteFunc(slices.Clone(args), isOutputFlag), encoded: lastForm(args, flagJSON),
-		noColor: lastForm(args, flagNoColor), signals: signals,
+		app:     a,
+		words:   words,
+		encoded: turnedOn(args, flagJSON),
+		noColor: turnedOn(args, flagNoColor),
+		signals: signals,
 	}
 	p.outProfile = a.profile(a.StdoutTerminal, p.noColor)
 
@@ -184,17 +188,17 @@ const ttyForce = "TTY_FORCE"
 //
 // NO_COLOR is checked here because colorprofile honors it only on a terminal, and lets
 // CLICOLOR_FORCE color a stream that is none.
-func (a App) profile(terminal, noColor bool) colorprofile.Profile {
-	if value, _ := git.EnvValue(a.Environ, "NO_COLOR"); noColor || value != "" {
+func (a App) profile(isTerminal, noColor bool) colorprofile.Profile {
+	if noColorEnv, _ := git.EnvValue(a.Environ, "NO_COLOR"); noColor || noColorEnv != "" {
 		return colorprofile.NoTTY
 	}
 
 	// colorprofile tells a terminal by its file descriptor or by TTY_FORCE. Whether the stream is a
-	// terminal is decided by terminal alone, so a TTY_FORCE of the environment never counts.
+	// terminal is decided by isTerminal alone, so a TTY_FORCE of the environment never counts.
 	env := slices.DeleteFunc(slices.Clone(a.Environ), func(entry string) bool {
 		return strings.HasPrefix(entry, ttyForce+"=")
 	})
-	if a.terminal(terminal) {
+	if a.terminal(isTerminal) {
 		env = append(env, ttyForce+"=1")
 	}
 
@@ -247,7 +251,8 @@ func (a App) show(r result.Result, gitDir string, encoded bool, profile colorpro
 	}
 
 	if a.terminal(a.StdoutTerminal) && r.Outcome == result.Pending && !r.Next.None() {
-		out = strings.TrimSuffix(out, "\n") + "  " + result.PenFor(profile).Styled(result.FaintStyle(), pendingHint) + "\n"
+		hint := result.PenFor(profile).Styled(result.FaintStyle(), pendingHint)
+		out = strings.TrimSuffix(out, "\n") + "  " + hint + "\n"
 	}
 
 	return a.print(out, r.Outcome.ExitCode())
@@ -272,12 +277,12 @@ func isOutputFlag(word string) bool {
 	return isForm(word, flagJSON)
 }
 
-// lastForm reports whether the words typed turn flag on: the last of its forms the grammar takes
+// turnedOn reports whether the words typed turn flag on: the last of its forms the grammar takes
 // among them decides, and none leaves it off.
 //
 // It reads the words and not the parsed flag, since parsing stops at the first flag it refuses
 // and a refusal is still rendered as the words after it ask.
-func lastForm(args []string, flag string) bool {
+func turnedOn(args []string, flag string) bool {
 	for _, word := range slices.Backward(args) {
 		if isForm(word, flag) {
 			return word != flag+"=false"
@@ -331,13 +336,23 @@ func (p *parse) refuse(reason result.Phrase) error {
 	return &refusedError{result: *req.Refused(reason, result.NextCommand(flagHelp))}
 }
 
-// extraWord is the reason command refuses word, which it was given besides its own.
-func extraWord(command, word string) result.Phrase {
-	return result.Say("%s takes no other word, and %s was given", command, word)
-}
-
 func notCommand(word string) result.Phrase {
 	return result.Say("%s is not a command", word)
+}
+
+// noWords refuses the words c was given when it takes none: a leading `--` first, then the first
+// word typed. Each refusal gives the reason that reason builds for the word. It returns nil when c
+// was given no word.
+func (p *parse) noWords(c *cobra.Command, args []string, reason func(string) result.Phrase) error {
+	if c.ArgsLenAtDash() == 0 {
+		return p.refuse(reason(wordDash))
+	}
+
+	if len(args) > 0 {
+		return p.refuse(reason(args[0]))
+	}
+
+	return nil
 }
 
 // flagRefusal turns a flag Cobra could not parse into a refusal: a value that is neither true
@@ -376,12 +391,8 @@ func (p *parse) root() *cobra.Command {
 		// Cobra asks Args only of a runnable command. Args refuses every run but `ils --version`,
 		// which RunE prints.
 		Args: func(c *cobra.Command, args []string) error {
-			if c.ArgsLenAtDash() == 0 {
-				return p.refuse(notCommand(wordDash))
-			}
-
-			if len(args) > 0 {
-				return p.refuse(notCommand(args[0]))
+			if err := p.noWords(c, args, notCommand); err != nil {
+				return err
 			}
 
 			if !p.version {
@@ -414,8 +425,8 @@ func (p *parse) root() *cobra.Command {
 	root.AddCommand(
 		p.landing(landingHelp{word: landing.PushCommand, short: pushShort, long: withBound(pushLong), examples: pushExamples}, p.app.runPush, landing.Push),
 		p.landing(landingHelp{word: landing.MergeCommand, short: mergeShort, long: withBound(mergeLong), examples: mergeExamples}, p.app.runMerge, landing.Merge),
-		p.landing(landingHelp{word: wordStatus, short: statusShort, long: statusLong, examples: statusExamples}, p.app.runStatus, landing.Status),
-		p.named(landingHelp{word: wordBranch, short: branchShort, long: branchLong, examples: branchExamples}, p.app.runBranch, landing.StartBranch),
+		p.landing(landingHelp{word: landing.StatusCommand, short: statusShort, long: statusLong, examples: statusExamples}, p.app.runStatus, landing.Status),
+		p.named(landingHelp{word: landing.BranchCommand, short: branchShort, long: branchLong, examples: branchExamples}, p.app.runBranch, landing.StartBranch),
 		&cobra.Command{
 			Use:    wordRelease,
 			Hidden: true,
@@ -492,7 +503,9 @@ func (p *parse) landing(help landingHelp, run, fallback Command) *cobra.Command 
 		run = fallback
 	}
 
-	extra := func(typed string) result.Phrase { return extraWord(help.word, typed) }
+	extra := func(typed string) result.Phrase {
+		return result.Say("%s takes no other word, and %s was given", help.word, typed)
+	}
 
 	c := &cobra.Command{
 		Use:     help.word,
@@ -500,15 +513,7 @@ func (p *parse) landing(help landingHelp, run, fallback Command) *cobra.Command 
 		Long:    help.long,
 		Example: help.examples,
 		Args: func(c *cobra.Command, args []string) error {
-			if c.ArgsLenAtDash() == 0 {
-				return p.refuse(extra(wordDash))
-			}
-
-			if len(args) > 0 {
-				return p.refuse(extra(args[0]))
-			}
-
-			return nil
+			return p.noWords(c, args, extra)
 		},
 		RunE: func(c *cobra.Command, _ []string) error {
 			p.land(c.Context(), run, landing.Request{Command: help.word, Words: p.words})
@@ -765,9 +770,7 @@ func (a App) fail(err error) int {
 }
 
 const (
-	wordBranch  = "branch"
 	wordRelease = "release"
-	wordStatus  = "status"
 
 	flagJSON    = "--json"
 	flagHelp    = "--help"

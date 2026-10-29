@@ -15,24 +15,20 @@ import (
 // unknown-bucket case.
 const unknownBucket = forge.Bucket("stale")
 
-// link is the CI page of the check called name.
 func link(name string) string {
 	return "https://ci.example.com/checks/" + name
 }
 
-// linked is check with its CI page set.
 func linked(check forge.Check) forge.Check {
 	check.Link = link(check.Name)
 
 	return check
 }
 
-// verdictOf is a verdict over the given checks, with no required name missing.
 func verdictOf(checks ...forge.Check) forge.Verdict {
 	return forge.Verdict{Checks: checks}
 }
 
-// missingBuild is a verdict over the given checks, with the required name "build" missing.
 func missingBuild(checks ...forge.Check) forge.Verdict {
 	return forge.Verdict{Checks: checks, MissingRequired: []string{"build"}}
 }
@@ -106,7 +102,10 @@ func TestVerdict_Pending(t *testing.T) {
 		verdict forge.Verdict
 		want    []forge.Check
 	}{
-		{name: "every check concluded", verdict: verdictOf(forgetest.Check("build", forge.BucketPass), forgetest.Check("test", forge.BucketFail))},
+		{
+			name:    "every check concluded",
+			verdict: verdictOf(forgetest.Check("build", forge.BucketPass), forgetest.Check("test", forge.BucketFail), forgetest.Check("lint", forge.BucketCanceled)),
+		},
 		{
 			name:    "pending among concluded, in order",
 			verdict: verdictOf(forgetest.Check("build", forge.BucketPending), forgetest.Check("lint", forge.BucketPass), forgetest.Check("test", forge.BucketPending)),

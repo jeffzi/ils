@@ -100,7 +100,12 @@ type ending struct {
 
 // Ending returns a context over parent that ends with err once done closes, and not before: a test
 // closes done, or hands in a channel that closes, at the moment the call under test must be cut.
+// It panics when err is nil: a context whose Done is closed must report why.
 func Ending(parent context.Context, done <-chan struct{}, err error) context.Context {
+	if err == nil {
+		panic("gittest: Ending needs a non-nil error")
+	}
+
 	return ending{Context: parent, done: done, err: err}
 }
 

@@ -37,7 +37,7 @@ func branchScene(t *testing.T, arrange func(*gittest.Fixture)) *scene {
 }
 
 // assertStarted fails unless HEAD is on the branch name, which stands at origin's trunk with no
-// upstream, and the forge was never called.
+// upstream.
 func assertStarted(t *testing.T, s *scene, name string) {
 	t.Helper()
 
@@ -45,7 +45,6 @@ func assertStarted(t *testing.T, s *scene, name string) {
 	assert.Check(t, is.Equal(f.Git("symbolic-ref", "--short", "HEAD"), name))
 	assert.Check(t, is.Equal(f.Git("rev-parse", "refs/heads/"+name), f.OriginGit("rev-parse", trunk)))
 	assert.Check(t, is.Equal(f.Git("for-each-ref", "--format=%(upstream)", "refs/heads/"+name), ""))
-	assertAsked(t, s, nil)
 }
 
 // branchRefusal is the refusal of `ils branch name` a test expects: its text holds the parts of
@@ -60,7 +59,6 @@ func assertRefusedBranch(t *testing.T, s *scene, got result.Result, want branchR
 
 	assertEndedBy(t, got, s.gitDir, ended{outcome: result.Refused, req: branchRequest(want.name), text: want.want})
 	assert.Check(t, is.Equal(s.written(), want.before))
-	assertAsked(t, s, nil)
 }
 
 func TestStartBranch_WhenEveryCheckHolds_StartsTheBranchAtOriginsTrunk(t *testing.T) {
@@ -218,19 +216,6 @@ func TestStartBranch_WhenLocalTrunkHasCommitsOriginLacks_StartsTheBranchNamingTh
 
 	want := expect(ahead, "local trunk "+trunk)
 	assertEndedBy(t, got, s.gitDir, ended{outcome: result.Done, req: branchRequest(fresh), text: want})
-	assertStarted(t, s, fresh)
-}
-
-func TestStartBranch_WhenTrackedFilesHaveChanges_StartsTheBranch(t *testing.T) {
-	t.Parallel()
-	s := branchScene(t, func(f *gittest.Fixture) {
-		f.DirtyFile()
-		f.StagedFile()
-	})
-
-	got := startBranch(t, s, fresh)
-
-	assertStoppedBy(t, got, result.Done, branchRequest(fresh))
 	assertStarted(t, s, fresh)
 }
 

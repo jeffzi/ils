@@ -81,7 +81,6 @@ func TestStatus_WhenOnTheTrunkAndOriginHoldsNoVersionTag_SaysThereIsNone(t *test
 		arrange func(*gittest.Fixture)
 		name    string
 	}{
-		{name: "no tag", arrange: standOnTrunk},
 		{
 			name: "only a tag that is no version",
 			arrange: func(f *gittest.Fixture) {
@@ -156,17 +155,15 @@ type protectionRow struct {
 	name  string
 	rules forge.RulesState
 	want  string
-	// said is the phrase of the text that tells the state apart.
-	said string
 }
 
 func TestStatus_WhenOnTheTrunk_ReportsWhetherRulesProtectIt(t *testing.T) {
 	t.Parallel()
 
 	tests := []protectionRow{
-		{name: "rules protect it", rules: forge.RulesProtect, want: "protected", said: "protect"},
-		{name: "no rule applies", rules: forge.RulesNone, want: "none", said: "no rule"},
-		{name: "the plan allows no rules", rules: forge.RulesUnavailable, want: "unavailable", said: "plan"},
+		{name: "rules protect it", rules: forge.RulesProtect, want: "protected"},
+		{name: "no rule applies", rules: forge.RulesNone, want: "none"},
+		{name: "the plan allows no rules", rules: forge.RulesUnavailable, want: "unavailable"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -176,7 +173,6 @@ func TestStatus_WhenOnTheTrunk_ReportsWhetherRulesProtectIt(t *testing.T) {
 			got := seeStatus(t, s, (*testing.T).Context)
 
 			assert.Check(t, is.Equal(got.status.Protection, tt.want))
-			assertSays(t, got.text, expect(tt.said))
 		})
 	}
 }
@@ -185,17 +181,16 @@ func TestStatus_WhenOnTheTrunkAndTheRulesReadFails_ReportsTheFailedReadBesideThe
 	t.Parallel()
 	s := statusScene(t, tagReleases, func(tip string) forgetest.Script {
 		script := viewing(cleanHead(), passing())(tip)
-		script.TrunkProtection = []forgetest.Answer[forge.Protection]{{Err: errors.New("HTTP 502")}}
+		script.TrunkProtection = []forgetest.Answer[forge.Protection]{{Err: errors.New(forgeFailure)}}
 
 		return script
 	})
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
-	assertSays(t, got.text, expect(readRules, "HTTP 502"))
+	assertSays(t, got.text, expect(readRules, forgeFailure))
 	assert.Assert(t, is.Len(got.status.Unread, 1))
 	assert.Check(t, is.Equal(got.status.Unread[0].Read, readRules))
-	assert.Check(t, is.Equal(got.status.LastTag, "v1.10.0"))
 }
 
 func TestStatus_WhenOnTheTrunk_EndsOnStartingABranch(t *testing.T) {

@@ -51,11 +51,11 @@ func pushedLine() string {
 }
 
 func alreadyLine() string {
-	return expect(topic, "already on origin", tipMark, "nothing pushed")
+	return expect(topic, "already on origin", tipMark)
 }
 
 func openedLine() string {
-	return expect("Opened", "#12", trunk, topic, "no body", pullURL)
+	return expect("Opened", "#12", trunk, topic, pullURL)
 }
 
 func foundLine() string {
@@ -75,8 +75,6 @@ func noCILine() string {
 func unreadAfterWrites(read, detail string) string {
 	return expect(read, detail) + nextFixed()
 }
-
-// The `Next:` lines that end a push.
 
 func editSteps() string {
 	return expect("`"+editCommand+"`", "ils merge")
@@ -187,10 +185,13 @@ func (build forgeFor) pulling(edit func(*forge.Change)) forgeFor {
 	})
 }
 
-// requiring returns build with a trunk whose protection requires the checks names.
+// requiring returns build with a trunk whose protection requires the checks names, and is otherwise
+// as build answers.
 func (build forgeFor) requiring(names ...string) forgeFor {
 	return build.with(func(script *forgetest.Script, _ string) {
-		script.TrunkProtection = forgetest.Values(forge.Protection{RequiredChecks: names})
+		for i := range script.TrunkProtection {
+			script.TrunkProtection[i].Value.RequiredChecks = names
+		}
 	})
 }
 
@@ -492,7 +493,7 @@ func TestPush_WhenGitRefusesThePush_BrokeSayingNothingWasPushed(t *testing.T) {
 
 	text, reason := shown(t, got, d.gitDir)
 	assertSays(t, reason, expect("refused"))
-	assertSays(t, text, expect("refused", topic, "nothing was pushed", policy)+nextFixed())
+	assertSays(t, text, expect("refused", topic, policy)+nextFixed())
 
 	assert.Check(t, is.Equal(d.onOrigin(), ""))
 
@@ -510,10 +511,10 @@ func pushOpenFailureRows() []pushRow {
 
 	rows := []pushRow{
 		{
-			name: "for a reason of the forge", script: failing(errors.New("HTTP 502")),
+			name: "for a reason of the forge", script: failing(errors.New(forgeFailure)),
 			want: finish{
 				outcome: result.Broke, reason: expect("could not open the pull request"),
-				text: pushedLine() + expect("No pull request was opened", "HTTP 502") + nextFixed(),
+				text: pushedLine() + expect("No pull request was opened", forgeFailure) + nextFixed(),
 			},
 		},
 	}
@@ -563,6 +564,28 @@ func TestPush_WhenTheGitPushIsCutShort_BrokeSayingThePushMayHaveTaken(t *testing
 	}
 }
 
+// cutPush is what a push that may have taken must say: the sha of the topic branch it names, and a
+// reason that holds reason.
+type cutPush struct {
+	sha, reason string
+}
+
+// assertMayHaveTaken fails unless got is a broke push whose reason holds cut.reason, and whose text
+// names the topic branch and cut.sha and ends on `ils push`. It returns the text.
+func assertMayHaveTaken(t *testing.T, s *scene, got result.Result, cut cutPush) string {
+	t.Helper()
+
+	assertStopped(t, got, result.Broke)
+
+	text, why := shown(t, got, s.gitDir)
+	assertSays(t, why, expect(cut.reason))
+	assert.Check(t, is.Contains(text, topic))
+	assert.Check(t, is.Contains(text, cut.sha))
+	assert.Check(t, strings.HasSuffix(text, "ils push\n"), "RenderText() = %q, want it to end on `ils push`", text)
+
+	return text
+}
+
 func TestPush_WhenOriginStopsAnsweringDuringThePush_BrokeSayingThePushMayHaveTaken(t *testing.T) {
 	t.Parallel()
 	const denied = "Permission denied for this key."
@@ -573,14 +596,8 @@ func TestPush_WhenOriginStopsAnsweringDuringThePush_BrokeSayingThePushMayHaveTak
 
 	got := landing.Push(t.Context(), s.deps, pushRequest())
 
-	assertStopped(t, got, result.Broke)
-
-	text, reason := shown(t, got, s.gitDir)
-	assertSays(t, reason, expect("stopped answering"))
-	assert.Check(t, is.Contains(text, topic))
-	assert.Check(t, is.Contains(text, sha))
+	text := assertMayHaveTaken(t, s, got, cutPush{sha: sha, reason: "stopped answering"})
 	assert.Check(t, is.Contains(text, denied))
-	assert.Check(t, strings.HasSuffix(text, "ils push\n"), "RenderText() = %q, want it to end on `ils push`", text)
 }
 
 // killsGitPush ends the git push with SIGTERM from the ssh it started, while ils runs on.
@@ -605,13 +622,7 @@ func TestPush_WhenASignalKillsTheGitPush_BrokeSayingThePushMayHaveTaken(t *testi
 
 	got := landing.Push(t.Context(), s.deps, pushRequest())
 
-	assertStopped(t, got, result.Broke)
-
-	text, reason := shown(t, got, s.gitDir)
-	assertSays(t, reason, expect("did not finish"))
-	assert.Check(t, is.Contains(text, topic))
-	assert.Check(t, is.Contains(text, sha))
-	assert.Check(t, strings.HasSuffix(text, "ils push\n"), "RenderText() = %q, want it to end on `ils push`", text)
+	assertMayHaveTaken(t, s, got, cutPush{sha: sha, reason: "did not finish"})
 }
 
 // hideGit empties PATH for the whole process until the test ends, so that the next git call finds
@@ -648,7 +659,7 @@ func TestPush_WhenGitIsMissingForThePush_BrokeSayingNothingWasPushed(t *testing.
 
 	text, reason := shown(t, got, s.gitDir)
 	assertSays(t, reason, expect("could not push"))
-	assertSays(t, text, expect("Could not push", topic, "nothing was pushed")+nextFixed())
+	assertSays(t, text, expect("Could not push", topic)+nextFixed())
 	between(t, text, "nothing was pushed", "fix what failed")
 
 	assertAsked(t, s, changesRead())
@@ -735,7 +746,7 @@ func pushNoCIRows() []pushRow {
 				payload: detail(forge.VerdictNone, forge.MergeClean),
 			},
 		},
-		unreadable("and the CI read fails", errors.New("HTTP 502"), "HTTP 502"),
+		unreadable("and the CI read fails", errors.New(forgeFailure), forgeFailure),
 	}
 
 	for _, c := range cuts() {
@@ -821,9 +832,11 @@ func callsOf(calls []forgetest.Call, ops ...forgetest.Op) []forgetest.Call {
 
 // pushWaitRows are the pushes whose wait ends without an error, one per result it maps to.
 func pushWaitRows() []pushRow {
-	reviewed := greenAfter(pushedLine() + foundLine())
-	reviewed.text = pushedLine() + foundLine() + countLine() + blockedLine() + nextReview()
-	reviewed.payload = detail(forge.VerdictGreen, forge.MergeBlockedByReview, passing().Checks...)
+	reviewed := finish{
+		outcome: result.Done,
+		text:    pushedLine() + foundLine() + countLine() + blockedLine() + nextReview(),
+		payload: detail(forge.VerdictGreen, forge.MergeBlockedByReview, passing().Checks...),
+	}
 
 	rows := []pushRow{
 		{
@@ -885,14 +898,14 @@ func readsAfterWrites(err error) []failingRead {
 	}
 }
 
-// brokenAfter returns the pushes that end broke on each of reads, failing as HTTP 502.
+// brokenAfter returns the pushes that end broke on each of reads, failing as forgeFailure.
 func brokenAfter(reads []failingRead) []pushRow {
 	rows := make([]pushRow, 0, len(reads))
 
 	for _, read := range reads {
 		rows = append(rows, read.row(finish{
 			outcome: result.Broke, reason: expect(read.name),
-			text: read.before + unreadAfterWrites(read.name, "HTTP 502"),
+			text: read.before + unreadAfterWrites(read.name, forgeFailure),
 		}))
 	}
 
@@ -928,5 +941,5 @@ func TestPush_WhenAReadAfterTheWritesIsCutShort_PendingNamingTheRead(t *testing.
 func TestPush_WhenAReadFailsAfterTheWrites_BrokeNamingTheRead(t *testing.T) {
 	t.Parallel()
 
-	runPushes(t, brokenAfter(readsAfterWrites(errors.New("HTTP 502"))))
+	runPushes(t, brokenAfter(readsAfterWrites(errors.New(forgeFailure))))
 }

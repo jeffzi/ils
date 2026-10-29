@@ -238,8 +238,8 @@ func (r Repo) LocalTrunkAhead(ctx context.Context, trunk string) (ahead bool, pa
 
 	local := headsRef + trunk
 
-	behind, err := r.Contains(ctx, originTrunk(trunk), local)
-	if err != nil || behind {
+	contained, err := r.Contains(ctx, originTrunk(trunk), local)
+	if err != nil || contained {
 		return false, nil, err
 	}
 

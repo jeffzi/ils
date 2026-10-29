@@ -22,9 +22,8 @@ const writeThenMerge = writeMessage + ", then run %s"
 // it found or opened, and what its wait found.
 type delivery struct {
 	// url is the pull request's; it is empty until one is found or opened.
-	url string
-	req Request
-	// lines say what happened so far, in order.
+	url   string
+	req   Request
 	lines []result.Phrase
 	pushReady
 	// waited is the zero value until the wait has ended.
@@ -77,7 +76,7 @@ func (d *delivery) pushTip(ctx context.Context, deps Deps) *result.Result {
 		return nil
 	}
 
-	deps.started(result.Say("Pushing %s", d.markedBranch()), 0)
+	deps.started(result.Say("Pushing %s", d.markedBranch()), untilTheEnd)
 
 	err := deps.Repo.Push(ctx, d.branch)
 	if err == nil {
@@ -125,7 +124,6 @@ func (d *delivery) pushFailed(err error) *result.Result {
 			result.Broke, result.Say(originStopped+" during the push"), d.req.again())
 	}
 
-	// A signal killed git, perhaps after origin had taken the push.
 	if _, ok := errors.AsType[*child.KilledError](err); ok {
 		return d.endedSaying(
 			result.Say("The push of %s at %s did not finish, so it may or may not have taken: %s",
@@ -147,7 +145,7 @@ func (d *delivery) findOrOpen(ctx context.Context, deps Deps) *result.Result {
 		return nil
 	}
 
-	deps.started(result.Say("Opening a pull request against %s", result.Branch(d.Trunk)), 0)
+	deps.started(result.Say("Opening a pull request against %s", result.Branch(d.Trunk)), untilTheEnd)
 
 	opened, err := deps.Forge.OpenChange(ctx, d.Repo, forge.NewChange{Title: d.branch, Base: d.Trunk, Head: d.branch})
 
@@ -296,13 +294,7 @@ func (d *delivery) report(deps Deps) *result.Result {
 func (d *delivery) doneMerging() *result.Result {
 	d.sayMergeState()
 
-	return d.ended(result.Done, result.Phrase{}, d.mergeNext())
-}
-
-// mergeNext is the step after a push that is done: write the squash commit's message, then
-// run ils merge, once a review is in when the merge state asks for one.
-func (d *delivery) mergeNext() result.Next {
-	return mergeStep(d.Repo, d.number, d.waited.MergeState)
+	return d.ended(result.Done, result.Phrase{}, mergeStep(d.Repo, d.number, d.waited.MergeState))
 }
 
 // mergeStep is the step once the checks of pull request number in repo are green and its merge

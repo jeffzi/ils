@@ -119,14 +119,22 @@ func sharedFirstCommit(ctx context.Context, deps Deps, req Request, p pushReady)
 
 	if p.copied != "" {
 		published, err := deps.Repo.Contains(ctx, p.copied, first)
-		if err != nil || published {
+		if err != nil {
 			return nil, readCopy, err
+		}
+
+		if published {
+			return nil, readCopy, nil
 		}
 	}
 
 	others, err := deps.Repo.BranchesContaining(ctx, first)
-	if err != nil || len(others) == 0 {
+	if err != nil {
 		return nil, readBranches, err
+	}
+
+	if len(others) == 0 {
+		return nil, readBranches, nil
 	}
 
 	own, err := deps.Repo.OwnCommits(ctx, p.tip, p.Trunk, others)

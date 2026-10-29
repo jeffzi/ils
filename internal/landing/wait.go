@@ -144,7 +144,6 @@ const (
 	CutoffInterrupt
 )
 
-// takeState records the merge state head reports and the forge's own value behind it.
 func (w *Waited) takeState(head forge.Head) {
 	w.MergeState, w.RawMergeState = head.MergeState, head.RawMergeState
 }
@@ -495,9 +494,9 @@ func (w waiter) movedOn(waited *Waited, head forge.Head) bool {
 		return false
 	}
 
-	*waited = Waited{
-		Outcome: WaitMoved, MovedTo: head.SHA, MergeState: waited.MergeState, RawMergeState: waited.RawMergeState,
-	}
+	moved := waited.unconfirmed()
+	moved.Outcome, moved.MovedTo = WaitMoved, head.SHA
+	*waited = moved
 
 	return true
 }
@@ -598,7 +597,8 @@ func (w waiter) concluded(ctx context.Context, waited *Waited) (forge.Verdict, W
 		outcome, done = judge(verdict, w.pushed.Required)
 		// Runs appear some seconds after a push, so a verdict without them is only believed once
 		// that has lasted. A failed check stays failed whatever runs start later.
-		if done && outcome != WaitRed && len(verdict.Runs) == 0 && time.Since(began)+verdictPoll <= silentRetry {
+		runsMayStillAppear := len(verdict.Runs) == 0 && time.Since(began)+verdictPoll <= silentRetry
+		if done && outcome != WaitRed && runsMayStillAppear {
 			done = false
 		}
 
@@ -755,7 +755,6 @@ func silent(verdict forge.Verdict) bool {
 	return len(verdict.Checks) == 0 && len(verdict.Runs) == 0
 }
 
-// tally counts the checks in the pass bucket and the checks in the skipped bucket.
 func tally(checks []forge.Check) (passed, skipped int) {
 	for _, check := range checks {
 		switch check.Bucket {

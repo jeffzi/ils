@@ -58,7 +58,8 @@ func detached() string {
 	return expect("detached") + nextBranch()
 }
 
-// dirtyText is cmd's refusal of a tree whose changed tracked files are files.
+// dirtyText is cmd's refusal of a tree with uncommitted tracked files, which it names in sorted
+// order.
 func dirtyText(cmd landingCommand, files ...string) string {
 	slices.Sort(files)
 
@@ -300,12 +301,12 @@ func TestPush_WhenLocalReadFails_BrokeNamingTheRead(t *testing.T) {
 
 func TestPush_WhenFindChangesFailsUntyped_BrokeNamingTheRead(t *testing.T) {
 	t.Parallel()
-	s := newScene(t, nil, failingToFind(errors.New("HTTP 502")), false)
+	s := newScene(t, nil, failingToFind(errors.New(forgeFailure)), false)
 	before := s.written()
 
 	got := landing.Push(t.Context(), s.deps, pushRequest())
 
-	want := unreadText(pushCommand(), readChanges, "HTTP 502")
+	want := unreadText(pushCommand(), readChanges, forgeFailure)
 	assertEnded(t, s, got, finish{outcome: result.Broke, text: want})
 	assertOnlyRead(t, s, reads{before: before, ops: changesRead(), fetches: true})
 }

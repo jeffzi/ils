@@ -64,7 +64,7 @@ func RenderStyled(r Result, gitDir string, profile colorprofile.Profile) (string
 		b.WriteString(pen.Styled(style, label+":") + " " + pen.spans(view.reason) + "\n")
 	}
 
-	if !view.nextNone {
+	if !view.noNext {
 		nextStyle := ansi.NewStyle().Bold().Underline(true)
 		b.WriteString(pen.Styled(nextStyle, NextLabel) + ": " + pen.spans(view.next) + "\n")
 	}
@@ -301,12 +301,12 @@ func (e *WordingError) Error() string {
 // shown is a checked result with every phrase rendered. Both renderers print
 // from it and from nothing else, so the two cannot drift.
 type shown struct {
-	lines    [][]span
-	reason   []span
-	next     []span
-	Object   `json:",inline"`
-	outcome  Outcome
-	nextNone bool
+	lines   [][]span
+	reason  []span
+	next    []span
+	Object  `json:",inline"`
+	outcome Outcome
+	noNext  bool
 }
 
 // check renders every phrase of r and rejects a result whose own wording
@@ -320,7 +320,7 @@ func check(r Result, gitDir string) (shown, error) {
 		Excerpt:  r.Excerpt,
 		Payload:  r.Payload,
 		outcome:  r.Outcome,
-		nextNone: r.Next.None(),
+		noNext:   r.Next.None(),
 	}
 
 	for _, line := range r.Lines {
@@ -338,7 +338,7 @@ func check(r Result, gitDir string) (shown, error) {
 		return shown{}, err
 	}
 
-	if view.next, err = checked(r.Command, r.Next.wording(), gitDir, r.Next.spans); err != nil {
+	if view.next, err = checked(r.Command, r.Next.phrase.wording, gitDir, r.Next.spans); err != nil {
 		return shown{}, err
 	}
 
@@ -406,13 +406,9 @@ func (n Next) spans() ([]span, error) {
 	return command, nil
 }
 
-// wording returns the fixed text of n, as the wording check reads it.
-func (n Next) wording() string {
-	return n.phrase.wording
-}
-
-// forbidden returns the first part of ownWording that names a hook or a path
-// under the git dir.
+// forbidden returns what in ownWording names a hook or a path under the git dir, and whether
+// anything does: gitDir itself when the wording names a path under it, else the first word that
+// names a git dir or a hook.
 func forbidden(ownWording, gitDir string) (string, bool) {
 	// The git dir is matched against the whole wording, since a path may hold spaces.
 	if dir := strings.TrimRight(folded(gitDir), "/"); dir != "" && namesPath(folded(ownWording), dir) {

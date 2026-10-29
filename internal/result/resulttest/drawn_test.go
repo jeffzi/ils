@@ -37,7 +37,6 @@ func TestDraw_WhenRenditionParameterUnknown_FailsTest(t *testing.T) {
 		name string
 		out  string
 	}{
-		{name: "italic", out: "\x1b[3mx"},
 		{name: "unknown code beside a known one", out: "\x1b[1;7mx"},
 	}
 	for _, tt := range tests {

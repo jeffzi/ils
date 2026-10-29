@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os/exec"
 	"slices"
 	"strings"
@@ -60,25 +61,25 @@ func Failure(ctx context.Context, argv []string, runErr error, stderr string) er
 	}
 
 	exitErr, ok := errors.AsType[*exec.ExitError](runErr)
-	if ok && interrupted(exitErr) {
+	if !ok {
+		return named(runErr)
+	}
+
+	if interrupted(exitErr) {
 		return named(context.Canceled)
 	}
 
-	if ok && killedBy(exitErr, syscall.SIGTERM) {
+	if killedBy(exitErr, syscall.SIGTERM) {
 		if ctxErr := endedWithin(ctx, terminateGrace); ctxErr != nil {
 			return named(ctxErr)
 		}
 	}
 
-	if ok && exitErr.Exited() {
+	if exitErr.Exited() {
 		return &ExitError{Argv: argv, Code: exitErr.ExitCode(), Stderr: stderr}
 	}
 
-	if ok {
-		return &KilledError{Argv: argv, Err: runErr}
-	}
-
-	return named(runErr)
+	return &KilledError{Argv: argv, Err: runErr}
 }
 
 // KilledError reports a program that started and never exited: a signal ended it, after it may
@@ -137,7 +138,6 @@ func interrupted(exitErr *exec.ExitError) bool {
 	return interruptedExit(exitErr.ExitCode())
 }
 
-// killedBy reports whether the program exitErr reports on was killed by signal.
 func killedBy(exitErr *exec.ExitError, signal syscall.Signal) bool {
 	status, ok := exitErr.Sys().(syscall.WaitStatus)
 
@@ -166,7 +166,7 @@ const statusControlCExit = 0xC000013A
 // STATUS_CONTROL_C_EXIT. Windows keeps the code as a uint32 and ExitCode converts it to int, so a
 // 32-bit build sees it negative; only its low 32 bits are compared.
 func interruptedExit(code int) bool {
-	return int64(code)&0xFFFFFFFF == statusControlCExit
+	return int64(code)&math.MaxUint32 == statusControlCExit
 }
 
 // Exec is one finished run of a tool, as a debug log records it.
@@ -244,8 +244,7 @@ type ToolTooOldError struct {
 	// Version is the installed version, empty when Line carries none that could be read.
 	Version string
 	// Line is the first line the tool prints when asked for its version.
-	Line string
-	// Minimum is the oldest version of the tool that ils works with.
+	Line       string
 	Minimum    string
 	InstallURL string
 }

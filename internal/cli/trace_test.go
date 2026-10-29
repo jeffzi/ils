@@ -49,22 +49,21 @@ var (
 	waitLine = regexp.MustCompile(`^\+\d+\.\d{3}s wait \S+=\S+( \S+=\S+)*$`)
 )
 
-// traced sorts the debug lines of stderr: the calls they trace, how many wait decisions they
-// trace, and the lines that are neither.
-func traced(stderr string) (calls []string, waits int, unmatched []string) {
+// traced sorts the debug lines of stderr: the calls they trace, and the lines that are neither a
+// call nor a wait decision.
+func traced(stderr string) (calls, unmatched []string) {
 	for line := range strings.Lines(stderr) {
 		line = strings.TrimSuffix(line, "\n")
 		switch m := execLine.FindStringSubmatch(line); {
 		case m != nil:
 			calls = append(calls, m[1])
 		case waitLine.MatchString(line):
-			waits++
 		default:
 			unmatched = append(unmatched, line)
 		}
 	}
 
-	return calls, waits, unmatched
+	return calls, unmatched
 }
 
 // commandLines returns each argv as the command line a debug line names it by.
@@ -82,11 +81,10 @@ func TestApp_Run_WhenDebugIsOnDuringALanding_TracesTheLandingOnStderrAlone(t *te
 
 	got := launch(t, s.app(), "push", "--json", "-d")
 
-	calls, waits, unmatched := traced(got.stderr)
+	calls, unmatched := traced(got.stderr)
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
 	assert.Check(t, is.Len(unmatched, 0), "lines that are neither a call nor a wait decision: %q", unmatched)
 	assert.Check(t, is.DeepEqual(calls, commandLines(slices.Concat(s.recorder.Calls(), s.fake.Calls())), anyOrder()))
-	assert.Check(t, waits > 0, "stderr traced no wait decision:\n%s", got.stderr)
 }
 
 func debugRecord(at time.Time, message string, attrs ...slog.Attr) slog.Record {
@@ -134,8 +132,7 @@ func TestApp_Run_WhenDebugIsOn_DrawsEachRecordTimedFromLaunchWithTimesDim(t *tes
 	}
 	assert.Assert(t, len(lines) >= len(want), "stderr = %q", drawn.String())
 	assert.Check(t, is.DeepEqual(lines[len(lines)-len(want):], want))
-	assert.Check(t, drawn.LookOf(t, want[1], "+2.250s") != resulttest.Look{}, "stderr = %q", drawn.String())
-	assert.Check(t, drawn.LookOf(t, want[1], "1.234s") != resulttest.Look{}, "stderr = %q", drawn.String())
+	assert.Check(t, is.Equal(drawn.LookOf(t, want[1], "+2.250s"), resulttest.Look{Dim: true}), "stderr = %q", drawn.String())
 }
 
 func TestApp_Run_WhenDebugIsOn_LeadsEachKeyByTheGroupsOpenWhenItWasAdded(t *testing.T) {
@@ -198,10 +195,12 @@ func TestApp_Run_WhenDebugHandlerIsDerivedTwice_TheDerivationsShareNothing(t *te
 func tracedReads(t *testing.T, derive func(slog.Handler) []slog.Handler, attrs ...slog.Attr) [][]string {
 	t.Helper()
 
+	const message = "read"
+
 	app := outside(t)
 	app.SetPush(func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
 		for _, handler := range derive(deps.Logger.Handler()) {
-			assert.Check(t, handler.Handle(ctx, debugRecord(time.Now(), "read", attrs...)))
+			assert.Check(t, handler.Handle(ctx, debugRecord(time.Now(), message, attrs...)))
 		}
 
 		return finished(req)
@@ -211,7 +210,7 @@ func tracedReads(t *testing.T, derive func(slog.Handler) []slog.Handler, attrs .
 
 	var reads [][]string
 	for line := range strings.Lines(got.stderr) {
-		if fields := strings.Fields(line); len(fields) >= 2 && fields[1] == "read" {
+		if fields := strings.Fields(line); len(fields) >= 2 && fields[1] == message {
 			reads = append(reads, fields[2:])
 		}
 	}

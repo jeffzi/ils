@@ -336,9 +336,7 @@ func protectionOf(rules []branchRule) forge.Protection {
 	return protection
 }
 
-// branchPath returns branch as a REST path.
-//
-// Each segment is escaped on its own: `#`, `%` and `?` would otherwise cut or corrupt the
+// branchPath escapes each segment on its own: `#`, `%` and `?` would otherwise cut or corrupt the
 // path, while `/` is kept literal so that a name like release/v1 keeps its slash in the path.
 func branchPath(branch string) string {
 	segments := strings.Split(branch, "/")
@@ -355,8 +353,12 @@ func branchPath(branch string) string {
 // A trunk with no .github/workflows directory has no CI; any other failure of a read is an error.
 func (f *Forge) HasTrunkCI(ctx context.Context, repo forge.Repo, trunk string) (bool, error) {
 	active, err := f.activeWorkflows(ctx, repo)
-	if err != nil || len(active) == 0 {
+	if err != nil {
 		return false, err
+	}
+
+	if len(active) == 0 {
+		return false, nil
 	}
 
 	files, err := f.workflowFiles(ctx, repo, trunk)

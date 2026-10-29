@@ -34,7 +34,7 @@ func callGit(t *testing.T, env []string, dir string, args ...string) faked {
 
 	var stdout, stderr bytes.Buffer
 
-	cmd := exec.CommandContext(t.Context(), "git", args...) //nolint:gosec // argv is written by the tests in this file
+	cmd := exec.CommandContext(t.Context(), "git", args...) //nolint:gosec // argv is written by the tests of this package
 	cmd.Dir = dir
 	cmd.Env = env
 	cmd.Stdout = &stdout
@@ -209,7 +209,6 @@ func initRepo(t *testing.T, env []string) string {
 	return dir
 }
 
-// Not parallel at either level: each row sets GORACE with t.Setenv.
 func TestRaceSetting(t *testing.T) {
 	tests := []struct {
 		name string
@@ -219,6 +218,7 @@ func TestRaceSetting(t *testing.T) {
 		{name: "no options in the environment", env: "", want: "atexit_sleep_ms=0"},
 		{name: "options in the environment", env: "halt_on_error=1", want: "halt_on_error=1 atexit_sleep_ms=0"},
 	}
+	// Not parallel at either level: each row sets GORACE with t.Setenv.
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("GORACE", tt.env)

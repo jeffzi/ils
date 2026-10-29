@@ -45,22 +45,24 @@ const (
 	liveGitVersionVar = "ILS_LIVE_GIT_VERSION"
 )
 
-// checkLiveGit returns why the output of `git --version` does not suit the live suite, or nil.
-func checkLiveGit(target, want, out string) error {
-	tool := testtarget.Tool{
+// liveGitTool is the git the live suite must find.
+func liveGitTool() testtarget.Tool {
+	return testtarget.Tool{
 		Name: "git", TargetVar: liveGitTargetVar, VersionVar: liveGitVersionVar, MinimumVersion: git.MinimumVersion,
 	}
-
-	return tool.CheckOutput(target, want, out, git.VersionOf)
 }
 
-// checkLiveGh returns why the output of `gh --version` does not suit the live suite, or nil.
-func checkLiveGh(target, want, out string) error {
-	tool := testtarget.Tool{
+// liveGhTool is the gh the live suite must find.
+func liveGhTool() testtarget.Tool {
+	return testtarget.Tool{
 		Name: "gh", TargetVar: liveGhTargetVar, VersionVar: liveGhVersionVar, MinimumVersion: github.MinimumVersion,
 	}
+}
 
-	return tool.CheckOutput(target, want, out, github.VersionOf)
+// checkLiveTool returns why out, the output of `<tool> --version`, does not suit the live suite
+// given the target and version the environment sets for tool, or nil.
+func checkLiveTool(tool testtarget.Tool, out string, versionOf func(string) string) error {
+	return tool.CheckOutput(os.Getenv(tool.TargetVar), os.Getenv(tool.VersionVar), out, versionOf)
 }
 
 const (
@@ -102,8 +104,7 @@ type liveSuite struct {
 	// url is the clone URL liveOriginVar holds, and origin the repository it names.
 	url    string
 	origin git.Origin
-	// trunk is the repository's default branch.
-	trunk string
+	trunk  string
 }
 
 // liveBranch is one scenario's fresh clone, on a branch of its own.
@@ -196,8 +197,8 @@ func newLiveSuite(t *testing.T) *liveSuite {
 
 	l.origin = origin
 
-	assert.NilError(t, checkLiveGh(os.Getenv(liveGhTargetVar), os.Getenv(liveGhVersionVar), mustGh(t, "--version")))
-	assert.NilError(t, checkLiveGit(os.Getenv(liveGitTargetVar), os.Getenv(liveGitVersionVar), mustGit(t, "", "--version")))
+	assert.NilError(t, checkLiveTool(liveGhTool(), mustGh(t, "--version"), github.VersionOf))
+	assert.NilError(t, checkLiveTool(liveGitTool(), mustGit(t, "", "--version"), git.VersionOf))
 	l.reset(t)
 	l.checkRulesRead(t)
 
@@ -244,8 +245,14 @@ func (l *liveSuite) mustRemoteCommit(t *testing.T, ref string) string {
 
 // trunkRef is the full name of the default branch's ref.
 func (l *liveSuite) trunkRef() string {
-	return "refs/heads/" + l.trunk
+	return headRef(l.trunk)
 }
+
+// headRef is the full name of the ref of the branch name.
+func headRef(name string) string { return "refs/heads/" + name }
+
+// liveToken returns random text in no earlier run's branch or commit.
+func liveToken() string { return strings.ToLower(rand.Text())[:liveTokenLength] }
 
 // clone returns a fresh clone of the repository that commits under a name of its own and
 // signs nothing.
@@ -376,7 +383,7 @@ func (l *liveSuite) changeTrunk(t *testing.T, files map[string]string) {
 func (l *liveSuite) branch(t *testing.T, scenario string) *liveBranch {
 	t.Helper()
 
-	token := strings.ToLower(rand.Text())[:liveTokenLength]
+	token := liveToken()
 	b := &liveBranch{
 		suite: l, dir: l.clone(t), name: "live/" + scenario + "-" + token, token: token,
 		deadline: time.Now().Add(liveScenarioLimit),
@@ -485,6 +492,16 @@ func (b *liveBranch) onePull(t *testing.T) livePull {
 	return pulls[0]
 }
 
+// pushedPull commits files, pushes the branch, and returns the number of its pull request.
+func (b *liveBranch) pushedPull(t *testing.T, files map[string]string) string {
+	t.Helper()
+
+	b.commit(t, files)
+	b.push(t)
+
+	return strconv.Itoa(b.onePull(t).Number)
+}
+
 func (b *liveBranch) tip(t *testing.T) string {
 	t.Helper()
 
@@ -496,7 +513,7 @@ func (b *liveBranch) tip(t *testing.T) string {
 func (b *liveBranch) remoteTip(t *testing.T) string {
 	t.Helper()
 
-	return b.suite.remoteCommit(t, "refs/heads/"+b.name)
+	return b.suite.remoteCommit(t, headRef(b.name))
 }
 
 // state is the state GitHub gives the pull request numbered number: OPEN, CLOSED or MERGED.
@@ -598,7 +615,7 @@ func liveDispatchedWorkflow() map[string]string {
 // Scenarios
 // ---------------------------------------------------------------------------
 
-func TestLive(t *testing.T) {
+func TestApp_Run_AgainstALiveRepository_EndsEachScenarioAsGitHubReportsIt(t *testing.T) {
 	l := newLiveSuite(t)
 
 	// The scenarios that write to the default branch run last.
@@ -747,7 +764,7 @@ func liveStatusOfTrunk(t *testing.T, l *liveSuite) {
 
 func liveStartBranch(t *testing.T, l *liveSuite) {
 	dir := l.clone(t)
-	name := "live/branch-" + strings.ToLower(rand.Text())[:liveTokenLength]
+	name := "live/branch-" + liveToken()
 
 	started := launch(t, over(git.Runner{Dir: dir}), "branch", name, "--json")
 
@@ -757,8 +774,8 @@ func liveStartBranch(t *testing.T, l *liveSuite) {
 }
 
 func liveBranchTaken(t *testing.T, l *liveSuite) {
-	name := "live/branch-" + strings.ToLower(rand.Text())[:liveTokenLength]
-	mustGit(t, l.clone(t), "push", "--quiet", l.url, "HEAD:refs/heads/"+name)
+	name := "live/branch-" + liveToken()
+	mustGit(t, l.clone(t), "push", "--quiet", l.url, "HEAD:"+headRef(name))
 
 	got := launch(t, over(git.Runner{Dir: l.clone(t)}), "branch", name, "--json")
 
@@ -768,9 +785,7 @@ func liveBranchTaken(t *testing.T, l *liveSuite) {
 
 func liveAlreadyLanded(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "landed")
-	b.commit(t, nil)
-	b.push(t)
-	number := strconv.Itoa(b.onePull(t).Number)
+	number := b.pushedPull(t, nil)
 	mustGh(t, "pr", "merge", number, "--repo", l.slug(), "--squash")
 	before := b.remoteTip(t)
 
@@ -829,9 +844,7 @@ func liveCIDidNotFire(t *testing.T, l *liveSuite) {
 
 func liveTitleRefused(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "title")
-	b.commit(t, liveWorkflow("echo passed"))
-	b.push(t)
-	number := strconv.Itoa(b.onePull(t).Number)
+	number := b.pushedPull(t, liveWorkflow("echo passed"))
 	before := l.remoteCommit(t, l.trunkRef())
 
 	got := b.merge(t)
@@ -845,9 +858,7 @@ func liveTitleRefused(t *testing.T, l *liveSuite) {
 
 func liveMerged(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "merged")
-	b.commit(t, liveWorkflow("echo passed"))
-	b.push(t)
-	number := strconv.Itoa(b.onePull(t).Number)
+	number := b.pushedPull(t, liveWorkflow("echo passed"))
 	title, body := "feat(live): land "+b.token, "Landed by the live suite as "+b.token+"."
 	mustGh(t, "pr", "edit", number, "--repo", l.slug(), "--title", title, "--body", body)
 	before := l.remoteCommit(t, l.trunkRef())
@@ -867,9 +878,7 @@ func liveMerged(t *testing.T, l *liveSuite) {
 
 func liveMergedOnTheWeb(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "merged-web")
-	b.commit(t, nil)
-	b.push(t)
-	number := strconv.Itoa(b.onePull(t).Number)
+	number := b.pushedPull(t, nil)
 	mustGh(t, "pr", "merge", number, "--repo", l.slug(), "--squash")
 	before := l.remoteCommit(t, l.trunkRef())
 

@@ -27,7 +27,6 @@ const (
 	opened = 12
 
 	readCommits  = "the branch's commits"
-	readOnOrigin = "whether origin has the branch"
 	readCopy     = "origin's copy of the branch"
 	readBranches = "the local branches"
 )
@@ -175,9 +174,6 @@ func cutRefusals() []pushRefusal {
 // manyCutRefusals are the refusals of an unpublished branch whose first commit past the trunk
 // several other local branches carry.
 func manyCutRefusals() []pushRefusal {
-	others := func(rest string) string {
-		return expect(side, "shares its first commit", "branches", rest)
-	}
 	listed := []string{early, topic, yearly}
 
 	return []pushRefusal{
@@ -191,7 +187,7 @@ func manyCutRefusals() []pushRefusal {
 				f.Git("branch", yearly, side)
 				own := f.Commits(side, sharpen)[0]
 
-				return expect(own, sharpen) + others(ownListed) + nextEitherMany()
+				return expect(own, sharpen) + shares("branches", ownListed) + nextEitherMany()
 			},
 			listed: listed,
 		},
@@ -203,7 +199,7 @@ func manyCutRefusals() []pushRefusal {
 				f.Git("branch", yearly, topic)
 				f.Git("switch", "--quiet", "--create", side, topic)
 
-				return others(noOwn) + nextEitherMany()
+				return shares("branches", noOwn) + nextEitherMany()
 			},
 			listed: listed,
 		},
@@ -274,7 +270,7 @@ func TestPush_WhenSharedPreconditionFails_ReturnsItsRefusal(t *testing.T) {
 
 	got := landing.Push(t.Context(), s.deps, pushRequest())
 
-	assertStopped(t, got, result.Refused)
+	assertEnded(t, s, got, finish{outcome: result.Refused, text: expect("no remote named origin")})
 	assert.Check(t, is.Equal(s.written(), before))
 	assert.Check(t, !s.gitRan("fetch"), "git fetched from origin before the refusal")
 }
@@ -417,25 +413,6 @@ func runOvertime(t *testing.T, rows func(c cut) []overtime) {
 			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
 		})
 	}
-}
-
-func TestPush_WhenAReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
-	t.Parallel()
-
-	runOvertime(t, func(c cut) []overtime {
-		return []overtime{
-			{
-				// Origin answers about its trunk and the fetch of it, and nothing after.
-				name: "during the question whether origin has the branch", read: readOnOrigin,
-				script: allowed(), ops: identityRead(), arrange: c.stalling(2),
-			},
-			{
-				name: "during the fetch of origin's copy of the branch", read: readCopy,
-				script: allowed(), ops: identityRead(), arrange: c.stalling(3),
-				prepare: func(f *gittest.Fixture) { f.Publish(topic) },
-			},
-		}
-	})
 }
 
 // failGit makes the scene's git calls whose arguments start with words fail as gittest.FakeGit

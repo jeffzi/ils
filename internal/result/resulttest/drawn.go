@@ -50,7 +50,7 @@ func Draw(tb testing.TB, out string) Drawn {
 	var d Drawn
 	pen := Look{}
 	for out != "" {
-		if strings.HasPrefix(out, "\x1b[") {
+		if strings.HasPrefix(out, controlSequenceIntroducer) {
 			pen, out = sequence(tb, pen, out)
 
 			continue
@@ -63,6 +63,9 @@ func Draw(tb testing.TB, out string) Drawn {
 
 	return d
 }
+
+// controlSequenceIntroducer starts every control sequence.
+const controlSequenceIntroducer = "\x1b["
 
 // Control sequences end at the first byte in this range.
 const (
@@ -80,7 +83,7 @@ func isFinalByte(r rune) bool {
 func sequence(tb testing.TB, pen Look, out string) (Look, string) {
 	tb.Helper()
 
-	rest := out[len("\x1b["):]
+	rest := out[len(controlSequenceIntroducer):]
 	end := strings.IndexFunc(rest, isFinalByte)
 	assert.Assert(tb, end >= 0, "unterminated sequence in %q", out)
 	if rest[end] == 'm' {
@@ -90,6 +93,9 @@ func sequence(tb testing.TB, pen Look, out string) (Look, string) {
 	return pen, rest[end+1:]
 }
 
+// resetParam clears every decoration; a sequence with no parameters means it too.
+const resetParam = "0"
+
 // rendition returns pen as the parameters of one select graphic rendition sequence change it, and
 // fails the test on a parameter it does not know.
 func rendition(tb testing.TB, pen Look, params string) Look {
@@ -97,11 +103,11 @@ func rendition(tb testing.TB, pen Look, params string) Look {
 
 	fields := strings.FieldsFunc(params, func(r rune) bool { return r == ';' })
 	if len(fields) == 0 {
-		fields = []string{"0"}
+		fields = []string{resetParam}
 	}
 	for _, code := range fields {
 		switch code {
-		case "0":
+		case resetParam:
 			pen = Look{}
 		case "1":
 			pen.Bold = true

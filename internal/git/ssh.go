@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/jeffzi/ils/internal/child"
@@ -29,6 +30,12 @@ const (
 	printConfigFlag = "-G"
 	// shellNotFoundCode is the exit of a shell for a command it cannot find.
 	shellNotFoundCode = 127
+
+	// gitSSHCommandVar, sshCommandKey and gitSSHVar are the three settings that configure the ssh
+	// command git connects with, as SSHCommandMissingError.Setting reports them.
+	gitSSHCommandVar = "GIT_SSH_COMMAND"
+	sshCommandKey    = "core.sshCommand"
+	gitSSHVar        = "GIT_SSH"
 )
 
 // plainHostname returns the host plain ssh connects to when asked for host, the ssh git runs when
@@ -41,10 +48,7 @@ func (r Repo) plainHostname(ctx context.Context, host string) (string, error) {
 	// The host comes from a URL: after "--", one that starts with a dash is never read as an option.
 	args := []string{printConfigFlag, "--", host}
 
-	inv := r.Runner.invocation(sshProgram, sshInstallURL, args)
-	inv.lookPath = r.Runner.lookPath
-
-	result, err := inv.run(ctx)
+	result, err := r.Runner.sshInvocation(sshProgram, sshInstallURL, args).run(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -126,21 +130,21 @@ type sshCommand struct {
 // configuredSSH returns the ssh command git connects with, in git's order of precedence:
 // GIT_SSH_COMMAND, then core.sshCommand, then GIT_SSH. An empty value counts as unset.
 func (r Repo) configuredSSH(ctx context.Context) (sshCommand, error) {
-	if line, _ := r.Runner.getenv("GIT_SSH_COMMAND"); line != "" {
-		return sshCommand{line: line, setting: "GIT_SSH_COMMAND"}, nil
+	if line, _ := r.Runner.getenv(gitSSHCommandVar); line != "" {
+		return sshCommand{line: line, setting: gitSSHCommandVar}, nil
 	}
 
-	line, _, err := r.config(ctx, "core.sshCommand")
+	line, _, err := r.config(ctx, sshCommandKey)
 	if err != nil {
 		return sshCommand{}, err
 	}
 
 	if line != "" {
-		return sshCommand{line: line, setting: "core.sshCommand"}, nil
+		return sshCommand{line: line, setting: sshCommandKey}, nil
 	}
 
-	if program, _ := r.Runner.getenv("GIT_SSH"); program != "" {
-		return sshCommand{program: program, setting: "GIT_SSH"}, nil
+	if program, _ := r.Runner.getenv(gitSSHVar); program != "" {
+		return sshCommand{program: program, setting: gitSSHVar}, nil
 	}
 
 	return sshCommand{}, nil
@@ -254,9 +258,12 @@ func isAssignment(word string) bool {
 		return false
 	}
 
-	return !strings.ContainsFunc(name, func(c rune) bool {
-		return c != '_' && (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9')
-	})
+	return !strings.ContainsFunc(name, func(c rune) bool { return !isNameChar(c) })
+}
+
+// isNameChar reports whether c is an ASCII letter, digit or underscore.
+func isNameChar(c rune) bool {
+	return c == '_' || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || ('0' <= c && c <= '9')
 }
 
 // lineWords returns the words of line as git splits a command line: spaces outside quotes separate
@@ -375,9 +382,7 @@ func (r Repo) askSSH(ctx context.Context, command sshCommand, host string) (stri
 		named = command.line
 		result, err = r.Runner.Run(ctx, append([]string{"-c", "alias." + sshAlias + "=!" + command.line, sshAlias}, args...)...)
 	} else {
-		inv := r.Runner.invocation(command.program, "", args)
-		inv.lookPath = r.Runner.lookPath
-		result, err = inv.run(ctx)
+		result, err = r.Runner.sshInvocation(command.program, "", args).run(ctx)
 	}
 
 	if notFound, ok := errors.AsType[*child.ToolMissingError](err); ok && command.line == "" {
@@ -400,6 +405,15 @@ func (r Repo) askSSH(ctx context.Context, command sshCommand, host string) (stri
 	return hostnameIn(result.Stdout, argv)
 }
 
+// sshInvocation returns the invocation of tool with args as Runner.invocation builds it, except that
+// tool is found on the PATH of the runner's environment, as lookPath searches it.
+func (r Runner) sshInvocation(tool, toolURL string, args []string) invocation {
+	inv := r.invocation(tool, toolURL, args)
+	inv.lookPath = r.lookPath
+
+	return inv
+}
+
 // getenv returns the value key has in the environment git runs with, and whether it is set, as
 // EnvValue reads it.
 func (r Runner) getenv(key string) (string, bool) {
@@ -408,6 +422,31 @@ func (r Runner) getenv(key string) (string, bool) {
 	}
 
 	return EnvValue(r.Env, key)
+}
+
+// SameKey reports whether name, the key of an environment entry, is key as the system matches
+// keys: exactly, or without regard to case on Windows.
+func SameKey(name, key string) bool {
+	return name == key || (runtime.GOOS == "windows" && strings.EqualFold(name, key))
+}
+
+// EnvValue returns the value key has in env, a list of key=value entries, and whether env sets it.
+// A key set twice has its last value, as it does for a child started with env, and keys match as
+// SameKey matches them.
+func EnvValue(env []string, key string) (string, bool) {
+	var (
+		value string
+		set   bool
+	)
+
+	for _, entry := range env {
+		name, entryValue, ok := strings.Cut(entry, "=")
+		if ok && SameKey(name, key) {
+			value, set = entryValue, true
+		}
+	}
+
+	return value, set
 }
 
 // lookPath finds name as exec.LookPath does, on the PATH of the environment git runs with: the
@@ -443,7 +482,7 @@ func (r Runner) missingProgram(command sshCommand) *SSHCommandMissingError {
 		return nil
 	}
 
-	return r.notFound(command, command.program)
+	return r.missingOn(command, command.program)
 }
 
 // missingLineProgram returns the *SSHCommandMissingError for the program of command's line, which
@@ -462,12 +501,12 @@ func (r Runner) missingLineProgram(command sshCommand, exitErr *child.ExitError)
 		return nil
 	}
 
-	return r.notFound(command, word)
+	return r.missingOn(command, word)
 }
 
-// notFound returns the *SSHCommandMissingError for program, a program of command, when it is not
+// missingOn returns the *SSHCommandMissingError for program, a program of command, when it is not
 // found on the PATH git searches; otherwise it returns nil.
-func (r Runner) notFound(command sshCommand, program string) *SSHCommandMissingError {
+func (r Runner) missingOn(command sshCommand, program string) *SSHCommandMissingError {
 	if _, err := r.lookPath(program); err != nil {
 		return &SSHCommandMissingError{Setting: command.setting, Program: program, Err: err}
 	}

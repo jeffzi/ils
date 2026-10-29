@@ -44,7 +44,7 @@ func TestRepo_OriginURLs_WhenURLIsSSH_ReturnsTheHostSSHConnectsTo(t *testing.T) 
 			got, err := repo.OriginURLs(t.Context())
 			assert.NilError(t, err, "OriginURLs() of %q", tt.url)
 
-			named := git.Origin{Host: "github.com", Owner: "jeffzi", Name: "ils"}
+			named := ilsOrigin()
 			want := git.OriginURLs{Fetch: named, Push: named, FetchURL: tt.url, PushURL: tt.url}
 			assert.Check(t, is.DeepEqual(got, want), "OriginURLs() of %q", tt.url)
 		})
@@ -73,14 +73,6 @@ func TestRepo_OriginURLs_WhenSSHFails_ReturnsExitErrorOfSSH(t *testing.T) {
 	assert.Check(t, is.Equal(exitErr.Argv[0], "ssh"))
 }
 
-// onRunnerPath links the test binary under name into a directory of its own put first on the PATH
-// of repo's runner environment alone, and returns repo; the process PATH stays as it is.
-func onRunnerPath(t *testing.T, repo git.Repo, name string) git.Repo {
-	t.Helper()
-
-	return firstOnRunnerPath(repo, standIn(t, name))
-}
-
 // firstOnRunnerPath returns repo with the directory of the program at path, in the slash form, put
 // first on the PATH of its runner's environment.
 func firstOnRunnerPath(repo git.Repo, path string) git.Repo {
@@ -91,11 +83,11 @@ func firstOnRunnerPath(repo git.Repo, path string) git.Repo {
 
 // plainSSH returns repo with no ssh command, and the test binary first on the PATH of its runner's
 // environment under ssh's name, acting as the plain ssh ils runs when no ssh command is configured,
-// in the stand-in mode plainSSHEnv takes.
+// in the stand-in mode plainSSHEnv takes. The process PATH stays as it is.
 func plainSSH(t *testing.T, repo git.Repo, mode string) git.Repo {
 	t.Helper()
 
-	repo = onRunnerPath(t, noSSHCommand(repo), "ssh")
+	repo = firstOnRunnerPath(noSSHCommand(repo), standIn(t, "ssh"))
 	repo.Runner.Env = append(repo.Runner.Env, plainSSHEnv+"="+mode)
 
 	return repo
@@ -153,8 +145,8 @@ func TestRepo_OriginURLs_WhenSSHMissingFromRunnerPath_ReturnsToolMissingError(t 
 
 func TestRepo_OriginURLs_WhenContextEndsWhileGitSSHProgramRuns_ReturnsContextError(t *testing.T) {
 	t.Parallel()
-	f := gittest.New(t, trunk)
-	f.SetOriginURL(aliasURL)
+	f := aliasFixture(t)
+	f.SetPushURL(httpsURL)
 	addr, started := gittest.SilentListener(t)
 	repo := noSSHCommand(newRepo(f))
 	repo.Runner.Env = append(append(repo.Runner.Env, gitSSHStandIn(t), sshStandInEnv+"="+standInLinger, helperAddrEnv+"="+addr),
@@ -181,8 +173,7 @@ func TestRepo_OriginURLs_WhenSSHPrintsNoHostname_ReturnsErrorNamingTheSSHCall(t 
 
 func TestRepo_OriginURLs_WhenConfiguredSSHPrintsNoHostname_ReturnsErrorNamingIt(t *testing.T) {
 	t.Parallel()
-	f := gittest.New(t, trunk)
-	f.SetOriginURL(aliasURL)
+	f := aliasFixture(t)
 	configured := quoted(standIn(t, "ssh"))
 	repo := noSSHCommand(newRepo(f))
 	repo.Runner.Env = append(repo.Runner.Env, "GIT_SSH_COMMAND="+configured, sshStandInEnv+"="+standInNoHostname)
@@ -208,22 +199,25 @@ const (
 	standInHost = "stand-in.example"
 )
 
-// sshConfigFile writes content to an ssh config file of its own and returns its path.
-func sshConfigFile(t *testing.T, content string) string {
-	t.Helper()
-
-	dir := t.TempDir()
-	gittest.WriteFile(t, dir, "config", content)
-
-	return filepath.Join(dir, "config")
-}
-
 // sshReading returns a command line that runs ssh with a config file of its own holding content as
 // its one config file.
 func sshReading(t *testing.T, content string) string {
 	t.Helper()
 
-	return "ssh -F " + quoted(sshConfigFile(t, content))
+	dir := t.TempDir()
+	gittest.WriteFile(t, dir, "config", content)
+
+	return "ssh -F " + quoted(filepath.Join(dir, "config"))
+}
+
+// aliasFixture returns a new fixture whose origin is aliasURL.
+func aliasFixture(t *testing.T) *gittest.Fixture {
+	t.Helper()
+
+	f := gittest.New(t, trunk)
+	f.SetOriginURL(aliasURL)
+
+	return f
 }
 
 // quoted returns path in the slash form between single quotes, one word to a shell.
@@ -307,8 +301,7 @@ func TestRepo_OriginURLs_WhenSSHCommandSet_ReturnsTheHostThatCommandConnectsTo(t
 	for _, tt := range sourceCases() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			f := gittest.New(t, trunk)
-			f.SetOriginURL(aliasURL)
+			f := aliasFixture(t)
 			repo := noSSHCommand(newRepo(f))
 			repo.Runner.Env = append(repo.Runner.Env, tt.arrange(t, f)...)
 
@@ -323,8 +316,7 @@ func TestRepo_OriginURLs_WhenSSHCommandSet_ReturnsTheHostThatCommandConnectsTo(t
 func TestRepo_OriginURLs_WhenRunnerSetsNoEnvironment_ReadsTheProcessEnvironment(t *testing.T) {
 	// Not parallel: this sets the environment of the whole process, which alone names the ssh
 	// command.
-	f := gittest.New(t, trunk)
-	f.SetOriginURL(aliasURL)
+	f := aliasFixture(t)
 	useProcessEnv(t, append(f.Env(), "GIT_SSH_COMMAND="+sshReading(t, aliases)))
 	repo := git.Repo{Runner: git.Runner{Dir: f.Dir()}}
 
@@ -347,8 +339,7 @@ func TestRepo_OriginURLs_WhenPlainSSHAnswersAHost_FoldsOnlyHostsUnderGitHub(t *t
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			f := gittest.New(t, trunk)
-			f.SetOriginURL(aliasURL)
+			f := aliasFixture(t)
 			repo := plainSSH(t, newRepo(f), standInAnswer+tt.answer)
 
 			got, err := repo.OriginURLs(t.Context())
@@ -411,8 +402,7 @@ func TestRepo_OriginURLs_WhenSSHCommandConfigured_AsksItOrPlainSSHAsItsVariantSa
 	for _, tt := range variantCases() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			f := gittest.New(t, trunk)
-			f.SetOriginURL(aliasURL)
+			f := aliasFixture(t)
 			if tt.variant != "" {
 				f.Git("config", "ssh.variant", tt.variant)
 			}
@@ -453,8 +443,7 @@ func TestRepo_OriginURLs_WhenConfiguredSSHFails_ReturnsErrorNamingIt(t *testing.
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			f := gittest.New(t, trunk)
-			f.SetOriginURL(aliasURL)
+			f := aliasFixture(t)
 			configured := tt.configure(standIn(t, "ssh"))
 			repo := noSSHCommand(newRepo(f))
 			repo.Runner.Env = append(repo.Runner.Env, tt.key+"="+configured, refusing)
@@ -520,8 +509,7 @@ func missingCases() []missingCase {
 func missingRepo(t *testing.T, tt missingCase) git.Repo {
 	t.Helper()
 
-	f := gittest.New(t, trunk)
-	f.SetOriginURL(aliasURL)
+	f := aliasFixture(t)
 	repo := plainSSH(t, newRepo(f), plainAnswer)
 	switch {
 	case tt.hide && tt.setting == "GIT_SSH":
@@ -608,8 +596,7 @@ func exitingCases() []exitingCase {
 func exitingRepo(t *testing.T, tt exitingCase, variant string) git.Repo {
 	t.Helper()
 
-	f := gittest.New(t, trunk)
-	f.SetOriginURL(aliasURL)
+	f := aliasFixture(t)
 	path := standIn(t, "connect")
 	repo := firstOnRunnerPath(plainSSH(t, newRepo(f), plainAnswer), path)
 	line := tt.line(path)
@@ -636,8 +623,7 @@ func TestRepo_OriginURLs_WhenFoundSSHCommandExitsAsIfMissing_ReturnsItsExitError
 func TestRepo_OriginURLs_WhenCommandLineNamesNoProgramAndExitsAsIfMissing_ReturnsItsExitError(t *testing.T) {
 	// The shell runs the -G that ils appends as the program, and finds no such command.
 	t.Parallel()
-	f := gittest.New(t, trunk)
-	f.SetOriginURL(aliasURL)
+	f := aliasFixture(t)
 	repo := plainSSH(t, newRepo(f), plainAnswer)
 	repo.Runner.Env = append(append(repo.Runner.Env, "GIT_SSH_COMMAND=AUDIT=1"), variantEnv("ssh")...)
 
@@ -671,8 +657,7 @@ func useProcessEnv(t *testing.T, env []string) {
 func TestRepo_OriginURLs_WhenRunnerSetsNoEnvironment_FindsSSHOnTheProcessPath(t *testing.T) {
 	// Not parallel: this sets the environment of the whole process, whose PATH alone holds the
 	// stand-in.
-	f := gittest.New(t, trunk)
-	f.SetOriginURL(aliasURL)
+	f := aliasFixture(t)
 	repo := plainSSH(t, newRepo(f), plainAnswer)
 	useProcessEnv(t, repo.Runner.Env)
 	repo.Runner.Env = nil
@@ -729,8 +714,7 @@ func TestRepo_OriginURLs_WhenLoggerAttachedAndSSHReadsHost_LogsEachSSHRun(t *tes
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			f := gittest.New(t, trunk)
-			f.SetOriginURL(aliasURL)
+			f := aliasFixture(t)
 			f.SetPushURL(httpsURL)
 			repo, tool := tt.arrange(t, newRepo(f))
 			logger, sink := logtest.New()
@@ -743,4 +727,37 @@ func TestRepo_OriginURLs_WhenLoggerAttachedAndSSHReadsHost_LogsEachSSHRun(t *tes
 			assert.Check(t, is.DeepEqual(callsOf(sink.Records(), tool), []map[string]any{want}))
 		})
 	}
+}
+
+func TestEnvValue(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		key     string
+		want    string
+		env     []string
+		wantSet bool
+	}{
+		{name: "set twice keeps the last", env: []string{"TERM=xterm", "TERM=dumb"}, key: "TERM", want: "dumb", wantSet: true},
+		{name: "set to nothing", env: []string{"NO_COLOR="}, key: "NO_COLOR", want: "", wantSet: true},
+		{name: "only a longer key set", env: []string{"TERMINAL=xterm"}, key: "TERM", wantSet: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, set := git.EnvValue(tt.env, tt.key)
+
+			assert.Check(t, is.Equal(set, tt.wantSet), "EnvValue(%q, %q) set", tt.env, tt.key)
+			assert.Check(t, is.Equal(got, tt.want), "EnvValue(%q, %q)", tt.env, tt.key)
+		})
+	}
+}
+
+func TestSameKey_WhenCaseDiffers_MatchesOnlyOnWindows(t *testing.T) {
+	t.Parallel()
+
+	got := git.SameKey("Path", "PATH")
+
+	assert.Check(t, is.Equal(got, runtime.GOOS == "windows"), "SameKey(%q, %q) on %s", "Path", "PATH", runtime.GOOS)
 }

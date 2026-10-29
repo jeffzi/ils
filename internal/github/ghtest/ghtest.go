@@ -156,9 +156,10 @@ func DeleteBranchArgs(host, repo, branchPath string) []string {
 	return []string{"api", "--hostname", host, "-X", "DELETE", "repos/" + repo + "/git/refs/heads/" + branchPath}
 }
 
-// RulesArgs is the argv of the read of the rules on branch; repo is owner/name.
-func RulesArgs(host, repo, branch string) []string {
-	return []string{"api", "--hostname", host, "--paginate", "repos/" + repo + "/rules/branches/" + branch}
+// RulesArgs is the argv of the read of the rules on a branch of the repository owner/name on host;
+// branchPath is the branch as it stands in a URL path, each of its segments escaped.
+func RulesArgs(host, repo, branchPath string) []string {
+	return []string{"api", "--hostname", host, "--paginate", "repos/" + repo + "/rules/branches/" + branchPath}
 }
 
 // ChecksArgs is the argv pattern of the read of pull request number's checks.
@@ -364,9 +365,7 @@ func listenForHolds(tb testing.TB, record string) (addr string, holding <-chan s
 
 	firstHold := make(chan struct{})
 
-	var once sync.Once
-
-	announced := func() { once.Do(func() { close(firstHold) }) }
+	announced := sync.OnceFunc(func() { close(firstHold) })
 
 	addr = gittest.Serve(tb, func(conn net.Conn) { acknowledgeHold(tb, conn, record, announced) })
 
@@ -479,11 +478,11 @@ func serve(ctx context.Context, places servePlaces, args []string) int {
 	}
 
 	recorded, err := readRecord(places.record)
-	if err == nil {
-		err = appendRecord(places.record, args)
+	if err != nil {
+		return broken(err)
 	}
 
-	if err != nil {
+	if err := appendRecord(places.record, args); err != nil {
 		return broken(err)
 	}
 

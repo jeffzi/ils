@@ -31,8 +31,8 @@ func exitErrorOf(t *testing.T, what string, cmd *exec.Cmd) *exec.ExitError {
 	return exitErr
 }
 
-// exitOf runs a go command that exits non-zero and returns what exec reports for it.
-func exitOf(t *testing.T) *exec.ExitError {
+// nonZeroExit runs a go command that exits non-zero and returns what exec reports for it.
+func nonZeroExit(t *testing.T) *exec.ExitError {
 	t.Helper()
 
 	return exitErrorOf(t, "go tool nonsense", exec.CommandContext(t.Context(), "go", "tool", "nonsense"))
@@ -95,7 +95,7 @@ func TestExitError_Error(t *testing.T) {
 func TestFailure_WhenProgramExitedNonZero_ReturnsExitError(t *testing.T) {
 	t.Parallel()
 	argv := []string{"go", "tool", "nonsense"}
-	runErr := exitOf(t)
+	runErr := nonZeroExit(t)
 
 	err := child.Failure(t.Context(), argv, runErr, "no such tool\n")
 
@@ -106,9 +106,16 @@ func TestFailure_WhenProgramExitedNonZero_ReturnsExitError(t *testing.T) {
 	assert.Check(t, is.Equal(exitErr.Code, runErr.ExitCode()))
 }
 
+// assertNoStderr fails the test when err carries the stderr the Failure tests print before the end.
+func assertNoStderr(t *testing.T, err error) {
+	t.Helper()
+
+	assert.Check(t, !strings.Contains(err.Error(), "secret"), "Failure error = %q, want no stderr in it", err)
+}
+
 func TestFailure_WhenContextEnded_ReturnsContextErrorWhateverTheExit(t *testing.T) {
 	t.Parallel()
-	runErr := exitOf(t)
+	runErr := nonZeroExit(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
@@ -116,7 +123,7 @@ func TestFailure_WhenContextEnded_ReturnsContextErrorWhateverTheExit(t *testing.
 
 	assert.Check(t, is.ErrorIs(err, context.Canceled))
 	assert.Check(t, is.ErrorContains(err, "go tool nonsense"))
-	assert.Check(t, !strings.Contains(err.Error(), "secret"), "Failure error = %q, want no stderr in it", err)
+	assertNoStderr(t, err)
 }
 
 func TestFailure_WhenProgramDiedOfTheInterruptBeforeContextEnded_ReturnsContextCanceled(t *testing.T) {
@@ -127,7 +134,7 @@ func TestFailure_WhenProgramDiedOfTheInterruptBeforeContextEnded_ReturnsContextC
 
 	assert.Check(t, is.ErrorIs(err, context.Canceled))
 	assert.Check(t, is.ErrorContains(err, "git fetch"))
-	assert.Check(t, !strings.Contains(err.Error(), "secret"), "Failure error = %q, want no stderr in it", err)
+	assertNoStderr(t, err)
 }
 
 func TestFailure_WhenProgramDiedOfTerminateAndContextEndsWithinGrace_ReturnsContextError(t *testing.T) {
@@ -142,7 +149,7 @@ func TestFailure_WhenProgramDiedOfTerminateAndContextEndsWithinGrace_ReturnsCont
 
 		assert.Check(t, is.ErrorIs(err, context.DeadlineExceeded))
 		assert.Check(t, is.ErrorContains(err, "git fetch"))
-		assert.Check(t, !strings.Contains(err.Error(), "secret"), "Failure error = %q, want no stderr in it", err)
+		assertNoStderr(t, err)
 	})
 }
 
@@ -165,7 +172,7 @@ func TestFailure_WhenProgramDidNotDieOfTerminate_ReturnsWithoutWaitingForContext
 		died func(*testing.T) *exec.ExitError
 		name string
 	}{
-		{name: "non-zero exit", died: exitOf},
+		{name: "non-zero exit", died: nonZeroExit},
 		{name: "kill", died: func(t *testing.T) *exec.ExitError {
 			t.Helper()
 
@@ -234,7 +241,7 @@ func TestEnded_WhenRunSucceeded_ReturnsWhatItPrinted(t *testing.T) {
 
 func TestEnded_WhenProgramExitedNonZero_KeepsOnlyStdout(t *testing.T) {
 	t.Parallel()
-	runErr := exitOf(t)
+	runErr := nonZeroExit(t)
 
 	got, err := child.Ended(t.Context(), []string{"go", "tool", "nonsense"}, runErr, printedBoth())
 
@@ -244,45 +251,22 @@ func TestEnded_WhenProgramExitedNonZero_KeepsOnlyStdout(t *testing.T) {
 	assert.Check(t, is.DeepEqual(got, child.Output{Stdout: printedBoth().Stdout}))
 }
 
-func TestEnded_WhenRunFailedWithoutAnExit_ReturnsNoOutput(t *testing.T) {
+func TestEnded_WhenContextEndedAfterNonZeroExit_ReturnsNoOutput(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		runErr func(*testing.T) error
-		want   error
-		name   string
-		ended  bool
-	}{
-		{
-			name:   "context ended",
-			ended:  true,
-			runErr: func(t *testing.T) error { return exitOf(t) },
-			want:   context.Canceled,
-		},
-		{
-			name:   "program never started",
-			runErr: func(*testing.T) error { return exec.ErrNotFound },
-			want:   exec.ErrNotFound,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			if tt.ended {
-				cancel()
-			}
+	runErr := nonZeroExit(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
 
-			got, err := child.Ended(ctx, []string{"go", "tool", "nonsense"}, tt.runErr(t), printedBoth())
+	got, err := child.Ended(ctx, []string{"go", "tool", "nonsense"}, runErr, printedBoth())
 
-			assert.Check(t, is.ErrorIs(err, tt.want))
-			assert.Check(t, is.DeepEqual(got, child.Output{}))
-		})
-	}
+	assert.Check(t, is.ErrorIs(err, context.Canceled))
+	assert.Check(t, is.DeepEqual(got, child.Output{}))
 }
 
 func TestExec_Log(t *testing.T) {
 	t.Parallel()
+	const took = 5 * time.Millisecond
+	args := []string{"pr", "view"}
 	tests := []struct {
 		err  error
 		want map[string]any
@@ -290,26 +274,26 @@ func TestExec_Log(t *testing.T) {
 	}{
 		{
 			name: "run that exited zero",
-			want: map[string]any{child.KeyTool: "gh", child.KeyArgs: []string{"pr", "view"}, child.KeyExit: int64(0), child.KeyDuration: 5 * time.Millisecond},
+			want: map[string]any{child.KeyTool: "gh", child.KeyArgs: args, child.KeyExit: int64(0), child.KeyDuration: took},
 		},
 		{
 			name: "run that exited non-zero",
 			err:  &child.ExitError{Argv: []string{"gh", "pr", "view"}, Code: 3, Stderr: "secret printed before the exit\n"},
-			want: map[string]any{child.KeyTool: "gh", child.KeyArgs: []string{"pr", "view"}, child.KeyExit: int64(3), child.KeyDuration: 5 * time.Millisecond},
+			want: map[string]any{child.KeyTool: "gh", child.KeyArgs: args, child.KeyExit: int64(3), child.KeyDuration: took},
 		},
 		{
 			name: "run that ended before an exit",
 			err:  fmt.Errorf("gh pr view: %w", exec.ErrNotFound),
 			want: map[string]any{
-				child.KeyTool: "gh", child.KeyArgs: []string{"pr", "view"}, child.KeyError: "gh pr view: " + exec.ErrNotFound.Error(),
-				child.KeyDuration: 5 * time.Millisecond,
+				child.KeyTool: "gh", child.KeyArgs: args, child.KeyError: "gh pr view: " + exec.ErrNotFound.Error(),
+				child.KeyDuration: took,
 			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			run := child.Exec{Tool: "gh", Args: []string{"pr", "view"}, Err: tt.err, Took: 5 * time.Millisecond}
+			run := child.Exec{Tool: "gh", Args: args, Err: tt.err, Took: took}
 
 			record := logtest.Only(t, logtest.RecordsOf(func(logger *slog.Logger) { run.Log(t.Context(), logger) }))
 

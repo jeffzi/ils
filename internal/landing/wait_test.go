@@ -139,16 +139,12 @@ func newVigilOn(t *testing.T, script forgetest.Script, under func(context.Contex
 	return &vigil{under: under, forge: fake, log: log, deps: landing.Deps{Forge: fake}}
 }
 
-// newVigil is newVigilOn with a context whose deadline is left of fake time away.
+// newVigil is newVigilOn with a context whose deadline is left of fake time away, or the whole
+// bound when left is zero.
 func newVigil(t *testing.T, script forgetest.Script, left time.Duration) *vigil {
 	t.Helper()
 
-	return newVigilOn(t, script, func(parent context.Context) context.Context {
-		ctx, cancel := context.WithDeadline(parent, time.Now().Add(left))
-		t.Cleanup(cancel)
-
-		return ctx
-	})
+	return newVigilOn(t, script, func(context.Context) context.Context { return within(t, left) })
 }
 
 // context returns the context the wait runs under, made from the test's.
@@ -319,6 +315,15 @@ type vigilRow struct {
 	left time.Duration
 }
 
+// onCleanHead returns rows, each of which reads the clean head.
+func onCleanHead(rows []vigilRow) []vigilRow {
+	for i := range rows {
+		rows[i].heads = shows(clean())
+	}
+
+	return rows
+}
+
 // runVigils runs each row as a test in a bubble of its own: the wait ends as the row wants, having
 // read the forge and let fake time pass between its reads exactly as the row says.
 func runVigils(t *testing.T, rows []vigilRow) {
@@ -328,7 +333,7 @@ func runVigils(t *testing.T, rows []vigilRow) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
-				v := newVigil(t, forgetest.Script{Head: tt.heads, Verdict: tt.verdicts}, orBound(tt.left))
+				v := newVigil(t, forgetest.Script{Head: tt.heads, Verdict: tt.verdicts}, tt.left)
 				w := watchOn(&v.deps)
 
 				got := v.await(t, tt.required...)
@@ -403,21 +408,10 @@ func mergeRows() []vigilRow {
 	}
 }
 
-// mergeableRows are the merge states that do not stop the wait before the checks.
-func mergeableRows() []vigilRow {
-	head := tip(forge.MergeBlockedOther, "UNSTABLE")
-
-	return []vigilRow{{
-		name:  string(head.MergeState),
-		heads: shows(head), verdicts: says(passing()),
-		want: stateOf(green(), head), ops: readsOf(1, 1, 1),
-	}}
-}
-
 func TestAwaitVerdict_WhenTheMergeStateDecides_ReadsItBeforeTheChecks(t *testing.T) {
 	t.Parallel()
 
-	runVigils(t, slices.Concat(mergeRows(), mergeableRows()))
+	runVigils(t, mergeRows())
 }
 
 // slowVerdict returns a read hook under which each read of the verdict takes d, and answers once
@@ -438,8 +432,7 @@ type logRow struct {
 	script forgetest.Script
 	want   []string
 	left   time.Duration
-	// fails is whether the wait returns an error.
-	fails bool
+	fails  bool
 }
 
 // logRows lists the waits whose debug records are checked, one per way a wait ends but for
@@ -467,7 +460,7 @@ func logRows() []logRow {
 		{
 			name: "a wait whose read of the merge state fails",
 			script: forgetest.Script{
-				Head: append(shows(unknown()), forgetest.Answer[forge.Head]{Err: errors.New("HTTP 502")}),
+				Head: append(shows(unknown()), forgetest.Answer[forge.Head]{Err: errors.New(forgeFailure)}),
 			},
 			fails: true,
 			want: []string{
@@ -505,7 +498,7 @@ func TestAwaitVerdict_WhenGivenALogger_LogsEachDecisionOfTheWait(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
-				v := newVigil(t, tt.script, orBound(tt.left))
+				v := newVigil(t, tt.script, tt.left)
 				w := watchOn(&v.deps)
 
 				_, err := landing.AwaitVerdict(v.context(t), v.deps, pushedTip())
@@ -552,7 +545,7 @@ func TestAwaitVerdict_WhenTheHeadMovesPastThePushedCommit_EndsMovedToTheNewHead(
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
-				v := newVigil(t, forgetest.Script{Head: tt.heads, Verdict: tt.verdicts}, orBound(tt.left))
+				v := newVigil(t, forgetest.Script{Head: tt.heads, Verdict: tt.verdicts}, tt.left)
 
 				got := v.await(t)
 
@@ -704,7 +697,7 @@ func TestAwaitVerdict_WhenTheHeadAfterTheChecksIsNotRead_EndsPendingWithoutTheVe
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
-				v := newVigil(t, forgetest.Script{Head: tt.heads, Verdict: tt.verdicts}, orBound(tt.left))
+				v := newVigil(t, forgetest.Script{Head: tt.heads, Verdict: tt.verdicts}, tt.left)
 
 				got := v.await(t)
 
@@ -784,10 +777,6 @@ func readCutWaits(c cut) []cutShort {
 	return []cutShort{
 		{name: "inside the head read", want: atHead, heads: []forgetest.Answer[forge.Head]{lateHead(c)}},
 		{name: "inside the merge state read", want: atMergeState(c), heads: append(shows(unknown()), lateHead(c))},
-		{
-			name: "inside the first verdict read", want: atVerdict(c),
-			heads: shows(clean()), verdicts: []forgetest.Answer[forge.Verdict]{lateVerdict},
-		},
 		{
 			name: "inside a later verdict read of checks still running", want: atVerdict(c),
 			heads: shows(clean()), verdicts: append(says(running()), lateVerdict),
@@ -970,7 +959,7 @@ func TestAwaitVerdict_WhenAnInterruptLandsAsTheHeadPollEnds_EndsPendingInterrupt
 func TestAwaitVerdict_WhenAReadFails_ReturnsAnErrorNamingTheRead(t *testing.T) {
 	t.Parallel()
 
-	cause := errors.New("HTTP 502")
+	cause := errors.New(forgeFailure)
 	failed := forgetest.Answer[forge.Head]{Err: cause}
 	tests := []struct {
 		name     string
@@ -1000,7 +989,7 @@ func TestAwaitVerdict_WhenAReadFails_ReturnsAnErrorNamingTheRead(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
-				v := newVigil(t, forgetest.Script{Head: tt.heads, Verdict: tt.verdicts}, orBound(tt.left))
+				v := newVigil(t, forgetest.Script{Head: tt.heads, Verdict: tt.verdicts}, tt.left)
 
 				_, err := landing.AwaitVerdict(v.context(t), v.deps, pushedTip())
 

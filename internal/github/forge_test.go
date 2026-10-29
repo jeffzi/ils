@@ -55,12 +55,10 @@ type readCase struct {
 	before []ghtest.Call
 }
 
-// engine is the repository every test asks about.
 func engine() forge.Repo {
 	return forge.Repo{Host: engineHost, Owner: "ada", Name: "engine"}
 }
 
-// newForge is a forge that runs the fake `gh`.
 func newForge() *github.Forge {
 	return &github.Forge{}
 }
@@ -82,12 +80,10 @@ func assertCalls(t *testing.T, fake *ghtest.Fake, want [][]string) {
 	assert.Check(t, is.DeepEqual(fake.Calls(), want))
 }
 
-// featureChange is the change every OpenChange test asks for.
 func featureChange() forge.NewChange {
 	return forge.NewChange{Title: featureTitle, Base: trunk, Head: featureBranch}
 }
 
-// versionArgs is the argv of the read of gh's version.
 func versionArgs() []string { return ghtest.VersionArgs() }
 
 // versionAnswer is what `gh --version` prints when line is its first line.
@@ -95,36 +91,27 @@ func versionAnswer(line string) string {
 	return line + "\nhttps://github.com/cli/cli/releases/tag/v2.0.0\n"
 }
 
-// loginArgs is the argv of the login read on the engine's host.
 func loginArgs() []string { return ghtest.LoginArgs(engineHost) }
 
-// repoViewArgs is the argv of the read of the engine's identity.
 func repoViewArgs() []string { return ghtest.RepoViewArgs(engineSlug) }
 
 // listArgs is the argv of the list of the feature branch's pull requests in every state.
 func listArgs() []string { return ghtest.ListArgs(engineSlug, featureBranch) }
 
-// createArgs is the argv of the creation of featureChange's pull request.
 func createArgs() []string {
 	return ghtest.CreateArgs(engineSlug, featureTitle, trunk, featureBranch)
 }
 
-// headArgs is the argv of the read of the engine's pull request head.
 func headArgs() []string { return ghtest.HeadArgs(engineSlug, pullNumber) }
 
-// rulesArgs is the argv of the read of the rules on the engine's trunk.
 func rulesArgs() []string { return ghtest.RulesArgs(engineHost, "ada/engine", trunk) }
 
-// checksArgs is the argv of the read of the pull request's checks.
 func checksArgs() []string { return ghtest.ChecksArgs(engineSlug, pullNumber) }
 
-// runsArgs is the argv of the read of the workflow runs of the head commit.
 func runsArgs() []string { return ghtest.RunsArgs(engineSlug, headSHA) }
 
-// messageArgs is the argv of the read of the pull request's message.
 func messageArgs() []string { return ghtest.MessageArgs(engineHost, "ada", "engine", pullNumber) }
 
-// featureLanding is the landing every Land test asks for.
 func featureLanding() forge.Landing {
 	return forge.Landing{Number: pullNumber, HeadSHA: headSHA, Subject: "feat: read the message (#7)", Body: "Lands the change."}
 }
@@ -137,15 +124,12 @@ func pullRequestRule(id int, methods string) string {
 		`,"parameters":{"required_approving_review_count":0,"allowed_merge_methods":` + methods + `}}`
 }
 
-// workflowsArgs is the argv of the read of the engine's workflow list.
 func workflowsArgs() []string {
 	return []string{"api", "--hostname", engineHost, "--paginate", "repos/ada/engine/actions/workflows"}
 }
 
-// workflowFilesArgs is the argv of the read of the workflow directory on the trunk.
 func workflowFilesArgs() []string { return workflowFilesArgsAt(trunk) }
 
-// workflowFilesArgsAt is the argv of the read of the workflow directory at ref.
 func workflowFilesArgsAt(ref string) []string {
 	return []string{"api", "--hostname", engineHost, "repos/ada/engine/contents/.github/workflows?ref=" + ref}
 }
@@ -296,16 +280,12 @@ func readCases() []readCase {
 // ---------------------------------------------------------------------------
 
 func TestForge_WhenCallExitsNonZero_ReturnsExitErrorNamingCall(t *testing.T) {
-	byName := operationsByName()
-	writes := []readCase{
-		{name: "pr merge", run: byName["Land"], args: ghtest.LandArgs(engineSlug, featureLanding())},
-	}
 	// Each read left out returns its exit error through a line another test already reaches:
 	// runDecoded's through "pr list", Identity's through the malformed "repo view",
 	// and TrunkProtection's and HasTrunkCI's through their own tests of a refused read. Verdict's
 	// reads have their own test in verdict_test.go.
 	reads := casesWithout(readCases(), "repo view", "api rules", "api workflows", "api workflow files")
-	for _, tt := range append(reads, writes...) {
+	for _, tt := range reads {
 		t.Run(tt.name, func(t *testing.T) {
 			assertExitErrorNamesCall(t, tt)
 		})
@@ -367,29 +347,15 @@ func loggedArgv(sink *logtest.Sink) [][]string {
 	return received(logged...)
 }
 
-// loggedCases reaches every `gh` call site of the forge but Verdict's, which verdict_test.go
-// reaches: the reads and the writes. A call site that a case reaches on its way to its own call has
-// no case of its own.
+// loggedCases is one `gh` call of the forge: every call goes through the same runner, so one case
+// shows that the forge hands its logger to it.
 func loggedCases() []readCase {
-	byName := operationsByName()
-	landing := featureLanding()
-
-	// The workflow list is logged by "api workflow files", which reads it on its way.
-	reads := casesWithout(readCases(), "pr checks behind a blocked head", "api workflows")
-	return append(reads,
-		readCase{name: "pr create", run: byName["OpenChange"], args: createArgs()},
-		readCase{
-			name: "pr merge", run: byName["Land"],
-			args: ghtest.LandArgs(engineSlug, landing),
-		},
-		readCase{
-			name: "api delete branch", run: byName["DeleteBranch"],
-			args: ghtest.DeleteBranchArgs(engineHost, "ada/engine", featureBranch),
-		},
-	)
+	return []readCase{
+		{name: "pr merge", run: operationsByName()["Land"], args: ghtest.LandArgs(engineSlug, featureLanding())},
+	}
 }
 
-func TestForge_WhenLoggerSet_LogsEveryCallSite(t *testing.T) {
+func TestForge_WhenLoggerSet_LogsTheCall(t *testing.T) {
 	for _, tt := range loggedCases() {
 		t.Run(tt.name, func(t *testing.T) {
 			assertLogsCall(t, tt)
@@ -409,17 +375,16 @@ func assertLogsCall(t *testing.T, c readCase) {
 	assert.Check(t, is.DeepEqual(loggedArgv(sink), fake.Calls()))
 	want := received(c.args)[0]
 	assert.Check(t, slices.ContainsFunc(fake.Calls(), func(argv []string) bool { return ghtest.Matches(want, argv) }),
-		"the fake never received %v", c.args)
+		"calls = %q, want one matching %q", fake.Calls(), c.args)
 }
 
 func TestForge_Identity_WhenNotLoggedIn_ReturnsNotLoggedInError(t *testing.T) {
-	fake := ghtest.Setup(t, ghtest.Exits(ghtest.LoggedOut(), loginArgs()...))
+	ghtest.Setup(t, ghtest.Exits(ghtest.LoggedOut(), loginArgs()...))
 
 	_, err := newForge().Identity(t.Context(), engine())
 
 	_, ok := errors.AsType[*forge.NotLoggedInError](err)
 	assert.Assert(t, ok, "Identity error = %v, want *forge.NotLoggedInError", err)
-	assertCalls(t, fake, received(versionArgs(), loginArgs()))
 }
 
 func TestForge_Identity_WhenGhIsOlderThanTheMinimum_ReturnsToolTooOldErrorBeforeTheLogin(t *testing.T) {
@@ -527,7 +492,7 @@ func TestForge_FindChanges_WhenStateIsUnknown_ReturnsDecodeError(t *testing.T) {
 
 	decodeErr, ok := errors.AsType[*github.DecodeError](err)
 	assert.Assert(t, ok, "FindChanges error = %v, want *github.DecodeError", err)
-	assert.Check(t, ghtest.Matches(received(listArgs())[0], decodeErr.Argv), "Argv = %q", decodeErr.Argv)
+	assert.Check(t, ghtest.Matches(received(listArgs())[0], decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, listArgs())
 }
 
 func TestForge_OpenChange_WhenCreated_ReturnsNumberAndURL(t *testing.T) {
@@ -902,7 +867,7 @@ func TestForge_Message_WhenAnswerHoldsNoPullRequest_ReturnsDecodeError(t *testin
 
 			decodeErr, ok := errors.AsType[*github.DecodeError](err)
 			assert.Assert(t, ok, "error = %v, want *github.DecodeError", err)
-			assert.Check(t, ghtest.Matches(received(messageArgs())[0], decodeErr.Argv), "Argv = %q", decodeErr.Argv)
+			assert.Check(t, ghtest.Matches(received(messageArgs())[0], decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, messageArgs())
 		})
 	}
 }

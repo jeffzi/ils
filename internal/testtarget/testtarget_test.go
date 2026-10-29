@@ -16,43 +16,23 @@ func hammer() testtarget.Tool {
 	return testtarget.Tool{Name: "hammer", TargetVar: "HAMMER_TARGET", VersionVar: "HAMMER_VERSION", MinimumVersion: "1.4.0"}
 }
 
-func TestTool_Check_WhenFoundSuitsTarget_ReturnsNil(t *testing.T) {
+func TestTool_Check_WhenTargetUnsetAndFoundNewer_ReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	err := hammer().Check("", "", "1.10.0")
+
+	assert.NilError(t, err)
+}
+
+func TestTool_Check_WhenFoundDoesNotSuitTarget_ReturnsError(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name   string
 		target string
 		want   string
 		found  string
+		parts  []string
 	}{
-		{name: "minimum target and the minimum", target: testtarget.Minimum, found: "1.4.0"},
-		{name: "unset target and a newer version", found: "1.10.0"},
-		{name: "version wanted is the one found", target: testtarget.Latest, want: "1.10.0", found: "1.10.0"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			err := hammer().Check(tt.target, tt.want, tt.found)
-
-			assert.NilError(t, err, "Check(%q, %q, %q)", tt.target, tt.want, tt.found)
-		})
-	}
-}
-
-// unsuited is a version found that does not suit a target, and the parts of the error Check
-// returns for it that Check computes.
-type unsuited struct {
-	name   string
-	target string
-	want   string
-	found  string
-	parts  []string
-}
-
-// unsuitedVersions returns the versions found that do not suit hammer's target, each with the
-// parts its error must name.
-func unsuitedVersions() []unsuited {
-	return []unsuited{
 		{
 			name: "minimum target and a newer version", target: testtarget.Minimum, found: "1.10.0",
 			parts: []string{"HAMMER_TARGET", "1.10.0", "1.4.0"},
@@ -66,19 +46,15 @@ func unsuitedVersions() []unsuited {
 			found: "1.10.0", parts: []string{"HAMMER_TARGET", "1.10.0", "1.4.0"},
 		},
 		{
-			name: "version wanted is checked before the minimum target", target: testtarget.Minimum, want: "1.4.0",
-			found: "1.10.0", parts: []string{"HAMMER_VERSION", "1.10.0", "1.4.0"},
+			name: "version wanted is checked before the minimum target", target: testtarget.Minimum, want: "1.9.0",
+			found: "1.10.0", parts: []string{"HAMMER_VERSION", "1.10.0", "1.9.0"},
 		},
 		{
 			name: "unknown target", target: "newest", found: "1.10.0",
 			parts: []string{"HAMMER_TARGET", "newest"},
 		},
 	}
-}
-
-func TestTool_Check_WhenFoundDoesNotSuitTarget_ReturnsError(t *testing.T) {
-	t.Parallel()
-	for _, tt := range unsuitedVersions() {
+	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 

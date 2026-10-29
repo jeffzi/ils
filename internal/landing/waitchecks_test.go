@@ -109,12 +109,7 @@ func redRows() []vigilRow {
 func TestAwaitVerdict_WhenACheckFailed_EndsRedOnceItsLogIsSettled(t *testing.T) {
 	t.Parallel()
 
-	rows := redRows()
-	for i := range rows {
-		rows[i].heads = shows(clean())
-	}
-
-	runVigils(t, rows)
+	runVigils(t, onCleanHead(redRows()))
 }
 
 // heldRows are the verdict waits a check that reported and still runs holds, though no run does.
@@ -157,12 +152,7 @@ func earlyRows() []vigilRow {
 func TestAwaitVerdict_WhenTrunkRequiresNoCheck_WaitsUntilNothingStillRuns(t *testing.T) {
 	t.Parallel()
 
-	rows := slices.Concat(everyCheckRows(), heldRows(), earlyRows())
-	for i := range rows {
-		rows[i].heads = shows(clean())
-	}
-
-	runVigils(t, rows)
+	runVigils(t, onCleanHead(slices.Concat(everyCheckRows(), heldRows(), earlyRows())))
 }
 
 // requiredRows are the verdict waits where the trunk requires the checks lint and test.
@@ -223,9 +213,8 @@ func runlessRequiredRows() []vigilRow {
 func TestAwaitVerdict_WhenTrunkRequiresChecks_WaitsForEveryRequiredName(t *testing.T) {
 	t.Parallel()
 
-	rows := slices.Concat(requiredRows(), runlessRequiredRows())
+	rows := onCleanHead(slices.Concat(requiredRows(), runlessRequiredRows()))
 	for i := range rows {
-		rows[i].heads = shows(clean())
 		rows[i].required = []string{"lint", "test"}
 	}
 

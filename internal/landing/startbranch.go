@@ -143,33 +143,9 @@ func freeName(ctx context.Context, deps Deps, req Request, name string) *result.
 	return nil
 }
 
-// detachedKept refuses a detached HEAD with commits origin's trunk lacks, for reason, and lists
-// them. It returns nil when HEAD has none.
-func (r Request) detachedKept(ctx context.Context, deps Deps, trunk string, reason result.Phrase) *result.Result {
-	own, err := deps.Repo.CommitsPast(ctx, "HEAD", trunk)
-	if err != nil {
-		return r.unread(readHeadCommits, err)
-	}
-
-	if len(own) == 0 {
-		return nil
-	}
-
-	stop := r.Refused(reason, keepDetachedStep())
-	stop.Lines = listed(own)
-
-	return stop
-}
-
 // detachedWith says that HEAD is detached with commits origin's trunk lacks, listed after it.
 func detachedWith(trunk string) result.Phrase {
 	return result.Say("HEAD is detached with commits origin's trunk %s lacks, listed here", result.Branch(trunk))
-}
-
-// keepDetachedStep is the next step of a detached HEAD with commits origin's trunk lacks: keep them
-// on a branch, then push it.
-func keepDetachedStep() result.Next {
-	return result.NextStep("keep them on a branch with `git switch -c <name>`, then run %s", result.Command(PushCommand))
 }
 
 // aheadLines returns the lines that name the local trunk's commits origin's trunk lacks, which stay

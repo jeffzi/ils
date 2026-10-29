@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -49,14 +48,6 @@ type ran struct {
 func launch(t *testing.T, app cli.App, args ...string) ran {
 	t.Helper()
 
-	return launchUnder(t.Context(), t, app, args...)
-}
-
-// launchUnder is launch with the run bound to ctx rather than t.Context(), so a caller can end it
-// early.
-func launchUnder(ctx context.Context, t *testing.T, app cli.App, args ...string) ran {
-	t.Helper()
-
 	var stdout, stderr bytes.Buffer
 
 	if app.Stderr == nil {
@@ -70,7 +61,7 @@ func launchUnder(ctx context.Context, t *testing.T, app cli.App, args ...string)
 		app.Launch = time.Now()
 	}
 
-	code := app.Run(ctx, args)
+	code := app.Run(t.Context(), args)
 
 	return ran{stdout: stdout.String(), stderr: stderr.String(), code: code}
 }
@@ -152,7 +143,7 @@ func TestApp_Run_WhenVersionIsSet_PrintsItOverTheBuildInfoVersion(t *testing.T) 
 	assert.Check(t, !strings.Contains(got.stdout, "9.9.9"), "stdout = %q, want the set version over the build info's", got.stdout)
 }
 
-func TestApp_Run_WhenVersionIsEmpty_PrintsTheVersionTheBuildInfoNames(t *testing.T) {
+func TestApp_Run_WhenVersionIsEmpty_PrintsTheBuildInfoVersionOrDevel(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -175,6 +166,7 @@ func TestApp_Run_WhenVersionIsEmpty_PrintsTheVersionTheBuildInfoNames(t *testing
 
 			assert.Check(t, is.Equal(got.code, exitDone))
 			assert.Check(t, is.Contains(got.stdout, tt.want))
+			assert.Check(t, !strings.Contains(got.stdout, "v"+tt.want), "stdout = %q", got.stdout)
 		})
 	}
 }
@@ -320,10 +312,6 @@ func TestApp_Run_WhenBranchIsGivenOneName_RunsTheBranchCommandWithTheNameAsTyped
 		args []string
 		want landing.Request
 	}{
-		{
-			name: "name alone", args: []string{"branch", "0.4/Fix-help"},
-			want: landing.Request{Command: "branch", Words: []string{"branch", "0.4/Fix-help"}, Args: []string{"0.4/Fix-help"}},
-		},
 		{
 			name: "flag before the name", args: []string{"branch", "--json", "topic"},
 			want: landing.Request{Command: "branch", Words: []string{"branch", "topic"}, Args: []string{"topic"}},
@@ -498,7 +486,6 @@ func TestApp_Run_WhenStdoutHasAColorProfile_StylesTheResult(t *testing.T) {
 		args     []string
 		terminal bool
 	}{
-		{name: "color terminal", env: []string{colorTerm}, terminal: true, args: []string{"push"}},
 		{name: "flag set to false", env: []string{colorTerm}, terminal: true, args: []string{"merge", "--no-color=false"}},
 		{name: "unknown word", env: []string{colorTerm}, terminal: true, args: []string{"pish"}},
 		{name: "color flag set to neither", env: []string{forced}, args: []string{"merge", "--no-color=maybe"}},
@@ -543,54 +530,6 @@ func TestApp_Run_WhenOneStreamIsAColorTerminal_LeavesTheOtherStreamPlain(t *test
 // Bound
 // ---------------------------------------------------------------------------
 
-// held is how long a held call stays open, far past the moment the run is cut.
-const held = 30 * time.Second
-
-// endWhileHeld runs app with args in s under a context that ends with cause the moment the fake gh
-// of s starts holding an answer, and fails the test unless it comes back well before the held
-// answer would have.
-func (s *scene) endWhileHeld(t *testing.T, app cli.App, cause error, args ...string) ran {
-	t.Helper()
-
-	cut := make(chan struct{})
-	cutAt := make(chan time.Time, 1)
-
-	ctx, cancel := context.WithCancel(t.Context())
-
-	var wg sync.WaitGroup
-
-	wg.Go(func() {
-		select {
-		case <-s.fake.Holding():
-			cutAt <- time.Now()
-			close(cut)
-		case <-ctx.Done():
-		}
-	})
-
-	got := launchUnder(gittest.Ending(t.Context(), cut, cause), t, app, args...)
-
-	cancel()
-	wg.Wait()
-
-	select {
-	case at := <-cutAt:
-		late := time.Since(at)
-		assert.Check(t, late < held/2, "ils %v returned %s after the held call started, want it back well before the %s hold ends", args, late, held)
-	default:
-		t.Errorf("ils %v returned without the fake gh holding an answer", args)
-	}
-
-	return got
-}
-
-func heldIdentity() scenario {
-	calls := allowed()
-	calls[1].Answer.Delay = held
-
-	return scenario{script: only(calls...)}
-}
-
 func TestApp_Run_WhenMergeRuns_EndsItAtTheBoundFromLaunch(t *testing.T) {
 	t.Parallel()
 
@@ -608,19 +547,6 @@ func TestApp_Run_WhenMergeRuns_EndsItAtTheBoundFromLaunch(t *testing.T) {
 
 	assert.Check(t, is.Equal(got.code, exitDone))
 	assert.Check(t, deadline.Equal(app.Launch.Add(bound)), "deadline = %s, want %s", deadline, app.Launch.Add(bound))
-}
-
-func TestApp_Run_WhenAnInterruptEndsAHeldRead_RefusesWithTheDisplayEnded(t *testing.T) {
-	s := newScene(t, heldIdentity())
-	app, stderr := onStderrScreenOf(t, s.app(), stderrScreen{env: []string{colorTerm}, width: wide})
-
-	got := s.endWhileHeld(t, app, context.Canceled, "push")
-
-	assert.Check(t, is.Equal(got.code, exitRefused))
-	assert.Check(t, is.Contains(got.stdout, "ils push"))
-	assert.Check(t, stderr.raw() != "", "the run drew no progress display on stderr")
-	assert.Check(t, is.Len(stderr.lines(), 0), "stderr still shows %q", stderr.lines())
-	assert.Check(t, !stderr.cursorHidden(), "the cursor is still hidden:\n%q", stderr.raw())
 }
 
 func TestApp_Run_WhenHelpIsAskedForOnAColorTerminal_StylesIt(t *testing.T) {

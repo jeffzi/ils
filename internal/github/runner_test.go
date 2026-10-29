@@ -49,10 +49,8 @@ func withoutGh(t *testing.T, ghPath string) {
 	t.Setenv("PATH", t.TempDir())
 }
 
-// pendingChecksArgs is the argv of a read that exits 8 printing a pending check.
 func pendingChecksArgs() []string { return []string{"pr", "checks", "7"} }
 
-// pendingChecks scripts the read of pendingChecksArgs.
 func pendingChecks() ghtest.Call {
 	return ghtest.Exits(ghtest.Answer{Stdout: "build\tpending\n", Stderr: "still running\n", Code: 8}, pendingChecksArgs()...)
 }

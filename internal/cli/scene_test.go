@@ -1,6 +1,7 @@
 package cli_test
 
 import (
+	"fmt"
 	"slices"
 	"testing"
 
@@ -25,11 +26,13 @@ const (
 	// opened is the number of the open pull request.
 	opened = 12
 
-	pullURL = "https://" + slug + "/pull/12"
 	// runID is the workflow run that stands behind a check, and runLink is that check's link.
 	runID   = "9001"
 	runLink = "https://" + slug + "/actions/runs/" + runID + "/job/42"
 )
+
+// pullURL is the address of the open pull request.
+func pullURL() string { return fmt.Sprintf("https://%s/pull/%d", slug, opened) }
 
 // scenario is one state of the repository and of GitHub that a landing command is run in.
 type scenario struct {
@@ -88,11 +91,6 @@ func found(body string) []ghtest.Call {
 	return append(allowed(), ghtest.Exits(ghtest.Answer{Stdout: body}, ghtest.ListArgs(slug, topic)...))
 }
 
-// only scripts the same answers whatever the repository holds.
-func only(calls ...ghtest.Call) func(*gittest.Fixture) []ghtest.Call {
-	return func(*gittest.Fixture) []ghtest.Call { return calls }
-}
-
 // greenFirstPush scripts a branch with no pull request yet that GitHub then shows mergeable,
 // its one check passed, on a trunk with no rule.
 func greenFirstPush() scenario {
@@ -102,7 +100,7 @@ func greenFirstPush() scenario {
 		checks := ghtest.JSONArray(ghtest.CheckJSON("build", "pass", runLink))
 
 		return slices.Concat(found("[]"), []ghtest.Call{
-			ghtest.Says(pullURL+"\n", ghtest.CreateArgs(slug, topic, trunk, topic)...),
+			ghtest.Says(pullURL()+"\n", ghtest.CreateArgs(slug, topic, trunk, topic)...),
 			ghtest.Says("[]", ghtest.RulesArgs(host, owner+"/"+widgets, trunk)...),
 			ghtest.Says(ghtest.HeadJSON(sha, "MERGEABLE", "CLEAN", ""), ghtest.HeadArgs(slug, opened)...),
 			ghtest.Says(checks, ghtest.ChecksArgs(slug, opened)...),

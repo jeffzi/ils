@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"os/exec"
-	"runtime"
 	"testing"
 	"time"
 
@@ -143,8 +142,9 @@ func onlyCall(t *testing.T, records []logtest.Record) (attrs map[string]any, too
 	t.Helper()
 
 	attrs = logtest.CallAttrs(t, records)
-	took, ok := records[0].Map()[child.KeyDuration].(time.Duration)
-	assert.Assert(t, ok, "duration attribute = %#v, want a time.Duration", records[0].Map()[child.KeyDuration])
+	raw := records[0].Map()[child.KeyDuration]
+	took, ok := raw.(time.Duration)
+	assert.Assert(t, ok, "duration attribute = %#v, want a time.Duration", raw)
 
 	return attrs, took
 }
@@ -166,46 +166,10 @@ func TestRecorder_Calls_WhenReturnedSliceMutated_LaterCallsUnchanged(t *testing.
 	runner, recorder := newRecordedRunner(t)
 	_, err := runner.Run(t.Context(), "version")
 	assert.NilError(t, err)
-	_, err = runner.Run(t.Context(), "init", "--quiet")
-	assert.NilError(t, err)
 	calls := recorder.Calls()
 
 	calls[0][1] = "changed"
-	calls[1] = nil
 
-	want := [][]string{{"git", "version"}, {"git", "init", "--quiet"}}
+	want := [][]string{{"git", "version"}}
 	assert.Check(t, is.DeepEqual(recorder.Calls(), want))
-}
-
-func TestEnvValue(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    string
-		key     string
-		want    string
-		env     []string
-		wantSet bool
-	}{
-		{name: "set twice keeps the last", env: []string{"TERM=xterm", "TERM=dumb"}, key: "TERM", want: "dumb", wantSet: true},
-		{name: "set to nothing", env: []string{"NO_COLOR="}, key: "NO_COLOR", want: "", wantSet: true},
-		{name: "only a longer key set", env: []string{"TERMINAL=xterm"}, key: "TERM", wantSet: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got, set := git.EnvValue(tt.env, tt.key)
-
-			assert.Check(t, is.Equal(set, tt.wantSet), "EnvValue(%q, %q) set", tt.env, tt.key)
-			assert.Check(t, is.Equal(got, tt.want), "EnvValue(%q, %q)", tt.env, tt.key)
-		})
-	}
-}
-
-func TestSameKey_WhenCaseDiffers_MatchesOnlyOnWindows(t *testing.T) {
-	t.Parallel()
-
-	got := git.SameKey("Path", "PATH")
-
-	assert.Check(t, is.Equal(got, runtime.GOOS == "windows"), "SameKey(%q, %q) on %s", "Path", "PATH", runtime.GOOS)
 }

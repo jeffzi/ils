@@ -127,7 +127,7 @@ tasks:
             echo "ILS_LIVE_ORIGIN is unset and the clone URL of your ils-live-local could not be read; run task test:setup-live first" >&2
             exit 1
           fi
-          ILS_LIVE_ORIGIN="$origin" go test -tags live -count=1 -timeout 60m -v -run '^TestLive$' ./internal/cli {{.CLI_ARGS}}
+          ILS_LIVE_ORIGIN="$origin" go test -tags live -count=1 -timeout 60m -v -run '^TestApp_Run_AgainstALiveRepository_EndsEachScenarioAsGitHubReportsIt$' ./internal/cli {{.CLI_ARGS}}
     silent: true
 
   check:

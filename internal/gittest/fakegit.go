@@ -28,6 +28,8 @@ const (
 
 	// realGitEnv holds the path of the real git; its presence makes the test binary act as git.
 	realGitEnv = "ILS_GITTEST_REAL_GIT"
+	// raceEnv holds the options of the Go race detector.
+	raceEnv = "GORACE"
 	// versionEnv holds what `git --version` prints.
 	versionEnv = "ILS_GITTEST_VERSION"
 	// failOnEnv holds the words a failing call starts with, separated by wordsSep.
@@ -40,7 +42,7 @@ const (
 	answerOnEnv = "ILS_GITTEST_ANSWER_ON"
 	// answerEnv holds what an answered call prints.
 	answerEnv = "ILS_GITTEST_ANSWER"
-	// wordsSep separates the words a variable holds; no git argument holds a line break.
+	// wordsSep separates the words a variable holds; no word a fake matches on holds a line break.
 	wordsSep = "\n"
 )
 
@@ -100,7 +102,7 @@ func FakeGit(tb testing.TB, fake Fake) []string {
 	}
 
 	set(realGitEnv, realGit)
-	set("GORACE", RaceSetting())
+	set(raceEnv, RaceSetting())
 
 	if fake.Version != "" {
 		set(versionEnv, fake.Version)
@@ -129,7 +131,7 @@ func FakeGit(tb testing.TB, fake Fake) []string {
 // second before every exit, which each call of a fake that the test binary stands in for would pay.
 // It keeps the options the environment already holds.
 func RaceSetting() string {
-	return strings.TrimSpace(os.Getenv("GORACE") + " atexit_sleep_ms=0")
+	return strings.TrimSpace(os.Getenv(raceEnv) + " atexit_sleep_ms=0")
 }
 
 // LinkAs puts the test binary first on PATH under the name of tool for the rest of the test, so
@@ -182,19 +184,11 @@ func firstOnPath(dir, path string) string {
 // serveGit answers one call of the fake git with args and returns its exit code.
 func serveGit(ctx context.Context, realGit string, args []string) int {
 	if version, ok := os.LookupEnv(versionEnv); ok && slices.Equal(args, []string{"--version"}) {
-		if _, err := fmt.Fprintln(os.Stdout, version); err != nil {
-			return broken(fmt.Errorf("print the faked version: %w", err))
-		}
-
-		return 0
+		return say(os.Stdout, version, "the faked version", 0)
 	}
 
 	if startsWith(args, failOnEnv) {
-		if _, err := fmt.Fprintln(os.Stderr, FailedSaid); err != nil {
-			return broken(fmt.Errorf("print the failure: %w", err))
-		}
-
-		return FailedCode
+		return say(os.Stderr, FailedSaid, "the failure", FailedCode)
 	}
 
 	if startsWith(args, stallOnEnv) {
@@ -202,14 +196,20 @@ func serveGit(ctx context.Context, realGit string, args []string) int {
 	}
 
 	if startsWith(args, answerOnEnv) {
-		if _, err := fmt.Fprintln(os.Stdout, os.Getenv(answerEnv)); err != nil {
-			return broken(fmt.Errorf("print the faked answer: %w", err))
-		}
-
-		return 0
+		return say(os.Stdout, os.Getenv(answerEnv), "the faked answer", 0)
 	}
 
 	return runRealGit(ctx, realGit, args)
+}
+
+// say prints line to w and returns code, or BrokenCode when the print fails; what names the line in
+// the message printed then.
+func say(w io.Writer, line, what string, code int) int {
+	if _, err := fmt.Fprintln(w, line); err != nil {
+		return broken(fmt.Errorf("print %s: %w", what, err))
+	}
+
+	return code
 }
 
 // startsWith reports whether args start with the words the variable key holds, and false when it

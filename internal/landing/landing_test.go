@@ -43,6 +43,9 @@ const (
 	readURLs       = "origin's URLs"
 	readIdentity   = "the repository's identity on GitHub"
 	readTrunk      = "origin's trunk"
+
+	// forgeFailure is what a fake forge call fails saying, and what the text of the failure holds.
+	forgeFailure = "HTTP 502"
 )
 
 // partEnd ends each part of an expected text built by expect, so that expected texts concatenate
@@ -581,16 +584,21 @@ func originRefusals() []refusal {
 
 // forgeRefusals are the refusals decided from the forge's answer about the repository.
 func forgeRefusals() []refusal {
+	const (
+		ghInstallURL = "https://cli.github.com"
+		ghMinimum    = "2.50.0"
+	)
+
 	push := pushCommand()
-	noTool := expect("gh", "not installed", "https://cli.github.com") + push.after("install gh")
+	noTool := expect("gh", "not installed", ghInstallURL) + push.after("install gh")
 	noLogin := expect("not logged in", host, "`gh auth login --hostname github.com`") + push.after("log in to "+host)
-	tooOld := expect("gh 2.49.0", "older than 2.50.0", "https://cli.github.com") + push.after("upgrade gh")
-	noVersion := expect("`gh version DEV`", "names no version", "2.50.0", "https://cli.github.com") + push.after("upgrade gh")
+	tooOld := expect("gh 2.49.0", "older than "+ghMinimum, ghInstallURL) + push.after("upgrade gh")
+	noVersion := expect("`gh version DEV`", ghMinimum, ghInstallURL) + push.after("upgrade gh")
 	isFork := expect(owner+"/"+repoName, "is a fork")
 	noPush := expect("no push permission", owner+"/"+repoName)
 
-	missing := fails(&child.ToolMissingError{Tool: "gh", InstallURL: "https://cli.github.com"})
-	old := child.ToolTooOldError{Tool: "gh", Minimum: "2.50.0", InstallURL: "https://cli.github.com"}
+	missing := fails(&child.ToolMissingError{Tool: "gh", InstallURL: ghInstallURL})
+	old := child.ToolTooOldError{Tool: "gh", Minimum: ghMinimum, InstallURL: ghInstallURL}
 	outdated, unread := old, old
 	outdated.Version, outdated.Line = "2.49.0", "gh version 2.49.0 (2024-05-13)"
 	unread.Line = "gh version DEV"
@@ -748,7 +756,7 @@ func TestPreconditions_WhenGitVersionFails_BrokeNamingTheRead(t *testing.T) {
 
 func TestPreconditions_WhenForgeIdentityFailsUntyped_BrokeNamingTheRead(t *testing.T) {
 	t.Parallel()
-	s := newScene(t, nil, fails(errors.New("HTTP 502")), false)
+	s := newScene(t, nil, fails(errors.New(forgeFailure)), false)
 
 	_, stop := landing.Preconditions(t.Context(), s.deps, pushRequest())
 
@@ -756,7 +764,7 @@ func TestPreconditions_WhenForgeIdentityFailsUntyped_BrokeNamingTheRead(t *testi
 	assertStoppedBy(t, got, result.Broke, pushRequest())
 
 	text, reason := shown(t, got, s.gitDir)
-	assertSays(t, text, unreadText(pushCommand(), readIdentity, "HTTP 502"))
+	assertSays(t, text, unreadText(pushCommand(), readIdentity, forgeFailure))
 	assert.Check(t, is.Contains(reason, readIdentity))
 
 	assertAsked(t, s, identityRead())

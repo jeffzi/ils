@@ -29,8 +29,6 @@ const (
 
 	// stuckSpinning shows the spinner line of its step on stderr.
 	stuckSpinning = "spinning"
-	// stuckIdle starts no step.
-	stuckIdle = "idle"
 	// stuckReturned lets its landing command return at once, then stays until it is killed.
 	stuckReturned = "returned"
 	// stuckStopping shows the spinner line of its step, and its landing command returns the
@@ -88,10 +86,11 @@ func stuck(way string) int {
 		Launch:         time.Now(),
 		Notify:         signal.Notify,
 	}
-	if way == stuckStopping || way == stuckHolding || way == stuckHoldingEarly {
+
+	switch way {
+	case stuckStopping, stuckHolding, stuckHoldingEarly:
 		return stopping(app, way)
-	}
-	if way == stuckReturned {
+	case stuckReturned:
 		app.SetMerge(finishing)
 		code := app.Run(context.Background(), []string{"merge"})
 		tell(ready)
@@ -99,10 +98,9 @@ func stuck(way string) int {
 
 		return code
 	}
+
 	app.SetMerge(func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
-		if way != stuckIdle {
-			startedMerge(deps.Progress)
-		}
+		startedMerge(deps.Progress)
 		tell(ready)
 		<-ctx.Done()
 

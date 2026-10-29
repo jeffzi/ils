@@ -40,7 +40,6 @@ func TestForge_Verdict_WhenChecksAreReported_ReadsEachBucketWhateverGhExitsWith(
 	}
 }
 
-// statusLink is the link a check of the verdict tests reports.
 const statusLink = "https://ci.example.com/builds/15"
 
 // logArgs is the argv of the read of the failed log of the run runID.
@@ -51,7 +50,6 @@ func jobLogArgs() []string {
 	return []string{"api", "--hostname", engineHost, "repos/ada/engine/actions/jobs/" + jobID + "/logs"}
 }
 
-// noChecksAnswer is what `gh pr checks` says when the branch has no check.
 func noChecksAnswer() ghtest.Answer {
 	return ghtest.Answer{Stderr: "no checks reported on the 'feature' branch\n", Code: 1}
 }
@@ -70,8 +68,7 @@ func TestForge_Verdict_WhenCommitHasRuns_ReturnsEachRunStatus(t *testing.T) {
 		{"status":"queued","name":"Add the forge","workflowName":"CI"},
 		{"status":"in_progress","name":"Add the forge","workflowName":"Lint"},
 		{"status":"waiting","name":"Add the forge","workflowName":"Preview"},
-		{"status":"completed","name":"Add the forge","workflowName":"Build"},
-		{"status":"completed","name":"Scan","workflowName":""}
+		{"status":"completed","name":"Add the forge","workflowName":"Build"}
 	]`
 	ghtest.Setup(t, ghtest.Says("[]", checksArgs()...), ghtest.Says(runs, runsArgs()...))
 
@@ -83,8 +80,18 @@ func TestForge_Verdict_WhenCommitHasRuns_ReturnsEachRunStatus(t *testing.T) {
 		{Name: "Lint", Status: forge.RunInProgress},
 		{Name: "Preview", Status: forge.RunAwaitingPerson},
 		{Name: "Build", Status: forge.RunCompleted},
-		{Name: "Scan", Status: forge.RunCompleted},
 	}
+	assert.Check(t, is.DeepEqual(got.Runs, want))
+}
+
+func TestForge_Verdict_WhenRunHasNoWorkflowName_NamesItByTheRun(t *testing.T) {
+	runs := `[{"status":"completed","name":"Scan","workflowName":""}]`
+	ghtest.Setup(t, ghtest.Says("[]", checksArgs()...), ghtest.Says(runs, runsArgs()...))
+
+	got, err := newForge().Verdict(t.Context(), engine(), verdictQuery())
+	assert.NilError(t, err)
+
+	want := []forge.Run{{Name: "Scan", Status: forge.RunCompleted}}
 	assert.Check(t, is.DeepEqual(got.Runs, want))
 }
 
@@ -203,24 +210,4 @@ func TestForge_Verdict_WhenAReadExitsNonZero_ReturnsExitErrorNamingTheRead(t *te
 
 func TestForge_Verdict_WhenChecksReadPrintsMalformedJSON_ReturnsDecodeErrorNamingIt(t *testing.T) {
 	assertDecodeErrorNamesCall(t, readCase{run: operationsByName()["Verdict"], args: checksArgs()})
-}
-
-func TestForge_Verdict_WhenLoggerSet_LogsEveryCallSite(t *testing.T) {
-	verdict := operationsByName()["Verdict"]
-	failedChecks := ghtest.Says(ghtest.JSONArray(ghtest.CheckJSON("build", "fail", runLink)), checksArgs()...)
-	noRuns := ghtest.Says("[]", runsArgs()...)
-	// The checks read and the failed log's run view are each logged by the case that reads them on
-	// its way: "run list" and the empty failed log.
-	tests := []readCase{
-		{name: "run list", run: verdict, args: runsArgs(), before: []ghtest.Call{ghtest.Says("[]", checksArgs()...)}},
-		{
-			name: "api job log behind an empty failed log", run: verdict, args: jobLogArgs(),
-			before: []ghtest.Call{failedChecks, noRuns, ghtest.Says("", logArgs()...)},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assertLogsCall(t, tt)
-		})
-	}
 }

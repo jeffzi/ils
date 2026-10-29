@@ -22,7 +22,7 @@ import (
 
 func TestParseOrigin(t *testing.T) {
 	t.Parallel()
-	hub := git.Origin{Host: "github.com", Owner: "jeffzi", Name: "ils"}
+	hub := ilsOrigin()
 	other := git.Origin{Host: "example.com", Owner: "jeffzi", Name: "ils"}
 	tests := []struct {
 		name string
@@ -105,7 +105,7 @@ func TestOriginError_Error_WhenCauseSet_HoldsTheCause(t *testing.T) {
 
 func TestOrigin_Same(t *testing.T) {
 	t.Parallel()
-	base := git.Origin{Host: "github.com", Owner: "jeffzi", Name: "ils"}
+	base := ilsOrigin()
 	tests := []struct {
 		name  string
 		other git.Origin
@@ -152,6 +152,12 @@ const (
 	localPath = "/srv/project"
 )
 
+// ilsOrigin returns the origin httpsURL parses to.
+func ilsOrigin() git.Origin { return git.Origin{Host: "github.com", Owner: "jeffzi", Name: "ils"} }
+
+// toolsOrigin returns the origin sshURL parses to.
+func toolsOrigin() git.Origin { return git.Origin{Host: "github.com", Owner: "jeffzi", Name: "tools"} }
+
 func TestRepo_OriginURLs_WhenFetchAndPushDiffer_ReturnsEachSideParsedWithRawURL(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
@@ -162,8 +168,8 @@ func TestRepo_OriginURLs_WhenFetchAndPushDiffer_ReturnsEachSideParsedWithRawURL(
 	assert.NilError(t, err)
 
 	want := git.OriginURLs{
-		Fetch:    git.Origin{Host: "github.com", Owner: "jeffzi", Name: "ils"},
-		Push:     git.Origin{Host: "github.com", Owner: "jeffzi", Name: "tools"},
+		Fetch:    ilsOrigin(),
+		Push:     toolsOrigin(),
 		FetchURL: httpsURL,
 		PushURL:  sshURL,
 	}
@@ -210,7 +216,7 @@ func TestRepo_OriginURLs_WhenURLDoesNotParse_ReturnsOriginErrorWithWhatParsed(t 
 		{
 			name: "fetch url",
 			want: git.OriginURLs{
-				Push:     git.Origin{Host: "github.com", Owner: "jeffzi", Name: "tools"},
+				Push:     toolsOrigin(),
 				FetchURL: localPath,
 				PushURL:  sshURL,
 			},
@@ -218,7 +224,7 @@ func TestRepo_OriginURLs_WhenURLDoesNotParse_ReturnsOriginErrorWithWhatParsed(t 
 		{
 			name: "push url",
 			want: git.OriginURLs{
-				Fetch:    git.Origin{Host: "github.com", Owner: "jeffzi", Name: "ils"},
+				Fetch:    ilsOrigin(),
 				FetchURL: httpsURL,
 				PushURL:  localPath,
 			},
@@ -285,6 +291,11 @@ func unreachable(t *testing.T, f *gittest.Fixture) {
 	f.SetOriginURL(filepath.ToSlash(f.MissingOriginDir()))
 }
 
+// originRefAtHead creates ref on origin at origin's HEAD.
+func originRefAtHead(f *gittest.Fixture, ref string) {
+	f.OriginGit("update-ref", ref, f.OriginGit("rev-parse", "HEAD"))
+}
+
 // decoyHead gives origin a symbolic ref outside its own HEAD whose name ends in HEAD and that names
 // a branch called decoy. The test fails here unless origin lists that ref when asked for HEAD.
 func decoyHead(t *testing.T, f *gittest.Fixture) {
@@ -292,7 +303,7 @@ func decoyHead(t *testing.T, f *gittest.Fixture) {
 
 	const name, target = "refs/remotes/upstream/HEAD", "refs/heads/decoy"
 
-	f.OriginGit("update-ref", target, f.OriginGit("rev-parse", "HEAD"))
+	originRefAtHead(f, target)
 	f.OriginGit("symbolic-ref", name, target)
 
 	listed := f.Git("ls-remote", "--symref", "origin", "HEAD")
@@ -317,28 +328,23 @@ type remoteBranch struct {
 	found bool
 }
 
-// takers is what BranchesTaking returns besides its error.
-type takers struct {
-	local    []string
-	onOrigin []string
-}
-
 // originCalls returns the repository calls that read from origin without changing the repository.
 func originCalls() []repoCall {
 	return []repoCall{
-		{name: "Trunk", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.Trunk(ctx) }},
 		{name: "RemoteBranch", call: func(ctx context.Context, repo git.Repo) (any, error) {
 			sha, found, err := repo.RemoteBranch(ctx, trunk)
 
 			return remoteBranch{sha, found}, err
 		}},
-		{name: "BranchesTaking", call: func(ctx context.Context, repo git.Repo) (any, error) {
-			local, onOrigin, err := repo.BranchesTaking(ctx, topic)
-
-			return takers{local, onOrigin}, err
-		}},
 		{name: "OriginTags", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.OriginTags(ctx) }},
 	}
+}
+
+// fastForwardTrunkCall returns the call of FastForwardTrunk on the trunk.
+func fastForwardTrunkCall() repoCall {
+	return repoCall{name: "FastForwardTrunk", call: func(ctx context.Context, repo git.Repo) (any, error) {
+		return nil, repo.FastForwardTrunk(ctx, trunk)
+	}}
 }
 
 // takingCase is a ref created before BranchesTaking reads which branches take the name in.
@@ -412,11 +418,7 @@ func TestRepo_OriginTags_WhenLightweightAndAnnotatedTags_ListsEachWithTheCommitI
 
 func TestRepo_WhenOriginDoesNotAnswer_ReturnsRemoteError(t *testing.T) {
 	t.Parallel()
-	tests := append(originCalls(), repoCall{
-		name: "FastForwardTrunk", call: func(ctx context.Context, repo git.Repo) (any, error) {
-			return nil, repo.FastForwardTrunk(ctx, trunk)
-		},
-	})
+	tests := append(originCalls(), fastForwardTrunkCall())
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -486,7 +488,7 @@ func TestRepo_Trunk_WhenHeadNamesNoBranch_ReturnsErrNoSymref(t *testing.T) {
 		{
 			name: "head points outside the branches",
 			arrange: func(_ *testing.T, f *gittest.Fixture) {
-				f.OriginGit("update-ref", "refs/odd/place", f.OriginGit("rev-parse", "HEAD"))
+				originRefAtHead(f, "refs/odd/place")
 				f.OriginGit("symbolic-ref", "HEAD", "refs/odd/place")
 			},
 		},
@@ -527,7 +529,7 @@ func TestRepo_RemoteBranch_WhenNotOnOrigin_ReportsAbsent(t *testing.T) {
 		{
 			name: "only a ref outside the branches ending the same",
 			arrange: func(f *gittest.Fixture) {
-				f.OriginGit("update-ref", "refs/odd/refs/heads/"+topic, f.OriginGit("rev-parse", "HEAD"))
+				originRefAtHead(f, "refs/odd/refs/heads/"+topic)
 			},
 		},
 	}
@@ -710,13 +712,11 @@ func TestRepo_Push_WhenContextCanceled_ReturnsNeitherPushNorRemoteError(t *testi
 	assert.Check(t, !remote, "Push(%q) error = %v, want no *git.RemoteError", topic, err)
 }
 
-func TestRepo_OriginReads_WhenNotARepository_ReturnsExitError(t *testing.T) {
+func TestRepo_WhenNotARepository_OriginCallsReturnExitError(t *testing.T) {
 	t.Parallel()
 	tests := []repoCall{
 		{name: "OriginURLs", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.OriginURLs(ctx) }},
-		{name: "FastForwardTrunk", call: func(ctx context.Context, repo git.Repo) (any, error) {
-			return nil, repo.FastForwardTrunk(ctx, trunk)
-		}},
+		fastForwardTrunkCall(),
 	}
 
 	checkExitErrorOutsideRepo(t, tests)

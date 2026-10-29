@@ -6,9 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"os/exec"
-	"runtime"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -81,13 +79,13 @@ func (r Runner) Run(ctx context.Context, args ...string) (Result, error) {
 	return r.invocation(program, installURL, args).run(ctx)
 }
 
-// invocation returns the run of program with args on the runner's behalf: from its directory, with
+// invocation returns the run of tool with args on the runner's behalf: from its directory, with
 // its environment, recorded by its recorder and logged by its logger. Every program the package runs
 // for a runner starts from here, so that no run drops a field of the runner.
-func (r Runner) invocation(program, installURL string, args []string) invocation {
+func (r Runner) invocation(tool, toolURL string, args []string) invocation {
 	inv := invocation{
-		program:    program,
-		installURL: installURL,
+		program:    tool,
+		installURL: toolURL,
 		args:       args,
 		dir:        r.Dir,
 		env:        r.Env,
@@ -98,31 +96,6 @@ func (r Runner) invocation(program, installURL string, args []string) invocation
 	}
 
 	return inv
-}
-
-// SameKey reports whether name, the key of an environment entry, is key as the system matches
-// keys: exactly, or without regard to case on Windows.
-func SameKey(name, key string) bool {
-	return name == key || (runtime.GOOS == "windows" && strings.EqualFold(name, key))
-}
-
-// EnvValue returns the value key has in env, a list of key=value entries, and whether env sets it.
-// A key set twice has its last value, as it does for a child started with env, and keys match as
-// SameKey matches them.
-func EnvValue(env []string, key string) (string, bool) {
-	var (
-		value string
-		set   bool
-	)
-
-	for _, entry := range env {
-		name, entryValue, ok := strings.Cut(entry, "=")
-		if ok && SameKey(name, key) {
-			value, set = entryValue, true
-		}
-	}
-
-	return value, set
 }
 
 // invocation is one run of a tool as a child process, started from an argv and never through a

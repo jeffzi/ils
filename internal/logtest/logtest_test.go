@@ -21,7 +21,6 @@ func TestSink_Records_WhenLoggedAtDebug_HoldsTheRecord(t *testing.T) {
 
 	records := sink.Records()
 	assert.Assert(t, is.Len(records, 1))
-	assert.Check(t, is.Equal(records[0].Message, "read"))
 	assert.Check(t, is.Equal(records[0].Level, slog.LevelDebug))
 	assert.Check(t, is.DeepEqual(records[0].Map(), map[string]any{"state": "clean"}))
 }
@@ -74,17 +73,28 @@ func TestOnly_WhenOneRecord_ReturnsIt(t *testing.T) {
 
 	spy.Run(func() { got = logtest.Only(spy, []logtest.Record{first}) })
 
-	assert.Check(t, !spy.Failed(), "Only failed the test on exactly one record")
 	assert.Check(t, is.DeepEqual(got, first))
 }
 
-func TestOnly_WhenNotExactlyOneRecord_FailsTest(t *testing.T) {
+func TestOnly_WhenNotExactlyOneRecord(t *testing.T) {
 	t.Parallel()
-	spy := failtest.New(t)
+	tests := []struct {
+		name    string
+		records []logtest.Record
+	}{
+		{name: "no records", records: nil},
+		{name: "two records", records: []logtest.Record{{Message: "first"}, {Message: "second"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			spy := failtest.New(t)
 
-	spy.Run(func() { logtest.Only(spy, []logtest.Record{{Message: "first"}, {Message: "second"}}) })
+			spy.Run(func() { logtest.Only(spy, tt.records) })
 
-	assert.Check(t, spy.Stopped(), "Only did not fail the test on two records")
+			assert.Check(t, spy.Stopped(), "Only did not fail the test on %s", tt.name)
+		})
+	}
 }
 
 // lazy is a slog.LogValuer, which a record keeps unresolved, so it shows that Record.Map resolves

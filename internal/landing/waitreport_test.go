@@ -314,7 +314,7 @@ func waitReads(err error) []failingRead {
 func TestPush_WhenAReadOfTheWaitFails_BrokeNamingTheRead(t *testing.T) {
 	t.Parallel()
 
-	runPushes(t, brokenAfter(waitReads(errors.New("HTTP 502"))))
+	runPushes(t, brokenAfter(waitReads(errors.New(forgeFailure))))
 }
 
 const (

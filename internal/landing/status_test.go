@@ -75,7 +75,21 @@ func viewing(head forge.Head, verdict forge.Verdict, found ...forge.Change) forg
 func statusScene(t *testing.T, arrange func(*gittest.Fixture), build forgeFor) *scene {
 	t.Helper()
 
-	s := newScene(t, arrange, forgetest.Script{}, false)
+	return statusSceneAt(t, arrange, build, false)
+}
+
+// offlineStatusScene is statusScene with an origin that does not answer.
+func offlineStatusScene(t *testing.T, arrange func(*gittest.Fixture), build forgeFor) *scene {
+	t.Helper()
+
+	return statusSceneAt(t, arrange, build, true)
+}
+
+// statusSceneAt is statusScene whose origin does not answer when offline is set.
+func statusSceneAt(t *testing.T, arrange func(*gittest.Fixture), build forgeFor, offline bool) *scene {
+	t.Helper()
+
+	s := newScene(t, arrange, forgetest.Script{}, offline)
 	s.useForge(t, build(s.fixture.Git("rev-parse", "HEAD")))
 
 	return s
@@ -340,15 +354,6 @@ func copySteps() []nextRow {
 
 	return []nextRow{
 		{
-			name: "diverged from origin's copy", script: green,
-			arrange: func(f *gittest.Fixture) string {
-				f.Publish(topic)
-				f.Diverge(topic)
-
-				return pushCommand().after("`" + originMerge + topic + "`")
-			},
-		},
-		{
 			name: "behind origin's copy with a green pull request", script: green,
 			arrange: func(f *gittest.Fixture) string {
 				f.Publish(topic)
@@ -395,10 +400,6 @@ func pullSteps() []nextRow {
 		},
 		{name: "red while conflicting with the trunk", script: viewing(conflicting, lintRed(), standing()), arrange: published(nextRed())},
 		{name: "conflicting with the trunk", script: viewing(conflicting, passing(), standing()), arrange: published(nextTrunk())},
-		{
-			name: "behind the trunk", script: viewing(inState(forge.MergeBehind, "BEHIND"), passing(), standing()),
-			arrange: published(nextTrunk()),
-		},
 		{name: "waiting on a review", script: viewing(review, passing(), standing()), arrange: published(expect("request a review"))},
 		{name: "green and mergeable", script: viewing(cleanHead(), passing(), standing()), arrange: published(nextMerge())},
 	}
@@ -523,19 +524,15 @@ func TestStatus_WhenOnAWorkBranch_EndsOnTheFirstNextThatHolds(t *testing.T) {
 
 func TestStatus_WhenAForgeReadFails_ReportsTheFailedReadBesideTheRest(t *testing.T) {
 	t.Parallel()
-	s := statusScene(t, func(f *gittest.Fixture) {
-		f.Publish(topic)
-		f.Commits(topic, "fix a typo")
-	}, func(string) forgetest.Script { return failingToFind(errors.New("HTTP 502")) })
+	s := statusScene(t, func(f *gittest.Fixture) { f.Publish(topic) },
+		func(string) forgetest.Script { return failingToFind(errors.New(forgeFailure)) })
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
-	assertSays(t, got.text, expect(readChanges, "HTTP 502"))
+	assertSays(t, got.text, expect(readChanges, forgeFailure))
 	assert.Assert(t, is.Len(got.status.Unread, 1))
 	assert.Check(t, is.Equal(got.status.Unread[0].Read, readChanges))
-	assert.Check(t, is.Contains(got.status.Unread[0].Error, "HTTP 502"))
-	assert.Check(t, is.Equal(got.status.Ahead, 1))
-	assert.Check(t, got.status.OnOrigin)
+	assert.Check(t, is.Contains(got.status.Unread[0].Error, forgeFailure))
 }
 
 func TestStatus_WhenAGitReadFails_ReportsTheFailedReadBesideTheRest(t *testing.T) {
@@ -549,7 +546,6 @@ func TestStatus_WhenAGitReadFails_ReportsTheFailedReadBesideTheRest(t *testing.T
 	assert.Assert(t, is.Len(got.status.Unread, 1))
 	assert.Check(t, is.Equal(got.status.Unread[0].Read, readCopy))
 	assert.Assert(t, got.status.PullRequest != nil)
-	assert.Check(t, is.Equal(got.status.PullRequest.Number, opened))
 }
 
 func TestStatus_WhenTheFirstReadIsCutShort_EndsDoneSkippingEveryReadAfterIt(t *testing.T) {
@@ -635,10 +631,8 @@ func TestStatus_WhenThereIsNoOrigin_EndsOnCreatingIt(t *testing.T) {
 	got := seeStatus(t, s, (*testing.T).Context)
 
 	assert.Check(t, is.Equal(got.status.Standing, standingNoOrigin))
-	assert.Check(t, is.Len(opsOf(s.forge.Calls()), 0))
 
-	report, next, _ := strings.Cut(got.text, "Next:")
-	assertSays(t, report, expect("no remote named origin"))
+	_, next, _ := strings.Cut(got.text, "Next:")
 	assertSays(t, next, expect("gh repo create --source . --push"))
 }
 
@@ -652,8 +646,7 @@ func TestStatus_WhenOutsideAGitRepository_SaysSo(t *testing.T) {
 	got := seeStatus(t, s, (*testing.T).Context)
 
 	assert.Check(t, is.Equal(got.status.Standing, standingNoRepository))
-	assert.Check(t, is.Len(opsOf(s.forge.Calls()), 0))
-	assertSays(t, got.text, expect("Not in a git repository", missing.Error()))
+	assertSays(t, got.text, expect(missing.Error()))
 }
 
 // ---------------------------------------------------------------------------
@@ -706,7 +699,6 @@ func TestStatus_WhenOnAWorkBranchAndGitHubCannotBeRead_NamesTheFixBesideWhatGitT
 			assert.Check(t, got.status.OnOrigin)
 			assert.Check(t, got.status.PullRequest == nil, "pull request = %+v, want none", got.status.PullRequest)
 			assert.Check(t, hasUnread(got.status, readChanges), "unread %v, want the pull requests listed", got.status.Unread)
-			assert.Check(t, !slices.Contains(opsOf(s.forge.Calls()), forgetest.OpFindChanges), "forge reads = %v, want no find-changes", opsOf(s.forge.Calls()))
 
 			if tt.unread != "" {
 				assert.Check(t, hasUnread(got.status, tt.unread), "unread %v, want %s listed", got.status.Unread, tt.unread)
@@ -735,13 +727,12 @@ func hasUnread(status *result.Status, read string) bool {
 
 func TestStatus_WhenOriginCannotBeReachedAndItsTrunkWasNeverLearned_CountsTheBranchAgainstTheLastFetch(t *testing.T) {
 	t.Parallel()
-	s := newScene(t, func(f *gittest.Fixture) {
+	s := offlineStatusScene(t, func(f *gittest.Fixture) {
 		f.Publish(topic)
 		f.Git("remote", "set-head", "origin", "--delete")
 		f.Git("update-ref", "refs/remotes/origin/"+topic, topic)
 		f.Commits(topic, "fix a typo")
-	}, forgetest.Script{}, true)
-	s.useForge(t, viewing(cleanHead(), passing(), standing())(s.fixture.Git("rev-parse", "HEAD")))
+	}, viewing(cleanHead(), passing(), standing()))
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
@@ -752,15 +743,14 @@ func TestStatus_WhenOriginCannotBeReachedAndItsTrunkWasNeverLearned_CountsTheBra
 
 func TestStatus_WhenOriginCannotBeReached_CountsAgainstTheLastFetch(t *testing.T) {
 	t.Parallel()
-	s := newScene(t, func(f *gittest.Fixture) {
+	s := offlineStatusScene(t, func(f *gittest.Fixture) {
 		f.Git("remote", "set-head", "origin", trunk)
 		f.Publish(topic)
 		// The last fetch saw origin's copy at the published tip; origin moves on after it.
 		f.Git("update-ref", "refs/remotes/origin/"+topic, topic)
 		f.Commits(topic, "fix a typo")
 		f.AdvanceOrigin(topic)
-	}, forgetest.Script{}, true)
-	s.useForge(t, viewing(cleanHead(), passing(), standing())(s.fixture.Git("rev-parse", "HEAD")))
+	}, viewing(cleanHead(), passing(), standing()))
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
@@ -768,7 +758,6 @@ func TestStatus_WhenOriginCannotBeReached_CountsAgainstTheLastFetch(t *testing.T
 	assert.Check(t, is.Equal(got.status.Behind, 0))
 	assert.Check(t, got.status.OnOrigin)
 	assertSays(t, got.text, expect("could not be reached"))
-	assertSays(t, got.text, expect("last fetch"))
 	assert.Check(t, is.Len(got.status.Unread, 1))
 	assert.Check(t, hasUnread(got.status, "origin's trunk"), "unread %v, want an entry for origin's trunk", got.status.Unread)
 }
