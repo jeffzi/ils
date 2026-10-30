@@ -154,9 +154,14 @@ func TestPush_WhenTheHeadMovesPastThePushedCommit_RefusesNamingTheNewHead(t *tes
 
 // pending is a push to the open pull request that ended pending for reason, after lines.
 func pending(reason, lines string, payload *result.Push) finish {
+	return pendingBy(pushCommand(), reason, lines, payload)
+}
+
+// pendingBy is pending for the push cmd, whose `Next:` runs cmd again.
+func pendingBy(cmd landingCommand, reason, lines string, payload *result.Push) finish {
 	return finish{
-		outcome: result.Pending, reason: reason, payload: payload,
-		text: pushedLine() + foundLine() + lines + reason + nextPush(),
+		outcome: result.Pending, reason: reason, payload: payload, req: cmd.req,
+		text: pushedLine() + foundLine() + lines + reason + cmd.again,
 	}
 }
 
@@ -318,6 +323,102 @@ func TestPush_WhenTheWaitEndsBeforeAnAnswer_PendingSayingWhy(t *testing.T) {
 	t.Parallel()
 
 	runPushes(t, slices.Concat(pushRunlessRows(), pushPendingRows(), pushStillRunningRows(), pushCutShortRows()))
+}
+
+// longWaitPendingRows are the pushes run with the long wait that end pending, one per reason that
+// names the time limit.
+func longWaitPendingRows() []pushRow {
+	cmd, c := waitCommand(), byWaitLimit()
+	clean := detail(forge.VerdictNone, forge.MergeClean)
+
+	return []pushRow{
+		{
+			name: "nothing has reported yet", left: 12 * time.Second, script: reusing(forge.Verdict{}),
+			want: pendingBy(cmd, expect("no check or status", tipMark, "#12", c.before), "", clean),
+		},
+		{
+			name: "a workflow run is going and no check has reported yet", left: 12 * time.Second,
+			script: reusing(forge.Verdict{Runs: ran(forge.RunInProgress)}),
+			want: pendingBy(cmd, expect("had not reported", c.before),
+				expect("No check has reported", tipMark, "#12", "workflow run is still going"), clean),
+		},
+		{
+			name: "a check passed and no workflow run has started yet", left: 12 * time.Second,
+			script: reusing(appPassing()),
+			want: pendingBy(cmd, expect("no workflow run", tipMark, "#12", c.before), "",
+				detail(forge.VerdictGreen, forge.MergeClean, appPassing().Checks...)),
+		},
+		{
+			name: "a check still runs", left: 7 * time.Second, script: reusing(running()).showing(cleanHead(), cleanHead()),
+			want: pendingBy(cmd, expect("still running", c.before), expect("Still running", "(1 check):\n  ◌ test"),
+				detail(forge.VerdictPending, forge.MergeClean, running().Checks...)),
+		},
+		{
+			name: c.name + " ends the first read of the checks", script: reusing().failingChecks(c.of("gh")),
+			want: pendingBy(cmd, expect(c.ends, readChecks, "nothing more will change"), "", clean),
+		},
+		{
+			name:   c.name + " ends the read of the merge state after the checks",
+			script: reusing(passing()).thenFailingHead(c.of("gh")),
+			want:   pendingBy(cmd, expect("#12", "can merge", c.before), "", clean),
+		},
+		{
+			name: c.name + " ends a poll of the head", script: reusing().showing(stale()), cut: c.inPoll,
+			want: pendingBy(cmd, expect("did not show", tipMark, "#12", c.before), "", clean),
+		},
+		{
+			name:   c.name + " ends the CI read",
+			script: reusing(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{Err: c.of("gh")}),
+			want:   pendingBy(cmd, expect(c.ends, readCI, "nothing more will change"), "", clean),
+		},
+	}
+}
+
+// longWaitAfterWritesRows are the pushes run with the long wait that a read after the writes, the
+// opening of the pull request, or the head moving past the pushed commit ends.
+func longWaitAfterWritesRows() []pushRow {
+	cmd, c := waitCommand(), byWaitLimit()
+	cutRules := expect(c.ends, readProtection, "nothing more will change")
+	openCut := opening().with(func(script *forgetest.Script, _ string) {
+		script.OpenChange = []forgetest.Answer[forge.ChangeRef]{{Err: c.of("gh pr create")}}
+	})
+	unreadHead := waitReads(errors.New(forgeFailure))[0]
+
+	return []pushRow{
+		{
+			name: c.name + " ends " + readProtection, script: opening(passing()).failingRules(c.of("gh")),
+			want: finish{
+				outcome: result.Pending, reason: cutRules, req: cmd.req,
+				text:    pushedLine() + openedLine() + cutRules + cmd.again,
+				payload: detail(forge.VerdictNone, forge.MergeUnknown),
+			},
+		},
+		{
+			name: c.name + " ends the opening of the pull request", script: openCut,
+			want: finish{
+				outcome: result.Broke, reason: expect(c.ends, "opening the pull request"), req: cmd.req,
+				text: pushedLine() + expect("opening the pull request", c.ends, "may or may not have been opened") + cmd.again,
+			},
+		},
+		{
+			name: "the head moves past the pushed commit", script: reusing(passing()).showing(cleanHead(), moved()),
+			want: finish{
+				outcome: result.Refused, reason: movedTo(), req: cmd.req,
+				text:    pushedLine() + foundLine() + movedTo() + cmd.after("pull the new commit"),
+				payload: detail(forge.VerdictNone, forge.MergeClean),
+			},
+		},
+		unreadHead.row(finish{
+			outcome: result.Broke, reason: expect(unreadHead.name), req: cmd.req,
+			text: unreadHead.before + expect(unreadHead.name, forgeFailure) + cmd.fixed,
+		}),
+	}
+}
+
+func TestPush_WhenRunWithTheLongWait_ResultsNameItsTimeLimitAndCommand(t *testing.T) {
+	t.Parallel()
+
+	runPushes(t, slices.Concat(longWaitPendingRows(), longWaitAfterWritesRows()))
 }
 
 // waitReads returns the reads of a push's wait, in the order the wait makes them, each failing

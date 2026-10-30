@@ -322,8 +322,8 @@ type pushRow struct {
 	script  forgeFor
 	cut     func(context.Context) context.Context
 	name    string
-	want    finish
 	told    []string
+	want    finish
 	left    time.Duration
 	quiet   bool
 	// noStateLine holds the push to say no merge state in its text or in the lines of its JSON.
@@ -359,7 +359,8 @@ func newDelivery(t *testing.T, tt pushRow) (context.Context, *delivery) {
 	return ctx, &delivery{scene: s, watch: w, tip: sha}
 }
 
-// runPushes runs each row as a test in a bubble of its own: the push ends as the row wants, with
+// runPushes runs each row as a test in a bubble of its own: the push of the request the row wants
+// ends as the row wants, with
 // every step line it said held by its result, origin's copy of the branch is at the tip, and git
 // pushed unless the row is quiet. A row that names the events its hook is told is held to them
 // too, and a row with noStateLine to saying no merge state.
@@ -372,7 +373,7 @@ func runPushes(t *testing.T, rows []pushRow) {
 			synctest.Test(t, func(t *testing.T) {
 				ctx, d := newDelivery(t, tt)
 
-				got := landing.Push(ctx, d.deps, pushRequest())
+				got := landing.Push(ctx, d.deps, tt.want.request())
 
 				assertDelivered(t, d.scene, got, tt.want.at(d.tip))
 				assertHeld(t, d.watch, got)
@@ -619,19 +620,27 @@ const answersBeforePush = 3
 
 func TestPush_WhenTheGitPushIsCutShort_BrokeSayingThePushMayHaveTaken(t *testing.T) {
 	t.Parallel()
+	tests := []struct {
+		c   cut
+		cmd landingCommand
+	}{
+		{c: byTimeLimit(), cmd: pushCommand()},
+		{c: byInterrupt(), cmd: pushCommand()},
+		{c: byWaitLimit(), cmd: waitCommand()},
+	}
 
-	for _, c := range cuts() {
-		t.Run(c.name, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.c.name, func(t *testing.T) {
 			t.Parallel()
 			s := newScene(t, nil, finding(), false)
-			ctx := c.stalling(answersBeforePush)(t, s)
+			ctx := tt.c.stalling(answersBeforePush)(t, s)
 			sha := s.fixture.Git("rev-parse", topic)
 
-			got := landing.Push(ctx, s.deps, pushRequest())
+			got := landing.Push(ctx, s.deps, tt.cmd.req)
 
 			assertDelivered(t, s, got, finish{
-				outcome: result.Broke, reason: expect(c.ends, "during the push"),
-				text: expect(topic, shortSHA(sha), c.ends, "may or may not have taken") + nextPush(),
+				outcome: result.Broke, reason: expect(tt.c.ends, "during the push"), req: tt.cmd.req,
+				text: expect(topic, shortSHA(sha), tt.c.ends, "may or may not have taken") + tt.cmd.again,
 			})
 			assertAsked(t, s, changesRead())
 		})

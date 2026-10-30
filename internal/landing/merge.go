@@ -383,7 +383,7 @@ func (m *mergeReady) withoutCI(ctx context.Context, deps Deps, req Request) *res
 
 	switch {
 	case endedEarly(err):
-		return m.reported(req, m.waited.ciCutShortReport(interrupted(err)), nil)
+		return m.reported(req, m.waited.ciCutShortReport(req.ending(pushAgain()), interrupted(err)), nil)
 	case err != nil:
 		return m.carrying(req.unread(readCI, err))
 	}
@@ -406,7 +406,7 @@ func (m *mergeReady) verdictStop(req Request) *result.Result {
 		return m.carrying(stop)
 	}
 
-	report, stops := m.waited.stopReport(req.ilsCommand(), m.pull.HeadSHA, m.Trunk, m.pull.Number)
+	report, stops := m.waited.stopReport(req.ending(pushAgain()), m.pull.HeadSHA, m.Trunk, m.pull.Number)
 	if !stops {
 		return nil
 	}
@@ -426,7 +426,7 @@ func (m *mergeReady) settle(ctx context.Context, deps Deps, req Request) *result
 
 	moved, polled, err := w.settled(ctx, &m.waited, read)
 	if moved {
-		report, _ := m.waited.stopReport(req.ilsCommand(), m.pull.HeadSHA, m.Trunk, m.pull.Number)
+		report, _ := m.waited.stopReport(req.ending(pushAgain()), m.pull.HeadSHA, m.Trunk, m.pull.Number)
 
 		return m.reported(req, report, nil)
 	}
@@ -440,7 +440,8 @@ func (m *mergeReady) settle(ctx context.Context, deps Deps, req Request) *result
 
 		return stop
 	case m.waited.endPending(StageMergeState, err):
-		return m.reported(req, m.waited.pendingReport(m.pull.HeadSHA, m.pull.Number), []result.Phrase{m.summary()})
+		return m.reported(req, m.waited.pendingReport(req.ending(pushAgain()), m.pull.HeadSHA, m.pull.Number),
+			[]result.Phrase{m.summary()})
 	default:
 		return m.carrying(req.unread(readMergeState, err))
 	}
@@ -533,11 +534,11 @@ func (m *mergeReady) reserved(ctx context.Context, req Request) *result.Result {
 	}
 
 	stop := req.ends(result.Pending,
-		result.Say(fewerLeft+" for the merge", seconds(mergeReserve), timeLimitWords),
+		result.Say(fewerLeft+" for the merge", span(mergeReserve), timeLimitWords),
 		result.NextCommand(PushCommand))
 	stop.Lines = slices.Concat([]result.Phrase{m.summary()}, m.waited.mergeStateLines(), []result.Phrase{
 		result.Say(fewerLeftCapital+" for the merge, so nothing was written",
-			seconds(mergeReserve), timeLimitWords),
+			span(mergeReserve), timeLimitWords),
 	})
 
 	return m.carrying(stop)
@@ -880,11 +881,11 @@ func (m *mergeReady) resume(ctx context.Context, deps Deps, req Request) *result
 
 	if deadlineWithin(ctx, mergeReserve) {
 		stop := req.ends(result.Pending,
-			result.Say(fewerLeft+" to finish the merge", seconds(mergeReserve), timeLimitWords),
+			result.Say(fewerLeft+" to finish the merge", span(mergeReserve), timeLimitWords),
 			req.again())
 		stop.Lines = slices.Concat(m.lines, []result.Phrase{
 			result.Say(fewerLeftCapital+" to finish the merge, so nothing was written",
-				seconds(mergeReserve), timeLimitWords),
+				span(mergeReserve), timeLimitWords),
 		})
 
 		return m.carrying(stop)

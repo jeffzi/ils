@@ -86,7 +86,8 @@ type App struct {
 //
 // A result the renderer rejects is printed nowhere: the error goes to Stderr and the code is 1.
 func (a App) Run(ctx context.Context, args []string) int {
-	ctx, cancel := context.WithDeadline(ctx, a.Launch.Add(landing.TimeLimit))
+	// The deadline is set once the command is known, by land: push --wait runs under a longer one.
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	signals, stopListening := a.onSignal(cancel)
@@ -301,6 +302,8 @@ type parse struct {
 	// version is read by root's Args so that `ils --version` passes with no command word.
 	version strictBool
 	debug   strictBool
+	// wait is the --wait flag of push, the one command that registers it.
+	wait strictBool
 	// outProfile is the color profile of Stdout, read once per run.
 	outProfile colorprofile.Profile
 	// encoded is whether the words typed select the JSON renderer, and noColor whether they turn
@@ -438,7 +441,7 @@ func (p *parse) root() *cobra.Command {
 	root.InitDefaultHelpFlag()
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return p.flagRefusal(err, notCommand) })
 	root.AddCommand(
-		p.landing(landingHelp{word: landing.PushCommand, short: pushShort, long: withTimeLimit(pushLong), examples: pushExamples}, orDefault(p.app.runPush, landing.Push)),
+		p.push(),
 		p.landing(landingHelp{word: landing.MergeCommand, short: mergeShort, long: withTimeLimit(mergeLong), examples: mergeExamples}, orDefault(p.app.runMerge, landing.Merge)),
 		p.landing(landingHelp{word: landing.StatusCommand, short: statusShort, long: statusLong, examples: statusExamples}, orDefault(p.app.runStatus, landing.Status)),
 		p.named(landingHelp{word: landing.BranchCommand, arg: "name", short: branchShort, long: branchLong, examples: branchExamples}, orDefault(p.app.runBranch, landing.StartBranch)),
@@ -532,12 +535,24 @@ func (p *parse) landing(help landingHelp, run Command) *cobra.Command {
 			return nil
 		},
 		RunE: func(c *cobra.Command, _ []string) error {
-			p.land(c.Context(), run, landing.Request{Command: help.word, Words: p.words})
+			p.land(c.Context(), run, landing.Request{Command: help.word, Words: p.words, Wait: bool(p.wait)})
 
 			return nil
 		},
 	}
 	c.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return p.flagRefusal(err, extra) })
+
+	return c
+}
+
+// push returns `ils push`, which runs the push command of the app, or landing.Push when it has
+// none, with --wait set on its request as typed.
+func (p *parse) push() *cobra.Command {
+	c := p.landing(landingHelp{
+		word: landing.PushCommand, short: pushShort, long: withTimeLimits(pushLong), examples: pushExamples,
+	}, orDefault(p.app.runPush, landing.Push))
+
+	boolFlag(c.Flags(), &p.wait, flagNames{long: flagWait}, withTimeLimits(waitUsage))
 
 	return c
 }
@@ -606,12 +621,15 @@ func (p *parse) release() *cobra.Command {
 }
 
 // land runs the landing command run for req against the repository ils runs in and its GitHub
-// origin, and keeps its result, the repository's git dir and the step lines it printed. With debug
-// on, the trace gets every git and gh call, the read of the git dir included, and every decision
-// of the wait. The display is told how the command advances, and is gone from the terminal by the
+// origin, until req's time limit from launch, and keeps its result, the repository's git dir and
+// the step lines it printed. With debug on, the trace gets every git and gh call, the read of the
+// git dir included, and every decision of the wait. The display is told how the command advances, and is gone from the terminal by the
 // time land returns, or by the time an interrupt, a termination or a quit ends the process, or the
 // stop signal of a terminal stops it.
 func (p *parse) land(ctx context.Context, run Command, req landing.Request) {
+	ctx, cancel := context.WithDeadline(ctx, p.app.Launch.Add(req.Limit()))
+	defer cancel()
+
 	errProfile := p.app.profile(p.app.StderrTerminal, p.noColor)
 	logger := p.logger(errProfile)
 	runner := p.app.git
@@ -816,6 +834,7 @@ const (
 
 	flagForce   = "--force"
 	flagTagOnly = "--tag-only"
+	flagWait    = "--wait"
 
 	// wordDash is the terminator after which every word is a positional argument.
 	wordDash = "--"

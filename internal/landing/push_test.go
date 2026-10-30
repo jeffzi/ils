@@ -53,20 +53,30 @@ func changesRead() []forgetest.Op {
 
 // finish is how a result must have ended: its outcome and the parts of its text, as expect builds
 // them. A result of the push sequence is also held to the parts of its reason and to its payload,
-// nil for none.
+// nil for none. req is the request it ran, a bare `ils push` when it names none.
 type finish struct {
 	payload *result.Push
 	text    string
 	reason  string
+	req     landing.Request
 	outcome result.Outcome
 }
 
-// assertEnded fails unless got ended as end says, carries the command and words of pushRequest,
+// request is the request end ran: its req, or a bare `ils push` when it names none.
+func (end finish) request() landing.Request {
+	if end.req.Command == "" {
+		return pushRequest()
+	}
+
+	return end.req
+}
+
+// assertEnded fails unless got ended as end says, carries the command and words of end's request,
 // and renders text that holds the parts of end's text.
 func assertEnded(t *testing.T, s *scene, got result.Result, end finish) {
 	t.Helper()
 
-	assertEndedBy(t, got, s.gitDir, ended{text: end.text, req: pushRequest(), outcome: end.outcome})
+	assertEndedBy(t, got, s.gitDir, ended{text: end.text, req: end.request(), outcome: end.outcome})
 }
 
 // reads is what a refusing Push may have done: the refs before it, the forge operations it made,

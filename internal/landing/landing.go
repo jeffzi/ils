@@ -30,24 +30,36 @@ const (
 // because result.NextStep accepts only constant expressions.
 const thenRunAgain = ", then run %s again"
 
-// TimeLimit is how long a command may run before its context reaches its deadline. Every result
-// that says the time limit cut a call or a wait short names this length, as timeLimitWords.
-const TimeLimit = 100 * time.Second
+// TimeLimit is how long a command may run before its context reaches its deadline, and
+// WaitTimeLimit how long `ils push --wait` may; both count from launch. Every result that says the
+// time limit cut a call or a wait short names the one its request ran under: Request.limitWords
+// for push, whose --wait lengthens it, and timeLimitWords for merge, release and status, which take
+// no --wait.
+const (
+	TimeLimit     = 100 * time.Second
+	WaitTimeLimit = 15 * time.Minute
+)
 
-// timeLimitWords is TimeLimit as every result names it.
-const timeLimitWords = seconds(TimeLimit)
+// timeLimitWords is TimeLimit as the results of merge, release and status name it; a result of
+// push names Request.limitWords instead.
+const timeLimitWords = span(TimeLimit)
 
-// seconds is a limit that prints in whole seconds, as the help and every result name one:
-// "100 seconds".
-type seconds time.Duration
+// span is a limit as the help and every result name one: in whole minutes when it is a whole
+// number of minutes, "15 minutes", and in whole seconds otherwise, "100 seconds".
+type span time.Duration
 
-func (s seconds) String() string {
-	return nounCount(int(time.Duration(s)/time.Second), "second")
+func (s span) String() string {
+	d := time.Duration(s)
+	if d >= time.Minute && d%time.Minute == 0 {
+		return nounCount(int(d/time.Minute), "minute")
+	}
+
+	return nounCount(int(d/time.Second), "second")
 }
 
-// Seconds is d as the help and every result name a limit: in whole seconds, "100 seconds".
-func Seconds(d time.Duration) string {
-	return seconds(d).String()
+// Span is d as the help and every result name a limit: "15 minutes", "100 seconds".
+func Span(d time.Duration) string {
+	return span(d).String()
 }
 
 // nounCount is n as a count of noun: "1 <noun>", or "<n> <noun>s" for any other n.
@@ -61,11 +73,13 @@ func nounCount(n int, noun string) string {
 
 // timeLimitEnded and runInterrupted are the clauses a result says a call or a wait was cut short
 // with: by the end of the time limit, or by an interrupt. They stay untyped so that result.Say
-// accepts wording built on them. The one placeholder of timeLimitEnded takes timeLimitWords.
+// accepts wording built on them. The one placeholder of timeLimitEnded takes the time limit as
+// Request.limitWords says it, or timeLimitWords in a command that takes no --wait.
 //
 // timeLimitRanOut and beforeTimeLimit are the clauses a wait's reason says the time limit cut it
 // short with, after the thing it was still waiting on, or before the answer it was waiting for.
-// The one placeholder of each takes timeLimitWords.
+// The one placeholder of each takes the time limit as Request.limitWords says it, or
+// timeLimitWords in a command that takes no --wait.
 //
 // fewerLeft and fewerLeftCapital open the clause that says less than the reserve of the time limit
 // was left, in a reason and at the start of a line. Their two placeholders take the reserve and
@@ -208,6 +222,23 @@ type Request struct {
 	// Force and TagOnly are the --force and --tag-only flags of `ils release`.
 	Force   bool
 	TagOnly bool
+	// Wait is the --wait flag of `ils push`: the push runs under WaitTimeLimit instead of TimeLimit.
+	Wait bool
+}
+
+// Limit is how long the request may run, counted from launch: WaitTimeLimit for a push with
+// --wait, TimeLimit for every other request.
+func (r Request) Limit() time.Duration {
+	if r.Wait {
+		return WaitTimeLimit
+	}
+
+	return TimeLimit
+}
+
+// limitWords is the time limit the request runs under, as its results name it.
+func (r Request) limitWords() span {
+	return span(r.Limit())
 }
 
 // ilsCommand is the request's command line, marked as an ils command, which prints as
@@ -226,6 +257,10 @@ func (r Request) commandLine() string {
 
 	if r.TagOnly {
 		words = append(words, "--tag-only")
+	}
+
+	if r.Wait {
+		words = append(words, "--wait")
 	}
 
 	return strings.Join(words, " ")
@@ -506,7 +541,7 @@ func (r Request) unread(read string, err error) *result.Result {
 	}
 
 	if endedEarly(err) {
-		reason := result.Say(timeLimitEnded+" while reading %s; nothing was written", timeLimitWords, read)
+		reason := result.Say(timeLimitEnded+" while reading %s; nothing was written", r.limitWords(), read)
 		if interrupted(err) {
 			reason = result.Say(runInterrupted+" while reading %s; nothing was written", read)
 		}

@@ -776,7 +776,6 @@ func (r *reading) next() result.Next {
 // other state is left to `ils push`, which reports it.
 func (r *reading) pullNext() result.Next {
 	w := r.waited
-	push := result.Command(PushCommand)
 	state := w.MergeState
 	mergeable := w.Outcome == WaitGreen && (state == forge.MergeClean || state == forge.MergeBlockedByReview)
 
@@ -784,7 +783,7 @@ func (r *reading) pullNext() result.Next {
 	case r.running:
 		return result.NextCommand(PushCommand)
 	case w.Outcome == WaitRed || w.takeApart():
-		report, _ := w.stopReport(push, r.open.HeadSHA, r.status.Trunk, r.open.Number)
+		report, _ := w.stopReport(Request{Command: PushCommand}.ending(pushAgain()), r.open.HeadSHA, r.status.Trunk, r.open.Number)
 
 		return report.next
 	case mergeable && !r.trunkAhead.None():

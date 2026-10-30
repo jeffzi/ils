@@ -419,6 +419,25 @@ func pushCommand() landingCommand {
 	return landingCommand{name: "push", req: pushRequest(), again: nextPush(), fixed: nextFixed()}
 }
 
+// waitRequest is the command and words of `ils push --wait`.
+func waitRequest() landing.Request {
+	req := pushRequest()
+	req.Words = append(req.Words, "--wait")
+	req.Wait = true
+
+	return req
+}
+
+// waitCommand is `ils push --wait` with the `Next:` lines that name it.
+func waitCommand() landingCommand {
+	const line = "ils push --wait"
+
+	return landingCommand{
+		name: "push --wait", req: waitRequest(),
+		again: expect(resulttest.NextLine(line) + "\n"), fixed: expect("fix what failed", line),
+	}
+}
+
 // mergeCommand is `ils merge` with the `Next:` lines that name it.
 func mergeCommand() landingCommand {
 	return landingCommand{name: "merge", req: mergeRequest(), again: nextMergeAgain(), fixed: nextMergeFixed()}
@@ -444,14 +463,19 @@ type cut struct {
 	before string
 }
 
-// byTimeLimit is the cut whose context is already past its deadline, so its error is
-// context.DeadlineExceeded. What it says names the length of the time limit in whole seconds, as
-// the help does.
-func byTimeLimit() cut {
-	limitPart := "time limit" + partEnd + fmt.Sprintf("%d seconds", int(landing.TimeLimit.Seconds()))
+// byTimeLimit is byLimit at TimeLimit.
+func byTimeLimit() cut { return byLimit("the time limit", landing.TimeLimit) }
+
+// byWaitLimit is byTimeLimit for a push run with the long wait, whose time limit is the long one.
+func byWaitLimit() cut { return byLimit("the time limit of the long wait", landing.WaitTimeLimit) }
+
+// byLimit is the cut named name whose context is already past its deadline, so its error is
+// context.DeadlineExceeded. What it says names limit as landing.Span does, as the help does.
+func byLimit(name string, limit time.Duration) cut {
+	limitPart := "time limit" + partEnd + landing.Span(limit)
 
 	return cut{
-		name: "the time limit", err: context.DeadlineExceeded,
+		name: name, err: context.DeadlineExceeded,
 		spend: func(parent context.Context) (context.Context, context.CancelFunc) {
 			return context.WithDeadline(parent, time.Unix(0, 0))
 		},
@@ -790,30 +814,34 @@ func TestPreconditions_WhenDirectoryIsNotARepository_BrokeNamingTheRead(t *testi
 	assertBrokeReadBy(t, got, pushCommand(), readStanding)
 }
 
-// unfinished is a cut that ends one read of the preconditions.
+// unfinished is a cut that ends one read of the preconditions of a command.
 type unfinished struct {
 	// arrange returns the context to run under and the forge's script, for the cut c.
 	arrange func(t *testing.T, c cut) (context.Context, forgetest.Script)
 	name    string
 	read    string
+	c       cut
 	// ops are the forge operations made before the refusal.
 	ops []forgetest.Op
+	cmd landingCommand
 }
 
 func TestPreconditions_WhenAReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
 	t.Parallel()
-	c := byTimeLimit()
-	tests := []unfinished{
-		{
-			name: "before the first read", read: readGitVersion,
-			arrange: func(t *testing.T, c cut) (context.Context, forgetest.Script) {
-				t.Helper()
+	beforeAnyRead := func(t *testing.T, c cut) (context.Context, forgetest.Script) {
+		t.Helper()
 
-				return c.spent(t), forgetest.Script{}
-			},
+		return c.spent(t), forgetest.Script{}
+	}
+	tests := []unfinished{
+		{name: "before the first read", read: readGitVersion, c: byTimeLimit(), cmd: pushCommand(), arrange: beforeAnyRead},
+		{
+			name: "before the first read of a push run with the long wait", read: readGitVersion,
+			c: byWaitLimit(), cmd: waitCommand(), arrange: beforeAnyRead,
 		},
 		{
 			name: "between the identity read and the trunk read", read: readTrunk, ops: identityRead(),
+			c: byTimeLimit(), cmd: pushCommand(),
 			arrange: func(t *testing.T, c cut) (context.Context, forgetest.Script) {
 				t.Helper()
 
@@ -828,18 +856,36 @@ func TestPreconditions_WhenAReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			ctx, script := tt.arrange(t, c)
+			ctx, script := tt.arrange(t, tt.c)
 			s := newScene(t, nil, script, false)
 
-			_, stop := landing.Preconditions(ctx, s.deps, pushRequest())
+			_, stop := landing.Preconditions(ctx, s.deps, tt.cmd.req)
 
 			got := stopped(t, stop, "a refusal")
-			assertStopped(t, got, result.Refused)
+			assertStoppedBy(t, got, result.Refused, tt.cmd.req)
 
 			text, _ := shown(t, got, s.gitDir)
-			assertSays(t, text, overtimeText(pushCommand(), c, tt.read))
+			assertSays(t, text, overtimeText(tt.cmd, tt.c, tt.read))
 
 			assertAsked(t, s, tt.ops)
+		})
+	}
+}
+
+func TestSpan_NamesAWholeNumberOfMinutesInMinutesAndAnyOtherSpanInSeconds(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+		span time.Duration
+	}{
+		{name: "whole minutes", span: 15 * time.Minute, want: "15 minutes"},
+		{name: "seconds past a minute", span: 100 * time.Second, want: "100 seconds"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := landing.Span(tt.span)
+
+			assert.Equal(t, got, tt.want)
 		})
 	}
 }

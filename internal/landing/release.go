@@ -357,11 +357,11 @@ func (rel *releasing) reserved(ctx context.Context, req Request) *result.Result 
 	}
 
 	stop := req.ends(result.Pending,
-		result.Say(fewerLeft+" for the release", seconds(mergeReserve), timeLimitWords),
+		result.Say(fewerLeft+" for the release", span(mergeReserve), timeLimitWords),
 		req.again())
 	stop.Lines = slices.Concat(rel.said, []result.Phrase{result.Say(
 		fewerLeftCapital+" for the release, so nothing was written",
-		seconds(mergeReserve), timeLimitWords)})
+		span(mergeReserve), timeLimitWords)})
 
 	return stop
 }

@@ -109,8 +109,8 @@ func (d *delivery) pushFailed(err error) *result.Result {
 	if timedOut(err) {
 		return d.endedSaying(
 			result.Say("Started the push of %s at %s when "+timeLimitEnded+"; it may or may not have taken",
-				d.markedBranch(), d.markedTip(), timeLimitWords),
-			result.Broke, result.Say(timeLimitEnded+" during the push", timeLimitWords), d.req.again())
+				d.markedBranch(), d.markedTip(), d.req.limitWords()),
+			result.Broke, result.Say(timeLimitEnded+" during the push", d.req.limitWords()), d.req.again())
 	}
 
 	if refused, ok := errors.AsType[*git.PushError](err); ok {
@@ -181,8 +181,8 @@ func (d *delivery) findOrOpen(ctx context.Context, deps Deps) *result.Result {
 	case timedOut(err):
 		return d.endedSaying(
 			result.Say("Started opening the pull request when "+timeLimitEnded+"; it may or may not have been opened",
-				timeLimitWords),
-			result.Broke, result.Say(timeLimitEnded+" while opening the pull request", timeLimitWords),
+				d.req.limitWords()),
+			result.Broke, result.Say(timeLimitEnded+" while opening the pull request", d.req.limitWords()),
 			d.req.again())
 	}
 
@@ -234,7 +234,7 @@ func (d *delivery) markedTip() result.Name {
 // resumes on the same commit, and broke otherwise.
 func (d *delivery) unread(read string, err error) *result.Result {
 	if endedEarly(err) {
-		return d.ended(result.Pending, cutShortReading(interrupted(err), read), d.req.again())
+		return d.ended(result.Pending, cutShortReading(interrupted(err), d.req.limitWords(), read), d.req.again())
 	}
 
 	line, reason := couldNotRead(read, err)
@@ -296,7 +296,7 @@ func (d *delivery) report(deps Deps) *result.Result {
 		return d.endNothingReported()
 	}
 
-	report, _ := d.waited.stopReport(d.req.ilsCommand(), d.tip, d.Trunk, d.number)
+	report, _ := d.waited.stopReport(d.req.ending(d.req.again()), d.tip, d.Trunk, d.number)
 	d.lines = append(d.lines, report.lines...)
 
 	ended := d.ended(report.outcome(result.DeliveredNotGreen), report.reason, report.next)
@@ -350,7 +350,7 @@ func (d *delivery) withoutCI(ctx context.Context, deps Deps, required []string) 
 
 	switch {
 	case endedEarly(err):
-		report := d.waited.ciCutShortReport(interrupted(err))
+		report := d.waited.ciCutShortReport(d.req.ending(d.req.again()), interrupted(err))
 		d.lines = append(d.lines, report.lines...)
 
 		return d.ended(result.Pending, report.reason, report.next)

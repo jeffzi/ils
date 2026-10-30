@@ -9,7 +9,14 @@ import (
 // withTimeLimit returns long with its one %s verb set to the time limit as results name it, so that
 // the help says the limit the command enforces.
 func withTimeLimit(long string) string {
-	return fmt.Sprintf(long, landing.Seconds(landing.TimeLimit))
+	return fmt.Sprintf(long, landing.Span(landing.TimeLimit))
+}
+
+// withTimeLimits returns text with its first verb set to the time limit and its second to the
+// time limit of --wait, as results name them, so that the help of push says both limits it
+// enforces.
+func withTimeLimits(text string) string {
+	return fmt.Sprintf(text, landing.Span(landing.TimeLimit), landing.Span(landing.WaitTimeLimit))
 }
 
 // The help says how to call a command and nothing else: what to do with an exit code and with
@@ -23,8 +30,8 @@ Docs: https://github.com/jeffzi/ils`
 
 	pushShort = "Push the branch, open its pull request, wait for the checks"
 	pushLong  = `Push the current branch, open its pull request on the first push, and
-wait up to %s for the checks of the pushed commit. It never
-forces a push and it does not merge.
+wait up to %s for the checks of the pushed commit, or up to
+%s with --wait. It never forces a push and it does not merge.
 
 It refuses before pushing anything when the branch is not ready, for
 example on the trunk (origin's default branch), with uncommitted
@@ -34,8 +41,13 @@ the next step.`
 	pushExamples = `# Push and wait for the checks
 ils push
 
+# Wait for checks that take longer
+ils push --wait
+
 # The same result as one JSON object
 ils push --json`
+
+	waitUsage = "Wait for the checks up to %[2]s in place of %[1]s"
 
 	mergeShort = "Squash and merge the pull request once its checks are green"
 	mergeLong  = `Squash-merge the pull request of the current branch once its checks are
