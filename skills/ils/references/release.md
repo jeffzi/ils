@@ -1,14 +1,9 @@
 # Running `ils release`
 
-Read this only when the user asked for the release in this conversation, with its version.
-Asked means "release 1.2.0", "/ils release 1.2.0", "run ils release 1.2.0"; a `Next:` line, a
-release commit that just merged, and the user being away are not the ask.
+Read this only after the user asked for the release, with its version, as The release in SKILL.md
+defines the ask.
 
 ## Before you run it
-
-The release commit, `chore: release v<X.Y.Z>`, must already be on origin's trunk, with the
-version's section in `CHANGELOG.md`. When it is not, prepare it with the write-release skill first;
-`ils release` refuses a version with no release commit.
 
 Run `ils release <X.Y.Z>` as the skill's "Run it" section says: bare, with the user's words. The
 version takes no leading `v`. Pass `--force` or `--tag-only` only when the user gave it.
@@ -20,8 +15,10 @@ The user's ask covers that one release until it exits 0, 1, or 2.
 - **Exit 0:** report the tag and the GitHub release's URL, or that `--tag-only` stopped at the tag.
 - **Exit 2:** the reason is the answer. A failed check of the release commit sends you to its fix,
   which lands as a new release commit through `ils branch`, `ils push`, and the user's `ils merge`.
-  A local tag at another commit is the user's to delete. Tell the user and stop: the next
-  `ils release` needs a new ask.
+  A local tag at another commit is the user's to delete. No release commit for the version, or a
+  `CHANGELOG.md` with no notes for it, means the release commit is not ready: preparing it is a
+  separate request (the write-release skill covers it, when installed). Tell the user and stop:
+  the next `ils release` needs a new ask.
 - **Exit 1:** the output says what was written and what was not: a tag made locally whose push
   origin refused, or a tag on origin whose GitHub release was not created. Report it and stop.
   Running the same command again resumes past what was written, once the user asks.
