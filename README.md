@@ -166,8 +166,8 @@ verdict again.
 
 When another commit reaches the pull request while `ils push` waits, the checks GitHub reports are
 no longer those of the pushed commit. `ils push` then prints no verdict and ends refused, naming
-the pull request's new head, and `Next:` says to pull the new commit, then run `ils push` again.
-The push itself already happened.
+the pull request's new head, and `Next:` says to pull the new commit, then run `ils push` again
+(`ils push --wait=false` if you gave `--wait=false`). The push itself already happened.
 
 ### What push refuses
 
