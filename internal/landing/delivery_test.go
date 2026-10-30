@@ -786,19 +786,6 @@ func pushUnreportedRows() []pushRow {
 func pushNoCIRows() []pushRow {
 	silent := opening(forge.Verdict{})
 	unverified := silent.answeringCI(forgetest.Answer[bool]{})
-	// unreadable is the push whose read of whether the repository has CI fails with err, which the
-	// push prints as said.
-	unreadable := func(name string, err error, said string) pushRow {
-		return pushRow{
-			name:   name,
-			script: silent.answeringCI(forgetest.Answer[bool]{Err: err}),
-			want: finish{
-				outcome: result.Broke, reason: expect(readCI),
-				text:    pushedLine() + openedLine() + unreadAfterWrites(readCI, said),
-				payload: detail(forge.VerdictNone, forge.MergeClean),
-			},
-		}
-	}
 
 	rows := []pushRow{
 		// A merge state after the checks that keeps the push from the trunk ends as a green push in
@@ -820,7 +807,15 @@ func pushNoCIRows() []pushRow {
 				payload: detail(forge.VerdictNone, forge.MergeClean),
 			},
 		},
-		unreadable("and the CI read fails", errors.New(forgeFailure), forgeFailure),
+		{
+			name:   "and the CI read fails",
+			script: silent.answeringCI(forgetest.Answer[bool]{Err: errors.New(forgeFailure)}),
+			want: finish{
+				outcome: result.Broke, reason: expect(readCI),
+				text:    pushedLine() + openedLine() + unreadAfterWrites(readCI, forgeFailure),
+				payload: detail(forge.VerdictNone, forge.MergeClean),
+			},
+		},
 	}
 
 	for _, c := range cuts() {

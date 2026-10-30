@@ -459,7 +459,8 @@ the repository, and also:
 - a local tag `v<X.Y.Z>` at another commit, unless origin already holds the tag at the release
   commit: `Next:` says to delete it by hand with `git tag --delete v<X.Y.Z>`;
 - a release commit with no `CHANGELOG.md`, no section for the version, or an empty section, with
-  `--tag-only` too;
+  `--tag-only` too. With no `CHANGELOG.md`, `Next:` says to stop and ask the user to start one,
+  since `ils release` then requires a section in it for every later release;
 - a failed or canceled check of the release commit, and a release commit no check reported for in
   a repository with CI.
 

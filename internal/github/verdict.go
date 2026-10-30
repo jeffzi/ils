@@ -201,7 +201,9 @@ func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Ve
 		return forge.FailedLog{Check: failed.Name, State: forge.FailedLogNoRun}, nil
 	}
 
-	result, err := f.runner().Run(ctx, "run", "view", "--repo", repo.Slug(), match[1], "--log-failed")
+	runID, jobID := match[1], match[2]
+
+	result, err := f.runner().Run(ctx, "run", "view", "--repo", repo.Slug(), runID, "--log-failed")
 	if exitErr, exited := errors.AsType[*child.ExitError](err); exited {
 		if runUnfinished.MatchString(exitErr.Stderr) {
 			return forge.FailedLog{Check: failed.Name, State: forge.FailedLogInProgress}, nil
@@ -216,7 +218,7 @@ func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Ve
 
 	text := result.Stdout
 	if strings.TrimSpace(text) == "" {
-		text, err = f.jobLog(ctx, repo, match[2])
+		text, err = f.jobLog(ctx, repo, jobID)
 		if err != nil {
 			return forge.FailedLog{}, err
 		}
@@ -248,7 +250,6 @@ func (f *Forge) jobLog(ctx context.Context, repo forge.Repo, job string) (string
 	return result.Stdout, nil
 }
 
-// commitCheckRun is one check run of the REST read of a commit's check runs.
 type commitCheckRun struct {
 	// StartedAt is the zero time for a check run GitHub has not started.
 	StartedAt  time.Time `json:"started_at"`
@@ -326,15 +327,6 @@ func (f *Forge) CommitVerdict(ctx context.Context, repo forge.Repo, sha string) 
 	}
 
 	return verdict, nil
-}
-
-func readEachPage[P any](ctx context.Context, r Runner, args []string) ([]P, error) {
-	result, err := r.Run(ctx, args...)
-	if err != nil {
-		return nil, err
-	}
-
-	return decodeEachPage[P](result.Stdout, args)
 }
 
 // commitSuites sorts the check suites of a commit's Actions runs by whether their run judges the

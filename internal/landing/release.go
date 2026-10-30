@@ -3,6 +3,7 @@ package landing
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"golang.org/x/mod/semver"
 
+	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/result"
@@ -114,8 +116,7 @@ type releasing struct {
 	// onOrigin is origin's tag of the version, empty when origin holds none.
 	onOrigin git.Tag
 	tag      string
-	// commit is the release commit.
-	commit string
+	commit   string
 	// localTag is the commit the local tag of the version is at, empty when there is none or it was
 	// not read because origin's tag is at the release commit.
 	localTag string
@@ -134,6 +135,16 @@ type releasing struct {
 // tagged and pushed it, so the release resumes past those writes.
 func (rel *releasing) resumed() bool {
 	return rel.onOrigin.Name != "" && rel.onOrigin.SHA == rel.commit
+}
+
+// version is the tag without its leading v, as the changelog and the payload name it.
+func (rel *releasing) version() string {
+	return strings.TrimPrefix(rel.tag, "v")
+}
+
+// prerelease reports whether the version has a pre-release part.
+func (rel *releasing) prerelease() bool {
+	return semver.Prerelease(rel.tag) != ""
 }
 
 // checks runs the checks of `ils release` after the shared preconditions, and returns the result
@@ -162,10 +173,8 @@ func (rel *releasing) readTags(ctx context.Context, deps Deps, req Request) *res
 		return req.unreached(readOriginTags, err, result.Say("origin could not be reached to ask for its tags"))
 	}
 
-	for _, tag := range tags {
-		if tag.Name == rel.tag {
-			rel.onOrigin = tag
-		}
+	if i := slices.IndexFunc(tags, func(tag git.Tag) bool { return tag.Name == rel.tag }); i >= 0 {
+		rel.onOrigin = tags[i]
 	}
 
 	others := slices.DeleteFunc(versionTags(tags), func(tag git.Tag) bool { return tag.Name == rel.tag })
@@ -237,7 +246,7 @@ func (rel *releasing) history(ctx context.Context, deps Deps, tip string) ([]git
 	// from a commit it lacks as it fails on a broken repository. Fetching the tag brings its commit,
 	// after which only a real failure fails the walk.
 	if _, err := deps.Repo.FetchTag(ctx, rel.previous.Name); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("fetch tag %s: %w", rel.previous.Name, err)
 	}
 
 	return deps.Repo.FirstParentHistory(ctx, tip, rel.previous.SHA)
@@ -282,18 +291,20 @@ func (rel *releasing) checkNotes(ctx context.Context, deps Deps, req Request) *r
 		return req.unread(readChangelog, err)
 	}
 
-	next := result.NextStep("land a release commit of %s whose %s holds its notes"+thenRunAgain,
-		rel.tag, changelogPath, req.ilsCommand())
-
+	// Starting a changelog commits every later release to a section in it, so the user decides.
 	if !found {
-		return req.Refused(result.Say("the release commit %s has no %s", result.SHA(rel.commit), changelogPath), next)
+		return req.Refused(
+			result.Say("the release commit %s has no %s", result.SHA(rel.commit), changelogPath),
+			result.NextStep("stop and ask the user to start a %s with the notes of %s, landed in a new release commit",
+				changelogPath, rel.tag))
 	}
 
-	rel.notes = releaseNotes(content, strings.TrimPrefix(rel.tag, "v"))
+	rel.notes = releaseNotes(content, rel.version())
 	if rel.notes == "" {
 		return req.Refused(
 			result.Say("the %s of the release commit %s has no notes for %s", changelogPath, result.SHA(rel.commit), rel.tag),
-			next)
+			result.NextStep("land a release commit of %s whose %s holds its notes"+thenRunAgain,
+				rel.tag, changelogPath, req.ilsCommand()))
 	}
 
 	return nil
@@ -346,10 +357,10 @@ func (rel *releasing) reserved(ctx context.Context, req Request) *result.Result 
 	}
 
 	stop := req.ends(result.Pending,
-		result.Say("fewer than %s of the time limit of %s were left for the release", seconds(mergeReserve), timeLimitWords),
+		result.Say(fewerLeft+" for the release", seconds(mergeReserve), timeLimitWords),
 		req.again())
 	stop.Lines = slices.Concat(rel.said, []result.Phrase{result.Say(
-		"Fewer than %s of the time limit of %s were left for the release, so nothing was written",
+		fewerLeftCapital+" for the release, so nothing was written",
 		seconds(mergeReserve), timeLimitWords)})
 
 	return stop
@@ -511,9 +522,7 @@ func (rel *releasing) pendingStop(req Request, waited Waited) *result.Result {
 	}
 
 	if len(pending) > 0 {
-		now := time.Now()
-		lines = runningList(result.Say("Still running (%s):", nounCount(len(pending), "check")), pending,
-			func(check forge.Check) result.Phrase { return runningAge(check, now) })
+		lines = runningAges(pending)
 	}
 
 	stop := req.ends(result.Pending, reason, req.again())
@@ -569,7 +578,7 @@ func (rel *releasing) write(ctx context.Context, deps Deps, req Request) *result
 }
 
 // pushTag creates the tag of the version at the release commit, keeping the local one already
-// there, and pushes it to origin.
+// there, and pushes it to origin. A push that fails ends as tagPushFailed words it.
 func (rel *releasing) pushTag(ctx context.Context, deps Deps, req Request) *result.Result {
 	commit := result.SHA(rel.commit)
 
@@ -594,6 +603,30 @@ func (rel *releasing) pushTag(ctx context.Context, deps Deps, req Request) *resu
 		return nil
 	}
 
+	return rel.tagPushFailed(req, err)
+}
+
+// tagPushFailed returns the result of a push of the tag that failed with err, worded for what err
+// says about origin, as pushFailed words the push of a branch. Only a push git refused, or one whose
+// git never started, surely left origin without the tag; one cut short, one origin stopped
+// answering, and one whose git a signal killed may have taken, and running the release again
+// settles which, since it resumes once origin holds the tag at the release commit.
+func (rel *releasing) tagPushFailed(req Request, err error) *result.Result {
+	commit := result.SHA(rel.commit)
+
+	if interrupted(err) {
+		return rel.broke(req, result.Say(runInterrupted+" during the push of the tag %s", rel.tag), req.again(),
+			result.Say("Started the push of the tag %s at %s when "+runInterrupted+"; it may or may not have taken",
+				rel.tag, commit))
+	}
+
+	if timedOut(err) {
+		return rel.broke(req, result.Say(timeLimitEnded+" during the push of the tag %s", timeLimitWords, rel.tag),
+			req.again(),
+			result.Say("Started the push of the tag %s at %s when "+timeLimitEnded+"; it may or may not have taken",
+				rel.tag, commit, timeLimitWords))
+	}
+
 	if refused, ok := errors.AsType[*git.PushError](err); ok {
 		line := result.Say("Git refused the push of the tag %s, made locally, so it was not pushed", rel.tag)
 		if refused.Reason != "" {
@@ -606,13 +639,26 @@ func (rel *releasing) pushTag(ctx context.Context, deps Deps, req Request) *resu
 		return stop
 	}
 
+	if _, ok := errors.AsType[*git.RemoteError](err); ok {
+		return rel.broke(req, result.Say(originStopped+" during the push of the tag %s", rel.tag), req.again(),
+			result.Say("Started the push of the tag %s at %s when "+originStopped+"; it may or may not have taken: %s",
+				rel.tag, commit, err.Error()))
+	}
+
+	if _, ok := errors.AsType[*child.KilledError](err); ok {
+		return rel.broke(req, result.Say("the push of the tag %s did not finish", rel.tag), req.again(),
+			result.Say("The push of the tag %s at %s did not finish, so it may or may not have taken: %s",
+				rel.tag, commit, err.Error()))
+	}
+
 	return rel.broke(req, result.Say("could not push the tag %s", rel.tag), req.onceFixed(),
 		result.Say("The tag %s was made locally, and its push to origin failed: %s", rel.tag, err.Error()))
 }
 
 // publish leaves the GitHub release of the tag as it is when one exists, and otherwise creates it
 // with the release's notes, as a pre-release when the version has a pre-release part. A failure is
-// broke, and running again resumes past the tag already on origin.
+// broke, and running again resumes past the tag already on origin. A creation the time limit or an
+// interrupt cut short may still have gone through; the next run finds the release when it did.
 func (rel *releasing) publish(ctx context.Context, deps Deps, req Request) *result.Result {
 	deps.started(result.Say("Publishing the GitHub release of %s", rel.tag))
 
@@ -626,12 +672,23 @@ func (rel *releasing) publish(ctx context.Context, deps Deps, req Request) *resu
 	}
 
 	if err == nil {
-		release := forge.NewRelease{Tag: rel.tag, Notes: rel.notes, Prerelease: semver.Prerelease(rel.tag) != ""}
+		release := forge.NewRelease{Tag: rel.tag, Notes: rel.notes, Prerelease: rel.prerelease()}
 		if link, err = deps.Forge.PublishRelease(ctx, rel.Repo, release); err == nil {
 			rel.url = link
 			deps.say(&rel.said, result.Say("Created the GitHub release of %s: %s", rel.tag, result.URL(link)))
 
 			return nil
+		}
+
+		switch {
+		case interrupted(err):
+			return rel.broke(req, result.Say(runInterrupted+" while publishing the GitHub release of %s", rel.tag), req.again(),
+				result.Say("Started publishing the GitHub release of %s when "+runInterrupted+mayHaveGoneThrough, rel.tag))
+		case timedOut(err):
+			return rel.broke(req, result.Say(timeLimitEnded+" while publishing the GitHub release of %s", timeLimitWords, rel.tag),
+				req.again(),
+				result.Say("Started publishing the GitHub release of %s when "+timeLimitEnded+mayHaveGoneThrough,
+					rel.tag, timeLimitWords))
 		}
 	}
 
@@ -649,12 +706,12 @@ func (rel *releasing) broke(req Request, reason result.Phrase, next result.Next,
 func (rel *releasing) ended(req Request, stop *result.Result, lines ...result.Phrase) *result.Result {
 	stop.Lines = slices.Concat(rel.said, lines)
 	stop.Payload = &result.Payload{Release: &result.Release{
-		Version:    strings.TrimPrefix(rel.tag, "v"),
+		Version:    rel.version(),
 		Tag:        rel.tag,
 		SHA:        rel.commit,
 		Verdict:    rel.verdict,
 		URL:        rel.url,
-		Prerelease: semver.Prerelease(rel.tag) != "",
+		Prerelease: rel.prerelease(),
 		TagOnly:    req.TagOnly,
 	}}
 

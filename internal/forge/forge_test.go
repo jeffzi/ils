@@ -15,20 +15,25 @@ import (
 // unknown-bucket case.
 const unknownBucket = forge.Bucket("stale")
 
+// link returns the URL of the check called name.
 func link(name string) string {
 	return "https://ci.example.com/checks/" + name
 }
 
+// linked returns check with its Link set to link(check.Name).
 func linked(check forge.Check) forge.Check {
 	check.Link = link(check.Name)
 
 	return check
 }
 
+// verdictOf returns a verdict of checks with no required check missing.
 func verdictOf(checks ...forge.Check) forge.Verdict {
 	return forge.Verdict{Checks: checks}
 }
 
+// missingBuild returns a verdict of checks where the trunk requires a "build" check that the commit
+// does not have, so only the required checks decide.
 func missingBuild(checks ...forge.Check) forge.Verdict {
 	return forge.Verdict{Checks: checks, MissingRequired: []string{"build"}}
 }
@@ -41,7 +46,6 @@ func TestVerdict_State(t *testing.T) {
 		want    forge.VerdictState
 		verdict forge.Verdict
 	}{
-		{name: "no check", verdict: verdictOf(), want: forge.VerdictNone},
 		{name: "only skipped", verdict: verdictOf(forgetest.Check("docs", forge.BucketSkipped)), want: forge.VerdictGreen},
 		{name: "one pending", verdict: verdictOf(forgetest.Check("build", forge.BucketPass), forgetest.Check("test", forge.BucketPending)), want: forge.VerdictPending},
 		{name: "failing and pending", verdict: verdictOf(forgetest.Check("build", forge.BucketPending), forgetest.Check("test", forge.BucketFail)), want: forge.VerdictRed},

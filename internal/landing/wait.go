@@ -276,22 +276,13 @@ func (w waiter) logEnd(ctx context.Context, waited Waited) {
 	w.deps.logWait(ctx, attrs...)
 }
 
-// startChecks tells the progress hook that the wait for the checks began.
 func (w waiter) startChecks() {
 	w.deps.started(result.Say("Waiting for checks on %s", result.PullRequest(w.pushed.Number)))
 }
 
-// logWait gives the logger, if any, a debug record of a decision of the wait, made of attrs.
 func (d Deps) logWait(ctx context.Context, attrs ...slog.Attr) {
 	if d.Logger != nil {
 		d.Logger.LogAttrs(ctx, slog.LevelDebug, "wait", attrs...)
-	}
-}
-
-// counted tells the progress hook, if any, that done of total checks have concluded.
-func (d Deps) counted(done, total int) {
-	if d.Progress != nil && total > 0 {
-		d.Progress.Counted(done, total)
 	}
 }
 
@@ -340,6 +331,15 @@ func (w *Waited) endPending(stage WaitStage, err error) bool {
 	return true
 }
 
+// take records verdict and the outcome it was judged as, with its deciding checks and how many of
+// them passed or were skipped.
+func (w *Waited) take(verdict forge.Verdict, outcome WaitOutcome) {
+	w.Outcome = outcome
+	w.Verdict = verdict
+	w.Deciding = verdict.Deciding()
+	w.Passed, w.Skipped = tally(w.Deciding)
+}
+
 // waiter is one wait for the checks of a pull request's head: what it reads through and the
 // commit it reads about.
 type waiter struct {
@@ -358,10 +358,7 @@ func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 	}
 
 	verdict, outcome, err := w.concluded(ctx, &waited)
-	waited.Outcome = outcome
-	waited.Verdict = verdict
-	waited.Deciding = verdict.Deciding()
-	waited.Passed, waited.Skipped = tally(waited.Deciding)
+	waited.take(verdict, outcome)
 
 	stillRunning := errors.Is(err, errOutOfTime)
 
@@ -750,7 +747,6 @@ func tally(checks []forge.Check) (passed, skipped int) {
 			passed++
 		case forge.BucketSkipped:
 			skipped++
-		default:
 		}
 	}
 

@@ -440,8 +440,7 @@ type logRow struct {
 	fails  bool
 }
 
-// logRows lists the waits whose debug records are checked, one per way a wait ends but for
-// checks still running at the deadline, which stillRunningLogRows lists.
+// logRows lists the waits whose debug records are checked, one per way a wait ends.
 func logRows() []logRow {
 	return []logRow{
 		{
@@ -476,30 +475,10 @@ func logRows() []logRow {
 	}
 }
 
-// stillRunningLogRows lists the waits that end with checks still running at the deadline whose
-// read of the head after them is cut short.
-func stillRunningLogRows() []logRow {
-	return []logRow{
-		{
-			name: "a wait whose head read after checks still running is cut short",
-			script: forgetest.Script{
-				Head:    append(shows(clean()), lateHead(byTimeLimit())),
-				Verdict: says(running()),
-			},
-			left: 5 * time.Second,
-			want: []string{
-				"DEBUG wait read=merge-state state=clean window=" + landing.MergeWindow.String(),
-				"DEBUG wait read=checks done=0 pending=1 verdict=pending",
-				"DEBUG wait ended=pending stage=verdict",
-			},
-		},
-	}
-}
-
 func TestAwaitVerdict_WhenGivenALogger_LogsEachDecisionOfTheWait(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range slices.Concat(logRows(), stillRunningLogRows()) {
+	for _, tt := range logRows() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {

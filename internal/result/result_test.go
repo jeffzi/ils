@@ -144,14 +144,5 @@ func listedBranches() result.Result {
 func TestSay_WhenDrawnInColor_DrawsEachBuiltPartInItsStyle(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range builtCases() {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			t.Logf("row: result %s", inputOf(tt.result))
-
-			got, out := drawnLook(t, tt)
-
-			assert.Check(t, is.Equal(got, tt.want), "output %q", out)
-		})
-	}
+	assertLooks(t, builtCases())
 }

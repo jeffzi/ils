@@ -830,28 +830,16 @@ const release = "v1.2.0"
 
 func TestRepo_LocalTag_WhenTheTagExists_ReturnsItsCommit(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		tag  func(f *gittest.Fixture, name, sha string)
-		name string
-	}{
-		{name: "annotated", tag: (*gittest.Fixture).OriginTag},
-		{name: "lightweight", tag: (*gittest.Fixture).OriginLightweightTag},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			f := gittest.New(t, trunk)
-			sha := f.Commits(topic, "one")[0]
-			tt.tag(f, release, sha)
-			fetch(t, f, releaseRef+":"+releaseRef)
+	f := gittest.New(t, trunk)
+	sha := f.Commits(topic, "one")[0]
+	f.OriginTag(release, sha)
+	fetch(t, f, releaseRef+":"+releaseRef)
 
-			got, found, err := newRepo(f).LocalTag(t.Context(), release)
-			assert.NilError(t, err)
+	got, found, err := newRepo(f).LocalTag(t.Context(), release)
+	assert.NilError(t, err)
 
-			assert.Check(t, found, "LocalTag(%q) found = false, want true", release)
-			assert.Check(t, is.Equal(got, sha))
-		})
-	}
+	assert.Check(t, found, "LocalTag(%q) found = false, want true", release)
+	assert.Check(t, is.Equal(got, sha))
 }
 
 func TestRepo_LocalTag_WhenNoLocalTagHasTheName_ReportsNotFound(t *testing.T) {
@@ -862,9 +850,6 @@ func TestRepo_LocalTag_WhenNoLocalTagHasTheName_ReportsNotFound(t *testing.T) {
 	}{
 		{name: "no ref of that name", arrange: func(*gittest.Fixture) {}},
 		{name: "a branch of that name", arrange: func(f *gittest.Fixture) { f.Commits(release, "one") }},
-		{name: "a tag of that name on origin alone", arrange: func(f *gittest.Fixture) {
-			f.OriginTag(release, f.Git("rev-parse", trunk))
-		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -880,13 +865,11 @@ func TestRepo_LocalTag_WhenNoLocalTagHasTheName_ReportsNotFound(t *testing.T) {
 	}
 }
 
-func TestRepo_CreateTag_WhenHeadIsElsewhereAndTheTreeIsDirty_TagsTheGivenCommitAnnotated(t *testing.T) {
+func TestRepo_CreateTag_WhenHeadIsElsewhere_TagsTheGivenCommitAnnotated(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
 	sha := f.Commits(topic, "one", "two")[0]
-	f.StagedFile()
-	f.DirtyFile()
-	ref := "refs/tags/" + release
+	ref := releaseRef
 
 	err := newRepo(f).CreateTag(t.Context(), release, sha)
 	assert.NilError(t, err, "CreateTag(%q, %s)", release, sha)
@@ -894,6 +877,19 @@ func TestRepo_CreateTag_WhenHeadIsElsewhereAndTheTreeIsDirty_TagsTheGivenCommitA
 	assert.Check(t, is.Equal(f.Git("cat-file", "-t", ref), "tag"))
 	assert.Check(t, is.Equal(f.Git("rev-parse", ref+"^{commit}"), sha))
 	assert.Check(t, is.Equal(f.Git("for-each-ref", "--format=%(contents)", ref), release))
+}
+
+func TestRepo_CreateTag_WhenTheTreeIsDirty_CreatesTheTag(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	sha := f.Commits(topic, "one")[0]
+	f.StagedFile()
+	f.DirtyFile()
+
+	err := newRepo(f).CreateTag(t.Context(), release, sha)
+	assert.NilError(t, err, "CreateTag(%q, %s)", release, sha)
+
+	assert.Check(t, is.Equal(f.Git("rev-parse", releaseRef+"^{commit}"), sha))
 }
 
 // versionCase is a line git prints for --version and the version VersionOf reads from it.

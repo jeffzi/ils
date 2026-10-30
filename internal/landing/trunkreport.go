@@ -2,6 +2,7 @@ package landing
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/git"
@@ -117,7 +118,7 @@ func (r *reading) onOriginTrunk(ctx context.Context, tag git.Tag) (bool, error) 
 	// it, yet git fails the check of a commit it lacks as it fails on a broken repository. Fetching
 	// the tag brings its commit, after which only a real failure fails the check.
 	if _, err := r.deps.Repo.FetchTag(ctx, tag.Name); err != nil {
-		return false, err
+		return false, fmt.Errorf("fetch tag %s: %w", tag.Name, err)
 	}
 
 	return r.deps.Repo.Contains(ctx, r.trunkTip, tag.SHA)

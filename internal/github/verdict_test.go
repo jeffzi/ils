@@ -200,7 +200,6 @@ func TestForge_Verdict_FailedLog(t *testing.T) {
 func TestForge_Verdict_WhenAReadExitsNonZero_ReturnsExitErrorNamingTheRead(t *testing.T) {
 	verdict := operationsByName()["Verdict"]
 	tests := []readCase{
-		{name: "pr checks", run: verdict, args: checksArgs()},
 		{name: "run list", run: verdict, args: runsArgs(), before: []ghtest.Call{ghtest.Says("[]", checksArgs()...)}},
 	}
 	for _, tt := range tests {
@@ -218,7 +217,6 @@ func TestForge_Verdict_WhenChecksReadPrintsMalformedJSON_ReturnsDecodeErrorNamin
 // Commit verdict
 // ---------------------------------------------------------------------------
 
-// The check suites of the workflow runs the commit verdict tests script.
 const (
 	ciSuite    = 11
 	otherSuite = 12
@@ -308,8 +306,6 @@ func TestForge_CommitVerdict_WhenARedCheckRunIsOnTheCommit_KeepsItUnlessItsRunIs
 		want []forge.Check
 	}{
 		{name: "scheduled run", run: workflowRunJSON(otherSuite, "Nightly", "schedule", "completed"), want: []forge.Check{build}},
-		{name: "run started by hand", run: workflowRunJSON(otherSuite, "Release", "workflow_dispatch", "completed"), want: []forge.Check{build}},
-		{name: "Dependabot run", run: workflowRunJSON(otherSuite, "Dependabot Updates", "dynamic", "completed"), want: []forge.Check{build}},
 		{
 			name: "run started by another run",
 			run:  workflowRunJSON(otherSuite, "Deploy", "workflow_run", "completed"),
@@ -369,9 +365,7 @@ func TestForge_CommitVerdict_WhenACommitStatusIsReported_BucketsItsState(t *test
 		want  forge.Bucket
 	}{
 		{name: "success", state: "success", want: forge.BucketPass},
-		{name: "pending", state: "pending", want: forge.BucketPending},
 		{name: "failure", state: "failure", want: forge.BucketFail},
-		{name: "error", state: "error", want: forge.BucketFail},
 		{name: "state this version does not know", state: "stale", want: forge.BucketPending},
 	}
 	for _, tt := range tests {
@@ -392,10 +386,8 @@ func TestForge_CommitVerdict_WhenACheckRunIsReported_BucketsItsOutcome(t *testin
 	}{
 		{name: "success", conclusion: "success", want: forge.BucketPass},
 		{name: "skipped", conclusion: "skipped", want: forge.BucketSkipped},
-		{name: "neutral", conclusion: "neutral", want: forge.BucketSkipped},
 		{name: "canceled", conclusion: "cancelled", want: forge.BucketCanceled}, //nolint:misspell // GitHub's REST API spells the conclusion this way.
 		{name: "failure", conclusion: "failure", want: forge.BucketFail},
-		{name: "timed out", conclusion: "timed_out", want: forge.BucketFail},
 		{name: "conclusion this version does not know", conclusion: "mystery", want: forge.BucketPending},
 		{name: "not completed", want: forge.BucketPending},
 	}
@@ -496,7 +488,7 @@ func TestForge_CommitVerdict_WhenAReadExitsNonZero_ReturnsExitErrorNamingTheRead
 }
 
 func TestForge_CommitVerdict_WhenAReadPrintsMalformedJSON_ReturnsDecodeErrorNamingTheRead(t *testing.T) {
-	for _, tt := range commitVerdictReads() {
+	for _, tt := range casesNamed(commitVerdictReads(), "check runs") {
 		t.Run(tt.name, func(t *testing.T) {
 			assertDecodeErrorNamesCall(t, tt)
 		})

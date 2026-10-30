@@ -51,7 +51,7 @@ func TestTB_WhenAReportIsNotFatal_RecordsItWithoutEndingTheGoroutine(t *testing.
 	}
 }
 
-func TestTB_WhenAFailureIsFatal_EndsTheGoroutineThatReportedIt(t *testing.T) {
+func TestTB_WhenAFailureIsFatal_RecordsItBeforeEndingTheGoroutine(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		fatal func(spy *failtest.TB)

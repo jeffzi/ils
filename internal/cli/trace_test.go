@@ -14,6 +14,10 @@ import (
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
+	"github.com/jeffzi/ils/internal/forge"
+	"github.com/jeffzi/ils/internal/git"
+	"github.com/jeffzi/ils/internal/github/ghtest"
+	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
 	"github.com/jeffzi/ils/internal/result/resulttest"
@@ -77,14 +81,29 @@ func commandLines(recorded [][]string) []string {
 }
 
 func TestApp_Run_WhenDebugIsOnDuringALanding_TracesTheLandingOnStderrAlone(t *testing.T) {
-	s := newScene(t, greenFirstPush())
+	// Not parallel: the fake `gh` is found through `GH_PATH`, which `go-gh` reads from the
+	// environment of the whole process.
+	repo := forge.Repo{Host: "github.com", Owner: "acme", Name: "widgets"}
+	f := gittest.New(t, trunk)
+	recorder := &git.Recorder{}
+	fake := ghtest.Setup(t,
+		ghtest.Exits(ghtest.Answer{Stdout: "Logged in\n"}, ghtest.LoginArgs(repo.Host)...),
+		ghtest.Says(ghtest.RepoViewJSON(false, "WRITE"), ghtest.RepoViewArgs(repo.Slug())...),
+	)
+	app := over(git.Runner{Dir: f.Dir(), Env: f.Env(), Recorder: recorder})
+	app.SetPush(func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
+		_, err := deps.Forge.Identity(ctx, repo)
+		assert.Check(t, is.Nil(err))
 
-	got := launch(t, s.app(), "push", "--json", "-d")
+		return finished(req)
+	})
+
+	got := launch(t, app, "push", "--json", "-d")
 
 	calls, unmatched := traced(got.stderr)
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
 	assert.Check(t, is.Len(unmatched, 0), "lines that are neither a call nor a wait decision: %q", unmatched)
-	assert.Check(t, is.DeepEqual(calls, commandLines(slices.Concat(s.recorder.Calls(), s.fake.Calls())), anyOrder()))
+	assert.Check(t, is.DeepEqual(calls, commandLines(slices.Concat(recorder.Calls(), fake.Calls())), anyOrder()))
 }
 
 func debugRecord(at time.Time, message string, attrs ...slog.Attr) slog.Record {

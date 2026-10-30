@@ -294,7 +294,6 @@ func (d *delivery) report(deps Deps) *result.Result {
 		return d.doneMerging()
 	case WaitNothingReported:
 		return d.endNothingReported()
-	default:
 	}
 
 	report, _ := d.waited.stopReport(d.req.ilsCommand(), d.tip, d.Trunk, d.number)

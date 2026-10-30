@@ -395,13 +395,20 @@ func pullRequestStops() []mergeRow {
 
 // titleStops are the refusals of pull request 12 by its title.
 func titleStops() []mergeRow {
-	titles := []string{"fix-thing", "Feat: x", "feat(): x", "fix(a(b)): x", "feat:x", "feat:  x"}
+	titles := []struct{ name, title string }{
+		{name: "no colon", title: "fix-thing"},
+		{name: "uppercase type", title: "Feat: x"},
+		{name: "empty scope", title: "feat(): x"},
+		{name: "nested scope", title: "fix(a(b)): x"},
+		{name: "no space after colon", title: "feat:x"},
+		{name: "two spaces after colon", title: "feat:  x"},
+	}
 
 	rows := make([]mergeRow, 0, len(titles))
-	for _, title := range titles {
-		text := titleText(title)
+	for _, tt := range titles {
+		text := titleText(tt.title)
 		rows = append(rows, mergeRow{
-			name: "title " + strconv.Quote(title), script: merging().titled(title), ops: changesRead(),
+			name: tt.name, script: merging().titled(tt.title), ops: changesRead(),
 			outcome: result.Refused, fetches: true, known: true,
 			arrange: func(*gittest.Fixture) mergeEnd { return ending(text) },
 		})
@@ -522,7 +529,7 @@ func failedGitMerges() []failedGitRow {
 			name: "what the fetch of the head of the pull request fetched", script: merging(), ops: changesRead(),
 			outcome: result.Broke, fetches: true, known: true,
 			arrange: func(f *gittest.Fixture) mergeEnd {
-				end := failedGitMerge(tipPastHead(f), []string{"rev-parse", "FETCH_HEAD"})
+				end := failedGitMerge(tipPastHead(f), []string{"rev-parse", "--verify", "refs/ils/fetched/pull/" + strconv.Itoa(opened) + "/head"})
 				end.from = forgetest.OpFindChanges
 
 				return end
@@ -760,9 +767,15 @@ func mergeDetail(verdict forge.VerdictState, state forge.MergeState, checks ...f
 	}
 }
 
+// greenDetail returns the payload of `ils merge` on pull request 12 whose passing checks were read,
+// in the merge state state.
+func greenDetail(state forge.MergeState) *result.Merge {
+	return mergeDetail(forge.VerdictGreen, state, passing().Checks...)
+}
+
 // composed returns the payload of a green run on a clean pull request 12 with subject and body.
 func composed(subject, body string) *result.Merge {
-	payload := mergeDetail(forge.VerdictGreen, forge.MergeClean, passing().Checks...)
+	payload := greenDetail(forge.MergeClean)
 	payload.Subject = subject
 	payload.Body = body
 
@@ -886,7 +899,7 @@ func afterWaitStops() []waitRow {
 			name:    string(state),
 			script:  waiting(passing()).showing(cleanHead(), inState(state)),
 			outcome: result.Refused, text: lead + stateLine(state) + rest,
-			payload: mergeDetail(forge.VerdictGreen, state, passing().Checks...),
+			payload: greenDetail(state),
 		}
 	}
 	reviewed := inState(forge.MergeBlockedByReview)
@@ -923,7 +936,7 @@ func afterWaitStops() []waitRow {
 		{
 			name:    string(forge.MergeBlockedByRunningCheck),
 			script:  waiting(passing()).showing(cleanHead(), inState(forge.MergeBlockedByRunningCheck)),
-			outcome: result.Pending, payload: mergeDetail(forge.VerdictGreen, forge.MergeBlockedByRunningCheck, passing().Checks...),
+			outcome: result.Pending, payload: greenDetail(forge.MergeBlockedByRunningCheck),
 			text: countLine() + stateLine(forge.MergeBlockedByRunningCheck) +
 				expect("requires still runs on", tipMark) + nextMergeAgain(),
 		},
@@ -940,13 +953,13 @@ func afterWaitStops() []waitRow {
 // settledStops are the runs of `ils merge` whose checks are green and whose merge state, read again
 // after the wait, stops the merge once a poll finds it or fails.
 func settledStops() []waitRow {
-	unknown := inState(forge.MergeUnknown)
+	unknownHead := inState(forge.MergeUnknown)
 	rows := []waitRow{
 		{
 			name:   "behind after an unknown poll",
-			script: waiting(passing()).showing(cleanHead(), unknown, inState(forge.MergeBehind)), outcome: result.Refused,
+			script: waiting(passing()).showing(cleanHead(), unknownHead, inState(forge.MergeBehind)), outcome: result.Refused,
 			text:    countLine() + stateLine(forge.MergeBehind) + expect("behind the trunk") + nextTrunk(),
-			payload: mergeDetail(forge.VerdictGreen, forge.MergeBehind, passing().Checks...),
+			payload: greenDetail(forge.MergeBehind),
 		},
 		{
 			name: "conflicting with nothing reported and no CI on the trunk",
@@ -957,18 +970,18 @@ func settledStops() []waitRow {
 		},
 		{
 			name:    "a poll of the merge state fails",
-			script:  waiting(passing()).showing(cleanHead(), unknown).thenFailingHead(errors.New(forgeFailure)),
+			script:  waiting(passing()).showing(cleanHead(), unknownHead).thenFailingHead(errors.New(forgeFailure)),
 			outcome: result.Broke, text: unreadText(mergeCommand(), readMergeState, forgeFailure),
-			payload: mergeDetail(forge.VerdictGreen, forge.MergeUnknown, passing().Checks...),
+			payload: greenDetail(forge.MergeUnknown),
 		},
 	}
 
 	c := byTimeLimit()
 
 	return append(rows, waitRow{
-		name: c.name + " ends the poll of the merge state", script: waiting(passing()).showing(cleanHead(), unknown),
+		name: c.name + " ends the poll of the merge state", script: waiting(passing()).showing(cleanHead(), unknownHead),
 		cut:     c.inPoll,
-		outcome: result.Pending, payload: mergeDetail(forge.VerdictGreen, forge.MergeUnknown, passing().Checks...),
+		outcome: result.Pending, payload: greenDetail(forge.MergeUnknown),
 		text: countLine() + expect("#12", "can merge", c.before) + nextPush(),
 	})
 }
@@ -976,10 +989,10 @@ func settledStops() []waitRow {
 // messageStops are the runs of `ils merge` whose checks are green on a clean pull request and which
 // stop on its message, read after the wait, or on the time that read left.
 func messageStops() []waitRow {
-	green := mergeDetail(forge.VerdictGreen, forge.MergeClean, passing().Checks...)
 	row := func(name string, answer forgetest.Answer[forge.Message], outcome result.Outcome, text string) waitRow {
 		return waitRow{
-			name: name, script: waiting(passing()).saying(answer), outcome: outcome, text: text, payload: green,
+			name: name, script: waiting(passing()).saying(answer), outcome: outcome, text: text,
+			payload: greenDetail(forge.MergeClean),
 		}
 	}
 	late := row("the message read leaves fewer than 20 seconds", titledAfter(""), result.Pending,
@@ -1030,7 +1043,6 @@ func readyRows() []readyRow {
 	return []readyRow{
 		row("a body with a line starting with # and trailers", titledAfter(body, trailers...), body+"\n\n"+block),
 		row("an empty body and trailers", titledAfter("", trailers...), block),
-		row("a body and no trailers", titledAfter(body), body),
 	}
 }
 

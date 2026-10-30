@@ -144,22 +144,6 @@ func callEach(t *testing.T, fake *forgetest.Fake) {
 	}
 }
 
-// callTimes calls call times times and returns its values in order, failing the test on any error.
-func callTimes[T any](t *testing.T, times int, call func() (T, error)) []T {
-	t.Helper()
-
-	values := make([]T, 0, times)
-
-	for range times {
-		value, err := call()
-		assert.NilError(t, err)
-
-		values = append(values, value)
-	}
-
-	return values
-}
-
 func TestFake_WhenContextEndedBeforeAnAnswerNotHeld_ReturnsItsValue(t *testing.T) {
 	t.Parallel()
 	fake := forgetest.New(t, script())
@@ -211,7 +195,13 @@ func TestFake_WhenCalledPastTheLastStep_RepeatsTheLast(t *testing.T) {
 	stale, unknown, clean := staleHead(), unknownHead(), head()
 	fake := forgetest.New(t, forgetest.Script{Head: forgetest.Values(stale, unknown, clean)})
 
-	got := callTimes(t, 4, func() (forge.Head, error) { return fake.Head(t.Context(), repo(), headQuery()) })
+	got := make([]forge.Head, 0, 4)
+	for range 4 {
+		h, err := fake.Head(t.Context(), repo(), headQuery())
+		assert.NilError(t, err)
+
+		got = append(got, h)
+	}
 
 	assert.Check(t, is.DeepEqual(got, []forge.Head{stale, unknown, clean, clean}))
 }
@@ -265,14 +255,9 @@ func TestFake_Land_WhenOnLandIsSet_RunsItOnAnUnscriptedLandingToo(t *testing.T) 
 	assert.Check(t, is.DeepEqual(seen, []forgetest.Call{{Op: forgetest.OpLand, Repo: repo(), Landing: landing()}}))
 }
 
-// hold scripts one held answer whose value would be value.
-func hold[T any](value T) []forgetest.Answer[T] {
-	return []forgetest.Answer[T]{{Value: value, Hold: true}}
-}
-
 // heldScript scripts Head to hold its read until the context ends.
 func heldScript() forgetest.Script {
-	return forgetest.Script{Head: hold(head())}
+	return forgetest.Script{Head: []forgetest.Answer[forge.Head]{{Value: head(), Hold: true}}}
 }
 
 // wait is how long a read's context lives before it ends, when it does not end before the read.

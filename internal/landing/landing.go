@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,11 +17,12 @@ import (
 // Each read names what a precondition reads as it follows "read" in a result, as in "Could not read
 // origin's URLs", so it stays a noun phrase.
 const (
-	readGitVersion = "git's version"
-	readStanding   = "where HEAD stands"
-	readURLs       = "origin's URLs"
-	readIdentity   = "the repository's identity on GitHub"
-	readTrunk      = "origin's trunk"
+	readGitVersion  = "git's version"
+	readStanding    = "where HEAD stands"
+	readURLs        = "origin's URLs"
+	readIdentity    = "the repository's identity on GitHub"
+	readTrunk       = "origin's trunk"
+	readHeadCommits = "the commits on HEAD"
 )
 
 // thenRunAgain is the ending of a next step that names what to do before running the request's
@@ -48,6 +50,15 @@ func Seconds(d time.Duration) string {
 	return seconds(d).String()
 }
 
+// nounCount is n as a count of noun: "1 <noun>", or "<n> <noun>s" for any other n.
+func nounCount(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+
+	return strconv.Itoa(n) + " " + noun + "s"
+}
+
 // timeLimitEnded and runInterrupted are the clauses a result says a call or a wait was cut short
 // with: by the end of the time limit, or by an interrupt. They stay untyped so that result.Say
 // accepts wording built on them. The one placeholder of timeLimitEnded takes timeLimitWords.
@@ -55,11 +66,17 @@ func Seconds(d time.Duration) string {
 // timeLimitRanOut and beforeTimeLimit are the clauses a wait's reason says the time limit cut it
 // short with, after the thing it was still waiting on, or before the answer it was waiting for.
 // The one placeholder of each takes timeLimitWords.
+//
+// fewerLeft and fewerLeftCapital open the clause that says less than the reserve of the time limit
+// was left, in a reason and at the start of a line. Their two placeholders take the reserve and
+// timeLimitWords.
 const (
-	timeLimitEnded  = "the time limit of %s ended"
-	runInterrupted  = "ils was interrupted"
-	timeLimitRanOut = "when the time limit of %s ran out"
-	beforeTimeLimit = "before the time limit of %s"
+	timeLimitEnded   = "the time limit of %s ended"
+	runInterrupted   = "ils was interrupted"
+	timeLimitRanOut  = "when the time limit of %s ran out"
+	beforeTimeLimit  = "before the time limit of %s"
+	fewerLeft        = "fewer than %s of the time limit of %s were left"
+	fewerLeftCapital = "Fewer than %s of the time limit of %s were left"
 )
 
 // interrupted reports whether err says an interrupt cut a call short. Only an interrupt cancels
@@ -131,18 +148,22 @@ func (d Deps) say(lines *[]result.Phrase, line result.Phrase) {
 	d.said(line)
 }
 
-// startChecking tells the progress hook, if any, that the checks a command makes before it writes
-// anything began.
+// counted tells nothing when total is zero, so a wait with no deciding check shows no count.
+func (d Deps) counted(done, total int) {
+	if d.Progress != nil && total > 0 {
+		d.Progress.Counted(done, total)
+	}
+}
+
 func (d Deps) startChecking() {
 	d.started(result.Say("Checking the branch and origin"))
 }
 
-// startFinding tells the progress hook, if any, that the search for the branch's pull request began.
 func (d Deps) startFinding() {
 	d.started(result.Say("Finding the pull request"))
 }
 
-// Forge is the host of a repository, seen through the operations `push` and `merge` need.
+// Forge is the host of a repository, seen through the operations the landing commands need.
 type Forge interface {
 	// Identity fills the fork, can-push and squash-allowed flags of the repository named by host,
 	// owner, and name.
@@ -343,11 +364,16 @@ func (r Request) twoRepositories(urls git.OriginURLs) *result.Result {
 
 // identity returns origin with the forge's fork, can-push and squash-allowed flags, once the
 // forge's tool is installed, recent enough and logged in, the repository is not a fork, and the user
-// can push to it.
+// can push to it. A failed call is the refusal toolRefusal returns, and what unread returns for any
+// other failure.
 func identity(ctx context.Context, deps Deps, req Request, origin forge.Repo) (forge.Repo, *result.Result) {
 	repo, err := deps.Forge.Identity(ctx, origin)
 	if err != nil {
-		return forge.Repo{}, req.identityFailure(err)
+		if stop := req.toolRefusal(err); stop != nil {
+			return forge.Repo{}, stop
+		}
+
+		return forge.Repo{}, req.unread(readIdentity, err)
 	}
 
 	if stop := req.repoRefusal(repo); stop != nil {
@@ -392,16 +418,6 @@ func trunkOf(ctx context.Context, deps Deps, req Request) (string, *result.Resul
 	}
 
 	return "", req.unreached(readTrunk, err, reason)
-}
-
-// identityFailure returns the result for a forge identity call that failed with err: the refusal
-// toolRefusal returns, and what unread returns for any other failure.
-func (r Request) identityFailure(err error) *result.Result {
-	if stop := r.toolRefusal(err); stop != nil {
-		return stop
-	}
-
-	return r.unread(readIdentity, err)
 }
 
 // toolRefusal returns the refusal for a forge call that failed with err because of gh itself: the
@@ -561,6 +577,11 @@ func (r Request) trunkAhead(trunk string, past []git.Commit) *result.Result {
 	stop.Lines = listed(past)
 
 	return stop
+}
+
+// detachedWith says that HEAD is detached with commits origin's trunk lacks, listed after it.
+func detachedWith(trunk string) result.Phrase {
+	return result.Say("HEAD is detached with commits origin's trunk %s lacks, listed here", result.Branch(trunk))
 }
 
 // detachedKept refuses a detached HEAD with commits origin's trunk lacks, for reason, and lists

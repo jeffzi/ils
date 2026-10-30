@@ -2,10 +2,8 @@ package github
 
 import (
 	"context"
-	"encoding/json/jsontext"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/url"
 	"os"
@@ -276,9 +274,10 @@ func (f *Forge) requiredChecks(ctx context.Context, repo forge.Repo, query forge
 		return false, false, err
 	}
 
-	running = len(verdict.Pending()) > 0 || len(verdict.MissingRequired) > 0 && verdict.Running()
+	missing = len(verdict.MissingRequired) > 0
+	running = len(verdict.Pending()) > 0 || (missing && verdict.Running())
 
-	return len(verdict.MissingRequired) > 0 && !running, running, nil
+	return missing && !running, running, nil
 }
 
 // TrunkProtection returns whether rules apply to trunk, the status checks they require, and
@@ -524,46 +523,9 @@ func paginatedAPIArgs(repo forge.Repo, rest string) []string {
 	return repoAPIArgs(repo, rest, "--paginate")
 }
 
-// decodeEachPage decodes the JSON values that `gh api --paginate` prints, one per page and
-// concatenated, each into a P; stdout holding no value is a *DecodeError.
-func decodeEachPage[P any](stdout string, args []string) ([]P, error) {
-	decoder := jsontext.NewDecoder(strings.NewReader(stdout))
-
-	var pages []P
-
-	for {
-		raw, err := decoder.ReadValue()
-		if errors.Is(err, io.EOF) {
-			if len(pages) > 0 {
-				return pages, nil
-			}
-
-			err = io.ErrUnexpectedEOF
-		}
-
-		if err != nil {
-			return nil, &DecodeError{Argv: Argv(args), Err: err}
-		}
-
-		page, err := decodeOutput[P](string(raw), args)
-		if err != nil {
-			return nil, err
-		}
-
-		pages = append(pages, page)
-	}
-}
-
 // activeWorkflows returns the paths of the active workflows that have a file under .github/workflows.
 func (f *Forge) activeWorkflows(ctx context.Context, repo forge.Repo) ([]string, error) {
-	args := paginatedAPIArgs(repo, "actions/workflows")
-
-	result, err := f.runner().Run(ctx, args...)
-	if err != nil {
-		return nil, err
-	}
-
-	pages, err := decodeEachPage[workflowsPage](result.Stdout, args)
+	pages, err := readEachPage[workflowsPage](ctx, f.runner(), paginatedAPIArgs(repo, "actions/workflows"))
 	if err != nil {
 		return nil, err
 	}
@@ -603,12 +565,12 @@ func (f *Forge) workflowFiles(ctx context.Context, repo forge.Repo, trunk string
 // Merge state
 // ---------------------------------------------------------------------------
 
-// mergeFacts is what GitHub says about whether a pull request can merge.
+// mergeFacts is GitHub's merge fields of a pull request, plus the two flags that Head derives from
+// the checks of the head commit.
 type mergeFacts struct {
 	// Mergeable is GitHub's `mergeable`: MERGEABLE, CONFLICTING, or UNKNOWN.
 	Mergeable string
-	// Status is GitHub's `mergeStateStatus`.
-	Status string
+	Status    string
 	// Review is GitHub's `reviewDecision`; it is empty when no review is asked for.
 	Review string
 	Draft  bool

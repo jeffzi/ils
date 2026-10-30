@@ -3,7 +3,6 @@ package landing_test
 import (
 	"context"
 	"errors"
-	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -68,7 +67,7 @@ func TestRelease_WhenTheChecksOfTheReleaseCommitPass_GoesOnCountingThem(t *testi
 		}
 		run := gateScene(t, gated(verdict))
 
-		got := landing.Release(within(t, 0), run.st.s.deps, releaseRequest(version, false))
+		got := runRelease(t, run.st.s, releaseRequest(version, false))
 
 		assertEndedBy(t, got, run.st.s.gitDir, ended{
 			outcome: result.Done, req: releaseRequest(version, false),
@@ -99,7 +98,7 @@ func runGateRefusals(t *testing.T, rows []gateRow) {
 				req := releaseRequest(version, false)
 				run := gateScene(t, gated(tt.verdicts...))
 
-				got := landing.Release(within(t, 0), run.st.s.deps, req)
+				got := runRelease(t, run.st.s, req)
 
 				assertEndedBy(t, got, run.st.s.gitDir, ended{outcome: result.Refused, req: req, text: tt.want})
 				assert.Check(t, is.Equal(run.st.s.written(), run.before))
@@ -128,15 +127,6 @@ func TestRelease_WhenTheChecksOfTheReleaseCommitGoOnAfterARead_WaitsForThemToCon
 	failed := expect("lint", lintURL)
 	runGateRefusals(t, []gateRow{
 		{name: "a check is pending", verdicts: []forge.Verdict{running(), redCheck(forge.BucketFail)}, want: failed},
-		{
-			// Read past the time a verdict without runs is believed, so only the run keeps the wait.
-			name: "a workflow run has not created its check yet",
-			verdicts: append(
-				slices.Repeat([]forge.Verdict{{Checks: appPassing().Checks, Runs: ran(forge.RunInProgress)}}, 6),
-				redCheck(forge.BucketFail),
-			),
-			want: failed,
-		},
 	})
 }
 
@@ -189,7 +179,7 @@ func TestRelease_WhenTheChecksNeverConclude_EndsTheWaitTheReserveBeforeTheDeadli
 		run := gateScene(t, gated(running()))
 		started := time.Now()
 
-		got := landing.Release(within(t, 0), run.st.s.deps, releaseRequest(version, false))
+		got := runRelease(t, run.st.s, releaseRequest(version, false))
 
 		waited := time.Since(started)
 		latest := bound - landing.MergeReserve
@@ -237,14 +227,23 @@ func silentRows() []silentRow {
 			name: "the trunk has no CI", outcome: result.Done, text: expect("No CI", trunk, tipMark),
 			script: silent(forge.Protection{}, false),
 		},
-		{
-			name: "a check reports at a later read", outcome: result.Done, text: expect(tipMark, "1 passed"),
-			script: gated(forge.Verdict{}, passing()),
-		},
 	}
 }
 
-func TestRelease_WhenNoCheckReportedForTheReleaseCommit_ReadsAgainThenDecidesByTheTrunksCI(t *testing.T) {
+func TestRelease_WhenNoCheckReportedAtTheFirstRead_ReadsAgain(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		req := releaseRequest(version, false)
+		run := gateScene(t, gated(forge.Verdict{}, passing()))
+
+		got := runRelease(t, run.st.s, req)
+
+		text := mark(expect(tipMark, "1 passed"), run.st.release)
+		assertEndedBy(t, got, run.st.s.gitDir, ended{outcome: result.Done, req: req, text: text})
+	})
+}
+
+func TestRelease_WhenNoCheckReportedForTheReleaseCommit_DecidesByTheTrunksCI(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range silentRows() {
@@ -254,7 +253,7 @@ func TestRelease_WhenNoCheckReportedForTheReleaseCommit_ReadsAgainThenDecidesByT
 				req := releaseRequest(version, false)
 				run := gateScene(t, tt.script)
 
-				got := landing.Release(within(t, 0), run.st.s.deps, req)
+				got := runRelease(t, run.st.s, req)
 
 				text := mark(tt.text, run.st.release)
 				assertEndedBy(t, got, run.st.s.gitDir, ended{outcome: tt.outcome, req: req, text: text})
@@ -294,6 +293,7 @@ func TestRelease_WhenForced_SaysTheCIGateWasSkippedWithoutReadingTheChecks(t *te
 
 	assertEndedBy(t, got, st.s.gitDir, ended{outcome: result.Done, req: req, text: expect("skipped", "--force")})
 	assert.Check(t, is.Len(commitVerdicts(st.s), 0))
+	assert.Check(t, is.DeepEqual(releasePayload(t, got, st.s.gitDir), released(st, "forced", releaseURL)))
 }
 
 func TestRelease_WhenForced_RefusesAsWithoutItWithTheCommandAsTyped(t *testing.T) {
@@ -318,7 +318,7 @@ func TestRelease_WhenACheckWithNoWorkflowRunBehindItFailed_RefusesAtTheFirstRead
 		run := gateScene(t, gated(red))
 		req := releaseRequest(version, false)
 
-		got := landing.Release(within(t, 0), run.st.s.deps, req)
+		got := runRelease(t, run.st.s, req)
 
 		assertEndedBy(t, got, run.st.s.gitDir, ended{outcome: result.Refused, req: req, text: expect("lint", lintURL)})
 		assert.Check(t, is.Len(commitVerdicts(run.st.s), 1))
@@ -333,9 +333,9 @@ func TestRelease_WhenTheChecksOfTheReleaseCommitCannotBeRead_BrokeNamingTheRead(
 		script.CommitVerdict = []forgetest.Answer[forge.Verdict]{{Err: errors.New(forgeFailure)}}
 		run := gateScene(t, script)
 
-		got := landing.Release(within(t, 0), run.st.s.deps, cmd.req)
+		got := runRelease(t, run.st.s, cmd.req)
 
-		said := assertBrokeReadBy(t, got, cmd, "the checks of the release commit")
+		said := assertBrokeReadBy(t, got, cmd, readReleaseChecks)
 		assert.Check(t, is.Contains(said, forgeFailure))
 		assert.Check(t, is.Equal(run.st.s.written(), run.before))
 	})

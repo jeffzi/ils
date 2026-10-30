@@ -280,7 +280,8 @@ type Verdict struct {
 // protection names required checks, and every check otherwise.
 func (v Verdict) Deciding() []Check {
 	isRequired := func(check Check) bool { return check.Required }
-	if len(v.MissingRequired) == 0 && !slices.ContainsFunc(v.Checks, isRequired) {
+	requiredNamed := len(v.MissingRequired) > 0 || slices.ContainsFunc(v.Checks, isRequired)
+	if !requiredNamed {
 		return v.Checks
 	}
 

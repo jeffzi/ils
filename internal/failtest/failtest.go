@@ -30,14 +30,10 @@ func New(tb testing.TB) *TB {
 
 // Run calls fn in a goroutine of its own and waits for it to return or to end by a fatal failure.
 func (s *TB) Run(fn func()) {
-	done := make(chan struct{})
+	var wg sync.WaitGroup
 
-	go func() {
-		defer close(done)
-
-		fn()
-	}()
-	<-done
+	wg.Go(fn)
+	wg.Wait()
 }
 
 // Failed reports whether a failure was reported, fatal or not.
@@ -94,13 +90,13 @@ func (s *TB) FailNow() {
 
 // Fatal records its arguments as a message and a fatal failure, and ends the calling goroutine.
 func (s *TB) Fatal(args ...any) {
-	s.record(fmt.Sprint(args...), false)
+	s.Log(args...)
 	s.FailNow()
 }
 
 // Fatalf records the formatted message and a fatal failure, and ends the calling goroutine.
 func (s *TB) Fatalf(format string, args ...any) {
-	s.record(fmt.Sprintf(format, args...), false)
+	s.Logf(format, args...)
 	s.FailNow()
 }
 

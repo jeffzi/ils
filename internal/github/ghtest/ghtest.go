@@ -63,6 +63,12 @@ type Answer struct {
 	Code  int
 }
 
+// scriptFormat returns the duration format of the script file: Setup and the fake must encode and
+// decode the script with the same one.
+func scriptFormat() json.Options {
+	return legacy.FormatDurationAsNano(true)
+}
+
 // installed is what the fake prints for its version when the script holds no answer to
 // VersionArgs: a release every command accepts, so that a script need not answer the version read.
 const installed = "gh version " + github.MinimumVersion + "\n"
@@ -366,7 +372,7 @@ func Setup(tb testing.TB, script ...Call) *Fake {
 		tb.Fatalf("ghtest: find the test binary: %v", err)
 	}
 
-	encoded, err := json.Marshal(script, legacy.FormatDurationAsNano(true))
+	encoded, err := json.Marshal(script, scriptFormat())
 	if err != nil {
 		tb.Fatalf("ghtest: encode the script: %v", err)
 	}
@@ -631,7 +637,7 @@ func readScript(path string) ([]Call, error) {
 	}
 
 	var script []Call
-	if err := json.Unmarshal(encoded, &script, legacy.FormatDurationAsNano(true)); err != nil {
+	if err := json.Unmarshal(encoded, &script, scriptFormat()); err != nil {
 		return nil, fmt.Errorf("decode the script %s: %w", path, err)
 	}
 

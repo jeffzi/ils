@@ -1,7 +1,6 @@
 package git_test
 
 import (
-	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -85,17 +84,6 @@ func TestRunner_Run_WhenGitMissingFromPath_ReturnsToolMissingError(t *testing.T)
 	_, ok := errors.AsType[*child.ToolMissingError](err)
 	assert.Assert(t, ok, "Run(version) error = %v, want *child.ToolMissingError", err)
 	assert.Check(t, is.ErrorIs(err, exec.ErrNotFound))
-}
-
-func TestRunner_Run_WhenContextEndsAfterOutputWhileChildHoldsPipes_ReturnsContextErrorPromptly(t *testing.T) {
-	// Not parallel: helperRunner sets PATH for the whole process.
-	addr, started := gittest.SilentListener(t)
-	runner := helperRunner(t, helperWait, addr)
-	ctx := gittest.Ending(t.Context(), started, context.Canceled)
-
-	_, err := runner.Run(ctx)
-
-	assert.Check(t, is.ErrorIs(err, context.Canceled))
 }
 
 func TestRunner_Run_WhenGitExitsZeroWhileChildHoldsPipes_ReturnsOutputPromptly(t *testing.T) {

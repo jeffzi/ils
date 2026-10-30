@@ -38,6 +38,10 @@ const (
 	gitSSHVar        = "GIT_SSH"
 )
 
+// ---------------------------------------------------------------------------
+// Hostname reading
+// ---------------------------------------------------------------------------
+
 // plainHostname returns the host plain ssh connects to when asked for host, the ssh git runs when
 // no ssh command is configured, read from `ssh -G`. Like the ssh git would run, it is found on the
 // PATH of the runner's environment and runs with that environment, from the runner's directory.
@@ -77,6 +81,10 @@ func foldGitHubHost(host string) string {
 
 	return host
 }
+
+// ---------------------------------------------------------------------------
+// ssh variants and command lines
+// ---------------------------------------------------------------------------
 
 // sshVariant is the kind of ssh command git takes a configured command for, which decides the
 // options git passes it.
@@ -321,6 +329,10 @@ func isSpace(c byte) bool {
 	return strings.IndexByte(" \t\n\v\f\r", c) >= 0
 }
 
+// ---------------------------------------------------------------------------
+// Configured ssh command hostname
+// ---------------------------------------------------------------------------
+
 // sshHostname returns the host the ssh command git connects with reaches when asked for host, read
 // with `-G` as the command's variant allows and with plain `ssh -G` otherwise.
 //
@@ -380,7 +392,8 @@ func (r Repo) askSSH(ctx context.Context, command sshCommand, host string) (stri
 	named := command.program
 	if command.line != "" {
 		named = command.line
-		result, err = r.Runner.Run(ctx, append([]string{"-c", "alias." + sshAlias + "=!" + command.line, sshAlias}, args...)...)
+		aliasArgs := append([]string{"-c", "alias." + sshAlias + "=!" + command.line, sshAlias}, args...)
+		result, err = r.Runner.Run(ctx, aliasArgs...)
 	} else {
 		result, err = r.Runner.sshInvocation(command.program, "", args).run(ctx)
 	}
@@ -413,6 +426,10 @@ func (r Runner) sshInvocation(tool, toolURL string, args []string) invocation {
 
 	return inv
 }
+
+// ---------------------------------------------------------------------------
+// Environment lookup
+// ---------------------------------------------------------------------------
 
 // getenv returns the value key has in the environment git runs with, and whether it is set, as
 // EnvValue reads it.

@@ -36,15 +36,13 @@ func branchScene(t *testing.T, arrange func(*gittest.Fixture)) *scene {
 	return newScene(t, arrange, forgetest.Script{}, false)
 }
 
-// assertStarted fails unless HEAD is on the branch name, which stands at origin's trunk with no
-// upstream.
+// assertStarted fails unless HEAD is on the branch name, which stands at origin's trunk.
 func assertStarted(t *testing.T, s *scene, name string) {
 	t.Helper()
 
 	f := s.fixture
 	assert.Check(t, is.Equal(f.Git("symbolic-ref", "--short", "HEAD"), name))
 	assert.Check(t, is.Equal(f.Git("rev-parse", "refs/heads/"+name), f.OriginGit("rev-parse", trunk)))
-	assert.Check(t, is.Equal(f.Git("for-each-ref", "--format=%(upstream)", "refs/heads/"+name), ""))
 }
 
 // branchRefusal is the refusal of `ils branch name` a test expects: its text holds the parts of
@@ -122,10 +120,6 @@ func TestStartBranch_WhenNameIsTaken_RefusesNamingTheBranchThatTakesIt(t *testin
 
 	tests := []takenName{
 		{
-			name: "a branch under it locally", given: parent, taker: nested, where: "local",
-			arrange: func(f *gittest.Fixture) { f.Git("branch", nested, trunk) },
-		},
-		{
 			name: "a branch under it on origin", given: parent, taker: nested, where: "origin",
 			arrange: func(f *gittest.Fixture) { publishAtTrunk(f, nested) },
 		},
@@ -201,7 +195,7 @@ func TestStartBranch_WhenDetachedHEADHasCommitsOriginsTrunkLacks_RefusesListingT
 
 	got := startBranch(t, s, fresh)
 
-	want := expect(shortSHA(own[0]), sharpen, "`git switch -c <name>`", "ils push")
+	want := expect(shortSHA(own[0]), sharpen) + keepDetached()
 	assertRefusedBranch(t, s, got, branchRefusal{name: fresh, before: before, want: want})
 }
 

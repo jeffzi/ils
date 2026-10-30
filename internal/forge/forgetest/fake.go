@@ -127,14 +127,14 @@ func (f *Fake) Calls() []Call {
 	return slices.Clone(f.calls)
 }
 
-// Identity answers from the script's Identity sequence.
+// Identity runs the script's OnRead hook, then answers from the script's Identity sequence.
 func (f *Fake) Identity(ctx context.Context, repo forge.Repo) (forge.Repo, error) {
 	f.tb.Helper()
 
 	return answer(ctx, f, f.script.Identity, Call{Op: OpIdentity, Repo: repo})
 }
 
-// FindChanges answers from the script's FindChanges sequence.
+// FindChanges runs the script's OnRead hook, then answers from the script's FindChanges sequence.
 func (f *Fake) FindChanges(ctx context.Context, repo forge.Repo, branch string) ([]forge.Change, error) {
 	f.tb.Helper()
 
@@ -148,42 +148,42 @@ func (f *Fake) OpenChange(ctx context.Context, repo forge.Repo, change forge.New
 	return answer(ctx, f, f.script.OpenChange, Call{Op: OpOpenChange, Repo: repo, Change: change})
 }
 
-// Head answers from the script's Head sequence.
+// Head runs the script's OnRead hook, then answers from the script's Head sequence.
 func (f *Fake) Head(ctx context.Context, repo forge.Repo, query forge.HeadQuery) (forge.Head, error) {
 	f.tb.Helper()
 
 	return answer(ctx, f, f.script.Head, Call{Op: OpHead, Repo: repo, HeadQuery: query})
 }
 
-// TrunkProtection answers from the script's TrunkProtection sequence.
+// TrunkProtection runs the script's OnRead hook, then answers from the script's TrunkProtection sequence.
 func (f *Fake) TrunkProtection(ctx context.Context, repo forge.Repo, trunk string) (forge.Protection, error) {
 	f.tb.Helper()
 
 	return answer(ctx, f, f.script.TrunkProtection, Call{Op: OpTrunkProtection, Repo: repo, Branch: trunk})
 }
 
-// Verdict answers from the script's Verdict sequence.
+// Verdict runs the script's OnRead hook, then answers from the script's Verdict sequence.
 func (f *Fake) Verdict(ctx context.Context, repo forge.Repo, query forge.VerdictQuery) (forge.Verdict, error) {
 	f.tb.Helper()
 
 	return answer(ctx, f, f.script.Verdict, Call{Op: OpVerdict, Repo: repo, VerdictQuery: query})
 }
 
-// CommitVerdict answers from the script's CommitVerdict sequence.
+// CommitVerdict runs the script's OnRead hook, then answers from the script's CommitVerdict sequence.
 func (f *Fake) CommitVerdict(ctx context.Context, repo forge.Repo, sha string) (forge.Verdict, error) {
 	f.tb.Helper()
 
 	return answer(ctx, f, f.script.CommitVerdict, Call{Op: OpCommitVerdict, Repo: repo, SHA: sha})
 }
 
-// HasTrunkCI answers from the script's HasTrunkCI sequence.
+// HasTrunkCI runs the script's OnRead hook, then answers from the script's HasTrunkCI sequence.
 func (f *Fake) HasTrunkCI(ctx context.Context, repo forge.Repo, trunk string) (bool, error) {
 	f.tb.Helper()
 
 	return answer(ctx, f, f.script.HasTrunkCI, Call{Op: OpHasTrunkCI, Repo: repo, Branch: trunk})
 }
 
-// Message answers from the script's Message sequence.
+// Message runs the script's OnRead hook, then answers from the script's Message sequence.
 func (f *Fake) Message(ctx context.Context, repo forge.Repo, number int) (forge.Message, error) {
 	f.tb.Helper()
 
@@ -204,7 +204,7 @@ func (f *Fake) DeleteBranch(ctx context.Context, repo forge.Repo, branch string)
 	return answerError(ctx, f, f.script.DeleteBranch, Call{Op: OpDeleteBranch, Repo: repo, Branch: branch})
 }
 
-// FindRelease answers from the script's FindRelease sequence.
+// FindRelease runs the script's OnRead hook, then answers from the script's FindRelease sequence.
 func (f *Fake) FindRelease(ctx context.Context, repo forge.Repo, tag string) (link string, found bool, err error) {
 	f.tb.Helper()
 
@@ -279,18 +279,4 @@ func reads(op Op) bool {
 	default:
 		return true
 	}
-}
-
-// Check returns a check of the ci workflow named name, in bucket, that the trunk does not require.
-// It carries no link.
-func Check(name string, bucket forge.Bucket) forge.Check {
-	return forge.Check{Name: name, Bucket: bucket, Workflow: "ci"}
-}
-
-// RequiredCheck returns Check(name, bucket) as a check the trunk requires.
-func RequiredCheck(name string, bucket forge.Bucket) forge.Check {
-	check := Check(name, bucket)
-	check.Required = true
-
-	return check
 }

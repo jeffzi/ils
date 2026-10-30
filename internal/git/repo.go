@@ -41,6 +41,10 @@ const (
 	commitFormat = "--format=%H %s"
 )
 
+// ---------------------------------------------------------------------------
+// Standing and repository checks
+// ---------------------------------------------------------------------------
+
 // StandingKind says which of the places a command can stand in applies.
 type StandingKind int
 
@@ -131,6 +135,10 @@ func (r Repo) CheckRepository(ctx context.Context) error {
 
 	return err
 }
+
+// ---------------------------------------------------------------------------
+// Commit and branch queries
+// ---------------------------------------------------------------------------
 
 // HeadSHA returns the sha of the commit HEAD is on.
 func (r Repo) HeadSHA(ctx context.Context) (string, error) {
@@ -272,16 +280,15 @@ func (r Repo) BranchesContaining(ctx context.Context, sha string) ([]string, err
 		return nil, err
 	}
 
-	result, err := r.Runner.Run(ctx, "for-each-ref", "--format=%(refname)", headsRef, "--contains", sha)
+	containing, err := r.localBranches(ctx, "--contains", sha)
 	if err != nil {
 		return nil, err
 	}
 
 	var branches []string
 
-	for line := range strings.SplitSeq(result.Stdout, "\n") {
-		branch, isBranch := strings.CutPrefix(line, headsRef)
-		if isBranch && branch != current {
+	for _, branch := range containing {
+		if branch != current {
 			branches = append(branches, branch)
 		}
 	}
@@ -296,6 +303,10 @@ func (r Repo) BranchesContaining(ctx context.Context, sha string) ([]string, err
 func (r Repo) Unlanded(ctx context.Context, mergedHead, tip, trunk string) ([]Commit, error) {
 	return r.commits(ctx, "--no-merges", "--cherry-pick", "--right-only", mergedHead+"..."+tip, excludeTrunk(trunk))
 }
+
+// ---------------------------------------------------------------------------
+// Branch switching and name checks
+// ---------------------------------------------------------------------------
 
 // Switch puts HEAD on branch. A branch that only origin has is created from origin's copy.
 //
@@ -414,6 +425,10 @@ func (r Repo) CheckBranchName(ctx context.Context, name string) error {
 	return nil
 }
 
+// ---------------------------------------------------------------------------
+// Commit, file and tag reads
+// ---------------------------------------------------------------------------
+
 // Subject returns the first line of the message of the commit sha.
 func (r Repo) Subject(ctx context.Context, sha string) (string, error) {
 	return r.line(ctx, "show", "--no-patch", "--format=%s", sha)
@@ -468,6 +483,10 @@ func (r Repo) FileAt(ctx context.Context, sha, path string) (content string, fou
 func (r Repo) LocalTag(ctx context.Context, name string) (sha string, found bool, err error) {
 	return r.optionalLine(ctx, "rev-parse", "--verify", "--quiet", tagsRef+name+"^{commit}")
 }
+
+// ---------------------------------------------------------------------------
+// Tag, branch and worktree operations
+// ---------------------------------------------------------------------------
 
 // CreateTag makes the annotated tag name at the commit sha, with name as its message, leaving HEAD
 // and the working tree as they are. Git's tag.gpgSign decides whether it is signed.
@@ -549,6 +568,10 @@ func sameDirectory(a, b string) (bool, error) {
 	return resolvedA == resolvedB, nil
 }
 
+// ---------------------------------------------------------------------------
+// Version parsing
+// ---------------------------------------------------------------------------
+
 // CheckVersion returns nil when git is MinimumVersion or newer.
 //
 // A git that is older, or whose first line of `git --version` names no version that can be read,
@@ -595,6 +618,10 @@ func VersionOf(line string) string {
 	return version
 }
 
+// ---------------------------------------------------------------------------
+// Runner helpers
+// ---------------------------------------------------------------------------
+
 // line runs git with args and returns its stdout without the trailing line break.
 func (r Repo) line(ctx context.Context, args ...string) (string, error) {
 	result, err := r.Runner.Run(ctx, args...)
@@ -629,12 +656,39 @@ func (r Repo) optionalLine(ctx context.Context, args ...string) (value string, f
 
 // currentBranch returns the branch HEAD is on; onBranch is false on a detached HEAD.
 func (r Repo) currentBranch(ctx context.Context) (branch string, onBranch bool, err error) {
-	ref, onBranch, err := r.optionalLine(ctx, "symbolic-ref", "--quiet", "HEAD")
-	if err != nil || !onBranch {
+	return r.symbolicRef(ctx, "HEAD", headsRef)
+}
+
+// symbolicRef returns the ref the symbolic ref names, without prefix; found is false when ref is not
+// a symbolic ref, as on a detached HEAD.
+func (r Repo) symbolicRef(ctx context.Context, ref, prefix string) (name string, found bool, err error) {
+	target, found, err := r.optionalLine(ctx, "symbolic-ref", "--quiet", ref)
+	if err != nil || !found {
 		return "", false, err
 	}
 
-	return strings.TrimPrefix(ref, headsRef), true, nil
+	return strings.TrimPrefix(target, prefix), true, nil
+}
+
+// localBranches returns the names of the local branches that git for-each-ref lists with filters,
+// such as `--contains <sha>`; it returns nil when there are none.
+func (r Repo) localBranches(ctx context.Context, filters ...string) ([]string, error) {
+	args := slices.Concat([]string{"for-each-ref", "--format=%(refname)", headsRef}, filters)
+
+	result, err := r.Runner.Run(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	var branches []string
+
+	for line := range strings.SplitSeq(result.Stdout, "\n") {
+		if branch, isBranch := strings.CutPrefix(line, headsRef); isBranch {
+			branches = append(branches, branch)
+		}
+	}
+
+	return branches, nil
 }
 
 // commits runs git log over revisions and returns its commits, oldest first.

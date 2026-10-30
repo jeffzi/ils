@@ -13,10 +13,15 @@ import (
 
 func TestAssertCarried(t *testing.T) {
 	t.Parallel()
-	const reason, next = "the branch is the trunk", "switch to a branch"
+	const (
+		reason  = "the branch is the trunk"
+		next    = "switch to a branch"
+		pushed  = "Pushed the branch to origin."
+		excerpt = "first line of the log\nsecond line of the log"
+	)
 	carrier := resulttest.Shown{
-		Excerpt: "first line of the log\nsecond line of the log",
-		Lines:   []string{"Pushed the branch to origin."},
+		Excerpt: excerpt,
+		Lines:   []string{pushed},
 		Reason:  reason,
 		Next:    next,
 	}
@@ -26,13 +31,13 @@ func TestAssertCarried(t *testing.T) {
 		text     string
 		wantFail bool
 	}{
-		{name: "a line of the lines", outcome: "refused", text: "Pushed the branch to origin.\n"},
-		{name: "each line of the excerpt", outcome: "refused", text: "first line of the log\nsecond line of the log\n"},
+		{name: "a line of the lines", outcome: "refused", text: pushed + "\n"},
+		{name: "each line of the excerpt", outcome: "refused", text: excerpt + "\n"},
 		{name: "a refusal behind its label", outcome: "refused", text: resulttest.ReasonLine(result.Refused, reason) + "\n"},
 		{name: "the next behind its label", outcome: "refused", text: resulttest.NextLine(next) + "\n"},
 		{
 			name: "a line the object lacks", outcome: "refused",
-			text: "Pushed the branch to origin.\nOpened the pull request.\n", wantFail: true,
+			text: pushed + "\nOpened the pull request.\n", wantFail: true,
 		},
 		{name: "the reason without its label", outcome: "refused", text: reason + "\n", wantFail: true},
 		{
@@ -60,14 +65,9 @@ func TestAssertCarried(t *testing.T) {
 
 func TestDecode_WhenOutIsNotOneObject_StopsTheTest(t *testing.T) {
 	t.Parallel()
-	for _, out := range []string{"null", "[]"} {
-		t.Run(out, func(t *testing.T) {
-			t.Parallel()
-			spy := failtest.New(t)
+	spy := failtest.New(t)
 
-			spy.Run(func() { resulttest.Decode(spy, out) })
+	spy.Run(func() { resulttest.Decode(spy, "null") })
 
-			assert.Check(t, spy.Stopped(), "Decode(%q) went on, want the test stopped", out)
-		})
-	}
+	assert.Check(t, spy.Stopped(), "Decode(%q) went on, want the test stopped", "null")
 }

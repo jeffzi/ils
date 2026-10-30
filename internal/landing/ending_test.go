@@ -71,14 +71,6 @@ func onTrunkLine() string {
 	return expect("Switched", trunk, topic)
 }
 
-func stillThere() string {
-	return expect("Could not delete", topic, "still there", forgeFailure)
-}
-
-func stillThereReason() string {
-	return expect("still on origin")
-}
-
 func interruptedResumeText() string {
 	return resumedLine() + expect("interrupted before finishing the merge", "interrupted before finishing the merge") +
 		nextMergeAgain()
@@ -512,27 +504,21 @@ func resumeStops() []landingRow {
 		nextMergeAgain()
 	gone := func(f *gittest.Fixture) { f.LandPull(merged, topic) }
 
+	stop := func(name string, set setting, text string) landingRow {
+		set.script = resuming()
+
+		return landingRow{name: name, set: set, text: text, outcome: result.Pending, kept: true, payload: resumed("", "")}
+	}
+
 	return []landingRow{
-		{
-			name: "fewer than 20 seconds are left before the first write", outcome: result.Pending, kept: true,
-			set:  setting{arrange: landAndPublish, script: resuming(), left: short},
-			text: late, payload: resumed("", ""),
-		},
-		{
-			name: "fewer than 20 seconds are left and origin no longer lists the branch", outcome: result.Pending,
-			kept: true, set: setting{arrange: gone, script: resuming(), left: short},
-			text: late, payload: resumed("", ""),
-		},
-		{
-			name: "an interrupt lands once origin was asked for the branch it still lists", outcome: result.Pending,
-			kept: true, set: setting{arrange: landAndPublish, script: resuming(), runCtx: interruptAfterAskingForTheBranch},
-			text: interruptedResumeText(), payload: resumed("", ""),
-		},
-		{
-			name: "an interrupt lands once origin was asked for the branch it no longer lists", outcome: result.Pending,
-			kept: true, set: setting{arrange: gone, script: resuming(), runCtx: interruptAfterAskingForTheBranch},
-			text: interruptedResumeText(), payload: resumed("", ""),
-		},
+		stop("fewer than 20 seconds are left before the first write",
+			setting{arrange: landAndPublish, left: short}, late),
+		stop("fewer than 20 seconds are left and origin no longer lists the branch",
+			setting{arrange: gone, left: short}, late),
+		stop("an interrupt lands once origin was asked for the branch it still lists",
+			setting{arrange: landAndPublish, runCtx: interruptAfterAskingForTheBranch}, interruptedResumeText()),
+		stop("an interrupt lands once origin was asked for the branch it no longer lists",
+			setting{arrange: gone, runCtx: interruptAfterAskingForTheBranch}, interruptedResumeText()),
 	}
 }
 
@@ -658,7 +644,7 @@ func writeStops() []landingRow {
 		mergedLine()+goneLine()+onTrunkLine())
 	gone.payload = sent(landedBody, true, result.EndingTrunk)
 	listed := row("the delete fails and origin still lists the branch", toLand(nil, failed), result.Broke,
-		mergedLine()+stillThere()+stillThereReason()+nextMergeAgain())
+		mergedLine()+expect("Could not delete", topic, "still there", forgeFailure)+expect("still on origin")+nextMergeAgain())
 	listed.set.arrange = func(f *gittest.Fixture) { f.Publish(topic) }
 	// The question fails with git's own message, which the text holds on one line before the reason line.
 	unasked := row("the delete fails and origin cannot be asked", toLand(nil, failed), result.Broke,

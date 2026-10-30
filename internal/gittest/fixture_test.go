@@ -300,7 +300,7 @@ func TestFixture_BranchWorktree_WhenBranchExists_LeavesTheTrunkInTheMainCheckout
 	assert.Check(t, is.DeepEqual(worktrees(t, f, dir), want))
 }
 
-func TestFixture_AdvanceTrunk_WhenOnABranch_AddsALocalTrunkCommit(t *testing.T) {
+func TestFixture_AdvanceTrunk_WhenOnABranch_AddsALocalTrunkCommitWithoutSwitchingToIt(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, mainBranch)
@@ -323,10 +323,20 @@ func TestFixture_UntrackedOnTrunk_WhenOnABranch_MakesSwitchingToTheTrunkRefuseTo
 
 	assert.Check(t, is.Equal(gitStdout(t, f, f.Dir(), "ls-files", "--others", "--exclude-standard"), path))
 
-	tracked := runGit(t, f, f.OriginDir(), "cat-file", "-e", mainBranch+":"+path)
-	assert.Check(t, is.Equal(tracked.Code, 0), "origin's %s does not track %s", mainBranch, path)
 	switched := runGit(t, f, f.Dir(), "switch", mainBranch)
 	assert.Check(t, switched.Code != 0, "git switch %s printed %+v, want it refused", mainBranch, switched)
+}
+
+func TestFixture_UntrackedOnTrunk_WhenOnABranch_PublishesTheTrunkCommitToOrigin(t *testing.T) {
+	t.Parallel()
+
+	f := gittest.New(t, mainBranch)
+	f.Commits(work, "first change")
+
+	path := f.UntrackedOnTrunk()
+
+	tracked := runGit(t, f, f.OriginDir(), "cat-file", "-e", mainBranch+":"+path)
+	assert.Check(t, is.Equal(tracked.Code, 0), "origin's %s does not track %s", mainBranch, path)
 }
 
 func TestFixture_Publish_WhenOriginURLNamesAnotherPlace_PutsLocalTipOnOrigin(t *testing.T) {

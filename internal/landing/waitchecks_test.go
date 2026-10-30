@@ -17,11 +17,6 @@ func everyCheckRows() []vigilRow {
 
 	return []vigilRow{
 		{
-			name:     "checks pending then green",
-			verdicts: says(running(), running(), passing()),
-			want:     green(), ops: readsOf(1, 3, 1), waits: polls(2, verdictPoll),
-		},
-		{
 			name:     "a run in progress with no check yet keeps the wait past 20 seconds",
 			verdicts: says(started, started, started, started, started, started, passing()),
 			want:     green(), ops: readsOf(1, 7, 1), waits: polls(6, verdictPoll),

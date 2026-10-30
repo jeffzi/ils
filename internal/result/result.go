@@ -1,11 +1,9 @@
 package result
 
 import (
-	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
-	"strings"
 )
 
 // ---------------------------------------------------------------------------
@@ -84,9 +82,6 @@ func ParseOutcome(name string) (Outcome, bool) {
 // ---------------------------------------------------------------------------
 // Marked names
 // ---------------------------------------------------------------------------
-
-// placeholder marks where a name goes in a wording.
-const placeholder = "%s"
 
 const commandPrefix = "ils "
 
@@ -275,94 +270,6 @@ func Say(w wording, names ...any) Phrase {
 	return phrase
 }
 
-// ErrPlaceholders reports a phrase whose wording and names do not pair up.
-var ErrPlaceholders = errors.New("placeholders and names differ in number")
-
-// spans returns the phrase with its names in place, as runs of wording and
-// names, each command inline in the wording marked by inlineCommands.
-func (p Phrase) spans() ([]span, error) {
-	parts := strings.Split(p.wording, placeholder)
-	placeholders := len(parts) - 1
-	if placeholders != len(p.names) {
-		return nil, fmt.Errorf("%w: %q has %d placeholders and %d names",
-			ErrPlaceholders, p.wording, placeholders, len(p.names))
-	}
-
-	spans := make([]span, 0, len(parts)+len(p.names))
-	for i, part := range parts {
-		spans = append(spans, span{text: part, kind: kindWording})
-		if i < len(p.names) {
-			spans = append(spans, p.names[i].spans...)
-		}
-	}
-
-	return inlineCommands(spans), nil
-}
-
-// tick opens and closes a command inline in wording.
-const tick = "`"
-
-// inlineCommands returns spans with each command the wording wraps in a pair of
-// ticks marked as a command: every span between the two, wording and names
-// alike, and each tick of the pair as a tick. Only ticks of the wording pair
-// up, in order; a tick left without a partner stays wording, and ticks inside
-// names are third-party text.
-func inlineCommands(spans []span) []span {
-	var ticks int
-	for _, s := range spans {
-		if s.kind == kindWording {
-			ticks += strings.Count(s.text, tick)
-		}
-	}
-
-	// paired counts the ticks still to come that have a partner; an odd last tick has none and
-	// stays wording.
-	paired := ticks - ticks%2
-	if paired == 0 {
-		return spans
-	}
-
-	withCommands := make([]span, 0, len(spans)+paired)
-	inside := false
-	for _, s := range spans {
-		if s.kind != kindWording {
-			withCommands = append(withCommands, commandWhen(inside, s))
-
-			continue
-		}
-
-		rest := s.text
-		for ; paired > 0; paired-- {
-			before, after, found := strings.Cut(rest, tick)
-			if !found {
-				break
-			}
-			withCommands = appendRun(withCommands, commandWhen(inside, span{text: before, kind: kindWording}))
-			withCommands = append(withCommands, span{text: tick, kind: kindTick})
-			inside, rest = !inside, after
-		}
-		withCommands = appendRun(withCommands, commandWhen(inside, span{text: rest, kind: kindWording}))
-	}
-
-	return withCommands
-}
-
-func commandWhen(inside bool, s span) span {
-	if inside {
-		s.kind = kindCommand
-	}
-
-	return s
-}
-
-func appendRun(spans []span, s span) []span {
-	if s.text == "" {
-		return spans
-	}
-
-	return append(spans, s)
-}
-
 // ---------------------------------------------------------------------------
 // Next
 // ---------------------------------------------------------------------------
@@ -420,9 +327,8 @@ type Result struct {
 	Excerpt string
 	// Reason says why the command did not end as done. It is set on every
 	// outcome but Done.
-	Reason Phrase
-	Words  []string
-	// Lines say what happened, in order.
+	Reason  Phrase
+	Words   []string
 	Lines   []Phrase
 	Next    Next
 	Outcome Outcome

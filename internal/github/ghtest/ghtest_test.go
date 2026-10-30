@@ -48,27 +48,30 @@ func TestFake_WhenScriptedArgvHoldsAny_AnswersWhateverTheCallHoldsThere(t *testi
 	assert.Check(t, is.Equal(got.Stdout, "scripted\n"))
 }
 
-func TestFake_WhenScriptedArgvHoldsFileHolding_AnswersOnlyAFileWithThatContent(t *testing.T) {
-	const scripted = "## [1.2.0]\n\n- Fix `$HOME`\n"
-	tests := []struct {
-		name    string
-		written string
-		want    bool
-	}{
-		{name: "file holds the content", written: scripted, want: true},
-		{name: "file holds other content", written: scripted + "- Add the release\n"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			notes := filepath.Join(t.TempDir(), "notes.md")
-			assert.NilError(t, os.WriteFile(notes, []byte(tt.written), 0o600))
-			ghtest.Setup(t, ghtest.Says("scripted\n", "release", "create", "--notes-file", ghtest.FileHolding(scripted)))
+// scriptedNotes is the content that the FileHolding tests script `gh release create` to expect.
+const scriptedNotes = "## [1.2.0]\n\n- Fix `$HOME`\n"
 
-			_, err := github.Runner{}.Run(t.Context(), "release", "create", "--notes-file", notes)
+func TestFileHolding_WhenFileHoldsTheContent_Answers(t *testing.T) {
+	notes := filepath.Join(t.TempDir(), "notes.md")
+	assert.NilError(t, os.WriteFile(notes, []byte(scriptedNotes), 0o600))
+	ghtest.Setup(t, ghtest.Says("scripted\n", "release", "create", "--notes-file", ghtest.FileHolding(scriptedNotes)))
 
-			assert.Check(t, is.Equal(err == nil, tt.want), "Run error = %v, want answered %t", err, tt.want)
-		})
-	}
+	got, err := github.Runner{}.Run(t.Context(), "release", "create", "--notes-file", notes)
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Equal(got.Stdout, "scripted\n"))
+}
+
+func TestFileHolding_WhenFileHoldsOtherContent_ExitsUnscripted(t *testing.T) {
+	notes := filepath.Join(t.TempDir(), "notes.md")
+	assert.NilError(t, os.WriteFile(notes, []byte(scriptedNotes+"- Add the release\n"), 0o600))
+	ghtest.Setup(t, ghtest.Says("scripted\n", "release", "create", "--notes-file", ghtest.FileHolding(scriptedNotes)))
+
+	_, err := github.Runner{}.Run(t.Context(), "release", "create", "--notes-file", notes)
+
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "Run error = %v, want *child.ExitError", err)
+	assert.Check(t, is.Equal(exitErr.Code, ghtest.UnscriptedCode))
 }
 
 func TestFake_WhenAnswerIsDelayed_AnswersAfterTheDelay(t *testing.T) {

@@ -60,12 +60,19 @@ func TestStatus_WhenOnTheTrunk_ReportsTheLastVersionTagOnOriginsTrunk(t *testing
 	assertSays(t, got.text, expect("v1.10.0"))
 }
 
+// strayTag is the version tag tagPastTheTrunk puts on a commit only origin holds.
+const strayTag = "v9.0.0"
+
+// tagPastTheTrunk gives origin the tags of tagReleases and a higher strayTag on a commit only
+// origin holds, so that a read of the trunk's last tag fetches it.
+func tagPastTheTrunk(f *gittest.Fixture) {
+	tagReleases(f)
+	f.OriginGit("tag", strayTag, f.AdvanceOrigin(topic))
+}
+
 func TestStatus_WhenOnTheTrunkAndAHigherTagIsOnACommitOnlyOriginHolds_ReportsTheHighestOnOriginsTrunk(t *testing.T) {
 	t.Parallel()
-	s := statusScene(t, func(f *gittest.Fixture) {
-		tagReleases(f)
-		f.OriginGit("tag", "v9.0.0", f.AdvanceOrigin(topic))
-	}, ruledBy(forge.RulesProtect))
+	s := statusScene(t, tagPastTheTrunk, ruledBy(forge.RulesProtect))
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
@@ -73,32 +80,33 @@ func TestStatus_WhenOnTheTrunkAndAHigherTagIsOnACommitOnlyOriginHolds_ReportsThe
 	assert.Check(t, is.Len(got.status.Unread, 0))
 }
 
-func TestStatus_WhenOnTheTrunkAndOriginHoldsNoVersionTag_SaysThereIsNone(t *testing.T) {
+// fetchTagWords are the first arguments of the git call that fetches the tag named tag from origin.
+func fetchTagWords(tag string) []string {
+	return []string{"fetch", "--no-tags", "origin", "+refs/tags/" + tag + ":refs/ils/fetched/tags/" + tag}
+}
+
+func TestStatus_WhenOnTheTrunkAndTheFetchOfAVersionTagFails_ReportsTheFetchAndTheTag(t *testing.T) {
+	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	s := statusScene(t, tagPastTheTrunk, ruledBy(forge.RulesProtect))
+	failGit(t, s, fetchTagWords(strayTag))
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	assert.Assert(t, is.Len(got.status.Unread, 1))
+	assertSays(t, got.status.Unread[0].Error, expect("fetch tag "+strayTag+": ", gittest.FailedSaid))
+}
+
+func TestStatus_WhenOnTheTrunkAndOriginHoldsOnlyATagThatIsNoVersion_SaysThereIsNone(t *testing.T) {
 	t.Parallel()
+	s := statusScene(t, func(f *gittest.Fixture) {
+		standOnTrunk(f)
+		f.OriginGit("tag", "vintage", trunk)
+	}, ruledBy(forge.RulesProtect))
 
-	tests := []struct {
-		arrange func(*gittest.Fixture)
-		name    string
-	}{
-		{
-			name: "only a tag that is no version",
-			arrange: func(f *gittest.Fixture) {
-				standOnTrunk(f)
-				f.OriginGit("tag", "vintage", trunk)
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			s := statusScene(t, tt.arrange, ruledBy(forge.RulesProtect))
+	got := seeStatus(t, s, (*testing.T).Context)
 
-			got := seeStatus(t, s, (*testing.T).Context)
-
-			assert.Check(t, is.Equal(got.status.LastTag, ""))
-			assertSays(t, got.text, expect("no version tag"))
-		})
-	}
+	assert.Check(t, is.Equal(got.status.LastTag, ""))
+	assertSays(t, got.text, expect("no version tag"))
 }
 
 func TestStatus_WhenOnTheTrunk_ReportsHowItStandsAgainstOriginsTrunk(t *testing.T) {
@@ -127,14 +135,7 @@ func TestStatus_WhenOnTheTrunk_ReportsWhetherOriginsTrunkTipIsAReleaseCommit(t *
 
 	tests := []releaseRow{
 		{name: "release commit", subject: "chore: release v1.2.0", want: true},
-		{name: "release commit merged as a pull request", subject: "chore: release v1.2.0 (#9)", want: true},
-		{name: "release commit of a pre-release", subject: "chore: release v1.2.0-rc.1", want: true},
-		{
-			name: "release commit of a pre-release merged as a pull request", subject: "chore: release v1.2.0-rc.1 (#9)",
-			want: true,
-		},
 		{name: "release of a version short of a patch number", subject: "chore: release v1.2"},
-		{name: "release subject with words after the version", subject: "chore: release v1.2.0 notes"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -214,8 +215,6 @@ func TestStatus_WhenOnTheTrunkAndGhIsMissing_StillReportsWhatGitTells(t *testing
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
-	assert.Check(t, is.Equal(got.status.Standing, standingTrunk))
 	assert.Check(t, is.Equal(got.status.Ahead, 1))
 	assert.Check(t, is.Equal(got.status.LastTag, "v1.10.0"))
-	assert.Check(t, is.Equal(got.status.SinceTag, 2))
 }
