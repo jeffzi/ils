@@ -94,12 +94,17 @@ func nextReview() string {
 	return expect("request a review") + editSteps()
 }
 
-func nextRed() string {
-	return expect("fix the failing check", "ils push")
-}
+func nextRed() string { return redNext(pushCommand()) }
 
-func nextTrunk() string {
-	return expect("`"+originMerge+trunk+"`", "resolve the conflicts", "ils push")
+func nextTrunk() string { return trunkNext(pushCommand()) }
+
+// redNext is the `Next:` line that fixes the failing check, then runs cmd again.
+func redNext(cmd landingCommand) string { return cmd.after("fix the failing check") }
+
+// trunkNext is the `Next:` line that merges the trunk into the branch and resolves the conflicts,
+// then runs cmd again.
+func trunkNext(cmd landingCommand) string {
+	return expect("`"+originMerge+trunk+"`") + cmd.after("resolve the conflicts")
 }
 
 // blockedLine is the merge-state line of a pull request GitHub blocks until it is reviewed.
@@ -360,10 +365,9 @@ func newDelivery(t *testing.T, tt pushRow) (context.Context, *delivery) {
 }
 
 // runPushes runs each row as a test in a bubble of its own: the push of the request the row wants
-// ends as the row wants, with
-// every step line it said held by its result, origin's copy of the branch is at the tip, and git
-// pushed unless the row is quiet. A row that names the events its hook is told is held to them
-// too, and a row with noStateLine to saying no merge state.
+// ends as the row wants, with every step line it said held by its result, origin's copy of the
+// branch is at the tip, and git pushed unless the row is quiet. A row that names the events its
+// hook is told is held to them too, and a row with noStateLine to saying no merge state.
 func runPushes(t *testing.T, rows []pushRow) {
 	t.Helper()
 
@@ -576,17 +580,26 @@ func TestPush_WhenGitGivesNoReasonForTheRefusal_EndsTheLineWithoutOne(t *testing
 		"refused line %q, want no reason after it, since git gave none", refused)
 }
 
+// openFailing is opening with an open-change call that returns err.
+func openFailing(err error) forgeFor {
+	return opening().with(func(script *forgetest.Script, _ string) {
+		script.OpenChange = []forgetest.Answer[forge.ChangeRef]{{Err: err}}
+	})
+}
+
+// openCutShort is how the push cmd must end when c ends the opening of the pull request.
+func openCutShort(cmd landingCommand, c cut) finish {
+	return finish{
+		outcome: result.Broke, reason: expect(c.ends, "opening the pull request"), req: cmd.req,
+		text: pushedLine() + expect("opening the pull request", c.ends, "may or may not have been opened") + cmd.again,
+	}
+}
+
 // pushOpenFailureRows are the pushes whose open-change fails once the branch is on origin.
 func pushOpenFailureRows() []pushRow {
-	failing := func(err error) forgeFor {
-		return opening().with(func(script *forgetest.Script, _ string) {
-			script.OpenChange = []forgetest.Answer[forge.ChangeRef]{{Err: err}}
-		})
-	}
-
 	rows := []pushRow{
 		{
-			name: "for a reason of the forge", script: failing(errors.New(forgeFailure)),
+			name: "for a reason of the forge", script: openFailing(errors.New(forgeFailure)),
 			want: finish{
 				outcome: result.Broke, reason: expect("could not open the pull request"),
 				text: pushedLine() + expect("No pull request was opened", forgeFailure) + nextFixed(),
@@ -597,11 +610,8 @@ func pushOpenFailureRows() []pushRow {
 	for _, c := range cuts() {
 		rows = append(rows, pushRow{
 			name:   "because " + c.name + " ended it",
-			script: failing(c.of("gh pr create")),
-			want: finish{
-				outcome: result.Broke, reason: expect(c.ends, "opening the pull request"),
-				text: pushedLine() + expect("opening the pull request", c.ends, "may or may not have been opened") + nextPush(),
-			},
+			script: openFailing(c.of("gh pr create")),
+			want:   openCutShort(pushCommand(), c),
 		})
 	}
 
@@ -620,10 +630,12 @@ const answersBeforePush = 3
 
 func TestPush_WhenTheGitPushIsCutShort_BrokeSayingThePushMayHaveTaken(t *testing.T) {
 	t.Parallel()
-	tests := append([]boundedPush{
-		{c: byTimeLimit(), cmd: pushCommand()},
-		{c: byInterrupt(), cmd: pushCommand()},
-	}, boundedPushes()...)
+	var tests []boundedPush
+	for _, c := range cuts() {
+		tests = append(tests, boundedPush{c: c, cmd: pushCommand()})
+	}
+
+	tests = append(tests, boundedPushes()...)
 
 	for _, tt := range tests {
 		t.Run("ils "+tt.cmd.name+", "+tt.c.name, func(t *testing.T) {

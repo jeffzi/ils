@@ -77,7 +77,7 @@ func elsewhereText(cmd landingCommand) string {
 // standingRefusals are the refusals decided from where HEAD stands and from the working tree,
 // before anything is fetched.
 func standingRefusals() []pushRefusal {
-	return []pushRefusal{
+	standing := []pushRefusal{
 		{
 			name: "on the trunk", script: allowed(), ops: identityRead(),
 			arrange: func(f *gittest.Fixture) string {
@@ -106,22 +106,24 @@ func standingRefusals() []pushRefusal {
 			name: "two tracked files changed", script: allowed(), ops: identityRead(),
 			arrange: func(f *gittest.Fixture) string { return dirtyText(pushCommand(), f.DirtyFile(), f.StagedFile()) },
 		},
-		{
-			name: "two tracked files changed, under the long wait", script: allowed(), ops: identityRead(),
-			req:     waitRequest(),
-			arrange: func(f *gittest.Fixture) string { return dirtyText(waitCommand(), f.DirtyFile(), f.StagedFile()) },
-		},
-		{
-			name: "two tracked files changed, under the long wait with no --wait typed", script: allowed(), ops: identityRead(),
-			req:     longRequest(),
-			arrange: func(f *gittest.Fixture) string { return dirtyText(longCommand(), f.DirtyFile(), f.StagedFile()) },
-		},
-		{
-			name: "two tracked files changed, after --wait=false", script: allowed(), ops: identityRead(),
-			req:     waitOffRequest(),
-			arrange: func(f *gittest.Fixture) string { return dirtyText(waitOffCommand(), f.DirtyFile(), f.StagedFile()) },
-		},
 	}
+
+	return append(standing, perBoundedPush("two tracked files changed", false,
+		func(b boundedPush, f *gittest.Fixture) string { return dirtyText(b.cmd, f.DirtyFile(), f.StagedFile()) })...)
+}
+
+// perBoundedPush is the refusal named prefix by each bounded push, whose text arrange returns once
+// it has changed the repository; fetches is whether git fetches from origin before it.
+func perBoundedPush(prefix string, fetches bool, arrange func(b boundedPush, f *gittest.Fixture) string) []pushRefusal {
+	var rows []pushRefusal
+	for _, b := range boundedPushes() {
+		rows = append(rows, pushRefusal{
+			name: prefix + ", ils " + b.cmd.name, script: allowed(), ops: identityRead(), fetches: fetches, req: b.cmd.req,
+			arrange: func(f *gittest.Fixture) string { return arrange(b, f) },
+		})
+	}
+
+	return rows
 }
 
 // nothingPast is the refusal of a branch with no commit past origin's trunk, whose `Next:` line
@@ -139,36 +141,21 @@ func nothingPastBy(cmd landingCommand, branch string) string {
 // keptRefusals are the refusals by each bounded push of a detached HEAD with commits origin's
 // trunk lacks, whose `Next:` line names the push without a typed --wait once they are on a branch.
 func keptRefusals() []pushRefusal {
-	var kept []pushRefusal
-	for _, b := range boundedPushes() {
-		kept = append(kept, pushRefusal{
-			name: "detached HEAD with commits origin's trunk lacks, ils " + b.cmd.name, script: allowed(), ops: identityRead(),
-			fetches: true, req: b.cmd.req,
-			arrange: func(f *gittest.Fixture) string {
-				f.Detach()
+	return perBoundedPush("detached HEAD with commits origin's trunk lacks", true,
+		func(b boundedPush, f *gittest.Fixture) string {
+			f.Detach()
 
-				return expect("detached", "`git switch -c <name>`", "then run "+strings.TrimSuffix(b.cmd.changed, " again")+"\n")
-			},
+			return expect("detached", "`git switch -c <name>`", "then run "+b.cmd.changed+"\n")
 		})
-	}
-
-	return kept
 }
 
 // commitRefusals are the refusals decided from the branch's commits past origin's trunk.
 func commitRefusals() []pushRefusal {
-	var bounded []pushRefusal
-	for _, b := range boundedPushes() {
-		bounded = append(bounded, pushRefusal{
-			name: "no commit past the trunk, ils " + b.cmd.name, script: allowed(), ops: identityRead(), fetches: true,
-			req: b.cmd.req,
-			arrange: func(f *gittest.Fixture) string {
-				f.Git("switch", "--quiet", "--create", spare, trunk)
+	bounded := perBoundedPush("no commit past the trunk", true, func(b boundedPush, f *gittest.Fixture) string {
+		f.Git("switch", "--quiet", "--create", spare, trunk)
 
-				return nothingPastBy(b.cmd, spare)
-			},
-		})
-	}
+		return nothingPastBy(b.cmd, spare)
+	})
 
 	return append(bounded, []pushRefusal{
 		{

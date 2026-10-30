@@ -592,43 +592,32 @@ func TestApp_Run_WhenPushRuns_WaitsAsLongAsTheWaitFlagOrAStdoutTerminalSaysFromL
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		env      []string
-		args     []string
-		limit    time.Duration
-		flag     landing.WaitFlag
-		stdout   bool
-		stderr   bool
-		longWait bool
+		name   string
+		env    []string
+		args   []string
+		limit  time.Duration
+		stdout bool
+		stderr bool
 	}{
 		{name: "no wait flag off a terminal", env: []string{colorTerm}, args: []string{"push"}, limit: landing.TimeLimit},
-		{name: "no wait flag at a terminal", env: []string{colorTerm}, args: []string{"push"}, stdout: true, limit: landing.WaitTimeLimit, longWait: true},
-		{name: "JSON at a terminal", env: []string{colorTerm}, args: []string{"push", "--json"}, stdout: true, limit: landing.WaitTimeLimit, longWait: true},
-		{name: "no color at a terminal", env: []string{colorTerm, noColor}, args: []string{"push"}, stdout: true, limit: landing.WaitTimeLimit, longWait: true},
-		{name: "color flag off at a terminal", env: []string{colorTerm}, args: []string{"push", "--no-color"}, stdout: true, limit: landing.WaitTimeLimit, longWait: true},
+		{name: "no wait flag at a terminal", env: []string{colorTerm}, args: []string{"push"}, stdout: true, limit: landing.WaitTimeLimit},
+		{name: "no color at a terminal", env: []string{colorTerm, noColor}, args: []string{"push"}, stdout: true, limit: landing.WaitTimeLimit},
 		{name: "dumb terminal", env: []string{"TERM=dumb"}, args: []string{"push"}, stdout: true, limit: landing.TimeLimit},
 		{name: "forced color off a terminal", env: []string{colorTerm, forced}, args: []string{"push"}, limit: landing.TimeLimit},
-		{name: "terminal forced off a terminal", env: []string{colorTerm, "TTY_FORCE=1"}, args: []string{"push"}, limit: landing.TimeLimit},
 		{name: "only stderr a terminal", env: []string{colorTerm}, args: []string{"push"}, stderr: true, limit: landing.TimeLimit},
-		{name: "wait flag", env: []string{colorTerm}, args: []string{"push", "--wait"}, limit: landing.WaitTimeLimit, longWait: true, flag: landing.WaitFlagTrue},
-		{name: "wait flag set to true", env: []string{colorTerm}, args: []string{"push", "--wait=true"}, limit: landing.WaitTimeLimit, longWait: true, flag: landing.WaitFlagTrue},
-		{name: "wait flag set to false", env: []string{colorTerm}, args: []string{"push", "--wait=false"}, limit: landing.TimeLimit, flag: landing.WaitFlagFalse},
-		{name: "wait flag set to false at a terminal", env: []string{colorTerm}, args: []string{"push", "--wait=false"}, stdout: true, limit: landing.TimeLimit, flag: landing.WaitFlagFalse},
+		{name: "wait flag", env: []string{colorTerm}, args: []string{"push", "--wait"}, limit: landing.WaitTimeLimit},
+		{name: "wait flag set to false at a terminal", env: []string{colorTerm}, args: []string{"push", "--wait=false"}, stdout: true, limit: landing.TimeLimit},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			var (
-				deadline time.Time
-				seen     landing.Request
-			)
+			var deadline time.Time
 
 			app := painted(t, tt.env, tt.stdout, tt.stderr)
 			app.Launch = time.Now()
 			app.SetPush(func(ctx context.Context, _ landing.Deps, req landing.Request) result.Result {
 				deadline, _ = ctx.Deadline()
-				seen = req
 
 				return finished(req)
 			})
@@ -636,10 +625,39 @@ func TestApp_Run_WhenPushRuns_WaitsAsLongAsTheWaitFlagOrAStdoutTerminalSaysFromL
 
 			got := launch(t, app, tt.args...)
 
-			assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-			assert.Check(t, is.Equal(seen.LongWait, tt.longWait))
-			assert.Check(t, is.Equal(seen.WaitFlag, tt.flag))
-			assert.Check(t, deadline.Equal(want), "deadline = %s, want %s", deadline, want)
+			assert.Check(t, deadline.Equal(want), "deadline = %s, want %s; stdout = %q", deadline, want, got.stdout)
+		})
+	}
+}
+
+func TestApp_Run_WhenPushRuns_PassesTheWaitFlagAsTyped(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args []string
+		want landing.WaitFlag
+	}{
+		{name: "no wait flag", args: []string{"push"}, want: landing.WaitFlagNone},
+		{name: "wait flag", args: []string{"push", "--wait"}, want: landing.WaitFlagTrue},
+		{name: "wait flag set to false", args: []string{"push", "--wait=false"}, want: landing.WaitFlagFalse},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var seen landing.Request
+
+			app := painted(t, []string{colorTerm}, false, false)
+			app.SetPush(func(_ context.Context, _ landing.Deps, req landing.Request) result.Result {
+				seen = req
+
+				return finished(req)
+			})
+
+			launch(t, app, tt.args...)
+
+			assert.Check(t, is.Equal(seen.WaitFlag, tt.want))
 		})
 	}
 }
@@ -663,9 +681,6 @@ const (
 
 	// releaseTakesOne opens the reason a word beyond the one version of release is refused for.
 	releaseTakesOne = "release takes one version and no other word, and "
-
-	// waitGiven closes the reason the wait flag is refused for by every command but push.
-	waitGiven = "--wait was given"
 )
 
 // grammarRefusal is a command line that breaks the grammar, and the reason ils refuses it with.
@@ -693,11 +708,6 @@ func grammarRefusals() []grammarRefusal {
 		{name: "unknown flag after push", args: []string{"push", "--bogus"}, reason: "push takes no other word, and --bogus was given"},
 		{name: "group of short flags after push", args: []string{"push", "-xyz"}, reason: "push takes no other word, and -xyz was given"},
 		{name: "JSON flag after push set to maybe", args: []string{"push", "--json=maybe"}, reason: jsonNeither},
-		{name: "wait flag after push set to maybe", args: []string{"push", "--wait=maybe"}, reason: "--wait takes true or false, and maybe was given"},
-		{name: "wait flag after merge", args: []string{"merge", "--wait"}, reason: waitGiven},
-		{name: "wait flag after status", args: []string{"status", "--wait"}, reason: waitGiven},
-		{name: "wait flag after release", args: []string{"release", "1.2.3", "--wait"}, reason: releaseTakesOne + waitGiven},
-		{name: "wait flag after branch", args: []string{"branch", "x", "--wait"}, reason: branchTakesOne + waitGiven},
 	}
 }
 

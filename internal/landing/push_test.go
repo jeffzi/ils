@@ -305,14 +305,11 @@ func runPushRefusals(t *testing.T, rows []pushRefusal) {
 
 			before := s.written()
 
-			req := tt.req
-			if req.Command == "" {
-				req = pushRequest()
-			}
+			end := finish{outcome: result.Refused, text: want, req: tt.req}
 
-			got := landing.Push(t.Context(), s.deps, req)
+			got := landing.Push(t.Context(), s.deps, end.request())
 
-			assertEnded(t, s, got, finish{outcome: result.Refused, text: want, req: req})
+			assertEnded(t, s, got, end)
 			_, reason := shown(t, got, s.gitDir)
 			for _, branch := range tt.listed {
 				assert.Check(t, is.Contains(reason, branch))

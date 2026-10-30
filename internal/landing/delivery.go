@@ -296,7 +296,7 @@ func (d *delivery) report(deps Deps) *result.Result {
 		return d.endNothingReported()
 	}
 
-	report, _ := d.waited.stopReport(d.req.ending(d.req.again()), d.tip, d.Trunk, d.number)
+	report, _ := d.waited.stopReport(d.req.ending(), d.tip, d.Trunk, d.number)
 	d.lines = append(d.lines, report.lines...)
 
 	ended := d.ended(report.outcome(result.DeliveredNotGreen), report.reason, report.next)
@@ -350,7 +350,7 @@ func (d *delivery) withoutCI(ctx context.Context, deps Deps, required []string) 
 
 	switch {
 	case endedEarly(err):
-		report := d.waited.ciCutShortReport(d.req.ending(d.req.again()), interrupted(err))
+		report := d.waited.ciCutShortReport(d.req.ending(), interrupted(err))
 		d.lines = append(d.lines, report.lines...)
 
 		return d.ended(result.Pending, report.reason, report.next)

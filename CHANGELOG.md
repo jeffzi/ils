@@ -13,8 +13,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   checks are green, pushes the tag, and publishes the GitHub release with the changelog's notes.
 - Add the `write-release` agent skill, which lands the release commit through `ils` and leaves
   `ils release` to the user.
-- Add a longer wait for the checks to `ils push`, used by default at a terminal and chosen
-  anywhere with `--wait`.
+- Add `--wait` to `ils push` to wait longer for the checks wherever it runs.
 
 ### Changed
 
@@ -22,6 +21,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   repeated foreground `ils push` calls.
 - Report a pre-release's release commit, such as `chore: release v1.2.0-rc.1`, as a release commit
   in `ils status`.
+- Make `ils push` wait longer for the checks by default when stdout is a terminal; `--wait=false`
+  keeps the short wait.
 
 ## [0.4.0] - 2026-10-30
 

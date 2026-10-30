@@ -33,16 +33,11 @@ const thenRunAgain = ", then run %s again"
 // TimeLimit is how long a command may run before its context reaches its deadline, and
 // WaitTimeLimit how long a push under the long wait may (Request.LongWait); both count from launch.
 // Every result that says the time limit cut a call or a wait short names the one its request ran
-// under: Request.limitWords for push, which may run under either, and timeLimitWords for merge,
-// release and status, which always run under TimeLimit.
+// under, as Request.limitWords says it.
 const (
 	TimeLimit     = 100 * time.Second
 	WaitTimeLimit = 15 * time.Minute
 )
-
-// timeLimitWords is TimeLimit as the results of merge, release and status name it; a result of
-// push names Request.limitWords instead.
-const timeLimitWords = span(TimeLimit)
 
 // span is a limit as the help and every result name one: in whole minutes when it is a whole
 // number of minutes, "15 minutes", and in whole seconds otherwise, "100 seconds".
@@ -74,16 +69,15 @@ func nounCount(n int, noun string) string {
 // timeLimitEnded and runInterrupted are the clauses a result says a call or a wait was cut short
 // with: by the end of the time limit, or by an interrupt. They stay untyped so that result.Say
 // accepts wording built on them. The one placeholder of timeLimitEnded takes the time limit as
-// Request.limitWords says it, or timeLimitWords in a command that never runs under the long wait.
+// Request.limitWords says it.
 //
 // timeLimitRanOut and beforeTimeLimit are the clauses a wait's reason says the time limit cut it
 // short with, after the thing it was still waiting on, or before the answer it was waiting for.
-// The one placeholder of each takes the time limit as Request.limitWords says it, or
-// timeLimitWords in a command that never runs under the long wait.
+// The one placeholder of each takes the time limit as Request.limitWords says it.
 //
 // fewerLeft and fewerLeftCapital open the clause that says less than the reserve of the time limit
 // was left, in a reason and at the start of a line. Their two placeholders take the reserve and
-// timeLimitWords.
+// the time limit as Request.limitWords says it.
 const (
 	timeLimitEnded   = "the time limit of %s ended"
 	runInterrupted   = "ils was interrupted"
@@ -230,6 +224,15 @@ type Request struct {
 	LongWait bool
 }
 
+// FlagForce, FlagTagOnly and FlagWait are the words of the --force, --tag-only and --wait flags,
+// as the command line spells them. The command line the parser accepts and the one a next step
+// prints are built from them.
+const (
+	FlagForce   = "--force"
+	FlagTagOnly = "--tag-only"
+	FlagWait    = "--wait"
+)
+
 // WaitFlag is which --wait flag the user typed to `ils push`.
 type WaitFlag int
 
@@ -257,9 +260,10 @@ func (r Request) limitWords() span {
 }
 
 // ilsCommand is the request's command line without a typed --wait, marked as an ils command, which
-// prints as "ils <command> <args> <flags>": the command a step that changes the branch first runs
-// again. The push of a changed branch does not ask for the long wait, so that a fast failure can
-// come back at once; a typed --wait=false, which asks for the short one, stays.
+// prints as "ils <command> <args> <flags>": the command that a step the user takes first (a login,
+// an install, an upgrade, a fix, a change to the branch) runs again. That run starts over, so it
+// does not ask for the long wait, and a fast failure comes back at once; a typed --wait=false,
+// which asks for the short one, stays.
 func (r Request) ilsCommand() result.Name {
 	return result.Command(r.commandLine(false))
 }
@@ -270,18 +274,18 @@ func (r Request) ilsCommand() result.Name {
 func (r Request) commandLine(keepWait bool) string {
 	words := append([]string{r.Command}, r.Args...)
 	if r.Force {
-		words = append(words, "--force")
+		words = append(words, FlagForce)
 	}
 
 	if r.TagOnly {
-		words = append(words, "--tag-only")
+		words = append(words, FlagTagOnly)
 	}
 
 	switch {
 	case r.WaitFlag == WaitFlagTrue && keepWait:
-		words = append(words, "--wait")
+		words = append(words, FlagWait)
 	case r.WaitFlag == WaitFlagFalse:
-		words = append(words, "--wait=false")
+		words = append(words, FlagWait+"=false")
 	}
 
 	return strings.Join(words, " ")

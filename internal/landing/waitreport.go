@@ -57,22 +57,28 @@ func cutShortReading(byInterrupt bool, limit span, read string) result.Phrase {
 
 // ending is what the report of a wait says about the run it ended: the ils command the run is,
 // which a head that moved runs again; the push that a fix of a failed check or a merge of the
-// trunk runs again, change; the time limit it ran under; and the push a pending wait runs again.
+// trunk runs again, pushOfChange; the time limit it ran under; and the push a pending wait runs
+// again.
 type ending struct {
-	command result.Name
-	change  result.Name
-	push    result.Next
-	limit   span
+	command      result.Name
+	pushOfChange result.Name
+	push         result.Next
+	limit        span
 }
 
-// ending returns what the report of a wait the request ran says about it, with push as the step a
-// pending wait runs.
-func (r Request) ending(push result.Next) ending {
-	return ending{command: r.ilsCommand(), change: r.pushOfChange(), push: push, limit: r.limitWords()}
+// ending returns what the report of a wait the request ran says about it. A pending wait of a push
+// runs that push again as it stands, keeping a typed --wait; one of any other command runs a plain
+// `ils push`, since the branch it reports on changes only by a push.
+func (r Request) ending() ending {
+	push := pushAgain()
+	if r.Command == PushCommand {
+		push = r.again()
+	}
+
+	return ending{command: r.ilsCommand(), pushOfChange: r.pushOfChange(), push: push, limit: r.limitWords()}
 }
 
-// pushAgain is the step that runs a plain `ils push`, which a command other than push sends a
-// pending wait to.
+// pushAgain is the step that runs a plain `ils push`.
 func pushAgain() result.Next {
 	return result.NextCommand(PushCommand)
 }
@@ -139,7 +145,7 @@ func (w Waited) stopReport(end ending, sha, trunk string, number int) (waitRepor
 }
 
 // redReport is a deciding check that failed or was canceled, with the end of its log as the
-// excerpt, whose next step runs the push end names as change once the check is fixed.
+// excerpt, whose next step runs the push end names as pushOfChange once the check is fixed.
 func (w Waited) redReport(end ending) waitReport {
 	failed, _ := w.Verdict.Failed()
 
@@ -155,12 +161,12 @@ func (w Waited) redReport(end ending) waitReport {
 		lines:   append([]result.Phrase{line}, w.mergeStateLines()...),
 		excerpt: w.excerpt(),
 		reason:  reason,
-		next:    result.NextStep("fix the failing check, commit, and run %s again", end.change),
+		next:    result.NextStep("fix the failing check, commit, and run %s again", end.pushOfChange),
 	}
 }
 
 // apartReport is a pull request that cannot merge until the trunk is merged into the branch, whose
-// next step runs the push end names as change once it is. The checks are said only when some
+// next step runs the push end names as pushOfChange once it is. The checks are said only when some
 // decided: they were green, and the merge state read after them found it apart.
 func (w Waited) apartReport(end ending, sha, trunk string, reason result.Phrase) waitReport {
 	var lines []result.Phrase
@@ -172,7 +178,7 @@ func (w Waited) apartReport(end ending, sha, trunk string, reason result.Phrase)
 		lines:  append(lines, w.mergeStateLines()...),
 		reason: reason,
 		next: result.NextStep("merge the trunk into the branch with `git merge origin/%s`, resolve the conflicts, "+
-			"commit, and run %s again", result.Branch(trunk), end.change),
+			"commit, and run %s again", result.Branch(trunk), end.pushOfChange),
 	}
 }
 

@@ -56,7 +56,7 @@ func redRowBy(cmd landingCommand, bucket forge.Bucket, log forge.FailedLog, exce
 		want: finish{
 			outcome: result.DeliveredNotGreen, reason: expect("lint", said), payload: payload, req: cmd.req,
 			text: pushedLine() + openedLine() + expect("lint", said, lintURL) +
-				state + excerpt + expect("lint", said) + cmd.after("fix the failing check"),
+				state + excerpt + expect("lint", said) + redNext(cmd),
 		},
 	}
 }
@@ -113,7 +113,7 @@ func stoppedRowBy(cmd landingCommand, state forge.MergeState, reason string) pus
 		want: finish{
 			outcome: result.DeliveredNotGreen, reason: expect(reason), req: cmd.req,
 			text: pushedLine() + foundLine() + stateLine(state) + expect(reason) +
-				expect("`"+originMerge+trunk+"`") + cmd.after("resolve the conflicts"),
+				trunkNext(cmd),
 			payload: detail(forge.VerdictNone, state),
 		},
 	}
@@ -181,37 +181,47 @@ func pendingBy(cmd landingCommand, reason, lines string, payload *result.Push) f
 }
 
 // pendingClean is a push that ended pending for reason on a clean merge state, with no check read.
-func pendingClean(reason string) finish {
-	return pending(reason, "", detail(forge.VerdictNone, forge.MergeClean))
+func pendingClean(reason string) finish { return pendingCleanBy(pushCommand(), reason) }
+
+// pendingCleanBy is pendingClean for the push cmd.
+func pendingCleanBy(cmd landingCommand, reason string) finish {
+	return pendingBy(cmd, reason, "", detail(forge.VerdictNone, forge.MergeClean))
 }
 
 // cutShortRead is a push to the open pull request that ended pending because c ended a read of
 // read.
-func cutShortRead(c cut, read string) finish {
-	return pendingClean(expect(c.ends, read, "nothing more will change"))
+func cutShortRead(c cut, read string) finish { return cutShortReadBy(pushCommand(), c, read) }
+
+// cutShortReadBy is cutShortRead for the push cmd.
+func cutShortReadBy(cmd landingCommand, c cut, read string) finish {
+	return pendingCleanBy(cmd, expect(c.ends, read, "nothing more will change"))
 }
 
-// pushCutShortRows are the pushes whose wait a cut ended inside a read or a poll, for each cut. A
-// cut in a poll is not known ahead of it.
+// cutShortRowsBy are the pushes cmd runs whose wait c ended inside a read or a poll. A cut in a
+// poll is not known ahead of it.
+func cutShortRowsBy(cmd landingCommand, c cut) []pushRow {
+	return []pushRow{
+		{
+			name: c.name + " ends the first read of the checks", want: cutShortReadBy(cmd, c, readChecks),
+			script: reusing().failingChecks(c.of("gh")),
+		},
+		{
+			name:   c.name + " ends the read of the merge state after the checks",
+			script: reusing(passing()).thenFailingHead(c.of("gh")),
+			want:   pendingCleanBy(cmd, expect("#12", "can merge", c.before)),
+		},
+		{
+			name: c.name + " ends a poll of the head", script: reusing().showing(stale()), cut: c.inPoll,
+			want: pendingCleanBy(cmd, expect("did not show", tipMark, "#12", c.before)),
+		},
+	}
+}
+
+// pushCutShortRows are the pushes whose wait a cut ended inside a read or a poll, for each cut.
 func pushCutShortRows() []pushRow {
 	var rows []pushRow
 	for _, c := range cuts() {
-		unsaid := expect("#12", "can merge", c.before)
-		rows = append(rows,
-			pushRow{
-				name: c.name + " ends the first read of the checks", want: cutShortRead(c, readChecks),
-				script: reusing().failingChecks(c.of("gh")),
-			},
-			pushRow{
-				name:   c.name + " ends the read of the merge state after the checks",
-				script: reusing(passing()).thenFailingHead(c.of("gh")),
-				want:   pendingClean(unsaid),
-			},
-			pushRow{
-				name: c.name + " ends a poll of the head", script: reusing().showing(stale()), cut: c.inPoll,
-				want: pendingClean(expect("did not show", tipMark, "#12", c.before)),
-			},
-		)
+		rows = append(rows, cutShortRowsBy(pushCommand(), c)...)
 	}
 
 	return rows
@@ -341,11 +351,11 @@ func TestPush_WhenTheWaitEndsBeforeAnAnswer_PendingSayingWhy(t *testing.T) {
 }
 
 // boundPendingRows are the pushes cmd runs that end pending, one per reason that names c's time
-// limit.
+// limit. The cuts of a read are left to the plain push when cmd runs under its time limit.
 func boundPendingRows(cmd landingCommand, c cut) []pushRow {
 	clean := detail(forge.VerdictNone, forge.MergeClean)
 
-	return []pushRow{
+	rows := []pushRow{
 		{
 			name: "nothing has reported yet", left: 12 * time.Second, script: reusing(forge.Verdict{}),
 			want: pendingBy(cmd, expect("no check or status", tipMark, "#12", c.before), "", clean),
@@ -367,37 +377,33 @@ func boundPendingRows(cmd landingCommand, c cut) []pushRow {
 			want: pendingBy(cmd, expect("still running", c.before), expect("Still running", "(1 check):\n  ◌ test"),
 				detail(forge.VerdictPending, forge.MergeClean, running().Checks...)),
 		},
-		{
-			name: c.name + " ends the first read of the checks", script: reusing().failingChecks(c.of("gh")),
-			want: pendingBy(cmd, expect(c.ends, readChecks, "nothing more will change"), "", clean),
-		},
-		{
-			name:   c.name + " ends the read of the merge state after the checks",
-			script: reusing(passing()).thenFailingHead(c.of("gh")),
-			want:   pendingBy(cmd, expect("#12", "can merge", c.before), "", clean),
-		},
-		{
-			name: c.name + " ends a poll of the head", script: reusing().showing(stale()), cut: c.inPoll,
-			want: pendingBy(cmd, expect("did not show", tipMark, "#12", c.before), "", clean),
-		},
-		{
-			name:   c.name + " ends the CI read",
-			script: reusing(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{Err: c.of("gh")}),
-			want:   pendingBy(cmd, expect(c.ends, readCI, "nothing more will change"), "", clean),
-		},
 	}
+
+	if repeatsPlainPush(cmd) {
+		return rows
+	}
+
+	rows = append(rows, cutShortRowsBy(cmd, c)...)
+
+	return append(rows, pushRow{
+		name:   c.name + " ends the CI read",
+		script: reusing(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{Err: c.of("gh")}),
+		want:   cutShortReadBy(cmd, c, readCI),
+	})
 }
 
-// boundAfterWritesRows are the pushes cmd runs that a read after the writes, the opening of the
-// pull request, or the head moving past the pushed commit ends, c naming the time limit.
+// repeatsPlainPush is whether cmd runs under the time limit of a plain push, so that the rows of
+// the plain push already hold the cuts of a read, and a row of cmd adds only its `Next:` lines.
+func repeatsPlainPush(cmd landingCommand) bool {
+	return cmd.req.WaitFlag == landing.WaitFlagFalse
+}
+
+// boundAfterWritesRows are the pushes cmd runs that a read after the writes, or the opening of the
+// pull request, ends, c naming the time limit.
 func boundAfterWritesRows(cmd landingCommand, c cut) []pushRow {
 	cutRules := expect(c.ends, readProtection, "nothing more will change")
-	openCut := opening().with(func(script *forgetest.Script, _ string) {
-		script.OpenChange = []forgetest.Answer[forge.ChangeRef]{{Err: c.of("gh pr create")}}
-	})
-	unreadHead := waitReads(errors.New(forgeFailure))[0]
 
-	return []pushRow{
+	rows := []pushRow{
 		{
 			name: c.name + " ends " + readProtection, script: opening(passing()).failingRules(c.of("gh")),
 			want: finish{
@@ -406,13 +412,25 @@ func boundAfterWritesRows(cmd landingCommand, c cut) []pushRow {
 				payload: detail(forge.VerdictNone, forge.MergeUnknown),
 			},
 		},
-		{
-			name: c.name + " ends the opening of the pull request", script: openCut,
-			want: finish{
-				outcome: result.Broke, reason: expect(c.ends, "opening the pull request"), req: cmd.req,
-				text: pushedLine() + expect("opening the pull request", c.ends, "may or may not have been opened") + cmd.again,
-			},
-		},
+	}
+
+	if repeatsPlainPush(cmd) {
+		return rows
+	}
+
+	return append(rows, pushRow{
+		name:   c.name + " ends the opening of the pull request",
+		script: openFailing(c.of("gh pr create")),
+		want:   openCutShort(cmd, c),
+	})
+}
+
+// boundMovedRows are the pushes cmd runs that the head moving past the pushed commit, or a read of
+// the head after the writes, ends.
+func boundMovedRows(cmd landingCommand) []pushRow {
+	unreadHead := waitReads(errors.New(forgeFailure))[0]
+
+	return []pushRow{
 		{
 			name: "the head moves past the pushed commit", script: reusing(passing()).showing(cleanHead(), moved()),
 			want: finish{
@@ -442,16 +460,34 @@ func boundChangeRows(cmd landingCommand) []pushRow {
 	}
 }
 
-func TestPush_WhenRunWithAWaitFlagOrTheLongTimeLimit_ResultsNameItsTimeLimitAndCommand(t *testing.T) {
+// byPush returns rows with the name of the push cmd put before each row's name.
+func byPush(cmd landingCommand, rows []pushRow) []pushRow {
+	named := make([]pushRow, 0, len(rows))
+	for _, row := range rows {
+		row.name = "ils " + cmd.name + ", " + row.name
+		named = append(named, row)
+	}
+
+	return named
+}
+
+func TestPush_WhenRunUnderABoundedTimeLimit_ResultsNameThatLimit(t *testing.T) {
 	t.Parallel()
 
 	var rows []pushRow
 	for _, b := range boundedPushes() {
-		bound := slices.Concat(boundPendingRows(b.cmd, b.c), boundAfterWritesRows(b.cmd, b.c), boundChangeRows(b.cmd))
-		for _, row := range bound {
-			row.name = "ils " + b.cmd.name + ", " + row.name
-			rows = append(rows, row)
-		}
+		rows = append(rows, byPush(b.cmd, slices.Concat(boundPendingRows(b.cmd, b.c), boundAfterWritesRows(b.cmd, b.c)))...)
+	}
+
+	runPushes(t, rows)
+}
+
+func TestPush_WhenRunWithAWaitFlagOrTheLongTimeLimit_NextLinesNameTheCommand(t *testing.T) {
+	t.Parallel()
+
+	var rows []pushRow
+	for _, b := range boundedPushes() {
+		rows = append(rows, byPush(b.cmd, slices.Concat(boundMovedRows(b.cmd), boundChangeRows(b.cmd)))...)
 	}
 
 	runPushes(t, rows)

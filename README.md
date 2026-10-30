@@ -166,8 +166,8 @@ verdict again.
 
 When another commit reaches the pull request while `ils push` waits, the checks GitHub reports are
 no longer those of the pushed commit. `ils push` then prints no verdict and ends refused, naming
-the pull request's new head, and `Next:` says to pull the new commit, then run `ils push` again
-(`ils push --wait=false` if you gave `--wait=false`). The push itself already happened.
+the pull request's new head. `Next:` says to pull the new commit, then run `ils push` again, or
+`ils push --wait=false` if you gave `--wait=false`. The push itself already happened.
 
 ### What push refuses
 
@@ -535,7 +535,7 @@ not one of the [exit codes](#exit-codes).
 | 1    | broke                | The output says what was done and what was not. Fix what failed, then follow `Next:`.                                                                                                                                                                                                                                                                  |
 | 2    | refused              | Nothing was pushed, opened, merged, or tagged, except by a push whose pull request's head moved during the wait. The reason says why; `Next:` says what to do.                                                                                                                                                                                         |
 | 3    | ask                  | Reserved; not used by this version.                                                                                                                                                                                                                                                                                                                    |
-| 4    | pending              | GitHub had not finished when the command stopped waiting, for example checks still running or not yet reported. Run `ils push` again, which waits up to 15 minutes at a terminal, or `ils push --wait` to wait that long anywhere; a merge that was already done elsewhere names `ils merge` instead. After `ils release`, run the same command again. |
+| 4    | pending              | GitHub had not finished when the command stopped waiting, for example checks still running or not yet reported. Run the command that the `Next:` line names. An `ils push` waits up to 15 minutes at a terminal, and `ils push --wait` waits that long anywhere. `--wait=false` picks 100 seconds. After an `ils release`, run the same command again. |
 | 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                                                                                                                                                 |
 
 Every outcome but done prints its reason on the line above `Next:`, labeled by outcome:
@@ -589,9 +589,10 @@ At a terminal, every command shows its progress as it runs:
   names, pull request numbers, and `ils` commands are bold blue.
 - **Pending hint:** when stdout is a terminal, the `Next:` line of a pending result ends with
   `# waits again; nothing to fix`.
-- **Longer wait:** when stdout is a terminal, `ils push` waits up to 15 minutes for the checks
-  instead of 100 seconds, unless you give `--wait=false`. A pending `ils merge` sends you to
-  `ils push`, which waits that long there too.
+
+When stdout is a terminal, `ils push` waits up to 15 minutes for the checks instead of 100 seconds,
+unless you give `--wait=false`. When a pending `ils merge` names `ils push` on its `Next:` line,
+that push waits that long too.
 
 A stream that is not a terminal gets none of this. Stdout prints the whole result at the end. Stderr
 stays empty unless `-d` is on, or `ils` cannot print its result and reports that failure there.

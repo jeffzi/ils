@@ -30,7 +30,8 @@ import (
 )
 
 // The live suite runs `ils push` and `ils merge` with the real git and the real gh against a test
-// repository on GitHub. `task test:live` runs it, and `task test:setup-live` creates the repositories it needs.
+// repository on GitHub. `task test:live` runs it, and `task test:setup-live` creates the
+// repositories it needs.
 
 const (
 	// liveGhTargetVar says which gh the live suite must find: testtarget.Minimum, testtarget.Latest,

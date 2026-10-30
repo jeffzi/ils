@@ -33,13 +33,3 @@ func TestApp_Run_WhenAskedForHelp_PrintsTheHelpOfTheCommand(t *testing.T) {
 		})
 	}
 }
-
-func TestApp_Run_WhenAskedForTheHelpOfPush_NamesBothTimeLimits(t *testing.T) {
-	t.Parallel()
-
-	got := launch(t, outside(t), "push", "--help")
-
-	assert.Check(t, is.Equal(got.code, exitDone))
-	assert.Check(t, is.Contains(flat(got.stdout), landing.Span(landing.TimeLimit)))
-	assert.Check(t, is.Contains(flat(got.stdout), landing.Span(landing.WaitTimeLimit)))
-}

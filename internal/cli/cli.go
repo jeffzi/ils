@@ -444,8 +444,8 @@ func (p *parse) root() *cobra.Command {
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return p.flagRefusal(err, notCommand) })
 	root.AddCommand(
 		p.push(),
-		p.landing(landingHelp{word: landing.MergeCommand, short: mergeShort, long: withTimeLimit(mergeLong), examples: mergeExamples}, orDefault(p.app.runMerge, landing.Merge)),
-		p.landing(landingHelp{word: landing.StatusCommand, short: statusShort, long: statusLong, examples: statusExamples}, orDefault(p.app.runStatus, landing.Status)),
+		p.landing(landingHelp{word: landing.MergeCommand, short: mergeShort, long: withTimeLimits(mergeLong), examples: mergeExamples}, orDefault(p.app.runMerge, landing.Merge), nil),
+		p.landing(landingHelp{word: landing.StatusCommand, short: statusShort, long: statusLong, examples: statusExamples}, orDefault(p.app.runStatus, landing.Status), nil),
 		p.named(landingHelp{word: landing.BranchCommand, arg: "name", short: branchShort, long: branchLong, examples: branchExamples}, orDefault(p.app.runBranch, landing.StartBranch)),
 		p.release(),
 	)
@@ -518,8 +518,10 @@ func orDefault(run, fallback Command) Command {
 	return run
 }
 
-// landing returns the landing command help names, which takes no other word and runs run.
-func (p *parse) landing(help landingHelp, run Command) *cobra.Command {
+// landing returns the landing command help names, which takes no other word and runs run. When
+// flags is not nil, it sets on the request what the command's own flags say, before land reads the
+// request's time limit.
+func (p *parse) landing(help landingHelp, run Command, flags func(*cobra.Command, *landing.Request)) *cobra.Command {
 	extra := func(typed string) result.Phrase {
 		return result.Say("%s takes no other word, and %s was given", help.word, typed)
 	}
@@ -538,7 +540,9 @@ func (p *parse) landing(help landingHelp, run Command) *cobra.Command {
 		},
 		RunE: func(c *cobra.Command, _ []string) error {
 			req := landing.Request{Command: help.word, Words: p.words}
-			p.waitOn(c, &req)
+			if flags != nil {
+				flags(c, &req)
+			}
 
 			p.land(c.Context(), run, req)
 
@@ -551,16 +555,10 @@ func (p *parse) landing(help landingHelp, run Command) *cobra.Command {
 }
 
 // waitOn sets on req the --wait typed to c and whether c runs under the long wait: as --wait says
-// when it was typed, and otherwise when stdout is a terminal. A command that registers no --wait,
-// every one but push, keeps the short wait whatever stdout is.
+// when it was typed, and otherwise when stdout is a terminal.
 func (p *parse) waitOn(c *cobra.Command, req *landing.Request) {
-	flag := c.Flags().Lookup(strings.TrimPrefix(flagWait, "--"))
-	if flag == nil {
-		return
-	}
-
 	switch {
-	case !flag.Changed:
+	case !c.Flags().Changed(strings.TrimPrefix(flagWait, "--")):
 		req.LongWait = p.app.terminal(p.app.StdoutTerminal)
 	case bool(p.wait):
 		req.LongWait, req.WaitFlag = true, landing.WaitFlagTrue
@@ -574,7 +572,7 @@ func (p *parse) waitOn(c *cobra.Command, req *landing.Request) {
 func (p *parse) push() *cobra.Command {
 	c := p.landing(landingHelp{
 		word: landing.PushCommand, short: pushShort, long: withTimeLimits(pushLong), examples: pushExamples,
-	}, orDefault(p.app.runPush, landing.Push))
+	}, orDefault(p.app.runPush, landing.Push), p.waitOn)
 
 	boolFlag(c.Flags(), &p.wait, flagNames{long: flagWait}, withTimeLimits(waitUsage))
 
@@ -635,7 +633,7 @@ func (p *parse) release() *cobra.Command {
 
 	c := p.named(landingHelp{
 		word: landing.ReleaseCommand, arg: "version",
-		short: releaseShort, long: withTimeLimit(releaseLong), examples: releaseExamples,
+		short: releaseShort, long: withTimeLimits(releaseLong), examples: releaseExamples,
 	}, withFlags)
 
 	boolFlag(c.Flags(), &force, flagNames{long: flagForce}, "Tag the release commit without waiting for its CI")
@@ -647,9 +645,9 @@ func (p *parse) release() *cobra.Command {
 // land runs the landing command run for req against the repository ils runs in and its GitHub
 // origin, until req's time limit from launch, and keeps its result, the repository's git dir and
 // the step lines it printed. With debug on, the trace gets every git and gh call, the read of the
-// git dir included, and every decision of the wait. The display is told how the command advances, and is gone from the terminal by the
-// time land returns, or by the time an interrupt, a termination or a quit ends the process, or the
-// stop signal of a terminal stops it.
+// git dir included, and every decision of the wait. The display is told how the command advances,
+// and is gone from the terminal by the time land returns, or by the time an interrupt, a
+// termination or a quit ends the process, or the stop signal of a terminal stops it.
 func (p *parse) land(ctx context.Context, run Command, req landing.Request) {
 	ctx, cancel := context.WithDeadline(ctx, p.app.Launch.Add(req.Limit()))
 	defer cancel()
@@ -856,9 +854,9 @@ const (
 	flagDebugShort = "-d"
 	flagNoColor    = "--no-color"
 
-	flagForce   = "--force"
-	flagTagOnly = "--tag-only"
-	flagWait    = "--wait"
+	flagForce   = landing.FlagForce
+	flagTagOnly = landing.FlagTagOnly
+	flagWait    = landing.FlagWait
 
 	// wordDash is the terminator after which every word is a positional argument.
 	wordDash = "--"

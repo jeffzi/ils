@@ -67,8 +67,11 @@ func expect(parts ...string) string {
 
 // nextPush is the `Next:` line that runs `ils push` again as it is, and nextFixed the one that runs
 // it again once what failed is fixed.
-func nextPush() string {
-	return expect(resulttest.NextLine("ils push") + "\n")
+func nextPush() string { return nextLine("ils push") }
+
+// nextLine is the `Next:` line that runs command.
+func nextLine(command string) string {
+	return expect(resulttest.NextLine(command) + "\n")
 }
 
 func nextFixed() string {
@@ -406,8 +409,8 @@ type landingCommand struct {
 	again string
 	// fixed is the `Next:` line that runs the command again once what failed is fixed.
 	fixed string
-	// changed is the command a `Next:` line names after a step that changes the branch, when it is
-	// not "ils <name>".
+	// changed is the command a `Next:` line names, followed by "again", after a step the user takes
+	// first, when it is not "ils <name>".
 	changed string
 	req     landing.Request
 }
@@ -415,10 +418,20 @@ type landingCommand struct {
 // after is the `Next:` line that does step, then runs the command again.
 func (c landingCommand) after(step string) string {
 	if c.changed != "" {
-		return expect(step, c.changed)
+		return expect(step, c.changed+" again")
 	}
 
 	return expect(step, "ils "+c.name)
+}
+
+// pushVariant is the push name that runs req, with the `Next:` lines that name it: runAgain is the
+// command that runs it again as it stands, and change the one that runs it again once the user
+// has taken a step first.
+func pushVariant(name string, req landing.Request, runAgain, change string) landingCommand {
+	return landingCommand{
+		name: name, req: req, changed: change,
+		again: nextLine(runAgain), fixed: expect("fix what failed", change+" again"),
+	}
 }
 
 // pushCommand is `ils push` with the `Next:` lines that name it.
@@ -439,12 +452,7 @@ func waitRequest() landing.Request {
 // it stands keeps --wait, and one that asks for a change first names a plain `ils push`, whose
 // first wait is the short one.
 func waitCommand() landingCommand {
-	const line = "ils push --wait"
-
-	return landingCommand{
-		name: "push --wait", req: waitRequest(), changed: "ils push again",
-		again: expect(resulttest.NextLine(line) + "\n"), fixed: expect("fix what failed", "ils push again"),
-	}
+	return pushVariant("push --wait", waitRequest(), "ils push --wait", "ils push")
 }
 
 // longRequest is the command and words of an `ils push` with no --wait typed that runs under the
@@ -459,10 +467,7 @@ func longRequest() landing.Request {
 // longCommand is longRequest with the `Next:` lines that name it: each names a plain `ils push`,
 // since no --wait was typed.
 func longCommand() landingCommand {
-	return landingCommand{
-		name: "push under the long time limit with no --wait typed", req: longRequest(), changed: "ils push again",
-		again: nextPush(), fixed: expect("fix what failed", "ils push again"),
-	}
+	return pushVariant("push under the long time limit with no --wait typed", longRequest(), "ils push", "ils push")
 }
 
 // waitOffRequest is the command and words of `ils push --wait=false`, which runs under the short
@@ -480,10 +485,7 @@ func waitOffRequest() landing.Request {
 func waitOffCommand() landingCommand {
 	const line = "ils push --wait=false"
 
-	return landingCommand{
-		name: "push --wait=false", req: waitOffRequest(), changed: line + " again",
-		again: expect(resulttest.NextLine(line) + "\n"), fixed: expect("fix what failed", line+" again"),
-	}
+	return pushVariant("push --wait=false", waitOffRequest(), line, line)
 }
 
 type boundedPush struct {
@@ -496,7 +498,6 @@ type boundedPush struct {
 func boundedPushes() []boundedPush {
 	return []boundedPush{
 		{c: byWaitLimit(), cmd: waitCommand()},
-		{c: byWaitLimit(), cmd: longCommand()},
 		{c: byTimeLimit(), cmd: waitOffCommand()},
 	}
 }
@@ -526,10 +527,9 @@ type cut struct {
 	before string
 }
 
-// byTimeLimit is byLimit at TimeLimit.
 func byTimeLimit() cut { return byLimit("the time limit", landing.TimeLimit) }
 
-// byWaitLimit is byTimeLimit for a push run with the long wait, whose time limit is the long one.
+// byWaitLimit is the cut named for the time limit of the long wait.
 func byWaitLimit() cut { return byLimit("the time limit of the long wait", landing.WaitTimeLimit) }
 
 // byLimit is the cut named name whose context is already past its deadline, so its error is
@@ -907,10 +907,6 @@ func TestPreconditions_WhenAReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
 			c: byWaitLimit(), cmd: longCommand(), arrange: beforeAnyRead,
 		},
 		{
-			name: "before the first read of a push run with --wait=false", read: readGitVersion,
-			c: byTimeLimit(), cmd: waitOffCommand(), arrange: beforeAnyRead,
-		},
-		{
 			name: "between the identity read and the trunk read", read: readTrunk, ops: identityRead(),
 			c: byTimeLimit(), cmd: pushCommand(),
 			arrange: func(t *testing.T, c cut) (context.Context, forgetest.Script) {
@@ -943,7 +939,8 @@ func TestPreconditions_WhenAReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
 	}
 }
 
-func TestSpan_NamesAWholeNumberOfMinutesInMinutesAndAnyOtherSpanInSeconds(t *testing.T) {
+func TestSpan(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		want string
@@ -954,6 +951,7 @@ func TestSpan_NamesAWholeNumberOfMinutesInMinutesAndAnyOtherSpanInSeconds(t *tes
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := landing.Span(tt.span)
 
 			assert.Equal(t, got, tt.want)

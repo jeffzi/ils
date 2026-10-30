@@ -6,15 +6,9 @@ import (
 	"github.com/jeffzi/ils/internal/landing"
 )
 
-// withTimeLimit returns long with its one %s verb set to the time limit as results name it, so that
-// the help says the limit the command enforces.
-func withTimeLimit(long string) string {
-	return fmt.Sprintf(long, landing.Span(landing.TimeLimit))
-}
-
-// withTimeLimits returns text with its first verb set to the time limit and its second to the
-// time limit of the long wait, as results name them, so that the help of push says both limits it
-// enforces.
+// withTimeLimits returns text with each %[1]s set to the time limit and each %[2]s set to the time
+// limit of the long wait, as results name them, so that the help says the limits the command
+// enforces. A text that needs only the time limit leaves %[2]s out.
 func withTimeLimits(text string) string {
 	return fmt.Sprintf(text, landing.Span(landing.TimeLimit), landing.Span(landing.WaitTimeLimit))
 }
@@ -56,7 +50,7 @@ ils push --json`
 
 	mergeShort = "Squash and merge the pull request once its checks are green"
 	mergeLong  = `Squash-merge the pull request of the current branch once its checks are
-green, within %s of the launch.
+green, within %[1]s of the launch.
 
 It squash-merges the pull request once its checks are green, deletes the
 branch on origin and in the clone, and leaves the trunk checked out at
@@ -89,7 +83,7 @@ ils branch fix-help`
 	releaseShort = "Tag a release commit once its CI is green, and publish the release"
 	releaseLong  = `Find the release commit of <version>, chore: release v<version>, on
 origin's trunk since the previous version tag, and read the notes of
-<version> from the changelog at that commit. Wait up to %s for
+<version> from the changelog at that commit. Wait up to %[1]s for
 the commit's CI, then tag it, push the tag and create the GitHub
 release from those notes.
 
