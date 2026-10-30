@@ -3,6 +3,8 @@ package github_test
 import (
 	"context"
 	"errors"
+	"io/fs"
+	"os"
 	"path"
 	"slices"
 	"strconv"
@@ -45,6 +47,13 @@ const (
 	releaseFile = ".github/workflows/release.yml"
 	// dependabotPath is where GitHub lists its own Dependabot workflow, which has no file.
 	dependabotPath = "dynamic/dependabot/dependabot-updates"
+
+	releaseTag = "v1.2.0"
+	releaseURL = "https://git.example.com/ada/engine/releases/tag/" + releaseTag
+	// releaseNotes holds what a shell would expand or split, so notes passed through one differ.
+	releaseNotes = "## [1.2.0] - 2026-10-30\n\n### Fixed\n\n" +
+		"- Quote `$HOME`, \"$(date)\" and 'single' words; keep a \\ backslash, a | pipe & a * star\n" +
+		"- Move → keep — done\n"
 )
 
 // readCase is one `gh` read of an operation, with the calls that succeed before it.
@@ -110,6 +119,16 @@ func checksArgs() []string { return ghtest.ChecksArgs(engineSlug, pullNumber) }
 func runsArgs() []string { return ghtest.RunsArgs(engineSlug, headSHA) }
 
 func messageArgs() []string { return ghtest.MessageArgs(engineHost, "ada", "engine", pullNumber) }
+
+func releaseViewArgs() []string { return ghtest.ReleaseViewArgs(engineSlug, releaseTag) }
+
+func releaseCreateArgs(prerelease bool) []string {
+	return ghtest.ReleaseCreateArgs(engineSlug, releaseTag, releaseNotes, prerelease)
+}
+
+func newRelease(prerelease bool) forge.NewRelease {
+	return forge.NewRelease{Tag: releaseTag, Notes: releaseNotes, Prerelease: prerelease}
+}
 
 func featureLanding() forge.Landing {
 	return forge.Landing{Number: pullNumber, HeadSHA: headSHA, Subject: "feat: read the message (#7)", Body: "Lands the change."}
@@ -237,6 +256,10 @@ func operationsByName() map[string]func(context.Context, *github.Forge) error {
 		"DeleteBranch": func(ctx context.Context, f *github.Forge) error {
 			return f.DeleteBranch(ctx, engine(), featureBranch)
 		},
+		"FindRelease": func(ctx context.Context, f *github.Forge) error {
+			_, _, err := f.FindRelease(ctx, engine(), releaseTag)
+			return err
+		},
 	}
 }
 
@@ -245,7 +268,7 @@ func readCases() []readCase {
 	byName := operationsByName()
 
 	identity, find, head, protection := byName["Identity"], byName["FindChanges"], byName["Head"], byName["TrunkProtection"]
-	hasCI, message := byName["HasTrunkCI"], byName["Message"]
+	hasCI, message, findRelease := byName["HasTrunkCI"], byName["Message"], byName["FindRelease"]
 	blocked := func(ctx context.Context, f *github.Forge) error {
 		_, err := f.Head(ctx, engine(), headQuery("build", "test"))
 		return err
@@ -266,6 +289,7 @@ func readCases() []readCase {
 			before: []ghtest.Call{ghtest.Says(activeCIList(), workflowsArgs()...)},
 		},
 		{name: "api graphql message", run: message, args: messageArgs()},
+		{name: "release view", run: findRelease, args: releaseViewArgs()},
 	}
 }
 
@@ -874,4 +898,98 @@ func TestForge_DeleteBranch_WhenNameHoldsAHash_EscapesIt(t *testing.T) {
 	assert.NilError(t, err)
 
 	assertCalls(t, fake, received(args))
+}
+
+func TestForge_FindRelease_WhenReleaseExists_ReturnsItsURL(t *testing.T) {
+	ghtest.Setup(t, ghtest.Says(`{"url":"`+releaseURL+`"}`, releaseViewArgs()...))
+
+	url, found, err := newForge().FindRelease(t.Context(), engine(), releaseTag)
+	assert.NilError(t, err)
+
+	assert.Check(t, found, "FindRelease found = false, want true")
+	assert.Check(t, is.Equal(url, releaseURL))
+}
+
+func TestForge_FindRelease_WhenGitHubHasNoReleaseForTheTag_ReportsNoneWithoutError(t *testing.T) {
+	ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stderr: "release not found\n", Code: 1}, releaseViewArgs()...))
+
+	url, found, err := newForge().FindRelease(t.Context(), engine(), releaseTag)
+	assert.NilError(t, err)
+
+	assert.Check(t, !found, "FindRelease found = true with URL %q, want none", url)
+}
+
+func TestForge_FindRelease_WhenSomethingElseIsNotFound_ReturnsExitError(t *testing.T) {
+	notFound := ghtest.Answer{Stderr: "HTTP 404: Not Found (https://api.git.example.com/repos/ada/engine/releases/tags/v1.2.0)\n", Code: 1}
+	ghtest.Setup(t, ghtest.Exits(notFound, releaseViewArgs()...))
+
+	_, _, err := newForge().FindRelease(t.Context(), engine(), releaseTag)
+
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "FindRelease error = %v, want *child.ExitError", err)
+	assert.Check(t, ghtest.Matches(received(releaseViewArgs())[0], exitErr.Argv), "Argv = %q, want %q", exitErr.Argv, releaseViewArgs())
+}
+
+func TestForge_PublishRelease(t *testing.T) {
+	tests := []struct {
+		name       string
+		prerelease bool
+	}{
+		{name: "release"},
+		{name: "pre-release", prerelease: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ghtest.Setup(t, ghtest.Says(releaseURL+"\n", releaseCreateArgs(tt.prerelease)...))
+
+			got, err := newForge().PublishRelease(t.Context(), engine(), newRelease(tt.prerelease))
+			assert.NilError(t, err)
+
+			assert.Check(t, is.Equal(got, releaseURL))
+		})
+	}
+}
+
+func TestForge_PublishRelease_WhenOriginLacksTheTag_ReturnsExitError(t *testing.T) {
+	noTag := ghtest.Answer{Stderr: "tag v1.2.0 doesn't exist in the repo ada/engine, aborting due to --verify-tag flag\n", Code: 1}
+	ghtest.Setup(t, ghtest.Exits(noTag, releaseCreateArgs(false)...))
+
+	_, err := newForge().PublishRelease(t.Context(), engine(), newRelease(false))
+
+	_, ok := errors.AsType[*child.ExitError](err)
+	assert.Check(t, ok, "PublishRelease error = %v, want *child.ExitError", err)
+}
+
+func TestForge_PublishRelease_RemovesTheNotesFile(t *testing.T) {
+	tests := []struct {
+		name   string
+		answer ghtest.Answer
+	}{
+		{name: "published", answer: ghtest.Answer{Stdout: releaseURL + "\n"}},
+		{name: "refused", answer: ghtest.ServerError()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := ghtest.Setup(t, ghtest.Exits(tt.answer, releaseCreateArgs(false)...))
+
+			_, _ = newForge().PublishRelease(t.Context(), engine(), newRelease(false))
+
+			notes := notesFiles(fake.Calls())
+			assert.Assert(t, is.Len(notes, 1), "calls = %q, want one --notes-file", fake.Calls())
+			_, err := os.Stat(notes[0])
+			assert.Check(t, errors.Is(err, fs.ErrNotExist), "Stat(%q) error = %v, want the notes file removed", notes[0], err)
+		})
+	}
+}
+
+// notesFiles is the path after every --notes-file in calls, in order.
+func notesFiles(calls [][]string) []string {
+	var paths []string
+	for _, argv := range calls {
+		if i := slices.Index(argv, "--notes-file"); i >= 0 && i+1 < len(argv) {
+			paths = append(paths, argv[i+1])
+		}
+	}
+
+	return paths
 }

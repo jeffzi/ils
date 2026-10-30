@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"os"
 	"regexp"
 	"slices"
 	"strconv"
@@ -430,6 +431,79 @@ func (f *Forge) DeleteBranch(ctx context.Context, repo forge.Repo, branch string
 	_, err := f.runner().Run(ctx, repoAPIArgs(repo, "git/refs/heads/"+branchPath(branch), "-X", "DELETE")...)
 
 	return err
+}
+
+// releaseNotFound is all `gh release view` prints on stderr when the repository has no release
+// for the tag. Any other failure, a 404 for the repository among them, prints something else.
+const releaseNotFound = "release not found"
+
+type releaseView struct {
+	URL string `json:"url"`
+}
+
+// FindRelease returns the URL of the GitHub release of tag, and found false with no error when
+// GitHub has no release for tag.
+func (f *Forge) FindRelease(ctx context.Context, repo forge.Repo, tag string) (link string, found bool, err error) {
+	view, err := runDecoded[releaseView](ctx, f.runner(), "release", "view", tag, "--repo", repo.Slug(), "--json", "url")
+	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && strings.TrimSpace(exitErr.Stderr) == releaseNotFound {
+		return "", false, nil
+	}
+
+	if err != nil {
+		return "", false, err
+	}
+
+	return view.URL, true, nil
+}
+
+// PublishRelease creates the GitHub release of release.Tag titled with the tag, with
+// release.Notes as its body, marked as a pre-release when release.Prerelease is set, and returns
+// its URL. `--verify-tag` makes gh refuse a tag origin does not hold, rather than create it at the
+// trunk's tip.
+//
+// The notes reach gh through a temporary file, since a Runner has no stdin; it is removed before
+// PublishRelease returns, and a failure to remove it is an error even once the release exists.
+func (f *Forge) PublishRelease(ctx context.Context, repo forge.Repo, release forge.NewRelease) (link string, err error) {
+	notes, err := writeNotes(release.Notes)
+	if err != nil {
+		return "", fmt.Errorf("write the notes of %s: %w", release.Tag, err)
+	}
+
+	defer func() {
+		if removeErr := os.Remove(notes); removeErr != nil {
+			err = errors.Join(err, fmt.Errorf("remove the notes of %s: %w", release.Tag, removeErr))
+		}
+	}()
+
+	args := []string{"release", "create", release.Tag, "--repo", repo.Slug(), "--verify-tag", "--title", release.Tag, "--notes-file", notes}
+	if release.Prerelease {
+		args = append(args, "--prerelease")
+	}
+
+	result, err := f.runner().Run(ctx, args...)
+	if err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(result.Stdout), nil
+}
+
+// writeNotes writes notes to a new temporary file and returns its path; the caller removes it.
+func writeNotes(notes string) (path string, err error) {
+	file, err := os.CreateTemp("", "ils-release-notes-*.md")
+	if err != nil {
+		return "", err
+	}
+
+	if _, err := file.WriteString(notes); err != nil {
+		return "", errors.Join(err, file.Close(), os.Remove(file.Name()))
+	}
+
+	if err := file.Close(); err != nil {
+		return "", errors.Join(err, os.Remove(file.Name()))
+	}
+
+	return file.Name(), nil
 }
 
 // repoAPIPath returns the REST path of rest under the repository, relative to the API root.

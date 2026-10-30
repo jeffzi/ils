@@ -66,6 +66,15 @@ type NewChange struct {
 	Head string
 }
 
+// NewRelease describes a release to publish for a tag the forge already holds; it is titled with
+// the tag.
+type NewRelease struct {
+	Tag string
+	// Notes is the body of the release, published as given.
+	Notes      string
+	Prerelease bool
+}
+
 // ChangeRef points at a change that was just opened.
 type ChangeRef struct {
 	URL    string

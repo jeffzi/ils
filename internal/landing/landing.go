@@ -156,6 +156,9 @@ type Forge interface {
 	Head(ctx context.Context, repo forge.Repo, query forge.HeadQuery) (forge.Head, error)
 	TrunkProtection(ctx context.Context, repo forge.Repo, trunk string) (forge.Protection, error)
 	Verdict(ctx context.Context, repo forge.Repo, query forge.VerdictQuery) (forge.Verdict, error)
+	// CommitVerdict returns what the CI of the commit sha says of it on its own, with no change
+	// involved and no failed log read.
+	CommitVerdict(ctx context.Context, repo forge.Repo, sha string) (forge.Verdict, error)
 	// HasTrunkCI reports whether the repository runs CI on the trunk: a workflow the forge runs
 	// whose file is on the trunk. A trunk with no workflow file has none; it is not an error.
 	HasTrunkCI(ctx context.Context, repo forge.Repo, trunk string) (bool, error)
@@ -166,6 +169,12 @@ type Forge interface {
 	// change's head has moved past the landing's. It never deletes the change's branch.
 	Land(ctx context.Context, repo forge.Repo, landing forge.Landing) error
 	DeleteBranch(ctx context.Context, repo forge.Repo, branch string) error
+	// FindRelease returns the URL of the release of the tag, and found false with no error when
+	// the forge has no release for it.
+	FindRelease(ctx context.Context, repo forge.Repo, tag string) (link string, found bool, err error)
+	// PublishRelease publishes the release and returns its URL. It fails, creating no tag, when
+	// the forge does not already hold the release's tag.
+	PublishRelease(ctx context.Context, repo forge.Repo, release forge.NewRelease) (string, error)
 }
 
 // Request is the command a result is for and the words it was given.

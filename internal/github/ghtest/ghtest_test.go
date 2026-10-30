@@ -3,6 +3,7 @@ package ghtest_test
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +46,29 @@ func TestFake_WhenScriptedArgvHoldsAny_AnswersWhateverTheCallHoldsThere(t *testi
 	assert.NilError(t, err)
 
 	assert.Check(t, is.Equal(got.Stdout, "scripted\n"))
+}
+
+func TestFake_WhenScriptedArgvHoldsFileHolding_AnswersOnlyAFileWithThatContent(t *testing.T) {
+	const scripted = "## [1.2.0]\n\n- Fix `$HOME`\n"
+	tests := []struct {
+		name    string
+		written string
+		want    bool
+	}{
+		{name: "file holds the content", written: scripted, want: true},
+		{name: "file holds other content", written: scripted + "- Add the release\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			notes := filepath.Join(t.TempDir(), "notes.md")
+			assert.NilError(t, os.WriteFile(notes, []byte(tt.written), 0o600))
+			ghtest.Setup(t, ghtest.Says("scripted\n", "release", "create", "--notes-file", ghtest.FileHolding(scripted)))
+
+			_, err := github.Runner{}.Run(t.Context(), "release", "create", "--notes-file", notes)
+
+			assert.Check(t, is.Equal(err == nil, tt.want), "Run error = %v, want answered %t", err, tt.want)
+		})
+	}
 }
 
 func TestFake_WhenAnswerIsDelayed_AnswersAfterTheDelay(t *testing.T) {
