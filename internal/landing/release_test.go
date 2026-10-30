@@ -248,6 +248,10 @@ func TestRelease_WhenOriginHoldsAVersionTagNotBelowIt_RefusesNamingTheHighest(t 
 				f.OriginTag("v1.3.0", base)
 			},
 		},
+		{
+			name: "the same version under a shorter name", version: version, highest: "v1.2",
+			arrange: func(f *gittest.Fixture, base string) { f.OriginTag("v1.2", base) },
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -825,6 +829,10 @@ func TestRelease_WhenTheTagHasNoGitHubRelease_CreatesOneWithTheChangelogSectionA
 			name: "a section that defines a link of its own", version: version, notes: linked,
 			changelog: changelog(section(version, linked+"\n\n"), section("1.1.0", notes)),
 		},
+		{
+			name: "a section whose heading has no date", version: version, notes: "### Added\n\n- A logo.",
+			changelog: changelog("## ["+version+"]\n\n"+notes, section("1.1.0", notes)),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -953,25 +961,33 @@ func TestRelease_WhenDone_CarriesThePayloadNamingHowTheGateEnded(t *testing.T) {
 
 // failedRelease is one git read of a release that fails for a reason no refusal covers.
 type failedRelease struct {
-	read string
+	// build commits the release commit on the trunk, as releaseScene's build does.
+	build func(f *gittest.Fixture, base string) string
+	name  string
+	read  string
 	// words are the first arguments of the git call that is made to fail.
 	words []string
 }
 
 func TestRelease_WhenAGitReadFailsForNoRefusal_BrokeNamingTheRead(t *testing.T) {
 	// Not parallel: each row puts a failing git first on PATH with t.Setenv.
+	history := []string{"log", "--reverse", "--topo-order", "--format=%H %s", "--first-parent"}
 	tests := []failedRelease{
+		{name: "history since the previous tag", build: tagged, read: "the first-parent history of origin's trunk", words: history},
 		{
-			read:  "the first-parent history of origin's trunk",
-			words: []string{"log", "--reverse", "--topo-order", "--format=%H %s", "--first-parent"},
+			name: "history with no previous tag", read: "the first-parent history of origin's trunk", words: history,
+			build: func(f *gittest.Fixture, _ string) string { return releaseCommit(f) },
 		},
-		{read: "the local tag of the version", words: []string{"rev-parse", "--verify", "--quiet", "refs/tags/" + releaseTag + "^{commit}"}},
-		{read: "the changelog of the release commit", words: []string{"cat-file", "blob"}},
+		{
+			name: "local tag", build: tagged, read: "the local tag of the version",
+			words: []string{"rev-parse", "--verify", "--quiet", "refs/tags/" + releaseTag + "^{commit}"},
+		},
+		{name: "changelog", build: tagged, read: "the changelog of the release commit", words: []string{"cat-file", "blob"}},
 	}
 	for _, tt := range tests {
-		t.Run(tt.read, func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			cmd := releaseCommand(version)
-			st := releaseScene(t, tagged)
+			st := releaseScene(t, tt.build)
 			failGit(t, st.s, tt.words)
 			before := st.s.written()
 
