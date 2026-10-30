@@ -87,7 +87,7 @@ of `ils merge` with `Next: ils push`:
 2. Tell the user it is waiting for the checks, and end your turn.
 3. When the notification arrives, read the output file it names: the notification carries the
    exit code, not the output. Show the output and act on that exit code as on any other run. On
-   another exit 4, Go back to step 1.
+   another exit 4, return to step 1.
 
 Any `ils push --wait`, whatever `Next:` names it, runs this way. The first `ils push` of a commit
 and every other `ils` command run bare in the foreground: fast CI and an early failure come back

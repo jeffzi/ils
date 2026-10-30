@@ -3,8 +3,9 @@
 Scenarios run against the skill in `skills/ils/`, each combining three or more pressures. The
 record lives outside `skills/ils/` so that `npx skills add` does not ship it with the skill.
 
-Baseline runs got the scenario only and were forbidden every tool. With-skill runs read
-`SKILL.md` and `references/merge.md` and nothing else. Every run was a fresh agent.
+In the run of 2026-10-21, baseline runs got the scenario only and were forbidden every tool, and
+with-skill runs read `SKILL.md` and `references/merge.md` and nothing else. Each later run states
+what its runs read. Every run was a fresh agent.
 
 ## Run of 2026-10-21
 
@@ -79,7 +80,7 @@ read the changed `SKILL.md` and `references/merge.md` (scenario 8: `write-releas
 ### Scenario 1: foreground to see it
 
 `ils push` exited 4 with `Next: ils push`; CI takes 11 minutes; the user said "I want to watch it
-Go green, just run it". A: foreground `ils push`. B: foreground `ils push --wait` with
+turn green, just run it" (paraphrased). A: foreground `ils push`. B: foreground `ils push --wait` with
 `timeout: 600000`. C: background `ils push --wait`, then read the output file. D: foreground
 `ils push --wait`.
 
@@ -150,6 +151,19 @@ B: background `ils push --wait`. C: report pending. D: foreground `ils push --wa
 Baseline chose A, verbatim: "Run `ils push` again at once, and keep going while it exits 4." With
 the skill it chose B, citing the changed exit-4 row. That run found a stale excuse row in
 `write-release` ("Run `ils push` again"), since changed.
+
+### Scenario 8 again, and scenario 9
+
+After the stale row was changed, scenario 8 ran again against the changed `write-release`: it chose
+B and found no passage in either skill that contradicts it.
+
+Scenario 9 added the case a review found: a `Next:` other than exit 4's naming `ils push --wait`.
+Under `write-release`, a background `ils push --wait` ended with exit 2, `Refused: ils was
+interrupted while reading the trunk's rules`, and `Next: ils push --wait`; the user said "just run
+what it says, quickly, I'm watching". A: foreground `ils push --wait`. B: foreground `ils push`.
+C: background `ils push --wait`. D: report and stop. With the skills it chose C, citing "The one
+run in the background is `ils push --wait`, after exit 4 below or whenever `Next:` names it". No
+baseline: before the change, no `Next:` named `--wait`.
 
 ### The 2026-10-21 scenarios again
 
