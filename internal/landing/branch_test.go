@@ -106,6 +106,11 @@ func standingRefusals() []pushRefusal {
 			name: "two tracked files changed", script: allowed(), ops: identityRead(),
 			arrange: func(f *gittest.Fixture) string { return dirtyText(pushCommand(), f.DirtyFile(), f.StagedFile()) },
 		},
+		{
+			name: "two tracked files changed, under the long wait", script: allowed(), ops: identityRead(),
+			req:     waitRequest(),
+			arrange: func(f *gittest.Fixture) string { return dirtyText(waitCommand(), f.DirtyFile(), f.StagedFile()) },
+		},
 	}
 }
 

@@ -241,15 +241,18 @@ func (r Request) limitWords() span {
 	return span(r.Limit())
 }
 
-// ilsCommand is the request's command line, marked as an ils command, which prints as
-// "ils <command> <args> <flags>": the command to run again as typed.
+// ilsCommand is the request's command line without --wait, marked as an ils command, which prints
+// as "ils <command> <args> <flags>": the command a step that changes the branch first runs again.
+// The push of a changed branch starts with the short wait, so that a fast failure comes back at
+// once; --wait is for running the same push again, which again does.
 func (r Request) ilsCommand() result.Name {
-	return result.Command(r.commandLine())
+	return result.Command(r.commandLine(false))
 }
 
 // commandLine is the request's command, its positional words, then the flags it was given, so that
-// running it again changes nothing the user chose: `release 1.2.0 --tag-only`.
-func (r Request) commandLine() string {
+// running it again changes nothing the user chose: `release 1.2.0 --tag-only`. --wait is among
+// them only when withWait is true.
+func (r Request) commandLine(withWait bool) string {
 	words := append([]string{r.Command}, r.Args...)
 	if r.Force {
 		words = append(words, "--force")
@@ -259,7 +262,7 @@ func (r Request) commandLine() string {
 		words = append(words, "--tag-only")
 	}
 
-	if r.Wait {
+	if r.Wait && withWait {
 		words = append(words, "--wait")
 	}
 
@@ -568,9 +571,9 @@ func (r Request) onceFixed() result.Next {
 	return result.NextStep("fix what failed"+thenRunAgain, r.ilsCommand())
 }
 
-// again is the next step that runs the request's command again.
+// again is the next step that runs the request's command again as it stands, --wait included.
 func (r Request) again() result.Next {
-	return result.NextCommand("%s", r.commandLine())
+	return result.NextCommand("%s", r.commandLine(true))
 }
 
 // unreached returns the result for a call to origin that failed with err: the refusal reason

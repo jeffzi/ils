@@ -109,6 +109,8 @@ type pushRefusal struct {
 	ops []forgetest.Op
 	// listed are the branches the refusal's reason names, in no particular order.
 	listed []string
+	// req is the request Push runs; its zero value is a bare `ils push`.
+	req landing.Request
 	// answered is how many calls origin answers before it stops; zero is every call.
 	answered int
 	// fetches is whether git fetches from origin before the refusal.
@@ -303,9 +305,14 @@ func runPushRefusals(t *testing.T, rows []pushRefusal) {
 
 			before := s.written()
 
-			got := landing.Push(t.Context(), s.deps, pushRequest())
+			req := tt.req
+			if req.Command == "" {
+				req = pushRequest()
+			}
 
-			assertEnded(t, s, got, finish{outcome: result.Refused, text: want})
+			got := landing.Push(t.Context(), s.deps, req)
+
+			assertEnded(t, s, got, finish{outcome: result.Refused, text: want, req: req})
 			_, reason := shown(t, got, s.gitDir)
 			for _, branch := range tt.listed {
 				assert.Check(t, is.Contains(reason, branch))

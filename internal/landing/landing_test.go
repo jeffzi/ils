@@ -406,11 +406,18 @@ type landingCommand struct {
 	again string
 	// fixed is the `Next:` line that runs the command again once what failed is fixed.
 	fixed string
-	req   landing.Request
+	// changed is the command a `Next:` line names after a step that changes the branch, when it is
+	// not "ils <name>".
+	changed string
+	req     landing.Request
 }
 
 // after is the `Next:` line that does step, then runs the command again.
 func (c landingCommand) after(step string) string {
+	if c.changed != "" {
+		return expect(step, c.changed)
+	}
+
 	return expect(step, "ils "+c.name)
 }
 
@@ -428,13 +435,15 @@ func waitRequest() landing.Request {
 	return req
 }
 
-// waitCommand is `ils push --wait` with the `Next:` lines that name it.
+// waitCommand is `ils push --wait` with the `Next:` lines that name it: one that runs it again as
+// it stands keeps --wait, and one that asks for a change first names a plain `ils push`, whose
+// first wait is the short one.
 func waitCommand() landingCommand {
 	const line = "ils push --wait"
 
 	return landingCommand{
-		name: "push --wait", req: waitRequest(),
-		again: expect(resulttest.NextLine(line) + "\n"), fixed: expect("fix what failed", line),
+		name: "push --wait", req: waitRequest(), changed: "ils push again",
+		again: expect(resulttest.NextLine(line) + "\n"), fixed: expect("fix what failed", "ils push again"),
 	}
 }
 
