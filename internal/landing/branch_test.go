@@ -111,6 +111,16 @@ func standingRefusals() []pushRefusal {
 			req:     waitRequest(),
 			arrange: func(f *gittest.Fixture) string { return dirtyText(waitCommand(), f.DirtyFile(), f.StagedFile()) },
 		},
+		{
+			name: "two tracked files changed, under the long wait with no --wait typed", script: allowed(), ops: identityRead(),
+			req:     longRequest(),
+			arrange: func(f *gittest.Fixture) string { return dirtyText(longCommand(), f.DirtyFile(), f.StagedFile()) },
+		},
+		{
+			name: "two tracked files changed, after --wait=false", script: allowed(), ops: identityRead(),
+			req:     waitOffRequest(),
+			arrange: func(f *gittest.Fixture) string { return dirtyText(waitOffCommand(), f.DirtyFile(), f.StagedFile()) },
+		},
 	}
 }
 
@@ -120,9 +130,47 @@ func nothingPast(branch string) string {
 	return expect(branch, "no commit past", trunk, "commit the work", "ils push again\n")
 }
 
+// nothingPastBy is the refusal by the push cmd of a branch with no commit past origin's trunk,
+// whose `Next:` line names cmd once the work is committed.
+func nothingPastBy(cmd landingCommand, branch string) string {
+	return expect(branch, "no commit past", trunk) + cmd.after("commit the work")
+}
+
+// keptRefusals are the refusals by each bounded push of a detached HEAD with commits origin's
+// trunk lacks, whose `Next:` line names the push without a typed --wait once they are on a branch.
+func keptRefusals() []pushRefusal {
+	var kept []pushRefusal
+	for _, b := range boundedPushes() {
+		kept = append(kept, pushRefusal{
+			name: "detached HEAD with commits origin's trunk lacks, ils " + b.cmd.name, script: allowed(), ops: identityRead(),
+			fetches: true, req: b.cmd.req,
+			arrange: func(f *gittest.Fixture) string {
+				f.Detach()
+
+				return expect("detached", "`git switch -c <name>`", "then run "+strings.TrimSuffix(b.cmd.changed, " again")+"\n")
+			},
+		})
+	}
+
+	return kept
+}
+
 // commitRefusals are the refusals decided from the branch's commits past origin's trunk.
 func commitRefusals() []pushRefusal {
-	return []pushRefusal{
+	var bounded []pushRefusal
+	for _, b := range boundedPushes() {
+		bounded = append(bounded, pushRefusal{
+			name: "no commit past the trunk, ils " + b.cmd.name, script: allowed(), ops: identityRead(), fetches: true,
+			req: b.cmd.req,
+			arrange: func(f *gittest.Fixture) string {
+				f.Git("switch", "--quiet", "--create", spare, trunk)
+
+				return nothingPastBy(b.cmd, spare)
+			},
+		})
+	}
+
+	return append(bounded, []pushRefusal{
 		{
 			name: "no commit past the trunk", script: allowed(), ops: identityRead(), fetches: true,
 			arrange: func(f *gittest.Fixture) string {
@@ -140,7 +188,7 @@ func commitRefusals() []pushRefusal {
 				return nothingPast(topic)
 			},
 		},
-	}
+	}...)
 }
 
 // changeRefusals are the refusals decided from the pull requests the forge finds for the branch.
@@ -191,7 +239,7 @@ func changeRefusals() []pushRefusal {
 func TestPush_WhenASharedCheckOfTheBranchFails_RefusesAtTheFirst(t *testing.T) {
 	t.Parallel()
 
-	runPushRefusals(t, slices.Concat(standingRefusals(), commitRefusals(), changeRefusals()))
+	runPushRefusals(t, slices.Concat(standingRefusals(), keptRefusals(), commitRefusals(), changeRefusals()))
 }
 
 // sharedAccepted are the states of the branch that pass a shared check another state fails, each

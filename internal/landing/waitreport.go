@@ -56,10 +56,11 @@ func cutShortReading(byInterrupt bool, limit span, read string) result.Phrase {
 }
 
 // ending is what the report of a wait says about the run it ended: the ils command the run is,
-// which a head that moved runs again; the time limit it ran under; and the push a pending wait
-// runs again.
+// which a head that moved runs again; the push that a fix of a failed check or a merge of the
+// trunk runs again, change; the time limit it ran under; and the push a pending wait runs again.
 type ending struct {
 	command result.Name
+	change  result.Name
 	push    result.Next
 	limit   span
 }
@@ -67,7 +68,7 @@ type ending struct {
 // ending returns what the report of a wait the request ran says about it, with push as the step a
 // pending wait runs.
 func (r Request) ending(push result.Next) ending {
-	return ending{command: r.ilsCommand(), push: push, limit: r.limitWords()}
+	return ending{command: r.ilsCommand(), change: r.pushOfChange(), push: push, limit: r.limitWords()}
 }
 
 // pushAgain is the step that runs a plain `ils push`, which a command other than push sends a
@@ -113,11 +114,11 @@ func (w Waited) stopReport(end ending, sha, trunk string, number int) (waitRepor
 	case WaitGreen, WaitNothingReported:
 		return waitReport{}, false
 	case WaitRed:
-		return w.redReport(), true
+		return w.redReport(end), true
 	case WaitConflicting:
-		return w.apartReport(sha, trunk, result.Say("the pull request conflicts with the trunk")), true
+		return w.apartReport(end, sha, trunk, result.Say("the pull request conflicts with the trunk")), true
 	case WaitBehind:
-		return w.apartReport(sha, trunk, result.Say("the pull request is behind the trunk")), true
+		return w.apartReport(end, sha, trunk, result.Say("the pull request is behind the trunk")), true
 	case WaitNeverReported:
 		return waitReport{
 			lines: append([]result.Phrase{
@@ -138,8 +139,8 @@ func (w Waited) stopReport(end ending, sha, trunk string, number int) (waitRepor
 }
 
 // redReport is a deciding check that failed or was canceled, with the end of its log as the
-// excerpt.
-func (w Waited) redReport() waitReport {
+// excerpt, whose next step runs the push end names as change once the check is fixed.
+func (w Waited) redReport(end ending) waitReport {
 	failed, _ := w.Verdict.Failed()
 
 	line := result.Say("Check %s failed: %s", failed.Name, result.URL(failed.Link))
@@ -154,14 +155,14 @@ func (w Waited) redReport() waitReport {
 		lines:   append([]result.Phrase{line}, w.mergeStateLines()...),
 		excerpt: w.excerpt(),
 		reason:  reason,
-		next:    result.NextStep("fix the failing check, commit, and run %s again", result.Command(PushCommand)),
+		next:    result.NextStep("fix the failing check, commit, and run %s again", end.change),
 	}
 }
 
-// apartReport is a pull request that cannot merge until the trunk is merged into the branch. The
-// checks are said only when some decided: they were green, and the merge state read after them
-// found it apart.
-func (w Waited) apartReport(sha, trunk string, reason result.Phrase) waitReport {
+// apartReport is a pull request that cannot merge until the trunk is merged into the branch, whose
+// next step runs the push end names as change once it is. The checks are said only when some
+// decided: they were green, and the merge state read after them found it apart.
+func (w Waited) apartReport(end ending, sha, trunk string, reason result.Phrase) waitReport {
 	var lines []result.Phrase
 	if len(w.Deciding) > 0 {
 		lines = append(lines, w.checksLine(sha))
@@ -171,7 +172,7 @@ func (w Waited) apartReport(sha, trunk string, reason result.Phrase) waitReport 
 		lines:  append(lines, w.mergeStateLines()...),
 		reason: reason,
 		next: result.NextStep("merge the trunk into the branch with `git merge origin/%s`, resolve the conflicts, "+
-			"commit, and run %s again", result.Branch(trunk), result.Command(PushCommand)),
+			"commit, and run %s again", result.Branch(trunk), end.change),
 	}
 }
 

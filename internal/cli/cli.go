@@ -86,7 +86,8 @@ type App struct {
 //
 // A result the renderer rejects is printed nowhere: the error goes to Stderr and the code is 1.
 func (a App) Run(ctx context.Context, args []string) int {
-	// The deadline is set once the command is known, by land: push --wait runs under a longer one.
+	// The deadline is set once the command is known, by land: a push under the long wait runs under a
+	// longer one.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -302,7 +303,8 @@ type parse struct {
 	// version is read by root's Args so that `ils --version` passes with no command word.
 	version strictBool
 	debug   strictBool
-	// wait is the --wait flag of push, the one command that registers it.
+	// wait is the --wait flag of push, the one command that registers it and so the one that may run
+	// under the long wait.
 	wait strictBool
 	// outProfile is the color profile of Stdout, read once per run.
 	outProfile colorprofile.Profile
@@ -535,7 +537,10 @@ func (p *parse) landing(help landingHelp, run Command) *cobra.Command {
 			return nil
 		},
 		RunE: func(c *cobra.Command, _ []string) error {
-			p.land(c.Context(), run, landing.Request{Command: help.word, Words: p.words, Wait: bool(p.wait)})
+			req := landing.Request{Command: help.word, Words: p.words}
+			p.waitOn(c, &req)
+
+			p.land(c.Context(), run, req)
 
 			return nil
 		},
@@ -545,8 +550,27 @@ func (p *parse) landing(help landingHelp, run Command) *cobra.Command {
 	return c
 }
 
+// waitOn sets on req the --wait typed to c and whether c runs under the long wait: as --wait says
+// when it was typed, and otherwise when stdout is a terminal. A command that registers no --wait,
+// every one but push, keeps the short wait whatever stdout is.
+func (p *parse) waitOn(c *cobra.Command, req *landing.Request) {
+	flag := c.Flags().Lookup(strings.TrimPrefix(flagWait, "--"))
+	if flag == nil {
+		return
+	}
+
+	switch {
+	case !flag.Changed:
+		req.LongWait = p.app.terminal(p.app.StdoutTerminal)
+	case bool(p.wait):
+		req.LongWait, req.WaitFlag = true, landing.WaitFlagTrue
+	default:
+		req.WaitFlag = landing.WaitFlagFalse
+	}
+}
+
 // push returns `ils push`, which runs the push command of the app, or landing.Push when it has
-// none, with --wait set on its request as typed.
+// none, under the long wait when --wait is typed, or when stdout is a terminal and no --wait is.
 func (p *parse) push() *cobra.Command {
 	c := p.landing(landingHelp{
 		word: landing.PushCommand, short: pushShort, long: withTimeLimits(pushLong), examples: pushExamples,

@@ -20,6 +20,15 @@ import (
 // redRow is a push whose lint check ended in bucket beside a passing test, with log as its failed
 // log: the lines say the check failed, or was canceled, and the excerpt block is excerpt.
 func redRow(name string, bucket forge.Bucket, log forge.FailedLog, excerpt string) pushRow {
+	row := redRowBy(pushCommand(), bucket, log, excerpt)
+	row.name = name
+
+	return row
+}
+
+// redRowBy is redRow, unnamed, for the push cmd, whose `Next:` line names cmd once the check is
+// fixed.
+func redRowBy(cmd landingCommand, bucket forge.Bucket, log forge.FailedLog, excerpt string) pushRow {
 	said := "failed"
 	if bucket == forge.BucketCanceled {
 		said = "was canceled"
@@ -43,12 +52,11 @@ func redRow(name string, bucket forge.Bucket, log forge.FailedLog, excerpt strin
 	}
 
 	return pushRow{
-		name:   name,
 		script: opening(verdict).showing(inState(forge.MergeBlockedOther)),
 		want: finish{
-			outcome: result.DeliveredNotGreen, reason: expect("lint", said), payload: payload,
+			outcome: result.DeliveredNotGreen, reason: expect("lint", said), payload: payload, req: cmd.req,
 			text: pushedLine() + openedLine() + expect("lint", said, lintURL) +
-				state + excerpt + expect("lint", said) + nextRed(),
+				state + excerpt + expect("lint", said) + cmd.after("fix the failing check"),
 		},
 	}
 }
@@ -93,12 +101,19 @@ func TestPush_WhenACheckFailed_ReportsTheExcerptOfItsLog(t *testing.T) {
 
 // stoppedRow is a push the pull request's merge state stops before any check is read.
 func stoppedRow(state forge.MergeState, reason string) pushRow {
+	return stoppedRowBy(pushCommand(), state, reason)
+}
+
+// stoppedRowBy is stoppedRow for the push cmd, whose `Next:` line names cmd once the trunk is
+// merged into the branch.
+func stoppedRowBy(cmd landingCommand, state forge.MergeState, reason string) pushRow {
 	return pushRow{
 		name:   string(state),
 		script: reusing().showing(inState(state)),
 		want: finish{
-			outcome: result.DeliveredNotGreen, reason: expect(reason),
-			text:    pushedLine() + foundLine() + stateLine(state) + expect(reason) + nextTrunk(),
+			outcome: result.DeliveredNotGreen, reason: expect(reason), req: cmd.req,
+			text: pushedLine() + foundLine() + stateLine(state) + expect(reason) +
+				expect("`"+originMerge+trunk+"`") + cmd.after("resolve the conflicts"),
 			payload: detail(forge.VerdictNone, state),
 		},
 	}
@@ -325,10 +340,9 @@ func TestPush_WhenTheWaitEndsBeforeAnAnswer_PendingSayingWhy(t *testing.T) {
 	runPushes(t, slices.Concat(pushRunlessRows(), pushPendingRows(), pushStillRunningRows(), pushCutShortRows()))
 }
 
-// longWaitPendingRows are the pushes run with the long wait that end pending, one per reason that
-// names the time limit.
-func longWaitPendingRows() []pushRow {
-	cmd, c := waitCommand(), byWaitLimit()
+// boundPendingRows are the pushes cmd runs that end pending, one per reason that names c's time
+// limit.
+func boundPendingRows(cmd landingCommand, c cut) []pushRow {
 	clean := detail(forge.VerdictNone, forge.MergeClean)
 
 	return []pushRow{
@@ -374,10 +388,9 @@ func longWaitPendingRows() []pushRow {
 	}
 }
 
-// longWaitAfterWritesRows are the pushes run with the long wait that a read after the writes, the
-// opening of the pull request, or the head moving past the pushed commit ends.
-func longWaitAfterWritesRows() []pushRow {
-	cmd, c := waitCommand(), byWaitLimit()
+// boundAfterWritesRows are the pushes cmd runs that a read after the writes, the opening of the
+// pull request, or the head moving past the pushed commit ends, c naming the time limit.
+func boundAfterWritesRows(cmd landingCommand, c cut) []pushRow {
 	cutRules := expect(c.ends, readProtection, "nothing more will change")
 	openCut := opening().with(func(script *forgetest.Script, _ string) {
 		script.OpenChange = []forgetest.Answer[forge.ChangeRef]{{Err: c.of("gh pr create")}}
@@ -415,10 +428,33 @@ func longWaitAfterWritesRows() []pushRow {
 	}
 }
 
-func TestPush_WhenRunWithTheLongWait_ResultsNameItsTimeLimitAndCommand(t *testing.T) {
+// boundChangeRows are the pushes cmd runs that end asking for a change to the branch before cmd
+// runs again: a failed check, and a pull request that conflicts with the trunk.
+func boundChangeRows(cmd landingCommand) []pushRow {
+	short := forge.FailedLog{Text: steps(1, 3), State: forge.FailedLogRead}
+
+	red := redRowBy(cmd, forge.BucketFail, short, steps(1, 3))
+	red.name = "a check failed"
+
+	return []pushRow{
+		red,
+		stoppedRowBy(cmd, forge.MergeConflicting, "conflicts with the trunk"),
+	}
+}
+
+func TestPush_WhenRunWithAWaitFlagOrTheLongTimeLimit_ResultsNameItsTimeLimitAndCommand(t *testing.T) {
 	t.Parallel()
 
-	runPushes(t, slices.Concat(longWaitPendingRows(), longWaitAfterWritesRows()))
+	var rows []pushRow
+	for _, b := range boundedPushes() {
+		bound := slices.Concat(boundPendingRows(b.cmd, b.c), boundAfterWritesRows(b.cmd, b.c), boundChangeRows(b.cmd))
+		for _, row := range bound {
+			row.name = "ils " + b.cmd.name + ", " + row.name
+			rows = append(rows, row)
+		}
+	}
+
+	runPushes(t, rows)
 }
 
 // waitReads returns the reads of a push's wait, in the order the wait makes them, each failing

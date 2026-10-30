@@ -13,7 +13,7 @@ func withTimeLimit(long string) string {
 }
 
 // withTimeLimits returns text with its first verb set to the time limit and its second to the
-// time limit of --wait, as results name them, so that the help of push says both limits it
+// time limit of the long wait, as results name them, so that the help of push says both limits it
 // enforces.
 func withTimeLimits(text string) string {
 	return fmt.Sprintf(text, landing.Span(landing.TimeLimit), landing.Span(landing.WaitTimeLimit))
@@ -30,8 +30,10 @@ Docs: https://github.com/jeffzi/ils`
 
 	pushShort = "Push the branch, open its pull request, wait for the checks"
 	pushLong  = `Push the current branch, open its pull request on the first push, and
-wait up to %s for the checks of the pushed commit, or up to
-%s with --wait. It never forces a push and it does not merge.
+wait for the checks of the pushed commit: up to %[2]s when
+stdout is a terminal or with --wait, and up to %[1]s
+otherwise or with --wait=false. It never forces a push and it does
+not merge.
 
 It refuses before pushing anything when the branch is not ready, for
 example on the trunk (origin's default branch), with uncommitted
@@ -41,13 +43,16 @@ the next step.`
 	pushExamples = `# Push and wait for the checks
 ils push
 
-# Wait for checks that take longer
+# Wait the longer time even when stdout is no terminal
 ils push --wait
+
+# Wait only the shorter time even at a terminal
+ils push --wait=false
 
 # The same result as one JSON object
 ils push --json`
 
-	waitUsage = "Wait for the checks up to %[2]s in place of %[1]s"
+	waitUsage = "Wait up to %[2]s for the checks, as at a terminal; =false waits up to %[1]s"
 
 	mergeShort = "Squash and merge the pull request once its checks are green"
 	mergeLong  = `Squash-merge the pull request of the current branch once its checks are

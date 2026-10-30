@@ -620,17 +620,13 @@ const answersBeforePush = 3
 
 func TestPush_WhenTheGitPushIsCutShort_BrokeSayingThePushMayHaveTaken(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		c   cut
-		cmd landingCommand
-	}{
+	tests := append([]boundedPush{
 		{c: byTimeLimit(), cmd: pushCommand()},
 		{c: byInterrupt(), cmd: pushCommand()},
-		{c: byWaitLimit(), cmd: waitCommand()},
-	}
+	}, boundedPushes()...)
 
 	for _, tt := range tests {
-		t.Run(tt.c.name, func(t *testing.T) {
+		t.Run("ils "+tt.cmd.name+", "+tt.c.name, func(t *testing.T) {
 			t.Parallel()
 			s := newScene(t, nil, finding(), false)
 			ctx := tt.c.stalling(answersBeforePush)(t, s)

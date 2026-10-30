@@ -31,10 +31,10 @@ const (
 const thenRunAgain = ", then run %s again"
 
 // TimeLimit is how long a command may run before its context reaches its deadline, and
-// WaitTimeLimit how long `ils push --wait` may; both count from launch. Every result that says the
-// time limit cut a call or a wait short names the one its request ran under: Request.limitWords
-// for push, whose --wait lengthens it, and timeLimitWords for merge, release and status, which take
-// no --wait.
+// WaitTimeLimit how long a push under the long wait may (Request.LongWait); both count from launch.
+// Every result that says the time limit cut a call or a wait short names the one its request ran
+// under: Request.limitWords for push, which may run under either, and timeLimitWords for merge,
+// release and status, which always run under TimeLimit.
 const (
 	TimeLimit     = 100 * time.Second
 	WaitTimeLimit = 15 * time.Minute
@@ -74,12 +74,12 @@ func nounCount(n int, noun string) string {
 // timeLimitEnded and runInterrupted are the clauses a result says a call or a wait was cut short
 // with: by the end of the time limit, or by an interrupt. They stay untyped so that result.Say
 // accepts wording built on them. The one placeholder of timeLimitEnded takes the time limit as
-// Request.limitWords says it, or timeLimitWords in a command that takes no --wait.
+// Request.limitWords says it, or timeLimitWords in a command that never runs under the long wait.
 //
 // timeLimitRanOut and beforeTimeLimit are the clauses a wait's reason says the time limit cut it
 // short with, after the thing it was still waiting on, or before the answer it was waiting for.
 // The one placeholder of each takes the time limit as Request.limitWords says it, or
-// timeLimitWords in a command that takes no --wait.
+// timeLimitWords in a command that never runs under the long wait.
 //
 // fewerLeft and fewerLeftCapital open the clause that says less than the reserve of the time limit
 // was left, in a reason and at the start of a line. Their two placeholders take the reserve and
@@ -219,17 +219,32 @@ type Request struct {
 	Words   []string
 	// Args are the command's positional words, as typed: for `ils branch`, the name.
 	Args []string
+	// WaitFlag is the --wait flag the user typed to `ils push`, which a `Next:` line names as typed.
+	// It does not pick the time limit: LongWait does.
+	WaitFlag WaitFlag
 	// Force and TagOnly are the --force and --tag-only flags of `ils release`.
 	Force   bool
 	TagOnly bool
-	// Wait is the --wait flag of `ils push`: the push runs under WaitTimeLimit instead of TimeLimit.
-	Wait bool
+	// LongWait runs the push under WaitTimeLimit instead of TimeLimit. The caller decides it,
+	// whether or not the user typed --wait.
+	LongWait bool
 }
 
-// Limit is how long the request may run, counted from launch: WaitTimeLimit for a push with
-// --wait, TimeLimit for every other request.
+// WaitFlag is which --wait flag the user typed to `ils push`.
+type WaitFlag int
+
+// WaitFlagNone is no --wait typed, WaitFlagTrue is --wait or --wait=true, and WaitFlagFalse is
+// --wait=false.
+const (
+	WaitFlagNone WaitFlag = iota
+	WaitFlagTrue
+	WaitFlagFalse
+)
+
+// Limit is how long the request may run, counted from launch: WaitTimeLimit for a push under the
+// long wait, TimeLimit for every other request.
 func (r Request) Limit() time.Duration {
-	if r.Wait {
+	if r.LongWait {
 		return WaitTimeLimit
 	}
 
@@ -241,18 +256,18 @@ func (r Request) limitWords() span {
 	return span(r.Limit())
 }
 
-// ilsCommand is the request's command line without --wait, marked as an ils command, which prints
-// as "ils <command> <args> <flags>": the command a step that changes the branch first runs again.
-// The push of a changed branch starts with the short wait, so that a fast failure comes back at
-// once; --wait is for running the same push again, which again does.
+// ilsCommand is the request's command line without a typed --wait, marked as an ils command, which
+// prints as "ils <command> <args> <flags>": the command a step that changes the branch first runs
+// again. The push of a changed branch does not ask for the long wait, so that a fast failure can
+// come back at once; a typed --wait=false, which asks for the short one, stays.
 func (r Request) ilsCommand() result.Name {
 	return result.Command(r.commandLine(false))
 }
 
 // commandLine is the request's command, its positional words, then the flags it was given, so that
-// running it again changes nothing the user chose: `release 1.2.0 --tag-only`. --wait is among
-// them only when withWait is true.
-func (r Request) commandLine(withWait bool) string {
+// running it again changes nothing the user chose: `release 1.2.0 --tag-only`. A typed
+// --wait=false is always among them, and a typed --wait only when keepWait is true.
+func (r Request) commandLine(keepWait bool) string {
 	words := append([]string{r.Command}, r.Args...)
 	if r.Force {
 		words = append(words, "--force")
@@ -262,8 +277,11 @@ func (r Request) commandLine(withWait bool) string {
 		words = append(words, "--tag-only")
 	}
 
-	if r.Wait && withWait {
+	switch {
+	case r.WaitFlag == WaitFlagTrue && keepWait:
 		words = append(words, "--wait")
+	case r.WaitFlag == WaitFlagFalse:
+		words = append(words, "--wait=false")
 	}
 
 	return strings.Join(words, " ")
@@ -571,7 +589,19 @@ func (r Request) onceFixed() result.Next {
 	return result.NextStep("fix what failed"+thenRunAgain, r.ilsCommand())
 }
 
-// again is the next step that runs the request's command again as it stands, --wait included.
+// pushOfChange is the push a step that changes the branch first runs: a push names itself, keeping
+// a typed --wait=false, and every other command names a plain `ils push`, since the branch it
+// reports on changes only by a push.
+func (r Request) pushOfChange() result.Name {
+	if r.Command == PushCommand {
+		return r.ilsCommand()
+	}
+
+	return result.Command(PushCommand)
+}
+
+// again is the next step that runs the request's command again as it stands, with the --wait flag
+// the user typed, if any.
 func (r Request) again() result.Next {
 	return result.NextCommand("%s", r.commandLine(true))
 }
@@ -634,14 +664,14 @@ func (r Request) detachedKept(ctx context.Context, deps Deps, trunk string, reas
 		return nil
 	}
 
-	stop := r.Refused(reason, keepDetachedStep())
+	stop := r.Refused(reason, keepDetachedStep(r.pushOfChange()))
 	stop.Lines = listed(own)
 
 	return stop
 }
 
 // keepDetachedStep is the next step of a detached HEAD with commits origin's trunk lacks: keep them
-// on a branch, then push it.
-func keepDetachedStep() result.Next {
-	return result.NextStep("keep them on a branch with `git switch -c <name>`, then run %s", result.Command(PushCommand))
+// on a branch, then push it with push.
+func keepDetachedStep(push result.Name) result.Next {
+	return result.NextStep("keep them on a branch with `git switch -c <name>`, then run %s", push)
 }

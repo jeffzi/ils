@@ -426,11 +426,11 @@ func pushCommand() landingCommand {
 	return landingCommand{name: "push", req: pushRequest(), again: nextPush(), fixed: nextFixed()}
 }
 
-// waitRequest is the command and words of `ils push --wait`.
+// waitRequest is the command and words of `ils push --wait`, which runs under the long time limit.
 func waitRequest() landing.Request {
-	req := pushRequest()
+	req := longRequest()
 	req.Words = append(req.Words, "--wait")
-	req.Wait = true
+	req.WaitFlag = landing.WaitFlagTrue
 
 	return req
 }
@@ -444,6 +444,60 @@ func waitCommand() landingCommand {
 	return landingCommand{
 		name: "push --wait", req: waitRequest(), changed: "ils push again",
 		again: expect(resulttest.NextLine(line) + "\n"), fixed: expect("fix what failed", "ils push again"),
+	}
+}
+
+// longRequest is the command and words of an `ils push` with no --wait typed that runs under the
+// long time limit all the same.
+func longRequest() landing.Request {
+	req := pushRequest()
+	req.LongWait = true
+
+	return req
+}
+
+// longCommand is longRequest with the `Next:` lines that name it: each names a plain `ils push`,
+// since no --wait was typed.
+func longCommand() landingCommand {
+	return landingCommand{
+		name: "push under the long time limit with no --wait typed", req: longRequest(), changed: "ils push again",
+		again: nextPush(), fixed: expect("fix what failed", "ils push again"),
+	}
+}
+
+// waitOffRequest is the command and words of `ils push --wait=false`, which runs under the short
+// time limit.
+func waitOffRequest() landing.Request {
+	req := pushRequest()
+	req.Words = append(req.Words, "--wait=false")
+	req.WaitFlag = landing.WaitFlagFalse
+
+	return req
+}
+
+// waitOffCommand is `ils push --wait=false` with the `Next:` lines that name it: each keeps
+// --wait=false.
+func waitOffCommand() landingCommand {
+	const line = "ils push --wait=false"
+
+	return landingCommand{
+		name: "push --wait=false", req: waitOffRequest(), changed: line + " again",
+		again: expect(resulttest.NextLine(line) + "\n"), fixed: expect("fix what failed", line+" again"),
+	}
+}
+
+type boundedPush struct {
+	c   cut
+	cmd landingCommand
+}
+
+// boundedPushes are the pushes that run under the long time limit or name a typed --wait=false,
+// each with the cut of the limit it runs under.
+func boundedPushes() []boundedPush {
+	return []boundedPush{
+		{c: byWaitLimit(), cmd: waitCommand()},
+		{c: byWaitLimit(), cmd: longCommand()},
+		{c: byTimeLimit(), cmd: waitOffCommand()},
 	}
 }
 
@@ -847,6 +901,14 @@ func TestPreconditions_WhenAReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
 		{
 			name: "before the first read of a push run with the long wait", read: readGitVersion,
 			c: byWaitLimit(), cmd: waitCommand(), arrange: beforeAnyRead,
+		},
+		{
+			name: "before the first read of a push run with the long wait and no --wait typed", read: readGitVersion,
+			c: byWaitLimit(), cmd: longCommand(), arrange: beforeAnyRead,
+		},
+		{
+			name: "before the first read of a push run with --wait=false", read: readGitVersion,
+			c: byTimeLimit(), cmd: waitOffCommand(), arrange: beforeAnyRead,
 		},
 		{
 			name: "between the identity read and the trunk read", read: readTrunk, ops: identityRead(),

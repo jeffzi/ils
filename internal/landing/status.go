@@ -727,7 +727,7 @@ func (r *reading) next() result.Next {
 		return startBranchStep()
 	case result.StandingDetached:
 		if len(r.status.Unlanded) > 0 {
-			return keepDetachedStep()
+			return keepDetachedStep(result.Command(PushCommand))
 		}
 
 		return startBranchStep()
