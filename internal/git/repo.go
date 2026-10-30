@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -416,6 +417,64 @@ func (r Repo) CheckBranchName(ctx context.Context, name string) error {
 // Subject returns the first line of the message of the commit sha.
 func (r Repo) Subject(ctx context.Context, sha string) (string, error) {
 	return r.line(ctx, "show", "--no-patch", "--format=%s", sha)
+}
+
+// FirstParentHistory returns, newest first, the commits on the first-parent chain of ref that the
+// commit after does not reach; with after empty, the whole chain. A commit that reached ref through
+// a merge's second parent is not on the chain.
+func (r Repo) FirstParentHistory(ctx context.Context, ref, after string) ([]Commit, error) {
+	revisions := []string{"--first-parent", ref}
+	if after != "" {
+		revisions = append(revisions, "^"+after)
+	}
+
+	commits, err := r.commits(ctx, revisions...)
+	if err != nil {
+		return nil, err
+	}
+
+	slices.Reverse(commits)
+
+	return commits, nil
+}
+
+// FileAt returns the contents of the file at path in the commit sha, byte for byte; found is false
+// when the commit has no such file. A sha the clone lacks is a *child.ExitError, never an absent
+// file.
+func (r Repo) FileAt(ctx context.Context, sha, path string) (content string, found bool, err error) {
+	blob, found, err := r.optionalLine(ctx, "rev-parse", "--verify", "--quiet", sha+":"+path)
+	if err != nil {
+		return "", false, err
+	}
+
+	// rev-parse answers the same way for a missing file and a missing commit, so the commit is
+	// checked on its own before the file is called absent.
+	if !found {
+		_, err = r.line(ctx, "rev-parse", "--verify", sha+"^{commit}")
+
+		return "", false, err
+	}
+
+	result, err := r.Runner.Run(ctx, "cat-file", "blob", blob)
+	if err != nil {
+		return "", false, err
+	}
+
+	return result.Stdout, true, nil
+}
+
+// LocalTag returns the commit the local tag name points to, through an annotated tag's object to
+// its commit; found is false when no local tag has that name, whatever branches or origin hold.
+func (r Repo) LocalTag(ctx context.Context, name string) (sha string, found bool, err error) {
+	return r.optionalLine(ctx, "rev-parse", "--verify", "--quiet", tagsRef+name+"^{commit}")
+}
+
+// CreateTag makes the annotated tag name at the commit sha, with name as its message, leaving HEAD
+// and the working tree as they are. Git's tag.gpgSign decides whether it is signed.
+func (r Repo) CreateTag(ctx context.Context, name, sha string) error {
+	_, err := r.Runner.Run(ctx, "tag", "--annotate", "--message", name, name, sha)
+
+	return err
 }
 
 // DetachAtOrigin detaches HEAD at origin's trunk as last fetched, keeping untracked files.

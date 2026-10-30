@@ -692,7 +692,7 @@ func TestRepo_Push_WhenOriginRefusesTheRef_ReturnsPushErrorNamingTheReason(t *te
 
 	pushErr, ok := errors.AsType[*git.PushError](err)
 	assert.Assert(t, ok, "Push(%q) error = %v, want *git.PushError", topic, err)
-	assert.Check(t, is.Equal(pushErr.Branch, topic))
+	assert.Check(t, is.Equal(pushErr.Ref, "refs/heads/"+topic))
 	assert.Check(t, is.Contains(pushErr.Reason, "pre-receive hook declined"))
 	assert.Check(t, !strings.Contains(pushErr.Reason, "refs/heads/"), "Reason = %q, want the summary, not the ref it names",
 		pushErr.Reason)
@@ -864,6 +864,81 @@ func TestRepo_Push_WhenContextCanceled_ReturnsNeitherPushNorRemoteError(t *testi
 	assert.Check(t, !refused, "Push(%q) error = %v, want no *git.PushError", topic, err)
 	_, remote := errors.AsType[*git.RemoteError](err)
 	assert.Check(t, !remote, "Push(%q) error = %v, want no *git.RemoteError", topic, err)
+}
+
+const releaseRef = "refs/tags/" + release
+
+func originRefs(f *gittest.Fixture) string {
+	return f.OriginGit("for-each-ref", "--format=%(refname)")
+}
+
+func TestRepo_PushTag_WhenOriginAccepts_PutsOnlyTheTagOnOrigin(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	before := originRefs(f)
+	tip := f.Commits(topic, "one")[0]
+	repo := newRepo(f)
+	assert.NilError(t, repo.CreateTag(t.Context(), release, tip))
+	f.Git("tag", "v0.9.0", tip)
+
+	err := repo.PushTag(t.Context(), release)
+	assert.NilError(t, err, "PushTag(%q)", release)
+
+	assert.Check(t, is.Equal(originRefs(f), strings.TrimSpace(before+"\n"+releaseRef)))
+	assert.Check(t, is.Equal(f.OriginGit("rev-parse", releaseRef+"^{commit}"), tip))
+}
+
+func TestRepo_PushTag_WhenOriginRefuses_ReturnsPushErrorNamingTheTagRef(t *testing.T) {
+	t.Parallel()
+	const said = "policy forbids this tag"
+	tests := []struct {
+		arrange func(f *gittest.Fixture)
+		name    string
+		// want is part of git's output the error carries.
+		want string
+	}{
+		{
+			name:    "origin holds the tag at another commit",
+			arrange: func(f *gittest.Fixture) { f.OriginTag(release, f.Git("rev-parse", trunk)) },
+			want:    "already exists",
+		},
+		{
+			name:    "a hook refuses",
+			arrange: func(f *gittest.Fixture) { f.OriginHook("pre-receive", "echo '"+said+"'\nexit 1") },
+			want:    said,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			tip := f.Commits(topic, "one")[0]
+			repo := newRepo(f)
+			assert.NilError(t, repo.CreateTag(t.Context(), release, tip))
+			tt.arrange(f)
+
+			err := repo.PushTag(t.Context(), release)
+
+			pushErr, ok := errors.AsType[*git.PushError](err)
+			assert.Assert(t, ok, "PushTag(%q) error = %v, want *git.PushError", release, err)
+			assert.Check(t, is.Equal(pushErr.Ref, releaseRef))
+			assert.Check(t, is.Contains(pushErr.Detail(), tt.want))
+		})
+	}
+}
+
+func TestRepo_PushTag_WhenOriginNeverAnswers_ReturnsRemoteError(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	tip := f.Commits(topic, "one")[0]
+	repo := newRepo(f)
+	assert.NilError(t, repo.CreateTag(t.Context(), release, tip))
+	unreachable(t, f)
+
+	err := repo.PushTag(t.Context(), release)
+
+	_, remote := errors.AsType[*git.RemoteError](err)
+	assert.Check(t, remote, "PushTag(%q) error = %v, want *git.RemoteError", release, err)
 }
 
 func TestRepo_WhenNotARepository_OriginCallsReturnExitError(t *testing.T) {

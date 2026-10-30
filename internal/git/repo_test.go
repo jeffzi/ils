@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -725,6 +726,174 @@ func TestRepo_CheckedOutElsewhere_WhenTheWorktreeOnTheBranchIsGone_ReturnsNotExi
 	got, err := newRepo(f).CheckedOutElsewhere(t.Context(), trunk)
 
 	assert.Check(t, is.ErrorIs(err, fs.ErrNotExist), "CheckedOutElsewhere() = %t", got)
+}
+
+// mergedHistory is a trunk whose first-parent chain runs, newest first, through last, a merge of
+// topic, middle, first and the fixture's initial commit. Topic's one commit, "side", reached the
+// trunk through the merge's second parent alone.
+type mergedHistory struct {
+	initial string
+	first   string
+	middle  string
+	merge   string
+	last    string
+	repo    git.Repo
+}
+
+// withMerge returns a repository whose trunk merged topic, cut after the trunk's first commit.
+func withMerge(t *testing.T) mergedHistory {
+	t.Helper()
+
+	f := gittest.New(t, trunk)
+	h := mergedHistory{repo: newRepo(f), initial: f.Git("rev-parse", trunk)}
+	h.first = f.Commits(trunk, "first")[0]
+	f.Commits(topic, "side")
+	h.middle = f.Commits(trunk, "middle")[0]
+	f.Git("merge", "--quiet", "--no-ff", "--message", "merge topic", topic)
+	h.merge = f.Git("rev-parse", "HEAD")
+	h.last = f.Commits(trunk, "last")[0]
+
+	return h
+}
+
+func TestRepo_FirstParentHistory(t *testing.T) {
+	t.Parallel()
+	h := withMerge(t)
+	newest := []git.Commit{
+		{SHA: h.last, Subject: "last"},
+		{SHA: h.merge, Subject: "merge topic"},
+		{SHA: h.middle, Subject: "middle"},
+	}
+	tests := []struct {
+		name  string
+		after string
+		want  []git.Commit
+	}{
+		{name: "after a commit on the chain", after: h.first, want: newest},
+		{
+			name:  "with no given commit",
+			after: "",
+			want:  append(slices.Clone(newest), git.Commit{SHA: h.first, Subject: "first"}, git.Commit{SHA: h.initial, Subject: "initial commit"}),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := h.repo.FirstParentHistory(t.Context(), trunk, tt.after)
+			assert.NilError(t, err, "FirstParentHistory(%q, %q)", trunk, tt.after)
+
+			assert.Check(t, is.DeepEqual(got, tt.want, cmpopts.EquateEmpty()))
+		})
+	}
+}
+
+const changelog = "CHANGELOG.md"
+
+func TestRepo_FileAt_WhenTheCommitHasTheFile_ReturnsItsContentsExactly(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	const content = "# Changelog\n\n## 1.2.0\n\n- Read a file at a commit.\n\n"
+	sha := f.CommitChangelog(trunk, "chore: release v1.2.0", content)
+
+	got, found, err := newRepo(f).FileAt(t.Context(), sha, changelog)
+	assert.NilError(t, err)
+
+	assert.Check(t, found, "FileAt(%s, %q) found = false, want true", sha, changelog)
+	assert.Check(t, is.Equal(got, content))
+}
+
+func TestRepo_FileAt_WhenTheCommitLacksTheFile_ReportsNotFound(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.CommitChangelog(topic, "add the changelog", "# Changelog\n")
+	sha := f.Git("rev-parse", trunk)
+
+	got, found, err := newRepo(f).FileAt(t.Context(), sha, changelog)
+	assert.NilError(t, err)
+
+	assert.Check(t, !found, "FileAt(%s, %q) = %q, want not found", sha, changelog, got)
+}
+
+func TestRepo_FileAt_WhenTheCloneLacksTheCommit_ReturnsExitError(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+
+	got, found, err := newRepo(f).FileAt(t.Context(), unknownSHA, changelog)
+
+	_, ok := errors.AsType[*child.ExitError](err)
+	assert.Check(t, ok, "FileAt(%s, %q) error = %v, want *child.ExitError", unknownSHA, changelog, err)
+	assert.Check(t, !found && got == "", "FileAt(%s, %q) = %q, %t, want no result", unknownSHA, changelog, got, found)
+}
+
+const release = "v1.2.0"
+
+func TestRepo_LocalTag_WhenTheTagExists_ReturnsItsCommit(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		tag  func(f *gittest.Fixture, name, sha string)
+		name string
+	}{
+		{name: "annotated", tag: (*gittest.Fixture).OriginTag},
+		{name: "lightweight", tag: (*gittest.Fixture).OriginLightweightTag},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			sha := f.Commits(topic, "one")[0]
+			tt.tag(f, release, sha)
+			fetch(t, f, releaseRef+":"+releaseRef)
+
+			got, found, err := newRepo(f).LocalTag(t.Context(), release)
+			assert.NilError(t, err)
+
+			assert.Check(t, found, "LocalTag(%q) found = false, want true", release)
+			assert.Check(t, is.Equal(got, sha))
+		})
+	}
+}
+
+func TestRepo_LocalTag_WhenNoLocalTagHasTheName_ReportsNotFound(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		arrange func(f *gittest.Fixture)
+		name    string
+	}{
+		{name: "no ref of that name", arrange: func(*gittest.Fixture) {}},
+		{name: "a branch of that name", arrange: func(f *gittest.Fixture) { f.Commits(release, "one") }},
+		{name: "a tag of that name on origin alone", arrange: func(f *gittest.Fixture) {
+			f.OriginTag(release, f.Git("rev-parse", trunk))
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			tt.arrange(f)
+
+			got, found, err := newRepo(f).LocalTag(t.Context(), release)
+			assert.NilError(t, err)
+
+			assert.Check(t, !found, "LocalTag(%q) = %q, want not found", release, got)
+		})
+	}
+}
+
+func TestRepo_CreateTag_WhenHeadIsElsewhereAndTheTreeIsDirty_TagsTheGivenCommitAnnotated(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	sha := f.Commits(topic, "one", "two")[0]
+	f.StagedFile()
+	f.DirtyFile()
+	ref := "refs/tags/" + release
+
+	err := newRepo(f).CreateTag(t.Context(), release, sha)
+	assert.NilError(t, err, "CreateTag(%q, %s)", release, sha)
+
+	assert.Check(t, is.Equal(f.Git("cat-file", "-t", ref), "tag"))
+	assert.Check(t, is.Equal(f.Git("rev-parse", ref+"^{commit}"), sha))
+	assert.Check(t, is.Equal(f.Git("for-each-ref", "--format=%(contents)", ref), release))
 }
 
 // versionCase is a line git prints for --version and the version VersionOf reads from it.

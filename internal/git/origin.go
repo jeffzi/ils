@@ -152,12 +152,14 @@ func (e *RemoteError) Unwrap() error {
 	return e.Err
 }
 
-// PushError reports a push that git or origin refused for the branch's ref: a non-fast-forward, a
-// hook of origin that declined it, a ref origin hides, a pre-push hook that failed. An origin that
-// never answered, or that hung up before it reported on the ref, is a *RemoteError instead.
+// PushError reports a push that git or origin refused for a ref: a non-fast-forward, a tag origin
+// already holds at another commit, a hook of origin that declined it, a ref origin hides, a pre-push
+// hook that failed. An origin that never answered, or that hung up before it reported on the ref, is
+// a *RemoteError instead.
 type PushError struct {
-	Err    error
-	Branch string
+	Err error
+	// Ref is the full name of the refused ref, such as `refs/heads/main` or `refs/tags/v1.0.0`.
+	Ref string
 	// Reason is the summary git gives for the ref, such as `[rejected] (fetch first)` or
 	// `[remote rejected] (pre-receive hook declined)`.
 	Reason string
@@ -169,9 +171,10 @@ type PushError struct {
 	Stderr string
 }
 
-// Error names the refused branch, followed by its Detail.
+// Error names the refused ref, a branch by its short name and any other ref in full, followed by
+// its Detail.
 func (e *PushError) Error() string {
-	return fmt.Sprintf("push of %s refused: %s", e.Branch, e.Detail())
+	return fmt.Sprintf("push of %s refused: %s", strings.TrimPrefix(e.Ref, headsRef), e.Detail())
 }
 
 // Detail returns git's reason and the Output, one per line, leaving out either when it is empty.
@@ -490,9 +493,22 @@ func (r Repo) FastForwardTrunk(ctx context.Context, trunk string) error {
 //
 // Any other failure, such as a context that ended or a git missing from PATH, is returned as it is.
 func (r Repo) Push(ctx context.Context, name string) error {
-	ref := headsRef + name
+	return r.push(ctx, headsRef+name, "-u")
+}
+
+// PushTag pushes the local tag name to origin under the same name, and nothing else: it names the
+// tag by its full ref on both sides and turns off `push.followTags`. It never forces, so a tag
+// origin already holds at another commit is refused. Its failures are classed as Push classes them.
+func (r Repo) PushTag(ctx context.Context, name string) error {
+	return r.push(ctx, tagsRef+name, "--no-follow-tags")
+}
+
+// push pushes ref to origin under the same name with git's flags, classing a git that exits
+// non-zero as Push documents.
+func (r Repo) push(ctx context.Context, ref string, flags ...string) error {
 	spec := ref + ":" + ref
-	result, err := r.Runner.Run(ctx, "push", "--porcelain", "-u", origin, spec)
+	args := slices.Concat([]string{"push", "--porcelain"}, flags, []string{origin, spec})
+	result, err := r.Runner.Run(ctx, args...)
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 	if !ok {
@@ -508,7 +524,7 @@ func (r Repo) Push(ctx context.Context, name string) error {
 		return &RemoteError{Err: err}
 	case !reported || status.flag == pushRejected:
 		return &PushError{
-			Branch: name,
+			Ref:    ref,
 			Reason: status.summary,
 			Stdout: hook,
 			Stderr: exitErr.Stderr,
