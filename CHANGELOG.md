@@ -13,8 +13,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   checks are green, pushes the tag, and publishes the GitHub release with the changelog's notes.
 - Add the `write-release` agent skill, which lands the release commit through `ils` and leaves
   `ils release` to the user.
-- Add `ils push --wait`, which waits longer for the checks, for a caller that runs it in the
-  background.
+- Add a longer wait for the checks to `ils push`, used by default at a terminal and chosen
+  anywhere with `--wait`.
 
 ### Changed
 
