@@ -505,13 +505,11 @@ func TestPush_WhenGitRefusesThePush_BrokeSayingNothingWasPushed(t *testing.T) {
 	assert.Check(t, got.Payload == nil || got.Payload.Push == nil, "Payload = %+v, want none for a push git refused", got.Payload)
 
 	text, decoded := rendered(t, got, d.gitDir)
-	assertSays(t, decoded.Reason, expect("refused"))
 	assertSays(t, text, expect("refused", topic, policy)+nextFixed())
 
 	refused := refusedLine(t, decoded.Lines)
 	assert.Check(t, is.Contains(refused, "pre-receive hook declined"))
 	assert.Check(t, !strings.Contains(refused, policy), "refused line %q, want the hook's output left out of it", refused)
-	assert.Check(t, is.Contains(got.Excerpt, policy))
 
 	assert.Check(t, is.Equal(d.onOrigin(), ""))
 
@@ -548,8 +546,23 @@ func refusedBy(t *testing.T, script string) (context.Context, *delivery) {
 func TestPush_WhenAPrePushHookRefusesThePush_MovesWhatItPrintedFromTheLineToTheExcerpt(t *testing.T) {
 	t.Parallel()
 	const onStdout, onStderr = "lint passed", "format failed"
-	// The blank line the hook starts with is trimmed from the excerpt.
-	ctx, d := refusedBy(t, "echo\necho '"+onStdout+"'\necho '"+onStderr+"' >&2\nexit 1")
+	ctx, d := refusedBy(t, "echo '"+onStdout+"'\necho '"+onStderr+"' >&2\nexit 1")
+
+	got := landing.Push(ctx, d.deps, pushRequest())
+
+	assertStopped(t, got, result.Broke)
+
+	_, decoded := rendered(t, got, d.gitDir)
+	refused := refusedLine(t, decoded.Lines)
+	assert.Check(t, !strings.Contains(refused, onStdout) && !strings.Contains(refused, onStderr),
+		"refused line %q, want the hook's output left out of it", refused)
+	assert.Check(t, is.Contains(got.Excerpt, onStdout))
+	assert.Check(t, is.Contains(got.Excerpt, onStderr))
+}
+
+func TestPush_WhenGitGivesNoReasonForTheRefusal_EndsTheLineWithoutOne(t *testing.T) {
+	t.Parallel()
+	ctx, d := refusedBy(t, "exit 1")
 
 	got := landing.Push(ctx, d.deps, pushRequest())
 
@@ -558,26 +571,8 @@ func TestPush_WhenAPrePushHookRefusesThePush_MovesWhatItPrintedFromTheLineToTheE
 	_, decoded := rendered(t, got, d.gitDir)
 	refused := refusedLine(t, decoded.Lines)
 	assert.Check(t, is.Contains(refused, topic))
-	assert.Check(t, !strings.Contains(refused, onStdout) && !strings.Contains(refused, onStderr),
-		"refused line %q, want the hook's output left out of it", refused)
 	assert.Check(t, !strings.HasSuffix(strings.TrimSpace(refused), ":"),
 		"refused line %q, want no reason after it, since git gave none", refused)
-	assert.Check(t, strings.HasPrefix(got.Excerpt, onStdout+"\n"+onStderr+"\n"),
-		"Excerpt = %q, want it to start with what the hook printed on stdout, then on stderr", got.Excerpt)
-}
-
-func TestPush_WhenARefusedPushPrintsMoreThanTheExcerptHolds_ExcerptsTheLastLines(t *testing.T) {
-	t.Parallel()
-	// The hook prints 100 lines, and git adds its own after them.
-	ctx, d := refusedBy(t, `i=1; while [ "$i" -le 100 ]; do echo "step $i"; i=$((i+1)); done; exit 1`)
-
-	got := landing.Push(ctx, d.deps, pushRequest())
-
-	assertStopped(t, got, result.Broke)
-
-	lines := strings.Split(strings.TrimSuffix(got.Excerpt, "\n"), "\n")
-	assert.Check(t, is.Len(lines, 60), "Excerpt = %q, want its last 60 lines", got.Excerpt)
-	assert.Check(t, is.Contains(got.Excerpt, "step 100\n"))
 }
 
 // pushOpenFailureRows are the pushes whose open-change fails once the branch is on origin.

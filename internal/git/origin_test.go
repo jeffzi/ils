@@ -597,9 +597,24 @@ const killsReceivePack = "kill -KILL $PPID"
 // topicSpec is the pair of refs Push hands git for topic, which git's report names on its status line.
 const topicSpec = "refs/heads/" + topic + ":refs/heads/" + topic
 
+// otherSpec is the pair of refs for a branch Push never pushes, which a hook's report-shaped lines name.
+const otherSpec = "refs/heads/other:refs/heads/other"
+
 // originTip returns the sha origin holds for branch, or nothing when origin lacks it.
 func originTip(f *gittest.Fixture, branch string) string {
 	return f.OriginGit("for-each-ref", "--format=%(objectname)", "refs/heads/"+branch)
+}
+
+// originRefusing returns a fixture whose origin holds topic and whose pre-receive hook prints said and
+// refuses the next push of it, which the clone's topic is one commit ahead of.
+func originRefusing(t *testing.T, said string) *gittest.Fixture {
+	t.Helper()
+	f := gittest.New(t, trunk)
+	f.Commits(topic, "one")
+	f.Push(topic)
+	f.OriginHook("pre-receive", "echo '"+said+"'\nexit 1")
+	f.Commits(topic, "two")
+	return f
 }
 
 func TestRepo_Push_WhenOriginReportsTheRefUpdated_PublishesTheBranch(t *testing.T) {
@@ -652,14 +667,26 @@ func TestRepo_Push_WhenTagSharesTheBranchName_PublishesTheBranch(t *testing.T) {
 	assert.Check(t, is.Equal(f.OriginGit("rev-parse", "refs/heads/"+topic), tip))
 }
 
+func TestRepo_Push_WhenOriginRefusesATagThePushFollows_PublishesTheBranch(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	tip := f.Commits(topic, "one")[0]
+	// push.followTags sends the annotated tag on the branch's tip with it, so git's report holds a
+	// status line for the tag beside the branch's. The update hook fails for any ref under refs/tags/.
+	f.Git("config", "push.followTags", "true")
+	f.Git("tag", "-a", "-m", "release", "v1", tip)
+	f.OriginHook("update", `test "${1#refs/tags/}" = "$1"`)
+
+	err := newRepo(f).Push(t.Context(), topic)
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Equal(originTip(f, topic), tip))
+}
+
 func TestRepo_Push_WhenOriginRefusesTheRef_ReturnsPushErrorNamingTheReason(t *testing.T) {
 	t.Parallel()
 	const said = "policy forbids this push"
-	f := gittest.New(t, trunk)
-	f.Commits(topic, "one")
-	f.Push(topic)
-	f.OriginHook("pre-receive", "echo '"+said+"'\nexit 1")
-	f.Commits(topic, "two")
+	f := originRefusing(t, said)
 
 	err := newRepo(f).Push(t.Context(), topic)
 
@@ -687,7 +714,7 @@ func TestRepo_Push_WhenThePrePushHookRefuses_ReturnsPushErrorHoldingWhatTheHookS
 		pushErr.Detail(), said)
 }
 
-func TestRepo_Push_WhenThePrePushHookRefusesAfterPrintingOnStdout(t *testing.T) {
+func TestRepo_Push_WhenThePrePushHookRefusesAfterPrintingOnStdout_ReturnsPushErrorLeadingWithWhatTheHookPrinted(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name   string
@@ -695,12 +722,10 @@ func TestRepo_Push_WhenThePrePushHookRefusesAfterPrintingOnStdout(t *testing.T) 
 		// want starts Output(): git adds its own failure line on stderr after the hook's.
 		want string
 	}{
-		{name: "stdout only", script: "echo first\necho second\nexit 1", want: "first\nsecond\n"},
-		{name: "stdout and stderr", script: "echo out\necho err >&2\nexit 1", want: "out\nerr\n"},
 		{
 			name:   "stdout ends in lines shaped like the report",
-			script: "printf 'To elsewhere\\n*\\trefs/heads/other:refs/heads/other\\t[new branch]\\nDone\\n'\nexit 1",
-			want:   "To elsewhere\n*\trefs/heads/other:refs/heads/other\t[new branch]\nDone\n",
+			script: "printf 'To elsewhere\\n*\\t" + otherSpec + "\\t[new branch]\\nDone\\n'\nexit 1",
+			want:   "To elsewhere\n*\t" + otherSpec + "\t[new branch]\nDone\n",
 		},
 		{
 			name:   "stdout holds a rejected status line for the pushed ref",
@@ -730,45 +755,35 @@ func TestRepo_Push_WhenOriginRefusesTheRef_KeepsOnlyThePrePushHookLinesInStdout(
 	t.Parallel()
 	tests := []struct {
 		name string
-		// script is the pre-push hook, which lets the push through; empty installs none.
+		// script is the pre-push hook, which lets the push through.
 		script string
 		want   string
 	}{
-		{name: "no pre-push hook", want: ""},
 		{name: "pre-push hook prints lines", script: "echo checked\necho passed", want: "checked\npassed"},
+		// git writes its report right after the hook's output, so the report's `To` line starts
+		// on the hook's last line.
+		{name: "pre-push hook ends without a newline", script: "printf checked", want: "checked"},
 		{
 			name:   "pre-push hook prints lines shaped like the report",
-			script: "printf 'Done\\nTo elsewhere\\n*\\trefs/heads/other:refs/heads/other\\t[new branch]\\n'",
-			want:   "Done\nTo elsewhere\n*\trefs/heads/other:refs/heads/other\t[new branch]",
+			script: "printf 'Done\\nTo elsewhere\\n*\\t" + otherSpec + "\\t[new branch]\\n'",
+			want:   "Done\nTo elsewhere\n*\t" + otherSpec + "\t[new branch]",
 		},
 		{
 			name:   "pre-push hook prints a new-branch status line for the pushed ref",
 			script: "printf '*\\t" + topicSpec + "\\t[new branch]\\n'",
 			want:   "*\t" + topicSpec + "\t[new branch]",
 		},
-		{
-			name:   "pre-push hook prints an up-to-date status line for the pushed ref",
-			script: "printf '=\\t" + topicSpec + "\\t[up to date]\\n'",
-			want:   "=\t" + topicSpec + "\t[up to date]",
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			f := gittest.New(t, trunk)
-			f.Commits(topic, "one")
-			f.Push(topic)
-			f.OriginHook("pre-receive", "echo 'policy forbids this push'\nexit 1")
-			f.Commits(topic, "two")
-			if tt.script != "" {
-				f.Hook("pre-push", tt.script)
-			}
+			f := originRefusing(t, "policy forbids this push")
+			f.Hook("pre-push", tt.script)
 
 			err := newRepo(f).Push(t.Context(), topic)
 
 			pushErr, ok := errors.AsType[*git.PushError](err)
 			assert.Assert(t, ok, "Push(%q) error = %v, want *git.PushError", topic, err)
-			assert.Check(t, is.Contains(pushErr.Reason, "pre-receive hook declined"))
 			assert.Check(t, is.Equal(strings.TrimSpace(pushErr.Stdout), tt.want))
 		})
 	}

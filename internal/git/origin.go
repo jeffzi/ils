@@ -528,50 +528,63 @@ type refStatus struct {
 	summary string
 }
 
+// reportLead starts the line of `git push --porcelain` that opens its report, naming the remote.
+const reportLead = "To "
+
+// reportEnd is the last line of the report of `git push --porcelain`, which git leaves out when
+// origin hung up after the report.
+const reportEnd = "Done"
+
 // splitPushReport splits the stdout of `git push --porcelain` for spec, the `<source>:<destination>`
 // pair of refs pushed, into what precedes the report git writes at its end once origin answered and
-// the status that report gives spec. The report is a `To <url>` line, then the status line for spec
-// (the flag, spec and the summary, separated by tabs), then the line telling the upstream `-u` set
-// for a ref it updated, then `Done`, which git leaves out when origin hung up after its report. The
-// upstream line is never matched by its text, which git translates.
+// the status that report gives spec. The report is a `To <url>` line, then one status line (the
+// flag, the refs and the summary, separated by tabs) for each ref the push sent (spec, and any tag
+// that `push.followTags` adds), then the line telling the upstream `-u` set for a ref it updated,
+// then `Done`, which git leaves out when origin hung up after its report. Neither the upstream line
+// nor the order of the status lines is relied on: spec is looked up in every line after the `To`
+// line, and the upstream line, which git translates, never matches.
 //
 // A pre-push hook runs before git talks to origin, so what precedes the report is the hook's; a
 // push git refused before it reached origin has no report, so all of its stdout is the hook's and
-// reported is false. Only that trailing block is the report: a hook line shaped like a line of the
-// report, even the status line of spec itself or a whole block for another ref at the end of a
-// refusing hook's output, stays in hook and never decides the status. Stdout alone cannot tell a
-// whole report for spec that a refusing hook printed last from git's own, so that one is read as
-// git's.
+// reported is false. The hook shares git's stdout, so when its output does not end in a newline,
+// the `To` line starts on the hook's last line, which is split there.
+//
+// The report starts at the last `To` that a status line of spec follows: a hook line shaped like a
+// line of the report, even the status line of spec itself, stays in hook and never decides the
+// status when no `To` precedes it, and a later line that only holds `To`, such as a translated
+// upstream line, does not hide the report. Stdout alone cannot tell a block that a refusing hook
+// printed last, a `To` line followed by the status line of spec, from git's own report, so that one
+// is read as git's.
 func splitPushReport(stdout, spec string) (hook string, status refStatus, reported bool) {
 	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
-	if lines[len(lines)-1] == "Done" {
+	if lines[len(lines)-1] == reportEnd {
 		lines = lines[:len(lines)-1]
 	}
 
-	for _, upstreamLines := range []int{0, 1} {
-		statusAt := len(lines) - 1 - upstreamLines
-		if statusAt < 1 || !strings.HasPrefix(lines[statusAt-1], "To ") {
+	for leadAt, lead := range slices.Backward(lines) {
+		// A URL holding `To ` must not split a line git started itself.
+		hookEnd := 0
+		if !strings.HasPrefix(lead, reportLead) {
+			hookEnd = strings.LastIndex(lead, reportLead)
+		}
+
+		if hookEnd < 0 {
 			continue
 		}
 
-		status, reported = statusFor(lines[statusAt], spec)
-		if !reported || (upstreamLines > 0 && status.flag == pushRejected) {
-			continue
+		for _, line := range lines[leadAt+1:] {
+			if status, reported = statusFor(line, spec); reported {
+				hook = strings.Join(append(lines[:leadAt:leadAt], lead[:hookEnd]), "\n")
+				return hook, status, true
+			}
 		}
-
-		hook = strings.Join(lines[:statusAt-1], "\n")
-		if hook != "" {
-			hook += "\n"
-		}
-
-		return hook, status, true
 	}
 
 	return stdout, refStatus{}, false
 }
 
-// statusFor returns the status line reports for spec, and whether line is the status line `git push
-// --porcelain` gives spec: the flag, spec and the summary, separated by tabs.
+// statusFor returns the status that line reports for spec, and whether line is the status line
+// `git push --porcelain` gives spec: the flag, spec and the summary, separated by tabs.
 func statusFor(line, spec string) (refStatus, bool) {
 	fields := strings.Split(line, "\t")
 	if len(fields) != 3 || fields[0] == "" || fields[1] != spec {

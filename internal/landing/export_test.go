@@ -4,5 +4,6 @@ package landing
 // values the wait and the merge branch on, instead of copying them.
 const MergeWindow, MergeReserve = mergeWindow, mergeReserve
 
-// LastLines lets the tests cut an excerpt from a text no push or wait produces, such as an empty one.
-func LastLines(text string) string { return lastLines(text) }
+// ExcerptLines lets the tests build a log longer than an excerpt holds, instead of copying its
+// length.
+const ExcerptLines = excerptLines

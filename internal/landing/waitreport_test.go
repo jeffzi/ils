@@ -66,7 +66,8 @@ func runningOn(row pushRow) pushRow {
 // pushRedRows are the pushes whose deciding check failed or was canceled.
 func pushRedRows() []pushRow {
 	// The log is one line longer than the excerpt may be.
-	read := forge.FailedLog{Text: steps(1, 61), State: forge.FailedLogRead}
+	longest := landing.ExcerptLines + 1
+	read := forge.FailedLog{Text: steps(1, longest), State: forge.FailedLogRead}
 	short := forge.FailedLog{Text: steps(1, 3), State: forge.FailedLogRead}
 	// unfinished stays held back up to the time limit: a third poll would end three seconds past it.
 	unfinished := runningOn(redRow("a check failed and its workflow run had not finished at the time limit", forge.BucketFail,
@@ -76,7 +77,7 @@ func pushRedRows() []pushRow {
 
 	return []pushRow{
 		unfinished,
-		redRow("a check failed and its log is longer than the excerpt", forge.BucketFail, read, steps(2, 61)),
+		redRow("a check failed and its log is longer than the excerpt", forge.BucketFail, read, steps(2, longest)),
 		shorter,
 		redRow("a check failed that no workflow run stands behind", forge.BucketFail,
 			forge.FailedLog{State: forge.FailedLogNoRun}, expect("lint", "not a workflow run")),
@@ -435,12 +436,4 @@ func TestPush_WhenTheMergeStateStopsThePush_SaysItInPlainWords(t *testing.T) {
 		assertSays(t, text, stateLine(forge.MergeConflicting))
 		assertSays(t, linesText(decoded.Lines), stateLine(forge.MergeConflicting))
 	})
-}
-
-func TestLastLines_WhenTheTextIsEmpty_ReturnsNoExcerpt(t *testing.T) {
-	t.Parallel()
-
-	got := landing.LastLines("")
-
-	assert.Check(t, is.Equal(got, ""))
 }

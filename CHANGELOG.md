@@ -22,8 +22,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Suggest the closest command when a command name is mistyped, and point `Next:` at its `--help`.
 - Show how long each check still running at the time limit has run on GitHub.
 - End `ils merge` pending instead of refused while a check the default branch requires still runs.
-- Put what the hooks and `git` printed for a push `git` refused in the JSON `excerpt`, instead of
-  the last entry of `lines`.
 
 ### Fixed
 
@@ -33,8 +31,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   mid-push, although the push may have reached origin.
 - Name a required check still running, with the new `merge_state` `blocked-by-running-check`,
   instead of blaming a branch rule `ils` cannot name.
-- Show the end of what a failing pre-push hook printed, its stdout included, as a block that keeps
-  its line breaks when `git` refuses the push.
+- Show what the hooks and `git` printed for a push `git` refused, a pre-push hook's stdout included,
+  as the excerpt, which JSON now carries in `excerpt` instead of the last entry of `lines`.
+- Fix `ils push` missing origin's answer when a pre-push hook's output did not end in a newline,
+  which reported a push that reached origin as stopped, or a refused one without its reason.
 
 ## [0.3.0] - 2026-10-25
 
