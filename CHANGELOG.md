@@ -18,6 +18,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Make the `ils` and `write-release` agent skills wait for slow CI with one background
+  `ils push --wait` instead of repeated foreground `ils push` calls.
 - Report a pre-release's release commit, such as `chore: release v1.2.0-rc.1`, as a release commit
   in `ils status`.
 

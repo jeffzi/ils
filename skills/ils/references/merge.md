@@ -15,8 +15,9 @@ where the checkout ended. Exit 2 ends the ask, and the reason is the answer: a t
 conventional commit subject sends you to the `gh pr edit` step, and a red check to the fix step.
 When that step ends, tell the user and stop: the next `ils merge` needs a new ask.
 
-On exit 4, run what `Next:` names. If it is `ils push`, that push waits for the checks; when it
-exits 0, run `ils merge` again, showing the title and body first. If it is `ils merge`, GitHub
+On exit 4, run what `Next:` names. If it is `ils push`, run `ils push --wait` in the background,
+as SKILL.md's "A pending push waits in the background" says; when it exits 0, run `ils merge`
+again, showing the title and body first. If it is `ils merge`, GitHub
 already made the merge and `ils merge` is finishing it; run it again without showing them, since
 the message is already on the trunk.
 

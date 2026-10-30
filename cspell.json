@@ -50,6 +50,7 @@
     "nestif",
     "nilerr",
     "noctx",
+    "nohup",
     "nolint",
     "NOSYSTEM",
     "notty",
