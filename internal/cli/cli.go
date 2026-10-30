@@ -50,6 +50,8 @@ type App struct {
 	runBranch Command
 	// runStatus runs `ils status`; nil runs landing.Status.
 	runStatus Command
+	// runRelease runs `ils release <version>`; nil runs landing.Release.
+	runRelease Command
 	// buildInfo reads the build info that an empty Version falls back to; nil reads
 	// debug.ReadBuildInfo.
 	buildInfo func() (*debug.BuildInfo, bool)
@@ -455,17 +457,8 @@ func (p *parse) root() *cobra.Command {
 		p.landing(landingHelp{word: landing.PushCommand, short: pushShort, long: withTimeLimit(pushLong), examples: pushExamples}, p.app.runPush, landing.Push),
 		p.landing(landingHelp{word: landing.MergeCommand, short: mergeShort, long: withTimeLimit(mergeLong), examples: mergeExamples}, p.app.runMerge, landing.Merge),
 		p.landing(landingHelp{word: landing.StatusCommand, short: statusShort, long: statusLong, examples: statusExamples}, p.app.runStatus, landing.Status),
-		p.named(landingHelp{word: landing.BranchCommand, short: branchShort, long: branchLong, examples: branchExamples}, p.app.runBranch, landing.StartBranch),
-		&cobra.Command{
-			Use:    wordRelease,
-			Hidden: true,
-			Args:   cobra.ArbitraryArgs,
-			// The command is refused whatever follows it, an unknown flag included.
-			FParseErrWhitelist: cobra.FParseErrWhitelist{UnknownFlags: true},
-			RunE: func(c *cobra.Command, _ []string) error {
-				return p.refuse(result.Say("%s is not in this version", c.Name()))
-			},
-		},
+		p.named(landingHelp{word: landing.BranchCommand, arg: "name", short: branchShort, long: branchLong, examples: branchExamples}, p.app.runBranch, landing.StartBranch),
+		p.release(),
 	)
 
 	return root
@@ -521,8 +514,10 @@ func boolFlag(flags *pflag.FlagSet, value pflag.Value, names flagNames, usage st
 	flag.NoOptDefVal = "true"
 }
 
+// landingHelp is what the help says of a landing command; arg names the one word that follows
+// the command, and is empty for a command that takes none.
 type landingHelp struct {
-	word, short, long, examples string
+	word, arg, short, long, examples string
 }
 
 // landing returns the landing command help names, which takes no other word and runs run, or
@@ -555,19 +550,19 @@ func (p *parse) landing(help landingHelp, run, fallback Command) *cobra.Command 
 	return c
 }
 
-// named returns the landing command help names, which takes one name and no other word and runs
-// run, or fallback when run is nil, with the name as typed as the one argument of its request.
+// named returns the landing command help names, which takes one help.arg and no other word and
+// runs run, or fallback when run is nil, with the word as typed as the one argument of its request.
 func (p *parse) named(help landingHelp, run, fallback Command) *cobra.Command {
 	if run == nil {
 		run = fallback
 	}
 
 	extra := func(typed string) result.Phrase {
-		return result.Say("%s takes one name and no other word, and %s was given", help.word, typed)
+		return result.Say("%s takes one %s and no other word, and %s was given", help.word, help.arg, typed)
 	}
 
 	c := &cobra.Command{
-		Use:     help.word + " <name>",
+		Use:     help.word + " <" + help.arg + ">",
 		Short:   help.short,
 		Long:    help.long,
 		Example: help.examples,
@@ -582,7 +577,7 @@ func (p *parse) named(help landingHelp, run, fallback Command) *cobra.Command {
 			}
 
 			if len(args) == 0 {
-				return p.refuse(result.Say("%s takes one name, and none was given", help.word))
+				return p.refuse(result.Say("%s takes one %s, and none was given", help.word, help.arg))
 			}
 
 			return nil
@@ -594,6 +589,33 @@ func (p *parse) named(help landingHelp, run, fallback Command) *cobra.Command {
 		},
 	}
 	c.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return p.flagRefusal(err, extra) })
+
+	return c
+}
+
+// release returns `ils release <version>`, which runs the release command of the app, or
+// landing.Release when it has none, with --force and --tag-only set on its request as typed.
+func (p *parse) release() *cobra.Command {
+	run := p.app.runRelease
+	if run == nil {
+		run = landing.Release
+	}
+
+	var force, tagOnly strictBool
+
+	withFlags := func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
+		req.Force, req.TagOnly = bool(force), bool(tagOnly)
+
+		return run(ctx, deps, req)
+	}
+
+	c := p.named(landingHelp{
+		word: landing.ReleaseCommand, arg: "version",
+		short: releaseShort, long: withTimeLimit(releaseLong), examples: releaseExamples,
+	}, withFlags, nil)
+
+	boolFlag(c.Flags(), &force, flagNames{long: flagForce}, "Tag the release commit without waiting for its CI")
+	boolFlag(c.Flags(), &tagOnly, flagNames{long: flagTagOnly}, "Stop once the tag is pushed, creating no GitHub release")
 
 	return c
 }
@@ -799,8 +821,6 @@ func (a App) fail(err error) int {
 }
 
 const (
-	wordRelease = "release"
-
 	flagJSON    = "--json"
 	flagHelp    = "--help"
 	flagVersion = "--version"
@@ -808,6 +828,9 @@ const (
 	flagDebug      = "--debug"
 	flagDebugShort = "-d"
 	flagNoColor    = "--no-color"
+
+	flagForce   = "--force"
+	flagTagOnly = "--tag-only"
 
 	// wordDash is the terminator after which every word is a positional argument.
 	wordDash = "--"

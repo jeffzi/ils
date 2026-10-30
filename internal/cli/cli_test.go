@@ -336,6 +336,47 @@ func TestApp_Run_WhenBranchIsGivenOneName_RunsTheBranchCommandWithTheNameAsTyped
 	}
 }
 
+func TestApp_Run_WhenReleaseIsGivenOneVersion_RunsTheReleaseCommandWithTheFlagsAsTyped(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args []string
+		want landing.Request
+	}{
+		{
+			name: "version alone", args: []string{"release", "1.2.0"},
+			want: landing.Request{Command: "release", Words: []string{"release", "1.2.0"}, Args: []string{"1.2.0"}},
+		},
+		{
+			name: "flags around the version", args: []string{"release", "--tag-only", "-d", "1.2.0", "--no-color", "--force", "--json"},
+			want: landing.Request{
+				Command: "release", Words: []string{"release", "--tag-only", "1.2.0", "--force"}, Args: []string{"1.2.0"},
+				Force: true, TagOnly: true,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var seen landing.Request
+
+			app := outside(t)
+			app.SetRelease(func(_ context.Context, _ landing.Deps, req landing.Request) result.Result {
+				seen = req
+
+				return finished(req)
+			})
+
+			got := launch(t, app, tt.args...)
+
+			assert.Check(t, is.Equal(got.code, exitDone))
+			assert.Check(t, is.DeepEqual(seen, tt.want))
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Color
 // ---------------------------------------------------------------------------
@@ -563,6 +604,9 @@ const (
 
 	// branchTakesOne opens the reason a word beyond the one name of branch is refused for.
 	branchTakesOne = "branch takes one name and no other word, and "
+
+	// releaseTakesOne opens the reason a word beyond the one version of release is refused for.
+	releaseTakesOne = "release takes one version and no other word, and "
 )
 
 // grammarRefusal is a command line that breaks the grammar, and the reason ils refuses it with.
@@ -573,15 +617,18 @@ type grammarRefusal struct {
 }
 
 // grammarRefusals are the command lines that break the grammar: a missing, unknown or extra word,
-// a missing or extra branch name, a command not in this version, and a flag that is unknown or set
-// to neither true nor false.
+// a missing or extra branch name or release version, and a flag that is unknown or set to neither
+// true nor false.
 func grammarRefusals() []grammarRefusal {
 	return []grammarRefusal{
 		{name: "unknown word", args: []string{"pish"}, reason: "pish is not a command"},
 		{name: "extra word", args: []string{"push", "extra"}, reason: "push takes no other word, and extra was given"},
 		{name: "end of flags", args: []string{"--", "push"}, reason: "-- is not a command"},
 		{name: "end of flags after push", args: []string{"push", "--", "x"}, reason: "push takes no other word, and -- was given"},
-		{name: "command not in this version", args: []string{"release", "1.0.0"}, reason: "release is not in this version"},
+		{name: "release without a version", args: []string{"release"}, reason: "release takes one version, and none was given"},
+		{name: "second word after the version", args: []string{"release", "1.2.0", "extra"}, reason: releaseTakesOne + "extra was given"},
+		{name: "end of flags before the version", args: []string{"release", "--", "1.2.0"}, reason: releaseTakesOne + "-- was given"},
+		{name: "end of flags after the version", args: []string{"release", "1.2.0", "--"}, reason: releaseTakesOne + "-- was given"},
 		{name: "branch without a name", args: []string{"branch"}, reason: "branch takes one name, and none was given"},
 		{name: "second word after the name", args: []string{"branch", "topic", "extra"}, reason: branchTakesOne + "extra was given"},
 		{name: "end of flags before the name", args: []string{"branch", "--", "topic"}, reason: branchTakesOne + "-- was given"},

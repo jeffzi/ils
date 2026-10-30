@@ -21,6 +21,11 @@ func (a *App) SetBranch(run Command) {
 	a.runBranch = run
 }
 
+// SetRelease makes a run `ils release <version>` with run in place of landing.Release.
+func (a *App) SetRelease(run Command) {
+	a.runRelease = run
+}
+
 // SetGit makes a run call git through runner in place of git in the working directory.
 func (a *App) SetGit(runner git.Runner) {
 	a.git = runner
