@@ -67,8 +67,11 @@ func expect(parts ...string) string {
 
 // nextPush is the `Next:` line that runs `ils push` again as it is, and nextFixed the one that runs
 // it again once what failed is fixed.
-func nextPush() string {
-	return expect(resulttest.NextLine("ils push") + "\n")
+func nextPush() string { return nextLine("ils push") }
+
+// nextLine is the `Next:` line that runs command.
+func nextLine(command string) string {
+	return expect(resulttest.NextLine(command) + "\n")
 }
 
 func nextFixed() string {
@@ -406,17 +409,97 @@ type landingCommand struct {
 	again string
 	// fixed is the `Next:` line that runs the command again once what failed is fixed.
 	fixed string
-	req   landing.Request
+	// changed is the command a `Next:` line names, followed by "again", after a step the user takes
+	// first, when it is not "ils <name>".
+	changed string
+	req     landing.Request
 }
 
 // after is the `Next:` line that does step, then runs the command again.
 func (c landingCommand) after(step string) string {
+	if c.changed != "" {
+		return expect(step, c.changed+" again")
+	}
+
 	return expect(step, "ils "+c.name)
+}
+
+// pushVariant is the push name that runs req, with the `Next:` lines that name it: runAgain is the
+// command that runs it again as it stands, and change the one that runs it again once the user
+// has taken a step first.
+func pushVariant(name string, req landing.Request, runAgain, change string) landingCommand {
+	return landingCommand{
+		name: name, req: req, changed: change,
+		again: nextLine(runAgain), fixed: expect("fix what failed", change+" again"),
+	}
 }
 
 // pushCommand is `ils push` with the `Next:` lines that name it.
 func pushCommand() landingCommand {
 	return landingCommand{name: "push", req: pushRequest(), again: nextPush(), fixed: nextFixed()}
+}
+
+// waitRequest is the command and words of `ils push --wait`, which runs under the long time limit.
+func waitRequest() landing.Request {
+	req := longRequest()
+	req.Words = append(req.Words, "--wait")
+	req.WaitFlag = landing.WaitFlagTrue
+
+	return req
+}
+
+// waitCommand is `ils push --wait` with the `Next:` lines that name it: one that runs it again as
+// it stands keeps --wait, and one that asks for a change first names a plain `ils push`, whose
+// first wait is the short one.
+func waitCommand() landingCommand {
+	return pushVariant("push --wait", waitRequest(), "ils push --wait", "ils push")
+}
+
+// longRequest is the command and words of an `ils push` with no --wait typed that runs under the
+// long time limit all the same.
+func longRequest() landing.Request {
+	req := pushRequest()
+	req.LongWait = true
+
+	return req
+}
+
+// longCommand is longRequest with the `Next:` lines that name it: each names a plain `ils push`,
+// since no --wait was typed.
+func longCommand() landingCommand {
+	return pushVariant("push under the long time limit with no --wait typed", longRequest(), "ils push", "ils push")
+}
+
+// waitOffRequest is the command and words of `ils push --wait=false`, which runs under the short
+// time limit.
+func waitOffRequest() landing.Request {
+	req := pushRequest()
+	req.Words = append(req.Words, "--wait=false")
+	req.WaitFlag = landing.WaitFlagFalse
+
+	return req
+}
+
+// waitOffCommand is `ils push --wait=false` with the `Next:` lines that name it: each keeps
+// --wait=false.
+func waitOffCommand() landingCommand {
+	const line = "ils push --wait=false"
+
+	return pushVariant("push --wait=false", waitOffRequest(), line, line)
+}
+
+type boundedPush struct {
+	c   cut
+	cmd landingCommand
+}
+
+// boundedPushes are the pushes that run under the long time limit or name a typed --wait=false,
+// each with the cut of the limit it runs under.
+func boundedPushes() []boundedPush {
+	return []boundedPush{
+		{c: byWaitLimit(), cmd: waitCommand()},
+		{c: byTimeLimit(), cmd: waitOffCommand()},
+	}
 }
 
 // mergeCommand is `ils merge` with the `Next:` lines that name it.
@@ -444,14 +527,18 @@ type cut struct {
 	before string
 }
 
-// byTimeLimit is the cut whose context is already past its deadline, so its error is
-// context.DeadlineExceeded. What it says names the length of the time limit in whole seconds, as
-// the help does.
-func byTimeLimit() cut {
-	limitPart := "time limit" + partEnd + fmt.Sprintf("%d seconds", int(landing.TimeLimit.Seconds()))
+func byTimeLimit() cut { return byLimit("the time limit", landing.TimeLimit) }
+
+// byWaitLimit is the cut named for the time limit of the long wait.
+func byWaitLimit() cut { return byLimit("the time limit of the long wait", landing.WaitTimeLimit) }
+
+// byLimit is the cut named name whose context is already past its deadline, so its error is
+// context.DeadlineExceeded. What it says names limit as landing.Span does, as the help does.
+func byLimit(name string, limit time.Duration) cut {
+	limitPart := "time limit" + partEnd + landing.Span(limit)
 
 	return cut{
-		name: "the time limit", err: context.DeadlineExceeded,
+		name: name, err: context.DeadlineExceeded,
 		spend: func(parent context.Context) (context.Context, context.CancelFunc) {
 			return context.WithDeadline(parent, time.Unix(0, 0))
 		},
@@ -790,30 +877,38 @@ func TestPreconditions_WhenDirectoryIsNotARepository_BrokeNamingTheRead(t *testi
 	assertBrokeReadBy(t, got, pushCommand(), readStanding)
 }
 
-// unfinished is a cut that ends one read of the preconditions.
+// unfinished is a cut that ends one read of the preconditions of a command.
 type unfinished struct {
 	// arrange returns the context to run under and the forge's script, for the cut c.
 	arrange func(t *testing.T, c cut) (context.Context, forgetest.Script)
 	name    string
 	read    string
+	c       cut
 	// ops are the forge operations made before the refusal.
 	ops []forgetest.Op
+	cmd landingCommand
 }
 
 func TestPreconditions_WhenAReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
 	t.Parallel()
-	c := byTimeLimit()
-	tests := []unfinished{
-		{
-			name: "before the first read", read: readGitVersion,
-			arrange: func(t *testing.T, c cut) (context.Context, forgetest.Script) {
-				t.Helper()
+	beforeAnyRead := func(t *testing.T, c cut) (context.Context, forgetest.Script) {
+		t.Helper()
 
-				return c.spent(t), forgetest.Script{}
-			},
+		return c.spent(t), forgetest.Script{}
+	}
+	tests := []unfinished{
+		{name: "before the first read", read: readGitVersion, c: byTimeLimit(), cmd: pushCommand(), arrange: beforeAnyRead},
+		{
+			name: "before the first read of a push run with the long wait", read: readGitVersion,
+			c: byWaitLimit(), cmd: waitCommand(), arrange: beforeAnyRead,
+		},
+		{
+			name: "before the first read of a push run with the long wait and no --wait typed", read: readGitVersion,
+			c: byWaitLimit(), cmd: longCommand(), arrange: beforeAnyRead,
 		},
 		{
 			name: "between the identity read and the trunk read", read: readTrunk, ops: identityRead(),
+			c: byTimeLimit(), cmd: pushCommand(),
 			arrange: func(t *testing.T, c cut) (context.Context, forgetest.Script) {
 				t.Helper()
 
@@ -828,18 +923,38 @@ func TestPreconditions_WhenAReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			ctx, script := tt.arrange(t, c)
+			ctx, script := tt.arrange(t, tt.c)
 			s := newScene(t, nil, script, false)
 
-			_, stop := landing.Preconditions(ctx, s.deps, pushRequest())
+			_, stop := landing.Preconditions(ctx, s.deps, tt.cmd.req)
 
 			got := stopped(t, stop, "a refusal")
-			assertStopped(t, got, result.Refused)
+			assertStoppedBy(t, got, result.Refused, tt.cmd.req)
 
 			text, _ := shown(t, got, s.gitDir)
-			assertSays(t, text, overtimeText(pushCommand(), c, tt.read))
+			assertSays(t, text, overtimeText(tt.cmd, tt.c, tt.read))
 
 			assertAsked(t, s, tt.ops)
+		})
+	}
+}
+
+func TestSpan(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		want string
+		span time.Duration
+	}{
+		{name: "whole minutes", span: 15 * time.Minute, want: "15 minutes"},
+		{name: "seconds past a minute", span: 100 * time.Second, want: "100 seconds"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := landing.Span(tt.span)
+
+			assert.Equal(t, got, tt.want)
 		})
 	}
 }

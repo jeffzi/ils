@@ -47,7 +47,7 @@ func movingStep() string {
 
 // mergeStateStep is the step of the wait for the merge state, which names the merge window.
 func mergeStateStep() string {
-	return expect("start", landing.Seconds(landing.MergeWindow), "#12", "can merge")
+	return expect("start", landing.Span(landing.MergeWindow), "#12", "can merge")
 }
 
 // eventKind is what a run told its progress hook.

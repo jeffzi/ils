@@ -94,12 +94,17 @@ func nextReview() string {
 	return expect("request a review") + editSteps()
 }
 
-func nextRed() string {
-	return expect("fix the failing check", "ils push")
-}
+func nextRed() string { return redNext(pushCommand()) }
 
-func nextTrunk() string {
-	return expect("`"+originMerge+trunk+"`", "resolve the conflicts", "ils push")
+func nextTrunk() string { return trunkNext(pushCommand()) }
+
+// redNext is the `Next:` line that fixes the failing check, then runs cmd again.
+func redNext(cmd landingCommand) string { return cmd.after("fix the failing check") }
+
+// trunkNext is the `Next:` line that merges the trunk into the branch and resolves the conflicts,
+// then runs cmd again.
+func trunkNext(cmd landingCommand) string {
+	return expect("`"+originMerge+trunk+"`") + cmd.after("resolve the conflicts")
 }
 
 // blockedLine is the merge-state line of a pull request GitHub blocks until it is reviewed.
@@ -322,8 +327,8 @@ type pushRow struct {
 	script  forgeFor
 	cut     func(context.Context) context.Context
 	name    string
-	want    finish
 	told    []string
+	want    finish
 	left    time.Duration
 	quiet   bool
 	// noStateLine holds the push to say no merge state in its text or in the lines of its JSON.
@@ -359,10 +364,10 @@ func newDelivery(t *testing.T, tt pushRow) (context.Context, *delivery) {
 	return ctx, &delivery{scene: s, watch: w, tip: sha}
 }
 
-// runPushes runs each row as a test in a bubble of its own: the push ends as the row wants, with
-// every step line it said held by its result, origin's copy of the branch is at the tip, and git
-// pushed unless the row is quiet. A row that names the events its hook is told is held to them
-// too, and a row with noStateLine to saying no merge state.
+// runPushes runs each row as a test in a bubble of its own: the push of the request the row wants
+// ends as the row wants, with every step line it said held by its result, origin's copy of the
+// branch is at the tip, and git pushed unless the row is quiet. A row that names the events its
+// hook is told is held to them too, and a row with noStateLine to saying no merge state.
 func runPushes(t *testing.T, rows []pushRow) {
 	t.Helper()
 
@@ -372,7 +377,7 @@ func runPushes(t *testing.T, rows []pushRow) {
 			synctest.Test(t, func(t *testing.T) {
 				ctx, d := newDelivery(t, tt)
 
-				got := landing.Push(ctx, d.deps, pushRequest())
+				got := landing.Push(ctx, d.deps, tt.want.request())
 
 				assertDelivered(t, d.scene, got, tt.want.at(d.tip))
 				assertHeld(t, d.watch, got)
@@ -575,17 +580,26 @@ func TestPush_WhenGitGivesNoReasonForTheRefusal_EndsTheLineWithoutOne(t *testing
 		"refused line %q, want no reason after it, since git gave none", refused)
 }
 
+// openFailing is opening with an open-change call that returns err.
+func openFailing(err error) forgeFor {
+	return opening().with(func(script *forgetest.Script, _ string) {
+		script.OpenChange = []forgetest.Answer[forge.ChangeRef]{{Err: err}}
+	})
+}
+
+// openCutShort is how the push cmd must end when c ends the opening of the pull request.
+func openCutShort(cmd landingCommand, c cut) finish {
+	return finish{
+		outcome: result.Broke, reason: expect(c.ends, "opening the pull request"), req: cmd.req,
+		text: pushedLine() + expect("opening the pull request", c.ends, "may or may not have been opened") + cmd.again,
+	}
+}
+
 // pushOpenFailureRows are the pushes whose open-change fails once the branch is on origin.
 func pushOpenFailureRows() []pushRow {
-	failing := func(err error) forgeFor {
-		return opening().with(func(script *forgetest.Script, _ string) {
-			script.OpenChange = []forgetest.Answer[forge.ChangeRef]{{Err: err}}
-		})
-	}
-
 	rows := []pushRow{
 		{
-			name: "for a reason of the forge", script: failing(errors.New(forgeFailure)),
+			name: "for a reason of the forge", script: openFailing(errors.New(forgeFailure)),
 			want: finish{
 				outcome: result.Broke, reason: expect("could not open the pull request"),
 				text: pushedLine() + expect("No pull request was opened", forgeFailure) + nextFixed(),
@@ -596,11 +610,8 @@ func pushOpenFailureRows() []pushRow {
 	for _, c := range cuts() {
 		rows = append(rows, pushRow{
 			name:   "because " + c.name + " ended it",
-			script: failing(c.of("gh pr create")),
-			want: finish{
-				outcome: result.Broke, reason: expect(c.ends, "opening the pull request"),
-				text: pushedLine() + expect("opening the pull request", c.ends, "may or may not have been opened") + nextPush(),
-			},
+			script: openFailing(c.of("gh pr create")),
+			want:   openCutShort(pushCommand(), c),
 		})
 	}
 
@@ -619,19 +630,25 @@ const answersBeforePush = 3
 
 func TestPush_WhenTheGitPushIsCutShort_BrokeSayingThePushMayHaveTaken(t *testing.T) {
 	t.Parallel()
-
+	var tests []boundedPush
 	for _, c := range cuts() {
-		t.Run(c.name, func(t *testing.T) {
+		tests = append(tests, boundedPush{c: c, cmd: pushCommand()})
+	}
+
+	tests = append(tests, boundedPushes()...)
+
+	for _, tt := range tests {
+		t.Run("ils "+tt.cmd.name+", "+tt.c.name, func(t *testing.T) {
 			t.Parallel()
 			s := newScene(t, nil, finding(), false)
-			ctx := c.stalling(answersBeforePush)(t, s)
+			ctx := tt.c.stalling(answersBeforePush)(t, s)
 			sha := s.fixture.Git("rev-parse", topic)
 
-			got := landing.Push(ctx, s.deps, pushRequest())
+			got := landing.Push(ctx, s.deps, tt.cmd.req)
 
 			assertDelivered(t, s, got, finish{
-				outcome: result.Broke, reason: expect(c.ends, "during the push"),
-				text: expect(topic, shortSHA(sha), c.ends, "may or may not have taken") + nextPush(),
+				outcome: result.Broke, reason: expect(tt.c.ends, "during the push"), req: tt.cmd.req,
+				text: expect(topic, shortSHA(sha), tt.c.ends, "may or may not have taken") + tt.cmd.again,
 			})
 			assertAsked(t, s, changesRead())
 		})

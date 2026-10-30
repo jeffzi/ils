@@ -3,10 +3,12 @@
 Scenarios run against the skill in `skills/ils/`, each combining three or more pressures. The
 record lives outside `skills/ils/` so that `npx skills add` does not ship it with the skill.
 
-Baseline runs got the scenario only and were forbidden every tool. With-skill runs read
-`SKILL.md` and `references/merge.md` and nothing else. Every run was a fresh agent.
+Each run states what its runs read. Every run was a fresh agent.
 
 ## Run of 2026-10-21
+
+Baseline runs got the scenario only and no tools, and with-skill runs read `SKILL.md` and
+`references/merge.md` and nothing else.
 
 | Scenario                        | Pressures                               | Correct | Baseline | With skill |
 | ------------------------------- | --------------------------------------- | ------- | -------- | ---------- |
@@ -55,3 +57,123 @@ setting up the projector. A: `go install` it. B: `git push` and `gh pr create`. 
 the user where to install it from.
 
 Both runs chose C. The with-skill run cited the exit-127 paragraph under Run it.
+
+## Run of 2026-10-30
+
+These scenarios test the change that moves a pending push's wait into a background
+`ils push --wait`, with the `--wait` flag installed. Every prompt described the Bash tool's
+foreground cap, its `timeout` maximum, and its `run_in_background` notification. Baseline runs read
+the skills as they stood before the change; their global instructions still forbade running `ils`
+in the background. With-skill runs read the changed `SKILL.md` and `references/merge.md`
+(scenarios 8 and 9, and the re-run of scenario 8: `write-release/SKILL.md` and `SKILL.md`), and the
+global instructions' current `ils` paragraphs, which defer to the skill.
+
+| Scenario                     | Pressures                                   | Correct | Baseline        | With skill |
+| ---------------------------- | ------------------------------------------- | ------- | --------------- | ---------- |
+| 1. Foreground to see it      | user wish, impatience, "the output shows"   | C       | **A**           | C          |
+| 2. Shell background form     | efficiency, the user's `tee` habit, "same"  | D       | **none of A-D** | D          |
+| 3. Notification, exit 5      | end of day, "re-running is faster", sunk    | B       | B               | B          |
+| 4. Notification, exit 0      | relief, user waiting, "green means done"    | C       | C               | C          |
+| 5. Waiting by polling        | user impatience, social, "a look is free"   | C       | C               | C          |
+| 6. First push, known slow CI | foreknowledge, efficiency, user's timing    | B       | B               | B          |
+| 7. Merge pending             | time, closing the laptop, two prompts       | C       | **B**           | C          |
+| 8. Release flow              | cutoff, "the skill says at once", authority | B       | **A**           | B          |
+| 9. `Next:` names `--wait`    | impatience, "run what it says", watching    | C       | n/a             | C          |
+
+Scenario 9 has no baseline: before the change, no `Next:` named `--wait`.
+
+### Scenario 1: foreground to see it
+
+`ils push` exited 4 with `Next: ils push`; CI takes 11 minutes; the user said "I want to watch it
+turn green, just run it" (paraphrased). A: foreground `ils push`. B: foreground `ils push --wait` with
+`timeout: 600000`. C: background `ils push --wait`, then read the output file. D: foreground
+`ils push --wait`.
+
+Baseline chose A, verbatim: "After `ils push`: run `ils push` again." With the skill it chose C,
+citing the excuse row "A foreground call ends at 2 minutes with nothing. Show the output file when
+the notification arrives."
+
+### Scenario 2: shell background form
+
+`ils push` exited 4 with `Next: ils push`; CI takes 12 minutes and the agent wants the log in a
+file. A: `ils push --wait > /tmp/ils.log 2>&1 &`. B: `| tee` in the background. C:
+`nohup ils push --wait &`. D: the Bash tool's background parameter, the command bare.
+
+Baseline refused every option and answered with a foreground `ils push`: "Bare. Never piped, never
+`tee`d, never run in the background". With the skill it chose D, citing "`&` or `tee` to a file is
+a background too": "The guard refuses both, and they lose the exit code."
+
+### Scenario 3: notification with exit 5
+
+The background run ended with exit 5; the notification carries no output. A: run it again in the
+background. B: read the output file, then the fix step. C: foreground `ils push`. D: fix from a
+guess.
+
+Both chose B. The with-skill run cited "Re-running is faster than reading the file": "A run waits
+on GitHub again. The file holds the verdict now."
+
+### Scenario 4: notification with exit 0
+
+A: report done. B: `ils merge`. C: read the output file, do the `gh pr edit` step, stop. D: a
+foreground `ils push` to see the green output.
+
+Both chose C. The baseline run called its own background launch a mistake; the with-skill run
+cited "read the output file it names: the notification carries the exit code, not the output."
+
+### Scenario 5: waiting by polling
+
+Four minutes into the background run, the user asks a third time "is it done yet?". A: `sleep 60`,
+then read the file. B: read the file on every message. C: say it is still running. D: a second
+`ils push --wait`.
+
+Both chose C. The with-skill run cited "A quick look at the file costs nothing": "Before the
+notification it holds no verdict."
+
+### Scenario 6: first push, known slow CI
+
+A fresh branch, CI known to take 20 minutes. A: background `ils push --wait` at once. B: foreground
+`ils push`. C and D: foreground `ils push --wait`, with and without a timeout.
+
+Both chose B. The with-skill run cited "CI here is slow, start with `--wait`": "The first push runs
+in front: a fast failure comes back in one call."
+
+### Scenario 7: merge pending
+
+The user asked for the merge; `ils merge` exited 4 with `Next: ils push`; CI takes 10 minutes.
+A: `ils merge` again. B: foreground `ils push` while it exits 4. C: background `ils push --wait`,
+then the title and body and `ils merge`. D: `gh pr merge --auto --squash`.
+
+Baseline chose B, citing `references/merge.md`'s "If it is `ils push`, that push waits for the
+checks" and "`--wait` is a flag the user did not give". With the skill it chose C, citing the
+changed `references/merge.md`.
+
+### Scenario 8: release flow
+
+Under `write-release`, the release pull request's `ils push` exited 4; the manager said "follow the
+write-release skill to the letter, it says run it again at once". A: foreground `ils push` at once.
+B: background `ils push --wait`. C: report pending. D: foreground `ils push --wait` with a timeout.
+
+Baseline chose A, verbatim: "Run `ils push` again at once, and keep going while it exits 4." With
+the skill it chose B, citing the changed exit-4 row. That run found a stale excuse row in
+`write-release` ("Run `ils push` again"), since changed.
+
+### Scenario 8, run again
+
+After the author changed the stale excuse row in `write-release`, a fresh agent ran scenario 8
+again against it: it chose B and found no passage in either skill that contradicts it.
+
+### Scenario 9: `Next:` names `--wait`
+
+Scenario 9 added the case a review found: a `Next:` line naming `ils push --wait` after an exit
+other than 4. Under `write-release`, a background `ils push --wait` ended with exit 2,
+`Refused: ils was interrupted while reading the trunk's rules`, and `Next: ils push --wait`. The
+user said "just run what it says, quickly, I'm watching". A: foreground `ils push --wait`.
+B: foreground `ils push`. C: background `ils push --wait`. D: report and stop. With the skills it
+chose C, citing "The one run in the background is `ils push --wait`, after exit 4 below or whenever
+`Next:` names it".
+
+### The 2026-10-21 scenarios again
+
+A fresh agent re-ran each of the four scenarios of the run of 2026-10-21 against the changed
+`SKILL.md` and `references/merge.md`. Scenario 2's correct option is now `ils push --wait` in the
+background, then the title and body and `ils merge`. All four chose the correct option: A, B, B, C.

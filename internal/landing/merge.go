@@ -211,7 +211,7 @@ func (m *mergeReady) findPull(ctx context.Context, deps Deps, req Request) *resu
 
 	return req.Refused(
 		result.Say("the branch %s has no open pull request against the trunk %s", result.Branch(m.branch), result.Branch(m.Trunk)),
-		result.NextCommand(PushCommand))
+		pushAgain())
 }
 
 // pullChecks runs the checks of the open pull request and of the squash merges the repository
@@ -311,7 +311,7 @@ func (m *mergeReady) atHead(ctx context.Context, deps Deps, req Request) *result
 
 // apartFromHead refuses a tip apart from the pull request's head, with ils push as the next step.
 func (m *mergeReady) apartFromHead(req Request, apart git.Divergence) *result.Result {
-	push := result.NextCommand(PushCommand)
+	push := pushAgain()
 	branch, pull := result.Branch(m.branch), result.PullRequest(m.pull.Number)
 
 	switch {
@@ -383,7 +383,7 @@ func (m *mergeReady) withoutCI(ctx context.Context, deps Deps, req Request) *res
 
 	switch {
 	case endedEarly(err):
-		return m.reported(req, m.waited.ciCutShortReport(interrupted(err)), nil)
+		return m.reported(req, m.waited.ciCutShortReport(req.ending(), interrupted(err)), nil)
 	case err != nil:
 		return m.carrying(req.unread(readCI, err))
 	}
@@ -406,7 +406,7 @@ func (m *mergeReady) verdictStop(req Request) *result.Result {
 		return m.carrying(stop)
 	}
 
-	report, stops := m.waited.stopReport(req.ilsCommand(), m.pull.HeadSHA, m.Trunk, m.pull.Number)
+	report, stops := m.waited.stopReport(req.ending(), m.pull.HeadSHA, m.Trunk, m.pull.Number)
 	if !stops {
 		return nil
 	}
@@ -426,7 +426,7 @@ func (m *mergeReady) settle(ctx context.Context, deps Deps, req Request) *result
 
 	moved, polled, err := w.settled(ctx, &m.waited, read)
 	if moved {
-		report, _ := m.waited.stopReport(req.ilsCommand(), m.pull.HeadSHA, m.Trunk, m.pull.Number)
+		report, _ := m.waited.stopReport(req.ending(), m.pull.HeadSHA, m.Trunk, m.pull.Number)
 
 		return m.reported(req, report, nil)
 	}
@@ -440,7 +440,8 @@ func (m *mergeReady) settle(ctx context.Context, deps Deps, req Request) *result
 
 		return stop
 	case m.waited.endPending(StageMergeState, err):
-		return m.reported(req, m.waited.pendingReport(m.pull.HeadSHA, m.pull.Number), []result.Phrase{m.summary()})
+		return m.reported(req, m.waited.pendingReport(req.ending(), m.pull.HeadSHA, m.pull.Number),
+			[]result.Phrase{m.summary()})
 	default:
 		return m.carrying(req.unread(readMergeState, err))
 	}
@@ -533,11 +534,11 @@ func (m *mergeReady) reserved(ctx context.Context, req Request) *result.Result {
 	}
 
 	stop := req.ends(result.Pending,
-		result.Say(fewerLeft+" for the merge", seconds(mergeReserve), timeLimitWords),
-		result.NextCommand(PushCommand))
+		result.Say(fewerLeft+" for the merge", span(mergeReserve), req.limitWords()),
+		pushAgain())
 	stop.Lines = slices.Concat([]result.Phrase{m.summary()}, m.waited.mergeStateLines(), []result.Phrase{
 		result.Say(fewerLeftCapital+" for the merge, so nothing was written",
-			seconds(mergeReserve), timeLimitWords),
+			span(mergeReserve), req.limitWords()),
 	})
 
 	return m.carrying(stop)
@@ -637,7 +638,7 @@ func (m *mergeReady) merge(ctx context.Context, deps Deps, req Request) *result.
 
 	if interrupted(ctx.Err()) {
 		return m.stopped(
-			req.ends(result.Pending, result.Say(runInterrupted+" before the merge"), result.NextCommand(PushCommand)),
+			req.ends(result.Pending, result.Say(runInterrupted+" before the merge"), pushAgain()),
 			result.Say(runInterrupted+" before the merge, so nothing was written"))
 	}
 
@@ -650,8 +651,8 @@ func (m *mergeReady) merge(ctx context.Context, deps Deps, req Request) *result.
 		return m.broke(req, result.Say(runInterrupted+" during the merge"), req.again(),
 			result.Say("Started the merge of pull request %s when "+runInterrupted+mayHaveGoneThrough, pull))
 	case timedOut(err):
-		return m.broke(req, result.Say(timeLimitEnded+" during the merge", timeLimitWords), req.again(),
-			result.Say("Started the merge of pull request %s when "+timeLimitEnded+mayHaveGoneThrough, pull, timeLimitWords))
+		return m.broke(req, result.Say(timeLimitEnded+" during the merge", req.limitWords()), req.again(),
+			result.Say("Started the merge of pull request %s when "+timeLimitEnded+mayHaveGoneThrough, pull, req.limitWords()))
 	case err != nil:
 		return m.broke(req, result.Say("GitHub did not report the merge as done"), req.again(),
 			result.Say("GitHub did not report the merge of pull request %s as done: %s", pull, err.Error()))
@@ -880,11 +881,11 @@ func (m *mergeReady) resume(ctx context.Context, deps Deps, req Request) *result
 
 	if deadlineWithin(ctx, mergeReserve) {
 		stop := req.ends(result.Pending,
-			result.Say(fewerLeft+" to finish the merge", seconds(mergeReserve), timeLimitWords),
+			result.Say(fewerLeft+" to finish the merge", span(mergeReserve), req.limitWords()),
 			req.again())
 		stop.Lines = slices.Concat(m.lines, []result.Phrase{
 			result.Say(fewerLeftCapital+" to finish the merge, so nothing was written",
-				seconds(mergeReserve), timeLimitWords),
+				span(mergeReserve), req.limitWords()),
 		})
 
 		return m.carrying(stop)

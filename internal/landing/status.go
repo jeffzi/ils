@@ -43,7 +43,7 @@ import (
 func Status(ctx context.Context, deps Deps, req Request) result.Result {
 	deps.startChecking()
 
-	r := &reading{deps: deps}
+	r := &reading{deps: deps, req: req}
 	r.readStanding(ctx)
 
 	done := req.ends(result.Done, result.Phrase{}, r.next())
@@ -62,6 +62,7 @@ type reading struct {
 	trunkTip  string
 	on        onBranch
 	deps      Deps
+	req       Request
 	repo      forge.Repo
 	lines     []result.Phrase
 	unlanded  []git.Commit
@@ -103,8 +104,8 @@ func (r *reading) failed(read string, err error) {
 		return
 	}
 
-	r.unread(result.Say("Stopped reading %s: "+timeLimitEnded+", so the reads after it were skipped", read, timeLimitWords),
-		read, fmt.Sprintf(timeLimitEnded, timeLimitWords))
+	r.unread(result.Say("Stopped reading %s: "+timeLimitEnded+", so the reads after it were skipped", read, r.req.limitWords()),
+		read, fmt.Sprintf(timeLimitEnded, r.req.limitWords()))
 }
 
 // unread says line and lists the read named read as unread, for the reason given.
@@ -727,7 +728,7 @@ func (r *reading) next() result.Next {
 		return startBranchStep()
 	case result.StandingDetached:
 		if len(r.status.Unlanded) > 0 {
-			return keepDetachedStep()
+			return keepDetachedStep(result.Command(PushCommand))
 		}
 
 		return startBranchStep()
@@ -765,7 +766,7 @@ func (r *reading) next() result.Next {
 	case nothingPast:
 		return firstPushStep()
 	case !s.OnOrigin || s.Ahead > 0 || r.open == nil:
-		return result.NextCommand(PushCommand)
+		return pushAgain()
 	}
 
 	return r.pullNext()
@@ -776,15 +777,14 @@ func (r *reading) next() result.Next {
 // other state is left to `ils push`, which reports it.
 func (r *reading) pullNext() result.Next {
 	w := r.waited
-	push := result.Command(PushCommand)
 	state := w.MergeState
 	mergeable := w.Outcome == WaitGreen && (state == forge.MergeClean || state == forge.MergeBlockedByReview)
 
 	switch {
 	case r.running:
-		return result.NextCommand(PushCommand)
+		return pushAgain()
 	case w.Outcome == WaitRed || w.takeApart():
-		report, _ := w.stopReport(push, r.open.HeadSHA, r.status.Trunk, r.open.Number)
+		report, _ := w.stopReport(r.req.ending(), r.open.HeadSHA, r.status.Trunk, r.open.Number)
 
 		return report.next
 	case mergeable && !r.trunkAhead.None():
@@ -793,5 +793,5 @@ func (r *reading) pullNext() result.Next {
 		return mergeStep(r.repo, r.open.Number, state)
 	}
 
-	return result.NextCommand(PushCommand)
+	return pushAgain()
 }

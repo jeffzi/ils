@@ -519,7 +519,7 @@ func (w waiter) mergeKnown(ctx context.Context, head forge.Head) (forge.Head, er
 	began := time.Now()
 
 	if w.unknownOnPushed(head) {
-		w.deps.started(result.Say("Waiting up to %s for GitHub to say whether %s can merge", seconds(mergeWindow),
+		w.deps.started(result.Say("Waiting up to %s for GitHub to say whether %s can merge", span(mergeWindow),
 			result.PullRequest(w.pushed.Number)))
 	}
 

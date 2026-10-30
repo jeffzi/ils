@@ -357,11 +357,11 @@ func (rel *releasing) reserved(ctx context.Context, req Request) *result.Result 
 	}
 
 	stop := req.ends(result.Pending,
-		result.Say(fewerLeft+" for the release", seconds(mergeReserve), timeLimitWords),
+		result.Say(fewerLeft+" for the release", span(mergeReserve), req.limitWords()),
 		req.again())
 	stop.Lines = slices.Concat(rel.said, []result.Phrase{result.Say(
 		fewerLeftCapital+" for the release, so nothing was written",
-		seconds(mergeReserve), timeLimitWords)})
+		span(mergeReserve), req.limitWords())})
 
 	return stop
 }
@@ -506,19 +506,19 @@ func (rel *releasing) pendingStop(req Request, waited Waited) *result.Result {
 	case waited.Since.IsZero() && byInterrupt:
 		reason = result.Say(runInterrupted+" while reading %s; nothing was written", readReleaseChecks)
 	case waited.Since.IsZero():
-		reason = result.Say(timeLimitEnded+" while reading %s; nothing was written", timeLimitWords, readReleaseChecks)
+		reason = result.Say(timeLimitEnded+" while reading %s; nothing was written", req.limitWords(), readReleaseChecks)
 	case silent(waited.Verdict) && byInterrupt:
 		reason = result.Say("no check or status had reported for %s when "+runInterrupted, commit)
 	case silent(waited.Verdict):
-		reason = result.Say("no check or status had reported for %s "+timeLimitRanOut, commit, timeLimitWords)
+		reason = result.Say("no check or status had reported for %s "+timeLimitRanOut, commit, req.limitWords())
 	case len(pending) == 0 && byInterrupt:
 		reason = result.Say("the checks of %s had not all reported when "+runInterrupted, commit)
 	case len(pending) == 0:
-		reason = result.Say("the checks of %s had not all reported "+timeLimitRanOut, commit, timeLimitWords)
+		reason = result.Say("the checks of %s had not all reported "+timeLimitRanOut, commit, req.limitWords())
 	case byInterrupt:
 		reason = result.Say("the checks of %s were still running when "+runInterrupted, commit)
 	default:
-		reason = result.Say("the checks of %s were still running "+timeLimitRanOut, commit, timeLimitWords)
+		reason = result.Say("the checks of %s were still running "+timeLimitRanOut, commit, req.limitWords())
 	}
 
 	if len(pending) > 0 {
@@ -621,10 +621,10 @@ func (rel *releasing) tagPushFailed(req Request, err error) *result.Result {
 	}
 
 	if timedOut(err) {
-		return rel.broke(req, result.Say(timeLimitEnded+" during the push of the tag %s", timeLimitWords, rel.tag),
+		return rel.broke(req, result.Say(timeLimitEnded+" during the push of the tag %s", req.limitWords(), rel.tag),
 			req.again(),
 			result.Say("Started the push of the tag %s at %s when "+timeLimitEnded+"; it may or may not have taken",
-				rel.tag, commit, timeLimitWords))
+				rel.tag, commit, req.limitWords()))
 	}
 
 	if refused, ok := errors.AsType[*git.PushError](err); ok {
@@ -685,10 +685,10 @@ func (rel *releasing) publish(ctx context.Context, deps Deps, req Request) *resu
 			return rel.broke(req, result.Say(runInterrupted+" while publishing the GitHub release of %s", rel.tag), req.again(),
 				result.Say("Started publishing the GitHub release of %s when "+runInterrupted+mayHaveGoneThrough, rel.tag))
 		case timedOut(err):
-			return rel.broke(req, result.Say(timeLimitEnded+" while publishing the GitHub release of %s", timeLimitWords, rel.tag),
+			return rel.broke(req, result.Say(timeLimitEnded+" while publishing the GitHub release of %s", req.limitWords(), rel.tag),
 				req.again(),
 				result.Say("Started publishing the GitHub release of %s when "+timeLimitEnded+mayHaveGoneThrough,
-					rel.tag, timeLimitWords))
+					rel.tag, req.limitWords()))
 		}
 	}
 

@@ -568,12 +568,12 @@ func TestApp_Run_WhenOneStreamIsAColorTerminal_LeavesTheOtherStreamPlain(t *test
 // Bound
 // ---------------------------------------------------------------------------
 
-func TestApp_Run_WhenMergeRuns_EndsItAtTheBoundFromLaunch(t *testing.T) {
+func TestApp_Run_WhenMergeRunsWithATerminalStdout_EndsItAtTheShortBoundFromLaunch(t *testing.T) {
 	t.Parallel()
 
 	var deadline time.Time
 
-	app := outside(t)
+	app := painted(t, []string{colorTerm}, true, false)
 	app.Launch = time.Now()
 	app.SetMerge(func(ctx context.Context, _ landing.Deps, req landing.Request) result.Result {
 		deadline, _ = ctx.Deadline()
@@ -586,6 +586,80 @@ func TestApp_Run_WhenMergeRuns_EndsItAtTheBoundFromLaunch(t *testing.T) {
 
 	assert.Check(t, is.Equal(got.code, exitDone))
 	assert.Check(t, deadline.Equal(want), "deadline = %s, want %s", deadline, want)
+}
+
+func TestApp_Run_WhenPushRuns_WaitsAsLongAsTheWaitFlagOrAStdoutTerminalSaysFromLaunch(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		env    []string
+		args   []string
+		limit  time.Duration
+		stdout bool
+		stderr bool
+	}{
+		{name: "no wait flag off a terminal", env: []string{colorTerm}, args: []string{"push"}, limit: landing.TimeLimit},
+		{name: "no wait flag at a terminal", env: []string{colorTerm}, args: []string{"push"}, stdout: true, limit: landing.WaitTimeLimit},
+		{name: "no color at a terminal", env: []string{colorTerm, noColor}, args: []string{"push"}, stdout: true, limit: landing.WaitTimeLimit},
+		{name: "dumb terminal", env: []string{"TERM=dumb"}, args: []string{"push"}, stdout: true, limit: landing.TimeLimit},
+		{name: "forced color off a terminal", env: []string{colorTerm, forced}, args: []string{"push"}, limit: landing.TimeLimit},
+		{name: "only stderr a terminal", env: []string{colorTerm}, args: []string{"push"}, stderr: true, limit: landing.TimeLimit},
+		{name: "wait flag", env: []string{colorTerm}, args: []string{"push", "--wait"}, limit: landing.WaitTimeLimit},
+		{name: "wait flag set to false at a terminal", env: []string{colorTerm}, args: []string{"push", "--wait=false"}, stdout: true, limit: landing.TimeLimit},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var deadline time.Time
+
+			app := painted(t, tt.env, tt.stdout, tt.stderr)
+			app.Launch = time.Now()
+			app.SetPush(func(ctx context.Context, _ landing.Deps, req landing.Request) result.Result {
+				deadline, _ = ctx.Deadline()
+
+				return finished(req)
+			})
+			want := app.Launch.Add(tt.limit)
+
+			got := launch(t, app, tt.args...)
+
+			assert.Check(t, deadline.Equal(want), "deadline = %s, want %s; stdout = %q", deadline, want, got.stdout)
+		})
+	}
+}
+
+func TestApp_Run_WhenPushRuns_PassesTheWaitFlagAsTyped(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args []string
+		want landing.WaitFlag
+	}{
+		{name: "no wait flag", args: []string{"push"}, want: landing.WaitFlagNone},
+		{name: "wait flag", args: []string{"push", "--wait"}, want: landing.WaitFlagTrue},
+		{name: "wait flag set to false", args: []string{"push", "--wait=false"}, want: landing.WaitFlagFalse},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var seen landing.Request
+
+			app := painted(t, []string{colorTerm}, false, false)
+			app.SetPush(func(_ context.Context, _ landing.Deps, req landing.Request) result.Result {
+				seen = req
+
+				return finished(req)
+			})
+
+			launch(t, app, tt.args...)
+
+			assert.Check(t, is.Equal(seen.WaitFlag, tt.want))
+		})
+	}
 }
 
 func TestApp_Run_WhenHelpIsAskedForOnAColorTerminal_StylesIt(t *testing.T) {

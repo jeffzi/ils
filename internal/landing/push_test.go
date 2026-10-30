@@ -53,20 +53,30 @@ func changesRead() []forgetest.Op {
 
 // finish is how a result must have ended: its outcome and the parts of its text, as expect builds
 // them. A result of the push sequence is also held to the parts of its reason and to its payload,
-// nil for none.
+// nil for none. req is the request it ran, a bare `ils push` when it names none.
 type finish struct {
 	payload *result.Push
 	text    string
 	reason  string
+	req     landing.Request
 	outcome result.Outcome
 }
 
-// assertEnded fails unless got ended as end says, carries the command and words of pushRequest,
+// request is the request end ran: its req, or a bare `ils push` when it names none.
+func (end finish) request() landing.Request {
+	if end.req.Command == "" {
+		return pushRequest()
+	}
+
+	return end.req
+}
+
+// assertEnded fails unless got ended as end says, carries the command and words of end's request,
 // and renders text that holds the parts of end's text.
 func assertEnded(t *testing.T, s *scene, got result.Result, end finish) {
 	t.Helper()
 
-	assertEndedBy(t, got, s.gitDir, ended{text: end.text, req: pushRequest(), outcome: end.outcome})
+	assertEndedBy(t, got, s.gitDir, ended{text: end.text, req: end.request(), outcome: end.outcome})
 }
 
 // reads is what a refusing Push may have done: the refs before it, the forge operations it made,
@@ -99,6 +109,8 @@ type pushRefusal struct {
 	ops []forgetest.Op
 	// listed are the branches the refusal's reason names, in no particular order.
 	listed []string
+	// req is the request Push runs; its zero value is a bare `ils push`.
+	req landing.Request
 	// answered is how many calls origin answers before it stops; zero is every call.
 	answered int
 	// fetches is whether git fetches from origin before the refusal.
@@ -293,9 +305,11 @@ func runPushRefusals(t *testing.T, rows []pushRefusal) {
 
 			before := s.written()
 
-			got := landing.Push(t.Context(), s.deps, pushRequest())
+			end := finish{outcome: result.Refused, text: want, req: tt.req}
 
-			assertEnded(t, s, got, finish{outcome: result.Refused, text: want})
+			got := landing.Push(t.Context(), s.deps, end.request())
+
+			assertEnded(t, s, got, end)
 			_, reason := shown(t, got, s.gitDir)
 			for _, branch := range tt.listed {
 				assert.Check(t, is.Contains(reason, branch))

@@ -45,14 +45,42 @@ func waitRead(err error) (string, error) {
 	}
 }
 
-// cutShortReading returns the reason that says the time limit, or an interrupt when byInterrupt
-// is true, ended a read of read, with nothing more to change.
-func cutShortReading(byInterrupt bool, read string) result.Phrase {
+// cutShortReading returns the reason that says the time limit of limit, or an interrupt when
+// byInterrupt is true, ended a read of read, with nothing more to change.
+func cutShortReading(byInterrupt bool, limit span, read string) result.Phrase {
 	if byInterrupt {
 		return result.Say(runInterrupted+" while reading %s; nothing more will change", read)
 	}
 
-	return result.Say(timeLimitEnded+" while reading %s; nothing more will change", timeLimitWords, read)
+	return result.Say(timeLimitEnded+" while reading %s; nothing more will change", limit, read)
+}
+
+// ending is what the report of a wait says about the run it ended: the ils command the run is,
+// which a head that moved runs again; the push that a fix of a failed check or a merge of the
+// trunk runs again, pushOfChange; the time limit it ran under; and the push a pending wait runs
+// again.
+type ending struct {
+	command      result.Name
+	pushOfChange result.Name
+	push         result.Next
+	limit        span
+}
+
+// ending returns what the report of a wait the request ran says about it. A pending wait of a push
+// runs that push again as it stands, keeping a typed --wait; one of any other command runs a plain
+// `ils push`, since the branch it reports on changes only by a push.
+func (r Request) ending() ending {
+	push := pushAgain()
+	if r.Command == PushCommand {
+		push = r.again()
+	}
+
+	return ending{command: r.ilsCommand(), pushOfChange: r.pushOfChange(), push: push, limit: r.limitWords()}
+}
+
+// pushAgain is the step that runs a plain `ils push`.
+func pushAgain() result.Next {
+	return result.NextCommand(PushCommand)
 }
 
 // waitReport is what a result says about a wait whose outcome stops the command: its lines, the
@@ -85,18 +113,18 @@ func (r waitReport) outcome(stopped result.Outcome) result.Outcome {
 
 // stopReport returns the report of a wait that ended red, apart from the trunk, with a required
 // check that never reported, pending, or on a head that moved, about the commit sha of pull request
-// number, whose trunk is trunk, for the ils command command. It returns false for green checks
-// and for nothing reported, which each command maps on its own.
-func (w Waited) stopReport(command result.Name, sha, trunk string, number int) (waitReport, bool) {
+// number, whose trunk is trunk, for the run end says. It returns false for green checks and for
+// nothing reported, which each command maps on its own.
+func (w Waited) stopReport(end ending, sha, trunk string, number int) (waitReport, bool) {
 	switch w.Outcome {
 	case WaitGreen, WaitNothingReported:
 		return waitReport{}, false
 	case WaitRed:
-		return w.redReport(), true
+		return w.redReport(end), true
 	case WaitConflicting:
-		return w.apartReport(sha, trunk, result.Say("the pull request conflicts with the trunk")), true
+		return w.apartReport(end, sha, trunk, result.Say("the pull request conflicts with the trunk")), true
 	case WaitBehind:
-		return w.apartReport(sha, trunk, result.Say("the pull request is behind the trunk")), true
+		return w.apartReport(end, sha, trunk, result.Say("the pull request is behind the trunk")), true
 	case WaitNeverReported:
 		return waitReport{
 			lines: append([]result.Phrase{
@@ -108,17 +136,17 @@ func (w Waited) stopReport(command result.Name, sha, trunk string, number int) (
 	case WaitMoved:
 		return waitReport{
 			reason:  result.Say("the head of pull request %s moved to %s", result.PullRequest(number), result.SHA(w.MovedTo)),
-			next:    result.NextStep("pull the new commit"+thenRunAgain, command),
+			next:    result.NextStep("pull the new commit"+thenRunAgain, end.command),
 			refused: true,
 		}, true
 	default:
-		return w.pendingReport(sha, number), true
+		return w.pendingReport(end, sha, number), true
 	}
 }
 
 // redReport is a deciding check that failed or was canceled, with the end of its log as the
-// excerpt.
-func (w Waited) redReport() waitReport {
+// excerpt, whose next step runs the push end names as pushOfChange once the check is fixed.
+func (w Waited) redReport(end ending) waitReport {
 	failed, _ := w.Verdict.Failed()
 
 	line := result.Say("Check %s failed: %s", failed.Name, result.URL(failed.Link))
@@ -133,14 +161,14 @@ func (w Waited) redReport() waitReport {
 		lines:   append([]result.Phrase{line}, w.mergeStateLines()...),
 		excerpt: w.excerpt(),
 		reason:  reason,
-		next:    result.NextStep("fix the failing check, commit, and run %s again", result.Command(PushCommand)),
+		next:    result.NextStep("fix the failing check, commit, and run %s again", end.pushOfChange),
 	}
 }
 
-// apartReport is a pull request that cannot merge until the trunk is merged into the branch. The
-// checks are said only when some decided: they were green, and the merge state read after them
-// found it apart.
-func (w Waited) apartReport(sha, trunk string, reason result.Phrase) waitReport {
+// apartReport is a pull request that cannot merge until the trunk is merged into the branch, whose
+// next step runs the push end names as pushOfChange once it is. The checks are said only when some
+// decided: they were green, and the merge state read after them found it apart.
+func (w Waited) apartReport(end ending, sha, trunk string, reason result.Phrase) waitReport {
 	var lines []result.Phrase
 	if len(w.Deciding) > 0 {
 		lines = append(lines, w.checksLine(sha))
@@ -150,14 +178,14 @@ func (w Waited) apartReport(sha, trunk string, reason result.Phrase) waitReport 
 		lines:  append(lines, w.mergeStateLines()...),
 		reason: reason,
 		next: result.NextStep("merge the trunk into the branch with `git merge origin/%s`, resolve the conflicts, "+
-			"commit, and run %s again", result.Branch(trunk), result.Command(PushCommand)),
+			"commit, and run %s again", result.Branch(trunk), end.pushOfChange),
 	}
 }
 
-// pendingReport is a wait that ended before the forge had an answer about the commit sha of pull
-// request number, at the stage it was in.
-func (w Waited) pendingReport(sha string, number int) waitReport {
-	report := waitReport{pending: true, next: result.NextCommand(PushCommand)}
+// pendingReport is a wait of the run end says that ended before the forge had an answer about the
+// commit sha of pull request number, at the stage it was in.
+func (w Waited) pendingReport(end ending, sha string, number int) waitReport {
+	report := waitReport{pending: true, next: end.push}
 	pull := result.PullRequest(number)
 
 	switch {
@@ -165,48 +193,48 @@ func (w Waited) pendingReport(sha string, number int) waitReport {
 		report.reason = result.Say("GitHub did not show %s on pull request %s before "+runInterrupted, result.SHA(sha), pull)
 	case w.Stage == StageHead:
 		report.reason = result.Say("GitHub did not show %s on pull request %s "+beforeTimeLimit,
-			result.SHA(sha), pull, timeLimitWords)
+			result.SHA(sha), pull, end.limit)
 	case w.Stage == StageMergeState && w.Cutoff == CutoffInterrupt:
 		report.reason = result.Say("GitHub did not say whether pull request %s can merge before "+runInterrupted, pull)
 	// The stage's own window ended the wait: the time limit was not reached.
 	case w.Stage == StageMergeState && w.Cutoff == CutoffWindow:
 		report.reason = result.Say("GitHub did not say whether pull request %s can merge within %s",
-			pull, seconds(mergeWindow))
+			pull, span(mergeWindow))
 	case w.Stage == StageMergeState:
 		report.reason = result.Say("GitHub did not say whether pull request %s can merge "+beforeTimeLimit,
-			pull, timeLimitWords)
+			pull, end.limit)
 	default:
-		report.lines, report.reason = w.unconcluded(sha, number)
+		report.lines, report.reason = w.unconcluded(end.limit, sha, number)
 	}
 
 	return report
 }
 
-// unconcluded returns what the checks stage had found when the deadline or an interrupt ended it,
-// then the merge state, and the reason: no verdict read at all, nothing reported, a workflow run
-// with no check yet, checks concluded before any workflow run started, or the checks still
-// running. A wait an interrupt ended holds no verdict read, since no read of the head after the
-// checks confirmed one.
-func (w Waited) unconcluded(sha string, number int) ([]result.Phrase, result.Phrase) {
+// unconcluded returns what the checks stage had found when the deadline, under a time limit of
+// limit, or an interrupt ended it, then the merge state, and the reason: no verdict read at all,
+// nothing reported, a workflow run with no check yet, checks concluded before any workflow run
+// started, or the checks still running. A wait an interrupt ended holds no verdict read, since no
+// read of the head after the checks confirmed one.
+func (w Waited) unconcluded(limit span, sha string, number int) ([]result.Phrase, result.Phrase) {
 	var lines []result.Phrase
 
-	reason := result.Say("the checks were still running "+timeLimitRanOut, timeLimitWords)
+	reason := result.Say("the checks were still running "+timeLimitRanOut, limit)
 	commit, pull := result.SHA(sha), result.PullRequest(number)
 
 	switch {
 	case w.Since.IsZero():
-		reason = cutShortReading(w.Cutoff == CutoffInterrupt, readChecks)
+		reason = cutShortReading(w.Cutoff == CutoffInterrupt, limit, readChecks)
 	case silent(w.Verdict):
 		reason = result.Say("no check or status had reported for %s on pull request %s "+timeLimitRanOut,
-			commit, pull, timeLimitWords)
+			commit, pull, limit)
 	case len(w.Verdict.Checks) == 0 && w.Verdict.Running():
 		lines = append(lines, result.Say(
 			"No check has reported for %s on pull request %s yet; a workflow run is still going", commit, pull))
-		reason = result.Say("the checks had not reported "+timeLimitRanOut, timeLimitWords)
+		reason = result.Say("the checks had not reported "+timeLimitRanOut, limit)
 	// The checks concluded, but the deadline ended the wait for workflow runs to appear.
 	case len(w.Verdict.Runs) == 0 && len(w.Verdict.Pending()) == 0:
 		reason = result.Say("no workflow run had started for %s on pull request %s "+timeLimitRanOut,
-			commit, pull, timeLimitWords)
+			commit, pull, limit)
 	default:
 		lines = runningAges(w.Verdict.Pending())
 	}
@@ -214,12 +242,12 @@ func (w Waited) unconcluded(sha string, number int) ([]result.Phrase, result.Phr
 	return append(lines, w.mergeStateLines()...), reason
 }
 
-// ciCutShortReport is a read of whether the repository has CI that the time limit, or an
-// interrupt when byInterrupt is true, cut short.
-func (w Waited) ciCutShortReport(byInterrupt bool) waitReport {
+// ciCutShortReport is a read of whether the repository has CI, by the run end says, that its time
+// limit, or an interrupt when byInterrupt is true, cut short.
+func (w Waited) ciCutShortReport(end ending, byInterrupt bool) waitReport {
 	return waitReport{
-		lines: w.mergeStateLines(), reason: cutShortReading(byInterrupt, readCI),
-		next: result.NextCommand(PushCommand), pending: true,
+		lines: w.mergeStateLines(), reason: cutShortReading(byInterrupt, end.limit, readCI),
+		next: end.push, pending: true,
 	}
 }
 

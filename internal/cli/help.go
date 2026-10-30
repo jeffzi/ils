@@ -6,10 +6,11 @@ import (
 	"github.com/jeffzi/ils/internal/landing"
 )
 
-// withTimeLimit returns long with its one %s verb set to the time limit as results name it, so that
-// the help says the limit the command enforces.
-func withTimeLimit(long string) string {
-	return fmt.Sprintf(long, landing.Seconds(landing.TimeLimit))
+// withTimeLimits returns text with each %[1]s set to the time limit and each %[2]s set to the time
+// limit of the long wait, as results name them, so that the help says the limits the command
+// enforces. A text that needs only the time limit leaves %[2]s out.
+func withTimeLimits(text string) string {
+	return fmt.Sprintf(text, landing.Span(landing.TimeLimit), landing.Span(landing.WaitTimeLimit))
 }
 
 // The help says how to call a command and nothing else: what to do with an exit code and with
@@ -23,8 +24,10 @@ Docs: https://github.com/jeffzi/ils`
 
 	pushShort = "Push the branch, open its pull request, wait for the checks"
 	pushLong  = `Push the current branch, open its pull request on the first push, and
-wait up to %s for the checks of the pushed commit. It never
-forces a push and it does not merge.
+wait for the checks of the pushed commit: up to %[2]s when
+stdout is a terminal or with --wait, and up to %[1]s
+otherwise or with --wait=false. It never forces a push and it does
+not merge.
 
 It refuses before pushing anything when the branch is not ready, for
 example on the trunk (origin's default branch), with uncommitted
@@ -34,12 +37,20 @@ the next step.`
 	pushExamples = `# Push and wait for the checks
 ils push
 
+# Wait the longer time even when stdout is no terminal
+ils push --wait
+
+# Wait only the shorter time even at a terminal
+ils push --wait=false
+
 # The same result as one JSON object
 ils push --json`
 
+	waitUsage = "Wait up to %[2]s for the checks, as at a terminal; =false waits up to %[1]s"
+
 	mergeShort = "Squash and merge the pull request once its checks are green"
 	mergeLong  = `Squash-merge the pull request of the current branch once its checks are
-green, within %s of the launch.
+green, within %[1]s of the launch.
 
 It squash-merges the pull request once its checks are green, deletes the
 branch on origin and in the clone, and leaves the trunk checked out at
@@ -72,7 +83,7 @@ ils branch fix-help`
 	releaseShort = "Tag a release commit once its CI is green, and publish the release"
 	releaseLong  = `Find the release commit of <version>, chore: release v<version>, on
 origin's trunk since the previous version tag, and read the notes of
-<version> from the changelog at that commit. Wait up to %s for
+<version> from the changelog at that commit. Wait up to %[1]s for
 the commit's CI, then tag it, push the tag and create the GitHub
 release from those notes.
 
