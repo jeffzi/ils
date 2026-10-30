@@ -52,6 +52,14 @@ manage flags and tool invocations.
   value that collides with a fixture, a typo, a bad import) is a test bug: fix the input and say
   so in one line.
 
+## Releasing
+
+Before making the release commit, start the live suite on `main` with `gh workflow run live.yml
+--ref main` and wait until both legs pass. On a push to `main`, the Live workflow runs only for the
+release commit. When that run is red, the release commit is already on `main`, and the release
+needs a fix and a second release commit. Never push a release tag until the release commit's Live
+run passes on both legs: pushing the tag starts the Publish workflow.
+
 ## Linter and type-checker configuration
 
 Treat lint config as fixed. Never add to an ignore list, disable a rule, lower a severity, or
