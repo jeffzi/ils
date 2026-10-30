@@ -78,14 +78,15 @@ func endedEarly(err error) bool {
 	return timedOut(err) || interrupted(err)
 }
 
-// PushCommand, MergeCommand, StatusCommand and BranchCommand are the command words of `ils push`,
-// `ils merge`, `ils status` and `ils branch`. They stay untyped so that a next step can name them
-// as result.NextCommand's constant wording.
+// PushCommand, MergeCommand, StatusCommand, BranchCommand and ReleaseCommand are the command words
+// of `ils push`, `ils merge`, `ils status`, `ils branch` and `ils release`. They stay untyped so that
+// a next step can name them as result.NextCommand's constant wording.
 const (
-	PushCommand   = "push"
-	MergeCommand  = "merge"
-	StatusCommand = "status"
-	BranchCommand = "branch"
+	PushCommand    = "push"
+	MergeCommand   = "merge"
+	StatusCommand  = "status"
+	BranchCommand  = "branch"
+	ReleaseCommand = "release"
 )
 
 // Deps is what a command takes: the forge and the repository it runs in, and what it tells how it
@@ -183,16 +184,30 @@ type Request struct {
 	Words   []string
 	// Args are the command's positional words, as typed: for `ils branch`, the name.
 	Args []string
+	// Force and TagOnly are the --force and --tag-only flags of `ils release`.
+	Force   bool
+	TagOnly bool
 }
 
-// ilsCommand is the request's command and its positional words, marked as an ils command, which
-// prints as "ils <command> <args>": the command to run again as typed.
+// ilsCommand is the request's command line, marked as an ils command, which prints as
+// "ils <command> <args> <flags>": the command to run again as typed.
 func (r Request) ilsCommand() result.Name {
 	return result.Command(r.commandLine())
 }
 
+// commandLine is the request's command, its positional words, then the flags it was given, so that
+// running it again changes nothing the user chose: `release 1.2.0 --tag-only`.
 func (r Request) commandLine() string {
-	return strings.Join(append([]string{r.Command}, r.Args...), " ")
+	words := append([]string{r.Command}, r.Args...)
+	if r.Force {
+		words = append(words, "--force")
+	}
+
+	if r.TagOnly {
+		words = append(words, "--tag-only")
+	}
+
+	return strings.Join(words, " ")
 }
 
 // Ready is what the shared preconditions hand to the steps that follow them.

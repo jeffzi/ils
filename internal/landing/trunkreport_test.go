@@ -128,6 +128,11 @@ func TestStatus_WhenOnTheTrunk_ReportsWhetherOriginsTrunkTipIsAReleaseCommit(t *
 	tests := []releaseRow{
 		{name: "release commit", subject: "chore: release v1.2.0", want: true},
 		{name: "release commit merged as a pull request", subject: "chore: release v1.2.0 (#9)", want: true},
+		{name: "release commit of a pre-release", subject: "chore: release v1.2.0-rc.1", want: true},
+		{
+			name: "release commit of a pre-release merged as a pull request", subject: "chore: release v1.2.0-rc.1 (#9)",
+			want: true,
+		},
 		{name: "release of a version short of a patch number", subject: "chore: release v1.2"},
 		{name: "release subject with words after the version", subject: "chore: release v1.2.0 notes"},
 	}

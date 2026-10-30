@@ -578,10 +578,8 @@ func (w waiter) concluded(ctx context.Context, waited *Waited) (forge.Verdict, W
 		w.logChecks(ctx, verdict)
 
 		outcome, done = judge(verdict, w.pushed.Required)
-		// Runs appear some seconds after a push, so a verdict without them is only believed once
-		// that has lasted. A failed check stays failed whatever runs start later.
-		runsMayStillAppear := len(verdict.Runs) == 0 && time.Since(began)+verdictPoll <= silentRetry
-		if done && outcome != WaitRed && runsMayStillAppear {
+		// A failed check stays failed whatever runs start later.
+		if done && outcome != WaitRed && runsMayStillAppear(verdict, began) {
 			done = false
 		}
 
@@ -655,6 +653,13 @@ func judge(verdict forge.Verdict, required []string) (WaitOutcome, bool) {
 	default:
 		return WaitGreen, true
 	}
+}
+
+// runsMayStillAppear reports whether verdict, read in a wait for the checks that began at began,
+// holds no workflow run while one may still appear before the next read. Runs appear some seconds
+// after a push, so a verdict without them is only believed once that has lasted.
+func runsMayStillAppear(verdict forge.Verdict, began time.Time) bool {
+	return len(verdict.Runs) == 0 && time.Since(began)+verdictPoll <= silentRetry
 }
 
 // beforeDeadline returns a context that ends reserve before ctx's deadline, or with ctx when it has

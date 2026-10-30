@@ -24,8 +24,8 @@ const (
 )
 
 // mergeReserve is the time the wait leaves before the command's deadline, and the least that must
-// be left at the first write: the merge, the delete on origin, and the local ending run in it, and
-// a write the deadline cuts short leaves the run halfway.
+// be left at the first write: the merge, the delete on origin, and the local ending run in it, as
+// the writes of `ils release` do, and a write the deadline cuts short leaves the run halfway.
 const mergeReserve = 20 * time.Second
 
 // conventionalTitle is a conventional commit subject, `<type>(<scope>)!: <summary>`: a type of

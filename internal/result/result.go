@@ -430,9 +430,36 @@ type Result struct {
 
 // Payload is a result's structured detail, one field per command that has any.
 type Payload struct {
-	Push   *Push   `json:"push,omitempty"`
-	Merge  *Merge  `json:"merge,omitempty"`
-	Status *Status `json:"status,omitempty"`
+	Push    *Push    `json:"push,omitempty"`
+	Merge   *Merge   `json:"merge,omitempty"`
+	Status  *Status  `json:"status,omitempty"`
+	Release *Release `json:"release,omitempty"`
+}
+
+// The words of Release.Verdict.
+const (
+	// ReleaseGreen is a release commit whose checks passed.
+	ReleaseGreen = "green"
+	// ReleaseNone is a release commit no check reported for, on a trunk without CI.
+	ReleaseNone = "none"
+	// ReleaseForced is a gate --force skipped.
+	ReleaseForced = "forced"
+	// ReleaseSkipped is a gate skipped because origin already held the tag at the release commit: a
+	// release resumed after an earlier run tagged it.
+	ReleaseSkipped = "skipped"
+)
+
+// Release is the structured detail of a release.
+type Release struct {
+	Version string `json:"version"`
+	Tag     string `json:"tag"`
+	// SHA is the release commit.
+	SHA     string `json:"sha"`
+	Verdict string `json:"verdict"`
+	// URL is the link of the GitHub release once it was created or found, and empty otherwise.
+	URL        string `json:"url"`
+	Prerelease bool   `json:"prerelease"`
+	TagOnly    bool   `json:"tag_only"`
 }
 
 // Push is the structured detail of a push.
@@ -530,7 +557,8 @@ type Status struct {
 	SinceTag int  `json:"since_tag"`
 	OnOrigin bool `json:"on_origin"`
 	// ReleaseCommit is, on the trunk, whether origin's trunk tip is a release commit, whose subject
-	// is `chore: release v<X.Y.Z>`, with or without a trailing ` (#N)`.
+	// is `chore: release v<X.Y.Z>`, with an optional pre-release part such as `-rc.1`, with or
+	// without a trailing ` (#N)`.
 	ReleaseCommit bool `json:"release_commit"`
 }
 
