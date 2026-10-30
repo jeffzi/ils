@@ -127,6 +127,7 @@ task install
 
 ```bash
 ils push          # push the branch, open its pull request on the first push, wait for the checks
+ils push --wait   # the same, waiting up to 15 minutes for the checks
 ils push --json   # the same result as one JSON object
 ils push --help   # usage of push
 ils push -d       # the same push, tracing each git and gh call and wait decision on stderr
@@ -143,7 +144,8 @@ ils --version     # print the version of ils
 ```
 
 `push`, `merge`, `branch`, `status`, and `release` each take `--json`, `-d` or `--debug`,
-`--no-color`, and `--help` or `-h`. `release` alone also takes `--force` and `--tag-only`.
+`--no-color`, and `--help` or `-h`. `push` alone also takes `--wait`, and `release` alone
+`--force` and `--tag-only`.
 
 ## Push
 
@@ -155,7 +157,7 @@ Run `ils push` on a work branch with everything committed. It:
 3. opens a pull request against origin's default branch when the branch has none, titled with the
    branch name and with an empty body;
 4. waits for the checks of the pushed commit until you stop it or 100 seconds have passed since the
-   command started, then prints the verdict.
+   command started, then prints the verdict. With `--wait`, it waits up to 15 minutes instead.
 
 Run it again at any time: on a commit that is already pushed it pushes nothing and reports the
 verdict again.
@@ -188,10 +190,11 @@ or file; at most it has fetched from origin. It refuses:
 - a `gh` older than 2.73.0, or one whose version `ils` cannot read;
 - a `gh` not logged in to origin's host (this is also how `ils` refuses a host that is not GitHub);
 - a fork, or a repository you cannot push to;
-- any word after `push` other than `--json`, `-d` or `--debug`, `--no-color`, `--help`, or `-h`,
-  and a `--json=<value>`, `--debug=<value>`, or `--no-color=<value>` whose value is not `true` or
-  `false`;
-- a precondition read that the time limit, Ctrl-C, or SIGTERM cut short: run `ils push` again.
+- any word after `push` other than `--wait`, `--json`, `-d` or `--debug`, `--no-color`, `--help`,
+  or `-h`, and a `--wait=<value>`, `--json=<value>`, `--debug=<value>`, or `--no-color=<value>`
+  whose value is not `true` or `false`;
+- a precondition read that the time limit, Ctrl-C, or SIGTERM cut short: run the same command
+  again, `--wait` included.
 
 ### After a green push
 
@@ -530,7 +533,7 @@ not one of the [exit codes](#exit-codes).
 | 1    | broke                | The output says what was done and what was not. Fix what failed, then follow `Next:`.                                                                                                                                                                                                                                              |
 | 2    | refused              | Nothing was pushed, opened, merged, or tagged, except by a push whose pull request's head moved during the wait. The reason says why; `Next:` says what to do.                                                                                                                                                                     |
 | 3    | ask                  | Reserved; not used by this version.                                                                                                                                                                                                                                                                                                |
-| 4    | pending              | GitHub had not finished when the command stopped waiting, for example checks still running or not yet reported. Run `ils push` again; a merge that was already done elsewhere names `ils merge` instead. After `ils release`, run the same command again.                                                                          |
+| 4    | pending              | GitHub had not finished when the command stopped waiting, for example checks still running or not yet reported. Run `ils push` again, or `ils push --wait` to wait up to 15 minutes; a merge that was already done elsewhere names `ils merge` instead. After `ils release`, run the same command again.                           |
 | 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                                                                                                                             |
 
 Every outcome but done prints its reason on the line above `Next:`, labeled by outcome:
