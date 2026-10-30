@@ -504,14 +504,75 @@ func TestPush_WhenGitRefusesThePush_BrokeSayingNothingWasPushed(t *testing.T) {
 	assertStopped(t, got, result.Broke)
 	assert.Check(t, got.Payload == nil || got.Payload.Push == nil, "Payload = %+v, want none for a push git refused", got.Payload)
 
-	text, reason := shown(t, got, d.gitDir)
-	assertSays(t, reason, expect("refused"))
+	text, decoded := rendered(t, got, d.gitDir)
 	assertSays(t, text, expect("refused", topic, policy)+nextFixed())
+
+	refused := refusedLine(t, decoded.Lines)
+	assert.Check(t, is.Contains(refused, "pre-receive hook declined"))
+	assert.Check(t, !strings.Contains(refused, policy), "refused line %q, want the hook's output left out of it", refused)
 
 	assert.Check(t, is.Equal(d.onOrigin(), ""))
 
 	assertAsked(t, d.scene, changesRead())
 	assertTold(t, d.watch.told(t), []string{checkingStep(), pushingStep()})
+}
+
+// refusedLine returns the one line of lines that says git refused the push, and fails the test
+// unless exactly one does.
+func refusedLine(t *testing.T, lines []string) string {
+	t.Helper()
+
+	var refused []string
+	for _, line := range lines {
+		if strings.Contains(line, "refused") {
+			refused = append(refused, line)
+		}
+	}
+
+	assert.Assert(t, is.Len(refused, 1), "lines %q, want one saying git refused the push", lines)
+
+	return refused[0]
+}
+
+// refusedBy returns the push of the topic branch, whose pre-push hook runs script.
+func refusedBy(t *testing.T, script string) (context.Context, *delivery) {
+	t.Helper()
+
+	refuse := func(f *gittest.Fixture) { f.Hook("pre-push", script) }
+
+	return newDelivery(t, pushRow{arrange: refuse, script: opening()})
+}
+
+func TestPush_WhenAPrePushHookRefusesThePush_MovesWhatItPrintedFromTheLineToTheExcerpt(t *testing.T) {
+	t.Parallel()
+	const onStdout, onStderr = "lint passed", "format failed"
+	ctx, d := refusedBy(t, "echo '"+onStdout+"'\necho '"+onStderr+"' >&2\nexit 1")
+
+	got := landing.Push(ctx, d.deps, pushRequest())
+
+	assertStopped(t, got, result.Broke)
+
+	_, decoded := rendered(t, got, d.gitDir)
+	refused := refusedLine(t, decoded.Lines)
+	assert.Check(t, !strings.Contains(refused, onStdout) && !strings.Contains(refused, onStderr),
+		"refused line %q, want the hook's output left out of it", refused)
+	assert.Check(t, is.Contains(got.Excerpt, onStdout))
+	assert.Check(t, is.Contains(got.Excerpt, onStderr))
+}
+
+func TestPush_WhenGitGivesNoReasonForTheRefusal_EndsTheLineWithoutOne(t *testing.T) {
+	t.Parallel()
+	ctx, d := refusedBy(t, "exit 1")
+
+	got := landing.Push(ctx, d.deps, pushRequest())
+
+	assertStopped(t, got, result.Broke)
+
+	_, decoded := rendered(t, got, d.gitDir)
+	refused := refusedLine(t, decoded.Lines)
+	assert.Check(t, is.Contains(refused, topic))
+	assert.Check(t, !strings.HasSuffix(strings.TrimSpace(refused), ":"),
+		"refused line %q, want no reason after it, since git gave none", refused)
 }
 
 // pushOpenFailureRows are the pushes whose open-change fails once the branch is on origin.

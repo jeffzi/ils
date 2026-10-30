@@ -31,6 +31,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   mid-push, although the push may have reached origin.
 - Name a required check still running, with the new `merge_state` `blocked-by-running-check`,
   instead of blaming a branch rule `ils` cannot name.
+- Show what the hooks and `git` printed for a push `git` refused, a pre-push hook's stdout included,
+  as the excerpt, which JSON now carries in `excerpt` instead of the last entry of `lines`.
+- Fix `ils push` missing origin's answer when a pre-push hook's output did not end in a newline,
+  which reported a push that reached origin as stopped, or a refused one without its reason.
 
 ## [0.3.0] - 2026-10-25
 

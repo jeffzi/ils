@@ -594,9 +594,27 @@ func TestRepo_Fetch_WhenRefOnOrigin_ReturnsFetchedSHA(t *testing.T) {
 // is the process that must die mid-push.
 const killsReceivePack = "kill -KILL $PPID"
 
+// topicSpec is the pair of refs Push hands git for topic, which git's report names on its status line.
+const topicSpec = "refs/heads/" + topic + ":refs/heads/" + topic
+
+// otherSpec is the pair of refs for a branch Push never pushes, which a hook's report-shaped lines name.
+const otherSpec = "refs/heads/other:refs/heads/other"
+
 // originTip returns the sha origin holds for branch, or nothing when origin lacks it.
 func originTip(f *gittest.Fixture, branch string) string {
 	return f.OriginGit("for-each-ref", "--format=%(objectname)", "refs/heads/"+branch)
+}
+
+// originRefusing returns a fixture whose origin holds topic and whose pre-receive hook prints said and
+// refuses the next push of it, which the clone's topic is one commit ahead of.
+func originRefusing(t *testing.T, said string) *gittest.Fixture {
+	t.Helper()
+	f := gittest.New(t, trunk)
+	f.Commits(topic, "one")
+	f.Push(topic)
+	f.OriginHook("pre-receive", "echo '"+said+"'\nexit 1")
+	f.Commits(topic, "two")
+	return f
 }
 
 func TestRepo_Push_WhenOriginReportsTheRefUpdated_PublishesTheBranch(t *testing.T) {
@@ -649,21 +667,33 @@ func TestRepo_Push_WhenTagSharesTheBranchName_PublishesTheBranch(t *testing.T) {
 	assert.Check(t, is.Equal(f.OriginGit("rev-parse", "refs/heads/"+topic), tip))
 }
 
+func TestRepo_Push_WhenOriginRefusesATagThePushFollows_PublishesTheBranch(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	tip := f.Commits(topic, "one")[0]
+	// push.followTags sends the annotated tag on the branch's tip with it, so git's report holds a
+	// status line for the tag beside the branch's. The update hook fails for any ref under refs/tags/.
+	f.Git("config", "push.followTags", "true")
+	f.Git("tag", "-a", "-m", "release", "v1", tip)
+	f.OriginHook("update", `test "${1#refs/tags/}" = "$1"`)
+
+	err := newRepo(f).Push(t.Context(), topic)
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Equal(originTip(f, topic), tip))
+}
+
 func TestRepo_Push_WhenOriginRefusesTheRef_ReturnsPushErrorNamingTheReason(t *testing.T) {
 	t.Parallel()
 	const said = "policy forbids this push"
-	f := gittest.New(t, trunk)
-	f.Commits(topic, "one")
-	f.Push(topic)
-	f.OriginHook("pre-receive", "echo '"+said+"'\nexit 1")
-	f.Commits(topic, "two")
+	f := originRefusing(t, said)
 
 	err := newRepo(f).Push(t.Context(), topic)
 
 	pushErr, ok := errors.AsType[*git.PushError](err)
 	assert.Assert(t, ok, "Push(%q) error = %v, want *git.PushError", topic, err)
 	assert.Check(t, is.Equal(pushErr.Branch, topic))
-	assert.Check(t, pushErr.Reason != "", "Push(%q) PushError carries no reason", topic)
+	assert.Check(t, is.Contains(pushErr.Reason, "pre-receive hook declined"))
 	assert.Check(t, !strings.Contains(pushErr.Reason, "refs/heads/"), "Reason = %q, want the summary, not the ref it names",
 		pushErr.Reason)
 	assert.Check(t, is.Contains(pushErr.Stderr, said))
@@ -682,6 +712,130 @@ func TestRepo_Push_WhenThePrePushHookRefuses_ReturnsPushErrorHoldingWhatTheHookS
 	assert.Assert(t, ok, "Push(%q) error = %v, want *git.PushError", topic, err)
 	assert.Check(t, strings.HasPrefix(pushErr.Detail(), said), "Detail() = %q, want it to start with %q",
 		pushErr.Detail(), said)
+}
+
+func TestRepo_Push_WhenThePrePushHookRefusesAfterPrintingOnStdout_ReturnsPushErrorLeadingWithWhatTheHookPrinted(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		script string
+		// want starts Output(): git adds its own failure line on stderr after the hook's.
+		want string
+	}{
+		{
+			name:   "stdout ends in lines shaped like the report",
+			script: "printf 'To elsewhere\\n*\\t" + otherSpec + "\\t[new branch]\\nDone\\n'\nexit 1",
+			want:   "To elsewhere\n*\t" + otherSpec + "\t[new branch]\nDone\n",
+		},
+		{
+			name:   "stdout holds a rejected status line for the pushed ref",
+			script: "printf '!\\t" + topicSpec + "\\tblocked by policy\\n'\nexit 1",
+			want:   "!\t" + topicSpec + "\tblocked by policy\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			f.Commits(topic, "one")
+			f.Hook("pre-push", tt.script)
+
+			err := newRepo(f).Push(t.Context(), topic)
+
+			pushErr, ok := errors.AsType[*git.PushError](err)
+			assert.Assert(t, ok, "Push(%q) error = %v, want *git.PushError", topic, err)
+			assert.Check(t, is.Equal(pushErr.Reason, ""))
+			assert.Check(t, strings.HasPrefix(pushErr.Output(), tt.want), "Output() = %q, want it to start with %q",
+				pushErr.Output(), tt.want)
+		})
+	}
+}
+
+func TestRepo_Push_WhenOriginRefusesTheRef_KeepsOnlyThePrePushHookLinesInStdout(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		// script is the pre-push hook, which lets the push through.
+		script string
+		want   string
+	}{
+		{name: "pre-push hook prints lines", script: "echo checked\necho passed", want: "checked\npassed"},
+		// git writes its report right after the hook's output, so the report's `To` line starts
+		// on the hook's last line.
+		{name: "pre-push hook ends without a newline", script: "printf checked", want: "checked"},
+		{
+			name:   "pre-push hook prints lines shaped like the report",
+			script: "printf 'Done\\nTo elsewhere\\n*\\t" + otherSpec + "\\t[new branch]\\n'",
+			want:   "Done\nTo elsewhere\n*\t" + otherSpec + "\t[new branch]",
+		},
+		{
+			name:   "pre-push hook prints a new-branch status line for the pushed ref",
+			script: "printf '*\\t" + topicSpec + "\\t[new branch]\\n'",
+			want:   "*\t" + topicSpec + "\t[new branch]",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := originRefusing(t, "policy forbids this push")
+			f.Hook("pre-push", tt.script)
+
+			err := newRepo(f).Push(t.Context(), topic)
+
+			pushErr, ok := errors.AsType[*git.PushError](err)
+			assert.Assert(t, ok, "Push(%q) error = %v, want *git.PushError", topic, err)
+			assert.Check(t, is.Equal(strings.TrimSpace(pushErr.Stdout), tt.want))
+		})
+	}
+}
+
+func TestPushError_Output(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		err  git.PushError
+		want string
+	}{
+		{name: "stdout before stderr", err: git.PushError{Stdout: "out\n", Stderr: "err\n"}, want: "out\nerr"},
+		{name: "stdout only", err: git.PushError{Stdout: "out\n"}, want: "out"},
+		{name: "stderr only", err: git.PushError{Stderr: "\nerr\n"}, want: "err"},
+		{name: "blank streams", err: git.PushError{Stdout: "\n", Stderr: " \n"}, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := tt.err.Output()
+
+			assert.Check(t, is.Equal(got, tt.want))
+		})
+	}
+}
+
+func TestPushError_Detail(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		err  git.PushError
+		want string
+	}{
+		{
+			name: "reason before output",
+			err:  git.PushError{Reason: "pre-receive hook declined", Stdout: "out\n", Stderr: "err\n"},
+			want: "pre-receive hook declined\nout\nerr",
+		},
+		{name: "reason only", err: git.PushError{Reason: "pre-receive hook declined"}, want: "pre-receive hook declined"},
+		{name: "output only", err: git.PushError{Stdout: "out\n"}, want: "out"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := tt.err.Detail()
+
+			assert.Check(t, is.Equal(got, tt.want))
+		})
+	}
 }
 
 func TestRepo_Push_WhenOriginNeverAnswers_ReturnsRemoteError(t *testing.T) {

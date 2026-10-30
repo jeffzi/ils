@@ -91,6 +91,9 @@ func (d *delivery) pushTip(ctx context.Context, deps Deps) *result.Result {
 // originStopped stays untyped so that result.Say accepts wording built on it.
 const originStopped = "origin stopped answering"
 
+// pushRefusedWording opens both lines pushRefused can say; it stays untyped for the same reason.
+const pushRefusedWording = "Git refused the push of %s, so nothing was pushed"
+
 // pushFailed returns the result of a push that failed with err, worded for what err says about
 // origin. Only a push git refused, or one whose git never started, surely left origin as it was;
 // one cut short, one origin stopped answering, and one whose git a signal killed may have taken,
@@ -111,10 +114,7 @@ func (d *delivery) pushFailed(err error) *result.Result {
 	}
 
 	if refused, ok := errors.AsType[*git.PushError](err); ok {
-		return d.endedSaying(
-			result.Say("Git refused the push of %s, so nothing was pushed: %s", d.markedBranch(),
-				refused.Detail()),
-			result.Broke, result.Say("git refused the push"), d.req.onceFixed())
+		return d.pushRefused(refused)
 	}
 
 	if _, ok := errors.AsType[*git.RemoteError](err); ok {
@@ -134,6 +134,21 @@ func (d *delivery) pushFailed(err error) *result.Result {
 	return d.endedSaying(
 		result.Say("Could not push %s, so nothing was pushed: %s", d.markedBranch(), err.Error()),
 		result.Broke, result.Say("could not push the branch"), d.req.onceFixed())
+}
+
+// pushRefused returns the result of a push git refused: a line naming git's reason for the ref,
+// when it gave one, and the end of what the hooks and git printed as the excerpt, with its line
+// breaks, which the line could not keep.
+func (d *delivery) pushRefused(refused *git.PushError) *result.Result {
+	line := result.Say(pushRefusedWording, d.markedBranch())
+	if refused.Reason != "" {
+		line = result.Say(pushRefusedWording+": %s", d.markedBranch(), refused.Reason)
+	}
+
+	ended := d.endedSaying(line, result.Broke, result.Say("git refused the push"), d.req.onceFixed())
+	ended.Excerpt = lastLines(refused.Output())
+
+	return ended
 }
 
 // findOrOpen takes the branch's open pull request against the trunk, and opens one titled with

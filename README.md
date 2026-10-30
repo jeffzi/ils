@@ -453,17 +453,17 @@ When no check reports for the pushed commit, the exit depends on whether the rep
 
 With `--json`, a command prints one JSON object with these fields:
 
-| Field       | Type             | Meaning                                                                                                                              |
-| ----------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `command`   | string           | The command that ran, such as `push`.                                                                                                |
-| `words`     | array of strings | The command-line words `ils` received. Absent when empty.                                                                            |
-| `outcome`   | string           | `done`, `broke`, `refused`, `ask`, `pending`, or `delivered-not-green`: the Means column of [Exit codes](#exit-codes), with hyphens. |
-| `next`      | string           | What to do next, as on the `Next:` line.                                                                                             |
-| `reason`    | string           | Why the command did not end as `done`. Present on every other outcome.                                                               |
-| `excerpt`   | string           | Third-party text, such as part of a failed check's log. Absent when empty.                                                           |
-| `lines`     | array of strings | What happened, in order; never a line that only restates the reason. Absent when empty.                                              |
-| `exit_code` | integer          | The process exit code.                                                                                                               |
-| `payload`   | object           | The command's structured detail, under the command's name, such as `payload.push`. Absent when empty.                                |
+| Field       | Type             | Meaning                                                                                                                                |
+| ----------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `command`   | string           | The command that ran, such as `push`.                                                                                                  |
+| `words`     | array of strings | The command-line words `ils` received. Absent when empty.                                                                              |
+| `outcome`   | string           | `done`, `broke`, `refused`, `ask`, `pending`, or `delivered-not-green`: the Means column of [Exit codes](#exit-codes), with hyphens.   |
+| `next`      | string           | What to do next, as on the `Next:` line.                                                                                               |
+| `reason`    | string           | Why the command did not end as `done`. Present on every other outcome.                                                                 |
+| `excerpt`   | string           | Third-party text: the end of a failed check's log, or of what the hooks and `git` printed for a push `git` refused. Absent when empty. |
+| `lines`     | array of strings | What happened, in order; never a line that only restates the reason. Absent when empty.                                                |
+| `exit_code` | integer          | The process exit code.                                                                                                                 |
+| `payload`   | object           | The command's structured detail, under the command's name, such as `payload.push`. Absent when empty.                                  |
 
 Each command's payload is described with the command: [Push JSON output](#push-json-output),
 [Merge JSON output](#merge-json-output), and [Status JSON output](#status-json-output).
