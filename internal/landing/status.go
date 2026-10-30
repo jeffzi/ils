@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/jeffzi/ils/internal/forge"
@@ -111,6 +110,11 @@ func (r *reading) failed(read string, err error) {
 // unread says line and lists the read named read as unread, for the reason given.
 func (r *reading) unread(line result.Phrase, read, reason string) {
 	r.say(line)
+	r.markUnread(read, reason)
+}
+
+// markUnread lists the read named read as unread, for the reason given.
+func (r *reading) markUnread(read, reason string) {
 	r.status.Unread = append(r.status.Unread, result.Unread{Read: read, Error: reason})
 }
 
@@ -212,10 +216,7 @@ func (r *reading) readLocalTrunk(ctx context.Context) {
 // refusal says the reason and lines of stop, a refusal push or merge would end on, and returns its
 // step.
 func (r *reading) refusal(stop *result.Result) result.Next {
-	for _, line := range stop.Lines {
-		r.say(line)
-	}
-
+	r.say(stop.Lines...)
 	r.say(stop.Reason)
 
 	return stop.Next
@@ -259,7 +260,7 @@ func (r *reading) readDetached(ctx context.Context) {
 		r.say(result.Say("HEAD is detached"))
 	} else {
 		r.say(detachedWith(r.on.Trunk))
-		r.lines = append(r.lines, listed(own)...)
+		r.say(listed(own)...)
 	}
 
 	for _, commit := range own {
@@ -278,6 +279,10 @@ func (r *reading) readOrigin(ctx context.Context) {
 	switch {
 	case err != nil:
 		r.failed(readURLs, err)
+
+		if !r.cut {
+			r.skippedPulls(err.Error())
+		}
 	case !oneRepo:
 		r.block(Request{Command: PushCommand}.twoRepositories(urls), "origin's URLs do not name one GitHub repository")
 	default:
@@ -337,7 +342,7 @@ func (r *reading) readLastFetch(ctx context.Context, err error) {
 	default:
 		r.status.Trunk, r.on.Trunk, r.trunkTip = trunk, trunk, tip
 		// The read of origin's trunk still failed, whatever the last fetch stands in for.
-		r.status.Unread = append(r.status.Unread, result.Unread{Read: readTrunk, Error: err.Error()})
+		r.markUnread(readTrunk, err.Error())
 	}
 
 	r.offline = true
@@ -360,14 +365,17 @@ func (r *reading) readIdentity(ctx context.Context) {
 	repo, err := r.deps.Forge.Identity(ctx, origin)
 	if err != nil {
 		if stop := push.toolRefusal(err); stop != nil {
-			r.unread(stop.Reason, readIdentity, err.Error())
-			r.blocked = stop.Next
-			r.skippedPulls(err.Error())
+			r.block(stop, err.Error())
+			r.markUnread(readIdentity, err.Error())
 
 			return
 		}
 
 		r.failed(readIdentity, err)
+
+		if !r.cut {
+			r.skippedPulls(err.Error())
+		}
 
 		return
 	}
@@ -505,15 +513,6 @@ func (r *reading) copyTip(ctx context.Context) (theirs string, found bool, read 
 	return theirs, true, readCopy, err
 }
 
-// nounCount is n as a count of noun: "1 <noun>", or "<n> <noun>s" for any other n.
-func nounCount(n int, noun string) string {
-	if n == 1 {
-		return "1 " + noun
-	}
-
-	return strconv.Itoa(n) + " " + noun + "s"
-}
-
 // readPulls reads the branch's pull requests: the open one against the trunk, and every closed or
 // merged one, each merged one checked for the branch's commits it carries.
 func (r *reading) readPulls(ctx context.Context) {
@@ -523,7 +522,7 @@ func (r *reading) readPulls(ctx context.Context) {
 
 	if r.repo == (forge.Repo{}) {
 		if r.unreadPulls != "" {
-			r.status.Unread = append(r.status.Unread, result.Unread{Read: readChanges, Error: r.unreadPulls})
+			r.markUnread(readChanges, r.unreadPulls)
 		}
 
 		return
@@ -592,7 +591,7 @@ func (r *reading) readLanded(ctx context.Context, change forge.Change) {
 	case r.unlanded == nil:
 		r.unlanded = unlanded
 		r.say(result.Say("Pull request %s was merged without the commits listed here", pull))
-		r.lines = append(r.lines, listed(unlanded)...)
+		r.say(listed(unlanded)...)
 	}
 }
 
@@ -693,8 +692,7 @@ func (r *reading) takeVerdict(verdict forge.Verdict, required []string) {
 	outcome, done := judge(verdict, required)
 
 	w := &r.waited
-	w.Verdict, w.Outcome, w.Deciding = verdict, outcome, verdict.Deciding()
-	w.Passed, w.Skipped = tally(w.Deciding)
+	w.take(verdict, outcome)
 	// A red verdict still waiting for its failed log is red all the same.
 	r.running = !done && outcome != WaitRed
 

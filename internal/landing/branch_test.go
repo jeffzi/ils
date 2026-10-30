@@ -50,6 +50,9 @@ func landedScript() forgetest.Script {
 // nextBranch is the `Next:` line that starts a branch from origin's trunk.
 func nextBranch() string { return expect("`" + startCommand + "`") }
 
+// keepDetached is the `Next:` line that keeps a detached HEAD's commits on a new branch.
+func keepDetached() string { return expect("`git switch -c <name>`", "ils push") }
+
 func onTrunk() string {
 	return expect("on the trunk "+trunk) + nextBranch()
 }
@@ -96,7 +99,7 @@ func standingRefusals() []pushRefusal {
 			arrange: func(f *gittest.Fixture) string {
 				f.Detach()
 
-				return expect(shortSHA(f.Git("rev-parse", "HEAD")), "detached", "`git switch -c <name>`", "ils push")
+				return expect(shortSHA(f.Git("rev-parse", "HEAD")), "detached") + keepDetached()
 			},
 		},
 		{
@@ -350,7 +353,9 @@ func sharedFailedReads() []failedRead {
 	return []failedRead{
 		{
 			name: "the commits on origin's trunk", read: readFetchedTrunk, script: allowed(), ops: identityRead(),
-			arrange: func(*gittest.Fixture) []string { return []string{"rev-parse", "FETCH_HEAD"} },
+			arrange: func(*gittest.Fixture) []string {
+				return []string{"rev-parse", "--verify", "refs/ils/fetched/heads/" + trunk}
+			},
 		},
 		{
 			name: "the branch's tip", read: readTip, script: allowed(), ops: identityRead(),

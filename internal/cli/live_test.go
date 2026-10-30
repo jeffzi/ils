@@ -45,14 +45,12 @@ const (
 	liveGitVersionVar = "ILS_LIVE_GIT_VERSION"
 )
 
-// liveGitTool is the git the live suite must find.
 func liveGitTool() testtarget.Tool {
 	return testtarget.Tool{
 		Name: "git", TargetVar: liveGitTargetVar, VersionVar: liveGitVersionVar, MinimumVersion: git.MinimumVersion,
 	}
 }
 
-// liveGhTool is the gh the live suite must find.
 func liveGhTool() testtarget.Tool {
 	return testtarget.Tool{
 		Name: "gh", TargetVar: liveGhTargetVar, VersionVar: liveGhVersionVar, MinimumVersion: github.MinimumVersion,
@@ -75,12 +73,9 @@ const (
 	// liveScenarioLimit is how long one scenario may run `ils push` or `ils merge` again while it is
 	// pending.
 	liveScenarioLimit = 8 * time.Minute
-	// liveCleanupLimit is how long the cancels after a scenario may take.
-	liveCleanupLimit = time.Minute
-	// liveRegistryPoll is how long to wait between two reads of the workflows GitHub has registered.
-	liveRegistryPoll = 5 * time.Second
+	liveCleanupLimit  = time.Minute
+	liveRegistryPoll  = 5 * time.Second
 
-	// liveListLimit is the most pull requests one list of gh returns.
 	liveListLimit = "1000"
 	// liveTokenLength is how many characters of random text tell one run's branch and commits from
 	// another's.
@@ -97,6 +92,8 @@ const (
 	// liveJob is the one job of every workflow the suite pushes, and so the name of its check. No
 	// wording of ils holds it, so finding it in a result means the result named the check.
 	liveJob = "probe"
+	// livePassing is the step of a workflow whose check passes.
+	livePassing = "echo passed"
 )
 
 // liveSuite is the test repository the suite writes to.
@@ -205,14 +202,19 @@ func newLiveSuite(t *testing.T) *liveSuite {
 	return l
 }
 
+// repo is the repository as owner/name.
+func (l *liveSuite) repo() string {
+	return l.origin.Owner + "/" + l.origin.Name
+}
+
 // slug is the repository as gh's --repo flag names it.
 func (l *liveSuite) slug() string {
-	return l.origin.Host + "/" + l.origin.Owner + "/" + l.origin.Name
+	return l.origin.Host + "/" + l.repo()
 }
 
 // apiPath is the path of gh api for rest, a path under the repository.
 func (l *liveSuite) apiPath(rest string) string {
-	return "repos/" + l.origin.Owner + "/" + l.origin.Name + "/" + rest
+	return "repos/" + l.repo() + "/" + rest
 }
 
 // apiArgs is the argument list of gh api for rest, a path under the repository, followed by extra.
@@ -243,16 +245,17 @@ func (l *liveSuite) mustRemoteCommit(t *testing.T, ref string) string {
 	return sha
 }
 
-// trunkRef is the full name of the default branch's ref.
 func (l *liveSuite) trunkRef() string {
 	return headRef(l.trunk)
 }
 
-// headRef is the full name of the ref of the branch name.
 func headRef(name string) string { return "refs/heads/" + name }
 
 // liveToken returns random text in no earlier run's branch or commit.
 func liveToken() string { return strings.ToLower(rand.Text())[:liveTokenLength] }
+
+// liveBranchName returns the name of the branch of scenario in the run token tells.
+func liveBranchName(scenario, token string) string { return "live/" + scenario + "-" + token }
 
 // clone returns a fresh clone of the repository that commits under a name of its own and
 // signs nothing.
@@ -385,7 +388,7 @@ func (l *liveSuite) branch(t *testing.T, scenario string) *liveBranch {
 
 	token := liveToken()
 	b := &liveBranch{
-		suite: l, dir: l.clone(t), name: "live/" + scenario + "-" + token, token: token,
+		suite: l, dir: l.clone(t), name: liveBranchName(scenario, token), token: token,
 		deadline: time.Now().Add(liveScenarioLimit),
 	}
 	mustGit(t, b.dir, "switch", "--quiet", "-c", b.name)
@@ -646,15 +649,15 @@ func TestApp_Run_AgainstALiveRepository_EndsEachScenarioAsGitHubReportsIt(t *tes
 
 func liveGreen(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "green")
-	b.commit(t, liveWorkflow("echo passed"))
+	b.commit(t, liveWorkflow(livePassing))
 
 	got := b.push(t)
 
 	assert.Equal(t, got.code, exitDone, "%s", got.raw)
 
-	b.checkFreshPull(t, b.tip(t))
+	pull := b.checkFreshPull(t, b.tip(t))
 	assert.Check(t, is.Equal(got.check("pass").Name, liveJob), "no passed check named %s in:\n%s", liveJob, got.raw)
-	checkMergeNext(t, l, got, b.onePull(t).Number)
+	checkMergeNext(t, l, got, pull.Number)
 }
 
 // checkMergeNext checks that a push's next step names the pull request numbered number in l's
@@ -668,7 +671,7 @@ func checkMergeNext(t *testing.T, l *liveSuite, got liveRun, number int) {
 
 func liveGreenAgain(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "green-again")
-	b.commit(t, liveWorkflow("echo passed"))
+	b.commit(t, liveWorkflow(livePassing))
 	b.push(t)
 	pull := b.onePull(t)
 
@@ -739,7 +742,7 @@ func liveStatus(t *testing.T, dir string) *result.Status {
 
 func liveStatusOfPull(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "status")
-	b.commit(t, liveWorkflow("echo passed"))
+	b.commit(t, liveWorkflow(livePassing))
 	b.push(t)
 	number := b.onePull(t).Number
 
@@ -764,7 +767,7 @@ func liveStatusOfTrunk(t *testing.T, l *liveSuite) {
 
 func liveStartBranch(t *testing.T, l *liveSuite) {
 	dir := l.clone(t)
-	name := "live/branch-" + liveToken()
+	name := liveBranchName("branch", liveToken())
 
 	started := launch(t, over(git.Runner{Dir: dir}), "branch", name, "--json")
 
@@ -774,7 +777,7 @@ func liveStartBranch(t *testing.T, l *liveSuite) {
 }
 
 func liveBranchTaken(t *testing.T, l *liveSuite) {
-	name := "live/branch-" + liveToken()
+	name := liveBranchName("branch", liveToken())
 	mustGit(t, l.clone(t), "push", "--quiet", l.url, "HEAD:"+headRef(name))
 
 	got := launch(t, over(git.Runner{Dir: l.clone(t)}), "branch", name, "--json")
@@ -844,7 +847,7 @@ func liveCIDidNotFire(t *testing.T, l *liveSuite) {
 
 func liveTitleRefused(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "title")
-	number := b.pushedPull(t, liveWorkflow("echo passed"))
+	number := b.pushedPull(t, liveWorkflow(livePassing))
 	before := l.remoteCommit(t, l.trunkRef())
 
 	got := b.merge(t)
@@ -858,7 +861,7 @@ func liveTitleRefused(t *testing.T, l *liveSuite) {
 
 func liveMerged(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "merged")
-	number := b.pushedPull(t, liveWorkflow("echo passed"))
+	number := b.pushedPull(t, liveWorkflow(livePassing))
 	title, body := "feat(live): land "+b.token, "Landed by the live suite as "+b.token+"."
 	mustGh(t, "pr", "edit", number, "--repo", l.slug(), "--title", title, "--body", body)
 	before := l.remoteCommit(t, l.trunkRef())

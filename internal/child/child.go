@@ -100,17 +100,16 @@ func (e *KilledError) Unwrap() error {
 	return e.Err
 }
 
-// Output is what a run left behind: both outputs of a run that exited zero, and only the stdout of
-// one that exited non-zero, whose stderr its *ExitError holds.
+// Output is the stdout and stderr a run printed.
 type Output struct {
 	Stdout string
 	Stderr string
 }
 
 // Ended returns what a run of argv that printed both outputs of printed and ended with runErr
-// leaves to its caller: printed when runErr is nil, and otherwise the error of Failure, with the
-// stdout when that error is an *ExitError and an empty Output when it is not, so that a
-// half-written stdout is never read.
+// leaves to its caller: printed when runErr is nil, and otherwise the error of Failure, with only
+// the stdout when that error is an *ExitError, which holds the stderr, and an empty Output when it
+// is not, so that a half-written stdout is never read.
 func Ended(ctx context.Context, argv []string, runErr error, printed Output) (Output, error) {
 	if runErr == nil {
 		return printed, nil

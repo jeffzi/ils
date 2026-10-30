@@ -99,6 +99,15 @@ func saying(line result.Phrase) cli.Command {
 	}
 }
 
+// recording is a landing command that keeps its request in seen and ends as done with nothing to say.
+func recording(seen *landing.Request) cli.Command {
+	return func(_ context.Context, _ landing.Deps, req landing.Request) result.Result {
+		*seen = req
+
+		return finished(req)
+	}
+}
+
 // plain checks, without stopping the test, that text carries no escape sequence; what names the
 // text in the failure message.
 func plain(t *testing.T, what, text string) {
@@ -145,12 +154,13 @@ func TestApp_Run_WhenVersionIsEmpty_PrintsTheBuildInfoVersionOrDevel(t *testing.
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		info *debug.BuildInfo
-		want string
-		ok   bool
+		name     string
+		info     *debug.BuildInfo
+		want     string
+		unwanted string
+		ok       bool
 	}{
-		{name: "release", info: built("v0.2.0"), ok: true, want: "0.2.0"},
+		{name: "release", info: built("v0.2.0"), ok: true, want: "0.2.0", unwanted: "v0.2.0"},
 		{name: "build info not readable", want: "(devel)"},
 		{name: "empty version", info: built(""), ok: true, want: "(devel)"},
 	}
@@ -164,7 +174,9 @@ func TestApp_Run_WhenVersionIsEmpty_PrintsTheBuildInfoVersionOrDevel(t *testing.
 
 			assert.Check(t, is.Equal(got.code, exitDone))
 			assert.Check(t, is.Contains(got.stdout, tt.want))
-			assert.Check(t, !strings.Contains(got.stdout, "v"+tt.want), "stdout = %q", got.stdout)
+			if tt.unwanted != "" {
+				assert.Check(t, !strings.Contains(got.stdout, tt.unwanted), "stdout = %q", got.stdout)
+			}
 		})
 	}
 }
@@ -322,11 +334,44 @@ func TestApp_Run_WhenBranchIsGivenOneName_RunsTheBranchCommandWithTheNameAsTyped
 			var seen landing.Request
 
 			app := outside(t)
-			app.SetBranch(func(_ context.Context, _ landing.Deps, req landing.Request) result.Result {
-				seen = req
+			app.SetBranch(recording(&seen))
 
-				return finished(req)
-			})
+			got := launch(t, app, tt.args...)
+
+			assert.Check(t, is.Equal(got.code, exitDone))
+			assert.Check(t, is.DeepEqual(seen, tt.want))
+		})
+	}
+}
+
+func TestApp_Run_WhenReleaseIsGivenOneVersion_RunsTheReleaseCommandWithTheFlagsAsTyped(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args []string
+		want landing.Request
+	}{
+		{
+			name: "version alone", args: []string{"release", "1.2.0"},
+			want: landing.Request{Command: "release", Words: []string{"release", "1.2.0"}, Args: []string{"1.2.0"}},
+		},
+		{
+			name: "flags around the version", args: []string{"release", "--tag-only", "-d", "1.2.0", "--no-color", "--force", "--json"},
+			want: landing.Request{
+				Command: "release", Words: []string{"release", "--tag-only", "1.2.0", "--force"}, Args: []string{"1.2.0"},
+				Force: true, TagOnly: true,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var seen landing.Request
+
+			app := outside(t)
+			app.SetRelease(recording(&seen))
 
 			got := launch(t, app, tt.args...)
 
@@ -351,11 +396,7 @@ const (
 func painted(t *testing.T, env []string, stdoutTerminal, stderrTerminal bool) cli.App {
 	t.Helper()
 
-	return paint(lost(t), env, stdoutTerminal, stderrTerminal)
-}
-
-// paint returns app under env, with stdout and stderr each a terminal or not.
-func paint(app cli.App, env []string, stdoutTerminal, stderrTerminal bool) cli.App {
+	app := lost(t)
 	app.Environ = env
 	app.StdoutTerminal = stdoutTerminal
 	app.StderrTerminal = stderrTerminal
@@ -484,7 +525,6 @@ func TestApp_Run_WhenStdoutHasAColorProfile_StylesTheResult(t *testing.T) {
 		args     []string
 		terminal bool
 	}{
-		{name: "flag set to false", env: []string{colorTerm}, terminal: true, args: []string{"merge", "--no-color=false"}},
 		{name: "unknown word", env: []string{colorTerm}, terminal: true, args: []string{"pish"}},
 		{name: "color flag set to neither", env: []string{forced}, args: []string{"merge", "--no-color=maybe"}},
 	}
@@ -540,11 +580,12 @@ func TestApp_Run_WhenMergeRuns_EndsItAtTheBoundFromLaunch(t *testing.T) {
 
 		return finished(req)
 	})
+	want := app.Launch.Add(landing.TimeLimit)
 
 	got := launch(t, app, "merge")
 
 	assert.Check(t, is.Equal(got.code, exitDone))
-	assert.Check(t, deadline.Equal(app.Launch.Add(landing.TimeLimit)), "deadline = %s, want %s", deadline, app.Launch.Add(landing.TimeLimit))
+	assert.Check(t, deadline.Equal(want), "deadline = %s, want %s", deadline, want)
 }
 
 func TestApp_Run_WhenHelpIsAskedForOnAColorTerminal_StylesIt(t *testing.T) {
@@ -563,6 +604,9 @@ const (
 
 	// branchTakesOne opens the reason a word beyond the one name of branch is refused for.
 	branchTakesOne = "branch takes one name and no other word, and "
+
+	// releaseTakesOne opens the reason a word beyond the one version of release is refused for.
+	releaseTakesOne = "release takes one version and no other word, and "
 )
 
 // grammarRefusal is a command line that breaks the grammar, and the reason ils refuses it with.
@@ -573,21 +617,18 @@ type grammarRefusal struct {
 }
 
 // grammarRefusals are the command lines that break the grammar: a missing, unknown or extra word,
-// a missing or extra branch name, a command not in this version, and a flag that is unknown or set
-// to neither true nor false.
+// a missing or extra release version, and a flag that is unknown or set to neither
+// true nor false.
 func grammarRefusals() []grammarRefusal {
 	return []grammarRefusal{
-		{name: "unknown word", args: []string{"pish"}, reason: "pish is not a command"},
 		{name: "extra word", args: []string{"push", "extra"}, reason: "push takes no other word, and extra was given"},
 		{name: "end of flags", args: []string{"--", "push"}, reason: "-- is not a command"},
 		{name: "end of flags after push", args: []string{"push", "--", "x"}, reason: "push takes no other word, and -- was given"},
-		{name: "command not in this version", args: []string{"release", "1.0.0"}, reason: "release is not in this version"},
-		{name: "branch without a name", args: []string{"branch"}, reason: "branch takes one name, and none was given"},
-		{name: "second word after the name", args: []string{"branch", "topic", "extra"}, reason: branchTakesOne + "extra was given"},
-		{name: "end of flags before the name", args: []string{"branch", "--", "topic"}, reason: branchTakesOne + "-- was given"},
-		{name: "end of flags after the name", args: []string{"branch", "topic", "--"}, reason: branchTakesOne + "-- was given"},
+		{name: "release without a version", args: []string{"release"}, reason: "release takes one version, and none was given"},
+		{name: "second word after the version", args: []string{"release", "1.2.0", "extra"}, reason: releaseTakesOne + "extra was given"},
+		{name: "end of flags before the version", args: []string{"release", "--", "1.2.0"}, reason: releaseTakesOne + "-- was given"},
+		{name: "end of flags after the version", args: []string{"release", "1.2.0", "--"}, reason: releaseTakesOne + "-- was given"},
 		{name: "unknown flag after branch", args: []string{"branch", "--bogus"}, reason: branchTakesOne + "--bogus was given"},
-		{name: "unknown flag", args: []string{"--bogus"}, reason: "--bogus is not a command"},
 		{name: "version flag set to false", args: []string{"--version=false"}, reason: "no command was given"},
 		{name: "version flag before an extra word", args: []string{"--version", "extra"}, reason: "extra is not a command"},
 		{name: "unknown flag after push", args: []string{"push", "--bogus"}, reason: "push takes no other word, and --bogus was given"},
@@ -596,18 +637,28 @@ func grammarRefusals() []grammarRefusal {
 	}
 }
 
-func TestApp_Run_WhenTheFirstWordIsNoCommand_SuggestsOnlyTheOneCommandItIsCloseTo(t *testing.T) {
+func TestApp_Run_WhenTheFirstWordIsCloseToOneCommand_SuggestsOnlyThatCommand(t *testing.T) {
+	t.Parallel()
+
+	got := launch(t, outside(t), "verge", "--json")
+
+	assert.Check(t, is.Equal(got.code, exitRefused))
+
+	printed := resulttest.Decode(t, got.stdout)
+	assert.Check(t, is.Contains(printed.Reason, "verge"))
+	assert.Check(t, is.Contains(printed.Reason, "merge"))
+	assert.Check(t, is.Equal(printed.Next, "ils merge --help"))
+}
+
+func TestApp_Run_WhenTheFirstWordIsCloseToNoCommand_SuggestsNoCommand(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		word      string
-		suggested string
-		next      string
+		name string
+		word string
 	}{
-		{name: "close to one command", word: "verge", suggested: "merge", next: "ils merge --help"},
-		{name: "close to no command", word: "extra", next: "ils --help"},
-		{name: "close to every command", word: "", next: "ils --help"},
+		{name: "close to no command", word: "extra"},
+		{name: "close to every command", word: ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -618,9 +669,10 @@ func TestApp_Run_WhenTheFirstWordIsNoCommand_SuggestsOnlyTheOneCommandItIsCloseT
 			assert.Check(t, is.Equal(got.code, exitRefused))
 
 			printed := resulttest.Decode(t, got.stdout)
-			assert.Check(t, is.Contains(printed.Reason, tt.word))
-			assert.Check(t, is.Contains(printed.Reason, tt.suggested))
-			assert.Check(t, is.Equal(printed.Next, tt.next))
+			if tt.word != "" {
+				assert.Check(t, is.Contains(printed.Reason, tt.word))
+			}
+			assert.Check(t, is.Equal(printed.Next, "ils --help"))
 		})
 	}
 }

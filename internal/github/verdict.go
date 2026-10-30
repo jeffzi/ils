@@ -201,7 +201,9 @@ func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Ve
 		return forge.FailedLog{Check: failed.Name, State: forge.FailedLogNoRun}, nil
 	}
 
-	result, err := f.runner().Run(ctx, "run", "view", "--repo", repo.Slug(), match[1], "--log-failed")
+	runID, jobID := match[1], match[2]
+
+	result, err := f.runner().Run(ctx, "run", "view", "--repo", repo.Slug(), runID, "--log-failed")
 	if exitErr, exited := errors.AsType[*child.ExitError](err); exited {
 		if runUnfinished.MatchString(exitErr.Stderr) {
 			return forge.FailedLog{Check: failed.Name, State: forge.FailedLogInProgress}, nil
@@ -216,7 +218,7 @@ func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Ve
 
 	text := result.Stdout
 	if strings.TrimSpace(text) == "" {
-		text, err = f.jobLog(ctx, repo, match[2])
+		text, err = f.jobLog(ctx, repo, jobID)
 		if err != nil {
 			return forge.FailedLog{}, err
 		}
@@ -246,4 +248,196 @@ func (f *Forge) jobLog(ctx context.Context, repo forge.Repo, job string) (string
 	}
 
 	return result.Stdout, nil
+}
+
+type commitCheckRun struct {
+	// StartedAt is the zero time for a check run GitHub has not started.
+	StartedAt  time.Time `json:"started_at"`
+	Name       string    `json:"name"`
+	Status     string    `json:"status"`
+	Conclusion string    `json:"conclusion"`
+	Link       string    `json:"html_url"`
+	CheckSuite struct {
+		ID int64 `json:"id"`
+	} `json:"check_suite"`
+	ID int64 `json:"id"`
+}
+
+type checkRunsPage struct {
+	CheckRuns []commitCheckRun `json:"check_runs"`
+}
+
+// commitStatus is one status of the REST read of a commit's combined status, which holds the
+// latest status of each context.
+type commitStatus struct {
+	CreatedAt time.Time `json:"created_at"`
+	Context   string    `json:"context"`
+	State     string    `json:"state"`
+	Link      string    `json:"target_url"`
+}
+
+type combinedStatusPage struct {
+	Statuses []commitStatus `json:"statuses"`
+}
+
+// actionsRun is one run of the REST read of the Actions runs on a commit; its check suite holds the
+// check runs of its jobs.
+type actionsRun struct {
+	Name       string `json:"name"`
+	Event      string `json:"event"`
+	Status     string `json:"status"`
+	CheckSuite int64  `json:"check_suite_id"`
+}
+
+type actionsRunsPage struct {
+	Runs []actionsRun `json:"workflow_runs"`
+}
+
+// CommitVerdict returns the verdict of the commit sha on its own, with no pull request involved:
+// every commit status, and every check run but those of an Actions run that judges something else
+// than the commit, with the Actions runs that judge it. Its FailedLog is always the zero value.
+//
+// A check run is keyed by its workflow and name: when one is reported more than once, the most
+// recent one stands for it.
+func (f *Forge) CommitVerdict(ctx context.Context, repo forge.Repo, sha string) (forge.Verdict, error) {
+	runPages, err := readEachPage[actionsRunsPage](ctx, f.runner(), paginatedAPIArgs(repo, "actions/runs?head_sha="+sha))
+	if err != nil {
+		return forge.Verdict{}, err
+	}
+
+	checkPages, err := readEachPage[checkRunsPage](ctx, f.runner(), paginatedAPIArgs(repo, "commits/"+sha+"/check-runs"))
+	if err != nil {
+		return forge.Verdict{}, err
+	}
+
+	statusPages, err := readEachPage[combinedStatusPage](ctx, f.runner(), paginatedAPIArgs(repo, "commits/"+sha+"/status"))
+	if err != nil {
+		return forge.Verdict{}, err
+	}
+
+	suites := suitesOf(runPages)
+	verdict := forge.Verdict{Checks: latestCheckRuns(checkPages, suites), Runs: suites.runs}
+
+	for _, page := range statusPages {
+		for _, status := range page.Statuses {
+			verdict.Checks = append(verdict.Checks, forge.Check{
+				Name: status.Context, Bucket: statusBucketOf(status.State), Link: status.Link, StartedAt: status.CreatedAt,
+			})
+		}
+	}
+
+	return verdict, nil
+}
+
+// commitSuites sorts the check suites of a commit's Actions runs by whether their run judges the
+// commit.
+type commitSuites struct {
+	// workflowOf names the workflow of each check suite whose run judges the commit.
+	workflowOf map[int64]string
+	// elsewhere holds the check suites of the runs that judge something else.
+	elsewhere map[int64]bool
+	// runs are the runs that judge the commit.
+	runs []forge.Run
+}
+
+// suitesOf judges each run by its event: a push judges the commit, and so does a run another run
+// started, since it carries on what a push began. A scheduled, manual or Dependabot run judges
+// something else that happens to stand on the same commit, and an event this version does not know
+// is counted with them.
+func suitesOf(pages []actionsRunsPage) commitSuites {
+	suites := commitSuites{workflowOf: map[int64]string{}, elsewhere: map[int64]bool{}}
+
+	for _, page := range pages {
+		for _, run := range page.Runs {
+			if run.Event != "push" && run.Event != "workflow_run" {
+				suites.elsewhere[run.CheckSuite] = true
+
+				continue
+			}
+
+			suites.workflowOf[run.CheckSuite] = run.Name
+			suites.runs = append(suites.runs, forge.Run{Name: run.Name, Status: runStatusOf(run.Status)})
+		}
+	}
+
+	return suites
+}
+
+// checkKey is what makes two check runs the same check.
+type checkKey struct {
+	workflow string
+	name     string
+}
+
+// latestCheckRuns returns a check for each workflow and name, from the check run of it GitHub
+// created last, leaving out the check runs of suites that judge something else. A check run with
+// no Actions run behind it, such as one a GitHub App reports, has no workflow.
+func latestCheckRuns(pages []checkRunsPage, suites commitSuites) []forge.Check {
+	var kept []commitCheckRun
+
+	at := map[checkKey]int{}
+
+	for _, page := range pages {
+		for _, run := range page.CheckRuns {
+			if suites.elsewhere[run.CheckSuite.ID] {
+				continue
+			}
+
+			key := checkKey{workflow: suites.workflowOf[run.CheckSuite.ID], name: run.Name}
+			if i, seen := at[key]; seen {
+				if run.ID > kept[i].ID {
+					kept[i] = run
+				}
+
+				continue
+			}
+
+			at[key] = len(kept)
+			kept = append(kept, run)
+		}
+	}
+
+	checks := make([]forge.Check, len(kept))
+	for i, run := range kept {
+		checks[i] = forge.Check{
+			Name: run.Name, Bucket: checkRunBucketOf(run.Status, run.Conclusion),
+			Workflow: suites.workflowOf[run.CheckSuite.ID], Link: run.Link, StartedAt: run.StartedAt,
+		}
+	}
+
+	return checks
+}
+
+// checkRunBucketOf returns BucketPending for a check run not completed, and for a conclusion it
+// does not know, so that it never reads as a passed check.
+func checkRunBucketOf(status, conclusion string) forge.Bucket {
+	if status != "completed" {
+		return forge.BucketPending
+	}
+
+	switch conclusion {
+	case "success":
+		return forge.BucketPass
+	case "skipped", "neutral":
+		return forge.BucketSkipped
+	case "cancelled": //nolint:misspell // GitHub's REST API spells the conclusion this way.
+		return forge.BucketCanceled
+	case "failure", "timed_out", "action_required", "stale":
+		return forge.BucketFail
+	default:
+		return forge.BucketPending
+	}
+}
+
+// statusBucketOf returns BucketPending for a state it does not know, so that it never reads as a
+// passed check.
+func statusBucketOf(state string) forge.Bucket {
+	switch state {
+	case "success":
+		return forge.BucketPass
+	case "failure", "error":
+		return forge.BucketFail
+	default:
+		return forge.BucketPending
+	}
 }

@@ -3,6 +3,8 @@ package github_test
 import (
 	"context"
 	"errors"
+	"io/fs"
+	"os"
 	"path"
 	"slices"
 	"strconv"
@@ -45,6 +47,13 @@ const (
 	releaseFile = ".github/workflows/release.yml"
 	// dependabotPath is where GitHub lists its own Dependabot workflow, which has no file.
 	dependabotPath = "dynamic/dependabot/dependabot-updates"
+
+	releaseTag = "v1.2.0"
+	releaseURL = "https://git.example.com/ada/engine/releases/tag/" + releaseTag
+	// releaseNotes holds what a shell would expand or split, so notes passed through one differ.
+	releaseNotes = "## [1.2.0] - 2026-10-30\n\n### Fixed\n\n" +
+		"- Quote `$HOME`, \"$(date)\" and 'single' words; keep a \\ backslash, a | pipe & a * star\n" +
+		"- Move → keep — done\n"
 )
 
 // readCase is one `gh` read of an operation, with the calls that succeed before it.
@@ -63,21 +72,17 @@ func newForge() *github.Forge {
 	return &github.Forge{}
 }
 
+// ghArgv is the argv of a call whose arguments are args, led by `gh`.
+func ghArgv(args []string) []string { return append([]string{"gh"}, args...) }
+
 // received is the calls the fake is expected to record, each led by `gh`.
 func received(calls ...[]string) [][]string {
 	led := make([][]string, len(calls))
 	for i, call := range calls {
-		led[i] = append([]string{"gh"}, call...)
+		led[i] = ghArgv(call)
 	}
 
 	return led
-}
-
-// assertCalls fails the test unless the fake received exactly the want argv, in order.
-func assertCalls(t *testing.T, fake *ghtest.Fake, want [][]string) {
-	t.Helper()
-
-	assert.Check(t, is.DeepEqual(fake.Calls(), want))
 }
 
 func featureChange() forge.NewChange {
@@ -110,6 +115,16 @@ func checksArgs() []string { return ghtest.ChecksArgs(engineSlug, pullNumber) }
 func runsArgs() []string { return ghtest.RunsArgs(engineSlug, headSHA) }
 
 func messageArgs() []string { return ghtest.MessageArgs(engineHost, "ada", "engine", pullNumber) }
+
+func releaseViewArgs() []string { return ghtest.ReleaseViewArgs(engineSlug, releaseTag) }
+
+func releaseCreateArgs(prerelease bool) []string {
+	return ghtest.ReleaseCreateArgs(engineSlug, releaseTag, releaseNotes, prerelease)
+}
+
+func newRelease(prerelease bool) forge.NewRelease {
+	return forge.NewRelease{Tag: releaseTag, Notes: releaseNotes, Prerelease: prerelease}
+}
 
 func featureLanding() forge.Landing {
 	return forge.Landing{Number: pullNumber, HeadSHA: headSHA, Subject: "feat: read the message (#7)", Body: "Lands the change."}
@@ -196,7 +211,7 @@ func verdictQuery(required ...string) forge.VerdictQuery {
 	return forge.VerdictQuery{SHA: headSHA, Number: pullNumber, Required: required}
 }
 
-// operationsByName is every forge operation, each reduced to its error, keyed by its method name.
+// operationsByName is the forge operations the read tables run, each reduced to its error, keyed by its method name.
 func operationsByName() map[string]func(context.Context, *github.Forge) error {
 	return map[string]func(context.Context, *github.Forge) error{
 		"Identity": func(ctx context.Context, f *github.Forge) error {
@@ -205,10 +220,6 @@ func operationsByName() map[string]func(context.Context, *github.Forge) error {
 		},
 		"FindChanges": func(ctx context.Context, f *github.Forge) error {
 			_, err := f.FindChanges(ctx, engine(), featureBranch)
-			return err
-		},
-		"OpenChange": func(ctx context.Context, f *github.Forge) error {
-			_, err := f.OpenChange(ctx, engine(), featureChange())
 			return err
 		},
 		"Head": func(ctx context.Context, f *github.Forge) error {
@@ -223,19 +234,12 @@ func operationsByName() map[string]func(context.Context, *github.Forge) error {
 			_, err := f.Verdict(ctx, engine(), verdictQuery())
 			return err
 		},
-		"HasTrunkCI": func(ctx context.Context, f *github.Forge) error {
-			_, err := f.HasTrunkCI(ctx, engine(), trunk)
-			return err
-		},
 		"Message": func(ctx context.Context, f *github.Forge) error {
 			_, err := f.Message(ctx, engine(), pullNumber)
 			return err
 		},
 		"Land": func(ctx context.Context, f *github.Forge) error {
 			return f.Land(ctx, engine(), featureLanding())
-		},
-		"DeleteBranch": func(ctx context.Context, f *github.Forge) error {
-			return f.DeleteBranch(ctx, engine(), featureBranch)
 		},
 	}
 }
@@ -245,7 +249,7 @@ func readCases() []readCase {
 	byName := operationsByName()
 
 	identity, find, head, protection := byName["Identity"], byName["FindChanges"], byName["Head"], byName["TrunkProtection"]
-	hasCI, message := byName["HasTrunkCI"], byName["Message"]
+	message := byName["Message"]
 	blocked := func(ctx context.Context, f *github.Forge) error {
 		_, err := f.Head(ctx, engine(), headQuery("build", "test"))
 		return err
@@ -260,11 +264,6 @@ func readCases() []readCase {
 			before: []ghtest.Call{ghtest.Says(headJSON("BLOCKED", ""), headArgs()...)},
 		},
 		{name: "api rules", run: protection, args: rulesArgs()},
-		{name: "api workflows", run: hasCI, args: workflowsArgs()},
-		{
-			name: "api workflow files", run: hasCI, args: workflowFilesArgs(),
-			before: []ghtest.Call{ghtest.Says(activeCIList(), workflowsArgs()...)},
-		},
 		{name: "api graphql message", run: message, args: messageArgs()},
 	}
 }
@@ -276,9 +275,11 @@ func readCases() []readCase {
 func TestForge_WhenCallExitsNonZero_ReturnsExitErrorNamingCall(t *testing.T) {
 	// Each read left out returns its exit error through a line another test already reaches:
 	// runDecoded's through "pr list", Identity's through the malformed "repo view",
-	// and TrunkProtection's and HasTrunkCI's through their own tests of a refused read. Verdict's
-	// reads have their own test in verdict_test.go.
-	reads := casesWithout(readCases(), "repo view", "api rules", "api workflows", "api workflow files")
+	// and TrunkProtection's through its own test of a refused read. FindRelease's and HasTrunkCI's
+	// reads are not cases: TestForge_FindRelease_WhenSomethingElseIsNotFound_ReturnsExitError and
+	// the HasTrunkCI tests of a refused read reach their exit errors. Verdict's propagation goes
+	// through "run list" in verdict_test.go.
+	reads := casesWithout(readCases(), "repo view", "api rules")
 	for _, tt := range reads {
 		t.Run(tt.name, func(t *testing.T) {
 			assertExitErrorNamesCall(t, tt)
@@ -296,7 +297,7 @@ func assertExitErrorNamesCall(t *testing.T, c readCase) {
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 	assert.Assert(t, ok, "error = %v, want *child.ExitError", err)
-	assert.Check(t, ghtest.Matches(received(c.args)[0], exitErr.Argv), "Argv = %q, want %q", exitErr.Argv, c.args)
+	assert.Check(t, ghtest.Matches(ghArgv(c.args), exitErr.Argv), "Argv = %q, want %q", exitErr.Argv, c.args)
 }
 
 // casesNamed is the cases of all whose name is among names, in the order of all.
@@ -327,7 +328,7 @@ func assertDecodeErrorNamesCall(t *testing.T, c readCase) {
 
 	decodeErr, ok := errors.AsType[*github.DecodeError](err)
 	assert.Assert(t, ok, "error = %v, want *github.DecodeError", err)
-	assert.Check(t, ghtest.Matches(received(c.args)[0], decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, c.args)
+	assert.Check(t, ghtest.Matches(ghArgv(c.args), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, c.args)
 }
 
 // loggedArgv is the argv of every call sink received, each led by `gh`, in order.
@@ -341,44 +342,20 @@ func loggedArgv(sink *logtest.Sink) [][]string {
 	return received(logged...)
 }
 
-// loggedCases is one `gh` call of the forge: every call goes through the same runner, so one case
-// shows that the forge hands its logger to it.
-func loggedCases() []readCase {
-	return []readCase{
-		{name: "pr merge", run: operationsByName()["Land"], args: ghtest.LandArgs(engineSlug, featureLanding())},
-	}
-}
-
 func TestForge_WhenLoggerSet_LogsTheCall(t *testing.T) {
-	for _, tt := range loggedCases() {
-		t.Run(tt.name, func(t *testing.T) {
-			assertLogsCall(t, tt)
-		})
-	}
-}
+	// Every call goes through the same runner, so one call shows that the forge hands its logger to it.
+	t.Run("pr merge", func(t *testing.T) {
+		args := ghtest.LandArgs(engineSlug, featureLanding())
+		fake := ghtest.Setup(t, ghtest.Says("", args...))
+		logger, sink := logtest.New()
 
-// assertLogsCall runs the operation of c with a logger and checks that every call the fake
-// received was logged, c's own among them.
-func assertLogsCall(t *testing.T, c readCase) {
-	t.Helper()
-	fake := ghtest.Setup(t, append(c.before, ghtest.Says("", c.args...))...)
-	logger, sink := logtest.New()
+		_ = (&github.Forge{Logger: logger}).Land(t.Context(), engine(), featureLanding())
 
-	_ = c.run(t.Context(), &github.Forge{Logger: logger})
-
-	assert.Check(t, is.DeepEqual(loggedArgv(sink), fake.Calls()))
-	want := received(c.args)[0]
-	assert.Check(t, slices.ContainsFunc(fake.Calls(), func(argv []string) bool { return ghtest.Matches(want, argv) }),
-		"calls = %q, want one matching %q", fake.Calls(), c.args)
-}
-
-func TestForge_Identity_WhenNotLoggedIn_ReturnsNotLoggedInError(t *testing.T) {
-	ghtest.Setup(t, ghtest.Exits(ghtest.LoggedOut(), loginArgs()...))
-
-	_, err := newForge().Identity(t.Context(), engine())
-
-	_, ok := errors.AsType[*forge.NotLoggedInError](err)
-	assert.Assert(t, ok, "Identity error = %v, want *forge.NotLoggedInError", err)
+		assert.Check(t, is.DeepEqual(loggedArgv(sink), fake.Calls()))
+		want := ghArgv(args)
+		assert.Check(t, slices.ContainsFunc(fake.Calls(), func(argv []string) bool { return ghtest.Matches(want, argv) }),
+			"calls = %q, want one matching %q", fake.Calls(), args)
+	})
 }
 
 func TestForge_Identity_WhenGhIsOlderThanTheMinimum_ReturnsToolTooOldErrorBeforeTheLogin(t *testing.T) {
@@ -399,7 +376,7 @@ func TestForge_Identity_WhenVersionReadExitsNonZero_ReturnsExitErrorNamingCall(t
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 	assert.Assert(t, ok, "Identity error = %v, want *child.ExitError", err)
-	assert.Check(t, is.DeepEqual(exitErr.Argv, received(versionArgs())[0]))
+	assert.Check(t, is.DeepEqual(exitErr.Argv, ghArgv(versionArgs())))
 }
 
 func TestForge_Identity(t *testing.T) {
@@ -486,7 +463,7 @@ func TestForge_FindChanges_WhenStateIsUnknown_ReturnsDecodeError(t *testing.T) {
 
 	decodeErr, ok := errors.AsType[*github.DecodeError](err)
 	assert.Assert(t, ok, "FindChanges error = %v, want *github.DecodeError", err)
-	assert.Check(t, ghtest.Matches(received(listArgs())[0], decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, listArgs())
+	assert.Check(t, ghtest.Matches(ghArgv(listArgs()), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, listArgs())
 }
 
 func TestForge_OpenChange_WhenCreated_ReturnsNumberAndURL(t *testing.T) {
@@ -515,7 +492,7 @@ func TestForge_OpenChange_WhenOutputNamesNoPullRequest_ReturnsDecodeErrorNamingC
 
 			decodeErr, ok := errors.AsType[*github.DecodeError](err)
 			assert.Assert(t, ok, "OpenChange error = %v, want *github.DecodeError", err)
-			assert.Check(t, is.DeepEqual(decodeErr.Argv, received(createArgs())[0]))
+			assert.Check(t, is.DeepEqual(decodeErr.Argv, ghArgv(createArgs())))
 		})
 	}
 }
@@ -652,8 +629,8 @@ func TestForge_TrunkProtection(t *testing.T) {
 		},
 		{
 			name: "rules spread over two pages",
-			answer: ghtest.Answer{Stdout: rules(`{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"build"}]}}`).Stdout +
-				rules(pullRequestRule(51, `["rebase"]`)).Stdout},
+			answer: ghtest.Answer{Stdout: ghtest.JSONArray(`{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"build"}]}}`) +
+				ghtest.JSONArray(pullRequestRule(51, `["rebase"]`))},
 			want: forge.Protection{Rules: forge.RulesProtect, RequiredChecks: []string{"build"}, SquashForbiddenBy: []int{51}},
 		},
 		{
@@ -700,7 +677,7 @@ func TestForge_TrunkProtection_WhenRefusalIsNotTheFreePlans_ReturnsExitError(t *
 
 			exitErr, ok := errors.AsType[*child.ExitError](err)
 			assert.Assert(t, ok, "error = %v, want *child.ExitError", err)
-			assert.Check(t, is.DeepEqual(exitErr.Argv, received(rulesArgs())[0]))
+			assert.Check(t, is.DeepEqual(exitErr.Argv, ghArgv(rulesArgs())))
 		})
 	}
 }
@@ -718,12 +695,11 @@ func TestForge_TrunkProtection_WhenTrunkNameHoldsPathSyntax_ReadsExactlyItsRules
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			args := []string{"api", "--hostname", engineHost, "--paginate", tt.path}
-			fake := ghtest.Setup(t, ghtest.Says(rules, args...))
+			ghtest.Setup(t, ghtest.Says(rules, args...))
 
 			_, err := newForge().TrunkProtection(t.Context(), engine(), tt.branch)
-			assert.NilError(t, err)
 
-			assertCalls(t, fake, received(args))
+			assert.NilError(t, err)
 		})
 	}
 }
@@ -768,7 +744,7 @@ func TestForge_HasTrunkCI_WhenWorkflowListAnswers404_ReturnsExitError(t *testing
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 	assert.Assert(t, ok, "HasTrunkCI error = %v, want *child.ExitError", err)
-	assert.Check(t, is.DeepEqual(exitErr.Argv, received(workflowsArgs())[0]))
+	assert.Check(t, is.DeepEqual(exitErr.Argv, ghArgv(workflowsArgs())))
 }
 
 func TestForge_HasTrunkCI_WhenTrunkRefIsMissing_ReturnsExitError(t *testing.T) {
@@ -779,7 +755,7 @@ func TestForge_HasTrunkCI_WhenTrunkRefIsMissing_ReturnsExitError(t *testing.T) {
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 	assert.Assert(t, ok, "HasTrunkCI error = %v, want *child.ExitError", err)
-	assert.Check(t, is.DeepEqual(exitErr.Argv, received(workflowFilesArgs())[0]))
+	assert.Check(t, is.DeepEqual(exitErr.Argv, ghArgv(workflowFilesArgs())))
 }
 
 func TestForge_HasTrunkCI_WhenWorkflowListPrintsNothing_ReturnsDecodeError(t *testing.T) {
@@ -789,18 +765,17 @@ func TestForge_HasTrunkCI_WhenWorkflowListPrintsNothing_ReturnsDecodeError(t *te
 
 	decodeErr, ok := errors.AsType[*github.DecodeError](err)
 	assert.Assert(t, ok, "HasTrunkCI error = %v, want *github.DecodeError", err)
-	assert.Check(t, is.DeepEqual(decodeErr.Argv, received(workflowsArgs())[0]))
+	assert.Check(t, is.DeepEqual(decodeErr.Argv, ghArgv(workflowsArgs())))
 }
 
 func TestForge_HasTrunkCI_WhenTrunkNameHoldsQuerySyntax_SendsItEscaped(t *testing.T) {
 	const release = "release/1.0+2"
 	escaped := workflowFilesArgsAt("release%2F1.0%2B2")
-	fake := ghtest.Setup(t, ghtest.Says(activeCIList(), workflowsArgs()...), ghtest.Says(ciOnTrunkJSON(), escaped...))
+	ghtest.Setup(t, ghtest.Says(activeCIList(), workflowsArgs()...), ghtest.Says(ciOnTrunkJSON(), escaped...))
 
 	_, err := newForge().HasTrunkCI(t.Context(), engine(), release)
-	assert.NilError(t, err)
 
-	assertCalls(t, fake, received(workflowsArgs(), escaped))
+	assert.NilError(t, err)
 }
 
 func TestForge_Message(t *testing.T) {
@@ -861,17 +836,110 @@ func TestForge_Message_WhenAnswerHoldsNoPullRequest_ReturnsDecodeError(t *testin
 
 			decodeErr, ok := errors.AsType[*github.DecodeError](err)
 			assert.Assert(t, ok, "error = %v, want *github.DecodeError", err)
-			assert.Check(t, ghtest.Matches(received(messageArgs())[0], decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, messageArgs())
+			assert.Check(t, ghtest.Matches(ghArgv(messageArgs()), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, messageArgs())
 		})
 	}
 }
 
 func TestForge_DeleteBranch_WhenNameHoldsAHash_EscapesIt(t *testing.T) {
 	args := ghtest.DeleteBranchArgs(engineHost, "ada/engine", "fix%231")
-	fake := ghtest.Setup(t, ghtest.Says("", args...))
+	ghtest.Setup(t, ghtest.Says("", args...))
 
 	err := newForge().DeleteBranch(t.Context(), engine(), "fix#1")
+
+	assert.NilError(t, err)
+}
+
+func TestForge_FindRelease_WhenReleaseExists_ReturnsItsURL(t *testing.T) {
+	ghtest.Setup(t, ghtest.Says(`{"url":"`+releaseURL+`"}`, releaseViewArgs()...))
+
+	url, found, err := newForge().FindRelease(t.Context(), engine(), releaseTag)
 	assert.NilError(t, err)
 
-	assertCalls(t, fake, received(args))
+	assert.Check(t, found, "FindRelease found = false, want true")
+	assert.Check(t, is.Equal(url, releaseURL))
+}
+
+func TestForge_FindRelease_WhenGitHubHasNoReleaseForTheTag_ReportsNoneWithoutError(t *testing.T) {
+	ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stderr: "release not found\n", Code: 1}, releaseViewArgs()...))
+
+	url, found, err := newForge().FindRelease(t.Context(), engine(), releaseTag)
+	assert.NilError(t, err)
+
+	assert.Check(t, !found, "FindRelease found = true with URL %q, want none", url)
+}
+
+func TestForge_FindRelease_WhenSomethingElseIsNotFound_ReturnsExitError(t *testing.T) {
+	notFound := ghtest.Answer{Stderr: "HTTP 404: Not Found (https://api.git.example.com/repos/ada/engine/releases/tags/v1.2.0)\n", Code: 1}
+	ghtest.Setup(t, ghtest.Exits(notFound, releaseViewArgs()...))
+
+	_, _, err := newForge().FindRelease(t.Context(), engine(), releaseTag)
+
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "FindRelease error = %v, want *child.ExitError", err)
+	assert.Check(t, ghtest.Matches(ghArgv(releaseViewArgs()), exitErr.Argv), "Argv = %q, want %q", exitErr.Argv, releaseViewArgs())
+}
+
+func TestForge_PublishRelease(t *testing.T) {
+	tests := []struct {
+		name       string
+		prerelease bool
+	}{
+		{name: "release"},
+		{name: "pre-release", prerelease: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ghtest.Setup(t, ghtest.Says(releaseURL+"\n", releaseCreateArgs(tt.prerelease)...))
+
+			got, err := newForge().PublishRelease(t.Context(), engine(), newRelease(tt.prerelease))
+			assert.NilError(t, err)
+
+			assert.Check(t, is.Equal(got, releaseURL))
+		})
+	}
+}
+
+func TestForge_PublishRelease_WhenOriginLacksTheTag_ReturnsExitError(t *testing.T) {
+	noTag := ghtest.Answer{Stderr: "tag v1.2.0 doesn't exist in the repo ada/engine, aborting due to --verify-tag flag\n", Code: 1}
+	ghtest.Setup(t, ghtest.Exits(noTag, releaseCreateArgs(false)...))
+
+	_, err := newForge().PublishRelease(t.Context(), engine(), newRelease(false))
+
+	_, ok := errors.AsType[*child.ExitError](err)
+	assert.Check(t, ok, "PublishRelease error = %v, want *child.ExitError", err)
+}
+
+func TestForge_PublishRelease_RemovesTheNotesFile(t *testing.T) {
+	tests := []struct {
+		name   string
+		answer ghtest.Answer
+	}{
+		{name: "published", answer: ghtest.Answer{Stdout: releaseURL + "\n"}},
+		{name: "refused", answer: ghtest.ServerError()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := ghtest.Setup(t, ghtest.Exits(tt.answer, releaseCreateArgs(false)...))
+
+			_, _ = newForge().PublishRelease(t.Context(), engine(), newRelease(false))
+
+			notes := notesFiles(fake.Calls())
+			assert.Assert(t, is.Len(notes, 1), "calls = %q, want one --notes-file", fake.Calls())
+			_, err := os.Stat(notes[0])
+			assert.Check(t, errors.Is(err, fs.ErrNotExist), "Stat(%q) error = %v, want the notes file removed", notes[0], err)
+		})
+	}
+}
+
+// notesFiles is the path after every --notes-file in calls, in order.
+func notesFiles(calls [][]string) []string {
+	var paths []string
+	for _, argv := range calls {
+		if i := slices.Index(argv, "--notes-file"); i >= 0 && i+1 < len(argv) {
+			paths = append(paths, argv[i+1])
+		}
+	}
+
+	return paths
 }

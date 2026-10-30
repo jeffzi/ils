@@ -375,7 +375,7 @@ func onStderrScreen(t *testing.T, env []string, stdoutTerminal bool, width int) 
 	t.Helper()
 
 	stderr := newScreen(t, width)
-	app := paint(lost(t), env, stdoutTerminal, true)
+	app := painted(t, env, stdoutTerminal, true)
 	app.Stderr = stderr
 	app.StderrWidth = func() int { return width }
 

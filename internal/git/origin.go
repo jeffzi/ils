@@ -12,6 +12,10 @@ import (
 	"github.com/jeffzi/ils/internal/child"
 )
 
+// ---------------------------------------------------------------------------
+// Origin URL parsing
+// ---------------------------------------------------------------------------
+
 const (
 	httpsPrefix    = "https://"
 	sshPrefix      = "ssh://git@"
@@ -114,6 +118,10 @@ func (o Origin) Same(other Origin) bool {
 		strings.EqualFold(o.Name, other.Name)
 }
 
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
 const (
 	// remotesRef prefixes the remote-tracking refs, where the clone keeps what it last fetched of
 	// origin's branches.
@@ -152,12 +160,14 @@ func (e *RemoteError) Unwrap() error {
 	return e.Err
 }
 
-// PushError reports a push that git or origin refused for the branch's ref: a non-fast-forward, a
-// hook of origin that declined it, a ref origin hides, a pre-push hook that failed. An origin that
-// never answered, or that hung up before it reported on the ref, is a *RemoteError instead.
+// PushError reports a push that git or origin refused for a ref: a non-fast-forward, a tag origin
+// already holds at another commit, a hook of origin that declined it, a ref origin hides, a pre-push
+// hook that failed. An origin that never answered, or that hung up before it reported on the ref, is
+// a *RemoteError instead.
 type PushError struct {
-	Err    error
-	Branch string
+	Err error
+	// Ref is the full name of the refused ref, such as `refs/heads/main` or `refs/tags/v1.0.0`.
+	Ref string
 	// Reason is the summary git gives for the ref, such as `[rejected] (fetch first)` or
 	// `[remote rejected] (pre-receive hook declined)`.
 	Reason string
@@ -169,9 +179,10 @@ type PushError struct {
 	Stderr string
 }
 
-// Error names the refused branch, followed by its Detail.
+// Error names the refused ref, a branch by its short name and any other ref in full, followed by
+// its Detail.
 func (e *PushError) Error() string {
-	return fmt.Sprintf("push of %s refused: %s", e.Branch, e.Detail())
+	return fmt.Sprintf("push of %s refused: %s", strings.TrimPrefix(e.Ref, headsRef), e.Detail())
 }
 
 // Detail returns git's reason and the Output, one per line, leaving out either when it is empty.
@@ -194,6 +205,10 @@ func (e *PushError) Unwrap() error {
 func joinPresent(parts ...string) string {
 	return strings.Join(slices.DeleteFunc(parts, func(part string) bool { return part == "" }), "\n")
 }
+
+// ---------------------------------------------------------------------------
+// Origin reads and fetch
+// ---------------------------------------------------------------------------
 
 // OriginURLs returns origin's fetch and push URLs, raw and parsed.
 //
@@ -306,12 +321,7 @@ func (r Repo) RemoteBranch(ctx context.Context, name string) (sha string, found 
 // among the remote-tracking refs, without asking origin; found is false when the clone holds no
 // such ref.
 func (r Repo) LastFetchedTrunk(ctx context.Context) (trunk string, found bool, err error) {
-	ref, found, err := r.optionalLine(ctx, "symbolic-ref", "--quiet", remotesRef+"HEAD")
-	if !found {
-		return "", false, err
-	}
-
-	return strings.TrimPrefix(ref, remotesRef), true, nil
+	return r.symbolicRef(ctx, remotesRef+"HEAD", remotesRef)
 }
 
 // LastFetched returns the sha of origin's branch name as last fetched, without asking origin;
@@ -329,7 +339,7 @@ func (r Repo) LastFetched(ctx context.Context, name string) (sha string, found b
 // does not take the name, and one pushed since the last fetch does. An origin that does not answer
 // is a *RemoteError, never an empty list.
 func (r Repo) BranchesTaking(ctx context.Context, name string) (local, onOrigin []string, err error) {
-	localRefs, err := r.Runner.Run(ctx, "for-each-ref", "--format=%(refname)", headsRef)
+	localBranches, err := r.localBranches(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -339,15 +349,15 @@ func (r Repo) BranchesTaking(ctx context.Context, name string) (local, onOrigin 
 		return nil, nil, err
 	}
 
-	for ref := range strings.SplitSeq(localRefs.Stdout, "\n") {
-		if branch, ok := takes(ref, name); ok {
+	for _, branch := range localBranches {
+		if takes(branch, name) {
 			local = append(local, branch)
 		}
 	}
 
 	for line := range strings.SplitSeq(originRefs.Stdout, "\n") {
 		_, ref, _ := strings.Cut(line, "\t")
-		if branch, ok := takes(ref, name); ok {
+		if branch, isBranch := strings.CutPrefix(ref, headsRef); isBranch && takes(branch, name) {
 			onOrigin = append(onOrigin, branch)
 		}
 	}
@@ -355,15 +365,10 @@ func (r Repo) BranchesTaking(ctx context.Context, name string) (local, onOrigin 
 	return local, onOrigin, nil
 }
 
-// takes returns the branch the full ref names, and whether that branch takes name: whether it is
-// name, or one of the two is a path prefix of the other.
-func takes(ref, name string) (string, bool) {
-	branch, isBranch := strings.CutPrefix(ref, headsRef)
-	if !isBranch {
-		return "", false
-	}
-
-	return branch, branch == name || strings.HasPrefix(name, branch+"/") || strings.HasPrefix(branch, name+"/")
+// takes reports whether branch takes name: whether it is name, or one of the two is a path prefix of
+// the other.
+func takes(branch, name string) bool {
+	return branch == name || strings.HasPrefix(name, branch+"/") || strings.HasPrefix(branch, name+"/")
 }
 
 const (
@@ -416,21 +421,45 @@ func (r Repo) OriginTags(ctx context.Context) ([]Tag, error) {
 	return tags, nil
 }
 
+const (
+	refsPrefix = "refs/"
+
+	// fetchedRefs prefixes the ref Fetch stores a fetch in until it has read it.
+	fetchedRefs = "refs/ils/fetched/"
+)
+
 // Fetch fetches one ref from origin, a branch name or a full ref, and returns the fetched sha.
 //
-// A branch name is fetched as the branch, never as a tag of the same name. A fetch that fails is a
-// *RemoteError.
+// A branch name is fetched as the branch, never as a tag of the same name. The fetch is stored in a
+// ref under refs/ils/fetched/, which only ils writes, read back from there and deleted: FETCH_HEAD is shared
+// with every other fetch in the repository, which can rewrite it before it is read. A fetch that
+// fails is a *RemoteError.
 func (r Repo) Fetch(ctx context.Context, ref string) (string, error) {
-	if !strings.HasPrefix(ref, "refs/") {
+	if !strings.HasPrefix(ref, refsPrefix) {
 		ref = headsRef + ref
 	}
 
-	_, err := r.remote(ctx, "fetch", origin, ref)
+	fetched := fetchedRefs + strings.TrimPrefix(ref, refsPrefix)
+
+	// --no-tags: a fetch that stores a ref also stores every tag of origin on the commits it brought,
+	// tags the user never asked for.
+	_, err := r.remote(ctx, "fetch", "--no-tags", origin, "+"+ref+":"+fetched)
 	if err != nil {
 		return "", err
 	}
 
-	return r.line(ctx, "rev-parse", "FETCH_HEAD")
+	sha, err := r.line(ctx, "rev-parse", "--verify", fetched)
+	if err != nil {
+		return "", err
+	}
+
+	// The ref has served its purpose once read; keeping it would leave one ref per fetched branch, pull
+	// request and tag in the user's repository.
+	if _, err := r.Runner.Run(ctx, "update-ref", "-d", fetched, sha); err != nil {
+		return "", err
+	}
+
+	return sha, nil
 }
 
 // pullRefs prefixes the refs GitHub keeps on origin for its pull requests, each under its number.
@@ -475,6 +504,10 @@ func (r Repo) FastForwardTrunk(ctx context.Context, trunk string) error {
 	return err
 }
 
+// ---------------------------------------------------------------------------
+// Push and its classification
+// ---------------------------------------------------------------------------
+
 // Push pushes the branch name to origin under the same name and sets it as the upstream.
 //
 // It names the branch by its full ref on both sides, so a tag of the same name is never pushed
@@ -490,9 +523,22 @@ func (r Repo) FastForwardTrunk(ctx context.Context, trunk string) error {
 //
 // Any other failure, such as a context that ended or a git missing from PATH, is returned as it is.
 func (r Repo) Push(ctx context.Context, name string) error {
-	ref := headsRef + name
+	return r.push(ctx, headsRef+name, "-u")
+}
+
+// PushTag pushes the local tag name to origin under the same name, and nothing else: it names the
+// tag by its full ref on both sides and turns off `push.followTags`. It never forces, so a tag
+// origin already holds at another commit is refused. Its failures are classed as Push classes them.
+func (r Repo) PushTag(ctx context.Context, name string) error {
+	return r.push(ctx, tagsRef+name, "--no-follow-tags")
+}
+
+// push pushes ref to origin under the same name with git's flags, classing a git that exits
+// non-zero as Push documents.
+func (r Repo) push(ctx context.Context, ref string, flags ...string) error {
 	spec := ref + ":" + ref
-	result, err := r.Runner.Run(ctx, "push", "--porcelain", "-u", origin, spec)
+	args := slices.Concat([]string{"push", "--porcelain"}, flags, []string{origin, spec})
+	result, err := r.Runner.Run(ctx, args...)
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 	if !ok {
@@ -508,7 +554,7 @@ func (r Repo) Push(ctx context.Context, name string) error {
 		return &RemoteError{Err: err}
 	case !reported || status.flag == pushRejected:
 		return &PushError{
-			Branch: name,
+			Ref:    ref,
 			Reason: status.summary,
 			Stdout: hook,
 			Stderr: exitErr.Stderr,

@@ -69,6 +69,28 @@ gives the reason and the next step.`
 	branchExamples = `# Start a branch for new work
 ils branch fix-help`
 
+	releaseShort = "Tag a release commit once its CI is green, and publish the release"
+	releaseLong  = `Find the release commit of <version>, chore: release v<version>, on
+origin's trunk since the previous version tag, and read the notes of
+<version> from the changelog at that commit. Wait up to %s for
+the commit's CI, then tag it, push the tag and create the GitHub
+release from those notes.
+
+--force tags the commit without waiting for its CI. --tag-only stops
+once the tag is pushed. Running it again resumes where the last run
+stopped.
+
+It refuses before writing anything when the release is not ready, for
+example when no release commit names the version, when the changelog
+has no notes for it, or when its CI is red. The output gives the reason
+and the next step.`
+
+	releaseExamples = `# Tag and publish 1.2.0 once its CI is green
+ils release 1.2.0
+
+# Push the tag only, leaving the GitHub release to another workflow
+ils release 1.2.0 --tag-only`
+
 	statusShort = "Say where the branch stands, and what to run next"
 	statusLong  = `Say where the current branch stands against origin, its pull requests
 and the verdict of the open one's checks, or on the trunk, its last tag

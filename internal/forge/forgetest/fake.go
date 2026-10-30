@@ -27,10 +27,13 @@ const (
 	OpHead            Op = "Head"
 	OpTrunkProtection Op = "TrunkProtection"
 	OpVerdict         Op = "Verdict"
+	OpCommitVerdict   Op = "CommitVerdict"
 	OpHasTrunkCI      Op = "HasTrunkCI"
 	OpMessage         Op = "Message"
 	OpLand            Op = "Land"
 	OpDeleteBranch    Op = "DeleteBranch"
+	OpFindRelease     Op = "FindRelease"
+	OpPublishRelease  Op = "PublishRelease"
 )
 
 // ErrUnscripted is returned for a call the script has no answer for.
@@ -61,10 +64,11 @@ func Values[T any](values ...T) []Answer[T] {
 //
 // Each operation holds a sequence that advances one step per call, and whose last step
 // repeats on further calls. A call to an operation with no step fails the test. Land and
-// DeleteBranch answer only an error: a nil step is a call that succeeds.
+// DeleteBranch answer only an error: a nil step is a call that succeeds. FindRelease answers the
+// URL of the release it finds: an empty URL is no release.
 type Script struct {
 	// OnRead, when set, runs on each call that reads from the forge, which is every
-	// operation but OpenChange, Land and DeleteBranch, before the call answers.
+	// operation but OpenChange, Land, DeleteBranch and PublishRelease, before the call answers.
 	OnRead func(Call)
 	// OnLand, when set, runs on each Land call, with the landing it was given, before the
 	// call answers.
@@ -75,10 +79,13 @@ type Script struct {
 	Head            []Answer[forge.Head]
 	TrunkProtection []Answer[forge.Protection]
 	Verdict         []Answer[forge.Verdict]
+	CommitVerdict   []Answer[forge.Verdict]
 	HasTrunkCI      []Answer[bool]
 	Message         []Answer[forge.Message]
 	Land            []error
 	DeleteBranch    []error
+	FindRelease     []Answer[string]
+	PublishRelease  []Answer[string]
 }
 
 // Call is one recorded call with the arguments that its operation takes.
@@ -86,8 +93,13 @@ type Call struct {
 	Op Op
 	// Branch is the branch of FindChanges and DeleteBranch, and the trunk of TrunkProtection
 	// and HasTrunkCI.
-	Branch       string
+	Branch string
+	// SHA is the commit of CommitVerdict.
+	SHA string
+	// Tag is the tag of FindRelease.
+	Tag          string
 	Change       forge.NewChange
+	Release      forge.NewRelease
 	Repo         forge.Repo
 	Landing      forge.Landing
 	HeadQuery    forge.HeadQuery
@@ -115,14 +127,14 @@ func (f *Fake) Calls() []Call {
 	return slices.Clone(f.calls)
 }
 
-// Identity answers from the script's Identity sequence.
+// Identity runs the script's OnRead hook, then answers from the script's Identity sequence.
 func (f *Fake) Identity(ctx context.Context, repo forge.Repo) (forge.Repo, error) {
 	f.tb.Helper()
 
 	return answer(ctx, f, f.script.Identity, Call{Op: OpIdentity, Repo: repo})
 }
 
-// FindChanges answers from the script's FindChanges sequence.
+// FindChanges runs the script's OnRead hook, then answers from the script's FindChanges sequence.
 func (f *Fake) FindChanges(ctx context.Context, repo forge.Repo, branch string) ([]forge.Change, error) {
 	f.tb.Helper()
 
@@ -136,35 +148,42 @@ func (f *Fake) OpenChange(ctx context.Context, repo forge.Repo, change forge.New
 	return answer(ctx, f, f.script.OpenChange, Call{Op: OpOpenChange, Repo: repo, Change: change})
 }
 
-// Head answers from the script's Head sequence.
+// Head runs the script's OnRead hook, then answers from the script's Head sequence.
 func (f *Fake) Head(ctx context.Context, repo forge.Repo, query forge.HeadQuery) (forge.Head, error) {
 	f.tb.Helper()
 
 	return answer(ctx, f, f.script.Head, Call{Op: OpHead, Repo: repo, HeadQuery: query})
 }
 
-// TrunkProtection answers from the script's TrunkProtection sequence.
+// TrunkProtection runs the script's OnRead hook, then answers from the script's TrunkProtection sequence.
 func (f *Fake) TrunkProtection(ctx context.Context, repo forge.Repo, trunk string) (forge.Protection, error) {
 	f.tb.Helper()
 
 	return answer(ctx, f, f.script.TrunkProtection, Call{Op: OpTrunkProtection, Repo: repo, Branch: trunk})
 }
 
-// Verdict answers from the script's Verdict sequence.
+// Verdict runs the script's OnRead hook, then answers from the script's Verdict sequence.
 func (f *Fake) Verdict(ctx context.Context, repo forge.Repo, query forge.VerdictQuery) (forge.Verdict, error) {
 	f.tb.Helper()
 
 	return answer(ctx, f, f.script.Verdict, Call{Op: OpVerdict, Repo: repo, VerdictQuery: query})
 }
 
-// HasTrunkCI answers from the script's HasTrunkCI sequence.
+// CommitVerdict runs the script's OnRead hook, then answers from the script's CommitVerdict sequence.
+func (f *Fake) CommitVerdict(ctx context.Context, repo forge.Repo, sha string) (forge.Verdict, error) {
+	f.tb.Helper()
+
+	return answer(ctx, f, f.script.CommitVerdict, Call{Op: OpCommitVerdict, Repo: repo, SHA: sha})
+}
+
+// HasTrunkCI runs the script's OnRead hook, then answers from the script's HasTrunkCI sequence.
 func (f *Fake) HasTrunkCI(ctx context.Context, repo forge.Repo, trunk string) (bool, error) {
 	f.tb.Helper()
 
 	return answer(ctx, f, f.script.HasTrunkCI, Call{Op: OpHasTrunkCI, Repo: repo, Branch: trunk})
 }
 
-// Message answers from the script's Message sequence.
+// Message runs the script's OnRead hook, then answers from the script's Message sequence.
 func (f *Fake) Message(ctx context.Context, repo forge.Repo, number int) (forge.Message, error) {
 	f.tb.Helper()
 
@@ -183,6 +202,22 @@ func (f *Fake) DeleteBranch(ctx context.Context, repo forge.Repo, branch string)
 	f.tb.Helper()
 
 	return answerError(ctx, f, f.script.DeleteBranch, Call{Op: OpDeleteBranch, Repo: repo, Branch: branch})
+}
+
+// FindRelease runs the script's OnRead hook, then answers from the script's FindRelease sequence.
+func (f *Fake) FindRelease(ctx context.Context, repo forge.Repo, tag string) (link string, found bool, err error) {
+	f.tb.Helper()
+
+	link, err = answer(ctx, f, f.script.FindRelease, Call{Op: OpFindRelease, Repo: repo, Tag: tag})
+
+	return link, link != "", err
+}
+
+// PublishRelease answers from the script's PublishRelease sequence.
+func (f *Fake) PublishRelease(ctx context.Context, repo forge.Repo, release forge.NewRelease) (string, error) {
+	f.tb.Helper()
+
+	return answer(ctx, f, f.script.PublishRelease, Call{Op: OpPublishRelease, Repo: repo, Release: release})
 }
 
 func answerError(ctx context.Context, f *Fake, sequence []error, call Call) error {
@@ -239,23 +274,9 @@ func answer[T any](ctx context.Context, f *Fake, sequence []Answer[T], call Call
 // reads reports whether op only reads what the forge holds.
 func reads(op Op) bool {
 	switch op {
-	case OpOpenChange, OpLand, OpDeleteBranch:
+	case OpOpenChange, OpLand, OpDeleteBranch, OpPublishRelease:
 		return false
 	default:
 		return true
 	}
-}
-
-// Check returns a check of the ci workflow named name, in bucket, that the trunk does not require.
-// It carries no link.
-func Check(name string, bucket forge.Bucket) forge.Check {
-	return forge.Check{Name: name, Bucket: bucket, Workflow: "ci"}
-}
-
-// RequiredCheck returns Check(name, bucket) as a check the trunk requires.
-func RequiredCheck(name string, bucket forge.Bucket) forge.Check {
-	check := Check(name, bucket)
-	check.Required = true
-
-	return check
 }

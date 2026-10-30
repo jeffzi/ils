@@ -2,9 +2,11 @@ package github
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os/exec"
@@ -156,6 +158,19 @@ func runDecoded[T any](ctx context.Context, r Runner, args ...string) (T, error)
 	return decodeOutput[T](result.Stdout, args)
 }
 
+// readEachPage runs gh with args and decodes the pages of its stdout with decodeEachPage.
+//
+// It returns the errors of Runner.Run, and a *DecodeError when stdout holds no page or a page
+// that is not the JSON of a P.
+func readEachPage[P any](ctx context.Context, r Runner, args []string) ([]P, error) {
+	result, err := r.Run(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	return decodeEachPage[P](result.Stdout, args)
+}
+
 func decodeOutput[T any](stdout string, args []string) (T, error) {
 	var value T
 	if err := json.Unmarshal([]byte(stdout), &value); err != nil {
@@ -165,4 +180,34 @@ func decodeOutput[T any](stdout string, args []string) (T, error) {
 	}
 
 	return value, nil
+}
+
+// decodeEachPage decodes the JSON values that `gh api --paginate` prints, one per page and
+// concatenated, each into a P; stdout holding no value is a *DecodeError.
+func decodeEachPage[P any](stdout string, args []string) ([]P, error) {
+	decoder := jsontext.NewDecoder(strings.NewReader(stdout))
+
+	var pages []P
+
+	for {
+		raw, err := decoder.ReadValue()
+		if errors.Is(err, io.EOF) {
+			if len(pages) > 0 {
+				return pages, nil
+			}
+
+			err = io.ErrUnexpectedEOF
+		}
+
+		if err != nil {
+			return nil, &DecodeError{Argv: Argv(args), Err: err}
+		}
+
+		page, err := decodeOutput[P](string(raw), args)
+		if err != nil {
+			return nil, err
+		}
+
+		pages = append(pages, page)
+	}
 }

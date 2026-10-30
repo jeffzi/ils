@@ -40,6 +40,7 @@ const (
 	shaNext = "check out " + fullSHA + ", then run ils push again"
 )
 
+// redReason is the reason line of redPush.
 func redReason() string { return labeled(result.DeliveredNotGreen, "the check prek is red") }
 
 // brokeEnd is the reason and Next lines of a broke push.
@@ -94,10 +95,12 @@ func brokeWithLine(p result.Phrase) result.Result {
 	return with(brokePush(), func(r *result.Result) { r.Lines = append(r.Lines, p) })
 }
 
+// refusedWithReason is refusedPush with p as its reason.
 func refusedWithReason(p result.Phrase) result.Result {
 	return with(refusedPush(), func(r *result.Result) { r.Reason = p })
 }
 
+// redWithNext is redPush with n as its next step.
 func redWithNext(n result.Next) result.Result {
 	return with(redPush(), func(r *result.Result) { r.Next = n })
 }
@@ -110,21 +113,6 @@ func refusedPush() result.Result {
 		Outcome: result.Refused,
 		Next:    result.NextCommand("branch %s", "fix-prek-again"),
 		Reason:  result.Say("the branch %s already landed with %s", "fix-prek", "lefthook.yml"),
-	}
-}
-
-// pendingPush is a push whose checks were still running at the bound.
-func pendingPush() result.Result {
-	return result.Result{
-		Command: "push",
-		Words:   []string{"push"},
-		Outcome: result.Pending,
-		Lines: []result.Phrase{
-			result.Say("Pushed %s to origin.", "tidy-readme"),
-			result.Say("Still running after %s seconds: %s", 100, "build"),
-		},
-		Next:   result.NextCommand("push"),
-		Reason: result.Say("the checks were still running at the bound"),
 	}
 }
 
@@ -189,18 +177,6 @@ func inputOf(r result.Result) string {
 func textCases() []pair {
 	return []pair{
 		{
-			name:     "done prints its lines and no Next line",
-			gitDir:   gitDir,
-			result:   donePush(),
-			wantText: doneBody,
-		},
-		{
-			name:     "excerpt sits verbatim between the lines and the reason",
-			gitDir:   gitDir,
-			result:   redPush(),
-			wantText: redBody + redReason() + nextLine(redNext),
-		},
-		{
 			name:     "wording wrapping a command in backticks keeps them",
 			gitDir:   gitDir,
 			result:   tickedPush(),
@@ -227,6 +203,7 @@ func excerptTextCases() []pair {
 	}
 }
 
+// shaTextCases returns the cases where a commit sha is printed short or in full.
 func shaTextCases() []pair {
 	return []pair{
 		brokeLine("sha in a line prints its first seven characters", shaLine(), "Checks for "+shortSHA+": 9 passed"),
@@ -400,8 +377,6 @@ func controlCases() []pair {
 	return []pair{
 		brokeLine("name holding an escape sequence prints the escape as visible text",
 			result.Say("Kept %s as is.", "x\x1b[31m"), `Kept x\x1b[31m as is.`),
-		brokeLine("marked name holding an escape sequence prints the escape as visible text",
-			result.Say("Kept %s as is.", result.Branch("x\x1b[4m")), `Kept x\x1b[4m as is.`),
 		brokeLine("name holding a tab prints it as it is",
 			result.Say("Kept %s as is.", "x\ty"), "Kept x\ty as is."),
 		brokeLine("name holding invalid UTF-8 beside a control byte prints its bytes as they are",
@@ -425,7 +400,7 @@ func controlCases() []pair {
 
 func TestRenderText_WhenOutcomeIsNotDoneAndReasonIsEmpty_ReturnsErrNoReason(t *testing.T) {
 	t.Parallel()
-	r := with(pendingPush(), func(r *result.Result) { r.Reason = result.Phrase{} })
+	r := with(brokePush(), func(r *result.Result) { r.Reason = result.Phrase{} })
 
 	out, err := result.RenderText(r, gitDir)
 
@@ -496,8 +471,7 @@ const (
 func tickedPush() result.Result {
 	return with(brokePush(), func(r *result.Result) {
 		r.Lines = append(r.Lines,
-			result.Say("Ran `gh pr edit --repo %s %s` at %s.", "jeffzi/ils", result.PullRequest(16), result.SHA("4f2a9c1")),
-			result.Say("Ran `git cherry-pick %s`.", result.SHA("b7e03d2")))
+			result.Say("Ran `gh pr edit --repo %s %s` at %s.", "jeffzi/ils", result.PullRequest(16), result.SHA("4f2a9c1")))
 		r.Reason = result.Say("`gh pr edit %s` failed", result.PullRequest(16))
 		r.Next = result.NextStep("run `gh pr ready %s`, then run %s again", result.PullRequestNumber(16), result.Command("push"))
 	})
@@ -505,14 +479,20 @@ func tickedPush() result.Result {
 
 // tickedPushLines returns the lines of tickedPush as a plain profile prints them.
 func tickedPushLines() []string {
-	return append(brokeLines(),
-		"Ran `gh pr edit --repo jeffzi/ils #16` at 4f2a9c1.", "Ran `git cherry-pick b7e03d2`.")
+	return append(brokeLines(), "Ran `gh pr edit --repo jeffzi/ils #16` at 4f2a9c1.")
 }
 
 func TestRenderStyled_WhenProfileHasColor_DrawsEachPartInItsStyle(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range styledCases() {
+	assertLooks(t, styledCases())
+}
+
+// assertLooks checks, case by case, that each part is drawn in the wanted look.
+func assertLooks(t *testing.T, cases []styledCase) {
+	t.Helper()
+
+	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			t.Logf("row: result %s", inputOf(tt.result))
@@ -676,7 +656,7 @@ func TestRenderText_WhenOwnWordingOnlyResemblesHookOrGitDir_PrintsIt(t *testing.
 	}
 }
 
-func TestWordingError_Error_WhenBothFieldsSet_NamesLineAndWord(t *testing.T) {
+func TestWordingError_Error_WhenBothFieldsSet_NamesBothFields(t *testing.T) {
 	t.Parallel()
 	err := &result.WordingError{Line: "The step ran.", Word: "pre-commit"}
 

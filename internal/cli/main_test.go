@@ -130,10 +130,10 @@ func stopping(app cli.App, way string) int {
 			<-make(chan struct{})
 		}
 
-		stopped := finished(req)
-		stopped.Lines = []result.Phrase{result.Say("Stopped.")}
+		halted := finished(req)
+		halted.Lines = []result.Phrase{result.Say("Stopped.")}
 
-		return stopped
+		return halted
 	})
 
 	return app.Run(context.Background(), []string{"merge"})

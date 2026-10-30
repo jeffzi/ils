@@ -11,9 +11,8 @@ import (
 
 // The reads of `ils branch`, as a result names them.
 const (
-	readName        = "whether git can hold the name as a branch"
-	readTaking      = "the branches that take the name"
-	readHeadCommits = "the commits on HEAD"
+	readName   = "whether git can hold the name as a branch"
+	readTaking = "the branches that take the name"
 )
 
 // StartBranch runs `ils branch <name>`, the name being the one word of req.Args: it starts a work
@@ -141,11 +140,6 @@ func freeName(ctx context.Context, deps Deps, req Request, name string) *result.
 	}
 
 	return nil
-}
-
-// detachedWith says that HEAD is detached with commits origin's trunk lacks, listed after it.
-func detachedWith(trunk string) result.Phrase {
-	return result.Say("HEAD is detached with commits origin's trunk %s lacks, listed here", result.Branch(trunk))
 }
 
 // aheadLines returns the lines that name the local trunk's commits origin's trunk lacks, which stay

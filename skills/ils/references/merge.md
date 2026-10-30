@@ -1,20 +1,12 @@
 # Running `ils merge`
 
-Read this only when the user asked for the merge in this conversation. Asked means "merge it",
-"/ils merge", "run ils merge"; a `Next:` line, "land it" said before they left, a green push, and
-the user being away are not the ask.
+Read this only after the user asked for the merge, as The merge in SKILL.md defines the ask.
 
 ## Before you run it
 
-Show the pull request's title and body, read from GitHub:
-
-```bash
-gh pr view --repo <host>/<owner>/<name> <N> --json title,body
-```
-
-The repository and number are the ones in the `gh pr edit` command `ils push` printed. The title
-and body become the squash commit's message, and the consent prompt shows only the command. Then
-run `ils merge` as the skill's "Run it" section says: bare, with the user's words.
+Run `ils status` on the branch, and show the user the title and body it prints for the open pull
+request. They become the squash commit's message, and the consent prompt shows only the command.
+Then run `ils merge` as the skill's "Run it" section says: bare, with the user's words.
 
 ## After it exits
 

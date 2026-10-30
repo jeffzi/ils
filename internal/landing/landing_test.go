@@ -535,23 +535,12 @@ func TestPush_WhenGivenNoProgressHookOrLogger_EndsAsWithThem(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		// A first push whose check is still running at the first read reaches every place a hook
 		// or the logger is told something.
-		run := func(withoutHooks bool) result.Result {
-			ctx, d := newDelivery(t, pushRow{script: opening(running(), passing())})
-			if withoutHooks {
-				d.deps.Progress, d.deps.Logger = nil, nil
-			}
+		ctx, d := newDelivery(t, pushRow{script: opening(running(), passing())})
+		d.deps.Progress, d.deps.Logger = nil, nil
 
-			return landing.Push(ctx, d.deps, pushRequest())
-		}
-		watched := run(false)
+		got := landing.Push(ctx, d.deps, pushRequest())
 
-		unwatched := run(true)
-
-		want, err := result.RenderJSON(watched, "")
-		assert.NilError(t, err)
-		got, err := result.RenderJSON(unwatched, "")
-		assert.NilError(t, err)
-		assert.Check(t, is.Equal(got, want))
+		assertDelivered(t, d.scene, got, greenAfter(pushedLine()+openedLine()).at(d.tip))
 	})
 }
 

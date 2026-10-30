@@ -1,7 +1,10 @@
 package github_test
 
 import (
+	"context"
+	"fmt"
 	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -10,6 +13,7 @@ import (
 	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/forge"
+	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/github/ghtest"
 )
 
@@ -196,7 +200,6 @@ func TestForge_Verdict_FailedLog(t *testing.T) {
 func TestForge_Verdict_WhenAReadExitsNonZero_ReturnsExitErrorNamingTheRead(t *testing.T) {
 	verdict := operationsByName()["Verdict"]
 	tests := []readCase{
-		{name: "pr checks", run: verdict, args: checksArgs()},
 		{name: "run list", run: verdict, args: runsArgs(), before: []ghtest.Call{ghtest.Says("[]", checksArgs()...)}},
 	}
 	for _, tt := range tests {
@@ -208,4 +211,286 @@ func TestForge_Verdict_WhenAReadExitsNonZero_ReturnsExitErrorNamingTheRead(t *te
 
 func TestForge_Verdict_WhenChecksReadPrintsMalformedJSON_ReturnsDecodeErrorNamingIt(t *testing.T) {
 	assertDecodeErrorNamesCall(t, readCase{run: operationsByName()["Verdict"], args: checksArgs()})
+}
+
+// ---------------------------------------------------------------------------
+// Commit verdict
+// ---------------------------------------------------------------------------
+
+const (
+	ciSuite    = 11
+	otherSuite = 12
+)
+
+// commitAPIArgs is the argv of the paginated read of rest under the engine repository.
+func commitAPIArgs(rest string) []string {
+	return []string{"api", "--hostname", engineHost, "--paginate", "repos/ada/engine/" + rest}
+}
+
+func checkRunsArgs() []string { return commitAPIArgs("commits/" + headSHA + "/check-runs") }
+
+func commitStatusArgs() []string { return commitAPIArgs("commits/" + headSHA + "/status") }
+
+func workflowRunsArgs() []string { return commitAPIArgs("actions/runs?head_sha=" + headSHA) }
+
+// checkRunJSON is one check run of the check-runs read: the check run numbered id, named name, of
+// the check suite suite, with conclusion; an empty conclusion is null and leaves the run in
+// progress, any other completes it. A higher id is a later start.
+func checkRunJSON(id, suite int, name, conclusion string) string {
+	status, concluded := "in_progress", "null"
+	if conclusion != "" {
+		status, concluded = "completed", `"`+conclusion+`"`
+	}
+
+	return `{"id":` + strconv.Itoa(id) + `,"name":"` + name + `","status":"` + status + `","conclusion":` + concluded +
+		`,"started_at":"2026-10-22T10:` + fmt.Sprintf("%02d", id) + `:00Z","html_url":"` + runLink +
+		`","check_suite":{"id":` + strconv.Itoa(suite) + `}}`
+}
+
+func checkRunsPage(runs ...string) string {
+	return `{"total_count":` + strconv.Itoa(len(runs)) + `,"check_runs":` + ghtest.JSONArray(runs...) + `}`
+}
+
+// statusJSON is one commit status of the combined status read: the context name in state.
+func statusJSON(name, state string) string {
+	return `{"context":"` + name + `","state":"` + state + `","target_url":"` + statusLink + `"}`
+}
+
+func statusPage(statuses ...string) string {
+	return `{"state":"pending","sha":"` + headSHA + `","total_count":` + strconv.Itoa(len(statuses)) +
+		`,"statuses":` + ghtest.JSONArray(statuses...) + `}`
+}
+
+// workflowRunJSON is one run of the workflow-runs read: a run of the workflow name, started by
+// event, in status, whose checks belong to the check suite suite.
+func workflowRunJSON(suite int, name, event, status string) string {
+	return `{"id":` + strconv.Itoa(suite+9000) + `,"name":"` + name + `","event":"` + event + `","status":"` + status +
+		`","check_suite_id":` + strconv.Itoa(suite) + `}`
+}
+
+func workflowRunsPage(runs ...string) string {
+	return `{"total_count":` + strconv.Itoa(len(runs)) + `,"workflow_runs":` + ghtest.JSONArray(runs...) + `}`
+}
+
+// commitVerdict reads the verdict of the head commit while gh answers the check-runs, combined
+// status and workflow-runs reads with checkRuns, statuses and runs.
+func commitVerdict(t *testing.T, checkRuns, statuses, runs string) forge.Verdict {
+	t.Helper()
+	ghtest.Setup(t,
+		ghtest.Says(checkRuns, checkRunsArgs()...),
+		ghtest.Says(statuses, commitStatusArgs()...),
+		ghtest.Says(runs, workflowRunsArgs()...),
+	)
+
+	got, err := newForge().CommitVerdict(t.Context(), engine(), headSHA)
+	assert.NilError(t, err)
+
+	return got
+}
+
+// sameChecks compares checks by workflow, name, bucket and required, in any order.
+func sameChecks() cmp.Options {
+	return cmp.Options{
+		cmpopts.IgnoreFields(forge.Check{}, "Link", "StartedAt"),
+		cmpopts.SortSlices(func(a, b forge.Check) bool { return a.Workflow+"\x00"+a.Name < b.Workflow+"\x00"+b.Name }),
+		cmpopts.EquateEmpty(),
+	}
+}
+
+func TestForge_CommitVerdict_WhenARedCheckRunIsOnTheCommit_KeepsItUnlessItsRunIsOfAnotherEvent(t *testing.T) {
+	build := forge.Check{Name: "build", Bucket: forge.BucketPass, Workflow: "CI"}
+	tests := []struct {
+		name string
+		// run is the workflow run of the red check run's check suite; empty when it has none.
+		run  string
+		want []forge.Check
+	}{
+		{name: "scheduled run", run: workflowRunJSON(otherSuite, "Nightly", "schedule", "completed"), want: []forge.Check{build}},
+		{
+			name: "run started by another run",
+			run:  workflowRunJSON(otherSuite, "Deploy", "workflow_run", "completed"),
+			want: []forge.Check{build, {Name: "scan", Bucket: forge.BucketFail, Workflow: "Deploy"}},
+		},
+		{name: "GitHub App with no workflow run", want: []forge.Check{build, {Name: "scan", Bucket: forge.BucketFail}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checkRuns := checkRunsPage(checkRunJSON(1, ciSuite, "build", "success"), checkRunJSON(2, otherSuite, "scan", "failure"))
+			runs := []string{workflowRunJSON(ciSuite, "CI", "push", "completed")}
+			if tt.run != "" {
+				runs = append(runs, tt.run)
+			}
+
+			got := commitVerdict(t, checkRuns, statusPage(), workflowRunsPage(runs...))
+
+			assert.Check(t, is.DeepEqual(got.Checks, tt.want, sameChecks()))
+		})
+	}
+}
+
+func TestForge_CommitVerdict_WhenTwoWorkflowsHaveAJobOfTheSameName_KeepsOneCheckForEach(t *testing.T) {
+	checkRuns := checkRunsPage(checkRunJSON(1, ciSuite, "test", "failure"), checkRunJSON(2, otherSuite, "test", "success"))
+	runs := workflowRunsPage(workflowRunJSON(ciSuite, "CI", "push", "completed"), workflowRunJSON(otherSuite, "Lint", "push", "completed"))
+
+	got := commitVerdict(t, checkRuns, statusPage(), runs)
+
+	want := []forge.Check{{Name: "test", Bucket: forge.BucketFail, Workflow: "CI"}, {Name: "test", Bucket: forge.BucketPass, Workflow: "Lint"}}
+	assert.Check(t, is.DeepEqual(got.Checks, want, sameChecks()))
+}
+
+func TestForge_CommitVerdict_WhenAWorkflowReportsACheckTwice_KeepsTheMostRecent(t *testing.T) {
+	failed := checkRunJSON(1, ciSuite, "test", "failure")
+	rerun := checkRunJSON(2, ciSuite, "test", "success")
+	tests := []struct {
+		name      string
+		checkRuns string
+	}{
+		{name: "re-run listed first", checkRuns: checkRunsPage(rerun, failed)},
+		{name: "re-run listed last", checkRuns: checkRunsPage(failed, rerun)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := commitVerdict(t, tt.checkRuns, statusPage(), workflowRunsPage(workflowRunJSON(ciSuite, "CI", "push", "completed")))
+
+			want := []forge.Check{{Name: "test", Bucket: forge.BucketPass, Workflow: "CI"}}
+			assert.Check(t, is.DeepEqual(got.Checks, want, sameChecks()))
+		})
+	}
+}
+
+func TestForge_CommitVerdict_WhenACommitStatusIsReported_BucketsItsState(t *testing.T) {
+	tests := []struct {
+		name  string
+		state string
+		want  forge.Bucket
+	}{
+		{name: "success", state: "success", want: forge.BucketPass},
+		{name: "failure", state: "failure", want: forge.BucketFail},
+		{name: "state this version does not know", state: "stale", want: forge.BucketPending},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := commitVerdict(t, checkRunsPage(), statusPage(statusJSON("ci/scan", tt.state)), workflowRunsPage())
+
+			want := []forge.Check{{Name: "ci/scan", Bucket: tt.want}}
+			assert.Check(t, is.DeepEqual(got.Checks, want, sameChecks()))
+		})
+	}
+}
+
+func TestForge_CommitVerdict_WhenACheckRunIsReported_BucketsItsOutcome(t *testing.T) {
+	tests := []struct {
+		name       string
+		conclusion string
+		want       forge.Bucket
+	}{
+		{name: "success", conclusion: "success", want: forge.BucketPass},
+		{name: "skipped", conclusion: "skipped", want: forge.BucketSkipped},
+		{name: "canceled", conclusion: "cancelled", want: forge.BucketCanceled}, //nolint:misspell // GitHub's REST API spells the conclusion this way.
+		{name: "failure", conclusion: "failure", want: forge.BucketFail},
+		{name: "conclusion this version does not know", conclusion: "mystery", want: forge.BucketPending},
+		{name: "not completed", want: forge.BucketPending},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checkRuns := checkRunsPage(checkRunJSON(1, ciSuite, "build", tt.conclusion))
+
+			got := commitVerdict(t, checkRuns, statusPage(), workflowRunsPage(workflowRunJSON(ciSuite, "CI", "push", "in_progress")))
+
+			want := []forge.Check{{Name: "build", Bucket: tt.want, Workflow: "CI"}}
+			assert.Check(t, is.DeepEqual(got.Checks, want, sameChecks()))
+		})
+	}
+}
+
+func TestForge_CommitVerdict_WhenRunsAreOnTheCommit_ListsThePushAndWorkflowRunRunsWithTheirStatus(t *testing.T) {
+	runs := workflowRunsPage(
+		workflowRunJSON(ciSuite, "CI", "push", "queued"),
+		workflowRunJSON(otherSuite, "Deploy", "workflow_run", "in_progress"),
+		workflowRunJSON(13, "Nightly", "schedule", "in_progress"),
+	)
+
+	got := commitVerdict(t, checkRunsPage(), statusPage(), runs)
+
+	want := []forge.Run{{Name: "CI", Status: forge.RunQueued}, {Name: "Deploy", Status: forge.RunInProgress}}
+	assert.Check(t, is.DeepEqual(got.Runs, want, cmpopts.SortSlices(func(a, b forge.Run) bool { return a.Name < b.Name })))
+}
+
+func TestForge_CommitVerdict_WhenAReadSpansTwoPages_ReadsEveryPage(t *testing.T) {
+	ci := workflowRunJSON(ciSuite, "CI", "push", "completed")
+	tests := []struct {
+		name      string
+		checkRuns string
+		statuses  string
+		runs      string
+		want      forge.Verdict
+	}{
+		{
+			name:      "check runs",
+			checkRuns: checkRunsPage(checkRunJSON(1, ciSuite, "build", "success")) + checkRunsPage(checkRunJSON(2, ciSuite, "test", "failure")),
+			statuses:  statusPage(),
+			runs:      workflowRunsPage(ci),
+			want: forge.Verdict{
+				Checks: []forge.Check{{Name: "build", Bucket: forge.BucketPass, Workflow: "CI"}, {Name: "test", Bucket: forge.BucketFail, Workflow: "CI"}},
+				Runs:   []forge.Run{{Name: "CI", Status: forge.RunCompleted}},
+			},
+		},
+		{
+			name:      "statuses",
+			checkRuns: checkRunsPage(),
+			statuses:  statusPage(statusJSON("ci/scan", "success")) + statusPage(statusJSON("ci/audit", "failure")),
+			runs:      workflowRunsPage(),
+			want:      forge.Verdict{Checks: []forge.Check{{Name: "ci/audit", Bucket: forge.BucketFail}, {Name: "ci/scan", Bucket: forge.BucketPass}}},
+		},
+		{
+			name:      "workflow runs",
+			checkRuns: checkRunsPage(checkRunJSON(1, otherSuite, "lint", "success")),
+			statuses:  statusPage(),
+			runs:      workflowRunsPage(ci) + workflowRunsPage(workflowRunJSON(otherSuite, "Lint", "push", "completed")),
+			want: forge.Verdict{
+				Checks: []forge.Check{{Name: "lint", Bucket: forge.BucketPass, Workflow: "Lint"}},
+				Runs:   []forge.Run{{Name: "CI", Status: forge.RunCompleted}, {Name: "Lint", Status: forge.RunCompleted}},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := commitVerdict(t, tt.checkRuns, tt.statuses, tt.runs)
+
+			assert.Check(t, is.DeepEqual(got, tt.want, sameChecks()))
+		})
+	}
+}
+
+// commitVerdictReads is each read of the commit verdict, with the other two answering empty pages.
+func commitVerdictReads() []readCase {
+	run := func(ctx context.Context, f *github.Forge) error {
+		_, err := f.CommitVerdict(ctx, engine(), headSHA)
+		return err
+	}
+	checkRuns := ghtest.Says(checkRunsPage(), checkRunsArgs()...)
+	statuses := ghtest.Says(statusPage(), commitStatusArgs()...)
+	runs := ghtest.Says(workflowRunsPage(), workflowRunsArgs()...)
+
+	return []readCase{
+		{name: "check runs", run: run, args: checkRunsArgs(), before: []ghtest.Call{statuses, runs}},
+		{name: "statuses", run: run, args: commitStatusArgs(), before: []ghtest.Call{checkRuns, runs}},
+		{name: "workflow runs", run: run, args: workflowRunsArgs(), before: []ghtest.Call{checkRuns, statuses}},
+	}
+}
+
+func TestForge_CommitVerdict_WhenAReadExitsNonZero_ReturnsExitErrorNamingTheRead(t *testing.T) {
+	for _, tt := range commitVerdictReads() {
+		t.Run(tt.name, func(t *testing.T) {
+			assertExitErrorNamesCall(t, tt)
+		})
+	}
+}
+
+func TestForge_CommitVerdict_WhenAReadPrintsMalformedJSON_ReturnsDecodeErrorNamingTheRead(t *testing.T) {
+	for _, tt := range casesNamed(commitVerdictReads(), "check runs") {
+		t.Run(tt.name, func(t *testing.T) {
+			assertDecodeErrorNamesCall(t, tt)
+		})
+	}
 }

@@ -2,10 +2,7 @@ package landing
 
 import (
 	"context"
-	"regexp"
-	"slices"
-
-	"golang.org/x/mod/semver"
+	"fmt"
 
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/git"
@@ -18,9 +15,6 @@ const (
 	readSinceTag = "the commits on origin's trunk since its version tags"
 	readTrunkTip = "origin's trunk tip"
 )
-
-// releaseSubject matches the subject of a release commit, as squashed from its pull request or not.
-var releaseSubject = regexp.MustCompile(`^chore: release v\d+\.\d+\.\d+( \(#\d+\))?$`)
 
 // readOnTrunk reads everything a status reports of the trunk HEAD stands on.
 func (r *reading) readOnTrunk(ctx context.Context) {
@@ -100,10 +94,7 @@ func (r *reading) readLastTag(ctx context.Context) {
 // lastTag returns the tag of tags with the highest version whose commit is on origin's trunk, and
 // whether there is one. Only tags that are versions count.
 func (r *reading) lastTag(ctx context.Context, tags []git.Tag) (git.Tag, bool, error) {
-	versions := slices.DeleteFunc(slices.Clone(tags), func(tag git.Tag) bool { return !semver.IsValid(tag.Name) })
-	slices.SortStableFunc(versions, func(a, b git.Tag) int { return semver.Compare(b.Name, a.Name) })
-
-	for _, tag := range versions {
+	for _, tag := range versionTags(tags) {
 		on, err := r.onOriginTrunk(ctx, tag)
 		if err != nil {
 			return git.Tag{}, false, err
@@ -127,7 +118,7 @@ func (r *reading) onOriginTrunk(ctx context.Context, tag git.Tag) (bool, error) 
 	// it, yet git fails the check of a commit it lacks as it fails on a broken repository. Fetching
 	// the tag brings its commit, after which only a real failure fails the check.
 	if _, err := r.deps.Repo.FetchTag(ctx, tag.Name); err != nil {
-		return false, err
+		return false, fmt.Errorf("fetch tag %s: %w", tag.Name, err)
 	}
 
 	return r.deps.Repo.Contains(ctx, r.trunkTip, tag.SHA)
@@ -145,7 +136,7 @@ func (r *reading) readRelease(ctx context.Context) {
 		return
 	}
 
-	r.status.ReleaseCommit = releaseSubject.MatchString(subject)
+	_, r.status.ReleaseCommit = releasedTag(subject)
 	if r.status.ReleaseCommit {
 		r.say(result.Say("Origin's trunk tip %s is a release commit: %s", result.SHA(r.trunkTip), subject))
 	} else {

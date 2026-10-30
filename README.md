@@ -5,10 +5,11 @@ language model (LLM) agent that runs it cannot skip a step or push to the wrong 
 command runs only standard `git` and `gh` commands, prints what it did and what to do next, and
 keeps no state of its own.
 
-This version has four commands. `ils branch <name>` starts a work branch from the default branch
+This version has five commands. `ils branch <name>` starts a work branch from the default branch
 as origin has it. `ils push` pushes a branch, opens its pull request, and waits for the checks.
 `ils merge` squash-merges that pull request once its checks are green. `ils status` says where the
-checkout stands and what to run next. `release` is coming.
+checkout stands and what to run next. `ils release <X.Y.Z>` tags the release commit once its checks
+are green, and publishes the GitHub release.
 
 - [Example](#example)
 - [Install](#install)
@@ -29,6 +30,11 @@ checkout stands and what to run next. `release` is coming.
   - [What branch refuses](#what-branch-refuses)
 - [Status](#status)
   - [Status JSON output](#status-json-output)
+- [Release](#release)
+  - [What release refuses](#what-release-refuses)
+  - [Run it again](#run-it-again)
+  - [Release by hand](#release-by-hand)
+  - [Release JSON output](#release-json-output)
 - [Stopping a run](#stopping-a-run)
 - [Exit codes](#exit-codes)
   - [When no check reports](#when-no-check-reports)
@@ -129,13 +135,15 @@ ils merge         # squash-merge the pull request once its checks are green
 ils merge --json  # the same result as one JSON object
 ils branch fix-help  # start the branch fix-help from the default branch as origin has it
 ils status        # where the checkout stands, and what to run next
+ils release 1.2.0 # tag the release commit of v1.2.0 once its checks are green, then publish it
+ils release 1.2.0 --tag-only  # the same, stopping once the tag is on origin
 ils help          # usage of ils and its commands
 ils help push     # the same as ils push --help
 ils --version     # print the version of ils
 ```
 
-`push`, `merge`, `branch`, and `status` each take `--json`, `-d` or `--debug`, `--no-color`, and
-`--help` or `-h`.
+`push`, `merge`, `branch`, `status`, and `release` each take `--json`, `-d` or `--debug`,
+`--no-color`, and `--help` or `-h`. `release` alone also takes `--force` and `--tag-only`.
 
 ## Push
 
@@ -390,31 +398,125 @@ tell.
 `ils status --json` prints the [JSON object](#json-output) every command prints, with the detail
 under `payload.status`:
 
-| Field                | Type             | Meaning                                                                                                                                                                         |
-| -------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `standing`           | string           | `branch`, `trunk`, `detached`, `no-origin`, or `no-repository`.                                                                                                                 |
-| `branch`             | string           | The branch HEAD is on; empty on a detached HEAD.                                                                                                                                |
-| `trunk`              | string           | Origin's default branch; empty when it could not be learned.                                                                                                                    |
-| `ahead`, `behind`    | integer          | Commits ahead of and behind the branch's copy on origin, or origin's default branch on the default branch.                                                                      |
-| `on_origin`          | boolean          | Whether origin has a copy of the branch.                                                                                                                                        |
-| `pull_request`       | object or null   | The open pull request against the default branch: `number`, `url`, `title`, `body`, `title_ok`, `verdict`, `merge_state`, `checks`; null when there is none or it was not read. |
-| `past_pull_requests` | array of objects | Each closed or merged pull request of the branch: `number` and `state`.                                                                                                         |
-| `last_tag`           | string           | On the default branch, the last version tag; empty when there is none.                                                                                                          |
-| `since_tag`          | integer          | On the default branch, the commits on origin's default branch since the last tag.                                                                                               |
-| `release_commit`     | boolean          | On the default branch, whether origin's tip is a release commit (`chore: release v<X.Y.Z>`).                                                                                    |
-| `protection`         | string           | On the default branch, `protected`, `none`, or `unavailable` (the plan does not allow rules).                                                                                   |
-| `unlanded`           | array of strings | On a detached HEAD, the commits origin's default branch lacks.                                                                                                                  |
-| `unread`             | array of objects | One entry per read that failed: `read` names it and `error` says why. A null `pull_request` with an entry here means it was not read.                                           |
+| Field                | Type             | Meaning                                                                                                                                                                              |
+| -------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `standing`           | string           | `branch`, `trunk`, `detached`, `no-origin`, or `no-repository`.                                                                                                                      |
+| `branch`             | string           | The branch HEAD is on; empty on a detached HEAD.                                                                                                                                     |
+| `trunk`              | string           | Origin's default branch; empty when it could not be learned.                                                                                                                         |
+| `ahead`, `behind`    | integer          | Commits ahead of and behind the branch's copy on origin, or origin's default branch on the default branch.                                                                           |
+| `on_origin`          | boolean          | Whether origin has a copy of the branch.                                                                                                                                             |
+| `pull_request`       | object or null   | The open pull request against the default branch: `number`, `url`, `title`, `body`, `title_ok`, `verdict`, `merge_state`, `checks`; null when there is none or it was not read.      |
+| `past_pull_requests` | array of objects | Each closed or merged pull request of the branch: `number` and `state`.                                                                                                              |
+| `last_tag`           | string           | On the default branch, the last version tag; empty when there is none.                                                                                                               |
+| `since_tag`          | integer          | On the default branch, the commits on origin's default branch since the last tag.                                                                                                    |
+| `release_commit`     | boolean          | On the default branch, whether origin's tip is a release commit (`chore: release v<X.Y.Z>`, with an optional pre-release part such as `-rc.1`, with or without a trailing `(#<N>)`). |
+| `protection`         | string           | On the default branch, `protected`, `none`, or `unavailable` (the plan does not allow rules).                                                                                        |
+| `unlanded`           | array of strings | On a detached HEAD, the commits origin's default branch lacks.                                                                                                                       |
+| `unread`             | array of objects | One entry per read that failed: `read` names it and `error` says why. A null `pull_request` with an entry here means it was not read.                                                |
 
 `verdict`, `merge_state`, and `checks` use the words of `payload.push`; `title_ok` says whether the
 title is a conventional commit subject, as `ils merge` requires.
 
+## Release
+
+Run `ils release <X.Y.Z>` once the release commit is on the default branch. The version takes no
+leading `v`, and may carry a pre-release part, such as `1.2.0-rc.1`. It:
+
+1. checks every precondition before it writes anything, and refuses with a reason when one does
+   not hold. It reads the release from origin, whatever the checkout: origin's tags, the
+   first-parent history of origin's default branch as fetched now, and `CHANGELOG.md` at the
+   release commit. From the clone it reads only the local tag `v<X.Y.Z>`;
+2. finds the release commit: the newest commit on that history, since the previous version tag,
+   whose subject is `chore: release v<X.Y.Z>`, with or without a trailing `(#<N>)`. It need not be
+   the tip: commits merged after it stay out of the tag;
+3. reads the release notes from the `## [X.Y.Z]` section of `CHANGELOG.md` at the release commit;
+4. waits for the checks of the release commit, as `ils merge` does, until you stop it or 80
+   seconds have passed since the command started;
+5. tags the release commit `v<X.Y.Z>` with an annotated tag and pushes the tag to origin;
+6. creates the GitHub release of the tag, titled with the tag and with the notes as its body, and
+   marked as a pre-release when the version has a pre-release part.
+
+`--force` skips the wait for the checks: the output says the CI gate was skipped and nothing
+verified the commit. Every other refusal still holds. `--tag-only` ends once the tag is on origin,
+and creates no GitHub release.
+
+When the checks are still running, or fewer than 20 seconds are left for the writes, `ils release`
+ends pending with nothing written, and `Next:` is the same command, flags included. A repository
+with no CI on its default branch goes on, and a line says nothing verified the commit.
+
+### What release refuses
+
+When `ils release` refuses, it has tagged nothing, pushed nothing, and created no release; at most
+it has fetched from origin. It refuses everything `ils push` refuses about the tools, `origin`, and
+the repository, and also:
+
+- a version that is not `X.Y.Z` with an optional pre-release part: `v1.2.0`, `1.2`, `1.2.0+build`,
+  and `latest` are refused;
+- a version that is not above every other version tag origin holds, naming the highest. Only
+  origin's tags count, not the clone's;
+- no release commit for the version on origin's default branch since the previous version tag;
+- a tag `v<X.Y.Z>` on origin at another commit;
+- a local tag `v<X.Y.Z>` at another commit, unless origin already holds the tag at the release
+  commit: `Next:` says to delete it by hand with `git tag --delete v<X.Y.Z>`;
+- a release commit with no `CHANGELOG.md`, no section for the version, or an empty section, with
+  `--tag-only` too. With no `CHANGELOG.md`, `Next:` says to stop and ask the user to start one,
+  since `ils release` then requires a section in it for every later release;
+- a failed or canceled check of the release commit, and a release commit no check reported for in
+  a repository with CI.
+
+### Run it again
+
+`ils release` writes in a fixed order: the local tag, the tag on origin, then the GitHub release.
+Each step first looks at what is already there, so a run that broke resumes where it stopped:
+
+- a local tag `v<X.Y.Z>` already at the release commit is kept, not made again;
+- a tag `v<X.Y.Z>` already on origin at the release commit means the release was tagged before: the
+  run reads no check and pushes nothing, and goes on to the GitHub release;
+- a GitHub release that already exists for the tag is left as it is, and its URL is reported.
+
+When origin refuses the tag push, `ils release` ends broke: the tag was made locally, and the
+output gives what `git` and the hooks printed. When the GitHub release cannot be created, it ends
+broke with the tag already on origin. Either way, `Next:` says to run the same command again, after
+the fix when there is one.
+
+### Release by hand
+
+The same steps, by hand, for `1.2.0` on `main`:
+
+```bash
+git fetch origin main
+git log --first-parent --format='%H %s' origin/main   # the newest chore: release v1.2.0
+gh api repos/<owner>/<name>/commits/<sha>/check-runs   # its checks, green before you go on
+git tag --annotate --message v1.2.0 v1.2.0 <sha>
+git push origin refs/tags/v1.2.0
+gh release create v1.2.0 --repo <host>/<owner>/<name> --verify-tag --title v1.2.0 \
+  --notes-file <notes>   # add --prerelease for a version such as 1.2.0-rc.1
+```
+
+`<notes>` is a file holding the `## [1.2.0]` section of `CHANGELOG.md` at the release commit.
+
+### Release JSON output
+
+`ils release --json` prints the [JSON object](#json-output) every command prints, with the detail
+under `payload.release`. Only a result from the writes on carries it: a refusal or a pending result
+before the tag is written has no payload.
+
+| Field        | Type    | Meaning                                                                                                                                                                        |
+| ------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `version`    | string  | The version, without the `v`.                                                                                                                                                  |
+| `tag`        | string  | The version tag, `v<X.Y.Z>`.                                                                                                                                                   |
+| `sha`        | string  | The release commit.                                                                                                                                                            |
+| `verdict`    | string  | `green` when its checks passed, `none` when none reported on a default branch without CI, `forced` when `--force` skipped them, or `skipped` when origin already held the tag. |
+| `url`        | string  | The GitHub release's URL once it was created or found; empty otherwise.                                                                                                        |
+| `prerelease` | boolean | Whether the version has a pre-release part.                                                                                                                                    |
+| `tag_only`   | boolean | Whether `--tag-only` was given.                                                                                                                                                |
+
 ## Stopping a run
 
-Ctrl-C or SIGTERM during `ils push` or `ils merge` stops the step in progress. `ils` then prints
-the result of that step, as text or as JSON per `--json`, and exits with that result's code. The
-output says that `ils` was interrupted, and `Next:` says what to run. As at a normal end, the
-spinner line is erased before the result prints; see [Terminal output](#terminal-output).
+Ctrl-C or SIGTERM during `ils push`, `ils merge`, or `ils release` stops the step in progress. `ils`
+then prints the result of that step, as text or as JSON per `--json`, and exits with that result's
+code. The output says that `ils` was interrupted, and `Next:` says what to run. As at a normal end,
+the spinner line is erased before the result prints; see [Terminal output](#terminal-output).
 
 A second Ctrl-C or SIGTERM ends `ils` at once, as that signal ends any program: no result is
 printed, and the exit status is the signal's (130 for Ctrl-C and 143 for SIGTERM in most shells),
@@ -422,14 +524,14 @@ not one of the [exit codes](#exit-codes).
 
 ## Exit codes
 
-| Exit | Means                | Reaction                                                                                                                                                                                                                                         |
-| ---- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 0    | done                 | Push: the checks are green, or the repository has no CI and a line says nothing verified the commit; follow `Next:`. Merge: the pull request is merged and the branch deleted. Branch: the branch is started. Status: always, whatever it finds. |
-| 1    | broke                | The output says what was done and what was not. Fix what failed, then follow `Next:`.                                                                                                                                                            |
-| 2    | refused              | Nothing was pushed, opened, or merged, except by a push whose pull request's head moved during the wait. The reason says why; `Next:` says what to do.                                                                                           |
-| 3    | ask                  | Reserved; not used by this version.                                                                                                                                                                                                              |
-| 4    | pending              | GitHub had not finished when the command stopped waiting, for example checks still running or not yet reported. Run `ils push` again; a merge that was already done elsewhere names `ils merge` instead.                                         |
-| 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                                           |
+| Exit | Means                | Reaction                                                                                                                                                                                                                                                                                                                           |
+| ---- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | done                 | Push: the checks are green, or the repository has no CI and a line says nothing verified the commit; follow `Next:`. Merge: the pull request is merged and the branch deleted. Branch: the branch is started. Status: always, whatever it finds. Release: the tag is on origin, and the GitHub release exists unless `--tag-only`. |
+| 1    | broke                | The output says what was done and what was not. Fix what failed, then follow `Next:`.                                                                                                                                                                                                                                              |
+| 2    | refused              | Nothing was pushed, opened, merged, or tagged, except by a push whose pull request's head moved during the wait. The reason says why; `Next:` says what to do.                                                                                                                                                                     |
+| 3    | ask                  | Reserved; not used by this version.                                                                                                                                                                                                                                                                                                |
+| 4    | pending              | GitHub had not finished when the command stopped waiting, for example checks still running or not yet reported. Run `ils push` again; a merge that was already done elsewhere names `ils merge` instead. After `ils release`, run the same command again.                                                                          |
+| 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                                                                                                                             |
 
 Every outcome but done prints its reason on the line above `Next:`, labeled by outcome:
 `Refused:`, `Broke:`, `Pending:`, or `Delivered, not green:`. A run stopped by Ctrl-C or SIGTERM
@@ -466,7 +568,8 @@ With `--json`, a command prints one JSON object with these fields:
 | `payload`   | object           | The command's structured detail, under the command's name, such as `payload.push`. Absent when empty.                                  |
 
 Each command's payload is described with the command: [Push JSON output](#push-json-output),
-[Merge JSON output](#merge-json-output), and [Status JSON output](#status-json-output).
+[Merge JSON output](#merge-json-output), [Status JSON output](#status-json-output), and
+[Release JSON output](#release-json-output).
 
 ## Terminal output
 
@@ -474,9 +577,9 @@ At a terminal, every command shows its progress as it runs:
 
 - **Spinner:** when stderr is a terminal and `-d` is off, one line on stderr names the running
   step and how long it has run, and is erased before anything else prints.
-- **Step lines:** for `ils push` and `ils merge`, when stdout is a terminal, each step prints on
-  stdout as soon as it succeeds, with a check mark and its duration. The result then prints only
-  its other lines, its excerpt, the reason, and `Next:`.
+- **Step lines:** for `ils push`, `ils merge`, and `ils release`, when stdout is a terminal, each
+  step prints on stdout as soon as it succeeds, with a check mark and its duration. The result then
+  prints only its other lines, its excerpt, the reason, and `Next:`.
 - **Color:** a stream that is a terminal gets color: outcome labels are red or yellow, and branch
   names, pull request numbers, and `ils` commands are bold blue.
 - **Pending hint:** when stdout is a terminal, the `Next:` line of a pending result ends with
@@ -495,16 +598,19 @@ exit code.
 
 ## Use with Claude Code
 
-The repository ships one agent skill, `ils`. Install it with
-[`skills`](https://github.com/vercel-labs/skills):
+The repository ships two agent skills: `ils`, which runs the binary, and `write-release`, which
+prepares the release commit. Install them with [`skills`](https://github.com/vercel-labs/skills):
 
 ```bash
 npx skills add jeffzi/ils
 ```
 
-With the skill installed, `/ils status`, `/ils branch <name>`, `/ils push`, and `/ils merge` run
-the binary and relay its output, and the skill tells an agent how to react to each exit code. The
-merge stays the user's decision: the skill runs `ils merge` only when you ask for it.
+With the skills installed, `/ils status`, `/ils branch <name>`, `/ils push`, `/ils merge`, and
+`/ils release <X.Y.Z>` run the binary and relay its output, and the `ils` skill tells an agent how to
+react to each exit code. The merge and the release stay the user's decision: the skill runs
+`ils merge` and `ils release` only when you ask for them. Asked for a release, an agent uses
+`write-release` to land the release commit through `ils branch`, `ils push`, and `ils merge`, then
+tells you to run `ils release <X.Y.Z>`.
 
 To make Claude Code ask you before every merge or release, add `ask` rules to your settings
 (`~/.claude/settings.json`, or the project's `.claude/settings.json`):

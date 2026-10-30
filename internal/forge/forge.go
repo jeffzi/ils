@@ -66,6 +66,15 @@ type NewChange struct {
 	Head string
 }
 
+// NewRelease describes a release to publish for a tag the forge already holds; it is titled with
+// the tag.
+type NewRelease struct {
+	Tag string
+	// Notes is the body of the release, published as given.
+	Notes      string
+	Prerelease bool
+}
+
 // ChangeRef points at a change that was just opened.
 type ChangeRef struct {
 	URL    string
@@ -271,7 +280,8 @@ type Verdict struct {
 // protection names required checks, and every check otherwise.
 func (v Verdict) Deciding() []Check {
 	isRequired := func(check Check) bool { return check.Required }
-	if len(v.MissingRequired) == 0 && !slices.ContainsFunc(v.Checks, isRequired) {
+	requiredNamed := len(v.MissingRequired) > 0 || slices.ContainsFunc(v.Checks, isRequired)
+	if !requiredNamed {
 		return v.Checks
 	}
 

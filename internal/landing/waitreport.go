@@ -168,15 +168,13 @@ func (w Waited) pendingReport(sha string, number int) waitReport {
 			result.SHA(sha), pull, timeLimitWords)
 	case w.Stage == StageMergeState && w.Cutoff == CutoffInterrupt:
 		report.reason = result.Say("GitHub did not say whether pull request %s can merge before "+runInterrupted, pull)
+	// The stage's own window ended the wait: the time limit was not reached.
+	case w.Stage == StageMergeState && w.Cutoff == CutoffWindow:
+		report.reason = result.Say("GitHub did not say whether pull request %s can merge within %s",
+			pull, seconds(mergeWindow))
 	case w.Stage == StageMergeState:
 		report.reason = result.Say("GitHub did not say whether pull request %s can merge "+beforeTimeLimit,
 			pull, timeLimitWords)
-
-		// The stage's own window ended the wait: the time limit was not reached.
-		if w.Cutoff == CutoffWindow {
-			report.reason = result.Say("GitHub did not say whether pull request %s can merge within %s",
-				pull, seconds(mergeWindow))
-		}
 	default:
 		report.lines, report.reason = w.unconcluded(sha, number)
 	}
@@ -210,10 +208,7 @@ func (w Waited) unconcluded(sha string, number int) ([]result.Phrase, result.Phr
 		reason = result.Say("no workflow run had started for %s on pull request %s "+timeLimitRanOut,
 			commit, pull, timeLimitWords)
 	default:
-		pending := w.Verdict.Pending()
-		now := time.Now()
-		lines = runningList(result.Say("Still running (%s):", nounCount(len(pending), "check")), pending,
-			func(check forge.Check) result.Phrase { return runningAge(check, now) })
+		lines = runningAges(w.Verdict.Pending())
 	}
 
 	return append(lines, w.mergeStateLines()...), reason
@@ -316,6 +311,14 @@ func runningAge(check forge.Check, now time.Time) result.Phrase {
 	age := max(now.Sub(check.StartedAt), 0).Truncate(time.Second)
 
 	return result.Say(pendingBullet+"%s, running %s", check.Name, age)
+}
+
+// runningAges returns the "Still running" list of pending, each check with how long it has run.
+func runningAges(pending []forge.Check) []result.Phrase {
+	now := time.Now()
+
+	return runningList(result.Say("Still running (%s):", nounCount(len(pending), "check")), pending,
+		func(check forge.Check) result.Phrase { return runningAge(check, now) })
 }
 
 // checksLine says how many deciding checks of the commit sha passed and how many were skipped,

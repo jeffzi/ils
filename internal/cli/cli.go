@@ -1,5 +1,3 @@
-// Package cli holds the grammar and the help of ils: it parses the words, runs the command they
-// name under the one deadline, and renders its result.
 package cli
 
 import (
@@ -50,6 +48,8 @@ type App struct {
 	runBranch Command
 	// runStatus runs `ils status`; nil runs landing.Status.
 	runStatus Command
+	// runRelease runs `ils release <version>`; nil runs landing.Release.
+	runRelease Command
 	// buildInfo reads the build info that an empty Version falls back to; nil reads
 	// debug.ReadBuildInfo.
 	buildInfo func() (*debug.BuildInfo, bool)
@@ -265,13 +265,9 @@ func isForm(word, flag string) bool {
 // debug or no-color flag in any form, a value the grammar refuses included: none of them changes
 // what a command does, so none is among the words of a result.
 func isOutputFlag(word string) bool {
-	for _, flag := range []string{flagDebug, flagDebugShort, flagNoColor} {
-		if word == flag || strings.HasPrefix(word, flag+"=") {
-			return true
-		}
-	}
-
-	return isForm(word, flagJSON)
+	return slices.ContainsFunc([]string{flagDebug, flagDebugShort, flagNoColor}, func(flag string) bool {
+		return word == flag || strings.HasPrefix(word, flag+"=")
+	}) || isForm(word, flagJSON)
 }
 
 // turnedOn reports whether the words typed turn flag on: the last of its forms the grammar takes
@@ -372,16 +368,6 @@ func firstWord(c *cobra.Command, args []string) (string, bool) {
 	return "", false
 }
 
-// noWords refuses the first word c was given when it takes none, for the reason that reason
-// builds for the word. It returns nil when c was given no word.
-func (p *parse) noWords(c *cobra.Command, args []string, reason func(string) result.Phrase) error {
-	if word, ok := firstWord(c, args); ok {
-		return p.refuse(reason(word))
-	}
-
-	return nil
-}
-
 // flagRefusal turns a flag Cobra could not parse into a refusal: a value that is neither true
 // nor false is named with its flag, and an unknown flag gets the reason unknown gives for the flag
 // as it was typed. Any other error is returned as it is.
@@ -452,20 +438,11 @@ func (p *parse) root() *cobra.Command {
 	root.InitDefaultHelpFlag()
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return p.flagRefusal(err, notCommand) })
 	root.AddCommand(
-		p.landing(landingHelp{word: landing.PushCommand, short: pushShort, long: withTimeLimit(pushLong), examples: pushExamples}, p.app.runPush, landing.Push),
-		p.landing(landingHelp{word: landing.MergeCommand, short: mergeShort, long: withTimeLimit(mergeLong), examples: mergeExamples}, p.app.runMerge, landing.Merge),
-		p.landing(landingHelp{word: landing.StatusCommand, short: statusShort, long: statusLong, examples: statusExamples}, p.app.runStatus, landing.Status),
-		p.named(landingHelp{word: landing.BranchCommand, short: branchShort, long: branchLong, examples: branchExamples}, p.app.runBranch, landing.StartBranch),
-		&cobra.Command{
-			Use:    wordRelease,
-			Hidden: true,
-			Args:   cobra.ArbitraryArgs,
-			// The command is refused whatever follows it, an unknown flag included.
-			FParseErrWhitelist: cobra.FParseErrWhitelist{UnknownFlags: true},
-			RunE: func(c *cobra.Command, _ []string) error {
-				return p.refuse(result.Say("%s is not in this version", c.Name()))
-			},
-		},
+		p.landing(landingHelp{word: landing.PushCommand, short: pushShort, long: withTimeLimit(pushLong), examples: pushExamples}, orDefault(p.app.runPush, landing.Push)),
+		p.landing(landingHelp{word: landing.MergeCommand, short: mergeShort, long: withTimeLimit(mergeLong), examples: mergeExamples}, orDefault(p.app.runMerge, landing.Merge)),
+		p.landing(landingHelp{word: landing.StatusCommand, short: statusShort, long: statusLong, examples: statusExamples}, orDefault(p.app.runStatus, landing.Status)),
+		p.named(landingHelp{word: landing.BranchCommand, arg: "name", short: branchShort, long: branchLong, examples: branchExamples}, orDefault(p.app.runBranch, landing.StartBranch)),
+		p.release(),
 	)
 
 	return root
@@ -521,17 +498,23 @@ func boolFlag(flags *pflag.FlagSet, value pflag.Value, names flagNames, usage st
 	flag.NoOptDefVal = "true"
 }
 
+// landingHelp is what the help says of a landing command; arg names the one word that follows
+// the command, and is empty for a command that takes none.
 type landingHelp struct {
-	word, short, long, examples string
+	word, arg, short, long, examples string
 }
 
-// landing returns the landing command help names, which takes no other word and runs run, or
-// fallback when run is nil.
-func (p *parse) landing(help landingHelp, run, fallback Command) *cobra.Command {
+// orDefault returns run, or fallback when run is nil.
+func orDefault(run, fallback Command) Command {
 	if run == nil {
-		run = fallback
+		return fallback
 	}
 
+	return run
+}
+
+// landing returns the landing command help names, which takes no other word and runs run.
+func (p *parse) landing(help landingHelp, run Command) *cobra.Command {
 	extra := func(typed string) result.Phrase {
 		return result.Say("%s takes no other word, and %s was given", help.word, typed)
 	}
@@ -542,7 +525,11 @@ func (p *parse) landing(help landingHelp, run, fallback Command) *cobra.Command 
 		Long:    help.long,
 		Example: help.examples,
 		Args: func(c *cobra.Command, args []string) error {
-			return p.noWords(c, args, extra)
+			if word, ok := firstWord(c, args); ok {
+				return p.refuse(extra(word))
+			}
+
+			return nil
 		},
 		RunE: func(c *cobra.Command, _ []string) error {
 			p.land(c.Context(), run, landing.Request{Command: help.word, Words: p.words})
@@ -555,19 +542,15 @@ func (p *parse) landing(help landingHelp, run, fallback Command) *cobra.Command 
 	return c
 }
 
-// named returns the landing command help names, which takes one name and no other word and runs
-// run, or fallback when run is nil, with the name as typed as the one argument of its request.
-func (p *parse) named(help landingHelp, run, fallback Command) *cobra.Command {
-	if run == nil {
-		run = fallback
-	}
-
+// named returns the landing command help names, which takes one help.arg and no other word and
+// runs run, with the word as typed as the one argument of its request.
+func (p *parse) named(help landingHelp, run Command) *cobra.Command {
 	extra := func(typed string) result.Phrase {
-		return result.Say("%s takes one name and no other word, and %s was given", help.word, typed)
+		return result.Say("%s takes one %s and no other word, and %s was given", help.word, help.arg, typed)
 	}
 
 	c := &cobra.Command{
-		Use:     help.word + " <name>",
+		Use:     help.word + " <" + help.arg + ">",
 		Short:   help.short,
 		Long:    help.long,
 		Example: help.examples,
@@ -582,7 +565,7 @@ func (p *parse) named(help landingHelp, run, fallback Command) *cobra.Command {
 			}
 
 			if len(args) == 0 {
-				return p.refuse(result.Say("%s takes one name, and none was given", help.word))
+				return p.refuse(result.Say("%s takes one %s, and none was given", help.word, help.arg))
 			}
 
 			return nil
@@ -594,6 +577,30 @@ func (p *parse) named(help landingHelp, run, fallback Command) *cobra.Command {
 		},
 	}
 	c.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return p.flagRefusal(err, extra) })
+
+	return c
+}
+
+// release returns `ils release <version>`, which runs the release command of the app, or
+// landing.Release when it has none, with --force and --tag-only set on its request as typed.
+func (p *parse) release() *cobra.Command {
+	run := orDefault(p.app.runRelease, landing.Release)
+
+	var force, tagOnly strictBool
+
+	withFlags := func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
+		req.Force, req.TagOnly = bool(force), bool(tagOnly)
+
+		return run(ctx, deps, req)
+	}
+
+	c := p.named(landingHelp{
+		word: landing.ReleaseCommand, arg: "version",
+		short: releaseShort, long: withTimeLimit(releaseLong), examples: releaseExamples,
+	}, withFlags)
+
+	boolFlag(c.Flags(), &force, flagNames{long: flagForce}, "Tag the release commit without waiting for its CI")
+	boolFlag(c.Flags(), &tagOnly, flagNames{long: flagTagOnly}, "Stop once the tag is pushed, creating no GitHub release")
 
 	return c
 }
@@ -799,8 +806,6 @@ func (a App) fail(err error) int {
 }
 
 const (
-	wordRelease = "release"
-
 	flagJSON    = "--json"
 	flagHelp    = "--help"
 	flagVersion = "--version"
@@ -808,6 +813,9 @@ const (
 	flagDebug      = "--debug"
 	flagDebugShort = "-d"
 	flagNoColor    = "--no-color"
+
+	flagForce   = "--force"
+	flagTagOnly = "--tag-only"
 
 	// wordDash is the terminator after which every word is a positional argument.
 	wordDash = "--"

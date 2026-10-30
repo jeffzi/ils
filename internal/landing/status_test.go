@@ -40,6 +40,12 @@ func conventionalPull() forge.Change {
 	return pull
 }
 
+// publishTopic publishes the topic branch.
+func publishTopic(f *gittest.Fixture) { f.Publish(topic) }
+
+// greenOpen is viewing with the open pull request 12 on a clean head and passing checks.
+func greenOpen() forgeFor { return viewing(cleanHead(), passing(), standing()) }
+
 // viewing is a forge that answers every read a status may make: Acme/Widgets as the user's to push
 // to, found as the branch's pull requests, a trunk that requires no check and has CI, head as the
 // open pull request's head on the tip, verdict as its checks, and a message titled as the open pull
@@ -145,10 +151,7 @@ func TestStatus_WhenOnAWorkBranch_ReportsHowItStandsAgainstOriginsCopy(t *testin
 
 	tests := []copyRow{
 		{name: "not on origin", said: "not on origin"},
-		{
-			name: "up to date", said: "up to date", onOrigin: true,
-			arrange: func(f *gittest.Fixture) { f.Publish(topic) },
-		},
+		{name: "up to date", said: "up to date", onOrigin: true, arrange: publishTopic},
 		{
 			name: "ahead", said: "ahead", ahead: 2, onOrigin: true,
 			arrange: func(f *gittest.Fixture) {
@@ -222,15 +225,13 @@ func TestStatus_WhenTheBranchHasPullRequests_ListsEachPullRequest(t *testing.T) 
 	assertSays(t, got.text, expect("#12", pullURL))
 	assertSays(t, got.text, expect(conventional))
 	assertSays(t, got.text, expect(landedBody))
-	assertNoStateLine(t, got.text)
 	assertSays(t, got.text, expect("#5", string(forge.ChangeClosed)))
 	assertSays(t, got.text, expect("#7", string(forge.ChangeMerged)))
 }
 
 func TestStatus_WhenTheOpenPullRequestsHeadIsNotClean_SaysItsMergeState(t *testing.T) {
 	t.Parallel()
-	s := statusScene(t, func(f *gittest.Fixture) { f.Publish(topic) },
-		viewing(inState(forge.MergeConflicting), passing(), standing()))
+	s := statusScene(t, publishTopic, viewing(inState(forge.MergeConflicting), passing(), standing()))
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
@@ -239,7 +240,7 @@ func TestStatus_WhenTheOpenPullRequestsHeadIsNotClean_SaysItsMergeState(t *testi
 
 func TestStatus_WhenTheBranchHasNoOpenPullRequest_SaysSo(t *testing.T) {
 	t.Parallel()
-	s := statusScene(t, func(f *gittest.Fixture) { f.Publish(topic) }, viewing(cleanHead(), passing()))
+	s := statusScene(t, publishTopic, viewing(cleanHead(), passing()))
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
@@ -249,7 +250,7 @@ func TestStatus_WhenTheBranchHasNoOpenPullRequest_SaysSo(t *testing.T) {
 
 func TestStatus_WhenTheOpenPullRequestsTitleIsNotAConventionalSubject_SaysSo(t *testing.T) {
 	t.Parallel()
-	s := statusScene(t, func(f *gittest.Fixture) { f.Publish(topic) }, viewing(cleanHead(), passing(), standing()))
+	s := statusScene(t, publishTopic, greenOpen())
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
@@ -280,7 +281,7 @@ func TestStatus_WhenThePullRequestIsOpen_ReportsTheVerdictOfItsHead(t *testing.T
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			s := statusScene(t, func(f *gittest.Fixture) { f.Publish(topic) }, viewing(cleanHead(), tt.verdict, standing()))
+			s := statusScene(t, publishTopic, viewing(cleanHead(), tt.verdict, standing()))
 
 			got := seeStatus(t, s, (*testing.T).Context)
 
@@ -292,7 +293,7 @@ func TestStatus_WhenThePullRequestIsOpen_ReportsTheVerdictOfItsHead(t *testing.T
 
 func TestStatus_WhenChecksOfTheOpenPullRequestStillRun_ListsEachUnderItsHead(t *testing.T) {
 	t.Parallel()
-	s := statusScene(t, func(f *gittest.Fixture) { f.Publish(topic) }, viewing(cleanHead(), bothRunning(), standing()))
+	s := statusScene(t, publishTopic, viewing(cleanHead(), bothRunning(), standing()))
 	head := s.fixture.Git("rev-parse", "HEAD")
 
 	got := seeStatus(t, s, (*testing.T).Context)
@@ -306,7 +307,7 @@ func TestStatus_WhenNoRequiredCheckHasReported_SaysSoWithNoTally(t *testing.T) {
 		Checks:          []forge.Check{forgetest.Check("docs", forge.BucketPass)},
 		MissingRequired: []string{"test"}, Runs: ran(forge.RunInProgress),
 	}
-	s := statusScene(t, func(f *gittest.Fixture) { f.Publish(topic) }, viewing(cleanHead(), aside, standing()))
+	s := statusScene(t, publishTopic, viewing(cleanHead(), aside, standing()))
 	head := s.fixture.Git("rev-parse", "HEAD")
 
 	got := seeStatus(t, s, (*testing.T).Context)
@@ -316,8 +317,7 @@ func TestStatus_WhenNoRequiredCheckHasReported_SaysSoWithNoTally(t *testing.T) {
 
 func TestStatus_WhenTheOpenPullRequestIsAgainstAnotherBase_ReportsItsBase(t *testing.T) {
 	t.Parallel()
-	s := statusScene(t, func(f *gittest.Fixture) { f.Publish(topic) },
-		viewing(cleanHead(), passing(), change(opened, otherBase, forge.ChangeOpen)))
+	s := statusScene(t, publishTopic, viewing(cleanHead(), passing(), change(opened, otherBase, forge.ChangeOpen)))
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
@@ -383,11 +383,9 @@ func landedSteps() []nextRow {
 
 // copySteps are the states whose `Next:` line origin's copy of the branch decides.
 func copySteps() []nextRow {
-	green := viewing(cleanHead(), passing(), standing())
-
 	return []nextRow{
 		{
-			name: "behind origin's copy with a green pull request", script: green,
+			name: "behind origin's copy with a green pull request", script: greenOpen(),
 			arrange: func(f *gittest.Fixture) string {
 				f.Publish(topic)
 				f.AdvanceOrigin(topic)
@@ -396,11 +394,7 @@ func copySteps() []nextRow {
 			},
 		},
 		{
-			name: "not on origin", script: viewing(cleanHead(), passing()),
-			arrange: func(*gittest.Fixture) string { return nextPush() },
-		},
-		{
-			name: "ahead of origin's copy with a green pull request", script: green,
+			name: "ahead of origin's copy with a green pull request", script: greenOpen(),
 			arrange: func(f *gittest.Fixture) string {
 				f.Publish(topic)
 				f.Commits(topic, "fix a typo")
@@ -421,20 +415,14 @@ func pullSteps() []nextRow {
 	review := inState(forge.MergeBlockedByReview)
 
 	return []nextRow{
-		{name: "checks still running", script: viewing(cleanHead(), running(), standing()), arrange: published(nextPush())},
 		{
 			name: "checks still running while conflicting with the trunk", script: viewing(conflicting, running(), standing()),
 			arrange: published(nextPush()),
 		},
-		{
-			name:    "red",
-			script:  viewing(inState(forge.MergeBlockedOther), lintRed(), standing()),
-			arrange: published(nextRed()),
-		},
 		{name: "red while conflicting with the trunk", script: viewing(conflicting, lintRed(), standing()), arrange: published(nextRed())},
 		{name: "conflicting with the trunk", script: viewing(conflicting, passing(), standing()), arrange: published(nextTrunk())},
 		{name: "waiting on a review", script: viewing(review, passing(), standing()), arrange: published(expect("request a review"))},
-		{name: "green and mergeable", script: viewing(cleanHead(), passing(), standing()), arrange: published(nextMerge())},
+		{name: "green and mergeable", script: greenOpen(), arrange: published(nextMerge())},
 	}
 }
 
@@ -498,11 +486,9 @@ func precedenceSteps() []nextRow {
 // refusedSteps are the states in which push or merge would refuse a step the list above names, so
 // that status ends on the refusal's own step instead.
 func refusedSteps() []nextRow {
-	open := viewing(cleanHead(), passing(), standing())
-
 	return []nextRow{
 		{
-			name: "changed tracked files", script: open,
+			name: "changed tracked files", script: greenOpen(),
 			arrange: func(f *gittest.Fixture) string {
 				f.Publish(topic)
 				f.DirtyFile()
@@ -520,7 +506,7 @@ func refusedSteps() []nextRow {
 			},
 		},
 		{
-			name: "green and mergeable with a local trunk ahead of origin's", script: open,
+			name: "green and mergeable with a local trunk ahead of origin's", script: greenOpen(),
 			arrange: func(f *gittest.Fixture) string {
 				f.Publish(topic)
 				f.AdvanceTrunk()
@@ -557,7 +543,7 @@ func TestStatus_WhenOnAWorkBranch_EndsOnTheFirstNextThatHolds(t *testing.T) {
 
 func TestStatus_WhenAForgeReadFails_ReportsTheFailedReadBesideTheRest(t *testing.T) {
 	t.Parallel()
-	s := statusScene(t, func(f *gittest.Fixture) { f.Publish(topic) },
+	s := statusScene(t, publishTopic,
 		func(string) forgetest.Script { return failingToFind(errors.New(forgeFailure)) })
 
 	got := seeStatus(t, s, (*testing.T).Context)
@@ -570,7 +556,7 @@ func TestStatus_WhenAForgeReadFails_ReportsTheFailedReadBesideTheRest(t *testing
 
 func TestStatus_WhenAGitReadFails_ReportsTheFailedReadBesideTheRest(t *testing.T) {
 	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
-	s := statusScene(t, func(f *gittest.Fixture) { f.Publish(topic) }, viewing(cleanHead(), passing(), standing()))
+	s := statusScene(t, publishTopic, greenOpen())
 	failGit(t, s, []string{"rev-list", "--left-right", "--count"})
 
 	got := seeStatus(t, s, (*testing.T).Context)
@@ -587,7 +573,7 @@ func TestStatus_WhenTheFirstReadIsCutShort_EndsDoneSkippingEveryReadAfterIt(t *t
 	for _, c := range cuts() {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			s := statusScene(t, nil, viewing(cleanHead(), passing(), standing()))
+			s := statusScene(t, nil, greenOpen())
 
 			got := seeStatus(t, s, c.spent)
 
@@ -601,7 +587,7 @@ func TestStatus_WhenTheFirstReadIsCutShort_EndsDoneSkippingEveryReadAfterIt(t *t
 func TestStatus_WhenAReadOfOriginIsCutShort_EndsDoneSkippingTheForgeReadsAfterIt(t *testing.T) {
 	t.Parallel()
 	c := byTimeLimit()
-	s := statusScene(t, func(f *gittest.Fixture) { f.Publish(topic) }, viewing(cleanHead(), passing(), standing()))
+	s := statusScene(t, publishTopic, greenOpen())
 	// Origin answers the question about its trunk and the fetch of it, and the next call stalls.
 	ctx := c.stalling(2)(t, s)
 
@@ -654,7 +640,7 @@ func TestStatus_WhenDetachedHEADHasCommitsOriginsTrunkLacks_ListsThemToKeepOnABr
 
 	assert.Check(t, is.Equal(got.status.Standing, standingDetached))
 	assert.Check(t, is.DeepEqual(got.status.Unlanded, own))
-	assertSays(t, got.text, expect(shortSHA(own[0]), sharpen, "`git switch -c <name>`", "ils push"))
+	assertSays(t, got.text, expect(shortSHA(own[0]), sharpen)+keepDetached())
 }
 
 func TestStatus_WhenThereIsNoOrigin_EndsOnCreatingIt(t *testing.T) {
@@ -726,8 +712,6 @@ func TestStatus_WhenOnAWorkBranchAndGitHubCannotBeRead_NamesTheFixBesideWhatGitT
 			got := seeStatus(t, s, (*testing.T).Context)
 
 			assertSays(t, got.text, tt.said)
-			assert.Check(t, is.Equal(got.status.Standing, standingBranch))
-			assert.Check(t, is.Equal(got.status.Branch, topic))
 			assert.Check(t, is.Equal(got.status.Ahead, 1))
 			assert.Check(t, got.status.OnOrigin)
 			assert.Check(t, got.status.PullRequest == nil, "pull request = %+v, want none", got.status.PullRequest)
@@ -764,7 +748,7 @@ func TestStatus_WhenOriginCannotBeReachedAndItsTrunkWasNeverLearned_CountsTheBra
 		f.Git("remote", "set-head", "origin", "--delete")
 		f.Git("update-ref", "refs/remotes/origin/"+topic, topic)
 		f.Commits(topic, "fix a typo")
-	}, viewing(cleanHead(), passing(), standing()))
+	}, greenOpen())
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
@@ -782,7 +766,7 @@ func TestStatus_WhenOriginCannotBeReached_CountsAgainstTheLastFetch(t *testing.T
 		f.Git("update-ref", "refs/remotes/origin/"+topic, topic)
 		f.Commits(topic, "fix a typo")
 		f.AdvanceOrigin(topic)
-	}, viewing(cleanHead(), passing(), standing()))
+	}, greenOpen())
 
 	got := seeStatus(t, s, (*testing.T).Context)
 

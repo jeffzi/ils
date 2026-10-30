@@ -24,7 +24,6 @@ const (
 // placeholder for the agent to choose.
 const startBranch = "start a branch with `ils " + BranchCommand + " <name>`"
 
-// startBranchStep is the next step that starts a branch from origin's trunk.
 func startBranchStep() result.Next {
 	return result.NextStep(startBranch)
 }
@@ -83,7 +82,6 @@ func onWorkBranch(ctx context.Context, deps Deps, req Request, ready Ready) *res
 	return req.Refused(reason, startBranchStep())
 }
 
-// cleanTree refuses a tree with a changed tracked file.
 func cleanTree(ctx context.Context, deps Deps, req Request) *result.Result {
 	files, err := deps.Repo.DirtyFiles(ctx)
 	if err != nil {
@@ -129,7 +127,6 @@ func commitsPast(ctx context.Context, deps Deps, req Request, b onBranch) (tip s
 	return tip, past, nil
 }
 
-// tipOf returns the sha of the branch's tip, refusing a branch that has no commit at all.
 func tipOf(ctx context.Context, deps Deps, req Request, b onBranch) (string, *result.Result) {
 	tip, committed, err := b.readTip(ctx, deps)
 

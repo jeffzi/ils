@@ -66,6 +66,9 @@ func Draw(tb testing.TB, out string) Drawn {
 
 const controlSequenceIntroducer = "\x1b["
 
+// selectGraphicRenditionFinal is the final byte of the control sequences that set the pen.
+const selectGraphicRenditionFinal = 'm'
+
 // Control sequences end at the first byte in this range.
 const (
 	finalByteFirst = 0x40
@@ -85,7 +88,7 @@ func sequence(tb testing.TB, pen Look, out string) (Look, string) {
 	rest := out[len(controlSequenceIntroducer):]
 	end := strings.IndexFunc(rest, isFinalByte)
 	assert.Assert(tb, end >= 0, "unterminated sequence in %q", out)
-	if rest[end] == 'm' {
+	if rest[end] == selectGraphicRenditionFinal {
 		pen = rendition(tb, pen, rest[:end])
 	}
 

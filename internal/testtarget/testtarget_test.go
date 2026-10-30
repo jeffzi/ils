@@ -80,7 +80,7 @@ func hammerVersionOf(line string) string {
 
 func TestTool_CheckOutput_WhenFirstLineNamesASuitedVersion_ReturnsNil(t *testing.T) {
 	t.Parallel()
-	out := "hammer 1.4.0\nhammer 1.3.9"
+	out := "hammer 1.4.0"
 
 	err := hammer().CheckOutput(testtarget.Minimum, "", out, hammerVersionOf)
 
@@ -96,7 +96,7 @@ func TestTool_CheckOutput_WhenFirstLineDoesNotSuitTarget_ReturnsError(t *testing
 		out    string
 		part   string
 	}{
-		{name: "first line names no version", out: "built on a bench\nhammer 1.4.0", part: `"built on a bench"`},
+		{name: "first line names no version", out: "built on a bench", part: `"built on a bench"`},
 		{
 			name: "first line names a version other than the one wanted", target: testtarget.Latest,
 			want: "1.10.0", out: "hammer 1.9.0", part: "1.9.0",

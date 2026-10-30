@@ -433,6 +433,99 @@ func (n Next) spans() ([]span, error) {
 	return command, nil
 }
 
+// ErrPlaceholders reports a phrase whose wording and names do not pair up.
+var ErrPlaceholders = errors.New("placeholders and names differ in number")
+
+// placeholder marks where a name goes in a wording.
+const placeholder = "%s"
+
+// spans returns the phrase with its names in place, as runs of wording and
+// names, each command inline in the wording marked by inlineCommands.
+func (p Phrase) spans() ([]span, error) {
+	parts := strings.Split(p.wording, placeholder)
+	placeholders := len(parts) - 1
+	if placeholders != len(p.names) {
+		return nil, fmt.Errorf("%w: %q has %d placeholders and %d names",
+			ErrPlaceholders, p.wording, placeholders, len(p.names))
+	}
+
+	spans := make([]span, 0, len(parts)+len(p.names))
+	for i, part := range parts {
+		spans = append(spans, span{text: part, kind: kindWording})
+		if i < len(p.names) {
+			spans = append(spans, p.names[i].spans...)
+		}
+	}
+
+	return inlineCommands(spans), nil
+}
+
+// tick opens and closes a command inline in wording.
+const tick = "`"
+
+// inlineCommands returns spans with each command the wording wraps in a pair of
+// ticks marked as a command: every span between the two, wording and names
+// alike, and each tick of the pair as a tick. Only ticks of the wording pair
+// up, in order; a tick left without a partner stays wording, and ticks inside
+// names are third-party text.
+func inlineCommands(spans []span) []span {
+	var ticks int
+	for _, s := range spans {
+		if s.kind == kindWording {
+			ticks += strings.Count(s.text, tick)
+		}
+	}
+
+	// paired counts the ticks still to come that have a partner; an odd last tick has none and
+	// stays wording.
+	paired := ticks - ticks%2
+	if paired == 0 {
+		return spans
+	}
+
+	withCommands := make([]span, 0, len(spans)+paired)
+	inside := false
+	for _, s := range spans {
+		if s.kind != kindWording {
+			withCommands = append(withCommands, commandWhen(inside, s))
+
+			continue
+		}
+
+		rest := s.text
+		for ; paired > 0; paired-- {
+			before, after, found := strings.Cut(rest, tick)
+			if !found {
+				break
+			}
+			withCommands = appendRun(withCommands, commandWhen(inside, span{text: before, kind: kindWording}))
+			withCommands = append(withCommands, span{text: tick, kind: kindTick})
+			inside, rest = !inside, after
+		}
+		withCommands = appendRun(withCommands, commandWhen(inside, span{text: rest, kind: kindWording}))
+	}
+
+	return withCommands
+}
+
+// commandWhen returns s marked as a command when inside, and unchanged otherwise.
+func commandWhen(inside bool, s span) span {
+	if inside {
+		s.kind = kindCommand
+	}
+
+	return s
+}
+
+// appendRun returns spans with s added, unless s holds no text.
+func appendRun(spans []span, s span) []span {
+	if s.text == "" {
+		return spans
+	}
+
+	return append(spans, s)
+}
+
 // forbidden returns what in ownWording names a hook or a path under the git dir, and whether
 // anything does: gitDir itself when the wording names a path under it, else the first word that
 // names a git dir or a hook.
@@ -481,12 +574,14 @@ func folded(path string) string {
 	return strings.ReplaceAll(strings.ToLower(path), `\`, "/")
 }
 
+// sentenceEnd is the punctuation a sentence may end on the component with, as in "nothing in .git."
+const sentenceEnd = ".,;:!?)'\"`"
+
 // namesGitDir reports whether word has .git as a path component.
 func namesGitDir(word string) bool {
 	separator := func(r rune) bool { return r == '/' || r == '\\' }
 	for component := range strings.FieldsFuncSeq(word, separator) {
-		// A sentence may end on the component, as in "nothing in .git."
-		before, found := strings.CutSuffix(strings.TrimRight(component, ".,;:!?)'\"`"), ".git")
+		before, found := strings.CutSuffix(strings.TrimRight(component, sentenceEnd), ".git")
 		if found && !endsInName(before) {
 			return true
 		}

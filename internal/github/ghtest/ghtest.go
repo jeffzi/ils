@@ -63,6 +63,12 @@ type Answer struct {
 	Code  int
 }
 
+// scriptFormat returns the duration format of the script file: Setup and the fake must encode and
+// decode the script with the same one.
+func scriptFormat() json.Options {
+	return legacy.FormatDurationAsNano(true)
+}
+
 // installed is what the fake prints for its version when the script holds no answer to
 // VersionArgs: a release every command accepts, so that a script need not answer the version read.
 const installed = "gh version " + github.MinimumVersion + "\n"
@@ -72,10 +78,38 @@ const installed = "gh version " + github.MinimumVersion + "\n"
 // No real argument can equal it, since an argument cannot hold a NUL byte.
 const Any = "\x00any"
 
+// fileHolding leads a scripted argument that FileHolding wrote; like Any, no real argument can
+// start with it, since an argument cannot hold a NUL byte.
+const fileHolding = "\x00file\x00"
+
+// FileHolding stands in a scripted argv for one argument naming a file that holds exactly
+// content when the call is made: the file the code under test writes for gh to read, such as
+// release notes, whose path no test can know.
+//
+// The fake checks the file when it answers. Matched after the call, against a recorded argv,
+// it fails once the code under test has removed the file.
+func FileHolding(content string) string {
+	return fileHolding + content
+}
+
 // Matches reports whether argv is a call pattern scripts: as long as pattern, and equal to it
-// wherever pattern does not hold Any.
+// wherever pattern does not hold Any or an argument FileHolding wrote, which matches the path of
+// a file holding its content.
 func Matches(pattern, argv []string) bool {
-	return slices.EqualFunc(pattern, argv, func(want, got string) bool { return want == Any || want == got })
+	return slices.EqualFunc(pattern, argv, func(want, got string) bool {
+		if content, ok := strings.CutPrefix(want, fileHolding); ok {
+			return fileHolds(got, content)
+		}
+
+		return want == Any || want == got
+	})
+}
+
+func fileHolds(path, content string) bool {
+	//nolint:gosec // G304: the path is one the code under test handed gh, read to check what it wrote.
+	held, err := os.ReadFile(path)
+
+	return err == nil && string(held) == content
 }
 
 // Call scripts the answer to one argv, given to every call of it.
@@ -175,6 +209,23 @@ func RunsArgs(slug, sha string) []string {
 // LogArgs is the argv of the read of the failed log of the workflow run numbered run.
 func LogArgs(slug, run string) []string {
 	return []string{"run", "view", "--repo", slug, run, "--log-failed"}
+}
+
+// ReleaseViewArgs is the argv pattern of the read of the GitHub release of tag.
+func ReleaseViewArgs(slug, tag string) []string {
+	return []string{"release", "view", tag, "--repo", slug, "--json", Any}
+}
+
+// ReleaseCreateArgs is the argv pattern that publishes the GitHub release of tag, which origin
+// must already hold, titled with tag, with notes as its body, and marked as a pre-release when
+// prerelease is set.
+func ReleaseCreateArgs(slug, tag, notes string, prerelease bool) []string {
+	args := []string{"release", "create", tag, "--repo", slug, "--verify-tag", "--title", tag, "--notes-file", FileHolding(notes)}
+	if prerelease {
+		args = append(args, "--prerelease")
+	}
+
+	return args
 }
 
 // MessageArgs is the argv pattern of the read of pull request number's title, body, and the body GitHub
@@ -321,7 +372,7 @@ func Setup(tb testing.TB, script ...Call) *Fake {
 		tb.Fatalf("ghtest: find the test binary: %v", err)
 	}
 
-	encoded, err := json.Marshal(script, legacy.FormatDurationAsNano(true))
+	encoded, err := json.Marshal(script, scriptFormat())
 	if err != nil {
 		tb.Fatalf("ghtest: encode the script: %v", err)
 	}
@@ -586,7 +637,7 @@ func readScript(path string) ([]Call, error) {
 	}
 
 	var script []Call
-	if err := json.Unmarshal(encoded, &script, legacy.FormatDurationAsNano(true)); err != nil {
+	if err := json.Unmarshal(encoded, &script, scriptFormat()); err != nil {
 		return nil, fmt.Errorf("decode the script %s: %w", path, err)
 	}
 

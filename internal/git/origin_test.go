@@ -590,6 +590,37 @@ func TestRepo_Fetch_WhenRefOnOrigin_ReturnsFetchedSHA(t *testing.T) {
 	}
 }
 
+func TestRepo_Fetch_WhenFetchHeadNamesAnotherCommitAfterTheFetch_ReturnsTheFetchedSHA(t *testing.T) {
+	// Not parallel: gittest.FakeGit sets PATH for the whole process.
+	f := gittest.New(t, trunk)
+	f.Commits(topic, "one")
+	f.Push(topic)
+	want := f.AdvanceOrigin(topic)
+	other := f.OriginGit("rev-parse", trunk)
+	repo := newRepo(f)
+	repo.Runner.Env = append(repo.Runner.Env, gittest.FakeGit(t, gittest.Fake{
+		AnswerOn: []string{"rev-parse", "FETCH_HEAD"},
+		Answer:   other,
+	})...)
+
+	got, err := repo.Fetch(t.Context(), topic)
+	assert.NilError(t, err, "Fetch(%q)", topic)
+
+	assert.Check(t, is.Equal(got, want), "Fetch(%q)", topic)
+}
+
+func TestRepo_Fetch_WhenItReturns_LeavesNoRefOfItsOwn(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.Commits(topic, "one")
+	f.Push(topic)
+
+	_, err := newRepo(f).Fetch(t.Context(), topic)
+	assert.NilError(t, err, "Fetch(%q)", topic)
+
+	assert.Check(t, is.Equal(f.Git("for-each-ref", "refs/ils/"), ""), "refs under refs/ils/ after Fetch")
+}
+
 // killsReceivePack kills the hook's parent: git runs a hook as a child of receive-pack, so `$PPID`
 // is the process that must die mid-push.
 const killsReceivePack = "kill -KILL $PPID"
@@ -692,7 +723,7 @@ func TestRepo_Push_WhenOriginRefusesTheRef_ReturnsPushErrorNamingTheReason(t *te
 
 	pushErr, ok := errors.AsType[*git.PushError](err)
 	assert.Assert(t, ok, "Push(%q) error = %v, want *git.PushError", topic, err)
-	assert.Check(t, is.Equal(pushErr.Branch, topic))
+	assert.Check(t, is.Equal(pushErr.Ref, "refs/heads/"+topic))
 	assert.Check(t, is.Contains(pushErr.Reason, "pre-receive hook declined"))
 	assert.Check(t, !strings.Contains(pushErr.Reason, "refs/heads/"), "Reason = %q, want the summary, not the ref it names",
 		pushErr.Reason)
@@ -864,6 +895,49 @@ func TestRepo_Push_WhenContextCanceled_ReturnsNeitherPushNorRemoteError(t *testi
 	assert.Check(t, !refused, "Push(%q) error = %v, want no *git.PushError", topic, err)
 	_, remote := errors.AsType[*git.RemoteError](err)
 	assert.Check(t, !remote, "Push(%q) error = %v, want no *git.RemoteError", topic, err)
+}
+
+const releaseRef = "refs/tags/" + release
+
+func originRefs(f *gittest.Fixture) string {
+	return f.OriginGit("for-each-ref", "--format=%(refname)")
+}
+
+// taggedRelease returns a fixture whose clone holds release as a local tag on tip.
+func taggedRelease(t *testing.T) (f *gittest.Fixture, repo git.Repo, tip string) {
+	t.Helper()
+	f = gittest.New(t, trunk)
+	tip = f.Commits(topic, "one")[0]
+	repo = newRepo(f)
+	assert.NilError(t, repo.CreateTag(t.Context(), release, tip))
+
+	return f, repo, tip
+}
+
+func TestRepo_PushTag_WhenOriginAccepts_PutsOnlyTheTagOnOrigin(t *testing.T) {
+	t.Parallel()
+	f, repo, tip := taggedRelease(t)
+	before := originRefs(f)
+	f.Git("tag", "v0.9.0", tip)
+
+	err := repo.PushTag(t.Context(), release)
+	assert.NilError(t, err, "PushTag(%q)", release)
+
+	assert.Check(t, is.Equal(originRefs(f), strings.TrimSpace(before+"\n"+releaseRef)))
+	assert.Check(t, is.Equal(f.OriginGit("rev-parse", releaseRef+"^{commit}"), tip))
+}
+
+func TestRepo_PushTag_WhenOriginHoldsTheTagElsewhere_ReturnsPushErrorNamingTheTagRef(t *testing.T) {
+	t.Parallel()
+	f, repo, _ := taggedRelease(t)
+	f.OriginTag(release, f.Git("rev-parse", trunk))
+
+	err := repo.PushTag(t.Context(), release)
+
+	pushErr, ok := errors.AsType[*git.PushError](err)
+	assert.Assert(t, ok, "PushTag(%q) error = %v, want *git.PushError", release, err)
+	assert.Check(t, is.Equal(pushErr.Ref, releaseRef))
+	assert.Check(t, is.Contains(pushErr.Detail(), "already exists"))
 }
 
 func TestRepo_WhenNotARepository_OriginCallsReturnExitError(t *testing.T) {

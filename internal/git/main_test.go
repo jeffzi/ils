@@ -27,9 +27,6 @@ const (
 	// helperSpawn makes the helper print helperSaid, start a lingering copy of itself and exit zero
 	// at once, so that a process it started still holds its output pipes after it exited.
 	helperSpawn = "spawn"
-	// helperWait makes the helper print helperSaid on stdout and stderr, then start a lingering copy
-	// of itself and wait for it, so that it is still running once that copy has connected.
-	helperWait = "wait"
 	// helperSaid is what the helper prints before it starts its lingering copy.
 	helperSaid = "helper started"
 
@@ -169,11 +166,6 @@ func helper(mode string) int {
 		fmt.Println(helperSaid)
 
 		return spawnLingerer()
-	case helperWait:
-		fmt.Println(helperSaid)
-		fmt.Fprintln(os.Stderr, helperSaid)
-
-		return waitForLingerer()
 	default:
 		fmt.Fprintf(os.Stderr, "helper: unknown mode %q\n", mode)
 

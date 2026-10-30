@@ -31,11 +31,24 @@ func exitErrorOf(t *testing.T, what string, cmd *exec.Cmd) *exec.ExitError {
 	return exitErr
 }
 
+// nonsenseArgv returns the argv of the go command that nonZeroExit runs.
+func nonsenseArgv() []string {
+	return []string{"go", "tool", "nonsense"}
+}
+
+// fetchArgv returns the argv that the Failure tests name in the errors they build.
+func fetchArgv() []string {
+	return []string{"git", "fetch"}
+}
+
 // nonZeroExit runs a go command that exits non-zero and returns what exec reports for it.
 func nonZeroExit(t *testing.T) *exec.ExitError {
 	t.Helper()
 
-	return exitErrorOf(t, "go tool nonsense", exec.CommandContext(t.Context(), "go", "tool", "nonsense"))
+	argv := nonsenseArgv()
+
+	//nolint:gosec // G204: the test names the command; nothing here comes from outside the test.
+	return exitErrorOf(t, "go tool nonsense", exec.CommandContext(t.Context(), argv[0], argv[1:]...))
 }
 
 // killedBy runs a shell that kills itself with signal, named as kill names it, and returns what
@@ -94,7 +107,7 @@ func TestExitError_Error(t *testing.T) {
 
 func TestFailure_WhenProgramExitedNonZero_ReturnsExitError(t *testing.T) {
 	t.Parallel()
-	argv := []string{"go", "tool", "nonsense"}
+	argv := nonsenseArgv()
 	runErr := nonZeroExit(t)
 
 	err := child.Failure(t.Context(), argv, runErr, "no such tool\n")
@@ -119,7 +132,7 @@ func TestFailure_WhenContextEnded_ReturnsContextErrorWhateverTheExit(t *testing.
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	err := child.Failure(ctx, []string{"go", "tool", "nonsense"}, runErr, "secret printed before the end\n")
+	err := child.Failure(ctx, nonsenseArgv(), runErr, "secret printed before the end\n")
 
 	assert.Check(t, is.ErrorIs(err, context.Canceled))
 	assert.Check(t, is.ErrorContains(err, "go tool nonsense"))
@@ -130,7 +143,7 @@ func TestFailure_WhenProgramDiedOfTheInterruptBeforeContextEnded_ReturnsContextC
 	t.Parallel()
 	runErr := interruptedChild(t)
 
-	err := child.Failure(t.Context(), []string{"git", "fetch"}, runErr, "secret printed before the interrupt\n")
+	err := child.Failure(t.Context(), fetchArgv(), runErr, "secret printed before the interrupt\n")
 
 	assert.Check(t, is.ErrorIs(err, context.Canceled))
 	assert.Check(t, is.ErrorContains(err, "git fetch"))
@@ -145,7 +158,7 @@ func TestFailure_WhenProgramDiedOfTerminateAndContextEndsWithinGrace_ReturnsCont
 		ctx, cancel := context.WithTimeout(t.Context(), time.Nanosecond)
 		defer cancel()
 
-		err := child.Failure(ctx, []string{"git", "fetch"}, runErr, "secret printed before the signal\n")
+		err := child.Failure(ctx, fetchArgv(), runErr, "secret printed before the signal\n")
 
 		assert.Check(t, is.ErrorIs(err, context.DeadlineExceeded))
 		assert.Check(t, is.ErrorContains(err, "git fetch"))
@@ -158,7 +171,7 @@ func TestFailure_WhenProgramDiedOfTerminateAndContextOutlivesGrace_ReturnsKilled
 	runErr := killedBy(t, "TERM")
 
 	synctest.Test(t, func(t *testing.T) {
-		err := child.Failure(t.Context(), []string{"git", "fetch"}, runErr, "")
+		err := child.Failure(t.Context(), fetchArgv(), runErr, "")
 
 		_, killed := errors.AsType[*child.KilledError](err)
 		assert.Check(t, killed, "Failure error = %v, want *child.KilledError", err)
@@ -188,7 +201,7 @@ func TestFailure_WhenProgramDidNotDieOfTerminate_ReturnsWithoutWaitingForContext
 				ctx, cancel := context.WithTimeout(t.Context(), time.Nanosecond)
 				defer cancel()
 
-				err := child.Failure(ctx, []string{"git", "fetch"}, runErr, "")
+				err := child.Failure(ctx, fetchArgv(), runErr, "")
 
 				assert.Check(t, !errors.Is(err, context.DeadlineExceeded), "Failure error = %v, want one returned before the context's deadline", err)
 			})
@@ -243,7 +256,7 @@ func TestEnded_WhenProgramExitedNonZero_KeepsOnlyStdout(t *testing.T) {
 	t.Parallel()
 	runErr := nonZeroExit(t)
 
-	got, err := child.Ended(t.Context(), []string{"go", "tool", "nonsense"}, runErr, printedBoth())
+	got, err := child.Ended(t.Context(), nonsenseArgv(), runErr, printedBoth())
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 	assert.Assert(t, ok, "Ended error = %v, want *child.ExitError", err)
@@ -257,7 +270,7 @@ func TestEnded_WhenContextEndedAfterNonZeroExit_ReturnsNoOutput(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	got, err := child.Ended(ctx, []string{"go", "tool", "nonsense"}, runErr, printedBoth())
+	got, err := child.Ended(ctx, nonsenseArgv(), runErr, printedBoth())
 
 	assert.Check(t, is.ErrorIs(err, context.Canceled))
 	assert.Check(t, is.DeepEqual(got, child.Output{}))

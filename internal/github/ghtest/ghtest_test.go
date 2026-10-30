@@ -3,6 +3,7 @@ package ghtest_test
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +46,32 @@ func TestFake_WhenScriptedArgvHoldsAny_AnswersWhateverTheCallHoldsThere(t *testi
 	assert.NilError(t, err)
 
 	assert.Check(t, is.Equal(got.Stdout, "scripted\n"))
+}
+
+// scriptedNotes is the content that the FileHolding tests script `gh release create` to expect.
+const scriptedNotes = "## [1.2.0]\n\n- Fix `$HOME`\n"
+
+func TestFileHolding_WhenFileHoldsTheContent_Answers(t *testing.T) {
+	notes := filepath.Join(t.TempDir(), "notes.md")
+	assert.NilError(t, os.WriteFile(notes, []byte(scriptedNotes), 0o600))
+	ghtest.Setup(t, ghtest.Says("scripted\n", "release", "create", "--notes-file", ghtest.FileHolding(scriptedNotes)))
+
+	got, err := github.Runner{}.Run(t.Context(), "release", "create", "--notes-file", notes)
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Equal(got.Stdout, "scripted\n"))
+}
+
+func TestFileHolding_WhenFileHoldsOtherContent_ExitsUnscripted(t *testing.T) {
+	notes := filepath.Join(t.TempDir(), "notes.md")
+	assert.NilError(t, os.WriteFile(notes, []byte(scriptedNotes+"- Add the release\n"), 0o600))
+	ghtest.Setup(t, ghtest.Says("scripted\n", "release", "create", "--notes-file", ghtest.FileHolding(scriptedNotes)))
+
+	_, err := github.Runner{}.Run(t.Context(), "release", "create", "--notes-file", notes)
+
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "Run error = %v, want *child.ExitError", err)
+	assert.Check(t, is.Equal(exitErr.Code, ghtest.UnscriptedCode))
 }
 
 func TestFake_WhenAnswerIsDelayed_AnswersAfterTheDelay(t *testing.T) {

@@ -26,6 +26,7 @@ const (
 	dirtyPath     = "README.md"
 	stagedPath    = "LICENSE"
 	trunkOnlyPath = "trunk-only.txt"
+	changelogPath = "CHANGELOG.md"
 	scratchRef    = "refs/gittest/squash"
 
 	sshConfigName = "ssh_config"
@@ -136,18 +137,21 @@ func NeedSignals(tb testing.TB) {
 // isolatedEnv returns the process environment with everything that could bring in the user's git
 // setup replaced: no system or global config, a home under the fixture, and a fixed identity and date.
 func isolatedEnv(home string) []string {
+	// XDG_CONFIG_HOME goes too: git reads its default ignore file from there.
+	userDirKeys := []string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME"}
+
 	env := slices.DeleteFunc(os.Environ(), func(entry string) bool {
 		name, _, _ := strings.Cut(entry, "=")
 
 		const gitPrefix = "GIT_"
 
 		head := name[:min(len(name), len(gitPrefix))]
+		gitSetup := git.SameKey(head, gitPrefix)
+		userDir := slices.ContainsFunc(userDirKeys, func(key string) bool {
+			return git.SameKey(name, key)
+		})
 
-		// XDG_CONFIG_HOME goes too: git reads its default ignore file from there.
-		return git.SameKey(head, gitPrefix) ||
-			slices.ContainsFunc([]string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME"}, func(key string) bool {
-				return git.SameKey(name, key)
-			})
+		return gitSetup || userDir
 	})
 
 	return append(env,
@@ -286,12 +290,7 @@ func (f *Fixture) run(dir string, args ...string) string {
 // per subject, and returns the new shas, oldest first.
 func (f *Fixture) Commits(branch string, subjects ...string) []string {
 	f.tb.Helper()
-
-	if f.Git("branch", "--list", branch) == "" {
-		f.Git("switch", "--quiet", "--create", branch, f.trunk)
-	} else {
-		f.Git("switch", "--quiet", branch)
-	}
+	f.checkout(branch)
 
 	shas := make([]string, 0, len(subjects))
 	for _, subject := range subjects {
@@ -299,6 +298,26 @@ func (f *Fixture) Commits(branch string, subjects ...string) []string {
 	}
 
 	return shas
+}
+
+// CommitChangelog checks out branch, cutting it from the trunk when it does not exist yet, commits
+// content as CHANGELOG.md with subject, and returns the new sha.
+func (f *Fixture) CommitChangelog(branch, subject, content string) string {
+	f.tb.Helper()
+	f.checkout(branch)
+
+	return f.commitFile(f.dir, changelogPath, content, subject)
+}
+
+// checkout checks out branch, cutting it from the trunk when it does not exist yet.
+func (f *Fixture) checkout(branch string) {
+	f.tb.Helper()
+
+	if f.Git("branch", "--list", branch) == "" {
+		f.Git("switch", "--quiet", "--create", branch, f.trunk)
+	} else {
+		f.Git("switch", "--quiet", branch)
+	}
 }
 
 // Push puts origin's copy of branch at the local tip.
@@ -437,9 +456,7 @@ func (f *Fixture) PullRef(number int, sha string) {
 // line and body when body is not empty. The working repository does not fetch it.
 func (f *Fixture) SquashOnOrigin(sha, subject, body string) string {
 	f.tb.Helper()
-
-	// Pushing to a scratch ref carries the objects of sha to origin without creating a branch.
-	f.Git("push", "--quiet", "--force", f.originURL(), sha+":"+scratchRef)
+	f.carryToOrigin(sha)
 
 	trunkRef := f.trunkRef()
 	parent := f.OriginGit("rev-parse", "--verify", trunkRef)
@@ -450,9 +467,37 @@ func (f *Fixture) SquashOnOrigin(sha, subject, body string) string {
 
 	squash := f.OriginGit(args...)
 	f.OriginGit("update-ref", trunkRef, squash, parent)
-	f.OriginGit("update-ref", "-d", scratchRef)
+	f.dropCarried()
 
 	return squash
+}
+
+// carryToOrigin pushes the local commit sha to a scratch ref on origin, which carries its objects
+// there without creating a branch.
+func (f *Fixture) carryToOrigin(sha string) {
+	f.tb.Helper()
+	f.Git("push", "--quiet", "--force", f.originURL(), sha+":"+scratchRef)
+}
+
+// dropCarried deletes the scratch ref carryToOrigin made on origin.
+func (f *Fixture) dropCarried() {
+	f.tb.Helper()
+	f.OriginGit("update-ref", "-d", scratchRef)
+}
+
+// OriginTag makes an annotated tag name on the bare origin at the local commit sha, whose message
+// is name.
+func (f *Fixture) OriginTag(name, sha string) {
+	f.tb.Helper()
+	f.carryToOrigin(sha)
+	f.OriginGit("tag", "--annotate", "--message", name, name, sha)
+	f.dropCarried()
+}
+
+// OriginLightweightTag makes a lightweight tag name on the bare origin at the local commit sha.
+func (f *Fixture) OriginLightweightTag(name, sha string) {
+	f.tb.Helper()
+	f.Git("push", "--quiet", f.originURL(), sha+":refs/tags/"+name)
 }
 
 // Publish puts origin's copy of branch at the local tip by the bare origin's path, which reaches

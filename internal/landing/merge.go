@@ -24,9 +24,13 @@ const (
 )
 
 // mergeReserve is the time the wait leaves before the command's deadline, and the least that must
-// be left at the first write: the merge, the delete on origin, and the local ending run in it, and
-// a write the deadline cuts short leaves the run halfway.
+// be left at the first write: the merge, the delete on origin, and the local ending run in it, as
+// the writes of `ils release` do, and a write the deadline cuts short leaves the run halfway.
 const mergeReserve = 20 * time.Second
+
+// mayHaveGoneThrough ends a line that says a write was started when a cut came, and may not have
+// been done. It stays untyped so that result.Say accepts wording built on it.
+const mayHaveGoneThrough = "; it may or may not have gone through"
 
 // conventionalTitle is a conventional commit subject, `<type>(<scope>)!: <summary>`: a type of
 // lowercase ASCII letters, an optional scope that is not empty and holds no parenthesis or line
@@ -529,10 +533,10 @@ func (m *mergeReady) reserved(ctx context.Context, req Request) *result.Result {
 	}
 
 	stop := req.ends(result.Pending,
-		result.Say("fewer than %s of the time limit of %s were left for the merge", seconds(mergeReserve), timeLimitWords),
+		result.Say(fewerLeft+" for the merge", seconds(mergeReserve), timeLimitWords),
 		result.NextCommand(PushCommand))
 	stop.Lines = slices.Concat([]result.Phrase{m.summary()}, m.waited.mergeStateLines(), []result.Phrase{
-		result.Say("Fewer than %s of the time limit of %s were left for the merge, so nothing was written",
+		result.Say(fewerLeftCapital+" for the merge, so nothing was written",
 			seconds(mergeReserve), timeLimitWords),
 	})
 
@@ -644,12 +648,10 @@ func (m *mergeReady) merge(ctx context.Context, deps Deps, req Request) *result.
 	switch {
 	case interrupted(err):
 		return m.broke(req, result.Say(runInterrupted+" during the merge"), req.again(),
-			result.Say("Started the merge of pull request %s when "+runInterrupted+"; "+
-				"it may or may not have gone through", pull))
+			result.Say("Started the merge of pull request %s when "+runInterrupted+mayHaveGoneThrough, pull))
 	case timedOut(err):
 		return m.broke(req, result.Say(timeLimitEnded+" during the merge", timeLimitWords), req.again(),
-			result.Say("Started the merge of pull request %s when "+timeLimitEnded+"; "+
-				"it may or may not have gone through", pull, timeLimitWords))
+			result.Say("Started the merge of pull request %s when "+timeLimitEnded+mayHaveGoneThrough, pull, timeLimitWords))
 	case err != nil:
 		return m.broke(req, result.Say("GitHub did not report the merge as done"), req.again(),
 			result.Say("GitHub did not report the merge of pull request %s as done: %s", pull, err.Error()))
@@ -686,8 +688,8 @@ func (m *mergeReady) deleteOnOrigin(ctx context.Context, deps Deps, req Request)
 
 	if interrupted(err) {
 		return m.broke(req, result.Say(runInterrupted+" while deleting the branch on origin"), req.again(),
-			result.Say("Started the delete of the branch %s on origin when "+runInterrupted+"; "+
-				"it may or may not have gone through", result.Branch(m.branch)))
+			result.Say("Started the delete of the branch %s on origin when "+runInterrupted+mayHaveGoneThrough,
+				result.Branch(m.branch)))
 	}
 
 	_, listed, askErr := deps.Repo.RemoteBranch(ctx, m.branch)
@@ -822,20 +824,7 @@ func (m *mergeReady) endSteps(ctx context.Context, deps Deps, req Request, local
 
 	for i, step := range local.steps {
 		if err := step.run(ctx); err != nil {
-			failed := result.Say("`%s` failed: %s", step.command, err.Error())
-			reason := result.Say("`%s` failed", step.command)
-
-			if interrupted(err) {
-				failed = result.Say("`%s` stopped when "+runInterrupted, step.command)
-				reason = result.Say(runInterrupted+" during `%s`", step.command)
-			}
-
-			lines := slices.Concat(ran, []result.Phrase{failed})
-			for _, rest := range local.steps[i+1:] {
-				lines = append(lines, result.Say("Not run: `%s`", rest.command))
-			}
-
-			return m.broke(req, reason, step.next, lines...)
+			return m.stepFailed(req, local.steps[i:], ran, err)
 		}
 
 		ran = append(ran, result.Say("Ran `%s`", step.command))
@@ -847,6 +836,26 @@ func (m *mergeReady) endSteps(ctx context.Context, deps Deps, req Request, local
 	finished.Lines = slices.Concat(m.lines, local.done)
 
 	return m.carrying(finished)
+}
+
+// stepFailed is the broke result of the first of steps failing with err, after the steps of ran:
+// its lines say which steps ran, which failed, and which did not run.
+func (m *mergeReady) stepFailed(req Request, steps []endStep, ran []result.Phrase, err error) *result.Result {
+	step := steps[0]
+	failed := result.Say("`%s` failed: %s", step.command, err.Error())
+	reason := result.Say("`%s` failed", step.command)
+
+	if interrupted(err) {
+		failed = result.Say("`%s` stopped when "+runInterrupted, step.command)
+		reason = result.Say(runInterrupted+" during `%s`", step.command)
+	}
+
+	lines := slices.Concat(ran, []result.Phrase{failed})
+	for _, rest := range steps[1:] {
+		lines = append(lines, result.Say("Not run: `%s`", rest.command))
+	}
+
+	return m.broke(req, reason, step.next, lines...)
 }
 
 // resume finishes a branch whose merged pull request carries every commit of it, without a merge
@@ -871,10 +880,10 @@ func (m *mergeReady) resume(ctx context.Context, deps Deps, req Request) *result
 
 	if deadlineWithin(ctx, mergeReserve) {
 		stop := req.ends(result.Pending,
-			result.Say("fewer than %s of the time limit of %s were left to finish the merge", seconds(mergeReserve), timeLimitWords),
+			result.Say(fewerLeft+" to finish the merge", seconds(mergeReserve), timeLimitWords),
 			req.again())
 		stop.Lines = slices.Concat(m.lines, []result.Phrase{
-			result.Say("Fewer than %s of the time limit of %s were left to finish the merge, so nothing was written",
+			result.Say(fewerLeftCapital+" to finish the merge, so nothing was written",
 				seconds(mergeReserve), timeLimitWords),
 		})
 
