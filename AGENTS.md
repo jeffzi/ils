@@ -58,7 +58,9 @@ Before making the release commit, start the live suite on `main` with `gh workfl
 --ref main` and wait until both legs pass. On a push to `main`, the Live workflow runs only for the
 release commit. When that run is red, the release commit is already on `main`, and the release
 needs a fix and a second release commit. Never push a release tag until the release commit's Live
-run passes on both legs: pushing the tag starts the Publish workflow.
+run passes on both legs: pushing the tag starts the Publish workflow. Once both legs pass, tag the
+release with `ils release <X.Y.Z>`, which waits for the release commit's checks, pushes the tag,
+and creates the GitHub release.
 
 ## Linter and type-checker configuration
 

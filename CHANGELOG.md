@@ -7,6 +7,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Add `ils release <X.Y.Z>`, which tags the release commit on origin's default branch once its
+  checks are green, pushes the tag, and publishes the GitHub release with the changelog's notes.
+- Add the `write-release` agent skill, which lands the release commit through `ils` and leaves
+  `ils release` to the user.
+
+### Changed
+
+- Report a pre-release's release commit, such as `chore: release v1.2.0-rc.1`, as a release commit
+  in `ils status`.
+
 ## [0.4.0] - 2026-10-30
 
 ### Added
