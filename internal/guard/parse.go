@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -26,8 +27,13 @@ const (
 
 // Caller is what Parse needs to know about the shell that would run the command.
 type Caller struct {
+	// Env is the environment the command would start with; Parse reads CDPATH, GIT_DIR, and
+	// GIT_WORK_TREE from it.
+	Env map[string]string
 	// Home is the HOME that `~` and `~/…` expand with.
 	Home string
+	// Dir is the absolute directory the command starts in; empty when unknown.
+	Dir string
 }
 
 // Invocation is one simple command of a parsed command string.
@@ -48,12 +54,20 @@ type Invocation struct {
 	// EnvUnset are the names an `env` wrapper removed from the environment with `-u`, in order.
 	EnvUnset []string
 	Marks    []Mark
+	// Dir is the directory the invocation runs in; empty when the guard cannot follow it.
+	Dir string
+	// env is every change to the environment the command runs with, in the order bash makes them.
+	env []envChange
+	// Target is where a git invocation points git; zero for any other tool.
+	Target GitTarget
 	// Bare reports whether the command word is written as a plain unquoted name, with no path, no
 	// quoting or escape, and no leading `=`.
 	Bare bool
 	// Whole reports whether this invocation is the entire command: one simple command with a bare
 	// command word, and no pipe, list, redirect, background `&`, assignment prefix, or wrapper.
 	Whole bool
+	// HeadUnknown reports whether an invocation before it may have moved HEAD.
+	HeadUnknown bool
 	// EnvCleared reports whether an `env` wrapper was given `-i`, which starts the command with an
 	// empty environment.
 	EnvCleared bool
@@ -65,25 +79,36 @@ type Assignment struct {
 	Value Word
 }
 
-// Mark names something Parse found in an invocation that it could not read.
-type Mark string
+// Mark is something Parse found in an invocation that it could not read, or that the guard does
+// not allow.
+type Mark struct {
+	Kind MarkKind
+	// Name is what the mark found, such as the variable of a GitVariable mark; empty for a kind
+	// that names nothing.
+	Name string
+}
 
-// The marks Parse puts on an invocation.
+// MarkKind is the kind of a Mark.
+type MarkKind string
+
+// The kinds of mark Parse puts on an invocation.
 const (
 	// ExtendedGlob is an extended glob such as `@(a|b)`, or zsh's `*(e:…:)` qualifier, which runs
 	// code.
-	ExtendedGlob Mark = "extended glob"
+	ExtendedGlob MarkKind = "extended glob"
 	// DynamicCommand is a command word that is not a literal, so the program it runs is unknown.
-	DynamicCommand Mark = "command word that is not a literal"
+	DynamicCommand MarkKind = "command word that is not a literal"
 	// ToolArgument is a git, gh, or ils word among the arguments of a command that may run it.
-	ToolArgument Mark = "git, gh, or ils word handed to another command"
+	ToolArgument MarkKind = "git, gh, or ils word handed to another command"
 	// DynamicScript is a string a shell or `eval` runs that is not a literal.
-	DynamicScript Mark = "shell string that is not a literal"
+	DynamicScript MarkKind = "shell string that is not a literal"
 	// DeepScript is a shell string nested past the depth Parse follows.
-	DeepScript Mark = "shell string nested too deep"
+	DeepScript MarkKind = "shell string nested too deep"
 	// HiddenScript is a shell that runs a script the command does not hold: standard input, a
 	// file, or a process substitution.
-	HiddenScript Mark = "shell running a script the command does not hold"
+	HiddenScript MarkKind = "shell running a script the command does not hold"
+	// GitVariable is an assignment or export of a GIT_* variable off the guard's allow list.
+	GitVariable MarkKind = "git variable off the allow list"
 )
 
 // maxDepth is how many levels of strings run by `bash -c`, `eval`, or a heredoc fed to a shell
@@ -161,34 +186,20 @@ func isDescriptor(w Word) bool {
 // invocations following the one that runs them. What Parse cannot read is marked on the invocation
 // it occurs in. It returns a *ParseError when the parser cannot read command or a string it runs.
 func Parse(command string, caller Caller) ([]Invocation, error) {
-	return parseAt(command, caller, 0)
-}
-
-func parseAt(command string, caller Caller, depth int) ([]Invocation, error) {
-	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(command), "")
+	file, err := read(command)
 	if err != nil {
-		if failure, ok := errors.AsType[syntax.ParseError](err); ok {
-			return nil, &ParseError{Line: failure.Pos.Line(), Column: failure.Pos.Col(), Message: failure.Text}
-		}
-
-		if failure, ok := errors.AsType[syntax.LangError](err); ok {
-			// The parser is given no file name, so its message opens with the position alone.
-			message := strings.TrimPrefix(failure.Error(), failure.Pos.String()+": ")
-
-			return nil, &ParseError{Line: failure.Pos.Line(), Column: failure.Pos.Col(), Message: message}
-		}
-
-		return nil, fmt.Errorf("parse %q: %w", command, err)
+		return nil, err
 	}
 
-	w := walker{caller: caller, depth: depth, timed: map[*syntax.Stmt]bool{}}
-	syntax.Walk(file, w.visit)
+	w := walker{caller: caller, timed: map[*syntax.Stmt]bool{}}
+	sc := startScope(caller, file)
+	w.list(file.Stmts, &sc)
 	if w.err != nil {
 		return nil, w.err
 	}
 
 	invocations := w.invocations
-	if depth == 0 && len(invocations) == 1 && len(file.Stmts) == 1 && alone(file.Stmts[0]) &&
+	if len(invocations) == 1 && len(file.Stmts) == 1 && alone(file.Stmts[0]) &&
 		invocations[0].Bare && len(invocations[0].Wrappers) == 0 {
 		invocations[0].Whole = true
 	}
@@ -196,7 +207,29 @@ func parseAt(command string, caller Caller, depth int) ([]Invocation, error) {
 	return invocations, nil
 }
 
-// walker collects the invocations of one parse tree, at depth levels of nested strings.
+// read parses command with bash's grammar. It returns a *ParseError when the parser cannot read it.
+func read(command string) (*syntax.File, error) {
+	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(command), "")
+	if err == nil {
+		return file, nil
+	}
+
+	if failure, ok := errors.AsType[syntax.ParseError](err); ok {
+		return nil, &ParseError{Line: failure.Pos.Line(), Column: failure.Pos.Col(), Message: failure.Text}
+	}
+
+	if failure, ok := errors.AsType[syntax.LangError](err); ok {
+		// The parser is given no file name, so its message opens with the position alone.
+		message := strings.TrimPrefix(failure.Error(), failure.Pos.String()+": ")
+
+		return nil, &ParseError{Line: failure.Pos.Line(), Column: failure.Pos.Col(), Message: message}
+	}
+
+	return nil, fmt.Errorf("parse %q: %w", command, err)
+}
+
+// walker collects the invocations of one parse tree and of the strings it runs, depth levels of
+// nested strings down.
 type walker struct {
 	caller Caller
 	// timed holds the statements a `time` keyword runs.
@@ -204,30 +237,43 @@ type walker struct {
 	err         error
 	invocations []Invocation
 	depth       int
+	// headMoved reports whether an invocation walked so far may move HEAD.
+	headMoved bool
+	// probing reports whether the walk is a dry run of a body that may repeat, whose invocations
+	// are dropped once it ends.
+	probing bool
 }
 
-func (w *walker) visit(node syntax.Node) bool {
-	stmt, ok := node.(*syntax.Stmt)
-	if !ok || w.err != nil {
-		return w.err == nil
+// simple walks stmt when it is a simple command, recording its invocation and then those of the
+// substitutions in it, and reports false when it is any other command.
+func (w *walker) simple(stmt *syntax.Stmt, sc *scope) bool {
+	switch stmt.Cmd.(type) {
+	case *syntax.CallExpr, *syntax.DeclClause, *syntax.LetClause:
+	default:
+		return false
 	}
 
+	// Each substitution runs before the command, in a subshell of the shell as it is then, so a
+	// HEAD move in one comes before the command; their invocations still follow its own.
+	at := len(w.invocations)
+	w.substitutions(stmt, sc)
+	held := slices.Clone(w.invocations[at:])
+	w.invocations = w.invocations[:at]
 	switch cmd := stmt.Cmd.(type) {
-	case *syntax.TimeClause:
-		if cmd.Stmt != nil {
-			w.timed[cmd.Stmt] = true
-		}
 	case *syntax.CallExpr:
-		w.err = w.add(stmt, cmd)
+		w.add(stmt, cmd, sc)
 	case *syntax.DeclClause:
-		w.invocations = append(w.invocations, declarationOf(stmt, cmd, w.caller.Home))
+		w.invocations = append(w.invocations, w.placed(declarationOf(stmt, cmd, w.caller.Home), sc))
+		sc.declare(cmd, w.caller.Home)
 	case *syntax.LetClause:
 		// Parse does not read an arithmetic expression back into text, so each one is a word that is
 		// not literal.
 		words := append([]Word{{Text: "let", Literal: true}}, make([]Word, len(cmd.Exprs))...)
 		inv := Invocation{Words: words, Redirects: redirectsOf(stmt, w.caller.Home), Bare: true}
-		w.invocations = append(w.invocations, inv)
+		w.invocations = append(w.invocations, w.placed(inv, sc))
 	}
+
+	w.invocations = append(w.invocations, held...)
 
 	return true
 }
@@ -237,15 +283,21 @@ func (w *walker) visit(node syntax.Node) bool {
 func declarationOf(stmt *syntax.Stmt, decl *syntax.DeclClause, home string) Invocation {
 	words := []Word{{Text: decl.Variant.Value, Literal: true}}
 	values := make([]*syntax.Word, 0, len(decl.Args))
+	var names []string
 	for _, a := range decl.Args {
 		words = append(words, declarationWord(a, home))
 		values = append(values, a.Value)
+		if a.Name != nil {
+			names = append(names, a.Name.Value)
+		}
 	}
 
 	inv := Invocation{Words: words, Redirects: redirectsOf(stmt, home), Bare: true}
 	if hasExtGlob(values, stmt) {
-		inv.Marks = []Mark{ExtendedGlob}
+		inv.Marks = []Mark{{Kind: ExtendedGlob}}
 	}
+
+	inv.Marks = append(inv.Marks, gitVariableMarks(names)...)
 
 	return inv
 }
@@ -283,13 +335,15 @@ func declarationWord(a *syntax.Assign, home string) Word {
 	return Word{Text: prefix + value.Text, Literal: value.Literal}
 }
 
-// add appends the invocation of call, then the invocations of the string it runs.
-func (w *walker) add(stmt *syntax.Stmt, call *syntax.CallExpr) error {
+// add appends the invocation of call, then the invocations of the string it runs, and applies to
+// sc what it changes in the shell.
+func (w *walker) add(stmt *syntax.Stmt, call *syntax.CallExpr, sc *scope) {
 	inv := invocationOf(stmt, call, w.caller.Home)
 	if w.timed[stmt] {
 		inv.Wrappers = slices.Insert(inv.Wrappers, 0, "time")
 	}
 
+	inv = w.placed(inv, sc)
 	script, runs, mark := scriptOf(stmt, inv.Words)
 	if runs && w.depth == maxDepth {
 		runs, mark = false, DeepScript
@@ -297,22 +351,22 @@ func (w *walker) add(stmt *syntax.Stmt, call *syntax.CallExpr) error {
 
 	inv.Marks = marksOf(call, stmt, inv)
 	if mark != "" {
-		inv.Marks = append(inv.Marks, mark)
+		inv.Marks = append(inv.Marks, Mark{Kind: mark})
 	}
 
+	names := make([]string, 0, len(inv.Assignments))
+	for _, a := range inv.Assignments {
+		names = append(names, a.Name)
+	}
+
+	inv.Marks = append(inv.Marks, gitVariableMarks(names)...)
 	w.invocations = append(w.invocations, inv)
-	if !runs {
-		return nil
+	w.headMoved = w.headMoved || movesHead(inv)
+	if runs {
+		w.script(script, inv, sc)
 	}
 
-	nested, err := parseAt(script, w.caller, w.depth+1)
-	if err != nil {
-		return fmt.Errorf("parse the string %q runs: %w", inv.Words[0].Text, err)
-	}
-
-	w.invocations = append(w.invocations, nested...)
-
-	return nil
+	sc.apply(inv)
 }
 
 // alone reports whether stmt is a simple command with no assignment prefix, redirect, or
@@ -340,10 +394,16 @@ func invocationOf(stmt *syntax.Stmt, call *syntax.CallExpr, home string) Invocat
 		return Invocation{Redirects: redirectsOf(stmt, home), Assignments: assignments}
 	}
 
+	prefix := make([]envChange, 0, len(assignments))
+	for _, a := range assignments {
+		prefix = append(prefix, envChange{assignment: a})
+	}
+
 	start, inv := seeThrough(call.Args, words, home)
 	inv.Words = words[start:]
 	inv.Redirects = redirectsOf(stmt, home)
 	inv.Assignments = append(assignments, inv.Assignments...)
+	inv.env = append(prefix, inv.env...)
 	inv.Tool = toolOf(words[start])
 	inv.Bare = isBare(call.Args[start], words[start])
 
@@ -416,8 +476,10 @@ func envArguments(inv *Invocation, given []option, args []*syntax.Word, home str
 		switch option.letter {
 		case 'i':
 			inv.EnvCleared = true
+			inv.env = append(inv.env, envChange{clear: true})
 		case 'u':
 			inv.EnvUnset = append(inv.EnvUnset, option.value)
+			inv.env = append(inv.env, envChange{unset: option.value})
 		}
 	}
 
@@ -428,6 +490,7 @@ func envArguments(inv *Invocation, given []option, args []*syntax.Word, home str
 		}
 
 		inv.Assignments = append(inv.Assignments, a)
+		inv.env = append(inv.env, envChange{assignment: a})
 	}
 
 	return len(args)
@@ -607,7 +670,7 @@ func marksOf(call *syntax.CallExpr, stmt *syntax.Stmt, inv Invocation) []Mark {
 
 	var marks []Mark
 	if hasExtGlob(words, stmt) {
-		marks = append(marks, ExtendedGlob)
+		marks = append(marks, Mark{Kind: ExtendedGlob})
 	}
 
 	if len(inv.Words) == 0 {
@@ -617,14 +680,14 @@ func marksOf(call *syntax.CallExpr, stmt *syntax.Stmt, inv Invocation) []Mark {
 	command := inv.Words[0]
 	switch {
 	case !command.Literal:
-		marks = append(marks, DynamicCommand)
+		marks = append(marks, Mark{Kind: DynamicCommand})
 	case inv.Tool != NoTool, isDataConsumer(inv.Words), isShell(command), command.Text == "eval":
 	case command.Text == "source" || command.Text == ".":
 		if len(inv.Words) > 1 {
-			marks = append(marks, HiddenScript)
+			marks = append(marks, Mark{Kind: HiddenScript})
 		}
-	case slices.ContainsFunc(inv.Words[1:], isToolWord):
-		marks = append(marks, ToolArgument)
+	case slices.ContainsFunc(inv.Words[1:], func(w Word) bool { return isToolWord(w, inv.Dir) }):
+		marks = append(marks, Mark{Kind: ToolArgument})
 	}
 
 	return marks
@@ -648,9 +711,10 @@ func hasExtGlob(words []*syntax.Word, stmt *syntax.Stmt) bool {
 }
 
 // isToolWord reports whether w names git, gh, or ils: the bare name, or a path whose basename is
-// the name and that is an executable regular file. A path whose stat fails for any reason other
-// than its absence counts as one, since the guard cannot rule it out.
-func isToolWord(w Word) bool {
+// the name and that is an executable regular file, a relative path read against dir. A path whose
+// stat fails for any reason other than its absence counts as one, and so does a relative path when
+// dir is empty, since the guard cannot rule it out.
+func isToolWord(w Word, dir string) bool {
 	if !w.Literal || toolOf(w) == NoTool {
 		return false
 	}
@@ -659,7 +723,16 @@ func isToolWord(w Word) bool {
 		return true
 	}
 
-	info, err := os.Stat(w.Text)
+	name := w.Text
+	if !filepath.IsAbs(name) {
+		if dir == "" {
+			return true
+		}
+
+		name = filepath.Join(dir, name)
+	}
+
+	info, err := os.Stat(name)
 	if errors.Is(err, fs.ErrNotExist) {
 		return false
 	}

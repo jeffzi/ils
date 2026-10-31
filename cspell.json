@@ -7,6 +7,7 @@
   ],
   "words": [
     "atexit",
+    "CDPATH",
     "charmbracelet",
     "CLICOLOR",
     "cmpopts",
@@ -18,6 +19,7 @@
     "coverprofile",
     "depguard",
     "dprint",
+    "elif",
     "errcheck",
     "errorlint",
     "esac",

@@ -12,13 +12,16 @@ import (
 	"github.com/jeffzi/ils/internal/guard"
 )
 
-const home = "/home/reader"
+const (
+	home  = "/home/reader"
+	start = "/home/reader/repo"
+)
 
-// parse returns the invocations of command, read by a caller whose HOME is home.
+// parse returns the invocations of command, read by a caller in start whose HOME is home.
 func parse(t *testing.T, command string) []guard.Invocation {
 	t.Helper()
 
-	got, err := guard.Parse(command, guard.Caller{Home: home})
+	got, err := guard.Parse(command, guard.Caller{Home: home, Dir: start})
 	assert.NilError(t, err, "Parse(%q)", command)
 
 	return got
@@ -487,7 +490,7 @@ func TestParse_MarksWhatItCannotRead(t *testing.T) {
 	tests := []struct {
 		name    string
 		command string
-		want    guard.Mark
+		want    guard.MarkKind
 		index   int
 	}{
 		{name: "zsh glob qualifier", command: "ls *(e:'git push':)", want: guard.ExtendedGlob},
@@ -515,7 +518,7 @@ func TestParse_MarksWhatItCannotRead(t *testing.T) {
 			got := parse(t, tt.command)
 
 			assert.Assert(t, len(got) > tt.index, "Parse(%q) = %v", tt.command, texts(got))
-			assert.Check(t, is.DeepEqual(got[tt.index].Marks, []guard.Mark{tt.want}), "Parse(%q) marks", tt.command)
+			assert.Check(t, is.DeepEqual(got[tt.index].Marks, []guard.Mark{{Kind: tt.want}}), "Parse(%q) marks", tt.command)
 		})
 	}
 }
@@ -528,7 +531,7 @@ func TestParse_WhenAnArgumentIsAPathNamedForATool_MarksOnlyAnExecutableFile(t *t
 		path func(t *testing.T) string
 		want []guard.Mark
 	}{
-		{name: "executable file", path: func(t *testing.T) string { return executable(t, "git") }, want: []guard.Mark{guard.ToolArgument}},
+		{name: "executable file", path: func(t *testing.T) string { return executable(t, "git") }, want: []guard.Mark{{Kind: guard.ToolArgument}}},
 		{
 			name: "directory",
 			path: func(t *testing.T) string {
@@ -557,7 +560,7 @@ func TestParse_WhenAnArgumentIsAPathNamedForATool_MarksOnlyAnExecutableFile(t *t
 
 				return filepath.Join(locked, "git")
 			},
-			want: []guard.Mark{guard.ToolArgument},
+			want: []guard.Mark{{Kind: guard.ToolArgument}},
 		},
 	}
 	for _, tt := range tests {
@@ -569,6 +572,36 @@ func TestParse_WhenAnArgumentIsAPathNamedForATool_MarksOnlyAnExecutableFile(t *t
 			got := only(t, command)
 
 			assert.Check(t, is.DeepEqual(got.Marks, tt.want), "Parse(%q) marks", command)
+		})
+	}
+}
+
+func TestParse_WhenAnArgumentIsARelativePathNamedForATool_ReadsItWhereTheInvocationRuns(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+		want    []guard.Mark
+	}{
+		{name: "path under the caller's directory", command: "xargs ./bin/git push", want: []guard.Mark{{Kind: guard.ToolArgument}}},
+		{name: "path under the directory a cd moved to", command: "cd bin && xargs ./git push", want: []guard.Mark{{Kind: guard.ToolArgument}}},
+		{name: "path missing under the directory a cd moved to", command: "cd bin && xargs ./bin/git push"},
+		{name: "path under an unknown directory", command: `cd "$d" && xargs ./absent/git push`, want: []guard.Mark{{Kind: guard.ToolArgument}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			callerDir := t.TempDir()
+			assert.NilError(t, os.Mkdir(filepath.Join(callerDir, "bin"), 0o750))
+			assert.NilError(t, os.WriteFile(filepath.Join(callerDir, "bin", "git"), []byte("#!/bin/sh\n"), 0o700)) //nolint:gosec // the test needs an executable file
+
+			got, err := guard.Parse(tt.command, guard.Caller{Home: home, Dir: callerDir})
+			assert.NilError(t, err, "Parse(%q)", tt.command)
+
+			xargs := got[len(got)-1]
+			assert.Check(t, is.DeepEqual(xargs.Marks, tt.want), "Parse(%q) marks", tt.command)
 		})
 	}
 }

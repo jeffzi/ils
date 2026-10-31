@@ -19,7 +19,7 @@ func isShell(command Word) bool {
 // scriptOf returns the string that the invocation of words runs as commands of its own, when it
 // is `eval` or a shell given `-c` or a heredoc, and reports whether there is one. The mark names
 // a string it runs that Parse cannot read.
-func scriptOf(stmt *syntax.Stmt, words []Word) (string, bool, Mark) {
+func scriptOf(stmt *syntax.Stmt, words []Word) (string, bool, MarkKind) {
 	switch {
 	case len(words) == 0 || !words[0].Literal:
 		return "", false, ""
@@ -32,7 +32,7 @@ func scriptOf(stmt *syntax.Stmt, words []Word) (string, bool, Mark) {
 	}
 }
 
-func evalScript(args []Word) (string, bool, Mark) {
+func evalScript(args []Word) (string, bool, MarkKind) {
 	if len(args) == 0 {
 		return "", false, ""
 	}
@@ -51,7 +51,7 @@ func evalScript(args []Word) (string, bool, Mark) {
 
 // shellScript returns the script a shell given args runs: its `-c` string, or the heredoc on its
 // standard input. Any other script it would read is marked hidden.
-func shellScript(stmt *syntax.Stmt, args []Word) (string, bool, Mark) {
+func shellScript(stmt *syntax.Stmt, args []Word) (string, bool, MarkKind) {
 	operands, command, stdin := shellOptions(args)
 	switch {
 	case command && len(operands) == 0:
@@ -91,7 +91,7 @@ func shellOptions(args []Word) ([]Word, bool, bool) {
 
 // heredocScript returns the script on the standard input of stmt when it is a literal heredoc,
 // and marks any other standard input as hidden.
-func heredocScript(stmt *syntax.Stmt) (string, bool, Mark) {
+func heredocScript(stmt *syntax.Stmt) (string, bool, MarkKind) {
 	var input *syntax.Redirect
 	for _, r := range stmt.Redirs {
 		if (r.N == nil || r.N.Value == "0") && isInput(r.Op) {

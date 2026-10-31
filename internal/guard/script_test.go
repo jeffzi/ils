@@ -72,5 +72,5 @@ func TestParse_WhenANestedStringIsPastTheThirdLevel_MarksItUnparsed(t *testing.T
 		{"eval", "git", "push"},
 	}
 	assert.Assert(t, is.DeepEqual(texts(got), want), "Parse(%q)", command)
-	assert.Check(t, is.DeepEqual(got[3].Marks, []guard.Mark{guard.DeepScript}), "Parse(%q) marks", command)
+	assert.Check(t, is.DeepEqual(got[3].Marks, []guard.Mark{{Kind: guard.DeepScript}}), "Parse(%q) marks", command)
 }
