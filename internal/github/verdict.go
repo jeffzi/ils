@@ -340,16 +340,18 @@ type commitSuites struct {
 	runs []forge.Run
 }
 
-// suitesOf judges each run by its event: a push judges the commit, and so does a run another run
-// started, since it carries on what a push began. A scheduled, manual or Dependabot run judges
-// something else that happens to stand on the same commit, and an event this version does not know
-// is counted with them.
+// suitesOf judges each run by its event: a push judges the commit. Every other event, and one this
+// version does not know, judges something else that happens to stand on the same commit, as a
+// scheduled, manual or Dependabot run does.
+//
+// A run another run started (`workflow_run`) is one of them: GitHub files it under the tip of the
+// default branch whatever started the run it follows, and nothing in the run says what that was.
 func suitesOf(pages []actionsRunsPage) commitSuites {
 	suites := commitSuites{workflowOf: map[int64]string{}, elsewhere: map[int64]bool{}}
 
 	for _, page := range pages {
 		for _, run := range page.Runs {
-			if run.Event != "push" && run.Event != "workflow_run" {
+			if run.Event != "push" {
 				suites.elsewhere[run.CheckSuite] = true
 
 				continue

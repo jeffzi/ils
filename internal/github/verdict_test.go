@@ -306,11 +306,7 @@ func TestForge_CommitVerdict_WhenARedCheckRunIsOnTheCommit_KeepsItUnlessItsRunIs
 		want []forge.Check
 	}{
 		{name: "scheduled run", run: workflowRunJSON(otherSuite, "Nightly", "schedule", "completed"), want: []forge.Check{build}},
-		{
-			name: "run started by another run",
-			run:  workflowRunJSON(otherSuite, "Deploy", "workflow_run", "completed"),
-			want: []forge.Check{build, {Name: "scan", Bucket: forge.BucketFail, Workflow: "Deploy"}},
-		},
+		{name: "run started by another run", run: workflowRunJSON(otherSuite, "Deploy", "workflow_run", "completed"), want: []forge.Check{build}},
 		{name: "GitHub App with no workflow run", want: []forge.Check{build, {Name: "scan", Bucket: forge.BucketFail}}},
 	}
 	for _, tt := range tests {
@@ -403,7 +399,7 @@ func TestForge_CommitVerdict_WhenACheckRunIsReported_BucketsItsOutcome(t *testin
 	}
 }
 
-func TestForge_CommitVerdict_WhenRunsAreOnTheCommit_ListsThePushAndWorkflowRunRunsWithTheirStatus(t *testing.T) {
+func TestForge_CommitVerdict_WhenRunsAreOnTheCommit_ListsThePushRunsWithTheirStatus(t *testing.T) {
 	runs := workflowRunsPage(
 		workflowRunJSON(ciSuite, "CI", "push", "queued"),
 		workflowRunJSON(otherSuite, "Deploy", "workflow_run", "in_progress"),
@@ -412,7 +408,7 @@ func TestForge_CommitVerdict_WhenRunsAreOnTheCommit_ListsThePushAndWorkflowRunRu
 
 	got := commitVerdict(t, checkRunsPage(), statusPage(), runs)
 
-	want := []forge.Run{{Name: "CI", Status: forge.RunQueued}, {Name: "Deploy", Status: forge.RunInProgress}}
+	want := []forge.Run{{Name: "CI", Status: forge.RunQueued}}
 	assert.Check(t, is.DeepEqual(got.Runs, want, cmpopts.SortSlices(func(a, b forge.Run) bool { return a.Name < b.Name })))
 }
 
