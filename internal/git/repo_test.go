@@ -215,6 +215,7 @@ func TestRepo_WhenNotARepository_ReturnsExitError(t *testing.T) {
 	tests := []repoCall{
 		{name: "Standing", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.Standing(ctx) }},
 		{name: "GitDir", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.GitDir(ctx) }},
+		{name: "Dirty", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.Dirty(ctx) }},
 	}
 
 	checkExitErrorOutsideRepo(t, tests)
@@ -305,6 +306,40 @@ func TestRepo_DirtyFiles_WhenTrackedFileRenamedInIndex_ListsNewNameOnly(t *testi
 	assert.NilError(t, err)
 
 	assert.Check(t, is.DeepEqual(got, want))
+}
+
+func TestRepo_Dirty(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		arrange func(t *testing.T, f *gittest.Fixture)
+		name    string
+		want    bool
+	}{
+		{name: "clean tree", arrange: func(*testing.T, *gittest.Fixture) {}, want: false},
+		{name: "unstaged change", arrange: func(_ *testing.T, f *gittest.Fixture) { f.DirtyFile() }, want: true},
+		{name: "staged change", arrange: func(_ *testing.T, f *gittest.Fixture) { f.StagedFile() }, want: true},
+		{name: "untracked file", arrange: func(t *testing.T, f *gittest.Fixture) { gittest.WriteFile(t, f.Dir(), "notes.txt", "draft\n") }, want: true},
+		{
+			name: "untracked file the config hides from status",
+			arrange: func(t *testing.T, f *gittest.Fixture) {
+				f.Git("config", "--local", "status.showUntrackedFiles", "no")
+				gittest.WriteFile(t, f.Dir(), "notes.txt", "draft\n")
+			},
+			want: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			tt.arrange(t, f)
+
+			got, err := newRepo(f).Dirty(t.Context())
+			assert.NilError(t, err)
+
+			assert.Check(t, is.Equal(got, tt.want))
+		})
+	}
 }
 
 func TestRepo_Divergence_WhenFirstIsAhead_CountsItsCommitsAsAhead(t *testing.T) {
@@ -1033,6 +1068,13 @@ func TestRepo_WhenAGitReadFails_ReturnsItsExitError(t *testing.T) {
 			arrange: func(f *gittest.Fixture) string { return f.Commits(topic, "one")[0] },
 			call: func(ctx context.Context, repo git.Repo, first string) (any, error) {
 				return repo.BranchesContaining(ctx, first)
+			},
+		},
+		{
+			name: "dirty, the status read", failOn: []string{"status"},
+			arrange: func(*gittest.Fixture) string { return "" },
+			call: func(ctx context.Context, repo git.Repo, _ string) (any, error) {
+				return repo.Dirty(ctx)
 			},
 		},
 		{

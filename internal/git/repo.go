@@ -232,6 +232,20 @@ func (r Repo) DirtyFiles(ctx context.Context) ([]string, error) {
 	return files, nil
 }
 
+// Dirty reports whether the work tree git finds when given the global options, such as `-C`, from
+// the runner's directory holds uncommitted changes, staged or not, or untracked files, whatever
+// status.showUntrackedFiles says. Ignored files do not count. A work tree git cannot read is an
+// error.
+func (r Repo) Dirty(ctx context.Context, options ...string) (bool, error) {
+	args := append(slices.Clone(options), "status", "--porcelain=v1", "--untracked-files=normal")
+	result, err := r.Runner.Run(ctx, args...)
+	if err != nil {
+		return false, err
+	}
+
+	return result.Stdout != "", nil
+}
+
 // Divergence returns how many commits a has that b lacks, and how many b has that a lacks.
 func (r Repo) Divergence(ctx context.Context, a, b string) (Divergence, error) {
 	args := []string{"rev-list", "--left-right", "--count", a + "..." + b}
