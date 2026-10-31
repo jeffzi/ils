@@ -346,13 +346,22 @@ type Payload struct {
 const (
 	// ReleaseGreen is a release commit whose checks passed.
 	ReleaseGreen = "green"
-	// ReleaseNone is a release commit no check reported for, on a trunk without CI.
+	// ReleaseRed is a release commit one of whose checks failed or was canceled.
+	ReleaseRed = "red"
+	// ReleasePending is a wait for the checks of the release commit that ended before they
+	// concluded, including when none had reported yet.
+	ReleasePending = "pending"
+	// ReleaseNone is a release commit no check or status reported for. The outcome tells a trunk
+	// without CI, which goes on, from one with CI, which refuses.
 	ReleaseNone = "none"
 	// ReleaseForced is a gate --force skipped.
 	ReleaseForced = "forced"
 	// ReleaseSkipped is a gate skipped because origin already held the tag at the release commit: a
 	// release resumed after an earlier run tagged it.
 	ReleaseSkipped = "skipped"
+	// ReleaseUnchecked is a release that stopped before the gate read the checks of the release
+	// commit, or whose read of the checks failed.
+	ReleaseUnchecked = "unchecked"
 )
 
 // Release is the structured detail of a release.
@@ -360,7 +369,8 @@ type Release struct {
 	Version string `json:"version"`
 	Tag     string `json:"tag"`
 	// SHA is the release commit.
-	SHA     string `json:"sha"`
+	SHA string `json:"sha"`
+	// Verdict is how the CI gate ended, in the words ReleaseGreen and its siblings name.
 	Verdict string `json:"verdict"`
 	// URL is the link of the GitHub release once it was created or found, and empty otherwise.
 	URL        string `json:"url"`
