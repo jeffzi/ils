@@ -922,6 +922,39 @@ func (l *lateInterrupt) Err() error {
 	return context.Canceled
 }
 
+// lookedInterrupt is a lateInterrupt whose interrupt lands just after the first look at its Err
+// from its moment on: that look still sees nil, and every look after it sees context.Canceled. It
+// stands for an interrupt that lands while a wait is between two looks at its context.
+type lookedInterrupt struct {
+	*lateInterrupt
+
+	looked bool
+}
+
+// interruptAfterLookIn returns a lookedInterrupt over the test's values whose interrupt lands just
+// after the first look at it once d of fake time has passed.
+func interruptAfterLookIn(t *testing.T, d time.Duration) *lookedInterrupt {
+	t.Helper()
+
+	return &lookedInterrupt{lateInterrupt: interruptIn(t, d)}
+}
+
+// Err returns nil before the interrupt's moment and on the first look from it, and
+// context.Canceled after that look.
+func (l *lookedInterrupt) Err() error {
+	if l.lateInterrupt.Err() == nil {
+		return nil
+	}
+
+	if !l.looked {
+		l.looked = true
+
+		return nil
+	}
+
+	return context.Canceled
+}
+
 func TestAwaitVerdict_WhenAnInterruptLandsAsTheHeadPollEnds_EndsPendingInterruptedAtTheHead(t *testing.T) {
 	t.Parallel()
 
@@ -937,6 +970,19 @@ func TestAwaitVerdict_WhenAnInterruptLandsAsTheHeadPollEnds_EndsPendingInterrupt
 		want := endedBy(byInterrupt(), pendingAt(landing.StageHead, stale()))
 		assert.Check(t, is.DeepEqual(got, want, ignoreSince(), cmpopts.EquateEmpty()))
 		assert.Check(t, is.Equal(time.Since(began), headPoll))
+	})
+}
+
+func TestAwaitVerdict_WhenAnInterruptLandsJustAfterThePollLooksAtTheContext_EndsInterrupted(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		v := newVigilOn(t, forgetest.Script{Head: shows(stale(), clean()), Verdict: says(running())},
+			func(context.Context) context.Context { return interruptAfterLookIn(t, headPoll) })
+
+		got := v.await(t)
+
+		assert.Check(t, is.Equal(got.Cutoff, landing.CutoffInterrupt))
 	})
 }
 

@@ -24,6 +24,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Make `ils push` wait longer for the checks by default when stdout is a terminal; `--wait=false`
   keeps the short wait.
 
+### Fixed
+
+- Report an interrupt that lands as a wait for the checks polls again as an interrupt, not as the
+  time limit running out.
+
 ## [0.4.0] - 2026-10-30
 
 ### Added
