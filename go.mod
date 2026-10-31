@@ -22,6 +22,7 @@ require (
 	golang.org/x/mod v0.42.0
 	golang.org/x/sys v0.48.0
 	gotest.tools/v3 v3.5.2
+	mvdan.cc/sh/v3 v3.14.1
 )
 
 require (
