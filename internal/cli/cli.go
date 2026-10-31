@@ -573,7 +573,8 @@ func (p *parse) addWaitFlag(c *cobra.Command) {
 }
 
 // push returns `ils push`, which runs the push command of the app, or landing.Push when it has
-// none, under the long wait when --wait is typed, or when stdout is a terminal and no --wait is.
+// none, under the long wait when --wait is true, or when stdout is a terminal and no --wait is
+// typed; --wait=false runs it under the short one.
 func (p *parse) push() *cobra.Command {
 	c := p.landing(landingHelp{
 		word: landing.PushCommand, short: pushShort, long: withTimeLimits(pushLong), examples: pushExamples,
