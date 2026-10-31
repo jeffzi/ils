@@ -86,8 +86,8 @@ type App struct {
 //
 // A result the renderer rejects is printed nowhere: the error goes to Stderr and the code is 1.
 func (a App) Run(ctx context.Context, args []string) int {
-	// The deadline is set once the command is known, by land: a push under the long wait runs under a
-	// longer one.
+	// The deadline is set once the command is known, by land: a push, a merge or a release under the
+	// long wait runs under a longer one.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -303,8 +303,8 @@ type parse struct {
 	// version is read by root's Args so that `ils --version` passes with no command word.
 	version strictBool
 	debug   strictBool
-	// wait is the --wait flag of push, the one command that registers it and so the one that may run
-	// under the long wait.
+	// wait is the --wait flag of push, merge and release, the commands that register it and so the
+	// ones that may run under the long wait.
 	wait strictBool
 	// outProfile is the color profile of Stdout, read once per run.
 	outProfile colorprofile.Profile
@@ -444,9 +444,9 @@ func (p *parse) root() *cobra.Command {
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return p.flagRefusal(err, notCommand) })
 	root.AddCommand(
 		p.push(),
-		p.landing(landingHelp{word: landing.MergeCommand, short: mergeShort, long: withTimeLimits(mergeLong), examples: mergeExamples}, orDefault(p.app.runMerge, landing.Merge), nil),
+		p.merge(),
 		p.landing(landingHelp{word: landing.StatusCommand, short: statusShort, long: statusLong, examples: statusExamples}, orDefault(p.app.runStatus, landing.Status), nil),
-		p.named(landingHelp{word: landing.BranchCommand, arg: "name", short: branchShort, long: branchLong, examples: branchExamples}, orDefault(p.app.runBranch, landing.StartBranch)),
+		p.named(landingHelp{word: landing.BranchCommand, arg: "name", short: branchShort, long: branchLong, examples: branchExamples}, orDefault(p.app.runBranch, landing.StartBranch), nil),
 		p.release(),
 	)
 
@@ -567,6 +567,11 @@ func (p *parse) waitOn(c *cobra.Command, req *landing.Request) {
 	}
 }
 
+// addWaitFlag registers --wait on c, read by waitOn.
+func (p *parse) addWaitFlag(c *cobra.Command) {
+	boolFlag(c.Flags(), &p.wait, flagNames{long: flagWait}, withTimeLimits(waitUsage))
+}
+
 // push returns `ils push`, which runs the push command of the app, or landing.Push when it has
 // none, under the long wait when --wait is typed, or when stdout is a terminal and no --wait is.
 func (p *parse) push() *cobra.Command {
@@ -574,14 +579,29 @@ func (p *parse) push() *cobra.Command {
 		word: landing.PushCommand, short: pushShort, long: withTimeLimits(pushLong), examples: pushExamples,
 	}, orDefault(p.app.runPush, landing.Push), p.waitOn)
 
-	boolFlag(c.Flags(), &p.wait, flagNames{long: flagWait}, withTimeLimits(waitUsage))
+	p.addWaitFlag(c)
+
+	return c
+}
+
+// merge returns `ils merge`, which runs the merge command of the app, or landing.Merge when it
+// has none, under the long wait when --wait is true, or when stdout is a terminal and no --wait
+// is typed; --wait=false runs it under the short one.
+func (p *parse) merge() *cobra.Command {
+	c := p.landing(landingHelp{
+		word: landing.MergeCommand, short: mergeShort, long: withTimeLimits(mergeLong), examples: mergeExamples,
+	}, orDefault(p.app.runMerge, landing.Merge), p.waitOn)
+
+	p.addWaitFlag(c)
 
 	return c
 }
 
 // named returns the landing command help names, which takes one help.arg and no other word and
-// runs run, with the word as typed as the one argument of its request.
-func (p *parse) named(help landingHelp, run Command) *cobra.Command {
+// runs run, with the word as typed as the one argument of its request. When flags is not nil, it
+// sets on the request what the command's own flags say, before land reads the request's time
+// limit.
+func (p *parse) named(help landingHelp, run Command, flags func(*cobra.Command, *landing.Request)) *cobra.Command {
 	extra := func(typed string) result.Phrase {
 		return result.Say("%s takes one %s and no other word, and %s was given", help.word, help.arg, typed)
 	}
@@ -608,7 +628,12 @@ func (p *parse) named(help landingHelp, run Command) *cobra.Command {
 			return nil
 		},
 		RunE: func(c *cobra.Command, args []string) error {
-			p.land(c.Context(), run, landing.Request{Command: help.word, Words: p.words, Args: args})
+			req := landing.Request{Command: help.word, Words: p.words, Args: args}
+			if flags != nil {
+				flags(c, &req)
+			}
+
+			p.land(c.Context(), run, req)
 
 			return nil
 		},
@@ -619,25 +644,25 @@ func (p *parse) named(help landingHelp, run Command) *cobra.Command {
 }
 
 // release returns `ils release <version>`, which runs the release command of the app, or
-// landing.Release when it has none, with --force and --tag-only set on its request as typed.
+// landing.Release when it has none, with --force and --tag-only set on its request as typed, under
+// the long wait when --wait is true, or when stdout is a terminal and no --wait is typed;
+// --wait=false runs it under the short one.
 func (p *parse) release() *cobra.Command {
-	run := orDefault(p.app.runRelease, landing.Release)
-
 	var force, tagOnly strictBool
 
-	withFlags := func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
+	flags := func(c *cobra.Command, req *landing.Request) {
 		req.Force, req.TagOnly = bool(force), bool(tagOnly)
-
-		return run(ctx, deps, req)
+		p.waitOn(c, req)
 	}
 
 	c := p.named(landingHelp{
 		word: landing.ReleaseCommand, arg: "version",
 		short: releaseShort, long: withTimeLimits(releaseLong), examples: releaseExamples,
-	}, withFlags)
+	}, orDefault(p.app.runRelease, landing.Release), flags)
 
 	boolFlag(c.Flags(), &force, flagNames{long: flagForce}, "Tag the release commit without waiting for its CI")
 	boolFlag(c.Flags(), &tagOnly, flagNames{long: flagTagOnly}, "Stop once the tag is pushed, creating no GitHub release")
+	p.addWaitFlag(c)
 
 	return c
 }

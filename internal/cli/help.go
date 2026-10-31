@@ -50,7 +50,8 @@ ils push --json`
 
 	mergeShort = "Squash and merge the pull request once its checks are green"
 	mergeLong  = `Squash-merge the pull request of the current branch once its checks are
-green, within %[1]s of the launch.
+green: within %[2]s of the launch when stdout is a terminal or
+with --wait, and within %[1]s otherwise or with --wait=false.
 
 It squash-merges the pull request once its checks are green, deletes the
 branch on origin and in the clone, and leaves the trunk checked out at
@@ -63,6 +64,12 @@ step.`
 
 	mergeExamples = `# Merge once the checks are green
 ils merge
+
+# Wait the longer time even when stdout is no terminal
+ils merge --wait
+
+# Wait only the shorter time even at a terminal
+ils merge --wait=false
 
 # The same result as one JSON object
 ils merge --json`
@@ -83,9 +90,10 @@ ils branch fix-help`
 	releaseShort = "Tag a release commit once its CI is green, and publish the release"
 	releaseLong  = `Find the release commit of <version>, chore: release v<version>, on
 origin's trunk since the previous version tag, and read the notes of
-<version> from the changelog at that commit. Wait up to %[1]s for
-the commit's CI, then tag it, push the tag and create the GitHub
-release from those notes.
+<version> from the changelog at that commit. Wait for the commit's CI,
+then tag it, push the tag and create the GitHub release from those
+notes. It waits up to %[2]s when stdout is a terminal or with
+--wait, and up to %[1]s otherwise or with --wait=false.
 
 --force tags the commit without waiting for its CI. --tag-only stops
 once the tag is pushed. Running it again resumes where the last run

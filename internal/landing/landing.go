@@ -31,7 +31,8 @@ const (
 const thenRunAgain = ", then run %s again"
 
 // TimeLimit is how long a command may run before its context reaches its deadline, and
-// WaitTimeLimit how long a push under the long wait may (Request.LongWait); both count from launch.
+// WaitTimeLimit how long a push, a merge or a release under the long wait may (Request.LongWait);
+// both count from launch.
 // Every result that says the time limit cut a call or a wait short names the one its request ran
 // under, as Request.limitWords says it.
 const (
@@ -213,14 +214,15 @@ type Request struct {
 	Words   []string
 	// Args are the command's positional words, as typed: for `ils branch`, the name.
 	Args []string
-	// WaitFlag is the --wait flag the user typed to `ils push`, which a `Next:` line names as typed.
+	// WaitFlag is the --wait flag the user typed to `ils push`, `ils merge` or `ils release`, which
+	// a `Next:` line names as typed.
 	// It does not pick the time limit: LongWait does.
 	WaitFlag WaitFlag
 	// Force and TagOnly are the --force and --tag-only flags of `ils release`.
 	Force   bool
 	TagOnly bool
-	// LongWait runs the push under WaitTimeLimit instead of TimeLimit. The caller decides it,
-	// whether or not the user typed --wait.
+	// LongWait runs the push, the merge or the release under WaitTimeLimit instead of TimeLimit.
+	// The caller decides it, whether or not the user typed --wait.
 	LongWait bool
 }
 
@@ -233,7 +235,7 @@ const (
 	FlagWait    = "--wait"
 )
 
-// WaitFlag is which --wait flag the user typed to `ils push`.
+// WaitFlag is which --wait flag the user typed to `ils push`, `ils merge` or `ils release`.
 type WaitFlag int
 
 // WaitFlagNone is no --wait typed, WaitFlagTrue is --wait or --wait=true, and WaitFlagFalse is
@@ -244,8 +246,8 @@ const (
 	WaitFlagFalse
 )
 
-// Limit is how long the request may run, counted from launch: WaitTimeLimit for a push under the
-// long wait, TimeLimit for every other request.
+// Limit is how long the request may run, counted from launch: WaitTimeLimit for a push, a merge or
+// a release under the long wait, TimeLimit for every other request.
 func (r Request) Limit() time.Duration {
 	if r.LongWait {
 		return WaitTimeLimit
