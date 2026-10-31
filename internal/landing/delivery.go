@@ -294,15 +294,15 @@ func (d *delivery) report(deps Deps) *result.Result {
 		return d.doneMerging()
 	case WaitNothingReported:
 		return d.endNothingReported()
+	default:
+		report, _ := d.waited.stopReport(d.req.ending(), d.tip, d.Trunk, d.number)
+		d.lines = append(d.lines, report.lines...)
+
+		ended := d.ended(report.outcome(result.DeliveredNotGreen), report.reason, report.next)
+		ended.Excerpt = report.excerpt
+
+		return ended
 	}
-
-	report, _ := d.waited.stopReport(d.req.ending(), d.tip, d.Trunk, d.number)
-	d.lines = append(d.lines, report.lines...)
-
-	ended := d.ended(report.outcome(result.DeliveredNotGreen), report.reason, report.next)
-	ended.Excerpt = report.excerpt
-
-	return ended
 }
 
 // doneMerging ends the push done, with ils merge as the next step. A done push says its merge

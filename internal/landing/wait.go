@@ -747,6 +747,8 @@ func tally(checks []forge.Check) (passed, skipped int) {
 			passed++
 		case forge.BucketSkipped:
 			skipped++
+		default:
+			// A failed, pending, or canceled check counts toward neither.
 		}
 	}
 

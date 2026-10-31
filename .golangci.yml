@@ -14,6 +14,7 @@ linters:
     - depguard
     - errcheck
     - errorlint
+    - exhaustive
     - funlen
     - gochecknoglobals
     - gocognit
@@ -40,6 +41,8 @@ linters:
       exclude-functions:
         - (io.ReadCloser).Close
         - (*database/sql.Rows).Close
+    exhaustive:
+      default-signifies-exhaustive: true
     funlen:
       lines: 60
       statements: 40
