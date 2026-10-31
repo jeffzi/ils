@@ -15,8 +15,60 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Decides whether the change can affect the build, the lint, or the tests. Only a pull request
+  # whose every changed file is one that none of them reads skips them; a push, a call from another
+  # workflow, and any file this list does not name run everything.
+  changes:
+    name: Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read # lists the pull request's changed files
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+    steps:
+      - name: Decide whether the change touches what the Go jobs read
+        id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != pull_request ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A rename lists its old name too, so moving a Go file out of a Go path still counts.
+          files=$(gh api --paginate "repos/$GH_REPO/pulls/$PR/files" \
+            --jq '.[] | .filename, (.previous_filename // empty)')
+          # The API lists at most 3000 files of a pull request; past that the list is incomplete.
+          if [ "$(wc -l <<<"$files")" -ge 3000 ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          go=false
+          while IFS= read -r file; do
+            case "$file" in
+              *.md | skills/* | LICENSE | .editorconfig | .gitignore | .markdownlint-cli2.jsonc \
+                | cspell.json | dprint.json | .pre-commit-config.yaml | Taskfile.yml \
+                | .github/dependabot.yml | .github/workflows/audit.yml | .github/workflows/live.yml \
+                | .github/workflows/prek.yml | .github/workflows/publish.yml \
+                | .github/workflows/update-tools.yml) ;;
+              *)
+                echo "$file can affect the Go jobs"
+                go=true
+                ;;
+            esac
+          done <<<"$files"
+          echo "go=$go" >> "$GITHUB_OUTPUT"
+
   lint:
     name: Lint
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -31,6 +83,8 @@ jobs:
 
   test:
     name: Test / ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     defaults:
@@ -59,6 +113,8 @@ jobs:
   # that changes behavior fails here instead of whenever a runner image updates its git.
   test-git:
     name: Test / git ${{ matrix.name }}
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -105,3 +161,28 @@ jobs:
           ILS_TEST_GIT: ${{ matrix.target }}
           ILS_TEST_GIT_VERSION: ${{ steps.git.outputs.version }}
         run: go test -race ./...
+
+  # The one check the trunk's ruleset requires of this workflow, so that the jobs above can be
+  # skipped without leaving a required check waiting. It passes when each of them passed or was
+  # skipped, and fails otherwise.
+  ci-ok:
+    name: CI ok
+    needs: [changes, lint, test, test-git]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail unless every job passed or was skipped
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          set -euo pipefail
+          for result in $RESULTS; do
+            case "$result" in
+              success | skipped) ;;
+              *)
+                echo "a job of this workflow ended $result: $RESULTS" >&2
+                exit 1
+                ;;
+            esac
+          done
