@@ -74,7 +74,8 @@ func versionTags(tags []git.Tag) []git.Tag {
 // that fails for any other reason is broke, and nothing is written before the CI gate and the
 // reserve let the release go on, as gate and reserved say.
 //
-// The writes follow, as write says. Every result from the writes on carries the release payload.
+// The writes follow, as write says. Every result from the release commit found on carries the
+// release payload.
 func Release(ctx context.Context, deps Deps, req Request) result.Result {
 	tag := "v" + req.Args[0]
 	if !exactVersion(tag) {
@@ -94,15 +95,15 @@ func Release(ctx context.Context, deps Deps, req Request) result.Result {
 	rel := releasing{Ready: ready, tag: tag}
 
 	if stop := rel.checks(ctx, deps, req); stop != nil {
-		return *stop
+		return *rel.carried(req, stop)
 	}
 
 	if stop := rel.gate(ctx, deps, req); stop != nil {
-		return *stop
+		return *rel.carried(req, stop)
 	}
 
 	if stop := rel.reserved(ctx, req); stop != nil {
-		return *stop
+		return *rel.carried(req, stop)
 	}
 
 	return *rel.write(ctx, deps, req)
@@ -471,6 +472,7 @@ func (w Waited) cutBy(err error) (Waited, error) {
 // redStop refuses the release on the check of waited that failed or was canceled. A failed check
 // carries the end of its log as the excerpt; a canceled one has no log and carries none.
 func (rel *releasing) redStop(req Request, waited Waited) *result.Result {
+	rel.verdict = result.ReleaseRed
 	failed, _ := waited.Verdict.Failed()
 	commit := result.SHA(rel.commit)
 
@@ -493,6 +495,7 @@ func (rel *releasing) redStop(req Request, waited Waited) *result.Result {
 // pendingStop ends the release pending on a wait for its checks that ended before they concluded:
 // by the deadline, or by an interrupt, which the reason names.
 func (rel *releasing) pendingStop(req Request, waited Waited) *result.Result {
+	rel.verdict = result.ReleasePending
 	commit := result.SHA(rel.commit)
 	byInterrupt := waited.Cutoff == CutoffInterrupt
 	pending := waited.Verdict.Pending()
@@ -535,6 +538,8 @@ func (rel *releasing) pendingStop(req Request, waited Waited) *result.Result {
 // its trunk has CI: a trunk whose protection requires checks has CI, and otherwise the forge says.
 // With CI the release is refused; without, it goes on, saying nothing verified the release commit.
 func (rel *releasing) unreported(ctx context.Context, deps Deps, req Request, waited Waited) *result.Result {
+	rel.verdict = result.ReleaseNone
+
 	protection, err := deps.Forge.TrunkProtection(ctx, rel.Repo, rel.Trunk)
 	if err != nil {
 		return req.unread(readProtection, err)
@@ -550,7 +555,6 @@ func (rel *releasing) unreported(ctx context.Context, deps Deps, req Request, wa
 			result.NextStep("report that no check or status reported for the release commit, and stop"))
 	}
 
-	rel.verdict = result.ReleaseNone
 	rel.said = append(rel.said, noCI(rel.Trunk, rel.commit))
 
 	return nil
@@ -705,15 +709,36 @@ func (rel *releasing) broke(req Request, reason result.Phrase, next result.Next,
 // payload.
 func (rel *releasing) ended(req Request, stop *result.Result, lines ...result.Phrase) *result.Result {
 	stop.Lines = slices.Concat(rel.said, lines)
-	stop.Payload = &result.Payload{Release: &result.Release{
+	stop.Payload = rel.payload(req)
+
+	return stop
+}
+
+// carried returns stop, which ends req, with the release payload once the release commit is found,
+// and as it is before then.
+func (rel *releasing) carried(req Request, stop *result.Result) *result.Result {
+	if rel.commit != "" {
+		stop.Payload = rel.payload(req)
+	}
+
+	return stop
+}
+
+// payload is the release payload of req. Its verdict is result.ReleaseUnchecked until the CI gate
+// set one.
+func (rel *releasing) payload(req Request) *result.Payload {
+	verdict := rel.verdict
+	if verdict == "" {
+		verdict = result.ReleaseUnchecked
+	}
+
+	return &result.Payload{Release: &result.Release{
 		Version:    rel.version(),
 		Tag:        rel.tag,
 		SHA:        rel.commit,
-		Verdict:    rel.verdict,
+		Verdict:    verdict,
 		URL:        rel.url,
 		Prerelease: rel.prerelease(),
 		TagOnly:    req.TagOnly,
 	}}
-
-	return stop
 }

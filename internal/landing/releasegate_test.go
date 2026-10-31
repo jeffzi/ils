@@ -87,7 +87,7 @@ type gateRow struct {
 }
 
 // runGateRefusals runs each row as a test in a bubble of its own: the release is refused as the row
-// says, with nothing written.
+// says, with nothing written, carrying the payload of a red gate.
 func runGateRefusals(t *testing.T, rows []gateRow) {
 	t.Helper()
 
@@ -102,6 +102,7 @@ func runGateRefusals(t *testing.T, rows []gateRow) {
 
 				assertEndedBy(t, got, run.st.s.gitDir, ended{outcome: result.Refused, req: req, text: tt.want})
 				assert.Check(t, is.Equal(run.st.s.written(), run.before))
+				assert.Check(t, is.DeepEqual(releasePayload(t, got, run.st.s.gitDir), released(run.st, "red", "")))
 			})
 		})
 	}
@@ -130,44 +131,90 @@ func TestRelease_WhenTheChecksOfTheReleaseCommitGoOnAfterARead_WaitsForThemToCon
 	})
 }
 
-// stillRunningRow is a way the wait for a check that never concludes ends, and the phrase that
-// says it.
+// stillRunningRow is a way the wait for checks that never conclude ends: the checks the forge
+// answers with, and the parts of the text before the `Next:` line.
 type stillRunningRow struct {
 	// under returns the context the release runs under, with the whole time limit left.
-	under func(t *testing.T) context.Context
-	name  string
-	says  string
+	under    func(t *testing.T) context.Context
+	name     string
+	text     string
+	verdicts []forgetest.Answer[forge.Verdict]
+}
+
+// stillRunningRows are the ways a wait for checks that do not conclude ends pending, one per reason
+// the release names.
+func stillRunningRows() []stillRunningRow {
+	timeLimitEnds := func(t *testing.T) context.Context {
+		t.Helper()
+
+		return within(t, 0)
+	}
+	interrupted := func(t *testing.T) context.Context {
+		t.Helper()
+
+		return byInterrupt().after(within(t, 0), 30*time.Second)
+	}
+	return []stillRunningRow{
+		{name: "the time limit", text: expect("test", "still running"), verdicts: says(running()), under: timeLimitEnds},
+		{name: "an interrupt", text: expect("test", "interrupted"), verdicts: says(running()), under: interrupted},
+		{
+			// The interrupt comes before no check reporting for long enough ends the wait.
+			name: "an interrupt before any check reported", text: expect("interrupted"),
+			verdicts: says(forge.Verdict{}), under: func(t *testing.T) context.Context {
+				t.Helper()
+
+				return byInterrupt().after(within(t, 0), 5*time.Second)
+			},
+		},
+		{
+			name: "an interrupt inside the first read", text: expect("interrupted"),
+			verdicts: []forgetest.Answer[forge.Verdict]{{Hold: true}}, under: interrupted,
+		},
+		{
+			name: "the time limit inside the first read", text: expect("time limit", "ended while reading"),
+			verdicts: []forgetest.Answer[forge.Verdict]{{Hold: true}}, under: timeLimitEnds,
+		},
+		{
+			// The time limit ends before no check reporting for long enough ends the wait.
+			name: "the time limit before any check reported", text: expect("no check or status had reported", "time limit"),
+			verdicts: says(forge.Verdict{}), under: func(t *testing.T) context.Context {
+				t.Helper()
+
+				return within(t, landing.MergeReserve+10*time.Second)
+			},
+		},
+		{
+			name: "the time limit with a run going and no check", text: expect("had not all reported", "time limit"),
+			verdicts: says(forge.Verdict{Runs: ran(forge.RunInProgress)}), under: timeLimitEnds,
+		},
+		{
+			name: "an interrupt with a run going and no check", text: expect("had not all reported", "interrupted"),
+			verdicts: says(forge.Verdict{Runs: ran(forge.RunInProgress)}), under: interrupted,
+		},
+	}
 }
 
 func TestRelease_WhenTheChecksStillRunAtTheEndOfTheWait_PendingWithTheCommandAsTyped(t *testing.T) {
 	t.Parallel()
 
-	tests := []stillRunningRow{
-		{name: "the time limit", says: "still running", under: func(t *testing.T) context.Context {
-			t.Helper()
-
-			return within(t, 0)
-		}},
-		{name: "an interrupt", says: "interrupted", under: func(t *testing.T) context.Context {
-			t.Helper()
-
-			return byInterrupt().after(within(t, 0), 30*time.Second)
-		}},
-	}
-	for _, tt := range tests {
+	for _, tt := range stillRunningRows() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
 				req := releaseRequest(version, true)
-				run := gateScene(t, gated(running()))
+				script := releasable()
+				script.CommitVerdict = tt.verdicts
+				run := gateScene(t, script)
 
 				got := landing.Release(tt.under(t), run.st.s.deps, req)
 
 				assertEndedBy(t, got, run.st.s.gitDir, ended{
-					outcome: result.Pending, req: req,
-					text: expect("test", tt.says) + nextRelease("release "+version+" --tag-only"),
+					outcome: result.Pending, req: req, text: tt.text + nextRelease("release "+version+" --tag-only"),
 				})
 				assert.Check(t, is.Equal(run.st.s.written(), run.before))
+				want := released(run.st, "pending", "")
+				want.TagOnly = true
+				assert.Check(t, is.DeepEqual(releasePayload(t, got, run.st.s.gitDir), want))
 			})
 		})
 	}
@@ -195,8 +242,10 @@ func TestRelease_WhenTheChecksNeverConclude_EndsTheWaitTheReserveBeforeTheDeadli
 // silentRow is a release for whose release commit no check reported at the first read: the forge's
 // script and how the release ends.
 type silentRow struct {
-	name    string
-	text    string
+	name string
+	text string
+	// url is the link the release payload carries.
+	url     string
 	script  forgetest.Script
 	outcome result.Outcome
 }
@@ -224,7 +273,7 @@ func silentRows() []silentRow {
 			script: silent(forge.Protection{}, true),
 		},
 		{
-			name: "the trunk has no CI", outcome: result.Done, text: expect("No CI", trunk, tipMark),
+			name: "the trunk has no CI", outcome: result.Done, text: expect("No CI", trunk, tipMark), url: releaseURL,
 			script: silent(forge.Protection{}, false),
 		},
 	}
@@ -257,6 +306,7 @@ func TestRelease_WhenNoCheckReportedForTheReleaseCommit_DecidesByTheTrunksCI(t *
 
 				text := mark(tt.text, run.st.release)
 				assertEndedBy(t, got, run.st.s.gitDir, ended{outcome: tt.outcome, req: req, text: text})
+				assert.Check(t, is.DeepEqual(releasePayload(t, got, run.st.s.gitDir), released(run.st, "none", tt.url)))
 			})
 		})
 	}
@@ -265,19 +315,27 @@ func TestRelease_WhenNoCheckReportedForTheReleaseCommit_DecidesByTheTrunksCI(t *
 func TestRelease_WhenFewerThanTheReserveIsLeftBeforeTheWrites_PendingWithTheCommandAsTyped(t *testing.T) {
 	t.Parallel()
 
-	for _, req := range []landing.Request{releaseRequest(version, false), forced(releaseRequest(version, false))} {
-		t.Run(strings.Join(req.Words, " "), func(t *testing.T) {
+	tests := []struct {
+		verdict string
+		req     landing.Request
+	}{
+		{verdict: "green", req: releaseRequest(version, false)},
+		{verdict: "forced", req: forced(releaseRequest(version, false))},
+	}
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.req.Words, " "), func(t *testing.T) {
 			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
 				left := landing.MergeReserve - time.Second
 				run := gateScene(t, gated(passing()))
 
-				got := landing.Release(within(t, left), run.st.s.deps, req)
+				got := landing.Release(within(t, left), run.st.s.deps, tt.req)
 
 				assertEndedBy(t, got, run.st.s.gitDir, ended{
-					outcome: result.Pending, req: req, text: nextRelease(strings.Join(req.Words, " ")),
+					outcome: result.Pending, req: tt.req, text: nextRelease(strings.Join(tt.req.Words, " ")),
 				})
 				assert.Check(t, is.Equal(run.st.s.written(), run.before))
+				assert.Check(t, is.DeepEqual(releasePayload(t, got, run.st.s.gitDir), released(run.st, tt.verdict, "")))
 			})
 		})
 	}
@@ -308,6 +366,7 @@ func TestRelease_WhenForced_RefusesAsWithoutItWithTheCommandAsTyped(t *testing.T
 		outcome: result.Refused, req: req,
 		text: expect(releaseTag, "git tag --delete "+releaseTag, "ils release "+version+" --force"),
 	})
+	assert.Check(t, is.DeepEqual(releasePayload(t, got, st.s.gitDir), released(st, "unchecked", "")))
 }
 
 func TestRelease_WhenACheckWithNoWorkflowRunBehindItFailed_RefusesAtTheFirstRead(t *testing.T) {
@@ -325,18 +384,40 @@ func TestRelease_WhenACheckWithNoWorkflowRunBehindItFailed_RefusesAtTheFirstRead
 	})
 }
 
-func TestRelease_WhenTheChecksOfTheReleaseCommitCannotBeRead_BrokeNamingTheRead(t *testing.T) {
+// unreadGateRow is a forge read of the gate that fails, and the verdict the release payload carries.
+type unreadGateRow struct {
+	name    string
+	read    string
+	verdict string
+	script  forgetest.Script
+}
+
+func TestRelease_WhenAReadOfTheGateFails_BrokeNamingTheRead(t *testing.T) {
 	t.Parallel()
-	synctest.Test(t, func(t *testing.T) {
-		cmd := releaseCommand(version)
-		script := gated()
-		script.CommitVerdict = []forgetest.Answer[forge.Verdict]{{Err: errors.New(forgeFailure)}}
-		run := gateScene(t, script)
 
-		got := runRelease(t, run.st.s, cmd.req)
+	failed := errors.New(forgeFailure)
+	checks := gated()
+	checks.CommitVerdict = []forgetest.Answer[forge.Verdict]{{Err: failed}}
+	protection := gated(forge.Verdict{})
+	protection.TrunkProtection = []forgetest.Answer[forge.Protection]{{Err: failed}}
+	tests := []unreadGateRow{
+		{name: "the checks of the release commit", read: readReleaseChecks, verdict: "unchecked", script: checks},
+		{name: "the trunk's protection once no check reported", read: readProtection, verdict: "none", script: protection},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				cmd := releaseCommand(version)
+				run := gateScene(t, tt.script)
 
-		said := assertBrokeReadBy(t, got, cmd, readReleaseChecks)
-		assert.Check(t, is.Contains(said, forgeFailure))
-		assert.Check(t, is.Equal(run.st.s.written(), run.before))
-	})
+				got := runRelease(t, run.st.s, cmd.req)
+
+				said := assertBrokeReadBy(t, got, cmd, tt.read)
+				assert.Check(t, is.Contains(said, forgeFailure))
+				assert.Check(t, is.Equal(run.st.s.written(), run.before))
+				assert.Check(t, is.DeepEqual(releasePayload(t, got, run.st.s.gitDir), released(run.st, tt.verdict, "")))
+			})
+		})
+	}
 }
