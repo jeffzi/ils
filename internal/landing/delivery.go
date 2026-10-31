@@ -110,7 +110,7 @@ func (d *delivery) pushFailed(err error) *result.Result {
 		return d.endedSaying(
 			result.Say("Started the push of %s at %s when "+timeLimitEnded+"; it may or may not have taken",
 				d.markedBranch(), d.markedTip(), d.req.limitWords()),
-			result.Broke, result.Say(timeLimitEnded+" during the push", d.req.limitWords()), d.req.again())
+			result.Broke, result.Say(timeLimitEnded+" during the push", d.req.limitWords()), d.req.afterTimeLimit())
 	}
 
 	if refused, ok := errors.AsType[*git.PushError](err); ok {

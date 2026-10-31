@@ -9,43 +9,39 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Add `ils release <X.Y.Z>`, which tags the release commit on origin's default branch once its
-  checks are green, pushes the tag, and publishes the GitHub release with the changelog's notes.
+- Add `ils release <X.Y.Z>`, which tags and publishes a release once its release commit's checks
+  are green.
 - Add the `write-release` agent skill, which lands the release commit through `ils` and leaves
   `ils release` to the user.
-- Add `--wait` to `ils push` to wait longer for the checks wherever it runs.
 
 ### Changed
 
 - Make the `ils` agent skill wait for slow CI with one background `ils push --wait` instead of
   repeated foreground `ils push` calls.
-- Report a pre-release's release commit, such as `chore: release v1.2.0-rc.1`, as a release commit
-  in `ils status`.
-- Make `ils push` wait longer for the checks by default when stdout is a terminal; `--wait=false`
-  keeps the short wait.
+- Report a pre-release's release commit as a release commit in `ils status`.
+- Make `ils push` and `ils merge` wait longer for the checks when stdout is a terminal, with
+  `--wait` to choose the long or the short wait anywhere.
 
 ### Fixed
 
-- Report an interrupt that lands as a wait for the checks polls again as an interrupt, not as the
-  time limit running out.
+- Report Ctrl-C or SIGTERM during the wait for the checks as an interrupt, not as the time limit
+  running out.
 
 ## [0.4.0] - 2026-10-30
 
 ### Added
 
-- Add `ils branch <name>`, which starts a work branch from the default branch as origin has it and
-  refuses a name a branch already takes, locally or on origin.
-- Add `ils status`, which says where the checkout stands and what to run next, and exits 0
-  whatever it finds.
+- Add `ils branch <name>`, which starts a work branch from origin's default branch.
+- Add `ils status`, which says where the checkout stands and what to run next.
 
 ### Changed
 
 - Point every `Next:` line that spelled out cutting a branch by hand at `ils branch <name>`.
-- Shorten the lines of `ils push` and `ils merge`, JSON `lines` included, by leaving out zero check
-  tallies and a clean merge state.
 - Suggest the closest command when a command name is mistyped, and point `Next:` at its `--help`.
 - Show how long each check still running at the time limit has run on GitHub.
 - End `ils merge` pending instead of refused while a check the default branch requires still runs.
+- Carry what the hooks and `git` printed for a push `git` refused in the new JSON field `excerpt`,
+  not in the last entry of `lines`.
 
 ### Fixed
 
@@ -55,8 +51,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   mid-push, although the push may have reached origin.
 - Name a required check still running, with the new `merge_state` `blocked-by-running-check`,
   instead of blaming a branch rule `ils` cannot name.
-- Show what the hooks and `git` printed for a push `git` refused, a pre-push hook's stdout included,
-  as the excerpt, which JSON now carries in `excerpt` instead of the last entry of `lines`.
+- Show a pre-push hook's stdout in the excerpt of a push `git` refused.
 - Fix `ils push` missing origin's answer when a pre-push hook's output did not end in a newline,
   which reported a push that reached origin as stopped, or a refused one without its reason.
 
@@ -90,8 +85,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - Add `ils --version`, which prints the version of `ils`.
-- Add `ils merge`, which squash-merges the branch's pull request once its checks are green, deletes
-  the branch, and leaves the default branch checked out.
+- Add `ils merge`, which squash-merges the branch's pull request once its checks are green.
 
 ### Changed
 

@@ -817,16 +817,24 @@ type cutTagPush struct {
 	name    string
 	said    string
 	reason  string
+	// again is the `Next:` line the run ends on.
+	again string
 }
 
 // cutTagPushes are the ways the push of the tag can end before git says whether origin took it.
 func cutTagPushes() []cutTagPush {
-	rows := make([]cutTagPush, 0, len(cuts())+2)
-	for _, c := range cuts() {
-		rows = append(rows, cutTagPush{
+	again := releaseCommand(version).again
+	cutBy := func(c cut, next string) cutTagPush {
+		return cutTagPush{
 			name: "because " + c.name + " ended it", arrange: c.stalling(answersBeforeTagPush),
-			said: expect(c.ends), reason: expect(c.ends),
-		})
+			said: expect(c.ends), reason: expect(c.ends), again: next,
+		}
+	}
+	// The short time limit names the long wait, since a push whose hooks outlast 100 seconds ends
+	// the same way every time under it.
+	rows := []cutTagPush{
+		cutBy(byTimeLimit(), nextLine("ils release "+version+" --wait")),
+		cutBy(byInterrupt(), again),
 	}
 
 	serving := func(after string) func(t *testing.T, s *scene) context.Context {
@@ -840,9 +848,9 @@ func cutTagPushes() []cutTagPush {
 	}
 
 	return append(rows,
-		cutTagPush{name: "origin stops answering", arrange: serving("true"), reason: expect("stopped answering")},
+		cutTagPush{name: "origin stops answering", arrange: serving("true"), reason: expect("stopped answering"), again: again},
 		cutTagPush{
-			name: "a signal kills the git push", reason: expect("did not finish"),
+			name: "a signal kills the git push", reason: expect("did not finish"), again: again,
 			arrange: func(t *testing.T, s *scene) context.Context {
 				t.Helper()
 				gittest.NeedSignals(t)
@@ -867,7 +875,7 @@ func TestRelease_WhenThePushOfTheTagIsCutShort_BrokeSayingItMayHaveTaken(t *test
 
 			assertEndedBy(t, got, st.s.gitDir, ended{
 				outcome: result.Broke, req: cmd.req,
-				text: expect(releaseTag) + tt.said + expect("may or may not have taken") + cmd.again,
+				text: expect(releaseTag) + tt.said + expect("may or may not have taken") + tt.again,
 			})
 			_, reason := shown(t, got, st.s.gitDir)
 			assertSays(t, reason, tt.reason)

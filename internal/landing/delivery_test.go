@@ -630,12 +630,23 @@ const answersBeforePush = 3
 
 func TestPush_WhenTheGitPushIsCutShort_BrokeSayingThePushMayHaveTaken(t *testing.T) {
 	t.Parallel()
-	var tests []boundedPush
-	for _, c := range cuts() {
-		tests = append(tests, boundedPush{c: c, cmd: pushCommand()})
+	type cutPushRow struct {
+		// again is the `Next:` line the push ends on.
+		again string
+		c     cut
+		cmd   landingCommand
 	}
 
-	tests = append(tests, boundedPushes()...)
+	// The short time limit with no --wait typed names the long wait, since a push whose hooks
+	// outlast 100 seconds ends the same way every time under it.
+	tests := []cutPushRow{
+		{c: byTimeLimit(), cmd: pushCommand(), again: nextLine("ils push --wait")},
+		{c: byInterrupt(), cmd: pushCommand(), again: pushCommand().again},
+		{c: byWaitLimit(), cmd: longCommand(), again: longCommand().again},
+	}
+	for _, b := range boundedPushes() {
+		tests = append(tests, cutPushRow{c: b.c, cmd: b.cmd, again: b.cmd.again})
+	}
 
 	for _, tt := range tests {
 		t.Run("ils "+tt.cmd.name+", "+tt.c.name, func(t *testing.T) {
@@ -648,7 +659,7 @@ func TestPush_WhenTheGitPushIsCutShort_BrokeSayingThePushMayHaveTaken(t *testing
 
 			assertDelivered(t, s, got, finish{
 				outcome: result.Broke, reason: expect(tt.c.ends, "during the push"), req: tt.cmd.req,
-				text: expect(topic, shortSHA(sha), tt.c.ends, "may or may not have taken") + tt.cmd.again,
+				text: expect(topic, shortSHA(sha), tt.c.ends, "may or may not have taken") + tt.again,
 			})
 			assertAsked(t, s, changesRead())
 		})

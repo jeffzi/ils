@@ -626,7 +626,7 @@ func (rel *releasing) tagPushFailed(req Request, err error) *result.Result {
 
 	if timedOut(err) {
 		return rel.broke(req, result.Say(timeLimitEnded+" during the push of the tag %s", req.limitWords(), rel.tag),
-			req.again(),
+			req.afterTimeLimit(),
 			result.Say("Started the push of the tag %s at %s when "+timeLimitEnded+"; it may or may not have taken",
 				rel.tag, commit, req.limitWords()))
 	}
