@@ -672,10 +672,11 @@ func beforeDeadline(ctx context.Context, reserve time.Duration) (context.Context
 
 // ctxEnded reports whether ctx has ended or its deadline is no longer ahead of the current time.
 func ctxEnded(ctx context.Context) bool {
-	if ctx.Err() != nil {
-		return true
-	}
+	return ctx.Err() != nil || deadlinePassed(ctx)
+}
 
+// deadlinePassed reports whether ctx has a deadline that is no longer ahead of the current time.
+func deadlinePassed(ctx context.Context) bool {
 	deadline, ok := ctx.Deadline()
 
 	return ok && time.Until(deadline) <= 0
@@ -710,12 +711,14 @@ func pause(ctx context.Context, d time.Duration) error {
 	}
 
 	// An interrupt that lands as the timer fires is still an interrupt: only the deadline makes
-	// the wait out of time.
-	if err := ctx.Err(); interrupted(err) {
+	// the wait out of time. The context's error is read once, so an interrupt that lands after
+	// this look is left to the next one instead of passing for the deadline.
+	err := ctx.Err()
+	if interrupted(err) {
 		return fmt.Errorf("wait %s: %w", d, err)
 	}
 
-	if ctxEnded(ctx) {
+	if err != nil || deadlinePassed(ctx) {
 		return errOutOfTime
 	}
 
