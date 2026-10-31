@@ -607,7 +607,9 @@ At a terminal, every command shows its progress as it runs:
 When stdout is a terminal, `ils push`, `ils merge`, and `ils release` wait up to 15 minutes for the
 checks instead of 100 seconds, unless you give `--wait=false`. `merge` and `release` stop waiting
 20 seconds before that limit, to leave time for the writes that follow. When a pending `ils merge`
-names `ils push` on its `Next:` line, that push waits that long too.
+names `ils push` on its `Next:` line, that push waits that long too. A script or harness that
+gives `ils` a terminal but stops it on a timeout shorter than 15 minutes passes `--wait=false`: an
+`ils merge` or `ils release` stopped between two of its writes continues on the next run.
 
 A stream that is not a terminal gets none of this. Stdout prints the whole result at the end. Stderr
 stays empty unless `-d` is on, or `ils` cannot print its result and reports that failure there.
