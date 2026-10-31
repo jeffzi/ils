@@ -93,7 +93,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -108,6 +108,61 @@ jobs:
         run: go tool go-test-coverage --config=.coverage.yml
       - name: Build
         run: go build ./...
+
+  # Starting a process costs Windows about twenty times what it costs Linux, and the landing tests
+  # start about 17,000 git processes, so on one runner they take about eight minutes. The suite is
+  # split instead: one job runs every other package, and each of SHARDS jobs runs its share of the
+  # landing tests, dealt out from `go test -list` so that a new test always lands in one. Waiting
+  # on git rather than on the CPU, the tests run 16 at a time instead of one per core.
+  test-windows:
+    name: Test / windows-latest / ${{ matrix.shard }}
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        # rest, then the numbers 1 to SHARDS.
+        shard: [rest, 1, 2, 3, 4]
+    env:
+      SHARDS: 4
+      SHARD: ${{ matrix.shard }}
+      SHARDED: ./internal/landing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+      - name: Run tests
+        run: |
+          set -euo pipefail
+          sharded=$(go list "$SHARDED")
+          if [ "$SHARD" = rest ]; then
+            mapfile -t packages < <(go list ./... | grep --invert-match --line-regexp --fixed-strings "$sharded")
+            go test -race -parallel 16 "${packages[@]}"
+            go build ./...
+            exit 0
+          fi
+          mapfile -t tests < <(go test -race -list '^Test' "$SHARDED" | grep '^Test')
+          mine=()
+          for i in "${!tests[@]}"; do
+            if [ $((i % SHARDS + 1)) -eq "$SHARD" ]; then
+              mine+=("${tests[$i]}")
+            fi
+          done
+          if [ "${#mine[@]}" -eq 0 ]; then
+            echo "shard $SHARD of $SHARDS holds no test of $sharded" >&2
+            exit 1
+          fi
+          echo "shard $SHARD of $SHARDS runs ${#mine[@]} of the ${#tests[@]} tests of $sharded"
+          pattern="^($(IFS='|'; echo "${mine[*]}"))\$"
+          go test -race -parallel 16 -run "$pattern" "$SHARDED"
 
   # The suite on the oldest git ils accepts and on the newest git release, so that a git release
   # that changes behavior fails here instead of whenever a runner image updates its git.
@@ -167,7 +222,7 @@ jobs:
   # skipped, and fails otherwise.
   ci-ok:
     name: CI ok
-    needs: [changes, lint, test, test-git]
+    needs: [changes, lint, test, test-windows, test-git]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
