@@ -341,11 +341,19 @@ type Payload struct {
 	Status  *Status  `json:"status,omitempty"`
 	Release *Release `json:"release,omitempty"`
 	Parse   *Parse   `json:"parse,omitempty"`
+	Guard   *Guard   `json:"guard,omitempty"`
 }
 
 // Parse is the structured detail of a parse: every invocation the command holds, in the order the
 // shell starts them.
 type Parse struct {
+	Invocations []Invocation `json:"invocations"`
+}
+
+// Guard is the structured detail of a guard run: every invocation the command holds, as a parse
+// shows them, beside the verdict the result's outcome and reason carry. It holds none when the
+// command cannot be read.
+type Guard struct {
 	Invocations []Invocation `json:"invocations"`
 }
 

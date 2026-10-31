@@ -46,7 +46,7 @@ func rules() []rule {
 	return []rule{
 		refuseSkippedChecks, refuseDiscardingGit, refuseHistoryOverFile, refuseRebaseOverChanges,
 		refuseRiskyWorktreeRemoval, refuseGuardedConfigWrite, refuseOriginRewrite, refusePush,
-		newTrunks().refuseOnTrunk,
+		newTrunks().refuseOnTrunk, judgeForge,
 	}
 }
 
@@ -58,20 +58,29 @@ func rules() []rule {
 //
 // A command with no git, gh, or ils invocation and no mark starts no subprocess.
 func Judge(ctx context.Context, command string, caller Caller) Verdict {
+	verdict, _ := Assess(ctx, command, caller)
+
+	return verdict
+}
+
+// Assess judges command as Judge does, and also returns the invocations it judged, so that a
+// caller showing them reads the command once. A command that does not parse, or whose state Parse
+// failed to read, returns no invocation.
+func Assess(ctx context.Context, command string, caller Caller) (Verdict, []Invocation) {
 	return judge(ctx, command, caller, rules())
 }
 
-func judge(ctx context.Context, command string, caller Caller, checks []rule) Verdict {
+func judge(ctx context.Context, command string, caller Caller, checks []rule) (Verdict, []Invocation) {
 	ctx, cancel := context.WithTimeout(ctx, readDeadline)
 	defer cancel()
 
 	invocations, err := Parse(ctx, command, caller)
 	if failure, ok := errors.AsType[*ParseError](err); ok {
-		return refuse("the guard cannot read the command: " + failure.Error())
+		return refuse("the guard cannot read the command: " + failure.Error()), nil
 	}
 
 	if err != nil {
-		return failedRead(err)
+		return failedRead(err), nil
 	}
 
 	verdict := Verdict{Outcome: Allow}
@@ -82,7 +91,7 @@ func judge(ctx context.Context, command string, caller Caller, checks []rule) Ve
 		}
 	}
 
-	return verdict
+	return verdict, invocations
 }
 
 func judgeInvocation(ctx context.Context, caller Caller, inv Invocation, checks []rule) Verdict {
@@ -127,7 +136,8 @@ func markReason(inv Invocation, mark Mark) string {
 		name = inv.Words[0].Text
 		at := slices.IndexFunc(inv.Words[1:], func(w Word) bool { return isToolWord(w, inv.Dir) })
 		if at >= 0 {
-			name = fmt.Sprintf("%s runs %s", name, inv.Words[1+at].Text)
+			tool := inv.Words[1+at].Text
+			name = fmt.Sprintf("%s runs %s: run %s on its own, by its bare name", name, tool, tool)
 		}
 	}
 

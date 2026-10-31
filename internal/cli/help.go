@@ -144,5 +144,23 @@ ils parse --cwd . -- 'git switch main && git pull'
 # The same as one JSON object, for a filter such as jq
 ils parse --cwd . --json -- 'git push'`
 
+	guardWord  = "guard"
+	guardUse   = guardWord + " --cwd <dir> -- '<command>'"
+	guardShort = "Judge a shell command as the guard does"
+	guardLong  = `Read a shell command as the guard does, as run from <dir>, and judge
+every git, gh and ils command it starts. The command goes after -- as one
+quoted word.
+
+It runs nothing of the command. It exits 0 when the guard allows the
+command, 2 when it refuses it, and 3 when it asks you first; a command it
+cannot read, or a read of git it cannot make, is a refusal. The guard
+runs on macOS and Linux.`
+
+	guardExamples = `# Judge a shell command
+ils guard --cwd . -- 'git push --force'
+
+# The verdict, its reason and every command, as one JSON object
+ils guard --cwd . --json -- 'ils merge'`
+
 	cwdUsage = "The directory the command runs in"
 )

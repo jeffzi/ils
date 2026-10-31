@@ -3,6 +3,8 @@ package cli
 import (
 	"runtime/debug"
 
+	"github.com/spf13/pflag"
+
 	"github.com/jeffzi/ils/internal/git"
 )
 
@@ -41,3 +43,25 @@ const FrameEvery = frameEvery
 
 // PendingHint is pendingHint, for the tests of package cli_test.
 const PendingHint = pendingHint
+
+// RootSwitches returns the flags the root command of ils knows before it finds a command and that
+// take no value, each spelled as typed: `--name` and, when it has one, `-x`.
+func (a *App) RootSwitches() []string {
+	root := (&parse{app: *a}).root()
+
+	var switches []string
+	visit := func(f *pflag.Flag) {
+		if f.NoOptDefVal == "" {
+			return
+		}
+
+		switches = append(switches, "--"+f.Name)
+		if f.Shorthand != "" {
+			switches = append(switches, "-"+f.Shorthand)
+		}
+	}
+	root.Flags().VisitAll(visit)
+	root.PersistentFlags().VisitAll(visit)
+
+	return switches
+}

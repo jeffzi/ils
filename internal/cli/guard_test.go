@@ -20,6 +20,9 @@ import (
 	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
+// exitAsk is the code ils guard exits with when it asks.
+const exitAsk = 3
+
 // parsed returns the parse payload of the JSON object out holds, and stops the test when it holds
 // none.
 func parsed(t *testing.T, out string) *result.Parse {
@@ -29,6 +32,17 @@ func parsed(t *testing.T, out string) *result.Parse {
 	assert.Assert(t, printed.Payload != nil && printed.Payload.Parse != nil, "output holds no parse payload:\n%s", out)
 
 	return printed.Payload.Parse
+}
+
+// guarded returns the guard payload of the JSON object out holds, and stops the test when it holds
+// none.
+func guarded(t *testing.T, out string) *result.Guard {
+	t.Helper()
+
+	printed := resulttest.Decode(t, out)
+	assert.Assert(t, printed.Payload != nil && printed.Payload.Guard != nil, "output holds no guard payload:\n%s", out)
+
+	return printed.Payload.Guard
 }
 
 // literals returns the words that read as texts.
@@ -257,5 +271,148 @@ func TestApp_Run_WhenParseIsNotGivenADirectoryAndOneCommandWord_Refuses(t *testi
 
 			assert.Check(t, is.Equal(got.code, exitRefused), "ils %s: stdout = %q", strings.Join(tt.args, " "), got.stdout)
 		})
+	}
+}
+
+// verdictCase is a command, and the outcome and exit code ils guard gives it.
+type verdictCase struct {
+	name    string
+	command string
+	want    result.Outcome
+	code    int
+}
+
+// verdicts returns one command per verdict.
+func verdicts() []verdictCase {
+	return []verdictCase{
+		{name: "allowed", command: "echo hi", want: result.Done, code: exitDone},
+		{name: "refused", command: "ils merge | cat", want: result.Refused, code: exitRefused},
+		{name: "asked", command: "ils merge", want: result.Ask, code: exitAsk},
+	}
+}
+
+func TestApp_Run_WhenGuardIsGivenACommandWithTheJSONFlag_PrintsTheVerdictTheReasonAndTheInvocations(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range verdicts() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir, env := t.TempDir(), gittest.Env(t)
+			verdict := guard.Judge(t.Context(), tt.command, guard.Caller{Dir: dir, Git: git.Runner{Env: env}})
+			want := parsed(t, launch(t, parsing(t, env), "parse", "--cwd", dir, "--json", "--", tt.command).stdout).Invocations
+			assert.Assert(t, len(want) > 0, "ils parse printed no invocation for %q", tt.command)
+
+			got := launch(t, parsing(t, env), "guard", "--cwd", dir, "--json", "--", tt.command)
+
+			assert.Check(t, is.Equal(got.code, tt.code), "stdout = %q", got.stdout)
+			printed := resulttest.Decode(t, got.stdout)
+			assert.Check(t, is.Equal(printed.Outcome, tt.want.String()))
+			assert.Check(t, is.Equal(printed.Reason, verdict.Reason))
+			assert.Check(t, is.DeepEqual(guarded(t, got.stdout).Invocations, want, cmpopts.EquateEmpty()))
+		})
+	}
+}
+
+func TestApp_Run_WhenGuardRunsAsText_PrintsTheVerdictAndTheReason(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range verdicts()[1:] {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir, env := t.TempDir(), gittest.Env(t)
+			verdict := guard.Judge(t.Context(), tt.command, guard.Caller{Dir: dir, Git: git.Runner{Env: env}})
+			assert.Assert(t, verdict.Reason != "", "Judge(%q) gave no reason", tt.command)
+
+			got := launch(t, parsing(t, env), "guard", "--cwd", dir, "--", tt.command)
+
+			assert.Check(t, is.Equal(got.code, tt.code), "stdout = %q", got.stdout)
+			assert.Check(t, is.Contains(got.stdout, resulttest.ReasonLine(tt.want, verdict.Reason)))
+		})
+	}
+}
+
+func TestApp_Run_WhenGuardCannotReadTheCommand_RefusesSayingWhatBroke(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		// arrange returns the directory the command is read in, after setting it up.
+		arrange func(t *testing.T, f *gittest.Fixture) string
+		name    string
+		command string
+	}{
+		{
+			name: "command that does not parse", command: `echo "x`,
+			arrange: func(_ *testing.T, f *gittest.Fixture) string { return f.Dir() },
+		},
+		{
+			name: "git dir read that fails", command: "git status",
+			arrange: func(t *testing.T, f *gittest.Fixture) string {
+				t.Helper()
+
+				assert.NilError(t, os.WriteFile(filepath.Join(f.Dir(), ".git", "config"), []byte("[core\nbroken"), 0o600))
+
+				return f.Dir()
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := gittest.New(t, trunk)
+			dir := tt.arrange(t, f)
+			_, failure := guard.Parse(t.Context(), tt.command, guard.Caller{Dir: dir, Git: git.Runner{Env: f.Env()}})
+			assert.Assert(t, failure != nil, "Parse(%q) did not fail", tt.command)
+
+			got := launch(t, parsing(t, f.Env()), "guard", "--cwd", dir, "--json", "--", tt.command)
+
+			assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
+			printed := resulttest.Decode(t, got.stdout)
+			assert.Check(t, is.Equal(printed.Outcome, result.Refused.String()))
+			assert.Check(t, is.Contains(printed.Reason, failure.Error()))
+		})
+	}
+}
+
+func TestApp_Run_WhenGuardIsNotGivenADirectoryAndOneCommandWord_Refuses(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "no directory", args: []string{"guard", "--json", "--", "ils merge"}},
+		{name: "no word after the end of flags", args: []string{"guard", "--json", "--cwd", ".", "--"}},
+		{name: "command split into words", args: []string{"guard", "--json", "--cwd", ".", "--", "ils", "merge"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := launch(t, outside(t), tt.args...)
+
+			assert.Check(t, is.Equal(got.code, exitRefused), "ils %s: stdout = %q", strings.Join(tt.args, " "), got.stdout)
+			// A command ils does not know is refused too, but points at the help of ils itself.
+			assert.Check(t, is.Equal(resulttest.Decode(t, got.stdout).Next, "ils guard --help"))
+		})
+	}
+}
+
+func TestGuard_ReadsEveryRootSwitchOfIlsAsTakingNoValue(t *testing.T) {
+	t.Parallel()
+
+	var app cli.App
+	switches := app.RootSwitches()
+	assert.Assert(t, len(switches) > 0, "the root command has no switch")
+	caller := guard.Caller{Dir: t.TempDir()}
+
+	for _, flag := range switches {
+		command := "ils " + flag + " merge"
+
+		got := guard.Judge(t.Context(), command, caller)
+
+		assert.Check(t, is.Equal(got.Outcome, guard.Ask), "Judge(%q) outcome, reason %q", command, got.Reason)
 	}
 }

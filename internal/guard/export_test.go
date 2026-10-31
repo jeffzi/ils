@@ -7,5 +7,7 @@ type Rule = rule
 
 // JudgeWith judges a command under the rules it is given instead of the guard's own.
 func JudgeWith(ctx context.Context, command string, caller Caller, rules []Rule) Verdict {
-	return judge(ctx, command, caller, rules)
+	verdict, _ := judge(ctx, command, caller, rules)
+
+	return verdict
 }
