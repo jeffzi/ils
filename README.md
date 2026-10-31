@@ -495,6 +495,11 @@ The same steps, by hand, for `1.2.0` on `main`:
 git fetch origin main
 git log --first-parent --format='%H %s' origin/main   # the newest chore: release v1.2.0
 gh run list --repo <host>/<owner>/<name> --commit <sha> --event push   # all green before you go on
+gh api --hostname <host> --paginate repos/<owner>/<name>/commits/<sha>/status \
+  --jq '.statuses[] | "\(.state) \(.context)"'   # its commit statuses, all success
+# its checks from GitHub Apps other than Actions, all success
+gh api --hostname <host> --paginate repos/<owner>/<name>/commits/<sha>/check-runs \
+  --jq '.check_runs[] | select(.app.slug != "github-actions") | "\(.conclusion) \(.name)"'
 git tag --annotate --message v1.2.0 v1.2.0 <sha>
 git push origin refs/tags/v1.2.0
 gh release create v1.2.0 --repo <host>/<owner>/<name> --verify-tag --title v1.2.0 \
