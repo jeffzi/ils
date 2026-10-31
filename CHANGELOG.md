@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-31
+
 ### Added
 
 - Add `ils release <X.Y.Z>`, which tags and publishes a release once its release commit's checks
@@ -121,7 +123,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   output.
 - Add usage help, printed by `--help` on `ils` and on each command and by `ils help [command]`.
 
-[Unreleased]: https://github.com/jeffzi/ils/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/jeffzi/ils/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/jeffzi/ils/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jeffzi/ils/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jeffzi/ils/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jeffzi/ils/compare/v0.1.1...v0.2.0
