@@ -400,9 +400,13 @@ func TestRelease_WhenAReadOfTheGateFails_BrokeNamingTheRead(t *testing.T) {
 	checks.CommitVerdict = []forgetest.Answer[forge.Verdict]{{Err: failed}}
 	protection := gated(forge.Verdict{})
 	protection.TrunkProtection = []forgetest.Answer[forge.Protection]{{Err: failed}}
+	ci := gated(forge.Verdict{})
+	ci.TrunkProtection = forgetest.Values(forge.Protection{})
+	ci.HasTrunkCI = []forgetest.Answer[bool]{{Err: failed}}
 	tests := []unreadGateRow{
 		{name: "the checks of the release commit", read: readReleaseChecks, verdict: "unchecked", script: checks},
 		{name: "the trunk's protection once no check reported", read: readProtection, verdict: "none", script: protection},
+		{name: "the trunk's CI once no check reported", read: readCI, verdict: "none", script: ci},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
