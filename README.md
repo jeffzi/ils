@@ -134,18 +134,20 @@ ils push -d       # the same push, tracing each git and gh call and wait decisio
 ils push --no-color  # the same push, with no color
 ils merge         # squash-merge the pull request once its checks are green
 ils merge --json  # the same result as one JSON object
+ils merge --wait  # the same, waiting up to 14 minutes 40 seconds for the checks even off a terminal
 ils branch fix-help  # start the branch fix-help from the default branch as origin has it
 ils status        # where the checkout stands, and what to run next
 ils release 1.2.0 # tag the release commit of v1.2.0 once its checks are green, then publish it
 ils release 1.2.0 --tag-only  # the same, stopping once the tag is on origin
+ils release 1.2.0 --wait=false  # the same, waiting at most 80 seconds even at a terminal
 ils help          # usage of ils and its commands
 ils help push     # the same as ils push --help
 ils --version     # print the version of ils
 ```
 
 `push`, `merge`, `branch`, `status`, and `release` each take `--json`, `-d` or `--debug`,
-`--no-color`, and `--help` or `-h`. `push` alone also takes `--wait`, and `release` alone
-`--force` and `--tag-only`.
+`--no-color`, and `--help` or `-h`. `push`, `merge`, and `release` also take `--wait`, and
+`release` alone `--force` and `--tag-only`.
 
 ## Push
 
@@ -246,8 +248,10 @@ Run `ils merge` on the branch whose pull request you want to land. It:
 
 1. checks every precondition before it writes anything, and refuses with a reason when one does
    not hold;
-2. waits for the checks of the pull request's head, as `ils push` does, until you stop it or 80
-   seconds have passed since the command started;
+2. waits for the checks of the pull request's head, as `ils push` does, until you stop it or the
+   command has run for 14 minutes 40 seconds when stdout is a terminal or you give `--wait`, and
+   80 seconds otherwise or with `--wait=false`: 20 seconds before its time limit, kept for the
+   writes that follow;
 3. squash-merges the pull request, with its title plus `(#<N>)` as the subject and its body as
    the commit body. The trailer block GitHub adds (`Signed-off-by` and `Co-authored-by` lines)
    follows the body;
@@ -435,8 +439,9 @@ leading `v`, and may carry a pre-release part, such as `1.2.0-rc.1`. It:
    whose subject is `chore: release v<X.Y.Z>`, with or without a trailing `(#<N>)`. It need not be
    the tip: commits merged after it stay out of the tag;
 3. reads the release notes from the `## [X.Y.Z]` section of `CHANGELOG.md` at the release commit;
-4. waits for the checks of the release commit, as `ils merge` does, until you stop it or 80
-   seconds have passed since the command started. It counts the runs a push started on the release
+4. waits for the checks of the release commit, as `ils merge` does, until you stop it or the
+   command has run for 14 minutes 40 seconds when stdout is a terminal or you give `--wait`, and
+   80 seconds otherwise or with `--wait=false`. It counts the runs a push started on the release
    commit, and leaves out the runs that judge something else: a run another workflow started
    (`workflow_run`), a scheduled or manual run, and a Dependabot run. GitHub files a `workflow_run`
    run under the default branch's tip whatever started it, pull request CI included;
@@ -538,14 +543,14 @@ not one of the [exit codes](#exit-codes).
 
 ## Exit codes
 
-| Exit | Means                | Reaction                                                                                                                                                                                                                                                                                                                                               |
-| ---- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 0    | done                 | Push: the checks are green, or the repository has no CI and a line says nothing verified the commit; follow `Next:`. Merge: the pull request is merged and the branch deleted. Branch: the branch is started. Status: always, whatever it finds. Release: the tag is on origin, and the GitHub release exists unless `--tag-only`.                     |
-| 1    | broke                | The output says what was done and what was not. Fix what failed, then follow `Next:`.                                                                                                                                                                                                                                                                  |
-| 2    | refused              | Nothing was pushed, opened, merged, or tagged, except by a push whose pull request's head moved during the wait. The reason says why; `Next:` says what to do.                                                                                                                                                                                         |
-| 3    | ask                  | Reserved; not used by this version.                                                                                                                                                                                                                                                                                                                    |
-| 4    | pending              | GitHub had not finished when the command stopped waiting, for example checks still running or not yet reported. Run the command that the `Next:` line names. An `ils push` waits up to 15 minutes at a terminal, and `ils push --wait` waits that long anywhere. `--wait=false` picks 100 seconds. After an `ils release`, run the same command again. |
-| 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                                                                                                                                                 |
+| Exit | Means                | Reaction                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ---- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | done                 | Push: the checks are green, or the repository has no CI and a line says nothing verified the commit; follow `Next:`. Merge: the pull request is merged and the branch deleted. Branch: the branch is started. Status: always, whatever it finds. Release: the tag is on origin, and the GitHub release exists unless `--tag-only`.                                                                                                           |
+| 1    | broke                | The output says what was done and what was not. Fix what failed, then follow `Next:`.                                                                                                                                                                                                                                                                                                                                                        |
+| 2    | refused              | Nothing was pushed, opened, merged, or tagged, except by a push whose pull request's head moved during the wait. The reason says why; `Next:` says what to do.                                                                                                                                                                                                                                                                               |
+| 3    | ask                  | Reserved; not used by this version.                                                                                                                                                                                                                                                                                                                                                                                                          |
+| 4    | pending              | GitHub had not finished when the command stopped waiting, for example checks still running or not yet reported. Run the command that the `Next:` line names. An `ils push`, `ils merge`, or `ils release` waits up to 15 minutes at a terminal, and with `--wait` that long anywhere. `--wait=false` picks 100 seconds. `merge` and `release` stop waiting 20 seconds before that limit. After an `ils release`, run the same command again. |
+| 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                                                                                                                                                                                                                                       |
 
 Every outcome but done prints its reason on the line above `Next:`, labeled by outcome:
 `Refused:`, `Broke:`, `Pending:`, or `Delivered, not green:`. A run stopped by Ctrl-C or SIGTERM
@@ -599,18 +604,19 @@ At a terminal, every command shows its progress as it runs:
 - **Pending hint:** when stdout is a terminal, the `Next:` line of a pending result ends with
   `# waits again; nothing to fix`.
 
-When stdout is a terminal, `ils push` waits up to 15 minutes for the checks instead of 100 seconds,
-unless you give `--wait=false`. When a pending `ils merge` names `ils push` on its `Next:` line,
-that push waits that long too.
+When stdout is a terminal, `ils push`, `ils merge`, and `ils release` wait up to 15 minutes for the
+checks instead of 100 seconds, unless you give `--wait=false`. `merge` and `release` stop waiting
+20 seconds before that limit, to leave time for the writes that follow. When a pending `ils merge`
+names `ils push` on its `Next:` line, that push waits that long too.
 
 A stream that is not a terminal gets none of this. Stdout prints the whole result at the end. Stderr
 stays empty unless `-d` is on, or `ils` cannot print its result and reports that failure there.
-`--json` output is never colored or streamed, but `ils push --json` at a terminal still waits up to
-15 minutes. `TERM=dumb` counts as no terminal.
+`--json` output is never colored or streamed, but `ils push --json`, `ils merge --json`, and
+`ils release --json` at a terminal still wait long. `TERM=dumb` counts as no terminal.
 
 `NO_COLOR` and `--no-color` turn color and bold off on both streams, help included. `CLICOLOR_FORCE`
 turns color on for a stream that is not a terminal; `NO_COLOR` and `--no-color` override it. None
-of the three changes how long `ils push` waits.
+of the three changes how long `ils push`, `ils merge`, or `ils release` waits.
 
 `-d` (or `--debug`) prints one line on stderr for each `git` and `gh` call and each wait decision,
 timed from when the command started, in place of the spinner. It changes neither stdout nor the
