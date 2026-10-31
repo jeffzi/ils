@@ -303,9 +303,9 @@ func (w *walker) repeated(sc *scope, body func(*scope)) {
 	entry := *sc
 	if !w.probing {
 		w.probing = true
-		kept := len(w.invocations)
+		at := len(w.kept)
 		body(&entry)
-		w.invocations = w.invocations[:kept]
+		w.kept = w.kept[:at]
 		w.probing = false
 		entry = merge(*sc, entry)
 	}
@@ -372,9 +372,9 @@ func (w *walker) script(script string, inv Invocation, sc *scope) {
 	// A dry run of the string from the shell's own environment leaves each variable as the string
 	// sets it, or as the shell had it when the string does not touch it.
 	after := *sc
-	kept := len(w.invocations)
+	at := len(w.kept)
 	w.nested(file, &after)
-	w.invocations = w.invocations[:kept]
+	w.kept = w.kept[:at]
 	sc.dir = inner.dir
 	sc.env = after.env
 }
@@ -387,12 +387,11 @@ func (w *walker) nested(file *syntax.File, sc *scope) {
 	w.depth--
 }
 
-// placed returns inv with where it runs: its directory, where it points git, and whether HEAD may
-// have moved before it.
+// placed returns inv with where it runs: its directory, and where it points git.
 func (w *walker) placed(inv Invocation, sc *scope) Invocation {
 	inv.Dir = sc.dir
-	inv.HeadUnknown = w.headMoved
 	if inv.Tool == Git {
+		inv.Git = readGitCall(inv.Words)
 		inv.Target = sc.targetOf(inv)
 	}
 
@@ -511,17 +510,20 @@ func (sc *scope) commandEnv(inv Invocation) environment {
 
 // targetOf returns where the git invocation inv points git, run from sc.
 func (sc *scope) targetOf(inv Invocation) GitTarget {
+	if inv.Git.missing != "" {
+		return GitTarget{Unknown: true}
+	}
+
 	env := sc.commandEnv(inv)
 	dir := sc.dir
-	options, _ := gitGlobals(inv.Words)
-	for _, o := range options {
-		switch o.name {
+	for _, o := range inv.Git.Options {
+		switch o.Name {
 		case "-C":
-			dir = moved(dir, o.value)
+			dir = moved(dir, o.Value)
 		case "--git-dir":
-			env.gitDir = valueOf(o.value)
+			env.gitDir = valueOf(o.Value)
 		case "--work-tree":
-			env.workTree = valueOf(o.value)
+			env.workTree = valueOf(o.Value)
 		}
 	}
 
@@ -536,54 +538,34 @@ func (sc *scope) targetOf(inv Invocation) GitTarget {
 	return GitTarget{Dir: dir, GitDir: gitDir, WorkTree: workTree}
 }
 
-// gitOption is one global option of git that moves where it works, with its value.
-type gitOption struct {
-	name  string
-	value Word
+// keep records inv as walked, and as the next invocation Parse returns.
+func (w *walker) keep(inv Invocation) {
+	w.kept = append(w.kept, len(w.walked))
+	w.walked = append(w.walked, inv)
 }
 
-// gitGlobals returns the `-C`, `--git-dir`, and `--work-tree` options among the global options
-// opening the git invocation words, in order, and the index in words of the subcommand after them.
-func gitGlobals(words []Word) ([]gitOption, int) {
-	var options []gitOption
-	i := 1
-	for i < len(words) {
-		text := words[i].Text
-		name, value, attached := strings.Cut(text, "=")
-		switch {
-		case attached && (name == "--git-dir" || name == "--work-tree"):
-			options = append(options, gitOption{name: name, value: Word{Text: value, Literal: words[i].Literal}})
-			i++
-		case !words[i].Literal || !strings.HasPrefix(text, "-"):
-			return options, i
-		case !takesGitValue(text):
-			i++
-		case i+1 == len(words):
-			return options, len(words)
-		default:
-			if text == "-C" || text == "--git-dir" || text == "--work-tree" {
-				options = append(options, gitOption{name: text, value: words[i+1]})
-			}
-
-			i += 2
-		}
+// returned returns the invocations Parse returns, each reporting whether an invocation walked
+// before it may move HEAD. It reads each git invocation once its aliases expand, so it runs after
+// resolveGit. The walk order is the order the shell may run them in: the substitutions of a command
+// come before it, and a dry run of a body that may repeat before the body itself.
+func (w *walker) returned() []Invocation {
+	moved := false
+	for i := range w.walked {
+		w.walked[i].HeadUnknown = moved
+		moved = moved || movesHead(w.walked[i])
 	}
 
-	return options, i
-}
-
-// takesGitValue reports whether the global option of git written as text takes the next word as
-// its value.
-func takesGitValue(text string) bool {
-	switch text {
-	case "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--attr-source":
-		return true
-	default:
-		return false
+	var invocations []Invocation
+	for _, i := range w.kept {
+		invocations = append(invocations, w.walked[i])
 	}
+
+	return invocations
 }
 
-// movesHead reports whether the invocation inv may move HEAD.
+// movesHead reports whether the invocation inv may move HEAD, reading a git invocation by the
+// subcommand its aliases expand to. A git invocation whose subcommand Parse could not resolve may
+// run any command, so it may move HEAD.
 func movesHead(inv Invocation) bool {
 	words := inv.Words
 	switch inv.Tool {
@@ -595,14 +577,22 @@ func movesHead(inv Invocation) bool {
 		return false
 	}
 
-	_, at := gitGlobals(words)
-	if at == len(words) || !words[at].Literal {
+	if slices.ContainsFunc(inv.Marks, func(m Mark) bool {
+		return m.Kind == ShellAlias || m.Kind == UnknownSubcommand || m.Kind == DeepAlias ||
+			m.Kind == UnreadableAlias
+	}) {
+		return true
+	}
+
+	if !inv.Git.Subcommand.Literal {
 		return false
 	}
 
-	args := words[at+1:]
-	switch words[at].Text {
-	case "switch", "bisect":
+	args := inv.Git.Args
+	switch inv.Git.Subcommand.Text {
+	case "switch", "checkout", "bisect":
+		// Every checkout counts, the one that restores files and leaves HEAD where it is too:
+		// telling them apart means reading its operands as git does.
 		return true
 	case "symbolic-ref":
 		return positionals(args, func(text string) bool { return text == "-m" }) > 1

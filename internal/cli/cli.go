@@ -448,6 +448,7 @@ func (p *parse) root() *cobra.Command {
 		p.landing(landingHelp{word: landing.StatusCommand, short: statusShort, long: statusLong, examples: statusExamples}, orDefault(p.app.runStatus, landing.Status), nil),
 		p.named(landingHelp{word: landing.BranchCommand, arg: "name", short: branchShort, long: branchLong, examples: branchExamples}, orDefault(p.app.runBranch, landing.StartBranch), nil),
 		p.release(),
+		p.parseCommand(),
 	)
 
 	return root

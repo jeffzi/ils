@@ -2,6 +2,7 @@
 package guard
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -12,6 +13,8 @@ import (
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
+
+	"github.com/jeffzi/ils/internal/git"
 )
 
 // Tool is the program a command word names, when it is one the guard judges.
@@ -34,6 +37,10 @@ type Caller struct {
 	Home string
 	// Dir is the absolute directory the command starts in; empty when unknown.
 	Dir string
+	// Git runs the git calls that read where each git invocation points git and what its aliases
+	// expand to. Parse runs each call from the invocation's directory, with the GIT_DIR and
+	// GIT_WORK_TREE it modeled for the invocation in place of those of Git's environment.
+	Git git.Runner
 }
 
 // Invocation is one simple command of a parsed command string.
@@ -60,6 +67,8 @@ type Invocation struct {
 	env []envChange
 	// Target is where a git invocation points git; zero for any other tool.
 	Target GitTarget
+	// Git is how git reads the words of a git invocation; zero for any other tool.
+	Git GitCall
 	// Bare reports whether the command word is written as a plain unquoted name, with no path, no
 	// quoting or escape, and no leading `=`.
 	Bare bool
@@ -185,7 +194,11 @@ func isDescriptor(w Word) bool {
 // or `eval`, and a literal heredoc fed to a shell, are parsed in turn to a depth of maxDepth, their
 // invocations following the one that runs them. What Parse cannot read is marked on the invocation
 // it occurs in. It returns a *ParseError when the parser cannot read command or a string it runs.
-func Parse(command string, caller Caller) ([]Invocation, error) {
+//
+// For each git invocation, Parse asks git through caller.Git which git dir it targets and what the
+// aliases it names expand to; a command with no git invocation starts no git. A failed call is
+// returned as an error naming it, never read as an answer.
+func Parse(ctx context.Context, command string, caller Caller) ([]Invocation, error) {
 	file, err := read(command)
 	if err != nil {
 		return nil, err
@@ -198,7 +211,11 @@ func Parse(command string, caller Caller) ([]Invocation, error) {
 		return nil, w.err
 	}
 
-	invocations := w.invocations
+	if err := resolveGit(ctx, caller.Git, w.walked); err != nil {
+		return nil, err
+	}
+
+	invocations := w.returned()
 	if len(invocations) == 1 && len(file.Stmts) == 1 && alone(file.Stmts[0]) &&
 		invocations[0].Bare && len(invocations[0].Wrappers) == 0 {
 		invocations[0].Whole = true
@@ -233,12 +250,14 @@ func read(command string) (*syntax.File, error) {
 type walker struct {
 	caller Caller
 	// timed holds the statements a `time` keyword runs.
-	timed       map[*syntax.Stmt]bool
-	err         error
-	invocations []Invocation
-	depth       int
-	// headMoved reports whether an invocation walked so far may move HEAD.
-	headMoved bool
+	timed map[*syntax.Stmt]bool
+	err   error
+	// walked holds every invocation the walk placed, in the order it walked them, those of dry runs
+	// included.
+	walked []Invocation
+	// kept holds the index in walked of each invocation Parse returns, in the order it returns them.
+	kept  []int
+	depth int
 	// probing reports whether the walk is a dry run of a body that may repeat, whose invocations
 	// are dropped once it ends.
 	probing bool
@@ -255,25 +274,25 @@ func (w *walker) simple(stmt *syntax.Stmt, sc *scope) bool {
 
 	// Each substitution runs before the command, in a subshell of the shell as it is then, so a
 	// HEAD move in one comes before the command; their invocations still follow its own.
-	at := len(w.invocations)
+	at := len(w.kept)
 	w.substitutions(stmt, sc)
-	held := slices.Clone(w.invocations[at:])
-	w.invocations = w.invocations[:at]
+	held := slices.Clone(w.kept[at:])
+	w.kept = w.kept[:at]
 	switch cmd := stmt.Cmd.(type) {
 	case *syntax.CallExpr:
 		w.add(stmt, cmd, sc)
 	case *syntax.DeclClause:
-		w.invocations = append(w.invocations, w.placed(declarationOf(stmt, cmd, w.caller.Home), sc))
+		w.keep(w.placed(declarationOf(stmt, cmd, w.caller.Home), sc))
 		sc.declare(cmd, w.caller.Home)
 	case *syntax.LetClause:
 		// Parse does not read an arithmetic expression back into text, so each one is a word that is
 		// not literal.
 		words := append([]Word{{Text: "let", Literal: true}}, make([]Word, len(cmd.Exprs))...)
 		inv := Invocation{Words: words, Redirects: redirectsOf(stmt, w.caller.Home), Bare: true}
-		w.invocations = append(w.invocations, w.placed(inv, sc))
+		w.keep(w.placed(inv, sc))
 	}
 
-	w.invocations = append(w.invocations, held...)
+	w.kept = append(w.kept, held...)
 
 	return true
 }
@@ -360,8 +379,7 @@ func (w *walker) add(stmt *syntax.Stmt, call *syntax.CallExpr, sc *scope) {
 	}
 
 	inv.Marks = append(inv.Marks, gitVariableMarks(names)...)
-	w.invocations = append(w.invocations, inv)
-	w.headMoved = w.headMoved || movesHead(inv)
+	w.keep(inv)
 	if runs {
 		w.script(script, inv, sc)
 	}

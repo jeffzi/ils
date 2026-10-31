@@ -125,4 +125,24 @@ ils status
 
 # The same result as one JSON object
 ils status --json`
+
+	parseWord  = "parse"
+	parseUse   = parseWord + " --cwd <dir> -- '<command>'"
+	parseShort = "Show how the guard reads a shell command"
+	parseLong  = `Read a shell command as the guard does, as run from <dir>, and show every
+command it starts: its words, what the guard would refuse in it, the
+directory it runs in, and for git the subcommand, its arguments and the
+git dir it targets. The command goes after -- as one quoted word.
+
+It runs nothing of the command and refuses nothing it holds: it exits 0
+once the command is read, and 1 when the command does not parse or a read
+of git it needs fails. The guard runs on macOS and Linux.`
+
+	parseExamples = `# Show the commands a shell command starts
+ils parse --cwd . -- 'git switch main && git pull'
+
+# The same as one JSON object, for a filter such as jq
+ils parse --cwd . --json -- 'git push'`
+
+	cwdUsage = "The directory the command runs in"
 )

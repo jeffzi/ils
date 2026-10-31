@@ -220,6 +220,69 @@ func TestRepo_WhenNotARepository_ReturnsExitError(t *testing.T) {
 	checkExitErrorOutsideRepo(t, tests)
 }
 
+func TestRepo_FindGitDir(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	tests := []struct {
+		name      string
+		wantDir   string
+		options   []string
+		wantFound bool
+	}{
+		{name: "work tree named by -C", options: []string{"-C", f.Dir()}, wantDir: filepath.Join(f.Dir(), ".git"), wantFound: true},
+		{name: "work tree root read as a bare repository", options: []string{"-C", f.Dir(), "--bare"}},
+		{name: "directory that holds no repository", options: []string{"-C", t.TempDir()}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, found, err := outsideRepo(t).FindGitDir(t.Context(), tt.options...)
+			assert.NilError(t, err, "FindGitDir(%q)", tt.options)
+
+			assert.Check(t, is.Equal(found, tt.wantFound), "FindGitDir(%q) found", tt.options)
+			assert.Check(t, is.Equal(got, tt.wantDir), "FindGitDir(%q)", tt.options)
+		})
+	}
+}
+
+func TestRepo_FindGitDir_WhenGitFailsForAnotherReason_ReturnsExitError(t *testing.T) {
+	t.Parallel()
+	options := []string{"-C", filepath.Join(t.TempDir(), "absent")}
+
+	got, found, err := outsideRepo(t).FindGitDir(t.Context(), options...)
+
+	_, ok := errors.AsType[*child.ExitError](err)
+	assert.Check(t, ok, "FindGitDir(%q) error = %v, want *child.ExitError", options, err)
+	assert.Check(t, !found, "FindGitDir(%q) = %q, want not found", options, got)
+}
+
+func TestRepo_Alias(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.Git("config", "--local", "alias.co", "checkout -b")
+	tests := []struct {
+		name    string
+		alias   string
+		want    string
+		wantSet bool
+	}{
+		{name: "alias set in the repository", alias: "co", want: "checkout -b", wantSet: true},
+		{name: "alias not set", alias: "ci"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, set, err := outsideRepo(t).Alias(t.Context(), tt.alias, "-C", f.Dir())
+			assert.NilError(t, err, "Alias(%q)", tt.alias)
+
+			assert.Check(t, is.Equal(set, tt.wantSet), "Alias(%q) set", tt.alias)
+			assert.Check(t, is.Equal(got, tt.want), "Alias(%q)", tt.alias)
+		})
+	}
+}
+
 func TestRepo_DirtyFiles_WhenStagedAndUnstagedChanges_ListsBoth(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)

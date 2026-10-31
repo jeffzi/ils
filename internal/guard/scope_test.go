@@ -13,7 +13,7 @@ import (
 func parseWith(t *testing.T, command string, env map[string]string) []guard.Invocation {
 	t.Helper()
 
-	got, err := guard.Parse(command, guard.Caller{Home: home, Dir: start, Env: env})
+	got, err := guard.Parse(t.Context(), command, guard.Caller{Home: home, Dir: start, Env: env})
 	assert.NilError(t, err, "Parse(%q)", command)
 
 	return got
@@ -308,6 +308,8 @@ func TestParse_ReportsWhetherHeadMayHaveMovedBeforeEachInvocation(t *testing.T) 
 		want    []bool
 	}{
 		{name: "git switch", command: "git switch main && git commit", want: []bool{false, true}},
+		{name: "git checkout of a branch", command: "git checkout topic && git commit", want: []bool{false, true}},
+		{name: "git checkout restoring a file", command: "git checkout -- file; git commit", want: []bool{false, true}},
 		{name: "symbolic-ref with a value", command: "git symbolic-ref HEAD refs/heads/main; git commit", want: []bool{false, true}},
 		{name: "symbolic-ref read", command: "git symbolic-ref HEAD; git commit", want: []bool{false, false}},
 		{name: "branch -m", command: "git branch -m next; git commit", want: []bool{false, true}},

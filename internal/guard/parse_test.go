@@ -21,7 +21,7 @@ const (
 func parse(t *testing.T, command string) []guard.Invocation {
 	t.Helper()
 
-	got, err := guard.Parse(command, guard.Caller{Home: home, Dir: start})
+	got, err := guard.Parse(t.Context(), command, guard.Caller{Home: home, Dir: start})
 	assert.NilError(t, err, "Parse(%q)", command)
 
 	return got
@@ -70,7 +70,7 @@ func TestParse_WhenTheParserCannotReadTheCommand_ReturnsItsPositionAndMessage(t 
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := guard.Parse(tt.command, guard.Caller{Home: home})
+			_, err := guard.Parse(t.Context(), tt.command, guard.Caller{Home: home})
 
 			failure, ok := errors.AsType[*guard.ParseError](err)
 			assert.Assert(t, ok, "Parse(%q) error = %v, want a *guard.ParseError", tt.command, err)
@@ -473,7 +473,7 @@ func TestParse_WhenADataConsumerNamesATool_ReportsNoInvocationOrMark(t *testing.
 			assert.NilError(t, os.MkdirAll(binDir, 0o750))
 			assert.NilError(t, os.WriteFile(filepath.Join(binDir, "ils"), []byte("#!/bin/sh\n"), 0o700)) //nolint:gosec // the test needs an executable file
 
-			got, err := guard.Parse(tt.command, guard.Caller{Home: callerHome})
+			got, err := guard.Parse(t.Context(), tt.command, guard.Caller{Home: callerHome})
 			assert.NilError(t, err, "Parse(%q)", tt.command)
 
 			for _, inv := range got {
@@ -597,7 +597,7 @@ func TestParse_WhenAnArgumentIsARelativePathNamedForATool_ReadsItWhereTheInvocat
 			assert.NilError(t, os.Mkdir(filepath.Join(callerDir, "bin"), 0o750))
 			assert.NilError(t, os.WriteFile(filepath.Join(callerDir, "bin", "git"), []byte("#!/bin/sh\n"), 0o700)) //nolint:gosec // the test needs an executable file
 
-			got, err := guard.Parse(tt.command, guard.Caller{Home: home, Dir: callerDir})
+			got, err := guard.Parse(t.Context(), tt.command, guard.Caller{Home: home, Dir: callerDir})
 			assert.NilError(t, err, "Parse(%q)", tt.command)
 
 			xargs := got[len(got)-1]

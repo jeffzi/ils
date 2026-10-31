@@ -340,6 +340,53 @@ type Payload struct {
 	Merge   *Merge   `json:"merge,omitempty"`
 	Status  *Status  `json:"status,omitempty"`
 	Release *Release `json:"release,omitempty"`
+	Parse   *Parse   `json:"parse,omitempty"`
+}
+
+// Parse is the structured detail of a parse: every invocation the command holds, in the order the
+// shell starts them.
+type Parse struct {
+	Invocations []Invocation `json:"invocations"`
+}
+
+// Invocation is one command of a parse, as the guard reads it.
+type Invocation struct {
+	// Git is how git reads the words of a git invocation, and nil for any other.
+	Git *GitCall `json:"git,omitempty"`
+	// Tool is git, gh or ils when the command word names one, and empty otherwise.
+	Tool string `json:"tool,omitempty"`
+	// Dir is the absolute directory the invocation runs in, and empty when it cannot be told.
+	Dir   string `json:"dir,omitempty"`
+	Words []Word `json:"words"`
+	// Marks name what the guard refuses in the invocation; a parse reports them and refuses none.
+	Marks []Mark `json:"marks"`
+}
+
+// Word is one word of an invocation. A word that is not a literal, whose text depends on what the
+// shell expands, carries as Text its literal prefix: the text before the first part the shell
+// expands, empty when the word starts with one.
+type Word struct {
+	Text    string `json:"text"`
+	Literal bool   `json:"literal"`
+}
+
+// Mark is one thing the guard refuses in an invocation: its kind in the guard's words, and the
+// name it is about, such as an alias or a variable, when it has one.
+type Mark struct {
+	Kind string `json:"kind"`
+	Name string `json:"name,omitempty"`
+}
+
+// GitCall is how git reads the words of a git invocation.
+type GitCall struct {
+	// GitDir is the absolute git dir the invocation targets, and empty when it targets no
+	// repository or GitDirUnknown.
+	GitDir string `json:"git_dir,omitempty"`
+	// Subcommand is the command git runs once its aliases expand, and nil when git runs none.
+	Subcommand *Word  `json:"subcommand,omitempty"`
+	Args       []Word `json:"args"`
+	// GitDirUnknown is whether the git dir cannot be told before the command runs.
+	GitDirUnknown bool `json:"git_dir_unknown"`
 }
 
 // The words of Release.Verdict.
