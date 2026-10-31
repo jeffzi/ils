@@ -436,7 +436,10 @@ leading `v`, and may carry a pre-release part, such as `1.2.0-rc.1`. It:
    the tip: commits merged after it stay out of the tag;
 3. reads the release notes from the `## [X.Y.Z]` section of `CHANGELOG.md` at the release commit;
 4. waits for the checks of the release commit, as `ils merge` does, until you stop it or 80
-   seconds have passed since the command started;
+   seconds have passed since the command started. It counts the runs a push started on the release
+   commit, and leaves out the runs that judge something else: a run another workflow started
+   (`workflow_run`), a scheduled or manual run, and a Dependabot run. GitHub files a `workflow_run`
+   run under the default branch's tip whatever started it, pull request CI included;
 5. tags the release commit `v<X.Y.Z>` with an annotated tag and pushes the tag to origin;
 6. creates the GitHub release of the tag, titled with the tag and with the notes as its body, and
    marked as a pre-release when the version has a pre-release part.
@@ -491,7 +494,7 @@ The same steps, by hand, for `1.2.0` on `main`:
 ```bash
 git fetch origin main
 git log --first-parent --format='%H %s' origin/main   # the newest chore: release v1.2.0
-gh api repos/<owner>/<name>/commits/<sha>/check-runs   # its checks, green before you go on
+gh run list --repo <host>/<owner>/<name> --commit <sha> --event push   # all green before you go on
 git tag --annotate --message v1.2.0 v1.2.0 <sha>
 git push origin refs/tags/v1.2.0
 gh release create v1.2.0 --repo <host>/<owner>/<name> --verify-tag --title v1.2.0 \
