@@ -23,13 +23,24 @@ type refusal struct {
 	wantNamed string
 }
 
-// repositoryCaller returns a caller working in a new repository.
+// repositoryCaller returns a caller working in a new repository, on a branch off its trunk, where
+// the trunk rules judge nothing.
 func repositoryCaller(t *testing.T) guard.Caller {
 	t.Helper()
 
-	f := gittest.New(t, "main")
+	f := offTrunk(t)
 
 	return guard.Caller{Home: home, Dir: f.Dir(), Git: git.Runner{Env: f.Env()}}
+}
+
+// offTrunk returns a new repository whose trunk is main, with HEAD on a branch cut from it.
+func offTrunk(t *testing.T) *gittest.Fixture {
+	t.Helper()
+
+	f := gittest.New(t, "main")
+	f.Commits("topic")
+
+	return f
 }
 
 // checkRefusals fails unless Judge refuses every command naming what its row wants named.
@@ -329,9 +340,9 @@ func addWorktree(f *gittest.Fixture, dir string) string {
 func TestJudge_RefusesARebaseOverUncommittedWork(t *testing.T) {
 	t.Parallel()
 
-	dirty := gittest.New(t, "main")
+	dirty := offTrunk(t)
 	dirty.DirtyFile()
-	clean := gittest.New(t, "main")
+	clean := offTrunk(t)
 	caller := guard.Caller{Home: home, Git: git.Runner{Env: dirty.Env()}}
 
 	checkRefusedIn(t, caller, []placed{
@@ -355,9 +366,9 @@ func TestJudge_RefusesARebaseWhoseTargetIsUnknown(t *testing.T) {
 func TestJudge_AllowsARebaseThatCannotLoseWork(t *testing.T) {
 	t.Parallel()
 
-	dirty := gittest.New(t, "main")
+	dirty := offTrunk(t)
 	dirty.DirtyFile()
-	clean := gittest.New(t, "main")
+	clean := offTrunk(t)
 	caller := guard.Caller{Home: home, Git: git.Runner{Env: dirty.Env()}}
 
 	checkAllowedIn(t, caller, []placed{
@@ -618,7 +629,7 @@ func TestJudge_RefusesANonLiteralArgumentAFlagCouldHideIn(t *testing.T) {
 
 func TestJudge_WhenAWorkTreeReadFails_RefusesSayingWhatBroke(t *testing.T) {
 	// Not parallel: gittest.FakeGit sets PATH for the whole process.
-	f := gittest.New(t, "main")
+	f := offTrunk(t)
 	clean := addWorktree(f, filepath.Join(outsideDir(t), "clean"))
 	env := append(f.Env(), gittest.FakeGit(t, gittest.Fake{FailOn: []string{"status"}})...)
 	caller := guard.Caller{Home: home, Dir: f.Dir(), Git: git.Runner{Env: env}}

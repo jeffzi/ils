@@ -5,7 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 )
+
+// readDeadline bounds every state read of one command, the calls to origin included, so the guard
+// answers well before the hook that runs it times out.
+const readDeadline = 5 * time.Second
 
 // Outcome is what the guard decides about a command. The outcomes run from the mildest to the
 // strictest, and a command takes the strictest outcome of its invocations.
@@ -34,25 +39,32 @@ func refuse(reason string) Verdict {
 // error, and the guard refuses the command saying what broke.
 type rule func(ctx context.Context, caller Caller, inv Invocation) (Verdict, error)
 
-// rules returns the rules every invocation is judged by, in the order they run.
+// rules returns the rules every invocation of one command is judged by, in the order they run.
+// The trunk rule keeps what origin answered for the rest of the command, so each command takes a
+// new set.
 func rules() []rule {
 	return []rule{
 		refuseSkippedChecks, refuseDiscardingGit, refuseHistoryOverFile, refuseRebaseOverChanges,
-		refuseRiskyWorktreeRemoval, refuseGuardedConfigWrite, refuseOriginRewrite,
+		refuseRiskyWorktreeRemoval, refuseGuardedConfigWrite, refuseOriginRewrite, refusePush,
+		newTrunks().refuseOnTrunk,
 	}
 }
 
 // Judge decides whether command may run for caller. It refuses a command it cannot parse, an
 // invocation Parse marked, and a command whose state it failed to read; otherwise every invocation
 // is judged by the guard's rules. The first refusal decides; failing that, the first ask; and a
-// command no rule objects to is allowed.
+// command no rule objects to is allowed. Every state read of the command shares one deadline of
+// readDeadline.
 //
 // A command with no git, gh, or ils invocation and no mark starts no subprocess.
 func Judge(ctx context.Context, command string, caller Caller) Verdict {
 	return judge(ctx, command, caller, rules())
 }
 
-func judge(ctx context.Context, command string, caller Caller, rules []rule) Verdict {
+func judge(ctx context.Context, command string, caller Caller, checks []rule) Verdict {
+	ctx, cancel := context.WithTimeout(ctx, readDeadline)
+	defer cancel()
+
 	invocations, err := Parse(ctx, command, caller)
 	if failure, ok := errors.AsType[*ParseError](err); ok {
 		return refuse("the guard cannot read the command: " + failure.Error())
@@ -64,7 +76,7 @@ func judge(ctx context.Context, command string, caller Caller, rules []rule) Ver
 
 	verdict := Verdict{Outcome: Allow}
 	for _, inv := range invocations {
-		verdict = verdict.or(judgeInvocation(ctx, caller, inv, rules))
+		verdict = verdict.or(judgeInvocation(ctx, caller, inv, checks))
 		if verdict.Outcome == Refuse {
 			break
 		}
@@ -73,13 +85,13 @@ func judge(ctx context.Context, command string, caller Caller, rules []rule) Ver
 	return verdict
 }
 
-func judgeInvocation(ctx context.Context, caller Caller, inv Invocation, rules []rule) Verdict {
+func judgeInvocation(ctx context.Context, caller Caller, inv Invocation, checks []rule) Verdict {
 	if len(inv.Marks) > 0 {
 		return refuse(markReason(inv, inv.Marks[0]))
 	}
 
 	verdict := Verdict{Outcome: Allow}
-	for _, judgeBy := range rules {
+	for _, judgeBy := range checks {
 		next, err := judgeBy(ctx, caller, inv)
 		if err != nil {
 			return failedRead(err)

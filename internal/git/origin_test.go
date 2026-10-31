@@ -506,6 +506,99 @@ func TestRepo_Trunk_WhenHeadNamesNoBranch_ReturnsErrNoSymref(t *testing.T) {
 	}
 }
 
+// lastFetchedAt records branch as origin's default branch in the clone, as a clone or a plain fetch
+// would, without asking origin.
+func lastFetchedAt(f *gittest.Fixture, branch string) {
+	f.Git("remote", "set-head", "origin", branch)
+}
+
+// movedTrunk is the branch origin's default branch moves to after the clone last fetched.
+const movedTrunk = "main"
+
+// moveOriginTrunk makes movedTrunk origin's default branch, without the clone fetching it.
+func moveOriginTrunk(f *gittest.Fixture) {
+	f.OriginGit("branch", movedTrunk, trunk)
+	f.OriginGit("symbolic-ref", "HEAD", "refs/heads/"+movedTrunk)
+}
+
+func TestRepo_TrunkOrLastFetched_WhenOriginAnswers_ReturnsOriginsTrunkOverTheLastFetched(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	lastFetchedAt(f, trunk)
+	moveOriginTrunk(f)
+
+	got, found, err := newRepo(f).TrunkOrLastFetched(t.Context())
+	assert.NilError(t, err)
+
+	assert.Check(t, found, "TrunkOrLastFetched() found = false, want true")
+	assert.Check(t, is.Equal(got, movedTrunk))
+}
+
+func TestRepo_TrunkOrLastFetched_WhenOriginDoesNotAnswer_ReturnsTheLastFetchedTrunk(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		arrange func(t *testing.T, f *gittest.Fixture) context.Context
+		name    string
+	}{
+		{
+			name: "origin unreachable",
+			arrange: func(t *testing.T, f *gittest.Fixture) context.Context {
+				t.Helper()
+				unreachable(t, f)
+
+				return t.Context()
+			},
+		},
+		{
+			name: "deadline passed",
+			arrange: func(t *testing.T, _ *gittest.Fixture) context.Context {
+				t.Helper()
+				ctx, cancel := context.WithTimeout(t.Context(), 0)
+				t.Cleanup(cancel)
+
+				return ctx
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			lastFetchedAt(f, trunk)
+			moveOriginTrunk(f)
+			ctx := tt.arrange(t, f)
+
+			got, found, err := newRepo(f).TrunkOrLastFetched(ctx)
+			assert.NilError(t, err)
+
+			assert.Check(t, found, "TrunkOrLastFetched() found = false, want true")
+			assert.Check(t, is.Equal(got, trunk))
+		})
+	}
+}
+
+func TestRepo_TrunkOrLastFetched_WhenOriginDoesNotAnswerAndNothingWasFetched_ReportsNotFound(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	unreachable(t, f)
+
+	got, found, err := newRepo(f).TrunkOrLastFetched(t.Context())
+	assert.NilError(t, err)
+
+	assert.Check(t, !found, "TrunkOrLastFetched() = %q, found = true, want not found", got)
+}
+
+func TestRepo_TrunkOrLastFetched_WhenOriginNamesNoBranch_ReturnsErrNoSymref(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	lastFetchedAt(f, trunk)
+	f.DetachOriginHead()
+
+	_, _, err := newRepo(f).TrunkOrLastFetched(t.Context())
+
+	assert.Check(t, is.ErrorIs(err, git.ErrNoSymref))
+}
+
 func TestRepo_RemoteBranch_WhenOnOrigin_ReturnsItsSHA(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
@@ -948,4 +1041,17 @@ func TestRepo_WhenNotARepository_OriginCallsReturnExitError(t *testing.T) {
 	}
 
 	checkExitErrorOutsideRepo(t, tests)
+}
+
+func TestRepo_TrunkOrLastFetched_WhenOriginDoesNotAnswerAndTheLastFetchCannotBeRead_ReturnsTheError(t *testing.T) {
+	// Not parallel: gittest.FakeGit sets PATH for the whole process.
+	f := gittest.New(t, trunk)
+	lastFetchedAt(f, trunk)
+	unreachable(t, f)
+	repo := newRepo(f)
+	repo.Runner.Env = append(repo.Runner.Env, gittest.FakeGit(t, gittest.Fake{FailOn: []string{"symbolic-ref"}})...)
+
+	_, _, err := repo.TrunkOrLastFetched(t.Context())
+
+	assert.Check(t, is.ErrorContains(err, gittest.FailedSaid))
 }
