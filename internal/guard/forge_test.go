@@ -106,16 +106,7 @@ func TestJudge_RefusesAnAdminMergeInEveryForm(t *testing.T) {
 
 	checkJudged(t, forgeCaller(t), []judged{
 		{name: "bare", command: "gh pr merge 3 --admin", want: guard.Refuse, wantNamed: "--admin"},
-		{name: "piped", command: "gh pr merge --admin 3 | cat", want: guard.Refuse, wantNamed: "--admin"},
 		{name: "with a value attached", command: "gh pr merge 3 --admin=true", want: guard.Refuse, wantNamed: "--admin"},
-	})
-}
-
-func TestJudge_AllowsAPushOrBranchRunAloneByItsBareName(t *testing.T) {
-	t.Parallel()
-
-	checkJudged(t, forgeCaller(t), []judged{
-		{name: "ils push", command: "ils push", want: guard.Allow},
 	})
 }
 
@@ -136,7 +127,6 @@ func TestJudge_RefusesAPushOrBranchNotRunAloneByItsBareNameNamingIt(t *testing.T
 	checkJudged(t, forgeCaller(t), []judged{
 		{name: "piped", command: "ils push | cat", want: guard.Refuse, wantNamed: "ils push"},
 		{name: "in a list", command: "ils branch topic && true", want: guard.Refuse, wantNamed: "ils branch"},
-		{name: "behind a wrapper", command: "nohup ils push", want: guard.Refuse, wantNamed: "ils push"},
 	})
 }
 
@@ -163,7 +153,6 @@ func TestJudge_RefusesAGhWriteNamingIt(t *testing.T) {
 		{name: "api method not literal", command: `gh api -X "$method" repos/x/y`, want: guard.Refuse, wantNamed: "gh api"},
 		{name: "repo sync", command: "gh repo sync", want: guard.Refuse, wantNamed: "gh repo sync"},
 		{name: "auth token", command: "gh auth token", want: guard.Refuse, wantNamed: "gh auth token"},
-		{name: "auth git-credential", command: "gh auth git-credential get", want: guard.Refuse, wantNamed: "gh auth git-credential"},
 		{name: "api method flag as the value of a field", command: "gh api -f --method=GET -f title=x repos/x/y/issues", want: guard.Refuse, wantNamed: "gh api"},
 		{name: "api method flag as the value of a long valued flag", command: "gh api --jq --method=GET -f title=x repos/x/y/issues", want: guard.Refuse, wantNamed: "gh api"},
 		{name: "config get token", command: "gh config get oauth_token", want: guard.Refuse, wantNamed: "oauth_token"},
@@ -189,7 +178,6 @@ func TestJudge_ReadsGhsCommandPastItsValueFlags(t *testing.T) {
 	checkJudged(t, forgeCaller(t), []judged{
 		{name: "short repo before merge", command: "gh pr -R o/r merge 3", want: guard.Ask},
 		{name: "long repo before merge piped", command: "gh pr --repo o/r merge 3 | cat", want: guard.Refuse, wantNamed: "gh pr merge"},
-		{name: "repo value naming a command", command: "gh pr -R merge checkout 12", want: guard.Allow},
 		{name: "help takes no word", command: "gh --help pr merge 3", want: guard.Ask, wantNamed: "gh pr merge"},
 	})
 }

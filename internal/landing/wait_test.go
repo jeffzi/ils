@@ -894,8 +894,9 @@ func TestAwaitVerdict_WhenContextIsCanceledDuringALaterVerdictRead_EndsPendingIn
 	})
 }
 
-// lateInterrupt is a context an interrupt cancels at a set moment, which a look at its Err sees
-// from that moment on; its Done channel never closes, and Err is all the test reads. It stands for
+// lateInterrupt is a context an interrupt cancels at a set moment, which a look at its Err or its
+// Done channel sees from that moment on: a Done channel taken before it stays open, as a select
+// entered before the interrupt waits on it, and one taken from it on is closed. It stands for
 // an interrupt that lands after a wait's timer fired and before the wait looks at its context
 // again, a moment no context canceled by a timer of its own is sure to hit, since the wait's timer
 // and that one fire at the same instant. Nothing over it cancels it.
@@ -903,6 +904,8 @@ type lateInterrupt struct {
 	context.Context
 
 	at time.Time
+	// open is the Done channel before the interrupt, which never closes.
+	open chan struct{}
 }
 
 // interruptIn returns a lateInterrupt over the test's values that an interrupt cancels d of fake
@@ -910,7 +913,25 @@ type lateInterrupt struct {
 func interruptIn(t *testing.T, d time.Duration) *lateInterrupt {
 	t.Helper()
 
-	return &lateInterrupt{Context: context.WithoutCancel(t.Context()), at: time.Now().Add(d)}
+	return &lateInterrupt{Context: context.WithoutCancel(t.Context()), at: time.Now().Add(d), open: make(chan struct{})}
+}
+
+// closedDone returns a Done channel that is closed, the channel of a context an interrupt ended.
+func closedDone() <-chan struct{} {
+	done := make(chan struct{})
+	close(done)
+
+	return done
+}
+
+// Done returns a channel that never closes before the interrupt's moment, and a closed one from it
+// on.
+func (l *lateInterrupt) Done() <-chan struct{} {
+	if l.Err() == nil {
+		return l.open
+	}
+
+	return closedDone()
 }
 
 // Err returns context.Canceled once the interrupt landed, and nil before.
@@ -924,11 +945,13 @@ func (l *lateInterrupt) Err() error {
 
 // lookedInterrupt is a lateInterrupt whose interrupt lands just after the first look at its Err
 // from its moment on: that look still sees nil, and every look after it sees context.Canceled. It
-// stands for an interrupt that lands while a wait is between two looks at its context.
+// stands for an interrupt that lands while a wait is between two looks at its context. Its Done
+// channel closes once its Err returned context.Canceled.
 type lookedInterrupt struct {
 	*lateInterrupt
 
-	looked bool
+	looked   bool
+	canceled bool
 }
 
 // interruptAfterLookIn returns a lookedInterrupt over the test's values whose interrupt lands just
@@ -952,7 +975,19 @@ func (l *lookedInterrupt) Err() error {
 		return nil
 	}
 
+	l.canceled = true
+
 	return context.Canceled
+}
+
+// Done returns a channel that never closes until Err returned context.Canceled, and a closed one
+// from then on.
+func (l *lookedInterrupt) Done() <-chan struct{} {
+	if !l.canceled {
+		return l.open
+	}
+
+	return closedDone()
 }
 
 func TestAwaitVerdict_WhenAnInterruptLandsAsTheHeadPollEnds_EndsPendingInterruptedAtTheHead(t *testing.T) {

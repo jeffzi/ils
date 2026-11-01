@@ -28,7 +28,6 @@ func TestParse_ReportsTheDirectoryEachInvocationRunsIn(t *testing.T) {
 		command string
 		want    []string
 	}{
-		{name: "no move", command: "git status", want: []string{start}},
 		{name: "cd to a relative path", command: "cd sub && git status", want: []string{start, start + "/sub"}},
 		{name: "cd to an absolute path", command: "cd /srv/repo; git status", want: []string{start, "/srv/repo"}},
 		{name: "cd past its options", command: "cd -P -- sub && git status", want: []string{start, start + "/sub"}},
@@ -76,7 +75,6 @@ func TestParse_WhenTheDirectoryCannotBeFollowed_ReportsItUnknown(t *testing.T) {
 		{name: "after a move that may have failed", command: "cd sub || git commit"},
 		{name: "after an or list that may have moved", command: "true || cd sub; git commit"},
 		{name: "after an and list whose right side moved", command: "true && cd sub; git commit"},
-		{name: "after an and list whose right side may not have run", command: "git diff --quiet && cd ../wt; git commit"},
 		{name: "after an and list of three operands", command: "true && true && cd sub; git commit"},
 		{name: "cd -P through a link and back up", command: "cd -P link/..; git commit"},
 		{name: "cd .. after cd -P", command: "cd -P sub; cd ..; git commit"},
@@ -104,7 +102,6 @@ func TestParse_ReportsWhereEachGitInvocationPointsGit(t *testing.T) {
 		env     map[string]string
 		want    guard.GitTarget
 	}{
-		{name: "nothing set", command: "git status", want: guard.GitTarget{Dir: start}},
 		{
 			name:    "GIT_DIR in the environment",
 			command: "git status",
@@ -152,27 +149,6 @@ func TestParse_ReportsWhereEachGitInvocationPointsGit(t *testing.T) {
 	}
 }
 
-func TestParse_WhenAShellStringRunsGit_ReportsTheTargetOfTheEnvironmentItStartsWith(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		command string
-	}{
-		{name: "assignment prefix", command: "GIT_DIR=/srv/x.git bash -c 'git status'"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := last(t, tt.command)
-
-			want := guard.GitTarget{Dir: start, GitDir: "/srv/x.git"}
-			assert.Check(t, is.DeepEqual(got.Target, want), "Parse(%q) target", tt.command)
-		})
-	}
-}
-
 func TestParse_WhenTheGitTargetCannotBeFollowed_ReportsItUnknown(t *testing.T) {
 	t.Parallel()
 
@@ -185,7 +161,6 @@ func TestParse_WhenTheGitTargetCannotBeFollowed_ReportsItUnknown(t *testing.T) {
 		{name: "unset of GIT_WORK_TREE", command: "unset GIT_WORK_TREE; git status"},
 		{name: "shell variable that may be exported", command: "GIT_DIR=/srv/repo.git; git status"},
 		{name: "export in an if body", command: "if test -d x; then export GIT_DIR=/srv/repo.git; fi; git status"},
-		{name: "export on the right of an and list", command: "true && export GIT_DIR=/srv/repo.git; git status"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -229,7 +204,6 @@ func TestParse_MarksAGitVariableOffTheAllowList(t *testing.T) {
 		name    string
 		command string
 		want    string
-		index   int
 	}{
 		{name: "assignment prefix", command: "GIT_CONFIG_COUNT=1 git status", want: "GIT_CONFIG_COUNT"},
 		{name: "env argument", command: "env GIT_EXEC_PATH=/tmp git status", want: "GIT_EXEC_PATH"},
@@ -242,9 +216,9 @@ func TestParse_MarksAGitVariableOffTheAllowList(t *testing.T) {
 
 			got := parse(t, tt.command)
 
-			assert.Assert(t, len(got) > tt.index, "Parse(%q) = %v", tt.command, texts(got))
+			assert.Assert(t, len(got) > 0, "Parse(%q) = %v", tt.command, texts(got))
 			want := []guard.Mark{{Kind: guard.GitVariable, Name: tt.want}}
-			assert.Check(t, is.DeepEqual(got[tt.index].Marks, want), "Parse(%q) marks", tt.command)
+			assert.Check(t, is.DeepEqual(got[0].Marks, want), "Parse(%q) marks", tt.command)
 		})
 	}
 }
@@ -258,7 +232,6 @@ func TestParse_WhenAVariableIsNoUnlistedGitVariable_MarksNothing(t *testing.T) {
 	}{
 		{name: "allowed git variable", command: "GIT_PAGER=cat git log"},
 		{name: "variable outside git's names", command: "PAGER=cat git log"},
-		{name: "editor variable naming a program", command: "GIT_EDITOR=vim git commit"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

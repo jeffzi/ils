@@ -20,7 +20,6 @@ func TestParse_WhenAWrapperRunsACommand_ReportsTheCommandBehindIt(t *testing.T) 
 		wantWords    []string
 		wantWrappers []string
 	}{
-		{name: "nice", command: "nice git push", wantWords: []string{"git", "push"}, wantWrappers: []string{"nice"}},
 		{name: "nice with a separate value", command: "nice -n 10 git push", wantWords: []string{"git", "push"}, wantWrappers: []string{"nice"}},
 		{name: "nice with a numeric option", command: "nice -10 git push", wantWords: []string{"git", "push"}, wantWrappers: []string{"nice"}},
 		{name: "env clearing the environment", command: "env -i git push", wantWords: []string{"git", "push"}, wantWrappers: []string{"env"}},

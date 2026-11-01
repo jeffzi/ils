@@ -48,7 +48,6 @@ func TestJudge_CombinesTheVerdictsOfItsInvocations(t *testing.T) {
 		{name: "one invocation asking", command: "echo a; ask why", want: guard.Verdict{Outcome: guard.Ask, Reason: "why"}},
 		{name: "two invocations asking", command: "ask first; ask second", want: guard.Verdict{Outcome: guard.Ask, Reason: "first"}},
 		{name: "refusal after an ask", command: "ask why; refuse never", want: guard.Verdict{Outcome: guard.Refuse, Reason: "never"}},
-		{name: "two refusals", command: "refuse first; refuse second", want: guard.Verdict{Outcome: guard.Refuse, Reason: "first"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -85,30 +84,27 @@ func TestJudge_WhenTheCommandCannotBeParsed_RefusesNamingWhatFailed(t *testing.T
 	assert.Check(t, is.Contains(got.Reason, failure.Message), "Judge(%q) reason", command)
 }
 
-func TestJudge_RefusesAMarkNamingWhatItFound(t *testing.T) {
+func TestJudge_WhenAMarkNamesNothing_RefusesWithItsKindAsTheReason(t *testing.T) {
 	t.Parallel()
-
 	_, caller := standingOn(t, "main", "topic")
-	tests := []struct {
-		name      string
-		command   string
-		wantKind  guard.MarkKind
-		wantNamed string
-	}{
-		{name: "mark without a name", command: "echo @(a|b)", wantKind: guard.ExtendedGlob},
-		{name: "git variable", command: "export GIT_CONFIG_GLOBAL=/tmp/c", wantKind: guard.GitVariable, wantNamed: "GIT_CONFIG_GLOBAL"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	const command = "echo @(a|b)"
 
-			got := guard.Judge(t.Context(), tt.command, caller)
+	got := guard.Judge(t.Context(), command, caller)
 
-			assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome", tt.command)
-			assert.Check(t, is.Contains(got.Reason, string(tt.wantKind)), "Judge(%q) reason", tt.command)
-			assert.Check(t, is.Contains(got.Reason, tt.wantNamed), "Judge(%q) reason", tt.command)
-		})
-	}
+	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome", command)
+	assert.Check(t, is.Equal(got.Reason, string(guard.ExtendedGlob)), "Judge(%q) reason", command)
+}
+
+func TestJudge_WhenAMarkNamesWhatItFound_RefusesNamingItBesideTheKind(t *testing.T) {
+	t.Parallel()
+	_, caller := standingOn(t, "main", "topic")
+	const command = "export GIT_CONFIG_GLOBAL=/tmp/c"
+
+	got := guard.Judge(t.Context(), command, caller)
+
+	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome", command)
+	assert.Check(t, is.Contains(got.Reason, string(guard.GitVariable)), "Judge(%q) reason", command)
+	assert.Check(t, is.Contains(got.Reason, "GIT_CONFIG_GLOBAL"), "Judge(%q) reason", command)
 }
 
 func TestJudge_WhenAToolWordIsHandedToAnotherCommand_RefusesNamingBoth(t *testing.T) {

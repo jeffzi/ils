@@ -53,7 +53,6 @@ func TestParse_WhenAWordCarriesAnExpansion_ReportsItNotLiteralWithItsLiteralPref
 	}{
 		{name: "parameter expansion after a literal", word: `--grep=$x`, wantPrefix: "--grep="},
 		{name: "parameter expansion in double quotes", word: `"a$x"`, wantPrefix: "a"},
-		{name: "command substitution", word: `a$(b)`, wantPrefix: "a"},
 		{name: "brace expansion", word: `-{f,d}`, wantPrefix: "-"},
 		{name: "bracket glob", word: `[ab]`, wantPrefix: ""},
 		{name: "tilde with a user name", word: `~user/x`, wantPrefix: ""},

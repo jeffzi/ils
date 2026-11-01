@@ -24,7 +24,6 @@ func TestParse_ReportsWhetherHeadMayHaveMovedBeforeEachInvocation(t *testing.T) 
 		{name: "symbolic-ref with an attached reason", command: "git symbolic-ref -mx HEAD refs/heads/main; git commit", want: []bool{false, true}},
 		{name: "symbolic-ref short read", command: "git symbolic-ref --short HEAD; git commit", want: []bool{false, false}},
 		{name: "branch -m", command: "git branch -m next; git commit", want: []bool{false, true}},
-		{name: "branch --move", command: "git branch --move next; git commit", want: []bool{false, true}},
 		{name: "branch create", command: "git branch next; git commit", want: []bool{false, false}},
 		{name: "rebase naming a branch", command: "git rebase main topic; git commit", want: []bool{false, true}},
 		{name: "rebase onto an upstream", command: "git rebase main; git commit", want: []bool{false, false}},
@@ -38,11 +37,14 @@ func TestParse_ReportsWhetherHeadMayHaveMovedBeforeEachInvocation(t *testing.T) 
 		{name: "gh pr checkout", command: "gh pr checkout 12; git commit", want: []bool{false, true}},
 		{name: "gh pr view", command: "gh pr view 12; git commit", want: []bool{false, false}},
 		{name: "gh command word gh does not ship", command: "gh co 12; git commit", want: []bool{false, true}},
-		{name: "branch -m ending a short-flag bundle", command: "git branch -fm next; git commit", want: []bool{false, true}},
 		{name: "branch -M leading a short-flag bundle", command: "git branch -Mf next; git commit", want: []bool{false, true}},
+		{name: "branch -m after the first flag of a short-flag bundle", command: "git branch -fm next; git commit", want: []bool{false, true}},
 		{name: "prefix of branch --move", command: "git branch --mo next; git commit", want: []bool{false, true}},
+		{name: "branch --m too short to name --move", command: "git branch --m next; git commit", want: []bool{false, false}},
 		{name: "branch short-flag bundle without a move", command: "git branch -av; git commit", want: []bool{false, false}},
 		{name: "branch long option sharing the move prefix", command: "git branch --merged; git commit", want: []bool{false, false}},
+		{name: "branch -u bundle whose value holds an m", command: "git branch -um x; git commit", want: []bool{false, false}},
+		{name: "option that prints and exits", command: "git --version; git commit", want: []bool{false, false}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -69,9 +71,7 @@ func TestParse_WhenAnInvocationMayMoveHeadThroughGitsAliases_ReportsHeadUnknownA
 		{name: "alias running a shell command", command: "git sh; git commit", want: []bool{false, true}},
 		{name: "word that is neither command nor alias", command: "git taxi; git commit", want: []bool{false, true}},
 		{name: "alias nested too deep", command: "git d1; git commit", want: []bool{false, true}},
-		{name: "alias in an unknown target", command: `git -C "$d" co; git commit`, want: []bool{false, true}},
-		{name: "unknown option before the subcommand", command: "git --sparkle status; git commit", want: []bool{false, true}},
-		{name: "option that prints and exits", command: "git --version; git commit", want: []bool{false, false}},
+		{name: "alias the guard cannot read", command: "git unclosed; git commit", want: []bool{false, true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

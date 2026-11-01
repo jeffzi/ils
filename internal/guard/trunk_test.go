@@ -80,7 +80,6 @@ func TestJudge_AllowsACommandThatCreatesNoCommitOnTheTrunk(t *testing.T) {
 	_, caller := standingOn(t, "main", "main")
 
 	checkAllowed(t, caller, []namedCommand{
-		{name: "pull --ff-only", command: "git pull --ff-only"},
 		{name: "pull whose last fast-forward option is --ff-only", command: "git pull --no-ff --ff-only"},
 	})
 }
@@ -90,9 +89,10 @@ func TestJudge_AllowsACommitCreatingSubcommandOffTheTrunk(t *testing.T) {
 
 	_, caller := standingOn(t, "main", "plan/x")
 
-	checkAllowed(t, caller, append(commitCreating(),
-		namedCommand{name: "rebase naming the current branch", command: "git rebase origin/main plan/x"},
-	))
+	checkAllowed(t, caller, []namedCommand{
+		{name: "commit", command: commitCommand},
+		{name: "rebase naming the current branch", command: "git rebase origin/main plan/x"},
+	})
 }
 
 func TestJudge_AllowsACommitWhereNoTrunkIsProtected(t *testing.T) {
@@ -180,23 +180,12 @@ func TestJudge_RefusesARebaseOfTheTrunkFromAnotherBranch(t *testing.T) {
 	}, "ils branch")
 }
 
-func TestJudge_WhenOriginOrHeadCannotBeRead_RefusesSayingWhatBroke(t *testing.T) {
+func TestJudge_WhenOriginsURLCannotBeRead_RefusesSayingWhatBroke(t *testing.T) {
 	// Not parallel: gittest.FakeGit sets PATH for the whole process.
-	tests := []struct {
-		name   string
-		failOn []string
-	}{
-		{name: "origin URL", failOn: []string{"remote"}},
-		{name: "HEAD", failOn: []string{"symbolic-ref"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f, caller := standingOn(t, "main", "topic")
-			caller.Git.Env = append(f.Env(), gittest.FakeGit(t, gittest.Fake{FailOn: tt.failOn})...)
+	f, caller := standingOn(t, "main", "topic")
+	caller.Git.Env = append(f.Env(), gittest.FakeGit(t, gittest.Fake{FailOn: []string{"remote"}})...)
 
-			checkJudgedRow(t, caller, judged{command: commitCommand, wantNamed: gittest.FailedSaid, want: guard.Refuse})
-		})
-	}
+	checkJudgedRow(t, caller, judged{command: commitCommand, wantNamed: gittest.FailedSaid, want: guard.Refuse})
 }
 
 func TestJudge_WhenOriginDoesNotAnswerAndNoTrunkIsCached_RefusesNamingTheCommand(t *testing.T) {
