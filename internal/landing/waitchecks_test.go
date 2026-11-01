@@ -169,6 +169,7 @@ func requiredRows() []vigilRow {
 			name:     "required name absent with a queued run, then concluded",
 			verdicts: says(absent, both),
 			want:     concluded(landing.WaitGreen, both, 2, 0), ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
+			told: []string{waitingStep(), "count 1 of 2", "count 2 of 2"},
 		},
 		{
 			name:     "every required name concluded while another check runs",

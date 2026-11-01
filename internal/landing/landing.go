@@ -161,7 +161,8 @@ type Progress interface {
 	// hold. A step that fails or is cut short says nothing.
 	Said(line result.Phrase)
 	// Counted is told, at each read of the checks, that done of the total deciding checks have
-	// concluded. It is not told while no check has reported.
+	// concluded. In a wait for a pull request, total also counts the required checks that have not
+	// reported yet. It is not told while the total is zero.
 	Counted(done, total int)
 }
 

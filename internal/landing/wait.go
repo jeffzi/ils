@@ -301,13 +301,15 @@ func (w waiter) logState(ctx context.Context, head forge.Head, window time.Durat
 }
 
 // logChecks logs a read of the checks: how many deciding checks concluded, how many still run, and
-// the verdict's state. It tells the progress hook the count.
+// the verdict's state. It tells the progress hook the count, out of a total that also holds the
+// required checks that have not reported yet, so that a wait for one of them never shows every
+// check done.
 func (w waiter) logChecks(ctx context.Context, verdict forge.Verdict) {
 	deciding, pending := len(verdict.Deciding()), len(verdict.Pending())
 
 	done := deciding - pending
 
-	w.deps.counted(done, deciding)
+	w.deps.counted(done, deciding+len(verdict.MissingRequired))
 	w.deps.logWait(ctx, slog.String("read", "checks"), slog.Int("done", done),
 		slog.Int("pending", pending), slog.String("verdict", string(verdict.State())))
 }
