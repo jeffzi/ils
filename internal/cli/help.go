@@ -163,4 +163,21 @@ ils guard --cwd . -- 'git push --force'
 ils guard --cwd . --json -- 'ils merge'`
 
 	cwdUsage = "The directory the command runs in"
+
+	hookWord  = "hook"
+	hookUse   = hookWord + " <harness>"
+	hookShort = "Judge a coding agent's shell command as its pre-tool hook"
+	hookLong  = `Read the payload a coding agent's harness hands its pre-tool hook on
+stdin, judge the shell command in it as ils guard does, and answer in
+the harness's own terms. The one harness is claude, Claude Code's
+PreToolUse hook.
+
+It exits 0 with nothing printed when the guard allows the command, or
+when the tool is not Bash; 2 with the reason on stderr when it refuses
+it; and 0 with the ask as JSON on stdout when the guard asks you first.
+A payload it cannot read, and any error, is a refusal: it never exits 1.
+The guard runs on macOS and Linux.`
+
+	hookExamples = `# Judge a payload as Claude Code's PreToolUse hook
+ils hook claude < payload.json`
 )

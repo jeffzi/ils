@@ -3,10 +3,13 @@
 package cli_test
 
 import (
+	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"gotest.tools/v3/assert"
@@ -414,5 +417,179 @@ func TestGuard_ReadsEveryRootSwitchOfIlsAsTakingNoValue(t *testing.T) {
 		got := guard.Judge(t.Context(), command, caller)
 
 		assert.Check(t, is.Equal(got.Outcome, guard.Ask), "Judge(%q) outcome, reason %q", command, got.Reason)
+	}
+}
+
+// toolUse is the PreToolUse payload Claude Code sends, cut to the fields ils hook reads.
+type toolUse struct {
+	Input    map[string]string `json:"tool_input,omitempty"`
+	ToolName string            `json:"tool_name,omitempty"`
+	Cwd      string            `json:"cwd,omitempty"`
+}
+
+func bash(command, cwd string) toolUse {
+	return toolUse{ToolName: "Bash", Input: map[string]string{"command": command}, Cwd: cwd}
+}
+
+// encoded returns use as the JSON Claude Code writes on the hook's stdin.
+func encoded(t *testing.T, use toolUse) string {
+	t.Helper()
+
+	payload, err := json.Marshal(use)
+	assert.NilError(t, err)
+
+	return string(payload)
+}
+
+func hooking(t *testing.T, env []string, stdin io.Reader) cli.App {
+	t.Helper()
+
+	app := parsing(t, env)
+	app.Stdin = stdin
+
+	return app
+}
+
+// hookAsk is what ils hook claude prints on stdout when it asks.
+type hookAsk struct {
+	HookSpecificOutput struct {
+		HookEventName            string `json:"hookEventName"`
+		PermissionDecision       string `json:"permissionDecision"`
+		PermissionDecisionReason string `json:"permissionDecisionReason"`
+	} `json:"hookSpecificOutput"`
+}
+
+func TestApp_Run_WhenHookClaudeIsGivenACommandTheGuardAllows_ExitsZeroPrintingNothing(t *testing.T) {
+	t.Parallel()
+
+	dir, env := t.TempDir(), gittest.Env(t)
+	app := hooking(t, env, strings.NewReader(encoded(t, bash("echo hi", dir))))
+
+	got := launch(t, app, "hook", "claude")
+
+	assert.Check(t, is.Equal(got.code, exitDone))
+	assert.Check(t, is.Equal(got.stdout, ""))
+	assert.Check(t, is.Equal(got.stderr, ""))
+}
+
+func TestApp_Run_WhenHookClaudeIsGivenACommandTheGuardRefuses_ExitsTwoWithTheReasonOnStderr(t *testing.T) {
+	t.Parallel()
+
+	dir, env := t.TempDir(), gittest.Env(t)
+	command := "ils merge | cat"
+	verdict := guard.Judge(t.Context(), command, guard.Caller{Dir: dir, Git: git.Runner{Env: env}})
+	assert.Assert(t, verdict.Outcome == guard.Refuse && verdict.Reason != "", "Judge(%q) = %+v, want a refusal with a reason", command, verdict)
+	app := hooking(t, env, strings.NewReader(encoded(t, bash(command, dir))))
+
+	got := launch(t, app, "hook", "claude")
+
+	assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
+	assert.Check(t, is.Contains(got.stderr, verdict.Reason))
+}
+
+func TestApp_Run_WhenHookClaudeIsGivenACommandTheGuardAsksAbout_ExitsZeroPrintingTheAskAsJSON(t *testing.T) {
+	t.Parallel()
+
+	dir, env := t.TempDir(), gittest.Env(t)
+	command := "ils merge"
+	verdict := guard.Judge(t.Context(), command, guard.Caller{Dir: dir, Git: git.Runner{Env: env}})
+	assert.Assert(t, verdict.Outcome == guard.Ask && verdict.Reason != "", "Judge(%q) = %+v, want an ask with a reason", command, verdict)
+	var want hookAsk
+	want.HookSpecificOutput.HookEventName = "PreToolUse"
+	want.HookSpecificOutput.PermissionDecision = "ask"
+	want.HookSpecificOutput.PermissionDecisionReason = verdict.Reason
+	app := hooking(t, env, strings.NewReader(encoded(t, bash(command, dir))))
+
+	got := launch(t, app, "hook", "claude")
+
+	assert.Check(t, is.Equal(got.code, exitDone))
+	assert.Check(t, is.Equal(got.stderr, ""))
+	var printed hookAsk
+	assert.Assert(t, json.Unmarshal([]byte(got.stdout), &printed), "stdout = %q", got.stdout)
+	assert.Check(t, is.DeepEqual(printed, want))
+}
+
+func TestApp_Run_WhenHookClaudeIsGivenAToolOtherThanBash_ExitsZeroPrintingNothing(t *testing.T) {
+	t.Parallel()
+
+	dir, env := t.TempDir(), gittest.Env(t)
+	use := toolUse{ToolName: "Edit", Input: map[string]string{"file_path": filepath.Join(dir, "notes.md")}, Cwd: dir}
+	app := hooking(t, env, strings.NewReader(encoded(t, use)))
+
+	got := launch(t, app, "hook", "claude")
+
+	assert.Check(t, is.Equal(got.code, exitDone))
+	assert.Check(t, is.Equal(got.stdout, ""))
+	assert.Check(t, is.Equal(got.stderr, ""))
+}
+
+func TestApp_Run_WhenHookClaudeCannotReadThePayload_ExitsTwoSayingWhatBroke(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	gone := filepath.Join(dir, "gone")
+	tests := []struct {
+		stdin io.Reader
+		name  string
+		want  string
+	}{
+		{name: "payload that is not JSON", stdin: strings.NewReader(`{"tool_name": "Bash"`)},
+		{name: "no tool name", stdin: strings.NewReader(encoded(t, toolUse{Input: map[string]string{"command": "echo hi"}, Cwd: dir})), want: "tool_name"},
+		{name: "stdin that cannot be read", stdin: iotest.ErrReader(errReaderGone), want: errReaderGone.Error()},
+		{name: "no command", stdin: strings.NewReader(encoded(t, toolUse{ToolName: "Bash", Input: map[string]string{}, Cwd: dir})), want: "command"},
+		{name: "no directory", stdin: strings.NewReader(encoded(t, toolUse{ToolName: "Bash", Input: map[string]string{"command": "echo hi"}})), want: "cwd"},
+		{name: "directory that does not exist", stdin: strings.NewReader(encoded(t, bash("echo hi", gone))), want: gone},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := launch(t, hooking(t, gittest.Env(t), tt.stdin), "hook", "claude")
+
+			assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
+			assert.Check(t, got.stderr != "", "stderr is empty")
+			assert.Check(t, is.Contains(got.stderr, tt.want))
+		})
+	}
+}
+
+func TestApp_Run_WhenHookClaudeCannotWriteTheAsk_ExitsTwoWithTheErrorOnStderr(t *testing.T) {
+	t.Parallel()
+
+	dir, env := t.TempDir(), gittest.Env(t)
+	app := hooking(t, env, strings.NewReader(encoded(t, bash("ils merge", dir))))
+	app.Stdout = shut{err: errReaderGone}
+
+	got := launch(t, app, "hook", "claude")
+
+	assert.Check(t, is.Equal(got.code, exitRefused))
+	assert.Check(t, is.Contains(got.stderr, errReaderGone.Error()))
+}
+
+func TestApp_Run_WhenHookIsGivenWordsItDoesNotTake_ExitsTwoNamingThemOnStderr(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		want string
+		args []string
+	}{
+		{name: "no harness", args: []string{"hook"}, want: "claude"},
+		{name: "harness it does not know", args: []string{"hook", "codex"}, want: "claude"},
+		{name: "word after the harness", args: []string{"hook", "claude", "extra"}, want: "extra"},
+		{name: "flag it does not know", args: []string{"hook", "claude", "--bogus"}, want: "--bogus"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			app := hooking(t, gittest.Env(t), strings.NewReader(encoded(t, bash("echo hi", dir))))
+
+			got := launch(t, app, tt.args...)
+
+			assert.Check(t, is.Equal(got.code, exitRefused), "ils %s: stdout = %q", strings.Join(tt.args, " "), got.stdout)
+			assert.Check(t, is.Contains(got.stderr, tt.want))
+		})
 	}
 }

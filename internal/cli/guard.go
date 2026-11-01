@@ -4,8 +4,11 @@ package cli
 
 import (
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -19,6 +22,9 @@ import (
 
 const (
 	flagCwd = "--cwd"
+
+	// harnessClaude is the harness word of Claude Code, the one harness `ils hook` knows.
+	harnessClaude = "claude"
 
 	// notLiteral stands, in the text of a parse, for a word whose text depends on what the shell
 	// expands.
@@ -185,7 +191,7 @@ func (p *parse) judgeCommand(ctx context.Context, cwd, command string) result.Re
 
 	dir, err := filepath.Abs(cwd)
 	if err != nil {
-		return judged(req, nil, guard.Verdict{Outcome: guard.Refuse, Reason: fmt.Sprintf("the guard could not resolve the directory %s: %v", cwd, err)})
+		return judged(req, nil, refusal("the guard could not resolve the directory %s: %v", cwd, err))
 	}
 
 	verdict, invocations := guard.Assess(ctx, command, p.caller(dir))
@@ -337,4 +343,141 @@ func orNone(text string) string {
 	}
 
 	return text
+}
+
+// hookCommand returns `ils hook <harness>`, which reads the payload of the harness's pre-tool hook
+// on Stdin and answers it in the harness's terms. It never exits 1, since a harness may read 1 as
+// letting the command run: words it does not take, and every error, end the run with exit 2 and
+// the reason on Stderr.
+func (p *parse) hookCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:     hookUse,
+		Short:   hookShort,
+		Long:    hookLong,
+		Example: hookExamples,
+		// Cobra would refuse a flag through the result, which prints on Stdout; the words are read
+		// here instead, so that every refusal lands on Stderr.
+		DisableFlagParsing: true,
+		RunE: func(c *cobra.Command, args []string) error {
+			if len(args) == 1 && (args[0] == flagHelp || args[0] == flagHelpShort) {
+				return pflag.ErrHelp
+			}
+
+			refused := result.Refused.ExitCode()
+
+			switch {
+			case len(args) == 0:
+				p.quit(refused, "hook takes the harness it runs under, one of: "+harnessClaude)
+			case args[0] != harnessClaude:
+				p.quit(refused, fmt.Sprintf("hook takes the harness it runs under, one of: %s, and %s was given", harnessClaude, args[0]))
+			case len(args) > 1:
+				p.quit(refused, fmt.Sprintf("hook takes one harness and no other word, and %s was given", args[1]))
+			default:
+				p.hookClaude(c.Context())
+			}
+
+			return nil
+		},
+	}
+}
+
+// claudeToolUse is the part of the payload of Claude Code's PreToolUse hook that the guard reads.
+type claudeToolUse struct {
+	ToolInput struct {
+		Command string `json:"command"`
+	} `json:"tool_input"`
+	ToolName string `json:"tool_name"`
+	Cwd      string `json:"cwd"`
+}
+
+// claudeAsk is the answer on stdout that has Claude Code ask the user before the tool runs.
+type claudeAsk struct {
+	HookSpecificOutput claudeDecision `json:"hookSpecificOutput"`
+}
+
+type claudeDecision struct {
+	HookEventName            string `json:"hookEventName"`
+	PermissionDecision       string `json:"permissionDecision"`
+	PermissionDecisionReason string `json:"permissionDecisionReason"`
+}
+
+// hookClaude answers the payload of Claude Code's PreToolUse hook on Stdin with the verdict of the
+// guard: allow is exit 0 with nothing printed, since Claude Code shows the stderr of exit 0 to no
+// one; refuse is exit 2 with the reason on Stderr, which Claude Code hands the model; ask is exit 0
+// with the ask as JSON on Stdout.
+func (p *parse) hookClaude(ctx context.Context) {
+	done, refused := result.Done.ExitCode(), result.Refused.ExitCode()
+	verdict := p.claudeVerdict(ctx)
+
+	switch verdict.Outcome {
+	case guard.Allow:
+		p.quit(done, "")
+	case guard.Ask:
+		out, err := json.Marshal(claudeAsk{HookSpecificOutput: claudeDecision{
+			HookEventName:            "PreToolUse",
+			PermissionDecision:       "ask",
+			PermissionDecisionReason: verdict.Reason,
+		}})
+		if err == nil {
+			_, err = p.app.Stdout.Write(append(out, '\n'))
+		}
+
+		if err != nil {
+			p.quit(refused, fmt.Sprintf("the hook could not write its ask: %v", err))
+
+			return
+		}
+
+		p.quit(done, "")
+	case guard.Refuse:
+		fallthrough
+	default:
+		// A verdict outside the table is a defect, and a defect must not let the command run.
+		p.quit(refused, verdict.Reason)
+	}
+}
+
+// refusal returns the Refuse verdict of a failure that kept the guard from judging, which must not
+// let the command run.
+func refusal(format string, args ...any) guard.Verdict {
+	return guard.Verdict{Outcome: guard.Refuse, Reason: fmt.Sprintf(format, args...)}
+}
+
+// claudeVerdict returns the verdict of the guard on the payload of Claude Code's PreToolUse hook on
+// Stdin, judged under the time limit of a command from launch: the command of a Bash call judged
+// from its cwd, and allow for any other tool. A payload that cannot be read, or that names no tool,
+// no command, or no directory that exists, is a refusal that says what broke.
+func (p *parse) claudeVerdict(ctx context.Context) guard.Verdict {
+	var payload []byte
+	if p.app.Stdin != nil {
+		var err error
+		if payload, err = io.ReadAll(p.app.Stdin); err != nil {
+			return refusal("the hook could not read its payload on stdin: %v", err)
+		}
+	}
+
+	var use claudeToolUse
+	if err := json.Unmarshal(payload, &use); err != nil {
+		return refusal("the hook's payload is not the JSON of a PreToolUse call: %v", err)
+	}
+
+	switch {
+	case use.ToolName == "":
+		return refusal("the hook's payload holds no tool_name")
+	case use.ToolName != "Bash":
+		return guard.Verdict{Outcome: guard.Allow}
+	case use.ToolInput.Command == "":
+		return refusal("the hook's payload holds no tool_input.command")
+	case use.Cwd == "":
+		return refusal("the hook's payload holds no cwd")
+	}
+
+	if _, err := os.Stat(use.Cwd); err != nil {
+		return refusal("the guard cannot read the directory the command runs in: %v", err)
+	}
+
+	ctx, cancel := context.WithDeadline(ctx, p.app.Launch.Add(landing.TimeLimit))
+	defer cancel()
+
+	return guard.Judge(ctx, use.ToolInput.Command, p.caller(use.Cwd))
 }

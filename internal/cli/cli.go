@@ -32,6 +32,8 @@ type Command func(ctx context.Context, deps landing.Deps, req landing.Request) r
 // App is one launch of ils: where it prints, when it was launched, its version, and the git it
 // runs.
 type App struct {
+	// Stdin is what `ils hook` reads the payload of its harness from; nil reads nothing.
+	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
 	// Environ is the process environment, read for the color profile of each stream: NO_COLOR,
@@ -131,6 +133,8 @@ func (a App) Run(ctx context.Context, args []string) int {
 		return a.show(refusal.result, "", p.encoded, p.outProfile)
 	case err != nil:
 		return a.fail(err)
+	case p.exit != nil:
+		return *p.exit
 	case p.result == nil:
 		return result.Done.ExitCode()
 	default:
@@ -291,7 +295,10 @@ func turnedOn(args []string, flag string) bool {
 // leave the result of the command that ran here.
 type parse struct {
 	// result is the result of the command that ran; nil when none did.
-	result  *result.Result
+	result *result.Result
+	// exit is the exit code of a command that printed what it had to say itself, as `ils hook`
+	// does for its harness; nil when the run ends with result.
+	exit    *int
 	signals *endSignals
 	// gitDir is the resolved git dir when the command ran in a repository.
 	gitDir string
@@ -450,6 +457,7 @@ func (p *parse) root() *cobra.Command {
 		p.release(),
 		p.parseCommand(),
 		p.guardCommand(),
+		p.hookCommand(),
 	)
 
 	return root
@@ -865,6 +873,17 @@ func (a App) print(text string, code int) int {
 	return code
 }
 
+// quit ends the run with code, once text, when it is not empty, is a line on Stderr: the command
+// says what it has to say itself, with no result.
+func (p *parse) quit(code int, text string) {
+	if text != "" {
+		// Nothing is left to report a failed write to Stderr on.
+		_, _ = fmt.Fprintf(p.app.Stderr, "ils: %s\n", text)
+	}
+
+	p.exit = &code
+}
+
 func (a App) fail(err error) int {
 	// Nothing is left to report a failed write to Stderr on.
 	_, _ = fmt.Fprintf(a.Stderr, "ils: %v\n", err)
@@ -874,9 +893,11 @@ func (a App) fail(err error) int {
 }
 
 const (
-	flagJSON    = "--json"
-	flagHelp    = "--help"
-	flagVersion = "--version"
+	flagJSON = "--json"
+	flagHelp = "--help"
+	// flagHelpShort is the short form Cobra gives the help flag.
+	flagHelpShort = "-h"
+	flagVersion   = "--version"
 
 	flagDebug      = "--debug"
 	flagDebugShort = "-d"

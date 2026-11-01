@@ -28,6 +28,23 @@ func (p *parse) guardCommand() *cobra.Command {
 	})
 }
 
+// hookCommand returns `ils hook`, which refuses every run with exit 2 and the reason on Stderr,
+// where a harness reads a block: the guard runs on macOS and Linux.
+func (p *parse) hookCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:                hookUse,
+		Short:              hookShort,
+		Long:               hookLong,
+		Example:            hookExamples,
+		DisableFlagParsing: true,
+		RunE: func(*cobra.Command, []string) error {
+			p.quit(result.Refused.ExitCode(), "the guard runs on macOS and Linux")
+
+			return nil
+		},
+	}
+}
+
 // unsupportedCommand completes c as a command that reads no flag and refuses every run.
 func (p *parse) unsupportedCommand(c *cobra.Command) *cobra.Command {
 	c.DisableFlagParsing = true

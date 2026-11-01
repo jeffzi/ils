@@ -26,11 +26,12 @@ type terminal struct {
 	Foreground func(fd uintptr) bool
 }
 
-// launched returns the launch of ils that prints on stdout and stderr, launched now under the
-// process's environment, with tty reading their terminals: whether each is one, and the width of
-// stderr's and whether ils is its foreground job.
+// launched returns the launch of ils that reads the process's stdin and prints on stdout and
+// stderr, launched now under the process's environment, with tty reading their terminals: whether
+// each is one, and the width of stderr's and whether ils is its foreground job.
 func launched(stdout, stderr *os.File, tty terminal) cli.App {
 	return cli.App{
+		Stdin:          os.Stdin,
 		Stdout:         stdout,
 		Stderr:         stderr,
 		Environ:        os.Environ(),
