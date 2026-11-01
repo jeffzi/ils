@@ -7,6 +7,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Add `ils guard`, which judges a shell command an agent is about to run against the git, `gh`,
+  and `ils` rules and answers allow, refuse, or ask.
+- Add `ils parse`, which prints how the guard reads a shell command, for hooks to filter.
+- Add `ils hook claude`, which gives Claude Code's pre-tool hook the guard's verdict.
+- Add the `hook.sh` shim to the `ils` agent skill, which blocks every command when `ils` is
+  missing or cannot answer.
+
 ## [0.5.0] - 2026-10-31
 
 ### Added
