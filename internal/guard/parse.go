@@ -65,10 +65,16 @@ type Invocation struct {
 	Dir string
 	// env is every change to the environment the command runs with, in the order bash makes them.
 	env []envChange
+	// enclosing are the redirects in effect on the shell's descriptors where the command runs:
+	// those of each compound command around it, and those of an earlier `exec` with no command.
+	enclosing []Redirect
 	// Target is where a git invocation points git; zero for any other tool.
 	Target GitTarget
 	// Git is how git reads the words of a git invocation; zero for any other tool.
 	Git GitCall
+	// depth is how many levels of nested strings hold the invocation; 0 for one the command holds
+	// itself.
+	depth int
 	// Bare reports whether the command word is written as a plain unquoted name, with no path, no
 	// quoting or escape, and no leading `=`.
 	Bare bool
@@ -107,9 +113,10 @@ const (
 	ExtendedGlob MarkKind = "extended glob"
 	// DynamicCommand is a command word that is not a literal, so the program it runs is unknown.
 	DynamicCommand MarkKind = "command word that is not a literal"
-	// ToolArgument is a git, gh, or ils word among the arguments of a command that may run it.
-	ToolArgument MarkKind = "git, gh, or ils word handed to another command"
-	// DynamicScript is a string a shell or `eval` runs that is not a literal.
+	// ToolArgument is a git, gh, ils, or shell word among the arguments of a command that may run
+	// it.
+	ToolArgument MarkKind = "git, gh, ils, or shell word handed to another command"
+	// DynamicScript is a string a shell, `eval`, or git runs that is not a literal.
 	DynamicScript MarkKind = "shell string that is not a literal"
 	// DeepScript is a shell string nested past the depth Parse follows.
 	DeepScript MarkKind = "shell string nested too deep"
@@ -145,39 +152,69 @@ func (e *ParseError) Error() string {
 }
 
 // Stdout returns the file the invocation's stdout is redirected to, and false when its redirects
-// leave stdout on a descriptor rather than a file. The last redirect of stdout decides, as in the
-// shell.
+// leave stdout on a descriptor rather than a file. The redirects in effect where it runs come
+// before its own: those of each group or subshell around it, and those of an earlier `exec` with
+// no command. Each redirect applies in order, as in the shell, so `2> f >&2` sends stdout to f,
+// while `>&2 2> f` leaves it where stderr was.
 func (inv Invocation) Stdout() (Word, bool) {
-	var target Word
-	toFile := false
-	for _, r := range inv.Redirects {
-		ontoStdout := r.Fd == "" || r.Fd == "1"
-		switch r.Op {
-		case ">", ">>", ">|", ">>|":
-			if ontoStdout {
-				target, toFile = r.Target, true
-			}
-		case "&>", "&>>", "&>|", "&>>|":
-			target, toFile = r.Target, true
-		case "<>":
-			// `<>` opens its file for reading and writing on fd 0 unless a descriptor is written.
-			if r.Fd == "1" {
-				target, toFile = r.Target, true
-			}
-		case ">&":
-			// `>&word` duplicates a descriptor when word is a number or `-`, and otherwise sends
-			// stdout and stderr to the file word names.
-			if ontoStdout {
-				target, toFile = r.Target, !isDescriptor(r.Target)
-			}
+	files := map[string]Word{}
+	for _, r := range slices.Concat(inv.enclosing, inv.Redirects) {
+		applyRedirect(files, r)
+	}
+
+	target, toFile := files["1"]
+
+	return target, toFile
+}
+
+// applyRedirect updates files, the file each descriptor is open on, with the redirect r. A
+// descriptor absent from files is on no file.
+func applyRedirect(files map[string]Word, r Redirect) {
+	fd := func(fallback string) string {
+		if r.Fd == "" {
+			return fallback
+		}
+
+		return r.Fd
+	}
+	open := func(fd string, target Word, isFile bool) {
+		if isFile {
+			files[fd] = target
+		} else {
+			delete(files, fd)
 		}
 	}
 
-	if !toFile {
-		return Word{}, false
-	}
+	switch r.Op {
+	case ">", ">>", ">|", ">>|":
+		open(fd("1"), r.Target, true)
+	case "&>", "&>>", "&>|", "&>>|":
+		open("1", r.Target, true)
+		open("2", r.Target, true)
+	case "<>":
+		open(fd("0"), r.Target, true)
+	case "<":
+		// A descriptor opened for reading only cannot write over the file.
+		open(fd("0"), r.Target, false)
+	case ">&", "<&":
+		into := fd("1")
+		if r.Op == "<&" {
+			into = fd("0")
+		}
 
-	return target, true
+		if !isDescriptor(r.Target) {
+			// `>&word` with a word that is no descriptor sends stdout and stderr to that file.
+			open(into, r.Target, true)
+			if r.Fd == "" {
+				open("2", r.Target, true)
+			}
+
+			return
+		}
+
+		source, isFile := files[r.Target.Text]
+		open(into, source, isFile)
+	}
 }
 
 func isDescriptor(w Word) bool {
@@ -211,7 +248,7 @@ func Parse(ctx context.Context, command string, caller Caller) ([]Invocation, er
 		return nil, w.err
 	}
 
-	if err := resolveGit(ctx, caller.Git, w.walked); err != nil {
+	if err := w.resolveGit(ctx); err != nil {
 		return nil, err
 	}
 
@@ -282,8 +319,11 @@ func (w *walker) simple(stmt *syntax.Stmt, sc *scope) bool {
 	case *syntax.CallExpr:
 		w.add(stmt, cmd, sc)
 	case *syntax.DeclClause:
-		w.keep(w.placed(declarationOf(stmt, cmd, w.caller.Home), sc))
+		inv := w.placed(declarationOf(stmt, cmd, w.caller.Home), sc)
+		scripts := w.variableScripts(&inv, declared(cmd, w.caller.Home))
+		w.keep(inv)
 		sc.declare(cmd, w.caller.Home)
+		w.variableCommands(scripts, laterScope())
 	case *syntax.LetClause:
 		// Parse does not read an arithmetic expression back into text, so each one is a word that is
 		// not literal.
@@ -363,12 +403,13 @@ func (w *walker) add(stmt *syntax.Stmt, call *syntax.CallExpr, sc *scope) {
 	}
 
 	inv = w.placed(inv, sc)
+	inv.depth = w.depth
 	script, runs, mark := scriptOf(stmt, inv.Words)
 	if runs && w.depth == maxDepth {
 		runs, mark = false, DeepScript
 	}
 
-	inv.Marks = marksOf(call, stmt, inv)
+	inv.Marks = marksOf(call, stmt, inv, w.caller.Home)
 	if mark != "" {
 		inv.Marks = append(inv.Marks, Mark{Kind: mark})
 	}
@@ -379,8 +420,17 @@ func (w *walker) add(stmt *syntax.Stmt, call *syntax.CallExpr, sc *scope) {
 	}
 
 	inv.Marks = append(inv.Marks, gitVariableMarks(names)...)
+	scripts := w.variableScripts(&inv, inv.Assignments)
 	w.keep(inv)
-	if runs {
+	if len(inv.Words) == 0 {
+		// A bare assignment reaches the git of a later command once the variable is exported, as it
+		// may already be.
+		w.variableCommands(scripts, laterScope())
+	} else {
+		w.variableCommands(scripts, sc.runScope(inv))
+	}
+
+	if runs && w.err == nil {
 		w.script(script, inv, sc)
 	}
 
@@ -458,191 +508,6 @@ func assignmentOf(a *syntax.Assign, home string) Assignment {
 	}
 }
 
-// seeThrough returns the index in words of the command that the wrappers opening words run, and
-// what those wrappers set on its invocation: their names, the `VAR=…` arguments of an `env` among
-// them, and the environment its options clear or remove. A wrapper with nothing after it is the
-// command itself.
-func seeThrough(args []*syntax.Word, words []Word, home string) (int, Invocation) {
-	start := 0
-	var inv Invocation
-	for start < len(words) && words[start].Literal && !isLookup(words[start:]) {
-		name := words[start].Text
-		options, ok := wrapperOptionsOf(name)
-		if !ok {
-			break
-		}
-
-		inv.Wrappers = append(inv.Wrappers, name)
-		n, given := skipOptions(words[start+1:], options)
-		start += 1 + n
-		if name == "env" {
-			start += envArguments(&inv, given, args[start:], home)
-		}
-	}
-
-	if start == len(words) {
-		return 0, Invocation{}
-	}
-
-	return start, inv
-}
-
-// envArguments records on inv what an `env` wrapper does to the environment: the options given to
-// it, then its `VAR=…` arguments at the start of args. It returns how many of args those are.
-func envArguments(inv *Invocation, given []option, args []*syntax.Word, home string) int {
-	for _, option := range given {
-		switch option.letter {
-		case 'i':
-			inv.EnvCleared = true
-			inv.env = append(inv.env, envChange{clear: true})
-		case 'u':
-			inv.EnvUnset = append(inv.EnvUnset, option.value)
-			inv.env = append(inv.env, envChange{unset: option.value})
-		}
-	}
-
-	for i, arg := range args {
-		a, ok := envAssignment(arg, home)
-		if !ok {
-			return i
-		}
-
-		inv.Assignments = append(inv.Assignments, a)
-		inv.env = append(inv.env, envChange{assignment: a})
-	}
-
-	return len(args)
-}
-
-// wrapperOptions are the options a wrapper takes before the command it runs.
-type wrapperOptions struct {
-	// flags are the option letters that take no value.
-	flags string
-	// valued are the option letters that take a value, attached or as the next word.
-	valued string
-	// numeric reports whether `-N` is an option, as nice's adjustment is.
-	numeric bool
-	// none reports whether the wrapper takes no option at all, not even `--`.
-	none bool
-}
-
-// option is one option letter given to a wrapper, with its value when it takes one.
-type option struct {
-	value  string
-	letter byte
-}
-
-// wrappers is the table of wrapper words: command words that run the command after them, each
-// with the options it takes before that command. An option a wrapper does not take is left out, so
-// that it ends the options and stands as the command word.
-func wrappers() map[string]wrapperOptions {
-	return map[string]wrapperOptions{
-		"env":       {flags: "i", valued: "u"},
-		"command":   {flags: "p"},
-		"exec":      {flags: "cl", valued: "a"},
-		"nice":      {valued: "n", numeric: true},
-		"time":      {flags: "p"},
-		"builtin":   {},
-		"nohup":     {},
-		"noglob":    {none: true},
-		"nocorrect": {none: true},
-	}
-}
-
-// wrapperOptionsOf returns the options of the wrapper name, and false when name is no wrapper.
-func wrapperOptionsOf(name string) (wrapperOptions, bool) {
-	options, ok := wrappers()[name]
-
-	return options, ok
-}
-
-// skipOptions returns how many of words, the words after a wrapper, are options it takes, and the
-// letters given among them. It stops at the first word that is not literal, is no option, or holds
-// a letter the wrapper does not take, or whose value is missing or not literal.
-func skipOptions(words []Word, options wrapperOptions) (int, []option) {
-	var given []option
-	for i := 0; i < len(words); i++ {
-		text := words[i].Text
-		switch {
-		case !words[i].Literal || options.none || len(text) < 2 || text[0] != '-':
-			return i, given
-		case text == "--":
-			return i + 1, given
-		case options.numeric && strings.Trim(text[1:], "0123456789") == "":
-			continue
-		}
-
-		letters, n, ok := optionLetters(text[1:], words[i+1:], options)
-		if !ok {
-			return i, given
-		}
-
-		given = append(given, letters...)
-		i += n
-	}
-
-	return len(words), given
-}
-
-// optionLetters reads the option letters of one word, after its `-`, and returns them with how
-// many of the next words their value took. It reports false when a letter is one the wrapper does
-// not take, or when its value is missing or not literal.
-func optionLetters(letters string, next []Word, options wrapperOptions) ([]option, int, bool) {
-	var given []option
-	for j := range len(letters) {
-		letter := letters[j]
-		switch {
-		case strings.IndexByte(options.flags, letter) >= 0:
-			given = append(given, option{letter: letter})
-		case strings.IndexByte(options.valued, letter) < 0:
-			return nil, 0, false
-		case j+1 < len(letters):
-			return append(given, option{letter: letter, value: letters[j+1:]}), 0, true
-		case len(next) > 0 && next[0].Literal:
-			return append(given, option{letter: letter, value: next[0].Text}), 1, true
-		default:
-			return nil, 0, false
-		}
-	}
-
-	return given, 0, true
-}
-
-// envAssignment reads raw as an `env` argument of the form `NAME=value`.
-func envAssignment(raw *syntax.Word, home string) (Assignment, bool) {
-	lit, ok := raw.Parts[0].(*syntax.Lit)
-	if !ok {
-		return Assignment{}, false
-	}
-
-	name, rest, found := strings.Cut(lit.Value, "=")
-	if !found || !isName(name) {
-		return Assignment{}, false
-	}
-
-	parts := slices.Clone(raw.Parts[1:])
-	if rest != "" {
-		parts = slices.Insert(parts, 0, syntax.WordPart(&syntax.Lit{Value: rest}))
-	}
-
-	if len(parts) == 0 {
-		return Assignment{Name: name, Value: Word{Literal: true}}, true
-	}
-
-	return Assignment{Name: name, Value: readWord(&syntax.Word{Parts: parts}, home)}, true
-}
-
-func isName(s string) bool {
-	for i, c := range s {
-		letter := c == '_' || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z')
-		if !letter && (i == 0 || c < '0' || c > '9') {
-			return false
-		}
-	}
-
-	return s != ""
-}
-
 // isLookup reports whether words open with `command -v` or `command -V`, which look a name up
 // instead of running it.
 func isLookup(words []Word) bool {
@@ -679,8 +544,8 @@ func isDataConsumer(words []Word) bool {
 }
 
 // marksOf returns what Parse cannot read in the invocation inv of call, apart from the string it
-// runs.
-func marksOf(call *syntax.CallExpr, stmt *syntax.Stmt, inv Invocation) []Mark {
+// runs. A `~` in a word expands to home.
+func marksOf(call *syntax.CallExpr, stmt *syntax.Stmt, inv Invocation, home string) []Mark {
 	words := slices.Clone(call.Args)
 	for _, a := range call.Assigns {
 		words = append(words, a.Value)
@@ -704,11 +569,136 @@ func marksOf(call *syntax.CallExpr, stmt *syntax.Stmt, inv Invocation) []Mark {
 		if len(inv.Words) > 1 {
 			marks = append(marks, Mark{Kind: HiddenScript})
 		}
-	case slices.ContainsFunc(inv.Words[1:], func(w Word) bool { return isToolWord(w, inv.Dir) }):
-		marks = append(marks, Mark{Kind: ToolArgument})
+	default:
+		args := call.Args[len(call.Args)-len(inv.Words):]
+		if name, ok := handedTool(args[1:], inv.Words[1:], inv.Dir, home); ok {
+			marks = append(marks, Mark{Kind: ToolArgument, Name: name})
+		}
 	}
 
 	return marks
+}
+
+// handedTool returns the tool that a command the guard does not know may run from its arguments,
+// raw as the parser read them and words after quote removal, and reports whether there is one.
+// An argument hands over a tool when it is a tool word itself, or when it reads as a shell script
+// one of whose commands is a tool word or hands one over in turn: `su -c 'cd /repo && git push'`,
+// `ssh host 'sudo git push'`. An argument that does not parse is data. An ils word followed by an
+// ils command that changes nothing hands over nothing. dir is where a relative path is read
+// against, and a `~` expands to home.
+func handedTool(args []*syntax.Word, words []Word, dir, home string) (string, bool) {
+	for i, w := range words {
+		if isToolWord(w, dir) {
+			if toolOf(w) == ILS && changesNothing(words[i+1:]) {
+				continue
+			}
+
+			return w.Text, true
+		}
+
+		if name, ok := scriptTool(scriptText(args[i], home), home); ok {
+			return name, true
+		}
+	}
+
+	return "", false
+}
+
+// expansionWord stands for an expansion in the text of an argument read as a script: one plain word
+// that names no tool.
+const expansionWord = "_"
+
+// scriptText returns the text a command receives as the argument raw, with each expansion the
+// shell makes in it standing as expansionWord. A command that runs a string (`su -c "git push $b"`)
+// runs it with the expansion already made, so what it holds stays a word of the script.
+func scriptText(raw *syntax.Word, home string) string {
+	parts := make([]syntax.WordPart, 0, len(raw.Parts))
+	for _, part := range raw.Parts {
+		switch p := part.(type) {
+		case *syntax.Lit, *syntax.SglQuoted:
+			parts = append(parts, p)
+		case *syntax.DblQuoted:
+			inner := make([]syntax.WordPart, 0, len(p.Parts))
+			for _, q := range p.Parts {
+				if _, ok := q.(*syntax.Lit); !ok {
+					q = &syntax.Lit{Value: expansionWord}
+				}
+
+				inner = append(inner, q)
+			}
+
+			parts = append(parts, &syntax.DblQuoted{Parts: inner, Dollar: p.Dollar})
+		default:
+			parts = append(parts, &syntax.Lit{Value: expansionWord})
+		}
+	}
+
+	return readWord(&syntax.Word{Parts: parts}, home).Text
+}
+
+// scriptTool reads text as a shell script and returns the tool one of its commands is, or hands
+// over as handedTool reads it, and reports whether there is one. Text with no blank and no shell
+// operator is one word, which handedTool has already judged, and text that does not parse is no
+// script. A command word that is not a literal is passed over: the guard cannot tell what a
+// variable handed to another command holds. A relative path in the script is read as unknown, since
+// the command that runs it may run it anywhere.
+func scriptTool(text, home string) (string, bool) {
+	if !strings.ContainsAny(text, " \t\n;&|()<>`$") {
+		return "", false
+	}
+
+	file, err := read(text)
+	if err != nil {
+		return "", false
+	}
+
+	var name string
+	syntax.Walk(file, func(node syntax.Node) bool {
+		if name != "" {
+			return false
+		}
+
+		stmt, ok := node.(*syntax.Stmt)
+		if !ok {
+			return true
+		}
+
+		call, ok := stmt.Cmd.(*syntax.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+
+		inv := invocationOf(stmt, call, home)
+		command := inv.Words[0]
+		switch {
+		case !command.Literal, isDataConsumer(inv.Words):
+		case inv.Tool == ILS && changesNothing(inv.Words[1:]):
+		case inv.Tool != NoTool, isShell(command), slices.Contains([]string{"eval", "source", "."}, command.Text):
+			name = command.Text
+		default:
+			args := call.Args[len(call.Args)-len(inv.Words):]
+			name, _ = handedTool(args[1:], inv.Words[1:], "", home)
+		}
+
+		return name == ""
+	})
+
+	return name, name != ""
+}
+
+// changesNothing reports whether args, the words after an ils word, name an ils command that
+// changes nothing, as Cobra finds the command. A command word that is not a literal, or that is
+// no command of ils, may become any command once another command fills it in (`find -exec ils
+// {}`), so it changes something.
+func changesNothing(args []Word) bool {
+	at := commandWords(args, ilsSwitches())
+	if len(at) == 0 {
+		return false
+	}
+
+	sub := args[at[0]]
+
+	return sub.Literal && slices.Contains([]string{"status", "parse", "guard", "hook", "help"}, sub.Text)
 }
 
 // hasExtGlob reports whether an extended glob opens any part of words or of the redirect targets
@@ -728,12 +718,16 @@ func hasExtGlob(words []*syntax.Word, stmt *syntax.Stmt) bool {
 	})
 }
 
-// isToolWord reports whether w names git, gh, or ils: the bare name, or a path whose basename is
-// the name and that is an executable regular file, a relative path read against dir. A path whose
-// stat fails for any reason other than its absence counts as one, and so does a relative path when
-// dir is empty, since the guard cannot rule it out.
+// isToolWord reports whether w names git, gh, ils, a shell, `eval`, or `source`: the bare name, or
+// a path whose basename is the name and that is an executable regular file, a relative path read
+// against dir. A path whose stat fails for any reason other than its absence counts as one, and so
+// does a relative path when dir is empty, since the guard cannot rule it out.
+//
+// `.` is not counted: as an argument it names the current directory far more often (`find .`,
+// `docker build .`) than it runs a script.
 func isToolWord(w Word, dir string) bool {
-	if !w.Literal || toolOf(w) == NoTool {
+	runner := toolOf(w) != NoTool || isShell(w) || programName(w) == "eval" || programName(w) == "source"
+	if !w.Literal || !runner {
 		return false
 	}
 

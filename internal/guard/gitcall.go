@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 
+	"mvdan.cc/sh/v3/syntax"
+
 	"github.com/jeffzi/ils/internal/git"
 )
 
@@ -185,22 +187,236 @@ func gitOptions(words []Word) (options []GitOption, at int, missing string) {
 	return options, i, ""
 }
 
-// resolveGit asks git, for each git invocation, which git dir it targets and what the aliases it
-// names expand to. runner runs each call, from the invocation's directory and with the GIT_DIR and
-// GIT_WORK_TREE the guard modeled for it. An invocation of any other tool starts no git.
-func resolveGit(ctx context.Context, runner git.Runner, invocations []Invocation) error {
-	for i := range invocations {
-		inv := &invocations[i]
+// resolveGit asks git, for each git invocation the walk placed, which git dir it targets and what
+// the aliases it names expand to, then walks the shell commands it has git run. Their invocations
+// are placed right after it and read in turn, so an alias that expands to `rebase --exec` is
+// followed like one written out. The caller's git runs each call, from the invocation's directory
+// and with the GIT_DIR and GIT_WORK_TREE the guard modeled for it. An invocation of any other tool
+// starts no git.
+func (w *walker) resolveGit(ctx context.Context) error {
+	for i := 0; i < len(w.walked); i++ {
+		inv := &w.walked[i]
 		if inv.Tool != Git {
 			continue
 		}
 
-		if err := resolveInvocation(ctx, runner, inv); err != nil {
+		if err := resolveInvocation(ctx, w.caller.Git, inv); err != nil {
 			return fmt.Errorf("read the git invocation %q: %w", wordTexts(inv.Words), err)
+		}
+
+		if err := w.gitScripts(i); err != nil {
+			return err
 		}
 	}
 
 	return nil
+}
+
+// gitScripts walks the shell commands that the resolved git invocation at index i of the walk has
+// git run, one level deeper, and places their invocations right after it: returned after it when
+// it is returned, and walked only when it belongs to a dry run. It marks a command it cannot read
+// on the invocation instead.
+func (w *walker) gitScripts(i int) error {
+	inv := &w.walked[i]
+	scripts, mark := shellCommandsOf(*inv)
+	if len(scripts) > 0 && inv.depth == maxDepth {
+		scripts, mark = nil, DeepScript
+	}
+
+	if mark != "" {
+		inv.Marks = append(inv.Marks, Mark{Kind: mark})
+	}
+
+	sub := walker{caller: w.caller, timed: map[*syntax.Stmt]bool{}, depth: inv.depth}
+	for _, script := range scripts {
+		file, err := read(script)
+		if err != nil {
+			return fmt.Errorf("parse the string git runs: %w", err)
+		}
+
+		sc := gitScope(*inv)
+		sub.nested(file, &sc)
+		if sub.err != nil {
+			return fmt.Errorf("parse the string git runs: %w", sub.err)
+		}
+	}
+
+	w.splice(i, sub)
+
+	return nil
+}
+
+// splice places the invocations sub walked right after the one at index i of the walk, and those
+// sub keeps right after it among the kept ones when it is kept itself.
+func (w *walker) splice(i int, sub walker) {
+	n := len(sub.walked)
+	if n == 0 {
+		return
+	}
+
+	w.walked = slices.Insert(w.walked, i+1, sub.walked...)
+	at := -1
+	for k, index := range w.kept {
+		switch {
+		case index == i:
+			at = k
+		case index > i:
+			w.kept[k] += n
+		}
+	}
+
+	if at < 0 {
+		return
+	}
+
+	kept := make([]int, 0, len(sub.kept))
+	for _, index := range sub.kept {
+		kept = append(kept, i+1+index)
+	}
+
+	w.kept = slices.Insert(w.kept, at+1, kept...)
+}
+
+// gitScope returns the scope a shell command run by the git invocation inv starts in: the directory
+// git works in, the GIT_DIR and GIT_WORK_TREE git runs with, and the redirects git runs with.
+// CDPATH is not followed into git's environment, so it is unknown.
+func gitScope(inv Invocation) scope {
+	unknown := variable{unknown: true}
+	sc := scope{
+		dir:       inv.Target.Dir,
+		env:       environment{gitDir: unknown, workTree: unknown, cdPath: unknown},
+		redirects: slices.Concat(inv.enclosing, inv.Redirects),
+	}
+	if !inv.Target.Unknown {
+		sc.env.gitDir = pathVariable(inv.Target.GitDir)
+		sc.env.workTree = pathVariable(inv.Target.WorkTree)
+	}
+
+	return sc
+}
+
+// pathVariable returns the variable that holds path, unset when path is empty.
+func pathVariable(path string) variable {
+	if path == "" {
+		return variable{}
+	}
+
+	return variable{value: path, set: true}
+}
+
+// shellCommandsOf returns the shell commands the git invocation inv has git run, read once its
+// aliases expand: the value of each config key git runs through the shell, given by `-c` or
+// `--config-env`, and each `rebase --exec`. It returns DynamicScript as well when one of them is
+// not a literal.
+func shellCommandsOf(inv Invocation) ([]string, MarkKind) {
+	values := configCommands(inv)
+	if sub := inv.Git.Subcommand; sub.Literal && sub.Text == "rebase" {
+		values = append(values, rebaseCommands(inv.Git.Args)...)
+	}
+
+	return literalScripts(values)
+}
+
+// literalScripts returns the text of each of values, the shell commands something runs, that is a
+// literal, and DynamicScript as well when one of them is not.
+func literalScripts(values []Word) ([]string, MarkKind) {
+	var scripts []string
+	var mark MarkKind
+	for _, v := range values {
+		if !v.Literal {
+			mark = DynamicScript
+
+			continue
+		}
+
+		scripts = append(scripts, v.Text)
+	}
+
+	return scripts, mark
+}
+
+// configCommands returns the value of each `-c` and `--config-env` option of the git invocation inv
+// whose key git runs through the shell. The value is not a literal when the guard cannot read it.
+// An option whose key the guard cannot read is left to the rules that judge the subcommand.
+func configCommands(inv Invocation) []Word {
+	var values []Word
+	for _, o := range inv.Git.Options {
+		switch o.Name {
+		case "-c":
+			key, value, cut := strings.Cut(o.Value.Text, "=")
+			if cut && runsShell(key) {
+				values = append(values, Word{Text: value, Literal: o.Value.Literal})
+			}
+		case "--config-env":
+			key, name, cut := strings.CutLast(o.Value.Text, "=")
+			if !cut || !runsShell(key) {
+				continue
+			}
+
+			value, ok := setValue(inv, name)
+			values = append(values, Word{Text: value, Literal: ok && o.Value.Literal})
+		}
+	}
+
+	return values
+}
+
+// shellKeys are the config keys outside the `pager` section whose value git runs as a shell
+// command.
+func shellKeys() []string {
+	return []string{"core.editor", "core.pager", "sequence.editor", "core.sshCommand"}
+}
+
+// runsShell reports whether git runs the value of the config key through the shell. Section and
+// variable names are case-insensitive.
+func runsShell(key string) bool {
+	for _, name := range shellKeys() {
+		if strings.EqualFold(key, name) {
+			return true
+		}
+	}
+
+	const pager = "pager."
+
+	return len(key) > len(pager) && strings.EqualFold(key[:len(pager)], pager)
+}
+
+// rebaseCommands returns the value of each `--exec` or `-x` among the arguments of `git rebase`:
+// separate or attached, a long option spelled as any prefix of `--exec` git could read as it, and
+// `-x` anywhere in a short-flag bundle, whose rest is then its value.
+func rebaseCommands(args []Word) []Word {
+	var values []Word
+	for i := 0; i < len(args); i++ {
+		text := args[i].Text
+		var value string
+		var attached bool
+		switch {
+		case text == "--":
+			return values
+		case strings.HasPrefix(text, "--"):
+			var name string
+			name, value, attached = strings.Cut(text, "=")
+			const exec = "--exec"
+			if len(name) < len("--e") || len(name) > len(exec) || name != exec[:len(name)] {
+				continue
+			}
+		case strings.HasPrefix(text, "-") && strings.Contains(text[1:], "x"):
+			_, value, _ = strings.Cut(text[1:], "x")
+			attached = value != "" || !args[i].Literal
+		default:
+			continue
+		}
+
+		switch {
+		case attached:
+			values = append(values, Word{Text: value, Literal: args[i].Literal})
+		case i+1 < len(args):
+			i++
+			values = append(values, args[i])
+		}
+	}
+
+	return values
 }
 
 // resolveInvocation records on the git invocation inv the git dir it targets and its subcommand

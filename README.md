@@ -429,18 +429,21 @@ To make Claude Code ask you before every merge or release, add `ask` rules to yo
 
 ## The guard
 
-The guard judges a shell command before an agent runs it. It parses the command with a bash
-parser, finds every `git`, `gh`, and `ils` call in it, nested ones included, and answers allow,
-refuse, or ask. It refuses git operations that destroy work or skip the hooks, every `git push`,
-commits on the default branch, and the `gh` calls that write to GitHub or print the auth token.
-It asks before `ils merge`, `ils release`, `gh pr merge`, and `gh release create`, and only when
-the command is that one call by its bare name, so the prompt shows exactly what runs. A command it
+The guard judges a shell command before an agent runs it. It parses the command with a bash parser,
+finds the `git`, `gh`, and `ils` calls in it, nested ones included, and answers allow, refuse, or
+ask. It refuses git operations that destroy work or skip the hooks, `git push` in any form it can
+read, commits on the default branch, and the `gh` calls that land a change, publish or delete a
+release, move the default branch, sync or delete a repository, or print the auth token. It asks
+before `ils merge`, `ils release`, `gh pr merge`, and `gh release create`, and only when the
+command is that one call by its bare name, so the prompt shows exactly what runs. A command it
 cannot read is a refusal. [What the guard refuses](docs/reference.md#what-the-guard-refuses) lists
 every rule.
 
 The guard lowers the odds of an accident; it is not a sandbox. It does not see:
 
 - an interpreter that is not a shell, such as `python -c 'subprocess.run(["git", "push"])'`;
+- a command held in a variable and handed to a command the guard does not know, such as `su -c
+  "$cmd"`;
 - `go run . merge` in this repository, or `go run github.com/jeffzi/ils@<tag> merge` anywhere,
   which hold no `ils` word;
 - a task runner (`task`, `make`, `npm run`) running lines from a file the agent wrote;

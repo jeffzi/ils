@@ -52,6 +52,16 @@ func texts(invocations []guard.Invocation) [][]string {
 	return lists
 }
 
+// kinds returns the kind of each of marks.
+func kinds(marks []guard.Mark) []guard.MarkKind {
+	got := make([]guard.MarkKind, 0, len(marks))
+	for _, m := range marks {
+		got = append(got, m.Kind)
+	}
+
+	return got
+}
+
 func TestParse_WhenTheParserCannotReadTheCommand_ReturnsItsPositionAndMessage(t *testing.T) {
 	t.Parallel()
 
@@ -297,12 +307,17 @@ func TestInvocation_Stdout_WhenStdoutGoesToAFile_ReturnsItsTarget(t *testing.T) 
 		{name: "read-write on descriptor one", command: "git show HEAD:f 1<> f"},
 		{name: "duplicate onto a file name", command: "git show HEAD:f >& f"},
 		{name: "last stdout redirect wins", command: "git show HEAD:f > g > f"},
+		{name: "redirect on an enclosing group", command: "{ git show HEAD:f; } > f"},
+		{name: "redirect on an enclosing subshell", command: "(git show HEAD:f) > f"},
+		{name: "earlier exec with no command", command: "exec > f; git show HEAD:f"},
+		{name: "stdout onto stderr after stderr goes to a file", command: "git show HEAD:f 2> f >&2"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			inv := only(t, tt.command)
+			invocations := parse(t, tt.command)
+			inv := invocations[len(invocations)-1]
 
 			got, ok := inv.Stdout()
 
@@ -324,6 +339,7 @@ func TestInvocation_Stdout_WhenStdoutIsNotRedirectedToAFile_ReportsNone(t *testi
 		{name: "input only", command: "git show HEAD:f < in"},
 		{name: "stdout duplicated onto stderr", command: "git show HEAD:f >&2"},
 		{name: "read-write on standard input", command: "git show HEAD:f <> f"},
+		{name: "stdout onto stderr before stderr goes to a file", command: "git show HEAD:f >&2 2> f"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -346,69 +362,6 @@ func executable(t *testing.T, name string) string {
 	assert.NilError(t, os.WriteFile(path, []byte("#!/bin/sh\n"), 0o700)) //nolint:gosec // the test needs an executable file
 
 	return path
-}
-
-func TestParse_WhenAWrapperRunsACommand_ReportsTheCommandBehindIt(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name         string
-		command      string
-		wantWords    []string
-		wantWrappers []string
-	}{
-		{name: "nice", command: "nice git push", wantWords: []string{"git", "push"}, wantWrappers: []string{"nice"}},
-		{name: "nice with a separate value", command: "nice -n 10 git push", wantWords: []string{"git", "push"}, wantWrappers: []string{"nice"}},
-		{name: "nice with a numeric option", command: "nice -10 git push", wantWords: []string{"git", "push"}, wantWrappers: []string{"nice"}},
-		{name: "env clearing the environment", command: "env -i git push", wantWords: []string{"git", "push"}, wantWrappers: []string{"env"}},
-		{name: "env removing a name", command: "env -u GIT_DIR git push", wantWords: []string{"git", "push"}, wantWrappers: []string{"env"}},
-		{name: "env end of options", command: "env -- git push", wantWords: []string{"git", "push"}, wantWrappers: []string{"env"}},
-		{name: "exec with a value", command: "exec -a name git push", wantWords: []string{"git", "push"}, wantWrappers: []string{"exec"}},
-		{name: "exec with grouped flags", command: "exec -cl git push", wantWords: []string{"git", "push"}, wantWrappers: []string{"exec"}},
-		{name: "command with a default path", command: "command -p git push", wantWords: []string{"git", "push"}, wantWrappers: []string{"command"}},
-		{name: "time with posix format", command: "time -p git push", wantWords: []string{"git", "push"}, wantWrappers: []string{"time"}},
-		{name: "nohup end of options", command: "nohup -- git push", wantWords: []string{"git", "push"}, wantWrappers: []string{"nohup"}},
-		{name: "time keyword", command: "time git push", wantWords: []string{"git", "push"}, wantWrappers: []string{"time"}},
-		{name: "command without a lookup flag", command: "command gh pr list", wantWords: []string{"gh", "pr", "list"}, wantWrappers: []string{"command"}},
-		{name: "stacked wrappers", command: "env nohup ils push", wantWords: []string{"ils", "push"}, wantWrappers: []string{"env", "nohup"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := only(t, tt.command)
-
-			assert.Check(t, is.DeepEqual(texts([]guard.Invocation{got})[0], tt.wantWords), "Parse(%q) words", tt.command)
-			assert.Check(t, is.DeepEqual(got.Wrappers, tt.wantWrappers), "Parse(%q) wrappers", tt.command)
-			assert.Check(t, got.Tool != guard.NoTool, "Parse(%q) tool = none, want the wrapped tool", tt.command)
-			assert.Check(t, !got.Whole, "Parse(%q) reports a wrapped invocation as the whole command", tt.command)
-		})
-	}
-}
-
-func TestParse_WhenEnvChangesTheEnvironment_ReportsItsOptions(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		command     string
-		wantUnset   []string
-		wantCleared bool
-	}{
-		{name: "no option", command: "env git push"},
-		{name: "cleared environment", command: "env -i git push", wantCleared: true},
-		{name: "removed names", command: "env -u GIT_DIR -u GIT_WORK_TREE git push", wantUnset: []string{"GIT_DIR", "GIT_WORK_TREE"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := only(t, tt.command)
-
-			assert.Check(t, is.Equal(got.EnvCleared, tt.wantCleared), "Parse(%q) env cleared", tt.command)
-			assert.Check(t, is.DeepEqual(got.EnvUnset, tt.wantUnset), "Parse(%q) env unset", tt.command)
-		})
-	}
 }
 
 func TestParse_ReportsEachAssignmentTheCommandRunsWith(t *testing.T) {
@@ -500,6 +453,27 @@ func TestParse_MarksWhatItCannotRead(t *testing.T) {
 		{name: "tool word handed to another command", command: "xargs git push", want: guard.ToolArgument},
 		{name: "tool word after an option", command: "find . -exec git rm {} +", want: guard.ToolArgument},
 		{name: "wrapper option it does not take", command: "nice -z git push", want: guard.ToolArgument},
+		{name: "shell handed to xargs", command: "xargs sh -c 'git push origin main'", want: guard.ToolArgument},
+		{name: "command string handed to su", command: "su -c 'git push origin main'", want: guard.ToolArgument},
+		{name: "shell string split by env -S", command: `env -S 'sh -c "git push origin main"'`, want: guard.ToolArgument},
+		{name: "command string handed to ssh", command: "ssh host 'git push origin main'", want: guard.ToolArgument},
+		{name: "shell run by find", command: `find . -maxdepth 0 -exec sh -c 'ils merge' \;`, want: guard.ToolArgument},
+		{name: "shell run by sudo", command: "sudo bash -c 'git reset --hard'", want: guard.ToolArgument},
+		{name: "shell run by timeout", command: "timeout 60 bash -c 'git status'", want: guard.ToolArgument},
+		{name: "eval handed to another command", command: "xargs eval 'git status'", want: guard.ToolArgument},
+		{name: "source handed to another command", command: "xargs source x.sh", want: guard.ToolArgument},
+		{name: "tool after a list in a string", command: "su -c 'cd /repo && git push'", want: guard.ToolArgument},
+		{name: "tool after a semicolon in a string", command: "ssh host 'cd repo; git push'", want: guard.ToolArgument},
+		{name: "tool behind a wrapper in a string", command: "su -c 'exec git push'", want: guard.ToolArgument},
+		{name: "tool behind an assignment in a string", command: "su -c 'FOO=1 git push'", want: guard.ToolArgument},
+		{name: "tool in a subshell in a string", command: "su -c '(git push)'", want: guard.ToolArgument},
+		{name: "tool in a substitution in a string", command: "su -c 'echo $(git push)'", want: guard.ToolArgument},
+		{name: "tool handed to an unknown command in a string", command: "su -c 'sudo git push'", want: guard.ToolArgument},
+		{name: "tool in a string with an expansion", command: `su -c "git push $b"`, want: guard.ToolArgument},
+		{name: "ils command that changes state behind another command", command: "timeout 60 ils merge", want: guard.ToolArgument},
+		{name: "ils with no command behind another command", command: "xargs ils", want: guard.ToolArgument},
+		{name: "ils with a placeholder for its command", command: `find . -exec ils {} \;`, want: guard.ToolArgument},
+		{name: "ils command that changes state in a string", command: "ssh host 'ils status && ils merge'", want: guard.ToolArgument},
 		{name: "non-literal wrapper option", command: `env -"$o" git push`, want: guard.DynamicCommand},
 		{name: "non-literal -c string", command: `bash -c "$CMD"`, want: guard.DynamicScript},
 		{name: "non-literal eval word", command: `eval "$x"`, want: guard.DynamicScript},
@@ -518,7 +492,31 @@ func TestParse_MarksWhatItCannotRead(t *testing.T) {
 			got := parse(t, tt.command)
 
 			assert.Assert(t, len(got) > tt.index, "Parse(%q) = %v", tt.command, texts(got))
-			assert.Check(t, is.DeepEqual(got[tt.index].Marks, []guard.Mark{{Kind: tt.want}}), "Parse(%q) marks", tt.command)
+			assert.Check(t, is.DeepEqual(kinds(got[tt.index].Marks), []guard.MarkKind{tt.want}), "Parse(%q) marks", tt.command)
+		})
+	}
+}
+
+func TestParse_WhenAToolIsHandedToAnotherCommand_NamesItOnTheMark(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+		want    string
+	}{
+		{name: "tool word", command: "xargs git push", want: "git"},
+		{name: "path to a tool", command: "find . -exec /bin/sh -c x \\;", want: "/bin/sh"},
+		{name: "tool in a string", command: "su -c 'cd /repo && gh pr merge 3'", want: "gh"},
+		{name: "tool handed on inside a string", command: "ssh host 'sudo ils merge'", want: "ils"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := only(t, tt.command)
+
+			assert.Check(t, is.DeepEqual(got.Marks, []guard.Mark{{Kind: guard.ToolArgument, Name: tt.want}}), "Parse(%q) marks", tt.command)
 		})
 	}
 }
@@ -532,6 +530,7 @@ func TestParse_WhenAnArgumentIsAPathNamedForATool_MarksOnlyAnExecutableFile(t *t
 		want []guard.Mark
 	}{
 		{name: "executable file", path: func(t *testing.T) string { return executable(t, "git") }, want: []guard.Mark{{Kind: guard.ToolArgument}}},
+		{name: "executable file named for a shell", path: func(t *testing.T) string { return executable(t, "bash") }, want: []guard.Mark{{Kind: guard.ToolArgument}}},
 		{
 			name: "directory",
 			path: func(t *testing.T) string {
@@ -571,7 +570,7 @@ func TestParse_WhenAnArgumentIsAPathNamedForATool_MarksOnlyAnExecutableFile(t *t
 
 			got := only(t, command)
 
-			assert.Check(t, is.DeepEqual(got.Marks, tt.want), "Parse(%q) marks", command)
+			assert.Check(t, is.DeepEqual(kinds(got.Marks), kinds(tt.want)), "Parse(%q) marks", command)
 		})
 	}
 }
@@ -601,7 +600,7 @@ func TestParse_WhenAnArgumentIsARelativePathNamedForATool_ReadsItWhereTheInvocat
 			assert.NilError(t, err, "Parse(%q)", tt.command)
 
 			xargs := got[len(got)-1]
-			assert.Check(t, is.DeepEqual(xargs.Marks, tt.want), "Parse(%q) marks", tt.command)
+			assert.Check(t, is.DeepEqual(kinds(xargs.Marks), kinds(tt.want)), "Parse(%q) marks", tt.command)
 		})
 	}
 }
@@ -616,6 +615,16 @@ func TestParse_WhenNoArgumentIsAToolWord_MarksNothing(t *testing.T) {
 		{name: "tool word in a tool's own arguments", command: "git commit -m git"},
 		{name: "name that only starts with git", command: "xargs gitk"},
 		{name: "relative path that does not exist", command: "xargs internal/git"},
+		{name: "command run by xargs that is no shell", command: "xargs echo hi"},
+		{name: "find with no command to run", command: "find . -name '*.go'"},
+		{name: "name that only starts with a shell name", command: "xargs shasum x"},
+		{name: "string a data consumer in it reads", command: "xargs echo 'grep -n git push docs'"},
+		{name: "string that does not parse", command: "xargs echo 'fi git push'"},
+		{name: "string held in a variable", command: `su -c "$cmd"`},
+		{name: "string whose command word is not a literal", command: `su -c "$g push"`},
+		{name: "ils command that changes nothing behind another command", command: "timeout 60 ils status"},
+		{name: "ils command that changes nothing after a flag", command: "timeout 60 ils --json status"},
+		{name: "ils command that changes nothing in a string", command: "ssh host 'cd repo && ils status'"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -624,6 +633,31 @@ func TestParse_WhenNoArgumentIsAToolWord_MarksNothing(t *testing.T) {
 			got := only(t, tt.command)
 
 			assert.Check(t, is.Len(got.Marks, 0), "Parse(%q) marks", tt.command)
+		})
+	}
+}
+
+func TestParse_WhenAShellWordIsAnArgumentOfAShellWrapperOrDataConsumer_MarksNothing(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{name: "shell named as the zero argument of a shell", command: "bash -c 'true' sh"},
+		{name: "shell named as an argument of eval", command: "eval sh -c true"},
+		{name: "shell behind a wrapper", command: "nice bash -c true"},
+		{name: "shell named by a data consumer", command: "echo bash -c true"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := parse(t, tt.command)
+
+			for _, inv := range got {
+				assert.Check(t, is.Len(inv.Marks, 0), "Parse(%q) invocation %v marks", tt.command, inv.Words)
+			}
 		})
 	}
 }

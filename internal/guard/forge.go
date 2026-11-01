@@ -173,9 +173,10 @@ func judgeGHAlias(ctx context.Context, inv Invocation, args []Word, alias int) (
 }
 
 // expandGHAlias returns the words gh runs for the alias name given rest, the words after it, as gh
-// expands them: each `$N` replaced by the Nth of rest, or rest appended when the expansion holds
-// no `$`. It returns a refusal instead for a word that is no alias, a shell alias, and an
-// expansion the guard cannot read.
+// expands them: each word of rest, in order, fills its `$N` while the expansion still holds a `$`,
+// and every word after that is appended to the expansion. It returns a refusal instead for a word
+// that is no alias, a shell alias, a word filling a `$N` that is not a literal, and an expansion
+// the guard cannot read, such as one left holding a `$N`.
 func expandGHAlias(ctx context.Context, name string, rest []Word) (words []Word, refusal string, err error) {
 	expansion, found, err := ghAlias(ctx, name)
 	if err != nil {
@@ -190,16 +191,19 @@ func expandGHAlias(ctx context.Context, name string, rest []Word) (words []Word,
 		return nil, fmt.Sprintf("gh alias %s runs a shell command, which the guard cannot judge", name), nil
 	}
 
-	if strings.Contains(expansion, "$") {
-		for i, w := range rest {
-			if !w.Literal {
-				return nil, fmt.Sprintf("gh alias %s is given an argument that is not a literal", name), nil
-			}
+	var appended []Word
+	for i, w := range rest {
+		if !strings.Contains(expansion, "$") {
+			appended = append(appended, w)
 
-			expansion = strings.ReplaceAll(expansion, "$"+strconv.Itoa(i+1), w.Text)
+			continue
 		}
 
-		rest = nil
+		if !w.Literal {
+			return nil, fmt.Sprintf("gh alias %s is given an argument that is not a literal", name), nil
+		}
+
+		expansion = strings.ReplaceAll(expansion, "$"+strconv.Itoa(i+1), w.Text)
 	}
 
 	split, ok := splitAlias(strings.TrimSpace(expansion))
@@ -211,7 +215,7 @@ func expandGHAlias(ctx context.Context, name string, rest []Word) (words []Word,
 		words = append(words, Word{Text: text, Literal: true})
 	}
 
-	return append(words, rest...), "", nil
+	return append(words, appended...), "", nil
 }
 
 // placeholder matches a `$N` of a gh alias left unreplaced, which makes gh refuse the alias.

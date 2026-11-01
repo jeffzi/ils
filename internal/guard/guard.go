@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 )
 
@@ -128,17 +127,12 @@ func failedRead(err error) Verdict {
 	return refuse("the guard could not check the command: " + err.Error())
 }
 
-// markReason says what the mark found on inv, by the mark's name when it has one. A tool word
-// handed to another command is named with that command.
+// markReason says what the mark found on inv, by the mark's name when it has one. A tool handed
+// to another command is named with that command.
 func markReason(inv Invocation, mark Mark) string {
 	name := mark.Name
 	if mark.Kind == ToolArgument && len(inv.Words) > 0 {
-		name = inv.Words[0].Text
-		at := slices.IndexFunc(inv.Words[1:], func(w Word) bool { return isToolWord(w, inv.Dir) })
-		if at >= 0 {
-			tool := inv.Words[1+at].Text
-			name = fmt.Sprintf("%s runs %s: run %s on its own, by its bare name", name, tool, tool)
-		}
+		name = fmt.Sprintf("%s runs %s: run %s on its own, by its bare name", inv.Words[0].Text, name, name)
 	}
 
 	if name == "" {

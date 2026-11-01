@@ -345,7 +345,7 @@ type Payload struct {
 }
 
 // Parse is the structured detail of a parse: every invocation the command holds, in the order the
-// shell starts them.
+// guard reads them, which is not always the order the shell runs them.
 type Parse struct {
 	Invocations []Invocation `json:"invocations"`
 }

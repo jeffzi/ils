@@ -97,12 +97,6 @@ func TestJudge_RefusesAGitOperationThatDiscardsWork(t *testing.T) {
 		{name: "branch -df", command: "git branch -df feature", wantNamed: "git branch"},
 		{name: "branch -fd", command: "git branch -fd feature", wantNamed: "git branch"},
 		{name: "branch -D behind a -C value spelled like the subcommand", command: "git -C branch branch -D main", wantNamed: "git branch"},
-		{name: "restore of a path", command: "git restore file", wantNamed: "git restore"},
-		{name: "restore of the tree", command: "git restore .", wantNamed: "git restore"},
-		{name: "restore -W", command: "git restore -W file", wantNamed: "git restore"},
-		{name: "restore --worktree", command: "git restore --worktree file", wantNamed: "git restore"},
-		{name: "restore --staged --worktree", command: "git restore --staged --worktree file", wantNamed: "git restore"},
-		{name: "restore --staged -W", command: "git restore --staged -W file", wantNamed: "git restore"},
 		{name: "rm -f", command: "git rm -f file", wantNamed: "git rm"},
 		{name: "rm --force", command: "git rm --force file", wantNamed: "git rm"},
 		{name: "rm -rf", command: "git rm -rf dir/", wantNamed: "git rm"},
@@ -120,6 +114,21 @@ func TestJudge_RefusesAGitOperationThatDiscardsWork(t *testing.T) {
 		{name: "add -f of the tree", command: "git add -f .", wantNamed: "git add"},
 		{name: "add --force -A", command: "git add --force -A", wantNamed: "git add"},
 		{name: "add bundle", command: "git add -fA", wantNamed: "git add"},
+	})
+}
+
+func TestJudge_RefusesARestoreThatDiscardsWork(t *testing.T) {
+	t.Parallel()
+
+	checkRefusals(t, []refusal{
+		{name: "restore of a path", command: "git restore file", wantNamed: "git restore"},
+		{name: "restore of the tree", command: "git restore .", wantNamed: "git restore"},
+		{name: "restore -W", command: "git restore -W file", wantNamed: "git restore"},
+		{name: "restore --worktree", command: "git restore --worktree file", wantNamed: "git restore"},
+		{name: "restore --staged --worktree", command: "git restore --staged --worktree file", wantNamed: "git restore"},
+		{name: "restore --staged -W", command: "git restore --staged -W file", wantNamed: "git restore"},
+		{name: "restore -S -W", command: "git restore -S -W file", wantNamed: "git restore"},
+		{name: "restore -SW", command: "git restore -SW file", wantNamed: "git restore"},
 	})
 }
 
@@ -194,6 +203,14 @@ func TestJudge_RefusesWritingGitHistoryOverAFile(t *testing.T) {
 		{name: "show with stdout and stderr", command: "git show HEAD:f &> f", wantNamed: "git show"},
 		{name: "show clobbering", command: "git show HEAD:f >| f", wantNamed: "git show"},
 		{name: "cat-file truncating", command: "git cat-file blob HEAD:README > out", wantNamed: "git cat-file"},
+		{name: "show in a redirected group", command: "{ git show HEAD:f; } > f", wantNamed: "git show"},
+		{name: "show in a redirected subshell", command: "(git show HEAD:f) > f", wantNamed: "git show"},
+		{name: "show in a group inside a redirected subshell", command: "({ git show HEAD:f; }) > f", wantNamed: "git show"},
+		{name: "show after exec redirected stdout", command: "exec > f; git show HEAD:f", wantNamed: "git show"},
+		{name: "show after exec redirected stdout in a group", command: "{ exec > f; }; git show HEAD:f", wantNamed: "git show"},
+		{name: "show with stdout copied onto a redirected stderr", command: "git show HEAD:f 2> f >&2", wantNamed: "git show"},
+		{name: "show with fd 1 copied onto a redirected fd 2", command: "git show HEAD:f 2>f 1>&2", wantNamed: "git show"},
+		{name: "show copying stdout onto stderr in a group redirected to a file", command: "{ git show HEAD:f >&2; } 2> f", wantNamed: "git show"},
 	})
 }
 
@@ -216,6 +233,8 @@ func keepingWork() []keptWork {
 		{name: "restore --staged of a path", command: "git restore --staged file"},
 		{name: "restore --staged of the tree", command: "git restore --staged ."},
 		{name: "prefix of restore --staged", command: "git restore --stag file"},
+		{name: "restore -S", command: "git restore -S file"},
+		{name: "restore -S in a short-flag bundle", command: "git restore -qS file"},
 		{name: "plain rm", command: "git rm file"},
 		{name: "rm -r", command: "git rm -r dir/"},
 		{name: "rm --cached", command: "git rm --cached file"},
@@ -231,6 +250,11 @@ func keepingWork() []keptWork {
 		{name: "reflog", command: "git reflog"},
 		{name: "reflog show", command: "git reflog show"},
 		{name: "show with only stderr redirected", command: "git show HEAD 2>errors.txt"},
+		{name: "show in a group with only stderr redirected", command: "{ git show HEAD:f; } 2> err"},
+		{name: "show sending stdout to stderr in a redirected group", command: "{ git show HEAD:f >&2; } > f"},
+		{name: "show after exec redirected stdout in a subshell", command: "(exec > f); git show HEAD:f"},
+		{name: "show before exec redirects stdout", command: "git show HEAD:f; exec > f"},
+		{name: "show copying stdout onto stderr before stderr is redirected", command: "git show HEAD:f >&2 2> f"},
 		{name: "plain apply", command: "git apply patch.diff"},
 		{name: "commit", command: "git commit -m 'msg'"},
 		{name: "commit --amend", command: "git commit --amend"},
@@ -527,6 +551,27 @@ func TestJudge_RefusesAGitConfigWriteOfAKeyThatChangesWhatGitRuns(t *testing.T) 
 		{name: "prefix of --remove-section", command: "git config --remove alias", wantNamed: "alias"},
 		{name: "prefix of --rename-section into a guarded section", command: "git config --rename team alias", wantNamed: "alias"},
 		{name: "prefix of --type with a separate value", command: "git config --ty path include.path /x", wantNamed: "include.path"},
+		{name: "core.editor", command: "git config core.editor vim", wantNamed: "core.editor"},
+		{name: "core.pager", command: "git config --global core.pager less", wantNamed: "core.pager"},
+		{name: "sequence.editor", command: "git config set sequence.editor vim", wantNamed: "sequence.editor"},
+		{name: "core.sshCommand", command: "git config core.sshCommand ssh", wantNamed: "core.sshCommand"},
+		{name: "core.sshCommand in another case", command: "git config Core.SshCommand ssh", wantNamed: "Core.SshCommand"},
+		{name: "pager of a command", command: "git config pager.log less", wantNamed: "pager.log"},
+		{name: "pager section in another case", command: "git config PAGER.log less", wantNamed: "PAGER.log"},
+		{name: "--unset of a pager", command: "git config --unset pager.diff", wantNamed: "pager.diff"},
+		{name: "--remove-section of the pager section", command: "git config --remove-section pager", wantNamed: "pager"},
+	})
+}
+
+func TestJudge_RefusesAGitConfigWriteOfASectionThatHoldsAGuardedKey(t *testing.T) {
+	t.Parallel()
+
+	checkRefusals(t, []refusal{
+		{name: "rename into core", command: "git config --rename-section team core", wantNamed: "core"},
+		{name: "rename out of core", command: "git config --rename-section core team", wantNamed: "core"},
+		{name: "rename into sequence", command: "git config rename-section team sequence", wantNamed: "sequence"},
+		{name: "remove core", command: "git config --remove-section core", wantNamed: "core"},
+		{name: "rename into core in another case", command: "git config --rename-section team CORE", wantNamed: "CORE"},
 	})
 }
 
@@ -543,6 +588,9 @@ func TestJudge_AllowsAGitConfigCallThatLeavesGuardedKeys(t *testing.T) {
 		{name: "list", command: "git config list"},
 		{name: "write of another key", command: "git config user.name Someone"},
 		{name: "--unset of another key", command: "git config --unset user.name"},
+		{name: "--get of an editor", command: "git config --get core.editor"},
+		{name: "get of a pager", command: "git config get pager.log"},
+		{name: "write of another core key", command: "git config core.autocrlf true"},
 	})
 }
 

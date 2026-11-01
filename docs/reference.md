@@ -37,10 +37,10 @@ how to install `ils` and what each command does. CI stands for continuous integr
 | 4    | pending              | GitHub had not finished when the command stopped waiting, for example checks still running or not yet reported. Run the command that the `Next:` line names; [Time limits](#time-limits) says how long each command waits. After an `ils release`, run the same command again.                                                     |
 | 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                                                                                                                             |
 
-Every outcome but done prints its reason on the line above `Next:`, labeled by outcome:
-`Refused:`, `Broke:`, `Ask:`, `Pending:`, or `Delivered, not green:`. A run stopped by Ctrl-C or SIGTERM
-(the signal `kill` sends by default) exits with the code of the result it prints; see
-[Stopping a run](#stopping-a-run).
+Every outcome but done prints its reason on the line above `Next:`, labeled by outcome: `Refused:`,
+`Broke:`, `Ask:`, `Pending:`, or `Delivered, not green:`. A run stopped by Ctrl-C or SIGTERM (the
+signal `kill` sends by default) exits with the code of the result it prints; see [Stopping a
+run](#stopping-a-run).
 
 ### When no check reports
 
@@ -326,35 +326,54 @@ How a command is read:
 - a command that does not parse, and an extended glob anywhere in it (zsh runs a glob qualifier
   such as `*(e:'git push':)` as code);
 - a command word that is not a literal (`$(which git)`, `"$GIT"`);
-- a `git`, `gh`, or `ils` word handed to a command the guard does not know (`xargs`, `timeout`,
-  `sudo`, `find -exec`). It sees through the wrappers `env`, `command`, `builtin`, `exec`, `nice`,
-  `nohup`, `time`, `noglob`, and `nocorrect`, and takes the words given to a reader, a filter, a
-  file tool, a lookup, or a package manager (`echo`, `grep`, `rg`, `cat`, `cp`, `which`, `go`,
-  `brew`, and the like) as data, so `echo git push` holds no `git` call;
+- a `git`, `gh`, `ils`, or shell word (`bash`, `sh`, `zsh`, `dash`, `eval`, `source`) handed to a
+  command the guard does not know (`xargs`, `timeout`, `sudo`, `find -exec`). The guard sees
+  through the wrappers `env`, `command`, `builtin`, `exec`, `nice`, `nohup`, `time`, `noglob`, and
+  `nocorrect`. It takes the words given to a reader, a filter, a file tool, a lookup, or a package
+  manager (`echo`, `grep`, `rg`, `cat`, `cp`, `which`, `go`, `brew`, and the like) as data, so
+  `echo git push` holds no `git` call. `ils status`, `parse`, `guard`, `hook`, and `help` are
+  allowed behind such a command (`timeout 60 ils status`); any other `ils` command, or one the
+  command fills in (`xargs ils`), is refused;
+- a string handed to a command the guard does not know, read as a script, when one of its
+  commands is such a word or hands one over in turn: `su -c 'cd /repo && git push'`, `ssh host
+  'sudo git push'`, and `su -c "git push $b"`, whose expansion stands as a plain word. A string
+  that does not parse as a script is data;
 - a `bash -c`, `sh -c`, `zsh -c`, `dash -c`, or `eval` string that is not a literal or nests more
   than three deep, and a shell that runs what the command does not hold (`cat x | bash`, `bash
-  -s`, `bash ./x.sh`, `bash <(…)`, `source`);
+  -s`, `bash ./x.sh`, `bash <(…)`, `source` or `.` of a file). The shell commands git runs are
+  read the same way: the value of `git rebase --exec` (`-x`), of `-c core.editor`, `core.pager`,
+  `sequence.editor`, `core.sshCommand`, or `pager.<command>`, and of `GIT_EDITOR`,
+  `GIT_SEQUENCE_EDITOR`, `GIT_PAGER`, and the `EDITOR`, `VISUAL`, and `PAGER` git falls back to;
 - an assignment or `export` of a `GIT_*` variable off the allow list (`GIT_CONFIG_COUNT`,
   `GIT_EXEC_PATH`, and the like);
-- a git word that is neither a command nor an alias, a `!` alias, and an alias nested more than
-  three deep;
+- a git word that is neither a command nor an alias, a `!` alias, an alias nested more than
+  three deep, and an alias the guard cannot read: a value that does not split into words, or one
+  set by a `-c` or `--config-env` it cannot follow. A subcommand that is not a literal (`git
+  "$sub"`), and any word off git's command list where the guard cannot tell the git dir (after
+  `cd "$d"`, or under `-C "$d"`), count as neither;
+- a git option at the end of the command with no value after it (`git -C`), and a `-c` or
+  `--config-env` value that is not a literal, on any git command, since it may set
+  `core.hooksPath`;
 - a non-literal argument a flag rule turns on (`git clean "$opt"`). A commit message (`-m
   "$(cat <<'EOF' … EOF)"`) and the directory of `-C "$dir"` are passed over.
 
 git operations that destroy work or skip checks:
 
-- every `checkout`, `reset`, `stash`, and `prune`; `switch --force` or `--discard-changes`;
-  `clean --force`; `branch -D`, `-d -f`, or `--delete --force`; `restore` without `--staged`;
-  `rm --force`; `reflog expire`, `delete`, and `drop`; `gc --prune=…`; `apply --reverse`;
-  `add --force`;
-- `--no-verify` on any command, `commit -n`, and `core.hooksPath` set through `-c` or
-  `--config-env`;
+- every `checkout`, `reset`, `stash`, and `prune`; `switch --force` or `--discard-changes`; `clean
+  --force`; `branch -D`, `-d -f`, or `--delete --force`; `restore` without `--staged` (or `-S`), or
+  with `--worktree` (`-W`) beside it; `rm
+  --force`; `reflog expire`, `delete`, and `drop`; `gc --prune=…`; `apply --reverse`; `add --force`;
+- `--no-verify` on any command, `commit -n`, `am -n`, `send-email --no-validate`, and
+  `core.hooksPath` set through `-c` or `--config-env`;
 - `git show` or `git cat-file` with stdout redirected to a file;
 - `rebase` over uncommitted changes, or where the guard cannot tell the target;
 - `worktree remove --force`, and `worktree remove` of a worktree with changes or one the guard
   cannot find;
-- `git config` writing `alias.*`, `include.*`, `includeIf.*`, `remote.*`, or `core.hooksPath`, at
-  any scope; `git remote remove`, `rm`, `rename`, `set-url`, or `set-head` on `origin`.
+- `git config` writing `alias.*`, `include.*`, `includeIf.*`, `remote.*`, `pager.*`,
+  `core.hooksPath`, `core.editor`, `core.pager`, `core.sshCommand`, or `sequence.editor`, at any
+  scope, renaming or removing a section that holds one of them, and `git config --edit`, which
+  can write any of them; `git remote remove`, `rm`,
+  `rename`, `set-url`, or `set-head` on `origin`.
 
 <!-- cspell:ignore verif -- a prefix git accepts for --no-verify, which the example needs -->
 
@@ -367,7 +386,8 @@ Pushes and the trunk:
   an agent pushes a branch;
 - in a repository with an `origin`, on its default branch: `commit`, `merge`, `cherry-pick`,
   `revert`, `am`, `rebase`, and `pull` without `--ff-only`. The reason names `ils branch <name>`.
-  The guard asks origin for the default branch once per command, and falls back to the cached
+  A `git rebase` naming the default branch as the branch to rebase counts as one on it. The guard
+  asks origin for the default branch once per command and git dir, and falls back to the cached
   `refs/remotes/origin/HEAD`; with neither, it refuses and names `git fetch origin`;
 - one of those where the guard cannot tell the directory, the target, or HEAD: after `cd -`,
   `popd`, or a `cd` to a non-literal, and after a command that moves HEAD earlier in the list
@@ -385,8 +405,11 @@ Pushes and the trunk:
   `gh repo sync`, `delete`, `edit`, and `create --push`; `gh release delete`, `edit`, `upload`,
   and `delete-asset`; `gh auth token`, `gh auth status --show-token`, and `gh config get
   oauth_token`; `gh pr checkout --force`;
+- an `ils` or `gh` command word that is not a literal (`ils "$cmd"`);
 - `gh alias set`, `import`, and `delete`; a `gh` word that is neither a command nor an alias,
-  extensions included; a `!` alias; and a `gh alias list` that fails.
+  extensions included; a `!` alias; a `gh` alias given an argument that is not a literal to fill
+  a `$N`, or whose expansion the guard cannot read, such as a `$2` left unfilled, or that expands
+  to no `gh` command; and a `gh alias list` that fails.
 
 A read the guard needs that fails (a missing `git`, a `gh alias list` that errors) is a refusal
 that says what broke.
@@ -394,8 +417,9 @@ that says what broke.
 ### Guard JSON output
 
 `ils parse --json` puts its detail under `payload.parse`, and `ils guard --json` under
-`payload.guard`, beside the verdict in `outcome` and `reason`. Both hold `invocations`, in the
-order the shell starts them; a command that does not parse holds none. Each invocation has:
+`payload.guard`, beside the verdict in `outcome` and `reason`. Both hold `invocations`, in the order
+the guard reads them, which is not always the order the shell runs them; a command that does not
+parse holds none. Each invocation has:
 
 | Field   | Type             | Meaning                                                                                                          |
 | ------- | ---------------- | ---------------------------------------------------------------------------------------------------------------- |

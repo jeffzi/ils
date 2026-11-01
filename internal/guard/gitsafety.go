@@ -48,8 +48,12 @@ func discards() map[string]discard {
 			reason: "git branch -D deletes a branch even when its commits are not merged",
 		},
 		"restore": {
-			refuses: func(o subcommandOptions) bool { return !o.names("--staged", "--source") || o.sets('W', "--worktree") },
-			reason:  "git restore without --staged discards changes in the working tree",
+			refuses: func(o subcommandOptions) bool {
+				staged := o.sets('S', "") || o.names("--staged", "--source")
+
+				return !staged || o.sets('W', "--worktree")
+			},
+			reason: "git restore without --staged discards changes in the working tree",
 		},
 		"rm": {
 			refuses: func(o subcommandOptions) bool { return o.sets('f', "--force") },
@@ -346,14 +350,20 @@ func worktreePath(inv Invocation, options subcommandOptions) (path, why string) 
 }
 
 // guardedSections returns the config sections that make git run programs or reach another
-// repository.
+// repository. git runs the value of every `pager.<command>` key as a shell command.
 func guardedSections() []string {
-	return []string{"alias", "include", "includeIf", "remote"}
+	return []string{"alias", "include", "includeIf", "pager", "remote"}
+}
+
+// guardedKeys returns the config keys outside guardedSections that make git run programs:
+// hooksPathKey, and the keys whose value git runs as a shell command.
+func guardedKeys() []string {
+	return append([]string{hooksPathKey}, shellKeys()...)
 }
 
 // refuseGuardedConfigWrite refuses `git config` writing, unsetting, renaming or removing a key
 // or section that changes what git runs or where it pushes: those of guardedSections and
-// hooksPathKey, in any scope. It refuses opening the config in an editor too, which can write
+// guardedKeys, in any scope. It refuses opening the config in an editor too, which can write
 // any key. Reads are allowed, and so is a write of any other key.
 func refuseGuardedConfigWrite(_ context.Context, _ Caller, inv Invocation) (Verdict, error) {
 	sub, ok := subcommand(inv)
@@ -370,8 +380,8 @@ func refuseGuardedConfigWrite(_ context.Context, _ Caller, inv Invocation) (Verd
 	names := words[:min(len(words), 1)]
 	switch action {
 	case "edit":
-		reason := fmt.Sprintf("git config opening an editor can write any key, those the guard protects included: the sections %s and %s",
-			strings.Join(guardedSections(), ", "), hooksPathKey)
+		reason := fmt.Sprintf("git config opening an editor can write any key, those the guard protects included: the sections %s and the keys %s",
+			strings.Join(guardedSections(), ", "), strings.Join(guardedKeys(), ", "))
 
 		return refuse(reason), nil
 	case "set", "unset", "remove-section":
@@ -429,13 +439,22 @@ func configAction(options subcommandOptions) (action string, words []string) {
 }
 
 // guardedConfigName reports whether name, a key or a whole section, is guarded: in a section of
-// guardedSections, or hooksPathKey. git reads the section and the variable name in any case.
+// guardedSections, one of guardedKeys, or a section that holds one of guardedKeys, which a rename
+// or a removal of the whole section writes. git reads the section and the variable name in any
+// case.
 func guardedConfigName(name string) bool {
 	section, _, _ := strings.Cut(name, ".")
+	matches := func(guarded string) func(string) bool {
+		return func(s string) bool { return strings.EqualFold(s, guarded) }
+	}
+	holdsKey := func(key string) bool {
+		keySection, _, _ := strings.Cut(key, ".")
 
-	inSection := slices.ContainsFunc(guardedSections(), func(s string) bool { return strings.EqualFold(s, section) })
+		return strings.EqualFold(name, keySection)
+	}
 
-	return inSection || strings.EqualFold(name, hooksPathKey)
+	return slices.ContainsFunc(guardedSections(), matches(section)) || slices.ContainsFunc(guardedKeys(), matches(name)) ||
+		slices.ContainsFunc(guardedKeys(), holdsKey)
 }
 
 // refuseOriginRewrite refuses a `git remote` operation that removes or renames origin, or points it elsewhere.

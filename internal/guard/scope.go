@@ -29,6 +29,9 @@ type scope struct {
 	// dir is the directory commands run in; empty when unknown.
 	dir string
 	env environment
+	// redirects are the redirects in effect on the shell's own descriptors: those of each compound
+	// command the walk is inside, outermost first, then those an `exec` with no command made.
+	redirects []Redirect
 }
 
 // environment is what the guard knows of the variables it follows: those that point git at a
@@ -100,6 +103,10 @@ func merge(a, b scope) scope {
 	a.env.gitDir = a.env.gitDir.or(b.env.gitDir)
 	a.env.workTree = a.env.workTree.or(b.env.workTree)
 	a.env.cdPath = a.env.cdPath.or(b.env.cdPath)
+	if _, toFile := (Invocation{Redirects: a.redirects}).Stdout(); !toFile {
+		// Either side's stdout may be in effect, so the one that sends it to a file decides.
+		a.redirects = b.redirects
+	}
 
 	return a
 }
@@ -182,7 +189,8 @@ func (w *walker) list(stmts []*syntax.Stmt, sc *scope) {
 
 // stmt walks one statement. One run in the background runs in a subshell, so what it changes
 // stays in it. bash opens a compound command's redirects before it runs the body, so the
-// substitutions in them start from the shell as it is before the body.
+// substitutions in them start from the shell as it is before the body, and every command in the
+// body runs with them.
 func (w *walker) stmt(stmt *syntax.Stmt, sc *scope) {
 	if stmt.Background || stmt.Coprocess {
 		inner := *sc
@@ -197,7 +205,40 @@ func (w *walker) stmt(stmt *syntax.Stmt, sc *scope) {
 		w.substitutions(r, sc)
 	}
 
+	own := redirectsOf(stmt, w.caller.Home)
+	before := sc.redirects
+	sc.redirects = slices.Concat(before, own)
 	w.compound(stmt.Cmd, sc)
+	sc.redirects = restored(before, own, sc.redirects)
+}
+
+// restored returns the redirects in effect once a command whose own redirects are own ends, given
+// those in effect before it and those at its end. bash restores each descriptor the command
+// redirected, so what an `exec` inside it did to stdout holds after it only when the command
+// leaves stdout alone.
+func restored(before, own, after []Redirect) []Redirect {
+	switch {
+	case len(own) == 0:
+		return after
+	case slices.ContainsFunc(own, ontoStdout):
+		return before
+	default:
+		return slices.Concat(before, after[len(before)+len(own):])
+	}
+}
+
+// ontoStdout reports whether the redirect r changes where stdout goes.
+func ontoStdout(r Redirect) bool {
+	if strings.HasPrefix(r.Op, "&>") {
+		return true
+	}
+
+	fd := r.Fd
+	if fd == "" && !strings.HasPrefix(r.Op, "<") {
+		fd = "1"
+	}
+
+	return fd == "1"
 }
 
 // compound walks a command that holds other commands.
@@ -356,8 +397,7 @@ func (w *walker) script(script string, inv Invocation, sc *scope) {
 		return
 	}
 
-	inner := *sc
-	inner.env = sc.commandEnv(inv)
+	inner := sc.runScope(inv)
 	w.nested(file, &inner)
 	if w.err != nil {
 		w.err = fmt.Errorf("parse the string %q runs: %w", name, w.err)
@@ -377,6 +417,74 @@ func (w *walker) script(script string, inv Invocation, sc *scope) {
 	w.kept = w.kept[:at]
 	sc.dir = inner.dir
 	sc.env = after.env
+	sc.redirects = restored(sc.redirects, inv.Redirects, inner.redirects)
+}
+
+// runScope returns the scope a string the invocation inv has run starts in, run from sc: the
+// environment inv runs with, and its own redirects in effect after those of the shell.
+func (sc *scope) runScope(inv Invocation) scope {
+	inner := *sc
+	inner.env = sc.commandEnv(inv)
+	inner.redirects = slices.Concat(sc.redirects, inv.Redirects)
+
+	return inner
+}
+
+// laterScope returns the scope of a string a variable set for later commands holds: any later
+// command may run it, from a directory and with git variables the guard cannot tell.
+func laterScope() scope {
+	unknown := variable{unknown: true}
+
+	return scope{env: environment{gitDir: unknown, workTree: unknown, cdPath: unknown}}
+}
+
+// commandVariables are the variables whose value git runs as a shell command: its own, and the
+// EDITOR, VISUAL, and PAGER it falls back to when neither its variable nor its config is set.
+func commandVariables() []string {
+	return []string{"GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_PAGER", "EDITOR", "VISUAL", "PAGER"}
+}
+
+// variableScripts returns the value of each of assignments that sets one of commandVariables, and
+// marks inv instead when one is not a literal or would nest past maxDepth.
+func (w *walker) variableScripts(inv *Invocation, assignments []Assignment) []string {
+	var values []Word
+	for _, a := range assignments {
+		if slices.Contains(commandVariables(), a.Name) {
+			values = append(values, a.Value)
+		}
+	}
+
+	scripts, mark := literalScripts(values)
+	if len(scripts) > 0 && w.depth == maxDepth {
+		scripts, mark = nil, DeepScript
+	}
+
+	if mark != "" {
+		inv.Marks = append(inv.Marks, Mark{Kind: mark})
+	}
+
+	return scripts
+}
+
+// variableCommands walks scripts, the shell commands a variable git reads holds, one level deeper
+// from sc.
+func (w *walker) variableCommands(scripts []string, sc scope) {
+	for _, script := range scripts {
+		file, err := read(script)
+		if err != nil {
+			w.err = fmt.Errorf("parse the string a git variable holds: %w", err)
+
+			return
+		}
+
+		inner := sc
+		w.nested(file, &inner)
+		if w.err != nil {
+			w.err = fmt.Errorf("parse the string a git variable holds: %w", w.err)
+
+			return
+		}
+	}
 }
 
 // nested walks the commands of file, a string run one level deeper, from sc.
@@ -390,6 +498,7 @@ func (w *walker) nested(file *syntax.File, sc *scope) {
 // placed returns inv with where it runs: its directory, and where it points git.
 func (w *walker) placed(inv Invocation, sc *scope) Invocation {
 	inv.Dir = sc.dir
+	inv.enclosing = sc.redirects
 	if inv.Tool == Git {
 		inv.Git = readGitCall(inv.Words)
 		inv.Target = sc.targetOf(inv)
@@ -415,6 +524,11 @@ func (sc *scope) apply(inv Invocation) {
 	}
 
 	switch inv.Words[0].Text {
+	case "exec":
+		// `exec` with no command applies its redirects to the shell itself.
+		if len(inv.Words) == 1 {
+			sc.redirects = slices.Concat(sc.redirects, inv.Redirects)
+		}
 	case "cd", "pushd":
 		sc.cd(inv.Words[1:], sc.commandEnv(inv).cdPath)
 	case "popd":
@@ -486,6 +600,19 @@ func (sc *scope) declare(decl *syntax.DeclClause, home string) {
 
 		sc.env.set(a.Name.Value, v)
 	}
+}
+
+// declared returns the assignments the declaration decl makes: each `NAME=value` among its
+// arguments.
+func declared(decl *syntax.DeclClause, home string) []Assignment {
+	var assignments []Assignment
+	for _, a := range decl.Args {
+		if a.Name != nil && !a.Naked {
+			assignments = append(assignments, assignmentOf(a, home))
+		}
+	}
+
+	return assignments
 }
 
 // commandEnv returns the environment the invocation inv runs with, run from sc: the shell's, then
@@ -570,8 +697,7 @@ func movesHead(inv Invocation) bool {
 	words := inv.Words
 	switch inv.Tool {
 	case GH:
-		return len(words) > 2 && words[1].Literal && words[1].Text == "pr" && words[2].Literal &&
-			words[2].Text == "checkout"
+		return ghMovesHead(words[1:])
 	case Git:
 	default:
 		return false
@@ -597,9 +723,7 @@ func movesHead(inv Invocation) bool {
 	case "symbolic-ref":
 		return positionals(args, func(text string) bool { return text == "-m" }) > 1
 	case "branch":
-		return slices.ContainsFunc(args, func(arg Word) bool {
-			return arg.Literal && (arg.Text == "-m" || arg.Text == "-M" || arg.Text == "--move")
-		})
+		return slices.ContainsFunc(args, isBranchMove)
 	case "rebase":
 		// The last of two operands is a branch rebase switches to first; with `--root` there is no
 		// upstream operand, so one operand is that branch.
@@ -611,6 +735,43 @@ func movesHead(inv Invocation) bool {
 		return positionals(args, takesRebaseValue) >= branchAt
 	default:
 		return false
+	}
+}
+
+// ghMovesHead reports whether gh given args may move HEAD: `gh pr checkout`, and a first command
+// word that is none of gh's commands, since an alias or an extension may check out a branch. It
+// finds the command words the way Cobra does, past the values of flags; one that is not a literal
+// may be any of them.
+func ghMovesHead(args []Word) bool {
+	at := commandWords(args, ghSwitches())
+	if len(at) == 0 {
+		return false
+	}
+
+	first := args[at[0]]
+	if !first.Literal || !ghCommands()[first.Text] {
+		return true
+	}
+
+	return first.Text == "pr" && len(at) > 1 && (!args[at[1]].Literal || args[at[1]].Text == "checkout")
+}
+
+// isBranchMove reports whether arg is an option `git branch` reads as `--move`: `m` or `M` in a
+// short-flag bundle ahead of any `u`, whose rest is the value of `-u`, or a prefix of `--move` git
+// reads as it.
+func isBranchMove(arg Word) bool {
+	text := arg.Text
+	switch {
+	case !arg.Literal || !strings.HasPrefix(text, "-"):
+		return false
+	case strings.HasPrefix(text, "--"):
+		const move = "--move"
+
+		return len(text) >= len("--mo") && len(text) <= len(move) && text == move[:len(text)]
+	default:
+		bundle, _, _ := strings.Cut(text[1:], "u")
+
+		return strings.ContainsAny(bundle, "mM")
 	}
 }
 

@@ -156,7 +156,7 @@ func TestParse_ReportsWhereEachGitInvocationPointsGit(t *testing.T) {
 			want:    guard.GitTarget{Dir: start, GitDir: "/srv/two.git"},
 		},
 		{name: "--work-tree", command: "git --work-tree wt -C sub status", want: guard.GitTarget{Dir: start + "/sub", WorkTree: start + "/sub/wt"}},
-		{name: "past the value of -c", command: "git -c core.pager=cat -C sub status", want: guard.GitTarget{Dir: start + "/sub"}},
+		{name: "past the value of -c", command: "git -c color.ui=never -C sub status", want: guard.GitTarget{Dir: start + "/sub"}},
 		{name: "a subcommand's own -C", command: "git log -C sub", want: guard.GitTarget{Dir: start}},
 		{name: "non-literal -C", command: `git -C "$d" status`, want: guard.GitTarget{}},
 		{name: "non-literal -C then a relative --git-dir", command: `git -C "$d" --git-dir=.git status`, want: guard.GitTarget{Unknown: true}},
@@ -287,14 +287,68 @@ func TestParse_WhenAVariableIsNoUnlistedGitVariable_MarksNothing(t *testing.T) {
 	}{
 		{name: "allowed git variable", command: "GIT_PAGER=cat git log"},
 		{name: "variable outside git's names", command: "PAGER=cat git log"},
+		{name: "editor variable naming a program", command: "GIT_EDITOR=vim git commit"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := only(t, tt.command)
+			got := parseWith(t, tt.command, nil)
 
-			assert.Check(t, is.Len(got.Marks, 0), "Parse(%q) marks", tt.command)
+			for _, inv := range got {
+				assert.Check(t, is.Len(inv.Marks, 0), "Parse(%q) marks of %v", tt.command, inv.Words)
+			}
+		})
+	}
+}
+
+func TestParse_WhenAGitVariableNamesACommandGitRuns_ParsesItsCommands(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+		want    []string
+	}{
+		{name: "sequence editor as an assignment prefix", command: "GIT_SEQUENCE_EDITOR='git push origin main; true' git rebase -i HEAD~1", want: []string{"git", "push", "origin", "main"}},
+		{name: "editor as an assignment prefix", command: "GIT_EDITOR=vim git commit", want: []string{"vim"}},
+		{name: "editor through env", command: "env GIT_EDITOR='git push origin main' git commit", want: []string{"git", "push", "origin", "main"}},
+		{name: "pager exported earlier in the list", command: "export GIT_PAGER='git push origin main'; git log", want: []string{"git", "push", "origin", "main"}},
+		{name: "editor git falls back to", command: "EDITOR='git push origin main' git commit", want: []string{"git", "push", "origin", "main"}},
+		{name: "visual editor git falls back to", command: "VISUAL='git push origin main' git commit", want: []string{"git", "push", "origin", "main"}},
+		{name: "pager git falls back to", command: "PAGER='git push origin main' git log", want: []string{"git", "push", "origin", "main"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := parseWith(t, tt.command, nil)
+
+			assert.Check(t, is.Contains(texts(got), tt.want), "Parse(%q)", tt.command)
+		})
+	}
+}
+
+func TestParse_WhenACommandAGitVariableNamesCannotBeRead_MarksIt(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+		want    guard.MarkKind
+		index   int
+	}{
+		{name: "non-literal editor", command: `GIT_EDITOR="$e" git commit`, want: guard.DynamicScript},
+		{name: "pager past the third level", command: "eval eval eval GIT_PAGER=less git log", index: 3, want: guard.DeepScript},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := parseWith(t, tt.command, nil)
+
+			assert.Assert(t, len(got) > tt.index, "Parse(%q) = %v", tt.command, texts(got))
+			assert.Check(t, is.DeepEqual(got[tt.index].Marks, []guard.Mark{{Kind: tt.want}}), "Parse(%q) marks", tt.command)
 		})
 	}
 }
@@ -325,6 +379,13 @@ func TestParse_ReportsWhetherHeadMayHaveMovedBeforeEachInvocation(t *testing.T) 
 		{name: "bisect", command: "git bisect start; git commit", want: []bool{false, true}},
 		{name: "gh pr checkout", command: "gh pr checkout 12; git commit", want: []bool{false, true}},
 		{name: "gh pr view", command: "gh pr view 12; git commit", want: []bool{false, false}},
+		{name: "gh pr checkout past a value flag", command: "gh pr -R o/r checkout 12 && git commit -m x", want: []bool{false, true}},
+		{name: "gh command word gh does not ship", command: "gh co 12; git commit", want: []bool{false, true}},
+		{name: "branch -m ending a short-flag bundle", command: "git branch -fm next; git commit", want: []bool{false, true}},
+		{name: "branch -M leading a short-flag bundle", command: "git branch -Mf next; git commit", want: []bool{false, true}},
+		{name: "prefix of branch --move", command: "git branch --mo next; git commit", want: []bool{false, true}},
+		{name: "branch short-flag bundle without a move", command: "git branch -av; git commit", want: []bool{false, false}},
+		{name: "branch long option sharing the move prefix", command: "git branch --merged; git commit", want: []bool{false, false}},
 		{name: "switch behind global options", command: "git -C sub switch main; git commit", want: []bool{false, true}},
 		{name: "switch in a subshell", command: "(git switch main); git commit", want: []bool{false, true}},
 	}

@@ -243,10 +243,12 @@ func TestJudge_JudgesTheExpansionOfAGhAlias(t *testing.T) {
 	const aliases = "co: pr checkout\n" +
 		"dl: release delete\n" +
 		`finder: '!gh issue list | grep "$1"'` + "\n" +
+		"mg: pr merge $1\n" +
 		"pm: pr merge\n" +
 		"rd: release delete $1\n" +
 		"two: release delete $1 $2\n" +
-		"vw: pr $1\n"
+		"vw: pr $1\n" +
+		"x: api $1\n"
 	ghtest.Setup(t, ghtest.Says(aliases, "alias", "list"))
 
 	checkJudgedInTurn(t, []judged{
@@ -259,6 +261,8 @@ func TestJudge_JudgesTheExpansionOfAGhAlias(t *testing.T) {
 		{name: "argument put in place of a write", command: "gh rd v0.6.0", want: guard.Refuse, wantNamed: "gh release delete"},
 		{name: "argument not a literal", command: `gh rd "$tag"`, want: guard.Refuse, wantNamed: "not a literal"},
 		{name: "placeholder left unfilled", command: "gh two v0.6.0", want: guard.Refuse, wantNamed: "cannot read"},
+		{name: "arguments past the placeholders appended", command: "gh mg 3 --admin", want: guard.Refuse, wantNamed: "--admin"},
+		{name: "arguments past the placeholders appended to an api read", command: "gh x repos/o/r -X POST", want: guard.Refuse, wantNamed: "gh api"},
 	})
 }
 
