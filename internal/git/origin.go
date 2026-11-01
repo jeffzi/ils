@@ -324,6 +324,26 @@ func (r Repo) LastFetchedTrunk(ctx context.Context) (trunk string, found bool, e
 	return r.symbolicRef(ctx, remotesRef+"HEAD", remotesRef)
 }
 
+// TrunkOrLastFetched returns origin's default branch, asked of origin under ctx, or as the clone
+// last fetched it when origin does not answer before ctx ends; found is false when origin did not
+// answer and the clone holds no such ref.
+//
+// The read of the last fetch runs past ctx's end, so a deadline that cut the call to origin still
+// leaves the clone's own answer. An answer from origin that names no branch is ErrNoSymref, never
+// the last fetch.
+func (r Repo) TrunkOrLastFetched(ctx context.Context) (trunk string, found bool, err error) {
+	trunk, err = r.Trunk(ctx)
+	if err == nil {
+		return trunk, true, nil
+	}
+
+	if _, unanswered := errors.AsType[*RemoteError](err); !unanswered {
+		return "", false, err
+	}
+
+	return r.LastFetchedTrunk(context.WithoutCancel(ctx))
+}
+
 // LastFetched returns the sha of origin's branch name as last fetched, without asking origin;
 // found is false when the clone holds no remote-tracking ref for it.
 func (r Repo) LastFetched(ctx context.Context, name string) (sha string, found bool, err error) {

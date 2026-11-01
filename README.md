@@ -5,11 +5,15 @@ language model (LLM) agent that runs it cannot skip a step or push to the wrong 
 command runs only standard `git` and `gh` commands, prints what it did and what to do next, and
 keeps no state of its own.
 
-`ils` has five commands. `ils branch <name>` starts a work branch from the default branch
-as origin has it. `ils push` pushes a branch, opens its pull request, and waits for the checks.
-`ils merge` squash-merges that pull request once its checks are green. `ils status` says where the
-checkout stands and what to run next. `ils release <X.Y.Z>` tags the release commit once its checks
-are green, and publishes the GitHub release.
+`ils` has five commands for landing a change. `ils branch <name>` starts a work branch from the
+default branch as origin has it. `ils push` pushes a branch, opens its pull request, and waits for
+the checks. `ils merge` squash-merges that pull request once its checks are green. `ils status` says
+where the checkout stands and what to run next. `ils release <X.Y.Z>` tags the release commit once
+its checks are green, and publishes the GitHub release.
+
+[The guard](#the-guard) judges an agent's shell commands before they run: `ils hook claude` is
+Claude Code's `PreToolUse` hook, `ils guard` gives the same verdict to any caller, and `ils parse`
+prints how the guard reads a command.
 
 - [Example](#example)
 - [Install](#install)
@@ -29,6 +33,8 @@ are green, and publishes the GitHub release.
   - [Release by hand](#release-by-hand)
 - [Reference](#reference)
 - [Use with Claude Code](#use-with-claude-code)
+- [The guard](#the-guard)
+  - [Wire the guard into Claude Code](#wire-the-guard-into-claude-code)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -385,6 +391,8 @@ gh release create v1.2.0 --repo <host>/<owner>/<name> --verify-tag --title v1.2.
 - [Refusals](docs/reference.md#refusals), every precondition each command checks;
 - [JSON output](docs/reference.md#json-output), the object `--json` prints and each command's
   payload;
+- [The guard](docs/reference.md#the-guard): `ils guard`, `ils parse`, and `ils hook`, and every
+  rule;
 - [Terminal output](docs/reference.md#terminal-output): the spinner, step lines, color, and `-d`.
 
 ## Use with Claude Code
@@ -418,6 +426,79 @@ To make Claude Code ask you before every merge or release, add `ask` rules to yo
   }
 }
 ```
+
+## The guard
+
+The guard judges a shell command before an agent runs it. It parses the command with a bash parser,
+finds the `git`, `gh`, and `ils` calls in it, nested ones included, and answers allow, refuse, or
+ask.
+
+It refuses:
+
+- git operations that destroy work or skip the hooks;
+- `git push` in any form it can read;
+- commits on the default branch;
+- `gh` calls that land a change, publish or delete a release, move the default branch, sync or
+  delete a repository, or print the auth token;
+- a command it cannot read.
+
+It asks before `ils merge`, `ils release`, `gh pr merge`, and `gh release create`, and only when
+the command is that one call by its bare name, so the prompt shows exactly what runs. In any other
+form, such as in a list, a pipe, or behind a wrapper, it refuses them.
+[What the guard refuses](docs/reference.md#what-the-guard-refuses) lists every rule.
+
+The guard lowers the odds of an accident; it is not a sandbox. It does not see:
+
+- an interpreter that is not a shell, such as `python -c 'subprocess.run(["git", "push"])'`;
+- a command held in a variable and handed to a command the guard does not know, such as `su -c
+  "$cmd"`;
+- `go run . merge` in this repository, or `go run github.com/jeffzi/ils@<tag> merge` anywhere,
+  which hold no `ils` word;
+- a task runner (`task`, `make`, `npm run`) running lines from a file the agent wrote;
+- `gh workflow run` of a workflow whose token can push, tag, or release;
+- an alias or function from your shell config, such as `gp='git push'`, which the agent's shell
+  runs with no `git` word in the command.
+
+The guard runs on macOS and Linux. On Windows its commands refuse.
+
+### Wire the guard into Claude Code
+
+Add a `PreToolUse` hook on `Bash` that runs `hook.sh` from the installed `ils` skill, here at its
+global install path. `onFailure` needs Claude Code 2.1.295 or later:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/skills/ils/hook.sh",
+            "timeout": 15,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+`hook.sh` runs `ils hook claude` and blocks the command whenever `ils` cannot answer: when it is
+not installed or cannot start, and when it exits with a code the hook contract does not know. A
+missing or broken binary blocks every command. Reinstall it from Claude Code's prompt with a `!`
+command, which skips the hook: `! go install github.com/jeffzi/ils@latest`, or `! task install`
+from a clone of `ils`. Keep the four `ask` rules from [Use with Claude Code](#use-with-claude-code)
+beside it, and add `deny` rules for the commands you never want run, such as `Bash(git push:*)`
+and `Bash(gh auth token:*)`: the permission rules are the first layer and the guard the second.
+
+The guard reads the default branch from origin and falls back to the copy `git fetch` keeps. In a
+repository made with `gh repo create --source . --push`, run `git remote set-head origin --auto`
+once, so that the guard has that copy when origin cannot be reached. With git 2.48 or later, `git
+fetch origin` also works. Run it as a `!` command or outside the agent, since the guard refuses
+`set-head` on origin.
 
 ## Contributing
 

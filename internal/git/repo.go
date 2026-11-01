@@ -37,6 +37,9 @@ const (
 	// fatalCode is the exit of a git command that died of a fatal error, and of git when it cannot
 	// start the program of a one-word command line, which it runs without a shell.
 	fatalCode = 128
+	// notRepositoryMessage is what git says, in the C locale, when it finds no repository where it
+	// looks.
+	notRepositoryMessage = "not a git repository"
 
 	commitFormat = "--format=%H %s"
 )
@@ -153,7 +156,12 @@ func (r Repo) HasCommits(ctx context.Context, branch string) (bool, error) {
 
 // GitDir returns the absolute path of the repository's git directory.
 func (r Repo) GitDir(ctx context.Context) (string, error) {
-	dir, err := r.line(ctx, "rev-parse", "--absolute-git-dir")
+	return r.gitDir(ctx)
+}
+
+// gitDir returns the absolute path of the git directory git finds when given the global options.
+func (r Repo) gitDir(ctx context.Context, options ...string) (string, error) {
+	dir, err := r.line(ctx, append(slices.Clone(options), "rev-parse", "--absolute-git-dir")...)
 	if err != nil {
 		return "", err
 	}
@@ -161,11 +169,40 @@ func (r Repo) GitDir(ctx context.Context) (string, error) {
 	return filepath.FromSlash(dir), nil
 }
 
-// DirtyFiles returns the tracked files that differ from HEAD, staged or not; the tree is dirty when
-// there is at least one.
+// FindGitDir returns the absolute path of the git directory git finds when given the global
+// options, such as `-C` or `--git-dir`, from the runner's directory, and found false when git says
+// there is no repository there. Any other exit of git, such as for a `-C` directory that does not
+// exist, is git's *child.ExitError; a git missing from PATH is a *child.ToolMissingError.
 //
-// Untracked files are not listed. A repository git cannot read is an error.
-func (r Repo) DirtyFiles(ctx context.Context) ([]string, error) {
+// Git tells the two apart only by its message, so the call runs in the C locale to keep that
+// message untranslated.
+func (r Repo) FindGitDir(ctx context.Context, options ...string) (dir string, found bool, err error) {
+	runner := r.Runner
+	runner.Env = append(runner.Environ(), "LC_ALL=C")
+	dir, err = Repo{Runner: runner}.gitDir(ctx, options...)
+	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && exitErr.Code == fatalCode &&
+		strings.Contains(exitErr.Stderr, notRepositoryMessage) {
+		return "", false, nil
+	}
+
+	if err != nil {
+		return "", false, err
+	}
+
+	return dir, true, nil
+}
+
+// Alias returns what the alias name expands to in the config git reads when given the global
+// options, and set false when no such alias is set. A failure of git itself is an error, never an
+// alias that is not set.
+func (r Repo) Alias(ctx context.Context, name string, options ...string) (expansion string, set bool, err error) {
+	return r.optionalLine(ctx, append(slices.Clone(options), "config", "--get", "alias."+name)...)
+}
+
+// ChangedTrackedFiles returns the tracked files that differ from HEAD, staged or not. Untracked
+// files are not listed, so an empty list does not mean the tree is clean: Dirty says that. A
+// repository git cannot read is an error.
+func (r Repo) ChangedTrackedFiles(ctx context.Context) ([]string, error) {
 	result, err := r.Runner.Run(ctx, "status", "--porcelain=v1", "-z", "--untracked-files=no")
 	if err != nil {
 		return nil, err
@@ -191,6 +228,20 @@ func (r Repo) DirtyFiles(ctx context.Context) ([]string, error) {
 	}
 
 	return files, nil
+}
+
+// Dirty reports whether the work tree git finds when given the global options, such as `-C`, from
+// the runner's directory holds uncommitted changes, staged or not, or untracked files, whatever
+// status.showUntrackedFiles says. Ignored files do not count. A work tree git cannot read is an
+// error.
+func (r Repo) Dirty(ctx context.Context, options ...string) (bool, error) {
+	args := append(slices.Clone(options), "status", "--porcelain=v1", "--untracked-files=normal")
+	result, err := r.Runner.Run(ctx, args...)
+	if err != nil {
+		return false, err
+	}
+
+	return result.Stdout != "", nil
 }
 
 // Divergence returns how many commits a has that b lacks, and how many b has that a lacks.

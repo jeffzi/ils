@@ -215,33 +215,120 @@ func TestRepo_WhenNotARepository_ReturnsExitError(t *testing.T) {
 	tests := []repoCall{
 		{name: "Standing", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.Standing(ctx) }},
 		{name: "GitDir", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.GitDir(ctx) }},
+		{name: "Dirty", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.Dirty(ctx) }},
 	}
 
 	checkExitErrorOutsideRepo(t, tests)
 }
 
-func TestRepo_DirtyFiles_WhenStagedAndUnstagedChanges_ListsBoth(t *testing.T) {
+func TestRepo_FindGitDir(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	tests := []struct {
+		name      string
+		wantDir   string
+		options   []string
+		wantFound bool
+	}{
+		{name: "work tree named by -C", options: []string{"-C", f.Dir()}, wantDir: filepath.Join(f.Dir(), ".git"), wantFound: true},
+		{name: "directory that holds no repository", options: []string{"-C", t.TempDir()}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, found, err := outsideRepo(t).FindGitDir(t.Context(), tt.options...)
+			assert.NilError(t, err, "FindGitDir(%q)", tt.options)
+
+			assert.Check(t, is.Equal(found, tt.wantFound), "FindGitDir(%q) found", tt.options)
+			assert.Check(t, is.Equal(got, tt.wantDir), "FindGitDir(%q)", tt.options)
+		})
+	}
+}
+
+func TestRepo_FindGitDir_WhenGitFailsForAnotherReason_ReturnsExitError(t *testing.T) {
+	t.Parallel()
+	options := []string{"-C", filepath.Join(t.TempDir(), "absent")}
+
+	got, found, err := outsideRepo(t).FindGitDir(t.Context(), options...)
+
+	_, ok := errors.AsType[*child.ExitError](err)
+	assert.Check(t, ok, "FindGitDir(%q) error = %v, want *child.ExitError", options, err)
+	assert.Check(t, !found, "FindGitDir(%q) = %q, want not found", options, got)
+}
+
+func TestRepo_Alias(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.Git("config", "--local", "alias.co", "checkout -b")
+	tests := []struct {
+		name    string
+		alias   string
+		want    string
+		wantSet bool
+	}{
+		{name: "alias set in the repository", alias: "co", want: "checkout -b", wantSet: true},
+		{name: "alias not set", alias: "ci"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, set, err := outsideRepo(t).Alias(t.Context(), tt.alias, "-C", f.Dir())
+			assert.NilError(t, err, "Alias(%q)", tt.alias)
+
+			assert.Check(t, is.Equal(set, tt.wantSet), "Alias(%q) set", tt.alias)
+			assert.Check(t, is.Equal(got, tt.want), "Alias(%q)", tt.alias)
+		})
+	}
+}
+
+func TestRepo_ChangedTrackedFiles_WhenStagedAndUnstagedChanges_ListsBoth(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
 	dirty := f.DirtyFile()
 	want := []string{f.StagedFile(), dirty}
 
-	got, err := newRepo(f).DirtyFiles(t.Context())
+	got, err := newRepo(f).ChangedTrackedFiles(t.Context())
 	assert.NilError(t, err)
 
 	assert.Check(t, is.DeepEqual(got, want))
 }
 
-func TestRepo_DirtyFiles_WhenTrackedFileRenamedInIndex_ListsNewNameOnly(t *testing.T) {
+func TestRepo_ChangedTrackedFiles_WhenTrackedFileRenamedInIndex_ListsNewNameOnly(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
 	moved := renameTracked(t, f)
 	want := []string{moved, f.DirtyFile()}
 
-	got, err := newRepo(f).DirtyFiles(t.Context())
+	got, err := newRepo(f).ChangedTrackedFiles(t.Context())
 	assert.NilError(t, err)
 
 	assert.Check(t, is.DeepEqual(got, want))
+}
+
+func TestRepo_Dirty(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		arrange func(t *testing.T, f *gittest.Fixture)
+		name    string
+		want    bool
+	}{
+		{name: "clean tree", arrange: func(*testing.T, *gittest.Fixture) {}, want: false},
+		{name: "unstaged change", arrange: func(_ *testing.T, f *gittest.Fixture) { f.DirtyFile() }, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			tt.arrange(t, f)
+
+			got, err := newRepo(f).Dirty(t.Context())
+			assert.NilError(t, err)
+
+			assert.Check(t, is.Equal(got, tt.want))
+		})
+	}
 }
 
 func TestRepo_Divergence_WhenFirstIsAhead_CountsItsCommitsAsAhead(t *testing.T) {

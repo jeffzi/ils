@@ -3,8 +3,44 @@ package cli
 import (
 	"fmt"
 
+	"github.com/spf13/cobra"
+
 	"github.com/jeffzi/ils/internal/landing"
 )
+
+// parseHeader returns the `ils parse` command with its help, which each build of the guard
+// completes with its own Args and RunE.
+func parseHeader() *cobra.Command {
+	return &cobra.Command{
+		Use:     parseUse,
+		Short:   parseShort,
+		Long:    parseLong,
+		Example: parseExamples,
+	}
+}
+
+// guardHeader returns the `ils guard` command with its help, which each build of the guard
+// completes with its own Args and RunE.
+func guardHeader() *cobra.Command {
+	return &cobra.Command{
+		Use:     guardUse,
+		Short:   guardShort,
+		Long:    guardLong,
+		Example: guardExamples,
+	}
+}
+
+// hookHeader returns the `ils hook` command with its help and flag parsing off, which each build
+// of the guard completes with its own RunE.
+func hookHeader() *cobra.Command {
+	return &cobra.Command{
+		Use:                hookUse,
+		Short:              hookShort,
+		Long:               hookLong,
+		Example:            hookExamples,
+		DisableFlagParsing: true,
+	}
+}
 
 // withTimeLimits returns text with each %[1]s set to the time limit and each %[2]s set to the time
 // limit of the long wait, as results name them, so that the help says the limits the command
@@ -125,4 +161,57 @@ ils status
 
 # The same result as one JSON object
 ils status --json`
+
+	parseWord  = landing.ParseCommand
+	parseUse   = parseWord + " --cwd <dir> -- '<command>'"
+	parseShort = "Show how the guard reads a shell command"
+	parseLong  = `Read a shell command as the guard does, as run from <dir>, and show every
+command it starts: its words, what the guard would refuse in it, the
+directory it runs in, and for git the subcommand, its arguments and the
+git dir it targets. The command goes after -- as one quoted word.
+
+It runs nothing of the command and refuses nothing it holds: it exits 0
+once the command is read, and 1 when the command does not parse or a read
+of git it needs fails. The guard runs on macOS and Linux.`
+
+	parseExamples = `# Show the commands a shell command starts
+ils parse --cwd . -- 'git switch main && git pull'
+
+# The same as one JSON object, for a filter such as jq
+ils parse --cwd . --json -- 'git push'`
+
+	guardWord  = landing.GuardCommand
+	guardUse   = guardWord + " --cwd <dir> -- '<command>'"
+	guardShort = "Judge a shell command as the guard does"
+	guardLong  = `Read a shell command as the guard does, as run from <dir>, and judge
+every git, gh and ils command it starts. The command goes after -- as one
+quoted word.
+
+It runs nothing of the command. It exits 0 when the guard allows the
+command, 2 when it refuses it, and 3 when it asks you first; a command it
+cannot read, or a read of git it cannot make, is a refusal. The guard
+runs on macOS and Linux.`
+
+	guardExamples = `# Judge a shell command
+ils guard --cwd . -- 'git push --force'
+
+# The verdict, its reason and every command, as one JSON object
+ils guard --cwd . --json -- 'ils merge'`
+
+	hookWord  = landing.HookCommand
+	hookUse   = hookWord + " <harness>"
+	hookShort = "Judge a coding agent's shell command as its pre-tool hook"
+	hookLong  = `Read the payload a coding agent's harness hands its pre-tool hook on
+stdin, judge the shell command in it as ils guard does, and answer in
+the harness's own terms. The one harness is claude, Claude Code's
+PreToolUse hook.
+
+It exits 0 with nothing printed when the guard allows the command, or
+when the tool is not Bash; 2 with the reason on stderr when it refuses
+it; and 0 with the ask as JSON on stdout when the guard asks you first.
+A payload it cannot read, and any error, is a refusal: it never exits 1.
+The guard runs on macOS and Linux.`
+
+	hookExamples = `# Judge a payload as Claude Code's PreToolUse hook
+ils hook claude < payload.json`
 )

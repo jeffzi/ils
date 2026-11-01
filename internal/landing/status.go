@@ -169,7 +169,7 @@ func (r *reading) readTree(ctx context.Context) {
 		return
 	}
 
-	files, err := r.deps.Repo.DirtyFiles(ctx)
+	files, err := r.deps.Repo.ChangedTrackedFiles(ctx)
 	if err != nil {
 		r.failed(readTree, err)
 

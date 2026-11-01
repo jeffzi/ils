@@ -1,6 +1,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
@@ -9,7 +10,9 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -42,6 +45,19 @@ type Runner struct {
 	// Logger, when set, receives one debug record per call once it ends: the record child.Exec.Log
 	// writes.
 	Logger *slog.Logger
+	// Env is gh's whole environment; nil inherits this process's. gh itself is found through this
+	// process's GH_PATH and PATH whatever Env holds.
+	Env []string
+}
+
+// Environ returns a copy of the environment gh runs with: the runner's own Env, or the environment
+// of this process when it has none.
+func (r Runner) Environ() []string {
+	if r.Env == nil {
+		return os.Environ()
+	}
+
+	return slices.Clone(r.Env)
 }
 
 // Result is what a call left behind, as child.Output holds it.
@@ -72,20 +88,39 @@ func (e *DecodeError) Unwrap() error {
 // half-written stdout is never read.
 func (r Runner) Run(ctx context.Context, args ...string) (Result, error) {
 	start := time.Now()
-	result, err := run(ctx, args)
+	result, err := r.run(ctx, args)
 	child.Exec{Tool: Program, Args: args, Err: err, Took: time.Since(start)}.Log(ctx, r.Logger)
 
 	return result, err
 }
 
 // run is Run without the log record.
-func run(ctx context.Context, args []string) (Result, error) {
-	stdout, stderr, err := gh.ExecContext(ctx, args...)
+func (r Runner) run(ctx context.Context, args []string) (Result, error) {
+	var stdout, stderr bytes.Buffer
+
+	err := r.execute(ctx, args, &stdout, &stderr)
 	if isMissing(err) {
 		return Result{}, &child.ToolMissingError{Tool: Program, InstallURL: installURL, Err: err}
 	}
 
 	return child.Ended(ctx, Argv(args), err, Result{Stdout: stdout.String(), Stderr: stderr.String()})
+}
+
+// execute runs gh with args and the runner's environment, writing what it prints to stdout and
+// stderr.
+func (r Runner) execute(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	path, err := gh.Path()
+	if err != nil {
+		return fmt.Errorf("find %s: %w", Program, err)
+	}
+
+	//nolint:gosec // G204: running gh with the caller's argv is this package's purpose; no shell is involved.
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Env = r.Env
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+
+	return cmd.Run()
 }
 
 // isMissing reports whether err says that no gh could be started: none on PATH,

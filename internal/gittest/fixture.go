@@ -438,6 +438,12 @@ func (f *Fixture) SetOriginURL(url string) {
 	f.Git("remote", "set-url", origin, url)
 }
 
+// CutOffOrigin points origin at a location that holds no repository, so it never answers.
+func (f *Fixture) CutOffOrigin() {
+	f.tb.Helper()
+	f.SetOriginURL(filepath.ToSlash(f.MissingOriginDir()))
+}
+
 // RemoveOrigin removes the remote named origin from the working repository.
 func (f *Fixture) RemoveOrigin() {
 	f.tb.Helper()

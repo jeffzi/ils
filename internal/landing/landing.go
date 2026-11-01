@@ -115,6 +115,33 @@ const (
 	ReleaseCommand = "release"
 )
 
+// ParseCommand, GuardCommand and HookCommand are the command words of `ils parse`, `ils guard` and
+// `ils hook`, the commands that read a command and change nothing. The command line registers
+// them and the guard reads them, so that both agree on what ils runs.
+const (
+	ParseCommand = "parse"
+	GuardCommand = "guard"
+	HookCommand  = "hook"
+)
+
+// FlagJSON, FlagDebug, FlagDebugShort, FlagNoColor, FlagHelp, FlagHelpShort and FlagVersion are the
+// flags of the root command of ils that take no value, as the command line spells them. The
+// command line registers them and the guard reads them through RootSwitches.
+const (
+	FlagJSON       = "--json"
+	FlagDebug      = "--debug"
+	FlagDebugShort = "-d"
+	FlagNoColor    = "--no-color"
+	FlagHelp       = "--help"
+	FlagHelpShort  = "-h"
+	FlagVersion    = "--version"
+)
+
+// RootSwitches returns every flag of the root command of ils that takes no value.
+func RootSwitches() []string {
+	return []string{FlagJSON, FlagDebug, FlagDebugShort, FlagNoColor, FlagHelp, FlagHelpShort, FlagVersion}
+}
+
 // Deps is what a command takes: the forge and the repository it runs in, and what it tells how it
 // advances to. Neither Progress nor Logger changes the result a command returns; either may be nil.
 type Deps struct {

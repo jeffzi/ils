@@ -3,6 +3,8 @@ package cli
 import (
 	"runtime/debug"
 
+	"github.com/spf13/cobra"
+
 	"github.com/jeffzi/ils/internal/git"
 )
 
@@ -41,3 +43,8 @@ const FrameEvery = frameEvery
 
 // PendingHint is pendingHint, for the tests of package cli_test.
 const PendingHint = pendingHint
+
+// Root returns the root command of ils, for the tests of package cli_test.
+func (a *App) Root() *cobra.Command {
+	return (&parse{app: *a}).root()
+}

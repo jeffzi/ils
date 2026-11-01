@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -52,6 +54,15 @@ const (
 	// listening is the line a stuckHoldingEarly run prints on stdout once it waits, as its landing
 	// starts, for the first interrupt or termination.
 	listening = "listening"
+
+	// standIn, set in its environment to one of the exits below, makes the test binary stand in
+	// for ils instead of running the tests: it prints its arguments on stderr, joined by spaces,
+	// and then exits with the code the value holds.
+	standIn = "ILS_TEST_STAND_IN"
+
+	// standInBroke is the code the stand-in exits with when it cannot do what standIn says. It is
+	// none of the codes the tests give the stand-in.
+	standInBroke = 99
 )
 
 func TestMain(m *testing.M) {
@@ -61,6 +72,9 @@ func TestMain(m *testing.M) {
 	if way := os.Getenv(stuckRun); way != "" {
 		os.Exit(stuck(way))
 	}
+	if exit := os.Getenv(standIn); exit != "" {
+		os.Exit(actAsIls(exit))
+	}
 
 	// Fang reads the width of the help once for the process, from the terminal unless this is set.
 	if err := os.Setenv(fangWidth, helpWidth); err != nil {
@@ -69,6 +83,21 @@ func TestMain(m *testing.M) {
 	}
 
 	os.Exit(m.Run())
+}
+
+// actAsIls prints the arguments of the process on stderr, joined by spaces, and then exits with
+// the code exit holds. It returns standInBroke when exit is no code.
+func actAsIls(exit string) int {
+	fmt.Fprintln(os.Stderr, strings.Join(os.Args[1:], " "))
+
+	code, err := strconv.Atoi(exit)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+
+		return standInBroke
+	}
+
+	return code
 }
 
 // stuck runs `ils merge` in a step that lasts until the run's deadline, as way says, with stderr
