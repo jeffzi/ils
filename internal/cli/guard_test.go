@@ -4,8 +4,11 @@ package cli_test
 
 import (
 	"encoding/json"
+	"errors"
+	"flag"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -411,8 +414,8 @@ func TestGuard_ReadsEveryRootSwitchOfIlsAsTakingNoValue(t *testing.T) {
 	assert.Assert(t, len(switches) > 0, "the root command has no switch")
 	caller := guard.Caller{Dir: t.TempDir()}
 
-	for _, flag := range switches {
-		command := "ils " + flag + " merge"
+	for _, name := range switches {
+		command := "ils " + name + " merge"
 
 		got := guard.Judge(t.Context(), command, caller)
 
@@ -590,6 +593,125 @@ func TestApp_Run_WhenHookIsGivenWordsItDoesNotTake_ExitsTwoNamingThemOnStderr(t 
 
 			assert.Check(t, is.Equal(got.code, exitRefused), "ils %s: stdout = %q", strings.Join(tt.args, " "), got.stdout)
 			assert.Check(t, is.Contains(got.stderr, tt.want))
+		})
+	}
+}
+
+// shim is the path, from the directory of this package, of the script Claude Code runs as its
+// hook, which fronts ils hook claude.
+const shim = "../../skills/ils/hook.sh"
+
+// standingIn returns a directory that holds the test binary as ils, and the environment that makes
+// it stand in for ils and exit as exit says.
+func standingIn(t *testing.T, exit string) (dir, env string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	gittest.Link(t, dir, "ils")
+
+	return dir, standIn + "=" + exit
+}
+
+// throughShim runs the shim with bash, giving it stdin, a PATH that holds only dir, and env, and
+// returns what it printed and the code it exited with.
+func throughShim(t *testing.T, dir, stdin string, env ...string) ran {
+	t.Helper()
+
+	bashPath, err := exec.LookPath("bash")
+	assert.NilError(t, err)
+	var stdout, stderr strings.Builder
+	cmd := exec.CommandContext(t.Context(), bashPath, shim) //nolint:gosec // argv is bash and the shim this package ships
+	cmd.Env = append([]string{"PATH=" + dir, "GORACE=" + gittest.RaceSetting()}, env...)
+	// A stand-in built for coverage warns on stderr unless it knows where to write its counters.
+	if covered := flag.Lookup("test.gocoverdir"); covered != nil && covered.Value.String() != "" {
+		cmd.Env = append(cmd.Env, "GOCOVERDIR="+covered.Value.String())
+	}
+	cmd.Stdin = strings.NewReader(stdin)
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+
+	err = cmd.Run()
+	if _, exited := errors.AsType[*exec.ExitError](err); err != nil && !exited {
+		t.Fatalf("run the shim: %v", err)
+	}
+
+	return ran{stdout: stdout.String(), stderr: stderr.String(), code: cmd.ProcessState.ExitCode()}
+}
+
+func TestHookShim_WhenIlsExitsZeroOrTwo_ExitsWithItsCodeAndPassesItsOutputThrough(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		exit string
+		want int
+	}{
+		{name: "allowed", exit: "0", want: exitDone},
+		{name: "refused", exit: "2", want: exitRefused},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir, env := standingIn(t, tt.exit)
+			payload := encoded(t, bash("echo hi", t.TempDir()))
+
+			got := throughShim(t, dir, payload, env)
+
+			assert.Check(t, is.Equal(got.code, tt.want), "stderr = %q", got.stderr)
+			assert.Check(t, is.Equal(got.stdout, payload))
+			assert.Check(t, is.Equal(got.stderr, "hook claude\n"))
+		})
+	}
+}
+
+func TestHookShim_WhenIlsEndsAnyOtherWay_ExitsTwoNamingTheCodeOnStderr(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		exit string
+		code string
+	}{
+		{name: "exit one", exit: "1", code: "1"},
+		{name: "killed by a signal", exit: standInKilled, code: "137"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir, env := standingIn(t, tt.exit)
+
+			got := throughShim(t, dir, encoded(t, bash("echo hi", t.TempDir())), env)
+
+			assert.Check(t, is.Equal(got.code, exitRefused), "stderr = %q", got.stderr)
+			assert.Check(t, is.Regexp(`(^|\D)`+tt.code+`(\D|$)`, got.stderr))
+		})
+	}
+}
+
+func TestHookShim_WhenIlsCannotStart_ExitsTwoNamingTheInstallTaskOnStderr(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		ils  string
+	}{
+		{name: "not on PATH"},
+		{name: "interpreter missing", ils: "#!/nonexistent/interpreter\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			if tt.ils != "" {
+				assert.NilError(t, os.WriteFile(filepath.Join(dir, "ils"), []byte(tt.ils), 0o700)) //nolint:gosec // the stand-in must be executable
+			}
+
+			got := throughShim(t, dir, encoded(t, bash("echo hi", t.TempDir())))
+
+			assert.Check(t, is.Equal(got.code, exitRefused), "stderr = %q", got.stderr)
+			assert.Check(t, is.Contains(got.stderr, "! task install"))
 		})
 	}
 }
