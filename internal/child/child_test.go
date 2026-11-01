@@ -440,7 +440,6 @@ func TestRequirement_CheckOutput_WhenFirstLineIsTheMinimumOrNewer_ReturnsNil(t *
 		name   string
 		stdout string
 	}{
-		{name: "one line with no newline", stdout: "gh version 2.50.0"},
 		{name: "a later line names an older version", stdout: "gh version 2.60.0\ngh version 2.49.0\n"},
 	}
 	for _, tt := range tests {

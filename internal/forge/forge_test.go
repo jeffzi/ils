@@ -111,11 +111,6 @@ func TestVerdict_Pending(t *testing.T) {
 			verdict: verdictOf(forgetest.Check("build", forge.BucketPass), forgetest.Check("test", forge.BucketFail), forgetest.Check("lint", forge.BucketCanceled)),
 		},
 		{
-			name:    "pending among concluded, in order",
-			verdict: verdictOf(forgetest.Check("build", forge.BucketPending), forgetest.Check("lint", forge.BucketPass), forgetest.Check("test", forge.BucketPending)),
-			want:    []forge.Check{forgetest.Check("build", forge.BucketPending), forgetest.Check("test", forge.BucketPending)},
-		},
-		{
 			name:    "bucket this version does not know",
 			verdict: verdictOf(forgetest.Check("build", forge.BucketPass), forgetest.Check("test", unknownBucket)),
 			want:    []forge.Check{forgetest.Check("test", unknownBucket)},

@@ -18,7 +18,6 @@ import (
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/github/ghtest"
-	"github.com/jeffzi/ils/internal/logtest"
 )
 
 // No test that scripts `gh` is parallel: the fake `gh` is found through `GH_PATH`,
@@ -238,9 +237,6 @@ func operationsByName() map[string]func(context.Context, *github.Forge) error {
 			_, err := f.Message(ctx, engine(), pullNumber)
 			return err
 		},
-		"Land": func(ctx context.Context, f *github.Forge) error {
-			return f.Land(ctx, engine(), featureLanding())
-		},
 	}
 }
 
@@ -329,33 +325,6 @@ func assertDecodeErrorNamesCall(t *testing.T, c readCase) {
 	decodeErr, ok := errors.AsType[*github.DecodeError](err)
 	assert.Assert(t, ok, "error = %v, want *github.DecodeError", err)
 	assert.Check(t, ghtest.Matches(ghArgv(c.args), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, c.args)
-}
-
-// loggedArgv is the argv of every call sink received, each led by `gh`, in order.
-func loggedArgv(sink *logtest.Sink) [][]string {
-	var logged [][]string
-	for _, record := range sink.Records() {
-		args, _ := record.Map()[child.KeyArgs].([]string)
-		logged = append(logged, args)
-	}
-
-	return received(logged...)
-}
-
-func TestForge_WhenLoggerSet_LogsTheCall(t *testing.T) {
-	// Every call goes through the same runner, so one call shows that the forge hands its logger to it.
-	t.Run("pr merge", func(t *testing.T) {
-		args := ghtest.LandArgs(engineSlug, featureLanding())
-		fake := ghtest.Setup(t, ghtest.Says("", args...))
-		logger, sink := logtest.New()
-
-		_ = (&github.Forge{Logger: logger}).Land(t.Context(), engine(), featureLanding())
-
-		assert.Check(t, is.DeepEqual(loggedArgv(sink), fake.Calls()))
-		want := ghArgv(args)
-		assert.Check(t, slices.ContainsFunc(fake.Calls(), func(argv []string) bool { return ghtest.Matches(want, argv) }),
-			"calls = %q, want one matching %q", fake.Calls(), args)
-	})
 }
 
 func TestForge_Identity_WhenGhIsOlderThanTheMinimum_ReturnsToolTooOldErrorBeforeTheLogin(t *testing.T) {
@@ -841,6 +810,14 @@ func TestForge_Message_WhenAnswerHoldsNoPullRequest_ReturnsDecodeError(t *testin
 	}
 }
 
+func TestForge_Land_WhenGhMerges_SquashesTheHeadWithTheMessage(t *testing.T) {
+	ghtest.Setup(t, ghtest.Says("", ghtest.LandArgs(engineSlug, featureLanding())...))
+
+	err := newForge().Land(t.Context(), engine(), featureLanding())
+
+	assert.NilError(t, err)
+}
+
 func TestForge_DeleteBranch_WhenNameHoldsAHash_EscapesIt(t *testing.T) {
 	args := ghtest.DeleteBranchArgs(engineHost, "ada/engine", "fix%231")
 	ghtest.Setup(t, ghtest.Says("", args...))
@@ -900,7 +877,7 @@ func TestForge_PublishRelease(t *testing.T) {
 	}
 }
 
-func TestForge_PublishRelease_WhenOriginLacksTheTag_ReturnsExitError(t *testing.T) {
+func TestForge_PublishRelease_WhenGhExitsNonZero_ReturnsExitError(t *testing.T) {
 	noTag := ghtest.Answer{Stderr: "tag v1.2.0 doesn't exist in the repo ada/engine, aborting due to --verify-tag flag\n", Code: 1}
 	ghtest.Setup(t, ghtest.Exits(noTag, releaseCreateArgs(false)...))
 

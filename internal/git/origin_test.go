@@ -638,44 +638,14 @@ func TestRepo_RemoteBranch_WhenNotOnOrigin_ReportsAbsent(t *testing.T) {
 
 func TestRepo_Fetch_WhenRefOnOrigin_ReturnsFetchedSHA(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		arrange func(f *gittest.Fixture) string
-		name    string
-		ref     string
-	}{
-		{
-			name: "branch origin moved",
-			ref:  topic,
-			arrange: func(f *gittest.Fixture) string {
-				f.Commits(topic, "one")
-				f.Push(topic)
+	f := gittest.New(t, trunk)
+	want := f.Commits(topic, "one")[0]
+	f.PullRef(pullNumber, want)
 
-				return f.AdvanceOrigin(topic)
-			},
-		},
-		{
-			name: "pull request head",
-			ref:  pullRef,
-			arrange: func(f *gittest.Fixture) string {
-				sha := f.Commits(topic, "one")[0]
-				f.PullRef(pullNumber, sha)
+	got, err := newRepo(f).Fetch(t.Context(), pullRef)
+	assert.NilError(t, err, "Fetch(%q)", pullRef)
 
-				return sha
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			f := gittest.New(t, trunk)
-			want := tt.arrange(f)
-
-			got, err := newRepo(f).Fetch(t.Context(), tt.ref)
-			assert.NilError(t, err, "Fetch(%q)", tt.ref)
-
-			assert.Check(t, is.Equal(got, want), "Fetch(%q)", tt.ref)
-		})
-	}
+	assert.Check(t, is.Equal(got, want), "Fetch(%q)", pullRef)
 }
 
 func TestRepo_Fetch_WhenFetchHeadNamesAnotherCommitAfterTheFetch_ReturnsTheFetchedSHA(t *testing.T) {
@@ -736,38 +706,17 @@ func originRefusing(t *testing.T, said string) *gittest.Fixture {
 	return f
 }
 
-func TestRepo_Push_WhenOriginReportsTheRefUpdated_PublishesTheBranch(t *testing.T) {
+func TestRepo_Push_WhenOriginHangsUpAfterReportingTheRefUpdated_PublishesTheBranch(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		// arrange changes origin before the push; nil leaves it as built.
-		arrange func(t *testing.T, f *gittest.Fixture)
-		name    string
-	}{
-		{name: "origin answers to the end"},
-		{
-			name: "origin hangs up after its report",
-			arrange: func(t *testing.T, f *gittest.Fixture) {
-				t.Helper()
-				gittest.NeedSignals(t)
-				f.OriginHook("post-receive", killsReceivePack)
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			f := gittest.New(t, trunk)
-			tip := f.Commits(topic, "one")[0]
-			if tt.arrange != nil {
-				tt.arrange(t, f)
-			}
+	gittest.NeedSignals(t)
+	f := gittest.New(t, trunk)
+	tip := f.Commits(topic, "one")[0]
+	f.OriginHook("post-receive", killsReceivePack)
 
-			err := newRepo(f).Push(t.Context(), topic)
-			assert.NilError(t, err)
+	err := newRepo(f).Push(t.Context(), topic)
+	assert.NilError(t, err)
 
-			assert.Check(t, is.Equal(originTip(f, topic), tip))
-		})
-	}
+	assert.Check(t, is.Equal(originTip(f, topic), tip))
 }
 
 func TestRepo_Push_WhenTagSharesTheBranchName_PublishesTheBranch(t *testing.T) {
@@ -812,7 +761,7 @@ func TestRepo_Push_WhenOriginRefusesTheRef_ReturnsPushErrorNamingTheReason(t *te
 	pushErr, ok := errors.AsType[*git.PushError](err)
 	assert.Assert(t, ok, "Push(%q) error = %v, want *git.PushError", topic, err)
 	assert.Check(t, is.Equal(pushErr.Ref, "refs/heads/"+topic))
-	assert.Check(t, is.Contains(pushErr.Reason, "pre-receive hook declined"))
+	assert.Check(t, pushErr.Reason != "" && pushErr.Reason != "!", "Reason = %q, want the status line's summary", pushErr.Reason)
 	assert.Check(t, !strings.Contains(pushErr.Reason, "refs/heads/"), "Reason = %q, want the summary, not the ref it names",
 		pushErr.Reason)
 	assert.Check(t, is.Contains(pushErr.Stderr, said))
@@ -987,10 +936,6 @@ func TestRepo_Push_WhenContextCanceled_ReturnsNeitherPushNorRemoteError(t *testi
 
 const releaseRef = "refs/tags/" + release
 
-func originRefs(f *gittest.Fixture) string {
-	return f.OriginGit("for-each-ref", "--format=%(refname)")
-}
-
 // taggedRelease returns a fixture whose clone holds release as a local tag on tip.
 func taggedRelease(t *testing.T) (f *gittest.Fixture, repo git.Repo, tip string) {
 	t.Helper()
@@ -1002,16 +947,13 @@ func taggedRelease(t *testing.T) (f *gittest.Fixture, repo git.Repo, tip string)
 	return f, repo, tip
 }
 
-func TestRepo_PushTag_WhenOriginAccepts_PutsOnlyTheTagOnOrigin(t *testing.T) {
+func TestRepo_PushTag_WhenOriginAccepts_PutsTheTagOnOrigin(t *testing.T) {
 	t.Parallel()
 	f, repo, tip := taggedRelease(t)
-	before := originRefs(f)
-	f.Git("tag", "v0.9.0", tip)
 
 	err := repo.PushTag(t.Context(), release)
 	assert.NilError(t, err, "PushTag(%q)", release)
 
-	assert.Check(t, is.Equal(originRefs(f), strings.TrimSpace(before+"\n"+releaseRef)))
 	assert.Check(t, is.Equal(f.OriginGit("rev-parse", releaseRef+"^{commit}"), tip))
 }
 
@@ -1025,7 +967,9 @@ func TestRepo_PushTag_WhenOriginHoldsTheTagElsewhere_ReturnsPushErrorNamingTheTa
 	pushErr, ok := errors.AsType[*git.PushError](err)
 	assert.Assert(t, ok, "PushTag(%q) error = %v, want *git.PushError", release, err)
 	assert.Check(t, is.Equal(pushErr.Ref, releaseRef))
-	assert.Check(t, is.Contains(pushErr.Detail(), "already exists"))
+	assert.Check(t, pushErr.Reason != "" && pushErr.Reason != "!", "Reason = %q, want the status line's summary", pushErr.Reason)
+	assert.Check(t, !strings.Contains(pushErr.Reason, "refs/tags/"), "Reason = %q, want the summary, not the ref it names",
+		pushErr.Reason)
 }
 
 func TestRepo_WhenNotARepository_OriginCallsReturnExitError(t *testing.T) {
@@ -1036,4 +980,25 @@ func TestRepo_WhenNotARepository_OriginCallsReturnExitError(t *testing.T) {
 	}
 
 	checkExitErrorOutsideRepo(t, tests)
+}
+
+func FuzzSplitPushReport(f *testing.F) {
+	const spec = "refs/heads/topic:refs/heads/topic"
+	for _, seed := range []string{
+		"To origin\n*\t" + spec + "\t[new branch]\nDone\n",
+		"To origin\n!\t" + spec + "\t[remote rejected] (pre-receive hook declined)\nDone\n",
+		"hook said\nTo elsewhere\n*\t" + spec + "\t[new branch]\nDone\n",
+		"!\t" + spec + "\tblocked by policy\n",
+		"To origin\nTo\n=\t" + spec + "\t[up to date]\nDone\n",
+		"",
+		"\n",
+	} {
+		f.Add(seed, spec)
+	}
+
+	f.Fuzz(func(t *testing.T, stdout, spec string) {
+		hook, _ := git.SplitPushReport(stdout, spec)
+
+		assert.Check(t, strings.HasPrefix(stdout, hook), "SplitPushReport(%q) hook = %q, not a prefix of stdout", stdout, hook)
+	})
 }

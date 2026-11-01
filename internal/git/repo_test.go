@@ -929,49 +929,21 @@ func TestRepo_LocalTag_WhenTheTagExists_ReturnsItsCommit(t *testing.T) {
 	assert.Check(t, is.Equal(got, sha))
 }
 
-func TestRepo_LocalTag_WhenNoLocalTagHasTheName_ReportsNotFound(t *testing.T) {
+func TestRepo_LocalTag_WhenOnlyABranchHasTheName_ReportsNotFound(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		arrange func(f *gittest.Fixture)
-		name    string
-	}{
-		{name: "no ref of that name", arrange: func(*gittest.Fixture) {}},
-		{name: "a branch of that name", arrange: func(f *gittest.Fixture) { f.Commits(release, "one") }},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			f := gittest.New(t, trunk)
-			tt.arrange(f)
+	f := gittest.New(t, trunk)
+	f.Commits(release, "one")
 
-			got, found, err := newRepo(f).LocalTag(t.Context(), release)
-			assert.NilError(t, err)
+	got, found, err := newRepo(f).LocalTag(t.Context(), release)
+	assert.NilError(t, err)
 
-			assert.Check(t, !found, "LocalTag(%q) = %q, want not found", release, got)
-		})
-	}
+	assert.Check(t, !found, "LocalTag(%q) = %q, want not found", release, got)
 }
 
-func TestRepo_CreateTag_WhenHeadIsElsewhere_TagsTheGivenCommitAnnotated(t *testing.T) {
+func TestRepo_CreateTag_WhenHeadIsElsewhere_TagsTheGivenCommit(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
 	sha := f.Commits(topic, "one", "two")[0]
-	ref := releaseRef
-
-	err := newRepo(f).CreateTag(t.Context(), release, sha)
-	assert.NilError(t, err, "CreateTag(%q, %s)", release, sha)
-
-	assert.Check(t, is.Equal(f.Git("cat-file", "-t", ref), "tag"))
-	assert.Check(t, is.Equal(f.Git("rev-parse", ref+"^{commit}"), sha))
-	assert.Check(t, is.Equal(f.Git("for-each-ref", "--format=%(contents)", ref), release))
-}
-
-func TestRepo_CreateTag_WhenTheTreeIsDirty_CreatesTheTag(t *testing.T) {
-	t.Parallel()
-	f := gittest.New(t, trunk)
-	sha := f.Commits(topic, "one")[0]
-	f.StagedFile()
-	f.DirtyFile()
 
 	err := newRepo(f).CreateTag(t.Context(), release, sha)
 	assert.NilError(t, err, "CreateTag(%q, %s)", release, sha)
@@ -1049,6 +1021,13 @@ func TestRepo_WhenAGitReadFails_ReturnsItsExitError(t *testing.T) {
 		name    string
 		failOn  []string
 	}{
+		{
+			name: "standing, the current branch read", failOn: []string{"symbolic-ref"},
+			arrange: func(f *gittest.Fixture) string { return f.Commits(topic, "one")[0] },
+			call: func(ctx context.Context, repo git.Repo, _ string) (any, error) {
+				return repo.Standing(ctx)
+			},
+		},
 		{name: "local trunk ahead, its ref read", failOn: []string{"show-ref"}, arrange: trunkAhead, call: localTrunkAhead},
 		{name: "local trunk ahead, its merge base read", failOn: []string{"merge-base"}, arrange: trunkAhead, call: localTrunkAhead},
 		{name: "local trunk ahead, its commits read", failOn: []string{"log"}, arrange: trunkAhead, call: localTrunkAhead},

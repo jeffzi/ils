@@ -26,6 +26,7 @@ const (
 	testCheck = "test"
 	subject   = "Add the widget list (#12)"
 	body      = "List every widget on the home page."
+	tag       = "v1.2.0"
 )
 
 // repo is the repository every call is made against.
@@ -68,6 +69,11 @@ func verdictQuery() forge.VerdictQuery {
 	return forge.VerdictQuery{Number: number, SHA: newCommit, Required: requiredChecks()}
 }
 
+// newRelease is the argument of PublishRelease.
+func newRelease() forge.NewRelease {
+	return forge.NewRelease{Tag: tag, Notes: body}
+}
+
 // landing is the argument of Land.
 func landing() forge.Landing {
 	return forge.Landing{Number: number, HeadSHA: newCommit, Subject: subject, Body: body}
@@ -102,6 +108,9 @@ func operations() []operation {
 		{name: "verdict", made: forgetest.Call{Op: forgetest.OpVerdict, Repo: repo(), VerdictQuery: verdictQuery()}, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
 			return f.Verdict(ctx, repo(), verdictQuery())
 		}},
+		{name: "commit verdict", made: forgetest.Call{Op: forgetest.OpCommitVerdict, Repo: repo(), SHA: newCommit}, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
+			return f.CommitVerdict(ctx, repo(), newCommit)
+		}},
 		{name: "has trunk CI", made: forgetest.Call{Op: forgetest.OpHasTrunkCI, Repo: repo(), Branch: trunk}, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
 			return f.HasTrunkCI(ctx, repo(), trunk)
 		}},
@@ -113,6 +122,14 @@ func operations() []operation {
 		}},
 		{name: "delete branch", made: forgetest.Call{Op: forgetest.OpDeleteBranch, Repo: repo(), Branch: branch}, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
 			return nil, f.DeleteBranch(ctx, repo(), branch)
+		}},
+		{name: "find release", made: forgetest.Call{Op: forgetest.OpFindRelease, Repo: repo(), Tag: tag}, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
+			link, _, err := f.FindRelease(ctx, repo(), tag)
+
+			return link, err
+		}},
+		{name: "publish release", made: forgetest.Call{Op: forgetest.OpPublishRelease, Repo: repo(), Release: newRelease()}, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
+			return f.PublishRelease(ctx, repo(), newRelease())
 		}},
 	}
 }
@@ -126,10 +143,13 @@ func script() forgetest.Script {
 		Head:            forgetest.Values(head()),
 		TrunkProtection: forgetest.Values(forge.Protection{}),
 		Verdict:         forgetest.Values(forge.Verdict{}),
+		CommitVerdict:   forgetest.Values(forge.Verdict{}),
 		HasTrunkCI:      forgetest.Values(false),
 		Message:         forgetest.Values(forge.Message{}),
 		Land:            []error{nil},
 		DeleteBranch:    []error{nil},
+		FindRelease:     forgetest.Values(""),
+		PublishRelease:  forgetest.Values(""),
 	}
 }
 
@@ -223,8 +243,10 @@ func TestFake_WhenOnReadIsSet_RunsItOncePerRead(t *testing.T) {
 		forgetest.OpHead,
 		forgetest.OpTrunkProtection,
 		forgetest.OpVerdict,
+		forgetest.OpCommitVerdict,
 		forgetest.OpHasTrunkCI,
 		forgetest.OpMessage,
+		forgetest.OpFindRelease,
 	}
 	assert.Check(t, is.DeepEqual(seen, want))
 }

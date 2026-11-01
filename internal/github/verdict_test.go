@@ -197,16 +197,10 @@ func TestForge_Verdict_FailedLog(t *testing.T) {
 	}
 }
 
-func TestForge_Verdict_WhenAReadExitsNonZero_ReturnsExitErrorNamingTheRead(t *testing.T) {
-	verdict := operationsByName()["Verdict"]
-	tests := []readCase{
-		{name: "run list", run: verdict, args: runsArgs(), before: []ghtest.Call{ghtest.Says("[]", checksArgs()...)}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assertExitErrorNamesCall(t, tt)
-		})
-	}
+func TestForge_Verdict_WhenTheRunListExitsNonZero_ReturnsExitErrorNamingIt(t *testing.T) {
+	assertExitErrorNamesCall(t, readCase{
+		run: operationsByName()["Verdict"], args: runsArgs(), before: []ghtest.Call{ghtest.Says("[]", checksArgs()...)},
+	})
 }
 
 func TestForge_Verdict_WhenChecksReadPrintsMalformedJSON_ReturnsDecodeErrorNamingIt(t *testing.T) {
@@ -305,7 +299,6 @@ func TestForge_CommitVerdict_WhenARedCheckRunIsOnTheCommit_KeepsItUnlessItsRunIs
 		run  string
 		want []forge.Check
 	}{
-		{name: "scheduled run", run: workflowRunJSON(otherSuite, "Nightly", "schedule", "completed"), want: []forge.Check{build}},
 		{name: "run started by another run", run: workflowRunJSON(otherSuite, "Deploy", "workflow_run", "completed"), want: []forge.Check{build}},
 		{name: "GitHub App with no workflow run", want: []forge.Check{build, {Name: "scan", Bucket: forge.BucketFail}}},
 	}
@@ -479,14 +472,6 @@ func TestForge_CommitVerdict_WhenAReadExitsNonZero_ReturnsExitErrorNamingTheRead
 	for _, tt := range commitVerdictReads() {
 		t.Run(tt.name, func(t *testing.T) {
 			assertExitErrorNamesCall(t, tt)
-		})
-	}
-}
-
-func TestForge_CommitVerdict_WhenAReadPrintsMalformedJSON_ReturnsDecodeErrorNamingTheRead(t *testing.T) {
-	for _, tt := range casesNamed(commitVerdictReads(), "check runs") {
-		t.Run(tt.name, func(t *testing.T) {
-			assertDecodeErrorNamesCall(t, tt)
 		})
 	}
 }

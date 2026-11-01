@@ -98,8 +98,8 @@ func TestRunner_Run_WhenEnvGiven_RunsGhWithIt(t *testing.T) {
 	ghtest.Setup(t, ghtest.Says("process\n", "alias", "list"))
 
 	got, err := github.Runner{Env: given}.Run(t.Context(), "alias", "list")
-
 	assert.NilError(t, err)
+
 	assert.Check(t, is.Equal(got.Stdout, "given\n"))
 }
 

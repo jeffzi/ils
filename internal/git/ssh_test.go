@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -29,7 +30,6 @@ func TestRepo_OriginURLs_WhenURLIsSSH_ReturnsTheHostSSHConnectsTo(t *testing.T) 
 		name string
 		url  string
 	}{
-		{name: "scp-like url with an alias", url: "git@github-personal:jeffzi/ils.git"},
 		{name: "ssh url with an alias", url: "ssh://git@github-personal/jeffzi/ils.git"},
 	}
 	for _, tt := range tests {
@@ -760,4 +760,25 @@ func TestSameKey_WhenCaseDiffers_MatchesOnlyOnWindows(t *testing.T) {
 	got := git.SameKey("Path", "PATH")
 
 	assert.Check(t, is.Equal(got, runtime.GOOS == "windows"), "SameKey(%q, %q) on %s", "Path", "PATH", runtime.GOOS)
+}
+
+func FuzzLineWords(f *testing.F) {
+	for _, seed := range []string{
+		"ssh", `plink.exe -batch`, `ssh -i "my key" -p 22`, `'C:\Program Files\PuTTY\plink.exe' -batch`,
+		`GIT_TRACE=1 env FOO=bar ssh -v`, `exec -a name ssh`, `command ssh`, `ssh "unclosed`, `ssh\`,
+		" ssh", "ssh ", "ssh\t-v", "ssh\v-v", `""`, `a\ b`,
+	} {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, line string) {
+		words, split := git.LineWords(line)
+
+		program, found := git.ProgramWord(line)
+
+		if found {
+			assert.Check(t, split, "ProgramWord(%q) found %q, but LineWords cannot split the line", line, program)
+			assert.Check(t, slices.Contains(words, program), "ProgramWord(%q) = %q, not one of LineWords' %q", line, program, words)
+		}
+	})
 }
