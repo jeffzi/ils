@@ -76,6 +76,11 @@ when the command started. Stdout and `--wait` pick the limit:
 seconds. Those 20 seconds are kept for the writes that follow. When fewer than 20 seconds are left,
 they end pending with nothing written.
 
+`ils push` waits until GitHub shows the pushed commit as the pull request's head. When another
+push moves that head past the pushed commit before GitHub showed it, `ils` cannot tell the move
+from GitHub being slow: it waits until the time limit and ends pending, and the wait itself
+writes nothing. The next `ils push` refuses the branch as behind its copy on origin.
+
 When a pending `ils merge` names `ils push` on its `Next:` line, that push waits as long. A script
 or harness may give `ils` a terminal but stop it on a timeout shorter than 15 minutes. It then
 passes `--wait=false`. An `ils merge` or `ils release` stopped between two of its writes continues
@@ -430,8 +435,8 @@ as `--no-verify`.
 - `gh pr merge --admin` in any form;
 - `gh api` with a method other than `GET`, or with no method but a field or `--input`;
   `gh repo sync`, `delete`, `edit`, and `create --push`; `gh release delete`, `edit`, `upload`,
-  and `delete-asset`; `gh auth token`, `gh auth status --show-token`, and `gh config get
-  oauth_token`; `gh pr checkout --force`;
+  and `delete-asset`; `gh auth token`, `gh auth git-credential`, `gh auth status --show-token`, and
+  `gh config get oauth_token`; `gh pr checkout --force`;
 - an `ils` or `gh` command word that is not a literal (`ils "$cmd"`);
 - `gh alias set`, `import`, and `delete`;
 - a `gh` word that is neither a command nor an alias, extensions included;
@@ -448,8 +453,9 @@ that says what broke.
 
 `ils parse --json` puts its detail under `payload.parse`, and `ils guard --json` under
 `payload.guard`, with the guard's verdict in `outcome` and `reason`. Both hold `invocations`, in
-the order the guard reads them, which is not always the order the shell runs them; a command that
-does not parse holds none. Each invocation has:
+the order the guard reads them, which is not always the order the shell runs them. On a command that
+does not parse, `ils guard` refuses with no invocations, and `ils parse` ends broke with no
+payload. Each invocation has:
 
 | Field   | Type             | Meaning                                                                                               |
 | ------- | ---------------- | ----------------------------------------------------------------------------------------------------- |

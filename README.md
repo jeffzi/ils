@@ -248,7 +248,10 @@ Run `ils merge` on the branch whose pull request you want to land. It:
 `ils merge` never pushes and has no `--force`. It refuses a commit that is not on the pull request
 yet: push it with `ils push` first. When the checks are still running, or fewer than 20
 seconds are left for the merge, `ils merge` ends pending with nothing written, and `Next:` says to
-run `ils push`, which waits for the checks and then names `ils merge` again.
+run `ils push`, which waits for the checks and then names `ils merge` again. When GitHub reports
+that a check the default branch requires still runs, `ils merge` also ends pending with nothing
+written, and `Next:` names `ils merge`. A pending `ils merge` that GitHub already merged, stopped
+by the time limit or an interrupt before it finished, names `ils merge` too.
 
 [What merge refuses](docs/reference.md#what-merge-refuses) lists every refusal, and
 [Merge JSON output](docs/reference.md#merge-json-output) describes `ils merge --json`.
