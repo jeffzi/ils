@@ -110,12 +110,16 @@ func fetchTrunk(ctx context.Context, deps Deps, req Request, trunk string) (stri
 // commitsPast returns the branch's tip and its commits past origin's trunk, which fetchTrunk
 // must have fetched, refusing a branch that has none or has no commit at all.
 func commitsPast(ctx context.Context, deps Deps, req Request, b onBranch) (tip string, past []git.Commit, stop *result.Result) {
-	tip, stop = tipOf(ctx, deps, req, b)
-	if stop != nil {
-		return "", nil, stop
+	tip, committed, err := b.readTip(ctx, deps)
+
+	switch {
+	case err != nil:
+		return "", nil, req.unread(readTip, err)
+	case !committed:
+		return "", nil, req.nothingPast(b)
 	}
 
-	past, err := deps.Repo.CommitsPast(ctx, tip, b.Trunk)
+	past, err = deps.Repo.CommitsPast(ctx, tip, b.Trunk)
 	if err != nil {
 		return "", nil, req.unread(readCommits, err)
 	}
@@ -125,19 +129,6 @@ func commitsPast(ctx context.Context, deps Deps, req Request, b onBranch) (tip s
 	}
 
 	return tip, past, nil
-}
-
-func tipOf(ctx context.Context, deps Deps, req Request, b onBranch) (string, *result.Result) {
-	tip, committed, err := b.readTip(ctx, deps)
-
-	switch {
-	case err != nil:
-		return "", req.unread(readTip, err)
-	case !committed:
-		return "", req.nothingPast(b)
-	}
-
-	return tip, nil
 }
 
 // readTip reads the sha of the branch's tip, and whether the branch has a commit at all; a branch

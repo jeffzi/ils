@@ -222,15 +222,7 @@ func (w *walker) resolveGit(ctx context.Context) error {
 // on the invocation instead.
 func (w *walker) gitScripts(i int) error {
 	inv := &w.walked[i]
-	scripts, mark := shellCommandsOf(*inv)
-	runs, mark := capDepth(inv.depth, len(scripts) > 0, mark)
-	if !runs {
-		scripts = nil
-	}
-
-	if mark != "" {
-		inv.Marks = append(inv.Marks, Mark{Kind: mark})
-	}
+	scripts := runnableScripts(inv, inv.depth, shellCommandsOf(*inv))
 
 	sub := walker{caller: w.caller, timed: map[*syntax.Stmt]bool{}, depth: inv.depth}
 	for _, script := range scripts {
@@ -304,15 +296,14 @@ func pathVariable(path string) variable {
 
 // shellCommandsOf returns the shell commands the git invocation inv has git run, read once its
 // aliases expand: the value of each config key git runs through the shell, given by `-c` or
-// `--config-env`, and each `rebase --exec`. It returns DynamicScript as well when one of them is
-// not a literal.
-func shellCommandsOf(inv Invocation) ([]string, MarkKind) {
+// `--config-env`, and each `rebase --exec`.
+func shellCommandsOf(inv Invocation) []Word {
 	values := configCommands(inv)
 	if sub := inv.Git.Subcommand; sub.Literal && sub.Text == "rebase" {
 		values = append(values, rebaseCommands(inv.Git.Args)...)
 	}
 
-	return literalScripts(values)
+	return values
 }
 
 // literalScripts returns the text of each of values, the shell commands something runs, that is a
@@ -555,11 +546,7 @@ func isDirectory(dir string) bool {
 // targetRunner returns runner moved to dir, with the GIT_DIR and GIT_WORK_TREE of target in place
 // of its own; an empty field of target leaves that variable unset.
 func targetRunner(runner git.Runner, dir string, target GitTarget) git.Runner {
-	env := slices.DeleteFunc(runner.Environ(), func(entry string) bool {
-		name, _, _ := strings.Cut(entry, "=")
-
-		return git.SameKey(name, "GIT_DIR") || git.SameKey(name, "GIT_WORK_TREE")
-	})
+	env := git.WithoutKeys(runner.Environ(), "GIT_DIR", "GIT_WORK_TREE")
 	if target.GitDir != "" {
 		env = append(env, "GIT_DIR="+target.GitDir)
 	}

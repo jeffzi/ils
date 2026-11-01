@@ -263,11 +263,18 @@ func programWord(line string) (string, bool) {
 // letters, digits and underscores, not starting with a digit, then an equals sign.
 func isAssignment(word string) bool {
 	name, _, found := strings.Cut(word, "=")
-	if !found || name == "" || (name[0] >= '0' && name[0] <= '9') {
+
+	return found && IsName(name)
+}
+
+// IsName reports whether s is a name to the shell: ASCII letters, digits and underscores, not
+// starting with a digit, and not empty.
+func IsName(s string) bool {
+	if s == "" || (s[0] >= '0' && s[0] <= '9') {
 		return false
 	}
 
-	return !strings.ContainsFunc(name, func(c rune) bool { return !isNameChar(c) })
+	return !strings.ContainsFunc(s, func(c rune) bool { return !isNameChar(c) })
 }
 
 // isNameChar reports whether c is an ASCII letter, digit or underscore.
@@ -456,6 +463,16 @@ func (r Runner) Environ() []string {
 // keys: exactly, or without regard to case on Windows.
 func SameKey(name, key string) bool {
 	return name == key || (runtime.GOOS == "windows" && strings.EqualFold(name, key))
+}
+
+// WithoutKeys returns env, a list of key=value entries, without the entries whose key is one of
+// keys as SameKey matches them. It reuses env's storage, as slices.DeleteFunc does.
+func WithoutKeys(env []string, keys ...string) []string {
+	return slices.DeleteFunc(env, func(entry string) bool {
+		name, _, _ := strings.Cut(entry, "=")
+
+		return slices.ContainsFunc(keys, func(key string) bool { return SameKey(name, key) })
+	})
 }
 
 // EnvValue returns the value key has in env, a list of key=value entries, and whether env sets it.

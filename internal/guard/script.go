@@ -3,6 +3,7 @@
 package guard
 
 import (
+	"slices"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -39,16 +40,11 @@ func evalScript(args []Word) (string, bool, MarkKind) {
 		return "", false, ""
 	}
 
-	texts := make([]string, 0, len(args))
-	for _, arg := range args {
-		if !arg.Literal {
-			return "", false, DynamicScript
-		}
-
-		texts = append(texts, arg.Text)
+	if slices.ContainsFunc(args, func(arg Word) bool { return !arg.Literal }) {
+		return "", false, DynamicScript
 	}
 
-	return strings.Join(texts, " "), true, ""
+	return strings.Join(wordTexts(args), " "), true, ""
 }
 
 // shellScript returns the script a shell given args runs: its `-c` string, or the heredoc on its

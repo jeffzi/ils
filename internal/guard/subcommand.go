@@ -260,14 +260,11 @@ func (k knownOptions) resolve(name string) (option string, valued, ambiguous boo
 	}
 
 	values, flags := startedBy(k.values, bare), startedBy(k.flags, bare)
-	switch {
-	case len(values)+len(flags) == 1:
+	if len(values)+len(flags) == 1 {
 		return "--" + slices.Concat(values, flags)[0], len(values) == 1, false
-	case len(values) > 0:
-		return name, false, true
 	}
 
-	return name, false, false
+	return name, false, len(values) > 0
 }
 
 func startedBy(names []string, prefix string) []string {

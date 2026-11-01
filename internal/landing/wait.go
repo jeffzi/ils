@@ -148,17 +148,6 @@ func (w Waited) unconfirmed() Waited {
 	return Waited{MergeState: w.MergeState}
 }
 
-// apartWithoutCI turns nothing reported into WaitConflicting or WaitBehind when the merge state,
-// read after the wait, says the pull request cannot merge and the trunk has no CI, and reports
-// whether it did.
-func (w *Waited) apartWithoutCI() bool {
-	if w.Outcome != WaitNothingReported {
-		return false
-	}
-
-	return w.takeApart()
-}
-
 // takeApart sets the outcome to WaitConflicting or WaitBehind when the merge state says the pull
 // request cannot merge, and reports whether it did.
 func (w *Waited) takeApart() bool {

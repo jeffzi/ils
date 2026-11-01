@@ -127,14 +127,14 @@ func (d *display) drop() {
 
 // suspend takes the spinner line off stderr, if one stands, and stops the process through stop, both
 // under mu so that no frame draws the line between the two: the first frame after the process
-// continues draws it again. It returns the error of stop.
-func (d *display) suspend(stop func() error) error {
+// continues draws it again.
+func (d *display) suspend(stop func() error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	d.clear()
 
-	return stop()
+	_ = stop()
 }
 
 // Started draws the spinner line of the step label names, timed from now.

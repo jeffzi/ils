@@ -509,17 +509,7 @@ func (w *walker) variableScripts(inv *Invocation, assignments []Assignment) []st
 		}
 	}
 
-	scripts, mark := literalScripts(values)
-	runs, mark := capDepth(w.depth, len(scripts) > 0, mark)
-	if !runs {
-		scripts = nil
-	}
-
-	if mark != "" {
-		inv.Marks = append(inv.Marks, Mark{Kind: mark})
-	}
-
-	return scripts
+	return runnableScripts(inv, w.depth, values)
 }
 
 // variableCommands walks scripts, the shell commands a variable git reads holds, one level deeper
@@ -554,6 +544,23 @@ func (w *walker) walkString(script string, sc *scope) (*syntax.File, error) {
 	w.nested(file, sc)
 
 	return file, w.err
+}
+
+// runnableScripts returns the text of each of values, the shell commands inv has something run at
+// depth levels of nesting, that is walked: none when they would nest past maxDepth. It marks inv
+// when one of them is not a literal or they would nest too deep.
+func runnableScripts(inv *Invocation, depth int, values []Word) []string {
+	scripts, mark := literalScripts(values)
+	runs, mark := capDepth(depth, len(scripts) > 0, mark)
+	if !runs {
+		scripts = nil
+	}
+
+	if mark != "" {
+		inv.Marks = append(inv.Marks, Mark{Kind: mark})
+	}
+
+	return scripts
 }
 
 // capDepth reports whether a string that runs at depth levels of nesting is walked, and the mark

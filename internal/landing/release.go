@@ -2,7 +2,6 @@ package landing
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -11,7 +10,6 @@ import (
 
 	"golang.org/x/mod/semver"
 
-	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/result"
@@ -437,8 +435,8 @@ func (rel *releasing) awaitChecks(ctx context.Context, deps Deps) (Waited, error
 
 		outcome, done := judge(verdict, nil)
 
-		waited = Waited{Since: began, Verdict: verdict, Deciding: verdict.Deciding(), Outcome: outcome}
-		waited.Passed, waited.Skipped = tally(waited.Deciding)
+		waited = Waited{Since: began}
+		waited.take(verdict, outcome)
 		deps.counted(len(waited.Deciding)-len(verdict.Pending()), len(waited.Deciding))
 
 		// A failed check stays failed whatever runs start later.
@@ -456,9 +454,7 @@ func (rel *releasing) awaitChecks(ctx context.Context, deps Deps) (Waited, error
 // waiting for its failed log stays red, the deadline or an interrupt makes it WaitPending, and any
 // other error is returned.
 func (w Waited) cutBy(err error) (Waited, error) {
-	if outcome, cutErr := cutShort(w.Outcome, err); cutErr == nil {
-		w.Outcome = outcome
-
+	if _, cutErr := cutShort(w.Outcome, err); cutErr == nil {
 		return w, nil
 	}
 
@@ -617,46 +613,42 @@ func (rel *releasing) pushTag(ctx context.Context, deps Deps, req Request) *resu
 // settles which, since it resumes once origin holds the tag at the release commit.
 func (rel *releasing) tagPushFailed(req Request, err error) *result.Result {
 	commit := result.SHA(rel.commit)
+	failure, next, refused := classifyPush(req, err)
 
-	if interrupted(err) {
-		return rel.broke(req, result.Say(runInterrupted+" during the push of the tag %s", rel.tag), req.again(),
+	switch failure {
+	case pushInterrupted:
+		return rel.broke(req, result.Say(runInterrupted+" during the push of the tag %s", rel.tag), next,
 			result.Say("Started the push of the tag %s at %s when "+runInterrupted+"; it may or may not have taken",
 				rel.tag, commit))
-	}
-
-	if timedOut(err) {
+	case pushTimedOut:
 		return rel.broke(req, result.Say(timeLimitEnded+" during the push of the tag %s", req.limitWords(), rel.tag),
-			req.afterTimeLimit(),
+			next,
 			result.Say("Started the push of the tag %s at %s when "+timeLimitEnded+"; it may or may not have taken",
 				rel.tag, commit, req.limitWords()))
-	}
-
-	if refused, ok := errors.AsType[*git.PushError](err); ok {
+	case pushRefusedByGit:
 		line := result.Say("Git refused the push of the tag %s, made locally, so it was not pushed", rel.tag)
 		if refused.Reason != "" {
 			line = result.Say("Git refused the push of the tag %s, made locally, so it was not pushed: %s", rel.tag, refused.Reason)
 		}
 
-		stop := rel.broke(req, result.Say("git refused the push of the tag %s", rel.tag), req.onceFixed(), line)
+		stop := rel.broke(req, result.Say("git refused the push of the tag %s", rel.tag), next, line)
 		stop.Excerpt = lastLines(refused.Output())
 
 		return stop
-	}
-
-	if _, ok := errors.AsType[*git.RemoteError](err); ok {
-		return rel.broke(req, result.Say(originStopped+" during the push of the tag %s", rel.tag), req.again(),
+	case pushUnanswered:
+		return rel.broke(req, result.Say(originStopped+" during the push of the tag %s", rel.tag), next,
 			result.Say("Started the push of the tag %s at %s when "+originStopped+"; it may or may not have taken: %s",
 				rel.tag, commit, err.Error()))
-	}
-
-	if _, ok := errors.AsType[*child.KilledError](err); ok {
-		return rel.broke(req, result.Say("the push of the tag %s did not finish", rel.tag), req.again(),
+	case pushKilled:
+		return rel.broke(req, result.Say("the push of the tag %s did not finish", rel.tag), next,
 			result.Say("The push of the tag %s at %s did not finish, so it may or may not have taken: %s",
 				rel.tag, commit, err.Error()))
+	case pushNotStarted:
+		fallthrough
+	default:
+		return rel.broke(req, result.Say("could not push the tag %s", rel.tag), next,
+			result.Say("The tag %s was made locally, and its push to origin failed: %s", rel.tag, err.Error()))
 	}
-
-	return rel.broke(req, result.Say("could not push the tag %s", rel.tag), req.onceFixed(),
-		result.Say("The tag %s was made locally, and its push to origin failed: %s", rel.tag, err.Error()))
 }
 
 // publish leaves the GitHub release of the tag as it is when one exists, and otherwise creates it

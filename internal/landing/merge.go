@@ -390,7 +390,7 @@ func (m *mergeReady) withoutCI(ctx context.Context, deps Deps, req Request) *res
 
 	if without {
 		m.unverified = true
-		m.waited.apartWithoutCI()
+		m.waited.takeApart()
 	}
 
 	return m.verdictStop(req)

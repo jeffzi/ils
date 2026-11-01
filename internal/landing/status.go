@@ -280,10 +280,7 @@ func (r *reading) readOrigin(ctx context.Context) {
 	switch {
 	case err != nil:
 		r.failed(readURLs, err)
-
-		if !r.cut {
-			r.skippedPulls(err.Error())
-		}
+		r.skippedPulls(err.Error())
 	case !oneRepo:
 		r.block(Request{Command: PushCommand}.twoRepositories(urls), "origin's URLs do not name one GitHub repository")
 	default:
@@ -373,10 +370,7 @@ func (r *reading) readIdentity(ctx context.Context) {
 		}
 
 		r.failed(readIdentity, err)
-
-		if !r.cut {
-			r.skippedPulls(err.Error())
-		}
+		r.skippedPulls(err.Error())
 
 		return
 	}

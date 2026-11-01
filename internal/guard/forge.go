@@ -312,12 +312,7 @@ func ghConfigRunner(runner github.Runner, dir string, config ghConfig) (github.R
 			}
 		}
 
-		env = slices.DeleteFunc(env, func(entry string) bool {
-			key, _, _ := strings.Cut(entry, "=")
-
-			return git.SameKey(key, named.name)
-		})
-		env = append(env, named.name+"="+value)
+		env = append(git.WithoutKeys(env, named.name), named.name+"="+value)
 	}
 
 	runner.Env = env

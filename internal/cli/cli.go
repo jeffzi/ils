@@ -39,25 +39,17 @@ type App struct {
 	// Environ is the process environment, read for the color profile of each stream: NO_COLOR,
 	// CLICOLOR_FORCE and TERM among others.
 	Environ []string
-	// Version is the version of ils that `ils --version` prints; empty falls back to the version in
-	// the binary's build info.
-	Version string
 	// runPush runs `ils push`; nil runs landing.Push.
 	runPush Command
 	// runMerge runs `ils merge`; nil runs landing.Merge.
 	runMerge Command
 	// runBranch runs `ils branch <name>`; nil runs landing.StartBranch.
 	runBranch Command
-	// runStatus runs `ils status`; nil runs landing.Status.
-	runStatus Command
 	// runRelease runs `ils release <version>`; nil runs landing.Release.
 	runRelease Command
-	// buildInfo reads the build info that an empty Version falls back to; nil reads
+	// buildInfo reads the build info whose version `ils --version` prints; nil reads
 	// debug.ReadBuildInfo.
 	buildInfo func() (*debug.BuildInfo, bool)
-	// suspend stops the process when the stop signal of a terminal reaches it; nil sends the
-	// process SIGSTOP.
-	suspend func() error
 	// StderrWidth returns the width in columns of the terminal stderr is, read at each frame of the
 	// spinner; nil, or a width below 1, counts as 80.
 	StderrWidth func() int
@@ -221,13 +213,8 @@ func Version(info *debug.BuildInfo, ok bool) string {
 	return strings.TrimPrefix(info.Main.Version, "v")
 }
 
-// printedVersion returns the version that ils --version prints: the App.Version field when it is
-// set, otherwise the version of the build info.
+// printedVersion returns the version that ils --version prints: the version of the build info.
 func (a App) printedVersion() string {
-	if a.Version != "" {
-		return a.Version
-	}
-
 	if a.buildInfo == nil {
 		return Version(debug.ReadBuildInfo())
 	}
@@ -452,7 +439,7 @@ func (p *parse) root() *cobra.Command {
 	root.AddCommand(
 		p.push(),
 		p.merge(),
-		p.landing(landingHelp{word: landing.StatusCommand, short: statusShort, long: statusLong, examples: statusExamples}, orDefault(p.app.runStatus, landing.Status), nil),
+		p.landing(landingHelp{word: landing.StatusCommand, short: statusShort, long: statusLong, examples: statusExamples}, landing.Status, nil),
 		p.named(landingHelp{word: landing.BranchCommand, arg: "name", short: branchShort, long: branchLong, examples: branchExamples}, orDefault(p.app.runBranch, landing.StartBranch), nil),
 		p.release(),
 		p.parseCommand(),
@@ -583,25 +570,27 @@ func (p *parse) addWaitFlag(c *cobra.Command) {
 }
 
 // push returns `ils push`, which runs the push command of the app, or landing.Push when it has
-// none, under the long wait when --wait is true, or when stdout is a terminal and no --wait is
-// typed; --wait=false runs it under the short one.
+// none.
 func (p *parse) push() *cobra.Command {
-	c := p.landing(landingHelp{
-		word: landing.PushCommand, short: pushShort, long: withTimeLimits(pushLong), examples: pushExamples,
-	}, orDefault(p.app.runPush, landing.Push), p.waitOn)
-
-	p.addWaitFlag(c)
-
-	return c
+	return p.waiting(landingHelp{
+		word: landing.PushCommand, short: pushShort, long: pushLong, examples: pushExamples,
+	}, orDefault(p.app.runPush, landing.Push))
 }
 
 // merge returns `ils merge`, which runs the merge command of the app, or landing.Merge when it
-// has none, under the long wait when --wait is true, or when stdout is a terminal and no --wait
-// is typed; --wait=false runs it under the short one.
+// has none.
 func (p *parse) merge() *cobra.Command {
-	c := p.landing(landingHelp{
-		word: landing.MergeCommand, short: mergeShort, long: withTimeLimits(mergeLong), examples: mergeExamples,
-	}, orDefault(p.app.runMerge, landing.Merge), p.waitOn)
+	return p.waiting(landingHelp{
+		word: landing.MergeCommand, short: mergeShort, long: mergeLong, examples: mergeExamples,
+	}, orDefault(p.app.runMerge, landing.Merge))
+}
+
+// waiting returns the landing command help names, with the time limits added to its long help,
+// which runs run under the long wait when --wait is true, or when stdout is a terminal and no
+// --wait is typed; --wait=false runs it under the short one.
+func (p *parse) waiting(help landingHelp, run Command) *cobra.Command {
+	help.long = withTimeLimits(help.long)
+	c := p.landing(help, run, p.waitOn)
 
 	p.addWaitFlag(c)
 

@@ -21,17 +21,14 @@ func (a App) onStop(shown *display) {
 		return
 	}
 
-	stop := a.suspend
-	if stop == nil {
-		stop = func() error { return syscall.Kill(os.Getpid(), syscall.SIGSTOP) }
-	}
+	stop := func() error { return syscall.Kill(os.Getpid(), syscall.SIGSTOP) }
 
 	stops := make(chan os.Signal, 1)
 	a.Notify(stops, syscall.SIGTSTP)
 
 	go func() {
 		for range stops {
-			_ = shown.suspend(stop)
+			shown.suspend(stop)
 		}
 	}()
 }

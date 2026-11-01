@@ -199,22 +199,10 @@ func TestRepo_Standing(t *testing.T) {
 	}
 }
 
-func TestRepo_GitDir_WhenInRepository_ReturnsAbsoluteGitDir(t *testing.T) {
-	t.Parallel()
-	f := gittest.New(t, trunk)
-	want := filepath.Join(f.Dir(), ".git")
-
-	got, err := newRepo(f).GitDir(t.Context())
-	assert.NilError(t, err)
-
-	assert.Check(t, is.Equal(got, want))
-}
-
 func TestRepo_WhenNotARepository_ReturnsExitError(t *testing.T) {
 	t.Parallel()
 	tests := []repoCall{
 		{name: "Standing", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.Standing(ctx) }},
-		{name: "GitDir", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.GitDir(ctx) }},
 		{name: "Dirty", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.Dirty(ctx) }},
 	}
 
@@ -1029,7 +1017,6 @@ func TestRepo_WhenAGitReadFails_ReturnsItsExitError(t *testing.T) {
 			},
 		},
 		{name: "local trunk ahead, its ref read", failOn: []string{"show-ref"}, arrange: trunkAhead, call: localTrunkAhead},
-		{name: "local trunk ahead, its merge base read", failOn: []string{"merge-base"}, arrange: trunkAhead, call: localTrunkAhead},
 		{name: "local trunk ahead, its commits read", failOn: []string{"log"}, arrange: trunkAhead, call: localTrunkAhead},
 		{
 			name: "branches containing, the current branch read", failOn: []string{"symbolic-ref"},

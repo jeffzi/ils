@@ -154,13 +154,9 @@ func (r Repo) HasCommits(ctx context.Context, branch string) (bool, error) {
 	return r.holds(ctx, "show-ref", "--verify", "--quiet", headsRef+branch)
 }
 
-// GitDir returns the absolute path of the repository's git directory.
-func (r Repo) GitDir(ctx context.Context) (string, error) {
-	return r.gitDir(ctx)
-}
-
-// gitDir returns the absolute path of the git directory git finds when given the global options.
-func (r Repo) gitDir(ctx context.Context, options ...string) (string, error) {
+// GitDir returns the absolute path of the git directory git finds when given the global options,
+// the repository's own when there are none.
+func (r Repo) GitDir(ctx context.Context, options ...string) (string, error) {
 	dir, err := r.line(ctx, append(slices.Clone(options), "rev-parse", "--absolute-git-dir")...)
 	if err != nil {
 		return "", err
@@ -179,7 +175,7 @@ func (r Repo) gitDir(ctx context.Context, options ...string) (string, error) {
 func (r Repo) FindGitDir(ctx context.Context, options ...string) (dir string, found bool, err error) {
 	runner := r.Runner
 	runner.Env = append(runner.Environ(), "LC_ALL=C")
-	dir, err = Repo{Runner: runner}.gitDir(ctx, options...)
+	dir, err = Repo{Runner: runner}.GitDir(ctx, options...)
 	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && exitErr.Code == fatalCode &&
 		strings.Contains(exitErr.Stderr, notRepositoryMessage) {
 		return "", false, nil
@@ -296,19 +292,12 @@ func (r Repo) LocalTrunkAhead(ctx context.Context, trunk string) (ahead bool, pa
 		return false, nil, err
 	}
 
-	local := headsRef + trunk
-
-	contained, err := r.Contains(ctx, originTrunk(trunk), local)
-	if err != nil || contained {
-		return false, nil, err
-	}
-
-	past, err = r.commits(ctx, local, excludeTrunk(trunk))
+	past, err = r.commits(ctx, headsRef+trunk, excludeTrunk(trunk))
 	if err != nil {
 		return false, nil, err
 	}
 
-	return true, past, nil
+	return len(past) > 0, past, nil
 }
 
 // OwnCommits returns the commits on tip that origin's trunk lacks and that none of the local

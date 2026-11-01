@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
+
+	"github.com/jeffzi/ils/internal/git"
 )
 
 // seeThrough returns the index in words of the command that the wrappers opening words run, and
@@ -161,7 +163,7 @@ func envAssignment(raw *syntax.Word, home string) (Assignment, bool) {
 	}
 
 	name, rest, found := strings.Cut(lit.Value, "=")
-	if !found || !isName(name) {
+	if !found || !git.IsName(name) {
 		return Assignment{}, false
 	}
 
@@ -175,16 +177,4 @@ func envAssignment(raw *syntax.Word, home string) (Assignment, bool) {
 	}
 
 	return Assignment{Name: name, Value: readWord(&syntax.Word{Parts: parts}, home)}, true
-}
-
-func isName(s string) bool {
-	for i, c := range s {
-		letter := c == '_' || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z')
-		digit := '0' <= c && c <= '9'
-		if !letter && (i == 0 || !digit) {
-			return false
-		}
-	}
-
-	return s != ""
 }

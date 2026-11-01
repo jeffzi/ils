@@ -135,22 +135,22 @@ func FaintStyle() ansi.Style {
 	return ansi.NewStyle().Faint()
 }
 
-// kindStyle returns the style a name of k is drawn in, and false for wording,
+// kindStyle returns the style a name of k is drawn in, and no style for wording,
 // ticks and names of no particular kind, which are drawn unstyled.
-func kindStyle(k kind) (ansi.Style, bool) {
+func kindStyle(k kind) ansi.Style {
 	switch k {
 	case kindBranch, kindPullRequest, kindCommand:
-		return ansi.NewStyle().Bold().ForegroundColor(ansi.Blue), true
+		return ansi.NewStyle().Bold().ForegroundColor(ansi.Blue)
 	case kindSHA, kindSkipped, kindZero:
-		return FaintStyle(), true
+		return FaintStyle()
 	case kindPassed:
-		return GreenStyle(), true
+		return GreenStyle()
 	case kindURL:
-		return ansi.NewStyle().Underline(true), true
+		return ansi.NewStyle().Underline(true)
 	case kindWording, kindName, kindTick:
 		fallthrough
 	default:
-		return nil, false
+		return nil
 	}
 }
 
@@ -191,18 +191,15 @@ func (p Pen) Styled(style ansi.Style, text string) string {
 func (p Pen) spans(spans []span) string {
 	var b strings.Builder
 	for _, s := range spans {
-		style, ok := kindStyle(s.kind)
-		switch {
-		case s.kind == kindTick:
+		switch s.kind {
+		case kindTick:
 			if !p.color {
 				b.WriteString(s.text)
 			}
-		case ok:
-			b.WriteString(p.Styled(style, visible(s.text)))
-		case s.kind == kindWording:
+		case kindWording:
 			b.WriteString(s.text)
 		default:
-			b.WriteString(visible(s.text))
+			b.WriteString(p.Styled(kindStyle(s.kind), visible(s.text)))
 		}
 	}
 

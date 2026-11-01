@@ -136,21 +136,7 @@ func (s shut) Write([]byte) (int, error) {
 	return 0, s.err
 }
 
-func TestApp_Run_WhenVersionIsSet_PrintsItOverTheBuildInfoVersion(t *testing.T) {
-	t.Parallel()
-
-	app := outside(t)
-	app.Version = "0.2.0"
-	app.SetBuildInfo(built("v9.9.9"), true)
-
-	got := launch(t, app, "--version")
-
-	assert.Check(t, is.Equal(got.code, exitDone))
-	assert.Check(t, is.Contains(got.stdout, "0.2.0"))
-	assert.Check(t, !strings.Contains(got.stdout, "9.9.9"), "stdout = %q, want the set version over the build info's", got.stdout)
-}
-
-func TestApp_Run_WhenVersionIsEmpty_PrintsTheBuildInfoVersionOrDevel(t *testing.T) {
+func TestApp_Run_WhenAskedForTheVersion_PrintsTheBuildInfoVersionOrDevel(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {

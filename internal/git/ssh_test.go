@@ -782,3 +782,27 @@ func FuzzLineWords(f *testing.F) {
 		}
 	})
 }
+
+func TestIsName(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{name: "letters, digits and underscores", in: "GIT_DIR2", want: true},
+		{name: "leading underscore", in: "_x", want: true},
+		{name: "empty", in: "", want: false},
+		{name: "leading digit", in: "1A", want: false},
+		{name: "a character no name holds", in: "a-b", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := git.IsName(tt.in)
+
+			assert.Check(t, is.Equal(got, tt.want), "IsName(%q)", tt.in)
+		})
+	}
+}

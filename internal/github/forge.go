@@ -505,17 +505,12 @@ func writeNotes(notes string) (path string, err error) {
 	return file.Name(), nil
 }
 
-// repoAPIPath returns the REST path of rest under the repository, relative to the API root.
-func repoAPIPath(repo forge.Repo, rest string) string {
-	return "repos/" + repo.FullName() + "/" + rest
-}
-
 // repoAPIArgs returns the gh arguments of a call of rest under the repository, with flags before
-// its path.
+// its REST path, which is relative to the API root.
 func repoAPIArgs(repo forge.Repo, rest string, flags ...string) []string {
 	args := append([]string{"api", "--hostname", repo.Host}, flags...)
 
-	return append(args, repoAPIPath(repo, rest))
+	return append(args, "repos/"+repo.FullName()+"/"+rest)
 }
 
 // paginatedAPIArgs returns the gh arguments that read rest under the repository, following every page.
