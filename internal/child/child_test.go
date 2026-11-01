@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -16,6 +19,7 @@ import (
 	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/child"
+	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/logtest"
 )
 
@@ -463,4 +467,120 @@ func TestRequirement_CheckOutput_WhenFirstLineIsOlder_ReturnsToolTooOldErrorForT
 	assert.Assert(t, ok, "CheckOutput(%q) error = %v, want *child.ToolTooOldError", stdout, err)
 	assert.Check(t, is.Equal(tooOld.Line, "gh version 2.49.0"))
 	assert.Check(t, is.Equal(tooOld.Version, "2.49.0"))
+}
+
+// prompt bounds how long a test waits for a call that must return soon after its program exited,
+// and for the program's lingering copy to connect.
+const prompt = 10 * time.Second
+
+// spawnerSaid is what the spawner the Program tests start prints.
+const spawnerSaid = "spawner started"
+
+// runBounded runs program and fails the test when the call has not returned within prompt, so a
+// call that waits on a descendant's pipes fails instead of hanging until the test ends.
+func runBounded(t *testing.T, program child.Program) (child.Output, error) {
+	t.Helper()
+
+	type ran struct {
+		err error
+		out child.Output
+	}
+
+	done := make(chan ran, 1)
+
+	go func() {
+		out, err := program.Run(t.Context())
+		done <- ran{out: out, err: err}
+	}()
+
+	select {
+	case got := <-done:
+		return got.out, got.err
+	case <-time.After(prompt):
+		t.Fatalf("Run did not return within %v", prompt)
+
+		return child.Output{}, nil
+	}
+}
+
+// foundAt returns a LookPath that finds every tool at path.
+func foundAt(path string) func(string) (string, error) {
+	return func(string) (string, error) { return path, nil }
+}
+
+func TestProgram_Run_WhenProgramExitsWhileDescendantHoldsStdout_ReturnsWhatItPrinted(t *testing.T) {
+	t.Parallel()
+	addr, lingering := gittest.SilentListener(t)
+	self, err := os.Executable()
+	assert.NilError(t, err)
+	program := child.Program{
+		Tool: "spawner", LookPath: foundAt(self), Env: append(os.Environ(), gittest.Spawner(addr, spawnerSaid)...),
+	}
+
+	got, err := runBounded(t, program)
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Equal(got.Stdout, spawnerSaid+"\n"))
+	select {
+	case <-lingering:
+	case <-time.After(prompt):
+		t.Error("the spawner's copy never connected, so nothing held the pipes open")
+	}
+}
+
+func TestProgram_Run_WhenProgramCannotBeStarted_ReturnsToolMissingError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		lookPath func(t *testing.T) func(string) (string, error)
+		name     string
+	}{
+		{name: "lookup finds no program", lookPath: func(*testing.T) func(string) (string, error) {
+			return func(string) (string, error) { return "", exec.ErrNotFound }
+		}},
+		{name: "lookup names no file", lookPath: func(t *testing.T) func(string) (string, error) {
+			t.Helper()
+
+			return foundAt(filepath.Join(t.TempDir(), "gh"))
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			program := child.Program{
+				Tool: "gh", InstallURL: "https://cli.github.com", Args: []string{"pr", "view"}, LookPath: tt.lookPath(t),
+				StartWantingAFileIsMissing: true,
+			}
+
+			_, err := program.Run(t.Context())
+
+			missing, ok := errors.AsType[*child.ToolMissingError](err)
+			assert.Assert(t, ok, "Run error = %v, want *child.ToolMissingError", err)
+			assert.Check(t, is.Equal(missing.Tool, "gh"))
+			assert.Check(t, is.Equal(missing.InstallURL, "https://cli.github.com"))
+			assert.Check(t, missing.Err != nil, "Run error carries no cause, want what starting the program failed with")
+		})
+	}
+}
+
+func TestProgram_Run_WhenTheFoundFileIsGoneAndAStartWantingAFileIsNotMissing_ReturnsTheStartError(t *testing.T) {
+	t.Parallel()
+	program := child.Program{Tool: "git", Args: []string{"status"}, LookPath: foundAt(filepath.Join(t.TempDir(), "git"))}
+
+	_, err := program.Run(t.Context())
+
+	_, missing := errors.AsType[*child.ToolMissingError](err)
+	assert.Check(t, err != nil && !missing, "Run error = %v, want the start error, not *child.ToolMissingError", err)
+	assert.Check(t, errors.Is(err, fs.ErrNotExist), "Run error = %v, want it to wrap fs.ErrNotExist", err)
+}
+
+func TestProgram_Run_WhenProgramExitsNonZero_ReturnsExitErrorNamingToolAndArgs(t *testing.T) {
+	t.Parallel()
+	argv := nonsenseArgv()
+	program := child.Program{Tool: argv[0], Args: argv[1:], LookPath: exec.LookPath}
+
+	_, err := program.Run(t.Context())
+
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "Run error = %v, want *child.ExitError", err)
+	assert.Check(t, is.DeepEqual(exitErr.Argv, argv))
 }

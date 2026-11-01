@@ -16,19 +16,14 @@ import (
 )
 
 const (
-	// helperModeEnv makes the test binary act, instead of running tests, as a program that leaves a
-	// lingering copy of itself holding the output pipes it inherited, in the mode the variable names.
+	// helperModeEnv makes the test binary act, instead of running tests, as the lingering helper
+	// of the mode the variable names.
 	helperModeEnv = "ILS_GIT_TEST_HELPER"
 	// helperAddrEnv holds the local address a lingering helper connects to once it has started.
 	helperAddrEnv = "ILS_GIT_TEST_HELPER_ADDR"
 
 	// helperLinger makes the helper hold the address in helperAddrEnv until the test ends.
 	helperLinger = "linger"
-	// helperSpawn makes the helper print helperSaid, start a lingering copy of itself and exit zero
-	// at once, so that a process it started still holds its output pipes after it exited.
-	helperSpawn = "spawn"
-	// helperSaid is what the helper prints before it starts its lingering copy.
-	helperSaid = "helper started"
 
 	// sshStandInEnv makes the test binary act as an ssh command a user configured: standInAnswer
 	// followed by a name answers `-G <host>` with a config whose hostname is that name,
@@ -162,26 +157,11 @@ func helper(mode string) int {
 	switch mode {
 	case helperLinger:
 		return gittest.Hold(context.Background(), os.Getenv(helperAddrEnv))
-	case helperSpawn:
-		fmt.Println(helperSaid)
-
-		return spawnLingerer()
 	default:
 		fmt.Fprintf(os.Stderr, "helper: unknown mode %q\n", mode)
 
 		return 2
 	}
-}
-
-// spawnLingerer starts a lingering helper that inherits this process's output and does not wait for it.
-func spawnLingerer() int {
-	if _, err := startLingerer(); err != nil {
-		fmt.Fprintf(os.Stderr, "helper: %v\n", err)
-
-		return 1
-	}
-
-	return 0
 }
 
 // waitForLingerer starts a lingering helper that inherits this process's output and waits for it,

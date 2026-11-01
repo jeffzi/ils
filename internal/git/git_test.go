@@ -16,8 +16,11 @@ import (
 	"github.com/jeffzi/ils/internal/logtest"
 )
 
-// prompt bounds how long a test waits for the helper's child to connect.
+// prompt bounds how long a test waits for the spawner's lingering copy to connect.
 const prompt = 10 * time.Second
+
+// spawnerSaid is what the spawner the pipe-holding test starts prints.
+const spawnerSaid = "helper started"
 
 // newRunner returns a runner in a fresh empty directory, cut off from the user's git config.
 func newRunner(t *testing.T) git.Runner {
@@ -37,18 +40,15 @@ func newRecordedRunner(t *testing.T) (git.Runner, *git.Recorder) {
 	return runner, recorder
 }
 
-// helperRunner returns a runner whose git is the test binary acting as the helper of mode, whose
-// lingering copy connects to addr once started. It puts the test binary on PATH as git, so the
-// test cannot be parallel.
-func helperRunner(t *testing.T, mode, addr string) git.Runner {
+// spawnerRunner returns a runner whose git is the test binary acting as a gittest.Spawner that
+// prints spawnerSaid, whose lingering copy connects to addr once started. It puts the test binary
+// on PATH as git, so the test cannot be parallel.
+func spawnerRunner(t *testing.T, addr string) git.Runner {
 	t.Helper()
 
 	gittest.LinkAs(t, "git")
 
-	return git.Runner{
-		Dir: t.TempDir(),
-		Env: append(os.Environ(), helperModeEnv+"="+mode, helperAddrEnv+"="+addr, "GORACE="+gittest.RaceSetting()),
-	}
+	return git.Runner{Dir: t.TempDir(), Env: append(os.Environ(), gittest.Spawner(addr, spawnerSaid)...)}
 }
 
 func TestRunner_Run_WhenArgHoldsShellSyntax_PassesItVerbatim(t *testing.T) {
@@ -87,14 +87,14 @@ func TestRunner_Run_WhenGitMissingFromPath_ReturnsToolMissingError(t *testing.T)
 }
 
 func TestRunner_Run_WhenGitExitsZeroWhileChildHoldsPipes_ReturnsOutputPromptly(t *testing.T) {
-	// Not parallel: helperRunner sets PATH for the whole process.
+	// Not parallel: spawnerRunner sets PATH for the whole process.
 	addr, lingering := gittest.SilentListener(t)
-	runner := helperRunner(t, helperSpawn, addr)
+	runner := spawnerRunner(t, addr)
 
 	got, err := runner.Run(t.Context())
 	assert.NilError(t, err)
 
-	assert.Check(t, is.Contains(got.Stdout, helperSaid))
+	assert.Check(t, is.Contains(got.Stdout, spawnerSaid))
 	select {
 	case <-lingering:
 	case <-time.After(prompt):

@@ -45,6 +45,14 @@ const (
 	answerEnv = "ILS_GITTEST_ANSWER"
 	// wordsSep separates the words a variable holds; no word a fake matches on holds a line break.
 	wordsSep = "\n"
+	// spawnAtEnv holds the address the lingering copy of a spawner holds; its presence makes the
+	// test binary act as a spawner.
+	spawnAtEnv = "ILS_GITTEST_SPAWN_AT"
+	// spawnSaysEnv holds the line a spawner prints before it starts its lingering copy.
+	spawnSaysEnv = "ILS_GITTEST_SPAWN_SAYS"
+	// lingerAtEnv holds the address a spawner's lingering copy holds; its presence makes the test
+	// binary act as that copy.
+	lingerAtEnv = "ILS_GITTEST_LINGER_AT"
 )
 
 // Fake says how the git FakeGit puts on PATH answers. A call it does not fake runs the real git.
@@ -67,11 +75,21 @@ type Fake struct {
 	AnswerOn []string
 }
 
-// Main makes the test binary act as git when FakeGit arranged for it, and reports whether it did.
+// Main makes the test binary act as git when FakeGit arranged for it, or as a spawner or its
+// lingering copy when Spawner did, and reports whether it did.
 //
 // A package's TestMain calls it before anything else and, when served is true, exits with code
 // without running a test.
 func Main() (code int, served bool) {
+	// First: the lingering copy inherits the spawner's environment, spawnAtEnv included.
+	if addr := os.Getenv(lingerAtEnv); addr != "" {
+		return Hold(context.Background(), addr), true
+	}
+
+	if addr := os.Getenv(spawnAtEnv); addr != "" {
+		return spawn(addr, os.Getenv(spawnSaysEnv)), true
+	}
+
 	realGit := os.Getenv(realGitEnv)
 	if realGit == "" {
 		return 0, false
@@ -272,6 +290,42 @@ func Hold(ctx context.Context, addr string) int {
 	closeErr := conn.Close()
 
 	return broken(errors.Join(fmt.Errorf("the server at %s closed the held call", addr), copyErr, closeErr))
+}
+
+// Spawner returns the environment entries that make the test binary, started with them, print
+// said on a line of its own, start a copy of itself that inherits its output and holds addr until
+// the test ends, and exit zero at once: a program that is gone while a process it started still
+// holds its output pipes.
+//
+// The package's TestMain must call Main. A test that hands in the address of a SilentListener
+// learns when the copy has started.
+func Spawner(addr, said string) []string {
+	return []string{spawnAtEnv + "=" + addr, spawnSaysEnv + "=" + said, raceEnv + "=" + RaceSetting()}
+}
+
+// spawn prints said, starts a copy of the test binary that inherits this process's output and
+// holds addr, and returns zero without waiting for it, or BrokenCode when it cannot.
+func spawn(addr, said string) int {
+	if code := say(os.Stdout, said, "the spawner's line", 0); code != 0 {
+		return code
+	}
+
+	self, err := os.Executable()
+	if err != nil {
+		return broken(fmt.Errorf("find the test binary: %w", err))
+	}
+
+	//nolint:gosec // G204: the test binary starts itself; nothing here comes from outside the test.
+	lingerer := exec.CommandContext(context.Background(), self)
+	lingerer.Env = append(os.Environ(), lingerAtEnv+"="+addr)
+	lingerer.Stdout = os.Stdout
+	lingerer.Stderr = os.Stderr
+
+	if err := lingerer.Start(); err != nil {
+		return broken(fmt.Errorf("start the lingering copy: %w", err))
+	}
+
+	return 0
 }
 
 // runRealGit runs the real git with args, the environment, and the standard streams, and returns

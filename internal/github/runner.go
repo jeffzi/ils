@@ -1,17 +1,14 @@
 package github
 
 import (
-	"bytes"
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"os"
-	"os/exec"
 	"slices"
 	"strings"
 	"time"
@@ -86,6 +83,9 @@ func (e *DecodeError) Unwrap() error {
 // before some of its non-zero exits; its stderr is the ExitError's. When ctx ends
 // before gh does, the error is the context's and the Result is empty, so a
 // half-written stdout is never read.
+//
+// Run does not wait for a process gh started and left behind: once gh has exited or been killed,
+// output pipes still held open are closed after a short grace, as child.Program.Run does.
 func (r Runner) Run(ctx context.Context, args ...string) (Result, error) {
 	start := time.Now()
 	result, err := r.run(ctx, args)
@@ -96,41 +96,23 @@ func (r Runner) Run(ctx context.Context, args ...string) (Result, error) {
 
 // run is Run without the log record.
 func (r Runner) run(ctx context.Context, args []string) (Result, error) {
-	var stdout, stderr bytes.Buffer
-
-	err := r.execute(ctx, args, &stdout, &stderr)
-	if isMissing(err) {
-		return Result{}, &child.ToolMissingError{Tool: Program, InstallURL: installURL, Err: err}
+	program := child.Program{
+		LookPath: ghPath, Tool: Program, InstallURL: installURL, Args: args, Env: r.Env,
+		StartWantingAFileIsMissing: true,
 	}
 
-	return child.Ended(ctx, Argv(args), err, Result{Stdout: stdout.String(), Stderr: stderr.String()})
+	return program.Run(ctx)
 }
 
-// execute runs gh with args and the runner's environment, writing what it prints to stdout and
-// stderr.
-func (r Runner) execute(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+// ghPath returns the gh to start, whatever name it is asked for: the one GH_PATH names, or else
+// the gh on PATH.
+func ghPath(string) (string, error) {
 	path, err := gh.Path()
 	if err != nil {
-		return fmt.Errorf("find %s: %w", Program, err)
+		return "", fmt.Errorf("find %s: %w", Program, err)
 	}
 
-	//nolint:gosec // G204: running gh with the caller's argv is this package's purpose; no shell is involved.
-	cmd := exec.CommandContext(ctx, path, args...)
-	cmd.Env = r.Env
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-
-	return cmd.Run()
-}
-
-// isMissing reports whether err says that no gh could be started: none on PATH,
-// or a GH_PATH that names no file.
-func isMissing(err error) bool {
-	if _, ok := errors.AsType[*exec.Error](err); ok {
-		return true
-	}
-
-	return errors.Is(err, fs.ErrNotExist)
+	return path, nil
 }
 
 // checkVersion returns nil when gh is MinimumVersion or newer.

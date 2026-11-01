@@ -1,7 +1,6 @@
 package git
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -17,11 +16,6 @@ const (
 	program = "git"
 	// installURL is the page git is installed from on every operating system.
 	installURL = "https://git-scm.com/downloads"
-
-	// pipeGrace is how long a call waits for a tool's output pipes to close once the tool itself is
-	// gone. A process the tool started, such as ssh or a credential helper, can outlive it holding
-	// those pipes.
-	pipeGrace = time.Second
 )
 
 // Recorder keeps the argv of every call made by the runners it is attached to.
@@ -98,8 +92,8 @@ func (r Runner) invocation(tool, toolURL string, args []string) invocation {
 	return inv
 }
 
-// invocation is one run of a tool as a child process, started from an argv and never through a
-// shell.
+// invocation is a Runner's call of one tool: the fields child.Program takes, plus the recorder and
+// logger the Runner adds.
 type invocation struct {
 	// record, when set, receives the argv once the tool is found and before it starts.
 	record func(argv []string)
@@ -127,46 +121,22 @@ func (inv invocation) run(ctx context.Context) (Result, error) {
 	return result, err
 }
 
-// execute runs the tool and returns its output once it has exited zero.
-//
-// A tool missing from the PATH it is looked up on is a *child.ToolMissingError, and a run that
-// ended returns what child.Ended leaves to its caller. Once the tool has exited or been killed, output pipes a process it
-// started still holds are closed after pipeGrace; such a process does not fail a run that exited
-// zero.
+// execute runs the tool as child.Program.Run does, found by the invocation's lookPath.
 func (inv invocation) execute(ctx context.Context) (Result, error) {
 	lookPath := inv.lookPath
 	if lookPath == nil {
 		lookPath = exec.LookPath
 	}
 
-	path, err := lookPath(inv.program)
-	if err != nil {
-		return Result{}, &child.ToolMissingError{Tool: inv.program, InstallURL: inv.installURL, Err: err}
-	}
-
-	argv := child.Argv(inv.program, inv.args)
-	if inv.record != nil {
-		inv.record(argv)
-	}
-
-	var stdout, stderr bytes.Buffer
-
-	//nolint:gosec // G204: running a tool with the caller's argv is this package's purpose; no shell is involved.
-	cmd := exec.CommandContext(ctx, path, inv.args...)
-	cmd.Dir = inv.dir
-	cmd.Env = inv.env
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	cmd.WaitDelay = pipeGrace
-
-	// ErrWaitDelay means the tool exited zero and a process it started still holds the pipes: the
-	// tool's own output is complete, so the call succeeded.
-	runErr := cmd.Run()
-	if errors.Is(runErr, exec.ErrWaitDelay) {
-		runErr = nil
-	}
-
-	return child.Ended(ctx, argv, runErr, Result{Stdout: stdout.String(), Stderr: stderr.String()})
+	return child.Program{
+		LookPath:   lookPath,
+		Starting:   inv.record,
+		Tool:       inv.program,
+		InstallURL: inv.installURL,
+		Dir:        inv.dir,
+		Args:       inv.args,
+		Env:        inv.env,
+	}.Run(ctx)
 }
 
 // exited reports whether err is git exiting with code.

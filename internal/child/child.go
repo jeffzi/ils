@@ -1,11 +1,13 @@
-// Package child names what a program started from an argv left behind, how it failed, or why it
-// is not fit to start.
+// Package child starts a program from an argv, never through a shell, and names what it left
+// behind, how it failed, or why it is not fit to start.
 package child
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"math"
 	"os/exec"
@@ -123,6 +125,90 @@ func Ended(ctx context.Context, argv []string, runErr error, printed Output) (Ou
 	return Output{}, err
 }
 
+// pipeGrace is how long a run waits for a program's output pipes to close once the program itself
+// is gone. A process the program started, such as ssh or a credential helper, can outlive it
+// holding those pipes.
+const pipeGrace = time.Second
+
+// Program is one run of a tool as a child process, started from an argv and never through a shell.
+type Program struct {
+	// LookPath finds the file to start for Tool. The run is a *ToolMissingError when it fails.
+	LookPath func(name string) (string, error)
+	// Starting, when set, receives the argv once the tool is found and before it starts.
+	Starting func(argv []string)
+	// Tool is the name the tool is looked up by and the first word of the argv errors name.
+	Tool       string
+	InstallURL string
+	// Dir is the directory the tool runs in; empty runs it in this process's.
+	Dir  string
+	Args []string
+	// Env is the tool's whole environment; nil inherits this process's.
+	Env []string
+	// StartWantingAFileIsMissing makes a start that fails because a file it needs is not there a
+	// *ToolMissingError too, as gh reads a GH_PATH that names no file; unset, such a start is the
+	// error of the run, as git reads one.
+	StartWantingAFileIsMissing bool
+}
+
+// Run runs the program and returns what Ended leaves to its caller.
+//
+// A tool that cannot be found is a *ToolMissingError, and so is one that cannot be started for want
+// of a file when StartWantingAFileIsMissing is set. Run does
+// not wait for a process the tool started and left behind: once the tool has exited or been
+// killed, output pipes still held open are closed after pipeGrace, and a tool that exited zero
+// still succeeds, its own output being complete.
+func (p Program) Run(ctx context.Context) (Output, error) {
+	path, err := p.LookPath(p.Tool)
+	if err != nil {
+		return Output{}, p.missing(err)
+	}
+
+	argv := Argv(p.Tool, p.Args)
+	if p.Starting != nil {
+		p.Starting(argv)
+	}
+
+	var stdout, stderr bytes.Buffer
+
+	//nolint:gosec // G204: running a tool with the caller's argv is this package's purpose; no shell is involved.
+	cmd := exec.CommandContext(ctx, path, p.Args...)
+	cmd.Dir = p.Dir
+	cmd.Env = p.Env
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	cmd.WaitDelay = pipeGrace
+
+	if startErr := cmd.Start(); startErr != nil {
+		if p.StartWantingAFileIsMissing && wantsAFile(startErr) {
+			return Output{}, p.missing(startErr)
+		}
+
+		return Ended(ctx, argv, startErr, Output{})
+	}
+
+	runErr := cmd.Wait()
+	if errors.Is(runErr, exec.ErrWaitDelay) {
+		runErr = nil
+	}
+
+	return Ended(ctx, argv, runErr, Output{Stdout: stdout.String(), Stderr: stderr.String()})
+}
+
+// missing returns the *ToolMissingError of the program, which err caused.
+func (p Program) missing(err error) *ToolMissingError {
+	return &ToolMissingError{Tool: p.Tool, InstallURL: p.InstallURL, Err: err}
+}
+
+// wantsAFile reports whether startErr, what starting a program failed with, says that a file the
+// start needs is not there: the program's own, or the interpreter a script names.
+func wantsAFile(startErr error) bool {
+	if _, ok := errors.AsType[*exec.Error](startErr); ok {
+		return true
+	}
+
+	return errors.Is(startErr, fs.ErrNotExist)
+}
+
 // terminateGrace bounds how long Failure waits for the context of a program that died of SIGTERM
 // to end. It only has to cover the scheduling of ils's own signal goroutine.
 const terminateGrace = 100 * time.Millisecond
@@ -218,7 +304,7 @@ func (e Exec) Log(ctx context.Context, logger *slog.Logger) {
 
 // ToolMissingError reports that a command-line tool ils drives is not installed.
 type ToolMissingError struct {
-	// Err is what looking the tool up failed with.
+	// Err is what looking the tool up, or starting the file the lookup found, failed with.
 	Err  error
 	Tool string
 	// InstallURL is the page the tool is installed from on every operating system, never a
@@ -231,7 +317,7 @@ func (e *ToolMissingError) Error() string {
 	return fmt.Sprintf("%s is not installed: install it from %s", e.Tool, e.InstallURL)
 }
 
-// Unwrap returns what looking the tool up failed with.
+// Unwrap returns what looking the tool up, or starting the file the lookup found, failed with.
 func (e *ToolMissingError) Unwrap() error {
 	return e.Err
 }
