@@ -44,6 +44,10 @@ const (
 	// before the landing command runs: the Notify of the run waits for it, after printing
 	// listening on stdout, and its landing command prints no ready.
 	stuckHoldingEarly = "holding early"
+	// stuckTelling is stuckStopping, except that once ils listens for the end of the process, its
+	// landing command first prints on stdout whether the process still ignores the interrupt:
+	// interruptIgnored or interruptHeard.
+	stuckTelling = "telling"
 
 	// ready is the line a stuck run prints on stdout once its landing command runs, or, for
 	// stuckReturned, once it returned.
@@ -54,6 +58,10 @@ const (
 	// listening is the line a stuckHoldingEarly run prints on stdout once it waits, as its landing
 	// starts, for the first interrupt or termination.
 	listening = "listening"
+	// interruptIgnored and interruptHeard are the lines a stuckTelling run prints on stdout when the
+	// process ignores the interrupt, and when it does not.
+	interruptIgnored = "interrupt ignored"
+	interruptHeard   = "interrupt heard"
 
 	// standIn, set in its environment to one of the exits below, makes the test binary stand in
 	// for ils instead of running the tests: it prints its arguments on stderr, joined by spaces,
@@ -117,7 +125,7 @@ func stuck(way string) int {
 	}
 
 	switch way {
-	case stuckStopping, stuckHolding, stuckHoldingEarly:
+	case stuckStopping, stuckHolding, stuckHoldingEarly, stuckTelling:
 		return stopping(app, way)
 	case stuckReturned:
 		app.SetMerge(finishing)
@@ -141,8 +149,9 @@ func stuck(way string) int {
 
 // stopping runs `ils merge` with app, which stuck set up, in a step whose spinner line shows on
 // stderr, and returns the exit code. Once the step started, its landing command prints ready on
-// stdout unless way is stuckHoldingEarly, then waits for the first interrupt or termination of the
-// process to end its context; a stuckStopping run then returns the result Stopped, and any other
+// stdout unless way is stuckHoldingEarly, after a stuckTelling run printed whether the process ignores
+// the interrupt, then waits for the first interrupt or termination of the
+// process to end its context; a stuckStopping or stuckTelling run then returns the result Stopped, and any other
 // prints canceled and stays until it is killed.
 func stopping(app cli.App, way string) int {
 	if way == stuckHoldingEarly {
@@ -150,11 +159,14 @@ func stopping(app cli.App, way string) int {
 	}
 	app.SetMerge(func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
 		startedWaiting(deps.Progress)
+		if way == stuckTelling {
+			tell(interruptState())
+		}
 		if way != stuckHoldingEarly {
 			tell(ready)
 		}
 		<-ctx.Done()
-		if way != stuckStopping {
+		if way != stuckStopping && way != stuckTelling {
 			tell(canceled)
 			<-make(chan struct{})
 		}
@@ -166,6 +178,16 @@ func stopping(app cli.App, way string) int {
 	})
 
 	return app.Run(context.Background(), []string{"merge"})
+}
+
+// interruptState returns interruptIgnored when the process ignores the interrupt, and
+// interruptHeard when it does not.
+func interruptState() string {
+	if signal.Ignored(os.Interrupt) {
+		return interruptIgnored
+	}
+
+	return interruptHeard
 }
 
 // heldForTheFirstInterrupt returns a notify that relays to c the signals sig, as signal.Notify

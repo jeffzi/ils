@@ -54,15 +54,16 @@ func TestApp_Run_WhenASignalLandsWhileTheSpinnerLineShows_PrintsTheResultWithThe
 func TestApp_Run_WhenStartedWithTheInterruptIgnored_GoesOnIgnoringIt(t *testing.T) {
 	t.Parallel()
 
-	run := startStuckIgnoringTheInterrupt(t, stuckStopping)
-	run.awaitSpinning(t)
+	run := startStuckIgnoringTheInterrupt(t, stuckTelling)
+	t.Cleanup(func() {
+		assert.Check(t, run.cmd.Process.Signal(syscall.SIGTERM))
+		_, _ = run.end(t) // the run ends Stopped. on the termination; the interrupt line is the check
+	})
 
-	assert.NilError(t, run.cmd.Process.Signal(syscall.SIGINT))
-	assert.NilError(t, run.cmd.Process.Signal(syscall.SIGTERM))
-	stdout, err := run.end(t)
+	line, err := run.stdout.ReadString('\n')
 
-	assert.Check(t, err, "the run did not end with the result of its landing command")
-	assert.Check(t, is.Equal(stdout, "Stopped.\n"), "the interrupt counted as the first signal of the run")
+	assert.NilError(t, err)
+	assert.Check(t, is.Equal(line, interruptIgnored+"\n"), "ils listens for the interrupt it was started ignoring")
 }
 
 func TestApp_Run_WhenASecondSignalLands_DiesOfItWithTheDisplayEnded(t *testing.T) {

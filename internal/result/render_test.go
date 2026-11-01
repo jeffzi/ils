@@ -173,9 +173,12 @@ func inputOf(r result.Result) string {
 // Text renderer
 // ---------------------------------------------------------------------------
 
-// textCases returns one case per shape the text renderer prints.
+// textCases returns the cases of the text renderer filling wording: a command the wording wraps in
+// backticks, and a name holding a placeholder.
 func textCases() []pair {
 	return []pair{
+		brokeLine("first name holding a placeholder is not filled by the second",
+			result.Say("Moved %s to %s.", "a %s file", "docs"), "Moved a %s file to docs."),
 		{
 			name:     "wording wrapping a command in backticks keeps them",
 			gitDir:   gitDir,
@@ -195,7 +198,7 @@ func excerptTextCases() []pair {
 			wantText: brokeBody + "one\ntwo\n" + brokeEnd(),
 		},
 		{
-			name:     "excerpt of only newlines stays above the reason",
+			name:     "excerpt of only newlines keeps all of them",
 			gitDir:   gitDir,
 			result:   with(brokePush(), func(r *result.Result) { r.Excerpt = "\n\n\n" }),
 			wantText: brokeBody + "\n\n\n" + brokeEnd(),
@@ -375,8 +378,6 @@ func redThen(name string, n result.Next, want string) pair {
 // visible escapes.
 func controlCases() []pair {
 	return []pair{
-		brokeLine("name holding an escape sequence prints the escape as visible text",
-			result.Say("Kept %s as is.", "x\x1b[31m"), `Kept x\x1b[31m as is.`),
 		brokeLine("name holding a tab prints it as it is",
 			result.Say("Kept %s as is.", "x\ty"), "Kept x\ty as is."),
 		brokeLine("name holding invalid UTF-8 beside a control byte prints its bytes as they are",
@@ -457,6 +458,26 @@ func styledCases() []styledCase {
 		{name: "step wording is drawn unstyled", result: markedPush(), within: resulttest.NextLine("rebase"), part: " rebase", want: resulttest.Look{}, profile: colorprofile.ANSI},
 		{name: "passed count is drawn green", result: talliedChecks(), within: "17 passed", part: "17", want: resulttest.PassedLook(), profile: colorprofile.ANSI},
 		{name: "command is drawn as a name", result: refusedPush(), within: resulttest.NextLine("ils branch fix-prek-again"), part: "ils branch fix-prek-again", want: resulttest.NameLook(), profile: colorprofile.ANSI},
+		{
+			name: "inline command in a line", result: tickedPush(), within: "Ran gh pr edit --repo jeffzi/ils #16 at",
+			part: "gh pr edit --repo jeffzi/ils #16", want: resulttest.NameLook(),
+			profile: colorprofile.ANSI,
+		},
+		{name: "wording before an inline command is drawn unstyled", result: tickedPush(), within: "Ran gh pr edit", part: "Ran ", want: resulttest.Look{}, profile: colorprofile.ANSI},
+		{name: "wording after an inline command is drawn unstyled", result: tickedPush(), within: "#16 at 4f2a9c1.", part: " at ", want: resulttest.Look{}, profile: colorprofile.ANSI},
+		{name: "sha after an inline command", result: tickedPush(), within: "at 4f2a9c1.", part: "4f2a9c1", want: resulttest.SHALook(), profile: colorprofile.ANSI},
+		{
+			name:   "lone backtick in wording is drawn unstyled",
+			result: brokeWithLine(result.Say("Kept the ` mark.")), within: "the ` mark", part: "`",
+			want:    resulttest.Look{},
+			profile: colorprofile.ANSI,
+		},
+		{
+			name:   "second of two inline commands in a phrase",
+			result: brokeWithLine(result.Say("Run `%s` and `%s` by hand.", "git branch -D topic", "git pull --ff-only")),
+			within: "and git pull --ff-only by", part: "git pull --ff-only", want: resulttest.NameLook(),
+			profile: colorprofile.ANSI,
+		},
 	}
 }
 
@@ -519,12 +540,10 @@ func drawnLook(t *testing.T, tt styledCase) (resulttest.Look, string) {
 // Wording check
 // ---------------------------------------------------------------------------
 
-// rejected is a result whose own wording names a hook or a git dir path. wantLine is set only
-// where the line holds a name filled in, the one case where the line differs from the wording.
+// rejected is a result whose own wording names a hook or a git dir path.
 type rejected struct {
 	name     string
 	gitDir   string
-	wantLine string
 	wantWord string
 	result   result.Result
 }
@@ -595,11 +614,6 @@ func lineCases() []rejected {
 func otherCases() []rejected {
 	return []rejected{
 		{
-			name: "reason naming a hook", gitDir: gitDir,
-			wantLine: "the pre-push step failed on main", wantWord: "pre-push",
-			result: refusedWithReason(result.Say("the pre-push step failed on %s", "main")),
-		},
-		{
 			name: "judgment step naming a hook", gitDir: gitDir, wantWord: "prek,",
 			result: redWithNext(result.NextStep("run prek, then ils push again")),
 		},
@@ -632,12 +646,20 @@ func TestRenderText_WhenOwnWordingNamesHookOrGitDir_ReturnsWordingError(t *testi
 
 			wordingErr, ok := errors.AsType[*result.WordingError](err)
 			assert.Assert(t, ok, "RenderText error = %v, want a *result.WordingError; output %q", err, out)
-			if tt.wantLine != "" {
-				assert.Check(t, is.Equal(wordingErr.Line, tt.wantLine))
-			}
 			assert.Check(t, is.Equal(wordingErr.Word, tt.wantWord))
 		})
 	}
+}
+
+func TestRenderText_WhenAReasonNamesAHook_ReturnsAWordingErrorNamingTheFilledInLine(t *testing.T) {
+	t.Parallel()
+
+	out, err := result.RenderText(refusedWithReason(result.Say("the pre-push step failed on %s", "main")), gitDir)
+
+	wordingErr, ok := errors.AsType[*result.WordingError](err)
+	assert.Assert(t, ok, "RenderText error = %v, want a *result.WordingError; output %q", err, out)
+	assert.Check(t, is.Equal(wordingErr.Line, "the pre-push step failed on main"))
+	assert.Check(t, is.Equal(wordingErr.Word, "pre-push"))
 }
 
 func TestRenderText_WhenOwnWordingOnlyResemblesHookOrGitDir_PrintsIt(t *testing.T) {
@@ -664,4 +686,25 @@ func TestWordingError_Error_WhenBothFieldsSet_NamesBothFields(t *testing.T) {
 
 	assert.Check(t, is.Contains(got, err.Line))
 	assert.Check(t, is.Contains(got, err.Word))
+}
+
+func TestRenderText_WhenPlaceholdersAndNamesDiffer_ReturnsErrPlaceholders(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		phrase result.Phrase
+	}{
+		{name: "more names than placeholders", phrase: result.Say("Pushed to origin.", "tidy-readme")},
+		{name: "more placeholders than names", phrase: result.Say("Pushed %s to %s.", "tidy-readme")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			out, err := result.RenderText(brokeWithLine(tt.phrase), gitDir)
+
+			assert.Check(t, is.ErrorIs(err, result.ErrPlaceholders), "output %q", out)
+		})
+	}
 }

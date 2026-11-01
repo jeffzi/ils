@@ -304,8 +304,9 @@ func render(row []cell) string {
 	return b.String()
 }
 
-// drawn returns row i as the screen draws it, each character in the rendition it was written in.
-func (s *screen) drawn(i int) resulttest.Drawn {
+// styledRow returns row i as the screen draws it, each character behind the rendition it was
+// written in, for resulttest.Draw to read on the test's goroutine.
+func (s *screen) styledRow(i int) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -316,7 +317,7 @@ func (s *screen) drawn(i int) resulttest.Drawn {
 		b.WriteRune(max(c.r, ' '))
 	}
 
-	return resulttest.Draw(s.tb, b.String())
+	return b.String()
 }
 
 func (s *screen) raw() string {
@@ -577,11 +578,12 @@ func TestApp_Run_WhenAStepRunsOnAColorTerminal_StylesTheSpinnerLine(t *testing.T
 	t.Parallel()
 
 	app, stderr := onStderrScreen(t, []string{colorTerm}, false, wide)
-	var seen resulttest.Drawn
-	app.SetMerge(stepping(startedWaiting, func() { seen = stderr.drawn(0) }))
+	var row string
+	app.SetMerge(stepping(startedWaiting, func() { row = stderr.styledRow(0) }))
 
 	shown(t, app, "merge")
 
+	seen := resulttest.Draw(t, row)
 	line := strings.TrimRight(seen.String(), " ")
 	spinner, _, _ := strings.Cut(line, " ")
 	assert.Check(t, seen.LookOf(t, line, spinner) != resulttest.Look{}, "the spinner is unstyled in %q", line)
@@ -643,7 +645,7 @@ func TestApp_Run_WhenStepLinesPrintOnAColorTerminal_StylesTheStepLine(t *testing
 
 	shown(t, app, "push")
 
-	drawn := stdout.drawn(0)
+	drawn := resulttest.Draw(t, stdout.styledRow(0))
 	assert.Check(t, drawn.LookOf(t, pushedStep, "✓") != resulttest.Look{}, "step line = %q", pushedStep)
 }
 

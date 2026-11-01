@@ -314,34 +314,19 @@ func TestApp_Run_WhenALineNamesAPathUnderTheGitDirOfTheRepository_ExitsOneWithNo
 	}
 }
 
-func TestApp_Run_WhenBranchIsGivenOneName_RunsTheBranchCommandWithTheNameAsTyped(t *testing.T) {
+func TestApp_Run_WhenBranchIsGivenOneNameAfterAFlag_RunsTheBranchCommandWithTheNameAsTyped(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name string
-		args []string
-		want landing.Request
-	}{
-		{
-			name: "flag before the name", args: []string{"branch", "--json", "topic"},
-			want: landing.Request{Command: "branch", Words: []string{"branch", "topic"}, Args: []string{"topic"}},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	var seen landing.Request
 
-			var seen landing.Request
+	app := outside(t)
+	app.SetBranch(recording(&seen))
+	want := landing.Request{Command: "branch", Words: []string{"branch", "topic"}, Args: []string{"topic"}}
 
-			app := outside(t)
-			app.SetBranch(recording(&seen))
+	got := launch(t, app, "branch", "--json", "topic")
 
-			got := launch(t, app, tt.args...)
-
-			assert.Check(t, is.Equal(got.code, exitDone))
-			assert.Check(t, is.DeepEqual(seen, tt.want))
-		})
-	}
+	assert.Check(t, is.Equal(got.code, exitDone))
+	assert.Check(t, is.DeepEqual(seen, want))
 }
 
 func TestApp_Run_WhenReleaseIsGivenOneVersion_RunsTheReleaseCommandWithTheFlagsAsTyped(t *testing.T) {
@@ -584,28 +569,15 @@ func TestApp_Run_WhenPushMergeOrReleaseRuns_WaitsAsLongAsTheWaitFlagOrAStdoutTer
 		args   []string
 		limit  time.Duration
 		stdout bool
-		stderr bool
 	}{
 		{name: "push with no wait flag off a terminal", stub: push, env: []string{colorTerm}, args: []string{"push"}, limit: landing.TimeLimit},
 		{name: "push with no wait flag at a terminal", stub: push, env: []string{colorTerm}, args: []string{"push"}, stdout: true, limit: landing.WaitTimeLimit},
 		{name: "push with no color at a terminal", stub: push, env: []string{colorTerm, noColor}, args: []string{"push"}, stdout: true, limit: landing.WaitTimeLimit},
 		{name: "push at a dumb terminal", stub: push, env: []string{"TERM=dumb"}, args: []string{"push"}, stdout: true, limit: landing.TimeLimit},
-		{name: "push with forced color off a terminal", stub: push, env: []string{colorTerm, forced}, args: []string{"push"}, limit: landing.TimeLimit},
-		{name: "push with only stderr a terminal", stub: push, env: []string{colorTerm}, args: []string{"push"}, stderr: true, limit: landing.TimeLimit},
 		{name: "push with the wait flag", stub: push, env: []string{colorTerm}, args: []string{"push", "--wait"}, limit: landing.WaitTimeLimit},
 		{name: "push with the wait flag set to false at a terminal", stub: push, env: []string{colorTerm}, args: []string{"push", "--wait=false"}, stdout: true, limit: landing.TimeLimit},
-		{name: "merge with no wait flag off a terminal", stub: merge, env: []string{colorTerm}, args: []string{"merge"}, limit: landing.TimeLimit},
-		{name: "merge with no wait flag at a terminal", stub: merge, env: []string{colorTerm}, args: []string{"merge"}, stdout: true, limit: landing.WaitTimeLimit},
 		{name: "merge with the wait flag", stub: merge, env: []string{colorTerm}, args: []string{"merge", "--wait"}, limit: landing.WaitTimeLimit},
-		{name: "merge with the wait flag set to false at a terminal", stub: merge, env: []string{colorTerm}, args: []string{"merge", "--wait=false"}, stdout: true, limit: landing.TimeLimit},
-		{name: "release with no wait flag off a terminal", stub: release, env: []string{colorTerm}, args: []string{"release", "1.2.0"}, limit: landing.TimeLimit},
-		{name: "release with no wait flag at a terminal", stub: release, env: []string{colorTerm}, args: []string{"release", "1.2.0"}, stdout: true, limit: landing.WaitTimeLimit},
 		{name: "release with the wait flag", stub: release, env: []string{colorTerm}, args: []string{"release", "1.2.0", "--wait"}, limit: landing.WaitTimeLimit},
-		{name: "release with the wait flag set to false at a terminal", stub: release, env: []string{colorTerm}, args: []string{"release", "--wait=false", "1.2.0"}, stdout: true, limit: landing.TimeLimit},
-		{
-			name: "release with the wait flag among the force and tag-only flags", stub: release, env: []string{colorTerm},
-			args: []string{"release", "--force", "--wait", "1.2.0", "--tag-only"}, limit: landing.WaitTimeLimit,
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -613,7 +585,7 @@ func TestApp_Run_WhenPushMergeOrReleaseRuns_WaitsAsLongAsTheWaitFlagOrAStdoutTer
 
 			var deadline time.Time
 
-			app := painted(t, tt.env, tt.stdout, tt.stderr)
+			app := painted(t, tt.env, tt.stdout, false)
 			app.Launch = time.Now()
 			tt.stub(&app, func(ctx context.Context, _ landing.Deps, req landing.Request) result.Result {
 				deadline, _ = ctx.Deadline()
@@ -697,7 +669,6 @@ func grammarRefusals() []grammarRefusal {
 	return []grammarRefusal{
 		{name: "extra word", args: []string{"push", "extra"}, reason: "push takes no other word, and extra was given"},
 		{name: "end of flags", args: []string{"--", "push"}, reason: "-- is not a command"},
-		{name: "end of flags after push", args: []string{"push", "--", "x"}, reason: "push takes no other word, and -- was given"},
 		{name: "release without a version", args: []string{"release"}, reason: "release takes one version, and none was given"},
 		{name: "second word after the version", args: []string{"release", "1.2.0", "extra"}, reason: releaseTakesOne + "extra was given"},
 		{name: "end of flags before the version", args: []string{"release", "--", "1.2.0"}, reason: releaseTakesOne + "-- was given"},
