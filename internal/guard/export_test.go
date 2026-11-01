@@ -1,3 +1,5 @@
+//go:build unix
+
 package guard
 
 import "context"

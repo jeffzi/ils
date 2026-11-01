@@ -1,3 +1,5 @@
+//go:build unix
+
 // cspell:ignore verif forc -- deliberately truncated git option spellings git accepts.
 
 package guard_test

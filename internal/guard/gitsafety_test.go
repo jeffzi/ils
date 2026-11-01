@@ -1,3 +1,5 @@
+//go:build unix
+
 // cspell:ignore verif forc ccore noval -- deliberately truncated or Perl-negated option spellings git accepts.
 
 package guard_test
