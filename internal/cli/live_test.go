@@ -352,6 +352,29 @@ func (l *liveSuite) private(t *testing.T) bool {
 	return mustGh(t, "repo", "view", l.slug(), "--json", "visibility", "--jq", ".visibility") == "PRIVATE"
 }
 
+// keepTrunk puts the default branch back, once the test ends, on the commit it stands on now, so
+// that a scenario that writes to it leaves the next one the trunk it found. GitHub moves the branch
+// itself: the commit is there, whatever clone the scenario wrote from.
+func (l *liveSuite) keepTrunk(t *testing.T) {
+	t.Helper()
+
+	before := l.mustRemoteCommit(t, l.trunkRef())
+	t.Cleanup(func() {
+		ctx, cancel := liveCleanupContext(t)
+		defer cancel()
+
+		now, err := liveGit(ctx, "", "ls-remote", l.url, l.trunkRef())
+		if sha, _, _ := strings.Cut(now, "\t"); err == nil && sha == before {
+			return
+		}
+
+		if _, err := liveGh(ctx, "api", "--hostname", l.origin.Host, "--method", "PATCH",
+			l.apiPath("git/refs/heads/"+l.trunk), "-f", "sha="+before, "-F", "force=true"); err != nil {
+			t.Errorf("could not put %s back on %s: %v", l.trunk, before, err)
+		}
+	})
+}
+
 // changeTrunk commits files on top of the default branch and pushes it.
 func (l *liveSuite) changeTrunk(t *testing.T, files map[string]string) {
 	t.Helper()
@@ -606,7 +629,6 @@ func liveDispatchedWorkflow() map[string]string {
 func TestApp_Run_WhenRunAgainstALiveRepository_EndsEachScenarioAsGitHubReportsIt(t *testing.T) {
 	l := newLiveSuite(t)
 
-	// The scenarios that write to the default branch run last.
 	scenarios := []struct {
 		run  func(t *testing.T, l *liveSuite)
 		name string
@@ -628,7 +650,10 @@ func TestApp_Run_WhenRunAgainstALiveRepository_EndsEachScenarioAsGitHubReportsIt
 		{name: "merged on the web", run: liveMergedOnTheWeb},
 	}
 	for _, sc := range scenarios {
-		t.Run(sc.name, func(t *testing.T) { sc.run(t, l) })
+		t.Run(sc.name, func(t *testing.T) {
+			l.keepTrunk(t)
+			sc.run(t, l)
+		})
 	}
 }
 
@@ -801,18 +826,8 @@ func liveConflict(t *testing.T, l *liveSuite) {
 }
 
 func liveCIDidNotFire(t *testing.T, l *liveSuite) {
-	before := l.mustRemoteCommit(t, l.trunkRef())
 	l.changeTrunk(t, liveDispatchedWorkflow())
 	b := l.branch(t, "ci-did-not-fire")
-	t.Cleanup(func() {
-		ctx, cancel := liveCleanupContext(t)
-		defer cancel()
-
-		// The branch's clone holds the commit the trunk stood on before the scenario changed it.
-		if _, err := liveGit(ctx, b.dir, "push", "--quiet", "--force", l.url, before+":"+l.trunkRef()); err != nil {
-			t.Errorf("could not put the trunk back on %s: %v", before, err)
-		}
-	})
 	b.commit(t, nil)
 	// ils reads the trunk's workflows once; one GitHub has not registered by then would read as no
 	// CI, and the scenario would test nothing.
