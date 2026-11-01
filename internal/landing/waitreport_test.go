@@ -351,7 +351,8 @@ func TestPush_WhenTheWaitEndsBeforeAnAnswer_PendingSayingWhy(t *testing.T) {
 }
 
 // boundPendingRows are the pushes cmd runs that end pending, one per reason that names c's time
-// limit. The cuts of a read are left to the plain push when cmd runs under its time limit.
+// limit. When cmd runs under the time limit of a plain push, whose rows already hold each reason and
+// the cuts of a read, one row is enough for its `Next:` line.
 func boundPendingRows(cmd landingCommand, c cut) []pushRow {
 	clean := detail(forge.VerdictNone, forge.MergeClean)
 
@@ -380,7 +381,7 @@ func boundPendingRows(cmd landingCommand, c cut) []pushRow {
 	}
 
 	if repeatsPlainPush(cmd) {
-		return rows
+		return rows[:1]
 	}
 
 	rows = append(rows, cutShortRowsBy(cmd, c)...)

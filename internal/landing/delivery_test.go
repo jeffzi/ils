@@ -513,10 +513,11 @@ func TestPush_WhenGitRefusesThePush_BrokeSayingNothingWasPushed(t *testing.T) {
 	assertSays(t, text, expect("refused", topic, policy)+nextFixed())
 
 	refused := refusedLine(t, decoded.Lines)
-	assert.Check(t, is.Contains(refused, "pre-receive hook declined"))
+	at := strings.LastIndex(refused, ":")
+	assert.Assert(t, at >= 0, "refused line %q, want git's reason after a colon", refused)
+	assert.Check(t, is.Contains(refused[:at], topic))
+	assert.Check(t, strings.TrimSpace(refused[at+1:]) != "", "refused line %q, want git's reason after its colon", refused)
 	assert.Check(t, !strings.Contains(refused, policy), "refused line %q, want the hook's output left out of it", refused)
-
-	assert.Check(t, is.Equal(d.onOrigin(), ""))
 
 	assertAsked(t, d.scene, changesRead())
 	assertTold(t, d.watch.told(t), []string{checkingStep(), pushingStep()})

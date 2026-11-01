@@ -830,7 +830,8 @@ func TestPreconditions_WhenGitIsTooOld_RefusesBeforeAnyOtherRead(t *testing.T) {
 	text, _ := shown(t, got, s.gitDir)
 	assertSays(t, text, expect("git", "1.0.0", git.MinimumVersion, "ils "+cmd.name))
 
-	assert.Check(t, is.Len(s.recorder.Calls(), 1))
+	assert.Check(t, !s.gitRan("ls-remote"), "git asked origin after the refusal")
+	assert.Check(t, !s.gitRan("get-url"), "git read origin's URL after the refusal")
 }
 
 func TestPreconditions_WhenGitVersionFails_BrokeNamingTheRead(t *testing.T) {

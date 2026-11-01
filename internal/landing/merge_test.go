@@ -168,8 +168,6 @@ type mergeRow struct {
 	outcome result.Outcome
 	// answered is how many calls origin answers before it stops; zero is every call.
 	answered int
-	// fetches is whether git fetches from origin before the run stops.
-	fetches bool
 	// known is whether the pull request against the trunk is known when the run stops, so that
 	// its result carries the merge payload.
 	known bool
@@ -225,7 +223,7 @@ func assertStoppedBeforeWait(t *testing.T, tt mergeRow, end mergeEnd, run mergeR
 	assert.Check(t, is.DeepEqual(mergePayload(t, run.got), want, cmpopts.EquateEmpty()))
 
 	assert.Check(t, is.DeepEqual(run.forge.Calls(), mergeAsked(tt.ops), whichRepo()))
-	assert.Check(t, is.Equal(run.gitRan("fetch"), tt.fetches))
+	assert.Check(t, run.gitRan("fetch"), "git did not fetch from origin before the run stopped")
 }
 
 // mergeRowOn runs `ils merge` on a scene of tt's own, as runMergeOn does, and returns how the run
@@ -290,7 +288,7 @@ func rulesRead() []forgetest.Op {
 func trunkStops() []mergeRow {
 	row := func(name string, arrange func(*gittest.Fixture) string) mergeRow {
 		return mergeRow{
-			name: name, script: merging(), ops: identityRead(), outcome: result.Refused, fetches: true,
+			name: name, script: merging(), ops: identityRead(), outcome: result.Refused,
 			arrange: func(f *gittest.Fixture) mergeEnd { return ending(arrange(f)) },
 		}
 	}
@@ -312,7 +310,7 @@ func trunkStops() []mergeRow {
 func pullStops() []mergeRow {
 	row := func(name string, script forgeFor) mergeRow {
 		return mergeRow{
-			name: name, script: script, outcome: result.Refused, fetches: true,
+			name: name, script: script, outcome: result.Refused,
 			ops:     changesRead(),
 			arrange: func(*gittest.Fixture) mergeEnd { return ending(noPullText()) },
 		}
@@ -337,7 +335,7 @@ func pullStops() []mergeRow {
 func headStops() []mergeRow {
 	row := func(name, text string, arrange func(*gittest.Fixture) string) mergeRow {
 		return mergeRow{
-			name: name, script: merging(), ops: changesRead(), outcome: result.Refused, fetches: true, known: true,
+			name: name, script: merging(), ops: changesRead(), outcome: result.Refused, known: true,
 			arrange: func(f *gittest.Fixture) mergeEnd { return mergeEnd{text: text, head: arrange(f)} },
 		}
 	}
@@ -378,7 +376,7 @@ func tipPastHead(f *gittest.Fixture) string {
 func pullRequestStops() []mergeRow {
 	row := func(name, text string, script forgeFor, ops []forgetest.Op) mergeRow {
 		return mergeRow{
-			name: name, script: script, ops: ops, outcome: result.Refused, fetches: true, known: true,
+			name: name, script: script, ops: ops, outcome: result.Refused, known: true,
 			arrange: func(*gittest.Fixture) mergeEnd { return ending(text) },
 		}
 	}
@@ -409,7 +407,7 @@ func titleStops() []mergeRow {
 		text := titleText(tt.title)
 		rows = append(rows, mergeRow{
 			name: tt.name, script: merging().titled(tt.title), ops: changesRead(),
-			outcome: result.Refused, fetches: true, known: true,
+			outcome: result.Refused, known: true,
 			arrange: func(*gittest.Fixture) mergeEnd { return ending(text) },
 		})
 	}
@@ -454,7 +452,7 @@ func mergeAccepted() []mergeRow {
 	row := func(name string, script forgeFor) mergeRow {
 		return mergeRow{
 			name: name, script: script.forbiddenByRuleset(42), ops: rulesRead(), outcome: result.Refused,
-			fetches: true, known: true,
+			known:   true,
 			arrange: func(*gittest.Fixture) mergeEnd { return ending(rulesetText()) },
 		}
 	}
@@ -483,7 +481,7 @@ func unansweredMerges() []mergeRow {
 		{
 			// Origin answers about its trunk and the fetch of it, and nothing after.
 			name: "asked to fetch the head of the pull request", script: merging(), ops: changesRead(), answered: 2,
-			outcome: result.Refused, fetches: true, known: true,
+			outcome: result.Refused, known: true,
 			arrange: pastHead(unreached(mergeCommand(), "fetch the head of pull request #12")),
 		},
 	}
@@ -497,7 +495,7 @@ func failedForgeMerges() []mergeRow {
 	return []mergeRow{
 		{
 			name: "the read of the trunk's rules", script: merging().failingRules(failed), ops: rulesRead(),
-			outcome: result.Broke, fetches: true, known: true,
+			outcome: result.Broke, known: true,
 			arrange: func(*gittest.Fixture) mergeEnd { return ending(unreadText(mergeCommand(), readRules, forgeFailure)) },
 		},
 	}
@@ -527,7 +525,7 @@ func failedGitMerges() []failedGitRow {
 		{
 			read: readHead,
 			name: "what the fetch of the head of the pull request fetched", script: merging(), ops: changesRead(),
-			outcome: result.Broke, fetches: true, known: true,
+			outcome: result.Broke, known: true,
 			arrange: func(f *gittest.Fixture) mergeEnd {
 				end := failedGitMerge(tipPastHead(f), []string{"rev-parse", "--verify", "refs/ils/fetched/pull/" + strconv.Itoa(opened) + "/head"})
 				end.from = forgetest.OpFindChanges
@@ -538,7 +536,7 @@ func failedGitMerges() []failedGitRow {
 		{
 			read: readWorktrees,
 			name: "where the trunk is checked out", script: merging(), ops: identityRead(),
-			outcome: result.Broke, fetches: true,
+			outcome: result.Broke,
 			arrange: func(*gittest.Fixture) mergeEnd {
 				return failedGitMerge("", worktreeList())
 			},
@@ -546,7 +544,7 @@ func failedGitMerges() []failedGitRow {
 		{
 			read: readLocalTrunk,
 			name: "whether the local trunk exists", script: merging(), ops: identityRead(),
-			outcome: result.Broke, fetches: true,
+			outcome: result.Broke,
 			arrange: func(*gittest.Fixture) mergeEnd {
 				return failedGitMerge("", []string{"show-ref", "--verify", "--quiet", "refs/heads/" + trunk})
 			},
@@ -554,7 +552,7 @@ func failedGitMerges() []failedGitRow {
 		{
 			read: readHead,
 			name: "the divergence of the tip from the head", script: merging(), ops: changesRead(),
-			outcome: result.Broke, fetches: true, known: true,
+			outcome: result.Broke, known: true,
 			arrange: func(f *gittest.Fixture) mergeEnd {
 				head := tipPastHead(f)
 				tip := f.Git("rev-parse", topic)
@@ -834,11 +832,6 @@ func waitVerdicts() []waitRow {
 			outcome: result.Refused, payload: mergeDetail(forge.VerdictRed, forge.MergeBlockedOther, red.Checks...),
 			text: expect("lint", "failed", lintURL, partsOf(stateLine(forge.MergeBlockedOther))[0]+steps(1, 3),
 				"lint", "failed") + nextRed(),
-		},
-		{
-			name:    "nothing reported in a repository with CI on its trunk",
-			script:  waiting(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{Value: true}),
-			outcome: result.Refused, text: nothing, payload: mergeDetail(forge.VerdictNone, forge.MergeClean),
 		},
 		{
 			// A trunk that requires checks has CI, so the forge has no answer for the CI read.

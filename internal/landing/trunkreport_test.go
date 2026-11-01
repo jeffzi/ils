@@ -2,7 +2,6 @@ package landing_test
 
 import (
 	"errors"
-	"strings"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -196,17 +195,7 @@ func TestStatus_WhenOnTheTrunkAndTheRulesReadFails_ReportsTheFailedReadBesideThe
 	assertSays(t, got.text, expect(readRules, forgeFailure))
 	assert.Assert(t, is.Len(got.status.Unread, 1))
 	assert.Check(t, is.Equal(got.status.Unread[0].Read, readRules))
-}
-
-func TestStatus_WhenOnTheTrunk_EndsOnStartingABranch(t *testing.T) {
-	t.Parallel()
-	s := statusScene(t, standOnTrunk, ruledBy(forge.RulesProtect))
-
-	got := seeStatus(t, s, (*testing.T).Context)
-
-	_, next, found := strings.Cut(got.text, "Next:")
-	assert.Check(t, found, "text %q, want a Next: line", got.text)
-	assertSays(t, next, nextBranch())
+	assert.Check(t, is.Equal(got.status.LastTag, "v1.10.0"))
 }
 
 func TestStatus_WhenOnTheTrunkAndGhIsMissing_StillReportsWhatGitTells(t *testing.T) {

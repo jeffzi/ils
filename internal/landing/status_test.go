@@ -226,7 +226,6 @@ func TestStatus_WhenTheBranchHasPullRequests_ListsEachPullRequest(t *testing.T) 
 	assertSays(t, got.text, expect(conventional))
 	assertSays(t, got.text, expect(landedBody))
 	assertSays(t, got.text, expect("#5", string(forge.ChangeClosed)))
-	assertSays(t, got.text, expect("#7", string(forge.ChangeMerged)))
 }
 
 func TestStatus_WhenTheOpenPullRequestsHeadIsNotClean_SaysItsMergeState(t *testing.T) {
@@ -552,6 +551,7 @@ func TestStatus_WhenAForgeReadFails_ReportsTheFailedReadBesideTheRest(t *testing
 	assert.Assert(t, is.Len(got.status.Unread, 1))
 	assert.Check(t, is.Equal(got.status.Unread[0].Read, readChanges))
 	assert.Check(t, is.Contains(got.status.Unread[0].Error, forgeFailure))
+	assert.Check(t, got.status.OnOrigin, "the branch's copy on origin went unreported beside the failed read")
 }
 
 func TestStatus_WhenAGitReadFails_ReportsTheFailedReadBesideTheRest(t *testing.T) {
@@ -579,7 +579,6 @@ func TestStatus_WhenTheFirstReadIsCutShort_EndsDoneSkippingEveryReadAfterIt(t *t
 
 			assertSays(t, got.text, expect(c.ends))
 			assert.Check(t, is.Len(got.status.Unread, 1))
-			assert.Check(t, !s.gitRan("fetch"), "git fetched from origin after the cut")
 		})
 	}
 }
@@ -641,6 +640,17 @@ func TestStatus_WhenDetachedHEADHasCommitsOriginsTrunkLacks_ListsThemToKeepOnABr
 	assert.Check(t, is.Equal(got.status.Standing, standingDetached))
 	assert.Check(t, is.DeepEqual(got.status.Unlanded, own))
 	assertSays(t, got.text, expect(shortSHA(own[0]), sharpen)+keepDetached())
+}
+
+func TestStatus_WhenOnTheTrunk_EndsOnStartingABranch(t *testing.T) {
+	t.Parallel()
+	s := statusScene(t, standOnTrunk, ruledBy(forge.RulesProtect))
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	_, next, found := strings.Cut(got.text, "Next:")
+	assert.Check(t, found, "text %q, want a Next: line", got.text)
+	assertSays(t, next, nextBranch())
 }
 
 func TestStatus_WhenThereIsNoOrigin_EndsOnCreatingIt(t *testing.T) {

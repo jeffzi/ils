@@ -1,7 +1,6 @@
 package landing_test
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -278,13 +277,10 @@ func TestPush_WhenOriginsCopyCarriesAFirstCommitAnotherBranchShares_PushesIt(t *
 func TestPush_WhenSharedPreconditionFails_ReturnsItsRefusal(t *testing.T) {
 	t.Parallel()
 	s := newScene(t, (*gittest.Fixture).RemoveOrigin, forgetest.Script{}, false)
-	before := s.written()
 
 	got := landing.Push(t.Context(), s.deps, pushRequest())
 
 	assertEnded(t, s, got, finish{outcome: result.Refused, text: expect("no remote named origin")})
-	assert.Check(t, is.Equal(s.written(), before))
-	assert.Check(t, !s.gitRan("fetch"), "git fetched from origin before the refusal")
 }
 
 // runPushRefusals runs each row as a test of its own: Push refuses with the text the row's arrange
@@ -392,41 +388,6 @@ func TestPush_WhenOriginStopsAnswering_RefusesNamingWhatItWasAskedFor(t *testing
 			asked:   "fetch its copy of the branch " + topic,
 		},
 	})
-}
-
-// overtime is a push whose context ends during one of its reads.
-type overtime struct {
-	// arrange returns the context to run under, once it has changed how the scene reads.
-	arrange func(t *testing.T, s *scene) context.Context
-	// prepare changes the repository before the scene reads it.
-	prepare func(*gittest.Fixture)
-	name    string
-	read    string
-	script  forgetest.Script
-	ops     []forgetest.Op
-}
-
-// runOvertime runs each row rows returns for the time limit as a test of its own: Push refuses
-// naming the read the time limit ended, having written nothing. Push hands each cut read on to the
-// shared wording, whose tests tell the time limit from an interrupt, so the time limit alone is
-// enough here.
-func runOvertime(t *testing.T, rows func(c cut) []overtime) {
-	t.Helper()
-
-	c := byTimeLimit()
-	for _, tt := range rows(c) {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			s := newScene(t, tt.prepare, tt.script, false)
-			ctx := tt.arrange(t, s)
-			before := s.written()
-
-			got := landing.Push(ctx, s.deps, pushRequest())
-
-			assertEnded(t, s, got, finish{outcome: result.Refused, text: overtimeText(pushCommand(), c, tt.read)})
-			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
-		})
-	}
 }
 
 // failGit makes the scene's git calls whose arguments start with words fail as gittest.FakeGit

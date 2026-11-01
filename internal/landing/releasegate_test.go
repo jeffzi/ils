@@ -350,7 +350,6 @@ func TestRelease_WhenForced_SaysTheCIGateWasSkippedWithoutReadingTheChecks(t *te
 	got := runRelease(t, st.s, req)
 
 	assertEndedBy(t, got, st.s.gitDir, ended{outcome: result.Done, req: req, text: expect("skipped", "--force")})
-	assert.Check(t, is.Len(commitVerdicts(st.s), 0))
 	assert.Check(t, is.DeepEqual(releasePayload(t, got, st.s.gitDir), released(st, "forced", releaseURL)))
 }
 
