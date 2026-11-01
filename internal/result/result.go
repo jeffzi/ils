@@ -22,9 +22,6 @@ const (
 	Ask
 	Pending
 	DeliveredNotGreen
-	// outcomeEnd follows the last outcome, so that ParseOutcome tries every one; a new outcome goes
-	// before it.
-	outcomeEnd
 )
 
 // ExitCode returns the process exit code for o.
@@ -66,17 +63,6 @@ func (o Outcome) String() string {
 	default:
 		return "broke"
 	}
-}
-
-// ParseOutcome returns the outcome whose String is name, and false when no outcome has that name.
-func ParseOutcome(name string) (Outcome, bool) {
-	for o := range outcomeEnd {
-		if o.String() == name {
-			return o, true
-		}
-	}
-
-	return Done, false
 }
 
 // ---------------------------------------------------------------------------

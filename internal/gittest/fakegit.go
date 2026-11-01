@@ -3,6 +3,7 @@ package gittest
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -132,6 +133,17 @@ func FakeGit(tb testing.TB, fake Fake) []string {
 // It keeps the options the environment already holds.
 func RaceSetting() string {
 	return strings.TrimSpace(os.Getenv(raceEnv) + " atexit_sleep_ms=0")
+}
+
+// CoverSetting returns the GOCOVERDIR=<dir> entry that makes a child built for coverage write its
+// counters where `go test -cover` collects them, or "" when the test binary runs without coverage.
+func CoverSetting() string {
+	covered := flag.Lookup("test.gocoverdir")
+	if covered == nil || covered.Value.String() == "" {
+		return ""
+	}
+
+	return "GOCOVERDIR=" + covered.Value.String()
 }
 
 // LinkAs puts the test binary first on PATH under the name of tool for the rest of the test, so

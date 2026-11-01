@@ -44,8 +44,8 @@ const (
 // (0, 1, 2, 4 and 8), which internal/github reads as answers, nor one of gittest's, so a test can
 // tell a fake that failed from a gh that answered.
 const (
-	// BrokenCode is the exit code of a fake that could not read its script or write its record.
-	BrokenCode = 122
+	// brokenCode is the exit code of a fake that could not read its script or write its record.
+	brokenCode = 122
 	// UnscriptedCode is the exit code of a fake asked for an argv its script does not hold.
 	UnscriptedCode = 123
 )
@@ -247,13 +247,8 @@ const workflow = "CI"
 // RepoViewJSON is `gh repo view`'s answer for a repository that is a fork or not, on which the
 // viewer holds permission, and whose settings allow squash merges.
 func RepoViewJSON(fork bool, permission string) string {
-	return RepoViewSquashJSON(fork, permission, true)
-}
-
-// RepoViewSquashJSON is RepoViewJSON for a repository whose settings allow squash merges or not.
-func RepoViewSquashJSON(fork bool, permission string, squash bool) string {
 	return `{"isFork":` + strconv.FormatBool(fork) + `,"viewerPermission":` + quoted(permission) +
-		`,"squashMergeAllowed":` + strconv.FormatBool(squash) + `}`
+		`,"squashMergeAllowed":true}`
 }
 
 // MessageJSON is the message read's answer for a pull request titled title with body, for which
@@ -626,7 +621,7 @@ func countOf(recorded [][]string, args []string) int {
 func broken(err error) int {
 	fmt.Fprintf(os.Stderr, "ghtest: %v\n", err)
 
-	return BrokenCode
+	return brokenCode
 }
 
 func readScript(path string) ([]Call, error) {

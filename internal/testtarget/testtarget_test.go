@@ -112,3 +112,16 @@ func TestTool_CheckOutput_WhenFirstLineDoesNotSuitTarget_ReturnsError(t *testing
 		})
 	}
 }
+
+func TestTool_CheckEnvOutput_ReadsTheTargetAndVersionFromTheEnvironment(t *testing.T) {
+	// Not parallel: t.Setenv sets the environment of the whole process.
+	t.Setenv("HAMMER_TARGET", testtarget.Minimum)
+	t.Setenv("HAMMER_VERSION", "")
+	versionOf := func(line string) string { return strings.TrimPrefix(line, "hammer ") }
+
+	got := hammer().CheckEnvOutput("hammer 1.10.0\n", versionOf)
+
+	want := hammer().CheckOutput(testtarget.Minimum, "", "hammer 1.10.0\n", versionOf)
+	assert.Assert(t, want != nil, "CheckOutput suits a version above the minimum to the minimum target")
+	assert.Check(t, is.Error(got, want.Error()))
+}

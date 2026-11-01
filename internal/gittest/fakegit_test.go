@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"flag"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -224,6 +225,33 @@ func TestRaceSetting(t *testing.T) {
 			t.Setenv("GORACE", tt.env)
 
 			got := gittest.RaceSetting()
+
+			assert.Check(t, is.Equal(got, tt.want))
+		})
+	}
+}
+
+func TestCoverSetting(t *testing.T) {
+	covered := flag.Lookup("test.gocoverdir")
+	if covered == nil {
+		t.Skip("the test binary has no test.gocoverdir flag")
+	}
+	was := covered.Value.String()
+	t.Cleanup(func() { assert.Check(t, covered.Value.Set(was)) })
+	tests := []struct {
+		name string
+		dir  string
+		want string
+	}{
+		{name: "coverage collected", dir: "/tmp/cover", want: "GOCOVERDIR=/tmp/cover"},
+		{name: "no coverage", dir: "", want: ""},
+	}
+	// Not parallel at either level: each row sets the flag of the whole test binary.
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.NilError(t, covered.Value.Set(tt.dir))
+
+			got := gittest.CoverSetting()
 
 			assert.Check(t, is.Equal(got, tt.want))
 		})

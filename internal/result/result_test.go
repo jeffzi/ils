@@ -11,40 +11,6 @@ import (
 	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
-func TestParseOutcome_WhenNameIsAnOutcomeName_ReturnsThatOutcome(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		want result.Outcome
-	}{
-		{name: "first outcome", want: result.Done},
-		{name: "last outcome", want: result.DeliveredNotGreen},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			name := tt.want.String()
-
-			got, ok := result.ParseOutcome(name)
-
-			assert.Check(t, ok, "ParseOutcome(%q) found nothing", name)
-			assert.Check(t, is.Equal(got, tt.want), "ParseOutcome(%q)", name)
-		})
-	}
-}
-
-func TestParseOutcome_WhenNameIsNoOutcomeName_ReportsNotFound(t *testing.T) {
-	t.Parallel()
-
-	const name = "Refused"
-
-	_, ok := result.ParseOutcome(name)
-
-	assert.Check(t, !ok, "ParseOutcome(%q) found an outcome, want none", name)
-}
-
 func TestSay(t *testing.T) {
 	t.Parallel()
 

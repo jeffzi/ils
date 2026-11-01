@@ -56,32 +56,10 @@ func logged(t *testing.T, f *gittest.Fixture, format string) []string {
 	return strings.Split(gitStdout(t, f, f.Dir(), "log", "--reverse", "--format="+format, mainBranch+".."+work), "\n")
 }
 
-// hasCommit reports whether the repository at dir holds the commit sha, and fails the test when
-// git cannot answer.
-func hasCommit(t *testing.T, f *gittest.Fixture, dir, sha string) bool {
-	t.Helper()
-
-	// With --quiet, rev-parse --verify exits 1 and prints nothing when the commit is absent.
-	got := runGit(t, f, dir, "rev-parse", "--verify", "--quiet", sha+"^{commit}")
-	assert.Assert(t, got.Code == 0 || got.Code == 1, "git rev-parse --verify %s in %s printed %+v", sha, dir, got)
-
-	return got.Code == 0
-}
-
 func originBranch(t *testing.T, f *gittest.Fixture, branch string) string {
 	t.Helper()
 
 	return gitStdout(t, f, f.OriginDir(), "rev-parse", "--verify", "refs/heads/"+branch)
-}
-
-func TestNew_WhenTrunkIsNotMain_PushesItToOriginAsItsHead(t *testing.T) {
-	t.Parallel()
-
-	f := gittest.New(t, "develop")
-
-	local := gitStdout(t, f, f.Dir(), "rev-parse", "--verify", "refs/heads/develop")
-	assert.Check(t, is.Equal(originBranch(t, f, "develop"), local))
-	assert.Check(t, is.Equal(f.OriginGit("symbolic-ref", "HEAD"), "refs/heads/develop"))
 }
 
 func TestFixture_Commits_WhenBranchIsNew_ReturnsCommitsCutFromTrunkInOrder(t *testing.T) {
@@ -123,21 +101,6 @@ func TestFixture_AdvanceOrigin_WhenCalledTwice_StacksSecondCommitOnFirst(t *test
 
 	want := strings.Join([]string{shas[0], first, second}, "\n")
 	assert.Check(t, is.Equal(gitStdout(t, f, f.OriginDir(), "rev-list", "--reverse", mainBranch+".."+work), want))
-}
-
-func TestFixture_Diverge_WhenBranchIsPushed_GivesEachSideACommitTheOtherLacks(t *testing.T) {
-	t.Parallel()
-
-	f := gittest.New(t, mainBranch)
-	f.Commits(work, "first change")
-	f.Push(work)
-
-	local, remote := f.Diverge(work)
-
-	assert.Check(t, is.Equal(gitStdout(t, f, f.Dir(), "rev-parse", work), local))
-	assert.Check(t, is.Equal(originBranch(t, f, work), remote))
-	assert.Check(t, !hasCommit(t, f, f.OriginDir(), local))
-	assert.Check(t, !hasCommit(t, f, f.Dir(), remote))
 }
 
 func TestFixture_Sibling_WhenBranchHasTwoCommits_SharesFirstCommitPastTrunk(t *testing.T) {
@@ -239,67 +202,6 @@ func TestFixture_SquashOnOrigin_WhenBodyIsEmpty_WritesSubjectAlone(t *testing.T)
 	assert.Check(t, is.Equal(message, "squash of work\n"))
 }
 
-// worktrees returns, for each worktree `git worktree list` run in dir names, the branch it has
-// checked out, keyed by its directory with symbolic links resolved.
-func worktrees(t *testing.T, f *gittest.Fixture, dir string) map[string]string {
-	t.Helper()
-
-	got := map[string]string{}
-	path := ""
-
-	for line := range strings.Lines(gitStdout(t, f, dir, "worktree", "list", "--porcelain")) {
-		line = strings.TrimRight(line, "\n")
-		if rest, ok := strings.CutPrefix(line, "worktree "); ok {
-			path = resolved(t, rest)
-		}
-
-		if rest, ok := strings.CutPrefix(line, "branch "); ok {
-			got[path] = rest
-		}
-	}
-
-	return got
-}
-
-func resolved(t *testing.T, path string) string {
-	t.Helper()
-
-	got, err := filepath.EvalSymlinks(path)
-	assert.NilError(t, err)
-
-	return got
-}
-
-func TestFixture_TrunkWorktree_WhenOnABranch_ChecksOutTheTrunkInALinkedWorktree(t *testing.T) {
-	t.Parallel()
-
-	f := gittest.New(t, mainBranch)
-	f.Commits(work, "first change")
-
-	dir := f.TrunkWorktree()
-
-	want := map[string]string{
-		resolved(t, f.Dir()): "refs/heads/" + work,
-		resolved(t, dir):     "refs/heads/" + mainBranch,
-	}
-	assert.Check(t, is.DeepEqual(worktrees(t, f, f.Dir()), want))
-}
-
-func TestFixture_BranchWorktree_WhenBranchExists_LeavesTheTrunkInTheMainCheckoutSeenFromTheLinkedOne(t *testing.T) {
-	t.Parallel()
-
-	f := gittest.New(t, mainBranch)
-	f.Commits(work, "first change")
-
-	dir := f.BranchWorktree(work)
-
-	want := map[string]string{
-		resolved(t, f.Dir()): "refs/heads/" + mainBranch,
-		resolved(t, dir):     "refs/heads/" + work,
-	}
-	assert.Check(t, is.DeepEqual(worktrees(t, f, dir), want))
-}
-
 func TestFixture_AdvanceTrunk_WhenOnABranch_AddsALocalTrunkCommitWithoutSwitchingToIt(t *testing.T) {
 	t.Parallel()
 
@@ -311,44 +213,6 @@ func TestFixture_AdvanceTrunk_WhenOnABranch_AddsALocalTrunkCommitWithoutSwitchin
 	assert.Check(t, is.Equal(gitStdout(t, f, f.Dir(), "log", "--format=%H", origin+"/"+mainBranch+".."+mainBranch), ahead))
 
 	assert.Check(t, is.Equal(gitStdout(t, f, f.Dir(), "symbolic-ref", "--short", "HEAD"), work))
-}
-
-func TestFixture_UntrackedOnTrunk_WhenOnABranch_MakesSwitchingToTheTrunkRefuseToOverwriteIt(t *testing.T) {
-	t.Parallel()
-
-	f := gittest.New(t, mainBranch)
-	f.Commits(work, "first change")
-
-	path := f.UntrackedOnTrunk()
-
-	assert.Check(t, is.Equal(gitStdout(t, f, f.Dir(), "ls-files", "--others", "--exclude-standard"), path))
-
-	switched := runGit(t, f, f.Dir(), "switch", mainBranch)
-	assert.Check(t, switched.Code != 0, "git switch %s printed %+v, want it refused", mainBranch, switched)
-}
-
-func TestFixture_UntrackedOnTrunk_WhenOnABranch_PublishesTheTrunkCommitToOrigin(t *testing.T) {
-	t.Parallel()
-
-	f := gittest.New(t, mainBranch)
-	f.Commits(work, "first change")
-
-	path := f.UntrackedOnTrunk()
-
-	tracked := runGit(t, f, f.OriginDir(), "cat-file", "-e", mainBranch+":"+path)
-	assert.Check(t, is.Equal(tracked.Code, 0), "origin's %s does not track %s", mainBranch, path)
-}
-
-func TestFixture_Publish_WhenOriginURLNamesAnotherPlace_PutsLocalTipOnOrigin(t *testing.T) {
-	t.Parallel()
-
-	f := gittest.New(t, mainBranch)
-	shas := f.Commits(work, "first change")
-	f.SetOriginURL(elsewhere)
-
-	f.Publish(work)
-
-	assert.Check(t, is.Equal(originBranch(t, f, work), shas[0]))
 }
 
 func TestFixture_LandPull_WhenBranchHasACommit_SquashesTheCommitOntoOriginTrunkAsThePullRequest(t *testing.T) {

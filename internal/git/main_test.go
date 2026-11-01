@@ -89,7 +89,7 @@ func guardTestGit() error {
 		Name: "git", TargetVar: testGitVar, VersionVar: testGitVersionVar, MinimumVersion: git.MinimumVersion,
 	}
 
-	return tool.CheckOutput(os.Getenv(testGitVar), os.Getenv(testGitVersionVar), got.Stdout, git.VersionOf)
+	return tool.CheckEnvOutput(got.Stdout, git.VersionOf)
 }
 
 // standInMode returns the stand-in mode of a call of the test binary with args, and whether the

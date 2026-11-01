@@ -16,10 +16,10 @@ import (
 )
 
 const (
-	// AuthorName is the author and committer name of every commit the fixture makes.
-	AuthorName = "Fixture Author"
-	// AuthorEmail is the author and committer email of every commit the fixture makes.
-	AuthorEmail = "fixture@example.com"
+	// authorName is the author and committer name of every commit the fixture makes.
+	authorName = "Fixture Author"
+	// authorEmail is the author and committer email of every commit the fixture makes.
+	authorEmail = "fixture@example.com"
 
 	commitDate    = "2001-02-03T04:05:06Z"
 	origin        = "origin"
@@ -92,8 +92,8 @@ func New(tb testing.TB, trunk string) *Fixture {
 
 	f.run(root, "init", "--quiet", "--bare", "--initial-branch="+trunk, f.originDir)
 	f.run(root, "init", "--quiet", "--initial-branch="+trunk, f.dir)
-	f.Git("config", "--local", "user.name", AuthorName)
-	f.Git("config", "--local", "user.email", AuthorEmail)
+	f.Git("config", "--local", "user.name", authorName)
+	f.Git("config", "--local", "user.email", authorEmail)
 	f.Git("config", "--local", "commit.gpgsign", "false")
 	f.Git("remote", "add", origin, f.originURL())
 	WriteFile(f.tb, f.dir, dirtyPath, "fixture\n")
@@ -159,11 +159,11 @@ func isolatedEnv(home string) []string {
 		"GIT_CONFIG_GLOBAL="+os.DevNull,
 		"HOME="+home,
 		"USERPROFILE="+home,
-		"GIT_AUTHOR_NAME="+AuthorName,
-		"GIT_AUTHOR_EMAIL="+AuthorEmail,
+		"GIT_AUTHOR_NAME="+authorName,
+		"GIT_AUTHOR_EMAIL="+authorEmail,
 		"GIT_AUTHOR_DATE="+commitDate,
-		"GIT_COMMITTER_NAME="+AuthorName,
-		"GIT_COMMITTER_EMAIL="+AuthorEmail,
+		"GIT_COMMITTER_NAME="+authorName,
+		"GIT_COMMITTER_EMAIL="+authorEmail,
 		"GIT_COMMITTER_DATE="+commitDate,
 	)
 }
@@ -498,12 +498,6 @@ func (f *Fixture) OriginTag(name, sha string) {
 	f.carryToOrigin(sha)
 	f.OriginGit("tag", "--annotate", "--message", name, name, sha)
 	f.dropCarried()
-}
-
-// OriginLightweightTag makes a lightweight tag name on the bare origin at the local commit sha.
-func (f *Fixture) OriginLightweightTag(name, sha string) {
-	f.tb.Helper()
-	f.Git("push", "--quiet", f.originURL(), sha+":refs/tags/"+name)
 }
 
 // Publish puts origin's copy of branch at the local tip by the bare origin's path, which reaches

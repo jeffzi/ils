@@ -46,24 +46,6 @@ const (
 	liveGitVersionVar = "ILS_LIVE_GIT_VERSION"
 )
 
-func liveGitTool() testtarget.Tool {
-	return testtarget.Tool{
-		Name: "git", TargetVar: liveGitTargetVar, VersionVar: liveGitVersionVar, MinimumVersion: git.MinimumVersion,
-	}
-}
-
-func liveGhTool() testtarget.Tool {
-	return testtarget.Tool{
-		Name: "gh", TargetVar: liveGhTargetVar, VersionVar: liveGhVersionVar, MinimumVersion: github.MinimumVersion,
-	}
-}
-
-// checkLiveTool returns why out, the output of `<tool> --version`, does not suit the live suite
-// given the target and version the environment sets for tool, or nil.
-func checkLiveTool(tool testtarget.Tool, out string, versionOf func(string) string) error {
-	return tool.CheckOutput(os.Getenv(tool.TargetVar), os.Getenv(tool.VersionVar), out, versionOf)
-}
-
 const (
 	// liveOriginVar holds the clone URL of the test repository the suite resets and writes to.
 	liveOriginVar = "ILS_LIVE_ORIGIN"
@@ -195,8 +177,10 @@ func newLiveSuite(t *testing.T) *liveSuite {
 
 	l.origin = origin
 
-	assert.NilError(t, checkLiveTool(liveGhTool(), mustGh(t, "--version"), github.VersionOf))
-	assert.NilError(t, checkLiveTool(liveGitTool(), mustGit(t, "", "--version"), git.VersionOf))
+	gh := testtarget.Tool{Name: "gh", TargetVar: liveGhTargetVar, VersionVar: liveGhVersionVar, MinimumVersion: github.MinimumVersion}
+	assert.NilError(t, gh.CheckEnvOutput(mustGh(t, "--version"), github.VersionOf))
+	gitTool := testtarget.Tool{Name: "git", TargetVar: liveGitTargetVar, VersionVar: liveGitVersionVar, MinimumVersion: git.MinimumVersion}
+	assert.NilError(t, gitTool.CheckEnvOutput(mustGit(t, "", "--version"), git.VersionOf))
 	l.reset(t)
 	l.checkRulesRead(t)
 
@@ -619,7 +603,7 @@ func liveDispatchedWorkflow() map[string]string {
 // Scenarios
 // ---------------------------------------------------------------------------
 
-func TestApp_Run_AgainstALiveRepository_EndsEachScenarioAsGitHubReportsIt(t *testing.T) {
+func TestApp_Run_WhenRunAgainstALiveRepository_EndsEachScenarioAsGitHubReportsIt(t *testing.T) {
 	l := newLiveSuite(t)
 
 	// The scenarios that write to the default branch run last.

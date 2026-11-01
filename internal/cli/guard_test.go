@@ -5,7 +5,6 @@ package cli_test
 import (
 	"encoding/json/v2"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -603,8 +602,8 @@ func throughShim(t *testing.T, dir, stdin string, env ...string) ran {
 	cmd := exec.CommandContext(t.Context(), bashPath, shim) //nolint:gosec // argv is bash and the shim this package ships
 	cmd.Env = append([]string{"PATH=" + dir, "GORACE=" + gittest.RaceSetting()}, env...)
 	// A stand-in built for coverage warns on stderr unless it knows where to write its counters.
-	if covered := flag.Lookup("test.gocoverdir"); covered != nil && covered.Value.String() != "" {
-		cmd.Env = append(cmd.Env, "GOCOVERDIR="+covered.Value.String())
+	if covered := gittest.CoverSetting(); covered != "" {
+		cmd.Env = append(cmd.Env, covered)
 	}
 	cmd.Stdin = strings.NewReader(stdin)
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr

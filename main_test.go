@@ -5,7 +5,6 @@ import (
 	"context"
 	"debug/buildinfo"
 	"errors"
-	"flag"
 	"io"
 	"os"
 	"os/exec"
@@ -65,17 +64,6 @@ type ran struct {
 	code   int
 }
 
-// coverDir returns the directory `go test -cover` collects coverage data in, or "" when the test
-// binary runs without coverage.
-func coverDir() string {
-	f := flag.Lookup("test.gocoverdir")
-	if f == nil {
-		return ""
-	}
-
-	return f.Value.String()
-}
-
 // binary is the path of an ils binary built from the module root.
 type binary string
 
@@ -95,7 +83,7 @@ func build(t *testing.T) binary {
 	bin := filepath.Join(t.TempDir(), name)
 
 	args := []string{"build", "-o", bin}
-	if coverDir() != "" {
+	if gittest.CoverSetting() != "" {
 		args = append(args, "-cover", "-covermode="+testing.CoverMode(), "-coverpkg="+coveredPackages(t))
 	}
 
@@ -130,8 +118,8 @@ func coveredPackages(t *testing.T) string {
 
 // withCoverDir returns env plus the coverage directory when there is one.
 func withCoverDir(env []string) []string {
-	if covered := coverDir(); covered != "" {
-		return append(env, "GOCOVERDIR="+covered)
+	if covered := gittest.CoverSetting(); covered != "" {
+		return append(env, covered)
 	}
 
 	return env

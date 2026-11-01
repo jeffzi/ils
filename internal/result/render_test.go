@@ -330,7 +330,7 @@ func TestRenderJSON_WhenResultHasLinesExcerptReasonAndNext_CarriesWhatTheTextSho
 	out, err := result.RenderJSON(redPush(), gitDir)
 	assert.NilError(t, err)
 
-	resulttest.AssertCarried(t, text, resulttest.Decode(t, out))
+	resulttest.AssertCarried(t, text, result.DeliveredNotGreen, resulttest.Decode(t, out))
 }
 
 // ---------------------------------------------------------------------------
