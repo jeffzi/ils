@@ -17,8 +17,7 @@ const readDeadline = 5 * time.Second
 // strictest, and a command takes the strictest outcome of its invocations.
 type Outcome int
 
-// The outcomes of a verdict, mildest first. Ask leaves the decision to the user instead of the
-// guard.
+// Ask leaves the decision to the user instead of the guard.
 const (
 	Allow Outcome = iota
 	Ask
@@ -132,14 +131,14 @@ func failedRead(err error) Verdict {
 // markReason says what the mark found on inv, by the mark's name when it has one. A tool handed
 // to another command is named with that command.
 func markReason(inv Invocation, mark Mark) string {
-	name := mark.Name
+	detail := mark.Name
 	if mark.Kind == ToolArgument && len(inv.Words) > 0 {
-		name = fmt.Sprintf("%s runs %s: run %s on its own, by its bare name", inv.Words[0].Text, name, name)
+		detail = fmt.Sprintf("%s runs %s: run %s on its own, by its bare name", inv.Words[0].Text, mark.Name, mark.Name)
 	}
 
-	if name == "" {
+	if detail == "" {
 		return string(mark.Kind)
 	}
 
-	return fmt.Sprintf("%s: %s", mark.Kind, name)
+	return fmt.Sprintf("%s: %s", mark.Kind, detail)
 }

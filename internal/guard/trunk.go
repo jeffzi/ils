@@ -5,24 +5,9 @@ package guard
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	"github.com/jeffzi/ils/internal/git"
 )
-
-// refusePush refuses every `git push`, `git send-pack`, and `git http-push`, in any repository or
-// none: `ils push` is the one way an agent pushes a branch.
-func refusePush(_ context.Context, _ Caller, inv Invocation) (Verdict, error) {
-	sub, ok := subcommand(inv)
-	if !ok || sub != "push" && sub != "send-pack" && sub != "http-push" {
-		return Verdict{Outcome: Allow}, nil
-	}
-
-	reason := fmt.Sprintf("git %s: `ils push` is the one way an agent pushes a branch; where `ils push` "+
-		"refuses the origin, the user pushes by hand", sub)
-
-	return refuse(reason), nil
-}
 
 // trunkAnswer is origin's default branch as the trunk rule learned it for one git dir; found is
 // false when origin did not answer and the clone holds no cached default branch.
@@ -65,7 +50,7 @@ func (t *trunks) refuseOnTrunk(ctx context.Context, caller Caller, inv Invocatio
 	}
 
 	// Every read here is of the repository, never of its work tree, so the git dir alone places it.
-	repo := git.Repo{Runner: targetRunner(caller.Git, Invocation{Dir: inv.Target.Dir, Target: GitTarget{GitDir: inv.Git.GitDir}})}
+	repo := git.Repo{Runner: targetRunner(caller.Git, inv.Target.Dir, GitTarget{GitDir: inv.Git.GitDir})}
 	standing, err := repo.Standing(ctx)
 	if err != nil {
 		return Verdict{}, fmt.Errorf("read the origin and HEAD git %s runs with: %w", sub, err)
@@ -87,7 +72,8 @@ func (t *trunks) refuseOnTrunk(ctx context.Context, caller Caller, inv Invocatio
 
 	if !answer.found {
 		reason := fmt.Sprintf("git %s: origin could not be reached and the clone holds no cached default "+
-			"branch (refs/remotes/origin/HEAD), so the guard cannot tell the trunk; `git fetch origin` caches it", sub)
+			"branch (refs/remotes/origin/HEAD), so the guard cannot tell the trunk; run `! git remote set-head origin --auto`, or run it outside the agent, "+
+			"to cache it", sub)
 
 		return refuse(reason), nil
 	}
@@ -126,31 +112,39 @@ func trunkJudged(sub string, args []Word) bool {
 	case "commit", "merge", "cherry-pick", "revert", "am", "rebase":
 		return true
 	case "pull":
-		options := readArgs(args, optionsOf(sub))
-
-		return !slices.ContainsFunc(options.long, func(l longOption) bool { return l.name == "--ff-only" })
+		return !fastForwardsOnly(readArgs(args, optionsOf(sub)).long)
 	default:
 		return false
 	}
 }
 
+// fastForwardsOnly reports whether the long options of `git pull` leave it fast-forwarding only:
+// the last of `--ff-only`, `--ff` and `--no-ff` decides, as it does in git.
+func fastForwardsOnly(options []longOption) bool {
+	only := false
+	for _, l := range options {
+		switch l.name {
+		case "--ff-only":
+			only = true
+		case "--ff", "--no-ff":
+			only = false
+		}
+	}
+
+	return only
+}
+
 // rebasedBranch returns the branch argument of `git rebase` with args, the branch it switches to
-// before it rebases, and false when sub is not rebase or names no literal branch. Without `--root`
-// the branch is the operand after the upstream; with it, the only operand.
+// before it rebases, and false when sub is not rebase or names no literal branch.
 func rebasedBranch(sub string, args []Word) (string, bool) {
 	if sub != "rebase" {
 		return "", false
 	}
 
-	options := readArgs(args, optionsOf(sub))
-	at := 1
-	if options.sets(0, "--root") {
-		at = 0
-	}
-
-	if len(options.positional) <= at || !options.positional[at].Literal {
+	branch, named, _ := rebaseBranch(args)
+	if !named || !branch.Literal {
 		return "", false
 	}
 
-	return options.positional[at].Text, true
+	return branch.Text, true
 }

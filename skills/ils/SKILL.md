@@ -42,7 +42,8 @@ ils branch fix-help
   never the shell's (see
   [A pending push waits in the background](#a-pending-push-waits-in-the-background)). `ils
   merge`, `ils release`, `gh pr merge`, and `gh release create` run bare too, so that the approval
-  prompt shows one command: in any other form the guard refuses them.
+  prompt shows one command: in any other form the guard (the pre-tool hook that blocks a command
+  before it runs) refuses them.
 - **No timeout argument.** A foreground wait ends on its own, under the default limit of one call.
   A run stopped by one Ctrl-C or SIGTERM also ends with a result to act on: its reason and `Next:`
   as usual. A second signal ends `ils` at once with nothing printed.
@@ -103,11 +104,10 @@ Exit 2 means `ils` checked every precondition before pushing or opening anything
 hold, for example the trunk, a detached HEAD, or a changed tracked file. The output says which,
 and `Next:` says what to do.
 
-A refusal by the guard, the pre-tool hook that blocks a command before it runs, is the same
-kind of answer: its reason names what to do, such as `ils branch <name>` or the bare command. When
-it names nothing you can do, tell the user what it refused and stop. Never reword the command to
-get past it: a path to the binary, `bash -c`, `env`, another remote, or another `git` command
-that does the same.
+A refusal by the guard is the same kind of answer. Its reason names what to do, such as
+`ils branch <name>` or the bare command. When it names nothing you can do, tell the user what it
+refused and stop. Never reword the command to get past it: a path to the binary, `bash -c`, `env`,
+another remote, or another `git` command that does the same.
 
 Do what `Next:` says and nothing else. A refusal (exit 2) or a break (exit 1) is never a prompt
 to:

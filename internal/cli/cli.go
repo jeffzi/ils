@@ -893,15 +893,13 @@ func (a App) fail(err error) int {
 }
 
 const (
-	flagJSON = "--json"
-	flagHelp = "--help"
-	// flagHelpShort is the short form Cobra gives the help flag.
-	flagHelpShort = "-h"
-	flagVersion   = "--version"
+	flagJSON    = landing.FlagJSON
+	flagHelp    = landing.FlagHelp
+	flagVersion = landing.FlagVersion
 
-	flagDebug      = "--debug"
-	flagDebugShort = "-d"
-	flagNoColor    = "--no-color"
+	flagDebug      = landing.FlagDebug
+	flagDebugShort = landing.FlagDebugShort
+	flagNoColor    = landing.FlagNoColor
 
 	flagForce   = landing.FlagForce
 	flagTagOnly = landing.FlagTagOnly

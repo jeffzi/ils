@@ -353,9 +353,7 @@ type Parse struct {
 // Guard is the structured detail of a guard run: every invocation the command holds, as a parse
 // shows them, beside the verdict the result's outcome and reason carry. It holds none when the
 // command cannot be read.
-type Guard struct {
-	Invocations []Invocation `json:"invocations"`
-}
+type Guard Parse
 
 // Invocation is one command of a parse, as the guard reads it.
 type Invocation struct {

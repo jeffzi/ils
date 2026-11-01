@@ -16,6 +16,8 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 
 	"github.com/jeffzi/ils/internal/git"
+	"github.com/jeffzi/ils/internal/github"
+	"github.com/jeffzi/ils/internal/landing"
 )
 
 // Tool is the program a command word names, when it is one the guard judges.
@@ -31,8 +33,8 @@ const (
 
 // Caller is what Parse needs to know about the shell that would run the command.
 type Caller struct {
-	// Env is the environment the command would start with; Parse reads CDPATH, GIT_DIR, and
-	// GIT_WORK_TREE from it.
+	// Env is the environment the command would start with; Parse reads CDPATH, GIT_DIR,
+	// GIT_WORK_TREE, GH_CONFIG_DIR, XDG_CONFIG_HOME, and HOME from it.
 	Env map[string]string
 	// Home is the HOME that `~` and `~/…` expand with.
 	Home string
@@ -42,6 +44,10 @@ type Caller struct {
 	// expand to. Parse runs each call from the invocation's directory, with the GIT_DIR and
 	// GIT_WORK_TREE it modeled for the invocation in place of those of Git's environment.
 	Git git.Runner
+	// GH runs the `gh alias list` calls that read what a gh alias expands to, with the
+	// GH_CONFIG_DIR, XDG_CONFIG_HOME and HOME modeled for the invocation in place of those of GH's
+	// environment.
+	GH github.Runner
 }
 
 // Invocation is one simple command of a parsed command string.
@@ -59,8 +65,6 @@ type Invocation struct {
 	// Wrappers are the wrapper words the command runs behind, such as `env` or `nice`, outermost
 	// first.
 	Wrappers []string
-	// EnvUnset are the names an `env` wrapper removed from the environment with `-u`, in order.
-	EnvUnset []string
 	Marks    []Mark
 	// Dir is the directory the invocation runs in; empty when the guard cannot follow it.
 	Dir string
@@ -69,6 +73,9 @@ type Invocation struct {
 	// enclosing are the redirects in effect on the shell's descriptors where the command runs:
 	// those of each compound command around it, and those of an earlier `exec` with no command.
 	enclosing []Redirect
+	// ghConfig is what the guard knows of where a gh invocation's gh reads its config; zero for
+	// any other tool.
+	ghConfig ghConfig
 	// Target is where a git invocation points git; zero for any other tool.
 	Target GitTarget
 	// Git is how git reads the words of a git invocation; zero for any other tool.
@@ -84,9 +91,6 @@ type Invocation struct {
 	Whole bool
 	// HeadUnknown reports whether an invocation before it may have moved HEAD.
 	HeadUnknown bool
-	// EnvCleared reports whether an `env` wrapper was given `-i`, which starts the command with an
-	// empty environment.
-	EnvCleared bool
 }
 
 // Assignment is one variable a command runs with.
@@ -107,7 +111,6 @@ type Mark struct {
 // MarkKind is the kind of a Mark.
 type MarkKind string
 
-// The kinds of mark Parse puts on an invocation.
 const (
 	// ExtendedGlob is an extended glob such as `@(a|b)`, or zsh's `*(e:…:)` qualifier, which runs
 	// code.
@@ -140,6 +143,13 @@ type Redirect struct {
 	Target Word
 }
 
+// The descriptors of a process, as a redirect writes them.
+const (
+	stdinFd  = "0"
+	stdoutFd = "1"
+	stderrFd = "2"
+)
+
 // ParseError is a command string the bash parser cannot read.
 type ParseError struct {
 	Message string
@@ -158,12 +168,18 @@ func (e *ParseError) Error() string {
 // no command. Each redirect applies in order, as in the shell, so `2> f >&2` sends stdout to f,
 // while `>&2 2> f` leaves it where stderr was.
 func (inv Invocation) Stdout() (Word, bool) {
+	return stdoutFile(slices.Concat(inv.enclosing, inv.Redirects))
+}
+
+// stdoutFile returns the file stdout is on once redirects apply in order, and false when it is on no
+// file.
+func stdoutFile(redirects []Redirect) (Word, bool) {
 	files := map[string]Word{}
-	for _, r := range slices.Concat(inv.enclosing, inv.Redirects) {
+	for _, r := range redirects {
 		applyRedirect(files, r)
 	}
 
-	target, toFile := files["1"]
+	target, toFile := files[stdoutFd]
 
 	return target, toFile
 }
@@ -178,36 +194,36 @@ func applyRedirect(files map[string]Word, r Redirect) {
 
 		return r.Fd
 	}
-	open := func(fd string, target Word, isFile bool) {
+	open := func(descriptor string, target Word, isFile bool) {
 		if isFile {
-			files[fd] = target
+			files[descriptor] = target
 		} else {
-			delete(files, fd)
+			delete(files, descriptor)
 		}
 	}
 
 	switch r.Op {
 	case ">", ">>", ">|", ">>|":
-		open(fd("1"), r.Target, true)
+		open(fd(stdoutFd), r.Target, true)
 	case "&>", "&>>", "&>|", "&>>|":
-		open("1", r.Target, true)
-		open("2", r.Target, true)
+		open(stdoutFd, r.Target, true)
+		open(stderrFd, r.Target, true)
 	case "<>":
-		open(fd("0"), r.Target, true)
+		open(fd(stdinFd), r.Target, true)
 	case "<":
 		// A descriptor opened for reading only cannot write over the file.
-		open(fd("0"), r.Target, false)
+		open(fd(stdinFd), r.Target, false)
 	case ">&", "<&":
-		into := fd("1")
+		into := fd(stdoutFd)
 		if r.Op == "<&" {
-			into = fd("0")
+			into = fd(stdinFd)
 		}
 
 		if !isDescriptor(r.Target) {
 			// `>&word` with a word that is no descriptor sends stdout and stderr to that file.
 			open(into, r.Target, true)
 			if r.Fd == "" {
-				open("2", r.Target, true)
+				open(stderrFd, r.Target, true)
 			}
 
 			return
@@ -254,12 +270,18 @@ func Parse(ctx context.Context, command string, caller Caller) ([]Invocation, er
 	}
 
 	invocations := w.returned()
-	if len(invocations) == 1 && len(file.Stmts) == 1 && alone(file.Stmts[0]) &&
-		invocations[0].Bare && len(invocations[0].Wrappers) == 0 {
+	if isWhole(file, invocations) {
 		invocations[0].Whole = true
 	}
 
 	return invocations, nil
+}
+
+// isWhole reports whether the one invocation of file is the entire command: a single simple
+// statement with a bare command word and no wrapper.
+func isWhole(file *syntax.File, invocations []Invocation) bool {
+	return len(invocations) == 1 && len(file.Stmts) == 1 && alone(file.Stmts[0]) &&
+		invocations[0].Bare && len(invocations[0].Wrappers) == 0
 }
 
 // read parses command with bash's grammar. It returns a *ParseError when the parser cannot read it.
@@ -406,9 +428,7 @@ func (w *walker) add(stmt *syntax.Stmt, call *syntax.CallExpr, sc *scope) {
 	inv = w.placed(inv, sc)
 	inv.depth = w.depth
 	script, runs, mark := scriptOf(stmt, inv.Words)
-	if runs && w.depth == maxDepth {
-		runs, mark = false, DeepScript
-	}
+	runs, mark = capDepth(w.depth, runs, mark)
 
 	inv.Marks = marksOf(call, stmt, inv, w.caller.Home)
 	if mark != "" {
@@ -519,7 +539,7 @@ func isLookup(words []Word) bool {
 // dataConsumers is the table of command words that take their arguments as data, never as a
 // command to run. `command -v` and `command -V` are the lookups isLookup adds.
 func dataConsumers() map[string]bool {
-	names := []string{
+	return setOf(
 		// Shell built-ins and file tools.
 		"cd", "pushd", "popd", "test", "[", "mkdir", "cp", "mv", "rm", "ln", "touch", "chmod", "tee",
 		"file", "stat", "du", "realpath", "readlink", "dirname", "basename",
@@ -530,16 +550,19 @@ func dataConsumers() map[string]bool {
 		"which", "type", "whence", "where",
 		// Toolchains and package managers.
 		"go", "brew", "apt", "apt-get", "dnf", "yum", "pacman", "apk", "port",
-	}
-	table := make(map[string]bool, len(names))
-	for _, name := range names {
-		table[name] = true
-	}
-
-	return table
+	)
 }
 
-// isDataConsumer reports whether the command words open with takes its arguments as data.
+// setOf returns the set that holds names.
+func setOf(names ...string) map[string]bool {
+	set := make(map[string]bool, len(names))
+	for _, name := range names {
+		set[name] = true
+	}
+
+	return set
+}
+
 func isDataConsumer(words []Word) bool {
 	return isLookup(words) || dataConsumers()[words[0].Text]
 }
@@ -571,13 +594,20 @@ func marksOf(call *syntax.CallExpr, stmt *syntax.Stmt, inv Invocation, home stri
 			marks = append(marks, Mark{Kind: HiddenScript})
 		}
 	default:
-		args := call.Args[len(call.Args)-len(inv.Words):]
-		if name, ok := handedTool(args[1:], inv.Words[1:], inv.Dir, home); ok {
+		if name, ok := handedByCall(call, inv.Words, inv.Dir, home); ok {
 			marks = append(marks, Mark{Kind: ToolArgument, Name: name})
 		}
 	}
 
 	return marks
+}
+
+// handedByCall returns the tool that the command call, whose words after any wrapper are words, may
+// run from its arguments, as handedTool reads them, and reports whether there is one.
+func handedByCall(call *syntax.CallExpr, words []Word, dir, home string) (string, bool) {
+	args := call.Args[len(call.Args)-len(words):]
+
+	return handedTool(args[1:], words[1:], dir, home)
 }
 
 // handedTool returns the tool that a command the guard does not know may run from its arguments,
@@ -637,6 +667,16 @@ func scriptText(raw *syntax.Word, home string) string {
 	return readWord(&syntax.Word{Parts: parts}, home).Text
 }
 
+// shellWordBreaks are the characters that split text into several shell words or make it more than
+// words: a blank, a list or pipe operator, a redirect, a substitution, or a subshell.
+const shellWordBreaks = " \t\n;&|()<>`$"
+
+// stringRunners are the command words that run a string or a file as shell commands, besides the
+// shells.
+func stringRunners() []string {
+	return []string{"eval", "source", "."}
+}
+
 // scriptTool reads text as a shell script and returns the tool one of its commands is, or hands
 // over as handedTool reads it, and reports whether there is one. Text with no blank and no shell
 // operator is one word, which handedTool has already judged, and text that does not parse is no
@@ -644,7 +684,7 @@ func scriptText(raw *syntax.Word, home string) string {
 // variable handed to another command holds. A relative path in the script is read as unknown, since
 // the command that runs it may run it anywhere.
 func scriptTool(text, home string) (string, bool) {
-	if !strings.ContainsAny(text, " \t\n;&|()<>`$") {
+	if !strings.ContainsAny(text, shellWordBreaks) {
 		return "", false
 	}
 
@@ -674,11 +714,10 @@ func scriptTool(text, home string) (string, bool) {
 		switch {
 		case !command.Literal, isDataConsumer(inv.Words):
 		case inv.Tool == ILS && changesNothing(inv.Words[1:]):
-		case inv.Tool != NoTool, isShell(command), slices.Contains([]string{"eval", "source", "."}, command.Text):
+		case inv.Tool != NoTool, isShell(command), slices.Contains(stringRunners(), command.Text):
 			name = command.Text
 		default:
-			args := call.Args[len(call.Args)-len(inv.Words):]
-			name, _ = handedTool(args[1:], inv.Words[1:], "", home)
+			name, _ = handedByCall(call, inv.Words, "", home)
 		}
 
 		return name == ""
@@ -699,7 +738,13 @@ func changesNothing(args []Word) bool {
 
 	sub := args[at[0]]
 
-	return sub.Literal && slices.Contains([]string{"status", "parse", "guard", "hook", "help"}, sub.Text)
+	return sub.Literal && (sub.Text == landing.StatusCommand || slices.Contains(readOnlyILSCommands(), sub.Text))
+}
+
+// readOnlyILSCommands are the commands of ils that change nothing besides `ils status`. `help` is
+// Cobra's own command, which ils never declares.
+func readOnlyILSCommands() []string {
+	return []string{landing.ParseCommand, landing.GuardCommand, landing.HookCommand, "help"}
 }
 
 // hasExtGlob reports whether an extended glob opens any part of words or of the redirect targets

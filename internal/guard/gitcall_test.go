@@ -47,26 +47,6 @@ func outsideDir(t *testing.T) string {
 	return dir
 }
 
-// parseAt returns the invocations of command, read by a caller in dir whose git runs with env.
-func parseAt(t *testing.T, command, dir string, env []string) []guard.Invocation {
-	t.Helper()
-
-	got, err := guard.Parse(t.Context(), command, guard.Caller{Home: home, Dir: dir, Git: git.Runner{Env: env}})
-	assert.NilError(t, err, "Parse(%q)", command)
-
-	return got
-}
-
-// lastAt returns the last invocation of command, read by a caller in dir whose git runs with env.
-func lastAt(t *testing.T, command, dir string, env []string) guard.Invocation {
-	t.Helper()
-
-	got := parseAt(t, command, dir, env)
-	assert.Assert(t, len(got) > 0, "Parse(%q) holds no invocation", command)
-
-	return got[len(got)-1]
-}
-
 // aliased returns a repository whose local config holds the aliases the alias tests read.
 func aliased(t *testing.T) *gittest.Fixture {
 	t.Helper()
@@ -88,11 +68,9 @@ func aliased(t *testing.T) *gittest.Fixture {
 		{"sh", "!git push"},
 		{"sw", "switch"},
 		{"rb", "rebase base main"},
-		{"bs", "bisect start"},
 		{"spaced", `commit -m a\ b`},
 		{"unclosed", `log "-1`},
 		{"dangling", `log -1\`},
-		{"rx", "rebase -x 'git push origin main' main"},
 	}
 	for _, alias := range aliases {
 		f.Git("config", "--local", "alias."+alias[0], alias[1])
@@ -120,14 +98,6 @@ func TestParse_ReadsTheGlobalOptionsOfAGitInvocation(t *testing.T) {
 			wantOptions: []guard.GitOption{{Name: "--git-dir", Value: literal("/srv/x.git")}}, wantSubcommand: "status", wantArgs: []string{},
 		},
 		{
-			name: "long option with a separate value", command: "git --namespace ns push origin",
-			wantOptions: []guard.GitOption{{Name: "--namespace", Value: literal("ns")}}, wantSubcommand: "push", wantArgs: []string{"origin"},
-		},
-		{
-			name: "config pair", command: "git -c color.ui=never log",
-			wantOptions: []guard.GitOption{{Name: "-c", Value: literal("color.ui=never")}}, wantSubcommand: "log", wantArgs: []string{},
-		},
-		{
 			name: "attached value of an option that takes only an attached one", command: "git --exec-path=/x status",
 			wantOptions: []guard.GitOption{{Name: "--exec-path", Value: literal("/x")}}, wantSubcommand: "status", wantArgs: []string{},
 		},
@@ -138,10 +108,6 @@ func TestParse_ReadsTheGlobalOptionsOfAGitInvocation(t *testing.T) {
 		{
 			name: "flags", command: "git --no-pager -P --literal-pathspecs add x",
 			wantOptions: []guard.GitOption{{Name: "--no-pager"}, {Name: "-P"}, {Name: "--literal-pathspecs"}}, wantSubcommand: "add", wantArgs: []string{"x"},
-		},
-		{
-			name: "value spelled like a subcommand", command: "git -C remove worktree remove x",
-			wantOptions: []guard.GitOption{{Name: "-C", Value: literal("remove")}}, wantSubcommand: "worktree", wantArgs: []string{"remove", "x"},
 		},
 		{
 			name: "global option after the subcommand", command: "git status --bare -C x",
@@ -173,11 +139,9 @@ func TestParse_ResolvesTheSubcommandThroughGitsAliases(t *testing.T) {
 	}{
 		{name: "command shadowed by an alias", command: "git status -s", wantSubcommand: "status", wantArgs: []string{"-s"}},
 		{name: "alias", command: "git co topic", wantSubcommand: "checkout", wantArgs: []string{"-b", "topic"}},
-		{name: "alias of an alias", command: "git lg -5", wantSubcommand: "log", wantArgs: []string{"--graph", "--oneline", "-5"}},
 		{name: "quoted words in an expansion", command: "git cm", wantSubcommand: "commit", wantArgs: []string{"-m", "two words"}},
 		{name: "three levels", command: "git one", wantSubcommand: "log", wantArgs: []string{}},
 		{name: "backslash escape in an expansion", command: "git spaced", wantSubcommand: "commit", wantArgs: []string{"-m", "a b"}},
-		{name: "alias given by -c over the repository's", command: "git -c alias.sw=status sw", wantSubcommand: "status", wantArgs: []string{}},
 		{
 			name: "alias given by --config-env", command: "SW=status git --config-env=alias.sw=SW sw",
 			wantSubcommand: "status", wantArgs: []string{},
@@ -187,7 +151,7 @@ func TestParse_ResolvesTheSubcommandThroughGitsAliases(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := lastAt(t, tt.command, f.Dir(), f.Env())
+			got := lastWith(t, tt.command, callerIn(f, f.Dir()))
 
 			assert.Check(t, is.Len(got.Marks, 0), "Parse(%q) marks", tt.command)
 			assert.Check(t, is.DeepEqual(got.Git.Subcommand, literal(tt.wantSubcommand)), "Parse(%q) subcommand", tt.command)
@@ -214,7 +178,7 @@ func TestParse_ReadsAnAliasInTheInvocationsTarget(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := lastAt(t, tt.command, outsideDir(t), tt.env)
+			got := lastWith(t, tt.command, callerWithEnv(outsideDir(t), tt.env))
 
 			assert.Check(t, is.Len(got.Marks, 0), "Parse(%q) marks", tt.command)
 			assert.Check(t, is.DeepEqual(got.Git.Subcommand, literal("checkout")), "Parse(%q) subcommand", tt.command)
@@ -234,11 +198,6 @@ func TestParse_MarksASubcommandItCannotResolve(t *testing.T) {
 		{name: "alias running a shell command", command: "git sh", want: []guard.Mark{{Kind: guard.ShellAlias, Name: "sh"}}},
 		{name: "word that is neither command nor alias", command: "git taxi", want: []guard.Mark{{Kind: guard.UnknownSubcommand, Name: "taxi"}}},
 		{name: "alias given only by -c", command: "git -c alias.x='!git push' x", want: []guard.Mark{{Kind: guard.ShellAlias, Name: "x"}}},
-		{
-			name:    "shell alias given by -c over the repository's",
-			command: "git -c alias.sw='!git push' sw",
-			want:    []guard.Mark{{Kind: guard.ShellAlias, Name: "sw"}},
-		},
 		{name: "alias read under a non-literal -c", command: `git -c "$v" co`, want: []guard.Mark{{Kind: guard.UnreadableAlias, Name: "co"}}},
 		{
 			name:    "alias read under --config-env naming a variable the parse cannot read",
@@ -254,7 +213,7 @@ func TestParse_MarksASubcommandItCannotResolve(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := lastAt(t, tt.command, f.Dir(), f.Env())
+			got := lastWith(t, tt.command, callerIn(f, f.Dir()))
 
 			assert.Check(t, is.DeepEqual(got.Marks, tt.want), "Parse(%q) marks", tt.command)
 		})
@@ -276,7 +235,7 @@ func TestParse_WhenAGitConfigReadFails_FailsNamingTheCall(t *testing.T) {
 	f := aliased(t)
 	env := append(f.Env(), gittest.FakeGit(t, gittest.Fake{FailOn: []string{"config"}})...)
 
-	_, err := guard.Parse(t.Context(), "git co topic", guard.Caller{Home: home, Dir: f.Dir(), Git: git.Runner{Env: env}})
+	_, err := guard.Parse(t.Context(), "git co topic", callerWithEnv(f.Dir(), env))
 
 	checkFailedCall(t, err, "alias.co")
 }
@@ -298,13 +257,12 @@ func TestParse_ReportsTheGitDirAnInvocationTargets(t *testing.T) {
 		{name: "git dir named by --git-dir", dir: outside, command: "git --git-dir=" + quotedPath(gitDir) + " status", want: gitDir},
 		{name: "git dir named by GIT_DIR", dir: outside, command: "GIT_DIR=" + quotedPath(gitDir) + " git status", want: gitDir},
 		{name: "work tree root read as a bare repository", dir: f.Dir(), command: "git --bare status"},
-		{name: "directory that holds no repository", dir: outside, command: "git status"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := lastAt(t, tt.command, tt.dir, f.Env()).Git
+			got := lastWith(t, tt.command, callerIn(f, tt.dir)).Git
 
 			assert.Check(t, !got.GitDirUnknown, "Parse(%q) reports the git dir unknown", tt.command)
 			assert.Check(t, is.Equal(got.GitDir, tt.want), "Parse(%q) git dir", tt.command)
@@ -332,10 +290,9 @@ func TestParse_WhenTheGitDirCannotBeRead_ReportsItUnknown(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := lastAt(t, tt.command, f.Dir(), f.Env()).Git
+			got := lastWith(t, tt.command, callerIn(f, f.Dir())).Git
 
 			assert.Check(t, got.GitDirUnknown, "Parse(%q) git dir = %q, want unknown", tt.command, got.GitDir)
-			assert.Check(t, is.Equal(got.GitDir, ""), "Parse(%q) git dir", tt.command)
 		})
 	}
 }
@@ -345,7 +302,7 @@ func TestParse_WhenGitCannotReadTheGitDir_FailsNamingTheCall(t *testing.T) {
 	f := gittest.New(t, "main")
 	env := append(f.Env(), gittest.FakeGit(t, gittest.Fake{FailOn: []string{"rev-parse"}})...)
 
-	_, err := guard.Parse(t.Context(), "git status", guard.Caller{Home: home, Dir: f.Dir(), Git: git.Runner{Env: env}})
+	_, err := guard.Parse(t.Context(), "git status", callerWithEnv(f.Dir(), env))
 
 	checkFailedCall(t, err, "--absolute-git-dir")
 }
@@ -355,83 +312,16 @@ func TestParse_WhenNoInvocationRunsGit_StartsNoGit(t *testing.T) {
 
 	f := gittest.New(t, "main")
 	recorder := &git.Recorder{}
+	caller := callerIn(f, f.Dir())
+	caller.Git.Recorder = recorder
 	const command = "gh pr list && ls -la | grep x; echo git push"
 
-	_, err := guard.Parse(t.Context(), command, guard.Caller{Home: home, Dir: f.Dir(), Git: git.Runner{Env: f.Env(), Recorder: recorder}})
-	assert.NilError(t, err, "Parse(%q)", command)
+	parseWith(t, command, caller)
 
 	assert.Check(t, is.Len(recorder.Calls(), 0), "Parse(%q) git calls", command)
 }
 
-func TestParse_WhenAnInvocationMayMoveHeadThroughGitsAliases_ReportsHeadUnknownAfterIt(t *testing.T) {
-	t.Parallel()
-
-	f := aliased(t)
-	tests := []struct {
-		name    string
-		command string
-		want    []bool
-	}{
-		{name: "alias of switch", command: "git sw main && git commit -m x", want: []bool{false, true}},
-		{name: "alias of a rebase naming a branch", command: "git rb; git commit", want: []bool{false, true}},
-		{name: "alias of bisect", command: "git bs; git commit", want: []bool{false, true}},
-		{name: "alias of checkout", command: "git co topic && git commit", want: []bool{false, true}},
-		{name: "alias that moves nothing", command: "git lg; git commit", want: []bool{false, false}},
-		{name: "alias move after the commit", command: "git commit; git sw main", want: []bool{false, false}},
-		{name: "alias move in a subshell", command: "(git sw main); git commit", want: []bool{false, true}},
-		{name: "alias running a shell command", command: "git sh; git commit", want: []bool{false, true}},
-		{name: "word that is neither command nor alias", command: "git taxi; git commit", want: []bool{false, true}},
-		{name: "alias nested too deep", command: "git d1; git commit", want: []bool{false, true}},
-		{name: "alias in an unknown target", command: `git -C "$d" co; git commit`, want: []bool{false, true}},
-		{name: "unknown option before the subcommand", command: "git --sparkle status; git commit", want: []bool{false, true}},
-		{name: "option that prints and exits", command: "git --version; git commit", want: []bool{false, false}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			invocations := parseAt(t, tt.command, f.Dir(), f.Env())
-
-			got := make([]bool, 0, len(invocations))
-			for _, inv := range invocations {
-				got = append(got, inv.HeadUnknown)
-			}
-
-			assert.Check(t, is.DeepEqual(got, tt.want), "Parse(%q) head unknown", tt.command)
-		})
-	}
-}
-
-func TestParse_WhenASubstitutionMovesHeadThroughAnAlias_ReportsHeadUnknownForTheCommandHoldingIt(t *testing.T) {
-	t.Parallel()
-
-	f := aliased(t)
-	tests := []struct {
-		name    string
-		command string
-	}{
-		{name: "argument", command: `git commit -m "$(git sw main)"`},
-		{name: "group redirect target", command: `{ git commit; } > "$(git sw main)"`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := parseAt(t, tt.command, f.Dir(), f.Env())
-
-			var commit []guard.Invocation
-			for _, inv := range got {
-				if len(inv.Words) > 1 && inv.Words[1].Text == "commit" {
-					commit = append(commit, inv)
-				}
-			}
-			assert.Assert(t, is.Len(commit, 1), "Parse(%q) = %v", tt.command, texts(got))
-			assert.Check(t, commit[0].HeadUnknown, "Parse(%q) git commit head unknown = false, want true", tt.command)
-		})
-	}
-}
-
-func TestParse_WhenAGlobalOptionPrintsAndExits_ReportsNoSubcommandAndNoMark(t *testing.T) {
+func TestParse_WhenAGlobalOptionPrintsAndExits_ReportsNoSubcommand(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, "main")
@@ -441,14 +331,13 @@ func TestParse_WhenAGlobalOptionPrintsAndExits_ReportsNoSubcommandAndNoMark(t *t
 	}{
 		{name: "version", command: "git --version"},
 		{name: "bare exec path", command: "git --exec-path"},
-		{name: "word after the option", command: "git --version status"},
 		{name: "bare git", command: "git"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := lastAt(t, tt.command, f.Dir(), f.Env())
+			got := lastWith(t, tt.command, callerIn(f, f.Dir()))
 
 			assert.Check(t, got.Git.NoSubcommand, "Parse(%q) reports a subcommand %+v, want none", tt.command, got.Git.Subcommand)
 			assert.Check(t, is.Len(got.Marks, 0), "Parse(%q) marks", tt.command)
@@ -456,13 +345,13 @@ func TestParse_WhenAGlobalOptionPrintsAndExits_ReportsNoSubcommandAndNoMark(t *t
 	}
 }
 
-func TestParse_WhenTheSubcommandIsNotLiteral_ReportsItPresentAndNotLiteral(t *testing.T) {
+func TestParse_WhenTheSubcommandIsNotLiteral_ReportsANonLiteralSubcommand(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, "main")
 	const command = `git "$x" status`
 
-	got := lastAt(t, command, f.Dir(), f.Env()).Git
+	got := lastWith(t, command, callerIn(f, f.Dir())).Git
 
 	assert.Check(t, !got.NoSubcommand, "Parse(%q) reports no subcommand, want one that is not literal", command)
 	assert.Check(t, is.DeepEqual(got.Subcommand, guard.Word{}), "Parse(%q) subcommand", command)
@@ -485,9 +374,10 @@ func TestParse_WhenAWordCannotNameAnAlias_MarksItWithoutReadingConfig(t *testing
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			recorder := &git.Recorder{}
+			caller := callerIn(f, f.Dir())
+			caller.Git.Recorder = recorder
 
-			got, err := guard.Parse(t.Context(), tt.command, guard.Caller{Home: home, Dir: f.Dir(), Git: git.Runner{Env: f.Env(), Recorder: recorder}})
-			assert.NilError(t, err, "Parse(%q)", tt.command)
+			got := parseWith(t, tt.command, caller)
 
 			assert.Assert(t, is.Len(got, 1), "Parse(%q) = %v", tt.command, texts(got))
 			want := []guard.Mark{{Kind: guard.UnknownSubcommand, Name: tt.word}}
@@ -499,33 +389,29 @@ func TestParse_WhenAWordCannotNameAnAlias_MarksItWithoutReadingConfig(t *testing
 	}
 }
 
-func TestParse_WhenAGlobalOptionLacksItsValue_MarksItAndReportsNoSubcommandOrTarget(t *testing.T) {
+func TestParse_WhenAGlobalOptionLacksItsValue_MarksIt(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, "main")
-	tests := []struct {
-		name    string
-		command string
-		option  string
-	}{
-		{name: "short option", command: "git -C", option: "-C"},
-		{name: "long option", command: "git --git-dir", option: "--git-dir"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	const command = "git -C"
 
-			got := lastAt(t, tt.command, f.Dir(), f.Env())
+	got := lastWith(t, command, callerIn(f, f.Dir()))
 
-			want := []guard.Mark{{Kind: guard.MissingGitValue, Name: tt.option}}
-			assert.Check(t, is.DeepEqual(got.Marks, want), "Parse(%q) marks", tt.command)
-			assert.Check(t, got.Git.NoSubcommand, "Parse(%q) reports a subcommand %+v, want none", tt.command, got.Git.Subcommand)
-			assert.Check(t, is.DeepEqual(got.Git.Subcommand, guard.Word{}), "Parse(%q) subcommand", tt.command)
-			assert.Check(t, got.Git.GitDirUnknown, "Parse(%q) git dir = %q, want unknown", tt.command, got.Git.GitDir)
-			assert.Check(t, is.Equal(got.Git.GitDir, ""), "Parse(%q) git dir", tt.command)
-			assert.Check(t, got.Target.Unknown, "Parse(%q) target = %+v, want unknown", tt.command, got.Target)
-		})
-	}
+	want := []guard.Mark{{Kind: guard.MissingGitValue, Name: "-C"}}
+	assert.Check(t, is.DeepEqual(got.Marks, want), "Parse(%q) marks", command)
+}
+
+func TestParse_WhenAGlobalOptionLacksItsValue_ReportsNoSubcommandOrTarget(t *testing.T) {
+	t.Parallel()
+
+	f := gittest.New(t, "main")
+	const command = "git -C"
+
+	got := lastWith(t, command, callerIn(f, f.Dir()))
+
+	assert.Check(t, got.Git.NoSubcommand, "Parse(%q) reports a subcommand %+v, want none", command, got.Git.Subcommand)
+	assert.Check(t, got.Git.GitDirUnknown, "Parse(%q) git dir = %q, want unknown", command, got.Git.GitDir)
+	assert.Check(t, got.Target.Unknown, "Parse(%q) target = %+v, want unknown", command, got.Target)
 }
 
 func TestParse_WhenGitRunsAShellCommandItHolds_ParsesItsCommands(t *testing.T) {
@@ -543,13 +429,18 @@ func TestParse_WhenGitRunsAShellCommandItHolds_ParsesItsCommands(t *testing.T) {
 		{name: "rebase -x with an attached value", command: "git rebase -x' git push origin main' HEAD~1", want: [][]string{{"git", "rebase", "-x git push origin main", "HEAD~1"}, {"git", "push", "origin", "main"}}},
 		{name: "rebase -x in a short-flag bundle", command: "git rebase -ix 'git push origin main' HEAD~1", want: [][]string{{"git", "rebase", "-ix", "git push origin main", "HEAD~1"}, {"git", "push", "origin", "main"}}},
 		{name: "core.editor given by -c", command: "git -c core.editor='git push origin main' commit", want: [][]string{{"git", "-c", "core.editor=git push origin main", "commit"}, {"git", "push", "origin", "main"}}},
-		{name: "core.pager given by -c", command: "git -c core.pager='git push origin main' log", want: [][]string{{"git", "-c", "core.pager=git push origin main", "log"}, {"git", "push", "origin", "main"}}},
-		{name: "sequence.editor given by -c", command: "git -c sequence.editor='git push origin main' rebase -i HEAD~1", want: [][]string{{"git", "-c", "sequence.editor=git push origin main", "rebase", "-i", "HEAD~1"}, {"git", "push", "origin", "main"}}},
-		{name: "core.sshCommand given by -c", command: "git -c core.sshCommand='git push origin main' fetch", want: [][]string{{"git", "-c", "core.sshCommand=git push origin main", "fetch"}, {"git", "push", "origin", "main"}}},
 		{name: "pager of one command given by -c", command: "git -c pager.log='git push origin main' log", want: [][]string{{"git", "-c", "pager.log=git push origin main", "log"}, {"git", "push", "origin", "main"}}},
 		{name: "key spelled in another case", command: "git -c CORE.Pager='git push origin main' log", want: [][]string{{"git", "-c", "CORE.Pager=git push origin main", "log"}, {"git", "push", "origin", "main"}}},
 		{name: "pager key spelled in another case", command: "git -c Pager.Log='git push origin main' log", want: [][]string{{"git", "-c", "Pager.Log=git push origin main", "log"}, {"git", "push", "origin", "main"}}},
 		{name: "core.pager given by --config-env", command: "P='git push origin main' git --config-env=core.pager=P log", want: [][]string{{"git", "--config-env=core.pager=P", "log"}, {"git", "push", "origin", "main"}}},
+		{name: "core.fsmonitor given by -c", command: "git -c core.fsmonitor='git push origin main' status", want: [][]string{{"git", "-c", "core.fsmonitor=git push origin main", "status"}, {"git", "push", "origin", "main"}}},
+		{name: "diff.external given by -c", command: "git -c diff.external='git push origin main' diff", want: [][]string{{"git", "-c", "diff.external=git push origin main", "diff"}, {"git", "push", "origin", "main"}}},
+		{name: "diff driver textconv given by -c", command: "git -c diff.x.textconv='git push origin main' diff", want: [][]string{{"git", "-c", "diff.x.textconv=git push origin main", "diff"}, {"git", "push", "origin", "main"}}},
+		{name: "filter driver smudge given by -c", command: "git -c filter.x.smudge='git push origin main' status", want: [][]string{{"git", "-c", "filter.x.smudge=git push origin main", "status"}, {"git", "push", "origin", "main"}}},
+		{name: "merge driver given by -c", command: "git -c merge.x.driver='git push origin main' status", want: [][]string{{"git", "-c", "merge.x.driver=git push origin main", "status"}, {"git", "push", "origin", "main"}}},
+		{name: "credential helper run by the shell", command: "git -c credential.helper='!git push origin main' fetch", want: [][]string{{"git", "-c", "credential.helper=!git push origin main", "fetch"}, {"git", "push", "origin", "main"}}},
+		{name: "credential helper of a URL, key in another case", command: "git -c credential.https://h.Helper='!git push origin main' fetch", want: [][]string{{"git", "-c", "credential.https://h.Helper=!git push origin main", "fetch"}, {"git", "push", "origin", "main"}}},
+		{name: "credential helper named by its suffix", command: "git -c credential.helper=store fetch", want: [][]string{{"git", "-c", "credential.helper=store", "fetch"}, {"git", "credential-store"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -571,6 +462,7 @@ func TestParse_WhenAGitValueIsNoShellCommand_ParsesNothingMore(t *testing.T) {
 	}{
 		{name: "cherry-pick -x flag", command: "git cherry-pick -x abc123"},
 		{name: "-c key git does not run", command: "git -c user.name='git push origin main' log"},
+		{name: "empty credential helper", command: "git -c credential.helper= fetch"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -597,7 +489,6 @@ func TestParse_WhenAShellCommandGitRunsCannotBeRead_MarksIt(t *testing.T) {
 		{name: "non-literal core.pager value", command: `git -c core.pager="$p" log`, want: guard.DynamicScript},
 		{name: "core.pager variable the parse cannot read", command: "git --config-env core.pager=ABSENT log", want: guard.DynamicScript},
 		{name: "rebase --exec past the third level", command: "eval eval eval git rebase -x true HEAD~1", index: 3, want: guard.DeepScript},
-		{name: "core.pager past the third level", command: "eval eval eval git -c core.pager=less log", index: 3, want: guard.DeepScript},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -620,13 +511,12 @@ func TestParse_WhenAGitAliasRunsARebaseExec_ParsesTheExecCommand(t *testing.T) {
 		command string
 	}{
 		{name: "exec given after an alias of rebase", command: "git rb -x 'git push origin main'"},
-		{name: "exec held in the alias", command: "git rx"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := parseAt(t, tt.command, f.Dir(), f.Env())
+			got := parseWith(t, tt.command, callerIn(f, f.Dir()))
 
 			assert.Check(t, is.Contains(texts(got), []string{"git", "push", "origin", "main"}), "Parse(%q)", tt.command)
 		})

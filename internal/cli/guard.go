@@ -4,6 +4,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/guard"
 	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
@@ -23,24 +25,40 @@ import (
 const (
 	flagCwd = "--cwd"
 
+	// hookCommand reads -h itself because it disables Cobra flag parsing.
+	flagHelpShort = landing.FlagHelpShort
+
+	cwdUsage = "The directory the command runs in"
+
 	// harnessClaude is the harness word of Claude Code, the one harness `ils hook` knows.
 	harnessClaude = "claude"
+
+	// claudeEvent is the hookEventName of the answer Claude Code reads from a PreToolUse hook.
+	claudeEvent = "PreToolUse"
+
+	// claudeDecisionAsk is the permissionDecision that has Claude Code ask the user first.
+	claudeDecisionAsk = "ask"
+
+	// claudeShellTool is the tool_name of Claude Code's shell tool, the one tool the guard judges.
+	claudeShellTool = "Bash"
 
 	// notLiteral stands, in the text of a parse, for a word whose text depends on what the shell
 	// expands.
 	notLiteral = "<not literal>"
+
+	// unknownText stands, in the text of a parse, for a directory or git dir that is not known.
+	unknownText = "unknown"
 )
+
+// ---------------------------------------------------------------------------
+// The parse and guard commands
+// ---------------------------------------------------------------------------
 
 // parseCommand returns `ils parse --cwd <dir> -- '<command>'`, which reads the command as the
 // guard does and keeps every invocation it holds as the result. It refuses words that give no
 // directory, or anything but one word after `--`; it never refuses what the command holds.
 func (p *parse) parseCommand() *cobra.Command {
-	return p.cwdCommand(&cobra.Command{
-		Use:     parseUse,
-		Short:   parseShort,
-		Long:    parseLong,
-		Example: parseExamples,
-	}, parseWord, p.readCommand)
+	return p.cwdCommand(parseHeader(), parseWord, p.readCommand)
 }
 
 // cwdCommand completes c as the command named word that takes `--cwd <dir> -- '<command>'`: it
@@ -100,10 +118,11 @@ func (p *parse) cwdCommand(
 // its HOME, and the git of the app.
 func (p *parse) caller(dir string) guard.Caller {
 	env := environment(p.app.Environ)
+	logger := p.logger(p.app.profile(p.app.StderrTerminal, p.noColor))
 	runner := p.app.git
-	runner.Logger = p.logger(p.app.profile(p.app.StderrTerminal, p.noColor))
+	runner.Logger = logger
 
-	return guard.Caller{Dir: dir, Env: env, Home: env["HOME"], Git: runner}
+	return guard.Caller{Dir: dir, Env: env, Home: env["HOME"], Git: runner, GH: github.Runner{Logger: logger}}
 }
 
 // readCommand reads command as the guard does from cwd, made absolute, with the process environment
@@ -113,7 +132,7 @@ func (p *parse) caller(dir string) guard.Caller {
 func (p *parse) readCommand(ctx context.Context, cwd, command string) (result.Result, error) {
 	req := landing.Request{Command: parseWord, Words: p.words}
 
-	ctx, cancel := context.WithDeadline(ctx, p.app.Launch.Add(req.Limit()))
+	ctx, cancel := p.underTimeLimit(ctx)
 	defer cancel()
 
 	dir, err := filepath.Abs(cwd)
@@ -126,12 +145,10 @@ func (p *parse) readCommand(ctx context.Context, cwd, command string) (result.Re
 		return unparsed(req, err), nil
 	}
 
-	payload := &result.Parse{Invocations: make([]result.Invocation, 0, len(invocations))}
+	payload := &result.Parse{Invocations: invocationsOf(invocations)}
 	lines := make([]result.Phrase, 0, len(invocations))
 
-	for _, inv := range invocations {
-		shown := invocationOf(inv)
-		payload.Invocations = append(payload.Invocations, shown)
+	for _, shown := range payload.Invocations {
 		lines = append(lines, invocationLine(shown))
 	}
 
@@ -168,12 +185,7 @@ func unparsed(req landing.Request, err error) result.Result {
 // it asks first, with every invocation it holds. It refuses words that give no directory, or
 // anything but one word after `--`.
 func (p *parse) guardCommand() *cobra.Command {
-	return p.cwdCommand(&cobra.Command{
-		Use:     guardUse,
-		Short:   guardShort,
-		Long:    guardLong,
-		Example: guardExamples,
-	}, guardWord, func(ctx context.Context, cwd, command string) (result.Result, error) {
+	return p.cwdCommand(guardHeader(), guardWord, func(ctx context.Context, cwd, command string) (result.Result, error) {
 		return p.judgeCommand(ctx, cwd, command), nil
 	})
 }
@@ -186,12 +198,12 @@ func (p *parse) guardCommand() *cobra.Command {
 func (p *parse) judgeCommand(ctx context.Context, cwd, command string) result.Result {
 	req := landing.Request{Command: guardWord, Words: p.words}
 
-	ctx, cancel := context.WithDeadline(ctx, p.app.Launch.Add(req.Limit()))
+	ctx, cancel := p.underTimeLimit(ctx)
 	defer cancel()
 
 	dir, err := filepath.Abs(cwd)
 	if err != nil {
-		return judged(req, nil, refusal("the guard could not resolve the directory %s: %v", cwd, err))
+		return judged(req, nil, cannotJudge("the guard could not resolve the directory %s: %v", cwd, err))
 	}
 
 	verdict, invocations := guard.Assess(ctx, command, p.caller(dir))
@@ -202,10 +214,7 @@ func (p *parse) judgeCommand(ctx context.Context, cwd, command string) result.Re
 // judged returns the result of verdict on a command holding invocations. Its reason, which may name
 // a config key or a path under a git dir, goes in as a name.
 func judged(req landing.Request, invocations []guard.Invocation, verdict guard.Verdict) result.Result {
-	payload := &result.Guard{Invocations: make([]result.Invocation, 0, len(invocations))}
-	for _, inv := range invocations {
-		payload.Invocations = append(payload.Invocations, invocationOf(inv))
-	}
+	payload := &result.Guard{Invocations: invocationsOf(invocations)}
 
 	r := result.Result{
 		Payload: &result.Payload{Guard: payload},
@@ -238,12 +247,36 @@ func environment(environ []string) map[string]string {
 	env := make(map[string]string, len(environ))
 	for _, entry := range environ {
 		name, value, ok := strings.Cut(entry, "=")
-		if _, seen := env[name]; ok && !seen {
+		if !ok {
+			continue
+		}
+
+		if _, seen := env[name]; !seen {
 			env[name] = value
 		}
 	}
 
 	return env
+}
+
+// underTimeLimit returns ctx with the deadline of a command from launch, which counts the time
+// limit from the launch of the app.
+func (p *parse) underTimeLimit(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithDeadline(ctx, p.app.Launch.Add(landing.TimeLimit))
+}
+
+// ---------------------------------------------------------------------------
+// The payload and its text
+// ---------------------------------------------------------------------------
+
+// invocationsOf returns invocations as the payload shows them, never nil.
+func invocationsOf(invocations []guard.Invocation) []result.Invocation {
+	shown := make([]result.Invocation, 0, len(invocations))
+	for _, inv := range invocations {
+		shown = append(shown, invocationOf(inv))
+	}
+
+	return shown
 }
 
 // invocationOf returns inv as the parse payload shows it; only a git invocation has a GitCall.
@@ -286,7 +319,7 @@ func wordsOf(words []guard.Word) []result.Word {
 func invocationLine(inv result.Invocation) result.Phrase {
 	dir := inv.Dir
 	if dir == "" {
-		dir = "unknown"
+		dir = unknownText
 	}
 
 	marks := make([]string, 0, len(inv.Marks))
@@ -304,33 +337,33 @@ func invocationLine(inv result.Invocation) result.Phrase {
 		return result.Say("%s; directory %s; marks %s", words, dir, markList)
 	}
 
-	gitDir := inv.Git.GitDir
-	switch {
-	case inv.Git.GitDirUnknown:
-		gitDir = "unknown"
-	case gitDir == "":
-		gitDir = "none"
+	gitDir := orNone(inv.Git.GitDir)
+	if inv.Git.GitDirUnknown {
+		gitDir = unknownText
 	}
 
 	gitPart := "arguments " + orNone(wordTexts(inv.Git.Args)) + "; git dir " + gitDir
 	if inv.Git.Subcommand != nil {
-		gitPart = "subcommand " + wordTexts([]result.Word{*inv.Git.Subcommand}) + "; " + gitPart
+		gitPart = "subcommand " + wordText(*inv.Git.Subcommand) + "; " + gitPart
 	}
 
 	return result.Say("%s; directory %s; marks %s; %s", words, dir, markList, gitPart)
+}
+
+// wordText returns the text of w, or notLiteral when w is not a literal.
+func wordText(w result.Word) string {
+	if !w.Literal {
+		return notLiteral
+	}
+
+	return w.Text
 }
 
 // wordTexts returns the words one space apart, each one that is not a literal as notLiteral.
 func wordTexts(words []result.Word) string {
 	texts := make([]string, 0, len(words))
 	for _, w := range words {
-		if !w.Literal {
-			texts = append(texts, notLiteral)
-
-			continue
-		}
-
-		texts = append(texts, w.Text)
+		texts = append(texts, wordText(w))
 	}
 
 	return strings.Join(texts, " ")
@@ -345,49 +378,55 @@ func orNone(text string) string {
 	return text
 }
 
+// ---------------------------------------------------------------------------
+// The hook command and the Claude Code payload
+// ---------------------------------------------------------------------------
+
 // hookCommand returns `ils hook <harness>`, which reads the payload of the harness's pre-tool hook
 // on Stdin and answers it in the harness's terms. It never exits 1, since a harness may read 1 as
 // letting the command run: words it does not take, and every error, end the run with exit 2 and
 // the reason on Stderr.
 func (p *parse) hookCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:     hookUse,
-		Short:   hookShort,
-		Long:    hookLong,
-		Example: hookExamples,
-		// Cobra would refuse a flag through the result, which prints on Stdout; the words are read
-		// here instead, so that every refusal lands on Stderr.
-		DisableFlagParsing: true,
-		RunE: func(c *cobra.Command, args []string) error {
-			if len(args) == 1 && (args[0] == flagHelp || args[0] == flagHelpShort) {
-				return pflag.ErrHelp
-			}
+	c := hookHeader()
+	// Cobra would refuse a flag through the result, which prints on Stdout; the words are read
+	// here instead, so that every refusal lands on Stderr.
+	c.RunE = func(c *cobra.Command, args []string) error {
+		if len(args) == 1 && (args[0] == flagHelp || args[0] == flagHelpShort) {
+			return pflag.ErrHelp
+		}
 
-			refused := result.Refused.ExitCode()
+		refused := result.Refused.ExitCode()
+		harnesses := "the harness it runs under, one of: " + harnessClaude
 
-			switch {
-			case len(args) == 0:
-				p.quit(refused, "hook takes the harness it runs under, one of: "+harnessClaude)
-			case args[0] != harnessClaude:
-				p.quit(refused, fmt.Sprintf("hook takes the harness it runs under, one of: %s, and %s was given", harnessClaude, args[0]))
-			case len(args) > 1:
-				p.quit(refused, fmt.Sprintf("hook takes one harness and no other word, and %s was given", args[1]))
-			default:
-				p.hookClaude(c.Context())
-			}
+		switch {
+		case len(args) == 0:
+			p.quit(refused, hookWord+" takes "+harnesses)
+		case args[0] != harnessClaude:
+			p.quit(refused, fmt.Sprintf("%s takes %s, and %s was given", hookWord, harnesses, args[0]))
+		case len(args) > 1:
+			p.quit(refused, fmt.Sprintf("%s takes one harness and no other word, and %s was given", hookWord, args[1]))
+		default:
+			p.hookClaude(c.Context())
+		}
 
-			return nil
-		},
+		return nil
 	}
+
+	return c
 }
 
-// claudeToolUse is the part of the payload of Claude Code's PreToolUse hook that the guard reads.
+// claudeToolUse is the part of the payload of Claude Code's PreToolUse hook that the guard reads
+// before it knows the tool. Only a call of the shell tool has its ToolInput read, as
+// claudeShellInput.
 type claudeToolUse struct {
-	ToolInput struct {
-		Command string `json:"command"`
-	} `json:"tool_input"`
-	ToolName string `json:"tool_name"`
-	Cwd      string `json:"cwd"`
+	ToolName  string         `json:"tool_name"`
+	Cwd       string         `json:"cwd"`
+	ToolInput jsontext.Value `json:"tool_input"`
+}
+
+// claudeShellInput is the tool_input of a call of the shell tool.
+type claudeShellInput struct {
+	Command string `json:"command"`
 }
 
 // claudeAsk is the answer on stdout that has Claude Code ask the user before the tool runs.
@@ -414,8 +453,8 @@ func (p *parse) hookClaude(ctx context.Context) {
 		p.quit(done, "")
 	case guard.Ask:
 		out, err := json.Marshal(claudeAsk{HookSpecificOutput: claudeDecision{
-			HookEventName:            "PreToolUse",
-			PermissionDecision:       "ask",
+			HookEventName:            claudeEvent,
+			PermissionDecision:       claudeDecisionAsk,
 			PermissionDecisionReason: verdict.Reason,
 		}})
 		if err == nil {
@@ -437,47 +476,64 @@ func (p *parse) hookClaude(ctx context.Context) {
 	}
 }
 
-// refusal returns the Refuse verdict of a failure that kept the guard from judging, which must not
+// cannotJudge returns the Refuse verdict of a failure that kept the guard from judging, which must not
 // let the command run.
-func refusal(format string, args ...any) guard.Verdict {
+func cannotJudge(format string, args ...any) guard.Verdict {
 	return guard.Verdict{Outcome: guard.Refuse, Reason: fmt.Sprintf(format, args...)}
 }
 
 // claudeVerdict returns the verdict of the guard on the payload of Claude Code's PreToolUse hook on
 // Stdin, judged under the time limit of a command from launch: the command of a Bash call judged
 // from its cwd, and allow for any other tool. A payload that cannot be read, or that names no tool,
-// no command, or no directory that exists, is a refusal that says what broke.
+// no command, or no cwd that is an absolute path to a directory that exists, is a refusal that says
+// what broke.
 func (p *parse) claudeVerdict(ctx context.Context) guard.Verdict {
 	var payload []byte
 	if p.app.Stdin != nil {
 		var err error
 		if payload, err = io.ReadAll(p.app.Stdin); err != nil {
-			return refusal("the hook could not read its payload on stdin: %v", err)
+			return cannotJudge("the hook could not read its payload on stdin: %v", err)
 		}
 	}
 
 	var use claudeToolUse
 	if err := json.Unmarshal(payload, &use); err != nil {
-		return refusal("the hook's payload is not the JSON of a PreToolUse call: %v", err)
+		return cannotJudge("the hook's payload is not the JSON of a PreToolUse call: %v", err)
 	}
 
 	switch {
 	case use.ToolName == "":
-		return refusal("the hook's payload holds no tool_name")
-	case use.ToolName != "Bash":
+		return cannotJudge("the hook's payload holds no tool_name")
+	case use.ToolName != claudeShellTool:
 		return guard.Verdict{Outcome: guard.Allow}
-	case use.ToolInput.Command == "":
-		return refusal("the hook's payload holds no tool_input.command")
+	}
+
+	var input claudeShellInput
+	if len(use.ToolInput) > 0 {
+		if err := json.Unmarshal(use.ToolInput, &input); err != nil {
+			return cannotJudge("the hook's payload holds a tool_input that is not the JSON of a Bash call: %v", err)
+		}
+	}
+
+	switch {
+	case input.Command == "":
+		return cannotJudge("the hook's payload holds no tool_input.command")
 	case use.Cwd == "":
-		return refusal("the hook's payload holds no cwd")
+		return cannotJudge("the hook's payload holds no cwd")
+	case !filepath.IsAbs(use.Cwd):
+		return cannotJudge("the hook's payload holds a cwd that is not absolute: %s", use.Cwd)
 	}
 
-	if _, err := os.Stat(use.Cwd); err != nil {
-		return refusal("the guard cannot read the directory the command runs in: %v", err)
+	info, err := os.Stat(use.Cwd)
+	if err != nil {
+		return cannotJudge("the guard cannot read the directory the command runs in: %v", err)
+	}
+	if !info.IsDir() {
+		return cannotJudge("the hook's payload holds a cwd that is not a directory: %s", use.Cwd)
 	}
 
-	ctx, cancel := context.WithDeadline(ctx, p.app.Launch.Add(landing.TimeLimit))
+	ctx, cancel := p.underTimeLimit(ctx)
 	defer cancel()
 
-	return guard.Judge(ctx, use.ToolInput.Command, p.caller(use.Cwd))
+	return guard.Judge(ctx, input.Command, p.caller(use.Cwd))
 }

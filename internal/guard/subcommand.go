@@ -49,6 +49,11 @@ type longOption struct {
 	attached bool
 }
 
+// startsOf reports whether the option's name is long or a start of it, which git reads as long.
+func (l longOption) startsOf(long string) bool {
+	return strings.HasPrefix(long, l.name)
+}
+
 // knownOptions is the options of a subcommand the guard knows. git reads the value of one that
 // takes a value as the rest of a short option bundle or as the next word, whatever it is spelled
 // like, and reads a start of a long option's name as that option when it starts no other.
@@ -56,8 +61,8 @@ type knownOptions struct {
 	// short holds, by the name of a long option without the leading `--`, the letter of the short
 	// option that spells it too.
 	short map[string]byte
-	// letters holds the short options that take a value.
-	letters string
+	// valuedLetters holds the short options that take a value.
+	valuedLetters string
 	// values and flags hold the names of the long options that take a value and of those that
 	// take none, without the leading `--`.
 	values, flags []string
@@ -182,6 +187,9 @@ switch -cC
 	[no-]create= [no-]force-create= [no-]guess [no-]discard-changes [no-]quiet
 	[no-]recurse-submodules [no-]progress [no-]merge [no-]conflict= [no-]detach [no-]track
 	[no-]force [no-]orphan= [no-]overwrite-ignore [no-]ignore-other-worktrees
+
+symbolic-ref -m
+	[no-]quiet [no-]delete [no-]short [no-]recurse
 `
 
 // cspell:enable
@@ -210,7 +218,7 @@ func optionsOf(sub string) knownOptions {
 // add records the option word of subcommandOptionTable.
 func (k *knownOptions) add(word string) {
 	if letters, ok := strings.CutPrefix(word, "-"); ok {
-		k.letters = letters
+		k.valuedLetters = letters
 
 		return
 	}
@@ -262,7 +270,6 @@ func (k knownOptions) resolve(name string) (option string, valued, ambiguous boo
 	return name, false, false
 }
 
-// startedBy returns the names that start with prefix.
 func startedBy(names []string, prefix string) []string {
 	var started []string
 	for _, name := range names {
@@ -293,8 +300,9 @@ func readArgs(args []Word, known knownOptions) subcommandOptions {
 				i++
 			}
 		case strings.HasPrefix(text, "-") && text != "-":
-			valued, taken := o.readBundle(text[1:], w.Literal, known.letters)
-			o.unreadable = o.unreadable || !w.Literal && !valued
+			valued, taken := o.readBundle(text[1:], w.Literal, known.valuedLetters)
+			opaqueBundle := !w.Literal && !valued
+			o.unreadable = o.unreadable || opaqueBundle
 			if taken {
 				i++
 			}
@@ -330,15 +338,33 @@ func (o *subcommandOptions) readLong(w Word, known knownOptions) (next bool) {
 // readBundle records the short options of the bundle letters up to the first that takes a value,
 // whose value is the rest of the bundle. It reports whether one takes a value, and whether that
 // value is the next word: the letter ends a bundle that is literal.
-func (o *subcommandOptions) readBundle(letters string, literal bool, valued string) (takes, next bool) {
+func (o *subcommandOptions) readBundle(letters string, literal bool, valuedLetters string) (takes, next bool) {
 	for j := range len(letters) {
 		o.letters += letters[j : j+1]
-		if strings.IndexByte(valued, letters[j]) >= 0 {
+		if strings.IndexByte(valuedLetters, letters[j]) >= 0 {
 			return true, literal && j == len(letters)-1
 		}
 	}
 
 	return false, false
+}
+
+// rebaseBranch returns the branch operand of `git rebase` given args, the branch it switches to
+// before it rebases, and whether args hold one: without `--root` it is the operand after the
+// upstream, with it the only operand. unreadable reports whether args hold an argument the guard
+// cannot read, which may be that operand.
+func rebaseBranch(args []Word) (branch Word, named, unreadable bool) {
+	options := readArgs(args, optionsOf("rebase"))
+	at := 1
+	if options.sets(0, "--root") {
+		at = 0
+	}
+
+	if len(options.positional) <= at {
+		return Word{}, false, options.unreadable
+	}
+
+	return options.positional[at], true, options.unreadable
 }
 
 // sets reports whether the options hold the short option letter, or a long option git reads as
@@ -349,7 +375,7 @@ func (o subcommandOptions) sets(letter byte, long string) bool {
 		return true
 	}
 
-	return long != "" && slices.ContainsFunc(o.long, func(l longOption) bool { return strings.HasPrefix(long, l.name) })
+	return long != "" && slices.ContainsFunc(o.long, func(l longOption) bool { return l.startsOf(long) })
 }
 
 // opaque reports whether the options hold an argument the guard cannot read: one outside a value
@@ -360,15 +386,15 @@ func (o subcommandOptions) opaque() bool {
 
 // attaches reports whether the options hold long, or a start of it, with a value attached.
 func (o subcommandOptions) attaches(long string) bool {
-	return slices.ContainsFunc(o.long, func(l longOption) bool { return l.attached && strings.HasPrefix(long, l.name) })
+	return slices.ContainsFunc(o.long, func(l longOption) bool { return l.attached && l.startsOf(long) })
 }
 
 // names reports whether the options hold long, or a start of it that starts none of others:
 // git takes such a start for long, while one it shares with another option is ambiguous.
 func (o subcommandOptions) names(long string, others ...string) bool {
 	return slices.ContainsFunc(o.long, func(l longOption) bool {
-		shared := slices.ContainsFunc(others, func(other string) bool { return strings.HasPrefix(other, l.name) })
+		shared := slices.ContainsFunc(others, l.startsOf)
 
-		return strings.HasPrefix(long, l.name) && !shared
+		return l.startsOf(long) && !shared
 	})
 }

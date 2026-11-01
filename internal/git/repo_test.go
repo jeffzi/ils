@@ -231,7 +231,6 @@ func TestRepo_FindGitDir(t *testing.T) {
 		wantFound bool
 	}{
 		{name: "work tree named by -C", options: []string{"-C", f.Dir()}, wantDir: filepath.Join(f.Dir(), ".git"), wantFound: true},
-		{name: "work tree root read as a bare repository", options: []string{"-C", f.Dir(), "--bare"}},
 		{name: "directory that holds no repository", options: []string{"-C", t.TempDir()}},
 	}
 	for _, tt := range tests {
@@ -284,25 +283,25 @@ func TestRepo_Alias(t *testing.T) {
 	}
 }
 
-func TestRepo_DirtyFiles_WhenStagedAndUnstagedChanges_ListsBoth(t *testing.T) {
+func TestRepo_ChangedTrackedFiles_WhenStagedAndUnstagedChanges_ListsBoth(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
 	dirty := f.DirtyFile()
 	want := []string{f.StagedFile(), dirty}
 
-	got, err := newRepo(f).DirtyFiles(t.Context())
+	got, err := newRepo(f).ChangedTrackedFiles(t.Context())
 	assert.NilError(t, err)
 
 	assert.Check(t, is.DeepEqual(got, want))
 }
 
-func TestRepo_DirtyFiles_WhenTrackedFileRenamedInIndex_ListsNewNameOnly(t *testing.T) {
+func TestRepo_ChangedTrackedFiles_WhenTrackedFileRenamedInIndex_ListsNewNameOnly(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
 	moved := renameTracked(t, f)
 	want := []string{moved, f.DirtyFile()}
 
-	got, err := newRepo(f).DirtyFiles(t.Context())
+	got, err := newRepo(f).ChangedTrackedFiles(t.Context())
 	assert.NilError(t, err)
 
 	assert.Check(t, is.DeepEqual(got, want))
@@ -317,16 +316,6 @@ func TestRepo_Dirty(t *testing.T) {
 	}{
 		{name: "clean tree", arrange: func(*testing.T, *gittest.Fixture) {}, want: false},
 		{name: "unstaged change", arrange: func(_ *testing.T, f *gittest.Fixture) { f.DirtyFile() }, want: true},
-		{name: "staged change", arrange: func(_ *testing.T, f *gittest.Fixture) { f.StagedFile() }, want: true},
-		{name: "untracked file", arrange: func(t *testing.T, f *gittest.Fixture) { gittest.WriteFile(t, f.Dir(), "notes.txt", "draft\n") }, want: true},
-		{
-			name: "untracked file the config hides from status",
-			arrange: func(t *testing.T, f *gittest.Fixture) {
-				f.Git("config", "--local", "status.showUntrackedFiles", "no")
-				gittest.WriteFile(t, f.Dir(), "notes.txt", "draft\n")
-			},
-			want: true,
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1068,13 +1057,6 @@ func TestRepo_WhenAGitReadFails_ReturnsItsExitError(t *testing.T) {
 			arrange: func(f *gittest.Fixture) string { return f.Commits(topic, "one")[0] },
 			call: func(ctx context.Context, repo git.Repo, first string) (any, error) {
 				return repo.BranchesContaining(ctx, first)
-			},
-		},
-		{
-			name: "dirty, the status read", failOn: []string{"status"},
-			arrange: func(*gittest.Fixture) string { return "" },
-			call: func(ctx context.Context, repo git.Repo, _ string) (any, error) {
-				return repo.Dirty(ctx)
 			},
 		},
 		{

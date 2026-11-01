@@ -8,48 +8,37 @@ import (
 	"github.com/jeffzi/ils/internal/result"
 )
 
+// guardUnsupported is the reason every run of the guard commands is refused.
+const guardUnsupported = "the guard runs on macOS and Linux"
+
 // parseCommand returns `ils parse`, which refuses every run: the guard runs on macOS and Linux.
 func (p *parse) parseCommand() *cobra.Command {
-	return p.unsupportedCommand(&cobra.Command{
-		Use:     parseUse,
-		Short:   parseShort,
-		Long:    parseLong,
-		Example: parseExamples,
-	})
+	return p.unsupportedCommand(parseHeader())
 }
 
 // guardCommand returns `ils guard`, which refuses every run: the guard runs on macOS and Linux.
 func (p *parse) guardCommand() *cobra.Command {
-	return p.unsupportedCommand(&cobra.Command{
-		Use:     guardUse,
-		Short:   guardShort,
-		Long:    guardLong,
-		Example: guardExamples,
-	})
+	return p.unsupportedCommand(guardHeader())
 }
 
 // hookCommand returns `ils hook`, which refuses every run with exit 2 and the reason on Stderr,
 // where a harness reads a block: the guard runs on macOS and Linux.
 func (p *parse) hookCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:                hookUse,
-		Short:              hookShort,
-		Long:               hookLong,
-		Example:            hookExamples,
-		DisableFlagParsing: true,
-		RunE: func(*cobra.Command, []string) error {
-			p.quit(result.Refused.ExitCode(), "the guard runs on macOS and Linux")
+	c := hookHeader()
+	c.RunE = func(*cobra.Command, []string) error {
+		p.quit(result.Refused.ExitCode(), guardUnsupported)
 
-			return nil
-		},
+		return nil
 	}
+
+	return c
 }
 
 // unsupportedCommand completes c as a command that reads no flag and refuses every run.
 func (p *parse) unsupportedCommand(c *cobra.Command) *cobra.Command {
 	c.DisableFlagParsing = true
 	c.Args = func(*cobra.Command, []string) error {
-		return p.refuseWith(result.Say("the guard runs on macOS and Linux"), result.NextNone())
+		return p.refuseWith(result.Say(guardUnsupported), result.NextNone())
 	}
 	c.RunE = func(*cobra.Command, []string) error { return nil }
 

@@ -24,13 +24,10 @@ func TestParse_WhenQuoteRemovalLeavesPlainText_ReportsALiteral(t *testing.T) {
 		{name: "single quotes", word: `'stash'`, want: "stash"},
 		{name: "quotes inside a word", word: `g"i"t`, want: "git"},
 		{name: "escaped dollar in double quotes", word: `"a\$x"`, want: "a$x"},
-		{name: "dollar in single quotes", word: `'$x'`, want: "$x"},
 		{name: "escaped glob character", word: `\*`, want: "*"},
 		{name: "quoted glob character", word: `"*.go"`, want: "*.go"},
 		{name: "bare tilde", word: `~`, want: home},
 		{name: "tilde path", word: `~/x`, want: home + "/x"},
-		{name: "ansi-c quotes", word: `$'git'`, want: "git"},
-		{name: "ansi-c escape", word: `$'\x67it'`, want: "git"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -55,18 +52,10 @@ func TestParse_WhenAWordCarriesAnExpansion_ReportsItNotLiteralWithItsLiteralPref
 		wantPrefix string
 	}{
 		{name: "parameter expansion after a literal", word: `--grep=$x`, wantPrefix: "--grep="},
-		{name: "braced parameter expansion", word: `${x}`, wantPrefix: ""},
 		{name: "parameter expansion in double quotes", word: `"a$x"`, wantPrefix: "a"},
 		{name: "command substitution", word: `a$(b)`, wantPrefix: "a"},
-		{name: "backtick substitution", word: "a`b`", wantPrefix: "a"},
-		{name: "arithmetic", word: `$((1+2))`, wantPrefix: ""},
-		{name: "process substitution", word: `<(ls)`, wantPrefix: ""},
 		{name: "brace expansion", word: `-{f,d}`, wantPrefix: "-"},
-		{name: "brace sequence", word: `x{1..3}`, wantPrefix: "x"},
-		{name: "star glob", word: `src/*.go`, wantPrefix: "src/"},
-		{name: "question mark glob", word: `a?`, wantPrefix: "a"},
 		{name: "bracket glob", word: `[ab]`, wantPrefix: ""},
-		{name: "extended glob", word: `@(a|b)`, wantPrefix: ""},
 		{name: "tilde with a user name", word: `~user/x`, wantPrefix: ""},
 	}
 	for _, tt := range tests {

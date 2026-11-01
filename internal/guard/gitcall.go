@@ -14,6 +14,10 @@ import (
 	"github.com/jeffzi/ils/internal/git"
 )
 
+// ---------------------------------------------------------------------------
+// Reading the words of a git invocation
+// ---------------------------------------------------------------------------
+
 // GitCall is how git reads the words of a git invocation: its global options, then the
 // subcommand and the arguments after it.
 type GitCall struct {
@@ -101,7 +105,7 @@ func gitGlobalOptions() map[string]gitArity {
 // gitCommands is the table of git 2.55's main commands, which git runs as they are whatever alias
 // shares their name. Commands that only contrib or a platform's packaging installs are left out.
 func gitCommands() map[string]bool {
-	names := []string{
+	return setOf(
 		"add", "am", "annotate", "apply", "archimport", "archive", "backfill", "bisect", "blame",
 		"branch", "bugreport", "bundle", "cat-file", "check-attr", "check-ignore", "check-mailmap",
 		"check-ref-format", "checkout", "checkout--worker", "checkout-index", "cherry", "cherry-pick",
@@ -129,13 +133,7 @@ func gitCommands() map[string]bool {
 		"unpack-objects", "update-index", "update-ref", "update-server-info", "upload-archive",
 		"upload-archive--writer", "upload-pack", "url-parse", "var", "verify-commit", "verify-pack",
 		"verify-tag", "version", "web--browse", "whatchanged", "worktree", "write-tree",
-	}
-	table := make(map[string]bool, len(names))
-	for _, name := range names {
-		table[name] = true
-	}
-
-	return table
+	)
 }
 
 // readGitCall returns how git reads the git invocation words, before any alias expands.
@@ -189,6 +187,10 @@ func gitOptions(words []Word) (options []GitOption, at int, missing string) {
 	return options, i, ""
 }
 
+// ---------------------------------------------------------------------------
+// Shell commands git runs
+// ---------------------------------------------------------------------------
+
 // resolveGit asks git, for each git invocation the walk placed, which git dir it targets and what
 // the aliases it names expand to, then walks the shell commands it has git run. Their invocations
 // are placed right after it and read in turn, so an alias that expands to `rebase --exec` is
@@ -221,8 +223,9 @@ func (w *walker) resolveGit(ctx context.Context) error {
 func (w *walker) gitScripts(i int) error {
 	inv := &w.walked[i]
 	scripts, mark := shellCommandsOf(*inv)
-	if len(scripts) > 0 && inv.depth == maxDepth {
-		scripts, mark = nil, DeepScript
+	runs, mark := capDepth(inv.depth, len(scripts) > 0, mark)
+	if !runs {
+		scripts = nil
 	}
 
 	if mark != "" {
@@ -231,15 +234,9 @@ func (w *walker) gitScripts(i int) error {
 
 	sub := walker{caller: w.caller, timed: map[*syntax.Stmt]bool{}, depth: inv.depth}
 	for _, script := range scripts {
-		file, err := read(script)
-		if err != nil {
-			return fmt.Errorf("parse the string git runs: %w", err)
-		}
-
 		sc := gitScope(*inv)
-		sub.nested(file, &sc)
-		if sub.err != nil {
-			return fmt.Errorf("parse the string git runs: %w", sub.err)
+		if _, err := sub.walkString(script, &sc); err != nil {
+			return fmt.Errorf("parse the string git runs: %w", err)
 		}
 	}
 
@@ -283,10 +280,9 @@ func (w *walker) splice(i int, sub walker) {
 // git works in, the GIT_DIR and GIT_WORK_TREE git runs with, and the redirects git runs with.
 // CDPATH is not followed into git's environment, so it is unknown.
 func gitScope(inv Invocation) scope {
-	unknown := variable{unknown: true}
 	sc := scope{
 		dir:       inv.Target.Dir,
-		env:       environment{gitDir: unknown, workTree: unknown, cdPath: unknown},
+		env:       unknownEnvironment(),
 		redirects: slices.Concat(inv.enclosing, inv.Redirects),
 	}
 	if !inv.Target.Unknown {
@@ -337,26 +333,41 @@ func literalScripts(values []Word) ([]string, MarkKind) {
 	return scripts, mark
 }
 
-// configCommands returns the value of each `-c` and `--config-env` option of the git invocation inv
-// whose key git runs through the shell. The value is not a literal when the guard cannot read it.
-// An option whose key the guard cannot read is left to the rules that judge the subcommand.
+// configKey returns the key and the rest of the value of the global option o when it sets config:
+// git reads a `-c` value up to its first `=` as the key, and a `--config-env` value up to its last,
+// the rest being the value or the name of the variable that holds it. cut is false for any other
+// option, and for a value with no `=`.
+func configKey(o GitOption) (key, rest string, cut bool) {
+	switch o.Name {
+	case "-c":
+		return strings.Cut(o.Value.Text, "=")
+	case "--config-env":
+		return strings.CutLast(o.Value.Text, "=")
+	default:
+		return "", "", false
+	}
+}
+
+// configCommands returns the shell command of each `-c` and `--config-env` option of the git
+// invocation inv whose key git runs through the shell. The command is not a literal when the guard
+// cannot read it. An option whose key the guard cannot read is left to the rules that judge the
+// subcommand.
 func configCommands(inv Invocation) []Word {
 	var values []Word
 	for _, o := range inv.Git.Options {
-		switch o.Name {
-		case "-c":
-			key, value, cut := strings.Cut(o.Value.Text, "=")
-			if cut && runsShell(key) {
-				values = append(values, Word{Text: value, Literal: o.Value.Literal})
-			}
-		case "--config-env":
-			key, name, cut := strings.CutLast(o.Value.Text, "=")
-			if !cut || !runsShell(key) {
-				continue
-			}
+		key, rest, cut := configKey(o)
+		if !cut {
+			continue
+		}
 
-			value, ok := setValue(inv, name)
-			values = append(values, Word{Text: value, Literal: ok && o.Value.Literal})
+		value := Word{Text: rest, Literal: o.Value.Literal}
+		if o.Name == "--config-env" {
+			text, ok := setValue(inv, rest)
+			value = Word{Text: text, Literal: ok && o.Value.Literal}
+		}
+
+		if command, runs := shellCommand(key, value); runs {
+			values = append(values, command)
 		}
 	}
 
@@ -366,21 +377,62 @@ func configCommands(inv Invocation) []Word {
 // shellKeys are the config keys outside the `pager` section whose value git runs as a shell
 // command.
 func shellKeys() []string {
-	return []string{"core.editor", "core.pager", "sequence.editor", "core.sshCommand"}
+	return []string{
+		"core.editor", "core.pager", "sequence.editor", "core.sshCommand", "core.fsmonitor", "diff.external",
+	}
 }
 
-// runsShell reports whether git runs the value of the config key through the shell. Section and
-// variable names are case-insensitive.
-func runsShell(key string) bool {
-	for _, name := range shellKeys() {
-		if strings.EqualFold(key, name) {
-			return true
-		}
-	}
+// containsFold reports whether names holds s, matched without regard to case.
+func containsFold(names []string, s string) bool {
+	return slices.ContainsFunc(names, func(name string) bool { return strings.EqualFold(name, s) })
+}
 
+// inSubsection reports whether key is `section.<subsection>.<name>` for one of names, where git
+// reads the section and the name in any case.
+func inSubsection(key, section string, names ...string) bool {
+	head, rest, _ := strings.Cut(key, ".")
+	subsection, name, dotted := strings.CutLast(rest, ".")
+
+	return dotted && subsection != "" && strings.EqualFold(head, section) && containsFold(names, name)
+}
+
+// isCredentialHelper reports whether key is `credential.helper`, or the helper of one URL.
+func isCredentialHelper(key string) bool {
+	return strings.EqualFold(key, "credential.helper") || inSubsection(key, "credential", "helper")
+}
+
+// runsShell reports whether git runs the value of the config key through the shell, whatever the
+// value is: a key of shellKeys, a `pager.<command>` key, or the command key of a driver that a
+// subsection names. Section and variable names are case-insensitive.
+func runsShell(key string) bool {
 	const pager = "pager."
 
-	return len(key) > len(pager) && strings.EqualFold(key[:len(pager)], pager)
+	return containsFold(shellKeys(), key) ||
+		(len(key) > len(pager) && strings.EqualFold(key[:len(pager)], pager)) ||
+		inSubsection(key, "diff", "command", "textconv") ||
+		inSubsection(key, "filter", "clean", "smudge", "process") ||
+		inSubsection(key, "merge", "driver")
+}
+
+// shellCommand returns the shell command git runs for the config key set to value, and false when
+// it runs none. git runs every credential helper through the shell the way it reads the value: the
+// text after a leading `!` is the command, a value starting with `/` is the command as written, and
+// any other value names `git credential-<value>`. An empty value runs nothing.
+func shellCommand(key string, value Word) (Word, bool) {
+	if !isCredentialHelper(key) {
+		return value, runsShell(key)
+	}
+
+	if value.Literal && value.Text == "" {
+		return Word{}, false
+	}
+
+	text, shell := strings.CutPrefix(value.Text, "!")
+	if !shell && !strings.HasPrefix(value.Text, "/") {
+		text = "git credential-" + value.Text
+	}
+
+	return Word{Text: text, Literal: value.Literal}, true
 }
 
 // rebaseCommands returns the value of each `--exec` or `-x` among the arguments of `git rebase`:
@@ -399,7 +451,7 @@ func rebaseCommands(args []Word) []Word {
 			var name string
 			name, value, attached = strings.Cut(text, "=")
 			const exec = "--exec"
-			if len(name) < len("--e") || len(name) > len(exec) || name != exec[:len(name)] {
+			if len(name) < len("--e") || !strings.HasPrefix(exec, name) {
 				continue
 			}
 		case strings.HasPrefix(text, "-") && strings.Contains(text[1:], "x"):
@@ -421,6 +473,10 @@ func rebaseCommands(args []Word) []Word {
 	return values
 }
 
+// ---------------------------------------------------------------------------
+// The git dir and aliases of an invocation
+// ---------------------------------------------------------------------------
+
 // resolveInvocation records on the git invocation inv the git dir it targets and its subcommand
 // once its aliases expand, or marks what stops the expansion.
 func resolveInvocation(ctx context.Context, runner git.Runner, inv *Invocation) error {
@@ -432,7 +488,7 @@ func resolveInvocation(ctx context.Context, runner git.Runner, inv *Invocation) 
 	}
 
 	options, known := targetOptions(*inv)
-	repo := git.Repo{Runner: targetRunner(runner, *inv)}
+	repo := git.Repo{Runner: targetRunner(runner, inv.Dir, inv.Target)}
 	if known {
 		gitDir, _, err := repo.FindGitDir(ctx, options...)
 		if err != nil {
@@ -496,28 +552,23 @@ func isDirectory(dir string) bool {
 	return err == nil && info.IsDir()
 }
 
-// targetRunner returns runner moved to the directory the git invocation inv runs in, with the
-// GIT_DIR and GIT_WORK_TREE the guard modeled for it in place of its own.
-func targetRunner(runner git.Runner, inv Invocation) git.Runner {
-	env := slices.Clone(runner.Env)
-	if env == nil {
-		env = os.Environ()
-	}
-
-	env = slices.DeleteFunc(env, func(entry string) bool {
+// targetRunner returns runner moved to dir, with the GIT_DIR and GIT_WORK_TREE of target in place
+// of its own; an empty field of target leaves that variable unset.
+func targetRunner(runner git.Runner, dir string, target GitTarget) git.Runner {
+	env := slices.DeleteFunc(runner.Environ(), func(entry string) bool {
 		name, _, _ := strings.Cut(entry, "=")
 
 		return git.SameKey(name, "GIT_DIR") || git.SameKey(name, "GIT_WORK_TREE")
 	})
-	if inv.Target.GitDir != "" {
-		env = append(env, "GIT_DIR="+inv.Target.GitDir)
+	if target.GitDir != "" {
+		env = append(env, "GIT_DIR="+target.GitDir)
 	}
 
-	if inv.Target.WorkTree != "" {
-		env = append(env, "GIT_WORK_TREE="+inv.Target.WorkTree)
+	if target.WorkTree != "" {
+		env = append(env, "GIT_WORK_TREE="+target.WorkTree)
 	}
 
-	runner.Dir = inv.Dir
+	runner.Dir = dir
 	runner.Env = env
 
 	return runner
@@ -570,12 +621,7 @@ func expandAliases(ctx context.Context, repo git.Repo, options []string, inv *In
 			return Mark{Kind: UnreadableAlias, Name: sub.Text}, nil
 		}
 
-		expanded := make([]Word, 0, len(words)-1+len(args))
-		for _, word := range words[1:] {
-			expanded = append(expanded, Word{Text: word, Literal: true})
-		}
-
-		sub, args = Word{Text: words[0], Literal: true}, append(expanded, args...)
+		sub, args = Word{Text: words[0], Literal: true}, append(literalWords(words[1:]), args...)
 	}
 }
 
@@ -595,12 +641,12 @@ func configOptions(inv Invocation) ([]string, bool) {
 			options = append(options, "-c", o.Value.Text)
 		case "--config-env":
 			// git splits the value at its last `=`: a config key may hold one, a variable name not.
-			key, variable, cut := strings.CutLast(o.Value.Text, "=")
+			key, varName, cut := configKey(o)
 			if !o.Value.Literal || !cut {
 				return nil, false
 			}
 
-			value, ok := setValue(inv, variable)
+			value, ok := setValue(inv, varName)
 			if !ok {
 				return nil, false
 			}
@@ -632,17 +678,17 @@ func setValue(inv Invocation, name string) (string, bool) {
 // dot, or all of name, starts with a letter and holds only letters, digits and `-`; the part before
 // it, a subsection, holds no line break.
 func isAliasName(name string) bool {
-	subsection, variable, dotted := strings.CutLast(name, ".")
+	subsection, key, dotted := strings.CutLast(name, ".")
 	if !dotted {
-		subsection, variable = "", name
+		subsection, key = "", name
 	}
 
-	if variable == "" || !isASCIILetter(variable[0]) || strings.Contains(subsection, "\n") {
+	if key == "" || !isASCIILetter(key[0]) || strings.Contains(subsection, "\n") {
 		return false
 	}
 
-	for i := range len(variable) {
-		c := variable[i]
+	for i := range len(key) {
+		c := key[i]
 		if !isASCIILetter(c) && (c < '0' || c > '9') && c != '-' {
 			return false
 		}
@@ -698,13 +744,4 @@ func splitAlias(expansion string) ([]string, bool) {
 // isAliasSpace reports whether c is one of the whitespace characters git splits an alias at.
 func isAliasSpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
-}
-
-func wordTexts(words []Word) []string {
-	texts := make([]string, 0, len(words))
-	for _, w := range words {
-		texts = append(texts, w.Text)
-	}
-
-	return texts
 }

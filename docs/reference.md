@@ -23,6 +23,10 @@ how to install `ils` and what each command does. CI stands for continuous integr
   - [ils parse](#ils-parse)
   - [ils hook](#ils-hook)
   - [What the guard refuses](#what-the-guard-refuses)
+    - [How the guard reads a command](#how-the-guard-reads-a-command)
+    - [Git operations that destroy work or skip checks](#git-operations-that-destroy-work-or-skip-checks)
+    - [Pushes and the default branch](#pushes-and-the-default-branch)
+    - [ils and gh commands](#ils-and-gh-commands)
   - [Guard JSON output](#guard-json-output)
 - [Terminal output](#terminal-output)
 
@@ -37,8 +41,9 @@ how to install `ils` and what each command does. CI stands for continuous integr
 | 4    | pending              | GitHub had not finished when the command stopped waiting, for example checks still running or not yet reported. Run the command that the `Next:` line names; [Time limits](#time-limits) says how long each command waits. After an `ils release`, run the same command again.                                                     |
 | 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                                                                                                                             |
 
-Every outcome but done prints its reason on the line above `Next:`, labeled by outcome: `Refused:`,
-`Broke:`, `Ask:`, `Pending:`, or `Delivered, not green:`. A run stopped by Ctrl-C or SIGTERM (the
+Every outcome but done prints its reason labeled by outcome: `Refused:`, `Broke:`, `Ask:`,
+`Pending:`, or `Delivered, not green:`. The reason sits on the line above `Next:`, except for `ils
+guard`, which prints no `Next:` line. A run stopped by Ctrl-C or SIGTERM (the
 signal `kill` sends by default) exits with the code of the result it prints; see [Stopping a
 run](#stopping-a-run).
 
@@ -274,9 +279,13 @@ origin's tags, no release commit, origin not answering) has no payload.
 
 ## The guard
 
+The guard judges an agent's shell command before it runs: `ils hook claude` is Claude Code's
+`PreToolUse` hook, `ils guard` gives the same verdict to any caller, and `ils parse` prints how the
+guard reads a command.
+
 `ils guard`, `ils parse`, and `ils hook` run on macOS and Linux. On Windows each one refuses with
 exit 2 and says the guard runs on macOS and Linux. `ils guard` and `ils parse` take the command
-to judge in one quoted word after `--`; no word, or more than one, is a refusal.
+to read in one quoted word after `--`; no word, or more than one, is a refusal.
 
 ### ils guard
 
@@ -292,12 +301,16 @@ to judge in one quoted word after `--`; no word, or more than one, is a refusal.
 
 `ils parse --cwd <dir> -- '<command>'` prints every invocation the command holds, one line each:
 its words, its directory, its marks, and, for `git`, the subcommand, its arguments, and the git
-dir it targets. A directory the guard cannot tell prints `unknown`; a target outside any
-repository prints `none`.
+dir it targets. A mark names a way the guard could not read the invocation safely.
 
-It gives no verdict. A mark names what `ils guard` would refuse, and `ils parse` still exits 0.
-It exits 1 when the command does not parse or a state read fails (a `git config` read of an
-alias, the git dir), and 2 when `--cwd` or the command word is missing.
+A word that is not a literal prints `<not literal>`. A directory or git dir the guard cannot tell
+prints `unknown`. A git dir outside any repository prints `none`, as does an empty list of marks or
+arguments. A git invocation with no subcommand leaves out the subcommand part.
+
+It gives no verdict. The rules for git operations, pushes, and `gh` leave no mark, so use `ils
+guard` for the verdict; `ils parse` exits 0 whatever it marks. It exits 1 when the command does not
+parse or a state read fails (a `git config` read of an alias, the git dir), and 2 when `--cwd` or
+the command word is missing.
 
 ### ils hook
 
@@ -309,19 +322,25 @@ alias, the git dir), and 2 when `--cwd` or the command word is missing.
 - ask: exit 0, with `{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision":
   "ask", "permissionDecisionReason": "<reason>"}}` on stdout.
 
-A tool other than `Bash` is allowed. A payload that is not JSON, or that holds no `tool_name`, no
-`tool_input.command`, or no `cwd`, a `cwd` that does not exist, and every internal error exit 2
-with a reason on stderr. `ils hook` never exits 1, since Claude Code runs a tool call whose hook
-exits with anything but 2. A harness other than `claude`, or none, exits 2 and names the
-harnesses it knows.
+A tool other than `Bash` is allowed. These exit 2 with a reason on stderr:
+
+- a payload that is not JSON;
+- a payload that holds no `tool_name`, no `tool_input.command`, or no `cwd`;
+- a `cwd` that does not exist;
+- every internal error.
+
+`ils hook` never exits 1, since Claude Code runs a tool call whose hook exits with anything but 2.
+A harness (the program that runs the agent's tool calls) other than `claude`, or none, exits 2 and
+names the harnesses `ils` knows.
 
 `skills/ils/hook.sh` fronts `ils hook claude`. It passes exit 0 and 2 through with the binary's
 output. Any other exit becomes exit 2, with a line on stderr naming the code. When `ils` is not
-on `PATH` or cannot start, it exits 2 and names `! task install`.
+on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/ils@latest`, and
+`! task install` from a clone of `ils`.
 
 ### What the guard refuses
 
-How a command is read:
+#### How the guard reads a command
 
 - a command that does not parse, and an extended glob anywhere in it (zsh runs a glob qualifier
   such as `*(e:'git push':)` as code);
@@ -331,56 +350,62 @@ How a command is read:
   through the wrappers `env`, `command`, `builtin`, `exec`, `nice`, `nohup`, `time`, `noglob`, and
   `nocorrect`. It takes the words given to a reader, a filter, a file tool, a lookup, or a package
   manager (`echo`, `grep`, `rg`, `cat`, `cp`, `which`, `go`, `brew`, and the like) as data, so
-  `echo git push` holds no `git` call. `ils status`, `parse`, `guard`, `hook`, and `help` are
-  allowed behind such a command (`timeout 60 ils status`); any other `ils` command, or one the
-  command fills in (`xargs ils`), is refused;
-- a string handed to a command the guard does not know, read as a script, when one of its
-  commands is such a word or hands one over in turn: `su -c 'cd /repo && git push'`, `ssh host
-  'sudo git push'`, and `su -c "git push $b"`, whose expansion stands as a plain word. A string
-  that does not parse as a script is data;
+  `echo git push` holds no `git` call. Behind such a command the guard allows `ils status`,
+  `parse`, `guard`, `hook`, and `help` (`timeout 60 ils status`). It refuses any other `ils`
+  command, including one the command fills in (`xargs ils`);
+- a string handed to a command the guard does not know, which the guard reads as a script, when
+  one of its commands is such a word or hands one over in turn: `su -c 'cd /repo && git push'`,
+  `ssh host 'sudo git push'`, and `su -c "git push $b"`. In the last one the guard reads `$b` as an
+  ordinary word, so the string still holds `git push`. A string that does not parse as a script is
+  data;
 - a `bash -c`, `sh -c`, `zsh -c`, `dash -c`, or `eval` string that is not a literal or nests more
-  than three deep, and a shell that runs what the command does not hold (`cat x | bash`, `bash
-  -s`, `bash ./x.sh`, `bash <(…)`, `source` or `.` of a file). The shell commands git runs are
-  read the same way: the value of `git rebase --exec` (`-x`), of `-c core.editor`, `core.pager`,
-  `sequence.editor`, `core.sshCommand`, or `pager.<command>`, and of `GIT_EDITOR`,
-  `GIT_SEQUENCE_EDITOR`, `GIT_PAGER`, and the `EDITOR`, `VISUAL`, and `PAGER` git falls back to;
+  than three deep;
+- a shell that runs what the command does not hold (`cat x | bash`, `bash -s`, `bash ./x.sh`,
+  `bash <(…)`, `source` or `.` of a file);
+- a shell command that git runs. The guard reads these the same way. They are the value of `git
+  rebase --exec` (`-x`), of `-c core.editor`, `core.pager`, `sequence.editor`, `core.sshCommand`,
+  or `pager.<command>`, and of `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`, `GIT_PAGER`, and the `EDITOR`,
+  `VISUAL`, and `PAGER` git falls back to;
 - an assignment or `export` of a `GIT_*` variable off the allow list (`GIT_CONFIG_COUNT`,
   `GIT_EXEC_PATH`, and the like);
-- a git word that is neither a command nor an alias, a `!` alias, an alias nested more than
-  three deep, and an alias the guard cannot read: a value that does not split into words, or one
-  set by a `-c` or `--config-env` it cannot follow. A subcommand that is not a literal (`git
-  "$sub"`), and any word off git's command list where the guard cannot tell the git dir (after
-  `cd "$d"`, or under `-C "$d"`), count as neither;
-- a git option at the end of the command with no value after it (`git -C`), and a `-c` or
-  `--config-env` value that is not a literal, on any git command, since it may set
+- a git word that is neither a command nor an alias, a `!` alias, an alias nested more than three
+  deep, and an alias the guard cannot read. An alias the guard cannot read has a value that does
+  not split into words, or one set by a `-c` or `--config-env` the guard cannot follow. A
+  subcommand that is not a literal (`git "$sub"`) counts as neither a command nor an alias. So does
+  any word off git's command list where the guard cannot tell the git dir (after `cd "$d"`, or
+  under `-C "$d"`);
+- a git option at the end of the command with no value after it (`git -C`);
+- a `-c` or `--config-env` value that is not a literal, on any git command, since it may set
   `core.hooksPath`;
-- a non-literal argument a flag rule turns on (`git clean "$opt"`). A commit message (`-m
-  "$(cat <<'EOF' … EOF)"`) and the directory of `-C "$dir"` are passed over.
+- a non-literal argument to a git command the guard checks for flags (`git clean "$opt"`, which
+  could expand to `--force`). A commit message (`-m "$(cat <<'EOF' … EOF)"`) and the directory of
+  `-C "$dir"` are exempt.
 
-git operations that destroy work or skip checks:
+#### Git operations that destroy work or skip checks
 
 - every `checkout`, `reset`, `stash`, and `prune`; `switch --force` or `--discard-changes`; `clean
   --force`; `branch -D`, `-d -f`, or `--delete --force`; `restore` without `--staged` (or `-S`), or
-  with `--worktree` (`-W`) beside it; `rm
-  --force`; `reflog expire`, `delete`, and `drop`; `gc --prune=…`; `apply --reverse`; `add --force`;
+  with `--worktree` (`-W`) beside it; `rm --force`; `reflog expire`, `delete`, and `drop`; `gc
+  --prune=…`; `apply --reverse`; `add --force`;
 - `--no-verify` on any command, `commit -n`, `am -n`, `send-email --no-validate`, and
   `core.hooksPath` set through `-c` or `--config-env`;
 - `git show` or `git cat-file` with stdout redirected to a file;
-- `rebase` over uncommitted changes, or where the guard cannot tell the target;
+- `rebase` in a working tree with uncommitted changes or untracked files, or where the guard cannot
+  tell the repository;
 - `worktree remove --force`, and `worktree remove` of a worktree with changes or one the guard
   cannot find;
 - `git config` writing `alias.*`, `include.*`, `includeIf.*`, `remote.*`, `pager.*`,
   `core.hooksPath`, `core.editor`, `core.pager`, `core.sshCommand`, or `sequence.editor`, at any
-  scope, renaming or removing a section that holds one of them, and `git config --edit`, which
-  can write any of them; `git remote remove`, `rm`,
-  `rename`, `set-url`, or `set-head` on `origin`.
+  scope, renaming or removing a section that holds one of them, and `git config --edit`, which can
+  write any of them;
+- `git remote remove`, `rm`, `rename`, `set-url`, or `set-head` on `origin`.
 
 <!-- cspell:ignore verif -- a prefix git accepts for --no-verify, which the example needs -->
 
 Long options match as git matches them: git accepts any unambiguous prefix, so `--no-verif` counts
 as `--no-verify`.
 
-Pushes and the trunk:
+#### Pushes and the default branch
 
 - every `git push`, `git send-pack`, and `git http-push`, in any repository: `ils push` is the way
   an agent pushes a branch;
@@ -388,28 +413,33 @@ Pushes and the trunk:
   `revert`, `am`, `rebase`, and `pull` without `--ff-only`. The reason names `ils branch <name>`.
   A `git rebase` naming the default branch as the branch to rebase counts as one on it. The guard
   asks origin for the default branch once per command and git dir, and falls back to the cached
-  `refs/remotes/origin/HEAD`; with neither, it refuses and names `git fetch origin`;
+  `refs/remotes/origin/HEAD`. With neither, it refuses and names
+  `git remote set-head origin --auto`, which caches the head on any supported git. Run it outside
+  the agent or as a `!` command, since the guard refuses `set-head` on `origin`;
 - one of those where the guard cannot tell the directory, the target, or HEAD: after `cd -`,
   `popd`, or a `cd` to a non-literal, and after a command that moves HEAD earlier in the list
   (`git switch main && git commit`).
 
-`ils` and `gh`:
+#### ils and gh commands
 
 - `ils merge`, `ils release`, `gh pr merge`, and `gh release create` ask when the command is that
-  one call by its bare name. Behind a wrapper, in a list or pipe, with a redirect or `&`, in a
-  `-c` string, or spelled as a path or with a backslash, they are refused;
-- `ils push` and `ils branch` are allowed as the whole command by their bare name, and refused in
-  any other form, piped or `tee`d included;
+  one call by its bare name. The guard refuses them behind a wrapper, in a list or pipe, with a
+  redirect or `&`, in a `-c` string, or spelled as a path or with a backslash;
+- the guard allows `ils push` and `ils branch` as the whole command by their bare name, and refuses
+  them in any other form, piped or `tee`d included;
 - `gh pr merge --admin` in any form;
 - `gh api` with a method other than `GET`, or with no method but a field or `--input`;
   `gh repo sync`, `delete`, `edit`, and `create --push`; `gh release delete`, `edit`, `upload`,
   and `delete-asset`; `gh auth token`, `gh auth status --show-token`, and `gh config get
   oauth_token`; `gh pr checkout --force`;
 - an `ils` or `gh` command word that is not a literal (`ils "$cmd"`);
-- `gh alias set`, `import`, and `delete`; a `gh` word that is neither a command nor an alias,
-  extensions included; a `!` alias; a `gh` alias given an argument that is not a literal to fill
-  a `$N`, or whose expansion the guard cannot read, such as a `$2` left unfilled, or that expands
-  to no `gh` command; and a `gh alias list` that fails.
+- `gh alias set`, `import`, and `delete`;
+- a `gh` word that is neither a command nor an alias, extensions included;
+- a `!` alias;
+- a `gh` alias given an argument that is not a literal to fill a `$N`;
+- a `gh` alias whose expansion the guard cannot read, such as a `$2` left unfilled, or that expands
+  to no `gh` command;
+- a `gh alias list` that fails.
 
 A read the guard needs that fails (a missing `git`, a `gh alias list` that errors) is a refusal
 that says what broke.
@@ -417,17 +447,45 @@ that says what broke.
 ### Guard JSON output
 
 `ils parse --json` puts its detail under `payload.parse`, and `ils guard --json` under
-`payload.guard`, beside the verdict in `outcome` and `reason`. Both hold `invocations`, in the order
-the guard reads them, which is not always the order the shell runs them; a command that does not
-parse holds none. Each invocation has:
+`payload.guard`, with the guard's verdict in `outcome` and `reason`. Both hold `invocations`, in
+the order the guard reads them, which is not always the order the shell runs them; a command that
+does not parse holds none. Each invocation has:
 
-| Field   | Type             | Meaning                                                                                                          |
-| ------- | ---------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `tool`  | string           | `git`, `gh`, or `ils` when the command word names one. Absent otherwise.                                         |
-| `dir`   | string           | The absolute directory the invocation runs in. Absent when the guard cannot tell it.                             |
-| `words` | array of objects | Each word as `text` and `literal`. A word that is not a literal carries its literal prefix as `text`.            |
-| `marks` | array of objects | What the guard refuses here, as `kind` and, when it names one, `name` (an alias, a variable).                    |
-| `git`   | object           | For a git invocation: `subcommand` (a word), `args` (words), `git_dir`, and `git_dir_unknown`. Absent otherwise. |
+| Field   | Type             | Meaning                                                                                               |
+| ------- | ---------------- | ----------------------------------------------------------------------------------------------------- |
+| `tool`  | string           | `git`, `gh`, or `ils` when the command word names one. Absent otherwise.                              |
+| `dir`   | string           | The absolute directory the invocation runs in. Absent when the guard cannot tell it.                  |
+| `words` | array of objects | Each word as `text` and `literal`. A word that is not a literal carries its literal prefix as `text`. |
+| `marks` | array of objects | What the guard could not read safely in this invocation, as `kind` and, when it names one, `name`.    |
+| `git`   | object           | For a git invocation: the fields listed below. Absent otherwise.                                      |
+
+A mark's `kind` is one of these 12 strings. These five name nothing:
+
+- `extended glob`
+- `command word that is not a literal`
+- `shell string that is not a literal`
+- `shell string nested too deep`
+- `shell running a script the command does not hold`
+
+These seven carry a `name`:
+
+- `git, gh, ils, or shell word handed to another command`: the word;
+- `git variable off the allow list`: the variable;
+- `git alias that runs a shell command`: the alias;
+- `git word that is neither a command nor an alias`: the word;
+- `git alias nested too deep`: the alias at the level where the guard stopped;
+- `git alias the guard cannot read`: the alias;
+- `git option missing its value`: the option.
+
+A mark is not a verdict. The rules for git operations, pushes, and `gh` leave no mark, so use `ils
+guard` for the verdict.
+
+The `git` object holds:
+
+- `subcommand`: a word, absent when git runs none;
+- `args`: an array of words;
+- `git_dir`: absent outside any repository, and when `git_dir_unknown` is true;
+- `git_dir_unknown`: whether the guard could not tell the git dir.
 
 ## Terminal output
 

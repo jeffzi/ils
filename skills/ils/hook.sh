@@ -5,22 +5,24 @@
 # exit can be mapped.
 set -euo pipefail
 
-if ! command -v ils >/dev/null; then
-  printf 'ils hook: ils is not on PATH; install it with: ! task install\n' >&2
+refuse() {
+  printf 'ils hook: %s\n' "$1" >&2
   exit 2
+}
+
+if ! command -v ils >/dev/null; then
+  refuse 'ils is not on PATH; install it with: ! go install github.com/jeffzi/ils@latest, or ! task install from a clone of ils'
 fi
 
-code=0
-ils hook claude || code=$?
+main() {
+  local code=0
+  ils hook claude || code=$?
 
-case "$code" in
-0 | 2) exit "$code" ;;
-126 | 127)
-  printf 'ils hook: ils could not start (exit %s); install it again with: ! task install\n' "$code" >&2
-  exit 2
-  ;;
-*)
-  printf 'ils hook: ils hook claude exited %s, so the command is refused\n' "$code" >&2
-  exit 2
-  ;;
-esac
+  case "$code" in
+  0 | 2) exit "$code" ;;
+  126 | 127) refuse "ils could not start (exit $code); install it again with: ! go install github.com/jeffzi/ils@latest, or ! task install from a clone of ils" ;;
+  *) refuse "ils hook claude exited $code, so the command is refused" ;;
+  esac
+}
+
+main "$@"

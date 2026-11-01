@@ -139,31 +139,58 @@ func readDoubleQuoted(b *strings.Builder, parts []syntax.WordPart) bool {
 			return false
 		}
 
-		escaped := false
-		for i := range len(lit.Value) {
-			c := lit.Value[i]
-			switch {
-			case escaped:
-				escaped = false
-				switch c {
-				case '$', '`', '"', '\\':
-					b.WriteByte(c)
-				case '\n':
-				default:
-					b.WriteByte('\\')
-					b.WriteByte(c)
-				}
-			case c == '\\':
-				escaped = true
-			default:
-				b.WriteByte(c)
-			}
-		}
-
-		if escaped {
-			b.WriteByte('\\')
-		}
+		writeDoubleQuotedText(b, lit.Value)
 	}
 
 	return true
+}
+
+// writeDoubleQuotedText writes value, the text between double quotes, to b after quote removal. A
+// backslash drops before `$`, a backtick, a double quote, or a backslash; it and a newline after it
+// both drop; before any other character, or at the end, it stays.
+func writeDoubleQuotedText(b *strings.Builder, value string) {
+	escaped := false
+	for i := range len(value) {
+		c := value[i]
+		switch {
+		case escaped:
+			escaped = false
+			switch c {
+			case '$', '`', '"', '\\':
+				b.WriteByte(c)
+			case '\n':
+			default:
+				b.WriteByte('\\')
+				b.WriteByte(c)
+			}
+		case c == '\\':
+			escaped = true
+		default:
+			b.WriteByte(c)
+		}
+	}
+
+	if escaped {
+		b.WriteByte('\\')
+	}
+}
+
+// wordTexts returns the text of each of words.
+func wordTexts(words []Word) []string {
+	texts := make([]string, 0, len(words))
+	for _, w := range words {
+		texts = append(texts, w.Text)
+	}
+
+	return texts
+}
+
+// literalWords returns each of texts as a literal word.
+func literalWords(texts []string) []Word {
+	words := make([]Word, 0, len(texts))
+	for _, text := range texts {
+		words = append(words, Word{Text: text, Literal: true})
+	}
+
+	return words
 }

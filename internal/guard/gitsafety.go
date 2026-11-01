@@ -45,7 +45,7 @@ func discards() map[string]discard {
 		},
 		"branch": {
 			refuses: func(o subcommandOptions) bool {
-				return o.sets('D', "") || o.sets('d', "--delete") && o.sets('f', "--force")
+				return o.sets('D', "") || (o.sets('d', "--delete") && o.sets('f', "--force"))
 			},
 			reason: "git branch -D deletes a branch even when its commits are not merged",
 		},
@@ -217,15 +217,7 @@ func refuseSkippedChecks(_ context.Context, _ Caller, inv Invocation) (Verdict, 
 // up to its first `=` and a `--config-env` value up to its last as the key, whose section and name
 // it reads in any case.
 func setsHooksPath(o GitOption) bool {
-	var key string
-	switch o.Name {
-	case "-c":
-		key, _, _ = strings.Cut(o.Value.Text, "=")
-	case "--config-env":
-		key, _, _ = strings.CutLast(o.Value.Text, "=")
-	default:
-		return false
-	}
+	key, _, _ := configKey(o)
 
 	return strings.EqualFold(key, hooksPathKey)
 }
@@ -234,7 +226,7 @@ func setsHooksPath(o GitOption) bool {
 // which writes a version from history over a file that may hold uncommitted changes.
 func refuseHistoryOverFile(_ context.Context, _ Caller, inv Invocation) (Verdict, error) {
 	sub, ok := subcommand(inv)
-	if !ok || sub != "show" && sub != "cat-file" {
+	if !ok || (sub != "show" && sub != "cat-file") {
 		return Verdict{Outcome: Allow}, nil
 	}
 
@@ -270,7 +262,7 @@ func refuseRebaseOverChanges(ctx context.Context, caller Caller, inv Invocation)
 	}
 
 	options, _ := targetOptions(inv)
-	dirty, err := git.Repo{Runner: targetRunner(caller.Git, inv)}.Dirty(ctx, options...)
+	dirty, err := git.Repo{Runner: targetRunner(caller.Git, inv.Dir, inv.Target)}.Dirty(ctx, options...)
 	if err != nil {
 		return Verdict{}, fmt.Errorf("read whether git rebase runs over changes: %w", err)
 	}
@@ -309,7 +301,7 @@ func refuseRiskyWorktreeRemoval(ctx context.Context, caller Caller, inv Invocati
 		return refuse("git worktree remove (unverifiable path): " + why), nil
 	}
 
-	dirty, err := git.Repo{Runner: targetRunner(caller.Git, Invocation{Dir: path})}.Dirty(ctx)
+	dirty, err := git.Repo{Runner: targetRunner(caller.Git, path, GitTarget{})}.Dirty(ctx)
 	if err != nil {
 		return Verdict{}, fmt.Errorf("read whether the worktree %s holds changes: %w", path, err)
 	}
@@ -379,7 +371,7 @@ func refuseGuardedConfigWrite(_ context.Context, _ Caller, inv Invocation) (Verd
 	}
 
 	action, words := configAction(options)
-	names := words[:min(len(words), 1)]
+	count := 0
 	switch action {
 	case "edit":
 		reason := fmt.Sprintf("git config opening an editor can write any key, those the guard protects included: the sections %s and the keys %s",
@@ -387,27 +379,59 @@ func refuseGuardedConfigWrite(_ context.Context, _ Caller, inv Invocation) (Verd
 
 		return refuse(reason), nil
 	case "set", "unset", "remove-section":
+		count = 1
 	case "rename-section":
-		names = words[:min(len(words), 2)]
-	default:
-		names = nil
+		count = 2
 	}
 
-	for _, name := range names {
+	for _, name := range words[:min(len(words), count)] {
 		if guardedConfigName(name) {
-			reason := fmt.Sprintf("git config writing %s changes what git runs or where it pushes", name)
-
-			return refuse(reason), nil
+			return refuseConfigWrite(name), nil
 		}
+	}
+
+	if action == "rename-section" && len(words) > 1 && holdsShellKey(words[1]) {
+		return refuseConfigWrite(words[1]), nil
+	}
+
+	if action == "set" && len(words) > 1 && isCredentialHelper(words[0]) && !plainHelperName(words[1]) {
+		return refuseConfigWrite(words[0]), nil
 	}
 
 	return Verdict{Outcome: Allow}, nil
 }
 
+// helperCommandBreaks are the characters that let a credential helper value run more than the
+// helper: a newline, a list or pipe operator, a redirect, a substitution, or a subshell. A blank is
+// not one of them, since git runs `git credential-<value>` through the shell and blank-separated
+// words are only the helper's arguments.
+const helperCommandBreaks = "\n;&|()<>`$"
+
+// plainHelperName reports whether value, set as a credential helper, names a helper program to
+// run as `git credential-<value>`, with plain arguments or none: it starts with neither `!` nor
+// `/`, and holds none of helperCommandBreaks.
+func plainHelperName(value string) bool {
+	return !strings.ContainsAny(value, helperCommandBreaks) && !strings.HasPrefix(value, "!") &&
+		!strings.HasPrefix(value, "/")
+}
+
+// holdsShellKey reports whether section, the section a rename moves keys into, holds a key whose
+// value git runs through the shell: a credential helper, or the command key of a driver that a
+// subsection names.
+func holdsShellKey(section string) bool {
+	return slices.ContainsFunc([]string{".command", ".textconv", ".clean", ".smudge", ".process", ".driver"},
+		func(name string) bool { return runsShell(section + name) }) || isCredentialHelper(section+".helper")
+}
+
+// refuseConfigWrite refuses a `git config` write of name, a key or a section the guard protects.
+func refuseConfigWrite(name string) Verdict {
+	return refuse(fmt.Sprintf("git config writing %s changes what git runs or where it pushes", name))
+}
+
 // configAction returns what `git config` with the arguments options does, by the name of its
 // subcommand form: get, set, unset, rename-section, remove-section or edit, with the words after
-// it. An option that adds or replaces a value writes the key as unset does. Opening the editor
-// wins over any other action. Two words and no action set the first.
+// it. An option that adds or replaces a value counts as set, and one that removes values as unset.
+// Opening the editor wins over any other action. Two words and no action set the first.
 func configAction(options subcommandOptions) (action string, words []string) {
 	words = wordTexts(options.positional)
 	if len(words) > 0 && slices.Contains([]string{"list", "get", "set", "unset", "rename-section", "remove-section", "edit"}, words[0]) {
@@ -422,7 +446,9 @@ func configAction(options subcommandOptions) (action string, words []string) {
 		switch {
 		case strings.HasPrefix(l.name, "--get") || l.name == "--list":
 			action = "get"
-		case slices.Contains([]string{"--replace-all", "--add", "--unset", "--unset-all"}, l.name):
+		case l.name == "--replace-all" || l.name == "--add":
+			action = "set"
+		case l.name == "--unset" || l.name == "--unset-all":
 			action = "unset"
 		case l.name == "--rename-section" || l.name == "--remove-section":
 			action = strings.TrimPrefix(l.name, "--")
@@ -441,22 +467,19 @@ func configAction(options subcommandOptions) (action string, words []string) {
 }
 
 // guardedConfigName reports whether name, a key or a whole section, is guarded: in a section of
-// guardedSections, one of guardedKeys, or a section that holds one of guardedKeys, which a rename
-// or a removal of the whole section writes. git reads the section and the variable name in any
-// case.
+// guardedSections, one of guardedKeys, a key whose value runsShell, or a section that holds one of
+// guardedKeys, which a rename or a removal of the whole section writes. git reads the section and
+// the variable name in any case.
 func guardedConfigName(name string) bool {
 	section, _, _ := strings.Cut(name, ".")
-	matches := func(guarded string) func(string) bool {
-		return func(s string) bool { return strings.EqualFold(s, guarded) }
-	}
 	holdsKey := func(key string) bool {
 		keySection, _, _ := strings.Cut(key, ".")
 
 		return strings.EqualFold(name, keySection)
 	}
 
-	return slices.ContainsFunc(guardedSections(), matches(section)) || slices.ContainsFunc(guardedKeys(), matches(name)) ||
-		slices.ContainsFunc(guardedKeys(), holdsKey)
+	return containsFold(guardedSections(), section) || containsFold(guardedKeys(), name) ||
+		slices.ContainsFunc(guardedKeys(), holdsKey) || runsShell(name)
 }
 
 // refuseOriginRewrite refuses a `git remote` operation that removes or renames origin, or points it elsewhere.

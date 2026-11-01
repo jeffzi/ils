@@ -83,7 +83,7 @@ func onWorkBranch(ctx context.Context, deps Deps, req Request, ready Ready) *res
 }
 
 func cleanTree(ctx context.Context, deps Deps, req Request) *result.Result {
-	files, err := deps.Repo.DirtyFiles(ctx)
+	files, err := deps.Repo.ChangedTrackedFiles(ctx)
 	if err != nil {
 		return req.unread(readTree, err)
 	}

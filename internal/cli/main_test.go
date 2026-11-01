@@ -3,7 +3,6 @@ package cli_test
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"slices"
@@ -57,13 +56,9 @@ const (
 	listening = "listening"
 
 	// standIn, set in its environment to one of the exits below, makes the test binary stand in
-	// for ils instead of running the tests: it copies stdin to stdout, prints its arguments on
-	// stderr, joined by spaces, and then exits as the value says.
+	// for ils instead of running the tests: it prints its arguments on stderr, joined by spaces,
+	// and then exits with the code the value holds.
 	standIn = "ILS_TEST_STAND_IN"
-
-	// standInKilled makes the stand-in kill itself, so that it ends on a signal and not on a code.
-	// Any other value is the code it exits with.
-	standInKilled = "killed"
 
 	// standInBroke is the code the stand-in exits with when it cannot do what standIn says. It is
 	// none of the codes the tests give the stand-in.
@@ -90,26 +85,10 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// actAsIls copies stdin to stdout, prints the arguments of the process on stderr, joined by
-// spaces, and then exits as exit says: killed when it is standInKilled, with the code it holds
-// otherwise. It returns standInBroke when it cannot.
+// actAsIls prints the arguments of the process on stderr, joined by spaces, and then exits with
+// the code exit holds. It returns standInBroke when exit is no code.
 func actAsIls(exit string) int {
-	if _, err := io.Copy(os.Stdout, os.Stdin); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-
-		return standInBroke
-	}
 	fmt.Fprintln(os.Stderr, strings.Join(os.Args[1:], " "))
-
-	if exit == standInKilled {
-		self, err := os.FindProcess(os.Getpid())
-		if err == nil {
-			err = self.Kill()
-		}
-		fmt.Fprintln(os.Stderr, "kill the stand-in:", err)
-
-		return standInBroke
-	}
 
 	code, err := strconv.Atoi(exit)
 	if err != nil {

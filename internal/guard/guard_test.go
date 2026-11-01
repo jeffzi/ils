@@ -5,7 +5,6 @@ package guard_test
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -89,7 +88,7 @@ func TestJudge_WhenTheCommandCannotBeParsed_RefusesNamingWhatFailed(t *testing.T
 func TestJudge_RefusesAMarkNamingWhatItFound(t *testing.T) {
 	t.Parallel()
 
-	caller := repositoryCaller(t)
+	_, caller := standingOn(t, "main", "topic")
 	tests := []struct {
 		name      string
 		command   string
@@ -98,7 +97,6 @@ func TestJudge_RefusesAMarkNamingWhatItFound(t *testing.T) {
 	}{
 		{name: "mark without a name", command: "echo @(a|b)", wantKind: guard.ExtendedGlob},
 		{name: "git variable", command: "export GIT_CONFIG_GLOBAL=/tmp/c", wantKind: guard.GitVariable, wantNamed: "GIT_CONFIG_GLOBAL"},
-		{name: "git alias", command: "git -c alias.lint='!git push' lint", wantKind: guard.ShellAlias, wantNamed: "lint"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -116,8 +114,7 @@ func TestJudge_RefusesAMarkNamingWhatItFound(t *testing.T) {
 func TestJudge_WhenAToolWordIsHandedToAnotherCommand_RefusesNamingBoth(t *testing.T) {
 	t.Parallel()
 	callerDir := t.TempDir()
-	assert.NilError(t, os.Mkdir(filepath.Join(callerDir, "bin"), 0o750))
-	assert.NilError(t, os.WriteFile(filepath.Join(callerDir, "bin", "git"), []byte("#!/bin/sh\n"), 0o700)) //nolint:gosec // the test needs an executable file
+	writeExecutable(t, filepath.Join(callerDir, "bin", "git"))
 	const command = "xargs ./bin/git push"
 
 	got := guard.Judge(t.Context(), command, guard.Caller{Home: home, Dir: callerDir})
@@ -146,7 +143,7 @@ func TestJudge_WhenAGitReadFails_RefusesSayingWhatBroke(t *testing.T) {
 	env := append(f.Env(), gittest.FakeGit(t, gittest.Fake{FailOn: []string{"config"}})...)
 	const command = "git co topic"
 
-	got := guard.Judge(t.Context(), command, guard.Caller{Home: home, Dir: f.Dir(), Git: git.Runner{Env: env}})
+	got := guard.Judge(t.Context(), command, callerWithEnv(f.Dir(), env))
 
 	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome", command)
 	assert.Check(t, is.Contains(got.Reason, gittest.FailedSaid), "Judge(%q) reason", command)

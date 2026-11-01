@@ -12,18 +12,24 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/github"
+	"github.com/jeffzi/ils/internal/landing"
 )
+
+// ---------------------------------------------------------------------------
+// Judging ils commands
+// ---------------------------------------------------------------------------
 
 // judgeForge judges an ils or gh invocation: the commands that land a change or publish a release
 // ask when they are the whole command and refuse in any other form, and the gh calls that write
 // to GitHub, change what a gh word runs, or print the auth token are refused.
-func judgeForge(ctx context.Context, _ Caller, inv Invocation) (Verdict, error) {
+func judgeForge(ctx context.Context, caller Caller, inv Invocation) (Verdict, error) {
 	switch inv.Tool {
 	case ILS:
 		return judgeILS(inv), nil
 	case GH:
-		return judgeGH(ctx, inv)
+		return judgeGH(ctx, caller, inv)
 	default:
 		return Verdict{Outcome: Allow}, nil
 	}
@@ -45,11 +51,11 @@ func judgeILS(inv Invocation) Verdict {
 	}
 
 	switch sub.Text {
-	case "merge":
-		return aloneAndBare(inv, "ils merge", Verdict{Outcome: Ask, Reason: "ils merge lands the pull request on the trunk"})
-	case "release":
-		return aloneAndBare(inv, "ils release", Verdict{Outcome: Ask, Reason: "ils release tags and publishes a release"})
-	case "push", "branch":
+	case landing.MergeCommand:
+		return aloneAndBare(inv, "ils "+sub.Text, Verdict{Outcome: Ask, Reason: "ils merge lands the pull request on the trunk"})
+	case landing.ReleaseCommand:
+		return aloneAndBare(inv, "ils "+sub.Text, Verdict{Outcome: Ask, Reason: "ils release tags and publishes a release"})
+	case landing.PushCommand, landing.BranchCommand:
 		return aloneAndBare(inv, "ils "+sub.Text, Verdict{Outcome: Allow})
 	default:
 		return Verdict{Outcome: Allow}
@@ -68,12 +74,14 @@ func aloneAndBare(inv Invocation, name string, whole Verdict) Verdict {
 }
 
 // ilsSwitches are the flags the root command of ils knows and that take no value. A test of
-// package cli fails when the root gains a switch this list lacks.
+// package cli fails when the root gains a switch landing.RootSwitches lacks.
 func ilsSwitches() map[string]bool {
-	return map[string]bool{
-		"--debug": true, "-d": true, "--help": true, "-h": true, "--json": true, "--no-color": true, "--version": true,
-	}
+	return setOf(landing.RootSwitches()...)
 }
+
+// ---------------------------------------------------------------------------
+// Finding the gh command
+// ---------------------------------------------------------------------------
 
 // ghSwitches are the flags gh and its command groups know and that take no value.
 func ghSwitches() map[string]bool {
@@ -83,18 +91,12 @@ func ghSwitches() map[string]bool {
 // ghCommands are the top-level commands of the oldest gh that ils accepts. A newer command is
 // left out on purpose: on an older gh, an extension of that name would run in its place.
 func ghCommands() map[string]bool {
-	names := []string{
+	return setOf(
 		"alias", "api", "attestation", "auth", "browse", "cache", "codespace", "completion", "config",
 		"extension", "gist", "gpg-key", "help", "issue", "label", "org", "pr", "preview", "project",
 		"release", "repo", "ruleset", "run", "search", "secret", "ssh-key", "status", "variable",
 		"version", "workflow",
-	}
-	commands := make(map[string]bool, len(names))
-	for _, name := range names {
-		commands[name] = true
-	}
-
-	return commands
+	)
 }
 
 // commandWords returns the positions in args of the words Cobra reads as command words while it
@@ -128,12 +130,16 @@ func takesNextWord(text string) bool {
 		return false
 	}
 
-	return strings.HasPrefix(text, "--") && len(text) > 2 || len(text) == 2 && text[0] == '-' && text[1] != '-'
+	long := strings.HasPrefix(text, "--") && len(text) > 2
+	shorthand := len(text) == 2 && text[0] == '-' && text[1] != '-'
+
+	return long || shorthand
 }
 
 // judgeGH judges a gh invocation by its command. A first command word that is not one of gh's
-// commands is resolved through `gh alias list`, and the expansion is judged in its place.
-func judgeGH(ctx context.Context, inv Invocation) (Verdict, error) {
+// commands is resolved through `gh alias list`, run by caller's gh runner, and the expansion is
+// judged in its place.
+func judgeGH(ctx context.Context, caller Caller, inv Invocation) (Verdict, error) {
 	args := inv.Words[1:]
 	at := commandWords(args, ghSwitches())
 	if len(at) == 0 {
@@ -146,17 +152,29 @@ func judgeGH(ctx context.Context, inv Invocation) (Verdict, error) {
 	}
 
 	if !ghCommands()[first.Text] {
-		return judgeGHAlias(ctx, inv, args, at[0])
+		return judgeGHAlias(ctx, caller, inv, at[0])
 	}
 
 	return judgeGHCommand(inv, args, at), nil
 }
 
-// judgeGHAlias judges the gh invocation inv, whose words after gh are args, by the expansion of
-// the alias at position alias of args.
-func judgeGHAlias(ctx context.Context, inv Invocation, args []Word, alias int) (Verdict, error) {
+// ---------------------------------------------------------------------------
+// gh aliases
+// ---------------------------------------------------------------------------
+
+// judgeGHAlias judges the gh invocation inv by the expansion of the alias at position alias of its
+// words after gh, read by caller's gh runner from the config directory inv's gh reads. An
+// invocation whose config directory the guard cannot tell is refused.
+func judgeGHAlias(ctx context.Context, caller Caller, inv Invocation, alias int) (Verdict, error) {
+	args := inv.Words[1:]
 	name := args[alias].Text
-	expanded, refusal, err := expandGHAlias(ctx, name, args[alias+1:])
+	runner, unknown := ghConfigRunner(caller.GH, inv.Dir, inv.ghConfig)
+	if unknown != "" {
+		return refuse(fmt.Sprintf(
+			"gh %s may be a gh alias, which the guard cannot read: it cannot tell the %s gh runs with", name, unknown)), nil
+	}
+
+	expanded, refusal, err := expandGHAlias(ctx, runner, name, args[alias+1:])
 	if err != nil {
 		return Verdict{}, err
 	}
@@ -179,8 +197,8 @@ func judgeGHAlias(ctx context.Context, inv Invocation, args []Word, alias int) (
 // and every word after that is appended to the expansion. It returns a refusal instead for a word
 // that is no alias, a shell alias, a word filling a `$N` that is not a literal, and an expansion
 // the guard cannot read, such as one left holding a `$N`.
-func expandGHAlias(ctx context.Context, name string, rest []Word) (words []Word, refusal string, err error) {
-	expansion, found, err := ghAlias(ctx, name)
+func expandGHAlias(ctx context.Context, runner github.Runner, name string, rest []Word) (words []Word, refusal string, err error) {
+	expansion, found, err := ghAlias(ctx, runner, name)
 	if err != nil {
 		return nil, "", err
 	}
@@ -213,20 +231,16 @@ func expandGHAlias(ctx context.Context, name string, rest []Word) (words []Word,
 		return nil, fmt.Sprintf("gh alias %s has an expansion the guard cannot read: %s", name, expansion), nil
 	}
 
-	for _, text := range split {
-		words = append(words, Word{Text: text, Literal: true})
-	}
-
-	return append(words, appended...), "", nil
+	return append(literalWords(split), appended...), "", nil
 }
 
 // placeholder matches a `$N` of a gh alias left unreplaced, which makes gh refuse the alias.
 var placeholder = regexp.MustCompile(`\$\d`)
 
-// ghAlias returns what `gh alias list` says the alias name expands to, and false when gh holds no
-// such alias.
-func ghAlias(ctx context.Context, name string) (expansion string, found bool, err error) {
-	out, err := github.Runner{}.Run(ctx, "alias", "list")
+// ghAlias returns what `gh alias list`, run by runner, says the alias name expands to, and false
+// when gh holds no such alias.
+func ghAlias(ctx context.Context, runner github.Runner, name string) (expansion string, found bool, err error) {
+	out, err := runner.Run(ctx, "alias", "list")
 	if err != nil {
 		return "", false, fmt.Errorf("read gh alias list: %w", err)
 	}
@@ -240,6 +254,80 @@ func ghAlias(ctx context.Context, name string) (expansion string, found bool, er
 
 	return expansion, found, nil
 }
+
+// The variables that choose the config directory gh reads: GH_CONFIG_DIR, else
+// XDG_CONFIG_HOME/gh, else HOME/.config/gh.
+const (
+	ghConfigDirVar  = "GH_CONFIG_DIR"
+	ghConfigHomeVar = "XDG_CONFIG_HOME"
+	ghHomeVar       = "HOME"
+)
+
+// ghConfig is what the guard knows of the variables that choose the config directory gh reads,
+// and with it the aliases gh expands. A variable neither set nor unknown keeps the value of the
+// gh runner's environment.
+type ghConfig struct {
+	configDir  variable
+	configHome variable
+	home       variable
+}
+
+// or returns the config that either c or other may be: what they agree on, and unknown elsewhere.
+func (c ghConfig) or(other ghConfig) ghConfig {
+	return ghConfig{
+		configDir:  c.configDir.or(other.configDir),
+		configHome: c.configHome.or(other.configHome),
+		home:       c.home.or(other.home),
+	}
+}
+
+// ghConfigRunner returns runner with each variable config sets in place of its own, a relative
+// path made absolute against dir, where the invocation runs. It returns the name of the first
+// variable whose value the guard cannot tell instead: one that is unknown, or a relative path in a
+// directory the guard cannot follow.
+func ghConfigRunner(runner github.Runner, dir string, config ghConfig) (github.Runner, string) {
+	env := runner.Environ()
+	for _, named := range []struct {
+		name  string
+		value variable
+	}{
+		{name: ghConfigDirVar, value: config.configDir},
+		{name: ghConfigHomeVar, value: config.configHome},
+		{name: ghHomeVar, value: config.home},
+	} {
+		if named.value.unknown {
+			return runner, named.name
+		}
+
+		if !named.value.set {
+			continue
+		}
+
+		// gh reads an empty value as an unset one, so it is handed over as it is.
+		value := named.value.value
+		if value != "" {
+			value = absolute(dir, value)
+			if value == "" {
+				return runner, named.name
+			}
+		}
+
+		env = slices.DeleteFunc(env, func(entry string) bool {
+			key, _, _ := strings.Cut(entry, "=")
+
+			return git.SameKey(key, named.name)
+		})
+		env = append(env, named.name+"="+value)
+	}
+
+	runner.Env = env
+
+	return runner, ""
+}
+
+// ---------------------------------------------------------------------------
+// gh commands that write or print secrets
+// ---------------------------------------------------------------------------
 
 // judgeGHCommand judges the gh command at the positions at of args, its command words.
 func judgeGHCommand(inv Invocation, args []Word, at []int) Verdict {
@@ -307,8 +395,8 @@ func judgeGHSubcommand(inv Invocation, name string, rest []Word) Verdict {
 		if slices.ContainsFunc(rest, func(w Word) bool { return !w.Literal || w.Text == "oauth_token" }) {
 			return refuse("gh config get oauth_token prints the auth token")
 		}
-	case "gh auth token":
-		return refuse("gh auth token prints the auth token")
+	case "gh auth token", "gh auth git-credential":
+		return refuse(name + " prints the auth token")
 	case "gh alias set", "gh alias import", "gh alias delete":
 		return refuse(name + " changes what a gh word runs")
 	case "gh repo sync", "gh repo delete", "gh repo edit", "gh release delete", "gh release edit", "gh release upload",
@@ -318,6 +406,10 @@ func judgeGHSubcommand(inv Invocation, name string, rest []Word) Verdict {
 
 	return Verdict{Outcome: Allow}
 }
+
+// ---------------------------------------------------------------------------
+// gh api and flag reading
+// ---------------------------------------------------------------------------
 
 // judgeAPI refuses a `gh api` call that may write: a method other than GET, a method that is not a
 // literal, or, with no method given, a field or an input, which make gh send a POST.
@@ -349,9 +441,38 @@ func apiValued() []byte {
 	return []byte{'X', 'f', 'F', 'H', 'p', 'q', 't'}
 }
 
+// apiValuedLong returns the long flags of `gh api` that take a value, as the next word when none
+// is attached with `=`.
+func apiValuedLong() []string {
+	return []string{"--raw-field", "--field", "--header", "--preview", "--jq", "--template", "--input", "--hostname", "--cache"}
+}
+
+// takesValueWord reports whether the literal word w is a flag of `gh api` other than the method's
+// that takes the next word as its value: a long flag in apiValuedLong with no `=`, or a bundle of
+// shorthands whose first valued letter ends it.
+func takesValueWord(w Word) bool {
+	t := w.Text
+	switch {
+	case !w.Literal:
+		return false
+	case slices.Contains(apiValuedLong(), t):
+		return true
+	case len(t) < 2 || t[0] != '-' || t[1] == '-':
+		return false
+	}
+
+	for i := 1; i < len(t); i++ {
+		if slices.Contains(apiValued(), t[i]) {
+			return i == len(t)-1
+		}
+	}
+
+	return false
+}
+
 // apiMethod returns the last method rest gives `gh api` with -X or --method, and false when it
 // gives none. A word that is not a literal and may be the flag gives a method that is not a
-// literal.
+// literal. The word after a flag that takes a value is that value, never a method flag.
 func apiMethod(rest []Word) (method Word, given bool) {
 	for i := 0; i < len(rest); i++ {
 		w := rest[i]
@@ -369,6 +490,12 @@ func apiMethod(rest []Word) (method Word, given bool) {
 			if takesNext {
 				i++
 			}
+
+			continue
+		}
+
+		if takesValueWord(w) {
+			i++
 		}
 	}
 

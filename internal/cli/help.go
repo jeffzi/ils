@@ -3,8 +3,44 @@ package cli
 import (
 	"fmt"
 
+	"github.com/spf13/cobra"
+
 	"github.com/jeffzi/ils/internal/landing"
 )
+
+// parseHeader returns the `ils parse` command with its help, which each build of the guard
+// completes with its own Args and RunE.
+func parseHeader() *cobra.Command {
+	return &cobra.Command{
+		Use:     parseUse,
+		Short:   parseShort,
+		Long:    parseLong,
+		Example: parseExamples,
+	}
+}
+
+// guardHeader returns the `ils guard` command with its help, which each build of the guard
+// completes with its own Args and RunE.
+func guardHeader() *cobra.Command {
+	return &cobra.Command{
+		Use:     guardUse,
+		Short:   guardShort,
+		Long:    guardLong,
+		Example: guardExamples,
+	}
+}
+
+// hookHeader returns the `ils hook` command with its help and flag parsing off, which each build
+// of the guard completes with its own RunE.
+func hookHeader() *cobra.Command {
+	return &cobra.Command{
+		Use:                hookUse,
+		Short:              hookShort,
+		Long:               hookLong,
+		Example:            hookExamples,
+		DisableFlagParsing: true,
+	}
+}
 
 // withTimeLimits returns text with each %[1]s set to the time limit and each %[2]s set to the time
 // limit of the long wait, as results name them, so that the help says the limits the command
@@ -126,7 +162,7 @@ ils status
 # The same result as one JSON object
 ils status --json`
 
-	parseWord  = "parse"
+	parseWord  = landing.ParseCommand
 	parseUse   = parseWord + " --cwd <dir> -- '<command>'"
 	parseShort = "Show how the guard reads a shell command"
 	parseLong  = `Read a shell command as the guard does, as run from <dir>, and show every
@@ -144,7 +180,7 @@ ils parse --cwd . -- 'git switch main && git pull'
 # The same as one JSON object, for a filter such as jq
 ils parse --cwd . --json -- 'git push'`
 
-	guardWord  = "guard"
+	guardWord  = landing.GuardCommand
 	guardUse   = guardWord + " --cwd <dir> -- '<command>'"
 	guardShort = "Judge a shell command as the guard does"
 	guardLong  = `Read a shell command as the guard does, as run from <dir>, and judge
@@ -162,9 +198,7 @@ ils guard --cwd . -- 'git push --force'
 # The verdict, its reason and every command, as one JSON object
 ils guard --cwd . --json -- 'ils merge'`
 
-	cwdUsage = "The directory the command runs in"
-
-	hookWord  = "hook"
+	hookWord  = landing.HookCommand
 	hookUse   = hookWord + " <harness>"
 	hookShort = "Judge a coding agent's shell command as its pre-tool hook"
 	hookLong  = `Read the payload a coding agent's harness hands its pre-tool hook on

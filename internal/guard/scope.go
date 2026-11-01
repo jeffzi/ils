@@ -30,18 +30,34 @@ type GitTarget struct {
 type scope struct {
 	// dir is the directory commands run in; empty when unknown.
 	dir string
-	env environment
 	// redirects are the redirects in effect on the shell's own descriptors: those of each compound
 	// command the walk is inside, outermost first, then those an `exec` with no command made.
 	redirects []Redirect
+	env       environment
+	// physical reports whether the shell's working directory was last set by `cd -P` and no
+	// absolute `cd` since, so a symlink may stand in the path dir spells where the shell has the
+	// directory it resolves to.
+	physical bool
 }
 
 // environment is what the guard knows of the variables it follows: those that point git at a
-// repository, and CDPATH, which `cd` reads a relative path against.
+// repository, CDPATH, which `cd` reads a relative path against, and those that choose the config
+// directory gh reads its aliases from.
 type environment struct {
 	gitDir   variable
 	workTree variable
 	cdPath   variable
+	ghConfig ghConfig
+}
+
+// unknownEnvironment returns the environment in which every variable the guard follows is unknown.
+func unknownEnvironment() environment {
+	unknown := variable{unknown: true}
+
+	return environment{
+		gitDir: unknown, workTree: unknown, cdPath: unknown,
+		ghConfig: ghConfig{configDir: unknown, configHome: unknown, home: unknown},
+	}
 }
 
 // envChange is one step in building the environment a command runs with: an assignment, or what
@@ -61,7 +77,6 @@ type variable struct {
 	unknown bool
 }
 
-// startScope returns the scope command file starts in, for caller.
 func startScope(caller Caller, file *syntax.File) scope {
 	sc := scope{dir: caller.Dir}
 	for name, value := range caller.Env {
@@ -82,7 +97,6 @@ func (e *environment) forgetCDPath(file *syntax.File) {
 	}
 }
 
-// assigns reports whether node assigns the variable name anywhere in it.
 func assigns(node syntax.Node, name string) bool {
 	found := false
 	syntax.Walk(node, func(n syntax.Node) bool {
@@ -102,10 +116,12 @@ func merge(a, b scope) scope {
 		a.dir = ""
 	}
 
+	a.physical = a.physical || b.physical
 	a.env.gitDir = a.env.gitDir.or(b.env.gitDir)
 	a.env.workTree = a.env.workTree.or(b.env.workTree)
 	a.env.cdPath = a.env.cdPath.or(b.env.cdPath)
-	if _, toFile := (Invocation{Redirects: a.redirects}).Stdout(); !toFile {
+	a.env.ghConfig = a.env.ghConfig.or(b.env.ghConfig)
+	if _, toFile := stdoutFile(a.redirects); !toFile {
 		// Either side's stdout may be in effect, so the one that sends it to a file decides.
 		a.redirects = b.redirects
 	}
@@ -130,10 +146,15 @@ func (e *environment) set(name string, v variable) {
 		e.workTree = v
 	case "CDPATH":
 		e.cdPath = v
+	case ghConfigDirVar:
+		e.ghConfig.configDir = v
+	case ghConfigHomeVar:
+		e.ghConfig.configHome = v
+	case ghHomeVar:
+		e.ghConfig.home = v
 	}
 }
 
-// valueOf returns what the guard knows of a variable given the value w.
 func valueOf(w Word) variable {
 	if !w.Literal {
 		return variable{unknown: true}
@@ -229,7 +250,8 @@ func restored(before, own, after []Redirect) []Redirect {
 	}
 }
 
-// ontoStdout reports whether the redirect r changes where stdout goes.
+// ontoStdout reports whether the redirect r changes where stdout goes: `&>` and any redirect of
+// descriptor 1 do, an unnumbered input redirect does not.
 func ontoStdout(r Redirect) bool {
 	if strings.HasPrefix(r.Op, "&>") {
 		return true
@@ -237,13 +259,12 @@ func ontoStdout(r Redirect) bool {
 
 	fd := r.Fd
 	if fd == "" && !strings.HasPrefix(r.Op, "<") {
-		fd = "1"
+		fd = stdoutFd
 	}
 
-	return fd == "1"
+	return fd == stdoutFd
 }
 
-// compound walks a command that holds other commands.
 func (w *walker) compound(cmd syntax.Command, sc *scope) {
 	switch cmd := cmd.(type) {
 	case *syntax.Block:
@@ -283,8 +304,7 @@ func (w *walker) compound(cmd syntax.Command, sc *scope) {
 func (w *walker) binary(cmd *syntax.BinaryCmd, sc *scope) {
 	switch cmd.Op {
 	case syntax.AndStmt:
-		w.stmt(cmd.X, sc)
-		w.stmt(cmd.Y, sc)
+		w.andList(cmd, sc)
 	case syntax.OrStmt:
 		// The right side runs only once the left side failed, which may be before or after any
 		// change it makes.
@@ -301,6 +321,47 @@ func (w *walker) binary(cmd *syntax.BinaryCmd, sc *scope) {
 		w.stmt(cmd.Y, &right)
 		*sc = merge(merge(*sc, left), right)
 	}
+}
+
+// andList walks an `&&` list. Each operand runs only once every one before it succeeded, so it
+// sees the changes of those before it, and the list may stop after any operand: sc is left as the
+// shell may be after any of them.
+func (w *walker) andList(cmd *syntax.BinaryCmd, sc *scope) {
+	var after []scope
+	for _, operand := range andOperands(cmd) {
+		w.stmt(operand, sc)
+		after = append(after, *sc)
+	}
+
+	merged := after[0]
+	for _, s := range after[1:] {
+		merged = merge(merged, s)
+	}
+
+	*sc = merged
+}
+
+// andOperands returns the statements an `&&` list joins, in the order they run, reading the
+// left-nested lists `a && b && c` parses to as one. A nested list that carries a redirect or runs
+// in the background, or whose result is negated, is an operand of its own.
+func andOperands(cmd *syntax.BinaryCmd) []*syntax.Stmt {
+	operands := []*syntax.Stmt{cmd.Y}
+	left := cmd.X
+	for {
+		inner, ok := left.Cmd.(*syntax.BinaryCmd)
+		if !ok || inner.Op != syntax.AndStmt || len(left.Redirs) > 0 ||
+			left.Background || left.Coprocess || left.Negated {
+			break
+		}
+
+		operands = append(operands, inner.Y)
+		left = inner.X
+	}
+
+	operands = append(operands, left)
+	slices.Reverse(operands)
+
+	return operands
 }
 
 // ifClause walks an `if`, `elif`, or `else` and the branches after it, leaving sc as any of them
@@ -392,17 +453,10 @@ func (w *walker) substitutions(node syntax.Node, sc *scope) {
 // with it.
 func (w *walker) script(script string, inv Invocation, sc *scope) {
 	name := inv.Words[0].Text
-	file, err := read(script)
+	inner := sc.runScope(inv)
+	file, err := w.walkString(script, &inner)
 	if err != nil {
 		w.err = fmt.Errorf("parse the string %q runs: %w", name, err)
-
-		return
-	}
-
-	inner := sc.runScope(inv)
-	w.nested(file, &inner)
-	if w.err != nil {
-		w.err = fmt.Errorf("parse the string %q runs: %w", name, w.err)
 
 		return
 	}
@@ -418,6 +472,7 @@ func (w *walker) script(script string, inv Invocation, sc *scope) {
 	w.nested(file, &after)
 	w.kept = w.kept[:at]
 	sc.dir = inner.dir
+	sc.physical = inner.physical
 	sc.env = after.env
 	sc.redirects = restored(sc.redirects, inv.Redirects, inner.redirects)
 }
@@ -435,9 +490,7 @@ func (sc *scope) runScope(inv Invocation) scope {
 // laterScope returns the scope of a string a variable set for later commands holds: any later
 // command may run it, from a directory and with git variables the guard cannot tell.
 func laterScope() scope {
-	unknown := variable{unknown: true}
-
-	return scope{env: environment{gitDir: unknown, workTree: unknown, cdPath: unknown}}
+	return scope{env: unknownEnvironment()}
 }
 
 // commandVariables are the variables whose value git runs as a shell command: its own, and the
@@ -457,8 +510,9 @@ func (w *walker) variableScripts(inv *Invocation, assignments []Assignment) []st
 	}
 
 	scripts, mark := literalScripts(values)
-	if len(scripts) > 0 && w.depth == maxDepth {
-		scripts, mark = nil, DeepScript
+	runs, mark := capDepth(w.depth, len(scripts) > 0, mark)
+	if !runs {
+		scripts = nil
 	}
 
 	if mark != "" {
@@ -472,17 +526,9 @@ func (w *walker) variableScripts(inv *Invocation, assignments []Assignment) []st
 // from sc.
 func (w *walker) variableCommands(scripts []string, sc scope) {
 	for _, script := range scripts {
-		file, err := read(script)
-		if err != nil {
-			w.err = fmt.Errorf("parse the string a git variable holds: %w", err)
-
-			return
-		}
-
 		inner := sc
-		w.nested(file, &inner)
-		if w.err != nil {
-			w.err = fmt.Errorf("parse the string a git variable holds: %w", w.err)
+		if _, err := w.walkString(script, &inner); err != nil {
+			w.err = fmt.Errorf("parse the string a git variable holds: %w", err)
 
 			return
 		}
@@ -497,7 +543,31 @@ func (w *walker) nested(file *syntax.File, sc *scope) {
 	w.depth--
 }
 
-// placed returns inv with where it runs: its directory, and where it points git.
+// walkString reads script, a string run one level deeper, and walks it from sc. It returns the file
+// it read, and the error of reading or walking it.
+func (w *walker) walkString(script string, sc *scope) (*syntax.File, error) {
+	file, err := read(script)
+	if err != nil {
+		return nil, err
+	}
+
+	w.nested(file, sc)
+
+	return file, w.err
+}
+
+// capDepth reports whether a string that runs at depth levels of nesting is walked, and the mark
+// for it: runs is cleared and the mark is DeepScript for one that would nest past maxDepth.
+func capDepth(depth int, runs bool, mark MarkKind) (bool, MarkKind) {
+	if runs && depth == maxDepth {
+		return false, DeepScript
+	}
+
+	return runs, mark
+}
+
+// placed returns inv with where it runs: its directory, where it points git, and where a gh
+// invocation's gh reads its config.
 func (w *walker) placed(inv Invocation, sc *scope) Invocation {
 	inv.Dir = sc.dir
 	inv.enclosing = sc.redirects
@@ -506,10 +576,13 @@ func (w *walker) placed(inv Invocation, sc *scope) Invocation {
 		inv.Target = sc.targetOf(inv)
 	}
 
+	if inv.Tool == GH {
+		inv.ghConfig = sc.commandEnv(inv).ghConfig
+	}
+
 	return inv
 }
 
-// apply changes sc the way the invocation inv changes the shell that runs it.
 func (sc *scope) apply(inv Invocation) {
 	if len(inv.Words) == 0 {
 		// A bare assignment sets a shell variable, which reaches git only once it is exported, as it
@@ -554,14 +627,28 @@ func (sc *scope) cd(args []Word, cdPath variable) {
 	}
 
 	target := operands[0]
+	physical := slices.ContainsFunc(args[:len(args)-len(operands)], func(o Word) bool {
+		return strings.ContainsRune(o.Text, 'P')
+	})
 	switch {
 	case target.Literal && (target.Text == "" || strings.ContainsAny(target.Text[:1], "-+")),
-		target.Literal && cdPath != (variable{}) && !filepath.IsAbs(target.Text):
+		target.Literal && cdPath != (variable{}) && !filepath.IsAbs(target.Text),
+		target.Literal && leavesThroughLinks(target.Text, physical, sc.physical):
 		sc.dir = ""
 	default:
 		sc.dir = moved(sc.dir, target)
 	}
+
+	switch {
+	case physical:
+		sc.physical = true
+	case filepath.IsAbs(target.Text):
+		sc.physical = false
+	}
 }
+
+// followedCDFlags are the option letters of `cd` and `pushd` the guard follows.
+const followedCDFlags = "LPe@qs"
 
 // cdOperands returns the operands of `cd` or `pushd` after its options, and false when an option
 // is one the guard does not follow.
@@ -572,12 +659,25 @@ func cdOperands(args []Word) ([]Word, bool) {
 			return args[i:], true
 		case arg.Text == "--":
 			return args[i+1:], true
-		case strings.Trim(arg.Text[1:], "LPe@qs") != "":
+		case strings.Trim(arg.Text[1:], followedCDFlags) != "":
 			return nil, false
 		}
 	}
 
 	return nil, true
+}
+
+// leavesThroughLinks reports whether a `cd` to the literal target may land elsewhere than the
+// guard's text-only resolution of it, because a symlink on the way is followed: `..` after a
+// symlink goes to the link's parent when the `cd` is physical (`-P`), or when it is relative and
+// follows a physical one, whose directory the shell holds with the links resolved. A target
+// without `..` reaches the same directory either way.
+func leavesThroughLinks(target string, physical, afterPhysical bool) bool {
+	if !slices.Contains(strings.Split(target, "/"), "..") {
+		return false
+	}
+
+	return physical || (afterPhysical && !filepath.IsAbs(target))
 }
 
 // declare changes sc the way the declaration builtin decl does. Only `export NAME=value` with no
@@ -625,8 +725,7 @@ func (sc *scope) commandEnv(inv Invocation) environment {
 	for _, c := range inv.env {
 		switch {
 		case c.clear:
-			unknown := variable{unknown: true}
-			env = environment{gitDir: unknown, workTree: unknown, cdPath: unknown}
+			env = unknownEnvironment()
 		case c.unset != "":
 			env.set(c.unset, variable{unknown: true})
 		default:
@@ -637,7 +736,6 @@ func (sc *scope) commandEnv(inv Invocation) environment {
 	return env
 }
 
-// targetOf returns where the git invocation inv points git, run from sc.
 func (sc *scope) targetOf(inv Invocation) GitTarget {
 	if inv.Git.missing != "" {
 		return GitTarget{Unknown: true}
@@ -690,119 +788,6 @@ func (w *walker) returned() []Invocation {
 	}
 
 	return invocations
-}
-
-// movesHead reports whether the invocation inv may move HEAD, reading a git invocation by the
-// subcommand its aliases expand to. A git invocation whose subcommand Parse could not resolve may
-// run any command, so it may move HEAD.
-func movesHead(inv Invocation) bool {
-	words := inv.Words
-	switch inv.Tool {
-	case GH:
-		return ghMovesHead(words[1:])
-	case Git:
-	default:
-		return false
-	}
-
-	if slices.ContainsFunc(inv.Marks, func(m Mark) bool {
-		return m.Kind == ShellAlias || m.Kind == UnknownSubcommand || m.Kind == DeepAlias ||
-			m.Kind == UnreadableAlias
-	}) {
-		return true
-	}
-
-	if !inv.Git.Subcommand.Literal {
-		return false
-	}
-
-	args := inv.Git.Args
-	switch inv.Git.Subcommand.Text {
-	case "switch", "checkout", "bisect":
-		// Every checkout counts, the one that restores files and leaves HEAD where it is too:
-		// telling them apart means reading its operands as git does.
-		return true
-	case "symbolic-ref":
-		return positionals(args, func(text string) bool { return text == "-m" }) > 1
-	case "branch":
-		return slices.ContainsFunc(args, isBranchMove)
-	case "rebase":
-		// The last of two operands is a branch rebase switches to first; with `--root` there is no
-		// upstream operand, so one operand is that branch.
-		branchAt := 2
-		if slices.ContainsFunc(args, func(arg Word) bool { return arg.Literal && arg.Text == "--root" }) {
-			branchAt = 1
-		}
-
-		return positionals(args, takesRebaseValue) >= branchAt
-	default:
-		return false
-	}
-}
-
-// ghMovesHead reports whether gh given args may move HEAD: `gh pr checkout`, and a first command
-// word that is none of gh's commands, since an alias or an extension may check out a branch. It
-// finds the command words the way Cobra does, past the values of flags; one that is not a literal
-// may be any of them.
-func ghMovesHead(args []Word) bool {
-	at := commandWords(args, ghSwitches())
-	if len(at) == 0 {
-		return false
-	}
-
-	first := args[at[0]]
-	if !first.Literal || !ghCommands()[first.Text] {
-		return true
-	}
-
-	return first.Text == "pr" && len(at) > 1 && (!args[at[1]].Literal || args[at[1]].Text == "checkout")
-}
-
-// isBranchMove reports whether arg is an option `git branch` reads as `--move`: `m` or `M` in a
-// short-flag bundle ahead of any `u`, whose rest is the value of `-u`, or a prefix of `--move` git
-// reads as it.
-func isBranchMove(arg Word) bool {
-	text := arg.Text
-	switch {
-	case !arg.Literal || !strings.HasPrefix(text, "-"):
-		return false
-	case strings.HasPrefix(text, "--"):
-		const move = "--move"
-
-		return len(text) >= len("--mo") && len(text) <= len(move) && text == move[:len(text)]
-	default:
-		bundle, _, _ := strings.Cut(text[1:], "u")
-
-		return strings.ContainsAny(bundle, "mM")
-	}
-}
-
-// positionals returns how many of args are operands rather than options, given which options take
-// the next word as their value. A word that is not a literal counts as an operand.
-func positionals(args []Word, takesValue func(string) bool) int {
-	n := 0
-	for i := 0; i < len(args); i++ {
-		text := args[i].Text
-		switch {
-		case !args[i].Literal || !strings.HasPrefix(text, "-") || text == "-":
-			n++
-		case text == "--":
-			return n + len(args) - i - 1
-		case takesValue(text):
-			i++
-		}
-	}
-
-	return n
-}
-
-func takesRebaseValue(text string) bool {
-	switch text {
-	case "--onto", "-s", "--strategy", "-X", "--strategy-option", "-x", "--exec":
-		return true
-	default:
-		return false
-	}
 }
 
 // allowedGitVariables is the list of GIT_* variables a command may set: those that point git at a

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -157,7 +156,12 @@ func (r Repo) HasCommits(ctx context.Context, branch string) (bool, error) {
 
 // GitDir returns the absolute path of the repository's git directory.
 func (r Repo) GitDir(ctx context.Context) (string, error) {
-	dir, err := r.line(ctx, "rev-parse", "--absolute-git-dir")
+	return r.gitDir(ctx)
+}
+
+// gitDir returns the absolute path of the git directory git finds when given the global options.
+func (r Repo) gitDir(ctx context.Context, options ...string) (string, error) {
+	dir, err := r.line(ctx, append(slices.Clone(options), "rev-parse", "--absolute-git-dir")...)
 	if err != nil {
 		return "", err
 	}
@@ -167,20 +171,15 @@ func (r Repo) GitDir(ctx context.Context) (string, error) {
 
 // FindGitDir returns the absolute path of the git directory git finds when given the global
 // options, such as `-C` or `--git-dir`, from the runner's directory, and found false when git says
-// there is no repository there. Any other failure, such as a `-C` directory that does not exist, is
-// returned as git's *child.ExitError.
+// there is no repository there. Any other exit of git, such as for a `-C` directory that does not
+// exist, is git's *child.ExitError; a git missing from PATH is a *child.ToolMissingError.
 //
 // Git tells the two apart only by its message, so the call runs in the C locale to keep that
 // message untranslated.
 func (r Repo) FindGitDir(ctx context.Context, options ...string) (dir string, found bool, err error) {
 	runner := r.Runner
-	runner.Env = slices.Clone(runner.Env)
-	if runner.Env == nil {
-		runner.Env = os.Environ()
-	}
-
-	runner.Env = append(runner.Env, "LC_ALL=C")
-	dir, err = Repo{Runner: runner}.line(ctx, append(slices.Clone(options), "rev-parse", "--absolute-git-dir")...)
+	runner.Env = append(runner.Environ(), "LC_ALL=C")
+	dir, err = Repo{Runner: runner}.gitDir(ctx, options...)
 	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && exitErr.Code == fatalCode &&
 		strings.Contains(exitErr.Stderr, notRepositoryMessage) {
 		return "", false, nil
@@ -190,7 +189,7 @@ func (r Repo) FindGitDir(ctx context.Context, options ...string) (dir string, fo
 		return "", false, err
 	}
 
-	return filepath.FromSlash(dir), true, nil
+	return dir, true, nil
 }
 
 // Alias returns what the alias name expands to in the config git reads when given the global
@@ -200,11 +199,10 @@ func (r Repo) Alias(ctx context.Context, name string, options ...string) (expans
 	return r.optionalLine(ctx, append(slices.Clone(options), "config", "--get", "alias."+name)...)
 }
 
-// DirtyFiles returns the tracked files that differ from HEAD, staged or not; the tree is dirty when
-// there is at least one.
-//
-// Untracked files are not listed. A repository git cannot read is an error.
-func (r Repo) DirtyFiles(ctx context.Context) ([]string, error) {
+// ChangedTrackedFiles returns the tracked files that differ from HEAD, staged or not. Untracked
+// files are not listed, so an empty list does not mean the tree is clean: Dirty says that. A
+// repository git cannot read is an error.
+func (r Repo) ChangedTrackedFiles(ctx context.Context) ([]string, error) {
 	result, err := r.Runner.Run(ctx, "status", "--porcelain=v1", "-z", "--untracked-files=no")
 	if err != nil {
 		return nil, err

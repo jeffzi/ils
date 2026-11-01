@@ -44,10 +44,8 @@ func envArguments(inv *Invocation, given []option, args []*syntax.Word, home str
 	for _, option := range given {
 		switch option.letter {
 		case 'i':
-			inv.EnvCleared = true
 			inv.env = append(inv.env, envChange{clear: true})
 		case 'u':
-			inv.EnvUnset = append(inv.EnvUnset, option.value)
 			inv.env = append(inv.env, envChange{unset: option.value})
 		}
 	}
@@ -83,11 +81,12 @@ type option struct {
 	letter byte
 }
 
-// wrappers is the table of wrapper words: command words that run the command after them, each
-// with the options it takes before that command. An option a wrapper does not take is left out, so
-// that it ends the options and stands as the command word.
-func wrappers() map[string]wrapperOptions {
-	return map[string]wrapperOptions{
+// wrapperOptionsOf returns the options of the wrapper name, and false when name is no wrapper. The
+// wrapper words are command words that run the command after them, each with the options it takes
+// before that command. An option a wrapper does not take is left out, so that it ends the options
+// and stands as the command word.
+func wrapperOptionsOf(name string) (wrapperOptions, bool) {
+	options, ok := map[string]wrapperOptions{
 		"env":       {flags: "i", valued: "u"},
 		"command":   {flags: "p"},
 		"exec":      {flags: "cl", valued: "a"},
@@ -97,12 +96,7 @@ func wrappers() map[string]wrapperOptions {
 		"nohup":     {},
 		"noglob":    {none: true},
 		"nocorrect": {none: true},
-	}
-}
-
-// wrapperOptionsOf returns the options of the wrapper name, and false when name is no wrapper.
-func wrapperOptionsOf(name string) (wrapperOptions, bool) {
-	options, ok := wrappers()[name]
+	}[name]
 
 	return options, ok
 }
@@ -186,7 +180,8 @@ func envAssignment(raw *syntax.Word, home string) (Assignment, bool) {
 func isName(s string) bool {
 	for i, c := range s {
 		letter := c == '_' || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z')
-		if !letter && (i == 0 || c < '0' || c > '9') {
+		digit := '0' <= c && c <= '9'
+		if !letter && (i == 0 || !digit) {
 			return false
 		}
 	}

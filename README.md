@@ -5,14 +5,14 @@ language model (LLM) agent that runs it cannot skip a step or push to the wrong 
 command runs only standard `git` and `gh` commands, prints what it did and what to do next, and
 keeps no state of its own.
 
-`ils` has five commands. `ils branch <name>` starts a work branch from the default branch
-as origin has it. `ils push` pushes a branch, opens its pull request, and waits for the checks.
-`ils merge` squash-merges that pull request once its checks are green. `ils status` says where the
-checkout stands and what to run next. `ils release <X.Y.Z>` tags the release commit once its checks
-are green, and publishes the GitHub release.
+`ils` has five commands for landing a change. `ils branch <name>` starts a work branch from the
+default branch as origin has it. `ils push` pushes a branch, opens its pull request, and waits for
+the checks. `ils merge` squash-merges that pull request once its checks are green. `ils status` says
+where the checkout stands and what to run next. `ils release <X.Y.Z>` tags the release commit once
+its checks are green, and publishes the GitHub release.
 
 [The guard](#the-guard) judges an agent's shell commands before they run: `ils hook claude` is
-Claude Code's pre-tool hook, `ils guard` gives the same verdict to any caller, and `ils parse`
+Claude Code's `PreToolUse` hook, `ils guard` gives the same verdict to any caller, and `ils parse`
 prints how the guard reads a command.
 
 - [Example](#example)
@@ -431,13 +431,21 @@ To make Claude Code ask you before every merge or release, add `ask` rules to yo
 
 The guard judges a shell command before an agent runs it. It parses the command with a bash parser,
 finds the `git`, `gh`, and `ils` calls in it, nested ones included, and answers allow, refuse, or
-ask. It refuses git operations that destroy work or skip the hooks, `git push` in any form it can
-read, commits on the default branch, and the `gh` calls that land a change, publish or delete a
-release, move the default branch, sync or delete a repository, or print the auth token. It asks
-before `ils merge`, `ils release`, `gh pr merge`, and `gh release create`, and only when the
-command is that one call by its bare name, so the prompt shows exactly what runs. A command it
-cannot read is a refusal. [What the guard refuses](docs/reference.md#what-the-guard-refuses) lists
-every rule.
+ask.
+
+It refuses:
+
+- git operations that destroy work or skip the hooks;
+- `git push` in any form it can read;
+- commits on the default branch;
+- `gh` calls that land a change, publish or delete a release, move the default branch, sync or
+  delete a repository, or print the auth token;
+- a command it cannot read.
+
+It asks before `ils merge`, `ils release`, `gh pr merge`, and `gh release create`, and only when
+the command is that one call by its bare name, so the prompt shows exactly what runs. In any other
+form, such as in a list, a pipe, or behind a wrapper, it refuses them.
+[What the guard refuses](docs/reference.md#what-the-guard-refuses) lists every rule.
 
 The guard lowers the odds of an accident; it is not a sandbox. It does not see:
 
@@ -480,14 +488,17 @@ global install path. `onFailure` needs Claude Code 2.1.295 or later:
 
 `hook.sh` runs `ils hook claude` and blocks the command whenever `ils` cannot answer: when it is
 not installed or cannot start, and when it exits with a code the hook contract does not know. A
-missing or broken binary blocks every command, so that message names `! task install`, which you
-type in Claude Code's prompt: a `!` command skips the hook. Keep the four `ask` rules above
+missing or broken binary blocks every command. Reinstall it from Claude Code's prompt with a `!`
+command, which skips the hook: `! go install github.com/jeffzi/ils@latest`, or `! task install`
+from a clone of `ils`. Keep the four `ask` rules from [Use with Claude Code](#use-with-claude-code)
 beside it, and add `deny` rules for the commands you never want run, such as `Bash(git push:*)`
 and `Bash(gh auth token:*)`: the permission rules are the first layer and the guard the second.
 
 The guard reads the default branch from origin and falls back to the copy `git fetch` keeps. In a
-repository made with `gh repo create --source . --push`, run `git fetch origin` once, so that the
-guard has that copy when origin cannot be reached.
+repository made with `gh repo create --source . --push`, run `git remote set-head origin --auto`
+once, so that the guard has that copy when origin cannot be reached. With git 2.48 or later, `git
+fetch origin` also works. Run it as a `!` command or outside the agent, since the guard refuses
+`set-head` on origin.
 
 ## Contributing
 

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/jeffzi/ils/internal/child"
@@ -439,6 +440,16 @@ func (r Runner) getenv(key string) (string, bool) {
 	}
 
 	return EnvValue(r.Env, key)
+}
+
+// Environ returns a copy of the environment git runs with: the runner's own Env, or the environment
+// of this process when it has none.
+func (r Runner) Environ() []string {
+	if r.Env == nil {
+		return os.Environ()
+	}
+
+	return slices.Clone(r.Env)
 }
 
 // SameKey reports whether name, the key of an environment entry, is key as the system matches
