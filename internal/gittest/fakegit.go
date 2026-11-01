@@ -86,13 +86,14 @@ func Main() (code int, served bool) {
 // It sets the process environment, so the test cannot be parallel, and a git runner that inherits
 // that environment reaches the fake. It returns the variables the fake reads, for a runner whose
 // environment is given whole: such a runner appends them to it.
+//
+// Called again in the same test, it keeps the real git the first call found: the git first on PATH
+// is then the earlier fake, and a fake that ran it for the calls it does not fake would call itself
+// forever.
 func FakeGit(tb testing.TB, fake Fake) []string {
 	tb.Helper()
 
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		tb.Fatalf("gittest: find the real git: %v", err)
-	}
+	realGit := findRealGit(tb)
 
 	var settings []string
 
@@ -126,6 +127,23 @@ func FakeGit(tb testing.TB, fake Fake) []string {
 	LinkAs(tb, "git")
 
 	return settings
+}
+
+// findRealGit returns the path of the git a fake runs for the calls it does not fake: the one an
+// earlier FakeGit of the test recorded, or else the git first on PATH.
+func findRealGit(tb testing.TB) string {
+	tb.Helper()
+
+	if realGit := os.Getenv(realGitEnv); realGit != "" {
+		return realGit
+	}
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		tb.Fatalf("gittest: find the real git: %v", err)
+	}
+
+	return realGit
 }
 
 // RaceSetting returns the value of GORACE that stops a binary built with -race from sleeping a

@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -102,6 +104,27 @@ func TestFakeGit_WhenCallIsNotFaked_RunsTheRealGit(t *testing.T) {
 	assert.Check(t, is.DeepEqual(got, faked{}))
 	_, err := os.Stat(filepath.Join(dir, ".git"))
 	assert.Check(t, err, "git init made no repository in %s", dir)
+}
+
+func TestFakeGit_WhenInstalledTwice_RunsTheRealGitForCallsNeitherFakes(t *testing.T) {
+	gittest.FakeGit(t, gittest.Fake{FailOn: []string{"show-ref"}})
+	gittest.FakeGit(t, gittest.Fake{AnswerOn: []string{"rev-list"}, Answer: "not counts"})
+	// A fake that took another fake for the real git calls itself forever: the deadline turns that
+	// into a failure instead of a hang.
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, "git", "--version")
+	cmd.Dir = t.TempDir()
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	// The calls a looping fake started outlive it and hold its output open.
+	cmd.WaitDelay = time.Second
+
+	err := cmd.Run()
+
+	assert.NilError(t, err, "git --version printed %q to stderr", stderr.String())
+	assert.Check(t, strings.HasPrefix(stdout.String(), "git version "), "git --version printed %q", stdout.String())
 }
 
 func TestFakeGit_WhenCallIsAPrefixOfFailingWords_RunsTheRealGit(t *testing.T) {
