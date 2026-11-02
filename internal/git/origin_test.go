@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -427,6 +431,171 @@ func TestRepo_WhenOriginDoesNotAnswer_ReturnsRemoteError(t *testing.T) {
 	}
 }
 
+// sshDenied is what GitHub's ssh prints when it turns away a caller whose key it does not accept.
+const sshDenied = "git@github.com: Permission denied (password)."
+
+// endedBy is one way origin's server ends a call: arrange points the fixture's origin at it and
+// returns the environment that reaches it and a part of what git prints on stderr then.
+type endedBy struct {
+	arrange func(t *testing.T, f *gittest.Fixture) (env []string, said string)
+	name    string
+}
+
+// sshSaying returns an arrangement whose origin is reached over ssh, where every call prints said on
+// stderr and exits with code before git hears from the repository.
+func sshSaying(said string, code int) func(t *testing.T, f *gittest.Fixture) ([]string, string) {
+	return func(t *testing.T, f *gittest.Fixture) ([]string, string) {
+		t.Helper()
+		f.SetOriginURL(sshURL)
+
+		return f.ServedBy("echo '" + said + "' >&2; exit " + strconv.Itoa(code)), said
+	}
+}
+
+// httpAnswering returns an arrangement whose origin is an HTTP server that answers every request
+// with status, under a URL that carries a user and a password. Git's message names the server's
+// address.
+func httpAnswering(status int) func(t *testing.T, f *gittest.Fixture) ([]string, string) {
+	return func(t *testing.T, f *gittest.Fixture) ([]string, string) {
+		t.Helper()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("WWW-Authenticate", `Basic realm="ils"`)
+			w.WriteHeader(status)
+		}))
+		t.Cleanup(srv.Close)
+
+		addr := srv.Listener.Addr().String()
+		f.SetOriginURL("http://ils:wrong@" + addr + "/jeffzi/ils.git")
+
+		return f.Env(), addr
+	}
+}
+
+// httpHangingUp is an arrangement whose origin is an HTTP address that closes every connection
+// before it answers.
+func httpHangingUp(t *testing.T, f *gittest.Fixture) ([]string, string) {
+	t.Helper()
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	assert.NilError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+
+			_ = conn.Close()
+		}
+	}()
+
+	addr := ln.Addr().String()
+	f.SetOriginURL("http://" + addr + "/jeffzi/ils.git")
+
+	return f.Env(), addr
+}
+
+// refusals lists one case for each message refusal in origin.go matches: an ssh key or ssh
+// repository refused, and an HTTP 401, 403 and 404.
+func refusals() []endedBy {
+	return []endedBy{
+		{name: "ssh key not accepted", arrange: sshSaying(sshDenied, 255)},
+		{name: "ssh repository not found", arrange: sshSaying("ERROR: Repository not found.", 1)},
+		{
+			name:    "credentials GitHub did not accept, under a translated git",
+			arrange: sshSaying("remote: Invalid username or token. Password authentication is not supported for Git operations.", 1),
+		},
+		{name: "http authentication failed", arrange: httpAnswering(http.StatusUnauthorized)},
+		{name: "http permission denied", arrange: httpAnswering(http.StatusForbidden)},
+		{name: "http repository not found", arrange: httpAnswering(http.StatusNotFound)},
+	}
+}
+
+// assertRefused fails unless err is origin's refusal of the call name, not origin going unreached,
+// and keeps what git said on stderr, which holds said.
+func assertRefused(t *testing.T, name string, err error, said string) {
+	t.Helper()
+
+	_, refused := errors.AsType[*git.RefusedError](err)
+	assert.Check(t, refused, "%s() error = %v, want *git.RefusedError", name, err)
+	_, remote := errors.AsType[*git.RemoteError](err)
+	assert.Check(t, !remote, "%s() error = %v, want it not to read as origin not answering", name, err)
+	exitErr, exited := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, exited, "%s() error = %v, want it to wrap *child.ExitError", name, err)
+	assert.Check(t, is.Contains(exitErr.Stderr, said))
+}
+
+func TestRepo_RemoteBranch_WhenOriginRefusesTheCall_ReturnsRefusedError(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range refusals() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			env, said := tt.arrange(t, f)
+			repo := git.Repo{Runner: git.Runner{Dir: f.Dir(), Env: env}}
+
+			_, _, err := repo.RemoteBranch(t.Context(), trunk)
+
+			assertRefused(t, "RemoteBranch", err, said)
+		})
+	}
+}
+
+func TestRepo_WhenOriginRefusesTheCall_ReturnsRefusedError(t *testing.T) {
+	t.Parallel()
+	tests := slices.Concat(originCalls(), []repoCall{
+		fastForwardTrunkCall(),
+		{name: "Trunk", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.Trunk(ctx) }},
+		{name: "Push", call: func(ctx context.Context, repo git.Repo) (any, error) { return nil, repo.Push(ctx, topic) }},
+	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			f.Commits(topic, "one")
+			f.Git("switch", "--quiet", trunk)
+			env, said := sshSaying(sshDenied, 255)(t, f)
+			repo := git.Repo{Runner: git.Runner{Dir: f.Dir(), Env: env}}
+
+			got, err := tt.call(t.Context(), repo)
+
+			assertRefused(t, tt.name, err, said)
+			checkNoResult(t, tt.name, got)
+		})
+	}
+}
+
+func TestRepo_RemoteBranch_WhenTheConnectionToOriginFails_ReturnsRemoteError(t *testing.T) {
+	t.Parallel()
+	tests := []endedBy{
+		{name: "ssh cannot connect", arrange: sshSaying("ssh: connect to host github.com port 22: Connection refused", 255)},
+		{
+			name:    "ssh connect denied by a local policy",
+			arrange: sshSaying("ssh: connect to host github.com port 22: Permission denied", 255),
+		},
+		{name: "git cannot write a local file", arrange: sshSaying("fatal: unable to create temporary file: Permission denied", 128)},
+		{name: "ssh ends saying nothing", arrange: sshSaying("", 1)},
+		{name: "http server hangs up", arrange: httpHangingUp},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			env, _ := tt.arrange(t, f)
+			repo := git.Repo{Runner: git.Runner{Dir: f.Dir(), Env: env}}
+
+			_, _, err := repo.RemoteBranch(t.Context(), trunk)
+
+			_, remote := errors.AsType[*git.RemoteError](err)
+			assert.Check(t, remote, "RemoteBranch() error = %v, want *git.RemoteError", err)
+			_, refused := errors.AsType[*git.RefusedError](err)
+			assert.Check(t, !refused, "RemoteBranch() error = %v, want it not to read as origin refusing", err)
+		})
+	}
+}
+
 func TestRepo_Trunk_WhenGitMissingFromPath_ReturnsToolMissingError(t *testing.T) {
 	// Not parallel: this empties PATH for the whole process while it runs. RemoteBranch hands a
 	// missing git to the same remoteFailure as Trunk does, so Trunk alone stands for both.
@@ -570,6 +739,20 @@ func TestRepo_TrunkOrLastFetched_WhenOriginDoesNotAnswer_ReturnsTheLastFetchedTr
 			assert.Check(t, is.Equal(got, trunk))
 		})
 	}
+}
+
+func TestRepo_TrunkOrLastFetched_WhenOriginRefusesTheCaller_ReturnsTheLastFetchedTrunk(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	lastFetchedAt(t, f, trunk)
+	env, _ := sshSaying(sshDenied, 255)(t, f)
+	repo := git.Repo{Runner: git.Runner{Dir: f.Dir(), Env: env}}
+
+	got, found, err := repo.TrunkOrLastFetched(t.Context())
+	assert.NilError(t, err)
+
+	assert.Check(t, found, "TrunkOrLastFetched() found = false, want true")
+	assert.Check(t, is.Equal(got, trunk))
 }
 
 func TestRepo_TrunkOrLastFetched_WhenOriginDoesNotAnswerAndNothingWasFetched_ReportsNotFound(t *testing.T) {

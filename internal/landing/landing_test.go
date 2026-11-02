@@ -199,6 +199,16 @@ func (s *scene) stopAnswering(t *testing.T, times int) {
 	s.deps.Repo.Runner.Env = answering(t, s.fixture, times, "true")
 }
 
+// sshDenied is what GitHub's ssh prints when it turns away a caller whose key it does not accept.
+const sshDenied = "git@github.com: Permission denied (password)."
+
+// refuse makes origin turn away every call git makes to it, saying sshDenied.
+func (s *scene) refuse(t *testing.T) {
+	t.Helper()
+
+	s.deps.Repo.Runner.Env = answering(t, s.fixture, 0, "echo '"+sshDenied+"' >&2")
+}
+
 // pushRequest is the command and words of a bare `ils push`.
 func pushRequest() landing.Request {
 	return landing.Request{Command: "push", Words: []string{"push"}}
@@ -768,6 +778,17 @@ func TestPreconditions_WhenAllHold_ReturnsReady(t *testing.T) {
 
 	assert.Check(t, is.DeepEqual(got, want))
 	assertAsked(t, s, identityRead())
+}
+
+func TestPreconditions_WhenOriginRefusesTheCaller_BrokeWithWhatGitSaid(t *testing.T) {
+	t.Parallel()
+	s := newScene(t, nil, allowed(), false)
+	s.refuse(t)
+
+	_, stop := landing.Preconditions(t.Context(), s.deps, pushRequest())
+
+	got := stopped(t, stop, "a broke result")
+	assertBrokeRead(t, got, readTrunk, sshDenied)
 }
 
 func TestPreconditions_WhenSSHFails_BrokeNamingTheRead(t *testing.T) {

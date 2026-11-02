@@ -215,6 +215,42 @@ func TestStartBranch_WhenOriginStopsAnswering_RefusesSayingSo(t *testing.T) {
 	}
 }
 
+func TestStartBranch_WhenOriginStopsAnswering_NextQuotesTheNameForTheShell(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name, given, quoted string
+	}{
+		{name: "name holds a single quote", given: "rock'n'roll", quoted: `'rock'\''n'\''roll'`},
+		{name: "name holds a shell operator", given: "fix;make", quoted: "'fix;make'"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := branchScene(t, nil)
+			s.stopAnswering(t, 1)
+
+			got := startBranch(t, s, tt.given)
+
+			text, _ := shown(t, got, s.gitDir)
+			assertSays(t, text, nextLine("ils branch "+tt.quoted))
+		})
+	}
+}
+
+func TestStartBranch_WhenOriginRefusesTheCaller_EndsBrokeWithWhatGitSaid(t *testing.T) {
+	t.Parallel()
+	s := branchScene(t, nil)
+	s.refuse(t)
+	before := s.written()
+
+	got := startBranch(t, s, fresh)
+
+	want := expect(sshDenied, "fix what failed", "ils branch "+fresh)
+	assertEndedBy(t, got, s.gitDir, ended{outcome: result.Broke, req: branchRequest(fresh), text: want})
+	assert.Check(t, is.Equal(s.written(), before))
+}
+
 func TestStartBranch_WhenDetachedHEADHasCommitsOriginsTrunkLacks_RefusesListingThem(t *testing.T) {
 	t.Parallel()
 

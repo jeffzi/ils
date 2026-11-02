@@ -150,6 +150,13 @@ or file; at most it has fetched from origin. It refuses:
 - a precondition read that the time limit, Ctrl-C, or SIGTERM cut short: run the same command
   again, with the `--wait` you gave it.
 
+An `origin` that answers and turns the call away, for a failed sign-in, a missing permission, or a
+repository it cannot find, is not a refusal. A command whose call to origin is turned away before
+it lands anything ends broke with git's message and `Next: fix what failed, then run <command>
+again`, and `ils status` lists the read as failed. The steps `ils merge` runs after the squash merge
+keep the `Next:` each gives for any failure, since the merge itself is done. Only an `origin` that
+cannot be reached at all ends as described above.
+
 ### What merge refuses
 
 When `ils merge` refuses, it has merged nothing, deleted nothing, and changed no branch or file;

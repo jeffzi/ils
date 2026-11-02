@@ -300,9 +300,14 @@ func (r Request) ilsCommand() result.Name {
 
 // commandLine is the request's command, its positional words, then the flags it was given, so that
 // running it again changes nothing the user chose: `release 1.2.0 --tag-only`. A typed
-// --wait=false is always among them, and a typed --wait only when keepWait is true.
+// --wait=false is always among them, and a typed --wait only when keepWait is true. Each positional
+// word is quoted as shellWord quotes it, so that the line pasted into a shell runs the same command.
 func (r Request) commandLine(keepWait bool) string {
-	words := append([]string{r.Command}, r.Args...)
+	words := []string{r.Command}
+	for _, arg := range r.Args {
+		words = append(words, shellWord(arg))
+	}
+
 	if r.Force {
 		words = append(words, FlagForce)
 	}
@@ -319,6 +324,22 @@ func (r Request) commandLine(keepWait bool) string {
 	}
 
 	return strings.Join(words, " ")
+}
+
+// shellSafe holds the characters a POSIX shell reads as part of a plain word, outside any quote.
+const shellSafe = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_@%+=:,./-"
+
+// shellWord returns word as a POSIX shell reads it back as one word: as it is when it holds only
+// shellSafe characters, and in single quotes otherwise, each single quote it holds closing the
+// quote, escaped, and reopening it:
+//
+//	rock'n'roll  ->  'rock'\''n'\''roll'
+func shellWord(word string) string {
+	if word != "" && strings.Trim(word, shellSafe) == "" {
+		return word
+	}
+
+	return "'" + strings.ReplaceAll(word, "'", `'\''`) + "'"
 }
 
 // Ready is what the shared preconditions hand to the steps that follow them.

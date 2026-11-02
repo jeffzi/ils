@@ -818,6 +818,23 @@ func TestStatus_WhenOriginCannotBeReachedAndItsTrunkWasNeverLearned_CountsTheBra
 	assertSays(t, got.text, expect("last fetch"))
 }
 
+func TestStatus_WhenOriginRefusesTheCaller_SaysWhatGitSaidNotThatOriginWasUnreached(t *testing.T) {
+	t.Parallel()
+	s := statusScene(t, func(f *gittest.Fixture) {
+		f.Git("remote", "set-head", "origin", trunk)
+		f.Publish(topic)
+	}, greenOpen())
+	s.refuse(t)
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	assertSays(t, got.text, expect(sshDenied))
+	assert.Check(t, !strings.Contains(got.text, "could not be reached"), "text %q, want origin's refusal, not unreached", got.text)
+	i := slices.IndexFunc(got.status.Unread, func(u result.Unread) bool { return u.Read == readTrunk })
+	assert.Assert(t, i >= 0, "unread %v, want an entry for %s", got.status.Unread, readTrunk)
+	assert.Check(t, is.Contains(got.status.Unread[i].Error, sshDenied))
+}
+
 func TestStatus_WhenOriginCannotBeReached_CountsAgainstTheLastFetch(t *testing.T) {
 	t.Parallel()
 	s := offlineStatusScene(t, func(f *gittest.Fixture) {

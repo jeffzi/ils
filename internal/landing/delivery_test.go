@@ -691,16 +691,16 @@ func assertMayHaveTaken(t *testing.T, s *scene, got result.Result, cut cutPush) 
 
 func TestPush_WhenOriginStopsAnsweringDuringThePush_BrokeSayingThePushMayHaveTaken(t *testing.T) {
 	t.Parallel()
-	const denied = "Permission denied for this key."
+	const dropped = "Connection closed by remote host."
 	s := newScene(t, nil, finding(), false)
 	// The ssh of the push exits before origin says a word.
-	s.deps.Repo.Runner.Env = answering(t, s.fixture, answersBeforePush, "echo '"+denied+"' >&2")
+	s.deps.Repo.Runner.Env = answering(t, s.fixture, answersBeforePush, "echo '"+dropped+"' >&2")
 	sha := s.fixture.Git("rev-parse", topic)
 
 	got := landing.Push(t.Context(), s.deps, pushRequest())
 
 	text := assertMayHaveTaken(t, s, got, cutPush{sha: sha, reason: "stopped answering"})
-	assert.Check(t, is.Contains(text, denied))
+	assert.Check(t, is.Contains(text, dropped))
 }
 
 // killsGitPush ends the git push with SIGTERM from the ssh it started, while ils runs on.
