@@ -564,7 +564,13 @@ func TestProgram_Run_WhenProgramCannotBeStarted_ReturnsToolMissingError(t *testi
 
 func TestProgram_Run_WhenTheFoundFileIsGoneAndAStartWantingAFileIsNotMissing_ReturnsTheStartError(t *testing.T) {
 	t.Parallel()
-	program := child.Program{Tool: "git", Args: []string{"status"}, LookPath: foundAt(filepath.Join(t.TempDir(), "git"))}
+	gone := filepath.Join(t.TempDir(), "git")
+	if runtime.GOOS == "windows" {
+		// A lookup on Windows finds a program with its executable suffix. Without one, exec searches
+		// the suffixes itself and fails with exec.ErrNotFound before it ever starts the program.
+		gone += ".exe"
+	}
+	program := child.Program{Tool: "git", Args: []string{"status"}, LookPath: foundAt(gone)}
 
 	_, err := program.Run(t.Context())
 
