@@ -232,14 +232,15 @@ type Phrase struct {
 	names   []Name
 }
 
-var lineBreaks = regexp.MustCompile(`[\r\n]+`)
+var lineBreaks = regexp.MustCompile(`[\r\n\x{2028}\x{2029}]+`)
 
 // Say builds a Phrase from wording and the names that fill its %s
 // placeholders, in order. A name is third-party text: a branch, a file, a
 // check, a commit subject, a URL, a tally of checks. A [Name] keeps the kind it was
 // marked with; any other value is a name of no particular kind. Each run of
-// line breaks in a name becomes one space, so that a name cannot split a line
-// or forge one.
+// line breaks in a name (CR, LF, U+2028 LINE SEPARATOR, U+2029 PARAGRAPH
+// SEPARATOR) becomes one space, so that a name cannot split a line or forge
+// one, even for a reader that splits lines the Unicode way.
 func Say(w wording, names ...any) Phrase {
 	phrase := Phrase{wording: string(w), names: make([]Name, 0, len(names))}
 	for _, name := range names {
