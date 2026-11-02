@@ -603,7 +603,7 @@ func expandAliases(ctx context.Context, repo git.Repo, options []string, inv *In
 			return Mark{Kind: ShellAlias, Name: sub.Text}, nil
 		}
 
-		words, ok := splitAlias(expansion)
+		words, ok := git.SplitCommandLine(expansion)
 		if !ok {
 			return Mark{Kind: UnreadableAlias, Name: sub.Text}, nil
 		}
@@ -686,49 +686,4 @@ func isAliasName(name string) bool {
 
 func isASCIILetter(c byte) bool {
 	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
-}
-
-// splitAlias splits the expansion of an alias into words as git does: at each run of whitespace
-// outside quotes, with what single quotes hold taken as it is, and a backslash anywhere else
-// standing for the character after it. It reports false where git refuses the expansion: a quote
-// left open, or a backslash at the end.
-func splitAlias(expansion string) ([]string, bool) {
-	var words []string
-	var word strings.Builder
-	var quote byte
-	for i := 0; i < len(expansion); i++ {
-		c := expansion[i]
-		switch {
-		case quote == 0 && isAliasSpace(c):
-			words = append(words, word.String())
-			word.Reset()
-			for i+1 < len(expansion) && isAliasSpace(expansion[i+1]) {
-				i++
-			}
-		case quote == 0 && (c == '\'' || c == '"'):
-			quote = c
-		case c == quote:
-			quote = 0
-		case c == '\\' && quote != '\'':
-			i++
-			if i == len(expansion) {
-				return nil, false
-			}
-
-			word.WriteByte(expansion[i])
-		default:
-			word.WriteByte(c)
-		}
-	}
-
-	if quote != 0 {
-		return nil, false
-	}
-
-	return append(words, word.String()), true
-}
-
-// isAliasSpace reports whether c is one of the whitespace characters git splits an alias at.
-func isAliasSpace(c byte) bool {
-	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }

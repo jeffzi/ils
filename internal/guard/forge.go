@@ -226,7 +226,7 @@ func expandGHAlias(ctx context.Context, runner github.Runner, name string, rest 
 		expansion = strings.ReplaceAll(expansion, "$"+strconv.Itoa(i+1), w.Text)
 	}
 
-	split, ok := splitAlias(strings.TrimSpace(expansion))
+	split, ok := git.SplitCommandLine(strings.TrimSpace(expansion))
 	if !ok || placeholder.MatchString(expansion) {
 		return nil, fmt.Sprintf("gh alias %s has an expansion the guard cannot read: %s", name, expansion), nil
 	}

@@ -471,7 +471,9 @@ func (r Repo) CheckBranchName(ctx context.Context, name string) error {
 
 // Subject returns the first line of the message of the commit sha.
 func (r Repo) Subject(ctx context.Context, sha string) (string, error) {
-	return r.line(ctx, "show", "--no-patch", "--format=%s", sha)
+	// --no-show-signature keeps a user's log.showSignature from printing a verification line that
+	// would read as the subject.
+	return r.line(ctx, "show", "--no-patch", "--no-show-signature", "--format=%s", sha)
 }
 
 // FirstParentHistory returns, newest first, the commits on the first-parent chain of ref that the
@@ -733,7 +735,10 @@ func (r Repo) localBranches(ctx context.Context, filters ...string) ([]string, e
 
 // commits runs git log over revisions and returns its commits, oldest first.
 func (r Repo) commits(ctx context.Context, revisions ...string) ([]Commit, error) {
-	args := append([]string{"log", "--reverse", "--topo-order", commitFormat}, revisions...)
+	// --no-show-signature keeps a user's log.showSignature from printing a verification line that
+	// would read as a commit. The closing -- keeps git from refusing a revision that a work-tree
+	// file shares a name with.
+	args := slices.Concat([]string{"log", "--reverse", "--topo-order", commitFormat}, revisions, []string{"--no-show-signature", "--"})
 
 	result, err := r.Runner.Run(ctx, args...)
 	if err != nil {

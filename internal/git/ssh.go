@@ -216,13 +216,12 @@ func basenameVariant(program string) sshVariant {
 	}
 }
 
-// firstWord returns the first word of line as git splits a command line, which lineWords
-// describes, except that git reads a line that starts with a space as having an empty first word.
-// It returns false when git cannot split line.
+// firstWord returns the first word of line as SplitCommandLine splits it, and false when git
+// cannot split line.
 func firstWord(line string) (string, bool) {
-	words, ok := lineWords(line)
-	if !ok || len(words) == 0 || isSpace(line[0]) {
-		return "", ok
+	words, ok := SplitCommandLine(line)
+	if !ok {
+		return "", false
 	}
 
 	return words[0], true
@@ -235,9 +234,21 @@ func firstWord(line string) (string, bool) {
 // the prefix's options may take the next word as their value (`exec -a name ssh`), so the program
 // cannot be told apart from them. A dash-led first word with no prefix before it is the program.
 func programWord(line string) (string, bool) {
-	words, ok := lineWords(line)
+	// The shell drops the empty words git keeps where whitespace starts or ends a line. Leading
+	// whitespace can be neither quoted nor escaped, so trimming it leaves the other words as they
+	// were; an empty last word after a whitespace character can only come from that whitespace.
+	line = strings.TrimLeft(line, commandLineSpaces)
+	if line == "" {
+		return "", false
+	}
+
+	words, ok := SplitCommandLine(line)
 	if !ok {
 		return "", false
+	}
+
+	if last := len(words) - 1; words[last] == "" && isSpace(line[len(line)-1]) {
+		words = words[:last]
 	}
 
 	assignments, prefixed := true, false
@@ -277,64 +288,58 @@ func IsName(s string) bool {
 	return !strings.ContainsFunc(s, func(c rune) bool { return !isNameChar(c) })
 }
 
-// isNameChar reports whether c is an ASCII letter, digit or underscore.
 func isNameChar(c rune) bool {
 	return c == '_' || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || ('0' <= c && c <= '9')
 }
 
-// lineWords returns the words of line as git splits a command line: spaces outside quotes separate
-// words, single and double quotes group, a pair of quotes with nothing between them is an empty
-// word, and a backslash outside single quotes takes the next character as it is. It returns false
-// when git cannot split line: a quote left open or a trailing backslash.
-func lineWords(line string) ([]string, bool) {
-	var (
-		words  []string
-		word   []byte
-		quote  byte
-		inWord bool
-	)
+// commandLineSpaces are the whitespace characters git splits a command line at; vertical tab and
+// form feed are not among them.
+const commandLineSpaces = " \t\n\r"
 
+// SplitCommandLine returns the words of line as git splits a command line, such as an alias or
+// GIT_SSH_COMMAND: each run of space, tab, newline or carriage return outside quotes separates two
+// words, so a line that starts or ends with one has an empty first or last word. What single quotes
+// hold is taken as it is, double quotes group, and a backslash anywhere else stands for the
+// character after it. It returns at least one word, and false where git refuses line: a quote left
+// open, or a backslash at the end.
+func SplitCommandLine(line string) ([]string, bool) {
+	var words []string
+	var word strings.Builder
+	var quote byte
 	for i := 0; i < len(line); i++ {
 		c := line[i]
-
 		switch {
 		case quote == 0 && isSpace(c):
-			if inWord {
-				words = append(words, string(word))
-				word, inWord = word[:0], false
+			words = append(words, word.String())
+			word.Reset()
+			for i+1 < len(line) && isSpace(line[i+1]) {
+				i++
 			}
-
-			continue
 		case quote == 0 && (c == '\'' || c == '"'):
-			quote, inWord = c, true
-
-			continue
+			quote = c
 		case c == quote:
 			quote = 0
-
-			continue
 		case c == '\\' && quote != '\'':
 			i++
 			if i == len(line) {
 				return nil, false
 			}
 
-			c = line[i]
+			word.WriteByte(line[i])
+		default:
+			word.WriteByte(c)
 		}
-
-		word, inWord = append(word, c), true
 	}
 
-	if inWord {
-		words = append(words, string(word))
+	if quote != 0 {
+		return nil, false
 	}
 
-	return words, quote == 0
+	return append(words, word.String()), true
 }
 
-// isSpace reports whether c is one of the ASCII spaces git splits a command line on.
 func isSpace(c byte) bool {
-	return strings.IndexByte(" \t\n\v\f\r", c) >= 0
+	return strings.IndexByte(commandLineSpaces, c) >= 0
 }
 
 // ---------------------------------------------------------------------------
