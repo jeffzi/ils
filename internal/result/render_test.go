@@ -333,6 +333,52 @@ func TestRenderJSON_WhenResultHasLinesExcerptReasonAndNext_CarriesWhatTheTextSho
 	resulttest.AssertCarried(t, text, result.DeliveredNotGreen, resulttest.Decode(t, out))
 }
 
+// separated is a string holding both Unicode separators a line splitter breaks a line at.
+const separated = "first second third"
+
+// separatorCases returns the cases where a string the JSON copies unfolded holds both separators.
+func separatorCases() []jsonCase {
+	return []jsonCase{
+		{
+			name:   "merge subject in the payload",
+			result: with(donePush(), func(r *result.Result) { r.Payload = &result.Payload{Merge: &result.Merge{Subject: separated}} }),
+			pick: func(s resulttest.Shown) resulttest.Shown {
+				return resulttest.Shown{Payload: &result.Payload{Merge: &result.Merge{Subject: s.Payload.Merge.Subject}}}
+			},
+			want: resulttest.Shown{Payload: &result.Payload{Merge: &result.Merge{Subject: separated}}},
+		},
+		{
+			name:   "word of the command",
+			result: with(donePush(), func(r *result.Result) { r.Words = []string{"push", separated} }),
+			pick:   func(s resulttest.Shown) resulttest.Shown { return resulttest.Shown{Words: s.Words} },
+			want:   resulttest.Shown{Words: []string{"push", separated}},
+		},
+		{
+			name:   "excerpt",
+			result: with(donePush(), func(r *result.Result) { r.Excerpt = separated }),
+			pick:   func(s resulttest.Shown) resulttest.Shown { return resulttest.Shown{Excerpt: s.Excerpt} },
+			want:   resulttest.Shown{Excerpt: separated},
+		},
+	}
+}
+
+func TestRenderJSON_WhenAStringHoldsUnicodeSeparators_EscapesThemAndDecodesBackTheString(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range separatorCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			t.Logf("row: result %s", inputOf(tt.result))
+
+			out, err := result.RenderJSON(tt.result, gitDir)
+			assert.NilError(t, err)
+
+			assert.Check(t, !strings.ContainsAny(out, "  "), "output holds a raw separator:\n%q", out)
+			assert.Check(t, is.DeepEqual(tt.pick(resulttest.Decode(t, out)), tt.want))
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Shared pair cases
 // ---------------------------------------------------------------------------
