@@ -43,12 +43,12 @@ func seeThrough(args []*syntax.Word, words []Word, home string) (int, Invocation
 // envArguments records on inv what an `env` wrapper does to the environment: the options given to
 // it, then its `VAR=…` arguments at the start of args. It returns how many of args those are.
 func envArguments(inv *Invocation, given []option, args []*syntax.Word, home string) int {
-	for _, option := range given {
-		switch option.letter {
+	for _, opt := range given {
+		switch opt.letter {
 		case 'i':
 			inv.env = append(inv.env, envChange{clear: true})
 		case 'u':
-			inv.env = append(inv.env, envChange{unset: option.value})
+			inv.env = append(inv.env, envChange{unset: opt.value})
 		}
 	}
 
@@ -109,6 +109,19 @@ func readsCommand(name string) bool {
 	_, wrapper := wrapperOptionsOf(name)
 
 	return wrapper || slices.Contains([]string{"cd", "pushd", "popd"}, name)
+}
+
+// runsInShell reports whether every one of wrappers runs the command after it in the current shell,
+// so that a `cd` or `eval` behind them changes the shell. Every other wrapper starts a program of
+// its own.
+func runsInShell(wrappers []string) bool {
+	for _, wrapper := range wrappers {
+		if !slices.Contains([]string{"command", "builtin", "time", "noglob", "nocorrect"}, wrapper) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // skipOptions returns how many of words, the words after a wrapper, are options it takes, and the
@@ -178,10 +191,6 @@ func envAssignment(raw *syntax.Word, home string) (Assignment, bool) {
 	parts := slices.Clone(raw.Parts[1:])
 	if rest != "" {
 		parts = slices.Insert(parts, 0, syntax.WordPart(&syntax.Lit{Value: rest}))
-	}
-
-	if len(parts) == 0 {
-		return Assignment{Name: name, Value: Word{Literal: true}}, true
 	}
 
 	return Assignment{Name: name, Value: readWord(&syntax.Word{Parts: parts}, home)}, true

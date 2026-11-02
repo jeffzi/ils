@@ -112,7 +112,7 @@ const (
 
 // classifyPush returns how the push that failed with err ended, the next step of the run req
 // that ends on it, and git's refusal when git refused it. The checks run in that order: a push cut
-// short is also a *git.RemoteError, so the interrupt and the time limit come before it.
+// short is also an ErrRemote failure of git, so the interrupt and the time limit come before it.
 func classifyPush(req Request, err error) (failure pushFailure, next result.Next, refused *git.PushError) {
 	if interrupted(err) {
 		return pushInterrupted, req.again(), nil
@@ -126,7 +126,7 @@ func classifyPush(req Request, err error) (failure pushFailure, next result.Next
 		return pushRefusedByGit, req.onceFixed(), refused
 	}
 
-	if _, ok := errors.AsType[*git.RemoteError](err); ok {
+	if errors.Is(err, git.ErrRemote) {
 		return pushUnanswered, req.again(), nil
 	}
 
@@ -147,19 +147,19 @@ func (d *delivery) pushFailed(err error) *result.Result {
 	switch failure {
 	case pushInterrupted:
 		return d.endedSaying(
-			result.Say("Started the push of %s at %s when "+runInterrupted+"; it may or may not have taken",
+			result.Say("Started the push of %s at %s when "+runInterrupted+mayHaveTaken,
 				d.markedBranch(), d.markedTip()),
 			result.Say(runInterrupted+" during the push"), next)
 	case pushTimedOut:
 		return d.endedSaying(
-			result.Say("Started the push of %s at %s when "+timeLimitEnded+"; it may or may not have taken",
+			result.Say("Started the push of %s at %s when "+timeLimitEnded+mayHaveTaken,
 				d.markedBranch(), d.markedTip(), d.req.limitWords()),
 			result.Say(timeLimitEnded+" during the push", d.req.limitWords()), next)
 	case pushRefusedByGit:
 		return d.pushRefused(refused)
 	case pushUnanswered:
 		return d.endedSaying(
-			result.Say("Started the push of %s at %s when "+originStopped+"; it may or may not have taken: %s",
+			result.Say("Started the push of %s at %s when "+originStopped+mayHaveTaken+": %s",
 				d.markedBranch(), d.markedTip(), err.Error()),
 			result.Say(originStopped+" during the push"), next)
 	case pushKilled:
@@ -167,8 +167,6 @@ func (d *delivery) pushFailed(err error) *result.Result {
 			result.Say("The push of %s at %s did not finish, so it may or may not have taken: %s",
 				d.markedBranch(), d.markedTip(), err.Error()),
 			result.Say("the push did not finish"), next)
-	case pushNotStarted:
-		fallthrough
 	default:
 		return d.endedSaying(
 			result.Say("Could not push %s, so nothing was pushed: %s", d.markedBranch(), err.Error()),

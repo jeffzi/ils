@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jeffzi/ils/internal/commandline"
 	"github.com/jeffzi/ils/internal/landing"
 )
 
@@ -162,7 +163,7 @@ ils status
 # The same result as one JSON object
 ils status --json`
 
-	parseWord  = landing.ParseCommand
+	parseWord  = commandline.ParseCommand
 	parseUse   = parseWord + " --cwd <dir> -- '<command>'"
 	parseShort = "Show how the guard reads a shell command"
 	parseLong  = `Read a shell command as the guard does, as run from <dir>, and show every
@@ -180,7 +181,7 @@ ils parse --cwd . -- 'git switch main && git pull'
 # The same as one JSON object, for a filter such as jq
 ils parse --cwd . --json -- 'git push'`
 
-	guardWord  = landing.GuardCommand
+	guardWord  = commandline.GuardCommand
 	guardUse   = guardWord + " --cwd <dir> -- '<command>'"
 	guardShort = "Judge a shell command as the guard does"
 	guardLong  = `Read a shell command as the guard does, as run from <dir>, and judge
@@ -198,7 +199,7 @@ ils guard --cwd . -- 'git push --force'
 # The verdict, its reason and every command, as one JSON object
 ils guard --cwd . --json -- 'ils merge'`
 
-	hookWord  = landing.HookCommand
+	hookWord  = commandline.HookCommand
 	hookUse   = hookWord + " <harness>"
 	hookShort = "Judge a coding agent's shell command as its pre-tool hook"
 	hookLong  = `Read the payload a coding agent's harness hands its pre-tool hook on

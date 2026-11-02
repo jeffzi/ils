@@ -78,16 +78,6 @@ func newForge() *github.Forge {
 // ghArgv is the argv of a call whose arguments are args, led by `gh`.
 func ghArgv(args []string) []string { return append([]string{"gh"}, args...) }
 
-// received is the calls the fake is expected to record, each led by `gh`.
-func received(calls ...[]string) [][]string {
-	led := make([][]string, len(calls))
-	for i, call := range calls {
-		led[i] = ghArgv(call)
-	}
-
-	return led
-}
-
 func featureChange() forge.NewChange {
 	return forge.NewChange{Title: featureTitle, Base: trunk, Head: featureBranch}
 }
@@ -141,14 +131,22 @@ func pullRequestRule(id int, methods string) string {
 		`,"parameters":{"required_approving_review_count":0,"allowed_merge_methods":` + methods + `}}`
 }
 
-func workflowsArgs() []string {
-	return []string{"api", "--hostname", engineHost, "--paginate", "repos/ada/engine/actions/workflows"}
+// apiArgs is the argv of the read of rest under the engine repository.
+func apiArgs(rest string) []string {
+	return []string{"api", "--hostname", engineHost, "repos/ada/engine/" + rest}
 }
+
+// pagedAPIArgs is the argv of the paginated read of rest under the engine repository.
+func pagedAPIArgs(rest string) []string {
+	return []string{"api", "--hostname", engineHost, "--paginate", "repos/ada/engine/" + rest}
+}
+
+func workflowsArgs() []string { return pagedAPIArgs("actions/workflows") }
 
 func workflowFilesArgs() []string { return workflowFilesArgsAt(trunk) }
 
 func workflowFilesArgsAt(ref string) []string {
-	return []string{"api", "--hostname", engineHost, "repos/ada/engine/contents/.github/workflows?ref=" + ref}
+	return apiArgs("contents/.github/workflows?ref=" + ref)
 }
 
 // workflowJSON is one entry of the workflow list's answer: the workflow at file, in state.
@@ -938,17 +936,12 @@ func TestForge_PublishRelease_WhenTheNotesFileCannotBeRemoved_ReturnsTheURLWithT
 	// os.TempDir reads TMP on Windows and TMPDIR everywhere else.
 	t.Setenv("TMPDIR", tmp)
 	t.Setenv("TMP", tmp)
-	created := ghtest.Answer{Stdout: releaseURL + "\n", Delay: time.Second}
+	created := ghtest.Answer{Stdout: releaseURL + "\n", Delay: time.Nanosecond}
 	fake := ghtest.Setup(t, ghtest.Exits(created, releaseCreateArgs(false)...))
-	blocked := make(chan error, 1)
-	go func() {
-		<-fake.Holding()
-		blocked <- blockRemoval(tmp)
-	}()
+	fake.WhileHolding(func() error { return blockRemoval(tmp) })
 
 	got, err := newForge().PublishRelease(t.Context(), engine(), newRelease(false))
 
-	assert.NilError(t, <-blocked)
 	assert.Check(t, is.Equal(got, releaseURL))
 	notes := notesFiles(fake.Calls())
 	assert.Assert(t, is.Len(notes, 1), "calls = %q, want one --notes-file", fake.Calls())

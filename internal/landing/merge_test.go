@@ -222,7 +222,7 @@ func assertStoppedBeforeWait(t *testing.T, tt mergeRow, end mergeEnd, run mergeR
 
 	assert.Check(t, is.DeepEqual(mergePayload(t, run.got), want, cmpopts.EquateEmpty()))
 
-	assert.Check(t, is.DeepEqual(run.forge.Calls(), mergeAsked(tt.ops), whichRepo()))
+	assert.Check(t, sameCalls(run.forge.Calls(), mergeAsked(tt.ops)))
 	assert.Check(t, run.gitRan("fetch"), "git did not fetch from origin before the run stopped")
 }
 
@@ -442,7 +442,7 @@ func TestMerge_WhenTheMergedPullRequestLacksCommitsOfTheBranch_RefusesNamingTheM
 		_, reason := shown(t, run.got, run.gitDir)
 		assertSays(t, reason, expect("#"+strconv.Itoa(merged), topic, "merged without the commits"))
 		assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(head, ""), cmpopts.EquateEmpty()))
-		assert.Check(t, is.DeepEqual(run.forge.Calls(), asked(changesRead()), whichRepo()))
+		assert.Check(t, sameOps(run.forge.Calls(), changesRead()))
 	})
 }
 
@@ -605,6 +605,15 @@ func mergePayload(t *testing.T, got result.Result) *result.Merge {
 	assertChecksArray(t, got.Payload.Merge.Checks)
 
 	return got.Payload.Merge
+}
+
+// assertMergePayload fails unless the merge payload of run equals want with its SHA set to the tip
+// of run, nil and empty slices equated.
+func assertMergePayload(t *testing.T, run mergeRun, want result.Merge) {
+	t.Helper()
+
+	want.SHA = run.tip
+	assert.Check(t, is.DeepEqual(mergePayload(t, run.got), &want, cmpopts.EquateEmpty()))
 }
 
 // assertChecksArray fails when a payload's checks are nil, which the JSON prints as null where its
@@ -810,9 +819,7 @@ func runWaits(t *testing.T, rows []waitRow) {
 			synctest.Test(t, func(t *testing.T) {
 				run := runMergeOn(t, setting{script: tt.script, left: tt.left, cut: tt.cut})
 
-				want := *tt.payload
-				want.SHA = run.tip
-				assert.Check(t, is.DeepEqual(mergePayload(t, run.got), &want, cmpopts.EquateEmpty()))
+				assertMergePayload(t, run, *tt.payload)
 				assert.Check(t, is.Equal(run.written(), run.before))
 				assertEndedBy(t, run.got, run.gitDir, ended{text: mark(tt.text, run.tip), req: mergeRequest(), outcome: tt.outcome})
 			})
@@ -1049,9 +1056,7 @@ func TestMerge_WhenTheMessageReadLeavesExactlyTheReserve_Merges(t *testing.T) {
 
 		assertStoppedBy(t, run.got, result.Done, mergeRequest())
 
-		want := made(composed(squashSubject, ""))
-		want.SHA = run.tip
-		assert.Check(t, is.DeepEqual(mergePayload(t, run.got), want, cmpopts.EquateEmpty()))
+		assertMergePayload(t, run, *made(composed(squashSubject, "")))
 	})
 }
 
@@ -1093,9 +1098,7 @@ func TestMerge_WhenEveryCheckBeforeTheMergeHolds_ComposesTheMessageFromThePullRe
 
 				assertStoppedBy(t, run.got, result.Done, mergeRequest())
 
-				want := *tt.payload
-				want.SHA = run.tip
-				assert.Check(t, is.DeepEqual(mergePayload(t, run.got), &want, cmpopts.EquateEmpty()))
+				assertMergePayload(t, run, *tt.payload)
 			})
 		})
 	}
@@ -1116,9 +1119,7 @@ func TestMerge_WhenTheHeadMovesPastThePushedCommit_RefusesWithoutMerging(t *test
 		run := runMergeIn(t, script, 0)
 
 		assertEndedBy(t, run.got, run.gitDir, ended{text: movedTo() + mergeCommand().after("pull the new commit"), req: mergeRequest(), outcome: result.Refused})
-		want := mergeDetail(forge.VerdictNone, forge.MergeUnknown)
-		want.SHA = run.tip
-		assert.Check(t, is.DeepEqual(mergePayload(t, run.got), want, cmpopts.EquateEmpty()))
+		assertMergePayload(t, run, *mergeDetail(forge.VerdictNone, forge.MergeUnknown))
 		assert.Check(t, is.Equal(run.written(), run.before))
 	})
 }

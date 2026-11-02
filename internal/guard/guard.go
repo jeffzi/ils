@@ -17,10 +17,12 @@ const readDeadline = 5 * time.Second
 // strictest, and a command takes the strictest outcome of its invocations.
 type Outcome int
 
-// Ask leaves the decision to the user instead of the guard.
 const (
+	// Allow lets the command run.
 	Allow Outcome = iota
+	// Ask leaves the decision to the user instead of the guard.
 	Ask
+	// Refuse stops the command and shows the user the reason.
 	Refuse
 )
 

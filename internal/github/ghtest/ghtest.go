@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -63,8 +64,7 @@ type Answer struct {
 	Code  int
 }
 
-// scriptFormat returns the duration format of the script file: Setup and the fake must encode and
-// decode the script with the same one.
+// scriptFormat is the encoding option that writes and reads a Delay as integer nanoseconds.
 func scriptFormat() json.Options {
 	return legacy.FormatDurationAsNano(true)
 }
@@ -337,7 +337,9 @@ func JSONArray(items ...string) string {
 type Fake struct {
 	tb      testing.TB
 	holding <-chan struct{}
-	record  string
+	// whileHeld is the action WhileHolding set, nil until it is called.
+	whileHeld atomic.Pointer[func() error]
+	record    string
 }
 
 // Main makes the test binary act as gh when Setup arranged for it, and reports whether it did.
@@ -352,7 +354,7 @@ func Main() (code int, served bool) {
 
 	places := servePlaces{script: script, record: os.Getenv(recordEnv), holdAddr: os.Getenv(holdEnv)}
 
-	return serve(context.Background(), places, os.Args[1:]), true
+	return serve(places, os.Args[1:]), true
 }
 
 // Setup points GH_PATH at the test binary for the rest of the test and scripts its answers.
@@ -379,8 +381,9 @@ func Setup(tb testing.TB, script ...Call) *Fake {
 	}
 
 	record := filepath.Join(dir, "record.jsonl")
-	holdAddr, holding := listenForHolds(tb, record)
-	fake := &Fake{tb: tb, holding: holding, record: record}
+	fake := &Fake{tb: tb, record: record}
+	holdAddr, holding := listenForHolds(tb, record, &fake.whileHeld)
+	fake.holding = holding
 
 	tb.Setenv("GORACE", gittest.RaceSetting())
 	tb.Setenv("GH_PATH", exe)
@@ -403,24 +406,35 @@ type hold struct {
 // child process, so the dial is how the moment reaches the test process.
 //
 // The fake waits for the server's acknowledgement before it holds its answer, and the server
-// sends it only once it has checked the held call against record and closed the channel. So the
-// channel is closed before the held call can end, and a fake that dials before recording the
-// call fails the test, whatever the scheduling.
-func listenForHolds(tb testing.TB, record string) (addr string, holding <-chan struct{}) {
+// sends it only once it has checked the held call against record, closed the channel, and run
+// the action whileHeld points to, if any, failing the test when the action returns an error. So
+// the channel is closed and the action has returned before the held call can end, and a fake
+// that dials before recording the call fails the test, whatever the scheduling.
+func listenForHolds(tb testing.TB, record string, whileHeld *atomic.Pointer[func() error]) (addr string, holding <-chan struct{}) {
 	tb.Helper()
 
 	firstHold := make(chan struct{})
 
 	announced := sync.OnceFunc(func() { close(firstHold) })
 
-	addr = gittest.Serve(tb, func(conn net.Conn) { acknowledgeHold(tb, conn, record, announced) })
+	held := func() {
+		announced()
+
+		if action := whileHeld.Load(); action != nil {
+			if err := (*action)(); err != nil {
+				tb.Errorf("ghtest: the action run while holding the answer: %v", err)
+			}
+		}
+	}
+
+	addr = gittest.Serve(tb, func(conn net.Conn) { acknowledgeHold(tb, conn, record, held) })
 
 	return addr, firstHold
 }
 
 // acknowledgeHold reads the hold the fake sends over conn, fails the test unless record already
-// holds the call, calls announced, and only then lets the fake go on.
-func acknowledgeHold(tb testing.TB, conn net.Conn, record string, announced func()) {
+// holds the call, calls held, and only then lets the fake go on.
+func acknowledgeHold(tb testing.TB, conn net.Conn, record string, held func()) {
 	// The acknowledgement already reached the fake, or the fake is gone and has nothing left to
 	// read: a failed close loses nothing.
 	defer func() { _ = conn.Close() }()
@@ -442,7 +456,7 @@ func acknowledgeHold(tb testing.TB, conn net.Conn, record string, announced func
 		tb.Errorf("ghtest: %v", err)
 	}
 
-	announced()
+	held()
 
 	// Closing the channel lets the test cut the run, which kills the fake: a fake gone before the
 	// acknowledgement reaches it was going to be killed anyway, and one still there that misses
@@ -492,6 +506,13 @@ func (f *Fake) Holding() <-chan struct{} {
 	return f.holding
 }
 
+// WhileHolding sets the action the test process runs each time the fake holds an answer open,
+// after Holding's channel closes. The fake neither answers nor exits until the action returns,
+// however long it takes, and an error it returns fails the test. A later call replaces the action.
+func (f *Fake) WhileHolding(action func() error) {
+	f.whileHeld.Store(&action)
+}
+
 // Calls returns every argv the fake received, each starting with gh, in order.
 func (f *Fake) Calls() [][]string {
 	f.tb.Helper()
@@ -517,7 +538,7 @@ type servePlaces struct {
 
 // serve answers one call of the fake and returns its exit code; before it holds an answer open,
 // it tells the test process at places.holdAddr and waits for its acknowledgement.
-func serve(ctx context.Context, places servePlaces, args []string) int {
+func serve(places servePlaces, args []string) int {
 	script, err := readScript(places.script)
 	if err != nil {
 		return broken(err)
@@ -546,7 +567,7 @@ func serve(ctx context.Context, places servePlaces, args []string) int {
 
 	answer := script[index].Answer
 	if answer.Delay > 0 {
-		if err := announceHold(ctx, places.holdAddr, hold{Args: args, Earlier: earlier}); err != nil {
+		if err := announceHold(places.holdAddr, hold{Args: args, Earlier: earlier}); err != nil {
 			return broken(err)
 		}
 
@@ -565,9 +586,9 @@ func serve(ctx context.Context, places servePlaces, args []string) int {
 }
 
 // announceHold tells the test process, listening at addr, that the fake is about to hold its
-// answer to held's call open, and returns once the test process has acknowledged it or ctx's
-// deadline, when it has one, passes.
-func announceHold(ctx context.Context, addr string, held hold) (err error) {
+// answer to held's call open, and returns once the test process has acknowledged it, with no
+// deadline.
+func announceHold(addr string, held hold) (err error) {
 	line, err := json.Marshal(held)
 	if err != nil {
 		return fmt.Errorf("encode the held call: %w", err)
@@ -575,7 +596,9 @@ func announceHold(ctx context.Context, addr string, held hold) (err error) {
 
 	var dialer net.Dialer
 
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	// The fake is a child process with no caller to cancel it: the test process ends it by killing
+	// it, so the dial needs no context of its own.
+	conn, err := dialer.DialContext(context.Background(), "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("announce the held answer to %s: %w", addr, err)
 	}
@@ -585,12 +608,6 @@ func announceHold(ctx context.Context, addr string, held hold) (err error) {
 			err = fmt.Errorf("close the announcement of the held answer: %w", closeErr)
 		}
 	}()
-
-	if deadline, ok := ctx.Deadline(); ok {
-		if err := conn.SetDeadline(deadline); err != nil {
-			return fmt.Errorf("bound the announcement of the held answer to %s: %w", addr, err)
-		}
-	}
 
 	if _, err := conn.Write(append(line, '\n')); err != nil {
 		return fmt.Errorf("announce the held answer to %s: %w", addr, err)

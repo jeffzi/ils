@@ -9,7 +9,7 @@ import (
 	"github.com/jeffzi/ils/internal/child"
 )
 
-// The targets a test suite can be asked to run against. An unset target means Latest.
+// An unset target means Latest.
 const (
 	// Minimum asks for exactly the minimum version ils enforces.
 	Minimum = "minimum"

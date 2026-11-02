@@ -3,7 +3,7 @@
 package guard
 
 import (
-	"fmt"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -30,6 +30,9 @@ type GitTarget struct {
 type scope struct {
 	// dir is the directory commands run in; empty when unknown.
 	dir string
+	// shell is the program name of the shell the commands run in: one of shellNames, or empty on
+	// the command line itself, whose shell the guard cannot tell.
+	shell string
 	// redirects are the redirects in effect on the shell's own descriptors: those of each compound
 	// command the walk is inside, outermost first, then those an `exec` with no command made.
 	redirects []Redirect
@@ -73,12 +76,63 @@ func merge(a, b scope) scope {
 	a.env.cdPath = a.env.cdPath.or(b.env.cdPath)
 	a.env.ghConfig = a.env.ghConfig.or(b.env.ghConfig)
 	a.functions = mergeFunctions(a.functions, b.functions)
-	if _, toFile := stdoutFile(a.redirects); !toFile {
-		// Either side's stdout may be in effect, so the one that sends it to a file decides.
-		a.redirects = b.redirects
-	}
+	a.redirects = mergeRedirects(a.redirects, b.redirects)
 
 	return a
+}
+
+// mergeRedirects returns the redirects in effect when either a or b may be. The shell is then in
+// a's state or b's, so a descriptor is on a file exactly when a or b leaves it on one: an `exec` on
+// either side holds. Both begin with the redirects they share, which the result keeps in front,
+// followed by a's own, then b's own, then the redirects that settle each descriptor the order of
+// the two left on the wrong file, or on none: where both leave it on a file, on a's.
+func mergeRedirects(a, b []Redirect) []Redirect {
+	if slices.Equal(a, b) {
+		return a
+	}
+
+	shared := 0
+	for shared < min(len(a), len(b)) && a[shared] == b[shared] {
+		shared++
+	}
+
+	merged := slices.Concat(a, b[shared:])
+	wanted := filesOf(b)
+	maps.Copy(wanted, filesOf(a))
+
+	return slices.Concat(merged, settled(filesOf(merged), wanted))
+}
+
+// settled returns the redirects that, applied after those that left each descriptor on the file
+// files names, put it on the file wanted names, in descriptor order: one wanted on no file is
+// closed, and one wanted on another file is opened on it.
+func settled(files, wanted map[string]Word) []Redirect {
+	fds := slices.Concat(slices.Collect(maps.Keys(files)), slices.Collect(maps.Keys(wanted)))
+	slices.Sort(fds)
+
+	var fixes []Redirect
+	for _, fd := range slices.Compact(fds) {
+		current, onFile := files[fd]
+		target, wantFile := wanted[fd]
+		switch {
+		case wantFile && current != target:
+			fixes = append(fixes, Redirect{Fd: fd, Op: ">", Target: target})
+		case !wantFile && onFile:
+			fixes = append(fixes, Redirect{Fd: fd, Op: ">&", Target: Word{Text: "-", Literal: true}})
+		}
+	}
+
+	return fixes
+}
+
+// filesOf returns the file each descriptor is open on once redirects apply in order.
+func filesOf(redirects []Redirect) map[string]Word {
+	files := map[string]Word{}
+	for _, r := range redirects {
+		applyRedirect(files, r)
+	}
+
+	return files
 }
 
 // moved returns the directory that going to w from dir leads to, empty when the guard cannot tell.
@@ -127,16 +181,16 @@ func (w *walker) list(stmts []*syntax.Stmt, sc *scope) {
 func (w *walker) stmt(stmt *syntax.Stmt, sc *scope) {
 	if stmt.Background || stmt.Coprocess {
 		inner := *sc
-		w.race(&inner, func(s *scope) { w.statement(stmt, s) })
+		w.race(&inner, func(s *scope) { w.stmtInPlace(stmt, s) })
 
 		return
 	}
 
-	w.statement(stmt, sc)
+	w.stmtInPlace(stmt, sc)
 }
 
-// statement walks stmt as the shell runs it once it has placed any background job.
-func (w *walker) statement(stmt *syntax.Stmt, sc *scope) {
+// stmtInPlace walks stmt as the shell runs it once it has placed any background job.
+func (w *walker) stmtInPlace(stmt *syntax.Stmt, sc *scope) {
 	if w.simple(stmt, sc) {
 		return
 	}
@@ -153,33 +207,50 @@ func (w *walker) statement(stmt *syntax.Stmt, sc *scope) {
 }
 
 // restored returns the redirects in effect once a command whose own redirects are own ends, given
-// those in effect before it and those at its end. bash restores each descriptor the command
-// redirected, so what an `exec` inside it did to stdout holds after it only when the command
-// leaves stdout alone.
+// those in effect before it and those at its end. bash and zsh put back only each descriptor the
+// command redirected, so what an `exec` inside it did to any other descriptor holds after it.
 func restored(before, own, after []Redirect) []Redirect {
-	switch {
-	case len(own) == 0:
+	if len(own) == 0 {
 		return after
-	case slices.ContainsFunc(own, ontoStdout):
-		return before
-	default:
-		return slices.Concat(before, after[len(before)+len(own):])
 	}
+
+	files := filesOf(after)
+	beforeFiles := filesOf(before)
+	wanted := maps.Clone(files)
+	for _, r := range own {
+		for _, fd := range touched(r) {
+			delete(wanted, fd)
+			if target, onFile := beforeFiles[fd]; onFile {
+				wanted[fd] = target
+			}
+		}
+	}
+
+	return slices.Concat(after, settled(files, wanted))
 }
 
-// ontoStdout reports whether the redirect r changes where stdout goes: `&>` and any redirect of
-// descriptor 1 do, an unnumbered input redirect does not.
+// touched returns the descriptors the redirect r changes: `&>`, and `>&` onto a word that is no
+// descriptor, change stdout and stderr; an unnumbered redirect changes stdin when it reads, and
+// stdout otherwise.
+func touched(r Redirect) []string {
+	if strings.HasPrefix(r.Op, "&>") || (r.Op == ">&" && r.Fd == "" && !isDescriptor(r.Target)) {
+		return []string{stdoutFd, stderrFd}
+	}
+
+	if r.Fd != "" {
+		return []string{r.Fd}
+	}
+
+	if strings.HasPrefix(r.Op, "<") {
+		return []string{stdinFd}
+	}
+
+	return []string{stdoutFd}
+}
+
+// ontoStdout reports whether the redirect r changes where stdout goes.
 func ontoStdout(r Redirect) bool {
-	if strings.HasPrefix(r.Op, "&>") {
-		return true
-	}
-
-	fd := r.Fd
-	if fd == "" && !strings.HasPrefix(r.Op, "<") {
-		fd = stdoutFd
-	}
-
-	return fd == stdoutFd
+	return slices.Contains(touched(r), stdoutFd)
 }
 
 func (w *walker) compound(cmd syntax.Command, sc *scope) {
@@ -368,137 +439,6 @@ func (w *walker) substitutions(node syntax.Node, sc *scope) {
 	})
 }
 
-// script walks the string that the invocation inv runs, one level deeper, starting with the
-// environment inv runs with. A shell runs it in a process of its own, so nothing it changes holds
-// after it. `eval` runs it in the shell itself, so the directory it leaves holds after it, and so
-// does what it does to the shell's variables, while inv's assignment prefix and `env` wrappers end
-// with it.
-func (w *walker) script(script string, inv Invocation, sc *scope) {
-	name := inv.Words[0].Text
-	inner := sc.runScope(inv)
-	inner.allexport = inner.allexport || startsAllexport(inv.Words)
-	file, err := w.walkString(script, &inner)
-	if err != nil {
-		w.err = fmt.Errorf("parse the string %q runs: %w", name, err)
-
-		return
-	}
-
-	if name != "eval" {
-		return
-	}
-
-	sc.functions = inner.functions
-	sc.allexport = inner.allexport
-
-	// A dry run of the string from the shell's own environment leaves each variable as the string
-	// sets it, or as the shell had it when the string does not touch it.
-	after := *sc
-	at := len(w.kept)
-	w.nested(file, &after)
-	w.kept = w.kept[:at]
-	sc.dir = inner.dir
-	sc.physical = inner.physical
-	sc.env = after.env
-	sc.redirects = restored(sc.redirects, inv.Redirects, inner.redirects)
-}
-
-// runScope returns the scope a string the invocation inv has run starts in, run from sc: the
-// environment inv runs with, and its own redirects in effect after those of the shell.
-func (sc *scope) runScope(inv Invocation) scope {
-	inner := *sc
-	inner.env = sc.commandEnv(inv)
-	inner.redirects = slices.Concat(sc.redirects, inv.Redirects)
-
-	return inner
-}
-
-// laterScope returns the scope of a string a variable set for later commands holds: any later
-// command may run it, from a directory and with git variables the guard cannot tell.
-func laterScope() scope {
-	return scope{env: unknownEnvironment()}
-}
-
-// commandVariables are the variables whose value git runs as a shell command: its own, and the
-// EDITOR, VISUAL, and PAGER it falls back to when neither its variable nor its config is set.
-func commandVariables() []string {
-	return []string{"GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_PAGER", "EDITOR", "VISUAL", "PAGER"}
-}
-
-// variableScripts returns the value of each of assignments that sets one of commandVariables, and
-// marks inv instead when one is not a literal or would nest past maxDepth.
-func (w *walker) variableScripts(inv *Invocation, assignments []Assignment) []string {
-	var values []Word
-	for _, a := range assignments {
-		if slices.Contains(commandVariables(), a.Name) {
-			values = append(values, a.Value)
-		}
-	}
-
-	return runnableScripts(inv, w.depth, values)
-}
-
-// variableCommands walks scripts, the shell commands a variable git reads holds, one level deeper
-// from sc.
-func (w *walker) variableCommands(scripts []string, sc scope) {
-	for _, script := range scripts {
-		inner := sc
-		if _, err := w.walkString(script, &inner); err != nil {
-			w.err = fmt.Errorf("parse the string a git variable holds: %w", err)
-
-			return
-		}
-	}
-}
-
-// nested walks the commands of file, a string run one level deeper, from sc.
-func (w *walker) nested(file *syntax.File, sc *scope) {
-	sc.env.forgetCDPath(file)
-	w.depth++
-	w.list(file.Stmts, sc)
-	w.depth--
-}
-
-// walkString reads script, a string run one level deeper, and walks it from sc. It returns the file
-// it read, and the error of reading or walking it.
-func (w *walker) walkString(script string, sc *scope) (*syntax.File, error) {
-	file, err := read(script)
-	if err != nil {
-		return nil, err
-	}
-
-	w.nested(file, sc)
-
-	return file, w.err
-}
-
-// runnableScripts returns the text of each of values, the shell commands inv has something run at
-// depth levels of nesting, that is walked: none when they would nest past maxDepth. It marks inv
-// when one of them is not a literal or they would nest too deep.
-func runnableScripts(inv *Invocation, depth int, values []Word) []string {
-	scripts, mark := literalScripts(values)
-	runs, mark := capDepth(depth, len(scripts) > 0, mark)
-	if !runs {
-		scripts = nil
-	}
-
-	if mark != "" {
-		inv.Marks = append(inv.Marks, Mark{Kind: mark})
-	}
-
-	return scripts
-}
-
-// capDepth reports whether a string that runs at depth levels of nesting is walked, and the mark
-// for it: runs is cleared and the mark is DeepScript for one that would nest past maxDepth.
-func capDepth(depth int, runs bool, mark MarkKind) (bool, MarkKind) {
-	if runs && depth == maxDepth {
-		return false, DeepScript
-	}
-
-	return runs, mark
-}
-
 // placed returns inv with where it runs: its directory, where it points git, and where a gh
 // invocation's gh reads its config. It leaves sc's functions as those callMarks reads.
 func (w *walker) placed(inv Invocation, sc *scope) Invocation {
@@ -534,13 +474,13 @@ func (sc *scope) apply(inv Invocation) {
 		return
 	}
 
-	if !inv.Words[0].Literal {
+	if !inv.Words[0].Literal || !runsInShell(inv.Wrappers) {
 		return
 	}
 
 	switch inv.Words[0].Text {
 	case "set":
-		sc.allexport = allexportAfter(inv.Words[1:], sc.allexport)
+		sc.allexport = allexportAfter(sc.shell, inv.Words[1:], sc.allexport)
 	case "cd", "pushd":
 		sc.cd(inv.Words[1:], sc.commandEnv(inv).cdPath)
 	case "popd":
@@ -573,9 +513,9 @@ func execsNothing(words []Word) bool {
 	return i+1+n == len(words)
 }
 
-// allexportAfter returns whether `set` given args leaves allexport on, given whether it was on
-// before. An option the guard cannot read may turn it on.
-func allexportAfter(args []Word, on bool) bool {
+// allexportAfter returns whether `set` given args, run by the shell named shell, leaves allexport
+// on, given whether it was on before. An option the guard cannot read may turn it on.
+func allexportAfter(shell string, args []Word, on bool) bool {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if !arg.Literal {
@@ -593,7 +533,7 @@ func allexportAfter(args []Word, on bool) bool {
 				on = enable
 			case letter == 'o' && i+1 < len(args):
 				i++
-				on = setsAllexport(args[i], enable, on)
+				on = setsAllexport(shell, args[i], enable, on)
 			}
 		}
 	}
@@ -601,13 +541,20 @@ func allexportAfter(args []Word, on bool) bool {
 	return on
 }
 
-// setsAllexport returns whether `set -o name`, or `set +o name` when enable is false, leaves
-// allexport on, given whether it was on before.
-func setsAllexport(name Word, enable, on bool) bool {
+// setsAllexport returns whether `set -o name`, or `set +o name` when enable is false, run by the
+// shell named shell, leaves allexport on, given whether it was on before. zsh ignores case and
+// underscores in the name; bash, sh and dash match it exactly. An unknown shell, empty, may be
+// zsh, so it is read the way zsh reads it.
+func setsAllexport(shell string, name Word, enable, on bool) bool {
+	text := name.Text
+	if shell == "zsh" || shell == "" {
+		text = zshOptionName(text)
+	}
+
 	switch {
 	case !name.Literal:
 		return on || enable
-	case name.Text == "allexport":
+	case text == "allexport":
 		return enable
 	default:
 		return on
@@ -630,9 +577,10 @@ func (sc *scope) cd(args []Word, cdPath variable) {
 		return strings.ContainsRune(o.Text, 'P')
 	})
 	switch {
-	case target.Literal && (target.Text == "" || strings.ContainsAny(target.Text[:1], "-+")),
-		target.Literal && cdPath != (variable{}) && !filepath.IsAbs(target.Text),
-		target.Literal && leavesThroughLinks(target.Text, physical, sc.physical):
+	case !target.Literal,
+		target.Text == "" || strings.ContainsAny(target.Text[:1], "-+"),
+		cdPath != (variable{}) && !filepath.IsAbs(target.Text),
+		leavesThroughLinks(target.Text, physical, sc.physical):
 		sc.dir = ""
 	default:
 		sc.dir = moved(sc.dir, target)
@@ -720,10 +668,10 @@ func (w *walker) keep(inv Invocation) {
 // come before it, a dry run of a body that may repeat before the body itself, and a dry run of a
 // background job or pipe stage before the commands already walked.
 func (w *walker) returned() []Invocation {
-	moved := false
+	headMoved := false
 	for i := range w.walked {
-		w.walked[i].HeadUnknown = moved
-		moved = moved || movesHead(w.walked[i])
+		w.walked[i].HeadUnknown = headMoved
+		headMoved = headMoved || movesHead(w.walked[i])
 	}
 
 	var invocations []Invocation
@@ -767,7 +715,13 @@ func (w *walker) loopVariable(c *syntax.ForClause, sc *scope) {
 		return
 	}
 
-	if marks := gitVariableMarks([]string{iter.Name.Value}); len(marks) > 0 {
+	w.keepGitVariableMarks([]string{iter.Name.Value}, sc)
+}
+
+// keepGitVariableMarks keeps an invocation placed at sc that holds the GitVariable mark of each of
+// names that is a GIT_* variable off the allow list, and keeps none when no name is.
+func (w *walker) keepGitVariableMarks(names []string, sc *scope) {
+	if marks := gitVariableMarks(names); len(marks) > 0 {
 		w.keep(w.placed(Invocation{Marks: marks}, sc))
 	}
 }
@@ -802,38 +756,10 @@ func (w *walker) exportedDefaults(node syntax.Node, sc *scope) {
 		return true
 	})
 
-	if marks := gitVariableMarks(names); len(marks) > 0 {
-		w.keep(w.placed(Invocation{Marks: marks}, sc))
-	}
+	w.keepGitVariableMarks(names, sc)
 }
 
 // assignsDefault reports whether p is a `${NAME:=word}` or `${NAME=word}`, which assigns NAME.
 func assignsDefault(p *syntax.ParamExp) bool {
 	return p.Param != nil && p.Exp != nil && (p.Exp.Op == syntax.AssignUnset || p.Exp.Op == syntax.AssignUnsetOrNull)
-}
-
-// startsAllexport reports whether words, the words of `bash`, `sh`, `zsh`, or `dash` running a
-// string, give the shell `-a` or `-o allexport`, which the string's commands run under. A long
-// option is skipped, with the file `--rcfile` and `--init-file` read.
-func startsAllexport(words []Word) bool {
-	if len(words) == 0 || !words[0].Literal ||
-		!slices.Contains([]string{"bash", "sh", "zsh", "dash"}, filepath.Base(words[0].Text)) {
-		return false
-	}
-
-	var options []Word
-	for i := 1; i < len(words); i++ {
-		word := words[i]
-		if !word.Literal || len(word.Text) <= 2 || !strings.HasPrefix(word.Text, "--") {
-			options = append(options, word)
-
-			continue
-		}
-
-		if word.Text == "--rcfile" || word.Text == "--init-file" {
-			i++
-		}
-	}
-
-	return allexportAfter(options, false)
 }

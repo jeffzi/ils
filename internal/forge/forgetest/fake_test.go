@@ -3,7 +3,6 @@ package forgetest_test
 import (
 	"context"
 	"errors"
-	"reflect"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -215,8 +214,9 @@ func TestFake_WhenCalledPastTheLastStep_RepeatsTheLast(t *testing.T) {
 	stale, unknown, clean := staleHead(), unknownHead(), head()
 	fake := forgetest.New(t, forgetest.Script{Head: forgetest.Values(stale, unknown, clean)})
 
-	got := make([]forge.Head, 0, 4)
-	for range 4 {
+	const calls = 4 // one past the three scripted steps
+	got := make([]forge.Head, 0, calls)
+	for range calls {
 		h, err := fake.Head(t.Context(), repo(), headQuery())
 		assert.NilError(t, err)
 
@@ -253,14 +253,14 @@ func TestFake_WhenOnReadIsSet_RunsItOncePerRead(t *testing.T) {
 
 func TestFake_Land_WhenCalledTwice_AdvancesItsErrorSequence(t *testing.T) {
 	t.Parallel()
-	scripted := errors.New("the head moved")
-	fake := forgetest.New(t, forgetest.Script{Land: []error{nil, scripted}})
+	headMoved := errors.New("the head moved")
+	fake := forgetest.New(t, forgetest.Script{Land: []error{nil, headMoved}})
 
 	firstErr := fake.Land(t.Context(), repo(), landing())
 	secondErr := fake.Land(t.Context(), repo(), landing())
 
 	assert.Check(t, is.Nil(firstErr))
-	assert.Check(t, is.ErrorIs(secondErr, scripted))
+	assert.Check(t, is.ErrorIs(secondErr, headMoved))
 }
 
 func TestFake_Land_WhenOnLandIsSet_RunsItOnAnUnscriptedLandingToo(t *testing.T) {
@@ -306,7 +306,7 @@ func TestFake_WhenAnswerIsHeld_ReturnsTheContextErrorOnceTheContextEnds(t *testi
 		got, err := fake.Head(ctx, repo(), headQuery())
 
 		assert.Check(t, is.ErrorIs(err, context.DeadlineExceeded))
-		assert.Check(t, reflect.ValueOf(got).IsZero(), "value %v, want the zero value", got)
+		assert.Check(t, is.DeepEqual(got, forge.Head{}))
 	})
 }
 

@@ -24,7 +24,7 @@ const (
 	// closed is the number of a pull request from the topic branch that was closed without merging.
 	closed = 5
 
-	standingBranch = "branch"
+	standingBranch result.Standing = "branch"
 )
 
 // statusRequest is the command and words of a bare `ils status`.
@@ -210,12 +210,12 @@ func TestStatus_WhenTheBranchHasPullRequests_ListsEachPullRequest(t *testing.T) 
 		Standing: standingBranch, Branch: topic, Trunk: trunk, OnOrigin: true,
 		PullRequest: &result.OpenPull{
 			Number: opened, URL: pullURL, Title: conventional, Body: landedBody, TitleOK: true,
-			Verdict: string(forge.VerdictGreen), MergeState: string(forge.MergeClean),
+			Verdict: forge.VerdictGreen, MergeState: forge.MergeClean,
 			Checks: detail(forge.VerdictGreen, forge.MergeClean, passing().Checks...).Checks,
 		},
 		PastPullRequests: []result.PastPull{
-			{Number: closed, State: string(forge.ChangeClosed)},
-			{Number: merged, State: string(forge.ChangeMerged)},
+			{Number: closed, State: forge.ChangeClosed},
+			{Number: merged, State: forge.ChangeMerged},
 		},
 	}
 
@@ -516,6 +516,16 @@ func refusedSteps() []nextRow {
 	}
 }
 
+// nextOf returns the text after the `Next:` marker of text, and fails the test when text has none.
+func nextOf(t *testing.T, text string) string {
+	t.Helper()
+
+	_, next, found := strings.Cut(text, "Next:")
+	assert.Check(t, found, "text %q, want a Next: line", text)
+
+	return next
+}
+
 func TestStatus_WhenOnAWorkBranch_EndsOnTheFirstNextThatHolds(t *testing.T) {
 	t.Parallel()
 
@@ -529,9 +539,7 @@ func TestStatus_WhenOnAWorkBranch_EndsOnTheFirstNextThatHolds(t *testing.T) {
 
 			got := seeStatus(t, s, (*testing.T).Context)
 
-			_, next, found := strings.Cut(got.text, "Next:")
-			assert.Check(t, found, "text %q, want a Next: line", got.text)
-			assertSays(t, "Next:"+next, want)
+			assertSays(t, "Next:"+nextOf(t, got.text), want)
 		})
 	}
 }
@@ -575,7 +583,11 @@ func aheadOfCopy(f *gittest.Fixture) {
 
 // failCopyFetch makes origin answer the questions about its trunk and whether it has the branch, and
 // fail the fetch of the branch's copy after them.
-func failCopyFetch(t *testing.T, s *scene) { s.stopAnswering(t, 3) }
+func failCopyFetch(t *testing.T, s *scene) {
+	t.Helper()
+
+	s.stopAnswering(t, 3)
+}
 
 func TestStatus_WhenTheFetchOfOriginsCopyFails_ListsTheReadWithoutCountingTheCopy(t *testing.T) {
 	t.Parallel()
@@ -611,9 +623,7 @@ func TestStatus_WhenAReadOfOriginsCopyFails_EndsOnFixingWhatFailed(t *testing.T)
 
 			got := seeStatus(t, s, (*testing.T).Context)
 
-			_, next, found := strings.Cut(got.text, "Next:")
-			assert.Check(t, found, "text %q, want a Next: line", got.text)
-			assertSays(t, "Next:"+next, expect("fix what failed", "ils status"))
+			assertSays(t, "Next:"+nextOf(t, got.text), expect("fix what failed", "ils status"))
 		})
 	}
 }
@@ -653,9 +663,9 @@ func TestStatus_WhenAReadOfOriginIsCutShort_EndsDoneSkippingTheForgeReadsAfterIt
 // ---------------------------------------------------------------------------
 
 const (
-	standingDetached     = "detached"
-	standingNoOrigin     = "no-origin"
-	standingNoRepository = "no-repository"
+	standingDetached     result.Standing = "detached"
+	standingNoOrigin     result.Standing = "no-origin"
+	standingNoRepository result.Standing = "no-repository"
 )
 
 // noForge is a forge with no answer, so that any call to it is unscripted.
@@ -699,9 +709,7 @@ func TestStatus_WhenOnTheTrunk_EndsOnStartingABranch(t *testing.T) {
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
-	_, next, found := strings.Cut(got.text, "Next:")
-	assert.Check(t, found, "text %q, want a Next: line", got.text)
-	assertSays(t, next, nextBranch())
+	assertSays(t, nextOf(t, got.text), nextBranch())
 }
 
 func TestStatus_WhenThereIsNoOrigin_EndsOnCreatingIt(t *testing.T) {
@@ -765,10 +773,7 @@ func TestStatus_WhenOnAWorkBranchAndGitHubCannotBeRead_NamesTheFixBesideWhatGitT
 	for _, tt := range ghFailures() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			s := statusScene(t, func(f *gittest.Fixture) {
-				f.Publish(topic)
-				f.Commits(topic, "fix a typo")
-			}, func(string) forgetest.Script { return tt.script })
+			s := statusScene(t, aheadOfCopy, func(string) forgetest.Script { return tt.script })
 
 			got := seeStatus(t, s, (*testing.T).Context)
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/child"
+	"github.com/jeffzi/ils/internal/failtest"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/github/ghtest"
 )
@@ -51,23 +53,26 @@ func TestFake_WhenScriptedArgvHoldsAny_AnswersWhateverTheCallHoldsThere(t *testi
 // scriptedNotes is the content that the FileHolding tests script `gh release create` to expect.
 const scriptedNotes = "## [1.2.0]\n\n- Fix `$HOME`\n"
 
-func TestFileHolding_WhenFileHoldsTheContent_Answers(t *testing.T) {
-	notes := filepath.Join(t.TempDir(), "notes.md")
-	assert.NilError(t, os.WriteFile(notes, []byte(scriptedNotes), 0o600))
+// runReleaseCreateWithNotes runs `gh release create` against a fake scripted to expect
+// scriptedNotes, passing a notes file that holds notes.
+func runReleaseCreateWithNotes(t *testing.T, notes string) (github.Result, error) {
+	t.Helper()
+
+	file := filepath.Join(t.TempDir(), "notes.md")
+	assert.NilError(t, os.WriteFile(file, []byte(notes), 0o600))
 	ghtest.Setup(t, ghtest.Says("scripted\n", "release", "create", "--notes-file", ghtest.FileHolding(scriptedNotes)))
 
-	got, err := github.Runner{}.Run(t.Context(), "release", "create", "--notes-file", notes)
-	assert.NilError(t, err)
+	return github.Runner{}.Run(t.Context(), "release", "create", "--notes-file", file)
+}
 
-	assert.Check(t, is.Equal(got.Stdout, "scripted\n"))
+func TestFileHolding_WhenFileHoldsTheContent_Answers(t *testing.T) {
+	_, err := runReleaseCreateWithNotes(t, scriptedNotes)
+
+	assert.NilError(t, err)
 }
 
 func TestFileHolding_WhenFileHoldsOtherContent_ExitsUnscripted(t *testing.T) {
-	notes := filepath.Join(t.TempDir(), "notes.md")
-	assert.NilError(t, os.WriteFile(notes, []byte(scriptedNotes+"- Add the release\n"), 0o600))
-	ghtest.Setup(t, ghtest.Says("scripted\n", "release", "create", "--notes-file", ghtest.FileHolding(scriptedNotes)))
-
-	_, err := github.Runner{}.Run(t.Context(), "release", "create", "--notes-file", notes)
+	_, err := runReleaseCreateWithNotes(t, scriptedNotes+"- Add the release\n")
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 	assert.Assert(t, ok, "Run error = %v, want *child.ExitError", err)
@@ -85,6 +90,35 @@ func TestFake_WhenAnswerIsDelayed_AnswersAfterTheDelay(t *testing.T) {
 
 	elapsed := time.Since(start)
 	assert.Check(t, elapsed >= delay, "Run(pr checks) answered after %s, want no sooner than %s", elapsed, delay)
+}
+
+func TestFake_WhileHolding_WhenTheActionTakesLong_AnswersOnlyAfterItReturns(t *testing.T) {
+	args := []string{"pr", "checks", "7"}
+	fake := ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "pass\n", Delay: time.Nanosecond}, args...))
+	var returned atomic.Bool
+	fake.WhileHolding(func() error {
+		time.Sleep(300 * time.Millisecond)
+		returned.Store(true)
+
+		return nil
+	})
+
+	_, err := github.Runner{}.Run(t.Context(), args...)
+	assert.NilError(t, err)
+
+	assert.Check(t, returned.Load(), "Run(pr checks) returned before the hold action did")
+}
+
+func TestFake_WhileHolding_WhenTheActionFails_FailsTheTestNamingTheError(t *testing.T) {
+	args := []string{"pr", "checks", "7"}
+	spy := failtest.New(t)
+	fake := ghtest.Setup(spy, ghtest.Exits(ghtest.Answer{Stdout: "pass\n", Delay: time.Nanosecond}, args...))
+	fake.WhileHolding(func() error { return errors.New("notes file locked") })
+
+	_, _ = github.Runner{}.Run(t.Context(), args...)
+
+	assert.Check(t, spy.Failed(), "WhileHolding action error left the test passing")
+	assert.Check(t, is.Contains(strings.Join(spy.Messages(), "\n"), "notes file locked"))
 }
 
 func TestFake_Holding_WhenNoAnswerIsHeld_StaysOpen(t *testing.T) {

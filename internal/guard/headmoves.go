@@ -37,7 +37,7 @@ func (w *walker) race(sc *scope, body func(*scope)) {
 	w.probing = false
 
 	ahead := len(w.walked) - walked
-	w.walked = slices.Concat(w.walked[walked:], w.walked[:walked])
+	w.walked = moveBehind(w.walked, 0, walked)
 	for k := range w.kept {
 		w.kept[k] += ahead
 	}
@@ -60,8 +60,8 @@ func (w *walker) job(stmt *syntax.Stmt, rest []*syntax.Stmt, sc *scope) {
 	}
 
 	after := len(w.kept)
-	w.race(&inner, func(s *scope) { w.statement(stmt, s) })
-	w.kept = slices.Concat(w.kept[:at], w.kept[after:], w.kept[at:after])
+	w.race(&inner, func(s *scope) { w.stmtInPlace(stmt, s) })
+	w.kept = moveBehind(w.kept, at, after)
 }
 
 // movesHead reports whether the invocation inv may move HEAD: by writing the HEAD file of a git
@@ -169,7 +169,7 @@ func writesHead(inv Invocation) bool {
 
 	command, args := "", inv.Words[1:]
 	if inv.Words[0].Literal {
-		command = filepath.Base(inv.Words[0].Text)
+		command = programName(inv.Words[0])
 	}
 
 	intoGitDir := func(w Word) bool { return mayBeGitDir(inv.Dir, w) }
@@ -286,8 +286,8 @@ func mayBeHead(dir string, w Word) bool {
 	}
 
 	parent, base := ".", w.Text
-	if i := strings.LastIndex(w.Text, "/"); i >= 0 {
-		parent, base = w.Text[:i], w.Text[i+1:]
+	if before, after, found := strings.CutLast(w.Text, "/"); found {
+		parent, base = before, after
 		if parent == "" {
 			parent = "/"
 		}

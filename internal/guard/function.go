@@ -22,10 +22,10 @@ type definition struct {
 	// redirects are those in effect where the function is declared, which the walk reads every
 	// command of its body with.
 	redirects []Redirect
-	// runs are the dry runs of the body so far, which a later call reuses instead of walking the
+	// pastRuns are the dry runs of the body so far, which a later call reuses instead of walking the
 	// body again: without them, functions that each call the one before twice cost a walk per call
 	// path, two to the power of their count.
-	runs []pastRun
+	pastRuns []pastRun
 	// probing reports whether a dry run of the body is under way, so that a call of the function
 	// from inside its own body is not run again.
 	probing bool
@@ -95,7 +95,7 @@ func (runs *dryRuns) noteUnderway(d *definition) {
 // sameScope reports whether a and b are the same scope to a dry run of a function body.
 func sameScope(a, b scope) bool {
 	return a.dir == b.dir && a.env == b.env && a.physical == b.physical && a.racing == b.racing &&
-		a.allexport == b.allexport && slices.Equal(a.redirects, b.redirects) &&
+		a.allexport == b.allexport && a.shell == b.shell && slices.Equal(a.redirects, b.redirects) &&
 		maps.Equal(a.functions, b.functions)
 }
 
@@ -127,16 +127,22 @@ func mergeFunctions(a, b map[string]*function) map[string]*function {
 		return a
 	}
 
-	merged := maps.Clone(a)
-	if merged == nil {
-		merged = map[string]*function{}
-	}
-
+	merged := cloneFunctions(a)
 	for name, fn := range b {
 		merged[name] = merged[name].with(fn.definitions...)
 	}
 
 	return merged
+}
+
+// cloneFunctions returns a copy of m, an empty map when m is nil.
+func cloneFunctions(m map[string]*function) map[string]*function {
+	cloned := maps.Clone(m)
+	if cloned == nil {
+		cloned = map[string]*function{}
+	}
+
+	return cloned
 }
 
 // unmovedDir is the directory a dry run of a function body starts in. No shell word holds a NUL
@@ -152,11 +158,7 @@ func (w *walker) declareFunction(decl *syntax.FuncDecl, sc *scope) {
 	}
 
 	name := decl.Name.Value
-	functions := maps.Clone(sc.functions)
-	if functions == nil {
-		functions = map[string]*function{}
-	}
-
+	functions := cloneFunctions(sc.functions)
 	functions[name] = &function{definitions: []*definition{{body: decl.Body, redirects: sc.redirects}}}
 	sc.functions = functions
 	if readsCommand(name) {
@@ -191,7 +193,11 @@ func calledDefinitions(inv Invocation, functions map[string]*function) []*defini
 func (w *walker) callMarks(inv Invocation) []Mark {
 	definitions := calledDefinitions(inv, w.functions)
 	elsewhere := func(d *definition) bool { return !slices.Equal(inv.enclosing, d.redirects) }
-	if len(definitions) == 0 || (len(inv.Redirects) == 0 && !slices.ContainsFunc(definitions, elsewhere)) {
+	if len(definitions) == 0 {
+		return nil
+	}
+
+	if len(inv.Redirects) == 0 && !slices.ContainsFunc(definitions, elsewhere) {
 		return nil
 	}
 
@@ -224,6 +230,12 @@ func (w *walker) call(inv Invocation, sc *scope) {
 	sc.allexport = after.allexport
 	sc.env = after.env
 	sc.functions = after.functions
+	if !slices.ContainsFunc(inv.Redirects, ontoStdout) {
+		// An `exec` in a body holds after the call, unless the call redirected stdout: bash then
+		// restores the descriptors it redirected (see restored).
+		sc.redirects = after.redirects
+	}
+
 	if len(marks) > 0 {
 		w.keep(w.placed(Invocation{Marks: marks}, sc))
 	}
@@ -231,7 +243,10 @@ func (w *walker) call(inv Invocation, sc *scope) {
 
 // probe returns a walker that reads at w's depth and drops what it finds.
 func (w *walker) probe() walker {
-	return walker{caller: w.caller, timed: map[*syntax.Stmt]bool{}, depth: w.depth, probing: true, dryRuns: w.runs()}
+	sub := newWalker(w.caller, w.depth)
+	sub.probing, sub.dryRuns = true, w.runs()
+
+	return sub
 }
 
 // runs returns the dry runs w shares with the walkers it probes with.
@@ -261,7 +276,7 @@ func (w *walker) dryRun(d *definition, sc scope) (scope, []Mark) {
 	}
 
 	sc.dir, sc.physical = unmovedDir, false
-	for _, past := range d.runs {
+	for _, past := range d.pastRuns {
 		if past.depth == w.depth && sameScope(past.from, sc) && past.reads.holds() {
 			runs.note(d, past.reads)
 
@@ -290,7 +305,7 @@ func (w *walker) dryRun(d *definition, sc scope) (scope, []Mark) {
 
 	// The caller appends to the marks it is handed, which must not reach the copy kept here.
 	marks = slices.Clip(marks)
-	d.runs = append(d.runs, pastRun{from: from, depth: w.depth, left: sc, marks: marks, reads: reads})
+	d.pastRuns = append(d.pastRuns, pastRun{from: from, depth: w.depth, left: sc, marks: marks, reads: reads})
 	runs.note(d, reads)
 
 	return sc, marks

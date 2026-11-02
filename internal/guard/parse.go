@@ -16,6 +16,7 @@ import (
 
 	"mvdan.cc/sh/v3/syntax"
 
+	"github.com/jeffzi/ils/internal/commandline"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/landing"
@@ -179,7 +180,7 @@ func Parse(ctx context.Context, command string, caller Caller) ([]Invocation, er
 		return nil, err
 	}
 
-	w := walker{caller: caller, timed: map[*syntax.Stmt]bool{}}
+	w := newWalker(caller, 0)
 	sc := startScope(caller, file)
 	w.list(file.Stmts, &sc)
 	if w.err != nil {
@@ -249,6 +250,11 @@ type walker struct {
 	probing bool
 }
 
+// newWalker returns a walker for caller that reads at depth levels of nested strings.
+func newWalker(caller Caller, depth int) walker {
+	return walker{caller: caller, timed: map[*syntax.Stmt]bool{}, depth: depth}
+}
+
 // simple walks stmt when it is a simple command, recording its invocation and then those of the
 // substitutions in it, and reports false when it is any other command.
 func (w *walker) simple(stmt *syntax.Stmt, sc *scope) bool {
@@ -282,9 +288,14 @@ func (w *walker) simple(stmt *syntax.Stmt, sc *scope) bool {
 		w.keep(w.placed(inv, sc))
 	}
 
-	w.kept = slices.Concat(w.kept[:at], w.kept[at+held:], w.kept[at:at+held])
+	w.kept = moveBehind(w.kept, at, at+held)
 
 	return true
+}
+
+// moveBehind returns s with the elements s[at:mid] moved behind those of s[mid:].
+func moveBehind[T any](s []T, at, mid int) []T {
+	return slices.Concat(s[:at], s[mid:], s[at:mid])
 }
 
 // declarationOf returns the invocation of a declaration builtin such as `export` or `declare`: its
@@ -482,8 +493,7 @@ func assignedNames(stmt *syntax.Stmt, words []Word) []string {
 	}
 
 	syntax.Walk(stmt, func(n syntax.Node) bool {
-		p, ok := n.(*syntax.ParamExp)
-		if ok && p.Param != nil && p.Exp != nil && (p.Exp.Op == syntax.AssignUnset || p.Exp.Op == syntax.AssignUnsetOrNull) {
+		if p, ok := n.(*syntax.ParamExp); ok && assignsDefault(p) {
 			names = append(names, p.Param.Value)
 		}
 
@@ -584,16 +594,15 @@ func dataConsumers() map[string]bool {
 		"cd", "pushd", "popd", "test", "[", "mkdir", "cp", "mv", "rm", "ln", "touch", "chmod", "tee",
 		"file", "stat", "du", "realpath", "readlink", "dirname", "basename",
 		// Readers and filters.
-		"echo", "printf", "cat", "head", "tail", "less", "grep", "egrep", "fgrep", "rg", "ls", "wc",
-		"sort", "uniq", "cut", "tr", "jq", "diff", "man",
+		"echo", "printf", "cat", "head", "tail", "less", "grep", "egrep", "fgrep", "ls", "wc",
+		"sort", "uniq", "cut", "tr", "jq", "diff",
 		// Lookups.
 		"which", "type", "whence", "where",
 		// Toolchains and package managers.
-		"go", "brew", "apt", "apt-get", "dnf", "yum", "pacman", "apk", "port",
+		"go", "apt", "apt-get", "dnf", "yum", "pacman", "apk", "port",
 	)
 }
 
-// setOf returns the set that holds names.
 func setOf(names ...string) map[string]bool {
 	set := make(map[string]bool, len(names))
 	for _, name := range names {
@@ -621,28 +630,6 @@ func isDataConsumer(words []Word) bool {
 	}
 
 	return dataConsumers()[words[0].Text]
-}
-
-// goSubcommand returns the subcommand word among args, the words after a go command word, past
-// `-C dir`, the one global option go takes, which it reads only as its first argument. A first
-// argument that is not a literal is returned as the subcommand word. It reports whether there is a
-// subcommand word.
-func goSubcommand(args []Word) (Word, bool) {
-	if len(args) > 0 && args[0].Literal {
-		flag, _, joined := strings.Cut(args[0].Text, "=")
-		switch {
-		case (flag == "-C" || flag == "--C") && joined:
-			args = args[1:]
-		case flag == "-C" || flag == "--C":
-			args = args[min(2, len(args)):]
-		}
-	}
-
-	if len(args) == 0 {
-		return Word{}, false
-	}
-
-	return args[0], true
 }
 
 // marksOf returns what Parse cannot read in the invocation inv of call, apart from the string it
@@ -839,7 +826,7 @@ func changesNothing(args []Word) bool {
 // readOnlyILSCommands are the commands of ils that change nothing besides `ils status`. `help` is
 // Cobra's own command, which ils never declares.
 func readOnlyILSCommands() []string {
-	return []string{landing.ParseCommand, landing.GuardCommand, landing.HookCommand, "help"}
+	return []string{commandline.ParseCommand, commandline.GuardCommand, commandline.HookCommand, "help"}
 }
 
 // hasExtGlob reports whether an extended glob opens any part of words or of the redirect targets

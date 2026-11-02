@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/jeffzi/ils/internal/commandline"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/guard"
@@ -27,7 +28,7 @@ const (
 	flagCwd = "--cwd"
 
 	// hookCommand reads -h itself because it disables Cobra flag parsing.
-	flagHelpShort = landing.FlagHelpShort
+	flagHelpShort = commandline.FlagHelpShort
 
 	cwdUsage = "The directory the command runs in"
 
@@ -120,10 +121,8 @@ func (p *parse) cwdCommand(
 func (p *parse) caller(dir string) guard.Caller {
 	env := environment(p.app.Environ)
 	logger := p.logger(p.app.profile(p.app.StderrTerminal, p.noColor))
-	runner := p.app.git
-	runner.Logger = logger
 
-	return guard.Caller{Dir: dir, Env: env, Home: env["HOME"], Git: runner, GH: github.Runner{Logger: logger}}
+	return guard.Caller{Dir: dir, Env: env, Home: env["HOME"], Git: p.loggedGit(logger), GH: github.Runner{Logger: logger}}
 }
 
 // readCommand reads command as the guard does from cwd, made absolute, with the process environment

@@ -86,10 +86,9 @@ func TestJudge_WhenTheCommandCannotBeParsed_RefusesNamingWhatFailed(t *testing.T
 
 func TestJudge_WhenAMarkNamesNothing_RefusesWithItsKindAsTheReason(t *testing.T) {
 	t.Parallel()
-	_, caller := standingOn(t, "main", "topic")
 	const command = "echo @(a|b)"
 
-	got := guard.Judge(t.Context(), command, caller)
+	got := guard.Judge(t.Context(), command, guard.Caller{Home: home, Dir: start})
 
 	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome", command)
 	assert.Check(t, is.Equal(got.Reason, string(guard.ExtendedGlob)), "Judge(%q) reason", command)
@@ -97,10 +96,9 @@ func TestJudge_WhenAMarkNamesNothing_RefusesWithItsKindAsTheReason(t *testing.T)
 
 func TestJudge_WhenAMarkNamesWhatItFound_RefusesNamingItBesideTheKind(t *testing.T) {
 	t.Parallel()
-	_, caller := standingOn(t, "main", "topic")
 	const command = "export GIT_CONFIG_GLOBAL=/tmp/c"
 
-	got := guard.Judge(t.Context(), command, caller)
+	got := guard.Judge(t.Context(), command, guard.Caller{Home: home, Dir: start})
 
 	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome", command)
 	assert.Check(t, is.Contains(got.Reason, string(guard.GitVariable)), "Judge(%q) reason", command)

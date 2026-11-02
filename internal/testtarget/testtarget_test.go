@@ -113,15 +113,25 @@ func TestTool_CheckOutput_WhenFirstLineDoesNotSuitTarget_ReturnsError(t *testing
 	}
 }
 
-func TestTool_CheckEnvOutput_ReadsTheTargetAndVersionFromTheEnvironment(t *testing.T) {
+func TestTool_CheckEnvOutput_WhenTargetVarIsMinimum_RejectsANewerVersion(t *testing.T) {
 	// Not parallel: t.Setenv sets the environment of the whole process.
+	const out = "hammer 1.10.0\n"
 	t.Setenv("HAMMER_TARGET", testtarget.Minimum)
 	t.Setenv("HAMMER_VERSION", "")
-	versionOf := func(line string) string { return strings.TrimPrefix(line, "hammer ") }
 
-	got := hammer().CheckEnvOutput("hammer 1.10.0\n", versionOf)
+	err := hammer().CheckEnvOutput(out, hammerVersionOf)
 
-	want := hammer().CheckOutput(testtarget.Minimum, "", "hammer 1.10.0\n", versionOf)
-	assert.Assert(t, want != nil, "CheckOutput suits a version above the minimum to the minimum target")
-	assert.Check(t, is.Error(got, want.Error()))
+	assert.Check(t, is.ErrorContains(err, "HAMMER_TARGET"), "CheckEnvOutput(%q)", out)
+}
+
+func TestTool_CheckEnvOutput_WhenVersionVarIsSet_RejectsAnotherVersion(t *testing.T) {
+	// Not parallel: t.Setenv sets the environment of the whole process.
+	const out = "hammer 1.10.0\n"
+	t.Setenv("HAMMER_TARGET", testtarget.Latest)
+	t.Setenv("HAMMER_VERSION", "1.9.0")
+
+	err := hammer().CheckEnvOutput(out, hammerVersionOf)
+
+	assert.Check(t, is.ErrorContains(err, "HAMMER_VERSION"), "CheckEnvOutput(%q)", out)
+	assert.Check(t, is.ErrorContains(err, "1.9.0"), "CheckEnvOutput(%q)", out)
 }

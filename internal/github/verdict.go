@@ -24,7 +24,7 @@ var runUnfinished = regexp.MustCompile(`run \d+ is still in progress; logs will 
 // noChecksReported is what gh prints on stderr when a pull request has no checks.
 const noChecksReported = "no checks reported"
 
-// runListLimit is the most runs `gh run list` returns for one commit.
+// runListLimit overrides gh's default page size of 20 runs, far below the runs one commit can have.
 const runListLimit = "1000"
 
 type pullCheck struct {
@@ -350,17 +350,21 @@ type commitSuites struct {
 func suitesOf(pages []actionsRunsPage) commitSuites {
 	suites := commitSuites{workflowOf: map[int64]string{}, elsewhere: map[int64]bool{}}
 
+	var runs []actionsRun
+
 	for _, page := range pages {
-		for _, run := range page.Runs {
-			if run.Event != "push" {
-				suites.elsewhere[run.CheckSuite] = true
+		runs = append(runs, page.Runs...)
+	}
 
-				continue
-			}
+	for _, run := range runs {
+		if run.Event != "push" {
+			suites.elsewhere[run.CheckSuite] = true
 
-			suites.workflowOf[run.CheckSuite] = run.Name
-			suites.runs = append(suites.runs, forge.Run{Name: run.Name, Status: runStatusOf(run.Status)})
+			continue
 		}
+
+		suites.workflowOf[run.CheckSuite] = run.Name
+		suites.runs = append(suites.runs, forge.Run{Name: run.Name, Status: runStatusOf(run.Status)})
 	}
 
 	return suites
@@ -376,27 +380,33 @@ type checkKey struct {
 // created last, leaving out the check runs of suites that judge something else. A check run with
 // no Actions run behind it, such as one a GitHub App reports, has no workflow.
 func latestCheckRuns(pages []checkRunsPage, suites commitSuites) []forge.Check {
+	var runs []commitCheckRun
+
+	for _, page := range pages {
+		runs = append(runs, page.CheckRuns...)
+	}
+
 	var kept []commitCheckRun
 
 	at := map[checkKey]int{}
 
-	for _, page := range pages {
-		for _, run := range page.CheckRuns {
-			if suites.elsewhere[run.CheckSuite.ID] {
-				continue
-			}
+	for _, run := range runs {
+		if suites.elsewhere[run.CheckSuite.ID] {
+			continue
+		}
 
-			key := checkKey{workflow: suites.workflowOf[run.CheckSuite.ID], name: run.Name}
-			if i, seen := at[key]; seen {
-				if run.ID > kept[i].ID {
-					kept[i] = run
-				}
+		key := checkKey{workflow: suites.workflowOf[run.CheckSuite.ID], name: run.Name}
 
-				continue
-			}
-
+		i, seen := at[key]
+		if !seen {
 			at[key] = len(kept)
 			kept = append(kept, run)
+
+			continue
+		}
+
+		if run.ID > kept[i].ID {
+			kept[i] = run
 		}
 	}
 

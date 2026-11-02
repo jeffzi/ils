@@ -18,7 +18,7 @@ type endStep struct {
 // localEnding is a local ending: where it leaves the checkout, its steps in order, and the lines
 // it says once every step ran.
 type localEnding struct {
-	ending string
+	ending result.Ending
 	steps  []endStep
 	done   []result.Phrase
 }

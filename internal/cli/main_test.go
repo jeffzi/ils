@@ -34,7 +34,7 @@ const (
 	// stuckReturned lets its landing command return at once, then stays until it is killed.
 	stuckReturned = "returned"
 	// stuckStopping shows the spinner line of its step, and its landing command returns the
-	// result Stopped. once the first interrupt or termination of the process ended its context.
+	// result Stopped once the first interrupt or termination of the process ended its context.
 	stuckStopping = "stopping"
 	// stuckHolding is stuckStopping, except that once the context of its landing command
 	// ended, the command prints canceled on stdout and stays until it is killed, so that a later
@@ -108,11 +108,12 @@ func actAsIls(exit string) int {
 	return code
 }
 
-// stuck runs `ils merge` in a step that lasts until the run's deadline, as way says, with stderr
-// a color terminal wide columns wide, and returns its exit code. Once the
-// landing command runs, it prints ready on stdout; a stuckReturned run prints it once the command
-// returned, and stays until it is killed. A stuckStopping, stuckHolding or stuckHoldingEarly run
-// is the one stopping describes instead.
+// stuck runs `ils merge` in a step that lasts until the run's deadline, as way says, with stderr a
+// color terminal `wide` columns wide, and returns its exit code. Once the landing command runs, it
+// prints ready on stdout; a stuckReturned run prints it once the command returned, and stays until
+// it is killed. A stuckStopping, stuckHolding, stuckHoldingEarly or stuckTelling run is the one
+// stopping describes instead. Any other way prints that it is unknown on stderr and returns
+// standInBroke.
 func stuck(way string) int {
 	app := cli.App{
 		Stdout:         os.Stdout,
@@ -134,17 +135,21 @@ func stuck(way string) int {
 		<-make(chan struct{})
 
 		return code
+	case stuckSpinning:
+		app.SetMerge(func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
+			startedWaiting(deps.Progress)
+			tell(ready)
+			<-ctx.Done()
+
+			return finished(req)
+		})
+
+		return app.Run(context.Background(), []string{"merge"})
+	default:
+		fmt.Fprintf(os.Stderr, "unknown stuck way %q\n", way)
+
+		return standInBroke
 	}
-
-	app.SetMerge(func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
-		startedWaiting(deps.Progress)
-		tell(ready)
-		<-ctx.Done()
-
-		return finished(req)
-	})
-
-	return app.Run(context.Background(), []string{"merge"})
 }
 
 // stopping runs `ils merge` with app, which stuck set up, in a step whose spinner line shows on
@@ -154,6 +159,7 @@ func stuck(way string) int {
 // process to end its context; a stuckStopping or stuckTelling run then returns the result Stopped, and any other
 // prints canceled and stays until it is killed.
 func stopping(app cli.App, way string) int {
+	holds := way == stuckHolding || way == stuckHoldingEarly
 	if way == stuckHoldingEarly {
 		app.Notify = heldForTheFirstInterrupt()
 	}
@@ -166,7 +172,7 @@ func stopping(app cli.App, way string) int {
 			tell(ready)
 		}
 		<-ctx.Done()
-		if way != stuckStopping && way != stuckTelling {
+		if holds {
 			tell(canceled)
 			<-make(chan struct{})
 		}

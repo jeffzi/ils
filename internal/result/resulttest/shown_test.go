@@ -65,19 +65,21 @@ func TestAssertCarried(t *testing.T) {
 
 func TestAssertCarried_WhenTheOutcomeDiffers_Fails(t *testing.T) {
 	t.Parallel()
-	shown := resulttest.Shown{Outcome: result.Pending.String(), Reason: "checks still run", Next: "ils push"}
+	const next = "ils push"
+	shown := resulttest.Shown{Outcome: result.Pending.String(), Reason: "checks still run", Next: next}
 	spy := failtest.New(t)
 
-	resulttest.AssertCarried(spy, resulttest.NextLine("ils push")+"\n", result.Refused, shown)
+	resulttest.AssertCarried(spy, resulttest.NextLine(next)+"\n", result.Refused, shown)
 
 	assert.Check(t, spy.Failed(), "AssertCarried of a pending object, want a refused one, passed")
 }
 
 func TestDecode_WhenOutIsNotOneObject_StopsTheTest(t *testing.T) {
 	t.Parallel()
+	const out = "null"
 	spy := failtest.New(t)
 
-	spy.Run(func() { resulttest.Decode(spy, "null") })
+	spy.Run(func() { resulttest.Decode(spy, out) })
 
-	assert.Check(t, spy.Stopped(), "Decode(%q) went on, want the test stopped", "null")
+	assert.Check(t, spy.Stopped(), "Decode(%q) went on, want the test stopped", out)
 }

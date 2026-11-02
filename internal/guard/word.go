@@ -65,13 +65,15 @@ func readWord(w *syntax.Word, home string) Word {
 
 // decodeANSIC returns the value of a `$'…'` string once its escapes are decoded as bash decodes
 // them, ending at the first NUL byte as bash does. It reports false for a value holding `\c`, the
-// control-character escape that expand.Format leaves as written.
+// control-character escape that expand.Format leaves as written, and for a value that
+// expand.Format returns an error for, whatever the error is.
 func decodeANSIC(value string) (string, bool) {
 	if strings.Contains(value, `\c`) {
 		return "", false
 	}
 
-	// With no arguments, Format decodes escapes only and leaves `%` as written, so it cannot fail.
+	// With no arguments, Format decodes escapes only and leaves `%` as written, so it is not
+	// expected to fail; an error it does return is reported as false, never as a decoded value.
 	// It writes to the config it is given, and to a shared one when given nil, so each call gets its
 	// own to keep concurrent Parse calls apart.
 	decoded, _, err := expand.Format(&expand.Config{}, value, nil)
@@ -175,7 +177,6 @@ func writeDoubleQuotedText(b *strings.Builder, value string) {
 	}
 }
 
-// wordTexts returns the text of each of words.
 func wordTexts(words []Word) []string {
 	texts := make([]string, 0, len(words))
 	for _, w := range words {
@@ -185,7 +186,6 @@ func wordTexts(words []Word) []string {
 	return texts
 }
 
-// literalWords returns each of texts as a literal word.
 func literalWords(texts []string) []Word {
 	words := make([]Word, 0, len(texts))
 	for _, text := range texts {

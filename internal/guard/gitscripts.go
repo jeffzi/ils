@@ -50,7 +50,7 @@ func (w *walker) gitScripts(i int) error {
 
 	runs = append(runs, readableRuns(inv)...)
 
-	sub := walker{caller: w.caller, timed: map[*syntax.Stmt]bool{}, depth: inv.depth}
+	sub := newWalker(w.caller, inv.depth)
 	for _, run := range runs {
 		sc := gitScope(*inv)
 		if run.elsewhere {
@@ -173,6 +173,33 @@ func literalScripts(values []Word) ([]string, MarkKind) {
 	return scripts, mark
 }
 
+// runnableScripts returns the text of each of values, the shell commands inv has something run at
+// depth levels of nesting, that is walked: none when they would nest past maxDepth. It marks inv
+// when one of them is not a literal or they would nest too deep.
+func runnableScripts(inv *Invocation, depth int, values []Word) []string {
+	scripts, mark := literalScripts(values)
+	runs, mark := capDepth(depth, len(scripts) > 0, mark)
+	if !runs {
+		scripts = nil
+	}
+
+	if mark != "" {
+		inv.Marks = append(inv.Marks, Mark{Kind: mark})
+	}
+
+	return scripts
+}
+
+// capDepth reports whether a string that runs at depth levels of nesting is walked, and the mark
+// for it: runs is cleared and the mark is DeepScript for one that would nest past maxDepth.
+func capDepth(depth int, runs bool, mark MarkKind) (bool, MarkKind) {
+	if runs && depth == maxDepth {
+		return false, DeepScript
+	}
+
+	return runs, mark
+}
+
 // configKey returns the key and the rest of the value of the global option o when it sets config:
 // git reads a `-c` value up to its first `=` as the key, and a `--config-env` value up to its last,
 // the rest being the value or the name of the variable that holds it. cut is false for any other
@@ -222,6 +249,25 @@ func shellKeys() []string {
 	}
 }
 
+// subsectionKeys are the keys of the subsections of one config section whose value git runs as a
+// shell command.
+type subsectionKeys struct {
+	section string
+	names   []string
+}
+
+// shellSubsectionKeys are the keys of a driver or tool that a subsection names whose value git runs
+// as a shell command, by section.
+func shellSubsectionKeys() []subsectionKeys {
+	return []subsectionKeys{
+		{section: "diff", names: []string{"command", "textconv"}},
+		{section: "filter", names: []string{"clean", "smudge", "process"}},
+		{section: "merge", names: []string{"driver"}},
+		{section: "difftool", names: []string{"cmd"}},
+		{section: "mergetool", names: []string{"cmd"}},
+	}
+}
+
 // containsFold reports whether names holds s, matched without regard to case.
 func containsFold(names []string, s string) bool {
 	return slices.ContainsFunc(names, func(name string) bool { return strings.EqualFold(name, s) })
@@ -249,11 +295,9 @@ func runsShell(key string) bool {
 
 	return containsFold(shellKeys(), key) ||
 		(len(key) > len(pager) && strings.EqualFold(key[:len(pager)], pager)) ||
-		inSubsection(key, "diff", "command", "textconv") ||
-		inSubsection(key, "filter", "clean", "smudge", "process") ||
-		inSubsection(key, "merge", "driver") ||
-		inSubsection(key, "difftool", "cmd") ||
-		inSubsection(key, "mergetool", "cmd")
+		slices.ContainsFunc(shellSubsectionKeys(), func(s subsectionKeys) bool {
+			return inSubsection(key, s.section, s.names...)
+		})
 }
 
 // shellCommand returns the shell command git runs for the config key set to value, and false when
@@ -410,9 +454,10 @@ func bisectRuns(args []Word) []gitRun {
 	}
 
 	words := args[1:]
-	if len(words) > 0 && words[0].Literal &&
-		(words[0].Text == "--reset-when-found" || strings.HasPrefix(words[0].Text, "--reset-when-found=")) {
-		words = words[1:]
+	if len(words) > 0 && words[0].Literal {
+		if option, _, _ := strings.Cut(words[0].Text, "="); option == "--reset-when-found" {
+			words = words[1:]
+		}
 	}
 
 	if len(words) == 0 {

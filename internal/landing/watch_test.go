@@ -84,14 +84,17 @@ func watchOn(deps *landing.Deps) *watch {
 	return w
 }
 
+// Started keeps label as a start event.
 func (w *watch) Started(label result.Phrase) {
 	w.keep(watchEvent{kind: eventStart, phrase: label})
 }
 
+// Said keeps line as a said event.
 func (w *watch) Said(line result.Phrase) {
 	w.keep(watchEvent{kind: eventSaid, phrase: line})
 }
 
+// Counted keeps done of total as a count event.
 func (w *watch) Counted(done, total int) {
 	w.keep(watchEvent{kind: eventCount, done: done, total: total})
 }

@@ -70,7 +70,7 @@ func discards() map[string]discard {
 			reason: "git restore without --staged discards changes in the working tree",
 		},
 		"rm": {
-			refuses: func(o subcommandOptions) bool { return o.sets('f', "--force") },
+			refuses: forced,
 			reason:  "git rm --force deletes files even when they hold uncommitted changes",
 		},
 		"reflog expire": {reason: "git reflog expire deletes the reflog entries that recover lost commits"},
@@ -87,7 +87,7 @@ func discards() map[string]discard {
 			reason:  "git apply --reverse undoes changes in the working tree",
 		},
 		"add": {
-			refuses: func(o subcommandOptions) bool { return o.sets('f', "--force") },
+			refuses: forced,
 			reason:  "git add --force stages files the ignore rules keep out",
 		},
 	}
@@ -96,12 +96,17 @@ func discards() map[string]discard {
 	return table
 }
 
+// forced reports whether the options hold `-f` or `--force`.
+func forced(o subcommandOptions) bool {
+	return o.sets('f', "--force")
+}
+
 // plumbingDiscards returns the operations of discards that git's plumbing commands, the low-level
 // ones its other commands are built from, perform.
 func plumbingDiscards() map[string]discard {
 	return map[string]discard{
 		"checkout-index": {
-			refuses: func(o subcommandOptions) bool { return o.sets('f', "--force") },
+			refuses: forced,
 			reason:  "git checkout-index --force overwrites files in the working tree, uncommitted changes included",
 		},
 		"read-tree": {
@@ -119,7 +124,12 @@ func plumbingDiscards() map[string]discard {
 			refuses: func(o subcommandOptions) bool {
 				deletes := o.sets('d', "") || o.sets(0, "--stdin")
 
-				return deletes || (len(o.positional) > 1 && nullObjectID(o.positional[1].Text))
+				// A ref or new value that is not a literal, reachable only after `--`, may be the all-zero
+				// id, or may split into the ref and the all-zero id.
+				named := o.positional[:min(2, len(o.positional))]
+				unreadable := slices.ContainsFunc(named, func(w Word) bool { return !w.Literal })
+
+				return deletes || unreadable || (len(o.positional) > 1 && nullObjectID(o.positional[1].Text))
 			},
 			reason: "git update-ref -d, --stdin, or an all-zero new value deletes refs, and the reflog that recovers their commits",
 		},
@@ -166,25 +176,14 @@ func refuseDiscardingGit(ctx context.Context, caller Caller, inv Invocation) (Ve
 // every form when d has neither refuses nor judges, and otherwise the forms they refuse and those
 // whose options it cannot read.
 func (d discard) verdict(ctx context.Context, caller Caller, inv Invocation, sub string) (Verdict, error) {
-	reason := d.reason
-	if d.refuses != nil || d.judges != nil {
-		options := readArgs(inv.Git.Args, optionsOf(sub))
-		if options.unreadable {
-			return unreadableArgument(sub), nil
-		}
-
-		switch {
-		case d.refuses != nil && d.refuses(options):
-		case d.judges != nil:
-			judged, err := d.judges(ctx, caller, inv, options)
-			if err != nil || judged == "" {
-				return Verdict{Outcome: Allow}, err
-			}
-
-			reason = judged
-		default:
-			return Verdict{Outcome: Allow}, nil
-		}
+	reason, unreadable, err := d.refusal(ctx, caller, inv, sub)
+	switch {
+	case err != nil:
+		return Verdict{}, err
+	case unreadable:
+		return unreadableArgument(sub), nil
+	case reason == "":
+		return Verdict{Outcome: Allow}, nil
 	}
 
 	if name := ruleName(sub); name != sub {
@@ -192,6 +191,28 @@ func (d discard) verdict(ctx context.Context, caller Caller, inv Invocation, sub
 	}
 
 	return refuse(reason), nil
+}
+
+// refusal returns the reason d refuses inv for, empty when d lets it through, and unreadable true
+// when the options of sub in inv cannot be read. An error is the failure of a read judges made.
+func (d discard) refusal(ctx context.Context, caller Caller, inv Invocation, sub string) (reason string, unreadable bool, err error) {
+	if d.refuses == nil && d.judges == nil {
+		return d.reason, false, nil
+	}
+
+	options := readArgs(inv.Git.Args, optionsOf(sub))
+	switch {
+	case options.unreadable:
+		return "", true, nil
+	case d.refuses != nil && d.refuses(options):
+		return d.reason, false, nil
+	case d.judges != nil:
+		judged, err := d.judges(ctx, caller, inv, options)
+
+		return judged, false, err
+	default:
+		return "", false, nil
+	}
 }
 
 // judgeCleanWithoutForce refuses `git clean` without `--force` when the config git reads for the
@@ -258,13 +279,18 @@ func judgeForcedBranchOverwrite(ctx context.Context, caller Caller, inv Invocati
 		return "", nil
 	}
 
+	last := o.positional[len(o.positional)-1]
+	if !last.Literal {
+		return fmt.Sprintf("git branch %s: the guard cannot read the new name, which may be a branch it replaces", flag), nil
+	}
+
 	targets, ok := targetOptions(inv)
 	if !ok {
 		return fmt.Sprintf("git branch %s: the guard cannot tell which repository it runs in", flag), nil
 	}
 
 	runner := targetRunner(caller.Git, inv.Dir, inv.Target)
-	name := o.positional[len(o.positional)-1].Text
+	name := last.Text
 
 	expanded, err := runner.Run(ctx, slices.Concat(targets, []string{"check-ref-format", "--branch", name})...)
 	if err != nil {
@@ -586,11 +612,13 @@ func plainHelperName(value string) bool {
 // value git runs through the shell: a credential helper, or the command key of a driver or tool
 // that a subsection names.
 func holdsShellKey(section string) bool {
-	return slices.ContainsFunc([]string{".command", ".textconv", ".clean", ".smudge", ".process", ".driver", ".cmd"},
-		func(name string) bool { return runsShell(section + name) }) || isCredentialHelper(section+".helper")
+	holdsName := func(keys subsectionKeys) bool {
+		return slices.ContainsFunc(keys.names, func(name string) bool { return runsShell(section + "." + name) })
+	}
+
+	return slices.ContainsFunc(shellSubsectionKeys(), holdsName) || isCredentialHelper(section+".helper")
 }
 
-// refuseConfigWrite refuses a `git config` write of name, a key or a section the guard protects.
 func refuseConfigWrite(name string) Verdict {
 	return refuse(fmt.Sprintf("git config writing %s changes what git runs or where it pushes", name))
 }
@@ -691,7 +719,9 @@ func refuseOriginRewrite(_ context.Context, _ Caller, inv Invocation) (Verdict, 
 // subcommand: -v, bundled or not, or --verbose, --no-verbose or a start of either.
 func remoteVerbosity(word string) bool {
 	if name, ok := strings.CutPrefix(word, "--"); ok {
-		return name != "" && slices.ContainsFunc([]string{"verbose", "no-verbose"}, func(long string) bool { return strings.HasPrefix(long, name) })
+		startsLong := func(long string) bool { return strings.HasPrefix(long, name) }
+
+		return name != "" && slices.ContainsFunc([]string{"verbose", "no-verbose"}, startsLong)
 	}
 
 	letters, ok := strings.CutPrefix(word, "-")

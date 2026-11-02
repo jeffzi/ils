@@ -36,7 +36,9 @@ type envChange struct {
 	clear bool
 }
 
-// variable is what the guard knows of one variable.
+// variable is what the guard knows of one variable: its value when set, and that it cannot tell the
+// value when unknown. One that is neither has not been assigned, and its reader decides what that
+// leaves: a gh run keeps the value of the runner's environment, while a git run or a `cd` sees none.
 type variable struct {
 	value   string
 	set     bool

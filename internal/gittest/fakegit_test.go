@@ -35,11 +35,23 @@ type faked struct {
 func callGit(t *testing.T, env []string, dir string, args ...string) faked {
 	t.Helper()
 
-	var stdout, stderr bytes.Buffer
+	return ranGit(t, gitCommand(t.Context(), env, dir, args...))
+}
 
-	cmd := exec.CommandContext(t.Context(), "git", args...) //nolint:gosec // argv is written by the tests of this package
+// gitCommand is the call callGit makes, killed once ctx ends.
+func gitCommand(ctx context.Context, env []string, dir string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", args...) //nolint:gosec // argv is written by the tests of this package
 	cmd.Dir = dir
 	cmd.Env = env
+
+	return cmd
+}
+
+// ranGit runs cmd and returns what it did; an exit code other than zero is part of the result.
+func ranGit(t *testing.T, cmd *exec.Cmd) faked {
+	t.Helper()
+
+	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
@@ -49,7 +61,7 @@ func callGit(t *testing.T, env []string, dir string, args ...string) faked {
 	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		code = exitErr.ExitCode()
 	} else {
-		assert.NilError(t, err, "git %q", args)
+		assert.NilError(t, err, "%q", cmd.Args)
 	}
 
 	return faked{Stdout: stdout.String(), Stderr: stderr.String(), Code: code}
@@ -111,7 +123,7 @@ func TestFakeGit_WhenInstalledTwice_RunsTheRealGitForCallsNeitherFakes(t *testin
 	gittest.FakeGit(t, gittest.Fake{AnswerOn: []string{"rev-list"}, Answer: "not counts"})
 	// A fake that took another fake for the real git calls itself forever: the deadline turns that
 	// into a failure instead of a hang.
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), patience)
 	defer cancel()
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, "git", "--version")
@@ -125,6 +137,74 @@ func TestFakeGit_WhenInstalledTwice_RunsTheRealGitForCallsNeitherFakes(t *testin
 
 	assert.NilError(t, err, "git --version printed %q to stderr", stderr.String())
 	assert.Check(t, strings.HasPrefix(stdout.String(), "git version "), "git --version printed %q", stdout.String())
+}
+
+// errStalled ends a call that stalled at the address of a fake it should no longer follow.
+var errStalled = errors.New("the call stalled at the address of an earlier fake")
+
+// onlyFirstFakes lists a call for each setting of firstFake, which a second, empty call to FakeGit
+// leaves unset.
+func onlyFirstFakes() []struct {
+	name string
+	args []string
+} {
+	return []struct {
+		name string
+		args []string
+	}{
+		{name: "version", args: []string{"--version"}},
+		{name: "fail", args: []string{"show-ref"}},
+		{name: "stall", args: []string{"rev-parse", "--is-inside-work-tree"}},
+		{name: "answer", args: []string{"rev-list", "--all"}},
+	}
+}
+
+// firstFake fakes every call of onlyFirstFakes, stalling at addr.
+func firstFake(addr string) gittest.Fake {
+	return gittest.Fake{
+		Version:  "git version 0.0.1",
+		FailOn:   []string{"show-ref"},
+		StallOn:  []string{"rev-parse"},
+		StallAt:  addr,
+		AnswerOn: []string{"rev-list"},
+		Answer:   "not counts",
+	}
+}
+
+func TestFakeGit_WhenInstalledAgain_StopsFakingWhatOnlyTheFirstCallFaked(t *testing.T) {
+	for _, tt := range onlyFirstFakes() {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := initRepo(t, nil)
+			want := callGit(t, nil, dir, tt.args...)
+			addr, connected := gittest.SilentListener(t)
+			gittest.FakeGit(t, firstFake(addr))
+			gittest.FakeGit(t, gittest.Fake{})
+			ctx := gittest.Ending(t.Context(), connected, errStalled)
+
+			got := ranGit(t, gitCommand(ctx, nil, dir, tt.args...))
+
+			assert.Check(t, is.DeepEqual(got, want))
+		})
+	}
+}
+
+func TestFakeGit_WhenInstalledAgain_ReturnsSettingsThatOverrideTheFirstCalls(t *testing.T) {
+	for _, tt := range onlyFirstFakes() {
+		t.Run(tt.name, func(t *testing.T) {
+			base := gittest.Env(t)
+			dir := initRepo(t, base)
+			want := callGit(t, base, dir, tt.args...)
+			addr, connected := gittest.SilentListener(t)
+			first := gittest.FakeGit(t, firstFake(addr))
+			second := gittest.FakeGit(t, gittest.Fake{})
+			env := slices.Concat(base, first, second)
+			ctx := gittest.Ending(t.Context(), connected, errStalled)
+
+			got := ranGit(t, gitCommand(ctx, env, dir, tt.args...))
+
+			assert.Check(t, is.DeepEqual(got, want))
+		})
+	}
 }
 
 func TestFakeGit_WhenCallIsAPrefixOfFailingWords_RunsTheRealGit(t *testing.T) {
@@ -143,7 +223,6 @@ func TestFakeGit_WhenRealGitCannotStart_ExitsBroken(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		name = "git.exe"
 	}
-
 	notRunnable := t.TempDir()
 	path := filepath.Join(notRunnable, name)
 	assert.NilError(t, os.WriteFile(path, []byte("not a program\n"), 0o755)) //nolint:gosec // must be executable to be found as git
@@ -255,12 +334,12 @@ func TestRaceSetting(t *testing.T) {
 }
 
 func TestCoverSetting(t *testing.T) {
-	covered := flag.Lookup("test.gocoverdir")
-	if covered == nil {
+	coverDirFlag := flag.Lookup("test.gocoverdir")
+	if coverDirFlag == nil {
 		t.Skip("the test binary has no test.gocoverdir flag")
 	}
-	was := covered.Value.String()
-	t.Cleanup(func() { assert.Check(t, covered.Value.Set(was)) })
+	was := coverDirFlag.Value.String()
+	t.Cleanup(func() { assert.Check(t, coverDirFlag.Value.Set(was)) })
 	tests := []struct {
 		name string
 		dir  string
@@ -272,7 +351,7 @@ func TestCoverSetting(t *testing.T) {
 	// Not parallel at either level: each row sets the flag of the whole test binary.
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.NilError(t, covered.Value.Set(tt.dir))
+			assert.NilError(t, coverDirFlag.Value.Set(tt.dir))
 
 			got := gittest.CoverSetting()
 

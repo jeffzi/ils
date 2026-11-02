@@ -165,6 +165,12 @@ func (r Repo) GitDir(ctx context.Context, options ...string) (string, error) {
 	return filepath.FromSlash(dir), nil
 }
 
+// Environ returns a copy of the environment git runs with: the runner's own Env, or the environment
+// of this process when it has none.
+func (r Runner) Environ() []string {
+	return child.Environ(r.Env)
+}
+
 // FindGitDir returns the absolute path of the git directory git finds when given the global
 // options, such as `-C` or `--git-dir`, from the runner's directory, and found false when git says
 // there is no repository there. Any other exit of git, such as for a `-C` directory that does not

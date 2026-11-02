@@ -4,6 +4,7 @@ package guard
 
 import (
 	"context"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -106,35 +107,18 @@ func gitGlobalOptions() map[string]gitArity {
 // whatever alias shares their name; everyGitBuiltins are those every git ils supports has. Commands
 // that only contrib or a platform's packaging installs are left out.
 func gitCommands() map[string]bool {
-	return setOf(
-		"add", "am", "annotate", "apply", "archimport", "archive", "backfill", "bisect", "blame",
-		"branch", "bugreport", "bundle", "cat-file", "check-attr", "check-ignore", "check-mailmap",
-		"check-ref-format", "checkout", "checkout--worker", "checkout-index", "cherry", "cherry-pick",
-		"clean", "clone", "column", "commit", "commit-graph", "commit-tree", "config", "count-objects",
-		"credential", "credential-cache", "credential-cache--daemon", "credential-store",
-		"cvsexportcommit", "cvsimport", "cvsserver", "daemon", "describe", "diagnose", "diff",
-		"diff-files", "diff-index", "diff-pairs", "diff-tree", "difftool", "difftool--helper",
-		"fast-export", "fast-import", "fetch", "fetch-pack", "filter-branch", "fmt-merge-msg",
-		"for-each-ref", "for-each-repo", "format-patch", "format-rev", "fsck", "fsck-objects",
-		"fsmonitor--daemon", "gc", "get-tar-commit-id", "grep", "hash-object", "help", "history",
-		"hook", "http-backend", "http-fetch", "http-push", "imap-send", "index-pack", "init",
-		"init-db", "instaweb", "interpret-trailers", "last-modified", "log", "ls-files", "ls-remote",
-		"ls-tree", "mailinfo", "mailsplit", "maintenance", "merge", "merge-base", "merge-file",
-		"merge-index", "merge-octopus", "merge-one-file", "merge-ours", "merge-recursive",
-		"merge-recursive-ours", "merge-recursive-theirs", "merge-resolve", "merge-subtree",
-		"merge-tree", "mergetool", "mktag", "mktree", "multi-pack-index", "mv", "name-rev", "notes",
-		"p4", "pack-objects", "pack-redundant", "pack-refs", "patch-id", "pickaxe", "prune",
-		"prune-packed", "pull", "push", "quiltimport", "range-diff", "read-tree", "rebase",
-		"receive-pack", "reflog", "refs", "remote", "remote-ext", "remote-fd", "remote-ftp",
-		"remote-ftps", "remote-http", "remote-https", "repack", "replace", "replay", "repo",
-		"request-pull", "rerere", "reset", "restore", "rev-list", "rev-parse", "revert", "rm",
-		"send-email", "send-pack", "sh-i18n--envsubst", "shell", "shortlog", "show", "show-branch",
-		"show-index", "show-ref", "sparse-checkout", "stage", "stash", "status", "stripspace",
-		"submodule", "submodule--helper", "switch", "symbolic-ref", "tag", "unpack-file",
-		"unpack-objects", "update-index", "update-ref", "update-server-info", "upload-archive",
-		"upload-archive--writer", "upload-pack", "url-parse", "var", "verify-commit", "verify-pack",
-		"verify-tag", "version", "web--browse", "whatchanged", "worktree", "write-tree",
-	)
+	commands := everyGitBuiltins()
+	maps.Copy(commands, setOf(
+		"archimport", "backfill", "bisect", "cvsexportcommit", "cvsimport", "cvsserver", "daemon",
+		"diagnose", "diff-pairs", "difftool--helper", "filter-branch", "format-rev",
+		"fsmonitor--daemon", "history", "hook", "http-backend", "http-fetch", "http-push", "imap-send",
+		"instaweb", "last-modified", "merge-octopus", "merge-one-file", "merge-resolve", "mergetool",
+		"p4", "quiltimport", "refs", "remote-ftp", "remote-ftps", "remote-http", "remote-https",
+		"replay", "repo", "request-pull", "send-email", "sh-i18n--envsubst", "shell", "submodule",
+		"url-parse", "web--browse",
+	))
+
+	return commands
 }
 
 // everyGitBuiltins is the part of gitCommands that git.MinimumVersion builds in, and so every git

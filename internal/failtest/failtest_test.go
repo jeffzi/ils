@@ -30,6 +30,13 @@ func TestTB_WhenAReportIsNotFatal_RecordsItWithoutEndingTheGoroutine(t *testing.
 			wantMessages: []string{"failed 2"},
 			wantFailed:   true,
 		},
+		{name: "Log with no text", report: func(spy *failtest.TB) { spy.Log("") }, wantMessages: []string{""}},
+		{
+			name:         "Errorf with no text",
+			report:       func(spy *failtest.TB) { spy.Errorf("") },
+			wantMessages: []string{""},
+			wantFailed:   true,
+		},
 		{name: "Fail", report: func(spy *failtest.TB) { spy.Fail() }, wantFailed: true},
 	}
 	for _, tt := range tests {
@@ -54,11 +61,30 @@ func TestTB_WhenAReportIsNotFatal_RecordsItWithoutEndingTheGoroutine(t *testing.
 func TestTB_WhenAFailureIsFatal_RecordsItBeforeEndingTheGoroutine(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		fatal func(spy *failtest.TB)
-		name  string
+		fatal        func(spy *failtest.TB)
+		name         string
+		wantMessages []string
 	}{
-		{name: "Fatalf", fatal: func(spy *failtest.TB) { spy.Fatalf("fatal %s", "now") }},
-		{name: "Fatal", fatal: func(spy *failtest.TB) { spy.Fatal("fatal now") }},
+		{
+			name:         "Fatalf",
+			fatal:        func(spy *failtest.TB) { spy.Fatalf("fatal %s", "now") },
+			wantMessages: []string{"logged before", "fatal now"},
+		},
+		{
+			name:         "Fatal",
+			fatal:        func(spy *failtest.TB) { spy.Fatal("fatal now") },
+			wantMessages: []string{"logged before", "fatal now"},
+		},
+		{
+			name:         "Fatal with no arguments",
+			fatal:        func(spy *failtest.TB) { spy.Fatal() },
+			wantMessages: []string{"logged before", ""},
+		},
+		{
+			name:         "FailNow",
+			fatal:        func(spy *failtest.TB) { spy.FailNow() },
+			wantMessages: []string{"logged before"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -75,7 +101,7 @@ func TestTB_WhenAFailureIsFatal_RecordsItBeforeEndingTheGoroutine(t *testing.T) 
 			assert.Check(t, !returned, "%s did not end the goroutine", tt.name)
 			assert.Check(t, spy.Failed())
 			assert.Check(t, spy.Stopped())
-			assert.Check(t, is.DeepEqual(spy.Messages(), []string{"logged before", "fatal now"}))
+			assert.Check(t, is.DeepEqual(spy.Messages(), tt.wantMessages))
 		})
 	}
 }

@@ -129,11 +129,13 @@ const messageQuery = "query($owner: String!, $name: String!, $number: Int!) { " 
 // trailerLine matches a line of the `Token: value` form, whose token is letters, digits and hyphens.
 var trailerLine = regexp.MustCompile(`^[A-Za-z0-9-]+: \S`)
 
+type workflowEntry struct {
+	Path  string `json:"path"`
+	State string `json:"state"`
+}
+
 type workflowsPage struct {
-	Workflows []struct {
-		Path  string `json:"path"`
-		State string `json:"state"`
-	} `json:"workflows"`
+	Workflows []workflowEntry `json:"workflows"`
 }
 
 type repoFile struct {
@@ -274,10 +276,10 @@ func (f *Forge) requiredChecks(ctx context.Context, repo forge.Repo, query forge
 		return false, false, err
 	}
 
-	missing = len(verdict.MissingRequired) > 0
-	running = len(verdict.Pending()) > 0 || (missing && verdict.Running())
+	absent := len(verdict.MissingRequired) > 0
+	running = len(verdict.Pending()) > 0 || (absent && verdict.Running())
 
-	return missing && !running, running, nil
+	return absent && !running, running, nil
 }
 
 // TrunkProtection returns whether rules apply to trunk, the status checks they require, and
@@ -409,7 +411,10 @@ func (f *Forge) Message(ctx context.Context, repo forge.Repo, number int) (forge
 func trailersOf(body, mergeBody string) []string {
 	appended := strings.ReplaceAll(mergeBody, "\r\n", "\n")
 	own := strings.TrimRight(strings.ReplaceAll(body, "\r\n", "\n"), " \t\n")
-	if rest, cut := strings.CutPrefix(appended, own); cut && (rest == "" || strings.HasPrefix(rest, "\n")) {
+	rest, cut := strings.CutPrefix(appended, own)
+
+	endsAtLine := rest == "" || strings.HasPrefix(rest, "\n")
+	if cut && endsAtLine {
 		appended = rest
 	}
 
@@ -538,14 +543,20 @@ func (f *Forge) activeWorkflows(ctx context.Context, repo forge.Repo) ([]string,
 		return nil, err
 	}
 
-	var active []string
+	var workflows []workflowEntry
 
 	for _, page := range pages {
-		for _, workflow := range page.Workflows {
-			if workflow.State == "active" && strings.HasPrefix(workflow.Path, workflowsDir+"/") {
-				active = append(active, workflow.Path)
-			}
+		workflows = append(workflows, page.Workflows...)
+	}
+
+	var active []string
+
+	for _, workflow := range workflows {
+		if workflow.State != "active" || !strings.HasPrefix(workflow.Path, workflowsDir+"/") {
+			continue
 		}
+
+		active = append(active, workflow.Path)
 	}
 
 	return active, nil

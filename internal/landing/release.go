@@ -121,8 +121,8 @@ type releasing struct {
 	localTag string
 	// notes are the release's notes, from the changelog at the release commit.
 	notes string
-	// verdict is how the CI gate ended, in the words of result.Release.Verdict.
-	verdict string
+	// verdict is how the CI gate ended.
+	verdict result.ReleaseVerdict
 	// url is the link of the GitHub release once it was created or found.
 	url string
 	// said are the lines the release says once its checks held, ahead of its end.
@@ -141,7 +141,6 @@ func (rel *releasing) version() string {
 	return strings.TrimPrefix(rel.tag, "v")
 }
 
-// prerelease reports whether the version has a pre-release part.
 func (rel *releasing) prerelease() bool {
 	return semver.Prerelease(rel.tag) != ""
 }
@@ -645,12 +644,12 @@ func (rel *releasing) tagPushFailed(req Request, err error) *result.Result {
 	switch failure {
 	case pushInterrupted:
 		return rel.broke(req, result.Say(runInterrupted+" during the push of the tag %s", rel.tag), next,
-			result.Say("Started the push of the tag %s at %s when "+runInterrupted+"; it may or may not have taken",
+			result.Say("Started the push of the tag %s at %s when "+runInterrupted+mayHaveTaken,
 				rel.tag, commit))
 	case pushTimedOut:
 		return rel.broke(req, result.Say(timeLimitEnded+" during the push of the tag %s", req.limitWords(), rel.tag),
 			next,
-			result.Say("Started the push of the tag %s at %s when "+timeLimitEnded+"; it may or may not have taken",
+			result.Say("Started the push of the tag %s at %s when "+timeLimitEnded+mayHaveTaken,
 				rel.tag, commit, req.limitWords()))
 	case pushRefusedByGit:
 		line := result.Say("Git refused the push of the tag %s, made locally, so it was not pushed", rel.tag)
@@ -664,14 +663,12 @@ func (rel *releasing) tagPushFailed(req Request, err error) *result.Result {
 		return stop
 	case pushUnanswered:
 		return rel.broke(req, result.Say(originStopped+" during the push of the tag %s", rel.tag), next,
-			result.Say("Started the push of the tag %s at %s when "+originStopped+"; it may or may not have taken: %s",
+			result.Say("Started the push of the tag %s at %s when "+originStopped+mayHaveTaken+": %s",
 				rel.tag, commit, err.Error()))
 	case pushKilled:
 		return rel.broke(req, result.Say("the push of the tag %s did not finish", rel.tag), next,
 			result.Say("The push of the tag %s at %s did not finish, so it may or may not have taken: %s",
 				rel.tag, commit, err.Error()))
-	case pushNotStarted:
-		fallthrough
 	default:
 		return rel.broke(req, result.Say("could not push the tag %s", rel.tag), next,
 			result.Say("The tag %s was made locally, and its push to origin failed: %s", rel.tag, err.Error()))

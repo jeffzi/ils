@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"runtime/debug"
@@ -20,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/jeffzi/ils/internal/commandline"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/landing"
@@ -157,7 +159,7 @@ type drawnFile struct {
 	out *colorprofile.Writer
 }
 
-// Write writes p to the file through out.
+// Write passes p through out, which downgrades its escape sequences to the profile.
 func (f drawnFile) Write(p []byte) (int, error) {
 	n, err := f.out.Write(p)
 	if err != nil {
@@ -190,9 +192,7 @@ func (a App) profile(isTerminal, noColor bool) colorprofile.Profile {
 
 	// colorprofile tells a terminal by its file descriptor or by TTY_FORCE. Whether the stream is a
 	// terminal is decided by isTerminal alone, so a TTY_FORCE of the environment never counts.
-	env := slices.DeleteFunc(slices.Clone(a.Environ), func(entry string) bool {
-		return strings.HasPrefix(entry, ttyForce+"=")
-	})
+	env := git.WithoutKeys(slices.Clone(a.Environ), ttyForce)
 	if a.terminal(isTerminal) {
 		env = append(env, ttyForce+"=1")
 	}
@@ -435,7 +435,7 @@ func (p *parse) root() *cobra.Command {
 	// word after a flag it does not know for that flag's value: `ils --help push` would print
 	// the help of the root.
 	root.InitDefaultHelpFlag()
-	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return p.flagRefusal(err, notCommand) })
+	p.refuseFlags(root, notCommand)
 	root.AddCommand(
 		p.push(),
 		p.merge(),
@@ -536,19 +536,29 @@ func (p *parse) landing(help landingHelp, run Command, flags func(*cobra.Command
 			return nil
 		},
 		RunE: func(c *cobra.Command, _ []string) error {
-			req := landing.Request{Command: help.word, Words: p.words}
-			if flags != nil {
-				flags(c, &req)
-			}
-
-			p.land(c.Context(), run, req)
-
-			return nil
+			return p.start(c, run, flags, landing.Request{Command: help.word, Words: p.words})
 		},
 	}
-	c.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return p.flagRefusal(err, extra) })
+	p.refuseFlags(c, extra)
 
 	return c
+}
+
+// start sets on req what the flags of c say, when flags is not nil, then lands it through run.
+func (p *parse) start(c *cobra.Command, run Command, flags func(*cobra.Command, *landing.Request), req landing.Request) error {
+	if flags != nil {
+		flags(c, &req)
+	}
+
+	p.land(c.Context(), run, req)
+
+	return nil
+}
+
+// refuseFlags makes c refuse a flag error as a result, naming a word it does not take through
+// unknown.
+func (p *parse) refuseFlags(c *cobra.Command, unknown func(typed string) result.Phrase) {
+	c.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return p.flagRefusal(err, unknown) })
 }
 
 // waitOn sets on req the --wait typed to c and whether c runs under the long wait: as --wait says
@@ -628,17 +638,10 @@ func (p *parse) named(help landingHelp, run Command, flags func(*cobra.Command, 
 			return nil
 		},
 		RunE: func(c *cobra.Command, args []string) error {
-			req := landing.Request{Command: help.word, Words: p.words, Args: args}
-			if flags != nil {
-				flags(c, &req)
-			}
-
-			p.land(c.Context(), run, req)
-
-			return nil
+			return p.start(c, run, flags, landing.Request{Command: help.word, Words: p.words, Args: args})
 		},
 	}
-	c.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return p.flagRefusal(err, extra) })
+	p.refuseFlags(c, extra)
 
 	return c
 }
@@ -667,6 +670,14 @@ func (p *parse) release() *cobra.Command {
 	return c
 }
 
+// loggedGit returns the git of the app, sending each call it runs to logger.
+func (p *parse) loggedGit(logger *slog.Logger) git.Runner {
+	runner := p.app.git
+	runner.Logger = logger
+
+	return runner
+}
+
 // land runs the landing command run for req against the repository ils runs in and its GitHub
 // origin, until req's time limit from launch, and keeps its result, the repository's git dir and
 // the step lines it printed. With debug on, the trace gets every git and gh call, the read of the
@@ -679,9 +690,7 @@ func (p *parse) land(ctx context.Context, run Command, req landing.Request) {
 
 	errProfile := p.app.profile(p.app.StderrTerminal, p.noColor)
 	logger := p.logger(errProfile)
-	runner := p.app.git
-	runner.Logger = logger
-	repo := git.Repo{Runner: runner}
+	repo := git.Repo{Runner: p.loggedGit(logger)}
 
 	// Outside a repository there is no git dir for a line to name, and whatever else stops
 	// this read stops the command's own first read too, whose result says so.
@@ -742,24 +751,20 @@ func (a App) onSignal(interrupt func()) (signals *endSignals, stop func()) {
 
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		spare := true
-		for {
-			sig, ok := nextSignal(landed, done)
-			if !ok {
-				return
-			}
-			if spare && sig != syscall.SIGQUIT {
-				spare = false
-				interrupt()
+		sig, ok := nextSignal(landed, done)
+		if ok && sig != syscall.SIGQUIT {
+			interrupt()
 
-				continue
-			}
-			signals.leaveDisplay()
-			signal.Stop(landed)
-			die(sig)
+			sig, ok = nextSignal(landed, done)
+		}
 
+		if !ok {
 			return
 		}
+
+		signals.leaveDisplay()
+		signal.Stop(landed)
+		die(sig)
 	})
 
 	return signals, func() {
@@ -882,13 +887,13 @@ func (a App) fail(err error) int {
 }
 
 const (
-	flagJSON    = landing.FlagJSON
-	flagHelp    = landing.FlagHelp
-	flagVersion = landing.FlagVersion
+	flagJSON    = commandline.FlagJSON
+	flagHelp    = commandline.FlagHelp
+	flagVersion = commandline.FlagVersion
 
-	flagDebug      = landing.FlagDebug
-	flagDebugShort = landing.FlagDebugShort
-	flagNoColor    = landing.FlagNoColor
+	flagDebug      = commandline.FlagDebug
+	flagDebugShort = commandline.FlagDebugShort
+	flagNoColor    = commandline.FlagNoColor
 
 	flagForce   = landing.FlagForce
 	flagTagOnly = landing.FlagTagOnly

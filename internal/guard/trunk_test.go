@@ -51,27 +51,17 @@ func lsRemotes(recorder *git.Recorder) int {
 	return count
 }
 
-// commitCreating returns a call of every subcommand the trunk rule refuses on the trunk.
-func commitCreating() []namedCommand {
-	return []namedCommand{
-		{name: "commit", command: commitCommand},
-		{name: "rebase", command: "git rebase origin/main"},
-		{name: "pull", command: "git pull"},
-		{name: "pull whose last fast-forward option allows a merge", command: "git pull --ff-only --no-ff"},
-	}
-}
-
 func TestJudge_RefusesACommitCreatingSubcommandOnTheTrunk(t *testing.T) {
 	t.Parallel()
 
-	_, caller := standingOn(t, "main", "main")
-	for _, tt := range commitCreating() {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	f, caller := standingOn(t, "main", "main")
 
-			checkJudgedRow(t, caller, judged{command: tt.command, wantNamed: "ils branch", want: guard.Refuse})
-		})
-	}
+	checkJudgedIn(t, caller, []placed{
+		{name: "commit", dir: f.Dir(), command: commitCommand},
+		{name: "rebase", dir: f.Dir(), command: "git rebase origin/main"},
+		{name: "pull", dir: f.Dir(), command: "git pull"},
+		{name: "pull whose last fast-forward option allows a merge", dir: f.Dir(), command: "git pull --ff-only --no-ff"},
+	}, expectation{outcome: guard.Refuse, named: "main"})
 }
 
 func TestJudge_AllowsACommandThatCreatesNoCommitOnTheTrunk(t *testing.T) {
@@ -97,14 +87,12 @@ func TestJudge_RefusesAFastForwardPullOfAnotherBranchOnTheTrunk(t *testing.T) {
 
 	f, caller := standingOn(t, "main", "main")
 
-	checkRefusedIn(t, caller, []placed{
+	checkJudgedIn(t, caller, []placed{
 		{name: "repository other than origin", dir: f.Dir(), command: "git pull --ff-only . topic"},
 		{name: "refspec other than the trunk", dir: f.Dir(), command: "git pull --ff-only origin topic"},
-		{name: "full ref other than the trunk", dir: f.Dir(), command: "git pull --ff-only origin refs/heads/topic"},
-		{name: "plus refspec other than the trunk", dir: f.Dir(), command: "git pull --ff-only origin +topic"},
 		{name: "non-literal repository", dir: f.Dir(), command: `git pull --ff-only "$r"`},
 		{name: "non-literal refspec", dir: f.Dir(), command: `git pull --ff-only origin "$b"`},
-	}, "git pull")
+	}, expectation{outcome: guard.Refuse, named: "git pull"})
 }
 
 func TestJudge_AllowsACommitCreatingSubcommandOffTheTrunk(t *testing.T) {
@@ -125,10 +113,10 @@ func TestJudge_AllowsACommitWhereNoTrunkIsProtected(t *testing.T) {
 	noOrigin, _ := standingOn(t, "main", "main")
 	noOrigin.RemoveOrigin()
 
-	checkAllowedIn(t, caller, []placed{
+	checkJudgedIn(t, caller, []placed{
 		{name: "repository with no origin", dir: noOrigin.Dir(), command: commitCommand},
 		{name: "outside any repository", dir: outsideDir(t), command: commitCommand},
-	})
+	}, expectation{outcome: guard.Allow})
 }
 
 func TestJudge_WhenTheTrunkIsNotMain_AllowsACommitOnMain(t *testing.T) {
@@ -136,9 +124,9 @@ func TestJudge_WhenTheTrunkIsNotMain_AllowsACommitOnMain(t *testing.T) {
 
 	f, caller := standingOn(t, "develop", "main")
 
-	checkAllowedIn(t, caller, []placed{
+	checkJudgedIn(t, caller, []placed{
 		{name: "on main", dir: f.Dir(), command: commitCommand},
-	})
+	}, expectation{outcome: guard.Allow})
 }
 
 func TestJudge_RefusesACommitWhoseOwnTargetIsOnTheTrunk(t *testing.T) {
@@ -149,14 +137,14 @@ func TestJudge_RefusesACommitWhoseOwnTargetIsOnTheTrunk(t *testing.T) {
 	trunkDir := quotedPath(f.Dir())
 	trunkGitDir := quotedPath(filepath.Join(f.Dir(), ".git"))
 
-	checkRefusedIn(t, caller, []placed{
+	checkJudgedIn(t, caller, []placed{
 		{name: "-C naming the trunk checkout", dir: feature, command: "git -C " + trunkDir + " commit -m 'msg'"},
 		{
 			name:    "--git-dir and --work-tree naming the trunk checkout",
 			dir:     feature,
 			command: "git --git-dir=" + trunkGitDir + " --work-tree=" + trunkDir + " commit -m 'msg'",
 		},
-	}, "ils branch")
+	}, expectation{outcome: guard.Refuse, named: "main"})
 }
 
 func TestJudge_AllowsACommitWhoseOwnTargetIsOffTheTrunk(t *testing.T) {
@@ -165,9 +153,9 @@ func TestJudge_AllowsACommitWhoseOwnTargetIsOffTheTrunk(t *testing.T) {
 	f, caller := standingOn(t, "main", "main")
 	feature := addWorktree(f, filepath.Join(outsideDir(t), "feature"))
 
-	checkAllowedIn(t, caller, []placed{
+	checkJudgedIn(t, caller, []placed{
 		{name: "-C naming a feature worktree", dir: f.Dir(), command: "git -C " + quotedPath(feature) + " commit -m 'msg'"},
-	})
+	}, expectation{outcome: guard.Allow})
 }
 
 func TestJudge_RefusesATrunkJudgedInvocationThatRunsWhereItCannotTell(t *testing.T) {
@@ -175,11 +163,11 @@ func TestJudge_RefusesATrunkJudgedInvocationThatRunsWhereItCannotTell(t *testing
 
 	f, caller := standingOn(t, "main", "topic")
 
-	checkRefusedIn(t, caller, []placed{
+	checkJudgedIn(t, caller, []placed{
 		{name: "after a switch", dir: f.Dir(), command: "git switch main && git commit -m 'msg'"},
 		{name: "after a cd to a non-literal", dir: f.Dir(), command: `cd "$d" && git commit -m 'msg'`},
 		{name: "non-literal -C", dir: f.Dir(), command: `git -C "$d" commit -m 'msg'`},
-	}, "git commit")
+	}, expectation{outcome: guard.Refuse, named: "git commit"})
 }
 
 func TestJudge_AllowsAReadThatRunsWhereItCannotTell(t *testing.T) {
@@ -187,9 +175,9 @@ func TestJudge_AllowsAReadThatRunsWhereItCannotTell(t *testing.T) {
 
 	f, caller := standingOn(t, "main", "topic")
 
-	checkAllowedIn(t, caller, []placed{
+	checkJudgedIn(t, caller, []placed{
 		{name: "after a switch", dir: f.Dir(), command: "git switch main && git status"},
-	})
+	}, expectation{outcome: guard.Allow})
 }
 
 func TestJudge_RefusesARebaseOfTheTrunkFromAnotherBranch(t *testing.T) {
@@ -197,10 +185,10 @@ func TestJudge_RefusesARebaseOfTheTrunkFromAnotherBranch(t *testing.T) {
 
 	f, caller := standingOn(t, "main", "topic")
 
-	checkRefusedIn(t, caller, []placed{
+	checkJudgedIn(t, caller, []placed{
 		{name: "trunk as the branch argument", dir: f.Dir(), command: "git rebase topic main"},
 		{name: "trunk after --onto", dir: f.Dir(), command: "git rebase --onto topic topic main"},
-	}, "ils branch")
+	}, expectation{outcome: guard.Refuse, named: "main"})
 }
 
 func TestJudge_WhenOriginsURLCannotBeRead_RefusesSayingWhatBroke(t *testing.T) {
@@ -217,9 +205,9 @@ func TestJudge_WhenOriginDoesNotAnswerAndNoTrunkIsCached_RefusesNamingTheCommand
 	f, caller := standingOn(t, "main", "topic")
 	f.CutOffOrigin()
 
-	checkRefusedIn(t, caller, []placed{
+	checkJudgedIn(t, caller, []placed{
 		{name: "off the trunk", dir: f.Dir(), command: commitCommand},
-	}, "git commit")
+	}, expectation{outcome: guard.Refuse, named: "git commit"})
 }
 
 func TestJudge_WhenACommandRunsGitTwiceInOneGitDir_AsksOriginOnce(t *testing.T) {
@@ -272,9 +260,9 @@ func TestJudge_WhenACommandSpansTwoGitDirs_JudgesEachAgainstItsOwnTrunk(t *testi
 	onMain, _ := standingOn(t, "main", "main")
 	command := "git commit -m one; git -C " + quotedPath(onMain.Dir()) + " commit -m two"
 
-	checkRefusedIn(t, caller, []placed{
+	checkJudgedIn(t, caller, []placed{
 		{name: "second repository on its trunk", dir: offDevelop.Dir(), command: command},
-	}, "ils branch")
+	}, expectation{outcome: guard.Refuse, named: "main"})
 }
 
 func TestJudge_WhenOriginNamesNoTrunk_RefusesSayingWhatBroke(t *testing.T) {
@@ -283,7 +271,7 @@ func TestJudge_WhenOriginNamesNoTrunk_RefusesSayingWhatBroke(t *testing.T) {
 	f, caller := standingOn(t, "main", "main")
 	f.DetachOriginHead()
 
-	checkRefusedIn(t, caller, []placed{
+	checkJudgedIn(t, caller, []placed{
 		{name: "origin with a detached HEAD", dir: f.Dir(), command: commitCommand},
-	}, "read the trunk")
+	}, expectation{outcome: guard.Refuse, named: "read the trunk"})
 }

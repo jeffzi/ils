@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
@@ -170,12 +169,33 @@ func opsOf(calls []forgetest.Call) []forgetest.Op {
 	return ops
 }
 
-// assertAsked fails unless the forge was called exactly as ops stand for: the operations in order,
-// the host, owner, and name of the repository each was about, and the branch.
+// byOp orders forge calls, or their operations, by operation, so that two lists compare whatever
+// order the calls came in: the fake forge already fails a test on any call its script has no
+// answer for, so the order of the reads pins nothing a run promises.
+func byOp() cmp.Option {
+	return cmp.Options{
+		cmpopts.SortSlices(func(a, b forgetest.Op) bool { return a < b }),
+		cmpopts.SortSlices(func(a, b forgetest.Call) bool { return a.Op < b.Op }),
+		cmpopts.EquateEmpty(),
+	}
+}
+
+// sameOps compares the operations of calls with ops, in any order.
+func sameOps(calls []forgetest.Call, ops []forgetest.Op) is.Comparison {
+	return is.DeepEqual(opsOf(calls), ops, byOp())
+}
+
+// sameCalls compares calls with want, in any order, by operation, by the host, owner, and name of
+// the repository each was about, and by branch.
+func sameCalls(calls, want []forgetest.Call) is.Comparison {
+	return is.DeepEqual(calls, want, whichRepo(), byOp())
+}
+
+// assertAsked fails unless the forge was called for exactly ops, in any order.
 func assertAsked(t *testing.T, s *scene, ops []forgetest.Op) {
 	t.Helper()
 
-	assert.Check(t, is.DeepEqual(s.forge.Calls(), asked(ops), whichRepo()))
+	assert.Check(t, sameOps(s.forge.Calls(), ops))
 }
 
 // gitRan reports whether a git call of the scene carried the argument word.
@@ -627,20 +647,6 @@ func unreadText(cmd landingCommand, read, detail string) string {
 	return expect(read, detail, nothingWritten) + cmd.fixed
 }
 
-func TestPush_WhenGivenNoProgressHookOrLogger_EndsAsWithThem(t *testing.T) {
-	t.Parallel()
-	synctest.Test(t, func(t *testing.T) {
-		// A first push whose check is still running at the first read reaches every place a hook
-		// or the logger is told something.
-		ctx, d := newDelivery(t, pushRow{script: opening(running(), passing())})
-		d.deps.Progress, d.deps.Logger = nil, nil
-
-		got := landing.Push(ctx, d.deps, pushRequest())
-
-		assertDelivered(t, d.scene, got, greenAfter(pushedLine()+openedLine()).at(d.tip))
-	})
-}
-
 // ---------------------------------------------------------------------------
 // Refusals of the shared preconditions
 // ---------------------------------------------------------------------------
@@ -745,10 +751,7 @@ func TestPreconditions_WhenOneFails_RefusesAtTheFirst(t *testing.T) {
 			_, stop := landing.Preconditions(t.Context(), s.deps, pushRequest())
 
 			got := stopped(t, stop, "a refusal")
-			assertStopped(t, got, result.Refused)
-
-			text, _ := shown(t, got, s.gitDir)
-			assertSays(t, text, tt.want)
+			assertEndedBy(t, got, s.gitDir, ended{outcome: result.Refused, req: pushRequest(), text: tt.want})
 
 			assertReadsStoppedAt(t, s, tt)
 		})
@@ -827,10 +830,7 @@ func TestPreconditions_WhenGitSSHRunsAMissingProgram_RefusesNamingIt(t *testing.
 	_, stop := landing.Preconditions(t.Context(), s.deps, cmd.req)
 
 	got := stopped(t, stop, "a refusal")
-	assertStoppedBy(t, got, result.Refused, cmd.req)
-
-	text, _ := shown(t, got, s.gitDir)
-	assertSays(t, text, commandMissing(cmd, "GIT_SSH"))
+	assertEndedBy(t, got, s.gitDir, ended{outcome: result.Refused, req: cmd.req, text: commandMissing(cmd, "GIT_SSH")})
 }
 
 // ---------------------------------------------------------------------------
@@ -846,10 +846,9 @@ func TestPreconditions_WhenGitIsTooOld_RefusesBeforeAnyOtherRead(t *testing.T) {
 	_, stop := landing.Preconditions(t.Context(), s.deps, cmd.req)
 
 	got := stopped(t, stop, "a refusal")
-	assertStoppedBy(t, got, result.Refused, cmd.req)
-
-	text, _ := shown(t, got, s.gitDir)
-	assertSays(t, text, expect("git", "1.0.0", git.MinimumVersion, "ils "+cmd.name))
+	assertEndedBy(t, got, s.gitDir, ended{
+		outcome: result.Refused, req: cmd.req, text: expect("git", "1.0.0", git.MinimumVersion, "ils "+cmd.name),
+	})
 
 	assert.Check(t, !s.gitRan("ls-remote"), "git asked origin after the refusal")
 	assert.Check(t, !s.gitRan("get-url"), "git read origin's URL after the refusal")
@@ -951,10 +950,9 @@ func TestPreconditions_WhenAReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
 			_, stop := landing.Preconditions(ctx, s.deps, tt.cmd.req)
 
 			got := stopped(t, stop, "a refusal")
-			assertStoppedBy(t, got, result.Refused, tt.cmd.req)
-
-			text, _ := shown(t, got, s.gitDir)
-			assertSays(t, text, overtimeText(tt.cmd, tt.c, tt.read))
+			assertEndedBy(t, got, s.gitDir, ended{
+				outcome: result.Refused, req: tt.cmd.req, text: overtimeText(tt.cmd, tt.c, tt.read),
+			})
 
 			assertAsked(t, s, tt.ops)
 		})

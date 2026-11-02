@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"gotest.tools/v3/assert"
+	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
@@ -366,7 +367,7 @@ func TestPush_WhenBranchHasNoCommitAtAll_RefusesAsNoCommitPastTheTrunk(t *testin
 	assertAsked(t, s, identityRead())
 }
 
-func TestPush_WhenBranchRefCannotBeRead_BrokeNamingTheTipRead(t *testing.T) {
+func TestPush_WhenTipAndBranchRefCannotBeRead_BrokeShowingBothFailures(t *testing.T) {
 	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
 	words := []string{"show-ref", "--verify", "--quiet", "refs/heads/" + spare}
 	s := newScene(t, func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--orphan", spare) }, allowed(), false)
@@ -374,7 +375,9 @@ func TestPush_WhenBranchRefCannotBeRead_BrokeNamingTheTipRead(t *testing.T) {
 
 	got := landing.Push(t.Context(), s.deps, pushRequest())
 
-	assertFailedGit(t, got, pushCommand(), readTip)
+	said := assertBrokeReadBy(t, got, pushCommand(), readTip)
+	assert.Check(t, is.Contains(said, gittest.FailedSaid))
+	assert.Check(t, is.Contains(said, "HEAD"))
 
 	assertAsked(t, s, identityRead())
 }

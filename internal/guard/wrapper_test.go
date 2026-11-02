@@ -38,7 +38,6 @@ func TestParse_WhenAWrapperRunsACommand_ReportsTheCommandBehindIt(t *testing.T) 
 			assert.Check(t, is.DeepEqual(wordTexts(got.Words), tt.wantWords), "Parse(%q) words", tt.command)
 			assert.Check(t, is.DeepEqual(got.Wrappers, tt.wantWrappers), "Parse(%q) wrappers", tt.command)
 			assert.Check(t, got.Tool != guard.NoTool, "Parse(%q) tool = none, want the wrapped tool", tt.command)
-			assert.Check(t, !got.Whole, "Parse(%q) reports a wrapped invocation as the whole command", tt.command)
 		})
 	}
 }

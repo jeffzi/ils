@@ -43,7 +43,9 @@ func (d Drawn) String() string {
 }
 
 // Draw reads out as a terminal does, drawing each character with the select graphic rendition
-// sequences before it. Other control sequences draw nothing.
+// sequences before it. Other control sequences draw nothing, and an escape that does not start a
+// control sequence is drawn as its characters. The test fails on a control sequence that is not
+// terminated, and on a select graphic rendition parameter Draw does not know.
 func Draw(tb testing.TB, out string) Drawn {
 	tb.Helper()
 
@@ -95,7 +97,8 @@ func sequence(tb testing.TB, pen Look, out string) (Look, string) {
 	return pen, rest[end+1:]
 }
 
-// resetParam clears every decoration; a sequence with no parameters means it too.
+// resetParam returns the pen to the default look, with no color and no decoration. An empty
+// parameter means it too, wherever it stands, so a sequence with no parameters resets.
 const resetParam = "0"
 
 // rendition returns pen as the parameters of one select graphic rendition sequence change it, and
@@ -103,13 +106,9 @@ const resetParam = "0"
 func rendition(tb testing.TB, pen Look, params string) Look {
 	tb.Helper()
 
-	fields := strings.FieldsFunc(params, func(r rune) bool { return r == ';' })
-	if len(fields) == 0 {
-		fields = []string{resetParam}
-	}
-	for _, code := range fields {
+	for code := range strings.SplitSeq(params, ";") {
 		switch code {
-		case resetParam:
+		case "", resetParam:
 			pen = Look{}
 		case "1":
 			pen.Bold = true

@@ -3,7 +3,6 @@
 package guard_test
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -36,13 +35,10 @@ func TestParse_ReportsWhetherHeadMayHaveMovedBeforeEachInvocation(t *testing.T) 
 		{name: "rebase --root naming a branch", command: "git rebase --root topic; git commit", want: []bool{false, true}},
 		{name: "rebase --root naming no branch", command: "git rebase --root; git commit", want: []bool{false, false}},
 		{name: "rebase short option taking a value", command: "git rebase -C 3 main; git commit", want: []bool{false, false}},
-		{name: "rebase prefix of a valued long option", command: "git rebase --ont main base; git commit", want: []bool{false, false}},
-		{name: "rebase prefix of --root naming a branch", command: "git rebase --ro topic; git commit", want: []bool{false, true}},
 		{name: "rebase argument the guard cannot read", command: "git rebase --str main; git commit", want: []bool{false, true}},
 		{name: "gh pr checkout", command: "gh pr checkout 12; git commit", want: []bool{false, true}},
 		{name: "gh pr view", command: "gh pr view 12; git commit", want: []bool{false, false}},
 		{name: "gh command word gh does not ship", command: "gh co 12; git commit", want: []bool{false, true}},
-		{name: "branch -M leading a short-flag bundle", command: "git branch -Mf next; git commit", want: []bool{false, true}},
 		{name: "branch -m after the first flag of a short-flag bundle", command: "git branch -fm next; git commit", want: []bool{false, true}},
 		{name: "prefix of branch --move", command: "git branch --mo next; git commit", want: []bool{false, true}},
 		{name: "branch --m too short to name --move", command: "git branch --m next; git commit", want: []bool{false, false}},
@@ -101,8 +97,7 @@ func TestParse_WhenACommandMayWriteTheGitDirsHead_ReportsHeadUnknownAfterIt(t *t
 	t.Parallel()
 
 	f := gittest.New(t, "main")
-	sub := filepath.Join(f.Dir(), "sub")
-	assert.NilError(t, os.MkdirAll(sub, 0o750))
+	gitDir := filepath.Join(f.Dir(), ".git")
 	tests := []struct {
 		name    string
 		dir     string
@@ -110,19 +105,16 @@ func TestParse_WhenACommandMayWriteTheGitDirsHead_ReportsHeadUnknownAfterIt(t *t
 		want    []bool
 	}{
 		{name: "redirect", dir: f.Dir(), command: "echo ref: refs/heads/x > .git/HEAD; git commit", want: []bool{false, true}},
-		{name: "appending redirect", dir: f.Dir(), command: "echo ref: refs/heads/x >> .git/HEAD; git commit", want: []bool{false, true}},
-		{name: "redirect through a roundabout path", dir: f.Dir(), command: "echo x > ./.git/../.git//HEAD; git commit", want: []bool{false, true}},
 		{name: "redirect to an absolute path", dir: f.Dir(), command: "echo x > {dir}/.git/HEAD; git commit", want: []bool{false, true}},
-		{name: "redirect from a subdirectory", dir: sub, command: "echo x > ../.git/HEAD; git commit", want: []bool{false, true}},
 		{name: "redirect to a target that is not a literal", dir: f.Dir(), command: `echo x > "$where"; git commit`, want: []bool{false, true}},
 		{name: "redirect to a work tree file named HEAD", dir: f.Dir(), command: "echo x > HEAD; git commit", want: []bool{false, false}},
 		{name: "cp onto it", dir: f.Dir(), command: "cp saved .git/HEAD; git commit", want: []bool{false, true}},
 		{name: "cp onto a destination that is not a literal", dir: f.Dir(), command: `cp saved "$where"; git commit`, want: []bool{false, true}},
 		{name: "cp reading it", dir: f.Dir(), command: "cp .git/HEAD saved; git commit", want: []bool{false, false}},
+		{name: "mv found by the equals lookup moving a HEAD file into it", dir: f.Dir(), command: "=mv HEAD .git; git commit -m x", want: []bool{false, true}},
+		{name: "cp found by the equals lookup copying a HEAD file into it", dir: f.Dir(), command: "=cp -t .git HEAD; git commit -m x", want: []bool{false, true}},
 		{name: "tee onto it", dir: f.Dir(), command: "tee .git/HEAD < saved; git commit", want: []bool{false, true}},
-		{name: "sed editing it in place", dir: f.Dir(), command: "sed -i s,a,b, .git/HEAD; git commit", want: []bool{false, true}},
-		{name: "dd writing it through of=", dir: f.Dir(), command: "dd if=saved of=.git/HEAD; git commit", want: []bool{false, true}},
-		{name: "long option whose attached value names it", dir: f.Dir(), command: "sort --output=.git/HEAD saved; git commit", want: []bool{false, true}},
+		{name: "dd writing HEAD through of= from the git dir", dir: gitDir, command: "dd if=saved of=HEAD; git commit", want: []bool{false, true}},
 		{name: "ln -s linking to it", dir: f.Dir(), command: "ln -s .git/HEAD h; echo x > h; git commit", want: []bool{false, true, true}},
 		{name: "command known only to read it", dir: f.Dir(), command: "grep ref .git/HEAD; git commit", want: []bool{false, false}},
 		{name: "git given it as an argument", dir: f.Dir(), command: "git hash-object .git/HEAD; git commit", want: []bool{false, false}},

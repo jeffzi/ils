@@ -109,11 +109,9 @@ type liveRun struct {
 // livePull is an open pull request of a scenario's branch, as GitHub shows it.
 type livePull struct {
 	Title  string `json:"title"`
-	Body   string `json:"body"`
 	Base   string `json:"baseRefName"`
 	Head   string `json:"headRefOid"`
 	Number int    `json:"number"`
-	Draft  bool   `json:"isDraft"`
 }
 
 // ---------------------------------------------------------------------------
@@ -212,9 +210,19 @@ func (l *liveSuite) apiArgs(rest string, extra ...string) []string {
 func (l *liveSuite) remoteCommit(t *testing.T, ref string) string {
 	t.Helper()
 
-	sha, _, _ := strings.Cut(mustGit(t, "", "ls-remote", l.url, ref), "\t")
+	sha, err := l.remoteCommitIn(t.Context(), ref)
+	assert.NilError(t, err)
 
 	return sha
+}
+
+// remoteCommitIn is the commit ref stands on in the repository on GitHub, read under ctx, and empty
+// when the ref is missing.
+func (l *liveSuite) remoteCommitIn(ctx context.Context, ref string) (string, error) {
+	out, err := liveGit(ctx, "", "ls-remote", l.url, ref)
+	sha, _, _ := strings.Cut(out, "\t")
+
+	return sha, err
 }
 
 // mustRemoteCommit is remoteCommit for a ref that must exist: it fails the test when the ref is
@@ -232,6 +240,13 @@ func (l *liveSuite) mustRemoteCommit(t *testing.T, ref string) string {
 
 func (l *liveSuite) trunkRef() string {
 	return headRef(l.trunk)
+}
+
+// trunkTip is the commit the default branch stands on in the repository on GitHub.
+func (l *liveSuite) trunkTip(t *testing.T) string {
+	t.Helper()
+
+	return l.remoteCommit(t, l.trunkRef())
 }
 
 func headRef(name string) string { return "refs/heads/" + name }
@@ -363,8 +378,7 @@ func (l *liveSuite) keepTrunk(t *testing.T) {
 		ctx, cancel := liveCleanupContext(t)
 		defer cancel()
 
-		now, err := liveGit(ctx, "", "ls-remote", l.url, l.trunkRef())
-		if sha, _, _ := strings.Cut(now, "\t"); err == nil && sha == before {
+		if sha, err := l.remoteCommitIn(ctx, l.trunkRef()); err == nil && sha == before {
 			return
 		}
 
@@ -493,7 +507,7 @@ func (b *liveBranch) onePull(t *testing.T) livePull {
 	t.Helper()
 
 	out := mustGh(t, "pr", "list", "--repo", b.suite.slug(), "--head", b.name, "--state", "open",
-		"--json", "number,title,body,baseRefName,headRefOid,isDraft")
+		"--json", "number,title,baseRefName,headRefOid")
 
 	var pulls []livePull
 
@@ -583,7 +597,7 @@ func (r liveRun) lines() string {
 }
 
 // check returns the first check of the result in bucket, and the zero Check when there is none.
-func (r liveRun) check(bucket string) result.Check {
+func (r liveRun) check(bucket forge.Bucket) result.Check {
 	if r.shown.Payload == nil || r.shown.Payload.Push == nil {
 		return result.Check{}
 	}
@@ -627,6 +641,9 @@ func liveDispatchedWorkflow() map[string]string {
 // ---------------------------------------------------------------------------
 
 func TestApp_Run_WhenRunAgainstALiveRepository_EndsEachScenarioAsGitHubReportsIt(t *testing.T) {
+	// Not parallel: the scenarios share one repository. Each one's keepTrunk puts the trunk back on
+	// the commit it stood on when the scenario began, and each branch's cleanup cancels every workflow
+	// run in the repository.
 	l := newLiveSuite(t)
 
 	scenarios := []struct {
@@ -760,7 +777,7 @@ func liveStatusOfPull(t *testing.T, l *liveSuite) {
 
 	assert.Assert(t, got.PullRequest != nil, "no open pull request in the status of %s", b.name)
 	assert.Check(t, is.Equal(got.PullRequest.Number, number))
-	assert.Check(t, is.Equal(got.PullRequest.Verdict, string(forge.VerdictGreen)))
+	assert.Check(t, is.Equal(got.PullRequest.Verdict, forge.VerdictGreen))
 }
 
 func liveStatusOfTrunk(t *testing.T, l *liveSuite) {
@@ -793,7 +810,7 @@ func liveBranchTaken(t *testing.T, l *liveSuite) {
 	got := launch(t, over(git.Runner{Dir: l.clone(t)}), "branch", name, "--json")
 
 	assert.Check(t, is.Equal(got.code, exitRefused), "%s", got.stdout)
-	assert.Check(t, is.Contains(got.stdout, "on origin"))
+	assert.Check(t, is.Contains(resulttest.Decode(t, got.stdout).Reason, name))
 }
 
 func liveAlreadyLanded(t *testing.T, l *liveSuite) {
@@ -821,7 +838,7 @@ func liveConflict(t *testing.T, l *liveSuite) {
 	assert.Equal(t, got.code, exitDelivered, "%s", got.raw)
 	assert.Check(t, is.Equal(b.onePull(t).Head, b.tip(t)))
 	assert.Assert(t, got.shown.Payload != nil && got.shown.Payload.Push != nil, "%s", got.raw)
-	assert.Check(t, is.Equal(got.shown.Payload.Push.MergeState, "conflicting"))
+	assert.Check(t, is.Equal(got.shown.Payload.Push.MergeState, forge.MergeConflicting))
 	assert.Check(t, is.Contains(got.shown.Next, "ils push"))
 }
 
@@ -848,14 +865,14 @@ func liveCIDidNotFire(t *testing.T, l *liveSuite) {
 func liveTitleRefused(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "title")
 	number := b.pushedPull(t, liveWorkflow(livePassing))
-	before := l.remoteCommit(t, l.trunkRef())
+	before := l.trunkTip(t)
 
 	got := b.merge(t)
 
 	assert.Equal(t, got.code, exitRefused, "%s", got.raw)
 	assert.Check(t, is.Contains(got.shown.Reason, "#"+number))
 	assert.Check(t, is.Contains(got.shown.Reason, strconv.Quote(b.name)))
-	assert.Check(t, is.Equal(l.remoteCommit(t, l.trunkRef()), before))
+	assert.Check(t, is.Equal(l.trunkTip(t), before))
 	assert.Check(t, is.Equal(b.state(t, number), "OPEN"))
 }
 
@@ -864,15 +881,13 @@ func liveMerged(t *testing.T, l *liveSuite) {
 	number := b.pushedPull(t, liveWorkflow(livePassing))
 	title, body := "feat(live): land "+b.token, "Landed by the live suite as "+b.token+"."
 	mustGh(t, "pr", "edit", number, "--repo", l.slug(), "--title", title, "--body", body)
-	before := l.remoteCommit(t, l.trunkRef())
 
 	got := b.merge(t)
 
 	assert.Equal(t, got.code, exitDone, "%s", got.raw)
 	assert.Check(t, is.Equal(b.state(t, number), "MERGED"))
 
-	after := l.remoteCommit(t, l.trunkRef())
-	assert.Check(t, is.Equal(mustGit(t, b.dir, "rev-parse", after+"^"), before), "origin's trunk gained more than one commit")
+	after := l.trunkTip(t)
 	assert.Check(t, is.Equal(mustGit(t, b.dir, "log", "-1", "--format=%s", after), title+" (#"+number+")"))
 	message := mustGit(t, b.dir, "log", "-1", "--format=%b", after)
 	assert.Check(t, strings.HasPrefix(message, body), "squash commit body = %q, want it to start with %q", message, body)
@@ -883,13 +898,13 @@ func liveMergedOnTheWeb(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "merged-web")
 	number := b.pushedPull(t, nil)
 	mustGh(t, "pr", "merge", number, "--repo", l.slug(), "--squash")
-	before := l.remoteCommit(t, l.trunkRef())
+	before := l.trunkTip(t)
 
 	got := b.merge(t)
 
 	assert.Equal(t, got.code, exitDone, "%s", got.raw)
 	assert.Check(t, is.Contains(got.lines(), "#"+number))
 	assert.Check(t, is.Contains(got.lines(), l.trunk))
-	assert.Check(t, is.Equal(l.remoteCommit(t, l.trunkRef()), before), "ils merge made a second commit on origin's trunk")
+	assert.Check(t, is.Equal(l.trunkTip(t), before), "ils merge made a second commit on origin's trunk")
 	b.checkLanded(t, before)
 }

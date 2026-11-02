@@ -1,7 +1,5 @@
 //go:build unix
 
-// cspell:ignore verif -- deliberately truncated git option spelling git accepts.
-
 package guard_test
 
 import (

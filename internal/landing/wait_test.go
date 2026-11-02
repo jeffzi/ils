@@ -46,6 +46,13 @@ const (
 	// fits with the 3 seconds kept for the head read after it, so the read after the poll begins
 	// 3.5 seconds before the deadline, and the reserve ends it heldRead in.
 	heldLeft = verdictPoll + headReadReserve + heldRead
+
+	// twoPollsLeft is a time limit a third poll would end a second past.
+	twoPollsLeft = 5 * time.Second
+
+	// onePollThenReadLeft leaves room for one poll and then for the read after the checks, of the
+	// head or of the merge state, but not for a second poll with that read after it.
+	onePollThenReadLeft = 10 * time.Second
 )
 
 // heldPauses are the fake times a wait lets pass when the reserve ends the read after its first
@@ -364,9 +371,8 @@ func TestAwaitVerdict_WhenTheHeadIsNotYetThePushedCommit_ReadsNoCheck(t *testing
 			want: green(), ops: readsOf(3, 1, 1), waits: polls(2, headPoll),
 		},
 		{
-			// A third poll would end a second past the deadline.
 			name:  "previous commit until the deadline",
-			heads: shows(stale()), left: 5 * time.Second,
+			heads: shows(stale()), left: twoPollsLeft,
 			want: landing.Waited{Outcome: landing.WaitPending, Stage: landing.StageHead},
 			ops:  readsOf(3, 0, 0), waits: polls(2, headPoll),
 		},
@@ -395,9 +401,8 @@ func mergeRows() []vigilRow {
 			want:  gaveUp, ops: readsOf(16, 0, 0), waits: polls(15, mergePoll),
 		},
 		{
-			// A third poll would end a second past the deadline.
 			name:  "unknown with 5 seconds left",
-			heads: shows(unknown()), left: 5 * time.Second,
+			heads: shows(unknown()), left: twoPollsLeft,
 			want: stillUnknown, ops: readsOf(3, 0, 0), waits: polls(2, mergePoll),
 		},
 		{
@@ -456,9 +461,8 @@ func logRows() []logRow {
 			},
 		},
 		{
-			// A third poll would end a second past the deadline.
 			name:   "a wait that ends pending on the previous commit",
-			script: forgetest.Script{Head: shows(stale())}, left: 5 * time.Second,
+			script: forgetest.Script{Head: shows(stale())}, left: twoPollsLeft,
 			want: []string{"DEBUG wait ended=pending stage=head"},
 		},
 		{
@@ -515,10 +519,8 @@ func TestAwaitVerdict_WhenTheHeadMovesPastThePushedCommit_EndsMovedToTheNewHead(
 			ops: readsOf(1, 1, 1),
 		},
 		{
-			// Ten seconds leave room for one poll and then for the head read, but not for a second poll
-			// with the head read after it.
 			name: "after checks still running at the deadline", heads: shows(clean(), moved()), before: clean(),
-			verdicts: says(running()), left: 10 * time.Second, ops: readsOf(1, 2, 1),
+			verdicts: says(running()), left: onePollThenReadLeft, ops: readsOf(1, 2, 1),
 		},
 		{
 			name: "before its merge state is known", heads: shows(unknown(), moved()), before: unknown(),
@@ -647,18 +649,8 @@ func TestAwaitVerdict_WhenALaterVerdictReadAnswersPastTheReserve_JudgesWhatItSay
 func TestAwaitVerdict_WhenTheHeadAfterTheChecksIsNotRead_EndsPendingWithoutTheVerdict(t *testing.T) {
 	t.Parallel()
 
-	type row struct {
-		name     string
-		heads    []forgetest.Answer[forge.Head]
-		verdicts []forgetest.Answer[forge.Verdict]
-		ops      []forgetest.Op
-		waits    []time.Duration
-		want     landing.Waited
-		left     time.Duration
-	}
-
 	c := byTimeLimit()
-	tests := []row{
+	tests := []vigilRow{
 		{
 			// The reserve ends the read after the poll; the wait's own deadline then ends the head read.
 			name:     "the deadline ends inside the head read after a later read the reserve ended",
@@ -753,14 +745,18 @@ func atMergeState(c cut) landing.Waited {
 	return endedBy(c, pendingAt(landing.StageMergeState, unknown()))
 }
 
+// atHead is the wait c ended at the read of the head, before any commit was shown as the pushed one.
+func atHead(c cut) landing.Waited {
+	return endedBy(c, landing.Waited{Outcome: landing.WaitPending, Stage: landing.StageHead})
+}
+
 // readCutWaits are the waits whose read c ends: the read fails with c's error.
 func readCutWaits(c cut) []cutShort {
 	lateVerdict := forgetest.Answer[forge.Verdict]{Err: c.of("gh")}
-	atHead := endedBy(c, landing.Waited{Outcome: landing.WaitPending, Stage: landing.StageHead})
 
 	return []cutShort{
-		{name: "inside the head read", want: atHead, heads: []forgetest.Answer[forge.Head]{lateHead(c)}},
-		{name: "inside a head read after one that showed the commit before the push", want: atHead, heads: append(shows(stale()), lateHead(c))},
+		{name: "inside the head read", want: atHead(c), heads: []forgetest.Answer[forge.Head]{lateHead(c)}},
+		{name: "inside a head read after one that showed the commit before the push", want: atHead(c), heads: append(shows(stale()), lateHead(c))},
 		{name: "inside the merge state read", want: atMergeState(c), heads: append(shows(unknown()), lateHead(c))},
 		{
 			name: "inside a later verdict read of checks still running", want: atVerdict(c),
@@ -773,7 +769,7 @@ func readCutWaits(c cut) []cutShort {
 func headPollCut(c cut) cutShort {
 	return cutShort{
 		name: "inside the head poll", heads: shows(stale()),
-		want: endedBy(c, landing.Waited{Outcome: landing.WaitPending, Stage: landing.StageHead}),
+		want: atHead(c),
 	}
 }
 
@@ -1003,8 +999,7 @@ func TestAwaitVerdict_WhenAnInterruptLandsAsTheHeadPollEnds_EndsPendingInterrupt
 
 		got := v.await(t)
 
-		want := endedBy(byInterrupt(), landing.Waited{Outcome: landing.WaitPending, Stage: landing.StageHead})
-		assert.Check(t, is.DeepEqual(got, want, ignoreSince(), cmpopts.EquateEmpty()))
+		assert.Check(t, is.DeepEqual(got, atHead(byInterrupt()), ignoreSince(), cmpopts.EquateEmpty()))
 		assert.Check(t, is.Equal(time.Since(began), headPoll))
 	})
 }
@@ -1045,10 +1040,8 @@ func TestAwaitVerdict_WhenAReadFails_ReturnsAnErrorNamingTheRead(t *testing.T) {
 			heads: append(shows(clean()), failed), verdicts: says(passing()),
 		},
 		{
-			// Ten seconds leave room for one poll and then for this read, but not for a second poll
-			// with this read after it.
 			name: "the merge state after checks that were still running", want: landing.StageMergeState,
-			heads: append(shows(clean()), failed), verdicts: says(running()), left: 10 * time.Second,
+			heads: append(shows(clean()), failed), verdicts: says(running()), left: onePollThenReadLeft,
 		},
 	}
 	for _, tt := range tests {

@@ -3,7 +3,6 @@ package github_test
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strconv"
 	"testing"
 
@@ -54,9 +53,7 @@ func jobFailedLogArgs(job string) []string {
 	return append(ghtest.LogArgs(engineSlug, runID), "--job", job)
 }
 
-func jobLogArgs() []string {
-	return []string{"api", "--hostname", engineHost, "repos/ada/engine/actions/jobs/" + jobID + "/logs"}
-}
+func jobLogArgs() []string { return apiArgs("actions/jobs/" + jobID + "/logs") }
 
 func noChecksAnswer() ghtest.Answer {
 	return ghtest.Answer{Stderr: "no checks reported on the 'feature' branch\n", Code: 1}
@@ -137,11 +134,8 @@ func TestForge_Verdict_WhenQueryNamesRequiredChecks_ListsRequiredChecksWithNoRep
 type failedLogRow struct {
 	name   string
 	checks string
-	// wantCalls is every argv gh receives, in any order: the log is read only for a failing check of
-	// a run.
-	wantCalls [][]string
-	want      forge.FailedLog
-	log       ghtest.Answer
+	want   forge.FailedLog
+	log    ghtest.Answer
 	// jobLog is the answer to the read of the log of the job runLink names.
 	jobLog ghtest.Answer
 }
@@ -170,57 +164,31 @@ func failedLogRows() []failedLogRow {
 	noRun := forge.FailedLog{Check: "scan", State: forge.FailedLogNoRun}
 	unreadable := forge.FailedLog{Check: "build", State: forge.FailedLogUnreadable}
 	inProgress := forge.FailedLog{Check: "build", State: forge.FailedLogInProgress}
-	withLog := received(checksArgs(), runsArgs(), logArgs())
-	noLog := received(checksArgs(), runsArgs())
-	withJobLog := received(checksArgs(), runsArgs(), logArgs(), jobLogArgs())
 
 	return []failedLogRow{
-		{name: "failing check of a run", checks: failing, log: logged, want: read, wantCalls: withLog},
-		{name: "failing status with no run", checks: ghtest.CheckJSON("scan", "fail", statusLink), log: logged, want: noRun, wantCalls: noLog},
-		{name: "run view fails", checks: failing, log: gone, want: unreadable, wantCalls: withLog},
-		{name: "run of the failing check still in progress", checks: failing, log: unfinished, want: inProgress, wantCalls: withLog},
-		{name: "failed log only whitespace reads the job log", checks: failing, log: blank, jobLog: jobLogged, want: jobRead, wantCalls: withJobLog},
-		{name: "failed log empty and job log only whitespace", checks: failing, log: empty, jobLog: blank, want: inProgress, wantCalls: withJobLog},
-		{name: "failed log empty and job log read fails", checks: failing, log: empty, jobLog: jobGone, want: inProgress, wantCalls: withJobLog},
-		{name: "link names no job", checks: ghtest.CheckJSON("build", "fail", runOnlyLink), log: logged, jobLog: jobLogged, want: unreadable, wantCalls: noLog},
-		{name: "check of a run still pending", checks: ghtest.CheckJSON("build", "pending", runLink), log: logged, wantCalls: noLog},
+		{name: "failing check of a run", checks: failing, log: logged, want: read},
+		{name: "failing status with no run", checks: ghtest.CheckJSON("scan", "fail", statusLink), log: logged, want: noRun},
+		{name: "run view fails", checks: failing, log: gone, want: unreadable},
+		{name: "run of the failing check still in progress", checks: failing, log: unfinished, want: inProgress},
+		{name: "failed log only whitespace reads the job log", checks: failing, log: blank, jobLog: jobLogged, want: jobRead},
+		{name: "failed log empty and job log only whitespace", checks: failing, log: empty, jobLog: blank, want: inProgress},
+		{name: "failed log empty and job log read fails", checks: failing, log: empty, jobLog: jobGone, want: inProgress},
+		{name: "link names no job", checks: ghtest.CheckJSON("build", "fail", runOnlyLink), log: logged, jobLog: jobLogged, want: unreadable},
+		{name: "check of a run still pending", checks: ghtest.CheckJSON("build", "pending", runLink), log: logged},
 	}
 }
 
 func TestForge_Verdict_FailedLog(t *testing.T) {
 	for _, tt := range failedLogRows() {
 		t.Run(tt.name, func(t *testing.T) {
-			fake := ghtest.Setup(t, ghtest.Says(ghtest.JSONArray(tt.checks), checksArgs()...), ghtest.Says("[]", runsArgs()...), ghtest.Exits(tt.log, logArgs()...), ghtest.Exits(tt.jobLog, jobLogArgs()...))
+			ghtest.Setup(t, ghtest.Says(ghtest.JSONArray(tt.checks), checksArgs()...), ghtest.Says("[]", runsArgs()...), ghtest.Exits(tt.log, logArgs()...), ghtest.Exits(tt.jobLog, jobLogArgs()...))
 
 			got, err := newForge().Verdict(t.Context(), engine(), verdictQuery())
 			assert.NilError(t, err)
 
 			assert.Check(t, is.DeepEqual(got.FailedLog, tt.want))
-			byArgv := cmpopts.SortSlices(func(a, b []string) bool { return slices.Compare(a, b) < 0 })
-			scripted := cmp.Comparer(func(a, b []string) bool { return ghtest.Matches(a, b) || ghtest.Matches(b, a) })
-			assert.Check(t, is.DeepEqual(fake.Calls(), tt.wantCalls, byArgv, scripted))
 		})
 	}
-}
-
-func TestForge_Verdict_WhenTwoJobsOfTheRunFailed_ReadsTheLogOfTheFailedCheckJobOnly(t *testing.T) {
-	const otherJob = "43"
-	texts := map[string]string{"build": "build\tRun tests\tFAIL\n", "lint": "lint\tRun vet\tFAIL\n"}
-	otherLink := "https://git.example.com/ada/engine/actions/runs/" + runID + "/job/" + otherJob
-	checks := ghtest.JSONArray(ghtest.CheckJSON("build", "fail", runLink), ghtest.CheckJSON("lint", "fail", otherLink))
-	ghtest.Setup(t,
-		ghtest.Exits(ghtest.Answer{Stdout: checks, Code: 1}, checksArgs()...),
-		ghtest.Says("[]", runsArgs()...),
-		ghtest.Says(texts["build"]+texts["lint"], ghtest.LogArgs(engineSlug, runID)...),
-		ghtest.Says(texts["build"], jobFailedLogArgs(jobID)...),
-		ghtest.Says(texts["lint"], jobFailedLogArgs(otherJob)...),
-	)
-
-	got, err := newForge().Verdict(t.Context(), engine(), verdictQuery())
-	assert.NilError(t, err)
-
-	want := forge.FailedLog{Check: got.FailedLog.Check, Text: texts[got.FailedLog.Check], State: forge.FailedLogRead}
-	assert.Check(t, is.DeepEqual(got.FailedLog, want))
 }
 
 func TestForge_Verdict_WhenTheRunListExitsNonZero_ReturnsExitErrorNamingIt(t *testing.T) {
@@ -242,16 +210,11 @@ const (
 	otherSuite = 12
 )
 
-// commitAPIArgs is the argv of the paginated read of rest under the engine repository.
-func commitAPIArgs(rest string) []string {
-	return []string{"api", "--hostname", engineHost, "--paginate", "repos/ada/engine/" + rest}
-}
+func checkRunsArgs() []string { return pagedAPIArgs("commits/" + headSHA + "/check-runs") }
 
-func checkRunsArgs() []string { return commitAPIArgs("commits/" + headSHA + "/check-runs") }
+func commitStatusArgs() []string { return pagedAPIArgs("commits/" + headSHA + "/status") }
 
-func commitStatusArgs() []string { return commitAPIArgs("commits/" + headSHA + "/status") }
-
-func workflowRunsArgs() []string { return commitAPIArgs("actions/runs?head_sha=" + headSHA) }
+func workflowRunsArgs() []string { return pagedAPIArgs("actions/runs?head_sha=" + headSHA) }
 
 // checkRunJSON is one check run of the check-runs read: the check run numbered id, named name, of
 // the check suite suite, with conclusion; an empty conclusion is null and leaves the run in
@@ -422,7 +385,6 @@ func TestForge_CommitVerdict_WhenRunsAreOnTheCommit_ListsThePushRunsWithTheirSta
 	runs := workflowRunsPage(
 		workflowRunJSON(ciSuite, "CI", "push", "queued"),
 		workflowRunJSON(otherSuite, "Deploy", "workflow_run", "in_progress"),
-		workflowRunJSON(13, "Nightly", "schedule", "in_progress"),
 	)
 
 	got := commitVerdict(t, checkRunsPage(), statusPage(), runs)

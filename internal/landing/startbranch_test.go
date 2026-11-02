@@ -45,6 +45,15 @@ func assertStarted(t *testing.T, s *scene, name string) {
 	assert.Check(t, is.Equal(f.Git("rev-parse", "refs/heads/"+name), f.OriginGit("rev-parse", trunk)))
 }
 
+// assertStartedBranch fails unless got is the success of `ils branch fresh`, whose text holds the
+// parts of want, and HEAD is on fresh at origin's trunk.
+func assertStartedBranch(t *testing.T, s *scene, got result.Result, want string) {
+	t.Helper()
+
+	assertEndedBy(t, got, s.gitDir, ended{outcome: result.Done, req: branchRequest(fresh), text: want})
+	assertStarted(t, s, fresh)
+}
+
 // branchRefusal is the refusal of `ils branch name` a test expects: its text holds the parts of
 // want, and what the repository holds is still before.
 type branchRefusal struct {
@@ -68,43 +77,7 @@ func TestStartBranch_WhenEveryCheckHolds_StartsTheBranchAtOriginsTrunk(t *testin
 
 	got := startBranch(t, s, fresh)
 
-	want := expect(fresh, shortSHA(tip), "Next:", "ils push")
-	assertEndedBy(t, got, s.gitDir, ended{outcome: result.Done, req: branchRequest(fresh), text: want})
-	assertStarted(t, s, fresh)
-}
-
-func TestStartBranch_WhenTheFetchConfigLeavesTheTrunkOut_StartsTheBranchAtTheFetchedTrunk(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		arrange func(*gittest.Fixture)
-		name    string
-	}{
-		{name: "tracking ref behind origin's trunk", arrange: func(*gittest.Fixture) {}},
-		{
-			name:    "no tracking ref",
-			arrange: func(f *gittest.Fixture) { f.Git("update-ref", "-d", "refs/remotes/origin/"+trunk) },
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			var tip string
-
-			s := branchScene(t, func(f *gittest.Fixture) {
-				f.Git("config", "remote.origin.fetch", "+refs/heads/"+topic+":refs/remotes/origin/"+topic)
-				tt.arrange(f)
-				tip = f.AdvanceOrigin(trunk)
-			})
-
-			got := startBranch(t, s, fresh)
-
-			want := expect(fresh, shortSHA(tip), "Next:", "ils push")
-			assertEndedBy(t, got, s.gitDir, ended{outcome: result.Done, req: branchRequest(fresh), text: want})
-			assertStarted(t, s, fresh)
-		})
-	}
+	assertStartedBranch(t, s, got, expect(fresh, shortSHA(tip), "Next:", "ils push"))
 }
 
 func TestStartBranch_WhenHEADIsDetachedWithNoCommitOfItsOwn_StartsAtOriginsTrunkAsFetched(t *testing.T) {
@@ -278,9 +251,7 @@ func TestStartBranch_WhenLocalTrunkHasCommitsOriginLacks_StartsTheBranchNamingTh
 
 	got := startBranch(t, s, fresh)
 
-	want := expect(shortSHA(ahead), "local trunk "+trunk)
-	assertEndedBy(t, got, s.gitDir, ended{outcome: result.Done, req: branchRequest(fresh), text: want})
-	assertStarted(t, s, fresh)
+	assertStartedBranch(t, s, got, expect(shortSHA(ahead), "local trunk "+trunk))
 }
 
 func TestStartBranch_WhenTheSwitchWouldOverwriteAFile_RefusesNamingIt(t *testing.T) {

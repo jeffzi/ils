@@ -15,6 +15,8 @@ import (
 // Shown is the JSON renderer's object as a caller decodes it.
 type Shown = result.Object
 
+const notOneObject = "output is not one JSON object:\n%s"
+
 // Decode reads the one JSON object out holds, and stops the test when out is anything else.
 func Decode(tb testing.TB, out string) Shown {
 	tb.Helper()
@@ -24,12 +26,12 @@ func Decode(tb testing.TB, out string) Shown {
 	err := json.Unmarshal([]byte(out), &value)
 	assert.NilError(tb, err, "output is not one JSON value:\n%s", out)
 	// Unmarshal reads null into a struct as its zero value, so the kind is checked first.
-	assert.Assert(tb, value.Kind() == '{', "output is not one JSON object:\n%s", out)
+	assert.Assert(tb, value.Kind() == '{', notOneObject, out)
 
 	var got Shown
 
 	err = json.Unmarshal(value, &got)
-	assert.NilError(tb, err, "output is not one JSON object:\n%s", out)
+	assert.NilError(tb, err, notOneObject, out)
 
 	return got
 }

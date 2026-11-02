@@ -12,6 +12,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/jeffzi/ils/internal/commandline"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/landing"
@@ -47,19 +48,26 @@ func judgeILS(inv Invocation) Verdict {
 
 	sub := args[at[0]]
 	if !sub.Literal {
-		return refuse("ils command that is not a literal: run ils with its command written out")
+		return notLiteralCommand("ils", "ils")
 	}
 
+	name := "ils " + sub.Text
 	switch sub.Text {
 	case landing.MergeCommand:
-		return aloneAndBare(inv, "ils "+sub.Text, Verdict{Outcome: Ask, Reason: "ils merge lands the pull request on the trunk"})
+		return aloneAndBare(inv, name, Verdict{Outcome: Ask, Reason: "ils merge lands the pull request on the trunk"})
 	case landing.ReleaseCommand:
-		return aloneAndBare(inv, "ils "+sub.Text, Verdict{Outcome: Ask, Reason: "ils release tags and publishes a release"})
+		return aloneAndBare(inv, name, Verdict{Outcome: Ask, Reason: "ils release tags and publishes a release"})
 	case landing.PushCommand, landing.BranchCommand:
-		return aloneAndBare(inv, "ils "+sub.Text, Verdict{Outcome: Allow})
+		return aloneAndBare(inv, name, Verdict{Outcome: Allow})
 	default:
 		return Verdict{Outcome: Allow}
 	}
+}
+
+// notLiteralCommand refuses the invocation of tool whose command word, which command names as the
+// refusal shows it, is not a literal.
+func notLiteralCommand(command, tool string) Verdict {
+	return refuse(fmt.Sprintf("%s command that is not a literal: run %s with its command written out", command, tool))
 }
 
 // aloneAndBare returns whole when inv is the whole command, its command word the bare name, and
@@ -74,9 +82,9 @@ func aloneAndBare(inv Invocation, name string, whole Verdict) Verdict {
 }
 
 // ilsSwitches are the flags the root command of ils knows and that take no value. A test of
-// package cli fails when the root gains a switch landing.RootSwitches lacks.
+// package cli fails when the root gains a switch commandline.RootSwitches lacks.
 func ilsSwitches() map[string]bool {
-	return setOf(landing.RootSwitches()...)
+	return setOf(commandline.RootSwitches()...)
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +156,7 @@ func judgeGH(ctx context.Context, caller Caller, inv Invocation) (Verdict, error
 
 	first := args[at[0]]
 	if !first.Literal {
-		return refuse("gh command that is not a literal: run gh with its command written out"), nil
+		return notLiteralCommand("gh", "gh"), nil
 	}
 
 	if !ghCommands()[first.Text] {
@@ -185,7 +193,7 @@ func judgeGHAlias(ctx context.Context, caller Caller, inv Invocation, alias int)
 
 	args = slices.Concat(args[:alias], expanded)
 	at := commandWords(args, ghSwitches())
-	if len(at) == 0 || !args[at[0]].Literal || !ghCommands()[args[at[0]].Text] {
+	if len(at) == 0 || !inTable(ghCommands(), args[at[0]]) {
 		return refuse(fmt.Sprintf("gh alias %s expands to no gh command the guard can judge", name)), nil
 	}
 
@@ -288,23 +296,23 @@ func (c ghConfig) or(other ghConfig) ghConfig {
 func ghConfigRunner(runner github.Runner, dir string, config ghConfig) (github.Runner, string) {
 	env := runner.Environ()
 	for _, named := range []struct {
-		name  string
-		value variable
+		name     string
+		variable variable
 	}{
-		{name: ghConfigDirVar, value: config.configDir},
-		{name: ghConfigHomeVar, value: config.configHome},
-		{name: ghHomeVar, value: config.home},
+		{name: ghConfigDirVar, variable: config.configDir},
+		{name: ghConfigHomeVar, variable: config.configHome},
+		{name: ghHomeVar, variable: config.home},
 	} {
-		if named.value.unknown {
+		if named.variable.unknown {
 			return runner, named.name
 		}
 
-		if !named.value.set {
+		if !named.variable.set {
 			continue
 		}
 
 		// gh reads an empty value as an unset one, so it is handed over as it is.
-		value := named.value.value
+		value := named.variable.value
 		if value != "" {
 			value = absolute(dir, value)
 			if value == "" {
@@ -332,20 +340,27 @@ func judgeGHCommand(inv Invocation, args []Word, at []int) Verdict {
 		return judgeAPI(rest)
 	}
 
-	if !slices.Contains([]string{"alias", "auth", "config", "pr", "release", "repo"}, group) || len(at) < 2 {
+	if !ghGuardedGroups()[group] || len(at) < 2 {
 		return Verdict{Outcome: Allow}
 	}
 
 	sub := args[at[1]]
 	if !sub.Literal {
-		return refuse(fmt.Sprintf("gh %s command that is not a literal: run gh with its command written out", group))
+		return notLiteralCommand("gh "+group, "gh")
 	}
 
 	return judgeGHSubcommand(inv, "gh "+group+" "+sub.Text, rest)
 }
 
-// ghGuardedFlag is a flag that turns a gh subcommand into a refusal, with the shorthands of that
-// subcommand that take a value.
+// ghGuardedGroups are the gh command groups whose subcommands judgeGHSubcommand judges and
+// ghGuardedFlags names; a subcommand of any other group is allowed.
+func ghGuardedGroups() map[string]bool {
+	return setOf("alias", "auth", "config", "pr", "release", "repo")
+}
+
+// ghGuardedFlag is a gh flag the guard looks for, with the shorthands of its subcommand that take a
+// value. The reason is the refusal a set flag gives; it is empty for a flag whose caller words its
+// own refusal.
 type ghGuardedFlag struct {
 	long   string
 	reason string
@@ -376,7 +391,8 @@ func ghGuardedFlags() map[string]ghGuardedFlag {
 // judgeGHSubcommand judges the gh subcommand name, such as `gh pr merge`, given its words rest.
 func judgeGHSubcommand(inv Invocation, name string, rest []Word) Verdict {
 	if flag, ok := ghGuardedFlags()[name]; ok {
-		if set, known := ghFlag(rest, flag.short, flag.long, flag.valued); set || !known {
+		takesNext := func(w Word) bool { return mayTakeValue(w, flag.valued) }
+		if set, known := ghFlag(rest, flag, takesNext); set || !known {
 			return refuse(flag.reason)
 		}
 	}
@@ -419,11 +435,12 @@ func judgeAPI(rest []Word) Verdict {
 		return Verdict{Outcome: Allow}
 	}
 
-	for _, flag := range []struct {
-		long  string
-		short byte
-	}{{"--raw-field", 'f'}, {"--field", 'F'}, {"--input", 0}} {
-		if set, known := ghFlag(rest, flag.short, flag.long, apiValued()); set || !known {
+	for _, flag := range []ghGuardedFlag{
+		{long: "--raw-field", short: 'f', valued: apiValued()},
+		{long: "--field", short: 'F', valued: apiValued()},
+		{long: "--input", valued: apiValued()},
+	} {
+		if set, known := ghFlag(rest, flag, takesValueWord); set || !known {
 			return refuse("gh api with a field or an input and no explicit GET sends a POST, which writes to GitHub")
 		}
 	}
@@ -452,7 +469,7 @@ func takesValueWord(w Word) bool {
 		return false
 	case slices.Contains(apiValuedLong(), t):
 		return true
-	case len(t) < 2 || t[0] != '-' || t[1] == '-':
+	case !isShortBundle(t):
 		return false
 	}
 
@@ -465,9 +482,16 @@ func takesValueWord(w Word) bool {
 	return false
 }
 
+// isShortBundle reports whether the text t is a bundle of shorthands: a single dash and at least
+// one letter.
+func isShortBundle(t string) bool {
+	return len(t) >= 2 && t[0] == '-' && t[1] != '-'
+}
+
 // apiMethod returns the last method rest gives `gh api` with -X or --method, and false when it
 // gives none. A word that is not a literal and may be the flag gives a method that is not a
-// literal. The word after a flag that takes a value is that value, never a method flag.
+// literal. The word after a flag that takes a value is that value, never a method flag; a `--` after
+// a word that is not a literal and may be such a flag is skipped as its value too.
 func apiMethod(rest []Word) (method Word, given bool) {
 	for i := 0; i < len(rest); i++ {
 		w := rest[i]
@@ -475,21 +499,17 @@ func apiMethod(rest []Word) (method Word, given bool) {
 			break
 		}
 
-		next := Word{}
-		if i+1 < len(rest) {
-			next = rest[i+1]
-		}
-
-		if value, ok, takesNext := methodFlag(w, next); ok {
+		dashes := flagBeforeDashes(rest, i)
+		if value, ok, takesNext := methodFlag(w, wordAfter(rest, i)); ok {
 			method, given = value, true
-			if takesNext {
+			if takesNext || dashes {
 				i++
 			}
 
 			continue
 		}
 
-		if takesValueWord(w) {
+		if takesValueWord(w) || dashes {
 			i++
 		}
 	}
@@ -529,7 +549,7 @@ func methodFlag(w, next Word) (method Word, ok, takesNext bool) {
 // value is the next word.
 func shortValue(w Word, letter byte, valued []byte) (value Word, ok, attached bool) {
 	t := w.Text
-	if len(t) < 2 || t[0] != '-' || t[1] == '-' {
+	if !isShortBundle(t) {
 		return Word{}, false, false
 	}
 
@@ -547,31 +567,104 @@ func shortValue(w Word, letter byte, valued []byte) (value Word, ok, attached bo
 	return Word{}, false, false
 }
 
-// ghFlag reports whether rest sets the flag with the shorthand letter short (0 when it has none)
-// or the long name, read as pflag reads it, up to `--`. known is false when a word that is not a
-// literal may be the flag.
-func ghFlag(rest []Word, short byte, long string, valued []byte) (set, known bool) {
+// ghFlag reports whether rest sets flag, by its shorthand letter (0 when it has none) or its long
+// name, read as pflag reads it, up to `--`. A `--` that follows a word for which takesNext holds is
+// that flag's value, as pflag reads it, and does not end the words; so does a `--` that follows a
+// word that is not a literal and may be such a flag (see mayBeValuedFlag). known is false when a
+// word that is not a literal may be the flag.
+func ghFlag(rest []Word, flag ghGuardedFlag, takesNext func(Word) bool) (set, known bool) {
 	known = true
-	for _, w := range rest {
+	for i := 0; i < len(rest); i++ {
+		w := rest[i]
 		if w.Literal && w.Text == "--" {
 			break
 		}
 
-		switch {
-		case w.Literal && (w.Text == long || strings.HasPrefix(w.Text, long+"=")):
+		if setsFlag(w, flag.short, flag.long, flag.valued) {
 			return true, true
-		case short != 0 && w.Literal:
-			if _, ok, _ := shortValue(w, short, valued); ok {
-				return true, true
-			}
 		}
 
-		if mayBeFlag(w, short, long) {
+		if mayBeFlag(w, flag.short, flag.long) {
 			known = false
+		}
+
+		if dashesFollow(rest, i) && (takesNext(w) || mayBeValuedFlag(w)) {
+			i++
 		}
 	}
 
 	return false, known
+}
+
+// wordAfter returns the word after rest[i], and the zero Word when rest[i] is the last.
+func wordAfter(rest []Word, i int) Word {
+	if i+1 < len(rest) {
+		return rest[i+1]
+	}
+
+	return Word{}
+}
+
+// flagBeforeDashes reports whether rest[i] may be a flag that takes the next word as its value
+// and a literal `--` follows it, which pflag then reads as that value.
+func flagBeforeDashes(rest []Word, i int) bool {
+	return dashesFollow(rest, i) && mayBeValuedFlag(rest[i])
+}
+
+// dashesFollow reports whether the word after rest[i] is a literal `--`.
+func dashesFollow(rest []Word, i int) bool {
+	return i+1 < len(rest) && rest[i+1].Literal && rest[i+1].Text == "--"
+}
+
+// mayBeValuedFlag reports whether w is a word that is not a literal whose literal prefix is empty
+// or starts with `-`, so that it may expand to a flag that takes the next word as its value. The
+// guard reads on past a `--` after such a word, which can only make a refusal more likely.
+func mayBeValuedFlag(w Word) bool {
+	return !w.Literal && (w.Text == "" || strings.HasPrefix(w.Text, "-"))
+}
+
+// setsFlag reports whether the literal word w is the long name, the long name with `=`, or a
+// bundle that sets the shorthand letter short (0 when it has none).
+func setsFlag(w Word, short byte, long string, valued []byte) bool {
+	if !w.Literal {
+		return false
+	}
+
+	if w.Text == long || strings.HasPrefix(w.Text, long+"=") {
+		return true
+	}
+
+	if short == 0 {
+		return false
+	}
+
+	_, ok, _ := shortValue(w, short, valued)
+
+	return ok
+}
+
+// mayTakeValue reports whether the literal word w may take the next word as its value in a gh
+// command whose shorthands that take a value are valued: a long flag or a lone shorthand with no
+// `=`, as takesNextWord reads it, or a bundle of shorthands whose first valued letter ends it. A
+// flag that takes none counts too, since the guard does not know every flag of the command.
+func mayTakeValue(w Word, valued []byte) bool {
+	t := w.Text
+	switch {
+	case !w.Literal:
+		return false
+	case takesNextWord(t):
+		return true
+	case !isShortBundle(t):
+		return false
+	}
+
+	for i := 1; i < len(t); i++ {
+		if slices.Contains(valued, t[i]) {
+			return i == len(t)-1
+		}
+	}
+
+	return false
 }
 
 // mayBeFlag reports whether w is a word that is not a literal whose literal prefix may still grow

@@ -7,7 +7,8 @@ import (
 	"github.com/jeffzi/ils/internal/result"
 )
 
-// The reads of push's own checks of the branch, as a result names them.
+// readBranches, readOnOrigin and readCopy name what push's own checks of the branch read, as a
+// result names them.
 const (
 	readBranches = "the local branches"
 	readOnOrigin = "whether origin has the branch"
@@ -124,7 +125,7 @@ func sharedFirstCommit(ctx context.Context, deps Deps, req Request, p pushReady)
 		}
 
 		if published {
-			return nil, readCopy, nil
+			return nil, "", nil
 		}
 	}
 
@@ -134,7 +135,7 @@ func sharedFirstCommit(ctx context.Context, deps Deps, req Request, p pushReady)
 	}
 
 	if len(others) == 0 {
-		return nil, readBranches, nil
+		return nil, "", nil
 	}
 
 	own, err := deps.Repo.OwnCommits(ctx, p.tip, p.Trunk, others)

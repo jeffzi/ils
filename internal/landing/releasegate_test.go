@@ -316,7 +316,7 @@ func TestRelease_WhenFewerThanTheReserveIsLeftBeforeTheWrites_PendingWithTheComm
 	t.Parallel()
 
 	tests := []struct {
-		verdict string
+		verdict result.ReleaseVerdict
 		req     landing.Request
 	}{
 		{verdict: "green", req: releaseRequest(version, false)},
@@ -387,7 +387,7 @@ func TestRelease_WhenACheckWithNoWorkflowRunBehindItFailed_RefusesAtTheFirstRead
 type unreadGateRow struct {
 	name    string
 	read    string
-	verdict string
+	verdict result.ReleaseVerdict
 	script  forgetest.Script
 }
 

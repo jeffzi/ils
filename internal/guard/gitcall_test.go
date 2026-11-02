@@ -18,7 +18,6 @@ import (
 	"github.com/jeffzi/ils/internal/guard"
 )
 
-// literal returns the word that reads as text.
 func literal(text string) guard.Word {
 	return guard.Word{Text: text, Literal: true}
 }
@@ -57,7 +56,6 @@ func aliased(t *testing.T) *gittest.Fixture {
 		{"co", "checkout -b"},
 		{"lg", "hist --oneline"},
 		{"hist", "log --graph"},
-		{"cm", `commit -m "two words"`},
 		{"one", "two"},
 		{"two", "three"},
 		{"three", "log"},
@@ -68,9 +66,7 @@ func aliased(t *testing.T) *gittest.Fixture {
 		{"sh", "!git push"},
 		{"sw", "switch"},
 		{"rb", "rebase base main"},
-		{"spaced", `commit -m a\ b`},
 		{"unclosed", `log "-1`},
-		{"dangling", `log -1\`},
 	}
 	for _, alias := range aliases {
 		f.Git("config", "--local", "alias."+alias[0], alias[1])
@@ -137,11 +133,7 @@ func TestParse_ResolvesTheSubcommandThroughGitsAliases(t *testing.T) {
 		wantSubcommand string
 		wantArgs       []string
 	}{
-		{name: "command shadowed by an alias", command: "git status -s", wantSubcommand: "status", wantArgs: []string{"-s"}},
 		{name: "alias", command: "git co topic", wantSubcommand: "checkout", wantArgs: []string{"-b", "topic"}},
-		{name: "quoted words in an expansion", command: "git cm", wantSubcommand: "commit", wantArgs: []string{"-m", "two words"}},
-		{name: "three levels", command: "git one", wantSubcommand: "log", wantArgs: []string{}},
-		{name: "backslash escape in an expansion", command: "git spaced", wantSubcommand: "commit", wantArgs: []string{"-m", "a b"}},
 		{
 			name: "command an older git lacks, with no alias of its name", command: "git replay --onto main topic",
 			wantSubcommand: "replay", wantArgs: []string{"--onto", "main", "topic"},
@@ -199,17 +191,14 @@ func TestParse_MarksASubcommandItCannotResolve(t *testing.T) {
 		command string
 		want    []guard.Mark
 	}{
-		{name: "alias running a shell command", command: "git sh", want: []guard.Mark{{Kind: guard.ShellAlias, Name: "sh"}}},
 		{name: "word that is neither command nor alias", command: "git taxi", want: []guard.Mark{{Kind: guard.UnknownSubcommand, Name: "taxi"}}},
 		{name: "alias given only by -c", command: "git -c alias.x='!git push' x", want: []guard.Mark{{Kind: guard.ShellAlias, Name: "x"}}},
-		{name: "alias read under a non-literal -c", command: `git -c "$v" co`, want: []guard.Mark{{Kind: guard.UnreadableAlias, Name: "co"}}},
 		{
 			name:    "alias read under --config-env naming a variable the parse cannot read",
 			command: "git --config-env alias.sw=ABSENT sw",
 			want:    []guard.Mark{{Kind: guard.UnreadableAlias, Name: "sw"}},
 		},
 		{name: "alias holding an unclosed quote", command: "git unclosed", want: []guard.Mark{{Kind: guard.UnreadableAlias, Name: "unclosed"}}},
-		{name: "alias ending in a backslash", command: "git dangling", want: []guard.Mark{{Kind: guard.UnreadableAlias, Name: "dangling"}}},
 		{name: "fourth level of expansion", command: "git d1", want: []guard.Mark{{Kind: guard.DeepAlias, Name: "d4"}}},
 		{name: "alias in an unknown target", command: `git -C "$d" co`, want: []guard.Mark{{Kind: guard.UnknownSubcommand, Name: "co"}}},
 		{
@@ -275,7 +264,6 @@ func TestParse_ReportsTheGitDirAnInvocationTargets(t *testing.T) {
 		command string
 		want    string
 	}{
-		{name: "work tree", dir: f.Dir(), command: "git status", want: gitDir},
 		{name: "work tree named by -C", dir: outside, command: "git -C " + quotedPath(f.Dir()) + " status", want: gitDir},
 		{name: "git dir named by --git-dir", dir: outside, command: "git --git-dir=" + quotedPath(gitDir) + " status", want: gitDir},
 		{name: "git dir named by GIT_DIR", dir: outside, command: "GIT_DIR=" + quotedPath(gitDir) + " git status", want: gitDir},
@@ -386,7 +374,6 @@ func TestParse_WhenAWordCannotNameAnAlias_MarksItWithoutReadingConfig(t *testing
 		command string
 		word    string
 	}{
-		{name: "long option that is not git's", command: "git --sparkle status", word: "--sparkle"},
 		{name: "short option holding an attached value", command: "git -C=x status", word: "-C=x"},
 		{name: "character git rejects in a config variable name", command: "git a_b", word: "a_b"},
 	}

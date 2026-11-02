@@ -4,8 +4,6 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/colorprofile"
-	"gotest.tools/v3/assert"
-	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/result"
 	"github.com/jeffzi/ils/internal/result/resulttest"
@@ -21,19 +19,19 @@ func TestSay(t *testing.T) {
 			result.Say("Kept %s as is.", "one Next: ils land two"), "Kept one Next: ils land two as is."),
 		brokeLine("list of branches holding a line break prints on one line",
 			result.Say("Kept %s.", result.Branches([]string{"one\r\ntwo", "main"})), "Kept one two and main."),
+	}
+
+	assertTexts(t, tests)
+}
+
+func TestName(t *testing.T) {
+	t.Parallel()
+	tests := []pair{
 		brokeLine("list of three branches is joined with commas, then and",
 			result.Say("Kept %s.", result.Branches([]string{"docs", "main", "tidy-readme"})), "Kept docs, main and tidy-readme."),
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 
-			got, err := result.RenderText(tt.result, tt.gitDir)
-			assert.NilError(t, err)
-
-			assert.Check(t, is.DeepEqual(got, tt.wantText))
-		})
-	}
+	assertTexts(t, tests)
 }
 
 // builtCases returns one case per part of a phrase whose look the building of a name decides:
@@ -66,7 +64,7 @@ func listedBranches() result.Result {
 	return brokeWithLine(result.Say("Kept %s.", result.Branches([]string{"docs", "main", "tidy-readme"})))
 }
 
-func TestSay_WhenDrawnInColor_DrawsEachBuiltPartInItsStyle(t *testing.T) {
+func TestName_WhenDrawnInColor_DrawsEachBuiltPartInItsStyle(t *testing.T) {
 	t.Parallel()
 
 	assertLooks(t, builtCases())

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+
+	"github.com/jeffzi/ils/internal/forge"
 )
 
 // ---------------------------------------------------------------------------
@@ -382,26 +384,29 @@ type GitCall struct {
 	GitDirUnknown bool `json:"git_dir_unknown"`
 }
 
+// ReleaseVerdict is how the CI gate of a release ended.
+type ReleaseVerdict string
+
 // The words of Release.Verdict.
 const (
 	// ReleaseGreen is a release commit whose checks passed.
-	ReleaseGreen = "green"
+	ReleaseGreen ReleaseVerdict = "green"
 	// ReleaseRed is a release commit one of whose checks failed or was canceled.
-	ReleaseRed = "red"
+	ReleaseRed ReleaseVerdict = "red"
 	// ReleasePending is a wait for the checks of the release commit that ended before they
 	// concluded, including when none had reported yet.
-	ReleasePending = "pending"
+	ReleasePending ReleaseVerdict = "pending"
 	// ReleaseNone is a release commit no check or status reported for. The outcome tells a trunk
 	// without CI, which goes on, from one with CI, which refuses.
-	ReleaseNone = "none"
+	ReleaseNone ReleaseVerdict = "none"
 	// ReleaseForced is a gate --force skipped.
-	ReleaseForced = "forced"
+	ReleaseForced ReleaseVerdict = "forced"
 	// ReleaseSkipped is a gate skipped because origin already held the tag at the release commit: a
 	// release resumed after an earlier run tagged it.
-	ReleaseSkipped = "skipped"
+	ReleaseSkipped ReleaseVerdict = "skipped"
 	// ReleaseUnchecked is a release that stopped before the gate read the checks of the release
 	// commit, or whose read of the checks failed.
-	ReleaseUnchecked = "unchecked"
+	ReleaseUnchecked ReleaseVerdict = "unchecked"
 )
 
 // Release is the structured detail of a release.
@@ -409,33 +414,41 @@ type Release struct {
 	Version string `json:"version"`
 	Tag     string `json:"tag"`
 	// SHA is the release commit.
-	SHA string `json:"sha"`
-	// Verdict is how the CI gate ended, in the words ReleaseGreen and its siblings name.
-	Verdict string `json:"verdict"`
+	SHA     string         `json:"sha"`
+	Verdict ReleaseVerdict `json:"verdict"`
 	// URL is the link of the GitHub release once it was created or found, and empty otherwise.
 	URL        string `json:"url"`
 	Prerelease bool   `json:"prerelease"`
 	TagOnly    bool   `json:"tag_only"`
 }
 
-// Push is the structured detail of a push.
+// Push is the structured detail of a push: its pull request, the sha it pushed, and what the wait
+// on that sha's checks found.
+//
+// Verdict is green, red, pending or none, the last when no deciding check reported or the checks
+// were not read. MergeState is GitHub's merge state in the forge's words, unknown until the wait
+// read one. Checks are the deciding checks, and FailedLog the whole log of the check that made the
+// verdict red, empty when the verdict is not red or that log could not be read.
 type Push struct {
-	URL        string  `json:"url"`
-	SHA        string  `json:"sha"`
-	Verdict    string  `json:"verdict"`
-	MergeState string  `json:"merge_state"`
-	FailedLog  string  `json:"failed_log,omitempty"`
-	Checks     []Check `json:"checks"`
-	Number     int     `json:"number"`
+	URL        string             `json:"url"`
+	SHA        string             `json:"sha"`
+	Verdict    forge.VerdictState `json:"verdict"`
+	MergeState forge.MergeState   `json:"merge_state"`
+	FailedLog  string             `json:"failed_log,omitempty"`
+	Checks     []Check            `json:"checks"`
+	Number     int                `json:"number"`
 }
+
+// Ending is where the local ending of a merge left the checkout.
+type Ending string
 
 // The words of Merge.Ending once the local ending ran.
 const (
 	// EndingTrunk is a checkout left on the trunk at origin's tip.
-	EndingTrunk = "trunk"
+	EndingTrunk Ending = "trunk"
 	// EndingDetached is a checkout left detached at origin's trunk, the trunk being checked out in
 	// another worktree.
-	EndingDetached = "detached"
+	EndingDetached Ending = "detached"
 )
 
 // Merge is the structured detail of a merge. Verdict, MergeState and Checks are in the words of
@@ -446,15 +459,15 @@ const (
 type Merge struct {
 	URL string `json:"url"`
 	// SHA is the head that was merged or found merged.
-	SHA        string `json:"sha"`
-	Verdict    string `json:"verdict"`
-	MergeState string `json:"merge_state"`
+	SHA        string             `json:"sha"`
+	Verdict    forge.VerdictState `json:"verdict"`
+	MergeState forge.MergeState   `json:"merge_state"`
 	// Subject and Body are the squash commit's message once it is composed after the wait, and
 	// empty before. A merge that stops at the 20-second reserve carries them unsent.
 	Subject string `json:"subject"`
 	Body    string `json:"body"`
 	// Ending is trunk or detached once every step of the local ending ran, and empty otherwise.
-	Ending string  `json:"ending"`
+	Ending Ending  `json:"ending"`
 	Checks []Check `json:"checks"`
 	Number int     `json:"number"`
 	// Merged is true when this run made the merge, and false when it found the pull request
@@ -462,40 +475,46 @@ type Merge struct {
 	Merged bool `json:"merged"`
 }
 
+// Standing is where HEAD stands in a status.
+type Standing string
+
 // The words of Status.Standing.
 const (
 	// StandingBranch is HEAD on a work branch.
-	StandingBranch   = "branch"
-	StandingTrunk    = "trunk"
-	StandingDetached = "detached"
+	StandingBranch   Standing = "branch"
+	StandingTrunk    Standing = "trunk"
+	StandingDetached Standing = "detached"
 	// StandingNoOrigin is a repository with no remote named origin.
-	StandingNoOrigin = "no-origin"
+	StandingNoOrigin Standing = "no-origin"
 	// StandingNoRepository is a directory in no git repository.
-	StandingNoRepository = "no-repository"
+	StandingNoRepository Standing = "no-repository"
 )
+
+// Protection is whether rules protect the trunk of a status.
+type Protection string
 
 // The words of Status.Protection, in the words of the forge's rules.
 const (
 	// ProtectionProtected is a trunk at least one rule applies to.
-	ProtectionProtected = "protected"
+	ProtectionProtected Protection = "protected"
 	// ProtectionNone is a trunk no rule applies to.
-	ProtectionNone = "none"
+	ProtectionNone Protection = "none"
 	// ProtectionUnavailable is a trunk whose repository's plan does not allow rules.
-	ProtectionUnavailable = "unavailable"
+	ProtectionUnavailable Protection = "unavailable"
 )
 
 // Status is the structured detail of a status: what it read of the branch, origin and GitHub.
 // A fact whose read failed keeps its zero value, and Unread names that read.
 type Status struct {
 	// Standing is one of the Standing words, and empty when where HEAD stands could not be read.
-	Standing string `json:"standing"`
-	Branch   string `json:"branch"`
-	Trunk    string `json:"trunk"`
+	Standing Standing `json:"standing"`
+	Branch   string   `json:"branch"`
+	Trunk    string   `json:"trunk"`
 	// LastTag is, on the trunk, the highest version tag origin holds whose commit is on origin's
 	// trunk, and empty when there is none.
 	LastTag string `json:"last_tag"`
 	// Protection is, on the trunk, one of the Protection words.
-	Protection string `json:"protection"`
+	Protection Protection `json:"protection"`
 	// PullRequest is the branch's open pull request against the trunk, nil when it has none.
 	PullRequest *OpenPull `json:"pull_request"`
 	// PastPullRequests are the branch's closed and merged pull requests, in the order GitHub
@@ -521,21 +540,21 @@ type Status struct {
 // OpenPull is the open pull request of a status. Verdict, MergeState and Checks are in the words of
 // Push, and so are the none and unknown they keep when their read failed.
 type OpenPull struct {
-	URL        string  `json:"url"`
-	Title      string  `json:"title"`
-	Body       string  `json:"body"`
-	Verdict    string  `json:"verdict"`
-	MergeState string  `json:"merge_state"`
-	Checks     []Check `json:"checks"`
-	Number     int     `json:"number"`
+	URL        string             `json:"url"`
+	Title      string             `json:"title"`
+	Body       string             `json:"body"`
+	Verdict    forge.VerdictState `json:"verdict"`
+	MergeState forge.MergeState   `json:"merge_state"`
+	Checks     []Check            `json:"checks"`
+	Number     int                `json:"number"`
 	// TitleOK is whether the title is a conventional commit subject, as `ils merge` requires.
 	TitleOK bool `json:"title_ok"`
 }
 
-// PastPull is a closed or merged pull request of a status.
+// PastPull is a closed or merged pull request of a status. State is closed or merged.
 type PastPull struct {
-	State  string `json:"state"`
-	Number int    `json:"number"`
+	State  forge.ChangeState `json:"state"`
+	Number int               `json:"number"`
 }
 
 // Unread is a read of a status that failed: what it read, as the text names it, and why it failed.
@@ -544,10 +563,11 @@ type Unread struct {
 	Error string `json:"error"`
 }
 
-// Check is one check or status reported on a commit.
+// Check is one check or status reported on a commit. Bucket is its outcome: pass, fail, pending,
+// skipped or canceled.
 type Check struct {
-	Name     string `json:"name"`
-	Bucket   string `json:"bucket"`
-	Workflow string `json:"workflow"`
-	Link     string `json:"link"`
+	Name     string       `json:"name"`
+	Bucket   forge.Bucket `json:"bucket"`
+	Workflow string       `json:"workflow"`
+	Link     string       `json:"link"`
 }

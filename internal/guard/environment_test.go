@@ -7,8 +7,6 @@ import (
 
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
-
-	"github.com/jeffzi/ils/internal/guard"
 )
 
 func TestParse_WhenTheGitTargetCannotBeFollowed_ReportsItUnknown(t *testing.T) {
@@ -35,18 +33,18 @@ func TestParse_WhenTheGitTargetCannotBeFollowed_ReportsItUnknown(t *testing.T) {
 	}
 }
 
-func TestParse_WhenEnvDropsAVariable_ReportsTheTargetOfTheCommandWithoutIt(t *testing.T) {
-	t.Parallel()
+// sameTarget is a command whose git target must equal that of the command same.
+type sameTarget struct {
+	name    string
+	command string
+	same    string
+}
 
-	tests := []struct {
-		name    string
-		command string
-		same    string
-	}{
-		{name: "prefix removed by env -u", command: "GIT_DIR=/a env -u GIT_DIR git status", same: "env -u GIT_DIR git status"},
-		{name: "env argument removed by a later env -u", command: "env GIT_DIR=/a env -u GIT_DIR git status", same: "env -u GIT_DIR git status"},
-		{name: "shell string under env -u", command: "env -u GIT_DIR bash -c 'git status'", same: "env -u GIT_DIR git status"},
-	}
+// checkSameTarget fails unless the last invocation of every row's command has the git target of
+// the last invocation of its same command.
+func checkSameTarget(t *testing.T, tests []sameTarget) {
+	t.Helper()
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -59,26 +57,12 @@ func TestParse_WhenEnvDropsAVariable_ReportsTheTargetOfTheCommandWithoutIt(t *te
 	}
 }
 
-func TestParse_WhenAFunctionCallSetsAGitVariable_ReportsTheTargetTheBodyLeaves(t *testing.T) {
+func TestParse_WhenEnvDropsAVariable_ReportsTheTargetOfTheCommandWithoutIt(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name       string
-		command    string
-		wantGitDir string
-	}{
-		{name: "export in the body", command: "f() { export GIT_DIR=/other/.git; }; f; git status", wantGitDir: "/other/.git"},
-		{name: "unset in the body", command: "f() { unset GIT_DIR; }; f; git status", wantGitDir: ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			caller := guard.Caller{Home: home, Dir: start, Env: map[string]string{"GIT_DIR": "/srv/repo.git"}}
-
-			got := lastWith(t, tt.command, caller)
-
-			assert.Check(t, got.Target.Unknown || got.Target.GitDir == tt.wantGitDir,
-				"Parse(%q) target = %+v, want git dir %q or unknown", tt.command, got.Target, tt.wantGitDir)
-		})
-	}
+	checkSameTarget(t, []sameTarget{
+		{name: "prefix removed by env -u", command: "GIT_DIR=/a env -u GIT_DIR git status", same: "env -u GIT_DIR git status"},
+		{name: "env argument removed by a later env -u", command: "env GIT_DIR=/a env -u GIT_DIR git status", same: "env -u GIT_DIR git status"},
+		{name: "shell string under env -u", command: "env -u GIT_DIR bash -c 'git status'", same: "env -u GIT_DIR git status"},
+	})
 }

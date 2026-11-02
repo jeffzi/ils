@@ -8,10 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
-	"slices"
 	"strings"
-	"time"
 
 	gh "github.com/cli/go-gh/v2"
 
@@ -50,11 +47,7 @@ type Runner struct {
 // Environ returns a copy of the environment gh runs with: the runner's own Env, or the environment
 // of this process when it has none.
 func (r Runner) Environ() []string {
-	if r.Env == nil {
-		return os.Environ()
-	}
-
-	return slices.Clone(r.Env)
+	return child.Environ(r.Env)
 }
 
 // Result is what a call left behind, as child.Output holds it.
@@ -87,17 +80,8 @@ func (e *DecodeError) Unwrap() error {
 // Run does not wait for a process gh started and left behind: once gh has exited or been killed,
 // output pipes still held open are closed after a short grace, as child.Program.Run does.
 func (r Runner) Run(ctx context.Context, args ...string) (Result, error) {
-	start := time.Now()
-	result, err := r.run(ctx, args)
-	child.Exec{Tool: Program, Args: args, Err: err, Took: time.Since(start)}.Log(ctx, r.Logger)
-
-	return result, err
-}
-
-// run is Run without the log record.
-func (r Runner) run(ctx context.Context, args []string) (Result, error) {
 	program := child.Program{
-		LookPath: ghPath, Tool: Program, InstallURL: installURL, Args: args, Env: r.Env,
+		LookPath: ghPath, Logger: r.Logger, Tool: Program, InstallURL: installURL, Args: args, Env: r.Env,
 		StartWantingAFileIsMissing: true,
 	}
 

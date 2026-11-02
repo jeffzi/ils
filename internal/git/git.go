@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"slices"
 	"sync"
-	"time"
 
 	"github.com/jeffzi/ils/internal/child"
 )
@@ -110,19 +109,9 @@ type invocation struct {
 	env        []string
 }
 
-// run runs the tool as invocation.execute does and, when the invocation has a logger, logs the run
-// once it has ended.
+// run runs the tool as child.Program.Run does, found by the invocation's lookPath and, when the
+// invocation has a logger, logged once the run has ended.
 func (inv invocation) run(ctx context.Context) (Result, error) {
-	begun := time.Now()
-	result, err := inv.execute(ctx)
-
-	child.Exec{Tool: inv.program, Args: inv.args, Err: err, Took: time.Since(begun)}.Log(ctx, inv.logger)
-
-	return result, err
-}
-
-// execute runs the tool as child.Program.Run does, found by the invocation's lookPath.
-func (inv invocation) execute(ctx context.Context) (Result, error) {
 	lookPath := inv.lookPath
 	if lookPath == nil {
 		lookPath = exec.LookPath
@@ -131,6 +120,7 @@ func (inv invocation) execute(ctx context.Context) (Result, error) {
 	return child.Program{
 		LookPath:   lookPath,
 		Starting:   inv.record,
+		Logger:     inv.logger,
 		Tool:       inv.program,
 		InstallURL: inv.installURL,
 		Dir:        inv.dir,

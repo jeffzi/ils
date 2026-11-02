@@ -40,7 +40,8 @@ func (t *trunks) refuseOnTrunk(ctx context.Context, caller Caller, inv Invocatio
 		return Verdict{Outcome: Allow}, nil
 	}
 
-	if inv.Dir == "" || inv.Target.Dir == "" || inv.Target.Unknown || inv.Git.GitDirUnknown || inv.HeadUnknown {
+	placeUnknown := inv.Dir == "" || inv.Target.Dir == "" || inv.Target.Unknown || inv.Git.GitDirUnknown || inv.HeadUnknown
+	if placeUnknown {
 		reason := fmt.Sprintf("git %s: the guard cannot tell where the command runs, so it cannot tell "+
 			"whether it lands on the trunk", sub)
 
@@ -101,7 +102,8 @@ func onTrunk(sub string, args []Word, trunk string) Verdict {
 			named[1] = strings.TrimPrefix(strings.TrimPrefix(named[1], "+"), "refs/heads/")
 		}
 
-		if !options.opaque() && (slices.Equal(named, []string{"origin"}) || slices.Equal(named, []string{"origin", trunk})) {
+		pullsTrunk := slices.Equal(named, []string{"origin"}) || slices.Equal(named, []string{"origin", trunk})
+		if !options.opaque() && pullsTrunk {
 			return Verdict{Outcome: Allow}
 		}
 

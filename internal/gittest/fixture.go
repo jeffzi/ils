@@ -171,11 +171,7 @@ func isolatedEnv(home string) []string {
 // Without returns a copy of env with every entry of key removed, matching the key as the system
 // does: exactly, or regardless of case on Windows.
 func Without(env []string, key string) []string {
-	return slices.DeleteFunc(slices.Clone(env), func(entry string) bool {
-		name, _, _ := strings.Cut(entry, "=")
-
-		return git.SameKey(name, key)
-	})
+	return git.WithoutKeys(slices.Clone(env), key)
 }
 
 // FirstOnPath returns a copy of env whose one PATH is the PATH env gives, the last one when it

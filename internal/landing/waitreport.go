@@ -283,7 +283,7 @@ func noCI(trunk, sha string) result.Phrase {
 
 // payloadFields returns the verdict state, the merge state and the deciding checks as the push
 // and merge payloads carry them; the merge state is unknown until the wait has read one.
-func (w Waited) payloadFields() (verdict, mergeState string, checks []result.Check) {
+func (w Waited) payloadFields() (verdict forge.VerdictState, mergeState forge.MergeState, checks []result.Check) {
 	state := w.MergeState
 	if state == "" {
 		state = forge.MergeUnknown
@@ -292,11 +292,11 @@ func (w Waited) payloadFields() (verdict, mergeState string, checks []result.Che
 	checks = make([]result.Check, 0, len(w.Deciding))
 	for _, check := range w.Deciding {
 		checks = append(checks, result.Check{
-			Name: check.Name, Bucket: string(check.Bucket), Workflow: check.Workflow, Link: check.Link,
+			Name: check.Name, Bucket: check.Bucket, Workflow: check.Workflow, Link: check.Link,
 		})
 	}
 
-	return string(w.Verdict.State()), string(state), checks
+	return w.Verdict.State(), state, checks
 }
 
 // mergeStateLines says the merge state in plain words on one line, or on none when it is clean. A
@@ -345,7 +345,6 @@ func runningList[T any](header result.Phrase, items []T, line func(T) result.Phr
 	return lines
 }
 
-// runningName is the line of a pending check that says only its name.
 func runningName(check forge.Check) result.Phrase {
 	return result.Say(pendingBullet+"%s", check.Name)
 }

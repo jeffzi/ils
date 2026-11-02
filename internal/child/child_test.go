@@ -123,11 +123,14 @@ func TestFailure_WhenProgramExitedNonZero_ReturnsExitError(t *testing.T) {
 	assert.Check(t, is.Equal(exitErr.Code, runErr.ExitCode()))
 }
 
+// stderrMarker starts the stderr the Failure tests print before the end.
+const stderrMarker = "secret"
+
 // assertNoStderr fails the test when err carries the stderr the Failure tests print before the end.
 func assertNoStderr(t *testing.T, err error) {
 	t.Helper()
 
-	assert.Check(t, !strings.Contains(err.Error(), "secret"), "Failure error = %q, want no stderr in it", err)
+	assert.Check(t, !strings.Contains(err.Error(), stderrMarker), "Failure error = %q, want no stderr in it", err)
 }
 
 func TestFailure_WhenContextEnded_ReturnsContextErrorWhateverTheExit(t *testing.T) {
@@ -136,7 +139,7 @@ func TestFailure_WhenContextEnded_ReturnsContextErrorWhateverTheExit(t *testing.
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	err := child.Failure(ctx, nonsenseArgv(), runErr, "secret printed before the end\n")
+	err := child.Failure(ctx, nonsenseArgv(), runErr, stderrMarker+" printed before the end\n")
 
 	assert.Check(t, is.ErrorIs(err, context.Canceled))
 	assert.Check(t, is.ErrorContains(err, "go tool nonsense"))
@@ -147,7 +150,7 @@ func TestFailure_WhenProgramDiedOfTheInterruptBeforeContextEnded_ReturnsContextC
 	t.Parallel()
 	runErr := interruptedChild(t)
 
-	err := child.Failure(t.Context(), fetchArgv(), runErr, "secret printed before the interrupt\n")
+	err := child.Failure(t.Context(), fetchArgv(), runErr, stderrMarker+" printed before the interrupt\n")
 
 	assert.Check(t, is.ErrorIs(err, context.Canceled))
 	assert.Check(t, is.ErrorContains(err, "git fetch"))
@@ -162,7 +165,7 @@ func TestFailure_WhenProgramDiedOfTerminateAndContextEndsWithinGrace_ReturnsCont
 		ctx, cancel := context.WithTimeout(t.Context(), time.Nanosecond)
 		defer cancel()
 
-		err := child.Failure(ctx, fetchArgv(), runErr, "secret printed before the signal\n")
+		err := child.Failure(ctx, fetchArgv(), runErr, stderrMarker+" printed before the signal\n")
 
 		assert.Check(t, is.ErrorIs(err, context.DeadlineExceeded))
 		assert.Check(t, is.ErrorContains(err, "git fetch"))
@@ -364,19 +367,25 @@ func TestToolTooOldError_Error(t *testing.T) {
 	}
 }
 
+// ghInstallURL is the install URL of the gh tool in the tests below.
+const ghInstallURL = "https://cli.github.com"
+
+// ghMinimum is the minimum gh version in the tests below.
+const ghMinimum = "2.50.0"
+
 func TestToolMissingError_Error_WhenToolIsMissing_NamesWhereToInstallIt(t *testing.T) {
 	t.Parallel()
-	err := &child.ToolMissingError{Tool: "gh", InstallURL: "https://cli.github.com", Err: exec.ErrNotFound}
+	err := &child.ToolMissingError{Tool: "gh", InstallURL: ghInstallURL, Err: exec.ErrNotFound}
 
 	got := err.Error()
 
 	assert.Check(t, is.Contains(got, "gh"))
-	assert.Check(t, is.Contains(got, "https://cli.github.com"))
+	assert.Check(t, is.Contains(got, ghInstallURL))
 }
 
 // requirement is the gh requirement every Check and CheckOutput test is made against.
 func requirement() child.Requirement {
-	return child.Requirement{Tool: "gh", Minimum: "2.50.0", InstallURL: "https://cli.github.com"}
+	return child.Requirement{Tool: "gh", Minimum: ghMinimum, InstallURL: ghInstallURL}
 }
 
 func TestRequirement_Check_WhenVersionIsTheMinimumOrNewer_ReturnsNil(t *testing.T) {
@@ -420,7 +429,7 @@ func TestRequirement_Check_WhenVersionIsOlderOrUnreadable_ReturnsToolTooOldError
 			tooOld, ok := errors.AsType[*child.ToolTooOldError](err)
 			assert.Assert(t, ok, "Check(%q) error = %v, want *child.ToolTooOldError", tt.version, err)
 			want := child.ToolTooOldError{
-				Tool: "gh", Version: tt.wantVersion, Line: tt.line, Minimum: "2.50.0", InstallURL: "https://cli.github.com",
+				Tool: "gh", Version: tt.wantVersion, Line: tt.line, Minimum: ghMinimum, InstallURL: ghInstallURL,
 			}
 			assert.Check(t, is.DeepEqual(*tooOld, want))
 		})
@@ -431,30 +440,19 @@ func TestRequirement_Check_WhenVersionIsOlderOrUnreadable_ReturnsToolTooOldError
 func versionOf(line string) string {
 	versions := map[string]string{
 		"gh version 2.49.0": "2.49.0",
-		"gh version 2.50.0": "2.50.0",
 		"gh version 2.60.0": "2.60.0",
 	}
 
 	return versions[line]
 }
 
-func TestRequirement_CheckOutput_WhenFirstLineIsTheMinimumOrNewer_ReturnsNil(t *testing.T) {
+func TestRequirement_CheckOutput_WhenOnlyALaterLineIsOlder_ReturnsNil(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		name   string
-		stdout string
-	}{
-		{name: "a later line names an older version", stdout: "gh version 2.60.0\ngh version 2.49.0\n"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	stdout := "gh version 2.60.0\ngh version 2.49.0\n"
 
-			err := requirement().CheckOutput(tt.stdout, versionOf)
+	err := requirement().CheckOutput(stdout, versionOf)
 
-			assert.NilError(t, err, "CheckOutput(%q)", tt.stdout)
-		})
-	}
+	assert.NilError(t, err, "CheckOutput(%q)", stdout)
 }
 
 func TestRequirement_CheckOutput_WhenFirstLineIsOlder_ReturnsToolTooOldErrorForThatLine(t *testing.T) {
@@ -469,14 +467,14 @@ func TestRequirement_CheckOutput_WhenFirstLineIsOlder_ReturnsToolTooOldErrorForT
 	assert.Check(t, is.Equal(tooOld.Version, "2.49.0"))
 }
 
-// prompt bounds how long a test waits for a call that must return soon after its program exited,
-// and for the program's lingering copy to connect.
-const prompt = 10 * time.Second
+// returnDeadline bounds how long a test waits for a call that must return soon after its program
+// exited, and for the program's lingering copy to connect.
+const returnDeadline = 10 * time.Second
 
 // spawnerSaid is what the spawner the Program tests start prints.
 const spawnerSaid = "spawner started"
 
-// runBounded runs program and fails the test when the call has not returned within prompt, so a
+// runBounded runs program and fails the test when the call has not returned within returnDeadline, so a
 // call that waits on a descendant's pipes fails instead of hanging until the test ends.
 func runBounded(t *testing.T, program child.Program) (child.Output, error) {
 	t.Helper()
@@ -496,14 +494,13 @@ func runBounded(t *testing.T, program child.Program) (child.Output, error) {
 	select {
 	case got := <-done:
 		return got.out, got.err
-	case <-time.After(prompt):
-		t.Fatalf("Run did not return within %v", prompt)
+	case <-time.After(returnDeadline):
+		t.Fatalf("Run did not return within %v", returnDeadline)
 
 		return child.Output{}, nil
 	}
 }
 
-// foundAt returns a LookPath that finds every tool at path.
 func foundAt(path string) func(string) (string, error) {
 	return func(string) (string, error) { return path, nil }
 }
@@ -523,7 +520,7 @@ func TestProgram_Run_WhenProgramExitsWhileDescendantHoldsStdout_ReturnsWhatItPri
 	assert.Check(t, is.Equal(got.Stdout, spawnerSaid+"\n"))
 	select {
 	case <-lingering:
-	case <-time.After(prompt):
+	case <-time.After(returnDeadline):
 		t.Error("the spawner's copy never connected, so nothing held the pipes open")
 	}
 }
@@ -547,7 +544,7 @@ func TestProgram_Run_WhenProgramCannotBeStarted_ReturnsToolMissingError(t *testi
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			program := child.Program{
-				Tool: "gh", InstallURL: "https://cli.github.com", Args: []string{"pr", "view"}, LookPath: tt.lookPath(t),
+				Tool: "gh", InstallURL: ghInstallURL, Args: []string{"pr", "view"}, LookPath: tt.lookPath(t),
 				StartWantingAFileIsMissing: true,
 			}
 
@@ -556,7 +553,7 @@ func TestProgram_Run_WhenProgramCannotBeStarted_ReturnsToolMissingError(t *testi
 			missing, ok := errors.AsType[*child.ToolMissingError](err)
 			assert.Assert(t, ok, "Run error = %v, want *child.ToolMissingError", err)
 			assert.Check(t, is.Equal(missing.Tool, "gh"))
-			assert.Check(t, is.Equal(missing.InstallURL, "https://cli.github.com"))
+			assert.Check(t, is.Equal(missing.InstallURL, ghInstallURL))
 			assert.Check(t, missing.Err != nil, "Run error carries no cause, want what starting the program failed with")
 		})
 	}
@@ -589,4 +586,19 @@ func TestProgram_Run_WhenProgramExitsNonZero_ReturnsExitErrorNamingToolAndArgs(t
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 	assert.Assert(t, ok, "Run error = %v, want *child.ExitError", err)
 	assert.Check(t, is.DeepEqual(exitErr.Argv, argv))
+}
+
+func TestProgram_Run_WhenALoggerIsSet_LogsTheTimeTheRunTook(t *testing.T) {
+	t.Parallel()
+	argv := nonsenseArgv()
+	logger, sink := logtest.New()
+	program := child.Program{Tool: argv[0], Args: argv[1:], LookPath: exec.LookPath, Logger: logger}
+
+	_, _ = program.Run(t.Context())
+
+	records := sink.Records()
+	assert.Assert(t, is.Len(records, 1))
+	took, ok := records[0].Map()[child.KeyDuration].(time.Duration)
+	assert.Assert(t, ok, "duration attribute = %#v, want a time.Duration", records[0].Map()[child.KeyDuration])
+	assert.Check(t, took > 0, "duration = %v, want above zero for a run that started a process", took)
 }

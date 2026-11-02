@@ -122,67 +122,24 @@ func (o Origin) Same(other Origin) bool {
 // Errors
 // ---------------------------------------------------------------------------
 
-const (
-	// remotesRef prefixes the remote-tracking refs, where the clone keeps what it last fetched of
-	// origin's branches.
-	remotesRef = "refs/remotes/" + origin + "/"
-
-	symrefLead = "ref: "
-	symrefTail = "\tHEAD"
-
-	// absentCode is the exit of `git ls-remote --exit-code` when no ref matched.
-	absentCode = 2
-)
-
 // ErrNoSymref reports an answer from origin that names no default branch: no `ref:` line for HEAD.
 var ErrNoSymref = errors.New("origin's HEAD names no branch")
 
-// OriginURLs holds origin's fetch and push URLs, raw and parsed.
-type OriginURLs struct {
-	Fetch    Origin
-	Push     Origin
-	FetchURL string
-	PushURL  string
-}
+// ErrRemote reports that origin could not be reached, or did not give what was asked of it. The
+// failure of the call to origin is wrapped with it.
+var ErrRemote = errors.New("origin could not be reached")
 
-// RemoteError reports that origin could not be reached, or did not give what was asked of it.
-type RemoteError struct {
-	Err error
-}
-
-// Error says origin could not be reached and appends the underlying failure.
-func (e *RemoteError) Error() string {
-	return "origin could not be reached: " + e.Err.Error()
-}
-
-// Unwrap returns the failure of the call to origin.
-func (e *RemoteError) Unwrap() error {
-	return e.Err
-}
-
-// RefusedError reports that origin answered a call and turned the caller away: it did not accept the
+// ErrRefused reports that origin answered a call and turned the caller away: it did not accept the
 // credentials or the key, denied the caller the repository, or holds no such repository. Running the
-// call again changes nothing until the caller fixes what origin refused.
-type RefusedError struct {
-	// Err is git's *child.ExitError, whose Stderr holds what origin and git said.
-	Err error
-}
-
-// Error says origin refused the call and appends git's failure.
-func (e *RefusedError) Error() string {
-	return "origin refused the call: " + e.Err.Error()
-}
-
-// Unwrap returns git's failure.
-func (e *RefusedError) Unwrap() error {
-	return e.Err
-}
+// call again changes nothing until the caller fixes what origin refused. Git's *child.ExitError,
+// whose Stderr holds what origin and git said, is wrapped with it.
+var ErrRefused = errors.New("origin refused the call")
 
 // PushError reports a push that git or origin refused for a ref: a non-fast-forward, a tag origin
 // already holds at another commit, a hook of origin that declined it, a ref origin hides, a pre-push
 // hook that failed. An origin that never answered, or that hung up before it reported on the ref, is
-// a *RemoteError instead, and an origin that turned the caller away before the push is a
-// *RefusedError.
+// an ErrRemote failure instead, and an origin that turned the caller away before the push is an
+// ErrRefused failure.
 type PushError struct {
 	Err error
 	// Ref is the full name of the refused ref, such as `refs/heads/main` or `refs/tags/v1.0.0`.
@@ -228,6 +185,26 @@ func joinPresent(parts ...string) string {
 // ---------------------------------------------------------------------------
 // Origin reads and fetch
 // ---------------------------------------------------------------------------
+
+const (
+	// remotesRef prefixes the remote-tracking refs, where the clone keeps what it last fetched of
+	// origin's branches.
+	remotesRef = "refs/remotes/" + origin + "/"
+
+	symrefLead = "ref: "
+	symrefTail = "\tHEAD"
+
+	// absentCode is the exit of `git ls-remote --exit-code` when no ref matched.
+	absentCode = 2
+)
+
+// OriginURLs holds origin's fetch and push URLs, raw and parsed.
+type OriginURLs struct {
+	Fetch    Origin
+	Push     Origin
+	FetchURL string
+	PushURL  string
+}
 
 // OriginURLs returns origin's fetch and push URLs, raw and parsed.
 //
@@ -282,7 +259,7 @@ func (r Repo) parseOrigin(ctx context.Context, raw string) (Origin, error) {
 
 // Trunk returns origin's default branch, asked of origin.
 //
-// An origin that does not answer is a *RemoteError, and an answer that names no branch is
+// An origin that does not answer is an ErrRemote failure, and an answer that names no branch is
 // ErrNoSymref.
 func (r Repo) Trunk(ctx context.Context) (string, error) {
 	args := []string{"ls-remote", "--symref", origin, "HEAD"}
@@ -313,17 +290,17 @@ func (r Repo) Trunk(ctx context.Context) (string, error) {
 
 // RemoteBranch reports whether origin has the branch name, and its sha there when it does.
 //
-// An origin that does not answer is a *RemoteError, never an absent branch.
+// An origin that does not answer is an ErrRemote failure, never an absent branch.
 func (r Repo) RemoteBranch(ctx context.Context, name string) (sha string, found bool, err error) {
 	ref := headsRef + name
 
-	result, err := r.Runner.Run(ctx, "ls-remote", "--exit-code", origin, ref)
+	result, err := r.remote(ctx, "ls-remote", "--exit-code", origin, ref)
 	if exited(err, absentCode) {
 		return "", false, nil
 	}
 
 	if err != nil {
-		return "", false, remoteFailure(err)
+		return "", false, err
 	}
 
 	// The pattern also matches a longer ref that ends with it, so only the exact ref counts.
@@ -356,9 +333,7 @@ func (r Repo) TrunkOrLastFetched(ctx context.Context) (trunk string, found bool,
 		return trunk, true, nil
 	}
 
-	_, unanswered := errors.AsType[*RemoteError](err)
-	_, refused := errors.AsType[*RefusedError](err)
-	if !unanswered && !refused {
+	if !errors.Is(err, ErrRemote) && !errors.Is(err, ErrRefused) {
 		return "", false, err
 	}
 
@@ -378,7 +353,7 @@ func (r Repo) LastFetched(ctx context.Context, name string) (sha string, found b
 //
 // Origin is asked at the time of the call: a branch deleted on origin that the clone still knows
 // does not take the name, and one pushed since the last fetch does. An origin that does not answer
-// is a *RemoteError, never an empty list.
+// is an ErrRemote failure, never an empty list.
 func (r Repo) BranchesTaking(ctx context.Context, name string) (local, onOrigin []string, err error) {
 	localBranches, err := r.localBranches(ctx)
 	if err != nil {
@@ -428,7 +403,7 @@ type Tag struct {
 // OriginTags returns origin's tags, asked of origin, in the order git lists them, each with the
 // commit it tags: an annotated tag gives the commit its tag object points to, never the tag object.
 //
-// An origin that does not answer is a *RemoteError.
+// An origin that does not answer is an ErrRemote failure.
 func (r Repo) OriginTags(ctx context.Context) ([]Tag, error) {
 	result, err := r.remote(ctx, "ls-remote", "--tags", origin)
 	if err != nil {
@@ -474,8 +449,8 @@ const (
 // A branch name is fetched as the branch, never as a tag of the same name. The fetch is stored in a
 // ref under refs/ils/fetched/, which only ils writes, read back from there and deleted: FETCH_HEAD
 // is shared with every other fetch in the repository, which can rewrite it before it is read. A
-// fetch that fails is a *RefusedError when origin turned the caller away, and a *RemoteError
-// otherwise.
+// fetch that fails is an ErrRefused failure when origin turned the caller away, and an ErrRemote
+// failure otherwise.
 //
 // A fetched branch also moves its remote-tracking ref, refs/remotes/origin/<branch>, to the fetched
 // sha, even when the clone's remote.origin.fetch leaves the branch out: every later read of origin's
@@ -532,8 +507,8 @@ func (r Repo) FetchTag(ctx context.Context, name string) (string, error) {
 // when it is already there.
 //
 // It does what `git pull --ff-only origin <trunk>` does, in two steps so that a failure says which
-// side refused: the fetch from origin, whose failure is a *RefusedError when origin turned the
-// caller away and a *RemoteError otherwise, then a fast-forward to what it fetched. The
+// side refused: the fetch from origin, whose failure is an ErrRefused failure when origin turned the
+// caller away and an ErrRemote failure otherwise, then a fast-forward to what it fetched. The
 // fast-forward never merges: a trunk with commits origin's lacks stays where it was, and the call
 // fails with git's *child.ExitError. HEAD must be on the trunk, since the fast-forward moves the
 // branch HEAD is on: anywhere else, the call fails and moves nothing.
@@ -572,8 +547,8 @@ func (r Repo) FastForwardTrunk(ctx context.Context, trunk string) error {
 // A git that exits non-zero is classed by the status it reports for the ref:
 //   - a ref git or origin refused is a *PushError naming git's reason;
 //   - a ref reported updated counts as pushed, though origin hung up afterwards;
-//   - a ref with no status, because origin never answered or hung up before its report, is a
-//     *RefusedError when origin turned the caller away, and a *RemoteError otherwise;
+//   - a ref with no status, because origin never answered or hung up before its report, is an
+//     ErrRefused failure when origin turned the caller away, and an ErrRemote failure otherwise;
 //   - a ref with no status from a git that refused the push itself, such as for a pre-push hook
 //     that failed, is a *PushError with no reason.
 //
@@ -724,18 +699,18 @@ func (r Repo) remote(ctx context.Context, args ...string) (Result, error) {
 }
 
 // remoteFailure wraps the failure of a call to origin: a git that died of a fatal error saying
-// origin turned the caller away is a *RefusedError, and any other failure a *RemoteError. A missing
-// git program is left as it is: that failure says nothing about origin.
+// origin turned the caller away is an ErrRefused failure, and any other failure an ErrRemote
+// failure. A missing git program is left as it is: that failure says nothing about origin.
 func remoteFailure(err error) error {
 	if _, ok := errors.AsType[*child.ToolMissingError](err); ok {
 		return err
 	}
 
 	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && exitErr.Code == fatalCode && refusal(exitErr.Stderr) {
-		return &RefusedError{Err: err}
+		return fmt.Errorf("%w: %w", ErrRefused, err)
 	}
 
-	return &RemoteError{Err: err}
+	return fmt.Errorf("%w: %w", ErrRemote, err)
 }
 
 // refusalPhrases returns the lowercase words of a stderr line that says origin turned the caller

@@ -117,7 +117,6 @@ func (r *reading) unread(line result.Phrase, read, reason string) {
 	r.markUnread(read, reason)
 }
 
-// markUnread lists the read named read as unread, for the reason given.
 func (r *reading) markUnread(read, reason string) {
 	r.status.Unread = append(r.status.Unread, result.Unread{Read: read, Error: reason})
 }
@@ -318,7 +317,7 @@ func (r *reading) readOrigin(ctx context.Context) {
 // against origin after them; a clone that never learned origin's trunk fails that read, yet still
 // counts the branch against origin's copy as last fetched. Anything else fails the read.
 func (r *reading) readLastFetch(ctx context.Context, err error) {
-	if _, unreached := errors.AsType[*git.RemoteError](err); !unreached || endedEarly(err) {
+	if !errors.Is(err, git.ErrRemote) || endedEarly(err) {
 		r.failed(readTrunk, err)
 
 		return
@@ -549,7 +548,7 @@ func (r *reading) readPulls(ctx context.Context) {
 				result.PullRequest(change.Number), result.Branch(change.Base), result.Branch(r.status.Trunk)))
 		case change.State != forge.ChangeOpen:
 			r.status.PastPullRequests = append(r.status.PastPullRequests,
-				result.PastPull{Number: change.Number, State: string(change.State)})
+				result.PastPull{Number: change.Number, State: change.State})
 			r.say(result.Say("Pull request %s: %s", result.PullRequest(change.Number), string(change.State)))
 		}
 	}

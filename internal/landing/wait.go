@@ -536,7 +536,6 @@ func (w waiter) mergeKnown(ctx context.Context, head forge.Head) (forge.Head, er
 	return head, nil
 }
 
-// unknownOnPushed reports whether head is the pushed commit with its merge state still unknown.
 func (w waiter) unknownOnPushed(head forge.Head) bool {
 	return head.MergeState == forge.MergeUnknown && head.SHA == w.pushed.SHA
 }

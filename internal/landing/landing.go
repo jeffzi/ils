@@ -14,8 +14,9 @@ import (
 	"github.com/jeffzi/ils/internal/result"
 )
 
-// Each read names what a precondition reads as it follows "read" in a result, as in "Could not read
-// origin's URLs", so it stays a noun phrase.
+// readGitVersion, readStanding, readURLs, readIdentity, readTrunk and readHeadCommits name what a
+// precondition reads as each follows "read" in a result, as in "Could not read origin's URLs", so
+// each stays a noun phrase.
 const (
 	readGitVersion  = "git's version"
 	readStanding    = "where HEAD stands"
@@ -114,33 +115,6 @@ const (
 	BranchCommand  = "branch"
 	ReleaseCommand = "release"
 )
-
-// ParseCommand, GuardCommand and HookCommand are the command words of `ils parse`, `ils guard` and
-// `ils hook`, the commands that read a command and change nothing. The command line registers
-// them and the guard reads them, so that both agree on what ils runs.
-const (
-	ParseCommand = "parse"
-	GuardCommand = "guard"
-	HookCommand  = "hook"
-)
-
-// FlagJSON, FlagDebug, FlagDebugShort, FlagNoColor, FlagHelp, FlagHelpShort and FlagVersion are the
-// flags of the root command of ils that take no value, as the command line spells them. The
-// command line registers them and the guard reads them through RootSwitches.
-const (
-	FlagJSON       = "--json"
-	FlagDebug      = "--debug"
-	FlagDebugShort = "-d"
-	FlagNoColor    = "--no-color"
-	FlagHelp       = "--help"
-	FlagHelpShort  = "-h"
-	FlagVersion    = "--version"
-)
-
-// RootSwitches returns every flag of the root command of ils that takes no value.
-func RootSwitches() []string {
-	return []string{FlagJSON, FlagDebug, FlagDebugShort, FlagNoColor, FlagHelp, FlagHelpShort, FlagVersion}
-}
 
 // Deps is what a command takes: the forge and the repository it runs in, and what it tells how it
 // advances to. Neither Progress nor Logger changes the result a command returns; either may be nil.
@@ -679,9 +653,9 @@ func (r Request) afterTimeLimit() result.Next {
 // unreached returns the result for a call to origin that failed with err: the refusal reason
 // when origin did not answer, and what unread returns otherwise.
 func (r Request) unreached(read string, err error, reason result.Phrase) *result.Result {
-	// The time limit and an interrupt are excluded: a call to origin that either cut short is also a
-	// *git.RemoteError, and unread words it as what cut it short.
-	if _, ok := errors.AsType[*git.RemoteError](err); ok && !endedEarly(err) {
+	// The time limit and an interrupt are excluded: a call to origin that either cut short is also an
+	// ErrRemote failure of git, and unread words it as what cut it short.
+	if errors.Is(err, git.ErrRemote) && !endedEarly(err) {
 		return r.Refused(reason, r.again())
 	}
 

@@ -2,6 +2,7 @@ package landing
 
 import (
 	"context"
+	"errors"
 	"slices"
 
 	"github.com/jeffzi/ils/internal/forge"
@@ -9,8 +10,8 @@ import (
 	"github.com/jeffzi/ils/internal/result"
 )
 
-// Each read of the checks of the branch names what it reads as it follows "read" in a result, so
-// it stays a noun phrase.
+// readTree, readTip, readFetchedTrunk, readCommits, readChanges and readMergedHead name what the
+// checks of the branch read as each follows "read" in a result, so each stays a noun phrase.
 const (
 	readTree         = "the working tree's changes"
 	readTip          = "the branch's tip"
@@ -132,7 +133,9 @@ func commitsPast(ctx context.Context, deps Deps, req Request, b onBranch) (tip s
 }
 
 // readTip reads the sha of the branch's tip, and whether the branch has a commit at all; a branch
-// with none reads as no tip and no error. err is a read of readTip that failed.
+// with none reads as no tip and no error. When the tip cannot be read on a branch that has
+// commits, err is that failure and committed is true; when the read of the branch's ref fails
+// too, err joins both failures.
 func (b onBranch) readTip(ctx context.Context, deps Deps) (tip string, committed bool, err error) {
 	tip, err = deps.Repo.HeadSHA(ctx)
 	if err == nil {
@@ -144,7 +147,7 @@ func (b onBranch) readTip(ctx context.Context, deps Deps) (tip string, committed
 	committed, refErr := deps.Repo.HasCommits(ctx, b.branch)
 	switch {
 	case refErr != nil:
-		return "", false, refErr
+		return "", false, errors.Join(err, refErr)
 	case !committed:
 		return "", false, nil
 	}

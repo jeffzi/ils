@@ -10,9 +10,10 @@ import (
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
 	"github.com/jeffzi/ils/internal/gittest"
+	"github.com/jeffzi/ils/internal/result"
 )
 
-const standingTrunk = "trunk"
+const standingTrunk result.Standing = "trunk"
 
 // ruledBy is viewing with no pull request found, and a trunk whose rules stand as rules says.
 func ruledBy(rules forge.RulesState) forgeFor {
@@ -158,7 +159,7 @@ func TestStatus_WhenOnTheTrunk_ReportsWhetherOriginsTrunkTipIsAReleaseCommit(t *
 type protectionRow struct {
 	name  string
 	rules forge.RulesState
-	want  string
+	want  result.Protection
 }
 
 func TestStatus_WhenOnTheTrunk_ReportsWhetherRulesProtectIt(t *testing.T) {

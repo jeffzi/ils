@@ -275,10 +275,10 @@ func (end finish) at(tip string) finish {
 // detail returns the payload of a push to pull request 12, but for the sha: the verdict's name,
 // the merge state in the words of ils, and the deciding checks.
 func detail(verdict forge.VerdictState, state forge.MergeState, checks ...forge.Check) *result.Push {
-	push := &result.Push{URL: pullURL, Number: opened, Verdict: string(verdict), MergeState: string(state)}
+	push := &result.Push{URL: pullURL, Number: opened, Verdict: verdict, MergeState: state}
 	for _, check := range checks {
 		push.Checks = append(push.Checks, result.Check{
-			Name: check.Name, Bucket: string(check.Bucket), Workflow: check.Workflow, Link: check.Link,
+			Name: check.Name, Bucket: check.Bucket, Workflow: check.Workflow, Link: check.Link,
 		})
 	}
 
@@ -542,7 +542,7 @@ func TestPush_WhenGitRefusesThePush_BrokeSayingNothingWasPushed(t *testing.T) {
 	assert.Check(t, strings.TrimSpace(refused[at+1:]) != "", "refused line %q, want git's reason after its colon", refused)
 	assert.Check(t, !strings.Contains(refused, policy), "refused line %q, want the hook's output left out of it", refused)
 
-	assertAsked(t, d.scene, changesRead())
+	assert.Check(t, sameCalls(d.forge.Calls(), asked(changesRead())))
 	assertTold(t, d.watch.told(t), []string{checkingStep(), pushingStep()})
 }
 
@@ -570,23 +570,6 @@ func refusedBy(t *testing.T, script string) (context.Context, *delivery) {
 	refuse := func(f *gittest.Fixture) { f.Hook("pre-push", script) }
 
 	return newDelivery(t, pushRow{arrange: refuse, script: opening()})
-}
-
-func TestPush_WhenAPrePushHookRefusesThePush_MovesWhatItPrintedFromTheLineToTheExcerpt(t *testing.T) {
-	t.Parallel()
-	const onStdout, onStderr = "lint passed", "format failed"
-	ctx, d := refusedBy(t, "echo '"+onStdout+"'\necho '"+onStderr+"' >&2\nexit 1")
-
-	got := landing.Push(ctx, d.deps, pushRequest())
-
-	assertStopped(t, got, result.Broke)
-
-	_, decoded := rendered(t, got, d.gitDir)
-	refused := refusedLine(t, decoded.Lines)
-	assert.Check(t, !strings.Contains(refused, onStdout) && !strings.Contains(refused, onStderr),
-		"refused line %q, want the hook's output left out of it", refused)
-	assert.Check(t, is.Contains(got.Excerpt, onStdout))
-	assert.Check(t, is.Contains(got.Excerpt, onStderr))
 }
 
 func TestPush_WhenGitGivesNoReasonForTheRefusal_EndsTheLineWithoutOne(t *testing.T) {

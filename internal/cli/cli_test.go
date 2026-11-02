@@ -23,7 +23,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Run helpers
+// Runs and their output
 // ---------------------------------------------------------------------------
 
 const (
@@ -106,6 +106,11 @@ func recording(seen *landing.Request) cli.Command {
 
 		return finished(req)
 	}
+}
+
+// outputLines returns the lines of text, without the line break that ends it.
+func outputLines(text string) []string {
+	return strings.Split(strings.TrimSuffix(text, "\n"), "\n")
 }
 
 // plain checks, without stopping the test, that text carries no escape sequence; what names the
@@ -352,12 +357,41 @@ func TestApp_Run_WhenReleaseIsGivenOneVersion_RunsTheReleaseCommandWithTheFlagsA
 	}
 }
 
+func TestApp_Run_WhenPushRuns_PassesTheWaitFlagAsTyped(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args []string
+		want landing.WaitFlag
+	}{
+		{name: "no wait flag", args: []string{"push"}, want: landing.WaitFlagNone},
+		{name: "wait flag", args: []string{"push", "--wait"}, want: landing.WaitFlagTrue},
+		{name: "wait flag set to false", args: []string{"push", "--wait=false"}, want: landing.WaitFlagFalse},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var seen landing.Request
+
+			app := painted(t, []string{colorTerm}, false, false)
+			app.SetPush(recording(&seen))
+
+			launch(t, app, tt.args...)
+
+			assert.Check(t, is.Equal(seen.WaitFlag, tt.want))
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Color
 // ---------------------------------------------------------------------------
 
 const (
 	colorTerm = "TERM=xterm-256color"
+	dumbTerm  = "TERM=dumb"
 	forced    = forceColor + "=1"
 	noColor   = "NO_COLOR=1"
 )
@@ -373,81 +407,6 @@ func painted(t *testing.T, env []string, stdoutTerminal, stderrTerminal bool) cl
 	app.StderrTerminal = stderrTerminal
 
 	return app
-}
-
-// ---------------------------------------------------------------------------
-// Pending hint
-// ---------------------------------------------------------------------------
-
-const hint = cli.PendingHint
-
-// pending is a landing command that ended pending, with ils push as its next step.
-func pending(_ context.Context, _ landing.Deps, req landing.Request) result.Result {
-	r := finished(req)
-	r.Outcome = result.Pending
-	r.Reason = result.Say("the checks of %s are still running", result.PullRequest(opened))
-	r.Next = result.NextCommand("push")
-
-	return r
-}
-
-func TestApp_Run_WhenTheResultIsPendingOnATerminalStdout_EndsNextWithAHintStyledOnlyInColor(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name  string
-		env   []string
-		color bool
-	}{
-		{name: "color terminal", env: []string{colorTerm}, color: true},
-		{name: "no color", env: []string{colorTerm, noColor}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			app := painted(t, tt.env, true, false)
-			app.SetPush(pending)
-
-			got := launch(t, app, "push")
-
-			assert.Check(t, is.Equal(got.code, exitPending))
-			drawn := resulttest.Draw(t, got.stdout)
-			lines := strings.Split(strings.TrimSuffix(drawn.String(), "\n"), "\n")
-			last := lines[len(lines)-1]
-			assert.Check(t, strings.Contains(last, "ils push"), "Next line = %q", last)
-			assert.Check(t, strings.HasSuffix(last, " "+hint), "Next line = %q", last)
-			assert.Check(t, is.Equal(drawn.LookOf(t, last, hint) != resulttest.Look{}, tt.color), "Next line = %q", last)
-		})
-	}
-}
-
-func TestApp_Run_WhenTheResultIsPendingOffATerminalStdoutOrAsJSON_PrintsNoHint(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		env      []string
-		args     []string
-		terminal bool
-	}{
-		{name: "no terminal", env: []string{colorTerm}, args: []string{"push"}},
-		{name: "dumb terminal", env: []string{"TERM=dumb"}, args: []string{"push"}, terminal: true},
-		{name: "JSON on a terminal", env: []string{colorTerm}, args: []string{"push", "--json"}, terminal: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			app := painted(t, tt.env, tt.terminal, false)
-			app.SetPush(pending)
-
-			got := launch(t, app, tt.args...)
-
-			assert.Check(t, is.Equal(got.code, exitPending))
-			assert.Check(t, !strings.Contains(got.stdout, hint), "stdout = %q", got.stdout)
-		})
-	}
 }
 
 func TestApp_Run_WhenOnlyTheProcessEnvironmentForcesColor_WritesNoEscapeSequence(t *testing.T) {
@@ -535,6 +494,96 @@ func TestApp_Run_WhenOneStreamIsAColorTerminal_LeavesTheOtherStreamPlain(t *test
 	}
 }
 
+func TestApp_Run_WhenHelpIsAskedForOnAColorTerminal_StylesIt(t *testing.T) {
+	// Fang styles help only when the process environment lets it; ils's profile then decides.
+	t.Setenv(forceColor, "1")
+
+	got := launch(t, painted(t, []string{colorTerm}, true, false), "--help")
+
+	assert.Check(t, is.Equal(got.code, exitDone))
+	assert.Check(t, strings.Contains(got.stdout, escape), "the help carries no escape sequence:\n%q", got.stdout)
+}
+
+// ---------------------------------------------------------------------------
+// Pending hint
+// ---------------------------------------------------------------------------
+
+const hint = cli.PendingHint
+
+// pending is a landing command that ended pending, with ils push as its next step.
+func pending(_ context.Context, _ landing.Deps, req landing.Request) result.Result {
+	r := finished(req)
+	r.Outcome = result.Pending
+	r.Reason = stillRunning()
+	r.Next = result.NextCommand("push")
+
+	return r
+}
+
+// stillRunning is the reason a result gives while the checks of the open pull request run.
+func stillRunning() result.Phrase {
+	return result.Say("the checks of %s are still running", result.PullRequest(opened))
+}
+
+func TestApp_Run_WhenTheResultIsPendingOnATerminalStdout_EndsNextWithAHintStyledOnlyInColor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		env   []string
+		color bool
+	}{
+		{name: "color terminal", env: []string{colorTerm}, color: true},
+		{name: "no color", env: []string{colorTerm, noColor}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			app := painted(t, tt.env, true, false)
+			app.SetPush(pending)
+
+			got := launch(t, app, "push")
+
+			assert.Check(t, is.Equal(got.code, exitPending))
+			drawn := resulttest.Draw(t, got.stdout)
+			lines := outputLines(drawn.String())
+			last := lines[len(lines)-1]
+			assert.Check(t, strings.Contains(last, "ils push"), "Next line = %q", last)
+			assert.Check(t, strings.HasSuffix(last, " "+hint), "Next line = %q", last)
+			assert.Check(t, is.Equal(drawn.LookOf(t, last, hint) != resulttest.Look{}, tt.color), "Next line = %q", last)
+		})
+	}
+}
+
+func TestApp_Run_WhenTheResultIsPendingOffATerminalStdoutOrAsJSON_PrintsNoHint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		env      []string
+		args     []string
+		terminal bool
+	}{
+		{name: "no terminal", env: []string{colorTerm}, args: []string{"push"}},
+		{name: "dumb terminal", env: []string{dumbTerm}, args: []string{"push"}, terminal: true},
+		{name: "JSON on a terminal", env: []string{colorTerm}, args: []string{"push", "--json"}, terminal: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			app := painted(t, tt.env, tt.terminal, false)
+			app.SetPush(pending)
+
+			got := launch(t, app, tt.args...)
+
+			assert.Check(t, is.Equal(got.code, exitPending))
+			assert.Check(t, !strings.Contains(got.stdout, hint), "stdout = %q", got.stdout)
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Bound
 // ---------------------------------------------------------------------------
@@ -559,7 +608,7 @@ func TestApp_Run_WhenPushMergeOrReleaseRuns_WaitsAsLongAsTheWaitFlagOrAStdoutTer
 		{name: "push with no wait flag off a terminal", stub: push, env: []string{colorTerm}, args: []string{"push"}, limit: landing.TimeLimit},
 		{name: "push with no wait flag at a terminal", stub: push, env: []string{colorTerm}, args: []string{"push"}, stdout: true, limit: landing.WaitTimeLimit},
 		{name: "push with no color at a terminal", stub: push, env: []string{colorTerm, noColor}, args: []string{"push"}, stdout: true, limit: landing.WaitTimeLimit},
-		{name: "push at a dumb terminal", stub: push, env: []string{"TERM=dumb"}, args: []string{"push"}, stdout: true, limit: landing.TimeLimit},
+		{name: "push at a dumb terminal", stub: push, env: []string{dumbTerm}, args: []string{"push"}, stdout: true, limit: landing.TimeLimit},
 		{name: "push with the wait flag", stub: push, env: []string{colorTerm}, args: []string{"push", "--wait"}, limit: landing.WaitTimeLimit},
 		{name: "push with the wait flag set to false at a terminal", stub: push, env: []string{colorTerm}, args: []string{"push", "--wait=false"}, stdout: true, limit: landing.TimeLimit},
 		{name: "merge with the wait flag", stub: merge, env: []string{colorTerm}, args: []string{"merge", "--wait"}, limit: landing.WaitTimeLimit},
@@ -588,47 +637,9 @@ func TestApp_Run_WhenPushMergeOrReleaseRuns_WaitsAsLongAsTheWaitFlagOrAStdoutTer
 	}
 }
 
-func TestApp_Run_WhenPushRuns_PassesTheWaitFlagAsTyped(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		args []string
-		want landing.WaitFlag
-	}{
-		{name: "no wait flag", args: []string{"push"}, want: landing.WaitFlagNone},
-		{name: "wait flag", args: []string{"push", "--wait"}, want: landing.WaitFlagTrue},
-		{name: "wait flag set to false", args: []string{"push", "--wait=false"}, want: landing.WaitFlagFalse},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			var seen landing.Request
-
-			app := painted(t, []string{colorTerm}, false, false)
-			app.SetPush(func(_ context.Context, _ landing.Deps, req landing.Request) result.Result {
-				seen = req
-
-				return finished(req)
-			})
-
-			launch(t, app, tt.args...)
-
-			assert.Check(t, is.Equal(seen.WaitFlag, tt.want))
-		})
-	}
-}
-
-func TestApp_Run_WhenHelpIsAskedForOnAColorTerminal_StylesIt(t *testing.T) {
-	// Fang styles help only when the process environment lets it; ils's profile then decides.
-	t.Setenv(forceColor, "1")
-
-	got := launch(t, painted(t, []string{colorTerm}, true, false), "--help")
-
-	assert.Check(t, is.Equal(got.code, exitDone))
-	assert.Check(t, strings.Contains(got.stdout, escape), "the help carries no escape sequence:\n%q", got.stdout)
-}
+// ---------------------------------------------------------------------------
+// Grammar
+// ---------------------------------------------------------------------------
 
 const (
 	// jsonNeither is the reason a JSON flag set to maybe is refused for.
@@ -681,7 +692,7 @@ func TestApp_Run_WhenTheFirstWordIsCloseToOneCommand_SuggestsOnlyThatCommand(t *
 	assert.Check(t, is.Equal(printed.Next, "ils merge --help"))
 }
 
-func TestApp_Run_WhenTheFirstWordIsCloseToNoCommand_SuggestsNoCommand(t *testing.T) {
+func TestApp_Run_WhenTheFirstWordIsNotCloseToExactlyOneCommand_SuggestsNoCommand(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -690,6 +701,7 @@ func TestApp_Run_WhenTheFirstWordIsCloseToNoCommand_SuggestsNoCommand(t *testing
 	}{
 		{name: "close to no command", word: "extra"},
 		{name: "close to every command", word: ""},
+		{name: "unknown flag", word: "--push"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -706,18 +718,6 @@ func TestApp_Run_WhenTheFirstWordIsCloseToNoCommand_SuggestsNoCommand(t *testing
 			assert.Check(t, is.Equal(printed.Next, "ils --help"))
 		})
 	}
-}
-
-func TestApp_Run_WhenTheFirstWordIsAnUnknownFlag_SuggestsNoCommand(t *testing.T) {
-	t.Parallel()
-
-	got := launch(t, outside(t), "--push", "--json")
-
-	assert.Check(t, is.Equal(got.code, exitRefused))
-
-	printed := resulttest.Decode(t, got.stdout)
-	assert.Check(t, is.Contains(printed.Reason, "--push"))
-	assert.Check(t, is.Equal(printed.Next, "ils --help"))
 }
 
 func TestApp_Run_WhenWordsBreakTheGrammar_RefusesNamingWhatBreaksIt(t *testing.T) {

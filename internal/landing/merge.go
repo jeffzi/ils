@@ -13,15 +13,14 @@ import (
 	"github.com/jeffzi/ils/internal/result"
 )
 
-// Each read of merge's own checks names what it reads as it follows "read" in a result, so it
-// stays a noun phrase.
+// readLocalTrunk, readWorktrees, readRules, readMessage and readStillOnOrigin name what merge's own
+// checks read as each follows "read" in a result, so each stays a noun phrase.
 const (
-	readLocalTrunk     = "the local trunk"
-	readWorktrees      = "where the trunk is checked out"
-	readRules          = "the trunk's rules"
-	readMessage        = "the pull request's message"
-	readStillOnOrigin  = "whether origin still has the branch"
-	readBranchOnOrigin = "origin's copy of the branch"
+	readLocalTrunk    = "the local trunk"
+	readWorktrees     = "where the trunk is checked out"
+	readRules         = "the trunk's rules"
+	readMessage       = "the pull request's message"
+	readStillOnOrigin = "whether origin still has the branch"
 )
 
 // mergeReserve is the time the wait leaves before the command's deadline, and the least that must
@@ -32,6 +31,10 @@ const mergeReserve = 20 * time.Second
 // mayHaveGoneThrough ends a line that says a write was started when a cut came, and may not have
 // been done. It stays untyped so that result.Say accepts wording built on it.
 const mayHaveGoneThrough = "; it may or may not have gone through"
+
+// mayHaveTaken ends a line that says a push was started when a cut came, and may not have taken. It
+// stays untyped so that result.Say accepts wording built on it.
+const mayHaveTaken = "; it may or may not have taken"
 
 // conventionalTitle is a conventional commit subject, `<type>(<scope>)!: <summary>`: a type of
 // lowercase ASCII letters, an optional scope that is not empty and holds no parenthesis or line
@@ -69,7 +72,7 @@ type mergeReady struct {
 	body    string
 	// ending is result.EndingTrunk or result.EndingDetached once the local ending ran, and empty
 	// until then.
-	ending string
+	ending result.Ending
 	// lines say what the writes did so far, for the result that ends the run.
 	lines []result.Phrase
 	// waited is the zero value until the wait has ended.
@@ -251,7 +254,6 @@ func (m *mergeReady) pullChecks(ctx context.Context, deps Deps, req Request) *re
 	return nil
 }
 
-// rulesetReason says that the rulesets with the ids ids forbid squash merges on trunk.
 func rulesetReason(ids []int, trunk string) result.Phrase {
 	if len(ids) == 1 {
 		return result.Say("the ruleset %s on the trunk %s forbids squash merges", ids[0], result.Branch(trunk))
@@ -454,7 +456,7 @@ func (m *mergeReady) settle(ctx context.Context, deps Deps, req Request) *result
 func (m *mergeReady) stateStop(req Request) *result.Result {
 	pull := result.PullRequest(m.pull.Number)
 
-	switch state := m.waited.MergeState; state {
+	switch m.waited.MergeState {
 	case forge.MergeClean:
 		return nil
 	case forge.MergeConflicting, forge.MergeBehind:
@@ -715,7 +717,6 @@ func (m *mergeReady) deleteOnOrigin(ctx context.Context, deps Deps, req Request)
 	return nil
 }
 
-// goneLine says the branch was gone from origin before ils deleted it.
 func (m *mergeReady) goneLine() result.Phrase {
 	return result.Say("The branch %s was already gone from origin", result.Branch(m.branch))
 }
@@ -803,12 +804,12 @@ func (m *mergeReady) resume(ctx context.Context, deps Deps, req Request) *result
 func (m *mergeReady) originCarried(ctx context.Context, deps Deps, req Request) *result.Result {
 	tip, err := deps.Repo.Fetch(ctx, m.branch)
 	if err != nil {
-		return m.unreadOnResume(req, readBranchOnOrigin, err)
+		return m.unreadOnResume(req, readCopy, err)
 	}
 
 	lacking, err := deps.Repo.Unlanded(ctx, m.pull.HeadSHA, tip, m.Trunk)
 	if err != nil {
-		return m.unreadOnResume(req, readBranchOnOrigin, err)
+		return m.unreadOnResume(req, readCopy, err)
 	}
 
 	if len(lacking) == 0 {
