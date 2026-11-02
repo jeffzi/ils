@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/guard"
 	"github.com/jeffzi/ils/internal/landing"
@@ -241,19 +242,18 @@ func judged(req landing.Request, invocations []guard.Invocation, verdict guard.V
 	return r
 }
 
-// environment returns the variables of environ, each `NAME=value`, by name. An entry with no `=`
-// names nothing, and the first entry of a name wins, as os.Getenv reads it.
+// environment returns the variables of environ, each `NAME=value`, by name, with the value
+// git.EnvValue reads for the name: a name set twice has its last value, as bash and the commands
+// it starts read it. An entry with no `=` names nothing.
 func environment(environ []string) map[string]string {
 	env := make(map[string]string, len(environ))
 	for _, entry := range environ {
-		name, value, ok := strings.Cut(entry, "=")
+		name, _, ok := strings.Cut(entry, "=")
 		if !ok {
 			continue
 		}
 
-		if _, seen := env[name]; !seen {
-			env[name] = value
-		}
+		env[name], _ = git.EnvValue(environ, name)
 	}
 
 	return env

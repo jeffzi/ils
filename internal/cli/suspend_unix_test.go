@@ -121,6 +121,26 @@ func (c *stuckChild) drain(t *testing.T) {
 	}
 }
 
+// watch draws onto the screen what stderr says for quiet, as long as a stopped run takes to have
+// stopped.
+func (c *stuckChild) watch(t *testing.T) {
+	t.Helper()
+
+	assert.NilError(t, c.pipe.SetReadDeadline(time.Now().Add(quiet)))
+	buf := make([]byte, 4096)
+	for {
+		n, err := c.pipe.Read(buf)
+		_, writeErr := c.stderr.Write(buf[:n])
+		assert.NilError(t, writeErr)
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			assert.NilError(t, c.pipe.SetReadDeadline(time.Time{}))
+
+			return
+		}
+		assert.NilError(t, err, "stderr ended while the run was watched:\n%q", c.stderr.raw())
+	}
+}
+
 // spinnerShows reports whether the screen shows a line with the cursor hidden.
 func (c *stuckChild) spinnerShows() bool {
 	return c.stderr.cursorHidden() && len(c.stderr.lines()) > 0
@@ -171,6 +191,21 @@ func TestApp_Run_WhenContinuedAfterASuspend_DrawsTheSpinnerLineAgain(t *testing.
 	assert.NilError(t, run.cmd.Process.Signal(syscall.SIGCONT))
 
 	run.await(t, "the spinner line showed again", run.spinnerShows)
+}
+
+func TestApp_Run_WhenSuspendedAfterStartingWithTheStopSignalIgnored_RunsOnWithTheSpinnerLine(t *testing.T) {
+	t.Parallel()
+	run := startStuckBy(t, stuckHolding, "sh", "-c", `trap "" TSTP; exec "$0"`, os.Args[0])
+	run.awaitSpinning(t)
+
+	assert.NilError(t, run.cmd.Process.Signal(syscall.SIGTSTP))
+
+	run.watch(t)
+	var status syscall.WaitStatus
+	pid, err := syscall.Wait4(run.cmd.Process.Pid, &status, syscall.WUNTRACED|syscall.WNOHANG, nil)
+	assert.NilError(t, err)
+	assert.Check(t, pid == 0, "status = %v, want the run still under way", status)
+	assert.Check(t, run.spinnerShows(), "the spinner line no longer shows:\n%q", run.stderr.raw())
 }
 
 func TestApp_Run_WhenSuspendedAfterTheLandingCommandReturned_Stops(t *testing.T) {

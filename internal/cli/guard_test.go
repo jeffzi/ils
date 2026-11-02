@@ -242,6 +242,38 @@ func TestApp_Run_WhenParseRunsWithHOMEInTheEnvironment_ExpandsTheTildeWithIt(t *
 	assert.Check(t, is.DeepEqual(invocations[0].Words, literals("ls", "/home/reader/notes")))
 }
 
+func TestApp_Run_WhenParseRunsWithHOMESetTwiceInTheEnvironment_ExpandsTheTildeWithTheLastValue(t *testing.T) {
+	t.Parallel()
+
+	f := gittest.New(t, trunk)
+	app := parsing(t, f.Env())
+	app.Environ = []string{"HOME=/home/writer", "HOME=/home/reader"}
+
+	got := launch(t, app, "parse", "--cwd", f.Dir(), "--json", "--", "ls ~/notes")
+
+	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
+	invocations := parsed(t, got.stdout).Invocations
+	assert.Assert(t, is.Len(invocations, 1))
+	assert.Check(t, is.DeepEqual(invocations[0].Words, literals("ls", "/home/reader/notes")))
+}
+
+func TestApp_Run_WhenParseRunsWithGIT_DIRSetTwiceInTheEnvironment_ReportsTheGitDirOfTheLastValue(t *testing.T) {
+	t.Parallel()
+
+	first, last := gittest.New(t, trunk), gittest.New(t, trunk)
+	app := parsing(t, last.Env())
+	firstDir, lastDir := filepath.Join(first.Dir(), ".git"), filepath.Join(last.Dir(), ".git")
+	app.Environ = []string{"GIT_DIR=" + firstDir, "GIT_DIR=" + lastDir}
+
+	got := launch(t, app, "parse", "--cwd", t.TempDir(), "--json", "--", "git status")
+
+	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
+	invocations := parsed(t, got.stdout).Invocations
+	assert.Assert(t, is.Len(invocations, 1))
+	assert.Assert(t, invocations[0].Git != nil, "invocation %+v holds no git call", invocations[0])
+	assert.Check(t, is.Equal(invocations[0].Git.GitDir, lastDir))
+}
+
 func TestApp_Run_WhenParseIsGivenARelativeDirectory_ReadsItFromTheWorkingDirectory(t *testing.T) {
 	f := gittest.New(t, trunk)
 	assert.NilError(t, os.Mkdir(filepath.Join(f.Dir(), "sub"), 0o750))
