@@ -48,15 +48,17 @@ func discards() map[string]discard {
 		"reset": {reason: "git reset can discard uncommitted changes and move the branch; use git restore --staged"},
 		"stash": {reason: "git stash takes uncommitted changes out of the working tree"},
 		"clean": {
-			refuses: func(o subcommandOptions) bool { return o.sets('f', "--force") },
-			judges:  judgeCleanWithoutForce,
-			reason:  "git clean --force deletes untracked files",
+			refuses: func(o subcommandOptions) bool {
+				return o.sets('f', "--force") || o.setsLast('i', "--interactive", "--no-interactive")
+			},
+			judges: judgeCleanWithoutForce,
+			reason: "git clean --force or --interactive deletes untracked files",
 		},
 		"branch": {
 			refuses: func(o subcommandOptions) bool {
 				return o.sets('D', "") || (o.sets('d', "--delete") && o.sets('f', "--force"))
 			},
-			judges: judgeForcedBranchMove,
+			judges: judgeForcedBranchOverwrite,
 			reason: "git branch -D deletes a branch even when its commits are not merged",
 		},
 		"restore": {
@@ -103,14 +105,31 @@ func plumbingDiscards() map[string]discard {
 			reason:  "git checkout-index --force overwrites files in the working tree, uncommitted changes included",
 		},
 		"read-tree": {
-			refuses: func(o subcommandOptions) bool { return o.sets(0, "--reset") || (o.sets('u', "") && o.sets('m', "")) },
-			reason:  "git read-tree --reset or -u -m discards changes in the index and the working tree",
+			refuses: func(o subcommandOptions) bool {
+				// --prefix only adds the tree's entries under a directory the index does not hold yet,
+				// and --index-output writes another file, so neither replaces what is staged.
+				replacesIndex := !o.setsLast('n', "--dry-run", "--no-dry-run") &&
+					!o.sets(0, "--index-output") && !o.sets(0, "--prefix")
+
+				return replacesIndex || o.sets(0, "--reset") || (o.sets('u', "") && o.sets('m', ""))
+			},
+			reason: "git read-tree replaces the index, and with --reset or -u -m the working tree, discarding their changes",
 		},
 		"update-ref": {
-			refuses: func(o subcommandOptions) bool { return o.sets('d', "") || o.sets(0, "--stdin") },
-			reason:  "git update-ref -d or --stdin deletes refs, and the reflog that recovers their commits",
+			refuses: func(o subcommandOptions) bool {
+				deletes := o.sets('d', "") || o.sets(0, "--stdin")
+
+				return deletes || (len(o.positional) > 1 && nullObjectID(o.positional[1].Text))
+			},
+			reason: "git update-ref -d, --stdin, or an all-zero new value deletes refs, and the reflog that recovers their commits",
 		},
 	}
+}
+
+// nullObjectID reports whether value is the all-zero object id, SHA-1 or SHA-256, which git reads
+// as a new value of `git update-ref` as the request to delete the ref.
+func nullObjectID(value string) bool {
+	return (len(value) == 40 || len(value) == 64) && strings.Trim(value, "0") == ""
 }
 
 // refuseDiscardingGit refuses a git invocation that destroys work: uncommitted changes, untracked
@@ -217,24 +236,31 @@ func judgePruneExpiry(_ context.Context, _ Caller, inv Invocation, _ subcommandO
 	return "", nil
 }
 
-// judgeForcedBranchMove refuses `git branch -M`, or `--move` with `--force`, onto a branch that
-// exists, which it replaces along with its reflog, and one whose repository the guard cannot
-// tell. The new name is the last of the one or two names the move takes, expanded as git expands
-// it (`@{-1}` names the branch checked out before). A name git cannot expand fails the read, so
-// the guard refuses it.
+// judgeForcedBranchOverwrite refuses `git branch -M` or `-C`, or `--move` or `--copy` with
+// `--force`, onto a branch that exists, which it replaces along with its reflog, and one whose
+// repository the guard cannot tell. The new name is the last of the one or two names the move or
+// copy takes, expanded as git expands it (`@{-1}` names the branch checked out before). A name git
+// cannot expand fails the read, so the guard refuses it.
 //
 // A branch exists when its name matches the new one in any letter case, wherever git stores it: on
 // a filesystem that folds case, `refs/heads/Main` and `refs/heads/main` are one file, while an exact
 // read of a ref packed into packed-refs finds no other case at all.
-func judgeForcedBranchMove(ctx context.Context, caller Caller, inv Invocation, o subcommandOptions) (string, error) {
-	forced := o.sets('M', "") || (o.sets('m', "--move") && o.sets('f', "--force"))
-	if !forced || len(o.positional) == 0 {
+func judgeForcedBranchOverwrite(ctx context.Context, caller Caller, inv Invocation, o subcommandOptions) (string, error) {
+	flag := ""
+	switch {
+	case o.sets('M', "") || (o.sets('m', "--move") && o.sets('f', "--force")):
+		flag = "-M"
+	case o.sets('C', "") || (o.sets('c', "--copy") && o.sets('f', "--force")):
+		flag = "-C"
+	}
+
+	if flag == "" || len(o.positional) == 0 {
 		return "", nil
 	}
 
 	targets, ok := targetOptions(inv)
 	if !ok {
-		return "git branch -M: the guard cannot tell which repository it runs in", nil
+		return fmt.Sprintf("git branch %s: the guard cannot tell which repository it runs in", flag), nil
 	}
 
 	runner := targetRunner(caller.Git, inv.Dir, inv.Target)
@@ -242,14 +268,14 @@ func judgeForcedBranchMove(ctx context.Context, caller Caller, inv Invocation, o
 
 	expanded, err := runner.Run(ctx, slices.Concat(targets, []string{"check-ref-format", "--branch", name})...)
 	if err != nil {
-		return "", fmt.Errorf("expand the branch name %s for git branch -M: %w", name, err)
+		return "", fmt.Errorf("expand the branch name %s for git branch %s: %w", name, flag, err)
 	}
 
 	branch := strings.TrimSpace(expanded.Stdout)
 
 	listed, err := runner.Run(ctx, slices.Concat(targets, []string{"for-each-ref", "--format=%(refname)", "refs/heads/"})...)
 	if err != nil {
-		return "", fmt.Errorf("read whether git branch -M replaces %s: %w", branch, err)
+		return "", fmt.Errorf("read whether git branch %s replaces %s: %w", flag, branch, err)
 	}
 
 	for ref := range strings.SplitSeq(listed.Stdout, "\n") {
@@ -257,10 +283,10 @@ func judgeForcedBranchMove(ctx context.Context, caller Caller, inv Invocation, o
 		switch {
 		case !isBranch || !strings.EqualFold(existing, branch):
 		case existing == branch:
-			return fmt.Sprintf("git branch -M replaces the existing branch %s and its reflog", branch), nil
+			return fmt.Sprintf("git branch %s replaces the existing branch %s and its reflog", flag, branch), nil
 		default:
-			return fmt.Sprintf("git branch -M onto %s can replace the existing branch %s and its reflog: "+
-				"where the filesystem folds case, git reads both names as one", branch, existing), nil
+			return fmt.Sprintf("git branch %s onto %s can replace the existing branch %s and its reflog: "+
+				"where the filesystem folds case, git reads both names as one", flag, branch, existing), nil
 		}
 	}
 
@@ -608,9 +634,10 @@ func configAction(options subcommandOptions) (action string, words []string) {
 }
 
 // guardedConfigName reports whether name, a key or a whole section, is guarded: in a section of
-// guardedSections, one of guardedKeys, a key whose value runsShell, a difftool or mergetool
-// command, or a section that holds one of guardedKeys, which a rename or a removal of the whole
-// section writes. git reads the section and the variable name in any case.
+// guardedSections, one of guardedKeys, a key whose value runsShell, the path of a difftool or
+// mergetool, which names the program git runs for it, or a section that holds one of guardedKeys,
+// which a rename or a removal of the whole section writes. git reads the section and the variable
+// name in any case.
 func guardedConfigName(name string) bool {
 	section, _, _ := strings.Cut(name, ".")
 	holdsKey := func(key string) bool {
@@ -620,7 +647,8 @@ func guardedConfigName(name string) bool {
 	}
 
 	return containsFold(guardedSections(), section) || containsFold(guardedKeys(), name) ||
-		slices.ContainsFunc(guardedKeys(), holdsKey) || runsShell(name)
+		slices.ContainsFunc(guardedKeys(), holdsKey) || runsShell(name) ||
+		inSubsection(name, "difftool", "path") || inSubsection(name, "mergetool", "path")
 }
 
 // refuseOriginRewrite refuses a `git remote` operation that removes or renames origin, or points it elsewhere.

@@ -49,6 +49,9 @@ func TestJudge_RefusesAGitOperationThatDiscardsWork(t *testing.T) {
 		{name: "clean --force", command: "git clean --force", wantNamed: "git clean"},
 		{name: "clean bundle", command: "git clean -fd", wantNamed: "git clean"},
 		{name: "clean flags by brace expansion", command: "git clean -{f,d}", wantNamed: "git clean"},
+		{name: "clean -i", command: "git clean -i", wantNamed: "git clean"},
+		{name: "clean --interactive", command: "git clean --interactive", wantNamed: "git clean"},
+		{name: "clean bundle holding i", command: "git clean -id", wantNamed: "git clean"},
 		{name: "branch -D", command: "git branch -D feature", wantNamed: "git branch"},
 		{name: "branch --delete --force", command: "git branch --delete --force feature", wantNamed: "git branch"},
 		{name: "branch -d -f", command: "git branch -d -f feature", wantNamed: "git branch"},
@@ -67,8 +70,13 @@ func TestJudge_RefusesAGitOperationThatDiscardsWork(t *testing.T) {
 		{name: "read-tree --reset", command: "git read-tree --reset HEAD", wantNamed: "git read-tree"},
 		{name: "read-tree -u -m", command: "git read-tree -u -m HEAD", wantNamed: "git read-tree"},
 		{name: "read-tree bundle of m and u", command: "git read-tree -mu HEAD", wantNamed: "git read-tree"},
+		{name: "read-tree of a tree", command: "git read-tree HEAD", wantNamed: "git read-tree"},
+		{name: "read-tree -m", command: "git read-tree -m HEAD", wantNamed: "git read-tree"},
 		{name: "update-ref -d", command: "git update-ref -d refs/heads/keep", wantNamed: "git update-ref"},
 		{name: "update-ref --stdin", command: "git update-ref --stdin", wantNamed: "git update-ref"},
+		{name: "update-ref to the all-zero SHA-1 id", command: "git update-ref refs/heads/keep " + strings.Repeat("0", 40), wantNamed: "git update-ref"},
+		{name: "update-ref to the all-zero SHA-256 id", command: "git update-ref refs/heads/keep " + strings.Repeat("0", 64), wantNamed: "git update-ref"},
+		{name: "update-ref to a non-literal value", command: `git update-ref refs/heads/keep "$sha"`, wantNamed: "git update-ref"},
 	})
 }
 
@@ -99,6 +107,18 @@ func TestJudge_RefusesABranchRenameOverAnExistingBranch(t *testing.T) {
 		{name: "-M onto a previous branch git cannot resolve", command: "git branch -M topic @{-5}", wantNamed: "git branch"},
 		{name: "-M onto the upstream", command: "git branch -M topic @{u}", wantNamed: "git branch"},
 		{name: "-M onto a branch's push target", command: "git branch -M topic main@{push}", wantNamed: "git branch"},
+	})
+}
+
+func TestJudge_RefusesABranchCopyOverAnExistingBranch(t *testing.T) {
+	t.Parallel()
+
+	checkRefusals(t, []refusal{
+		{name: "-C naming both branches", command: "git branch -C topic main", wantNamed: "main"},
+		{name: "-C copying the current branch", command: "git branch -C main", wantNamed: "main"},
+		{name: "--copy --force", command: "git branch --copy --force topic main", wantNamed: "main"},
+		{name: "-c -f", command: "git branch -c -f topic main", wantNamed: "main"},
+		{name: "bundle of c and f", command: "git branch -cf topic main", wantNamed: "main"},
 	})
 }
 
@@ -136,6 +156,11 @@ func TestJudge_AllowsAGitOperationThatLeavesWorkOnDisk(t *testing.T) {
 		{name: "checkout-index without force", command: "git checkout-index -a"},
 		{name: "update-ref setting a ref", command: "git update-ref refs/heads/new HEAD"},
 		{name: "branch -M onto a new name", command: "git branch -M topic other"},
+		{name: "branch -C onto a new name", command: "git branch -C topic other"},
+		{name: "read-tree -n", command: "git read-tree -n -m HEAD"},
+		{name: "read-tree --dry-run", command: "git read-tree --dry-run HEAD"},
+		{name: "read-tree --index-output", command: "git read-tree --index-output=other.idx -m HEAD"},
+		{name: "read-tree --prefix", command: "git read-tree --prefix=vendor/lib/ HEAD"},
 	})
 }
 
@@ -528,6 +553,8 @@ func TestJudge_RefusesAGitConfigWriteOfAKeyThatChangesWhatGitRuns(t *testing.T) 
 		{name: "url insteadOf", command: "git config url.https://example.com/me/.insteadOf https://example.com/org/", wantNamed: "url.https://example.com/me/.insteadOf"},
 		{name: "difftool command", command: "git config difftool.x.cmd 'git push'", wantNamed: "difftool.x.cmd"},
 		{name: "mergetool command in another case", command: "git config MergeTool.x.CMD 'git push'", wantNamed: "MergeTool.x.CMD"},
+		{name: "difftool path", command: "git config difftool.x.path /bin/x", wantNamed: "difftool.x.path"},
+		{name: "mergetool path in another case", command: "git config MergeTool.x.PATH /bin/x", wantNamed: "MergeTool.x.PATH"},
 	})
 }
 

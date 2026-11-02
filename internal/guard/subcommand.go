@@ -154,6 +154,11 @@ push -o
 	[no-]recurse-submodules= [no-]thin [no-]receive-pack= [no-]exec= [no-]set-upstream [no-]progress
 	[no-]prune no-verify verify [no-]follow-tags [no-]signed [no-]atomic [no-]push-option= ipv4 ipv6
 
+read-tree
+	[no-]super-prefix= index-output= [no-]empty [no-]verbose [no-]trivial [no-]aggressive [no-]reset
+	prefix= exclude-per-directory= [no-]dry-run no-sparse-checkout sparse-checkout [no-]debug-unpack
+	[no-]recurse-submodules [no-]quiet
+
 rebase -CxsX
 	[no-]onto= [no-]keep-base no-verify verify [no-]quiet [no-]verbose no-stat stat [no-]trailer=
 	[no-]signoff [no-]committer-date-is-author-date [no-]reset-author-date [no-]ignore-date
@@ -192,6 +197,9 @@ switch -cC
 
 symbolic-ref -m
 	[no-]quiet [no-]delete [no-]short [no-]recurse
+
+update-ref -m
+	no-deref deref [no-]stdin [no-]create-reflog [no-]batch-updates
 `
 
 // cspell:enable
