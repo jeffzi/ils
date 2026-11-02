@@ -561,10 +561,13 @@ func (r Repo) FastForwardTrunk(ctx context.Context, trunk string) error {
 // Push and its classification
 // ---------------------------------------------------------------------------
 
-// Push pushes the branch name to origin under the same name and sets it as the upstream.
+// Push pushes the commit sha to origin's branch name. Before the push, it sets that branch as the
+// upstream of the local branch name, as `git push -u` would after it, so a failure to set it means
+// that nothing was pushed.
 //
-// It names the branch by its full ref on both sides, so a tag of the same name is never pushed
-// in its place. It never forces.
+// It pushes sha rather than the local branch, so a commit that reaches the branch while the push
+// runs is never pushed in its place. It names origin's branch by its full ref, so a tag of the same
+// name is never updated in its place. It never forces.
 //
 // A git that exits non-zero is classed by the status it reports for the ref:
 //   - a ref git or origin refused is a *PushError naming git's reason;
@@ -575,21 +578,39 @@ func (r Repo) FastForwardTrunk(ctx context.Context, trunk string) error {
 //     that failed, is a *PushError with no reason.
 //
 // Any other failure, such as a context that ended or a git missing from PATH, is returned as it is.
-func (r Repo) Push(ctx context.Context, name string) error {
-	return r.push(ctx, headsRef+name, "-u")
+func (r Repo) Push(ctx context.Context, name, sha string) error {
+	if err := r.setUpstream(ctx, name); err != nil {
+		return err
+	}
+
+	return r.push(ctx, sha, headsRef+name)
+}
+
+// setUpstream sets origin's branch name as the upstream of the local branch name, as `git push -u`
+// does, which git skips for a push whose source is a commit rather than a branch.
+func (r Repo) setUpstream(ctx context.Context, name string) error {
+	for _, setting := range [][2]string{{"remote", origin}, {"merge", headsRef + name}} {
+		if _, err := r.Runner.Run(ctx, "config", "branch."+name+"."+setting[0], setting[1]); err != nil {
+			return fmt.Errorf("set the upstream of %s: %w", name, err)
+		}
+	}
+
+	return nil
 }
 
 // PushTag pushes the local tag name to origin under the same name, and nothing else: it names the
 // tag by its full ref on both sides and turns off `push.followTags`. It never forces, so a tag
 // origin already holds at another commit is refused. Its failures are classed as Push classes them.
 func (r Repo) PushTag(ctx context.Context, name string) error {
-	return r.push(ctx, tagsRef+name, "--no-follow-tags")
+	ref := tagsRef + name
+
+	return r.push(ctx, ref, ref, "--no-follow-tags")
 }
 
-// push pushes ref to origin under the same name with git's flags, classing a git that exits
-// non-zero as Push documents.
-func (r Repo) push(ctx context.Context, ref string, flags ...string) error {
-	spec := ref + ":" + ref
+// push pushes source to origin's ref with git's flags, classing a git that exits non-zero as Push
+// documents.
+func (r Repo) push(ctx context.Context, source, ref string, flags ...string) error {
+	spec := source + ":" + ref
 	args := slices.Concat([]string{"push", "--porcelain"}, flags, []string{origin, spec})
 	result, err := r.Runner.Run(ctx, args...)
 
@@ -639,10 +660,9 @@ const reportEnd = "Done"
 // pair of refs pushed, into what precedes the report git writes at its end once origin answered and
 // the status that report gives spec. The report is a `To <url>` line, then one status line (the
 // flag, the refs and the summary, separated by tabs) for each ref the push sent (spec, and any tag
-// that `push.followTags` adds), then the line telling the upstream `-u` set for a ref it updated,
-// then `Done`, which git leaves out when origin hung up after its report. Neither the upstream line
-// nor the order of the status lines is relied on: spec is looked up in every line after the `To`
-// line, and the upstream line, which git translates, never matches.
+// that `push.followTags` adds), then `Done`, which git leaves out when origin hung up after its
+// report. The order of the status lines is not relied on: spec is looked up in every line after the
+// `To` line.
 //
 // A pre-push hook runs before git talks to origin, so what precedes the report is the hook's; a
 // push git refused before it reached origin has no report, so all of its stdout is the hook's and
@@ -651,10 +671,9 @@ const reportEnd = "Done"
 //
 // The report starts at the last `To` that a status line of spec follows: a hook line shaped like a
 // line of the report, even the status line of spec itself, stays in hook and never decides the
-// status when no `To` precedes it, and a later line that only holds `To`, such as a translated
-// upstream line, does not hide the report. Stdout alone cannot tell a block that a refusing hook
-// printed last, a `To` line followed by the status line of spec, from git's own report, so that one
-// is read as git's.
+// status when no `To` precedes it, and a later line that only holds `To` does not hide the report.
+// Stdout alone cannot tell a block that a refusing hook printed last, a `To` line followed by the
+// status line of spec, from git's own report, so that one is read as git's.
 func splitPushReport(stdout, spec string) (hook string, status refStatus, reported bool) {
 	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
 	if lines[len(lines)-1] == reportEnd {

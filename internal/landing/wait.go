@@ -409,12 +409,13 @@ func lostStage(stillRunning bool, headErr error) WaitStage {
 func (w waiter) readied(ctx context.Context, waited *Waited) (ended bool, stage WaitStage, err error) {
 	w.startChecks()
 
+	// On an error the head caughtUp returns is not the pushed commit, so its merge state is not kept.
 	head, err := w.caughtUp(ctx)
-	waited.MergeState = head.MergeState
-
 	if err != nil {
 		return true, StageHead, err
 	}
+
+	waited.MergeState = head.MergeState
 
 	w.logState(ctx, head, mergeWindow)
 

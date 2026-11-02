@@ -367,7 +367,7 @@ func TestAwaitVerdict_WhenTheHeadIsNotYetThePushedCommit_ReadsNoCheck(t *testing
 			// A third poll would end a second past the deadline.
 			name:  "previous commit until the deadline",
 			heads: shows(stale()), left: 5 * time.Second,
-			want: pendingAt(landing.StageHead, stale()),
+			want: landing.Waited{Outcome: landing.WaitPending, Stage: landing.StageHead},
 			ops:  readsOf(3, 0, 0), waits: polls(2, headPoll),
 		},
 	})
@@ -760,6 +760,7 @@ func readCutWaits(c cut) []cutShort {
 
 	return []cutShort{
 		{name: "inside the head read", want: atHead, heads: []forgetest.Answer[forge.Head]{lateHead(c)}},
+		{name: "inside a head read after one that showed the commit before the push", want: atHead, heads: append(shows(stale()), lateHead(c))},
 		{name: "inside the merge state read", want: atMergeState(c), heads: append(shows(unknown()), lateHead(c))},
 		{
 			name: "inside a later verdict read of checks still running", want: atVerdict(c),
@@ -772,7 +773,7 @@ func readCutWaits(c cut) []cutShort {
 func headPollCut(c cut) cutShort {
 	return cutShort{
 		name: "inside the head poll", heads: shows(stale()),
-		want: stateOf(endedBy(c, landing.Waited{Outcome: landing.WaitPending, Stage: landing.StageHead}), stale()),
+		want: endedBy(c, landing.Waited{Outcome: landing.WaitPending, Stage: landing.StageHead}),
 	}
 }
 
@@ -1002,7 +1003,7 @@ func TestAwaitVerdict_WhenAnInterruptLandsAsTheHeadPollEnds_EndsPendingInterrupt
 
 		got := v.await(t)
 
-		want := endedBy(byInterrupt(), pendingAt(landing.StageHead, stale()))
+		want := endedBy(byInterrupt(), landing.Waited{Outcome: landing.WaitPending, Stage: landing.StageHead})
 		assert.Check(t, is.DeepEqual(got, want, ignoreSince(), cmpopts.EquateEmpty()))
 		assert.Check(t, is.Equal(time.Since(began), headPoll))
 	})

@@ -202,6 +202,12 @@ type Run struct {
 	Status RunStatus
 }
 
+// Going reports whether the run is queued or in progress; a run that awaits a person is not, since
+// nothing says it will ever start.
+func (r Run) Going() bool {
+	return r.Status == RunQueued || r.Status == RunInProgress
+}
+
 // ---------------------------------------------------------------------------
 // Verdicts
 // ---------------------------------------------------------------------------
@@ -351,12 +357,9 @@ func (v Verdict) Pending() []Check {
 	})
 }
 
-// Running reports whether a workflow run is queued or in progress; a run that
-// awaits a person is not, since nothing says it will ever start.
+// Running reports whether a workflow run is going, as Run.Going says.
 func (v Verdict) Running() bool {
-	return slices.ContainsFunc(v.Runs, func(run Run) bool {
-		return run.Status == RunQueued || run.Status == RunInProgress
-	})
+	return slices.ContainsFunc(v.Runs, Run.Going)
 }
 
 // ---------------------------------------------------------------------------

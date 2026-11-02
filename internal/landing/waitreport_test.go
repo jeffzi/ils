@@ -211,8 +211,9 @@ func cutShortRowsBy(cmd landingCommand, c cut) []pushRow {
 			want:   pendingCleanBy(cmd, expect("#12", "can merge", c.before)),
 		},
 		{
+			// The head read before the cut is of another commit, whose merge state is not the pushed one's.
 			name: c.name + " ends a poll of the head", script: reusing().showing(stale()), cut: c.inPoll,
-			want: pendingCleanBy(cmd, expect("did not show", tipMark, "#12", c.before)),
+			want: pendingBy(cmd, expect("did not show", tipMark, "#12", c.before), "", detail(forge.VerdictNone, forge.MergeUnknown)),
 		},
 	}
 }
@@ -302,7 +303,24 @@ func startedAt(build forgeFor, starts func(begun time.Time) []time.Time) forgeFo
 
 // pushStillRunningRows are the pushes whose wait ended with a check still running at the time limit.
 func pushStillRunningRows() []pushRow {
+	deploying := []forge.Run{{Name: "deploy", Status: forge.RunInProgress}}
+	passed := forge.Verdict{Checks: []forge.Check{forgetest.Check("test", forge.BucketPass)}, Runs: deploying}
+	lint := forgetest.RequiredCheck("lint", forge.BucketPass)
+	missing := forge.Verdict{Checks: []forge.Check{lint}, MissingRequired: []string{"audit"}, Runs: deploying}
+
 	return []pushRow{
+		{
+			name: "every check passed and a workflow run still goes", left: 7 * time.Second,
+			script: reusing(passed).showing(cleanHead(), cleanHead()),
+			want: pending(expect("still running"), expect("deploy"),
+				detail(forge.VerdictGreen, forge.MergeClean, passed.Checks...)),
+		},
+		{
+			name: "a required check never reported and a workflow run still goes", left: 7 * time.Second,
+			script: reusing(missing).requiring("lint", "audit").showing(cleanHead(), cleanHead()),
+			want: pending(expect("still running"), expect("audit", "deploy"),
+				detail(forge.VerdictGreen, forge.MergeClean, lint)),
+		},
 		{
 			// The head catches up after one poll of two seconds; then two polls of five seconds pass,
 			// and a third would leave too little time for the head read after it.

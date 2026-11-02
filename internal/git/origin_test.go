@@ -548,7 +548,14 @@ func TestRepo_WhenOriginRefusesTheCall_ReturnsRefusedError(t *testing.T) {
 	tests := slices.Concat(originCalls(), []repoCall{
 		fastForwardTrunkCall(),
 		{name: "Trunk", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.Trunk(ctx) }},
-		{name: "Push", call: func(ctx context.Context, repo git.Repo) (any, error) { return nil, repo.Push(ctx, topic) }},
+		{name: "Push", call: func(ctx context.Context, repo git.Repo) (any, error) {
+			sha, err := repo.HeadSHA(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			return nil, repo.Push(ctx, topic, sha)
+		}},
 	})
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -878,15 +885,51 @@ func TestRepo_Fetch_WhenTheFetchConfigLeavesTheBranchOut_PutsOriginsTrackingRefA
 // is the process that must die mid-push.
 const killsReceivePack = "kill -KILL $PPID"
 
-// topicSpec is the pair of refs Push hands git for topic, which git's report names on its status line.
-const topicSpec = "refs/heads/" + topic + ":refs/heads/" + topic
+// specMark stands, in a hook's script and in what a test wants, for the pair of refs Push hands git
+// for topic's tip, which git's report names on its status line.
+const specMark = "<spec>"
 
 // otherSpec is the pair of refs for a branch Push never pushes, which a hook's report-shaped lines name.
 const otherSpec = "refs/heads/other:refs/heads/other"
 
+// localTip returns the sha of the clone's topic branch.
+func localTip(f *gittest.Fixture) string { return f.Git("rev-parse", "refs/heads/"+topic) }
+
+// withSpec returns text with the pair of refs Push hands git for topic's tip in place of specMark.
+func withSpec(f *gittest.Fixture, text string) string {
+	return strings.ReplaceAll(text, specMark, localTip(f)+":refs/heads/"+topic)
+}
+
+// pushTip pushes the tip the clone's topic branch is on to origin's topic.
+func pushTip(ctx context.Context, f *gittest.Fixture) error {
+	return newRepo(f).Push(ctx, topic, localTip(f))
+}
+
 // originTip returns the sha origin holds for branch, or nothing when origin lacks it.
 func originTip(f *gittest.Fixture, branch string) string {
 	return f.OriginGit("for-each-ref", "--format=%(objectname)", "refs/heads/"+branch)
+}
+
+func TestRepo_Push_WhenTheBranchMovedPastTheGivenCommit_PublishesTheGivenCommit(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	checked := f.Commits(topic, "one", "two")[0]
+
+	err := newRepo(f).Push(t.Context(), topic, checked)
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Equal(originTip(f, topic), checked))
+}
+
+func TestRepo_Push_WhenOriginAccepts_SetsOriginsBranchAsTheUpstream(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.Commits(topic, "one")
+
+	err := pushTip(t.Context(), f)
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Equal(f.Git("for-each-ref", "--format=%(upstream)", "refs/heads/"+topic), "refs/remotes/origin/"+topic))
 }
 
 // originRefusing returns a fixture whose origin holds topic and whose pre-receive hook prints said and
@@ -908,7 +951,7 @@ func TestRepo_Push_WhenOriginHangsUpAfterReportingTheRefUpdated_PublishesTheBran
 	tip := f.Commits(topic, "one")[0]
 	f.OriginHook("post-receive", killsReceivePack)
 
-	err := newRepo(f).Push(t.Context(), topic)
+	err := pushTip(t.Context(), f)
 	assert.NilError(t, err)
 
 	assert.Check(t, is.Equal(originTip(f, topic), tip))
@@ -924,7 +967,7 @@ func TestRepo_Push_WhenTagSharesTheBranchName_PublishesTheBranch(t *testing.T) {
 	f.OriginGit("tag", topic, trunkTip)
 	f.Git("tag", "-a", "-m", "release", topic, trunk)
 
-	err := newRepo(f).Push(t.Context(), topic)
+	err := pushTip(t.Context(), f)
 	assert.NilError(t, err)
 
 	assert.Check(t, is.Equal(f.OriginGit("rev-parse", "refs/heads/"+topic), tip))
@@ -940,7 +983,7 @@ func TestRepo_Push_WhenOriginRefusesATagThePushFollows_PublishesTheBranch(t *tes
 	f.Git("tag", "-a", "-m", "release", "v1", tip)
 	f.OriginHook("update", `test "${1#refs/tags/}" = "$1"`)
 
-	err := newRepo(f).Push(t.Context(), topic)
+	err := pushTip(t.Context(), f)
 	assert.NilError(t, err)
 
 	assert.Check(t, is.Equal(originTip(f, topic), tip))
@@ -951,7 +994,7 @@ func TestRepo_Push_WhenOriginRefusesTheRef_ReturnsPushErrorNamingTheReason(t *te
 	const said = "policy forbids this push"
 	f := originRefusing(t, said)
 
-	err := newRepo(f).Push(t.Context(), topic)
+	err := pushTip(t.Context(), f)
 
 	pushErr, ok := errors.AsType[*git.PushError](err)
 	assert.Assert(t, ok, "Push(%q) error = %v, want *git.PushError", topic, err)
@@ -969,7 +1012,7 @@ func TestRepo_Push_WhenThePrePushHookRefuses_ReturnsPushErrorHoldingWhatTheHookS
 	f.Commits(topic, "one")
 	f.Hook("pre-push", "echo '"+said+"' >&2\nexit 1")
 
-	err := newRepo(f).Push(t.Context(), topic)
+	err := pushTip(t.Context(), f)
 
 	pushErr, ok := errors.AsType[*git.PushError](err)
 	assert.Assert(t, ok, "Push(%q) error = %v, want *git.PushError", topic, err)
@@ -992,8 +1035,8 @@ func TestRepo_Push_WhenThePrePushHookRefusesAfterPrintingOnStdout_ReturnsPushErr
 		},
 		{
 			name:   "stdout holds a rejected status line for the pushed ref",
-			script: "printf '!\\t" + topicSpec + "\\tblocked by policy\\n'\nexit 1",
-			want:   "!\t" + topicSpec + "\tblocked by policy\n",
+			script: "printf '!\\t" + specMark + "\\tblocked by policy\\n'\nexit 1",
+			want:   "!\t" + specMark + "\tblocked by policy\n",
 		},
 	}
 	for _, tt := range tests {
@@ -1001,15 +1044,16 @@ func TestRepo_Push_WhenThePrePushHookRefusesAfterPrintingOnStdout_ReturnsPushErr
 			t.Parallel()
 			f := gittest.New(t, trunk)
 			f.Commits(topic, "one")
-			f.Hook("pre-push", tt.script)
+			f.Hook("pre-push", withSpec(f, tt.script))
+			want := withSpec(f, tt.want)
 
-			err := newRepo(f).Push(t.Context(), topic)
+			err := pushTip(t.Context(), f)
 
 			pushErr, ok := errors.AsType[*git.PushError](err)
 			assert.Assert(t, ok, "Push(%q) error = %v, want *git.PushError", topic, err)
 			assert.Check(t, is.Equal(pushErr.Reason, ""))
-			assert.Check(t, strings.HasPrefix(pushErr.Output(), tt.want), "Output() = %q, want it to start with %q",
-				pushErr.Output(), tt.want)
+			assert.Check(t, strings.HasPrefix(pushErr.Output(), want), "Output() = %q, want it to start with %q",
+				pushErr.Output(), want)
 		})
 	}
 }
@@ -1033,21 +1077,21 @@ func TestRepo_Push_WhenOriginRefusesTheRef_KeepsOnlyThePrePushHookLinesInStdout(
 		},
 		{
 			name:   "pre-push hook prints a new-branch status line for the pushed ref",
-			script: "printf '*\\t" + topicSpec + "\\t[new branch]\\n'",
-			want:   "*\t" + topicSpec + "\t[new branch]",
+			script: "printf '*\\t" + specMark + "\\t[new branch]\\n'",
+			want:   "*\t" + specMark + "\t[new branch]",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			f := originRefusing(t, "policy forbids this push")
-			f.Hook("pre-push", tt.script)
+			f.Hook("pre-push", withSpec(f, tt.script))
 
-			err := newRepo(f).Push(t.Context(), topic)
+			err := pushTip(t.Context(), f)
 
 			pushErr, ok := errors.AsType[*git.PushError](err)
 			assert.Assert(t, ok, "Push(%q) error = %v, want *git.PushError", topic, err)
-			assert.Check(t, is.Equal(strings.TrimSpace(pushErr.Stdout), tt.want))
+			assert.Check(t, is.Equal(strings.TrimSpace(pushErr.Stdout), withSpec(f, tt.want)))
 		})
 	}
 }
@@ -1107,7 +1151,7 @@ func TestRepo_Push_WhenOriginNeverAnswers_ReturnsRemoteError(t *testing.T) {
 	f.Commits(topic, "one")
 	f.CutOffOrigin()
 
-	err := newRepo(f).Push(t.Context(), topic)
+	err := pushTip(t.Context(), f)
 
 	_, remote := errors.AsType[*git.RemoteError](err)
 	assert.Check(t, remote, "Push(%q) error = %v, want *git.RemoteError", topic, err)
@@ -1120,7 +1164,7 @@ func TestRepo_Push_WhenContextCanceled_ReturnsNeitherPushNorRemoteError(t *testi
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	err := newRepo(f).Push(ctx, topic)
+	err := pushTip(ctx, f)
 
 	assert.Check(t, is.ErrorIs(err, context.Canceled))
 	_, refused := errors.AsType[*git.PushError](err)

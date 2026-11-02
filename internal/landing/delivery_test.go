@@ -15,6 +15,7 @@ import (
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
+	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
 	"github.com/jeffzi/ils/internal/gittest"
@@ -459,6 +460,28 @@ func TestPush_WhenTrunkRequiresChecks_PassesThemToEveryForgeRead(t *testing.T) {
 	})
 }
 
+func TestPush_WhenACommitReachesTheBranchAfterItsChecks_PushesTheCheckedTip(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		s := newScene(t, nil, forgetest.Script{}, false)
+		checked := s.fixture.Git("rev-parse", topic)
+		script := opening(passing())(checked)
+		// The pull requests of the branch are read once its checks are done, just before the push.
+		var late sync.Once
+		script.OnRead = func(call forgetest.Call) {
+			if call.Op == forgetest.OpFindChanges {
+				late.Do(func() { s.fixture.Commits(topic, "late") })
+			}
+		}
+		s.useForge(t, script)
+
+		got := landing.Push(within(t, 0), s.deps, pushRequest())
+
+		assertDelivered(t, s, got, greenAfter(pushedLine()+openedLine()).at(checked))
+		assert.Check(t, is.Equal(s.onOrigin(), checked))
+	})
+}
+
 // reporting is a forge whose open-change reports a pull request that already exists, whose
 // find-changes answers with each of lists in turn, and whose checks pass.
 func reporting(lists ...[]forge.Change) forgeFor {
@@ -616,7 +639,16 @@ func pushOpenFailureRows() []pushRow {
 		})
 	}
 
-	return rows
+	// A signal can end gh after GitHub opened the pull request, before gh said so.
+	killed := &child.KilledError{Argv: []string{"gh", "pr", "create"}, Err: errors.New("signal: terminated")}
+
+	return append(rows, pushRow{
+		name: "because a signal killed gh", script: openFailing(killed),
+		want: finish{
+			outcome: result.Broke, reason: expect("opening the pull request"),
+			text: pushedLine() + expect("opening the pull request", "may or may not have been opened") + pushCommand().again,
+		},
+	})
 }
 
 func TestPush_WhenOpeningThePullRequestFails_BrokeSayingThePushHappened(t *testing.T) {

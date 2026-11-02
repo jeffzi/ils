@@ -68,7 +68,8 @@ func deliver(ctx context.Context, deps Deps, req Request, p pushReady) result.Re
 	return *d.report(deps)
 }
 
-// pushTip pushes the branch to origin unless origin's copy is already at the tip.
+// pushTip pushes the tip the preconditions checked to the branch on origin, unless origin's copy is
+// already at it.
 func (d *delivery) pushTip(ctx context.Context, deps Deps) *result.Result {
 	if d.onOrigin {
 		deps.say(&d.lines, result.Say("%s is already on origin at %s; nothing pushed", d.markedBranch(), d.markedTip()))
@@ -78,7 +79,7 @@ func (d *delivery) pushTip(ctx context.Context, deps Deps) *result.Result {
 
 	deps.started(result.Say("Pushing %s", d.markedBranch()))
 
-	err := deps.Repo.Push(ctx, d.branch)
+	err := deps.Repo.Push(ctx, d.branch, d.tip)
 	if err == nil {
 		deps.say(&d.lines, result.Say("Pushed %s at %s", d.markedBranch(), d.markedTip()))
 
@@ -98,15 +99,11 @@ const pushRefusedWording = "Git refused the push of %s, so nothing was pushed"
 type pushFailure int
 
 const (
-	// pushInterrupted is a push an interrupt cut short.
 	pushInterrupted pushFailure = iota
-	// pushTimedOut is a push the time limit cut short.
 	pushTimedOut
 	// pushRefusedByGit is a push git refused, which left origin as it was.
 	pushRefusedByGit
-	// pushUnanswered is a push during which origin stopped answering.
 	pushUnanswered
-	// pushKilled is a push whose git a signal killed.
 	pushKilled
 	// pushNotStarted is any other failure, such as a git that never started, which left origin as
 	// it was.
@@ -226,6 +223,14 @@ func (d *delivery) findOrOpen(ctx context.Context, deps Deps) *result.Result {
 			result.Say("Started opening the pull request when "+timeLimitEnded+"; it may or may not have been opened",
 				d.req.limitWords()),
 			result.Say(timeLimitEnded+" while opening the pull request", d.req.limitWords()),
+			d.req.again())
+	}
+
+	// A signal can end gh after GitHub opened the pull request, so its failure says nothing either way.
+	if _, killed := errors.AsType[*child.KilledError](err); killed {
+		return d.endedSaying(
+			result.Say("Started opening the pull request, which did not finish; it may or may not have been opened: %s", err.Error()),
+			result.Say("opening the pull request did not finish"),
 			d.req.again())
 	}
 
