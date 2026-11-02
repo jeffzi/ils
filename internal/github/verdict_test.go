@@ -46,7 +46,13 @@ func TestForge_Verdict_WhenChecksAreReported_ReadsEachBucketWhateverGhExitsWith(
 
 const statusLink = "https://ci.example.com/builds/15"
 
-func logArgs() []string { return ghtest.LogArgs(engineSlug, runID) }
+func logArgs() []string { return jobFailedLogArgs(jobID) }
+
+// jobFailedLogArgs is the argv of the read of the failed log of the job numbered job of the run
+// runID.
+func jobFailedLogArgs(job string) []string {
+	return append(ghtest.LogArgs(engineSlug, runID), "--job", job)
+}
 
 func jobLogArgs() []string {
 	return []string{"api", "--hostname", engineHost, "repos/ada/engine/actions/jobs/" + jobID + "/logs"}
@@ -145,7 +151,7 @@ func failedLogRows() []failedLogRow {
 	const (
 		logText = "build\tRun tests\t--- FAIL: TestForge (0.01s)\nbuild\tRun tests\tFAIL\n"
 		jobText = "2026-10-22T10:00:00.0000000Z --- FAIL: TestForge (0.01s)\n"
-		// runOnlyLink has no /job/ segment, so failedLog has no job log to fall back to.
+		// runOnlyLink has no /job/ segment, so it names no job whose log to read.
 		runOnlyLink = "https://git.example.com/ada/engine/actions/runs/" + runID
 	)
 
@@ -176,7 +182,7 @@ func failedLogRows() []failedLogRow {
 		{name: "failed log only whitespace reads the job log", checks: failing, log: blank, jobLog: jobLogged, want: jobRead, wantCalls: withJobLog},
 		{name: "failed log empty and job log only whitespace", checks: failing, log: empty, jobLog: blank, want: inProgress, wantCalls: withJobLog},
 		{name: "failed log empty and job log read fails", checks: failing, log: empty, jobLog: jobGone, want: inProgress, wantCalls: withJobLog},
-		{name: "failed log empty and link names no job", checks: ghtest.CheckJSON("build", "fail", runOnlyLink), log: empty, jobLog: jobLogged, want: inProgress, wantCalls: withLog},
+		{name: "link names no job", checks: ghtest.CheckJSON("build", "fail", runOnlyLink), log: logged, jobLog: jobLogged, want: unreadable, wantCalls: noLog},
 		{name: "check of a run still pending", checks: ghtest.CheckJSON("build", "pending", runLink), log: logged, wantCalls: noLog},
 	}
 }
@@ -195,6 +201,26 @@ func TestForge_Verdict_FailedLog(t *testing.T) {
 			assert.Check(t, is.DeepEqual(fake.Calls(), tt.wantCalls, byArgv, scripted))
 		})
 	}
+}
+
+func TestForge_Verdict_WhenTwoJobsOfTheRunFailed_ReadsTheLogOfTheFailedCheckJobOnly(t *testing.T) {
+	const otherJob = "43"
+	texts := map[string]string{"build": "build\tRun tests\tFAIL\n", "lint": "lint\tRun vet\tFAIL\n"}
+	otherLink := "https://git.example.com/ada/engine/actions/runs/" + runID + "/job/" + otherJob
+	checks := ghtest.JSONArray(ghtest.CheckJSON("build", "fail", runLink), ghtest.CheckJSON("lint", "fail", otherLink))
+	ghtest.Setup(t,
+		ghtest.Exits(ghtest.Answer{Stdout: checks, Code: 1}, checksArgs()...),
+		ghtest.Says("[]", runsArgs()...),
+		ghtest.Says(texts["build"]+texts["lint"], ghtest.LogArgs(engineSlug, runID)...),
+		ghtest.Says(texts["build"], jobFailedLogArgs(jobID)...),
+		ghtest.Says(texts["lint"], jobFailedLogArgs(otherJob)...),
+	)
+
+	got, err := newForge().Verdict(t.Context(), engine(), verdictQuery())
+	assert.NilError(t, err)
+
+	want := forge.FailedLog{Check: got.FailedLog.Check, Text: texts[got.FailedLog.Check], State: forge.FailedLogRead}
+	assert.Check(t, is.DeepEqual(got.FailedLog, want))
 }
 
 func TestForge_Verdict_WhenTheRunListExitsNonZero_ReturnsExitErrorNamingIt(t *testing.T) {

@@ -182,7 +182,9 @@ func runStatusOf(status string) forge.RunStatus {
 //
 // A check with no Actions run behind it has no log, a run that has not completed
 // holds its log back, and a gh that cannot give the log for any other reason
-// leaves it unreadable: the verdict is red either way.
+// leaves it unreadable: the verdict is red either way. A link that names no job
+// leaves the log unreadable without a read: the run's failed log holds every
+// failed job of the run, and would be shown as this check's.
 //
 // A failed log that is empty falls back to the log of the job the check's link
 // names: for a few seconds after a run completes, GitHub serves a log archive
@@ -202,8 +204,11 @@ func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Ve
 	}
 
 	runID, jobID := match[1], match[2]
+	if jobID == "" {
+		return forge.FailedLog{Check: failed.Name, State: forge.FailedLogUnreadable}, nil
+	}
 
-	result, err := f.runner().Run(ctx, "run", "view", "--repo", repo.Slug(), runID, "--log-failed")
+	result, err := f.runner().Run(ctx, "run", "view", "--repo", repo.Slug(), runID, "--log-failed", "--job", jobID)
 	if exitErr, exited := errors.AsType[*child.ExitError](err); exited {
 		if runUnfinished.MatchString(exitErr.Stderr) {
 			return forge.FailedLog{Check: failed.Name, State: forge.FailedLogInProgress}, nil
@@ -232,12 +237,8 @@ func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Ve
 }
 
 // jobLog reads the log of the Actions job numbered job. It returns an empty log, and no error,
-// when job is empty or gh exits non-zero: either way failedLog has no log to give yet.
+// when gh exits non-zero: failedLog has no log to give yet.
 func (f *Forge) jobLog(ctx context.Context, repo forge.Repo, job string) (string, error) {
-	if job == "" {
-		return "", nil
-	}
-
 	result, err := f.runner().Run(ctx, repoAPIArgs(repo, "actions/jobs/"+job+"/logs")...)
 	if _, exited := errors.AsType[*child.ExitError](err); exited {
 		return "", nil

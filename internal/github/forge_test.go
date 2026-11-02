@@ -8,6 +8,7 @@ import (
 	"path"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -756,6 +757,8 @@ func TestForge_Message(t *testing.T) {
 	)
 	tests := []struct {
 		name string
+		// body is the pull request's body; empty stands for pullBody.
+		body string
 		// mergeBody is the body GitHub would compose for a squash merge by the logged-in user.
 		mergeBody string
 		want      []string
@@ -770,6 +773,20 @@ func TestForge_Message(t *testing.T) {
 			mergeBody: pullBody + "\n\n---------\n\n" + liveSuite,
 			want:      []string{liveSuite},
 		},
+		{name: "pull request body setting with no trailer for GitHub to add", mergeBody: pullBody},
+		{
+			name: "pull request body setting, the copy of the body without its closing newline",
+			body: pullBody + "\n", mergeBody: pullBody,
+		},
+		{
+			name: "pull request body setting, the copy of a CRLF body with LF line ends",
+			body: strings.ReplaceAll(pullBody, "\n", "\r\n"), mergeBody: pullBody,
+		},
+		{
+			name: "body ending partway through a line of the merge body",
+			body: "Lands the change.\n\nSigned-off", mergeBody: "Lands the change.\n\n" + signedOff,
+			want: []string{signedOff},
+		},
 		{name: "last paragraph mixes prose with a trailer", mergeBody: "Lands the change.\n\nThanks to Grace.\n" + liveSuite},
 		{name: "token holding a space", mergeBody: "Lands the change.\n\nThanks to: Grace Hopper"},
 		{name: "token with no value", mergeBody: "Lands the change.\n\nReviewed-by: "},
@@ -778,12 +795,16 @@ func TestForge_Message(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ghtest.Setup(t, ghtest.Says(ghtest.MessageJSON(title, pullBody, tt.mergeBody), messageArgs()...))
+			body := tt.body
+			if body == "" {
+				body = pullBody
+			}
+			ghtest.Setup(t, ghtest.Says(ghtest.MessageJSON(title, body, tt.mergeBody), messageArgs()...))
 
 			got, err := newForge().Message(t.Context(), engine(), pullNumber)
 			assert.NilError(t, err)
 
-			want := forge.Message{Title: title, Body: pullBody, Trailers: tt.want}
+			want := forge.Message{Title: title, Body: body, Trailers: tt.want}
 			assert.Check(t, is.DeepEqual(got, want, cmpopts.EquateEmpty()))
 		})
 	}

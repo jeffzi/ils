@@ -373,9 +373,11 @@ func (f *Forge) HasTrunkCI(ctx context.Context, repo forge.Repo, trunk string) (
 // Message returns pull request number's title and body, and the trailer block GitHub would end
 // its squash commit with when the logged-in user merges it.
 //
-// The block is the last paragraph of the body GitHub composes, taken only when every line of it
-// is a trailer. Under every message setting GitHub puts its trailers there; a last paragraph with
-// any other line, such as a commit's subject, means GitHub added no trailer.
+// The block is the last paragraph of what GitHub appends after the pull request body in the body
+// it composes, taken only when every line of it is a trailer. Under every message setting GitHub
+// puts its trailers there; a last paragraph with any other line, such as a commit's subject, means
+// GitHub added no trailer. A trailer the pull request body itself ends with is not returned: the
+// squash body already carries it.
 //
 // An answer that cannot be decoded, or that holds no pull request, is a *DecodeError.
 func (f *Forge) Message(ctx context.Context, repo forge.Repo, number int) (forge.Message, error) {
@@ -396,13 +398,22 @@ func (f *Forge) Message(ctx context.Context, repo forge.Repo, number int) (forge
 
 	view := answer.Data.Repository.PullRequest
 
-	return forge.Message{Title: view.Title, Body: view.Body, Trailers: trailersOf(view.MergeBody)}, nil
+	return forge.Message{Title: view.Title, Body: view.Body, Trailers: trailersOf(view.Body, view.MergeBody)}, nil
 }
 
-// trailersOf returns the lines of the last paragraph of body when every one is a trailer, and
-// nil otherwise.
-func trailersOf(body string) []string {
-	paragraphs := strings.Split(strings.TrimRight(body, "\n"), "\n\n")
+// trailersOf returns the lines of the last paragraph of what GitHub appended to body in
+// mergeBody when every one is a trailer, and nil otherwise. A mergeBody that does not start with
+// body, ending at a line, is all GitHub's own; the two are compared with LF line ends and without
+// the whitespace that closes body, which GitHub's copy of it may not keep. Trailers of body itself
+// are never returned: the squash body already carries body, and would carry them twice.
+func trailersOf(body, mergeBody string) []string {
+	appended := strings.ReplaceAll(mergeBody, "\r\n", "\n")
+	own := strings.TrimRight(strings.ReplaceAll(body, "\r\n", "\n"), " \t\n")
+	if rest, cut := strings.CutPrefix(appended, own); cut && (rest == "" || strings.HasPrefix(rest, "\n")) {
+		appended = rest
+	}
+
+	paragraphs := strings.Split(strings.TrimRight(appended, "\n"), "\n\n")
 	lines := strings.Split(paragraphs[len(paragraphs)-1], "\n")
 
 	for _, line := range lines {
