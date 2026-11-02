@@ -472,7 +472,9 @@ func (f *Forge) FindRelease(ctx context.Context, repo forge.Repo, tag string) (l
 // trunk's tip.
 //
 // The notes reach gh through a temporary file, since a Runner has no stdin; it is removed before
-// PublishRelease returns, and a failure to remove it is an error even once the release exists.
+// PublishRelease returns, and a failure to remove it is an error even once the release exists:
+// the release's URL then comes back with that error, so a caller can tell a created release from
+// one gh did not create.
 func (f *Forge) PublishRelease(ctx context.Context, repo forge.Repo, release forge.NewRelease) (link string, err error) {
 	notes, err := writeNotes(release.Notes)
 	if err != nil {

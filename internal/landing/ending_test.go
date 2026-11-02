@@ -460,6 +460,20 @@ func finishedResumes() []finishedResume {
 			},
 			text: resumedLine() + goneLine() + onTrunkLine(), ending: result.EndingTrunk, calls: asked(changesRead()),
 		},
+		{
+			// Origin's branch stayed at the tip, which the merged head carries.
+			name: "origin's branch behind the merged head", script: resuming().deleting(nil),
+			arrange: func(f *gittest.Fixture) string {
+				f.Publish(topic)
+				head := f.Commits(topic, "Apply suggestions from code review")[0]
+				f.LandPull(merged, head)
+				f.Git("reset", "--quiet", "--hard", "HEAD~1")
+
+				return head
+			},
+			text: resumedLine() + deletedLine() + onTrunkLine(), ending: result.EndingTrunk,
+			calls: append(asked(changesRead()), forgetest.Call{Op: forgetest.OpDeleteBranch, Repo: origin(), Branch: topic}),
+		},
 	}
 }
 
@@ -597,6 +611,61 @@ func TestMerge_WhenTheResumeCannotAskOriginForTheBranch_BrokeNamingTheRead(t *te
 	between(t, text, readStillOnOrigin, nothingWritten)
 	assert.Check(t, is.Contains(reason, readStillOnOrigin))
 	assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(run.tip, ""), cmpopts.EquateEmpty()))
+	assert.Check(t, is.Equal(run.written(), run.before))
+}
+
+func TestMerge_WhenOriginsBranchHoldsCommitsTheMergedHeadLacks_RefusesListingThem(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		var pushed string
+
+		run := runMergeOn(t, setting{
+			arrange: func(f *gittest.Fixture) {
+				landAndPublish(f)
+				pushed = f.AdvanceOrigin(topic)
+			},
+			script: resuming(),
+		})
+
+		assertStoppedBy(t, run.got, result.Refused, mergeRequest())
+
+		text, reason := shown(t, run.got, run.gitDir)
+		assertSays(t, text, expect(shortSHA(pushed), "origin change on "+topic))
+		assertSays(t, reason, expect(topic))
+		assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(run.tip, ""), cmpopts.EquateEmpty()))
+		assert.Check(t, is.DeepEqual(run.forge.Calls(), asked(changesRead()), whichRepo()))
+		assert.Check(t, is.Equal(run.written(), run.before))
+	})
+}
+
+// readBranchOnOrigin is the read of the commits origin's copy of the branch holds.
+const readBranchOnOrigin = "origin's copy of the branch"
+
+func TestMerge_WhenTheResumeCannotReadOriginsBranch_BrokeNamingTheRead(t *testing.T) {
+	t.Parallel()
+
+	run := runMergeOn(t, setting{
+		arrange: func(f *gittest.Fixture) {
+			landAndPublish(f)
+			f.AdvanceOrigin(topic)
+		},
+		script: resuming(), unbounded: true,
+		rewire: func(t *testing.T, s *scene) {
+			t.Helper()
+			// Origin answers about its trunk, the fetch of it, the fetch of the merged head, and whether
+			// it still has the branch, and not the fetch of the commits its branch holds.
+			s.stopAnswering(t, 4)
+		},
+	})
+
+	assertStoppedBy(t, run.got, result.Broke, mergeRequest())
+
+	text, reason := shown(t, run.got, run.gitDir)
+	assertSays(t, text, resumedLine()+expect(readBranchOnOrigin, nothingWritten)+nextMergeFixed())
+	between(t, text, readBranchOnOrigin, nothingWritten)
+	assert.Check(t, is.Contains(reason, readBranchOnOrigin))
+	assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(run.tip, ""), cmpopts.EquateEmpty()))
+	assert.Check(t, is.DeepEqual(run.forge.Calls(), asked(changesRead()), whichRepo()))
 	assert.Check(t, is.Equal(run.written(), run.before))
 }
 

@@ -3,13 +3,16 @@ package github_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"gotest.tools/v3/assert"
@@ -928,6 +931,56 @@ func TestForge_PublishRelease_RemovesTheNotesFile(t *testing.T) {
 			assert.Check(t, errors.Is(err, fs.ErrNotExist), "Stat(%q) error = %v, want the notes file removed", notes[0], err)
 		})
 	}
+}
+
+func TestForge_PublishRelease_WhenTheNotesFileCannotBeRemoved_ReturnsTheURLWithTheRemoveError(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	created := ghtest.Answer{Stdout: releaseURL + "\n", Delay: time.Second}
+	fake := ghtest.Setup(t, ghtest.Exits(created, releaseCreateArgs(false)...))
+	blocked := make(chan error, 1)
+	go func() {
+		<-fake.Holding()
+		blocked <- blockRemoval(tmp)
+	}()
+
+	got, err := newForge().PublishRelease(t.Context(), engine(), newRelease(false))
+
+	assert.NilError(t, <-blocked)
+	assert.Check(t, is.Equal(got, releaseURL))
+	notes := notesFiles(fake.Calls())
+	assert.Assert(t, is.Len(notes, 1), "calls = %q, want one --notes-file", fake.Calls())
+	pathErr, ok := errors.AsType[*fs.PathError](err)
+	assert.Assert(t, ok, "PublishRelease error = %v, want the *fs.PathError of the remove", err)
+	assert.Check(t, is.Equal(pathErr.Path, notes[0]))
+}
+
+// blockRemoval turns the one file under dir, the notes file gh is reading, into a directory that
+// holds a file, which no remove of the notes file can delete.
+func blockRemoval(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("list %s: %w", dir, err)
+	}
+
+	if len(entries) != 1 {
+		return fmt.Errorf("%s holds %d entries, want the notes file alone", dir, len(entries))
+	}
+
+	notes := filepath.Join(dir, entries[0].Name())
+	if err := os.Remove(notes); err != nil {
+		return fmt.Errorf("remove the notes file: %w", err)
+	}
+
+	if err := os.Mkdir(notes, 0o700); err != nil {
+		return fmt.Errorf("make a directory in place of the notes file: %w", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(notes, "kept"), []byte("kept\n"), 0o600); err != nil {
+		return fmt.Errorf("fill the directory in place of the notes file: %w", err)
+	}
+
+	return nil
 }
 
 // notesFiles is the path after every --notes-file in calls, in order.

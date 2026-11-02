@@ -47,6 +47,8 @@ type longOption struct {
 	name string
 	// attached reports whether a value follows the name after `=`.
 	attached bool
+	// after counts the short option letters git read before this option.
+	after int
 }
 
 // startsOf reports whether the option's name is long or a start of it, which git reads as long.
@@ -327,7 +329,7 @@ func (o *subcommandOptions) readLong(w Word, known knownOptions) (next bool) {
 
 	option, valued, ambiguous := known.resolve(name)
 	o.unreadable = o.unreadable || ambiguous
-	o.long = append(o.long, longOption{name: option, attached: attached})
+	o.long = append(o.long, longOption{name: option, attached: attached, after: len(o.letters)})
 
 	return !attached && valued
 }
@@ -373,6 +375,27 @@ func (o subcommandOptions) sets(letter byte, long string) bool {
 	}
 
 	return long != "" && slices.ContainsFunc(o.long, func(l longOption) bool { return l.startsOf(long) })
+}
+
+// setsLast reports whether the last of the short option letter, the long option long and its
+// negation that the options hold is letter or long, the one git honors. A long option counts in
+// its started forms too, and a start of both long and negation counts as negation.
+func (o subcommandOptions) setsLast(letter byte, long, negation string) bool {
+	letterAt := strings.LastIndexByte(o.letters, letter)
+	for _, l := range slices.Backward(o.long) {
+		if l.after <= letterAt {
+			break
+		}
+
+		switch {
+		case l.startsOf(negation):
+			return false
+		case l.startsOf(long):
+			return true
+		}
+	}
+
+	return letterAt >= 0
 }
 
 // opaque reports whether the options hold an argument the guard cannot read: one outside a value

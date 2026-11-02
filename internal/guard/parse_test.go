@@ -178,6 +178,16 @@ func TestParse_ReturnsEverySimpleCommandInTheTree(t *testing.T) {
 		{name: "function body never called", command: "f() { git push; }", want: [][]string{{"git", "push"}}},
 		{name: "command substitution", command: "echo $(git push)", want: [][]string{{"echo", ""}, {"git", "push"}}},
 		{name: "input process substitution", command: "cat <(git push)", want: [][]string{{"cat", ""}, {"git", "push"}}},
+		{
+			name:    "command substitution beside a shell string holding a pipeline",
+			command: "bash -c 'echo a | cat' x $(git push origin main)",
+			want:    [][]string{{"bash", "-c", "echo a | cat", "x", ""}, {"echo", "a"}, {"cat"}, {"git", "push", "origin", "main"}},
+		},
+		{
+			name:    "command substitution beside a shell string whose pipeline moves HEAD",
+			command: "bash -c 'git switch x | cat' x $(git commit)",
+			want:    [][]string{{"bash", "-c", "git switch x | cat", "x", ""}, {"git", "switch", "x"}, {"cat"}, {"git", "commit"}},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -325,73 +335,6 @@ func TestParse_ReportsEachRedirect(t *testing.T) {
 	assert.Check(t, is.DeepEqual(got.Redirects, want), "Parse(%q) redirects", command)
 }
 
-func TestInvocation_Stdout_WhenStdoutGoesToAFile_ReturnsItsTarget(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		command string
-	}{
-		{name: "truncate", command: "git show HEAD:f > f"},
-		{name: "stdout and stderr", command: "git show HEAD:f &> f"},
-		{name: "explicit descriptor one", command: "git show HEAD:f 1> f"},
-		{name: "read-write on descriptor one", command: "git show HEAD:f 1<> f"},
-		{name: "duplicate onto a file name", command: "git show HEAD:f >& f"},
-		{name: "last stdout redirect wins", command: "git show HEAD:f > g > f"},
-		{name: "redirect on an enclosing group", command: "{ git show HEAD:f; } > f"},
-		{name: "earlier exec with no command", command: "exec > f; git show HEAD:f"},
-		{name: "stdout onto stderr after stderr goes to a file", command: "git show HEAD:f 2> f >&2"},
-		{name: "group inside a redirected subshell", command: "({ git show HEAD:f; }) > f"},
-		{name: "earlier exec with no command in a group", command: "{ exec > f; }; git show HEAD:f"},
-		{name: "earlier exec in a group with only stderr redirected", command: "{ exec > f; } 2> err; git show HEAD:f"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			inv := gitRun(t, tt.command)
-
-			got, ok := inv.Stdout()
-
-			assert.Assert(t, ok, "Parse(%q) reports stdout not redirected", tt.command)
-			assert.Check(t, is.DeepEqual(got, guard.Word{Text: "f", Literal: true}), "Parse(%q) stdout", tt.command)
-		})
-	}
-}
-
-func TestInvocation_Stdout_WhenStdoutIsNotRedirectedToAFile_ReportsNone(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		command string
-	}{
-		{name: "no redirect", command: "git show HEAD:f"},
-		{name: "stderr only", command: "git show HEAD:f 2> err"},
-		{name: "input only", command: "git show HEAD:f < in"},
-		{name: "stdout duplicated onto stderr", command: "git show HEAD:f >&2"},
-		{name: "read-write on standard input", command: "git show HEAD:f <> f"},
-		{name: "stdout onto stderr before stderr goes to a file", command: "git show HEAD:f >&2 2> f"},
-		{name: "group with only stderr redirected", command: "{ git show HEAD:f; } 2> err"},
-		{name: "stdout onto stderr inside a redirected group", command: "{ git show HEAD:f >&2; } > f"},
-		{name: "earlier exec with no command in a subshell", command: "(exec > f); git show HEAD:f"},
-		{name: "later exec with no command", command: "git show HEAD:f; exec > f"},
-		{name: "earlier exec in a group with stdout redirected", command: "{ exec > f; } > g; git show HEAD:f"},
-		{name: "stdout onto stderr after a group whose stderr went to a file", command: "{ true; } 2> f; git show HEAD:f >&2"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			inv := gitRun(t, tt.command)
-
-			got, ok := inv.Stdout()
-
-			assert.Check(t, !ok, "Parse(%q) stdout = %+v, want none", tt.command, got)
-		})
-	}
-}
-
 // executable writes an executable file named name in a new directory and returns its path.
 func executable(t *testing.T, name string) string {
 	t.Helper()
@@ -451,6 +394,9 @@ func TestParse_WhenADataConsumerNamesATool_ReportsNoToolInvocationOrMark(t *test
 		{name: "reader", command: "echo git reset is banned"},
 		{name: "command -v lookup", command: "command -v git"},
 		{name: "consumer behind a wrapper", command: "nice echo git push"},
+		{name: "go words that run nothing", command: "go test -run 'git push' ./..."},
+		{name: "go words that run nothing behind a global option", command: "go -C dir test -run 'git push' ./..."},
+		{name: "go words that run nothing beside a non-literal package", command: `go build "$pkg" git push`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -519,6 +465,7 @@ func TestParse_WhenAToolIsHandedToAnotherCommand_NamesItOnTheMark(t *testing.T) 
 		{name: "path to a tool", command: "find . -exec /bin/sh -c x \\;", want: "/bin/sh"},
 		{name: "tool in a string", command: "su -c 'cd /repo && gh pr merge 3'", want: "gh"},
 		{name: "tool handed on inside a string", command: "ssh host 'sudo ils merge'", want: "ils"},
+		{name: "tool in a string that does not parse, behind a data consumer word", command: "ssh host echo 'fi; git push'", want: "git"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -622,12 +569,15 @@ func TestParse_WhenNoArgumentIsAToolWord_MarksNothing(t *testing.T) {
 		{name: "tool word in a tool's own arguments", command: "git commit -m git"},
 		{name: "name that only starts with git", command: "xargs gitk"},
 		{name: "string a data consumer in it reads", command: "xargs echo 'grep -n git push docs'"},
-		{name: "string that does not parse", command: "xargs echo 'fi git push'"},
+		{name: "string that does not parse, read by the data consumer that is the command", command: "echo 'fi; git push'"},
+		{name: "handed string that does not parse and holds no tool word", command: `python3 -c "print('gitk')"`},
+		{name: "handed string that does not parse and holds a hyphenated name starting with a tool", command: `python3 -c "os.system('ils-live push')"`},
 		{name: "string held in a variable", command: `su -c "$cmd"`},
 		{name: "string whose command word is not a literal", command: `su -c "$g push"`},
 		{name: "ils command that changes nothing behind another command", command: "timeout 60 ils status"},
 		{name: "ils command that changes nothing in a string", command: "ssh host 'cd repo && ils status'"},
 		{name: "ils command that only reads a command, behind another command", command: "timeout 60 ils parse --cwd . -- 'echo hi'"},
+		{name: "go run with no tool word", command: "go run ./cmd/tool --verbose"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -661,4 +611,81 @@ func TestParse_WhenAShellWordIsAnArgumentOfAShellWrapperOrDataConsumer_MarksNoth
 			}
 		})
 	}
+}
+
+func TestJudge_WhenAHandedStringThatDoesNotParseHoldsAToolWord_RefusesNamingBoth(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+		runner  string
+		tool    string
+	}{
+		{name: "python string running git", command: `python3 -c "import os; os.system('git push --force origin main')"`, runner: "python3", tool: "git"},
+		{name: "node string running gh", command: `node -e "require('child_process').execSync('gh pr merge 3')"`, runner: "node", tool: "gh"},
+		{name: "perl string running ils", command: `perl -e 'system("ils merge")'`, runner: "perl", tool: "ils"},
+		{name: "python string running git by its path", command: `python3 -c "os.system('/usr/bin/git push')"`, runner: "python3", tool: "/usr/bin/git"},
+		{name: "remote shell line behind a data consumer word", command: "ssh host echo 'fi; git push'", runner: "ssh", tool: "git"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := guard.Judge(t.Context(), tt.command, guard.Caller{Home: home, Dir: start})
+
+			assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome", tt.command)
+			assert.Check(t, is.Contains(got.Reason, tt.runner), "Judge(%q) reason", tt.command)
+			assert.Check(t, is.Contains(got.Reason, tt.tool), "Judge(%q) reason", tt.command)
+		})
+	}
+}
+
+func TestParse_WhenGoRunsAProgramOrGenerator_ReadsItsWordsAsHanded(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+		want    string
+	}{
+		{name: "tool word handed to the program go run starts", command: "go run ./tools git push", want: "git"},
+		{name: "tool in a string handed to go generate", command: "go generate -run 'gh pr merge 3' ./...", want: "gh"},
+		{name: "tool word handed to go run behind a global option", command: "go -C dir run ./tools git push", want: "git"},
+		{name: "tool word handed to go run behind a joined global option", command: "go -C=dir run ./tools git push", want: "git"},
+		{name: "tool in a string handed to go generate behind a global option", command: "go -C dir generate -run 'gh pr merge 3' ./...", want: "gh"},
+		{name: "tool word behind a non-literal go subcommand", command: `go "$o" run . git push`, want: "git"},
+		{name: "tool word behind a non-literal word where go reads its global option", command: `go "$o" . git push`, want: "git"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := only(t, tt.command)
+
+			assert.Check(t, is.DeepEqual(got.Marks, []guard.Mark{{Kind: guard.ToolArgument, Name: tt.want}}), "Parse(%q) marks", tt.command)
+		})
+	}
+}
+
+func TestJudge_RefusesAnAliasWhoseValueNamesATool(t *testing.T) {
+	t.Parallel()
+
+	checkRefusals(t, []refusal{
+		{name: "git", command: "alias ship='git push'; ship", wantNamed: "ship"},
+		{name: "gh", command: "alias ship='gh pr merge'; ship", wantNamed: "ship"},
+		{name: "ils", command: "alias ship='ils merge'; ship", wantNamed: "ship"},
+		{name: "tool word alone", command: "alias ship=git; ship push", wantNamed: "ship"},
+		{name: "tool behind a wrapper", command: "alias ship='env git push'; ship", wantNamed: "ship"},
+		{name: "second operand", command: "alias ll='ls -l' ship='git push'; ship", wantNamed: "ship"},
+		{name: "non-literal value", command: `alias ship="$c"; ship`, wantNamed: "ship"},
+	})
+}
+
+func TestJudge_WhenAPushIsSubstitutedBesideAShellStringHoldingAPipeline_RefusesIt(t *testing.T) {
+	t.Parallel()
+
+	checkRefusals(t, []refusal{
+		{name: "bash -c string", command: "bash -c 'echo a | cat' x $(git push origin main)", wantNamed: "git push"},
+	})
 }

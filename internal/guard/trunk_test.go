@@ -81,7 +81,30 @@ func TestJudge_AllowsACommandThatCreatesNoCommitOnTheTrunk(t *testing.T) {
 
 	checkAllowed(t, caller, []namedCommand{
 		{name: "pull whose last fast-forward option is --ff-only", command: "git pull --no-ff --ff-only"},
+		{name: "fast-forward pull naming origin and the trunk", command: "git pull --ff-only origin main"},
+		{name: "fast-forward pull naming origin alone", command: "git pull --ff-only origin"},
+		{name: "fast-forward pull naming the trunk by its full ref", command: "git pull --ff-only origin refs/heads/main"},
+		{name: "fast-forward pull naming the trunk with a leading plus", command: "git pull --ff-only origin +main"},
+		{
+			name:    "fast-forward pull naming the trunk by its full ref with a leading plus",
+			command: "git pull --ff-only origin +refs/heads/main",
+		},
 	})
+}
+
+func TestJudge_RefusesAFastForwardPullOfAnotherBranchOnTheTrunk(t *testing.T) {
+	t.Parallel()
+
+	f, caller := standingOn(t, "main", "main")
+
+	checkRefusedIn(t, caller, []placed{
+		{name: "repository other than origin", dir: f.Dir(), command: "git pull --ff-only . topic"},
+		{name: "refspec other than the trunk", dir: f.Dir(), command: "git pull --ff-only origin topic"},
+		{name: "full ref other than the trunk", dir: f.Dir(), command: "git pull --ff-only origin refs/heads/topic"},
+		{name: "plus refspec other than the trunk", dir: f.Dir(), command: "git pull --ff-only origin +topic"},
+		{name: "non-literal repository", dir: f.Dir(), command: `git pull --ff-only "$r"`},
+		{name: "non-literal refspec", dir: f.Dir(), command: `git pull --ff-only origin "$b"`},
+	}, "git pull")
 }
 
 func TestJudge_AllowsACommitCreatingSubcommandOffTheTrunk(t *testing.T) {

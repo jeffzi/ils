@@ -41,6 +41,7 @@ func TestParse_ReportsTheDirectoryEachInvocationRunsIn(t *testing.T) {
 		{name: "absolute cd after an unknown one", command: `cd "$d"; cd /srv/repo; git status`, want: []string{start, "", "/srv/repo"}},
 		{name: "cd every and-list operand agrees on", command: "cd sub && git status; git commit", want: []string{start, start + "/sub", start + "/sub"}},
 		{name: "cd .. after an absolute cd ends a physical walk", command: "cd -P sub; cd /srv/repo; cd ..; git status", want: []string{start, start + "/sub", "/srv/repo", "/srv"}},
+		{name: "call of a function whose body stays", command: "f() { true; }; cd /srv/repo; f; git status", want: []string{start, start, "/srv/repo", "/srv/repo"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -72,6 +73,8 @@ func TestParse_WhenTheDirectoryCannotBeFollowed_ReportsItUnknown(t *testing.T) {
 		{name: "move in a loop body", command: "while true; do cd sub; done; git commit"},
 		{name: "move in a case arm", command: "case x in y) cd sub;; esac; git commit"},
 		{name: "move in a function body", command: "f() { cd sub; }; f; git commit"},
+		{name: "call of a function whose body moves", command: "f() { cd sub; }; cd /srv/repo; f; git commit"},
+		{name: "call of a function whose body moves in an and list", command: "f() { cd sub; }; cd /srv/repo && f && git commit"},
 		{name: "after a move that may have failed", command: "cd sub || git commit"},
 		{name: "after an or list that may have moved", command: "true || cd sub; git commit"},
 		{name: "after an and list whose right side moved", command: "true && cd sub; git commit"},
@@ -81,6 +84,11 @@ func TestParse_WhenTheDirectoryCannotBeFollowed_ReportsItUnknown(t *testing.T) {
 		{name: "cd .. after cd -P inside eval", command: "eval 'cd -P sub'; cd ..; git commit"},
 		{name: "move in a pipeline", command: "true | cd sub; git commit"},
 		{name: "relative cd in a shell string given CDPATH by a prefix", command: "CDPATH=/srv bash -c 'cd sub && git commit'"},
+		{name: "call after a subshell redefines a function whose body moves", command: "f() { cd sub; }; (f() { :; }); cd /srv/repo; f; git commit"},
+		{name: "call after an if branch redefines a function whose body moves", command: "f() { cd sub; }; if true; then f() { :; }; fi; cd /srv/repo; f; git commit"},
+		{name: "call after an if branch defines a body that moves", command: "f() { :; }; if true; then f() { cd sub; }; fi; cd /srv/repo; f; git commit"},
+		{name: "call after an uncalled function body redefines one that moves", command: "f() { cd sub; }; g() { f() { :; }; }; cd /srv/repo; f; git commit"},
+		{name: "call after an alias value redefines a function whose body moves", command: "f() { cd sub; }; alias a='f() { :; }'; cd /srv/repo; f; git commit"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -149,54 +157,6 @@ func TestParse_ReportsWhereEachGitInvocationPointsGit(t *testing.T) {
 	}
 }
 
-func TestParse_WhenTheGitTargetCannotBeFollowed_ReportsItUnknown(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		command string
-	}{
-		{name: "env clearing the environment", command: "env -i git status"},
-		{name: "env removing GIT_DIR", command: "env -u GIT_DIR git status"},
-		{name: "unset of GIT_WORK_TREE", command: "unset GIT_WORK_TREE; git status"},
-		{name: "shell variable that may be exported", command: "GIT_DIR=/srv/repo.git; git status"},
-		{name: "export in an if body", command: "if test -d x; then export GIT_DIR=/srv/repo.git; fi; git status"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := last(t, tt.command)
-
-			assert.Check(t, got.Target.Unknown, "Parse(%q) target = %+v, want unknown", tt.command, got.Target)
-		})
-	}
-}
-
-func TestParse_WhenEnvDropsAVariable_ReportsTheTargetOfTheCommandWithoutIt(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		command string
-		same    string
-	}{
-		{name: "prefix removed by env -u", command: "GIT_DIR=/a env -u GIT_DIR git status", same: "env -u GIT_DIR git status"},
-		{name: "env argument removed by a later env -u", command: "env GIT_DIR=/a env -u GIT_DIR git status", same: "env -u GIT_DIR git status"},
-		{name: "shell string under env -u", command: "env -u GIT_DIR bash -c 'git status'", same: "env -u GIT_DIR git status"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			want := last(t, tt.same).Target
-
-			got := last(t, tt.command)
-
-			assert.Check(t, is.DeepEqual(got.Target, want), "Parse(%q) target, want that of %q", tt.command, tt.same)
-		})
-	}
-}
-
 func TestParse_MarksAGitVariableOffTheAllowList(t *testing.T) {
 	t.Parallel()
 
@@ -231,6 +191,7 @@ func TestParse_WhenAVariableIsNoUnlistedGitVariable_MarksNothing(t *testing.T) {
 		command string
 	}{
 		{name: "allowed git variable", command: "GIT_PAGER=cat git log"},
+		{name: "allowed git variable read under allexport", command: "set -a; read -r GIT_PAGER; git log"},
 		{name: "variable outside git's names", command: "PAGER=cat git log"},
 	}
 	for _, tt := range tests {
@@ -317,6 +278,80 @@ func TestParse_WhenASubstitutionMovesHead_ReportsHeadUnknownForTheCommandHolding
 			}
 			assert.Assert(t, is.Len(commit, 1), "Parse(%q) = %v", tt.command, texts(got))
 			assert.Check(t, commit[0].HeadUnknown, "Parse(%q) git commit head unknown = false, want true", tt.command)
+		})
+	}
+}
+
+func marksOf(invocations []guard.Invocation) []guard.Mark {
+	var got []guard.Mark
+	for _, inv := range invocations {
+		got = append(got, inv.Marks...)
+	}
+
+	return got
+}
+
+func TestParse_WhenAllexportIsOn_MarksAGitVariableABuiltinAssigns(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{name: "read", command: "set -a; read -r GIT_CONFIG_PARAMETERS <<< x; git commit -m x"},
+		{name: "read under set -o allexport", command: "set -o allexport; read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "read under a flag group holding a", command: "set -ea; read GIT_CONFIG_PARAMETERS; git status"},
+		{name: "printf -v", command: "set -a; printf -v GIT_CONFIG_PARAMETERS %s x; git status"},
+		{name: "mapfile", command: "set -a; mapfile GIT_CONFIG_PARAMETERS < f; git status"},
+		{name: "readarray", command: "set -a; readarray -t GIT_CONFIG_PARAMETERS < f; git status"},
+		{name: "for", command: "set -a; for GIT_CONFIG_PARAMETERS in x; do git status; done"},
+		{name: "getopts", command: "set -a; getopts ab GIT_CONFIG_PARAMETERS; git status"},
+		{name: "assign-default expansion", command: `set -a; echo "${GIT_CONFIG_PARAMETERS:=x}"; git status`},
+		{name: "allexport turned on in an if body", command: "if true; then set -a; fi; read GIT_CONFIG_PARAMETERS; git status"},
+		{name: "assign-default expansion in [[ ]]", command: "set -a; [[ -n ${GIT_CONFIG_PARAMETERS:=x} ]]; git status"},
+		{name: "assign-default expansion in a case word", command: "set -a; case ${GIT_CONFIG_PARAMETERS:=x} in *) ;; esac; git status"},
+		{name: "assign-default expansion in a for word list", command: "set -a; for v in ${GIT_CONFIG_PARAMETERS:=x}; do :; done; git status"},
+		{name: "assign-default expansion in a declare argument", command: `set -a; declare v="${GIT_CONFIG_PARAMETERS:=x}"; git status`},
+		{name: "assign-default expansion in an export argument", command: `set -a; export v="${GIT_CONFIG_PARAMETERS:=x}"; git status`},
+		{name: "assign-default expansion in a local argument", command: `set -a; f() { local v="${GIT_CONFIG_PARAMETERS:=x}"; }; f; git status`},
+		{name: "read in a function defined before set -a and called after", command: "f() { read -r GIT_CONFIG_PARAMETERS; }; set -a; f; git status"},
+		{name: "allexport turned on by eval", command: "eval 'set -a'; read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "allexport turned on by a function call", command: "f() { set -a; }; f; read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "read in a bash -a string", command: "bash -a -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
+		{name: "read in a bash -o allexport string", command: "bash -o allexport -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := parse(t, tt.command)
+
+			want := guard.Mark{Kind: guard.GitVariable, Name: "GIT_CONFIG_PARAMETERS"}
+			assert.Check(t, is.Contains(marksOf(got), want), "Parse(%q) marks", tt.command)
+		})
+	}
+}
+
+func TestParse_WhenAllexportIsOff_MarksNoGitVariableABuiltinAssigns(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{name: "never turned on", command: "read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "turned off again", command: "set -a; set +a; read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "turned on in a subshell", command: "(set -a); read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "turned on for a bash -a string only", command: "bash -a -c true; read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "read in a bash string without -a", command: "bash -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := parse(t, tt.command)
+
+			assert.Check(t, is.Len(marksOf(got), 0), "Parse(%q) marks", tt.command)
 		})
 	}
 }

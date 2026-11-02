@@ -5,6 +5,8 @@ package guard
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/jeffzi/ils/internal/git"
 )
@@ -82,10 +84,34 @@ func (t *trunks) refuseOnTrunk(ctx context.Context, caller Caller, inv Invocatio
 		return Verdict{Outcome: Allow}, nil
 	}
 
-	reason := fmt.Sprintf("git %s on %s, the trunk: work goes on a branch, started with `ils branch <name>`",
-		sub, answer.trunk)
+	return onTrunk(sub, inv.Git.Args, answer.trunk), nil
+}
 
-	return refuse(reason), nil
+// onTrunk returns the verdict on the trunk-judged git subcommand sub, given args, run on trunk. A
+// `git pull` that may only fast-forward is allowed when it names origin and the trunk alone; one
+// that names any other repository or refspec, or one the guard cannot read, can fast-forward the
+// trunk to another branch.
+func onTrunk(sub string, args []Word, trunk string) Verdict {
+	options := readArgs(args, optionsOf(sub))
+	if sub == "pull" && fastForwardsOnly(options.long) {
+		// origin alone pulls what a plain `git pull --ff-only` pulls: the trunk's own upstream. A
+		// refspec names the trunk with or without a leading `+` and its full ref.
+		named := wordTexts(options.positional)
+		if len(named) == 2 {
+			named[1] = strings.TrimPrefix(strings.TrimPrefix(named[1], "+"), "refs/heads/")
+		}
+
+		if !options.opaque() && (slices.Equal(named, []string{"origin"}) || slices.Equal(named, []string{"origin", trunk})) {
+			return Verdict{Outcome: Allow}
+		}
+
+		return refuse(fmt.Sprintf("git pull --ff-only on %s, the trunk, naming a repository or refspec other "+
+			"than origin %s: it can fast-forward the trunk to another branch; run `git pull --ff-only` alone",
+			trunk, trunk))
+	}
+
+	return refuse(fmt.Sprintf("git %s on %s, the trunk: work goes on a branch, started with `ils branch <name>`",
+		sub, trunk))
 }
 
 // trunkOf returns the trunk of the repository at gitDir, asking origin only the first time.
@@ -105,14 +131,17 @@ func (t *trunks) trunkOf(ctx context.Context, repo git.Repo, gitDir string) (tru
 	return answer, nil
 }
 
-// trunkJudged reports whether the git subcommand sub, given args, adds commits to the branch it
-// runs on: `git pull` does unless it may only fast-forward.
+// trunkJudged reports whether the git subcommand sub, given args, may add commits to the branch
+// it runs on: `git pull` may unless it may only fast-forward from the branch's upstream, naming no
+// repository or refspec and holding nothing the guard cannot read.
 func trunkJudged(sub string, args []Word) bool {
 	switch sub {
 	case "commit", "merge", "cherry-pick", "revert", "am", "rebase":
 		return true
 	case "pull":
-		return !fastForwardsOnly(readArgs(args, optionsOf(sub)).long)
+		options := readArgs(args, optionsOf(sub))
+
+		return !fastForwardsOnly(options.long) || len(options.positional) > 0 || options.opaque()
 	default:
 		return false
 	}

@@ -93,6 +93,17 @@ then prints the result of that step, as text or as JSON per `--json`, and exits 
 code. The output says that `ils` was interrupted, and `Next:` says what to run. As at a normal end,
 the spinner line is erased before the result prints; see [Terminal output](#terminal-output).
 
+`ils release` stopped while it reads the repository, origin, or the default branch, before it
+waits for checks, is refused with nothing written, as [What push refuses](#what-push-refuses)
+lists. Stopped while it waits for the checks of the release commit, it ends pending with nothing
+written, as `ils merge` does, unless a check of that commit has already failed or been canceled:
+it is then refused on that check, as [What release refuses](#what-release-refuses) lists. Only
+when no check reported for the release commit does it then read the rules of the default branch
+and whether the repository has CI; stopped during either read, it is refused with nothing written.
+Stopped after its last read and before its first write, it ends pending with nothing written.
+Stopped while it makes the tag or looks up the GitHub release, it says that it was interrupted, or
+which time limit ran out, as it does for the push of the tag.
+
 A second Ctrl-C or SIGTERM ends `ils` at once, as that signal ends any program: no result is
 printed, and the exit status is the signal's (130 for Ctrl-C and 143 for SIGTERM in most shells),
 not one of the [exit codes](#exit-codes).
@@ -177,7 +188,10 @@ at most it has fetched from origin. It refuses everything `ils push` refuses abo
 - a pull request that conflicts with or is behind the default branch, needs a review, lacks a
   required check, or that GitHub blocks for another reason;
 - a pull request whose head moved to another commit while `ils merge` waited for its checks:
-  `Next:` says to pull the new commit, then run `ils merge` again.
+  `Next:` says to pull the new commit, then run `ils merge` again;
+- on a run that finishes a pull request already merged, a branch on origin that holds commits the
+  merged head does not carry: it lists them and deletes nothing, and `Next:` says to start a branch
+  and cherry-pick them.
 
 ### What release refuses
 
@@ -198,6 +212,9 @@ the repository, and also:
   since `ils release` then requires a section in it for every later release;
 - a failed or canceled check of the release commit, and a release commit no check reported for in
   a repository with CI.
+
+A GitHub release created while the notes file `ils release` wrote for it cannot be removed ends
+done, with the release's URL and a line naming the file left behind.
 
 ## JSON output
 
@@ -360,32 +377,50 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
 - a `git`, `gh`, `ils`, or shell word (`bash`, `sh`, `zsh`, `dash`, `eval`, `source`) handed to a
   command the guard does not know (`xargs`, `timeout`, `sudo`, `find -exec`). The guard sees
   through the wrappers `env`, `command`, `builtin`, `exec`, `nice`, `nohup`, `time`, `noglob`, and
-  `nocorrect`. It takes the words given to a reader, a filter, a file tool, a lookup, or a package
+  `nocorrect`, and reads an `exec` with no command behind them (`command exec > f`) as it reads
+  `exec > f`. It takes the words given to a reader, a filter, a file tool, a lookup, or a package
   manager (`echo`, `grep`, `rg`, `cat`, `cp`, `which`, `go`, `brew`, and the like) as data, so
-  `echo git push` holds no `git` call. Behind such a command the guard allows `ils status`,
-  `parse`, `guard`, `hook`, and `help` (`timeout 60 ils status`). It refuses any other `ils`
-  command, including one the command fills in (`xargs ils`);
+  `echo git push` holds no `git` call. `go` is data except for the command its `-toolexec` or
+  `-exec` names, which the guard reads as a script and refuses when it is not a literal or does not
+  parse, and the words of `go run`, of `go generate`, and of a `go` whose subcommand or `-C` word is
+  not a literal (`go "$o" run`), which it reads as those of a command it does not know. Behind such
+  a command the guard allows
+  `ils status`, `parse`, `guard`, `hook`, and `help` (`timeout 60 ils status`). It refuses any
+  other `ils` command, including one the command fills in (`xargs ils`);
 - a string handed to a command the guard does not know, which the guard reads as a script, when
   one of its commands is such a word or hands one over in turn: `su -c 'cd /repo && git push'`,
   `ssh host 'sudo git push'`, and `su -c "git push $b"`. In the last one the guard reads `$b` as an
-  ordinary word, so the string still holds `git push`. A string that does not parse as a script is
-  data;
+  ordinary word, so the string still holds `git push`. A string that does not parse as a script
+  is refused when it holds a `git`, `gh`, or `ils` word (`python3 -c "import os;
+  os.system('git push')"`), and is data otherwise;
 - a `bash -c`, `sh -c`, `zsh -c`, `dash -c`, or `eval` string that is not a literal or nests more
   than three deep;
 - a shell that runs what the command does not hold (`cat x | bash`, `bash -s`, `bash ./x.sh`,
   `bash <(…)`, `source` or `.` of a file);
-- a shell command that git runs. The guard reads these the same way. They are the value of `git
-  rebase --exec` (`-x`), of `-c core.editor`, `core.pager`, `sequence.editor`, `core.sshCommand`,
-  or `pager.<command>`, and of `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`, `GIT_PAGER`, and the `EDITOR`,
-  `VISUAL`, and `PAGER` git falls back to;
+- a shell command that git runs. The guard reads these the same way, and refuses one that is not
+  a literal. They are the value of `git rebase --exec` (`-x`), the command of `git bisect run`,
+  `git submodule foreach`, `git difftool -x` (`--extcmd`), the `git filter-branch` filters and
+  `--setup`, and `git for-each-repo`; the value of `-c core.editor`, `core.pager`,
+  `sequence.editor`, `core.sshCommand`, `pager.<command>`, `difftool.<tool>.cmd`, or
+  `mergetool.<tool>.cmd`; and the value of `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`, `GIT_PAGER`, and
+  the `EDITOR`, `VISUAL`, and `PAGER` git falls back to;
 - an assignment or `export` of a `GIT_*` variable off the allow list (`GIT_CONFIG_COUNT`,
-  `GIT_EXEC_PATH`, and the like);
+  `GIT_EXEC_PATH`, and the like), and under `set -a` a `read`, `printf -v`, `mapfile`, `for`,
+  `getopts`, or `${V:=…}` that sets one, since `set -a` exports it;
+- a function the command defines that shadows `cd`, `pushd`, `popd`, or a wrapper the guard sees
+  through, and a call of a function the command defines with a redirect its definition lacks. A
+  call of one whose body may change directory leaves the directory unknown after it;
+- an `alias` whose value runs `git`, `gh`, or `ils`, or that the guard cannot read;
 - a git word that is neither a command nor an alias, a `!` alias, an alias nested more than three
   deep, and an alias the guard cannot read. An alias the guard cannot read has a value that does
   not split into words, or one set by a `-c` or `--config-env` the guard cannot follow. A
   subcommand that is not a literal (`git "$sub"`) counts as neither a command nor an alias. So does
   any word off git's command list where the guard cannot tell the git dir (after `cd "$d"`, or
   under `-C "$d"`);
+- an alias, given by `-c alias.<name>` or configured, named for a git command that git 2.34.1 does
+  not build in (`replay`, `send-email`, `submodule`, and the like): a git without the command runs
+  the alias. Where the guard cannot read that alias (the git dir is unknown, as after `cd "$d"` or
+  under `-C "$d"`, or a `-c` it cannot follow), it refuses such a command;
 - a git option at the end of the command with no value after it (`git -C`);
 - a `-c` or `--config-env` value that is not a literal, on any git command, since it may set
   `core.hooksPath`;
@@ -398,7 +433,10 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
 - every `checkout`, `reset`, `stash`, and `prune`; `switch --force` or `--discard-changes`; `clean
   --force`; `branch -D`, `-d -f`, or `--delete --force`; `restore` without `--staged` (or `-S`), or
   with `--worktree` (`-W`) beside it; `rm --force`; `reflog expire`, `delete`, and `drop`; `gc
-  --prune=…`; `apply --reverse`; `add --force`;
+  --prune=…`, and `gc` with `gc.pruneExpire` set through `-c` or `--config-env`; `clean` without
+  `--force` where `clean.requireForce` is off, through `-c` or the repository's config;
+  `checkout-index --force`; `read-tree --reset`, and `read-tree -u -m`; `update-ref -d` and
+  `update-ref --stdin`; `branch -M` onto a branch that exists; `apply --reverse`; `add --force`;
 - `--no-verify` on any command, `commit -n`, `am -n`, `send-email --no-validate`, and
   `core.hooksPath` set through `-c` or `--config-env`;
 - `git show` or `git cat-file` with stdout redirected to a file;
@@ -406,8 +444,9 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   tell the repository;
 - `worktree remove --force`, and `worktree remove` of a worktree with changes or one the guard
   cannot find;
-- `git config` writing `alias.*`, `include.*`, `includeIf.*`, `remote.*`, `pager.*`,
-  `core.hooksPath`, `core.editor`, `core.pager`, `core.sshCommand`, or `sequence.editor`, at any
+- `git config` writing `alias.*`, `include.*`, `includeIf.*`, `remote.*`, `url.*`, `pager.*`,
+  `difftool.<tool>.cmd`, `mergetool.<tool>.cmd`, `core.hooksPath`, `core.editor`, `core.pager`,
+  `core.sshCommand`, or `sequence.editor`, at any
   scope, renaming or removing a section that holds one of them, and `git config --edit`, which can
   write any of them;
 - `git remote remove`, `rm`, `rename`, `set-url`, or `set-head` on `origin`.
@@ -422,15 +461,17 @@ as `--no-verify`.
 - every `git push`, `git send-pack`, and `git http-push`, in any repository: `ils push` is the way
   an agent pushes a branch;
 - in a repository with an `origin`, on its default branch: `commit`, `merge`, `cherry-pick`,
-  `revert`, `am`, `rebase`, and `pull` without `--ff-only`. The reason names `ils branch <name>`.
+  `revert`, `am`, `rebase`, `pull` without `--ff-only`, and `pull --ff-only` naming a repository or
+  branch other than `origin <default branch>`. The reason names `ils branch <name>`.
   A `git rebase` naming the default branch as the branch to rebase counts as one on it. The guard
   asks origin for the default branch once per command and git dir, and falls back to the cached
   `refs/remotes/origin/HEAD`. With neither, it refuses and names
   `git remote set-head origin --auto`, which caches the head on any supported git. Run it outside
   the agent or as a `!` command, since the guard refuses `set-head` on `origin`;
 - one of those where the guard cannot tell the directory, the target, or HEAD: after `cd -`,
-  `popd`, or a `cd` to a non-literal, and after a command that moves HEAD earlier in the list
-  (`git switch main && git commit`).
+  `popd`, or a `cd` to a non-literal, after a command that moves HEAD earlier in the list
+  (`git switch main && git commit`) or a write to the git dir's `HEAD` file, and anywhere in a
+  list where a background job or a pipe stage may move HEAD, since those run beside the rest.
 
 #### ils and gh commands
 
@@ -453,8 +494,8 @@ as `--no-verify`.
   to no `gh` command;
 - a `gh alias list` that fails.
 
-A read the guard needs that fails (a missing `git`, a `gh alias list` that errors) is a refusal
-that says what broke.
+A read the guard needs that fails (a missing `git`, a `gh alias list` that errors, the read of
+`clean.requireForce` or of an alias) is a refusal that says what broke.
 
 ### Guard JSON output
 

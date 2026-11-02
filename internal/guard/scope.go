@@ -33,48 +33,20 @@ type scope struct {
 	// redirects are the redirects in effect on the shell's own descriptors: those of each compound
 	// command the walk is inside, outermost first, then those an `exec` with no command made.
 	redirects []Redirect
+	// functions holds, by name, the functions a call may run. Copies of a scope share it, so a
+	// declaration replaces it rather than changing it in place.
+	functions map[string]*function
 	env       environment
 	// physical reports whether the shell's working directory was last set by `cd -P` and no
 	// absolute `cd` since, so a symlink may stand in the path dir spells where the shell has the
 	// directory it resolves to.
 	physical bool
-}
-
-// environment is what the guard knows of the variables it follows: those that point git at a
-// repository, CDPATH, which `cd` reads a relative path against, and those that choose the config
-// directory gh reads its aliases from.
-type environment struct {
-	gitDir   variable
-	workTree variable
-	cdPath   variable
-	ghConfig ghConfig
-}
-
-// unknownEnvironment returns the environment in which every variable the guard follows is unknown.
-func unknownEnvironment() environment {
-	unknown := variable{unknown: true}
-
-	return environment{
-		gitDir: unknown, workTree: unknown, cdPath: unknown,
-		ghConfig: ghConfig{configDir: unknown, configHome: unknown, home: unknown},
-	}
-}
-
-// envChange is one step in building the environment a command runs with: an assignment, or what
-// an `env -i` or `env -u NAME` removes.
-type envChange struct {
-	// unset is the name `env -u` removes; empty for any other change.
-	unset      string
-	assignment Assignment
-	// clear reports whether the change is `env -i`, which removes every variable before it.
-	clear bool
-}
-
-// variable is what the guard knows of one variable.
-type variable struct {
-	value   string
-	set     bool
-	unknown bool
+	// racing reports whether the walk is inside a background job or a stage of a pipe, which runs
+	// beside the commands around it.
+	racing bool
+	// allexport reports whether `set -a` may be in effect, under which the shell exports every
+	// variable it assigns.
+	allexport bool
 }
 
 func startScope(caller Caller, file *syntax.File) scope {
@@ -88,28 +60,6 @@ func startScope(caller Caller, file *syntax.File) scope {
 	return sc
 }
 
-// forgetCDPath makes CDPATH unknown in e when file assigns it anywhere. A function body is walked
-// where it is declared rather than where it is called, so an assignment the walk has not reached
-// in order may still be in effect when a `cd` runs.
-func (e *environment) forgetCDPath(file *syntax.File) {
-	if assigns(file, "CDPATH") {
-		e.cdPath = variable{unknown: true}
-	}
-}
-
-func assigns(node syntax.Node, name string) bool {
-	found := false
-	syntax.Walk(node, func(n syntax.Node) bool {
-		if a, ok := n.(*syntax.Assign); ok && a.Name != nil && a.Name.Value == name {
-			found = true
-		}
-
-		return !found
-	})
-
-	return found
-}
-
 // merge returns the scope that either a or b may be: what they agree on, and unknown elsewhere.
 func merge(a, b scope) scope {
 	if a.dir != b.dir {
@@ -117,65 +67,18 @@ func merge(a, b scope) scope {
 	}
 
 	a.physical = a.physical || b.physical
+	a.allexport = a.allexport || b.allexport
 	a.env.gitDir = a.env.gitDir.or(b.env.gitDir)
 	a.env.workTree = a.env.workTree.or(b.env.workTree)
 	a.env.cdPath = a.env.cdPath.or(b.env.cdPath)
 	a.env.ghConfig = a.env.ghConfig.or(b.env.ghConfig)
+	a.functions = mergeFunctions(a.functions, b.functions)
 	if _, toFile := stdoutFile(a.redirects); !toFile {
 		// Either side's stdout may be in effect, so the one that sends it to a file decides.
 		a.redirects = b.redirects
 	}
 
 	return a
-}
-
-func (v variable) or(other variable) variable {
-	if v != other {
-		return variable{unknown: true}
-	}
-
-	return v
-}
-
-// set records v as the value of name, when name is a variable the guard follows.
-func (e *environment) set(name string, v variable) {
-	switch name {
-	case "GIT_DIR":
-		e.gitDir = v
-	case "GIT_WORK_TREE":
-		e.workTree = v
-	case "CDPATH":
-		e.cdPath = v
-	case ghConfigDirVar:
-		e.ghConfig.configDir = v
-	case ghConfigHomeVar:
-		e.ghConfig.configHome = v
-	case ghHomeVar:
-		e.ghConfig.home = v
-	}
-}
-
-func valueOf(w Word) variable {
-	if !w.Literal {
-		return variable{unknown: true}
-	}
-
-	return variable{value: w.Text, set: true}
-}
-
-// resolve returns the path v holds, made absolute against dir, and false when the guard cannot
-// tell it.
-func (v variable) resolve(dir string) (string, bool) {
-	switch {
-	case v.unknown:
-		return "", false
-	case !v.set:
-		return "", true
-	}
-
-	abs := absolute(dir, v.value)
-
-	return abs, abs != ""
 }
 
 // moved returns the directory that going to w from dir leads to, empty when the guard cannot tell.
@@ -199,10 +102,17 @@ func absolute(dir, p string) string {
 	}
 }
 
-// list walks stmts in order, each one starting where the one before left sc.
+// list walks stmts in order, each one starting where the one before left sc. A background job and
+// the statements after it are walked by job.
 func (w *walker) list(stmts []*syntax.Stmt, sc *scope) {
-	for _, stmt := range stmts {
+	for i, stmt := range stmts {
 		if w.err != nil {
+			return
+		}
+
+		if stmt.Background || stmt.Coprocess {
+			w.job(stmt, stmts[i+1:], sc)
+
 			return
 		}
 
@@ -217,9 +127,16 @@ func (w *walker) list(stmts []*syntax.Stmt, sc *scope) {
 func (w *walker) stmt(stmt *syntax.Stmt, sc *scope) {
 	if stmt.Background || stmt.Coprocess {
 		inner := *sc
-		sc = &inner
+		w.race(&inner, func(s *scope) { w.statement(stmt, s) })
+
+		return
 	}
 
+	w.statement(stmt, sc)
+}
+
+// statement walks stmt as the shell runs it once it has placed any background job.
+func (w *walker) statement(stmt *syntax.Stmt, sc *scope) {
 	if w.simple(stmt, sc) {
 		return
 	}
@@ -289,9 +206,11 @@ func (w *walker) compound(cmd syntax.Command, sc *scope) {
 			w.list(cmd.Do, s)
 		})
 	case *syntax.ForClause:
+		w.loopVariable(cmd, sc)
 		w.substitutions(cmd.Loop, sc)
 		w.repeated(sc, func(s *scope) { w.list(cmd.Do, s) })
 	case *syntax.FuncDecl:
+		w.declareFunction(cmd, sc)
 		// A function body runs each time the function is called, from any later command.
 		w.repeated(sc, func(s *scope) { w.stmt(cmd.Body, s) })
 	default:
@@ -316,10 +235,12 @@ func (w *walker) binary(cmd *syntax.BinaryCmd, sc *scope) {
 	default:
 		// bash runs each side of a pipe in a subshell, and zsh runs the last one in the shell
 		// itself, so a change either side makes may or may not hold after it.
-		left, right := *sc, *sc
-		w.stmt(cmd.X, &left)
-		w.stmt(cmd.Y, &right)
-		*sc = merge(merge(*sc, left), right)
+		w.race(sc, func(s *scope) {
+			left, right := *s, *s
+			w.stmt(cmd.X, &left)
+			w.stmt(cmd.Y, &right)
+			*s = merge(merge(*s, left), right)
+		})
 	}
 }
 
@@ -422,6 +343,7 @@ func (w *walker) repeated(sc *scope, body func(*scope)) {
 // substitutions, and the statements of a command that holds them. Each starts from sc, and nothing
 // it changes holds after it.
 func (w *walker) substitutions(node syntax.Node, sc *scope) {
+	w.exportedDefaults(node, sc)
 	syntax.Walk(node, func(n syntax.Node) bool {
 		var stmts []*syntax.Stmt
 		switch n := n.(type) {
@@ -454,6 +376,7 @@ func (w *walker) substitutions(node syntax.Node, sc *scope) {
 func (w *walker) script(script string, inv Invocation, sc *scope) {
 	name := inv.Words[0].Text
 	inner := sc.runScope(inv)
+	inner.allexport = inner.allexport || startsAllexport(inv.Words)
 	file, err := w.walkString(script, &inner)
 	if err != nil {
 		w.err = fmt.Errorf("parse the string %q runs: %w", name, err)
@@ -464,6 +387,9 @@ func (w *walker) script(script string, inv Invocation, sc *scope) {
 	if name != "eval" {
 		return
 	}
+
+	sc.functions = inner.functions
+	sc.allexport = inner.allexport
 
 	// A dry run of the string from the shell's own environment leaves each variable as the string
 	// sets it, or as the shell had it when the string does not touch it.
@@ -574,8 +500,9 @@ func capDepth(depth int, runs bool, mark MarkKind) (bool, MarkKind) {
 }
 
 // placed returns inv with where it runs: its directory, where it points git, and where a gh
-// invocation's gh reads its config.
+// invocation's gh reads its config. It leaves sc's functions as those callMarks reads.
 func (w *walker) placed(inv Invocation, sc *scope) Invocation {
+	w.functions = sc.functions
 	inv.Dir = sc.dir
 	inv.enclosing = sc.redirects
 	if inv.Tool == Git {
@@ -601,16 +528,19 @@ func (sc *scope) apply(inv Invocation) {
 		return
 	}
 
+	if execsNothing(inv.Words) {
+		sc.redirects = slices.Concat(sc.redirects, inv.Redirects)
+
+		return
+	}
+
 	if !inv.Words[0].Literal {
 		return
 	}
 
 	switch inv.Words[0].Text {
-	case "exec":
-		// `exec` with no command applies its redirects to the shell itself.
-		if len(inv.Words) == 1 {
-			sc.redirects = slices.Concat(sc.redirects, inv.Redirects)
-		}
+	case "set":
+		sc.allexport = allexportAfter(inv.Words[1:], sc.allexport)
 	case "cd", "pushd":
 		sc.cd(inv.Words[1:], sc.commandEnv(inv).cdPath)
 	case "popd":
@@ -619,6 +549,68 @@ func (sc *scope) apply(inv Invocation) {
 		for _, name := range inv.Words[1:] {
 			sc.env.set(name.Text, variable{unknown: true})
 		}
+	}
+}
+
+// execsNothing reports whether words, the words of a command, are an `exec` with nothing after its
+// options, reached through any of the wrappers that run a builtin: one that applies its redirects
+// to the shell itself.
+func execsNothing(words []Word) bool {
+	i := 0
+	for i < len(words) && words[i].Literal && (words[i].Text == "command" || words[i].Text == "builtin") {
+		options, _ := wrapperOptionsOf(words[i].Text)
+		n, _ := skipOptions(words[i+1:], options)
+		i += 1 + n
+	}
+
+	if i == len(words) || !words[i].Literal || words[i].Text != "exec" {
+		return false
+	}
+
+	options, _ := wrapperOptionsOf("exec")
+	n, _ := skipOptions(words[i+1:], options)
+
+	return i+1+n == len(words)
+}
+
+// allexportAfter returns whether `set` given args leaves allexport on, given whether it was on
+// before. An option the guard cannot read may turn it on.
+func allexportAfter(args []Word, on bool) bool {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !arg.Literal {
+			return true
+		}
+
+		if len(arg.Text) < 2 || arg.Text == "--" || !strings.ContainsAny(arg.Text[:1], "-+") {
+			return on
+		}
+
+		enable := arg.Text[0] == '-'
+		for _, letter := range arg.Text[1:] {
+			switch {
+			case letter == 'a':
+				on = enable
+			case letter == 'o' && i+1 < len(args):
+				i++
+				on = setsAllexport(args[i], enable, on)
+			}
+		}
+	}
+
+	return on
+}
+
+// setsAllexport returns whether `set -o name`, or `set +o name` when enable is false, leaves
+// allexport on, given whether it was on before.
+func setsAllexport(name Word, enable, on bool) bool {
+	switch {
+	case !name.Literal:
+		return on || enable
+	case name.Text == "allexport":
+		return enable
+	default:
+		return on
 	}
 }
 
@@ -687,62 +679,6 @@ func leavesThroughLinks(target string, physical, afterPhysical bool) bool {
 	return physical || (afterPhysical && !filepath.IsAbs(target))
 }
 
-// declare changes sc the way the declaration builtin decl does. Only `export NAME=value` with no
-// option sets a git variable the guard follows; any other declaration of one makes it unknown.
-func (sc *scope) declare(decl *syntax.DeclClause, home string) {
-	plain := decl.Variant.Value == "export"
-	for _, a := range decl.Args {
-		if a.Name == nil {
-			plain = false
-		}
-	}
-
-	for _, a := range decl.Args {
-		if a.Name == nil {
-			continue
-		}
-
-		v := variable{unknown: true}
-		if plain && !a.Naked && !a.Append {
-			v = valueOf(assignmentOf(a, home).Value)
-		}
-
-		sc.env.set(a.Name.Value, v)
-	}
-}
-
-// declared returns the assignments the declaration decl makes: each `NAME=value` among its
-// arguments.
-func declared(decl *syntax.DeclClause, home string) []Assignment {
-	var assignments []Assignment
-	for _, a := range decl.Args {
-		if a.Name != nil && !a.Naked {
-			assignments = append(assignments, assignmentOf(a, home))
-		}
-	}
-
-	return assignments
-}
-
-// commandEnv returns the environment the invocation inv runs with, run from sc: the shell's, then
-// inv's changes in the order bash makes them, its assignment prefix first and then each `env`
-// wrapper's. What `env -i` or `env -u` removes is unknown rather than unset.
-func (sc *scope) commandEnv(inv Invocation) environment {
-	env := sc.env
-	for _, c := range inv.env {
-		switch {
-		case c.clear:
-			env = unknownEnvironment()
-		case c.unset != "":
-			env.set(c.unset, variable{unknown: true})
-		default:
-			env.set(c.assignment.Name, valueOf(c.assignment.Value))
-		}
-	}
-
-	return env
-}
-
 func (sc *scope) targetOf(inv Invocation) GitTarget {
 	if inv.Git.missing != "" {
 		return GitTarget{Unknown: true}
@@ -781,7 +717,8 @@ func (w *walker) keep(inv Invocation) {
 // returned returns the invocations Parse returns, each reporting whether an invocation walked
 // before it may move HEAD. It reads each git invocation once its aliases expand, so it runs after
 // resolveGit. The walk order is the order the shell may run them in: the substitutions of a command
-// come before it, and a dry run of a body that may repeat before the body itself.
+// come before it, a dry run of a body that may repeat before the body itself, and a dry run of a
+// background job or pipe stage before the commands already walked.
 func (w *walker) returned() []Invocation {
 	moved := false
 	for i := range w.walked {
@@ -820,4 +757,83 @@ func gitVariableMarks(names []string) []Mark {
 	}
 
 	return marks
+}
+
+// loopVariable marks a `for` loop whose variable is a GIT_* variable off the allow list while
+// allexport may be on, which exports it to every git after it.
+func (w *walker) loopVariable(c *syntax.ForClause, sc *scope) {
+	iter, ok := c.Loop.(*syntax.WordIter)
+	if !ok || !sc.allexport {
+		return
+	}
+
+	if marks := gitVariableMarks([]string{iter.Name.Value}); len(marks) > 0 {
+		w.keep(w.placed(Invocation{Marks: marks}, sc))
+	}
+}
+
+// exportedDefaults marks each GIT_* variable off the allow list that a `${NAME:=word}` or
+// `${NAME=word}` in node assigns while allexport may be on, which exports it. A command reached
+// through a substitution, and a simple command that is not a declaration, marks its own.
+func (w *walker) exportedDefaults(node syntax.Node, sc *scope) {
+	if !sc.allexport {
+		return
+	}
+
+	if stmt, ok := node.(*syntax.Stmt); ok {
+		if _, call := stmt.Cmd.(*syntax.CallExpr); call {
+			return
+		}
+	}
+
+	var names []string
+	syntax.Walk(node, func(n syntax.Node) bool {
+		switch n := n.(type) {
+		case *syntax.CmdSubst, *syntax.ProcSubst:
+			return false
+		case *syntax.Stmt:
+			return syntax.Node(n) == node
+		case *syntax.ParamExp:
+			if assignsDefault(n) {
+				names = append(names, n.Param.Value)
+			}
+		}
+
+		return true
+	})
+
+	if marks := gitVariableMarks(names); len(marks) > 0 {
+		w.keep(w.placed(Invocation{Marks: marks}, sc))
+	}
+}
+
+// assignsDefault reports whether p is a `${NAME:=word}` or `${NAME=word}`, which assigns NAME.
+func assignsDefault(p *syntax.ParamExp) bool {
+	return p.Param != nil && p.Exp != nil && (p.Exp.Op == syntax.AssignUnset || p.Exp.Op == syntax.AssignUnsetOrNull)
+}
+
+// startsAllexport reports whether words, the words of `bash`, `sh`, `zsh`, or `dash` running a
+// string, give the shell `-a` or `-o allexport`, which the string's commands run under. A long
+// option is skipped, with the file `--rcfile` and `--init-file` read.
+func startsAllexport(words []Word) bool {
+	if len(words) == 0 || !words[0].Literal ||
+		!slices.Contains([]string{"bash", "sh", "zsh", "dash"}, filepath.Base(words[0].Text)) {
+		return false
+	}
+
+	var options []Word
+	for i := 1; i < len(words); i++ {
+		word := words[i]
+		if !word.Literal || len(word.Text) <= 2 || !strings.HasPrefix(word.Text, "--") {
+			options = append(options, word)
+
+			continue
+		}
+
+		if word.Text == "--rcfile" || word.Text == "--init-file" {
+			i++
+		}
+	}
+
+	return allexportAfter(options, false)
 }

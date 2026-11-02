@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"gotest.tools/v3/assert"
+	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/guard"
@@ -60,7 +61,141 @@ func TestJudge_RefusesAGitOperationThatDiscardsWork(t *testing.T) {
 		{name: "apply --reverse", command: "git apply --reverse patch.diff", wantNamed: "git apply"},
 		{name: "add -f", command: "git add -f some-file", wantNamed: "git add"},
 		{name: "add --force", command: "git add --force some-file", wantNamed: "git add"},
+		{name: "checkout-index -f", command: "git checkout-index -a -f", wantNamed: "git checkout-index"},
+		{name: "checkout-index --force", command: "git checkout-index --all --force", wantNamed: "git checkout-index"},
+		{name: "checkout-index bundle holding f", command: "git checkout-index -af", wantNamed: "git checkout-index"},
+		{name: "read-tree --reset", command: "git read-tree --reset HEAD", wantNamed: "git read-tree"},
+		{name: "read-tree -u -m", command: "git read-tree -u -m HEAD", wantNamed: "git read-tree"},
+		{name: "read-tree bundle of m and u", command: "git read-tree -mu HEAD", wantNamed: "git read-tree"},
+		{name: "update-ref -d", command: "git update-ref -d refs/heads/keep", wantNamed: "git update-ref"},
+		{name: "update-ref --stdin", command: "git update-ref --stdin", wantNamed: "git update-ref"},
 	})
+}
+
+func TestJudge_RefusesAConfigOverrideThatLetsGitDiscardWork(t *testing.T) {
+	t.Parallel()
+
+	checkRefusals(t, []refusal{
+		{name: "-c lifting the clean force requirement", command: "git -c clean.requireForce=false clean -d", wantNamed: "clean.requireForce"},
+		{name: "-c lifting it with the key in another case", command: "git -c Clean.RequireForce=false clean -d", wantNamed: "clean.requireForce"},
+		{name: "--config-env setting the clean force requirement", command: "git --config-env clean.requireForce=V clean -d", wantNamed: "clean.requireForce"},
+		{name: "-c lifting it under a dry run a later --no-dry-run undoes", command: "git -c clean.requireForce=false clean -n --no-dry-run -d", wantNamed: "clean.requireForce"},
+		{name: "-c lifting it under a dry run a later prefix of --no-dry-run undoes", command: "git -c clean.requireForce=false clean --dry-run --no-d", wantNamed: "clean.requireForce"},
+		{name: "-c setting the gc prune expiry", command: "git -c gc.pruneExpire=now gc", wantNamed: "gc.pruneExpire"},
+		{name: "--config-env setting the gc prune expiry", command: "git --config-env=gc.pruneExpire=V gc", wantNamed: "gc.pruneExpire"},
+	})
+}
+
+func TestJudge_RefusesABranchRenameOverAnExistingBranch(t *testing.T) {
+	t.Parallel()
+
+	checkRefusals(t, []refusal{
+		{name: "-M naming both branches", command: "git branch -M topic main", wantNamed: "git branch"},
+		{name: "-M renaming the current branch", command: "git branch -M main", wantNamed: "git branch"},
+		{name: "--move --force", command: "git branch --move --force topic main", wantNamed: "git branch"},
+		{name: "-m -f", command: "git branch -m -f topic main", wantNamed: "git branch"},
+		{name: "-M onto a non-literal name", command: `git branch -M topic "$b"`, wantNamed: "git branch"},
+		{name: "-M onto the previous branch", command: "git branch -M topic @{-1}", wantNamed: "main"},
+		{name: "-M onto a previous branch git cannot resolve", command: "git branch -M topic @{-5}", wantNamed: "git branch"},
+		{name: "-M onto the upstream", command: "git branch -M topic @{u}", wantNamed: "git branch"},
+		{name: "-M onto a branch's push target", command: "git branch -M topic main@{push}", wantNamed: "git branch"},
+	})
+}
+
+func TestJudge_RefusesABranchRenameOntoAPackedBranchInAnotherCase(t *testing.T) {
+	t.Parallel()
+	f, caller := standingOn(t, "main", "topic")
+	f.Git("pack-refs", "--all")
+
+	checkJudged(t, caller, []judged{
+		{name: "-M naming both branches", command: "git branch -M topic Main", wantNamed: "Main", want: guard.Refuse},
+		{name: "-M renaming the current branch", command: "git branch -M MAIN", wantNamed: "MAIN", want: guard.Refuse},
+	})
+}
+
+func TestJudge_WhenTheFilesystemFoldsCase_RefusesABranchRenameOntoABranchInAnotherCase(t *testing.T) {
+	t.Parallel()
+	f, caller := standingOn(t, "main", "topic")
+	if _, err := os.Stat(filepath.Join(f.Dir(), ".git", "refs", "heads", "MAIN")); err != nil {
+		t.Skip("the filesystem keeps file names apart by case, so no other case names refs/heads/main")
+	}
+
+	checkJudgedRow(t, caller, judged{command: "git branch -M topic Main", wantNamed: "Main", want: guard.Refuse})
+}
+
+func TestJudge_AllowsAGitOperationThatLeavesWorkOnDisk(t *testing.T) {
+	t.Parallel()
+	_, caller := standingOn(t, "main", "topic")
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "clean without force", command: "git clean -d"},
+		{name: "clean under -c keeping the force requirement", command: "git -c clean.requireForce=true clean -d"},
+		{name: "clean -n under -c lifting the force requirement", command: "git -c clean.requireForce=false clean -n"},
+		{name: "clean --no-dry-run then -n under -c lifting the force requirement", command: "git -c clean.requireForce=false clean --no-dry-run -n -d"},
+		{name: "clean --no-dry-run then a bundle holding n under -c lifting the force requirement", command: "git -c clean.requireForce=false clean --no-dry-run -dn"},
+		{name: "checkout-index without force", command: "git checkout-index -a"},
+		{name: "update-ref setting a ref", command: "git update-ref refs/heads/new HEAD"},
+		{name: "branch -M onto a new name", command: "git branch -M topic other"},
+	})
+}
+
+// liftingForce returns a repository whose local config lifts the force requirement of git clean.
+func liftingForce(t *testing.T) *gittest.Fixture {
+	t.Helper()
+
+	f := gittest.New(t, "main")
+	f.Git("config", "--local", "clean.requireForce", "false")
+
+	return f
+}
+
+func TestJudge_RefusesACleanWhereTheRepositoryLiftsTheForceRequirement(t *testing.T) {
+	t.Parallel()
+
+	lifted := liftingForce(t)
+	kept, caller := standingOn(t, "main", "topic")
+
+	checkRefusedIn(t, callerIn(lifted, lifted.Dir()), []placed{
+		{name: "in the repository", dir: lifted.Dir(), command: "git clean -d"},
+		{name: "-n a later --no-dry-run undoes", dir: lifted.Dir(), command: "git clean -n --no-dry-run -d"},
+	}, "clean.requireForce")
+	checkRefusedIn(t, caller, []placed{
+		{name: "-C naming the repository", dir: kept.Dir(), command: "git -C " + quotedPath(lifted.Dir()) + " clean -d"},
+	}, "clean.requireForce")
+}
+
+func TestJudge_AllowsACleanThatKeepsTheForceRequirement(t *testing.T) {
+	t.Parallel()
+
+	lifted := liftingForce(t)
+
+	checkAllowedIn(t, callerIn(lifted, lifted.Dir()), []placed{
+		{name: "-c restoring the requirement", dir: lifted.Dir(), command: "git -c clean.requireForce=true clean -d"},
+	})
+}
+
+func TestJudge_AllowsADryRunCleanWhereTheRepositoryLiftsTheForceRequirement(t *testing.T) {
+	t.Parallel()
+
+	lifted := liftingForce(t)
+
+	checkAllowedIn(t, callerIn(lifted, lifted.Dir()), []placed{
+		{name: "-n", dir: lifted.Dir(), command: "git clean -n"},
+		{name: "--no-dry-run then -n", dir: lifted.Dir(), command: "git clean --no-dry-run -n -d"},
+	})
+}
+
+func TestJudge_WhenTheCleanForceSettingCannotBeRead_RefusesNamingTheRead(t *testing.T) {
+	// Not parallel: gittest.FakeGit sets PATH for the whole process.
+	f, _ := standingOn(t, "main", "topic")
+	env := append(f.Env(), gittest.FakeGit(t, gittest.Fake{FailOn: []string{"config"}})...)
+	const command = "git clean -d"
+
+	got := guard.Judge(t.Context(), command, callerWithEnv(f.Dir(), env))
+
+	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome", command)
+	assert.Check(t, is.Contains(got.Reason, "clean.requireForce"), "Judge(%q) reason", command)
+	assert.Check(t, is.Contains(got.Reason, gittest.FailedSaid), "Judge(%q) reason", command)
 }
 
 func TestJudge_RefusesARestoreThatDiscardsWork(t *testing.T) {
@@ -389,6 +524,10 @@ func TestJudge_RefusesAGitConfigWriteOfAKeyThatChangesWhatGitRuns(t *testing.T) 
 		{name: "credential helper of a URL given as a path", command: "git config credential.https://h.helper /bin/x", wantNamed: "credential.https://h.helper"},
 		{name: "credential helper key in another case", command: "git config credential.HELPER '!x'", wantNamed: "credential.HELPER"},
 		{name: "credential helper with ;", command: "git config credential.helper 'cache; touch x'", wantNamed: "credential.helper"},
+		{name: "url pushInsteadOf", command: "git config url.git@github.com:me/.pushInsteadOf git@github.com:org/", wantNamed: "url.git@github.com:me/.pushInsteadOf"},
+		{name: "url insteadOf", command: "git config url.https://example.com/me/.insteadOf https://example.com/org/", wantNamed: "url.https://example.com/me/.insteadOf"},
+		{name: "difftool command", command: "git config difftool.x.cmd 'git push'", wantNamed: "difftool.x.cmd"},
+		{name: "mergetool command in another case", command: "git config MergeTool.x.CMD 'git push'", wantNamed: "MergeTool.x.CMD"},
 	})
 }
 
@@ -401,6 +540,8 @@ func TestJudge_RefusesAGitConfigWriteOfASectionThatHoldsAGuardedKey(t *testing.T
 		{name: "rename into core in another case", command: "git config --rename-section team CORE", wantNamed: "CORE"},
 		{name: "rename into a filter driver", command: "git config --rename-section team filter.x", wantNamed: "filter.x"},
 		{name: "rename into the credentials of a URL", command: "git config --rename-section team credential.https://h", wantNamed: "credential.https://h"},
+		{name: "rename into a url rewrite", command: "git config --rename-section team url.https://h", wantNamed: "url.https://h"},
+		{name: "rename into a difftool", command: "git config --rename-section team difftool.x", wantNamed: "difftool.x"},
 	})
 }
 
@@ -419,6 +560,8 @@ func TestJudge_AllowsAGitConfigCallThatLeavesGuardedKeys(t *testing.T) {
 		{name: "filter driver key that runs nothing", command: "git config filter.lfs.required true"},
 		{name: "merge driver name", command: "git config merge.x.name x"},
 		{name: "diff key that runs nothing", command: "git config diff.renames true"},
+		{name: "difftool key that runs nothing", command: "git config difftool.prompt false"},
+		{name: "mergetool key that runs nothing", command: "git config mergetool.keepBackup false"},
 		{name: "removal of a diff driver", command: "git config --remove-section diff.x"},
 		{name: "credential helper with plain arguments", command: "git config credential.helper 'cache --timeout 3600'"},
 		{name: "--unset of a credential helper whatever its value-pattern", command: "git config --unset credential.helper 'a|b'"},

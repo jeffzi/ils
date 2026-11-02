@@ -5,6 +5,7 @@ package guard
 import (
 	"context"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -20,18 +21,25 @@ const hooksPathKey = "core.hooksPath"
 // Operations that discard work
 // ---------------------------------------------------------------------------
 
+// cleanForceKey is the config key that, while true, keeps git clean from deleting without
+// `--force`.
+const cleanForceKey = "clean.requireForce"
+
 // discard is a git operation that destroys work, with the reason the guard refuses it for.
 type discard struct {
 	// refuses reports whether the options make the operation destroy work; nil refuses every
-	// form of it.
+	// form of it, unless judges is set.
 	refuses func(o subcommandOptions) bool
-	reason  string
+	// judges decides the forms refuses leaves allowed, by the invocation's global options or the
+	// state of its repository: it returns the reason to refuse for, or an empty one to allow.
+	judges func(ctx context.Context, caller Caller, inv Invocation, o subcommandOptions) (string, error)
+	reason string
 }
 
 // discards returns the git operations that destroy work, each by the subcommand and, for the
 // operations of a subcommand that takes its own, the first word after it.
 func discards() map[string]discard {
-	return map[string]discard{
+	table := map[string]discard{
 		"checkout": {reason: "git checkout can overwrite uncommitted changes; use git switch or git restore --staged"},
 		"switch": {
 			refuses: func(o subcommandOptions) bool { return o.sets('f', "--force") || o.sets(0, "--discard-changes") },
@@ -41,12 +49,14 @@ func discards() map[string]discard {
 		"stash": {reason: "git stash takes uncommitted changes out of the working tree"},
 		"clean": {
 			refuses: func(o subcommandOptions) bool { return o.sets('f', "--force") },
+			judges:  judgeCleanWithoutForce,
 			reason:  "git clean --force deletes untracked files",
 		},
 		"branch": {
 			refuses: func(o subcommandOptions) bool {
 				return o.sets('D', "") || (o.sets('d', "--delete") && o.sets('f', "--force"))
 			},
+			judges: judgeForcedBranchMove,
 			reason: "git branch -D deletes a branch even when its commits are not merged",
 		},
 		"restore": {
@@ -67,6 +77,7 @@ func discards() map[string]discard {
 		"prune":         {reason: "git prune deletes unreachable objects, which can hold lost commits"},
 		"gc": {
 			refuses: func(o subcommandOptions) bool { return o.attaches("--prune") },
+			judges:  judgePruneExpiry,
 			reason:  "git gc --prune deletes unreachable objects, which can hold lost commits",
 		},
 		"apply": {
@@ -78,12 +89,34 @@ func discards() map[string]discard {
 			reason:  "git add --force stages files the ignore rules keep out",
 		},
 	}
+	maps.Copy(table, plumbingDiscards())
+
+	return table
+}
+
+// plumbingDiscards returns the operations of discards that git's plumbing commands, the low-level
+// ones its other commands are built from, perform.
+func plumbingDiscards() map[string]discard {
+	return map[string]discard{
+		"checkout-index": {
+			refuses: func(o subcommandOptions) bool { return o.sets('f', "--force") },
+			reason:  "git checkout-index --force overwrites files in the working tree, uncommitted changes included",
+		},
+		"read-tree": {
+			refuses: func(o subcommandOptions) bool { return o.sets(0, "--reset") || (o.sets('u', "") && o.sets('m', "")) },
+			reason:  "git read-tree --reset or -u -m discards changes in the index and the working tree",
+		},
+		"update-ref": {
+			refuses: func(o subcommandOptions) bool { return o.sets('d', "") || o.sets(0, "--stdin") },
+			reason:  "git update-ref -d or --stdin deletes refs, and the reflog that recovers their commits",
+		},
+	}
 }
 
 // refuseDiscardingGit refuses a git invocation that destroys work: uncommitted changes, untracked
 // files, unmerged branches, or the objects and reflog entries lost commits are recovered from. It
 // refuses one whose operation, or the options that decide it, it cannot read.
-func refuseDiscardingGit(_ context.Context, _ Caller, inv Invocation) (Verdict, error) {
+func refuseDiscardingGit(ctx context.Context, caller Caller, inv Invocation) (Verdict, error) {
 	sub, ok := subcommand(inv)
 	if !ok {
 		return Verdict{Outcome: Allow}, nil
@@ -107,22 +140,131 @@ func refuseDiscardingGit(_ context.Context, _ Caller, inv Invocation) (Verdict, 
 		return Verdict{Outcome: Allow}, nil
 	}
 
-	if op.refuses != nil {
+	return op.verdict(ctx, caller, inv, sub)
+}
+
+// verdict judges the git invocation inv of the subcommand sub, whose operation is d: it refuses
+// every form when d has neither refuses nor judges, and otherwise the forms they refuse and those
+// whose options it cannot read.
+func (d discard) verdict(ctx context.Context, caller Caller, inv Invocation, sub string) (Verdict, error) {
+	reason := d.reason
+	if d.refuses != nil || d.judges != nil {
 		options := readArgs(inv.Git.Args, optionsOf(sub))
 		if options.unreadable {
 			return unreadableArgument(sub), nil
 		}
 
-		if !op.refuses(options) {
+		switch {
+		case d.refuses != nil && d.refuses(options):
+		case d.judges != nil:
+			judged, err := d.judges(ctx, caller, inv, options)
+			if err != nil || judged == "" {
+				return Verdict{Outcome: Allow}, err
+			}
+
+			reason = judged
+		default:
 			return Verdict{Outcome: Allow}, nil
 		}
 	}
 
-	if name != sub {
-		return refuse(fmt.Sprintf("git %s is git %s: %s", sub, name, op.reason)), nil
+	if name := ruleName(sub); name != sub {
+		return refuse(fmt.Sprintf("git %s is git %s: %s", sub, name, reason)), nil
 	}
 
-	return refuse(op.reason), nil
+	return refuse(reason), nil
+}
+
+// judgeCleanWithoutForce refuses `git clean` without `--force` when the config git reads for the
+// invocation, its `-c` and `--config-env` options included, sets cleanForceKey to false, which
+// lets it delete untracked files anyway, or when the guard cannot read that config. A dry run
+// deletes nothing, unless a later --no-dry-run undoes it.
+func judgeCleanWithoutForce(ctx context.Context, caller Caller, inv Invocation, o subcommandOptions) (string, error) {
+	if o.setsLast('n', "--dry-run", "--no-dry-run") {
+		return "", nil
+	}
+
+	targets, targetOK := targetOptions(inv)
+	config, configOK := configOptions(inv)
+	if !targetOK || !configOK {
+		return fmt.Sprintf("git clean: the guard cannot read %s, which lets it delete untracked files without --force", cleanForceKey), nil
+	}
+
+	// --default answers for an unset key, so git exits non-zero only on a failure.
+	args := slices.Concat(targets, config, []string{"config", "--type=bool", "--default=true", "--get", cleanForceKey})
+
+	result, err := targetRunner(caller.Git, inv.Dir, inv.Target).Run(ctx, args...)
+	if err != nil {
+		return "", fmt.Errorf("read %s for git clean: %w", cleanForceKey, err)
+	}
+
+	if strings.TrimSpace(result.Stdout) == "true" {
+		return "", nil
+	}
+
+	return fmt.Sprintf("git clean deletes untracked files without --force: %s is false", cleanForceKey), nil
+}
+
+// judgePruneExpiry refuses `git gc` whose `-c` or `--config-env` option sets gc.pruneExpire, which
+// decides how old the unreachable objects it deletes must be.
+func judgePruneExpiry(_ context.Context, _ Caller, inv Invocation, _ subcommandOptions) (string, error) {
+	for _, o := range inv.Git.Options {
+		if key, _, cut := configKey(o); cut && strings.EqualFold(key, "gc.pruneExpire") {
+			return fmt.Sprintf("git %s gc.pruneExpire sets which unreachable objects git gc deletes, and they can hold lost commits", o.Name), nil
+		}
+	}
+
+	return "", nil
+}
+
+// judgeForcedBranchMove refuses `git branch -M`, or `--move` with `--force`, onto a branch that
+// exists, which it replaces along with its reflog, and one whose repository the guard cannot
+// tell. The new name is the last of the one or two names the move takes, expanded as git expands
+// it (`@{-1}` names the branch checked out before). A name git cannot expand fails the read, so
+// the guard refuses it.
+//
+// A branch exists when its name matches the new one in any letter case, wherever git stores it: on
+// a filesystem that folds case, `refs/heads/Main` and `refs/heads/main` are one file, while an exact
+// read of a ref packed into packed-refs finds no other case at all.
+func judgeForcedBranchMove(ctx context.Context, caller Caller, inv Invocation, o subcommandOptions) (string, error) {
+	forced := o.sets('M', "") || (o.sets('m', "--move") && o.sets('f', "--force"))
+	if !forced || len(o.positional) == 0 {
+		return "", nil
+	}
+
+	targets, ok := targetOptions(inv)
+	if !ok {
+		return "git branch -M: the guard cannot tell which repository it runs in", nil
+	}
+
+	runner := targetRunner(caller.Git, inv.Dir, inv.Target)
+	name := o.positional[len(o.positional)-1].Text
+
+	expanded, err := runner.Run(ctx, slices.Concat(targets, []string{"check-ref-format", "--branch", name})...)
+	if err != nil {
+		return "", fmt.Errorf("expand the branch name %s for git branch -M: %w", name, err)
+	}
+
+	branch := strings.TrimSpace(expanded.Stdout)
+
+	listed, err := runner.Run(ctx, slices.Concat(targets, []string{"for-each-ref", "--format=%(refname)", "refs/heads/"})...)
+	if err != nil {
+		return "", fmt.Errorf("read whether git branch -M replaces %s: %w", branch, err)
+	}
+
+	for ref := range strings.SplitSeq(listed.Stdout, "\n") {
+		existing, isBranch := strings.CutPrefix(ref, "refs/heads/")
+		switch {
+		case !isBranch || !strings.EqualFold(existing, branch):
+		case existing == branch:
+			return fmt.Sprintf("git branch -M replaces the existing branch %s and its reflog", branch), nil
+		default:
+			return fmt.Sprintf("git branch -M onto %s can replace the existing branch %s and its reflog: "+
+				"where the filesystem folds case, git reads both names as one", branch, existing), nil
+		}
+	}
+
+	return "", nil
 }
 
 // hasOperations reports whether table holds an operation of sub named by the word after it.
@@ -139,9 +281,7 @@ func hasOperations(table map[string]discard, sub string) bool {
 // unreadableArgument refuses the git subcommand sub, one of whose arguments outside a value slot
 // is not a literal: it may hold an option the guard decides by.
 func unreadableArgument(sub string) Verdict {
-	reason := fmt.Sprintf("git %s: the argument cannot be read, and it may hold an option the guard checks for", sub)
-
-	return refuse(reason)
+	return refuse(fmt.Sprintf("git %s: the argument cannot be read, and it may hold an option the guard checks for", sub))
 }
 
 // ---------------------------------------------------------------------------
@@ -343,10 +483,11 @@ func worktreePath(inv Invocation, options subcommandOptions) (path, why string) 
 	return path, ""
 }
 
-// guardedSections returns the config sections that make git run programs or reach another
-// repository. git runs the value of every `pager.<command>` key as a shell command.
+// guardedSections returns the config sections that make git run programs, reach another
+// repository, or rewrite the URL it pushes to. git runs the value of every `pager.<command>` key
+// as a shell command, and the `url.<base>` keys replace the start of a URL.
 func guardedSections() []string {
-	return []string{"alias", "include", "includeIf", "pager", "remote"}
+	return []string{"alias", "include", "includeIf", "pager", "remote", "url"}
 }
 
 // guardedKeys returns the config keys outside guardedSections that make git run programs:
@@ -416,10 +557,10 @@ func plainHelperName(value string) bool {
 }
 
 // holdsShellKey reports whether section, the section a rename moves keys into, holds a key whose
-// value git runs through the shell: a credential helper, or the command key of a driver that a
-// subsection names.
+// value git runs through the shell: a credential helper, or the command key of a driver or tool
+// that a subsection names.
 func holdsShellKey(section string) bool {
-	return slices.ContainsFunc([]string{".command", ".textconv", ".clean", ".smudge", ".process", ".driver"},
+	return slices.ContainsFunc([]string{".command", ".textconv", ".clean", ".smudge", ".process", ".driver", ".cmd"},
 		func(name string) bool { return runsShell(section + name) }) || isCredentialHelper(section+".helper")
 }
 
@@ -467,9 +608,9 @@ func configAction(options subcommandOptions) (action string, words []string) {
 }
 
 // guardedConfigName reports whether name, a key or a whole section, is guarded: in a section of
-// guardedSections, one of guardedKeys, a key whose value runsShell, or a section that holds one of
-// guardedKeys, which a rename or a removal of the whole section writes. git reads the section and
-// the variable name in any case.
+// guardedSections, one of guardedKeys, a key whose value runsShell, a difftool or mergetool
+// command, or a section that holds one of guardedKeys, which a rename or a removal of the whole
+// section writes. git reads the section and the variable name in any case.
 func guardedConfigName(name string) bool {
 	section, _, _ := strings.Cut(name, ".")
 	holdsKey := func(key string) bool {

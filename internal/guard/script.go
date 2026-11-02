@@ -159,3 +159,69 @@ func unescapeHeredoc(body string) string {
 
 	return b.String()
 }
+
+// goCommandFlags are the flags of go whose value is a shell command go runs: `-toolexec` runs each
+// compiler tool through it, and `-exec` each test binary or program go builds.
+func goCommandFlags() []string {
+	return []string{"-toolexec", "--toolexec", "-exec", "--exec"}
+}
+
+// goCommand is one flag of goCommandFlags in a go invocation, with its value.
+type goCommand struct {
+	flag  string
+	value Word
+}
+
+// goCommandsOf returns each flag of goCommandFlags among words, the words of a go invocation, with
+// its value: the rest of the word after `=`, or the next word. A word that only starts as one of
+// the flags before an expansion has a value that is not a literal.
+func goCommandsOf(words []Word) []goCommand {
+	if len(words) == 0 || words[0].Text != "go" {
+		return nil
+	}
+
+	var commands []goCommand
+	args := words[1:]
+	for i, arg := range args {
+		flag, value, joined := strings.Cut(arg.Text, "=")
+		if !slices.Contains(goCommandFlags(), flag) {
+			continue
+		}
+
+		switch {
+		case joined:
+			commands = append(commands, goCommand{flag: flag, value: Word{Text: value, Literal: arg.Literal}})
+		case arg.Literal && i+1 < len(args):
+			commands = append(commands, goCommand{flag: flag, value: args[i+1]})
+		}
+	}
+
+	return commands
+}
+
+// goCommands reads each command the go invocation inv runs through a flag of goCommandFlags, at
+// depth levels of nesting, and returns those to walk. It marks inv, naming the flag, for a command
+// that is not a literal, that does not parse, or that would nest past maxDepth.
+func goCommands(inv *Invocation, depth int) []*syntax.File {
+	var files []*syntax.File
+	for _, c := range goCommandsOf(inv.Words) {
+		form := "go " + c.flag
+		switch {
+		case !c.value.Literal:
+			inv.Marks = append(inv.Marks, Mark{Kind: DynamicScript, Name: form})
+		case depth == maxDepth:
+			inv.Marks = append(inv.Marks, Mark{Kind: DeepScript, Name: form})
+		default:
+			file, err := read(c.value.Text)
+			if err != nil {
+				inv.Marks = append(inv.Marks, Mark{Kind: UnreadCommand, Name: form})
+
+				continue
+			}
+
+			files = append(files, file)
+		}
+	}
+
+	return files
+}

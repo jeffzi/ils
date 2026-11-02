@@ -3,8 +3,11 @@ package landing_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 
@@ -776,6 +779,65 @@ func TestRelease_WhenTheTagCannotBeCreated_BrokeSayingNothingWasWritten(t *testi
 	})
 }
 
+func TestRelease_WhenAnInterruptLandsBeforeTheFirstWrite_EndsPendingWithNothingWritten(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		cmd := releaseCommand(version)
+		// The interrupt lands as the gate reads the checks, the last read before the tag is made.
+		done := make(chan struct{})
+		interrupt := sync.OnceFunc(func() { close(done) })
+		script := gated(passing())
+		script.OnRead = func(call forgetest.Call) {
+			if call.Op == forgetest.OpCommitVerdict {
+				interrupt()
+			}
+		}
+		run := gateScene(t, script)
+
+		got := landing.Release(byInterrupt().once(within(t, 0), done), run.st.s.deps, cmd.req)
+
+		assertEndedBy(t, got, run.st.s.gitDir, ended{
+			outcome: result.Pending, req: cmd.req, text: expect("interrupted") + cmd.again,
+		})
+		assert.Check(t, is.Equal(run.st.s.written(), run.before))
+		assert.Check(t, is.Equal(run.st.s.localTag(releaseTag), ""))
+		assert.Check(t, is.Len(releaseCalls(run.st.s), 0))
+		assert.Check(t, is.DeepEqual(releasePayload(t, got, run.st.s.gitDir), released(run.st, "green", "")))
+	})
+}
+
+// cutTagNext is the `Next:` line a release ends on once c cut short the making or the push of the
+// tag: the short time limit names the long wait, as a push whose hooks, or a tag whose signing,
+// outlast 100 seconds ends the same way every time under it.
+func cutTagNext(c cut) string {
+	if errors.Is(c.err, context.DeadlineExceeded) {
+		return nextLine("ils release " + version + " --wait")
+	}
+
+	return releaseCommand(version).again
+}
+
+func TestRelease_WhenACutEndsTheMakingOfTheTag_SaysWhatEndedIt(t *testing.T) {
+	// Not parallel: stallingGit puts a stalling git first on PATH with t.Setenv.
+	for _, c := range cuts() {
+		t.Run(c.name, func(t *testing.T) {
+			cmd := releaseCommand(version)
+			st := releaseScene(t, tagged)
+			ctx := c.stallingGit([]string{"tag", "--annotate"})(t, st.s)
+
+			got := landing.Release(ctx, st.s.deps, cmd.req)
+
+			assertEndedBy(t, got, st.s.gitDir, ended{
+				outcome: result.Broke, req: cmd.req, text: expect(releaseTag) + expect(c.ends) + cutTagNext(c),
+			})
+			_, reason := shown(t, got, st.s.gitDir)
+			assertSays(t, reason, expect(c.ends))
+			assert.Check(t, is.Equal(st.s.originTag(releaseTag), ""))
+			assert.Check(t, is.Len(releaseCalls(st.s), 0))
+		})
+	}
+}
+
 // answersBeforeTagPush is how many calls git makes to origin before the push of the tag: origin
 // answers about its trunk, its tags, and the fetch of its trunk; the push is next.
 const answersBeforeTagPush = 3
@@ -1031,6 +1093,72 @@ func TestRelease_WhenPublishingTheGitHubReleaseIsCutShort_BrokeSayingItMayHaveGo
 			})
 		})
 	}
+}
+
+func TestRelease_WhenACutEndsTheLookupOfTheGitHubRelease_SaysWhatEndedIt(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range cuts() {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				cmd := releaseCommand(version)
+				st := releaseScene(t, tagged)
+				script := gated(passing())
+				script.FindRelease = []forgetest.Answer[string]{{Err: c.of("gh release view")}}
+				script.PublishRelease = nil
+				st.s.useForge(t, script)
+
+				got := runRelease(t, st.s, cmd.req)
+
+				assertEndedBy(t, got, st.s.gitDir, ended{
+					outcome: result.Broke, req: cmd.req, text: expect(releaseTag, c.ends) + cmd.again,
+				})
+				_, reason := shown(t, got, st.s.gitDir)
+				assertSays(t, reason, expect(c.ends))
+				assert.Check(t, is.DeepEqual(opsOf(releaseCalls(st.s)), []forgetest.Op{forgetest.OpFindRelease}))
+				assert.Check(t, is.Equal(st.s.originTag(releaseTag), st.release))
+				assert.Check(t, is.DeepEqual(releasePayload(t, got, st.s.gitDir), released(st, "green", "")))
+			})
+		})
+	}
+}
+
+// notesLeft is a forge whose release is created while its notes file stays behind: its
+// PublishRelease answers as the fake does, then fails with left once the fake gave a link.
+type notesLeft struct {
+	*forgetest.Fake
+
+	left error
+}
+
+// PublishRelease returns the link the fake answers with left, or the fake's error when it fails.
+func (f notesLeft) PublishRelease(ctx context.Context, repo forge.Repo, release forge.NewRelease) (string, error) {
+	link, err := f.Fake.PublishRelease(ctx, repo, release)
+	if err != nil {
+		return "", err
+	}
+
+	return link, f.left
+}
+
+func TestRelease_WhenTheNotesFileOfACreatedReleaseStaysBehind_DoneNamingIt(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		const notesFile = "/tmp/ils-release-notes-417.md"
+		req := releaseRequest(version, false)
+		st := releaseScene(t, tagged)
+		left := &fs.PathError{Op: "remove", Path: notesFile, Err: errors.New("directory not empty")}
+		st.s.deps.Forge = notesLeft{Fake: st.s.forge, left: fmt.Errorf("remove the release notes: %w", left)}
+
+		got := runRelease(t, st.s, req)
+
+		assertEndedBy(t, got, st.s.gitDir, ended{outcome: result.Done, req: req, text: expect(releaseURL)})
+		text, _ := shown(t, got, st.s.gitDir)
+		assertSays(t, text, expect(notesFile))
+		assert.Check(t, is.DeepEqual(opsOf(releaseCalls(st.s)), []forgetest.Op{forgetest.OpFindRelease, forgetest.OpPublishRelease}))
+		assert.Check(t, is.DeepEqual(releasePayload(t, got, st.s.gitDir), released(st, "green", releaseURL)))
+	})
 }
 
 // failedRelease is one git read of a release that fails for a reason no refusal covers.
