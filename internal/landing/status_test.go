@@ -567,6 +567,57 @@ func TestStatus_WhenAGitReadFails_ReportsTheFailedReadBesideTheRest(t *testing.T
 	assert.Assert(t, got.status.PullRequest != nil)
 }
 
+// aheadOfCopy publishes the topic branch and adds a commit past origin's copy of it.
+func aheadOfCopy(f *gittest.Fixture) {
+	f.Publish(topic)
+	f.Commits(topic, "fix a typo")
+}
+
+// failCopyFetch makes origin answer the questions about its trunk and whether it has the branch, and
+// fail the fetch of the branch's copy after them.
+func failCopyFetch(t *testing.T, s *scene) { s.stopAnswering(t, 3) }
+
+func TestStatus_WhenTheFetchOfOriginsCopyFails_ListsTheReadWithoutCountingTheCopy(t *testing.T) {
+	t.Parallel()
+	s := statusScene(t, aheadOfCopy, greenOpen())
+	failCopyFetch(t, s)
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	assert.Check(t, hasUnread(got.status, readCopy), "unread %v, want %s listed", got.status.Unread, readCopy)
+	assert.Check(t, !got.status.OnOrigin, "status carries the copy on origin, %d ahead and %d behind, though its fetch failed",
+		got.status.Ahead, got.status.Behind)
+}
+
+func TestStatus_WhenAReadOfOriginsCopyFails_EndsOnFixingWhatFailed(t *testing.T) {
+	// Not parallel: a row puts a failing git first on PATH with t.Setenv.
+	tests := []struct {
+		fail func(t *testing.T, s *scene)
+		name string
+	}{
+		{name: "the fetch of the copy", fail: failCopyFetch},
+		{
+			name: "the divergence from the copy",
+			fail: func(t *testing.T, s *scene) {
+				t.Helper()
+				failGit(t, s, []string{"rev-list", "--left-right", "--count"})
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := statusScene(t, aheadOfCopy, greenOpen())
+			tt.fail(t, s)
+
+			got := seeStatus(t, s, (*testing.T).Context)
+
+			_, next, found := strings.Cut(got.text, "Next:")
+			assert.Check(t, found, "text %q, want a Next: line", got.text)
+			assertSays(t, "Next:"+next, expect("fix what failed", "ils status"))
+		})
+	}
+}
+
 func TestStatus_WhenTheFirstReadIsCutShort_EndsDoneSkippingEveryReadAfterIt(t *testing.T) {
 	t.Parallel()
 

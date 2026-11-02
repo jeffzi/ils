@@ -679,6 +679,18 @@ func TestRepo_Fetch_WhenItReturns_LeavesNoRefOfItsOwn(t *testing.T) {
 	assert.Check(t, is.Equal(f.Git("for-each-ref", "refs/ils/"), ""), "refs under refs/ils/ after Fetch")
 }
 
+func TestRepo_Fetch_WhenTheFetchConfigLeavesTheBranchOut_PutsOriginsTrackingRefAtTheFetchedSHA(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.Git("config", "remote.origin.fetch", "+refs/heads/"+topic+":refs/remotes/origin/"+topic)
+	want := f.AdvanceOrigin(trunk)
+
+	_, err := newRepo(f).Fetch(t.Context(), trunk)
+	assert.NilError(t, err, "Fetch(%q)", trunk)
+
+	assert.Check(t, is.Equal(f.Git("rev-parse", "refs/remotes/origin/"+trunk), want))
+}
+
 // killsReceivePack kills the hook's parent: git runs a hook as a child of receive-pack, so `$PPID`
 // is the process that must die mid-push.
 const killsReceivePack = "kill -KILL $PPID"

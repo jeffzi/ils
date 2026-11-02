@@ -451,9 +451,13 @@ const (
 // Fetch fetches one ref from origin, a branch name or a full ref, and returns the fetched sha.
 //
 // A branch name is fetched as the branch, never as a tag of the same name. The fetch is stored in a
-// ref under refs/ils/fetched/, which only ils writes, read back from there and deleted: FETCH_HEAD is shared
-// with every other fetch in the repository, which can rewrite it before it is read. A fetch that
-// fails is a *RemoteError.
+// ref under refs/ils/fetched/, which only ils writes, read back from there and deleted: FETCH_HEAD
+// is shared with every other fetch in the repository, which can rewrite it before it is read. A
+// fetch that fails is a *RemoteError.
+//
+// A fetched branch also moves its remote-tracking ref, refs/remotes/origin/<branch>, to the fetched
+// sha, even when the clone's remote.origin.fetch leaves the branch out: every later read of origin's
+// branch goes through that ref, and must see the tip this fetch returned.
 func (r Repo) Fetch(ctx context.Context, ref string) (string, error) {
 	if !strings.HasPrefix(ref, refsPrefix) {
 		ref = headsRef + ref
@@ -477,6 +481,12 @@ func (r Repo) Fetch(ctx context.Context, ref string) (string, error) {
 	// request and tag in the user's repository.
 	if _, err := r.Runner.Run(ctx, "update-ref", "-d", fetched, sha); err != nil {
 		return "", err
+	}
+
+	if branch, isBranch := strings.CutPrefix(ref, headsRef); isBranch {
+		if _, err := r.Runner.Run(ctx, "update-ref", remotesRef+branch, sha); err != nil {
+			return "", err
+		}
 	}
 
 	return sha, nil

@@ -73,6 +73,40 @@ func TestStartBranch_WhenEveryCheckHolds_StartsTheBranchAtOriginsTrunk(t *testin
 	assertStarted(t, s, fresh)
 }
 
+func TestStartBranch_WhenTheFetchConfigLeavesTheTrunkOut_StartsTheBranchAtTheFetchedTrunk(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		arrange func(*gittest.Fixture)
+		name    string
+	}{
+		{name: "tracking ref behind origin's trunk", arrange: func(*gittest.Fixture) {}},
+		{
+			name:    "no tracking ref",
+			arrange: func(f *gittest.Fixture) { f.Git("update-ref", "-d", "refs/remotes/origin/"+trunk) },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var tip string
+
+			s := branchScene(t, func(f *gittest.Fixture) {
+				f.Git("config", "remote.origin.fetch", "+refs/heads/"+topic+":refs/remotes/origin/"+topic)
+				tt.arrange(f)
+				tip = f.AdvanceOrigin(trunk)
+			})
+
+			got := startBranch(t, s, fresh)
+
+			want := expect(fresh, shortSHA(tip), "Next:", "ils push")
+			assertEndedBy(t, got, s.gitDir, ended{outcome: result.Done, req: branchRequest(fresh), text: want})
+			assertStarted(t, s, fresh)
+		})
+	}
+}
+
 func TestStartBranch_WhenHEADIsDetachedWithNoCommitOfItsOwn_StartsAtOriginsTrunkAsFetched(t *testing.T) {
 	t.Parallel()
 	s := branchScene(t, func(f *gittest.Fixture) {

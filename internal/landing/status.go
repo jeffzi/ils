@@ -80,6 +80,9 @@ type reading struct {
 	running     bool
 	cut         bool
 	offline     bool
+	// copyUnread is set when the fetch of origin's copy of the branch, or the count of the commits
+	// apart from it, failed: the status then knows neither, so no step past the fix can be told.
+	copyUnread bool
 }
 
 func (r *reading) say(lines ...result.Phrase) {
@@ -449,11 +452,9 @@ func (r *reading) readCopy(ctx context.Context) {
 
 	theirs, found, read, err := r.copyTip(ctx)
 
-	r.status.OnOrigin = found
-
 	switch {
 	case err != nil:
-		r.failed(read, err)
+		r.failedCopy(read, err)
 
 		return
 	case !found:
@@ -462,7 +463,7 @@ func (r *reading) readCopy(ctx context.Context) {
 		return
 	}
 
-	r.copied = theirs
+	r.status.OnOrigin, r.copied = true, theirs
 
 	if r.on.tip == "" {
 		return
@@ -470,7 +471,7 @@ func (r *reading) readCopy(ctx context.Context) {
 
 	apart, err := r.deps.Repo.Divergence(ctx, r.on.tip, theirs)
 	if err != nil {
-		r.failed(readCopy, err)
+		r.failedCopy(readCopy, err)
 
 		return
 	}
@@ -487,6 +488,14 @@ func (r *reading) readCopy(ctx context.Context) {
 	default:
 		r.say(result.Say("The branch %s is up to date with origin's copy of it", branch))
 	}
+}
+
+// failedCopy records that the read named read of origin's copy of the branch failed with err and,
+// unless a cut ended it, leaves the copy unread for next. A failed ask of whether origin has the
+// branch is not a read of the copy: it leaves the branch counted as not on origin.
+func (r *reading) failedCopy(read string, err error) {
+	r.failed(read, err)
+	r.copyUnread = read == readCopy && !r.cut
 }
 
 // copyTip returns the tip of origin's copy of the branch and whether origin has one: fetched now, or
@@ -739,6 +748,10 @@ func (r *reading) next() result.Next {
 
 	if !r.dirty.None() {
 		return r.dirty
+	}
+
+	if r.copyUnread {
+		return r.req.onceFixed()
 	}
 
 	s, push := r.status, result.Command(PushCommand)
