@@ -103,6 +103,14 @@ func wrapperOptionsOf(name string) (wrapperOptions, bool) {
 	return options, ok
 }
 
+// readsCommand reports whether the guard reads the command word name: `cd`, `pushd`, `popd`, or a
+// wrapper it sees through.
+func readsCommand(name string) bool {
+	_, wrapper := wrapperOptionsOf(name)
+
+	return wrapper || slices.Contains([]string{"cd", "pushd", "popd"}, name)
+}
+
 // skipOptions returns how many of words, the words after a wrapper, are options it takes, and the
 // letters given among them. It stops at the first word that is not literal, is no option, or holds
 // a letter the wrapper does not take, or whose value is missing or not literal.

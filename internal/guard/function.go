@@ -22,9 +22,81 @@ type definition struct {
 	// redirects are those in effect where the function is declared, which the walk reads every
 	// command of its body with.
 	redirects []Redirect
+	// runs are the dry runs of the body so far, which a later call reuses instead of walking the
+	// body again: without them, functions that each call the one before twice cost a walk per call
+	// path, two to the power of their count.
+	runs []pastRun
 	// probing reports whether a dry run of the body is under way, so that a call of the function
 	// from inside its own body is not run again.
 	probing bool
+}
+
+// pastRun is one dry run of a definition's body: the scope it started from at a depth, what it
+// left and found, and the definitions its result rests on.
+type pastRun struct {
+	reads dryRunReads
+	marks []Mark
+	from  scope
+	left  scope
+	depth int
+}
+
+// dryRunReads is what a dry run's result rests on besides the scope it starts from: the
+// definitions it ran, which must not be under way for the result to hold again, and those it found
+// under way and so did not run again, which must be.
+type dryRunReads struct {
+	ran      map[*definition]bool
+	underway map[*definition]bool
+}
+
+// holds reports whether a dry run that read r would run again as it did, given the definitions
+// under way now.
+func (r dryRunReads) holds() bool {
+	for d := range r.ran {
+		if d.probing {
+			return false
+		}
+	}
+
+	for d := range r.underway {
+		if !d.probing {
+			return false
+		}
+	}
+
+	return true
+}
+
+// dryRuns is what the walkers of one Parse share about dry runs of function bodies: what each run
+// under way has read so far, innermost last.
+type dryRuns struct {
+	stack []dryRunReads
+}
+
+// note records in the innermost run under way, if any, that it ran d, whose result rests on reads.
+func (runs *dryRuns) note(d *definition, reads dryRunReads) {
+	if len(runs.stack) == 0 {
+		return
+	}
+
+	top := runs.stack[len(runs.stack)-1]
+	top.ran[d] = true
+	maps.Copy(top.ran, reads.ran)
+	maps.Copy(top.underway, reads.underway)
+}
+
+// noteUnderway records in the innermost run under way, if any, that it found d under way.
+func (runs *dryRuns) noteUnderway(d *definition) {
+	if len(runs.stack) > 0 {
+		runs.stack[len(runs.stack)-1].underway[d] = true
+	}
+}
+
+// sameScope reports whether a and b are the same scope to a dry run of a function body.
+func sameScope(a, b scope) bool {
+	return a.dir == b.dir && a.env == b.env && a.physical == b.physical && a.racing == b.racing &&
+		a.allexport == b.allexport && slices.Equal(a.redirects, b.redirects) &&
+		maps.Equal(a.functions, b.functions)
 }
 
 // with returns the function that runs any of fn's definitions or of defs. A nil fn has none.
@@ -87,8 +159,7 @@ func (w *walker) declareFunction(decl *syntax.FuncDecl, sc *scope) {
 
 	functions[name] = &function{definitions: []*definition{{body: decl.Body, redirects: sc.redirects}}}
 	sc.functions = functions
-	_, wrapper := wrapperOptionsOf(name)
-	if wrapper || slices.Contains([]string{"cd", "pushd", "popd"}, name) {
+	if readsCommand(name) {
 		w.keep(w.placed(Invocation{Marks: []Mark{{Kind: ShadowingFunction, Name: name}}}, sc))
 	}
 }
@@ -160,25 +231,53 @@ func (w *walker) call(inv Invocation, sc *scope) {
 
 // probe returns a walker that reads at w's depth and drops what it finds.
 func (w *walker) probe() walker {
-	return walker{caller: w.caller, timed: map[*syntax.Stmt]bool{}, depth: w.depth, probing: true}
+	return walker{caller: w.caller, timed: map[*syntax.Stmt]bool{}, depth: w.depth, probing: true, dryRuns: w.runs()}
+}
+
+// runs returns the dry runs w shares with the walkers it probes with.
+func (w *walker) runs() *dryRuns {
+	if w.dryRuns == nil {
+		w.dryRuns = &dryRuns{}
+	}
+
+	return w.dryRuns
 }
 
 // dryRun returns the scope d's body leaves, run from sc in unmovedDir, and the GitVariable marks of
 // its invocations. The run is walked apart and dropped: the walk of the body where it is declared
 // already holds its invocations, and the errors in reading them. A call of d from inside its own
 // body moves to an unknown directory, and may turn allexport on.
+//
+// A run that starts from the same scope at the same depth as an earlier run of d, while every
+// definition that run ran is not under way and every one it found under way still is, leaves what
+// the earlier run left, which dryRun returns without walking the body again.
 func (w *walker) dryRun(d *definition, sc scope) (scope, []Mark) {
+	runs := w.runs()
 	if d.probing {
+		runs.noteUnderway(d)
 		sc.dir, sc.allexport = "", true
 
 		return sc, nil
 	}
 
+	sc.dir, sc.physical = unmovedDir, false
+	for _, past := range d.runs {
+		if past.depth == w.depth && sameScope(past.from, sc) && past.reads.holds() {
+			runs.note(d, past.reads)
+
+			return past.left, past.marks
+		}
+	}
+
+	reads := dryRunReads{ran: map[*definition]bool{}, underway: map[*definition]bool{}}
+	runs.stack = append(runs.stack, reads)
 	d.probing = true
 	sub := w.probe()
-	sc.dir, sc.physical = unmovedDir, false
+	from := sc
 	sub.stmt(d.body, &sc)
 	d.probing = false
+	runs.stack = runs.stack[:len(runs.stack)-1]
+	delete(reads.underway, d)
 
 	var marks []Mark
 	for _, inv := range sub.walked {
@@ -188,6 +287,11 @@ func (w *walker) dryRun(d *definition, sc scope) (scope, []Mark) {
 			}
 		}
 	}
+
+	// The caller appends to the marks it is handed, which must not reach the copy kept here.
+	marks = slices.Clip(marks)
+	d.runs = append(d.runs, pastRun{from: from, depth: w.depth, left: sc, marks: marks, reads: reads})
+	runs.note(d, reads)
 
 	return sc, marks
 }

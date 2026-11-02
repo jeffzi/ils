@@ -142,6 +142,9 @@ const (
 	ShadowingFunction MarkKind = "function defined over a command the guard reads"
 	// ToolAlias is an alias whose value may run git, gh, or ils, or that the guard cannot read.
 	ToolAlias MarkKind = "alias that may run git, gh, or ils"
+	// ReadCommandAlias is an alias whose value runs a command the guard reads, such as `cd` or a
+	// wrapper: a later command that names the alias runs it without the guard following it.
+	ReadCommandAlias MarkKind = "alias that runs a command the guard reads"
 )
 
 // maxDepth is how many levels of strings run by `bash -c`, `eval`, or a heredoc fed to a shell
@@ -231,6 +234,9 @@ type walker struct {
 	timed     map[*syntax.Stmt]bool
 	functions map[string]*function
 	err       error
+	// dryRuns is shared by w and every walker it probes with; nil until w's first dry run of a
+	// function body.
+	dryRuns *dryRuns
 	// walked holds every invocation the walk placed, in the order it walked them, those of dry runs
 	// included.
 	walked []Invocation
@@ -393,9 +399,9 @@ func (w *walker) add(stmt *syntax.Stmt, call *syntax.CallExpr, sc *scope) {
 	w.call(inv, sc)
 }
 
-// aliasMarks marks each alias the `alias` invocation inv defines whose value may run git, gh, or
-// ils, or is a string the guard cannot read. A later command that names the alias runs its value
-// from wherever it stands.
+// aliasMarks marks each alias the `alias` invocation inv defines whose value takes a mark (see
+// aliasKind), or is a string the guard cannot read. A later command that names the alias runs its
+// value from wherever it stands.
 func (w *walker) aliasMarks(inv Invocation) []Mark {
 	if len(inv.Words) == 0 || !inv.Words[0].Literal || inv.Words[0].Text != "alias" {
 		return nil
@@ -404,31 +410,59 @@ func (w *walker) aliasMarks(inv Invocation) []Mark {
 	var marks []Mark
 	for _, word := range inv.Words[1:] {
 		name, value, defines := strings.Cut(word.Text, "=")
-		if word.Literal && (!defines || !w.runsTool(value)) {
-			continue
+		kind := ToolAlias
+		if word.Literal {
+			if !defines {
+				continue
+			}
+
+			var marked bool
+			if kind, marked = w.aliasKind(value); !marked {
+				continue
+			}
 		}
 
-		marks = append(marks, Mark{Kind: ToolAlias, Name: name})
+		marks = append(marks, Mark{Kind: kind, Name: name})
 	}
 
 	return marks
 }
 
-// runsTool reports whether the shell string script may run git, gh, or ils: when it holds an
-// invocation of one, or one the guard marks, or when the guard cannot read it.
-func (w *walker) runsTool(script string) bool {
-	file, err := read(script)
+// aliasKind returns the mark an alias whose value is the shell string value takes, and false when
+// it takes none. The mark is ToolAlias when value holds an invocation of git, gh, or ils, or one
+// the guard marks, or when the guard cannot read it; it is ReadCommandAlias when value runs a
+// command the guard reads (see readsThrough), whose effect the guard never applies to the command
+// that names the alias.
+func (w *walker) aliasKind(value string) (MarkKind, bool) {
+	file, err := read(value)
 	if err != nil || w.depth == maxDepth {
-		return true
+		return ToolAlias, true
 	}
 
 	sub := w.probe()
 	sc := laterScope()
 	sub.nested(file, &sc)
 
-	return sub.err != nil || slices.ContainsFunc(sub.walked, func(inv Invocation) bool {
+	switch {
+	case sub.err != nil || slices.ContainsFunc(sub.walked, func(inv Invocation) bool {
 		return inv.Tool != NoTool || len(inv.Marks) > 0
-	})
+	}):
+		return ToolAlias, true
+	case slices.ContainsFunc(sub.walked, readsThrough):
+		return ReadCommandAlias, true
+	default:
+		return "", false
+	}
+}
+
+// readsThrough reports whether inv runs a command the guard reads: `cd`, `pushd`, `popd`, or a
+// wrapper it sees through, whether as the command word or in front of it.
+func readsThrough(inv Invocation) bool {
+	if len(inv.Wrappers) > 0 {
+		return true
+	}
+
+	return len(inv.Words) > 0 && inv.Words[0].Literal && readsCommand(inv.Words[0].Text)
 }
 
 // assignedNames returns the variables the simple command stmt, whose words are words, assigns

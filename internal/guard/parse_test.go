@@ -682,6 +682,18 @@ func TestJudge_RefusesAnAliasWhoseValueNamesATool(t *testing.T) {
 	})
 }
 
+func TestJudge_RefusesAnAliasWhoseValueStartsWithACommandTheGuardReadsThrough(t *testing.T) {
+	t.Parallel()
+
+	checkRefusals(t, []refusal{
+		{name: "cd", command: "alias hop=cd; hop sub; git commit -m x", wantNamed: "hop"},
+		{name: "pushd", command: "alias hop='pushd sub'; hop; git commit -m x", wantNamed: "hop"},
+		{name: "popd", command: "alias hop=popd; pushd sub; hop; git commit -m x", wantNamed: "hop"},
+		{name: "wrapper", command: "alias hop='builtin cd'; hop sub; git commit -m x", wantNamed: "hop"},
+		{name: "second operand", command: "alias ll='ls -l' hop=cd; hop sub; git commit -m x", wantNamed: "hop"},
+	})
+}
+
 func TestJudge_WhenAPushIsSubstitutedBesideAShellStringHoldingAPipeline_RefusesIt(t *testing.T) {
 	t.Parallel()
 
