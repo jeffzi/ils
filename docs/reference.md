@@ -541,8 +541,18 @@ as `--no-verify`.
   the agent or as a `!` command, since the guard refuses `set-head` on `origin`;
 - one of those where the guard cannot tell the directory, the target, or HEAD: after `cd -`,
   `popd`, or a `cd` to a non-literal, after a command that moves HEAD earlier in the list
-  (`git switch main && git commit`) or a write to the git dir's `HEAD` file, and anywhere in a
+  (`git switch main; git commit`) or a write to the git dir's `HEAD` file, and anywhere in a
   list where a background job or a pipe stage may move HEAD, since those run beside the rest.
+  The guard follows a `git switch` run as a git command of its own (no wrapper, alias, shell
+  function, `!`, or command substitution) that names one literal branch and takes no option, or
+  that takes `-c`, `--create`, `-C`, or `--force-create` followed by a literal name as a word of
+  its own, and at most a literal start point. The commands later in the same `&&` list that run in
+  the same git dir are judged on that branch, until a command that may move HEAD or a call of a
+  function the command declares: `git switch -c topic && git commit` is allowed, and
+  `git switch main && git commit` is refused as a commit on the default branch. A switch with any
+  other option (`-q`, `--detach`), with the name joined to its option (`--create=topic`), with a
+  start point that is not a literal, to `-`, or to a name holding `@{` leaves HEAD unknown, and
+  the commands of a function body are never judged on the branch of a switch outside it.
 
 #### ils and gh commands
 

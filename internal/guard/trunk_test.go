@@ -181,7 +181,7 @@ func TestJudge_RefusesATrunkJudgedInvocationThatRunsWhereItCannotTell(t *testing
 	f, caller := standingOn(t, "main", "topic")
 
 	checkJudgedIn(t, caller, []placed{
-		{name: "after a switch", dir: f.Dir(), command: "git switch main && git " + commitArgs},
+		{name: "after a switch", dir: f.Dir(), command: "git switch main; git " + commitArgs},
 		{name: "non-literal -C", dir: f.Dir(), command: `git -C "$d" ` + commitArgs},
 	}, expectation{outcome: guard.Refuse, named: "git commit"})
 }
@@ -191,7 +191,7 @@ func TestJudge_AllowsAReadThatRunsWhereItCannotTell(t *testing.T) {
 
 	_, caller := standingOn(t, "main", "topic")
 
-	checkJudgedRow(t, caller, judged{command: "git switch main && git status", want: guard.Allow})
+	checkJudgedRow(t, caller, judged{command: "git switch main; git status", want: guard.Allow})
 }
 
 func TestJudge_RefusesARebaseOfTheTrunkFromAnotherBranch(t *testing.T) {

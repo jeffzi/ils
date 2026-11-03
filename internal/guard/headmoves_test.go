@@ -11,6 +11,7 @@ import (
 	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/gittest"
+	"github.com/jeffzi/ils/internal/guard"
 )
 
 func TestParse_ReportsWhetherHeadMayHaveMovedBeforeEachInvocation(t *testing.T) {
@@ -21,7 +22,7 @@ func TestParse_ReportsWhetherHeadMayHaveMovedBeforeEachInvocation(t *testing.T) 
 		command string
 		want    []bool
 	}{
-		{name: "git switch", command: "git switch main && git commit", want: []bool{false, true}},
+		{name: "git switch", command: "git switch main; git commit", want: []bool{false, true}},
 		{name: "symbolic-ref with a value", command: "git symbolic-ref HEAD refs/heads/main; git commit", want: []bool{false, true}},
 		{name: "symbolic-ref read", command: "git symbolic-ref HEAD; git commit", want: []bool{false, false}},
 		{name: "symbolic-ref short read", command: "git symbolic-ref --short HEAD; git commit", want: []bool{false, false}},
@@ -129,4 +130,64 @@ func TestParse_WhenACommandMayWriteTheGitDirsHead_ReportsHeadUnknownAfterIt(t *t
 			assert.Check(t, is.DeepEqual(got, tt.want), "Parse(%q) head unknown", command)
 		})
 	}
+}
+
+func TestJudge_WhenAnAndListSwitchesOffTheTrunk_AllowsWhatFollowsOnTheNamedBranch(t *testing.T) {
+	t.Parallel()
+
+	_, caller := standingOn(t, "main", "main")
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "switch to a branch", command: "git switch topic && " + commitCommand},
+		{name: "switch -c", command: "git switch -c topic && " + commitCommand},
+		{name: "switch --create", command: "git switch --create topic && " + commitCommand},
+		{name: "switch -C", command: "git switch -C topic && " + commitCommand},
+		{name: "switch --force-create", command: "git switch --force-create topic && " + commitCommand},
+		{name: "switch -c with a start point", command: "git switch -c topic main && " + commitCommand},
+		{name: "squash merge after the switch", command: "git switch topic && git merge --squash other"},
+		{name: "commit further down the list", command: "git switch -c topic && git add -A && " + commitCommand},
+	})
+}
+
+func TestJudge_WhenAnAndListSwitchesToTheTrunk_RefusesACommitAfterIt(t *testing.T) {
+	t.Parallel()
+
+	f, caller := standingOn(t, "main", "topic")
+
+	checkJudgedIn(t, caller, []placed{
+		{name: "switch to the trunk", dir: f.Dir(), command: "git switch main && " + commitCommand},
+		{name: "switch -C onto the trunk", dir: f.Dir(), command: "git switch -C main && " + commitCommand},
+		{name: "later switch to the trunk", dir: f.Dir(), command: "git switch -c next && git switch main && " + commitCommand},
+	}, expectation{outcome: guard.Refuse, named: "main"})
+}
+
+func TestJudge_WhenHeadMovesWhereTheGuardCannotFollowIt_RefusesALaterCommit(t *testing.T) {
+	t.Parallel()
+
+	f, caller := standingOn(t, "main", "topic")
+	other, _ := standingOn(t, "main", "topic")
+	dir := f.Dir()
+
+	checkJudgedIn(t, caller, []placed{
+		{name: "switch joined by ;", dir: dir, command: "git switch topic; " + commitCommand},
+		{name: "switch joined by ||", dir: dir, command: "git switch topic || " + commitCommand},
+		{name: "switch piped into the list", dir: dir, command: "git switch topic | cat && " + commitCommand},
+		{name: "switch in the background", dir: dir, command: "git switch topic & " + commitCommand},
+		{name: "switch -c naming a non-literal", dir: dir, command: `git switch -c "$b" && ` + commitCommand},
+		{name: "switch to the previous branch", dir: dir, command: "git switch - && " + commitCommand},
+		{name: "switch --detach", dir: dir, command: "git switch --detach topic && " + commitCommand},
+		{name: "switch in another git dir", dir: dir, command: "git -C " + quotedPath(other.Dir()) + " switch -c topic && " + commitCommand},
+		{name: "switch inside a function body", dir: dir, command: "f() { git switch topic && :; } && " + commitCommand},
+		{name: "switch inside a subshell", dir: dir, command: "(git switch topic && :) && " + commitCommand},
+		{name: "switch inside a loop", dir: dir, command: "for x in a; do git switch topic && :; done && " + commitCommand},
+		{name: "move after the switch", dir: dir, command: "git switch -c topic && gh pr checkout 12 && " + commitCommand},
+		{name: "rebase naming a branch", dir: dir, command: "git rebase main topic && " + commitCommand},
+		{name: "bisect", dir: dir, command: "git bisect bad && " + commitCommand},
+		{name: "branch -m", dir: dir, command: "git branch -m topic && " + commitCommand},
+		{name: "symbolic-ref with a value", dir: dir, command: "git symbolic-ref HEAD refs/heads/topic && " + commitCommand},
+		{name: "gh pr checkout", dir: dir, command: "gh pr checkout 12 && " + commitCommand},
+		{name: "switch through a function named git", dir: dir, command: "git() { true; }; git switch -c topic && command " + commitCommand},
+		{name: "call of a function whose body moves HEAD", dir: dir, command: "f() { git switch main; }; git switch -c topic && f && " + commitCommand},
+		{name: "function declared after the switch", dir: dir, command: "git switch -c topic && f() { " + commitCommand + "; }"},
+	}, expectation{outcome: guard.Refuse, named: "cannot tell"})
 }

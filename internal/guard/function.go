@@ -157,12 +157,14 @@ func declarationBuiltins() []string {
 
 // functionBody walks body, the body of a function, where it is declared. A call runs it with the
 // variables of the shell where the call stands, which are not those here, so the walk reads no
-// variable the body does not assign itself, and leaves the variables of sc as they were.
+// variable the body does not assign itself, and leaves the variables of sc as they were. Nor does
+// a switch before the declaration hold in the body, which a call may run once HEAD moved again.
 func (w *walker) functionBody(body *syntax.Stmt, sc *scope) {
-	outer := sc.vars
+	outer, head := sc.vars, sc.head
 	sc.vars = shellVars{held: outer.held, unread: outer.unread, function: true}
+	sc.head = nil
 	w.stmt(body, sc)
-	sc.vars = outer
+	sc.vars, sc.head = outer, head
 }
 
 // declareFunction records in sc the function decl declares for the calls after it, and marks a
@@ -225,13 +227,16 @@ func (w *walker) callMarks(inv Invocation) []Mark {
 // allexport, the variables the guard follows, and the functions are as a body leaves them, unknown
 // where two bodies leave them differently. A shell variable whose value a body may change is
 // unknown after it. A GIT_* variable off the allow list that a body sets while allexport may be on
-// is marked where the call stands.
+// is marked where the call stands. No switch before the call holds after it.
 func (w *walker) call(inv Invocation, sc *scope) {
 	definitions := calledDefinitions(inv, sc.functions)
 	if len(definitions) == 0 {
 		return
 	}
 
+	// The walk placed each body where it is declared, so a HEAD move in one is not between the
+	// commands around the call.
+	sc.head = nil
 	after, marks := w.dryRun(definitions[0], *sc)
 	for _, d := range definitions[1:] {
 		run, found := w.dryRun(d, *sc)

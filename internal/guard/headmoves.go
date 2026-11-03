@@ -64,6 +64,127 @@ func (w *walker) job(stmt *syntax.Stmt, rest []*syntax.Stmt, sc *scope) {
 	w.kept = moveBehind(w.kept, at, after)
 }
 
+// headClaim is a `git switch` an operand of an `&&` list makes: every later operand runs only once
+// it succeeded, so HEAD is on branch there until something else moves it. Each switch walked has a
+// claim of its own, so an invocation follows the switch whose claim it holds, wherever the walk
+// moves either of them.
+type headClaim struct {
+	branch string
+}
+
+// followSwitch reads operand, an operand of an `&&` list whose invocations the walk kept from index
+// at of w.kept on, run where functions are the functions a call may run, and has the later
+// operands of the list run after its switch when it is a `git switch` switchedBranch reads. operand
+// must be that switch alone, with a result that is its own: not negated, not in the background,
+// holding no substitution, and no call of a function, which may switch nothing. A background job
+// or pipe stage runs beside the commands after it, so a switch in one claims nothing.
+func (w *walker) followSwitch(operand *syntax.Stmt, at int, functions map[string]*function, sc *scope) {
+	if _, ok := operand.Cmd.(*syntax.CallExpr); !ok || sc.racing || operand.Negated || operand.Background ||
+		operand.Coprocess || len(w.kept)-at != 1 {
+		return
+	}
+
+	inv := &w.walked[w.kept[at]]
+	branch, ok := switchedBranch(*inv)
+	if !ok || functions[inv.Words[0].Text] != nil {
+		return
+	}
+
+	inv.sets = &headClaim{branch: branch}
+	sc.head = inv.sets
+}
+
+// switchedBranch returns the branch the git invocation inv leaves HEAD on when it succeeds, and
+// false unless inv is `git switch` written out, with no wrapper or mark, given a literal branch, or
+// `-c`, `--create`, `-C` or `--force-create` with a literal name and at most a start point. Any
+// other option may detach HEAD or name the branch another way, and `-` or a name holding `@{` is a
+// branch git looks up in the reflog, so each leaves the branch unknown.
+func switchedBranch(inv Invocation) (string, bool) {
+	sub := inv.Git.Subcommand
+	if inv.Tool != Git || len(inv.Wrappers) > 0 || len(inv.Marks) > 0 || inv.Git.NoSubcommand ||
+		!sub.Literal || sub.Text != "switch" {
+		return "", false
+	}
+
+	name, ok := switchName(inv.Git.Args)
+	if !ok || !name.Literal || strings.HasPrefix(name.Text, "-") || strings.Contains(name.Text, "@{") {
+		return "", false
+	}
+
+	return name.Text, true
+}
+
+// switchName returns the branch the arguments args of `git switch` name: the value of its one
+// create option, or else its one operand. ok is false for any other option, a word that is not a
+// literal, or operands past those.
+func switchName(args []Word) (name Word, ok bool) {
+	var operands []Word
+	created := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case !arg.Literal:
+			return Word{}, false
+		case !created && i+1 < len(args) && slices.Contains([]string{"-c", "--create", "-C", "--force-create"}, arg.Text):
+			created, name = true, args[i+1]
+			i++
+		case strings.HasPrefix(arg.Text, "-"):
+			return Word{}, false
+		default:
+			operands = append(operands, arg)
+		}
+	}
+
+	switch {
+	case created && len(operands) <= 1:
+		return name, true
+	case !created && len(operands) == 1:
+		return operands[0], true
+	default:
+		return Word{}, false
+	}
+}
+
+// returned returns the invocations Parse returns, each reporting whether an invocation walked
+// before it may move HEAD, and the branch a switch earlier in its `&&` list left HEAD on. It reads
+// each git invocation once its aliases expand, so it runs after resolveGit. The walk order is the
+// order the shell may run them in: the substitutions of a command come before it, a dry run of a
+// body that may repeat before the body itself, and a dry run of a background job or pipe stage
+// before the commands already walked.
+func (w *walker) returned() []Invocation {
+	markHeads(w.walked)
+
+	var invocations []Invocation
+	for _, i := range w.kept {
+		invocations = append(invocations, w.walked[i])
+	}
+
+	return invocations
+}
+
+// markHeads marks each invocation of walked, in walk order, with where HEAD is when it runs. HEAD
+// is unknown once an invocation before it may move HEAD, and on the branch of the switch it
+// follows when that switch is the last such invocation and points git at the same git dir. A move
+// in a background job or pipe stage may come between any two commands, so no switch holds after
+// one.
+func markHeads(walked []Invocation) {
+	moved, raced := false, false
+	var last *headClaim
+	lastGitDir := ""
+	for i := range walked {
+		inv := &walked[i]
+		inv.HeadUnknown = moved
+		if inv.follows != nil && inv.follows == last && !raced && lastGitDir != "" && inv.Git.GitDir == lastGitDir {
+			inv.HeadUnknown, inv.head = false, last.branch
+		}
+
+		if movesHead(*inv) {
+			moved, raced = true, raced || inv.racing
+			last, lastGitDir = inv.sets, inv.Git.GitDir
+		}
+	}
+}
+
 // movesHead reports whether the invocation inv may move HEAD: by writing the HEAD file of a git
 // dir, or as a git invocation read by the subcommand its aliases expand to. A git invocation whose
 // subcommand Parse could not resolve may run any command, so it may move HEAD.

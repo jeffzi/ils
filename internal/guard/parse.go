@@ -71,6 +71,14 @@ type Invocation struct {
 	Marks    []Mark
 	// Dir is the directory the invocation runs in; empty when the guard cannot follow it.
 	Dir string
+	// head is the branch HEAD is on where the invocation runs, once a switch earlier in its `&&`
+	// list moved it there; empty when HEAD is where the repository has it, or HeadUnknown.
+	head string
+	// follows is the switch of the `&&` list the invocation runs after, which leaves HEAD on its
+	// branch unless HEAD moves again before the invocation; nil when it runs after none.
+	follows *headClaim
+	// sets is the switch the invocation makes, when it is one followSwitch reads; nil otherwise.
+	sets *headClaim
 	// env is every change to the environment the command runs with, in the order bash makes them.
 	env []envChange
 	// enclosing are the redirects in effect on the shell's descriptors where the command runs:
@@ -95,8 +103,12 @@ type Invocation struct {
 	// Whole reports whether this invocation is the entire command: one simple command with a bare
 	// command word, and no pipe, list, redirect, background `&`, assignment prefix, or wrapper.
 	Whole bool
-	// HeadUnknown reports whether an invocation before it may have moved HEAD.
+	// HeadUnknown reports whether an invocation before it may have moved HEAD to a branch the guard
+	// cannot tell.
 	HeadUnknown bool
+	// racing reports whether the invocation runs beside the commands around it, in a background job
+	// or a stage of a pipe.
+	racing bool
 }
 
 // Assignment is one variable a command runs with.

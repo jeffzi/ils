@@ -43,8 +43,11 @@ type scope struct {
 	// functions holds, by name, the functions a call may run. Copies of a scope share it, so a
 	// declaration replaces it rather than changing it in place.
 	functions map[string]*function
-	vars      shellVars
-	env       environment
+	// head is the switch an earlier operand of the `&&` list being walked made, which every later
+	// operand runs after; nil outside such a list.
+	head *headClaim
+	vars shellVars
+	env  environment
 	// physical reports whether the shell's working directory was last set by `cd -P` and no
 	// absolute `cd` since, so a symlink may stand in the path dir spells where the shell has the
 	// directory it resolves to.
@@ -83,6 +86,9 @@ func merge(a, b scope) scope {
 	a.vars = a.vars.merge(b.vars)
 	a.functions = mergeFunctions(a.functions, b.functions)
 	a.redirects = mergeRedirects(a.redirects, b.redirects)
+	if a.head != b.head {
+		a.head = nil
+	}
 
 	return a
 }
@@ -257,12 +263,16 @@ func (w *walker) binary(cmd *syntax.BinaryCmd, sc *scope) {
 
 // andList walks an `&&` list. Each operand runs only once every one before it succeeded, so it
 // sees the changes of those before it, and the list may stop after any operand: sc is left as the
-// shell may be after any of them.
+// shell may be after any of them. A switch one operand makes holds for the operands after it, and
+// not past the list, which may have stopped before it.
 func (w *walker) andList(cmd *syntax.BinaryCmd, sc *scope) {
+	head := sc.head
 	var after []scope
 	for _, operand := range andOperands(cmd) {
+		at, functions := len(w.kept), sc.functions
 		w.stmt(operand, sc)
 		after = append(after, *sc)
+		w.followSwitch(operand, at, functions, sc)
 	}
 
 	merged := after[0]
@@ -270,6 +280,7 @@ func (w *walker) andList(cmd *syntax.BinaryCmd, sc *scope) {
 		merged = merge(merged, s)
 	}
 
+	merged.head = head
 	*sc = merged
 }
 
@@ -387,6 +398,7 @@ func (w *walker) placed(inv Invocation, sc *scope) Invocation {
 	w.functions = sc.functions
 	inv.Dir = sc.dir
 	inv.enclosing = sc.redirects
+	inv.follows, inv.racing = sc.head, sc.racing
 	if inv.Tool == Git {
 		inv.Git = readGitCall(inv.Words)
 		inv.Target = sc.targetOf(inv)
@@ -759,26 +771,6 @@ func (sc *scope) targetOf(inv Invocation) GitTarget {
 func (w *walker) keep(inv Invocation) {
 	w.kept = append(w.kept, len(w.walked))
 	w.walked = append(w.walked, inv)
-}
-
-// returned returns the invocations Parse returns, each reporting whether an invocation walked
-// before it may move HEAD. It reads each git invocation once its aliases expand, so it runs after
-// resolveGit. The walk order is the order the shell may run them in: the substitutions of a command
-// come before it, a dry run of a body that may repeat before the body itself, and a dry run of a
-// background job or pipe stage before the commands already walked.
-func (w *walker) returned() []Invocation {
-	headMoved := false
-	for i := range w.walked {
-		w.walked[i].HeadUnknown = headMoved
-		headMoved = headMoved || movesHead(w.walked[i])
-	}
-
-	var invocations []Invocation
-	for _, i := range w.kept {
-		invocations = append(invocations, w.walked[i])
-	}
-
-	return invocations
 }
 
 // ---------------------------------------------------------------------------

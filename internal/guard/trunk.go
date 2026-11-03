@@ -27,10 +27,11 @@ const moveFirst = "run the `cd`, switch, or other move as its own command first,
 // repository is judged against the same answer.
 type trunks map[string]trunkAnswer
 
-// refuseOnTrunk refuses a subcommand that adds commits to the branch HEAD is on when that branch is
-// the trunk of a repository that has an origin, and one whose directory, target, or HEAD the guard
-// cannot tell. A `git rebase` whose branch argument is the trunk is judged as a rebase on the trunk,
-// and one whose branch argument the guard cannot read is refused, since that branch may be the trunk.
+// refuseOnTrunk refuses a subcommand that adds commits to the branch HEAD is on, or the branch a
+// switch earlier in its `&&` list left HEAD on, when that branch is the trunk of a repository that
+// has an origin, and one whose directory, target, or HEAD the guard cannot tell. A `git rebase`
+// whose branch argument is the trunk is judged as a rebase on the trunk, and one whose branch
+// argument the guard cannot read is refused, since that branch may be the trunk.
 //
 // It reads origin and HEAD locally before it asks origin for the trunk, so a repository with no
 // origin or a detached HEAD starts no call to origin.
@@ -59,7 +60,7 @@ func (t trunks) refuseOnTrunk(ctx context.Context, caller Caller, inv Invocation
 		return Verdict{}, fmt.Errorf("read the origin and HEAD git %s runs with: %w", sub, err)
 	}
 
-	branch, onBranch := standing.Branch, standing.Kind == git.OnBranch
+	branch, onBranch := headBranch(standing, inv)
 	rebased, named := rebasedBranch(sub, inv.Git.Args)
 	if named {
 		branch, onBranch = rebased.Text, true
@@ -94,6 +95,16 @@ func (t trunks) refuseOnTrunk(ctx context.Context, caller Caller, inv Invocation
 	}
 
 	return onTrunk(sub, inv.Git.Args, answer.trunk), nil
+}
+
+// headBranch returns the branch HEAD is on where inv runs, and false when it is on none: the branch
+// a switch earlier in its `&&` list left it on, or else the one standing reads.
+func headBranch(standing git.Standing, inv Invocation) (string, bool) {
+	if inv.head != "" {
+		return inv.head, true
+	}
+
+	return standing.Branch, standing.Kind == git.OnBranch
 }
 
 // onTrunk returns the verdict on the trunk-judged git subcommand sub, given args, run on trunk. A
