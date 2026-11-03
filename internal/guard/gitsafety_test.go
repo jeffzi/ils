@@ -675,7 +675,6 @@ func TestJudge_WhenDoubleDashLeavesAnUnreadableGitArgumentRefused_NamesALiteral(
 		{name: "update-ref", command: `git update-ref "$r" HEAD`},
 		{name: "config", command: `git config "$k"`},
 		{name: "restore without --staged", command: `git restore "$f"`},
-		{name: "literal that starts several options", command: `git branch --s "$b"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -684,6 +683,18 @@ func TestJudge_WhenDoubleDashLeavesAnUnreadableGitArgumentRefused_NamesALiteral(
 			checkRefusedOmitting(t, tt.command, "write the argument as a literal", "`--`")
 		})
 	}
+}
+
+func TestJudge_WhenALiteralStartsSeveralOptionsOneTakingAValue_NamesItToSpellOutInFull(t *testing.T) {
+	t.Parallel()
+	command := `git branch --s "$b"`
+	_, caller := standingOn(t, "main", "topic")
+
+	got := guard.Judge(t.Context(), command, caller)
+
+	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome, reason %q", command, got.Reason)
+	assert.Check(t, is.Contains(got.Reason, "`--s` in full"), "Judge(%q) reason", command)
+	assert.Check(t, !strings.Contains(got.Reason, "`--`"), "Judge(%q) reason %q holds `--`", command, got.Reason)
 }
 
 func TestJudge_WhenAGitWordCannotBeRead_RefusesNamingASpellingTheGuardAllows(t *testing.T) {

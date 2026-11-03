@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -141,29 +142,35 @@ func judgeByRules(ctx context.Context, caller Caller, inv Invocation, checks []r
 }
 
 // passingArgumentSpelling returns how to write the git arguments of inv the guard cannot read so
-// that the guard allows inv, as allows judges it: after `--`, when inv with each of them moved
-// there is allowed, and as a literal otherwise. A form allows cannot judge is not allowed.
+// that the guard allows inv, as allows judges it: the option in full, when one of them is a
+// literal that starts several options; after `--`, when inv with each of them moved there is
+// allowed; and as a literal otherwise. A form allows cannot judge is not allowed.
 func passingArgumentSpelling(inv Invocation, allows func(Invocation) bool) string {
-	if moved, ok := argumentsAfterDoubleDash(inv); ok && allows(moved) {
+	moved, prefix, ok := argumentsAfterDoubleDash(inv)
+	switch {
+	case prefix != "":
+		return "; spell out the option `" + prefix + "` in full"
+	case ok && allows(moved):
 		return "; put the argument after `--`, where git reads no word as an option"
+	default:
+		return "; write the argument as a literal"
 	}
-
-	return "; write the argument as a literal"
 }
 
 // argumentsAfterDoubleDash returns inv with each git argument that keeps readArgs from reading
 // the arguments moved after `--`. ok is false when there is none, and when one is a literal: a
-// literal is unreadable only as the start of several options, which `--` would make a path.
-func argumentsAfterDoubleDash(inv Invocation) (Invocation, bool) {
+// literal is unreadable only as the start of several options, which `--` would make a path, and
+// prefix is then its option name, the text before any `=`.
+func argumentsAfterDoubleDash(inv Invocation) (moved Invocation, prefix string, ok bool) {
 	sub, ok := subcommand(inv)
 	if !ok {
-		return Invocation{}, false
+		return Invocation{}, "", false
 	}
 
 	known := optionsOf(sub)
 	kept := slices.Clone(inv.Git.Args)
 
-	var moved []Word
+	var unread []Word
 	// A word makes the arguments unreadable once the words up to it are; those before it read.
 	for i := 0; i < len(kept); i++ {
 		if !readArgs(kept[:i+1], known).unreadable {
@@ -171,16 +178,18 @@ func argumentsAfterDoubleDash(inv Invocation) (Invocation, bool) {
 		}
 
 		if kept[i].Literal {
-			return Invocation{}, false
+			name, _, _ := strings.Cut(kept[i].Text, "=")
+
+			return Invocation{}, name, false
 		}
 
-		moved = append(moved, kept[i])
+		unread = append(unread, kept[i])
 		kept = slices.Delete(kept, i, i+1)
 		i--
 	}
 
-	if len(moved) == 0 {
-		return Invocation{}, false
+	if len(unread) == 0 {
+		return Invocation{}, "", false
 	}
 
 	doubleDash := Word{Text: "--", Literal: true}
@@ -188,10 +197,10 @@ func argumentsAfterDoubleDash(inv Invocation) (Invocation, bool) {
 		kept = append(kept, doubleDash)
 	}
 
-	kept = append(kept, moved...)
+	kept = append(kept, unread...)
 	inv.Git.Args = kept
 
-	return inv, true
+	return inv, "", true
 }
 
 // or returns v unless other is stricter, so that the first verdict of the strictest outcome wins.
