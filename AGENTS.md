@@ -62,6 +62,13 @@ run passes on both legs: pushing the tag starts the Publish workflow. Once both 
 release with `ils release <X.Y.Z>`, which waits for the release commit's checks, pushes the tag,
 and creates the GitHub release.
 
+## Changing the guard
+
+Before you add, change, or remove a refusal of the guard, read
+[docs/guard-scope.md](docs/guard-scope.md) and apply its rules. A report that a command gets past
+the guard becomes work only when the command passes its rule 3: an agent would write it in ordinary
+work.
+
 ## Linter and type-checker configuration
 
 Treat lint config as fixed. Never add to an ignore list, disable a rule, lower a severity, or

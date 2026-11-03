@@ -460,7 +460,9 @@ The guard lowers the odds of an accident; it is not a sandbox. It does not see:
 - a task runner (`task`, `make`, `npm run`) running lines from a file the agent wrote;
 - `gh workflow run` of a workflow whose token can push, tag, or release;
 - an alias or function from your shell config, such as `gp='git push'`, which the agent's shell
-  runs with no `git` word in the command.
+  runs with no `git` word in the command;
+- a construct whose only use is to hide a command, such as a name reference that writes `GIT_DIR`
+  or a tool name built by a glob. [Guard scope](docs/guard-scope.md#accepted-limits) says why.
 
 The guard runs on macOS and Linux. On Windows its commands refuse.
 
