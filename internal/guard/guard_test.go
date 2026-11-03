@@ -83,6 +83,20 @@ func TestJudge_WhenNoInvocationRunsATool_AllowsWithoutStartingGit(t *testing.T) 
 	assert.Check(t, is.Len(recorder.Calls(), 0), "Judge(%q) git calls", command)
 }
 
+func TestJudge_AllowsEverydayCommandsOutsideAnyRepository(t *testing.T) {
+	t.Parallel()
+
+	caller := guard.Caller{Home: home, Dir: outsideDir(t)}
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "non-literal argument to a command the guard does not know", command: `sed -n "${n}p" "$f"`},
+		{
+			name:    "heredoc that mentions git on an interpreter's stdin",
+			command: "python3 - <<'EOF'\ns = s.replace(\"git reset --hard\", \"git restore\")\nEOF",
+		},
+	})
+}
+
 func TestJudge_WhenAGitReadFails_RefusesSayingWhatBroke(t *testing.T) {
 	// Not parallel: gittest.FakeGit sets PATH for the whole process.
 	f := aliased(t)
