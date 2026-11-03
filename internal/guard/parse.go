@@ -275,6 +275,11 @@ type walker struct {
 	err   error
 	// dryRuns is shared by w and every walker it probes with; newWalker creates it.
 	dryRuns *dryRuns
+	// loopBodies counts the walks of `for` loop bodies the walk made once per value of the loop's
+	// list, dry runs included, which it stops doing past maxCalls, the bound it holds calls to as
+	// well. It is shared by w and every walker it probes or walks git's scripts with, so the bound
+	// holds for the whole command; newWalker creates it.
+	loopBodies *int
 	// walked holds every invocation the walk placed, in the order it walked them, those of dry runs
 	// included.
 	walked []Invocation
@@ -293,11 +298,12 @@ type walker struct {
 // newWalker returns a walker for caller that reads at depth levels of nested strings.
 func newWalker(caller Caller, depth int) walker {
 	return walker{
-		caller:  caller,
-		timed:   map[*syntax.Stmt]bool{},
-		pipes:   map[*syntax.Stmt]*syntax.Stmt{},
-		depth:   depth,
-		dryRuns: &dryRuns{},
+		caller:     caller,
+		timed:      map[*syntax.Stmt]bool{},
+		pipes:      map[*syntax.Stmt]*syntax.Stmt{},
+		depth:      depth,
+		dryRuns:    &dryRuns{},
+		loopBodies: new(int),
 	}
 }
 

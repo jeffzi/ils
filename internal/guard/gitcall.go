@@ -167,12 +167,21 @@ func everyGitBuiltins() map[string]bool {
 }
 
 // readGitCall returns how git reads the git invocation words, before any alias expands.
+//
+// A literal `--help` right after the subcommand makes git run `git help <subcommand> <rest>`
+// whatever the subcommand word is, alias or not, so the call is read as that: git swaps the two
+// words before it looks up any alias. `--help` anywhere else is an argument of the subcommand.
 func readGitCall(words []Word) GitCall {
 	options, at, missing := gitOptions(words)
 	call := GitCall{Options: options, NoSubcommand: at >= len(words), missing: missing}
-	if !call.NoSubcommand {
-		call.Subcommand = words[at]
-		call.Args = words[at+1:]
+	if call.NoSubcommand {
+		return call
+	}
+
+	call.Subcommand, call.Args = words[at], words[at+1:]
+	if len(call.Args) > 0 && call.Args[0] == (Word{Text: "--help", Literal: true}) {
+		call.Args = append([]Word{call.Subcommand}, call.Args[1:]...)
+		call.Subcommand = Word{Text: "help", Literal: true}
 	}
 
 	return call

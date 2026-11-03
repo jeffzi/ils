@@ -248,7 +248,8 @@ func (w *walker) call(inv Invocation, sc *scope) {
 
 // maxCalls is how many calls of functions the command defines one walk follows into the body they
 // run. A function that calls itself runs without end, and functions that each call the one before
-// twice run two to the power of their count of calls.
+// twice run two to the power of their count of calls. It also bounds how many bodies of `for`
+// loops over a literal list one walk follows, one per value.
 const maxCalls = 256
 
 // runBodies walks each of definitions, the bodies inv's call may run, where the call stands: from
@@ -299,7 +300,7 @@ func declaredBody(body *syntax.Stmt) *syntax.Stmt {
 // probe returns a walker that reads at w's depth and drops what it finds.
 func (w *walker) probe() walker {
 	sub := newWalker(w.caller, w.depth)
-	sub.probing, sub.dryRuns = true, w.dryRuns
+	sub.probing, sub.dryRuns, sub.loopBodies = true, w.dryRuns, w.loopBodies
 
 	return sub
 }

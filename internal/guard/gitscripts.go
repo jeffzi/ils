@@ -58,6 +58,7 @@ func (w *walker) gitScripts(ctx context.Context, i int) error {
 	}
 
 	sub := newWalker(w.caller, inv.depth)
+	sub.loopBodies = w.loopBodies
 	for _, run := range runs {
 		sc := gitScope(*inv)
 		switch run.start {

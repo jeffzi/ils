@@ -70,6 +70,7 @@
     "lefthook",
     "logtest",
     "loong",
+    "luajit",
     "mailinfo",
     "mailsplit",
     "mapfile",
