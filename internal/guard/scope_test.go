@@ -211,6 +211,7 @@ func TestParse_WhenAllexportIsOn_MarksAGitVariableABuiltinAssigns(t *testing.T) 
 		{name: "printf -v in a string of bash found by the equals lookup", command: `=bash -a -c 'printf -v GIT_CONFIG_PARAMETERS %s "core.hooksPath=/dev/null"; git commit -m x'`},
 		{name: "read in a zsh string under a long option spelled with capitals and underscores", command: "zsh --All_Export -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
 		{name: "read in a zsh -o string spelled with capitals and underscores", command: "zsh -o ALL_EXPORT -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
+		{name: "read in a zsh string where --allexport follows --no-allexport", command: "zsh --no-allexport --allexport -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
 		{name: "read in a zsh string after set -o spelled with capitals and underscores", command: "zsh -c 'set -o All_Export; read -r GIT_CONFIG_PARAMETERS; git status'"},
 		{name: "read after set -o spelled with capitals and underscores in an unknown shell", command: "set -o All_Export; read -r GIT_CONFIG_PARAMETERS; git status"},
 		{name: "read after setopt allexport", command: "setopt allexport; read -r GIT_CONFIG_PARAMETERS; git status"},
@@ -249,6 +250,8 @@ func TestParse_WhenAllexportIsOff_MarksNoGitVariableABuiltinAssigns(t *testing.T
 		{name: "read after unsetopt allexport", command: "unsetopt allexport; read -r GIT_CONFIG_PARAMETERS; git status"},
 		{name: "read after set +a undoes set -a", command: "set -a; set +a; read -r GIT_CONFIG_PARAMETERS; git status"},
 		{name: "read in a zsh string after set -o noallexport undoes set -a", command: "zsh -c 'set -a; set -o noallexport; read -r GIT_CONFIG_PARAMETERS; git status'"},
+		{name: "read in a zsh -a string after --no-allexport with dashes", command: "zsh -a --no-allexport -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
+		{name: "read in a zsh -a string after --noallexport spelled with capitals and underscores", command: "zsh -a --No_AllExport -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
 		{name: "read in a bash string after set +o with an attached name", command: "bash -c 'set +oVERBOSE -a; read -r GIT_CONFIG_PARAMETERS; git status'"},
 	}
 	for _, tt := range tests {

@@ -135,8 +135,9 @@ func readShellOptions(shell string, args []Word) shellOptions {
 		case len(text) < 2 || (text[0] != '-' && text[0] != '+'):
 			r.operands = args[i:]
 		case strings.HasPrefix(text, "--"):
-			if shell == "zsh" && zshOptionName(strings.ReplaceAll(text[2:], "-", "_")) == "allexport" {
-				r.allexport = true
+			if shell == "zsh" {
+				name := Word{Text: strings.ReplaceAll(text[2:], "-", "_"), Literal: true}
+				r.allexport = zshOptionSetting(name, true, r.allexport)
 			}
 
 			continue
