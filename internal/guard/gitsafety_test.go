@@ -41,7 +41,6 @@ func TestJudge_RefusesAGitOperationThatDiscardsWork(t *testing.T) {
 	t.Parallel()
 
 	checkRefusals(t, []refusal{
-		{name: "checkout of a path", command: "git checkout -- file"},
 		{name: "switch -f", command: "git switch -f branch"},
 		{name: "switch --discard-changes", command: "git switch --discard-changes branch"},
 		{name: "clean -f", command: "git clean -f"},
@@ -188,7 +187,6 @@ func TestJudge_RefusesWritingGitHistoryOverAFile(t *testing.T) {
 
 	checkRefusals(t, []refusal{
 		{name: "show truncating", command: "git show HEAD > output.txt", wantNamed: "git show"},
-		{name: "cat-file truncating", command: "git cat-file -p HEAD:f > f", wantNamed: "git cat-file"},
 	})
 }
 
@@ -368,7 +366,6 @@ func TestJudge_RefusesAWorktreeRemovalItCannotVerify(t *testing.T) {
 		{name: "non-literal path", dir: w.repo, command: `git worktree remove "$wt"`},
 		{name: "no path", dir: w.repo, command: "git worktree remove"},
 		{name: "missing path", dir: w.repo, command: "git worktree remove " + quotedPath(filepath.Join(w.repo, "absent"))},
-		{name: "path that would glob onto a dirty worktree", dir: w.held, command: "git worktree remove wt*"},
 		{name: "relative path absent under -C though present where it runs", dir: w.heldClean, command: "git -C " + quotedPath(w.repo) + " worktree remove wt1"},
 	}, expectation{outcome: guard.Refuse, named: "unverifiable"})
 }

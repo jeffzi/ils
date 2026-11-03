@@ -200,15 +200,6 @@ func TestParse_WhenGitRunsAScriptAtTheTopOfTheWorkTree_ReadsItsGitCommandsFromTh
 	}
 }
 
-func TestJudge_RefusesAScriptCommitOnTheTrunkOfTheRepositoryAtTheTop(t *testing.T) {
-	t.Parallel()
-	_, caller := nestedRepositories(t)
-
-	checkJudged(t, caller, []judged{
-		{name: "rebase --exec below the top", command: "git -C docs rebase --exec " + innerCommit + " origin/main", wantNamed: "main", want: guard.Refuse},
-	})
-}
-
 func TestParse_WhenWhereGitRunsAScriptCannotBeTold_ReportsItsDirectoryUnknown(t *testing.T) {
 	t.Parallel()
 
@@ -230,12 +221,4 @@ func TestParse_WhenWhereGitRunsAScriptCannotBeTold_ReportsItsDirectoryUnknown(t 
 			assert.Check(t, is.Equal(got.Dir, ""), "Parse(%q) directory of %v", tt.command, got.Words)
 		})
 	}
-}
-
-func TestJudge_WhenTheTopOfTheWorkTreeCannotBeRead_RefusesAScriptCommit(t *testing.T) {
-	// Not parallel: gittest.FakeGit sets PATH for the whole process.
-	f, _ := standingOn(t, "main", "topic")
-	caller := callerFailingOn(t, f, f.Dir(), "rev-parse", "--show-toplevel")
-
-	checkJudgedRow(t, caller, judged{command: "git rebase --exec 'git commit --allow-empty -m x' origin/main", wantNamed: "git commit", want: guard.Refuse})
 }

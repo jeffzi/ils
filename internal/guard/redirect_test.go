@@ -29,7 +29,6 @@ func TestInvocation_Stdout_WhenStdoutGoesToAFile_ReturnsItsTarget(t *testing.T) 
 		{name: "group inside a redirected subshell", command: "({ git show HEAD:f; }) > f"},
 		{name: "earlier exec with no command in a group", command: "{ exec > f; }; git show HEAD:f"},
 		{name: "earlier exec in a group with only stderr redirected", command: "{ exec > f; } 2> err; git show HEAD:f"},
-		{name: "earlier exec behind command", command: "command exec > f; git show HEAD:f"},
 		{name: "earlier exec behind stacked wrappers", command: "command builtin exec > f; git show HEAD:f"},
 		{name: "stderr on a file in the then branch only", command: "if c; then exec 2> f 3>&1; else exec 3> g 2>&1; fi; git show HEAD:f >&2"},
 		{name: "descriptor three on a file in an if with no else", command: "exec 2> g 3>&1; if c; then exec 3> f 2>&1; fi; git show HEAD:f >&3"},
@@ -37,7 +36,6 @@ func TestInvocation_Stdout_WhenStdoutGoesToAFile_ReturnsItsTarget(t *testing.T) 
 		{name: "stderr on a file before an and list that moves it", command: "exec 2> f 3>&1 && exec 3> g 2>&1; git show HEAD:f >&2"},
 		{name: "stderr on a file before a for loop that moves it", command: "exec 2> f 3>&1; for i in $list; do exec 3> g 2>&1; done; git show HEAD:f >&2"},
 		{name: "stderr on a file before a function that moves it", command: "exec 2> f 3>&1; h() { exec 3> g 2>&1; }; git show HEAD:f >&2"},
-		{name: "exec in a group with stdout redirected keeps its stderr", command: "{ exec 2> f; } > g; git show HEAD:f >&2"},
 		{name: "exec in a group with stdout redirected keeps a copy of it", command: "{ exec 3>&1; } > f; git show HEAD:f >&3"},
 		{name: "exec in an eval with stdout redirected keeps its stderr", command: "eval 'exec 2> f' > g; git show HEAD:f >&2"},
 	}

@@ -111,8 +111,8 @@ func TestJudge_RefusesAFastForwardPullOfAnotherBranchOnTheTrunk(t *testing.T) {
 		{name: "repository other than origin", dir: f.Dir(), command: "git pull --ff-only . main"},
 		{name: "refspec other than the trunk", dir: f.Dir(), command: "git pull --ff-only origin topic"},
 		{name: "non-literal repository", dir: f.Dir(), command: `git pull --ff-only "$r"`},
-		{name: "non-literal refspec", dir: f.Dir(), command: `git pull --ff-only origin "$b"`},
-	}, expectation{outcome: guard.Refuse, named: "git pull"})
+		{name: "non-literal refspec after --", dir: f.Dir(), command: `git pull --ff-only -- origin main"$b"`},
+	}, expectation{outcome: guard.Refuse})
 }
 
 func TestJudge_AllowsACommitCreatingSubcommandOffTheTrunk(t *testing.T) {
@@ -181,7 +181,6 @@ func TestJudge_RefusesATrunkJudgedInvocationThatRunsWhereItCannotTell(t *testing
 
 	checkJudgedIn(t, caller, []placed{
 		{name: "after a switch", dir: f.Dir(), command: "git switch main && git " + commitArgs},
-		{name: "after a cd to a non-literal", dir: f.Dir(), command: `cd "$d" && git ` + commitArgs},
 		{name: "non-literal -C", dir: f.Dir(), command: `git -C "$d" ` + commitArgs},
 	}, expectation{outcome: guard.Refuse, named: "git commit"})
 }

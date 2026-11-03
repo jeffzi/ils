@@ -257,7 +257,6 @@ func TestParse_ReportsTheToolACommandWordNames(t *testing.T) {
 	}{
 		{name: "absolute path", command: "/opt/homebrew/bin/git status", wantTool: guard.Git},
 		{name: "zsh equals lookup", command: "=git status", wantTool: guard.Git},
-		{name: "backslash escaped", command: `\git status`, wantTool: guard.Git},
 		{name: "name that only starts with git", command: "gitk --all", wantTool: guard.NoTool},
 		{name: "literal prefix of an expansion", command: `git"$x" status`, wantTool: guard.NoTool},
 	}

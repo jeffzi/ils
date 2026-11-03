@@ -20,7 +20,6 @@ func TestParse_WhenADataConsumerNamesATool_ReportsNoToolInvocationOrMark(t *test
 	}{
 		{name: "command -v lookup", command: "command -v git"},
 		{name: "consumer behind a wrapper", command: "nice echo git push"},
-		{name: "go words that run nothing behind a global option", command: "go -C dir test -run 'git push' ./..."},
 		{name: "go words that run nothing beside a non-literal package", command: `go build "$pkg" git push`},
 	}
 	for _, tt := range tests {

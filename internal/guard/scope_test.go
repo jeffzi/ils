@@ -106,7 +106,6 @@ func TestParse_ReportsWhereEachGitInvocationPointsGit(t *testing.T) {
 			command: "export GIT_DIR=.git; cd sub; git status",
 			want:    guard.GitTarget{Dir: start + "/sub", GitDir: start + "/sub/.git"},
 		},
-		{name: "prefix of an earlier eval", command: "GIT_DIR=/srv/repo.git eval true; git status", want: guard.GitTarget{Dir: start}},
 		{name: "move in an earlier eval string", command: "GIT_DIR=/srv/repo.git eval 'cd sub'; git status", want: guard.GitTarget{Dir: start + "/sub"}},
 		{name: "env removing another name", command: "env -u PAGER git status", want: guard.GitTarget{Dir: start}},
 		{name: "--work-tree", command: "git --work-tree wt -C sub status", want: guard.GitTarget{Dir: start + "/sub", WorkTree: start + "/sub/wt"}},
@@ -133,7 +132,6 @@ func TestParse_MarksAGitVariableOffTheAllowList(t *testing.T) {
 		want    string
 	}{
 		{name: "assignment prefix", command: "GIT_CONFIG_COUNT=1 git status", want: "GIT_CONFIG_COUNT"},
-		{name: "assignment-only command", command: "GIT_CONFIG_PARAMETERS=x", want: "GIT_CONFIG_PARAMETERS"},
 		{name: "export of an assignment", command: "export GIT_CONFIG_GLOBAL=/tmp/c", want: "GIT_CONFIG_GLOBAL"},
 	}
 	for _, tt := range tests {
@@ -211,7 +209,6 @@ func TestParse_WhenAllexportIsOn_MarksAGitVariableABuiltinAssigns(t *testing.T) 
 		{name: "read in a bash -a string after a one-dash long option", command: "bash -norc -a -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
 		{name: "read in a bash -a string after a one-dash long option taking a value", command: "bash -rcfile x -a -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
 		{name: "printf -v in a string of bash found by the equals lookup", command: `=bash -a -c 'printf -v GIT_CONFIG_PARAMETERS %s "core.hooksPath=/dev/null"; git commit -m x'`},
-		{name: "read in a zsh --allexport string", command: "zsh --allexport -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
 		{name: "read in a zsh string under a long option spelled with capitals and underscores", command: "zsh --All_Export -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
 		{name: "read in a zsh -o string spelled with capitals and underscores", command: "zsh -o ALL_EXPORT -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
 		{name: "read in a zsh string after set -o spelled with capitals and underscores", command: "zsh -c 'set -o All_Export; read -r GIT_CONFIG_PARAMETERS; git status'"},

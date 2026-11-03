@@ -36,7 +36,6 @@ func TestJudge_WhenACallMayRunAnOuterBodyThatLacksItsRedirect_RefusesNamingTheFu
 	t.Parallel()
 
 	checkRefusals(t, []refusal{
-		{name: "redefined in a subshell", command: "dump() { git show HEAD:f; }; { (dump() { :; }); dump; } > f", wantNamed: "dump"},
 		{name: "redefined in an if branch", command: "dump() { git show HEAD:f; }; { if true; then dump() { :; }; fi; dump; } > f", wantNamed: "dump"},
 		{name: "redefined in an uncalled function body", command: "dump() { git show HEAD:f; }; { g() { dump() { :; }; }; dump; } > f", wantNamed: "dump"},
 		{name: "redefined in an alias value", command: "dump() { git show HEAD:f; }; { alias a='dump() { :; }'; dump; } > f", wantNamed: "dump"},

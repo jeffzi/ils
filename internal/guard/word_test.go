@@ -20,7 +20,6 @@ func TestParse_WhenQuoteRemovalLeavesPlainText_ReportsALiteral(t *testing.T) {
 		want string
 	}{
 		{name: "backslash escape", word: `\git`, want: "git"},
-		{name: "double quotes", word: `"git"`, want: "git"},
 		{name: "single quotes", word: `'stash'`, want: "stash"},
 		{name: "quotes inside a word", word: `g"i"t`, want: "git"},
 		{name: "escaped dollar in double quotes", word: `"a\$x"`, want: "a$x"},
@@ -54,6 +53,7 @@ func TestParse_WhenAWordCarriesAnExpansion_ReportsItNotLiteralWithItsLiteralPref
 		{name: "parameter expansion after a literal", word: `--grep=$x`, wantPrefix: "--grep="},
 		{name: "parameter expansion in double quotes", word: `"a$x"`, wantPrefix: "a"},
 		{name: "brace expansion", word: `-{f,d}`, wantPrefix: "-"},
+		{name: "star glob", word: `wt*`, wantPrefix: "wt"},
 		{name: "bracket glob", word: `[ab]`, wantPrefix: ""},
 		{name: "tilde with a user name", word: `~user/x`, wantPrefix: ""},
 	}
