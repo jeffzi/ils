@@ -94,6 +94,7 @@ func TestJudge_AllowsEverydayCommandsOutsideAnyRepository(t *testing.T) {
 			name:    "heredoc that mentions git on an interpreter's stdin",
 			command: "python3 - <<'EOF'\ns = s.replace(\"git reset --hard\", \"git restore\")\nEOF",
 		},
+		{name: "git history written to /dev/null", command: "git show HEAD:f > /dev/null"},
 	})
 }
 

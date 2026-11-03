@@ -76,6 +76,9 @@ type Invocation struct {
 	// enclosing are the redirects in effect on the shell's descriptors where the command runs:
 	// those of each compound command around it, and those of an earlier `exec` with no command.
 	enclosing []Redirect
+	// pipedInto are the words, behind any wrapper, of the simple command of the pipe stage that
+	// reads the invocation's stdout; none when no such stage follows it.
+	pipedInto []Word
 	// ghConfig is what the guard knows of where a gh invocation's gh reads its config; zero for
 	// any other tool.
 	ghConfig ghConfig
@@ -238,7 +241,9 @@ func read(command string) (*syntax.File, error) {
 type walker struct {
 	caller Caller
 	// timed holds the statements a `time` keyword runs.
-	timed     map[*syntax.Stmt]bool
+	timed map[*syntax.Stmt]bool
+	// pipes holds, for each statement that is a stage of a pipe, the stage after it.
+	pipes     map[*syntax.Stmt]*syntax.Stmt
 	functions map[string]*function
 	err       error
 	// dryRuns is shared by w and every walker it probes with; newWalker creates it.
@@ -257,7 +262,13 @@ type walker struct {
 
 // newWalker returns a walker for caller that reads at depth levels of nested strings.
 func newWalker(caller Caller, depth int) walker {
-	return walker{caller: caller, timed: map[*syntax.Stmt]bool{}, depth: depth, dryRuns: &dryRuns{}}
+	return walker{
+		caller:  caller,
+		timed:   map[*syntax.Stmt]bool{},
+		pipes:   map[*syntax.Stmt]*syntax.Stmt{},
+		depth:   depth,
+		dryRuns: &dryRuns{},
+	}
 }
 
 // simple walks stmt when it is a simple command, recording its invocation and then those of the
@@ -386,6 +397,7 @@ func (w *walker) add(stmt *syntax.Stmt, call *syntax.CallExpr, sc *scope) {
 
 	inv = w.placed(inv, sc)
 	inv.depth = w.depth
+	inv.pipedInto = w.pipedInto(stmt)
 	script, runs, mark := scriptOf(stmt, inv.Words)
 	runs, mark = capDepth(w.depth, runs, mark)
 
@@ -431,6 +443,22 @@ func (w *walker) add(stmt *syntax.Stmt, call *syntax.CallExpr, sc *scope) {
 
 	sc.apply(inv)
 	w.call(inv, sc)
+}
+
+// pipedInto returns the words, behind any wrapper, of the simple command of the pipe stage that
+// reads the stdout of stmt; none when no such stage follows it.
+func (w *walker) pipedInto(stmt *syntax.Stmt) []Word {
+	next, piped := w.pipes[stmt]
+	if !piped {
+		return nil
+	}
+
+	stage, simple := next.Cmd.(*syntax.CallExpr)
+	if !simple || len(stage.Args) == 0 {
+		return nil
+	}
+
+	return invocationOf(next, stage, w.caller.Home).Words
 }
 
 // ---------------------------------------------------------------------------

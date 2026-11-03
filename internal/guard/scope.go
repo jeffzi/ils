@@ -235,6 +235,14 @@ func (w *walker) binary(cmd *syntax.BinaryCmd, sc *scope) {
 	default:
 		// bash runs each side of a pipe in a subshell, and zsh runs the last one in the shell
 		// itself, so a change either side makes may or may not hold after it.
+		// The parser nests `a | b | c` to the left, so cmd.Y is a single stage, and the stage before
+		// it is cmd.X, or the right side of cmd.X when that is a pipe too.
+		before := cmd.X
+		if inner, ok := cmd.X.Cmd.(*syntax.BinaryCmd); ok && inner.Op != syntax.AndStmt && inner.Op != syntax.OrStmt {
+			before = inner.Y
+		}
+
+		w.pipes[before] = cmd.Y
 		w.race(sc, func(s *scope) {
 			left, right := *s, *s
 			w.stmt(cmd.X, &left)

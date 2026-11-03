@@ -185,9 +185,60 @@ func TestJudge_RefusesSkippingGitsCommitChecks(t *testing.T) {
 func TestJudge_RefusesWritingGitHistoryOverAFile(t *testing.T) {
 	t.Parallel()
 
-	checkRefusals(t, []refusal{
-		{name: "show truncating", command: "git show HEAD > output.txt", wantNamed: "git show"},
+	_, caller := standingOn(t, "main", "topic")
+	outside := quotedPath(filepath.Join(outsideDir(t), "x.md"))
+
+	checkJudged(t, caller, []judged{
+		{name: "show truncating", command: "git show HEAD > output.txt", want: guard.Refuse, wantNamed: "git show"},
+		{name: "show into a directory not yet made", command: "git show HEAD:README.md > absent/x.md", want: guard.Refuse, wantNamed: "git show"},
+		{name: "show piped into tee", command: "git show HEAD:README.md | tee README.md", want: guard.Refuse, wantNamed: "git show"},
+		{name: "cat-file piped into tee -a", command: "git cat-file -p HEAD:README.md | tee -a README.md", want: guard.Refuse, wantNamed: "git cat-file"},
+		{name: "tee whose second file lands in the work tree", command: "git show HEAD:README.md | tee " + outside + " README.md", want: guard.Refuse, wantNamed: "git show"},
+		{name: "relative target where the directory is unknown", command: `cd "$d" && git show HEAD:README.md > x.md`, want: guard.Refuse, wantNamed: "x.md from"},
+		{name: "tee operand after --", command: "git show HEAD:README.md | tee -- -x", want: guard.Refuse, wantNamed: "git show"},
+		{name: "tee operand -", command: "git show HEAD:README.md | tee -", want: guard.Refuse, wantNamed: "git show"},
 	})
+}
+
+func TestJudge_RefusesGitHistoryWrittenWhereTheGuardCannotRead(t *testing.T) {
+	t.Parallel()
+
+	_, caller := standingOn(t, "main", "topic")
+
+	checkJudged(t, caller, []judged{
+		{name: "non-literal redirect target", command: `git show HEAD:README.md > "$out"`, want: guard.Refuse, wantNamed: "git show"},
+		{name: "non-literal tee operand", command: `git show HEAD:README.md | tee "$out"`, want: guard.Refuse, wantNamed: "git show"},
+	})
+}
+
+func TestJudge_AllowsGitHistoryWrittenOutsideAnyWorkTree(t *testing.T) {
+	t.Parallel()
+
+	_, caller := standingOn(t, "main", "topic")
+	away := outsideDir(t)
+	outside := quotedPath(filepath.Join(away, "x.md"))
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "show into /dev/null", command: "git show HEAD:README.md > /dev/null"},
+		{name: "show into a file outside", command: "git show HEAD:README.md > " + outside},
+		{name: "cat-file appending to a file outside", command: "git cat-file -p HEAD:README.md >> " + outside},
+		{name: "show piped into tee of a file outside", command: "git show HEAD:README.md | tee -a " + outside},
+		{name: "show piped into tee naming no file", command: "git show HEAD:README.md | tee"},
+		{name: "relative target after a cd outside", command: "cd " + quotedPath(away) + " && git show HEAD:README.md > x.md"},
+		{name: "tee further down the pipe", command: "git show HEAD:README.md | cat | tee README.md"},
+		{name: "show into the git directory", command: "git show HEAD:README.md > .git/x.md"},
+	})
+}
+
+func TestJudge_WhenWhetherTheTargetIsInAWorkTreeCannotBeRead_RefusesNamingTheRead(t *testing.T) {
+	// Not parallel: gittest.FakeGit sets PATH for the whole process.
+	f, _ := standingOn(t, "main", "topic")
+	command := "git show HEAD:README.md > " + quotedPath(filepath.Join(outsideDir(t), "x.md"))
+
+	got := guard.Judge(t.Context(), command, callerFailingOn(t, f, f.Dir(), "rev-parse", "--show-toplevel"))
+
+	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome", command)
+	assert.Check(t, is.Contains(got.Reason, gittest.FailedSaid), "Judge(%q) reason", command)
 }
 
 // namedCommand is a command, with the name of the test case that runs it.

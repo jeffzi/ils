@@ -439,7 +439,9 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   `update-ref --stdin`; `branch -M` onto a branch that exists; `apply --reverse`; `add --force`;
 - `--no-verify` on any command, `commit -n`, `am -n`, `send-email --no-validate`, and
   `core.hooksPath` set through `-c` or `--config-env`;
-- `git show` or `git cat-file` with stdout redirected to a file;
+- `git show` or `git cat-file` with stdout redirected, or piped straight into `tee`, to a file in a
+  git working tree, or to a file whose name the guard cannot read; output landing in `/dev/null`,
+  or in a file whose nearest existing directory is outside every working tree, is allowed;
 - `rebase` in a working tree with uncommitted changes or untracked files, or where the guard cannot
   tell the repository;
 - `worktree remove --force`, and `worktree remove` of a worktree with changes or one the guard

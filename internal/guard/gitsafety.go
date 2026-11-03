@@ -420,22 +420,87 @@ func setsHooksPath(o GitOption) bool {
 	return strings.EqualFold(key, hooksPathKey)
 }
 
-// refuseHistoryOverFile refuses `git show` or `git cat-file` with stdout redirected to a file,
-// which writes a version from history over a file that may hold uncommitted changes.
-func refuseHistoryOverFile(_ context.Context, _ Caller, inv Invocation) (Verdict, error) {
+// refuseHistoryOverFile refuses `git show` or `git cat-file` whose output lands in a file of a git
+// work tree, which writes a version from history over a file that may hold uncommitted changes.
+// The output lands in the file stdout is redirected to, or else in each file a `tee` that reads it
+// straight from the pipe names. A file outside every work tree, `/dev/null` among them, has no
+// changes to lose; one the guard cannot read is refused.
+func refuseHistoryOverFile(ctx context.Context, caller Caller, inv Invocation) (Verdict, error) {
 	sub, ok := subcommand(inv)
 	if !ok || (sub != "show" && sub != "cat-file") {
 		return Verdict{Outcome: Allow}, nil
 	}
 
-	target, toFile := inv.Stdout()
-	if !toFile {
-		return Verdict{Outcome: Allow}, nil
+	for _, target := range historyTargets(inv) {
+		path := target.Text
+		switch {
+		case !target.Literal:
+			return refuse(fmt.Sprintf("git %s writes to a file the guard cannot read; name the file as a literal path", sub)), nil
+		case !filepath.IsAbs(path) && inv.Dir == "":
+			reason := fmt.Sprintf("git %s writes to %s from a directory the guard cannot tell; %s", sub, path, moveFirst)
+
+			return refuse(reason), nil
+		case !filepath.IsAbs(path):
+			path = filepath.Join(inv.Dir, path)
+		}
+
+		dir := nearestDirectory(path)
+		inside, err := git.Repo{Runner: targetRunner(caller.Git, dir, GitTarget{})}.InWorkTree(ctx)
+		if err != nil {
+			return Verdict{}, fmt.Errorf("read whether %s lies in a git work tree: %w", dir, err)
+		}
+
+		if inside {
+			return refuse(fmt.Sprintf("git %s writes over %s, which may hold uncommitted changes", sub, path)), nil
+		}
 	}
 
-	reason := fmt.Sprintf("git %s writes over %s, which may hold uncommitted changes", sub, target.Text)
+	return Verdict{Outcome: Allow}, nil
+}
 
-	return refuse(reason), nil
+// historyTargets returns the files the output of inv lands in: the file its stdout is redirected
+// to, or else each operand of a `tee` that reads it straight from the pipe. A word that is not a
+// literal may be either an option or a file, so it is returned as a file.
+func historyTargets(inv Invocation) []Word {
+	if target, toFile := inv.Stdout(); toFile {
+		return []Word{target}
+	}
+
+	if len(inv.pipedInto) == 0 || !inv.pipedInto[0].Literal || programName(inv.pipedInto[0]) != "tee" {
+		return nil
+	}
+
+	var files []Word
+	options := true
+	for _, word := range inv.pipedInto[1:] {
+		switch {
+		case !word.Literal:
+			files = append(files, word)
+		case options && word.Text == "--":
+			options = false
+		case options && strings.HasPrefix(word.Text, "-") && word.Text != "-":
+		default:
+			files = append(files, word)
+		}
+	}
+
+	return files
+}
+
+// nearestDirectory returns the nearest directory that exists among those holding path, which the
+// shell creates path in.
+func nearestDirectory(path string) string {
+	dir := filepath.Dir(path)
+	for !isDirectory(dir) {
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+
+		dir = parent
+	}
+
+	return dir
 }
 
 // ---------------------------------------------------------------------------

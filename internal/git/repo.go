@@ -40,6 +40,9 @@ const (
 	// notRepositoryMessage is what git says, in the C locale, when it finds no repository where it
 	// looks.
 	notRepositoryMessage = "not a git repository"
+	// noWorkTreeMessage is what git says, in the C locale, when it needs a work tree and finds a
+	// repository without one where it looks: a bare repository, or the inside of a git directory.
+	noWorkTreeMessage = "must be run in a work tree"
 
 	commitFormat = "--format=%H %s"
 )
@@ -171,6 +174,13 @@ func (r Runner) Environ() []string {
 	return child.Environ(r.Env)
 }
 
+// inCLocale returns a copy of r that runs git in the C locale, so that its messages are untranslated.
+func (r Runner) inCLocale() Runner {
+	r.Env = append(r.Environ(), "LC_ALL=C")
+
+	return r
+}
+
 // FindGitDir returns the absolute path of the git directory git finds when given the global
 // options, such as `-C` or `--git-dir`, from the runner's directory, and found false when git says
 // there is no repository there. Any other exit of git, such as for a `-C` directory that does not
@@ -179,9 +189,7 @@ func (r Runner) Environ() []string {
 // Git tells the two apart only by its message, so the call runs in the C locale to keep that
 // message untranslated.
 func (r Repo) FindGitDir(ctx context.Context, options ...string) (dir string, found bool, err error) {
-	runner := r.Runner
-	runner.Env = append(runner.Environ(), "LC_ALL=C")
-	dir, err = Repo{Runner: runner}.GitDir(ctx, options...)
+	dir, err = Repo{Runner: r.Runner.inCLocale()}.GitDir(ctx, options...)
 	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && exitErr.Code == fatalCode &&
 		strings.Contains(exitErr.Stderr, notRepositoryMessage) {
 		return "", false, nil
@@ -192,6 +200,23 @@ func (r Repo) FindGitDir(ctx context.Context, options ...string) (dir string, fo
 	}
 
 	return dir, true, nil
+}
+
+// InWorkTree reports whether the runner's directory lies in the work tree of a repository, and
+// false when git says there is no repository there, or one without a work tree: a bare repository,
+// or the inside of a git directory. Any other exit of git is git's *child.ExitError; a git missing
+// from PATH is a *child.ToolMissingError.
+//
+// Git tells these apart only by its message, so the call runs in the C locale to keep that message
+// untranslated.
+func (r Repo) InWorkTree(ctx context.Context) (bool, error) {
+	_, err := r.Runner.inCLocale().Run(ctx, "rev-parse", "--show-toplevel")
+	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && exitErr.Code == fatalCode &&
+		(strings.Contains(exitErr.Stderr, notRepositoryMessage) || strings.Contains(exitErr.Stderr, noWorkTreeMessage)) {
+		return false, nil
+	}
+
+	return err == nil, err
 }
 
 // Alias returns what the alias name expands to in the config git reads when given the global
