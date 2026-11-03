@@ -139,7 +139,7 @@ func takesNextWord(text string) bool {
 	}
 
 	long := strings.HasPrefix(text, "--") && len(text) > 2
-	shorthand := len(text) == 2 && text[0] == '-' && text[1] != '-'
+	shorthand := len(text) == 2 && isShortBundle(text)
 
 	return long || shorthand
 }
@@ -469,23 +469,25 @@ func takesValueWord(w Word) bool {
 		return false
 	case slices.Contains(apiValuedLong(), t):
 		return true
-	case !isShortBundle(t):
+	default:
+		return bundleEndsWithValued(t, apiValued())
+	}
+}
+
+// bundleEndsWithValued reports whether the text t is a bundle of shorthands whose first letter that
+// is in valued is its last.
+func bundleEndsWithValued(t string, valued []byte) bool {
+	if !isShortBundle(t) {
 		return false
 	}
 
 	for i := 1; i < len(t); i++ {
-		if slices.Contains(apiValued(), t[i]) {
+		if slices.Contains(valued, t[i]) {
 			return i == len(t)-1
 		}
 	}
 
 	return false
-}
-
-// isShortBundle reports whether the text t is a bundle of shorthands: a single dash and at least
-// one letter.
-func isShortBundle(t string) bool {
-	return len(t) >= 2 && t[0] == '-' && t[1] != '-'
 }
 
 // apiMethod returns the last method rest gives `gh api` with -X or --method, and false when it
@@ -495,7 +497,7 @@ func isShortBundle(t string) bool {
 func apiMethod(rest []Word) (method Word, given bool) {
 	for i := 0; i < len(rest); i++ {
 		w := rest[i]
-		if w.Literal && w.Text == "--" {
+		if isEndOfFlags(w) {
 			break
 		}
 
@@ -517,19 +519,25 @@ func apiMethod(rest []Word) (method Word, given bool) {
 	return method, given
 }
 
+// The long name and the shorthand letter of the method flag of `gh api`.
+const (
+	apiMethodLong  = "--method"
+	apiMethodShort = 'X'
+)
+
 // methodFlag returns the method w gives `gh api` when it is -X or --method, reading next as the
 // value when the flag takes the next word. A word that is not a literal and may be the flag gives
 // a method that is not a literal.
 func methodFlag(w, next Word) (method Word, ok, takesNext bool) {
-	if value, attached := strings.CutPrefix(w.Text, "--method="); attached {
+	if value, attached := strings.CutPrefix(w.Text, apiMethodLong+"="); attached {
 		return Word{Text: value, Literal: w.Literal}, true, false
 	}
 
-	if w.Literal && w.Text == "--method" {
+	if w.Literal && w.Text == apiMethodLong {
 		return next, true, true
 	}
 
-	if value, found, attached := shortValue(w, 'X', apiValued()); found {
+	if value, found, attached := shortValue(w, apiMethodShort, apiValued()); found {
 		if attached {
 			return value, true, false
 		}
@@ -537,31 +545,8 @@ func methodFlag(w, next Word) (method Word, ok, takesNext bool) {
 		return next, true, true
 	}
 
-	if mayBeFlag(w, 'X', "--method") {
+	if mayBeFlag(w, apiMethodShort, apiMethodLong) {
 		return Word{}, true, false
-	}
-
-	return Word{}, false, false
-}
-
-// shortValue returns the value of the shorthand letter in the bundle w, reading the bundle's
-// letters up to the first of valued, the shorthands that take a value. attached is false when the
-// value is the next word.
-func shortValue(w Word, letter byte, valued []byte) (value Word, ok, attached bool) {
-	t := w.Text
-	if !isShortBundle(t) {
-		return Word{}, false, false
-	}
-
-	for i := 1; i < len(t); i++ {
-		if t[i] == letter {
-			value = Word{Text: t[i+1:], Literal: w.Literal}
-			return value, true, i+1 < len(t) || !w.Literal
-		}
-
-		if slices.Contains(valued, t[i]) {
-			break
-		}
 	}
 
 	return Word{}, false, false
@@ -576,7 +561,7 @@ func ghFlag(rest []Word, flag ghGuardedFlag, takesNext func(Word) bool) (set, kn
 	known = true
 	for i := 0; i < len(rest); i++ {
 		w := rest[i]
-		if w.Literal && w.Text == "--" {
+		if isEndOfFlags(w) {
 			break
 		}
 
@@ -611,9 +596,12 @@ func flagBeforeDashes(rest []Word, i int) bool {
 	return dashesFollow(rest, i) && mayBeValuedFlag(rest[i])
 }
 
-// dashesFollow reports whether the word after rest[i] is a literal `--`.
 func dashesFollow(rest []Word, i int) bool {
-	return i+1 < len(rest) && rest[i+1].Literal && rest[i+1].Text == "--"
+	return i+1 < len(rest) && isEndOfFlags(rest[i+1])
+}
+
+func isEndOfFlags(w Word) bool {
+	return w.Literal && w.Text == "--"
 }
 
 // mayBeValuedFlag reports whether w is a word that is not a literal whose literal prefix is empty
@@ -654,17 +642,9 @@ func mayTakeValue(w Word, valued []byte) bool {
 		return false
 	case takesNextWord(t):
 		return true
-	case !isShortBundle(t):
-		return false
+	default:
+		return bundleEndsWithValued(t, valued)
 	}
-
-	for i := 1; i < len(t); i++ {
-		if slices.Contains(valued, t[i]) {
-			return i == len(t)-1
-		}
-	}
-
-	return false
 }
 
 // mayBeFlag reports whether w is a word that is not a literal whose literal prefix may still grow

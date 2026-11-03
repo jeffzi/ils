@@ -104,7 +104,9 @@ func movesHead(inv Invocation) bool {
 
 		return options.unreadable || len(options.positional) > 1
 	case "branch":
-		return slices.ContainsFunc(args, isBranchMove)
+		valued := []byte(optionsOf("branch").valuedLetters)
+
+		return slices.ContainsFunc(args, func(arg Word) bool { return isBranchMove(arg, valued) })
 	case "rebase":
 		_, named, unreadable := rebaseBranch(args)
 
@@ -133,9 +135,9 @@ func ghMovesHead(args []Word) bool {
 }
 
 // isBranchMove reports whether arg is an option `git branch` reads as `--move`: `m` or `M` in a
-// short-flag bundle ahead of any `u`, whose rest is the value of `-u`, or a prefix of `--move` git
-// reads as it.
-func isBranchMove(arg Word) bool {
+// short-flag bundle ahead of any of valued, the short options that take a value, whose rest is
+// then that value, or a prefix of `--move` git reads as it.
+func isBranchMove(arg Word, valued []byte) bool {
 	text := arg.Text
 	switch {
 	case !arg.Literal || !strings.HasPrefix(text, "-"):
@@ -143,11 +145,12 @@ func isBranchMove(arg Word) bool {
 	case strings.HasPrefix(text, "--"):
 		const move = "--move"
 
-		return len(text) >= len("--mo") && strings.HasPrefix(move, text)
+		return abbreviates(text, move, len("--mo"))
 	default:
-		bundle, _, _ := strings.Cut(text[1:], "u")
+		_, move, _ := shortValue(arg, 'm', valued)
+		_, forced, _ := shortValue(arg, 'M', valued)
 
-		return strings.ContainsAny(bundle, "mM")
+		return move || forced
 	}
 }
 
@@ -177,10 +180,10 @@ func writesHead(inv Invocation) bool {
 	case writesNoFile()[command]:
 		return false
 	case command == "cp" || command == "install":
-		return slices.ContainsFunc(copyDestinations(args), func(w Word) bool {
+		return slices.ContainsFunc(copyDestinations(command, args), func(w Word) bool {
 			return mayBeHead(inv.Dir, w) || intoGitDir(w)
 		})
-	case (command == "mv" || command == "ln") && slices.ContainsFunc(copyDestinations(args), intoGitDir):
+	case (command == "mv" || command == "ln") && slices.ContainsFunc(copyDestinations(command, args), intoGitDir):
 		return true
 	default:
 		return slices.ContainsFunc(args, func(w Word) bool { return namesHead(inv.Dir, w) })
@@ -237,11 +240,17 @@ func operands(args []Word) []Word {
 	return found
 }
 
-// copyDestinations returns the paths `cp`, `mv`, `ln` or `install` given args may write into: the
-// last operand, and the directory a `-t` option or a prefix of `--target-directory` names, read
-// from a short-flag bundle as the rest of it or as the next word. A word that is not a literal may
-// be an option naming one, so it is one.
-func copyDestinations(args []Word) []Word {
+// copyDestinations returns the paths command, `cp`, `mv`, `ln` or `install`, given args may write
+// into: the last operand, and the directory a `-t` option or a prefix of `--target-directory`
+// names, read from a short-flag bundle as the rest of it or as the next word. `-t` counts only
+// ahead of the command's other short options that take a value, whose value is the rest of the
+// bundle. A word that is not a literal may be an option naming one, so it is one.
+func copyDestinations(command string, args []Word) []Word {
+	valued := []byte{'S', 't'}
+	if command == "install" {
+		valued = append(valued, 'm', 'o', 'g')
+	}
+
 	var found []Word
 	if all := operands(args); len(all) > 0 {
 		found = append(found, all[len(all)-1])
@@ -260,10 +269,12 @@ func copyDestinations(args []Word) []Word {
 		case strings.HasPrefix(text, "--"):
 			const target = "--target-directory"
 			name, attached, _ := strings.Cut(text, "=")
-			named = len(name) >= len("--t") && strings.HasPrefix(target, name)
+			named = abbreviates(name, target, len("--t"))
 			value = attached
 		case strings.HasPrefix(text, "-"):
-			_, value, named = strings.Cut(text[1:], "t")
+			var short Word
+			short, named, _ = shortValue(arg, 't', valued)
+			value = short.Text
 		}
 
 		switch {

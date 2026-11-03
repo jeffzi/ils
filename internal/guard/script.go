@@ -10,6 +10,10 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
+// ---------------------------------------------------------------------------
+// Shell script extraction
+// ---------------------------------------------------------------------------
+
 // shellNames are the shells whose `-c` string Parse reads.
 func shellNames() []string {
 	return []string{"bash", "sh", "zsh", "dash"}
@@ -67,6 +71,10 @@ func shellScript(stmt *syntax.Stmt, shell string, args []Word) (string, bool, Ma
 		return heredocScript(stmt)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Shell option parsing
+// ---------------------------------------------------------------------------
 
 // bashLongOptions are the long options of bash, which it also reads with a single dash.
 func bashLongOptions() []string {
@@ -305,6 +313,10 @@ func unescapeHeredoc(body string) string {
 	return b.String()
 }
 
+// ---------------------------------------------------------------------------
+// go command flags
+// ---------------------------------------------------------------------------
+
 // goCommandFlags are the flags of go whose value is a shell command go runs: `-toolexec` runs each
 // compiler tool through it, and `-exec` each test binary or program go builds.
 func goCommandFlags() []string {
@@ -319,7 +331,10 @@ type goCommand struct {
 
 // goCommandsOf returns each flag of goCommandFlags among words, the words of a go invocation, with
 // its value: the rest of the word after `=`, or the next word. A word that only starts as one of
-// the flags before an expansion has a value that is not a literal.
+// the flags before an expansion has a value that is not a literal. A word that is not a literal and
+// whose literal text so far is a non-empty start of one of the flags may become one: it is returned
+// with the flag its text names, or with none, and a value that is not a literal. The word after a
+// flag that takes it as its value is that value, and is not read again as a flag.
 func goCommandsOf(words []Word) []goCommand {
 	if len(words) == 0 || words[0].Text != "go" {
 		return nil
@@ -327,30 +342,50 @@ func goCommandsOf(words []Word) []goCommand {
 
 	var commands []goCommand
 	args := words[1:]
+	isValue := false
 	for i, arg := range args {
-		flag, value, joined := strings.Cut(arg.Text, "=")
-		if !slices.Contains(goCommandFlags(), flag) {
+		if isValue {
+			isValue = false
+
 			continue
 		}
 
+		flag, value, joined := strings.Cut(arg.Text, "=")
+		known := slices.Contains(goCommandFlags(), flag)
 		switch {
+		case !arg.Literal && !joined && startsCommandFlag(arg.Text):
+			if !known {
+				flag = ""
+			}
+
+			commands = append(commands, goCommand{flag: flag})
+		case !known:
 		case joined:
 			commands = append(commands, goCommand{flag: flag, value: Word{Text: value, Literal: arg.Literal}})
 		case arg.Literal && i+1 < len(args):
 			commands = append(commands, goCommand{flag: flag, value: args[i+1]})
+			isValue = true
 		}
 	}
 
 	return commands
 }
 
+// startsCommandFlag reports whether text, the literal start of a word the shell expands further, is
+// a non-empty start of one of goCommandFlags.
+func startsCommandFlag(text string) bool {
+	return text != "" &&
+		slices.ContainsFunc(goCommandFlags(), func(flag string) bool { return strings.HasPrefix(flag, text) })
+}
+
 // goCommands reads each command the go invocation inv runs through a flag of goCommandFlags, at
-// depth levels of nesting, and returns those to walk. It marks inv, naming the flag, for a command
-// that is not a literal, that does not parse, or that would nest past maxDepth.
+// depth levels of nesting, and returns those to walk. It marks inv, naming the flag, or `go` alone
+// when the flag is unknown, for a command that is not a literal, that does not parse, or that would
+// nest past maxDepth.
 func goCommands(inv *Invocation, depth int) []*syntax.File {
 	var files []*syntax.File
 	for _, c := range goCommandsOf(inv.Words) {
-		form := "go " + c.flag
+		form := strings.TrimSpace("go " + c.flag)
 		switch {
 		case !c.value.Literal:
 			inv.Marks = append(inv.Marks, Mark{Kind: DynamicScript, Name: form})
@@ -396,6 +431,10 @@ func goSubcommand(args []Word) (Word, bool) {
 
 	return args[0], true
 }
+
+// ---------------------------------------------------------------------------
+// Walking nested strings
+// ---------------------------------------------------------------------------
 
 // script walks the string that the invocation inv runs, one level deeper, starting with the
 // environment inv runs with. A shell runs it in a process of its own, so nothing it changes holds

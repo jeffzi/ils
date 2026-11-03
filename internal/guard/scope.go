@@ -11,6 +11,10 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
+// ---------------------------------------------------------------------------
+// Scope state and merging
+// ---------------------------------------------------------------------------
+
 // GitTarget is where a git invocation points git: the directory git works in once the
 // invocation's own `-C` options apply, and the GIT_DIR and GIT_WORK_TREE it runs with once its own
 // `--git-dir` and `--work-tree` apply, each made absolute against that directory as git does.
@@ -103,38 +107,6 @@ func mergeRedirects(a, b []Redirect) []Redirect {
 	return slices.Concat(merged, settled(filesOf(merged), wanted))
 }
 
-// settled returns the redirects that, applied after those that left each descriptor on the file
-// files names, put it on the file wanted names, in descriptor order: one wanted on no file is
-// closed, and one wanted on another file is opened on it.
-func settled(files, wanted map[string]Word) []Redirect {
-	fds := slices.Concat(slices.Collect(maps.Keys(files)), slices.Collect(maps.Keys(wanted)))
-	slices.Sort(fds)
-
-	var fixes []Redirect
-	for _, fd := range slices.Compact(fds) {
-		current, onFile := files[fd]
-		target, wantFile := wanted[fd]
-		switch {
-		case wantFile && current != target:
-			fixes = append(fixes, Redirect{Fd: fd, Op: ">", Target: target})
-		case !wantFile && onFile:
-			fixes = append(fixes, Redirect{Fd: fd, Op: ">&", Target: Word{Text: "-", Literal: true}})
-		}
-	}
-
-	return fixes
-}
-
-// filesOf returns the file each descriptor is open on once redirects apply in order.
-func filesOf(redirects []Redirect) map[string]Word {
-	files := map[string]Word{}
-	for _, r := range redirects {
-		applyRedirect(files, r)
-	}
-
-	return files
-}
-
 // moved returns the directory that going to w from dir leads to, empty when the guard cannot tell.
 func moved(dir string, w Word) string {
 	if !w.Literal {
@@ -155,6 +127,10 @@ func absolute(dir, p string) string {
 		return filepath.Join(dir, p)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Walking compound commands
+// ---------------------------------------------------------------------------
 
 // list walks stmts in order, each one starting where the one before left sc. A background job and
 // the statements after it are walked by job.
@@ -204,53 +180,6 @@ func (w *walker) stmtInPlace(stmt *syntax.Stmt, sc *scope) {
 	sc.redirects = slices.Concat(before, own)
 	w.compound(stmt.Cmd, sc)
 	sc.redirects = restored(before, own, sc.redirects)
-}
-
-// restored returns the redirects in effect once a command whose own redirects are own ends, given
-// those in effect before it and those at its end. bash and zsh put back only each descriptor the
-// command redirected, so what an `exec` inside it did to any other descriptor holds after it.
-func restored(before, own, after []Redirect) []Redirect {
-	if len(own) == 0 {
-		return after
-	}
-
-	files := filesOf(after)
-	beforeFiles := filesOf(before)
-	wanted := maps.Clone(files)
-	for _, r := range own {
-		for _, fd := range touched(r) {
-			delete(wanted, fd)
-			if target, onFile := beforeFiles[fd]; onFile {
-				wanted[fd] = target
-			}
-		}
-	}
-
-	return slices.Concat(after, settled(files, wanted))
-}
-
-// touched returns the descriptors the redirect r changes: `&>`, and `>&` onto a word that is no
-// descriptor, change stdout and stderr; an unnumbered redirect changes stdin when it reads, and
-// stdout otherwise.
-func touched(r Redirect) []string {
-	if strings.HasPrefix(r.Op, "&>") || (r.Op == ">&" && r.Fd == "" && !isDescriptor(r.Target)) {
-		return []string{stdoutFd, stderrFd}
-	}
-
-	if r.Fd != "" {
-		return []string{r.Fd}
-	}
-
-	if strings.HasPrefix(r.Op, "<") {
-		return []string{stdinFd}
-	}
-
-	return []string{stdoutFd}
-}
-
-// ontoStdout reports whether the redirect r changes where stdout goes.
-func ontoStdout(r Redirect) bool {
-	return slices.Contains(touched(r), stdoutFd)
 }
 
 func (w *walker) compound(cmd syntax.Command, sc *scope) {
@@ -457,6 +386,10 @@ func (w *walker) placed(inv Invocation, sc *scope) Invocation {
 	return inv
 }
 
+// ---------------------------------------------------------------------------
+// Directory and option tracking
+// ---------------------------------------------------------------------------
+
 func (sc *scope) apply(inv Invocation) {
 	if len(inv.Words) == 0 {
 		// A bare assignment sets a shell variable, which reaches git only once it is exported, as it
@@ -481,6 +414,8 @@ func (sc *scope) apply(inv Invocation) {
 	switch inv.Words[0].Text {
 	case "set":
 		sc.allexport = allexportAfter(sc.shell, inv.Words[1:], sc.allexport)
+	case "setopt", "unsetopt":
+		sc.allexport = allexportAfterZshOptions(inv.Words[0].Text == "setopt", inv.Words[1:], sc.allexport)
 	case "cd", "pushd":
 		sc.cd(inv.Words[1:], sc.commandEnv(inv).cdPath)
 	case "popd":
@@ -515,7 +450,22 @@ func execsNothing(words []Word) bool {
 
 // allexportAfter returns whether `set` given args, run by the shell named shell, leaves allexport
 // on, given whether it was on before. An option the guard cannot read may turn it on.
+//
+// zsh's `o` takes the rest of its bundle as the option name when the rest is non-empty, and the
+// next word otherwise; bash's `o` always takes the next word. An unknown shell, empty, may be zsh
+// or a shell that reads `set` as bash does, so allexport is on after it when either reading leaves
+// it on.
 func allexportAfter(shell string, args []Word, on bool) bool {
+	if shell == "" {
+		return allexportAfterIn("zsh", args, on) || allexportAfterIn("bash", args, on)
+	}
+
+	return allexportAfterIn(shell, args, on)
+}
+
+// allexportAfterIn returns whether `set` given args, run by the shell named shell, which is known,
+// leaves allexport on, given whether it was on before.
+func allexportAfterIn(shell string, args []Word, on bool) bool {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if !arg.Literal {
@@ -527,10 +477,16 @@ func allexportAfter(shell string, args []Word, on bool) bool {
 		}
 
 		enable := arg.Text[0] == '-'
-		for _, letter := range arg.Text[1:] {
+	bundle:
+		for j, letter := range arg.Text[1:] {
 			switch {
 			case letter == 'a':
 				on = enable
+			case letter == 'o' && shell == "zsh" && j+2 < len(arg.Text):
+				name := Word{Text: arg.Text[j+2:], Literal: arg.Literal}
+				on = setsAllexport(shell, name, enable, on)
+
+				break bundle
 			case letter == 'o' && i+1 < len(args):
 				i++
 				on = setsAllexport(shell, args[i], enable, on)
@@ -542,20 +498,121 @@ func allexportAfter(shell string, args []Word, on bool) bool {
 }
 
 // setsAllexport returns whether `set -o name`, or `set +o name` when enable is false, run by the
-// shell named shell, leaves allexport on, given whether it was on before. zsh ignores case and
-// underscores in the name; bash, sh and dash match it exactly. An unknown shell, empty, may be
-// zsh, so it is read the way zsh reads it.
+// shell named shell, leaves allexport on, given whether it was on before. zsh reads the name as
+// setopt does (zshOptionSetting); bash, sh and dash match `allexport` exactly and reject any other
+// spelling, leaving allexport as it was.
 func setsAllexport(shell string, name Word, enable, on bool) bool {
-	text := name.Text
-	if shell == "zsh" || shell == "" {
-		text = zshOptionName(text)
-	}
-
 	switch {
 	case !name.Literal:
 		return on || enable
-	case text == "allexport":
+	case shell == "zsh":
+		return zshOptionSetting(name, enable, on)
+	case name.Text == "allexport":
 		return enable
+	default:
+		return on
+	}
+}
+
+// allexportAfterZshOptions returns whether zsh's `setopt` given args, or `unsetopt` when enable is
+// false, leaves allexport on, given whether it was on before. zsh ignores case and underscores in an
+// option name, and `noallexport` is the reverse of `allexport`. The pattern form `-m`, and an
+// argument the guard cannot read, may turn it on.
+//
+// Only the leading arguments that start with `-` or `+` are option bundles, and `+` reverses `-`;
+// the first argument that does not ends them, as do a lone `-` or `+` and a `-` inside a bundle, and
+// every argument after that is an option name.
+func allexportAfterZshOptions(enable bool, args []Word, on bool) bool {
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+		if !arg.Literal {
+			return true
+		}
+
+		if arg.Text == "" || !strings.ContainsAny(arg.Text[:1], "-+") {
+			break
+		}
+
+		read := readZshOptionBundle(arg, args[i+1:], enable == (arg.Text[0] == '-'), on)
+		if read.pattern {
+			return true
+		}
+
+		on = read.on
+		i += 1 + read.taken
+		if read.ended {
+			break
+		}
+	}
+
+	for _, arg := range args[i:] {
+		on = zshOptionSetting(arg, enable, on)
+	}
+
+	return on
+}
+
+// zshOptionBundle is what one `-` or `+` bundle of `setopt` or `unsetopt` did.
+type zshOptionBundle struct {
+	// on reports whether allexport is on after the bundle.
+	on bool
+	// pattern reports whether the bundle holds `m`, which makes the option names patterns.
+	pattern bool
+	// ended reports whether the bundle ends the options, so the arguments after it are names.
+	ended bool
+	// taken counts the words after the bundle it read as an option name.
+	taken int
+}
+
+// readZshOptionBundle reads the option bundle arg, followed by the words next, that turns on the
+// options it names when set and turns them off otherwise, given whether allexport was on before. `a`
+// is allexport, and `o` takes the rest of the bundle as an option name when the rest is non-empty,
+// else the next word, and ends the bundle.
+func readZshOptionBundle(arg Word, next []Word, set, on bool) zshOptionBundle {
+	bundle := arg.Text[1:]
+	if bundle == "" {
+		return zshOptionBundle{on: on, ended: true}
+	}
+
+	for j, letter := range bundle {
+		switch letter {
+		case '-':
+			return zshOptionBundle{on: on, ended: true}
+		case 'm':
+			return zshOptionBundle{on: true, pattern: true}
+		case 'a':
+			on = set
+		case 'o':
+			if rest := bundle[j+1:]; rest != "" {
+				name := Word{Text: rest, Literal: arg.Literal}
+
+				return zshOptionBundle{on: zshOptionSetting(name, set, on)}
+			}
+
+			if len(next) == 0 {
+				return zshOptionBundle{on: on}
+			}
+
+			return zshOptionBundle{on: zshOptionSetting(next[0], set, on), taken: 1}
+		}
+	}
+
+	return zshOptionBundle{on: on}
+}
+
+// zshOptionSetting returns whether the zsh option name, set when enable and unset otherwise, leaves
+// allexport on, given whether it was on before. A name the guard cannot read may be allexport.
+func zshOptionSetting(name Word, enable, on bool) bool {
+	if !name.Literal {
+		return true
+	}
+
+	switch zshOptionName(name.Text) {
+	case "allexport":
+		return enable
+	case "noallexport":
+		return !enable
 	default:
 		return on
 	}
@@ -594,7 +651,6 @@ func (sc *scope) cd(args []Word, cdPath variable) {
 	}
 }
 
-// followedCDFlags are the option letters of `cd` and `pushd` the guard follows.
 const followedCDFlags = "LPe@qs"
 
 // cdOperands returns the operands of `cd` or `pushd` after its options, and false when an option
@@ -682,6 +738,10 @@ func (w *walker) returned() []Invocation {
 	return invocations
 }
 
+// ---------------------------------------------------------------------------
+// GIT_* variable marks
+// ---------------------------------------------------------------------------
+
 // allowedGitVariables is the list of GIT_* variables a command may set: those that point git at a
 // repository, which the guard follows, and those that change no rule it judges by.
 func allowedGitVariables() []string {
@@ -707,15 +767,29 @@ func gitVariableMarks(names []string) []Mark {
 	return marks
 }
 
-// loopVariable marks a `for` loop whose variable is a GIT_* variable off the allow list while
-// allexport may be on, which exports it to every git after it.
+// loopVariable makes the variable of a `for` loop unknown in sc, whatever it is, and marks the loop
+// when that variable is a GIT_* variable off the allow list while allexport may be on, which
+// exports it to every git after it.
 func (w *walker) loopVariable(c *syntax.ForClause, sc *scope) {
 	iter, ok := c.Loop.(*syntax.WordIter)
-	if !ok || !sc.allexport {
+	if !ok {
 		return
 	}
 
-	w.keepGitVariableMarks([]string{iter.Name.Value}, sc)
+	names := []string{iter.Name.Value}
+	sc.assignUnknown(names)
+
+	if sc.allexport {
+		w.keepGitVariableMarks(names, sc)
+	}
+}
+
+// assignUnknown makes each of names a variable the guard cannot tell the value of in sc's
+// environment, for variables the shell assigns without an assignment.
+func (sc *scope) assignUnknown(names []string) {
+	for _, name := range names {
+		sc.env.set(name, variable{unknown: true})
+	}
 }
 
 // keepGitVariableMarks keeps an invocation placed at sc that holds the GitVariable mark of each of
@@ -726,14 +800,11 @@ func (w *walker) keepGitVariableMarks(names []string, sc *scope) {
 	}
 }
 
-// exportedDefaults marks each GIT_* variable off the allow list that a `${NAME:=word}` or
-// `${NAME=word}` in node assigns while allexport may be on, which exports it. A command reached
-// through a substitution, and a simple command that is not a declaration, marks its own.
+// exportedDefaults makes each variable a `${NAME:=word}` or `${NAME=word}` in node assigns unknown
+// in sc, whichever variable it is, and marks each GIT_* variable off the allow list among them
+// while allexport may be on, which exports it. A command reached through a substitution, and a
+// simple command that is not a declaration, marks its own.
 func (w *walker) exportedDefaults(node syntax.Node, sc *scope) {
-	if !sc.allexport {
-		return
-	}
-
 	if stmt, ok := node.(*syntax.Stmt); ok {
 		if _, call := stmt.Cmd.(*syntax.CallExpr); call {
 			return
@@ -756,7 +827,11 @@ func (w *walker) exportedDefaults(node syntax.Node, sc *scope) {
 		return true
 	})
 
-	w.keepGitVariableMarks(names, sc)
+	sc.assignUnknown(names)
+
+	if sc.allexport {
+		w.keepGitVariableMarks(names, sc)
+	}
 }
 
 // assignsDefault reports whether p is a `${NAME:=word}` or `${NAME=word}`, which assigns NAME.

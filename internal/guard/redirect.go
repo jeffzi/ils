@@ -3,6 +3,7 @@
 package guard
 
 import (
+	"maps"
 	"slices"
 	"strings"
 
@@ -29,20 +30,87 @@ const (
 // no command. Each redirect applies in order, as in the shell, so `2> f >&2` sends stdout to f,
 // while `>&2 2> f` leaves it where stderr was.
 func (inv Invocation) Stdout() (Word, bool) {
-	return stdoutFile(slices.Concat(inv.enclosing, inv.Redirects))
+	target, toFile := filesOf(slices.Concat(inv.enclosing, inv.Redirects))[stdoutFd]
+
+	return target, toFile
 }
 
-// stdoutFile returns the file stdout is on once redirects apply in order, and false when it is on no
-// file.
-func stdoutFile(redirects []Redirect) (Word, bool) {
+// filesOf returns the file each descriptor is open on once redirects apply in order.
+func filesOf(redirects []Redirect) map[string]Word {
 	files := map[string]Word{}
 	for _, r := range redirects {
 		applyRedirect(files, r)
 	}
 
-	target, toFile := files[stdoutFd]
+	return files
+}
 
-	return target, toFile
+// settled returns the redirects that, applied after those that left each descriptor on the file
+// files names, put it on the file wanted names, in descriptor order: one wanted on no file is
+// closed, and one wanted on another file is opened on it.
+func settled(files, wanted map[string]Word) []Redirect {
+	fds := slices.Concat(slices.Collect(maps.Keys(files)), slices.Collect(maps.Keys(wanted)))
+	slices.Sort(fds)
+
+	var fixes []Redirect
+	for _, fd := range slices.Compact(fds) {
+		current, onFile := files[fd]
+		target, wantFile := wanted[fd]
+		switch {
+		case wantFile && current != target:
+			fixes = append(fixes, Redirect{Fd: fd, Op: ">", Target: target})
+		case !wantFile && onFile:
+			fixes = append(fixes, Redirect{Fd: fd, Op: ">&", Target: Word{Text: "-", Literal: true}})
+		}
+	}
+
+	return fixes
+}
+
+// restored returns the redirects in effect once a command whose own redirects are own ends, given
+// those in effect before it and those at its end. bash and zsh put back only each descriptor the
+// command redirected, so what an `exec` inside it did to any other descriptor holds after it.
+func restored(before, own, after []Redirect) []Redirect {
+	if len(own) == 0 {
+		return after
+	}
+
+	files := filesOf(after)
+	beforeFiles := filesOf(before)
+	wanted := maps.Clone(files)
+	for _, r := range own {
+		for _, fd := range touched(r) {
+			delete(wanted, fd)
+			if target, onFile := beforeFiles[fd]; onFile {
+				wanted[fd] = target
+			}
+		}
+	}
+
+	return slices.Concat(after, settled(files, wanted))
+}
+
+// touched returns the descriptors the redirect r changes: `&>`, and `>&` onto a word that is no
+// descriptor, change stdout and stderr; an unnumbered redirect changes stdin when it reads, and
+// stdout otherwise.
+func touched(r Redirect) []string {
+	if strings.HasPrefix(r.Op, "&>") || (r.Op == ">&" && r.Fd == "" && !isDescriptor(r.Target)) {
+		return []string{stdoutFd, stderrFd}
+	}
+
+	if r.Fd != "" {
+		return []string{r.Fd}
+	}
+
+	if strings.HasPrefix(r.Op, "<") {
+		return []string{stdinFd}
+	}
+
+	return []string{stdoutFd}
+}
+
+func ontoStdout(r Redirect) bool {
+	return slices.Contains(touched(r), stdoutFd)
 }
 
 // applyRedirect updates files, the file each descriptor is open on, with the redirect r. A
@@ -73,7 +141,7 @@ func applyRedirect(files map[string]Word, r Redirect) {
 		open(fd(stdinFd), r.Target, true)
 	case "<":
 		// A descriptor opened for reading only cannot write over the file.
-		open(fd(stdinFd), r.Target, false)
+		delete(files, fd(stdinFd))
 	case ">&", "<&":
 		into := fd(stdoutFd)
 		if r.Op == "<&" {

@@ -177,6 +177,10 @@ func writeDoubleQuotedText(b *strings.Builder, value string) {
 	}
 }
 
+func inTable(table map[string]bool, w Word) bool {
+	return w.Literal && table[w.Text]
+}
+
 func wordTexts(words []Word) []string {
 	texts := make([]string, 0, len(words))
 	for _, w := range words {

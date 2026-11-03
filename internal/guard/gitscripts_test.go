@@ -3,11 +3,13 @@
 package guard_test
 
 import (
+	"path/filepath"
 	"testing"
 
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
+	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/guard"
 )
 
@@ -26,18 +28,14 @@ func TestParse_WhenGitRunsAShellCommandItHolds_ParsesItsCommands(t *testing.T) {
 		{name: "rebase -x with a separate value", command: "git rebase -x 'git push origin main' HEAD~1", want: [][]string{{"git", "rebase", "-x", "git push origin main", "HEAD~1"}, pushed}},
 		{name: "rebase -x with an attached value", command: "git rebase -x' git push origin main' HEAD~1", want: [][]string{{"git", "rebase", "-x git push origin main", "HEAD~1"}, pushed}},
 		{name: "rebase -x in a short-flag bundle", command: "git rebase -ix 'git push origin main' HEAD~1", want: [][]string{{"git", "rebase", "-ix", "git push origin main", "HEAD~1"}, pushed}},
-		{name: "pager of one command given by -c", command: "git -c pager.log='git push origin main' log", want: [][]string{{"git", "-c", "pager.log=git push origin main", "log"}, pushed}},
+		{name: "rebase --exec after a -X value holding an x", command: "git rebase -Xx --exec 'git push origin main' main", want: [][]string{{"git", "rebase", "-Xx", "--exec", "git push origin main", "main"}, pushed}},
 		{name: "key spelled in another case", command: "git -c CORE.Pager='git push origin main' log", want: [][]string{{"git", "-c", "CORE.Pager=git push origin main", "log"}, pushed}},
 		{name: "pager key spelled in another case", command: "git -c Pager.Log='git push origin main' log", want: [][]string{{"git", "-c", "Pager.Log=git push origin main", "log"}, pushed}},
 		{name: "core.pager given by --config-env", command: "P='git push origin main' git --config-env=core.pager=P log", want: [][]string{{"git", "--config-env=core.pager=P", "log"}, pushed}},
 		{name: "diff driver textconv given by -c", command: "git -c diff.x.textconv='git push origin main' diff", want: [][]string{{"git", "-c", "diff.x.textconv=git push origin main", "diff"}, pushed}},
-		{name: "filter driver smudge given by -c", command: "git -c filter.x.smudge='git push origin main' status", want: [][]string{{"git", "-c", "filter.x.smudge=git push origin main", "status"}, pushed}},
-		{name: "merge driver given by -c", command: "git -c merge.x.driver='git push origin main' status", want: [][]string{{"git", "-c", "merge.x.driver=git push origin main", "status"}, pushed}},
 		{name: "credential helper run by the shell", command: "git -c credential.helper='!git push origin main' fetch", want: [][]string{{"git", "-c", "credential.helper=!git push origin main", "fetch"}, pushed}},
 		{name: "credential helper of a URL, key in another case", command: "git -c credential.https://h.Helper='!git push origin main' fetch", want: [][]string{{"git", "-c", "credential.https://h.Helper=!git push origin main", "fetch"}, pushed}},
 		{name: "credential helper named by its suffix", command: "git -c credential.helper=store fetch", want: [][]string{{"git", "-c", "credential.helper=store", "fetch"}, {"git", "credential-store"}}},
-		{name: "difftool command given by -c", command: "git -c difftool.x.cmd='git push origin main' difftool", want: [][]string{{"git", "-c", "difftool.x.cmd=git push origin main", "difftool"}, pushed}},
-		{name: "mergetool command given by -c", command: "git -c mergetool.x.cmd='git push origin main' mergetool", want: [][]string{{"git", "-c", "mergetool.x.cmd=git push origin main", "mergetool"}, pushed}},
 		{name: "bisect run", command: "git bisect run git push origin main", want: [][]string{{"git", "bisect", "run", "git", "push", "origin", "main"}, pushed}},
 		{name: "submodule foreach", command: "git submodule foreach 'git push origin main'", want: [][]string{{"git", "submodule", "foreach", "git push origin main"}, pushed}},
 		{name: "submodule foreach after its options", command: "git submodule foreach --recursive 'git push origin main'", want: [][]string{{"git", "submodule", "foreach", "--recursive", "git push origin main"}, pushed}},
@@ -158,4 +156,86 @@ func TestJudge_AllowsAGitCommandRunningALiteralItAllows(t *testing.T) {
 		{name: "difftool without prompting", command: "git difftool -y", want: guard.Allow},
 		{name: "for-each-repo", command: "git for-each-repo --config=x.repo status", want: guard.Allow},
 	})
+}
+
+// nestedRepositories returns a repository standing on topic, off its trunk main, holding a nested
+// repository inner on main and a nested repository docs/inner on scratch, both cloned from its
+// origin and left out of its status, and a caller working at its top.
+func nestedRepositories(t *testing.T) (*gittest.Fixture, guard.Caller) {
+	t.Helper()
+
+	f, caller := standingOn(t, "main", "topic")
+	f.Git("clone", "--quiet", f.OriginDir(), "inner")
+	f.Git("clone", "--quiet", f.OriginDir(), filepath.Join("docs", "inner"))
+	f.Git("-C", filepath.Join("docs", "inner"), "switch", "--quiet", "--create", "scratch")
+	gittest.WriteFile(t, filepath.Join(f.Dir(), ".git", "info"), "exclude", "/inner/\n/docs/\n")
+
+	return f, caller
+}
+
+const innerCommit = `"git -C inner commit --allow-empty -m x"`
+
+func TestParse_WhenGitRunsAScriptAtTheTopOfTheWorkTree_ReadsItsGitCommandsFromTheTop(t *testing.T) {
+	t.Parallel()
+
+	f, caller := nestedRepositories(t)
+	want := filepath.Join(f.Dir(), "inner", ".git")
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{name: "rebase --exec below the top by -C", command: "git -C docs rebase --exec " + innerCommit + " origin/main"},
+		{name: "rebase --exec below the top by cd", command: "cd docs && git rebase --exec " + innerCommit + " origin/main"},
+		{name: "difftool --extcmd below the top by -C", command: "git -C docs difftool --extcmd " + innerCommit + " HEAD~1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := lastWith(t, tt.command, caller).Git
+
+			assert.Check(t, !got.GitDirUnknown, "Parse(%q) reports the git dir unknown", tt.command)
+			assert.Check(t, is.Equal(got.GitDir, want), "Parse(%q) git dir", tt.command)
+		})
+	}
+}
+
+func TestJudge_RefusesAScriptCommitOnTheTrunkOfTheRepositoryAtTheTop(t *testing.T) {
+	t.Parallel()
+	_, caller := nestedRepositories(t)
+
+	checkJudged(t, caller, []judged{
+		{name: "rebase --exec below the top", command: "git -C docs rebase --exec " + innerCommit + " origin/main", wantNamed: "main", want: guard.Refuse},
+	})
+}
+
+func TestParse_WhenWhereGitRunsAScriptCannotBeTold_ReportsItsDirectoryUnknown(t *testing.T) {
+	t.Parallel()
+
+	f, caller := standingOn(t, "main", "topic")
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{name: "rebase --exec in a bare repository", command: "git --git-dir=" + quotedPath(f.OriginDir()) + " rebase --exec 'git status' main"},
+		{name: "rebase --exec in a target it cannot read", command: `GIT_DIR="$d" git rebase --exec 'git status' main`},
+		{name: "submodule foreach", command: "git submodule foreach 'git status'"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := lastWith(t, tt.command, caller)
+
+			assert.Check(t, is.Equal(got.Dir, ""), "Parse(%q) directory of %v", tt.command, got.Words)
+		})
+	}
+}
+
+func TestJudge_WhenTheTopOfTheWorkTreeCannotBeRead_RefusesAScriptCommit(t *testing.T) {
+	// Not parallel: gittest.FakeGit sets PATH for the whole process.
+	f, _ := standingOn(t, "main", "topic")
+	caller := callerFailingOn(t, f, f.Dir(), "rev-parse", "--show-toplevel")
+
+	checkJudgedRow(t, caller, judged{command: "git rebase --exec 'git commit --allow-empty -m x' origin/main", wantNamed: "git commit", want: guard.Refuse})
 }

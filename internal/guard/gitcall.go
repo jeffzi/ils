@@ -50,6 +50,21 @@ type GitOption struct {
 	Value Word
 }
 
+// configKey returns the key and the rest of the value of the global option o when it sets config:
+// git reads a `-c` value up to its first `=` as the key, and a `--config-env` value up to its last,
+// the rest being the value or the name of the variable that holds it. cut is false for any other
+// option, and for a value with no `=`.
+func configKey(o GitOption) (key, rest string, cut bool) {
+	switch o.Name {
+	case "-c":
+		return strings.Cut(o.Value.Text, "=")
+	case "--config-env":
+		return strings.CutLast(o.Value.Text, "=")
+	default:
+		return "", "", false
+	}
+}
+
 // The kinds of mark Parse puts on a git invocation whose subcommand it cannot resolve.
 const (
 	// ShellAlias is an alias whose expansion starts with `!`, which git runs as a shell command.
@@ -363,11 +378,6 @@ const (
 	// know.
 	aliasesTargetUnknown
 )
-
-// inTable reports whether the word w is a literal that names an entry of table.
-func inTable(table map[string]bool, w Word) bool {
-	return w.Literal && table[w.Text]
-}
 
 // aliasConfig returns the config options of the git invocation inv as configOptions does, and how
 // far the guard can read its aliases with them.

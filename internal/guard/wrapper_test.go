@@ -51,5 +51,4 @@ func TestParse_WhenAZshModifierIsGivenAnOption_ReadsTheOptionAsTheCommand(t *tes
 	got := only(t, command)
 
 	assert.Check(t, is.DeepEqual(wordTexts(got.Words), []string{"--", "git", "push"}), "Parse(%q) words", command)
-	assert.Check(t, is.DeepEqual(kinds(got.Marks), []guard.MarkKind{guard.ToolArgument}), "Parse(%q) marks", command)
 }

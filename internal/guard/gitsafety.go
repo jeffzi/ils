@@ -42,21 +42,21 @@ func discards() map[string]discard {
 	table := map[string]discard{
 		"checkout": {reason: "git checkout can overwrite uncommitted changes; use git switch or git restore --staged"},
 		"switch": {
-			refuses: func(o subcommandOptions) bool { return o.sets('f', "--force") || o.sets(0, "--discard-changes") },
+			refuses: func(o subcommandOptions) bool { return forced(o) || o.sets(0, "--discard-changes") },
 			reason:  "git switch --force discards uncommitted changes",
 		},
 		"reset": {reason: "git reset can discard uncommitted changes and move the branch; use git restore --staged"},
 		"stash": {reason: "git stash takes uncommitted changes out of the working tree"},
 		"clean": {
 			refuses: func(o subcommandOptions) bool {
-				return o.sets('f', "--force") || o.setsLast('i', "--interactive", "--no-interactive")
+				return forced(o) || o.setsLast('i', "--interactive", "--no-interactive")
 			},
 			judges: judgeCleanWithoutForce,
 			reason: "git clean --force or --interactive deletes untracked files",
 		},
 		"branch": {
 			refuses: func(o subcommandOptions) bool {
-				return o.sets('D', "") || (o.sets('d', "--delete") && o.sets('f', "--force"))
+				return o.sets('D', "") || (o.sets('d', "--delete") && forced(o))
 			},
 			judges: judgeForcedBranchOverwrite,
 			reason: "git branch -D deletes a branch even when its commits are not merged",
@@ -96,7 +96,6 @@ func discards() map[string]discard {
 	return table
 }
 
-// forced reports whether the options hold `-f` or `--force`.
 func forced(o subcommandOptions) bool {
 	return o.sets('f', "--force")
 }
@@ -269,9 +268,9 @@ func judgePruneExpiry(_ context.Context, _ Caller, inv Invocation, _ subcommandO
 func judgeForcedBranchOverwrite(ctx context.Context, caller Caller, inv Invocation, o subcommandOptions) (string, error) {
 	flag := ""
 	switch {
-	case o.sets('M', "") || (o.sets('m', "--move") && o.sets('f', "--force")):
+	case o.sets('M', "") || (o.sets('m', "--move") && forced(o)):
 		flag = "-M"
-	case o.sets('C', "") || (o.sets('c', "--copy") && o.sets('f', "--force")):
+	case o.sets('C', "") || (o.sets('c', "--copy") && forced(o)):
 		flag = "-C"
 	}
 
@@ -484,7 +483,7 @@ func refuseRiskyWorktreeRemoval(ctx context.Context, caller Caller, inv Invocati
 	}
 
 	options := readArgs(inv.Git.Args[1:], knownOptions{})
-	if options.sets('f', "--force") {
+	if forced(options) {
 		return refuse("git worktree remove --force deletes the worktree's uncommitted and untracked changes"), nil
 	}
 
@@ -594,17 +593,13 @@ func refuseGuardedConfigWrite(_ context.Context, _ Caller, inv Invocation) (Verd
 	return Verdict{Outcome: Allow}, nil
 }
 
-// helperCommandBreaks are the characters that let a credential helper value run more than the
-// helper: a newline, a list or pipe operator, a redirect, a substitution, or a subshell. A blank is
-// not one of them, since git runs `git credential-<value>` through the shell and blank-separated
-// words are only the helper's arguments.
-const helperCommandBreaks = "\n;&|()<>`$"
-
 // plainHelperName reports whether value, set as a credential helper, names a helper program to
 // run as `git credential-<value>`, with plain arguments or none: it starts with neither `!` nor
-// `/`, and holds none of helperCommandBreaks.
+// `/`, and holds none of shellOperatorChars, which would let it run more than the helper. A blank
+// is not one of them, since git runs `git credential-<value>` through the shell and
+// blank-separated words are only the helper's arguments.
 func plainHelperName(value string) bool {
-	return !strings.ContainsAny(value, helperCommandBreaks) && !strings.HasPrefix(value, "!") &&
+	return !strings.ContainsAny(value, shellOperatorChars) && !strings.HasPrefix(value, "!") &&
 		!strings.HasPrefix(value, "/")
 }
 

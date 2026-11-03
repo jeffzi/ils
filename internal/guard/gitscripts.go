@@ -4,11 +4,16 @@ package guard
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
+
+	"github.com/jeffzi/ils/internal/child"
+	"github.com/jeffzi/ils/internal/git"
 )
 
 // resolveGit asks git, for each git invocation the walk placed, which git dir it targets and what
@@ -28,7 +33,7 @@ func (w *walker) resolveGit(ctx context.Context) error {
 			return fmt.Errorf("read the git invocation %q: %w", wordTexts(inv.Words), err)
 		}
 
-		if err := w.gitScripts(i); err != nil {
+		if err := w.gitScripts(ctx, i); err != nil {
 			return err
 		}
 	}
@@ -39,22 +44,29 @@ func (w *walker) resolveGit(ctx context.Context) error {
 // gitScripts walks the shell commands that the resolved git invocation at index i of the walk has
 // git run, one level deeper, and places their invocations right after it: returned after it when
 // it is returned, and walked only when it belongs to a dry run. It marks a command it cannot read
-// on the invocation instead. A command git runs outside the invocation's directory and repository
-// is walked from a directory and a repository the guard does not know.
-func (w *walker) gitScripts(i int) error {
+// on the invocation instead. Each command is walked from the directory git starts it in: the top
+// of the invocation's work tree, read through the caller's git, for one git starts there; a
+// directory the guard does not know for any other, and a repository it does not know as well for
+// one git runs outside the invocation's repository.
+func (w *walker) gitScripts(ctx context.Context, i int) error {
 	inv := &w.walked[i]
-	var runs []gitRun
-	for _, script := range runnableScripts(inv, inv.depth, shellCommandsOf(*inv)) {
-		runs = append(runs, gitRun{script: Word{Text: script, Literal: true}})
-	}
+	runs := slices.Concat(shellRuns(inv), readableRuns(inv))
 
-	runs = append(runs, readableRuns(inv)...)
+	top, err := w.topFor(ctx, *inv, runs)
+	if err != nil {
+		return err
+	}
 
 	sub := newWalker(w.caller, inv.depth)
 	for _, run := range runs {
 		sc := gitScope(*inv)
-		if run.elsewhere {
+		switch run.start {
+		case startTop:
+			sc.dir = top
+		case startElsewhere:
 			sc.dir, sc.env = "", unknownEnvironment()
+		case startUnknown:
+			sc.dir = ""
 		}
 
 		if _, err := sub.walkString(run.script.Text, &sc); err != nil {
@@ -65,6 +77,66 @@ func (w *walker) gitScripts(i int) error {
 	w.splice(i, sub)
 
 	return nil
+}
+
+// topFor returns the top of the work tree of the git invocation inv when one of runs starts there,
+// and "" when none does or the guard cannot tell where the top is.
+func (w *walker) topFor(ctx context.Context, inv Invocation, runs []gitRun) (string, error) {
+	if !slices.ContainsFunc(runs, func(run gitRun) bool { return run.start == startTop }) {
+		return "", nil
+	}
+
+	top, err := workTreeTop(ctx, w.caller.Git, inv)
+	if err != nil {
+		return "", fmt.Errorf("read the top of the work tree of %q: %w", wordTexts(inv.Words), err)
+	}
+
+	return top, nil
+}
+
+// workTreeTop returns the top of the work tree git finds for the git invocation inv, which git
+// moves to before it runs a subcommand that needs a work tree, and "" when the guard cannot tell
+// it: a target it cannot follow, or a call git fails, as it does outside a work tree and in a bare
+// repository. A failure to run git at all is an error.
+func workTreeTop(ctx context.Context, runner git.Runner, inv Invocation) (string, error) {
+	options, known := targetOptions(inv)
+	if !known {
+		return "", nil
+	}
+
+	result, err := targetRunner(runner, inv.Dir, inv.Target).Run(ctx, append(options, "rev-parse", "--show-toplevel")...)
+	if _, failed := errors.AsType[*child.ExitError](err); failed {
+		return "", nil
+	}
+
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.FromSlash(strings.TrimSpace(result.Stdout)), nil
+}
+
+// shellRuns returns the commands of shellCommandsOf that the guard walks, and marks inv when one of
+// them is not a literal or they would nest too deep.
+func shellRuns(inv *Invocation) []gitRun {
+	values := shellCommandsOf(*inv)
+	scripts := make([]Word, 0, len(values))
+	for _, run := range values {
+		scripts = append(scripts, run.script)
+	}
+
+	if len(runnableScripts(inv, inv.depth, scripts)) == 0 {
+		return nil
+	}
+
+	var runs []gitRun
+	for _, run := range values {
+		if run.script.Literal {
+			runs = append(runs, run)
+		}
+	}
+
+	return runs
 }
 
 // readableRuns returns the commands the git invocation inv has git run from its arguments that the
@@ -145,14 +217,23 @@ func pathVariable(path string) variable {
 
 // shellCommandsOf returns the shell commands the git invocation inv has git run, read once its
 // aliases expand: the value of each config key git runs through the shell, given by `-c` or
-// `--config-env`, and each `rebase --exec`.
-func shellCommandsOf(inv Invocation) []Word {
-	values := configCommands(inv)
-	if sub := inv.Git.Subcommand; sub.Literal && sub.Text == "rebase" {
-		values = append(values, rebaseCommands(inv.Git.Args)...)
+// `--config-env`, and each `rebase --exec`. git starts a rebase's commands at the top of the work
+// tree, rebase being a command that needs one. Where it starts a config key's command depends on
+// the subcommand, such as a clone's filters run in the new repository, so that one starts in a
+// directory the guard does not know.
+func shellCommandsOf(inv Invocation) []gitRun {
+	var runs []gitRun
+	for _, command := range configCommands(inv) {
+		runs = append(runs, gitRun{script: command})
 	}
 
-	return values
+	if sub := inv.Git.Subcommand; sub.Literal && sub.Text == "rebase" {
+		for _, command := range rebaseCommands(inv.Git.Args) {
+			runs = append(runs, gitRun{script: command, start: startTop})
+		}
+	}
+
+	return runs
 }
 
 // literalScripts returns the text of each of values, the shell commands something runs, that is a
@@ -198,21 +279,6 @@ func capDepth(depth int, runs bool, mark MarkKind) (bool, MarkKind) {
 	}
 
 	return runs, mark
-}
-
-// configKey returns the key and the rest of the value of the global option o when it sets config:
-// git reads a `-c` value up to its first `=` as the key, and a `--config-env` value up to its last,
-// the rest being the value or the name of the variable that holds it. cut is false for any other
-// option, and for a value with no `=`.
-func configKey(o GitOption) (key, rest string, cut bool) {
-	switch o.Name {
-	case "-c":
-		return strings.Cut(o.Value.Text, "=")
-	case "--config-env":
-		return strings.CutLast(o.Value.Text, "=")
-	default:
-		return "", "", false
-	}
 }
 
 // configCommands returns the shell command of each `-c` and `--config-env` option of the git
@@ -265,10 +331,12 @@ func shellSubsectionKeys() []subsectionKeys {
 		{section: "merge", names: []string{"driver"}},
 		{section: "difftool", names: []string{"cmd"}},
 		{section: "mergetool", names: []string{"cmd"}},
+		{section: "man", names: []string{"cmd"}},
+		{section: "browser", names: []string{"cmd"}},
+		{section: "trailer", names: []string{"cmd", "command"}},
 	}
 }
 
-// containsFold reports whether names holds s, matched without regard to case.
 func containsFold(names []string, s string) bool {
 	return slices.ContainsFunc(names, func(name string) bool { return strings.EqualFold(name, s) })
 }
@@ -324,7 +392,8 @@ func shellCommand(key string, value Word) (Word, bool) {
 // rebaseCommands returns the value of each `--exec` or `-x` among the arguments of `git rebase`.
 func rebaseCommands(args []Word) []Word {
 	var values []Word
-	for _, run := range xOptionRuns(args, "rebase", "--exec") {
+	valued := []byte(optionsOf("rebase").valuedLetters)
+	for _, run := range xOptionRuns(args, "rebase", "--exec", valued) {
 		values = append(values, run.script)
 	}
 
@@ -333,41 +402,47 @@ func rebaseCommands(args []Word) []Word {
 
 // xOptionRuns returns the value of each `-x` or long option among args, the arguments of the git
 // subcommand name, the commands git runs: separate or attached, the long option spelled as any
-// prefix of long git could read as it, and `-x` anywhere in a short-flag bundle, whose rest is then
-// its value. Each run's form is the option as written. A word the guard cannot read that git could
-// read as one of these options is a run the guard cannot read either, whose form is name.
-func xOptionRuns(args []Word, name, long string) []gitRun {
+// prefix of long git could read as it, and `-x` in a short-flag bundle ahead of any other of
+// valued, the subcommand's short options that take a value, whose rest is then its value. Each
+// run's form is the option as written. A word the guard cannot read that git could read as one of
+// these options is a run the guard cannot read either, whose form is name.
+func xOptionRuns(args []Word, name, long string, valued []byte) []gitRun {
 	var runs []gitRun
 	for i := 0; i < len(args); i++ {
 		text := args[i].Text
-		if !args[i].Literal && couldBeXOption(text, long) {
+		if !args[i].Literal && couldBeXOption(text, long, valued) {
 			runs = append(runs, gitRun{form: name})
 
 			continue
 		}
 
-		var form, value string
+		var form string
+		var script Word
 		var attached bool
 		switch {
 		case text == "--":
 			return runs
 		case strings.HasPrefix(text, "--"):
+			var value string
 			form, value, attached = strings.Cut(text, "=")
-			if len(form) < len("--e") || !strings.HasPrefix(long, form) {
+			if !abbreviates(form, long, len("--e")) {
 				continue
 			}
-		case strings.HasPrefix(text, "-") && strings.Contains(text[1:], "x"):
-			var before string
-			before, value, _ = strings.Cut(text[1:], "x")
-			form = "-" + before + "x"
-			attached = value != "" || !args[i].Literal
+
+			script = Word{Text: value, Literal: args[i].Literal}
 		default:
-			continue
+			var found bool
+			script, found, attached = shortValue(args[i], 'x', valued)
+			if !found {
+				continue
+			}
+
+			form = text[:len(text)-len(script.Text)]
 		}
 
 		switch {
 		case attached:
-			runs = append(runs, gitRun{form: form, script: Word{Text: value, Literal: args[i].Literal}})
+			runs = append(runs, gitRun{form: form, script: script})
 		case i+1 < len(args):
 			i++
 			runs = append(runs, gitRun{form: form, script: args[i]})
@@ -379,27 +454,40 @@ func xOptionRuns(args []Word, name, long string) []gitRun {
 
 // couldBeXOption reports whether a word that starts with text, the rest unknown, could be `-x` or
 // the long option long once the rest is known, where text alone does not already name one: an
-// empty text, a short-flag bundle without `x`, or a prefix of long with no value.
-func couldBeXOption(text, long string) bool {
+// empty text, a short-flag bundle holding none of valued, the short options that take a value
+// with `x` among them, or a prefix of long with no value.
+func couldBeXOption(text, long string, valued []byte) bool {
 	switch {
 	case strings.HasPrefix(text, "--"):
 		return !strings.Contains(text, "=") && strings.HasPrefix(long, text)
 	case strings.HasPrefix(text, "-"):
-		return !strings.Contains(text[1:], "x")
+		return !strings.ContainsAny(text[1:], string(valued))
 	default:
 		return text == ""
 	}
 }
 
-// gitRun is a command that a git invocation has git run from its arguments.
+// startDir is where git starts a command that a git invocation has it run.
+type startDir int
+
+const (
+	// startUnknown is a directory of the invocation's repository the guard does not know.
+	startUnknown startDir = iota
+	// startTop is the top of the invocation's work tree, where git moves before it runs a
+	// subcommand that needs one.
+	startTop
+	// startElsewhere is outside the invocation's directory and repository: in each submodule, in
+	// each repository a config key lists, or in filter-branch's scratch tree.
+	startElsewhere
+)
+
+// gitRun is a command that a git invocation has git run from its arguments or its config.
 type gitRun struct {
 	// form names the argument as the invocation gives it, such as `bisect run` or `--tree-filter`.
 	form string
 	// script is the shell command git runs; not a literal when the guard cannot read it.
 	script Word
-	// elsewhere reports whether git runs it outside the invocation's directory and repository: in
-	// each submodule, in each repository a config key lists, or in filter-branch's scratch tree.
-	elsewhere bool
+	start  startDir
 }
 
 // argumentRuns returns the commands the git invocation inv has git run from its arguments, once its
@@ -408,7 +496,7 @@ func argumentRuns(inv Invocation) []gitRun {
 	runs := map[string]func([]Word) []gitRun{
 		"bisect":        bisectRuns,
 		"submodule":     submoduleRuns,
-		"difftool":      func(args []Word) []gitRun { return xOptionRuns(args, "difftool", "--extcmd") },
+		"difftool":      difftoolRuns,
 		"filter-branch": filterBranchRuns,
 		"for-each-repo": forEachRepoRuns,
 	}
@@ -418,6 +506,18 @@ func argumentRuns(inv Invocation) []gitRun {
 	}
 
 	return nil
+}
+
+// difftoolRuns returns the value of each `--extcmd` or `-x` among the arguments of `git difftool`,
+// whose short options that take a value are `-t` and `-x`. git starts each at the top of the work
+// tree, difftool setting one up before it compares.
+func difftoolRuns(args []Word) []gitRun {
+	runs := xOptionRuns(args, "difftool", "--extcmd", []byte{'t', 'x'})
+	for i := range runs {
+		runs[i].start = startTop
+	}
+
+	return runs
 }
 
 // argvScript returns the shell command that runs words as one command, each word one argument; not
@@ -441,7 +541,7 @@ func argvScript(words []Word) Word {
 }
 
 // bisectRuns returns the command of `git bisect run` among the arguments of `git bisect`, which git
-// runs with each word one argument. A newer git reads a leading `--reset-when-found` as its option;
+// runs with each word one argument, at the top of the work tree. A newer git reads a leading `--reset-when-found` as its option;
 // an older one runs it as the command's name, which runs nothing the guard judges.
 func bisectRuns(args []Word) []gitRun {
 	switch {
@@ -464,7 +564,7 @@ func bisectRuns(args []Word) []gitRun {
 		return nil
 	}
 
-	return []gitRun{{form: "bisect run", script: argvScript(words)}}
+	return []gitRun{{form: "bisect run", script: argvScript(words), start: startTop}}
 }
 
 // submoduleRuns returns the command of `git submodule foreach` among the arguments of `git
@@ -474,7 +574,7 @@ func submoduleRuns(args []Word) []gitRun {
 	for i := 0; i < len(args); i++ {
 		switch w := args[i]; {
 		case !w.Literal:
-			return []gitRun{{form: "submodule", elsewhere: true}}
+			return []gitRun{{form: "submodule", start: startElsewhere}}
 		case w.Text == "foreach":
 			return foreachRun(args[i+1:])
 		case w.Text == "-b" || w.Text == "--branch":
@@ -494,7 +594,7 @@ func foreachRun(args []Word) []gitRun {
 	case at < 0:
 		return nil
 	case !args[at].Literal:
-		return []gitRun{{form: "submodule foreach", elsewhere: true}}
+		return []gitRun{{form: "submodule foreach", start: startElsewhere}}
 	}
 
 	script := args[at]
@@ -503,7 +603,7 @@ func foreachRun(args []Word) []gitRun {
 		script = Word{Text: script.Text + " " + quoted.Text, Literal: quoted.Literal}
 	}
 
-	return []gitRun{{form: "submodule foreach", script: script, elsewhere: true}}
+	return []gitRun{{form: "submodule foreach", script: script, start: startElsewhere}}
 }
 
 // filterBranchRuns returns the value of each filter among the arguments of `git filter-branch`, and
@@ -520,7 +620,7 @@ func filterBranchRuns(args []Word) []gitRun {
 		w := args[i]
 		switch {
 		case !w.Literal:
-			return append(runs, gitRun{form: "filter-branch", elsewhere: true})
+			return append(runs, gitRun{form: "filter-branch", start: startElsewhere})
 		case flags[w.Text]:
 			continue
 		case w.Text == "--" || !strings.HasPrefix(w.Text, "-") || i+1 == len(args):
@@ -529,7 +629,7 @@ func filterBranchRuns(args []Word) []gitRun {
 
 		i++
 		if scripts[w.Text] {
-			runs = append(runs, gitRun{form: w.Text, script: args[i], elsewhere: true})
+			runs = append(runs, gitRun{form: w.Text, script: args[i], start: startElsewhere})
 		}
 	}
 
@@ -545,12 +645,12 @@ func forEachRepoRuns(args []Word) []gitRun {
 		name, _, attached := strings.Cut(w.Text, "=")
 		switch {
 		case !w.Literal:
-			return []gitRun{{form: "for-each-repo", elsewhere: true}}
+			return []gitRun{{form: "for-each-repo", start: startElsewhere}}
 		case w.Text == "--":
 			return forEachRepoRun(args[i+1:])
 		case !strings.HasPrefix(w.Text, "-"):
 			return forEachRepoRun(args[i:])
-		case !attached && len(name) >= len("--c") && strings.HasPrefix(config, name):
+		case !attached && abbreviates(name, config, len("--c")):
 			i++
 		}
 	}
@@ -569,5 +669,5 @@ func forEachRepoRun(argv []Word) []gitRun {
 		script.Text = "git " + script.Text
 	}
 
-	return []gitRun{{form: "for-each-repo", script: script, elsewhere: true}}
+	return []gitRun{{form: "for-each-repo", script: script, start: startElsewhere}}
 }

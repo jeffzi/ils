@@ -149,9 +149,15 @@ func cloneFunctions(m map[string]*function) map[string]*function {
 // byte, so no `cd` reaches it: a body that ends anywhere else may move the shell.
 const unmovedDir = "/\x00"
 
+// declarationBuiltins are the builtins the parser reads as declarations rather than as calls, so a
+// function of the same name runs in their place without the walk of a call seeing it.
+func declarationBuiltins() []string {
+	return []string{"export", "declare", "local", "readonly", "typeset", "let"}
+}
+
 // declareFunction records in sc the function decl declares for the calls after it, and marks a
-// declaration that takes the name of a command the guard reads: `cd`, `pushd`, `popd`, or a
-// wrapper it sees through.
+// declaration that takes the name of a command the guard reads: `cd`, `pushd`, `popd`, a wrapper it
+// sees through, or a declaration builtin.
 func (w *walker) declareFunction(decl *syntax.FuncDecl, sc *scope) {
 	if decl.Name == nil {
 		return
@@ -161,7 +167,7 @@ func (w *walker) declareFunction(decl *syntax.FuncDecl, sc *scope) {
 	functions := cloneFunctions(sc.functions)
 	functions[name] = &function{definitions: []*definition{{body: decl.Body, redirects: sc.redirects}}}
 	sc.functions = functions
-	if readsCommand(name) {
+	if readsCommand(name) || slices.Contains(declarationBuiltins(), name) {
 		w.keep(w.placed(Invocation{Marks: []Mark{{Kind: ShadowingFunction, Name: name}}}, sc))
 	}
 }
@@ -294,8 +300,17 @@ func (w *walker) dryRun(d *definition, sc scope) (scope, []Mark) {
 	runs.stack = runs.stack[:len(runs.stack)-1]
 	delete(reads.underway, d)
 
+	// The caller appends to the marks it is handed, which must not reach the copy kept here.
+	marks := slices.Clip(variableMarksOf(sub.walked))
+	d.pastRuns = append(d.pastRuns, pastRun{from: from, depth: w.depth, left: sc, marks: marks, reads: reads})
+	runs.note(d, reads)
+
+	return sc, marks
+}
+
+func variableMarksOf(invocations []Invocation) []Mark {
 	var marks []Mark
-	for _, inv := range sub.walked {
+	for _, inv := range invocations {
 		for _, m := range inv.Marks {
 			if m.Kind == GitVariable {
 				marks = append(marks, m)
@@ -303,10 +318,5 @@ func (w *walker) dryRun(d *definition, sc scope) (scope, []Mark) {
 		}
 	}
 
-	// The caller appends to the marks it is handed, which must not reach the copy kept here.
-	marks = slices.Clip(marks)
-	d.pastRuns = append(d.pastRuns, pastRun{from: from, depth: w.depth, left: sc, marks: marks, reads: reads})
-	runs.note(d, reads)
-
-	return sc, marks
+	return marks
 }

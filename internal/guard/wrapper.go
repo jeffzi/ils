@@ -65,7 +65,8 @@ func envArguments(inv *Invocation, given []option, args []*syntax.Word, home str
 	return len(args)
 }
 
-// wrapperOptions are the options a wrapper takes before the command it runs.
+// wrapperOptions are the options a wrapper takes before the command it runs, and whether it runs
+// that command in the current shell.
 type wrapperOptions struct {
 	// flags are the option letters that take no value.
 	flags string
@@ -75,6 +76,9 @@ type wrapperOptions struct {
 	numeric bool
 	// none reports whether the wrapper takes no option at all, not even `--`.
 	none bool
+	// inShell reports whether the wrapper runs the command after it in the current shell, so that a
+	// `cd` or `eval` behind it changes the shell. Every other wrapper starts a program of its own.
+	inShell bool
 }
 
 // option is one option letter given to a wrapper, with its value when it takes one.
@@ -90,14 +94,14 @@ type option struct {
 func wrapperOptionsOf(name string) (wrapperOptions, bool) {
 	options, ok := map[string]wrapperOptions{
 		"env":       {flags: "i", valued: "u"},
-		"command":   {flags: "p"},
+		"command":   {flags: "p", inShell: true},
 		"exec":      {flags: "cl", valued: "a"},
 		"nice":      {valued: "n", numeric: true},
-		"time":      {flags: "p"},
-		"builtin":   {},
+		"time":      {flags: "p", inShell: true},
+		"builtin":   {inShell: true},
 		"nohup":     {},
-		"noglob":    {none: true},
-		"nocorrect": {none: true},
+		"noglob":    {none: true, inShell: true},
+		"nocorrect": {none: true, inShell: true},
 	}[name]
 
 	return options, ok
@@ -116,7 +120,7 @@ func readsCommand(name string) bool {
 // its own.
 func runsInShell(wrappers []string) bool {
 	for _, wrapper := range wrappers {
-		if !slices.Contains([]string{"command", "builtin", "time", "noglob", "nocorrect"}, wrapper) {
+		if options, _ := wrapperOptionsOf(wrapper); !options.inShell {
 			return false
 		}
 	}

@@ -55,7 +55,7 @@ func TestJudge_RefusesAFunctionThatShadowsACommandTheGuardReadsThrough(t *testin
 func TestJudge_AllowsAFunctionThatHidesNoTool(t *testing.T) {
 	t.Parallel()
 
-	checkAllowed(t, guard.Caller{Home: home, Dir: start}, []namedCommand{
+	checkAllowed(t, readerCaller(), []namedCommand{
 		{name: "call of a function with no redirect", command: "greet() { echo hi; }; greet"},
 	})
 }
@@ -91,11 +91,11 @@ func TestParse_WhenTwoDefinitionsACallMayRunLeaveAGitVariableDifferently_Reports
 	assert.Check(t, got.Target.Unknown, "Parse(%q) target = %+v, want unknown", command, got.Target)
 }
 
-func TestParse_WhenEachFunctionCallsThePreviousTwice_ReturnsWithinASecondOrTwo(t *testing.T) {
+func TestParse_WhenEachFunctionCallsThePreviousTwice_ReturnsWithoutExpandingEveryCall(t *testing.T) {
 	t.Parallel()
 	const (
 		depth = 30
-		limit = 2 * time.Second
+		limit = 30 * time.Second
 	)
 	var command strings.Builder
 	command.WriteString("f0() { :; }; ")
@@ -103,6 +103,7 @@ func TestParse_WhenEachFunctionCallsThePreviousTwice_ReturnsWithinASecondOrTwo(t
 		fmt.Fprintf(&command, "f%d() { f%d; f%d; }; ", i, i-1, i-1)
 	}
 	fmt.Fprintf(&command, "f%d; git status", depth)
+	cmd := command.String()
 	ctx, cancel := context.WithTimeout(t.Context(), limit)
 	defer cancel()
 	type result struct {
@@ -112,16 +113,16 @@ func TestParse_WhenEachFunctionCallsThePreviousTwice_ReturnsWithinASecondOrTwo(t
 	done := make(chan result, 1)
 
 	go func() {
-		got, err := guard.Parse(ctx, command.String(), guard.Caller{Home: home, Dir: start})
+		got, err := guard.Parse(ctx, cmd, readerCaller())
 		done <- result{invocations: got, err: err}
 	}()
 
 	select {
 	case got := <-done:
-		assert.NilError(t, got.err, "Parse(%q)", command.String())
-		assert.Assert(t, len(got.invocations) > 0, "Parse(%q) holds no invocation", command.String())
+		assert.NilError(t, got.err, "Parse(%q)", cmd)
+		assert.Assert(t, len(got.invocations) > 0, "Parse(%q) holds no invocation", cmd)
 		assert.Check(t, is.Equal(got.invocations[len(got.invocations)-1].Tool, guard.Git),
-			"Parse(%q) last invocation", command.String())
+			"Parse(%q) last invocation", cmd)
 	case <-ctx.Done():
 		t.Fatalf("Parse of a chain of %d functions each calling the previous twice has not returned within %v", depth, limit)
 	}

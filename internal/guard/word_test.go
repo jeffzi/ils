@@ -63,8 +63,7 @@ func TestParse_WhenAWordCarriesAnExpansion_ReportsItNotLiteralWithItsLiteralPref
 
 			command := "echo " + tt.word
 
-			// A substitution's own command is an invocation of its own, after the echo.
-			got := parse(t, command)[0]
+			got := only(t, command)
 
 			assert.Assert(t, is.Len(got.Words, 2), "Parse(%q)", command)
 			assert.Check(t, is.DeepEqual(got.Words[1], guard.Word{Text: tt.wantPrefix, Literal: false}), "Parse(%q)", command)

@@ -30,7 +30,8 @@ func newTrunks() *trunks {
 
 // refuseOnTrunk refuses a subcommand that adds commits to the branch HEAD is on when that branch is
 // the trunk of a repository that has an origin, and one whose directory, target, or HEAD the guard
-// cannot tell. A `git rebase` whose branch argument is the trunk is judged as a rebase on the trunk.
+// cannot tell. A `git rebase` whose branch argument is the trunk is judged as a rebase on the trunk,
+// and one whose branch argument the guard cannot read is refused, since that branch may be the trunk.
 //
 // It reads origin and HEAD locally before it asks origin for the trunk, so a repository with no
 // origin or a detached HEAD starts no call to origin.
@@ -60,12 +61,20 @@ func (t *trunks) refuseOnTrunk(ctx context.Context, caller Caller, inv Invocatio
 	}
 
 	branch, onBranch := standing.Branch, standing.Kind == git.OnBranch
-	if rebased, named := rebasedBranch(sub, inv.Git.Args); named {
-		branch, onBranch = rebased, true
+	rebased, named := rebasedBranch(sub, inv.Git.Args)
+	if named {
+		branch, onBranch = rebased.Text, true
 	}
 
 	if standing.Kind == git.NoOrigin || !onBranch {
 		return Verdict{Outcome: Allow}, nil
+	}
+
+	if named && !rebased.Literal {
+		reason := fmt.Sprintf("git %s: the guard cannot read the branch it switches to, so it cannot tell "+
+			"which branch the rebase lands on", sub)
+
+		return refuse(reason), nil
 	}
 
 	answer, err := t.trunkOf(ctx, repo, inv.Git.GitDir)
@@ -166,16 +175,13 @@ func fastForwardsOnly(options []longOption) bool {
 }
 
 // rebasedBranch returns the branch argument of `git rebase` with args, the branch it switches to
-// before it rebases, and false when sub is not rebase or names no literal branch.
-func rebasedBranch(sub string, args []Word) (string, bool) {
+// before it rebases, and false when sub is not rebase or names no branch.
+func rebasedBranch(sub string, args []Word) (Word, bool) {
 	if sub != "rebase" {
-		return "", false
+		return Word{}, false
 	}
 
 	branch, named, _ := rebaseBranch(args)
-	if !named || !branch.Literal {
-		return "", false
-	}
 
-	return branch.Text, true
+	return branch, named
 }

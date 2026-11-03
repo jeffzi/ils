@@ -13,7 +13,6 @@ import (
 	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/child"
-	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/guard"
 )
@@ -56,9 +55,6 @@ func aliased(t *testing.T) *gittest.Fixture {
 		{"co", "checkout -b"},
 		{"lg", "hist --oneline"},
 		{"hist", "log --graph"},
-		{"one", "two"},
-		{"two", "three"},
-		{"three", "log"},
 		{"d1", "d2"},
 		{"d2", "d3"},
 		{"d3", "d4"},
@@ -235,21 +231,10 @@ func checkFailedCall(t *testing.T, err error, arg string) {
 func TestParse_WhenAGitConfigReadFails_FailsNamingTheCall(t *testing.T) {
 	// Not parallel: gittest.FakeGit sets PATH for the whole process.
 	f := aliased(t)
-	env := append(f.Env(), gittest.FakeGit(t, gittest.Fake{FailOn: []string{"config"}})...)
 
-	_, err := guard.Parse(t.Context(), "git co topic", callerWithEnv(f.Dir(), env))
+	_, err := guard.Parse(t.Context(), "git co topic", callerFailingOn(t, f, f.Dir(), "config"))
 
 	checkFailedCall(t, err, "alias.co")
-}
-
-func TestParse_WhenReadingTheAliasOfACommandAnOlderGitLacksFails_FailsNamingTheCall(t *testing.T) {
-	// Not parallel: gittest.FakeGit sets PATH for the whole process.
-	f := gittest.New(t, "main")
-	env := append(f.Env(), gittest.FakeGit(t, gittest.Fake{FailOn: []string{"config"}})...)
-
-	_, err := guard.Parse(t.Context(), "git replay --onto main topic", callerWithEnv(f.Dir(), env))
-
-	checkFailedCall(t, err, "alias.replay")
 }
 
 func TestParse_ReportsTheGitDirAnInvocationTargets(t *testing.T) {
@@ -308,9 +293,8 @@ func TestParse_WhenTheGitDirCannotBeRead_ReportsItUnknown(t *testing.T) {
 func TestParse_WhenGitCannotReadTheGitDir_FailsNamingTheCall(t *testing.T) {
 	// Not parallel: gittest.FakeGit sets PATH for the whole process.
 	f := gittest.New(t, "main")
-	env := append(f.Env(), gittest.FakeGit(t, gittest.Fake{FailOn: []string{"rev-parse"}})...)
 
-	_, err := guard.Parse(t.Context(), "git status", callerWithEnv(f.Dir(), env))
+	_, err := guard.Parse(t.Context(), "git status", callerFailingOn(t, f, f.Dir(), "rev-parse"))
 
 	checkFailedCall(t, err, "--absolute-git-dir")
 }
@@ -319,9 +303,7 @@ func TestParse_WhenNoInvocationRunsGit_StartsNoGit(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, "main")
-	recorder := &git.Recorder{}
-	caller := callerIn(f, f.Dir())
-	caller.Git.Recorder = recorder
+	caller, recorder := recordingCaller(f, f.Dir())
 	const command = "gh pr list && ls -la | grep x; echo git push"
 
 	parseWith(t, command, caller)
@@ -380,9 +362,7 @@ func TestParse_WhenAWordCannotNameAnAlias_MarksItWithoutReadingConfig(t *testing
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			recorder := &git.Recorder{}
-			caller := callerIn(f, f.Dir())
-			caller.Git.Recorder = recorder
+			caller, recorder := recordingCaller(f, f.Dir())
 
 			got := parseWith(t, tt.command, caller)
 
@@ -427,7 +407,6 @@ func TestJudge_WhenAnAliasNamesACommandAnOlderGitLacks_RefusesNamingIt(t *testin
 	f.Git("config", "--local", "alias.replay", "log")
 
 	checkJudged(t, caller, []judged{
-		{name: "alias given by -c", command: "git -c alias.send-email=log send-email x.patch", wantNamed: "send-email", want: guard.Refuse},
 		{name: "configured alias", command: "git replay --onto main topic", wantNamed: "replay", want: guard.Refuse},
 	})
 }

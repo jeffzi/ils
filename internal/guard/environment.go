@@ -3,8 +3,13 @@
 package guard
 
 import (
+	"strings"
+
 	"mvdan.cc/sh/v3/syntax"
 )
+
+// cdPathVar is the variable `cd` reads a relative path against.
+const cdPathVar = "CDPATH"
 
 // environment is what the guard knows of the variables it follows: those that point git at a
 // repository, CDPATH, which `cd` reads a relative path against, and those that choose the config
@@ -49,7 +54,7 @@ type variable struct {
 // where it is declared rather than where it is called, so an assignment the walk has not reached
 // in order may still be in effect when a `cd` runs.
 func (e *environment) forgetCDPath(file *syntax.File) {
-	if assigns(file, "CDPATH") {
+	if assigns(file, cdPathVar) {
 		e.cdPath = variable{unknown: true}
 	}
 }
@@ -82,7 +87,7 @@ func (e *environment) set(name string, v variable) {
 		e.gitDir = v
 	case "GIT_WORK_TREE":
 		e.workTree = v
-	case "CDPATH":
+	case cdPathVar:
 		e.cdPath = v
 	case ghConfigDirVar:
 		e.ghConfig.configDir = v
@@ -136,7 +141,9 @@ func (sc *scope) commandEnv(inv Invocation) environment {
 }
 
 // declare changes sc the way the declaration builtin decl does. Only `export NAME=value` with no
-// option sets a git variable the guard follows; any other declaration of one makes it unknown.
+// option sets a git variable the guard follows; any other declaration of one makes it unknown. An
+// argument the parser did not split into a name and a value (`export "$v=x"`) makes the variable it
+// names unknown, and every variable the guard follows when the guard cannot read the name.
 func (sc *scope) declare(decl *syntax.DeclClause, home string) {
 	plain := decl.Variant.Value == "export"
 	for _, a := range decl.Args {
@@ -147,6 +154,15 @@ func (sc *scope) declare(decl *syntax.DeclClause, home string) {
 
 	for _, a := range decl.Args {
 		if a.Name == nil {
+			name, assigns := unsplitName(a, home)
+			switch {
+			case !assigns:
+			case name == "":
+				sc.env = unknownEnvironment()
+			default:
+				sc.env.set(name, variable{unknown: true})
+			}
+
 			continue
 		}
 
@@ -156,6 +172,26 @@ func (sc *scope) declare(decl *syntax.DeclClause, home string) {
 		}
 
 		sc.env.set(a.Name.Value, v)
+	}
+}
+
+// unsplitName returns the variable the argument a of a declaration builtin names when the parser
+// did not split it into a name and a value, as in `export "NAME=value"` or `export "$v=value"`, and
+// reports whether a may assign one. The name is empty when the guard cannot read it.
+func unsplitName(a *syntax.Assign, home string) (name string, assigns bool) {
+	if a.Name != nil || a.Value == nil {
+		return "", false
+	}
+
+	word := readWord(a.Value, home)
+	prefix, _, found := strings.Cut(word.Text, "=")
+	switch {
+	case found:
+		return strings.TrimSuffix(prefix, "+"), true
+	case word.Literal:
+		return "", false
+	default:
+		return "", true
 	}
 }
 

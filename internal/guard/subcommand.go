@@ -56,14 +56,19 @@ func (l longOption) startsOf(long string) bool {
 	return strings.HasPrefix(long, l.name)
 }
 
+// abbreviates reports whether name is long or a start of it at least shortest bytes long, which git
+// reads as long.
+func abbreviates(name, long string, shortest int) bool {
+	return len(name) >= shortest && strings.HasPrefix(long, name)
+}
+
 // knownOptions is the options of a subcommand the guard knows. git reads the value of one that
 // takes a value as the rest of a short option bundle or as the next word, whatever it is spelled
 // like, and reads a start of a long option's name as that option when it starts no other.
 type knownOptions struct {
 	// short holds, by the name of a long option without the leading `--`, the letter of the short
 	// option that spells it too.
-	short map[string]byte
-	// valuedLetters holds the short options that take a value.
+	short         map[string]byte
 	valuedLetters string
 	// values and flags hold the names of the long options that take a value and of those that
 	// take none, without the leading `--`.
@@ -307,10 +312,10 @@ func readArgs(args []Word, known knownOptions) subcommandOptions {
 				i++
 			}
 		case strings.HasPrefix(text, "-") && text != "-":
-			valued, taken := o.readBundle(text[1:], w.Literal, known.valuedLetters)
-			opaqueBundle := !w.Literal && !valued
+			takes, next := o.readBundle(text[1:], w.Literal, known.valuedLetters)
+			opaqueBundle := !w.Literal && !takes
 			o.unreadable = o.unreadable || opaqueBundle
-			if taken {
+			if next {
 				i++
 			}
 		case !w.Literal:
@@ -354,6 +359,37 @@ func (o *subcommandOptions) readBundle(letters string, literal bool, valuedLette
 	}
 
 	return false, false
+}
+
+// isShortBundle reports whether the text t is a bundle of short options: a single dash and at
+// least one letter.
+func isShortBundle(t string) bool {
+	return len(t) >= 2 && t[0] == '-' && t[1] != '-'
+}
+
+// shortValue returns the value of the short option letter in the bundle w, reading the bundle's
+// letters up to the first of valued, the short options that take a value: that letter takes the
+// rest of the bundle as its value, so no later letter is an option. ok is false when the bundle
+// does not set letter. attached is false when the value is the next word: letter ends a bundle
+// that is a literal. A bundle that is not a literal holds its literal prefix, and its value is not
+// a literal either.
+func shortValue(w Word, letter byte, valued []byte) (value Word, ok, attached bool) {
+	t := w.Text
+	if !isShortBundle(t) {
+		return Word{}, false, false
+	}
+
+	for i := 1; i < len(t); i++ {
+		if t[i] == letter {
+			return Word{Text: t[i+1:], Literal: w.Literal}, true, i+1 < len(t) || !w.Literal
+		}
+
+		if slices.Contains(valued, t[i]) {
+			break
+		}
+	}
+
+	return Word{}, false, false
 }
 
 // rebaseBranch returns the branch operand of `git rebase` given args, the branch it switches to
