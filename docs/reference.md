@@ -442,7 +442,8 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   --force` or `--discard-changes`; `clean --force`; `branch -D`, `-d -f`, or `--delete --force`;
   `restore` without `--staged` (or `-S`), or with `--worktree` (`-W`) beside it; `rm --force`;
   `reflog expire`, `delete`, and `drop`; `gc --prune=…`, and `gc` with `gc.pruneExpire` set
-  through `-c` or `--config-env`; `clean` without `--force` where `clean.requireForce` is off,
+  through `-c` or `--config-env`; `repack -a -d` without `-A`, `--cruft`, or
+  `--keep-unreachable`; `clean` without `--force` where `clean.requireForce` is off,
   through `-c` or the repository's config;
   `checkout-index --force`; `read-tree --reset`, and `read-tree -u -m`; `update-ref -d` and
   `update-ref --stdin`; `branch -M` onto a branch that exists; `apply --reverse`; `add --force`;

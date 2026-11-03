@@ -77,15 +77,6 @@ func discards() map[string]discard {
 			refuses: forced,
 			reason:  "git rm --force deletes files even when they hold uncommitted changes",
 		},
-		"reflog expire": {reason: "git reflog expire deletes the reflog entries that recover lost commits"},
-		"reflog delete": {reason: "git reflog delete deletes the reflog entries that recover lost commits"},
-		"reflog drop":   {reason: "git reflog drop deletes the whole reflog of a ref, which recovers lost commits"},
-		"prune":         {reason: "git prune deletes unreachable objects, which can hold lost commits"},
-		"gc": {
-			refuses: func(o subcommandOptions) bool { return o.attaches("--prune") },
-			judges:  judgePruneExpiry,
-			reason:  "git gc --prune deletes unreachable objects, which can hold lost commits",
-		},
 		"apply": {
 			refuses: func(o subcommandOptions) bool { return o.sets('R', "--reverse") },
 			reason:  "git apply --reverse undoes changes in the working tree",
@@ -95,6 +86,7 @@ func discards() map[string]discard {
 			reason:  "git add --force stages files the ignore rules keep out",
 		},
 	}
+	maps.Copy(table, recoveryDiscards())
 	maps.Copy(table, plumbingDiscards())
 
 	return table
@@ -102,6 +94,34 @@ func discards() map[string]discard {
 
 func forced(o subcommandOptions) bool {
 	return o.sets('f', "--force")
+}
+
+// recoveryDiscards returns the operations of discards that delete what lost commits are recovered
+// from: the reflog entries that name them and the unreachable objects that hold them.
+func recoveryDiscards() map[string]discard {
+	return map[string]discard{
+		"reflog expire": {reason: "git reflog expire deletes the reflog entries that recover lost commits"},
+		"reflog delete": {reason: "git reflog delete deletes the reflog entries that recover lost commits"},
+		"reflog drop":   {reason: "git reflog drop deletes the whole reflog of a ref, which recovers lost commits"},
+		"prune":         {reason: "git prune deletes unreachable objects, which can hold lost commits"},
+		"gc": {
+			refuses: func(o subcommandOptions) bool { return o.attaches("--prune") },
+			judges:  judgePruneExpiry,
+			reason:  "git gc --prune deletes unreachable objects, which can hold lost commits",
+		},
+		"repack": {
+			refuses: func(o subcommandOptions) bool {
+				// -A, --cruft and --keep-unreachable each keep the unreachable objects -a -d would
+				// delete. An expiry of now, through --unpack-unreachable or --cruft-expiration, is not
+				// read.
+				keeps := o.sets('A', "") || o.setsLast(0, "--cruft", "--no-cruft") ||
+					o.setsLast('k', "--keep-unreachable", "--no-keep-unreachable")
+
+				return o.sets('a', "") && o.sets('d', "") && !keeps
+			},
+			reason: "git repack -a -d deletes unreachable objects at once, which can hold lost commits",
+		},
+	}
 }
 
 // plumbingDiscards returns the operations of discards that git's plumbing commands, the low-level

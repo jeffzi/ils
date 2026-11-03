@@ -51,6 +51,14 @@ func TestJudge_RefusesAGitOperationThatDiscardsWork(t *testing.T) {
 		{name: "rm -f", command: "git rm -f file"},
 		{name: "reflog expire", command: "git reflog expire"},
 		{name: "gc pruning now", command: "git gc --prune=now"},
+		{name: "repack -a -d", command: "git repack -a -d"},
+		{name: "repack bundle -ad", command: "git repack -ad"},
+		{name: "repack bundle -adf", command: "git repack -adf"},
+		{name: "repack -a -d with --cruft turned off again", command: "git repack -a -d --cruft --no-cruft"},
+		{
+			name:    "repack -a -d with --keep-unreachable turned off again",
+			command: "git repack -a -d --keep-unreachable --no-keep-unreachable",
+		},
 		{name: "apply -R", command: "git apply -R patch.diff"},
 		{name: "checkout-index bundle holding f", command: "git checkout-index -af"},
 		{name: "read-tree --reset beside --index-output", command: "git read-tree --index-output=x.idx --reset HEAD"},
@@ -116,6 +124,12 @@ func TestJudge_AllowsAGitOperationThatLeavesWorkOnDisk(t *testing.T) {
 		{name: "read-tree --dry-run", command: "git read-tree --dry-run HEAD"},
 		{name: "read-tree --index-output", command: "git read-tree --index-output=other.idx -m HEAD"},
 		{name: "read-tree --prefix", command: "git read-tree --prefix=vendor/lib/ HEAD"},
+		{name: "repack -a", command: "git repack -a"},
+		{name: "repack -d", command: "git repack -d"},
+		{name: "repack -A -d", command: "git repack -A -d"},
+		{name: "repack -a -A -d", command: "git repack -a -A -d"},
+		{name: "repack -a -d --cruft", command: "git repack -a -d --cruft"},
+		{name: "repack -a -d --keep-unreachable", command: "git repack -a -d --keep-unreachable"},
 	})
 }
 

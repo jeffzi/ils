@@ -177,6 +177,13 @@ rebase -CxsX
 	[no-]allow-empty-message [no-]rebase-merges [no-]fork-point [no-]strategy= [no-]strategy-option=
 	[no-]root [no-]reschedule-failed-exec [no-]reapply-cherry-picks
 
+repack -g
+	[no-]cruft [no-]cruft-expiration= combine-cruft-below-size= max-cruft-size=
+	[no-]name-hash-version= [no-]path-walk [no-]quiet [no-]local [no-]write-bitmap-index
+	[no-]delta-islands [no-]unpack-unreachable= [no-]keep-unreachable [no-]window= [no-]window-memory=
+	[no-]depth= [no-]threads= max-pack-size= [no-]filter= [no-]pack-kept-objects [no-]keep-pack=
+	[no-]geometric= [no-]write-midx [no-]expire-to= [no-]filter-to=
+
 restore -sU
 	[no-]source= [no-]staged [no-]worktree [no-]ignore-unmerged [no-]overlay [no-]quiet
 	[no-]recurse-submodules [no-]progress [no-]merge [no-]conflict= ours theirs [no-]patch unified=
