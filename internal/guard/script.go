@@ -471,7 +471,16 @@ func goSubcommand(args []Word) (Word, bool) {
 func (w *walker) script(script string, inv Invocation, sc *scope) {
 	name := inv.Words[0].Text
 	inner := sc.runScope(inv)
-	if name != "eval" {
+	// eval reads the variables of the shell, except those of its assignment prefix, which the guard
+	// does not follow and so reads unknown.
+	vars := sc.vars
+	for _, a := range inv.Assignments {
+		vars = vars.forget(a.Name)
+	}
+
+	if name == "eval" {
+		inner.vars = vars
+	} else {
 		inner.shell = programName(inv.Words[0])
 	}
 
@@ -491,22 +500,28 @@ func (w *walker) script(script string, inv Invocation, sc *scope) {
 	sc.allexport = inner.allexport
 
 	// A dry run of the string from the shell's own environment leaves each variable as the string
-	// sets it, or as the shell had it when the string does not touch it.
+	// sets it, or as the shell had it when the string does not touch it, other than those of the
+	// assignment prefix.
 	after := *sc
+	after.vars = vars
 	at := len(w.kept)
 	w.nested(file, &after)
 	w.kept = w.kept[:at]
 	sc.dir = inner.dir
 	sc.physical = inner.physical
 	sc.env = after.env
+	sc.vars = after.vars
 	sc.redirects = restored(sc.redirects, inv.Redirects, inner.redirects)
 }
 
 // runScope returns the scope a string the invocation inv has run starts in, run from sc: the
-// environment inv runs with, and its own redirects in effect after those of the shell.
+// environment inv runs with, and its own redirects in effect after those of the shell. For a string
+// a shell of its own runs, the variables the guard follows are none, apart from whether the guard
+// may read any of them (unread); script replaces them for eval.
 func (sc *scope) runScope(inv Invocation) scope {
 	inner := *sc
 	inner.env = sc.commandEnv(inv)
+	inner.vars = shellVars{unread: sc.vars.unread}
 	inner.redirects = slices.Concat(sc.redirects, inv.Redirects)
 
 	return inner
@@ -553,6 +568,7 @@ func (w *walker) variableCommands(scripts []string, sc scope) {
 // nested walks the commands of file, a string run one level deeper, from sc.
 func (w *walker) nested(file *syntax.File, sc *scope) {
 	sc.env.forgetCDPath(file)
+	sc.vars = sc.vars.watched(file)
 	w.depth++
 	w.list(file.Stmts, sc)
 	w.depth--

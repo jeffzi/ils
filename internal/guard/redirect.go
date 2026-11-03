@@ -171,10 +171,10 @@ func isDescriptor(w Word) bool {
 	return w.Text == "-" || strings.Trim(w.Text, "0123456789") == ""
 }
 
-func redirectsOf(stmt *syntax.Stmt, home string) []Redirect {
+func redirectsOf(stmt *syntax.Stmt, ex expander) []Redirect {
 	redirects := make([]Redirect, 0, len(stmt.Redirs))
 	for _, r := range stmt.Redirs {
-		redirect := Redirect{Op: r.Op.String(), Target: readWord(r.Word, home)}
+		redirect := Redirect{Op: r.Op.String(), Target: readWord(r.Word, ex)}
 		if r.N != nil {
 			redirect.Fd = r.N.Value
 		}

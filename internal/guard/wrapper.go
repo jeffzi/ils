@@ -15,7 +15,7 @@ import (
 // what those wrappers set on its invocation: their names, the `VAR=…` arguments of an `env` among
 // them, and the environment its options clear or remove. A wrapper with nothing after it is the
 // command itself.
-func seeThrough(args []*syntax.Word, words []Word, home string) (int, Invocation) {
+func seeThrough(args []*syntax.Word, words []Word, ex expander) (int, Invocation) {
 	start := 0
 	var inv Invocation
 	for start < len(words) && words[start].Literal && !isLookup(words[start:]) {
@@ -29,7 +29,7 @@ func seeThrough(args []*syntax.Word, words []Word, home string) (int, Invocation
 		n, given := skipOptions(words[start+1:], options)
 		start += 1 + n
 		if name == "env" {
-			start += envArguments(&inv, given, args[start:], home)
+			start += envArguments(&inv, given, args[start:], ex)
 		}
 	}
 
@@ -42,7 +42,7 @@ func seeThrough(args []*syntax.Word, words []Word, home string) (int, Invocation
 
 // envArguments records on inv what an `env` wrapper does to the environment: the options given to
 // it, then its `VAR=…` arguments at the start of args. It returns how many of args those are.
-func envArguments(inv *Invocation, given []option, args []*syntax.Word, home string) int {
+func envArguments(inv *Invocation, given []option, args []*syntax.Word, ex expander) int {
 	for _, opt := range given {
 		switch opt.letter {
 		case 'i':
@@ -53,7 +53,7 @@ func envArguments(inv *Invocation, given []option, args []*syntax.Word, home str
 	}
 
 	for i, arg := range args {
-		a, ok := envAssignment(arg, home)
+		a, ok := envAssignment(arg, ex)
 		if !ok {
 			return i
 		}
@@ -181,7 +181,7 @@ func optionLetters(letters string, next []Word, options wrapperOptions) ([]optio
 }
 
 // envAssignment reads raw as an `env` argument of the form `NAME=value`.
-func envAssignment(raw *syntax.Word, home string) (Assignment, bool) {
+func envAssignment(raw *syntax.Word, ex expander) (Assignment, bool) {
 	lit, ok := raw.Parts[0].(*syntax.Lit)
 	if !ok {
 		return Assignment{}, false
@@ -197,5 +197,5 @@ func envAssignment(raw *syntax.Word, home string) (Assignment, bool) {
 		parts = slices.Insert(parts, 0, syntax.WordPart(&syntax.Lit{Value: rest}))
 	}
 
-	return Assignment{Name: name, Value: readWord(&syntax.Word{Parts: parts}, home)}, true
+	return Assignment{Name: name, Value: readWord(&syntax.Word{Parts: parts}, ex)}, true
 }

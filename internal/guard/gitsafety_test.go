@@ -211,6 +211,12 @@ func TestJudge_RefusesWritingGitHistoryOverAFile(t *testing.T) {
 		{name: "relative target where the directory is unknown", command: `cd "$d" && git show HEAD:README.md > x.md`, want: guard.Refuse, wantNamed: "x.md from"},
 		{name: "tee operand after --", command: "git show HEAD:README.md | tee -- -x", want: guard.Refuse, wantNamed: "git show"},
 		{name: "tee operand -", command: "git show HEAD:README.md | tee -", want: guard.Refuse, wantNamed: "git show"},
+		{
+			name:      "tee named by a variable the command assigned",
+			command:   "T=tee; git show HEAD:README.md | $T README.md",
+			want:      guard.Refuse,
+			wantNamed: "git show",
+		},
 	})
 }
 
@@ -238,6 +244,7 @@ func TestJudge_AllowsGitHistoryWrittenOutsideAnyWorkTree(t *testing.T) {
 		{name: "cat-file appending to a file outside", command: "git cat-file -p HEAD:README.md >> " + outside},
 		{name: "show piped into tee of a file outside", command: "git show HEAD:README.md | tee -a " + outside},
 		{name: "show piped into tee naming no file", command: "git show HEAD:README.md | tee"},
+		{name: "tee of a file outside named by a variable", command: "F=" + outside + "; git show HEAD:README.md | tee $F"},
 		{name: "relative target after a cd outside", command: "cd " + quotedPath(away) + " && git show HEAD:README.md > x.md"},
 		{name: "tee further down the pipe", command: "git show HEAD:README.md | cat | tee README.md"},
 		{name: "show into the git directory", command: "git show HEAD:README.md > .git/x.md"},

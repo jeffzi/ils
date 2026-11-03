@@ -37,7 +37,7 @@ const (
 // Caller is what Parse needs to know about the shell that would run the command.
 type Caller struct {
 	// Env is the environment the command would start with; Parse reads CDPATH, GIT_DIR,
-	// GIT_WORK_TREE, GH_CONFIG_DIR, XDG_CONFIG_HOME, and HOME from it.
+	// GIT_WORK_TREE, GH_CONFIG_DIR, XDG_CONFIG_HOME, HOME, and IFS from it.
 	Env map[string]string
 	// Home is the HOME that `~` and `~/…` expand with.
 	Home string
@@ -291,22 +291,29 @@ func (w *walker) simple(stmt *syntax.Stmt, sc *scope) bool {
 	case *syntax.CallExpr:
 		w.add(stmt, cmd, sc)
 	case *syntax.DeclClause:
-		inv := w.placed(declarationOf(stmt, cmd, w.caller.Home), sc)
-		scripts := w.variableScripts(&inv, declared(cmd, w.caller.Home))
+		ex := w.reading(sc)
+		ex.vars = ex.vars.forgetAssigned(cmd.Args)
+		inv := w.placed(declarationOf(stmt, cmd, ex), sc)
+		scripts := w.variableScripts(&inv, declared(cmd, ex))
 		w.keep(inv)
-		sc.declare(cmd, w.caller.Home)
+		sc.declare(cmd, ex)
 		w.variableCommands(scripts, laterScope())
 	case *syntax.LetClause:
 		// Parse does not read an arithmetic expression back into text, so each one is a word that is
 		// not literal.
 		words := append([]Word{{Text: "let", Literal: true}}, make([]Word, len(cmd.Exprs))...)
-		inv := Invocation{Words: words, Redirects: redirectsOf(stmt, w.caller.Home), Bare: true}
+		inv := Invocation{Words: words, Redirects: redirectsOf(stmt, w.reading(sc)), Bare: true}
 		w.keep(w.placed(inv, sc))
 	}
 
 	w.kept = moveBehind(w.kept, at, at+held)
 
 	return true
+}
+
+// reading returns the expander that reads the words of a command run from sc.
+func (w *walker) reading(sc *scope) expander {
+	return expander{vars: sc.vars, home: w.caller.Home}
 }
 
 func moveBehind[T any](s []T, at, mid int) []T {
@@ -317,13 +324,13 @@ func moveBehind[T any](s []T, at, mid int) []T {
 // name, then each of its arguments as a word. An argument the parser did not split into a name and a
 // value (`export "$v=x"`) may assign any variable, so it takes a GitVariable mark that names none
 // when the guard cannot read the name.
-func declarationOf(stmt *syntax.Stmt, decl *syntax.DeclClause, home string) Invocation {
+func declarationOf(stmt *syntax.Stmt, decl *syntax.DeclClause, ex expander) Invocation {
 	words := []Word{{Text: decl.Variant.Value, Literal: true}}
 	values := make([]*syntax.Word, 0, len(decl.Args))
 	var names []string
 	nameless := false
 	for _, a := range decl.Args {
-		words = append(words, declarationWord(a, home))
+		words = append(words, declarationWord(a, ex))
 		values = append(values, a.Value)
 		if a.Name != nil {
 			names = append(names, a.Name.Value)
@@ -331,7 +338,7 @@ func declarationOf(stmt *syntax.Stmt, decl *syntax.DeclClause, home string) Invo
 			continue
 		}
 
-		name, assigns := unsplitName(a, home)
+		name, assigns := unsplitName(a, ex)
 		switch {
 		case !assigns:
 		case name == "":
@@ -341,7 +348,7 @@ func declarationOf(stmt *syntax.Stmt, decl *syntax.DeclClause, home string) Invo
 		}
 	}
 
-	inv := Invocation{Words: words, Redirects: redirectsOf(stmt, home), Bare: true}
+	inv := Invocation{Words: words, Redirects: redirectsOf(stmt, ex), Bare: true}
 	if hasExtGlob(values, stmt) {
 		inv.Marks = []Mark{{Kind: ExtendedGlob}}
 	}
@@ -356,13 +363,13 @@ func declarationOf(stmt *syntax.Stmt, decl *syntax.DeclClause, home string) Invo
 
 // declarationWord returns the argument a of a declaration builtin as the word the shell reads:
 // an option or a name alone, or `NAME=value`.
-func declarationWord(a *syntax.Assign, home string) Word {
+func declarationWord(a *syntax.Assign, ex expander) Word {
 	if a.Naked {
 		if a.Name != nil {
 			return Word{Text: a.Name.Value, Literal: true}
 		}
 
-		return readWord(a.Value, home)
+		return readWord(a.Value, ex)
 	}
 
 	prefix := a.Name.Value
@@ -381,7 +388,7 @@ func declarationWord(a *syntax.Assign, home string) Word {
 
 	value := Word{Literal: true}
 	if a.Value != nil {
-		value = readWord(a.Value, home)
+		value = readWord(a.Value, ex)
 	}
 
 	return Word{Text: prefix + value.Text, Literal: value.Literal}
@@ -390,18 +397,18 @@ func declarationWord(a *syntax.Assign, home string) Word {
 // add appends the invocation of call, then the invocations of the string it runs, and applies to
 // sc what it changes in the shell.
 func (w *walker) add(stmt *syntax.Stmt, call *syntax.CallExpr, sc *scope) {
-	inv := invocationOf(stmt, call, w.caller.Home)
+	inv := invocationOf(stmt, call, w.reading(sc))
 	if w.timed[stmt] {
 		inv.Wrappers = slices.Insert(inv.Wrappers, 0, "time")
 	}
 
 	inv = w.placed(inv, sc)
 	inv.depth = w.depth
-	inv.pipedInto = w.pipedInto(stmt)
+	inv.pipedInto = w.pipedInto(stmt, sc)
 	script, runs, mark := scriptOf(stmt, call, inv.Words)
 	runs, mark = capDepth(w.depth, runs, mark)
 
-	inv.Marks = append(w.aliasMarks(inv), marksOf(call, stmt, inv, w.caller.Home)...)
+	inv.Marks = append(w.aliasMarks(inv), marksOf(call, stmt, inv, w.reading(sc))...)
 	inv.Marks = append(inv.Marks, w.callMarks(inv)...)
 	if mark != "" {
 		inv.Marks = append(inv.Marks, Mark{Kind: mark})
@@ -441,13 +448,18 @@ func (w *walker) add(stmt *syntax.Stmt, call *syntax.CallExpr, sc *scope) {
 		w.nested(file, &inner)
 	}
 
+	sc.assignVariables(call, inv)
+	if len(inv.Words) > 0 {
+		sc.vars = sc.vars.ran(inv, sc.functions)
+	}
+
 	sc.apply(inv)
 	w.call(inv, sc)
 }
 
 // pipedInto returns the words, behind any wrapper, of the simple command of the pipe stage that
-// reads the stdout of stmt; none when no such stage follows it.
-func (w *walker) pipedInto(stmt *syntax.Stmt) []Word {
+// reads the stdout of stmt, read with the variables of sc; none when no such stage follows it.
+func (w *walker) pipedInto(stmt *syntax.Stmt, sc *scope) []Word {
 	next, piped := w.pipes[stmt]
 	if !piped {
 		return nil
@@ -458,7 +470,7 @@ func (w *walker) pipedInto(stmt *syntax.Stmt) []Word {
 		return nil
 	}
 
-	return invocationOf(next, stage, w.caller.Home).Words
+	return invocationOf(next, stage, w.reading(sc)).Words
 }
 
 // ---------------------------------------------------------------------------
@@ -587,20 +599,24 @@ func alone(stmt *syntax.Stmt) bool {
 		!stmt.Background && !stmt.Coprocess && !stmt.Disown
 }
 
-// invocationOf returns the invocation of call. A call that only assigns has no words.
-func invocationOf(stmt *syntax.Stmt, call *syntax.CallExpr, home string) Invocation {
+// invocationOf returns the invocation of call, whose words ex reads. The values of its assignment
+// prefix are read with the variables it assigns unknown, since the shell makes them in turn. A call
+// that only assigns has no words.
+func invocationOf(stmt *syntax.Stmt, call *syntax.CallExpr, ex expander) Invocation {
 	words := make([]Word, 0, len(call.Args))
 	for _, arg := range call.Args {
-		words = append(words, readWord(arg, home))
+		words = append(words, readWord(arg, ex))
 	}
 
+	values := ex
+	values.vars = ex.vars.forgetAssigned(call.Assigns)
 	assignments := make([]Assignment, 0, len(call.Assigns))
 	for _, a := range call.Assigns {
-		assignments = append(assignments, assignmentOf(a, home))
+		assignments = append(assignments, assignmentOf(a, values))
 	}
 
 	if len(words) == 0 {
-		return Invocation{Redirects: redirectsOf(stmt, home), Assignments: assignments}
+		return Invocation{Redirects: redirectsOf(stmt, ex), Assignments: assignments}
 	}
 
 	prefix := make([]envChange, 0, len(assignments))
@@ -608,9 +624,9 @@ func invocationOf(stmt *syntax.Stmt, call *syntax.CallExpr, home string) Invocat
 		prefix = append(prefix, envChange{assignment: a})
 	}
 
-	start, inv := seeThrough(call.Args, words, home)
+	start, inv := seeThrough(call.Args, words, ex)
 	inv.Words = words[start:]
-	inv.Redirects = redirectsOf(stmt, home)
+	inv.Redirects = redirectsOf(stmt, ex)
 	inv.Assignments = append(assignments, inv.Assignments...)
 	inv.env = append(prefix, inv.env...)
 	inv.Tool = toolOf(words[start])
@@ -619,7 +635,7 @@ func invocationOf(stmt *syntax.Stmt, call *syntax.CallExpr, home string) Invocat
 	return inv
 }
 
-func assignmentOf(a *syntax.Assign, home string) Assignment {
+func assignmentOf(a *syntax.Assign, ex expander) Assignment {
 	name := ""
 	if a.Name != nil {
 		name = a.Name.Value
@@ -631,7 +647,7 @@ func assignmentOf(a *syntax.Assign, home string) Assignment {
 	case a.Value == nil:
 		return Assignment{Name: name, Value: Word{Literal: true}}
 	default:
-		return Assignment{Name: name, Value: readWord(a.Value, home)}
+		return Assignment{Name: name, Value: readWord(a.Value, ex)}
 	}
 }
 

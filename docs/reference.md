@@ -381,7 +381,53 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   expansion such as a default, a `case` word or pattern, a `[[ … ]]` test, or the redirects of
   `let` or a compound command. A qualifier there could only hide a command
   ([rule 3](guard-scope.md#3-close-a-bypass-only-when-agents-write-it));
-- a command word that is not a literal (`$(which git)`, `"$GIT"`);
+- a command word that is not a literal (`$(which git)`, `"$GIT"`). A `$NAME` or `${NAME}` the
+  command assigned a literal earlier reads as that literal in the words that run later in the same
+  shell, the words of a subshell, a command substitution, or an `eval` string included. A plain
+  assignment counts, and so do `export`, `declare`, `typeset`, and `readonly` with a literal
+  value, and `local` inside its function. So `S=/tmp/work; $S/run.sh` passes, and `G=git; $G
+  push` is refused as `git push`. The value holds only where the assignment always ran before the
+  word (`S=/x && $S/run.sh`, `S=/x; for f in a b; do $S/run.sh; done`), and only across commands
+  that write no variable: a program, a function whose body the guard walks, and the builtins `:`,
+  `true`, `false`, `echo`, `test`, `[`, `cd`, `pwd`, `pushd`, `popd`, `dirs`, `exit`, `return`,
+  `break`, `continue`, `shift`, `alias`, `unalias`, `hash`, `type`, `which`, `whence`, `where`,
+  `umask`, `ulimit`, `kill`, `jobs`, `eval`, `source`, `.`, and `printf` with no argument or whose
+  first argument is a literal that does not start with `-v`. zsh's `mkdir`, `rm`, `ln`, and the
+  other builtins of its `zsh/files` module write no variable either, and count as programs. Every
+  other builtin of bash or zsh (`read`, `print -v`, `vared`, `zformat`, `set`), and a command word
+  that is not a literal, makes every variable unknown after it. The variable also stays unknown:
+  - when something other than a literal assignment writes it: `+=`, `printf -v`, `for NAME in`,
+    `${NAME:=…}`, `unset`, arithmetic, or a value that is not a literal;
+  - when the assignment ran in a subshell, a pipeline stage, or a background job, or may not have
+    run: `true && S=/x; $S/run.sh`, an `if` or loop body, or a function the command calls;
+  - in a string another shell runs (`sh -c '$S/run.sh'`) or that the guard reads for a tool a
+    command the guard does not know may run (`su -c '$S/run.sh'`), and in a function body, which
+    knows only the variables it assigns itself;
+  - for a variable bash or zsh defines as it starts or sets on its own (`PWD`, `PATH`, `REPLY`,
+    `MATCH`, `match`, `BASH_REMATCH`), and for a name that a declaration with an option, or zsh's
+    `integer` or `float`, names anywhere in the command (`declare -x S=/x`, `declare -u S`);
+  - for a name made `readonly`, other than by the one `readonly` that gives it its value, and for
+    that one too when another `readonly` names the variable anywhere in the command (`readonly
+    S=$(pwd); readonly S=/x`);
+  - for every variable, later literal assignments included, after a `source`, after a command word
+    that is not a literal (`$X; S=/a; $S/run.sh`), after any other write of `IFS` (`read IFS`,
+    `for IFS in`), and after a builtin that makes every variable unknown and has a word that is not
+    a literal or holds `IFS` anywhere in its text; and anywhere in a command that holds a name
+    reference (`declare -n`, `typeset -n`, `local -n`), a `declare`, `typeset`, or `local` option
+    the guard cannot read, or an assignment of `IFS`, or that inherits `IFS` from its environment.
+    A declaration run through `builtin` or `command` (`builtin declare -n R=T`) counts as one
+    written plainly. Inside an `eval` string, each of these, and each declaration of the two items
+    above, takes effect where the `eval` runs and throughout any loop it runs in, not anywhere in
+    the command: `S=/a; $S/run.sh; eval 'declare -n R=T'` reads `/a/run.sh`;
+  - in an expansion with an operator (`${S%/x}`) or a zsh modifier (`$S:h`), and in an unquoted
+    expansion whose value is empty or holds a space, a tab, a newline, a glob character (`*`, `?`,
+    `[`, `(`), or a backslash (`S='/tmp/my work'; $S/run.sh`).
+
+  An assignment prefix gives its value to the command it prefixes, not to that command's own
+  words: in `S=/a; S=/x $S/run.sh` the word reads `/a/run.sh`, the value from before the prefix,
+  and it stays unknown when the command assigned none earlier (`S=/x $S/run.sh`). After the
+  prefixed command, each variable of its prefix is unknown, since a special builtin or a function
+  may leave the value in the shell: in `S=/a; S=/x true; $S/run.sh` the last word is not read.
 - a `git`, `gh`, `ils`, or shell word (`bash`, `sh`, `zsh`, `dash`, `eval`, `source`) handed to a
   command the guard does not know (`xargs`, `timeout`, `sudo`, `find -exec`). The guard sees
   through the wrappers `env`, `command`, `builtin`, `exec`, `nice`, `nohup`, `time`, `noglob`, and

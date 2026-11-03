@@ -57,8 +57,8 @@ func isDataConsumer(words []Word) bool {
 }
 
 // marksOf returns what Parse cannot read in the invocation inv of call, apart from the string it
-// runs. A `~` in a word expands to home.
-func marksOf(call *syntax.CallExpr, stmt *syntax.Stmt, inv Invocation, home string) []Mark {
+// runs. ex reads its words.
+func marksOf(call *syntax.CallExpr, stmt *syntax.Stmt, inv Invocation, ex expander) []Mark {
 	words := slices.Clone(call.Args)
 	for _, a := range call.Assigns {
 		words = append(words, a.Value)
@@ -83,13 +83,13 @@ func marksOf(call *syntax.CallExpr, stmt *syntax.Stmt, inv Invocation, home stri
 	case isShell(command):
 		// A script file the shell runs gets its arguments as `./x.sh` does.
 		if file, ok := scriptFileWords(inv.Words); ok {
-			if name, handed := handedByCall(call, file, inv.Dir, home); handed {
+			if name, handed := handedByCall(call, file, inv.Dir, ex); handed {
 				marks = append(marks, Mark{Kind: ToolArgument, Name: name})
 			}
 		}
 	case inv.Tool != NoTool, isDataConsumer(inv.Words), command.Text == "eval":
 	default:
-		if name, ok := handedByCall(call, inv.Words, inv.Dir, home); ok {
+		if name, ok := handedByCall(call, inv.Words, inv.Dir, ex); ok {
 			marks = append(marks, Mark{Kind: ToolArgument, Name: name})
 		}
 	}
@@ -103,15 +103,15 @@ func marksOf(call *syntax.CallExpr, stmt *syntax.Stmt, inv Invocation, home stri
 // literal string hands over only what the string hands over (`xargs -I{} sh -c 'ls {}'`, `docker
 // run img sh -c 'make test'`). The string runs where the command puts it, so a git call in it is
 // never judged as if it ran here: holding a tool word, or a command that hands one over in turn,
-// is enough to hand one over. dir is where a relative path is read against, and a `~` expands to
-// home.
-func handedByCall(call *syntax.CallExpr, words []Word, dir, home string) (string, bool) {
+// is enough to hand one over. dir is where a relative path is read against, and ex reads the
+// arguments.
+func handedByCall(call *syntax.CallExpr, words []Word, dir string, ex expander) (string, bool) {
 	args := argsOf(call, words)
 	if !isInterpreter(words[0]) {
 		words, args = withoutShellStrings(words, args)
 	}
 
-	return handedBy(words, args, dir, home)
+	return handedBy(words, args, dir, ex)
 }
 
 // argsOf returns the arguments of call that words, its words after any wrapper, were read from.
@@ -146,9 +146,9 @@ func withoutShellStrings(words []Word, args []*syntax.Word) ([]Word, []*syntax.W
 // is a tool word or hands one over in turn: `su -c 'cd /repo && git push'`, `ssh host 'sudo git
 // push'`. The arguments of an interpreter are code in its own language, never read as a shell
 // script, so only a tool word among them hands one over. An ils word followed by an ils command
-// that changes nothing hands over nothing. dir is where a relative path is read against, and a `~`
-// expands to home.
-func handedBy(words []Word, args []*syntax.Word, dir, home string) (string, bool) {
+// that changes nothing hands over nothing. dir is where a relative path is read against, and ex
+// reads the arguments; a script among them runs in a shell of its own.
+func handedBy(words []Word, args []*syntax.Word, dir string, ex expander) (string, bool) {
 	readsScripts := !isInterpreter(words[0])
 	for i, w := range words[1:] {
 		if isToolWord(w, dir) {
@@ -163,7 +163,7 @@ func handedBy(words []Word, args []*syntax.Word, dir, home string) (string, bool
 			continue
 		}
 
-		if name, ok := scriptTool(scriptText(args[i+1], home), home); ok {
+		if name, ok := scriptTool(scriptText(args[i+1], ex), ex.home); ok {
 			return name, true
 		}
 	}
@@ -195,10 +195,11 @@ func isInterpreter(command Word) bool {
 // that names no tool.
 const expansionWord = "_"
 
-// scriptText returns the text a command receives as the argument raw, with each expansion the
-// shell makes in it standing as expansionWord. A command that runs a string (`su -c "git push $b"`)
-// runs it with the expansion already made, so what it holds stays a word of the script.
-func scriptText(raw *syntax.Word, home string) string {
+// scriptText returns the text a command receives as the argument raw, read by ex, with each
+// expansion the shell makes in it standing as its value when ex knows it, and as expansionWord
+// otherwise. A command that runs a string (`su -c "git push $b"`) runs it with the expansion
+// already made, so what it holds stays a word of the script.
+func scriptText(raw *syntax.Word, ex expander) string {
 	parts := make([]syntax.WordPart, 0, len(raw.Parts))
 	for _, part := range raw.Parts {
 		switch p := part.(type) {
@@ -207,7 +208,7 @@ func scriptText(raw *syntax.Word, home string) string {
 		case *syntax.DblQuoted:
 			inner := make([]syntax.WordPart, 0, len(p.Parts))
 			for _, q := range p.Parts {
-				if _, ok := q.(*syntax.Lit); !ok {
+				if _, known := knownExpansion(q, ex.vars); !known {
 					q = &syntax.Lit{Value: expansionWord}
 				}
 
@@ -216,11 +217,29 @@ func scriptText(raw *syntax.Word, home string) string {
 
 			parts = append(parts, &syntax.DblQuoted{Parts: inner, Dollar: p.Dollar})
 		default:
-			parts = append(parts, &syntax.Lit{Value: expansionWord})
+			value, known := knownExpansion(p, ex.vars)
+			if !known {
+				value = expansionWord
+			}
+
+			parts = append(parts, &syntax.SglQuoted{Value: value})
 		}
 	}
 
-	return readWord(&syntax.Word{Parts: parts}, home).Text
+	return readWord(&syntax.Word{Parts: parts}, ex).Text
+}
+
+// knownExpansion returns the value part, a part of a word, stands for when it is a literal or an
+// expansion of a variable vars knows, and reports whether it is one of those.
+func knownExpansion(part syntax.WordPart, vars shellVars) (string, bool) {
+	switch p := part.(type) {
+	case *syntax.Lit:
+		return p.Value, true
+	case *syntax.ParamExp:
+		return vars.expansion(p)
+	default:
+		return "", false
+	}
 }
 
 // shellOperatorChars are the characters that make text more than words: a newline, a list or pipe
@@ -253,6 +272,7 @@ func scriptTool(text, home string) (string, bool) {
 		return "", false
 	}
 
+	ex := expander{home: home}
 	var name string
 	syntax.Walk(file, func(node syntax.Node) bool {
 		if name != "" {
@@ -269,7 +289,7 @@ func scriptTool(text, home string) (string, bool) {
 			return true
 		}
 
-		inv := invocationOf(stmt, call, home)
+		inv := invocationOf(stmt, call, ex)
 		command := inv.Words[0]
 		switch {
 		case !command.Literal, isDataConsumer(inv.Words):
@@ -277,7 +297,7 @@ func scriptTool(text, home string) (string, bool) {
 		case inv.Tool != NoTool, isShell(command), slices.Contains(stringRunners(), command.Text):
 			name = command.Text
 		default:
-			name, _ = handedBy(inv.Words, argsOf(call, inv.Words), "", home)
+			name, _ = handedBy(inv.Words, argsOf(call, inv.Words), "", ex)
 		}
 
 		return name == ""

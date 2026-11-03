@@ -43,6 +43,7 @@ type scope struct {
 	// functions holds, by name, the functions a call may run. Copies of a scope share it, so a
 	// declaration replaces it rather than changing it in place.
 	functions map[string]*function
+	vars      shellVars
 	env       environment
 	// physical reports whether the shell's working directory was last set by `cd -P` and no
 	// absolute `cd` since, so a symlink may stand in the path dir spells where the shell has the
@@ -57,7 +58,7 @@ type scope struct {
 }
 
 func startScope(caller Caller, file *syntax.File) scope {
-	sc := scope{dir: caller.Dir}
+	sc := scope{dir: caller.Dir, vars: startVars(caller.Env, file)}
 	for name, value := range caller.Env {
 		sc.env.set(name, variable{value: value, set: true})
 	}
@@ -79,6 +80,7 @@ func merge(a, b scope) scope {
 	a.env.workTree = a.env.workTree.or(b.env.workTree)
 	a.env.cdPath = a.env.cdPath.or(b.env.cdPath)
 	a.env.ghConfig = a.env.ghConfig.or(b.env.ghConfig)
+	a.vars = a.vars.merge(b.vars)
 	a.functions = mergeFunctions(a.functions, b.functions)
 	a.redirects = mergeRedirects(a.redirects, b.redirects)
 
@@ -175,7 +177,7 @@ func (w *walker) stmtInPlace(stmt *syntax.Stmt, sc *scope) {
 		w.substitutions(r, sc)
 	}
 
-	own := redirectsOf(stmt, w.caller.Home)
+	own := redirectsOf(stmt, w.reading(sc))
 	before := sc.redirects
 	sc.redirects = slices.Concat(before, own)
 	w.compound(stmt.Cmd, sc)
@@ -212,9 +214,10 @@ func (w *walker) compound(cmd syntax.Command, sc *scope) {
 	case *syntax.FuncDecl:
 		w.declareFunction(cmd, sc)
 		// A function body runs each time the function is called, from any later command.
-		w.repeated(sc, func(s *scope) { w.stmt(cmd.Body, s) })
+		w.repeated(sc, func(s *scope) { w.functionBody(cmd.Body, s) })
 	default:
-		// Arithmetic, `[[ … ]]`, and the other commands run nothing but the substitutions in them.
+		// Arithmetic may assign a variable, which substitutions makes unknown; `[[ … ]]` and the
+		// other commands run nothing but the substitutions in them.
 		w.substitutions(cmd, sc)
 	}
 }
@@ -349,9 +352,11 @@ func (w *walker) repeated(sc *scope, body func(*scope)) {
 
 // substitutions walks the commands node runs, each in a subshell of its own: command and process
 // substitutions, and the statements of a command that holds them. Each starts from sc, and nothing
-// it changes holds after it.
+// it changes holds after it. The variables an arithmetic expression in node assigns, which the
+// shell makes itself, become unknown in sc.
 func (w *walker) substitutions(node syntax.Node, sc *scope) {
 	w.exportedDefaults(node, sc)
+	sc.vars = sc.vars.forget(arithmeticNames(node)...)
 	syntax.Walk(node, func(n syntax.Node) bool {
 		var stmts []*syntax.Stmt
 		switch n := n.(type) {
@@ -429,8 +434,8 @@ func (sc *scope) apply(inv Invocation) {
 	case "popd":
 		sc.dir = ""
 	case "source", ".":
-		// The file runs in this shell and may move it or set any variable the guard follows.
-		sc.dir, sc.env = "", unknownEnvironment()
+		// The file runs in this shell and may move it, or set or declare any variable.
+		sc.dir, sc.env, sc.vars = "", unknownEnvironment(), shellVars{unread: true}
 	case "unset":
 		sc.assignUnknown(wordTexts(inv.Words[1:]))
 	}
@@ -826,6 +831,8 @@ func (sc *scope) assignUnknown(names []string) {
 	for _, name := range names {
 		sc.env.set(name, variable{unknown: true})
 	}
+
+	sc.vars = sc.vars.forget(names...)
 }
 
 // assignUnknownExported makes each of names unknown in sc, and, while allexport may be on, which

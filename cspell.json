@@ -139,12 +139,15 @@
     "tortoiseplink",
     "truecolor",
     "TSTP",
+    "unalias",
     "unsetopt",
     "USERPROFILE",
+    "vared",
     "whatchanged",
     "wordexp",
     "worktree",
     "worktrees",
+    "zformat",
     "zizmor"
   ],
   "ignorePaths": [

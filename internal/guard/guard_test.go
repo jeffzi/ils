@@ -104,6 +104,7 @@ func TestJudge_AllowsEverydayCommandsOutsideAnyRepository(t *testing.T) {
 		{name: "python code mentioning git, behind uv run", command: `uv run python -c 'import subprocess; subprocess.run(["git", "log"])'`},
 		{name: "shell running a script file", command: "bash /tmp/probe.sh"},
 		{name: "environment file sourced under allexport", command: "set -a && . ./.env && set +a && make deploy"},
+		{name: "script run through a variable the command assigned", command: "S=/tmp/work; mkdir -p $S && cd $S && $S/run.sh"},
 	})
 }
 

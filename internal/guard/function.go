@@ -96,7 +96,7 @@ func (runs *dryRuns) noteUnderway(d *definition) {
 func sameScope(a, b scope) bool {
 	return a.dir == b.dir && a.env == b.env && a.physical == b.physical && a.racing == b.racing &&
 		a.allexport == b.allexport && a.shell == b.shell && slices.Equal(a.redirects, b.redirects) &&
-		maps.Equal(a.functions, b.functions)
+		maps.Equal(a.functions, b.functions) && a.vars.equal(b.vars)
 }
 
 // with returns the function that runs any of fn's definitions or of defs. A nil fn has none.
@@ -153,6 +153,16 @@ const unmovedDir = "/\x00"
 // function of the same name runs in their place without the walk of a call seeing it.
 func declarationBuiltins() []string {
 	return []string{"export", "declare", "local", "readonly", "typeset", "let"}
+}
+
+// functionBody walks body, the body of a function, where it is declared. A call runs it with the
+// variables of the shell where the call stands, which are not those here, so the walk reads no
+// variable the body does not assign itself, and leaves the variables of sc as they were.
+func (w *walker) functionBody(body *syntax.Stmt, sc *scope) {
+	outer := sc.vars
+	sc.vars = shellVars{held: outer.held, unread: outer.unread, function: true}
+	w.stmt(body, sc)
+	sc.vars = outer
 }
 
 // declareFunction records in sc the function decl declares for the calls after it, and marks a
@@ -213,8 +223,9 @@ func (w *walker) callMarks(inv Invocation) []Mark {
 // call changes sc the way inv's call of a function the command declares does, run from any of the
 // definitions it may run: the directory after it is unknown when a body may move the shell, and
 // allexport, the variables the guard follows, and the functions are as a body leaves them, unknown
-// where two bodies leave them differently. A GIT_* variable off the allow list that a body sets
-// while allexport may be on is marked where the call stands.
+// where two bodies leave them differently. A shell variable whose value a body may change is
+// unknown after it. A GIT_* variable off the allow list that a body sets while allexport may be on
+// is marked where the call stands.
 func (w *walker) call(inv Invocation, sc *scope) {
 	definitions := calledDefinitions(inv, sc.functions)
 	if len(definitions) == 0 {
@@ -235,6 +246,7 @@ func (w *walker) call(inv Invocation, sc *scope) {
 	sc.physical = sc.physical || after.physical
 	sc.allexport = after.allexport
 	sc.env = after.env
+	sc.vars = sc.vars.merge(after.vars)
 	sc.functions = after.functions
 	if !slices.ContainsFunc(inv.Redirects, ontoStdout) {
 		// An `exec` in a body holds after the call, unless the call redirected stdout: bash then
@@ -258,7 +270,7 @@ func (w *walker) probe() walker {
 // dryRun returns the scope d's body leaves, run from sc in unmovedDir, and the GitVariable marks of
 // its invocations. The run is walked apart and dropped: the walk of the body where it is declared
 // already holds its invocations, and the errors in reading them. A call of d from inside its own
-// body moves to an unknown directory, and may turn allexport on.
+// body moves to an unknown directory, may turn allexport on, and may change any shell variable.
 //
 // A run that starts from the same scope at the same depth as an earlier run of d, while every
 // definition that run ran is not under way and every one it found under way still is, leaves what
@@ -267,12 +279,12 @@ func (w *walker) dryRun(d *definition, sc scope) (scope, []Mark) {
 	runs := w.dryRuns
 	if d.probing {
 		runs.noteUnderway(d)
-		sc.dir, sc.allexport = "", true
+		sc.dir, sc.allexport, sc.vars = "", true, sc.vars.forgetAll()
 
 		return sc, nil
 	}
 
-	sc.dir, sc.physical = unmovedDir, false
+	sc.dir, sc.physical, sc.vars.function = unmovedDir, false, true
 	for _, past := range d.pastRuns {
 		if past.depth == w.depth && sameScope(past.from, sc) && past.reads.holds() {
 			runs.note(d, past.reads)
