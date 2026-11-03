@@ -122,48 +122,24 @@ func (o Origin) Same(other Origin) bool {
 // Errors
 // ---------------------------------------------------------------------------
 
-const (
-	// remotesRef prefixes the remote-tracking refs, where the clone keeps what it last fetched of
-	// origin's branches.
-	remotesRef = "refs/remotes/" + origin + "/"
-
-	symrefLead = "ref: "
-	symrefTail = "\tHEAD"
-
-	// absentCode is the exit of `git ls-remote --exit-code` when no ref matched.
-	absentCode = 2
-)
-
 // ErrNoSymref reports an answer from origin that names no default branch: no `ref:` line for HEAD.
 var ErrNoSymref = errors.New("origin's HEAD names no branch")
 
-// OriginURLs holds origin's fetch and push URLs, raw and parsed.
-type OriginURLs struct {
-	Fetch    Origin
-	Push     Origin
-	FetchURL string
-	PushURL  string
-}
+// ErrRemote reports that origin could not be reached, or did not give what was asked of it. The
+// failure of the call to origin is wrapped with it.
+var ErrRemote = errors.New("origin could not be reached")
 
-// RemoteError reports that origin could not be reached, or did not give what was asked of it.
-type RemoteError struct {
-	Err error
-}
-
-// Error says origin could not be reached and appends the underlying failure.
-func (e *RemoteError) Error() string {
-	return "origin could not be reached: " + e.Err.Error()
-}
-
-// Unwrap returns the failure of the call to origin.
-func (e *RemoteError) Unwrap() error {
-	return e.Err
-}
+// ErrRefused reports that origin answered a call and turned the caller away: it did not accept the
+// credentials or the key, denied the caller the repository, or holds no such repository. Running the
+// call again changes nothing until the caller fixes what origin refused. Git's *child.ExitError,
+// whose Stderr holds what origin and git said, is wrapped with it.
+var ErrRefused = errors.New("origin refused the call")
 
 // PushError reports a push that git or origin refused for a ref: a non-fast-forward, a tag origin
 // already holds at another commit, a hook of origin that declined it, a ref origin hides, a pre-push
 // hook that failed. An origin that never answered, or that hung up before it reported on the ref, is
-// a *RemoteError instead.
+// an ErrRemote failure instead, and an origin that turned the caller away before the push is an
+// ErrRefused failure.
 type PushError struct {
 	Err error
 	// Ref is the full name of the refused ref, such as `refs/heads/main` or `refs/tags/v1.0.0`.
@@ -209,6 +185,26 @@ func joinPresent(parts ...string) string {
 // ---------------------------------------------------------------------------
 // Origin reads and fetch
 // ---------------------------------------------------------------------------
+
+const (
+	// remotesRef prefixes the remote-tracking refs, where the clone keeps what it last fetched of
+	// origin's branches.
+	remotesRef = "refs/remotes/" + origin + "/"
+
+	symrefLead = "ref: "
+	symrefTail = "\tHEAD"
+
+	// absentCode is the exit of `git ls-remote --exit-code` when no ref matched.
+	absentCode = 2
+)
+
+// OriginURLs holds origin's fetch and push URLs, raw and parsed.
+type OriginURLs struct {
+	Fetch    Origin
+	Push     Origin
+	FetchURL string
+	PushURL  string
+}
 
 // OriginURLs returns origin's fetch and push URLs, raw and parsed.
 //
@@ -263,7 +259,7 @@ func (r Repo) parseOrigin(ctx context.Context, raw string) (Origin, error) {
 
 // Trunk returns origin's default branch, asked of origin.
 //
-// An origin that does not answer is a *RemoteError, and an answer that names no branch is
+// An origin that does not answer is an ErrRemote failure, and an answer that names no branch is
 // ErrNoSymref.
 func (r Repo) Trunk(ctx context.Context) (string, error) {
 	args := []string{"ls-remote", "--symref", origin, "HEAD"}
@@ -294,17 +290,17 @@ func (r Repo) Trunk(ctx context.Context) (string, error) {
 
 // RemoteBranch reports whether origin has the branch name, and its sha there when it does.
 //
-// An origin that does not answer is a *RemoteError, never an absent branch.
+// An origin that does not answer is an ErrRemote failure, never an absent branch.
 func (r Repo) RemoteBranch(ctx context.Context, name string) (sha string, found bool, err error) {
 	ref := headsRef + name
 
-	result, err := r.Runner.Run(ctx, "ls-remote", "--exit-code", origin, ref)
+	result, err := r.remote(ctx, "ls-remote", "--exit-code", origin, ref)
 	if exited(err, absentCode) {
 		return "", false, nil
 	}
 
 	if err != nil {
-		return "", false, remoteFailure(err)
+		return "", false, err
 	}
 
 	// The pattern also matches a longer ref that ends with it, so only the exact ref counts.
@@ -325,8 +321,8 @@ func (r Repo) LastFetchedTrunk(ctx context.Context) (trunk string, found bool, e
 }
 
 // TrunkOrLastFetched returns origin's default branch, asked of origin under ctx, or as the clone
-// last fetched it when origin does not answer before ctx ends; found is false when origin did not
-// answer and the clone holds no such ref.
+// last fetched it when origin does not answer before ctx ends, or turns the caller away; found is
+// false when origin gave no trunk and the clone holds no such ref.
 //
 // The read of the last fetch runs past ctx's end, so a deadline that cut the call to origin still
 // leaves the clone's own answer. An answer from origin that names no branch is ErrNoSymref, never
@@ -337,7 +333,7 @@ func (r Repo) TrunkOrLastFetched(ctx context.Context) (trunk string, found bool,
 		return trunk, true, nil
 	}
 
-	if _, unanswered := errors.AsType[*RemoteError](err); !unanswered {
+	if !errors.Is(err, ErrRemote) && !errors.Is(err, ErrRefused) {
 		return "", false, err
 	}
 
@@ -357,7 +353,7 @@ func (r Repo) LastFetched(ctx context.Context, name string) (sha string, found b
 //
 // Origin is asked at the time of the call: a branch deleted on origin that the clone still knows
 // does not take the name, and one pushed since the last fetch does. An origin that does not answer
-// is a *RemoteError, never an empty list.
+// is an ErrRemote failure, never an empty list.
 func (r Repo) BranchesTaking(ctx context.Context, name string) (local, onOrigin []string, err error) {
 	localBranches, err := r.localBranches(ctx)
 	if err != nil {
@@ -407,7 +403,7 @@ type Tag struct {
 // OriginTags returns origin's tags, asked of origin, in the order git lists them, each with the
 // commit it tags: an annotated tag gives the commit its tag object points to, never the tag object.
 //
-// An origin that does not answer is a *RemoteError.
+// An origin that does not answer is an ErrRemote failure.
 func (r Repo) OriginTags(ctx context.Context) ([]Tag, error) {
 	result, err := r.remote(ctx, "ls-remote", "--tags", origin)
 	if err != nil {
@@ -451,9 +447,14 @@ const (
 // Fetch fetches one ref from origin, a branch name or a full ref, and returns the fetched sha.
 //
 // A branch name is fetched as the branch, never as a tag of the same name. The fetch is stored in a
-// ref under refs/ils/fetched/, which only ils writes, read back from there and deleted: FETCH_HEAD is shared
-// with every other fetch in the repository, which can rewrite it before it is read. A fetch that
-// fails is a *RemoteError.
+// ref under refs/ils/fetched/, which only ils writes, read back from there and deleted: FETCH_HEAD
+// is shared with every other fetch in the repository, which can rewrite it before it is read. A
+// fetch that fails is an ErrRefused failure when origin turned the caller away, and an ErrRemote
+// failure otherwise.
+//
+// A fetched branch also moves its remote-tracking ref, refs/remotes/origin/<branch>, to the fetched
+// sha, even when the clone's remote.origin.fetch leaves the branch out: every later read of origin's
+// branch goes through that ref, and must see the tip this fetch returned.
 func (r Repo) Fetch(ctx context.Context, ref string) (string, error) {
 	if !strings.HasPrefix(ref, refsPrefix) {
 		ref = headsRef + ref
@@ -479,6 +480,12 @@ func (r Repo) Fetch(ctx context.Context, ref string) (string, error) {
 		return "", err
 	}
 
+	if branch, isBranch := strings.CutPrefix(ref, headsRef); isBranch {
+		if _, err := r.Runner.Run(ctx, "update-ref", remotesRef+branch, sha); err != nil {
+			return "", err
+		}
+	}
+
 	return sha, nil
 }
 
@@ -500,10 +507,11 @@ func (r Repo) FetchTag(ctx context.Context, name string) (string, error) {
 // when it is already there.
 //
 // It does what `git pull --ff-only origin <trunk>` does, in two steps so that a failure says which
-// side refused: the fetch from origin, whose failure is a *RemoteError, then a fast-forward to what
-// it fetched. The fast-forward never merges: a trunk with commits origin's lacks stays where it
-// was, and the call fails with git's *child.ExitError. HEAD must be on the trunk, since the
-// fast-forward moves the branch HEAD is on: anywhere else, the call fails and moves nothing.
+// side refused: the fetch from origin, whose failure is an ErrRefused failure when origin turned the
+// caller away and an ErrRemote failure otherwise, then a fast-forward to what it fetched. The
+// fast-forward never merges: a trunk with commits origin's lacks stays where it was, and the call
+// fails with git's *child.ExitError. HEAD must be on the trunk, since the fast-forward moves the
+// branch HEAD is on: anywhere else, the call fails and moves nothing.
 func (r Repo) FastForwardTrunk(ctx context.Context, trunk string) error {
 	branch, onBranch, err := r.currentBranch(ctx)
 	if err != nil {
@@ -528,35 +536,56 @@ func (r Repo) FastForwardTrunk(ctx context.Context, trunk string) error {
 // Push and its classification
 // ---------------------------------------------------------------------------
 
-// Push pushes the branch name to origin under the same name and sets it as the upstream.
+// Push pushes the commit sha to origin's branch name. Before the push, it sets that branch as the
+// upstream of the local branch name, as `git push -u` would after it, so a failure to set it means
+// that nothing was pushed.
 //
-// It names the branch by its full ref on both sides, so a tag of the same name is never pushed
-// in its place. It never forces.
+// It pushes sha rather than the local branch, so a commit that reaches the branch while the push
+// runs is never pushed in its place. It names origin's branch by its full ref, so a tag of the same
+// name is never updated in its place. It never forces.
 //
 // A git that exits non-zero is classed by the status it reports for the ref:
 //   - a ref git or origin refused is a *PushError naming git's reason;
 //   - a ref reported updated counts as pushed, though origin hung up afterwards;
-//   - a ref with no status, because origin never answered or hung up before its report, is a
-//     *RemoteError;
+//   - a ref with no status, because origin never answered or hung up before its report, is an
+//     ErrRefused failure when origin turned the caller away, and an ErrRemote failure otherwise;
 //   - a ref with no status from a git that refused the push itself, such as for a pre-push hook
 //     that failed, is a *PushError with no reason.
 //
 // Any other failure, such as a context that ended or a git missing from PATH, is returned as it is.
-func (r Repo) Push(ctx context.Context, name string) error {
-	return r.push(ctx, headsRef+name, "-u")
+func (r Repo) Push(ctx context.Context, name, sha string) error {
+	if err := r.setUpstream(ctx, name); err != nil {
+		return err
+	}
+
+	return r.push(ctx, sha, headsRef+name)
+}
+
+// setUpstream sets origin's branch name as the upstream of the local branch name, as `git push -u`
+// does, which git skips for a push whose source is a commit rather than a branch.
+func (r Repo) setUpstream(ctx context.Context, name string) error {
+	for _, setting := range [][2]string{{"remote", origin}, {"merge", headsRef + name}} {
+		if _, err := r.Runner.Run(ctx, "config", "branch."+name+"."+setting[0], setting[1]); err != nil {
+			return fmt.Errorf("set the upstream of %s: %w", name, err)
+		}
+	}
+
+	return nil
 }
 
 // PushTag pushes the local tag name to origin under the same name, and nothing else: it names the
 // tag by its full ref on both sides and turns off `push.followTags`. It never forces, so a tag
 // origin already holds at another commit is refused. Its failures are classed as Push classes them.
 func (r Repo) PushTag(ctx context.Context, name string) error {
-	return r.push(ctx, tagsRef+name, "--no-follow-tags")
+	ref := tagsRef + name
+
+	return r.push(ctx, ref, ref, "--no-follow-tags")
 }
 
-// push pushes ref to origin under the same name with git's flags, classing a git that exits
-// non-zero as Push documents.
-func (r Repo) push(ctx context.Context, ref string, flags ...string) error {
-	spec := ref + ":" + ref
+// push pushes source to origin's ref with git's flags, classing a git that exits non-zero as Push
+// documents.
+func (r Repo) push(ctx context.Context, source, ref string, flags ...string) error {
+	spec := source + ":" + ref
 	args := slices.Concat([]string{"push", "--porcelain"}, flags, []string{origin, spec})
 	result, err := r.Runner.Run(ctx, args...)
 
@@ -568,10 +597,11 @@ func (r Repo) push(ctx context.Context, ref string, flags ...string) error {
 	hook, status, reported := splitPushReport(result.Stdout, spec)
 
 	switch {
-	// A push dies with fatalCode when it cannot reach origin or origin hangs up; one git refuses
-	// before it talks to origin, such as for a pre-push hook that failed, exits 1.
+	// A push dies with fatalCode when it cannot reach origin, origin hangs up or origin turns the
+	// caller away; one git refuses before it talks to origin, such as for a pre-push hook that
+	// failed, exits 1.
 	case !reported && exitErr.Code == fatalCode:
-		return &RemoteError{Err: err}
+		return remoteFailure(err)
 	case !reported || status.flag == pushRejected:
 		return &PushError{
 			Ref:    ref,
@@ -605,10 +635,9 @@ const reportEnd = "Done"
 // pair of refs pushed, into what precedes the report git writes at its end once origin answered and
 // the status that report gives spec. The report is a `To <url>` line, then one status line (the
 // flag, the refs and the summary, separated by tabs) for each ref the push sent (spec, and any tag
-// that `push.followTags` adds), then the line telling the upstream `-u` set for a ref it updated,
-// then `Done`, which git leaves out when origin hung up after its report. Neither the upstream line
-// nor the order of the status lines is relied on: spec is looked up in every line after the `To`
-// line, and the upstream line, which git translates, never matches.
+// that `push.followTags` adds), then `Done`, which git leaves out when origin hung up after its
+// report. The order of the status lines is not relied on: spec is looked up in every line after the
+// `To` line.
 //
 // A pre-push hook runs before git talks to origin, so what precedes the report is the hook's; a
 // push git refused before it reached origin has no report, so all of its stdout is the hook's and
@@ -617,10 +646,9 @@ const reportEnd = "Done"
 //
 // The report starts at the last `To` that a status line of spec follows: a hook line shaped like a
 // line of the report, even the status line of spec itself, stays in hook and never decides the
-// status when no `To` precedes it, and a later line that only holds `To`, such as a translated
-// upstream line, does not hide the report. Stdout alone cannot tell a block that a refusing hook
-// printed last, a `To` line followed by the status line of spec, from git's own report, so that one
-// is read as git's.
+// status when no `To` precedes it, and a later line that only holds `To` does not hide the report.
+// Stdout alone cannot tell a block that a refusing hook printed last, a `To` line followed by the
+// status line of spec, from git's own report, so that one is read as git's.
 func splitPushReport(stdout, spec string) (hook string, status refStatus, reported bool) {
 	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
 	if lines[len(lines)-1] == reportEnd {
@@ -660,7 +688,7 @@ func statusFor(line, spec string) (refStatus, bool) {
 	return refStatus{flag: fields[0], summary: fields[2]}, true
 }
 
-// remote runs a git call that talks to origin, whose failure is a *RemoteError.
+// remote runs a git call that talks to origin, whose failure is classed as remoteFailure classes it.
 func (r Repo) remote(ctx context.Context, args ...string) (Result, error) {
 	result, err := r.Runner.Run(ctx, args...)
 	if err != nil {
@@ -670,12 +698,53 @@ func (r Repo) remote(ctx context.Context, args ...string) (Result, error) {
 	return result, nil
 }
 
-// remoteFailure wraps the failure of a call to origin, leaving a missing git program as it is:
-// that failure says nothing about origin.
+// remoteFailure wraps the failure of a call to origin: a git that died of a fatal error saying
+// origin turned the caller away is an ErrRefused failure, and any other failure an ErrRemote
+// failure. A missing git program is left as it is: that failure says nothing about origin.
 func remoteFailure(err error) error {
 	if _, ok := errors.AsType[*child.ToolMissingError](err); ok {
 		return err
 	}
 
-	return &RemoteError{Err: err}
+	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && exitErr.Code == fatalCode && refusal(exitErr.Stderr) {
+		return fmt.Errorf("%w: %w", ErrRefused, err)
+	}
+
+	return fmt.Errorf("%w: %w", ErrRemote, err)
+}
+
+// refusalPhrases returns the lowercase words of a stderr line that says origin turned the caller
+// away. ssh's own refusal lists the methods it tried, `Permission denied (password)`, which a
+// connect or a local file that the system denies never does; GitHub's answer to HTTP credentials it
+// did not accept stays in English whatever language git speaks.
+func refusalPhrases() []string {
+	return []string{
+		"permission denied (",
+		"invalid username or ",
+		"authentication failed for ",
+		"repository not found",
+		"the requested url returned error: 403",
+	}
+}
+
+// refusal reports whether stderr, what a failed call to origin printed, says origin turned the
+// caller away: it holds, regardless of case, what origin or git prints for an ssh key or HTTP
+// credentials origin did not accept, a caller denied the repository, or a repository origin does not
+// hold, as GitHub says it and as git says it of an HTTP 404. A failure to connect never prints one,
+// and neither does a local path that holds no repository.
+func refusal(stderr string) bool {
+	for line := range strings.Lines(strings.ToLower(stderr)) {
+		line = strings.TrimSpace(line)
+
+		// Git's own words for an HTTP 404: `fatal: repository '<url>' not found`.
+		if strings.HasPrefix(line, "fatal: repository '") && strings.HasSuffix(line, "' not found") {
+			return true
+		}
+
+		if slices.ContainsFunc(refusalPhrases(), func(phrase string) bool { return strings.Contains(line, phrase) }) {
+			return true
+		}
+	}
+
+	return false
 }

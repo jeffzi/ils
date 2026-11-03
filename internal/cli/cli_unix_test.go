@@ -5,7 +5,6 @@ package cli_test
 import (
 	"errors"
 	"io"
-	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -54,15 +53,16 @@ func TestApp_Run_WhenASignalLandsWhileTheSpinnerLineShows_PrintsTheResultWithThe
 func TestApp_Run_WhenStartedWithTheInterruptIgnored_GoesOnIgnoringIt(t *testing.T) {
 	t.Parallel()
 
-	run := startStuckIgnoringTheInterrupt(t, stuckStopping)
-	run.awaitSpinning(t)
+	run := startStuckIgnoring(t, stuckTelling, "INT")
+	t.Cleanup(func() {
+		assert.Check(t, run.cmd.Process.Signal(syscall.SIGTERM))
+		_, _ = run.end(t) // the run ends Stopped. on the termination; the interrupt line is the check
+	})
 
-	assert.NilError(t, run.cmd.Process.Signal(syscall.SIGINT))
-	assert.NilError(t, run.cmd.Process.Signal(syscall.SIGTERM))
-	stdout, err := run.end(t)
+	line, err := run.stdout.ReadString('\n')
 
-	assert.Check(t, err, "the run did not end with the result of its landing command")
-	assert.Check(t, is.Equal(stdout, "Stopped.\n"), "the interrupt counted as the first signal of the run")
+	assert.NilError(t, err)
+	assert.Check(t, is.Equal(line, interruptIgnored+"\n"), "ils listens for the interrupt it was started ignoring")
 }
 
 func TestApp_Run_WhenASecondSignalLands_DiesOfItWithTheDisplayEnded(t *testing.T) {
@@ -107,15 +107,6 @@ func TestApp_Run_WhenASecondSignalLands_DiesOfItWithTheDisplayEnded(t *testing.T
 			assert.Check(t, run.cleared(), "stderr does not end as a normal end leaves it:\n%q", run.stderr.raw())
 		})
 	}
-}
-
-// startStuckIgnoringTheInterrupt is startStuck, except that the run starts with the interrupt
-// ignored, as a background job of a non-interactive shell does: the shell ignores it, and the
-// ignore holds across its exec of the test binary.
-func startStuckIgnoringTheInterrupt(t *testing.T, way string) *stuckChild {
-	t.Helper()
-
-	return startStuckBy(t, way, "sh", "-c", `trap "" INT; exec "$0"`, os.Args[0])
 }
 
 // end draws the rest of stderr onto the screen, reads the rest of stdout, and waits for the run to

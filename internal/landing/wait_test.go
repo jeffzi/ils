@@ -46,6 +46,13 @@ const (
 	// fits with the 3 seconds kept for the head read after it, so the read after the poll begins
 	// 3.5 seconds before the deadline, and the reserve ends it heldRead in.
 	heldLeft = verdictPoll + headReadReserve + heldRead
+
+	// twoPollsLeft is a time limit a third poll would end a second past.
+	twoPollsLeft = 5 * time.Second
+
+	// onePollThenReadLeft leaves room for one poll and then for the read after the checks, of the
+	// head or of the merge state, but not for a second poll with that read after it.
+	onePollThenReadLeft = 10 * time.Second
 )
 
 // heldPauses are the fake times a wait lets pass when the reserve ends the read after its first
@@ -364,10 +371,9 @@ func TestAwaitVerdict_WhenTheHeadIsNotYetThePushedCommit_ReadsNoCheck(t *testing
 			want: green(), ops: readsOf(3, 1, 1), waits: polls(2, headPoll),
 		},
 		{
-			// A third poll would end a second past the deadline.
 			name:  "previous commit until the deadline",
-			heads: shows(stale()), left: 5 * time.Second,
-			want: pendingAt(landing.StageHead, stale()),
+			heads: shows(stale()), left: twoPollsLeft,
+			want: landing.Waited{Outcome: landing.WaitPending, Stage: landing.StageHead},
 			ops:  readsOf(3, 0, 0), waits: polls(2, headPoll),
 		},
 	})
@@ -395,9 +401,8 @@ func mergeRows() []vigilRow {
 			want:  gaveUp, ops: readsOf(16, 0, 0), waits: polls(15, mergePoll),
 		},
 		{
-			// A third poll would end a second past the deadline.
 			name:  "unknown with 5 seconds left",
-			heads: shows(unknown()), left: 5 * time.Second,
+			heads: shows(unknown()), left: twoPollsLeft,
 			want: stillUnknown, ops: readsOf(3, 0, 0), waits: polls(2, mergePoll),
 		},
 		{
@@ -456,9 +461,8 @@ func logRows() []logRow {
 			},
 		},
 		{
-			// A third poll would end a second past the deadline.
 			name:   "a wait that ends pending on the previous commit",
-			script: forgetest.Script{Head: shows(stale())}, left: 5 * time.Second,
+			script: forgetest.Script{Head: shows(stale())}, left: twoPollsLeft,
 			want: []string{"DEBUG wait ended=pending stage=head"},
 		},
 		{
@@ -515,10 +519,8 @@ func TestAwaitVerdict_WhenTheHeadMovesPastThePushedCommit_EndsMovedToTheNewHead(
 			ops: readsOf(1, 1, 1),
 		},
 		{
-			// Ten seconds leave room for one poll and then for the head read, but not for a second poll
-			// with the head read after it.
 			name: "after checks still running at the deadline", heads: shows(clean(), moved()), before: clean(),
-			verdicts: says(running()), left: 10 * time.Second, ops: readsOf(1, 2, 1),
+			verdicts: says(running()), left: onePollThenReadLeft, ops: readsOf(1, 2, 1),
 		},
 		{
 			name: "before its merge state is known", heads: shows(unknown(), moved()), before: unknown(),
@@ -647,18 +649,8 @@ func TestAwaitVerdict_WhenALaterVerdictReadAnswersPastTheReserve_JudgesWhatItSay
 func TestAwaitVerdict_WhenTheHeadAfterTheChecksIsNotRead_EndsPendingWithoutTheVerdict(t *testing.T) {
 	t.Parallel()
 
-	type row struct {
-		name     string
-		heads    []forgetest.Answer[forge.Head]
-		verdicts []forgetest.Answer[forge.Verdict]
-		ops      []forgetest.Op
-		waits    []time.Duration
-		want     landing.Waited
-		left     time.Duration
-	}
-
 	c := byTimeLimit()
-	tests := []row{
+	tests := []vigilRow{
 		{
 			// The reserve ends the read after the poll; the wait's own deadline then ends the head read.
 			name:     "the deadline ends inside the head read after a later read the reserve ended",
@@ -753,13 +745,18 @@ func atMergeState(c cut) landing.Waited {
 	return endedBy(c, pendingAt(landing.StageMergeState, unknown()))
 }
 
+// atHead is the wait c ended at the read of the head, before any commit was shown as the pushed one.
+func atHead(c cut) landing.Waited {
+	return endedBy(c, landing.Waited{Outcome: landing.WaitPending, Stage: landing.StageHead})
+}
+
 // readCutWaits are the waits whose read c ends: the read fails with c's error.
 func readCutWaits(c cut) []cutShort {
 	lateVerdict := forgetest.Answer[forge.Verdict]{Err: c.of("gh")}
-	atHead := endedBy(c, landing.Waited{Outcome: landing.WaitPending, Stage: landing.StageHead})
 
 	return []cutShort{
-		{name: "inside the head read", want: atHead, heads: []forgetest.Answer[forge.Head]{lateHead(c)}},
+		{name: "inside the head read", want: atHead(c), heads: []forgetest.Answer[forge.Head]{lateHead(c)}},
+		{name: "inside a head read after one that showed the commit before the push", want: atHead(c), heads: append(shows(stale()), lateHead(c))},
 		{name: "inside the merge state read", want: atMergeState(c), heads: append(shows(unknown()), lateHead(c))},
 		{
 			name: "inside a later verdict read of checks still running", want: atVerdict(c),
@@ -772,7 +769,7 @@ func readCutWaits(c cut) []cutShort {
 func headPollCut(c cut) cutShort {
 	return cutShort{
 		name: "inside the head poll", heads: shows(stale()),
-		want: stateOf(endedBy(c, landing.Waited{Outcome: landing.WaitPending, Stage: landing.StageHead}), stale()),
+		want: atHead(c),
 	}
 }
 
@@ -894,8 +891,9 @@ func TestAwaitVerdict_WhenContextIsCanceledDuringALaterVerdictRead_EndsPendingIn
 	})
 }
 
-// lateInterrupt is a context an interrupt cancels at a set moment, which a look at its Err sees
-// from that moment on; its Done channel never closes, and Err is all the test reads. It stands for
+// lateInterrupt is a context an interrupt cancels at a set moment, which a look at its Err or its
+// Done channel sees from that moment on: a Done channel taken before it stays open, as a select
+// entered before the interrupt waits on it, and one taken from it on is closed. It stands for
 // an interrupt that lands after a wait's timer fired and before the wait looks at its context
 // again, a moment no context canceled by a timer of its own is sure to hit, since the wait's timer
 // and that one fire at the same instant. Nothing over it cancels it.
@@ -903,6 +901,8 @@ type lateInterrupt struct {
 	context.Context
 
 	at time.Time
+	// open is the Done channel before the interrupt, which never closes.
+	open chan struct{}
 }
 
 // interruptIn returns a lateInterrupt over the test's values that an interrupt cancels d of fake
@@ -910,7 +910,25 @@ type lateInterrupt struct {
 func interruptIn(t *testing.T, d time.Duration) *lateInterrupt {
 	t.Helper()
 
-	return &lateInterrupt{Context: context.WithoutCancel(t.Context()), at: time.Now().Add(d)}
+	return &lateInterrupt{Context: context.WithoutCancel(t.Context()), at: time.Now().Add(d), open: make(chan struct{})}
+}
+
+// closedDone returns a Done channel that is closed, the channel of a context an interrupt ended.
+func closedDone() <-chan struct{} {
+	done := make(chan struct{})
+	close(done)
+
+	return done
+}
+
+// Done returns a channel that never closes before the interrupt's moment, and a closed one from it
+// on.
+func (l *lateInterrupt) Done() <-chan struct{} {
+	if l.Err() == nil {
+		return l.open
+	}
+
+	return closedDone()
 }
 
 // Err returns context.Canceled once the interrupt landed, and nil before.
@@ -924,11 +942,13 @@ func (l *lateInterrupt) Err() error {
 
 // lookedInterrupt is a lateInterrupt whose interrupt lands just after the first look at its Err
 // from its moment on: that look still sees nil, and every look after it sees context.Canceled. It
-// stands for an interrupt that lands while a wait is between two looks at its context.
+// stands for an interrupt that lands while a wait is between two looks at its context. Its Done
+// channel closes once its Err returned context.Canceled.
 type lookedInterrupt struct {
 	*lateInterrupt
 
-	looked bool
+	looked   bool
+	canceled bool
 }
 
 // interruptAfterLookIn returns a lookedInterrupt over the test's values whose interrupt lands just
@@ -952,7 +972,19 @@ func (l *lookedInterrupt) Err() error {
 		return nil
 	}
 
+	l.canceled = true
+
 	return context.Canceled
+}
+
+// Done returns a channel that never closes until Err returned context.Canceled, and a closed one
+// from then on.
+func (l *lookedInterrupt) Done() <-chan struct{} {
+	if !l.canceled {
+		return l.open
+	}
+
+	return closedDone()
 }
 
 func TestAwaitVerdict_WhenAnInterruptLandsAsTheHeadPollEnds_EndsPendingInterruptedAtTheHead(t *testing.T) {
@@ -967,8 +999,7 @@ func TestAwaitVerdict_WhenAnInterruptLandsAsTheHeadPollEnds_EndsPendingInterrupt
 
 		got := v.await(t)
 
-		want := endedBy(byInterrupt(), pendingAt(landing.StageHead, stale()))
-		assert.Check(t, is.DeepEqual(got, want, ignoreSince(), cmpopts.EquateEmpty()))
+		assert.Check(t, is.DeepEqual(got, atHead(byInterrupt()), ignoreSince(), cmpopts.EquateEmpty()))
 		assert.Check(t, is.Equal(time.Since(began), headPoll))
 	})
 }
@@ -1009,10 +1040,8 @@ func TestAwaitVerdict_WhenAReadFails_ReturnsAnErrorNamingTheRead(t *testing.T) {
 			heads: append(shows(clean()), failed), verdicts: says(passing()),
 		},
 		{
-			// Ten seconds leave room for one poll and then for this read, but not for a second poll
-			// with this read after it.
 			name: "the merge state after checks that were still running", want: landing.StageMergeState,
-			heads: append(shows(clean()), failed), verdicts: says(running()), left: 10 * time.Second,
+			heads: append(shows(clean()), failed), verdicts: says(running()), left: onePollThenReadLeft,
 		},
 	}
 	for _, tt := range tests {

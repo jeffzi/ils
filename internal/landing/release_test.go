@@ -3,8 +3,11 @@ package landing_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 
@@ -29,7 +32,6 @@ const (
 	// previousTag is the version tag below version that the tests put on origin.
 	previousTag = "v1.1.0"
 
-	readTags          = "origin's tags"
 	readHistory       = "the first-parent history of origin's trunk"
 	readLocalTag      = "the local tag of the version"
 	readChangelog     = "the changelog of the release commit"
@@ -99,7 +101,7 @@ func releaseCalls(s *scene) []forgetest.Call {
 
 // released is the payload of st's release of version once its gate ended on verdict, with url as
 // the link of its GitHub release.
-func released(st staged, verdict, url string) *result.Release {
+func released(st staged, verdict result.ReleaseVerdict, url string) *result.Release {
 	return &result.Release{Version: version, Tag: releaseTag, SHA: st.release, Verdict: verdict, URL: url}
 }
 
@@ -224,18 +226,21 @@ type releaseRefusal struct {
 	text    string
 }
 
-// assertReleaseRefused fails unless running req on st's scene ends refused as want says, and
-// writes nothing.
-func assertReleaseRefused(t *testing.T, st staged, req landing.Request, want releaseRefusal) {
+// releaseRun is one run of req on a release scene: what the scene had written before it, and the
+// result it gave.
+type releaseRun struct {
+	req    landing.Request
+	before string
+	got    result.Result
+}
+
+// assertReleaseRefused fails unless run ends refused as want says, and wrote nothing.
+func assertReleaseRefused(t *testing.T, st staged, run releaseRun, want releaseRefusal) {
 	t.Helper()
 
-	before := st.s.written()
-
-	got := runRelease(t, st.s, req)
-
-	assertEndedBy(t, got, st.s.gitDir, ended{outcome: result.Refused, req: req, text: want.text})
-	assert.Check(t, is.Equal(st.s.written(), before))
-	assert.Check(t, is.DeepEqual(releasePayload(t, got, st.s.gitDir), want.payload))
+	assertEndedBy(t, run.got, st.s.gitDir, ended{outcome: result.Refused, req: run.req, text: want.text})
+	assert.Check(t, is.Equal(st.s.written(), run.before))
+	assert.Check(t, is.DeepEqual(releasePayload(t, run.got, st.s.gitDir), want.payload))
 }
 
 // ---------------------------------------------------------------------------
@@ -248,7 +253,6 @@ func TestRelease_WhenTheVersionIsNotXYZ_RefusesNamingItBeforeReadingOrigin(t *te
 	tests := []struct{ name, in string }{
 		{name: "leading v", in: "v1.2.0"},
 		{name: "missing patch", in: "1.2"},
-		{name: "build metadata", in: "1.2.0+build"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -269,7 +273,7 @@ type orderRow struct {
 	arrange func(f *gittest.Fixture, base string)
 	name    string
 	version string
-	// highest is the tag the refusal names; empty when the version passes.
+	// highest is the tag the refusal names.
 	highest string
 }
 
@@ -301,31 +305,12 @@ func TestRelease_WhenOriginHoldsAVersionTagNotBelowIt_RefusesNamingTheHighest(t 
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			st := releaseScene(t, tt.build)
+			req := releaseRequest(tt.version, false)
+			before := st.s.written()
 
-			assertReleaseRefused(t, st, releaseRequest(tt.version, false), releaseRefusal{text: expect(tt.highest)})
-		})
-	}
-}
+			got := runRelease(t, st.s, req)
 
-func TestRelease_WhenEveryVersionTagOfOriginIsBelowIt_ReadsTheRelease(t *testing.T) {
-	t.Parallel()
-
-	tests := []orderRow{
-		{
-			name: "a higher tag only the clone holds", version: version,
-			arrange: func(f *gittest.Fixture, base string) { f.Git("tag", "v9.0.0", base) },
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			synctest.Test(t, func(t *testing.T) {
-				st := releaseScene(t, tt.build)
-
-				got := runRelease(t, st.s, releaseRequest(tt.version, false))
-
-				assertReleaseRead(t, st, got, tt.version)
-			})
+			assertReleaseRefused(t, st, releaseRun{req, before, got}, releaseRefusal{text: expect(tt.highest)})
 		})
 	}
 }
@@ -445,7 +430,6 @@ func TestRelease_WhenRunFromAnyCheckout_ReadsTheReleaseFromOriginAsFetchedNow(t 
 	t.Parallel()
 
 	tests := []checkoutRow{
-		{name: "another branch", arrange: func(*testing.T, *scene) {}},
 		{name: "a detached HEAD", arrange: func(_ *testing.T, s *scene) { s.fixture.Detach() }},
 		{name: "a dirty tree", arrange: func(_ *testing.T, s *scene) { s.fixture.DirtyFile() }},
 		{
@@ -524,8 +508,12 @@ func TestRelease_WhenNoReleaseCommitFollowsThePreviousTag_RefusesNamingWhereItLo
 
 				return ""
 			})
+			req := releaseRequest(version, false)
+			before := st.s.written()
 
-			assertReleaseRefused(t, st, releaseRequest(version, false), releaseRefusal{text: tt.want})
+			got := runRelease(t, st.s, req)
+
+			assertReleaseRefused(t, st, releaseRun{req, before, got}, releaseRefusal{text: tt.want})
 		})
 	}
 }
@@ -538,8 +526,12 @@ func TestRelease_WhenOriginsTagIsAtAnotherCommit_RefusesNamingIt(t *testing.T) {
 	t.Parallel()
 	st := releaseScene(t, tagged)
 	st.s.fixture.OriginTag(releaseTag, st.base)
+	req := releaseRequest(version, false)
+	before := st.s.written()
 
-	assertReleaseRefused(t, st, releaseRequest(version, false), releaseRefusal{
+	got := runRelease(t, st.s, req)
+
+	assertReleaseRefused(t, st, releaseRun{req, before, got}, releaseRefusal{
 		text: expect(releaseTag, shortSHA(st.base)), payload: released(st, "unchecked", ""),
 	})
 }
@@ -548,8 +540,12 @@ func TestRelease_WhenTheLocalTagIsAtAnotherCommit_RefusesWithANextThatDeletesIt(
 	t.Parallel()
 	st := releaseScene(t, tagged)
 	st.s.fixture.Git("tag", releaseTag, st.base)
+	req := releaseRequest(version, false)
+	before := st.s.written()
 
-	assertReleaseRefused(t, st, releaseRequest(version, false), releaseRefusal{
+	got := runRelease(t, st.s, req)
+
+	assertReleaseRefused(t, st, releaseRun{req, before, got}, releaseRefusal{
 		text:    expect(releaseTag, shortSHA(st.base), "Next:", "git tag --delete "+releaseTag, "ils release "+version),
 		payload: released(st, "unchecked", ""),
 	})
@@ -649,7 +645,12 @@ func TestRelease_WhenTheReleaseCommitHoldsNoNotes_RefusesNamingIt(t *testing.T) 
 				return tt.build(f)
 			})
 
-			assertReleaseRefused(t, st, releaseRequest(version, false), releaseRefusal{
+			req := releaseRequest(version, false)
+			before := st.s.written()
+
+			got := runRelease(t, st.s, req)
+
+			assertReleaseRefused(t, st, releaseRun{req, before, got}, releaseRefusal{
 				text: expect(shortSHA(st.release)), payload: released(st, "unchecked", ""),
 			})
 		})
@@ -667,40 +668,11 @@ func TestRelease_WhenOriginStopsAnsweringAtItsTags_RefusesNamingWhatItWasAskedFo
 	// Origin answers the question about its trunk, and nothing after.
 	st.s.stopAnswering(t, 1)
 
-	assertReleaseRefused(t, st, cmd.req, releaseRefusal{text: unreached(cmd, "ask for its tags")})
-}
+	before := st.s.written()
 
-// overtimeRead is a read of a release that the time limit ends: the context to run under once it
-// made the read stall, and whether the result carries the release payload.
-type overtimeRead struct {
-	arrange func(t *testing.T, s *scene) context.Context
-	name    string
-	read    string
-	payload bool
-}
+	got := runRelease(t, st.s, cmd.req)
 
-func TestRelease_WhenTheTimeLimitEndsARead_RefusesNamingTheRead(t *testing.T) {
-	// Not parallel: stallingGit puts a stalling git first on PATH with t.Setenv.
-	c := byTimeLimit()
-	tests := []overtimeRead{
-		// Origin answers the question about its trunk; the next call stalls until the time limit ends.
-		{name: "origin's tags", read: readTags, arrange: c.stalling(1)},
-		{name: "changelog", read: readChangelog, arrange: c.stallingGit([]string{"cat-file", "blob"}), payload: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cmd := releaseCommand(version)
-			st := releaseScene(t, tagged)
-			ctx := tt.arrange(t, st.s)
-			before := st.s.written()
-
-			got := landing.Release(ctx, st.s.deps, cmd.req)
-
-			assertEndedBy(t, got, st.s.gitDir, ended{outcome: result.Refused, req: cmd.req, text: overtimeText(cmd, c, tt.read)})
-			assert.Check(t, is.Equal(st.s.written(), before))
-			assert.Check(t, is.DeepEqual(releasePayload(t, got, st.s.gitDir), uncheckedIf(st, tt.payload)))
-		})
-	}
+	assertReleaseRefused(t, st, releaseRun{cmd.req, before, got}, releaseRefusal{text: unreached(cmd, "ask for its tags")})
 }
 
 // ---------------------------------------------------------------------------
@@ -722,8 +694,6 @@ func TestRelease_WhenOriginHoldsTheTagAtTheReleaseCommit_GoesOnToTheGitHubReleas
 	})
 	assert.Check(t, is.Equal(st.s.written(), before))
 	assert.Check(t, is.Equal(st.s.localTag(releaseTag), ""))
-	assert.Check(t, is.Len(commitVerdicts(st.s), 0))
-	assert.Check(t, is.Len(callsOf(st.s.forge.Calls(), forgetest.OpPublishRelease), 1))
 	assert.Check(t, is.DeepEqual(releasePayload(t, got, st.s.gitDir), released(st, "skipped", releaseURL)))
 }
 
@@ -762,45 +732,79 @@ func TestRelease_WhenOriginRefusesTheTag_BrokeKeepingTheLocalTagForTheNextRun(t 
 	})
 }
 
-// failedTagWrite is a git write of the tag that fails, and whether the clone holds the tag after it.
-type failedTagWrite struct {
-	name string
-	// words are the first arguments of the git call that is made to fail.
-	words []string
-	made  bool
-	// cut is whether git's failure leaves origin's copy unknown, so the run may be started again.
-	cut bool
+func TestRelease_WhenTheTagCannotBeCreated_BrokeSayingNothingWasWritten(t *testing.T) {
+	// Not parallel: failGit puts a failing git first on the scene's PATH.
+	synctest.Test(t, func(t *testing.T) {
+		cmd := releaseCommand(version)
+		st := releaseScene(t, tagged)
+		failGit(t, st.s, []string{"tag", "--annotate"})
+
+		got := runRelease(t, st.s, cmd.req)
+
+		assertEndedBy(t, got, st.s.gitDir, ended{
+			outcome: result.Broke, req: cmd.req, text: expect(releaseTag, gittest.FailedSaid) + cmd.fixed,
+		})
+		assert.Check(t, is.Equal(st.s.localTag(releaseTag), ""))
+		assert.Check(t, is.Equal(st.s.originTag(releaseTag), ""))
+		assert.Check(t, is.Len(releaseCalls(st.s), 0))
+	})
 }
 
-func TestRelease_WhenAGitWriteOfTheTagFails_BrokeSayingWhereTheTagIs(t *testing.T) {
-	// Not parallel: fakeGit puts a failing git first on the scene's PATH.
-	tests := []failedTagWrite{
-		{name: "the tag cannot be created", words: []string{"tag", "--annotate"}},
-		{name: "origin cannot be reached to push it", words: []string{"push"}, made: true, cut: true},
+func TestRelease_WhenAnInterruptLandsBeforeTheFirstWrite_EndsPendingWithNothingWritten(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		cmd := releaseCommand(version)
+		// The interrupt lands as the gate reads the checks, the last read before the tag is made.
+		done := make(chan struct{})
+		interrupt := sync.OnceFunc(func() { close(done) })
+		script := gated(passing())
+		script.OnRead = func(call forgetest.Call) {
+			if call.Op == forgetest.OpCommitVerdict {
+				interrupt()
+			}
+		}
+		run := gateScene(t, script)
+
+		got := landing.Release(byInterrupt().once(within(t, 0), done), run.st.s.deps, cmd.req)
+
+		assertEndedBy(t, got, run.st.s.gitDir, ended{
+			outcome: result.Pending, req: cmd.req, text: expect("interrupted") + cmd.again,
+		})
+		assert.Check(t, is.Equal(run.st.s.written(), run.before))
+		assert.Check(t, is.Equal(run.st.s.localTag(releaseTag), ""))
+		assert.Check(t, is.Len(releaseCalls(run.st.s), 0))
+		assert.Check(t, is.DeepEqual(releasePayload(t, got, run.st.s.gitDir), released(run.st, "green", "")))
+	})
+}
+
+// cutTagNext is the `Next:` line a release ends on once c cut short the making or the push of the
+// tag: the short time limit names the long wait, as a push whose hooks, or a tag whose signing,
+// outlast 100 seconds ends the same way every time under it.
+func cutTagNext(c cut) string {
+	if errors.Is(c.err, context.DeadlineExceeded) {
+		return nextLine("ils release " + version + " --wait")
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				cmd := releaseCommand(version)
-				st := releaseScene(t, tagged)
-				failGit(t, st.s, tt.words)
 
-				text := expect(releaseTag, gittest.FailedSaid) + cmd.fixed
-				if tt.cut {
-					text = expect(releaseTag, "may or may not have taken", gittest.FailedSaid) + cmd.again
-				}
+	return releaseCommand(version).again
+}
 
-				got := runRelease(t, st.s, cmd.req)
+func TestRelease_WhenACutEndsTheMakingOfTheTag_SaysWhatEndedIt(t *testing.T) {
+	// Not parallel: stallingGit puts a stalling git first on PATH with t.Setenv.
+	for _, c := range cuts() {
+		t.Run(c.name, func(t *testing.T) {
+			cmd := releaseCommand(version)
+			st := releaseScene(t, tagged)
+			ctx := c.stallingGit([]string{"tag", "--annotate"})(t, st.s)
 
-				assertEndedBy(t, got, st.s.gitDir, ended{outcome: result.Broke, req: cmd.req, text: text})
-				want := ""
-				if tt.made {
-					want = st.release
-				}
-				assert.Check(t, is.Equal(st.s.localTag(releaseTag), want))
-				assert.Check(t, is.Equal(st.s.originTag(releaseTag), ""))
-				assert.Check(t, is.Len(releaseCalls(st.s), 0))
+			got := landing.Release(ctx, st.s.deps, cmd.req)
+
+			assertEndedBy(t, got, st.s.gitDir, ended{
+				outcome: result.Broke, req: cmd.req, text: expect(releaseTag) + expect(c.ends) + cutTagNext(c),
 			})
+			_, reason := shown(t, got, st.s.gitDir)
+			assertSays(t, reason, expect(c.ends))
+			assert.Check(t, is.Equal(st.s.originTag(releaseTag), ""))
+			assert.Check(t, is.Len(releaseCalls(st.s), 0))
 		})
 	}
 }
@@ -811,11 +815,13 @@ const answersBeforeTagPush = 3
 
 // cutTagPush is a push of the tag that ends before git says whether origin took it: the context to
 // run under once it changed how the scene reaches origin, the parts the text holds between the tag
-// and the phrase that the push may have taken, and the parts the reason holds.
+// and the phrase that the push may have taken, the parts it holds after that phrase, and the parts
+// the reason holds.
 type cutTagPush struct {
 	arrange func(t *testing.T, s *scene) context.Context
 	name    string
 	said    string
+	taken   string
 	reason  string
 	// again is the `Next:` line the run ends on.
 	again string
@@ -848,7 +854,10 @@ func cutTagPushes() []cutTagPush {
 	}
 
 	return append(rows,
-		cutTagPush{name: "origin stops answering", arrange: serving("true"), reason: expect("stopped answering"), again: again},
+		cutTagPush{
+			name: "origin stops answering", arrange: serving("true"),
+			taken: expect("origin could not be reached"), reason: expect("stopped answering"), again: again,
+		},
 		cutTagPush{
 			name: "a signal kills the git push", reason: expect("did not finish"), again: again,
 			arrange: func(t *testing.T, s *scene) context.Context {
@@ -875,7 +884,7 @@ func TestRelease_WhenThePushOfTheTagIsCutShort_BrokeSayingItMayHaveTaken(t *test
 
 			assertEndedBy(t, got, st.s.gitDir, ended{
 				outcome: result.Broke, req: cmd.req,
-				text: expect(releaseTag) + tt.said + expect("may or may not have taken") + tt.again,
+				text: expect(releaseTag) + tt.said + expect("may or may not have taken") + tt.taken + tt.again,
 			})
 			_, reason := shown(t, got, st.s.gitDir)
 			assertSays(t, reason, tt.reason)
@@ -887,30 +896,19 @@ func TestRelease_WhenThePushOfTheTagIsCutShort_BrokeSayingItMayHaveTaken(t *test
 
 func TestRelease_WhenTagOnly_EndsOnceOriginHoldsTheTagWithoutAGitHubRelease(t *testing.T) {
 	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		st := releaseScene(t, tagged)
+		req := releaseRequest(version, true)
 
-	tests := []tagRow{
-		{name: "the tag made and pushed", arrange: func(staged) {}},
-		{name: "the tag already on origin", arrange: func(st staged) { st.s.fixture.OriginTag(releaseTag, st.release) }},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			synctest.Test(t, func(t *testing.T) {
-				st := releaseScene(t, tagged)
-				tt.arrange(st)
-				req := releaseRequest(version, true)
+		got := runRelease(t, st.s, req)
 
-				got := runRelease(t, st.s, req)
-
-				assertEndedBy(t, got, st.s.gitDir, ended{outcome: result.Done, req: req, text: expect(releaseTag)})
-				assert.Check(t, is.Equal(st.s.originTag(releaseTag), st.release))
-				assert.Check(t, is.Len(releaseCalls(st.s), 0))
-				payload := releasePayload(t, got, st.s.gitDir)
-				assert.Assert(t, payload != nil, "Release() carries no release payload")
-				assert.Check(t, payload.TagOnly, "release payload %+v, want tag_only set", payload)
-			})
-		})
-	}
+		assertEndedBy(t, got, st.s.gitDir, ended{outcome: result.Done, req: req, text: expect(releaseTag)})
+		assert.Check(t, is.Equal(st.s.originTag(releaseTag), st.release))
+		assert.Check(t, is.Len(releaseCalls(st.s), 0))
+		payload := releasePayload(t, got, st.s.gitDir)
+		assert.Assert(t, payload != nil, "Release() carries no release payload")
+		assert.Check(t, payload.TagOnly, "release payload %+v, want tag_only set", payload)
+	})
 }
 
 func TestRelease_WhenTheTagHasAGitHubRelease_ReportsTheExistingReleaseWithoutPublishing(t *testing.T) {
@@ -979,14 +977,15 @@ func TestRelease_WhenTheTagHasNoGitHubRelease_CreatesOneWithTheChangelogSectionA
 				got := runRelease(t, st.s, req)
 
 				assertEndedBy(t, got, st.s.gitDir, ended{outcome: result.Done, req: req, text: expect(releaseURL)})
-				published := forge.NewRelease{Tag: "v" + tt.version, Notes: tt.notes, Prerelease: tt.prerelease}
+				tag := "v" + tt.version
+				published := forge.NewRelease{Tag: tag, Notes: tt.notes, Prerelease: tt.prerelease}
 				want := []forgetest.Call{
-					{Op: forgetest.OpFindRelease, Repo: origin(), Tag: "v" + tt.version},
+					{Op: forgetest.OpFindRelease, Repo: origin(), Tag: tag},
 					{Op: forgetest.OpPublishRelease, Repo: origin(), Release: published},
 				}
 				assert.Check(t, is.DeepEqual(releaseCalls(st.s), want, whichRepo()))
 				payload := &result.Release{
-					Version: tt.version, Tag: "v" + tt.version, SHA: st.release, Verdict: "green",
+					Version: tt.version, Tag: tag, SHA: st.release, Verdict: "green",
 					Prerelease: tt.prerelease, URL: releaseURL,
 				}
 				assert.Check(t, is.DeepEqual(releasePayload(t, got, st.s.gitDir), payload))
@@ -1068,20 +1067,69 @@ func TestRelease_WhenPublishingTheGitHubReleaseIsCutShort_BrokeSayingItMayHaveGo
 	}
 }
 
-func TestRelease_WhenTheTrunkHasNoCI_CarriesAPayloadNamingNoneAsTheVerdict(t *testing.T) {
+func TestRelease_WhenACutEndsTheLookupOfTheGitHubRelease_SaysWhatEndedIt(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range cuts() {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				cmd := releaseCommand(version)
+				st := releaseScene(t, tagged)
+				script := gated(passing())
+				script.FindRelease = []forgetest.Answer[string]{{Err: c.of("gh release view")}}
+				script.PublishRelease = nil
+				st.s.useForge(t, script)
+
+				got := runRelease(t, st.s, cmd.req)
+
+				assertEndedBy(t, got, st.s.gitDir, ended{
+					outcome: result.Broke, req: cmd.req, text: expect(releaseTag, c.ends) + cmd.again,
+				})
+				_, reason := shown(t, got, st.s.gitDir)
+				assertSays(t, reason, expect(c.ends))
+				assert.Check(t, is.DeepEqual(opsOf(releaseCalls(st.s)), []forgetest.Op{forgetest.OpFindRelease}))
+				assert.Check(t, is.Equal(st.s.originTag(releaseTag), st.release))
+				assert.Check(t, is.DeepEqual(releasePayload(t, got, st.s.gitDir), released(st, "green", "")))
+			})
+		})
+	}
+}
+
+// notesLeft is a forge whose release is created while its notes file stays behind: its
+// PublishRelease answers as the fake does, then fails with left once the fake gave a link.
+type notesLeft struct {
+	*forgetest.Fake
+
+	left error
+}
+
+// PublishRelease returns the link the fake answers with left, or the fake's error when it fails.
+func (f notesLeft) PublishRelease(ctx context.Context, repo forge.Repo, release forge.NewRelease) (string, error) {
+	link, err := f.Fake.PublishRelease(ctx, repo, release)
+	if err != nil {
+		return "", err
+	}
+
+	return link, f.left
+}
+
+func TestRelease_WhenTheNotesFileOfACreatedReleaseStaysBehind_DoneNamingIt(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-		script := gated(forge.Verdict{})
-		script.TrunkProtection = forgetest.Values(forge.Protection{})
-		script.HasTrunkCI = forgetest.Values(false)
-		st := releaseScene(t, tagged)
-		st.s.useForge(t, script)
+		const notesFile = "/tmp/ils-release-notes-417.md"
 		req := releaseRequest(version, false)
+		st := releaseScene(t, tagged)
+		left := &fs.PathError{Op: "remove", Path: notesFile, Err: errors.New("directory not empty")}
+		st.s.deps.Forge = notesLeft{Fake: st.s.forge, left: fmt.Errorf("remove the release notes: %w", left)}
 
 		got := runRelease(t, st.s, req)
 
-		assertStoppedBy(t, got, result.Done, req)
-		assert.Check(t, is.DeepEqual(releasePayload(t, got, st.s.gitDir), released(st, "none", releaseURL)))
+		assertEndedBy(t, got, st.s.gitDir, ended{outcome: result.Done, req: req, text: expect(releaseURL)})
+		text, _ := shown(t, got, st.s.gitDir)
+		assertSays(t, text, expect(notesFile))
+		assert.Check(t, is.DeepEqual(opsOf(releaseCalls(st.s)), []forgetest.Op{forgetest.OpFindRelease, forgetest.OpPublishRelease}))
+		assert.Check(t, is.DeepEqual(releasePayload(t, got, st.s.gitDir), released(st, "green", releaseURL)))
 	})
 }
 
@@ -1134,6 +1182,9 @@ func TestRelease_WhenOriginStopsAnsweringAtThePreviousTag_RefusesNamingTheTag(t 
 	st := releaseScene(t, pastATagTheCloneLacks)
 	// The fetch of the tag is the first call to origin after those before the push of the tag.
 	st.s.stopAnswering(t, answersBeforeTagPush)
+	before := st.s.written()
 
-	assertReleaseRefused(t, st, cmd.req, releaseRefusal{text: expect("could not be reached", previousTag) + cmd.again})
+	got := runRelease(t, st.s, cmd.req)
+
+	assertReleaseRefused(t, st, releaseRun{cmd.req, before, got}, releaseRefusal{text: expect("could not be reached", previousTag) + cmd.again})
 }

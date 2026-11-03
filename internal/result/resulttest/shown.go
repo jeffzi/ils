@@ -15,6 +15,8 @@ import (
 // Shown is the JSON renderer's object as a caller decodes it.
 type Shown = result.Object
 
+const notOneObject = "output is not one JSON object:\n%s"
+
 // Decode reads the one JSON object out holds, and stops the test when out is anything else.
 func Decode(tb testing.TB, out string) Shown {
 	tb.Helper()
@@ -24,12 +26,12 @@ func Decode(tb testing.TB, out string) Shown {
 	err := json.Unmarshal([]byte(out), &value)
 	assert.NilError(tb, err, "output is not one JSON value:\n%s", out)
 	// Unmarshal reads null into a struct as its zero value, so the kind is checked first.
-	assert.Assert(tb, value.Kind() == '{', "output is not one JSON object:\n%s", out)
+	assert.Assert(tb, value.Kind() == '{', notOneObject, out)
 
 	var got Shown
 
 	err = json.Unmarshal(value, &got)
-	assert.NilError(tb, err, "output is not one JSON object:\n%s", out)
+	assert.NilError(tb, err, notOneObject, out)
 
 	return got
 }
@@ -45,20 +47,16 @@ func NextLine(next string) string {
 	return result.NextLabel + ": " + next
 }
 
-// AssertCarried fails unless every line of text is in what the JSON object carries: its lines, its
-// excerpt, its reason behind its outcome's label, or its next. It reports through tb only by Helper
-// and the calls of assert.TestingT, so a *testing.T or a stand-in that records them both serve.
-func AssertCarried(tb interface {
-	assert.TestingT
-	Helper()
-}, text string, got Shown,
-) {
+// AssertCarried fails unless the JSON object's outcome is want and every line of text is in what
+// it carries: its lines, its excerpt, its reason behind want's label, or its next.
+func AssertCarried(tb testing.TB, text string, want result.Outcome, got Shown) {
 	tb.Helper()
 
+	assert.Check(tb, is.Equal(got.Outcome, want.String()), "JSON outcome")
 	carried := append(strings.Split(got.Excerpt, "\n"), got.Lines...)
 	carried = append(carried, NextLine(got.Next))
-	if outcome, ok := result.ParseOutcome(got.Outcome); ok && outcome != result.Done {
-		carried = append(carried, ReasonLine(outcome, got.Reason))
+	if want != result.Done {
+		carried = append(carried, ReasonLine(want, got.Reason))
 	}
 
 	for line := range strings.Lines(text) {

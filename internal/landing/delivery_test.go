@@ -15,6 +15,7 @@ import (
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
+	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
 	"github.com/jeffzi/ils/internal/gittest"
@@ -274,10 +275,10 @@ func (end finish) at(tip string) finish {
 // detail returns the payload of a push to pull request 12, but for the sha: the verdict's name,
 // the merge state in the words of ils, and the deciding checks.
 func detail(verdict forge.VerdictState, state forge.MergeState, checks ...forge.Check) *result.Push {
-	push := &result.Push{URL: pullURL, Number: opened, Verdict: string(verdict), MergeState: string(state)}
+	push := &result.Push{URL: pullURL, Number: opened, Verdict: verdict, MergeState: state}
 	for _, check := range checks {
 		push.Checks = append(push.Checks, result.Check{
-			Name: check.Name, Bucket: string(check.Bucket), Workflow: check.Workflow, Link: check.Link,
+			Name: check.Name, Bucket: check.Bucket, Workflow: check.Workflow, Link: check.Link,
 		})
 	}
 
@@ -459,6 +460,28 @@ func TestPush_WhenTrunkRequiresChecks_PassesThemToEveryForgeRead(t *testing.T) {
 	})
 }
 
+func TestPush_WhenACommitReachesTheBranchAfterItsChecks_PushesTheCheckedTip(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		s := newScene(t, nil, forgetest.Script{}, false)
+		checked := s.fixture.Git("rev-parse", topic)
+		script := opening(passing())(checked)
+		// The pull requests of the branch are read once its checks are done, just before the push.
+		var late sync.Once
+		script.OnRead = func(call forgetest.Call) {
+			if call.Op == forgetest.OpFindChanges {
+				late.Do(func() { s.fixture.Commits(topic, "late") })
+			}
+		}
+		s.useForge(t, script)
+
+		got := landing.Push(within(t, 0), s.deps, pushRequest())
+
+		assertDelivered(t, s, got, greenAfter(pushedLine()+openedLine()).at(checked))
+		assert.Check(t, is.Equal(s.onOrigin(), checked))
+	})
+}
+
 // reporting is a forge whose open-change reports a pull request that already exists, whose
 // find-changes answers with each of lists in turn, and whose checks pass.
 func reporting(lists ...[]forge.Change) forgeFor {
@@ -513,12 +536,13 @@ func TestPush_WhenGitRefusesThePush_BrokeSayingNothingWasPushed(t *testing.T) {
 	assertSays(t, text, expect("refused", topic, policy)+nextFixed())
 
 	refused := refusedLine(t, decoded.Lines)
-	assert.Check(t, is.Contains(refused, "pre-receive hook declined"))
+	at := strings.LastIndex(refused, ":")
+	assert.Assert(t, at >= 0, "refused line %q, want git's reason after a colon", refused)
+	assert.Check(t, is.Contains(refused[:at], topic))
+	assert.Check(t, strings.TrimSpace(refused[at+1:]) != "", "refused line %q, want git's reason after its colon", refused)
 	assert.Check(t, !strings.Contains(refused, policy), "refused line %q, want the hook's output left out of it", refused)
 
-	assert.Check(t, is.Equal(d.onOrigin(), ""))
-
-	assertAsked(t, d.scene, changesRead())
+	assert.Check(t, sameCalls(d.forge.Calls(), asked(changesRead())))
 	assertTold(t, d.watch.told(t), []string{checkingStep(), pushingStep()})
 }
 
@@ -546,23 +570,6 @@ func refusedBy(t *testing.T, script string) (context.Context, *delivery) {
 	refuse := func(f *gittest.Fixture) { f.Hook("pre-push", script) }
 
 	return newDelivery(t, pushRow{arrange: refuse, script: opening()})
-}
-
-func TestPush_WhenAPrePushHookRefusesThePush_MovesWhatItPrintedFromTheLineToTheExcerpt(t *testing.T) {
-	t.Parallel()
-	const onStdout, onStderr = "lint passed", "format failed"
-	ctx, d := refusedBy(t, "echo '"+onStdout+"'\necho '"+onStderr+"' >&2\nexit 1")
-
-	got := landing.Push(ctx, d.deps, pushRequest())
-
-	assertStopped(t, got, result.Broke)
-
-	_, decoded := rendered(t, got, d.gitDir)
-	refused := refusedLine(t, decoded.Lines)
-	assert.Check(t, !strings.Contains(refused, onStdout) && !strings.Contains(refused, onStderr),
-		"refused line %q, want the hook's output left out of it", refused)
-	assert.Check(t, is.Contains(got.Excerpt, onStdout))
-	assert.Check(t, is.Contains(got.Excerpt, onStderr))
 }
 
 func TestPush_WhenGitGivesNoReasonForTheRefusal_EndsTheLineWithoutOne(t *testing.T) {
@@ -615,7 +622,16 @@ func pushOpenFailureRows() []pushRow {
 		})
 	}
 
-	return rows
+	// A signal can end gh after GitHub opened the pull request, before gh said so.
+	killed := &child.KilledError{Argv: []string{"gh", "pr", "create"}, Err: errors.New("signal: terminated")}
+
+	return append(rows, pushRow{
+		name: "because a signal killed gh", script: openFailing(killed),
+		want: finish{
+			outcome: result.Broke, reason: expect("opening the pull request"),
+			text: pushedLine() + expect("opening the pull request", "may or may not have been opened") + pushCommand().again,
+		},
+	})
 }
 
 func TestPush_WhenOpeningThePullRequestFails_BrokeSayingThePushHappened(t *testing.T) {
@@ -690,16 +706,16 @@ func assertMayHaveTaken(t *testing.T, s *scene, got result.Result, cut cutPush) 
 
 func TestPush_WhenOriginStopsAnsweringDuringThePush_BrokeSayingThePushMayHaveTaken(t *testing.T) {
 	t.Parallel()
-	const denied = "Permission denied for this key."
+	const dropped = "Connection closed by remote host."
 	s := newScene(t, nil, finding(), false)
 	// The ssh of the push exits before origin says a word.
-	s.deps.Repo.Runner.Env = answering(t, s.fixture, answersBeforePush, "echo '"+denied+"' >&2")
+	s.deps.Repo.Runner.Env = answering(t, s.fixture, answersBeforePush, "echo '"+dropped+"' >&2")
 	sha := s.fixture.Git("rev-parse", topic)
 
 	got := landing.Push(t.Context(), s.deps, pushRequest())
 
 	text := assertMayHaveTaken(t, s, got, cutPush{sha: sha, reason: "stopped answering"})
-	assert.Check(t, is.Contains(text, denied))
+	assert.Check(t, is.Contains(text, dropped))
 }
 
 // killsGitPush ends the git push with SIGTERM from the ssh it started, while ils runs on.

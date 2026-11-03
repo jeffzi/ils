@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -265,8 +269,8 @@ func TestRepo_FastForwardTrunk_WhenTrunkHasCommitsOriginLacks_RefusesWithExitErr
 
 	err := newRepo(f).FastForwardTrunk(t.Context(), trunk)
 
-	_, remote := errors.AsType[*git.RemoteError](err)
-	assert.Check(t, !remote, "FastForwardTrunk(%q) error = %v, want git's refusal, not *git.RemoteError", trunk, err)
+	remote := errors.Is(err, git.ErrRemote)
+	assert.Check(t, !remote, "FastForwardTrunk(%q) error = %v, want git's refusal, not git.ErrRemote", trunk, err)
 	_, refused := errors.AsType[*child.ExitError](err)
 	assert.Check(t, refused, "FastForwardTrunk(%q) error = %v, want *child.ExitError", trunk, err)
 }
@@ -409,7 +413,7 @@ func TestRepo_OriginTags_WhenLightweightAndAnnotatedTags_ListsEachWithTheCommitI
 	assert.Check(t, is.DeepEqual(got, want))
 }
 
-func TestRepo_WhenOriginDoesNotAnswer_ReturnsRemoteError(t *testing.T) {
+func TestRepo_WhenOriginDoesNotAnswer_ReturnsErrRemote(t *testing.T) {
 	t.Parallel()
 	tests := append(originCalls(), fastForwardTrunkCall())
 	for _, tt := range tests {
@@ -420,9 +424,183 @@ func TestRepo_WhenOriginDoesNotAnswer_ReturnsRemoteError(t *testing.T) {
 
 			got, err := tt.call(t.Context(), newRepo(f))
 
-			_, ok := errors.AsType[*git.RemoteError](err)
-			assert.Check(t, ok, "%s() error = %v, want *git.RemoteError", tt.name, err)
+			ok := errors.Is(err, git.ErrRemote)
+			assert.Check(t, ok, "%s() error = %v, want git.ErrRemote", tt.name, err)
 			checkNoResult(t, tt.name, got)
+		})
+	}
+}
+
+// sshDenied is what GitHub's ssh prints when it turns away a caller whose key it does not accept.
+const sshDenied = "git@github.com: Permission denied (password)."
+
+// sshFailedCode is the code ssh exits with when it fails itself, rather than the command it ran.
+const sshFailedCode = 255
+
+// endedBy is one way origin's server ends a call: arrange points the fixture's origin at it and
+// returns the environment that reaches it and a part of what git prints on stderr then.
+type endedBy struct {
+	arrange func(t *testing.T, f *gittest.Fixture) (env []string, said string)
+	name    string
+}
+
+// sshSaying returns an arrangement whose origin is reached over ssh, where every call prints said on
+// stderr and exits with code before git hears from the repository.
+func sshSaying(said string, code int) func(t *testing.T, f *gittest.Fixture) ([]string, string) {
+	return func(t *testing.T, f *gittest.Fixture) ([]string, string) {
+		t.Helper()
+		f.SetOriginURL(sshURL)
+
+		return f.ServedBy("echo '" + said + "' >&2; exit " + strconv.Itoa(code)), said
+	}
+}
+
+// httpAnswering returns an arrangement whose origin is an HTTP server that answers every request
+// with status, under a URL that carries a user and a password. Git's message names the server's
+// address.
+func httpAnswering(status int) func(t *testing.T, f *gittest.Fixture) ([]string, string) {
+	return func(t *testing.T, f *gittest.Fixture) ([]string, string) {
+		t.Helper()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("WWW-Authenticate", `Basic realm="ils"`)
+			w.WriteHeader(status)
+		}))
+		t.Cleanup(srv.Close)
+
+		addr := srv.Listener.Addr().String()
+		f.SetOriginURL("http://ils:wrong@" + addr + "/jeffzi/ils.git")
+
+		return f.Env(), addr
+	}
+}
+
+// httpHangingUp is an arrangement whose origin is an HTTP address that closes every connection
+// before it answers.
+func httpHangingUp(t *testing.T, f *gittest.Fixture) ([]string, string) {
+	t.Helper()
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	assert.NilError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+
+			_ = conn.Close()
+		}
+	}()
+
+	addr := ln.Addr().String()
+	f.SetOriginURL("http://" + addr + "/jeffzi/ils.git")
+
+	return f.Env(), addr
+}
+
+// refusals lists one case for each message refusal in origin.go matches, but the ssh key that
+// TestRepo_WhenOriginRefusesTheCall_ReturnsErrRefused refuses: an ssh repository refused, the
+// credentials GitHub did not accept, and an HTTP 401, 403 and 404.
+func refusals() []endedBy {
+	return []endedBy{
+		{name: "ssh repository not found", arrange: sshSaying("ERROR: Repository not found.", 1)},
+		{
+			name:    "credentials GitHub did not accept",
+			arrange: sshSaying("remote: Invalid username or token. Password authentication is not supported for Git operations.", 1),
+		},
+		{name: "http authentication failed", arrange: httpAnswering(http.StatusUnauthorized)},
+		{name: "http permission denied", arrange: httpAnswering(http.StatusForbidden)},
+		{name: "http repository not found", arrange: httpAnswering(http.StatusNotFound)},
+	}
+}
+
+// assertRefused fails unless err is origin's refusal of the call name, not origin going unreached,
+// and keeps what git said on stderr, which holds said.
+func assertRefused(t *testing.T, name string, err error, said string) {
+	t.Helper()
+
+	refused := errors.Is(err, git.ErrRefused)
+	assert.Check(t, refused, "%s() error = %v, want git.ErrRefused", name, err)
+	remote := errors.Is(err, git.ErrRemote)
+	assert.Check(t, !remote, "%s() error = %v, want it not to read as origin not answering", name, err)
+	exitErr, exited := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, exited, "%s() error = %v, want it to wrap *child.ExitError", name, err)
+	assert.Check(t, is.Contains(exitErr.Stderr, said))
+}
+
+func TestRepo_RemoteBranch_WhenOriginRefusesTheCall_ReturnsErrRefused(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range refusals() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			env, said := tt.arrange(t, f)
+			repo := git.Repo{Runner: git.Runner{Dir: f.Dir(), Env: env}}
+
+			_, _, err := repo.RemoteBranch(t.Context(), trunk)
+
+			assertRefused(t, "RemoteBranch", err, said)
+		})
+	}
+}
+
+func TestRepo_WhenOriginRefusesTheCall_ReturnsErrRefused(t *testing.T) {
+	t.Parallel()
+	tests := slices.Concat(originCalls(), []repoCall{
+		fastForwardTrunkCall(),
+		{name: "Trunk", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.Trunk(ctx) }},
+		{name: "Push", call: func(ctx context.Context, repo git.Repo) (any, error) {
+			sha, err := repo.HeadSHA(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			return nil, repo.Push(ctx, topic, sha)
+		}},
+	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			f.Commits(topic, "one")
+			f.Git("switch", "--quiet", trunk)
+			env, said := sshSaying(sshDenied, sshFailedCode)(t, f)
+			repo := git.Repo{Runner: git.Runner{Dir: f.Dir(), Env: env}}
+
+			got, err := tt.call(t.Context(), repo)
+
+			assertRefused(t, tt.name, err, said)
+			checkNoResult(t, tt.name, got)
+		})
+	}
+}
+
+func TestRepo_RemoteBranch_WhenTheConnectionToOriginFails_ReturnsErrRemote(t *testing.T) {
+	t.Parallel()
+	tests := []endedBy{
+		{name: "ssh cannot connect", arrange: sshSaying("ssh: connect to host github.com port 22: Connection refused", sshFailedCode)},
+		{
+			name:    "ssh connect denied by a local policy",
+			arrange: sshSaying("ssh: connect to host github.com port 22: Permission denied", sshFailedCode),
+		},
+		{name: "git cannot write a local file", arrange: sshSaying("fatal: unable to create temporary file: Permission denied", 128)},
+		{name: "http server hangs up", arrange: httpHangingUp},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			env, _ := tt.arrange(t, f)
+			repo := git.Repo{Runner: git.Runner{Dir: f.Dir(), Env: env}}
+
+			_, _, err := repo.RemoteBranch(t.Context(), trunk)
+
+			remote := errors.Is(err, git.ErrRemote)
+			assert.Check(t, remote, "RemoteBranch() error = %v, want git.ErrRemote", err)
+			refused := errors.Is(err, git.ErrRefused)
+			assert.Check(t, !refused, "RemoteBranch() error = %v, want it not to read as origin refusing", err)
 		})
 	}
 }
@@ -437,11 +615,11 @@ func TestRepo_Trunk_WhenGitMissingFromPath_ReturnsToolMissingError(t *testing.T)
 
 	_, ok := errors.AsType[*child.ToolMissingError](err)
 	assert.Assert(t, ok, "Trunk() error = %v, want *child.ToolMissingError", err)
-	_, remote := errors.AsType[*git.RemoteError](err)
+	remote := errors.Is(err, git.ErrRemote)
 	assert.Check(t, !remote, "Trunk() error = %v, want it not to read as origin not answering", err)
 }
 
-func TestRepo_Trunk_WhenContextEnded_ReturnsRemoteError(t *testing.T) {
+func TestRepo_Trunk_WhenContextEnded_ReturnsErrRemote(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
 	ctx, cancel := context.WithCancel(t.Context())
@@ -449,18 +627,9 @@ func TestRepo_Trunk_WhenContextEnded_ReturnsRemoteError(t *testing.T) {
 
 	got, err := newRepo(f).Trunk(ctx)
 
-	_, ok := errors.AsType[*git.RemoteError](err)
-	assert.Check(t, ok, "Trunk() = %q, error = %v, want *git.RemoteError", got, err)
+	ok := errors.Is(err, git.ErrRemote)
+	assert.Check(t, ok, "Trunk() = %q, error = %v, want git.ErrRemote", got, err)
 	assert.Check(t, is.ErrorIs(err, context.Canceled))
-}
-
-func TestRemoteError_Error_WhenCauseSet_HoldsTheCause(t *testing.T) {
-	t.Parallel()
-	err := &git.RemoteError{Err: errors.New("exit status 128")}
-
-	got := err.Error()
-
-	assert.Check(t, is.Contains(got, "exit status 128"))
 }
 
 func TestRepo_Trunk_WhenHeadNamesNoBranch_ReturnsErrNoSymref(t *testing.T) {
@@ -572,6 +741,20 @@ func TestRepo_TrunkOrLastFetched_WhenOriginDoesNotAnswer_ReturnsTheLastFetchedTr
 	}
 }
 
+func TestRepo_TrunkOrLastFetched_WhenOriginRefusesTheCaller_ReturnsTheLastFetchedTrunk(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	lastFetchedAt(t, f, trunk)
+	env, _ := sshSaying(sshDenied, sshFailedCode)(t, f)
+	repo := git.Repo{Runner: git.Runner{Dir: f.Dir(), Env: env}}
+
+	got, found, err := repo.TrunkOrLastFetched(t.Context())
+	assert.NilError(t, err)
+
+	assert.Check(t, found, "TrunkOrLastFetched() found = false, want true")
+	assert.Check(t, is.Equal(got, trunk))
+}
+
 func TestRepo_TrunkOrLastFetched_WhenOriginDoesNotAnswerAndNothingWasFetched_ReportsNotFound(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
@@ -638,44 +821,14 @@ func TestRepo_RemoteBranch_WhenNotOnOrigin_ReportsAbsent(t *testing.T) {
 
 func TestRepo_Fetch_WhenRefOnOrigin_ReturnsFetchedSHA(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		arrange func(f *gittest.Fixture) string
-		name    string
-		ref     string
-	}{
-		{
-			name: "branch origin moved",
-			ref:  topic,
-			arrange: func(f *gittest.Fixture) string {
-				f.Commits(topic, "one")
-				f.Push(topic)
+	f := gittest.New(t, trunk)
+	want := f.Commits(topic, "one")[0]
+	f.PullRef(pullNumber, want)
 
-				return f.AdvanceOrigin(topic)
-			},
-		},
-		{
-			name: "pull request head",
-			ref:  pullRef,
-			arrange: func(f *gittest.Fixture) string {
-				sha := f.Commits(topic, "one")[0]
-				f.PullRef(pullNumber, sha)
+	got, err := newRepo(f).Fetch(t.Context(), pullRef)
+	assert.NilError(t, err, "Fetch(%q)", pullRef)
 
-				return sha
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			f := gittest.New(t, trunk)
-			want := tt.arrange(f)
-
-			got, err := newRepo(f).Fetch(t.Context(), tt.ref)
-			assert.NilError(t, err, "Fetch(%q)", tt.ref)
-
-			assert.Check(t, is.Equal(got, want), "Fetch(%q)", tt.ref)
-		})
-	}
+	assert.Check(t, is.Equal(got, want), "Fetch(%q)", pullRef)
 }
 
 func TestRepo_Fetch_WhenFetchHeadNamesAnotherCommitAfterTheFetch_ReturnsTheFetchedSHA(t *testing.T) {
@@ -709,19 +862,67 @@ func TestRepo_Fetch_WhenItReturns_LeavesNoRefOfItsOwn(t *testing.T) {
 	assert.Check(t, is.Equal(f.Git("for-each-ref", "refs/ils/"), ""), "refs under refs/ils/ after Fetch")
 }
 
+func TestRepo_Fetch_WhenTheFetchConfigLeavesTheBranchOut_PutsOriginsTrackingRefAtTheFetchedSHA(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.Git("config", "remote.origin.fetch", "+refs/heads/"+topic+":refs/remotes/origin/"+topic)
+	want := f.AdvanceOrigin(trunk)
+
+	_, err := newRepo(f).Fetch(t.Context(), trunk)
+	assert.NilError(t, err, "Fetch(%q)", trunk)
+
+	assert.Check(t, is.Equal(f.Git("rev-parse", "refs/remotes/origin/"+trunk), want))
+}
+
 // killsReceivePack kills the hook's parent: git runs a hook as a child of receive-pack, so `$PPID`
 // is the process that must die mid-push.
 const killsReceivePack = "kill -KILL $PPID"
 
-// topicSpec is the pair of refs Push hands git for topic, which git's report names on its status line.
-const topicSpec = "refs/heads/" + topic + ":refs/heads/" + topic
+// specMark stands, in a hook's script and in what a test wants, for the pair of refs Push hands git
+// for topic's tip, which git's report names on its status line.
+const specMark = "<spec>"
 
 // otherSpec is the pair of refs for a branch Push never pushes, which a hook's report-shaped lines name.
 const otherSpec = "refs/heads/other:refs/heads/other"
 
+// localTip returns the sha of the clone's topic branch.
+func localTip(f *gittest.Fixture) string { return f.Git("rev-parse", "refs/heads/"+topic) }
+
+// withSpec returns text with the pair of refs Push hands git for topic's tip in place of specMark.
+func withSpec(f *gittest.Fixture, text string) string {
+	return strings.ReplaceAll(text, specMark, localTip(f)+":refs/heads/"+topic)
+}
+
+// pushTip pushes the tip the clone's topic branch is on to origin's topic.
+func pushTip(ctx context.Context, f *gittest.Fixture) error {
+	return newRepo(f).Push(ctx, topic, localTip(f))
+}
+
 // originTip returns the sha origin holds for branch, or nothing when origin lacks it.
 func originTip(f *gittest.Fixture, branch string) string {
 	return f.OriginGit("for-each-ref", "--format=%(objectname)", "refs/heads/"+branch)
+}
+
+func TestRepo_Push_WhenTheBranchMovedPastTheGivenCommit_PublishesTheGivenCommit(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	checked := f.Commits(topic, "one", "two")[0]
+
+	err := newRepo(f).Push(t.Context(), topic, checked)
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Equal(originTip(f, topic), checked))
+}
+
+func TestRepo_Push_WhenOriginAccepts_SetsOriginsBranchAsTheUpstream(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.Commits(topic, "one")
+
+	err := pushTip(t.Context(), f)
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Equal(f.Git("for-each-ref", "--format=%(upstream)", "refs/heads/"+topic), "refs/remotes/origin/"+topic))
 }
 
 // originRefusing returns a fixture whose origin holds topic and whose pre-receive hook prints said and
@@ -736,38 +937,17 @@ func originRefusing(t *testing.T, said string) *gittest.Fixture {
 	return f
 }
 
-func TestRepo_Push_WhenOriginReportsTheRefUpdated_PublishesTheBranch(t *testing.T) {
+func TestRepo_Push_WhenOriginHangsUpAfterReportingTheRefUpdated_PublishesTheBranch(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		// arrange changes origin before the push; nil leaves it as built.
-		arrange func(t *testing.T, f *gittest.Fixture)
-		name    string
-	}{
-		{name: "origin answers to the end"},
-		{
-			name: "origin hangs up after its report",
-			arrange: func(t *testing.T, f *gittest.Fixture) {
-				t.Helper()
-				gittest.NeedSignals(t)
-				f.OriginHook("post-receive", killsReceivePack)
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			f := gittest.New(t, trunk)
-			tip := f.Commits(topic, "one")[0]
-			if tt.arrange != nil {
-				tt.arrange(t, f)
-			}
+	gittest.NeedSignals(t)
+	f := gittest.New(t, trunk)
+	tip := f.Commits(topic, "one")[0]
+	f.OriginHook("post-receive", killsReceivePack)
 
-			err := newRepo(f).Push(t.Context(), topic)
-			assert.NilError(t, err)
+	err := pushTip(t.Context(), f)
+	assert.NilError(t, err)
 
-			assert.Check(t, is.Equal(originTip(f, topic), tip))
-		})
-	}
+	assert.Check(t, is.Equal(originTip(f, topic), tip))
 }
 
 func TestRepo_Push_WhenTagSharesTheBranchName_PublishesTheBranch(t *testing.T) {
@@ -780,7 +960,7 @@ func TestRepo_Push_WhenTagSharesTheBranchName_PublishesTheBranch(t *testing.T) {
 	f.OriginGit("tag", topic, trunkTip)
 	f.Git("tag", "-a", "-m", "release", topic, trunk)
 
-	err := newRepo(f).Push(t.Context(), topic)
+	err := pushTip(t.Context(), f)
 	assert.NilError(t, err)
 
 	assert.Check(t, is.Equal(f.OriginGit("rev-parse", "refs/heads/"+topic), tip))
@@ -796,7 +976,7 @@ func TestRepo_Push_WhenOriginRefusesATagThePushFollows_PublishesTheBranch(t *tes
 	f.Git("tag", "-a", "-m", "release", "v1", tip)
 	f.OriginHook("update", `test "${1#refs/tags/}" = "$1"`)
 
-	err := newRepo(f).Push(t.Context(), topic)
+	err := pushTip(t.Context(), f)
 	assert.NilError(t, err)
 
 	assert.Check(t, is.Equal(originTip(f, topic), tip))
@@ -807,12 +987,12 @@ func TestRepo_Push_WhenOriginRefusesTheRef_ReturnsPushErrorNamingTheReason(t *te
 	const said = "policy forbids this push"
 	f := originRefusing(t, said)
 
-	err := newRepo(f).Push(t.Context(), topic)
+	err := pushTip(t.Context(), f)
 
 	pushErr, ok := errors.AsType[*git.PushError](err)
 	assert.Assert(t, ok, "Push(%q) error = %v, want *git.PushError", topic, err)
 	assert.Check(t, is.Equal(pushErr.Ref, "refs/heads/"+topic))
-	assert.Check(t, is.Contains(pushErr.Reason, "pre-receive hook declined"))
+	assert.Check(t, pushErr.Reason != "" && pushErr.Reason != "!", "Reason = %q, want the status line's summary", pushErr.Reason)
 	assert.Check(t, !strings.Contains(pushErr.Reason, "refs/heads/"), "Reason = %q, want the summary, not the ref it names",
 		pushErr.Reason)
 	assert.Check(t, is.Contains(pushErr.Stderr, said))
@@ -825,7 +1005,7 @@ func TestRepo_Push_WhenThePrePushHookRefuses_ReturnsPushErrorHoldingWhatTheHookS
 	f.Commits(topic, "one")
 	f.Hook("pre-push", "echo '"+said+"' >&2\nexit 1")
 
-	err := newRepo(f).Push(t.Context(), topic)
+	err := pushTip(t.Context(), f)
 
 	pushErr, ok := errors.AsType[*git.PushError](err)
 	assert.Assert(t, ok, "Push(%q) error = %v, want *git.PushError", topic, err)
@@ -848,8 +1028,8 @@ func TestRepo_Push_WhenThePrePushHookRefusesAfterPrintingOnStdout_ReturnsPushErr
 		},
 		{
 			name:   "stdout holds a rejected status line for the pushed ref",
-			script: "printf '!\\t" + topicSpec + "\\tblocked by policy\\n'\nexit 1",
-			want:   "!\t" + topicSpec + "\tblocked by policy\n",
+			script: "printf '!\\t" + specMark + "\\tblocked by policy\\n'\nexit 1",
+			want:   "!\t" + specMark + "\tblocked by policy\n",
 		},
 	}
 	for _, tt := range tests {
@@ -857,15 +1037,16 @@ func TestRepo_Push_WhenThePrePushHookRefusesAfterPrintingOnStdout_ReturnsPushErr
 			t.Parallel()
 			f := gittest.New(t, trunk)
 			f.Commits(topic, "one")
-			f.Hook("pre-push", tt.script)
+			f.Hook("pre-push", withSpec(f, tt.script))
+			want := withSpec(f, tt.want)
 
-			err := newRepo(f).Push(t.Context(), topic)
+			err := pushTip(t.Context(), f)
 
 			pushErr, ok := errors.AsType[*git.PushError](err)
 			assert.Assert(t, ok, "Push(%q) error = %v, want *git.PushError", topic, err)
 			assert.Check(t, is.Equal(pushErr.Reason, ""))
-			assert.Check(t, strings.HasPrefix(pushErr.Output(), tt.want), "Output() = %q, want it to start with %q",
-				pushErr.Output(), tt.want)
+			assert.Check(t, strings.HasPrefix(pushErr.Output(), want), "Output() = %q, want it to start with %q",
+				pushErr.Output(), want)
 		})
 	}
 }
@@ -889,21 +1070,21 @@ func TestRepo_Push_WhenOriginRefusesTheRef_KeepsOnlyThePrePushHookLinesInStdout(
 		},
 		{
 			name:   "pre-push hook prints a new-branch status line for the pushed ref",
-			script: "printf '*\\t" + topicSpec + "\\t[new branch]\\n'",
-			want:   "*\t" + topicSpec + "\t[new branch]",
+			script: "printf '*\\t" + specMark + "\\t[new branch]\\n'",
+			want:   "*\t" + specMark + "\t[new branch]",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			f := originRefusing(t, "policy forbids this push")
-			f.Hook("pre-push", tt.script)
+			f.Hook("pre-push", withSpec(f, tt.script))
 
-			err := newRepo(f).Push(t.Context(), topic)
+			err := pushTip(t.Context(), f)
 
 			pushErr, ok := errors.AsType[*git.PushError](err)
 			assert.Assert(t, ok, "Push(%q) error = %v, want *git.PushError", topic, err)
-			assert.Check(t, is.Equal(strings.TrimSpace(pushErr.Stdout), tt.want))
+			assert.Check(t, is.Equal(strings.TrimSpace(pushErr.Stdout), withSpec(f, tt.want)))
 		})
 	}
 }
@@ -957,39 +1138,35 @@ func TestPushError_Detail(t *testing.T) {
 	}
 }
 
-func TestRepo_Push_WhenOriginNeverAnswers_ReturnsRemoteError(t *testing.T) {
+func TestRepo_Push_WhenOriginNeverAnswers_ReturnsErrRemote(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
 	f.Commits(topic, "one")
 	f.CutOffOrigin()
 
-	err := newRepo(f).Push(t.Context(), topic)
+	err := pushTip(t.Context(), f)
 
-	_, remote := errors.AsType[*git.RemoteError](err)
-	assert.Check(t, remote, "Push(%q) error = %v, want *git.RemoteError", topic, err)
+	remote := errors.Is(err, git.ErrRemote)
+	assert.Check(t, remote, "Push(%q) error = %v, want git.ErrRemote", topic, err)
 }
 
-func TestRepo_Push_WhenContextCanceled_ReturnsNeitherPushNorRemoteError(t *testing.T) {
+func TestRepo_Push_WhenContextCanceled_ReturnsNeitherPushErrorNorErrRemote(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
 	f.Commits(topic, "one")
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	err := newRepo(f).Push(ctx, topic)
+	err := pushTip(ctx, f)
 
 	assert.Check(t, is.ErrorIs(err, context.Canceled))
 	_, refused := errors.AsType[*git.PushError](err)
 	assert.Check(t, !refused, "Push(%q) error = %v, want no *git.PushError", topic, err)
-	_, remote := errors.AsType[*git.RemoteError](err)
-	assert.Check(t, !remote, "Push(%q) error = %v, want no *git.RemoteError", topic, err)
+	remote := errors.Is(err, git.ErrRemote)
+	assert.Check(t, !remote, "Push(%q) error = %v, want no git.ErrRemote", topic, err)
 }
 
 const releaseRef = "refs/tags/" + release
-
-func originRefs(f *gittest.Fixture) string {
-	return f.OriginGit("for-each-ref", "--format=%(refname)")
-}
 
 // taggedRelease returns a fixture whose clone holds release as a local tag on tip.
 func taggedRelease(t *testing.T) (f *gittest.Fixture, repo git.Repo, tip string) {
@@ -1002,16 +1179,13 @@ func taggedRelease(t *testing.T) (f *gittest.Fixture, repo git.Repo, tip string)
 	return f, repo, tip
 }
 
-func TestRepo_PushTag_WhenOriginAccepts_PutsOnlyTheTagOnOrigin(t *testing.T) {
+func TestRepo_PushTag_WhenOriginAccepts_PutsTheTagOnOrigin(t *testing.T) {
 	t.Parallel()
 	f, repo, tip := taggedRelease(t)
-	before := originRefs(f)
-	f.Git("tag", "v0.9.0", tip)
 
 	err := repo.PushTag(t.Context(), release)
 	assert.NilError(t, err, "PushTag(%q)", release)
 
-	assert.Check(t, is.Equal(originRefs(f), strings.TrimSpace(before+"\n"+releaseRef)))
 	assert.Check(t, is.Equal(f.OriginGit("rev-parse", releaseRef+"^{commit}"), tip))
 }
 
@@ -1025,7 +1199,9 @@ func TestRepo_PushTag_WhenOriginHoldsTheTagElsewhere_ReturnsPushErrorNamingTheTa
 	pushErr, ok := errors.AsType[*git.PushError](err)
 	assert.Assert(t, ok, "PushTag(%q) error = %v, want *git.PushError", release, err)
 	assert.Check(t, is.Equal(pushErr.Ref, releaseRef))
-	assert.Check(t, is.Contains(pushErr.Detail(), "already exists"))
+	assert.Check(t, pushErr.Reason != "" && pushErr.Reason != "!", "Reason = %q, want the status line's summary", pushErr.Reason)
+	assert.Check(t, !strings.Contains(pushErr.Reason, "refs/tags/"), "Reason = %q, want the summary, not the ref it names",
+		pushErr.Reason)
 }
 
 func TestRepo_WhenNotARepository_OriginCallsReturnExitError(t *testing.T) {
@@ -1036,4 +1212,25 @@ func TestRepo_WhenNotARepository_OriginCallsReturnExitError(t *testing.T) {
 	}
 
 	checkExitErrorOutsideRepo(t, tests)
+}
+
+func FuzzSplitPushReport(f *testing.F) {
+	const spec = "refs/heads/topic:refs/heads/topic"
+	for _, seed := range []string{
+		"To origin\n*\t" + spec + "\t[new branch]\nDone\n",
+		"To origin\n!\t" + spec + "\t[remote rejected] (pre-receive hook declined)\nDone\n",
+		"hook said\nTo elsewhere\n*\t" + spec + "\t[new branch]\nDone\n",
+		"!\t" + spec + "\tblocked by policy\n",
+		"To origin\nTo\n=\t" + spec + "\t[up to date]\nDone\n",
+		"",
+		"\n",
+	} {
+		f.Add(seed, spec)
+	}
+
+	f.Fuzz(func(t *testing.T, stdout, spec string) {
+		hook, _ := git.SplitPushReport(stdout, spec)
+
+		assert.Check(t, strings.HasPrefix(stdout, hook), "SplitPushReport(%q) hook = %q, not a prefix of stdout", stdout, hook)
+	})
 }

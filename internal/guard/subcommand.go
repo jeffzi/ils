@@ -45,13 +45,30 @@ type subcommandOptions struct {
 // the subcommand it names or starts, or its own name when it starts none or several.
 type longOption struct {
 	name string
+	// known reports whether name is the whole name of an option of the subcommand, which git reads
+	// as that option and no other, even when it starts a longer one (`--cruft`, not
+	// `--cruft-expiration`).
+	known bool
 	// attached reports whether a value follows the name after `=`.
 	attached bool
+	// after counts the short option letters git read before this option.
+	after int
 }
 
-// startsOf reports whether the option's name is long or a start of it, which git reads as long.
+// startsOf reports whether git reads the option as long: an option of the subcommand when it is
+// long itself, and any other when it is long or a start of it.
 func (l longOption) startsOf(long string) bool {
+	if l.known {
+		return l.name == long
+	}
+
 	return strings.HasPrefix(long, l.name)
+}
+
+// abbreviates reports whether name is long or a start of it at least shortest bytes long, which git
+// reads as long.
+func abbreviates(name, long string, shortest int) bool {
+	return len(name) >= shortest && strings.HasPrefix(long, name)
 }
 
 // knownOptions is the options of a subcommand the guard knows. git reads the value of one that
@@ -60,8 +77,7 @@ func (l longOption) startsOf(long string) bool {
 type knownOptions struct {
 	// short holds, by the name of a long option without the leading `--`, the letter of the short
 	// option that spells it too.
-	short map[string]byte
-	// valuedLetters holds the short options that take a value.
+	short         map[string]byte
 	valuedLetters string
 	// values and flags hold the names of the long options that take a value and of those that
 	// take none, without the leading `--`.
@@ -125,6 +141,10 @@ config -ft
 	[no-]type= bool int bool-or-int bool-or-str path expiry-date [no-]default= [no-]comment=
 	[no-]fixed-value [no-]includes [no-]all [no-]regexp [no-]value= [no-]url= [no-]append
 
+difftool -tx
+	[no-]gui [no-]dir-diff no-prompt prompt [no-]symlinks [no-]tool= [no-]tool-help
+	[no-]trust-exit-code [no-]extcmd= no-index index
+
 gc
 	[no-]quiet [no-]prune [no-]cruft max-cruft-size= [no-]aggressive [no-]auto [no-]detach
 	[no-]force [no-]keep-largest-pack [no-]expire-to= [no-]skip-foreground-tasks
@@ -152,6 +172,11 @@ push -o
 	[no-]recurse-submodules= [no-]thin [no-]receive-pack= [no-]exec= [no-]set-upstream [no-]progress
 	[no-]prune no-verify verify [no-]follow-tags [no-]signed [no-]atomic [no-]push-option= ipv4 ipv6
 
+read-tree
+	[no-]super-prefix= index-output= [no-]empty [no-]verbose [no-]trivial [no-]aggressive [no-]reset
+	prefix= exclude-per-directory= [no-]dry-run no-sparse-checkout sparse-checkout [no-]debug-unpack
+	[no-]recurse-submodules [no-]quiet
+
 rebase -CxsX
 	[no-]onto= [no-]keep-base no-verify verify [no-]quiet [no-]verbose no-stat stat [no-]trailer=
 	[no-]signoff [no-]committer-date-is-author-date [no-]reset-author-date [no-]ignore-date
@@ -160,6 +185,13 @@ rebase -CxsX
 	empty= [no-]keep-empty [no-]autosquash [no-]update-refs [no-]gpg-sign [no-]autostash [no-]exec=
 	[no-]allow-empty-message [no-]rebase-merges [no-]fork-point [no-]strategy= [no-]strategy-option=
 	[no-]root [no-]reschedule-failed-exec [no-]reapply-cherry-picks
+
+repack -g
+	[no-]cruft [no-]cruft-expiration= combine-cruft-below-size= max-cruft-size=
+	[no-]name-hash-version= [no-]path-walk [no-]quiet [no-]local [no-]write-bitmap-index
+	[no-]delta-islands [no-]unpack-unreachable= [no-]keep-unreachable [no-]window= [no-]window-memory=
+	[no-]depth= [no-]threads= max-pack-size= [no-]filter= [no-]pack-kept-objects [no-]keep-pack=
+	[no-]geometric= [no-]write-midx [no-]expire-to= [no-]filter-to=
 
 restore -sU
 	[no-]source= [no-]staged [no-]worktree [no-]ignore-unmerged [no-]overlay [no-]quiet
@@ -190,6 +222,9 @@ switch -cC
 
 symbolic-ref -m
 	[no-]quiet [no-]delete [no-]short [no-]recurse
+
+update-ref -m
+	no-deref deref [no-]stdin [no-]create-reflog [no-]batch-updates
 `
 
 // cspell:enable
@@ -260,14 +295,18 @@ func (k knownOptions) resolve(name string) (option string, valued, ambiguous boo
 	}
 
 	values, flags := startedBy(k.values, bare), startedBy(k.flags, bare)
-	switch {
-	case len(values)+len(flags) == 1:
+	if len(values)+len(flags) == 1 {
 		return "--" + slices.Concat(values, flags)[0], len(values) == 1, false
-	case len(values) > 0:
-		return name, false, true
 	}
 
-	return name, false, false
+	return name, false, len(values) > 0
+}
+
+// has reports whether option, with its leading `--`, is the whole name of one of the options.
+func (k knownOptions) has(option string) bool {
+	bare, ok := strings.CutPrefix(option, "--")
+
+	return ok && (slices.Contains(k.values, bare) || slices.Contains(k.flags, bare))
 }
 
 func startedBy(names []string, prefix string) []string {
@@ -300,10 +339,10 @@ func readArgs(args []Word, known knownOptions) subcommandOptions {
 				i++
 			}
 		case strings.HasPrefix(text, "-") && text != "-":
-			valued, taken := o.readBundle(text[1:], w.Literal, known.valuedLetters)
-			opaqueBundle := !w.Literal && !valued
+			takes, next := o.readBundle(text[1:], w.Literal, known.valuedLetters)
+			opaqueBundle := !w.Literal && !takes
 			o.unreadable = o.unreadable || opaqueBundle
-			if taken {
+			if next {
 				i++
 			}
 		case !w.Literal:
@@ -330,7 +369,7 @@ func (o *subcommandOptions) readLong(w Word, known knownOptions) (next bool) {
 
 	option, valued, ambiguous := known.resolve(name)
 	o.unreadable = o.unreadable || ambiguous
-	o.long = append(o.long, longOption{name: option, attached: attached})
+	o.long = append(o.long, longOption{name: option, known: known.has(option), attached: attached, after: len(o.letters)})
 
 	return !attached && valued
 }
@@ -347,6 +386,37 @@ func (o *subcommandOptions) readBundle(letters string, literal bool, valuedLette
 	}
 
 	return false, false
+}
+
+// isShortBundle reports whether the text t is a bundle of short options: a single dash and at
+// least one letter.
+func isShortBundle(t string) bool {
+	return len(t) >= 2 && t[0] == '-' && t[1] != '-'
+}
+
+// shortValue returns the value of the short option letter in the bundle w, reading the bundle's
+// letters up to the first of valued, the short options that take a value: that letter takes the
+// rest of the bundle as its value, so no later letter is an option. ok is false when the bundle
+// does not set letter. attached is false when the value is the next word: letter ends a bundle
+// that is a literal. A bundle that is not a literal holds its literal prefix, and its value is not
+// a literal either.
+func shortValue(w Word, letter byte, valued string) (value Word, ok, attached bool) {
+	t := w.Text
+	if !isShortBundle(t) {
+		return Word{}, false, false
+	}
+
+	for i := 1; i < len(t); i++ {
+		if t[i] == letter {
+			return Word{Text: t[i+1:], Literal: w.Literal}, true, i+1 < len(t) || !w.Literal
+		}
+
+		if strings.IndexByte(valued, t[i]) >= 0 {
+			break
+		}
+	}
+
+	return Word{}, false, false
 }
 
 // rebaseBranch returns the branch operand of `git rebase` given args, the branch it switches to
@@ -376,6 +446,27 @@ func (o subcommandOptions) sets(letter byte, long string) bool {
 	}
 
 	return long != "" && slices.ContainsFunc(o.long, func(l longOption) bool { return l.startsOf(long) })
+}
+
+// setsLast reports whether the last of the short option letter, the long option long and its
+// negation that the options hold is letter or long, the one git honors. A long option counts in
+// its started forms too, and a start of both long and negation counts as negation.
+func (o subcommandOptions) setsLast(letter byte, long, negation string) bool {
+	letterAt := strings.LastIndexByte(o.letters, letter)
+	for _, l := range slices.Backward(o.long) {
+		if l.after <= letterAt {
+			break
+		}
+
+		switch {
+		case l.startsOf(negation):
+			return false
+		case l.startsOf(long):
+			return true
+		}
+	}
+
+	return letterAt >= 0
 }
 
 // opaque reports whether the options hold an argument the guard cannot read: one outside a value

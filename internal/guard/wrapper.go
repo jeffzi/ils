@@ -7,13 +7,15 @@ import (
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
+
+	"github.com/jeffzi/ils/internal/git"
 )
 
 // seeThrough returns the index in words of the command that the wrappers opening words run, and
 // what those wrappers set on its invocation: their names, the `VAR=…` arguments of an `env` among
 // them, and the environment its options clear or remove. A wrapper with nothing after it is the
 // command itself.
-func seeThrough(args []*syntax.Word, words []Word, home string) (int, Invocation) {
+func seeThrough(args []*syntax.Word, words []Word, ex expander) (int, Invocation) {
 	start := 0
 	var inv Invocation
 	for start < len(words) && words[start].Literal && !isLookup(words[start:]) {
@@ -27,7 +29,7 @@ func seeThrough(args []*syntax.Word, words []Word, home string) (int, Invocation
 		n, given := skipOptions(words[start+1:], options)
 		start += 1 + n
 		if name == "env" {
-			start += envArguments(&inv, given, args[start:], home)
+			start += envArguments(&inv, given, args[start:], ex)
 		}
 	}
 
@@ -40,18 +42,18 @@ func seeThrough(args []*syntax.Word, words []Word, home string) (int, Invocation
 
 // envArguments records on inv what an `env` wrapper does to the environment: the options given to
 // it, then its `VAR=…` arguments at the start of args. It returns how many of args those are.
-func envArguments(inv *Invocation, given []option, args []*syntax.Word, home string) int {
-	for _, option := range given {
-		switch option.letter {
+func envArguments(inv *Invocation, given []option, args []*syntax.Word, ex expander) int {
+	for _, opt := range given {
+		switch opt.letter {
 		case 'i':
 			inv.env = append(inv.env, envChange{clear: true})
 		case 'u':
-			inv.env = append(inv.env, envChange{unset: option.value})
+			inv.env = append(inv.env, envChange{unset: opt.value})
 		}
 	}
 
 	for i, arg := range args {
-		a, ok := envAssignment(arg, home)
+		a, ok := envAssignment(arg, ex)
 		if !ok {
 			return i
 		}
@@ -63,7 +65,8 @@ func envArguments(inv *Invocation, given []option, args []*syntax.Word, home str
 	return len(args)
 }
 
-// wrapperOptions are the options a wrapper takes before the command it runs.
+// wrapperOptions are the options a wrapper takes before the command it runs, and whether it runs
+// that command in the current shell.
 type wrapperOptions struct {
 	// flags are the option letters that take no value.
 	flags string
@@ -73,6 +76,9 @@ type wrapperOptions struct {
 	numeric bool
 	// none reports whether the wrapper takes no option at all, not even `--`.
 	none bool
+	// inShell reports whether the wrapper runs the command after it in the current shell, so that a
+	// `cd` or `eval` behind it changes the shell. Every other wrapper starts a program of its own.
+	inShell bool
 }
 
 // option is one option letter given to a wrapper, with its value when it takes one.
@@ -88,17 +94,38 @@ type option struct {
 func wrapperOptionsOf(name string) (wrapperOptions, bool) {
 	options, ok := map[string]wrapperOptions{
 		"env":       {flags: "i", valued: "u"},
-		"command":   {flags: "p"},
+		"command":   {flags: "p", inShell: true},
 		"exec":      {flags: "cl", valued: "a"},
 		"nice":      {valued: "n", numeric: true},
-		"time":      {flags: "p"},
-		"builtin":   {},
+		"time":      {flags: "p", inShell: true},
+		"builtin":   {inShell: true},
 		"nohup":     {},
-		"noglob":    {none: true},
-		"nocorrect": {none: true},
+		"noglob":    {none: true, inShell: true},
+		"nocorrect": {none: true, inShell: true},
 	}[name]
 
 	return options, ok
+}
+
+// readsCommand reports whether the guard reads the command word name: `cd`, `pushd`, `popd`, or a
+// wrapper it sees through.
+func readsCommand(name string) bool {
+	_, wrapper := wrapperOptionsOf(name)
+
+	return wrapper || slices.Contains([]string{"cd", "pushd", "popd"}, name)
+}
+
+// runsInShell reports whether every one of wrappers runs the command after it in the current shell,
+// so that a `cd` or `eval` behind them changes the shell. Every other wrapper starts a program of
+// its own.
+func runsInShell(wrappers []string) bool {
+	for _, wrapper := range wrappers {
+		if options, _ := wrapperOptionsOf(wrapper); !options.inShell {
+			return false
+		}
+	}
+
+	return true
 }
 
 // skipOptions returns how many of words, the words after a wrapper, are options it takes, and the
@@ -154,14 +181,14 @@ func optionLetters(letters string, next []Word, options wrapperOptions) ([]optio
 }
 
 // envAssignment reads raw as an `env` argument of the form `NAME=value`.
-func envAssignment(raw *syntax.Word, home string) (Assignment, bool) {
+func envAssignment(raw *syntax.Word, ex expander) (Assignment, bool) {
 	lit, ok := raw.Parts[0].(*syntax.Lit)
 	if !ok {
 		return Assignment{}, false
 	}
 
 	name, rest, found := strings.Cut(lit.Value, "=")
-	if !found || !isName(name) {
+	if !found || !git.IsName(name) {
 		return Assignment{}, false
 	}
 
@@ -170,21 +197,5 @@ func envAssignment(raw *syntax.Word, home string) (Assignment, bool) {
 		parts = slices.Insert(parts, 0, syntax.WordPart(&syntax.Lit{Value: rest}))
 	}
 
-	if len(parts) == 0 {
-		return Assignment{Name: name, Value: Word{Literal: true}}, true
-	}
-
-	return Assignment{Name: name, Value: readWord(&syntax.Word{Parts: parts}, home)}, true
-}
-
-func isName(s string) bool {
-	for i, c := range s {
-		letter := c == '_' || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z')
-		digit := '0' <= c && c <= '9'
-		if !letter && (i == 0 || !digit) {
-			return false
-		}
-	}
-
-	return s != ""
+	return Assignment{Name: name, Value: readWord(&syntax.Word{Parts: parts}, ex)}, true
 }

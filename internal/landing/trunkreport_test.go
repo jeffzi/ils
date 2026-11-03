@@ -2,7 +2,6 @@ package landing_test
 
 import (
 	"errors"
-	"strings"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -11,9 +10,10 @@ import (
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
 	"github.com/jeffzi/ils/internal/gittest"
+	"github.com/jeffzi/ils/internal/result"
 )
 
-const standingTrunk = "trunk"
+const standingTrunk result.Standing = "trunk"
 
 // ruledBy is viewing with no pull request found, and a trunk whose rules stand as rules says.
 func ruledBy(rules forge.RulesState) forgeFor {
@@ -159,7 +159,7 @@ func TestStatus_WhenOnTheTrunk_ReportsWhetherOriginsTrunkTipIsAReleaseCommit(t *
 type protectionRow struct {
 	name  string
 	rules forge.RulesState
-	want  string
+	want  result.Protection
 }
 
 func TestStatus_WhenOnTheTrunk_ReportsWhetherRulesProtectIt(t *testing.T) {
@@ -196,17 +196,7 @@ func TestStatus_WhenOnTheTrunkAndTheRulesReadFails_ReportsTheFailedReadBesideThe
 	assertSays(t, got.text, expect(readRules, forgeFailure))
 	assert.Assert(t, is.Len(got.status.Unread, 1))
 	assert.Check(t, is.Equal(got.status.Unread[0].Read, readRules))
-}
-
-func TestStatus_WhenOnTheTrunk_EndsOnStartingABranch(t *testing.T) {
-	t.Parallel()
-	s := statusScene(t, standOnTrunk, ruledBy(forge.RulesProtect))
-
-	got := seeStatus(t, s, (*testing.T).Context)
-
-	_, next, found := strings.Cut(got.text, "Next:")
-	assert.Check(t, found, "text %q, want a Next: line", got.text)
-	assertSays(t, next, nextBranch())
+	assert.Check(t, is.Equal(got.status.LastTag, "v1.10.0"))
 }
 
 func TestStatus_WhenOnTheTrunkAndGhIsMissing_StillReportsWhatGitTells(t *testing.T) {

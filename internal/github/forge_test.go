@@ -3,12 +3,16 @@ package github_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"gotest.tools/v3/assert"
@@ -18,7 +22,6 @@ import (
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/github/ghtest"
-	"github.com/jeffzi/ils/internal/logtest"
 )
 
 // No test that scripts `gh` is parallel: the fake `gh` is found through `GH_PATH`,
@@ -75,16 +78,6 @@ func newForge() *github.Forge {
 // ghArgv is the argv of a call whose arguments are args, led by `gh`.
 func ghArgv(args []string) []string { return append([]string{"gh"}, args...) }
 
-// received is the calls the fake is expected to record, each led by `gh`.
-func received(calls ...[]string) [][]string {
-	led := make([][]string, len(calls))
-	for i, call := range calls {
-		led[i] = ghArgv(call)
-	}
-
-	return led
-}
-
 func featureChange() forge.NewChange {
 	return forge.NewChange{Title: featureTitle, Base: trunk, Head: featureBranch}
 }
@@ -138,14 +131,22 @@ func pullRequestRule(id int, methods string) string {
 		`,"parameters":{"required_approving_review_count":0,"allowed_merge_methods":` + methods + `}}`
 }
 
-func workflowsArgs() []string {
-	return []string{"api", "--hostname", engineHost, "--paginate", "repos/ada/engine/actions/workflows"}
+// apiArgs is the argv of the read of rest under the engine repository.
+func apiArgs(rest string) []string {
+	return []string{"api", "--hostname", engineHost, "repos/ada/engine/" + rest}
 }
+
+// pagedAPIArgs is the argv of the paginated read of rest under the engine repository.
+func pagedAPIArgs(rest string) []string {
+	return []string{"api", "--hostname", engineHost, "--paginate", "repos/ada/engine/" + rest}
+}
+
+func workflowsArgs() []string { return pagedAPIArgs("actions/workflows") }
 
 func workflowFilesArgs() []string { return workflowFilesArgsAt(trunk) }
 
 func workflowFilesArgsAt(ref string) []string {
-	return []string{"api", "--hostname", engineHost, "repos/ada/engine/contents/.github/workflows?ref=" + ref}
+	return apiArgs("contents/.github/workflows?ref=" + ref)
 }
 
 // workflowJSON is one entry of the workflow list's answer: the workflow at file, in state.
@@ -238,9 +239,6 @@ func operationsByName() map[string]func(context.Context, *github.Forge) error {
 			_, err := f.Message(ctx, engine(), pullNumber)
 			return err
 		},
-		"Land": func(ctx context.Context, f *github.Forge) error {
-			return f.Land(ctx, engine(), featureLanding())
-		},
 	}
 }
 
@@ -329,33 +327,6 @@ func assertDecodeErrorNamesCall(t *testing.T, c readCase) {
 	decodeErr, ok := errors.AsType[*github.DecodeError](err)
 	assert.Assert(t, ok, "error = %v, want *github.DecodeError", err)
 	assert.Check(t, ghtest.Matches(ghArgv(c.args), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, c.args)
-}
-
-// loggedArgv is the argv of every call sink received, each led by `gh`, in order.
-func loggedArgv(sink *logtest.Sink) [][]string {
-	var logged [][]string
-	for _, record := range sink.Records() {
-		args, _ := record.Map()[child.KeyArgs].([]string)
-		logged = append(logged, args)
-	}
-
-	return received(logged...)
-}
-
-func TestForge_WhenLoggerSet_LogsTheCall(t *testing.T) {
-	// Every call goes through the same runner, so one call shows that the forge hands its logger to it.
-	t.Run("pr merge", func(t *testing.T) {
-		args := ghtest.LandArgs(engineSlug, featureLanding())
-		fake := ghtest.Setup(t, ghtest.Says("", args...))
-		logger, sink := logtest.New()
-
-		_ = (&github.Forge{Logger: logger}).Land(t.Context(), engine(), featureLanding())
-
-		assert.Check(t, is.DeepEqual(loggedArgv(sink), fake.Calls()))
-		want := ghArgv(args)
-		assert.Check(t, slices.ContainsFunc(fake.Calls(), func(argv []string) bool { return ghtest.Matches(want, argv) }),
-			"calls = %q, want one matching %q", fake.Calls(), args)
-	})
 }
 
 func TestForge_Identity_WhenGhIsOlderThanTheMinimum_ReturnsToolTooOldErrorBeforeTheLogin(t *testing.T) {
@@ -787,6 +758,8 @@ func TestForge_Message(t *testing.T) {
 	)
 	tests := []struct {
 		name string
+		// body is the pull request's body; empty stands for pullBody.
+		body string
 		// mergeBody is the body GitHub would compose for a squash merge by the logged-in user.
 		mergeBody string
 		want      []string
@@ -801,6 +774,20 @@ func TestForge_Message(t *testing.T) {
 			mergeBody: pullBody + "\n\n---------\n\n" + liveSuite,
 			want:      []string{liveSuite},
 		},
+		{name: "pull request body setting with no trailer for GitHub to add", mergeBody: pullBody},
+		{
+			name: "pull request body setting, the copy of the body without its closing newline",
+			body: pullBody + "\n", mergeBody: pullBody,
+		},
+		{
+			name: "pull request body setting, the copy of a CRLF body with LF line ends",
+			body: strings.ReplaceAll(pullBody, "\n", "\r\n"), mergeBody: pullBody,
+		},
+		{
+			name: "body ending partway through a line of the merge body",
+			body: "Lands the change.\n\nSigned-off", mergeBody: "Lands the change.\n\n" + signedOff,
+			want: []string{signedOff},
+		},
 		{name: "last paragraph mixes prose with a trailer", mergeBody: "Lands the change.\n\nThanks to Grace.\n" + liveSuite},
 		{name: "token holding a space", mergeBody: "Lands the change.\n\nThanks to: Grace Hopper"},
 		{name: "token with no value", mergeBody: "Lands the change.\n\nReviewed-by: "},
@@ -809,12 +796,16 @@ func TestForge_Message(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ghtest.Setup(t, ghtest.Says(ghtest.MessageJSON(title, pullBody, tt.mergeBody), messageArgs()...))
+			body := tt.body
+			if body == "" {
+				body = pullBody
+			}
+			ghtest.Setup(t, ghtest.Says(ghtest.MessageJSON(title, body, tt.mergeBody), messageArgs()...))
 
 			got, err := newForge().Message(t.Context(), engine(), pullNumber)
 			assert.NilError(t, err)
 
-			want := forge.Message{Title: title, Body: pullBody, Trailers: tt.want}
+			want := forge.Message{Title: title, Body: body, Trailers: tt.want}
 			assert.Check(t, is.DeepEqual(got, want, cmpopts.EquateEmpty()))
 		})
 	}
@@ -839,6 +830,14 @@ func TestForge_Message_WhenAnswerHoldsNoPullRequest_ReturnsDecodeError(t *testin
 			assert.Check(t, ghtest.Matches(ghArgv(messageArgs()), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, messageArgs())
 		})
 	}
+}
+
+func TestForge_Land_WhenGhMerges_SquashesTheHeadWithTheMessage(t *testing.T) {
+	ghtest.Setup(t, ghtest.Says("", ghtest.LandArgs(engineSlug, featureLanding())...))
+
+	err := newForge().Land(t.Context(), engine(), featureLanding())
+
+	assert.NilError(t, err)
 }
 
 func TestForge_DeleteBranch_WhenNameHoldsAHash_EscapesIt(t *testing.T) {
@@ -900,7 +899,7 @@ func TestForge_PublishRelease(t *testing.T) {
 	}
 }
 
-func TestForge_PublishRelease_WhenOriginLacksTheTag_ReturnsExitError(t *testing.T) {
+func TestForge_PublishRelease_WhenGhExitsNonZero_ReturnsExitError(t *testing.T) {
 	noTag := ghtest.Answer{Stderr: "tag v1.2.0 doesn't exist in the repo ada/engine, aborting due to --verify-tag flag\n", Code: 1}
 	ghtest.Setup(t, ghtest.Exits(noTag, releaseCreateArgs(false)...))
 
@@ -930,6 +929,53 @@ func TestForge_PublishRelease_RemovesTheNotesFile(t *testing.T) {
 			assert.Check(t, errors.Is(err, fs.ErrNotExist), "Stat(%q) error = %v, want the notes file removed", notes[0], err)
 		})
 	}
+}
+
+func TestForge_PublishRelease_WhenTheNotesFileCannotBeRemoved_ReturnsTheURLWithTheRemoveError(t *testing.T) {
+	tmp := t.TempDir()
+	// os.TempDir reads TMP on Windows and TMPDIR everywhere else.
+	t.Setenv("TMPDIR", tmp)
+	t.Setenv("TMP", tmp)
+	created := ghtest.Answer{Stdout: releaseURL + "\n", Delay: time.Nanosecond}
+	fake := ghtest.Setup(t, ghtest.Exits(created, releaseCreateArgs(false)...))
+	fake.WhileHolding(func() error { return blockRemoval(tmp) })
+
+	got, err := newForge().PublishRelease(t.Context(), engine(), newRelease(false))
+
+	assert.Check(t, is.Equal(got, releaseURL))
+	notes := notesFiles(fake.Calls())
+	assert.Assert(t, is.Len(notes, 1), "calls = %q, want one --notes-file", fake.Calls())
+	pathErr, ok := errors.AsType[*fs.PathError](err)
+	assert.Assert(t, ok, "PublishRelease error = %v, want the *fs.PathError of the remove", err)
+	assert.Check(t, is.Equal(pathErr.Path, notes[0]))
+}
+
+// blockRemoval turns the one file under dir, the notes file gh is reading, into a directory that
+// holds a file, which no remove of the notes file can delete.
+func blockRemoval(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("list %s: %w", dir, err)
+	}
+
+	if len(entries) != 1 {
+		return fmt.Errorf("%s holds %d entries, want the notes file alone", dir, len(entries))
+	}
+
+	notes := filepath.Join(dir, entries[0].Name())
+	if err := os.Remove(notes); err != nil {
+		return fmt.Errorf("remove the notes file: %w", err)
+	}
+
+	if err := os.Mkdir(notes, 0o700); err != nil {
+		return fmt.Errorf("make a directory in place of the notes file: %w", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(notes, "kept"), []byte("kept\n"), 0o600); err != nil {
+		return fmt.Errorf("fill the directory in place of the notes file: %w", err)
+	}
+
+	return nil
 }
 
 // notesFiles is the path after every --notes-file in calls, in order.

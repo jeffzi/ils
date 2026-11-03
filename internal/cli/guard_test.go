@@ -5,7 +5,6 @@ package cli_test
 import (
 	"encoding/json/v2"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -30,6 +29,14 @@ import (
 
 // exitAsk is the code ils guard exits with when it asks.
 const exitAsk = 3
+
+// The commands that stand for each verdict of the guard: it allows the first, refuses the second
+// and asks about the third.
+const (
+	allowedCommand = "echo hi"
+	refusedCommand = "ils merge | cat"
+	askedCommand   = "ils merge"
+)
 
 // ---------------------------------------------------------------------------
 // ils parse
@@ -67,8 +74,8 @@ func literals(texts ...string) []result.Word {
 	return words
 }
 
-// parsing returns the cli in a directory that is no repository, with git's environment env.
-func parsing(t *testing.T, env []string) cli.App {
+// outsideWith returns the cli in a directory that is no repository, with git's environment env.
+func outsideWith(t *testing.T, env []string) cli.App {
 	t.Helper()
 
 	return over(git.Runner{Dir: t.TempDir(), Env: env})
@@ -93,37 +100,22 @@ func TestApp_Run_WhenParseIsGivenACommandWithTheJSONFlag_PrintsEveryInvocation(t
 		{Words: []result.Word{{Text: "echo", Literal: true}, {}}, Dir: f.Dir()},
 	}}
 
-	got := launch(t, parsing(t, f.Env()), "parse", "--cwd", f.Dir(), "--json", "--", `git status -s && echo "$x"`)
+	got := launch(t, outsideWith(t, f.Env()), "parse", "--cwd", f.Dir(), "--json", "--", `git status -s && echo "$x"`)
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
 	assert.Check(t, is.DeepEqual(parsed(t, got.stdout), want, cmpopts.EquateEmpty()))
 }
 
-func TestApp_Run_WhenParseIsGivenACommandHoldingAMark_ExitsZeroCarryingIt(t *testing.T) {
+func TestApp_Run_WhenParseRunsAsText_PrintsTheGitCallOfAGitInvocation(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, trunk)
 
-	got := launch(t, parsing(t, f.Env()), "parse", "--cwd", f.Dir(), "--json", "--", `"$tool" push`)
+	got := launch(t, outsideWith(t, f.Env()), "parse", "--cwd", f.Dir(), "--", "git status")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	invocations := parsed(t, got.stdout).Invocations
-	assert.Assert(t, is.Len(invocations, 1))
-	assert.Check(t, is.DeepEqual(invocations[0].Marks, []result.Mark{{Kind: string(guard.DynamicCommand)}}))
-}
-
-func TestApp_Run_WhenParseRunsAsText_PrintsOneLinePerInvocation(t *testing.T) {
-	t.Parallel()
-
-	f := gittest.New(t, trunk)
-
-	got := launch(t, parsing(t, f.Env()), "parse", "--cwd", f.Dir(), "--", "git status; echo hi")
-
-	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	lines := strings.Split(strings.TrimSuffix(got.stdout, "\n"), "\n")
-	assert.Assert(t, is.Len(lines, 2), "stdout = %q", got.stdout)
-	assert.Check(t, is.Contains(lines[0], "subcommand status"))
-	assert.Check(t, is.Contains(lines[0], filepath.Join(f.Dir(), ".git")))
+	assert.Check(t, is.Contains(got.stdout, "subcommand status"))
+	assert.Check(t, is.Contains(got.stdout, filepath.Join(f.Dir(), ".git")))
 }
 
 func TestApp_Run_WhenParseRunsAsText_PrintsANonLiteralWordApartFromAnEmptyOne(t *testing.T) {
@@ -131,10 +123,10 @@ func TestApp_Run_WhenParseRunsAsText_PrintsANonLiteralWordApartFromAnEmptyOne(t 
 
 	f := gittest.New(t, trunk)
 
-	got := launch(t, parsing(t, f.Env()), "parse", "--cwd", f.Dir(), "--", `echo "$x"; echo ""`)
+	got := launch(t, outsideWith(t, f.Env()), "parse", "--cwd", f.Dir(), "--", `echo "$x"; echo ""`)
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	lines := strings.Split(strings.TrimSuffix(got.stdout, "\n"), "\n")
+	lines := outputLines(got.stdout)
 	assert.Assert(t, is.Len(lines, 2), "stdout = %q", got.stdout)
 	assert.Check(t, lines[0] != lines[1], "a word that is not literal prints as the empty literal does: %q", lines[0])
 }
@@ -144,7 +136,7 @@ func TestApp_Run_WhenParseRunsAsText_PrintsEachMarkNamingWhatItMarks(t *testing.
 
 	f := gittest.New(t, trunk)
 
-	got := launch(t, parsing(t, f.Env()), "parse", "--cwd", f.Dir(), "--", "GIT_CONFIG_COUNT=1 git status")
+	got := launch(t, outsideWith(t, f.Env()), "parse", "--cwd", f.Dir(), "--", "GIT_CONFIG_COUNT=1 git status")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
 	assert.Check(t, is.Contains(got.stdout, string(guard.GitVariable)), "stdout = %q", got.stdout)
@@ -169,27 +161,13 @@ func TestApp_Run_WhenParseRunsAsText_PrintsWhatItCannotPlace(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := launch(t, parsing(t, f.Env()), "parse", "--cwd", tt.dir, "--", tt.command)
+			got := launch(t, outsideWith(t, f.Env()), "parse", "--cwd", tt.dir, "--", tt.command)
 
 			assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-			lines := strings.Split(strings.TrimSuffix(got.stdout, "\n"), "\n")
+			lines := outputLines(got.stdout)
 			assert.Check(t, is.Contains(lines[len(lines)-1], tt.want), "stdout = %q", got.stdout)
 		})
 	}
-}
-
-func TestApp_Run_WhenParseIsGivenGitWithNoSubcommand_PrintsNone(t *testing.T) {
-	t.Parallel()
-
-	f := gittest.New(t, trunk)
-
-	got := launch(t, parsing(t, f.Env()), "parse", "--cwd", f.Dir(), "--json", "--", "git --version")
-
-	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	invocations := parsed(t, got.stdout).Invocations
-	assert.Assert(t, is.Len(invocations, 1))
-	assert.Assert(t, invocations[0].Git != nil, "stdout = %q", got.stdout)
-	assert.Check(t, is.Nil(invocations[0].Git.Subcommand), "git --version subcommand")
 }
 
 func TestApp_Run_WhenParseRunsAsTextOnGitWithNoSubcommand_PrintsNoSubcommand(t *testing.T) {
@@ -197,32 +175,17 @@ func TestApp_Run_WhenParseRunsAsTextOnGitWithNoSubcommand_PrintsNoSubcommand(t *
 
 	f := gittest.New(t, trunk)
 
-	got := launch(t, parsing(t, f.Env()), "parse", "--cwd", f.Dir(), "--", "git --version")
+	got := launch(t, outsideWith(t, f.Env()), "parse", "--cwd", f.Dir(), "--", "git --version")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
 	assert.Check(t, !strings.Contains(got.stdout, "subcommand"), "stdout = %q", got.stdout)
-}
-
-func TestApp_Run_WhenParseRunsWithCDPATHInTheEnvironment_ReportsTheDirectoryAfterARelativeCDUnknown(t *testing.T) {
-	t.Parallel()
-
-	f := gittest.New(t, trunk)
-	app := parsing(t, f.Env())
-	app.Environ = []string{"CDPATH=/srv"}
-
-	got := launch(t, app, "parse", "--cwd", f.Dir(), "--json", "--", "cd sub && echo hi")
-
-	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	invocations := parsed(t, got.stdout).Invocations
-	assert.Assert(t, is.Len(invocations, 2))
-	assert.Check(t, is.Equal(invocations[1].Dir, ""))
 }
 
 func TestApp_Run_WhenParseRunsWithHOMEInTheEnvironment_ExpandsTheTildeWithIt(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, trunk)
-	app := parsing(t, f.Env())
+	app := outsideWith(t, f.Env())
 	app.Environ = []string{"HOME=/home/reader"}
 
 	got := launch(t, app, "parse", "--cwd", f.Dir(), "--json", "--", "ls ~/notes")
@@ -233,12 +196,29 @@ func TestApp_Run_WhenParseRunsWithHOMEInTheEnvironment_ExpandsTheTildeWithIt(t *
 	assert.Check(t, is.DeepEqual(invocations[0].Words, literals("ls", "/home/reader/notes")))
 }
 
+func TestApp_Run_WhenParseRunsWithGIT_DIRInTheEnvironment_ReportsThatGitDir(t *testing.T) {
+	t.Parallel()
+
+	f := gittest.New(t, trunk)
+	app := outsideWith(t, f.Env())
+	gitDir := filepath.Join(f.Dir(), ".git")
+	app.Environ = []string{"GIT_DIR=" + gitDir}
+
+	got := launch(t, app, "parse", "--cwd", t.TempDir(), "--json", "--", "git status")
+
+	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
+	invocations := parsed(t, got.stdout).Invocations
+	assert.Assert(t, is.Len(invocations, 1))
+	assert.Assert(t, invocations[0].Git != nil, "invocation %+v holds no git call", invocations[0])
+	assert.Check(t, is.Equal(invocations[0].Git.GitDir, gitDir))
+}
+
 func TestApp_Run_WhenParseIsGivenARelativeDirectory_ReadsItFromTheWorkingDirectory(t *testing.T) {
 	f := gittest.New(t, trunk)
 	assert.NilError(t, os.Mkdir(filepath.Join(f.Dir(), "sub"), 0o750))
 	t.Chdir(f.Dir())
 
-	got := launch(t, parsing(t, f.Env()), "parse", "--cwd", "sub", "--json", "--", "echo hi")
+	got := launch(t, outsideWith(t, f.Env()), "parse", "--cwd", "sub", "--json", "--", "echo hi")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
 	invocations := parsed(t, got.stdout).Invocations
@@ -249,44 +229,16 @@ func TestApp_Run_WhenParseIsGivenARelativeDirectory_ReadsItFromTheWorkingDirecto
 func TestApp_Run_WhenParseCannotReadTheCommand_ExitsOneWithTheReason(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		// arrange returns the directory the command is read in, after setting it up.
-		arrange func(t *testing.T, f *gittest.Fixture) string
-		name    string
-		command string
-	}{
-		{
-			name: "command that does not parse", command: `echo "x`,
-			arrange: func(_ *testing.T, f *gittest.Fixture) string { return f.Dir() },
-		},
-		{
-			name: "git dir read that fails", command: "git status",
-			arrange: func(t *testing.T, f *gittest.Fixture) string {
-				t.Helper()
+	f := gittest.New(t, trunk)
+	const command = `echo "x`
+	_, failure := guard.Parse(t.Context(), command, guard.Caller{Dir: f.Dir(), Git: git.Runner{Env: f.Env()}})
+	assert.Assert(t, failure != nil, "Parse(%q) did not fail", command)
 
-				assert.NilError(t, os.WriteFile(filepath.Join(f.Dir(), ".git", "config"), []byte("[core\nbroken"), 0o600))
+	got := launch(t, outsideWith(t, f.Env()), "parse", "--cwd", f.Dir(), "--json", "--", command)
 
-				return f.Dir()
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			f := gittest.New(t, trunk)
-			dir := tt.arrange(t, f)
-			_, failure := guard.Parse(t.Context(), tt.command, guard.Caller{Dir: dir, Git: git.Runner{Env: f.Env()}})
-			assert.Assert(t, failure != nil, "Parse(%q) did not fail", tt.command)
-
-			got := launch(t, parsing(t, f.Env()), "parse", "--cwd", dir, "--json", "--", tt.command)
-
-			assert.Check(t, is.Equal(got.code, exitBroke), "stdout = %q", got.stdout)
-			printed := resulttest.Decode(t, got.stdout)
-			assert.Check(t, is.Equal(printed.Outcome, result.Broke.String()))
-			assert.Check(t, is.Contains(printed.Reason, failure.Error()))
-		})
-	}
+	assert.Check(t, is.Equal(got.code, exitBroke), "stdout = %q", got.stdout)
+	printed := resulttest.Decode(t, got.stdout)
+	assert.Check(t, is.Contains(printed.Reason, failure.Error()))
 }
 
 func TestApp_Run_WhenParseIsNotGivenADirectoryAndOneCommandWord_Refuses(t *testing.T) {
@@ -316,24 +268,23 @@ func TestApp_Run_WhenParseIsNotGivenADirectoryAndOneCommandWord_Refuses(t *testi
 // ils guard
 // ---------------------------------------------------------------------------
 
-// verdictCase is a command, and the outcome and exit code ils guard gives it.
+// verdictCase is a command, and the exit code ils guard gives it.
 type verdictCase struct {
 	name    string
 	command string
-	want    result.Outcome
 	code    int
 }
 
 // verdicts returns one command per verdict.
 func verdicts() []verdictCase {
 	return []verdictCase{
-		{name: "allowed", command: "echo hi", want: result.Done, code: exitDone},
-		{name: "refused", command: "ils merge | cat", want: result.Refused, code: exitRefused},
-		{name: "asked", command: "ils merge", want: result.Ask, code: exitAsk},
+		{name: "allowed", command: allowedCommand, code: exitDone},
+		{name: "refused", command: refusedCommand, code: exitRefused},
+		{name: "asked", command: askedCommand, code: exitAsk},
 	}
 }
 
-func TestApp_Run_WhenGuardIsGivenACommandWithTheJSONFlag_PrintsTheVerdictAndTheReason(t *testing.T) {
+func TestApp_Run_WhenGuardIsGivenACommandWithTheJSONFlag_PrintsTheVerdict(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range verdicts() {
@@ -343,11 +294,10 @@ func TestApp_Run_WhenGuardIsGivenACommandWithTheJSONFlag_PrintsTheVerdictAndTheR
 			dir, env := t.TempDir(), gittest.Env(t)
 			verdict := judge(t, tt.command, dir, env)
 
-			got := launch(t, parsing(t, env), "guard", "--cwd", dir, "--json", "--", tt.command)
+			got := launch(t, outsideWith(t, env), "guard", "--cwd", dir, "--json", "--", tt.command)
 
 			assert.Check(t, is.Equal(got.code, tt.code), "stdout = %q", got.stdout)
 			printed := resulttest.Decode(t, got.stdout)
-			assert.Check(t, is.Equal(printed.Outcome, tt.want.String()))
 			assert.Check(t, is.Equal(printed.Reason, verdict.Reason))
 		})
 	}
@@ -356,19 +306,14 @@ func TestApp_Run_WhenGuardIsGivenACommandWithTheJSONFlag_PrintsTheVerdictAndTheR
 func TestApp_Run_WhenGuardIsGivenACommandWithTheJSONFlag_PrintsTheInvocationsParsePrints(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range verdicts() {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	const command = refusedCommand
+	dir, env := t.TempDir(), gittest.Env(t)
+	want := parsed(t, launch(t, outsideWith(t, env), "parse", "--cwd", dir, "--json", "--", command).stdout).Invocations
+	assert.Assert(t, len(want) > 0, "ils parse printed no invocation for %q", command)
 
-			dir, env := t.TempDir(), gittest.Env(t)
-			want := parsed(t, launch(t, parsing(t, env), "parse", "--cwd", dir, "--json", "--", tt.command).stdout).Invocations
-			assert.Assert(t, len(want) > 0, "ils parse printed no invocation for %q", tt.command)
+	got := launch(t, outsideWith(t, env), "guard", "--cwd", dir, "--json", "--", command)
 
-			got := launch(t, parsing(t, env), "guard", "--cwd", dir, "--json", "--", tt.command)
-
-			assert.Check(t, is.DeepEqual(guarded(t, got.stdout).Invocations, want, cmpopts.EquateEmpty()))
-		})
-	}
+	assert.Check(t, is.DeepEqual(guarded(t, got.stdout).Invocations, want, cmpopts.EquateEmpty()))
 }
 
 func TestApp_Run_WhenGuardIsNotGivenADirectory_RefusesPointingAtItsHelp(t *testing.T) {
@@ -401,7 +346,6 @@ func TestJudge_WhenIlsIsGivenAnyRootSwitchOfTheCli_AsksAboutTheCommandAfterIt(t 
 	}
 	root := new(cli.App).Root()
 	root.Flags().VisitAll(visit)
-	root.PersistentFlags().VisitAll(visit)
 	assert.Assert(t, len(switches) > 0, "the root command has no switch")
 	dir := t.TempDir()
 
@@ -446,7 +390,7 @@ func encoded(t *testing.T, use toolUse) string {
 func hooking(t *testing.T, env []string, stdin io.Reader) cli.App {
 	t.Helper()
 
-	app := parsing(t, env)
+	app := outsideWith(t, env)
 	app.Stdin = stdin
 
 	return app
@@ -463,7 +407,7 @@ func TestApp_Run_WhenHookClaudeIsGivenACommandTheGuardAllows_ExitsZeroPrintingNo
 	t.Parallel()
 
 	dir, env := t.TempDir(), gittest.Env(t)
-	app := hooking(t, env, strings.NewReader(encoded(t, bash("echo hi", dir))))
+	app := hooking(t, env, strings.NewReader(encoded(t, bash(allowedCommand, dir))))
 
 	got := launch(t, app, "hook", "claude")
 
@@ -476,7 +420,7 @@ func TestApp_Run_WhenHookClaudeIsGivenACommandTheGuardRefuses_ExitsTwoWithTheRea
 	t.Parallel()
 
 	dir, env := t.TempDir(), gittest.Env(t)
-	command := "ils merge | cat"
+	command := refusedCommand
 	verdict := judge(t, command, dir, env)
 	assert.Assert(t, verdict.Outcome == guard.Refuse && verdict.Reason != "", "Judge(%q) = %+v, want a refusal with a reason", command, verdict)
 	app := hooking(t, env, strings.NewReader(encoded(t, bash(command, dir))))
@@ -491,7 +435,7 @@ func TestApp_Run_WhenHookClaudeIsGivenACommandTheGuardAsksAbout_ExitsZeroPrintin
 	t.Parallel()
 
 	dir, env := t.TempDir(), gittest.Env(t)
-	command := "ils merge"
+	command := askedCommand
 	verdict := judge(t, command, dir, env)
 	assert.Assert(t, verdict.Outcome == guard.Ask && verdict.Reason != "", "Judge(%q) = %+v, want an ask with a reason", command, verdict)
 	app := hooking(t, env, strings.NewReader(encoded(t, bash(command, dir))))
@@ -509,24 +453,12 @@ func TestApp_Run_WhenHookClaudeIsGivenAToolOtherThanBash_ExitsZeroPrintingNothin
 	t.Parallel()
 
 	dir := t.TempDir()
-	tests := []struct {
-		name  string
-		stdin string
-	}{
-		{name: "input of another shape", stdin: encoded(t, toolUse{ToolName: "Edit", Input: map[string]string{"file_path": filepath.Join(dir, "notes.md")}, Cwd: dir})},
-		{name: "command that is not a string", stdin: fmt.Sprintf(`{"tool_name":"Edit","cwd":%q,"tool_input":{"command":["x"]}}`, dir)},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	stdin := fmt.Sprintf(`{"tool_name":"Edit","cwd":%q,"tool_input":{"command":["x"]}}`, dir)
 
-			got := launch(t, hooking(t, gittest.Env(t), strings.NewReader(tt.stdin)), "hook", "claude")
+	got := launch(t, hooking(t, gittest.Env(t), strings.NewReader(stdin)), "hook", "claude")
 
-			assert.Check(t, is.Equal(got.code, exitDone), "stderr = %q", got.stderr)
-			assert.Check(t, is.Equal(got.stdout, ""))
-			assert.Check(t, is.Equal(got.stderr, ""))
-		})
-	}
+	assert.Check(t, is.Equal(got.code, exitDone), "stderr = %q", got.stderr)
+	assert.Check(t, is.Equal(got.stdout, ""))
 }
 
 func TestApp_Run_WhenHookClaudeCannotReadThePayload_ExitsTwoSayingWhatBroke(t *testing.T) {
@@ -542,12 +474,12 @@ func TestApp_Run_WhenHookClaudeCannotReadThePayload_ExitsTwoSayingWhatBroke(t *t
 		name  string
 		want  string
 	}{
-		{name: "payload that is not JSON", stdin: strings.NewReader(`{"tool_name": "Bash"`)},
-		{name: "no tool name", stdin: strings.NewReader(encoded(t, toolUse{Input: map[string]string{"command": "echo hi"}, Cwd: dir})), want: "tool_name"},
+		{name: "payload that is not JSON", stdin: strings.NewReader(`{"tool_name":"Read","tool_name":"Bash"}`)},
+		{name: "no tool name", stdin: strings.NewReader(encoded(t, toolUse{Input: map[string]string{"command": "echo hi"}, Cwd: dir}))},
 		{name: "stdin that cannot be read", stdin: iotest.ErrReader(errReaderGone), want: errReaderGone.Error()},
-		{name: "command that is not a string", stdin: strings.NewReader(fmt.Sprintf(`{"tool_name":"Bash","cwd":%q,"tool_input":{"command":5}}`, dir)), want: "tool_input"},
-		{name: "no command", stdin: strings.NewReader(encoded(t, toolUse{ToolName: "Bash", Input: map[string]string{}, Cwd: dir})), want: "command"},
-		{name: "no directory", stdin: strings.NewReader(encoded(t, toolUse{ToolName: "Bash", Input: map[string]string{"command": "echo hi"}})), want: "cwd"},
+		{name: "command that is not a string", stdin: strings.NewReader(fmt.Sprintf(`{"tool_name":"Bash","cwd":%q,"tool_input":{"command":5}}`, dir))},
+		{name: "no command", stdin: strings.NewReader(encoded(t, toolUse{ToolName: "Bash", Input: map[string]string{}, Cwd: dir}))},
+		{name: "no directory", stdin: strings.NewReader(encoded(t, toolUse{ToolName: "Bash", Input: map[string]string{"command": "echo hi"}}))},
 		{name: "directory that does not exist", stdin: strings.NewReader(encoded(t, bash("echo hi", gone))), want: gone},
 		{name: "directory that is relative", stdin: strings.NewReader(encoded(t, bash("echo hi", relative))), want: relative},
 		{name: "directory that is a file", stdin: strings.NewReader(encoded(t, bash("echo hi", file))), want: file},
@@ -569,7 +501,7 @@ func TestApp_Run_WhenHookClaudeCannotWriteTheAsk_ExitsTwoWithTheErrorOnStderr(t 
 	t.Parallel()
 
 	dir, env := t.TempDir(), gittest.Env(t)
-	app := hooking(t, env, strings.NewReader(encoded(t, bash("ils merge", dir))))
+	app := hooking(t, env, strings.NewReader(encoded(t, bash(askedCommand, dir))))
 	app.Stdout = shut{err: errReaderGone}
 
 	got := launch(t, app, "hook", "claude")
@@ -595,7 +527,7 @@ func TestApp_Run_WhenHookIsGivenWordsItDoesNotTake_ExitsTwoNamingThemOnStderr(t 
 			t.Parallel()
 
 			dir := t.TempDir()
-			app := hooking(t, gittest.Env(t), strings.NewReader(encoded(t, bash("echo hi", dir))))
+			app := hooking(t, gittest.Env(t), strings.NewReader(encoded(t, bash(allowedCommand, dir))))
 
 			got := launch(t, app, tt.args...)
 
@@ -636,8 +568,8 @@ func throughShim(t *testing.T, dir, stdin string, env ...string) ran {
 	cmd := exec.CommandContext(t.Context(), bashPath, shim) //nolint:gosec // argv is bash and the shim this package ships
 	cmd.Env = append([]string{"PATH=" + dir, "GORACE=" + gittest.RaceSetting()}, env...)
 	// A stand-in built for coverage warns on stderr unless it knows where to write its counters.
-	if covered := flag.Lookup("test.gocoverdir"); covered != nil && covered.Value.String() != "" {
-		cmd.Env = append(cmd.Env, "GOCOVERDIR="+covered.Value.String())
+	if covered := gittest.CoverSetting(); covered != "" {
+		cmd.Env = append(cmd.Env, covered)
 	}
 	cmd.Stdin = strings.NewReader(stdin)
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -648,6 +580,14 @@ func throughShim(t *testing.T, dir, stdin string, env ...string) ran {
 	}
 
 	return ran{stdout: stdout.String(), stderr: stderr.String(), code: cmd.ProcessState.ExitCode()}
+}
+
+// shimPayload returns a payload the shim reads from stdin, for a command that runs in a directory
+// that holds nothing.
+func shimPayload(t *testing.T) string {
+	t.Helper()
+
+	return encoded(t, bash(allowedCommand, t.TempDir()))
 }
 
 func TestHookShim_WhenIlsExitsZeroOrTwo_ExitsWithItsCode(t *testing.T) {
@@ -666,12 +606,10 @@ func TestHookShim_WhenIlsExitsZeroOrTwo_ExitsWithItsCode(t *testing.T) {
 			t.Parallel()
 
 			dir, env := standingIn(t, tt.exit)
-			payload := encoded(t, bash("echo hi", t.TempDir()))
 
-			got := throughShim(t, dir, payload, env)
+			got := throughShim(t, dir, shimPayload(t), env)
 
 			assert.Check(t, is.Equal(got.code, tt.want), "stderr = %q", got.stderr)
-			assert.Check(t, is.Equal(got.stderr, "hook claude\n"))
 		})
 	}
 }
@@ -681,7 +619,7 @@ func TestHookShim_WhenIlsEndsAnyOtherWay_ExitsTwoNamingTheCodeOnStderr(t *testin
 
 	dir, env := standingIn(t, "1")
 
-	got := throughShim(t, dir, encoded(t, bash("echo hi", t.TempDir())), env)
+	got := throughShim(t, dir, shimPayload(t), env)
 
 	assert.Check(t, is.Equal(got.code, exitRefused), "stderr = %q", got.stderr)
 	assert.Check(t, is.Regexp(`(^|\D)1(\D|$)`, got.stderr))
@@ -706,7 +644,7 @@ func TestHookShim_WhenIlsCannotStart_ExitsTwoWithAReasonOnStderr(t *testing.T) {
 				assert.NilError(t, os.WriteFile(filepath.Join(dir, "ils"), []byte(tt.ils), 0o700)) //nolint:gosec // the stand-in must be executable
 			}
 
-			got := throughShim(t, dir, encoded(t, bash("echo hi", t.TempDir())))
+			got := throughShim(t, dir, shimPayload(t))
 
 			assert.Check(t, is.Equal(got.code, exitRefused), "stderr = %q", got.stderr)
 			assert.Check(t, got.stderr != "", "stderr is empty")

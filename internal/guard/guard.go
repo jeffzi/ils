@@ -17,10 +17,12 @@ const readDeadline = 5 * time.Second
 // strictest, and a command takes the strictest outcome of its invocations.
 type Outcome int
 
-// Ask leaves the decision to the user instead of the guard.
 const (
+	// Allow lets the command run.
 	Allow Outcome = iota
+	// Ask leaves the decision to the user instead of the guard.
 	Ask
+	// Refuse stops the command and shows the user the reason.
 	Refuse
 )
 
@@ -46,7 +48,7 @@ func rules() []rule {
 	return []rule{
 		refuseSkippedChecks, refuseDiscardingGit, refuseHistoryOverFile, refuseRebaseOverChanges,
 		refuseRiskyWorktreeRemoval, refuseGuardedConfigWrite, refuseOriginRewrite, refusePush,
-		newTrunks().refuseOnTrunk, judgeForge,
+		trunks{}.refuseOnTrunk, judgeForge,
 	}
 }
 
@@ -64,17 +66,14 @@ func Judge(ctx context.Context, command string, caller Caller) Verdict {
 }
 
 // Assess judges command as Judge does, and also returns the invocations it judged, so that a
-// caller showing them reads the command once. A command that does not parse, or whose state Parse
-// failed to read, returns no invocation.
+// caller showing them reads the command once: those Parse returns, and after each call of a
+// function the command defines, the commands of the body it runs, placed where the call stands. A
+// command that does not parse, or whose state Parse failed to read, returns no invocation.
 func Assess(ctx context.Context, command string, caller Caller) (Verdict, []Invocation) {
-	return judge(ctx, command, caller, rules())
-}
-
-func judge(ctx context.Context, command string, caller Caller, checks []rule) (Verdict, []Invocation) {
 	ctx, cancel := context.WithTimeout(ctx, readDeadline)
 	defer cancel()
 
-	invocations, err := Parse(ctx, command, caller)
+	invocations, err := parse(ctx, command, caller)
 	if failure, ok := errors.AsType[*ParseError](err); ok {
 		return refuse("the guard cannot read the command: " + failure.Error()), nil
 	}
@@ -83,6 +82,7 @@ func judge(ctx context.Context, command string, caller Caller, checks []rule) (V
 		return failedRead(err), nil
 	}
 
+	checks := rules()
 	verdict := Verdict{Outcome: Allow}
 	for _, inv := range invocations {
 		verdict = verdict.or(judgeInvocation(ctx, caller, inv, checks))
@@ -129,11 +129,17 @@ func failedRead(err error) Verdict {
 }
 
 // markReason says what the mark found on inv, by the mark's name when it has one. A tool handed
-// to another command is named with that command.
+// to another command is named with that command. A git word the guard could not read as an alias
+// because it cannot tell which repository git runs in says so.
 func markReason(inv Invocation, mark Mark) string {
 	detail := mark.Name
-	if mark.Kind == ToolArgument && len(inv.Words) > 0 {
+	switch {
+	case mark.Kind == ToolArgument && len(inv.Words) > 0:
 		detail = fmt.Sprintf("%s runs %s: run %s on its own, by its bare name", inv.Words[0].Text, mark.Name, mark.Name)
+	case (mark.Kind == UnknownSubcommand || mark.Kind == UnreadableAlias) && inv.Git.GitDirUnknown &&
+		inv.Git.Subcommand.Literal && isAliasName(mark.Name):
+		detail = fmt.Sprintf("%s: the guard cannot tell which repository git runs in, so it cannot read its "+
+			"aliases; %s", mark.Name, moveFirst)
 	}
 
 	if detail == "" {

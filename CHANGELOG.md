@@ -14,6 +14,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Add `ils hook claude` and the `ils` skill's `hook.sh`, which run the guard as Claude Code's
   `PreToolUse` hook and block every command when `ils` cannot answer.
 
+### Fixed
+
+- Count required checks that have not reported yet in the "N of M done" progress of a wait for a
+  pull request's checks, which showed every check done while one was still to come.
+
 ## [0.5.0] - 2026-10-31
 
 ### Added
@@ -48,7 +53,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Point every `Next:` line that spelled out cutting a branch by hand at `ils branch <name>`.
 - Suggest the closest command when a command name is mistyped, and point `Next:` at its `--help`.
 - Show how long each check still running at the time limit has run on GitHub.
-- End `ils merge` pending instead of refused while a check the default branch requires still runs.
 - Carry what the hooks and `git` printed for a push `git` refused in the new JSON field `excerpt`,
   not in the last entry of `lines`.
 
@@ -58,11 +62,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   would ask for, instead of a merge it would refuse.
 - Fix `ils push` saying nothing was pushed when origin stopped answering or a signal killed `git`
   mid-push, although the push may have reached origin.
-- Name a required check still running, with the new `merge_state` `blocked-by-running-check`,
-  instead of blaming a branch rule `ils` cannot name.
-- Show a pre-push hook's stdout in the excerpt of a push `git` refused.
-- Fix `ils push` missing origin's answer when a pre-push hook's output did not end in a newline,
-  which reported a push that reached origin as stopped, or a refused one without its reason.
+- End `ils merge` pending while a required check still runs, with the new `merge_state`
+  `blocked-by-running-check`, instead of refusing it for a branch rule `ils` cannot name.
+- Fix `ils push` losing a pre-push hook's stdout or its final line without a newline, so a push
+  that reached origin read as stopped, or a refused one lacked its reason.
 
 ## [0.3.0] - 2026-10-25
 

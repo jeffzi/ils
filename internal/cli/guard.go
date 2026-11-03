@@ -16,6 +16,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/jeffzi/ils/internal/commandline"
+	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/guard"
 	"github.com/jeffzi/ils/internal/landing"
@@ -26,7 +28,7 @@ const (
 	flagCwd = "--cwd"
 
 	// hookCommand reads -h itself because it disables Cobra flag parsing.
-	flagHelpShort = landing.FlagHelpShort
+	flagHelpShort = commandline.FlagHelpShort
 
 	cwdUsage = "The directory the command runs in"
 
@@ -64,7 +66,7 @@ func (p *parse) parseCommand() *cobra.Command {
 // cwdCommand completes c as the command named word that takes `--cwd <dir> -- '<command>'`: it
 // refuses words that give no directory, or anything but one word after `--`, naming word and
 // pointing at the help of word. Otherwise it keeps the result that run returns for the directory
-// and the command as the result of the run.
+// and the command, under the time limit of a command from launch, as the result of the run.
 func (p *parse) cwdCommand(
 	c *cobra.Command,
 	word string,
@@ -93,7 +95,10 @@ func (p *parse) cwdCommand(
 		return nil
 	}
 	c.RunE = func(c *cobra.Command, args []string) error {
-		r, err := run(c.Context(), cwd, args[0])
+		ctx, cancel := p.underTimeLimit(c.Context())
+		defer cancel()
+
+		r, err := run(ctx, cwd, args[0])
 		if err != nil {
 			return err
 		}
@@ -119,21 +124,15 @@ func (p *parse) cwdCommand(
 func (p *parse) caller(dir string) guard.Caller {
 	env := environment(p.app.Environ)
 	logger := p.logger(p.app.profile(p.app.StderrTerminal, p.noColor))
-	runner := p.app.git
-	runner.Logger = logger
 
-	return guard.Caller{Dir: dir, Env: env, Home: env["HOME"], Git: runner, GH: github.Runner{Logger: logger}}
+	return guard.Caller{Dir: dir, Env: env, Home: env["HOME"], Git: p.loggedGit(logger), GH: github.Runner{Logger: logger}}
 }
 
 // readCommand reads command as the guard does from cwd, made absolute, with the process environment
-// and its HOME, through the git of the app, under the time limit of a command from launch. It
-// returns the result that shows every invocation, or, when the command does not parse or a read of
-// git fails, a broke result that says why.
+// and its HOME, through the git of the app. It returns the result that shows every invocation, or,
+// when the command does not parse or a read of git fails, a broke result that says why.
 func (p *parse) readCommand(ctx context.Context, cwd, command string) (result.Result, error) {
 	req := landing.Request{Command: parseWord, Words: p.words}
-
-	ctx, cancel := p.underTimeLimit(ctx)
-	defer cancel()
 
 	dir, err := filepath.Abs(cwd)
 	if err != nil {
@@ -191,15 +190,12 @@ func (p *parse) guardCommand() *cobra.Command {
 }
 
 // judgeCommand judges command as the guard does from cwd, made absolute, with the process
-// environment and its HOME, through the git of the app, under the time limit of a command from
-// launch. The result carries the verdict as its outcome and reason, and every invocation the
-// command holds. Anything that keeps the guard from judging the command is a refusal that says
-// what broke, never a broke result: a caller that gates on the exit code must not let it run.
+// environment and its HOME, through the git of the app. The result carries the verdict as its
+// outcome and reason, and every invocation the command holds. Anything that keeps the guard from
+// judging the command is a refusal that says what broke, never a broke result: a caller that gates
+// on the exit code must not let it run.
 func (p *parse) judgeCommand(ctx context.Context, cwd, command string) result.Result {
 	req := landing.Request{Command: guardWord, Words: p.words}
-
-	ctx, cancel := p.underTimeLimit(ctx)
-	defer cancel()
 
 	dir, err := filepath.Abs(cwd)
 	if err != nil {
@@ -214,10 +210,8 @@ func (p *parse) judgeCommand(ctx context.Context, cwd, command string) result.Re
 // judged returns the result of verdict on a command holding invocations. Its reason, which may name
 // a config key or a path under a git dir, goes in as a name.
 func judged(req landing.Request, invocations []guard.Invocation, verdict guard.Verdict) result.Result {
-	payload := &result.Guard{Invocations: invocationsOf(invocations)}
-
 	r := result.Result{
-		Payload: &result.Payload{Guard: payload},
+		Payload: &result.Payload{Guard: &result.Guard{Invocations: invocationsOf(invocations)}},
 		Command: req.Command,
 		Words:   req.Words,
 		Next:    result.NextNone(),
@@ -241,19 +235,18 @@ func judged(req landing.Request, invocations []guard.Invocation, verdict guard.V
 	return r
 }
 
-// environment returns the variables of environ, each `NAME=value`, by name. An entry with no `=`
-// names nothing, and the first entry of a name wins, as os.Getenv reads it.
+// environment returns the variables of environ, each `NAME=value`, by name, with the value
+// git.EnvValue reads for the name: a name set twice has its last value, as bash and the commands
+// it starts read it. An entry with no `=` names nothing.
 func environment(environ []string) map[string]string {
 	env := make(map[string]string, len(environ))
 	for _, entry := range environ {
-		name, value, ok := strings.Cut(entry, "=")
+		name, _, ok := strings.Cut(entry, "=")
 		if !ok {
 			continue
 		}
 
-		if _, seen := env[name]; !seen {
-			env[name] = value
-		}
+		env[name], _ = git.EnvValue(environ, name)
 	}
 
 	return env

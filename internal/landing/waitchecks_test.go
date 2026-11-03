@@ -90,15 +90,13 @@ func redRows() []vigilRow {
 		},
 	}
 
-	for _, c := range cuts() {
-		rows = append(rows, vigilRow{
-			name:     "a check failed and " + c.name + " ended inside the read after it",
-			verdicts: []forgetest.Answer[forge.Verdict]{{Value: unfinished}, {Err: c.of("gh")}},
-			want:     concluded(landing.WaitRed, unfinished, 0, 0), ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
-		})
-	}
+	c := byTimeLimit()
 
-	return rows
+	return append(rows, vigilRow{
+		name:     "a check failed and " + c.name + " ended inside the read after it",
+		verdicts: []forgetest.Answer[forge.Verdict]{{Value: unfinished}, {Err: c.of("gh")}},
+		want:     concluded(landing.WaitRed, unfinished, 0, 0), ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
+	})
 }
 
 func TestAwaitVerdict_WhenACheckFailed_EndsRedOnceItsLogIsSettled(t *testing.T) {
@@ -169,6 +167,7 @@ func requiredRows() []vigilRow {
 			name:     "required name absent with a queued run, then concluded",
 			verdicts: says(absent, both),
 			want:     concluded(landing.WaitGreen, both, 2, 0), ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
+			told: []string{waitingStep(), "count 1 of 2", "count 2 of 2"},
 		},
 		{
 			name:     "every required name concluded while another check runs",

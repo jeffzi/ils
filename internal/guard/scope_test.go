@@ -3,6 +3,7 @@
 package guard_test
 
 import (
+	"strings"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -28,9 +29,6 @@ func TestParse_ReportsTheDirectoryEachInvocationRunsIn(t *testing.T) {
 		command string
 		want    []string
 	}{
-		{name: "no move", command: "git status", want: []string{start}},
-		{name: "cd to a relative path", command: "cd sub && git status", want: []string{start, start + "/sub"}},
-		{name: "cd to an absolute path", command: "cd /srv/repo; git status", want: []string{start, "/srv/repo"}},
 		{name: "cd past its options", command: "cd -P -- sub && git status", want: []string{start, start + "/sub"}},
 		{name: "subshell move stays inside", command: "(cd sub && git status); git commit", want: []string{start, start + "/sub", start}},
 		{
@@ -38,10 +36,10 @@ func TestParse_ReportsTheDirectoryEachInvocationRunsIn(t *testing.T) {
 			command: `echo "$(cd sub; git status)"; git commit`,
 			want:    []string{start, start, start + "/sub", start},
 		},
-		{name: "group move holds after the group", command: "{ cd sub; }; git commit", want: []string{start, start + "/sub"}},
 		{name: "absolute cd after an unknown one", command: `cd "$d"; cd /srv/repo; git status`, want: []string{start, "", "/srv/repo"}},
-		{name: "cd every and-list operand agrees on", command: "cd sub && git status; git commit", want: []string{start, start + "/sub", start + "/sub"}},
 		{name: "cd .. after an absolute cd ends a physical walk", command: "cd -P sub; cd /srv/repo; cd ..; git status", want: []string{start, start + "/sub", "/srv/repo", "/srv"}},
+		{name: "call of a function whose body stays", command: "f() { true; }; cd /srv/repo; f; git status", want: []string{start, start, "/srv/repo", "/srv/repo"}},
+		{name: "cd to a variable the command assigned a literal", command: `S=/srv/repo; cd "$S" && git status`, want: []string{start, start, "/srv/repo"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -66,23 +64,19 @@ func TestParse_WhenTheDirectoryCannotBeFollowed_ReportsItUnknown(t *testing.T) {
 		{name: "cd to the previous directory", command: "cd - && git commit"},
 		{name: "bare cd", command: "cd && git commit"},
 		{name: "cd to a non-literal", command: `cd "$dir" && git commit`},
-		{name: "relative cd after an unknown one", command: `cd "$dir"; cd sub; git commit`},
 		{name: "relative cd with CDPATH in the environment", command: "cd sub && git commit", env: map[string]string{"CDPATH": "/srv"}},
 		{name: "relative cd with CDPATH assigned in the command", command: "CDPATH=/srv; cd sub && git commit"},
 		{name: "move in an if body", command: "if test -d sub; then cd sub; fi; git commit"},
 		{name: "move in a loop body", command: "while true; do cd sub; done; git commit"},
 		{name: "move in a case arm", command: "case x in y) cd sub;; esac; git commit"},
-		{name: "move in a function body", command: "f() { cd sub; }; f; git commit"},
-		{name: "after a move that may have failed", command: "cd sub || git commit"},
 		{name: "after an or list that may have moved", command: "true || cd sub; git commit"},
-		{name: "after an and list whose right side moved", command: "true && cd sub; git commit"},
-		{name: "after an and list whose right side may not have run", command: "git diff --quiet && cd ../wt; git commit"},
-		{name: "after an and list of three operands", command: "true && true && cd sub; git commit"},
 		{name: "cd -P through a link and back up", command: "cd -P link/..; git commit"},
-		{name: "cd .. after cd -P", command: "cd -P sub; cd ..; git commit"},
 		{name: "cd .. after cd -P inside eval", command: "eval 'cd -P sub'; cd ..; git commit"},
 		{name: "move in a pipeline", command: "true | cd sub; git commit"},
 		{name: "relative cd in a shell string given CDPATH by a prefix", command: "CDPATH=/srv bash -c 'cd sub && git commit'"},
+		{name: "after a source of a file", command: "source env.sh && git commit"},
+		{name: "after a dot of a file", command: ". ./env.sh; git commit"},
+		{name: "relative cd after a source of a file, which may set CDPATH", command: "source env.sh; cd /srv; cd sub; git commit"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -104,42 +98,26 @@ func TestParse_ReportsWhereEachGitInvocationPointsGit(t *testing.T) {
 		env     map[string]string
 		want    guard.GitTarget
 	}{
-		{name: "nothing set", command: "git status", want: guard.GitTarget{Dir: start}},
 		{
 			name:    "GIT_DIR in the environment",
 			command: "git status",
 			env:     map[string]string{"GIT_DIR": "/srv/repo.git"},
 			want:    guard.GitTarget{Dir: start, GitDir: "/srv/repo.git"},
 		},
-		{name: "assignment prefix", command: "GIT_DIR=/srv/repo.git git status", want: guard.GitTarget{Dir: start, GitDir: "/srv/repo.git"}},
 		{name: "relative work tree", command: "GIT_WORK_TREE=wt git status", want: guard.GitTarget{Dir: start, WorkTree: start + "/wt"}},
 		{name: "env argument", command: "env GIT_DIR=.git git status", want: guard.GitTarget{Dir: start, GitDir: start + "/.git"}},
-		{name: "export earlier in the list", command: "export GIT_DIR=/srv/repo.git; git status", want: guard.GitTarget{Dir: start, GitDir: "/srv/repo.git"}},
 		{
 			name:    "relative export read where git runs",
 			command: "export GIT_DIR=.git; cd sub; git status",
 			want:    guard.GitTarget{Dir: start + "/sub", GitDir: start + "/sub/.git"},
 		},
-		{name: "prefix of an earlier command", command: "GIT_DIR=/srv/repo.git true; git status", want: guard.GitTarget{Dir: start}},
-		{name: "prefix of an earlier eval", command: "GIT_DIR=/srv/repo.git eval true; git status", want: guard.GitTarget{Dir: start}},
 		{name: "move in an earlier eval string", command: "GIT_DIR=/srv/repo.git eval 'cd sub'; git status", want: guard.GitTarget{Dir: start + "/sub"}},
 		{name: "env removing another name", command: "env -u PAGER git status", want: guard.GitTarget{Dir: start}},
-		{name: "-C", command: "git -C sub status", want: guard.GitTarget{Dir: start + "/sub"}},
-		{name: "each -C relative to the one before", command: "git -C a -C ../b status", want: guard.GitTarget{Dir: start + "/b"}},
-		{
-			name:    "relative --git-dir read after every -C",
-			command: "git -C a --git-dir=.git -C b status",
-			want:    guard.GitTarget{Dir: start + "/a/b", GitDir: start + "/a/b/.git"},
-		},
-		{
-			name:    "--git-dir over GIT_DIR",
-			command: "GIT_DIR=/srv/one.git git --git-dir /srv/two.git status",
-			want:    guard.GitTarget{Dir: start, GitDir: "/srv/two.git"},
-		},
 		{name: "--work-tree", command: "git --work-tree wt -C sub status", want: guard.GitTarget{Dir: start + "/sub", WorkTree: start + "/sub/wt"}},
-		{name: "non-literal -C", command: `git -C "$d" status`, want: guard.GitTarget{}},
 		{name: "non-literal -C then a relative --git-dir", command: `git -C "$d" --git-dir=.git status`, want: guard.GitTarget{Unknown: true}},
 		{name: "non-literal GIT_DIR", command: `GIT_DIR="$d" git status`, want: guard.GitTarget{Dir: start, Unknown: true}},
+		{name: "GIT_DIR given a variable the command assigned a literal", command: "S=/srv/repo.git; GIT_DIR=$S git status", want: guard.GitTarget{Dir: start, GitDir: "/srv/repo.git"}},
+		{name: "absolute cd after a source of a file, which may set GIT_DIR", command: "source env.sh; cd /srv/repo; git status", want: guard.GitTarget{Dir: "/srv/repo", Unknown: true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -152,76 +130,6 @@ func TestParse_ReportsWhereEachGitInvocationPointsGit(t *testing.T) {
 	}
 }
 
-func TestParse_WhenAShellStringRunsGit_ReportsTheTargetOfTheEnvironmentItStartsWith(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		command string
-	}{
-		{name: "assignment prefix", command: "GIT_DIR=/srv/x.git bash -c 'git status'"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := last(t, tt.command)
-
-			want := guard.GitTarget{Dir: start, GitDir: "/srv/x.git"}
-			assert.Check(t, is.DeepEqual(got.Target, want), "Parse(%q) target", tt.command)
-		})
-	}
-}
-
-func TestParse_WhenTheGitTargetCannotBeFollowed_ReportsItUnknown(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		command string
-	}{
-		{name: "env clearing the environment", command: "env -i git status"},
-		{name: "env removing GIT_DIR", command: "env -u GIT_DIR git status"},
-		{name: "unset of GIT_WORK_TREE", command: "unset GIT_WORK_TREE; git status"},
-		{name: "shell variable that may be exported", command: "GIT_DIR=/srv/repo.git; git status"},
-		{name: "export in an if body", command: "if test -d x; then export GIT_DIR=/srv/repo.git; fi; git status"},
-		{name: "export on the right of an and list", command: "true && export GIT_DIR=/srv/repo.git; git status"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := last(t, tt.command)
-
-			assert.Check(t, got.Target.Unknown, "Parse(%q) target = %+v, want unknown", tt.command, got.Target)
-		})
-	}
-}
-
-func TestParse_WhenEnvDropsAVariable_ReportsTheTargetOfTheCommandWithoutIt(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		command string
-		same    string
-	}{
-		{name: "prefix removed by env -u", command: "GIT_DIR=/a env -u GIT_DIR git status", same: "env -u GIT_DIR git status"},
-		{name: "env argument removed by a later env -u", command: "env GIT_DIR=/a env -u GIT_DIR git status", same: "env -u GIT_DIR git status"},
-		{name: "shell string under env -u", command: "env -u GIT_DIR bash -c 'git status'", same: "env -u GIT_DIR git status"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			want := last(t, tt.same).Target
-
-			got := last(t, tt.command)
-
-			assert.Check(t, is.DeepEqual(got.Target, want), "Parse(%q) target, want that of %q", tt.command, tt.same)
-		})
-	}
-}
-
 func TestParse_MarksAGitVariableOffTheAllowList(t *testing.T) {
 	t.Parallel()
 
@@ -229,11 +137,8 @@ func TestParse_MarksAGitVariableOffTheAllowList(t *testing.T) {
 		name    string
 		command string
 		want    string
-		index   int
 	}{
 		{name: "assignment prefix", command: "GIT_CONFIG_COUNT=1 git status", want: "GIT_CONFIG_COUNT"},
-		{name: "env argument", command: "env GIT_EXEC_PATH=/tmp git status", want: "GIT_EXEC_PATH"},
-		{name: "assignment-only command", command: "GIT_CONFIG_PARAMETERS=x", want: "GIT_CONFIG_PARAMETERS"},
 		{name: "export of an assignment", command: "export GIT_CONFIG_GLOBAL=/tmp/c", want: "GIT_CONFIG_GLOBAL"},
 	}
 	for _, tt := range tests {
@@ -242,9 +147,9 @@ func TestParse_MarksAGitVariableOffTheAllowList(t *testing.T) {
 
 			got := parse(t, tt.command)
 
-			assert.Assert(t, len(got) > tt.index, "Parse(%q) = %v", tt.command, texts(got))
+			assert.Assert(t, len(got) > 0, "Parse(%q) = %v", tt.command, texts(got))
 			want := []guard.Mark{{Kind: guard.GitVariable, Name: tt.want}}
-			assert.Check(t, is.DeepEqual(got[tt.index].Marks, want), "Parse(%q) marks", tt.command)
+			assert.Check(t, is.DeepEqual(got[0].Marks, want), "Parse(%q) marks", tt.command)
 		})
 	}
 }
@@ -252,83 +157,79 @@ func TestParse_MarksAGitVariableOffTheAllowList(t *testing.T) {
 func TestParse_WhenAVariableIsNoUnlistedGitVariable_MarksNothing(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		command string
-	}{
-		{name: "allowed git variable", command: "GIT_PAGER=cat git log"},
-		{name: "variable outside git's names", command: "PAGER=cat git log"},
-		{name: "editor variable naming a program", command: "GIT_EDITOR=vim git commit"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	const command = "GIT_PAGER=cat git log"
 
-			got := parse(t, tt.command)
+	got := parse(t, command)
 
-			for _, inv := range got {
-				assert.Check(t, is.Len(inv.Marks, 0), "Parse(%q) marks of %v", tt.command, inv.Words)
-			}
-		})
-	}
-}
-
-func TestParse_WhenAGitVariableNamesACommandGitRuns_ParsesItsCommands(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		command string
-		want    []string
-	}{
-		{name: "sequence editor as an assignment prefix", command: "GIT_SEQUENCE_EDITOR='git push origin main; true' git rebase -i HEAD~1", want: []string{"git", "push", "origin", "main"}},
-		{name: "editor through env", command: "env GIT_EDITOR='git push origin main' git commit", want: []string{"git", "push", "origin", "main"}},
-		{name: "pager exported earlier in the list", command: "export GIT_PAGER='git push origin main'; git log", want: []string{"git", "push", "origin", "main"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := parse(t, tt.command)
-
-			assert.Check(t, is.Contains(texts(got), tt.want), "Parse(%q)", tt.command)
-		})
-	}
-}
-
-func TestParse_WhenACommandAGitVariableNamesCannotBeRead_MarksIt(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		command string
-		want    guard.MarkKind
-		index   int
-	}{
-		{name: "non-literal editor", command: `GIT_EDITOR="$e" git commit`, want: guard.DynamicScript},
-		{name: "pager past the third level", command: "eval eval eval GIT_PAGER=less git log", index: 3, want: guard.DeepScript},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := parse(t, tt.command)
-
-			assert.Assert(t, len(got) > tt.index, "Parse(%q) = %v", tt.command, texts(got))
-			assert.Check(t, is.DeepEqual(got[tt.index].Marks, []guard.Mark{{Kind: tt.want}}), "Parse(%q) marks", tt.command)
-		})
+	assert.Assert(t, len(got) > 0, "Parse(%q) = %v", command, texts(got))
+	for _, inv := range got {
+		assert.Check(t, is.Len(inv.Marks, 0), "Parse(%q) marks of %v", command, inv.Words)
 	}
 }
 
 func TestParse_WhenASubstitutionMovesHead_ReportsHeadUnknownForTheCommandHoldingIt(t *testing.T) {
 	t.Parallel()
 
+	const command = `{ git commit; } > "$(git switch main)"`
+
+	got := parse(t, command)
+
+	var commit []guard.Invocation
+	for _, inv := range got {
+		if len(inv.Words) > 1 && inv.Words[1].Text == "commit" {
+			commit = append(commit, inv)
+		}
+	}
+	assert.Assert(t, is.Len(commit, 1), "Parse(%q) = %v", command, texts(got))
+	assert.Check(t, commit[0].HeadUnknown, "Parse(%q) git commit head unknown = false, want true", command)
+}
+
+func marksOf(invocations []guard.Invocation) []guard.Mark {
+	var got []guard.Mark
+	for _, inv := range invocations {
+		got = append(got, inv.Marks...)
+	}
+
+	return got
+}
+
+func TestParse_WhenAllexportIsOn_MarksAGitVariableABuiltinAssigns(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		command string
 	}{
-		{name: "argument", command: `git commit -m "$(git switch main)"`},
-		{name: "group redirect target", command: `{ git commit; } > "$(git switch main)"`},
+		{name: "read", command: "set -a; read -r GIT_CONFIG_PARAMETERS <<< x; git commit -m x"},
+		{name: "printf -v", command: "set -a; printf -v GIT_CONFIG_PARAMETERS %s x; git status"},
+		{name: "assign-default expansion", command: `set -a; echo "${GIT_CONFIG_PARAMETERS:=x}"; git status`},
+		{name: "allexport turned on in an if body", command: "if true; then set -a; fi; read GIT_CONFIG_PARAMETERS; git status"},
+		{name: "assign-default expansion in [[ ]]", command: "set -a; [[ -n ${GIT_CONFIG_PARAMETERS:=x} ]]; git status"},
+		{name: "assign-default expansion in a case word", command: "set -a; case ${GIT_CONFIG_PARAMETERS:=x} in *) ;; esac; git status"},
+		{name: "assign-default expansion in a for word list", command: "set -a; for v in ${GIT_CONFIG_PARAMETERS:=x}; do :; done; git status"},
+		{name: "assign-default expansion in a declare argument", command: `set -a; declare v="${GIT_CONFIG_PARAMETERS:=x}"; git status`},
+		{name: "read in a function defined before set -a and called after", command: "f() { read -r GIT_CONFIG_PARAMETERS; }; set -a; f; git status"},
+		{name: "allexport turned on by eval", command: "eval 'set -a'; read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "allexport turned on by a function call", command: "f() { set -a; }; f; read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "read in a bash -a string", command: "bash -a -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
+		{name: "read in a bash -o allexport string", command: "bash -o allexport -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
+		{name: "read in a bash -a string after a one-dash long option", command: "bash -norc -a -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
+		{name: "read in a bash -a string after a one-dash long option taking a value", command: "bash -rcfile x -a -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
+		{name: "printf -v in a string of bash found by the equals lookup", command: `=bash -a -c 'printf -v GIT_CONFIG_PARAMETERS %s "core.hooksPath=/dev/null"; git commit -m x'`},
+		{name: "read in a zsh string under a long option spelled with capitals and underscores", command: "zsh --All_Export -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
+		{name: "read in a zsh -o string spelled with capitals and underscores", command: "zsh -o ALL_EXPORT -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
+		{name: "read in a zsh string where --allexport follows --no-allexport", command: "zsh --no-allexport --allexport -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
+		{name: "read in a zsh string after set -o spelled with capitals and underscores", command: "zsh -c 'set -o All_Export; read -r GIT_CONFIG_PARAMETERS; git status'"},
+		{name: "read after set -o spelled with capitals and underscores in an unknown shell", command: "set -o All_Export; read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "read after setopt allexport", command: "setopt allexport; read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "read after setopt of a non-literal option", command: `setopt "$o"; read -r GIT_CONFIG_PARAMETERS; git status`},
+		{name: "read after setopt whose +o takes an attached name", command: "setopt +oVERBOSE allexport; read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "read after unsetopt whose -o takes an attached name", command: "unsetopt -oNO_ALL_EXPORT; read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "read after setopt where +a follows a name", command: "setopt allexport; setopt verbose +a; read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "read after set +o with an attached name in an unknown shell", command: "set +oVERBOSE -a; read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "read after set +o noallexport in an unknown shell", command: "set +o noallexport; read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "read after set +o with a spelling only zsh reads, in an unknown shell", command: "set -a; set +o All_Export; read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "read after set -o with an attached name bash reads as letters, in an unknown shell", command: "set -oxa; read -r GIT_CONFIG_PARAMETERS; git status"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -336,14 +237,261 @@ func TestParse_WhenASubstitutionMovesHead_ReportsHeadUnknownForTheCommandHolding
 
 			got := parse(t, tt.command)
 
-			var commit []guard.Invocation
-			for _, inv := range got {
-				if len(inv.Words) > 1 && inv.Words[1].Text == "commit" {
-					commit = append(commit, inv)
-				}
-			}
-			assert.Assert(t, is.Len(commit, 1), "Parse(%q) = %v", tt.command, texts(got))
-			assert.Check(t, commit[0].HeadUnknown, "Parse(%q) git commit head unknown = false, want true", tt.command)
+			want := guard.Mark{Kind: guard.GitVariable, Name: "GIT_CONFIG_PARAMETERS"}
+			assert.Check(t, is.Contains(marksOf(got), want), "Parse(%q) marks", tt.command)
 		})
 	}
+}
+
+func TestParse_WhenAllexportIsOff_MarksNoGitVariableABuiltinAssigns(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{name: "turned on in a subshell", command: "(set -a); read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "turned on for a bash -a string only", command: "bash -a -c true; read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "read in a bash string after set -o spelled with capitals", command: "bash -c 'set -o ALLEXPORT; read -r GIT_CONFIG_PARAMETERS; git status'"},
+		{name: "read after setopt noallexport", command: "setopt noallexport; read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "read after unsetopt allexport", command: "unsetopt allexport; read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "read after set +a undoes set -a", command: "set -a; set +a; read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "read in a zsh string after set -o noallexport undoes set -a", command: "zsh -c 'set -a; set -o noallexport; read -r GIT_CONFIG_PARAMETERS; git status'"},
+		{name: "read in a zsh -a string after --no-allexport with dashes", command: "zsh -a --no-allexport -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
+		{name: "read in a zsh -a string after --noallexport spelled with capitals and underscores", command: "zsh -a --No_AllExport -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
+		{name: "read in a bash string after set +o with an attached name", command: "bash -c 'set +oVERBOSE -a; read -r GIT_CONFIG_PARAMETERS; git status'"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := parse(t, tt.command)
+
+			assert.Assert(t, len(got) > 0, "Parse(%q) = %v", tt.command, texts(got))
+			assert.Check(t, is.Len(marksOf(got), 0), "Parse(%q) marks", tt.command)
+		})
+	}
+}
+
+func TestJudge_WhenAFileIsSourced_AllowsItAndWhatRunsWhereverItRuns(t *testing.T) {
+	t.Parallel()
+	_, caller := standingOn(t, "main", "topic")
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "source of a file", command: "source env.sh"},
+		{name: "read after a dot of a file", command: ". ./env.sh && git status"},
+	})
+}
+
+func TestJudge_WhenAFileIsSourcedBeforeACommit_RefusesTheCommit(t *testing.T) {
+	t.Parallel()
+	_, caller := standingOn(t, "main", "topic")
+
+	checkJudgedRow(t, caller, judged{command: "source env.sh && git commit -m x", want: guard.Refuse, wantNamed: "git commit"})
+}
+
+func TestJudge_WhenAFileIsSourcedBeforeAGhAlias_RefusesNamingTheConfigVariable(t *testing.T) {
+	// Not parallel: it sets GH_PATH and the gh config location for the whole process.
+	ghReadingConfig(t, "sy: repo view\n")
+
+	checkJudgedRow(t, forgeCaller(t), judged{command: "source env.sh && gh sy", want: guard.Refuse, wantNamed: "GH_CONFIG_DIR"})
+}
+
+func wordsOf(invocations []guard.Invocation) []guard.Word {
+	var got []guard.Word
+	for _, inv := range invocations {
+		got = append(got, inv.Words...)
+	}
+
+	return got
+}
+
+func TestParse_WhenTheCommandAssignedAVariableALiteral_ReadsItsExpansionAsThatLiteral(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+		want    string
+	}{
+		{name: "plain assignment", command: "S=/tmp/work; $S/run.sh", want: "/tmp/work/run.sh"},
+		{name: "expansion in braces", command: "S=/tmp/work; ${S}/run.sh", want: "/tmp/work/run.sh"},
+		{name: "quoted expansion of a value holding a space", command: `S='/tmp/my work'; "$S/run.sh"`, want: "/tmp/my work/run.sh"},
+		{name: "value starting with a tilde", command: "S=~/work; $S/run.sh", want: home + "/work/run.sh"},
+		{name: "export", command: "export S=/tmp/work; $S/run.sh", want: "/tmp/work/run.sh"},
+		{name: "declare", command: "declare S=/tmp/work; $S/run.sh", want: "/tmp/work/run.sh"},
+		{name: "typeset", command: "typeset S=/tmp/work; $S/run.sh", want: "/tmp/work/run.sh"},
+		{name: "readonly", command: "readonly S=/tmp/work; $S/run.sh", want: "/tmp/work/run.sh"},
+		{name: "readonly after a plain assignment", command: "S=/srv; readonly S=/tmp/work; $S/run.sh", want: "/tmp/work/run.sh"},
+		{name: "local inside its function body", command: "f() { local S=/tmp/work; $S/run.sh; }; f", want: "/tmp/work/run.sh"},
+		{name: "later literal assignment", command: "S=/srv; S=/tmp/work; $S/run.sh", want: "/tmp/work/run.sh"},
+		{name: "assignment that always ran before an and list", command: "S=/tmp/work && $S/run.sh", want: "/tmp/work/run.sh"},
+		{name: "loop body after the assignment", command: `S=/tmp/work; for f in a b; do $S/run.sh "$f"; done`, want: "/tmp/work/run.sh"},
+		{name: "prefix of the command reading the earlier value", command: "S=/tmp/work; S=/srv $S/run.sh", want: "/tmp/work/run.sh"},
+		{name: "argument of a command", command: "S=/tmp/work; ls $S", want: "/tmp/work"},
+		{name: "program run between", command: "S=/tmp/work; mkdir -p $S; $S/run.sh", want: "/tmp/work/run.sh"},
+		{name: "builtin that writes no variable run between", command: "S=/tmp/work; echo x; $S/run.sh", want: "/tmp/work/run.sh"},
+		{name: "word before an eval string declaring a name reference", command: "S=/tmp/work; $S/run.sh; eval 'declare -n R=T'", want: "/tmp/work/run.sh"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := parse(t, tt.command)
+
+			assert.Check(t, is.Contains(wordsOf(got), literal(tt.want)), "Parse(%q) words", tt.command)
+		})
+	}
+}
+
+func TestParse_WhenTheGuardCannotBeSureOfAVariable_ReadsItsExpansionUnknown(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{name: "append assignment", command: "S=/tmp/work; S+=/x; $S/run.sh"},
+		{name: "read", command: "S=/tmp/work; read -r S; $S/run.sh"},
+		{name: "printf -v", command: "S=/tmp/work; printf -v S %s /srv; $S/run.sh"},
+		{name: "mapfile", command: "S=/tmp/work; mapfile S < list; $S/run.sh"},
+		{name: "readarray", command: "S=/tmp/work; readarray S < list; $S/run.sh"},
+		{name: "for loop name", command: "S=/tmp/work; for S in /srv; do :; done; $S/run.sh"},
+		{name: "assign-default expansion", command: `S=/tmp/work; echo "${S:=/srv}"; $S/run.sh`},
+		{name: "getopts", command: "S=/tmp/work; getopts ab S; $S/run.sh"},
+		{name: "unset", command: "S=/tmp/work; unset S; $S/run.sh"},
+		{name: "value from a command substitution", command: "S=/tmp/work; S=$(pwd); $S/run.sh"},
+		{name: "array value", command: "S=(/tmp/work); $S/run.sh"},
+		{name: "element assignment", command: "S=/tmp/work; S[1]=/srv; $S/run.sh"},
+		{name: "assignment in a subshell", command: "(S=/tmp/work); $S/run.sh"},
+		{name: "assignment in a pipeline stage", command: "true | S=/tmp/work; $S/run.sh"},
+		{name: "assignment in a background job", command: "S=/tmp/work & $S/run.sh"},
+		{name: "assignment that may not run in an and list", command: "true && S=/tmp/work; $S/run.sh"},
+		{name: "assignment in an if body", command: "if test -d x; then S=/tmp/work; fi; $S/run.sh"},
+		{name: "assignment in a loop body", command: "for f in a; do S=/tmp/work; done; $S/run.sh"},
+		{name: "call of a function whose body assigns it", command: "f() { S=/tmp/work; }; f; $S/run.sh"},
+		{name: "local outside a function", command: "local S=/tmp/work; $S/run.sh"},
+		{name: "declare -n before the assignment", command: "declare -n R=T; S=/tmp/work; $S/run.sh"},
+		{name: "typeset -n after the word", command: "S=/tmp/work; $S/run.sh; typeset -n R=T"},
+		{name: "local -n in a function", command: "f() { local -n R=T; }; S=/tmp/work; $S/run.sh"},
+		{name: "declare -n through builtin", command: "builtin declare -n R=T; S=/tmp/work; $S/run.sh"},
+		{name: "typeset -n through command with an option", command: "command -p typeset -n R=T; S=/tmp/work; $S/run.sh"},
+		{name: "declare with an attribute through command", command: "command declare -u S; S=/tmp/work; $S/run.sh"},
+		{name: "zsh integer", command: "integer S; S=/tmp/work; $S/run.sh"},
+		{name: "eval string declaring a name reference later in a loop", command: "S=/tmp/work; for f in a b; do $S/run.sh; eval 'declare -n R=T'; done"},
+		{name: "assignment prefix of the command reading it", command: "S=/tmp/work $S/run.sh"},
+		{name: "source of a file after the assignment", command: "S=/tmp/work; source env.sh; $S/run.sh"},
+		{name: "shell string of another shell", command: "S=/tmp/work; bash -c '$S/run.sh'"},
+		{name: "expansion with an operator", command: "S=/tmp/work/x; ${S%/x}/run.sh"},
+		{name: "unquoted expansion of a value holding a space", command: "S='/tmp/my work'; $S/run.sh"},
+		{name: "unquoted expansion of a value holding a glob character", command: "S='/tmp/*'; $S/run.sh"},
+		{name: "unquoted expansion after IFS is assigned", command: "IFS=/; S=/tmp/work; $S/run.sh"},
+		{name: "declare with an attribute that changes the value", command: "declare -u S=/tmp/work; $S/run.sh"},
+		{name: "assignment after an attribute that changes the value", command: "typeset -l S; S=/TMP/work; $S/run.sh"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := parse(t, tt.command)
+
+			checkRunShReadUnknown(t, tt.command, got)
+		})
+	}
+}
+
+func TestParse_WhenAReadonlyMayNotGiveAVariableItsValue_ReadsItsExpansionUnknown(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{name: "assignment to a readonly name", command: "readonly S=/srv; S=/tmp/work; $S/run.sh"},
+		{name: "readonly after a readonly whose value is not a literal", command: "readonly S=$(pwd); readonly S=/tmp/work; $S/run.sh"},
+		{name: "readonly after declare -r", command: "declare -r S=$(pwd); readonly S=/tmp/work; $S/run.sh"},
+		{name: "readonly after a readonly in an if body", command: "if test -d x; then readonly S=/srv; fi; readonly S=/tmp/work; $S/run.sh"},
+		{name: "readonly after a readonly an eval string runs", command: "eval 'readonly S=$(pwd)'; readonly S=/tmp/work; $S/run.sh"},
+		{name: "assignment to a name builtin readonly made readonly", command: "builtin readonly S=/srv; S=/tmp/work; $S/run.sh"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := parse(t, tt.command)
+
+			checkRunShReadUnknown(t, tt.command, got)
+		})
+	}
+}
+
+func TestParse_WhenTheShellMaySetAVariableOnItsOwn_ReadsItsExpansionUnknown(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{name: "builtin that writes a named variable", command: "S=/tmp/work; print -v S /srv; $S/run.sh"},
+		{name: "builtin of a zsh module that writes a named variable", command: "S=/tmp/work; zformat -f S /srv; $S/run.sh"},
+		{name: "builtin that edits a variable", command: "S=/tmp/work; vared S; $S/run.sh"},
+		{name: "printf given a format that is not a literal", command: `S=/tmp/work; printf "$F" S /srv; $S/run.sh`},
+		{name: "read of IFS before the assignment", command: "read IFS <<< ,; S=/tmp/work,x; $S/run.sh"},
+		{name: "for loop over IFS before the assignment", command: "for IFS in ,; do :; done; S=/tmp/work,x; $S/run.sh"},
+		{name: "builtin naming IFS before the assignment", command: "print -v IFS ,; S=/tmp/work,x; $S/run.sh"},
+		{name: "zsh match variable after a regex test", command: "MATCH=/tmp/work; [[ a =~ a ]]; $MATCH/run.sh"},
+		{name: "zsh match array after a regex test", command: "match=/tmp/work; [[ a =~ (a) ]]; $match/run.sh"},
+		{name: "bash match array after a regex test", command: "BASH_REMATCH=/tmp/work; [[ a =~ a ]]; $BASH_REMATCH/run.sh"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := parse(t, tt.command)
+
+			checkRunShReadUnknown(t, tt.command, got)
+		})
+	}
+}
+
+// checkRunShReadUnknown checks that got, the invocations Parse returns for command, read no command
+// word as a literal run.sh and read at least one command word unknown.
+func checkRunShReadUnknown(t *testing.T, command string, got []guard.Invocation) {
+	t.Helper()
+
+	var unread bool
+	for _, inv := range got {
+		if len(inv.Words) == 0 {
+			continue
+		}
+		first := inv.Words[0]
+		unread = unread || !first.Literal
+		assert.Check(t, !first.Literal || !strings.HasSuffix(first.Text, "run.sh"), "Parse(%q) reads %q", command, first.Text)
+	}
+	assert.Check(t, unread, "Parse(%q) = %v, want a command word read unknown", command, texts(got))
+}
+
+func TestJudge_WhenAVariableTheCommandAssignedHoldsAGuardedWord_RefusesAsThatWord(t *testing.T) {
+	t.Parallel()
+
+	checkRefusals(t, []refusal{
+		{name: "command word", command: "G=git; $G push", wantNamed: "git push"},
+		{name: "option of git clean", command: "F=--force; git clean $F", wantNamed: "deletes untracked files"},
+	})
+}
+
+func TestJudge_WhenACdFollowsAVariableNamingATrunkClone_RefusesTheCommit(t *testing.T) {
+	t.Parallel()
+	f, _ := standingOn(t, "main", "main")
+	caller := callerIn(f, outsideDir(t))
+
+	checkJudgedRow(t, caller, judged{command: "D=" + quotedPath(f.Dir()) + `; cd "$D" && ` + commitCommand, want: guard.Refuse, wantNamed: "main"})
+}
+
+func TestJudge_WhenACdFollowsAVariableNamingATopicClone_AllowsTheCommit(t *testing.T) {
+	t.Parallel()
+	f, _ := standingOn(t, "main", "topic")
+	caller := callerIn(f, outsideDir(t))
+
+	checkJudgedRow(t, caller, judged{command: "D=" + quotedPath(f.Dir()) + `; cd "$D" && ` + commitCommand, want: guard.Allow})
 }

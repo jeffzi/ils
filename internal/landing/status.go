@@ -80,6 +80,9 @@ type reading struct {
 	running     bool
 	cut         bool
 	offline     bool
+	// copyUnread is set when the fetch of origin's copy of the branch, or the count of the commits
+	// apart from it, failed: the status then knows neither, so no step past the fix can be told.
+	copyUnread bool
 }
 
 func (r *reading) say(lines ...result.Phrase) {
@@ -114,7 +117,6 @@ func (r *reading) unread(line result.Phrase, read, reason string) {
 	r.markUnread(read, reason)
 }
 
-// markUnread lists the read named read as unread, for the reason given.
 func (r *reading) markUnread(read, reason string) {
 	r.status.Unread = append(r.status.Unread, result.Unread{Read: read, Error: reason})
 }
@@ -280,10 +282,7 @@ func (r *reading) readOrigin(ctx context.Context) {
 	switch {
 	case err != nil:
 		r.failed(readURLs, err)
-
-		if !r.cut {
-			r.skippedPulls(err.Error())
-		}
+		r.skippedPulls(err.Error())
 	case !oneRepo:
 		r.block(Request{Command: PushCommand}.twoRepositories(urls), "origin's URLs do not name one GitHub repository")
 	default:
@@ -318,7 +317,7 @@ func (r *reading) readOrigin(ctx context.Context) {
 // against origin after them; a clone that never learned origin's trunk fails that read, yet still
 // counts the branch against origin's copy as last fetched. Anything else fails the read.
 func (r *reading) readLastFetch(ctx context.Context, err error) {
-	if _, unreached := errors.AsType[*git.RemoteError](err); !unreached || endedEarly(err) {
+	if !errors.Is(err, git.ErrRemote) || endedEarly(err) {
 		r.failed(readTrunk, err)
 
 		return
@@ -373,10 +372,7 @@ func (r *reading) readIdentity(ctx context.Context) {
 		}
 
 		r.failed(readIdentity, err)
-
-		if !r.cut {
-			r.skippedPulls(err.Error())
-		}
+		r.skippedPulls(err.Error())
 
 		return
 	}
@@ -455,11 +451,9 @@ func (r *reading) readCopy(ctx context.Context) {
 
 	theirs, found, read, err := r.copyTip(ctx)
 
-	r.status.OnOrigin = found
-
 	switch {
 	case err != nil:
-		r.failed(read, err)
+		r.failedCopy(read, err)
 
 		return
 	case !found:
@@ -468,7 +462,7 @@ func (r *reading) readCopy(ctx context.Context) {
 		return
 	}
 
-	r.copied = theirs
+	r.status.OnOrigin, r.copied = true, theirs
 
 	if r.on.tip == "" {
 		return
@@ -476,7 +470,7 @@ func (r *reading) readCopy(ctx context.Context) {
 
 	apart, err := r.deps.Repo.Divergence(ctx, r.on.tip, theirs)
 	if err != nil {
-		r.failed(readCopy, err)
+		r.failedCopy(readCopy, err)
 
 		return
 	}
@@ -493,6 +487,14 @@ func (r *reading) readCopy(ctx context.Context) {
 	default:
 		r.say(result.Say("The branch %s is up to date with origin's copy of it", branch))
 	}
+}
+
+// failedCopy records that the read named read of origin's copy of the branch failed with err and,
+// unless a cut ended it, leaves the copy unread for next. A failed ask of whether origin has the
+// branch is not a read of the copy: it leaves the branch counted as not on origin.
+func (r *reading) failedCopy(read string, err error) {
+	r.failed(read, err)
+	r.copyUnread = read == readCopy && !r.cut
 }
 
 // copyTip returns the tip of origin's copy of the branch and whether origin has one: fetched now, or
@@ -546,7 +548,7 @@ func (r *reading) readPulls(ctx context.Context) {
 				result.PullRequest(change.Number), result.Branch(change.Base), result.Branch(r.status.Trunk)))
 		case change.State != forge.ChangeOpen:
 			r.status.PastPullRequests = append(r.status.PastPullRequests,
-				result.PastPull{Number: change.Number, State: string(change.State)})
+				result.PastPull{Number: change.Number, State: change.State})
 			r.say(result.Say("Pull request %s: %s", result.PullRequest(change.Number), string(change.State)))
 		}
 	}
@@ -745,6 +747,10 @@ func (r *reading) next() result.Next {
 
 	if !r.dirty.None() {
 		return r.dirty
+	}
+
+	if r.copyUnread {
+		return r.req.onceFixed()
 	}
 
 	s, push := r.status, result.Command(PushCommand)

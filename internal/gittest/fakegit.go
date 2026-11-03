@@ -3,6 +3,7 @@ package gittest
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -28,29 +29,38 @@ const (
 
 	// realGitEnv holds the path of the real git; its presence makes the test binary act as git.
 	realGitEnv = "ILS_GITTEST_REAL_GIT"
-	// raceEnv holds the options of the Go race detector.
-	raceEnv = "GORACE"
-	// versionEnv holds what `git --version` prints.
+	raceEnv    = "GORACE"
 	versionEnv = "ILS_GITTEST_VERSION"
 	// failOnEnv holds the words a failing call starts with, separated by wordsSep.
 	failOnEnv = "ILS_GITTEST_FAIL_ON"
 	// stallOnEnv holds the words a stalling call starts with, separated by wordsSep.
 	stallOnEnv = "ILS_GITTEST_STALL_ON"
-	// stallAtEnv holds the address a stalling call connects to.
 	stallAtEnv = "ILS_GITTEST_STALL_AT"
 	// answerOnEnv holds the words an answered call starts with, separated by wordsSep.
 	answerOnEnv = "ILS_GITTEST_ANSWER_ON"
-	// answerEnv holds what an answered call prints.
-	answerEnv = "ILS_GITTEST_ANSWER"
+	answerEnv   = "ILS_GITTEST_ANSWER"
 	// wordsSep separates the words a variable holds; no word a fake matches on holds a line break.
 	wordsSep = "\n"
+	// spawnAtEnv holds the address the lingering copy of a spawner holds; its presence makes the
+	// test binary act as a spawner.
+	spawnAtEnv = "ILS_GITTEST_SPAWN_AT"
+	// spawnSaysEnv holds the line a spawner prints before it starts its lingering copy.
+	spawnSaysEnv = "ILS_GITTEST_SPAWN_SAYS"
+	// lingerAtEnv holds the address a spawner's lingering copy holds; its presence makes the test
+	// binary act as that copy.
+	lingerAtEnv = "ILS_GITTEST_LINGER_AT"
 )
 
 // Fake says how the git FakeGit puts on PATH answers. A call it does not fake runs the real git.
+//
+// A call that more than one setting fakes gets the first that matches, in this order: Version,
+// FailOn, StallOn, AnswerOn.
 type Fake struct {
-	// Version, when not empty, is what `git --version` prints, followed by a line break.
+	// Version, when not empty, is what a call whose arguments are exactly `--version` prints,
+	// followed by a line break. Any other call, `version` and `--version --build-options` included,
+	// is not faked by it.
 	Version string
-	// StallAt is the address a call StallOn names connects to.
+	// StallAt is the address a call StallOn names connects to; it is unused when StallOn is empty.
 	StallAt string
 	// Answer is what a call AnswerOn names prints, followed by a line break.
 	Answer string
@@ -66,17 +76,29 @@ type Fake struct {
 	AnswerOn []string
 }
 
-// Main makes the test binary act as git when FakeGit arranged for it, and reports whether it did.
+// Main makes the test binary act as git when FakeGit arranged for it, or as a spawner or its
+// lingering copy when Spawner did, and reports whether it did.
 //
 // A package's TestMain calls it before anything else and, when served is true, exits with code
 // without running a test.
 func Main() (code int, served bool) {
+	ctx := context.Background()
+
+	// First: the lingering copy inherits the spawner's environment, spawnAtEnv included.
+	if addr := os.Getenv(lingerAtEnv); addr != "" {
+		return Hold(ctx, addr), true
+	}
+
+	if addr := os.Getenv(spawnAtEnv); addr != "" {
+		return spawn(ctx, addr, os.Getenv(spawnSaysEnv)), true
+	}
+
 	realGit := os.Getenv(realGitEnv)
 	if realGit == "" {
 		return 0, false
 	}
 
-	return serveGit(context.Background(), realGit, os.Args[1:]), true
+	return serveGit(ctx, realGit, os.Args[1:]), true
 }
 
 // FakeGit puts the test binary first on PATH under git's name for the rest of the test, acting as
@@ -85,13 +107,16 @@ func Main() (code int, served bool) {
 // It sets the process environment, so the test cannot be parallel, and a git runner that inherits
 // that environment reaches the fake. It returns the variables the fake reads, for a runner whose
 // environment is given whole: such a runner appends them to it.
+//
+// Called again in the same test, it replaces every setting of the earlier call: a setting the new
+// fake leaves empty fakes nothing, and the variables it returns override the earlier call's when a
+// runner appends both. It keeps only the real git the first call found: the git first on PATH is
+// then the earlier fake, and a fake that ran it for the calls it does not fake would call itself
+// forever.
 func FakeGit(tb testing.TB, fake Fake) []string {
 	tb.Helper()
 
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		tb.Fatalf("gittest: find the real git: %v", err)
-	}
+	realGit := findRealGit(tb)
 
 	var settings []string
 
@@ -103,28 +128,35 @@ func FakeGit(tb testing.TB, fake Fake) []string {
 
 	set(realGitEnv, realGit)
 	set(raceEnv, RaceSetting())
-
-	if fake.Version != "" {
-		set(versionEnv, fake.Version)
-	}
-
-	if len(fake.FailOn) > 0 {
-		set(failOnEnv, strings.Join(fake.FailOn, wordsSep))
-	}
-
-	if len(fake.StallOn) > 0 {
-		set(stallOnEnv, strings.Join(fake.StallOn, wordsSep))
-		set(stallAtEnv, fake.StallAt)
-	}
-
-	if len(fake.AnswerOn) > 0 {
-		set(answerOnEnv, strings.Join(fake.AnswerOn, wordsSep))
-		set(answerEnv, fake.Answer)
-	}
+	// Every variable is set, empty when unused, so that this call's settings replace an earlier
+	// call's both in the process environment and in a runner that appends both calls' settings.
+	set(versionEnv, fake.Version)
+	set(failOnEnv, strings.Join(fake.FailOn, wordsSep))
+	set(stallOnEnv, strings.Join(fake.StallOn, wordsSep))
+	set(stallAtEnv, fake.StallAt)
+	set(answerOnEnv, strings.Join(fake.AnswerOn, wordsSep))
+	set(answerEnv, fake.Answer)
 
 	LinkAs(tb, "git")
 
 	return settings
+}
+
+// findRealGit returns the path of the git a fake runs for the calls it does not fake: the one an
+// earlier FakeGit of the test recorded, or else the git first on PATH.
+func findRealGit(tb testing.TB) string {
+	tb.Helper()
+
+	if realGit := os.Getenv(realGitEnv); realGit != "" {
+		return realGit
+	}
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		tb.Fatalf("gittest: find the real git: %v", err)
+	}
+
+	return realGit
 }
 
 // RaceSetting returns the value of GORACE that stops a binary built with -race from sleeping a
@@ -132,6 +164,22 @@ func FakeGit(tb testing.TB, fake Fake) []string {
 // It keeps the options the environment already holds.
 func RaceSetting() string {
 	return strings.TrimSpace(os.Getenv(raceEnv) + " atexit_sleep_ms=0")
+}
+
+// CoverSetting returns the GOCOVERDIR=<dir> entry that makes a child built for coverage write its
+// counters where `go test -cover` collects them, or "" when the test binary runs without coverage.
+func CoverSetting() string {
+	coverDirFlag := flag.Lookup("test.gocoverdir")
+	if coverDirFlag == nil {
+		return ""
+	}
+
+	dir := coverDirFlag.Value.String()
+	if dir == "" {
+		return ""
+	}
+
+	return "GOCOVERDIR=" + dir
 }
 
 // LinkAs puts the test binary first on PATH under the name of tool for the rest of the test, so
@@ -183,7 +231,7 @@ func firstOnPath(dir, path string) string {
 
 // serveGit answers one call of the fake git with args and returns its exit code.
 func serveGit(ctx context.Context, realGit string, args []string) int {
-	if version, ok := os.LookupEnv(versionEnv); ok && slices.Equal(args, []string{"--version"}) {
+	if version := os.Getenv(versionEnv); version != "" && slices.Equal(args, []string{"--version"}) {
 		return say(os.Stdout, version, "the faked version", 0)
 	}
 
@@ -242,6 +290,42 @@ func Hold(ctx context.Context, addr string) int {
 	closeErr := conn.Close()
 
 	return broken(errors.Join(fmt.Errorf("the server at %s closed the held call", addr), copyErr, closeErr))
+}
+
+// Spawner returns the environment entries that make the test binary, started with them, print
+// said on a line of its own, start a copy of itself that inherits its output and holds addr until
+// the test ends, and exit zero at once: a program that is gone while a process it started still
+// holds its output pipes.
+//
+// The package's TestMain must call Main. A test that hands in the address of a SilentListener
+// learns when the copy has started.
+func Spawner(addr, said string) []string {
+	return []string{spawnAtEnv + "=" + addr, spawnSaysEnv + "=" + said, raceEnv + "=" + RaceSetting()}
+}
+
+// spawn prints said, starts a copy of the test binary that inherits this process's output and
+// holds addr, and returns zero without waiting for it, or BrokenCode when it cannot.
+func spawn(ctx context.Context, addr, said string) int {
+	if code := say(os.Stdout, said, "the spawner's line", 0); code != 0 {
+		return code
+	}
+
+	self, err := os.Executable()
+	if err != nil {
+		return broken(fmt.Errorf("find the test binary: %w", err))
+	}
+
+	//nolint:gosec // G204: the test binary starts itself; nothing here comes from outside the test.
+	lingerer := exec.CommandContext(ctx, self)
+	lingerer.Env = append(os.Environ(), lingerAtEnv+"="+addr)
+	lingerer.Stdout = os.Stdout
+	lingerer.Stderr = os.Stderr
+
+	if err := lingerer.Start(); err != nil {
+		return broken(fmt.Errorf("start the lingering copy: %w", err))
+	}
+
+	return 0
 }
 
 // runRealGit runs the real git with args, the environment, and the standard streams, and returns

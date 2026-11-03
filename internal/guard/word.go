@@ -12,17 +12,26 @@ import (
 
 // Word is one word of an invocation after quote removal.
 type Word struct {
-	// Text is the word after quote removal when Literal is set, and otherwise the literal text
-	// before the first part the shell would expand.
+	// Text is the word after quote removal when Literal is set, and otherwise the text before the
+	// first part the guard cannot read, with each expansion of a variable whose value the guard
+	// knows read as that value.
 	Text string
-	// Literal reports whether quote removal leaves plain text: the word holds no expansion, no
-	// substitution, no brace expansion, no unquoted glob character, and no `~user`.
+	// Literal reports whether quote removal leaves plain text: the word holds no substitution, no
+	// brace expansion, no unquoted glob character, no `~user`, and no expansion other than one of a
+	// variable whose value the guard knows (see shellVars), which the text holds in its place.
 	Literal bool
 }
 
+// expander is what readWord reads a word with: the HOME that `~` and `~/…` expand to, and the
+// shell variables whose value an expansion may stand for.
+type expander struct {
+	vars shellVars
+	home string
+}
+
 // readWord returns w after quote removal, or its literal prefix when any part of it is one the
-// shell would expand.
-func readWord(w *syntax.Word, home string) Word {
+// shell would expand and ex cannot tell the value of.
+func readWord(w *syntax.Word, ex expander) Word {
 	if w == nil {
 		return Word{}
 	}
@@ -38,7 +47,7 @@ func readWord(w *syntax.Word, home string) Word {
 		case *syntax.Lit:
 			raw, expanded := p.Value, true
 			if i == 0 {
-				raw, expanded = expandTilde(&text, raw, len(split.Parts) == 1, home)
+				raw, expanded = expandTilde(&text, raw, len(split.Parts) == 1, ex.home)
 			}
 
 			literal = expanded && readUnquoted(&text, raw, i == len(split.Parts)-1)
@@ -52,7 +61,9 @@ func readWord(w *syntax.Word, home string) Word {
 
 			text.WriteString(value)
 		case *syntax.DblQuoted:
-			literal = readDoubleQuoted(&text, p.Parts)
+			literal = readDoubleQuoted(&text, p.Parts, ex.vars)
+		case *syntax.ParamExp:
+			literal = readUnquotedExpansion(&text, split.Parts, i, ex.vars)
 		}
 
 		if !literal {
@@ -65,13 +76,15 @@ func readWord(w *syntax.Word, home string) Word {
 
 // decodeANSIC returns the value of a `$'…'` string once its escapes are decoded as bash decodes
 // them, ending at the first NUL byte as bash does. It reports false for a value holding `\c`, the
-// control-character escape that expand.Format leaves as written.
+// control-character escape that expand.Format leaves as written, and for a value that
+// expand.Format returns an error for, whatever the error is.
 func decodeANSIC(value string) (string, bool) {
 	if strings.Contains(value, `\c`) {
 		return "", false
 	}
 
-	// With no arguments, Format decodes escapes only and leaves `%` as written, so it cannot fail.
+	// With no arguments, Format decodes escapes only and leaves `%` as written, so it is not
+	// expected to fail; an error it does return is reported as false, never as a decoded value.
 	// It writes to the config it is given, and to a shared one when given nil, so each call gets its
 	// own to keep concurrent Parse calls apart.
 	decoded, _, err := expand.Format(&expand.Config{}, value, nil)
@@ -131,18 +144,61 @@ func readUnquoted(b *strings.Builder, raw string, last bool) bool {
 }
 
 // readDoubleQuoted writes the parts of a double-quoted string to b after quote removal, and reports
-// whether they are all plain text.
-func readDoubleQuoted(b *strings.Builder, parts []syntax.WordPart) bool {
-	for _, part := range parts {
-		lit, ok := part.(*syntax.Lit)
-		if !ok {
+// whether they are all plain text, or expansions of variables whose value vars knows.
+func readDoubleQuoted(b *strings.Builder, parts []syntax.WordPart, vars shellVars) bool {
+	for i, part := range parts {
+		switch p := part.(type) {
+		case *syntax.Lit:
+			writeDoubleQuotedText(b, p.Value)
+		case *syntax.ParamExp:
+			value, known := vars.expansion(p)
+			if !known || modifiedByZsh(parts, i) {
+				return false
+			}
+
+			b.WriteString(value)
+		default:
 			return false
 		}
-
-		writeDoubleQuotedText(b, lit.Value)
 	}
 
 	return true
+}
+
+// splitOrGlobChars are the characters that make the value of an unquoted expansion more than one
+// plain word: a blank the shell splits it at, or a character that may open a glob pattern.
+const splitOrGlobChars = " \t\n*?[(\\"
+
+// readUnquotedExpansion writes to b the value of parts[i], an unquoted parameter expansion, and
+// reports whether it stands for one plain word: a variable whose value vars knows, which is not
+// empty, since an empty one removes the word, holds none of splitOrGlobChars, and is not modified
+// by zsh (see modifiedByZsh).
+func readUnquotedExpansion(b *strings.Builder, parts []syntax.WordPart, i int, vars shellVars) bool {
+	value, known := vars.expansion(parts[i].(*syntax.ParamExp))
+	if !known || value == "" || strings.ContainsAny(value, splitOrGlobChars) || modifiedByZsh(parts, i) {
+		return false
+	}
+
+	b.WriteString(value)
+
+	return true
+}
+
+// modifiedByZsh reports whether parts[i], a parameter expansion, is a `$NAME` that zsh reads with
+// the modifier the text after it opens, as in `$f:h`: a colon and a letter or `&`.
+func modifiedByZsh(parts []syntax.WordPart, i int) bool {
+	if !parts[i].(*syntax.ParamExp).Short || i+1 == len(parts) {
+		return false
+	}
+
+	next, ok := parts[i+1].(*syntax.Lit)
+	if !ok || len(next.Value) < 2 || next.Value[0] != ':' {
+		return false
+	}
+
+	c := next.Value[1]
+
+	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || c == '&'
 }
 
 // writeDoubleQuotedText writes value, the text between double quotes, to b after quote removal. A
@@ -175,7 +231,10 @@ func writeDoubleQuotedText(b *strings.Builder, value string) {
 	}
 }
 
-// wordTexts returns the text of each of words.
+func inTable(table map[string]bool, w Word) bool {
+	return w.Literal && table[w.Text]
+}
+
 func wordTexts(words []Word) []string {
 	texts := make([]string, 0, len(words))
 	for _, w := range words {
@@ -185,7 +244,6 @@ func wordTexts(words []Word) []string {
 	return texts
 }
 
-// literalWords returns each of texts as a literal word.
 func literalWords(texts []string) []Word {
 	words := make([]Word, 0, len(texts))
 	for _, text := range texts {

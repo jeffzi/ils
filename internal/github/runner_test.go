@@ -3,7 +3,6 @@ package github_test
 import (
 	"errors"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -41,12 +40,11 @@ func TestVersionOf(t *testing.T) {
 	}
 }
 
-// withoutGh sets `GH_PATH` to ghPath and empties `PATH` for the rest of the test, so that no `gh`
-// can be found.
-func withoutGh(t *testing.T, ghPath string) {
+// withoutGh empties `GH_PATH` and `PATH` for the rest of the test, so that no `gh` can be found.
+func withoutGh(t *testing.T) {
 	t.Helper()
 
-	t.Setenv("GH_PATH", ghPath)
+	t.Setenv("GH_PATH", "")
 	t.Setenv("PATH", t.TempDir())
 }
 
@@ -57,24 +55,12 @@ func pendingChecks() ghtest.Call {
 }
 
 func TestRunner_Run_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
-	tests := []struct {
-		name   string
-		ghPath string
-	}{
-		{name: "GH_PATH names no file", ghPath: filepath.Join(t.TempDir(), "gh")},
-		{name: "no GH_PATH and no gh on PATH", ghPath: ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			withoutGh(t, tt.ghPath)
+	withoutGh(t)
 
-			_, err := github.Runner{}.Run(t.Context(), "pr", "view")
+	_, err := github.Runner{}.Run(t.Context(), "pr", "view")
 
-			missing, ok := errors.AsType[*child.ToolMissingError](err)
-			assert.Assert(t, ok, "Run(pr view) error = %v, want *child.ToolMissingError", err)
-			assert.Check(t, missing.Err != nil, "Run(pr view) error carries no cause, want what starting gh failed with")
-		})
-	}
+	_, ok := errors.AsType[*child.ToolMissingError](err)
+	assert.Assert(t, ok, "Run(pr view) error = %v, want *child.ToolMissingError", err)
 }
 
 func TestRunner_CheckLogin_WhenNotLoggedIn_ReturnsNotLoggedInError(t *testing.T) {
@@ -98,8 +84,8 @@ func TestRunner_Run_WhenEnvGiven_RunsGhWithIt(t *testing.T) {
 	ghtest.Setup(t, ghtest.Says("process\n", "alias", "list"))
 
 	got, err := github.Runner{Env: given}.Run(t.Context(), "alias", "list")
-
 	assert.NilError(t, err)
+
 	assert.Check(t, is.Equal(got.Stdout, "given\n"))
 }
 

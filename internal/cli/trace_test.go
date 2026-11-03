@@ -143,7 +143,7 @@ func TestApp_Run_WhenDebugIsOn_DrawsEachRecordTimedFromLaunchWithTimesDim(t *tes
 	got := launch(t, app, "push", "-d")
 
 	drawn := resulttest.Draw(t, got.stderr)
-	lines := strings.Split(strings.TrimSuffix(drawn.String(), "\n"), "\n")
+	lines := outputLines(drawn.String())
 	want := []string{
 		"+1.500s wait read=merge-state state=unknown window=30s",
 		"+2.250s gh pr view 12 exit 0 1.234s",

@@ -68,7 +68,8 @@ func deliver(ctx context.Context, deps Deps, req Request, p pushReady) result.Re
 	return *d.report(deps)
 }
 
-// pushTip pushes the branch to origin unless origin's copy is already at the tip.
+// pushTip pushes the tip the preconditions checked to the branch on origin, unless origin's copy is
+// already at it.
 func (d *delivery) pushTip(ctx context.Context, deps Deps) *result.Result {
 	if d.onOrigin {
 		deps.say(&d.lines, result.Say("%s is already on origin at %s; nothing pushed", d.markedBranch(), d.markedTip()))
@@ -78,7 +79,7 @@ func (d *delivery) pushTip(ctx context.Context, deps Deps) *result.Result {
 
 	deps.started(result.Say("Pushing %s", d.markedBranch()))
 
-	err := deps.Repo.Push(ctx, d.branch)
+	err := deps.Repo.Push(ctx, d.branch, d.tip)
 	if err == nil {
 		deps.say(&d.lines, result.Say("Pushed %s at %s", d.markedBranch(), d.markedTip()))
 
@@ -94,46 +95,83 @@ const originStopped = "origin stopped answering"
 // pushRefusedWording opens both lines pushRefused can say; it stays untyped for the same reason.
 const pushRefusedWording = "Git refused the push of %s, so nothing was pushed"
 
+// pushFailure is how a push that failed ended, by what its error says about origin.
+type pushFailure int
+
+const (
+	pushInterrupted pushFailure = iota
+	pushTimedOut
+	// pushRefusedByGit is a push git refused, which left origin as it was.
+	pushRefusedByGit
+	pushUnanswered
+	pushKilled
+	// pushNotStarted is any other failure, such as a git that never started, which left origin as
+	// it was.
+	pushNotStarted
+)
+
+// classifyPush returns how the push that failed with err ended, the next step of the run req
+// that ends on it, and git's refusal when git refused it. The checks run in that order: a push cut
+// short is also an ErrRemote failure of git, so the interrupt and the time limit come before it.
+func classifyPush(req Request, err error) (failure pushFailure, next result.Next, refused *git.PushError) {
+	if interrupted(err) {
+		return pushInterrupted, req.again(), nil
+	}
+
+	if timedOut(err) {
+		return pushTimedOut, req.afterTimeLimit(), nil
+	}
+
+	if refused, ok := errors.AsType[*git.PushError](err); ok {
+		return pushRefusedByGit, req.onceFixed(), refused
+	}
+
+	if errors.Is(err, git.ErrRemote) {
+		return pushUnanswered, req.again(), nil
+	}
+
+	if _, ok := errors.AsType[*child.KilledError](err); ok {
+		return pushKilled, req.again(), nil
+	}
+
+	return pushNotStarted, req.onceFixed(), nil
+}
+
 // pushFailed returns the result of a push that failed with err, worded for what err says about
 // origin. Only a push git refused, or one whose git never started, surely left origin as it was;
 // one cut short, one origin stopped answering, and one whose git a signal killed may have taken,
 // and running the push again settles which.
 func (d *delivery) pushFailed(err error) *result.Result {
-	if interrupted(err) {
+	failure, next, refused := classifyPush(d.req, err)
+
+	switch failure {
+	case pushInterrupted:
 		return d.endedSaying(
-			result.Say("Started the push of %s at %s when "+runInterrupted+"; it may or may not have taken",
+			result.Say("Started the push of %s at %s when "+runInterrupted+mayHaveTaken,
 				d.markedBranch(), d.markedTip()),
-			result.Broke, result.Say(runInterrupted+" during the push"), d.req.again())
-	}
-
-	if timedOut(err) {
+			result.Say(runInterrupted+" during the push"), next)
+	case pushTimedOut:
 		return d.endedSaying(
-			result.Say("Started the push of %s at %s when "+timeLimitEnded+"; it may or may not have taken",
+			result.Say("Started the push of %s at %s when "+timeLimitEnded+mayHaveTaken,
 				d.markedBranch(), d.markedTip(), d.req.limitWords()),
-			result.Broke, result.Say(timeLimitEnded+" during the push", d.req.limitWords()), d.req.afterTimeLimit())
-	}
-
-	if refused, ok := errors.AsType[*git.PushError](err); ok {
+			result.Say(timeLimitEnded+" during the push", d.req.limitWords()), next)
+	case pushRefusedByGit:
 		return d.pushRefused(refused)
-	}
-
-	if _, ok := errors.AsType[*git.RemoteError](err); ok {
+	case pushUnanswered:
 		return d.endedSaying(
-			result.Say("Started the push of %s at %s when "+originStopped+"; it may or may not have taken: %s",
+			result.Say("Started the push of %s at %s when "+originStopped+mayHaveTaken+": %s",
 				d.markedBranch(), d.markedTip(), err.Error()),
-			result.Broke, result.Say(originStopped+" during the push"), d.req.again())
-	}
-
-	if _, ok := errors.AsType[*child.KilledError](err); ok {
+			result.Say(originStopped+" during the push"), next)
+	case pushKilled:
 		return d.endedSaying(
 			result.Say("The push of %s at %s did not finish, so it may or may not have taken: %s",
 				d.markedBranch(), d.markedTip(), err.Error()),
-			result.Broke, result.Say("the push did not finish"), d.req.again())
+			result.Say("the push did not finish"), next)
+	default:
+		return d.endedSaying(
+			result.Say("Could not push %s, so nothing was pushed: %s", d.markedBranch(), err.Error()),
+			result.Say("could not push the branch"), next)
 	}
-
-	return d.endedSaying(
-		result.Say("Could not push %s, so nothing was pushed: %s", d.markedBranch(), err.Error()),
-		result.Broke, result.Say("could not push the branch"), d.req.onceFixed())
 }
 
 // pushRefused returns the result of a push git refused: a line naming git's reason for the ref,
@@ -145,7 +183,7 @@ func (d *delivery) pushRefused(refused *git.PushError) *result.Result {
 		line = result.Say(pushRefusedWording+": %s", d.markedBranch(), refused.Reason)
 	}
 
-	ended := d.endedSaying(line, result.Broke, result.Say("git refused the push"), d.req.onceFixed())
+	ended := d.endedSaying(line, result.Say("git refused the push"), d.req.onceFixed())
 	ended.Excerpt = lastLines(refused.Output())
 
 	return ended
@@ -176,19 +214,27 @@ func (d *delivery) findOrOpen(ctx context.Context, deps Deps) *result.Result {
 	case interrupted(err):
 		return d.endedSaying(
 			result.Say("Started opening the pull request when "+runInterrupted+"; it may or may not have been opened"),
-			result.Broke, result.Say(runInterrupted+" while opening the pull request"),
+			result.Say(runInterrupted+" while opening the pull request"),
 			d.req.again())
 	case timedOut(err):
 		return d.endedSaying(
 			result.Say("Started opening the pull request when "+timeLimitEnded+"; it may or may not have been opened",
 				d.req.limitWords()),
-			result.Broke, result.Say(timeLimitEnded+" while opening the pull request", d.req.limitWords()),
+			result.Say(timeLimitEnded+" while opening the pull request", d.req.limitWords()),
+			d.req.again())
+	}
+
+	// A signal can end gh after GitHub opened the pull request, so its failure says nothing either way.
+	if _, killed := errors.AsType[*child.KilledError](err); killed {
+		return d.endedSaying(
+			result.Say("Started opening the pull request, which did not finish; it may or may not have been opened: %s", err.Error()),
+			result.Say("opening the pull request did not finish"),
 			d.req.again())
 	}
 
 	return d.endedSaying(
 		result.Say("No pull request was opened: %s", err.Error()),
-		result.Broke, result.Say("could not open the pull request"), d.req.onceFixed())
+		result.Say("could not open the pull request"), d.req.onceFixed())
 }
 
 // findAgain reads the branch's pull requests once more, after the forge said that one exists,
@@ -212,7 +258,7 @@ func (d *delivery) findAgain(ctx context.Context, deps Deps) *result.Result {
 	return d.endedSaying(
 		result.Say("No pull request was opened or found: GitHub reports one for %s and lists none open against %s",
 			d.markedBranch(), result.Branch(d.Trunk)),
-		result.Broke, result.Say("no pull request was opened or found"), d.req.onceFixed())
+		result.Say("no pull request was opened or found"), d.req.onceFixed())
 }
 
 // found takes change as the branch's pull request and says so.
@@ -239,16 +285,15 @@ func (d *delivery) unread(read string, err error) *result.Result {
 
 	line, reason := couldNotRead(read, err)
 
-	return d.endedSaying(line, result.Broke, reason, d.req.onceFixed())
+	return d.endedSaying(line, reason, d.req.onceFixed())
 }
 
-// endedSaying adds line to the lines said so far, then returns what ended returns.
-func (d *delivery) endedSaying(
-	line result.Phrase, outcome result.Outcome, reason result.Phrase, next result.Next,
-) *result.Result {
+// endedSaying adds line to the lines said so far, then returns what ended returns for a push that
+// broke.
+func (d *delivery) endedSaying(line result.Phrase, reason result.Phrase, next result.Next) *result.Result {
 	d.lines = append(d.lines, line)
 
-	return d.ended(outcome, reason, next)
+	return d.ended(result.Broke, reason, next)
 }
 
 // ended returns the result of the push with the lines said so far and, once the pull request
@@ -362,7 +407,7 @@ func (d *delivery) withoutCI(ctx context.Context, deps Deps, required []string) 
 
 	d.lines = append(d.lines, noCI(d.Trunk, d.tip))
 
-	if d.waited.apartWithoutCI() {
+	if d.waited.takeApart() {
 		return d.report(deps)
 	}
 

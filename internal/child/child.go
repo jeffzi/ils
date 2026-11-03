@@ -1,13 +1,16 @@
-// Package child names what a program started from an argv left behind, how it failed, or why it
-// is not fit to start.
+// Package child starts a program from an argv, never through a shell, and names what it left
+// behind, how it failed, or why it is not fit to start.
 package child
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"math"
+	"os"
 	"os/exec"
 	"slices"
 	"strings"
@@ -34,7 +37,7 @@ func (e *ExitError) Error() string {
 	return message
 }
 
-// Failure returns the error of a run of argv that failed with runErr and left stderr behind.
+// failure returns the error of a run of argv that failed with runErr and left stderr behind.
 //
 // When ctx ended before the program did, the error is the context's, whatever the
 // program's exit was. A program that died of an interrupt is reported as
@@ -52,7 +55,7 @@ func (e *ExitError) Error() string {
 //
 // A non-zero exit is an *ExitError, and a program a signal ended is a *KilledError. Anything else
 // is runErr, named by the command.
-func Failure(ctx context.Context, argv []string, runErr error, stderr string) error {
+func failure(ctx context.Context, argv []string, runErr error, stderr string) error {
 	command := CommandLine(argv)
 	named := func(err error) error { return fmt.Errorf("%s: %w", command, err) }
 
@@ -106,16 +109,16 @@ type Output struct {
 	Stderr string
 }
 
-// Ended returns what a run of argv that printed both outputs of printed and ended with runErr
-// leaves to its caller: printed when runErr is nil, and otherwise the error of Failure, with only
+// ended returns what a run of argv that printed both outputs of printed and ended with runErr
+// leaves to its caller: printed when runErr is nil, and otherwise the error of failure, with only
 // the stdout when that error is an *ExitError, which holds the stderr, and an empty Output when it
 // is not, so that a half-written stdout is never read.
-func Ended(ctx context.Context, argv []string, runErr error, printed Output) (Output, error) {
+func ended(ctx context.Context, argv []string, runErr error, printed Output) (Output, error) {
 	if runErr == nil {
 		return printed, nil
 	}
 
-	err := Failure(ctx, argv, runErr, printed.Stderr)
+	err := failure(ctx, argv, runErr, printed.Stderr)
 	if _, exitedNonZero := errors.AsType[*ExitError](err); exitedNonZero {
 		return Output{Stdout: printed.Stdout}, err
 	}
@@ -123,7 +126,116 @@ func Ended(ctx context.Context, argv []string, runErr error, printed Output) (Ou
 	return Output{}, err
 }
 
-// terminateGrace bounds how long Failure waits for the context of a program that died of SIGTERM
+// pipeGrace is how long a run waits for a program's output pipes to close once the program itself
+// is gone. A process the program started, such as ssh or a credential helper, can outlive it
+// holding those pipes.
+const pipeGrace = time.Second
+
+// Program is one run of a tool as a child process, started from an argv and never through a shell.
+type Program struct {
+	// LookPath finds the file to start for Tool. It must be set, because Run calls it to find Tool
+	// and a nil LookPath panics. The run is a *ToolMissingError when it fails.
+	LookPath func(name string) (string, error)
+	// Starting, when set, receives the argv once the tool is found and before it starts.
+	Starting func(argv []string)
+	// Logger, when set, receives one debug record per run once it ends: the record Exec.Log writes.
+	Logger *slog.Logger
+	// Tool is the name the tool is looked up by and the first word of the argv errors name.
+	Tool       string
+	InstallURL string
+	// Dir is the directory the tool runs in; empty runs it in this process's.
+	Dir  string
+	Args []string
+	// Env is the tool's whole environment; nil inherits this process's.
+	Env []string
+	// StartWantingAFileIsMissing makes a start that fails because a file it needs is not there a
+	// *ToolMissingError too, as gh reads a GH_PATH that names no file; unset, such a start is the
+	// error of the run, as git reads one.
+	StartWantingAFileIsMissing bool
+}
+
+// Environ returns a copy of env, the environment a tool runs with, or the environment of this
+// process when env is nil.
+func Environ(env []string) []string {
+	if env == nil {
+		return os.Environ()
+	}
+
+	return slices.Clone(env)
+}
+
+// Run runs the program and returns what ended leaves to its caller.
+//
+// A tool that cannot be found is a *ToolMissingError, and so is one that cannot be started for want
+// of a file when StartWantingAFileIsMissing is set. Run does
+// not wait for a process the tool started and left behind: once the tool has exited or been
+// killed, output pipes still held open are closed after pipeGrace, and a tool that exited zero
+// still succeeds, its own output being complete.
+//
+// When Logger is set, Run sends it the Exec record of the run once it has ended, whatever the run
+// ended with.
+func (p Program) Run(ctx context.Context) (Output, error) {
+	begun := time.Now()
+	output, err := p.run(ctx)
+
+	Exec{Tool: p.Tool, Args: p.Args, Err: err, Took: time.Since(begun)}.Log(ctx, p.Logger)
+
+	return output, err
+}
+
+// run is Run without the log record.
+func (p Program) run(ctx context.Context) (Output, error) {
+	path, err := p.LookPath(p.Tool)
+	if err != nil {
+		return Output{}, p.missing(err)
+	}
+
+	argv := Argv(p.Tool, p.Args)
+	if p.Starting != nil {
+		p.Starting(argv)
+	}
+
+	var stdout, stderr bytes.Buffer
+
+	//nolint:gosec // G204: running a tool with the caller's argv is this package's purpose; no shell is involved.
+	cmd := exec.CommandContext(ctx, path, p.Args...)
+	cmd.Dir = p.Dir
+	cmd.Env = p.Env
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	cmd.WaitDelay = pipeGrace
+
+	if startErr := cmd.Start(); startErr != nil {
+		if p.StartWantingAFileIsMissing && wantsAFile(startErr) {
+			return Output{}, p.missing(startErr)
+		}
+
+		return ended(ctx, argv, startErr, Output{})
+	}
+
+	runErr := cmd.Wait()
+	if errors.Is(runErr, exec.ErrWaitDelay) {
+		runErr = nil
+	}
+
+	return ended(ctx, argv, runErr, Output{Stdout: stdout.String(), Stderr: stderr.String()})
+}
+
+func (p Program) missing(err error) *ToolMissingError {
+	return &ToolMissingError{Tool: p.Tool, InstallURL: p.InstallURL, Err: err}
+}
+
+// wantsAFile reports whether startErr, what starting a program failed with, says that a file the
+// start needs is not there: the program's own, or the interpreter a script names.
+func wantsAFile(startErr error) bool {
+	if _, ok := errors.AsType[*exec.Error](startErr); ok {
+		return true
+	}
+
+	return errors.Is(startErr, fs.ErrNotExist)
+}
+
+// terminateGrace bounds how long failure waits for the context of a program that died of SIGTERM
 // to end. It only has to cover the scheduling of ils's own signal goroutine.
 const terminateGrace = 100 * time.Millisecond
 
@@ -218,7 +330,7 @@ func (e Exec) Log(ctx context.Context, logger *slog.Logger) {
 
 // ToolMissingError reports that a command-line tool ils drives is not installed.
 type ToolMissingError struct {
-	// Err is what looking the tool up failed with.
+	// Err is what looking the tool up, or starting the file the lookup found, failed with.
 	Err  error
 	Tool string
 	// InstallURL is the page the tool is installed from on every operating system, never a
@@ -231,7 +343,7 @@ func (e *ToolMissingError) Error() string {
 	return fmt.Sprintf("%s is not installed: install it from %s", e.Tool, e.InstallURL)
 }
 
-// Unwrap returns what looking the tool up failed with.
+// Unwrap returns what looking the tool up, or starting the file the lookup found, failed with.
 func (e *ToolMissingError) Unwrap() error {
 	return e.Err
 }
@@ -278,10 +390,10 @@ type Requirement struct {
 	InstallURL string
 }
 
-// Check returns nil when version is valid semver without the leading v and is r.Minimum or
+// check returns nil when version is valid semver without the leading v and is r.Minimum or
 // newer. Otherwise it returns a *ToolTooOldError for r.Tool, whose Version is empty when version
 // is not valid semver. line is the first line the tool printed for its version.
-func (r Requirement) Check(line, version string) error {
+func (r Requirement) check(line, version string) error {
 	tooOld := &ToolTooOldError{Tool: r.Tool, Line: line, Minimum: r.Minimum, InstallURL: r.InstallURL}
 
 	if !ValidVersion(version) {
@@ -298,11 +410,11 @@ func (r Requirement) Check(line, version string) error {
 
 // CheckOutput returns nil when the version that versionOf reads from the VersionLine of stdout,
 // the whole output of the tool's --version, is r.Minimum or newer. Otherwise it returns the
-// *ToolTooOldError of Check for that line.
+// *ToolTooOldError of check for that line.
 func (r Requirement) CheckOutput(stdout string, versionOf func(line string) string) error {
 	line := VersionLine(stdout)
 
-	return r.Check(line, versionOf(line))
+	return r.check(line, versionOf(line))
 }
 
 // VersionLine returns the first line of stdout, the output of a tool's --version: the only line a

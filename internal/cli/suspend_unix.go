@@ -12,26 +12,27 @@ import (
 // where it was once continued. A stop that cannot be sent leaves the process running, with nothing
 // reported: as with the display's own writes, a failed stop never changes the result.
 //
+// A process started with the stop signal ignored listens for nothing, so that it keeps ignoring it:
+// Notify would replace the ignore with a handler, and the listener would stop a process its parent
+// meant to keep running.
+//
 // The listener stays for the rest of the process, after the landing command returns too: once
 // Notify was called for SIGTSTP, detaching it does not give the signal back its default of
 // stopping the process, so the listener is what stops it. For the same reason it stops the process
 // with SIGSTOP, never by sending SIGTSTP again.
 func (a App) onStop(shown *display) {
-	if a.Notify == nil {
+	if a.Notify == nil || stopIgnored() {
 		return
 	}
 
-	stop := a.suspend
-	if stop == nil {
-		stop = func() error { return syscall.Kill(os.Getpid(), syscall.SIGSTOP) }
-	}
+	stop := func() error { return syscall.Kill(os.Getpid(), syscall.SIGSTOP) }
 
 	stops := make(chan os.Signal, 1)
 	a.Notify(stops, syscall.SIGTSTP)
 
 	go func() {
 		for range stops {
-			_ = shown.suspend(stop)
+			shown.suspend(stop)
 		}
 	}()
 }

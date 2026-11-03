@@ -4,11 +4,12 @@ package testtarget
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/jeffzi/ils/internal/child"
 )
 
-// The targets a test suite can be asked to run against. An unset target means Latest.
+// An unset target means Latest.
 const (
 	// Minimum asks for exactly the minimum version ils enforces.
 	Minimum = "minimum"
@@ -67,4 +68,10 @@ func (t Tool) CheckOutput(target, want, out string, versionOf func(line string) 
 	}
 
 	return t.Check(target, want, found)
+}
+
+// CheckEnvOutput is CheckOutput with the target and version the environment sets in t's TargetVar
+// and VersionVar.
+func (t Tool) CheckEnvOutput(out string, versionOf func(line string) string) error {
+	return t.CheckOutput(os.Getenv(t.TargetVar), os.Getenv(t.VersionVar), out, versionOf)
 }

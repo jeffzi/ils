@@ -68,7 +68,6 @@ func TestEnding_WhenDoneCloses_EndsWithTheError(t *testing.T) {
 	err := ctx.Err()
 
 	assert.Check(t, is.ErrorIs(err, context.DeadlineExceeded))
-
 	select {
 	case <-ctx.Done():
 	default:

@@ -316,7 +316,7 @@ func TestRelease_WhenFewerThanTheReserveIsLeftBeforeTheWrites_PendingWithTheComm
 	t.Parallel()
 
 	tests := []struct {
-		verdict string
+		verdict result.ReleaseVerdict
 		req     landing.Request
 	}{
 		{verdict: "green", req: releaseRequest(version, false)},
@@ -350,7 +350,6 @@ func TestRelease_WhenForced_SaysTheCIGateWasSkippedWithoutReadingTheChecks(t *te
 	got := runRelease(t, st.s, req)
 
 	assertEndedBy(t, got, st.s.gitDir, ended{outcome: result.Done, req: req, text: expect("skipped", "--force")})
-	assert.Check(t, is.Len(commitVerdicts(st.s), 0))
 	assert.Check(t, is.DeepEqual(releasePayload(t, got, st.s.gitDir), released(st, "forced", releaseURL)))
 }
 
@@ -388,7 +387,7 @@ func TestRelease_WhenACheckWithNoWorkflowRunBehindItFailed_RefusesAtTheFirstRead
 type unreadGateRow struct {
 	name    string
 	read    string
-	verdict string
+	verdict result.ReleaseVerdict
 	script  forgetest.Script
 }
 

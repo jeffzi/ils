@@ -2,7 +2,6 @@ package landing
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -11,7 +10,6 @@ import (
 
 	"golang.org/x/mod/semver"
 
-	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/result"
@@ -123,8 +121,8 @@ type releasing struct {
 	localTag string
 	// notes are the release's notes, from the changelog at the release commit.
 	notes string
-	// verdict is how the CI gate ended, in the words of result.Release.Verdict.
-	verdict string
+	// verdict is how the CI gate ended.
+	verdict result.ReleaseVerdict
 	// url is the link of the GitHub release once it was created or found.
 	url string
 	// said are the lines the release says once its checks held, ahead of its end.
@@ -143,7 +141,6 @@ func (rel *releasing) version() string {
 	return strings.TrimPrefix(rel.tag, "v")
 }
 
-// prerelease reports whether the version has a pre-release part.
 func (rel *releasing) prerelease() bool {
 	return semver.Prerelease(rel.tag) != ""
 }
@@ -257,11 +254,11 @@ func (rel *releasing) history(ctx context.Context, deps Deps, tip string) ([]git
 // commit. Origin's tag at the release commit is a release already tagged, whose local tag no
 // longer matters.
 func (rel *releasing) checkTags(ctx context.Context, deps Deps, req Request) *result.Result {
-	if rel.onOrigin.Name != "" {
-		if rel.resumed() {
-			return nil
-		}
+	if rel.resumed() {
+		return nil
+	}
 
+	if rel.onOrigin.Name != "" {
 		return req.Refused(
 			result.Say("origin holds the tag %s at %s, not at the release commit %s",
 				rel.tag, result.SHA(rel.onOrigin.SHA), result.SHA(rel.commit)),
@@ -437,8 +434,8 @@ func (rel *releasing) awaitChecks(ctx context.Context, deps Deps) (Waited, error
 
 		outcome, done := judge(verdict, nil)
 
-		waited = Waited{Since: began, Verdict: verdict, Deciding: verdict.Deciding(), Outcome: outcome}
-		waited.Passed, waited.Skipped = tally(waited.Deciding)
+		waited = Waited{Since: began}
+		waited.take(verdict, outcome)
 		deps.counted(len(waited.Deciding)-len(verdict.Pending()), len(waited.Deciding))
 
 		// A failed check stays failed whatever runs start later.
@@ -456,9 +453,7 @@ func (rel *releasing) awaitChecks(ctx context.Context, deps Deps) (Waited, error
 // waiting for its failed log stays red, the deadline or an interrupt makes it WaitPending, and any
 // other error is returned.
 func (w Waited) cutBy(err error) (Waited, error) {
-	if outcome, cutErr := cutShort(w.Outcome, err); cutErr == nil {
-		w.Outcome = outcome
-
+	if _, cutErr := cutShort(w.Outcome, err); cutErr == nil {
 		return w, nil
 	}
 
@@ -563,8 +558,14 @@ func (rel *releasing) unreported(ctx context.Context, deps Deps, req Request, wa
 // write tags the release commit and pushes the tag to origin, unless origin holds it there already,
 // then ends done with --tag-only, and otherwise publishes the GitHub release of the tag. Each step
 // that ran says so in a line, and a write that fails is broke, saying what was written and what was
-// not.
+// not. An interrupt that ended ctx before the first write ends the release pending with nothing
+// written, as too little time left does in reserved.
 func (rel *releasing) write(ctx context.Context, deps Deps, req Request) *result.Result {
+	if interrupted(ctx.Err()) {
+		return rel.ended(req, req.ends(result.Pending, result.Say(runInterrupted+" before the first write of the release"),
+			req.again()), result.Say(runInterrupted+" before the first write of the release, so nothing was written"))
+	}
+
 	if rel.resumed() {
 		deps.say(&rel.said, result.Say("The tag %s is already on origin at the release commit %s, so nothing was tagged "+
 			"or pushed", rel.tag, result.SHA(rel.commit)))
@@ -582,7 +583,8 @@ func (rel *releasing) write(ctx context.Context, deps Deps, req Request) *result
 }
 
 // pushTag creates the tag of the version at the release commit, keeping the local one already
-// there, and pushes it to origin. A push that fails ends as tagPushFailed words it.
+// there, and pushes it to origin. A tag that cannot be made ends as tagFailed words it, and a push
+// that fails as tagPushFailed does.
 func (rel *releasing) pushTag(ctx context.Context, deps Deps, req Request) *result.Result {
 	commit := result.SHA(rel.commit)
 
@@ -590,9 +592,7 @@ func (rel *releasing) pushTag(ctx context.Context, deps Deps, req Request) *resu
 		deps.say(&rel.said, result.Say("The local tag %s is already at the release commit %s, so it was kept", rel.tag, commit))
 	} else {
 		if err := deps.Repo.CreateTag(ctx, rel.tag, rel.commit); err != nil {
-			return rel.broke(req, result.Say("could not create the tag %s", rel.tag), req.onceFixed(),
-				result.Say("Could not create the tag %s at the release commit %s, so nothing was written: %s",
-					rel.tag, commit, err.Error()))
+			return rel.tagFailed(req, err)
 		}
 
 		deps.say(&rel.said, result.Say("Tagged the release commit %s as %s", commit, rel.tag))
@@ -610,6 +610,28 @@ func (rel *releasing) pushTag(ctx context.Context, deps Deps, req Request) *resu
 	return rel.tagPushFailed(req, err)
 }
 
+// tagFailed returns the result of a `git tag` that failed with err. One the time limit or an
+// interrupt cut short may still have made the tag locally, and ends as tagPushFailed ends a push
+// cut short; any other failure made nothing.
+func (rel *releasing) tagFailed(req Request, err error) *result.Result {
+	commit := result.SHA(rel.commit)
+
+	switch {
+	case interrupted(err):
+		return rel.broke(req, result.Say(runInterrupted+" while creating the tag %s", rel.tag), req.again(),
+			result.Say("Started creating the tag %s at %s when "+runInterrupted+mayHaveGoneThrough, rel.tag, commit))
+	case timedOut(err):
+		return rel.broke(req, result.Say(timeLimitEnded+" while creating the tag %s", req.limitWords(), rel.tag),
+			req.afterTimeLimit(),
+			result.Say("Started creating the tag %s at %s when "+timeLimitEnded+mayHaveGoneThrough,
+				rel.tag, commit, req.limitWords()))
+	}
+
+	return rel.broke(req, result.Say("could not create the tag %s", rel.tag), req.onceFixed(),
+		result.Say("Could not create the tag %s at the release commit %s, so nothing was written: %s",
+			rel.tag, commit, err.Error()))
+}
+
 // tagPushFailed returns the result of a push of the tag that failed with err, worded for what err
 // says about origin, as pushFailed words the push of a branch. Only a push git refused, or one whose
 // git never started, surely left origin without the tag; one cut short, one origin stopped
@@ -617,57 +639,57 @@ func (rel *releasing) pushTag(ctx context.Context, deps Deps, req Request) *resu
 // settles which, since it resumes once origin holds the tag at the release commit.
 func (rel *releasing) tagPushFailed(req Request, err error) *result.Result {
 	commit := result.SHA(rel.commit)
+	failure, next, refused := classifyPush(req, err)
 
-	if interrupted(err) {
-		return rel.broke(req, result.Say(runInterrupted+" during the push of the tag %s", rel.tag), req.again(),
-			result.Say("Started the push of the tag %s at %s when "+runInterrupted+"; it may or may not have taken",
+	switch failure {
+	case pushInterrupted:
+		return rel.broke(req, result.Say(runInterrupted+" during the push of the tag %s", rel.tag), next,
+			result.Say("Started the push of the tag %s at %s when "+runInterrupted+mayHaveTaken,
 				rel.tag, commit))
-	}
-
-	if timedOut(err) {
+	case pushTimedOut:
 		return rel.broke(req, result.Say(timeLimitEnded+" during the push of the tag %s", req.limitWords(), rel.tag),
-			req.afterTimeLimit(),
-			result.Say("Started the push of the tag %s at %s when "+timeLimitEnded+"; it may or may not have taken",
+			next,
+			result.Say("Started the push of the tag %s at %s when "+timeLimitEnded+mayHaveTaken,
 				rel.tag, commit, req.limitWords()))
-	}
-
-	if refused, ok := errors.AsType[*git.PushError](err); ok {
+	case pushRefusedByGit:
 		line := result.Say("Git refused the push of the tag %s, made locally, so it was not pushed", rel.tag)
 		if refused.Reason != "" {
 			line = result.Say("Git refused the push of the tag %s, made locally, so it was not pushed: %s", rel.tag, refused.Reason)
 		}
 
-		stop := rel.broke(req, result.Say("git refused the push of the tag %s", rel.tag), req.onceFixed(), line)
+		stop := rel.broke(req, result.Say("git refused the push of the tag %s", rel.tag), next, line)
 		stop.Excerpt = lastLines(refused.Output())
 
 		return stop
-	}
-
-	if _, ok := errors.AsType[*git.RemoteError](err); ok {
-		return rel.broke(req, result.Say(originStopped+" during the push of the tag %s", rel.tag), req.again(),
-			result.Say("Started the push of the tag %s at %s when "+originStopped+"; it may or may not have taken: %s",
+	case pushUnanswered:
+		return rel.broke(req, result.Say(originStopped+" during the push of the tag %s", rel.tag), next,
+			result.Say("Started the push of the tag %s at %s when "+originStopped+mayHaveTaken+": %s",
 				rel.tag, commit, err.Error()))
-	}
-
-	if _, ok := errors.AsType[*child.KilledError](err); ok {
-		return rel.broke(req, result.Say("the push of the tag %s did not finish", rel.tag), req.again(),
+	case pushKilled:
+		return rel.broke(req, result.Say("the push of the tag %s did not finish", rel.tag), next,
 			result.Say("The push of the tag %s at %s did not finish, so it may or may not have taken: %s",
 				rel.tag, commit, err.Error()))
+	default:
+		return rel.broke(req, result.Say("could not push the tag %s", rel.tag), next,
+			result.Say("The tag %s was made locally, and its push to origin failed: %s", rel.tag, err.Error()))
 	}
-
-	return rel.broke(req, result.Say("could not push the tag %s", rel.tag), req.onceFixed(),
-		result.Say("The tag %s was made locally, and its push to origin failed: %s", rel.tag, err.Error()))
 }
 
 // publish leaves the GitHub release of the tag as it is when one exists, and otherwise creates it
 // with the release's notes, as a pre-release when the version has a pre-release part. A failure is
-// broke, and running again resumes past the tag already on origin. A creation the time limit or an
-// interrupt cut short may still have gone through; the next run finds the release when it did.
+// broke, and running again resumes past the tag already on origin. A lookup the time limit or an
+// interrupt cut short says which ended it, and a creation they cut short may still have gone
+// through; the next run finds the release when it did. A release created whose notes file stayed
+// behind is created, and says where the file is.
 func (rel *releasing) publish(ctx context.Context, deps Deps, req Request) *result.Result {
 	deps.started(result.Say("Publishing the GitHub release of %s", rel.tag))
 
 	link, found, err := deps.Forge.FindRelease(ctx, rel.Repo, rel.tag)
-	if err == nil && found {
+	if err != nil {
+		return rel.lookupFailed(req, err)
+	}
+
+	if found {
 		rel.url = link
 		deps.say(&rel.said, result.Say("The GitHub release of %s already exists, so it was left as it is: %s",
 			rel.tag, result.URL(link)))
@@ -675,27 +697,55 @@ func (rel *releasing) publish(ctx context.Context, deps Deps, req Request) *resu
 		return nil
 	}
 
-	if err == nil {
-		release := forge.NewRelease{Tag: rel.tag, Notes: rel.notes, Prerelease: rel.prerelease()}
-		if link, err = deps.Forge.PublishRelease(ctx, rel.Repo, release); err == nil {
-			rel.url = link
-			deps.say(&rel.said, result.Say("Created the GitHub release of %s: %s", rel.tag, result.URL(link)))
+	release := forge.NewRelease{Tag: rel.tag, Notes: rel.notes, Prerelease: rel.prerelease()}
 
-			return nil
+	link, err = deps.Forge.PublishRelease(ctx, rel.Repo, release)
+	if err == nil || link != "" {
+		rel.url = link
+		deps.say(&rel.said, result.Say("Created the GitHub release of %s: %s", rel.tag, result.URL(link)))
+
+		if err != nil {
+			deps.say(&rel.said, result.Say("The notes file of the GitHub release of %s was left behind: %s", rel.tag, err.Error()))
 		}
 
-		switch {
-		case interrupted(err):
-			return rel.broke(req, result.Say(runInterrupted+" while publishing the GitHub release of %s", rel.tag), req.again(),
-				result.Say("Started publishing the GitHub release of %s when "+runInterrupted+mayHaveGoneThrough, rel.tag))
-		case timedOut(err):
-			return rel.broke(req, result.Say(timeLimitEnded+" while publishing the GitHub release of %s", req.limitWords(), rel.tag),
-				req.again(),
-				result.Say("Started publishing the GitHub release of %s when "+timeLimitEnded+mayHaveGoneThrough,
-					rel.tag, req.limitWords()))
-		}
+		return nil
 	}
 
+	switch {
+	case interrupted(err):
+		return rel.broke(req, result.Say(runInterrupted+" while publishing the GitHub release of %s", rel.tag), req.again(),
+			result.Say("Started publishing the GitHub release of %s when "+runInterrupted+mayHaveGoneThrough, rel.tag))
+	case timedOut(err):
+		return rel.broke(req, result.Say(timeLimitEnded+" while publishing the GitHub release of %s", req.limitWords(), rel.tag),
+			req.again(),
+			result.Say("Started publishing the GitHub release of %s when "+timeLimitEnded+mayHaveGoneThrough,
+				rel.tag, req.limitWords()))
+	}
+
+	return rel.notCreated(req, err)
+}
+
+// lookupFailed returns the result of a lookup of the GitHub release of the tag that failed with
+// err, which created nothing: it names the time limit or the interrupt when one cut it short.
+func (rel *releasing) lookupFailed(req Request, err error) *result.Result {
+	switch {
+	case interrupted(err):
+		return rel.broke(req, result.Say(runInterrupted+" while looking up the GitHub release of %s", rel.tag), req.again(),
+			result.Say("The tag %s is on origin, but "+runInterrupted+" while looking up its GitHub release, so none was created",
+				rel.tag))
+	case timedOut(err):
+		return rel.broke(req, result.Say(timeLimitEnded+" while looking up the GitHub release of %s", req.limitWords(), rel.tag),
+			req.again(),
+			result.Say("The tag %s is on origin, but "+timeLimitEnded+" while looking up its GitHub release, so none was created",
+				rel.tag, req.limitWords()))
+	}
+
+	return rel.notCreated(req, err)
+}
+
+// notCreated returns the result of a release whose tag is on origin and whose GitHub release was
+// not created, because of err.
+func (rel *releasing) notCreated(req Request, err error) *result.Result {
 	return rel.broke(req, result.Say("the GitHub release of %s was not created", rel.tag), req.again(),
 		result.Say("The tag %s is on origin, but its GitHub release was not created: %s", rel.tag, err.Error()))
 }

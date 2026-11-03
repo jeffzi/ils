@@ -112,3 +112,26 @@ func TestTool_CheckOutput_WhenFirstLineDoesNotSuitTarget_ReturnsError(t *testing
 		})
 	}
 }
+
+func TestTool_CheckEnvOutput_WhenTargetVarIsMinimum_RejectsANewerVersion(t *testing.T) {
+	// Not parallel: t.Setenv sets the environment of the whole process.
+	const out = "hammer 1.10.0\n"
+	t.Setenv("HAMMER_TARGET", testtarget.Minimum)
+	t.Setenv("HAMMER_VERSION", "")
+
+	err := hammer().CheckEnvOutput(out, hammerVersionOf)
+
+	assert.Check(t, is.ErrorContains(err, "HAMMER_TARGET"), "CheckEnvOutput(%q)", out)
+}
+
+func TestTool_CheckEnvOutput_WhenVersionVarIsSet_RejectsAnotherVersion(t *testing.T) {
+	// Not parallel: t.Setenv sets the environment of the whole process.
+	const out = "hammer 1.10.0\n"
+	t.Setenv("HAMMER_TARGET", testtarget.Latest)
+	t.Setenv("HAMMER_VERSION", "1.9.0")
+
+	err := hammer().CheckEnvOutput(out, hammerVersionOf)
+
+	assert.Check(t, is.ErrorContains(err, "HAMMER_VERSION"), "CheckEnvOutput(%q)", out)
+	assert.Check(t, is.ErrorContains(err, "1.9.0"), "CheckEnvOutput(%q)", out)
+}

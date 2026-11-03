@@ -202,6 +202,12 @@ type Run struct {
 	Status RunStatus
 }
 
+// Going reports whether the run is queued or in progress; a run that awaits a person is not, since
+// nothing says it will ever start.
+func (r Run) Going() bool {
+	return r.Status == RunQueued || r.Status == RunInProgress
+}
+
 // ---------------------------------------------------------------------------
 // Verdicts
 // ---------------------------------------------------------------------------
@@ -244,7 +250,6 @@ type VerdictQuery struct {
 // VerdictState is the summary of a verdict.
 type VerdictState string
 
-// The summaries of a verdict.
 const (
 	// VerdictGreen is at least one deciding check, each one passed or skipped.
 	VerdictGreen VerdictState = "green"
@@ -351,12 +356,9 @@ func (v Verdict) Pending() []Check {
 	})
 }
 
-// Running reports whether a workflow run is queued or in progress; a run that
-// awaits a person is not, since nothing says it will ever start.
+// Running reports whether a workflow run is going, as Run.Going says.
 func (v Verdict) Running() bool {
-	return slices.ContainsFunc(v.Runs, func(run Run) bool {
-		return run.Status == RunQueued || run.Status == RunInProgress
-	})
+	return slices.ContainsFunc(v.Runs, Run.Going)
 }
 
 // ---------------------------------------------------------------------------

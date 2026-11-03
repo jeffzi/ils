@@ -2,6 +2,7 @@ package landing
 
 import (
 	"context"
+	"errors"
 	"slices"
 
 	"github.com/jeffzi/ils/internal/forge"
@@ -9,8 +10,8 @@ import (
 	"github.com/jeffzi/ils/internal/result"
 )
 
-// Each read of the checks of the branch names what it reads as it follows "read" in a result, so
-// it stays a noun phrase.
+// readTree, readTip, readFetchedTrunk, readCommits, readChanges and readMergedHead name what the
+// checks of the branch read as each follows "read" in a result, so each stays a noun phrase.
 const (
 	readTree         = "the working tree's changes"
 	readTip          = "the branch's tip"
@@ -110,12 +111,16 @@ func fetchTrunk(ctx context.Context, deps Deps, req Request, trunk string) (stri
 // commitsPast returns the branch's tip and its commits past origin's trunk, which fetchTrunk
 // must have fetched, refusing a branch that has none or has no commit at all.
 func commitsPast(ctx context.Context, deps Deps, req Request, b onBranch) (tip string, past []git.Commit, stop *result.Result) {
-	tip, stop = tipOf(ctx, deps, req, b)
-	if stop != nil {
-		return "", nil, stop
+	tip, committed, err := b.readTip(ctx, deps)
+
+	switch {
+	case err != nil:
+		return "", nil, req.unread(readTip, err)
+	case !committed:
+		return "", nil, req.nothingPast(b)
 	}
 
-	past, err := deps.Repo.CommitsPast(ctx, tip, b.Trunk)
+	past, err = deps.Repo.CommitsPast(ctx, tip, b.Trunk)
 	if err != nil {
 		return "", nil, req.unread(readCommits, err)
 	}
@@ -127,21 +132,10 @@ func commitsPast(ctx context.Context, deps Deps, req Request, b onBranch) (tip s
 	return tip, past, nil
 }
 
-func tipOf(ctx context.Context, deps Deps, req Request, b onBranch) (string, *result.Result) {
-	tip, committed, err := b.readTip(ctx, deps)
-
-	switch {
-	case err != nil:
-		return "", req.unread(readTip, err)
-	case !committed:
-		return "", req.nothingPast(b)
-	}
-
-	return tip, nil
-}
-
 // readTip reads the sha of the branch's tip, and whether the branch has a commit at all; a branch
-// with none reads as no tip and no error. err is a read of readTip that failed.
+// with none reads as no tip and no error. When the tip cannot be read on a branch that has
+// commits, err is that failure and committed is true; when the read of the branch's ref fails
+// too, err joins both failures.
 func (b onBranch) readTip(ctx context.Context, deps Deps) (tip string, committed bool, err error) {
 	tip, err = deps.Repo.HeadSHA(ctx)
 	if err == nil {
@@ -153,7 +147,7 @@ func (b onBranch) readTip(ctx context.Context, deps Deps) (tip string, committed
 	committed, refErr := deps.Repo.HasCommits(ctx, b.branch)
 	switch {
 	case refErr != nil:
-		return "", false, refErr
+		return "", false, errors.Join(err, refErr)
 	case !committed:
 		return "", false, nil
 	}

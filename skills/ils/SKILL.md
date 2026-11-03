@@ -205,7 +205,8 @@ Stop and re-read this skill when you catch yourself about to:
 - run `ils release`, `git tag`, or `gh release create` unasked, or add `--force` or `--tag-only` the
   user did not give,
 - run `ils merge` without first showing the title and body, except the run again that `Next:`
-  names after its exit 4,
+  names after its exit 4 when the reason says GitHub already merged (see
+  [references/merge.md](references/merge.md)),
 - show the title and body after `gh pr edit` without saying the pull request already holds them,
   or as a draft for the user to approve,
 - skip `gh pr edit` on a green push because you wrote the title and body before,

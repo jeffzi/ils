@@ -45,6 +45,15 @@ func assertStarted(t *testing.T, s *scene, name string) {
 	assert.Check(t, is.Equal(f.Git("rev-parse", "refs/heads/"+name), f.OriginGit("rev-parse", trunk)))
 }
 
+// assertStartedBranch fails unless got is the success of `ils branch fresh`, whose text holds the
+// parts of want, and HEAD is on fresh at origin's trunk.
+func assertStartedBranch(t *testing.T, s *scene, got result.Result, want string) {
+	t.Helper()
+
+	assertEndedBy(t, got, s.gitDir, ended{outcome: result.Done, req: branchRequest(fresh), text: want})
+	assertStarted(t, s, fresh)
+}
+
 // branchRefusal is the refusal of `ils branch name` a test expects: its text holds the parts of
 // want, and what the repository holds is still before.
 type branchRefusal struct {
@@ -68,9 +77,7 @@ func TestStartBranch_WhenEveryCheckHolds_StartsTheBranchAtOriginsTrunk(t *testin
 
 	got := startBranch(t, s, fresh)
 
-	want := expect(fresh, shortSHA(tip), "Next:", "ils push")
-	assertEndedBy(t, got, s.gitDir, ended{outcome: result.Done, req: branchRequest(fresh), text: want})
-	assertStarted(t, s, fresh)
+	assertStartedBranch(t, s, got, expect(fresh, shortSHA(tip), "Next:", "ils push"))
 }
 
 func TestStartBranch_WhenHEADIsDetachedWithNoCommitOfItsOwn_StartsAtOriginsTrunkAsFetched(t *testing.T) {
@@ -181,6 +188,42 @@ func TestStartBranch_WhenOriginStopsAnswering_RefusesSayingSo(t *testing.T) {
 	}
 }
 
+func TestStartBranch_WhenOriginStopsAnswering_NextQuotesTheNameForTheShell(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name, given, quoted string
+	}{
+		{name: "name holds a single quote", given: "rock'n'roll", quoted: `'rock'\''n'\''roll'`},
+		{name: "name holds a shell operator", given: "fix;make", quoted: "'fix;make'"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := branchScene(t, nil)
+			s.stopAnswering(t, 1)
+
+			got := startBranch(t, s, tt.given)
+
+			text, _ := shown(t, got, s.gitDir)
+			assertSays(t, text, nextLine("ils branch "+tt.quoted))
+		})
+	}
+}
+
+func TestStartBranch_WhenOriginRefusesTheCaller_EndsBrokeWithWhatGitSaid(t *testing.T) {
+	t.Parallel()
+	s := branchScene(t, nil)
+	s.refuse(t)
+	before := s.written()
+
+	got := startBranch(t, s, fresh)
+
+	want := expect(sshDenied, "fix what failed", "ils branch "+fresh)
+	assertEndedBy(t, got, s.gitDir, ended{outcome: result.Broke, req: branchRequest(fresh), text: want})
+	assert.Check(t, is.Equal(s.written(), before))
+}
+
 func TestStartBranch_WhenDetachedHEADHasCommitsOriginsTrunkLacks_RefusesListingThem(t *testing.T) {
 	t.Parallel()
 
@@ -208,9 +251,7 @@ func TestStartBranch_WhenLocalTrunkHasCommitsOriginLacks_StartsTheBranchNamingTh
 
 	got := startBranch(t, s, fresh)
 
-	want := expect(shortSHA(ahead), "local trunk "+trunk)
-	assertEndedBy(t, got, s.gitDir, ended{outcome: result.Done, req: branchRequest(fresh), text: want})
-	assertStarted(t, s, fresh)
+	assertStartedBranch(t, s, got, expect(shortSHA(ahead), "local trunk "+trunk))
 }
 
 func TestStartBranch_WhenTheSwitchWouldOverwriteAFile_RefusesNamingIt(t *testing.T) {

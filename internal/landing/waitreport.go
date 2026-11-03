@@ -2,6 +2,7 @@ package landing
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -213,13 +214,15 @@ func (w Waited) pendingReport(end ending, sha string, number int) waitReport {
 // unconcluded returns what the checks stage had found when the deadline, under a time limit of
 // limit, or an interrupt ended it, then the merge state, and the reason: no verdict read at all,
 // nothing reported, a workflow run with no check yet, checks concluded before any workflow run
-// started, or the checks still running. A wait an interrupt ended holds no verdict read, since no
-// read of the head after the checks confirmed one.
+// started, a required check not reported yet, checks concluded while a workflow run still goes, or
+// the checks still running. A wait an interrupt ended holds no verdict read, since no read of the
+// head after the checks confirmed one.
 func (w Waited) unconcluded(limit span, sha string, number int) ([]result.Phrase, result.Phrase) {
 	var lines []result.Phrase
 
 	reason := result.Say("the checks were still running "+timeLimitRanOut, limit)
 	commit, pull := result.SHA(sha), result.PullRequest(number)
+	pending := w.Verdict.Pending()
 
 	switch {
 	case w.Since.IsZero():
@@ -232,14 +235,32 @@ func (w Waited) unconcluded(limit span, sha string, number int) ([]result.Phrase
 			"No check has reported for %s on pull request %s yet; a workflow run is still going", commit, pull))
 		reason = result.Say("the checks had not reported "+timeLimitRanOut, limit)
 	// The checks concluded, but the deadline ended the wait for workflow runs to appear.
-	case len(w.Verdict.Runs) == 0 && len(w.Verdict.Pending()) == 0:
+	case len(w.Verdict.Runs) == 0 && len(pending) == 0:
 		reason = result.Say("no workflow run had started for %s on pull request %s "+timeLimitRanOut,
 			commit, pull, limit)
+	// Every deciding check that reported concluded, and the wait went on for a required one that a
+	// workflow run still going could create: both are named.
+	case len(pending) == 0 && len(w.Verdict.MissingRequired) > 0:
+		lines = append(lines, result.Say("Required and not reported yet: %s", strings.Join(w.Verdict.MissingRequired, ", ")))
+		lines = append(lines, goingRuns(w.Verdict.Runs)...)
+	// Every check concluded, and the wait went on for the checks a workflow run still going could add.
+	case len(pending) == 0 && w.Verdict.Running():
+		lines = goingRuns(w.Verdict.Runs)
 	default:
-		lines = runningAges(w.Verdict.Pending())
+		lines = runningAges(pending)
 	}
 
 	return append(lines, w.mergeStateLines()...), reason
+}
+
+// goingRuns returns the "Still going" list of the workflow runs of runs that are going.
+func goingRuns(runs []forge.Run) []result.Phrase {
+	going := slices.DeleteFunc(slices.Clone(runs), func(run forge.Run) bool { return !run.Going() })
+	header := result.Say("Still going (%s):", nounCount(len(going), "workflow run"))
+
+	return runningList(header, going, func(run forge.Run) result.Phrase {
+		return result.Say(pendingBullet+"%s", run.Name)
+	})
 }
 
 // ciCutShortReport is a read of whether the repository has CI, by the run end says, that its time
@@ -262,7 +283,7 @@ func noCI(trunk, sha string) result.Phrase {
 
 // payloadFields returns the verdict state, the merge state and the deciding checks as the push
 // and merge payloads carry them; the merge state is unknown until the wait has read one.
-func (w Waited) payloadFields() (verdict, mergeState string, checks []result.Check) {
+func (w Waited) payloadFields() (verdict forge.VerdictState, mergeState forge.MergeState, checks []result.Check) {
 	state := w.MergeState
 	if state == "" {
 		state = forge.MergeUnknown
@@ -271,11 +292,11 @@ func (w Waited) payloadFields() (verdict, mergeState string, checks []result.Che
 	checks = make([]result.Check, 0, len(w.Deciding))
 	for _, check := range w.Deciding {
 		checks = append(checks, result.Check{
-			Name: check.Name, Bucket: string(check.Bucket), Workflow: check.Workflow, Link: check.Link,
+			Name: check.Name, Bucket: check.Bucket, Workflow: check.Workflow, Link: check.Link,
 		})
 	}
 
-	return string(w.Verdict.State()), string(state), checks
+	return w.Verdict.State(), state, checks
 }
 
 // mergeStateLines says the merge state in plain words on one line, or on none when it is clean. A
@@ -307,23 +328,23 @@ func (w Waited) mergeStateLines() []result.Phrase {
 	return []result.Phrase{line}
 }
 
-// pendingBullet is the indent and mark of a check still running, under its list header.
+// pendingBullet is the indent and mark of an item still running, a check or a workflow run, under
+// its list header.
 const pendingBullet = "  ◌ "
 
-// runningList returns header, then each check of pending on a line of its own, as line says it,
-// indented under the header.
-func runningList(header result.Phrase, pending []forge.Check, line func(forge.Check) result.Phrase) []result.Phrase {
-	lines := make([]result.Phrase, 0, len(pending)+1)
+// runningList returns header, then each of items on a line of its own, as line says it; line
+// supplies the indent.
+func runningList[T any](header result.Phrase, items []T, line func(T) result.Phrase) []result.Phrase {
+	lines := make([]result.Phrase, 0, len(items)+1)
 	lines = append(lines, header)
 
-	for _, check := range pending {
-		lines = append(lines, line(check))
+	for _, item := range items {
+		lines = append(lines, line(item))
 	}
 
 	return lines
 }
 
-// runningName is the line of a pending check that says only its name.
 func runningName(check forge.Check) result.Phrase {
 	return result.Say(pendingBullet+"%s", check.Name)
 }

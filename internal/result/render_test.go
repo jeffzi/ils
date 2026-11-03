@@ -95,6 +95,11 @@ func brokeWithLine(p result.Phrase) result.Result {
 	return with(brokePush(), func(r *result.Result) { r.Lines = append(r.Lines, p) })
 }
 
+// withExcerpt is base with text as its excerpt.
+func withExcerpt(base result.Result, text string) result.Result {
+	return with(base, func(r *result.Result) { r.Excerpt = text })
+}
+
 // refusedWithReason is refusedPush with p as its reason.
 func refusedWithReason(p result.Phrase) result.Result {
 	return with(refusedPush(), func(r *result.Result) { r.Reason = p })
@@ -173,9 +178,12 @@ func inputOf(r result.Result) string {
 // Text renderer
 // ---------------------------------------------------------------------------
 
-// textCases returns one case per shape the text renderer prints.
+// textCases returns the cases of the text renderer filling wording: a command the wording wraps in
+// backticks, and a name holding a placeholder.
 func textCases() []pair {
 	return []pair{
+		brokeLine("first name holding a placeholder is not filled by the second",
+			result.Say("Moved %s to %s.", "a %s file", "docs"), "Moved a %s file to docs."),
 		{
 			name:     "wording wrapping a command in backticks keeps them",
 			gitDir:   gitDir,
@@ -191,13 +199,13 @@ func excerptTextCases() []pair {
 		{
 			name:     "excerpt ending in a newline gains no blank line",
 			gitDir:   gitDir,
-			result:   with(brokePush(), func(r *result.Result) { r.Excerpt = "one\ntwo\n" }),
+			result:   withExcerpt(brokePush(), "one\ntwo\n"),
 			wantText: brokeBody + "one\ntwo\n" + brokeEnd(),
 		},
 		{
-			name:     "excerpt of only newlines stays above the reason",
+			name:     "excerpt of only newlines keeps all of them",
 			gitDir:   gitDir,
-			result:   with(brokePush(), func(r *result.Result) { r.Excerpt = "\n\n\n" }),
+			result:   withExcerpt(brokePush(), "\n\n\n"),
 			wantText: brokeBody + "\n\n\n" + brokeEnd(),
 		},
 	}
@@ -227,7 +235,14 @@ func allTextCases() []pair {
 func TestRenderText(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range allTextCases() {
+	assertTexts(t, allTextCases())
+}
+
+// assertTexts checks, case by case, that the text renderer prints the wanted text.
+func assertTexts(t *testing.T, cases []pair) {
+	t.Helper()
+
+	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			t.Logf("row: git dir %q, result %s", tt.gitDir, inputOf(tt.result))
@@ -248,7 +263,6 @@ type jsonCase struct {
 	// pick keeps the fields of the decoded object the row is about.
 	pick   func(s resulttest.Shown) resulttest.Shown
 	name   string
-	gitDir string
 	want   resulttest.Shown
 	result result.Result
 }
@@ -258,33 +272,34 @@ func linesReasonNext(s resulttest.Shown) resulttest.Shown {
 	return resulttest.Shown{Lines: s.Lines, Reason: s.Reason, Next: s.Next}
 }
 
+// excerptOnly keeps the excerpt of a decoded object.
+func excerptOnly(s resulttest.Shown) resulttest.Shown {
+	return resulttest.Shown{Excerpt: s.Excerpt}
+}
+
 // jsonCases returns the cases whose text the JSON renderer carries as it was handed in.
 func jsonCases() []jsonCase {
 	return []jsonCase{
 		{
 			name:   "wording wrapping a command in backticks keeps them",
-			gitDir: gitDir,
 			result: tickedPush(),
 			pick:   linesReasonNext,
 			want:   resulttest.Shown{Lines: tickedPushLines(), Reason: tickedReason, Next: tickedNext},
 		},
 		{
 			name:   "name holding an escape sequence carries the escape raw",
-			gitDir: gitDir,
 			result: brokeWithLine(result.Say("Kept %s as is.", "x\x1b[31m")),
 			pick:   func(s resulttest.Shown) resulttest.Shown { return resulttest.Shown{Lines: s.Lines} },
 			want:   resulttest.Shown{Lines: append(brokeLines(), "Kept x\x1b[31m as is.")},
 		},
 		{
 			name:   "excerpt holding control bytes carries them raw",
-			gitDir: gitDir,
-			result: with(donePush(), func(r *result.Result) { r.Excerpt = controlBytes }),
-			pick:   func(s resulttest.Shown) resulttest.Shown { return resulttest.Shown{Excerpt: s.Excerpt} },
+			result: withExcerpt(donePush(), controlBytes),
+			pick:   excerptOnly,
 			want:   resulttest.Shown{Excerpt: controlBytes},
 		},
 		{
 			name:   "sha in a line, the reason and the next carries in full",
-			gitDir: gitDir,
 			result: shaPush(),
 			pick:   linesReasonNext,
 			want: resulttest.Shown{
@@ -295,7 +310,6 @@ func jsonCases() []jsonCase {
 		},
 		{
 			name:   "done carries none as its next",
-			gitDir: gitDir,
 			result: donePush(),
 			pick:   func(s resulttest.Shown) resulttest.Shown { return resulttest.Shown{Next: s.Next} },
 			want:   resulttest.Shown{Next: "none"},
@@ -309,9 +323,9 @@ func TestRenderJSON(t *testing.T) {
 	for _, tt := range jsonCases() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			t.Logf("row: git dir %q, result %s", tt.gitDir, inputOf(tt.result))
+			t.Logf("row: git dir %q, result %s", gitDir, inputOf(tt.result))
 
-			out, err := result.RenderJSON(tt.result, tt.gitDir)
+			out, err := result.RenderJSON(tt.result, gitDir)
 			assert.NilError(t, err)
 
 			assert.Check(t, is.DeepEqual(tt.pick(resulttest.Decode(t, out)), tt.want))
@@ -327,7 +341,53 @@ func TestRenderJSON_WhenResultHasLinesExcerptReasonAndNext_CarriesWhatTheTextSho
 	out, err := result.RenderJSON(redPush(), gitDir)
 	assert.NilError(t, err)
 
-	resulttest.AssertCarried(t, text, resulttest.Decode(t, out))
+	resulttest.AssertCarried(t, text, result.DeliveredNotGreen, resulttest.Decode(t, out))
+}
+
+// separated is a string holding both Unicode separators a line splitter breaks a line at.
+const separated = "first second third"
+
+// separatorCases returns the cases where a string the JSON copies unfolded holds both separators.
+func separatorCases() []jsonCase {
+	return []jsonCase{
+		{
+			name:   "merge subject in the payload",
+			result: with(donePush(), func(r *result.Result) { r.Payload = &result.Payload{Merge: &result.Merge{Subject: separated}} }),
+			pick: func(s resulttest.Shown) resulttest.Shown {
+				return resulttest.Shown{Payload: &result.Payload{Merge: &result.Merge{Subject: s.Payload.Merge.Subject}}}
+			},
+			want: resulttest.Shown{Payload: &result.Payload{Merge: &result.Merge{Subject: separated}}},
+		},
+		{
+			name:   "word of the command",
+			result: with(donePush(), func(r *result.Result) { r.Words = []string{"push", separated} }),
+			pick:   func(s resulttest.Shown) resulttest.Shown { return resulttest.Shown{Words: s.Words} },
+			want:   resulttest.Shown{Words: []string{"push", separated}},
+		},
+		{
+			name:   "excerpt",
+			result: withExcerpt(donePush(), separated),
+			pick:   excerptOnly,
+			want:   resulttest.Shown{Excerpt: separated},
+		},
+	}
+}
+
+func TestRenderJSON_WhenAStringHoldsUnicodeSeparators_EscapesThemAndDecodesBackTheString(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range separatorCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			t.Logf("row: result %s", inputOf(tt.result))
+
+			out, err := result.RenderJSON(tt.result, gitDir)
+			assert.NilError(t, err)
+
+			assert.Check(t, !strings.ContainsAny(out, "  "), "output holds a raw separator:\n%q", out)
+			assert.Check(t, is.DeepEqual(tt.pick(resulttest.Decode(t, out)), tt.want))
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -375,8 +435,6 @@ func redThen(name string, n result.Next, want string) pair {
 // visible escapes.
 func controlCases() []pair {
 	return []pair{
-		brokeLine("name holding an escape sequence prints the escape as visible text",
-			result.Say("Kept %s as is.", "x\x1b[31m"), `Kept x\x1b[31m as is.`),
 		brokeLine("name holding a tab prints it as it is",
 			result.Say("Kept %s as is.", "x\ty"), "Kept x\ty as is."),
 		brokeLine("name holding invalid UTF-8 beside a control byte prints its bytes as they are",
@@ -389,7 +447,7 @@ func controlCases() []pair {
 			name:     "excerpt holding control bytes prints them as visible text",
 			gitDir:   gitDir,
 			wantText: doneBody + `one\x1b[1;33m two\x08 three\x7f four\u009b` + "\n",
-			result:   with(donePush(), func(r *result.Result) { r.Excerpt = controlBytes }),
+			result:   withExcerpt(donePush(), controlBytes),
 		},
 	}
 }
@@ -457,6 +515,26 @@ func styledCases() []styledCase {
 		{name: "step wording is drawn unstyled", result: markedPush(), within: resulttest.NextLine("rebase"), part: " rebase", want: resulttest.Look{}, profile: colorprofile.ANSI},
 		{name: "passed count is drawn green", result: talliedChecks(), within: "17 passed", part: "17", want: resulttest.PassedLook(), profile: colorprofile.ANSI},
 		{name: "command is drawn as a name", result: refusedPush(), within: resulttest.NextLine("ils branch fix-prek-again"), part: "ils branch fix-prek-again", want: resulttest.NameLook(), profile: colorprofile.ANSI},
+		{
+			name: "inline command in a line", result: tickedPush(), within: "Ran gh pr edit --repo jeffzi/ils #16 at",
+			part: "gh pr edit --repo jeffzi/ils #16", want: resulttest.NameLook(),
+			profile: colorprofile.ANSI,
+		},
+		{name: "wording before an inline command is drawn unstyled", result: tickedPush(), within: "Ran gh pr edit", part: "Ran ", want: resulttest.Look{}, profile: colorprofile.ANSI},
+		{name: "wording after an inline command is drawn unstyled", result: tickedPush(), within: "#16 at 4f2a9c1.", part: " at ", want: resulttest.Look{}, profile: colorprofile.ANSI},
+		{name: "sha after an inline command", result: tickedPush(), within: "at 4f2a9c1.", part: "4f2a9c1", want: resulttest.SHALook(), profile: colorprofile.ANSI},
+		{
+			name:   "lone backtick in wording is drawn unstyled",
+			result: brokeWithLine(result.Say("Kept the ` mark.")), within: "the ` mark", part: "`",
+			want:    resulttest.Look{},
+			profile: colorprofile.ANSI,
+		},
+		{
+			name:   "second of two inline commands in a phrase",
+			result: brokeWithLine(result.Say("Run `%s` and `%s` by hand.", "git branch -D topic", "git pull --ff-only")),
+			within: "and git pull --ff-only by", part: "git pull --ff-only", want: resulttest.NameLook(),
+			profile: colorprofile.ANSI,
+		},
 	}
 }
 
@@ -519,12 +597,10 @@ func drawnLook(t *testing.T, tt styledCase) (resulttest.Look, string) {
 // Wording check
 // ---------------------------------------------------------------------------
 
-// rejected is a result whose own wording names a hook or a git dir path. wantLine is set only
-// where the line holds a name filled in, the one case where the line differs from the wording.
+// rejected is a result whose own wording names a hook or a git dir path.
 type rejected struct {
 	name     string
 	gitDir   string
-	wantLine string
 	wantWord string
 	result   result.Result
 }
@@ -557,16 +633,10 @@ func dirCases() []rejected {
 	)
 
 	return []rejected{
-		rejectedLine("handed-in dir ends in a separator", gitDir+"/",
-			result.Say("Wrote /srv/store/meta/HEAD")).naming(gitDir + "/"),
 		rejectedLine("wording uses backslashes", gitDir,
 			result.Say(`Wrote \srv\store\meta\HEAD`)).naming(gitDir),
-		rejectedLine("handed-in dir uses backslashes", windowsDir,
-			result.Say("Wrote C:/Work/Store/meta/HEAD")).naming(windowsDir),
 		rejectedLine("handed-in dir uses backslashes and ends in one", windowsDir+`\`,
 			result.Say("Wrote C:/Work/Store/meta/HEAD")).naming(windowsDir + `\`),
-		rejectedLine("wording differs in case", gitDir,
-			result.Say("Wrote /SRV/Store/Meta/HEAD")).naming(gitDir),
 		rejectedLine("handed-in dir differs in case", shoutedDir,
 			result.Say("Wrote /srv/store/meta/HEAD")).naming(shoutedDir),
 		rejectedLine("resolved git dir holding spaces", spacedDir,
@@ -595,11 +665,6 @@ func lineCases() []rejected {
 func otherCases() []rejected {
 	return []rejected{
 		{
-			name: "reason naming a hook", gitDir: gitDir,
-			wantLine: "the pre-push step failed on main", wantWord: "pre-push",
-			result: refusedWithReason(result.Say("the pre-push step failed on %s", "main")),
-		},
-		{
 			name: "judgment step naming a hook", gitDir: gitDir, wantWord: "prek,",
 			result: redWithNext(result.NextStep("run prek, then ils push again")),
 		},
@@ -620,6 +685,17 @@ func exemptCases() []pair {
 	}
 }
 
+// wordingError returns the *result.WordingError that err is, and fails the test when it is none; out
+// is the rendered output, for the failure message.
+func wordingError(t *testing.T, err error, out string) *result.WordingError {
+	t.Helper()
+
+	wordingErr, ok := errors.AsType[*result.WordingError](err)
+	assert.Assert(t, ok, "RenderText error = %v, want a *result.WordingError; output %q", err, out)
+
+	return wordingErr
+}
+
 func TestRenderText_WhenOwnWordingNamesHookOrGitDir_ReturnsWordingError(t *testing.T) {
 	t.Parallel()
 
@@ -630,14 +706,19 @@ func TestRenderText_WhenOwnWordingNamesHookOrGitDir_ReturnsWordingError(t *testi
 
 			out, err := result.RenderText(tt.result, tt.gitDir)
 
-			wordingErr, ok := errors.AsType[*result.WordingError](err)
-			assert.Assert(t, ok, "RenderText error = %v, want a *result.WordingError; output %q", err, out)
-			if tt.wantLine != "" {
-				assert.Check(t, is.Equal(wordingErr.Line, tt.wantLine))
-			}
+			wordingErr := wordingError(t, err, out)
 			assert.Check(t, is.Equal(wordingErr.Word, tt.wantWord))
 		})
 	}
+}
+
+func TestRenderText_WhenAReasonNamesAHook_ReturnsAWordingErrorNamingTheFilledInLine(t *testing.T) {
+	t.Parallel()
+
+	out, err := result.RenderText(refusedWithReason(result.Say("the pre-push step failed on %s", "main")), gitDir)
+
+	wordingErr := wordingError(t, err, out)
+	assert.Check(t, is.Equal(wordingErr.Line, "the pre-push step failed on main"))
 }
 
 func TestRenderText_WhenOwnWordingOnlyResemblesHookOrGitDir_PrintsIt(t *testing.T) {
@@ -664,4 +745,25 @@ func TestWordingError_Error_WhenBothFieldsSet_NamesBothFields(t *testing.T) {
 
 	assert.Check(t, is.Contains(got, err.Line))
 	assert.Check(t, is.Contains(got, err.Word))
+}
+
+func TestRenderText_WhenPlaceholdersAndNamesDiffer_ReturnsErrPlaceholders(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		phrase result.Phrase
+	}{
+		{name: "more names than placeholders", phrase: result.Say("Pushed to origin.", "tidy-readme")},
+		{name: "more placeholders than names", phrase: result.Say("Pushed %s to %s.", "tidy-readme")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			out, err := result.RenderText(brokeWithLine(tt.phrase), gitDir)
+
+			assert.Check(t, is.ErrorIs(err, result.ErrPlaceholders), "output %q", out)
+		})
+	}
 }

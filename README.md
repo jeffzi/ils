@@ -248,7 +248,10 @@ Run `ils merge` on the branch whose pull request you want to land. It:
 `ils merge` never pushes and has no `--force`. It refuses a commit that is not on the pull request
 yet: push it with `ils push` first. When the checks are still running, or fewer than 20
 seconds are left for the merge, `ils merge` ends pending with nothing written, and `Next:` says to
-run `ils push`, which waits for the checks and then names `ils merge` again.
+run `ils push`, which waits for the checks and then names `ils merge` again. When GitHub reports
+that a check the default branch requires still runs, `ils merge` also ends pending with nothing
+written, and `Next:` names `ils merge`. A pending `ils merge` that GitHub already merged, stopped
+by the time limit or an interrupt before it finished, names `ils merge` too.
 
 [What merge refuses](docs/reference.md#what-merge-refuses) lists every refusal, and
 [Merge JSON output](docs/reference.md#merge-json-output) describes `ils merge --json`.
@@ -457,7 +460,9 @@ The guard lowers the odds of an accident; it is not a sandbox. It does not see:
 - a task runner (`task`, `make`, `npm run`) running lines from a file the agent wrote;
 - `gh workflow run` of a workflow whose token can push, tag, or release;
 - an alias or function from your shell config, such as `gp='git push'`, which the agent's shell
-  runs with no `git` word in the command.
+  runs with no `git` word in the command;
+- a construct whose only use is to hide a command, such as a name reference that writes `GIT_DIR`
+  or a tool name built by a glob. [Guard scope](docs/guard-scope.md#accepted-limits) says why.
 
 The guard runs on macOS and Linux. On Windows its commands refuse.
 

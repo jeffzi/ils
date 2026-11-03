@@ -129,11 +129,13 @@ const messageQuery = "query($owner: String!, $name: String!, $number: Int!) { " 
 // trailerLine matches a line of the `Token: value` form, whose token is letters, digits and hyphens.
 var trailerLine = regexp.MustCompile(`^[A-Za-z0-9-]+: \S`)
 
+type workflowEntry struct {
+	Path  string `json:"path"`
+	State string `json:"state"`
+}
+
 type workflowsPage struct {
-	Workflows []struct {
-		Path  string `json:"path"`
-		State string `json:"state"`
-	} `json:"workflows"`
+	Workflows []workflowEntry `json:"workflows"`
 }
 
 type repoFile struct {
@@ -274,10 +276,10 @@ func (f *Forge) requiredChecks(ctx context.Context, repo forge.Repo, query forge
 		return false, false, err
 	}
 
-	missing = len(verdict.MissingRequired) > 0
-	running = len(verdict.Pending()) > 0 || (missing && verdict.Running())
+	absent := len(verdict.MissingRequired) > 0
+	running = len(verdict.Pending()) > 0 || (absent && verdict.Running())
 
-	return missing && !running, running, nil
+	return absent && !running, running, nil
 }
 
 // TrunkProtection returns whether rules apply to trunk, the status checks they require, and
@@ -373,9 +375,11 @@ func (f *Forge) HasTrunkCI(ctx context.Context, repo forge.Repo, trunk string) (
 // Message returns pull request number's title and body, and the trailer block GitHub would end
 // its squash commit with when the logged-in user merges it.
 //
-// The block is the last paragraph of the body GitHub composes, taken only when every line of it
-// is a trailer. Under every message setting GitHub puts its trailers there; a last paragraph with
-// any other line, such as a commit's subject, means GitHub added no trailer.
+// The block is the last paragraph of what GitHub appends after the pull request body in the body
+// it composes, taken only when every line of it is a trailer. Under every message setting GitHub
+// puts its trailers there; a last paragraph with any other line, such as a commit's subject, means
+// GitHub added no trailer. A trailer the pull request body itself ends with is not returned: the
+// squash body already carries it.
 //
 // An answer that cannot be decoded, or that holds no pull request, is a *DecodeError.
 func (f *Forge) Message(ctx context.Context, repo forge.Repo, number int) (forge.Message, error) {
@@ -396,13 +400,25 @@ func (f *Forge) Message(ctx context.Context, repo forge.Repo, number int) (forge
 
 	view := answer.Data.Repository.PullRequest
 
-	return forge.Message{Title: view.Title, Body: view.Body, Trailers: trailersOf(view.MergeBody)}, nil
+	return forge.Message{Title: view.Title, Body: view.Body, Trailers: trailersOf(view.Body, view.MergeBody)}, nil
 }
 
-// trailersOf returns the lines of the last paragraph of body when every one is a trailer, and
-// nil otherwise.
-func trailersOf(body string) []string {
-	paragraphs := strings.Split(strings.TrimRight(body, "\n"), "\n\n")
+// trailersOf returns the lines of the last paragraph of what GitHub appended to body in
+// mergeBody when every one is a trailer, and nil otherwise. A mergeBody that does not start with
+// body, ending at a line, is all GitHub's own; the two are compared with LF line ends and without
+// the whitespace that closes body, which GitHub's copy of it may not keep. Trailers of body itself
+// are never returned: the squash body already carries body, and would carry them twice.
+func trailersOf(body, mergeBody string) []string {
+	appended := strings.ReplaceAll(mergeBody, "\r\n", "\n")
+	own := strings.TrimRight(strings.ReplaceAll(body, "\r\n", "\n"), " \t\n")
+	rest, cut := strings.CutPrefix(appended, own)
+
+	endsAtLine := rest == "" || strings.HasPrefix(rest, "\n")
+	if cut && endsAtLine {
+		appended = rest
+	}
+
+	paragraphs := strings.Split(strings.TrimRight(appended, "\n"), "\n\n")
 	lines := strings.Split(paragraphs[len(paragraphs)-1], "\n")
 
 	for _, line := range lines {
@@ -461,7 +477,9 @@ func (f *Forge) FindRelease(ctx context.Context, repo forge.Repo, tag string) (l
 // trunk's tip.
 //
 // The notes reach gh through a temporary file, since a Runner has no stdin; it is removed before
-// PublishRelease returns, and a failure to remove it is an error even once the release exists.
+// PublishRelease returns, and a failure to remove it is an error even once the release exists:
+// the release's URL then comes back with that error, so a caller can tell a created release from
+// one gh did not create.
 func (f *Forge) PublishRelease(ctx context.Context, repo forge.Repo, release forge.NewRelease) (link string, err error) {
 	notes, err := writeNotes(release.Notes)
 	if err != nil {
@@ -505,17 +523,12 @@ func writeNotes(notes string) (path string, err error) {
 	return file.Name(), nil
 }
 
-// repoAPIPath returns the REST path of rest under the repository, relative to the API root.
-func repoAPIPath(repo forge.Repo, rest string) string {
-	return "repos/" + repo.FullName() + "/" + rest
-}
-
 // repoAPIArgs returns the gh arguments of a call of rest under the repository, with flags before
-// its path.
+// its REST path, which is relative to the API root.
 func repoAPIArgs(repo forge.Repo, rest string, flags ...string) []string {
 	args := append([]string{"api", "--hostname", repo.Host}, flags...)
 
-	return append(args, repoAPIPath(repo, rest))
+	return append(args, "repos/"+repo.FullName()+"/"+rest)
 }
 
 // paginatedAPIArgs returns the gh arguments that read rest under the repository, following every page.
@@ -530,14 +543,20 @@ func (f *Forge) activeWorkflows(ctx context.Context, repo forge.Repo) ([]string,
 		return nil, err
 	}
 
-	var active []string
+	var workflows []workflowEntry
 
 	for _, page := range pages {
-		for _, workflow := range page.Workflows {
-			if workflow.State == "active" && strings.HasPrefix(workflow.Path, workflowsDir+"/") {
-				active = append(active, workflow.Path)
-			}
+		workflows = append(workflows, page.Workflows...)
+	}
+
+	var active []string
+
+	for _, workflow := range workflows {
+		if workflow.State != "active" || !strings.HasPrefix(workflow.Path, workflowsDir+"/") {
+			continue
 		}
+
+		active = append(active, workflow.Path)
 	}
 
 	return active, nil

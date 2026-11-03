@@ -161,9 +161,7 @@ func aheadLines(ctx context.Context, deps Deps, req Request, trunk string) ([]re
 // create creates the branch at origin's trunk and puts HEAD on it. A file the switch would
 // overwrite is a refusal naming it; any other failure is broke.
 func (n newBranch) create(ctx context.Context, deps Deps, req Request) *result.Result {
-	name := n.name
-
-	err := deps.Repo.CreateBranch(ctx, name, n.Trunk)
+	err := deps.Repo.CreateBranch(ctx, n.name, n.Trunk)
 	if err == nil {
 		return nil
 	}
@@ -171,12 +169,12 @@ func (n newBranch) create(ctx context.Context, deps Deps, req Request) *result.R
 	if overwrite, ok := errors.AsType[*git.OverwriteError](err); ok {
 		return req.Refused(
 			result.Say("the switch to %s would overwrite %s; nothing was written",
-				result.Branch(name), strings.Join(overwrite.Files, ", ")),
+				result.Branch(n.name), strings.Join(overwrite.Files, ", ")),
 			result.NextStep("commit or move those files"+thenRunAgain, req.ilsCommand()))
 	}
 
-	broke := req.ends(result.Broke, result.Say("could not start the branch %s", result.Branch(name)), req.onceFixed())
-	broke.Lines = []result.Phrase{result.Say("Could not start the branch %s: %s", result.Branch(name), err.Error())}
+	broke := req.ends(result.Broke, result.Say("could not start the branch %s", result.Branch(n.name)), req.onceFixed())
+	broke.Lines = []result.Phrase{result.Say("Could not start the branch %s: %s", result.Branch(n.name), err.Error())}
 
 	return broke
 }

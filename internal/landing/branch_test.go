@@ -1,6 +1,7 @@
 package landing_test
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"gotest.tools/v3/assert"
+	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
@@ -365,7 +367,7 @@ func TestPush_WhenBranchHasNoCommitAtAll_RefusesAsNoCommitPastTheTrunk(t *testin
 	assertAsked(t, s, identityRead())
 }
 
-func TestPush_WhenBranchRefCannotBeRead_BrokeNamingTheTipRead(t *testing.T) {
+func TestPush_WhenTipAndBranchRefCannotBeRead_BrokeShowingBothFailures(t *testing.T) {
 	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
 	words := []string{"show-ref", "--verify", "--quiet", "refs/heads/" + spare}
 	s := newScene(t, func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--orphan", spare) }, allowed(), false)
@@ -373,7 +375,9 @@ func TestPush_WhenBranchRefCannotBeRead_BrokeNamingTheTipRead(t *testing.T) {
 
 	got := landing.Push(t.Context(), s.deps, pushRequest())
 
-	assertFailedGit(t, got, pushCommand(), readTip)
+	said := assertBrokeReadBy(t, got, pushCommand(), readTip)
+	assert.Check(t, is.Contains(said, gittest.FailedSaid))
+	assert.Check(t, is.Contains(said, "HEAD"))
 
 	assertAsked(t, s, identityRead())
 }
@@ -423,4 +427,39 @@ func sharedFailedReads() []failedRead {
 func TestPush_WhenASharedGitReadFails_BrokeNamingTheRead(t *testing.T) {
 	// Not parallel: each row puts a failing git first on PATH with t.Setenv.
 	runFailedReads(t, sharedFailedReads())
+}
+
+// overtime is a push whose context ends during one of its reads.
+type overtime struct {
+	// arrange returns the context to run under, once it has changed how the scene reads.
+	arrange func(t *testing.T, s *scene) context.Context
+	// prepare changes the repository before the scene reads it.
+	prepare func(*gittest.Fixture)
+	name    string
+	read    string
+	script  forgetest.Script
+	ops     []forgetest.Op
+}
+
+// runOvertime runs each row rows returns for the time limit as a test of its own: Push refuses
+// naming the read the time limit ended, having written nothing. Push hands each cut read on to the
+// shared wording, whose tests tell the time limit from an interrupt, so the time limit alone is
+// enough here.
+func runOvertime(t *testing.T, rows func(c cut) []overtime) {
+	t.Helper()
+
+	c := byTimeLimit()
+	for _, tt := range rows(c) {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := newScene(t, tt.prepare, tt.script, false)
+			ctx := tt.arrange(t, s)
+			before := s.written()
+
+			got := landing.Push(ctx, s.deps, pushRequest())
+
+			assertEnded(t, s, got, finish{outcome: result.Refused, text: overtimeText(pushCommand(), c, tt.read)})
+			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
+		})
+	}
 }

@@ -17,8 +17,13 @@ When that step ends, tell the user and stop: the next `ils merge` needs a new as
 
 On exit 4, read `Next:`. If it names `ils push`, run `ils push --wait` instead, in the background,
 as SKILL.md's "A pending push waits in the background" says. When that exits 0, run `ils merge`
-again, showing the title and body first. If `Next:` names `ils merge`, GitHub already made the
-merge and `ils merge` is finishing it. Run it again without showing them, since the message is
-already on the trunk.
+again, showing the title and body first. If `Next:` names `ils merge`, read the reason line above
+it:
+
+- "a check the trunk requires still runs": nothing merged. Run `ils merge` again, showing the
+  title and body first.
+- "fewer than … to finish the merge" or "ils was interrupted before finishing the merge": GitHub
+  already made the merge and `ils merge` is finishing it. Run it again without showing them, since
+  the message is already on the trunk.
 
 `ils merge` has no `--force`; a merge on red is the user's, typed by hand.

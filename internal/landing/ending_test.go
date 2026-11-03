@@ -210,7 +210,7 @@ type landedRow struct {
 func landedRows() []landedRow {
 	// unverified is the payload of a run on a repository with no CI, where no check reported.
 	unverified := sent(landedBody, true, result.EndingTrunk)
-	unverified.Verdict, unverified.Checks = string(forge.VerdictNone), nil
+	unverified.Verdict, unverified.Checks = forge.VerdictNone, nil
 	earlierArrange, earlierScript := listedEarlier()
 
 	return []landedRow{
@@ -405,10 +405,10 @@ func (build forgeFor) deleting(remove error) forgeFor {
 
 // resumed returns the payload of a resume of pull request 7 merged at head, which merged nothing
 // and ended the checkout at ending.
-func resumed(head, ending string) *result.Merge {
+func resumed(head string, ending result.Ending) *result.Merge {
 	return &result.Merge{
 		URL: mergedPullURL, Number: merged, SHA: head,
-		Verdict: string(forge.VerdictNone), MergeState: string(forge.MergeUnknown), Ending: ending,
+		Verdict: forge.VerdictNone, MergeState: forge.MergeUnknown, Ending: ending,
 	}
 }
 
@@ -419,7 +419,7 @@ type finishedResume struct {
 	script  forgeFor
 	name    string
 	text    string
-	ending  string
+	ending  result.Ending
 	calls   []forgetest.Call
 }
 
@@ -459,6 +459,20 @@ func finishedResumes() []finishedResume {
 				return head
 			},
 			text: resumedLine() + goneLine() + onTrunkLine(), ending: result.EndingTrunk, calls: asked(changesRead()),
+		},
+		{
+			// Origin's branch stayed at the tip, which the merged head carries.
+			name: "origin's branch behind the merged head", script: resuming().deleting(nil),
+			arrange: func(f *gittest.Fixture) string {
+				f.Publish(topic)
+				head := f.Commits(topic, "Apply suggestions from code review")[0]
+				f.LandPull(merged, head)
+				f.Git("reset", "--quiet", "--hard", "HEAD~1")
+
+				return head
+			},
+			text: resumedLine() + deletedLine() + onTrunkLine(), ending: result.EndingTrunk,
+			calls: append(asked(changesRead()), forgetest.Call{Op: forgetest.OpDeleteBranch, Repo: origin(), Branch: topic}),
 		},
 	}
 }
@@ -577,6 +591,20 @@ func TestMerge_WhenAResumeCannotFinish_EndsWithNothingWritten(t *testing.T) {
 	runLandings(t, resumeStops())
 }
 
+// assertResumeUnread fails unless run broke on a resume that could not read read, naming it, with
+// the merge payload of a resume that wrote nothing.
+func assertResumeUnread(t *testing.T, run mergeRun, read string) {
+	t.Helper()
+
+	assertStoppedBy(t, run.got, result.Broke, mergeRequest())
+
+	text, reason := shown(t, run.got, run.gitDir)
+	assertSays(t, text, resumedLine()+expect(read, nothingWritten)+nextMergeFixed())
+	between(t, text, read, nothingWritten)
+	assert.Check(t, is.Contains(reason, read))
+	assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(run.tip, ""), cmpopts.EquateEmpty()))
+}
+
 func TestMerge_WhenTheResumeCannotAskOriginForTheBranch_BrokeNamingTheRead(t *testing.T) {
 	t.Parallel()
 
@@ -590,19 +618,62 @@ func TestMerge_WhenTheResumeCannotAskOriginForTheBranch_BrokeNamingTheRead(t *te
 		},
 	})
 
-	assertStoppedBy(t, run.got, result.Broke, mergeRequest())
+	assertResumeUnread(t, run, readStillOnOrigin)
+	assert.Check(t, is.Equal(run.written(), run.before))
+}
 
-	text, reason := shown(t, run.got, run.gitDir)
-	assertSays(t, text, resumedLine()+expect(readStillOnOrigin, nothingWritten)+nextMergeFixed())
-	between(t, text, readStillOnOrigin, nothingWritten)
-	assert.Check(t, is.Contains(reason, readStillOnOrigin))
-	assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(run.tip, ""), cmpopts.EquateEmpty()))
+func TestMerge_WhenOriginsBranchHoldsCommitsTheMergedHeadLacks_RefusesListingThem(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		var pushed string
+
+		run := runMergeOn(t, setting{
+			arrange: func(f *gittest.Fixture) {
+				landAndPublish(f)
+				pushed = f.AdvanceOrigin(topic)
+			},
+			script: resuming(),
+		})
+
+		assertStoppedBy(t, run.got, result.Refused, mergeRequest())
+
+		text, reason := shown(t, run.got, run.gitDir)
+		assertSays(t, text, expect(shortSHA(pushed), "origin change on "+topic))
+		assertSays(t, reason, expect(topic))
+		assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(run.tip, ""), cmpopts.EquateEmpty()))
+		assert.Check(t, sameOps(run.forge.Calls(), changesRead()))
+		assert.Check(t, is.Equal(run.written(), run.before))
+	})
+}
+
+// readBranchOnOrigin is the read of the commits origin's copy of the branch holds.
+const readBranchOnOrigin = "origin's copy of the branch"
+
+func TestMerge_WhenTheResumeCannotReadOriginsBranch_BrokeNamingTheRead(t *testing.T) {
+	t.Parallel()
+
+	run := runMergeOn(t, setting{
+		arrange: func(f *gittest.Fixture) {
+			landAndPublish(f)
+			f.AdvanceOrigin(topic)
+		},
+		script: resuming(), unbounded: true,
+		rewire: func(t *testing.T, s *scene) {
+			t.Helper()
+			// Origin answers about its trunk, the fetch of it, the fetch of the merged head, and whether
+			// it still has the branch, and not the fetch of the commits its branch holds.
+			s.stopAnswering(t, 4)
+		},
+	})
+
+	assertResumeUnread(t, run, readBranchOnOrigin)
+	assert.Check(t, sameOps(run.forge.Calls(), changesRead()))
 	assert.Check(t, is.Equal(run.written(), run.before))
 }
 
 // sent returns the payload of a green run on a clean pull request 12 that sent its merge with a
 // body of body, made the merge when merged says so, and ended the checkout at ending.
-func sent(body string, merged bool, ending string) *result.Merge {
+func sent(body string, merged bool, ending result.Ending) *result.Merge {
 	payload := composed(squashSubject, body)
 	payload.Merged = merged
 	payload.Ending = ending

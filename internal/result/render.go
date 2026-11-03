@@ -135,22 +135,22 @@ func FaintStyle() ansi.Style {
 	return ansi.NewStyle().Faint()
 }
 
-// kindStyle returns the style a name of k is drawn in, and false for wording,
+// kindStyle returns the style a name of k is drawn in, and no style for wording,
 // ticks and names of no particular kind, which are drawn unstyled.
-func kindStyle(k kind) (ansi.Style, bool) {
+func kindStyle(k kind) ansi.Style {
 	switch k {
 	case kindBranch, kindPullRequest, kindCommand:
-		return ansi.NewStyle().Bold().ForegroundColor(ansi.Blue), true
+		return ansi.NewStyle().Bold().ForegroundColor(ansi.Blue)
 	case kindSHA, kindSkipped, kindZero:
-		return FaintStyle(), true
+		return FaintStyle()
 	case kindPassed:
-		return GreenStyle(), true
+		return GreenStyle()
 	case kindURL:
-		return ansi.NewStyle().Underline(true), true
+		return ansi.NewStyle().Underline(true)
 	case kindWording, kindName, kindTick:
 		fallthrough
 	default:
-		return nil, false
+		return nil
 	}
 }
 
@@ -191,18 +191,15 @@ func (p Pen) Styled(style ansi.Style, text string) string {
 func (p Pen) spans(spans []span) string {
 	var b strings.Builder
 	for _, s := range spans {
-		style, ok := kindStyle(s.kind)
-		switch {
-		case s.kind == kindTick:
+		switch s.kind {
+		case kindTick:
 			if !p.color {
 				b.WriteString(s.text)
 			}
-		case ok:
-			b.WriteString(p.Styled(style, visible(s.text)))
-		case s.kind == kindWording:
+		case kindWording:
 			b.WriteString(s.text)
 		default:
-			b.WriteString(visible(s.text))
+			b.WriteString(p.Styled(kindStyle(s.kind), visible(s.text)))
 		}
 	}
 
@@ -283,9 +280,11 @@ type Object struct {
 	ExitCode int      `json:"exit_code"`
 }
 
-// RenderJSON returns r as one JSON object on one line. gitDir is the resolved
-// git dir, or empty outside a repository. It returns the errors of RenderText,
-// and an error wrapping the encoder's when the object cannot be encoded.
+// RenderJSON returns r as one JSON object on one line. Every U+2028 and U+2029
+// in any of its strings is written as an escape, so the line holds neither.
+// gitDir is the resolved git dir, or empty outside a repository. It returns the
+// errors of RenderText, and an error wrapping the encoder's when the object
+// cannot be encoded.
 func RenderJSON(r Result, gitDir string) (string, error) {
 	view, err := check(r, gitDir)
 	if err != nil {
@@ -295,7 +294,15 @@ func RenderJSON(r Result, gitDir string) (string, error) {
 	// Third-party text may hold invalid UTF-8, which RenderText prints as is.
 	// The encoder replaces each invalid byte with U+FFFD rather than failing
 	// the result.
-	out, err := json.Marshal(view, json.Deterministic(true), jsontext.AllowInvalidUTF8(true))
+	//
+	// The payload, the words and the excerpt reach the object unfolded, so a
+	// raw U+2028 or U+2029 in them would let a Unicode line splitter break the
+	// object in two. Escaping them at the encoder covers every string at once.
+	out, err := json.Marshal(view,
+		json.Deterministic(true),
+		jsontext.AllowInvalidUTF8(true),
+		jsontext.EscapeForJS(true),
+	)
 	if err != nil {
 		return "", fmt.Errorf("encode %s result: %w", r.Command, err)
 	}

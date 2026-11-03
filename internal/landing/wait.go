@@ -148,17 +148,6 @@ func (w Waited) unconfirmed() Waited {
 	return Waited{MergeState: w.MergeState}
 }
 
-// apartWithoutCI turns nothing reported into WaitConflicting or WaitBehind when the merge state,
-// read after the wait, says the pull request cannot merge and the trunk has no CI, and reports
-// whether it did.
-func (w *Waited) apartWithoutCI() bool {
-	if w.Outcome != WaitNothingReported {
-		return false
-	}
-
-	return w.takeApart()
-}
-
 // takeApart sets the outcome to WaitConflicting or WaitBehind when the merge state says the pull
 // request cannot merge, and reports whether it did.
 func (w *Waited) takeApart() bool {
@@ -301,13 +290,15 @@ func (w waiter) logState(ctx context.Context, head forge.Head, window time.Durat
 }
 
 // logChecks logs a read of the checks: how many deciding checks concluded, how many still run, and
-// the verdict's state. It tells the progress hook the count.
+// the verdict's state. It tells the progress hook the count, out of a total that also holds the
+// required checks that have not reported yet, so that a wait for one of them never shows every
+// check done.
 func (w waiter) logChecks(ctx context.Context, verdict forge.Verdict) {
 	deciding, pending := len(verdict.Deciding()), len(verdict.Pending())
 
 	done := deciding - pending
 
-	w.deps.counted(done, deciding)
+	w.deps.counted(done, deciding+len(verdict.MissingRequired))
 	w.deps.logWait(ctx, slog.String("read", "checks"), slog.Int("done", done),
 		slog.Int("pending", pending), slog.String("verdict", string(verdict.State())))
 }
@@ -418,12 +409,13 @@ func lostStage(stillRunning bool, headErr error) WaitStage {
 func (w waiter) readied(ctx context.Context, waited *Waited) (ended bool, stage WaitStage, err error) {
 	w.startChecks()
 
+	// On an error the head caughtUp returns is not the pushed commit, so its merge state is not kept.
 	head, err := w.caughtUp(ctx)
-	waited.MergeState = head.MergeState
-
 	if err != nil {
 		return true, StageHead, err
 	}
+
+	waited.MergeState = head.MergeState
 
 	w.logState(ctx, head, mergeWindow)
 
@@ -544,7 +536,6 @@ func (w waiter) mergeKnown(ctx context.Context, head forge.Head) (forge.Head, er
 	return head, nil
 }
 
-// unknownOnPushed reports whether head is the pushed commit with its merge state still unknown.
 func (w waiter) unknownOnPushed(head forge.Head) bool {
 	return head.MergeState == forge.MergeUnknown && head.SHA == w.pushed.SHA
 }

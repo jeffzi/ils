@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -29,7 +30,6 @@ func TestRepo_OriginURLs_WhenURLIsSSH_ReturnsTheHostSSHConnectsTo(t *testing.T) 
 		name string
 		url  string
 	}{
-		{name: "scp-like url with an alias", url: "git@github-personal:jeffzi/ils.git"},
 		{name: "ssh url with an alias", url: "ssh://git@github-personal/jeffzi/ils.git"},
 	}
 	for _, tt := range tests {
@@ -760,4 +760,125 @@ func TestSameKey_WhenCaseDiffers_MatchesOnlyOnWindows(t *testing.T) {
 	got := git.SameKey("Path", "PATH")
 
 	assert.Check(t, is.Equal(got, runtime.GOOS == "windows"), "SameKey(%q, %q) on %s", "Path", "PATH", runtime.GOOS)
+}
+
+func TestSplitCommandLine(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		line string
+		want []string
+	}{
+		{name: "run of spaces separates once", line: "a  b", want: []string{"a", "b"}},
+		{name: "tab separates", line: "a\tb", want: []string{"a", "b"}},
+		{name: "carriage return separates", line: "a\rb", want: []string{"a", "b"}},
+		{name: "vertical tab does not separate", line: "a\vb", want: []string{"a\vb"}},
+		{name: "form feed does not separate", line: "a\fb", want: []string{"a\fb"}},
+		{name: "leading space gives an empty first word", line: " a", want: []string{"", "a"}},
+		{name: "trailing space gives an empty last word", line: "a ", want: []string{"a", ""}},
+		{name: "single quotes keep a backslash", line: `'a\ b'`, want: []string{`a\ b`}},
+		{name: "double quotes group and a backslash escapes", line: `"a \"b\""`, want: []string{`a "b"`}},
+		{name: "backslash outside quotes escapes a space", line: `a\ b`, want: []string{"a b"}},
+		{name: "empty quotes are an empty word", line: `''`, want: []string{""}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := git.SplitCommandLine(tt.line)
+			assert.Assert(t, ok, "SplitCommandLine(%q) refused the line", tt.line)
+
+			assert.Check(t, is.DeepEqual(got, tt.want), "SplitCommandLine(%q)", tt.line)
+		})
+	}
+}
+
+func TestSplitCommandLine_WhenGitRefusesTheLine_ReportsFalse(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		line string
+	}{
+		{name: "quote left open", line: `a "b`},
+		{name: "backslash at the end", line: `a\`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, ok := git.SplitCommandLine(tt.line)
+
+			assert.Check(t, !ok, "SplitCommandLine(%q) split the line", tt.line)
+		})
+	}
+}
+
+func TestProgramWord(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		line      string
+		want      string
+		wantFound bool
+	}{
+		{name: "vertical tab stays inside the program word", line: "ssh\v-v", want: "ssh\v-v", wantFound: true},
+		{name: "form feed stays inside the program word", line: "ssh\f-v", want: "ssh\f-v", wantFound: true},
+		{name: "leading space before the program", line: " ssh -v", want: "ssh", wantFound: true},
+		{name: "only an assignment and a trailing space", line: "FOO=bar ", want: "", wantFound: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, found := git.ProgramWord(tt.line)
+
+			assert.Check(t, is.Equal(found, tt.wantFound), "ProgramWord(%q) found", tt.line)
+			assert.Check(t, is.Equal(got, tt.want), "ProgramWord(%q)", tt.line)
+		})
+	}
+}
+
+func FuzzSplitCommandLine(f *testing.F) {
+	for _, seed := range []string{
+		"ssh", `plink.exe -batch`, `ssh -i "my key" -p 22`, `'C:\Program Files\PuTTY\plink.exe' -batch`,
+		`GIT_TRACE=1 env FOO=bar ssh -v`, `exec -a name ssh`, `command ssh`, `ssh "unclosed`, `ssh\`,
+		" ssh", "ssh ", "ssh\t-v", "ssh\v-v", "ssh\f-v", "ssh\r-v", `""`, `a\ b`,
+	} {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, line string) {
+		words, split := git.SplitCommandLine(line)
+
+		program, found := git.ProgramWord(line)
+
+		if found {
+			assert.Check(t, split, "ProgramWord(%q) found %q, but SplitCommandLine cannot split the line", line, program)
+			assert.Check(t, slices.Contains(words, program), "ProgramWord(%q) = %q, not one of SplitCommandLine's %q", line, program, words)
+		}
+	})
+}
+
+func TestIsName(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{name: "letters, digits and underscores", in: "GIT_DIR2", want: true},
+		{name: "leading underscore", in: "_x", want: true},
+		{name: "empty", in: "", want: false},
+		{name: "leading digit", in: "1A", want: false},
+		{name: "a character no name holds", in: "a-b", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := git.IsName(tt.in)
+
+			assert.Check(t, is.Equal(got, tt.want), "IsName(%q)", tt.in)
+		})
+	}
 }

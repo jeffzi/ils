@@ -14,8 +14,9 @@ import (
 	"github.com/jeffzi/ils/internal/result"
 )
 
-// Each read names what a precondition reads as it follows "read" in a result, as in "Could not read
-// origin's URLs", so it stays a noun phrase.
+// readGitVersion, readStanding, readURLs, readIdentity, readTrunk and readHeadCommits name what a
+// precondition reads as each follows "read" in a result, as in "Could not read origin's URLs", so
+// each stays a noun phrase.
 const (
 	readGitVersion  = "git's version"
 	readStanding    = "where HEAD stands"
@@ -115,33 +116,6 @@ const (
 	ReleaseCommand = "release"
 )
 
-// ParseCommand, GuardCommand and HookCommand are the command words of `ils parse`, `ils guard` and
-// `ils hook`, the commands that read a command and change nothing. The command line registers
-// them and the guard reads them, so that both agree on what ils runs.
-const (
-	ParseCommand = "parse"
-	GuardCommand = "guard"
-	HookCommand  = "hook"
-)
-
-// FlagJSON, FlagDebug, FlagDebugShort, FlagNoColor, FlagHelp, FlagHelpShort and FlagVersion are the
-// flags of the root command of ils that take no value, as the command line spells them. The
-// command line registers them and the guard reads them through RootSwitches.
-const (
-	FlagJSON       = "--json"
-	FlagDebug      = "--debug"
-	FlagDebugShort = "-d"
-	FlagNoColor    = "--no-color"
-	FlagHelp       = "--help"
-	FlagHelpShort  = "-h"
-	FlagVersion    = "--version"
-)
-
-// RootSwitches returns every flag of the root command of ils that takes no value.
-func RootSwitches() []string {
-	return []string{FlagJSON, FlagDebug, FlagDebugShort, FlagNoColor, FlagHelp, FlagHelpShort, FlagVersion}
-}
-
 // Deps is what a command takes: the forge and the repository it runs in, and what it tells how it
 // advances to. Neither Progress nor Logger changes the result a command returns; either may be nil.
 type Deps struct {
@@ -161,7 +135,8 @@ type Progress interface {
 	// hold. A step that fails or is cut short says nothing.
 	Said(line result.Phrase)
 	// Counted is told, at each read of the checks, that done of the total deciding checks have
-	// concluded. It is not told while no check has reported.
+	// concluded. In a wait for a pull request, total also counts the required checks that have not
+	// reported yet. It is not told while the total is zero.
 	Counted(done, total int)
 }
 
@@ -299,9 +274,14 @@ func (r Request) ilsCommand() result.Name {
 
 // commandLine is the request's command, its positional words, then the flags it was given, so that
 // running it again changes nothing the user chose: `release 1.2.0 --tag-only`. A typed
-// --wait=false is always among them, and a typed --wait only when keepWait is true.
+// --wait=false is always among them, and a typed --wait only when keepWait is true. Each positional
+// word is quoted as shellWord quotes it, so that the line pasted into a shell runs the same command.
 func (r Request) commandLine(keepWait bool) string {
-	words := append([]string{r.Command}, r.Args...)
+	words := []string{r.Command}
+	for _, arg := range r.Args {
+		words = append(words, shellWord(arg))
+	}
+
 	if r.Force {
 		words = append(words, FlagForce)
 	}
@@ -318,6 +298,22 @@ func (r Request) commandLine(keepWait bool) string {
 	}
 
 	return strings.Join(words, " ")
+}
+
+// shellSafe holds the characters a POSIX shell reads as part of a plain word, outside any quote.
+const shellSafe = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_@%+=:,./-"
+
+// shellWord returns word as a POSIX shell reads it back as one word: as it is when it holds only
+// shellSafe characters, and in single quotes otherwise, each single quote it holds closing the
+// quote, escaped, and reopening it:
+//
+//	rock'n'roll  ->  'rock'\''n'\''roll'
+func shellWord(word string) string {
+	if word != "" && strings.Trim(word, shellSafe) == "" {
+		return word
+	}
+
+	return "'" + strings.ReplaceAll(word, "'", `'\''`) + "'"
 }
 
 // Ready is what the shared preconditions hand to the steps that follow them.
@@ -657,9 +653,9 @@ func (r Request) afterTimeLimit() result.Next {
 // unreached returns the result for a call to origin that failed with err: the refusal reason
 // when origin did not answer, and what unread returns otherwise.
 func (r Request) unreached(read string, err error, reason result.Phrase) *result.Result {
-	// The time limit and an interrupt are excluded: a call to origin that either cut short is also a
-	// *git.RemoteError, and unread words it as what cut it short.
-	if _, ok := errors.AsType[*git.RemoteError](err); ok && !endedEarly(err) {
+	// The time limit and an interrupt are excluded: a call to origin that either cut short is also an
+	// ErrRemote failure of git, and unread words it as what cut it short.
+	if errors.Is(err, git.ErrRemote) && !endedEarly(err) {
 		return r.Refused(reason, r.again())
 	}
 

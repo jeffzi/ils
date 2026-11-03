@@ -5,6 +5,8 @@ package guard
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/jeffzi/ils/internal/git"
 )
@@ -16,31 +18,33 @@ type trunkAnswer struct {
 	found bool
 }
 
-// trunks is the trunk rule for one command. It asks origin for the trunk at most once per git dir,
-// so every invocation of the command in one repository is judged against the same answer.
-type trunks struct {
-	asked map[string]trunkAnswer
-}
+// moveFirst is what a refusal says to do when the guard cannot tell where a git command runs, or
+// which branch HEAD is on, because of a move earlier in the command or a directory it cannot read.
+const moveFirst = "run the `cd`, switch, or other move as its own command first, and write any directory as a literal"
 
-func newTrunks() *trunks {
-	return &trunks{asked: map[string]trunkAnswer{}}
-}
+// trunks is the trunk rule for one command, holding the answer for each git dir it asked. It asks
+// origin for the trunk at most once per git dir, so every invocation of the command in one
+// repository is judged against the same answer.
+type trunks map[string]trunkAnswer
 
-// refuseOnTrunk refuses a subcommand that adds commits to the branch HEAD is on when that branch is
-// the trunk of a repository that has an origin, and one whose directory, target, or HEAD the guard
-// cannot tell. A `git rebase` whose branch argument is the trunk is judged as a rebase on the trunk.
+// refuseOnTrunk refuses a subcommand that adds commits to the branch HEAD is on, or the branch a
+// switch earlier in its `&&` list left HEAD on, when that branch is the trunk of a repository that
+// has an origin, and one whose directory, target, or HEAD the guard cannot tell. A `git rebase`
+// whose branch argument is the trunk is judged as a rebase on the trunk, and one whose branch
+// argument the guard cannot read is refused, since that branch may be the trunk.
 //
 // It reads origin and HEAD locally before it asks origin for the trunk, so a repository with no
 // origin or a detached HEAD starts no call to origin.
-func (t *trunks) refuseOnTrunk(ctx context.Context, caller Caller, inv Invocation) (Verdict, error) {
+func (t trunks) refuseOnTrunk(ctx context.Context, caller Caller, inv Invocation) (Verdict, error) {
 	sub, ok := subcommand(inv)
 	if !ok || !trunkJudged(sub, inv.Git.Args) {
 		return Verdict{Outcome: Allow}, nil
 	}
 
-	if inv.Dir == "" || inv.Target.Dir == "" || inv.Target.Unknown || inv.Git.GitDirUnknown || inv.HeadUnknown {
-		reason := fmt.Sprintf("git %s: the guard cannot tell where the command runs, so it cannot tell "+
-			"whether it lands on the trunk", sub)
+	placeUnknown := inv.Dir == "" || inv.Target.Dir == "" || inv.Target.Unknown || inv.Git.GitDirUnknown || inv.HeadUnknown
+	if placeUnknown {
+		reason := fmt.Sprintf("git %s: the guard cannot tell where the command runs, or which branch HEAD "+
+			"is on, so it cannot tell whether it lands on the trunk; %s", sub, moveFirst)
 
 		return refuse(reason), nil
 	}
@@ -56,13 +60,21 @@ func (t *trunks) refuseOnTrunk(ctx context.Context, caller Caller, inv Invocatio
 		return Verdict{}, fmt.Errorf("read the origin and HEAD git %s runs with: %w", sub, err)
 	}
 
-	branch, onBranch := standing.Branch, standing.Kind == git.OnBranch
-	if rebased, named := rebasedBranch(sub, inv.Git.Args); named {
-		branch, onBranch = rebased, true
+	branch, onBranch := headBranch(standing, inv)
+	rebased, named := rebasedBranch(sub, inv.Git.Args)
+	if named {
+		branch, onBranch = rebased.Text, true
 	}
 
 	if standing.Kind == git.NoOrigin || !onBranch {
 		return Verdict{Outcome: Allow}, nil
+	}
+
+	if named && !rebased.Literal {
+		reason := fmt.Sprintf("git %s: the guard cannot read the branch it switches to, so it cannot tell "+
+			"which branch the rebase lands on", sub)
+
+		return refuse(reason), nil
 	}
 
 	answer, err := t.trunkOf(ctx, repo, inv.Git.GitDir)
@@ -82,15 +94,50 @@ func (t *trunks) refuseOnTrunk(ctx context.Context, caller Caller, inv Invocatio
 		return Verdict{Outcome: Allow}, nil
 	}
 
-	reason := fmt.Sprintf("git %s on %s, the trunk: work goes on a branch, started with `ils branch <name>`",
-		sub, answer.trunk)
+	return onTrunk(sub, inv.Git.Args, answer.trunk), nil
+}
 
-	return refuse(reason), nil
+// headBranch returns the branch HEAD is on where inv runs, and false when it is on none: the branch
+// a switch earlier in its `&&` list left it on, or else the one standing reads.
+func headBranch(standing git.Standing, inv Invocation) (string, bool) {
+	if inv.head != "" {
+		return inv.head, true
+	}
+
+	return standing.Branch, standing.Kind == git.OnBranch
+}
+
+// onTrunk returns the verdict on the trunk-judged git subcommand sub, given args, run on trunk. A
+// `git pull` that may only fast-forward is allowed when it names origin and the trunk alone; one
+// that names any other repository or refspec, or one the guard cannot read, can fast-forward the
+// trunk to another branch.
+func onTrunk(sub string, args []Word, trunk string) Verdict {
+	options := readArgs(args, optionsOf(sub))
+	if sub == "pull" && fastForwardsOnly(options.long) {
+		// origin alone pulls what a plain `git pull --ff-only` pulls: the trunk's own upstream. A
+		// refspec names the trunk with or without a leading `+` and its full ref.
+		named := wordTexts(options.positional)
+		if len(named) == 2 {
+			named[1] = strings.TrimPrefix(strings.TrimPrefix(named[1], "+"), "refs/heads/")
+		}
+
+		pullsTrunk := slices.Equal(named, []string{"origin"}) || slices.Equal(named, []string{"origin", trunk})
+		if !options.opaque() && pullsTrunk {
+			return Verdict{Outcome: Allow}
+		}
+
+		return refuse(fmt.Sprintf("git pull --ff-only on %s, the trunk, naming a repository or refspec other "+
+			"than origin %s: it can fast-forward the trunk to another branch; run `git pull --ff-only` alone",
+			trunk, trunk))
+	}
+
+	return refuse(fmt.Sprintf("git %s on %s, the trunk: work goes on a branch, started with `ils branch <name>`",
+		sub, trunk))
 }
 
 // trunkOf returns the trunk of the repository at gitDir, asking origin only the first time.
-func (t *trunks) trunkOf(ctx context.Context, repo git.Repo, gitDir string) (trunkAnswer, error) {
-	if answer, asked := t.asked[gitDir]; asked {
+func (t trunks) trunkOf(ctx context.Context, repo git.Repo, gitDir string) (trunkAnswer, error) {
+	if answer, asked := t[gitDir]; asked {
 		return answer, nil
 	}
 
@@ -100,19 +147,22 @@ func (t *trunks) trunkOf(ctx context.Context, repo git.Repo, gitDir string) (tru
 	}
 
 	answer := trunkAnswer{trunk: trunk, found: found}
-	t.asked[gitDir] = answer
+	t[gitDir] = answer
 
 	return answer, nil
 }
 
-// trunkJudged reports whether the git subcommand sub, given args, adds commits to the branch it
-// runs on: `git pull` does unless it may only fast-forward.
+// trunkJudged reports whether the git subcommand sub, given args, may add commits to the branch
+// it runs on: `git pull` may unless it may only fast-forward from the branch's upstream, naming no
+// repository or refspec and holding nothing the guard cannot read.
 func trunkJudged(sub string, args []Word) bool {
 	switch sub {
 	case "commit", "merge", "cherry-pick", "revert", "am", "rebase":
 		return true
 	case "pull":
-		return !fastForwardsOnly(readArgs(args, optionsOf(sub)).long)
+		options := readArgs(args, optionsOf(sub))
+
+		return !fastForwardsOnly(options.long) || len(options.positional) > 0 || options.opaque()
 	default:
 		return false
 	}
@@ -135,16 +185,13 @@ func fastForwardsOnly(options []longOption) bool {
 }
 
 // rebasedBranch returns the branch argument of `git rebase` with args, the branch it switches to
-// before it rebases, and false when sub is not rebase or names no literal branch.
-func rebasedBranch(sub string, args []Word) (string, bool) {
+// before it rebases, and false when sub is not rebase or names no branch.
+func rebasedBranch(sub string, args []Word) (Word, bool) {
 	if sub != "rebase" {
-		return "", false
+		return Word{}, false
 	}
 
 	branch, named, _ := rebaseBranch(args)
-	if !named || !branch.Literal {
-		return "", false
-	}
 
-	return branch.Text, true
+	return branch, named
 }

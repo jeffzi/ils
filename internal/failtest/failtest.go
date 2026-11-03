@@ -5,6 +5,7 @@ package failtest
 import (
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -52,7 +53,8 @@ func (s *TB) Stopped() bool {
 	return s.stopped
 }
 
-// Messages returns every message logged or reported through s, in order.
+// Messages returns every message logged or reported through s, in order. An empty message is
+// recorded like any other, as testing.T logs an empty line; Fail and FailNow record no message.
 func (s *TB) Messages() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -63,32 +65,39 @@ func (s *TB) Messages() []string {
 // Helper marks nothing: the recorded calls report no position.
 func (*TB) Helper() {}
 
-// Log records its arguments as a message.
-func (s *TB) Log(args ...any) { s.record(fmt.Sprint(args...), false) }
+// Log records its arguments as one message, joined as testing.T joins them. Log with no arguments,
+// or with only an empty string, records an empty message.
+func (s *TB) Log(args ...any) { s.logMessage(joinArgs(args)) }
 
 // Logf records the formatted message.
-func (s *TB) Logf(format string, args ...any) { s.record(fmt.Sprintf(format, args...), false) }
+func (s *TB) Logf(format string, args ...any) { s.logMessage(fmt.Sprintf(format, args...)) }
 
-// Fail records a failure.
-func (s *TB) Fail() { s.record("", true) }
+// Fail records a failure and no message.
+func (s *TB) Fail() { s.fail(false) }
 
-// Error records its arguments as a message, and a failure.
-func (s *TB) Error(args ...any) { s.record(fmt.Sprint(args...), true) }
+// Error records its arguments as one message, as Log does, and a failure. Error with no arguments
+// records an empty message.
+func (s *TB) Error(args ...any) {
+	s.Log(args...)
+	s.Fail()
+}
 
-// Errorf records the formatted message and a failure.
-func (s *TB) Errorf(format string, args ...any) { s.record(fmt.Sprintf(format, args...), true) }
+// Errorf records the formatted message and a failure. A format that yields no text records an empty
+// message.
+func (s *TB) Errorf(format string, args ...any) {
+	s.Logf(format, args...)
+	s.Fail()
+}
 
-// FailNow records a fatal failure and ends the calling goroutine.
+// FailNow records a fatal failure and no message, and ends the calling goroutine.
 func (s *TB) FailNow() {
-	s.mu.Lock()
-	s.failed = true
-	s.stopped = true
-	s.mu.Unlock()
+	s.fail(true)
 
 	runtime.Goexit()
 }
 
-// Fatal records its arguments as a message and a fatal failure, and ends the calling goroutine.
+// Fatal records its arguments as one message, as Log does, and a fatal failure, and ends the
+// calling goroutine. Fatal with no arguments records an empty message.
 func (s *TB) Fatal(args ...any) {
 	s.Log(args...)
 	s.FailNow()
@@ -100,14 +109,22 @@ func (s *TB) Fatalf(format string, args ...any) {
 	s.FailNow()
 }
 
-// record skips an empty message so Fail, which reports none, adds no blank entry to Messages.
-func (s *TB) record(message string, failed bool) {
+func (s *TB) logMessage(message string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if message != "" {
-		s.messages = append(s.messages, message)
-	}
+	s.messages = append(s.messages, message)
+}
 
-	s.failed = s.failed || failed
+func (s *TB) fail(stopped bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.failed = true
+	s.stopped = s.stopped || stopped
+}
+
+// joinArgs formats args as testing.T does: with a space between every pair of operands.
+func joinArgs(args []any) string {
+	return strings.TrimSuffix(fmt.Sprintln(args...), "\n")
 }

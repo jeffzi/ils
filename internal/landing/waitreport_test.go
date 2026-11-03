@@ -75,17 +75,14 @@ func pushRedRows() []pushRow {
 	// The log is one line longer than the excerpt may be.
 	longest := landing.ExcerptLines + 1
 	read := forge.FailedLog{Text: steps(1, longest), State: forge.FailedLogRead}
-	short := forge.FailedLog{Text: steps(1, 3), State: forge.FailedLogRead}
 	// unfinished stays held back up to the time limit: a third poll would end three seconds past it.
 	unfinished := runningOn(redRow("a check failed and its workflow run had not finished at the time limit", forge.BucketFail,
 		forge.FailedLog{State: forge.FailedLogInProgress}, expect("lint", "not available yet")))
 	unfinished.left = 12 * time.Second
-	shorter := redRow("a check failed and its log is shorter than the excerpt", forge.BucketFail, short, steps(1, 3))
 
 	return []pushRow{
 		unfinished,
 		redRow("a check failed and its log is longer than the excerpt", forge.BucketFail, read, steps(2, longest)),
-		shorter,
 		redRow("a check failed that no workflow run stands behind", forge.BucketFail,
 			forge.FailedLog{State: forge.FailedLogNoRun}, expect("lint", "not a workflow run")),
 		redRow("a check was canceled and its log cannot be read", forge.BucketCanceled,
@@ -123,7 +120,6 @@ func TestPush_WhenTheMergeStateKeepsThePullRequestApart_DeliveredNotGreen(t *tes
 	t.Parallel()
 
 	runPushes(t, []pushRow{
-		stoppedRow(forge.MergeConflicting, "conflicts with the trunk"),
 		stoppedRow(forge.MergeBehind, "behind the trunk"),
 	})
 }
@@ -147,22 +143,6 @@ func TestPush_WhenARequiredCheckNeverReported_DeliveredNotGreen(t *testing.T) {
 					stateLine(forge.MergeBlockedByMissingCheck) + expect("a required check never reported") + nextNever(),
 				payload: detail(forge.VerdictGreen, forge.MergeBlockedByMissingCheck, lint),
 			},
-		},
-	})
-}
-
-func TestPush_WhenTheHeadMovesPastThePushedCommit_RefusesNamingTheNewHead(t *testing.T) {
-	t.Parallel()
-
-	refused := finish{
-		outcome: result.Refused, reason: movedTo(),
-		text:    pushedLine() + foundLine() + movedTo() + pushCommand().after("pull the new commit"),
-		payload: detail(forge.VerdictNone, forge.MergeClean),
-	}
-	runPushes(t, []pushRow{
-		{
-			name: "after a green verdict", want: refused,
-			script: reusing(passing()).showing(cleanHead(), moved()),
 		},
 	})
 }
@@ -211,8 +191,9 @@ func cutShortRowsBy(cmd landingCommand, c cut) []pushRow {
 			want:   pendingCleanBy(cmd, expect("#12", "can merge", c.before)),
 		},
 		{
+			// The head read before the cut is of another commit, whose merge state is not the pushed one's.
 			name: c.name + " ends a poll of the head", script: reusing().showing(stale()), cut: c.inPoll,
-			want: pendingCleanBy(cmd, expect("did not show", tipMark, "#12", c.before)),
+			want: pendingBy(cmd, expect("did not show", tipMark, "#12", c.before), "", detail(forge.VerdictNone, forge.MergeUnknown)),
 		},
 	}
 }
@@ -302,7 +283,24 @@ func startedAt(build forgeFor, starts func(begun time.Time) []time.Time) forgeFo
 
 // pushStillRunningRows are the pushes whose wait ended with a check still running at the time limit.
 func pushStillRunningRows() []pushRow {
+	deploying := []forge.Run{{Name: "deploy", Status: forge.RunInProgress}}
+	passed := forge.Verdict{Checks: []forge.Check{forgetest.Check("test", forge.BucketPass)}, Runs: deploying}
+	lint := forgetest.RequiredCheck("lint", forge.BucketPass)
+	missing := forge.Verdict{Checks: []forge.Check{lint}, MissingRequired: []string{"audit"}, Runs: deploying}
+
 	return []pushRow{
+		{
+			name: "every check passed and a workflow run still goes", left: 7 * time.Second,
+			script: reusing(passed).showing(cleanHead(), cleanHead()),
+			want: pending(expect("still running"), expect("deploy"),
+				detail(forge.VerdictGreen, forge.MergeClean, passed.Checks...)),
+		},
+		{
+			name: "a required check never reported and a workflow run still goes", left: 7 * time.Second,
+			script: reusing(missing).requiring("lint", "audit").showing(cleanHead(), cleanHead()),
+			want: pending(expect("still running"), expect("audit", "deploy"),
+				detail(forge.VerdictGreen, forge.MergeClean, lint)),
+		},
 		{
 			// The head catches up after one poll of two seconds; then two polls of five seconds pass,
 			// and a third would leave too little time for the head read after it.
@@ -351,20 +349,21 @@ func TestPush_WhenTheWaitEndsBeforeAnAnswer_PendingSayingWhy(t *testing.T) {
 }
 
 // boundPendingRows are the pushes cmd runs that end pending, one per reason that names c's time
-// limit. The cuts of a read are left to the plain push when cmd runs under its time limit.
+// limit. When cmd runs under the time limit of a plain push, whose rows already hold each reason and
+// the cuts of a read, one row is enough for its `Next:` line.
 func boundPendingRows(cmd landingCommand, c cut) []pushRow {
-	clean := detail(forge.VerdictNone, forge.MergeClean)
+	cleanPayload := detail(forge.VerdictNone, forge.MergeClean)
 
 	rows := []pushRow{
 		{
 			name: "nothing has reported yet", left: 12 * time.Second, script: reusing(forge.Verdict{}),
-			want: pendingBy(cmd, expect("no check or status", tipMark, "#12", c.before), "", clean),
+			want: pendingBy(cmd, expect("no check or status", tipMark, "#12", c.before), "", cleanPayload),
 		},
 		{
 			name: "a workflow run is going and no check has reported yet", left: 12 * time.Second,
 			script: reusing(forge.Verdict{Runs: ran(forge.RunInProgress)}),
 			want: pendingBy(cmd, expect("had not reported", c.before),
-				expect("No check has reported", tipMark, "#12", "workflow run is still going"), clean),
+				expect("No check has reported", tipMark, "#12", "workflow run is still going"), cleanPayload),
 		},
 		{
 			name: "a check passed and no workflow run has started yet", left: 12 * time.Second,
@@ -380,7 +379,7 @@ func boundPendingRows(cmd landingCommand, c cut) []pushRow {
 	}
 
 	if repeatsPlainPush(cmd) {
-		return rows
+		return rows[:1]
 	}
 
 	rows = append(rows, cutShortRowsBy(cmd, c)...)

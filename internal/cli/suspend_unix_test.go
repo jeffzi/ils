@@ -19,6 +19,9 @@ import (
 // all it wrote before the stop: the bytes written before the stop are already in the pipe.
 const quiet = 200 * time.Millisecond
 
+// pipeBuffer is how many bytes of stderr one read of the pipe takes.
+const pipeBuffer = 4096
+
 // stuckChild is the test binary run as stuck runs, in a process group of its own so that a stop
 // signal from the terminal reaches it.
 type stuckChild struct {
@@ -34,6 +37,16 @@ func startStuck(t *testing.T, way string) *stuckChild {
 	t.Helper()
 
 	return startStuckBy(t, way, os.Args[0])
+}
+
+// startStuckIgnoring is startStuck, except that the run starts with signal ignored, as a
+// non-interactive shell ignores the interrupt of a background job: the shell ignores it, and the
+// ignore holds across its exec of the test binary. signal is a name trap takes, such as INT or
+// TSTP.
+func startStuckIgnoring(t *testing.T, way, signal string) *stuckChild {
+	t.Helper()
+
+	return startStuckBy(t, way, "sh", "-c", `trap "" `+signal+`; exec "$0"`, os.Args[0])
 }
 
 // startStuckBy is startStuck run through argv, whose run ends in an exec of the test binary.
@@ -102,22 +115,49 @@ func (c *stuckChild) awaitLine(t *testing.T, want string) {
 	assert.Assert(t, line == want+"\n", "stdout = %q, want %q", line, want+"\n")
 }
 
+// drawRead reads what stderr holds into buf and draws it onto the screen, and reports whether the
+// read deadline passed, which clears the deadline. It fails the test on any other error, naming
+// what the run was while stderr ended: state.
+func (c *stuckChild) drawRead(t *testing.T, buf []byte, state string) (quietPassed bool) {
+	t.Helper()
+
+	n, err := c.pipe.Read(buf)
+	_, writeErr := c.stderr.Write(buf[:n])
+	assert.NilError(t, writeErr)
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		assert.NilError(t, c.pipe.SetReadDeadline(time.Time{}))
+
+		return true
+	}
+	assert.NilError(t, err, "stderr ended while the run was %s:\n%q", state, c.stderr.raw())
+
+	return false
+}
+
 // drain draws onto the screen everything stderr holds, which is all a stopped run wrote.
 func (c *stuckChild) drain(t *testing.T) {
 	t.Helper()
 
-	buf := make([]byte, 4096)
+	buf := make([]byte, pipeBuffer)
 	for {
 		assert.NilError(t, c.pipe.SetReadDeadline(time.Now().Add(quiet)))
-		n, err := c.pipe.Read(buf)
-		_, writeErr := c.stderr.Write(buf[:n])
-		assert.NilError(t, writeErr)
-		if errors.Is(err, os.ErrDeadlineExceeded) {
-			assert.NilError(t, c.pipe.SetReadDeadline(time.Time{}))
-
+		if c.drawRead(t, buf, "stopped") {
 			return
 		}
-		assert.NilError(t, err, "stderr ended while the run was stopped:\n%q", c.stderr.raw())
+	}
+}
+
+// watch draws onto the screen what stderr says for quiet, as long as a stopped run takes to have
+// stopped.
+func (c *stuckChild) watch(t *testing.T) {
+	t.Helper()
+
+	assert.NilError(t, c.pipe.SetReadDeadline(time.Now().Add(quiet)))
+	buf := make([]byte, pipeBuffer)
+	for {
+		if c.drawRead(t, buf, "watched") {
+			return
+		}
 	}
 }
 
@@ -171,6 +211,21 @@ func TestApp_Run_WhenContinuedAfterASuspend_DrawsTheSpinnerLineAgain(t *testing.
 	assert.NilError(t, run.cmd.Process.Signal(syscall.SIGCONT))
 
 	run.await(t, "the spinner line showed again", run.spinnerShows)
+}
+
+func TestApp_Run_WhenSuspendedAfterStartingWithTheStopSignalIgnored_RunsOnWithTheSpinnerLine(t *testing.T) {
+	t.Parallel()
+	run := startStuckIgnoring(t, stuckHolding, "TSTP")
+	run.awaitSpinning(t)
+
+	assert.NilError(t, run.cmd.Process.Signal(syscall.SIGTSTP))
+
+	run.watch(t)
+	var status syscall.WaitStatus
+	pid, err := syscall.Wait4(run.cmd.Process.Pid, &status, syscall.WUNTRACED|syscall.WNOHANG, nil)
+	assert.NilError(t, err)
+	assert.Check(t, pid == 0, "status = %v, want the run still under way", status)
+	assert.Check(t, run.spinnerShows(), "the spinner line no longer shows:\n%q", run.stderr.raw())
 }
 
 func TestApp_Run_WhenSuspendedAfterTheLandingCommandReturned_Stops(t *testing.T) {

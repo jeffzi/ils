@@ -24,7 +24,7 @@ var runUnfinished = regexp.MustCompile(`run \d+ is still in progress; logs will 
 // noChecksReported is what gh prints on stderr when a pull request has no checks.
 const noChecksReported = "no checks reported"
 
-// runListLimit is the most runs `gh run list` returns for one commit.
+// runListLimit overrides gh's default page size of 20 runs, far below the runs one commit can have.
 const runListLimit = "1000"
 
 type pullCheck struct {
@@ -182,7 +182,9 @@ func runStatusOf(status string) forge.RunStatus {
 //
 // A check with no Actions run behind it has no log, a run that has not completed
 // holds its log back, and a gh that cannot give the log for any other reason
-// leaves it unreadable: the verdict is red either way.
+// leaves it unreadable: the verdict is red either way. A link that names no job
+// leaves the log unreadable without a read: the run's failed log holds every
+// failed job of the run, and would be shown as this check's.
 //
 // A failed log that is empty falls back to the log of the job the check's link
 // names: for a few seconds after a run completes, GitHub serves a log archive
@@ -202,8 +204,11 @@ func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Ve
 	}
 
 	runID, jobID := match[1], match[2]
+	if jobID == "" {
+		return forge.FailedLog{Check: failed.Name, State: forge.FailedLogUnreadable}, nil
+	}
 
-	result, err := f.runner().Run(ctx, "run", "view", "--repo", repo.Slug(), runID, "--log-failed")
+	result, err := f.runner().Run(ctx, "run", "view", "--repo", repo.Slug(), runID, "--log-failed", "--job", jobID)
 	if exitErr, exited := errors.AsType[*child.ExitError](err); exited {
 		if runUnfinished.MatchString(exitErr.Stderr) {
 			return forge.FailedLog{Check: failed.Name, State: forge.FailedLogInProgress}, nil
@@ -232,12 +237,8 @@ func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Ve
 }
 
 // jobLog reads the log of the Actions job numbered job. It returns an empty log, and no error,
-// when job is empty or gh exits non-zero: either way failedLog has no log to give yet.
+// when gh exits non-zero: failedLog has no log to give yet.
 func (f *Forge) jobLog(ctx context.Context, repo forge.Repo, job string) (string, error) {
-	if job == "" {
-		return "", nil
-	}
-
 	result, err := f.runner().Run(ctx, repoAPIArgs(repo, "actions/jobs/"+job+"/logs")...)
 	if _, exited := errors.AsType[*child.ExitError](err); exited {
 		return "", nil
@@ -349,17 +350,21 @@ type commitSuites struct {
 func suitesOf(pages []actionsRunsPage) commitSuites {
 	suites := commitSuites{workflowOf: map[int64]string{}, elsewhere: map[int64]bool{}}
 
+	var runs []actionsRun
+
 	for _, page := range pages {
-		for _, run := range page.Runs {
-			if run.Event != "push" {
-				suites.elsewhere[run.CheckSuite] = true
+		runs = append(runs, page.Runs...)
+	}
 
-				continue
-			}
+	for _, run := range runs {
+		if run.Event != "push" {
+			suites.elsewhere[run.CheckSuite] = true
 
-			suites.workflowOf[run.CheckSuite] = run.Name
-			suites.runs = append(suites.runs, forge.Run{Name: run.Name, Status: runStatusOf(run.Status)})
+			continue
 		}
+
+		suites.workflowOf[run.CheckSuite] = run.Name
+		suites.runs = append(suites.runs, forge.Run{Name: run.Name, Status: runStatusOf(run.Status)})
 	}
 
 	return suites
@@ -375,27 +380,33 @@ type checkKey struct {
 // created last, leaving out the check runs of suites that judge something else. A check run with
 // no Actions run behind it, such as one a GitHub App reports, has no workflow.
 func latestCheckRuns(pages []checkRunsPage, suites commitSuites) []forge.Check {
+	var runs []commitCheckRun
+
+	for _, page := range pages {
+		runs = append(runs, page.CheckRuns...)
+	}
+
 	var kept []commitCheckRun
 
 	at := map[checkKey]int{}
 
-	for _, page := range pages {
-		for _, run := range page.CheckRuns {
-			if suites.elsewhere[run.CheckSuite.ID] {
-				continue
-			}
+	for _, run := range runs {
+		if suites.elsewhere[run.CheckSuite.ID] {
+			continue
+		}
 
-			key := checkKey{workflow: suites.workflowOf[run.CheckSuite.ID], name: run.Name}
-			if i, seen := at[key]; seen {
-				if run.ID > kept[i].ID {
-					kept[i] = run
-				}
+		key := checkKey{workflow: suites.workflowOf[run.CheckSuite.ID], name: run.Name}
 
-				continue
-			}
-
+		i, seen := at[key]
+		if !seen {
 			at[key] = len(kept)
 			kept = append(kept, run)
+
+			continue
+		}
+
+		if run.ID > kept[i].ID {
+			kept[i] = run
 		}
 	}
 

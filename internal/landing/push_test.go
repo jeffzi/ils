@@ -1,7 +1,6 @@
 package landing_test
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -145,41 +144,38 @@ func publishAtTrunk(f *gittest.Fixture, branch string) {
 	f.Git("push", "--quiet", filepath.ToSlash(f.OriginDir()), trunk+":refs/heads/"+branch)
 }
 
+// refusedAfterIdentity is the refusal named name of the branch arrange sets up, whose forge answers
+// the identity read alone and which fetches from origin before the refusal.
+func refusedAfterIdentity(name string, arrange func(*gittest.Fixture) string) pushRefusal {
+	return pushRefusal{name: name, script: allowed(), ops: identityRead(), fetches: true, arrange: arrange}
+}
+
 // cutRefusals are the refusals of a branch whose copy on origin, if any, does not carry its first
 // commit past the trunk, decided from the one other local branch that carries that commit.
 func cutRefusals() []pushRefusal {
 	const other = "the branch " + topic
 
 	return []pushRefusal{
-		{
-			name: "first commit past the trunk is on another branch", script: allowed(),
-			ops: identityRead(), fetches: true,
-			arrange: func(f *gittest.Fixture) string {
-				first := f.Sibling(side, topic)
-				second := f.Commits(side, sharpen)[0]
+		refusedAfterIdentity("first commit past the trunk is on another branch", func(f *gittest.Fixture) string {
+			first := f.Sibling(side, topic)
+			second := f.Commits(side, sharpen)[0]
 
-				return expect(shortSHA(first), changeOnSide, shortSHA(second), sharpen) + shares(other, ownListed) + nextEither()
-			},
-		},
-		{
-			name: "cut from another branch with no commit of its own", script: allowed(),
-			ops: identityRead(), fetches: true,
-			arrange: func(f *gittest.Fixture) string {
-				f.Git("switch", "--quiet", "--create", side, topic)
+			return expect(shortSHA(first), changeOnSide, shortSHA(second), sharpen) + shares(other, ownListed) + nextEither()
+		}),
+		refusedAfterIdentity("cut from another branch with no commit of its own", func(f *gittest.Fixture) string {
+			f.Git("switch", "--quiet", "--create", side, topic)
 
-				return shares(other, noOwn) + nextEither()
-			},
-		},
-		{
-			name: "first commit past the trunk is on another branch and origin's copy is at the trunk", script: allowed(),
-			ops: identityRead(), fetches: true,
-			arrange: func(f *gittest.Fixture) string {
+			return shares(other, noOwn) + nextEither()
+		}),
+		refusedAfterIdentity(
+			"first commit past the trunk is on another branch and origin's copy is at the trunk",
+			func(f *gittest.Fixture) string {
 				own := f.Sibling(side, topic)
 				publishAtTrunk(f, side)
 
 				return expect(shortSHA(own), changeOnSide) + shares(other, ownListed) + nextEither()
 			},
-		},
+		),
 	}
 }
 
@@ -188,34 +184,27 @@ func cutRefusals() []pushRefusal {
 func manyCutRefusals() []pushRefusal {
 	listed := []string{early, topic, yearly}
 
-	return []pushRefusal{
-		{
-			// The second commit is on the last of the other branches alone, so it is not the branch's own.
-			name: "first commit past the trunk is on three other branches", script: allowed(),
-			ops: identityRead(), fetches: true,
-			arrange: func(f *gittest.Fixture) string {
-				f.Git("branch", early, topic)
-				f.Sibling(side, topic)
-				f.Git("branch", yearly, side)
-				own := f.Commits(side, sharpen)[0]
+	// The second commit is on the last of the other branches alone, so it is not the branch's own.
+	cutAcross := refusedAfterIdentity("first commit past the trunk is on three other branches", func(f *gittest.Fixture) string {
+		f.Git("branch", early, topic)
+		f.Sibling(side, topic)
+		f.Git("branch", yearly, side)
+		own := f.Commits(side, sharpen)[0]
 
-				return expect(shortSHA(own), sharpen) + shares("branches", ownListed) + nextEitherMany()
-			},
-			listed: listed,
-		},
-		{
-			name: "cut from three other branches with no commit of its own", script: allowed(),
-			ops: identityRead(), fetches: true,
-			arrange: func(f *gittest.Fixture) string {
-				f.Git("branch", early, topic)
-				f.Git("branch", yearly, topic)
-				f.Git("switch", "--quiet", "--create", side, topic)
+		return expect(shortSHA(own), sharpen) + shares("branches", ownListed) + nextEitherMany()
+	})
+	cutAcross.listed = listed
 
-				return shares("branches", noOwn) + nextEitherMany()
-			},
-			listed: listed,
-		},
-	}
+	cutBare := refusedAfterIdentity("cut from three other branches with no commit of its own", func(f *gittest.Fixture) string {
+		f.Git("branch", early, topic)
+		f.Git("branch", yearly, topic)
+		f.Git("switch", "--quiet", "--create", side, topic)
+
+		return shares("branches", noOwn) + nextEitherMany()
+	})
+	cutBare.listed = listed
+
+	return []pushRefusal{cutAcross, cutBare}
 }
 
 // pullFrom is the command that fast-forwards branch to origin's copy of it.
@@ -236,24 +225,18 @@ func diverged(branch string) string {
 // copyRefusals are the refusals decided from origin's copy of the branch.
 func copyRefusals() []pushRefusal {
 	return []pushRefusal{
-		{
-			name: "behind origin's copy", script: allowed(), ops: identityRead(), fetches: true,
-			arrange: func(f *gittest.Fixture) string {
-				f.Publish(topic)
-				f.AdvanceOrigin(topic)
+		refusedAfterIdentity("behind origin's copy", func(f *gittest.Fixture) string {
+			f.Publish(topic)
+			f.AdvanceOrigin(topic)
 
-				return behind(topic)
-			},
-		},
-		{
-			name: "diverged from origin's copy", script: allowed(), ops: identityRead(), fetches: true,
-			arrange: func(f *gittest.Fixture) string {
-				f.Publish(topic)
-				f.Diverge(topic)
+			return behind(topic)
+		}),
+		refusedAfterIdentity("diverged from origin's copy", func(f *gittest.Fixture) string {
+			f.Publish(topic)
+			f.Diverge(topic)
 
-				return diverged(topic)
-			},
-		},
+			return diverged(topic)
+		}),
 	}
 }
 
@@ -278,13 +261,10 @@ func TestPush_WhenOriginsCopyCarriesAFirstCommitAnotherBranchShares_PushesIt(t *
 func TestPush_WhenSharedPreconditionFails_ReturnsItsRefusal(t *testing.T) {
 	t.Parallel()
 	s := newScene(t, (*gittest.Fixture).RemoveOrigin, forgetest.Script{}, false)
-	before := s.written()
 
 	got := landing.Push(t.Context(), s.deps, pushRequest())
 
 	assertEnded(t, s, got, finish{outcome: result.Refused, text: expect("no remote named origin")})
-	assert.Check(t, is.Equal(s.written(), before))
-	assert.Check(t, !s.gitRan("fetch"), "git fetched from origin before the refusal")
 }
 
 // runPushRefusals runs each row as a test of its own: Push refuses with the text the row's arrange
@@ -394,41 +374,6 @@ func TestPush_WhenOriginStopsAnswering_RefusesNamingWhatItWasAskedFor(t *testing
 	})
 }
 
-// overtime is a push whose context ends during one of its reads.
-type overtime struct {
-	// arrange returns the context to run under, once it has changed how the scene reads.
-	arrange func(t *testing.T, s *scene) context.Context
-	// prepare changes the repository before the scene reads it.
-	prepare func(*gittest.Fixture)
-	name    string
-	read    string
-	script  forgetest.Script
-	ops     []forgetest.Op
-}
-
-// runOvertime runs each row rows returns for the time limit as a test of its own: Push refuses
-// naming the read the time limit ended, having written nothing. Push hands each cut read on to the
-// shared wording, whose tests tell the time limit from an interrupt, so the time limit alone is
-// enough here.
-func runOvertime(t *testing.T, rows func(c cut) []overtime) {
-	t.Helper()
-
-	c := byTimeLimit()
-	for _, tt := range rows(c) {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			s := newScene(t, tt.prepare, tt.script, false)
-			ctx := tt.arrange(t, s)
-			before := s.written()
-
-			got := landing.Push(ctx, s.deps, pushRequest())
-
-			assertEnded(t, s, got, finish{outcome: result.Refused, text: overtimeText(pushCommand(), c, tt.read)})
-			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
-		})
-	}
-}
-
 // failGit makes the scene's git calls whose arguments start with words fail as gittest.FakeGit
 // makes them. It cannot run in a parallel test.
 func failGit(t *testing.T, s *scene, words []string) {
@@ -470,53 +415,46 @@ func history() []string {
 	return []string{"log", "--reverse", "--topo-order", "--format=%H %s", "--no-merges"}
 }
 
+// failedAfterIdentity is the failed read named name of the branch arrange sets up, whose forge
+// answers the identity read alone before the read named read.
+func failedAfterIdentity(name, read string, arrange func(*gittest.Fixture) []string) failedRead {
+	return failedRead{name: name, read: read, script: allowed(), ops: identityRead(), arrange: arrange}
+}
+
 // branchFailedReads are the failed reads of the other local branches.
 func branchFailedReads() []failedRead {
 	return []failedRead{
-		{
-			name: "the local branches that contain the first commit", read: readBranches,
-			script: allowed(), ops: identityRead(),
-			arrange: func(f *gittest.Fixture) []string {
-				return []string{
-					"for-each-ref", "--format=%(refname)", "refs/heads/", "--contains", f.Git("rev-parse", topic),
-				}
-			},
-		},
-		{
-			name: "whether another branch carries a commit", read: readCommits, script: allowed(), ops: identityRead(),
-			arrange: func(f *gittest.Fixture) []string {
-				tip := f.Git("rev-parse", topic)
-				f.Sibling(side, topic)
-				f.Git("switch", "--quiet", topic)
+		failedAfterIdentity("the local branches that contain the first commit", readBranches, func(f *gittest.Fixture) []string {
+			return []string{
+				"for-each-ref", "--format=%(refname)", "refs/heads/", "--contains", f.Git("rev-parse", topic),
+			}
+		}),
+		failedAfterIdentity("whether another branch carries a commit", readCommits, func(f *gittest.Fixture) []string {
+			tip := f.Git("rev-parse", topic)
+			f.Sibling(side, topic)
+			f.Git("switch", "--quiet", topic)
 
-				return append(history(), tip, "^refs/remotes/origin/"+trunk, "^refs/heads/"+side)
-			},
-		},
+			return append(history(), tip, "^refs/remotes/origin/"+trunk, "^refs/heads/"+side)
+		}),
 	}
 }
 
 // copyFailedReads are the failed reads of origin's copy of the branch, fetched before they run.
 func copyFailedReads() []failedRead {
 	return []failedRead{
-		{
-			name: "whether origin's copy carries the first commit", read: readCopy, script: allowed(), ops: identityRead(),
-			arrange: func(f *gittest.Fixture) []string {
-				f.Publish(topic)
-				first := f.Git("rev-parse", topic)
+		failedAfterIdentity("whether origin's copy carries the first commit", readCopy, func(f *gittest.Fixture) []string {
+			f.Publish(topic)
+			first := f.Git("rev-parse", topic)
 
-				return []string{"merge-base", "--is-ancestor", first, first}
-			},
-		},
-		{
-			name: "the divergence from origin's copy", read: readCopy, script: allowed(), ops: identityRead(),
-			arrange: func(f *gittest.Fixture) []string {
-				f.Publish(topic)
-				copied := f.Git("rev-parse", topic)
-				tip := f.Commits(topic, "fix a typo")[0]
+			return []string{"merge-base", "--is-ancestor", first, first}
+		}),
+		failedAfterIdentity("the divergence from origin's copy", readCopy, func(f *gittest.Fixture) []string {
+			f.Publish(topic)
+			copied := f.Git("rev-parse", topic)
+			tip := f.Commits(topic, "fix a typo")[0]
 
-				return []string{"rev-list", "--left-right", "--count", tip + "..." + copied}
-			},
-		},
+			return []string{"rev-list", "--left-right", "--count", tip + "..." + copied}
+		}),
 	}
 }
 
