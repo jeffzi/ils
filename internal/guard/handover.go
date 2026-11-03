@@ -125,13 +125,18 @@ func argsOf(call *syntax.CallExpr, words []Word) []*syntax.Word {
 // shell word before the first interpreter word read as the script it runs, run directly:
 //
 //   - A shell followed by `-c` and a literal string loses the shell and the `-c`. The string stays,
-//     to be read as any other argument.
+//     to be read as any other argument. A bare shell word right after the string goes too: it is
+//     the zero argument (`$0`), the name the shell gives itself, as in `xargs sh -c 'ls "$1"' sh`.
 //   - A shell given a script file loses the shell and its options. The file and the arguments the
 //     script gets stay, read as those of `./x.sh` in the same place.
 //
 // A shell word with neither, whose string is not a literal, or whose file holds a script the
 // command does not (`/dev/stdin`, `<(cat x)`) stays, and so does a path to a shell. Words from the
 // first interpreter word on are its own: a shell word there is one of its arguments.
+//
+// Only a shell word as the zero argument goes. Any other zero argument, and every word after it,
+// stays a word handed to the command: the string can run them (`sh -c '"$@"' sh git push`), and
+// the guard does not read what the string does with its parameters.
 func runDirectly(words []Word, args []*syntax.Word) ([]Word, []*syntax.Word) {
 	keptWords := []Word{words[0]}
 	keptArgs := []*syntax.Word{args[0]}
@@ -140,22 +145,40 @@ func runDirectly(words []Word, args []*syntax.Word) ([]Word, []*syntax.Word) {
 			return append(keptWords, words[i:]...), append(keptArgs, args[i:]...)
 		}
 
-		if words[i].Literal && slices.Contains(shellNames(), words[i].Text) {
+		ranString := false
+		if isBareShell(words[i]) {
+			ranString = runsString(words[i:])
 			i += shellWords(words[i:], args[i:])
 		}
 
 		keptWords = append(keptWords, words[i])
 		keptArgs = append(keptArgs, args[i])
+
+		if ranString && i+1 < len(words) && isBareShell(words[i+1]) {
+			i++
+		}
 	}
 
 	return keptWords, keptArgs
+}
+
+// isBareShell reports whether w is the plain name of a shell whose `-c` string Parse reads, not a
+// path to one.
+func isBareShell(w Word) bool {
+	return w.Literal && slices.Contains(shellNames(), w.Text)
+}
+
+// runsString reports whether words, a shell word and the words after it, give the shell `-c` and a
+// literal string.
+func runsString(words []Word) bool {
+	return len(words) > 2 && words[1].Literal && words[1].Text == "-c" && words[2].Literal
 }
 
 // shellWords returns how many of words, a bare shell word and the words after it read from args,
 // go before the script it runs: the shell and `-c` before a literal string, or the shell and its
 // options before a script file that holds the script. It returns zero when the shell runs neither.
 func shellWords(words []Word, args []*syntax.Word) int {
-	if len(words) > 2 && words[1].Literal && words[1].Text == "-c" && words[2].Literal {
+	if runsString(words) {
 		return 2
 	}
 

@@ -455,10 +455,12 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   `ils status`, `parse`, `guard`, `hook`, and `help` (`timeout 60 ils status`). It refuses any
   other `ils` command, including one the command fills in (`xargs ils`). A bare `sh`, `bash`,
   `zsh`, or `dash` followed by `-c` and a literal string hands over only what that string does,
-  wherever the command runs it: `xargs -I{} sh -c 'ls {}'` and `docker run img sh -c 'make test'`
-  pass, while `xargs sh -c 'git status'`, a shell with neither `-c` nor a script file (`xargs sh`,
-  `xargs bash -s`, `timeout 60 bash /dev/stdin`), and one whose string is not a literal (`xargs
-  bash -c "$s"`) are refused. A bare shell given a script file, after any options, is read as that
+  wherever the command runs it, and a bare shell word right after the string is the name the shell
+  gives `$0`, not one handed over; the words after that are still read: `xargs -I{} sh -c 'ls {}'`,
+  `xargs sh -c 'ls "$1"' sh`, and `docker run img sh -c 'make test'` pass, while `xargs sh -c
+  'git status'`, a shell with neither `-c` nor a script file (`xargs sh`, `xargs bash -s`,
+  `timeout 60 bash /dev/stdin`), and one whose string is not a literal (`xargs bash -c "$s"`) are
+  refused. A bare shell given a script file, after any options, is read as that
   file run directly by the same command: `timeout 60 bash x.sh` and `find . -exec bash {} \;` pass
   as `timeout 60 ./x.sh` does, and the script's own arguments are read as those of `./x.sh`
   (`timeout 60 bash x.sh git push` is refused, naming `git`). Words from the first interpreter word

@@ -59,6 +59,7 @@ func TestParse_MarksWhatItCannotRead(t *testing.T) {
 		{name: "shell with a non-literal -c string, handed to xargs", command: `xargs bash -c "$s"`, want: guard.ToolArgument},
 		{name: "shell with another option before its string, handed to xargs", command: "xargs bash -e -c ls", want: guard.ToolArgument},
 		{name: "shell with -c and no string, handed to xargs", command: "xargs sh -c", want: guard.ToolArgument},
+		{name: "shell with a non-literal -c string and a zero argument, handed to xargs", command: `xargs sh -c "$s" sh`, want: guard.ToolArgument},
 		{name: "shell string among an interpreter's arguments", command: "python3 tool.py sh -c 'git push'", want: guard.ToolArgument},
 		{name: "eval handed to another command", command: "xargs eval 'git status'", want: guard.ToolArgument},
 		{name: "tool behind a wrapper in a string", command: "su -c 'exec git push'", want: guard.ToolArgument},
@@ -98,6 +99,7 @@ func TestParse_WhenAToolIsHandedToAnotherCommand_NamesItOnTheMark(t *testing.T) 
 		{name: "bare tool word after an interpreter word behind another command", command: "timeout 30 python3 tool.py git push", want: "git"},
 		{name: "bare tool word among a script file's arguments behind another command", command: "timeout 60 bash x.sh git push", want: "git"},
 		{name: "shell word after an interpreter word behind another command", command: "timeout 30 python3 tool.py bash x.sh", want: "bash"},
+		{name: "bare tool word among the positional parameters of a shell string, behind xargs", command: `xargs sh -c 'ls "$1"' sh git push`, want: "git"},
 		{name: "code for a python3 word with no minor", command: "python3. -c 'import git'", want: "git"},
 		{name: "code for a python3 word whose minor is not a number", command: "python3.x -c 'import git'", want: "git"},
 	}
@@ -152,6 +154,7 @@ func TestParse_WhenAShellStringHandedToAnotherCommandHandsNoTool_MarksNothing(t 
 		{name: "sh string behind xargs", command: "xargs -I{} sh -c 'ls {}'"},
 		{name: "sh string behind docker run", command: "docker run img sh -c 'make test'"},
 		{name: "bash string behind timeout", command: "timeout 60 bash -c 'go test ./...'"},
+		{name: "shell named as the zero argument of a sh string behind xargs", command: `xargs sh -c 'ls "$1"' sh`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -240,6 +243,7 @@ func TestJudge_WhenAShellScriptHandedToAnotherCommandRunsGit_Refuses(t *testing.
 	checkJudged(t, caller, []judged{
 		{name: "shell string behind timeout", command: "timeout 30 sh -c 'git push'", want: guard.Refuse},
 		{name: "shell string behind xargs", command: "xargs -I{} sh -c 'git push {}'", want: guard.Refuse},
+		{name: "shell string with a zero argument behind xargs", command: "xargs sh -c 'git status' sh", want: guard.Refuse},
 		{name: "interpreter arguments ssh hands to a shell", command: "ssh host sed 's/x/; git push/' f", want: guard.Refuse},
 	})
 }
