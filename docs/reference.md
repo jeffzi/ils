@@ -395,8 +395,16 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   first argument is a literal that does not start with `-v`. zsh's `mkdir`, `rm`, `ln`, and the
   other builtins of its `zsh/files` module write no variable either, and count as programs. Every
   other builtin of bash or zsh (`read`, `print -v`, `vared`, `zformat`, `set`), and a command word
-  that is not a literal, makes every variable unknown after it. The variable also stays unknown:
-  - when something other than a literal assignment writes it: `+=`, `printf -v`, `for NAME in`,
+  that is not a literal, makes every variable unknown after it. A `for NAME in` loop whose list
+  words are all literals with no glob gives NAME each value in turn, read as a literal assignment
+  would leave it, and the guard judges the body once for each: `for v in lua5.1 luajit; do
+  /opt/$v/bin/lua b.lua; done` passes, and `for g in ls git; do $g push; done` is refused as `git
+  push`. A command gets at most 256 such walks of a loop body, each value counting twice outside a
+  dry run (once for the dry run, once for the walk), function bodies and the scripts git runs
+  included; a loop past that leaves NAME unknown in its body. After the loop NAME is unknown. The
+  variable also stays unknown:
+  - when something other than a literal assignment writes it: `+=`, `printf -v`, a `for NAME in`
+    whose list holds a word that is not a literal (`for f in *.sh`, `"$@"`, `$(ls)`),
     `${NAME:=…}`, `unset`, arithmetic, or a value that is not a literal;
   - when the assignment ran in a subshell, a pipeline stage, or a background job, or may not have
     run: `true && S=/x; $S/run.sh`, an `if` or loop body, or a function the command calls;
@@ -437,7 +445,8 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   through the wrappers `env`, `command`, `builtin`, `exec`, `nice`, `nohup`, `time`, `noglob`, and
   `nocorrect`, and reads an `exec` with no command behind them (`command exec > f`) as it reads
   `exec > f`. It takes the words given to a reader, a filter, a file tool, a lookup, or a package
-  manager (`echo`, `grep`, `rg`, `cat`, `cp`, `which`, `go`, `brew`, and the like) as data, so
+  manager, or a shell checker or formatter (`echo`, `grep`, `rg`, `cat`, `cp`, `which`, `go`,
+  `brew`, `shellcheck`, `shfmt`, and the like) as data, so
   `echo git push` holds no `git` call. `go` is data except for the command its `-toolexec` or
   `-exec` names, which the guard reads as a script and refuses when it is not a literal or does not
   parse, and the words of `go run`, of `go generate`, and of a `go` whose subcommand or `-C` word is
@@ -447,19 +456,30 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   other `ils` command, including one the command fills in (`xargs ils`). A bare `sh`, `bash`,
   `zsh`, or `dash` followed by `-c` and a literal string hands over only what that string does,
   wherever the command runs it: `xargs -I{} sh -c 'ls {}'` and `docker run img sh -c 'make test'`
-  pass, while `xargs sh -c 'git status'`, a shell with no `-c` (`xargs sh`), and one whose string is
-  not a literal (`xargs bash -c "$s"`) are refused. This holds only at the top of the command:
-  inside a string the guard reads as a script, a shell word still counts as handed over
-  (`ssh host 'xargs sh -c ls'` is refused), and so does one among an interpreter's arguments;
+  pass, while `xargs sh -c 'git status'`, a shell with neither `-c` nor a script file (`xargs sh`,
+  `xargs bash -s`, `timeout 60 bash /dev/stdin`), and one whose string is not a literal (`xargs
+  bash -c "$s"`) are refused. A bare shell given a script file, after any options, is read as that
+  file run directly by the same command: `timeout 60 bash x.sh` and `find . -exec bash {} \;` pass
+  as `timeout 60 ./x.sh` does, and the script's own arguments are read as those of `./x.sh`
+  (`timeout 60 bash x.sh git push` is refused, naming `git`). Words from the first interpreter word
+  on (`sed`, `awk`, `perl`, `python`, `node`, `ruby`, listed below) belong to that interpreter: its
+  code is data (`xargs sed -i 's/git push/ils push/'`, `timeout 30 python3 -c 'import git'`), and
+  a bare `git`, `gh`, `ils`, or shell word among them still counts as handed over (`timeout 30
+  python3 tool.py git push`). `ssh` and `su` hand their words to a shell, so as the command word
+  they have every argument read as a script, interpreter word or not: `ssh host sed 's/x/; git
+  push/' f` is refused. A bare shell's `-c` string or script file is read this way only at the top
+  of the command: inside a string the guard reads as a script, a shell word still counts as handed
+  over (`ssh host 'xargs sh -c ls'` is refused), and so does one among an interpreter's arguments;
 - a string handed to a command the guard does not know, which the guard reads as a script, when
   one of its commands is such a word or hands one over in turn: `su -c 'cd /repo && git push'`,
   `ssh host 'sudo git push'`, and `su -c "git push $b"`. In the last one the guard reads `$b` as an
   ordinary word, so the string still holds `git push`. A string that does not parse as a script
   is data, whatever command it goes to (`uv run python -c 'import subprocess;
   subprocess.run(["git", "log"])'`). The code given to `sed`, `awk`, `perl`, `python`, `python3`
-  (and `python3.<minor>`), `node`, or `ruby` is never read as a script, whether or not it parses
-  (`sed -n '/git push/p' README.md`); a bare `git`, `gh`, `ils`, or shell word among their
-  arguments still counts as handed over (`python3 tool.py git push`);
+  (and `python3.<minor>`), `node`, or `ruby` is not read as a script, whether or not it parses
+  (`sed -n '/git push/p' README.md`), except behind `ssh` or `su` as the command word; a bare
+  `git`, `gh`, `ils`, or shell word among their arguments still counts as handed over (`python3
+  tool.py git push`);
 - a `bash -c`, `sh -c`, `zsh -c`, `dash -c`, or `eval` string that is not a literal or nests more
   than three deep;
 - a shell that reads its script from standard input or a process substitution (`cat x | bash`,
@@ -498,6 +518,11 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   the alias. Where the guard cannot read that alias (the git dir is unknown, as after `cd "$d"` or
   under `-C "$d"`, or a `-c` it cannot follow), it refuses such a command;
 - a git option at the end of the command with no value after it (`git -C`);
+- a git help call only for the operation git runs: git runs `git <sub> --help`, with `--help` the
+  first word after the subcommand, as `git help <sub>`, before it expands any alias, and the guard
+  reads it the same way, so `git stash --help`, `git push --help origin`, and `git st --help` pass,
+  and `ils parse` shows the subcommand `help`. A `--help` anywhere else leaves the call judged by
+  its subcommand: `git stash drop --help` and `git push origin --help` are refused;
 - a `-c` or `--config-env` value that is not a literal, on any git command, since it may set
   `core.hooksPath`;
 - a non-literal argument to a git command the guard checks for flags (`git clean "$opt"`, which
@@ -514,8 +539,10 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   `--keep-unreachable`, and `repack -d` with `-A --unpack-unreachable=…` or `--cruft
   --cruft-expiration=…`, whatever the expiry; `clean` without `--force` where
   `clean.requireForce` is off, through `-c` or the repository's config;
-  `checkout-index --force`; `read-tree --reset`, and `read-tree -u -m`; `update-ref -d` and
-  `update-ref --stdin`; `branch -M` onto a branch that exists; `apply --reverse`; `add --force`;
+  `checkout-index --force`; `read-tree`, unless `-n` (`--dry-run`), `--index-output`, or
+  `--prefix` keeps it off the index, and always with `--reset` or `-u -m`; `update-ref -d`,
+  `update-ref --stdin`, and `update-ref` whose new value is all zeros or whose ref or new value is
+  not a literal; `branch -M` onto a branch that exists; `apply --reverse`; `add --force`;
 - `--no-verify` on any command, `commit -n`, `am -n`, `send-email --no-validate`, and
   `core.hooksPath` set through `-c` or `--config-env`;
 - `git show` or `git cat-file` with stdout redirected, or piped straight into `tee`, to a file in a
@@ -569,6 +596,12 @@ as `--no-verify`.
 
 #### ils and gh commands
 
+- a help call passes: an `ils` subcommand, or a subcommand of `gh alias`, `auth`, `config`, `pr`,
+  `release`, or `repo`, whose first word after it is `--help` (`ils merge --help`, `gh pr merge
+  --help`) prints its help and runs nothing, and the guard allows it alone, in a pipe, a list, or a
+  subshell, and with a redirect. Handed to a command the guard does not know (`timeout 60 ils merge
+  --help`), it is refused as any other `ils` or `gh` word there. A `--help` past that first word may
+  be the value of an earlier flag, so `gh pr merge 1 --help` is judged as written;
 - `ils merge`, `ils release`, `gh pr merge`, and `gh release create` ask when the command is that
   one call by its bare name. The guard refuses them behind a wrapper, in a list or pipe, with a
   redirect or `&`, in a `-c` string, or spelled as a path or with a backslash;
@@ -613,23 +646,36 @@ payload. Each invocation has:
 | `marks` | array of objects | What the guard could not read safely in this invocation, as `kind` and, when it names one, `name`.    |
 | `git`   | object           | For a git invocation: the fields listed below. Absent otherwise.                                      |
 
-A mark's `kind` is one of these 12 strings. These five name nothing:
+A mark's `kind` is one of these 18 strings. These three name nothing:
 
 - `extended glob`
 - `command word that is not a literal`
-- `shell string that is not a literal`
-- `shell string nested too deep`
 - `shell running a script the command does not hold`
 
-These seven carry a `name`:
+These two carry a `name` only for a command that `go` runs through a flag, and name nothing
+otherwise:
+
+- `shell string that is not a literal`: the flag, such as `go -exec`, or `go` alone when the guard
+  cannot tell the flag;
+- `shell string nested too deep`: the flag.
+
+These 13 carry a `name`:
 
 - `git, gh, ils, or shell word handed to another command`: the word;
-- `git variable off the allow list`: the variable;
+- `command string that does not parse`: the `go` flag whose command it is, such as `go -exec`;
+- `git variable off the allow list`: the variable, absent when the guard cannot read its name;
+- `call of a function past the calls the guard follows`: the function;
+- `function defined over a command the guard reads`: the function;
+- `alias that may run git, gh, or ils`: the alias, or for a word that is not a literal its literal
+  prefix, absent when it has none (`alias "$a"`);
+- `alias that runs a command the guard reads`: the alias;
 - `git alias that runs a shell command`: the alias;
-- `git word that is neither a command nor an alias`: the word;
+- `git word that is neither a command nor an alias`: the word, or for a word that is not a literal
+  its literal prefix, absent when it has none (`git "$sub"`);
 - `git alias nested too deep`: the alias at the level where the guard stopped;
 - `git alias the guard cannot read`: the alias;
-- `git option missing its value`: the option.
+- `git option missing its value`: the option;
+- `git alias of a command an older git lacks`: the alias.
 
 A mark is not a verdict. The rules for git operations, pushes, and `gh` leave no mark, so use `ils
 guard` for the verdict.
