@@ -421,9 +421,7 @@ func (sc *scope) apply(inv Invocation) {
 	case "popd":
 		sc.dir = ""
 	case "unset":
-		for _, name := range inv.Words[1:] {
-			sc.env.set(name.Text, variable{unknown: true})
-		}
+		sc.assignUnknown(wordTexts(inv.Words[1:]))
 	}
 }
 
@@ -466,6 +464,7 @@ func allexportAfter(shell string, args []Word, on bool) bool {
 // allexportAfterIn returns whether `set` given args, run by the shell named shell, which is known,
 // leaves allexport on, given whether it was on before.
 func allexportAfterIn(shell string, args []Word, on bool) bool {
+	r := allexportReader{shell: shell, on: on}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if !arg.Literal {
@@ -473,28 +472,56 @@ func allexportAfterIn(shell string, args []Word, on bool) bool {
 		}
 
 		if len(arg.Text) < 2 || arg.Text == "--" || !strings.ContainsAny(arg.Text[:1], "-+") {
-			return on
+			return r.on
 		}
 
-		enable := arg.Text[0] == '-'
-	bundle:
-		for j, letter := range arg.Text[1:] {
-			switch {
-			case letter == 'a':
-				on = enable
-			case letter == 'o' && shell == "zsh" && j+2 < len(arg.Text):
-				name := Word{Text: arg.Text[j+2:], Literal: arg.Literal}
-				on = setsAllexport(shell, name, enable, on)
-
-				break bundle
-			case letter == 'o' && i+1 < len(args):
-				i++
-				on = setsAllexport(shell, args[i], enable, on)
+		letters, enable, taken := arg.Text[1:], arg.Text[0] == '-', 0
+		for j, letter := range letters {
+			takes, ends := r.letter(letter, letters[j+1:], enable, args[min(i+taken+1, len(args)):])
+			taken += takes
+			if ends {
+				break
 			}
 		}
+
+		i += taken
 	}
 
-	return on
+	return r.on
+}
+
+// allexportReader follows allexport through the bundles of short options of `set` or of a shell,
+// in the shell named shell; on is whether allexport is on so far.
+type allexportReader struct {
+	shell string
+	on    bool
+}
+
+// letter reads letter, one letter of a bundle of short options, which rest follows in its bundle,
+// and next, the words after the values the bundle has taken. It returns how many of next it takes,
+// and whether it takes rest. The bundle starts with `-` when enable is true, `+` otherwise.
+//
+// `a` sets allexport. Each `o` of bash, sh and dash takes the next word as an option name; the `o`
+// of zsh takes rest when there is any, and the next word otherwise. Any other letter takes nothing
+// here.
+func (r *allexportReader) letter(letter rune, rest string, enable bool, next []Word) (int, bool) {
+	switch {
+	case letter == 'a':
+		r.on = enable
+	case letter != 'o':
+	case r.shell == "zsh" && rest != "":
+		r.on = setsAllexport(r.shell, Word{Text: rest, Literal: true}, enable, r.on)
+
+		return 0, true
+	case len(next) > 0:
+		r.on = setsAllexport(r.shell, next[0], enable, r.on)
+
+		return 1, false
+	default:
+		return 1, false
+	}
+
+	return 0, false
 }
 
 // setsAllexport returns whether `set -o name`, or `set +o name` when enable is false, run by the
@@ -743,14 +770,17 @@ func (w *walker) returned() []Invocation {
 // ---------------------------------------------------------------------------
 
 // allowedGitVariables is the list of GIT_* variables a command may set: those that point git at a
-// repository, which the guard follows, and those that change no rule it judges by.
+// repository, which the guard follows, the GIT_* variables among commandVariables, whose scripts it
+// reads, and those that change no rule it judges by.
 func allowedGitVariables() []string {
-	return []string{
-		"GIT_DIR", "GIT_WORK_TREE", "GIT_PAGER", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR",
+	followed := slices.DeleteFunc(commandVariables(), func(name string) bool { return !strings.HasPrefix(name, "GIT_") })
+
+	return append(followed,
+		gitDirVar, gitWorkTreeVar,
 		"GIT_TERMINAL_PROMPT", "GIT_TRACE", "GIT_TRACE2", "GIT_ADVICE", "GIT_OPTIONAL_LOCKS",
 		"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
 		"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE",
-	}
+	)
 }
 
 // gitVariableMarks returns a GitVariable mark for each of the variable names that is a GIT_*
@@ -776,12 +806,7 @@ func (w *walker) loopVariable(c *syntax.ForClause, sc *scope) {
 		return
 	}
 
-	names := []string{iter.Name.Value}
-	sc.assignUnknown(names)
-
-	if sc.allexport {
-		w.keepGitVariableMarks(names, sc)
-	}
+	w.assignUnknownExported([]string{iter.Name.Value}, sc)
 }
 
 // assignUnknown makes each of names a variable the guard cannot tell the value of in sc's
@@ -792,9 +817,15 @@ func (sc *scope) assignUnknown(names []string) {
 	}
 }
 
-// keepGitVariableMarks keeps an invocation placed at sc that holds the GitVariable mark of each of
-// names that is a GIT_* variable off the allow list, and keeps none when no name is.
-func (w *walker) keepGitVariableMarks(names []string, sc *scope) {
+// assignUnknownExported makes each of names unknown in sc, and, while allexport may be on, which
+// exports them, keeps an invocation placed at sc that holds the GitVariable mark of each of names
+// that is a GIT_* variable off the allow list; it keeps none when no name is.
+func (w *walker) assignUnknownExported(names []string, sc *scope) {
+	sc.assignUnknown(names)
+	if !sc.allexport {
+		return
+	}
+
 	if marks := gitVariableMarks(names); len(marks) > 0 {
 		w.keep(w.placed(Invocation{Marks: marks}, sc))
 	}
@@ -827,11 +858,7 @@ func (w *walker) exportedDefaults(node syntax.Node, sc *scope) {
 		return true
 	})
 
-	sc.assignUnknown(names)
-
-	if sc.allexport {
-		w.keepGitVariableMarks(names, sc)
-	}
+	w.assignUnknownExported(names, sc)
 }
 
 // assignsDefault reports whether p is a `${NAME:=word}` or `${NAME=word}`, which assigns NAME.

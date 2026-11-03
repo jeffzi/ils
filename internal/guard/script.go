@@ -207,10 +207,15 @@ func (r *optionReader) bundle(args []Word, i int) int {
 			r.stdin = r.stdin || enable
 		case 'i':
 			r.interactive = true
-		case 'a':
-			r.allexport = enable
-		case 'o', 'O':
-			takes, ends := r.option(letter, letters[j+1:], enable, args[min(i+taken+1, len(args)):])
+		case 'O':
+			// The `O` of bash, sh and dash takes the next word; that of zsh takes nothing.
+			if r.shell != "zsh" {
+				taken++
+			}
+		default:
+			a := allexportReader{shell: r.shell, on: r.allexport}
+			takes, ends := a.letter(letter, letters[j+1:], enable, args[min(i+taken+1, len(args)):])
+			r.allexport = a.on
 			taken += takes
 			if ends {
 				return taken
@@ -219,25 +224,6 @@ func (r *optionReader) bundle(args []Word, i int) int {
 	}
 
 	return taken
-}
-
-// option reads letter, an `o` or `O` that rest follows in its bundle, and returns how many of
-// next, the words after the values its bundle has taken, it takes, and whether it takes rest. Each
-// `o` and `O` of bash, sh and dash takes the next word. The `o` of zsh takes rest when there is
-// any, and the next word otherwise; its `O` takes nothing.
-func (r *optionReader) option(letter rune, rest string, enable bool, next []Word) (int, bool) {
-	switch {
-	case r.shell == "zsh" && letter == 'O':
-		return 0, false
-	case r.shell == "zsh" && rest != "":
-		r.allexport = setsAllexport(r.shell, Word{Text: rest, Literal: true}, enable, r.allexport)
-
-		return 0, true
-	case letter == 'o' && len(next) > 0:
-		r.allexport = setsAllexport(r.shell, next[0], enable, r.allexport)
-	}
-
-	return 1, false
 }
 
 // heredocScript returns the script on the standard input of stmt when it is a literal heredoc,

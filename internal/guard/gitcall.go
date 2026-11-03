@@ -299,13 +299,13 @@ func isDirectory(dir string) bool {
 // targetRunner returns runner moved to dir, with the GIT_DIR and GIT_WORK_TREE of target in place
 // of its own; an empty field of target leaves that variable unset.
 func targetRunner(runner git.Runner, dir string, target GitTarget) git.Runner {
-	env := git.WithoutKeys(runner.Environ(), "GIT_DIR", "GIT_WORK_TREE")
+	env := git.WithoutKeys(runner.Environ(), gitDirVar, gitWorkTreeVar)
 	if target.GitDir != "" {
-		env = append(env, "GIT_DIR="+target.GitDir)
+		env = append(env, gitDirVar+"="+target.GitDir)
 	}
 
 	if target.WorkTree != "" {
-		env = append(env, "GIT_WORK_TREE="+target.WorkTree)
+		env = append(env, gitWorkTreeVar+"="+target.WorkTree)
 	}
 
 	runner.Dir = dir

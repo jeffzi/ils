@@ -8,8 +8,13 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
-// cdPathVar is the variable `cd` reads a relative path against.
-const cdPathVar = "CDPATH"
+// The variables the guard follows to tell where git runs.
+const (
+	// cdPathVar is the variable `cd` reads a relative path against.
+	cdPathVar      = "CDPATH"
+	gitDirVar      = "GIT_DIR"
+	gitWorkTreeVar = "GIT_WORK_TREE"
+)
 
 // environment is what the guard knows of the variables it follows: those that point git at a
 // repository, CDPATH, which `cd` reads a relative path against, and those that choose the config
@@ -83,9 +88,9 @@ func (v variable) or(other variable) variable {
 // set records v as the value of name, when name is a variable the guard follows.
 func (e *environment) set(name string, v variable) {
 	switch name {
-	case "GIT_DIR":
+	case gitDirVar:
 		e.gitDir = v
-	case "GIT_WORK_TREE":
+	case gitWorkTreeVar:
 		e.workTree = v
 	case cdPathVar:
 		e.cdPath = v

@@ -241,8 +241,7 @@ type walker struct {
 	timed     map[*syntax.Stmt]bool
 	functions map[string]*function
 	err       error
-	// dryRuns is shared by w and every walker it probes with; nil until w's first dry run of a
-	// function body.
+	// dryRuns is shared by w and every walker it probes with; newWalker creates it.
 	dryRuns *dryRuns
 	// walked holds every invocation the walk placed, in the order it walked them, those of dry runs
 	// included.
@@ -258,7 +257,7 @@ type walker struct {
 
 // newWalker returns a walker for caller that reads at depth levels of nested strings.
 func newWalker(caller Caller, depth int) walker {
-	return walker{caller: caller, timed: map[*syntax.Stmt]bool{}, depth: depth}
+	return walker{caller: caller, timed: map[*syntax.Stmt]bool{}, depth: depth, dryRuns: &dryRuns{}}
 }
 
 // simple walks stmt when it is a simple command, recording its invocation and then those of the

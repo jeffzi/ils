@@ -250,18 +250,9 @@ func (w *walker) call(inv Invocation, sc *scope) {
 // probe returns a walker that reads at w's depth and drops what it finds.
 func (w *walker) probe() walker {
 	sub := newWalker(w.caller, w.depth)
-	sub.probing, sub.dryRuns = true, w.runs()
+	sub.probing, sub.dryRuns = true, w.dryRuns
 
 	return sub
-}
-
-// runs returns the dry runs w shares with the walkers it probes with.
-func (w *walker) runs() *dryRuns {
-	if w.dryRuns == nil {
-		w.dryRuns = &dryRuns{}
-	}
-
-	return w.dryRuns
 }
 
 // dryRun returns the scope d's body leaves, run from sc in unmovedDir, and the GitVariable marks of
@@ -273,7 +264,7 @@ func (w *walker) runs() *dryRuns {
 // definition that run ran is not under way and every one it found under way still is, leaves what
 // the earlier run left, which dryRun returns without walking the body again.
 func (w *walker) dryRun(d *definition, sc scope) (scope, []Mark) {
-	runs := w.runs()
+	runs := w.dryRuns
 	if d.probing {
 		runs.noteUnderway(d)
 		sc.dir, sc.allexport = "", true
