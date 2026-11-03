@@ -4,6 +4,7 @@ package guard_test
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -22,22 +23,74 @@ func TestParse_WhenASubshellDefinesAFunction_CallsAfterItRunTheOuterBody(t *test
 	assert.Check(t, is.Equal(got.Dir, "/srv/repo"), "Parse(%q) directory of %v", command, got.Words)
 }
 
-func TestJudge_WhenACallOfAFunctionTheCommandDefinesCarriesARedirect_RefusesNamingTheFunction(t *testing.T) {
+func TestJudge_WhenACallCarriesARedirect_JudgesItsBodyUnderTheRedirect(t *testing.T) {
 	t.Parallel()
 
 	checkRefusals(t, []refusal{
-		{name: "stdout to a file", command: "dump() { git show HEAD:f; }; dump > f", wantNamed: "dump"},
+		{name: "git history onto a work tree file", command: "dump() { git show HEAD:README.md; }; dump > README.md", wantNamed: "git show"},
+		{name: "onto the head file of the git dir", command: "f() { :; }; f > .git/HEAD; " + commitCommand, wantNamed: "cannot tell"},
 	})
 }
 
-func TestJudge_WhenACallMayRunAnOuterBodyThatLacksItsRedirect_RefusesNamingTheFunction(t *testing.T) {
+func TestJudge_WhenACallMayRunAnOuterBodyUnderARedirect_JudgesThatBodyUnderTheRedirect(t *testing.T) {
 	t.Parallel()
 
 	checkRefusals(t, []refusal{
-		{name: "redefined in an if branch", command: "dump() { git show HEAD:f; }; { if true; then dump() { :; }; fi; dump; } > f", wantNamed: "dump"},
-		{name: "redefined in an uncalled function body", command: "dump() { git show HEAD:f; }; { g() { dump() { :; }; }; dump; } > f", wantNamed: "dump"},
-		{name: "redefined in an alias value", command: "dump() { git show HEAD:f; }; { alias a='dump() { :; }'; dump; } > f", wantNamed: "dump"},
+		{name: "redefined in an if branch", command: "dump() { git show HEAD:f; }; { if true; then dump() { :; }; fi; dump; } > f", wantNamed: "git show"},
+		{name: "redefined in an uncalled function body", command: "dump() { git show HEAD:f; }; { g() { dump() { :; }; }; dump; } > f", wantNamed: "git show"},
+		{name: "redefined in an alias value", command: "dump() { git show HEAD:f; }; { alias a='dump() { :; }'; dump; } > f", wantNamed: "git show"},
 	})
+}
+
+func TestJudge_WhenACallRunsABodyWhoseCommitLandsOnTheTrunk_RefusesNamingTheTrunk(t *testing.T) {
+	t.Parallel()
+
+	f, caller := standingOn(t, "main", "topic")
+	trunk, _ := standingOn(t, "main", "main")
+	toTrunk := "cd " + quotedPath(trunk.Dir())
+	const commits = "f() { git commit -am wip; }; "
+
+	checkJudgedIn(t, caller, []placed{
+		{name: "after a switch to the trunk", dir: f.Dir(), command: commits + "git switch main && f"},
+		{name: "after a cd into a trunk checkout", dir: f.Dir(), command: commits + toTrunk + " && f"},
+		{
+			name:    "after an export of a trunk git dir",
+			dir:     f.Dir(),
+			command: commits + "export GIT_DIR=" + quotedPath(filepath.Join(trunk.Dir(), ".git")) + "; f",
+		},
+		{name: "inside a subshell", dir: f.Dir(), command: commits + "(" + toTrunk + " && f)"},
+		{name: "inside a loop", dir: f.Dir(), command: commits + "for x in a; do " + toTrunk + " && f; done"},
+		{name: "inside another function's body", dir: f.Dir(), command: commits + "g() { f; }; " + toTrunk + " && g"},
+	}, expectation{outcome: guard.Refuse, named: "main"})
+}
+
+func TestJudge_WhenACallRunsABodyOffTheTrunk_Allows(t *testing.T) {
+	t.Parallel()
+
+	_, caller := standingOn(t, "main", "topic")
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "commit defined and called on a topic branch", command: "f() { git commit -m x; }; f"},
+	})
+}
+
+func TestJudge_WhenCallsGoPastThoseTheGuardFollows_RefusesNamingTheFunction(t *testing.T) {
+	t.Parallel()
+
+	checkRefusals(t, []refusal{
+		{name: "function that calls itself", command: "f() { f; }; f", wantNamed: "past the calls the guard follows: f"},
+		{name: "more calls than the guard follows", command: "f() { :; }" + strings.Repeat("; f", 257), wantNamed: "past the calls the guard follows: f"},
+	})
+}
+
+func TestParse_WhenATopLevelCallGoesPastThoseTheGuardFollows_ReturnsItsMark(t *testing.T) {
+	t.Parallel()
+	command := "f() { :; }" + strings.Repeat("; f", 257)
+
+	got := parse(t, command)
+
+	assert.Assert(t, len(got) > 0, "Parse(%q) returned nothing", command)
+	assert.Check(t, is.DeepEqual(got[len(got)-1].Marks, []guard.Mark{{Kind: guard.DeepCall, Name: "f"}}), "Parse(%q) last marks", command)
 }
 
 func TestJudge_RefusesAFunctionThatShadowsACommandTheGuardReadsThrough(t *testing.T) {

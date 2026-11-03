@@ -15,13 +15,10 @@ type function struct {
 	definitions []*definition
 }
 
-// definition is one declaration of a function: its body, which the walk reads once where it is
-// declared, and what a call of it changes that this read does not show.
+// definition is one declaration of a function: its body, which the walk reads where it is
+// declared and again where each call of it stands, and what a call of it changes.
 type definition struct {
 	body *syntax.Stmt
-	// redirects are those in effect where the function is declared, which the walk reads every
-	// command of its body with.
-	redirects []Redirect
 	// pastRuns are the dry runs of the body so far, which a later call reuses instead of walking the
 	// body again: without them, functions that each call the one before twice cost a walk per call
 	// path, two to the power of their count.
@@ -115,9 +112,9 @@ func (fn *function) with(defs ...*definition) *function {
 	return &function{definitions: all}
 }
 
-// same reports whether d and other run the same body with the same redirects.
+// same reports whether d and other run the same body.
 func (d *definition) same(other *definition) bool {
-	return d.body == other.body && slices.Equal(d.redirects, other.redirects)
+	return d.body == other.body
 }
 
 // mergeFunctions returns the functions a call may run when the shell may hold the functions of a or
@@ -177,7 +174,7 @@ func (w *walker) declareFunction(decl *syntax.FuncDecl, sc *scope) {
 
 	name := decl.Name.Value
 	functions := cloneFunctions(sc.functions)
-	functions[name] = &function{definitions: []*definition{{body: decl.Body, redirects: sc.redirects}}}
+	functions[name] = &function{definitions: []*definition{{body: decl.Body}}}
 	sc.functions = functions
 	if readsCommand(name) || slices.Contains(declarationBuiltins(), name) {
 		w.keep(w.placed(Invocation{Marks: []Mark{{Kind: ShadowingFunction, Name: name}}}, sc))
@@ -205,36 +202,21 @@ func calledDefinitions(inv Invocation, functions map[string]*function) []*defini
 	return fn.definitions
 }
 
-// callMarks marks inv when it calls a function the command declares with redirects other than
-// those of a declaration it may run, which the walk of that body does not see. It reads the
-// functions of the scope inv was placed from.
-func (w *walker) callMarks(inv Invocation) []Mark {
-	definitions := calledDefinitions(inv, w.functions)
-	elsewhere := func(d *definition) bool { return !slices.Equal(inv.enclosing, d.redirects) }
-	if len(definitions) == 0 {
-		return nil
-	}
-
-	if len(inv.Redirects) == 0 && !slices.ContainsFunc(definitions, elsewhere) {
-		return nil
-	}
-
-	return []Mark{{Kind: RedirectedFunction, Name: inv.Words[0].Text}}
-}
-
 // call changes sc the way inv's call of a function the command declares does, run from any of the
 // definitions it may run: the directory after it is unknown when a body may move the shell, and
 // allexport, the variables the guard follows, and the functions are as a body leaves them, unknown
 // where two bodies leave them differently. A shell variable whose value a body may change is
 // unknown after it. A GIT_* variable off the allow list that a body sets while allexport may be on
-// is marked where the call stands. No switch before the call holds after it.
+// is marked where the call stands. Each body the call may run is walked from sc first (see
+// runBodies). No switch before the call holds after it.
 func (w *walker) call(inv Invocation, sc *scope) {
 	definitions := calledDefinitions(inv, sc.functions)
 	if len(definitions) == 0 {
 		return
 	}
 
-	// The walk placed each body where it is declared, so a HEAD move in one is not between the
+	w.runBodies(inv, definitions, *sc)
+	// A dry run walks no body where a call in it stands, so a HEAD move in one is not between the
 	// commands around the call.
 	sc.head = nil
 	after, marks := w.dryRun(definitions[0], *sc)
@@ -261,6 +243,56 @@ func (w *walker) call(inv Invocation, sc *scope) {
 
 	if len(marks) > 0 {
 		w.keep(w.placed(Invocation{Marks: marks}, sc))
+	}
+}
+
+// maxCalls is how many calls of functions the command defines one walk follows into the body they
+// run. A function that calls itself runs without end, and functions that each call the one before
+// twice run two to the power of their count of calls.
+const maxCalls = 256
+
+// runBodies walks each of definitions, the bodies inv's call may run, where the call stands: from
+// sc, the shell as it is there, behind the redirects of the call, and after any switch of the `&&`
+// list the call is in, so each command of a body is judged in the directory, with the environment,
+// and behind the redirects and HEAD of the call.
+//
+// What the walks keep is atCall. A dry run walks no body: its invocations are dropped, and dryRun
+// finds what the call changes. A call past maxCalls is marked instead.
+func (w *walker) runBodies(inv Invocation, definitions []*definition, sc scope) {
+	if w.probing {
+		return
+	}
+
+	if w.calls == maxCalls {
+		w.keep(w.placed(Invocation{Marks: []Mark{{Kind: DeepCall, Name: inv.Words[0].Text}}}, &sc))
+
+		return
+	}
+
+	w.calls++
+	w.calling++
+	sc.redirects = slices.Concat(sc.redirects, inv.Redirects)
+	sc.vars.function = true
+	for _, d := range definitions {
+		body := sc
+		w.stmt(declaredBody(d.body), &body)
+	}
+
+	w.calling--
+}
+
+// declaredBody returns the commands a call runs of body, the body the parser reads for a function
+// declaration. The parser reads `f() { …; } && g` as a declaration whose body is the whole list,
+// while bash and zsh end the body at its compound command and run the rest of the list once, after
+// the declaration: the body a call runs is the first operand of that list.
+func declaredBody(body *syntax.Stmt) *syntax.Stmt {
+	for {
+		list, ok := body.Cmd.(*syntax.BinaryCmd)
+		if !ok {
+			return body
+		}
+
+		body = list.X
 	}
 }
 

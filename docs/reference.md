@@ -475,8 +475,13 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   `GIT_EXEC_PATH`, and the like), and under `set -a` a `read`, `printf -v`, `mapfile`, `for`,
   `getopts`, or `${V:=…}` that sets one, since `set -a` exports it;
 - a function the command defines that shadows `cd`, `pushd`, `popd`, or a wrapper the guard sees
-  through, and a call of a function the command defines with a redirect its definition lacks. A
-  call of one whose body may change directory leaves the directory unknown after it;
+  through. A call of one whose body may change directory leaves the directory unknown after it.
+  The guard judges each command of a function body where the function is declared, and again at
+  each call, in the directory, environment, redirects, and HEAD of the call:
+  `f() { git commit -am wip; }; git switch main && f` is refused as a commit on the trunk, and
+  `T() { uv run pytest -q "$@"; }; T -k x > out.txt` passes;
+- a call of a function the command defines past the 256 calls the guard follows into a body, as a
+  function that calls itself makes;
 - an `alias` whose value runs `git`, `gh`, or `ils`, or that the guard cannot read;
 - a git word that is neither a command nor an alias, a `!` alias, an alias nested more than three
   deep, and an alias the guard cannot read. An alias the guard cannot read has a value that does

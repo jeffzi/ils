@@ -393,9 +393,8 @@ func (w *walker) substitutions(node syntax.Node, sc *scope) {
 }
 
 // placed returns inv with where it runs: its directory, where it points git, and where a gh
-// invocation's gh reads its config. It leaves sc's functions as those callMarks reads.
+// invocation's gh reads its config.
 func (w *walker) placed(inv Invocation, sc *scope) Invocation {
-	w.functions = sc.functions
 	inv.Dir = sc.dir
 	inv.enclosing = sc.redirects
 	inv.follows, inv.racing = sc.head, sc.racing
@@ -767,8 +766,10 @@ func (sc *scope) targetOf(inv Invocation) GitTarget {
 	return GitTarget{Dir: dir, GitDir: gitDir, WorkTree: workTree}
 }
 
-// keep records inv as walked, and as the next invocation Parse returns.
+// keep records inv as walked, and as the next invocation Parse returns, atCall inside a walk of a
+// function body where a call of it stands.
 func (w *walker) keep(inv Invocation) {
+	inv.atCall = inv.atCall || w.calling > 0
 	w.kept = append(w.kept, len(w.walked))
 	w.walked = append(w.walked, inv)
 }

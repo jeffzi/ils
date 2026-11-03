@@ -66,13 +66,14 @@ func Judge(ctx context.Context, command string, caller Caller) Verdict {
 }
 
 // Assess judges command as Judge does, and also returns the invocations it judged, so that a
-// caller showing them reads the command once. A command that does not parse, or whose state Parse
-// failed to read, returns no invocation.
+// caller showing them reads the command once: those Parse returns, and after each call of a
+// function the command defines, the commands of the body it runs, placed where the call stands. A
+// command that does not parse, or whose state Parse failed to read, returns no invocation.
 func Assess(ctx context.Context, command string, caller Caller) (Verdict, []Invocation) {
 	ctx, cancel := context.WithTimeout(ctx, readDeadline)
 	defer cancel()
 
-	invocations, err := Parse(ctx, command, caller)
+	invocations, err := parse(ctx, command, caller)
 	if failure, ok := errors.AsType[*ParseError](err); ok {
 		return refuse("the guard cannot read the command: " + failure.Error()), nil
 	}

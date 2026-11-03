@@ -159,11 +159,15 @@ func readableRuns(inv *Invocation) []gitRun {
 }
 
 // splice places the invocations sub walked right after the one at index i of the walk, and those
-// sub keeps right after it among the kept ones when it is kept itself.
+// sub keeps right after it among the kept ones when it is kept itself. They are atCall when it is.
 func (w *walker) splice(i int, sub walker) {
 	n := len(sub.walked)
 	if n == 0 {
 		return
+	}
+
+	for k := range sub.walked {
+		sub.walked[k].atCall = w.walked[i].atCall
 	}
 
 	w.walked = slices.Insert(w.walked, i+1, sub.walked...)

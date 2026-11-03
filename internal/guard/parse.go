@@ -109,6 +109,10 @@ type Invocation struct {
 	// racing reports whether the invocation runs beside the commands around it, in a background job
 	// or a stage of a pipe.
 	racing bool
+	// atCall reports whether the invocation is a command of a function body walked where a call of
+	// the function stands, which Parse leaves out: the walk of the body where it is declared holds
+	// the same command.
+	atCall bool
 }
 
 // Assignment is one variable a command runs with.
@@ -150,10 +154,9 @@ const (
 	HiddenScript MarkKind = "shell running a script the command does not hold"
 	// GitVariable is an assignment or export of a GIT_* variable off the guard's allow list.
 	GitVariable MarkKind = "git variable off the allow list"
-	// RedirectedFunction is a call of a function the command defines that runs with a redirect its
-	// declaration does not: the commands of its body are read with the redirects of the
-	// declaration.
-	RedirectedFunction MarkKind = "call of a function the command defines, with a redirect"
+	// DeepCall is a call of a function the command defines past the maxCalls calls Parse follows
+	// into the body they run, so the guard cannot tell where the commands of that body run.
+	DeepCall MarkKind = "call of a function past the calls the guard follows"
 	// ShadowingFunction is a function the command defines under the name of a command the guard
 	// reads, such as `cd`, a wrapper, or a declaration builtin like `export`, which every later call
 	// of that name runs instead.
@@ -191,7 +194,20 @@ func (e *ParseError) Error() string {
 // For each git invocation, Parse asks git through caller.Git which git dir it targets and what the
 // aliases it names expand to; a command with no git invocation starts no git. A failed call is
 // returned as an error naming it, never read as an answer.
+//
+// The body of a function the command defines is walked again where each call of it stands, from
+// the shell as it is there; Parse leaves out the invocations of those walks, which Assess judges.
+// A call past the calls the walks follow that stands outside them is returned as an invocation
+// holding only its DeepCall mark, as the marks of a call are.
 func Parse(ctx context.Context, command string, caller Caller) ([]Invocation, error) {
+	invocations, err := parse(ctx, command, caller)
+
+	return slices.DeleteFunc(invocations, func(inv Invocation) bool { return inv.atCall }), err
+}
+
+// parse reads command as Parse does, and also returns the invocations of the function bodies walked
+// where a call stands, each one after the call.
+func parse(ctx context.Context, command string, caller Caller) ([]Invocation, error) {
 	file, err := read(command)
 	if err != nil {
 		return nil, err
@@ -255,9 +271,8 @@ type walker struct {
 	// timed holds the statements a `time` keyword runs.
 	timed map[*syntax.Stmt]bool
 	// pipes holds, for each statement that is a stage of a pipe, the stage after it.
-	pipes     map[*syntax.Stmt]*syntax.Stmt
-	functions map[string]*function
-	err       error
+	pipes map[*syntax.Stmt]*syntax.Stmt
+	err   error
 	// dryRuns is shared by w and every walker it probes with; newWalker creates it.
 	dryRuns *dryRuns
 	// walked holds every invocation the walk placed, in the order it walked them, those of dry runs
@@ -266,6 +281,9 @@ type walker struct {
 	// kept holds the index in walked of each invocation Parse returns, in the order it returns them.
 	kept  []int
 	depth int
+	// calls counts the calls whose bodies the walk followed where the call stands, and calling
+	// those under way, inside which every invocation the walk keeps is atCall.
+	calls, calling int
 	// probing reports whether the walk is a dry run, whose invocations are dropped once it ends: of
 	// a body that may repeat, of a background job or pipe stage, or of a function body or an alias
 	// string.
@@ -421,7 +439,6 @@ func (w *walker) add(stmt *syntax.Stmt, call *syntax.CallExpr, sc *scope) {
 	runs, mark = capDepth(w.depth, runs, mark)
 
 	inv.Marks = append(w.aliasMarks(inv), marksOf(call, stmt, inv, w.reading(sc))...)
-	inv.Marks = append(inv.Marks, w.callMarks(inv)...)
 	if mark != "" {
 		inv.Marks = append(inv.Marks, Mark{Kind: mark})
 	}

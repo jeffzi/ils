@@ -105,6 +105,8 @@ func TestJudge_AllowsEverydayCommandsOutsideAnyRepository(t *testing.T) {
 		{name: "shell running a script file", command: "bash /tmp/probe.sh"},
 		{name: "environment file sourced under allexport", command: "set -a && . ./.env && set +a && make deploy"},
 		{name: "script run through a variable the command assigned", command: "S=/tmp/work; mkdir -p $S && cd $S && $S/run.sh"},
+		{name: "redirected call of a function wrapping a test runner", command: `T() { uv run pytest -q "$@"; }; T -k x > out.txt`},
+		{name: "function declared and called in one and list", command: `mk() { echo "$1"; } && mk a && mk b`},
 	})
 }
 

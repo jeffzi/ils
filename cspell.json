@@ -106,6 +106,7 @@
     "prek",
     "pushd",
     "pyproject",
+    "pytest",
     "quiltimport",
     "rcfile",
     "readarray",
