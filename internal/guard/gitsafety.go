@@ -217,7 +217,13 @@ func judgeCleanWithoutForce(ctx context.Context, caller Caller, inv Invocation, 
 	targets, targetOK := targetOptions(inv)
 	config, configOK := configOptions(inv)
 	if !targetOK || !configOK {
-		return fmt.Sprintf("git clean: the guard cannot read %s, which lets it delete untracked files without --force", cleanForceKey), nil
+		reason := fmt.Sprintf("git clean: the guard cannot read %s, which lets it delete untracked files without --force", cleanForceKey)
+		if !targetOK {
+			reason = fmt.Sprintf("git clean: the guard cannot tell where it runs, so it cannot read %s, which lets it "+
+				"delete untracked files without --force; %s", cleanForceKey, moveFirst)
+		}
+
+		return reason, nil
 	}
 
 	// --default answers for an unset key, so git exits non-zero only on a failure.
@@ -276,7 +282,7 @@ func judgeForcedBranchOverwrite(ctx context.Context, caller Caller, inv Invocati
 
 	targets, ok := targetOptions(inv)
 	if !ok {
-		return fmt.Sprintf("git branch %s: the guard cannot tell which repository it runs in", flag), nil
+		return fmt.Sprintf("git branch %s: the guard cannot tell which repository it runs in; %s", flag, moveFirst), nil
 	}
 
 	runner := targetRunner(caller.Git, inv.Dir, inv.Target)
@@ -321,9 +327,15 @@ func hasOperations(table map[string]discard, sub string) bool {
 }
 
 // unreadableArgument refuses the git subcommand sub, one of whose arguments outside a value slot
-// is not a literal: it may hold an option the guard decides by.
+// is not a literal: it may hold an option the guard decides by. For a subcommand that takes paths,
+// the reason says to put them after `--`, where the guard reads every word as a path.
 func unreadableArgument(sub string) Verdict {
-	return refuse(fmt.Sprintf("git %s: the argument cannot be read, and it may hold an option the guard checks for", sub))
+	reason := fmt.Sprintf("git %s: the argument cannot be read, and it may hold an option the guard checks for", sub)
+	if slices.Contains([]string{"add", "rm", "clean", "commit", "restore"}, ruleName(sub)) {
+		reason += "; put the paths after `--`, where the guard reads every word as a path"
+	}
+
+	return refuse(reason)
 }
 
 // ---------------------------------------------------------------------------
@@ -440,7 +452,7 @@ func refuseRebaseOverChanges(ctx context.Context, caller Caller, inv Invocation)
 	}
 
 	if inv.Git.GitDirUnknown {
-		return refuse("git rebase: the guard cannot tell which repository it runs in"), nil
+		return refuse("git rebase: the guard cannot tell which repository it runs in; " + moveFirst), nil
 	}
 
 	if inv.Git.GitDir == "" {
@@ -516,7 +528,7 @@ func worktreePath(inv Invocation, options subcommandOptions) (path, why string) 
 	path = options.positional[0].Text
 	if !filepath.IsAbs(path) {
 		if inv.Target.Dir == "" {
-			return "", "the directory git runs in cannot be followed"
+			return "", "the directory git runs in cannot be followed; " + moveFirst
 		}
 
 		path = filepath.Join(inv.Target.Dir, path)

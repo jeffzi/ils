@@ -128,11 +128,17 @@ func failedRead(err error) Verdict {
 }
 
 // markReason says what the mark found on inv, by the mark's name when it has one. A tool handed
-// to another command is named with that command.
+// to another command is named with that command. A git word the guard could not read as an alias
+// because it cannot tell which repository git runs in says so.
 func markReason(inv Invocation, mark Mark) string {
 	detail := mark.Name
-	if mark.Kind == ToolArgument && len(inv.Words) > 0 {
+	switch {
+	case mark.Kind == ToolArgument && len(inv.Words) > 0:
 		detail = fmt.Sprintf("%s runs %s: run %s on its own, by its bare name", inv.Words[0].Text, mark.Name, mark.Name)
+	case (mark.Kind == UnknownSubcommand || mark.Kind == UnreadableAlias) && inv.Git.GitDirUnknown &&
+		inv.Git.Subcommand.Literal && isAliasName(mark.Name):
+		detail = fmt.Sprintf("%s: the guard cannot tell which repository git runs in, so it cannot read its "+
+			"aliases; %s", mark.Name, moveFirst)
 	}
 
 	if detail == "" {

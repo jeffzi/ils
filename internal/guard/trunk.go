@@ -18,6 +18,10 @@ type trunkAnswer struct {
 	found bool
 }
 
+// moveFirst is what a refusal says to do when the guard cannot tell where a git command runs, or
+// which branch HEAD is on, because of a move earlier in the command or a directory it cannot read.
+const moveFirst = "run the `cd`, switch, or other move as its own command first, and write any directory as a literal"
+
 // trunks is the trunk rule for one command, holding the answer for each git dir it asked. It asks
 // origin for the trunk at most once per git dir, so every invocation of the command in one
 // repository is judged against the same answer.
@@ -38,8 +42,8 @@ func (t trunks) refuseOnTrunk(ctx context.Context, caller Caller, inv Invocation
 
 	placeUnknown := inv.Dir == "" || inv.Target.Dir == "" || inv.Target.Unknown || inv.Git.GitDirUnknown || inv.HeadUnknown
 	if placeUnknown {
-		reason := fmt.Sprintf("git %s: the guard cannot tell where the command runs, so it cannot tell "+
-			"whether it lands on the trunk", sub)
+		reason := fmt.Sprintf("git %s: the guard cannot tell where the command runs, or which branch HEAD "+
+			"is on, so it cannot tell whether it lands on the trunk; %s", sub, moveFirst)
 
 		return refuse(reason), nil
 	}
