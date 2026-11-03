@@ -490,11 +490,10 @@ func argumentRuns(inv Invocation) []gitRun {
 	return nil
 }
 
-// difftoolRuns returns the value of each `--extcmd` or `-x` among the arguments of `git difftool`,
-// whose short options that take a value are `-t` and `-x`. git starts each at the top of the work
-// tree, difftool setting one up before it compares.
+// difftoolRuns returns the value of each `--extcmd` or `-x` among the arguments of `git difftool`.
+// git starts each at the top of the work tree, difftool setting one up before it compares.
 func difftoolRuns(args []Word) []gitRun {
-	runs := xOptionRuns(args, "difftool", "--extcmd", "tx")
+	runs := xOptionRuns(args, "difftool", "--extcmd", optionsOf("difftool").valuedLetters)
 	for i := range runs {
 		runs[i].start = startTop
 	}

@@ -147,6 +147,24 @@ func TestJudge_AllowsAGitCommandRunningALiteralItAllows(t *testing.T) {
 	})
 }
 
+func TestJudge_PassesOverTheValueOfADifftoolOptionThatTakesOne(t *testing.T) {
+	t.Parallel()
+	_, caller := standingOn(t, "main", "topic")
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "-x", command: "git difftool -x --no-verify HEAD"},
+		{name: "-t", command: "git difftool -t --no-verify HEAD"},
+	})
+}
+
+func TestJudge_RefusesDifftoolSkippingChecks(t *testing.T) {
+	t.Parallel()
+
+	checkRefusals(t, []refusal{
+		{name: "--no-verify", command: "git difftool --no-verify HEAD", wantNamed: "--no-verify"},
+	})
+}
+
 // nestedRepositories returns a repository standing on topic, off its trunk main, holding a nested
 // repository inner on main and a nested repository docs/inner on scratch, both cloned from its
 // origin and left out of its status, and a caller working at its top.

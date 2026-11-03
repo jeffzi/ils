@@ -132,6 +132,10 @@ config -ft
 	[no-]type= bool int bool-or-int bool-or-str path expiry-date [no-]default= [no-]comment=
 	[no-]fixed-value [no-]includes [no-]all [no-]regexp [no-]value= [no-]url= [no-]append
 
+difftool -tx
+	[no-]gui [no-]dir-diff no-prompt prompt [no-]symlinks [no-]tool= [no-]tool-help
+	[no-]trust-exit-code [no-]extcmd= no-index index
+
 gc
 	[no-]quiet [no-]prune [no-]cruft max-cruft-size= [no-]aggressive [no-]auto [no-]detach
 	[no-]force [no-]keep-largest-pack [no-]expire-to= [no-]skip-foreground-tasks
