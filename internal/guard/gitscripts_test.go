@@ -104,25 +104,14 @@ func TestParse_WhenAShellCommandGitRunsCannotBeRead_MarksIt(t *testing.T) {
 	}
 }
 
-func TestParse_WhenAGitAliasRunsARebaseExec_ParsesTheExecCommand(t *testing.T) {
+func TestParse_WhenAGitAliasOfRebaseIsGivenAnExec_ParsesTheExecCommand(t *testing.T) {
 	t.Parallel()
-
 	f := aliased(t)
-	tests := []struct {
-		name    string
-		command string
-	}{
-		{name: "exec given after an alias of rebase", command: "git rb -x 'git push origin main'"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	const command = "git rb -x 'git push origin main'"
 
-			got := parseWith(t, tt.command, callerIn(f, f.Dir()))
+	got := parseWith(t, command, callerIn(f, f.Dir()))
 
-			assert.Check(t, is.Contains(texts(got), []string{"git", "push", "origin", "main"}), "Parse(%q)", tt.command)
-		})
-	}
+	assert.Check(t, is.Contains(texts(got), []string{"git", "push", "origin", "main"}), "Parse(%q)", command)
 }
 
 func TestJudge_RefusesAGitCommandRunningAnArgumentItCannotRead(t *testing.T) {

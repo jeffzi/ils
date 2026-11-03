@@ -474,7 +474,7 @@ func TestApp_Run_WhenHookClaudeCannotReadThePayload_ExitsTwoSayingWhatBroke(t *t
 		name  string
 		want  string
 	}{
-		{name: "payload that is not JSON", stdin: strings.NewReader(`{"tool_name": "Bash"`)},
+		{name: "payload that is not JSON", stdin: strings.NewReader(`{"tool_name":"Read","tool_name":"Bash"}`)},
 		{name: "no tool name", stdin: strings.NewReader(encoded(t, toolUse{Input: map[string]string{"command": "echo hi"}, Cwd: dir}))},
 		{name: "stdin that cannot be read", stdin: iotest.ErrReader(errReaderGone), want: errReaderGone.Error()},
 		{name: "command that is not a string", stdin: strings.NewReader(fmt.Sprintf(`{"tool_name":"Bash","cwd":%q,"tool_input":{"command":5}}`, dir))},

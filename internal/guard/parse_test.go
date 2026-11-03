@@ -132,11 +132,13 @@ func TestParse_WhenTheParserCannotReadTheCommand_ReturnsAParseError(t *testing.T
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		command string
+		name       string
+		command    string
+		wantLine   uint
+		wantColumn uint
 	}{
-		{name: "stray closing parenthesis", command: "echo ok; rm -rf / )"},
-		{name: "feature of another shell", command: "echo ok\n  echo ${(U)x}"},
+		{name: "stray closing parenthesis", command: "echo ok; rm -rf / )", wantLine: 1, wantColumn: 19},
+		{name: "feature of another shell", command: "echo ok\n  echo ${(U)x}", wantLine: 2, wantColumn: 8},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -147,6 +149,8 @@ func TestParse_WhenTheParserCannotReadTheCommand_ReturnsAParseError(t *testing.T
 			failure, ok := errors.AsType[*guard.ParseError](err)
 			assert.Assert(t, ok, "Parse(%q) error = %v, want a *guard.ParseError", tt.command, err)
 			assert.Check(t, failure.Message != "", "Parse(%q) carries no message", tt.command)
+			assert.Check(t, is.Equal(failure.Line, tt.wantLine), "Parse(%q) line", tt.command)
+			assert.Check(t, is.Equal(failure.Column, tt.wantColumn), "Parse(%q) column", tt.command)
 			position := fmt.Sprintf("%d:%d", failure.Line, failure.Column)
 			assert.Check(t, !strings.HasPrefix(failure.Message, position), "Parse(%q) message %q repeats the position", tt.command, failure.Message)
 		})
@@ -257,6 +261,7 @@ func TestParse_ReportsTheToolACommandWordNames(t *testing.T) {
 	}{
 		{name: "absolute path", command: "/opt/homebrew/bin/git status", wantTool: guard.Git},
 		{name: "zsh equals lookup", command: "=git status", wantTool: guard.Git},
+		{name: "ANSI-C quoted", command: "$'git' push", wantTool: guard.Git},
 		{name: "name that only starts with git", command: "gitk --all", wantTool: guard.NoTool},
 		{name: "literal prefix of an expansion", command: `git"$x" status`, wantTool: guard.NoTool},
 	}
@@ -293,16 +298,6 @@ func TestParse_ReportsWhetherTheCommandWordIsBare(t *testing.T) {
 			assert.Check(t, is.Equal(got.Bare, tt.wantBare), "Parse(%q) bare", tt.command)
 		})
 	}
-}
-
-func TestParse_WhenTheCommandWordIsInANSICQuotes_ReportsTheToolUnmarked(t *testing.T) {
-	t.Parallel()
-
-	const command = "$'git' push"
-
-	got := only(t, command)
-
-	assert.Check(t, is.Equal(got.Tool, guard.Git), "Parse(%q) tool", command)
 }
 
 func TestParse_ReportsWhetherEachInvocationIsTheWholeCommand(t *testing.T) {
@@ -382,7 +377,7 @@ func TestParse_ReportsEachAssignmentTheCommandRunsWith(t *testing.T) {
 	}
 }
 
-func TestParse_WhenAnArgumentIsAPathNamedForATool_MarksOnlyAnExecutableFile(t *testing.T) {
+func TestParse_WhenAnArgumentIsAPathNamedForATool_MarksItUnlessProvenMissingOrNotAnExecutableRegularFile(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {

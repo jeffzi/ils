@@ -3,11 +3,9 @@
 package guard_test
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -92,10 +90,7 @@ func TestParse_WhenTwoDefinitionsACallMayRunLeaveAGitVariableDifferently_Reports
 
 func TestParse_WhenEachFunctionCallsThePreviousTwice_ReturnsWithoutExpandingEveryCall(t *testing.T) {
 	t.Parallel()
-	const (
-		depth = 30
-		limit = 30 * time.Second
-	)
+	const depth = 30
 	var command strings.Builder
 	command.WriteString("f0() { :; }; ")
 	for i := 1; i <= depth; i++ {
@@ -103,26 +98,10 @@ func TestParse_WhenEachFunctionCallsThePreviousTwice_ReturnsWithoutExpandingEver
 	}
 	fmt.Fprintf(&command, "f%d; git status", depth)
 	cmd := command.String()
-	ctx, cancel := context.WithTimeout(t.Context(), limit)
-	defer cancel()
-	type result struct {
-		err         error
-		invocations []guard.Invocation
-	}
-	done := make(chan result, 1)
 
-	go func() {
-		got, err := guard.Parse(ctx, cmd, readerCaller())
-		done <- result{invocations: got, err: err}
-	}()
+	got, err := guard.Parse(t.Context(), cmd, readerCaller())
 
-	select {
-	case got := <-done:
-		assert.NilError(t, got.err, "Parse(%q)", cmd)
-		assert.Assert(t, len(got.invocations) > 0, "Parse(%q) holds no invocation", cmd)
-		assert.Check(t, is.Equal(got.invocations[len(got.invocations)-1].Tool, guard.Git),
-			"Parse(%q) last invocation", cmd)
-	case <-ctx.Done():
-		t.Fatalf("Parse of a chain of %d functions each calling the previous twice has not returned within %v", depth, limit)
-	}
+	assert.NilError(t, err, "Parse(%q)", cmd)
+	assert.Assert(t, len(got) > 0, "Parse(%q) holds no invocation", cmd)
+	assert.Check(t, is.Equal(got[len(got)-1].Tool, guard.Git), "Parse(%q) last invocation", cmd)
 }

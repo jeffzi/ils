@@ -267,7 +267,9 @@ func changeTracked(t *testing.T, f *gittest.Fixture, dir string) string {
 }
 
 // addWorktree adds a linked worktree of f at dir on a new branch named for it, and returns dir.
-func addWorktree(f *gittest.Fixture, dir string) string {
+func addWorktree(t *testing.T, f *gittest.Fixture, dir string) string {
+	t.Helper()
+
 	f.Git("worktree", "add", "--quiet", "-b", filepath.Base(dir), dir)
 
 	return dir
@@ -293,7 +295,7 @@ func TestJudge_RefusesARebaseWhoseTargetIsUnknown(t *testing.T) {
 
 	checkJudgedIn(t, caller, []placed{
 		{name: "non-literal -C", dir: f.Dir(), command: `git -C "$d" rebase main`},
-	}, expectation{outcome: guard.Refuse})
+	}, expectation{outcome: guard.Refuse, named: "which repository"})
 }
 
 func TestJudge_AllowsARebaseThatCannotLoseWork(t *testing.T) {
@@ -332,15 +334,15 @@ func newWorktrees(t *testing.T) worktrees {
 		assert.NilError(t, os.Mkdir(filepath.Join(f.Dir(), name), 0o750))
 	}
 	held := gittest.New(t, "main")
-	changeTracked(t, held, addWorktree(held, filepath.Join(held.Dir(), "wt1")))
+	changeTracked(t, held, addWorktree(t, held, filepath.Join(held.Dir(), "wt1")))
 	heldClean := gittest.New(t, "main")
-	addWorktree(heldClean, filepath.Join(heldClean.Dir(), "wt1"))
+	addWorktree(t, heldClean, filepath.Join(heldClean.Dir(), "wt1"))
 
 	return worktrees{
 		caller:    callerIn(f, f.Dir()),
 		repo:      f.Dir(),
-		clean:     addWorktree(f, filepath.Join(outside, "clean")),
-		dirty:     changeTracked(t, f, addWorktree(f, filepath.Join(outside, "dirty"))),
+		clean:     addWorktree(t, f, filepath.Join(outside, "clean")),
+		dirty:     changeTracked(t, f, addWorktree(t, f, filepath.Join(outside, "dirty"))),
 		held:      held.Dir(),
 		heldClean: heldClean.Dir(),
 	}
@@ -350,7 +352,7 @@ func TestJudge_RefusesAForcedWorktreeRemovalWhateverThePath(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, "main")
-	clean := quotedPath(addWorktree(f, filepath.Join(outsideDir(t), "clean")))
+	clean := quotedPath(addWorktree(t, f, filepath.Join(outsideDir(t), "clean")))
 
 	checkJudgedIn(t, callerIn(f, f.Dir()), []placed{
 		{name: "prefix of --force", dir: f.Dir(), command: "git worktree remove --forc " + clean},
@@ -495,7 +497,7 @@ func TestJudge_RefusesANonLiteralArgumentAFlagCouldHideIn(t *testing.T) {
 func TestJudge_WhenAWorkTreeReadFails_RefusesSayingWhatBroke(t *testing.T) {
 	// Not parallel: gittest.FakeGit sets PATH for the whole process.
 	f, _ := standingOn(t, "main", "topic")
-	clean := addWorktree(f, filepath.Join(outsideDir(t), "clean"))
+	clean := addWorktree(t, f, filepath.Join(outsideDir(t), "clean"))
 	caller := callerFailingOn(t, f, f.Dir(), "status")
 
 	checkJudgedInTurn(t, caller, []judged{

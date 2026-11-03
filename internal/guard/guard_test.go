@@ -33,7 +33,7 @@ func TestJudge_WhenTheCommandCannotBeParsed_RefusesNamingWhatFailed(t *testing.T
 	got := guard.Judge(t.Context(), command, caller)
 
 	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome", command)
-	assert.Check(t, is.Contains(got.Reason, failure.Message), "Judge(%q) reason", command)
+	assert.Check(t, is.Contains(got.Reason, failure.Error()), "Judge(%q) reason", command)
 }
 
 func TestJudge_WhenAMarkNamesNothing_RefusesWithItsKindAsTheReason(t *testing.T) {

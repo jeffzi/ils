@@ -151,7 +151,7 @@ func TestJudge_RefusesACommitWhoseOwnTargetIsOnTheTrunk(t *testing.T) {
 	t.Parallel()
 
 	f, caller := standingOn(t, "main", "main")
-	feature := addWorktree(f, filepath.Join(outsideDir(t), "feature"))
+	feature := addWorktree(t, f, filepath.Join(outsideDir(t), "feature"))
 	trunkDir := quotedPath(f.Dir())
 	trunkGitDir := quotedPath(filepath.Join(f.Dir(), ".git"))
 
@@ -162,6 +162,7 @@ func TestJudge_RefusesACommitWhoseOwnTargetIsOnTheTrunk(t *testing.T) {
 			dir:     feature,
 			command: "git --git-dir=" + trunkGitDir + " --work-tree=" + trunkDir + " " + commitArgs,
 		},
+		{name: "GIT_DIR exported by an earlier eval string", dir: feature, command: `eval "export GIT_DIR=` + trunkGitDir + `"; git ` + commitArgs},
 	}, expectation{outcome: guard.Refuse, named: "main"})
 }
 
@@ -169,7 +170,7 @@ func TestJudge_AllowsACommitWhoseOwnTargetIsOffTheTrunk(t *testing.T) {
 	t.Parallel()
 
 	f, caller := standingOn(t, "main", "main")
-	feature := addWorktree(f, filepath.Join(outsideDir(t), "feature"))
+	feature := addWorktree(t, f, filepath.Join(outsideDir(t), "feature"))
 
 	checkJudgedRow(t, caller, judged{command: "git -C " + quotedPath(feature) + " " + commitArgs, want: guard.Allow})
 }
