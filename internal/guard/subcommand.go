@@ -373,7 +373,7 @@ func isShortBundle(t string) bool {
 // does not set letter. attached is false when the value is the next word: letter ends a bundle
 // that is a literal. A bundle that is not a literal holds its literal prefix, and its value is not
 // a literal either.
-func shortValue(w Word, letter byte, valued []byte) (value Word, ok, attached bool) {
+func shortValue(w Word, letter byte, valued string) (value Word, ok, attached bool) {
 	t := w.Text
 	if !isShortBundle(t) {
 		return Word{}, false, false
@@ -384,7 +384,7 @@ func shortValue(w Word, letter byte, valued []byte) (value Word, ok, attached bo
 			return Word{Text: t[i+1:], Literal: w.Literal}, true, i+1 < len(t) || !w.Literal
 		}
 
-		if slices.Contains(valued, t[i]) {
+		if strings.IndexByte(valued, t[i]) >= 0 {
 			break
 		}
 	}

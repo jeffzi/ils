@@ -48,7 +48,7 @@ func rules() []rule {
 	return []rule{
 		refuseSkippedChecks, refuseDiscardingGit, refuseHistoryOverFile, refuseRebaseOverChanges,
 		refuseRiskyWorktreeRemoval, refuseGuardedConfigWrite, refuseOriginRewrite, refusePush,
-		newTrunks().refuseOnTrunk, judgeForge,
+		trunks{}.refuseOnTrunk, judgeForge,
 	}
 }
 
@@ -69,10 +69,6 @@ func Judge(ctx context.Context, command string, caller Caller) Verdict {
 // caller showing them reads the command once. A command that does not parse, or whose state Parse
 // failed to read, returns no invocation.
 func Assess(ctx context.Context, command string, caller Caller) (Verdict, []Invocation) {
-	return judge(ctx, command, caller, rules())
-}
-
-func judge(ctx context.Context, command string, caller Caller, checks []rule) (Verdict, []Invocation) {
 	ctx, cancel := context.WithTimeout(ctx, readDeadline)
 	defer cancel()
 
@@ -85,6 +81,7 @@ func judge(ctx context.Context, command string, caller Caller, checks []rule) (V
 		return failedRead(err), nil
 	}
 
+	checks := rules()
 	verdict := Verdict{Outcome: Allow}
 	for _, inv := range invocations {
 		verdict = verdict.or(judgeInvocation(ctx, caller, inv, checks))

@@ -173,15 +173,28 @@ func refuseDiscardingGit(ctx context.Context, caller Caller, inv Invocation) (Ve
 
 // verdict judges the git invocation inv of the subcommand sub, whose operation is d: it refuses
 // every form when d has neither refuses nor judges, and otherwise the forms they refuse and those
-// whose options it cannot read.
+// whose options it cannot read. An error is the failure of a read judges made.
 func (d discard) verdict(ctx context.Context, caller Caller, inv Invocation, sub string) (Verdict, error) {
-	reason, unreadable, err := d.refusal(ctx, caller, inv, sub)
-	switch {
-	case err != nil:
-		return Verdict{}, err
-	case unreadable:
-		return unreadableArgument(sub), nil
-	case reason == "":
+	reason := d.reason
+	if d.refuses != nil || d.judges != nil {
+		options := readArgs(inv.Git.Args, optionsOf(sub))
+		switch {
+		case options.unreadable:
+			return unreadableArgument(sub), nil
+		case d.refuses != nil && d.refuses(options):
+		case d.judges != nil:
+			judged, err := d.judges(ctx, caller, inv, options)
+			if err != nil {
+				return Verdict{}, err
+			}
+
+			reason = judged
+		default:
+			reason = ""
+		}
+	}
+
+	if reason == "" {
 		return Verdict{Outcome: Allow}, nil
 	}
 
@@ -190,28 +203,6 @@ func (d discard) verdict(ctx context.Context, caller Caller, inv Invocation, sub
 	}
 
 	return refuse(reason), nil
-}
-
-// refusal returns the reason d refuses inv for, empty when d lets it through, and unreadable true
-// when the options of sub in inv cannot be read. An error is the failure of a read judges made.
-func (d discard) refusal(ctx context.Context, caller Caller, inv Invocation, sub string) (reason string, unreadable bool, err error) {
-	if d.refuses == nil && d.judges == nil {
-		return d.reason, false, nil
-	}
-
-	options := readArgs(inv.Git.Args, optionsOf(sub))
-	switch {
-	case options.unreadable:
-		return "", true, nil
-	case d.refuses != nil && d.refuses(options):
-		return d.reason, false, nil
-	case d.judges != nil:
-		judged, err := d.judges(ctx, caller, inv, options)
-
-		return judged, false, err
-	default:
-		return "", false, nil
-	}
 }
 
 // judgeCleanWithoutForce refuses `git clean` without `--force` when the config git reads for the

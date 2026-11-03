@@ -18,15 +18,10 @@ type trunkAnswer struct {
 	found bool
 }
 
-// trunks is the trunk rule for one command. It asks origin for the trunk at most once per git dir,
-// so every invocation of the command in one repository is judged against the same answer.
-type trunks struct {
-	asked map[string]trunkAnswer
-}
-
-func newTrunks() *trunks {
-	return &trunks{asked: map[string]trunkAnswer{}}
-}
+// trunks is the trunk rule for one command, holding the answer for each git dir it asked. It asks
+// origin for the trunk at most once per git dir, so every invocation of the command in one
+// repository is judged against the same answer.
+type trunks map[string]trunkAnswer
 
 // refuseOnTrunk refuses a subcommand that adds commits to the branch HEAD is on when that branch is
 // the trunk of a repository that has an origin, and one whose directory, target, or HEAD the guard
@@ -35,7 +30,7 @@ func newTrunks() *trunks {
 //
 // It reads origin and HEAD locally before it asks origin for the trunk, so a repository with no
 // origin or a detached HEAD starts no call to origin.
-func (t *trunks) refuseOnTrunk(ctx context.Context, caller Caller, inv Invocation) (Verdict, error) {
+func (t trunks) refuseOnTrunk(ctx context.Context, caller Caller, inv Invocation) (Verdict, error) {
 	sub, ok := subcommand(inv)
 	if !ok || !trunkJudged(sub, inv.Git.Args) {
 		return Verdict{Outcome: Allow}, nil
@@ -126,8 +121,8 @@ func onTrunk(sub string, args []Word, trunk string) Verdict {
 }
 
 // trunkOf returns the trunk of the repository at gitDir, asking origin only the first time.
-func (t *trunks) trunkOf(ctx context.Context, repo git.Repo, gitDir string) (trunkAnswer, error) {
-	if answer, asked := t.asked[gitDir]; asked {
+func (t trunks) trunkOf(ctx context.Context, repo git.Repo, gitDir string) (trunkAnswer, error) {
+	if answer, asked := t[gitDir]; asked {
 		return answer, nil
 	}
 
@@ -137,7 +132,7 @@ func (t *trunks) trunkOf(ctx context.Context, repo git.Repo, gitDir string) (tru
 	}
 
 	answer := trunkAnswer{trunk: trunk, found: found}
-	t.asked[gitDir] = answer
+	t[gitDir] = answer
 
 	return answer, nil
 }

@@ -227,18 +227,19 @@ func shellCommandsOf(inv Invocation) []gitRun {
 		runs = append(runs, gitRun{script: command})
 	}
 
-	if sub := inv.Git.Subcommand; sub.Literal && sub.Text == "rebase" {
-		for _, command := range rebaseCommands(inv.Git.Args) {
-			runs = append(runs, gitRun{script: command, start: startTop})
+	if sub, ok := subcommand(inv); ok && sub == "rebase" {
+		for _, run := range xOptionRuns(inv.Git.Args, "rebase", "--exec", optionsOf("rebase").valuedLetters) {
+			runs = append(runs, gitRun{script: run.script, start: startTop})
 		}
 	}
 
 	return runs
 }
 
-// literalScripts returns the text of each of values, the shell commands something runs, that is a
-// literal, and DynamicScript as well when one of them is not.
-func literalScripts(values []Word) ([]string, MarkKind) {
+// runnableScripts returns the text of each of values, the shell commands inv has something run at
+// depth levels of nesting, that is walked: none when they would nest past maxDepth. It marks inv
+// when one of them is not a literal or they would nest too deep.
+func runnableScripts(inv *Invocation, depth int, values []Word) []string {
 	var scripts []string
 	var mark MarkKind
 	for _, v := range values {
@@ -251,14 +252,6 @@ func literalScripts(values []Word) ([]string, MarkKind) {
 		scripts = append(scripts, v.Text)
 	}
 
-	return scripts, mark
-}
-
-// runnableScripts returns the text of each of values, the shell commands inv has something run at
-// depth levels of nesting, that is walked: none when they would nest past maxDepth. It marks inv
-// when one of them is not a literal or they would nest too deep.
-func runnableScripts(inv *Invocation, depth int, values []Word) []string {
-	scripts, mark := literalScripts(values)
 	runs, mark := capDepth(depth, len(scripts) > 0, mark)
 	if !runs {
 		scripts = nil
@@ -389,24 +382,13 @@ func shellCommand(key string, value Word) (Word, bool) {
 	return Word{Text: text, Literal: value.Literal}, true
 }
 
-// rebaseCommands returns the value of each `--exec` or `-x` among the arguments of `git rebase`.
-func rebaseCommands(args []Word) []Word {
-	var values []Word
-	valued := []byte(optionsOf("rebase").valuedLetters)
-	for _, run := range xOptionRuns(args, "rebase", "--exec", valued) {
-		values = append(values, run.script)
-	}
-
-	return values
-}
-
 // xOptionRuns returns the value of each `-x` or long option among args, the arguments of the git
 // subcommand name, the commands git runs: separate or attached, the long option spelled as any
 // prefix of long git could read as it, and `-x` in a short-flag bundle ahead of any other of
 // valued, the subcommand's short options that take a value, whose rest is then its value. Each
 // run's form is the option as written. A word the guard cannot read that git could read as one of
 // these options is a run the guard cannot read either, whose form is name.
-func xOptionRuns(args []Word, name, long string, valued []byte) []gitRun {
+func xOptionRuns(args []Word, name, long, valued string) []gitRun {
 	var runs []gitRun
 	for i := 0; i < len(args); i++ {
 		text := args[i].Text
@@ -456,12 +438,12 @@ func xOptionRuns(args []Word, name, long string, valued []byte) []gitRun {
 // the long option long once the rest is known, where text alone does not already name one: an
 // empty text, a short-flag bundle holding none of valued, the short options that take a value
 // with `x` among them, or a prefix of long with no value.
-func couldBeXOption(text, long string, valued []byte) bool {
+func couldBeXOption(text, long, valued string) bool {
 	switch {
 	case strings.HasPrefix(text, "--"):
 		return !strings.Contains(text, "=") && strings.HasPrefix(long, text)
 	case strings.HasPrefix(text, "-"):
-		return !strings.ContainsAny(text[1:], string(valued))
+		return !strings.ContainsAny(text[1:], valued)
 	default:
 		return text == ""
 	}
@@ -500,8 +482,8 @@ func argumentRuns(inv Invocation) []gitRun {
 		"filter-branch": filterBranchRuns,
 		"for-each-repo": forEachRepoRuns,
 	}
-	sub := inv.Git.Subcommand
-	if read, ok := runs[sub.Text]; ok && sub.Literal {
+	sub, ok := subcommand(inv)
+	if read, known := runs[sub]; ok && known {
 		return read(inv.Git.Args)
 	}
 
@@ -512,7 +494,7 @@ func argumentRuns(inv Invocation) []gitRun {
 // whose short options that take a value are `-t` and `-x`. git starts each at the top of the work
 // tree, difftool setting one up before it compares.
 func difftoolRuns(args []Word) []gitRun {
-	runs := xOptionRuns(args, "difftool", "--extcmd", []byte{'t', 'x'})
+	runs := xOptionRuns(args, "difftool", "--extcmd", "tx")
 	for i := range runs {
 		runs[i].start = startTop
 	}

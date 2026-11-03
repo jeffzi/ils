@@ -364,7 +364,7 @@ func ghGuardedGroups() map[string]bool {
 type ghGuardedFlag struct {
 	long   string
 	reason string
-	valued []byte
+	valued string
 	short  byte
 }
 
@@ -375,14 +375,14 @@ func ghGuardedFlags() map[string]ghGuardedFlag {
 			long: "--admin", reason: "gh pr merge --admin merges past the trunk's protection rules, which no agent may bypass",
 		},
 		"gh pr checkout": {
-			long: "--force", short: 'f', valued: []byte{'b', 'R'},
+			long: "--force", short: 'f', valued: "bR",
 			reason: "gh pr checkout --force resets the local branch to the pull request, discarding its commits",
 		},
 		"gh repo create": {
 			long: "--push", reason: "gh repo create --push pushes a branch: `ils push` is the one way an agent pushes a branch",
 		},
 		"gh auth status": {
-			long: "--show-token", short: 't', valued: []byte{'h'},
+			long: "--show-token", short: 't', valued: "h",
 			reason: "gh auth status with -t or --show-token prints the auth token",
 		},
 	}
@@ -449,8 +449,9 @@ func judgeAPI(rest []Word) Verdict {
 }
 
 // apiValued returns the shorthands of `gh api` that take a value.
-func apiValued() []byte {
-	return []byte{'X', 'f', 'F', 'H', 'p', 'q', 't'}
+func apiValued() string {
+	// cspell:disable-next-line -- a set of option letters, not a word.
+	return "XfFHpqt"
 }
 
 // apiValuedLong returns the long flags of `gh api` that take a value, as the next word when none
@@ -476,13 +477,13 @@ func takesValueWord(w Word) bool {
 
 // bundleEndsWithValued reports whether the text t is a bundle of shorthands whose first letter that
 // is in valued is its last.
-func bundleEndsWithValued(t string, valued []byte) bool {
+func bundleEndsWithValued(t, valued string) bool {
 	if !isShortBundle(t) {
 		return false
 	}
 
 	for i := 1; i < len(t); i++ {
-		if slices.Contains(valued, t[i]) {
+		if strings.IndexByte(valued, t[i]) >= 0 {
 			return i == len(t)-1
 		}
 	}
@@ -501,7 +502,9 @@ func apiMethod(rest []Word) (method Word, given bool) {
 			break
 		}
 
-		dashes := flagBeforeDashes(rest, i)
+		// pflag reads a literal `--` after a flag that takes the next word as its value as that
+		// value, so a `--` after a word that may be such a flag is skipped with it.
+		dashes := dashesFollow(rest, i) && mayBeValuedFlag(rest[i])
 		if value, ok, takesNext := methodFlag(w, wordAfter(rest, i)); ok {
 			method, given = value, true
 			if takesNext || dashes {
@@ -590,12 +593,6 @@ func wordAfter(rest []Word, i int) Word {
 	return Word{}
 }
 
-// flagBeforeDashes reports whether rest[i] may be a flag that takes the next word as its value
-// and a literal `--` follows it, which pflag then reads as that value.
-func flagBeforeDashes(rest []Word, i int) bool {
-	return dashesFollow(rest, i) && mayBeValuedFlag(rest[i])
-}
-
 func dashesFollow(rest []Word, i int) bool {
 	return i+1 < len(rest) && isEndOfFlags(rest[i+1])
 }
@@ -613,7 +610,7 @@ func mayBeValuedFlag(w Word) bool {
 
 // setsFlag reports whether the literal word w is the long name, the long name with `=`, or a
 // bundle that sets the shorthand letter short (0 when it has none).
-func setsFlag(w Word, short byte, long string, valued []byte) bool {
+func setsFlag(w Word, short byte, long, valued string) bool {
 	if !w.Literal {
 		return false
 	}
@@ -635,7 +632,7 @@ func setsFlag(w Word, short byte, long string, valued []byte) bool {
 // command whose shorthands that take a value are valued: a long flag or a lone shorthand with no
 // `=`, as takesNextWord reads it, or a bundle of shorthands whose first valued letter ends it. A
 // flag that takes none counts too, since the guard does not know every flag of the command.
-func mayTakeValue(w Word, valued []byte) bool {
+func mayTakeValue(w Word, valued string) bool {
 	t := w.Text
 	switch {
 	case !w.Literal:

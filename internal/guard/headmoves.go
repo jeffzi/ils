@@ -88,12 +88,13 @@ func movesHead(inv Invocation) bool {
 		return true
 	}
 
-	if !inv.Git.Subcommand.Literal {
+	sub, ok := subcommand(inv)
+	if !ok {
 		return false
 	}
 
 	args := inv.Git.Args
-	switch inv.Git.Subcommand.Text {
+	switch sub {
 	case "switch", "checkout", "bisect":
 		// Every checkout counts, the one that restores files and leaves HEAD where it is too:
 		// telling them apart means reading its operands as git does.
@@ -104,7 +105,7 @@ func movesHead(inv Invocation) bool {
 
 		return options.unreadable || len(options.positional) > 1
 	case "branch":
-		valued := []byte(optionsOf("branch").valuedLetters)
+		valued := optionsOf("branch").valuedLetters
 
 		return slices.ContainsFunc(args, func(arg Word) bool { return isBranchMove(arg, valued) })
 	case "rebase":
@@ -137,7 +138,7 @@ func ghMovesHead(args []Word) bool {
 // isBranchMove reports whether arg is an option `git branch` reads as `--move`: `m` or `M` in a
 // short-flag bundle ahead of any of valued, the short options that take a value, whose rest is
 // then that value, or a prefix of `--move` git reads as it.
-func isBranchMove(arg Word, valued []byte) bool {
+func isBranchMove(arg Word, valued string) bool {
 	text := arg.Text
 	switch {
 	case !arg.Literal || !strings.HasPrefix(text, "-"):
@@ -246,9 +247,9 @@ func operands(args []Word) []Word {
 // ahead of the command's other short options that take a value, whose value is the rest of the
 // bundle. A word that is not a literal may be an option naming one, so it is one.
 func copyDestinations(command string, args []Word) []Word {
-	valued := []byte{'S', 't'}
+	valued := "St"
 	if command == "install" {
-		valued = append(valued, 'm', 'o', 'g')
+		valued += "mog"
 	}
 
 	var found []Word
