@@ -627,3 +627,70 @@ func TestJudge_WhenAWorkTreeReadFails_RefusesSayingWhatBroke(t *testing.T) {
 		{name: "worktree remove", command: "git worktree remove " + quotedPath(clean), want: guard.Refuse, wantNamed: gittest.FailedSaid},
 	})
 }
+
+// checkRefusedOmitting fails unless Judge refuses command with a reason that holds named and does
+// not hold omitted.
+func checkRefusedOmitting(t *testing.T, command, named, omitted string) {
+	t.Helper()
+
+	_, caller := standingOn(t, "main", "topic")
+
+	got := guard.Judge(t.Context(), command, caller)
+
+	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome, reason %q", command, got.Reason)
+	assert.Check(t, is.Contains(got.Reason, named), "Judge(%q) reason", command)
+	assert.Check(t, !strings.Contains(got.Reason, omitted), "Judge(%q) reason %q holds %q", command, got.Reason, omitted)
+}
+
+func TestJudge_WhenAGitArgumentCannotBeRead_NamesDoubleDashWhereItLetsTheCommandRun(t *testing.T) {
+	t.Parallel()
+
+	checkRefusals(t, []refusal{
+		{name: "branch -d", command: `git branch -d "$b"`, wantNamed: "after `--`"},
+		{name: "switch", command: `git switch "$b"`, wantNamed: "after `--`"},
+		{name: "add", command: `git add "$f"`, wantNamed: "after `--`"},
+		{name: "rm", command: `git rm "$f"`, wantNamed: "after `--`"},
+		{name: "clean -n", command: `git clean -n "$f"`, wantNamed: "after `--`"},
+		{name: "commit", command: `git commit -m msg "$f"`, wantNamed: "after `--`"},
+		{name: "restore --staged", command: `git restore --staged "$f"`, wantNamed: "after `--`"},
+		{name: "several unreadable arguments", command: `git branch -d "$a" "$b"`, wantNamed: "after `--`"},
+	})
+}
+
+func TestJudge_AllowsAnUnreadableGitArgumentAfterDoubleDash(t *testing.T) {
+	t.Parallel()
+	_, caller := standingOn(t, "main", "topic")
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "branch -d", command: `git branch -d -- "$b"`},
+		{name: "switch", command: `git switch -- "$b"`},
+		{name: "restore --staged", command: `git restore --staged -- "$f"`},
+	})
+}
+
+func TestJudge_WhenDoubleDashLeavesAnUnreadableGitArgumentRefused_NamesALiteral(t *testing.T) {
+	t.Parallel()
+
+	tests := []namedCommand{
+		{name: "update-ref", command: `git update-ref "$r" HEAD`},
+		{name: "config", command: `git config "$k"`},
+		{name: "restore without --staged", command: `git restore "$f"`},
+		{name: "literal that starts several options", command: `git branch --s "$b"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			checkRefusedOmitting(t, tt.command, "write the argument as a literal", "`--`")
+		})
+	}
+}
+
+func TestJudge_WhenAGitWordCannotBeRead_RefusesNamingASpellingTheGuardAllows(t *testing.T) {
+	t.Parallel()
+
+	checkRefusals(t, []refusal{
+		{name: "-c value", command: `git -c "$v" status`, wantNamed: "write the -c value as a literal"},
+		{name: "push, refused in every form", command: `git push "$b"`, wantNamed: "`ils push`"},
+	})
+}

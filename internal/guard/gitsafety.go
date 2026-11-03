@@ -178,7 +178,7 @@ func refuseDiscardingGit(ctx context.Context, caller Caller, inv Invocation) (Ve
 	op, found := discard{}, false
 	if args := inv.Git.Args; len(args) > 0 {
 		if !args[0].Literal && hasOperations(table, name) {
-			return unreadableArgument(sub), nil
+			return Verdict{}, unreadableArgument(sub)
 		}
 
 		op, found = table[name+" "+args[0].Text]
@@ -204,7 +204,7 @@ func (d discard) verdict(ctx context.Context, caller Caller, inv Invocation, sub
 		options := readArgs(inv.Git.Args, optionsOf(sub))
 		switch {
 		case options.unreadable:
-			return unreadableArgument(sub), nil
+			return Verdict{}, unreadableArgument(sub)
 		case d.refuses != nil && d.refuses(options):
 		case d.judges != nil:
 			judged, err := d.judges(ctx, caller, inv, options)
@@ -373,16 +373,20 @@ func hasOperations(table map[string]discard, sub string) bool {
 	return false
 }
 
-// unreadableArgument refuses the git subcommand sub, one of whose arguments outside a value slot
-// is not a literal: it may hold an option the guard decides by. For a subcommand that takes paths,
-// the reason says to put them after `--`, where the guard reads every word as a path.
-func unreadableArgument(sub string) Verdict {
-	reason := fmt.Sprintf("git %s: the argument cannot be read, and it may hold an option the guard checks for", sub)
-	if slices.Contains([]string{"add", "rm", "clean", "commit", "restore"}, ruleName(sub)) {
-		reason += "; put the paths after `--`, where the guard reads every word as a path"
-	}
+// unreadArgumentError is what a rule returns for a git invocation of the subcommand sub, one of
+// whose arguments outside a value slot is not a literal: it may hold an option the guard decides
+// by. judgeInvocation refuses the invocation with the error's text and the spelling of the
+// argument that the guard allows.
+type unreadArgumentError struct {
+	sub string
+}
 
-	return refuse(reason)
+func unreadableArgument(sub string) *unreadArgumentError {
+	return &unreadArgumentError{sub: sub}
+}
+
+func (e *unreadArgumentError) Error() string {
+	return fmt.Sprintf("git %s: the argument cannot be read, and it may hold an option the guard checks for", e.sub)
 }
 
 // ---------------------------------------------------------------------------
@@ -417,7 +421,8 @@ func refuseSkippedChecks(_ context.Context, _ Caller, inv Invocation) (Verdict, 
 			if inv.Git.Subcommand.Text != "" {
 				command += " " + inv.Git.Subcommand.Text
 			}
-			reason := fmt.Sprintf("%s: the value of %s cannot be read, and it may set %s", command, o.Name, hooksPathKey)
+			reason := fmt.Sprintf("%s: the value of %s cannot be read, and it may set %s; write the %s value as a literal",
+				command, o.Name, hooksPathKey, o.Name)
 
 			return refuse(reason), nil
 		}
@@ -448,7 +453,7 @@ func refuseSkippedChecks(_ context.Context, _ Caller, inv Invocation) (Verdict, 
 	case options.sets(letter, ""):
 		flag = "-" + string(letter)
 	case options.unreadable && runsChecks:
-		return unreadableArgument(sub), nil
+		return Verdict{}, unreadableArgument(sub)
 	default:
 		return Verdict{Outcome: Allow}, nil
 	}
@@ -594,7 +599,7 @@ func refuseRiskyWorktreeRemoval(ctx context.Context, caller Caller, inv Invocati
 	}
 
 	if !inv.Git.Args[0].Literal {
-		return unreadableArgument(sub), nil
+		return Verdict{}, unreadableArgument(sub)
 	}
 
 	if inv.Git.Args[0].Text != "remove" {
@@ -678,7 +683,7 @@ func refuseGuardedConfigWrite(_ context.Context, _ Caller, inv Invocation) (Verd
 
 	options := readArgs(inv.Git.Args, optionsOf(sub))
 	if options.opaque() {
-		return unreadableArgument(sub), nil
+		return Verdict{}, unreadableArgument(sub)
 	}
 
 	action, words := configAction(options)
@@ -817,7 +822,7 @@ func refuseOriginRewrite(_ context.Context, _ Caller, inv Invocation) (Verdict, 
 
 	options := readArgs(args[1:], knownOptions{})
 	if !op.Literal || options.opaque() {
-		return unreadableArgument(sub), nil
+		return Verdict{}, unreadableArgument(sub)
 	}
 
 	if len(options.positional) == 0 || options.positional[0].Text != "origin" {

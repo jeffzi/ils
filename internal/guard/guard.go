@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -38,16 +39,19 @@ func refuse(reason string) Verdict {
 }
 
 // rule judges one invocation of a command. A rule that cannot read the state it needs returns the
-// error, and the guard refuses the command saying what broke.
+// error, and the guard refuses the command saying what broke; one that cannot read a git argument
+// it decides by returns an *unreadArgumentError, and the guard refuses the command naming a
+// spelling of the argument it allows.
 type rule func(ctx context.Context, caller Caller, inv Invocation) (Verdict, error)
 
 // rules returns the rules every invocation of one command is judged by, in the order they run.
 // The trunk rule keeps what origin answered for the rest of the command, so each command takes a
-// new set.
+// new set. refusePush runs first: it refuses every form of what it judges, so no argument the
+// guard cannot read changes its verdict, and its reason names the one way to push.
 func rules() []rule {
 	return []rule{
-		refuseSkippedChecks, refuseDiscardingGit, refuseHistoryOverFile, refuseRebaseOverChanges,
-		refuseRiskyWorktreeRemoval, refuseGuardedConfigWrite, refuseOriginRewrite, refusePush,
+		refusePush, refuseSkippedChecks, refuseDiscardingGit, refuseHistoryOverFile, refuseRebaseOverChanges,
+		refuseRiskyWorktreeRemoval, refuseGuardedConfigWrite, refuseOriginRewrite,
 		trunks{}.refuseOnTrunk, judgeForge,
 	}
 }
@@ -99,11 +103,32 @@ func judgeInvocation(ctx context.Context, caller Caller, inv Invocation, checks 
 		return refuse(markReason(inv, inv.Marks[0]))
 	}
 
+	verdict, err := judgeByRules(ctx, caller, inv, checks)
+	if unread, ok := errors.AsType[*unreadArgumentError](err); ok {
+		allows := func(in Invocation) bool {
+			moved, failed := judgeByRules(ctx, caller, in, checks)
+
+			return failed == nil && moved.Outcome == Allow
+		}
+
+		return refuse(unread.Error() + passingArgumentSpelling(inv, allows))
+	}
+
+	if err != nil {
+		return failedRead(err)
+	}
+
+	return verdict
+}
+
+// judgeByRules judges inv by checks, up to the first refusal, and returns the error of the first
+// rule that fails.
+func judgeByRules(ctx context.Context, caller Caller, inv Invocation, checks []rule) (Verdict, error) {
 	verdict := Verdict{Outcome: Allow}
 	for _, judgeBy := range checks {
 		next, err := judgeBy(ctx, caller, inv)
 		if err != nil {
-			return failedRead(err)
+			return Verdict{}, err
 		}
 
 		verdict = verdict.or(next)
@@ -112,7 +137,61 @@ func judgeInvocation(ctx context.Context, caller Caller, inv Invocation, checks 
 		}
 	}
 
-	return verdict
+	return verdict, nil
+}
+
+// passingArgumentSpelling returns how to write the git arguments of inv the guard cannot read so
+// that the guard allows inv, as allows judges it: after `--`, when inv with each of them moved
+// there is allowed, and as a literal otherwise. A form allows cannot judge is not allowed.
+func passingArgumentSpelling(inv Invocation, allows func(Invocation) bool) string {
+	if moved, ok := argumentsAfterDoubleDash(inv); ok && allows(moved) {
+		return "; put the argument after `--`, where git reads no word as an option"
+	}
+
+	return "; write the argument as a literal"
+}
+
+// argumentsAfterDoubleDash returns inv with each git argument that keeps readArgs from reading
+// the arguments moved after `--`. ok is false when there is none, and when one is a literal: a
+// literal is unreadable only as the start of several options, which `--` would make a path.
+func argumentsAfterDoubleDash(inv Invocation) (Invocation, bool) {
+	sub, ok := subcommand(inv)
+	if !ok {
+		return Invocation{}, false
+	}
+
+	known := optionsOf(sub)
+	kept := slices.Clone(inv.Git.Args)
+
+	var moved []Word
+	// A word makes the arguments unreadable once the words up to it are; those before it read.
+	for i := 0; i < len(kept); i++ {
+		if !readArgs(kept[:i+1], known).unreadable {
+			continue
+		}
+
+		if kept[i].Literal {
+			return Invocation{}, false
+		}
+
+		moved = append(moved, kept[i])
+		kept = slices.Delete(kept, i, i+1)
+		i--
+	}
+
+	if len(moved) == 0 {
+		return Invocation{}, false
+	}
+
+	doubleDash := Word{Text: "--", Literal: true}
+	if !slices.Contains(kept, doubleDash) {
+		kept = append(kept, doubleDash)
+	}
+
+	kept = append(kept, moved...)
+	inv.Git.Args = kept
+
+	return inv, true
 }
 
 // or returns v unless other is stricter, so that the first verdict of the strictest outcome wins.
@@ -128,23 +207,63 @@ func failedRead(err error) Verdict {
 	return refuse("the guard could not check the command: " + err.Error())
 }
 
-// markReason says what the mark found on inv, by the mark's name when it has one. A tool handed
-// to another command is named with that command. A git word the guard could not read as an alias
-// because it cannot tell which repository git runs in says so.
+// markReason says what the mark found on inv, by the mark's name when it has one, and for a word
+// the guard cannot read, how to spell it so that the guard reads it. A tool handed to another
+// command is named with that command. A git word the guard could not read as an alias because it
+// cannot tell which repository git runs in says so.
 func markReason(inv Invocation, mark Mark) string {
 	detail := mark.Name
 	switch {
 	case mark.Kind == ToolArgument && len(inv.Words) > 0:
-		detail = fmt.Sprintf("%s runs %s: run %s on its own, by its bare name", inv.Words[0].Text, mark.Name, mark.Name)
+		detail = handedToolDetail(inv, mark.Name)
 	case (mark.Kind == UnknownSubcommand || mark.Kind == UnreadableAlias) && inv.Git.GitDirUnknown &&
 		inv.Git.Subcommand.Literal && isAliasName(mark.Name):
 		detail = fmt.Sprintf("%s: the guard cannot tell which repository git runs in, so it cannot read its "+
 			"aliases; %s", mark.Name, moveFirst)
 	}
 
-	if detail == "" {
-		return string(mark.Kind)
+	reason := string(mark.Kind)
+	if detail != "" {
+		reason += ": " + detail
 	}
 
-	return fmt.Sprintf("%s: %s", mark.Kind, detail)
+	if hint := readableSpelling(inv, mark.Kind); hint != "" {
+		reason += "; " + hint
+	}
+
+	return reason
+}
+
+// readableSpelling says how to write the word a mark of kind found on inv so that the guard reads
+// it; empty for a kind that marks no word the guard cannot read.
+func readableSpelling(inv Invocation, kind MarkKind) string {
+	switch {
+	case kind == UnknownSubcommand && !inv.Git.Subcommand.Literal:
+		return "write the subcommand as a literal"
+	case kind == DynamicCommand:
+		return "write the command word as a literal, or assign its variable a literal earlier in the same command"
+	case kind == DynamicScript:
+		return "write the string as a literal"
+	case kind == HiddenScript:
+		return "run the script from a file, as in `bash x.sh`"
+	default:
+		return ""
+	}
+}
+
+// handedToolDetail names the command of inv that runs tool, one of its arguments, and how to run
+// tool so that the guard reads it: a shell whose `-c` string is not a literal is run with a
+// literal one, and anything else on its own, by its bare name.
+func handedToolDetail(inv Invocation, tool string) string {
+	runner := inv.Words[0].Text
+	toolAt := 1 + slices.IndexFunc(inv.Words[1:], func(w Word) bool { return w.Literal && w.Text == tool })
+	if toolAt > 0 && isShell(inv.Words[toolAt]) {
+		set := readShellOptions(programName(inv.Words[toolAt]), inv.Words[toolAt+1:])
+		if set.command && len(set.operands) > 0 && !set.operands[0].Literal {
+			return fmt.Sprintf("%s runs %s with a -c string that is not a literal: write the -c string as a literal",
+				runner, tool)
+		}
+	}
+
+	return fmt.Sprintf("%s runs %s: run %s on its own, by its bare name", runner, tool, tool)
 }

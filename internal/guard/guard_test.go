@@ -117,3 +117,26 @@ func TestJudge_WhenAGitReadFails_RefusesSayingWhatBroke(t *testing.T) {
 
 	checkJudgedRow(t, caller, judged{command: "git co topic", want: guard.Refuse, wantNamed: gittest.FailedSaid})
 }
+
+func TestJudge_WhenAWordCannotBeRead_RefusesNamingASpellingTheGuardAllows(t *testing.T) {
+	t.Parallel()
+
+	checkRefusals(t, []refusal{
+		{name: "variable as the command word", command: `"$c" status`, wantNamed: "as a literal, or assign its variable a literal"},
+		{name: "command substitution as the command word", command: `$(which git) status`, wantNamed: "as a literal, or assign its variable a literal"},
+		{name: "shell string", command: `bash -c "$s"`, wantNamed: "write the string as a literal"},
+		{name: "eval string", command: `eval "$s"`, wantNamed: "write the string as a literal"},
+		{name: "rebase exec string", command: `git rebase -x "$c" HEAD~1`, wantNamed: "write the string as a literal"},
+		{name: "editor variable", command: `GIT_EDITOR="$e" git commit`, wantNamed: "write the string as a literal"},
+		{name: "script piped to a shell", command: "cat x.sh | bash", wantNamed: "`bash x.sh`"},
+		{name: "shell reading its script from stdin", command: "bash -s", wantNamed: "`bash x.sh`"},
+		{name: "script from a process substitution", command: "bash <(cat x)", wantNamed: "`bash x.sh`"},
+		{name: "git subcommand", command: `git "$s"`, wantNamed: "write the subcommand as a literal"},
+	})
+}
+
+func TestJudge_WhenAShellStringBehindAnotherCommandCannotBeRead_NamesALiteralString(t *testing.T) {
+	t.Parallel()
+
+	checkRefusedOmitting(t, `xargs bash -c "$s"`, "write the -c string as a literal", "on its own")
+}
