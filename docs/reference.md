@@ -493,10 +493,16 @@ as `--no-verify`.
 - the guard allows `ils push` and `ils branch` as the whole command by their bare name, and refuses
   them in any other form, piped or `tee`d included;
 - `gh pr merge --admin` in any form;
-- `gh api` with a method other than `GET`, or with no method but a field or `--input`;
-  `gh repo sync`, `delete`, `edit`, and `create --push`; `gh release delete`, `edit`, `upload`,
+- `gh api` with a method other than `GET`, or with no method but a field or `--input`. A `gh api
+  graphql` call whose `query` field is a literal document holding no mutation is a read, and the
+  guard allows it; one whose document holds a mutation is a write, and one whose document the guard
+  cannot read (`-F query=@q.graphql`, `-f query="$q"`, `--input`) is refused until the query is
+  passed inline;
+- `gh repo sync`, `delete`, `edit`, and `create --push`; `gh release delete`, `edit`, `upload`,
   and `delete-asset`; `gh auth token`, `gh auth git-credential`, `gh auth status --show-token`, and
   `gh config get oauth_token`; `gh pr checkout --force`;
+- a flag these rules name (`--admin`, `--input`, `--push`, `--show-token`, `--force`) counts as
+  given when its value is one the guard cannot read (`--force="$v"`, `--input="$f"`);
 - an `ils` or `gh` command word that is not a literal (`ils "$cmd"`);
 - `gh alias set`, `import`, and `delete`;
 - a `gh` word that is neither a command nor an alias, extensions included;

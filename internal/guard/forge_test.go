@@ -106,6 +106,119 @@ func TestJudge_RefusesAnAdminMergeInEveryForm(t *testing.T) {
 	checkJudged(t, forgeCaller(t), []judged{
 		{name: "bare", command: "gh pr merge 3 --admin", want: guard.Refuse},
 		{name: "with a value attached", command: "gh pr merge 3 --admin=true", want: guard.Refuse},
+		{name: "with a value attached not a literal", command: `gh pr merge 1 --admin="$v"`, want: guard.Refuse, wantNamed: "literal"},
+	})
+}
+
+func TestJudge_RefusesAGuardedGhFlagWhoseAttachedValueIsNotALiteral(t *testing.T) {
+	t.Parallel()
+
+	checkJudged(t, forgeCaller(t), []judged{
+		{name: "pr checkout force", command: `gh pr checkout 1 --force="$v"`, want: guard.Refuse, wantNamed: "literal"},
+		{name: "auth status show token", command: `gh auth status --show-token="$v"`, want: guard.Refuse, wantNamed: "literal"},
+		{name: "repo create push", command: `gh repo create x --push="$v"`, want: guard.Refuse, wantNamed: "literal"},
+		{name: "api input", command: `gh api repos/o/r/pulls --input="$f"`, want: guard.Refuse},
+	})
+}
+
+func TestJudge_PassesOverANonLiteralValueThatCannotSetAGuardedGhFlag(t *testing.T) {
+	t.Parallel()
+
+	checkJudged(t, forgeCaller(t), []judged{
+		{name: "flag of a command with no guarded flag", command: `gh pr view 1 --json="$f"`, want: guard.Allow},
+		{name: "prefix rules out the guarded flag", command: `gh pr checkout 1 --branch="$b"`, want: guard.Allow},
+		{name: "prefix rules out the api fields", command: `gh api repos/o/r --jq="$q"`, want: guard.Allow},
+		{name: "prefix rules out the admin flag", command: `gh pr merge 1 --subject="$s"`, want: guard.Ask},
+	})
+}
+
+func TestJudge_AllowsAGhGraphqlQuery(t *testing.T) {
+	t.Parallel()
+
+	checkJudged(t, forgeCaller(t), []judged{
+		{name: "shorthand query", command: `gh api graphql -f query='{ viewer { login } }'`, want: guard.Allow},
+		{
+			name:    "query with variables beside it",
+			command: `gh api graphql -f query='query($n: Int!) { viewer { repositories(first: $n) { totalCount } } }' -F n=3`,
+			want:    guard.Allow,
+		},
+		{
+			name:    "query searching for the word mutation",
+			command: `gh api graphql -f query='{ search(query: "mutation", type: ISSUE) { issueCount } }'`,
+			want:    guard.Allow,
+		},
+		{
+			name:    "operation whose name starts with mutation",
+			command: `gh api graphql -f query='query mutationLog { viewer { login } }'`,
+			want:    guard.Allow,
+		},
+		{
+			name:    "query attached to the long field flag",
+			command: `gh api graphql --raw-field=query='{ viewer { login } }'`,
+			want:    guard.Allow,
+		},
+		{name: "no field and no input", command: "gh api graphql", want: guard.Allow},
+		{
+			name:    "endpoint after a flag that takes a value",
+			command: `gh api -H 'Accept: application/json' graphql -f query='{ viewer { login } }'`,
+			want:    guard.Allow,
+		},
+	})
+}
+
+func TestJudge_RefusesAGhGraphqlMutation(t *testing.T) {
+	t.Parallel()
+
+	checkJudged(t, forgeCaller(t), []judged{
+		{
+			name:    "mutation",
+			command: `gh api graphql -f query='mutation { closeIssue(input: {issueId: "x"}) { clientMutationId } }'`,
+			want:    guard.Refuse,
+		},
+		{
+			name:    "query beside a mutation",
+			command: `gh api graphql -f query='query A { viewer { login } } mutation B { closeIssue(input: {issueId: "x"}) { clientMutationId } }'`,
+			want:    guard.Refuse,
+		},
+		{name: "query field on another endpoint", command: `gh api search/issues -f query='{ viewer { login } }'`, want: guard.Refuse},
+		{
+			name:    "mutation after a comment holding a brace",
+			command: "gh api graphql -f query='# {\nmutation { closeIssue(input: {issueId: \"x\"}) { clientMutationId } }'",
+			want:    guard.Refuse,
+		},
+		{
+			name:    "mutation after a block string holding a quote and a parenthesis",
+			command: `gh api graphql -f query='{ a(x: """ " ) """) } mutation { closeIssue(input: {issueId: "x"}) { clientMutationId } }'`,
+			want:    guard.Refuse,
+		},
+		{
+			name:    "mutation after a string holding an escaped quote",
+			command: `gh api graphql -f query='{ a(x: "\")") } mutation { closeIssue(input: {issueId: "x"}) { clientMutationId } }'`,
+			want:    guard.Refuse,
+		},
+	})
+}
+
+func TestJudge_RefusesAGhGraphqlDocumentTheGuardCannotReadSayingToPassItInline(t *testing.T) {
+	t.Parallel()
+
+	checkJudged(t, forgeCaller(t), []judged{
+		{name: "query read from a file", command: "gh api graphql -F query=@q.graphql", want: guard.Refuse, wantNamed: "inline"},
+		{name: "query not a literal", command: `gh api graphql -f query="$q"`, want: guard.Refuse, wantNamed: "inline"},
+		{name: "body from --input", command: "gh api graphql --input q.json", want: guard.Refuse, wantNamed: "inline"},
+		{
+			name:      "word not a literal that may be a field flag",
+			command:   `gh api graphql -f query='{ viewer { login } }' --f"$x" y`,
+			want:      guard.Refuse,
+			wantNamed: "inline",
+		},
+		{name: "fields with no query", command: "gh api graphql -F n=3", want: guard.Refuse, wantNamed: "inline"},
+		{
+			name:      "field name not a literal beside a query",
+			command:   `gh api graphql -f query='{ viewer { login } }' -f q"$n"`,
+			want:      guard.Refuse,
+			wantNamed: "inline",
+		},
 	})
 }
 
