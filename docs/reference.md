@@ -515,7 +515,9 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   `core.hooksPath` set through `-c` or `--config-env`;
 - `git show` or `git cat-file` with stdout redirected, or piped straight into `tee`, to a file in a
   git working tree, or to a file whose name the guard cannot read; output landing in `/dev/null`,
-  or in a file whose nearest existing directory is outside every working tree, is allowed;
+  or in a file whose nearest existing directory is outside every working tree, is allowed. A `tee`
+  that reads a group, a subshell, or a function call holding `git show` is not judged
+  ([rule 3](guard-scope.md#3-close-a-bypass-only-when-agents-write-it));
 - `rebase` in a working tree with uncommitted changes or untracked files, or where the guard cannot
   tell the repository;
 - `worktree remove --force`, and `worktree remove` of a worktree with changes or one the guard
@@ -556,8 +558,9 @@ as `--no-verify`.
   function the command declares: `git switch -c topic && git commit` is allowed, and
   `git switch main && git commit` is refused as a commit on the default branch. A switch with any
   other option (`-q`, `--detach`), with the name joined to its option (`--create=topic`), with a
-  start point that is not a literal, to `-`, or to a name holding `@{` leaves HEAD unknown, and
-  the commands of a function body are never judged on the branch of a switch outside it.
+  start point that is not a literal, to `-`, or to a name holding `@{` leaves HEAD unknown. The
+  commands of a function body follow no switch where the function is declared; at a call, they
+  follow the switch the call follows.
 
 #### ils and gh commands
 
