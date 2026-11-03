@@ -371,8 +371,16 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
 
 #### How the guard reads a command
 
-- a command that does not parse, and an extended glob anywhere in it (zsh runs a glob qualifier
-  such as `*(e:'git push':)` as code);
+- a command that does not parse;
+- an extended glob written directly in the words, the non-array values, or the redirects
+  (here-strings included) of a simple command or a declaration such as `declare` or `export` (zsh
+  runs a glob qualifier such as `*(e:'git push':)` or `*(+f)` as code). The one form allowed there
+  is a `*(…)` whose parentheses hold no `e`, `+`, `$`, backtick, or inner parenthesis, such as the
+  null glob `*(N)`; every other extended glob, `@(a|b)` and `!(x)` included, is refused. The guard
+  looks for none anywhere else: an array value, a `for` or `select` list, the operand of a `${…}`
+  expansion such as a default, a `case` word or pattern, a `[[ … ]]` test, or the redirects of
+  `let` or a compound command. A qualifier there could only hide a command
+  ([rule 3](guard-scope.md#3-close-a-bypass-only-when-agents-write-it));
 - a command word that is not a literal (`$(which git)`, `"$GIT"`);
 - a `git`, `gh`, `ils`, or shell word (`bash`, `sh`, `zsh`, `dash`, `eval`, `source`) handed to a
   command the guard does not know (`xargs`, `timeout`, `sudo`, `find -exec`). The guard sees
@@ -430,11 +438,12 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
 
 #### Git operations that destroy work or skip checks
 
-- every `checkout`, `reset`, `stash`, and `prune`; `switch --force` or `--discard-changes`; `clean
-  --force`; `branch -D`, `-d -f`, or `--delete --force`; `restore` without `--staged` (or `-S`), or
-  with `--worktree` (`-W`) beside it; `rm --force`; `reflog expire`, `delete`, and `drop`; `gc
-  --prune=…`, and `gc` with `gc.pruneExpire` set through `-c` or `--config-env`; `clean` without
-  `--force` where `clean.requireForce` is off, through `-c` or the repository's config;
+- every `checkout`, `reset`, and `prune`; every `stash` but `stash list` and `stash show`; `switch
+  --force` or `--discard-changes`; `clean --force`; `branch -D`, `-d -f`, or `--delete --force`;
+  `restore` without `--staged` (or `-S`), or with `--worktree` (`-W`) beside it; `rm --force`;
+  `reflog expire`, `delete`, and `drop`; `gc --prune=…`, and `gc` with `gc.pruneExpire` set
+  through `-c` or `--config-env`; `clean` without `--force` where `clean.requireForce` is off,
+  through `-c` or the repository's config;
   `checkout-index --force`; `read-tree --reset`, and `read-tree -u -m`; `update-ref -d` and
   `update-ref --stdin`; `branch -M` onto a branch that exists; `apply --reverse`; `add --force`;
 - `--no-verify` on any command, `commit -n`, `am -n`, `send-email --no-validate`, and

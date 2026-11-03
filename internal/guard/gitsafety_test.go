@@ -266,6 +266,37 @@ func TestJudge_AllowsAGitOperationThatKeepsWork(t *testing.T) {
 	})
 }
 
+func TestJudge_RefusesEveryStashButAListOrAShow(t *testing.T) {
+	t.Parallel()
+
+	checkRefusals(t, []refusal{
+		{name: "bare stash", command: "git stash"},
+		{name: "push", command: "git stash push -m msg"},
+		{name: "save", command: "git stash save msg"},
+		{name: "pop", command: "git stash pop"},
+		{name: "apply", command: "git stash apply stash@{1}"},
+		{name: "drop", command: "git stash drop"},
+		{name: "clear", command: "git stash clear"},
+		{name: "branch", command: "git stash branch topic"},
+		{name: "store", command: "git stash store -m msg HEAD"},
+		{name: "create", command: "git stash create"},
+		{name: "subcommand the guard cannot read", command: `git stash "$x"`},
+	})
+}
+
+func TestJudge_AllowsAStashListOrShow(t *testing.T) {
+	t.Parallel()
+	_, caller := standingOn(t, "main", "topic")
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "list", command: "git stash list"},
+		{name: "list with options", command: "git stash list --stat -n 3"},
+		{name: "show of a stash entry with options", command: "git stash show -p stash@{1}"},
+		{name: "list in a pipe", command: "git stash list | head -3"},
+		{name: "show in a list", command: "git status && git stash show --stat"},
+	})
+}
+
 // checkAllowed fails unless Judge, run by caller, allows every command.
 func checkAllowed(t *testing.T, caller guard.Caller, tests []namedCommand) {
 	t.Helper()

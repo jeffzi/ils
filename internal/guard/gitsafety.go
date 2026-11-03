@@ -25,7 +25,9 @@ const hooksPathKey = "core.hooksPath"
 // `--force`.
 const cleanForceKey = "clean.requireForce"
 
-// discard is a git operation that destroys work, with the reason the guard refuses it for.
+// discard is a git operation that destroys work, with the reason the guard refuses it for. One
+// with an empty reason, no refuses, and no judges destroys nothing: it is a read-only operation of
+// a subcommand whose other operations discard, so the guard allows every form of it.
 type discard struct {
 	// refuses reports whether the options make the operation destroy work; nil refuses every
 	// form of it, unless judges is set.
@@ -45,8 +47,10 @@ func discards() map[string]discard {
 			refuses: func(o subcommandOptions) bool { return forced(o) || o.sets(0, "--discard-changes") },
 			reason:  "git switch --force discards uncommitted changes",
 		},
-		"reset": {reason: "git reset can discard uncommitted changes and move the branch; use git restore --staged"},
-		"stash": {reason: "git stash takes uncommitted changes out of the working tree"},
+		"reset":      {reason: "git reset can discard uncommitted changes and move the branch; use git restore --staged"},
+		"stash":      {reason: "git stash takes uncommitted changes out of the working tree"},
+		"stash list": {},
+		"stash show": {},
 		"clean": {
 			refuses: func(o subcommandOptions) bool {
 				return forced(o) || o.setsLast('i', "--interactive", "--no-interactive")

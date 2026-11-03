@@ -95,6 +95,8 @@ func TestJudge_AllowsEverydayCommandsOutsideAnyRepository(t *testing.T) {
 			command: "python3 - <<'EOF'\ns = s.replace(\"git reset --hard\", \"git restore\")\nEOF",
 		},
 		{name: "git history written to /dev/null", command: "git show HEAD:f > /dev/null"},
+		{name: "stash list in a pipe", command: "git stash list | head -3"},
+		{name: "zsh null-glob qualifier", command: `rm -f "$d"/x*(N)`},
 	})
 }
 

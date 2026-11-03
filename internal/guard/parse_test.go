@@ -455,6 +455,57 @@ func TestParse_WhenAnArgumentIsARelativePathNamedForATool_ReadsItWhereTheInvocat
 	}
 }
 
+func TestParse_WhenAGlobQualifierRunsNoCode_MarksNothing(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{name: "null glob after a non-literal directory", command: `rm -f "$d"/tdd-red-phase*(N)`},
+		{name: "plain files", command: "ls *(.)"},
+		{name: "directories", command: "ls *(/)"},
+		{name: "newest by modification time", command: "ls *(om[1])"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := only(t, tt.command)
+
+			assert.Check(t, is.Len(got.Marks, 0), "Parse(%q) marks", tt.command)
+		})
+	}
+}
+
+func TestParse_WhenAnExtendedGlobCouldRunCodeOrIsNoQualifier_MarksIt(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{name: "qualifier evaluating a string", command: "ls *(e:'touch x':)"},
+		{name: "qualifier calling a function", command: "ls *(+f)"},
+		{name: "negation", command: "ls !(x)"},
+		{name: "one or more", command: "ls +(a)"},
+		{name: "zero or one", command: "ls ?(a)"},
+		{name: "qualifier holding a command substitution", command: "ls *($(git stash)N)"},
+		{name: "qualifier holding a substitution in backticks", command: "ls *(`git stash`N)"},
+		{name: "qualifier holding a parameter expansion", command: `ls *(${x}N)`},
+		{name: "qualifier holding a process substitution", command: "ls *(<(git stash)N)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := only(t, tt.command)
+
+			assert.Check(t, is.DeepEqual(kinds(got.Marks), []guard.MarkKind{guard.ExtendedGlob}), "Parse(%q) marks", tt.command)
+		})
+	}
+}
+
 func TestJudge_AllowsAnAliasThatHidesNoTool(t *testing.T) {
 	t.Parallel()
 

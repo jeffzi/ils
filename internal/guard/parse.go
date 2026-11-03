@@ -119,7 +119,7 @@ type MarkKind string
 
 const (
 	// ExtendedGlob is an extended glob such as `@(a|b)`, or zsh's `*(e:…:)` qualifier, which runs
-	// code.
+	// code. A zsh qualifier that runs nothing, such as `*(N)`, is not one.
 	ExtendedGlob MarkKind = "extended glob"
 	// DynamicCommand is a command word that is not a literal, so the program it runs is unknown.
 	DynamicCommand MarkKind = "command word that is not a literal"
@@ -635,8 +635,9 @@ func assignmentOf(a *syntax.Assign, home string) Assignment {
 	}
 }
 
-// hasExtGlob reports whether an extended glob opens any part of words or of the redirect targets
-// of stmt. A nil word is skipped.
+// hasExtGlob reports whether any part of words, or of the redirect targets of stmt, is an extended
+// glob the guard cannot read. A nil word is skipped. A zsh glob qualifier that runs nothing, such
+// as the null glob `*(N)`, is read: see runsNoCode.
 func hasExtGlob(words []*syntax.Word, stmt *syntax.Stmt) bool {
 	words = slices.Clone(words)
 	for _, r := range stmt.Redirs {
@@ -645,11 +646,22 @@ func hasExtGlob(words []*syntax.Word, stmt *syntax.Stmt) bool {
 
 	return slices.ContainsFunc(words, func(w *syntax.Word) bool {
 		return w != nil && slices.ContainsFunc(w.Parts, func(part syntax.WordPart) bool {
-			_, ok := part.(*syntax.ExtGlob)
+			glob, ok := part.(*syntax.ExtGlob)
 
-			return ok
+			return ok && !runsNoCode(glob)
 		})
 	})
+}
+
+// runsNoCode reports whether glob is a `*(…)` whose parentheses hold no `e`, `+`, `$`, backtick
+// or inner parenthesis: zsh's glob qualifier in a form that runs nothing (`*(N)`, `*(.)`,
+// `*(om[1])`). zsh runs the string of an `e` qualifier (`*(e:'git push':)`) and the function a `+`
+// names (`*(+f)`) as code, and the shell expands a substitution inside the parentheses
+// (`*($(git push)N)`, `*(<(git push)N)`) before it globs; the parser keeps the parentheses as raw
+// text, so the guard never walks one. Every other operator opens a bash or ksh extended glob, which
+// stays unread.
+func runsNoCode(glob *syntax.ExtGlob) bool {
+	return glob.Op == syntax.GlobZeroOrMore && !strings.ContainsAny(glob.Pattern.Value, "e+$`(")
 }
 
 // isToolWord reports whether w names git, gh, ils, a shell, `eval`, or `source`: the bare name, or
