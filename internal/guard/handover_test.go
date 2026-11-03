@@ -70,8 +70,6 @@ func TestParse_MarksWhatItCannotRead(t *testing.T) {
 		{name: "non-literal eval word", command: `eval "$x"`, want: guard.DynamicScript},
 		{name: "non-literal heredoc fed to a shell", command: "bash <<EOF\n$x\nEOF", want: guard.DynamicScript},
 		{name: "shell reading a pipe", command: "cat x | bash", index: 1, want: guard.HiddenScript},
-		{name: "shell running a file", command: "bash ./x.sh", want: guard.HiddenScript},
-		{name: "source of a file", command: "source x.sh", want: guard.HiddenScript},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

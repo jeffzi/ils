@@ -133,8 +133,8 @@ const (
 	// UnreadCommand is a string a command runs as a shell command, such as the value of go's
 	// `-exec`, that does not parse.
 	UnreadCommand MarkKind = "command string that does not parse"
-	// HiddenScript is a shell that runs a script the command does not hold: standard input, a
-	// file, or a process substitution.
+	// HiddenScript is a shell, or a `source` or `.`, that runs a script the command does not hold:
+	// standard input, a startup file, or a process substitution.
 	HiddenScript MarkKind = "shell running a script the command does not hold"
 	// GitVariable is an assignment or export of a GIT_* variable off the guard's allow list.
 	GitVariable MarkKind = "git variable off the allow list"
@@ -398,7 +398,7 @@ func (w *walker) add(stmt *syntax.Stmt, call *syntax.CallExpr, sc *scope) {
 	inv = w.placed(inv, sc)
 	inv.depth = w.depth
 	inv.pipedInto = w.pipedInto(stmt)
-	script, runs, mark := scriptOf(stmt, inv.Words)
+	script, runs, mark := scriptOf(stmt, call, inv.Words)
 	runs, mark = capDepth(w.depth, runs, mark)
 
 	inv.Marks = append(w.aliasMarks(inv), marksOf(call, stmt, inv, w.caller.Home)...)

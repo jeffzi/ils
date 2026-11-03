@@ -72,6 +72,9 @@ func TestParse_WhenTheDirectoryCannotBeFollowed_ReportsItUnknown(t *testing.T) {
 		{name: "cd .. after cd -P inside eval", command: "eval 'cd -P sub'; cd ..; git commit"},
 		{name: "move in a pipeline", command: "true | cd sub; git commit"},
 		{name: "relative cd in a shell string given CDPATH by a prefix", command: "CDPATH=/srv bash -c 'cd sub && git commit'"},
+		{name: "after a source of a file", command: "source env.sh && git commit"},
+		{name: "after a dot of a file", command: ". ./env.sh; git commit"},
+		{name: "relative cd after a source of a file, which may set CDPATH", command: "source env.sh; cd /srv; cd sub; git commit"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -111,6 +114,7 @@ func TestParse_ReportsWhereEachGitInvocationPointsGit(t *testing.T) {
 		{name: "--work-tree", command: "git --work-tree wt -C sub status", want: guard.GitTarget{Dir: start + "/sub", WorkTree: start + "/sub/wt"}},
 		{name: "non-literal -C then a relative --git-dir", command: `git -C "$d" --git-dir=.git status`, want: guard.GitTarget{Unknown: true}},
 		{name: "non-literal GIT_DIR", command: `GIT_DIR="$d" git status`, want: guard.GitTarget{Dir: start, Unknown: true}},
+		{name: "absolute cd after a source of a file, which may set GIT_DIR", command: "source env.sh; cd /srv/repo; git status", want: guard.GitTarget{Dir: "/srv/repo", Unknown: true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -264,4 +268,28 @@ func TestParse_WhenAllexportIsOff_MarksNoGitVariableABuiltinAssigns(t *testing.T
 			assert.Check(t, is.Len(marksOf(got), 0), "Parse(%q) marks", tt.command)
 		})
 	}
+}
+
+func TestJudge_WhenAFileIsSourced_AllowsItAndWhatRunsWhereverItRuns(t *testing.T) {
+	t.Parallel()
+	_, caller := standingOn(t, "main", "topic")
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "source of a file", command: "source env.sh"},
+		{name: "read after a dot of a file", command: ". ./env.sh && git status"},
+	})
+}
+
+func TestJudge_WhenAFileIsSourcedBeforeACommit_RefusesTheCommit(t *testing.T) {
+	t.Parallel()
+	_, caller := standingOn(t, "main", "topic")
+
+	checkJudgedRow(t, caller, judged{command: "source env.sh && git commit -m x", want: guard.Refuse, wantNamed: "git commit"})
+}
+
+func TestJudge_WhenAFileIsSourcedBeforeAGhAlias_RefusesNamingTheConfigVariable(t *testing.T) {
+	// Not parallel: it sets GH_PATH and the gh config location for the whole process.
+	ghReadingConfig(t, "sy: repo view\n")
+
+	checkJudgedRow(t, forgeCaller(t), judged{command: "source env.sh && gh sy", want: guard.Refuse, wantNamed: "GH_CONFIG_DIR"})
 }

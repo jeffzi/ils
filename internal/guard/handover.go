@@ -77,11 +77,17 @@ func marksOf(call *syntax.CallExpr, stmt *syntax.Stmt, inv Invocation, home stri
 	switch {
 	case !command.Literal:
 		marks = append(marks, Mark{Kind: DynamicCommand})
-	case inv.Tool != NoTool, isDataConsumer(inv.Words), isShell(command), command.Text == "eval":
-	case command.Text == "source" || command.Text == ".":
-		if len(inv.Words) > 1 {
-			marks = append(marks, Mark{Kind: HiddenScript})
+	case (command.Text == "source" || command.Text == ".") && len(inv.Words) > 1 &&
+		hidesScript(inv.Words[1], argsOf(call, inv.Words[1:])[0]):
+		marks = append(marks, Mark{Kind: HiddenScript})
+	case isShell(command):
+		// A script file the shell runs gets its arguments as `./x.sh` does.
+		if file, ok := scriptFileWords(inv.Words); ok {
+			if name, handed := handedByCall(call, file, inv.Dir, home); handed {
+				marks = append(marks, Mark{Kind: ToolArgument, Name: name})
+			}
 		}
+	case inv.Tool != NoTool, isDataConsumer(inv.Words), command.Text == "eval":
 	default:
 		if name, ok := handedByCall(call, inv.Words, inv.Dir, home); ok {
 			marks = append(marks, Mark{Kind: ToolArgument, Name: name})

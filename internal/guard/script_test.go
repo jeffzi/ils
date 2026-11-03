@@ -118,12 +118,51 @@ func TestJudge_WhenAShellsOptionsRunAStringOrAFile_RefusesIt(t *testing.T) {
 		{name: "zsh one-dash rcfile is a bundle", command: "zsh -rcfile 'git push --force origin main' -c true", wantNamed: "git push"},
 		{name: "zsh one-dash login is a bundle", command: "zsh -login -c 'git push --force origin main'", wantNamed: "git push"},
 		{name: "zsh O in a bundle takes no value", command: "zsh -cO 'git push --force origin main' true", wantNamed: "git push"},
-		// cspell:disable-next-line -- zsh option name glued to -o, the form under test
-		{name: "zsh o takes the rest of its bundle", command: "zsh -ocshnullglob ./evil.sh true"},
 		{name: "bash lone dash ends the options before the -c string", command: "bash -c - 'git push --force origin main'", wantNamed: "git push"},
-		{name: "bash lone dash makes a later -c a file name", command: "bash - -c 'git status'"},
 		{name: "bash lone plus leaves a later short option an option", command: "bash -c + -x 'git push --force origin main'", wantNamed: "git push"},
-		{name: "zsh lone plus makes a later -c a file name", command: "zsh + -c 'git status'"},
+	})
+}
+
+func TestJudge_WhenAShellIsGivenAScriptFile_AllowsIt(t *testing.T) {
+	t.Parallel()
+	_, caller := standingOn(t, "main", "topic")
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "bash with an absolute path", command: "bash /tmp/probe.sh"},
+		{name: "sh with a relative path", command: "sh ./run.sh"},
+		{name: "bash with an option before the file", command: "bash -e x.sh"},
+		{name: "zsh with a non-literal path", command: `zsh "$S/probe.sh"`},
+		{name: "literal sh string among the file's arguments", command: "bash x.sh sh -c 'make test'"},
+		// cspell:disable-next-line -- zsh option name glued to -o, the form under test
+		{name: "zsh o takes the rest of its bundle", command: `zsh -ocshnullglob "$s" true`},
+		{name: "bash lone dash makes a later -c a file name", command: `bash - -c "$s"`},
+		{name: "zsh lone plus makes a later -c a file name", command: `zsh + -c "$s"`},
+	})
+}
+
+func TestJudge_WhenAShellReadsItsScriptFromStandardInputOrASubstitution_RefusesIt(t *testing.T) {
+	t.Parallel()
+
+	checkRefusals(t, []refusal{
+		{name: "shell reading a pipe", command: "cat x | bash", wantNamed: string(guard.HiddenScript)},
+		{name: "bash -s", command: "bash -s", wantNamed: string(guard.HiddenScript)},
+		{name: "process substitution as the file", command: "bash <(cat x)", wantNamed: string(guard.HiddenScript)},
+		{name: "source of a process substitution", command: "source <(cat x)", wantNamed: string(guard.HiddenScript)},
+		{name: "dot of a process substitution", command: ". <(cat x)", wantNamed: string(guard.HiddenScript)},
+		{name: "process substitution after an option", command: "bash -e <(cat x)", wantNamed: string(guard.HiddenScript)},
+		{name: "standard input named as the file", command: "cat x | bash /dev/stdin", wantNamed: string(guard.HiddenScript)},
+		{name: "standard input named by its descriptor", command: "cat x | sh /dev/fd/0", wantNamed: string(guard.HiddenScript)},
+		{name: "source of standard input", command: "cat x | source /dev/stdin", wantNamed: string(guard.HiddenScript)},
+	})
+}
+
+func TestJudge_WhenAShellGivesItsScriptFileAToolWord_RefusesIt(t *testing.T) {
+	t.Parallel()
+
+	checkRefusals(t, []refusal{
+		{name: "tool word after the file", command: "bash x.sh git push", wantNamed: string(guard.ToolArgument)},
+		{name: "tool in a string after the file", command: "sh ./run.sh 'git push'", wantNamed: string(guard.ToolArgument)},
+		{name: "tool in a string after an option and the file", command: "bash -e x.sh 'git push'", wantNamed: string(guard.ToolArgument)},
 	})
 }
 

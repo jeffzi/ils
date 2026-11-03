@@ -102,6 +102,8 @@ func TestJudge_AllowsEverydayCommandsOutsideAnyRepository(t *testing.T) {
 		{name: "literal sh string behind xargs", command: "xargs -I{} sh -c 'ls {}'"},
 		{name: "sed substitution whose text parses as a shell script", command: "sed 's/old text/git push/' f"},
 		{name: "python code mentioning git, behind uv run", command: `uv run python -c 'import subprocess; subprocess.run(["git", "log"])'`},
+		{name: "shell running a script file", command: "bash /tmp/probe.sh"},
+		{name: "environment file sourced under allexport", command: "set -a && . ./.env && set +a && make deploy"},
 	})
 }
 

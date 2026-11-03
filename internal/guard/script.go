@@ -24,17 +24,17 @@ func isShell(command Word) bool {
 	return slices.Contains(shellNames(), programName(command))
 }
 
-// scriptOf returns the string that the invocation of words runs as commands of its own, when it
-// is `eval` or a shell given `-c` or a heredoc, and reports whether there is one. The mark names
-// a string it runs that Parse cannot read.
-func scriptOf(stmt *syntax.Stmt, words []Word) (string, bool, MarkKind) {
+// scriptOf returns the string that the invocation of words, the words of call after any wrapper,
+// runs as commands of its own, when it is `eval` or a shell given `-c` or a heredoc, and reports
+// whether there is one. The mark names a string it runs that Parse cannot read.
+func scriptOf(stmt *syntax.Stmt, call *syntax.CallExpr, words []Word) (string, bool, MarkKind) {
 	switch {
 	case len(words) == 0 || !words[0].Literal:
 		return "", false, ""
 	case words[0].Text == "eval":
 		return evalScript(words[1:])
 	case isShell(words[0]):
-		return shellScript(stmt, programName(words[0]), words[1:])
+		return shellScript(stmt, programName(words[0]), words[1:], argsOf(call, words[1:]))
 	default:
 		return "", false, ""
 	}
@@ -52,9 +52,11 @@ func evalScript(args []Word) (string, bool, MarkKind) {
 	return strings.Join(wordTexts(args), " "), true, ""
 }
 
-// shellScript returns the script the shell named shell, given args, runs: its `-c` string, or the
-// heredoc on its standard input. Any other script it would read is marked hidden.
-func shellScript(stmt *syntax.Stmt, shell string, args []Word) (string, bool, MarkKind) {
+// shellScript returns the script the shell named shell runs, given args, the words read from the
+// raw words raw: its `-c` string, or the heredoc on its standard input. A script file runs nothing the guard
+// reads, just as `./x.sh` does not; a process substitution as the file, a startup file, or any
+// other standard input is marked hidden.
+func shellScript(stmt *syntax.Stmt, shell string, args []Word, raw []*syntax.Word) (string, bool, MarkKind) {
 	set := readShellOptions(shell, args)
 	switch {
 	case set.readsStartup:
@@ -66,10 +68,48 @@ func shellScript(stmt *syntax.Stmt, shell string, args []Word) (string, bool, Ma
 	case set.command:
 		return set.operands[0].Text, true, ""
 	case len(set.operands) > 0 && !set.stdin:
-		return "", false, HiddenScript
+		if hidesScript(set.operands[0], raw[len(raw)-len(set.operands)]) {
+			return "", false, HiddenScript
+		}
+
+		return "", false, ""
 	default:
 		return heredocScript(stmt)
 	}
+}
+
+// scriptFileWords returns the words of the shell invocation words from its script file on, the
+// file and the arguments the script gets, and reports whether the shell runs a script file. A
+// shell given `-c`, reading standard input, or first reading a startup file runs none.
+func scriptFileWords(words []Word) ([]Word, bool) {
+	set := readShellOptions(programName(words[0]), words[1:])
+	if set.readsStartup || set.command || set.stdin || len(set.operands) == 0 {
+		return nil, false
+	}
+
+	return set.operands, true
+}
+
+// hidesScript reports whether the script file file, read from the raw word raw, holds a script
+// the command does not: a process substitution, or a name for standard input (`/dev/stdin`,
+// `/dev/fd/N`, `/proc/self/fd/N`).
+func hidesScript(file Word, raw *syntax.Word) bool {
+	if substitutes(raw) {
+		return true
+	}
+
+	return file.Literal && (file.Text == "/dev/stdin" || strings.HasPrefix(file.Text, "/dev/fd/") ||
+		strings.HasPrefix(file.Text, "/proc/self/fd/"))
+}
+
+// substitutes reports whether w holds a process substitution, whose file is a script the command
+// writes to a pipe.
+func substitutes(w *syntax.Word) bool {
+	return slices.ContainsFunc(w.Parts, func(part syntax.WordPart) bool {
+		_, ok := part.(*syntax.ProcSubst)
+
+		return ok
+	})
 }
 
 // ---------------------------------------------------------------------------

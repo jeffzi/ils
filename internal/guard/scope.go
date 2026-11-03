@@ -428,6 +428,9 @@ func (sc *scope) apply(inv Invocation) {
 		sc.cd(inv.Words[1:], sc.commandEnv(inv).cdPath)
 	case "popd":
 		sc.dir = ""
+	case "source", ".":
+		// The file runs in this shell and may move it or set any variable the guard follows.
+		sc.dir, sc.env = "", unknownEnvironment()
 	case "unset":
 		sc.assignUnknown(wordTexts(inv.Words[1:]))
 	}

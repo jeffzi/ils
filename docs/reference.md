@@ -412,8 +412,12 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   arguments still counts as handed over (`python3 tool.py git push`);
 - a `bash -c`, `sh -c`, `zsh -c`, `dash -c`, or `eval` string that is not a literal or nests more
   than three deep;
-- a shell that runs what the command does not hold (`cat x | bash`, `bash -s`, `bash ./x.sh`,
-  `bash <(…)`, `source` or `.` of a file);
+- a shell that reads its script from standard input or a process substitution (`cat x | bash`,
+  `bash -s`, `bash /dev/stdin`, `bash <(…)`), and a `source` or `.` of either. A shell given a script
+  file runs it as `./x.sh` does (`bash /tmp/probe.sh`), and its arguments after the file are read
+  as those of `./x.sh` (`bash x.sh git push` is refused). A `source` or `.` of a file is allowed;
+  after it, the directory and every variable the guard follows are unknown, so `source env.sh &&
+  git commit -m x` is refused because the guard cannot tell where the commit runs;
 - a shell command that git runs. The guard reads these the same way, and refuses one that is not
   a literal. They are the value of `git rebase --exec` (`-x`), the command of `git bisect run`,
   `git submodule foreach`, `git difftool -x` (`--extcmd`), the `git filter-branch` filters and
