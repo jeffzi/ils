@@ -37,6 +37,16 @@ manage flags and tool invocations.
     minimum `ils` enforces; `latest` or unset fails it on an older `git` or one whose version `ils`
     cannot read; any other value fails it.
   - `ILS_LIVE_GIT_VERSION` — when set, the exact `git` version the suite must find.
+- `task test:replay` — Judge every Bash command of your local Claude Code transcripts with the
+  guard, in the directory each one ran in, and print the number of commands read, judged and
+  skipped, then each refusal and ask reason with its count and up to three commands. Never fails on
+  the counts. It reads:
+  - `ILS_REPLAY_DIR` — the directory of transcripts to read, subagent transcripts included. Unset,
+    the task reads `~/.claude/projects`.
+  - `ILS_REPLAY_BEFORE` — when set, an RFC 3339 time: only calls recorded before it are read, so
+    later sessions add no commands. Each command is still judged against its repository as it is
+    now, so a verdict can move when a branch, worktree or alias changes: compare counts per
+    reason, not the total.
 - `task check` — Run every pre-commit hook across the repo
 - `task check:fix` — auto-fix everything that supports it: `go mod tidy`, `go tool golangci-lint
   run --fix`, `go tool golangci-lint fmt`, `dprint fmt`, markdownlint (`prek run -a

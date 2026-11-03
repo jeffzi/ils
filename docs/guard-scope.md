@@ -176,8 +176,9 @@ Check every new refusal two ways before it lands:
 - A table of everyday commands in the guard's tests must stay allowed. A refusal that catches one
   of them needs a narrower trigger.
 - A replay judges every shell command in your local Claude Code transcripts and counts the
-  refusals by reason. A change that adds a refusal states how many replayed commands it refuses.
-  More than 1 in 1,000 needs a narrower trigger, unless the commands it refuses are real catches.
+  refusals by reason: run `task test:replay`. A change that adds a refusal states how many replayed
+  commands it refuses. More than 1 in 1,000 needs a narrower trigger, unless the commands it
+  refuses are real catches.
 
 ## Accepted limits
 

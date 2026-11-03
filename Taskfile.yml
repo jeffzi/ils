@@ -114,6 +114,11 @@ tasks:
           echo "task test:live      $local"
     silent: true
 
+  test:replay:
+    desc: "Judge every Bash command of your Claude Code transcripts and count the refusals by reason (ILS_REPLAY_DIR, ILS_REPLAY_BEFORE)"
+    cmds:
+      - go test -tags replay -count=1 -timeout 30m -v -run '^TestAssess_ReplaysTheBashCommandsOfTheLocalTranscripts$' ./internal/guard {{.CLI_ARGS}}
+
   test:live:
     desc: "Run the live suite against a test repository on GitHub (ILS_LIVE_ORIGIN, or your ils-live-local)"
     cmds:
