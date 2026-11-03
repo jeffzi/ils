@@ -93,14 +93,56 @@ func marksOf(call *syntax.CallExpr, stmt *syntax.Stmt, inv Invocation, home stri
 
 // handedByCall returns the tool that the command call, a command the guard does not know whose
 // words after any wrapper are words, may run from its arguments, and reports whether there is one.
-// An argument hands over a tool when it is a tool word itself, or when it reads as a shell script
-// one of whose commands is a tool word or hands one over in turn: `su -c 'cd /repo && git push'`,
-// `ssh host 'sudo git push'`. The arguments of an interpreter are code in its own language, never
-// read as a shell script, so only a tool word among them hands one over. An ils word followed by
-// an ils command that changes nothing hands over nothing. dir is where a relative path is read
-// against, and a `~` expands to home.
+// It reads the arguments as handedBy does, except that a bare shell word followed by `-c` and a
+// literal string hands over only what the string hands over (`xargs -I{} sh -c 'ls {}'`, `docker
+// run img sh -c 'make test'`). The string runs where the command puts it, so a git call in it is
+// never judged as if it ran here: holding a tool word, or a command that hands one over in turn,
+// is enough to hand one over. dir is where a relative path is read against, and a `~` expands to
+// home.
 func handedByCall(call *syntax.CallExpr, words []Word, dir, home string) (string, bool) {
-	args := call.Args[len(call.Args)-len(words)+1:]
+	args := argsOf(call, words)
+	if !isInterpreter(words[0]) {
+		words, args = withoutShellStrings(words, args)
+	}
+
+	return handedBy(words, args, dir, home)
+}
+
+// argsOf returns the arguments of call that words, its words after any wrapper, were read from.
+func argsOf(call *syntax.CallExpr, words []Word) []*syntax.Word {
+	return call.Args[len(call.Args)-len(words):]
+}
+
+// withoutShellStrings returns words and args, the raw word each of words was read from, without
+// each bare shell word that is followed by `-c` and a literal string, and without that `-c`. The
+// string stays, to be read as any other argument. A shell word with no `-c`, or whose string is not
+// a literal, stays as well, and so does a path to a shell.
+func withoutShellStrings(words []Word, args []*syntax.Word) ([]Word, []*syntax.Word) {
+	keptWords := []Word{words[0]}
+	keptArgs := []*syntax.Word{args[0]}
+	for i := 1; i < len(words); i++ {
+		shell := words[i]
+		if shell.Literal && slices.Contains(shellNames(), shell.Text) && i+2 < len(words) &&
+			words[i+1].Literal && words[i+1].Text == "-c" && words[i+2].Literal {
+			i += 2
+		}
+
+		keptWords = append(keptWords, words[i])
+		keptArgs = append(keptArgs, args[i])
+	}
+
+	return keptWords, keptArgs
+}
+
+// handedBy returns the tool that a command the guard does not know, whose words are words read
+// from args, may run from its arguments, and reports whether there is one. An argument hands over
+// a tool when it is a tool word itself, or when it reads as a shell script one of whose commands
+// is a tool word or hands one over in turn: `su -c 'cd /repo && git push'`, `ssh host 'sudo git
+// push'`. The arguments of an interpreter are code in its own language, never read as a shell
+// script, so only a tool word among them hands one over. An ils word followed by an ils command
+// that changes nothing hands over nothing. dir is where a relative path is read against, and a `~`
+// expands to home.
+func handedBy(words []Word, args []*syntax.Word, dir, home string) (string, bool) {
 	readsScripts := !isInterpreter(words[0])
 	for i, w := range words[1:] {
 		if isToolWord(w, dir) {
@@ -115,7 +157,7 @@ func handedByCall(call *syntax.CallExpr, words []Word, dir, home string) (string
 			continue
 		}
 
-		if name, ok := scriptTool(scriptText(args[i], home), home); ok {
+		if name, ok := scriptTool(scriptText(args[i+1], home), home); ok {
 			return name, true
 		}
 	}
@@ -190,8 +232,8 @@ func stringRunners() []string {
 }
 
 // scriptTool reads text as a shell script and returns the tool one of its commands is, or hands
-// over as handedByCall reads it, and reports whether there is one. Text with no blank and no shell
-// operator is one word, which handedByCall has already judged. Text that does not parse is no
+// over as handedBy reads it, and reports whether there is one. Text with no blank and no shell
+// operator is one word, which handedBy has already judged. Text that does not parse is no
 // script: it is data, whatever command it goes to. A command word that is not a literal is passed
 // over: the guard cannot tell what a variable handed to another command holds. A relative path in
 // the script is read as unknown, since the command that runs it may run it anywhere.
@@ -229,7 +271,7 @@ func scriptTool(text, home string) (string, bool) {
 		case inv.Tool != NoTool, isShell(command), slices.Contains(stringRunners(), command.Text):
 			name = command.Text
 		default:
-			name, _ = handedByCall(call, inv.Words, "", home)
+			name, _ = handedBy(inv.Words, argsOf(call, inv.Words), "", home)
 		}
 
 		return name == ""

@@ -99,6 +99,7 @@ func TestJudge_AllowsEverydayCommandsOutsideAnyRepository(t *testing.T) {
 		{name: "zsh null-glob qualifier", command: `rm -f "$d"/x*(N)`},
 		{name: "gh graphql query", command: `gh api graphql -f query='{ viewer { login } }'`},
 		{name: "search for a tool word", command: "rg -n git docs"},
+		{name: "literal sh string behind xargs", command: "xargs -I{} sh -c 'ls {}'"},
 		{name: "sed substitution whose text parses as a shell script", command: "sed 's/old text/git push/' f"},
 		{name: "python code mentioning git, behind uv run", command: `uv run python -c 'import subprocess; subprocess.run(["git", "log"])'`},
 	})

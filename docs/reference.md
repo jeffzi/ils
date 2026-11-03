@@ -394,7 +394,13 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   not a literal (`go "$o" run`), which it reads as those of a command it does not know. Behind such
   a command the guard allows
   `ils status`, `parse`, `guard`, `hook`, and `help` (`timeout 60 ils status`). It refuses any
-  other `ils` command, including one the command fills in (`xargs ils`);
+  other `ils` command, including one the command fills in (`xargs ils`). A bare `sh`, `bash`,
+  `zsh`, or `dash` followed by `-c` and a literal string hands over only what that string does,
+  wherever the command runs it: `xargs -I{} sh -c 'ls {}'` and `docker run img sh -c 'make test'`
+  pass, while `xargs sh -c 'git status'`, a shell with no `-c` (`xargs sh`), and one whose string is
+  not a literal (`xargs bash -c "$s"`) are refused. This holds only at the top of the command:
+  inside a string the guard reads as a script, a shell word still counts as handed over
+  (`ssh host 'xargs sh -c ls'` is refused), and so does one among an interpreter's arguments;
 - a string handed to a command the guard does not know, which the guard reads as a script, when
   one of its commands is such a word or hands one over in turn: `su -c 'cd /repo && git push'`,
   `ssh host 'sudo git push'`, and `su -c "git push $b"`. In the last one the guard reads `$b` as an

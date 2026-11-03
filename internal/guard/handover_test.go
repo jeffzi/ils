@@ -52,6 +52,14 @@ func TestParse_MarksWhatItCannotRead(t *testing.T) {
 		{name: "substituted command word", command: "$(which git) push", want: guard.DynamicCommand},
 		{name: "wrapper option it does not take", command: "nice -z git push", want: guard.ToolArgument},
 		{name: "shell handed to xargs", command: "xargs sh -c 'git push origin main'", want: guard.ToolArgument},
+		{name: "shell whose string runs git, handed to docker run", command: "docker run img sh -c 'git log'", want: guard.ToolArgument},
+		{name: "shell whose string hands git over, handed to xargs", command: "xargs sh -c 'sudo git log'", want: guard.ToolArgument},
+		{name: "shell whose string runs a shell, handed to xargs", command: "xargs sh -c 'sh -c ls'", want: guard.ToolArgument},
+		{name: "shell with no -c string, handed to xargs", command: "xargs sh", want: guard.ToolArgument},
+		{name: "shell with a non-literal -c string, handed to xargs", command: `xargs bash -c "$s"`, want: guard.ToolArgument},
+		{name: "shell with another option before its string, handed to xargs", command: "xargs bash -e ls", want: guard.ToolArgument},
+		{name: "shell with -c and no string, handed to xargs", command: "xargs sh -c", want: guard.ToolArgument},
+		{name: "shell string among an interpreter's arguments", command: "python3 tool.py sh -c 'git push'", want: guard.ToolArgument},
 		{name: "eval handed to another command", command: "xargs eval 'git status'", want: guard.ToolArgument},
 		{name: "tool behind a wrapper in a string", command: "su -c 'exec git push'", want: guard.ToolArgument},
 		{name: "tool in a string with an expansion", command: `su -c "git push $b"`, want: guard.ToolArgument},
@@ -121,6 +129,28 @@ func TestParse_WhenNoArgumentIsAToolWord_MarksNothing(t *testing.T) {
 		{name: "code that parses as a shell script, for a versioned python", command: "python3.13 -c 'import git'"},
 		{name: "code that does not parse, for an interpreter", command: `python3 -c 'import os; os.system("git push")'`},
 		{name: "code that does not parse, for a command the guard does not know", command: `php -r 'system("git push");'`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := only(t, tt.command)
+
+			assert.Check(t, is.Len(got.Marks, 0), "Parse(%q) marks", tt.command)
+		})
+	}
+}
+
+func TestParse_WhenAShellStringHandedToAnotherCommandHandsNoTool_MarksNothing(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{name: "sh string behind xargs", command: "xargs -I{} sh -c 'ls {}'"},
+		{name: "sh string behind docker run", command: "docker run img sh -c 'make test'"},
+		{name: "bash string behind timeout", command: "timeout 60 bash -c 'go test ./...'"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
