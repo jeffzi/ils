@@ -29,6 +29,8 @@ func dataConsumers() map[string]bool {
 		// Readers and filters.
 		"echo", "printf", "cat", "head", "tail", "less", "grep", "egrep", "fgrep", "ls", "wc",
 		"sort", "uniq", "cut", "tr", "jq", "diff", "rg",
+		// Shell script checkers and formatters, which name a shell dialect without running it.
+		"shellcheck", "shfmt",
 		// Lookups.
 		"which", "type", "whence", "where",
 		// Toolchains and package managers.
@@ -99,16 +101,16 @@ func marksOf(call *syntax.CallExpr, stmt *syntax.Stmt, inv Invocation, ex expand
 
 // handedByCall returns the tool that the command call, a command the guard does not know whose
 // words after any wrapper are words, may run from its arguments, and reports whether there is one.
-// It reads the arguments as handedBy does, except that a bare shell word followed by `-c` and a
-// literal string hands over only what the string hands over (`xargs -I{} sh -c 'ls {}'`, `docker
-// run img sh -c 'make test'`). The string runs where the command puts it, so a git call in it is
-// never judged as if it ran here: holding a tool word, or a command that hands one over in turn,
-// is enough to hand one over. dir is where a relative path is read against, and ex reads the
-// arguments.
+// It reads the arguments as handedBy does, once each bare shell word that runs a script the guard
+// can see is read as that script run directly (runDirectly): `xargs -I{} sh -c 'ls {}'` hands
+// over only what its string hands over, and `timeout 60 bash x.sh` only what `timeout 60 ./x.sh`
+// does. The string runs where the command puts it, so a git call in it is never judged as if it
+// ran here: holding a tool word, or a command that hands one over in turn, is enough to hand one
+// over. dir is where a relative path is read against, and ex reads the arguments.
 func handedByCall(call *syntax.CallExpr, words []Word, dir string, ex expander) (string, bool) {
 	args := argsOf(call, words)
 	if !isInterpreter(words[0]) {
-		words, args = withoutShellStrings(words, args)
+		words, args = runDirectly(words, args)
 	}
 
 	return handedBy(words, args, dir, ex)
@@ -119,18 +121,27 @@ func argsOf(call *syntax.CallExpr, words []Word) []*syntax.Word {
 	return call.Args[len(call.Args)-len(words):]
 }
 
-// withoutShellStrings returns words and args, the raw word each of words was read from, without
-// each bare shell word that is followed by `-c` and a literal string, and without that `-c`. The
-// string stays, to be read as any other argument. A shell word with no `-c`, or whose string is not
-// a literal, stays as well, and so does a path to a shell.
-func withoutShellStrings(words []Word, args []*syntax.Word) ([]Word, []*syntax.Word) {
+// runDirectly returns words and args, the raw word each of words was read from, with each bare
+// shell word before the first interpreter word read as the script it runs, run directly:
+//
+//   - A shell followed by `-c` and a literal string loses the shell and the `-c`. The string stays,
+//     to be read as any other argument.
+//   - A shell given a script file loses the shell and its options. The file and the arguments the
+//     script gets stay, read as those of `./x.sh` in the same place.
+//
+// A shell word with neither, whose string is not a literal, or whose file holds a script the
+// command does not (`/dev/stdin`, `<(cat x)`) stays, and so does a path to a shell. Words from the
+// first interpreter word on are its own: a shell word there is one of its arguments.
+func runDirectly(words []Word, args []*syntax.Word) ([]Word, []*syntax.Word) {
 	keptWords := []Word{words[0]}
 	keptArgs := []*syntax.Word{args[0]}
 	for i := 1; i < len(words); i++ {
-		shell := words[i]
-		if shell.Literal && slices.Contains(shellNames(), shell.Text) && i+2 < len(words) &&
-			words[i+1].Literal && words[i+1].Text == "-c" && words[i+2].Literal {
-			i += 2
+		if isInterpreter(words[i]) {
+			return append(keptWords, words[i:]...), append(keptArgs, args[i:]...)
+		}
+
+		if words[i].Literal && slices.Contains(shellNames(), words[i].Text) {
+			i += shellWords(words[i:], args[i:])
 		}
 
 		keptWords = append(keptWords, words[i])
@@ -140,15 +151,40 @@ func withoutShellStrings(words []Word, args []*syntax.Word) ([]Word, []*syntax.W
 	return keptWords, keptArgs
 }
 
+// shellWords returns how many of words, a bare shell word and the words after it read from args,
+// go before the script it runs: the shell and `-c` before a literal string, or the shell and its
+// options before a script file that holds the script. It returns zero when the shell runs neither.
+func shellWords(words []Word, args []*syntax.Word) int {
+	if len(words) > 2 && words[1].Literal && words[1].Text == "-c" && words[2].Literal {
+		return 2
+	}
+
+	file, ok := scriptFileWords(words)
+	if !ok {
+		return 0
+	}
+
+	skip := len(words) - len(file)
+	if hidesScript(file[0], args[skip]) {
+		return 0
+	}
+
+	return skip
+}
+
 // handedBy returns the tool that a command the guard does not know, whose words are words read
 // from args, may run from its arguments, and reports whether there is one. An argument hands over
 // a tool when it is a tool word itself, or when it reads as a shell script one of whose commands
 // is a tool word or hands one over in turn: `su -c 'cd /repo && git push'`, `ssh host 'sudo git
-// push'`. The arguments of an interpreter are code in its own language, never read as a shell
-// script, so only a tool word among them hands one over. An ils word followed by an ils command
-// that changes nothing hands over nothing. dir is where a relative path is read against, and ex
-// reads the arguments; a script among them runs in a shell of its own.
+// push'`. The arguments of an interpreter, whether it is the command or an argument of it
+// (`xargs sed …`), are code in its own language, never read as a shell script, so only a tool
+// word among them hands one over. A command that hands its words to a shell (shellHandovers) has
+// every argument read as a script, interpreter word or not: that shell reads them as one. An ils
+// word followed by an ils command that changes nothing hands over nothing. dir is where a
+// relative path is read against, and ex reads the arguments; a script among them runs in a shell
+// of its own.
 func handedBy(words []Word, args []*syntax.Word, dir string, ex expander) (string, bool) {
+	toShell := words[0].Literal && shellHandovers()[programName(words[0])]
 	readsScripts := !isInterpreter(words[0])
 	for i, w := range words[1:] {
 		if isToolWord(w, dir) {
@@ -157,6 +193,10 @@ func handedBy(words []Word, args []*syntax.Word, dir string, ex expander) (strin
 			}
 
 			return w.Text, true
+		}
+
+		if !toShell && isInterpreter(w) {
+			readsScripts = false
 		}
 
 		if !readsScripts {
@@ -169,6 +209,12 @@ func handedBy(words []Word, args []*syntax.Word, dir string, ex expander) (strin
 	}
 
 	return "", false
+}
+
+// shellHandovers are the commands that hand their words to a shell, which reads them all as one
+// script.
+func shellHandovers() map[string]bool {
+	return setOf("ssh", "su")
 }
 
 // interpreters are the command words that run code in a language other than shell from their

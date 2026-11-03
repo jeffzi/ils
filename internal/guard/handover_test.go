@@ -57,7 +57,7 @@ func TestParse_MarksWhatItCannotRead(t *testing.T) {
 		{name: "shell whose string runs a shell, handed to xargs", command: "xargs sh -c 'sh -c ls'", want: guard.ToolArgument},
 		{name: "shell with no -c string, handed to xargs", command: "xargs sh", want: guard.ToolArgument},
 		{name: "shell with a non-literal -c string, handed to xargs", command: `xargs bash -c "$s"`, want: guard.ToolArgument},
-		{name: "shell with another option before its string, handed to xargs", command: "xargs bash -e ls", want: guard.ToolArgument},
+		{name: "shell with another option before its string, handed to xargs", command: "xargs bash -e -c ls", want: guard.ToolArgument},
 		{name: "shell with -c and no string, handed to xargs", command: "xargs sh -c", want: guard.ToolArgument},
 		{name: "shell string among an interpreter's arguments", command: "python3 tool.py sh -c 'git push'", want: guard.ToolArgument},
 		{name: "eval handed to another command", command: "xargs eval 'git status'", want: guard.ToolArgument},
@@ -95,6 +95,9 @@ func TestParse_WhenAToolIsHandedToAnotherCommand_NamesItOnTheMark(t *testing.T) 
 		{name: "tool in a string", command: "su -c 'cd /repo && gh pr merge 3'", want: "gh"},
 		{name: "tool handed on inside a string", command: "ssh host 'sudo ils merge'", want: "ils"},
 		{name: "bare tool word among an interpreter's arguments", command: "python3 tool.py git push", want: "git"},
+		{name: "bare tool word after an interpreter word behind another command", command: "timeout 30 python3 tool.py git push", want: "git"},
+		{name: "bare tool word among a script file's arguments behind another command", command: "timeout 60 bash x.sh git push", want: "git"},
+		{name: "shell word after an interpreter word behind another command", command: "timeout 30 python3 tool.py bash x.sh", want: "bash"},
 		{name: "code for a python3 word with no minor", command: "python3. -c 'import git'", want: "git"},
 		{name: "code for a python3 word whose minor is not a number", command: "python3.x -c 'import git'", want: "git"},
 	}
@@ -207,4 +210,49 @@ func TestParse_WhenGoRunsAProgramOrGenerator_ReadsItsWordsAsHanded(t *testing.T)
 			assert.Check(t, is.DeepEqual(got.Marks, []guard.Mark{{Kind: guard.ToolArgument, Name: tt.want}}), "Parse(%q) marks", tt.command)
 		})
 	}
+}
+
+func TestJudge_WhenACommandHandsAnotherCommandCodeOrAScriptFile_Allows(t *testing.T) {
+	t.Parallel()
+
+	checkAllowed(t, guard.Caller{Home: home, Dir: outsideDir(t)}, []namedCommand{
+		{name: "sed script behind find -exec", command: `find . -name '*.md' -exec sed -i 's/git push/ils push/' {} +`},
+		{name: "sed script behind xargs", command: `xargs sed -i 's/git push/ils push/'`},
+		{name: "sed script behind timeout", command: `timeout 30 sed -n '/git push/p' README.md`},
+		{name: "python code behind uv run", command: `uv run python -c 'import git'`},
+		{name: "python code behind timeout", command: `timeout 30 python3 -c 'import git'`},
+		{name: "shell script file behind timeout", command: "timeout 60 bash x.sh"},
+		{name: "shell script file behind sudo", command: "sudo bash x.sh"},
+		{name: "shell script file behind uv run", command: "uv run bash x.sh"},
+		{name: "shell script file behind docker run", command: "docker run img bash x.sh"},
+		{name: "shell script file behind xargs", command: "xargs -n1 bash x.sh"},
+		{name: "shell script file with a shell option before it", command: "timeout 60 bash -x x.sh"},
+		{name: "shell script file named by find -exec", command: `find . -name '*.sh' -exec bash {} \;`},
+		{name: "shell script file behind ssh", command: "ssh host bash x.sh"},
+		{name: "shell script file named by a variable", command: `timeout 60 bash "$f"`},
+	})
+}
+
+func TestJudge_WhenAShellScriptHandedToAnotherCommandRunsGit_Refuses(t *testing.T) {
+	t.Parallel()
+
+	caller := guard.Caller{Home: home, Dir: outsideDir(t)}
+	checkJudged(t, caller, []judged{
+		{name: "shell string behind timeout", command: "timeout 30 sh -c 'git push'", want: guard.Refuse},
+		{name: "shell string behind xargs", command: "xargs -I{} sh -c 'git push {}'", want: guard.Refuse},
+		{name: "interpreter arguments ssh hands to a shell", command: "ssh host sed 's/x/; git push/' f", want: guard.Refuse},
+	})
+}
+
+func TestJudge_WhenACommandHandsAnotherCommandAShellWithNoScriptFile_Refuses(t *testing.T) {
+	t.Parallel()
+
+	caller := guard.Caller{Home: home, Dir: outsideDir(t)}
+	checkJudged(t, caller, []judged{
+		{name: "shell reading stdin behind xargs", command: "xargs sh", want: guard.Refuse},
+		{name: "shell told to read stdin behind xargs", command: "xargs bash -s", wantNamed: "bash", want: guard.Refuse},
+		{name: "shell reading stdin behind timeout", command: "timeout 60 bash", wantNamed: "bash", want: guard.Refuse},
+		{name: "shell reading /dev/stdin behind timeout", command: "timeout 60 bash /dev/stdin", wantNamed: "bash", want: guard.Refuse},
+		{name: "shell reading a process substitution behind timeout", command: "timeout 60 bash <(cat x)", wantNamed: "bash", want: guard.Refuse},
+	})
 }

@@ -122,6 +122,8 @@
     "riscv",
     "semver",
     "setopt",
+    "shellcheck",
+    "shfmt",
     "shortlog",
     "Shortnames",
     "sigaction",
