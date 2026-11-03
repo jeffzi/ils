@@ -491,6 +491,9 @@ func TestJudge_RefusesANonLiteralArgumentAFlagCouldHideIn(t *testing.T) {
 		{name: "config", command: `git config "$k" x`, wantNamed: "git config"},
 		{name: "long option holding a variable", command: `git restore "--st$x" f`, wantNamed: "git restore"},
 		{name: "-c value", command: `git -c "$v" commit -m msg`, wantNamed: "git commit"},
+		{name: "-c value with no subcommand", command: `git -c "$k"`, wantNamed: "git:"},
+		{name: "--config-env value", command: `git --config-env "$k" status`, wantNamed: "git status"},
+		{name: "--config-env value with no subcommand", command: `git --config-env "$k"`, wantNamed: "git:"},
 	})
 }
 

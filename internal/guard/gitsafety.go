@@ -354,7 +354,11 @@ func refuseSkippedChecks(_ context.Context, _ Caller, inv Invocation) (Verdict, 
 
 	for _, o := range inv.Git.Options {
 		if (o.Name == "-c" || o.Name == "--config-env") && !o.Value.Literal {
-			reason := fmt.Sprintf("git %s: the value of %s cannot be read, and it may set %s", inv.Git.Subcommand.Text, o.Name, hooksPathKey)
+			command := "git"
+			if inv.Git.Subcommand.Text != "" {
+				command += " " + inv.Git.Subcommand.Text
+			}
+			reason := fmt.Sprintf("%s: the value of %s cannot be read, and it may set %s", command, o.Name, hooksPathKey)
 
 			return refuse(reason), nil
 		}
