@@ -21,6 +21,8 @@ func TestParse_WhenADataConsumerNamesATool_ReportsNoToolInvocationOrMark(t *test
 		{name: "command -v lookup", command: "command -v git"},
 		{name: "consumer behind a wrapper", command: "nice echo git push"},
 		{name: "go words that run nothing beside a non-literal package", command: `go build "$pkg" git push`},
+		{name: "search pattern that parses as a script", command: "rg 'git push' docs"},
+		{name: "package manager naming a tool", command: "brew install git"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -86,8 +88,9 @@ func TestParse_WhenAToolIsHandedToAnotherCommand_NamesItOnTheMark(t *testing.T) 
 		{name: "path to a tool", command: "find . -exec /bin/sh -c x \\;", want: "/bin/sh"},
 		{name: "tool in a string", command: "su -c 'cd /repo && gh pr merge 3'", want: "gh"},
 		{name: "tool handed on inside a string", command: "ssh host 'sudo ils merge'", want: "ils"},
-		{name: "tool in a string that does not parse, behind a data consumer word", command: "ssh host echo 'fi; git push'", want: "git"},
-		{name: "tool path in a handed string that does not parse", command: `python3 -c "os.system('/usr/bin/git push')"`, want: "/usr/bin/git"},
+		{name: "bare tool word among an interpreter's arguments", command: "python3 tool.py git push", want: "git"},
+		{name: "code for a python3 word with no minor", command: "python3. -c 'import git'", want: "git"},
+		{name: "code for a python3 word whose minor is not a number", command: "python3.x -c 'import git'", want: "git"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -114,6 +117,10 @@ func TestParse_WhenNoArgumentIsAToolWord_MarksNothing(t *testing.T) {
 		{name: "ils command that changes nothing in a string", command: "ssh host 'cd repo && ils status'"},
 		{name: "ils command that only reads a command, behind another command", command: "timeout 60 ils parse --cwd . -- 'echo hi'"},
 		{name: "go run with no tool word", command: "go run ./cmd/tool --verbose"},
+		{name: "sed script that parses as a shell script", command: "sed -n '/git push/p' README.md"},
+		{name: "code that parses as a shell script, for a versioned python", command: "python3.13 -c 'import git'"},
+		{name: "code that does not parse, for an interpreter", command: `python3 -c 'import os; os.system("git push")'`},
+		{name: "code that does not parse, for a command the guard does not know", command: `php -r 'system("git push");'`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

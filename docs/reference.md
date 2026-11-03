@@ -399,8 +399,11 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   one of its commands is such a word or hands one over in turn: `su -c 'cd /repo && git push'`,
   `ssh host 'sudo git push'`, and `su -c "git push $b"`. In the last one the guard reads `$b` as an
   ordinary word, so the string still holds `git push`. A string that does not parse as a script
-  is refused when it holds a `git`, `gh`, or `ils` word (`python3 -c "import os;
-  os.system('git push')"`), and is data otherwise;
+  is data, whatever command it goes to (`uv run python -c 'import subprocess;
+  subprocess.run(["git", "log"])'`). The code given to `sed`, `awk`, `perl`, `python`, `python3`
+  (and `python3.<minor>`), `node`, or `ruby` is never read as a script, whether or not it parses
+  (`sed -n '/git push/p' README.md`); a bare `git`, `gh`, `ils`, or shell word among their
+  arguments still counts as handed over (`python3 tool.py git push`);
 - a `bash -c`, `sh -c`, `zsh -c`, `dash -c`, or `eval` string that is not a literal or nests more
   than three deep;
 - a shell that runs what the command does not hold (`cat x | bash`, `bash -s`, `bash ./x.sh`,

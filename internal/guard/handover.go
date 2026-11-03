@@ -5,7 +5,6 @@ package guard
 import (
 	"slices"
 	"strings"
-	"unicode"
 
 	"mvdan.cc/sh/v3/syntax"
 
@@ -29,11 +28,11 @@ func dataConsumers() map[string]bool {
 		"file", "stat", "du", "realpath", "readlink", "dirname", "basename",
 		// Readers and filters.
 		"echo", "printf", "cat", "head", "tail", "less", "grep", "egrep", "fgrep", "ls", "wc",
-		"sort", "uniq", "cut", "tr", "jq", "diff",
+		"sort", "uniq", "cut", "tr", "jq", "diff", "rg",
 		// Lookups.
 		"which", "type", "whence", "where",
 		// Toolchains and package managers.
-		"go", "apt", "apt-get", "dnf", "yum", "pacman", "apk", "port",
+		"go", "brew", "apt", "apt-get", "dnf", "yum", "pacman", "apk", "port",
 	)
 }
 
@@ -92,31 +91,28 @@ func marksOf(call *syntax.CallExpr, stmt *syntax.Stmt, inv Invocation, home stri
 	return marks
 }
 
-// handedByCall returns the tool that the command call, whose words after any wrapper are words, may
-// run from its arguments, as handedTool reads them, and reports whether there is one.
-func handedByCall(call *syntax.CallExpr, words []Word, dir, home string) (string, bool) {
-	args := call.Args[len(call.Args)-len(words):]
-
-	return handedTool(args[1:], words[1:], dir, home)
-}
-
-// handedTool returns the tool that a command the guard does not know may run from its arguments,
-// raw as the parser read them and words after quote removal, and reports whether there is one.
+// handedByCall returns the tool that the command call, a command the guard does not know whose
+// words after any wrapper are words, may run from its arguments, and reports whether there is one.
 // An argument hands over a tool when it is a tool word itself, or when it reads as a shell script
 // one of whose commands is a tool word or hands one over in turn: `su -c 'cd /repo && git push'`,
-// `ssh host 'sudo git push'`. An argument that does not parse hands over the git, gh, or ils word
-// it holds, even when a data consumer word stands ahead of it: the guard does not know how the
-// command runs its words, and `ssh host echo 'fi; git push'` runs them as one shell line. An ils
-// word followed by an ils command that changes nothing hands over nothing. dir is where a relative
-// path is read against, and a `~` expands to home.
-func handedTool(args []*syntax.Word, words []Word, dir, home string) (string, bool) {
-	for i, w := range words {
+// `ssh host 'sudo git push'`. The arguments of an interpreter are code in its own language, never
+// read as a shell script, so only a tool word among them hands one over. An ils word followed by
+// an ils command that changes nothing hands over nothing. dir is where a relative path is read
+// against, and a `~` expands to home.
+func handedByCall(call *syntax.CallExpr, words []Word, dir, home string) (string, bool) {
+	args := call.Args[len(call.Args)-len(words)+1:]
+	readsScripts := !isInterpreter(words[0])
+	for i, w := range words[1:] {
 		if isToolWord(w, dir) {
-			if toolOf(w) == ILS && changesNothing(words[i+1:]) {
+			if toolOf(w) == ILS && changesNothing(words[i+2:]) {
 				continue
 			}
 
 			return w.Text, true
+		}
+
+		if !readsScripts {
+			continue
 		}
 
 		if name, ok := scriptTool(scriptText(args[i], home), home); ok {
@@ -127,18 +123,24 @@ func handedTool(args []*syntax.Word, words []Word, dir, home string) (string, bo
 	return "", false
 }
 
-// toolWordIn returns the first git, gh, or ils word in text, split at each character a path does
-// not hold, and reports whether there is one.
-func toolWordIn(text string) (string, bool) {
-	for field := range strings.FieldsFuncSeq(text, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && !strings.ContainsRune("_-./", r)
-	}) {
-		if toolOf(Word{Text: field, Literal: true}) != NoTool {
-			return field, true
-		}
+// interpreters are the command words that run code in a language other than shell from their
+// arguments.
+func interpreters() map[string]bool {
+	return setOf("sed", "awk", "perl", "python", "python3", "node", "ruby")
+}
+
+// isInterpreter reports whether command is the command word of an interpreter, `python3.<minor>`
+// included.
+func isInterpreter(command Word) bool {
+	if !command.Literal {
+		return false
 	}
 
-	return "", false
+	if minor, ok := strings.CutPrefix(command.Text, "python3."); ok {
+		return minor != "" && strings.Trim(minor, "0123456789") == ""
+	}
+
+	return interpreters()[command.Text]
 }
 
 // expansionWord stands for an expansion in the text of an argument read as a script: one plain word
@@ -188,10 +190,9 @@ func stringRunners() []string {
 }
 
 // scriptTool reads text as a shell script and returns the tool one of its commands is, or hands
-// over as handedTool reads it, and reports whether there is one. Text with no blank and no shell
-// operator is one word, which handedTool has already judged. Text that does not parse is no
-// script, but the command it goes to may run it in a language of its own (`python3 -c`), so it
-// hands over the git, gh, or ils word it holds. A command word that is not a literal is passed
+// over as handedByCall reads it, and reports whether there is one. Text with no blank and no shell
+// operator is one word, which handedByCall has already judged. Text that does not parse is no
+// script: it is data, whatever command it goes to. A command word that is not a literal is passed
 // over: the guard cannot tell what a variable handed to another command holds. A relative path in
 // the script is read as unknown, since the command that runs it may run it anywhere.
 func scriptTool(text, home string) (string, bool) {
@@ -201,7 +202,7 @@ func scriptTool(text, home string) (string, bool) {
 
 	file, err := read(text)
 	if err != nil {
-		return toolWordIn(text)
+		return "", false
 	}
 
 	var name string
