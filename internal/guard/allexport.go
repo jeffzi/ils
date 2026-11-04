@@ -29,7 +29,7 @@ func allexportAfterIn(shell string, args []Word, on bool) bool {
 			return true
 		}
 
-		if len(arg.Text) < 2 || arg.Text == "--" || !strings.ContainsAny(arg.Text[:1], "-+") {
+		if len(arg.Text) < 2 || arg.Text == "--" || !startsWithSign(arg.Text) {
 			return r.on
 		}
 
@@ -115,7 +115,7 @@ func allexportAfterZshOptions(enable bool, args []Word, on bool) bool {
 			return true
 		}
 
-		if arg.Text == "" || !strings.ContainsAny(arg.Text[:1], "-+") {
+		if !startsWithSign(arg.Text) {
 			break
 		}
 
@@ -201,4 +201,11 @@ func zshOptionSetting(name Word, enable, on bool) bool {
 	default:
 		return on
 	}
+}
+
+// zshOptionName returns name, the name of an option of zsh, the way zsh compares it: case and
+// underscores ignored. Dashes are kept: the caller first turns the dashes of a `--name` argument
+// into underscores, as zsh reads them there.
+func zshOptionName(name string) string {
+	return strings.ToLower(strings.ReplaceAll(name, "_", ""))
 }

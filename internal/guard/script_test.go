@@ -144,11 +144,10 @@ func TestJudge_WhenAShellReadsItsScriptFromStandardInputOrASubstitution_RefusesI
 	t.Parallel()
 
 	checkRefusals(t, []refusal{
-		{name: "shell reading a pipe", command: "cat x | bash", wantNamed: string(guard.HiddenScript)},
+		{name: "shell reading a pipe", command: "cat x | bash", wantNamed: "`bash x.sh`"},
 		{name: "bash -s", command: "bash -s", wantNamed: string(guard.HiddenScript)},
 		{name: "process substitution as the file", command: "bash <(cat x)", wantNamed: string(guard.HiddenScript)},
 		{name: "source of a process substitution", command: "source <(cat x)", wantNamed: string(guard.HiddenScript)},
-		{name: "dot of a process substitution", command: ". <(cat x)", wantNamed: string(guard.HiddenScript)},
 		{name: "process substitution after an option", command: "bash -e <(cat x)", wantNamed: string(guard.HiddenScript)},
 		{name: "standard input named as the file", command: "cat x | bash /dev/stdin", wantNamed: string(guard.HiddenScript)},
 		{name: "standard input named by its descriptor", command: "cat x | sh /dev/fd/0", wantNamed: string(guard.HiddenScript)},

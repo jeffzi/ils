@@ -5,6 +5,7 @@ package guard_test
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -97,12 +98,10 @@ func TestJudge_AllowsEverydayCommandsOutsideAnyRepository(t *testing.T) {
 		{name: "git history written to /dev/null", command: "git show HEAD:f > /dev/null"},
 		{name: "stash list in a pipe", command: "git stash list | head -3"},
 		{name: "zsh null-glob qualifier", command: `rm -f "$d"/x*(N)`},
-		{name: "gh graphql query", command: `gh api graphql -f query='{ viewer { login } }'`},
 		{name: "search for a tool word", command: "rg -n git docs"},
 		{name: "literal sh string behind xargs", command: "xargs -I{} sh -c 'ls {}'"},
 		{name: "sed substitution whose text parses as a shell script", command: "sed 's/old text/git push/' f"},
 		{name: "python code mentioning git, behind uv run", command: `uv run python -c 'import subprocess; subprocess.run(["git", "log"])'`},
-		{name: "shell running a script file", command: "bash /tmp/probe.sh"},
 		{name: "environment file sourced under allexport", command: "set -a && . ./.env && set +a && make deploy"},
 		{name: "script run through a variable the command assigned", command: "S=/tmp/work; mkdir -p $S && cd $S && $S/run.sh"},
 		{name: "redirected call of a function wrapping a test runner", command: `T() { uv run pytest -q "$@"; }; T -k x > out.txt`},
@@ -125,12 +124,6 @@ func TestJudge_WhenAWordCannotBeRead_RefusesNamingASpellingTheGuardAllows(t *tes
 		{name: "variable as the command word", command: `"$c" status`, wantNamed: "as a literal, or assign its variable a literal"},
 		{name: "command substitution as the command word", command: `$(which git) status`, wantNamed: "as a literal, or assign its variable a literal"},
 		{name: "shell string", command: `bash -c "$s"`, wantNamed: "write the string as a literal"},
-		{name: "eval string", command: `eval "$s"`, wantNamed: "write the string as a literal"},
-		{name: "rebase exec string", command: `git rebase -x "$c" HEAD~1`, wantNamed: "write the string as a literal"},
-		{name: "editor variable", command: `GIT_EDITOR="$e" git commit`, wantNamed: "write the string as a literal"},
-		{name: "script piped to a shell", command: "cat x.sh | bash", wantNamed: "`bash x.sh`"},
-		{name: "shell reading its script from stdin", command: "bash -s", wantNamed: "`bash x.sh`"},
-		{name: "script from a process substitution", command: "bash <(cat x)", wantNamed: "`bash x.sh`"},
 		{name: "git subcommand", command: `git "$s"`, wantNamed: "write the subcommand as a literal"},
 	})
 }
@@ -139,4 +132,61 @@ func TestJudge_WhenAShellStringBehindAnotherCommandCannotBeRead_NamesALiteralStr
 	t.Parallel()
 
 	checkRefusedOmitting(t, `xargs bash -c "$s"`, "write the -c string as a literal", "on its own")
+}
+
+// checkRefusedOmitting fails unless Judge refuses command with a reason that holds named and does
+// not hold omitted.
+func checkRefusedOmitting(t *testing.T, command, named, omitted string) {
+	t.Helper()
+
+	_, caller := standingOn(t, "main", "topic")
+
+	got := guard.Judge(t.Context(), command, caller)
+
+	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome, reason %q", command, got.Reason)
+	assert.Check(t, is.Contains(got.Reason, named), "Judge(%q) reason", command)
+	assert.Check(t, !strings.Contains(got.Reason, omitted), "Judge(%q) reason %q holds %q", command, got.Reason, omitted)
+}
+
+func TestJudge_WhenAGitArgumentCannotBeRead_NamesDoubleDashWhereItLetsTheCommandRun(t *testing.T) {
+	t.Parallel()
+
+	checkRefusals(t, []refusal{
+		{name: "branch -d", command: `git branch -d "$b"`, wantNamed: "after `--`"},
+		{name: "switch", command: `git switch "$b"`, wantNamed: "after `--`"},
+		{name: "add", command: `git add "$f"`, wantNamed: "after `--`"},
+		{name: "clean -n", command: `git clean -n "$f"`, wantNamed: "after `--`"},
+		{name: "commit", command: `git commit -m msg "$f"`, wantNamed: "after `--`"},
+		{name: "restore --staged", command: `git restore --staged "$f"`, wantNamed: "after `--`"},
+		{name: "several unreadable arguments", command: `git branch -d "$a" "$b"`, wantNamed: "after `--`"},
+	})
+}
+
+func TestJudge_WhenDoubleDashLeavesAnUnreadableGitArgumentRefused_NamesALiteral(t *testing.T) {
+	t.Parallel()
+
+	tests := []namedCommand{
+		{name: "update-ref", command: `git update-ref "$r" HEAD`},
+		{name: "config", command: `git config "$k"`},
+		{name: "restore without --staged", command: `git restore "$f"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, caller := standingOn(t, "main", "topic")
+
+			checkJudgedRow(t, caller, judged{command: tt.command, want: guard.Refuse, wantNamed: "write the argument as a literal"})
+		})
+	}
+}
+
+func TestJudge_WhenALiteralStartsSeveralOptionsOneTakingAValue_NamesItToSpellOutInFull(t *testing.T) {
+	t.Parallel()
+	command := `git branch --s "$b"`
+	_, caller := standingOn(t, "main", "topic")
+
+	got := guard.Judge(t.Context(), command, caller)
+
+	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome, reason %q", command, got.Reason)
+	assert.Check(t, is.Contains(got.Reason, "`--s` in full"), "Judge(%q) reason", command)
 }

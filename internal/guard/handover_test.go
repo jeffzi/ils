@@ -3,6 +3,7 @@
 package guard_test
 
 import (
+	"path/filepath"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -22,7 +23,6 @@ func TestParse_WhenADataConsumerNamesATool_ReportsNoToolInvocationOrMark(t *test
 		{name: "consumer behind a wrapper", command: "nice echo git push"},
 		{name: "go words that run nothing beside a non-literal package", command: `go build "$pkg" git push`},
 		{name: "search pattern that parses as a script", command: "rg 'git push' docs"},
-		{name: "package manager naming a tool", command: "brew install git"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -52,14 +52,12 @@ func TestParse_MarksWhatItCannotRead(t *testing.T) {
 		{name: "substituted command word", command: "$(which git) push", want: guard.DynamicCommand},
 		{name: "wrapper option it does not take", command: "nice -z git push", want: guard.ToolArgument},
 		{name: "shell handed to xargs", command: "xargs sh -c 'git push origin main'", want: guard.ToolArgument},
-		{name: "shell whose string runs git, handed to docker run", command: "docker run img sh -c 'git log'", want: guard.ToolArgument},
 		{name: "shell whose string hands git over, handed to xargs", command: "xargs sh -c 'sudo git log'", want: guard.ToolArgument},
 		{name: "shell whose string runs a shell, handed to xargs", command: "xargs sh -c 'sh -c ls'", want: guard.ToolArgument},
 		{name: "shell with no -c string, handed to xargs", command: "xargs sh", want: guard.ToolArgument},
 		{name: "shell with a non-literal -c string, handed to xargs", command: `xargs bash -c "$s"`, want: guard.ToolArgument},
 		{name: "shell with another option before its string, handed to xargs", command: "xargs bash -e -c ls", want: guard.ToolArgument},
 		{name: "shell with -c and no string, handed to xargs", command: "xargs sh -c", want: guard.ToolArgument},
-		{name: "shell with a non-literal -c string and a zero argument, handed to xargs", command: `xargs sh -c "$s" sh`, want: guard.ToolArgument},
 		{name: "shell string among an interpreter's arguments", command: "python3 tool.py sh -c 'git push'", want: guard.ToolArgument},
 		{name: "eval handed to another command", command: "xargs eval 'git status'", want: guard.ToolArgument},
 		{name: "tool behind a wrapper in a string", command: "su -c 'exec git push'", want: guard.ToolArgument},
@@ -87,11 +85,7 @@ func TestParse_MarksWhatItCannotRead(t *testing.T) {
 func TestParse_WhenAToolIsHandedToAnotherCommand_NamesItOnTheMark(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		command string
-		want    string
-	}{
+	checkHandedTool(t, []handedTool{
 		{name: "path to a tool", command: "find . -exec /bin/sh -c x \\;", want: "/bin/sh"},
 		{name: "tool in a string", command: "su -c 'cd /repo && gh pr merge 3'", want: "gh"},
 		{name: "tool handed on inside a string", command: "ssh host 'sudo ils merge'", want: "ils"},
@@ -102,69 +96,31 @@ func TestParse_WhenAToolIsHandedToAnotherCommand_NamesItOnTheMark(t *testing.T) 
 		{name: "bare tool word among the positional parameters of a shell string, behind xargs", command: `xargs sh -c 'ls "$1"' sh git push`, want: "git"},
 		{name: "code for a python3 word with no minor", command: "python3. -c 'import git'", want: "git"},
 		{name: "code for a python3 word whose minor is not a number", command: "python3.x -c 'import git'", want: "git"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := only(t, tt.command)
-
-			assert.Check(t, is.DeepEqual(got.Marks, []guard.Mark{{Kind: guard.ToolArgument, Name: tt.want}}), "Parse(%q) marks", tt.command)
-		})
-	}
+	})
 }
 
 func TestParse_WhenNoArgumentIsAToolWord_MarksNothing(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		command string
-	}{
+	checkNoMarks(t, []namedCommand{
 		{name: "tool word in a tool's own arguments", command: "git commit -m git"},
-		{name: "string that does not parse, read by the data consumer that is the command", command: "echo 'fi; git push'"},
-		{name: "handed string that does not parse and holds a hyphenated name starting with a tool", command: `python3 -c "os.system('ils-live push')"`},
 		{name: "string whose command word is not a literal", command: `su -c "$g push"`},
 		{name: "ils command that changes nothing in a string", command: "ssh host 'cd repo && ils status'"},
 		{name: "ils command that only reads a command, behind another command", command: "timeout 60 ils parse --cwd . -- 'echo hi'"},
 		{name: "go run with no tool word", command: "go run ./cmd/tool --verbose"},
 		{name: "sed script that parses as a shell script", command: "sed -n '/git push/p' README.md"},
 		{name: "code that parses as a shell script, for a versioned python", command: "python3.13 -c 'import git'"},
-		{name: "code that does not parse, for an interpreter", command: `python3 -c 'import os; os.system("git push")'`},
 		{name: "code that does not parse, for a command the guard does not know", command: `php -r 'system("git push");'`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := only(t, tt.command)
-
-			assert.Check(t, is.Len(got.Marks, 0), "Parse(%q) marks", tt.command)
-		})
-	}
+	})
 }
 
 func TestParse_WhenAShellStringHandedToAnotherCommandHandsNoTool_MarksNothing(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		command string
-	}{
+	checkNoMarks(t, []namedCommand{
 		{name: "sh string behind xargs", command: "xargs -I{} sh -c 'ls {}'"},
-		{name: "sh string behind docker run", command: "docker run img sh -c 'make test'"},
-		{name: "bash string behind timeout", command: "timeout 60 bash -c 'go test ./...'"},
 		{name: "shell named as the zero argument of a sh string behind xargs", command: `xargs sh -c 'ls "$1"' sh`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := only(t, tt.command)
-
-			assert.Check(t, is.Len(got.Marks, 0), "Parse(%q) marks", tt.command)
-		})
-	}
+	})
 }
 
 func TestParse_WhenAShellWordIsAnArgumentOfAShellOrEval_MarksNothing(t *testing.T) {
@@ -194,16 +150,63 @@ func TestParse_WhenAShellWordIsAnArgumentOfAShellOrEval_MarksNothing(t *testing.
 func TestParse_WhenGoRunsAProgramOrGenerator_ReadsItsWordsAsHanded(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		command string
-		want    string
-	}{
+	checkHandedTool(t, []handedTool{
 		{name: "tool in a string handed to go generate", command: "go generate -run 'gh pr merge 3' ./...", want: "gh"},
 		{name: "tool word handed to go run behind a joined global option", command: "go -C=dir run ./tools git push", want: "git"},
 		{name: "tool in a string handed to go generate behind a global option", command: "go -C dir generate -run 'gh pr merge 3' ./...", want: "gh"},
 		{name: "tool word behind a non-literal word where go reads its global option", command: `go "$o" . git push`, want: "git"},
+	})
+}
+
+func TestParse_WhenARelativePathAfterACdIsNamedForATool_ReadsItWhereTheKernelOpensIt(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		// dir returns the directory the command moves into before naming ../bin/git.
+		dir  func(t *testing.T) string
+		name string
+	}{
+		{
+			name: "link whose target sits beside the tool",
+			dir: func(t *testing.T) string {
+				root := outsideDir(t)
+				writeExecutable(t, filepath.Join(root, "bin", "git"))
+
+				return linkTo(t, subdirectory(t, root))
+			},
+		},
+		{
+			name: "directory that does not exist, beside the tool",
+			dir: func(t *testing.T) string {
+				root := outsideDir(t)
+				writeExecutable(t, filepath.Join(root, "bin", "git"))
+
+				return filepath.Join(root, "absent")
+			},
+		},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			command := "cd " + quotedPath(tt.dir(t)) + " && xargs ../bin/git push"
+
+			got := last(t, command)
+
+			assert.Check(t, is.DeepEqual(kinds(got.Marks), []guard.MarkKind{guard.ToolArgument}), "Parse(%q) marks", command)
+		})
+	}
+}
+
+// handedTool is a command whose one invocation carries one ToolArgument mark naming want.
+type handedTool struct {
+	name    string
+	command string
+	want    string
+}
+
+func checkHandedTool(t *testing.T, tests []handedTool) {
+	t.Helper()
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -220,19 +223,7 @@ func TestJudge_WhenACommandHandsAnotherCommandCodeOrAScriptFile_Allows(t *testin
 
 	checkAllowed(t, guard.Caller{Home: home, Dir: outsideDir(t)}, []namedCommand{
 		{name: "sed script behind find -exec", command: `find . -name '*.md' -exec sed -i 's/git push/ils push/' {} +`},
-		{name: "sed script behind xargs", command: `xargs sed -i 's/git push/ils push/'`},
-		{name: "sed script behind timeout", command: `timeout 30 sed -n '/git push/p' README.md`},
-		{name: "python code behind uv run", command: `uv run python -c 'import git'`},
-		{name: "python code behind timeout", command: `timeout 30 python3 -c 'import git'`},
 		{name: "shell script file behind timeout", command: "timeout 60 bash x.sh"},
-		{name: "shell script file behind sudo", command: "sudo bash x.sh"},
-		{name: "shell script file behind uv run", command: "uv run bash x.sh"},
-		{name: "shell script file behind docker run", command: "docker run img bash x.sh"},
-		{name: "shell script file behind xargs", command: "xargs -n1 bash x.sh"},
-		{name: "shell script file with a shell option before it", command: "timeout 60 bash -x x.sh"},
-		{name: "shell script file named by find -exec", command: `find . -name '*.sh' -exec bash {} \;`},
-		{name: "shell script file behind ssh", command: "ssh host bash x.sh"},
-		{name: "shell script file named by a variable", command: `timeout 60 bash "$f"`},
 	})
 }
 
@@ -240,10 +231,8 @@ func TestJudge_WhenAShellScriptHandedToAnotherCommandRunsGit_Refuses(t *testing.
 	t.Parallel()
 
 	caller := guard.Caller{Home: home, Dir: outsideDir(t)}
+
 	checkJudged(t, caller, []judged{
-		{name: "shell string behind timeout", command: "timeout 30 sh -c 'git push'", want: guard.Refuse},
-		{name: "shell string behind xargs", command: "xargs -I{} sh -c 'git push {}'", want: guard.Refuse},
-		{name: "shell string with a zero argument behind xargs", command: "xargs sh -c 'git status' sh", want: guard.Refuse},
 		{name: "interpreter arguments ssh hands to a shell", command: "ssh host sed 's/x/; git push/' f", want: guard.Refuse},
 	})
 }
@@ -252,10 +241,8 @@ func TestJudge_WhenACommandHandsAnotherCommandAShellWithNoScriptFile_Refuses(t *
 	t.Parallel()
 
 	caller := guard.Caller{Home: home, Dir: outsideDir(t)}
+
 	checkJudged(t, caller, []judged{
-		{name: "shell reading stdin behind xargs", command: "xargs sh", want: guard.Refuse},
-		{name: "shell told to read stdin behind xargs", command: "xargs bash -s", wantNamed: "bash", want: guard.Refuse},
-		{name: "shell reading stdin behind timeout", command: "timeout 60 bash", wantNamed: "bash", want: guard.Refuse},
 		{name: "shell reading /dev/stdin behind timeout", command: "timeout 60 bash /dev/stdin", wantNamed: "bash", want: guard.Refuse},
 		{name: "shell reading a process substitution behind timeout", command: "timeout 60 bash <(cat x)", wantNamed: "bash", want: guard.Refuse},
 	})

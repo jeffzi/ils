@@ -72,7 +72,7 @@ func (t trunks) refuseOnTrunk(ctx context.Context, caller Caller, inv Invocation
 
 	if named && !rebased.Literal {
 		reason := fmt.Sprintf("git %s: the guard cannot read the branch it switches to, so it cannot tell "+
-			"which branch the rebase lands on", sub)
+			"which branch the rebase lands on; write the branch as a literal", sub)
 
 		return refuse(reason), nil
 	}
@@ -118,7 +118,7 @@ func onTrunk(sub string, args []Word, trunk string) Verdict {
 		// refspec names the trunk with or without a leading `+` and its full ref.
 		named := wordTexts(options.positional)
 		if len(named) == 2 {
-			named[1] = strings.TrimPrefix(strings.TrimPrefix(named[1], "+"), "refs/heads/")
+			named[1] = strings.TrimPrefix(strings.TrimPrefix(named[1], "+"), branchRefPrefix)
 		}
 
 		pullsTrunk := slices.Equal(named, []string{"origin"}) || slices.Equal(named, []string{"origin", trunk})

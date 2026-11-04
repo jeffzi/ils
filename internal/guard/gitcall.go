@@ -19,7 +19,6 @@ import (
 // GitCall is how git reads the words of a git invocation: its global options, then the
 // subcommand and the arguments after it.
 type GitCall struct {
-	// Options are the global options before the subcommand, in order.
 	Options []GitOption
 	// Args are the words after the subcommand, the words of each alias it expanded first.
 	Args []Word
@@ -336,14 +335,14 @@ func expandAliases(ctx context.Context, repo git.Repo, options []string, inv *In
 	options = append(slices.Clone(options), config...)
 	sub, args := inv.Git.Subcommand, inv.Git.Args
 	for depth := 0; ; depth++ {
-		command := inTable(commands, sub)
+		isCommand := inTable(commands, sub)
 		if inTable(builtins, sub) {
 			inv.Git.Subcommand, inv.Git.Args = sub, args
 
 			return Mark{}, nil
 		}
 
-		if mark := unreadAlias(sub, command, depth, access); mark != (Mark{}) {
+		if mark := unreadAlias(sub, isCommand, depth, access); mark != (Mark{}) {
 			return mark, nil
 		}
 
@@ -353,13 +352,13 @@ func expandAliases(ctx context.Context, repo git.Repo, options []string, inv *In
 		}
 
 		switch {
-		case !set && command:
+		case !set && isCommand:
 			inv.Git.Subcommand, inv.Git.Args = sub, args
 
 			return Mark{}, nil
 		case !set:
 			return Mark{Kind: UnknownSubcommand, Name: sub.Text}, nil
-		case command:
+		case isCommand:
 			return Mark{Kind: OlderCommandAlias, Name: sub.Text}, nil
 		}
 
@@ -403,11 +402,12 @@ func aliasConfig(inv Invocation) ([]string, aliasAccess) {
 }
 
 // unreadAlias returns the mark that stops the expansion of the git subcommand word sub at depth
-// before its alias is read, and the zero Mark when the alias is to be read. command reports whether
+// before its alias is read, and the zero Mark when the alias is to be read. isCommand reports whether
 // sub is one of git's commands, which an alias can replace only on a git that lacks it.
-func unreadAlias(sub Word, command bool, depth int, access aliasAccess) Mark {
+func unreadAlias(sub Word, isCommand bool, depth int, access aliasAccess) Mark {
+	targetHidesAlias := access == aliasesTargetUnknown && !isCommand
 	switch {
-	case !sub.Literal || access == aliasesTargetUnknown && !command:
+	case !sub.Literal || targetHidesAlias:
 		return Mark{Kind: UnknownSubcommand, Name: sub.Text}
 	case depth == maxAliasDepth:
 		return Mark{Kind: DeepAlias, Name: sub.Text}

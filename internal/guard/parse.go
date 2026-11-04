@@ -6,10 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
-	"os"
 	"path"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -492,6 +489,53 @@ func (w *walker) add(stmt *syntax.Stmt, call *syntax.CallExpr, sc *scope) {
 	w.call(inv, sc)
 }
 
+// marksOf returns what Parse cannot read in the invocation inv of call, apart from the string it
+// runs. ex reads its words.
+func marksOf(call *syntax.CallExpr, stmt *syntax.Stmt, inv Invocation, ex expander) []Mark {
+	words := slices.Clone(call.Args)
+	for _, a := range call.Assigns {
+		words = append(words, a.Value)
+	}
+
+	var marks []Mark
+	if hasExtGlob(words, stmt) {
+		marks = append(marks, Mark{Kind: ExtendedGlob})
+	}
+
+	if len(inv.Words) == 0 {
+		return marks
+	}
+
+	command := inv.Words[0]
+	switch {
+	case !command.Literal:
+		marks = append(marks, Mark{Kind: DynamicCommand})
+	case (command.Text == "source" || command.Text == ".") && len(inv.Words) > 1 &&
+		hidesScript(inv.Words[1], argsOf(call, inv.Words[1:])[0]):
+		marks = append(marks, Mark{Kind: HiddenScript})
+	case isShell(command):
+		// A script file the shell runs gets its arguments as `./x.sh` does.
+		if file, ok := scriptFileWords(inv.Words); ok {
+			if name, handed := handedByCall(call, file, inv.Dir, ex); handed {
+				marks = append(marks, Mark{Kind: ToolArgument, Name: name})
+			}
+		}
+	case inv.Tool != NoTool, isDataConsumer(inv.Words), command.Text == "eval":
+	default:
+		if name, ok := handedByCall(call, inv.Words, inv.Dir, ex); ok {
+			marks = append(marks, Mark{Kind: ToolArgument, Name: name})
+		}
+	}
+
+	return marks
+}
+
+// laterScope returns the scope of a string a variable set for later commands holds: any later
+// command may run it, from a directory and with git variables the guard cannot tell.
+func laterScope() scope {
+	return scope{env: unknownEnvironment()}
+}
+
 // pipedInto returns the words, behind any wrapper, of the simple command of the pipe stage that
 // reads the stdout of stmt, read with the variables of sc; none when no such stage follows it.
 func (w *walker) pipedInto(stmt *syntax.Stmt, sc *scope) []Word {
@@ -523,16 +567,19 @@ func (w *walker) aliasMarks(inv Invocation) []Mark {
 	var marks []Mark
 	for _, word := range inv.Words[1:] {
 		name, value, defines := strings.Cut(word.Text, "=")
-		kind := ToolAlias
-		if word.Literal {
-			if !defines {
-				continue
-			}
+		if !word.Literal {
+			marks = append(marks, Mark{Kind: ToolAlias, Name: name})
 
-			var marked bool
-			if kind, marked = w.aliasKind(value); !marked {
-				continue
-			}
+			continue
+		}
+
+		if !defines {
+			continue
+		}
+
+		kind, marked := w.aliasKind(value)
+		if !marked {
+			continue
 		}
 
 		marks = append(marks, Mark{Kind: kind, Name: name})
@@ -587,9 +634,7 @@ func assignedNames(stmt *syntax.Stmt, words []Word) []string {
 	if len(words) > 0 && words[0].Literal {
 		switch words[0].Text {
 		case "read", "mapfile", "readarray", "getopts":
-			for _, word := range words[1:] {
-				names = append(names, word.Text)
-			}
+			names = append(names, wordTexts(words[1:])...)
 		case "printf":
 			names = printfTarget(words[1:])
 		}
@@ -713,45 +758,6 @@ func hasExtGlob(words []*syntax.Word, stmt *syntax.Stmt) bool {
 // stays unread.
 func runsNoCode(glob *syntax.ExtGlob) bool {
 	return glob.Op == syntax.GlobZeroOrMore && !strings.ContainsAny(glob.Pattern.Value, "e+$`(")
-}
-
-// isToolWord reports whether w names git, gh, ils, a shell, `eval`, or `source`: the bare name, or
-// a path whose basename is the name and that is an executable regular file, a relative path read
-// against dir. A path whose stat fails for any reason other than its absence counts as one, and so
-// does a relative path when dir is empty, since the guard cannot rule it out.
-//
-// `.` is not counted: as an argument it names the current directory far more often (`find .`,
-// `docker build .`) than it runs a script.
-func isToolWord(w Word, dir string) bool {
-	program := programName(w)
-	runner := toolOf(w) != NoTool || isShell(w) || program == "eval" || program == "source"
-	if !w.Literal || !runner {
-		return false
-	}
-
-	if !strings.Contains(w.Text, "/") {
-		return true
-	}
-
-	name := w.Text
-	if !filepath.IsAbs(name) {
-		if dir == "" {
-			return true
-		}
-
-		name = filepath.Join(dir, name)
-	}
-
-	info, err := os.Stat(name)
-	if errors.Is(err, fs.ErrNotExist) {
-		return false
-	}
-
-	if err != nil {
-		return true
-	}
-
-	return info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
 }
 
 // programName returns the basename of the command word, with a leading zsh `=` lookup removed.

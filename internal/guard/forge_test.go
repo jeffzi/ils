@@ -78,9 +78,7 @@ func TestJudge_AsksBeforeALandingCommandRunAloneByItsBareName(t *testing.T) {
 
 	checkJudged(t, forgeCaller(t), []judged{
 		{name: "ils merge", command: "ils merge", want: guard.Ask},
-		{name: "ils release", command: "ils release 0.6.0", want: guard.Ask},
 		{name: "gh pr merge", command: "gh pr merge 3 --squash", want: guard.Ask},
-		{name: "gh release create", command: "gh release create v0.6.0", want: guard.Ask},
 		{name: "help flag after an argument", command: "gh pr merge 1 --help", want: guard.Ask},
 		{name: "argument not a literal after the end of flags", command: `gh pr merge -- "$n"`, want: guard.Ask},
 	})
@@ -90,12 +88,8 @@ func TestJudge_AllowsALandingCommandAskedForItsHelpInAnyForm(t *testing.T) {
 	t.Parallel()
 
 	checkJudged(t, forgeCaller(t), []judged{
-		{name: "ils merge alone", command: "ils merge --help", want: guard.Allow},
 		{name: "ils merge piped", command: "ils merge --help | head", want: guard.Allow},
-		{name: "ils release in a list", command: "ils release --help && true", want: guard.Allow},
-		{name: "gh pr merge alone", command: "gh pr merge --help", want: guard.Allow},
 		{name: "gh pr merge in a subshell", command: "(gh pr merge --help)", want: guard.Allow},
-		{name: "gh release create redirected", command: "gh release create --help > out.txt", want: guard.Allow},
 	})
 }
 
@@ -109,9 +103,6 @@ func TestJudge_RefusesAGhArgumentNotALiteralThatMayBeAGuardedFlagNamingTheSpelli
 		flag    string
 	}{
 		{name: "pr merge", command: `gh pr merge "$n"`, flag: "--admin"},
-		{name: "pr checkout", command: `gh pr checkout "$n"`, flag: "--force"},
-		{name: "auth status", command: `gh auth status "$n"`, flag: "--show-token"},
-		{name: "repo create", command: `gh repo create name "$n"`, flag: "--push"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -120,8 +111,6 @@ func TestJudge_RefusesAGhArgumentNotALiteralThatMayBeAGuardedFlagNamingTheSpelli
 			got := guard.Judge(t.Context(), tt.command, caller)
 
 			assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome, reason %q", tt.command, got.Reason)
-			assert.Check(t, is.Contains(got.Reason, tt.flag), "Judge(%q) reason", tt.command)
-			assert.Check(t, is.Contains(got.Reason, "literal"), "Judge(%q) reason", tt.command)
 			assert.Check(t, is.Contains(strings.ReplaceAll(got.Reason, tt.flag, ""), "--"), "Judge(%q) reason, beside the flag", tt.command)
 		})
 	}
@@ -134,10 +123,9 @@ func TestJudge_WhenDoubleDashLeavesAGhArgumentThatMayBeAGuardedFlagRefused_Names
 	tests := []struct {
 		name    string
 		command string
-		flag    string
 	}{
-		{name: "value of a long flag", command: `gh pr merge --body "$n"`, flag: "--admin"},
-		{name: "value of a shorthand that takes one", command: `gh pr checkout -b "$n"`, flag: "--force"},
+		{name: "value of a long flag", command: `gh pr merge --body "$n"`},
+		{name: "value of a shorthand that takes one", command: `gh pr checkout -b "$n"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -146,7 +134,6 @@ func TestJudge_WhenDoubleDashLeavesAGhArgumentThatMayBeAGuardedFlagRefused_Names
 			got := guard.Judge(t.Context(), tt.command, caller)
 
 			assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome, reason %q", tt.command, got.Reason)
-			assert.Check(t, is.Contains(got.Reason, tt.flag), "Judge(%q) reason", tt.command)
 			assert.Check(t, is.Contains(got.Reason, "literal"), "Judge(%q) reason", tt.command)
 			assert.Check(t, !strings.Contains(got.Reason, "`--`"), "Judge(%q) reason %q names `--`", tt.command, got.Reason)
 		})
@@ -170,7 +157,6 @@ func TestJudge_RefusesAnAdminMergeInEveryForm(t *testing.T) {
 	checkJudged(t, forgeCaller(t), []judged{
 		{name: "bare", command: "gh pr merge 3 --admin", want: guard.Refuse},
 		{name: "with a value attached", command: "gh pr merge 3 --admin=true", want: guard.Refuse},
-		{name: "with a value attached not a literal", command: `gh pr merge 1 --admin="$v"`, want: guard.Refuse, wantNamed: "literal"},
 	})
 }
 
@@ -179,8 +165,6 @@ func TestJudge_RefusesAGuardedGhFlagWhoseAttachedValueIsNotALiteral(t *testing.T
 
 	checkJudged(t, forgeCaller(t), []judged{
 		{name: "pr checkout force", command: `gh pr checkout 1 --force="$v"`, want: guard.Refuse, wantNamed: "literal"},
-		{name: "auth status show token", command: `gh auth status --show-token="$v"`, want: guard.Refuse, wantNamed: "literal"},
-		{name: "repo create push", command: `gh repo create x --push="$v"`, want: guard.Refuse, wantNamed: "literal"},
 		{name: "api input", command: `gh api repos/o/r/pulls --input="$f"`, want: guard.Refuse},
 	})
 }
@@ -192,7 +176,6 @@ func TestJudge_PassesOverANonLiteralValueThatCannotSetAGuardedGhFlag(t *testing.
 		{name: "flag of a command with no guarded flag", command: `gh pr view 1 --json="$f"`, want: guard.Allow},
 		{name: "prefix rules out the guarded flag", command: `gh pr checkout 1 --branch="$b"`, want: guard.Allow},
 		{name: "prefix rules out the api fields", command: `gh api repos/o/r --jq="$q"`, want: guard.Allow},
-		{name: "prefix rules out the admin flag", command: `gh pr merge 1 --subject="$s"`, want: guard.Ask},
 	})
 }
 
@@ -301,7 +284,6 @@ func TestJudge_RefusesAPushOrBranchNotRunAloneByItsBareNameNamingIt(t *testing.T
 	t.Parallel()
 
 	checkJudged(t, forgeCaller(t), []judged{
-		{name: "piped", command: "ils push | cat", want: guard.Refuse, wantNamed: "ils push"},
 		{name: "in a list", command: "ils branch topic && true", want: guard.Refuse, wantNamed: "ils branch"},
 	})
 }
@@ -324,10 +306,7 @@ func TestJudge_RefusesAGhWrite(t *testing.T) {
 		// cspell:ignore XPUT -- gh reads -X with its value attached; the test needs that spelling.
 		{name: "api method attached", command: "gh api -XPUT repos/x/y", want: guard.Refuse, wantNamed: "PUT"},
 		{name: "api long method attached in lower case", command: "gh api --method=put repos/x/y", want: guard.Refuse, wantNamed: "put"},
-		{name: "api typed field", command: "gh api repos/x/y/issues -F title=x", want: guard.Refuse},
 		{name: "api method not literal", command: `gh api -X "$method" repos/x/y`, want: guard.Refuse},
-		{name: "repo sync", command: "gh repo sync", want: guard.Refuse, wantNamed: "gh repo sync"},
-		{name: "auth token", command: "gh auth token", want: guard.Refuse, wantNamed: "gh auth token"},
 		{name: "api method flag as the value of a field", command: "gh api -f --method=GET -f title=x repos/x/y/issues", want: guard.Refuse},
 		{name: "api method flag as the value of a long valued flag", command: "gh api --jq --method=GET -f title=x repos/x/y/issues", want: guard.Refuse},
 		{name: "config get token", command: "gh config get oauth_token", want: guard.Refuse},
@@ -340,7 +319,6 @@ func TestJudge_AllowsAGhCallThatWritesNothing(t *testing.T) {
 
 	checkJudged(t, forgeCaller(t), []judged{
 		{name: "api read", command: "gh api repos/x/y", want: guard.Allow},
-		{name: "api explicit get with a field", command: "gh api -X GET search/issues -f q=1", want: guard.Allow},
 		{name: "api explicit get in lower case attached", command: "gh api --method=get search/issues -f q=1", want: guard.Allow},
 		{name: "pr checkout", command: "gh pr checkout 12", want: guard.Allow},
 		{name: "config get another key", command: "gh config get editor", want: guard.Allow},

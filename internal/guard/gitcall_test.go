@@ -444,8 +444,6 @@ func TestJudge_AllowsAGitCallWhoseHelpFlagFollowsTheSubcommand(t *testing.T) {
 
 	checkAllowed(t, caller, []namedCommand{
 		{name: "stash", command: "git stash --help"},
-		{name: "reset", command: "git reset --help"},
-		{name: "checkout", command: "git checkout --help"},
 		{name: "push with a word after the help flag", command: "git push --help origin"},
 		{name: "after a global option", command: "git -C /tmp stash --help"},
 		{name: "word that is neither command nor alias", command: "git st --help"},

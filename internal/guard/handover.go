@@ -3,7 +3,10 @@
 package guard
 
 import (
-	"slices"
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -58,45 +61,30 @@ func isDataConsumer(words []Word) bool {
 	return dataConsumers()[words[0].Text]
 }
 
-// marksOf returns what Parse cannot read in the invocation inv of call, apart from the string it
-// runs. ex reads its words.
-func marksOf(call *syntax.CallExpr, stmt *syntax.Stmt, inv Invocation, ex expander) []Mark {
-	words := slices.Clone(call.Args)
-	for _, a := range call.Assigns {
-		words = append(words, a.Value)
+// goSubcommand returns the subcommand word among args, the words after a go command word, past
+// `-C dir`, the one global option go takes, which it reads only as its first argument. A first
+// argument that is not a literal is returned as the subcommand word. It reports whether there is a
+// subcommand word.
+func goSubcommand(args []Word) (Word, bool) {
+	if len(args) == 0 {
+		return Word{}, false
 	}
 
-	var marks []Mark
-	if hasExtGlob(words, stmt) {
-		marks = append(marks, Mark{Kind: ExtendedGlob})
-	}
-
-	if len(inv.Words) == 0 {
-		return marks
-	}
-
-	command := inv.Words[0]
-	switch {
-	case !command.Literal:
-		marks = append(marks, Mark{Kind: DynamicCommand})
-	case (command.Text == "source" || command.Text == ".") && len(inv.Words) > 1 &&
-		hidesScript(inv.Words[1], argsOf(call, inv.Words[1:])[0]):
-		marks = append(marks, Mark{Kind: HiddenScript})
-	case isShell(command):
-		// A script file the shell runs gets its arguments as `./x.sh` does.
-		if file, ok := scriptFileWords(inv.Words); ok {
-			if name, handed := handedByCall(call, file, inv.Dir, ex); handed {
-				marks = append(marks, Mark{Kind: ToolArgument, Name: name})
-			}
+	flag, _, joined := strings.Cut(args[0].Text, "=")
+	if args[0].Literal && (flag == "-C" || flag == "--C") {
+		skip := min(2, len(args))
+		if joined {
+			skip = 1
 		}
-	case inv.Tool != NoTool, isDataConsumer(inv.Words), command.Text == "eval":
-	default:
-		if name, ok := handedByCall(call, inv.Words, inv.Dir, ex); ok {
-			marks = append(marks, Mark{Kind: ToolArgument, Name: name})
-		}
+
+		args = args[skip:]
 	}
 
-	return marks
+	if len(args) == 0 {
+		return Word{}, false
+	}
+
+	return args[0], true
 }
 
 // handedByCall returns the tool that the command call, a command the guard does not know whose
@@ -165,7 +153,7 @@ func runDirectly(words []Word, args []*syntax.Word) ([]Word, []*syntax.Word) {
 // isBareShell reports whether w is the plain name of a shell whose `-c` string Parse reads, not a
 // path to one.
 func isBareShell(w Word) bool {
-	return w.Literal && slices.Contains(shellNames(), w.Text)
+	return inTable(shellNames(), w)
 }
 
 // runsString reports whether words, a shell word and the words after it, give the shell `-c` and a
@@ -232,6 +220,45 @@ func handedBy(words []Word, args []*syntax.Word, dir string, ex expander) (strin
 	}
 
 	return "", false
+}
+
+// isToolWord reports whether w names git, gh, ils, a shell, `eval`, or `source`: the bare name, or
+// a path whose basename is the name and that is an executable regular file, a relative path read
+// against dir. A path whose stat fails for any reason other than its absence counts as one, and so
+// does a relative path when dir is empty, since the guard cannot rule it out.
+//
+// `.` is not counted: as an argument it names the current directory far more often (`find .`,
+// `docker build .`) than it runs a script.
+func isToolWord(w Word, dir string) bool {
+	program := programName(w)
+	runner := toolOf(w) != NoTool || isShell(w) || program == "eval" || program == "source"
+	if !w.Literal || !runner {
+		return false
+	}
+
+	if !strings.Contains(w.Text, "/") {
+		return true
+	}
+
+	name := w.Text
+	if !filepath.IsAbs(name) {
+		if dir == "" {
+			return true
+		}
+
+		name = opened(dir, name)
+	}
+
+	info, err := os.Stat(name)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+
+	if err != nil {
+		return true
+	}
+
+	return info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
 }
 
 // shellHandovers are the commands that hand their words to a shell, which reads them all as one
@@ -321,8 +348,8 @@ const shellWordBreaks = " \t" + shellOperatorChars
 
 // stringRunners are the command words that run a string or a file as shell commands, besides the
 // shells.
-func stringRunners() []string {
-	return []string{"eval", "source", "."}
+func stringRunners() map[string]bool {
+	return setOf("eval", "source", ".")
 }
 
 // scriptTool reads text as a shell script and returns the tool one of its commands is, or hands
@@ -363,7 +390,7 @@ func scriptTool(text, home string) (string, bool) {
 		switch {
 		case !command.Literal, isDataConsumer(inv.Words):
 		case inv.Tool == ILS && changesNothing(inv.Words[1:]):
-		case inv.Tool != NoTool, isShell(command), slices.Contains(stringRunners(), command.Text):
+		case inv.Tool != NoTool, isShell(command), stringRunners()[command.Text]:
 			name = command.Text
 		default:
 			name, _ = handedBy(inv.Words, argsOf(call, inv.Words), "", ex)
@@ -387,13 +414,13 @@ func changesNothing(args []Word) bool {
 
 	sub := args[at[0]]
 
-	return sub.Literal && slices.Contains(readOnlyILSCommands(), sub.Text)
+	return inTable(readOnlyILSCommands(), sub)
 }
 
 // readOnlyILSCommands are the commands of ils that change nothing. `help` is Cobra's own command,
 // which ils never declares.
-func readOnlyILSCommands() []string {
-	return []string{
+func readOnlyILSCommands() map[string]bool {
+	return setOf(
 		landing.StatusCommand, commandline.ParseCommand, commandline.GuardCommand, commandline.HookCommand, "help",
-	}
+	)
 }

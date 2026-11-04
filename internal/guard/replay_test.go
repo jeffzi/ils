@@ -63,7 +63,7 @@ type transcriptEntry struct {
 	} `json:"message"`
 }
 
-func TestAssess_ReplaysTheBashCommandsOfTheLocalTranscripts(t *testing.T) {
+func TestJudge_ReplaysTheBashCommandsOfTheLocalTranscripts(t *testing.T) {
 	dir := replayDir(t)
 	before := replayBefore(t)
 

@@ -15,13 +15,13 @@ import (
 // ---------------------------------------------------------------------------
 
 // shellNames are the shells whose `-c` string Parse reads.
-func shellNames() []string {
-	return []string{"bash", "sh", "zsh", "dash"}
+func shellNames() map[string]bool {
+	return setOf("bash", "sh", "zsh", "dash")
 }
 
 // isShell reports whether the command word names a shell whose `-c` string Parse reads.
 func isShell(command Word) bool {
-	return slices.Contains(shellNames(), programName(command))
+	return shellNames()[programName(command)]
 }
 
 // scriptOf returns the string that the invocation of words, the words of call after any wrapper,
@@ -117,12 +117,12 @@ func substitutes(w *syntax.Word) bool {
 // ---------------------------------------------------------------------------
 
 // bashLongOptions are the long options of bash, which it also reads with a single dash.
-func bashLongOptions() []string {
-	return []string{
+func bashLongOptions() map[string]bool {
+	return setOf(
 		"debug", "debugger", "dump-po-strings", "dump-strings", "help", "init-file", "login", "noediting",
 		"noprofile", "norc", "posix", "pretty-print", "protected", "rcfile", "restricted", "verbose",
 		"version", "wordexp",
-	}
+	)
 }
 
 // shellOptions is what the options of a shell set, with the operands after them.
@@ -195,13 +195,6 @@ func readShellOptions(shell string, args []Word) shellOptions {
 	return r.shellOptions
 }
 
-// zshOptionName returns name, the name of an option of zsh, the way zsh compares it: case and
-// underscores ignored. Dashes are kept: the caller first turns the dashes of a `--name` argument
-// into underscores, as zsh reads them there.
-func zshOptionName(name string) string {
-	return strings.ToLower(strings.ReplaceAll(name, "_", ""))
-}
-
 // bashLongRun returns how many of args, the arguments of bash or sh, the run of long options
 // leading them takes, and whether the run names a startup file.
 func bashLongRun(args []Word) (int, bool) {
@@ -231,7 +224,7 @@ func isBashLongOption(w Word) bool {
 
 	name, ok := strings.CutPrefix(w.Text, "-")
 
-	return ok && slices.Contains(bashLongOptions(), name)
+	return ok && bashLongOptions()[name]
 }
 
 // bundle reads the bundle of short options args[i] and returns how many words after it the bundle
@@ -413,13 +406,14 @@ func goCommands(inv *Invocation, depth int) []*syntax.File {
 	var files []*syntax.File
 	for _, c := range goCommandsOf(inv.Words) {
 		form := strings.TrimSpace("go " + c.flag)
-		switch {
-		case !c.value.Literal:
-			inv.Marks = append(inv.Marks, Mark{Kind: DynamicScript, Name: form})
-		case depth == maxDepth:
-			inv.Marks = append(inv.Marks, Mark{Kind: DeepScript, Name: form})
-		default:
-			file, err := read(c.value.Text)
+		before := len(inv.Marks)
+		scripts := runnableScripts(inv, depth, []Word{c.value})
+		for k := before; k < len(inv.Marks); k++ {
+			inv.Marks[k].Name = form
+		}
+
+		for _, script := range scripts {
+			file, err := read(script)
 			if err != nil {
 				inv.Marks = append(inv.Marks, Mark{Kind: UnreadCommand, Name: form})
 
@@ -431,32 +425,6 @@ func goCommands(inv *Invocation, depth int) []*syntax.File {
 	}
 
 	return files
-}
-
-// goSubcommand returns the subcommand word among args, the words after a go command word, past
-// `-C dir`, the one global option go takes, which it reads only as its first argument. A first
-// argument that is not a literal is returned as the subcommand word. It reports whether there is a
-// subcommand word.
-func goSubcommand(args []Word) (Word, bool) {
-	if len(args) == 0 {
-		return Word{}, false
-	}
-
-	flag, _, joined := strings.Cut(args[0].Text, "=")
-	if args[0].Literal && (flag == "-C" || flag == "--C") {
-		skip := min(2, len(args))
-		if joined {
-			skip = 1
-		}
-
-		args = args[skip:]
-	}
-
-	if len(args) == 0 {
-		return Word{}, false
-	}
-
-	return args[0], true
 }
 
 // ---------------------------------------------------------------------------
@@ -525,12 +493,6 @@ func (sc *scope) runScope(inv Invocation) scope {
 	inner.redirects = slices.Concat(sc.redirects, inv.Redirects)
 
 	return inner
-}
-
-// laterScope returns the scope of a string a variable set for later commands holds: any later
-// command may run it, from a directory and with git variables the guard cannot tell.
-func laterScope() scope {
-	return scope{env: unknownEnvironment()}
 }
 
 // commandVariables are the variables whose value git runs as a shell command: its own, and the

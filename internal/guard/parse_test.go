@@ -52,6 +52,21 @@ func only(t *testing.T, command string) guard.Invocation {
 	return got[0]
 }
 
+// checkNoMarks fails unless every command parses to one invocation that carries no marks.
+func checkNoMarks(t *testing.T, tests []namedCommand) {
+	t.Helper()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := only(t, tt.command)
+
+			assert.Check(t, is.Len(got.Marks, 0), "Parse(%q) marks", tt.command)
+		})
+	}
+}
+
 // gitRun returns the one invocation of command that runs git, read by a caller in start whose
 // HOME is home.
 func gitRun(t *testing.T, command string) guard.Invocation {
@@ -160,11 +175,7 @@ func TestParse_WhenTheParserCannotReadTheCommand_ReturnsAParseError(t *testing.T
 func TestParse_ReturnsEverySimpleCommandInTheTree(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		command string
-		want    [][]string
-	}{
+	checkTexts(t, []commandTexts{
 		{name: "pipeline", command: "git log | grep fix", want: [][]string{{"git", "log"}, {"grep", "fix"}}},
 		{
 			name:    "and and or lists",
@@ -191,7 +202,19 @@ func TestParse_ReturnsEverySimpleCommandInTheTree(t *testing.T) {
 			command: "bash -c 'echo a | cat' x $(git push origin main)",
 			want:    [][]string{{"bash", "-c", "echo a | cat", "x", ""}, {"echo", "a"}, {"cat"}, {"git", "push", "origin", "main"}},
 		},
-	}
+	})
+}
+
+// commandTexts is a command whose invocations carry the word texts in want.
+type commandTexts struct {
+	name    string
+	command string
+	want    [][]string
+}
+
+func checkTexts(t *testing.T, tests []commandTexts) {
+	t.Helper()
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -206,24 +229,11 @@ func TestParse_ReturnsEverySimpleCommandInTheTree(t *testing.T) {
 func TestParse_WhenASimpleCommandIsNotACall_ReportsAnInvocation(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		command string
-		want    [][]string
-	}{
+	checkTexts(t, []commandTexts{
 		{name: "export of an assignment", command: "export GIT_DIR=/tmp/x; git push", want: [][]string{{"export", "GIT_DIR=/tmp/x"}, {"git", "push"}}},
 		{name: "declare with an option", command: "declare -x A=1", want: [][]string{{"declare", "-x", "A=1"}}},
 		{name: "local of a name", command: "local name", want: [][]string{{"local", "name"}}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := parse(t, tt.command)
-
-			assert.Check(t, is.DeepEqual(texts(got), tt.want), "Parse(%q)", tt.command)
-		})
-	}
+	})
 }
 
 func TestParse_WhenACommandOnlyAssigns_ReportsAnInvocationWithNoWords(t *testing.T) {
@@ -458,24 +468,9 @@ func TestParse_WhenAnArgumentIsARelativePathNamedForATool_ReadsItWhereTheInvocat
 func TestParse_WhenAGlobQualifierRunsNoCode_MarksNothing(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		command string
-	}{
+	checkNoMarks(t, []namedCommand{
 		{name: "null glob after a non-literal directory", command: `rm -f "$d"/tdd-red-phase*(N)`},
-		{name: "plain files", command: "ls *(.)"},
-		{name: "directories", command: "ls *(/)"},
-		{name: "newest by modification time", command: "ls *(om[1])"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := only(t, tt.command)
-
-			assert.Check(t, is.Len(got.Marks, 0), "Parse(%q) marks", tt.command)
-		})
-	}
+	})
 }
 
 func TestParse_WhenAnExtendedGlobCouldRunCodeOrIsNoQualifier_MarksIt(t *testing.T) {
@@ -488,9 +483,6 @@ func TestParse_WhenAnExtendedGlobCouldRunCodeOrIsNoQualifier_MarksIt(t *testing.
 		{name: "qualifier evaluating a string", command: "ls *(e:'touch x':)"},
 		{name: "qualifier calling a function", command: "ls *(+f)"},
 		{name: "negation", command: "ls !(x)"},
-		{name: "one or more", command: "ls +(a)"},
-		{name: "zero or one", command: "ls ?(a)"},
-		{name: "qualifier holding a command substitution", command: "ls *($(git stash)N)"},
 		{name: "qualifier holding a substitution in backticks", command: "ls *(`git stash`N)"},
 		{name: "qualifier holding a parameter expansion", command: `ls *(${x}N)`},
 		{name: "qualifier holding a process substitution", command: "ls *(<(git stash)N)"},

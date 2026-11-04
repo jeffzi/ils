@@ -98,7 +98,7 @@ func ilsSwitches() map[string]bool {
 
 // ghSwitches are the flags gh and its command groups know and that take no value.
 func ghSwitches() map[string]bool {
-	return map[string]bool{"--help": true}
+	return setOf("--help")
 }
 
 // ghCommands are the top-level commands of the oldest gh that ils accepts. A newer command is
@@ -230,7 +230,7 @@ func ghGuardedFlags() map[string]ghGuardedFlag {
 		},
 		"gh auth status": {
 			long: "--show-token", short: 't', valued: "h",
-			reason: "gh auth status with -t or --show-token prints the auth token",
+			reason: "gh auth status with -t or --show-token " + printsLogin,
 		},
 	}
 }
@@ -263,15 +263,15 @@ func judgeGHSubcommand(inv Invocation, name string, rest []Word) Verdict {
 		return aloneAndBare(inv, name, Verdict{Outcome: Ask, Reason: "gh release create publishes a release; `ils release` tags and publishes one once the release commit's checks pass"})
 	case "gh config get":
 		if slices.ContainsFunc(rest, func(w Word) bool { return !w.Literal || w.Text == "oauth_token" }) {
-			return refuse("gh config get oauth_token prints the auth token")
+			return refuse("gh config get oauth_token " + printsLogin)
 		}
 	case "gh auth token", "gh auth git-credential":
-		return refuse(name + " prints the auth token")
+		return refuse(name + " " + printsLogin)
 	case "gh alias set", "gh alias import", "gh alias delete":
 		return refuse(name + " changes what a gh word runs")
 	case "gh repo sync", "gh repo delete", "gh repo edit", "gh release delete", "gh release edit", "gh release upload",
 		"gh release delete-asset":
-		return refuse(name + " writes to GitHub, which the user does by hand")
+		return refuse(name + " " + writesByHand)
 	}
 
 	return Verdict{Outcome: Allow}
@@ -290,7 +290,7 @@ func judgeAPI(rest []Word) Verdict {
 	case given && !method.Literal:
 		return refuse("gh api with a method that is not a literal may write to GitHub")
 	case given && !strings.EqualFold(method.Text, "GET"):
-		return refuse(fmt.Sprintf("gh api with method %s writes to GitHub, which the user does by hand", method.Text))
+		return refuse(fmt.Sprintf("gh api with method %s %s", method.Text, writesByHand))
 	case given:
 		return Verdict{Outcome: Allow}
 	}
@@ -345,6 +345,13 @@ func apiEndpoint(rest []Word) (endpoint Word, ok bool) {
 // queryField is the field of `gh api graphql` that holds the document gh sends.
 const queryField = "query"
 
+// printsLogin and writesByHand end the refusals of a gh command that shows the auth token and of one
+// that writes to GitHub.
+const (
+	printsLogin  = "prints the auth token"
+	writesByHand = "writes to GitHub, which the user does by hand"
+)
+
 const unreadableGraphQL = "gh api graphql with a query the guard cannot read may send a mutation, which writes to GitHub: " +
 	"pass the query inline, as -f query='{ … }'"
 
@@ -386,7 +393,7 @@ func judgeGraphQL(rest []Word) Verdict {
 	case fields > 0 && len(documents) == 0:
 		return refuse(unreadableGraphQL)
 	case slices.ContainsFunc(documents, holdsMutation):
-		return refuse("gh api graphql with a mutation writes to GitHub, which the user does by hand")
+		return refuse("gh api graphql with a mutation " + writesByHand)
 	default:
 		return Verdict{Outcome: Allow}
 	}
@@ -584,25 +591,17 @@ func apiMethod(rest []Word) (method Word, given bool) {
 	return method, given
 }
 
-// The long name and the shorthand letter of the method flag of `gh api`.
-const (
-	apiMethodLong  = "--method"
-	apiMethodShort = 'X'
-)
+// apiMethodFlag returns the method flag of `gh api`.
+func apiMethodFlag() ghGuardedFlag {
+	return ghGuardedFlag{long: "--method", short: 'X', valued: apiValued()}
+}
 
 // methodFlag returns the method w gives `gh api` when it is -X or --method, reading next as the
 // value when the flag takes the next word. A word that is not a literal and may be the flag gives
 // a method that is not a literal.
 func methodFlag(w, next Word) (method Word, ok, takesNext bool) {
-	if value, attached := strings.CutPrefix(w.Text, apiMethodLong+"="); attached {
-		return Word{Text: value, Literal: w.Literal}, true, false
-	}
-
-	if w.Literal && w.Text == apiMethodLong {
-		return next, true, true
-	}
-
-	if value, found, attached := shortValue(w, apiMethodShort, apiValued()); found {
+	flag := apiMethodFlag()
+	if value, found, attached := flagValue(w, flag); found {
 		if attached {
 			return value, true, false
 		}
@@ -610,7 +609,7 @@ func methodFlag(w, next Word) (method Word, ok, takesNext bool) {
 		return next, true, true
 	}
 
-	if mayBeFlag(w, apiMethodShort, apiMethodLong) {
+	if mayBeFlag(w, flag.short, flag.long) {
 		return Word{}, true, false
 	}
 

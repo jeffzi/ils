@@ -79,8 +79,8 @@ type headClaim struct {
 // holding no substitution, and no call of a function, which may switch nothing. A background job
 // or pipe stage runs beside the commands after it, so a switch in one claims nothing.
 func (w *walker) followSwitch(operand *syntax.Stmt, at int, functions map[string]*function, sc *scope) {
-	if _, ok := operand.Cmd.(*syntax.CallExpr); !ok || sc.racing || operand.Negated || operand.Background ||
-		operand.Coprocess || len(w.kept)-at != 1 {
+	if _, ok := operand.Cmd.(*syntax.CallExpr); !ok || sc.racing || operand.Negated || runsAsJob(operand) ||
+		len(w.kept)-at != 1 {
 		return
 	}
 
@@ -100,9 +100,8 @@ func (w *walker) followSwitch(operand *syntax.Stmt, at int, functions map[string
 // other option may detach HEAD or name the branch another way, and `-` or a name holding `@{` is a
 // branch git looks up in the reflog, so each leaves the branch unknown.
 func switchedBranch(inv Invocation) (string, bool) {
-	sub := inv.Git.Subcommand
-	if inv.Tool != Git || len(inv.Wrappers) > 0 || len(inv.Marks) > 0 || inv.Git.NoSubcommand ||
-		!sub.Literal || sub.Text != "switch" {
+	sub, ok := subcommand(inv)
+	if !ok || sub != "switch" || len(inv.Wrappers) > 0 || len(inv.Marks) > 0 {
 		return "", false
 	}
 
@@ -118,7 +117,7 @@ func switchedBranch(inv Invocation) (string, bool) {
 // create option, or else its one operand. ok is false for any other option, a word that is not a
 // literal, or operands past those.
 func switchName(args []Word) (name Word, ok bool) {
-	var operands []Word
+	var positional []Word
 	created := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -131,15 +130,15 @@ func switchName(args []Word) (name Word, ok bool) {
 		case strings.HasPrefix(arg.Text, "-"):
 			return Word{}, false
 		default:
-			operands = append(operands, arg)
+			positional = append(positional, arg)
 		}
 	}
 
 	switch {
-	case created && len(operands) <= 1:
+	case created && len(positional) <= 1:
 		return name, true
-	case !created && len(operands) == 1:
-		return operands[0], true
+	case !created && len(positional) == 1:
+		return positional[0], true
 	default:
 		return Word{}, false
 	}
@@ -174,7 +173,8 @@ func markHeads(walked []Invocation) {
 	for i := range walked {
 		inv := &walked[i]
 		inv.HeadUnknown = moved
-		if inv.follows != nil && inv.follows == last && !raced && lastGitDir != "" && inv.Git.GitDir == lastGitDir {
+		onClaimedBranch := inv.follows != nil && inv.follows == last && !raced && lastGitDir != "" && inv.Git.GitDir == lastGitDir
+		if onClaimedBranch {
 			inv.HeadUnknown, inv.head = false, last.branch
 		}
 
@@ -193,12 +193,11 @@ func movesHead(inv Invocation) bool {
 		return true
 	}
 
-	words := inv.Words
-	switch inv.Tool {
-	case GH:
-		return ghMovesHead(words[1:])
-	case Git:
-	default:
+	if inv.Tool == GH {
+		return ghMovesHead(inv.Words[1:])
+	}
+
+	if inv.Tool != Git {
 		return false
 	}
 
@@ -249,7 +248,7 @@ func ghMovesHead(args []Word) bool {
 	}
 
 	first := args[at[0]]
-	if !first.Literal || !ghCommands()[first.Text] {
+	if !inTable(ghCommands(), first) {
 		return true
 	}
 
@@ -265,14 +264,12 @@ func isBranchMove(arg Word, valued string) bool {
 	case !arg.Literal || !strings.HasPrefix(text, "-"):
 		return false
 	case strings.HasPrefix(text, "--"):
-		const move = "--move"
-
-		return abbreviates(text, move, len("--mo"))
+		return abbreviates(text, "--move", len("--mo"))
 	default:
 		_, move, _ := shortValue(arg, 'm', valued)
-		_, forced, _ := shortValue(arg, 'M', valued)
+		_, forceMove, _ := shortValue(arg, 'M', valued)
 
-		return move || forced
+		return move || forceMove
 	}
 }
 
@@ -337,29 +334,13 @@ func namesHead(dir string, w Word) bool {
 // writesFile reports whether the redirect r opens its target for writing.
 func writesFile(r Redirect) bool {
 	switch r.Op {
-	case "<", "<<", "<<-", "<<<":
+	case syntax.RdrIn, syntax.Hdoc, syntax.DashHdoc, syntax.WordHdoc:
 		return false
-	case ">&", "<&":
+	case syntax.DplOut, syntax.DplIn:
 		return !isDescriptor(r.Target)
 	default:
 		return true
 	}
-}
-
-// operands returns the words of args that are not options: each one after `--`, and each other one
-// that does not start with `-`. A word that is not a literal may be either, so it is one.
-func operands(args []Word) []Word {
-	var found []Word
-	for i, arg := range args {
-		switch {
-		case arg.Literal && arg.Text == "--":
-			return append(found, args[i+1:]...)
-		case !arg.Literal || !strings.HasPrefix(arg.Text, "-") || arg.Text == "-":
-			found = append(found, arg)
-		}
-	}
-
-	return found
 }
 
 // copyDestinations returns the paths command, `cp`, `mv`, `ln` or `install`, given args may write
@@ -378,33 +359,9 @@ func copyDestinations(command string, args []Word) []Word {
 		found = append(found, all[len(all)-1])
 	}
 
-	for i, arg := range args {
-		text := arg.Text
-		value, named := "", false
-		switch {
-		case !arg.Literal:
-			found = append(found, arg)
-
-			continue
-		case text == "--":
-			return found
-		case strings.HasPrefix(text, "--"):
-			const target = "--target-directory"
-			name, attached, _ := strings.Cut(text, "=")
-			named = abbreviates(name, target, len("--t"))
-			value = attached
-		case strings.HasPrefix(text, "-"):
-			var short Word
-			short, named, _ = shortValue(arg, 't', valued)
-			value = short.Text
-		}
-
-		switch {
-		case named && value != "":
-			found = append(found, Word{Text: value, Literal: true})
-		case named && i+1 < len(args):
-			found = append(found, args[i+1])
-		}
+	target := valuedOption{letter: 't', valued: valued, long: "--target-directory", shortest: len("--t")}
+	for _, v := range target.values(args, func(string) bool { return true }) {
+		found = append(found, v.value)
 	}
 
 	return found

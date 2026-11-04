@@ -20,7 +20,7 @@ const readDeadline = 5 * time.Second
 type Outcome int
 
 const (
-	// Allow lets the command run.
+	// Allow is the zero value, so a Verdict that sets no outcome lets the command run.
 	Allow Outcome = iota
 	// Ask leaves the decision to the user instead of the guard.
 	Ask
@@ -107,9 +107,9 @@ func judgeInvocation(ctx context.Context, caller Caller, inv Invocation, checks 
 	verdict, err := judgeByRules(ctx, caller, inv, checks)
 	if unread, ok := errors.AsType[*unreadArgumentError](err); ok {
 		allows := func(in Invocation) bool {
-			moved, failed := judgeByRules(ctx, caller, in, checks)
+			rejudged, rejudgeErr := judgeByRules(ctx, caller, in, checks)
 
-			return failed == nil && moved.Outcome == Allow
+			return rejudgeErr == nil && rejudged.Outcome == Allow
 		}
 
 		return refuse(unread.Error() + passingArgumentSpelling(inv, allows))
@@ -222,11 +222,12 @@ func failedRead(err error) Verdict {
 // cannot tell which repository git runs in says so.
 func markReason(inv Invocation, mark Mark) string {
 	detail := mark.Name
+	aliasInUnknownRepo := (mark.Kind == UnknownSubcommand || mark.Kind == UnreadableAlias) && inv.Git.GitDirUnknown &&
+		inv.Git.Subcommand.Literal && isAliasName(mark.Name)
 	switch {
 	case mark.Kind == ToolArgument && len(inv.Words) > 0:
 		detail = handedToolDetail(inv, mark.Name)
-	case (mark.Kind == UnknownSubcommand || mark.Kind == UnreadableAlias) && inv.Git.GitDirUnknown &&
-		inv.Git.Subcommand.Literal && isAliasName(mark.Name):
+	case aliasInUnknownRepo:
 		detail = fmt.Sprintf("%s: the guard cannot tell which repository git runs in, so it cannot read its "+
 			"aliases; %s", mark.Name, moveFirst)
 	}

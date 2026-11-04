@@ -124,22 +124,12 @@ func mergeFunctions(a, b map[string]*function) map[string]*function {
 		return a
 	}
 
-	merged := cloneFunctions(a)
+	merged := cloneOrEmpty(a)
 	for name, fn := range b {
 		merged[name] = merged[name].with(fn.definitions...)
 	}
 
 	return merged
-}
-
-// cloneFunctions returns a copy of m, an empty map when m is nil.
-func cloneFunctions(m map[string]*function) map[string]*function {
-	cloned := maps.Clone(m)
-	if cloned == nil {
-		cloned = map[string]*function{}
-	}
-
-	return cloned
 }
 
 // unmovedDir is the directory a dry run of a function body starts in. No shell word holds a NUL
@@ -148,8 +138,8 @@ const unmovedDir = "/\x00"
 
 // declarationBuiltins are the builtins the parser reads as declarations rather than as calls, so a
 // function of the same name runs in their place without the walk of a call seeing it.
-func declarationBuiltins() []string {
-	return []string{"export", "declare", "local", "readonly", "typeset", "let"}
+func declarationBuiltins() map[string]bool {
+	return setOf("export", "declare", "local", "readonly", "typeset", "let")
 }
 
 // functionBody walks body, the body of a function, where it is declared. A call runs it with the
@@ -173,10 +163,10 @@ func (w *walker) declareFunction(decl *syntax.FuncDecl, sc *scope) {
 	}
 
 	name := decl.Name.Value
-	functions := cloneFunctions(sc.functions)
+	functions := cloneOrEmpty(sc.functions)
 	functions[name] = &function{definitions: []*definition{{body: decl.Body}}}
 	sc.functions = functions
-	if readsCommand(name) || slices.Contains(declarationBuiltins(), name) {
+	if readsCommand(name) || declarationBuiltins()[name] {
 		w.keep(w.placed(Invocation{Marks: []Mark{{Kind: ShadowingFunction, Name: name}}}, sc))
 	}
 }
@@ -244,6 +234,10 @@ func (w *walker) call(inv Invocation, sc *scope) {
 	if len(marks) > 0 {
 		w.keep(w.placed(Invocation{Marks: marks}, sc))
 	}
+}
+
+func ontoStdout(r Redirect) bool {
+	return slices.Contains(touched(r), stdoutFd)
 }
 
 // maxCalls is how many calls of functions the command defines one walk follows into the body they

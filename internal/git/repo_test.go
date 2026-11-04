@@ -246,6 +246,32 @@ func TestRepo_FindGitDir_WhenGitFailsForAnotherReason_ReturnsExitError(t *testin
 	assert.Check(t, !found, "FindGitDir(%q) = %q, want not found", options, got)
 }
 
+func TestRepo_InWorkTree(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	tests := []struct {
+		name string
+		dir  string
+		want bool
+	}{
+		{name: "work tree", dir: f.Dir(), want: true},
+		{name: "inside the git directory", dir: filepath.Join(f.Dir(), ".git")},
+		{name: "bare repository", dir: f.OriginDir()},
+		{name: "directory that holds no repository", dir: t.TempDir()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			repo := git.Repo{Runner: git.Runner{Dir: tt.dir, Env: f.Env()}}
+
+			got, err := repo.InWorkTree(t.Context())
+			assert.NilError(t, err, "InWorkTree() in %s", tt.dir)
+
+			assert.Check(t, is.Equal(got, tt.want), "InWorkTree() in %s", tt.dir)
+		})
+	}
+}
+
 func TestRepo_Alias(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)

@@ -136,6 +136,22 @@ func absolute(dir, p string) string {
 	}
 }
 
+// opened returns the path the kernel opens for p from dir, empty when p is relative and dir is
+// unknown. Unlike absolute, which follows `cd`, it reads p against the directory dir resolves to,
+// so a `..` in p steps up from the target of a symbolic link in dir. A dir that cannot be resolved,
+// such as one that does not exist, has p joined to it as written.
+func opened(dir, p string) string {
+	if filepath.IsAbs(p) || dir == "" {
+		return absolute(dir, p)
+	}
+
+	if physical, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = physical
+	}
+
+	return filepath.Join(dir, p)
+}
+
 // ---------------------------------------------------------------------------
 // Walking compound commands
 // ---------------------------------------------------------------------------
@@ -148,7 +164,7 @@ func (w *walker) list(stmts []*syntax.Stmt, sc *scope) {
 			return
 		}
 
-		if stmt.Background || stmt.Coprocess {
+		if runsAsJob(stmt) {
 			w.job(stmt, stmts[i+1:], sc)
 
 			return
@@ -163,7 +179,7 @@ func (w *walker) list(stmts []*syntax.Stmt, sc *scope) {
 // substitutions in them start from the shell as it is before the body, and every command in the
 // body runs with them.
 func (w *walker) stmt(stmt *syntax.Stmt, sc *scope) {
-	if stmt.Background || stmt.Coprocess {
+	if runsAsJob(stmt) {
 		inner := *sc
 		w.race(&inner, func(s *scope) { w.stmtInPlace(stmt, s) })
 
@@ -171,6 +187,12 @@ func (w *walker) stmt(stmt *syntax.Stmt, sc *scope) {
 	}
 
 	w.stmtInPlace(stmt, sc)
+}
+
+// runsAsJob reports whether the shell runs stmt beside the commands after it: in the background, or
+// as a coprocess.
+func runsAsJob(stmt *syntax.Stmt) bool {
+	return stmt.Background || stmt.Coprocess
 }
 
 // stmtInPlace walks stmt as the shell runs it once it has placed any background job.
@@ -245,7 +267,7 @@ func (w *walker) binary(cmd *syntax.BinaryCmd, sc *scope) {
 		// The parser nests `a | b | c` to the left, so cmd.Y is a single stage, and the stage before
 		// it is cmd.X, or the right side of cmd.X when that is a pipe too.
 		before := cmd.X
-		if inner, ok := cmd.X.Cmd.(*syntax.BinaryCmd); ok && inner.Op != syntax.AndStmt && inner.Op != syntax.OrStmt {
+		if inner, ok := cmd.X.Cmd.(*syntax.BinaryCmd); ok && (inner.Op == syntax.Pipe || inner.Op == syntax.PipeAll) {
 			before = inner.Y
 		}
 
@@ -291,7 +313,7 @@ func andOperands(cmd *syntax.BinaryCmd) []*syntax.Stmt {
 	for {
 		inner, ok := left.Cmd.(*syntax.BinaryCmd)
 		if !ok || inner.Op != syntax.AndStmt || len(left.Redirs) > 0 ||
-			left.Background || left.Coprocess || left.Negated {
+			runsAsJob(left) || left.Negated {
 			break
 		}
 
@@ -456,19 +478,22 @@ func (sc *scope) apply(inv Invocation) {
 func execsNothing(words []Word) bool {
 	i := 0
 	for i < len(words) && words[i].Literal && (words[i].Text == "command" || words[i].Text == "builtin") {
-		options, _ := wrapperOptionsOf(words[i].Text)
-		n, _ := skipOptions(words[i+1:], options)
-		i += 1 + n
+		i = pastOptions(words, i)
 	}
 
 	if i == len(words) || !words[i].Literal || words[i].Text != "exec" {
 		return false
 	}
 
-	options, _ := wrapperOptionsOf("exec")
+	return pastOptions(words, i) == len(words)
+}
+
+// pastOptions returns the index of the word after the options of the wrapper at index i of words.
+func pastOptions(words []Word, i int) int {
+	options, _ := wrapperOptionsOf(words[i].Text)
 	n, _ := skipOptions(words[i+1:], options)
 
-	return i+1+n == len(words)
+	return i + 1 + n
 }
 
 // cd moves sc.dir the way `cd` or `pushd` given args and run with cdPath as CDPATH does, or
@@ -488,7 +513,7 @@ func (sc *scope) cd(args []Word, cdPath variable) {
 	})
 	switch {
 	case !target.Literal,
-		target.Text == "" || strings.ContainsAny(target.Text[:1], "-+"),
+		target.Text == "" || startsWithSign(target.Text),
 		cdPath != (variable{}) && !filepath.IsAbs(target.Text),
 		leavesThroughLinks(target.Text, physical, sc.physical):
 		sc.dir = ""
@@ -612,7 +637,7 @@ func gitVariableMarks(names []string) []Mark {
 func (w *walker) forClause(c *syntax.ForClause, sc *scope) {
 	iter, _ := c.Loop.(*syntax.WordIter)
 	values, each := w.loopValues(iter, sc)
-	w.loopVariable(c, sc)
+	w.loopVariable(iter, sc)
 	w.substitutions(c.Loop, sc)
 	w.repeated(sc, func(s *scope) {
 		if !each {
@@ -664,12 +689,11 @@ func (w *walker) loopValues(iter *syntax.WordIter, sc *scope) ([]string, bool) {
 	return values, true
 }
 
-// loopVariable makes the variable of a `for` loop unknown in sc, whatever it is, and marks the loop
-// when that variable is a GIT_* variable off the allow list while allexport may be on, which
-// exports it to every git after it.
-func (w *walker) loopVariable(c *syntax.ForClause, sc *scope) {
-	iter, ok := c.Loop.(*syntax.WordIter)
-	if !ok {
+// loopVariable makes the variable of the `for` loop over iter unknown in sc, whatever it is, and
+// marks the loop when that variable is a GIT_* variable off the allow list while allexport may be
+// on, which exports it to every git after it. A nil iter, a loop that is not over words, has none.
+func (w *walker) loopVariable(iter *syntax.WordIter, sc *scope) {
+	if iter == nil {
 		return
 	}
 

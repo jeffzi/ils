@@ -338,7 +338,7 @@ func readArgs(args []Word, known knownOptions) subcommandOptions {
 			if o.readLong(w, known) {
 				i++
 			}
-		case strings.HasPrefix(text, "-") && text != "-":
+		case isShortBundle(text):
 			takes, next := o.readBundle(text[1:], w.Literal, known.valuedLetters)
 			opaqueBundle := !w.Literal && !takes
 			o.unreadable = o.unreadable || opaqueBundle
@@ -394,6 +394,27 @@ func isShortBundle(t string) bool {
 	return len(t) >= 2 && t[0] == '-' && t[1] != '-'
 }
 
+// operands returns the words of args that are not options: each one after `--`, and each other one
+// that does not start with `-`. A word that is not a literal may be either, so it is one.
+func operands(args []Word) []Word {
+	var found []Word
+	for i, arg := range args {
+		switch {
+		case arg.Literal && arg.Text == "--":
+			return append(found, args[i+1:]...)
+		case !arg.Literal || !strings.HasPrefix(arg.Text, "-") || arg.Text == "-":
+			found = append(found, arg)
+		}
+	}
+
+	return found
+}
+
+// startsWithSign reports whether text starts with `-` or `+`, the signs that open an option.
+func startsWithSign(text string) bool {
+	return text != "" && strings.ContainsAny(text[:1], "-+")
+}
+
 // shortValue returns the value of the short option letter in the bundle w, reading the bundle's
 // letters up to the first of valued, the short options that take a value: that letter takes the
 // rest of the bundle as its value, so no later letter is an option. ok is false when the bundle
@@ -417,6 +438,77 @@ func shortValue(w Word, letter byte, valued string) (value Word, ok, attached bo
 	}
 
 	return Word{}, false, false
+}
+
+// valuedOption is an option that takes a value: the short option letter, read in a short-flag
+// bundle ahead of any other of valued, the command's short options that take a value, and the long
+// option long, read as any start of it at least shortest bytes long.
+type valuedOption struct {
+	valued   string
+	long     string
+	shortest int
+	letter   byte
+}
+
+// optionValue is a value of a valuedOption as values reads it from a command's arguments.
+type optionValue struct {
+	// form is the option as written up to its value, such as `-x`, `-ax` or `--ex`.
+	form     string
+	value    Word
+	attached bool
+	// unread marks a word that is not a literal and that the caller could not tell from the
+	// option; value is then the word itself and form is empty.
+	unread bool
+}
+
+// values returns, in order, each value of o among args ahead of the first `--`: the rest of a
+// short-flag bundle or the next word, and after `=` or the next word for the long option. An empty
+// value after `=` is a value, and the next word stays an argument. The word an option takes as its
+// value is never read as an option or as `--`. A word that is not a literal and for which unread
+// holds is returned as unread and not read as an option either.
+func (o valuedOption) values(args []Word, unread func(text string) bool) []optionValue {
+	var found []optionValue
+	for i := 0; i < len(args); i++ {
+		text := args[i].Text
+		if !args[i].Literal && unread(text) {
+			found = append(found, optionValue{value: args[i], unread: true})
+
+			continue
+		}
+
+		var v optionValue
+		switch {
+		case text == "--":
+			return found
+		case strings.HasPrefix(text, "--"):
+			var value string
+			v.form, value, v.attached = strings.Cut(text, "=")
+			if !abbreviates(v.form, o.long, o.shortest) {
+				continue
+			}
+
+			v.value = Word{Text: value, Literal: args[i].Literal}
+		default:
+			var named bool
+			v.value, named, v.attached = shortValue(args[i], o.letter, o.valued)
+			if !named {
+				continue
+			}
+
+			v.form = text[:len(text)-len(v.value.Text)]
+		}
+
+		switch {
+		case v.attached:
+			found = append(found, v)
+		case i+1 < len(args):
+			i++
+			v.value = args[i]
+			found = append(found, v)
+		}
+	}
+
+	return found
 }
 
 // rebaseBranch returns the branch operand of `git rebase` given args, the branch it switches to

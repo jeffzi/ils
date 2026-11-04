@@ -132,11 +132,15 @@ func runsInShell(wrappers []string) bool {
 // letters given among them. It stops at the first word that is not literal, is no option, or holds
 // a letter the wrapper does not take, or whose value is missing or not literal.
 func skipOptions(words []Word, options wrapperOptions) (int, []option) {
+	if options.none {
+		return 0, nil
+	}
+
 	var given []option
 	for i := 0; i < len(words); i++ {
 		text := words[i].Text
 		switch {
-		case !words[i].Literal || options.none || len(text) < 2 || text[0] != '-':
+		case !words[i].Literal || len(text) < 2 || text[0] != '-':
 			return i, given
 		case text == "--":
 			return i + 1, given

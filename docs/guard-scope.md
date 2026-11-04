@@ -125,7 +125,7 @@ refusing it as unreadable. Examples:
 A command with read-only forms is refused only in its writing forms:
 
 - `git stash list` and `git stash show` read;
-- `git show HEAD:f > /dev/null`, or into a file outside any work tree, overwrites no work;
+- `git show HEAD:f > /dev/null`, or into a file outside any working tree, overwrites no work;
 - `gh api graphql` with a `query` reads, while one with a `mutation` writes;
 - a zsh glob qualifier such as `(N)` runs nothing, while `(e:…:)` and `(+…)` run code.
 
@@ -173,12 +173,14 @@ another tool.
 
 Check every new refusal two ways before it lands:
 
-- A table of everyday commands in the guard's tests must stay allowed. A refusal that catches one
-  of them needs a narrower trigger.
+- The table of everyday commands in `TestJudge_AllowsEverydayCommandsOutsideAnyRepository`
+  (`internal/guard/guard_test.go`) must stay allowed. A refusal that catches one of them needs a
+  narrower trigger.
 - A replay judges every shell command in your local Claude Code transcripts and counts the
   refusals by reason: run `task test:replay`. A change that adds a refusal states how many replayed
   commands it refuses. More than 1 in 1,000 needs a narrower trigger, unless the commands it
-  refuses are real catches.
+  refuses do what [rule 2](#2-refuse-every-direct-operation) refuses: destroy work, skip checks,
+  push, or land a change.
 
 ## Accepted limits
 

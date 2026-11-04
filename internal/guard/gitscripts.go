@@ -120,9 +120,9 @@ func workTreeTop(ctx context.Context, runner git.Runner, inv Invocation) (string
 // shellRuns returns the commands of shellCommandsOf that the guard walks, and marks inv when one of
 // them is not a literal or they would nest too deep.
 func shellRuns(inv *Invocation) []gitRun {
-	values := shellCommandsOf(*inv)
-	scripts := make([]Word, 0, len(values))
-	for _, run := range values {
+	commands := shellCommandsOf(*inv)
+	scripts := make([]Word, 0, len(commands))
+	for _, run := range commands {
 		scripts = append(scripts, run.script)
 	}
 
@@ -131,7 +131,7 @@ func shellRuns(inv *Invocation) []gitRun {
 	}
 
 	var runs []gitRun
-	for _, run := range values {
+	for _, run := range commands {
 		if run.script.Literal {
 			runs = append(runs, run)
 		}
@@ -160,7 +160,8 @@ func readableRuns(inv *Invocation) []gitRun {
 }
 
 // splice places the invocations sub walked right after the one at index i of the walk, and those
-// sub keeps right after it among the kept ones when it is kept itself. They are atCall when it is.
+// sub keeps right after it among the kept ones when it is kept itself. Each is atCall when sub
+// walked it at a call site or when the one at index i is.
 func (w *walker) splice(i int, sub walker) {
 	n := len(sub.walked)
 	if n == 0 {
@@ -168,7 +169,7 @@ func (w *walker) splice(i int, sub walker) {
 	}
 
 	for k := range sub.walked {
-		sub.walked[k].atCall = w.walked[i].atCall
+		sub.walked[k].atCall = sub.walked[k].atCall || w.walked[i].atCall
 	}
 
 	w.walked = slices.Insert(w.walked, i+1, sub.walked...)
@@ -233,9 +234,7 @@ func shellCommandsOf(inv Invocation) []gitRun {
 	}
 
 	if sub, ok := subcommand(inv); ok && sub == "rebase" {
-		for _, run := range xOptionRuns(inv.Git.Args, "rebase", "--exec", optionsOf("rebase").valuedLetters) {
-			runs = append(runs, gitRun{script: run.script, start: startTop})
-		}
+		runs = append(runs, topRuns(inv.Git.Args, "rebase", "--exec")...)
 	}
 
 	return runs
@@ -284,7 +283,7 @@ func capDepth(depth int, runs bool, mark MarkKind) (bool, MarkKind) {
 // cannot read it. An option whose key the guard cannot read is left to the rules that judge the
 // subcommand.
 func configCommands(inv Invocation) []Word {
-	var values []Word
+	var scripts []Word
 	for _, o := range inv.Git.Options {
 		key, rest, cut := configKey(o)
 		if !cut {
@@ -298,11 +297,11 @@ func configCommands(inv Invocation) []Word {
 		}
 
 		if command, runs := shellCommand(key, value); runs {
-			values = append(values, command)
+			scripts = append(scripts, command)
 		}
 	}
 
-	return values
+	return scripts
 }
 
 // shellKeys are the config keys outside the `pager` section whose value git runs as a shell
@@ -394,46 +393,17 @@ func shellCommand(key string, value Word) (Word, bool) {
 // run's form is the option as written. A word the guard cannot read that git could read as one of
 // these options is a run the guard cannot read either, whose form is name.
 func xOptionRuns(args []Word, name, long, valued string) []gitRun {
+	x := valuedOption{letter: 'x', valued: valued, long: long, shortest: len("--e")}
+
 	var runs []gitRun
-	for i := 0; i < len(args); i++ {
-		text := args[i].Text
-		if !args[i].Literal && couldBeXOption(text, long, valued) {
+	for _, v := range x.values(args, func(text string) bool { return couldBeXOption(text, long, valued) }) {
+		if v.unread {
 			runs = append(runs, gitRun{form: name})
 
 			continue
 		}
 
-		var form string
-		var script Word
-		var attached bool
-		switch {
-		case text == "--":
-			return runs
-		case strings.HasPrefix(text, "--"):
-			var value string
-			form, value, attached = strings.Cut(text, "=")
-			if !abbreviates(form, long, len("--e")) {
-				continue
-			}
-
-			script = Word{Text: value, Literal: args[i].Literal}
-		default:
-			var found bool
-			script, found, attached = shortValue(args[i], 'x', valued)
-			if !found {
-				continue
-			}
-
-			form = text[:len(text)-len(script.Text)]
-		}
-
-		switch {
-		case attached:
-			runs = append(runs, gitRun{form: form, script: script})
-		case i+1 < len(args):
-			i++
-			runs = append(runs, gitRun{form: form, script: args[i]})
-		}
+		runs = append(runs, gitRun{form: v.form, script: v.value})
 	}
 
 	return runs
@@ -498,7 +468,13 @@ func argumentRuns(inv Invocation) []gitRun {
 // difftoolRuns returns the value of each `--extcmd` or `-x` among the arguments of `git difftool`.
 // git starts each at the top of the work tree, difftool setting one up before it compares.
 func difftoolRuns(args []Word) []gitRun {
-	runs := xOptionRuns(args, "difftool", "--extcmd", optionsOf("difftool").valuedLetters)
+	return topRuns(args, "difftool", "--extcmd")
+}
+
+// topRuns returns the value of each `-x` or long option among args, the arguments of the git
+// subcommand sub, that git runs at the top of the work tree.
+func topRuns(args []Word, sub, long string) []gitRun {
+	runs := xOptionRuns(args, sub, long, optionsOf(sub).valuedLetters)
 	for i := range runs {
 		runs[i].start = startTop
 	}

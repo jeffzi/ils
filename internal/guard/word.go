@@ -63,7 +63,7 @@ func readWord(w *syntax.Word, ex expander) Word {
 		case *syntax.DblQuoted:
 			literal = readDoubleQuoted(&text, p.Parts, ex.vars)
 		case *syntax.ParamExp:
-			literal = readUnquotedExpansion(&text, split.Parts, i, ex.vars)
+			literal = readUnquotedExpansion(&text, p, nextPart(split.Parts, i), ex.vars)
 		}
 
 		if !literal {
@@ -152,7 +152,7 @@ func readDoubleQuoted(b *strings.Builder, parts []syntax.WordPart, vars shellVar
 			writeDoubleQuotedText(b, p.Value)
 		case *syntax.ParamExp:
 			value, known := vars.expansion(p)
-			if !known || modifiedByZsh(parts, i) {
+			if !known || modifiedByZsh(p, nextPart(parts, i)) {
 				return false
 			}
 
@@ -169,13 +169,13 @@ func readDoubleQuoted(b *strings.Builder, parts []syntax.WordPart, vars shellVar
 // plain word: a blank the shell splits it at, or a character that may open a glob pattern.
 const splitOrGlobChars = " \t\n*?[(\\"
 
-// readUnquotedExpansion writes to b the value of parts[i], an unquoted parameter expansion, and
-// reports whether it stands for one plain word: a variable whose value vars knows, which is not
-// empty, since an empty one removes the word, holds none of splitOrGlobChars, and is not modified
-// by zsh (see modifiedByZsh).
-func readUnquotedExpansion(b *strings.Builder, parts []syntax.WordPart, i int, vars shellVars) bool {
-	value, known := vars.expansion(parts[i].(*syntax.ParamExp))
-	if !known || value == "" || strings.ContainsAny(value, splitOrGlobChars) || modifiedByZsh(parts, i) {
+// readUnquotedExpansion writes to b the value of p, an unquoted parameter expansion followed by the
+// word part next (nil when p ends the word), and reports whether it stands for one plain word: a
+// variable whose value vars knows, which is not empty, since an empty one removes the word, holds
+// none of splitOrGlobChars, and is not modified by zsh (see modifiedByZsh).
+func readUnquotedExpansion(b *strings.Builder, p *syntax.ParamExp, next syntax.WordPart, vars shellVars) bool {
+	value, known := vars.expansion(p)
+	if !known || value == "" || strings.ContainsAny(value, splitOrGlobChars) || modifiedByZsh(p, next) {
 		return false
 	}
 
@@ -184,21 +184,31 @@ func readUnquotedExpansion(b *strings.Builder, parts []syntax.WordPart, i int, v
 	return true
 }
 
-// modifiedByZsh reports whether parts[i], a parameter expansion, is a `$NAME` that zsh reads with
-// the modifier the text after it opens, as in `$f:h`: a colon and a letter or `&`.
-func modifiedByZsh(parts []syntax.WordPart, i int) bool {
-	if !parts[i].(*syntax.ParamExp).Short || i+1 == len(parts) {
+// modifiedByZsh reports whether p, a parameter expansion followed by the word part next (nil when
+// p ends the word), is a `$NAME` that zsh reads with the modifier next opens, as in `$f:h`: a colon
+// and a letter or `&`.
+func modifiedByZsh(p *syntax.ParamExp, next syntax.WordPart) bool {
+	if !p.Short {
 		return false
 	}
 
-	next, ok := parts[i+1].(*syntax.Lit)
-	if !ok || len(next.Value) < 2 || next.Value[0] != ':' {
+	lit, ok := next.(*syntax.Lit)
+	if !ok || len(lit.Value) < 2 || lit.Value[0] != ':' {
 		return false
 	}
 
-	c := next.Value[1]
+	c := lit.Value[1]
 
 	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || c == '&'
+}
+
+// nextPart returns the word part after parts[i], nil when parts[i] is the last.
+func nextPart(parts []syntax.WordPart, i int) syntax.WordPart {
+	if i+1 == len(parts) {
+		return nil
+	}
+
+	return parts[i+1]
 }
 
 // writeDoubleQuotedText writes value, the text between double quotes, to b after quote removal. A

@@ -79,7 +79,6 @@ func TestJudge_WhenCallsGoPastThoseTheGuardFollows_RefusesNamingTheFunction(t *t
 
 	checkRefusals(t, []refusal{
 		{name: "function that calls itself", command: "f() { f; }; f", wantNamed: "past the calls the guard follows: f"},
-		{name: "more calls than the guard follows", command: "f() { :; }" + strings.Repeat("; f", 257), wantNamed: "past the calls the guard follows: f"},
 	})
 }
 

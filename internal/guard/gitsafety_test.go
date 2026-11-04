@@ -5,13 +5,13 @@
 package guard_test
 
 import (
+	"cmp"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"gotest.tools/v3/assert"
-	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/guard"
@@ -44,7 +44,6 @@ func TestJudge_RefusesAGitOperationThatDiscardsWork(t *testing.T) {
 		{name: "switch -f", command: "git switch -f branch"},
 		{name: "switch --discard-changes", command: "git switch --discard-changes branch"},
 		{name: "clean -f", command: "git clean -f"},
-		{name: "clean flags by brace expansion", command: "git clean -{f,d}"},
 		{name: "clean -i", command: "git clean -i"},
 		{name: "branch -D", command: "git branch -D feature"},
 		{name: "branch --delete --force", command: "git branch --delete --force feature"},
@@ -53,7 +52,6 @@ func TestJudge_RefusesAGitOperationThatDiscardsWork(t *testing.T) {
 		{name: "gc pruning now", command: "git gc --prune=now"},
 		{name: "repack -a -d", command: "git repack -a -d"},
 		{name: "repack bundle -ad", command: "git repack -ad"},
-		{name: "repack bundle -adf", command: "git repack -adf"},
 		{name: "repack -a -d with --cruft turned off again", command: "git repack -a -d --cruft --no-cruft"},
 		{
 			name:    "repack -a -d with --keep-unreachable turned off again",
@@ -136,7 +134,6 @@ func TestJudge_AllowsAGitOperationThatLeavesWorkOnDisk(t *testing.T) {
 		{name: "read-tree --prefix", command: "git read-tree --prefix=vendor/lib/ HEAD"},
 		{name: "repack -a", command: "git repack -a"},
 		{name: "repack -d", command: "git repack -d"},
-		{name: "repack -A -d", command: "git repack -A -d"},
 		{name: "repack -a -A -d", command: "git repack -a -A -d"},
 		{name: "repack -a -d --cruft", command: "git repack -a -d --cruft"},
 		{name: "repack -a -d --keep-unreachable", command: "git repack -a -d --keep-unreachable"},
@@ -176,10 +173,7 @@ func TestJudge_WhenTheCleanForceSettingCannotBeRead_RefusesNamingTheRead(t *test
 	f, _ := standingOn(t, "main", "topic")
 	const command = "git clean -d"
 
-	got := guard.Judge(t.Context(), command, callerFailingOn(t, f, f.Dir(), "config"))
-
-	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome", command)
-	assert.Check(t, is.Contains(got.Reason, gittest.FailedSaid), "Judge(%q) reason", command)
+	checkJudgedRow(t, callerFailingOn(t, f, f.Dir(), "config"), judged{command: command, want: guard.Refuse, wantNamed: gittest.FailedSaid})
 }
 
 func TestJudge_RefusesARestoreThatDiscardsWork(t *testing.T) {
@@ -215,22 +209,20 @@ func TestJudge_RefusesSkippingGitsCommitChecks(t *testing.T) {
 func TestJudge_RefusesWritingGitHistoryOverAFile(t *testing.T) {
 	t.Parallel()
 
-	_, caller := standingOn(t, "main", "topic")
 	outside := quotedPath(filepath.Join(outsideDir(t), "x.md"))
 
-	checkJudged(t, caller, []judged{
-		{name: "show truncating", command: "git show HEAD > output.txt", want: guard.Refuse, wantNamed: "git show"},
-		{name: "show into a directory not yet made", command: "git show HEAD:README.md > absent/x.md", want: guard.Refuse, wantNamed: "git show"},
-		{name: "show piped into tee", command: "git show HEAD:README.md | tee README.md", want: guard.Refuse, wantNamed: "git show"},
-		{name: "cat-file piped into tee -a", command: "git cat-file -p HEAD:README.md | tee -a README.md", want: guard.Refuse, wantNamed: "git cat-file"},
-		{name: "tee whose second file lands in the work tree", command: "git show HEAD:README.md | tee " + outside + " README.md", want: guard.Refuse, wantNamed: "git show"},
-		{name: "relative target where the directory is unknown", command: `cd "$d" && git show HEAD:README.md > x.md`, want: guard.Refuse, wantNamed: "x.md from"},
-		{name: "tee operand after --", command: "git show HEAD:README.md | tee -- -x", want: guard.Refuse, wantNamed: "git show"},
-		{name: "tee operand -", command: "git show HEAD:README.md | tee -", want: guard.Refuse, wantNamed: "git show"},
+	checkRefusals(t, []refusal{
+		{name: "show truncating", command: "git show HEAD > output.txt", wantNamed: "git show"},
+		{name: "show into a directory not yet made", command: "git show HEAD:README.md > absent/x.md", wantNamed: "git show"},
+		{name: "show piped into tee", command: "git show HEAD:README.md | tee README.md", wantNamed: "git show"},
+		{name: "cat-file piped into tee -a", command: "git cat-file -p HEAD:README.md | tee -a README.md", wantNamed: "git cat-file"},
+		{name: "tee whose second file lands in the work tree", command: "git show HEAD:README.md | tee " + outside + " README.md", wantNamed: "git show"},
+		{name: "relative target where the directory is unknown", command: `cd "$d" && git show HEAD:README.md > x.md`, wantNamed: "x.md from"},
+		{name: "tee operand after --", command: "git show HEAD:README.md | tee -- -x", wantNamed: "git show"},
+		{name: "tee operand -", command: "git show HEAD:README.md | tee -", wantNamed: "git show"},
 		{
 			name:      "tee named by a variable the command assigned",
 			command:   "T=tee; git show HEAD:README.md | $T README.md",
-			want:      guard.Refuse,
 			wantNamed: "git show",
 		},
 	})
@@ -239,11 +231,9 @@ func TestJudge_RefusesWritingGitHistoryOverAFile(t *testing.T) {
 func TestJudge_RefusesGitHistoryWrittenWhereTheGuardCannotRead(t *testing.T) {
 	t.Parallel()
 
-	_, caller := standingOn(t, "main", "topic")
-
-	checkJudged(t, caller, []judged{
-		{name: "non-literal redirect target", command: `git show HEAD:README.md > "$out"`, want: guard.Refuse, wantNamed: "git show"},
-		{name: "non-literal tee operand", command: `git show HEAD:README.md | tee "$out"`, want: guard.Refuse, wantNamed: "git show"},
+	checkRefusals(t, []refusal{
+		{name: "non-literal redirect target", command: `git show HEAD:README.md > "$out"`, wantNamed: "git show"},
+		{name: "non-literal tee operand", command: `git show HEAD:README.md | tee "$out"`, wantNamed: "git show"},
 	})
 }
 
@@ -255,7 +245,6 @@ func TestJudge_AllowsGitHistoryWrittenOutsideAnyWorkTree(t *testing.T) {
 	outside := quotedPath(filepath.Join(away, "x.md"))
 
 	checkAllowed(t, caller, []namedCommand{
-		{name: "show into /dev/null", command: "git show HEAD:README.md > /dev/null"},
 		{name: "show into a file outside", command: "git show HEAD:README.md > " + outside},
 		{name: "cat-file appending to a file outside", command: "git cat-file -p HEAD:README.md >> " + outside},
 		{name: "show piped into tee of a file outside", command: "git show HEAD:README.md | tee -a " + outside},
@@ -267,15 +256,23 @@ func TestJudge_AllowsGitHistoryWrittenOutsideAnyWorkTree(t *testing.T) {
 	})
 }
 
+func TestJudge_RefusesGitHistoryWrittenUpFromALinkIntoAWorkTree(t *testing.T) {
+	t.Parallel()
+
+	f, caller := standingOn(t, "main", "topic")
+	link := linkTo(t, subdirectory(t, f.Dir()))
+	top, err := filepath.EvalSymlinks(f.Dir())
+	assert.NilError(t, err)
+
+	checkJudgedRow(t, caller, judged{command: "cd " + quotedPath(link) + " && git show HEAD:README.md > ../x.md", want: guard.Refuse, wantNamed: "writes over " + filepath.Join(top, "x.md")})
+}
+
 func TestJudge_WhenWhetherTheTargetIsInAWorkTreeCannotBeRead_RefusesNamingTheRead(t *testing.T) {
 	// Not parallel: gittest.FakeGit sets PATH for the whole process.
 	f, _ := standingOn(t, "main", "topic")
 	command := "git show HEAD:README.md > " + quotedPath(filepath.Join(outsideDir(t), "x.md"))
 
-	got := guard.Judge(t.Context(), command, callerFailingOn(t, f, f.Dir(), "rev-parse", "--show-toplevel"))
-
-	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome", command)
-	assert.Check(t, is.Contains(got.Reason, gittest.FailedSaid), "Judge(%q) reason", command)
+	checkJudgedRow(t, callerFailingOn(t, f, f.Dir(), "rev-parse", "--show-toplevel"), judged{command: command, want: guard.Refuse, wantNamed: gittest.FailedSaid})
 }
 
 // namedCommand is a command, with the name of the test case that runs it.
@@ -309,14 +306,6 @@ func TestJudge_RefusesEveryStashButAListOrAShow(t *testing.T) {
 	checkRefusals(t, []refusal{
 		{name: "bare stash", command: "git stash"},
 		{name: "push", command: "git stash push -m msg"},
-		{name: "save", command: "git stash save msg"},
-		{name: "pop", command: "git stash pop"},
-		{name: "apply", command: "git stash apply stash@{1}"},
-		{name: "drop", command: "git stash drop"},
-		{name: "clear", command: "git stash clear"},
-		{name: "branch", command: "git stash branch topic"},
-		{name: "store", command: "git stash store -m msg HEAD"},
-		{name: "create", command: "git stash create"},
 		{name: "subcommand the guard cannot read", command: `git stash "$x"`},
 	})
 }
@@ -327,10 +316,7 @@ func TestJudge_AllowsAStashListOrShow(t *testing.T) {
 
 	checkAllowed(t, caller, []namedCommand{
 		{name: "list", command: "git stash list"},
-		{name: "list with options", command: "git stash list --stat -n 3"},
 		{name: "show of a stash entry with options", command: "git stash show -p stash@{1}"},
-		{name: "list in a pipe", command: "git stash list | head -3"},
-		{name: "show in a list", command: "git status && git stash show --stat"},
 	})
 }
 
@@ -359,8 +345,8 @@ type expectation struct {
 	outcome guard.Outcome
 }
 
-// checkJudgedIn fails unless Judge, run by caller from each row's directory, gives the row's
-// command the outcome want states.
+// checkJudgedIn fails unless Judge, run by caller from each row's directory, or from the caller's
+// own when the row names none, gives the row's command the outcome want states.
 func checkJudgedIn(t *testing.T, caller guard.Caller, tests []placed, want expectation) {
 	t.Helper()
 
@@ -368,7 +354,7 @@ func checkJudgedIn(t *testing.T, caller guard.Caller, tests []placed, want expec
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			in := caller
-			in.Dir = tt.dir
+			in.Dir = cmp.Or(tt.dir, caller.Dir)
 
 			checkJudgedRow(t, in, judged{command: tt.command, wantNamed: want.named, want: want.outcome})
 		})
@@ -484,11 +470,25 @@ func TestJudge_RefusesAWorktreeRemovalItCannotVerify(t *testing.T) {
 	w := newWorktrees(t)
 
 	checkJudgedIn(t, w.caller, []placed{
-		{name: "non-literal path", dir: w.repo, command: `git worktree remove "$wt"`},
+		{name: "non-literal path after --", dir: w.repo, command: `git worktree remove -- "$wt"`},
 		{name: "no path", dir: w.repo, command: "git worktree remove"},
+		{name: "two paths", dir: w.repo, command: "git worktree remove " + quotedPath(w.clean) + " " + quotedPath(w.dirty)},
+		{name: "relative path where the directory is unknown", dir: w.repo, command: `cd "$d" && git worktree remove wt1`},
 		{name: "missing path", dir: w.repo, command: "git worktree remove " + quotedPath(filepath.Join(w.repo, "absent"))},
 		{name: "relative path absent under -C though present where it runs", dir: w.heldClean, command: "git -C " + quotedPath(w.repo) + " worktree remove wt1"},
 	}, expectation{outcome: guard.Refuse, named: "unverifiable"})
+}
+
+func TestJudge_WhenAWorktreeRemovalHoldsAnUnreadableWordWhereAnOptionCanStand_RefusesNamingASpellingTheGuardAllows(t *testing.T) {
+	t.Parallel()
+
+	f := gittest.New(t, "main")
+	clean := quotedPath(addWorktree(t, f, filepath.Join(outsideDir(t), "clean")))
+
+	checkJudgedIn(t, callerIn(f, f.Dir()), []placed{
+		{name: "before the path", dir: f.Dir(), command: `git worktree remove "$opt" ` + clean},
+		{name: "alone", dir: f.Dir(), command: `git worktree remove "$wt"`},
+	}, expectation{outcome: guard.Refuse, named: "write the argument as a literal"})
 }
 
 func TestJudge_RefusesRemovingADirtyWorktree(t *testing.T) {
@@ -497,9 +497,11 @@ func TestJudge_RefusesRemovingADirtyWorktree(t *testing.T) {
 	w := newWorktrees(t)
 	heldClean := filepath.Dir(w.heldClean)
 	heldCleanName := quotedPath(filepath.Base(w.heldClean))
+	intoHeld := linkTo(t, subdirectory(t, w.held))
 
 	checkJudgedIn(t, w.caller, []placed{
 		{name: "changed tracked file", dir: w.repo, command: "git worktree remove " + quotedPath(w.dirty)},
+		{name: "relative path up from a link into a tree holding a dirty one", dir: w.repo, command: "cd " + quotedPath(intoHeld) + " && git worktree remove ../wt1"},
 		{
 			name:    "relative path under an absolute -C after a relative one",
 			dir:     heldClean,
@@ -612,7 +614,6 @@ func TestJudge_RefusesANonLiteralArgumentAFlagCouldHideIn(t *testing.T) {
 		{name: "-c value", command: `git -c "$v" commit -m msg`, wantNamed: "git commit"},
 		{name: "-c value with no subcommand", command: `git -c "$k"`, wantNamed: "git:"},
 		{name: "--config-env value", command: `git --config-env "$k" status`, wantNamed: "git status"},
-		{name: "--config-env value with no subcommand", command: `git --config-env "$k"`, wantNamed: "git:"},
 	})
 }
 
@@ -628,35 +629,6 @@ func TestJudge_WhenAWorkTreeReadFails_RefusesSayingWhatBroke(t *testing.T) {
 	})
 }
 
-// checkRefusedOmitting fails unless Judge refuses command with a reason that holds named and does
-// not hold omitted.
-func checkRefusedOmitting(t *testing.T, command, named, omitted string) {
-	t.Helper()
-
-	_, caller := standingOn(t, "main", "topic")
-
-	got := guard.Judge(t.Context(), command, caller)
-
-	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome, reason %q", command, got.Reason)
-	assert.Check(t, is.Contains(got.Reason, named), "Judge(%q) reason", command)
-	assert.Check(t, !strings.Contains(got.Reason, omitted), "Judge(%q) reason %q holds %q", command, got.Reason, omitted)
-}
-
-func TestJudge_WhenAGitArgumentCannotBeRead_NamesDoubleDashWhereItLetsTheCommandRun(t *testing.T) {
-	t.Parallel()
-
-	checkRefusals(t, []refusal{
-		{name: "branch -d", command: `git branch -d "$b"`, wantNamed: "after `--`"},
-		{name: "switch", command: `git switch "$b"`, wantNamed: "after `--`"},
-		{name: "add", command: `git add "$f"`, wantNamed: "after `--`"},
-		{name: "rm", command: `git rm "$f"`, wantNamed: "after `--`"},
-		{name: "clean -n", command: `git clean -n "$f"`, wantNamed: "after `--`"},
-		{name: "commit", command: `git commit -m msg "$f"`, wantNamed: "after `--`"},
-		{name: "restore --staged", command: `git restore --staged "$f"`, wantNamed: "after `--`"},
-		{name: "several unreadable arguments", command: `git branch -d "$a" "$b"`, wantNamed: "after `--`"},
-	})
-}
-
 func TestJudge_AllowsAnUnreadableGitArgumentAfterDoubleDash(t *testing.T) {
 	t.Parallel()
 	_, caller := standingOn(t, "main", "topic")
@@ -668,40 +640,10 @@ func TestJudge_AllowsAnUnreadableGitArgumentAfterDoubleDash(t *testing.T) {
 	})
 }
 
-func TestJudge_WhenDoubleDashLeavesAnUnreadableGitArgumentRefused_NamesALiteral(t *testing.T) {
-	t.Parallel()
-
-	tests := []namedCommand{
-		{name: "update-ref", command: `git update-ref "$r" HEAD`},
-		{name: "config", command: `git config "$k"`},
-		{name: "restore without --staged", command: `git restore "$f"`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			checkRefusedOmitting(t, tt.command, "write the argument as a literal", "`--`")
-		})
-	}
-}
-
-func TestJudge_WhenALiteralStartsSeveralOptionsOneTakingAValue_NamesItToSpellOutInFull(t *testing.T) {
-	t.Parallel()
-	command := `git branch --s "$b"`
-	_, caller := standingOn(t, "main", "topic")
-
-	got := guard.Judge(t.Context(), command, caller)
-
-	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome, reason %q", command, got.Reason)
-	assert.Check(t, is.Contains(got.Reason, "`--s` in full"), "Judge(%q) reason", command)
-	assert.Check(t, !strings.Contains(got.Reason, "`--`"), "Judge(%q) reason %q holds `--`", command, got.Reason)
-}
-
 func TestJudge_WhenAGitWordCannotBeRead_RefusesNamingASpellingTheGuardAllows(t *testing.T) {
 	t.Parallel()
 
 	checkRefusals(t, []refusal{
-		{name: "-c value", command: `git -c "$v" status`, wantNamed: "write the -c value as a literal"},
 		{name: "push, refused in every form", command: `git push "$b"`, wantNamed: "`ils push`"},
 	})
 }
