@@ -43,10 +43,11 @@ how to install `ils` and what each command does. CI stands for continuous integr
 | 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                                                                                                                                           |
 
 Every outcome but done prints its reason labeled by outcome: `Refused:`, `Broke:`, `Ask:`,
-`Pending:`, or `Delivered, not green:`. The reason sits on the line above `Next:`, except for `ils
-guard`, which prints no `Next:` line. A run stopped by Ctrl-C or SIGTERM (the
-signal `kill` sends by default) exits with the code of the result it prints; see [Stopping a
-run](#stopping-a-run).
+`Pending:`, or `Delivered, not green:`. The reason sits on the line above `Next:`, except for a
+verdict of `ils guard`, which prints no `Next:` line. When `ils guard` refuses its own words (no
+`--cwd`, or not exactly one word after `--`), it prints `Next: ils guard --help`. A run stopped by
+Ctrl-C or SIGTERM (the signal `kill` sends by default) exits with the code of the result it
+prints; see [Stopping a run](#stopping-a-run).
 
 ### When no check reports
 
@@ -384,7 +385,8 @@ A tool other than `Bash` is allowed. These exit 2 with a reason on stderr:
 
 - a payload that is not JSON;
 - a payload that holds no `tool_name`, no `tool_input.command`, or no `cwd`;
-- a `cwd` that does not exist;
+- a `tool_input` that is not the JSON of a Bash call;
+- a `cwd` that is not absolute, is not a directory, or cannot be read;
 - every internal error.
 
 `ils hook` never exits 1, since Claude Code runs a tool call whose hook exits with anything but 2.
@@ -540,21 +542,28 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   a literal. They are the value of `git rebase --exec` (`-x`), the command of `git bisect run`,
   `git submodule foreach`, `git difftool -x` (`--extcmd`), the `git filter-branch` filters and
   `--setup`, and `git for-each-repo`; the value of `-c core.editor`, `core.pager`,
-  `sequence.editor`, `core.sshCommand`, `pager.<command>`, `difftool.<tool>.cmd`, or
-  `mergetool.<tool>.cmd`; and the value of `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`, `GIT_PAGER`, and
+  `sequence.editor`, `core.sshCommand`, `core.fsmonitor`, `diff.external`, `pager.<command>`,
+  `diff.<driver>.command`, `diff.<driver>.textconv`, `filter.<driver>.clean`, `smudge`, or
+  `process`, `merge.<driver>.driver`, `difftool.<tool>.cmd`, `mergetool.<tool>.cmd`,
+  `man.<tool>.cmd`, `browser.<tool>.cmd`, `trailer.<token>.cmd`, or `trailer.<token>.command`; the
+  credential helper of `-c credential.helper` or `credential.<url>.helper`, which git runs as the
+  text after a leading `!`, as written when it starts with `/`, and as `git credential-<value>`
+  otherwise; and the value of `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`, `GIT_PAGER`, and
   the `EDITOR`, `VISUAL`, and `PAGER` git falls back to;
 - an assignment or `export` of a `GIT_*` variable off the allow list (`GIT_CONFIG_COUNT`,
   `GIT_EXEC_PATH`, and the like), and under `set -a` a `read`, `printf -v`, `mapfile`, `for`,
   `getopts`, or `${V:=…}` that sets one, since `set -a` exports it;
-- a function the command defines that shadows `cd`, `pushd`, `popd`, or a wrapper the guard sees
-  through. A call of one whose body may change directory leaves the directory unknown after it.
+- a function the command defines that shadows `cd`, `pushd`, `popd`, a wrapper the guard sees
+  through, or a declaration builtin (`export`, `declare`, `local`, `readonly`, `typeset`, `let`).
+  A call of one whose body may change directory leaves the directory unknown after it.
   The guard judges each command of a function body where the function is declared, and again at
   each call, in the directory, environment, redirects, and HEAD of the call:
   `f() { git commit -am wip; }; git switch main && f` is refused as a commit on the trunk, and
   `T() { uv run pytest -q "$@"; }; T -k x > out.txt` passes;
 - a call of a function the command defines past the 256 calls the guard follows into a body, as a
   function that calls itself makes;
-- an `alias` whose value runs `git`, `gh`, or `ils`, or that the guard cannot read;
+- an `alias` whose value runs `git`, `gh`, `ils`, `cd`, `pushd`, `popd`, or a wrapper the guard
+  sees through, holds a command the guard marks, or that the guard cannot read;
 - a git word that is neither a command nor an alias, a `!` alias, an alias nested more than three
   deep, and an alias the guard cannot read. An alias the guard cannot read has a value that does
   not split into words, or one set by a `-c` or `--config-env` the guard cannot follow. A
@@ -580,7 +589,8 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
 #### Git operations that destroy work or skip checks
 
 - every `checkout`, `reset`, and `prune`; every `stash` but `stash list` and `stash show`; `switch
-  --force` or `--discard-changes`; `clean --force`; `branch -D`, `-d -f`, or `--delete --force`;
+  --force` or `--discard-changes`; `clean --force` or `--interactive` (`-i`); `branch -D`, `-d
+  -f`, or `--delete --force`;
   `restore` without `--staged` (or `-S`), or with `--worktree` (`-W`) beside it; `rm --force`;
   `reflog expire`, `delete`, and `drop`; `gc --prune=…`, and `gc` with `gc.pruneExpire` set
   through `-c` or `--config-env`; `repack -a -d` without `-A`, `--cruft`, or
@@ -590,7 +600,8 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   `checkout-index --force`; `read-tree`, unless `-n` (`--dry-run`), `--index-output`, or
   `--prefix` keeps it off the index, and always with `--reset` or `-u -m`; `update-ref -d`,
   `update-ref --stdin`, and `update-ref` whose new value is all zeros or whose ref or new value is
-  not a literal; `branch -M` onto a branch that exists; `apply --reverse`; `add --force`;
+  not a literal; `branch -M`, `-C`, or `-m` (`--move`) or `-c` (`--copy`) with
+  `--force`, onto a branch that exists in any letter case; `apply --reverse`; `add --force`;
 - `--no-verify` on any command, `commit -n`, `am -n`, `send-email --no-validate`, and
   `core.hooksPath` set through `-c` or `--config-env`;
 - `git show` or `git cat-file` with stdout redirected, or piped straight into `tee`, to a file in a
@@ -603,10 +614,13 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
 - `worktree remove --force`, and `worktree remove` of a worktree with changes or one the guard
   cannot find;
 - `git config` writing `alias.*`, `include.*`, `includeIf.*`, `remote.*`, `url.*`, `pager.*`,
-  `difftool.<tool>.cmd`, `mergetool.<tool>.cmd`, `core.hooksPath`, `core.editor`, `core.pager`,
-  `core.sshCommand`, or `sequence.editor`, at any
-  scope, renaming or removing a section that holds one of them, and `git config --edit`, which can
-  write any of them;
+  `core.hooksPath`, any key whose value git runs as a shell command (listed above under the shell
+  commands git runs), `difftool.<tool>.path`, or `mergetool.<tool>.path`, at any scope; setting a
+  credential helper that is not a plain helper name (one starting with `!` or `/`, or holding a
+  shell operator); renaming or removing one of those sections, or the `core`, `sequence`, or
+  `diff` section, which hold `core.hooksPath` and shell command keys; renaming a section into one
+  whose keys git runs as a shell command or that holds a credential helper; and `git config
+  --edit`, which can write any of them;
 - `git remote remove`, `rm`, `rename`, `set-url`, or `set-head` on `origin`.
 
 <!-- cspell:ignore verif -- a prefix git accepts for --no-verify, which the example needs -->
@@ -705,12 +719,15 @@ A mark's `kind` is one of these 18 strings. These three name nothing:
 - `command word that is not a literal`
 - `shell running a script the command does not hold`
 
-These two carry a `name` only for a command that `go` runs through a flag, and name nothing
-otherwise:
+These two carry a `name` for a command that `go` runs through a flag or that git runs from its
+arguments, and name nothing otherwise:
 
-- `shell string that is not a literal`: the flag, such as `go -exec`, or `go` alone when the guard
-  cannot tell the flag;
-- `shell string nested too deep`: the flag.
+- `shell string that is not a literal`: the `go` flag, such as `go -exec`, or `go` alone when the
+  guard cannot tell the flag; or the form git runs it from: `bisect`, `bisect run`, `submodule`,
+  `submodule foreach`, `filter-branch` or its filter or `--setup` flag as written
+  (`--tree-filter`), `for-each-repo`, or the `difftool` option as written (`-x`, `--extcmd`), or
+  `difftool` alone when the guard cannot read the option;
+- `shell string nested too deep`: the flag or the form, as above.
 
 These 13 carry a `name`:
 

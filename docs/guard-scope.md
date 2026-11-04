@@ -148,7 +148,8 @@ README.md`, or a Python script that edits a file about git.
 So:
 
 - An interpreter's arguments are never read as a shell script, even when they happen to parse as
-  one (`sed 's/old text/git push/' f`).
+  one (`sed 's/old text/git push/' f`), except behind `ssh` or `su` as the command word, which hand
+  every word to a shell.
 - A string that does not parse as shell is data, whatever command it goes to.
 - A heredoc body on an interpreter's stdin is not read.
 - A bare `git`, `gh`, `ils`, or shell word among an interpreter's arguments still counts as handed
