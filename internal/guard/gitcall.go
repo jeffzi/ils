@@ -331,7 +331,7 @@ func targetRunner(runner git.Runner, dir string, target GitTarget) git.Runner {
 // git lacks.
 func expandAliases(ctx context.Context, repo git.Repo, options []string, inv *Invocation) (Mark, error) {
 	commands, builtins := gitCommands(), everyGitBuiltins()
-	config, access := aliasConfig(*inv)
+	config, readable := configOptions(*inv)
 	options = append(slices.Clone(options), config...)
 	sub, args := inv.Git.Subcommand, inv.Git.Args
 	for depth := 0; ; depth++ {
@@ -342,7 +342,7 @@ func expandAliases(ctx context.Context, repo git.Repo, options []string, inv *In
 			return Mark{}, nil
 		}
 
-		if mark := unreadAlias(sub, isCommand, depth, access); mark != (Mark{}) {
+		if mark := inv.Git.unreadAlias(sub, isCommand, depth, readable); mark != (Mark{}) {
 			return mark, nil
 		}
 
@@ -375,37 +375,12 @@ func expandAliases(ctx context.Context, repo git.Repo, options []string, inv *In
 	}
 }
 
-// aliasAccess is how far the guard can read the aliases of a git invocation as git would.
-type aliasAccess int
-
-const (
-	aliasesReadable aliasAccess = iota
-	// aliasesUnreadable is an invocation whose `-c` or `--config-env` options the guard cannot follow.
-	aliasesUnreadable
-	// aliasesTargetUnknown is an invocation whose repository, and so whose config, the guard does not
-	// know.
-	aliasesTargetUnknown
-)
-
-// aliasConfig returns the config options of the git invocation inv as configOptions does, and how
-// far the guard can read its aliases with them.
-func aliasConfig(inv Invocation) ([]string, aliasAccess) {
-	config, readable := configOptions(inv)
-	switch {
-	case inv.Git.GitDirUnknown:
-		return config, aliasesTargetUnknown
-	case !readable:
-		return config, aliasesUnreadable
-	}
-
-	return config, aliasesReadable
-}
-
-// unreadAlias returns the mark that stops the expansion of the git subcommand word sub at depth
-// before its alias is read, and the zero Mark when the alias is to be read. isCommand reports whether
-// sub is one of git's commands, which an alias can replace only on a git that lacks it.
-func unreadAlias(sub Word, isCommand bool, depth int, access aliasAccess) Mark {
-	targetHidesAlias := access == aliasesTargetUnknown && !isCommand
+// unreadAlias returns the mark that stops the expansion of the git subcommand word sub of call at
+// depth before its alias is read, and the zero Mark when the alias is to be read. isCommand reports
+// whether sub is one of git's commands, which an alias can replace only on a git that lacks it.
+// readable reports whether the guard can follow every `-c` and `--config-env` option of call.
+func (call GitCall) unreadAlias(sub Word, isCommand bool, depth int, readable bool) Mark {
+	targetHidesAlias := call.GitDirUnknown && !isCommand
 	switch {
 	case !sub.Literal || targetHidesAlias:
 		return Mark{Kind: UnknownSubcommand, Name: sub.Text}
@@ -415,7 +390,7 @@ func unreadAlias(sub Word, isCommand bool, depth int, access aliasAccess) Mark {
 		// git config exits 1 both for a key that is not set and for one it rejects, so only a
 		// name git accepts is read, and an exit of 1 means no alias is set.
 		return Mark{Kind: UnknownSubcommand, Name: sub.Text}
-	case access != aliasesReadable:
+	case call.GitDirUnknown || !readable:
 		return Mark{Kind: UnreadableAlias, Name: sub.Text}
 	}
 

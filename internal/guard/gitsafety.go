@@ -193,7 +193,7 @@ func refuseDiscardingGit(ctx context.Context, caller Caller, inv Invocation) (Ve
 	op, found := discard{}, false
 	if args := inv.Git.Args; len(args) > 0 {
 		if !args[0].Literal && hasOperations(table, name) {
-			return Verdict{}, unreadableArgument(sub)
+			return Verdict{}, &unreadArgumentError{sub: sub}
 		}
 
 		op, found = table[name+" "+args[0].Text]
@@ -219,7 +219,7 @@ func (d discard) verdict(ctx context.Context, caller Caller, inv Invocation, sub
 		options := readArgs(inv.Git.Args, optionsOf(sub))
 		switch {
 		case options.unreadable:
-			return Verdict{}, unreadableArgument(sub)
+			return Verdict{}, &unreadArgumentError{sub: sub}
 		case d.refuses != nil && d.refuses(options):
 		case d.judges != nil:
 			judged, err := d.judges(ctx, caller, inv, options)
@@ -398,10 +398,6 @@ type unreadArgumentError struct {
 	sub string
 }
 
-func unreadableArgument(sub string) *unreadArgumentError {
-	return &unreadArgumentError{sub: sub}
-}
-
 func (e *unreadArgumentError) Error() string {
 	return fmt.Sprintf("git %s: the argument cannot be read, and it may hold an option the guard checks for", e.sub)
 }
@@ -424,9 +420,9 @@ func hookRunners() map[string][]string {
 
 // refuseSkippedChecks refuses a git invocation that skips the checks a repository runs before a
 // commit or a push: `--no-verify` on any subcommand, the option hookRunners names for its
-// subcommand, the short option subcommandOptionTable lists for `--no-verify`, or a global `-c` or
-// `--config-env` option that sets hooksPathKey. It refuses a `-c` or `--config-env` value it cannot
-// read, and an argument it cannot read of a subcommand that runs those checks.
+// subcommand, `-n` on `am` and `commit`, or a global `-c` or `--config-env` option that sets
+// hooksPathKey. It refuses a `-c` or `--config-env` option whose key
+// it cannot read, and an argument it cannot read of a subcommand that runs those checks.
 func refuseSkippedChecks(_ context.Context, _ Caller, inv Invocation) (Verdict, error) {
 	if inv.Tool != Git {
 		return Verdict{Outcome: Allow}, nil
@@ -438,14 +434,16 @@ func refuseSkippedChecks(_ context.Context, _ Caller, inv Invocation) (Verdict, 
 	}
 
 	for _, o := range inv.Git.Options {
-		if (o.Name == "-c" || o.Name == "--config-env") && !o.Value.Literal {
-			reason := fmt.Sprintf("%s: the value of %s cannot be read, and it may set %s; write the %s value as a literal",
+		if configKeyUnread(o) {
+			reason := fmt.Sprintf("%s: the key of %s cannot be read, and it may be %s; write the %s key as a literal",
 				command, o.Name, hooksPathKey, o.Name)
 
 			return refuse(reason), nil
 		}
 
-		if setsHooksPath(o) {
+		// configKey reads a `-c` key up to the value's first `=` and a `--config-env` key up to its
+		// last, and git reads a key's section and name in any case.
+		if key, _, _ := configKey(o); strings.EqualFold(key, hooksPathKey) {
 			reason := fmt.Sprintf("git %s %s replaces the checks set up to run before commits and pushes", o.Name, hooksPathKey)
 
 			return refuse(reason), nil
@@ -457,10 +455,14 @@ func refuseSkippedChecks(_ context.Context, _ Caller, inv Invocation) (Verdict, 
 		return Verdict{Outcome: Allow}, nil
 	}
 
-	known := optionsOf(sub)
-	options := readArgs(inv.Git.Args, known)
+	options := readArgs(inv.Git.Args, optionsOf(sub))
 	skips, runsChecks := hookRunners()[sub]
-	letter := known.short["no-verify"]
+	// am and commit spell --no-verify as -n too; elsewhere -n means something else.
+	var letter byte
+	if sub == "am" || sub == "commit" {
+		letter = 'n'
+	}
+
 	skip := slices.IndexFunc(skips, func(long string) bool { return options.sets(0, long) })
 	flag := ""
 	switch {
@@ -471,7 +473,7 @@ func refuseSkippedChecks(_ context.Context, _ Caller, inv Invocation) (Verdict, 
 	case options.sets(letter, ""):
 		flag = "-" + string(letter)
 	case options.unreadable && runsChecks:
-		return Verdict{}, unreadableArgument(sub)
+		return Verdict{}, &unreadArgumentError{sub: sub}
 	default:
 		return Verdict{Outcome: Allow}, nil
 	}
@@ -481,13 +483,20 @@ func refuseSkippedChecks(_ context.Context, _ Caller, inv Invocation) (Verdict, 
 	return refuse(reason), nil
 }
 
-// setsHooksPath reports whether the global option o sets hooksPathKey. git reads a `-c` value
-// up to its first `=` and a `--config-env` value up to its last as the key, whose section and name
-// it reads in any case.
-func setsHooksPath(o GitOption) bool {
-	key, _, _ := configKey(o)
-
-	return strings.EqualFold(key, hooksPathKey)
+// configKeyUnread reports whether the guard cannot read the key of the global `-c` or
+// `--config-env` option o. git reads a `-c` key up to the first `=` of the value, so the key is read
+// when the text before the first part the guard cannot read holds an `=`. A `--config-env` key runs
+// up to the last `=`, which a part the guard cannot read may hold, so its key is read only when the
+// whole value is.
+func configKeyUnread(o GitOption) bool {
+	switch o.Name {
+	case "-c":
+		return !o.Value.Literal && !strings.Contains(o.Value.Text, "=")
+	case "--config-env":
+		return !o.Value.Literal
+	default:
+		return false
+	}
 }
 
 // refuseHistoryOverFile refuses `git show` or `git cat-file` whose output lands in a file of a git
@@ -565,7 +574,7 @@ func nearestDirectory(path string) string {
 
 // refuseRebaseOverChanges refuses `git rebase` in a work tree that holds uncommitted or
 // untracked changes, and one whose repository the guard cannot tell. Outside any repository there
-// is nothing for it to lose, and an action of rebaseKeepingActions leaves the work tree as it is.
+// is nothing for it to lose, and an action keepsWorkTree names leaves the work tree as it is.
 func refuseRebaseOverChanges(ctx context.Context, caller Caller, inv Invocation) (Verdict, error) {
 	sub, ok := subcommand(inv)
 	if !ok || sub != "rebase" {
@@ -593,18 +602,14 @@ func refuseRebaseOverChanges(ctx context.Context, caller Caller, inv Invocation)
 	return Verdict{Outcome: Allow}, nil
 }
 
-// rebaseKeepingActions are the actions of `git rebase` that discard nothing in the work tree:
-// --continue commits what is staged, and the others edit or show the rebase's state, or drop it
-// while leaving HEAD and the work tree where they are. git refuses an action beside another, so
-// one of these set means no other runs.
-func rebaseKeepingActions() []string {
-	return []string{"--continue", "--edit-todo", "--show-current-patch", "--quit"}
-}
-
-// keepsWorkTree reports whether the readable `git rebase` options o set an action of
-// rebaseKeepingActions.
+// keepsWorkTree reports whether the readable `git rebase` options o set an action that discards
+// nothing in the work tree: --continue commits what is staged, and the others edit or show the
+// rebase's state, or drop it while leaving HEAD and the work tree where they are. git refuses an
+// action beside another, so one of these set means no other runs.
 func keepsWorkTree(o subcommandOptions) bool {
-	return !o.unreadable && slices.ContainsFunc(rebaseKeepingActions(), func(action string) bool { return o.sets(0, action) })
+	keeping := []string{"--continue", "--edit-todo", "--show-current-patch", "--quit"}
+
+	return !o.unreadable && slices.ContainsFunc(keeping, func(action string) bool { return o.sets(0, action) })
 }
 
 // refuseRiskyWorktreeRemoval refuses `git worktree remove` with `--force`, of a path it cannot
@@ -617,7 +622,7 @@ func refuseRiskyWorktreeRemoval(ctx context.Context, caller Caller, inv Invocati
 	}
 
 	if !inv.Git.Args[0].Literal {
-		return Verdict{}, unreadableArgument(sub)
+		return Verdict{}, &unreadArgumentError{sub: sub}
 	}
 
 	if inv.Git.Args[0].Text != "remove" {
@@ -630,7 +635,7 @@ func refuseRiskyWorktreeRemoval(ctx context.Context, caller Caller, inv Invocati
 	}
 
 	if options.unreadable {
-		return Verdict{}, unreadableArgument(sub)
+		return Verdict{}, &unreadArgumentError{sub: sub}
 	}
 
 	path, why := worktreePath(inv, options)
@@ -678,23 +683,15 @@ func worktreePath(inv Invocation, options subcommandOptions) (path, why string) 
 	return path, ""
 }
 
-// guardedSections returns the config sections that make git run programs, reach another
-// repository, or rewrite the URL it pushes to. git runs the value of every `pager.<command>` key
-// as a shell command, and the `url.<base>` keys replace the start of a URL.
+// guardedSections returns the config sections that make git reach another repository or rewrite
+// the URL it pushes to: the `url.<base>` keys replace the start of a URL.
 func guardedSections() []string {
-	return []string{"alias", "include", "includeIf", "pager", "remote", "url"}
+	return []string{"remote", "url"}
 }
 
-// guardedKeys returns the config keys outside guardedSections that make git run programs:
-// hooksPathKey, and the keys whose value git runs as a shell command.
-func guardedKeys() []string {
-	return append([]string{hooksPathKey}, shellKeys()...)
-}
-
-// refuseGuardedConfigWrite refuses `git config` writing, unsetting, renaming or removing a key
-// or section that changes what git runs or where it pushes: those of guardedSections and
-// guardedKeys, in any scope. It refuses opening the config in an editor too, which can write
-// any key. Reads are allowed, and so is a write of any other key.
+// refuseGuardedConfigWrite refuses `git config` writing, unsetting, renaming or removing
+// hooksPathKey, the section that holds it, or a section of guardedSections, in any scope. Reads are
+// allowed, and so is a write of any other key or opening the config in an editor.
 func refuseGuardedConfigWrite(_ context.Context, _ Caller, inv Invocation) (Verdict, error) {
 	sub, ok := subcommand(inv)
 	if !ok || sub != "config" {
@@ -703,17 +700,12 @@ func refuseGuardedConfigWrite(_ context.Context, _ Caller, inv Invocation) (Verd
 
 	options := readArgs(inv.Git.Args, optionsOf(sub))
 	if options.opaque() {
-		return Verdict{}, unreadableArgument(sub)
+		return Verdict{}, &unreadArgumentError{sub: sub}
 	}
 
 	action, words := configAction(options)
 	count := 0
 	switch action {
-	case "edit":
-		reason := fmt.Sprintf("git config opening an editor can write any key, those the guard protects included: the sections %s and the keys %s",
-			strings.Join(guardedSections(), ", "), strings.Join(guardedKeys(), ", "))
-
-		return refuse(reason), nil
 	case "set", "unset", "remove-section":
 		count = 1
 	case "rename-section":
@@ -722,44 +714,11 @@ func refuseGuardedConfigWrite(_ context.Context, _ Caller, inv Invocation) (Verd
 
 	for _, name := range words[:min(len(words), count)] {
 		if guardedConfigName(name) {
-			return refuseConfigWrite(name), nil
+			return refuse(fmt.Sprintf("git config writing %s changes what git runs or where it pushes", name)), nil
 		}
 	}
 
-	if action == "rename-section" && len(words) > 1 && holdsShellKey(words[1]) {
-		return refuseConfigWrite(words[1]), nil
-	}
-
-	if action == "set" && len(words) > 1 && isCredentialHelper(words[0]) && !plainHelperName(words[1]) {
-		return refuseConfigWrite(words[0]), nil
-	}
-
 	return Verdict{Outcome: Allow}, nil
-}
-
-// plainHelperName reports whether value, set as a credential helper, names a helper program to
-// run as `git credential-<value>`, with plain arguments or none: it starts with neither `!` nor
-// `/`, and holds none of shellOperatorChars, which would let it run more than the helper. A blank
-// is not one of them, since git runs `git credential-<value>` through the shell and
-// blank-separated words are only the helper's arguments.
-func plainHelperName(value string) bool {
-	return !strings.ContainsAny(value, shellOperatorChars) && !strings.HasPrefix(value, "!") &&
-		!strings.HasPrefix(value, "/")
-}
-
-// holdsShellKey reports whether section, the section a rename moves keys into, holds a key whose
-// value git runs through the shell: a credential helper, or the command key of a driver or tool
-// that a subsection names.
-func holdsShellKey(section string) bool {
-	holdsName := func(keys subsectionKeys) bool {
-		return slices.ContainsFunc(keys.names, func(name string) bool { return runsShell(section + "." + name) })
-	}
-
-	return slices.ContainsFunc(shellSubsectionKeys(), holdsName) || isCredentialHelper(section+".helper")
-}
-
-func refuseConfigWrite(name string) Verdict {
-	return refuse(fmt.Sprintf("git config writing %s changes what git runs or where it pushes", name))
 }
 
 // configAction returns what `git config` with the arguments options does, by the name of its
@@ -801,21 +760,14 @@ func configAction(options subcommandOptions) (action string, words []string) {
 }
 
 // guardedConfigName reports whether name, a key or a whole section, is guarded: in a section of
-// guardedSections, one of guardedKeys, a key whose value runsShell, the path of a difftool or
-// mergetool, which names the program git runs for it, or a section that holds one of guardedKeys,
-// which a rename or a removal of the whole section writes. git reads the section and the variable
-// name in any case.
+// guardedSections, hooksPathKey, or the section that holds hooksPathKey, which a rename or a removal
+// of the whole section writes. git reads the section and the variable name in any case.
 func guardedConfigName(name string) bool {
 	section, _, _ := strings.Cut(name, ".")
-	holdsKey := func(key string) bool {
-		keySection, _, _ := strings.Cut(key, ".")
+	hooksSection, _, _ := strings.Cut(hooksPathKey, ".")
 
-		return strings.EqualFold(name, keySection)
-	}
-
-	return containsFold(guardedSections(), section) || containsFold(guardedKeys(), name) ||
-		slices.ContainsFunc(guardedKeys(), holdsKey) || runsShell(name) ||
-		inSubsection(name, "difftool", "path") || inSubsection(name, "mergetool", "path")
+	return containsFold(guardedSections(), section) || strings.EqualFold(name, hooksPathKey) ||
+		strings.EqualFold(name, hooksSection)
 }
 
 // refuseOriginRewrite refuses a `git remote` operation that removes or renames origin, or points it elsewhere.
@@ -842,7 +794,7 @@ func refuseOriginRewrite(_ context.Context, _ Caller, inv Invocation) (Verdict, 
 
 	options := readArgs(args[1:], knownOptions{})
 	if !op.Literal || options.opaque() {
-		return Verdict{}, unreadableArgument(sub)
+		return Verdict{}, &unreadArgumentError{sub: sub}
 	}
 
 	if len(options.positional) == 0 || options.positional[0].Text != "origin" {

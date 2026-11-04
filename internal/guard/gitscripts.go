@@ -13,7 +13,6 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 
 	"github.com/jeffzi/ils/internal/child"
-	"github.com/jeffzi/ils/internal/git"
 )
 
 // resolveGit asks git, for each git invocation the walk placed, which git dir it targets and what
@@ -81,37 +80,27 @@ func (w *walker) gitScripts(ctx context.Context, i int) error {
 }
 
 // topFor returns the top of the work tree of the git invocation inv when one of runs starts there,
-// and "" when none does or the guard cannot tell where the top is.
+// which git moves to before it runs a subcommand that needs a work tree. It returns "" when none
+// starts there or the guard cannot tell where the top is: a target it cannot follow, or a call git
+// fails, as it does outside a work tree and in a bare repository. A failure to run git at all is an
+// error.
 func (w *walker) topFor(ctx context.Context, inv Invocation, runs []gitRun) (string, error) {
 	if !slices.ContainsFunc(runs, func(run gitRun) bool { return run.start == startTop }) {
 		return "", nil
 	}
 
-	top, err := workTreeTop(ctx, w.caller.Git, inv)
-	if err != nil {
-		return "", fmt.Errorf("read the top of the work tree of %q: %w", wordTexts(inv.Words), err)
-	}
-
-	return top, nil
-}
-
-// workTreeTop returns the top of the work tree git finds for the git invocation inv, which git
-// moves to before it runs a subcommand that needs a work tree, and "" when the guard cannot tell
-// it: a target it cannot follow, or a call git fails, as it does outside a work tree and in a bare
-// repository. A failure to run git at all is an error.
-func workTreeTop(ctx context.Context, runner git.Runner, inv Invocation) (string, error) {
 	options, known := targetOptions(inv)
 	if !known {
 		return "", nil
 	}
 
-	result, err := targetRunner(runner, inv.Dir, inv.Target).Run(ctx, append(options, "rev-parse", "--show-toplevel")...)
+	result, err := targetRunner(w.caller.Git, inv.Dir, inv.Target).Run(ctx, append(options, "rev-parse", "--show-toplevel")...)
 	if _, failed := errors.AsType[*child.ExitError](err); failed {
 		return "", nil
 	}
 
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("read the top of the work tree of %q: %w", wordTexts(inv.Words), err)
 	}
 
 	return filepath.FromSlash(strings.TrimSpace(result.Stdout)), nil
@@ -222,11 +211,9 @@ func pathVariable(path string) variable {
 }
 
 // shellCommandsOf returns the shell commands the git invocation inv has git run, read once its
-// aliases expand: the value of each config key git runs through the shell, given by `-c` or
-// `--config-env`, and each `rebase --exec`. git starts a rebase's commands at the top of the work
-// tree, rebase being a command that needs one. Where it starts a config key's command depends on
-// the subcommand, such as a clone's filters run in the new repository, so that one starts in a
-// directory the guard does not know.
+// aliases expand: the editor given by `-c` or `--config-env`, and each `rebase --exec`. git starts
+// a rebase's commands at the top of the work tree, rebase being a command that needs one. An editor
+// starts in a directory the guard does not know.
 func shellCommandsOf(inv Invocation) []gitRun {
 	var runs []gitRun
 	for _, command := range configCommands(inv) {
@@ -279,111 +266,27 @@ func capDepth(depth int, runs bool, mark MarkKind) (bool, MarkKind) {
 }
 
 // configCommands returns the shell command of each `-c` and `--config-env` option of the git
-// invocation inv whose key git runs through the shell. The command is not a literal when the guard
-// cannot read it. An option whose key the guard cannot read is left to the rules that judge the
-// subcommand.
+// invocation inv that sets `core.editor` or `sequence.editor`, the editors git runs through the
+// shell. The command is not a literal when the `-c` value is not one, and never for a
+// `--config-env`, whose value the guard does not read. An option whose key the guard cannot read
+// is left to the rules that judge the subcommand.
 func configCommands(inv Invocation) []Word {
+	editors := []string{"core.editor", "sequence.editor"}
 	var scripts []Word
 	for _, o := range inv.Git.Options {
 		key, rest, cut := configKey(o)
-		if !cut {
+		if !cut || !containsFold(editors, key) {
 			continue
 		}
 
-		value := Word{Text: rest, Literal: o.Value.Literal}
-		if o.Name == "--config-env" {
-			text, ok := setValue(inv, rest)
-			value = Word{Text: text, Literal: ok && o.Value.Literal}
-		}
-
-		if command, runs := shellCommand(key, value); runs {
-			scripts = append(scripts, command)
-		}
+		scripts = append(scripts, Word{Text: rest, Literal: o.Name == "-c" && o.Value.Literal})
 	}
 
 	return scripts
 }
 
-// shellKeys are the config keys outside the `pager` section whose value git runs as a shell
-// command.
-func shellKeys() []string {
-	return []string{
-		"core.editor", "core.pager", "sequence.editor", "core.sshCommand", "core.fsmonitor", "diff.external",
-	}
-}
-
-// subsectionKeys are the keys of the subsections of one config section whose value git runs as a
-// shell command.
-type subsectionKeys struct {
-	section string
-	names   []string
-}
-
-// shellSubsectionKeys are the keys of a driver or tool that a subsection names whose value git runs
-// as a shell command, by section.
-func shellSubsectionKeys() []subsectionKeys {
-	return []subsectionKeys{
-		{section: "diff", names: []string{"command", "textconv"}},
-		{section: "filter", names: []string{"clean", "smudge", "process"}},
-		{section: "merge", names: []string{"driver"}},
-		{section: "difftool", names: []string{"cmd"}},
-		{section: "mergetool", names: []string{"cmd"}},
-		{section: "man", names: []string{"cmd"}},
-		{section: "browser", names: []string{"cmd"}},
-		{section: "trailer", names: []string{"cmd", "command"}},
-	}
-}
-
 func containsFold(names []string, s string) bool {
 	return slices.ContainsFunc(names, func(name string) bool { return strings.EqualFold(name, s) })
-}
-
-// inSubsection reports whether key is `section.<subsection>.<name>` for one of names, where git
-// reads the section and the name in any case.
-func inSubsection(key, section string, names ...string) bool {
-	head, rest, _ := strings.Cut(key, ".")
-	subsection, name, dotted := strings.CutLast(rest, ".")
-
-	return dotted && subsection != "" && strings.EqualFold(head, section) && containsFold(names, name)
-}
-
-// isCredentialHelper reports whether key is `credential.helper`, or the helper of one URL.
-func isCredentialHelper(key string) bool {
-	return strings.EqualFold(key, "credential.helper") || inSubsection(key, "credential", "helper")
-}
-
-// runsShell reports whether git runs the value of the config key through the shell, whatever the
-// value is: a key of shellKeys, a `pager.<command>` key, or the command key of a driver or tool
-// that a subsection names. Section and variable names are case-insensitive.
-func runsShell(key string) bool {
-	const pager = "pager."
-
-	return containsFold(shellKeys(), key) ||
-		(len(key) > len(pager) && strings.EqualFold(key[:len(pager)], pager)) ||
-		slices.ContainsFunc(shellSubsectionKeys(), func(s subsectionKeys) bool {
-			return inSubsection(key, s.section, s.names...)
-		})
-}
-
-// shellCommand returns the shell command git runs for the config key set to value, and false when
-// it runs none. git runs every credential helper through the shell the way it reads the value: the
-// text after a leading `!` is the command, a value starting with `/` is the command as written, and
-// any other value names `git credential-<value>`. An empty value runs nothing.
-func shellCommand(key string, value Word) (Word, bool) {
-	if !isCredentialHelper(key) {
-		return value, runsShell(key)
-	}
-
-	if value.Literal && value.Text == "" {
-		return Word{}, false
-	}
-
-	text, shell := strings.CutPrefix(value.Text, "!")
-	if !shell && !strings.HasPrefix(value.Text, "/") {
-		text = "git credential-" + value.Text
-	}
-
-	return Word{Text: text, Literal: value.Literal}, true
 }
 
 // couldBeXOption reports whether a word that starts with text, the rest unknown, could be `-x` or
@@ -430,7 +333,6 @@ func argumentRuns(inv Invocation) []gitRun {
 	runs := map[string]func([]Word) []gitRun{
 		"bisect":        bisectRuns,
 		"submodule":     submoduleRuns,
-		"difftool":      difftoolRuns,
 		"filter-branch": filterBranchRuns,
 		"for-each-repo": forEachRepoRuns,
 	}
@@ -440,12 +342,6 @@ func argumentRuns(inv Invocation) []gitRun {
 	}
 
 	return nil
-}
-
-// difftoolRuns returns the value of each `--extcmd` or `-x` among the arguments of `git difftool`.
-// git starts each at the top of the work tree, difftool setting one up before it compares.
-func difftoolRuns(args []Word) []gitRun {
-	return topRuns(args, "difftool", "--extcmd")
 }
 
 // topRuns returns the value of each `-x` or long option among args, the arguments of the git

@@ -75,9 +75,6 @@ func abbreviates(name, long string, shortest int) bool {
 // takes a value as the rest of a short option bundle or as the next word, whatever it is spelled
 // like, and reads a start of a long option's name as that option when it starts no other.
 type knownOptions struct {
-	// short holds, by the name of a long option without the leading `--`, the letter of the short
-	// option that spells it too.
-	short         map[string]byte
 	valuedLetters string
 	// values and flags hold the names of the long options that take a value and of those that
 	// take none, without the leading `--`.
@@ -91,8 +88,7 @@ type knownOptions struct {
 // options. These are the options git 2.55 lists with `git <subcommand> --help-all`, and for
 // send-email those its script declares. A long option ending in `=` takes a value, and one
 // starting with `[no-]` has a negated form too, which takes none. An option that takes a value
-// only after `=` is listed as taking none. A letter and `|` before a long option name the short
-// option that spells it too, where a rule reads that spelling.
+// only after `=` is listed as taking none.
 const subcommandOptionTable = `
 add -U
 	[no-]dry-run [no-]verbose [no-]interactive [no-]patch [no-]auto-advance unified=
@@ -101,7 +97,7 @@ add -U
 	[no-]chmod= [no-]warn-embedded-repo [no-]pathspec-from-file= [no-]pathspec-file-nul
 
 am -Cp
-	[no-]interactive n|no-verify verify [no-]binary [no-]3way [no-]quiet [no-]signoff [no-]utf8
+	[no-]interactive no-verify verify [no-]binary [no-]3way [no-]quiet [no-]signoff [no-]utf8
 	[no-]keep [no-]keep-non-patch [no-]message-id [no-]keep-cr [no-]scissors quoted-cr=
 	[no-]whitespace= [no-]ignore-space-change [no-]ignore-whitespace [no-]directory= [no-]exclude=
 	[no-]include= [no-]patch-format= [no-]reject [no-]resolvemsg= continue resolved skip abort quit
@@ -129,7 +125,7 @@ commit -FmcCtU
 	[no-]quiet [no-]verbose [no-]file= [no-]author= [no-]date= [no-]message= [no-]reedit-message=
 	[no-]reuse-message= [no-]fixup= [no-]squash= [no-]reset-author [no-]trailer= [no-]signoff
 	[no-]template= [no-]edit [no-]cleanup= [no-]status [no-]gpg-sign [no-]all [no-]include
-	[no-]interactive [no-]patch unified= inter-hunk-context= [no-]only n|no-verify verify [no-]dry-run
+	[no-]interactive [no-]patch unified= inter-hunk-context= [no-]only no-verify verify [no-]dry-run
 	[no-]short [no-]branch [no-]ahead-behind [no-]porcelain [no-]long [no-]null [no-]amend
 	no-post-rewrite post-rewrite [no-]untracked-files [no-]pathspec-from-file=
 	[no-]pathspec-file-nul [no-]allow-empty [no-]allow-empty-message
@@ -256,15 +252,6 @@ func (k *knownOptions) add(word string) {
 		k.valuedLetters = letters
 
 		return
-	}
-
-	if letter, long, ok := strings.Cut(word, "|"); ok {
-		if k.short == nil {
-			k.short = map[string]byte{}
-		}
-
-		k.short[long] = letter[0]
-		word = long
 	}
 
 	word, negated := strings.CutPrefix(word, "[no-]")

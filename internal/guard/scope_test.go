@@ -249,7 +249,7 @@ func TestJudge_WhenAForLoopRunsOverLiterals_AllowsWhatTheBodyRunsForEachValue(t 
 		{name: "as many values as the bodies the guard walks, each walked twice", command: "for v in" + strings.Repeat(" ls", 128) + "; do $v; done"},
 		{name: "two loops whose values fill the bodies the guard walks", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; for v in" + strings.Repeat(" ls", 28) + "; do $v; done"},
 		{name: "loop after a function whose loop and dry run fill the bodies the guard walks", command: "f() { for v in" + strings.Repeat(" ls", 40) + "; do :; done; }; f; for v in" + strings.Repeat(" ls", 8) + "; do $v; done"},
-		{name: "loop in a git pager script that fills the bodies a first loop left", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; git -c core.pager='for v in" + strings.Repeat(" ls", 28) + "; do $v; done' log"},
+		{name: "loop in a git editor script that fills the bodies a first loop left", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; git -c core.editor='for v in" + strings.Repeat(" ls", 28) + "; do $v; done' log"},
 	})
 }
 
@@ -272,7 +272,7 @@ func TestJudge_WhenTheGuardCannotReadAForLoopValue_RefusesItAsACommandWord(t *te
 		{name: "more values than the bodies the guard walks, each walked twice", command: "for v in" + strings.Repeat(" ls", 129) + "; do $v; done"},
 		{name: "second loop past the bodies a first loop left", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; for v in" + strings.Repeat(" ls", 29) + "; do $v; done"},
 		{name: "loop past the bodies a function's loop and its dry run left", command: "f() { for v in" + strings.Repeat(" ls", 40) + "; do :; done; }; f; for v in" + strings.Repeat(" ls", 12) + "; do $v; done"},
-		{name: "loop in a git pager script past the bodies a first loop left", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; git -c core.pager='for v in" + strings.Repeat(" ls", 29) + "; do $v; done' log"},
+		{name: "loop in a git editor script past the bodies a first loop left", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; git -c core.editor='for v in" + strings.Repeat(" ls", 29) + "; do $v; done' log"},
 	})
 }
 
