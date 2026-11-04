@@ -403,8 +403,10 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
 #### How the guard reads a command
 
 - a command that does not parse;
-- a command word that is not a literal (`$(which git)`, `"$GIT"`, `@(git)`). These rules decide
-  when a `$NAME` or `${NAME}` counts as a literal:
+- a command word that is not a literal (`$(which git)`, `"$GIT"`, `@(git)`). A glob anywhere else
+  in a word is data, though zsh runs a qualifier such as `*(e:'git push':)` as code
+  ([accepted limits](guard-scope.md#accepted-limits)). These rules decide when a `$NAME` or
+  `${NAME}` counts as a literal:
   - **Literal assignments:** a `$NAME` or `${NAME}` the command assigned a literal earlier reads as
     that literal in the words that run later in the same shell. That includes the words of a
     subshell, a command substitution, or an `eval` string. A plain assignment counts. So do
@@ -544,8 +546,9 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   `git submodule foreach`, the `git filter-branch` filters and `--setup`, and `git for-each-repo`;
   the value of `-c core.editor` and `-c sequence.editor`; and the value of `GIT_EDITOR`,
   `GIT_SEQUENCE_EDITOR`, `GIT_PAGER`, and the `EDITOR`, `VISUAL`, and `PAGER` git falls back to. A
-  `--config-env=<key>=<VAR>` is judged as `-c <key>` with a value that is not a literal, whatever
-  the command assigns `VAR`, so the guard refuses `ED=vim git --config-env=core.editor=ED commit`.
+  `--config-env` of either editor key is judged as that `-c` with a value that is not a literal,
+  whatever the command assigns its variable, so the guard refuses
+  `ED=vim git --config-env=core.editor=ED commit`.
   The other keys and options git runs as a program (`core.pager`, `core.sshCommand`, a credential
   helper, `difftool -x`) are data
   ([accepted limits](guard-scope.md#accepted-limits));
@@ -606,7 +609,9 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   git working tree, or to a file whose name the guard cannot read. The guard allows output landing
   in `/dev/null`, or in a file whose nearest existing directory is outside every working tree. A
   `tee` that reads a group, a subshell, or a function call holding `git show` is not judged
-  ([rule 3](guard-scope.md#3-close-a-bypass-only-when-agents-write-it));
+  ([rule 3](guard-scope.md#3-close-a-bypass-only-when-agents-write-it)), and neither is a file an
+  earlier `exec` opened (`exec > f; git show HEAD:f`,
+  [accepted limits](guard-scope.md#accepted-limits));
 - `rebase` in a working tree with uncommitted changes or untracked files, or where the guard cannot
   tell the repository. In a dirty tree, `--continue`, `--edit-todo`, `--show-current-patch`, and
   `--quit` are allowed, since they leave the tree as it is; `--abort` and `--skip` are refused;

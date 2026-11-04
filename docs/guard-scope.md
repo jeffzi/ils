@@ -220,3 +220,11 @@ These classes fail that test, so the guard lets them through:
 - **Exports through `set -a`:** `set -a; read -r GIT_DIR` exports a variable the guard never sees
   assigned. Agents write `export GIT_DIR=…`, which the guard reads, and use `set -a` to load a
   `.env` file of their own settings.
+- **A glob that runs code:** a zsh qualifier such as `*(e:'git push':)` or `*(+f)`, or a command
+  substitution inside the parentheses of an extended glob. Agents write `*(N)` or `@(a|b)` to
+  match files, and those run nothing. Putting a command inside a glob only hides it. A command word
+  written as a glob (`@(git) push`) stays refused.
+- **A redirect an earlier `exec` opens:** `exec > README.md; git show HEAD:README.md` writes
+  history over a tracked file that the history-over-file refusal never sees. Agents run
+  `exec > log` to capture a run's output. Opening a tracked file there first only hides the
+  overwrite. A redirect on `git show` itself stays refused.
