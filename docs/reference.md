@@ -592,14 +592,17 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
 - a `-c` or `--config-env` value that is not a literal, on any git command, since it may set
   `core.hooksPath`;
 - a non-literal argument to a git command the guard checks for flags (`git clean "$opt"`, which
-  could expand to `--force`). A commit message (`-m "$(cat <<'EOF' … EOF)"`) and the directory of
-  `-C "$dir"` are exempt.
+  could expand to `--force`). A commit message (`-m "$(cat <<'EOF' … EOF)"`), the directory of
+  `-C "$dir"`, and a path glob whose literal prefix does not start with `-` or `+` (`git add
+  src/*.go`, which expands only to paths under `src/`) are exempt; a glob with no such prefix
+  (`git add *.go`) could match a file named like an option and is refused.
 
 #### Git operations that destroy work or skip checks
 
 - every `checkout`, `reset`, and `prune`; every `stash` but `stash list` and `stash show`; `switch
-  --force` or `--discard-changes`; `clean --force` or `--interactive` (`-i`); `branch -D`, `-d
-  -f`, or `--delete --force`;
+  --force` or `--discard-changes`; `clean --force` or `--interactive` (`-i`), unless a dry run
+  (`-n`, `--dry-run`) is set last and `--interactive` is not; `branch -D`, `-d -f`, or `--delete
+  --force`;
   `restore` without `--staged` (or `-S`), or with `--worktree` (`-W`) beside it; `rm --force`;
   `reflog expire`, `delete`, and `drop`; `gc --prune=…`, and `gc` with `gc.pruneExpire` set
   through `-c` or `--config-env`; `repack -a -d` without `-A`, `--cruft`, or
@@ -619,7 +622,8 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   `tee` that reads a group, a subshell, or a function call holding `git show` is not judged
   ([rule 3](guard-scope.md#3-close-a-bypass-only-when-agents-write-it));
 - `rebase` in a working tree with uncommitted changes or untracked files, or where the guard cannot
-  tell the repository;
+  tell the repository. In a dirty tree, `--continue`, `--edit-todo`, `--show-current-patch`, and
+  `--quit` are allowed, since they leave the tree as it is; `--abort` and `--skip` are refused;
 - `worktree remove --force`, and `worktree remove` of a worktree with changes or one the guard
   cannot find;
 - `git config` writing `alias.*`, `include.*`, `includeIf.*`, `remote.*`, `url.*`, `pager.*`,

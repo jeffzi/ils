@@ -20,6 +20,10 @@ type Word struct {
 	// brace expansion, no unquoted glob character, no `~user`, and no expansion other than one of a
 	// variable whose value the guard knows (see shellVars), which the text holds in its place.
 	Literal bool
+	// Glob reports whether the only parts of the word the guard cannot read are unquoted glob
+	// characters (`*`, `?`, `[`). Text is then the text before the first of them, and every word the
+	// shell expands the pattern to starts with it.
+	Glob bool
 }
 
 // isEndOfFlags reports whether w is a literal `--`, which ends the options of most commands.
@@ -35,7 +39,8 @@ type expander struct {
 }
 
 // readWord returns w after quote removal, or its literal prefix when any part of it is one the
-// shell would expand and ex cannot tell the value of.
+// shell would expand and ex cannot tell the value of. A word whose only such parts are unquoted
+// glob characters is reported as a glob.
 func readWord(w *syntax.Word, ex expander) Word {
 	if w == nil {
 		return Word{}
@@ -45,38 +50,59 @@ func readWord(w *syntax.Word, ex expander) Word {
 	split := &syntax.Word{Parts: slices.Clone(w.Parts)}
 	syntax.SplitBraces(split)
 
-	var text strings.Builder
+	// Once a glob character ends the prefix, the parts after it are still read, into pattern, which
+	// is thrown away: one the guard cannot read keeps the word from counting as a glob.
+	var prefix, pattern strings.Builder
+	text, glob := &prefix, false
 	for i, part := range split.Parts {
-		literal := false
-		switch p := part.(type) {
-		case *syntax.Lit:
-			raw, expanded := p.Value, true
+		lit, unquoted := part.(*syntax.Lit)
+		switch {
+		case unquoted && glob:
+			// Unquoted text after a glob character only extends the pattern.
+		case unquoted:
+			raw, expanded := lit.Value, true
 			if i == 0 {
-				raw, expanded = expandTilde(&text, raw, len(split.Parts) == 1, ex.home)
+				raw, expanded = expandTilde(text, raw, len(split.Parts) == 1, ex.home)
 			}
 
-			literal = expanded && readUnquoted(&text, raw, i == len(split.Parts)-1)
-		case *syntax.SglQuoted:
-			value := p.Value
-			if p.Dollar {
-				value, literal = decodeANSIC(value)
-			} else {
-				literal = true
+			if !expanded {
+				return Word{Text: prefix.String()}
 			}
 
-			text.WriteString(value)
-		case *syntax.DblQuoted:
-			literal = readDoubleQuoted(&text, p.Parts, ex.vars)
-		case *syntax.ParamExp:
-			literal = readUnquotedExpansion(&text, p, nextPart(split.Parts, i), ex.vars)
-		}
-
-		if !literal {
-			return Word{Text: text.String()}
+			if !readUnquoted(text, raw, i == len(split.Parts)-1) {
+				text, glob = &pattern, true
+			}
+		case !readQuotedOrExpansion(text, split.Parts, i, ex.vars):
+			return Word{Text: prefix.String()}
 		}
 	}
 
-	return Word{Text: text.String(), Literal: true}
+	return Word{Text: prefix.String(), Literal: !glob, Glob: glob}
+}
+
+// readQuotedOrExpansion writes parts[i], a word part other than unquoted text, to b after quote
+// removal, and reports whether it is plain text: a quoted string, or an expansion of a variable
+// whose value vars knows.
+func readQuotedOrExpansion(b *strings.Builder, parts []syntax.WordPart, i int, vars shellVars) bool {
+	switch p := parts[i].(type) {
+	case *syntax.SglQuoted:
+		if !p.Dollar {
+			b.WriteString(p.Value)
+
+			return true
+		}
+
+		value, decoded := decodeANSIC(p.Value)
+		b.WriteString(value)
+
+		return decoded
+	case *syntax.DblQuoted:
+		return readDoubleQuoted(b, p.Parts, vars)
+	case *syntax.ParamExp:
+		return readUnquotedExpansion(b, p, nextPart(parts, i), vars)
+	default:
+		return false
+	}
 }
 
 // decodeANSIC returns the value of a `$'…'` string once its escapes are decoded as bash decodes

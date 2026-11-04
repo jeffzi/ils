@@ -44,7 +44,10 @@ func TestJudge_RefusesAGitOperationThatDiscardsWork(t *testing.T) {
 		{name: "switch -f", command: "git switch -f branch"},
 		{name: "switch --discard-changes", command: "git switch --discard-changes branch"},
 		{name: "clean -f", command: "git clean -f"},
+		{name: "clean -fd", command: "git clean -fd"},
 		{name: "clean -i", command: "git clean -i"},
+		{name: "clean -nf with the dry run turned off last", command: "git clean -nf --no-dry-run"},
+		{name: "clean -n with interactive set last", command: "git clean -n -i"},
 		{name: "branch -D", command: "git branch -D feature"},
 		{name: "branch --delete --force", command: "git branch --delete --force feature"},
 		{name: "reflog expire", command: "git reflog expire"},
@@ -124,6 +127,9 @@ func TestJudge_AllowsAGitOperationThatLeavesWorkOnDisk(t *testing.T) {
 	checkAllowed(t, caller, []namedCommand{
 		{name: "clean under -c keeping the force requirement", command: "git -c clean.requireForce=true clean -d"},
 		{name: "clean --no-dry-run then -n under -c lifting the force requirement", command: "git -c clean.requireForce=false clean --no-dry-run -n -d"},
+		{name: "clean bundle holding a dry run beside force", command: "git clean -nfd"},
+		{name: "clean bundle ending in a dry run", command: "git clean -fn"},
+		{name: "clean --dry-run after -f -d", command: "git clean -f -d --dry-run"},
 		{name: "checkout-index without force", command: "git checkout-index -a"},
 		{name: "update-ref setting a ref", command: "git update-ref refs/heads/new HEAD"},
 		{name: "branch -M onto a new name", command: "git branch -M topic other"},
@@ -385,7 +391,20 @@ func TestJudge_RefusesARebaseOverUncommittedWork(t *testing.T) {
 	checkJudgedIn(t, caller, []placed{
 		{name: "in the dirty tree", dir: dirty.Dir(), command: "git rebase main"},
 		{name: "-C naming the dirty tree", dir: clean.Dir(), command: "git -C " + quotedPath(dirty.Dir()) + " rebase main"},
+		{name: "--abort in the dirty tree", dir: dirty.Dir(), command: "git rebase --abort"},
+		{name: "--skip in the dirty tree", dir: dirty.Dir(), command: "git rebase --skip"},
 	}, expectation{outcome: guard.Refuse, named: "dirty"})
+}
+
+func TestJudge_RefusesARebaseInADirtyTreeWhoseOptionsAreUnreadable(t *testing.T) {
+	t.Parallel()
+
+	dirty, caller := standingOn(t, "main", "topic")
+	dirty.DirtyFile()
+
+	checkJudgedIn(t, caller, []placed{
+		{name: "non-literal option", dir: dirty.Dir(), command: `git rebase "$opt"`},
+	}, expectation{outcome: guard.Refuse})
 }
 
 func TestJudge_RefusesARebaseWhoseTargetIsUnknown(t *testing.T) {
@@ -408,6 +427,10 @@ func TestJudge_AllowsARebaseThatCannotLoseWork(t *testing.T) {
 	checkJudgedIn(t, caller, []placed{
 		{name: "-C naming a clean tree from a dirty one", dir: dirty.Dir(), command: "git -C " + quotedPath(clean.Dir()) + " rebase main"},
 		{name: "outside any repository", dir: outsideDir(t), command: "git rebase main"},
+		{name: "--continue in a dirty tree", dir: dirty.Dir(), command: "git rebase --continue"},
+		{name: "--edit-todo in a dirty tree", dir: dirty.Dir(), command: "git rebase --edit-todo"},
+		{name: "--show-current-patch in a dirty tree", dir: dirty.Dir(), command: "git rebase --show-current-patch"},
+		{name: "--quit in a dirty tree", dir: dirty.Dir(), command: "git rebase --quit"},
 	}, expectation{outcome: guard.Allow})
 }
 

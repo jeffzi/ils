@@ -53,7 +53,10 @@ func discards() map[string]discard {
 		"stash show": {},
 		"clean": {
 			refuses: func(o subcommandOptions) bool {
-				return forced(o) || o.setsLast('i', "--interactive", "--no-interactive")
+				// A dry run deletes nothing, --force or not, but --interactive still asks to delete.
+				dryRun := isDryRun(o)
+
+				return (forced(o) && !dryRun) || o.setsLast('i', "--interactive", "--no-interactive")
 			},
 			judges: judgeCleanWithoutForce,
 			reason: "git clean --force or --interactive deletes untracked files",
@@ -96,6 +99,12 @@ func forced(o subcommandOptions) bool {
 	return o.sets('f', "--force")
 }
 
+// isDryRun reports whether the options end on `-n` or `--dry-run`, not undone by a later
+// `--no-dry-run`.
+func isDryRun(o subcommandOptions) bool {
+	return o.setsLast('n', "--dry-run", "--no-dry-run")
+}
+
 // recoveryDiscards returns the operations of discards that delete what lost commits are recovered
 // from: the reflog entries that name them and the unreachable objects that hold them.
 func recoveryDiscards() map[string]discard {
@@ -136,7 +145,7 @@ func plumbingDiscards() map[string]discard {
 			refuses: func(o subcommandOptions) bool {
 				// --prefix only adds the tree's entries under a directory the index does not hold yet,
 				// and --index-output writes another file, so neither replaces what is staged.
-				replacesIndex := !o.setsLast('n', "--dry-run", "--no-dry-run") &&
+				replacesIndex := !isDryRun(o) &&
 					!o.sets(0, "--index-output") && !o.sets(0, "--prefix")
 
 				return replacesIndex || o.sets(0, "--reset") || (o.sets('u', "") && o.sets('m', ""))
@@ -240,7 +249,7 @@ func (d discard) verdict(ctx context.Context, caller Caller, inv Invocation, sub
 // lets it delete untracked files anyway, or when the guard cannot read that config. A dry run
 // deletes nothing, unless a later --no-dry-run undoes it.
 func judgeCleanWithoutForce(ctx context.Context, caller Caller, inv Invocation, o subcommandOptions) (string, error) {
-	if o.setsLast('n', "--dry-run", "--no-dry-run") {
+	if isDryRun(o) {
 		return "", nil
 	}
 
@@ -556,7 +565,7 @@ func nearestDirectory(path string) string {
 
 // refuseRebaseOverChanges refuses `git rebase` in a work tree that holds uncommitted or
 // untracked changes, and one whose repository the guard cannot tell. Outside any repository there
-// is nothing for it to lose.
+// is nothing for it to lose, and an action of rebaseKeepingActions leaves the work tree as it is.
 func refuseRebaseOverChanges(ctx context.Context, caller Caller, inv Invocation) (Verdict, error) {
 	sub, ok := subcommand(inv)
 	if !ok || sub != "rebase" {
@@ -567,7 +576,7 @@ func refuseRebaseOverChanges(ctx context.Context, caller Caller, inv Invocation)
 		return refuse("git rebase: the guard cannot tell which repository it runs in; " + moveFirst), nil
 	}
 
-	if inv.Git.GitDir == "" {
+	if inv.Git.GitDir == "" || keepsWorkTree(readArgs(inv.Git.Args, optionsOf(sub))) {
 		return Verdict{Outcome: Allow}, nil
 	}
 
@@ -582,6 +591,20 @@ func refuseRebaseOverChanges(ctx context.Context, caller Caller, inv Invocation)
 	}
 
 	return Verdict{Outcome: Allow}, nil
+}
+
+// rebaseKeepingActions are the actions of `git rebase` that discard nothing in the work tree:
+// --continue commits what is staged, and the others edit or show the rebase's state, or drop it
+// while leaving HEAD and the work tree where they are. git refuses an action beside another, so
+// one of these set means no other runs.
+func rebaseKeepingActions() []string {
+	return []string{"--continue", "--edit-todo", "--show-current-patch", "--quit"}
+}
+
+// keepsWorkTree reports whether the readable `git rebase` options o set an action of
+// rebaseKeepingActions.
+func keepsWorkTree(o subcommandOptions) bool {
+	return !o.unreadable && slices.ContainsFunc(rebaseKeepingActions(), func(action string) bool { return o.sets(0, action) })
 }
 
 // refuseRiskyWorktreeRemoval refuses `git worktree remove` with `--force`, of a path it cannot

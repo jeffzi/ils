@@ -323,7 +323,8 @@ func startedBy(names []string, prefix string) []string {
 // readArgs returns the options and other arguments among the subcommand arguments args, given the
 // options the subcommand takes. A value is a value slot: whether it is a literal and what it is
 // spelled like do not matter. So is a word after `--`. Any other word that is not a literal makes
-// the arguments unreadable, unless it is a long option whose name before `=` is literal.
+// the arguments unreadable, unless it is a long option whose name before `=` is literal, or a glob
+// that expands to no option (see globOfPaths), which is positional.
 func readArgs(args []Word, known knownOptions) subcommandOptions {
 	var o subcommandOptions
 	for i := 0; i < len(args); i++ {
@@ -345,7 +346,7 @@ func readArgs(args []Word, known knownOptions) subcommandOptions {
 			if next {
 				i++
 			}
-		case !w.Literal:
+		case !w.Literal && !globOfPaths(w):
 			o.unreadable = true
 		default:
 			o.positional = append(o.positional, w)
@@ -353,6 +354,12 @@ func readArgs(args []Word, known knownOptions) subcommandOptions {
 	}
 
 	return o
+}
+
+// globOfPaths reports whether w is a glob whose literal prefix starts with neither `-` nor `+`:
+// every word the shell expands it to starts with that prefix, so none is an option.
+func globOfPaths(w Word) bool {
+	return w.Glob && w.Text != "" && w.Text[0] != '-' && w.Text[0] != '+'
 }
 
 // readLong records the long option w, given the options the subcommand takes, and reports
@@ -522,11 +529,14 @@ func rebaseBranch(args []Word) (branch Word, named, unreadable bool) {
 		at = 0
 	}
 
+	// A glob may expand to several words, which moves the operand past it.
+	upToOperand := options.positional[:min(at+1, len(options.positional))]
+	unreadable = options.unreadable || slices.ContainsFunc(upToOperand, func(w Word) bool { return w.Glob })
 	if len(options.positional) <= at {
-		return Word{}, false, options.unreadable
+		return Word{}, false, unreadable
 	}
 
-	return options.positional[at], true, options.unreadable
+	return options.positional[at], true, unreadable
 }
 
 // sets reports whether the options hold the short option letter, or a long option git reads as

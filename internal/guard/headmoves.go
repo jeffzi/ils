@@ -226,9 +226,7 @@ func movesHead(inv Invocation) bool {
 
 		return options.unreadable || len(options.positional) > 1
 	case "branch":
-		valued := optionsOf("branch").valuedLetters
-
-		return slices.ContainsFunc(args, func(arg Word) bool { return isBranchMove(arg, valued) })
+		return isBranchMove(args)
 	case "rebase":
 		_, named, unreadable := rebaseBranch(args)
 
@@ -256,22 +254,26 @@ func ghMovesHead(args []Word) bool {
 	return first.Text == "pr" && len(at) > 1 && (!args[at[1]].Literal || args[at[1]].Text == "checkout")
 }
 
-// isBranchMove reports whether arg is an option `git branch` reads as `--move`: `m` or `M` in a
-// short-flag bundle ahead of any of valued, the short options that take a value, whose rest is
-// then that value, or a prefix of `--move` git reads as it.
-func isBranchMove(arg Word, valued string) bool {
-	text := arg.Text
-	switch {
-	case !arg.Literal || !strings.HasPrefix(text, "-"):
-		return false
-	case strings.HasPrefix(text, "--"):
-		return abbreviates(text, "--move", len("--mo"))
-	default:
-		_, move, _ := shortValue(arg, 'm', valued)
-		_, forceMove, _ := shortValue(arg, 'M', valued)
-
-		return move || forceMove
+// isBranchMove reports whether `git branch` given args may rename or move a branch: its options,
+// read the way git reads them, hold `-m`, `-M` or `--move`, or hold a word the guard cannot read.
+// A long option that starts several options, one of which takes a value, moves nothing: git
+// refuses the command over it, so the word after it does not matter.
+func isBranchMove(args []Word) bool {
+	if slices.ContainsFunc(args, func(w Word) bool { return !w.Literal && !w.Glob }) {
+		return true
 	}
+
+	known := optionsOf("branch")
+	options := readArgs(args, known)
+	if slices.ContainsFunc(options.long, func(l longOption) bool {
+		_, _, ambiguous := known.resolve(l.name)
+
+		return ambiguous
+	}) {
+		return false
+	}
+
+	return options.unreadable || options.sets('m', "--move") || options.sets('M', "")
 }
 
 // writesHead reports whether inv may write the HEAD file of a git dir: through one of the redirects
