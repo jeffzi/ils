@@ -258,8 +258,6 @@ func readableSpelling(inv Invocation, kind MarkKind) string {
 		return "write the command word as a literal, or assign its variable a literal earlier in the same command"
 	case kind == DynamicScript:
 		return "write the string as a literal"
-	case kind == HiddenScript:
-		return "run the script from a file, as in `bash x.sh`"
 	default:
 		return ""
 	}

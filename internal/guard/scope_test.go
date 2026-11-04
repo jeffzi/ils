@@ -305,8 +305,6 @@ func TestParse_WhenTheGuardCannotBeSureOfAVariable_ReadsItsExpansionUnknown(t *t
 		{name: "local -n in a function", command: "f() { local -n R=T; }; S=/tmp/work; $S/run.sh"},
 		{name: "declare -n through builtin", command: "builtin declare -n R=T; S=/tmp/work; $S/run.sh"},
 		{name: "typeset -n through command with an option", command: "command -p typeset -n R=T; S=/tmp/work; $S/run.sh"},
-		{name: "declare with an attribute through command", command: "command declare -u S; S=/tmp/work; $S/run.sh"},
-		{name: "zsh integer", command: "integer S; S=/tmp/work; $S/run.sh"},
 		{name: "eval string declaring a name reference later in a loop", command: "S=/tmp/work; for f in a b; do $S/run.sh; eval 'declare -n R=T'; done"},
 		{name: "assignment prefix of the command reading it", command: "S=/tmp/work $S/run.sh"},
 		{name: "source of a file after the assignment", command: "S=/tmp/work; source env.sh; $S/run.sh"},

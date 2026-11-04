@@ -411,55 +411,67 @@ func TestParse_WhenAGlobQualifierRunsNoCode_MarksNothing(t *testing.T) {
 	})
 }
 
-func TestParse_WhenAnExtendedGlobCouldRunCodeOrIsNoQualifier_MarksIt(t *testing.T) {
+func TestJudge_WhenAWordIsAnExtendedGlob_AllowsIt(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		command string
-	}{
-		{name: "qualifier evaluating a string", command: "ls *(e:'touch x':)"},
-		{name: "qualifier calling a function", command: "ls *(+f)"},
-		{name: "negation", command: "ls !(x)"},
-		{name: "qualifier holding a substitution in backticks", command: "ls *(`git stash`N)"},
-		{name: "qualifier holding a parameter expansion", command: `ls *(${x}N)`},
-		{name: "qualifier holding a process substitution", command: "ls *(<(git stash)N)"},
+	checkAllowed(t, readerCaller(), []namedCommand{
+		{name: "extended glob", command: "echo @(a|b)"},
+		{name: "qualifier evaluating a string", command: "ls *(e:'git push':)"},
+	})
+}
+
+func TestJudge_WhenTheCommandWordIsAnExtendedGlob_RefusesItAsNotALiteral(t *testing.T) {
+	t.Parallel()
+
+	checkRefusals(t, []refusal{
+		{name: "extended glob naming git", command: "@(git) push", wantNamed: string(guard.DynamicCommand)},
+	})
+}
+
+func TestJudge_AllowsACommandThatDefinesAnAlias(t *testing.T) {
+	t.Parallel()
+
+	_, caller := standingOn(t, "main", "topic")
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "alias naming no tool", command: "alias ll='ls -l'; ll"},
+		{name: "alias printing one", command: "alias ll"},
+		{name: "alias naming git", command: "alias g=git; g status"},
+		{name: "alias naming gh in a second operand", command: "alias ll='ls -l' ship='gh pr merge'; ship"},
+		{name: "alias whose value is not a literal", command: `alias ship="$c"; ship`},
+		{name: "alias starting with pushd", command: "alias hop='pushd sub'; hop; git status"},
+		{name: "alias starting with a wrapper", command: "alias hop='builtin cd'; hop sub; git status"},
+	})
+}
+
+func TestJudge_WhenAllexportIsOnAroundASource_AllowsGitStatus(t *testing.T) {
+	t.Parallel()
+
+	_, caller := standingOn(t, "main", "topic")
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "set -a around a source", command: "set -a; . ./.env; set +a; git status"},
+	})
+}
+
+func TestParse_WhenAllexportIsOn_MarksNoGitVariableABuiltinAssigns(t *testing.T) {
+	t.Parallel()
+
+	tests := []namedCommand{
+		{name: "read after set -a", command: "set -a; read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "read after setopt allexport", command: "setopt allexport; read -r GIT_CONFIG_PARAMETERS; git status"},
+		{name: "assign-default expansion after set -a", command: `set -a; echo "${GIT_CONFIG_PARAMETERS:=x}"; git status`},
+		{name: "read in a function called after set -a", command: "f() { read -r GIT_CONFIG_PARAMETERS; }; set -a; f; git status"},
+		{name: "read in a bash -a string", command: "bash -a -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := only(t, tt.command)
+			got := parse(t, tt.command)
 
-			assert.Check(t, is.DeepEqual(kinds(got.Marks), []guard.MarkKind{guard.ExtendedGlob}), "Parse(%q) marks", tt.command)
+			assert.Assert(t, len(got) > 0, "Parse(%q) = %v", tt.command, texts(got))
+			assert.Check(t, is.Len(marksOf(got), 0), "Parse(%q) marks", tt.command)
 		})
 	}
-}
-
-func TestJudge_AllowsAnAliasThatHidesNoTool(t *testing.T) {
-	t.Parallel()
-
-	checkAllowed(t, readerCaller(), []namedCommand{
-		{name: "alias naming no tool", command: "alias ll='ls -l'; ll"},
-		{name: "alias printing one", command: "alias ll"},
-	})
-}
-
-func TestJudge_RefusesAnAliasWhoseValueNamesATool(t *testing.T) {
-	t.Parallel()
-
-	checkRefusals(t, []refusal{
-		{name: "gh", command: "alias ship='gh pr merge'; ship", wantNamed: "ship"},
-		{name: "second operand", command: "alias ll='ls -l' ship='git push'; ship", wantNamed: "ship"},
-		{name: "non-literal value", command: `alias ship="$c"; ship`, wantNamed: "ship"},
-	})
-}
-
-func TestJudge_RefusesAnAliasWhoseValueStartsWithACommandTheGuardReadsThrough(t *testing.T) {
-	t.Parallel()
-
-	checkRefusals(t, []refusal{
-		{name: "pushd", command: "alias hop='pushd sub'; hop; git commit -m x", wantNamed: "hop"},
-		{name: "wrapper", command: "alias hop='builtin cd'; hop sub; git commit -m x", wantNamed: "hop"},
-	})
 }

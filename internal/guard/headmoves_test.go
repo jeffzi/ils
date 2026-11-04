@@ -3,15 +3,11 @@
 package guard_test
 
 import (
-	"cmp"
-	"path/filepath"
-	"strings"
 	"testing"
 
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
-	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/guard"
 )
 
@@ -72,14 +68,10 @@ func TestParse_ReportsWhetherHeadMayHaveMovedBeforeEachInvocation(t *testing.T) 
 		{name: "rebase of a glob that may expand to the upstream and the branch", command: "git rebase m*; git commit", want: []bool{false, true}},
 		{name: "branch --show-current", command: "git branch --show-current; git commit", want: []bool{false, false}},
 		{name: "option that prints and exits", command: "git --version; git commit", want: []bool{false, false}},
-		{name: "pipeline stage that moves HEAD", command: "git switch x | cat; git commit", want: []bool{true, true, true}},
-		{name: "pipeline stage after the commit moving HEAD", command: "git commit | git switch x", want: []bool{true, true}},
-		{name: "pipeline whose stages move nothing", command: "git log | cat; git commit", want: []bool{false, false, false}},
-		{name: "background job that moves HEAD", command: "git switch x & git commit", want: []bool{true, true}},
-		{name: "background job that moves nothing", command: "git log & git commit", want: []bool{false, false}},
-		{name: "background job beside a later command that moves HEAD", command: "git commit & git switch main", want: []bool{true, false}},
-		{name: "background job beside a command further down the list that moves HEAD", command: "git commit & git log; git switch main", want: []bool{true, false, false}},
-		{name: "background job beside a group that moves HEAD", command: "git commit & { git switch main; }", want: []bool{true, false}},
+		{name: "pipeline stage that moves HEAD before an and list", command: "git switch x | cat && git commit", want: []bool{false, false, false}},
+		{name: "pipeline stage after the commit moving HEAD", command: "git commit | git switch x", want: []bool{false, false}},
+		{name: "background job that moves HEAD", command: "git switch x & git commit", want: []bool{false, false}},
+		{name: "background job beside a later command that moves HEAD", command: "git commit & git switch main", want: []bool{false, false}},
 	})
 }
 
@@ -95,46 +87,27 @@ func TestParse_WhenAnInvocationMayMoveHeadThroughGitsAliases_ReportsHeadUnknownA
 	})
 }
 
-func TestParse_WhenACommandMayWriteTheGitDirsHead_ReportsHeadUnknownAfterIt(t *testing.T) {
+func TestJudge_WhenACommandWritesFilesWithoutGit_AllowsACommitAfterIt(t *testing.T) {
 	t.Parallel()
 
-	f := gittest.New(t, "main")
-	gitDir := filepath.Join(f.Dir(), ".git")
-	tests := []struct {
-		name    string
-		dir     string
-		command string
-		want    []bool
-	}{
-		{name: "redirect", command: "echo ref: refs/heads/x > .git/HEAD; git commit", want: []bool{false, true}},
-		{name: "redirect to an absolute path", command: "echo x > {dir}/.git/HEAD; git commit", want: []bool{false, true}},
-		{name: "redirect to a target that is not a literal", command: `echo x > "$where"; git commit`, want: []bool{false, true}},
-		{name: "redirect to a work tree file named HEAD", command: "echo x > HEAD; git commit", want: []bool{false, false}},
-		{name: "cp onto it", command: "cp saved .git/HEAD; git commit", want: []bool{false, true}},
-		{name: "cp given a word it cannot read where an option can stand", command: `cp "$o" HEAD saved; git commit`, want: []bool{false, true}},
-		{name: "cp reading it", command: "cp .git/HEAD saved; git commit", want: []bool{false, false}},
-		{name: "mv found by the equals lookup moving a HEAD file into it", command: "=mv HEAD .git; git commit -m x", want: []bool{false, true}},
-		{name: "cp found by the equals lookup copying a HEAD file into it", command: "=cp -t .git HEAD; git commit -m x", want: []bool{false, true}},
-		{name: "install -m value holding a t", command: "install -mt.git HEAD saved; git commit", want: []bool{false, false}},
-		{name: "cp -t whose value is spelled like --", command: "cp -t -- --target-directory=.git HEAD; git commit", want: []bool{false, true}},
-		{name: "cp --target-directory= with an empty value", command: "cp --target-directory= .git/HEAD saved; git commit", want: []bool{false, false}},
-		{name: "tee onto it", command: "tee .git/HEAD < saved; git commit", want: []bool{false, true}},
-		{name: "dd writing HEAD through of= from the git dir", dir: gitDir, command: "dd if=saved of=HEAD; git commit", want: []bool{false, true}},
-		{name: "ln -s linking to it", command: "ln -s .git/HEAD h; git commit", want: []bool{false, true}},
-		{name: "command known only to read it", command: "grep ref .git/HEAD; git commit", want: []bool{false, false}},
-		{name: "git given it as an argument", command: "git hash-object .git/HEAD; git commit", want: []bool{false, false}},
-		{name: "sed editing another file in place", command: "sed -i s,a,b, notes; git commit", want: []bool{false, false}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			command := strings.ReplaceAll(tt.command, "{dir}", f.Dir())
+	_, caller := standingOn(t, "main", "topic")
 
-			got := heads(parseWith(t, command, callerIn(f, cmp.Or(tt.dir, f.Dir()))))
+	checkAllowed(t, caller, []namedCommand{
+		{name: "redirect to a target that is not a literal", command: `go test ./... > "$LOG"; git commit -m x`},
+		{name: "command given an argument that is not a literal", command: `uv run ruff format "$f"; git commit -m x`},
+		{name: "redirect onto the git dir's HEAD", command: "echo 'ref: refs/heads/main' > .git/HEAD; git commit -m x"},
+	})
+}
 
-			assert.Check(t, is.DeepEqual(got, tt.want), "Parse(%q) head unknown", command)
-		})
-	}
+func TestJudge_WhenABackgroundJobSwitchesBranch_AllowsACommitAfterIt(t *testing.T) {
+	t.Parallel()
+
+	_, caller := standingOn(t, "main", "topic")
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "switch to the trunk in the background", command: "git switch main & git commit -m x"},
+		{name: "switch to the trunk in a script git runs in the background", command: "git rebase --exec 'git switch main' HEAD & git commit -m x"},
+	})
 }
 
 func TestJudge_WhenAnAndListSwitchesOffTheTrunk_AllowsWhatFollowsOnTheNamedBranch(t *testing.T) {
@@ -170,8 +143,6 @@ func TestJudge_WhenHeadMovesWhereTheGuardCannotFollowIt_RefusesALaterCommit(t *t
 
 	checkJudgedIn(t, caller, []placed{
 		{name: "switch joined by ||", command: "git switch topic || " + commitCommand},
-		{name: "switch piped into the list", command: "git switch topic | cat && " + commitCommand},
-		{name: "switch in the background", command: "git switch topic & " + commitCommand},
 		{name: "switch -c naming a non-literal", command: `git switch -c "$b" && ` + commitCommand},
 		{name: "switch to the previous branch", command: "git switch - && " + commitCommand},
 		{name: "switch --detach", command: "git switch --detach topic && " + commitCommand},

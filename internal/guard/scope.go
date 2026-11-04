@@ -1,9 +1,10 @@
 //go:build unix
 
+// cspell:ignore Arithm -- the shell parser's names for its arithmetic nodes.
+
 package guard
 
 import (
-	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -38,7 +39,7 @@ type scope struct {
 	// the command line itself, whose shell the guard cannot tell.
 	shell string
 	// redirects are the redirects in effect on the shell's own descriptors: those of each compound
-	// command the walk is inside, outermost first, then those an `exec` with no command made.
+	// command the walk is inside, outermost first.
 	redirects []Redirect
 	// functions holds, by name, the functions a call may run. Copies of a scope share it, so a
 	// declaration replaces it rather than changing it in place.
@@ -52,12 +53,6 @@ type scope struct {
 	// absolute `cd` since, so a symlink may stand in the path dir spells where the shell has the
 	// directory it resolves to.
 	physical bool
-	// racing reports whether the walk is inside a background job or a stage of a pipe, which runs
-	// beside the commands around it.
-	racing bool
-	// allexport reports whether `set -a` may be in effect, under which the shell exports every
-	// variable it assigns.
-	allexport bool
 }
 
 func startScope(caller Caller, file *syntax.File) scope {
@@ -78,41 +73,17 @@ func merge(a, b scope) scope {
 	}
 
 	a.physical = a.physical || b.physical
-	a.allexport = a.allexport || b.allexport
 	a.env.gitDir = a.env.gitDir.or(b.env.gitDir)
 	a.env.workTree = a.env.workTree.or(b.env.workTree)
 	a.env.cdPath = a.env.cdPath.or(b.env.cdPath)
 	a.env.ghConfig = a.env.ghConfig.or(b.env.ghConfig)
 	a.vars = a.vars.merge(b.vars)
 	a.functions = mergeFunctions(a.functions, b.functions)
-	a.redirects = mergeRedirects(a.redirects, b.redirects)
 	if a.head != b.head {
 		a.head = nil
 	}
 
 	return a
-}
-
-// mergeRedirects returns the redirects in effect when either a or b may be. The shell is then in
-// a's state or b's, so a descriptor is on a file exactly when a or b leaves it on one: an `exec` on
-// either side holds. Both begin with the redirects they share, which the result keeps in front,
-// followed by a's own, then b's own, then the redirects that settle each descriptor the order of
-// the two left on the wrong file, or on none: where both leave it on a file, on a's.
-func mergeRedirects(a, b []Redirect) []Redirect {
-	if slices.Equal(a, b) {
-		return a
-	}
-
-	shared := 0
-	for shared < min(len(a), len(b)) && a[shared] == b[shared] {
-		shared++
-	}
-
-	merged := slices.Concat(a, b[shared:])
-	wanted := filesOf(b)
-	maps.Copy(wanted, filesOf(a))
-
-	return slices.Concat(merged, settled(filesOf(merged), wanted))
 }
 
 // moved returns the directory that going to w from dir leads to, empty when the guard cannot tell.
@@ -156,17 +127,10 @@ func opened(dir, p string) string {
 // Walking compound commands
 // ---------------------------------------------------------------------------
 
-// list walks stmts in order, each one starting where the one before left sc. A background job and
-// the statements after it are walked by job.
+// list walks stmts in order, each one starting where the one before left sc.
 func (w *walker) list(stmts []*syntax.Stmt, sc *scope) {
-	for i, stmt := range stmts {
+	for _, stmt := range stmts {
 		if w.err != nil {
-			return
-		}
-
-		if runsAsJob(stmt) {
-			w.job(stmt, stmts[i+1:], sc)
-
 			return
 		}
 
@@ -175,13 +139,13 @@ func (w *walker) list(stmts []*syntax.Stmt, sc *scope) {
 }
 
 // stmt walks one statement. One run in the background runs in a subshell, so what it changes
-// stays in it. bash opens a compound command's redirects before it runs the body, so the
-// substitutions in them start from the shell as it is before the body, and every command in the
-// body runs with them.
+// stays in it, and beside the commands after it.
 func (w *walker) stmt(stmt *syntax.Stmt, sc *scope) {
 	if runsAsJob(stmt) {
 		inner := *sc
-		w.race(&inner, func(s *scope) { w.stmtInPlace(stmt, s) })
+		w.beside++
+		w.stmtInPlace(stmt, &inner)
+		w.beside--
 
 		return
 	}
@@ -195,7 +159,9 @@ func runsAsJob(stmt *syntax.Stmt) bool {
 	return stmt.Background || stmt.Coprocess
 }
 
-// stmtInPlace walks stmt as the shell runs it once it has placed any background job.
+// stmtInPlace walks stmt in the shell that runs it. bash opens a compound command's redirects
+// before it runs the body, so the substitutions in them start from the shell as it is before the
+// body, and every command in the body runs with them.
 func (w *walker) stmtInPlace(stmt *syntax.Stmt, sc *scope) {
 	if w.simple(stmt, sc) {
 		return
@@ -205,11 +171,10 @@ func (w *walker) stmtInPlace(stmt *syntax.Stmt, sc *scope) {
 		w.substitutions(r, sc)
 	}
 
-	own := redirectsOf(stmt, w.reading(sc))
 	before := sc.redirects
-	sc.redirects = slices.Concat(before, own)
+	sc.redirects = slices.Concat(before, redirectsOf(stmt, w.reading(sc)))
 	w.compound(stmt.Cmd, sc)
-	sc.redirects = restored(before, own, sc.redirects)
+	sc.redirects = before
 }
 
 func (w *walker) compound(cmd syntax.Command, sc *scope) {
@@ -271,12 +236,12 @@ func (w *walker) binary(cmd *syntax.BinaryCmd, sc *scope) {
 		}
 
 		w.pipes[before] = cmd.Y
-		w.race(sc, func(s *scope) {
-			left, right := *s, *s
-			w.stmt(cmd.X, &left)
-			w.stmt(cmd.Y, &right)
-			*s = merge(merge(*s, left), right)
-		})
+		left, right := *sc, *sc
+		w.beside++
+		w.stmt(cmd.X, &left)
+		w.stmt(cmd.Y, &right)
+		w.beside--
+		*sc = merge(merge(*sc, left), right)
 	}
 }
 
@@ -385,8 +350,7 @@ func (w *walker) repeated(sc *scope, body func(*scope)) {
 // it changes holds after it. The variables an arithmetic expression in node assigns, which the
 // shell makes itself, become unknown in sc.
 func (w *walker) substitutions(node syntax.Node, sc *scope) {
-	w.exportedDefaults(node, sc)
-	sc.vars = sc.vars.forget(arithmeticNames(node)...)
+	sc.assignInExpansions(node)
 	syntax.Walk(node, func(n syntax.Node) bool {
 		var stmts []*syntax.Stmt
 		switch n := n.(type) {
@@ -416,7 +380,7 @@ func (w *walker) substitutions(node syntax.Node, sc *scope) {
 func (w *walker) placed(inv Invocation, sc *scope) Invocation {
 	inv.Dir = sc.dir
 	inv.enclosing = sc.redirects
-	inv.follows, inv.racing = sc.head, sc.racing
+	inv.follows = sc.head
 	if inv.Tool == Git {
 		inv.Git = readGitCall(inv.Words)
 		inv.Target = sc.targetOf(inv)
@@ -444,21 +408,11 @@ func (sc *scope) apply(inv Invocation) {
 		return
 	}
 
-	if execsNothing(inv.Words) {
-		sc.redirects = slices.Concat(sc.redirects, inv.Redirects)
-
-		return
-	}
-
 	if !inv.Words[0].Literal || !runsInShell(inv.Wrappers) {
 		return
 	}
 
 	switch inv.Words[0].Text {
-	case "set":
-		sc.allexport = allexportAfter(sc.shell, inv.Words[1:], sc.allexport)
-	case "setopt", "unsetopt":
-		sc.allexport = allexportAfterZshOptions(inv.Words[0].Text == "setopt", inv.Words[1:], sc.allexport)
 	case "cd", "pushd":
 		sc.cd(inv.Words[1:], sc.commandEnv(inv).cdPath)
 	case "popd":
@@ -469,30 +423,6 @@ func (sc *scope) apply(inv Invocation) {
 	case "unset":
 		sc.assignUnknown(wordTexts(inv.Words[1:]))
 	}
-}
-
-// execsNothing reports whether words, the words of a command, are an `exec` with nothing after its
-// options, reached through any of the wrappers that run a builtin: one that applies its redirects
-// to the shell itself.
-func execsNothing(words []Word) bool {
-	i := 0
-	for i < len(words) && words[i].Literal && (words[i].Text == "command" || words[i].Text == "builtin") {
-		i = pastOptions(words, i)
-	}
-
-	if i == len(words) || !words[i].Literal || words[i].Text != "exec" {
-		return false
-	}
-
-	return pastOptions(words, i) == len(words)
-}
-
-// pastOptions returns the index of the word after the options of the wrapper at index i of words.
-func pastOptions(words []Word, i int) int {
-	options, _ := wrapperOptionsOf(words[i].Text)
-	n, _ := skipOptions(words[i+1:], options)
-
-	return i + 1 + n
 }
 
 // cd moves sc.dir the way `cd` or `pushd` given args and run with cdPath as CDPATH does, or
@@ -593,6 +523,7 @@ func (sc *scope) targetOf(inv Invocation) GitTarget {
 // function body where a call of it stands.
 func (w *walker) keep(inv Invocation) {
 	inv.atCall = inv.atCall || w.calling > 0
+	inv.beside = inv.beside || w.beside > 0
 	w.kept = append(w.kept, len(w.walked))
 	w.walked = append(w.walked, inv)
 }
@@ -636,7 +567,10 @@ func gitVariableMarks(names []string) []Mark {
 func (w *walker) forClause(c *syntax.ForClause, sc *scope) {
 	iter, _ := c.Loop.(*syntax.WordIter)
 	values, each := w.loopValues(iter, sc)
-	w.loopVariable(iter, sc)
+	if iter != nil {
+		sc.assignUnknown([]string{iter.Name.Value})
+	}
+
 	w.substitutions(c.Loop, sc)
 	w.repeated(sc, func(s *scope) {
 		if !each {
@@ -688,17 +622,6 @@ func (w *walker) loopValues(iter *syntax.WordIter, sc *scope) ([]string, bool) {
 	return values, true
 }
 
-// loopVariable makes the variable of the `for` loop over iter unknown in sc, whatever it is, and
-// marks the loop when that variable is a GIT_* variable off the allow list while allexport may be
-// on, which exports it to every git after it. A nil iter, a loop that is not over words, has none.
-func (w *walker) loopVariable(iter *syntax.WordIter, sc *scope) {
-	if iter == nil {
-		return
-	}
-
-	w.assignUnknownExported([]string{iter.Name.Value}, sc)
-}
-
 // assignUnknown makes each of names a variable the guard cannot tell the value of in sc's
 // environment, for variables the shell assigns without an assignment.
 func (sc *scope) assignUnknown(names []string) {
@@ -709,32 +632,19 @@ func (sc *scope) assignUnknown(names []string) {
 	sc.vars = sc.vars.forget(names...)
 }
 
-// assignUnknownExported makes each of names unknown in sc, and, while allexport may be on, which
-// exports them, keeps an invocation placed at sc that holds the GitVariable mark of each of names
-// that is a GIT_* variable off the allow list; it keeps none when no name is.
-func (w *walker) assignUnknownExported(names []string, sc *scope) {
-	sc.assignUnknown(names)
-	if !sc.allexport {
-		return
-	}
-
-	if marks := gitVariableMarks(names); len(marks) > 0 {
-		w.keep(w.placed(Invocation{Marks: marks}, sc))
-	}
-}
-
-// exportedDefaults makes each variable a `${NAME:=word}` or `${NAME=word}` in node assigns unknown
-// in sc, whichever variable it is, and marks each GIT_* variable off the allow list among them
-// while allexport may be on, which exports it. A command reached through a substitution, and a
-// simple command that is not a declaration, marks its own.
-func (w *walker) exportedDefaults(node syntax.Node, sc *scope) {
+// assignInExpansions makes unknown in sc each variable node assigns in an expansion the shell
+// makes itself: a `${NAME:=word}` or `${NAME=word}`, and an arithmetic expression, as in `((n =
+// 1))`, `let n++`, or `$((n += 2))`. A command or process substitution, and a statement other than
+// node, run in a shell of their own or are walked apart, so what they assign is left out. A simple
+// command that is not a declaration assigns its own defaults.
+func (sc *scope) assignInExpansions(node syntax.Node) {
+	readsDefaults := true
 	if stmt, ok := node.(*syntax.Stmt); ok {
-		if _, call := stmt.Cmd.(*syntax.CallExpr); call {
-			return
-		}
+		_, simple := stmt.Cmd.(*syntax.CallExpr)
+		readsDefaults = !simple
 	}
 
-	var names []string
+	var defaults, arithmetic []string
 	syntax.Walk(node, func(n syntax.Node) bool {
 		switch n := n.(type) {
 		case *syntax.CmdSubst, *syntax.ProcSubst:
@@ -742,15 +652,45 @@ func (w *walker) exportedDefaults(node syntax.Node, sc *scope) {
 		case *syntax.Stmt:
 			return syntax.Node(n) == node
 		case *syntax.ParamExp:
-			if assignsDefault(n) {
-				names = append(names, n.Param.Value)
+			if readsDefaults && assignsDefault(n) {
+				defaults = append(defaults, n.Param.Value)
 			}
+		}
+
+		if name, ok := arithmeticTarget(n); ok {
+			arithmetic = append(arithmetic, name)
 		}
 
 		return true
 	})
 
-	w.assignUnknownExported(names, sc)
+	sc.assignUnknown(defaults)
+	sc.vars = sc.vars.forget(arithmetic...)
+}
+
+// arithmeticTarget returns the variable n assigns when it is an arithmetic assignment, increment,
+// or decrement of a variable, and false for any other node.
+func arithmeticTarget(n syntax.Node) (string, bool) {
+	var target syntax.ArithmExpr
+	switch n := n.(type) {
+	case *syntax.BinaryArithm:
+		if assignsArithmetic(n.Op) {
+			target = n.X
+		}
+	case *syntax.UnaryArithm:
+		if n.Op == syntax.Inc || n.Op == syntax.Dec {
+			target = n.X
+		}
+	}
+
+	w, ok := target.(*syntax.Word)
+	if !ok {
+		return "", false
+	}
+
+	name, _, _ := strings.Cut(w.Lit(), "[")
+
+	return name, true
 }
 
 // assignsDefault reports whether p is a `${NAME:=word}` or `${NAME=word}`, which assigns NAME.

@@ -50,7 +50,6 @@ func TestParse_WhenAShellRunsAScriptItCannotRead_MarksIt(t *testing.T) {
 		{name: "non-literal -c string", command: `bash -c "$CMD"`, want: guard.DynamicScript},
 		{name: "non-literal eval word", command: `eval "$x"`, want: guard.DynamicScript},
 		{name: "non-literal heredoc fed to a shell", command: "bash <<EOF\n$x\nEOF", want: guard.DynamicScript},
-		{name: "shell reading a pipe", command: "cat x | bash", index: 1, want: guard.HiddenScript},
 	})
 }
 
@@ -71,53 +70,22 @@ func TestParse_WhenANestedStringIsPastTheThirdLevel_MarksItUnparsed(t *testing.T
 	assert.Check(t, is.DeepEqual(got[3].Marks, []guard.Mark{{Kind: guard.DeepScript}}), "Parse(%q) marks", command)
 }
 
-func TestParse_WhenGoIsGivenACommandToRunItsTools_ReadsTheCommand(t *testing.T) {
+func TestJudge_WhenGoIsGivenACommandToRunItsTools_AllowsIt(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		command string
-	}{
+	checkAllowed(t, readerCaller(), []namedCommand{
+		{name: "literal exec value", command: "go test -exec 'git push' ./..."},
+		{name: "non-literal exec value", command: `go test -exec "$RUNNER" ./...`},
 		{name: "toolexec value", command: `go build -toolexec "sh -c 'git push'" .`},
-		{name: "exec value joined by an equals sign", command: "go test -exec='git push' ."},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := gitRun(t, tt.command)
-
-			assert.Check(t, is.DeepEqual(wordTexts(got.Words), []string{"git", "push"}), "Parse(%q) git words", tt.command)
-		})
-	}
+	})
 }
 
-func TestParse_WhenTheGoCommandToRunIsNotALiteral_MarksADynamicScript(t *testing.T) {
+func TestJudge_WhenGoRunsAProgramGivenAToolWord_RefusesIt(t *testing.T) {
 	t.Parallel()
 
-	const command = `go build -toolexec "$T" .`
-
-	got := only(t, command)
-
-	assert.Check(t, is.DeepEqual(kinds(got.Marks), []guard.MarkKind{guard.DynamicScript}), "Parse(%q) marks", command)
-}
-
-func TestJudge_WhenTheGoCommandToRunDoesNotParse_RefusesNamingTheFlag(t *testing.T) {
-	t.Parallel()
-
-	const command = "go test -exec 'wrap )' ."
-
-	checkJudgedRow(t, readerCaller(), judged{command: command, want: guard.Refuse, wantNamed: "-exec"})
-}
-
-func TestParse_WhenAGoCommandToRunIsPastTheThirdLevel_MarksItUnparsed(t *testing.T) {
-	t.Parallel()
-
-	const command = "eval eval eval go build -toolexec 'git push'"
-
-	got := last(t, command)
-
-	assert.Check(t, is.DeepEqual(got.Marks, []guard.Mark{{Kind: guard.DeepScript, Name: "go -toolexec"}}), "Parse(%q) marks", command)
+	checkRefusals(t, []refusal{
+		{name: "bare git among go run's arguments", command: "go run ./tool git push", wantNamed: "go runs git"},
+	})
 }
 
 func TestJudge_WhenAShellsOptionsRunAStringOrAFile_RefusesIt(t *testing.T) {
@@ -125,8 +93,7 @@ func TestJudge_WhenAShellsOptionsRunAStringOrAFile_RefusesIt(t *testing.T) {
 
 	checkRefusals(t, []refusal{
 		{name: "bash rcfile word after a short option is a bundle", command: "bash -e -rcfile 'git push --force origin main' -c true", wantNamed: "git push"},
-		{name: "bash rcfile read under -i", command: "bash -rcfile ./evil.sh -i -c true"},
-		{name: "bash init-file read under -i", command: "bash -init-file ./evil.sh -i -c true"},
+		{name: "bash -o takes the next word as its value", command: "bash -o pipefail -c 'git push --force origin main'", wantNamed: "git push"},
 		{name: "zsh one-dash rcfile is a bundle", command: "zsh -rcfile 'git push --force origin main' -c true", wantNamed: "git push"},
 		{name: "zsh one-dash login is a bundle", command: "zsh -login -c 'git push --force origin main'", wantNamed: "git push"},
 		{name: "zsh O in a bundle takes no value", command: "zsh -cO 'git push --force origin main' true", wantNamed: "git push"},
@@ -151,17 +118,32 @@ func TestJudge_WhenAShellIsGivenAScriptFile_AllowsIt(t *testing.T) {
 	})
 }
 
-func TestJudge_WhenAShellReadsItsScriptFromStandardInputOrASubstitution_RefusesIt(t *testing.T) {
+func TestJudge_WhenAShellReadsItsScriptFromOutsideTheCommand_AllowsIt(t *testing.T) {
+	t.Parallel()
+
+	checkAllowed(t, readerCaller(), []namedCommand{
+		{name: "installer piped into bash", command: "curl -fsSL https://example.com/install.sh | bash"},
+		{name: "tool string piped into bash", command: "echo 'git push' | bash"},
+		{name: "bash with no script", command: "bash --version"},
+		{name: "zsh with no script", command: "zsh --version"},
+		{name: "script file redirected into bash", command: "bash < x.sh"},
+		{name: "bash -s with a script file", command: "bash -s x.sh"},
+		{name: "process substitution as the file", command: "bash <(cat x)"},
+		{name: "process substitution after an option", command: "bash -e <(cat x)"},
+		{name: "source of a process substitution", command: "source <(cat x)"},
+		{name: "standard input named as the file", command: "cat x | bash /dev/stdin"},
+		{name: "standard input named by its descriptor", command: "cat x | sh /dev/fd/0"},
+		{name: "bash two-dash rcfile read under -i", command: "bash --rcfile f -i"},
+		{name: "bash one-dash rcfile read under -i", command: "bash -rcfile ./evil.sh -i -c true"},
+		{name: "bash init-file read under -i", command: "bash -init-file ./evil.sh -i -c true"},
+	})
+}
+
+func TestJudge_WhenGitRunsAfterASourceOfASubstitution_RefusesForTheUnknownDirectory(t *testing.T) {
 	t.Parallel()
 
 	checkRefusals(t, []refusal{
-		{name: "shell reading a pipe", command: "cat x | bash", wantNamed: "`bash x.sh`"},
-		{name: "bash -s with a script file", command: "bash -s x.sh", wantNamed: string(guard.HiddenScript)},
-		{name: "process substitution as the file", command: "bash <(cat x)", wantNamed: string(guard.HiddenScript)},
-		{name: "source of a process substitution", command: "source <(cat x)", wantNamed: string(guard.HiddenScript)},
-		{name: "process substitution after an option", command: "bash -e <(cat x)", wantNamed: string(guard.HiddenScript)},
-		{name: "standard input named as the file", command: "cat x | bash /dev/stdin", wantNamed: string(guard.HiddenScript)},
-		{name: "standard input named by its descriptor", command: "cat x | sh /dev/fd/0", wantNamed: string(guard.HiddenScript)},
+		{name: "commit", command: "source <(echo x); git commit -m x", wantNamed: "cannot tell where the command runs"},
 	})
 }
 

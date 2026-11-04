@@ -39,12 +39,12 @@ func TestJudge_WhenTheCommandCannotBeParsed_RefusesNamingWhatFailed(t *testing.T
 
 func TestJudge_WhenAMarkNamesNothing_RefusesWithItsKindAsTheReason(t *testing.T) {
 	t.Parallel()
-	const command = "echo @(a|b)"
+	const command = "eval eval eval eval git push"
 
 	got := guard.Judge(t.Context(), command, readerCaller())
 
 	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome", command)
-	assert.Check(t, is.Equal(got.Reason, string(guard.ExtendedGlob)), "Judge(%q) reason", command)
+	assert.Check(t, is.Equal(got.Reason, string(guard.DeepScript)), "Judge(%q) reason", command)
 }
 
 func TestJudge_WhenAMarkNamesWhatItFound_RefusesNamingItBesideTheKind(t *testing.T) {

@@ -57,7 +57,7 @@ func (w *walker) gitScripts(ctx context.Context, i int) error {
 	}
 
 	sub := newWalker(w.caller, inv.depth)
-	sub.loopBodies = w.loopBodies
+	sub.loopBodies, sub.bodies = w.loopBodies, w.bodies
 	for _, run := range runs {
 		sc := gitScope(*inv)
 		switch run.start {
@@ -150,7 +150,7 @@ func readableRuns(inv *Invocation) []gitRun {
 
 // splice places the invocations sub walked right after the one at index i of the walk, and those
 // sub keeps right after it among the kept ones when it is kept itself. Each is atCall when sub
-// walked it at a call site or when the one at index i is.
+// walked it at a call site or when the one at index i is, and beside when the one at index i is.
 func (w *walker) splice(i int, sub walker) {
 	n := len(sub.walked)
 	if n == 0 {
@@ -159,6 +159,7 @@ func (w *walker) splice(i int, sub walker) {
 
 	for k := range sub.walked {
 		sub.walked[k].atCall = sub.walked[k].atCall || w.walked[i].atCall
+		sub.walked[k].beside = sub.walked[k].beside || w.walked[i].beside
 	}
 
 	w.walked = slices.Insert(w.walked, i+1, sub.walked...)

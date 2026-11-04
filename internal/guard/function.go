@@ -19,81 +19,9 @@ type function struct {
 // declared and again where each call of it stands, and what a call of it changes.
 type definition struct {
 	body *syntax.Stmt
-	// pastRuns are the dry runs of the body so far, which a later call reuses instead of walking the
-	// body again: without them, functions that each call the one before twice cost a walk per call
-	// path, two to the power of their count.
-	pastRuns []pastRun
 	// probing reports whether a dry run of the body is under way, so that a call of the function
 	// from inside its own body is not run again.
 	probing bool
-}
-
-// pastRun is one dry run of a definition's body: the scope it started from at a depth, what it
-// left and found, and the definitions its result rests on.
-type pastRun struct {
-	reads dryRunReads
-	marks []Mark
-	from  scope
-	left  scope
-	depth int
-}
-
-// dryRunReads is what a dry run's result rests on besides the scope it starts from: the
-// definitions it ran, which must not be under way for the result to hold again, and those it found
-// under way and so did not run again, which must be.
-type dryRunReads struct {
-	ran      map[*definition]bool
-	underway map[*definition]bool
-}
-
-// holds reports whether a dry run that read r would run again as it did, given the definitions
-// under way now.
-func (r dryRunReads) holds() bool {
-	for d := range r.ran {
-		if d.probing {
-			return false
-		}
-	}
-
-	for d := range r.underway {
-		if !d.probing {
-			return false
-		}
-	}
-
-	return true
-}
-
-// dryRuns is what the walkers of one Parse share about dry runs of function bodies: what each run
-// under way has read so far, innermost last.
-type dryRuns struct {
-	stack []dryRunReads
-}
-
-// note records in the innermost run under way, if any, that it ran d, whose result rests on reads.
-func (runs *dryRuns) note(d *definition, reads dryRunReads) {
-	if len(runs.stack) == 0 {
-		return
-	}
-
-	top := runs.stack[len(runs.stack)-1]
-	top.ran[d] = true
-	maps.Copy(top.ran, reads.ran)
-	maps.Copy(top.underway, reads.underway)
-}
-
-// noteUnderway records in the innermost run under way, if any, that it found d under way.
-func (runs *dryRuns) noteUnderway(d *definition) {
-	if len(runs.stack) > 0 {
-		runs.stack[len(runs.stack)-1].underway[d] = true
-	}
-}
-
-// sameScope reports whether a and b are the same scope to a dry run of a function body.
-func sameScope(a, b scope) bool {
-	return a.dir == b.dir && a.env == b.env && a.physical == b.physical && a.racing == b.racing &&
-		a.allexport == b.allexport && a.shell == b.shell && slices.Equal(a.redirects, b.redirects) &&
-		maps.Equal(a.functions, b.functions) && a.vars.equal(b.vars)
 }
 
 // with returns the function that runs any of fn's definitions or of defs. A nil fn has none.
@@ -104,17 +32,12 @@ func (fn *function) with(defs ...*definition) *function {
 	}
 
 	for _, d := range defs {
-		if !slices.ContainsFunc(all, d.same) {
+		if !slices.ContainsFunc(all, func(other *definition) bool { return other.body == d.body }) {
 			all = append(all, d)
 		}
 	}
 
 	return &function{definitions: all}
-}
-
-// same reports whether d and other run the same body.
-func (d *definition) same(other *definition) bool {
-	return d.body == other.body
 }
 
 // mergeFunctions returns the functions a call may run when the shell may hold the functions of a or
@@ -135,12 +58,6 @@ func mergeFunctions(a, b map[string]*function) map[string]*function {
 // unmovedDir is the directory a dry run of a function body starts in. No shell word holds a NUL
 // byte, so no `cd` reaches it: a body that ends anywhere else may move the shell.
 const unmovedDir = "/\x00"
-
-// declarationBuiltins are the builtins the parser reads as declarations rather than as calls, so a
-// function of the same name runs in their place without the walk of a call seeing it.
-func declarationBuiltins() map[string]bool {
-	return setOf("export", "declare", "local", "readonly", "typeset", "let")
-}
 
 // functionBody walks body, the body of a function, where it is declared, as a body that runs any
 // number of times. A call runs it with the variables of the shell where the call stands, which are
@@ -168,9 +85,7 @@ func (w *walker) functionBody(body *syntax.Stmt, sc *scope) {
 	}
 }
 
-// declareFunction records in sc the function decl declares for the calls after it, and marks a
-// declaration that takes the name of a command the guard reads: `cd`, `pushd`, `popd`, a wrapper it
-// sees through, or a declaration builtin.
+// declareFunction records in sc the function decl declares for the calls after it.
 func (w *walker) declareFunction(decl *syntax.FuncDecl, sc *scope) {
 	if decl.Name == nil {
 		return
@@ -180,9 +95,6 @@ func (w *walker) declareFunction(decl *syntax.FuncDecl, sc *scope) {
 	functions := cloneOrEmpty(sc.functions)
 	functions[name] = &function{definitions: []*definition{{body: decl.Body}}}
 	sc.functions = functions
-	if readsCommand(name) || declarationBuiltins()[name] {
-		w.keep(w.placed(Invocation{Marks: []Mark{{Kind: ShadowingFunction, Name: name}}}, sc))
-	}
 }
 
 // calledDefinitions returns the definitions among functions that inv's call may run. Only `time`
@@ -208,11 +120,11 @@ func calledDefinitions(inv Invocation, functions map[string]*function) []*defini
 
 // call changes sc the way inv's call of a function the command declares does, run from any of the
 // definitions it may run: the directory after it is unknown when a body may move the shell, and
-// allexport, the variables the guard follows, and the functions are as a body leaves them, unknown
-// where two bodies leave them differently. A shell variable whose value a body may change is
-// unknown after it. A GIT_* variable off the allow list that a body sets while allexport may be on
-// is marked where the call stands. Each body the call may run is walked from sc first (see
-// runBodies). No switch before the call holds after it.
+// the variables the guard follows and the functions are as a body leaves them, unknown where two
+// bodies leave them differently. A shell variable whose value a body may change is unknown after
+// it. Each GIT_* variable off the allow list that a body sets, and each call a dry run of a body
+// cannot follow past maxCalls, is marked where the call stands. Each body the call may run is
+// walked from sc first (see runBodies). No switch before the call holds after it.
 func (w *walker) call(inv Invocation, sc *scope) {
 	definitions := calledDefinitions(inv, sc.functions)
 	if len(definitions) == 0 {
@@ -223,9 +135,10 @@ func (w *walker) call(inv Invocation, sc *scope) {
 	// A dry run walks no body where a call in it stands, so a HEAD move in one is not between the
 	// commands around the call.
 	sc.head = nil
-	after, marks := w.dryRun(definitions[0], *sc)
+	name := inv.Words[0].Text
+	after, marks := w.dryRun(definitions[0], *sc, name)
 	for _, d := range definitions[1:] {
-		run, found := w.dryRun(d, *sc)
+		run, found := w.dryRun(d, *sc, name)
 		after = merge(after, run)
 		marks = append(marks, found...)
 	}
@@ -235,29 +148,19 @@ func (w *walker) call(inv Invocation, sc *scope) {
 	}
 
 	sc.physical = sc.physical || after.physical
-	sc.allexport = after.allexport
 	sc.env = after.env
 	sc.vars = sc.vars.merge(after.vars)
 	sc.functions = after.functions
-	if !slices.ContainsFunc(inv.Redirects, ontoStdout) {
-		// An `exec` in a body holds after the call, unless the call redirected stdout: bash then
-		// restores the descriptors it redirected (see restored).
-		sc.redirects = after.redirects
-	}
 
 	if len(marks) > 0 {
 		w.keep(w.placed(Invocation{Marks: marks}, sc))
 	}
 }
 
-func ontoStdout(r Redirect) bool {
-	return slices.Contains(touched(r), stdoutFd)
-}
-
-// maxCalls is how many calls of functions the command defines one walk follows into the body they
-// run. A function that calls itself runs without end, and functions that each call the one before
-// twice run two to the power of their count of calls. It also bounds how many bodies of `for`
-// loops over a literal list one walk follows, one per value.
+// maxCalls is how many walks of the bodies of functions the command defines one Parse makes, dry
+// runs included. A function that calls itself runs without end, and functions that each call the
+// one before twice run two to the power of their count of calls. It also bounds how many bodies of
+// `for` loops over a literal list one Parse follows, one per value.
 const maxCalls = 256
 
 // runBodies walks each of definitions, the bodies inv's call may run, where the call stands: from
@@ -266,19 +169,20 @@ const maxCalls = 256
 // and behind the redirects and HEAD of the call.
 //
 // What the walks keep is atCall. A dry run walks no body: its invocations are dropped, and dryRun
-// finds what the call changes. A call past maxCalls is marked instead.
+// finds what the call changes. A call whose walks would take the Parse past maxCalls is marked
+// instead.
 func (w *walker) runBodies(inv Invocation, definitions []*definition, sc scope) {
 	if w.probing {
 		return
 	}
 
-	if w.calls == maxCalls {
+	if *w.bodies+len(definitions) > maxCalls {
 		w.keep(w.placed(Invocation{Marks: []Mark{{Kind: DeepCall, Name: inv.Words[0].Text}}}, &sc))
 
 		return
 	}
 
-	w.calls++
+	*w.bodies += len(definitions)
 	w.calling++
 	sc.redirects = slices.Concat(sc.redirects, inv.Redirects)
 	sc.vars.function = true
@@ -308,60 +212,43 @@ func declaredBody(body *syntax.Stmt) *syntax.Stmt {
 // probe returns a walker that reads at w's depth and drops what it finds.
 func (w *walker) probe() walker {
 	sub := newWalker(w.caller, w.depth)
-	sub.probing, sub.dryRuns, sub.loopBodies = true, w.dryRuns, w.loopBodies
+	sub.probing, sub.loopBodies, sub.bodies = true, w.loopBodies, w.bodies
 
 	return sub
 }
 
-// dryRun returns the scope d's body leaves, run from sc in unmovedDir, and the GitVariable marks of
+// dryRun returns the scope d's body leaves, run from sc in unmovedDir, and the carriedMarks of
 // its invocations. The run is walked apart and dropped: the walk of the body where it is declared
 // already holds its invocations, and the errors in reading them. A call of d from inside its own
-// body moves to an unknown directory, may turn allexport on, and may change any shell variable.
-//
-// A run that starts from the same scope at the same depth as an earlier run of d, while every
-// definition that run ran is not under way and every one it found under way still is, leaves what
-// the earlier run left, which dryRun returns without walking the body again.
-func (w *walker) dryRun(d *definition, sc scope) (scope, []Mark) {
-	runs := w.dryRuns
-	if d.probing {
-		runs.noteUnderway(d)
-		sc.dir, sc.allexport, sc.vars = "", true, sc.vars.forgetAll()
-
-		return sc, nil
-	}
-
-	sc.dir, sc.physical, sc.vars.function = unmovedDir, false, true
-	for _, past := range d.pastRuns {
-		if past.depth == w.depth && sameScope(past.from, sc) && past.reads.holds() {
-			runs.note(d, past.reads)
-
-			return past.left, past.marks
+// body moves to an unknown directory and may change any shell variable, and so does one past the
+// maxCalls walks of the Parse, which is marked as a DeepCall of name, the function called.
+func (w *walker) dryRun(d *definition, sc scope, name string) (scope, []Mark) {
+	if d.probing || *w.bodies == maxCalls {
+		sc.dir, sc.vars = "", sc.vars.forgetAll()
+		if d.probing {
+			return sc, nil
 		}
+
+		return sc, []Mark{{Kind: DeepCall, Name: name}}
 	}
 
-	reads := dryRunReads{ran: map[*definition]bool{}, underway: map[*definition]bool{}}
-	runs.stack = append(runs.stack, reads)
+	*w.bodies++
+	sc.dir, sc.physical, sc.vars.function = unmovedDir, false, true
 	d.probing = true
 	sub := w.probe()
-	from := sc
 	sub.stmt(d.body, &sc)
 	d.probing = false
-	runs.stack = runs.stack[:len(runs.stack)-1]
-	delete(reads.underway, d)
 
-	// The caller appends to the marks it is handed, which must not reach the copy kept here.
-	marks := slices.Clip(variableMarksOf(sub.walked))
-	d.pastRuns = append(d.pastRuns, pastRun{from: from, depth: w.depth, left: sc, marks: marks, reads: reads})
-	runs.note(d, reads)
-
-	return sc, marks
+	return sc, carriedMarks(sub.walked)
 }
 
-func variableMarksOf(invocations []Invocation) []Mark {
+// carriedMarks returns the marks of invocations that a dry run carries to the call it runs for:
+// each GIT_* variable off the allow list a body sets, and each call past maxCalls.
+func carriedMarks(invocations []Invocation) []Mark {
 	var marks []Mark
 	for _, inv := range invocations {
 		for _, m := range inv.Marks {
-			if m.Kind == GitVariable {
+			if m.Kind == GitVariable || m.Kind == DeepCall {
 				marks = append(marks, m)
 			}
 		}
