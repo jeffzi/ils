@@ -5,6 +5,7 @@ package guard
 import (
 	"errors"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -313,10 +314,13 @@ func writesHead(inv Invocation) bool {
 // that only read the files they name, those that only print, and the declaration builtins. A
 // command that has an option to write a file, such as `less -o` or `sort -o`, is not one of them.
 func writesNoFile() map[string]bool {
-	return setOf(
+	commands := setOf(
 		"cat", "head", "tail", "more", "grep", "rg", "wc", "file", "stat", "ls", "diff", "cmp",
-		"test", "[", "echo", "printf", "export", "declare", "local", "readonly", "typeset", "let",
+		"test", "[", "echo", "printf",
 	)
+	maps.Copy(commands, declarationBuiltins())
+
+	return commands
 }
 
 // namesHead reports whether the word w, read from dir, may name the HEAD file of a git dir, as a

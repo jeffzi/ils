@@ -22,6 +22,11 @@ type Word struct {
 	Literal bool
 }
 
+// isEndOfFlags reports whether w is a literal `--`, which ends the options of most commands.
+func isEndOfFlags(w Word) bool {
+	return w.Literal && w.Text == "--"
+}
+
 // expander is what readWord reads a word with: the HOME that `~` and `~/…` expand to, and the
 // shell variables whose value an expansion may stand for.
 type expander struct {
@@ -199,7 +204,7 @@ func modifiedByZsh(p *syntax.ParamExp, next syntax.WordPart) bool {
 
 	c := lit.Value[1]
 
-	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || c == '&'
+	return isASCIILetter(c) || c == '&'
 }
 
 // nextPart returns the word part after parts[i], nil when parts[i] is the last.

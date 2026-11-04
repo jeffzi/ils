@@ -312,14 +312,14 @@ func judgeAPI(rest []Word) Verdict {
 // --field, which reads a value starting with `@` from a file.
 func apiFields() []ghGuardedFlag {
 	return []ghGuardedFlag{
-		{long: "--raw-field", short: 'f', valued: apiValued()},
-		{long: "--field", short: 'F', valued: apiValued()},
+		{long: "--raw-field", short: 'f', valued: apiValued},
+		{long: "--field", short: 'F', valued: apiValued},
 	}
 }
 
 // apiInput returns the flag that gives `gh api` its request body.
 func apiInput() ghGuardedFlag {
-	return ghGuardedFlag{long: "--input", valued: apiValued()}
+	return ghGuardedFlag{long: "--input", valued: apiValued}
 }
 
 // apiEndpoint returns the endpoint of `gh api`: its first word that is neither a flag nor a flag's
@@ -514,14 +514,13 @@ func skipString(document string, i int) int {
 }
 
 func isNameStart(c byte) bool {
-	return c == '_' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
+	return c == '_' || isASCIILetter(c)
 }
 
-// apiValued returns the shorthands of `gh api` that take a value.
-func apiValued() string {
-	// cspell:disable-next-line -- a set of option letters, not a word.
-	return "XfFHpqt"
-}
+// apiValued holds the shorthands of `gh api` that take a value.
+//
+// cspell:disable-next-line -- a set of option letters, not a word.
+const apiValued = "XfFHpqt"
 
 // apiValuedLong returns the long flags of `gh api` that take a value, as the next word when none
 // is attached with `=`.
@@ -540,7 +539,7 @@ func takesValueWord(w Word) bool {
 	case slices.Contains(apiValuedLong(), t):
 		return true
 	default:
-		return bundleEndsWithValued(t, apiValued())
+		return bundleEndsWithValued(t, apiValued)
 	}
 }
 
@@ -591,16 +590,11 @@ func apiMethod(rest []Word) (method Word, given bool) {
 	return method, given
 }
 
-// apiMethodFlag returns the method flag of `gh api`.
-func apiMethodFlag() ghGuardedFlag {
-	return ghGuardedFlag{long: "--method", short: 'X', valued: apiValued()}
-}
-
 // methodFlag returns the method w gives `gh api` when it is -X or --method, reading next as the
 // value when the flag takes the next word. A word that is not a literal and may be the flag gives
 // a method that is not a literal.
 func methodFlag(w, next Word) (method Word, ok, takesNext bool) {
-	flag := apiMethodFlag()
+	flag := ghGuardedFlag{long: "--method", short: 'X', valued: apiValued}
 	if value, found, attached := flagValue(w, flag); found {
 		if attached {
 			return value, true, false
@@ -684,10 +678,6 @@ func wordAfter(rest []Word, i int) Word {
 
 func dashesFollow(rest []Word, i int) bool {
 	return i+1 < len(rest) && isEndOfFlags(rest[i+1])
-}
-
-func isEndOfFlags(w Word) bool {
-	return w.Literal && w.Text == "--"
 }
 
 // mayBeValuedFlag reports whether w is a word that is not a literal whose literal prefix is empty

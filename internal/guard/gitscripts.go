@@ -386,29 +386,6 @@ func shellCommand(key string, value Word) (Word, bool) {
 	return Word{Text: text, Literal: value.Literal}, true
 }
 
-// xOptionRuns returns the value of each `-x` or long option among args, the arguments of the git
-// subcommand name, the commands git runs: separate or attached, the long option spelled as any
-// prefix of long git could read as it, and `-x` in a short-flag bundle ahead of any other of
-// valued, the subcommand's short options that take a value, whose rest is then its value. Each
-// run's form is the option as written. A word the guard cannot read that git could read as one of
-// these options is a run the guard cannot read either, whose form is name.
-func xOptionRuns(args []Word, name, long, valued string) []gitRun {
-	x := valuedOption{letter: 'x', valued: valued, long: long, shortest: len("--e")}
-
-	var runs []gitRun
-	for _, v := range x.values(args, func(text string) bool { return couldBeXOption(text, long, valued) }) {
-		if v.unread {
-			runs = append(runs, gitRun{form: name})
-
-			continue
-		}
-
-		runs = append(runs, gitRun{form: v.form, script: v.value})
-	}
-
-	return runs
-}
-
 // couldBeXOption reports whether a word that starts with text, the rest unknown, could be `-x` or
 // the long option long once the rest is known, where text alone does not already name one: an
 // empty text, a short-flag bundle holding none of valued, the short options that take a value
@@ -472,11 +449,24 @@ func difftoolRuns(args []Word) []gitRun {
 }
 
 // topRuns returns the value of each `-x` or long option among args, the arguments of the git
-// subcommand sub, that git runs at the top of the work tree.
+// subcommand sub, the commands git runs at the top of the work tree: separate or attached, the long
+// option spelled as any prefix of long git could read as it, and `-x` in a short-flag bundle ahead
+// of any other of the subcommand's short options that take a value, whose rest is then its value.
+// Each run's form is the option as written. A word the guard cannot read that git could read as
+// one of these options is a run the guard cannot read either, whose form is sub.
 func topRuns(args []Word, sub, long string) []gitRun {
-	runs := xOptionRuns(args, sub, long, optionsOf(sub).valuedLetters)
-	for i := range runs {
-		runs[i].start = startTop
+	valued := optionsOf(sub).valuedLetters
+	x := valuedOption{letter: 'x', valued: valued, long: long, shortest: len("--e")}
+
+	var runs []gitRun
+	for _, v := range x.values(args, func(text string) bool { return couldBeXOption(text, long, valued) }) {
+		if v.unread {
+			runs = append(runs, gitRun{form: sub, start: startTop})
+
+			continue
+		}
+
+		runs = append(runs, gitRun{form: v.form, script: v.value, start: startTop})
 	}
 
 	return runs

@@ -165,7 +165,7 @@ func (v shellVars) watched(file *syntax.File) shellVars {
 		v.unread = true
 	}
 
-	held := maps.Clone(v.held)
+	held := cloneOrEmpty(v.held)
 	syntax.Walk(file, func(n syntax.Node) bool {
 		decl, ok := n.(*syntax.DeclClause)
 		if call, isCall := n.(*syntax.CallExpr); isCall {
@@ -179,10 +179,6 @@ func (v shellVars) watched(file *syntax.File) shellVars {
 		names, refers := declarationHolds(decl)
 		v.unread = v.unread || refers
 		for _, name := range names {
-			if held == nil {
-				held = map[string]int{}
-			}
-
 			held[name]++
 		}
 
@@ -403,10 +399,7 @@ func (v shellVars) merge(other shellVars) shellVars {
 		}
 	}
 
-	held := maps.Clone(v.held)
-	if len(other.held) > 0 && held == nil {
-		held = map[string]int{}
-	}
+	held := cloneOrEmpty(v.held)
 
 	for name, count := range other.held {
 		held[name] = max(held[name], count)

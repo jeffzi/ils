@@ -244,6 +244,10 @@ func markReason(inv Invocation, mark Mark) string {
 	return reason
 }
 
+// moveFirst is what a refusal says to do when the guard cannot tell where a git command runs, or
+// which branch HEAD is on, because of a move earlier in the command or a directory it cannot read.
+const moveFirst = "run the `cd`, switch, or other move as its own command first, and write any directory as a literal"
+
 // readableSpelling says how to write the word a mark of kind found on inv so that the guard reads
 // it; empty for a kind that marks no word the guard cannot read.
 func readableSpelling(inv Invocation, kind MarkKind) string {

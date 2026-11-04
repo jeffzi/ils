@@ -330,7 +330,7 @@ func readArgs(args []Word, known knownOptions) subcommandOptions {
 		w := args[i]
 		text := w.Text
 		switch {
-		case w.Literal && text == "--":
+		case isEndOfFlags(w):
 			o.positional = append(o.positional, args[i+1:]...)
 
 			return o
@@ -400,7 +400,7 @@ func operands(args []Word) []Word {
 	var found []Word
 	for i, arg := range args {
 		switch {
-		case arg.Literal && arg.Text == "--":
+		case isEndOfFlags(arg):
 			return append(found, args[i+1:]...)
 		case !arg.Literal || !strings.HasPrefix(arg.Text, "-") || arg.Text == "-":
 			found = append(found, arg)

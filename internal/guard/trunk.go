@@ -18,10 +18,6 @@ type trunkAnswer struct {
 	found bool
 }
 
-// moveFirst is what a refusal says to do when the guard cannot tell where a git command runs, or
-// which branch HEAD is on, because of a move earlier in the command or a directory it cannot read.
-const moveFirst = "run the `cd`, switch, or other move as its own command first, and write any directory as a literal"
-
 // trunks is the trunk rule for one command, holding the answer for each git dir it asked. It asks
 // origin for the trunk at most once per git dir, so every invocation of the command in one
 // repository is judged against the same answer.

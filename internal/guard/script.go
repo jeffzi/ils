@@ -172,7 +172,7 @@ func readShellOptions(shell string, args []Word) shellOptions {
 			r.operands = args[i+1:]
 		case text == "+":
 			continue
-		case len(text) < 2 || (text[0] != '-' && text[0] != '+'):
+		case len(text) < 2 || !startsWithSign(text):
 			r.operands = args[i:]
 		case strings.HasPrefix(text, "--"):
 			if shell == "zsh" {
