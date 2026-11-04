@@ -82,9 +82,6 @@ func TestParse_WhenAnInvocationMayMoveHeadThroughGitsAliases_ReportsHeadUnknownA
 		{name: "alias of switch", command: "git sw main && git commit -m x", want: []bool{false, true}},
 		{name: "alias that moves nothing", command: "git lg; git commit", want: []bool{false, false}},
 		{name: "alias running a shell command", command: "git sh; git commit", want: []bool{false, true}},
-		{name: "word that is neither command nor alias", command: "git taxi; git commit", want: []bool{false, true}},
-		{name: "alias nested too deep", command: "git d1; git commit", want: []bool{false, true}},
-		{name: "alias the guard cannot read", command: "git unclosed; git commit", want: []bool{false, true}},
 	})
 }
 

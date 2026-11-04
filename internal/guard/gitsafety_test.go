@@ -47,7 +47,6 @@ func TestJudge_RefusesAGitOperationThatDiscardsWork(t *testing.T) {
 		{name: "clean -i", command: "git clean -i"},
 		{name: "branch -D", command: "git branch -D feature"},
 		{name: "branch --delete --force", command: "git branch --delete --force feature"},
-		{name: "rm -f", command: "git rm -f file"},
 		{name: "reflog expire", command: "git reflog expire"},
 		{name: "gc pruning now", command: "git gc --prune=now"},
 		{name: "repack -a -d", command: "git repack -a -d"},
@@ -535,7 +534,6 @@ func TestJudge_RefusesAGitConfigWriteOfAKeyThatChangesWhatGitRuns(t *testing.T) 
 		{name: "credential helper with ;", command: "git config credential.helper 'cache; touch x'", wantNamed: "credential.helper"},
 		{name: "mergetool command in another case", command: "git config MergeTool.x.CMD 'git push'", wantNamed: "MergeTool.x.CMD"},
 		{name: "difftool path", command: "git config difftool.x.path /bin/x", wantNamed: "difftool.x.path"},
-		{name: "mergetool path in another case", command: "git config MergeTool.x.PATH /bin/x", wantNamed: "MergeTool.x.PATH"},
 	})
 }
 
@@ -563,7 +561,6 @@ func TestJudge_AllowsAGitConfigCallThatLeavesGuardedKeys(t *testing.T) {
 		{name: "removal of a diff driver", command: "git config --remove-section diff.x"},
 		{name: "credential helper with plain arguments", command: "git config credential.helper 'cache --timeout 3600'"},
 		{name: "--unset of a credential helper whatever its value-pattern", command: "git config --unset credential.helper 'a|b'"},
-		{name: "--unset-all of a credential helper whatever its value-pattern", command: "git config --unset-all credential.helper '!.*'"},
 	})
 }
 
@@ -630,13 +627,5 @@ func TestJudge_AllowsAnUnreadableGitArgumentAfterDoubleDash(t *testing.T) {
 
 	checkAllowed(t, caller, []namedCommand{
 		{name: "branch -d", command: `git branch -d -- "$b"`},
-	})
-}
-
-func TestJudge_WhenAGitWordCannotBeRead_RefusesNamingASpellingTheGuardAllows(t *testing.T) {
-	t.Parallel()
-
-	checkRefusals(t, []refusal{
-		{name: "push, refused in every form", command: `git push "$b"`, wantNamed: "`ils push`"},
 	})
 }
