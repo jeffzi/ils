@@ -129,8 +129,9 @@ that other files also use is placed by those users alone. The same holds between
      - Otherwise: an existing file you have read that already owns that concern, or a file of its
        own, named for what it does, whatever its size.
    - When two or more packages use it, the first of these that applies:
-     - One of its users is already imported by every other user, and uses the code itself: that
-       package is the home, because nobody loads the code without loading it.
+     - One of its users is already imported by every other user in every build of that user, and
+       uses the code itself: that package is the home, because nobody loads the code without
+       loading it. An import that only a constrained file of the user carries does not count.
      - It is a rule about one project type and every user already imports the package that
        declares the type: beside the type. Code that merely mentions the type does not qualify.
      - Otherwise: an existing package you have read that already owns that concern, or a package
