@@ -545,12 +545,12 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   a literal. They are the value of `git rebase --exec` (`-x`), the command of `git bisect run`,
   `git submodule foreach`, the `git filter-branch` filters and `--setup`, and `git for-each-repo`;
   the value of `-c core.editor` and `-c sequence.editor`; and the value of `GIT_EDITOR`,
-  `GIT_SEQUENCE_EDITOR`, `GIT_PAGER`, and the `EDITOR`, `VISUAL`, and `PAGER` git falls back to. A
+  `GIT_SEQUENCE_EDITOR`, and the `EDITOR` and `VISUAL` git falls back to. A
   `--config-env` of either editor key is judged as that `-c` with a value that is not a literal,
   whatever the command assigns its variable, so the guard refuses
   `ED=vim git --config-env=core.editor=ED commit`.
-  The other keys and options git runs as a program (`core.pager`, `core.sshCommand`, a credential
-  helper, `difftool -x`) are data
+  The other keys, variables, and options git runs as a program (`core.pager`, `GIT_PAGER`,
+  `PAGER`, `core.sshCommand`, a credential helper, `difftool -x`) are data
   ([accepted limits](guard-scope.md#accepted-limits));
 - an assignment or `export` of a `GIT_*` variable off the allow list (`GIT_CONFIG_COUNT`,
   `GIT_EXEC_PATH`, and the like);

@@ -382,10 +382,11 @@ func (sc *scope) runScope(inv Invocation) scope {
 	return inner
 }
 
-// commandVariables are the variables whose value git runs as a shell command: its own, and the
-// EDITOR, VISUAL, and PAGER it falls back to when neither its variable nor its config is set.
+// commandVariables are the editor variables whose value git runs as a shell command: its own, and
+// the EDITOR and VISUAL it falls back to when neither its variable nor its config is set. The pager
+// variables are left out: like `core.pager`, they are data.
 func commandVariables() []string {
-	return []string{"GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_PAGER", "EDITOR", "VISUAL", "PAGER"}
+	return []string{"GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "EDITOR", "VISUAL"}
 }
 
 // variableScripts returns the value of each of assignments that sets one of commandVariables, and

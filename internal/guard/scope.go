@@ -534,13 +534,13 @@ func (w *walker) keep(inv Invocation) {
 
 // allowedGitVariables is the list of GIT_* variables a command may set: those that point git at a
 // repository, which the guard follows, the GIT_* variables among commandVariables, whose scripts it
-// reads, and those that change no rule it judges by.
+// reads, and those that change no rule it judges by, GIT_PAGER among them.
 func allowedGitVariables() []string {
 	followed := slices.DeleteFunc(commandVariables(), func(name string) bool { return !strings.HasPrefix(name, "GIT_") })
 
 	return append(followed,
 		gitDirVar, gitWorkTreeVar,
-		"GIT_TERMINAL_PROMPT", "GIT_TRACE", "GIT_TRACE2", "GIT_ADVICE", "GIT_OPTIONAL_LOCKS",
+		"GIT_PAGER", "GIT_TERMINAL_PROMPT", "GIT_TRACE", "GIT_TRACE2", "GIT_ADVICE", "GIT_OPTIONAL_LOCKS",
 		"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
 		"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE",
 	)

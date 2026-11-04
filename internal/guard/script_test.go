@@ -177,7 +177,7 @@ func TestParse_WhenAGitVariableNamesACommandGitRuns_ParsesItsCommands(t *testing
 		want    []string
 	}{
 		{name: "sequence editor as an assignment prefix", command: "GIT_SEQUENCE_EDITOR='git push origin main; true' git rebase -i HEAD~1", want: []string{"git", "push", "origin", "main"}},
-		{name: "pager exported earlier in the list", command: "export GIT_PAGER='git push origin main'; git log", want: []string{"git", "push", "origin", "main"}},
+		{name: "editor exported earlier in the list", command: "export GIT_EDITOR='git push origin main'; git commit", want: []string{"git", "push", "origin", "main"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -200,7 +200,7 @@ func TestParse_WhenACommandAGitVariableNamesCannotBeRead_MarksIt(t *testing.T) {
 		index   int
 	}{
 		{name: "non-literal editor", command: `GIT_EDITOR="$e" git commit`, want: guard.DynamicScript},
-		{name: "pager past the third level", command: "eval eval eval GIT_PAGER=less git log", index: 3, want: guard.DeepScript},
+		{name: "editor past the third level", command: "eval eval eval GIT_EDITOR=vim git commit", index: 3, want: guard.DeepScript},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

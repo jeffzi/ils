@@ -201,12 +201,13 @@ These classes fail that test, so the guard lets them through:
   than git, or a `git switch` in a background job or a pipe stage, which runs beside the rest of
   the command. Agents switch branches with git, as a command of its own. Writing the HEAD file by
   hand, or racing a switch against a commit, only hides where the commit lands.
-- **An option or config key that runs a program, other than the editors the guard reads where
-  the command sets them, as [rule 2](#2-refuse-every-direct-operation) asks (`core.editor` and
-  `sequence.editor` given by `-c` or `--config-env`, `GIT_EDITOR`, and `GIT_SEQUENCE_EDITOR`):**
-  `core.pager`, `core.sshCommand`, `credential.helper`, the command keys of diff, merge, and tool
-  drivers, `difftool -x`, and `go test -exec`. Agents set these to run a pager, an SSH key, or a
-  test runner. Reaching a push through one only hides the push.
+- **An option, variable, or config key that runs a program, other than the editors the guard
+  reads where the command sets them, as [rule 2](#2-refuse-every-direct-operation) asks
+  (`core.editor` and `sequence.editor` given by `-c` or `--config-env`, `GIT_EDITOR`,
+  `GIT_SEQUENCE_EDITOR`, and the `EDITOR` and `VISUAL` git falls back to):** `core.pager`,
+  `GIT_PAGER`, `PAGER`, `core.sshCommand`, `credential.helper`, the command keys of diff, merge,
+  and tool drivers, `difftool -x`, and `go test -exec`. Agents set these to run a pager, an SSH
+  key, or a test runner. Reaching a push through one only hides the push.
 - **Config the guard does not read written by `git config`:** an editor or any other key that
   runs a program (`git config core.editor vim`), and an `include.path` or `includeIf.*.path` whose
   file can set any key, `core.hooksPath` included. Agents set their editor and split their config
