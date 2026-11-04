@@ -132,7 +132,7 @@ func argumentsWriteNoVariable(name string, args []Word) bool {
 		return len(args) == 0 || args[0].Literal && !strings.HasPrefix(args[0].Text, "-v")
 	case "set":
 		writes = func(arg string) bool {
-			return (strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "+")) && strings.Contains(arg, "A")
+			return startsWithSign(arg) && strings.Contains(arg, "A")
 		}
 	case "wait":
 		writes = func(arg string) bool { return strings.HasPrefix(arg, "-") && strings.Contains(arg, "p") }

@@ -359,7 +359,7 @@ func readArgs(args []Word, known knownOptions) subcommandOptions {
 // globOfPaths reports whether w is a glob whose literal prefix starts with neither `-` nor `+`:
 // every word the shell expands it to starts with that prefix, so none is an option.
 func globOfPaths(w Word) bool {
-	return w.Glob && w.Text != "" && w.Text[0] != '-' && w.Text[0] != '+'
+	return w.Glob && w.Text != "" && !startsWithSign(w.Text)
 }
 
 // readLong records the long option w, given the options the subcommand takes, and reports
