@@ -132,11 +132,15 @@ func runsInShell(wrappers []string) bool {
 // letters given among them. It stops at the first word that is not literal, is no option, or holds
 // a letter the wrapper does not take, or whose value is missing or not literal.
 func skipOptions(words []Word, options wrapperOptions) (int, []option) {
+	if options.none {
+		return 0, nil
+	}
+
 	var given []option
 	for i := 0; i < len(words); i++ {
 		text := words[i].Text
 		switch {
-		case !words[i].Literal || options.none || len(text) < 2 || text[0] != '-':
+		case !words[i].Literal || len(text) < 2 || text[0] != '-':
 			return i, given
 		case text == "--":
 			return i + 1, given
@@ -180,22 +184,81 @@ func optionLetters(letters string, next []Word, options wrapperOptions) ([]optio
 	return given, 0, true
 }
 
-// envAssignment reads raw as an `env` argument of the form `NAME=value`.
+// envAssignment reads raw as an `env` argument of the form `NAME=value`, quoted in whole or in
+// part: env sees the word after quote removal, so `"NAME=value"` assigns as `NAME=value` does.
 func envAssignment(raw *syntax.Word, ex expander) (Assignment, bool) {
-	lit, ok := raw.Parts[0].(*syntax.Lit)
-	if !ok {
+	c, ok := cutParts(raw.Parts)
+	if !ok || !c.found || !git.IsName(c.head) {
 		return Assignment{}, false
 	}
 
-	name, rest, found := strings.Cut(lit.Value, "=")
-	if !found || !git.IsName(name) {
-		return Assignment{}, false
+	return Assignment{Name: c.head, Value: readWord(&syntax.Word{Parts: c.tail}, ex)}, true
+}
+
+// equalsCut is word parts cut at their first `=`.
+type equalsCut struct {
+	// head is the text before the `=`, or all the text when found is false.
+	head string
+	// tail is the parts after the `=`, with the text that follows it kept in the quotes it stood in.
+	tail  []syntax.WordPart
+	found bool
+}
+
+// cutParts cuts parts at their first `=`. It reports false when a part before the `=` is anything
+// but plain or quoted text: the text an expansion gives is known only at run time.
+func cutParts(parts []syntax.WordPart) (equalsCut, bool) {
+	var head strings.Builder
+	for i, part := range parts {
+		c, ok := cutPart(part)
+		if !ok {
+			return equalsCut{}, false
+		}
+
+		head.WriteString(c.head)
+		if c.found {
+			return equalsCut{head: head.String(), tail: slices.Concat(c.tail, parts[i+1:]), found: true}, true
+		}
 	}
 
-	parts := slices.Clone(raw.Parts[1:])
-	if rest != "" {
-		parts = slices.Insert(parts, 0, syntax.WordPart(&syntax.Lit{Value: rest}))
+	return equalsCut{head: head.String()}, true
+}
+
+// cutPart is cutParts for one part. A `$'…'` or `$"…"` string is no plain text: its escapes or its
+// translation decide what it holds.
+func cutPart(part syntax.WordPart) (equalsCut, bool) {
+	switch p := part.(type) {
+	case *syntax.Lit:
+		return cutText(p.Value, func(tail string) syntax.WordPart { return &syntax.Lit{Value: tail} }), true
+	case *syntax.SglQuoted:
+		if p.Dollar {
+			return equalsCut{}, false
+		}
+
+		return cutText(p.Value, func(tail string) syntax.WordPart { return &syntax.SglQuoted{Value: tail} }), true
+	case *syntax.DblQuoted:
+		if p.Dollar {
+			return equalsCut{}, false
+		}
+
+		c, ok := cutParts(p.Parts)
+		if len(c.tail) > 0 {
+			c.tail = []syntax.WordPart{&syntax.DblQuoted{Parts: c.tail}}
+		}
+
+		return c, ok
+	default:
+		return equalsCut{}, false
+	}
+}
+
+// cutText cuts text at its first `=`, giving what follows it to quote to make the tail part. An
+// empty remainder makes no part.
+func cutText(text string, quote func(string) syntax.WordPart) equalsCut {
+	head, tail, found := strings.Cut(text, "=")
+	cut := equalsCut{head: head, found: found}
+	if tail != "" {
+		cut.tail = []syntax.WordPart{quote(tail)}
 	}
 
-	return Assignment{Name: name, Value: readWord(&syntax.Word{Parts: parts}, ex)}, true
+	return cut
 }

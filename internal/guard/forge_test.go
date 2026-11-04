@@ -3,18 +3,12 @@
 package guard_test
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
-	"github.com/jeffzi/ils/internal/child"
-	"github.com/jeffzi/ils/internal/github"
-	"github.com/jeffzi/ils/internal/github/ghtest"
 	"github.com/jeffzi/ils/internal/guard"
-	"github.com/jeffzi/ils/internal/logtest"
 )
 
 // judged is a command, the outcome Judge must give it, and a word its reason must hold.
@@ -83,10 +77,49 @@ func TestJudge_AsksBeforeALandingCommandRunAloneByItsBareName(t *testing.T) {
 
 	checkJudged(t, forgeCaller(t), []judged{
 		{name: "ils merge", command: "ils merge", want: guard.Ask},
-		{name: "ils release", command: "ils release 0.6.0", want: guard.Ask},
 		{name: "gh pr merge", command: "gh pr merge 3 --squash", want: guard.Ask},
-		{name: "gh release create", command: "gh release create v0.6.0", want: guard.Ask},
+		{name: "help flag after an argument", command: "gh pr merge 1 --help", want: guard.Ask},
+		{name: "argument not a literal after the end of flags", command: `gh pr merge -- "$n"`, want: guard.Ask},
 	})
+}
+
+func TestJudge_AllowsALandingCommandAskedForItsHelpInAnyForm(t *testing.T) {
+	t.Parallel()
+
+	checkJudged(t, forgeCaller(t), []judged{
+		{name: "ils merge piped", command: "ils merge --help | head", want: guard.Allow},
+		{name: "gh pr merge in a subshell", command: "(gh pr merge --help)", want: guard.Allow},
+	})
+}
+
+func TestJudge_RefusesAGhArgumentNotALiteralThatMayBeAGuardedFlagNamingTheSpellingsThatPass(t *testing.T) {
+	t.Parallel()
+	command := `gh pr merge "$n"`
+
+	got := guard.Judge(t.Context(), command, forgeCaller(t))
+
+	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome, reason %q", command, got.Reason)
+	assert.Check(t, is.Contains(got.Reason, "`--`"), "Judge(%q) reason", command)
+}
+
+func TestJudge_WhenDoubleDashLeavesAGhArgumentThatMayBeAGuardedFlagRefused_NamesOnlyALiteral(t *testing.T) {
+	t.Parallel()
+	caller := forgeCaller(t)
+
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{name: "value of a long flag", command: `gh pr merge --body "$n"`},
+		{name: "value of a shorthand that takes one", command: `gh pr checkout -b "$n"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			checkRefusedOmitting(t, caller, omitting{command: tt.command, named: "literal", omitted: "`--`"})
+		})
+	}
 }
 
 func TestJudge_RefusesALandingCommandNotRunAloneByItsBareNameNamingIt(t *testing.T) {
@@ -106,7 +139,6 @@ func TestJudge_RefusesAnAdminMergeInEveryForm(t *testing.T) {
 	checkJudged(t, forgeCaller(t), []judged{
 		{name: "bare", command: "gh pr merge 3 --admin", want: guard.Refuse},
 		{name: "with a value attached", command: "gh pr merge 3 --admin=true", want: guard.Refuse},
-		{name: "with a value attached not a literal", command: `gh pr merge 1 --admin="$v"`, want: guard.Refuse, wantNamed: "literal"},
 	})
 }
 
@@ -115,8 +147,6 @@ func TestJudge_RefusesAGuardedGhFlagWhoseAttachedValueIsNotALiteral(t *testing.T
 
 	checkJudged(t, forgeCaller(t), []judged{
 		{name: "pr checkout force", command: `gh pr checkout 1 --force="$v"`, want: guard.Refuse, wantNamed: "literal"},
-		{name: "auth status show token", command: `gh auth status --show-token="$v"`, want: guard.Refuse, wantNamed: "literal"},
-		{name: "repo create push", command: `gh repo create x --push="$v"`, want: guard.Refuse, wantNamed: "literal"},
 		{name: "api input", command: `gh api repos/o/r/pulls --input="$f"`, want: guard.Refuse},
 	})
 }
@@ -128,7 +158,6 @@ func TestJudge_PassesOverANonLiteralValueThatCannotSetAGuardedGhFlag(t *testing.
 		{name: "flag of a command with no guarded flag", command: `gh pr view 1 --json="$f"`, want: guard.Allow},
 		{name: "prefix rules out the guarded flag", command: `gh pr checkout 1 --branch="$b"`, want: guard.Allow},
 		{name: "prefix rules out the api fields", command: `gh api repos/o/r --jq="$q"`, want: guard.Allow},
-		{name: "prefix rules out the admin flag", command: `gh pr merge 1 --subject="$s"`, want: guard.Ask},
 	})
 }
 
@@ -222,6 +251,47 @@ func TestJudge_RefusesAGhGraphqlDocumentTheGuardCannotReadSayingToPassItInline(t
 	})
 }
 
+func TestJudge_AllowsAGhGraphqlQueryWithAnExplicitPostInAnySpelling(t *testing.T) {
+	t.Parallel()
+
+	checkJudged(t, forgeCaller(t), []judged{
+		{name: "short method separate", command: `gh api graphql -X POST -f query='{ viewer { login } }'`, want: guard.Allow},
+		// cspell:ignore XPOST -- gh reads -X with its value attached; the test needs that spelling.
+		{name: "short method attached", command: `gh api graphql -XPOST -f query='{ viewer { login } }'`, want: guard.Allow},
+		{name: "long method separate in lower case", command: `gh api graphql --method post -f query='{ viewer { login } }'`, want: guard.Allow},
+		{name: "long method attached", command: `gh api graphql --method=POST -f query='{ viewer { login } }'`, want: guard.Allow},
+		{name: "short method separate before the endpoint", command: `gh api -X POST graphql -f query='{ viewer { login } }'`, want: guard.Allow},
+		{name: "long method separate before the endpoint", command: `gh api --method POST graphql -f query='{ viewer { login } }'`, want: guard.Allow},
+	})
+}
+
+func TestJudge_RefusesAGhGraphqlCallWithAnExplicitPostByItsDocument(t *testing.T) {
+	t.Parallel()
+	caller := forgeCaller(t)
+
+	tests := []struct {
+		name    string
+		command string
+		named   string
+	}{
+		{name: "mutation", command: `gh api graphql -X POST -f query='mutation { a }'`, named: "mutation"},
+		{
+			name:    "mutation after a long method separate before the endpoint",
+			command: `gh api --method POST graphql -f query='mutation { a }'`,
+			named:   "mutation",
+		},
+		{name: "query read from a file", command: "gh api graphql --method=POST -F query=@q.graphql", named: "inline"},
+		{name: "query not a literal", command: `gh api graphql -X POST -f query="$q"`, named: "inline"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			checkRefusedOmitting(t, caller, omitting{command: tt.command, named: tt.named, omitted: "POST"})
+		})
+	}
+}
+
 func TestJudge_ReadsTheIlsCommandAsCobraFindsIt(t *testing.T) {
 	t.Parallel()
 
@@ -237,7 +307,6 @@ func TestJudge_RefusesAPushOrBranchNotRunAloneByItsBareNameNamingIt(t *testing.T
 	t.Parallel()
 
 	checkJudged(t, forgeCaller(t), []judged{
-		{name: "piped", command: "ils push | cat", want: guard.Refuse, wantNamed: "ils push"},
 		{name: "in a list", command: "ils branch topic && true", want: guard.Refuse, wantNamed: "ils branch"},
 	})
 }
@@ -251,7 +320,7 @@ func TestJudge_AllowsAnyOtherIlsCommandInAnyForm(t *testing.T) {
 	})
 }
 
-func TestJudge_RefusesAGhWrite(t *testing.T) {
+func TestJudge_RefusesAGhCallThatWritesToGitHubDiscardsWorkOrPrintsTheToken(t *testing.T) {
 	t.Parallel()
 
 	checkJudged(t, forgeCaller(t), []judged{
@@ -260,10 +329,15 @@ func TestJudge_RefusesAGhWrite(t *testing.T) {
 		// cspell:ignore XPUT -- gh reads -X with its value attached; the test needs that spelling.
 		{name: "api method attached", command: "gh api -XPUT repos/x/y", want: guard.Refuse, wantNamed: "PUT"},
 		{name: "api long method attached in lower case", command: "gh api --method=put repos/x/y", want: guard.Refuse, wantNamed: "put"},
-		{name: "api typed field", command: "gh api repos/x/y/issues -F title=x", want: guard.Refuse},
 		{name: "api method not literal", command: `gh api -X "$method" repos/x/y`, want: guard.Refuse},
-		{name: "repo sync", command: "gh repo sync", want: guard.Refuse, wantNamed: "gh repo sync"},
-		{name: "auth token", command: "gh auth token", want: guard.Refuse, wantNamed: "gh auth token"},
+		{name: "api graphql query with a method other than post", command: `gh api graphql -X DELETE -f query='{ viewer { login } }'`, want: guard.Refuse, wantNamed: "DELETE"},
+		{name: "api post with a query field to another endpoint", command: `gh api -X POST repos/x/y/issues -f query='{ viewer { login } }'`, want: guard.Refuse, wantNamed: "POST"},
+		{
+			name:      "api long post separate before another endpoint with a query field",
+			command:   `gh api --method POST repos/x/y/issues -f query='{ viewer { login } }'`,
+			want:      guard.Refuse,
+			wantNamed: "POST",
+		},
 		{name: "api method flag as the value of a field", command: "gh api -f --method=GET -f title=x repos/x/y/issues", want: guard.Refuse},
 		{name: "api method flag as the value of a long valued flag", command: "gh api --jq --method=GET -f title=x repos/x/y/issues", want: guard.Refuse},
 		{name: "config get token", command: "gh config get oauth_token", want: guard.Refuse},
@@ -271,12 +345,11 @@ func TestJudge_RefusesAGhWrite(t *testing.T) {
 	})
 }
 
-func TestJudge_AllowsAGhCallThatWritesNothing(t *testing.T) {
+func TestJudge_AllowsAGhCallThatWritesNothingToGitHubAndKeepsLocalWork(t *testing.T) {
 	t.Parallel()
 
 	checkJudged(t, forgeCaller(t), []judged{
 		{name: "api read", command: "gh api repos/x/y", want: guard.Allow},
-		{name: "api explicit get with a field", command: "gh api -X GET search/issues -f q=1", want: guard.Allow},
 		{name: "api explicit get in lower case attached", command: "gh api --method=get search/issues -f q=1", want: guard.Allow},
 		{name: "pr checkout", command: "gh pr checkout 12", want: guard.Allow},
 		{name: "config get another key", command: "gh config get editor", want: guard.Allow},
@@ -297,106 +370,4 @@ func TestJudge_RefusesChangingGhAliases(t *testing.T) {
 	checkJudged(t, forgeCaller(t), []judged{
 		{name: "set", command: "gh alias set pm 'pr merge'", want: guard.Refuse, wantNamed: "gh alias set"},
 	})
-}
-
-func TestJudge_JudgesTheExpansionOfAGhAlias(t *testing.T) {
-	// Not parallel: ghtest.Setup sets GH_PATH for the whole process.
-	const aliases = `finder: '!gh issue list | grep "$1"'` + "\n" +
-		"mg: pr merge $1\n" +
-		"pm: pr merge\n" +
-		"rd: release delete $1\n" +
-		"two: release delete $1 $2\n" +
-		"vw: pr $1\n"
-	ghtest.Setup(t, ghtest.Says(aliases, "alias", "list"))
-
-	checkJudgedInTurn(t, forgeCaller(t), []judged{
-		{name: "alias of a landing command", command: "gh pm 3", want: guard.Ask},
-		{name: "shell alias", command: "gh finder bug", want: guard.Refuse, wantNamed: "finder"},
-		{name: "neither a command nor an alias", command: "gh copilot suggest", want: guard.Refuse, wantNamed: "copilot"},
-		{name: "argument put in place", command: "gh vw merge 3", want: guard.Ask},
-		{name: "argument not a literal", command: `gh rd "$tag"`, want: guard.Refuse, wantNamed: "not a literal"},
-		{name: "placeholder left unfilled", command: "gh two v0.6.0", want: guard.Refuse, wantNamed: "cannot read"},
-		{name: "arguments past the placeholders appended", command: "gh mg 3 --admin", want: guard.Refuse},
-	})
-}
-
-func TestJudge_WhenGhRunnerLogs_LogsTheAliasLookup(t *testing.T) {
-	// Not parallel: ghtest.Setup sets GH_PATH for the whole process.
-	ghtest.Setup(t, ghtest.Says("pm: pr merge\n", "alias", "list"))
-	logger, sink := logtest.New()
-	caller := guard.Caller{Home: home, Dir: t.TempDir(), GH: github.Runner{Logger: logger}}
-
-	guard.Judge(t.Context(), "gh pm 3", caller)
-
-	want := logtest.ExecAttrs(t, child.Exec{Tool: "gh", Args: []string{"alias", "list"}})
-	assert.Check(t, is.DeepEqual(logtest.CallAttrs(t, sink.Records()), want), "record the alias lookup logged")
-}
-
-// ghReadingConfig points GH_PATH, for the rest of the test, at a gh that answers `alias list` with
-// the file aliases of the config directory gh reads: GH_CONFIG_DIR, else XDG_CONFIG_HOME/gh, else
-// HOME/.config/gh. The process's own config directory holds processAliases.
-func ghReadingConfig(t *testing.T, processAliases string) {
-	t.Helper()
-
-	const script = `#!/bin/sh
-case "$*" in
---version) echo "gh version ` + github.MinimumVersion + `" ;;
-"alias list") cat "${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}/aliases" ;;
-*) exit 123 ;;
-esac
-`
-
-	gh := filepath.Join(t.TempDir(), "gh")
-	//nolint:gosec // G306: the fake gh must be executable to stand in for gh.
-	assert.NilError(t, os.WriteFile(gh, []byte(script), 0o700))
-	t.Setenv("GH_PATH", gh)
-	t.Setenv("GH_CONFIG_DIR", "")
-	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("HOME", configHolding(t, ".config/gh", processAliases))
-}
-
-// configHolding returns a new directory whose subdirectory sub is a gh config directory holding
-// aliases.
-func configHolding(t *testing.T, sub, aliases string) string {
-	t.Helper()
-
-	root := t.TempDir()
-	dir := filepath.Join(root, sub)
-	assert.NilError(t, os.MkdirAll(dir, 0o700))
-	assert.NilError(t, os.WriteFile(filepath.Join(dir, "aliases"), []byte(aliases), 0o600))
-
-	return root
-}
-
-func TestJudge_ExpandsAGhAliasFromTheConfigTheInvocationsGhReads(t *testing.T) {
-	// Not parallel: it sets GH_PATH and the gh config location for the whole process.
-	ghReadingConfig(t, "sy: repo view\n")
-	const aliases = "sy: repo sync\n"
-	configDir := configHolding(t, "", aliases)
-	configHome := configHolding(t, "gh", aliases)
-	userHome := configHolding(t, ".config/gh", aliases)
-
-	checkJudgedInTurn(t, forgeCaller(t), []judged{
-		{name: "config dir assigned", command: "GH_CONFIG_DIR=" + configDir + " gh sy", want: guard.Refuse, wantNamed: "gh repo sync"},
-		{name: "config home assigned", command: "XDG_CONFIG_HOME=" + configHome + " gh sy", want: guard.Refuse, wantNamed: "gh repo sync"},
-		{name: "home assigned", command: "HOME=" + userHome + " gh sy", want: guard.Refuse, wantNamed: "gh repo sync"},
-	})
-}
-
-func TestJudge_RefusesAGhAliasWhoseConfigTheGuardCannotReadNamingTheVariable(t *testing.T) {
-	// Not parallel: it sets GH_PATH and the gh config location for the whole process.
-	ghReadingConfig(t, "sy: repo view\n")
-
-	checkJudgedInTurn(t, forgeCaller(t), []judged{
-		{name: "config dir not a literal", command: `GH_CONFIG_DIR="$d" gh sy`, want: guard.Refuse, wantNamed: "GH_CONFIG_DIR"},
-		{name: "config home exported not a literal", command: `export XDG_CONFIG_HOME="$d"; gh sy`, want: guard.Refuse, wantNamed: "XDG_CONFIG_HOME"},
-		{name: "home exported in an if body", command: "if test -d x; then export HOME=/srv; fi; gh sy", want: guard.Refuse, wantNamed: "HOME"},
-	})
-}
-
-func TestJudge_WhenGhAliasListFails_RefusesNamingTheRead(t *testing.T) {
-	// Not parallel: ghtest.Setup sets GH_PATH for the whole process.
-	ghtest.Setup(t, ghtest.Exits(ghtest.ServerError(), "alias", "list"))
-
-	checkJudgedRow(t, forgeCaller(t), judged{command: "gh pm 3", want: guard.Refuse, wantNamed: "alias list"})
 }

@@ -53,7 +53,10 @@ func discards() map[string]discard {
 		"stash show": {},
 		"clean": {
 			refuses: func(o subcommandOptions) bool {
-				return forced(o) || o.setsLast('i', "--interactive", "--no-interactive")
+				// A dry run deletes nothing, --force or not, but --interactive still asks to delete.
+				dryRun := isDryRun(o)
+
+				return (forced(o) && !dryRun) || o.setsLast('i', "--interactive", "--no-interactive")
 			},
 			judges: judgeCleanWithoutForce,
 			reason: "git clean --force or --interactive deletes untracked files",
@@ -96,6 +99,12 @@ func forced(o subcommandOptions) bool {
 	return o.sets('f', "--force")
 }
 
+// isDryRun reports whether the options end on `-n` or `--dry-run`, not undone by a later
+// `--no-dry-run`.
+func isDryRun(o subcommandOptions) bool {
+	return o.setsLast('n', "--dry-run", "--no-dry-run")
+}
+
 // recoveryDiscards returns the operations of discards that delete what lost commits are recovered
 // from: the reflog entries that name them and the unreachable objects that hold them.
 func recoveryDiscards() map[string]discard {
@@ -136,7 +145,7 @@ func plumbingDiscards() map[string]discard {
 			refuses: func(o subcommandOptions) bool {
 				// --prefix only adds the tree's entries under a directory the index does not hold yet,
 				// and --index-output writes another file, so neither replaces what is staged.
-				replacesIndex := !o.setsLast('n', "--dry-run", "--no-dry-run") &&
+				replacesIndex := !isDryRun(o) &&
 					!o.sets(0, "--index-output") && !o.sets(0, "--prefix")
 
 				return replacesIndex || o.sets(0, "--reset") || (o.sets('u', "") && o.sets('m', ""))
@@ -162,8 +171,14 @@ func plumbingDiscards() map[string]discard {
 // nullObjectID reports whether value is the all-zero object id, SHA-1 or SHA-256, which git reads
 // as a new value of `git update-ref` as the request to delete the ref.
 func nullObjectID(value string) bool {
-	return (len(value) == 40 || len(value) == 64) && strings.Trim(value, "0") == ""
+	return (len(value) == shortObjectIDLength || len(value) == longObjectIDLength) && strings.Trim(value, "0") == ""
 }
+
+// The lengths of an object id in hex digits: the SHA-1 id and the SHA-256 id.
+const (
+	shortObjectIDLength = 40
+	longObjectIDLength  = 64
+)
 
 // refuseDiscardingGit refuses a git invocation that destroys work: uncommitted changes, untracked
 // files, unmerged branches, or the objects and reflog entries lost commits are recovered from. It
@@ -178,7 +193,7 @@ func refuseDiscardingGit(ctx context.Context, caller Caller, inv Invocation) (Ve
 	op, found := discard{}, false
 	if args := inv.Git.Args; len(args) > 0 {
 		if !args[0].Literal && hasOperations(table, name) {
-			return unreadableArgument(sub), nil
+			return Verdict{}, unreadableArgument(sub)
 		}
 
 		op, found = table[name+" "+args[0].Text]
@@ -204,7 +219,7 @@ func (d discard) verdict(ctx context.Context, caller Caller, inv Invocation, sub
 		options := readArgs(inv.Git.Args, optionsOf(sub))
 		switch {
 		case options.unreadable:
-			return unreadableArgument(sub), nil
+			return Verdict{}, unreadableArgument(sub)
 		case d.refuses != nil && d.refuses(options):
 		case d.judges != nil:
 			judged, err := d.judges(ctx, caller, inv, options)
@@ -234,20 +249,19 @@ func (d discard) verdict(ctx context.Context, caller Caller, inv Invocation, sub
 // lets it delete untracked files anyway, or when the guard cannot read that config. A dry run
 // deletes nothing, unless a later --no-dry-run undoes it.
 func judgeCleanWithoutForce(ctx context.Context, caller Caller, inv Invocation, o subcommandOptions) (string, error) {
-	if o.setsLast('n', "--dry-run", "--no-dry-run") {
+	if isDryRun(o) {
 		return "", nil
 	}
 
 	targets, targetOK := targetOptions(inv)
 	config, configOK := configOptions(inv)
-	if !targetOK || !configOK {
-		reason := fmt.Sprintf("git clean: the guard cannot read %s, which lets it delete untracked files without --force", cleanForceKey)
-		if !targetOK {
-			reason = fmt.Sprintf("git clean: the guard cannot tell where it runs, so it cannot read %s, which lets it "+
-				"delete untracked files without --force; %s", cleanForceKey, moveFirst)
-		}
+	if !targetOK {
+		return fmt.Sprintf("git clean: the guard cannot tell where it runs, so it cannot read %s, which lets it "+
+			"delete untracked files without --force; %s", cleanForceKey, moveFirst), nil
+	}
 
-		return reason, nil
+	if !configOK {
+		return fmt.Sprintf("git clean: the guard cannot read %s, which lets it delete untracked files without --force", cleanForceKey), nil
 	}
 
 	// --default answers for an unset key, so git exits non-zero only on a failure.
@@ -300,6 +314,9 @@ func judgeRepackExpiry(_ context.Context, _ Caller, _ Invocation, o subcommandOp
 	return fmt.Sprintf("git repack -d %s deletes the unreachable objects older than the expiry, which can hold lost commits", expiry), nil
 }
 
+// branchRefPrefix is what a ref name starts with when the ref is a branch.
+const branchRefPrefix = "refs/heads/"
+
 // judgeForcedBranchOverwrite refuses `git branch -M` or `-C`, or `--move` or `--copy` with
 // `--force`, onto a branch that exists, which it replaces along with its reflog, and one whose
 // repository the guard cannot tell. The new name is the last of the one or two names the move or
@@ -324,7 +341,7 @@ func judgeForcedBranchOverwrite(ctx context.Context, caller Caller, inv Invocati
 
 	last := o.positional[len(o.positional)-1]
 	if !last.Literal {
-		return fmt.Sprintf("git branch %s: the guard cannot read the new name, which may be a branch it replaces", flag), nil
+		return fmt.Sprintf("git branch %s: the guard cannot read the new name, which may be a branch it replaces; write the new name as a literal", flag), nil
 	}
 
 	targets, ok := targetOptions(inv)
@@ -342,13 +359,13 @@ func judgeForcedBranchOverwrite(ctx context.Context, caller Caller, inv Invocati
 
 	branch := strings.TrimSpace(expanded.Stdout)
 
-	listed, err := runner.Run(ctx, slices.Concat(targets, []string{"for-each-ref", "--format=%(refname)", "refs/heads/"})...)
+	listed, err := runner.Run(ctx, slices.Concat(targets, []string{"for-each-ref", "--format=%(refname)", branchRefPrefix})...)
 	if err != nil {
 		return "", fmt.Errorf("read whether git branch %s replaces %s: %w", flag, branch, err)
 	}
 
 	for ref := range strings.SplitSeq(listed.Stdout, "\n") {
-		existing, isBranch := strings.CutPrefix(ref, "refs/heads/")
+		existing, isBranch := strings.CutPrefix(ref, branchRefPrefix)
 		switch {
 		case !isBranch || !strings.EqualFold(existing, branch):
 		case existing == branch:
@@ -373,16 +390,20 @@ func hasOperations(table map[string]discard, sub string) bool {
 	return false
 }
 
-// unreadableArgument refuses the git subcommand sub, one of whose arguments outside a value slot
-// is not a literal: it may hold an option the guard decides by. For a subcommand that takes paths,
-// the reason says to put them after `--`, where the guard reads every word as a path.
-func unreadableArgument(sub string) Verdict {
-	reason := fmt.Sprintf("git %s: the argument cannot be read, and it may hold an option the guard checks for", sub)
-	if slices.Contains([]string{"add", "rm", "clean", "commit", "restore"}, ruleName(sub)) {
-		reason += "; put the paths after `--`, where the guard reads every word as a path"
-	}
+// unreadArgumentError is what a rule returns for a git invocation of the subcommand sub, one of
+// whose arguments outside a value slot is not a literal: it may hold an option the guard decides
+// by. judgeInvocation refuses the invocation with the error's text and the spelling of the
+// argument that the guard allows.
+type unreadArgumentError struct {
+	sub string
+}
 
-	return refuse(reason)
+func unreadableArgument(sub string) *unreadArgumentError {
+	return &unreadArgumentError{sub: sub}
+}
+
+func (e *unreadArgumentError) Error() string {
+	return fmt.Sprintf("git %s: the argument cannot be read, and it may hold an option the guard checks for", e.sub)
 }
 
 // ---------------------------------------------------------------------------
@@ -411,13 +432,15 @@ func refuseSkippedChecks(_ context.Context, _ Caller, inv Invocation) (Verdict, 
 		return Verdict{Outcome: Allow}, nil
 	}
 
+	command := "git"
+	if inv.Git.Subcommand.Text != "" {
+		command += " " + inv.Git.Subcommand.Text
+	}
+
 	for _, o := range inv.Git.Options {
 		if (o.Name == "-c" || o.Name == "--config-env") && !o.Value.Literal {
-			command := "git"
-			if inv.Git.Subcommand.Text != "" {
-				command += " " + inv.Git.Subcommand.Text
-			}
-			reason := fmt.Sprintf("%s: the value of %s cannot be read, and it may set %s", command, o.Name, hooksPathKey)
+			reason := fmt.Sprintf("%s: the value of %s cannot be read, and it may set %s; write the %s value as a literal",
+				command, o.Name, hooksPathKey, o.Name)
 
 			return refuse(reason), nil
 		}
@@ -448,7 +471,7 @@ func refuseSkippedChecks(_ context.Context, _ Caller, inv Invocation) (Verdict, 
 	case options.sets(letter, ""):
 		flag = "-" + string(letter)
 	case options.unreadable && runsChecks:
-		return unreadableArgument(sub), nil
+		return Verdict{}, unreadableArgument(sub)
 	default:
 		return Verdict{Outcome: Allow}, nil
 	}
@@ -488,7 +511,7 @@ func refuseHistoryOverFile(ctx context.Context, caller Caller, inv Invocation) (
 
 			return refuse(reason), nil
 		case !filepath.IsAbs(path):
-			path = filepath.Join(inv.Dir, path)
+			path = opened(inv.Dir, path)
 		}
 
 		dir := nearestDirectory(path)
@@ -517,21 +540,7 @@ func historyTargets(inv Invocation) []Word {
 		return nil
 	}
 
-	var files []Word
-	options := true
-	for _, word := range inv.pipedInto[1:] {
-		switch {
-		case !word.Literal:
-			files = append(files, word)
-		case options && word.Text == "--":
-			options = false
-		case options && strings.HasPrefix(word.Text, "-") && word.Text != "-":
-		default:
-			files = append(files, word)
-		}
-	}
-
-	return files
+	return operands(inv.pipedInto[1:])
 }
 
 // nearestDirectory returns the nearest directory that exists among those holding path, which the
@@ -556,7 +565,7 @@ func nearestDirectory(path string) string {
 
 // refuseRebaseOverChanges refuses `git rebase` in a work tree that holds uncommitted or
 // untracked changes, and one whose repository the guard cannot tell. Outside any repository there
-// is nothing for it to lose.
+// is nothing for it to lose, and an action of rebaseKeepingActions leaves the work tree as it is.
 func refuseRebaseOverChanges(ctx context.Context, caller Caller, inv Invocation) (Verdict, error) {
 	sub, ok := subcommand(inv)
 	if !ok || sub != "rebase" {
@@ -567,7 +576,7 @@ func refuseRebaseOverChanges(ctx context.Context, caller Caller, inv Invocation)
 		return refuse("git rebase: the guard cannot tell which repository it runs in; " + moveFirst), nil
 	}
 
-	if inv.Git.GitDir == "" {
+	if inv.Git.GitDir == "" || keepsWorkTree(readArgs(inv.Git.Args, optionsOf(sub))) {
 		return Verdict{Outcome: Allow}, nil
 	}
 
@@ -584,6 +593,20 @@ func refuseRebaseOverChanges(ctx context.Context, caller Caller, inv Invocation)
 	return Verdict{Outcome: Allow}, nil
 }
 
+// rebaseKeepingActions are the actions of `git rebase` that discard nothing in the work tree:
+// --continue commits what is staged, and the others edit or show the rebase's state, or drop it
+// while leaving HEAD and the work tree where they are. git refuses an action beside another, so
+// one of these set means no other runs.
+func rebaseKeepingActions() []string {
+	return []string{"--continue", "--edit-todo", "--show-current-patch", "--quit"}
+}
+
+// keepsWorkTree reports whether the readable `git rebase` options o set an action of
+// rebaseKeepingActions.
+func keepsWorkTree(o subcommandOptions) bool {
+	return !o.unreadable && slices.ContainsFunc(rebaseKeepingActions(), func(action string) bool { return o.sets(0, action) })
+}
+
 // refuseRiskyWorktreeRemoval refuses `git worktree remove` with `--force`, of a path it cannot
 // verify, and of a worktree that holds uncommitted or untracked changes. It reads a relative path
 // from the directory git runs in once its `-C` options apply, as git does.
@@ -594,7 +617,7 @@ func refuseRiskyWorktreeRemoval(ctx context.Context, caller Caller, inv Invocati
 	}
 
 	if !inv.Git.Args[0].Literal {
-		return unreadableArgument(sub), nil
+		return Verdict{}, unreadableArgument(sub)
 	}
 
 	if inv.Git.Args[0].Text != "remove" {
@@ -604,6 +627,10 @@ func refuseRiskyWorktreeRemoval(ctx context.Context, caller Caller, inv Invocati
 	options := readArgs(inv.Git.Args[1:], knownOptions{})
 	if forced(options) {
 		return refuse("git worktree remove --force deletes the worktree's uncommitted and untracked changes"), nil
+	}
+
+	if options.unreadable {
+		return Verdict{}, unreadableArgument(sub)
 	}
 
 	path, why := worktreePath(inv, options)
@@ -629,12 +656,10 @@ func refuseRiskyWorktreeRemoval(ctx context.Context, caller Caller, inv Invocati
 // arguments options removes, or why the guard cannot verify it.
 func worktreePath(inv Invocation, options subcommandOptions) (path, why string) {
 	switch {
-	case options.unreadable:
-		return "", "an argument cannot be read"
 	case len(options.positional) != 1:
 		return "", "it names no single worktree"
 	case !options.positional[0].Literal:
-		return "", "the path cannot be read"
+		return "", "the path cannot be read; write the path as a literal"
 	}
 
 	path = options.positional[0].Text
@@ -643,7 +668,7 @@ func worktreePath(inv Invocation, options subcommandOptions) (path, why string) 
 			return "", "the directory git runs in cannot be followed; " + moveFirst
 		}
 
-		path = filepath.Join(inv.Target.Dir, path)
+		path = opened(inv.Target.Dir, path)
 	}
 
 	if !isDirectory(path) {
@@ -678,7 +703,7 @@ func refuseGuardedConfigWrite(_ context.Context, _ Caller, inv Invocation) (Verd
 
 	options := readArgs(inv.Git.Args, optionsOf(sub))
 	if options.opaque() {
-		return unreadableArgument(sub), nil
+		return Verdict{}, unreadableArgument(sub)
 	}
 
 	action, words := configAction(options)
@@ -817,7 +842,7 @@ func refuseOriginRewrite(_ context.Context, _ Caller, inv Invocation) (Verdict, 
 
 	options := readArgs(args[1:], knownOptions{})
 	if !op.Literal || options.opaque() {
-		return unreadableArgument(sub), nil
+		return Verdict{}, unreadableArgument(sub)
 	}
 
 	if len(options.positional) == 0 || options.positional[0].Text != "origin" {

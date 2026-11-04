@@ -18,10 +18,6 @@ type trunkAnswer struct {
 	found bool
 }
 
-// moveFirst is what a refusal says to do when the guard cannot tell where a git command runs, or
-// which branch HEAD is on, because of a move earlier in the command or a directory it cannot read.
-const moveFirst = "run the `cd`, switch, or other move as its own command first, and write any directory as a literal"
-
 // trunks is the trunk rule for one command, holding the answer for each git dir it asked. It asks
 // origin for the trunk at most once per git dir, so every invocation of the command in one
 // repository is judged against the same answer.
@@ -72,7 +68,7 @@ func (t trunks) refuseOnTrunk(ctx context.Context, caller Caller, inv Invocation
 
 	if named && !rebased.Literal {
 		reason := fmt.Sprintf("git %s: the guard cannot read the branch it switches to, so it cannot tell "+
-			"which branch the rebase lands on", sub)
+			"which branch the rebase lands on; write the branch as a literal", sub)
 
 		return refuse(reason), nil
 	}
@@ -118,7 +114,7 @@ func onTrunk(sub string, args []Word, trunk string) Verdict {
 		// refspec names the trunk with or without a leading `+` and its full ref.
 		named := wordTexts(options.positional)
 		if len(named) == 2 {
-			named[1] = strings.TrimPrefix(strings.TrimPrefix(named[1], "+"), "refs/heads/")
+			named[1] = strings.TrimPrefix(strings.TrimPrefix(named[1], "+"), branchRefPrefix)
 		}
 
 		pullsTrunk := slices.Equal(named, []string{"origin"}) || slices.Equal(named, []string{"origin", trunk})

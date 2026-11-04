@@ -1,5 +1,7 @@
 //go:build unix
 
+// cspell:ignore Clob -- the shell parser's name for its clobbering redirect operators.
+
 package guard
 
 import (
@@ -14,8 +16,8 @@ import (
 type Redirect struct {
 	// Fd is the descriptor written before the operator, empty when none is.
 	Fd     string
-	Op     string
 	Target Word
+	Op     syntax.RedirOperator
 }
 
 const (
@@ -58,9 +60,9 @@ func settled(files, wanted map[string]Word) []Redirect {
 		target, wantFile := wanted[fd]
 		switch {
 		case wantFile && current != target:
-			fixes = append(fixes, Redirect{Fd: fd, Op: ">", Target: target})
+			fixes = append(fixes, Redirect{Fd: fd, Op: syntax.RdrOut, Target: target})
 		case !wantFile && onFile:
-			fixes = append(fixes, Redirect{Fd: fd, Op: ">&", Target: Word{Text: "-", Literal: true}})
+			fixes = append(fixes, Redirect{Fd: fd, Op: syntax.DplOut, Target: Word{Text: "-", Literal: true}})
 		}
 	}
 
@@ -94,7 +96,7 @@ func restored(before, own, after []Redirect) []Redirect {
 // descriptor, change stdout and stderr; an unnumbered redirect changes stdin when it reads, and
 // stdout otherwise.
 func touched(r Redirect) []string {
-	if strings.HasPrefix(r.Op, "&>") || (r.Op == ">&" && r.Fd == "" && !isDescriptor(r.Target)) {
+	if opensAll(r.Op) || (r.Op == syntax.DplOut && r.Fd == "" && !isDescriptor(r.Target)) {
 		return []string{stdoutFd, stderrFd}
 	}
 
@@ -102,15 +104,11 @@ func touched(r Redirect) []string {
 		return []string{r.Fd}
 	}
 
-	if strings.HasPrefix(r.Op, "<") {
+	if isInput(r.Op) {
 		return []string{stdinFd}
 	}
 
 	return []string{stdoutFd}
-}
-
-func ontoStdout(r Redirect) bool {
-	return slices.Contains(touched(r), stdoutFd)
 }
 
 // applyRedirect updates files, the file each descriptor is open on, with the redirect r. A
@@ -132,19 +130,19 @@ func applyRedirect(files map[string]Word, r Redirect) {
 	}
 
 	switch r.Op {
-	case ">", ">>", ">|", ">>|":
+	case syntax.RdrOut, syntax.AppOut, syntax.RdrClob, syntax.AppClob:
 		open(fd(stdoutFd), r.Target, true)
-	case "&>", "&>>", "&>|", "&>>|":
+	case syntax.RdrAll, syntax.AppAll, syntax.RdrAllClob, syntax.AppAllClob:
 		open(stdoutFd, r.Target, true)
 		open(stderrFd, r.Target, true)
-	case "<>":
+	case syntax.RdrInOut:
 		open(fd(stdinFd), r.Target, true)
-	case "<":
-		// A descriptor opened for reading only cannot write over the file.
+	case syntax.RdrIn, syntax.Hdoc, syntax.DashHdoc, syntax.WordHdoc:
+		// A descriptor opened for reading only, or on a heredoc, cannot write over a file.
 		delete(files, fd(stdinFd))
-	case ">&", "<&":
+	case syntax.DplOut, syntax.DplIn:
 		into := fd(stdoutFd)
-		if r.Op == "<&" {
+		if r.Op == syntax.DplIn {
 			into = fd(stdinFd)
 		}
 
@@ -163,6 +161,17 @@ func applyRedirect(files map[string]Word, r Redirect) {
 	}
 }
 
+// opensAll reports whether op sends both stdout and stderr to its target: `&>` and its appending
+// and clobbering forms.
+func opensAll(op syntax.RedirOperator) bool {
+	switch op {
+	case syntax.RdrAll, syntax.AppAll, syntax.RdrAllClob, syntax.AppAllClob:
+		return true
+	default:
+		return false
+	}
+}
+
 func isDescriptor(w Word) bool {
 	if !w.Literal || w.Text == "" {
 		return false
@@ -174,7 +183,7 @@ func isDescriptor(w Word) bool {
 func redirectsOf(stmt *syntax.Stmt, ex expander) []Redirect {
 	redirects := make([]Redirect, 0, len(stmt.Redirs))
 	for _, r := range stmt.Redirs {
-		redirect := Redirect{Op: r.Op.String(), Target: readWord(r.Word, ex)}
+		redirect := Redirect{Op: r.Op, Target: readWord(r.Word, ex)}
 		if r.N != nil {
 			redirect.Fd = r.N.Value
 		}

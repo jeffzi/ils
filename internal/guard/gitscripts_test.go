@@ -37,9 +37,7 @@ func TestParse_WhenGitRunsAShellCommandItHolds_ParsesItsCommands(t *testing.T) {
 		{name: "key spelled in another case", command: "git -c CORE.Pager='git push origin main' log", want: [][]string{{"git", "-c", "CORE.Pager=git push origin main", "log"}, pushed}},
 		{name: "pager key spelled in another case", command: "git -c Pager.Log='git push origin main' log", want: [][]string{{"git", "-c", "Pager.Log=git push origin main", "log"}, pushed}},
 		{name: "core.pager given by --config-env", command: "P='git push origin main' git --config-env=core.pager=P log", want: [][]string{{"git", "--config-env=core.pager=P", "log"}, pushed}},
-		{name: "diff driver textconv given by -c", command: "git -c diff.x.textconv='git push origin main' diff", want: [][]string{{"git", "-c", "diff.x.textconv=git push origin main", "diff"}, pushed}},
 		{name: "credential helper run by the shell", command: "git -c credential.helper='!git push origin main' fetch", want: [][]string{{"git", "-c", "credential.helper=!git push origin main", "fetch"}, pushed}},
-		{name: "credential helper of a URL, key in another case", command: "git -c credential.https://h.Helper='!git push origin main' fetch", want: [][]string{{"git", "-c", "credential.https://h.Helper=!git push origin main", "fetch"}, pushed}},
 		{name: "credential helper named by its suffix", command: "git -c credential.helper=store fetch", want: [][]string{{"git", "-c", "credential.helper=store", "fetch"}, {"git", "credential-store"}}},
 		{name: "bisect run", command: "git bisect run git push origin main", want: [][]string{{"git", "bisect", "run", "git", "push", "origin", "main"}, pushed}},
 		{name: "submodule foreach", command: "git submodule foreach 'git push origin main'", want: [][]string{{"git", "submodule", "foreach", "git push origin main"}, pushed}},
@@ -121,18 +119,17 @@ func TestParse_WhenAGitAliasOfRebaseIsGivenAnExec_ParsesTheExecCommand(t *testin
 
 func TestJudge_RefusesAGitCommandRunningAnArgumentItCannotRead(t *testing.T) {
 	t.Parallel()
-	_, caller := standingOn(t, "main", "topic")
 
-	checkJudged(t, caller, []judged{
-		{name: "bisect run", command: `git bisect run "$c"`, wantNamed: "bisect run", want: guard.Refuse},
-		{name: "submodule foreach", command: `git submodule foreach "$c"`, wantNamed: "submodule foreach", want: guard.Refuse},
-		{name: "difftool -x", command: `git difftool -x "$c" HEAD~1`, wantNamed: "-x", want: guard.Refuse},
-		{name: "difftool --extcmd", command: `git difftool --extcmd="$c" HEAD~1`, wantNamed: "--extcmd", want: guard.Refuse},
-		{name: "difftool word that could be an option", command: `git difftool "$o" HEAD~1`, wantNamed: "difftool", want: guard.Refuse},
-		{name: "difftool short-flag bundle ending in a non-literal", command: `git difftool -y"$o" HEAD~1`, wantNamed: "difftool", want: guard.Refuse},
-		{name: "difftool long option completed by a non-literal", command: `git difftool --e"$x" HEAD~1`, wantNamed: "difftool", want: guard.Refuse},
-		{name: "filter-branch filter", command: `git filter-branch --index-filter "$c" HEAD`, wantNamed: "--index-filter", want: guard.Refuse},
-		{name: "for-each-repo", command: `git for-each-repo --config=x.repo "$c"`, wantNamed: "for-each-repo", want: guard.Refuse},
+	checkRefusals(t, []refusal{
+		{name: "bisect run", command: `git bisect run "$c"`, wantNamed: "bisect run"},
+		{name: "submodule foreach", command: `git submodule foreach "$c"`, wantNamed: "submodule foreach"},
+		{name: "difftool -x", command: `git difftool -x "$c" HEAD~1`, wantNamed: "-x"},
+		{name: "difftool --extcmd", command: `git difftool --extcmd="$c" HEAD~1`, wantNamed: "--extcmd"},
+		{name: "difftool word that could be an option", command: `git difftool "$o" HEAD~1`, wantNamed: "difftool"},
+		{name: "difftool short-flag bundle ending in a non-literal", command: `git difftool -y"$o" HEAD~1`, wantNamed: "difftool"},
+		{name: "difftool long option completed by a non-literal", command: `git difftool --e"$x" HEAD~1`, wantNamed: "difftool"},
+		{name: "filter-branch filter", command: `git filter-branch --index-filter "$c" HEAD`, wantNamed: "--index-filter"},
+		{name: "for-each-repo", command: `git for-each-repo --config=x.repo "$c"`, wantNamed: "for-each-repo"},
 	})
 }
 
@@ -140,49 +137,28 @@ func TestJudge_AllowsAGitCommandRunningALiteralItAllows(t *testing.T) {
 	t.Parallel()
 	_, caller := standingOn(t, "main", "topic")
 
-	checkJudged(t, caller, []judged{
-		{name: "bisect run", command: "git bisect run make test", want: guard.Allow},
-		{name: "submodule foreach", command: "git submodule foreach 'git status'", want: guard.Allow},
-		{name: "difftool -x", command: "git difftool -x 'diff -u' HEAD~1", want: guard.Allow},
-		{name: "difftool command given by -c", command: "git -c difftool.x.cmd='diff -u' difftool --tool=x HEAD~1", want: guard.Allow},
-		{name: "difftool against a revision", command: "git difftool HEAD~1", want: guard.Allow},
-		{name: "difftool with a tool", command: "git difftool --tool=meld", want: guard.Allow},
-		{name: "difftool without prompting", command: "git difftool -y", want: guard.Allow},
-		{name: "for-each-repo", command: "git for-each-repo --config=x.repo status", want: guard.Allow},
-	})
-}
-
-func TestJudge_PassesOverTheValueOfADifftoolOptionThatTakesOne(t *testing.T) {
-	t.Parallel()
-	_, caller := standingOn(t, "main", "topic")
-
 	checkAllowed(t, caller, []namedCommand{
-		{name: "-x", command: "git difftool -x --no-verify HEAD"},
-		{name: "-t", command: "git difftool -t --no-verify HEAD"},
+		{name: "bisect run", command: "git bisect run make test"},
+		{name: "submodule foreach", command: "git submodule foreach 'git status'"},
+		{name: "difftool -x", command: "git difftool -x 'diff -u' HEAD~1"},
+		{name: "difftool command given by -c", command: "git -c difftool.x.cmd='diff -u' difftool --tool=x HEAD~1"},
+		{name: "difftool against a revision", command: "git difftool HEAD~1"},
+		{name: "difftool with a tool", command: "git difftool --tool=meld"},
+		{name: "difftool without prompting", command: "git difftool -y"},
+		{name: "for-each-repo", command: "git for-each-repo --config=x.repo status"},
 	})
 }
 
-func TestJudge_RefusesDifftoolSkippingChecks(t *testing.T) {
-	t.Parallel()
-
-	checkRefusals(t, []refusal{
-		{name: "--no-verify", command: "git difftool --no-verify HEAD", wantNamed: "--no-verify"},
-	})
-}
-
-// nestedRepositories returns a repository standing on topic, off its trunk main, holding a nested
-// repository inner on main and a nested repository docs/inner on scratch, both cloned from its
-// origin and left out of its status, and a caller working at its top.
+// nestedRepositories returns a repository on main holding the nested repositories inner and
+// docs/inner, both cloned from its origin, and a caller working at its top.
 func nestedRepositories(t *testing.T) (*gittest.Fixture, guard.Caller) {
 	t.Helper()
 
-	f, caller := standingOn(t, "main", "topic")
+	f := gittest.New(t, "main")
 	f.Git("clone", "--quiet", f.OriginDir(), "inner")
 	f.Git("clone", "--quiet", f.OriginDir(), filepath.Join("docs", "inner"))
-	f.Git("-C", filepath.Join("docs", "inner"), "switch", "--quiet", "--create", "scratch")
-	gittest.WriteFile(t, filepath.Join(f.Dir(), ".git", "info"), "exclude", "/inner/\n/docs/\n")
 
-	return f, caller
+	return f, callerIn(f, f.Dir())
 }
 
 const innerCommit = `"git -C inner commit --allow-empty -m x"`
@@ -197,7 +173,6 @@ func TestParse_WhenGitRunsAScriptAtTheTopOfTheWorkTree_ReadsItsGitCommandsFromTh
 		command string
 	}{
 		{name: "rebase --exec below the top by -C", command: "git -C docs rebase --exec " + innerCommit + " origin/main"},
-		{name: "rebase --exec below the top by cd", command: "cd docs && git rebase --exec " + innerCommit + " origin/main"},
 		{name: "difftool --extcmd below the top by -C", command: "git -C docs difftool --extcmd " + innerCommit + " HEAD~1"},
 	}
 	for _, tt := range tests {

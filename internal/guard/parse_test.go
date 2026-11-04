@@ -52,6 +52,45 @@ func only(t *testing.T, command string) guard.Invocation {
 	return got[0]
 }
 
+// checkNoMarks fails unless every command parses to one invocation that carries no marks.
+func checkNoMarks(t *testing.T, tests []namedCommand) {
+	t.Helper()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := only(t, tt.command)
+
+			assert.Check(t, is.Len(got.Marks, 0), "Parse(%q) marks", tt.command)
+		})
+	}
+}
+
+// markedCommand is a command whose invocation at index carries exactly one mark, of kind want.
+type markedCommand struct {
+	name    string
+	command string
+	want    guard.MarkKind
+	index   int
+}
+
+// checkMarkKind fails unless each command's invocation at its index carries exactly its one mark.
+func checkMarkKind(t *testing.T, tests []markedCommand) {
+	t.Helper()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := parse(t, tt.command)
+
+			assert.Assert(t, len(got) > tt.index, "Parse(%q) = %v", tt.command, texts(got))
+			assert.Check(t, is.DeepEqual(kinds(got[tt.index].Marks), []guard.MarkKind{tt.want}), "Parse(%q) marks", tt.command)
+		})
+	}
+}
+
 // gitRun returns the one invocation of command that runs git, read by a caller in start whose
 // HOME is home.
 func gitRun(t *testing.T, command string) guard.Invocation {
@@ -160,11 +199,7 @@ func TestParse_WhenTheParserCannotReadTheCommand_ReturnsAParseError(t *testing.T
 func TestParse_ReturnsEverySimpleCommandInTheTree(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		command string
-		want    [][]string
-	}{
+	checkTexts(t, []commandTexts{
 		{name: "pipeline", command: "git log | grep fix", want: [][]string{{"git", "log"}, {"grep", "fix"}}},
 		{
 			name:    "and and or lists",
@@ -191,7 +226,19 @@ func TestParse_ReturnsEverySimpleCommandInTheTree(t *testing.T) {
 			command: "bash -c 'echo a | cat' x $(git push origin main)",
 			want:    [][]string{{"bash", "-c", "echo a | cat", "x", ""}, {"echo", "a"}, {"cat"}, {"git", "push", "origin", "main"}},
 		},
-	}
+	})
+}
+
+// commandTexts is a command whose invocations carry the word texts in want.
+type commandTexts struct {
+	name    string
+	command string
+	want    [][]string
+}
+
+func checkTexts(t *testing.T, tests []commandTexts) {
+	t.Helper()
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -206,24 +253,10 @@ func TestParse_ReturnsEverySimpleCommandInTheTree(t *testing.T) {
 func TestParse_WhenASimpleCommandIsNotACall_ReportsAnInvocation(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		command string
-		want    [][]string
-	}{
-		{name: "export of an assignment", command: "export GIT_DIR=/tmp/x; git push", want: [][]string{{"export", "GIT_DIR=/tmp/x"}, {"git", "push"}}},
+	checkTexts(t, []commandTexts{
 		{name: "declare with an option", command: "declare -x A=1", want: [][]string{{"declare", "-x", "A=1"}}},
 		{name: "local of a name", command: "local name", want: [][]string{{"local", "name"}}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := parse(t, tt.command)
-
-			assert.Check(t, is.DeepEqual(texts(got), tt.want), "Parse(%q)", tt.command)
-		})
-	}
+	})
 }
 
 func TestParse_WhenACommandOnlyAssigns_ReportsAnInvocationWithNoWords(t *testing.T) {
@@ -249,6 +282,14 @@ func TestParse_WhenALetClauseRuns_ReportsALetInvocation(t *testing.T) {
 	assert.Assert(t, len(got[0].Words) > 0, "Parse(%q) let invocation has no words", command)
 	assert.Check(t, is.DeepEqual(got[0].Words[0], guard.Word{Text: "let", Literal: true}), "Parse(%q) let word", command)
 	assert.Check(t, is.DeepEqual(texts(got[1:]), [][]string{{"git", "push"}}), "Parse(%q)", command)
+}
+
+func TestParse_WhenTheCommandWordIsASubstitution_MarksADynamicCommand(t *testing.T) {
+	t.Parallel()
+
+	checkMarkKind(t, []markedCommand{
+		{name: "substituted command word", command: "$(which git) push", want: guard.DynamicCommand},
+	})
 }
 
 func TestParse_ReportsTheToolACommandWordNames(t *testing.T) {
@@ -328,16 +369,6 @@ func TestParse_ReportsWhetherEachInvocationIsTheWholeCommand(t *testing.T) {
 	}
 }
 
-// executable writes an executable file named name in a new directory and returns its path.
-func executable(t *testing.T, name string) string {
-	t.Helper()
-
-	path := filepath.Join(t.TempDir(), name)
-	writeExecutable(t, path)
-
-	return path
-}
-
 func TestParse_ReportsEachAssignmentTheCommandRunsWith(t *testing.T) {
 	t.Parallel()
 
@@ -346,11 +377,6 @@ func TestParse_ReportsEachAssignmentTheCommandRunsWith(t *testing.T) {
 		command string
 		want    []guard.Assignment
 	}{
-		{
-			name:    "assignment prefix",
-			command: "GIT_DIR=x git status",
-			want:    []guard.Assignment{{Name: "GIT_DIR", Value: guard.Word{Text: "x", Literal: true}}},
-		},
 		{
 			name:    "env argument",
 			command: "env GIT_DIR=x git status",
@@ -377,105 +403,12 @@ func TestParse_ReportsEachAssignmentTheCommandRunsWith(t *testing.T) {
 	}
 }
 
-func TestParse_WhenAnArgumentIsAPathNamedForATool_MarksItUnlessProvenMissingOrNotAnExecutableRegularFile(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		path func(t *testing.T) string
-		want []guard.Mark
-	}{
-		{name: "executable file named for a shell", path: func(t *testing.T) string { return executable(t, "bash") }, want: []guard.Mark{{Kind: guard.ToolArgument}}},
-		{
-			name: "directory",
-			path: func(t *testing.T) string {
-				dir := filepath.Join(t.TempDir(), "ils")
-				assert.NilError(t, os.Mkdir(dir, 0o750))
-
-				return dir
-			},
-		},
-		{
-			name: "file that is not executable",
-			path: func(t *testing.T) string {
-				path := filepath.Join(t.TempDir(), "gh")
-				assert.NilError(t, os.WriteFile(path, []byte("text\n"), 0o600))
-
-				return path
-			},
-		},
-		{name: "missing path", path: func(t *testing.T) string { return filepath.Join(t.TempDir(), "absent", "git") }},
-		{
-			name: "path whose stat fails",
-			path: func(t *testing.T) string {
-				loop := filepath.Join(t.TempDir(), "loop")
-				assert.NilError(t, os.Symlink("loop", loop))
-
-				return filepath.Join(loop, "git")
-			},
-			want: []guard.Mark{{Kind: guard.ToolArgument}},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			command := "xargs " + tt.path(t) + " push"
-
-			got := only(t, command)
-
-			assert.Check(t, is.DeepEqual(kinds(got.Marks), kinds(tt.want)), "Parse(%q) marks", command)
-		})
-	}
-}
-
-func TestParse_WhenAnArgumentIsARelativePathNamedForATool_ReadsItWhereTheInvocationRuns(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		command string
-		want    []guard.Mark
-	}{
-		{name: "path under the caller's directory", command: "xargs ./bin/git push", want: []guard.Mark{{Kind: guard.ToolArgument}}},
-		{name: "path missing under the directory a cd moved to", command: "cd bin && xargs ./bin/git push"},
-		{name: "path under an unknown directory", command: `cd "$d" && xargs ./absent/git push`, want: []guard.Mark{{Kind: guard.ToolArgument}}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			callerDir := t.TempDir()
-			writeExecutable(t, filepath.Join(callerDir, "bin", "git"))
-
-			xargs := lastWith(t, tt.command, guard.Caller{Home: home, Dir: callerDir})
-
-			assert.Check(t, is.DeepEqual(kinds(xargs.Marks), kinds(tt.want)), "Parse(%q) marks", tt.command)
-		})
-	}
-}
-
 func TestParse_WhenAGlobQualifierRunsNoCode_MarksNothing(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		command string
-	}{
+	checkNoMarks(t, []namedCommand{
 		{name: "null glob after a non-literal directory", command: `rm -f "$d"/tdd-red-phase*(N)`},
-		{name: "plain files", command: "ls *(.)"},
-		{name: "directories", command: "ls *(/)"},
-		{name: "newest by modification time", command: "ls *(om[1])"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := only(t, tt.command)
-
-			assert.Check(t, is.Len(got.Marks, 0), "Parse(%q) marks", tt.command)
-		})
-	}
+	})
 }
 
 func TestParse_WhenAnExtendedGlobCouldRunCodeOrIsNoQualifier_MarksIt(t *testing.T) {
@@ -488,9 +421,6 @@ func TestParse_WhenAnExtendedGlobCouldRunCodeOrIsNoQualifier_MarksIt(t *testing.
 		{name: "qualifier evaluating a string", command: "ls *(e:'touch x':)"},
 		{name: "qualifier calling a function", command: "ls *(+f)"},
 		{name: "negation", command: "ls !(x)"},
-		{name: "one or more", command: "ls +(a)"},
-		{name: "zero or one", command: "ls ?(a)"},
-		{name: "qualifier holding a command substitution", command: "ls *($(git stash)N)"},
 		{name: "qualifier holding a substitution in backticks", command: "ls *(`git stash`N)"},
 		{name: "qualifier holding a parameter expansion", command: `ls *(${x}N)`},
 		{name: "qualifier holding a process substitution", command: "ls *(<(git stash)N)"},

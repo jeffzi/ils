@@ -41,6 +41,71 @@ func TestParse_WhenAWrapperRunsACommand_ReportsTheCommandBehindIt(t *testing.T) 
 	}
 }
 
+func TestParse_WhenAnEnvArgumentIsAQuotedAssignment_ReadsItAsAnAssignment(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		command         string
+		wantAssignments []guard.Assignment
+		wantWords       []string
+	}{
+		{
+			name:            "whole word in double quotes",
+			command:         `env "GIT_DIR=/x" git commit`,
+			wantAssignments: []guard.Assignment{{Name: "GIT_DIR", Value: guard.Word{Text: "/x", Literal: true}}},
+			wantWords:       []string{"git", "commit"},
+		},
+		{
+			name:            "whole word in single quotes",
+			command:         `env 'FOO=bar baz' make`,
+			wantAssignments: []guard.Assignment{{Name: "FOO", Value: guard.Word{Text: "bar baz", Literal: true}}},
+			wantWords:       []string{"make"},
+		},
+		{
+			name:            "name alone in quotes",
+			command:         `env "GIT_TRACE"=1 git status`,
+			wantAssignments: []guard.Assignment{{Name: "GIT_TRACE", Value: guard.Word{Text: "1", Literal: true}}},
+			wantWords:       []string{"git", "status"},
+		},
+		{
+			name:            "expansion in the quoted value",
+			command:         `env "PATH=$y/bin:$PATH" make`,
+			wantAssignments: []guard.Assignment{{Name: "PATH", Value: guard.Word{Text: "", Literal: false}}},
+			wantWords:       []string{"make"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := only(t, tt.command)
+
+			assert.Check(t, is.DeepEqual(got.Assignments, tt.wantAssignments), "Parse(%q) assignments", tt.command)
+			assert.Check(t, is.DeepEqual(wordTexts(got.Words), tt.wantWords), "Parse(%q) words", tt.command)
+		})
+	}
+}
+
+func TestParse_WhenAQuotedEnvArgumentHasNoLiteralName_ReadsItAsTheCommand(t *testing.T) {
+	t.Parallel()
+
+	tests := []namedCommand{
+		{name: "expansion before the equals sign", command: `env "$n=1" make`},
+		{name: "expansion alone", command: `env "$x" make`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := only(t, tt.command)
+
+			assert.Check(t, is.Len(got.Assignments, 0), "Parse(%q) assignments", tt.command)
+			assert.Check(t, is.DeepEqual(wordTexts(got.Words), []string{"", "make"}), "Parse(%q) words", tt.command)
+		})
+	}
+}
+
 func TestParse_WhenAZshModifierIsGivenAnOption_ReadsTheOptionAsTheCommand(t *testing.T) {
 	t.Parallel()
 

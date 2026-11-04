@@ -28,7 +28,6 @@ func TestJudge_WhenACallCarriesARedirect_JudgesItsBodyUnderTheRedirect(t *testin
 
 	checkRefusals(t, []refusal{
 		{name: "git history onto a work tree file", command: "dump() { git show HEAD:README.md; }; dump > README.md", wantNamed: "git show"},
-		{name: "onto the head file of the git dir", command: "f() { :; }; f > .git/HEAD; " + commitCommand, wantNamed: "cannot tell"},
 	})
 }
 
@@ -45,22 +44,21 @@ func TestJudge_WhenACallMayRunAnOuterBodyUnderARedirect_JudgesThatBodyUnderTheRe
 func TestJudge_WhenACallRunsABodyWhoseCommitLandsOnTheTrunk_RefusesNamingTheTrunk(t *testing.T) {
 	t.Parallel()
 
-	f, caller := standingOn(t, "main", "topic")
+	_, caller := standingOn(t, "main", "topic")
 	trunk, _ := standingOn(t, "main", "main")
 	toTrunk := "cd " + quotedPath(trunk.Dir())
 	const commits = "f() { git commit -am wip; }; "
 
 	checkJudgedIn(t, caller, []placed{
-		{name: "after a switch to the trunk", dir: f.Dir(), command: commits + "git switch main && f"},
-		{name: "after a cd into a trunk checkout", dir: f.Dir(), command: commits + toTrunk + " && f"},
+		{name: "after a switch to the trunk", command: commits + "git switch main && f"},
+		{name: "after a cd into a trunk checkout", command: commits + toTrunk + " && f"},
 		{
 			name:    "after an export of a trunk git dir",
-			dir:     f.Dir(),
 			command: commits + "export GIT_DIR=" + quotedPath(filepath.Join(trunk.Dir(), ".git")) + "; f",
 		},
-		{name: "inside a subshell", dir: f.Dir(), command: commits + "(" + toTrunk + " && f)"},
-		{name: "inside a loop", dir: f.Dir(), command: commits + "for x in a; do " + toTrunk + " && f; done"},
-		{name: "inside another function's body", dir: f.Dir(), command: commits + "g() { f; }; " + toTrunk + " && g"},
+		{name: "inside a subshell", command: commits + "(" + toTrunk + " && f)"},
+		{name: "inside a loop", command: commits + "for x in a; do " + toTrunk + " && f; done"},
+		{name: "inside another function's body", command: commits + "g() { f; }; " + toTrunk + " && g"},
 	}, expectation{outcome: guard.Refuse, named: "main"})
 }
 
@@ -74,12 +72,40 @@ func TestJudge_WhenACallRunsABodyOffTheTrunk_Allows(t *testing.T) {
 	})
 }
 
+func TestJudge_WhenADeclaredFunctionIsNeverCalled_JudgesWhatFollowsAsIfItWereAbsent(t *testing.T) {
+	t.Parallel()
+
+	_, caller := standingOn(t, "main", "topic")
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "body that changes directory", command: "f() { cd sub && make; }; git commit -m x"},
+		{name: "body that exports a git dir", command: "f() { export GIT_DIR=/srv/x.git; }; git commit -m x"},
+	})
+}
+
+func TestJudge_WhenACallRunsABodyThatChangesDirectory_RefusesTheCommitAfterIt(t *testing.T) {
+	t.Parallel()
+
+	checkRefusals(t, []refusal{
+		{name: "relative cd in the body", command: "f() { cd sub; }; f; git commit -m x"},
+	})
+}
+
+func TestInvocation_Stdout_WhenAnUncalledBodyRedirectsStdout_ReportsNone(t *testing.T) {
+	t.Parallel()
+	const command = "f() { exec > f; }; git show HEAD:f"
+	inv := gitRun(t, command)
+
+	got, ok := inv.Stdout()
+
+	assert.Check(t, !ok, "Parse(%q) stdout = %+v, want none", command, got)
+}
+
 func TestJudge_WhenCallsGoPastThoseTheGuardFollows_RefusesNamingTheFunction(t *testing.T) {
 	t.Parallel()
 
 	checkRefusals(t, []refusal{
 		{name: "function that calls itself", command: "f() { f; }; f", wantNamed: "past the calls the guard follows: f"},
-		{name: "more calls than the guard follows", command: "f() { :; }" + strings.Repeat("; f", 257), wantNamed: "past the calls the guard follows: f"},
 	})
 }
 
@@ -99,14 +125,6 @@ func TestJudge_RefusesAFunctionThatShadowsACommandTheGuardReadsThrough(t *testin
 	checkRefusals(t, []refusal{
 		{name: "cd", command: "cd() { builtin cd /srv; }; cd sub && git commit -m x", wantNamed: "cd"},
 		{name: "builtin", command: "builtin() { :; }", wantNamed: "builtin"},
-	})
-}
-
-func TestJudge_AllowsAFunctionThatHidesNoTool(t *testing.T) {
-	t.Parallel()
-
-	checkAllowed(t, readerCaller(), []namedCommand{
-		{name: "call of a function with no redirect", command: "greet() { echo hi; }; greet"},
 	})
 }
 

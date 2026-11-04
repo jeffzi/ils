@@ -124,22 +124,12 @@ func mergeFunctions(a, b map[string]*function) map[string]*function {
 		return a
 	}
 
-	merged := cloneFunctions(a)
+	merged := cloneOrEmpty(a)
 	for name, fn := range b {
 		merged[name] = merged[name].with(fn.definitions...)
 	}
 
 	return merged
-}
-
-// cloneFunctions returns a copy of m, an empty map when m is nil.
-func cloneFunctions(m map[string]*function) map[string]*function {
-	cloned := maps.Clone(m)
-	if cloned == nil {
-		cloned = map[string]*function{}
-	}
-
-	return cloned
 }
 
 // unmovedDir is the directory a dry run of a function body starts in. No shell word holds a NUL
@@ -148,20 +138,34 @@ const unmovedDir = "/\x00"
 
 // declarationBuiltins are the builtins the parser reads as declarations rather than as calls, so a
 // function of the same name runs in their place without the walk of a call seeing it.
-func declarationBuiltins() []string {
-	return []string{"export", "declare", "local", "readonly", "typeset", "let"}
+func declarationBuiltins() map[string]bool {
+	return setOf("export", "declare", "local", "readonly", "typeset", "let")
 }
 
-// functionBody walks body, the body of a function, where it is declared. A call runs it with the
-// variables of the shell where the call stands, which are not those here, so the walk reads no
-// variable the body does not assign itself, and leaves the variables of sc as they were. Nor does
-// a switch before the declaration hold in the body, which a call may run once HEAD moved again.
+// functionBody walks body, the body of a function, where it is declared, as a body that runs any
+// number of times. A call runs it with the variables of the shell where the call stands, which are
+// not those here, so the walk reads no variable the body does not assign itself. Nor does a switch
+// before the declaration hold in the body, which a call may run once HEAD moved again.
+//
+// The declaration runs nothing, and each call walks the body again where it stands (see call), so
+// sc is left as it was. The parser reads `f() { …; } && g` as a declaration whose body is the whole
+// list, while the rest of the list runs once, after the declaration, in the shell itself: the walk
+// cannot keep the changes of the rest apart from those of the body, so for such a declaration sc
+// is left as the shell may be after any number of runs of the whole list, the variables of sc
+// aside.
 func (w *walker) functionBody(body *syntax.Stmt, sc *scope) {
-	outer, head := sc.vars, sc.head
-	sc.vars = shellVars{held: outer.held, unread: outer.unread, function: true}
-	sc.head = nil
-	w.stmt(body, sc)
-	sc.vars, sc.head = outer, head
+	declared := *sc
+	w.repeated(&declared, func(s *scope) {
+		outer, head := s.vars, s.head
+		s.vars = shellVars{held: outer.held, unread: outer.unread, function: true}
+		s.head = nil
+		w.stmt(body, s)
+		s.vars, s.head = outer, head
+	})
+
+	if declaredBody(body) != body {
+		*sc = declared
+	}
 }
 
 // declareFunction records in sc the function decl declares for the calls after it, and marks a
@@ -173,10 +177,10 @@ func (w *walker) declareFunction(decl *syntax.FuncDecl, sc *scope) {
 	}
 
 	name := decl.Name.Value
-	functions := cloneFunctions(sc.functions)
+	functions := cloneOrEmpty(sc.functions)
 	functions[name] = &function{definitions: []*definition{{body: decl.Body}}}
 	sc.functions = functions
-	if readsCommand(name) || slices.Contains(declarationBuiltins(), name) {
+	if readsCommand(name) || declarationBuiltins()[name] {
 		w.keep(w.placed(Invocation{Marks: []Mark{{Kind: ShadowingFunction, Name: name}}}, sc))
 	}
 }
@@ -246,9 +250,14 @@ func (w *walker) call(inv Invocation, sc *scope) {
 	}
 }
 
+func ontoStdout(r Redirect) bool {
+	return slices.Contains(touched(r), stdoutFd)
+}
+
 // maxCalls is how many calls of functions the command defines one walk follows into the body they
 // run. A function that calls itself runs without end, and functions that each call the one before
-// twice run two to the power of their count of calls.
+// twice run two to the power of their count of calls. It also bounds how many bodies of `for`
+// loops over a literal list one walk follows, one per value.
 const maxCalls = 256
 
 // runBodies walks each of definitions, the bodies inv's call may run, where the call stands: from
@@ -299,7 +308,7 @@ func declaredBody(body *syntax.Stmt) *syntax.Stmt {
 // probe returns a walker that reads at w's depth and drops what it finds.
 func (w *walker) probe() walker {
 	sub := newWalker(w.caller, w.depth)
-	sub.probing, sub.dryRuns = true, w.dryRuns
+	sub.probing, sub.dryRuns, sub.loopBodies = true, w.dryRuns, w.loopBodies
 
 	return sub
 }

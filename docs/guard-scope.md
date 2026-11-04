@@ -125,7 +125,7 @@ refusing it as unreadable. Examples:
 A command with read-only forms is refused only in its writing forms:
 
 - `git stash list` and `git stash show` read;
-- `git show HEAD:f > /dev/null`, or into a file outside any work tree, overwrites no work;
+- `git show HEAD:f > /dev/null`, or into a file outside any working tree, overwrites no work;
 - `gh api graphql` with a `query` reads, while one with a `mutation` writes;
 - a zsh glob qualifier such as `(N)` runs nothing, while `(e:…:)` and `(+…)` run code.
 
@@ -148,7 +148,8 @@ README.md`, or a Python script that edits a file about git.
 So:
 
 - An interpreter's arguments are never read as a shell script, even when they happen to parse as
-  one (`sed 's/old text/git push/' f`).
+  one (`sed 's/old text/git push/' f`), except behind `ssh` or `su` as the command word, which hand
+  every word to a shell.
 - A string that does not parse as shell is data, whatever command it goes to.
 - A heredoc body on an interpreter's stdin is not read.
 - A bare `git`, `gh`, `ils`, or shell word among an interpreter's arguments still counts as handed
@@ -173,12 +174,14 @@ another tool.
 
 Check every new refusal two ways before it lands:
 
-- A table of everyday commands in the guard's tests must stay allowed. A refusal that catches one
-  of them needs a narrower trigger.
+- The table of everyday commands in `TestJudge_AllowsEverydayCommandsOutsideAnyRepository`
+  (`internal/guard/guard_test.go`) must stay allowed. A refusal that catches one of them needs a
+  narrower trigger.
 - A replay judges every shell command in your local Claude Code transcripts and counts the
   refusals by reason: run `task test:replay`. A change that adds a refusal states how many replayed
   commands it refuses. More than 1 in 1,000 needs a narrower trigger, unless the commands it
-  refuses are real catches.
+  refuses do what [rule 2](#2-refuse-every-direct-operation) refuses: destroy work, skip checks,
+  push, or land a change.
 
 ## Accepted limits
 

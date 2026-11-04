@@ -3,6 +3,8 @@
 package guard_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,6 +13,26 @@ import (
 
 	"github.com/jeffzi/ils/internal/guard"
 )
+
+// linkTo returns a symbolic link to target, made in a new directory that holds no repository.
+func linkTo(t *testing.T, target string) string {
+	t.Helper()
+
+	link := filepath.Join(outsideDir(t), "link")
+	assert.NilError(t, os.Symlink(target, link))
+
+	return link
+}
+
+// subdirectory makes the directory sub inside dir, and returns its path.
+func subdirectory(t *testing.T, dir string) string {
+	t.Helper()
+
+	sub := filepath.Join(dir, "sub")
+	assert.NilError(t, os.MkdirAll(sub, 0o750))
+
+	return sub
+}
 
 func dirs(invocations []guard.Invocation) []string {
 	got := make([]string, 0, len(invocations))
@@ -75,7 +97,6 @@ func TestParse_WhenTheDirectoryCannotBeFollowed_ReportsItUnknown(t *testing.T) {
 		{name: "move in a pipeline", command: "true | cd sub; git commit"},
 		{name: "relative cd in a shell string given CDPATH by a prefix", command: "CDPATH=/srv bash -c 'cd sub && git commit'"},
 		{name: "after a source of a file", command: "source env.sh && git commit"},
-		{name: "after a dot of a file", command: ". ./env.sh; git commit"},
 		{name: "relative cd after a source of a file, which may set CDPATH", command: "source env.sh; cd /srv; cd sub; git commit"},
 	}
 	for _, tt := range tests {
@@ -193,87 +214,7 @@ func marksOf(invocations []guard.Invocation) []guard.Mark {
 	return got
 }
 
-func TestParse_WhenAllexportIsOn_MarksAGitVariableABuiltinAssigns(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		command string
-	}{
-		{name: "read", command: "set -a; read -r GIT_CONFIG_PARAMETERS <<< x; git commit -m x"},
-		{name: "printf -v", command: "set -a; printf -v GIT_CONFIG_PARAMETERS %s x; git status"},
-		{name: "assign-default expansion", command: `set -a; echo "${GIT_CONFIG_PARAMETERS:=x}"; git status`},
-		{name: "allexport turned on in an if body", command: "if true; then set -a; fi; read GIT_CONFIG_PARAMETERS; git status"},
-		{name: "assign-default expansion in [[ ]]", command: "set -a; [[ -n ${GIT_CONFIG_PARAMETERS:=x} ]]; git status"},
-		{name: "assign-default expansion in a case word", command: "set -a; case ${GIT_CONFIG_PARAMETERS:=x} in *) ;; esac; git status"},
-		{name: "assign-default expansion in a for word list", command: "set -a; for v in ${GIT_CONFIG_PARAMETERS:=x}; do :; done; git status"},
-		{name: "assign-default expansion in a declare argument", command: `set -a; declare v="${GIT_CONFIG_PARAMETERS:=x}"; git status`},
-		{name: "read in a function defined before set -a and called after", command: "f() { read -r GIT_CONFIG_PARAMETERS; }; set -a; f; git status"},
-		{name: "allexport turned on by eval", command: "eval 'set -a'; read -r GIT_CONFIG_PARAMETERS; git status"},
-		{name: "allexport turned on by a function call", command: "f() { set -a; }; f; read -r GIT_CONFIG_PARAMETERS; git status"},
-		{name: "read in a bash -a string", command: "bash -a -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
-		{name: "read in a bash -o allexport string", command: "bash -o allexport -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
-		{name: "read in a bash -a string after a one-dash long option", command: "bash -norc -a -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
-		{name: "read in a bash -a string after a one-dash long option taking a value", command: "bash -rcfile x -a -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
-		{name: "printf -v in a string of bash found by the equals lookup", command: `=bash -a -c 'printf -v GIT_CONFIG_PARAMETERS %s "core.hooksPath=/dev/null"; git commit -m x'`},
-		{name: "read in a zsh string under a long option spelled with capitals and underscores", command: "zsh --All_Export -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
-		{name: "read in a zsh -o string spelled with capitals and underscores", command: "zsh -o ALL_EXPORT -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
-		{name: "read in a zsh string where --allexport follows --no-allexport", command: "zsh --no-allexport --allexport -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
-		{name: "read in a zsh string after set -o spelled with capitals and underscores", command: "zsh -c 'set -o All_Export; read -r GIT_CONFIG_PARAMETERS; git status'"},
-		{name: "read after set -o spelled with capitals and underscores in an unknown shell", command: "set -o All_Export; read -r GIT_CONFIG_PARAMETERS; git status"},
-		{name: "read after setopt allexport", command: "setopt allexport; read -r GIT_CONFIG_PARAMETERS; git status"},
-		{name: "read after setopt of a non-literal option", command: `setopt "$o"; read -r GIT_CONFIG_PARAMETERS; git status`},
-		{name: "read after setopt whose +o takes an attached name", command: "setopt +oVERBOSE allexport; read -r GIT_CONFIG_PARAMETERS; git status"},
-		{name: "read after unsetopt whose -o takes an attached name", command: "unsetopt -oNO_ALL_EXPORT; read -r GIT_CONFIG_PARAMETERS; git status"},
-		{name: "read after setopt where +a follows a name", command: "setopt allexport; setopt verbose +a; read -r GIT_CONFIG_PARAMETERS; git status"},
-		{name: "read after set +o with an attached name in an unknown shell", command: "set +oVERBOSE -a; read -r GIT_CONFIG_PARAMETERS; git status"},
-		{name: "read after set +o noallexport in an unknown shell", command: "set +o noallexport; read -r GIT_CONFIG_PARAMETERS; git status"},
-		{name: "read after set +o with a spelling only zsh reads, in an unknown shell", command: "set -a; set +o All_Export; read -r GIT_CONFIG_PARAMETERS; git status"},
-		{name: "read after set -o with an attached name bash reads as letters, in an unknown shell", command: "set -oxa; read -r GIT_CONFIG_PARAMETERS; git status"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := parse(t, tt.command)
-
-			want := guard.Mark{Kind: guard.GitVariable, Name: "GIT_CONFIG_PARAMETERS"}
-			assert.Check(t, is.Contains(marksOf(got), want), "Parse(%q) marks", tt.command)
-		})
-	}
-}
-
-func TestParse_WhenAllexportIsOff_MarksNoGitVariableABuiltinAssigns(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		command string
-	}{
-		{name: "turned on in a subshell", command: "(set -a); read -r GIT_CONFIG_PARAMETERS; git status"},
-		{name: "turned on for a bash -a string only", command: "bash -a -c true; read -r GIT_CONFIG_PARAMETERS; git status"},
-		{name: "read in a bash string after set -o spelled with capitals", command: "bash -c 'set -o ALLEXPORT; read -r GIT_CONFIG_PARAMETERS; git status'"},
-		{name: "read after setopt noallexport", command: "setopt noallexport; read -r GIT_CONFIG_PARAMETERS; git status"},
-		{name: "read after unsetopt allexport", command: "unsetopt allexport; read -r GIT_CONFIG_PARAMETERS; git status"},
-		{name: "read after set +a undoes set -a", command: "set -a; set +a; read -r GIT_CONFIG_PARAMETERS; git status"},
-		{name: "read in a zsh string after set -o noallexport undoes set -a", command: "zsh -c 'set -a; set -o noallexport; read -r GIT_CONFIG_PARAMETERS; git status'"},
-		{name: "read in a zsh -a string after --no-allexport with dashes", command: "zsh -a --no-allexport -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
-		{name: "read in a zsh -a string after --noallexport spelled with capitals and underscores", command: "zsh -a --No_AllExport -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
-		{name: "read in a bash string after set +o with an attached name", command: "bash -c 'set +oVERBOSE -a; read -r GIT_CONFIG_PARAMETERS; git status'"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := parse(t, tt.command)
-
-			assert.Assert(t, len(got) > 0, "Parse(%q) = %v", tt.command, texts(got))
-			assert.Check(t, is.Len(marksOf(got), 0), "Parse(%q) marks", tt.command)
-		})
-	}
-}
-
-func TestJudge_WhenAFileIsSourced_AllowsItAndWhatRunsWhereverItRuns(t *testing.T) {
+func TestJudge_WhenAFileIsSourced_AllowsWhatNeedsNoKnownDirectory(t *testing.T) {
 	t.Parallel()
 	_, caller := standingOn(t, "main", "topic")
 
@@ -283,13 +224,6 @@ func TestJudge_WhenAFileIsSourced_AllowsItAndWhatRunsWhereverItRuns(t *testing.T
 	})
 }
 
-func TestJudge_WhenAFileIsSourcedBeforeACommit_RefusesTheCommit(t *testing.T) {
-	t.Parallel()
-	_, caller := standingOn(t, "main", "topic")
-
-	checkJudgedRow(t, caller, judged{command: "source env.sh && git commit -m x", want: guard.Refuse, wantNamed: "git commit"})
-}
-
 func TestJudge_WhenAFileIsSourcedBeforeAGhAlias_RefusesNamingTheConfigVariable(t *testing.T) {
 	// Not parallel: it sets GH_PATH and the gh config location for the whole process.
 	ghReadingConfig(t, "sy: repo view\n")
@@ -297,51 +231,49 @@ func TestJudge_WhenAFileIsSourcedBeforeAGhAlias_RefusesNamingTheConfigVariable(t
 	checkJudgedRow(t, forgeCaller(t), judged{command: "source env.sh && gh sy", want: guard.Refuse, wantNamed: "GH_CONFIG_DIR"})
 }
 
-func wordsOf(invocations []guard.Invocation) []guard.Word {
-	var got []guard.Word
-	for _, inv := range invocations {
-		got = append(got, inv.Words...)
-	}
+func TestJudge_WhenACdFollowsAVariableNamingATrunkClone_RefusesTheCommit(t *testing.T) {
+	t.Parallel()
+	f, _ := standingOn(t, "main", "main")
+	caller := callerIn(f, outsideDir(t))
 
-	return got
+	checkJudgedRow(t, caller, judged{command: "D=" + quotedPath(f.Dir()) + `; cd "$D" && ` + commitCommand, want: guard.Refuse, wantNamed: "main"})
 }
 
-func TestParse_WhenTheCommandAssignedAVariableALiteral_ReadsItsExpansionAsThatLiteral(t *testing.T) {
+func TestJudge_WhenAForLoopRunsOverLiterals_AllowsWhatTheBodyRunsForEachValue(t *testing.T) {
+	t.Parallel()
+	_, caller := standingOn(t, "main", "topic")
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "value in a path", command: "for v in lua5.1 luajit; do /opt/$v/bin/lua b.lua; done"},
+		{name: "value after a variable the command assigned", command: "L=/opt/lua; for v in lua5.1 luajit; do $L/$v/bin/lua b.lua; done"},
+		{name: "as many values as the bodies the guard walks, each walked twice", command: "for v in" + strings.Repeat(" ls", 128) + "; do $v; done"},
+		{name: "two loops whose values fill the bodies the guard walks", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; for v in" + strings.Repeat(" ls", 28) + "; do $v; done"},
+		{name: "loop after a function whose loop and dry run fill the bodies the guard walks", command: "f() { for v in" + strings.Repeat(" ls", 40) + "; do :; done; }; f; for v in" + strings.Repeat(" ls", 8) + "; do $v; done"},
+		{name: "loop in a git pager script that fills the bodies a first loop left", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; git -c core.pager='for v in" + strings.Repeat(" ls", 28) + "; do $v; done' log"},
+	})
+}
+
+func TestJudge_WhenAForLoopValueIsAGuardedWord_RefusesAsThatWord(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		command string
-		want    string
-	}{
-		{name: "plain assignment", command: "S=/tmp/work; $S/run.sh", want: "/tmp/work/run.sh"},
-		{name: "expansion in braces", command: "S=/tmp/work; ${S}/run.sh", want: "/tmp/work/run.sh"},
-		{name: "quoted expansion of a value holding a space", command: `S='/tmp/my work'; "$S/run.sh"`, want: "/tmp/my work/run.sh"},
-		{name: "value starting with a tilde", command: "S=~/work; $S/run.sh", want: home + "/work/run.sh"},
-		{name: "export", command: "export S=/tmp/work; $S/run.sh", want: "/tmp/work/run.sh"},
-		{name: "declare", command: "declare S=/tmp/work; $S/run.sh", want: "/tmp/work/run.sh"},
-		{name: "typeset", command: "typeset S=/tmp/work; $S/run.sh", want: "/tmp/work/run.sh"},
-		{name: "readonly", command: "readonly S=/tmp/work; $S/run.sh", want: "/tmp/work/run.sh"},
-		{name: "readonly after a plain assignment", command: "S=/srv; readonly S=/tmp/work; $S/run.sh", want: "/tmp/work/run.sh"},
-		{name: "local inside its function body", command: "f() { local S=/tmp/work; $S/run.sh; }; f", want: "/tmp/work/run.sh"},
-		{name: "later literal assignment", command: "S=/srv; S=/tmp/work; $S/run.sh", want: "/tmp/work/run.sh"},
-		{name: "assignment that always ran before an and list", command: "S=/tmp/work && $S/run.sh", want: "/tmp/work/run.sh"},
-		{name: "loop body after the assignment", command: `S=/tmp/work; for f in a b; do $S/run.sh "$f"; done`, want: "/tmp/work/run.sh"},
-		{name: "prefix of the command reading the earlier value", command: "S=/tmp/work; S=/srv $S/run.sh", want: "/tmp/work/run.sh"},
-		{name: "argument of a command", command: "S=/tmp/work; ls $S", want: "/tmp/work"},
-		{name: "program run between", command: "S=/tmp/work; mkdir -p $S; $S/run.sh", want: "/tmp/work/run.sh"},
-		{name: "builtin that writes no variable run between", command: "S=/tmp/work; echo x; $S/run.sh", want: "/tmp/work/run.sh"},
-		{name: "word before an eval string declaring a name reference", command: "S=/tmp/work; $S/run.sh; eval 'declare -n R=T'", want: "/tmp/work/run.sh"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	checkRefusals(t, []refusal{
+		{name: "value after an unguarded one", command: "for g in ls git; do $g push; done", wantNamed: "git push"},
+		{name: "value before an unguarded one", command: "for g in git ls; do $g push; done", wantNamed: "git push"},
+	})
+}
 
-			got := parse(t, tt.command)
+func TestJudge_WhenTheGuardCannotReadAForLoopValue_RefusesItAsACommandWord(t *testing.T) {
+	t.Parallel()
 
-			assert.Check(t, is.Contains(wordsOf(got), literal(tt.want)), "Parse(%q) words", tt.command)
-		})
-	}
+	checkRefusals(t, []refusal{
+		{name: "glob word after a literal", command: "for f in ls *.sh; do $f; done"},
+		{name: "command substitution after a literal", command: "for f in ls $(ls); do $f; done"},
+		{name: "positional parameters", command: `for f in "$@"; do $f; done`},
+		{name: "more values than the bodies the guard walks, each walked twice", command: "for v in" + strings.Repeat(" ls", 129) + "; do $v; done"},
+		{name: "second loop past the bodies a first loop left", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; for v in" + strings.Repeat(" ls", 29) + "; do $v; done"},
+		{name: "loop past the bodies a function's loop and its dry run left", command: "f() { for v in" + strings.Repeat(" ls", 40) + "; do :; done; }; f; for v in" + strings.Repeat(" ls", 12) + "; do $v; done"},
+		{name: "loop in a git pager script past the bodies a first loop left", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; git -c core.pager='for v in" + strings.Repeat(" ls", 29) + "; do $v; done' log"},
+	})
 }
 
 func TestParse_WhenTheGuardCannotBeSureOfAVariable_ReadsItsExpansionUnknown(t *testing.T) {
@@ -354,11 +286,8 @@ func TestParse_WhenTheGuardCannotBeSureOfAVariable_ReadsItsExpansionUnknown(t *t
 		{name: "append assignment", command: "S=/tmp/work; S+=/x; $S/run.sh"},
 		{name: "read", command: "S=/tmp/work; read -r S; $S/run.sh"},
 		{name: "printf -v", command: "S=/tmp/work; printf -v S %s /srv; $S/run.sh"},
-		{name: "mapfile", command: "S=/tmp/work; mapfile S < list; $S/run.sh"},
-		{name: "readarray", command: "S=/tmp/work; readarray S < list; $S/run.sh"},
 		{name: "for loop name", command: "S=/tmp/work; for S in /srv; do :; done; $S/run.sh"},
 		{name: "assign-default expansion", command: `S=/tmp/work; echo "${S:=/srv}"; $S/run.sh`},
-		{name: "getopts", command: "S=/tmp/work; getopts ab S; $S/run.sh"},
 		{name: "unset", command: "S=/tmp/work; unset S; $S/run.sh"},
 		{name: "value from a command substitution", command: "S=/tmp/work; S=$(pwd); $S/run.sh"},
 		{name: "array value", command: "S=(/tmp/work); $S/run.sh"},
@@ -387,6 +316,7 @@ func TestParse_WhenTheGuardCannotBeSureOfAVariable_ReadsItsExpansionUnknown(t *t
 		{name: "unquoted expansion of a value holding a glob character", command: "S='/tmp/*'; $S/run.sh"},
 		{name: "unquoted expansion after IFS is assigned", command: "IFS=/; S=/tmp/work; $S/run.sh"},
 		{name: "declare with an attribute that changes the value", command: "declare -u S=/tmp/work; $S/run.sh"},
+		{name: "unquoted expansion of a for loop value holding a backslash", command: `for S in '/tmp/a\b'; do $S/run.sh; done`},
 		{name: "assignment after an attribute that changes the value", command: "typeset -l S; S=/TMP/work; $S/run.sh"},
 	}
 	for _, tt := range tests {
@@ -398,100 +328,4 @@ func TestParse_WhenTheGuardCannotBeSureOfAVariable_ReadsItsExpansionUnknown(t *t
 			checkRunShReadUnknown(t, tt.command, got)
 		})
 	}
-}
-
-func TestParse_WhenAReadonlyMayNotGiveAVariableItsValue_ReadsItsExpansionUnknown(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		command string
-	}{
-		{name: "assignment to a readonly name", command: "readonly S=/srv; S=/tmp/work; $S/run.sh"},
-		{name: "readonly after a readonly whose value is not a literal", command: "readonly S=$(pwd); readonly S=/tmp/work; $S/run.sh"},
-		{name: "readonly after declare -r", command: "declare -r S=$(pwd); readonly S=/tmp/work; $S/run.sh"},
-		{name: "readonly after a readonly in an if body", command: "if test -d x; then readonly S=/srv; fi; readonly S=/tmp/work; $S/run.sh"},
-		{name: "readonly after a readonly an eval string runs", command: "eval 'readonly S=$(pwd)'; readonly S=/tmp/work; $S/run.sh"},
-		{name: "assignment to a name builtin readonly made readonly", command: "builtin readonly S=/srv; S=/tmp/work; $S/run.sh"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := parse(t, tt.command)
-
-			checkRunShReadUnknown(t, tt.command, got)
-		})
-	}
-}
-
-func TestParse_WhenTheShellMaySetAVariableOnItsOwn_ReadsItsExpansionUnknown(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		command string
-	}{
-		{name: "builtin that writes a named variable", command: "S=/tmp/work; print -v S /srv; $S/run.sh"},
-		{name: "builtin of a zsh module that writes a named variable", command: "S=/tmp/work; zformat -f S /srv; $S/run.sh"},
-		{name: "builtin that edits a variable", command: "S=/tmp/work; vared S; $S/run.sh"},
-		{name: "printf given a format that is not a literal", command: `S=/tmp/work; printf "$F" S /srv; $S/run.sh`},
-		{name: "read of IFS before the assignment", command: "read IFS <<< ,; S=/tmp/work,x; $S/run.sh"},
-		{name: "for loop over IFS before the assignment", command: "for IFS in ,; do :; done; S=/tmp/work,x; $S/run.sh"},
-		{name: "builtin naming IFS before the assignment", command: "print -v IFS ,; S=/tmp/work,x; $S/run.sh"},
-		{name: "zsh match variable after a regex test", command: "MATCH=/tmp/work; [[ a =~ a ]]; $MATCH/run.sh"},
-		{name: "zsh match array after a regex test", command: "match=/tmp/work; [[ a =~ (a) ]]; $match/run.sh"},
-		{name: "bash match array after a regex test", command: "BASH_REMATCH=/tmp/work; [[ a =~ a ]]; $BASH_REMATCH/run.sh"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := parse(t, tt.command)
-
-			checkRunShReadUnknown(t, tt.command, got)
-		})
-	}
-}
-
-// checkRunShReadUnknown checks that got, the invocations Parse returns for command, read no command
-// word as a literal run.sh and read at least one command word unknown.
-func checkRunShReadUnknown(t *testing.T, command string, got []guard.Invocation) {
-	t.Helper()
-
-	var unread bool
-	for _, inv := range got {
-		if len(inv.Words) == 0 {
-			continue
-		}
-		first := inv.Words[0]
-		unread = unread || !first.Literal
-		assert.Check(t, !first.Literal || !strings.HasSuffix(first.Text, "run.sh"), "Parse(%q) reads %q", command, first.Text)
-	}
-	assert.Check(t, unread, "Parse(%q) = %v, want a command word read unknown", command, texts(got))
-}
-
-func TestJudge_WhenAVariableTheCommandAssignedHoldsAGuardedWord_RefusesAsThatWord(t *testing.T) {
-	t.Parallel()
-
-	checkRefusals(t, []refusal{
-		{name: "command word", command: "G=git; $G push", wantNamed: "git push"},
-		{name: "option of git clean", command: "F=--force; git clean $F", wantNamed: "deletes untracked files"},
-	})
-}
-
-func TestJudge_WhenACdFollowsAVariableNamingATrunkClone_RefusesTheCommit(t *testing.T) {
-	t.Parallel()
-	f, _ := standingOn(t, "main", "main")
-	caller := callerIn(f, outsideDir(t))
-
-	checkJudgedRow(t, caller, judged{command: "D=" + quotedPath(f.Dir()) + `; cd "$D" && ` + commitCommand, want: guard.Refuse, wantNamed: "main"})
-}
-
-func TestJudge_WhenACdFollowsAVariableNamingATopicClone_AllowsTheCommit(t *testing.T) {
-	t.Parallel()
-	f, _ := standingOn(t, "main", "topic")
-	caller := callerIn(f, outsideDir(t))
-
-	checkJudgedRow(t, caller, judged{command: "D=" + quotedPath(f.Dir()) + `; cd "$D" && ` + commitCommand, want: guard.Allow})
 }

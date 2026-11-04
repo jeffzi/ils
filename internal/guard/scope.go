@@ -136,6 +136,22 @@ func absolute(dir, p string) string {
 	}
 }
 
+// opened returns the path the kernel opens for p from dir, empty when p is relative and dir is
+// unknown. Unlike absolute, which follows `cd`, it reads p against the directory dir resolves to,
+// so a `..` in p steps up from the target of a symbolic link in dir. A dir that cannot be resolved,
+// such as one that does not exist, has p joined to it as written.
+func opened(dir, p string) string {
+	if filepath.IsAbs(p) || dir == "" {
+		return absolute(dir, p)
+	}
+
+	if physical, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = physical
+	}
+
+	return filepath.Join(dir, p)
+}
+
 // ---------------------------------------------------------------------------
 // Walking compound commands
 // ---------------------------------------------------------------------------
@@ -148,7 +164,7 @@ func (w *walker) list(stmts []*syntax.Stmt, sc *scope) {
 			return
 		}
 
-		if stmt.Background || stmt.Coprocess {
+		if runsAsJob(stmt) {
 			w.job(stmt, stmts[i+1:], sc)
 
 			return
@@ -163,7 +179,7 @@ func (w *walker) list(stmts []*syntax.Stmt, sc *scope) {
 // substitutions in them start from the shell as it is before the body, and every command in the
 // body runs with them.
 func (w *walker) stmt(stmt *syntax.Stmt, sc *scope) {
-	if stmt.Background || stmt.Coprocess {
+	if runsAsJob(stmt) {
 		inner := *sc
 		w.race(&inner, func(s *scope) { w.stmtInPlace(stmt, s) })
 
@@ -171,6 +187,12 @@ func (w *walker) stmt(stmt *syntax.Stmt, sc *scope) {
 	}
 
 	w.stmtInPlace(stmt, sc)
+}
+
+// runsAsJob reports whether the shell runs stmt beside the commands after it: in the background, or
+// as a coprocess.
+func runsAsJob(stmt *syntax.Stmt) bool {
+	return stmt.Background || stmt.Coprocess
 }
 
 // stmtInPlace walks stmt as the shell runs it once it has placed any background job.
@@ -214,13 +236,10 @@ func (w *walker) compound(cmd syntax.Command, sc *scope) {
 			w.list(cmd.Do, s)
 		})
 	case *syntax.ForClause:
-		w.loopVariable(cmd, sc)
-		w.substitutions(cmd.Loop, sc)
-		w.repeated(sc, func(s *scope) { w.list(cmd.Do, s) })
+		w.forClause(cmd, sc)
 	case *syntax.FuncDecl:
 		w.declareFunction(cmd, sc)
-		// A function body runs each time the function is called, from any later command.
-		w.repeated(sc, func(s *scope) { w.functionBody(cmd.Body, s) })
+		w.functionBody(cmd.Body, sc)
 	default:
 		// Arithmetic may assign a variable, which substitutions makes unknown; `[[ … ]]` and the
 		// other commands run nothing but the substitutions in them.
@@ -247,7 +266,7 @@ func (w *walker) binary(cmd *syntax.BinaryCmd, sc *scope) {
 		// The parser nests `a | b | c` to the left, so cmd.Y is a single stage, and the stage before
 		// it is cmd.X, or the right side of cmd.X when that is a pipe too.
 		before := cmd.X
-		if inner, ok := cmd.X.Cmd.(*syntax.BinaryCmd); ok && inner.Op != syntax.AndStmt && inner.Op != syntax.OrStmt {
+		if inner, ok := cmd.X.Cmd.(*syntax.BinaryCmd); ok && (inner.Op == syntax.Pipe || inner.Op == syntax.PipeAll) {
 			before = inner.Y
 		}
 
@@ -293,7 +312,7 @@ func andOperands(cmd *syntax.BinaryCmd) []*syntax.Stmt {
 	for {
 		inner, ok := left.Cmd.(*syntax.BinaryCmd)
 		if !ok || inner.Op != syntax.AndStmt || len(left.Redirs) > 0 ||
-			left.Background || left.Coprocess || left.Negated {
+			runsAsJob(left) || left.Negated {
 			break
 		}
 
@@ -458,218 +477,22 @@ func (sc *scope) apply(inv Invocation) {
 func execsNothing(words []Word) bool {
 	i := 0
 	for i < len(words) && words[i].Literal && (words[i].Text == "command" || words[i].Text == "builtin") {
-		options, _ := wrapperOptionsOf(words[i].Text)
-		n, _ := skipOptions(words[i+1:], options)
-		i += 1 + n
+		i = pastOptions(words, i)
 	}
 
 	if i == len(words) || !words[i].Literal || words[i].Text != "exec" {
 		return false
 	}
 
-	options, _ := wrapperOptionsOf("exec")
+	return pastOptions(words, i) == len(words)
+}
+
+// pastOptions returns the index of the word after the options of the wrapper at index i of words.
+func pastOptions(words []Word, i int) int {
+	options, _ := wrapperOptionsOf(words[i].Text)
 	n, _ := skipOptions(words[i+1:], options)
 
-	return i+1+n == len(words)
-}
-
-// allexportAfter returns whether `set` given args, run by the shell named shell, leaves allexport
-// on, given whether it was on before. An option the guard cannot read may turn it on.
-//
-// zsh's `o` takes the rest of its bundle as the option name when the rest is non-empty, and the
-// next word otherwise; bash's `o` always takes the next word. An unknown shell, empty, may be zsh
-// or a shell that reads `set` as bash does, so allexport is on after it when either reading leaves
-// it on.
-func allexportAfter(shell string, args []Word, on bool) bool {
-	if shell == "" {
-		return allexportAfterIn("zsh", args, on) || allexportAfterIn("bash", args, on)
-	}
-
-	return allexportAfterIn(shell, args, on)
-}
-
-// allexportAfterIn returns whether `set` given args, run by the shell named shell, which is known,
-// leaves allexport on, given whether it was on before.
-func allexportAfterIn(shell string, args []Word, on bool) bool {
-	r := allexportReader{shell: shell, on: on}
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if !arg.Literal {
-			return true
-		}
-
-		if len(arg.Text) < 2 || arg.Text == "--" || !strings.ContainsAny(arg.Text[:1], "-+") {
-			return r.on
-		}
-
-		letters, enable, taken := arg.Text[1:], arg.Text[0] == '-', 0
-		for j, letter := range letters {
-			takes, ends := r.letter(letter, letters[j+1:], enable, args[min(i+taken+1, len(args)):])
-			taken += takes
-			if ends {
-				break
-			}
-		}
-
-		i += taken
-	}
-
-	return r.on
-}
-
-// allexportReader follows allexport through the bundles of short options of `set` or of a shell,
-// in the shell named shell; on is whether allexport is on so far.
-type allexportReader struct {
-	shell string
-	on    bool
-}
-
-// letter reads letter, one letter of a bundle of short options, which rest follows in its bundle,
-// and next, the words after the values the bundle has taken. It returns how many of next it takes,
-// and whether it takes rest. The bundle starts with `-` when enable is true, `+` otherwise.
-//
-// `a` sets allexport. Each `o` of bash, sh and dash takes the next word as an option name; the `o`
-// of zsh takes rest when there is any, and the next word otherwise. Any other letter takes nothing
-// here.
-func (r *allexportReader) letter(letter rune, rest string, enable bool, next []Word) (int, bool) {
-	switch {
-	case letter == 'a':
-		r.on = enable
-	case letter != 'o':
-	case r.shell == "zsh" && rest != "":
-		r.on = setsAllexport(r.shell, Word{Text: rest, Literal: true}, enable, r.on)
-
-		return 0, true
-	case len(next) > 0:
-		r.on = setsAllexport(r.shell, next[0], enable, r.on)
-
-		return 1, false
-	default:
-		return 1, false
-	}
-
-	return 0, false
-}
-
-// setsAllexport returns whether `set -o name`, or `set +o name` when enable is false, run by the
-// shell named shell, leaves allexport on, given whether it was on before. zsh reads the name as
-// setopt does (zshOptionSetting); bash, sh and dash match `allexport` exactly and reject any other
-// spelling, leaving allexport as it was.
-func setsAllexport(shell string, name Word, enable, on bool) bool {
-	switch {
-	case !name.Literal:
-		return on || enable
-	case shell == "zsh":
-		return zshOptionSetting(name, enable, on)
-	case name.Text == "allexport":
-		return enable
-	default:
-		return on
-	}
-}
-
-// allexportAfterZshOptions returns whether zsh's `setopt` given args, or `unsetopt` when enable is
-// false, leaves allexport on, given whether it was on before. zsh ignores case and underscores in an
-// option name, and `noallexport` is the reverse of `allexport`. The pattern form `-m`, and an
-// argument the guard cannot read, may turn it on.
-//
-// Only the leading arguments that start with `-` or `+` are option bundles, and `+` reverses `-`;
-// the first argument that does not ends them, as do a lone `-` or `+` and a `-` inside a bundle, and
-// every argument after that is an option name.
-func allexportAfterZshOptions(enable bool, args []Word, on bool) bool {
-	i := 0
-	for i < len(args) {
-		arg := args[i]
-		if !arg.Literal {
-			return true
-		}
-
-		if arg.Text == "" || !strings.ContainsAny(arg.Text[:1], "-+") {
-			break
-		}
-
-		read := readZshOptionBundle(arg, args[i+1:], enable == (arg.Text[0] == '-'), on)
-		if read.pattern {
-			return true
-		}
-
-		on = read.on
-		i += 1 + read.taken
-		if read.ended {
-			break
-		}
-	}
-
-	for _, arg := range args[i:] {
-		on = zshOptionSetting(arg, enable, on)
-	}
-
-	return on
-}
-
-// zshOptionBundle is what one `-` or `+` bundle of `setopt` or `unsetopt` did.
-type zshOptionBundle struct {
-	// on reports whether allexport is on after the bundle.
-	on bool
-	// pattern reports whether the bundle holds `m`, which makes the option names patterns.
-	pattern bool
-	// ended reports whether the bundle ends the options, so the arguments after it are names.
-	ended bool
-	// taken counts the words after the bundle it read as an option name.
-	taken int
-}
-
-// readZshOptionBundle reads the option bundle arg, followed by the words next, that turns on the
-// options it names when set and turns them off otherwise, given whether allexport was on before. `a`
-// is allexport, and `o` takes the rest of the bundle as an option name when the rest is non-empty,
-// else the next word, and ends the bundle.
-func readZshOptionBundle(arg Word, next []Word, set, on bool) zshOptionBundle {
-	bundle := arg.Text[1:]
-	if bundle == "" {
-		return zshOptionBundle{on: on, ended: true}
-	}
-
-	for j, letter := range bundle {
-		switch letter {
-		case '-':
-			return zshOptionBundle{on: on, ended: true}
-		case 'm':
-			return zshOptionBundle{on: true, pattern: true}
-		case 'a':
-			on = set
-		case 'o':
-			if rest := bundle[j+1:]; rest != "" {
-				name := Word{Text: rest, Literal: arg.Literal}
-
-				return zshOptionBundle{on: zshOptionSetting(name, set, on)}
-			}
-
-			if len(next) == 0 {
-				return zshOptionBundle{on: on}
-			}
-
-			return zshOptionBundle{on: zshOptionSetting(next[0], set, on), taken: 1}
-		}
-	}
-
-	return zshOptionBundle{on: on}
-}
-
-// zshOptionSetting returns whether the zsh option name, set when enable and unset otherwise, leaves
-// allexport on, given whether it was on before. A name the guard cannot read may be allexport.
-func zshOptionSetting(name Word, enable, on bool) bool {
-	if !name.Literal {
-		return true
-	}
-
-	switch zshOptionName(name.Text) {
-	case "allexport":
-		return enable
-	case "noallexport":
-		return !enable
-	default:
-		return on
-	}
+	return i + 1 + n
 }
 
 // cd moves sc.dir the way `cd` or `pushd` given args and run with cdPath as CDPATH does, or
@@ -689,7 +512,7 @@ func (sc *scope) cd(args []Word, cdPath variable) {
 	})
 	switch {
 	case !target.Literal,
-		target.Text == "" || strings.ContainsAny(target.Text[:1], "-+"),
+		target.Text == "" || startsWithSign(target.Text),
 		cdPath != (variable{}) && !filepath.IsAbs(target.Text),
 		leavesThroughLinks(target.Text, physical, sc.physical):
 		sc.dir = ""
@@ -806,12 +629,70 @@ func gitVariableMarks(names []string) []Mark {
 	return marks
 }
 
-// loopVariable makes the variable of a `for` loop unknown in sc, whatever it is, and marks the loop
-// when that variable is a GIT_* variable off the allow list while allexport may be on, which
-// exports it to every git after it.
-func (w *walker) loopVariable(c *syntax.ForClause, sc *scope) {
-	iter, ok := c.Loop.(*syntax.WordIter)
-	if !ok {
+// forClause walks a `for` loop. When the walk reads a value for each word of the loop's list (see
+// loopValues), it walks the body once per value, the variable holding it as a literal assignment
+// would leave it; otherwise the variable is unknown in the body. After the loop the variable is
+// unknown either way, since a `break` may end the loop before its last value.
+func (w *walker) forClause(c *syntax.ForClause, sc *scope) {
+	iter, _ := c.Loop.(*syntax.WordIter)
+	values, each := w.loopValues(iter, sc)
+	w.loopVariable(iter, sc)
+	w.substitutions(c.Loop, sc)
+	w.repeated(sc, func(s *scope) {
+		if !each {
+			w.list(c.Do, s)
+
+			return
+		}
+
+		for _, value := range values {
+			s.vars = s.vars.assigned(&syntax.Assign{Name: iter.Name}, Word{Text: value, Literal: true})
+			w.list(c.Do, s)
+		}
+	})
+}
+
+// loopValues returns the values iter, the list of a `for` loop, gives its variable, read where the
+// loop starts in sc, and reports whether the walk follows the body once for each: every word of
+// the list reads as a literal, and the walk has bodies left for all of them, which it then
+// spends. Outside a dry run, repeated walks the body twice for each value, a dry run and then the
+// walk that keeps what it finds, so each value spends two bodies there. A loop with no list runs
+// over the positional parameters, which the guard cannot read.
+func (w *walker) loopValues(iter *syntax.WordIter, sc *scope) ([]string, bool) {
+	if iter == nil || !iter.InPos.IsValid() {
+		return nil, false
+	}
+
+	bodies := len(iter.Items)
+	if !w.probing {
+		bodies *= 2
+	}
+
+	if *w.loopBodies+bodies > maxCalls {
+		return nil, false
+	}
+
+	ex := w.reading(sc)
+	values := make([]string, 0, len(iter.Items))
+	for _, item := range iter.Items {
+		word := readWord(item, ex)
+		if !word.Literal {
+			return nil, false
+		}
+
+		values = append(values, word.Text)
+	}
+
+	*w.loopBodies += bodies
+
+	return values, true
+}
+
+// loopVariable makes the variable of the `for` loop over iter unknown in sc, whatever it is, and
+// marks the loop when that variable is a GIT_* variable off the allow list while allexport may be
+// on, which exports it to every git after it. A nil iter, a loop that is not over words, has none.
+func (w *walker) loopVariable(iter *syntax.WordIter, sc *scope) {
+	if iter == nil {
 		return
 	}
 

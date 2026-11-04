@@ -311,7 +311,7 @@ func TestParse_WhenNoInvocationRunsGit_StartsNoGit(t *testing.T) {
 	assert.Check(t, is.Len(recorder.Calls(), 0), "Parse(%q) git calls", command)
 }
 
-func TestParse_WhenAGlobalOptionPrintsAndExits_ReportsNoSubcommand(t *testing.T) {
+func TestParse_WhenGitIsGivenNoSubcommandOrAnOptionThatPrintsAndExits_ReportsNoSubcommand(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, "main")
@@ -408,5 +408,49 @@ func TestJudge_WhenAnAliasNamesACommandAnOlderGitLacks_RefusesNamingIt(t *testin
 
 	checkJudged(t, caller, []judged{
 		{name: "configured alias", command: "git replay --onto main topic", wantNamed: "replay", want: guard.Refuse},
+	})
+}
+
+func TestParse_ReadsAHelpFlagRightAfterTheSubcommandAsGitHelp(t *testing.T) {
+	t.Parallel()
+
+	f := aliased(t)
+	tests := []struct {
+		name     string
+		command  string
+		wantArgs []string
+	}{
+		{name: "help flag alone", command: "git stash --help", wantArgs: []string{"stash"}},
+		{name: "words after the help flag", command: "git push --help origin", wantArgs: []string{"push", "origin"}},
+		{name: "alias, read before it expands", command: "git co --help", wantArgs: []string{"co"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := lastWith(t, tt.command, callerIn(f, f.Dir()))
+
+			assert.Check(t, is.Len(got.Marks, 0), "Parse(%q) marks", tt.command)
+			assert.Check(t, is.DeepEqual(got.Git.Subcommand, literal("help")), "Parse(%q) subcommand", tt.command)
+			assert.Check(t, is.DeepEqual(wordTexts(got.Git.Args), tt.wantArgs), "Parse(%q) arguments", tt.command)
+		})
+	}
+}
+
+func TestJudge_AllowsAGitCallWhoseHelpFlagFollowsTheSubcommand(t *testing.T) {
+	t.Parallel()
+	_, caller := standingOn(t, "main", "topic")
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "stash", command: "git stash --help"},
+		{name: "after a global option", command: "git -C /tmp stash --help"},
+	})
+}
+
+func TestJudge_JudgesAHelpFlagPastTheSubcommandsFirstWordByTheSubcommand(t *testing.T) {
+	t.Parallel()
+
+	checkRefusals(t, []refusal{
+		{name: "stash drop", command: "git stash drop --help"},
 	})
 }
