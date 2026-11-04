@@ -104,37 +104,96 @@ func shellBuiltins() map[string]bool {
 }
 
 // variableFreeBuiltins are the builtins that write no variable of the shell, other than those it
-// sets on its own (see selfSetVariables). `eval` and `source` are among them because the walk
-// applies what their strings and files do where it reads them; `printf` only while its first
-// argument is a literal other than `-v`.
+// sets on its own (see selfSetVariables), in the forms argumentsWriteNoVariable lets through.
+// `eval` and `source` are among them because the walk applies what their strings and files do
+// where it reads them.
 func variableFreeBuiltins() map[string]bool {
 	return setOf(
 		":", "true", "false", "echo", "printf", "test", "[", "cd", "pwd", "pushd", "popd", "dirs", "exit",
 		"return", "break", "continue", "shift", "eval", "source", ".", "alias", "unalias", "hash", "type",
-		"umask", "ulimit", "kill", "jobs", "which", "whence", "where",
+		"umask", "ulimit", "kill", "jobs", "which", "whence", "where", "set", "shopt", "wait", "trap",
 	)
+}
+
+// argumentsWriteNoVariable reports whether args, the arguments of name, a builtin among
+// variableFreeBuiltins, keep it from writing a variable or running code before later commands:
+//
+//   - `printf` writes one when its first argument is `-v` or is not a literal;
+//   - zsh's `set -A` and `set +A` write an array;
+//   - `wait -p` writes the id of the job it waited for;
+//   - a `trap` runs its string around later commands unless every signal it names is one of
+//     trapSignalsAfterAll (see trapsOnlyAtEnd).
+//
+// An argument of `set`, `shopt`, `wait` or `trap` that is not a literal may be any of these forms.
+func argumentsWriteNoVariable(name string, args []Word) bool {
+	var writes func(arg string) bool
+	switch name {
+	case "printf":
+		return len(args) == 0 || args[0].Literal && !strings.HasPrefix(args[0].Text, "-v")
+	case "set":
+		writes = func(arg string) bool {
+			return (strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "+")) && strings.Contains(arg, "A")
+		}
+	case "wait":
+		writes = func(arg string) bool { return strings.HasPrefix(arg, "-") && strings.Contains(arg, "p") }
+	case "trap":
+		return !slices.ContainsFunc(args, func(w Word) bool { return !w.Literal }) && trapsOnlyAtEnd(wordTexts(args))
+	case "shopt":
+		writes = func(string) bool { return false }
+	default:
+		return true
+	}
+
+	return !slices.ContainsFunc(args, func(w Word) bool { return !w.Literal || writes(w.Text) })
+}
+
+// trapSignalsAfterAll are the signals whose trap runs only when the shell exits or is stopped,
+// after every later command of the command line: an exit, and the signals that stop it from the
+// outside. A trap on any other signal, such as DEBUG, ERR or CHLD, or on a signal given by number,
+// can run between later commands.
+func trapSignalsAfterAll() []string {
+	return []string{"EXIT", "0", "INT", "TERM", "HUP"}
+}
+
+// trapsOnlyAtEnd reports whether `trap` with the literal arguments args sets or resets traps only
+// on trapSignalsAfterAll, in any letter case and with or without a `SIG` prefix. A `-p`, `-l` or
+// `-P` option only lists traps. With one argument, that argument is the signal to reset; with
+// more, the first is the action and the rest are signals.
+func trapsOnlyAtEnd(args []string) bool {
+	if len(args) == 0 || slices.Contains([]string{"-p", "-l", "-P"}, args[0]) {
+		return true
+	}
+
+	signals := args
+	if len(args) > 1 {
+		signals = args[1:]
+	}
+
+	return !slices.ContainsFunc(signals, func(signal string) bool {
+		name := signal
+		if len(name) > len("SIG") && strings.EqualFold(name[:len("SIG")], "SIG") {
+			name = name[len("SIG"):]
+		}
+
+		return !containsFold(trapSignalsAfterAll(), name)
+	})
 }
 
 // cspell:enable
 
 // ran returns v once inv, a simple command with a command word, has run in the shell. A program
 // changes no variable of the shell, and a function call is applied by the walk of its body; a
-// builtin that is not among variableFreeBuiltins, or a command word that is not a literal, may
-// write any variable, so every one is unknown after it. When one of its words is not a literal or
-// names IFS, it may also have written IFS, which changes where every later expansion splits, so no
-// variable is read after it.
+// builtin that is not among variableFreeBuiltins or is in a form argumentsWriteNoVariable refuses,
+// or a command word that is not a literal, may write any variable, so every one is unknown after
+// it. When one of its words is not a literal or names IFS, it may also have written IFS, which
+// changes where every later expansion splits, so no variable is read after it.
 func (v shellVars) ran(inv Invocation, functions map[string]*function) shellVars {
 	word := inv.Words[0]
 	if word.Literal && (functions[word.Text] != nil || !shellBuiltins()[word.Text]) {
 		return v
 	}
 
-	free := word.Literal && variableFreeBuiltins()[word.Text]
-	if free && word.Text == "printf" {
-		free = len(inv.Words) < 2 || inv.Words[1].Literal && !strings.HasPrefix(inv.Words[1].Text, "-v")
-	}
-
-	if free {
+	if word.Literal && variableFreeBuiltins()[word.Text] && argumentsWriteNoVariable(word.Text, inv.Words[1:]) {
 		return v
 	}
 

@@ -46,6 +46,15 @@ func TestParse_WhenTheCommandAssignedAVariableALiteral_ReadsItsExpansionAsThatLi
 		{name: "builtin that writes no variable run between", command: "S=/tmp/work; echo x; $S/run.sh", want: "/tmp/work/run.sh"},
 		{name: "word before an eval string declaring a name reference", command: "S=/tmp/work; $S/run.sh; eval 'declare -n R=T'", want: "/tmp/work/run.sh"},
 		{name: "quoted expansion of a for loop value holding a space", command: `for S in '/tmp/my work'; do "$S/run.sh"; done`, want: "/tmp/my work/run.sh"},
+		{name: "set of options and an option name run between", command: "S=/tmp/work; set -euo pipefail; $S/run.sh", want: "/tmp/work/run.sh"},
+		{name: "set turning an option off run between", command: "S=/tmp/work; set +x; $S/run.sh", want: "/tmp/work/run.sh"},
+		{name: "shopt run between", command: "S=/tmp/work; shopt -s nullglob; $S/run.sh", want: "/tmp/work/run.sh"},
+		{name: "bare wait run between", command: "S=/tmp/work; wait; $S/run.sh", want: "/tmp/work/run.sh"},
+		{name: "wait for a job run between", command: "S=/tmp/work; wait %1; $S/run.sh", want: "/tmp/work/run.sh"},
+		{name: "trap on EXIT run between", command: "S=/tmp/work; trap 'echo done' EXIT; $S/run.sh", want: "/tmp/work/run.sh"},
+		{name: "trap resetting a signal run between", command: "S=/tmp/work; trap - INT; $S/run.sh", want: "/tmp/work/run.sh"},
+		{name: "trap on exit and interrupt signals run between", command: "S=/tmp/work; trap 'rm -f t' EXIT SIGINT term HUP 0; $S/run.sh", want: "/tmp/work/run.sh"},
+		{name: "trap listing its traps run between", command: "S=/tmp/work; trap -p; $S/run.sh", want: "/tmp/work/run.sh"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -96,6 +105,21 @@ func TestParse_WhenTheShellMaySetAVariableOnItsOwn_ReadsItsExpansionUnknown(t *t
 		{name: "for loop over IFS before the assignment", command: "for IFS in ,; do :; done; S=/tmp/work,x; $S/run.sh"},
 		{name: "builtin naming IFS before the assignment", command: "print -v IFS ,; S=/tmp/work,x; $S/run.sh"},
 		{name: "zsh match variable after a regex test", command: "MATCH=/tmp/work; [[ a =~ a ]]; $MATCH/run.sh"},
+		{name: "zsh set -A writing an array", command: "S=/tmp/work; set -A S /srv; $S/run.sh"},
+		{name: "zsh set +A writing an array", command: "S=/tmp/work; set +A S /srv; $S/run.sh"},
+		{name: "wait -p writing the job id", command: "S=/tmp/work; wait -p S; $S/run.sh"},
+		{name: "trap on DEBUG running before later commands", command: "S=/tmp/work; trap 'S=/srv' DEBUG; $S/run.sh"},
+		{name: "trap on RETURN running before later commands", command: "S=/tmp/work; trap 'S=/srv' RETURN; $S/run.sh"},
+		{name: "trap on ERR running before later commands", command: "S=/tmp/work; trap 'S=/srv' err; $S/run.sh"},
+		{name: "zsh trap on ZERR running before later commands", command: "S=/tmp/work; trap 'S=/srv' ZERR; $S/run.sh"},
+		{name: "set given an argument that is not a literal", command: `S=/tmp/work; set "$O" S /srv; $S/run.sh`},
+		{name: "wait given an argument that is not a literal", command: `S=/tmp/work; wait "$O" S; $S/run.sh`},
+		{name: "trap given an action that is not a literal", command: `S=/tmp/work; trap "$H" EXIT; $S/run.sh`},
+		{name: "trap given a signal that is not a literal", command: `S=/tmp/work; trap 'S=/srv' "$SIG"; $S/run.sh`},
+		{name: "trap on a child exit running between later commands", command: "S=/tmp/work; trap 'S=/srv' CHLD; true; $S/run.sh"},
+		{name: "zsh trap on a debug signal spelled with its prefix", command: "S=/tmp/work; trap 'S=/srv' SIGDEBUG; $S/run.sh"},
+		{name: "trap on a signal given by number", command: "S=/tmp/work; trap 'S=/srv' 13; $S/run.sh"},
+		{name: "shopt given an argument that is not a literal", command: `S=/tmp/work; shopt -s "$opt"; $S/run.sh`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

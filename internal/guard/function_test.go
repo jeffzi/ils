@@ -72,6 +72,35 @@ func TestJudge_WhenACallRunsABodyOffTheTrunk_Allows(t *testing.T) {
 	})
 }
 
+func TestJudge_WhenADeclaredFunctionIsNeverCalled_JudgesWhatFollowsAsIfItWereAbsent(t *testing.T) {
+	t.Parallel()
+
+	_, caller := standingOn(t, "main", "topic")
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "body that changes directory", command: "f() { cd sub && make; }; git commit -m x"},
+		{name: "body that exports a git dir", command: "f() { export GIT_DIR=/srv/x.git; }; git commit -m x"},
+	})
+}
+
+func TestJudge_WhenACallRunsABodyThatChangesDirectory_RefusesTheCommitAfterIt(t *testing.T) {
+	t.Parallel()
+
+	checkRefusals(t, []refusal{
+		{name: "relative cd in the body", command: "f() { cd sub; }; f; git commit -m x"},
+	})
+}
+
+func TestInvocation_Stdout_WhenAnUncalledBodyRedirectsStdout_ReportsNone(t *testing.T) {
+	t.Parallel()
+	const command = "f() { exec > f; }; git show HEAD:f"
+	inv := gitRun(t, command)
+
+	got, ok := inv.Stdout()
+
+	assert.Check(t, !ok, "Parse(%q) stdout = %+v, want none", command, got)
+}
+
 func TestJudge_WhenCallsGoPastThoseTheGuardFollows_RefusesNamingTheFunction(t *testing.T) {
 	t.Parallel()
 

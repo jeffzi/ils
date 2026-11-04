@@ -239,8 +239,7 @@ func (w *walker) compound(cmd syntax.Command, sc *scope) {
 		w.forClause(cmd, sc)
 	case *syntax.FuncDecl:
 		w.declareFunction(cmd, sc)
-		// A function body runs each time the function is called, from any later command.
-		w.repeated(sc, func(s *scope) { w.functionBody(cmd.Body, s) })
+		w.functionBody(cmd.Body, sc)
 	default:
 		// Arithmetic may assign a variable, which substitutions makes unknown; `[[ … ]]` and the
 		// other commands run nothing but the substitutions in them.

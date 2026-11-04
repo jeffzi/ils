@@ -429,10 +429,16 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
       `whence`, `where`, `umask`, `ulimit`, `kill`, `jobs`, `eval`, `source`, and `.`;
     - `printf` with no argument or whose first argument is a literal that does not start with
       `-v`;
+    - `set`, `shopt`, and `wait` whose arguments are all literals, except zsh's `set -A` or `set
+      +A` and `wait -p`, which write a variable: `S=/tmp/work; set -euo pipefail; $S/run.sh`
+      runs `/tmp/work/run.sh`;
+    - `trap` with literal arguments that lists traps, or sets or resets them only on `EXIT`, `0`,
+      `INT`, `TERM`, or `HUP` (with or without `SIG`), whose trap runs only once the shell exits
+      or is stopped; a trap on any other signal can run between later commands;
     - zsh's `mkdir`, `rm`, `ln`, and the other builtins of its `zsh/files` module, which write no
       variable either and count as programs.
   - **Commands that make every variable unknown:** every other builtin of bash or zsh (`read`,
-    `print -v`, `vared`, `zformat`, `set`), and a command word that is not a literal, makes every
+    `print -v`, `vared`, `zformat`), and a command word that is not a literal, makes every
     variable unknown after it.
   - **`for` loops:** a `for NAME in` loop whose list words are all literals with no glob gives NAME
     each value in turn, read as a literal assignment would leave it. The guard judges the body once
@@ -485,7 +491,9 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   what counts as handed over:
   - **Wrappers the guard sees through:** `env`, `command`, `builtin`, `exec`, `nice`, `nohup`,
     `time`, `noglob`, and `nocorrect`. The guard reads an `exec` with no command behind them
-    (`command exec > f`) as it reads `exec > f`.
+    (`command exec > f`) as it reads `exec > f`. An `env` argument `NAME=value` is an assignment
+    when its name is a literal, bare or in single or double quotes: `env "PATH=$HOME/bin:$PATH"
+    make` runs `make`.
   - **Commands whose words are data:** the guard takes the words given to a reader, a filter, a
     file tool, a lookup, or a package manager, or a shell checker or formatter (`echo`, `grep`,
     `rg`, `cat`, `cp`, `which`, `go`, `brew`, `shellcheck`, `shfmt`, and the like) as data. So
@@ -557,7 +565,8 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   through, or a declaration builtin (`export`, `declare`, `local`, `readonly`, `typeset`, `let`).
   A call of one whose body may change directory leaves the directory unknown after it.
   The guard judges each command of a function body where the function is declared, and again at
-  each call, in the directory, environment, redirects, and HEAD of the call:
+  each call, in the directory, environment, redirects, and HEAD of the call. A declaration alone
+  changes nothing for the commands after it:
   `f() { git commit -am wip; }; git switch main && f` is refused as a commit on the trunk, and
   `T() { uv run pytest -q "$@"; }; T -k x > out.txt` passes;
 - a call of a function the command defines past the 256 calls the guard follows into a body, as a
