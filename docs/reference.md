@@ -403,17 +403,8 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
 #### How the guard reads a command
 
 - a command that does not parse;
-- an extended glob written directly in the words, the non-array values, or the redirects
-  (here-strings included) of a simple command or a declaration such as `declare` or `export` (zsh
-  runs a glob qualifier such as `*(e:'git push':)` or `*(+f)` as code). The one form allowed there
-  is a `*(…)` whose parentheses hold no `e`, `+`, `$`, backtick, or inner parenthesis, such as the
-  null glob `*(N)`; every other extended glob, `@(a|b)` and `!(x)` included, is refused. The guard
-  looks for none anywhere else: an array value, a `for` or `select` list, the operand of a `${…}`
-  expansion such as a default, a `case` word or pattern, a `[[ … ]]` test, or the redirects of
-  `let` or a compound command. A qualifier there could only hide a command
-  ([rule 3](guard-scope.md#3-close-a-bypass-only-when-agents-write-it));
-- a command word that is not a literal (`$(which git)`, `"$GIT"`). These rules decide when a
-  `$NAME` or `${NAME}` counts as a literal:
+- a command word that is not a literal (`$(which git)`, `"$GIT"`, `@(git)`). These rules decide
+  when a `$NAME` or `${NAME}` counts as a literal:
   - **Literal assignments:** a `$NAME` or `${NAME}` the command assigned a literal earlier reads as
     that literal in the words that run later in the same shell. That includes the words of a
     subshell, a command substitution, or an `eval` string. A plain assignment counts. So do
@@ -458,8 +449,8 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
       command the guard does not know may run (`su -c '$S/run.sh'`), and in a function body, which
       knows only the variables it assigns itself;
     - for a variable bash or zsh defines as it starts or sets on its own (`PWD`, `PATH`, `REPLY`,
-      `MATCH`, `match`, `BASH_REMATCH`), and for a name that a declaration with an option, or zsh's
-      `integer` or `float`, names anywhere in the command (`declare -x S=/x`, `declare -u S`).
+      `MATCH`, `match`, `BASH_REMATCH`), and for a name that a declaration with an option names
+      anywhere in the command (`declare -x S=/x`, `declare -u S`).
       `HOME` is one of them, but a `~` or `~/…` that opens a word always reads as the caller's
       `HOME`, even after the command assigns it: `HOME=/srv; cd ~/x` reads as a `cd` into the
       caller's `~/x`. Only a command that hides its directory would assign `HOME` there
@@ -473,8 +464,10 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
       that is not a literal or holds `IFS` anywhere in its text; and anywhere in a command that
       holds a name reference (`declare -n`, `typeset -n`, `local -n`), a `declare`, `typeset`, or
       `local` option the guard cannot read, or an assignment of `IFS`, or that inherits `IFS` from
-      its environment. A declaration run through `builtin` or `command` (`builtin declare -n R=T`)
-      counts as one written plainly. Inside an `eval` string, each of these, and each declaration
+      its environment. A name reference or an option the guard cannot read counts the same when its
+      declaration runs through `builtin` or `command` (`builtin declare -n R=T`), but the names such
+      a declaration declares stay readable: `command declare -u S; S=/x; $S/run.sh` runs
+      `/x/run.sh`. Inside an `eval` string, each of these, and each declaration
       of the two items above, takes effect where the `eval` runs and throughout any loop it runs
       in, not anywhere in the command: `S=/a; $S/run.sh; eval 'declare -n R=T'` reads `/a/run.sh`;
     - in an expansion with an operator (`${S%/x}`) or a zsh modifier (`$S:h`), and in an unquoted
@@ -498,10 +491,10 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
     file tool, a lookup, or a package manager, or a shell checker or formatter (`echo`, `grep`,
     `rg`, `cat`, `cp`, `which`, `go`, `brew`, `shellcheck`, `shfmt`, and the like) as data. So
     `echo git push` holds no `git` call.
-  - **`go`:** `go` is data except for the command its `-toolexec` or `-exec` names. The guard reads
-    that command as a script and refuses it when it is not a literal or does not parse. The guard
-    reads the words of `go run`, of `go generate`, and of a `go` whose subcommand or `-C` word is
-    not a literal (`go "$o" run`) as those of a command it does not know.
+  - **`go`:** the words of `go` are data, the values of `-exec` and `-toolexec` included
+    (`go test -exec "$RUNNER" ./...`). The guard reads the words of `go run`, of `go generate`, and
+    of a `go` whose subcommand or `-C` word is not a literal (`go "$o" run`) as those of a command
+    it does not know, so it refuses `go run ./tool git push`.
   - **Behind a command the guard does not know:** the guard allows `ils status`, `parse`, `guard`,
     `hook`, and `help` (`timeout 60 ils status`). It refuses any other `ils` command, including one
     the command fills in (`xargs ils`).
@@ -511,7 +504,8 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
     guard still reads the words after that. `xargs -I{} sh -c 'ls {}'`,
     `xargs sh -c 'ls "$1"' sh`, and `docker run img sh -c 'make test'` pass. The guard refuses
     `xargs sh -c 'git status'`, a shell with neither `-c` nor a script file (`xargs sh`,
-    `xargs bash -s`, `timeout 60 bash /dev/stdin`), and one whose string is not a literal
+    `xargs bash -s`, `timeout 60 bash /dev/stdin`, `timeout 60 bash <(cat x)`), and one whose
+    string is not a literal
     (`xargs bash -c "$s"`). The guard reads a bare shell given a script file, after any options, as
     that file run directly by the same command: `timeout 60 bash x.sh` and
     `find . -exec bash {} \;` pass as `timeout 60 ./x.sh` does. It reads the script's own arguments
@@ -540,39 +534,31 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   tool.py git push`);
 - a `bash -c`, `sh -c`, `zsh -c`, `dash -c`, or `eval` string that is not a literal or nests more
   than three deep;
-- a shell that reads its script from standard input or a process substitution (`cat x | bash`,
-  `bash -s`, `bash /dev/stdin`, `bash <(…)`), and a `source` or `.` of either. A shell given a script
-  file runs it as `./x.sh` does (`bash /tmp/probe.sh`), and its arguments after the file are read
-  as those of `./x.sh` (the guard refuses `bash x.sh git push`). The guard allows a `source` or `.`
-  of a file; after it, the directory and every variable the guard follows are unknown, so the guard
-  refuses `source env.sh && git commit -m x` because it cannot tell where the commit runs;
+- a `git` or shell word among the arguments of a script file a shell runs: the shell runs the file
+  as `./x.sh` does (`bash /tmp/probe.sh`), and the guard reads the arguments after the file as
+  those of `./x.sh`, so it refuses `bash x.sh git push`. After a `source` or `.`, of a file or of a
+  process substitution, the directory and every variable the guard follows are unknown, so the
+  guard refuses `source env.sh && git commit -m x` because it cannot tell where the commit runs;
 - a shell command that git runs. The guard reads these the same way, and refuses one that is not
   a literal. They are the value of `git rebase --exec` (`-x`), the command of `git bisect run`,
-  `git submodule foreach`, `git difftool -x` (`--extcmd`), the `git filter-branch` filters and
-  `--setup`, and `git for-each-repo`; the value of `-c core.editor`, `core.pager`,
-  `sequence.editor`, `core.sshCommand`, `core.fsmonitor`, `diff.external`, `pager.<command>`,
-  `diff.<driver>.command`, `diff.<driver>.textconv`, `filter.<driver>.clean`, `smudge`, or
-  `process`, `merge.<driver>.driver`, `difftool.<tool>.cmd`, `mergetool.<tool>.cmd`,
-  `man.<tool>.cmd`, `browser.<tool>.cmd`, `trailer.<token>.cmd`, or `trailer.<token>.command`; the
-  credential helper of `-c credential.helper` or `credential.<url>.helper`, which git runs as the
-  text after a leading `!`, as written when it starts with `/`, and as `git credential-<value>`
-  otherwise; and the value of `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`, `GIT_PAGER`, and
-  the `EDITOR`, `VISUAL`, and `PAGER` git falls back to;
+  `git submodule foreach`, the `git filter-branch` filters and `--setup`, and `git for-each-repo`;
+  the value of `-c core.editor` and `-c sequence.editor`; and the value of `GIT_EDITOR`,
+  `GIT_SEQUENCE_EDITOR`, `GIT_PAGER`, and the `EDITOR`, `VISUAL`, and `PAGER` git falls back to. A
+  `--config-env=<key>=<VAR>` is judged as `-c <key>` with a value that is not a literal, whatever
+  the command assigns `VAR`, so the guard refuses `ED=vim git --config-env=core.editor=ED commit`.
+  The other keys and options git runs as a program (`core.pager`, `core.sshCommand`, a credential
+  helper, `difftool -x`) are data
+  ([accepted limits](guard-scope.md#accepted-limits));
 - an assignment or `export` of a `GIT_*` variable off the allow list (`GIT_CONFIG_COUNT`,
-  `GIT_EXEC_PATH`, and the like), and under `set -a` a `read`, `printf -v`, `mapfile`, `for`,
-  `getopts`, or `${V:=…}` that sets one, since `set -a` exports it;
-- a function the command defines that shadows `cd`, `pushd`, `popd`, a wrapper the guard sees
-  through, or a declaration builtin (`export`, `declare`, `local`, `readonly`, `typeset`, `let`).
-  A call of one whose body may change directory leaves the directory unknown after it.
-  The guard judges each command of a function body where the function is declared, and again at
-  each call, in the directory, environment, redirects, and HEAD of the call. A declaration alone
-  changes nothing for the commands after it:
+  `GIT_EXEC_PATH`, and the like);
+- a command of a function body the command defines. The guard judges each one where the function
+  is declared, and again at each call, in the directory, environment, redirects, and HEAD of the
+  call. A declaration alone changes nothing for the commands after it:
   `f() { git commit -am wip; }; git switch main && f` is refused as a commit on the trunk, and
-  `T() { uv run pytest -q "$@"; }; T -k x > out.txt` passes;
-- a call of a function the command defines past the 256 calls the guard follows into a body, as a
-  function that calls itself makes;
-- an `alias` whose value runs `git`, `gh`, `ils`, `cd`, `pushd`, `popd`, or a wrapper the guard
-  sees through, holds a command the guard marks, or that the guard cannot read;
+  `T() { uv run pytest -q "$@"; }; T -k x > out.txt` passes. A call of one whose body may change
+  directory leaves the directory unknown after it;
+- a call of a function the command defines past the 256 walks of function bodies the guard makes
+  for one command, dry runs included, as a function that calls itself makes;
 - a git word that is neither a command nor an alias, a `!` alias, an alias nested more than three
   deep, and an alias the guard cannot read. An alias the guard cannot read has a value that does
   not split into words, or one set by a `-c` or `--config-env` the guard cannot follow. A
@@ -589,8 +575,8 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   reads it the same way, so `git stash --help`, `git push --help origin`, and `git st --help` pass,
   and `ils parse` shows the subcommand `help`. A `--help` anywhere else leaves the call judged by
   its subcommand, so the guard refuses `git stash drop --help` and `git push origin --help`;
-- a `-c` or `--config-env` value that is not a literal, on any git command, since it may set
-  `core.hooksPath`;
+- a `-c` whose key is not a literal (`git -c "$kv" commit`), or a `--config-env` whose value is
+  not a literal, on any git command, since the key may be `core.hooksPath`;
 - a non-literal argument to a git command the guard checks for flags (`git clean "$opt"`, which
   could expand to `--force`). A commit message (`-m "$(cat <<'EOF' … EOF)"`), the directory of
   `-C "$dir"`, and a path glob whose literal prefix does not start with `-` or `+` (`git add
@@ -626,14 +612,8 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   `--quit` are allowed, since they leave the tree as it is; `--abort` and `--skip` are refused;
 - `worktree remove --force`, and `worktree remove` of a worktree with changes or one the guard
   cannot find;
-- `git config` writing `alias.*`, `include.*`, `includeIf.*`, `remote.*`, `url.*`, `pager.*`,
-  `core.hooksPath`, any key whose value git runs as a shell command (listed above under the shell
-  commands git runs), `difftool.<tool>.path`, or `mergetool.<tool>.path`, at any scope; setting a
-  credential helper that is not a plain helper name (one starting with `!` or `/`, or holding a
-  shell operator); renaming or removing one of those sections, or the `core`, `sequence`, or
-  `diff` section, which hold `core.hooksPath` and shell command keys; renaming a section into one
-  whose keys git runs as a shell command or that holds a credential helper; and `git config
-  --edit`, which can write any of them;
+- `git config` writing `remote.*`, `url.*`, or `core.hooksPath`, at any scope, and renaming or
+  removing the `remote`, `url`, or `core` section;
 - `git remote remove`, `rm`, `rename`, `set-url`, or `set-head` on `origin`.
 
 <!-- cspell:ignore verif -- a prefix git accepts for --no-verify, which the example needs -->
@@ -654,9 +634,10 @@ as `--no-verify`.
   `git remote set-head origin --auto`, which caches the head on any supported git. Run it outside
   the agent or as a `!` command, since the guard refuses `set-head` on `origin`;
 - one of those where the guard cannot tell the directory, the target, or HEAD: after `cd -`,
-  `popd`, or a `cd` to a non-literal, after a command that moves HEAD earlier in the list
-  (`git switch main; git commit`) or a write to the git dir's `HEAD` file, and anywhere in a
-  list where a background job or a pipe stage may move HEAD, since those run beside the rest.
+  `popd`, or a `cd` to a non-literal, and after a git or `gh` command that moves HEAD earlier in
+  the list (`git switch main; git commit`). A HEAD move in a background job or a pipe stage, and a
+  write to the `HEAD` file by any command other than git, are not followed
+  ([accepted limits](guard-scope.md#accepted-limits)).
   The guard follows a `git switch` run as a git command of its own (no wrapper, alias, shell
   function, `!`, or command substitution) in one of two forms:
 
@@ -676,7 +657,7 @@ as `--no-verify`.
 
 #### ils and gh commands
 
-- a help call passes: an `ils` subcommand, or a subcommand of `gh alias`, `auth`, `config`, `pr`,
+- a help call passes: an `ils` subcommand, or a subcommand of `gh auth`, `config`, `pr`,
   `release`, or `repo`, whose first word after it is `--help` (`ils merge --help`, `gh pr merge
   --help`) prints its help and runs nothing, and the guard allows it alone, in a pipe, a list, or a
   subshell, and with a redirect. Handed to a command the guard does not know (`timeout 60 ils merge
@@ -699,7 +680,6 @@ as `--no-verify`.
 - a flag these rules name (`--admin`, `--input`, `--push`, `--show-token`, `--force`) counts as
   given when its value is one the guard cannot read (`--force="$v"`, `--input="$f"`);
 - an `ils` or `gh` command word that is not a literal (`ils "$cmd"`);
-- `gh alias set`, `import`, and `delete`;
 - a `gh` word that is neither a command nor an alias, extensions included;
 - a `!` alias;
 - a `gh` alias given an argument that is not a literal to fill a `$N`;
@@ -726,32 +706,23 @@ payload. Each invocation has:
 | `marks` | array of objects | What the guard could not read safely in this invocation, as `kind` and, when it names one, `name`.    |
 | `git`   | object           | For a git invocation: the fields listed below. Absent otherwise.                                      |
 
-A mark's `kind` is one of these 18 strings. These three name nothing:
+A mark's `kind` is one of these 12 strings. This one names nothing:
 
-- `extended glob`
 - `command word that is not a literal`
-- `shell running a script the command does not hold`
 
-These two carry a `name` for a command that `go` runs through a flag or that git runs from its
-arguments, and name nothing otherwise:
+These two carry a `name` for a command that git runs from its arguments, and name nothing
+otherwise:
 
-- `shell string that is not a literal`: the `go` flag, such as `go -exec`, or `go` alone when the
-  guard cannot tell the flag; or the form git runs it from: `bisect`, `bisect run`, `submodule`,
-  `submodule foreach`, `filter-branch` or its filter or `--setup` flag as written
-  (`--tree-filter`), `for-each-repo`, or the `difftool` option as written (`-x`, `--extcmd`), or
-  `difftool` alone when the guard cannot read the option;
-- `shell string nested too deep`: the flag or the form, as above.
+- `shell string that is not a literal`: the form git runs it from: `bisect`, `bisect run`,
+  `submodule`, `submodule foreach`, `filter-branch` or its filter or `--setup` flag as written
+  (`--tree-filter`), or `for-each-repo`;
+- `shell string nested too deep`: the form, as above.
 
-These 13 carry a `name`:
+These nine carry a `name`:
 
 - `git, gh, ils, or shell word handed to another command`: the word;
-- `command string that does not parse`: the `go` flag whose command it is, such as `go -exec`;
 - `git variable off the allow list`: the variable, absent when the guard cannot read its name;
 - `call of a function past the calls the guard follows`: the function;
-- `function defined over a command the guard reads`: the function;
-- `alias that may run git, gh, or ils`: the alias, or for a word that is not a literal its literal
-  prefix, absent when it has none (`alias "$a"`);
-- `alias that runs a command the guard reads`: the alias;
 - `git alias that runs a shell command`: the alias;
 - `git word that is neither a command nor an alias`: the word, or for a word that is not a literal
   its literal prefix, absent when it has none (`git "$sub"`);
