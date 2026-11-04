@@ -202,7 +202,7 @@ func judgeGHCommand(inv Invocation, args []Word, at []int) Verdict {
 // ghGuardedGroups are the gh command groups whose subcommands judgeGHSubcommand judges and
 // ghGuardedFlags names; a subcommand of any other group is allowed.
 func ghGuardedGroups() map[string]bool {
-	return setOf("alias", "auth", "config", "pr", "release", "repo")
+	return setOf("auth", "config", "pr", "release", "repo")
 }
 
 // ghGuardedFlag is a gh flag the guard looks for, with the shorthands of its subcommand that take a
@@ -267,8 +267,6 @@ func judgeGHSubcommand(inv Invocation, name string, rest []Word) Verdict {
 		}
 	case "gh auth token", "gh auth git-credential":
 		return refuse(name + " " + printsLogin)
-	case "gh alias set", "gh alias import", "gh alias delete":
-		return refuse(name + " changes what a gh word runs")
 	case "gh repo sync", "gh repo delete", "gh repo edit", "gh release delete", "gh release edit", "gh release upload",
 		"gh release delete-asset":
 		return refuse(name + " " + writesByHand)
@@ -538,31 +536,13 @@ func apiValuedLong() []string {
 // as its value: a long flag in apiValuedLong with no `=`, or a bundle of shorthands whose first
 // valued letter ends it.
 func takesValueWord(w Word) bool {
-	t := w.Text
-	switch {
-	case !w.Literal:
-		return false
-	case slices.Contains(apiValuedLong(), t):
-		return true
-	default:
-		return bundleEndsWithValued(t, apiValued)
-	}
+	return w.Literal && (slices.Contains(apiValuedLong(), w.Text) || bundleEndsWithValued(w.Text, apiValued))
 }
 
 // bundleEndsWithValued reports whether the text t is a bundle of shorthands whose first letter that
 // is in valued is its last.
 func bundleEndsWithValued(t, valued string) bool {
-	if !isShortBundle(t) {
-		return false
-	}
-
-	for i := 1; i < len(t); i++ {
-		if strings.IndexByte(valued, t[i]) >= 0 {
-			return i == len(t)-1
-		}
-	}
-
-	return false
+	return isShortBundle(t) && strings.IndexAny(t[1:], valued) == len(t)-2
 }
 
 // apiMethod returns the last method rest gives `gh api` with -X or --method, and false when it
@@ -698,15 +678,7 @@ func mayBeValuedFlag(w Word) bool {
 // `=`, as takesNextWord reads it, or a bundle of shorthands whose first valued letter ends it. A
 // flag that takes none counts too, since the guard does not know every flag of the command.
 func mayTakeValue(w Word, valued string) bool {
-	t := w.Text
-	switch {
-	case !w.Literal:
-		return false
-	case takesNextWord(t):
-		return true
-	default:
-		return bundleEndsWithValued(t, valued)
-	}
+	return w.Literal && (takesNextWord(w.Text) || bundleEndsWithValued(w.Text, valued))
 }
 
 // mayBeFlag reports whether w is a word that is not a literal whose literal prefix may still grow
