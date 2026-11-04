@@ -251,6 +251,47 @@ func TestJudge_RefusesAGhGraphqlDocumentTheGuardCannotReadSayingToPassItInline(t
 	})
 }
 
+func TestJudge_AllowsAGhGraphqlQueryWithAnExplicitPostInAnySpelling(t *testing.T) {
+	t.Parallel()
+
+	checkJudged(t, forgeCaller(t), []judged{
+		{name: "short method separate", command: `gh api graphql -X POST -f query='{ viewer { login } }'`, want: guard.Allow},
+		// cspell:ignore XPOST -- gh reads -X with its value attached; the test needs that spelling.
+		{name: "short method attached", command: `gh api graphql -XPOST -f query='{ viewer { login } }'`, want: guard.Allow},
+		{name: "long method separate in lower case", command: `gh api graphql --method post -f query='{ viewer { login } }'`, want: guard.Allow},
+		{name: "long method attached", command: `gh api graphql --method=POST -f query='{ viewer { login } }'`, want: guard.Allow},
+		{name: "short method separate before the endpoint", command: `gh api -X POST graphql -f query='{ viewer { login } }'`, want: guard.Allow},
+		{name: "long method separate before the endpoint", command: `gh api --method POST graphql -f query='{ viewer { login } }'`, want: guard.Allow},
+	})
+}
+
+func TestJudge_RefusesAGhGraphqlCallWithAnExplicitPostByItsDocument(t *testing.T) {
+	t.Parallel()
+	caller := forgeCaller(t)
+
+	tests := []struct {
+		name    string
+		command string
+		named   string
+	}{
+		{name: "mutation", command: `gh api graphql -X POST -f query='mutation { a }'`, named: "mutation"},
+		{
+			name:    "mutation after a long method separate before the endpoint",
+			command: `gh api --method POST graphql -f query='mutation { a }'`,
+			named:   "mutation",
+		},
+		{name: "query read from a file", command: "gh api graphql --method=POST -F query=@q.graphql", named: "inline"},
+		{name: "query not a literal", command: `gh api graphql -X POST -f query="$q"`, named: "inline"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			checkRefusedOmitting(t, caller, omitting{command: tt.command, named: tt.named, omitted: "POST"})
+		})
+	}
+}
+
 func TestJudge_ReadsTheIlsCommandAsCobraFindsIt(t *testing.T) {
 	t.Parallel()
 
@@ -289,6 +330,14 @@ func TestJudge_RefusesAGhCallThatWritesToGitHubDiscardsWorkOrPrintsTheToken(t *t
 		{name: "api method attached", command: "gh api -XPUT repos/x/y", want: guard.Refuse, wantNamed: "PUT"},
 		{name: "api long method attached in lower case", command: "gh api --method=put repos/x/y", want: guard.Refuse, wantNamed: "put"},
 		{name: "api method not literal", command: `gh api -X "$method" repos/x/y`, want: guard.Refuse},
+		{name: "api graphql query with a method other than post", command: `gh api graphql -X DELETE -f query='{ viewer { login } }'`, want: guard.Refuse, wantNamed: "DELETE"},
+		{name: "api post with a query field to another endpoint", command: `gh api -X POST repos/x/y/issues -f query='{ viewer { login } }'`, want: guard.Refuse, wantNamed: "POST"},
+		{
+			name:      "api long post separate before another endpoint with a query field",
+			command:   `gh api --method POST repos/x/y/issues -f query='{ viewer { login } }'`,
+			want:      guard.Refuse,
+			wantNamed: "POST",
+		},
 		{name: "api method flag as the value of a field", command: "gh api -f --method=GET -f title=x repos/x/y/issues", want: guard.Refuse},
 		{name: "api method flag as the value of a long valued flag", command: "gh api --jq --method=GET -f title=x repos/x/y/issues", want: guard.Refuse},
 		{name: "config get token", command: "gh config get oauth_token", want: guard.Refuse},

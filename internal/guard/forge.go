@@ -283,19 +283,25 @@ func judgeGHSubcommand(inv Invocation, name string, rest []Word) Verdict {
 
 // judgeAPI refuses a `gh api` call that may write: a method other than GET, a method that is not a
 // literal, or, with no method given, a field or an input, which make gh send a POST. A POST to the
-// graphql endpoint is judged by its document instead (see judgeGraphQL).
+// graphql endpoint, explicit or sent for a field or an input, is judged by its document instead
+// (see judgeGraphQL).
 func judgeAPI(rest []Word) Verdict {
+	endpoint, ok := apiEndpoint(rest)
+	graphQL := ok && endpoint.Literal && endpoint.Text == "graphql"
+
 	method, given := apiMethod(rest)
 	switch {
 	case given && !method.Literal:
 		return refuse("gh api with a method that is not a literal may write to GitHub")
+	case given && graphQL && strings.EqualFold(method.Text, "POST"):
+		return judgeGraphQL(rest)
 	case given && !strings.EqualFold(method.Text, "GET"):
 		return refuse(fmt.Sprintf("gh api with method %s %s", method.Text, writesByHand))
 	case given:
 		return Verdict{Outcome: Allow}
 	}
 
-	if endpoint, ok := apiEndpoint(rest); ok && endpoint.Literal && endpoint.Text == "graphql" {
+	if graphQL {
 		return judgeGraphQL(rest)
 	}
 
@@ -525,12 +531,12 @@ const apiValued = "XfFHpqt"
 // apiValuedLong returns the long flags of `gh api` that take a value, as the next word when none
 // is attached with `=`.
 func apiValuedLong() []string {
-	return []string{"--raw-field", "--field", "--header", "--preview", "--jq", "--template", "--input", "--hostname", "--cache"}
+	return []string{"--method", "--raw-field", "--field", "--header", "--preview", "--jq", "--template", "--input", "--hostname", "--cache"}
 }
 
-// takesValueWord reports whether the literal word w is a flag of `gh api` other than the method's
-// that takes the next word as its value: a long flag in apiValuedLong with no `=`, or a bundle of
-// shorthands whose first valued letter ends it.
+// takesValueWord reports whether the literal word w is a flag of `gh api` that takes the next word
+// as its value: a long flag in apiValuedLong with no `=`, or a bundle of shorthands whose first
+// valued letter ends it.
 func takesValueWord(w Word) bool {
 	t := w.Text
 	switch {

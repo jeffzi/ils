@@ -677,9 +677,9 @@ as `--no-verify`.
 - `gh pr merge --admin` in any form;
 - `gh api` with a method other than `GET`, or with no method but a field or `--input`. A `gh api
   graphql` call whose `query` field is a literal document holding no mutation is a read, and the
-  guard allows it; one whose document holds a mutation is a write, and one whose document the guard
-  cannot read (`-F query=@q.graphql`, `-f query="$q"`, `--input`) is refused until the query is
-  passed inline;
+  guard allows it, with no method or with `POST` in any spelling (`-X POST`, `--method post`); one
+  whose document holds a mutation is a write, and one whose document the guard cannot read (`-F
+  query=@q.graphql`, `-f query="$q"`, `--input`) is refused until the query is passed inline;
 - `gh repo sync`, `delete`, `edit`, and `create --push`; `gh release delete`, `edit`, `upload`,
   and `delete-asset`; `gh auth token`, `gh auth git-credential`, `gh auth status --show-token`, and
   `gh config get oauth_token`; `gh pr checkout --force`;
