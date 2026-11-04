@@ -597,7 +597,7 @@ on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/
   through `-c` or `--config-env`; `repack -a -d` without `-A`, `--cruft`, or
   `--keep-unreachable`, and `repack -d` with `-A --unpack-unreachable=…` or `--cruft
   --cruft-expiration=…`, whatever the expiry; `clean` without `--force` where
-  `clean.requireForce` is off, through `-c` or the repository's config;
+  `clean.requireForce` is off, through `-c`, `--config-env`, or the repository's config;
   `checkout-index --force`; `read-tree`, unless `-n` (`--dry-run`), `--index-output`, or
   `--prefix` keeps it off the index, and always with `--reset` or `-u -m`; `update-ref -d`,
   `update-ref --stdin`, and `update-ref` whose new value is all zeros or whose ref or new value is
