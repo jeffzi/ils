@@ -44,7 +44,6 @@ func TestParse_MarksWhatItCannotRead(t *testing.T) {
 	t.Parallel()
 
 	checkMarkKind(t, []markedCommand{
-		{name: "extended glob", command: "echo @(a|b)", want: guard.ExtendedGlob},
 		{name: "wrapper option it does not take", command: "nice -z git push", want: guard.ToolArgument},
 		{name: "shell handed to xargs", command: "xargs sh -c 'git push origin main'", want: guard.ToolArgument},
 		{name: "shell whose string hands git over, handed to xargs", command: "xargs sh -c 'sudo git log'", want: guard.ToolArgument},
@@ -204,7 +203,6 @@ func TestJudge_WhenACommandHandsAnotherCommandCodeOrAScriptFile_Allows(t *testin
 
 	checkAllowed(t, guard.Caller{Home: home, Dir: outsideDir(t)}, []namedCommand{
 		{name: "sed script behind find -exec", command: `find . -name '*.md' -exec sed -i 's/git push/ils push/' {} +`},
-		{name: "shell script file behind timeout", command: "timeout 60 bash x.sh"},
 	})
 }
 

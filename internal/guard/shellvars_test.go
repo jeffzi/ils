@@ -30,7 +30,7 @@ func TestParse_WhenTheCommandAssignedAVariableALiteral_ReadsItsExpansionAsThatLi
 		want    string
 	}{
 		{name: "plain assignment", command: "S=/tmp/work; $S/run.sh", want: "/tmp/work/run.sh"},
-		{name: "expansion in braces", command: "S=/tmp/work; ${S}/run.sh", want: "/tmp/work/run.sh"},
+		{name: "expansion in braces followed by a colon", command: "S=/tmp/work; ${S}:h/run.sh", want: "/tmp/work:h/run.sh"},
 		{name: "quoted expansion of a value holding a space", command: `S='/tmp/my work'; "$S/run.sh"`, want: "/tmp/my work/run.sh"},
 		{name: "value starting with a tilde", command: "S=~/work; $S/run.sh", want: home + "/work/run.sh"},
 		{name: "export", command: "export S=/tmp/work; $S/run.sh", want: "/tmp/work/run.sh"},

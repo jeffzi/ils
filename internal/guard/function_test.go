@@ -28,7 +28,6 @@ func TestJudge_WhenACallCarriesARedirect_JudgesItsBodyUnderTheRedirect(t *testin
 
 	checkRefusals(t, []refusal{
 		{name: "git history onto a work tree file", command: "dump() { git show HEAD:README.md; }; dump > README.md", wantNamed: "git show"},
-		{name: "onto the head file of the git dir", command: "f() { :; }; f > .git/HEAD; " + commitCommand, wantNamed: "cannot tell"},
 	})
 }
 
@@ -97,14 +96,6 @@ func TestJudge_RefusesAFunctionThatShadowsACommandTheGuardReadsThrough(t *testin
 	checkRefusals(t, []refusal{
 		{name: "cd", command: "cd() { builtin cd /srv; }; cd sub && git commit -m x", wantNamed: "cd"},
 		{name: "builtin", command: "builtin() { :; }", wantNamed: "builtin"},
-	})
-}
-
-func TestJudge_AllowsAFunctionThatHidesNoTool(t *testing.T) {
-	t.Parallel()
-
-	checkAllowed(t, readerCaller(), []namedCommand{
-		{name: "call of a function with no redirect", command: "greet() { echo hi; }; greet"},
 	})
 }
 

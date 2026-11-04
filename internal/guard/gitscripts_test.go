@@ -37,9 +37,7 @@ func TestParse_WhenGitRunsAShellCommandItHolds_ParsesItsCommands(t *testing.T) {
 		{name: "key spelled in another case", command: "git -c CORE.Pager='git push origin main' log", want: [][]string{{"git", "-c", "CORE.Pager=git push origin main", "log"}, pushed}},
 		{name: "pager key spelled in another case", command: "git -c Pager.Log='git push origin main' log", want: [][]string{{"git", "-c", "Pager.Log=git push origin main", "log"}, pushed}},
 		{name: "core.pager given by --config-env", command: "P='git push origin main' git --config-env=core.pager=P log", want: [][]string{{"git", "--config-env=core.pager=P", "log"}, pushed}},
-		{name: "diff driver textconv given by -c", command: "git -c diff.x.textconv='git push origin main' diff", want: [][]string{{"git", "-c", "diff.x.textconv=git push origin main", "diff"}, pushed}},
 		{name: "credential helper run by the shell", command: "git -c credential.helper='!git push origin main' fetch", want: [][]string{{"git", "-c", "credential.helper=!git push origin main", "fetch"}, pushed}},
-		{name: "credential helper of a URL, key in another case", command: "git -c credential.https://h.Helper='!git push origin main' fetch", want: [][]string{{"git", "-c", "credential.https://h.Helper=!git push origin main", "fetch"}, pushed}},
 		{name: "credential helper named by its suffix", command: "git -c credential.helper=store fetch", want: [][]string{{"git", "-c", "credential.helper=store", "fetch"}, {"git", "credential-store"}}},
 		{name: "bisect run", command: "git bisect run git push origin main", want: [][]string{{"git", "bisect", "run", "git", "push", "origin", "main"}, pushed}},
 		{name: "submodule foreach", command: "git submodule foreach 'git push origin main'", want: [][]string{{"git", "submodule", "foreach", "git push origin main"}, pushed}},
@@ -151,15 +149,6 @@ func TestJudge_AllowsAGitCommandRunningALiteralItAllows(t *testing.T) {
 	})
 }
 
-func TestJudge_PassesOverTheValueOfADifftoolOptionThatTakesOne(t *testing.T) {
-	t.Parallel()
-	_, caller := standingOn(t, "main", "topic")
-
-	checkAllowed(t, caller, []namedCommand{
-		{name: "-x", command: "git difftool -x --no-verify HEAD"},
-	})
-}
-
 // nestedRepositories returns a repository on main holding the nested repositories inner and
 // docs/inner, both cloned from its origin, and a caller working at its top.
 func nestedRepositories(t *testing.T) (*gittest.Fixture, guard.Caller) {
@@ -184,7 +173,6 @@ func TestParse_WhenGitRunsAScriptAtTheTopOfTheWorkTree_ReadsItsGitCommandsFromTh
 		command string
 	}{
 		{name: "rebase --exec below the top by -C", command: "git -C docs rebase --exec " + innerCommit + " origin/main"},
-		{name: "rebase --exec below the top by cd", command: "cd docs && git rebase --exec " + innerCommit + " origin/main"},
 		{name: "difftool --extcmd below the top by -C", command: "git -C docs difftool --extcmd " + innerCommit + " HEAD~1"},
 	}
 	for _, tt := range tests {

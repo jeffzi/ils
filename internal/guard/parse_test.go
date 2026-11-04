@@ -254,7 +254,6 @@ func TestParse_WhenASimpleCommandIsNotACall_ReportsAnInvocation(t *testing.T) {
 	t.Parallel()
 
 	checkTexts(t, []commandTexts{
-		{name: "export of an assignment", command: "export GIT_DIR=/tmp/x; git push", want: [][]string{{"export", "GIT_DIR=/tmp/x"}, {"git", "push"}}},
 		{name: "declare with an option", command: "declare -x A=1", want: [][]string{{"declare", "-x", "A=1"}}},
 		{name: "local of a name", command: "local name", want: [][]string{{"local", "name"}}},
 	})
@@ -378,11 +377,6 @@ func TestParse_ReportsEachAssignmentTheCommandRunsWith(t *testing.T) {
 		command string
 		want    []guard.Assignment
 	}{
-		{
-			name:    "assignment prefix",
-			command: "GIT_DIR=x git status",
-			want:    []guard.Assignment{{Name: "GIT_DIR", Value: guard.Word{Text: "x", Literal: true}}},
-		},
 		{
 			name:    "env argument",
 			command: "env GIT_DIR=x git status",

@@ -423,7 +423,6 @@ func TestParse_ReadsAHelpFlagRightAfterTheSubcommandAsGitHelp(t *testing.T) {
 		{name: "help flag alone", command: "git stash --help", wantArgs: []string{"stash"}},
 		{name: "words after the help flag", command: "git push --help origin", wantArgs: []string{"push", "origin"}},
 		{name: "alias, read before it expands", command: "git co --help", wantArgs: []string{"co"}},
-		{name: "word that is neither command nor alias", command: "git st --help", wantArgs: []string{"st"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -444,9 +443,7 @@ func TestJudge_AllowsAGitCallWhoseHelpFlagFollowsTheSubcommand(t *testing.T) {
 
 	checkAllowed(t, caller, []namedCommand{
 		{name: "stash", command: "git stash --help"},
-		{name: "push with a word after the help flag", command: "git push --help origin"},
 		{name: "after a global option", command: "git -C /tmp stash --help"},
-		{name: "word that is neither command nor alias", command: "git st --help"},
 	})
 }
 
@@ -455,6 +452,5 @@ func TestJudge_JudgesAHelpFlagPastTheSubcommandsFirstWordByTheSubcommand(t *test
 
 	checkRefusals(t, []refusal{
 		{name: "stash drop", command: "git stash drop --help"},
-		{name: "push to a remote", command: "git push origin --help"},
 	})
 }

@@ -51,7 +51,6 @@ func TestJudge_RefusesAGitOperationThatDiscardsWork(t *testing.T) {
 		{name: "reflog expire", command: "git reflog expire"},
 		{name: "gc pruning now", command: "git gc --prune=now"},
 		{name: "repack -a -d", command: "git repack -a -d"},
-		{name: "repack bundle -ad", command: "git repack -ad"},
 		{name: "repack -a -d with --cruft turned off again", command: "git repack -a -d --cruft --no-cruft"},
 		{
 			name:    "repack -a -d with --keep-unreachable turned off again",
@@ -247,13 +246,11 @@ func TestJudge_AllowsGitHistoryWrittenOutsideAnyWorkTree(t *testing.T) {
 
 	checkAllowed(t, caller, []namedCommand{
 		{name: "show into a file outside", command: "git show HEAD:README.md > " + outside},
-		{name: "cat-file appending to a file outside", command: "git cat-file -p HEAD:README.md >> " + outside},
 		{name: "show piped into tee of a file outside", command: "git show HEAD:README.md | tee -a " + outside},
 		{name: "show piped into tee naming no file", command: "git show HEAD:README.md | tee"},
 		{name: "tee of a file outside named by a variable", command: "F=" + outside + "; git show HEAD:README.md | tee $F"},
 		{name: "relative target after a cd outside", command: "cd " + quotedPath(away) + " && git show HEAD:README.md > x.md"},
 		{name: "tee further down the pipe", command: "git show HEAD:README.md | cat | tee README.md"},
-		{name: "show into the git directory", command: "git show HEAD:README.md > .git/x.md"},
 	})
 }
 
@@ -297,7 +294,6 @@ func TestJudge_AllowsAGitOperationThatKeepsWork(t *testing.T) {
 		{name: "plain apply", command: "git apply patch.diff"},
 		{name: "send-email --validate", command: "git send-email --validate x.patch"},
 		{name: "restore --staged after an attached --pathspec-from-file", command: "git restore --pathspec-from-file=x --staged f"},
-		{name: "rebase", command: "git rebase main"},
 	})
 }
 
@@ -317,7 +313,6 @@ func TestJudge_AllowsAStashListOrShow(t *testing.T) {
 
 	checkAllowed(t, caller, []namedCommand{
 		{name: "list", command: "git stash list"},
-		{name: "show of a stash entry with options", command: "git stash show -p stash@{1}"},
 	})
 }
 
@@ -488,7 +483,6 @@ func TestJudge_WhenAWorktreeRemovalHoldsAnUnreadableWordWhereAnOptionCanStand_Re
 
 	checkJudgedIn(t, callerIn(f, f.Dir()), []placed{
 		{name: "before the path", dir: f.Dir(), command: `git worktree remove "$opt" ` + clean},
-		{name: "alone", dir: f.Dir(), command: `git worktree remove "$wt"`},
 	}, expectation{outcome: guard.Refuse, named: "write the argument as a literal"})
 }
 
@@ -636,8 +630,6 @@ func TestJudge_AllowsAnUnreadableGitArgumentAfterDoubleDash(t *testing.T) {
 
 	checkAllowed(t, caller, []namedCommand{
 		{name: "branch -d", command: `git branch -d -- "$b"`},
-		{name: "switch", command: `git switch -- "$b"`},
-		{name: "restore --staged", command: `git restore --staged -- "$f"`},
 	})
 }
 

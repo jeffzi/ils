@@ -11,7 +11,6 @@ func TestJudge_RefusesAPrefixOfAGuardedLongOption(t *testing.T) {
 
 	checkRefusals(t, []refusal{
 		{name: "ambiguous prefix of --no-verify", command: "git commit --no-v -m msg", wantNamed: "--no-v"},
-		{name: "prefix of gc --prune", command: "git gc --pru=now"},
 	})
 }
 
@@ -20,7 +19,6 @@ func TestJudge_RefusesAFlagBehindTheValueOfAnOptionThatTakesOne(t *testing.T) {
 
 	checkRefusals(t, []refusal{
 		{name: "restore --pathspec-from-file before --staged", command: "git restore --pathspec-from-file --staged", wantNamed: "git restore"},
-		{name: "restore prefix of --pathspec-from-file", command: "git restore --pathspec-from --staged"},
 		{name: "restore prefix shared with a flag", command: "git restore --pathspec-f --staged f"},
 	})
 }

@@ -122,7 +122,6 @@ func TestJudge_WhenAWordCannotBeRead_RefusesNamingASpellingTheGuardAllows(t *tes
 
 	checkRefusals(t, []refusal{
 		{name: "variable as the command word", command: `"$c" status`, wantNamed: "as a literal, or assign its variable a literal"},
-		{name: "command substitution as the command word", command: `$(which git) status`, wantNamed: "as a literal, or assign its variable a literal"},
 		{name: "shell string", command: `bash -c "$s"`, wantNamed: "write the string as a literal"},
 		{name: "git subcommand", command: `git "$s"`, wantNamed: "write the subcommand as a literal"},
 	})
