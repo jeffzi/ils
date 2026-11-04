@@ -160,14 +160,6 @@ func TestJudge_PassesOverTheValueOfADifftoolOptionThatTakesOne(t *testing.T) {
 	})
 }
 
-func TestJudge_RefusesDifftoolSkippingChecks(t *testing.T) {
-	t.Parallel()
-
-	checkRefusals(t, []refusal{
-		{name: "--no-verify", command: "git difftool --no-verify HEAD", wantNamed: "--no-verify"},
-	})
-}
-
 // nestedRepositories returns a repository on main holding the nested repositories inner and
 // docs/inner, both cloned from its origin, and a caller working at its top.
 func nestedRepositories(t *testing.T) (*gittest.Fixture, guard.Caller) {

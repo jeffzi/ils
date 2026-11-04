@@ -67,6 +67,30 @@ func checkNoMarks(t *testing.T, tests []namedCommand) {
 	}
 }
 
+// markedCommand is a command whose invocation at index carries exactly one mark, of kind want.
+type markedCommand struct {
+	name    string
+	command string
+	want    guard.MarkKind
+	index   int
+}
+
+// checkMarkKind fails unless each command's invocation at its index carries exactly its one mark.
+func checkMarkKind(t *testing.T, tests []markedCommand) {
+	t.Helper()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := parse(t, tt.command)
+
+			assert.Assert(t, len(got) > tt.index, "Parse(%q) = %v", tt.command, texts(got))
+			assert.Check(t, is.DeepEqual(kinds(got[tt.index].Marks), []guard.MarkKind{tt.want}), "Parse(%q) marks", tt.command)
+		})
+	}
+}
+
 // gitRun returns the one invocation of command that runs git, read by a caller in start whose
 // HOME is home.
 func gitRun(t *testing.T, command string) guard.Invocation {
@@ -261,6 +285,14 @@ func TestParse_WhenALetClauseRuns_ReportsALetInvocation(t *testing.T) {
 	assert.Check(t, is.DeepEqual(texts(got[1:]), [][]string{{"git", "push"}}), "Parse(%q)", command)
 }
 
+func TestParse_WhenTheCommandWordIsASubstitution_MarksADynamicCommand(t *testing.T) {
+	t.Parallel()
+
+	checkMarkKind(t, []markedCommand{
+		{name: "substituted command word", command: "$(which git) push", want: guard.DynamicCommand},
+	})
+}
+
 func TestParse_ReportsTheToolACommandWordNames(t *testing.T) {
 	t.Parallel()
 
@@ -338,16 +370,6 @@ func TestParse_ReportsWhetherEachInvocationIsTheWholeCommand(t *testing.T) {
 	}
 }
 
-// executable writes an executable file named name in a new directory and returns its path.
-func executable(t *testing.T, name string) string {
-	t.Helper()
-
-	path := filepath.Join(t.TempDir(), name)
-	writeExecutable(t, path)
-
-	return path
-}
-
 func TestParse_ReportsEachAssignmentTheCommandRunsWith(t *testing.T) {
 	t.Parallel()
 
@@ -383,84 +405,6 @@ func TestParse_ReportsEachAssignmentTheCommandRunsWith(t *testing.T) {
 
 			assert.Check(t, is.DeepEqual(got.Assignments, tt.want), "Parse(%q) assignments", tt.command)
 			assert.Check(t, is.DeepEqual(wordTexts(got.Words), []string{"git", "status"}), "Parse(%q) words", tt.command)
-		})
-	}
-}
-
-func TestParse_WhenAnArgumentIsAPathNamedForATool_MarksItUnlessProvenMissingOrNotAnExecutableRegularFile(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		path func(t *testing.T) string
-		want []guard.Mark
-	}{
-		{name: "executable file named for a shell", path: func(t *testing.T) string { return executable(t, "bash") }, want: []guard.Mark{{Kind: guard.ToolArgument}}},
-		{
-			name: "directory",
-			path: func(t *testing.T) string {
-				dir := filepath.Join(t.TempDir(), "ils")
-				assert.NilError(t, os.Mkdir(dir, 0o750))
-
-				return dir
-			},
-		},
-		{
-			name: "file that is not executable",
-			path: func(t *testing.T) string {
-				path := filepath.Join(t.TempDir(), "gh")
-				assert.NilError(t, os.WriteFile(path, []byte("text\n"), 0o600))
-
-				return path
-			},
-		},
-		{name: "missing path", path: func(t *testing.T) string { return filepath.Join(t.TempDir(), "absent", "git") }},
-		{
-			name: "path whose stat fails",
-			path: func(t *testing.T) string {
-				loop := filepath.Join(t.TempDir(), "loop")
-				assert.NilError(t, os.Symlink("loop", loop))
-
-				return filepath.Join(loop, "git")
-			},
-			want: []guard.Mark{{Kind: guard.ToolArgument}},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			command := "xargs " + tt.path(t) + " push"
-
-			got := only(t, command)
-
-			assert.Check(t, is.DeepEqual(kinds(got.Marks), kinds(tt.want)), "Parse(%q) marks", command)
-		})
-	}
-}
-
-func TestParse_WhenAnArgumentIsARelativePathNamedForATool_ReadsItWhereTheInvocationRuns(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		command string
-		want    []guard.Mark
-	}{
-		{name: "path under the caller's directory", command: "xargs ./bin/git push", want: []guard.Mark{{Kind: guard.ToolArgument}}},
-		{name: "path missing under the directory a cd moved to", command: "cd bin && xargs ./bin/git push"},
-		{name: "path under an unknown directory", command: `cd "$d" && xargs ./absent/git push`, want: []guard.Mark{{Kind: guard.ToolArgument}}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			callerDir := t.TempDir()
-			writeExecutable(t, filepath.Join(callerDir, "bin", "git"))
-
-			xargs := lastWith(t, tt.command, guard.Caller{Home: home, Dir: callerDir})
-
-			assert.Check(t, is.DeepEqual(kinds(xargs.Marks), kinds(tt.want)), "Parse(%q) marks", tt.command)
 		})
 	}
 }

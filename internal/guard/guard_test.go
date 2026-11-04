@@ -131,21 +131,28 @@ func TestJudge_WhenAWordCannotBeRead_RefusesNamingASpellingTheGuardAllows(t *tes
 func TestJudge_WhenAShellStringBehindAnotherCommandCannotBeRead_NamesALiteralString(t *testing.T) {
 	t.Parallel()
 
-	checkRefusedOmitting(t, `xargs bash -c "$s"`, "write the -c string as a literal", "on its own")
-}
-
-// checkRefusedOmitting fails unless Judge refuses command with a reason that holds named and does
-// not hold omitted.
-func checkRefusedOmitting(t *testing.T, command, named, omitted string) {
-	t.Helper()
-
 	_, caller := standingOn(t, "main", "topic")
 
-	got := guard.Judge(t.Context(), command, caller)
+	checkRefusedOmitting(t, caller, omitting{command: `xargs bash -c "$s"`, named: "write the -c string as a literal", omitted: "on its own"})
+}
 
-	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome, reason %q", command, got.Reason)
-	assert.Check(t, is.Contains(got.Reason, named), "Judge(%q) reason", command)
-	assert.Check(t, !strings.Contains(got.Reason, omitted), "Judge(%q) reason %q holds %q", command, got.Reason, omitted)
+// omitting is a command Judge refuses with a reason that holds named and does not hold omitted.
+type omitting struct {
+	command string
+	named   string
+	omitted string
+}
+
+// checkRefusedOmitting fails unless Judge, run by caller, refuses the command of tt with a reason
+// that holds tt.named and does not hold tt.omitted.
+func checkRefusedOmitting(t *testing.T, caller guard.Caller, tt omitting) {
+	t.Helper()
+
+	got := guard.Judge(t.Context(), tt.command, caller)
+
+	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome, reason %q", tt.command, got.Reason)
+	assert.Check(t, is.Contains(got.Reason, tt.named), "Judge(%q) reason", tt.command)
+	assert.Check(t, !strings.Contains(got.Reason, tt.omitted), "Judge(%q) reason %q holds %q", tt.command, got.Reason, tt.omitted)
 }
 
 func TestJudge_WhenAGitArgumentCannotBeRead_NamesDoubleDashWhereItLetsTheCommandRun(t *testing.T) {
@@ -182,11 +189,7 @@ func TestJudge_WhenDoubleDashLeavesAnUnreadableGitArgumentRefused_NamesALiteral(
 
 func TestJudge_WhenALiteralStartsSeveralOptionsOneTakingAValue_NamesItToSpellOutInFull(t *testing.T) {
 	t.Parallel()
-	command := `git branch --s "$b"`
 	_, caller := standingOn(t, "main", "topic")
 
-	got := guard.Judge(t.Context(), command, caller)
-
-	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome, reason %q", command, got.Reason)
-	assert.Check(t, is.Contains(got.Reason, "`--s` in full"), "Judge(%q) reason", command)
+	checkJudgedRow(t, caller, judged{command: `git branch --s "$b"`, want: guard.Refuse, wantNamed: "`--s` in full"})
 }

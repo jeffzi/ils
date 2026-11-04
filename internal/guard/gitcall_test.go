@@ -311,7 +311,7 @@ func TestParse_WhenNoInvocationRunsGit_StartsNoGit(t *testing.T) {
 	assert.Check(t, is.Len(recorder.Calls(), 0), "Parse(%q) git calls", command)
 }
 
-func TestParse_WhenAGlobalOptionPrintsAndExits_ReportsNoSubcommand(t *testing.T) {
+func TestParse_WhenGitIsGivenNoSubcommandOrAnOptionThatPrintsAndExits_ReportsNoSubcommand(t *testing.T) {
 	t.Parallel()
 
 	f := gittest.New(t, "main")

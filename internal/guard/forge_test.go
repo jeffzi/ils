@@ -3,7 +3,6 @@
 package guard_test
 
 import (
-	"strings"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -95,25 +94,12 @@ func TestJudge_AllowsALandingCommandAskedForItsHelpInAnyForm(t *testing.T) {
 
 func TestJudge_RefusesAGhArgumentNotALiteralThatMayBeAGuardedFlagNamingTheSpellingsThatPass(t *testing.T) {
 	t.Parallel()
-	caller := forgeCaller(t)
+	command := `gh pr merge "$n"`
 
-	tests := []struct {
-		name    string
-		command string
-		flag    string
-	}{
-		{name: "pr merge", command: `gh pr merge "$n"`, flag: "--admin"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	got := guard.Judge(t.Context(), command, forgeCaller(t))
 
-			got := guard.Judge(t.Context(), tt.command, caller)
-
-			assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome, reason %q", tt.command, got.Reason)
-			assert.Check(t, is.Contains(strings.ReplaceAll(got.Reason, tt.flag, ""), "--"), "Judge(%q) reason, beside the flag", tt.command)
-		})
-	}
+	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome, reason %q", command, got.Reason)
+	assert.Check(t, is.Contains(got.Reason, "`--`"), "Judge(%q) reason", command)
 }
 
 func TestJudge_WhenDoubleDashLeavesAGhArgumentThatMayBeAGuardedFlagRefused_NamesOnlyALiteral(t *testing.T) {
@@ -131,11 +117,7 @@ func TestJudge_WhenDoubleDashLeavesAGhArgumentThatMayBeAGuardedFlagRefused_Names
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := guard.Judge(t.Context(), tt.command, caller)
-
-			assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome, reason %q", tt.command, got.Reason)
-			assert.Check(t, is.Contains(got.Reason, "literal"), "Judge(%q) reason", tt.command)
-			assert.Check(t, !strings.Contains(got.Reason, "`--`"), "Judge(%q) reason %q names `--`", tt.command, got.Reason)
+			checkRefusedOmitting(t, caller, omitting{command: tt.command, named: "literal", omitted: "`--`"})
 		})
 	}
 }
@@ -297,7 +279,7 @@ func TestJudge_AllowsAnyOtherIlsCommandInAnyForm(t *testing.T) {
 	})
 }
 
-func TestJudge_RefusesAGhWrite(t *testing.T) {
+func TestJudge_RefusesAGhCallThatWritesToGitHubDiscardsWorkOrPrintsTheToken(t *testing.T) {
 	t.Parallel()
 
 	checkJudged(t, forgeCaller(t), []judged{
@@ -314,7 +296,7 @@ func TestJudge_RefusesAGhWrite(t *testing.T) {
 	})
 }
 
-func TestJudge_AllowsAGhCallThatWritesNothing(t *testing.T) {
+func TestJudge_AllowsAGhCallThatWritesNothingToGitHubAndKeepsLocalWork(t *testing.T) {
 	t.Parallel()
 
 	checkJudged(t, forgeCaller(t), []judged{

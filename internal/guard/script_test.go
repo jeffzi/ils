@@ -43,6 +43,17 @@ func TestParse_WhenAShellRunsAStringItHolds_ParsesItsCommands(t *testing.T) {
 	}
 }
 
+func TestParse_WhenAShellRunsAScriptItCannotRead_MarksIt(t *testing.T) {
+	t.Parallel()
+
+	checkMarkKind(t, []markedCommand{
+		{name: "non-literal -c string", command: `bash -c "$CMD"`, want: guard.DynamicScript},
+		{name: "non-literal eval word", command: `eval "$x"`, want: guard.DynamicScript},
+		{name: "non-literal heredoc fed to a shell", command: "bash <<EOF\n$x\nEOF", want: guard.DynamicScript},
+		{name: "shell reading a pipe", command: "cat x | bash", index: 1, want: guard.HiddenScript},
+	})
+}
+
 func TestParse_WhenANestedStringIsPastTheThirdLevel_MarksItUnparsed(t *testing.T) {
 	t.Parallel()
 

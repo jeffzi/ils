@@ -231,50 +231,49 @@ func TestJudge_WhenAFileIsSourcedBeforeAGhAlias_RefusesNamingTheConfigVariable(t
 	checkJudgedRow(t, forgeCaller(t), judged{command: "source env.sh && gh sy", want: guard.Refuse, wantNamed: "GH_CONFIG_DIR"})
 }
 
-func wordsOf(invocations []guard.Invocation) []guard.Word {
-	var got []guard.Word
-	for _, inv := range invocations {
-		got = append(got, inv.Words...)
-	}
+func TestJudge_WhenACdFollowsAVariableNamingATrunkClone_RefusesTheCommit(t *testing.T) {
+	t.Parallel()
+	f, _ := standingOn(t, "main", "main")
+	caller := callerIn(f, outsideDir(t))
 
-	return got
+	checkJudgedRow(t, caller, judged{command: "D=" + quotedPath(f.Dir()) + `; cd "$D" && ` + commitCommand, want: guard.Refuse, wantNamed: "main"})
 }
 
-func TestParse_WhenTheCommandAssignedAVariableALiteral_ReadsItsExpansionAsThatLiteral(t *testing.T) {
+func TestJudge_WhenAForLoopRunsOverLiterals_AllowsWhatTheBodyRunsForEachValue(t *testing.T) {
+	t.Parallel()
+	_, caller := standingOn(t, "main", "topic")
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "value in a path", command: "for v in lua5.1 luajit; do /opt/$v/bin/lua b.lua; done"},
+		{name: "value after a variable the command assigned", command: "L=/opt/lua; for v in lua5.1 luajit; do $L/$v/bin/lua b.lua; done"},
+		{name: "as many values as the bodies the guard walks, each walked twice", command: "for v in" + strings.Repeat(" ls", 128) + "; do $v; done"},
+		{name: "two loops whose values fill the bodies the guard walks", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; for v in" + strings.Repeat(" ls", 28) + "; do $v; done"},
+		{name: "loop after a function whose loop and dry run fill the bodies the guard walks", command: "f() { for v in" + strings.Repeat(" ls", 40) + "; do :; done; }; f; for v in" + strings.Repeat(" ls", 8) + "; do $v; done"},
+		{name: "loop in a git pager script that fills the bodies a first loop left", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; git -c core.pager='for v in" + strings.Repeat(" ls", 28) + "; do $v; done' log"},
+	})
+}
+
+func TestJudge_WhenAForLoopValueIsAGuardedWord_RefusesAsThatWord(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		command string
-		want    string
-	}{
-		{name: "plain assignment", command: "S=/tmp/work; $S/run.sh", want: "/tmp/work/run.sh"},
-		{name: "expansion in braces", command: "S=/tmp/work; ${S}/run.sh", want: "/tmp/work/run.sh"},
-		{name: "quoted expansion of a value holding a space", command: `S='/tmp/my work'; "$S/run.sh"`, want: "/tmp/my work/run.sh"},
-		{name: "value starting with a tilde", command: "S=~/work; $S/run.sh", want: home + "/work/run.sh"},
-		{name: "export", command: "export S=/tmp/work; $S/run.sh", want: "/tmp/work/run.sh"},
-		{name: "readonly", command: "readonly S=/tmp/work; $S/run.sh", want: "/tmp/work/run.sh"},
-		{name: "readonly after a plain assignment", command: "S=/srv; readonly S=/tmp/work; $S/run.sh", want: "/tmp/work/run.sh"},
-		{name: "local inside its function body", command: "f() { local S=/tmp/work; $S/run.sh; }; f", want: "/tmp/work/run.sh"},
-		{name: "later literal assignment", command: "S=/srv; S=/tmp/work; $S/run.sh", want: "/tmp/work/run.sh"},
-		{name: "assignment that always ran before an and list", command: "S=/tmp/work && $S/run.sh", want: "/tmp/work/run.sh"},
-		{name: "loop body after the assignment", command: `S=/tmp/work; for f in a b; do $S/run.sh "$f"; done`, want: "/tmp/work/run.sh"},
-		{name: "prefix of the command reading the earlier value", command: "S=/tmp/work; S=/srv $S/run.sh", want: "/tmp/work/run.sh"},
-		{name: "argument of a command", command: "S=/tmp/work; ls $S", want: "/tmp/work"},
-		{name: "program run between", command: "S=/tmp/work; mkdir -p $S; $S/run.sh", want: "/tmp/work/run.sh"},
-		{name: "builtin that writes no variable run between", command: "S=/tmp/work; echo x; $S/run.sh", want: "/tmp/work/run.sh"},
-		{name: "word before an eval string declaring a name reference", command: "S=/tmp/work; $S/run.sh; eval 'declare -n R=T'", want: "/tmp/work/run.sh"},
-		{name: "quoted expansion of a for loop value holding a space", command: `for S in '/tmp/my work'; do "$S/run.sh"; done`, want: "/tmp/my work/run.sh"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	checkRefusals(t, []refusal{
+		{name: "value after an unguarded one", command: "for g in ls git; do $g push; done", wantNamed: "git push"},
+		{name: "value before an unguarded one", command: "for g in git ls; do $g push; done", wantNamed: "git push"},
+	})
+}
 
-			got := parse(t, tt.command)
+func TestJudge_WhenTheGuardCannotReadAForLoopValue_RefusesItAsACommandWord(t *testing.T) {
+	t.Parallel()
 
-			assert.Check(t, is.Contains(wordsOf(got), literal(tt.want)), "Parse(%q) words", tt.command)
-		})
-	}
+	checkRefusals(t, []refusal{
+		{name: "glob word after a literal", command: "for f in ls *.sh; do $f; done"},
+		{name: "command substitution after a literal", command: "for f in ls $(ls); do $f; done"},
+		{name: "positional parameters", command: `for f in "$@"; do $f; done`},
+		{name: "more values than the bodies the guard walks, each walked twice", command: "for v in" + strings.Repeat(" ls", 129) + "; do $v; done"},
+		{name: "second loop past the bodies a first loop left", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; for v in" + strings.Repeat(" ls", 29) + "; do $v; done"},
+		{name: "loop past the bodies a function's loop and its dry run left", command: "f() { for v in" + strings.Repeat(" ls", 40) + "; do :; done; }; f; for v in" + strings.Repeat(" ls", 12) + "; do $v; done"},
+		{name: "loop in a git pager script past the bodies a first loop left", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; git -c core.pager='for v in" + strings.Repeat(" ls", 29) + "; do $v; done' log"},
+	})
 }
 
 func TestParse_WhenTheGuardCannotBeSureOfAVariable_ReadsItsExpansionUnknown(t *testing.T) {
@@ -329,125 +328,4 @@ func TestParse_WhenTheGuardCannotBeSureOfAVariable_ReadsItsExpansionUnknown(t *t
 			checkRunShReadUnknown(t, tt.command, got)
 		})
 	}
-}
-
-func TestParse_WhenAReadonlyMayNotGiveAVariableItsValue_ReadsItsExpansionUnknown(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		command string
-	}{
-		{name: "assignment to a readonly name", command: "readonly S=/srv; S=/tmp/work; $S/run.sh"},
-		{name: "readonly after a readonly whose value is not a literal", command: "readonly S=$(pwd); readonly S=/tmp/work; $S/run.sh"},
-		{name: "readonly after declare -r", command: "declare -r S=$(pwd); readonly S=/tmp/work; $S/run.sh"},
-		{name: "readonly after a readonly in an if body", command: "if test -d x; then readonly S=/srv; fi; readonly S=/tmp/work; $S/run.sh"},
-		{name: "readonly after a readonly an eval string runs", command: "eval 'readonly S=$(pwd)'; readonly S=/tmp/work; $S/run.sh"},
-		{name: "assignment to a name builtin readonly made readonly", command: "builtin readonly S=/srv; S=/tmp/work; $S/run.sh"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := parse(t, tt.command)
-
-			checkRunShReadUnknown(t, tt.command, got)
-		})
-	}
-}
-
-func TestParse_WhenTheShellMaySetAVariableOnItsOwn_ReadsItsExpansionUnknown(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		command string
-	}{
-		{name: "builtin that writes a named variable", command: "S=/tmp/work; print -v S /srv; $S/run.sh"},
-		{name: "printf given a format that is not a literal", command: `S=/tmp/work; printf "$F" S /srv; $S/run.sh`},
-		{name: "read of IFS before the assignment", command: "read IFS <<< ,; S=/tmp/work,x; $S/run.sh"},
-		{name: "for loop over IFS before the assignment", command: "for IFS in ,; do :; done; S=/tmp/work,x; $S/run.sh"},
-		{name: "builtin naming IFS before the assignment", command: "print -v IFS ,; S=/tmp/work,x; $S/run.sh"},
-		{name: "zsh match variable after a regex test", command: "MATCH=/tmp/work; [[ a =~ a ]]; $MATCH/run.sh"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := parse(t, tt.command)
-
-			checkRunShReadUnknown(t, tt.command, got)
-		})
-	}
-}
-
-// checkRunShReadUnknown checks that got, the invocations Parse returns for command, read no command
-// word as a literal run.sh and read at least one command word unknown.
-func checkRunShReadUnknown(t *testing.T, command string, got []guard.Invocation) {
-	t.Helper()
-
-	var unread bool
-	for _, inv := range got {
-		if len(inv.Words) == 0 {
-			continue
-		}
-		first := inv.Words[0]
-		unread = unread || !first.Literal
-		assert.Check(t, !first.Literal || !strings.HasSuffix(first.Text, "run.sh"), "Parse(%q) reads %q", command, first.Text)
-	}
-	assert.Check(t, unread, "Parse(%q) = %v, want a command word read unknown", command, texts(got))
-}
-
-func TestJudge_WhenAVariableTheCommandAssignedHoldsAGuardedWord_RefusesAsThatWord(t *testing.T) {
-	t.Parallel()
-
-	checkRefusals(t, []refusal{
-		{name: "command word", command: "G=git; $G push", wantNamed: "git push"},
-		{name: "option of git clean", command: "F=--force; git clean $F", wantNamed: "deletes untracked files"},
-	})
-}
-
-func TestJudge_WhenACdFollowsAVariableNamingATrunkClone_RefusesTheCommit(t *testing.T) {
-	t.Parallel()
-	f, _ := standingOn(t, "main", "main")
-	caller := callerIn(f, outsideDir(t))
-
-	checkJudgedRow(t, caller, judged{command: "D=" + quotedPath(f.Dir()) + `; cd "$D" && ` + commitCommand, want: guard.Refuse, wantNamed: "main"})
-}
-
-func TestJudge_WhenAForLoopRunsOverLiterals_AllowsWhatTheBodyRunsForEachValue(t *testing.T) {
-	t.Parallel()
-	_, caller := standingOn(t, "main", "topic")
-
-	checkAllowed(t, caller, []namedCommand{
-		{name: "value in a path", command: "for v in lua5.1 luajit; do /opt/$v/bin/lua b.lua; done"},
-		{name: "value after a variable the command assigned", command: "L=/opt/lua; for v in lua5.1 luajit; do $L/$v/bin/lua b.lua; done"},
-		{name: "as many values as the bodies the guard walks, each walked twice", command: "for v in" + strings.Repeat(" ls", 128) + "; do $v; done"},
-		{name: "two loops whose values fill the bodies the guard walks", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; for v in" + strings.Repeat(" ls", 28) + "; do $v; done"},
-		{name: "loop after a function whose loop and dry run fill the bodies the guard walks", command: "f() { for v in" + strings.Repeat(" ls", 40) + "; do :; done; }; f; for v in" + strings.Repeat(" ls", 8) + "; do $v; done"},
-		{name: "loop in a git pager script that fills the bodies a first loop left", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; git -c core.pager='for v in" + strings.Repeat(" ls", 28) + "; do $v; done' log"},
-	})
-}
-
-func TestJudge_WhenAForLoopValueIsAGuardedWord_RefusesAsThatWord(t *testing.T) {
-	t.Parallel()
-
-	checkRefusals(t, []refusal{
-		{name: "value after an unguarded one", command: "for g in ls git; do $g push; done", wantNamed: "git push"},
-		{name: "value before an unguarded one", command: "for g in git ls; do $g push; done", wantNamed: "git push"},
-	})
-}
-
-func TestJudge_WhenTheGuardCannotReadAForLoopValue_RefusesItAsACommandWord(t *testing.T) {
-	t.Parallel()
-
-	checkRefusals(t, []refusal{
-		{name: "glob word after a literal", command: "for f in ls *.sh; do $f; done"},
-		{name: "command substitution after a literal", command: "for f in ls $(ls); do $f; done"},
-		{name: "positional parameters", command: `for f in "$@"; do $f; done`},
-		{name: "more values than the bodies the guard walks, each walked twice", command: "for v in" + strings.Repeat(" ls", 129) + "; do $v; done"},
-		{name: "second loop past the bodies a first loop left", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; for v in" + strings.Repeat(" ls", 29) + "; do $v; done"},
-		{name: "loop past the bodies a function's loop and its dry run left", command: "f() { for v in" + strings.Repeat(" ls", 40) + "; do :; done; }; f; for v in" + strings.Repeat(" ls", 12) + "; do $v; done"},
-		{name: "loop in a git pager script past the bodies a first loop left", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; git -c core.pager='for v in" + strings.Repeat(" ls", 29) + "; do $v; done' log"},
-	})
 }

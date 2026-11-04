@@ -200,6 +200,7 @@ func TestJudge_RefusesSkippingGitsCommitChecks(t *testing.T) {
 	checkRefusals(t, []refusal{
 		{name: "commit --no-verify", command: "git commit --no-verify -m 'msg'", wantNamed: "--no-verify"},
 		{name: "commit -n", command: "git commit -n -m 'msg'", wantNamed: "git commit"},
+		{name: "difftool --no-verify", command: "git difftool --no-verify HEAD", wantNamed: "--no-verify"},
 		{name: "prefix of send-email --novalidate", command: "git send-email --noval x.patch", wantNamed: "--noval"},
 		{name: "-c in another case", command: "git -c Core.HooksPATH=x commit -m msg"},
 		{name: "--config-env with a separate value", command: "git --config-env core.hooksPath=X commit -m msg"},

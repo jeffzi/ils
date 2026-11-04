@@ -45,22 +45,21 @@ func TestJudge_WhenACallMayRunAnOuterBodyUnderARedirect_JudgesThatBodyUnderTheRe
 func TestJudge_WhenACallRunsABodyWhoseCommitLandsOnTheTrunk_RefusesNamingTheTrunk(t *testing.T) {
 	t.Parallel()
 
-	f, caller := standingOn(t, "main", "topic")
+	_, caller := standingOn(t, "main", "topic")
 	trunk, _ := standingOn(t, "main", "main")
 	toTrunk := "cd " + quotedPath(trunk.Dir())
 	const commits = "f() { git commit -am wip; }; "
 
 	checkJudgedIn(t, caller, []placed{
-		{name: "after a switch to the trunk", dir: f.Dir(), command: commits + "git switch main && f"},
-		{name: "after a cd into a trunk checkout", dir: f.Dir(), command: commits + toTrunk + " && f"},
+		{name: "after a switch to the trunk", command: commits + "git switch main && f"},
+		{name: "after a cd into a trunk checkout", command: commits + toTrunk + " && f"},
 		{
 			name:    "after an export of a trunk git dir",
-			dir:     f.Dir(),
 			command: commits + "export GIT_DIR=" + quotedPath(filepath.Join(trunk.Dir(), ".git")) + "; f",
 		},
-		{name: "inside a subshell", dir: f.Dir(), command: commits + "(" + toTrunk + " && f)"},
-		{name: "inside a loop", dir: f.Dir(), command: commits + "for x in a; do " + toTrunk + " && f; done"},
-		{name: "inside another function's body", dir: f.Dir(), command: commits + "g() { f; }; " + toTrunk + " && g"},
+		{name: "inside a subshell", command: commits + "(" + toTrunk + " && f)"},
+		{name: "inside a loop", command: commits + "for x in a; do " + toTrunk + " && f; done"},
+		{name: "inside another function's body", command: commits + "g() { f; }; " + toTrunk + " && g"},
 	}, expectation{outcome: guard.Refuse, named: "main"})
 }
 
