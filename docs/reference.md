@@ -129,10 +129,9 @@ When `ils branch` refuses, it has created no branch and switched nothing; at mos
 from origin. It refuses:
 
 - no name, a second word, or `--`;
-- any flag other than `--json`, `-d` or `--debug`, `--no-color`, `--help`, or `-h`; a
-  `--json=<value>`, `-d=<value>`, `--debug=<value>`, or `--no-color=<value>` whose value is not
-  `true` or `false`; and a `--help=<value>` or `-h=<value>` whose value is not a boolean such as
-  `true`, `false`, `1`, or `0`;
+- any flag other than `--json`, `-d` or `--debug`, `--no-color`, `--help`, or `-h`, and a
+  `--json=<value>`, `-d=<value>`, `--debug=<value>`, `--no-color=<value>`, `--help=<value>`, or
+  `-h=<value>` whose value is not `true` or `false`;
 - a name git cannot hold as a branch, including one that starts with `-` and `@{-1}`;
 - a name a branch already takes, locally or on origin. A branch takes the name when it has the
   same name, or collides with it by path, which git cannot hold beside it: `fix` takes `fix/help`,

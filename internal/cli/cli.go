@@ -7,12 +7,9 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/signal"
 	"runtime/debug"
 	"slices"
 	"strings"
-	"sync"
-	"syscall"
 	"time"
 
 	"charm.land/fang/v2"
@@ -370,11 +367,16 @@ func firstWord(c *cobra.Command, args []string) (string, bool) {
 }
 
 // flagRefusal turns a flag Cobra could not parse into a refusal: a value that is neither true
-// nor false is named with its flag, and an unknown flag gets the reason unknown gives for the flag
-// as it was typed. Any other error is returned as it is.
+// nor false is named with its flag, and an unknown flag, or a word that no flag can be spelled as
+// (`---x`, `--=x`), gets the reason unknown gives for the word as it was typed. Any other error is
+// returned as it is.
 func (p *parse) flagRefusal(err error, unknown func(typed string) result.Phrase) error {
 	if invalid, ok := errors.AsType[*pflag.InvalidValueError](err); ok {
 		return p.refuse(result.Say("--%s takes true or false, and %s was given", invalid.GetFlag().Name, invalid.GetValue()))
+	}
+
+	if malformed, ok := errors.AsType[*pflag.InvalidSyntaxError](err); ok {
+		return p.refuse(unknown(malformed.GetSpecifiedFlag()))
 	}
 
 	missing, ok := errors.AsType[*pflag.NotExistError](err)
@@ -453,8 +455,18 @@ func (p *parse) root() *cobra.Command {
 		p.hookCommand(),
 	)
 	p.judgeHelpWords(root)
+	addHelpFlags(root)
 
 	return root
+}
+
+// addHelpFlags gives every command under root, its help command included, a help flag that takes
+// no value but true and false, as every other flag of ils does. Cobra adds a help flag only to a
+// command that has none, and its own takes 1, 0, t and f as well.
+func addHelpFlags(root *cobra.Command) {
+	for _, c := range root.Commands() {
+		boolFlag(c.Flags(), new(strictBool), flagNames{long: flagHelp, short: flagHelpShort}, "help for "+c.Name())
+	}
 }
 
 // judgeHelpWords makes root's help command, `ils help [command]`, refuse a first word that is no
@@ -767,125 +779,6 @@ func (p *parse) land(ctx context.Context, run Command, req landing.Request) {
 	}()
 
 	p.result, p.gitDir, p.printed = &r, gitDir, shown.printed
-}
-
-// endSignals is the one listener of a run for the interrupt, the termination and the quit of the
-// process, from the start of Run to its end, so that every one of these signals is counted alike
-// whenever it lands.
-type endSignals struct {
-	// leave takes the spinner line off stderr; nil while no display runs.
-	leave func()
-	mu    sync.Mutex
-}
-
-// onSignal listens through Notify, for nothing when Notify is nil, for the interrupt, the
-// termination and the quit of the process until the returned stop is called. The first interrupt
-// or termination calls interrupt, which ends the run, so that ils prints the result of the step it
-// stopped. Every other of these signals calls the leave of the display that runs, if one does,
-// then ends the process as the signal would have had ils never listened.
-//
-// A process that started with the interrupt ignored, as a background job of a non-interactive
-// shell does, is not listened to for it: Notify would take the ignore back, so the interrupt is
-// left out and goes on being ignored.
-func (a App) onSignal(interrupt func()) (signals *endSignals, stop func()) {
-	signals = &endSignals{}
-	if a.Notify == nil {
-		return signals, func() {}
-	}
-
-	landed := make(chan os.Signal, 1)
-	done := make(chan struct{})
-
-	listened := []os.Signal{syscall.SIGTERM, syscall.SIGQUIT}
-	if !signal.Ignored(os.Interrupt) {
-		listened = append(listened, os.Interrupt)
-	}
-
-	a.Notify(landed, listened...)
-
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		sig, ok := nextSignal(landed, done)
-		if ok && sig != syscall.SIGQUIT {
-			interrupt()
-
-			sig, ok = nextSignal(landed, done)
-		}
-
-		if !ok {
-			return
-		}
-
-		signals.leaveDisplay()
-		signal.Stop(landed)
-		die(sig)
-	})
-
-	return signals, func() {
-		signal.Stop(landed)
-		close(done)
-		wg.Wait()
-	}
-}
-
-// during makes leave the call that takes the display off stderr before a signal ends the process,
-// until the returned done is called.
-func (s *endSignals) during(leave func()) (done func()) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.leave = leave
-
-	return func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-
-		s.leave = nil
-	}
-}
-
-// leaveDisplay takes the display that runs, if one does, off stderr.
-func (s *endSignals) leaveDisplay() {
-	s.mu.Lock()
-	leave := s.leave
-	s.mu.Unlock()
-
-	if leave != nil {
-		leave()
-	}
-}
-
-// nextSignal returns the next signal on signals, or false when done is closed first and no signal
-// is left.
-func nextSignal(signals <-chan os.Signal, done <-chan struct{}) (os.Signal, bool) {
-	select {
-	case sig := <-signals:
-		return sig, true
-	case <-done:
-		// stop detached the channel before closing done, so a signal that reached it before
-		// stop was called is already buffered; select picks at random when both are ready.
-		select {
-		case sig := <-signals:
-			return sig, true
-		default:
-			return nil, false
-		}
-	}
-}
-
-// die sends sig, which no channel is notified of any longer, to the process, so that it ends the
-// process as it would have had ils never listened for it; a process that ignored sig before ils
-// listened goes on ignoring it. Where sig cannot be sent, as on Windows, the process is killed.
-//
-// It panics when the process can be neither signaled nor killed.
-func die(sig os.Signal) {
-	self, err := os.FindProcess(os.Getpid())
-	if err == nil && self.Signal(sig) != nil {
-		err = self.Kill()
-	}
-	if err != nil {
-		panic(fmt.Sprintf("end ils on %v: %v", sig, err))
-	}
 }
 
 // unprinted returns lines without the ones already printed: each text in printed takes out the
