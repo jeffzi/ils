@@ -82,7 +82,7 @@ func TestStatus_WhenOnTheTrunkAndAHigherTagIsOnACommitOnlyOriginHolds_ReportsThe
 
 // fetchTagWords are the first arguments of the git call that fetches the tag named tag from origin.
 func fetchTagWords(tag string) []string {
-	return []string{"fetch", "--no-tags", "origin", "+refs/tags/" + tag + ":refs/ils/fetched/tags/" + tag}
+	return []string{"fetch", "--no-tags", "--refmap=", "origin", "+refs/tags/" + tag + ":refs/ils/fetched/*"}
 }
 
 func TestStatus_WhenOnTheTrunkAndTheFetchOfAVersionTagFails_ReportsTheFetchAndTheTag(t *testing.T) {

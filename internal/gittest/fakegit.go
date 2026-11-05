@@ -33,6 +33,9 @@ const (
 	versionEnv = "ILS_GITTEST_VERSION"
 	// failOnEnv holds the words a failing call starts with, separated by wordsSep.
 	failOnEnv = "ILS_GITTEST_FAIL_ON"
+	// failAfterOnEnv holds the words a call that fails after the real git ran starts with,
+	// separated by wordsSep.
+	failAfterOnEnv = "ILS_GITTEST_FAIL_AFTER_ON"
 	// stallOnEnv holds the words a stalling call starts with, separated by wordsSep.
 	stallOnEnv = "ILS_GITTEST_STALL_ON"
 	stallAtEnv = "ILS_GITTEST_STALL_AT"
@@ -54,7 +57,7 @@ const (
 // Fake says how the git FakeGit puts on PATH answers. A call it does not fake runs the real git.
 //
 // A call that more than one setting fakes gets the first that matches, in this order: Version,
-// FailOn, StallOn, AnswerOn.
+// FailOn, FailAfterOn, StallOn, AnswerOn.
 type Fake struct {
 	// Version, when not empty, is what a call whose arguments are exactly `--version` prints,
 	// followed by a line break. Any other call, `version` and `--version --build-options` included,
@@ -65,8 +68,13 @@ type Fake struct {
 	// Answer is what a call AnswerOn names prints, followed by a line break.
 	Answer string
 	// FailOn, when not empty, makes a call whose arguments start with these words exit with
-	// FailedCode and print FailedSaid to stderr.
+	// FailedCode and print FailedSaid to stderr. A last word that ends in `*` matches any argument
+	// that starts with what comes before the star, here and in StallOn and AnswerOn.
 	FailOn []string
+	// FailAfterOn, when not empty, makes a call whose arguments start with these words run the
+	// real git, then exit with FailedCode and print FailedSaid to stderr, as a git that did its
+	// work and failed after it does.
+	FailAfterOn []string
 	// StallOn, when not empty, makes a call whose arguments start with these words connect to the
 	// address StallAt and wait there until it is killed. A test that hands in the address of a
 	// SilentListener learns when the call is under way, and can end its context then.
@@ -166,6 +174,7 @@ func FakeGit(tb testing.TB, fake Fake) []string {
 	// call's both in the process environment and in a runner that appends both calls' settings.
 	set(versionEnv, fake.Version)
 	set(failOnEnv, strings.Join(fake.FailOn, wordsSep))
+	set(failAfterOnEnv, strings.Join(fake.FailAfterOn, wordsSep))
 	set(stallOnEnv, strings.Join(fake.StallOn, wordsSep))
 	set(stallAtEnv, fake.StallAt)
 	set(answerOnEnv, strings.Join(fake.AnswerOn, wordsSep))
@@ -273,6 +282,14 @@ func serveGit(ctx context.Context, realGit string, args []string) int {
 		return say(os.Stderr, FailedSaid, "the failure", FailedCode)
 	}
 
+	if startsWith(args, failAfterOnEnv) {
+		if code := runRealGit(ctx, realGit, args); code == BrokenCode {
+			return code
+		}
+
+		return say(os.Stderr, FailedSaid, "the failure", FailedCode)
+	}
+
 	if startsWith(args, stallOnEnv) {
 		return Hold(ctx, os.Getenv(stallAtEnv))
 	}
@@ -295,7 +312,8 @@ func say(w io.Writer, line, what string, code int) int {
 }
 
 // startsWith reports whether args start with the words the variable key holds, and false when it
-// holds none.
+// holds none. A last word that ends in `*` matches any argument that starts with what comes before
+// the star, so that a call can be named by an argument part of which is made at run time.
 func startsWith(args []string, key string) bool {
 	words := os.Getenv(key)
 	if words == "" {
@@ -303,8 +321,16 @@ func startsWith(args []string, key string) bool {
 	}
 
 	prefix := strings.Split(words, wordsSep)
+	if len(args) < len(prefix) {
+		return false
+	}
 
-	return len(args) >= len(prefix) && slices.Equal(args[:len(prefix)], prefix)
+	last := len(prefix) - 1
+	if start, star := strings.CutSuffix(prefix[last], "*"); star {
+		return slices.Equal(args[:last], prefix[:last]) && strings.HasPrefix(args[last], start)
+	}
+
+	return slices.Equal(args[:len(prefix)], prefix)
 }
 
 // Hold connects to addr and waits for the server to close the connection, which a SilentListener

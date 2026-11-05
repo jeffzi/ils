@@ -445,6 +445,70 @@ func TestMerge_WhenTheMergedPullRequestLacksCommitsOfTheBranch_RefusesNamingTheM
 	})
 }
 
+// mergedElsewhere is the number of a pull request from the topic branch merged into otherBase.
+const mergedElsewhere = 3
+
+func elsewhereMerge() forge.Change { return change(mergedElsewhere, otherBase, forge.ChangeMerged) }
+
+// mergedIntoOtherBase is a forge for a branch whose one pull request, mergedElsewhere, was merged
+// into otherBase, and that lets a branch delete through.
+func mergedIntoOtherBase() forgeFor {
+	return func(string) forgetest.Script {
+		return forgetest.Script{
+			Identity:     forgetest.Values(squashing(true)),
+			FindChanges:  listing([]forge.Change{elsewhereMerge()}),
+			DeleteBranch: []error{nil},
+		}
+	}
+}
+
+// landElsewhere keeps the tip of the topic branch as the head of pull request mergedElsewhere and
+// publishes the branch.
+func landElsewhere(f *gittest.Fixture) {
+	f.PullRef(mergedElsewhere, f.Git("rev-parse", topic))
+	f.Publish(topic)
+}
+
+// elsewhereRefusal is the run of `ils merge` on a branch whose one pull request was merged into
+// otherBase.
+func elsewhereRefusal(t *testing.T) mergeRun {
+	t.Helper()
+
+	return runMergeOn(t, setting{arrange: landElsewhere, script: mergedIntoOtherBase(), unbounded: true})
+}
+
+func TestMerge_WhenTheOnlyPullRequestWasMergedIntoAnotherBase_RefusesNamingItsBase(t *testing.T) {
+	t.Parallel()
+
+	run := elsewhereRefusal(t)
+
+	assertStoppedBy(t, run.got, result.Refused, mergeRequest())
+
+	_, reason := shown(t, run.got, run.gitDir)
+	assertSays(t, reason, expect("#"+strconv.Itoa(mergedElsewhere), otherBase))
+	assert.Check(t, is.Equal(run.written(), run.before))
+	assert.Check(t, sameOps(run.forge.Calls(), changesRead()))
+}
+
+func TestMerge_WhenAPullRequestMergedIntoTheTrunkSitsBesideOneMergedElsewhere_FinishesWithoutMerging(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		both := resuming().deleting(nil).with(func(script *forgetest.Script, _ string) {
+			script.FindChanges[0].Value = slices.Insert(script.FindChanges[0].Value, 0, elsewhereMerge())
+		})
+		arrange := func(f *gittest.Fixture) {
+			f.PullRef(mergedElsewhere, f.Git("rev-parse", topic))
+			landAndPublish(f)
+		}
+
+		run := runMergeOn(t, setting{arrange: arrange, script: both})
+
+		assertEndedBy(t, run.got, run.gitDir,
+			ended{text: resumedLine() + deletedLine() + onTrunkLine(), req: mergeRequest(), outcome: result.Done})
+		assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(run.tip, result.EndingTrunk), cmpopts.EquateEmpty()))
+	})
+}
+
 // mergeAccepted are the states that pass a check before the wait that another state fails: each
 // reaches the read of the trunk's rules, whose ruleset forbids squash merges.
 func mergeAccepted() []mergeRow {
@@ -526,7 +590,7 @@ func failedGitMerges() []failedGitRow {
 			name: "what the fetch of the head of the pull request fetched", script: merging(), ops: changesRead(),
 			outcome: result.Broke, known: true,
 			arrange: func(f *gittest.Fixture) mergeEnd {
-				end := failedGitMerge(tipPastHead(f), []string{"rev-parse", "--verify", "refs/ils/fetched/pull/" + strconv.Itoa(opened) + "/head"})
+				end := failedGitMerge(tipPastHead(f), []string{"rev-parse", "--verify", "refs/ils/fetched/*"})
 				end.from = forgetest.OpFindChanges
 
 				return end

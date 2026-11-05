@@ -432,6 +432,13 @@ func pushWriteRows() []pushRow {
 			script: reusing(passing()), want: greenAfter(pushedLine() + foundLine()),
 		},
 		{
+			name: "only pull request merged into another base",
+			script: opening(passing()).with(func(script *forgetest.Script, _ string) {
+				script.FindChanges = listing([]forge.Change{elsewhereMerge()})
+			}),
+			want: opens,
+		},
+		{
 			name: "first push of the branch, with its check still running at the first read", script: opening(running(), passing()),
 			want: opens,
 			told: []string{

@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"net/url"
@@ -454,36 +455,41 @@ const (
 // Fetch fetches one ref from origin, a branch name or a full ref, and returns the fetched sha.
 //
 // A branch name is fetched as the branch, never as a tag of the same name. The fetch is stored in a
-// ref under refs/ils/fetched/, which only ils writes, read back from there and deleted: FETCH_HEAD
-// is shared with every other fetch in the repository, which can rewrite it before it is read. A
-// fetch that fails is an ErrRefused failure when origin turned the caller away, and an ErrRemote
-// failure otherwise.
+// ref under refs/ils/fetched/ named for this call alone, read back from there and deleted, whether
+// the fetch or the read succeeds or fails: FETCH_HEAD is shared with every other fetch in the
+// worktree, and any fixed name with every fetch in the repository, another ils run in another
+// worktree included, which can lock, rewrite or delete them before they are read. A fetch that
+// fails is an ErrRefused failure when origin turned the caller away, and an ErrRemote failure
+// otherwise.
 //
 // A fetched branch also moves its remote-tracking ref, refs/remotes/origin/<branch>, to the fetched
 // sha, even when the clone's remote.origin.fetch leaves the branch out: every later read of origin's
-// branch goes through that ref, and must see the tip this fetch returned.
+// branch goes through that ref, and must see the tip this fetch returned. The fetch itself moves no
+// remote-tracking ref.
 func (r Repo) Fetch(ctx context.Context, ref string) (string, error) {
 	if !strings.HasPrefix(ref, refsPrefix) {
 		ref = BranchRefPrefix + ref
 	}
 
-	fetched := fetchedRefs + strings.TrimPrefix(ref, refsPrefix)
+	fetched := fetchedRefs + rand.Text() + "/" + strings.TrimPrefix(ref, refsPrefix)
 
 	// --no-tags: a fetch that stores a ref also stores every tag of origin on the commits it brought,
-	// tags the user never asked for.
-	_, err := r.remote(ctx, "fetch", "--no-tags", origin, "+"+ref+":"+fetched)
-	if err != nil {
-		return "", err
+	// tags the user never asked for. --refmap=: git would otherwise also move the remote-tracking ref
+	// remote.origin.fetch maps the ref to, only if it still holds the sha git read before the fetch,
+	// so a concurrent fetch of the same branch that moves it first fails this one.
+	var sha string
+
+	_, err := r.remote(ctx, "fetch", "--no-tags", "--refmap=", origin, "+"+ref+":"+fetched)
+	if err == nil {
+		sha, err = r.line(ctx, "rev-parse", "--verify", fetched)
 	}
 
-	sha, err := r.line(ctx, "rev-parse", "--verify", fetched)
-	if err != nil {
-		return "", err
-	}
-
-	// The ref has served its purpose once read; keeping it would leave one ref per fetched branch, pull
-	// request and tag in the user's repository.
-	if _, err := r.Runner.Run(ctx, "update-ref", "-d", fetched, sha); err != nil {
+	// The ref has served its purpose once read, or once the fetch or the read failed: a fetch can
+	// store it and fail after, and keeping it would leave one ref per fetch in the user's
+	// repository. Deleting a ref that is not there succeeds, and the delete runs past an ended ctx,
+	// as the cleanup of the run it ended.
+	_, deleteErr := r.Runner.Run(context.WithoutCancel(ctx), "update-ref", "-d", fetched)
+	if err = errors.Join(err, deleteErr); err != nil {
 		return "", err
 	}
 

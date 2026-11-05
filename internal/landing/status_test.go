@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -349,6 +350,37 @@ func TestStatus_WhenTheOpenPullRequestIsAgainstAnotherBase_ReportsItsBase(t *tes
 
 	report, _, _ := strings.Cut(got.text, "Next:")
 	assertSays(t, report, expect("#12", otherBase))
+}
+
+// elsewhereStatus is a status scene of a branch whose one pull request was merged into otherBase.
+func elsewhereStatus(t *testing.T) *scene {
+	t.Helper()
+
+	return statusScene(t, landElsewhere, viewing(cleanHead(), passing(), elsewhereMerge()))
+}
+
+func TestStatus_WhenTheOnlyPullRequestWasMergedIntoAnotherBase_ReportsItMergedIntoThatBase(t *testing.T) {
+	t.Parallel()
+	s := elsewhereStatus(t)
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	report, _, _ := strings.Cut(got.text, "Next:")
+	assertSays(t, report, expect("#"+strconv.Itoa(mergedElsewhere), "merged", otherBase))
+	assert.Check(t, !strings.Contains(report, "merged into "+trunk), "report %q, want no merge into %s", report, trunk)
+}
+
+func TestStatus_WhenTheOnlyPullRequestWasMergedIntoAnotherBase_EndsOnTheStepOfMergesRefusal(t *testing.T) {
+	t.Parallel()
+	refusal := elsewhereRefusal(t)
+	assertStoppedBy(t, refusal.got, result.Refused, mergeRequest())
+	refused, decoded := rendered(t, refusal.got, refusal.gitDir)
+	s := elsewhereStatus(t)
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	assert.Check(t, is.Equal(nextOf(t, got.text), nextOf(t, refused)))
+	assert.Check(t, is.Equal(got.next, decoded.Next))
 }
 
 // ---------------------------------------------------------------------------

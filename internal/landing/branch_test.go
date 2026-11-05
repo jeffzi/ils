@@ -396,7 +396,7 @@ func sharedFailedReads() []failedRead {
 		{
 			name: "the commits on origin's trunk", read: readFetchedTrunk, script: allowed(), ops: identityRead(),
 			arrange: func(*gittest.Fixture) []string {
-				return []string{"rev-parse", "--verify", "refs/ils/fetched/heads/" + trunk}
+				return []string{"rev-parse", "--verify", "refs/ils/fetched/*"}
 			},
 		},
 		{

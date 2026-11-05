@@ -162,7 +162,8 @@ this list, which `ils push` finds after the push. It refuses:
   tells you to land each branch that shares the commit first, or to remove each one that was cut
   from this branch. `ils` reads the copy on origin first, so a branch that is also behind or
   diverged from that copy gets that refusal instead;
-- a branch whose pull request already merged, or is open against another base;
+- a branch whose pull request already merged into the default branch, or is open against another
+  base;
 - a repository with no remote named `origin`, or an `origin` that cannot be reached;
 - an `origin` whose fetch and push URLs do not name one repository (they differ, or one is not an
   `https://`, `ssh://git@`, or `git@host:` repository URL);
@@ -200,6 +201,8 @@ at most it has fetched from origin. It refuses everything `ils push` refuses abo
 - a branch with no commit past origin's default branch, or with no open pull request against it;
 - a branch whose tip is behind, past, or diverged from the head of its pull request;
 - a pull request that is a draft, or open against another base;
+- a branch whose only pull request merged into another base: that never lands it, and `Next:` says
+  to run `ils push`, which opens one against the default branch;
 - a pull request whose title is not a conventional commit subject (`<type>(<scope>)!: <summary>`,
   with the scope and `!` optional);
 - a repository whose settings forbid squash merges, and a default branch whose ruleset forbids

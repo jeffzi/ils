@@ -97,6 +97,34 @@ func TestFakeGit_WhenCallStartsWithFailingWords_FailsAsAGitRead(t *testing.T) {
 	}
 }
 
+func TestFakeGit_WhenTheLastWordEndsInAStar_MatchesAnArgumentStartingWithWhatComesBefore(t *testing.T) {
+	gittest.FakeGit(t, gittest.Fake{FailOn: []string{"rev-parse", "--verify", "refs/ils/fetched/*"}})
+
+	got := callGit(t, nil, t.TempDir(), "rev-parse", "--verify", "refs/ils/fetched/Q7/heads/main")
+
+	want := faked{Stderr: gittest.FailedSaid + "\n", Code: gittest.FailedCode}
+	assert.Check(t, is.DeepEqual(got, want))
+}
+
+func TestFakeGit_WhenTheLastWordEndsInAStar_RunsTheRealGitForAnArgumentStartingOtherwise(t *testing.T) {
+	gittest.FakeGit(t, gittest.Fake{FailOn: []string{"rev-parse", "--verify", "refs/ils/fetched/*"}})
+
+	got := callGit(t, nil, t.TempDir(), "rev-parse", "--verify", "refs/heads/main")
+
+	assert.Check(t, got.Stderr != gittest.FailedSaid+"\n", "stderr = %q, what a faked failure prints", got.Stderr)
+}
+
+func TestFakeGit_WhenCallStartsWithWordsThatFailAfterward_RunsTheRealGitThenFails(t *testing.T) {
+	f := gittest.New(t, "main")
+	gittest.FakeGit(t, gittest.Fake{FailAfterOn: []string{"update-ref"}})
+
+	got := callGit(t, nil, f.Dir(), "update-ref", "refs/heads/kept", "HEAD")
+
+	want := faked{Stderr: gittest.FailedSaid + "\n", Code: gittest.FailedCode}
+	assert.Check(t, is.DeepEqual(got, want))
+	assert.Check(t, is.Equal(f.Git("rev-parse", "refs/heads/kept"), f.Git("rev-parse", "HEAD")), "the real git did not run")
+}
+
 func TestFakeGit_WhenCallStartsWithAnsweredWords_PrintsTheAnswer(t *testing.T) {
 	gittest.FakeGit(t, gittest.Fake{AnswerOn: []string{"rev-list"}, Answer: "not counts"})
 

@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -848,6 +849,60 @@ func TestRepo_Fetch_WhenItReturns_LeavesNoRefOfItsOwn(t *testing.T) {
 	assert.NilError(t, err, "Fetch(%q)", topic)
 
 	assert.Check(t, is.Equal(f.Git("for-each-ref", "refs/ils/"), ""), "refs under refs/ils/ after Fetch")
+}
+
+func TestRepo_Fetch_WhenTheReadFails_LeavesNoRefOfItsOwn(t *testing.T) {
+	// Not parallel: gittest.FakeGit sets PATH for the whole process.
+	f := gittest.New(t, trunk)
+	f.Commits(topic, "one")
+	f.Push(topic)
+	repo := newRepo(f)
+	repo.Runner.Env = append(repo.Runner.Env, gittest.FakeGit(t, gittest.Fake{FailOn: []string{"rev-parse"}})...)
+
+	got, err := repo.Fetch(t.Context(), topic)
+	assert.Assert(t, err != nil, "Fetch(%q) = %q, error = nil, want the failed read", topic, got)
+
+	assert.Check(t, is.Equal(f.Git("for-each-ref", "refs/ils/"), ""), "refs under refs/ils/ after Fetch")
+}
+
+func TestRepo_Fetch_WhenTheFetchFailsAfterStoringTheRef_LeavesNoRefOfItsOwn(t *testing.T) {
+	// Not parallel: gittest.FakeGit sets PATH for the whole process.
+	f := gittest.New(t, trunk)
+	f.Commits(topic, "one")
+	f.Push(topic)
+	repo := newRepo(f)
+	repo.Runner.Env = append(repo.Runner.Env, gittest.FakeGit(t, gittest.Fake{FailAfterOn: []string{"fetch"}})...)
+
+	got, err := repo.Fetch(t.Context(), topic)
+	assert.Assert(t, err != nil, "Fetch(%q) = %q, error = nil, want the failed fetch", topic, got)
+
+	assert.Check(t, is.Equal(f.Git("for-each-ref", "refs/ils/"), ""), "refs under refs/ils/ after Fetch")
+}
+
+func TestRepo_Fetch_WhenTwoWorktreesFetchTheSameBranchAtOnce_EachReturnsTheFetchedSHA(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.Commits(topic, "one")
+	f.Push(topic)
+	want := f.AdvanceOrigin(topic)
+	other := f.BranchWorktree(topic)
+	repos := []git.Repo{newRepo(f), {Runner: git.Runner{Dir: other, Env: f.Env()}}}
+	got := make([]string, len(repos))
+	errs := make([]error, len(repos))
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+
+	for i, repo := range repos {
+		wg.Go(func() {
+			<-start
+			got[i], errs[i] = repo.Fetch(t.Context(), topic)
+		})
+	}
+	close(start)
+	wg.Wait()
+	assert.NilError(t, errors.Join(errs...), "Fetch(%q) from two worktrees at once", topic)
+
+	assert.Check(t, is.DeepEqual(got, []string{want, want}), "Fetch(%q) from two worktrees at once", topic)
 }
 
 func TestRepo_Fetch_WhenTheFetchConfigLeavesTheBranchOut_PutsOriginsTrackingRefAtTheFetchedSHA(t *testing.T) {

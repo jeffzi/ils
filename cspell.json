@@ -119,6 +119,7 @@
     "Redir",
     "Redirs",
     "reflog",
+    "refmap",
     "refspec",
     "rerere",
     "resulttest",

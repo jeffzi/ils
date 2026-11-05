@@ -597,12 +597,13 @@ func (r *reading) readPulls(ctx context.Context) {
 		case change.State != forge.ChangeOpen:
 			r.status.PastPullRequests = append(r.status.PastPullRequests,
 				result.PastPull{Number: change.Number, State: change.State})
-			r.say(result.Say("Pull request %s: %s", result.PullRequest(change.Number), string(change.State)))
+			r.say(r.pastLine(change))
 		}
 	}
 
 	for _, change := range changes {
-		if change.State == forge.ChangeMerged && r.landed == nil {
+		// As in pullRequest, only a merge into the trunk can land the branch.
+		if change.State == forge.ChangeMerged && change.Base == r.status.Trunk && r.landed == nil {
 			r.readLanded(ctx, change)
 		}
 	}
@@ -614,6 +615,18 @@ func (r *reading) readPulls(ctx context.Context) {
 		r.say(result.Say("The branch %s has no open pull request against the trunk %s",
 			result.Branch(r.on.branch), result.Branch(r.status.Trunk)))
 	}
+}
+
+// pastLine says the closed or merged pull request change, naming the base it was merged into when
+// that is not the trunk.
+func (r *reading) pastLine(change forge.Change) result.Phrase {
+	pull := result.PullRequest(change.Number)
+	if change.State == forge.ChangeMerged && r.status.Trunk != "" && change.Base != r.status.Trunk {
+		return result.Say("Pull request %s: merged into %s and not into the trunk %s",
+			pull, result.Branch(change.Base), result.Branch(r.status.Trunk))
+	}
+
+	return result.Say("Pull request %s: %s", pull, string(change.State))
 }
 
 // readLanded fetches the head of the merged pull request change and reads whether it carries
