@@ -21,6 +21,16 @@ const (
 	start = "/home/reader/repo"
 )
 
+// marksOf returns the marks of every invocation of invocations, in order.
+func marksOf(invocations []guard.Invocation) []guard.Mark {
+	var got []guard.Mark
+	for _, inv := range invocations {
+		got = append(got, inv.Marks...)
+	}
+
+	return got
+}
+
 // readerCaller returns the caller in start whose HOME is home.
 func readerCaller() guard.Caller {
 	return guard.Caller{Home: home, Dir: start}
@@ -329,6 +339,7 @@ func TestParse_ReportsWhetherTheCommandWordIsBare(t *testing.T) {
 		{name: "backslash escaped", command: `\git status`},
 		{name: "double quoted", command: `"gh" pr list`},
 		{name: "path to the command", command: "/usr/bin/git status"},
+		{name: "leading equals sign", command: "=git status"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

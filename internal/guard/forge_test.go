@@ -172,8 +172,8 @@ func TestJudge_AllowsAGhGraphqlQuery(t *testing.T) {
 			want:    guard.Allow,
 		},
 		{
-			name:    "query searching for the word mutation",
-			command: `gh api graphql -f query='{ search(query: "mutation", type: ISSUE) { issueCount } }'`,
+			name:    "query holding mutation as a nested name",
+			command: `gh api graphql -f query='{ viewer { mutation: login } }'`,
 			want:    guard.Allow,
 		},
 		{
@@ -320,7 +320,7 @@ func TestJudge_AllowsAnyOtherIlsCommandInAnyForm(t *testing.T) {
 	})
 }
 
-func TestJudge_RefusesAGhCallThatWritesToGitHubDiscardsWorkOrPrintsTheToken(t *testing.T) {
+func TestJudge_RefusesAGhApiCallThatWritesToGitHub(t *testing.T) {
 	t.Parallel()
 
 	checkJudged(t, forgeCaller(t), []judged{
@@ -340,18 +340,46 @@ func TestJudge_RefusesAGhCallThatWritesToGitHubDiscardsWorkOrPrintsTheToken(t *t
 		},
 		{name: "api method flag as the value of a field", command: "gh api -f --method=GET -f title=x repos/x/y/issues", want: guard.Refuse},
 		{name: "api method flag as the value of a long valued flag", command: "gh api --jq --method=GET -f title=x repos/x/y/issues", want: guard.Refuse},
-		{name: "config get token", command: "gh config get oauth_token", want: guard.Refuse},
+	})
+}
+
+func TestJudge_RefusesAGhPrCheckoutThatDiscardsWork(t *testing.T) {
+	t.Parallel()
+
+	checkJudged(t, forgeCaller(t), []judged{
 		{name: "pr checkout short force", command: "gh pr checkout 12 -f", want: guard.Refuse},
 	})
 }
 
-func TestJudge_AllowsAGhCallThatWritesNothingToGitHubAndKeepsLocalWork(t *testing.T) {
+func TestJudge_RefusesAGhConfigGetThatPrintsTheToken(t *testing.T) {
+	t.Parallel()
+
+	checkJudged(t, forgeCaller(t), []judged{
+		{name: "config get token", command: "gh config get oauth_token", want: guard.Refuse},
+	})
+}
+
+func TestJudge_AllowsAGhApiCallThatWritesNothingToGitHub(t *testing.T) {
 	t.Parallel()
 
 	checkJudged(t, forgeCaller(t), []judged{
 		{name: "api read", command: "gh api repos/x/y", want: guard.Allow},
 		{name: "api explicit get in lower case attached", command: "gh api --method=get search/issues -f q=1", want: guard.Allow},
+	})
+}
+
+func TestJudge_AllowsAGhPrCheckoutThatKeepsWork(t *testing.T) {
+	t.Parallel()
+
+	checkJudged(t, forgeCaller(t), []judged{
 		{name: "pr checkout", command: "gh pr checkout 12", want: guard.Allow},
+	})
+}
+
+func TestJudge_AllowsAGhConfigGetOfAnotherKey(t *testing.T) {
+	t.Parallel()
+
+	checkJudged(t, forgeCaller(t), []judged{
 		{name: "config get another key", command: "gh config get editor", want: guard.Allow},
 	})
 }

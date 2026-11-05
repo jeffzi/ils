@@ -17,6 +17,26 @@ import (
 	"github.com/jeffzi/ils/internal/guard"
 )
 
+// linkTo returns a symbolic link to target, made in a new directory that holds no repository.
+func linkTo(t *testing.T, target string) string {
+	t.Helper()
+
+	link := filepath.Join(outsideDir(t), "link")
+	assert.NilError(t, os.Symlink(target, link))
+
+	return link
+}
+
+// subdirectory makes the directory sub inside dir, and returns its path.
+func subdirectory(t *testing.T, dir string) string {
+	t.Helper()
+
+	sub := filepath.Join(dir, "sub")
+	assert.NilError(t, os.MkdirAll(sub, 0o750))
+
+	return sub
+}
+
 // refusal is a command the guard refuses, with the text its reason must hold.
 type refusal struct {
 	name      string
@@ -552,6 +572,9 @@ func TestJudge_RefusesAGitConfigWriteOfTheHooksPathOrARemote(t *testing.T) {
 		{name: "prefix of --remove-section", command: "git config --remove remote.origin", wantNamed: "remote.origin"},
 		{name: "prefix of --type with a separate value", command: "git config --ty path core.hooksPath /x", wantNamed: "core.hooksPath"},
 		{name: "rename into core in another case", command: "git config --rename-section team CORE", wantNamed: "CORE"},
+		{name: "--unset", command: "git config --unset core.hooksPath", wantNamed: "core.hooksPath"},
+		{name: "--unset-all with a value-pattern", command: "git config --unset-all remote.origin.url x", wantNamed: "remote.origin.url"},
+		{name: "--unset-all", command: "git config --unset-all core.hooksPath", wantNamed: "core.hooksPath"},
 	})
 }
 
@@ -562,6 +585,8 @@ func TestJudge_AllowsAGitConfigCallThatLeavesTheHooksPathAndRemotes(t *testing.T
 
 	checkAllowed(t, caller, []namedCommand{
 		{name: "--get", command: "git config --get alias.p"},
+		{name: "--get-all with a value-pattern", command: "git config --get-all remote.origin.url x"},
+		{name: "--edit given two words", command: "git config --edit core.hooksPath x"},
 		{name: "get", command: "git config get remote.origin.url"},
 		{name: "key alone", command: "git config alias.p"},
 		{name: "merge driver name", command: "git config merge.x.name x"},

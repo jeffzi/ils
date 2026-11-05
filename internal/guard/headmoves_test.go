@@ -145,6 +145,7 @@ func TestJudge_WhenHeadMovesWhereTheGuardCannotFollowIt_RefusesALaterCommit(t *t
 		{name: "switch joined by ||", command: "git switch topic || " + commitCommand},
 		{name: "switch -c naming a non-literal", command: `git switch -c "$b" && ` + commitCommand},
 		{name: "switch to the previous branch", command: "git switch - && " + commitCommand},
+		{name: "switch to a branch the reflog names", command: "git switch @{-1} && " + commitCommand},
 		{name: "switch --detach", command: "git switch --detach topic && " + commitCommand},
 		{name: "switch in another git dir", command: "git -C " + quotedPath(other.Dir()) + " switch -c topic && " + commitCommand},
 		{name: "switch inside a function body", command: "f() { git switch topic && :; } && " + commitCommand},

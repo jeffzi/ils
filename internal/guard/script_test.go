@@ -21,6 +21,8 @@ func TestParse_WhenAShellRunsAStringItHolds_ParsesItsCommands(t *testing.T) {
 	}{
 		{name: "bash -c string", command: "bash -c 'git push'", want: [][]string{{"bash", "-c", "git push"}, {"git", "push"}}},
 		{name: "eval words", command: "eval git push", want: [][]string{{"eval", "git", "push"}, {"git", "push"}}},
+		{name: "-c after a long option", command: "dash --login -c 'git push'", want: [][]string{{"dash", "--login", "-c", "git push"}, {"git", "push"}}},
+		{name: "heredoc read under -s given arguments", command: "bash -s arg <<EOF\ngit push\nEOF", want: [][]string{{"bash", "-s", "arg"}, {"git", "push"}}},
 		{
 			name:    "escaped dollar in a quoted heredoc",
 			command: "bash <<'EOF'\ngit commit -m \\$x\nEOF",

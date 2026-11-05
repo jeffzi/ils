@@ -3,8 +3,6 @@
 package guard_test
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,26 +11,6 @@ import (
 
 	"github.com/jeffzi/ils/internal/guard"
 )
-
-// linkTo returns a symbolic link to target, made in a new directory that holds no repository.
-func linkTo(t *testing.T, target string) string {
-	t.Helper()
-
-	link := filepath.Join(outsideDir(t), "link")
-	assert.NilError(t, os.Symlink(target, link))
-
-	return link
-}
-
-// subdirectory makes the directory sub inside dir, and returns its path.
-func subdirectory(t *testing.T, dir string) string {
-	t.Helper()
-
-	sub := filepath.Join(dir, "sub")
-	assert.NilError(t, os.MkdirAll(sub, 0o750))
-
-	return sub
-}
 
 func dirs(invocations []guard.Invocation) []string {
 	got := make([]string, 0, len(invocations))
@@ -203,15 +181,6 @@ func TestParse_WhenASubstitutionMovesHead_ReportsHeadUnknownForTheCommandHolding
 	}
 	assert.Assert(t, is.Len(commit, 1), "Parse(%q) = %v", command, texts(got))
 	assert.Check(t, commit[0].HeadUnknown, "Parse(%q) git commit head unknown = false, want true", command)
-}
-
-func marksOf(invocations []guard.Invocation) []guard.Mark {
-	var got []guard.Mark
-	for _, inv := range invocations {
-		got = append(got, inv.Marks...)
-	}
-
-	return got
 }
 
 func TestJudge_WhenAFileIsSourced_AllowsWhatNeedsNoKnownDirectory(t *testing.T) {

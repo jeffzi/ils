@@ -90,6 +90,7 @@ func TestParse_WhenAShellCommandGitRunsCannotBeRead_MarksIt(t *testing.T) {
 	}{
 		{name: "non-literal rebase --exec value", command: `git rebase --exec "$c" HEAD~1`, want: guard.DynamicScript},
 		{name: "non-literal attached rebase -x value", command: `git rebase -x"$c" HEAD~1`, want: guard.DynamicScript},
+		{name: "rebase argument that could be an exec option", command: `git rebase "$opt" HEAD~1`, want: guard.DynamicScript},
 		{name: "non-literal core.editor value", command: `git -c core.editor="$e" commit`, want: guard.DynamicScript},
 		{name: "core.editor given by --config-env from an assignment", command: "ED=vim git --config-env=core.editor=ED commit", want: guard.DynamicScript},
 		{name: "rebase --exec past the third level", command: "eval eval eval git rebase -x true HEAD~1", index: 3, want: guard.DeepScript},

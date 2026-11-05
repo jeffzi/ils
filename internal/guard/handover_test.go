@@ -198,7 +198,7 @@ func checkHandedTool(t *testing.T, tests []handedTool) {
 	}
 }
 
-func TestJudge_WhenACommandHandsAnotherCommandCodeOrAScriptFile_Allows(t *testing.T) {
+func TestJudge_WhenFindRunsASedScriptThatNamesATool_AllowsIt(t *testing.T) {
 	t.Parallel()
 
 	checkAllowed(t, guard.Caller{Home: home, Dir: outsideDir(t)}, []namedCommand{
