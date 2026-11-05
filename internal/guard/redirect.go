@@ -14,6 +14,9 @@ import (
 
 // Redirect is one redirection of an invocation.
 type Redirect struct {
+	// Dir is the directory the shell opens Target from: the one the command carrying the redirect
+	// starts in, before anything that command runs moves it. Empty when the guard cannot tell.
+	Dir string
 	// Fd is the descriptor written before the operator, empty when none is.
 	Fd     string
 	Target Word
@@ -31,14 +34,33 @@ const (
 // before its own: those of each group or subshell around it. Each redirect applies in order, as in
 // the shell, so `2> f >&2` sends stdout to f, while `>&2 2> f` leaves it where stderr was.
 func (inv Invocation) Stdout() (Word, bool) {
-	target, toFile := filesOf(slices.Concat(inv.enclosing, inv.Redirects))[stdoutFd]
+	opened, toFile := inv.stdoutFile()
 
-	return target, toFile
+	return opened.Target, toFile
 }
 
-// filesOf returns the file each descriptor is open on once redirects apply in order.
-func filesOf(redirects []Redirect) map[string]Word {
-	files := map[string]Word{}
+// stdoutFile returns the redirect that opened the file the invocation's stdout is on, with the
+// directory the shell opened it from, and false when stdout is on no file (see Stdout).
+func (inv Invocation) stdoutFile() (Redirect, bool) {
+	opened, toFile := filesOf(slices.Concat(inv.enclosing, inv.Redirects))[stdoutFd]
+
+	return opened, toFile
+}
+
+// openedIn returns a copy of redirects, each opened from dir.
+func openedIn(redirects []Redirect, dir string) []Redirect {
+	opened := slices.Clone(redirects)
+	for i := range opened {
+		opened[i].Dir = dir
+	}
+
+	return opened
+}
+
+// filesOf returns the redirect that opened the file each descriptor is on once redirects apply in
+// order.
+func filesOf(redirects []Redirect) map[string]Redirect {
+	files := map[string]Redirect{}
 	for _, r := range redirects {
 		applyRedirect(files, r)
 	}
@@ -46,16 +68,16 @@ func filesOf(redirects []Redirect) map[string]Word {
 	return files
 }
 
-// applyRedirect updates files, the file each descriptor is open on, with the redirect r. A
-// descriptor absent from files is on no file.
-func applyRedirect(files map[string]Word, r Redirect) {
+// applyRedirect updates files, the redirect that opened the file each descriptor is on, with the
+// redirect r. A descriptor absent from files is on no file.
+func applyRedirect(files map[string]Redirect, r Redirect) {
 	switch r.Op {
 	case syntax.RdrOut, syntax.AppOut, syntax.RdrClob, syntax.AppClob:
-		files[cmp.Or(r.Fd, stdoutFd)] = r.Target
+		files[cmp.Or(r.Fd, stdoutFd)] = r
 	case syntax.RdrAll, syntax.AppAll, syntax.RdrAllClob, syntax.AppAllClob:
-		files[stdoutFd], files[stderrFd] = r.Target, r.Target
+		files[stdoutFd], files[stderrFd] = r, r
 	case syntax.RdrInOut:
-		files[cmp.Or(r.Fd, stdinFd)] = r.Target
+		files[cmp.Or(r.Fd, stdinFd)] = r
 	case syntax.RdrIn, syntax.Hdoc, syntax.DashHdoc, syntax.WordHdoc:
 		// A descriptor opened for reading only, or on a heredoc, cannot write over a file.
 		delete(files, cmp.Or(r.Fd, stdinFd))
@@ -67,9 +89,9 @@ func applyRedirect(files map[string]Word, r Redirect) {
 
 		if !isDescriptor(r.Target) {
 			// `>&word` with a word that is no descriptor sends stdout and stderr to that file.
-			files[into] = r.Target
+			files[into] = r
 			if r.Fd == "" {
-				files[stderrFd] = r.Target
+				files[stderrFd] = r
 			}
 
 			return

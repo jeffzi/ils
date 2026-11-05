@@ -36,7 +36,9 @@ Check that `CHANGELOG.md` exists at the repository root. `ils release` publishes
 section of it as the GitHub release's notes, and refuses a release commit without one. When it is
 missing, stop and ask the user to start one: a changelog commits every later release to a section
 in it, so creating it is their decision, not part of the release. Do not create it, and do not
-branch or bump anything first.
+branch or bump anything first. When the user asks you to start one, use the template in
+[A new CHANGELOG.md](references/changelog.md#a-new-changelogmd), land it through its own branch
+and pull request, then start this flow again.
 
 The step is done when you are on the trunk, the tree is clean, `CHANGELOG.md` exists, and you have
 the last tag from `ils status`.
@@ -211,6 +213,6 @@ from this skill.
 - Lock file exists but wasn't refreshed
 - Version string found in a file that wasn't bumped
 - Creating multiple commits for one release
-- Skipping the changelog, or creating a missing one
+- Skipping the changelog, or creating a missing one the user did not ask you to start
 - Reporting "checks still running" after `ils push` exited 4
 - About to run `ils merge` the user did not ask for

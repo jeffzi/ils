@@ -175,10 +175,14 @@ func firstPushStep() result.Next {
 }
 
 // pullRequest returns the branch's open pull request against the trunk, nil when it has none,
-// and the first merged pull request from the branch whose commits all landed, nil when none
-// did, with its HeadSHA the head fetched from origin. It refuses an open pull request against
-// another base, and a merged one that carries some of the branch's commits but not the ones
-// listed; with that refusal, landed is that merged pull request.
+// and the first pull request merged from the branch into the trunk whose commits all landed, nil
+// when none did, with its HeadSHA the head fetched from origin. It refuses an open pull request
+// against another base, and a merged one that carries some of the branch's commits but not the
+// ones listed; with that refusal, landed is that merged pull request.
+//
+// A pull request merged into another base never lands the branch, so it is never read as landed.
+// `ils merge` on a branch left with such a pull request and nothing open against the trunk is
+// refused naming it, where `ils push` goes on to open a pull request against the trunk.
 func pullRequest(ctx context.Context, deps Deps, req Request, b onBranch) (open, landed *forge.Change, stop *result.Result) {
 	changes, err := deps.Forge.FindChanges(ctx, b.Repo, b.branch)
 	if err != nil {
@@ -201,7 +205,7 @@ func pullRequest(ctx context.Context, deps Deps, req Request, b onBranch) (open,
 	}
 
 	for _, change := range changes {
-		if change.State != forge.ChangeMerged {
+		if change.State != forge.ChangeMerged || change.Base != b.Trunk {
 			continue
 		}
 
@@ -218,7 +222,28 @@ func pullRequest(ctx context.Context, deps Deps, req Request, b onBranch) (open,
 		}
 	}
 
+	if open == nil && req.Command == MergeCommand {
+		return nil, nil, b.mergedAside(req, changes)
+	}
+
 	return open, nil, nil
+}
+
+// mergedAside refuses a branch with no open pull request against the trunk and no merged one that
+// landed it, naming the first of changes merged into another base, and returns nil when none was:
+// those commits never reached the trunk, so the next step is the push that opens a pull request
+// against it.
+func (b onBranch) mergedAside(req Request, changes []forge.Change) *result.Result {
+	for _, change := range changes {
+		if change.State == forge.ChangeMerged && change.Base != b.Trunk {
+			return req.Refused(
+				result.Say("pull request %s from %s was merged into %s and not into the trunk %s, against which the branch has no open pull request",
+					result.PullRequest(change.Number), result.Branch(b.branch), result.Branch(change.Base), result.Branch(b.Trunk)),
+				pushAgain())
+		}
+	}
+
+	return nil
 }
 
 // elsewhereStep is the next step of a branch whose open pull request number is against a base

@@ -481,23 +481,16 @@ func (w waiter) head(ctx context.Context) (forge.Head, error) {
 	return w.deps.Forge.Head(ctx, w.pushed.Repo, query)
 }
 
-// caughtUp polls the head until it is the pushed commit and returns the last head it read.
+// caughtUp polls the head until it is the pushed commit and returns it.
 func (w waiter) caughtUp(ctx context.Context) (forge.Head, error) {
-	var last forge.Head
-
 	for {
 		head, err := w.head(ctx)
-		if err != nil {
-			return last, err
-		}
-
-		last = head
-		if head.SHA == w.pushed.SHA {
-			return last, nil
+		if err != nil || head.SHA == w.pushed.SHA {
+			return head, err
 		}
 
 		if err = pause(ctx, headPoll); err != nil {
-			return last, err
+			return head, err
 		}
 	}
 }

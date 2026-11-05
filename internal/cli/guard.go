@@ -16,8 +16,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
-	"github.com/jeffzi/ils/internal/commandline"
-	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/guard"
 	"github.com/jeffzi/ils/internal/landing"
@@ -26,9 +24,6 @@ import (
 
 const (
 	flagCwd = "--cwd"
-
-	// hookCommand reads -h itself because it disables Cobra flag parsing.
-	flagHelpShort = commandline.FlagHelpShort
 
 	cwdUsage = "The directory the command runs in"
 
@@ -235,18 +230,14 @@ func judged(req landing.Request, invocations []guard.Invocation, verdict guard.V
 	return r
 }
 
-// environment returns the variables of environ, each `NAME=value`, by name, with the value
-// git.EnvValue reads for the name: a name set twice has its last value, as bash and the commands
-// it starts read it. An entry with no `=` names nothing.
+// environment returns the variables of environ, each `NAME=value`, by name: a name set twice has
+// its last value, as bash and the commands it starts read it. An entry with no `=` names nothing.
 func environment(environ []string) map[string]string {
 	env := make(map[string]string, len(environ))
 	for _, entry := range environ {
-		name, _, ok := strings.Cut(entry, "=")
-		if !ok {
-			continue
+		if name, value, ok := strings.Cut(entry, "="); ok {
+			env[name] = value
 		}
-
-		env[name], _ = git.EnvValue(environ, name)
 	}
 
 	return env
@@ -255,7 +246,7 @@ func environment(environ []string) map[string]string {
 // underTimeLimit returns ctx with the deadline of a command from launch, which counts the time
 // limit from the launch of the app.
 func (p *parse) underTimeLimit(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithDeadline(ctx, p.app.Launch.Add(landing.TimeLimit))
+	return p.fromLaunch(ctx, landing.TimeLimit)
 }
 
 // ---------------------------------------------------------------------------
@@ -343,7 +334,6 @@ func invocationLine(inv result.Invocation) result.Phrase {
 	return result.Say("%s; directory %s; marks %s; %s", words, dir, markList, gitPart)
 }
 
-// wordText returns the text of w, or notLiteral when w is not a literal.
 func wordText(w result.Word) string {
 	if !w.Literal {
 		return notLiteral
@@ -352,7 +342,6 @@ func wordText(w result.Word) string {
 	return w.Text
 }
 
-// wordTexts returns the words one space apart, each one that is not a literal as notLiteral.
 func wordTexts(words []result.Word) string {
 	texts := make([]string, 0, len(words))
 	for _, w := range words {
@@ -362,7 +351,6 @@ func wordTexts(words []result.Word) string {
 	return strings.Join(texts, " ")
 }
 
-// orNone returns text, or none when it is empty.
 func orNone(text string) string {
 	if text == "" {
 		return "none"

@@ -6,15 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"testing"
 
 	"github.com/jeffzi/ils/internal/forge"
 )
-
-// TB is the part of testing.TB the fake reports through.
-type TB interface {
-	Helper()
-	Errorf(format string, args ...any)
-}
 
 // Op names an operation of the forge.
 type Op string
@@ -111,14 +106,14 @@ type Call struct {
 // Fake is a landing.Forge that answers from a script and records its calls.
 // It is not safe for concurrent use.
 type Fake struct {
-	tb     TB
+	tb     testing.TB
 	steps  map[Op]int
 	script Script
 	calls  []Call
 }
 
 // New returns a fake that answers from script and reports unexpected calls to tb.
-func New(tb TB, script Script) *Fake {
+func New(tb testing.TB, script Script) *Fake {
 	return &Fake{tb: tb, script: script, steps: map[Op]int{}}
 }
 

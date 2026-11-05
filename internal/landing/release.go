@@ -1,6 +1,7 @@
 package landing
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"regexp"
@@ -471,7 +472,7 @@ func (rel *releasing) redStop(req Request, waited Waited) *result.Result {
 	failed, _ := waited.Verdict.Failed()
 	commit := result.SHA(rel.commit)
 
-	if failed.Canceled {
+	if failed.Bucket == forge.BucketCanceled {
 		stop := req.Refused(result.Say("the check %s of the release commit %s was canceled", failed.Name, commit),
 			result.NextStep("rerun the canceled check %s with `gh run rerun`"+thenRunAgain, failed.Name, req.ilsCommand()))
 		stop.Lines = []result.Phrase{result.Say("Check %s was canceled: %s", failed.Name, result.URL(failed.Link))}
@@ -501,10 +502,8 @@ func (rel *releasing) pendingStop(req Request, waited Waited) *result.Result {
 	)
 
 	switch {
-	case waited.Since.IsZero() && byInterrupt:
-		reason = result.Say(runInterrupted+" while reading %s; nothing was written", readReleaseChecks)
 	case waited.Since.IsZero():
-		reason = result.Say(timeLimitEnded+" while reading %s; nothing was written", req.limitWords(), readReleaseChecks)
+		reason = cutShortReading(byInterrupt, req.limitWords(), readReleaseChecks, nothingWritten)
 	case silent(waited.Verdict) && byInterrupt:
 		reason = result.Say("no check or status had reported for %s when "+runInterrupted, commit)
 	case silent(waited.Verdict):
@@ -777,10 +776,7 @@ func (rel *releasing) carried(req Request, stop *result.Result) *result.Result {
 // payload is the release payload of req. Its verdict is result.ReleaseUnchecked until the CI gate
 // set one.
 func (rel *releasing) payload(req Request) *result.Payload {
-	verdict := rel.verdict
-	if verdict == "" {
-		verdict = result.ReleaseUnchecked
-	}
+	verdict := cmp.Or(rel.verdict, result.ReleaseUnchecked)
 
 	return &result.Payload{Release: &result.Release{
 		Version:    rel.version(),

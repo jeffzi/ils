@@ -16,7 +16,7 @@ type function struct {
 }
 
 // definition is one declaration of a function: its body, which the walk reads where it is
-// declared and again where each call of it stands, and what a call of it changes.
+// declared and again where each call of it stands.
 type definition struct {
 	body *syntax.Stmt
 	// probing reports whether a dry run of the body is under way, so that a call of the function

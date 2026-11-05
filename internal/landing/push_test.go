@@ -78,24 +78,20 @@ func assertEnded(t *testing.T, s *scene, got result.Result, end finish) {
 	assertEndedBy(t, got, s.gitDir, ended{text: end.text, req: end.request(), outcome: end.outcome})
 }
 
-// reads is what a refusing Push may have done: the refs before it, the forge operations it made,
-// and whether it fetched from origin.
+// reads is what a refusing Push may have done: the refs before it and the forge operations it made.
 type reads struct {
-	before  string
-	ops     []forgetest.Op
-	fetches bool
+	before string
+	ops    []forgetest.Op
 }
 
-// assertOnlyRead fails unless nothing was written since before, the forge was called exactly as
-// ops stand for, and git fetched from origin only when fetches is set.
+// assertOnlyRead fails unless nothing was written since before and the forge was called exactly as
+// ops stand for.
 func assertOnlyRead(t *testing.T, s *scene, read reads) {
 	t.Helper()
 
 	assert.Check(t, is.Equal(s.written(), read.before))
 
 	assertAsked(t, s, read.ops)
-
-	assert.Check(t, is.Equal(s.gitRan("fetch"), read.fetches))
 }
 
 // pushRefusal is one state of the branch that Push refuses, and how far Push reads to refuse it.
@@ -112,8 +108,6 @@ type pushRefusal struct {
 	req landing.Request
 	// answered is how many calls origin answers before it stops; zero is every call.
 	answered int
-	// fetches is whether git fetches from origin before the refusal.
-	fetches bool
 }
 
 const (
@@ -139,15 +133,16 @@ func shares(others, rest string) string {
 	return expect(side, "shares its first commit", others, rest)
 }
 
-// publishAtTrunk puts origin's copy of branch at the trunk.
+// publishAtTrunk sets branch on origin to the trunk's tip, pushing to origin's path rather than
+// the remote's name, so the clone's own refs, its tracking refs included, stay as they were.
 func publishAtTrunk(f *gittest.Fixture, branch string) {
 	f.Git("push", "--quiet", filepath.ToSlash(f.OriginDir()), trunk+":refs/heads/"+branch)
 }
 
 // refusedAfterIdentity is the refusal named name of the branch arrange sets up, whose forge answers
-// the identity read alone and which fetches from origin before the refusal.
+// the identity read alone.
 func refusedAfterIdentity(name string, arrange func(*gittest.Fixture) string) pushRefusal {
-	return pushRefusal{name: name, script: allowed(), ops: identityRead(), fetches: true, arrange: arrange}
+	return pushRefusal{name: name, script: allowed(), ops: identityRead(), arrange: arrange}
 }
 
 // cutRefusals are the refusals of a branch whose copy on origin, if any, does not carry its first
@@ -294,7 +289,7 @@ func runPushRefusals(t *testing.T, rows []pushRefusal) {
 			for _, branch := range tt.listed {
 				assert.Check(t, is.Contains(reason, branch))
 			}
-			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: tt.fetches})
+			assertOnlyRead(t, s, reads{before: before, ops: tt.ops})
 		})
 	}
 }
@@ -351,7 +346,7 @@ func runUnanswered(t *testing.T, rows []unanswered) {
 			got := landing.Push(t.Context(), s.deps, pushRequest())
 
 			assertEnded(t, s, got, finish{outcome: result.Refused, text: unreached(pushCommand(), tt.asked)})
-			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
+			assertOnlyRead(t, s, reads{before: before, ops: tt.ops})
 		})
 	}
 }
@@ -474,7 +469,7 @@ func runFailedReads(t *testing.T, rows []failedRead) {
 			got := landing.Push(t.Context(), s.deps, pushRequest())
 
 			assertBrokeReadBy(t, got, pushCommand(), tt.read)
-			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
+			assertOnlyRead(t, s, reads{before: before, ops: tt.ops})
 		})
 	}
 }

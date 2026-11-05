@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/charmbracelet/colorprofile"
+
 	"gotest.tools/v3/assert"
 
 	"github.com/jeffzi/ils/internal/landing"
@@ -169,12 +171,12 @@ func (w *watch) lines(t *testing.T) []string {
 func plainText(t *testing.T, phrase result.Phrase) string {
 	t.Helper()
 
-	text, err := result.RenderText(result.Result{
+	text, err := result.RenderStyled(result.Result{
 		Command: landing.PushCommand,
 		Outcome: result.Done,
 		Lines:   []result.Phrase{phrase},
 		Next:    result.NextNone(),
-	}, "")
+	}, "", colorprofile.NoTTY)
 	assert.NilError(t, err)
 
 	return strings.TrimSuffix(text, "\n")

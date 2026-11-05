@@ -22,7 +22,6 @@ func branchRequest(name string) landing.Request {
 	return landing.Request{Command: "branch", Words: []string{"branch", name}, Args: []string{name}}
 }
 
-// startBranch runs `ils branch name` on the scene.
 func startBranch(t *testing.T, s *scene, name string) result.Result {
 	t.Helper()
 

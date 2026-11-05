@@ -74,8 +74,7 @@ const (
 	liveContested = "contested.txt"
 	// liveJob is the one job of every workflow the suite pushes, and so the name of its check. No
 	// wording of ils holds it, so finding it in a result means the result named the check.
-	liveJob = "probe"
-	// livePassing is the step of a workflow whose check passes.
+	liveJob     = "probe"
 	livePassing = "echo passed"
 )
 
@@ -106,7 +105,6 @@ type liveRun struct {
 	code  int
 }
 
-// livePull is an open pull request of a scenario's branch, as GitHub shows it.
 type livePull struct {
 	Title  string `json:"title"`
 	Base   string `json:"baseRefName"`
@@ -225,28 +223,28 @@ func (l *liveSuite) remoteCommitIn(ctx context.Context, ref string) (string, err
 	return sha, err
 }
 
-// mustRemoteCommit is remoteCommit for a ref that must exist: it fails the test when the ref is
-// missing.
-func (l *liveSuite) mustRemoteCommit(t *testing.T, ref string) string {
+func (l *liveSuite) trunkRef() string {
+	return headRef(l.trunk)
+}
+
+// trunkTip is the commit the default branch stands on in the repository on GitHub; it fails the
+// test when GitHub has no such branch.
+func (l *liveSuite) trunkTip(t *testing.T) string {
 	t.Helper()
 
-	sha := l.remoteCommit(t, ref)
+	sha, err := l.trunkTipIn(t.Context())
+	assert.NilError(t, err)
 	if sha == "" {
-		t.Fatalf("%s has no commit on %s", l.url, ref)
+		t.Fatalf("%s has no commit on %s", l.url, l.trunkRef())
 	}
 
 	return sha
 }
 
-func (l *liveSuite) trunkRef() string {
-	return headRef(l.trunk)
-}
-
-// trunkTip is the commit the default branch stands on in the repository on GitHub.
-func (l *liveSuite) trunkTip(t *testing.T) string {
-	t.Helper()
-
-	return l.remoteCommit(t, l.trunkRef())
+// trunkTipIn is the commit the default branch stands on in the repository on GitHub, read under
+// ctx, and empty when GitHub has no such branch.
+func (l *liveSuite) trunkTipIn(ctx context.Context) (string, error) {
+	return l.remoteCommitIn(ctx, l.trunkRef())
 }
 
 func headRef(name string) string { return "refs/heads/" + name }
@@ -373,12 +371,12 @@ func (l *liveSuite) private(t *testing.T) bool {
 func (l *liveSuite) keepTrunk(t *testing.T) {
 	t.Helper()
 
-	before := l.mustRemoteCommit(t, l.trunkRef())
+	before := l.trunkTip(t)
 	t.Cleanup(func() {
 		ctx, cancel := liveCleanupContext(t)
 		defer cancel()
 
-		if sha, err := l.remoteCommitIn(ctx, l.trunkRef()); err == nil && sha == before {
+		if sha, err := l.trunkTipIn(ctx); err == nil && sha == before {
 			return
 		}
 
@@ -389,7 +387,6 @@ func (l *liveSuite) keepTrunk(t *testing.T) {
 	})
 }
 
-// changeTrunk commits files on top of the default branch and pushes it.
 func (l *liveSuite) changeTrunk(t *testing.T, files map[string]string) {
 	t.Helper()
 
@@ -488,20 +485,6 @@ func (b *liveBranch) run(t *testing.T, command string) liveRun {
 	}
 }
 
-// push runs `ils push --json` again while it is pending and returns the last result.
-func (b *liveBranch) push(t *testing.T) liveRun {
-	t.Helper()
-
-	return b.run(t, "push")
-}
-
-// merge runs `ils merge --json` again while it is pending and returns the last result.
-func (b *liveBranch) merge(t *testing.T) liveRun {
-	t.Helper()
-
-	return b.run(t, "merge")
-}
-
 // onePull returns the branch's open pull request, and stops the test unless it has exactly one.
 func (b *liveBranch) onePull(t *testing.T) livePull {
 	t.Helper()
@@ -522,7 +505,7 @@ func (b *liveBranch) pushedPull(t *testing.T, files map[string]string) string {
 	t.Helper()
 
 	b.commit(t, files)
-	b.push(t)
+	b.run(t, "push")
 
 	return strconv.Itoa(b.onePull(t).Number)
 }
@@ -678,7 +661,7 @@ func liveGreen(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "green")
 	b.commit(t, liveWorkflow(livePassing))
 
-	got := b.push(t)
+	got := b.run(t, "push")
 
 	assert.Equal(t, got.code, exitDone, "%s", got.raw)
 
@@ -699,10 +682,10 @@ func checkMergeNext(t *testing.T, l *liveSuite, got liveRun, number int) {
 func liveGreenAgain(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "green-again")
 	b.commit(t, liveWorkflow(livePassing))
-	b.push(t)
+	b.run(t, "push")
 	pull := b.onePull(t)
 
-	again := b.push(t)
+	again := b.run(t, "push")
 
 	assert.Check(t, is.Equal(again.code, exitDone), "%s", again.raw)
 	assert.Check(t, is.DeepEqual(b.onePull(t), pull))
@@ -713,7 +696,7 @@ func liveRed(t *testing.T, l *liveSuite) {
 	marker := "live marker " + b.token
 	b.commit(t, liveWorkflow(`echo "`+marker+`" && exit 1`))
 
-	got := b.push(t)
+	got := b.run(t, "push")
 
 	assert.Equal(t, got.code, exitDelivered, "%s", got.raw)
 
@@ -730,7 +713,7 @@ func liveNoCI(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "no-ci")
 	b.commit(t, nil)
 
-	got := b.push(t)
+	got := b.run(t, "push")
 	tip := b.tip(t)
 
 	assert.Equal(t, got.code, exitDone, "%s", got.raw)
@@ -770,7 +753,7 @@ func liveStatus(t *testing.T, dir string) *result.Status {
 func liveStatusOfPull(t *testing.T, l *liveSuite) {
 	b := l.branch(t, "status")
 	b.commit(t, liveWorkflow(livePassing))
-	b.push(t)
+	b.run(t, "push")
 	number := b.onePull(t).Number
 
 	got := liveStatus(t, b.dir)
@@ -800,7 +783,7 @@ func liveStartBranch(t *testing.T, l *liveSuite) {
 
 	assert.Equal(t, started.code, exitDone, "%s", started.stdout)
 	assert.Check(t, is.Equal(mustGit(t, dir, "symbolic-ref", "--short", "HEAD"), name))
-	assert.Check(t, is.Equal(mustGit(t, dir, "rev-parse", "HEAD"), l.mustRemoteCommit(t, l.trunkRef())))
+	assert.Check(t, is.Equal(mustGit(t, dir, "rev-parse", "HEAD"), l.trunkTip(t)))
 }
 
 func liveBranchTaken(t *testing.T, l *liveSuite) {
@@ -819,7 +802,7 @@ func liveAlreadyLanded(t *testing.T, l *liveSuite) {
 	mustGh(t, "pr", "merge", number, "--repo", l.slug(), "--squash")
 	before := b.remoteTip(t)
 
-	got := b.push(t)
+	got := b.run(t, "push")
 
 	assert.Equal(t, got.code, exitRefused, "%s", got.raw)
 	assert.Check(t, is.Contains(got.shown.Reason, b.name))
@@ -833,7 +816,7 @@ func liveConflict(t *testing.T, l *liveSuite) {
 	b.commit(t, map[string]string{liveContested: "the branch's line " + b.token + "\n"})
 	l.changeTrunk(t, map[string]string{liveContested: "the trunk's line " + b.token + "\n"})
 
-	got := b.push(t)
+	got := b.run(t, "push")
 
 	assert.Equal(t, got.code, exitDelivered, "%s", got.raw)
 	assert.Check(t, is.Equal(b.onePull(t).Head, b.tip(t)))
@@ -850,7 +833,7 @@ func liveCIDidNotFire(t *testing.T, l *liveSuite) {
 	// CI, and the scenario would test nothing.
 	b.waitWorkflowActive(t, liveDispatchedPath)
 
-	got := b.push(t)
+	got := b.run(t, "push")
 	tip := b.tip(t)
 
 	assert.Equal(t, got.code, exitDelivered, "%s", got.raw)
@@ -867,7 +850,7 @@ func liveTitleRefused(t *testing.T, l *liveSuite) {
 	number := b.pushedPull(t, liveWorkflow(livePassing))
 	before := l.trunkTip(t)
 
-	got := b.merge(t)
+	got := b.run(t, "merge")
 
 	assert.Equal(t, got.code, exitRefused, "%s", got.raw)
 	assert.Check(t, is.Contains(got.shown.Reason, "#"+number))
@@ -882,7 +865,7 @@ func liveMerged(t *testing.T, l *liveSuite) {
 	title, body := "feat(live): land "+b.token, "Landed by the live suite as "+b.token+"."
 	mustGh(t, "pr", "edit", number, "--repo", l.slug(), "--title", title, "--body", body)
 
-	got := b.merge(t)
+	got := b.run(t, "merge")
 
 	assert.Equal(t, got.code, exitDone, "%s", got.raw)
 	assert.Check(t, is.Equal(b.state(t, number), "MERGED"))
@@ -900,7 +883,7 @@ func liveMergedOnTheWeb(t *testing.T, l *liveSuite) {
 	mustGh(t, "pr", "merge", number, "--repo", l.slug(), "--squash")
 	before := l.trunkTip(t)
 
-	got := b.merge(t)
+	got := b.run(t, "merge")
 
 	assert.Equal(t, got.code, exitDone, "%s", got.raw)
 	assert.Check(t, is.Contains(got.lines(), "#"+number))

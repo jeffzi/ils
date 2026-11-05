@@ -7,12 +7,9 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/signal"
 	"runtime/debug"
 	"slices"
 	"strings"
-	"sync"
-	"syscall"
 	"time"
 
 	"charm.land/fang/v2"
@@ -296,7 +293,9 @@ type parse struct {
 	app     App
 	// version is read by root's Args so that `ils --version` passes with no command word.
 	version strictBool
-	debug   strictBool
+	// help is the root's own help flag, read by root's Args and RunE.
+	help  rootHelp
+	debug strictBool
 	// wait is the --wait flag of push, merge and release, the commands that register it and so the
 	// ones that may run under the long wait.
 	wait strictBool
@@ -368,11 +367,16 @@ func firstWord(c *cobra.Command, args []string) (string, bool) {
 }
 
 // flagRefusal turns a flag Cobra could not parse into a refusal: a value that is neither true
-// nor false is named with its flag, and an unknown flag gets the reason unknown gives for the flag
-// as it was typed. Any other error is returned as it is.
+// nor false is named with its flag, and an unknown flag, or a word that no flag can be spelled as
+// (`---x`, `--=x`), gets the reason unknown gives for the word as it was typed. Any other error is
+// returned as it is.
 func (p *parse) flagRefusal(err error, unknown func(typed string) result.Phrase) error {
 	if invalid, ok := errors.AsType[*pflag.InvalidValueError](err); ok {
 		return p.refuse(result.Say("--%s takes true or false, and %s was given", invalid.GetFlag().Name, invalid.GetValue()))
+	}
+
+	if malformed, ok := errors.AsType[*pflag.InvalidSyntaxError](err); ok {
+		return p.refuse(unknown(malformed.GetSpecifiedFlag()))
 	}
 
 	missing, ok := errors.AsType[*pflag.NotExistError](err)
@@ -400,20 +404,24 @@ func (p *parse) root() *cobra.Command {
 		SilenceUsage:  true,
 		// `ils completion` is refused as no command.
 		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
-		// Cobra asks Args only of a runnable command. Args refuses every run but `ils --version`,
-		// which RunE prints.
+		// Cobra asks Args only of a runnable command. Args refuses every run but `ils --help` and
+		// `ils --version`, which RunE prints.
 		Args: func(c *cobra.Command, args []string) error {
 			if word, ok := firstWord(c, args); ok {
 				return p.notRootCommand(c, word)
 			}
 
-			if !p.version {
+			if !p.version && !p.help.strictBool {
 				return p.refuse(result.Say("no command was given"))
 			}
 
 			return nil
 		},
 		RunE: func(c *cobra.Command, _ []string) error {
+			if p.help.strictBool {
+				return printHelp(c)
+			}
+
 			if _, err := fmt.Fprintf(c.OutOrStdout(), "ils version %s\n", p.app.printedVersion()); err != nil {
 				return fmt.Errorf("write the version: %w", err)
 			}
@@ -434,11 +442,11 @@ func (p *parse) root() *cobra.Command {
 	// Cobra adds the help flag only after it has found the command, and until then takes the
 	// word after a flag it does not know for that flag's value: `ils --help push` would print
 	// the help of the root.
-	root.InitDefaultHelpFlag()
+	boolFlag(root.Flags(), &p.help, flagNames{long: flagHelp, short: flagHelpShort}, "help for ils")
 	p.refuseFlags(root, notCommand)
 	root.AddCommand(
-		p.push(),
-		p.merge(),
+		p.waiting(landingHelp{word: landing.PushCommand, short: pushShort, long: pushLong, examples: pushExamples}, orDefault(p.app.runPush, landing.Push)),
+		p.waiting(landingHelp{word: landing.MergeCommand, short: mergeShort, long: mergeLong, examples: mergeExamples}, orDefault(p.app.runMerge, landing.Merge)),
 		p.landing(landingHelp{word: landing.StatusCommand, short: statusShort, long: statusLong, examples: statusExamples}, landing.Status, nil),
 		p.named(landingHelp{word: landing.BranchCommand, arg: "name", short: branchShort, long: branchLong, examples: branchExamples}, orDefault(p.app.runBranch, landing.StartBranch), nil),
 		p.release(),
@@ -446,8 +454,76 @@ func (p *parse) root() *cobra.Command {
 		p.guardCommand(),
 		p.hookCommand(),
 	)
+	p.judgeHelpWords(root)
+	addHelpFlags(root)
 
 	return root
+}
+
+// addHelpFlags gives every command under root, its help command included, a help flag that takes
+// no value but true and false, as every other flag of ils does. Cobra adds a help flag only to a
+// command that has none, and its own takes 1, 0, t and f as well.
+func addHelpFlags(root *cobra.Command) {
+	for _, c := range root.Commands() {
+		boolFlag(c.Flags(), new(strictBool), flagNames{long: flagHelp, short: flagHelpShort}, "help for "+c.Name())
+	}
+}
+
+// judgeHelpWords makes root's help command, `ils help [command]`, refuse a first word that is no
+// command as the root refuses it, and print the help of the command its words name. The command
+// is Cobra's own otherwise, so that its help text and its completion of command names stay.
+func (p *parse) judgeHelpWords(root *cobra.Command) {
+	root.InitDefaultHelpCmd()
+
+	help, _, err := root.Find([]string{"help"})
+	if err != nil || help == root {
+		panic("ils: the root has no help command")
+	}
+
+	var topic *cobra.Command
+
+	help.Args = func(_ *cobra.Command, args []string) error {
+		found, rest, err := root.Find(args)
+		if err != nil {
+			return fmt.Errorf("find the command to help with: %w", err)
+		}
+
+		if found == root && len(rest) > 0 {
+			return p.notRootCommand(root, rest[0])
+		}
+
+		topic = found
+
+		return nil
+	}
+	help.Run = nil
+	help.RunE = func(*cobra.Command, []string) error {
+		// The help of a command lists its help flag only once the flag is added.
+		topic.InitDefaultHelpFlag()
+
+		return printHelp(topic)
+	}
+}
+
+// printHelp prints the help of c.
+func printHelp(c *cobra.Command) error {
+	if err := c.Help(); err != nil {
+		return fmt.Errorf("print the help of %s: %w", c.CommandPath(), err)
+	}
+
+	return nil
+}
+
+// rootHelp is the value of the root's help flag. Cobra answers a help flag before it asks Args,
+// and so prints the help of the root for `ils verge --help`; the flag reads as false to Cobra, so
+// that root's Args refuses a word that is no command first, and root's RunE prints the help.
+type rootHelp struct {
+	strictBool
+}
+
+// String returns "false", whatever the flag was set to.
+func (*rootHelp) String() string {
+	return "false"
 }
 
 // addOutputFlags adds to root, for every command under it, the flags that change how a command
@@ -579,22 +655,6 @@ func (p *parse) addWaitFlag(c *cobra.Command) {
 	boolFlag(c.Flags(), &p.wait, flagNames{long: flagWait}, withTimeLimits(waitUsage))
 }
 
-// push returns `ils push`, which runs the push command of the app, or landing.Push when it has
-// none.
-func (p *parse) push() *cobra.Command {
-	return p.waiting(landingHelp{
-		word: landing.PushCommand, short: pushShort, long: pushLong, examples: pushExamples,
-	}, orDefault(p.app.runPush, landing.Push))
-}
-
-// merge returns `ils merge`, which runs the merge command of the app, or landing.Merge when it
-// has none.
-func (p *parse) merge() *cobra.Command {
-	return p.waiting(landingHelp{
-		word: landing.MergeCommand, short: mergeShort, long: mergeLong, examples: mergeExamples,
-	}, orDefault(p.app.runMerge, landing.Merge))
-}
-
 // waiting returns the landing command help names, with the time limits added to its long help,
 // which runs run under the long wait when --wait is true, or when stdout is a terminal and no
 // --wait is typed; --wait=false runs it under the short one.
@@ -678,6 +738,12 @@ func (p *parse) loggedGit(logger *slog.Logger) git.Runner {
 	return runner
 }
 
+// fromLaunch returns ctx with the deadline limit after the launch of the app, so that the time
+// spent before a command starts counts against its limit.
+func (p *parse) fromLaunch(ctx context.Context, limit time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithDeadline(ctx, p.app.Launch.Add(limit))
+}
+
 // land runs the landing command run for req against the repository ils runs in and its GitHub
 // origin, until req's time limit from launch, and keeps its result, the repository's git dir and
 // the step lines it printed. With debug on, the trace gets every git and gh call, the read of the
@@ -685,7 +751,7 @@ func (p *parse) loggedGit(logger *slog.Logger) git.Runner {
 // and is gone from the terminal by the time land returns, or by the time an interrupt, a
 // termination or a quit ends the process, or the stop signal of a terminal stops it.
 func (p *parse) land(ctx context.Context, run Command, req landing.Request) {
-	ctx, cancel := context.WithDeadline(ctx, p.app.Launch.Add(req.Limit()))
+	ctx, cancel := p.fromLaunch(ctx, req.Limit())
 	defer cancel()
 
 	errProfile := p.app.profile(p.app.StderrTerminal, p.noColor)
@@ -713,125 +779,6 @@ func (p *parse) land(ctx context.Context, run Command, req landing.Request) {
 	}()
 
 	p.result, p.gitDir, p.printed = &r, gitDir, shown.printed
-}
-
-// endSignals is the one listener of a run for the interrupt, the termination and the quit of the
-// process, from the start of Run to its end, so that every one of these signals is counted alike
-// whenever it lands.
-type endSignals struct {
-	// leave takes the spinner line off stderr; nil while no display runs.
-	leave func()
-	mu    sync.Mutex
-}
-
-// onSignal listens through Notify, for nothing when Notify is nil, for the interrupt, the
-// termination and the quit of the process until the returned stop is called. The first interrupt
-// or termination calls interrupt, which ends the run, so that ils prints the result of the step it
-// stopped. Every other of these signals calls the leave of the display that runs, if one does,
-// then ends the process as the signal would have had ils never listened.
-//
-// A process that started with the interrupt ignored, as a background job of a non-interactive
-// shell does, is not listened to for it: Notify would take the ignore back, so the interrupt is
-// left out and goes on being ignored.
-func (a App) onSignal(interrupt func()) (signals *endSignals, stop func()) {
-	signals = &endSignals{}
-	if a.Notify == nil {
-		return signals, func() {}
-	}
-
-	landed := make(chan os.Signal, 1)
-	done := make(chan struct{})
-
-	listened := []os.Signal{syscall.SIGTERM, syscall.SIGQUIT}
-	if !signal.Ignored(os.Interrupt) {
-		listened = append(listened, os.Interrupt)
-	}
-
-	a.Notify(landed, listened...)
-
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		sig, ok := nextSignal(landed, done)
-		if ok && sig != syscall.SIGQUIT {
-			interrupt()
-
-			sig, ok = nextSignal(landed, done)
-		}
-
-		if !ok {
-			return
-		}
-
-		signals.leaveDisplay()
-		signal.Stop(landed)
-		die(sig)
-	})
-
-	return signals, func() {
-		signal.Stop(landed)
-		close(done)
-		wg.Wait()
-	}
-}
-
-// during makes leave the call that takes the display off stderr before a signal ends the process,
-// until the returned done is called.
-func (s *endSignals) during(leave func()) (done func()) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.leave = leave
-
-	return func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-
-		s.leave = nil
-	}
-}
-
-// leaveDisplay takes the display that runs, if one does, off stderr.
-func (s *endSignals) leaveDisplay() {
-	s.mu.Lock()
-	leave := s.leave
-	s.mu.Unlock()
-
-	if leave != nil {
-		leave()
-	}
-}
-
-// nextSignal returns the next signal on signals, or false when done is closed first and no signal
-// is left.
-func nextSignal(signals <-chan os.Signal, done <-chan struct{}) (os.Signal, bool) {
-	select {
-	case sig := <-signals:
-		return sig, true
-	case <-done:
-		// stop detached the channel before closing done, so a signal that reached it before
-		// stop was called is already buffered; select picks at random when both are ready.
-		select {
-		case sig := <-signals:
-			return sig, true
-		default:
-			return nil, false
-		}
-	}
-}
-
-// die sends sig, which no channel is notified of any longer, to the process, so that it ends the
-// process as it would have had ils never listened for it; a process that ignored sig before ils
-// listened goes on ignoring it. Where sig cannot be sent, as on Windows, the process is killed.
-//
-// It panics when the process can be neither signaled nor killed.
-func die(sig os.Signal) {
-	self, err := os.FindProcess(os.Getpid())
-	if err == nil && self.Signal(sig) != nil {
-		err = self.Kill()
-	}
-	if err != nil {
-		panic(fmt.Sprintf("end ils on %v: %v", sig, err))
-	}
 }
 
 // unprinted returns lines without the ones already printed: each text in printed takes out the
@@ -887,9 +834,10 @@ func (a App) fail(err error) int {
 }
 
 const (
-	flagJSON    = commandline.FlagJSON
-	flagHelp    = commandline.FlagHelp
-	flagVersion = commandline.FlagVersion
+	flagJSON      = commandline.FlagJSON
+	flagHelp      = commandline.FlagHelp
+	flagHelpShort = commandline.FlagHelpShort
+	flagVersion   = commandline.FlagVersion
 
 	flagDebug      = commandline.FlagDebug
 	flagDebugShort = commandline.FlagDebugShort

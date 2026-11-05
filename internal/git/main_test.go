@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,14 +15,8 @@ import (
 )
 
 const (
-	// helperModeEnv makes the test binary act, instead of running tests, as the lingering helper
-	// of the mode the variable names.
-	helperModeEnv = "ILS_GIT_TEST_HELPER"
-	// helperAddrEnv holds the local address a lingering helper connects to once it has started.
+	// helperAddrEnv holds the local address the lingering copy of a standInLinger call holds.
 	helperAddrEnv = "ILS_GIT_TEST_HELPER_ADDR"
-
-	// helperLinger makes the helper hold the address in helperAddrEnv until the test ends.
-	helperLinger = "linger"
 
 	// sshStandInEnv makes the test binary act as an ssh command a user configured: standInAnswer
 	// followed by a name answers `-G <host>` with a config whose hostname is that name,
@@ -53,8 +46,10 @@ const (
 )
 
 func TestMain(m *testing.M) {
-	if mode := os.Getenv(helperModeEnv); mode != "" {
-		os.Exit(helper(mode))
+	// First: the lingering copy of a standInLinger call inherits sshStandInEnv, and would start
+	// another copy of itself as the stand-in, without end.
+	if code, served := gittest.Linger(); served {
+		os.Exit(code)
 	}
 
 	if mode, ok := standInMode(os.Args[1:]); ok {
@@ -152,53 +147,22 @@ func sshStandIn(mode string, args []string) int {
 	return 0
 }
 
-// helper plays the program of the lingering mode it is given and returns its exit code.
-func helper(mode string) int {
-	switch mode {
-	case helperLinger:
-		return gittest.Hold(context.Background(), os.Getenv(helperAddrEnv))
-	default:
-		fmt.Fprintf(os.Stderr, "helper: unknown mode %q\n", mode)
-
-		return 2
-	}
-}
-
-// waitForLingerer starts a lingering helper that inherits this process's output and waits for it,
-// so that this process is still running when the helper has connected.
+// waitForLingerer starts a lingering copy of the test binary that inherits this process's output
+// and holds the address in helperAddrEnv, and waits for it, so that this process is still running
+// when the copy has connected.
 func waitForLingerer() int {
-	lingerer, err := startLingerer()
+	lingerer, err := gittest.StartLingerer(context.Background(), os.Getenv(helperAddrEnv))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "helper: %v\n", err)
+		fmt.Fprintf(os.Stderr, "stand-in: %v\n", err)
 
 		return 1
 	}
 
 	if err = lingerer.Wait(); err != nil {
-		fmt.Fprintf(os.Stderr, "helper: wait for the lingering helper: %v\n", err)
+		fmt.Fprintf(os.Stderr, "stand-in: wait for the lingering copy: %v\n", err)
 
 		return 1
 	}
 
 	return 0
-}
-
-// startLingerer starts a lingering copy of the test binary that inherits this process's output.
-func startLingerer() (*exec.Cmd, error) {
-	binary, err := os.Executable()
-	if err != nil {
-		return nil, fmt.Errorf("find the test binary: %w", err)
-	}
-
-	//nolint:gosec // G204: the test binary starts itself; nothing here comes from outside the test.
-	lingerer := exec.CommandContext(context.Background(), binary)
-	lingerer.Env = append(os.Environ(), helperModeEnv+"="+helperLinger)
-	lingerer.Stdout = os.Stdout
-	lingerer.Stderr = os.Stderr
-
-	if err = lingerer.Start(); err != nil {
-		return nil, fmt.Errorf("start the lingering helper: %w", err)
-	}
-
-	return lingerer, nil
 }

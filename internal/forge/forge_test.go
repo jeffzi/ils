@@ -84,11 +84,10 @@ func TestVerdict_State(t *testing.T) {
 func TestVerdict_Failed(t *testing.T) {
 	t.Parallel()
 
-	failed := forge.FailedCheck{Name: "test", Link: link("test")}
-	canceled := forge.FailedCheck{Name: "build", Link: link("build"), Canceled: true}
+	const failed, canceled = "test", "build"
 	tests := []struct {
 		name    string
-		want    forge.FailedCheck
+		want    string
 		verdict forge.Verdict
 	}{
 		{
@@ -119,7 +118,7 @@ func TestVerdict_Failed(t *testing.T) {
 			got, ok := tt.verdict.Failed()
 			assert.Assert(t, ok, "Failed() = %+v, false, want a failed check", got)
 
-			assert.Check(t, is.DeepEqual(got, tt.want))
+			assert.Check(t, is.Equal(got.Name, tt.want))
 		})
 	}
 }

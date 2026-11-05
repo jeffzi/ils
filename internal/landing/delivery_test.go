@@ -432,6 +432,13 @@ func pushWriteRows() []pushRow {
 			script: reusing(passing()), want: greenAfter(pushedLine() + foundLine()),
 		},
 		{
+			name: "only pull request merged into another base",
+			script: opening(passing()).with(func(script *forgetest.Script, _ string) {
+				script.FindChanges = listing([]forge.Change{elsewhereMerge()})
+			}),
+			want: opens,
+		},
+		{
 			name: "first push of the branch, with its check still running at the first read", script: opening(running(), passing()),
 			want: opens,
 			told: []string{
@@ -520,7 +527,7 @@ func TestPush_WhenOpenChangeReportsAnExistingPullRequest_ReadsThePullRequestsOfT
 	runPushes(t, pushExistsRows())
 }
 
-func TestPush_WhenGitRefusesThePush_BrokeSayingNothingWasPushed(t *testing.T) {
+func TestPush_WhenGitRefusesThePush_PutsGitsReasonAloneOnTheRefusedLine(t *testing.T) {
 	t.Parallel()
 	// Origin's hook declines pushes alone, so every read passes and the push is refused.
 	const policy = "pushes wait for the freeze to end"
@@ -699,7 +706,7 @@ func assertMayHaveTaken(t *testing.T, s *scene, got result.Result, cut cutPush) 
 	assertSays(t, why, expect(cut.reason))
 	assert.Check(t, is.Contains(text, topic))
 	assert.Check(t, is.Contains(text, shortSHA(cut.sha)))
-	assert.Check(t, strings.HasSuffix(text, "ils push\n"), "RenderText() = %q, want it to end on `ils push`", text)
+	assert.Check(t, strings.HasSuffix(text, "ils push\n"), "RenderStyled() = %q, want it to end on `ils push`", text)
 
 	return text
 }

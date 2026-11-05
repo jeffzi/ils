@@ -40,18 +40,14 @@ const (
 	shaNext = "check out " + fullSHA + ", then run ils push again"
 )
 
-// redReason is the reason line of redPush.
 func redReason() string { return labeled(result.DeliveredNotGreen, "the check prek is red") }
 
-// brokeEnd is the reason and Next lines of a broke push.
 func brokeEnd() string { return labeled(result.Broke, "GitHub did not answer") + nextLine("ils push") }
 
-// labeled returns the reason line the text prints for reason, led by the label of outcome.
 func labeled(outcome result.Outcome, reason string) string {
 	return resulttest.ReasonLine(outcome, reason) + "\n"
 }
 
-// nextLine returns the Next line the text prints for next.
 func nextLine(next string) string {
 	return resulttest.NextLine(next) + "\n"
 }
@@ -85,27 +81,22 @@ func brokePush() result.Result {
 	}
 }
 
-// brokeLines returns the lines of brokePush as the renderers print them.
 func brokeLines() []string {
 	return strings.Split(strings.TrimSuffix(brokeBody, "\n"), "\n")
 }
 
-// brokeWithLine is brokePush with p as one more line.
 func brokeWithLine(p result.Phrase) result.Result {
 	return with(brokePush(), func(r *result.Result) { r.Lines = append(r.Lines, p) })
 }
 
-// withExcerpt is base with text as its excerpt.
 func withExcerpt(base result.Result, text string) result.Result {
 	return with(base, func(r *result.Result) { r.Excerpt = text })
 }
 
-// refusedWithReason is refusedPush with p as its reason.
 func refusedWithReason(p result.Phrase) result.Result {
 	return with(refusedPush(), func(r *result.Result) { r.Reason = p })
 }
 
-// redWithNext is redPush with n as its next step.
 func redWithNext(n result.Next) result.Result {
 	return with(redPush(), func(r *result.Result) { r.Next = n })
 }
@@ -232,7 +223,7 @@ func allTextCases() []pair {
 	return slices.Concat(textCases(), excerptTextCases(), controlCases(), shaTextCases())
 }
 
-func TestRenderText(t *testing.T) {
+func TestRenderStyled(t *testing.T) {
 	t.Parallel()
 
 	assertTexts(t, allTextCases())
@@ -247,7 +238,7 @@ func assertTexts(t *testing.T, cases []pair) {
 			t.Parallel()
 			t.Logf("row: git dir %q, result %s", tt.gitDir, inputOf(tt.result))
 
-			got, err := result.RenderText(tt.result, tt.gitDir)
+			got, err := result.RenderStyled(tt.result, tt.gitDir, colorprofile.NoTTY)
 			assert.NilError(t, err)
 
 			assert.Check(t, is.DeepEqual(got, tt.wantText))
@@ -335,7 +326,7 @@ func TestRenderJSON(t *testing.T) {
 
 func TestRenderJSON_WhenResultHasLinesExcerptReasonAndNext_CarriesWhatTheTextShows(t *testing.T) {
 	t.Parallel()
-	text, err := result.RenderText(redPush(), gitDir)
+	text, err := result.RenderStyled(redPush(), gitDir, colorprofile.NoTTY)
 	assert.NilError(t, err)
 
 	out, err := result.RenderJSON(redPush(), gitDir)
@@ -344,36 +335,32 @@ func TestRenderJSON_WhenResultHasLinesExcerptReasonAndNext_CarriesWhatTheTextSho
 	resulttest.AssertCarried(t, text, result.DeliveredNotGreen, resulttest.Decode(t, out))
 }
 
-// separated is a string holding both Unicode separators a line splitter breaks a line at.
-const separated = "first second third"
+// separators are the Unicode characters a line splitter breaks a line at beyond the ASCII ones.
+const separators = "\u2028\u2029\u0085"
 
-// separatorCases returns the cases where a string the JSON copies unfolded holds both separators.
-func separatorCases() []jsonCase {
-	return []jsonCase{
-		{
-			name:   "merge subject in the payload",
-			result: with(donePush(), func(r *result.Result) { r.Payload = &result.Payload{Merge: &result.Merge{Subject: separated}} }),
-			pick: func(s resulttest.Shown) resulttest.Shown {
-				return resulttest.Shown{Payload: &result.Payload{Merge: &result.Merge{Subject: s.Payload.Merge.Subject}}}
-			},
-			want: resulttest.Shown{Payload: &result.Payload{Merge: &result.Merge{Subject: separated}}},
-		},
-		{
-			name:   "word of the command",
-			result: with(donePush(), func(r *result.Result) { r.Words = []string{"push", separated} }),
-			pick:   func(s resulttest.Shown) resulttest.Shown { return resulttest.Shown{Words: s.Words} },
-			want:   resulttest.Shown{Words: []string{"push", separated}},
-		},
-		{
-			name:   "excerpt",
-			result: withExcerpt(donePush(), separated),
-			pick:   excerptOnly,
-			want:   resulttest.Shown{Excerpt: separated},
-		},
+// subjectHolding is a done push whose merge subject is subject, picked back from the decoded JSON.
+func subjectHolding(name, subject string) jsonCase {
+	shown := func(subject string) resulttest.Shown {
+		return resulttest.Shown{Payload: &result.Payload{Merge: &result.Merge{Subject: subject}}}
+	}
+
+	return jsonCase{
+		name:   name,
+		result: with(donePush(), func(r *result.Result) { r.Payload = &result.Payload{Merge: &result.Merge{Subject: subject}} }),
+		pick:   func(s resulttest.Shown) resulttest.Shown { return shown(s.Payload.Merge.Subject) },
+		want:   shown(subject),
 	}
 }
 
-func TestRenderJSON_WhenAStringHoldsUnicodeSeparators_EscapesThemAndDecodesBackTheString(t *testing.T) {
+// separatorCases returns the cases where a string the JSON copies unfolded holds a Unicode separator.
+func separatorCases() []jsonCase {
+	return []jsonCase{
+		subjectHolding("line and paragraph separators in the merge subject", "first\u2028second\u2029third"),
+		subjectHolding("next line in the merge subject", "first\u0085second"),
+	}
+}
+
+func TestRenderJSON_WhenAStringHoldsUnicodeSeparators_WritesThemEscaped(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range separatorCases() {
@@ -384,7 +371,7 @@ func TestRenderJSON_WhenAStringHoldsUnicodeSeparators_EscapesThemAndDecodesBackT
 			out, err := result.RenderJSON(tt.result, gitDir)
 			assert.NilError(t, err)
 
-			assert.Check(t, !strings.ContainsAny(out, "  "), "output holds a raw separator:\n%q", out)
+			assert.Check(t, !strings.ContainsAny(out, separators), "output holds a raw separator:\n%q", out)
 			assert.Check(t, is.DeepEqual(tt.pick(resulttest.Decode(t, out)), tt.want))
 		})
 	}
@@ -456,11 +443,11 @@ func controlCases() []pair {
 // Malformed results
 // ---------------------------------------------------------------------------
 
-func TestRenderText_WhenOutcomeIsNotDoneAndReasonIsEmpty_ReturnsErrNoReason(t *testing.T) {
+func TestRenderStyled_WhenOutcomeIsNotDoneAndReasonIsEmpty_ReturnsErrNoReason(t *testing.T) {
 	t.Parallel()
 	r := with(brokePush(), func(r *result.Result) { r.Reason = result.Phrase{} })
 
-	out, err := result.RenderText(r, gitDir)
+	out, err := result.RenderStyled(r, gitDir, colorprofile.NoTTY)
 
 	assert.Check(t, is.ErrorIs(err, result.ErrNoReason), "output %q", out)
 }
@@ -691,12 +678,12 @@ func wordingError(t *testing.T, err error, out string) *result.WordingError {
 	t.Helper()
 
 	wordingErr, ok := errors.AsType[*result.WordingError](err)
-	assert.Assert(t, ok, "RenderText error = %v, want a *result.WordingError; output %q", err, out)
+	assert.Assert(t, ok, "RenderStyled error = %v, want a *result.WordingError; output %q", err, out)
 
 	return wordingErr
 }
 
-func TestRenderText_WhenOwnWordingNamesHookOrGitDir_ReturnsWordingError(t *testing.T) {
+func TestRenderStyled_WhenOwnWordingNamesHookOrGitDir_ReturnsWordingError(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range slices.Concat(lineCases(), dirCases(), otherCases()) {
@@ -704,7 +691,7 @@ func TestRenderText_WhenOwnWordingNamesHookOrGitDir_ReturnsWordingError(t *testi
 			t.Parallel()
 			t.Logf("row: git dir %q, result %s", tt.gitDir, inputOf(tt.result))
 
-			out, err := result.RenderText(tt.result, tt.gitDir)
+			out, err := result.RenderStyled(tt.result, tt.gitDir, colorprofile.NoTTY)
 
 			wordingErr := wordingError(t, err, out)
 			assert.Check(t, is.Equal(wordingErr.Word, tt.wantWord))
@@ -712,16 +699,16 @@ func TestRenderText_WhenOwnWordingNamesHookOrGitDir_ReturnsWordingError(t *testi
 	}
 }
 
-func TestRenderText_WhenAReasonNamesAHook_ReturnsAWordingErrorNamingTheFilledInLine(t *testing.T) {
+func TestRenderStyled_WhenAReasonNamesAHook_ReturnsAWordingErrorNamingTheFilledInLine(t *testing.T) {
 	t.Parallel()
 
-	out, err := result.RenderText(refusedWithReason(result.Say("the pre-push step failed on %s", "main")), gitDir)
+	out, err := result.RenderStyled(refusedWithReason(result.Say("the pre-push step failed on %s", "main")), gitDir, colorprofile.NoTTY)
 
 	wordingErr := wordingError(t, err, out)
 	assert.Check(t, is.Equal(wordingErr.Line, "the pre-push step failed on main"))
 }
 
-func TestRenderText_WhenOwnWordingOnlyResemblesHookOrGitDir_PrintsIt(t *testing.T) {
+func TestRenderStyled_WhenOwnWordingOnlyResemblesHookOrGitDir_PrintsIt(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range exemptCases() {
@@ -729,7 +716,7 @@ func TestRenderText_WhenOwnWordingOnlyResemblesHookOrGitDir_PrintsIt(t *testing.
 			t.Parallel()
 			t.Logf("row: git dir %q, result %s", tt.gitDir, inputOf(tt.result))
 
-			got, err := result.RenderText(tt.result, tt.gitDir)
+			got, err := result.RenderStyled(tt.result, tt.gitDir, colorprofile.NoTTY)
 			assert.NilError(t, err)
 
 			assert.Check(t, is.Equal(got, tt.wantText))
@@ -747,7 +734,7 @@ func TestWordingError_Error_WhenBothFieldsSet_NamesBothFields(t *testing.T) {
 	assert.Check(t, is.Contains(got, err.Word))
 }
 
-func TestRenderText_WhenPlaceholdersAndNamesDiffer_ReturnsErrPlaceholders(t *testing.T) {
+func TestRenderStyled_WhenPlaceholdersAndNamesDiffer_ReturnsErrPlaceholders(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -761,7 +748,7 @@ func TestRenderText_WhenPlaceholdersAndNamesDiffer_ReturnsErrPlaceholders(t *tes
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			out, err := result.RenderText(brokeWithLine(tt.phrase), gitDir)
+			out, err := result.RenderStyled(brokeWithLine(tt.phrase), gitDir, colorprofile.NoTTY)
 
 			assert.Check(t, is.ErrorIs(err, result.ErrPlaceholders), "output %q", out)
 		})

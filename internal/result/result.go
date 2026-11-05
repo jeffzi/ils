@@ -15,7 +15,8 @@ import (
 // Outcome is how a command ended.
 type Outcome int
 
-// The outcomes, one per reaction a caller can have.
+// Done through DeliveredNotGreen are the outcomes, one per reaction a caller
+// can have; ExitCode gives each its own exit code.
 const (
 	Done Outcome = iota
 	Broke
@@ -117,22 +118,20 @@ func Branch(name string) Name {
 // Branches marks each of names as a branch and joins them as "a, b and c",
 // in the order given.
 func Branches(names []string) Name {
-	return listed(names, kindBranch, func(i int) string {
-		if i == len(names)-1 {
-			return " and "
-		}
-
-		return ", "
-	})
+	return listed(names, kindBranch, ", ", " and ")
 }
 
 // listed returns texts as names of kind k, each but the first preceded by
-// the wording before(i) gives for its index i.
-func listed(texts []string, k kind, before func(i int) string) Name {
+// the wording sep, and the last by the wording last when there are two or more.
+func listed(texts []string, k kind, sep, last string) Name {
 	var list Name
 	for i, text := range texts {
-		if i > 0 {
-			list.spans = append(list.spans, span{text: before(i), kind: kindWording})
+		switch {
+		case i == 0:
+		case i == len(texts)-1:
+			list.spans = append(list.spans, span{text: last, kind: kindWording})
+		default:
+			list.spans = append(list.spans, span{text: sep, kind: kindWording})
 		}
 
 		list.spans = append(list.spans, span{text: text, kind: k})
@@ -160,7 +159,7 @@ func SHA(sha string) Name {
 // SHAs marks each of shas as a commit SHA and joins them with spaces, in the
 // order given, as a git command takes them.
 func SHAs(shas []string) Name {
-	return listed(shas, kindSHA, func(int) string { return " " })
+	return listed(shas, kindSHA, " ", " ")
 }
 
 // URL marks url as a URL.

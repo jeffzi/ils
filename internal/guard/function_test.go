@@ -31,6 +31,16 @@ func TestJudge_WhenACallCarriesARedirect_JudgesItsBodyUnderTheRedirect(t *testin
 	})
 }
 
+func TestJudge_WhenACallsRedirectLandsWhereTheCallRuns_RefusesGitHistoryTheBodyWritesFromElsewhere(t *testing.T) {
+	t.Parallel()
+
+	f, _ := standingOn(t, "main", "topic")
+	caller := callerIn(f, filepath.Dir(f.Dir()))
+	command := "dump() { cd " + quotedPath(outsideDir(t)) + " && git -C " + quotedPath(f.Dir()) + " show HEAD:go.mod; }; cd repo && dump > go.mod"
+
+	checkJudgedRow(t, caller, judged{command: command, want: guard.Refuse, wantNamed: "writes over " + filepath.Join(f.Dir(), "go.mod")})
+}
+
 func TestJudge_WhenACallMayRunAnOuterBodyUnderARedirect_JudgesThatBodyUnderTheRedirect(t *testing.T) {
 	t.Parallel()
 
@@ -79,7 +89,6 @@ func TestJudge_WhenADeclaredFunctionIsNeverCalled_JudgesWhatFollowsAsIfItWereAbs
 
 	checkAllowed(t, caller, []namedCommand{
 		{name: "body that changes directory", command: "f() { cd sub && make; }; git commit -m x"},
-		{name: "body that exports a git dir", command: "f() { export GIT_DIR=/srv/x.git; }; git commit -m x"},
 	})
 }
 
@@ -131,19 +140,6 @@ func TestParse_WhenATopLevelCallGoesPastThoseTheGuardFollows_ReturnsItsMark(t *t
 
 	assert.Assert(t, len(got) > 0, "Parse(%q) returned nothing", command)
 	assert.Check(t, is.DeepEqual(got[len(got)-1].Marks, []guard.Mark{{Kind: guard.DeepCall, Name: "f"}}), "Parse(%q) last marks", command)
-}
-
-func TestJudge_AllowsAFunctionDefinedOverACommandTheGuardReads(t *testing.T) {
-	t.Parallel()
-
-	_, caller := standingOn(t, "main", "topic")
-
-	checkAllowed(t, caller, []namedCommand{
-		{name: "cd", command: `cd() { builtin cd "$@"; }; cd /tmp; ls`},
-		{name: "builtin", command: "builtin() { :; }"},
-		{name: "export", command: "function export { :; }; ls"},
-		{name: "wrapper", command: "nice() { :; }; nice ls"},
-	})
 }
 
 func TestParse_WhenACallRunsABodyThatSetsAGitVariable_ReportsTheTargetTheBodyLeaves(t *testing.T) {

@@ -250,6 +250,7 @@ type VerdictQuery struct {
 // VerdictState is the summary of a verdict.
 type VerdictState string
 
+// The summaries of a verdict.
 const (
 	// VerdictGreen is at least one deciding check, each one passed or skipped.
 	VerdictGreen VerdictState = "green"
@@ -261,14 +262,6 @@ const (
 	// VerdictNone is no deciding check at all.
 	VerdictNone VerdictState = "none"
 )
-
-// FailedCheck is the deciding check that makes a verdict red.
-type FailedCheck struct {
-	Name string
-	Link string
-	// Canceled reports whether the check was canceled and did not fail.
-	Canceled bool
-}
 
 // Verdict is what the checks say about one commit of a change.
 type Verdict struct {
@@ -323,15 +316,13 @@ func (v Verdict) State() VerdictState {
 }
 
 // Failed returns the first of FailedChecks, and whether there is one.
-func (v Verdict) Failed() (FailedCheck, bool) {
+func (v Verdict) Failed() (Check, bool) {
 	failed := v.FailedChecks()
 	if len(failed) == 0 {
-		return FailedCheck{}, false
+		return Check{}, false
 	}
 
-	check := failed[0]
-
-	return FailedCheck{Name: check.Name, Link: check.Link, Canceled: check.Bucket == BucketCanceled}, true
+	return failed[0], true
 }
 
 // FailedChecks returns the deciding checks that failed or were canceled, in the order of Checks.

@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"net/url"
@@ -158,7 +159,7 @@ type PushError struct {
 // Error names the refused ref, a branch by its short name and any other ref in full, followed by
 // its Detail.
 func (e *PushError) Error() string {
-	return fmt.Sprintf("push of %s refused: %s", strings.TrimPrefix(e.Ref, headsRef), e.Detail())
+	return fmt.Sprintf("push of %s refused: %s", strings.TrimPrefix(e.Ref, BranchRefPrefix), e.Detail())
 }
 
 // Detail returns git's reason and the Output, one per line, leaving out either when it is empty.
@@ -218,6 +219,9 @@ type OriginURLs struct {
 // host. A plain ssh missing from PATH is a *child.ToolMissingError; an ssh that exits non-zero is a
 // *child.ExitError. A URL that does not parse, or an ssh URL whose host starts with a dash, which
 // git refuses to connect to, is an *OriginError, and both raw URLs are still returned.
+//
+// When the fetch and push URLs are the same, the URL is read once, so its failure is returned once;
+// when they differ, the error holds the failure of each side that failed.
 func (r Repo) OriginURLs(ctx context.Context) (OriginURLs, error) {
 	fetchURL, err := r.line(ctx, "remote", "get-url", origin)
 	if err != nil {
@@ -230,6 +234,10 @@ func (r Repo) OriginURLs(ctx context.Context) (OriginURLs, error) {
 	}
 
 	fetch, fetchErr := r.parseOrigin(ctx, fetchURL)
+	if pushURL == fetchURL {
+		return OriginURLs{Fetch: fetch, Push: fetch, FetchURL: fetchURL, PushURL: pushURL}, fetchErr
+	}
+
 	push, pushErr := r.parseOrigin(ctx, pushURL)
 
 	return OriginURLs{Fetch: fetch, Push: push, FetchURL: fetchURL, PushURL: pushURL}, errors.Join(fetchErr, pushErr)
@@ -280,7 +288,7 @@ func (r Repo) Trunk(ctx context.Context) (string, error) {
 			continue
 		}
 
-		if branch, isBranch := strings.CutPrefix(ref, headsRef); isBranch {
+		if branch, isBranch := strings.CutPrefix(ref, BranchRefPrefix); isBranch {
 			return branch, nil
 		}
 	}
@@ -292,7 +300,7 @@ func (r Repo) Trunk(ctx context.Context) (string, error) {
 //
 // An origin that does not answer is an ErrRemote failure, never an absent branch.
 func (r Repo) RemoteBranch(ctx context.Context, name string) (sha string, found bool, err error) {
-	ref := headsRef + name
+	ref := BranchRefPrefix + name
 
 	result, err := r.remote(ctx, "ls-remote", "--exit-code", origin, ref)
 	if exited(err, absentCode) {
@@ -373,7 +381,7 @@ func (r Repo) BranchesTaking(ctx context.Context, name string) (local, onOrigin 
 
 	for line := range strings.SplitSeq(originRefs.Stdout, "\n") {
 		_, ref, _ := strings.Cut(line, "\t")
-		if branch, isBranch := strings.CutPrefix(ref, headsRef); isBranch && takes(branch, name) {
+		if branch, isBranch := strings.CutPrefix(ref, BranchRefPrefix); isBranch && takes(branch, name) {
 			onOrigin = append(onOrigin, branch)
 		}
 	}
@@ -447,40 +455,45 @@ const (
 // Fetch fetches one ref from origin, a branch name or a full ref, and returns the fetched sha.
 //
 // A branch name is fetched as the branch, never as a tag of the same name. The fetch is stored in a
-// ref under refs/ils/fetched/, which only ils writes, read back from there and deleted: FETCH_HEAD
-// is shared with every other fetch in the repository, which can rewrite it before it is read. A
-// fetch that fails is an ErrRefused failure when origin turned the caller away, and an ErrRemote
-// failure otherwise.
+// ref under refs/ils/fetched/ named for this call alone, read back from there and deleted, whether
+// the fetch or the read succeeds or fails: FETCH_HEAD is shared with every other fetch in the
+// worktree, and any fixed name with every fetch in the repository, another ils run in another
+// worktree included, which can lock, rewrite or delete them before they are read. A fetch that
+// fails is an ErrRefused failure when origin turned the caller away, and an ErrRemote failure
+// otherwise.
 //
 // A fetched branch also moves its remote-tracking ref, refs/remotes/origin/<branch>, to the fetched
 // sha, even when the clone's remote.origin.fetch leaves the branch out: every later read of origin's
-// branch goes through that ref, and must see the tip this fetch returned.
+// branch goes through that ref, and must see the tip this fetch returned. The fetch itself moves no
+// remote-tracking ref.
 func (r Repo) Fetch(ctx context.Context, ref string) (string, error) {
 	if !strings.HasPrefix(ref, refsPrefix) {
-		ref = headsRef + ref
+		ref = BranchRefPrefix + ref
 	}
 
-	fetched := fetchedRefs + strings.TrimPrefix(ref, refsPrefix)
+	fetched := fetchedRefs + rand.Text() + "/" + strings.TrimPrefix(ref, refsPrefix)
 
 	// --no-tags: a fetch that stores a ref also stores every tag of origin on the commits it brought,
-	// tags the user never asked for.
-	_, err := r.remote(ctx, "fetch", "--no-tags", origin, "+"+ref+":"+fetched)
-	if err != nil {
+	// tags the user never asked for. --refmap=: git would otherwise also move the remote-tracking ref
+	// remote.origin.fetch maps the ref to, only if it still holds the sha git read before the fetch,
+	// so a concurrent fetch of the same branch that moves it first fails this one.
+	var sha string
+
+	_, err := r.remote(ctx, "fetch", "--no-tags", "--refmap=", origin, "+"+ref+":"+fetched)
+	if err == nil {
+		sha, err = r.line(ctx, "rev-parse", "--verify", fetched)
+	}
+
+	// The ref has served its purpose once read, or once the fetch or the read failed: a fetch can
+	// store it and fail after, and keeping it would leave one ref per fetch in the user's
+	// repository. Deleting a ref that is not there succeeds, and the delete runs past an ended ctx,
+	// as the cleanup of the run it ended.
+	_, deleteErr := r.Runner.Run(context.WithoutCancel(ctx), "update-ref", "-d", fetched)
+	if err = errors.Join(err, deleteErr); err != nil {
 		return "", err
 	}
 
-	sha, err := r.line(ctx, "rev-parse", "--verify", fetched)
-	if err != nil {
-		return "", err
-	}
-
-	// The ref has served its purpose once read; keeping it would leave one ref per fetched branch, pull
-	// request and tag in the user's repository.
-	if _, err := r.Runner.Run(ctx, "update-ref", "-d", fetched, sha); err != nil {
-		return "", err
-	}
-
-	if branch, isBranch := strings.CutPrefix(ref, headsRef); isBranch {
+	if branch, isBranch := strings.CutPrefix(ref, BranchRefPrefix); isBranch {
 		if _, err := r.Runner.Run(ctx, "update-ref", remotesRef+branch, sha); err != nil {
 			return "", err
 		}
@@ -558,13 +571,13 @@ func (r Repo) Push(ctx context.Context, name, sha string) error {
 		return err
 	}
 
-	return r.push(ctx, sha, headsRef+name)
+	return r.push(ctx, sha, BranchRefPrefix+name)
 }
 
 // setUpstream sets origin's branch name as the upstream of the local branch name, as `git push -u`
 // does, which git skips for a push whose source is a commit rather than a branch.
 func (r Repo) setUpstream(ctx context.Context, name string) error {
-	for _, setting := range [][2]string{{"remote", origin}, {"merge", headsRef + name}} {
+	for _, setting := range [][2]string{{"remote", origin}, {"merge", BranchRefPrefix + name}} {
 		if _, err := r.Runner.Run(ctx, "config", "branch."+name+"."+setting[0], setting[1]); err != nil {
 			return fmt.Errorf("set the upstream of %s: %w", name, err)
 		}

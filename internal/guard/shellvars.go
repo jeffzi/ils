@@ -411,7 +411,8 @@ func (v shellVars) forget(names ...string) shellVars {
 	return v
 }
 
-// forgetAll returns v with every variable unknown.
+// forgetAll returns v with every variable unknown. It leaves held, unread and function as they
+// were.
 func (v shellVars) forgetAll() shellVars {
 	v.known = nil
 

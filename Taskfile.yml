@@ -4,7 +4,6 @@ vars:
   BIN: bin/ils{{exeExt}}
   CLEAN_PATHS:
     - bin
-    - dist
     - coverage.out
     - coverage.html
 

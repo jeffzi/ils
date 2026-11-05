@@ -174,7 +174,6 @@ func (a flatAttrs) Of(record slog.Record) []slog.Attr {
 	return attrs
 }
 
-// grouped returns attr with its key under the groups open now.
 func (a flatAttrs) grouped(attr slog.Attr) slog.Attr {
 	attr.Key = a.prefix + attr.Key
 

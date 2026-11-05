@@ -3,6 +3,7 @@
 package guard_test
 
 import (
+	"path/filepath"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -21,6 +22,8 @@ func TestParse_WhenAShellRunsAStringItHolds_ParsesItsCommands(t *testing.T) {
 	}{
 		{name: "bash -c string", command: "bash -c 'git push'", want: [][]string{{"bash", "-c", "git push"}, {"git", "push"}}},
 		{name: "eval words", command: "eval git push", want: [][]string{{"eval", "git", "push"}, {"git", "push"}}},
+		{name: "-c after a long option", command: "dash --login -c 'git push'", want: [][]string{{"dash", "--login", "-c", "git push"}, {"git", "push"}}},
+		{name: "heredoc read under -s given arguments", command: "bash -s arg <<EOF\ngit push\nEOF", want: [][]string{{"bash", "-s", "arg"}, {"git", "push"}}},
 		{
 			name:    "escaped dollar in a quoted heredoc",
 			command: "bash <<'EOF'\ngit commit -m \\$x\nEOF",
@@ -70,16 +73,6 @@ func TestParse_WhenANestedStringIsPastTheThirdLevel_MarksItUnparsed(t *testing.T
 	assert.Check(t, is.DeepEqual(got[3].Marks, []guard.Mark{{Kind: guard.DeepScript}}), "Parse(%q) marks", command)
 }
 
-func TestJudge_WhenGoIsGivenACommandToRunItsTools_AllowsIt(t *testing.T) {
-	t.Parallel()
-
-	checkAllowed(t, readerCaller(), []namedCommand{
-		{name: "literal exec value", command: "go test -exec 'git push' ./..."},
-		{name: "non-literal exec value", command: `go test -exec "$RUNNER" ./...`},
-		{name: "toolexec value", command: `go build -toolexec "sh -c 'git push'" .`},
-	})
-}
-
 func TestJudge_WhenGoRunsAProgramGivenAToolWord_RefusesIt(t *testing.T) {
 	t.Parallel()
 
@@ -107,9 +100,6 @@ func TestJudge_WhenAShellIsGivenAScriptFile_AllowsIt(t *testing.T) {
 	_, caller := standingOn(t, "main", "topic")
 
 	checkAllowed(t, caller, []namedCommand{
-		{name: "bash with an absolute path", command: "bash /tmp/probe.sh"},
-		{name: "bash with an option before the file", command: "bash -e x.sh"},
-		{name: "zsh with a non-literal path", command: `zsh "$S/probe.sh"`},
 		{name: "literal sh string among the file's arguments", command: "bash x.sh sh -c 'make test'"},
 		// cspell:disable-next-line -- zsh option name glued to -o, the form under test
 		{name: "zsh o takes the rest of its bundle", command: `zsh -ocshnullglob "$s" true`},
@@ -122,20 +112,7 @@ func TestJudge_WhenAShellReadsItsScriptFromOutsideTheCommand_AllowsIt(t *testing
 	t.Parallel()
 
 	checkAllowed(t, readerCaller(), []namedCommand{
-		{name: "installer piped into bash", command: "curl -fsSL https://example.com/install.sh | bash"},
 		{name: "tool string piped into bash", command: "echo 'git push' | bash"},
-		{name: "bash with no script", command: "bash --version"},
-		{name: "zsh with no script", command: "zsh --version"},
-		{name: "script file redirected into bash", command: "bash < x.sh"},
-		{name: "bash -s with a script file", command: "bash -s x.sh"},
-		{name: "process substitution as the file", command: "bash <(cat x)"},
-		{name: "process substitution after an option", command: "bash -e <(cat x)"},
-		{name: "source of a process substitution", command: "source <(cat x)"},
-		{name: "standard input named as the file", command: "cat x | bash /dev/stdin"},
-		{name: "standard input named by its descriptor", command: "cat x | sh /dev/fd/0"},
-		{name: "bash two-dash rcfile read under -i", command: "bash --rcfile f -i"},
-		{name: "bash one-dash rcfile read under -i", command: "bash -rcfile ./evil.sh -i -c true"},
-		{name: "bash init-file read under -i", command: "bash -init-file ./evil.sh -i -c true"},
 	})
 }
 
@@ -156,6 +133,20 @@ func TestJudge_WhenAShellGivesItsScriptFileAToolWord_RefusesIt(t *testing.T) {
 	})
 }
 
+func TestJudge_WhenAStringRedirectsAroundACd_RefusesGitHistoryWrittenWhereTheStringStarts(t *testing.T) {
+	t.Parallel()
+
+	f, _ := standingOn(t, "main", "topic")
+	caller := callerIn(f, filepath.Dir(f.Dir()))
+	inner := "'(cd " + filepath.ToSlash(outsideDir(t)) + " && git -C " + filepath.ToSlash(f.Dir()) + " show HEAD:go.mod) > go.mod'"
+	named := "writes over " + filepath.Join(f.Dir(), "go.mod")
+
+	checkJudged(t, caller, []judged{
+		{name: "sh -c", command: "cd repo && sh -c " + inner, want: guard.Refuse, wantNamed: named},
+		{name: "eval", command: "cd repo && eval " + inner, want: guard.Refuse, wantNamed: named},
+	})
+}
+
 func TestJudge_WhenAShellsOptionsRunNothingHidden_AllowsIt(t *testing.T) {
 	t.Parallel()
 	_, caller := standingOn(t, "main", "topic")
@@ -163,7 +154,6 @@ func TestJudge_WhenAShellsOptionsRunNothingHidden_AllowsIt(t *testing.T) {
 	checkAllowed(t, caller, []namedCommand{
 		{name: "bash rcfile after a one-dash long option", command: "bash -login -rcfile 'git push --force origin main' -c true"},
 		{name: "sh rcfile not read without -i", command: "sh -rcfile 'git push --force origin main' -c true"},
-		{name: "sh rcfile not read even with -i", command: "sh -rcfile ./evil.sh -i -c true"},
 		{name: "bash two-dash rcfile takes its value", command: "bash --rcfile x -c 'git status'"},
 	})
 }

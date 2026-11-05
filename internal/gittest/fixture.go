@@ -257,7 +257,7 @@ func (f *Fixture) OriginGit(args ...string) string {
 // originURL returns the bare origin's location in the slash form git accepts on every platform.
 func (f *Fixture) originURL() string { return filepath.ToSlash(f.originDir) }
 
-func (f *Fixture) trunkRef() string { return "refs/heads/" + f.trunk }
+func (f *Fixture) trunkRef() string { return git.BranchRefPrefix + f.trunk }
 
 func (f *Fixture) run(dir string, args ...string) string {
 	f.tb.Helper()

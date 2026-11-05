@@ -30,13 +30,6 @@ func TestTB_WhenAReportIsNotFatal_RecordsItWithoutEndingTheGoroutine(t *testing.
 			wantMessages: []string{"failed 2"},
 			wantFailed:   true,
 		},
-		{name: "Log with no text", report: func(spy *failtest.TB) { spy.Log("") }, wantMessages: []string{""}},
-		{
-			name:         "Errorf with no text",
-			report:       func(spy *failtest.TB) { spy.Errorf("") },
-			wantMessages: []string{""},
-			wantFailed:   true,
-		},
 		{name: "Fail", report: func(spy *failtest.TB) { spy.Fail() }, wantFailed: true},
 	}
 	for _, tt := range tests {

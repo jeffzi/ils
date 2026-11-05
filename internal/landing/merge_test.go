@@ -223,7 +223,6 @@ func assertStoppedBeforeWait(t *testing.T, tt mergeRow, end mergeEnd, run mergeR
 	assert.Check(t, is.DeepEqual(mergePayload(t, run.got), want, cmpopts.EquateEmpty()))
 
 	assert.Check(t, sameCalls(run.forge.Calls(), mergeAsked(tt.ops)))
-	assert.Check(t, run.gitRan("fetch"), "git did not fetch from origin before the run stopped")
 }
 
 // mergeRowOn runs `ils merge` on a scene of tt's own, as runMergeOn does, and returns how the run
@@ -394,10 +393,10 @@ func pullRequestStops() []mergeRow {
 // titleStops are the refusals of pull request 12 by its title.
 func titleStops() []mergeRow {
 	titles := []struct{ name, title string }{
-		{name: "no colon", title: "fix-thing"},
 		{name: "uppercase type", title: "Feat: x"},
 		{name: "empty scope", title: "feat(): x"},
 		{name: "nested scope", title: "fix(a(b)): x"},
+		{name: "no colon", title: "feat x"},
 		{name: "no space after colon", title: "feat:x"},
 		{name: "two spaces after colon", title: "feat:  x"},
 	}
@@ -443,6 +442,70 @@ func TestMerge_WhenTheMergedPullRequestLacksCommitsOfTheBranch_RefusesNamingTheM
 		assertSays(t, reason, expect("#"+strconv.Itoa(merged), topic, "merged without the commits"))
 		assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(head, ""), cmpopts.EquateEmpty()))
 		assert.Check(t, sameOps(run.forge.Calls(), changesRead()))
+	})
+}
+
+// mergedElsewhere is the number of a pull request from the topic branch merged into otherBase.
+const mergedElsewhere = 3
+
+func elsewhereMerge() forge.Change { return change(mergedElsewhere, otherBase, forge.ChangeMerged) }
+
+// mergedIntoOtherBase is a forge for a branch whose one pull request, mergedElsewhere, was merged
+// into otherBase, and that lets a branch delete through.
+func mergedIntoOtherBase() forgeFor {
+	return func(string) forgetest.Script {
+		return forgetest.Script{
+			Identity:     forgetest.Values(squashing(true)),
+			FindChanges:  listing([]forge.Change{elsewhereMerge()}),
+			DeleteBranch: []error{nil},
+		}
+	}
+}
+
+// landElsewhere keeps the tip of the topic branch as the head of pull request mergedElsewhere and
+// publishes the branch.
+func landElsewhere(f *gittest.Fixture) {
+	f.PullRef(mergedElsewhere, f.Git("rev-parse", topic))
+	f.Publish(topic)
+}
+
+// elsewhereRefusal is the run of `ils merge` on a branch whose one pull request was merged into
+// otherBase.
+func elsewhereRefusal(t *testing.T) mergeRun {
+	t.Helper()
+
+	return runMergeOn(t, setting{arrange: landElsewhere, script: mergedIntoOtherBase(), unbounded: true})
+}
+
+func TestMerge_WhenTheOnlyPullRequestWasMergedIntoAnotherBase_RefusesNamingItsBase(t *testing.T) {
+	t.Parallel()
+
+	run := elsewhereRefusal(t)
+
+	assertStoppedBy(t, run.got, result.Refused, mergeRequest())
+
+	_, reason := shown(t, run.got, run.gitDir)
+	assertSays(t, reason, expect("#"+strconv.Itoa(mergedElsewhere), otherBase))
+	assert.Check(t, is.Equal(run.written(), run.before))
+	assert.Check(t, sameOps(run.forge.Calls(), changesRead()))
+}
+
+func TestMerge_WhenAPullRequestMergedIntoTheTrunkSitsBesideOneMergedElsewhere_FinishesWithoutMerging(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		both := resuming().deleting(nil).with(func(script *forgetest.Script, _ string) {
+			script.FindChanges[0].Value = slices.Insert(script.FindChanges[0].Value, 0, elsewhereMerge())
+		})
+		arrange := func(f *gittest.Fixture) {
+			f.PullRef(mergedElsewhere, f.Git("rev-parse", topic))
+			landAndPublish(f)
+		}
+
+		run := runMergeOn(t, setting{arrange: arrange, script: both})
+
+		assertEndedBy(t, run.got, run.gitDir,
+			ended{text: resumedLine() + deletedLine() + onTrunkLine(), req: mergeRequest(), outcome: result.Done})
+		assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(run.tip, result.EndingTrunk), cmpopts.EquateEmpty()))
 	})
 }
 
@@ -527,7 +590,7 @@ func failedGitMerges() []failedGitRow {
 			name: "what the fetch of the head of the pull request fetched", script: merging(), ops: changesRead(),
 			outcome: result.Broke, known: true,
 			arrange: func(f *gittest.Fixture) mergeEnd {
-				end := failedGitMerge(tipPastHead(f), []string{"rev-parse", "--verify", "refs/ils/fetched/pull/" + strconv.Itoa(opened) + "/head"})
+				end := failedGitMerge(tipPastHead(f), []string{"rev-parse", "--verify", "refs/ils/fetched/*"})
 				end.from = forgetest.OpFindChanges
 
 				return end
@@ -805,7 +868,6 @@ type waitRow struct {
 	name    string
 	text    string
 	outcome result.Outcome
-	left    time.Duration
 }
 
 // runWaits runs each row as a test in a bubble of its own: the run carries the row's payload,
@@ -817,7 +879,7 @@ func runWaits(t *testing.T, rows []waitRow) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
-				run := runMergeOn(t, setting{script: tt.script, left: tt.left, cut: tt.cut})
+				run := runMergeOn(t, setting{script: tt.script, cut: tt.cut})
 
 				assertMergePayload(t, run, *tt.payload)
 				assert.Check(t, is.Equal(run.written(), run.before))
@@ -1052,7 +1114,7 @@ func TestMerge_WhenTheMessageReadLeavesExactlyTheReserve_Merges(t *testing.T) {
 		// The wait's deadline is 80 seconds away: the read ends 20 seconds before the command's.
 		script := waiting(passing()).saying(titledAfter("")).landing(nil, nil).messageTaking(80 * time.Second)
 
-		run := runMergeIn(t, script, 0)
+		run := runMergeIn(t, script)
 
 		assertStoppedBy(t, run.got, result.Done, mergeRequest())
 
@@ -1060,12 +1122,11 @@ func TestMerge_WhenTheMessageReadLeavesExactlyTheReserve_Merges(t *testing.T) {
 	})
 }
 
-// runMergeIn runs `ils merge` inside the test's bubble with the forge script builds and a deadline
-// left of fake time away.
-func runMergeIn(t *testing.T, script forgeFor, left time.Duration) mergeRun {
+// runMergeIn runs `ils merge` inside the test's bubble with the forge script builds.
+func runMergeIn(t *testing.T, script forgeFor) mergeRun {
 	t.Helper()
 
-	return runMergeOn(t, setting{script: script, left: left})
+	return runMergeOn(t, setting{script: script})
 }
 
 func TestMerge_WhenTheChecksNeverConclude_EndsTheWaitTheReserveBeforeTheDeadline(t *testing.T) {
@@ -1073,7 +1134,7 @@ func TestMerge_WhenTheChecksNeverConclude_EndsTheWaitTheReserveBeforeTheDeadline
 	synctest.Test(t, func(t *testing.T) {
 		started := time.Now()
 
-		run := runMergeIn(t, waiting(running()), 0)
+		run := runMergeIn(t, waiting(running()))
 
 		waited := time.Since(started)
 		latest := bound - landing.MergeReserve
@@ -1094,7 +1155,7 @@ func TestMerge_WhenEveryCheckBeforeTheMergeHolds_ComposesTheMessageFromThePullRe
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
-				run := runMergeIn(t, tt.script, 0)
+				run := runMergeIn(t, tt.script)
 
 				assertStoppedBy(t, run.got, result.Done, mergeRequest())
 
@@ -1116,7 +1177,7 @@ func TestMerge_WhenTheHeadMovesPastThePushedCommit_RefusesWithoutMerging(t *test
 		// The forge would compose and land the merge, were it asked to.
 		script := waiting(passing()).showing(heads...).saying(titledAfter("Tidy the wording.")).landing(nil, nil)
 
-		run := runMergeIn(t, script, 0)
+		run := runMergeIn(t, script)
 
 		assertEndedBy(t, run.got, run.gitDir, ended{text: movedTo() + mergeCommand().after("pull the new commit"), req: mergeRequest(), outcome: result.Refused})
 		assertMergePayload(t, run, *mergeDetail(forge.VerdictNone, forge.MergeUnknown))
@@ -1129,7 +1190,7 @@ func TestMerge_WhenTrunkRequiresChecks_WaitsForThoseOfTheHead(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		required := []string{"lint", "test"}
 
-		run := runMergeIn(t, waiting(requiredPassing()).requiring(required...).saying(titledAfter("")).landing(nil, nil), 0)
+		run := runMergeIn(t, waiting(requiredPassing()).requiring(required...).saying(titledAfter("")).landing(nil, nil))
 
 		assertReadsRequire(t, run.forge.Calls(), run.tip, required)
 	})

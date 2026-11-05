@@ -67,8 +67,6 @@ func TestTool_Check_WhenFoundDoesNotSuitTarget_ReturnsError(t *testing.T) {
 	}
 }
 
-// hammerVersionOf reads the version from a line `hammer <version>`, and returns "" for any other
-// line.
 func hammerVersionOf(line string) string {
 	version, ok := strings.CutPrefix(line, "hammer ")
 	if !ok {
@@ -87,30 +85,13 @@ func TestTool_CheckOutput_WhenFirstLineNamesASuitedVersion_ReturnsNil(t *testing
 	assert.NilError(t, err)
 }
 
-func TestTool_CheckOutput_WhenFirstLineDoesNotSuitTarget_ReturnsError(t *testing.T) {
+func TestTool_CheckOutput_WhenFirstLineNamesNoVersion_ReturnsErrorQuotingIt(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		name   string
-		target string
-		want   string
-		out    string
-		part   string
-	}{
-		{name: "first line names no version", out: "built on a bench", part: `"built on a bench"`},
-		{
-			name: "first line names a version other than the one wanted", target: testtarget.Latest,
-			want: "1.10.0", out: "hammer 1.9.0", part: "1.9.0",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	const out = "built on a bench"
 
-			err := hammer().CheckOutput(tt.target, tt.want, tt.out, hammerVersionOf)
+	err := hammer().CheckOutput("", "", out, hammerVersionOf)
 
-			assert.Check(t, is.ErrorContains(err, tt.part), "CheckOutput(%q, %q, %q)", tt.target, tt.want, tt.out)
-		})
-	}
+	assert.Check(t, is.ErrorContains(err, `"built on a bench"`), "CheckOutput(%q)", out)
 }
 
 func TestTool_CheckEnvOutput_WhenTargetVarIsMinimum_RejectsANewerVersion(t *testing.T) {

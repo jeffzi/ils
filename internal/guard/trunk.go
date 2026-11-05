@@ -114,7 +114,7 @@ func onTrunk(sub string, args []Word, trunk string) Verdict {
 		// refspec names the trunk with or without a leading `+` and its full ref.
 		named := wordTexts(options.positional)
 		if len(named) == 2 {
-			named[1] = strings.TrimPrefix(strings.TrimPrefix(named[1], "+"), branchRefPrefix)
+			named[1] = strings.TrimPrefix(strings.TrimPrefix(named[1], "+"), git.BranchRefPrefix)
 		}
 
 		pullsTrunk := slices.Equal(named, []string{"origin"}) || slices.Equal(named, []string{"origin", trunk})

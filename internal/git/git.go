@@ -69,64 +69,29 @@ type Result = child.Output
 // exited or been killed, output pipes still held open are closed after a short
 // grace, so a context that ended never turns into a hang.
 func (r Runner) Run(ctx context.Context, args ...string) (Result, error) {
-	return r.invocation(program, installURL, args).run(ctx)
+	// Git itself is found on this process's PATH, whatever the runner's environment holds.
+	return r.childProgram(program, installURL, args, exec.LookPath).Run(ctx)
 }
 
-// invocation returns the run of tool with args on the runner's behalf: from its directory, with
-// its environment, recorded by its recorder and logged by its logger. Every program the package runs
-// for a runner starts from here, so that no run drops a field of the runner.
-func (r Runner) invocation(tool, toolURL string, args []string) invocation {
-	inv := invocation{
-		program:    tool,
-		installURL: toolURL,
-		args:       args,
-		dir:        r.Dir,
-		env:        r.Env,
-		logger:     r.Logger,
+// childProgram returns the run of tool with args on the runner's behalf: from its directory, with
+// its environment, recorded by its recorder and logged by its logger, the tool found by lookPath.
+// Every program the package runs for a runner starts from here, so that no run drops a field of
+// the runner.
+func (r Runner) childProgram(tool, toolURL string, args []string, lookPath func(name string) (string, error)) child.Program {
+	p := child.Program{
+		LookPath:   lookPath,
+		Logger:     r.Logger,
+		Tool:       tool,
+		InstallURL: toolURL,
+		Dir:        r.Dir,
+		Args:       args,
+		Env:        r.Env,
 	}
 	if r.Recorder != nil {
-		inv.record = r.Recorder.record
+		p.Starting = r.Recorder.record
 	}
 
-	return inv
-}
-
-// invocation is a Runner's call of one tool: the fields child.Program takes, plus the recorder and
-// logger the Runner adds.
-type invocation struct {
-	// record, when set, receives the argv once the tool is found and before it starts.
-	record func(argv []string)
-	// lookPath, when set, finds the tool; Runner.lookPath finds it on the PATH of env, the way git
-	// would find a program it starts with env. Nil finds it on this process's PATH, which is how git
-	// itself is found whatever env holds.
-	lookPath func(name string) (string, error)
-	// logger, when set, receives the record child.Exec.Log writes once the run has ended.
-	logger     *slog.Logger
-	program    string
-	installURL string
-	dir        string
-	args       []string
-	env        []string
-}
-
-// run runs the tool as child.Program.Run does, found by the invocation's lookPath and, when the
-// invocation has a logger, logged once the run has ended.
-func (inv invocation) run(ctx context.Context) (Result, error) {
-	lookPath := inv.lookPath
-	if lookPath == nil {
-		lookPath = exec.LookPath
-	}
-
-	return child.Program{
-		LookPath:   lookPath,
-		Starting:   inv.record,
-		Logger:     inv.logger,
-		Tool:       inv.program,
-		InstallURL: inv.installURL,
-		Dir:        inv.dir,
-		Args:       inv.args,
-		Env:        inv.env,
-	}.Run(ctx)
+	return p
 }
 
 // exited reports whether err is git exiting with code.

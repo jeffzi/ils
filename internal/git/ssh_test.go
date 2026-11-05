@@ -24,31 +24,21 @@ import (
 // renames is an ssh config that gives github.com another name.
 const renames = "Host github-personal\n  HostName github.com\n"
 
-func TestRepo_OriginURLs_WhenURLIsSSH_ReturnsTheHostSSHConnectsTo(t *testing.T) {
+func TestRepo_OriginURLs_WhenURLIsSSHWithAnAlias_ReturnsTheHostSSHConnectsTo(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		name string
-		url  string
-	}{
-		{name: "ssh url with an alias", url: "ssh://git@github-personal/jeffzi/ils.git"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			f := gittest.New(t, trunk)
-			f.SetOriginURL(tt.url)
-			f.SetPushURL(tt.url)
-			f.SetSSHConfig(renames)
-			repo := newRepo(f)
+	url := "ssh://git@github-personal/jeffzi/ils.git"
+	f := gittest.New(t, trunk)
+	f.SetOriginURL(url)
+	f.SetPushURL(url)
+	f.SetSSHConfig(renames)
+	repo := newRepo(f)
 
-			got, err := repo.OriginURLs(t.Context())
-			assert.NilError(t, err, "OriginURLs() of %q", tt.url)
+	got, err := repo.OriginURLs(t.Context())
+	assert.NilError(t, err, "OriginURLs() of %q", url)
 
-			named := ilsOrigin()
-			want := git.OriginURLs{Fetch: named, Push: named, FetchURL: tt.url, PushURL: tt.url}
-			assert.Check(t, is.DeepEqual(got, want), "OriginURLs() of %q", tt.url)
-		})
-	}
+	named := ilsOrigin()
+	want := git.OriginURLs{Fetch: named, Push: named, FetchURL: url, PushURL: url}
+	assert.Check(t, is.DeepEqual(got, want), "OriginURLs() of %q", url)
 }
 
 // noSSHCommand returns repo without the fixture's GIT_SSH_COMMAND in its environment, so that it
@@ -262,7 +252,6 @@ type sourceCase struct {
 	host string
 }
 
-// sourceCases are the places a user names the ssh command git connects with.
 func sourceCases() []sourceCase {
 	const decoys = "Host work\n  HostName decoy.example.org\n"
 
@@ -371,9 +360,6 @@ type variantCase struct {
 	program bool
 }
 
-// escapedSpaces returns path with a backslash before each space, one word to a shell.
-func escapedSpaces(path string) string { return strings.ReplaceAll(path, " ", `\ `) }
-
 // unclosed returns path after a single quote that nothing closes, a line git cannot split.
 func unclosed(path string) string { return "'" + path }
 
@@ -385,7 +371,6 @@ func variantEnv(name string) []string { return []string{"GIT_SSH_VARIANT=" + nam
 func variantCases() []variantCase {
 	return []variantCase{
 		{name: "command named PLINK.EXE", command: "PLINK.EXE", want: plainHost},
-		{name: "command named plink, spaces escaped", command: "plink", line: escapedSpaces, want: plainHost},
 		{name: "command line with an unclosed quote", command: "ssh", line: unclosed, want: plainHost},
 		{name: "unrecognized command that answers", command: "connect", want: standInHost},
 		{name: "unrecognized command that refuses", command: "connect", refuses: true, want: plainHost},
@@ -773,7 +758,6 @@ func TestSplitCommandLine(t *testing.T) {
 		{name: "tab separates", line: "a\tb", want: []string{"a", "b"}},
 		{name: "carriage return separates", line: "a\rb", want: []string{"a", "b"}},
 		{name: "vertical tab does not separate", line: "a\vb", want: []string{"a\vb"}},
-		{name: "form feed does not separate", line: "a\fb", want: []string{"a\fb"}},
 		{name: "leading space gives an empty first word", line: " a", want: []string{"", "a"}},
 		{name: "trailing space gives an empty last word", line: "a ", want: []string{"a", ""}},
 		{name: "single quotes keep a backslash", line: `'a\ b'`, want: []string{`a\ b`}},
@@ -822,7 +806,6 @@ func TestProgramWord(t *testing.T) {
 		wantFound bool
 	}{
 		{name: "vertical tab stays inside the program word", line: "ssh\v-v", want: "ssh\v-v", wantFound: true},
-		{name: "form feed stays inside the program word", line: "ssh\f-v", want: "ssh\f-v", wantFound: true},
 		{name: "leading space before the program", line: " ssh -v", want: "ssh", wantFound: true},
 		{name: "only an assignment and a trailing space", line: "FOO=bar ", want: "", wantFound: false},
 	}

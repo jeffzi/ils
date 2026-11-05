@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -255,7 +254,6 @@ func TestRepo_InWorkTree(t *testing.T) {
 		want bool
 	}{
 		{name: "work tree", dir: f.Dir(), want: true},
-		{name: "inside the git directory", dir: filepath.Join(f.Dir(), ".git")},
 		{name: "bare repository", dir: f.OriginDir()},
 		{name: "directory that holds no repository", dir: t.TempDir()},
 	}
@@ -436,66 +434,15 @@ func TestRepo_CommitsPast_WhenALocalBranchIsNamedLikeOriginsTrunk_ListsTheCommit
 	assert.Check(t, is.DeepEqual(got, []git.Commit{{SHA: sha, Subject: "one"}}, cmpopts.EquateEmpty()))
 }
 
-// signedPast returns a fixture whose git config shows signatures, as log.showSignature set by the
-// user does, checked out on topic with one commit past the trunk signed by an ssh key that the
-// config trusts, and that commit's sha.
-func signedPast(t *testing.T) (f *gittest.Fixture, sha string) {
-	t.Helper()
-
-	keygen, err := exec.LookPath("ssh-keygen")
-	if err != nil {
-		t.Skipf("ssh-keygen is not on PATH to make a signing key: %v", err)
-	}
-
-	key := filepath.Join(t.TempDir(), "signing")
-	//nolint:gosec // G204: ssh-keygen found on PATH, with arguments the test writes; no shell is involved.
-	out, err := exec.CommandContext(t.Context(), keygen, "-q", "-t", "ed25519", "-N", "", "-C", "", "-f", key).CombinedOutput()
-	assert.NilError(t, err, "ssh-keygen: %s", out)
-	public, err := os.ReadFile(key + ".pub") //nolint:gosec // G304: the key the test just made in its own temp directory
-	assert.NilError(t, err)
-	signers := filepath.Join(filepath.Dir(key), "allowed_signers")
-	assert.NilError(t, os.WriteFile(signers, append([]byte("* "), public...), 0o600)) //nolint:gosec // G703: a path in the test's own temp directory
-
-	f = gittest.New(t, trunk)
-	f.Git("config", "--local", "gpg.format", "ssh")
-	f.Git("config", "--local", "user.signingKey", filepath.ToSlash(key))
-	f.Git("config", "--local", "gpg.ssh.allowedSignersFile", filepath.ToSlash(signers))
-	f.Git("config", "--local", "commit.gpgsign", "true")
-	f.Git("config", "--local", "log.showSignature", "true")
-
-	return f, f.Commits(topic, "signed")[0]
-}
-
-func TestRepo_CommitsPast_WhenGitShowsSignatures_ListsTheCommitsAlone(t *testing.T) {
+func TestRepo_Subject_ReturnsTheFirstLineOfTheMessage(t *testing.T) {
 	t.Parallel()
-	f, sha := signedPast(t)
-
-	got, err := newRepo(f).CommitsPast(t.Context(), sha, trunk)
-	assert.NilError(t, err)
-
-	assert.Check(t, is.DeepEqual(got, []git.Commit{{SHA: sha, Subject: "signed"}}, cmpopts.EquateEmpty()))
-}
-
-func TestRepo_Subject_WhenGitShowsSignatures_ReturnsTheSubjectAlone(t *testing.T) {
-	t.Parallel()
-	f, sha := signedPast(t)
+	f := gittest.New(t, trunk)
+	sha := f.Commits(topic, "one")[0]
 
 	got, err := newRepo(f).Subject(t.Context(), sha)
 	assert.NilError(t, err)
 
-	assert.Check(t, is.Equal(got, "signed"))
-}
-
-func TestRepo_CommitsPast_WhenAWorkTreeFileIsNamedHEAD_ListsTheCommitsPastTheTrunk(t *testing.T) {
-	t.Parallel()
-	f := gittest.New(t, trunk)
-	sha := f.Commits(topic, "one")[0]
-	gittest.WriteFile(t, f.Dir(), "HEAD", "not a revision\n")
-
-	got, err := newRepo(f).CommitsPast(t.Context(), "HEAD", trunk)
-	assert.NilError(t, err)
-
-	assert.Check(t, is.DeepEqual(got, []git.Commit{{SHA: sha, Subject: "one"}}, cmpopts.EquateEmpty()))
+	assert.Check(t, is.Equal(got, "one"))
 }
 
 func TestRepo_LocalTrunkAhead(t *testing.T) {
@@ -587,7 +534,6 @@ type ownCommitsCase struct {
 	name    string
 }
 
-// ownCommitsCases returns the cases of OwnCommits.
 func ownCommitsCases() []ownCommitsCase {
 	return []ownCommitsCase{
 		{

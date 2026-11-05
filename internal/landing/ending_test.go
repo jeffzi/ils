@@ -167,7 +167,7 @@ func assertSaid(t *testing.T, text, want, after string) {
 	rest, _ := past(text, want)
 	said, below, ended := strings.Cut(rest, "\n")
 	assert.Check(t, ended && strings.Trim(said, ":;, ") != "",
-		"RenderText() = %q, want a message on the line that holds %q", text, partsOf(want))
+		"RenderStyled() = %q, want a message on the line that holds %q", text, partsOf(want))
 	assertSays(t, below, after)
 }
 

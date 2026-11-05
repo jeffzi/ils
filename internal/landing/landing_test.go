@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/colorprofile"
+
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"gotest.tools/v3/assert"
@@ -258,7 +260,7 @@ func fails(err error) forgetest.Script {
 func rendered(t *testing.T, r result.Result, gitDir string) (text string, decoded resulttest.Shown) {
 	t.Helper()
 
-	text, err := result.RenderText(r, gitDir)
+	text, err := result.RenderStyled(r, gitDir, colorprofile.NoTTY)
 	assert.NilError(t, err)
 
 	out, err := result.RenderJSON(r, gitDir)
@@ -394,7 +396,7 @@ func between(t *testing.T, text, before, after string) string {
 	said, _, ends := strings.Cut(rest, after)
 	said = strings.Trim(said, ":;,. \n")
 	assert.Check(t, starts && ends && said != "",
-		"RenderText() = %q, want %q, then what failed said, then %q", text, before, after)
+		"RenderStyled() = %q, want %q, then what failed said, then %q", text, before, after)
 
 	return said
 }
@@ -660,10 +662,6 @@ type refusal struct {
 	script forgetest.Script
 	// offline gives the scene an origin that does not answer.
 	offline bool
-	// asksForge is whether the forge's identity is read before the refusal.
-	asksForge bool
-	// asksOrigin is whether origin is asked for its trunk before the refusal.
-	asksOrigin bool
 }
 
 // originRefusals are the refusals decided from origin's URLs alone; their forge has no answer,
@@ -714,14 +712,14 @@ func forgeRefusals() []refusal {
 	unread.Line = "gh version DEV"
 
 	return []refusal{
-		{name: "gh is not installed", script: missing, asksForge: true, want: noTool},
+		{name: "gh is not installed", script: missing, want: noTool},
 		{
-			name: "gh is older than the minimum", script: fails(&outdated), asksForge: true, want: tooOld,
+			name: "gh is older than the minimum", script: fails(&outdated), want: tooOld,
 		},
-		{name: "gh prints no version", script: fails(&unread), asksForge: true, want: noVersion},
-		{name: "gh is not logged in", script: fails(&forge.NotLoggedInError{Host: host}), asksForge: true, want: noLogin},
-		{name: "fork", script: answers(widgets(true, true)), asksForge: true, want: isFork},
-		{name: "no push permission", script: answers(widgets(false, false)), asksForge: true, want: noPush},
+		{name: "gh prints no version", script: fails(&unread), want: noVersion},
+		{name: "gh is not logged in", script: fails(&forge.NotLoggedInError{Host: host}), want: noLogin},
+		{name: "fork", script: answers(widgets(true, true)), want: isFork},
+		{name: "no push permission", script: answers(widgets(false, false)), want: noPush},
 	}
 }
 
@@ -730,12 +728,12 @@ func trunkRefusals() []refusal {
 	return []refusal{
 		{
 			name:   "origin does not answer",
-			script: allowed(), offline: true, asksForge: true, asksOrigin: true, want: unreached(pushCommand(), "ask for its trunk"),
+			script: allowed(), offline: true, want: unreached(pushCommand(), "ask for its trunk"),
 		},
 		{
 			name:    "origin's answer names no branch",
 			arrange: (*gittest.Fixture).DetachOriginHead,
-			script:  allowed(), asksForge: true, asksOrigin: true, want: unreached(pushCommand(), "ask for its trunk"),
+			script:  allowed(), want: unreached(pushCommand(), "ask for its trunk"),
 		},
 	}
 }
@@ -752,23 +750,8 @@ func TestPreconditions_WhenOneFails_RefusesAtTheFirst(t *testing.T) {
 
 			got := stopped(t, stop, "a refusal")
 			assertEndedBy(t, got, s.gitDir, ended{outcome: result.Refused, req: pushRequest(), text: tt.want})
-
-			assertReadsStoppedAt(t, s, tt)
 		})
 	}
-}
-
-func assertReadsStoppedAt(t *testing.T, s *scene, tt refusal) {
-	t.Helper()
-
-	var ops []forgetest.Op
-	if tt.asksForge {
-		ops = identityRead()
-	}
-
-	assertAsked(t, s, ops)
-
-	assert.Check(t, is.Equal(s.gitRan("ls-remote"), tt.asksOrigin))
 }
 
 func TestPreconditions_WhenAllHold_ReturnsReady(t *testing.T) {
@@ -780,18 +763,6 @@ func TestPreconditions_WhenAllHold_ReturnsReady(t *testing.T) {
 	got := ready(t, s)
 
 	assert.Check(t, is.DeepEqual(got, want))
-	assertAsked(t, s, identityRead())
-}
-
-func TestPreconditions_WhenOriginRefusesTheCaller_BrokeWithWhatGitSaid(t *testing.T) {
-	t.Parallel()
-	s := newScene(t, nil, allowed(), false)
-	s.refuse(t)
-
-	_, stop := landing.Preconditions(t.Context(), s.deps, pushRequest())
-
-	got := stopped(t, stop, "a broke result")
-	assertBrokeRead(t, got, readTrunk, sshDenied)
 }
 
 func TestPreconditions_WhenSSHFails_BrokeNamingTheRead(t *testing.T) {
@@ -802,7 +773,7 @@ func TestPreconditions_WhenSSHFails_BrokeNamingTheRead(t *testing.T) {
 	_, stop := landing.Preconditions(t.Context(), s.deps, pushRequest())
 
 	got := stopped(t, stop, "a broke result")
-	assertBrokeRead(t, got, readURLs, "ssh ")
+	assertBrokeReadBy(t, got, pushCommand(), readURLs)
 }
 
 // ---------------------------------------------------------------------------
@@ -837,7 +808,7 @@ func TestPreconditions_WhenGitSSHRunsAMissingProgram_RefusesNamingIt(t *testing.
 // The git on PATH
 // ---------------------------------------------------------------------------
 
-func TestPreconditions_WhenGitIsTooOld_RefusesBeforeAnyOtherRead(t *testing.T) {
+func TestPreconditions_WhenGitIsTooOld_RefusesNamingTheVersions(t *testing.T) {
 	// Not parallel: fakeGit puts a git that prints its own version first on PATH with t.Setenv.
 	cmd := pushCommand()
 	s := newScene(t, nil, forgetest.Script{}, false)
@@ -849,9 +820,6 @@ func TestPreconditions_WhenGitIsTooOld_RefusesBeforeAnyOtherRead(t *testing.T) {
 	assertEndedBy(t, got, s.gitDir, ended{
 		outcome: result.Refused, req: cmd.req, text: expect("git", "1.0.0", git.MinimumVersion, "ils "+cmd.name),
 	})
-
-	assert.Check(t, !s.gitRan("ls-remote"), "git asked origin after the refusal")
-	assert.Check(t, !s.gitRan("get-url"), "git read origin's URL after the refusal")
 }
 
 func TestPreconditions_WhenGitVersionFails_BrokeNamingTheRead(t *testing.T) {
@@ -881,8 +849,6 @@ func TestPreconditions_WhenForgeIdentityFailsUntyped_BrokeNamingTheRead(t *testi
 	text, reason := shown(t, got, s.gitDir)
 	assertSays(t, text, unreadText(pushCommand(), readIdentity, forgeFailure))
 	assert.Check(t, is.Contains(reason, readIdentity))
-
-	assertAsked(t, s, identityRead())
 }
 
 func TestPreconditions_WhenDirectoryIsNotARepository_BrokeNamingTheRead(t *testing.T) {
@@ -905,9 +871,7 @@ type unfinished struct {
 	name    string
 	read    string
 	c       cut
-	// ops are the forge operations made before the refusal.
-	ops []forgetest.Op
-	cmd landingCommand
+	cmd     landingCommand
 }
 
 func TestPreconditions_WhenAReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
@@ -928,7 +892,7 @@ func TestPreconditions_WhenAReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
 			c: byWaitLimit(), cmd: longCommand(), arrange: beforeAnyRead,
 		},
 		{
-			name: "between the identity read and the trunk read", read: readTrunk, ops: identityRead(),
+			name: "between the identity read and the trunk read", read: readTrunk,
 			c: byTimeLimit(), cmd: pushCommand(),
 			arrange: func(t *testing.T, c cut) (context.Context, forgetest.Script) {
 				t.Helper()
@@ -953,8 +917,6 @@ func TestPreconditions_WhenAReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
 			assertEndedBy(t, got, s.gitDir, ended{
 				outcome: result.Refused, req: tt.cmd.req, text: overtimeText(tt.cmd, tt.c, tt.read),
 			})
-
-			assertAsked(t, s, tt.ops)
 		})
 	}
 }

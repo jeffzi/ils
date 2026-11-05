@@ -129,6 +129,9 @@ When `ils branch` refuses, it has created no branch and switched nothing; at mos
 from origin. It refuses:
 
 - no name, a second word, or `--`;
+- any flag other than `--json`, `-d` or `--debug`, `--no-color`, `--help`, or `-h`, and a
+  `--json=<value>`, `-d=<value>`, `--debug=<value>`, `--no-color=<value>`, `--help=<value>`, or
+  `-h=<value>` whose value is not `true` or `false`;
 - a name git cannot hold as a branch, including one that starts with `-` and `@{-1}`;
 - a name a branch already takes, locally or on origin. A branch takes the name when it has the
   same name, or collides with it by path, which git cannot hold beside it: `fix` takes `fix/help`,
@@ -158,7 +161,8 @@ this list, which `ils push` finds after the push. It refuses:
   tells you to land each branch that shares the commit first, or to remove each one that was cut
   from this branch. `ils` reads the copy on origin first, so a branch that is also behind or
   diverged from that copy gets that refusal instead;
-- a branch whose pull request already merged, or is open against another base;
+- a branch whose pull request already merged into the default branch, or is open against another
+  base;
 - a repository with no remote named `origin`, or an `origin` that cannot be reached;
 - an `origin` whose fetch and push URLs do not name one repository (they differ, or one is not an
   `https://`, `ssh://git@`, or `git@host:` repository URL);
@@ -196,6 +200,8 @@ at most it has fetched from origin. It refuses everything `ils push` refuses abo
 - a branch with no commit past origin's default branch, or with no open pull request against it;
 - a branch whose tip is behind, past, or diverged from the head of its pull request;
 - a pull request that is a draft, or open against another base;
+- a branch whose only pull request merged into another base: that never lands it, and `Next:` says
+  to run `ils push`, which opens one against the default branch;
 - a pull request whose title is not a conventional commit subject (`<type>(<scope>)!: <summary>`,
   with the scope and `!` optional);
 - a repository whose settings forbid squash merges, and a default branch whose ruleset forbids
@@ -250,17 +256,17 @@ ends done. The output gives the release's URL and a line naming the file left be
 
 With `--json`, a command prints one JSON object with these fields:
 
-| Field       | Type             | Meaning                                                                                                                                |
-| ----------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `command`   | string           | The command that ran, such as `push`.                                                                                                  |
-| `words`     | array of strings | The command-line words `ils` received. Absent when empty.                                                                              |
-| `outcome`   | string           | `done`, `broke`, `refused`, `ask`, `pending`, or `delivered-not-green`: the Means column of [Exit codes](#exit-codes), with hyphens.   |
-| `next`      | string           | What to do next, as on the `Next:` line.                                                                                               |
-| `reason`    | string           | Why the command did not end as `done`. Present on every other outcome.                                                                 |
-| `excerpt`   | string           | Third-party text: the end of a failed check's log, or of what the hooks and `git` printed for a push `git` refused. Absent when empty. |
-| `lines`     | array of strings | What happened, in order; never a line that only restates the reason. Absent when empty.                                                |
-| `exit_code` | integer          | The process exit code.                                                                                                                 |
-| `payload`   | object           | The command's structured detail, under the command's name, such as `payload.push`. Absent when empty.                                  |
+| Field       | Type             | Meaning                                                                                                                                                                                                                   |
+| ----------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `command`   | string           | The command that ran, such as `push`.                                                                                                                                                                                     |
+| `words`     | array of strings | The command-line words `ils` received, less the output flags: `-d`, `--debug` and `--no-color` in any form, and `--json` bare or as `--json=true` or `--json=false`. A refused `--json=<value>` stays. Absent when empty. |
+| `outcome`   | string           | `done`, `broke`, `refused`, `ask`, `pending`, or `delivered-not-green`: the Means column of [Exit codes](#exit-codes), with hyphens.                                                                                      |
+| `next`      | string           | What to do next, as on the `Next:` line.                                                                                                                                                                                  |
+| `reason`    | string           | Why the command did not end as `done`. Present on every other outcome.                                                                                                                                                    |
+| `excerpt`   | string           | Third-party text: the end of a failed check's log, or of what the hooks and `git` printed for a push `git` refused. Absent when empty.                                                                                    |
+| `lines`     | array of strings | What happened, in order; never a line that only restates the reason. Absent when empty.                                                                                                                                   |
+| `exit_code` | integer          | The process exit code.                                                                                                                                                                                                    |
+| `payload`   | object           | The command's structured detail, under the command's name, such as `payload.push`. Absent when empty.                                                                                                                     |
 
 ### Push JSON output
 

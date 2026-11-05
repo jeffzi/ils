@@ -329,8 +329,8 @@ func TestApp_Run_WhenReleaseIsGivenOneVersion_RunsTheReleaseCommandWithTheFlagsA
 		want landing.Request
 	}{
 		{
-			name: "version alone", args: []string{"release", "1.2.0"},
-			want: landing.Request{Command: "release", Words: []string{"release", "1.2.0"}, Args: []string{"1.2.0"}},
+			name: "force alone", args: []string{"release", "--force", "1.2.0"},
+			want: landing.Request{Command: "release", Words: []string{"release", "--force", "1.2.0"}, Args: []string{"1.2.0"}, Force: true},
 		},
 		{
 			name: "flags around the version", args: []string{"release", "--tag-only", "-d", "1.2.0", "--no-color", "--force", "--json"},
@@ -701,7 +701,6 @@ func TestApp_Run_WhenTheFirstWordIsNotCloseToExactlyOneCommand_SuggestsNoCommand
 	}{
 		{name: "close to no command", word: "extra"},
 		{name: "close to every command", word: ""},
-		{name: "unknown flag", word: "--push"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -718,6 +717,148 @@ func TestApp_Run_WhenTheFirstWordIsNotCloseToExactlyOneCommand_SuggestsNoCommand
 			assert.Check(t, is.Equal(printed.Next, "ils --help"))
 		})
 	}
+}
+
+func TestApp_Run_WhenTheFirstWordIsAnUnknownRootFlag_RefusesWithTheRootHelp(t *testing.T) {
+	t.Parallel()
+
+	got := launch(t, outside(t), "--push", "--json")
+
+	assert.Check(t, is.Equal(got.code, exitRefused))
+
+	printed := resulttest.Decode(t, got.stdout)
+	assert.Check(t, is.Contains(printed.Reason, "--push"))
+	assert.Check(t, is.Equal(printed.Next, "ils --help"))
+}
+
+func TestApp_Run_WhenHelpIsAskedForAWordThatIsNotACommand_RefusesItAsTheWordAloneIs(t *testing.T) {
+	t.Parallel()
+
+	alone := resulttest.Decode(t, launch(t, outside(t), "verge", "--json").stdout)
+	assert.Assert(t, is.Contains(alone.Reason, "verge"))
+	tests := [][]string{{"verge", "--help"}, {"--help", "verge"}, {"help", "verge"}}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			t.Parallel()
+
+			text := launch(t, outside(t), args...)
+			asJSON := launch(t, outside(t), append(args, "--json")...)
+
+			assert.Check(t, is.Equal(text.code, exitRefused), "stdout = %q", text.stdout)
+			assert.Check(t, is.Contains(text.stdout, alone.Reason))
+			assert.Check(t, is.Equal(asJSON.code, exitRefused), "stdout = %q", asJSON.stdout)
+			printed := resulttest.Decode(t, asJSON.stdout)
+			assert.Check(t, is.Equal(printed.Reason, alone.Reason))
+			assert.Check(t, is.Equal(printed.Next, alone.Next))
+		})
+	}
+}
+
+func TestApp_Run_WhenHelpIsAskedForTheRootOrACommand_PrintsItAndExitsZero(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct{ asked, flagged []string }{
+		{asked: []string{"help"}, flagged: []string{"--help"}},
+		{asked: []string{"help", "push"}, flagged: []string{"push", "--help"}},
+	}
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.asked, " "), func(t *testing.T) {
+			t.Parallel()
+			want := launch(t, outside(t), tt.flagged...)
+			assert.Assert(t, is.Equal(want.code, exitDone), "%v: stdout = %q", tt.flagged, want.stdout)
+			assert.Assert(t, want.stdout != "", "%v printed no help", tt.flagged)
+
+			got := launch(t, outside(t), tt.asked...)
+
+			assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
+			assert.Check(t, is.Equal(got.stdout, want.stdout))
+		})
+	}
+}
+
+// flagParsers are the words that start each command line whose flags ils parses: the root alone,
+// then each command but hook, which takes its words as they are, and but guard and parse where
+// they refuse every run.
+func flagParsers() [][]string {
+	parsers := [][]string{{}, {"branch"}, {"help"}, {"merge"}, {"push"}, {"release"}, {"status"}}
+	if cli.GuardParsesFlags {
+		parsers = append(parsers, []string{"guard"}, []string{"parse"})
+	}
+
+	return parsers
+}
+
+// typedAfter is a command line: the words of parser, then word.
+type typedAfter struct {
+	word   string
+	parser []string
+}
+
+// args returns the words in a new slice, so that appending word never writes into parser, which
+// the parallel tests share.
+func (c typedAfter) args() []string {
+	return append(append([]string{}, c.parser...), c.word)
+}
+
+func TestApp_Run_WhenAFlagWordIsMalformed_RefusesNamingTheWordAsTyped(t *testing.T) {
+	t.Parallel()
+
+	var tests []typedAfter
+	for _, parser := range flagParsers() {
+		tests = append(tests, typedAfter{parser: parser, word: "---x"})
+	}
+	tests = append(tests, typedAfter{parser: []string{"push"}, word: "--=x"})
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.args(), " "), func(t *testing.T) {
+			t.Parallel()
+
+			got := launch(t, outside(t), tt.args()...)
+
+			assert.Check(t, is.Equal(got.code, exitRefused), "stderr = %q", got.stderr)
+			assert.Check(t, is.Contains(got.stdout, tt.word))
+		})
+		t.Run(strings.Join(tt.args(), " ")+" --json", func(t *testing.T) {
+			t.Parallel()
+
+			got := launch(t, outside(t), append(tt.args(), "--json")...)
+
+			printed := resulttest.Decode(t, got.stdout)
+			assert.Check(t, is.Equal(printed.ExitCode, exitRefused))
+			assert.Check(t, is.Contains(printed.Reason, tt.word))
+		})
+	}
+}
+
+func TestApp_Run_WhenAHelpFlagIsSetToNeitherTrueNorFalse_RefusesNamingTheValue(t *testing.T) {
+	t.Parallel()
+
+	var tests []typedAfter
+	for _, parser := range flagParsers() {
+		tests = append(tests, typedAfter{parser: parser, word: "--help=1"})
+	}
+	tests = append(tests, typedAfter{parser: []string{"push"}, word: "-h=0"})
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.args(), " "), func(t *testing.T) {
+			t.Parallel()
+			_, value, _ := strings.Cut(tt.word, "=")
+
+			got := launch(t, outside(t), tt.args()...)
+
+			assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
+			assert.Check(t, is.Contains(got.stdout, "--help takes true or false, and "+value+" was given"))
+		})
+	}
+}
+
+func TestApp_Run_WhenTheHelpFlagOfACommandIsSetToTrue_PrintsTheHelpTheBareFlagPrints(t *testing.T) {
+	t.Parallel()
+	want := launch(t, outside(t), "push", "--help")
+	assert.Assert(t, is.Equal(want.code, exitDone), "stdout = %q", want.stdout)
+
+	got := launch(t, outside(t), "push", "--help=true")
+
+	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
+	assert.Check(t, is.Equal(got.stdout, want.stdout))
 }
 
 func TestApp_Run_WhenWordsBreakTheGrammar_RefusesNamingWhatBreaksIt(t *testing.T) {

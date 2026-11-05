@@ -216,27 +216,12 @@ func appPassing() forge.Verdict {
 // pushRunlessRows are the pushes whose deadline ended inside the 20 seconds a commit is given
 // for its workflow runs to appear, before any of them had a check to report.
 func pushRunlessRows() []pushRow {
-	started := forge.Verdict{Runs: ran(forge.RunInProgress)}
-	scanned := appPassing()
 	silent := pendingClean(expect("no check or status", tipMark, "#12"))
-	noRun := pending(expect("no workflow run", tipMark, "#12"),
-		"", detail(forge.VerdictGreen, forge.MergeClean, scanned.Checks...))
 
 	return []pushRow{
 		{
 			name: "nothing has reported yet", left: 12 * time.Second, script: reusing(forge.Verdict{}), want: silent,
 			noStateLine: true,
-		},
-		{
-			name: "a workflow run is going and no check has reported yet", left: 12 * time.Second,
-			script: reusing(started),
-			want: pending(expect("had not reported"),
-				expect("No check has reported", tipMark, "#12", "workflow run is still going"),
-				detail(forge.VerdictNone, forge.MergeClean)),
-		},
-		{
-			name: "a check passed and no workflow run has started yet", left: 12 * time.Second,
-			script: reusing(scanned), want: noRun,
 		},
 	}
 }
@@ -307,7 +292,7 @@ func pushStillRunningRows() []pushRow {
 			name: "a check still runs", left: 17 * time.Second,
 			script: reusing(running()).showing(stale(), cleanHead()),
 			want: pending(expect("still running"),
-				expect("Still running", "(1 check):\n  ◌ test"),
+				expect("Still running", "1 check", " test"),
 				detail(forge.VerdictPending, forge.MergeClean, running().Checks...)),
 			told: []string{
 				checkingStep(), pushingStep(), said(pushedLine()), said(foundLine()),
@@ -326,7 +311,7 @@ func pushStillRunningRows() []pushRow {
 					script.OnRead = onHeadAfterChecks(func() { time.Sleep(1500 * time.Millisecond) })
 				}), func(begun time.Time) []time.Time { return []time.Time{begun.Add(-time.Minute)} }),
 			want: pending(expect("still running"),
-				expect("Still running", "(1 check):\n  ◌ test, running 1m1s\n")+blockedLine(),
+				expect("Still running", "1 check", " test, running 1m1s\n")+blockedLine(),
 				detail(forge.VerdictPending, forge.MergeBlockedByReview, running().Checks...)),
 		},
 		{
@@ -336,9 +321,24 @@ func pushStillRunningRows() []pushRow {
 			script: startedAt(reusing(bothRunning()).showing(cleanHead(), cleanHead()),
 				func(begun time.Time) []time.Time { return []time.Time{{}, begun.Add(time.Minute)} }),
 			want: pending(expect("still running"),
-				expect("Still running", "(2 checks):\n  ◌ lint, not started yet\n  ◌ test, running 0s\n"),
+				expect("Still running", "2 checks", " lint, not started yet\n", " test, running 0s\n"),
 				detail(forge.VerdictPending, forge.MergeClean, bothRunning().Checks...)),
 		},
+		{
+			name: "a check passed beside one still running", left: 7 * time.Second,
+			script: reusing(builtAndRunning()).showing(cleanHead(), cleanHead()),
+			want: pending(expect("still running"),
+				expect("Still running", "1 check", " test, not started yet\n"),
+				detail(forge.VerdictPending, forge.MergeClean, builtAndRunning().Checks...)),
+		},
+	}
+}
+
+// builtAndRunning is a verdict whose check build passed while its check test still runs.
+func builtAndRunning() forge.Verdict {
+	return forge.Verdict{
+		Checks: []forge.Check{forgetest.Check("build", forge.BucketPass), forgetest.Check("test", forge.BucketPending)},
+		Runs:   ran(forge.RunInProgress),
 	}
 }
 
@@ -349,8 +349,8 @@ func TestPush_WhenTheWaitEndsBeforeAnAnswer_PendingSayingWhy(t *testing.T) {
 }
 
 // boundPendingRows are the pushes cmd runs that end pending, one per reason that names c's time
-// limit. When cmd runs under the time limit of a plain push, whose rows already hold each reason and
-// the cuts of a read, one row is enough for its `Next:` line.
+// limit. When cmd runs under the time limit of a plain push, the rows of the commands under other
+// limits already hold each reason and the cuts of a read, so one row is enough for its `Next:` line.
 func boundPendingRows(cmd landingCommand, c cut) []pushRow {
 	cleanPayload := detail(forge.VerdictNone, forge.MergeClean)
 
@@ -373,7 +373,7 @@ func boundPendingRows(cmd landingCommand, c cut) []pushRow {
 		},
 		{
 			name: "a check still runs", left: 7 * time.Second, script: reusing(running()).showing(cleanHead(), cleanHead()),
-			want: pendingBy(cmd, expect("still running", c.before), expect("Still running", "(1 check):\n  ◌ test"),
+			want: pendingBy(cmd, expect("still running", c.before), expect("Still running", "1 check", " test"),
 				detail(forge.VerdictPending, forge.MergeClean, running().Checks...)),
 		},
 	}

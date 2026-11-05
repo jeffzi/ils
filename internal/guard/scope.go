@@ -172,7 +172,7 @@ func (w *walker) stmtInPlace(stmt *syntax.Stmt, sc *scope) {
 	}
 
 	before := sc.redirects
-	sc.redirects = slices.Concat(before, redirectsOf(stmt, w.reading(sc)))
+	sc.redirects = slices.Concat(before, openedIn(redirectsOf(stmt, w.reading(sc)), sc.dir))
 	w.compound(stmt.Cmd, sc)
 	sc.redirects = before
 }
@@ -375,10 +375,11 @@ func (w *walker) substitutions(node syntax.Node, sc *scope) {
 	})
 }
 
-// placed returns inv with where it runs: its directory, where it points git, and where a gh
-// invocation's gh reads its config.
+// placed returns inv with where it runs: its directory, which its own redirects are opened from,
+// where it points git, and where a gh invocation's gh reads its config.
 func (w *walker) placed(inv Invocation, sc *scope) Invocation {
 	inv.Dir = sc.dir
+	inv.Redirects = openedIn(inv.Redirects, sc.dir)
 	inv.enclosing = sc.redirects
 	inv.follows = sc.head
 	if inv.Tool == Git {
@@ -559,6 +560,10 @@ func gitVariableMarks(names []string) []Mark {
 
 	return marks
 }
+
+// ---------------------------------------------------------------------------
+// Loops and variable assignment
+// ---------------------------------------------------------------------------
 
 // forClause walks a `for` loop. When the walk reads a value for each word of the loop's list (see
 // loopValues), it walks the body once per value, the variable holding it as a literal assignment

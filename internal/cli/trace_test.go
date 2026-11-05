@@ -14,6 +14,7 @@ import (
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
+	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/github/ghtest"
@@ -23,7 +24,6 @@ import (
 	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
-// anyOrder lets cmp compare two slices of strings whatever the order of their elements.
 func anyOrder() cmp.Option {
 	return cmpopts.SortSlices(func(a, b string) bool { return a < b })
 }
@@ -81,7 +81,7 @@ func commandLines(recorded [][]string) []string {
 }
 
 func TestApp_Run_WhenDebugIsOnDuringALanding_TracesTheLandingOnStderrAlone(t *testing.T) {
-	// Not parallel: the fake `gh` is found through `GH_PATH`, which `go-gh` reads from the
+	// Not parallel: the fake `gh` is found through `GH_PATH`, which the runner reads from the
 	// environment of the whole process.
 	repo := forge.Repo{Host: "github.com", Owner: "acme", Name: "widgets"}
 	f := gittest.New(t, trunk)
@@ -127,12 +127,12 @@ func TestApp_Run_WhenDebugIsOn_DrawsEachRecordTimedFromLaunchWithTimesDim(t *tes
 		for _, record := range []slog.Record{
 			debugRecord(app.Launch.Add(1500*time.Millisecond), "wait",
 				slog.String("read", "merge-state"), slog.String("state", "unknown"), slog.Duration("window", 30*time.Second)),
-			debugRecord(app.Launch.Add(2250*time.Millisecond), "exec",
-				slog.String("tool", "gh"), slog.Any("args", []string{"pr", "view", "12"}), slog.Int64("exit", 0),
-				slog.Duration("duration", 1234*time.Millisecond)),
-			debugRecord(app.Launch.Add(3*time.Second), "exec",
-				slog.String("tool", "gh"), slog.Any("args", []string{"pr", "checks", "12"}), slog.String("error", "signal: killed"),
-				slog.Duration("duration", 30*time.Millisecond)),
+			debugRecord(app.Launch.Add(2250*time.Millisecond), child.ExecMessage,
+				slog.String(child.KeyTool, "gh"), slog.Any(child.KeyArgs, []string{"pr", "view", "12"}), slog.Int64(child.KeyExit, 0),
+				slog.Duration(child.KeyDuration, 1234*time.Millisecond)),
+			debugRecord(app.Launch.Add(3*time.Second), child.ExecMessage,
+				slog.String(child.KeyTool, "gh"), slog.Any(child.KeyArgs, []string{"pr", "checks", "12"}), slog.String(child.KeyError, "signal: killed"),
+				slog.Duration(child.KeyDuration, 30*time.Millisecond)),
 		} {
 			assert.Check(t, deps.Logger.Handler().Handle(ctx, record))
 		}
@@ -152,6 +152,38 @@ func TestApp_Run_WhenDebugIsOn_DrawsEachRecordTimedFromLaunchWithTimesDim(t *tes
 	assert.Assert(t, len(lines) >= len(want), "stderr = %q", drawn.String())
 	assert.Check(t, is.DeepEqual(lines[len(lines)-len(want):], want))
 	assert.Check(t, is.Equal(drawn.LookOf(t, want[1], "+2.250s"), resulttest.Look{Dim: true}), "stderr = %q", drawn.String())
+	assert.Check(t, is.Equal(drawn.LookOf(t, want[1], "1.234s"), resulttest.Look{Dim: true}), "stderr = %q", drawn.String())
+}
+
+func TestApp_Run_WhenDebugIsOnAndACallRecordHoldsAnAttributeOfAnotherType_DrawsItAsAnyRecord(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		args slog.Attr
+		took slog.Attr
+		want []string
+	}{
+		{
+			name: "args not a list of words",
+			args: slog.String(child.KeyArgs, "pr view"), took: slog.Duration(child.KeyDuration, time.Second),
+			want: []string{child.KeyTool + "=gh", child.KeyArgs + "=pr", "view", child.KeyDuration + "=1s"},
+		},
+		{
+			name: "duration not a duration",
+			args: slog.Any(child.KeyArgs, []string{"pr"}), took: slog.String(child.KeyDuration, "slow"),
+			want: []string{child.KeyTool + "=gh", child.KeyArgs + "=[pr]", child.KeyDuration + "=slow"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := tracedReads(t, child.ExecMessage, func(h slog.Handler) []slog.Handler { return []slog.Handler{h} },
+				slog.String(child.KeyTool, "gh"), tt.args, tt.took)
+
+			assert.Check(t, is.DeepEqual(got, [][]string{tt.want}))
+		})
+	}
 }
 
 func TestApp_Run_WhenDebugIsOn_LeadsEachKeyByTheGroupsOpenWhenItWasAdded(t *testing.T) {
@@ -184,7 +216,7 @@ func TestApp_Run_WhenDebugIsOn_LeadsEachKeyByTheGroupsOpenWhenItWasAdded(t *test
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := tracedReads(t, func(h slog.Handler) []slog.Handler { return []slog.Handler{tt.build(h)} },
+			got := tracedReads(t, "read", func(h slog.Handler) []slog.Handler { return []slog.Handler{tt.build(h)} },
 				slog.String("state", "clean"))
 
 			assert.Check(t, is.DeepEqual(got, [][]string{tt.want}))
@@ -197,7 +229,7 @@ func TestApp_Run_WhenDebugHandlerIsDerivedTwice_TheDerivationsShareNothing(t *te
 
 	// Three attributes appended one by one leave the slice with spare capacity, so a derivation
 	// that stopped copying would let the second one write over the first one's last attribute.
-	got := tracedReads(t, func(h slog.Handler) []slog.Handler {
+	got := tracedReads(t, "read", func(h slog.Handler) []slog.Handler {
 		base := h.WithAttrs([]slog.Attr{slog.Int("run", 1), slog.Int("try", 2), slog.String("branch", "topic")})
 		first := base.WithAttrs([]slog.Attr{slog.String("stage", "head")})
 		_ = base.WithAttrs([]slog.Attr{slog.String("stage", "checks")})
@@ -209,12 +241,10 @@ func TestApp_Run_WhenDebugHandlerIsDerivedTwice_TheDerivationsShareNothing(t *te
 }
 
 // tracedReads runs `ils push -d` with a push that has each handler derive builds from the debug
-// logger's handle one record of message read holding attrs, and returns the key=value pairs of each
-// line traced for such a record, in order.
-func tracedReads(t *testing.T, derive func(slog.Handler) []slog.Handler, attrs ...slog.Attr) [][]string {
+// logger's handle one record of message holding attrs, and returns the words after the message of
+// each line traced for such a record, in order.
+func tracedReads(t *testing.T, message string, derive func(slog.Handler) []slog.Handler, attrs ...slog.Attr) [][]string {
 	t.Helper()
-
-	const message = "read"
 
 	app := outside(t)
 	app.SetPush(func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {

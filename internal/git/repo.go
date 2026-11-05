@@ -15,6 +15,9 @@ import (
 // MinimumVersion is the oldest git ils works with: the git of Ubuntu 22.04 LTS.
 const MinimumVersion = "2.34.1"
 
+// BranchRefPrefix is what a ref name starts with when the ref is a branch.
+const BranchRefPrefix = "refs/heads/"
+
 const (
 	// versionPrefix starts the first line of `git --version`.
 	versionPrefix = "git version "
@@ -24,8 +27,7 @@ const (
 	// versionComponents counts the numeric components of a version: major, minor, patch.
 	versionComponents = 3
 
-	origin   = "origin"
-	headsRef = "refs/heads/"
+	origin = "origin"
 
 	// noRemoteCode is the exit of `git remote get-url` for a remote that is not configured.
 	noRemoteCode = 2
@@ -154,7 +156,7 @@ func (r Repo) HeadSHA(ctx context.Context) (string, error) {
 // HasCommits reports whether the local branch has a commit; one made with `git switch --orphan`
 // has none until the first commit on it.
 func (r Repo) HasCommits(ctx context.Context, branch string) (bool, error) {
-	return r.holds(ctx, "show-ref", "--verify", "--quiet", headsRef+branch)
+	return r.holds(ctx, "show-ref", "--verify", "--quiet", BranchRefPrefix+branch)
 }
 
 // GitDir returns the absolute path of the git directory git finds when given the global options,
@@ -323,7 +325,7 @@ func (r Repo) LocalTrunkAhead(ctx context.Context, trunk string) (ahead bool, pa
 		return false, nil, err
 	}
 
-	past, err = r.commits(ctx, headsRef+trunk, excludeTrunk(trunk))
+	past, err = r.commits(ctx, BranchRefPrefix+trunk, excludeTrunk(trunk))
 	if err != nil {
 		return false, nil, err
 	}
@@ -338,7 +340,7 @@ func (r Repo) LocalTrunkAhead(ctx context.Context, trunk string) (ahead bool, pa
 func (r Repo) OwnCommits(ctx context.Context, tip, trunk string, branches []string) ([]Commit, error) {
 	revisions := []string{"--no-merges", tip, excludeTrunk(trunk)}
 	for _, branch := range branches {
-		revisions = append(revisions, "^"+headsRef+branch)
+		revisions = append(revisions, "^"+BranchRefPrefix+branch)
 	}
 
 	return r.commits(ctx, revisions...)
@@ -607,7 +609,7 @@ func (r Repo) CheckedOutElsewhere(ctx context.Context, branch string) (bool, err
 			continue
 		}
 
-		if line != "branch "+headsRef+branch {
+		if line != "branch "+BranchRefPrefix+branch {
 			continue
 		}
 
@@ -729,7 +731,7 @@ func (r Repo) optionalLine(ctx context.Context, args ...string) (value string, f
 
 // currentBranch returns the branch HEAD is on; onBranch is false on a detached HEAD.
 func (r Repo) currentBranch(ctx context.Context) (branch string, onBranch bool, err error) {
-	return r.symbolicRef(ctx, "HEAD", headsRef)
+	return r.symbolicRef(ctx, "HEAD", BranchRefPrefix)
 }
 
 // symbolicRef returns the ref the symbolic ref names, without prefix; found is false when ref is not
@@ -746,7 +748,7 @@ func (r Repo) symbolicRef(ctx context.Context, ref, prefix string) (name string,
 // localBranches returns the names of the local branches that git for-each-ref lists with filters,
 // such as `--contains <sha>`; it returns nil when there are none.
 func (r Repo) localBranches(ctx context.Context, filters ...string) ([]string, error) {
-	args := slices.Concat([]string{"for-each-ref", "--format=%(refname)", headsRef}, filters)
+	args := slices.Concat([]string{"for-each-ref", "--format=%(refname)", BranchRefPrefix}, filters)
 
 	result, err := r.Runner.Run(ctx, args...)
 	if err != nil {
@@ -756,7 +758,7 @@ func (r Repo) localBranches(ctx context.Context, filters ...string) ([]string, e
 	var branches []string
 
 	for line := range strings.SplitSeq(result.Stdout, "\n") {
-		if branch, isBranch := strings.CutPrefix(line, headsRef); isBranch {
+		if branch, isBranch := strings.CutPrefix(line, BranchRefPrefix); isBranch {
 			branches = append(branches, branch)
 		}
 	}

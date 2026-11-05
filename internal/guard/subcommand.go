@@ -246,7 +246,9 @@ func optionsOf(sub string) knownOptions {
 	return knownOptions{}
 }
 
-// add records the option word of subcommandOptionTable.
+// add records one word of a subcommandOptionTable paragraph. A word led by `-` gives the letters
+// of the short options that take a value. Any other word is a long option, which takes a value when
+// it ends in `=`; one led by `[no-]` also records its `no-` form as an option that takes none.
 func (k *knownOptions) add(word string) {
 	if letters, ok := strings.CutPrefix(word, "-"); ok {
 		k.valuedLetters = letters

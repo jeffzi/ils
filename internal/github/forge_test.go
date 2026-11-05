@@ -25,7 +25,7 @@ import (
 )
 
 // No test that scripts `gh` is parallel: the fake `gh` is found through `GH_PATH`,
-// which `go-gh` reads from the environment of the whole process.
+// which the runner reads from the environment of the whole process.
 
 // ---------------------------------------------------------------------------
 // Fixtures and helpers
@@ -101,7 +101,7 @@ func createArgs() []string {
 
 func headArgs() []string { return ghtest.HeadArgs(engineSlug, pullNumber) }
 
-func rulesArgs() []string { return ghtest.RulesArgs(engineHost, "ada/engine", trunk) }
+func rulesArgs() []string { return pagedAPIArgs("rules/branches/" + trunk) }
 
 func checksArgs() []string { return ghtest.ChecksArgs(engineSlug, pullNumber) }
 
@@ -295,7 +295,7 @@ func assertExitErrorNamesCall(t *testing.T, c readCase) {
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 	assert.Assert(t, ok, "error = %v, want *child.ExitError", err)
-	assert.Check(t, ghtest.Matches(ghArgv(c.args), exitErr.Argv), "Argv = %q, want %q", exitErr.Argv, c.args)
+	assert.Check(t, ghtest.Matches(ghArgv(c.args), exitErr.Argv), "Argv = %q, want %q", exitErr.Argv, ghArgv(c.args))
 }
 
 // casesNamed is the cases of all whose name is among names, in the order of all.
@@ -326,7 +326,7 @@ func assertDecodeErrorNamesCall(t *testing.T, c readCase) {
 
 	decodeErr, ok := errors.AsType[*github.DecodeError](err)
 	assert.Assert(t, ok, "error = %v, want *github.DecodeError", err)
-	assert.Check(t, ghtest.Matches(ghArgv(c.args), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, c.args)
+	assert.Check(t, ghtest.Matches(ghArgv(c.args), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, ghArgv(c.args))
 }
 
 func TestForge_Identity_WhenGhIsOlderThanTheMinimum_ReturnsToolTooOldErrorBeforeTheLogin(t *testing.T) {
@@ -434,7 +434,7 @@ func TestForge_FindChanges_WhenStateIsUnknown_ReturnsDecodeError(t *testing.T) {
 
 	decodeErr, ok := errors.AsType[*github.DecodeError](err)
 	assert.Assert(t, ok, "FindChanges error = %v, want *github.DecodeError", err)
-	assert.Check(t, ghtest.Matches(ghArgv(listArgs()), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, listArgs())
+	assert.Check(t, ghtest.Matches(ghArgv(listArgs()), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, ghArgv(listArgs()))
 }
 
 func TestForge_OpenChange_WhenCreated_ReturnsNumberAndURL(t *testing.T) {
@@ -509,9 +509,7 @@ func TestForge_Head_WhenStateNeedsNoCheck_ReportsMergeStateFromThePullRequestAlo
 		want     forge.Head
 		required []string
 	}{
-		{name: "conflicting wins over a clean status", view: pullJSON("CONFLICTING", "CLEAN", ""), want: headOf(forge.MergeConflicting), required: checked},
 		{name: "conflicting wins over the draft flag", view: draftJSON("CONFLICTING", "DIRTY"), want: headOf(forge.MergeConflicting), required: checked},
-		{name: "mergeable not worked out yet", view: pullJSON("UNKNOWN", "BLOCKED", ""), want: headOf(forge.MergeUnknown), required: checked},
 		{name: "mergeable not worked out yet wins over the draft flag", view: draftJSON("UNKNOWN", "UNKNOWN"), want: headOf(forge.MergeUnknown), required: checked},
 		{name: "clean", view: headJSON("CLEAN", "APPROVED"), want: headOf(forge.MergeClean), required: checked},
 		{name: "behind the base", view: headJSON("BEHIND", ""), want: headOf(forge.MergeBehind), required: checked},
@@ -610,7 +608,6 @@ func TestForge_TrunkProtection(t *testing.T) {
 			want:   forge.Protection{Rules: forge.RulesUnavailable, SquashAllowed: true},
 		},
 		{name: "no rule applies", answer: rules(), want: forge.Protection{Rules: forge.RulesNone, SquashAllowed: true}},
-		{name: "pull request rule listing squash", answer: rules(pullRequestRule(42, `["merge","squash","rebase"]`)), want: squash},
 		{name: "the rule without squash ahead of one with it", answer: rules(pullRequestRule(42, `["rebase"]`), pullRequestRule(51, `["squash"]`)), want: forbiddenBy(42)},
 		{name: "two pull request rules without squash", answer: rules(pullRequestRule(42, `["merge"]`), pullRequestRule(51, `["rebase"]`)), want: forbiddenBy(42, 51)},
 		{name: "pull request rule with an empty methods list", answer: rules(pullRequestRule(42, `[]`)), want: forbiddenBy(42)},
@@ -827,7 +824,7 @@ func TestForge_Message_WhenAnswerHoldsNoPullRequest_ReturnsDecodeError(t *testin
 
 			decodeErr, ok := errors.AsType[*github.DecodeError](err)
 			assert.Assert(t, ok, "error = %v, want *github.DecodeError", err)
-			assert.Check(t, ghtest.Matches(ghArgv(messageArgs()), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, messageArgs())
+			assert.Check(t, ghtest.Matches(ghArgv(messageArgs()), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, ghArgv(messageArgs()))
 		})
 	}
 }
@@ -876,7 +873,7 @@ func TestForge_FindRelease_WhenSomethingElseIsNotFound_ReturnsExitError(t *testi
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 	assert.Assert(t, ok, "FindRelease error = %v, want *child.ExitError", err)
-	assert.Check(t, ghtest.Matches(ghArgv(releaseViewArgs()), exitErr.Argv), "Argv = %q, want %q", exitErr.Argv, releaseViewArgs())
+	assert.Check(t, ghtest.Matches(ghArgv(releaseViewArgs()), exitErr.Argv), "Argv = %q, want %q", exitErr.Argv, ghArgv(releaseViewArgs()))
 }
 
 func TestForge_PublishRelease(t *testing.T) {

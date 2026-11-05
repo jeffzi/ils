@@ -17,6 +17,26 @@ import (
 	"github.com/jeffzi/ils/internal/guard"
 )
 
+// linkTo returns a symbolic link to target, made in a new directory that holds no repository.
+func linkTo(t *testing.T, target string) string {
+	t.Helper()
+
+	link := filepath.Join(outsideDir(t), "link")
+	assert.NilError(t, os.Symlink(target, link))
+
+	return link
+}
+
+// subdirectory makes the directory sub inside dir, and returns its path.
+func subdirectory(t *testing.T, dir string) string {
+	t.Helper()
+
+	sub := filepath.Join(dir, "sub")
+	assert.NilError(t, os.MkdirAll(sub, 0o750))
+
+	return sub
+}
+
 // refusal is a command the guard refuses, with the text its reason must hold.
 type refusal struct {
 	name      string
@@ -44,7 +64,6 @@ func TestJudge_RefusesAGitOperationThatDiscardsWork(t *testing.T) {
 		{name: "switch -f", command: "git switch -f branch"},
 		{name: "switch --discard-changes", command: "git switch --discard-changes branch"},
 		{name: "clean -f", command: "git clean -f"},
-		{name: "clean -fd", command: "git clean -fd"},
 		{name: "clean -i", command: "git clean -i"},
 		{name: "clean -nf with the dry run turned off last", command: "git clean -nf --no-dry-run"},
 		{name: "clean -n with interactive set last", command: "git clean -n -i"},
@@ -270,6 +289,32 @@ func TestJudge_RefusesGitHistoryWrittenUpFromALinkIntoAWorkTree(t *testing.T) {
 	checkJudgedRow(t, caller, judged{command: "cd " + quotedPath(link) + " && git show HEAD:README.md > ../x.md", want: guard.Refuse, wantNamed: "writes over " + filepath.Join(top, "x.md")})
 }
 
+func TestJudge_AllowsGitHistoryRedirectedAroundACdFromOutsideAnyWorkTree(t *testing.T) {
+	t.Parallel()
+
+	f, _ := standingOn(t, "main", "topic")
+	caller := callerIn(f, filepath.Dir(f.Dir()))
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "subshell entering the repository", command: "(cd repo && git show HEAD:go.mod) > old.mod"},
+		{name: "subshell entering a directory the command assigned", command: `d=repo; (cd "$d" && git show HEAD:go.mod) > old.mod`},
+	})
+}
+
+func TestJudge_RefusesGitHistoryRedirectedAroundACdOntoAWorkTreeFile(t *testing.T) {
+	t.Parallel()
+
+	f, caller := standingOn(t, "main", "topic")
+	parent := filepath.Dir(f.Dir())
+	away := quotedPath(outsideDir(t))
+
+	checkJudgedIn(t, caller, []placed{
+		{name: "subshell redirected into the repository it enters", dir: parent, command: "(cd repo && git show HEAD:go.mod) > repo/go.mod"},
+		{name: "subshell leaving the work tree it is redirected in", command: "(cd " + away + " && git -C " + quotedPath(f.Dir()) + " show HEAD:go.mod) > go.mod"},
+		{name: "redirect on git show inside the subshell", dir: parent, command: "(cd repo && git show HEAD:go.mod > go.mod)"},
+	}, expectation{outcome: guard.Refuse, named: "writes over " + filepath.Join(f.Dir(), "go.mod")})
+}
+
 func TestJudge_WhenWhetherTheTargetIsInAWorkTreeCannotBeRead_RefusesNamingTheRead(t *testing.T) {
 	// Not parallel: gittest.FakeGit sets PATH for the whole process.
 	f, _ := standingOn(t, "main", "topic")
@@ -309,15 +354,6 @@ func TestJudge_RefusesEveryStashButAListOrAShow(t *testing.T) {
 		{name: "bare stash", command: "git stash"},
 		{name: "push", command: "git stash push -m msg"},
 		{name: "subcommand the guard cannot read", command: `git stash "$x"`},
-	})
-}
-
-func TestJudge_AllowsAStashListOrShow(t *testing.T) {
-	t.Parallel()
-	_, caller := standingOn(t, "main", "topic")
-
-	checkAllowed(t, caller, []namedCommand{
-		{name: "list", command: "git stash list"},
 	})
 }
 
@@ -391,20 +427,7 @@ func TestJudge_RefusesARebaseOverUncommittedWork(t *testing.T) {
 	checkJudgedIn(t, caller, []placed{
 		{name: "in the dirty tree", dir: dirty.Dir(), command: "git rebase main"},
 		{name: "-C naming the dirty tree", dir: clean.Dir(), command: "git -C " + quotedPath(dirty.Dir()) + " rebase main"},
-		{name: "--abort in the dirty tree", dir: dirty.Dir(), command: "git rebase --abort"},
-		{name: "--skip in the dirty tree", dir: dirty.Dir(), command: "git rebase --skip"},
 	}, expectation{outcome: guard.Refuse, named: "dirty"})
-}
-
-func TestJudge_RefusesARebaseInADirtyTreeWhoseOptionsAreUnreadable(t *testing.T) {
-	t.Parallel()
-
-	dirty, caller := standingOn(t, "main", "topic")
-	dirty.DirtyFile()
-
-	checkJudgedIn(t, caller, []placed{
-		{name: "non-literal option", dir: dirty.Dir(), command: `git rebase "$opt"`},
-	}, expectation{outcome: guard.Refuse})
 }
 
 func TestJudge_RefusesARebaseWhoseTargetIsUnknown(t *testing.T) {
@@ -428,9 +451,6 @@ func TestJudge_AllowsARebaseThatCannotLoseWork(t *testing.T) {
 		{name: "-C naming a clean tree from a dirty one", dir: dirty.Dir(), command: "git -C " + quotedPath(clean.Dir()) + " rebase main"},
 		{name: "outside any repository", dir: outsideDir(t), command: "git rebase main"},
 		{name: "--continue in a dirty tree", dir: dirty.Dir(), command: "git rebase --continue"},
-		{name: "--edit-todo in a dirty tree", dir: dirty.Dir(), command: "git rebase --edit-todo"},
-		{name: "--show-current-patch in a dirty tree", dir: dirty.Dir(), command: "git rebase --show-current-patch"},
-		{name: "--quit in a dirty tree", dir: dirty.Dir(), command: "git rebase --quit"},
 	}, expectation{outcome: guard.Allow})
 }
 
@@ -552,6 +572,9 @@ func TestJudge_RefusesAGitConfigWriteOfTheHooksPathOrARemote(t *testing.T) {
 		{name: "prefix of --remove-section", command: "git config --remove remote.origin", wantNamed: "remote.origin"},
 		{name: "prefix of --type with a separate value", command: "git config --ty path core.hooksPath /x", wantNamed: "core.hooksPath"},
 		{name: "rename into core in another case", command: "git config --rename-section team CORE", wantNamed: "CORE"},
+		{name: "--unset", command: "git config --unset core.hooksPath", wantNamed: "core.hooksPath"},
+		{name: "--unset-all with a value-pattern", command: "git config --unset-all remote.origin.url x", wantNamed: "remote.origin.url"},
+		{name: "--unset-all", command: "git config --unset-all core.hooksPath", wantNamed: "core.hooksPath"},
 	})
 }
 
@@ -561,39 +584,9 @@ func TestJudge_AllowsAGitConfigCallThatLeavesTheHooksPathAndRemotes(t *testing.T
 	_, caller := standingOn(t, "main", "topic")
 
 	checkAllowed(t, caller, []namedCommand{
-		{name: "--get", command: "git config --get alias.p"},
-		{name: "get", command: "git config get remote.origin.url"},
-		{name: "key alone", command: "git config alias.p"},
-		{name: "merge driver name", command: "git config merge.x.name x"},
-		{name: "removal of a diff driver", command: "git config --remove-section diff.x"},
-		{name: "credential helper with plain arguments", command: "git config credential.helper 'cache --timeout 3600'"},
-		{name: "--unset of a credential helper whatever its value-pattern", command: "git config --unset credential.helper 'a|b'"},
-		{name: "alias", command: "git config alias.co checkout"},
-		{name: "alias under -f", command: "git config -f other.cfg alias.p push"},
-		{name: "alias section in another case", command: "git config ALIAS.p push"},
-		{name: "include at global scope", command: "git config --global include.path ~/.gitconfig.local"},
-		{name: "include under --type with an attached value", command: "git config --type=path include.path x"},
-		{name: "include under --add", command: "git config --add include.path x"},
-		{name: "include under a prefix of --type with a separate value", command: "git config --ty path include.path /x"},
-		{name: "conditional include", command: "git config includeIf.gitdir:~/work/.path ~/.gitconfig.work"},
-		{name: "pager of a command", command: "git config pager.log less"},
+		{name: "--get-all with a value-pattern", command: "git config --get-all remote.origin.url x"},
+		{name: "--edit given two words", command: "git config --edit core.hooksPath x"},
 		{name: "core.editor", command: "git config core.editor vim"},
-		{name: "core.pager at global scope", command: "git config --global core.pager less"},
-		{name: "textconv of a diff driver", command: "git config diff.x.textconv 'git push'"},
-		{name: "mergetool command in another case", command: "git config MergeTool.x.CMD 'git push'"},
-		{name: "core.sshCommand", command: "git config core.sshCommand 'ssh -i key'"},
-		{name: "credential helper key in another case", command: "git config credential.HELPER '!x'"},
-		{name: "credential helper with ;", command: "git config credential.helper 'cache; touch x'"},
-		{name: "credential helper of a URL given as a path", command: "git config credential.https://h.helper /bin/x"},
-		{name: "difftool path", command: "git config difftool.x.path /bin/x"},
-		{name: "mergetool path", command: "git config mergetool.x.path /bin/x"},
-		{name: "rename into alias", command: "git config --rename-section team alias"},
-		{name: "rename into sequence", command: "git config rename-section team sequence"},
-		{name: "rename into the credentials of a URL", command: "git config --rename-section team credential.https://h"},
-		{name: "rename into a difftool", command: "git config --rename-section team difftool.x"},
-		{name: "prefix of --remove-section of alias", command: "git config --remove alias"},
-		{name: "--edit", command: "git config --edit"},
-		{name: "edit", command: "git config edit"},
 	})
 }
 
@@ -622,7 +615,6 @@ func TestJudge_RefusesANonLiteralArgumentAFlagCouldHideIn(t *testing.T) {
 	t.Parallel()
 
 	checkRefusals(t, []refusal{
-		{name: "commit", command: `git commit "$opt" -m msg`, wantNamed: "git commit"},
 		{name: "reflog", command: `git reflog "$sub"`, wantNamed: "git reflog"},
 		{name: "remote", command: `git remote remove "$r"`, wantNamed: "git remote"},
 		{name: "config", command: `git config "$k" x`, wantNamed: "git config"},

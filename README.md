@@ -276,12 +276,12 @@ When Ctrl-C or SIGTERM (the signal `kill` sends by default) stops `ils merge`, t
 
 ### A merge made elsewhere
 
-When the branch's pull request is already merged, on the web or by a run of `ils merge` that was
-cut short, `ils merge` merges nothing and reads no check. It deletes the branch on origin if it is
-still there, then ends as [How merge ends](#how-merge-ends) describes. This also covers a pull
-request that got an "Update branch" or a committed suggestion on the web before its merge. When
-the branch has commits the merge did not carry, `ils merge` refuses and lists them, and `Next:`
-says to start a new branch and cherry-pick them.
+When the branch's pull request is already merged into the trunk, on the web or by a run of `ils
+merge` that was cut short, `ils merge` merges nothing and reads no check. It deletes the branch on
+origin if it is still there, then ends as [How merge ends](#how-merge-ends) describes. This also
+covers a pull request that got an "Update branch" or a committed suggestion on the web before its
+merge. When the branch has commits the merge did not carry, `ils merge` refuses and lists them, and
+`Next:` says to start a new branch and cherry-pick them.
 
 ## Status
 

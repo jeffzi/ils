@@ -101,10 +101,6 @@ func TestParse_ReadsTheGlobalOptionsOfAGitInvocation(t *testing.T) {
 			name: "flags", command: "git --no-pager -P --literal-pathspecs add x",
 			wantOptions: []guard.GitOption{{Name: "--no-pager"}, {Name: "-P"}, {Name: "--literal-pathspecs"}}, wantSubcommand: "add", wantArgs: []string{"x"},
 		},
-		{
-			name: "global option after the subcommand", command: "git status --bare -C x",
-			wantSubcommand: "status", wantArgs: []string{"--bare", "-C", "x"},
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

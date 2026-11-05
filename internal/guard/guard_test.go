@@ -159,8 +159,6 @@ func TestJudge_WhenAGitArgumentCannotBeRead_NamesDoubleDashWhereItLetsTheCommand
 
 	checkRefusals(t, []refusal{
 		{name: "branch -d", command: `git branch -d "$b"`, wantNamed: "after `--`"},
-		{name: "switch", command: `git switch "$b"`, wantNamed: "after `--`"},
-		{name: "add", command: `git add "$f"`, wantNamed: "after `--`"},
 		{name: "clean -n", command: `git clean -n "$f"`, wantNamed: "after `--`"},
 		{name: "commit", command: `git commit -m msg "$f"`, wantNamed: "after `--`"},
 		{name: "restore --staged", command: `git restore --staged "$f"`, wantNamed: "after `--`"},

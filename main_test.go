@@ -237,40 +237,35 @@ func outsideRepository(t *testing.T, extra ...string) (dir string, env []string)
 	return dir, append(env, extra...)
 }
 
-func TestLaunched(t *testing.T) {
+func TestLaunched_WhenOnlyStdoutIsATerminal_CountsOnlyStdoutAsOne(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		terminal func(stdout, stderr *os.File) *os.File
-		name     string
-	}{
-		{name: "stdout a terminal", terminal: func(stdout, _ *os.File) *os.File { return stdout }},
-		{name: "stderr a terminal", terminal: func(_, stderr *os.File) *os.File { return stderr }},
+	stdout, stderr := opened(t, "stdout"), opened(t, "stderr")
+	isTerminal := func(fd uintptr) bool { return fd == stdout.Fd() }
+
+	app := main.Launched(stdout, stderr, main.Terminal{IsTerminal: isTerminal})
+
+	assert.Check(t, app.StdoutTerminal, "stdout was not counted as a terminal")
+	assert.Check(t, !app.StderrTerminal, "stderr was counted as a terminal")
+}
+
+func TestLaunched_AsksTheDisplayQueriesOfStderr(t *testing.T) {
+	t.Parallel()
+
+	stdout, stderr := opened(t, "stdout"), opened(t, "stderr")
+	size := func(fd uintptr) (int, int, error) {
+		if fd == stderr.Fd() {
+			return 132, 40, nil
+		}
+
+		return 7, 3, nil
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	foreground := func(fd uintptr) bool { return fd != stderr.Fd() }
 
-			stdout, stderr := opened(t, "stdout"), opened(t, "stderr")
-			terminal := tt.terminal(stdout, stderr)
-			isTerminal := func(fd uintptr) bool { return fd == terminal.Fd() }
-			size := func(fd uintptr) (int, int, error) {
-				if fd == stderr.Fd() {
-					return 132, 40, nil
-				}
+	app := main.Launched(stdout, stderr, main.Terminal{IsTerminal: func(uintptr) bool { return true }, Size: size, Foreground: foreground})
 
-				return 7, 3, nil
-			}
-			foreground := func(fd uintptr) bool { return fd != stderr.Fd() }
-
-			app := main.Launched(stdout, stderr, main.Terminal{IsTerminal: isTerminal, Size: size, Foreground: foreground})
-
-			assert.Check(t, is.Equal(app.StdoutTerminal, terminal == stdout))
-			assert.Check(t, is.Equal(app.StderrTerminal, terminal == stderr))
-			assert.Check(t, is.Equal(app.StderrWidth(), 132))
-			assert.Check(t, !app.StderrForeground(), "the foreground query was not asked of stderr")
-		})
-	}
+	assert.Check(t, is.Equal(app.StderrWidth(), 132))
+	assert.Check(t, !app.StderrForeground(), "the foreground query was not asked of stderr")
 }
 
 func TestLaunched_WhenTheWidthOfStderrCannotBeRead_CountsItAsNone(t *testing.T) {

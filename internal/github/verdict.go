@@ -74,10 +74,6 @@ func (f *Forge) checksAndRuns(ctx context.Context, repo forge.Repo, query forge.
 	}
 
 	verdict := forge.Verdict{Checks: checks, Runs: runs}
-	if len(query.Required) == 0 {
-		return verdict, nil
-	}
-
 	for i := range checks {
 		checks[i].Required = slices.Contains(query.Required, checks[i].Name)
 	}
@@ -301,17 +297,17 @@ type actionsRunsPage struct {
 // A check run is keyed by its workflow and name: when one is reported more than once, the most
 // recent one stands for it.
 func (f *Forge) CommitVerdict(ctx context.Context, repo forge.Repo, sha string) (forge.Verdict, error) {
-	runPages, err := readEachPage[actionsRunsPage](ctx, f.runner(), paginatedAPIArgs(repo, "actions/runs?head_sha="+sha))
+	runPages, err := readEachPage[actionsRunsPage](ctx, f.runner(), repoAPIArgs(repo, "actions/runs?head_sha="+sha, "--paginate"))
 	if err != nil {
 		return forge.Verdict{}, err
 	}
 
-	checkPages, err := readEachPage[checkRunsPage](ctx, f.runner(), paginatedAPIArgs(repo, "commits/"+sha+"/check-runs"))
+	checkPages, err := readEachPage[checkRunsPage](ctx, f.runner(), repoAPIArgs(repo, "commits/"+sha+"/check-runs", "--paginate"))
 	if err != nil {
 		return forge.Verdict{}, err
 	}
 
-	statusPages, err := readEachPage[combinedStatusPage](ctx, f.runner(), paginatedAPIArgs(repo, "commits/"+sha+"/status"))
+	statusPages, err := readEachPage[combinedStatusPage](ctx, f.runner(), repoAPIArgs(repo, "commits/"+sha+"/status", "--paginate"))
 	if err != nil {
 		return forge.Verdict{}, err
 	}
@@ -350,21 +346,17 @@ type commitSuites struct {
 func suitesOf(pages []actionsRunsPage) commitSuites {
 	suites := commitSuites{workflowOf: map[int64]string{}, elsewhere: map[int64]bool{}}
 
-	var runs []actionsRun
-
 	for _, page := range pages {
-		runs = append(runs, page.Runs...)
-	}
+		for _, run := range page.Runs {
+			if run.Event != "push" {
+				suites.elsewhere[run.CheckSuite] = true
 
-	for _, run := range runs {
-		if run.Event != "push" {
-			suites.elsewhere[run.CheckSuite] = true
+				continue
+			}
 
-			continue
+			suites.workflowOf[run.CheckSuite] = run.Name
+			suites.runs = append(suites.runs, forge.Run{Name: run.Name, Status: runStatusOf(run.Status)})
 		}
-
-		suites.workflowOf[run.CheckSuite] = run.Name
-		suites.runs = append(suites.runs, forge.Run{Name: run.Name, Status: runStatusOf(run.Status)})
 	}
 
 	return suites
@@ -380,33 +372,29 @@ type checkKey struct {
 // created last, leaving out the check runs of suites that judge something else. A check run with
 // no Actions run behind it, such as one a GitHub App reports, has no workflow.
 func latestCheckRuns(pages []checkRunsPage, suites commitSuites) []forge.Check {
-	var runs []commitCheckRun
-
-	for _, page := range pages {
-		runs = append(runs, page.CheckRuns...)
-	}
-
 	var kept []commitCheckRun
 
 	at := map[checkKey]int{}
 
-	for _, run := range runs {
-		if suites.elsewhere[run.CheckSuite.ID] {
-			continue
-		}
+	for _, page := range pages {
+		for _, run := range page.CheckRuns {
+			if suites.elsewhere[run.CheckSuite.ID] {
+				continue
+			}
 
-		key := checkKey{workflow: suites.workflowOf[run.CheckSuite.ID], name: run.Name}
+			key := checkKey{workflow: suites.workflowOf[run.CheckSuite.ID], name: run.Name}
 
-		i, seen := at[key]
-		if !seen {
-			at[key] = len(kept)
-			kept = append(kept, run)
+			i, seen := at[key]
+			if !seen {
+				at[key] = len(kept)
+				kept = append(kept, run)
 
-			continue
-		}
+				continue
+			}
 
-		if run.ID > kept[i].ID {
-			kept[i] = run
+			if run.ID > kept[i].ID {
+				kept[i] = run
+			}
 		}
 	}
 
