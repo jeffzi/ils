@@ -699,7 +699,7 @@ func assertMayHaveTaken(t *testing.T, s *scene, got result.Result, cut cutPush) 
 	assertSays(t, why, expect(cut.reason))
 	assert.Check(t, is.Contains(text, topic))
 	assert.Check(t, is.Contains(text, shortSHA(cut.sha)))
-	assert.Check(t, strings.HasSuffix(text, "ils push\n"), "RenderText() = %q, want it to end on `ils push`", text)
+	assert.Check(t, strings.HasSuffix(text, "ils push\n"), "RenderStyled() = %q, want it to end on `ils push`", text)
 
 	return text
 }

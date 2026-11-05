@@ -18,30 +18,27 @@ import (
 // Text rendering
 // ---------------------------------------------------------------------------
 
-// RenderText returns r as the lines of what happened, the excerpt when there
-// is one, the reason labeled by the outcome unless r is done, and one Next
-// line unless nothing is left to do. A commit SHA in a line or in the reason
-// prints as its first seven characters; the Next line prints every SHA in
-// full. gitDir is the resolved git dir, or empty outside a repository.
+// RenderStyled returns r as the lines of what happened, the excerpt when
+// there is one, the reason labeled by the outcome unless r is done, and one
+// Next line unless nothing is left to do, drawn for a terminal of profile. A
+// commit SHA in a line or in the reason prints as its first seven characters;
+// the Next line prints every SHA in full. gitDir is the resolved git dir, or
+// empty outside a repository.
+//
+// A profile without color (NoTTY, ASCII) gets plain text, with no escape
+// sequence of this program's. Any other profile draws the outcome label, the
+// word Next, and each name in the style of its kind, and draws a command the
+// wording wraps in backticks without them, everything between drawn as a
+// command; the rest of the wording and the excerpt stay unstyled. On every
+// profile, the control characters inside names and the excerpt print spelled
+// out as visible text, such as \x1b for ESC, so that third-party text never
+// drives the terminal and the only escape sequences printed are this program's
+// own styling.
 //
 // It returns ErrNoReason when r is not done and has no reason, a *WordingError
 // when the program's own wording names a hook or a path under gitDir, and an
 // error wrapping ErrPlaceholders when a wording's placeholders and names do not
 // pair up.
-func RenderText(r Result, gitDir string) (string, error) {
-	return RenderStyled(r, gitDir, colorprofile.NoTTY)
-}
-
-// RenderStyled returns r as RenderText does, drawn for a terminal of profile.
-// A profile without color (NoTTY, ASCII) gets exactly what RenderText returns,
-// with no escape sequence of this program's. Any other profile draws the
-// outcome label, the word Next, and each name in the style of its kind, and
-// draws a command the wording wraps in backticks without them, everything
-// between drawn as a command; the rest of the wording and the excerpt stay
-// unstyled. On every profile, the control characters inside names and the
-// excerpt print spelled out as visible text, such as \x1b for ESC, so that
-// third-party text never drives the terminal and the only escape sequences
-// printed are this program's own styling. It returns the errors of RenderText.
 func RenderStyled(r Result, gitDir string, profile colorprofile.Profile) (string, error) {
 	view, err := check(r, gitDir)
 	if err != nil {
@@ -282,8 +279,9 @@ type Object struct {
 
 // RenderJSON returns r as one JSON object on one line. Every U+2028 and U+2029
 // in any of its strings is written as an escape, so the line holds neither.
-// gitDir is the resolved git dir, or empty outside a repository. It returns the
-// errors of RenderText, and an error wrapping the encoder's when the object
+// gitDir is the resolved git dir, or empty outside a repository. It returns
+// ErrNoReason, a *WordingError and an error wrapping ErrPlaceholders as
+// RenderStyled does, and an error wrapping the encoder's when the object
 // cannot be encoded.
 func RenderJSON(r Result, gitDir string) (string, error) {
 	view, err := check(r, gitDir)
@@ -291,7 +289,7 @@ func RenderJSON(r Result, gitDir string) (string, error) {
 		return "", err
 	}
 
-	// Third-party text may hold invalid UTF-8, which RenderText prints as is.
+	// Third-party text may hold invalid UTF-8, which RenderStyled prints as is.
 	// The encoder replaces each invalid byte with U+FFFD rather than failing
 	// the result.
 	//

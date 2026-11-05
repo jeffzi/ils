@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/colorprofile"
+
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"gotest.tools/v3/assert"
@@ -258,7 +260,7 @@ func fails(err error) forgetest.Script {
 func rendered(t *testing.T, r result.Result, gitDir string) (text string, decoded resulttest.Shown) {
 	t.Helper()
 
-	text, err := result.RenderText(r, gitDir)
+	text, err := result.RenderStyled(r, gitDir, colorprofile.NoTTY)
 	assert.NilError(t, err)
 
 	out, err := result.RenderJSON(r, gitDir)
@@ -394,7 +396,7 @@ func between(t *testing.T, text, before, after string) string {
 	said, _, ends := strings.Cut(rest, after)
 	said = strings.Trim(said, ":;,. \n")
 	assert.Check(t, starts && ends && said != "",
-		"RenderText() = %q, want %q, then what failed said, then %q", text, before, after)
+		"RenderStyled() = %q, want %q, then what failed said, then %q", text, before, after)
 
 	return said
 }

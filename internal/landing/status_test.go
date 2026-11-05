@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/colorprofile"
+
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -120,7 +122,7 @@ func seeStatus(t *testing.T, s *scene, under func(*testing.T) context.Context) s
 	assertStoppedBy(t, got, result.Done, statusRequest())
 	assert.Check(t, is.Equal(s.written(), before))
 
-	text, err := result.RenderText(got, s.gitDir)
+	text, err := result.RenderStyled(got, s.gitDir, colorprofile.NoTTY)
 	assert.NilError(t, err)
 
 	out, err := result.RenderJSON(got, s.gitDir)

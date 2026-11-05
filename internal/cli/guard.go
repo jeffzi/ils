@@ -17,7 +17,6 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/jeffzi/ils/internal/commandline"
-	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/guard"
 	"github.com/jeffzi/ils/internal/landing"
@@ -235,18 +234,14 @@ func judged(req landing.Request, invocations []guard.Invocation, verdict guard.V
 	return r
 }
 
-// environment returns the variables of environ, each `NAME=value`, by name, with the value
-// git.EnvValue reads for the name: a name set twice has its last value, as bash and the commands
-// it starts read it. An entry with no `=` names nothing.
+// environment returns the variables of environ, each `NAME=value`, by name: a name set twice has
+// its last value, as bash and the commands it starts read it. An entry with no `=` names nothing.
 func environment(environ []string) map[string]string {
 	env := make(map[string]string, len(environ))
 	for _, entry := range environ {
-		name, _, ok := strings.Cut(entry, "=")
-		if !ok {
-			continue
+		if name, value, ok := strings.Cut(entry, "="); ok {
+			env[name] = value
 		}
-
-		env[name], _ = git.EnvValue(environ, name)
 	}
 
 	return env
@@ -255,7 +250,7 @@ func environment(environ []string) map[string]string {
 // underTimeLimit returns ctx with the deadline of a command from launch, which counts the time
 // limit from the launch of the app.
 func (p *parse) underTimeLimit(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithDeadline(ctx, p.app.Launch.Add(landing.TimeLimit))
+	return p.fromLaunch(ctx, landing.TimeLimit)
 }
 
 // ---------------------------------------------------------------------------

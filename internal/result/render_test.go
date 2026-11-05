@@ -232,7 +232,7 @@ func allTextCases() []pair {
 	return slices.Concat(textCases(), excerptTextCases(), controlCases(), shaTextCases())
 }
 
-func TestRenderText(t *testing.T) {
+func TestRenderStyled(t *testing.T) {
 	t.Parallel()
 
 	assertTexts(t, allTextCases())
@@ -247,7 +247,7 @@ func assertTexts(t *testing.T, cases []pair) {
 			t.Parallel()
 			t.Logf("row: git dir %q, result %s", tt.gitDir, inputOf(tt.result))
 
-			got, err := result.RenderText(tt.result, tt.gitDir)
+			got, err := result.RenderStyled(tt.result, tt.gitDir, colorprofile.NoTTY)
 			assert.NilError(t, err)
 
 			assert.Check(t, is.DeepEqual(got, tt.wantText))
@@ -335,7 +335,7 @@ func TestRenderJSON(t *testing.T) {
 
 func TestRenderJSON_WhenResultHasLinesExcerptReasonAndNext_CarriesWhatTheTextShows(t *testing.T) {
 	t.Parallel()
-	text, err := result.RenderText(redPush(), gitDir)
+	text, err := result.RenderStyled(redPush(), gitDir, colorprofile.NoTTY)
 	assert.NilError(t, err)
 
 	out, err := result.RenderJSON(redPush(), gitDir)
@@ -444,11 +444,11 @@ func controlCases() []pair {
 // Malformed results
 // ---------------------------------------------------------------------------
 
-func TestRenderText_WhenOutcomeIsNotDoneAndReasonIsEmpty_ReturnsErrNoReason(t *testing.T) {
+func TestRenderStyled_WhenOutcomeIsNotDoneAndReasonIsEmpty_ReturnsErrNoReason(t *testing.T) {
 	t.Parallel()
 	r := with(brokePush(), func(r *result.Result) { r.Reason = result.Phrase{} })
 
-	out, err := result.RenderText(r, gitDir)
+	out, err := result.RenderStyled(r, gitDir, colorprofile.NoTTY)
 
 	assert.Check(t, is.ErrorIs(err, result.ErrNoReason), "output %q", out)
 }
@@ -679,12 +679,12 @@ func wordingError(t *testing.T, err error, out string) *result.WordingError {
 	t.Helper()
 
 	wordingErr, ok := errors.AsType[*result.WordingError](err)
-	assert.Assert(t, ok, "RenderText error = %v, want a *result.WordingError; output %q", err, out)
+	assert.Assert(t, ok, "RenderStyled error = %v, want a *result.WordingError; output %q", err, out)
 
 	return wordingErr
 }
 
-func TestRenderText_WhenOwnWordingNamesHookOrGitDir_ReturnsWordingError(t *testing.T) {
+func TestRenderStyled_WhenOwnWordingNamesHookOrGitDir_ReturnsWordingError(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range slices.Concat(lineCases(), dirCases(), otherCases()) {
@@ -692,7 +692,7 @@ func TestRenderText_WhenOwnWordingNamesHookOrGitDir_ReturnsWordingError(t *testi
 			t.Parallel()
 			t.Logf("row: git dir %q, result %s", tt.gitDir, inputOf(tt.result))
 
-			out, err := result.RenderText(tt.result, tt.gitDir)
+			out, err := result.RenderStyled(tt.result, tt.gitDir, colorprofile.NoTTY)
 
 			wordingErr := wordingError(t, err, out)
 			assert.Check(t, is.Equal(wordingErr.Word, tt.wantWord))
@@ -700,16 +700,16 @@ func TestRenderText_WhenOwnWordingNamesHookOrGitDir_ReturnsWordingError(t *testi
 	}
 }
 
-func TestRenderText_WhenAReasonNamesAHook_ReturnsAWordingErrorNamingTheFilledInLine(t *testing.T) {
+func TestRenderStyled_WhenAReasonNamesAHook_ReturnsAWordingErrorNamingTheFilledInLine(t *testing.T) {
 	t.Parallel()
 
-	out, err := result.RenderText(refusedWithReason(result.Say("the pre-push step failed on %s", "main")), gitDir)
+	out, err := result.RenderStyled(refusedWithReason(result.Say("the pre-push step failed on %s", "main")), gitDir, colorprofile.NoTTY)
 
 	wordingErr := wordingError(t, err, out)
 	assert.Check(t, is.Equal(wordingErr.Line, "the pre-push step failed on main"))
 }
 
-func TestRenderText_WhenOwnWordingOnlyResemblesHookOrGitDir_PrintsIt(t *testing.T) {
+func TestRenderStyled_WhenOwnWordingOnlyResemblesHookOrGitDir_PrintsIt(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range exemptCases() {
@@ -717,7 +717,7 @@ func TestRenderText_WhenOwnWordingOnlyResemblesHookOrGitDir_PrintsIt(t *testing.
 			t.Parallel()
 			t.Logf("row: git dir %q, result %s", tt.gitDir, inputOf(tt.result))
 
-			got, err := result.RenderText(tt.result, tt.gitDir)
+			got, err := result.RenderStyled(tt.result, tt.gitDir, colorprofile.NoTTY)
 			assert.NilError(t, err)
 
 			assert.Check(t, is.Equal(got, tt.wantText))
@@ -735,7 +735,7 @@ func TestWordingError_Error_WhenBothFieldsSet_NamesBothFields(t *testing.T) {
 	assert.Check(t, is.Contains(got, err.Word))
 }
 
-func TestRenderText_WhenPlaceholdersAndNamesDiffer_ReturnsErrPlaceholders(t *testing.T) {
+func TestRenderStyled_WhenPlaceholdersAndNamesDiffer_ReturnsErrPlaceholders(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -749,7 +749,7 @@ func TestRenderText_WhenPlaceholdersAndNamesDiffer_ReturnsErrPlaceholders(t *tes
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			out, err := result.RenderText(brokeWithLine(tt.phrase), gitDir)
+			out, err := result.RenderStyled(brokeWithLine(tt.phrase), gitDir, colorprofile.NoTTY)
 
 			assert.Check(t, is.ErrorIs(err, result.ErrPlaceholders), "output %q", out)
 		})

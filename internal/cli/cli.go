@@ -437,8 +437,8 @@ func (p *parse) root() *cobra.Command {
 	root.InitDefaultHelpFlag()
 	p.refuseFlags(root, notCommand)
 	root.AddCommand(
-		p.push(),
-		p.merge(),
+		p.waiting(landingHelp{word: landing.PushCommand, short: pushShort, long: pushLong, examples: pushExamples}, orDefault(p.app.runPush, landing.Push)),
+		p.waiting(landingHelp{word: landing.MergeCommand, short: mergeShort, long: mergeLong, examples: mergeExamples}, orDefault(p.app.runMerge, landing.Merge)),
 		p.landing(landingHelp{word: landing.StatusCommand, short: statusShort, long: statusLong, examples: statusExamples}, landing.Status, nil),
 		p.named(landingHelp{word: landing.BranchCommand, arg: "name", short: branchShort, long: branchLong, examples: branchExamples}, orDefault(p.app.runBranch, landing.StartBranch), nil),
 		p.release(),
@@ -579,22 +579,6 @@ func (p *parse) addWaitFlag(c *cobra.Command) {
 	boolFlag(c.Flags(), &p.wait, flagNames{long: flagWait}, withTimeLimits(waitUsage))
 }
 
-// push returns `ils push`, which runs the push command of the app, or landing.Push when it has
-// none.
-func (p *parse) push() *cobra.Command {
-	return p.waiting(landingHelp{
-		word: landing.PushCommand, short: pushShort, long: pushLong, examples: pushExamples,
-	}, orDefault(p.app.runPush, landing.Push))
-}
-
-// merge returns `ils merge`, which runs the merge command of the app, or landing.Merge when it
-// has none.
-func (p *parse) merge() *cobra.Command {
-	return p.waiting(landingHelp{
-		word: landing.MergeCommand, short: mergeShort, long: mergeLong, examples: mergeExamples,
-	}, orDefault(p.app.runMerge, landing.Merge))
-}
-
 // waiting returns the landing command help names, with the time limits added to its long help,
 // which runs run under the long wait when --wait is true, or when stdout is a terminal and no
 // --wait is typed; --wait=false runs it under the short one.
@@ -678,6 +662,12 @@ func (p *parse) loggedGit(logger *slog.Logger) git.Runner {
 	return runner
 }
 
+// fromLaunch returns ctx with the deadline limit after the launch of the app, so that the time
+// spent before a command starts counts against its limit.
+func (p *parse) fromLaunch(ctx context.Context, limit time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithDeadline(ctx, p.app.Launch.Add(limit))
+}
+
 // land runs the landing command run for req against the repository ils runs in and its GitHub
 // origin, until req's time limit from launch, and keeps its result, the repository's git dir and
 // the step lines it printed. With debug on, the trace gets every git and gh call, the read of the
@@ -685,7 +675,7 @@ func (p *parse) loggedGit(logger *slog.Logger) git.Runner {
 // and is gone from the terminal by the time land returns, or by the time an interrupt, a
 // termination or a quit ends the process, or the stop signal of a terminal stops it.
 func (p *parse) land(ctx context.Context, run Command, req landing.Request) {
-	ctx, cancel := context.WithDeadline(ctx, p.app.Launch.Add(req.Limit()))
+	ctx, cancel := p.fromLaunch(ctx, req.Limit())
 	defer cancel()
 
 	errProfile := p.app.profile(p.app.StderrTerminal, p.noColor)
