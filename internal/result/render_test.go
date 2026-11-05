@@ -344,24 +344,32 @@ func TestRenderJSON_WhenResultHasLinesExcerptReasonAndNext_CarriesWhatTheTextSho
 	resulttest.AssertCarried(t, text, result.DeliveredNotGreen, resulttest.Decode(t, out))
 }
 
-// separated is a string holding both Unicode separators a line splitter breaks a line at.
-const separated = "first second third"
+// separators are the Unicode characters a line splitter breaks a line at beyond the ASCII ones.
+const separators = "\u2028\u2029\u0085"
 
-// separatorCases returns the cases where a string the JSON copies unfolded holds both separators.
-func separatorCases() []jsonCase {
-	return []jsonCase{
-		{
-			name:   "merge subject in the payload",
-			result: with(donePush(), func(r *result.Result) { r.Payload = &result.Payload{Merge: &result.Merge{Subject: separated}} }),
-			pick: func(s resulttest.Shown) resulttest.Shown {
-				return resulttest.Shown{Payload: &result.Payload{Merge: &result.Merge{Subject: s.Payload.Merge.Subject}}}
-			},
-			want: resulttest.Shown{Payload: &result.Payload{Merge: &result.Merge{Subject: separated}}},
-		},
+// subjectHolding is a done push whose merge subject is subject, picked back from the decoded JSON.
+func subjectHolding(name, subject string) jsonCase {
+	shown := func(subject string) resulttest.Shown {
+		return resulttest.Shown{Payload: &result.Payload{Merge: &result.Merge{Subject: subject}}}
+	}
+
+	return jsonCase{
+		name:   name,
+		result: with(donePush(), func(r *result.Result) { r.Payload = &result.Payload{Merge: &result.Merge{Subject: subject}} }),
+		pick:   func(s resulttest.Shown) resulttest.Shown { return shown(s.Payload.Merge.Subject) },
+		want:   shown(subject),
 	}
 }
 
-func TestRenderJSON_WhenAStringHoldsUnicodeSeparators_EscapesThemAndDecodesBackTheString(t *testing.T) {
+// separatorCases returns the cases where a string the JSON copies unfolded holds a Unicode separator.
+func separatorCases() []jsonCase {
+	return []jsonCase{
+		subjectHolding("line and paragraph separators in the merge subject", "first\u2028second\u2029third"),
+		subjectHolding("next line in the merge subject", "first\u0085second"),
+	}
+}
+
+func TestRenderJSON_WhenAStringHoldsUnicodeSeparators_WritesThemEscaped(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range separatorCases() {
@@ -372,7 +380,7 @@ func TestRenderJSON_WhenAStringHoldsUnicodeSeparators_EscapesThemAndDecodesBackT
 			out, err := result.RenderJSON(tt.result, gitDir)
 			assert.NilError(t, err)
 
-			assert.Check(t, !strings.ContainsAny(out, "  "), "output holds a raw separator:\n%q", out)
+			assert.Check(t, !strings.ContainsAny(out, separators), "output holds a raw separator:\n%q", out)
 			assert.Check(t, is.DeepEqual(tt.pick(resulttest.Decode(t, out)), tt.want))
 		})
 	}

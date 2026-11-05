@@ -277,8 +277,9 @@ type Object struct {
 	ExitCode int      `json:"exit_code"`
 }
 
-// RenderJSON returns r as one JSON object on one line. Every U+2028 and U+2029
-// in any of its strings is written as an escape, so the line holds neither.
+// RenderJSON returns r as one JSON object on one line. Every U+2028, U+2029
+// and U+0085 (NEL) in any of its strings is written as an escape, so the line
+// holds none of them.
 // gitDir is the resolved git dir, or empty outside a repository. It returns
 // ErrNoReason, a *WordingError and an error wrapping ErrPlaceholders as
 // RenderStyled does, and an error wrapping the encoder's when the object
@@ -294,8 +295,12 @@ func RenderJSON(r Result, gitDir string) (string, error) {
 	// the result.
 	//
 	// The payload, the words and the excerpt reach the object unfolded, so a
-	// raw U+2028 or U+2029 in them would let a Unicode line splitter break the
-	// object in two. Escaping them at the encoder covers every string at once.
+	// raw U+2028, U+2029 or NEL in them would let a Unicode line splitter break
+	// the object in two. The encoder escapes U+2028 and U+2029 in every string
+	// but has no option for NEL, so the encoded object gets NEL escaped after.
+	// Only ASCII sits outside its string literals and it is valid UTF-8, so
+	// every NEL in it is a character inside a string, where the escape decodes
+	// back to it.
 	out, err := json.Marshal(view,
 		json.Deterministic(true),
 		jsontext.AllowInvalidUTF8(true),
@@ -305,7 +310,7 @@ func RenderJSON(r Result, gitDir string) (string, error) {
 		return "", fmt.Errorf("encode %s result: %w", r.Command, err)
 	}
 
-	return string(out) + "\n", nil
+	return strings.ReplaceAll(string(out), "\u0085", `\u0085`) + "\n", nil
 }
 
 // ---------------------------------------------------------------------------
