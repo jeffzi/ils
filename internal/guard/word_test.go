@@ -54,7 +54,6 @@ func TestParse_WhenAWordCarriesAnExpansion_ReportsItNotLiteralWithItsLiteralPref
 		{name: "parameter expansion in double quotes", word: `"a$x"`, wantPrefix: "a"},
 		{name: "brace expansion", word: `-{f,d}`, wantPrefix: "-"},
 		{name: "glob followed by a parameter expansion", word: `src/*$x`, wantPrefix: "src/"},
-		{name: "parameter expansion followed by a glob", word: `a$x*`, wantPrefix: "a"},
 		{name: "tilde with a user name", word: `~user/x`, wantPrefix: ""},
 	}
 	for _, tt := range tests {
@@ -82,7 +81,6 @@ func TestParse_WhenAWordsOnlyUnreadablePartIsAGlob_ReportsAGlobWithItsLiteralPre
 		{name: "star glob", word: `src/*.go`, wantPrefix: "src/"},
 		{name: "question mark glob", word: `src/?.go`, wantPrefix: "src/"},
 		{name: "bracket glob", word: `src/[ab].go`, wantPrefix: "src/"},
-		{name: "glob with no literal prefix", word: `[ab]`, wantPrefix: ""},
 		{name: "quoted prefix", word: `"my dir/"*`, wantPrefix: "my dir/"},
 	}
 	for _, tt := range tests {

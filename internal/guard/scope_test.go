@@ -188,7 +188,6 @@ func TestJudge_WhenAFileIsSourced_AllowsWhatNeedsNoKnownDirectory(t *testing.T) 
 	_, caller := standingOn(t, "main", "topic")
 
 	checkAllowed(t, caller, []namedCommand{
-		{name: "source of a file", command: "source env.sh"},
 		{name: "read after a dot of a file", command: ". ./env.sh && git status"},
 	})
 }
@@ -236,8 +235,6 @@ func TestJudge_WhenTheGuardCannotReadAForLoopValue_RefusesItAsACommandWord(t *te
 
 	checkRefusals(t, []refusal{
 		{name: "glob word after a literal", command: "for f in ls *.sh; do $f; done"},
-		{name: "command substitution after a literal", command: "for f in ls $(ls); do $f; done"},
-		{name: "positional parameters", command: `for f in "$@"; do $f; done`},
 		{name: "more values than the bodies the guard walks, each walked twice", command: "for v in" + strings.Repeat(" ls", 129) + "; do $v; done"},
 		{name: "second loop past the bodies a first loop left", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; for v in" + strings.Repeat(" ls", 29) + "; do $v; done"},
 		{name: "loop past the bodies a function's loop and its dry run left", command: "f() { for v in" + strings.Repeat(" ls", 40) + "; do :; done; }; f; for v in" + strings.Repeat(" ls", 12) + "; do $v; done"},

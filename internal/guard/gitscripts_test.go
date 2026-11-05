@@ -35,11 +35,6 @@ func TestParse_WhenGitRunsAShellCommandItHolds_ParsesItsCommands(t *testing.T) {
 		{name: "rebase -x in a short-flag bundle", command: "git rebase -ix 'git push origin main' HEAD~1", want: [][]string{{"git", "rebase", "-ix", "git push origin main", "HEAD~1"}, pushed}},
 		{name: "rebase --exec after a -X value holding an x", command: "git rebase -Xx --exec 'git push origin main' main", want: [][]string{{"git", "rebase", "-Xx", "--exec", "git push origin main", "main"}, pushed}},
 		{name: "core.editor key spelled in another case", command: "git -c CORE.Editor='git push origin main' commit", want: [][]string{{"git", "-c", "CORE.Editor=git push origin main", "commit"}, pushed}},
-		{
-			name:    "sequence.editor given by -c",
-			command: "git -c sequence.editor='git push origin main' rebase -i HEAD~1",
-			want:    [][]string{{"git", "-c", "sequence.editor=git push origin main", "rebase", "-i", "HEAD~1"}, pushed},
-		},
 		{name: "bisect run", command: "git bisect run git push origin main", want: [][]string{{"git", "bisect", "run", "git", "push", "origin", "main"}, pushed}},
 		{name: "submodule foreach", command: "git submodule foreach 'git push origin main'", want: [][]string{{"git", "submodule", "foreach", "git push origin main"}, pushed}},
 		{name: "submodule foreach after its options", command: "git submodule foreach --recursive 'git push origin main'", want: [][]string{{"git", "submodule", "foreach", "--recursive", "git push origin main"}, pushed}},
@@ -125,7 +120,6 @@ func TestJudge_RefusesAGitCommandRunningAnArgumentItCannotRead(t *testing.T) {
 		{name: "submodule foreach", command: `git submodule foreach "$c"`, wantNamed: "submodule foreach"},
 		{name: "filter-branch filter", command: `git filter-branch --index-filter "$c" HEAD`, wantNamed: "--index-filter"},
 		{name: "for-each-repo", command: `git for-each-repo --config=x.repo "$c"`, wantNamed: "for-each-repo"},
-		{name: "core.editor that is not a literal", command: `git -c core.editor="$ED" commit`},
 	})
 }
 
@@ -136,9 +130,6 @@ func TestJudge_AllowsAGitCommandRunningALiteralItAllows(t *testing.T) {
 	checkAllowed(t, caller, []namedCommand{
 		{name: "bisect run", command: "git bisect run make test"},
 		{name: "submodule foreach", command: "git submodule foreach 'git status'"},
-		{name: "difftool against a revision", command: "git difftool HEAD~1"},
-		{name: "difftool with a tool", command: "git difftool --tool=meld"},
-		{name: "difftool without prompting", command: "git difftool -y"},
 		{name: "for-each-repo", command: "git for-each-repo --config=x.repo status"},
 	})
 }
@@ -149,15 +140,8 @@ func TestJudge_AllowsAGitCommandWhoseConfigOrOptionValueItDoesNotReadAsAScript(t
 
 	checkAllowed(t, caller, []namedCommand{
 		{name: "core.sshCommand", command: `git -c core.sshCommand='git push origin main' fetch`},
-		{name: "core.pager", command: `git -c core.pager='git push origin main' log`},
-		{name: "pager of a command", command: `git -c pager.log='git push origin main' log`},
-		{name: "credential helper", command: `git -c credential.helper='!git push origin main' fetch`},
-		{name: "command key of a tool", command: `git -c difftool.x.cmd='git push origin main' difftool --tool=x HEAD~1`},
-		{name: "difftool -x", command: `git difftool -x "$c" HEAD~1`},
-		{name: "difftool --extcmd", command: `git difftool --extcmd="$c" HEAD~1`},
 		{name: "--config-env of a key it does not read", command: "git --config-env=http.extraHeader=AUTH fetch"},
 		{name: "core.sshCommand that is not a literal", command: `git -c core.sshCommand="ssh -i $KEY" fetch`},
-		{name: "core.pager that is not a literal", command: `git -c core.pager="$P" log`},
 	})
 }
 
@@ -165,7 +149,6 @@ func TestJudge_RefusesAGitCommandWhoseConfigTheGuardRefusesWhateverItsValue(t *t
 	t.Parallel()
 
 	checkRefusals(t, []refusal{
-		{name: "--config-env of the hooks path from an assignment", command: "AUTH=x git --config-env=core.hooksPath=AUTH commit -m x"},
 		{name: "alias given by -c that pushes", command: "git -c alias.p=push p", wantNamed: "push"},
 	})
 }

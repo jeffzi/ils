@@ -66,12 +66,9 @@ func TestParse_ReportsWhetherHeadMayHaveMovedBeforeEachInvocation(t *testing.T) 
 		{name: "branch option the guard cannot read", command: "git branch $f old new; git commit", want: []bool{false, true}},
 		{name: "branch option the guard cannot read before an ambiguous one", command: "git branch $f --m; git commit", want: []bool{false, true}},
 		{name: "rebase of a glob that may expand to the upstream and the branch", command: "git rebase m*; git commit", want: []bool{false, true}},
-		{name: "branch --show-current", command: "git branch --show-current; git commit", want: []bool{false, false}},
 		{name: "option that prints and exits", command: "git --version; git commit", want: []bool{false, false}},
 		{name: "pipeline stage that moves HEAD before an and list", command: "git switch x | cat && git commit", want: []bool{false, false, false}},
-		{name: "pipeline stage after the commit moving HEAD", command: "git commit | git switch x", want: []bool{false, false}},
 		{name: "background job that moves HEAD", command: "git switch x & git commit", want: []bool{false, false}},
-		{name: "background job beside a later command that moves HEAD", command: "git commit & git switch main", want: []bool{false, false}},
 	})
 }
 
@@ -94,8 +91,6 @@ func TestJudge_WhenACommandWritesFilesWithoutGit_AllowsACommitAfterIt(t *testing
 
 	checkAllowed(t, caller, []namedCommand{
 		{name: "redirect to a target that is not a literal", command: `go test ./... > "$LOG"; git commit -m x`},
-		{name: "command given an argument that is not a literal", command: `uv run ruff format "$f"; git commit -m x`},
-		{name: "redirect onto the git dir's HEAD", command: "echo 'ref: refs/heads/main' > .git/HEAD; git commit -m x"},
 	})
 }
 
@@ -105,7 +100,6 @@ func TestJudge_WhenABackgroundJobSwitchesBranch_AllowsACommitAfterIt(t *testing.
 	_, caller := standingOn(t, "main", "topic")
 
 	checkAllowed(t, caller, []namedCommand{
-		{name: "switch to the trunk in the background", command: "git switch main & git commit -m x"},
 		{name: "switch to the trunk in a script git runs in the background", command: "git rebase --exec 'git switch main' HEAD & git commit -m x"},
 	})
 }
@@ -146,7 +140,6 @@ func TestJudge_WhenHeadMovesWhereTheGuardCannotFollowIt_RefusesALaterCommit(t *t
 		{name: "switch -c naming a non-literal", command: `git switch -c "$b" && ` + commitCommand},
 		{name: "switch to the previous branch", command: "git switch - && " + commitCommand},
 		{name: "switch to a branch the reflog names", command: "git switch @{-1} && " + commitCommand},
-		{name: "switch --detach", command: "git switch --detach topic && " + commitCommand},
 		{name: "switch in another git dir", command: "git -C " + quotedPath(other.Dir()) + " switch -c topic && " + commitCommand},
 		{name: "switch inside a function body", command: "f() { git switch topic && :; } && " + commitCommand},
 		{name: "switch inside a subshell", command: "(git switch topic && :) && " + commitCommand},

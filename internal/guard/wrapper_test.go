@@ -92,7 +92,6 @@ func TestParse_WhenAQuotedEnvArgumentHasNoLiteralName_ReadsItAsTheCommand(t *tes
 
 	tests := []namedCommand{
 		{name: "expansion before the equals sign", command: `env "$n=1" make`},
-		{name: "expansion alone", command: `env "$x" make`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

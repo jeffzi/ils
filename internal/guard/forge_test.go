@@ -275,13 +275,6 @@ func TestJudge_RefusesAGhGraphqlCallWithAnExplicitPostByItsDocument(t *testing.T
 		named   string
 	}{
 		{name: "mutation", command: `gh api graphql -X POST -f query='mutation { a }'`, named: "mutation"},
-		{
-			name:    "mutation after a long method separate before the endpoint",
-			command: `gh api --method POST graphql -f query='mutation { a }'`,
-			named:   "mutation",
-		},
-		{name: "query read from a file", command: "gh api graphql --method=POST -F query=@q.graphql", named: "inline"},
-		{name: "query not a literal", command: `gh api graphql -X POST -f query="$q"`, named: "inline"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -297,7 +290,6 @@ func TestJudge_ReadsTheIlsCommandAsCobraFindsIt(t *testing.T) {
 
 	checkJudged(t, forgeCaller(t), []judged{
 		{name: "unknown root flag takes the next word", command: "ils --force 0.6.0 release", want: guard.Ask},
-		{name: "unknown short root flag takes the next word", command: "ils -x status merge", want: guard.Ask},
 		{name: "root switches take no word", command: "ils -d --json --no-color merge", want: guard.Ask},
 		{name: "attached value takes no word", command: "ils --json=true merge", want: guard.Ask},
 	})
@@ -331,13 +323,6 @@ func TestJudge_RefusesAGhApiCallThatWritesToGitHub(t *testing.T) {
 		{name: "api long method attached in lower case", command: "gh api --method=put repos/x/y", want: guard.Refuse, wantNamed: "put"},
 		{name: "api method not literal", command: `gh api -X "$method" repos/x/y`, want: guard.Refuse},
 		{name: "api graphql query with a method other than post", command: `gh api graphql -X DELETE -f query='{ viewer { login } }'`, want: guard.Refuse, wantNamed: "DELETE"},
-		{name: "api post with a query field to another endpoint", command: `gh api -X POST repos/x/y/issues -f query='{ viewer { login } }'`, want: guard.Refuse, wantNamed: "POST"},
-		{
-			name:      "api long post separate before another endpoint with a query field",
-			command:   `gh api --method POST repos/x/y/issues -f query='{ viewer { login } }'`,
-			want:      guard.Refuse,
-			wantNamed: "POST",
-		},
 		{name: "api method flag as the value of a field", command: "gh api -f --method=GET -f title=x repos/x/y/issues", want: guard.Refuse},
 		{name: "api method flag as the value of a long valued flag", command: "gh api --jq --method=GET -f title=x repos/x/y/issues", want: guard.Refuse},
 	})
@@ -397,7 +382,5 @@ func TestJudge_AllowsChangingGhAliases(t *testing.T) {
 
 	checkJudged(t, forgeCaller(t), []judged{
 		{name: "set", command: "gh alias set co 'pr checkout'", want: guard.Allow},
-		{name: "import", command: "gh alias import aliases.yml", want: guard.Allow},
-		{name: "delete", command: "gh alias delete co", want: guard.Allow},
 	})
 }

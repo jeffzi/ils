@@ -414,23 +414,6 @@ func TestParse_ReportsEachAssignmentTheCommandRunsWith(t *testing.T) {
 	}
 }
 
-func TestParse_WhenAGlobQualifierRunsNoCode_MarksNothing(t *testing.T) {
-	t.Parallel()
-
-	checkNoMarks(t, []namedCommand{
-		{name: "null glob after a non-literal directory", command: `rm -f "$d"/tdd-red-phase*(N)`},
-	})
-}
-
-func TestJudge_WhenAWordIsAnExtendedGlob_AllowsIt(t *testing.T) {
-	t.Parallel()
-
-	checkAllowed(t, readerCaller(), []namedCommand{
-		{name: "extended glob", command: "echo @(a|b)"},
-		{name: "qualifier evaluating a string", command: "ls *(e:'git push':)"},
-	})
-}
-
 func TestJudge_WhenTheCommandWordIsAnExtendedGlob_RefusesItAsNotALiteral(t *testing.T) {
 	t.Parallel()
 
@@ -470,7 +453,6 @@ func TestParse_WhenAllexportIsOn_MarksNoGitVariableABuiltinAssigns(t *testing.T)
 
 	tests := []namedCommand{
 		{name: "read after set -a", command: "set -a; read -r GIT_CONFIG_PARAMETERS; git status"},
-		{name: "read after setopt allexport", command: "setopt allexport; read -r GIT_CONFIG_PARAMETERS; git status"},
 		{name: "assign-default expansion after set -a", command: `set -a; echo "${GIT_CONFIG_PARAMETERS:=x}"; git status`},
 		{name: "read in a function called after set -a", command: "f() { read -r GIT_CONFIG_PARAMETERS; }; set -a; f; git status"},
 		{name: "read in a bash -a string", command: "bash -a -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},

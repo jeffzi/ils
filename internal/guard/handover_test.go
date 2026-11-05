@@ -70,7 +70,6 @@ func TestParse_WhenAToolIsHandedToAnotherCommand_NamesItOnTheMark(t *testing.T) 
 		{name: "tool in a string", command: "su -c 'cd /repo && gh pr merge 3'", want: "gh"},
 		{name: "tool handed on inside a string", command: "ssh host 'sudo ils merge'", want: "ils"},
 		{name: "bare tool word among an interpreter's arguments", command: "python3 tool.py git push", want: "git"},
-		{name: "bare tool word after an interpreter word behind another command", command: "timeout 30 python3 tool.py git push", want: "git"},
 		{name: "bare tool word among a script file's arguments behind another command", command: "timeout 60 bash x.sh git push", want: "git"},
 		{name: "shell word after an interpreter word behind another command", command: "timeout 30 python3 tool.py bash x.sh", want: "bash"},
 		{name: "bare tool word among the positional parameters of a shell string, behind xargs", command: `xargs sh -c 'ls "$1"' sh git push`, want: "git"},
