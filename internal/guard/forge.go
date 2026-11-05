@@ -589,11 +589,7 @@ func methodFlag(w, next Word) (method Word, ok, takesNext bool) {
 		return next, true, true
 	}
 
-	if mayBeFlag(w, flag.short, flag.long) {
-		return Word{}, true, false
-	}
-
-	return Word{}, false, false
+	return Word{}, mayBeFlag(w, flag.short, flag.long), false
 }
 
 // ghFlagReading is what ghFlag reads of a flag among the words of a gh command.

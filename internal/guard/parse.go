@@ -332,7 +332,7 @@ func (w *walker) simple(stmt *syntax.Stmt, sc *scope) bool {
 		w.keep(w.placed(inv, sc))
 	}
 
-	w.kept = moveBehind(w.kept, at, at+held)
+	w.kept = slices.Concat(w.kept[:at], w.kept[at+held:], w.kept[at:at+held])
 
 	return true
 }
@@ -340,10 +340,6 @@ func (w *walker) simple(stmt *syntax.Stmt, sc *scope) bool {
 // reading returns the expander that reads the words of a command run from sc.
 func (w *walker) reading(sc *scope) expander {
 	return expander{vars: sc.vars, home: w.caller.Home}
-}
-
-func moveBehind[T any](s []T, at, mid int) []T {
-	return slices.Concat(s[:at], s[mid:], s[at:mid])
 }
 
 // declarationOf returns the invocation of a declaration builtin such as `export` or `declare`: its

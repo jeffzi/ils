@@ -314,9 +314,6 @@ func judgeRepackExpiry(_ context.Context, _ Caller, _ Invocation, o subcommandOp
 	return fmt.Sprintf("git repack -d %s deletes the unreachable objects older than the expiry, which can hold lost commits", expiry), nil
 }
 
-// branchRefPrefix is what a ref name starts with when the ref is a branch.
-const branchRefPrefix = "refs/heads/"
-
 // judgeForcedBranchOverwrite refuses `git branch -M` or `-C`, or `--move` or `--copy` with
 // `--force`, onto a branch that exists, which it replaces along with its reflog, and one whose
 // repository the guard cannot tell. The new name is the last of the one or two names the move or
@@ -359,13 +356,13 @@ func judgeForcedBranchOverwrite(ctx context.Context, caller Caller, inv Invocati
 
 	branch := strings.TrimSpace(expanded.Stdout)
 
-	listed, err := runner.Run(ctx, slices.Concat(targets, []string{"for-each-ref", "--format=%(refname)", branchRefPrefix})...)
+	listed, err := runner.Run(ctx, slices.Concat(targets, []string{"for-each-ref", "--format=%(refname)", git.BranchRefPrefix})...)
 	if err != nil {
 		return "", fmt.Errorf("read whether git branch %s replaces %s: %w", flag, branch, err)
 	}
 
 	for ref := range strings.SplitSeq(listed.Stdout, "\n") {
-		existing, isBranch := strings.CutPrefix(ref, branchRefPrefix)
+		existing, isBranch := strings.CutPrefix(ref, git.BranchRefPrefix)
 		switch {
 		case !isBranch || !strings.EqualFold(existing, branch):
 		case existing == branch:

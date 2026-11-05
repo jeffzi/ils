@@ -158,7 +158,7 @@ type PushError struct {
 // Error names the refused ref, a branch by its short name and any other ref in full, followed by
 // its Detail.
 func (e *PushError) Error() string {
-	return fmt.Sprintf("push of %s refused: %s", strings.TrimPrefix(e.Ref, headsRef), e.Detail())
+	return fmt.Sprintf("push of %s refused: %s", strings.TrimPrefix(e.Ref, BranchRefPrefix), e.Detail())
 }
 
 // Detail returns git's reason and the Output, one per line, leaving out either when it is empty.
@@ -280,7 +280,7 @@ func (r Repo) Trunk(ctx context.Context) (string, error) {
 			continue
 		}
 
-		if branch, isBranch := strings.CutPrefix(ref, headsRef); isBranch {
+		if branch, isBranch := strings.CutPrefix(ref, BranchRefPrefix); isBranch {
 			return branch, nil
 		}
 	}
@@ -292,7 +292,7 @@ func (r Repo) Trunk(ctx context.Context) (string, error) {
 //
 // An origin that does not answer is an ErrRemote failure, never an absent branch.
 func (r Repo) RemoteBranch(ctx context.Context, name string) (sha string, found bool, err error) {
-	ref := headsRef + name
+	ref := BranchRefPrefix + name
 
 	result, err := r.remote(ctx, "ls-remote", "--exit-code", origin, ref)
 	if exited(err, absentCode) {
@@ -373,7 +373,7 @@ func (r Repo) BranchesTaking(ctx context.Context, name string) (local, onOrigin 
 
 	for line := range strings.SplitSeq(originRefs.Stdout, "\n") {
 		_, ref, _ := strings.Cut(line, "\t")
-		if branch, isBranch := strings.CutPrefix(ref, headsRef); isBranch && takes(branch, name) {
+		if branch, isBranch := strings.CutPrefix(ref, BranchRefPrefix); isBranch && takes(branch, name) {
 			onOrigin = append(onOrigin, branch)
 		}
 	}
@@ -457,7 +457,7 @@ const (
 // branch goes through that ref, and must see the tip this fetch returned.
 func (r Repo) Fetch(ctx context.Context, ref string) (string, error) {
 	if !strings.HasPrefix(ref, refsPrefix) {
-		ref = headsRef + ref
+		ref = BranchRefPrefix + ref
 	}
 
 	fetched := fetchedRefs + strings.TrimPrefix(ref, refsPrefix)
@@ -480,7 +480,7 @@ func (r Repo) Fetch(ctx context.Context, ref string) (string, error) {
 		return "", err
 	}
 
-	if branch, isBranch := strings.CutPrefix(ref, headsRef); isBranch {
+	if branch, isBranch := strings.CutPrefix(ref, BranchRefPrefix); isBranch {
 		if _, err := r.Runner.Run(ctx, "update-ref", remotesRef+branch, sha); err != nil {
 			return "", err
 		}
@@ -558,13 +558,13 @@ func (r Repo) Push(ctx context.Context, name, sha string) error {
 		return err
 	}
 
-	return r.push(ctx, sha, headsRef+name)
+	return r.push(ctx, sha, BranchRefPrefix+name)
 }
 
 // setUpstream sets origin's branch name as the upstream of the local branch name, as `git push -u`
 // does, which git skips for a push whose source is a commit rather than a branch.
 func (r Repo) setUpstream(ctx context.Context, name string) error {
-	for _, setting := range [][2]string{{"remote", origin}, {"merge", headsRef + name}} {
+	for _, setting := range [][2]string{{"remote", origin}, {"merge", BranchRefPrefix + name}} {
 		if _, err := r.Runner.Run(ctx, "config", "branch."+name+"."+setting[0], setting[1]); err != nil {
 			return fmt.Errorf("set the upstream of %s: %w", name, err)
 		}

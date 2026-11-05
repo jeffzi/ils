@@ -53,7 +53,7 @@ func (r Repo) plainHostname(ctx context.Context, host string) (string, error) {
 	// The host comes from a URL: after "--", one that starts with a dash is never read as an option.
 	args := []string{printConfigFlag, "--", host}
 
-	result, err := r.Runner.sshInvocation(sshProgram, sshInstallURL, args).run(ctx)
+	result, err := r.Runner.childProgram(sshProgram, sshInstallURL, args, r.Runner.lookPath).Run(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -178,13 +178,14 @@ func (r Repo) variant(ctx context.Context, command sshCommand) (sshVariant, erro
 		}
 	}
 
-	word, ok := command.program, true
+	word := command.program
 	if command.line != "" {
-		word, ok = firstWord(command.line)
-	}
+		words, ok := SplitCommandLine(command.line)
+		if !ok {
+			return variantAuto, nil
+		}
 
-	if !ok {
-		return variantAuto, nil
+		word = words[0]
 	}
 
 	return basenameVariant(word), nil
@@ -214,17 +215,6 @@ func basenameVariant(program string) sshVariant {
 	default:
 		return variantAuto
 	}
-}
-
-// firstWord returns the first word of line as SplitCommandLine splits it, and false when git
-// cannot split line.
-func firstWord(line string) (string, bool) {
-	words, ok := SplitCommandLine(line)
-	if !ok {
-		return "", false
-	}
-
-	return words[0], true
 }
 
 // programWord returns the program the shell runs for line: the first word after any leading
@@ -408,7 +398,7 @@ func (r Repo) askSSH(ctx context.Context, command sshCommand, host string) (stri
 		aliasArgs := append([]string{"-c", "alias." + sshAlias + "=!" + command.line, sshAlias}, args...)
 		result, err = r.Runner.Run(ctx, aliasArgs...)
 	} else {
-		result, err = r.Runner.sshInvocation(command.program, "", args).run(ctx)
+		result, err = r.Runner.childProgram(command.program, "", args, r.Runner.lookPath).Run(ctx)
 	}
 
 	if notFound, ok := errors.AsType[*child.ToolMissingError](err); ok && command.line == "" {
@@ -429,15 +419,6 @@ func (r Repo) askSSH(ctx context.Context, command sshCommand, host string) (stri
 	}
 
 	return hostnameIn(result.Stdout, argv)
-}
-
-// sshInvocation returns the invocation of tool with args as Runner.invocation builds it, except that
-// tool is found on the PATH of the runner's environment, as lookPath searches it.
-func (r Runner) sshInvocation(tool, toolURL string, args []string) invocation {
-	inv := r.invocation(tool, toolURL, args)
-	inv.lookPath = r.lookPath
-
-	return inv
 }
 
 // ---------------------------------------------------------------------------
