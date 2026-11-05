@@ -828,6 +828,8 @@ type cutTagPush struct {
 
 // cutTagPushes are the ways the push of the tag can end before git says whether origin took it.
 func cutTagPushes() []cutTagPush {
+	// dropped is what the ssh of the push prints when origin stops answering.
+	const dropped = "Connection closed by remote host."
 	again := releaseCommand(version).again
 	cutBy := func(c cut, next string) cutTagPush {
 		return cutTagPush{
@@ -854,8 +856,8 @@ func cutTagPushes() []cutTagPush {
 
 	return append(rows,
 		cutTagPush{
-			name: "origin stops answering", arrange: serving("true"),
-			taken: expect("origin could not be reached"), reason: expect("stopped answering"), again: again,
+			name: "origin stops answering", arrange: serving("echo '" + dropped + "' >&2"),
+			taken: expect(dropped), reason: expect("stopped answering"), again: again,
 		},
 		cutTagPush{
 			name: "a signal kills the git push", reason: expect("did not finish"), again: again,

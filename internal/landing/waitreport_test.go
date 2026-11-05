@@ -307,7 +307,7 @@ func pushStillRunningRows() []pushRow {
 			name: "a check still runs", left: 17 * time.Second,
 			script: reusing(running()).showing(stale(), cleanHead()),
 			want: pending(expect("still running"),
-				expect("Still running", "(1 check):\n  ◌ test"),
+				expect("Still running", "1 check", " test"),
 				detail(forge.VerdictPending, forge.MergeClean, running().Checks...)),
 			told: []string{
 				checkingStep(), pushingStep(), said(pushedLine()), said(foundLine()),
@@ -326,7 +326,7 @@ func pushStillRunningRows() []pushRow {
 					script.OnRead = onHeadAfterChecks(func() { time.Sleep(1500 * time.Millisecond) })
 				}), func(begun time.Time) []time.Time { return []time.Time{begun.Add(-time.Minute)} }),
 			want: pending(expect("still running"),
-				expect("Still running", "(1 check):\n  ◌ test, running 1m1s\n")+blockedLine(),
+				expect("Still running", "1 check", " test, running 1m1s\n")+blockedLine(),
 				detail(forge.VerdictPending, forge.MergeBlockedByReview, running().Checks...)),
 		},
 		{
@@ -336,9 +336,24 @@ func pushStillRunningRows() []pushRow {
 			script: startedAt(reusing(bothRunning()).showing(cleanHead(), cleanHead()),
 				func(begun time.Time) []time.Time { return []time.Time{{}, begun.Add(time.Minute)} }),
 			want: pending(expect("still running"),
-				expect("Still running", "(2 checks):\n  ◌ lint, not started yet\n  ◌ test, running 0s\n"),
+				expect("Still running", "2 checks", " lint, not started yet\n", " test, running 0s\n"),
 				detail(forge.VerdictPending, forge.MergeClean, bothRunning().Checks...)),
 		},
+		{
+			name: "a check passed beside one still running", left: 7 * time.Second,
+			script: reusing(builtAndRunning()).showing(cleanHead(), cleanHead()),
+			want: pending(expect("still running"),
+				expect("Still running", "1 check", " test, not started yet\n"),
+				detail(forge.VerdictPending, forge.MergeClean, builtAndRunning().Checks...)),
+		},
+	}
+}
+
+// builtAndRunning is a verdict whose check build passed while its check test still runs.
+func builtAndRunning() forge.Verdict {
+	return forge.Verdict{
+		Checks: []forge.Check{forgetest.Check("build", forge.BucketPass), forgetest.Check("test", forge.BucketPending)},
+		Runs:   ran(forge.RunInProgress),
 	}
 }
 
@@ -373,7 +388,7 @@ func boundPendingRows(cmd landingCommand, c cut) []pushRow {
 		},
 		{
 			name: "a check still runs", left: 7 * time.Second, script: reusing(running()).showing(cleanHead(), cleanHead()),
-			want: pendingBy(cmd, expect("still running", c.before), expect("Still running", "(1 check):\n  ◌ test"),
+			want: pendingBy(cmd, expect("still running", c.before), expect("Still running", "1 check", " test"),
 				detail(forge.VerdictPending, forge.MergeClean, running().Checks...)),
 		},
 	}

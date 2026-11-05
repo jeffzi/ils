@@ -290,6 +290,16 @@ func TestStatus_WhenThePullRequestIsOpen_ReportsTheVerdictOfItsHead(t *testing.T
 	}
 }
 
+func TestStatus_WhenACheckPassedBesideOneStillRunning_ListsOnlyTheRunningOne(t *testing.T) {
+	t.Parallel()
+	s := statusScene(t, publishTopic, viewing(cleanHead(), builtAndRunning(), standing()))
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	assertSays(t, got.text, expect("Still running", "1 check", " test\n"))
+	assert.Check(t, !strings.Contains(got.text, " build\n"), "text %q, want the passed check left out of the list", got.text)
+}
+
 func TestStatus_WhenChecksOfTheOpenPullRequestStillRun_ListsEachUnderItsHead(t *testing.T) {
 	t.Parallel()
 	s := statusScene(t, publishTopic, viewing(cleanHead(), bothRunning(), standing()))
@@ -297,7 +307,7 @@ func TestStatus_WhenChecksOfTheOpenPullRequestStillRun_ListsEachUnderItsHead(t *
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
-	assertSays(t, got.text, expect("Still running", shortSHA(head)+" (2 checks):\n  ◌ lint\n  ◌ test\n"))
+	assertSays(t, got.text, expect("Still running", shortSHA(head), "2 checks", " lint\n", " test\n"))
 }
 
 func TestStatus_WhenNoRequiredCheckHasReported_SaysSoWithNoTally(t *testing.T) {

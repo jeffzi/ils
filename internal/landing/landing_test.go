@@ -802,7 +802,7 @@ func TestPreconditions_WhenSSHFails_BrokeNamingTheRead(t *testing.T) {
 	_, stop := landing.Preconditions(t.Context(), s.deps, pushRequest())
 
 	got := stopped(t, stop, "a broke result")
-	assertBrokeRead(t, got, readURLs, "ssh ")
+	assertBrokeReadBy(t, got, pushCommand(), readURLs)
 }
 
 // ---------------------------------------------------------------------------
