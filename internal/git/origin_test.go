@@ -251,6 +251,35 @@ func TestRepo_OriginURLs_WhenURLDoesNotParse_ReturnsOriginErrorWithWhatParsed(t 
 	}
 }
 
+func TestRepo_OriginURLs_WhenFetchAndPushAreTheSameAndSSHFails_NamesTheFailureOnce(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.SetOriginURL(sshURL)
+	f.SetPushURL(sshURL)
+	repo := plainSSH(t, newRepo(f), standInRefuse)
+
+	_, err := repo.OriginURLs(t.Context())
+
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "OriginURLs() error = %v, want *child.ExitError", err)
+	assert.Check(t, is.Equal(strings.Count(err.Error(), exitErr.Error()), 1), "OriginURLs() error = %q", err)
+}
+
+func TestRepo_OriginURLs_WhenFetchAndPushDifferAndSSHFailsForBoth_NamesBothFailures(t *testing.T) {
+	t.Parallel()
+	const otherHostURL = "git@example.com:jeffzi/ils.git"
+	f := gittest.New(t, trunk)
+	f.SetOriginURL(sshURL)
+	f.SetPushURL(otherHostURL)
+	repo := plainSSH(t, newRepo(f), standInRefuse)
+
+	_, err := repo.OriginURLs(t.Context())
+
+	assert.Assert(t, err != nil, "OriginURLs() error = nil, want the failures of both ssh calls")
+	assert.Check(t, is.Contains(err.Error(), "github.com"))
+	assert.Check(t, is.Contains(err.Error(), "example.com"))
+}
+
 func TestRepo_FastForwardTrunk_WhenTrunkIsBehindOrigin_MovesItToOriginTip(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)

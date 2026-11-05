@@ -218,6 +218,9 @@ type OriginURLs struct {
 // host. A plain ssh missing from PATH is a *child.ToolMissingError; an ssh that exits non-zero is a
 // *child.ExitError. A URL that does not parse, or an ssh URL whose host starts with a dash, which
 // git refuses to connect to, is an *OriginError, and both raw URLs are still returned.
+//
+// When the fetch and push URLs are the same, the URL is read once, so its failure is returned once;
+// when they differ, the error holds the failure of each side that failed.
 func (r Repo) OriginURLs(ctx context.Context) (OriginURLs, error) {
 	fetchURL, err := r.line(ctx, "remote", "get-url", origin)
 	if err != nil {
@@ -230,6 +233,10 @@ func (r Repo) OriginURLs(ctx context.Context) (OriginURLs, error) {
 	}
 
 	fetch, fetchErr := r.parseOrigin(ctx, fetchURL)
+	if pushURL == fetchURL {
+		return OriginURLs{Fetch: fetch, Push: fetch, FetchURL: fetchURL, PushURL: pushURL}, fetchErr
+	}
+
 	push, pushErr := r.parseOrigin(ctx, pushURL)
 
 	return OriginURLs{Fetch: fetch, Push: push, FetchURL: fetchURL, PushURL: pushURL}, errors.Join(fetchErr, pushErr)
