@@ -474,12 +474,12 @@ func TestApp_Run_WhenHookClaudeCannotReadThePayload_ExitsTwoSayingWhatBroke(t *t
 		name  string
 		want  string
 	}{
-		{name: "payload that is not JSON", stdin: strings.NewReader(`{"tool_name":"Read","tool_name":"Bash"}`)},
-		{name: "no tool name", stdin: strings.NewReader(encoded(t, toolUse{Input: map[string]string{"command": "echo hi"}, Cwd: dir}))},
+		{name: "payload naming the tool twice", stdin: strings.NewReader(`{"tool_name":"Read","tool_name":"Bash"}`), want: "is not the JSON of a PreToolUse call"},
+		{name: "no tool name", stdin: strings.NewReader(encoded(t, toolUse{Input: map[string]string{"command": "echo hi"}, Cwd: dir})), want: "no tool_name"},
 		{name: "stdin that cannot be read", stdin: iotest.ErrReader(errReaderGone), want: errReaderGone.Error()},
-		{name: "command that is not a string", stdin: strings.NewReader(fmt.Sprintf(`{"tool_name":"Bash","cwd":%q,"tool_input":{"command":5}}`, dir))},
-		{name: "no command", stdin: strings.NewReader(encoded(t, toolUse{ToolName: "Bash", Input: map[string]string{}, Cwd: dir}))},
-		{name: "no directory", stdin: strings.NewReader(encoded(t, toolUse{ToolName: "Bash", Input: map[string]string{"command": "echo hi"}}))},
+		{name: "command that is not a string", stdin: strings.NewReader(fmt.Sprintf(`{"tool_name":"Bash","cwd":%q,"tool_input":{"command":5}}`, dir)), want: "tool_input that is not the JSON of a Bash call"},
+		{name: "no command", stdin: strings.NewReader(encoded(t, toolUse{ToolName: "Bash", Input: map[string]string{}, Cwd: dir})), want: "no tool_input.command"},
+		{name: "no directory", stdin: strings.NewReader(encoded(t, toolUse{ToolName: "Bash", Input: map[string]string{"command": "echo hi"}})), want: "no cwd"},
 		{name: "directory that does not exist", stdin: strings.NewReader(encoded(t, bash("echo hi", gone))), want: gone},
 		{name: "directory that is relative", stdin: strings.NewReader(encoded(t, bash("echo hi", relative))), want: relative},
 		{name: "directory that is a file", stdin: strings.NewReader(encoded(t, bash("echo hi", file))), want: file},
@@ -491,7 +491,6 @@ func TestApp_Run_WhenHookClaudeCannotReadThePayload_ExitsTwoSayingWhatBroke(t *t
 			got := launch(t, hooking(t, gittest.Env(t), tt.stdin), "hook", "claude")
 
 			assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
-			assert.Check(t, got.stderr != "", "stderr is empty")
 			assert.Check(t, is.Contains(got.stderr, tt.want))
 		})
 	}

@@ -24,31 +24,21 @@ import (
 // renames is an ssh config that gives github.com another name.
 const renames = "Host github-personal\n  HostName github.com\n"
 
-func TestRepo_OriginURLs_WhenURLIsSSH_ReturnsTheHostSSHConnectsTo(t *testing.T) {
+func TestRepo_OriginURLs_WhenURLIsSSHWithAnAlias_ReturnsTheHostSSHConnectsTo(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		name string
-		url  string
-	}{
-		{name: "ssh url with an alias", url: "ssh://git@github-personal/jeffzi/ils.git"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			f := gittest.New(t, trunk)
-			f.SetOriginURL(tt.url)
-			f.SetPushURL(tt.url)
-			f.SetSSHConfig(renames)
-			repo := newRepo(f)
+	url := "ssh://git@github-personal/jeffzi/ils.git"
+	f := gittest.New(t, trunk)
+	f.SetOriginURL(url)
+	f.SetPushURL(url)
+	f.SetSSHConfig(renames)
+	repo := newRepo(f)
 
-			got, err := repo.OriginURLs(t.Context())
-			assert.NilError(t, err, "OriginURLs() of %q", tt.url)
+	got, err := repo.OriginURLs(t.Context())
+	assert.NilError(t, err, "OriginURLs() of %q", url)
 
-			named := ilsOrigin()
-			want := git.OriginURLs{Fetch: named, Push: named, FetchURL: tt.url, PushURL: tt.url}
-			assert.Check(t, is.DeepEqual(got, want), "OriginURLs() of %q", tt.url)
-		})
-	}
+	named := ilsOrigin()
+	want := git.OriginURLs{Fetch: named, Push: named, FetchURL: url, PushURL: url}
+	assert.Check(t, is.DeepEqual(got, want), "OriginURLs() of %q", url)
 }
 
 // noSSHCommand returns repo without the fixture's GIT_SSH_COMMAND in its environment, so that it

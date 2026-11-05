@@ -48,6 +48,9 @@ const (
 	// landing command first prints on stdout whether the process still ignores the interrupt:
 	// interruptIgnored or interruptHeard.
 	stuckTelling = "telling"
+	// stuckTellingStop is stuckTelling, except that its landing command prints whether the process
+	// still ignores the stop signal of a terminal: stopIgnoredLine or stopHeard.
+	stuckTellingStop = "telling stop"
 
 	// ready is the line a stuck run prints on stdout once its landing command runs, or, for
 	// stuckReturned, once it returned.
@@ -62,6 +65,10 @@ const (
 	// process ignores the interrupt, and when it does not.
 	interruptIgnored = "interrupt ignored"
 	interruptHeard   = "interrupt heard"
+	// stopIgnoredLine and stopHeard are the lines a stuckTellingStop run prints on stdout when the
+	// process ignores the stop signal of a terminal, and when it does not.
+	stopIgnoredLine = "stop ignored"
+	stopHeard       = "stop heard"
 
 	// standIn, set in its environment to one of the exits below, makes the test binary stand in
 	// for ils instead of running the tests: it prints its arguments on stderr, joined by spaces,
@@ -111,7 +118,7 @@ func actAsIls(exit string) int {
 // stuck runs `ils merge` in a step that lasts until the run's deadline, as way says, with stderr a
 // color terminal `wide` columns wide, and returns its exit code. Once the landing command runs, it
 // prints ready on stdout; a stuckReturned run prints it once the command returned, and stays until
-// it is killed. A stuckStopping, stuckHolding, stuckHoldingEarly or stuckTelling run is the one
+// it is killed. A stuckStopping, stuckHolding, stuckHoldingEarly, stuckTelling or stuckTellingStop run is the one
 // stopping describes instead. Any other way prints that it is unknown on stderr and returns
 // standInBroke.
 func stuck(way string) int {
@@ -126,7 +133,7 @@ func stuck(way string) int {
 	}
 
 	switch way {
-	case stuckStopping, stuckHolding, stuckHoldingEarly, stuckTelling:
+	case stuckStopping, stuckHolding, stuckHoldingEarly, stuckTelling, stuckTellingStop:
 		return stopping(app, way)
 	case stuckReturned:
 		app.SetMerge(finishing)
@@ -155,9 +162,10 @@ func stuck(way string) int {
 // stopping runs `ils merge` with app, which stuck set up, in a step whose spinner line shows on
 // stderr, and returns the exit code. Once the step started, its landing command prints ready on
 // stdout unless way is stuckHoldingEarly, after a stuckTelling run printed whether the process ignores
-// the interrupt, then waits for the first interrupt or termination of the
-// process to end its context; a stuckStopping or stuckTelling run then returns the result Stopped, and any other
-// prints canceled and stays until it is killed.
+// the interrupt and a stuckTellingStop run whether it ignores the stop signal, then waits for the
+// first interrupt or termination of the process to end its context; a stuckStopping, stuckTelling or
+// stuckTellingStop run then returns the result Stopped, and any other prints canceled and stays
+// until it is killed.
 func stopping(app cli.App, way string) int {
 	holds := way == stuckHolding || way == stuckHoldingEarly
 	if way == stuckHoldingEarly {
@@ -165,8 +173,11 @@ func stopping(app cli.App, way string) int {
 	}
 	app.SetMerge(func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
 		startedWaiting(deps.Progress)
-		if way == stuckTelling {
+		switch way {
+		case stuckTelling:
 			tell(interruptState())
+		case stuckTellingStop:
+			tell(stopState())
 		}
 		if way != stuckHoldingEarly {
 			tell(ready)
@@ -184,6 +195,17 @@ func stopping(app cli.App, way string) int {
 	})
 
 	return app.Run(context.Background(), []string{"merge"})
+}
+
+// stopState returns stopIgnoredLine when the process ignores the stop signal of a terminal, as the
+// kernel holds it, and stopHeard when it does not. It reads the kernel and not signal.Ignored,
+// which reports false for a stop signal ignored from the start.
+func stopState() string {
+	if cli.StopIgnored() {
+		return stopIgnoredLine
+	}
+
+	return stopHeard
 }
 
 // interruptState returns interruptIgnored when the process ignores the interrupt, and

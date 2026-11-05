@@ -329,8 +329,8 @@ func TestApp_Run_WhenReleaseIsGivenOneVersion_RunsTheReleaseCommandWithTheFlagsA
 		want landing.Request
 	}{
 		{
-			name: "version alone", args: []string{"release", "1.2.0"},
-			want: landing.Request{Command: "release", Words: []string{"release", "1.2.0"}, Args: []string{"1.2.0"}},
+			name: "force alone", args: []string{"release", "--force", "1.2.0"},
+			want: landing.Request{Command: "release", Words: []string{"release", "--force", "1.2.0"}, Args: []string{"1.2.0"}, Force: true},
 		},
 		{
 			name: "flags around the version", args: []string{"release", "--tag-only", "-d", "1.2.0", "--no-color", "--force", "--json"},
@@ -701,7 +701,6 @@ func TestApp_Run_WhenTheFirstWordIsNotCloseToExactlyOneCommand_SuggestsNoCommand
 	}{
 		{name: "close to no command", word: "extra"},
 		{name: "close to every command", word: ""},
-		{name: "unknown flag", word: "--push"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -718,6 +717,18 @@ func TestApp_Run_WhenTheFirstWordIsNotCloseToExactlyOneCommand_SuggestsNoCommand
 			assert.Check(t, is.Equal(printed.Next, "ils --help"))
 		})
 	}
+}
+
+func TestApp_Run_WhenTheFirstWordIsAnUnknownRootFlag_RefusesWithTheRootHelp(t *testing.T) {
+	t.Parallel()
+
+	got := launch(t, outside(t), "--push", "--json")
+
+	assert.Check(t, is.Equal(got.code, exitRefused))
+
+	printed := resulttest.Decode(t, got.stdout)
+	assert.Check(t, is.Contains(printed.Reason, "--push"))
+	assert.Check(t, is.Equal(printed.Next, "ils --help"))
 }
 
 func TestApp_Run_WhenWordsBreakTheGrammar_RefusesNamingWhatBreaksIt(t *testing.T) {

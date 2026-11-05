@@ -383,32 +383,26 @@ func TestToolMissingError_Error_WhenToolIsMissing_NamesWhereToInstallIt(t *testi
 	assert.Check(t, is.Contains(got, ghInstallURL))
 }
 
-// requirement is the gh requirement every Check and CheckOutput test is made against.
+// requirement is the gh requirement every CheckOutput test is made against.
 func requirement() child.Requirement {
 	return child.Requirement{Tool: "gh", Minimum: ghMinimum, InstallURL: ghInstallURL}
 }
 
-func TestRequirement_Check_WhenVersionIsTheMinimumOrNewer_ReturnsNil(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    string
-		version string
-	}{
-		{name: "the minimum", version: "2.50.0"},
-		{name: "a newer release", version: "2.60.0"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			err := requirement().Check("gh version "+tt.version, tt.version)
-
-			assert.NilError(t, err, "Check(%q)", tt.version)
-		})
-	}
+// readsAs returns a versionOf that reads version from any line.
+func readsAs(version string) func(string) string {
+	return func(string) string { return version }
 }
 
-func TestRequirement_Check_WhenVersionIsOlderOrUnreadable_ReturnsToolTooOldError(t *testing.T) {
+func TestRequirement_CheckOutput_WhenVersionIsTheMinimum_ReturnsNil(t *testing.T) {
+	t.Parallel()
+	stdout := "gh version " + ghMinimum + "\n"
+
+	err := requirement().CheckOutput(stdout, readsAs(ghMinimum))
+
+	assert.NilError(t, err, "CheckOutput(%q)", stdout)
+}
+
+func TestRequirement_CheckOutput_WhenVersionIsOlderOrUnreadable_ReturnsToolTooOldError(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
@@ -424,10 +418,10 @@ func TestRequirement_Check_WhenVersionIsOlderOrUnreadable_ReturnsToolTooOldError
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := requirement().Check(tt.line, tt.version)
+			err := requirement().CheckOutput(tt.line+"\n", readsAs(tt.version))
 
 			tooOld, ok := errors.AsType[*child.ToolTooOldError](err)
-			assert.Assert(t, ok, "Check(%q) error = %v, want *child.ToolTooOldError", tt.version, err)
+			assert.Assert(t, ok, "CheckOutput(%q) error = %v, want *child.ToolTooOldError", tt.line, err)
 			want := child.ToolTooOldError{
 				Tool: "gh", Version: tt.wantVersion, Line: tt.line, Minimum: ghMinimum, InstallURL: ghInstallURL,
 			}

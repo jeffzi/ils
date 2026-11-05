@@ -259,14 +259,17 @@ func TestFixture_Git_WhenGitExitsNonZero_FailsTestWithStderr(t *testing.T) {
 	t.Parallel()
 
 	spy := failtest.New(t)
-	f := gittest.New(spy, mainBranch)
 	args := []string{"rev-parse", "--verify", "refs/heads/absent"}
+	var f *gittest.Fixture
 
+	spy.Run(func() {
+		f = gittest.New(spy, mainBranch)
+		f.Git(args...)
+	})
+
+	assert.Assert(t, f != nil, "the fixture's setup stopped the test: %q", spy.Messages())
 	stderr := runGit(t, f, f.Dir(), args...).Stderr
 	assert.Assert(t, stderr != "", "git %v wrote nothing to stderr, want a message to look for", args)
-
-	spy.Run(func() { f.Git(args...) })
-
 	assert.Check(t, spy.Stopped(), "Git(%v) did not stop the test", args)
 	assert.Check(t, is.Contains(strings.Join(spy.Messages(), "\n"), stderr))
 }

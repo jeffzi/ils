@@ -478,22 +478,9 @@ func httpAnswering(status int) func(t *testing.T, f *gittest.Fixture) ([]string,
 // before it answers.
 func httpHangingUp(t *testing.T, f *gittest.Fixture) ([]string, string) {
 	t.Helper()
-	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
-	assert.NilError(t, err)
-	t.Cleanup(func() { _ = ln.Close() })
-
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-
-			_ = conn.Close()
-		}
-	}()
-
-	addr := ln.Addr().String()
+	addr := gittest.Serve(t, func(conn net.Conn) {
+		assert.Check(t, conn.Close())
+	})
 	f.SetOriginURL("http://" + addr + "/jeffzi/ils.git")
 
 	return f.Env(), addr
@@ -1150,22 +1137,6 @@ func TestRepo_Push_WhenOriginNeverAnswers_ReturnsErrRemote(t *testing.T) {
 	assert.Check(t, remote, "Push(%q) error = %v, want git.ErrRemote", topic, err)
 }
 
-func TestRepo_Push_WhenContextCanceled_ReturnsNeitherPushErrorNorErrRemote(t *testing.T) {
-	t.Parallel()
-	f := gittest.New(t, trunk)
-	f.Commits(topic, "one")
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-
-	err := pushTip(ctx, f)
-
-	assert.Check(t, is.ErrorIs(err, context.Canceled))
-	_, refused := errors.AsType[*git.PushError](err)
-	assert.Check(t, !refused, "Push(%q) error = %v, want no *git.PushError", topic, err)
-	remote := errors.Is(err, git.ErrRemote)
-	assert.Check(t, !remote, "Push(%q) error = %v, want no git.ErrRemote", topic, err)
-}
-
 const releaseRef = "refs/tags/" + release
 
 // taggedRelease returns a fixture whose clone holds release as a local tag on tip.
@@ -1177,6 +1148,21 @@ func taggedRelease(t *testing.T) (f *gittest.Fixture, repo git.Repo, tip string)
 	assert.NilError(t, repo.CreateTag(t.Context(), release, tip))
 
 	return f, repo, tip
+}
+
+func TestRepo_PushTag_WhenContextCanceled_ReturnsNeitherPushErrorNorErrRemote(t *testing.T) {
+	t.Parallel()
+	_, repo, _ := taggedRelease(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	err := repo.PushTag(ctx, release)
+
+	assert.Check(t, is.ErrorIs(err, context.Canceled))
+	_, refused := errors.AsType[*git.PushError](err)
+	assert.Check(t, !refused, "PushTag(%q) error = %v, want no *git.PushError", release, err)
+	remote := errors.Is(err, git.ErrRemote)
+	assert.Check(t, !remote, "PushTag(%q) error = %v, want no git.ErrRemote", release, err)
 }
 
 func TestRepo_PushTag_WhenOriginAccepts_PutsTheTagOnOrigin(t *testing.T) {

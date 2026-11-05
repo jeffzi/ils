@@ -8,11 +8,14 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"gotest.tools/v3/assert"
+	is "gotest.tools/v3/assert/cmp"
 )
 
 // quiet is how long stderr of a stopped run stays silent before the tests take it to have said
@@ -147,17 +150,18 @@ func (c *stuckChild) drain(t *testing.T) {
 	}
 }
 
-// watch draws onto the screen what stderr says for quiet, as long as a stopped run takes to have
-// stopped.
-func (c *stuckChild) watch(t *testing.T) {
-	t.Helper()
-
-	assert.NilError(t, c.pipe.SetReadDeadline(time.Now().Add(quiet)))
-	buf := make([]byte, pipeBuffer)
-	for {
-		if c.drawRead(t, buf, "watched") {
-			return
-		}
+// readsStopDisposition reports whether ils reads the disposition of the stop signal on this system,
+// as the build constraints of suspend_bsd.go and suspend_linux.go select: the darwin constraint
+// also holds on ios, and the linux one on android. Elsewhere ils stops on the signal even when
+// started with it ignored.
+func readsStopDisposition() bool {
+	switch runtime.GOOS {
+	case "darwin", "ios", "dragonfly", "freebsd":
+		return true
+	case "linux", "android":
+		return !strings.HasPrefix(runtime.GOARCH, "mips")
+	default:
+		return false
 	}
 }
 
@@ -213,19 +217,22 @@ func TestApp_Run_WhenContinuedAfterASuspend_DrawsTheSpinnerLineAgain(t *testing.
 	run.await(t, "the spinner line showed again", run.spinnerShows)
 }
 
-func TestApp_Run_WhenSuspendedAfterStartingWithTheStopSignalIgnored_RunsOnWithTheSpinnerLine(t *testing.T) {
+func TestApp_Run_WhenStartedWithTheStopSignalIgnored_GoesOnIgnoringIt(t *testing.T) {
 	t.Parallel()
-	run := startStuckIgnoring(t, stuckHolding, "TSTP")
-	run.awaitSpinning(t)
+	if !readsStopDisposition() {
+		t.Skipf("ils does not read the disposition of the stop signal on %s/%s", runtime.GOOS, runtime.GOARCH)
+	}
 
-	assert.NilError(t, run.cmd.Process.Signal(syscall.SIGTSTP))
+	run := startStuckIgnoring(t, stuckTellingStop, "TSTP")
+	t.Cleanup(func() {
+		assert.Check(t, run.cmd.Process.Signal(syscall.SIGTERM))
+		_, _ = run.end(t) // the run ends Stopped. on the termination; the stop line is the check
+	})
 
-	run.watch(t)
-	var status syscall.WaitStatus
-	pid, err := syscall.Wait4(run.cmd.Process.Pid, &status, syscall.WUNTRACED|syscall.WNOHANG, nil)
+	line, err := run.stdout.ReadString('\n')
+
 	assert.NilError(t, err)
-	assert.Check(t, pid == 0, "status = %v, want the run still under way", status)
-	assert.Check(t, run.spinnerShows(), "the spinner line no longer shows:\n%q", run.stderr.raw())
+	assert.Check(t, is.Equal(line, stopIgnoredLine+"\n"), "ils listens for the stop signal it was started ignoring")
 }
 
 func TestApp_Run_WhenSuspendedAfterTheLandingCommandReturned_Stops(t *testing.T) {
