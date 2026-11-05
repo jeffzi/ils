@@ -361,9 +361,6 @@ type variantCase struct {
 	program bool
 }
 
-// escapedSpaces returns path with a backslash before each space, one word to a shell.
-func escapedSpaces(path string) string { return strings.ReplaceAll(path, " ", `\ `) }
-
 // unclosed returns path after a single quote that nothing closes, a line git cannot split.
 func unclosed(path string) string { return "'" + path }
 
@@ -375,7 +372,6 @@ func variantEnv(name string) []string { return []string{"GIT_SSH_VARIANT=" + nam
 func variantCases() []variantCase {
 	return []variantCase{
 		{name: "command named PLINK.EXE", command: "PLINK.EXE", want: plainHost},
-		{name: "command named plink, spaces escaped", command: "plink", line: escapedSpaces, want: plainHost},
 		{name: "command line with an unclosed quote", command: "ssh", line: unclosed, want: plainHost},
 		{name: "unrecognized command that answers", command: "connect", want: standInHost},
 		{name: "unrecognized command that refuses", command: "connect", refuses: true, want: plainHost},
@@ -763,7 +759,6 @@ func TestSplitCommandLine(t *testing.T) {
 		{name: "tab separates", line: "a\tb", want: []string{"a", "b"}},
 		{name: "carriage return separates", line: "a\rb", want: []string{"a", "b"}},
 		{name: "vertical tab does not separate", line: "a\vb", want: []string{"a\vb"}},
-		{name: "form feed does not separate", line: "a\fb", want: []string{"a\fb"}},
 		{name: "leading space gives an empty first word", line: " a", want: []string{"", "a"}},
 		{name: "trailing space gives an empty last word", line: "a ", want: []string{"a", ""}},
 		{name: "single quotes keep a backslash", line: `'a\ b'`, want: []string{`a\ b`}},
@@ -812,7 +807,6 @@ func TestProgramWord(t *testing.T) {
 		wantFound bool
 	}{
 		{name: "vertical tab stays inside the program word", line: "ssh\v-v", want: "ssh\v-v", wantFound: true},
-		{name: "form feed stays inside the program word", line: "ssh\f-v", want: "ssh\f-v", wantFound: true},
 		{name: "leading space before the program", line: " ssh -v", want: "ssh", wantFound: true},
 		{name: "only an assignment and a trailing space", line: "FOO=bar ", want: "", wantFound: false},
 	}

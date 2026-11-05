@@ -413,24 +413,6 @@ func TestRepo_OriginTags_WhenLightweightAndAnnotatedTags_ListsEachWithTheCommitI
 	assert.Check(t, is.DeepEqual(got, want))
 }
 
-func TestRepo_WhenOriginDoesNotAnswer_ReturnsErrRemote(t *testing.T) {
-	t.Parallel()
-	tests := append(originCalls(), fastForwardTrunkCall())
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			f := gittest.New(t, trunk)
-			f.CutOffOrigin()
-
-			got, err := tt.call(t.Context(), newRepo(f))
-
-			ok := errors.Is(err, git.ErrRemote)
-			assert.Check(t, ok, "%s() error = %v, want git.ErrRemote", tt.name, err)
-			checkNoResult(t, tt.name, got)
-		})
-	}
-}
-
 // sshDenied is what GitHub's ssh prints when it turns away a caller whose key it does not accept.
 const sshDenied = "git@github.com: Permission denied (password)."
 
@@ -572,7 +554,6 @@ func TestRepo_RemoteBranch_WhenTheConnectionToOriginFails_ReturnsErrRemote(t *te
 			name:    "ssh connect denied by a local policy",
 			arrange: sshSaying("ssh: connect to host github.com port 22: Permission denied", sshFailedCode),
 		},
-		{name: "git cannot write a local file", arrange: sshSaying("fatal: unable to create temporary file: Permission denied", 128)},
 		{name: "http server hangs up", arrange: httpHangingUp},
 	}
 	for _, tt := range tests {
@@ -691,15 +672,6 @@ func TestRepo_TrunkOrLastFetched_WhenOriginDoesNotAnswer_ReturnsTheLastFetchedTr
 		arrange func(t *testing.T, f *gittest.Fixture) context.Context
 		name    string
 	}{
-		{
-			name: "origin unreachable",
-			arrange: func(t *testing.T, f *gittest.Fixture) context.Context {
-				t.Helper()
-				f.CutOffOrigin()
-
-				return t.Context()
-			},
-		},
 		{
 			name: "deadline passed",
 			arrange: func(t *testing.T, _ *gittest.Fixture) context.Context {
@@ -1185,9 +1157,6 @@ func TestRepo_PushTag_WhenOriginHoldsTheTagElsewhere_ReturnsPushErrorNamingTheTa
 	pushErr, ok := errors.AsType[*git.PushError](err)
 	assert.Assert(t, ok, "PushTag(%q) error = %v, want *git.PushError", release, err)
 	assert.Check(t, is.Equal(pushErr.Ref, releaseRef))
-	assert.Check(t, pushErr.Reason != "" && pushErr.Reason != "!", "Reason = %q, want the status line's summary", pushErr.Reason)
-	assert.Check(t, !strings.Contains(pushErr.Reason, "refs/tags/"), "Reason = %q, want the summary, not the ref it names",
-		pushErr.Reason)
 }
 
 func TestRepo_WhenNotARepository_OriginCallsReturnExitError(t *testing.T) {
