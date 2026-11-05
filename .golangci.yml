@@ -38,10 +38,6 @@ linters:
           deny:
             - pkg: github.com/pkg/errors
               desc: use the standard library errors package and %w wrapping
-    errcheck:
-      exclude-functions:
-        - (io.ReadCloser).Close
-        - (*database/sql.Rows).Close
     exhaustive:
       default-signifies-exhaustive: true
     funlen:
