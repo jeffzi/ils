@@ -190,6 +190,16 @@ func TestParse_WhenGitRunsAScriptAtTheTopOfTheWorkTree_ReadsItsGitCommandsFromTh
 	}
 }
 
+func TestJudge_WhenARebaseExecRedirectsAroundACd_RefusesGitHistoryWrittenAtTheTopOfTheWorkTree(t *testing.T) {
+	t.Parallel()
+
+	f, _ := standingOn(t, "main", "topic")
+	caller := callerIn(f, subdirectory(t, f.Dir()))
+	command := "git rebase --exec '(cd " + filepath.ToSlash(outsideDir(t)) + " && git -C " + filepath.ToSlash(f.Dir()) + " show HEAD:go.mod) > go.mod' main"
+
+	checkJudgedRow(t, caller, judged{command: command, want: guard.Refuse, wantNamed: "writes over " + filepath.Join(f.Dir(), "go.mod")})
+}
+
 func TestParse_WhenWhereGitRunsAScriptCannotBeTold_ReportsItsDirectoryUnknown(t *testing.T) {
 	t.Parallel()
 

@@ -3,6 +3,7 @@
 package guard_test
 
 import (
+	"path/filepath"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -129,6 +130,20 @@ func TestJudge_WhenAShellGivesItsScriptFileAToolWord_RefusesIt(t *testing.T) {
 	checkRefusals(t, []refusal{
 		{name: "tool word after the file", command: "bash x.sh git push", wantNamed: string(guard.ToolArgument)},
 		{name: "tool in a string after the file", command: "sh ./run.sh 'git push'", wantNamed: string(guard.ToolArgument)},
+	})
+}
+
+func TestJudge_WhenAStringRedirectsAroundACd_RefusesGitHistoryWrittenWhereTheStringStarts(t *testing.T) {
+	t.Parallel()
+
+	f, _ := standingOn(t, "main", "topic")
+	caller := callerIn(f, filepath.Dir(f.Dir()))
+	inner := "'(cd " + filepath.ToSlash(outsideDir(t)) + " && git -C " + filepath.ToSlash(f.Dir()) + " show HEAD:go.mod) > go.mod'"
+	named := "writes over " + filepath.Join(f.Dir(), "go.mod")
+
+	checkJudged(t, caller, []judged{
+		{name: "sh -c", command: "cd repo && sh -c " + inner, want: guard.Refuse, wantNamed: named},
+		{name: "eval", command: "cd repo && eval " + inner, want: guard.Refuse, wantNamed: named},
 	})
 }
 

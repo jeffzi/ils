@@ -31,6 +31,16 @@ func TestJudge_WhenACallCarriesARedirect_JudgesItsBodyUnderTheRedirect(t *testin
 	})
 }
 
+func TestJudge_WhenACallsRedirectLandsWhereTheCallRuns_RefusesGitHistoryTheBodyWritesFromElsewhere(t *testing.T) {
+	t.Parallel()
+
+	f, _ := standingOn(t, "main", "topic")
+	caller := callerIn(f, filepath.Dir(f.Dir()))
+	command := "dump() { cd " + quotedPath(outsideDir(t)) + " && git -C " + quotedPath(f.Dir()) + " show HEAD:go.mod; }; cd repo && dump > go.mod"
+
+	checkJudgedRow(t, caller, judged{command: command, want: guard.Refuse, wantNamed: "writes over " + filepath.Join(f.Dir(), "go.mod")})
+}
+
 func TestJudge_WhenACallMayRunAnOuterBodyUnderARedirect_JudgesThatBodyUnderTheRedirect(t *testing.T) {
 	t.Parallel()
 

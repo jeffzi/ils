@@ -507,17 +507,18 @@ func refuseHistoryOverFile(ctx context.Context, caller Caller, inv Invocation) (
 		return Verdict{Outcome: Allow}, nil
 	}
 
-	for _, target := range historyTargets(inv) {
+	from, targets := historyTargets(inv)
+	for _, target := range targets {
 		path := target.Text
 		switch {
 		case !target.Literal:
 			return refuse(fmt.Sprintf("git %s writes to a file the guard cannot read; name the file as a literal path", sub)), nil
-		case !filepath.IsAbs(path) && inv.Dir == "":
+		case !filepath.IsAbs(path) && from == "":
 			reason := fmt.Sprintf("git %s writes to %s from a directory the guard cannot tell; %s", sub, path, moveFirst)
 
 			return refuse(reason), nil
 		case !filepath.IsAbs(path):
-			path = opened(inv.Dir, path)
+			path = opened(from, path)
 		}
 
 		dir := nearestDirectory(path)
@@ -534,19 +535,21 @@ func refuseHistoryOverFile(ctx context.Context, caller Caller, inv Invocation) (
 	return Verdict{Outcome: Allow}, nil
 }
 
-// historyTargets returns the files the output of inv lands in: the file its stdout is redirected
-// to, or else each operand of a `tee` that reads it straight from the pipe. A word that is not a
-// literal may be either an option or a file, so it is returned as a file.
-func historyTargets(inv Invocation) []Word {
-	if target, toFile := inv.Stdout(); toFile {
-		return []Word{target}
+// historyTargets returns the files the output of inv lands in, and the directory a relative one is
+// opened from: the file its stdout is redirected to, from where the shell opened that redirect,
+// which for one around a `cd` is before the `cd` runs; or else each operand of a `tee` that reads
+// it straight from the pipe, from the directory inv runs in. A word that is not a literal may be
+// either an option or a file, so it is returned as a file.
+func historyTargets(inv Invocation) (string, []Word) {
+	if opened, toFile := inv.stdoutFile(); toFile {
+		return opened.Dir, []Word{opened.Target}
 	}
 
 	if len(inv.pipedInto) == 0 || !inv.pipedInto[0].Literal || programName(inv.pipedInto[0]) != "tee" {
-		return nil
+		return inv.Dir, nil
 	}
 
-	return operands(inv.pipedInto[1:])
+	return inv.Dir, operands(inv.pipedInto[1:])
 }
 
 // nearestDirectory returns the nearest directory that exists among those holding path, which the

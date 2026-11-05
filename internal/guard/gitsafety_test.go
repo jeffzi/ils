@@ -289,6 +289,32 @@ func TestJudge_RefusesGitHistoryWrittenUpFromALinkIntoAWorkTree(t *testing.T) {
 	checkJudgedRow(t, caller, judged{command: "cd " + quotedPath(link) + " && git show HEAD:README.md > ../x.md", want: guard.Refuse, wantNamed: "writes over " + filepath.Join(top, "x.md")})
 }
 
+func TestJudge_AllowsGitHistoryRedirectedAroundACdFromOutsideAnyWorkTree(t *testing.T) {
+	t.Parallel()
+
+	f, _ := standingOn(t, "main", "topic")
+	caller := callerIn(f, filepath.Dir(f.Dir()))
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "subshell entering the repository", command: "(cd repo && git show HEAD:go.mod) > old.mod"},
+		{name: "subshell entering a directory the command assigned", command: `d=repo; (cd "$d" && git show HEAD:go.mod) > old.mod`},
+	})
+}
+
+func TestJudge_RefusesGitHistoryRedirectedAroundACdOntoAWorkTreeFile(t *testing.T) {
+	t.Parallel()
+
+	f, caller := standingOn(t, "main", "topic")
+	parent := filepath.Dir(f.Dir())
+	away := quotedPath(outsideDir(t))
+
+	checkJudgedIn(t, caller, []placed{
+		{name: "subshell redirected into the repository it enters", dir: parent, command: "(cd repo && git show HEAD:go.mod) > repo/go.mod"},
+		{name: "subshell leaving the work tree it is redirected in", command: "(cd " + away + " && git -C " + quotedPath(f.Dir()) + " show HEAD:go.mod) > go.mod"},
+		{name: "redirect on git show inside the subshell", dir: parent, command: "(cd repo && git show HEAD:go.mod > go.mod)"},
+	}, expectation{outcome: guard.Refuse, named: "writes over " + filepath.Join(f.Dir(), "go.mod")})
+}
+
 func TestJudge_WhenWhetherTheTargetIsInAWorkTreeCannotBeRead_RefusesNamingTheRead(t *testing.T) {
 	// Not parallel: gittest.FakeGit sets PATH for the whole process.
 	f, _ := standingOn(t, "main", "topic")
