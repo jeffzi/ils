@@ -190,12 +190,6 @@ func DeleteBranchArgs(host, repo, branchPath string) []string {
 	return []string{"api", "--hostname", host, "-X", "DELETE", "repos/" + repo + "/git/refs/heads/" + branchPath}
 }
 
-// RulesArgs is the argv of the read of the rules on a branch of the repository owner/name on host;
-// branchPath is the branch as it stands in a URL path, each of its segments escaped.
-func RulesArgs(host, repo, branchPath string) []string {
-	return []string{"api", "--hostname", host, "--paginate", "repos/" + repo + "/rules/branches/" + branchPath}
-}
-
 // ChecksArgs is the argv pattern of the read of pull request number's checks.
 func ChecksArgs(slug string, number int) []string {
 	return []string{"pr", "checks", "--repo", slug, strconv.Itoa(number), "--json", Any}
@@ -206,9 +200,10 @@ func RunsArgs(slug, sha string) []string {
 	return []string{"run", "list", "--repo", slug, "--commit", sha, "--limit", Any, "--json", Any}
 }
 
-// LogArgs is the argv of the read of the failed log of the workflow run numbered run.
-func LogArgs(slug, run string) []string {
-	return []string{"run", "view", "--repo", slug, run, "--log-failed"}
+// LogArgs is the argv of the read of the failed log of the job numbered job in the workflow run
+// numbered run, as ils makes it: `gh run view --repo <slug> <run> --log-failed --job <job>`.
+func LogArgs(slug, run, job string) []string {
+	return []string{"run", "view", "--repo", slug, run, "--log-failed", "--job", job}
 }
 
 // ReleaseViewArgs is the argv pattern of the read of the GitHub release of tag.

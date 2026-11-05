@@ -268,21 +268,20 @@ func TestRelease_WhenTheVersionIsNotXYZ_RefusesNamingItBeforeReadingOrigin(t *te
 	}
 }
 
-// orderRow is one set of tags origin or the clone holds, and the version released over them.
+// orderRow is one set of tags origin or the clone holds, which version is released over.
 type orderRow struct {
 	arrange func(f *gittest.Fixture, base string)
 	name    string
-	version string
 	// highest is the tag the refusal names.
 	highest string
 }
 
-// build arranges row's tags and commits the release commit of row's version, as releaseScene's
-// build does.
+// build arranges row's tags and commits the release commit of version, as releaseScene's build
+// does.
 func (row orderRow) build(f *gittest.Fixture, base string) string {
 	row.arrange(f, base)
 
-	return releaseOf(f, row.version, "chore: release v"+row.version)
+	return releaseOf(f, version, "chore: release v"+version)
 }
 
 func TestRelease_WhenOriginHoldsAVersionTagNotBelowIt_RefusesNamingTheHighest(t *testing.T) {
@@ -290,14 +289,14 @@ func TestRelease_WhenOriginHoldsAVersionTagNotBelowIt_RefusesNamingTheHighest(t 
 
 	tests := []orderRow{
 		{
-			name: "a version below two higher ones", version: version, highest: "v1.10.0",
+			name: "a version below two higher ones", highest: "v1.10.0",
 			arrange: func(f *gittest.Fixture, base string) {
 				f.OriginTag("v1.10.0", base)
 				f.OriginTag("v1.3.0", base)
 			},
 		},
 		{
-			name: "the same version under a shorter name", version: version, highest: "v1.2",
+			name: "the same version under a shorter name", highest: "v1.2",
 			arrange: func(f *gittest.Fixture, base string) { f.OriginTag("v1.2", base) },
 		},
 	}
@@ -305,7 +304,7 @@ func TestRelease_WhenOriginHoldsAVersionTagNotBelowIt_RefusesNamingTheHighest(t 
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			st := releaseScene(t, tt.build)
-			req := releaseRequest(tt.version, false)
+			req := releaseRequest(version, false)
 			before := st.s.written()
 
 			got := runRelease(t, st.s, req)

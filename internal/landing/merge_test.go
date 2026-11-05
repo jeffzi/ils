@@ -805,7 +805,6 @@ type waitRow struct {
 	name    string
 	text    string
 	outcome result.Outcome
-	left    time.Duration
 }
 
 // runWaits runs each row as a test in a bubble of its own: the run carries the row's payload,
@@ -817,7 +816,7 @@ func runWaits(t *testing.T, rows []waitRow) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
-				run := runMergeOn(t, setting{script: tt.script, left: tt.left, cut: tt.cut})
+				run := runMergeOn(t, setting{script: tt.script, cut: tt.cut})
 
 				assertMergePayload(t, run, *tt.payload)
 				assert.Check(t, is.Equal(run.written(), run.before))
@@ -1052,7 +1051,7 @@ func TestMerge_WhenTheMessageReadLeavesExactlyTheReserve_Merges(t *testing.T) {
 		// The wait's deadline is 80 seconds away: the read ends 20 seconds before the command's.
 		script := waiting(passing()).saying(titledAfter("")).landing(nil, nil).messageTaking(80 * time.Second)
 
-		run := runMergeIn(t, script, 0)
+		run := runMergeIn(t, script)
 
 		assertStoppedBy(t, run.got, result.Done, mergeRequest())
 
@@ -1060,12 +1059,11 @@ func TestMerge_WhenTheMessageReadLeavesExactlyTheReserve_Merges(t *testing.T) {
 	})
 }
 
-// runMergeIn runs `ils merge` inside the test's bubble with the forge script builds and a deadline
-// left of fake time away.
-func runMergeIn(t *testing.T, script forgeFor, left time.Duration) mergeRun {
+// runMergeIn runs `ils merge` inside the test's bubble with the forge script builds.
+func runMergeIn(t *testing.T, script forgeFor) mergeRun {
 	t.Helper()
 
-	return runMergeOn(t, setting{script: script, left: left})
+	return runMergeOn(t, setting{script: script})
 }
 
 func TestMerge_WhenTheChecksNeverConclude_EndsTheWaitTheReserveBeforeTheDeadline(t *testing.T) {
@@ -1073,7 +1071,7 @@ func TestMerge_WhenTheChecksNeverConclude_EndsTheWaitTheReserveBeforeTheDeadline
 	synctest.Test(t, func(t *testing.T) {
 		started := time.Now()
 
-		run := runMergeIn(t, waiting(running()), 0)
+		run := runMergeIn(t, waiting(running()))
 
 		waited := time.Since(started)
 		latest := bound - landing.MergeReserve
@@ -1094,7 +1092,7 @@ func TestMerge_WhenEveryCheckBeforeTheMergeHolds_ComposesTheMessageFromThePullRe
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
-				run := runMergeIn(t, tt.script, 0)
+				run := runMergeIn(t, tt.script)
 
 				assertStoppedBy(t, run.got, result.Done, mergeRequest())
 
@@ -1116,7 +1114,7 @@ func TestMerge_WhenTheHeadMovesPastThePushedCommit_RefusesWithoutMerging(t *test
 		// The forge would compose and land the merge, were it asked to.
 		script := waiting(passing()).showing(heads...).saying(titledAfter("Tidy the wording.")).landing(nil, nil)
 
-		run := runMergeIn(t, script, 0)
+		run := runMergeIn(t, script)
 
 		assertEndedBy(t, run.got, run.gitDir, ended{text: movedTo() + mergeCommand().after("pull the new commit"), req: mergeRequest(), outcome: result.Refused})
 		assertMergePayload(t, run, *mergeDetail(forge.VerdictNone, forge.MergeUnknown))
@@ -1129,7 +1127,7 @@ func TestMerge_WhenTrunkRequiresChecks_WaitsForThoseOfTheHead(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		required := []string{"lint", "test"}
 
-		run := runMergeIn(t, waiting(requiredPassing()).requiring(required...).saying(titledAfter("")).landing(nil, nil), 0)
+		run := runMergeIn(t, waiting(requiredPassing()).requiring(required...).saying(titledAfter("")).landing(nil, nil))
 
 		assertReadsRequire(t, run.forge.Calls(), run.tip, required)
 	})

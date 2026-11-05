@@ -85,8 +85,8 @@ func Main() (code int, served bool) {
 	ctx := context.Background()
 
 	// First: the lingering copy inherits the spawner's environment, spawnAtEnv included.
-	if addr := os.Getenv(lingerAtEnv); addr != "" {
-		return Hold(ctx, addr), true
+	if code, served := Linger(); served {
+		return code, true
 	}
 
 	if addr := os.Getenv(spawnAtEnv); addr != "" {
@@ -99,6 +99,40 @@ func Main() (code int, served bool) {
 	}
 
 	return serveGit(ctx, realGit, os.Args[1:]), true
+}
+
+// Linger makes the test binary act as the lingering copy StartLingerer starts, when it is one, and
+// reports whether it is. Main calls it first; a TestMain with modes of its own that the copy's
+// inherited environment would also select calls it before them.
+func Linger() (code int, served bool) {
+	addr := os.Getenv(lingerAtEnv)
+	if addr == "" {
+		return 0, false
+	}
+
+	return Hold(context.Background(), addr), true
+}
+
+// StartLingerer starts, under ctx, a copy of the test binary that inherits this process's output
+// and holds addr until the test ends, and returns it without waiting for it. The copy's TestMain
+// must call Main or Linger.
+func StartLingerer(ctx context.Context, addr string) (*exec.Cmd, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("find the test binary: %w", err)
+	}
+
+	//nolint:gosec // G204: the test binary starts itself; nothing here comes from outside the test.
+	lingerer := exec.CommandContext(ctx, self)
+	lingerer.Env = append(os.Environ(), lingerAtEnv+"="+addr)
+	lingerer.Stdout = os.Stdout
+	lingerer.Stderr = os.Stderr
+
+	if err := lingerer.Start(); err != nil {
+		return nil, fmt.Errorf("start the lingering copy: %w", err)
+	}
+
+	return lingerer, nil
 }
 
 // FakeGit puts the test binary first on PATH under git's name for the rest of the test, acting as
@@ -310,19 +344,8 @@ func spawn(ctx context.Context, addr, said string) int {
 		return code
 	}
 
-	self, err := os.Executable()
-	if err != nil {
-		return broken(fmt.Errorf("find the test binary: %w", err))
-	}
-
-	//nolint:gosec // G204: the test binary starts itself; nothing here comes from outside the test.
-	lingerer := exec.CommandContext(ctx, self)
-	lingerer.Env = append(os.Environ(), lingerAtEnv+"="+addr)
-	lingerer.Stdout = os.Stdout
-	lingerer.Stderr = os.Stderr
-
-	if err := lingerer.Start(); err != nil {
-		return broken(fmt.Errorf("start the lingering copy: %w", err))
+	if _, err := StartLingerer(ctx, addr); err != nil {
+		return broken(err)
 	}
 
 	return 0

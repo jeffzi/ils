@@ -101,7 +101,7 @@ func createArgs() []string {
 
 func headArgs() []string { return ghtest.HeadArgs(engineSlug, pullNumber) }
 
-func rulesArgs() []string { return ghtest.RulesArgs(engineHost, "ada/engine", trunk) }
+func rulesArgs() []string { return pagedAPIArgs("rules/branches/" + trunk) }
 
 func checksArgs() []string { return ghtest.ChecksArgs(engineSlug, pullNumber) }
 
@@ -295,7 +295,7 @@ func assertExitErrorNamesCall(t *testing.T, c readCase) {
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 	assert.Assert(t, ok, "error = %v, want *child.ExitError", err)
-	assert.Check(t, ghtest.Matches(ghArgv(c.args), exitErr.Argv), "Argv = %q, want %q", exitErr.Argv, c.args)
+	assert.Check(t, ghtest.Matches(ghArgv(c.args), exitErr.Argv), "Argv = %q, want %q", exitErr.Argv, ghArgv(c.args))
 }
 
 // casesNamed is the cases of all whose name is among names, in the order of all.
@@ -326,7 +326,7 @@ func assertDecodeErrorNamesCall(t *testing.T, c readCase) {
 
 	decodeErr, ok := errors.AsType[*github.DecodeError](err)
 	assert.Assert(t, ok, "error = %v, want *github.DecodeError", err)
-	assert.Check(t, ghtest.Matches(ghArgv(c.args), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, c.args)
+	assert.Check(t, ghtest.Matches(ghArgv(c.args), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, ghArgv(c.args))
 }
 
 func TestForge_Identity_WhenGhIsOlderThanTheMinimum_ReturnsToolTooOldErrorBeforeTheLogin(t *testing.T) {
@@ -434,7 +434,7 @@ func TestForge_FindChanges_WhenStateIsUnknown_ReturnsDecodeError(t *testing.T) {
 
 	decodeErr, ok := errors.AsType[*github.DecodeError](err)
 	assert.Assert(t, ok, "FindChanges error = %v, want *github.DecodeError", err)
-	assert.Check(t, ghtest.Matches(ghArgv(listArgs()), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, listArgs())
+	assert.Check(t, ghtest.Matches(ghArgv(listArgs()), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, ghArgv(listArgs()))
 }
 
 func TestForge_OpenChange_WhenCreated_ReturnsNumberAndURL(t *testing.T) {
@@ -827,7 +827,7 @@ func TestForge_Message_WhenAnswerHoldsNoPullRequest_ReturnsDecodeError(t *testin
 
 			decodeErr, ok := errors.AsType[*github.DecodeError](err)
 			assert.Assert(t, ok, "error = %v, want *github.DecodeError", err)
-			assert.Check(t, ghtest.Matches(ghArgv(messageArgs()), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, messageArgs())
+			assert.Check(t, ghtest.Matches(ghArgv(messageArgs()), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, ghArgv(messageArgs()))
 		})
 	}
 }
@@ -876,7 +876,7 @@ func TestForge_FindRelease_WhenSomethingElseIsNotFound_ReturnsExitError(t *testi
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 	assert.Assert(t, ok, "FindRelease error = %v, want *child.ExitError", err)
-	assert.Check(t, ghtest.Matches(ghArgv(releaseViewArgs()), exitErr.Argv), "Argv = %q, want %q", exitErr.Argv, releaseViewArgs())
+	assert.Check(t, ghtest.Matches(ghArgv(releaseViewArgs()), exitErr.Argv), "Argv = %q, want %q", exitErr.Argv, ghArgv(releaseViewArgs()))
 }
 
 func TestForge_PublishRelease(t *testing.T) {

@@ -520,7 +520,7 @@ func TestPush_WhenOpenChangeReportsAnExistingPullRequest_ReadsThePullRequestsOfT
 	runPushes(t, pushExistsRows())
 }
 
-func TestPush_WhenGitRefusesThePush_BrokeSayingNothingWasPushed(t *testing.T) {
+func TestPush_WhenGitRefusesThePush_PutsGitsReasonAloneOnTheRefusedLine(t *testing.T) {
 	t.Parallel()
 	// Origin's hook declines pushes alone, so every read passes and the push is refused.
 	const policy = "pushes wait for the freeze to end"
