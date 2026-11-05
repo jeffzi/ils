@@ -129,6 +129,10 @@ When `ils branch` refuses, it has created no branch and switched nothing; at mos
 from origin. It refuses:
 
 - no name, a second word, or `--`;
+- any flag other than `--json`, `-d` or `--debug`, `--no-color`, `--help`, or `-h`; a
+  `--json=<value>`, `-d=<value>`, `--debug=<value>`, or `--no-color=<value>` whose value is not
+  `true` or `false`; and a `--help=<value>` or `-h=<value>` whose value is not a boolean such as
+  `true`, `false`, `1`, or `0`;
 - a name git cannot hold as a branch, including one that starts with `-` and `@{-1}`;
 - a name a branch already takes, locally or on origin. A branch takes the name when it has the
   same name, or collides with it by path, which git cannot hold beside it: `fix` takes `fix/help`,
@@ -250,17 +254,17 @@ ends done. The output gives the release's URL and a line naming the file left be
 
 With `--json`, a command prints one JSON object with these fields:
 
-| Field       | Type             | Meaning                                                                                                                                |
-| ----------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `command`   | string           | The command that ran, such as `push`.                                                                                                  |
-| `words`     | array of strings | The command-line words `ils` received. Absent when empty.                                                                              |
-| `outcome`   | string           | `done`, `broke`, `refused`, `ask`, `pending`, or `delivered-not-green`: the Means column of [Exit codes](#exit-codes), with hyphens.   |
-| `next`      | string           | What to do next, as on the `Next:` line.                                                                                               |
-| `reason`    | string           | Why the command did not end as `done`. Present on every other outcome.                                                                 |
-| `excerpt`   | string           | Third-party text: the end of a failed check's log, or of what the hooks and `git` printed for a push `git` refused. Absent when empty. |
-| `lines`     | array of strings | What happened, in order; never a line that only restates the reason. Absent when empty.                                                |
-| `exit_code` | integer          | The process exit code.                                                                                                                 |
-| `payload`   | object           | The command's structured detail, under the command's name, such as `payload.push`. Absent when empty.                                  |
+| Field       | Type             | Meaning                                                                                                                                                                                                                   |
+| ----------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `command`   | string           | The command that ran, such as `push`.                                                                                                                                                                                     |
+| `words`     | array of strings | The command-line words `ils` received, less the output flags: `-d`, `--debug` and `--no-color` in any form, and `--json` bare or as `--json=true` or `--json=false`. A refused `--json=<value>` stays. Absent when empty. |
+| `outcome`   | string           | `done`, `broke`, `refused`, `ask`, `pending`, or `delivered-not-green`: the Means column of [Exit codes](#exit-codes), with hyphens.                                                                                      |
+| `next`      | string           | What to do next, as on the `Next:` line.                                                                                                                                                                                  |
+| `reason`    | string           | Why the command did not end as `done`. Present on every other outcome.                                                                                                                                                    |
+| `excerpt`   | string           | Third-party text: the end of a failed check's log, or of what the hooks and `git` printed for a push `git` refused. Absent when empty.                                                                                    |
+| `lines`     | array of strings | What happened, in order; never a line that only restates the reason. Absent when empty.                                                                                                                                   |
+| `exit_code` | integer          | The process exit code.                                                                                                                                                                                                    |
+| `payload`   | object           | The command's structured detail, under the command's name, such as `payload.push`. Absent when empty.                                                                                                                     |
 
 ### Push JSON output
 
