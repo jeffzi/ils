@@ -92,9 +92,9 @@ type reading struct {
 	running  bool
 	cut      bool
 	offline  bool
-	// branchUnread is set when a read of the branch's tip, of its commits past the trunk, or of
-	// origin's copy of it failed other than by a cut: push would end on the same failure, so no step
-	// past the fix can be told.
+	// branchUnread is set when a read of the branch's tip, of its commits past the trunk, of
+	// origin's copy of it, of the working tree's changes, or of the local trunk failed other than by
+	// a cut: push or merge would end on the same failure, so no step past the fix can be told.
 	branchUnread bool
 }
 
@@ -134,8 +134,8 @@ func (r *reading) markUnread(read, reason string) {
 	r.status.Unread = append(r.status.Unread, result.Unread{Read: read, Error: reason})
 }
 
-// failedBranch records that the read named read of the branch failed with err and, unless a cut
-// ended it, leaves the branch unread for next.
+// failedBranch records that the read named read, one push or merge also makes, failed with err
+// and, unless a cut ended it, leaves the branch unread for next.
 func (r *reading) failedBranch(read string, err error) {
 	r.failed(read, err)
 	r.branchUnread = r.branchUnread || !r.cut
@@ -222,7 +222,7 @@ func (r *reading) readTree(ctx context.Context) {
 
 	files, err := r.deps.Repo.ChangedTrackedFiles(ctx)
 	if err != nil {
-		r.failed(readTree, err)
+		r.failedBranch(readTree, err)
 
 		return
 	}
@@ -259,7 +259,7 @@ func (r *reading) readLocalTrunk(ctx context.Context) {
 
 	switch {
 	case err != nil:
-		r.failed(readLocalTrunk, err)
+		r.failedBranch(readLocalTrunk, err)
 	case ahead:
 		r.trunkAhead = r.refusal(Request{Command: MergeCommand}.trunkAhead(r.on.Trunk, past))
 	}

@@ -714,6 +714,52 @@ func TestStatus_WhenAReadOfTheBranchFails_EndsOnFixingWhatFailed(t *testing.T) {
 	}
 }
 
+// localRead is one read of the repository's own state that a status makes on a work branch.
+type localRead struct {
+	name  string
+	read  string
+	words []string
+}
+
+// localReads are the reads of the working tree and of the local trunk, each with the arguments of
+// the git call that makes it.
+func localReads() []localRead {
+	return []localRead{
+		{name: "the working tree's changes", read: readTree, words: []string{"status", "--porcelain=v1"}},
+		{name: "the local trunk", read: readLocalTrunk, words: []string{"show-ref", "--verify", "--quiet", "refs/heads/" + trunk}},
+	}
+}
+
+func TestStatus_WhenALocalReadFails_EndsOnFixingWhatFailed(t *testing.T) {
+	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	for _, tt := range localReads() {
+		t.Run(tt.name, func(t *testing.T) {
+			s := statusScene(t, publishTopic, greenOpen())
+			failGit(t, s, tt.words)
+
+			got := seeStatus(t, s, (*testing.T).Context)
+
+			assertEndsOn(t, got, statusCommand().fixed)
+			assert.Check(t, hasUnread(got.status, tt.read), "unread %v, want %s listed", got.status.Unread, tt.read)
+		})
+	}
+}
+
+func TestStatus_WhenALocalReadIsCutShort_DoesNotEndOnFixingWhatFailed(t *testing.T) {
+	// Not parallel: stallingGit puts a git that stalls first on PATH with t.Setenv.
+	for _, tt := range localReads() {
+		t.Run(tt.name, func(t *testing.T) {
+			s := statusScene(t, publishTopic, greenOpen())
+			ctx := byTimeLimit().stallingGit(tt.words)(t, s)
+
+			got := seeStatus(t, s, func(*testing.T) context.Context { return ctx })
+
+			assert.Assert(t, hasUnread(got.status, tt.read), "unread %v, want %s listed", got.status.Unread, tt.read)
+			assert.Check(t, !strings.Contains(got.next, "fix what failed"), "next = %q, want a step other than fixing what failed", got.next)
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // The tools the landing commands check first
 // ---------------------------------------------------------------------------
