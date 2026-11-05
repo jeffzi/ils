@@ -296,7 +296,9 @@ type parse struct {
 	app     App
 	// version is read by root's Args so that `ils --version` passes with no command word.
 	version strictBool
-	debug   strictBool
+	// help is the root's own help flag, read by root's Args and RunE.
+	help  rootHelp
+	debug strictBool
 	// wait is the --wait flag of push, merge and release, the commands that register it and so the
 	// ones that may run under the long wait.
 	wait strictBool
@@ -400,20 +402,24 @@ func (p *parse) root() *cobra.Command {
 		SilenceUsage:  true,
 		// `ils completion` is refused as no command.
 		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
-		// Cobra asks Args only of a runnable command. Args refuses every run but `ils --version`,
-		// which RunE prints.
+		// Cobra asks Args only of a runnable command. Args refuses every run but `ils --help` and
+		// `ils --version`, which RunE prints.
 		Args: func(c *cobra.Command, args []string) error {
 			if word, ok := firstWord(c, args); ok {
 				return p.notRootCommand(c, word)
 			}
 
-			if !p.version {
+			if !p.version && !p.help.strictBool {
 				return p.refuse(result.Say("no command was given"))
 			}
 
 			return nil
 		},
 		RunE: func(c *cobra.Command, _ []string) error {
+			if p.help.strictBool {
+				return printHelp(c)
+			}
+
 			if _, err := fmt.Fprintf(c.OutOrStdout(), "ils version %s\n", p.app.printedVersion()); err != nil {
 				return fmt.Errorf("write the version: %w", err)
 			}
@@ -434,7 +440,7 @@ func (p *parse) root() *cobra.Command {
 	// Cobra adds the help flag only after it has found the command, and until then takes the
 	// word after a flag it does not know for that flag's value: `ils --help push` would print
 	// the help of the root.
-	root.InitDefaultHelpFlag()
+	boolFlag(root.Flags(), &p.help, flagNames{long: flagHelp, short: flagHelpShort}, "help for ils")
 	p.refuseFlags(root, notCommand)
 	root.AddCommand(
 		p.waiting(landingHelp{word: landing.PushCommand, short: pushShort, long: pushLong, examples: pushExamples}, orDefault(p.app.runPush, landing.Push)),
@@ -446,8 +452,66 @@ func (p *parse) root() *cobra.Command {
 		p.guardCommand(),
 		p.hookCommand(),
 	)
+	p.judgeHelpWords(root)
 
 	return root
+}
+
+// judgeHelpWords makes root's help command, `ils help [command]`, refuse a first word that is no
+// command as the root refuses it, and print the help of the command its words name. The command
+// is Cobra's own otherwise, so that its help text and its completion of command names stay.
+func (p *parse) judgeHelpWords(root *cobra.Command) {
+	root.InitDefaultHelpCmd()
+
+	help, _, err := root.Find([]string{"help"})
+	if err != nil || help == root {
+		panic("ils: the root has no help command")
+	}
+
+	var topic *cobra.Command
+
+	help.Args = func(_ *cobra.Command, args []string) error {
+		found, rest, err := root.Find(args)
+		if err != nil {
+			return fmt.Errorf("find the command to help with: %w", err)
+		}
+
+		if found == root && len(rest) > 0 {
+			return p.notRootCommand(root, rest[0])
+		}
+
+		topic = found
+
+		return nil
+	}
+	help.Run = nil
+	help.RunE = func(*cobra.Command, []string) error {
+		// The help of a command lists its help flag only once the flag is added.
+		topic.InitDefaultHelpFlag()
+
+		return printHelp(topic)
+	}
+}
+
+// printHelp prints the help of c.
+func printHelp(c *cobra.Command) error {
+	if err := c.Help(); err != nil {
+		return fmt.Errorf("print the help of %s: %w", c.CommandPath(), err)
+	}
+
+	return nil
+}
+
+// rootHelp is the value of the root's help flag. Cobra answers a help flag before it asks Args,
+// and so prints the help of the root for `ils verge --help`; the flag reads as false to Cobra, so
+// that root's Args refuses a word that is no command first, and root's RunE prints the help.
+type rootHelp struct {
+	strictBool
+}
+
+// String returns "false", whatever the flag was set to.
+func (*rootHelp) String() string {
+	return "false"
 }
 
 // addOutputFlags adds to root, for every command under it, the flags that change how a command
@@ -877,9 +941,10 @@ func (a App) fail(err error) int {
 }
 
 const (
-	flagJSON    = commandline.FlagJSON
-	flagHelp    = commandline.FlagHelp
-	flagVersion = commandline.FlagVersion
+	flagJSON      = commandline.FlagJSON
+	flagHelp      = commandline.FlagHelp
+	flagHelpShort = commandline.FlagHelpShort
+	flagVersion   = commandline.FlagVersion
 
 	flagDebug      = commandline.FlagDebug
 	flagDebugShort = commandline.FlagDebugShort

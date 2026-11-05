@@ -16,7 +16,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
-	"github.com/jeffzi/ils/internal/commandline"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/guard"
 	"github.com/jeffzi/ils/internal/landing"
@@ -25,9 +24,6 @@ import (
 
 const (
 	flagCwd = "--cwd"
-
-	// hookCommand reads -h itself because it disables Cobra flag parsing.
-	flagHelpShort = commandline.FlagHelpShort
 
 	cwdUsage = "The directory the command runs in"
 

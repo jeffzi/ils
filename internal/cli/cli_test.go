@@ -731,6 +731,51 @@ func TestApp_Run_WhenTheFirstWordIsAnUnknownRootFlag_RefusesWithTheRootHelp(t *t
 	assert.Check(t, is.Equal(printed.Next, "ils --help"))
 }
 
+func TestApp_Run_WhenHelpIsAskedForAWordThatIsNotACommand_RefusesItAsTheWordAloneIs(t *testing.T) {
+	t.Parallel()
+
+	alone := resulttest.Decode(t, launch(t, outside(t), "verge", "--json").stdout)
+	assert.Assert(t, is.Contains(alone.Reason, "verge"))
+	tests := [][]string{{"verge", "--help"}, {"--help", "verge"}, {"help", "verge"}}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			t.Parallel()
+
+			text := launch(t, outside(t), args...)
+			asJSON := launch(t, outside(t), append(args, "--json")...)
+
+			assert.Check(t, is.Equal(text.code, exitRefused), "stdout = %q", text.stdout)
+			assert.Check(t, is.Contains(text.stdout, alone.Reason))
+			assert.Check(t, is.Equal(asJSON.code, exitRefused), "stdout = %q", asJSON.stdout)
+			printed := resulttest.Decode(t, asJSON.stdout)
+			assert.Check(t, is.Equal(printed.Reason, alone.Reason))
+			assert.Check(t, is.Equal(printed.Next, alone.Next))
+		})
+	}
+}
+
+func TestApp_Run_WhenHelpIsAskedForTheRootOrACommand_PrintsItAndExitsZero(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct{ asked, flagged []string }{
+		{asked: []string{"help"}, flagged: []string{"--help"}},
+		{asked: []string{"help", "push"}, flagged: []string{"push", "--help"}},
+	}
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.asked, " "), func(t *testing.T) {
+			t.Parallel()
+			want := launch(t, outside(t), tt.flagged...)
+			assert.Assert(t, is.Equal(want.code, exitDone), "%v: stdout = %q", tt.flagged, want.stdout)
+			assert.Assert(t, want.stdout != "", "%v printed no help", tt.flagged)
+
+			got := launch(t, outside(t), tt.asked...)
+
+			assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
+			assert.Check(t, is.Equal(got.stdout, want.stdout))
+		})
+	}
+}
+
 func TestApp_Run_WhenWordsBreakTheGrammar_RefusesNamingWhatBreaksIt(t *testing.T) {
 	t.Parallel()
 
