@@ -69,7 +69,6 @@ func (r Request) ending() ending {
 	return ending{command: r.ilsCommand(), pushOfChange: r.pushOfChange(), push: push, limit: r.limitWords()}
 }
 
-// pushAgain is the step that runs a plain `ils push`.
 func pushAgain() result.Next {
 	return result.NextCommand(PushCommand)
 }

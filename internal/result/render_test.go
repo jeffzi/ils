@@ -40,18 +40,14 @@ const (
 	shaNext = "check out " + fullSHA + ", then run ils push again"
 )
 
-// redReason is the reason line of redPush.
 func redReason() string { return labeled(result.DeliveredNotGreen, "the check prek is red") }
 
-// brokeEnd is the reason and Next lines of a broke push.
 func brokeEnd() string { return labeled(result.Broke, "GitHub did not answer") + nextLine("ils push") }
 
-// labeled returns the reason line the text prints for reason, led by the label of outcome.
 func labeled(outcome result.Outcome, reason string) string {
 	return resulttest.ReasonLine(outcome, reason) + "\n"
 }
 
-// nextLine returns the Next line the text prints for next.
 func nextLine(next string) string {
 	return resulttest.NextLine(next) + "\n"
 }
@@ -85,27 +81,22 @@ func brokePush() result.Result {
 	}
 }
 
-// brokeLines returns the lines of brokePush as the renderers print them.
 func brokeLines() []string {
 	return strings.Split(strings.TrimSuffix(brokeBody, "\n"), "\n")
 }
 
-// brokeWithLine is brokePush with p as one more line.
 func brokeWithLine(p result.Phrase) result.Result {
 	return with(brokePush(), func(r *result.Result) { r.Lines = append(r.Lines, p) })
 }
 
-// withExcerpt is base with text as its excerpt.
 func withExcerpt(base result.Result, text string) result.Result {
 	return with(base, func(r *result.Result) { r.Excerpt = text })
 }
 
-// refusedWithReason is refusedPush with p as its reason.
 func refusedWithReason(p result.Phrase) result.Result {
 	return with(refusedPush(), func(r *result.Result) { r.Reason = p })
 }
 
-// redWithNext is redPush with n as its next step.
 func redWithNext(n result.Next) result.Result {
 	return with(redPush(), func(r *result.Result) { r.Next = n })
 }

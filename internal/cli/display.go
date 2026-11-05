@@ -142,7 +142,8 @@ func (d *display) Started(label result.Phrase) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// A label the wording check rejects is not drawn; the landing tests keep every label in it.
+	// A label the wording check rejects is not drawn, and its error is dropped here: every label
+	// passed to Started must pass that check.
 	d.label, _ = renderLine(label, d.gitDir, d.errProfile)
 	d.done, d.total, d.began = 0, 0, time.Now()
 	d.draw()

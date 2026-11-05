@@ -151,5 +151,3 @@ const specMark = "<spec>"
 
 // otherSpec is the pair of refs for a branch Push never pushes, which a hook's report-shaped lines name.
 const otherSpec = "refs/heads/other:refs/heads/other"
-
-// localTip returns the sha of the clone's topic branch.

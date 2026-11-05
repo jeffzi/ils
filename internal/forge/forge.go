@@ -250,6 +250,7 @@ type VerdictQuery struct {
 // VerdictState is the summary of a verdict.
 type VerdictState string
 
+// The summaries of a verdict.
 const (
 	// VerdictGreen is at least one deciding check, each one passed or skipped.
 	VerdictGreen VerdictState = "green"

@@ -27,7 +27,6 @@ type environment struct {
 	ghConfig ghConfig
 }
 
-// unknownEnvironment returns the environment in which every variable the guard follows is unknown.
 func unknownEnvironment() environment {
 	unknown := variable{unknown: true}
 

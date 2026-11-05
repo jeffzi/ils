@@ -64,7 +64,6 @@ func guarded(t *testing.T, out string) *result.Guard {
 	return printed.Payload.Guard
 }
 
-// literals returns the words that read as texts.
 func literals(texts ...string) []result.Word {
 	words := make([]result.Word, 0, len(texts))
 	for _, text := range texts {
@@ -268,14 +267,12 @@ func TestApp_Run_WhenParseIsNotGivenADirectoryAndOneCommandWord_Refuses(t *testi
 // ils guard
 // ---------------------------------------------------------------------------
 
-// verdictCase is a command, and the exit code ils guard gives it.
 type verdictCase struct {
 	name    string
 	command string
 	code    int
 }
 
-// verdicts returns one command per verdict.
 func verdicts() []verdictCase {
 	return []verdictCase{
 		{name: "allowed", command: allowedCommand, code: exitDone},

@@ -367,10 +367,8 @@ func TestToolTooOldError_Error(t *testing.T) {
 	}
 }
 
-// ghInstallURL is the install URL of the gh tool in the tests below.
 const ghInstallURL = "https://cli.github.com"
 
-// ghMinimum is the minimum gh version in the tests below.
 const ghMinimum = "2.50.0"
 
 func TestToolMissingError_Error_WhenToolIsMissing_NamesWhereToInstallIt(t *testing.T) {

@@ -334,7 +334,6 @@ func invocationLine(inv result.Invocation) result.Phrase {
 	return result.Say("%s; directory %s; marks %s; %s", words, dir, markList, gitPart)
 }
 
-// wordText returns the text of w, or notLiteral when w is not a literal.
 func wordText(w result.Word) string {
 	if !w.Literal {
 		return notLiteral
@@ -343,7 +342,6 @@ func wordText(w result.Word) string {
 	return w.Text
 }
 
-// wordTexts returns the words one space apart, each one that is not a literal as notLiteral.
 func wordTexts(words []result.Word) string {
 	texts := make([]string, 0, len(words))
 	for _, w := range words {
@@ -353,7 +351,6 @@ func wordTexts(words []result.Word) string {
 	return strings.Join(texts, " ")
 }
 
-// orNone returns text, or none when it is empty.
 func orNone(text string) string {
 	if text == "" {
 		return "none"

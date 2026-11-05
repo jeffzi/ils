@@ -21,7 +21,6 @@ const (
 	start = "/home/reader/repo"
 )
 
-// marksOf returns the marks of every invocation of invocations, in order.
 func marksOf(invocations []guard.Invocation) []guard.Mark {
 	var got []guard.Mark
 	for _, inv := range invocations {

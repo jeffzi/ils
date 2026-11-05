@@ -74,8 +74,7 @@ const (
 	liveContested = "contested.txt"
 	// liveJob is the one job of every workflow the suite pushes, and so the name of its check. No
 	// wording of ils holds it, so finding it in a result means the result named the check.
-	liveJob = "probe"
-	// livePassing is the step of a workflow whose check passes.
+	liveJob     = "probe"
 	livePassing = "echo passed"
 )
 
@@ -106,7 +105,6 @@ type liveRun struct {
 	code  int
 }
 
-// livePull is an open pull request of a scenario's branch, as GitHub shows it.
 type livePull struct {
 	Title  string `json:"title"`
 	Base   string `json:"baseRefName"`
@@ -389,7 +387,6 @@ func (l *liveSuite) keepTrunk(t *testing.T) {
 	})
 }
 
-// changeTrunk commits files on top of the default branch and pushes it.
 func (l *liveSuite) changeTrunk(t *testing.T, files map[string]string) {
 	t.Helper()
 

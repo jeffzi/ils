@@ -317,7 +317,6 @@ func TestRepo_FastForwardTrunk_WhenHeadIsOnAnotherBranch_RefusesWithoutMovingThe
 	assert.Check(t, is.Equal(f.Git("rev-parse", topic), before))
 }
 
-// originRefAtHead creates ref on origin at origin's HEAD.
 func originRefAtHead(f *gittest.Fixture, ref string) {
 	f.OriginGit("update-ref", ref, f.OriginGit("rev-parse", "HEAD"))
 }
@@ -366,7 +365,6 @@ func originCalls() []repoCall {
 	}
 }
 
-// fastForwardTrunkCall returns the call of FastForwardTrunk on the trunk.
 func fastForwardTrunkCall() repoCall {
 	return repoCall{name: "FastForwardTrunk", call: func(ctx context.Context, repo git.Repo) (any, error) {
 		return nil, repo.FastForwardTrunk(ctx, trunk)
@@ -814,7 +812,6 @@ func withSpec(f *gittest.Fixture, text string) string {
 	return strings.ReplaceAll(text, specMark, localTip(f)+":refs/heads/"+topic)
 }
 
-// pushTip pushes the tip the clone's topic branch is on to origin's topic.
 func pushTip(ctx context.Context, f *gittest.Fixture) error {
 	return newRepo(f).Push(ctx, topic, localTip(f))
 }
@@ -1073,7 +1070,6 @@ func TestRepo_Push_WhenOriginNeverAnswers_ReturnsErrRemote(t *testing.T) {
 
 const releaseRef = "refs/tags/" + release
 
-// taggedRelease returns a fixture whose clone holds release as a local tag on tip.
 func taggedRelease(t *testing.T) (f *gittest.Fixture, repo git.Repo, tip string) {
 	t.Helper()
 	f = gittest.New(t, trunk)

@@ -24,7 +24,6 @@ import (
 	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
-// anyOrder lets cmp compare two slices of strings whatever the order of their elements.
 func anyOrder() cmp.Option {
 	return cmpopts.SortSlices(func(a, b string) bool { return a < b })
 }

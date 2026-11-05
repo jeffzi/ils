@@ -534,7 +534,6 @@ type ownCommitsCase struct {
 	name    string
 }
 
-// ownCommitsCases returns the cases of OwnCommits.
 func ownCommitsCases() []ownCommitsCase {
 	return []ownCommitsCase{
 		{

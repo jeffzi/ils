@@ -133,7 +133,8 @@ func shares(others, rest string) string {
 	return expect(side, "shares its first commit", others, rest)
 }
 
-// publishAtTrunk puts origin's copy of branch at the trunk.
+// publishAtTrunk sets branch on origin to the trunk's tip, pushing to origin's path rather than
+// the remote's name, so the clone's own refs, its tracking refs included, stay as they were.
 func publishAtTrunk(f *gittest.Fixture, branch string) {
 	f.Git("push", "--quiet", filepath.ToSlash(f.OriginDir()), trunk+":refs/heads/"+branch)
 }

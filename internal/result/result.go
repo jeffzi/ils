@@ -15,7 +15,8 @@ import (
 // Outcome is how a command ended.
 type Outcome int
 
-// The outcomes, one per reaction a caller can have.
+// Done through DeliveredNotGreen are the outcomes, one per reaction a caller
+// can have; ExitCode gives each its own exit code.
 const (
 	Done Outcome = iota
 	Broke

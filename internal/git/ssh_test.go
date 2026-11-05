@@ -252,7 +252,6 @@ type sourceCase struct {
 	host string
 }
 
-// sourceCases are the places a user names the ssh command git connects with.
 func sourceCases() []sourceCase {
 	const decoys = "Host work\n  HostName decoy.example.org\n"
 

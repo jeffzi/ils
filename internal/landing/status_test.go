@@ -43,7 +43,6 @@ func conventionalPull() forge.Change {
 	return pull
 }
 
-// publishTopic publishes the topic branch.
 func publishTopic(f *gittest.Fixture) { f.Publish(topic) }
 
 // greenOpen is viewing with the open pull request 12 on a clean head and passing checks.
@@ -819,7 +818,6 @@ func TestStatus_WhenGitsVersionIsNotOneIlsWorksWith_EndsOnUpgradingGit(t *testin
 	}
 }
 
-// onTheTrunk checks out the trunk.
 func onTheTrunk(f *gittest.Fixture) { f.Git("switch", "--quiet", trunk) }
 
 func TestStatus_WhenGitsVersionCannotBeRead_EndsOnFixingWhatFailed(t *testing.T) {

@@ -17,7 +17,6 @@ func newRunner(t *testing.T) git.Runner {
 	return git.Runner{Dir: t.TempDir(), Env: gittest.Env(t)}
 }
 
-// newRecordedRunner returns a runner like newRunner with a recorder attached, and that recorder.
 func newRecordedRunner(t *testing.T) (git.Runner, *git.Recorder) {
 	t.Helper()
 

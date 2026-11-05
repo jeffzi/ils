@@ -561,6 +561,10 @@ func gitVariableMarks(names []string) []Mark {
 	return marks
 }
 
+// ---------------------------------------------------------------------------
+// Loops and variable assignment
+// ---------------------------------------------------------------------------
+
 // forClause walks a `for` loop. When the walk reads a value for each word of the loop's list (see
 // loopValues), it walks the body once per value, the variable holding it as a literal assignment
 // would leave it; otherwise the variable is unknown in the body. After the loop the variable is
