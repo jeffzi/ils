@@ -103,10 +103,11 @@ func statusSceneAt(t *testing.T, arrange func(*gittest.Fixture), build forgeFor,
 	return s
 }
 
-// seen is what a status showed: its text and the status object its JSON carries.
+// seen is what a status showed: its text, and the status object and `next` its JSON carries.
 type seen struct {
 	status *result.Status
 	text   string
+	next   string
 }
 
 // seeStatus runs `ils status` on the scene under the context under makes for t, and fails unless it
@@ -128,10 +129,24 @@ func seeStatus(t *testing.T, s *scene, under func(*testing.T) context.Context) s
 	out, err := result.RenderJSON(got, s.gitDir)
 	assert.NilError(t, err)
 
-	payload := resulttest.Decode(t, out).Payload
+	decoded := resulttest.Decode(t, out)
+	payload := decoded.Payload
 	assert.Assert(t, payload != nil && payload.Status != nil, "RenderJSON() = %s, want a status object", out)
 
-	return seen{text: text, status: payload.Status}
+	return seen{text: text, status: payload.Status, next: decoded.Next}
+}
+
+// statusCommand is `ils status` with the `Next:` lines that name it.
+func statusCommand() landingCommand {
+	return landingCommand{name: "status", req: statusRequest(), fixed: expect("fix what failed", "ils status")}
+}
+
+// assertEndsOn fails unless both the `Next:` line of the text and the `next` of the JSON hold want.
+func assertEndsOn(t *testing.T, got seen, want string) {
+	t.Helper()
+
+	assertSays(t, nextOf(t, got.text), want)
+	assertSays(t, got.next, want)
 }
 
 // ---------------------------------------------------------------------------
@@ -613,6 +628,14 @@ func TestStatus_WhenTheFetchOfOriginsCopyFails_ListsTheReadWithoutCountingTheCop
 		got.status.Ahead, got.status.Behind)
 }
 
+// failingGit returns a fail that makes the scene's git calls whose arguments start with words fail.
+func failingGit(words ...string) func(t *testing.T, s *scene) {
+	return func(t *testing.T, s *scene) {
+		t.Helper()
+		failGit(t, s, words)
+	}
+}
+
 func TestStatus_WhenAReadOfOriginsCopyFails_EndsOnFixingWhatFailed(t *testing.T) {
 	// Not parallel: a row puts a failing git first on PATH with t.Setenv.
 	tests := []struct {
@@ -620,13 +643,8 @@ func TestStatus_WhenAReadOfOriginsCopyFails_EndsOnFixingWhatFailed(t *testing.T)
 		name string
 	}{
 		{name: "the fetch of the copy", fail: failCopyFetch},
-		{
-			name: "the divergence from the copy",
-			fail: func(t *testing.T, s *scene) {
-				t.Helper()
-				failGit(t, s, []string{"rev-list", "--left-right", "--count"})
-			},
-		},
+		{name: "the divergence from the copy", fail: failingGit("rev-list", "--left-right", "--count")},
+		{name: "whether the copy carries the branch's first commit", fail: failingGit("merge-base", "--is-ancestor")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -635,9 +653,117 @@ func TestStatus_WhenAReadOfOriginsCopyFails_EndsOnFixingWhatFailed(t *testing.T)
 
 			got := seeStatus(t, s, (*testing.T).Context)
 
-			assertSays(t, "Next:"+nextOf(t, got.text), expect("fix what failed", "ils status"))
+			assertEndsOn(t, got, statusCommand().fixed)
+			assert.Check(t, hasUnread(got.status, readCopy), "unread %v, want %s listed", got.status.Unread, readCopy)
 		})
 	}
+}
+
+func TestStatus_WhenAReadOfTheBranchFails_EndsOnFixingWhatFailed(t *testing.T) {
+	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	tests := []struct {
+		name  string
+		read  string
+		words []string
+	}{
+		{name: "the tip", read: readTip, words: []string{"rev-parse", "HEAD"}},
+		{name: "the commits past origin's trunk", read: readCommits, words: history()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := statusScene(t, publishTopic, greenOpen())
+			failGit(t, s, tt.words)
+
+			got := seeStatus(t, s, (*testing.T).Context)
+
+			assertEndsOn(t, got, statusCommand().fixed)
+			assert.Check(t, hasUnread(got.status, tt.read), "unread %v, want %s listed", got.status.Unread, tt.read)
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The tools the landing commands check first
+// ---------------------------------------------------------------------------
+
+func TestStatus_WhenTheSSHOriginsURLsNeedIsMissing_EndsOnTheStepThatFixesIt(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		hide func(tb testing.TB, env []string) []string
+		name string
+		// step is the step the `Next:` line names before it runs ils status again.
+		step string
+	}{
+		{name: "no ssh on PATH", hide: gittest.WithoutSSH, step: "install ssh"},
+		{
+			name: "GIT_SSH names a missing program", step: "fix GIT_SSH",
+			hide: func(_ testing.TB, env []string) []string {
+				return append(gittest.Without(env, sshCommandVar), "GIT_SSH="+missingProgram)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := statusScene(t, publishTopic, greenOpen())
+			s.deps.Repo.Runner.Env = tt.hide(t, s.deps.Repo.Runner.Env)
+
+			got := seeStatus(t, s, (*testing.T).Context)
+
+			assertEndsOn(t, got, statusCommand().after(tt.step))
+			assert.Check(t, hasUnread(got.status, readURLs), "unread %v, want %s listed", got.status.Unread, readURLs)
+		})
+	}
+}
+
+func TestStatus_WhenGitsVersionIsNotOneIlsWorksWith_EndsOnUpgradingGit(t *testing.T) {
+	// Not parallel: fakeGit puts a git that prints its own version first on PATH with t.Setenv.
+	tests := []struct {
+		arrange func(*gittest.Fixture)
+		name    string
+		version string
+	}{
+		{name: "older than the minimum", arrange: publishTopic, version: "git version 1.0.0"},
+		{name: "no readable version", arrange: publishTopic, version: "git version DEV"},
+		{name: "older than the minimum, on the trunk", arrange: onTheTrunk, version: "git version 1.0.0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := statusScene(t, tt.arrange, greenOpen())
+			fakeGit(t, s, gittest.Fake{Version: tt.version})
+
+			got := seeStatus(t, s, (*testing.T).Context)
+
+			assertEndsOn(t, got, statusCommand().after("upgrade git"))
+			assert.Check(t, hasUnread(got.status, readGitVersion), "unread %v, want %s listed", got.status.Unread, readGitVersion)
+		})
+	}
+}
+
+// onTheTrunk checks out the trunk.
+func onTheTrunk(f *gittest.Fixture) { f.Git("switch", "--quiet", trunk) }
+
+func TestStatus_WhenGitsVersionCannotBeRead_EndsOnFixingWhatFailed(t *testing.T) {
+	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	s := statusScene(t, publishTopic, greenOpen())
+	failGit(t, s, []string{"--version"})
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	assertEndsOn(t, got, statusCommand().fixed)
+	assert.Check(t, hasUnread(got.status, readGitVersion), "unread %v, want %s listed", got.status.Unread, readGitVersion)
+}
+
+func TestStatus_WhenAReadOfTheBranchIsCutShort_DoesNotEndOnFixingWhatFailed(t *testing.T) {
+	// Not parallel: stallingGit puts a git that stalls first on PATH with t.Setenv.
+	s := statusScene(t, publishTopic, greenOpen())
+	ctx := byTimeLimit().stallingGit([]string{"rev-parse", "HEAD"})(t, s)
+
+	got := seeStatus(t, s, func(*testing.T) context.Context { return ctx })
+
+	assert.Assert(t, hasUnread(got.status, readTip), "unread %v, want %s listed", got.status.Unread, readTip)
+	assert.Check(t, !strings.Contains(got.next, "fix what failed"), "next = %q, want a step other than fixing what failed", got.next)
 }
 
 func TestStatus_WhenTheFirstReadIsCutShort_EndsDoneSkippingEveryReadAfterIt(t *testing.T) {

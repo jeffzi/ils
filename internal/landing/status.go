@@ -22,11 +22,17 @@ import (
 // pull request whose commits it checks, and a version tag whose commit the clone lacks. They store
 // objects and move remote-tracking refs and FETCH_HEAD, nothing a user owns.
 //
+// A git older than the minimum or with no version ils can read, or an ssh that origin's URLs need
+// and that is not installed, is the step every landing command refuses with first, and `Next:` is
+// that step wherever HEAD stands.
+//
 // On a work branch `Next:` mirrors the order in which `ils push` refuses and ends, so that it never
-// names a command that would refuse: an open pull request against a base other than the trunk,
-// unless the branch is behind origin's copy or has no commit past the trunk, which push refuses
-// first; then a merged pull request that carries the branch's commits, then origin's copy of the
-// branch, then the branch's commits past the trunk, then the open pull request.
+// names a command that would refuse: changed tracked files; then a read of the branch's tip, of its
+// commits past the trunk, or of origin's copy of it that failed other than by a cut, which push
+// would end on; then an open pull request against a base other than the trunk, unless the branch is
+// behind origin's copy or has no commit past the trunk, which push refuses first; then a merged
+// pull request that carries the branch's commits, then origin's copy of the branch, then the
+// branch's commits past the trunk, then the open pull request.
 //
 // On the trunk it reports how the trunk stands against origin's, the last version tag on origin's
 // trunk and the commits since it, whether origin's trunk tip is a release commit, and whether rules
@@ -44,6 +50,7 @@ func Status(ctx context.Context, deps Deps, req Request) result.Result {
 	deps.startChecking()
 
 	r := &reading{deps: deps, req: req}
+	r.readVersion(ctx)
 	r.readStanding(ctx)
 
 	done := req.ends(result.Done, result.Phrase{}, r.next())
@@ -76,15 +83,19 @@ type reading struct {
 	// work branch then lists as unread, so that a payload with no pull request and no such entry
 	// means it has none.
 	unreadPulls string
-	waited      Waited
-	status      result.Status
-	pastRead    bool
-	running     bool
-	cut         bool
-	offline     bool
-	// copyUnread is set when the fetch of origin's copy of the branch, or the count of the commits
-	// apart from it, failed: the status then knows neither, so no step past the fix can be told.
-	copyUnread bool
+	// refused is the step the shared preconditions of every landing command refuse with for git, or
+	// for the ssh origin's URLs need, which comes before any step the standing decides.
+	refused  result.Next
+	waited   Waited
+	status   result.Status
+	pastRead bool
+	running  bool
+	cut      bool
+	offline  bool
+	// branchUnread is set when a read of the branch's tip, of its commits past the trunk, or of
+	// origin's copy of it failed other than by a cut: push would end on the same failure, so no step
+	// past the fix can be told.
+	branchUnread bool
 }
 
 func (r *reading) say(lines ...result.Phrase) {
@@ -123,8 +134,44 @@ func (r *reading) markUnread(read, reason string) {
 	r.status.Unread = append(r.status.Unread, result.Unread{Read: read, Error: reason})
 }
 
+// failedBranch records that the read named read of the branch failed with err and, unless a cut
+// ended it, leaves the branch unread for next.
+func (r *reading) failedBranch(read string, err error) {
+	r.failed(read, err)
+	r.branchUnread = r.branchUnread || !r.cut
+}
+
+// failedPrecondition records that the read named read, one the shared preconditions make, failed
+// with err, and takes the step they end on for it: upgrading a git older than the minimum or with
+// no readable version, installing a tool a read runs, or else, unless a cut ended the read, fixing
+// what failed. The first such step stands, as the preconditions stop at the first failure.
+func (r *reading) failedPrecondition(read string, err error) {
+	r.failed(read, err)
+
+	switch {
+	case !r.refused.None():
+	case r.req.tooOld(err) != nil:
+		r.refused = r.req.tooOld(err).Next
+	case r.req.notInstalled(err) != nil:
+		r.refused = r.req.notInstalled(err).Next
+	case !r.cut:
+		r.refused = r.req.onceFixed()
+	}
+}
+
+// readVersion reads git's version, which every landing command checks first.
+func (r *reading) readVersion(ctx context.Context) {
+	if err := r.deps.Repo.CheckVersion(ctx); err != nil {
+		r.failedPrecondition(readGitVersion, err)
+	}
+}
+
 // readStanding reads where HEAD stands and, on a work branch, everything a status reports of it.
 func (r *reading) readStanding(ctx context.Context) {
+	if r.cut {
+		return
+	}
+
 	standing, err := r.deps.Repo.Standing(ctx)
 	if err != nil {
 		r.readNoStanding(ctx, err)
@@ -196,7 +243,7 @@ func (r *reading) readShared(ctx context.Context) {
 
 	switch {
 	case err != nil:
-		r.failed(read, err)
+		r.failedCopy(read, err)
 	case stop != nil:
 		r.shared = r.refusal(stop)
 	}
@@ -283,7 +330,7 @@ func (r *reading) readOrigin(ctx context.Context) {
 
 	switch {
 	case err != nil:
-		r.failed(readURLs, err)
+		r.failedPrecondition(readURLs, err)
 		r.unreadPulls = err.Error()
 	case !oneRepo:
 		r.block(Request{Command: PushCommand}.twoRepositories(urls), "origin's URLs do not name one GitHub repository")
@@ -406,7 +453,7 @@ func (r *reading) readCommits(ctx context.Context) {
 
 	switch {
 	case err != nil:
-		r.failed(readTip, err)
+		r.failedBranch(readTip, err)
 
 		return
 	case !committed:
@@ -424,7 +471,7 @@ func (r *reading) readCommits(ctx context.Context) {
 
 	past, err := r.deps.Repo.CommitsPast(ctx, tip, r.on.Trunk)
 	if err != nil {
-		r.failed(readCommits, err)
+		r.failedBranch(readCommits, err)
 
 		return
 	}
@@ -486,11 +533,16 @@ func (r *reading) readCopy(ctx context.Context) {
 }
 
 // failedCopy records that the read named read of origin's copy of the branch failed with err and,
-// unless a cut ended it, leaves the copy unread for next. A failed ask of whether origin has the
+// unless a cut ended it, leaves the branch unread for next. A failed ask of whether origin has the
 // branch is not a read of the copy: it leaves the branch counted as not on origin.
 func (r *reading) failedCopy(read string, err error) {
-	r.failed(read, err)
-	r.copyUnread = read == readCopy && !r.cut
+	if read != readCopy {
+		r.failed(read, err)
+
+		return
+	}
+
+	r.failedBranch(read, err)
 }
 
 // copyTip returns the tip of origin's copy of the branch and whether origin has one: fetched now, or
@@ -716,11 +768,15 @@ func (r *reading) takeVerdict(verdict forge.Verdict, required []string) {
 	}
 }
 
-// next is the step a status ends on: on the trunk, start a branch; on a detached HEAD, keep its
-// commits on a branch, or start one when it has none; with no origin, create it; on a work branch,
-// the first of the steps below that holds, in the order push refuses and ends in, each built as push
-// builds it.
+// next is the step a status ends on: the step the shared preconditions refuse with, wherever HEAD
+// stands; otherwise on the trunk, start a branch; on a detached HEAD, keep its commits on a branch,
+// or start one when it has none; with no origin, create it; on a work branch, the first of the
+// steps below that holds, in the order push refuses and ends in, each built as push builds it.
 func (r *reading) next() result.Next {
+	if !r.refused.None() {
+		return r.refused
+	}
+
 	switch r.status.Standing {
 	case result.StandingTrunk:
 		return startBranchStep()
@@ -745,7 +801,7 @@ func (r *reading) next() result.Next {
 		return r.dirty
 	}
 
-	if r.copyUnread {
+	if r.branchUnread {
 		return r.req.onceFixed()
 	}
 
