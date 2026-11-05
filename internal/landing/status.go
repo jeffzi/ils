@@ -72,7 +72,9 @@ type reading struct {
 	dirty, shared, trunkAhead result.Next
 	// copied is the commit origin's copy of the branch is on, as read; empty when origin has none.
 	copied string
-	// unreadPulls, when not empty, is why GitHub was not read for the branch's pull requests.
+	// unreadPulls, when not empty, is why GitHub was not read for the branch's pull requests, which a
+	// work branch then lists as unread, so that a payload with no pull request and no such entry
+	// means it has none.
 	unreadPulls string
 	waited      Waited
 	status      result.Status
@@ -282,7 +284,7 @@ func (r *reading) readOrigin(ctx context.Context) {
 	switch {
 	case err != nil:
 		r.failed(readURLs, err)
-		r.skippedPulls(err.Error())
+		r.unreadPulls = err.Error()
 	case !oneRepo:
 		r.block(Request{Command: PushCommand}.twoRepositories(urls), "origin's URLs do not name one GitHub repository")
 	default:
@@ -372,7 +374,7 @@ func (r *reading) readIdentity(ctx context.Context) {
 		}
 
 		r.failed(readIdentity, err)
-		r.skippedPulls(err.Error())
+		r.unreadPulls = err.Error()
 
 		return
 	}
@@ -391,12 +393,6 @@ func (r *reading) readIdentity(ctx context.Context) {
 func (r *reading) block(stop *result.Result, why string) {
 	r.say(stop.Reason)
 	r.blocked = stop.Next
-	r.skippedPulls(why)
-}
-
-// skippedPulls records why GitHub is not read for the branch's pull requests, which a work branch
-// then lists as unread, so that a payload with no pull request and no such entry means it has none.
-func (r *reading) skippedPulls(why string) {
 	r.unreadPulls = why
 }
 

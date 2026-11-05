@@ -46,16 +46,6 @@ func waitRead(err error) (string, error) {
 	}
 }
 
-// cutShortReading returns the reason that says the time limit of limit, or an interrupt when
-// byInterrupt is true, ended a read of read, with nothing more to change.
-func cutShortReading(byInterrupt bool, limit span, read string) result.Phrase {
-	if byInterrupt {
-		return result.Say(runInterrupted+" while reading %s; nothing more will change", read)
-	}
-
-	return result.Say(timeLimitEnded+" while reading %s; nothing more will change", limit, read)
-}
-
 // ending is what the report of a wait says about the run it ended: the ils command the run is,
 // which a head that moved runs again; the push that a fix of a failed check or a merge of the
 // trunk runs again, pushOfChange; the time limit it ran under; and the push a pending wait runs
@@ -153,7 +143,7 @@ func (w Waited) redReport(end ending) waitReport {
 	line := result.Say("Check %s failed: %s", failed.Name, result.URL(failed.Link))
 	reason := result.Say("the check %s failed", failed.Name)
 
-	if failed.Canceled {
+	if failed.Bucket == forge.BucketCanceled {
 		line = result.Say("Check %s was canceled: %s", failed.Name, result.URL(failed.Link))
 		reason = result.Say("the check %s was canceled", failed.Name)
 	}
@@ -226,7 +216,7 @@ func (w Waited) unconcluded(limit span, sha string, number int) ([]result.Phrase
 
 	switch {
 	case w.Since.IsZero():
-		reason = cutShortReading(w.Cutoff == CutoffInterrupt, limit, readChecks)
+		reason = cutShortReading(w.Cutoff == CutoffInterrupt, limit, readChecks, nothingMoreChanges)
 	case silent(w.Verdict):
 		reason = result.Say("no check or status had reported for %s on pull request %s "+timeLimitRanOut,
 			commit, pull, limit)
@@ -267,7 +257,7 @@ func goingRuns(runs []forge.Run) []result.Phrase {
 // limit, or an interrupt when byInterrupt is true, cut short.
 func (w Waited) ciCutShortReport(end ending, byInterrupt bool) waitReport {
 	return waitReport{
-		lines: w.mergeStateLines(), reason: cutShortReading(byInterrupt, end.limit, readCI),
+		lines: w.mergeStateLines(), reason: cutShortReading(byInterrupt, end.limit, readCI, nothingMoreChanges),
 		next: end.push, pending: true,
 	}
 }

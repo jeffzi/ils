@@ -280,7 +280,7 @@ func (d *delivery) markedTip() result.Name {
 // resumes on the same commit, and broke otherwise.
 func (d *delivery) unread(read string, err error) *result.Result {
 	if endedEarly(err) {
-		return d.ended(result.Pending, cutShortReading(interrupted(err), d.req.limitWords(), read), d.req.again())
+		return d.ended(result.Pending, cutShortReading(interrupted(err), d.req.limitWords(), read, nothingMoreChanges), d.req.again())
 	}
 
 	line, reason := couldNotRead(read, err)

@@ -582,6 +582,31 @@ func (r Request) Refused(reason result.Phrase, next result.Next) *result.Result 
 	return r.ends(result.Refused, reason, next)
 }
 
+// readEnding is what a reason for a read cut short says the run left behind.
+type readEnding int
+
+const (
+	// nothingWritten says the run had written nothing.
+	nothingWritten readEnding = iota
+	// nothingMoreChanges says what the run wrote stays as it is.
+	nothingMoreChanges
+)
+
+// cutShortReading returns the reason that says the time limit of limit, or an interrupt when
+// byInterrupt is true, ended a read of read, followed by what ending says the run left behind.
+func cutShortReading(byInterrupt bool, limit span, read string, ending readEnding) result.Phrase {
+	switch {
+	case byInterrupt && ending == nothingWritten:
+		return result.Say(runInterrupted+" while reading %s; nothing was written", read)
+	case byInterrupt:
+		return result.Say(runInterrupted+" while reading %s; nothing more will change", read)
+	case ending == nothingWritten:
+		return result.Say(timeLimitEnded+" while reading %s; nothing was written", limit, read)
+	default:
+		return result.Say(timeLimitEnded+" while reading %s; nothing more will change", limit, read)
+	}
+}
+
 // unread returns the result for a read made before any write that failed with err: a refusal
 // when the tool the read runs is not installed or the time limit or an interrupt cut the read
 // short, since nothing was written and running again is safe, and broke otherwise.
@@ -591,12 +616,7 @@ func (r Request) unread(read string, err error) *result.Result {
 	}
 
 	if endedEarly(err) {
-		reason := result.Say(timeLimitEnded+" while reading %s; nothing was written", r.limitWords(), read)
-		if interrupted(err) {
-			reason = result.Say(runInterrupted+" while reading %s; nothing was written", read)
-		}
-
-		return r.Refused(reason, r.again())
+		return r.Refused(cutShortReading(interrupted(err), r.limitWords(), read, nothingWritten), r.again())
 	}
 
 	line, reason := couldNotRead(read, err)

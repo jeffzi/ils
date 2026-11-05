@@ -116,9 +116,6 @@ type pullMessageView struct {
 	MergeBody string `json:"viewerMergeBodyText"`
 }
 
-// errNoPullRequest is why an answer to the message read that names no pull request cannot be read.
-var errNoPullRequest = errors.New("the answer holds no pull request")
-
 // messageQuery is the GraphQL query that reads a pull request's title, its body, and the body
 // GitHub would compose for the viewer's squash merge. The repository and number are variables,
 // never spliced into the query.
@@ -289,7 +286,7 @@ func (f *Forge) requiredChecks(ctx context.Context, repo forge.Repo, query forge
 // A free private repository answers 403 with an upgrade message to the read: the plan does not
 // allow rules, so none applies and a squash merge is allowed. Any other 403 is an error.
 func (f *Forge) TrunkProtection(ctx context.Context, repo forge.Repo, trunk string) (forge.Protection, error) {
-	args := paginatedAPIArgs(repo, "rules/branches/"+branchPath(trunk))
+	args := repoAPIArgs(repo, "rules/branches/"+branchPath(trunk), "--paginate")
 
 	result, err := f.runner().Run(ctx, args...)
 	if exitErr, ok := errors.AsType[*child.ExitError](err); ok &&
@@ -395,7 +392,7 @@ func (f *Forge) Message(ctx context.Context, repo forge.Repo, number int) (forge
 	}
 
 	if answer.Data.Repository == nil || answer.Data.Repository.PullRequest == nil {
-		return forge.Message{}, &DecodeError{Argv: Argv(args), Err: errNoPullRequest}
+		return forge.Message{}, &DecodeError{Argv: Argv(args), Err: errors.New("the answer holds no pull request")}
 	}
 
 	view := answer.Data.Repository.PullRequest
@@ -531,32 +528,23 @@ func repoAPIArgs(repo forge.Repo, rest string, flags ...string) []string {
 	return append(args, "repos/"+repo.FullName()+"/"+rest)
 }
 
-// paginatedAPIArgs returns the gh arguments that read rest under the repository, following every page.
-func paginatedAPIArgs(repo forge.Repo, rest string) []string {
-	return repoAPIArgs(repo, rest, "--paginate")
-}
-
 // activeWorkflows returns the paths of the active workflows that have a file under .github/workflows.
 func (f *Forge) activeWorkflows(ctx context.Context, repo forge.Repo) ([]string, error) {
-	pages, err := readEachPage[workflowsPage](ctx, f.runner(), paginatedAPIArgs(repo, "actions/workflows"))
+	pages, err := readEachPage[workflowsPage](ctx, f.runner(), repoAPIArgs(repo, "actions/workflows", "--paginate"))
 	if err != nil {
 		return nil, err
 	}
 
-	var workflows []workflowEntry
-
-	for _, page := range pages {
-		workflows = append(workflows, page.Workflows...)
-	}
-
 	var active []string
 
-	for _, workflow := range workflows {
-		if workflow.State != "active" || !strings.HasPrefix(workflow.Path, workflowsDir+"/") {
-			continue
-		}
+	for _, page := range pages {
+		for _, workflow := range page.Workflows {
+			if workflow.State != "active" || !strings.HasPrefix(workflow.Path, workflowsDir+"/") {
+				continue
+			}
 
-		active = append(active, workflow.Path)
+			active = append(active, workflow.Path)
+		}
 	}
 
 	return active, nil
