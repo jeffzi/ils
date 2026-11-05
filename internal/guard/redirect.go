@@ -5,7 +5,7 @@
 package guard
 
 import (
-	"maps"
+	"cmp"
 	"slices"
 	"strings"
 
@@ -28,9 +28,8 @@ const (
 
 // Stdout returns the file the invocation's stdout is redirected to, and false when its redirects
 // leave stdout on a descriptor rather than a file. The redirects in effect where it runs come
-// before its own: those of each group or subshell around it, and those of an earlier `exec` with
-// no command. Each redirect applies in order, as in the shell, so `2> f >&2` sends stdout to f,
-// while `>&2 2> f` leaves it where stderr was.
+// before its own: those of each group or subshell around it. Each redirect applies in order, as in
+// the shell, so `2> f >&2` sends stdout to f, while `>&2 2> f` leaves it where stderr was.
 func (inv Invocation) Stdout() (Word, bool) {
 	target, toFile := filesOf(slices.Concat(inv.enclosing, inv.Redirects))[stdoutFd]
 
@@ -47,128 +46,40 @@ func filesOf(redirects []Redirect) map[string]Word {
 	return files
 }
 
-// settled returns the redirects that, applied after those that left each descriptor on the file
-// files names, put it on the file wanted names, in descriptor order: one wanted on no file is
-// closed, and one wanted on another file is opened on it.
-func settled(files, wanted map[string]Word) []Redirect {
-	fds := slices.Concat(slices.Collect(maps.Keys(files)), slices.Collect(maps.Keys(wanted)))
-	slices.Sort(fds)
-
-	var fixes []Redirect
-	for _, fd := range slices.Compact(fds) {
-		current, onFile := files[fd]
-		target, wantFile := wanted[fd]
-		switch {
-		case wantFile && current != target:
-			fixes = append(fixes, Redirect{Fd: fd, Op: syntax.RdrOut, Target: target})
-		case !wantFile && onFile:
-			fixes = append(fixes, Redirect{Fd: fd, Op: syntax.DplOut, Target: Word{Text: "-", Literal: true}})
-		}
-	}
-
-	return fixes
-}
-
-// restored returns the redirects in effect once a command whose own redirects are own ends, given
-// those in effect before it and those at its end. bash and zsh put back only each descriptor the
-// command redirected, so what an `exec` inside it did to any other descriptor holds after it.
-func restored(before, own, after []Redirect) []Redirect {
-	if len(own) == 0 {
-		return after
-	}
-
-	files := filesOf(after)
-	beforeFiles := filesOf(before)
-	wanted := maps.Clone(files)
-	for _, r := range own {
-		for _, fd := range touched(r) {
-			delete(wanted, fd)
-			if target, onFile := beforeFiles[fd]; onFile {
-				wanted[fd] = target
-			}
-		}
-	}
-
-	return slices.Concat(after, settled(files, wanted))
-}
-
-// touched returns the descriptors the redirect r changes: `&>`, and `>&` onto a word that is no
-// descriptor, change stdout and stderr; an unnumbered redirect changes stdin when it reads, and
-// stdout otherwise.
-func touched(r Redirect) []string {
-	if opensAll(r.Op) || (r.Op == syntax.DplOut && r.Fd == "" && !isDescriptor(r.Target)) {
-		return []string{stdoutFd, stderrFd}
-	}
-
-	if r.Fd != "" {
-		return []string{r.Fd}
-	}
-
-	if isInput(r.Op) {
-		return []string{stdinFd}
-	}
-
-	return []string{stdoutFd}
-}
-
 // applyRedirect updates files, the file each descriptor is open on, with the redirect r. A
 // descriptor absent from files is on no file.
 func applyRedirect(files map[string]Word, r Redirect) {
-	fd := func(fallback string) string {
-		if r.Fd == "" {
-			return fallback
-		}
-
-		return r.Fd
-	}
-	open := func(descriptor string, target Word, isFile bool) {
-		if isFile {
-			files[descriptor] = target
-		} else {
-			delete(files, descriptor)
-		}
-	}
-
 	switch r.Op {
 	case syntax.RdrOut, syntax.AppOut, syntax.RdrClob, syntax.AppClob:
-		open(fd(stdoutFd), r.Target, true)
+		files[cmp.Or(r.Fd, stdoutFd)] = r.Target
 	case syntax.RdrAll, syntax.AppAll, syntax.RdrAllClob, syntax.AppAllClob:
-		open(stdoutFd, r.Target, true)
-		open(stderrFd, r.Target, true)
+		files[stdoutFd], files[stderrFd] = r.Target, r.Target
 	case syntax.RdrInOut:
-		open(fd(stdinFd), r.Target, true)
+		files[cmp.Or(r.Fd, stdinFd)] = r.Target
 	case syntax.RdrIn, syntax.Hdoc, syntax.DashHdoc, syntax.WordHdoc:
 		// A descriptor opened for reading only, or on a heredoc, cannot write over a file.
-		delete(files, fd(stdinFd))
+		delete(files, cmp.Or(r.Fd, stdinFd))
 	case syntax.DplOut, syntax.DplIn:
-		into := fd(stdoutFd)
+		into := cmp.Or(r.Fd, stdoutFd)
 		if r.Op == syntax.DplIn {
-			into = fd(stdinFd)
+			into = cmp.Or(r.Fd, stdinFd)
 		}
 
 		if !isDescriptor(r.Target) {
 			// `>&word` with a word that is no descriptor sends stdout and stderr to that file.
-			open(into, r.Target, true)
+			files[into] = r.Target
 			if r.Fd == "" {
-				open(stderrFd, r.Target, true)
+				files[stderrFd] = r.Target
 			}
 
 			return
 		}
 
-		source, isFile := files[r.Target.Text]
-		open(into, source, isFile)
-	}
-}
-
-// opensAll reports whether op sends both stdout and stderr to its target: `&>` and its appending
-// and clobbering forms.
-func opensAll(op syntax.RedirOperator) bool {
-	switch op {
-	case syntax.RdrAll, syntax.AppAll, syntax.RdrAllClob, syntax.AppAllClob:
-		return true
-	default:
-		return false
+		if source, isFile := files[r.Target.Text]; isFile {
+			files[into] = source
+		} else {
+			delete(files, into)
+		}
 	}
 }
 

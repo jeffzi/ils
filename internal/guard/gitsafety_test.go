@@ -539,39 +539,23 @@ func TestJudge_AllowsAWorktreeCommandThatKeepsWork(t *testing.T) {
 	}, expectation{outcome: guard.Allow})
 }
 
-func TestJudge_RefusesAGitConfigWriteOfAKeyThatChangesWhatGitRuns(t *testing.T) {
+func TestJudge_RefusesAGitConfigWriteOfTheHooksPathOrARemote(t *testing.T) {
 	t.Parallel()
 
 	checkRefusals(t, []refusal{
-		{name: "-f", command: "git config -f other.cfg alias.p push", wantNamed: "alias.p"},
-		{name: "--type with an attached value", command: "git config --type=path include.path x", wantNamed: "include.path"},
-		{name: "section in another case", command: "git config ALIAS.p push", wantNamed: "ALIAS.p"},
+		{name: "-f", command: "git config -f other.cfg remote.origin.url x", wantNamed: "remote.origin.url"},
+		{name: "--type with an attached value", command: "git config --type=path core.hooksPath x", wantNamed: "core.hooksPath"},
+		{name: "section in another case", command: "git config URL.x.insteadOf y", wantNamed: "URL.x.insteadOf"},
 		{name: "variable in another case", command: "git config core.HOOKSPath x", wantNamed: "core.HOOKSPath"},
-		{name: "--add", command: "git config --add include.path x", wantNamed: "include.path"},
+		{name: "--add", command: "git config --add url.x.pushInsteadOf y", wantNamed: "url.x.pushInsteadOf"},
 		{name: "set", command: "git config set core.hooksPath x", wantNamed: "core.hooksPath"},
-		{name: "--rename-section into a guarded section", command: "git config --rename-section team alias", wantNamed: "alias"},
-		{name: "prefix of --remove-section", command: "git config --remove alias", wantNamed: "alias"},
-		{name: "prefix of --type with a separate value", command: "git config --ty path include.path /x", wantNamed: "include.path"},
-		{name: "credential helper of a URL given as a path", command: "git config credential.https://h.helper /bin/x", wantNamed: "credential.https://h.helper"},
-		{name: "credential helper key in another case", command: "git config credential.HELPER '!x'", wantNamed: "credential.HELPER"},
-		{name: "credential helper with ;", command: "git config credential.helper 'cache; touch x'", wantNamed: "credential.helper"},
-		{name: "mergetool command in another case", command: "git config MergeTool.x.CMD 'git push'", wantNamed: "MergeTool.x.CMD"},
-		{name: "difftool path", command: "git config difftool.x.path /bin/x", wantNamed: "difftool.x.path"},
-	})
-}
-
-func TestJudge_RefusesAGitConfigWriteOfASectionThatHoldsAGuardedKey(t *testing.T) {
-	t.Parallel()
-
-	checkRefusals(t, []refusal{
-		{name: "rename into sequence", command: "git config rename-section team sequence", wantNamed: "sequence"},
+		{name: "prefix of --remove-section", command: "git config --remove remote.origin", wantNamed: "remote.origin"},
+		{name: "prefix of --type with a separate value", command: "git config --ty path core.hooksPath /x", wantNamed: "core.hooksPath"},
 		{name: "rename into core in another case", command: "git config --rename-section team CORE", wantNamed: "CORE"},
-		{name: "rename into the credentials of a URL", command: "git config --rename-section team credential.https://h", wantNamed: "credential.https://h"},
-		{name: "rename into a difftool", command: "git config --rename-section team difftool.x", wantNamed: "difftool.x"},
 	})
 }
 
-func TestJudge_AllowsAGitConfigCallThatLeavesGuardedKeys(t *testing.T) {
+func TestJudge_AllowsAGitConfigCallThatLeavesTheHooksPathAndRemotes(t *testing.T) {
 	t.Parallel()
 
 	_, caller := standingOn(t, "main", "topic")
@@ -584,13 +568,30 @@ func TestJudge_AllowsAGitConfigCallThatLeavesGuardedKeys(t *testing.T) {
 		{name: "removal of a diff driver", command: "git config --remove-section diff.x"},
 		{name: "credential helper with plain arguments", command: "git config credential.helper 'cache --timeout 3600'"},
 		{name: "--unset of a credential helper whatever its value-pattern", command: "git config --unset credential.helper 'a|b'"},
-	})
-}
-
-func TestJudge_RefusesOpeningTheGitConfigEditor(t *testing.T) {
-	t.Parallel()
-
-	checkRefusals(t, []refusal{
+		{name: "alias", command: "git config alias.co checkout"},
+		{name: "alias under -f", command: "git config -f other.cfg alias.p push"},
+		{name: "alias section in another case", command: "git config ALIAS.p push"},
+		{name: "include at global scope", command: "git config --global include.path ~/.gitconfig.local"},
+		{name: "include under --type with an attached value", command: "git config --type=path include.path x"},
+		{name: "include under --add", command: "git config --add include.path x"},
+		{name: "include under a prefix of --type with a separate value", command: "git config --ty path include.path /x"},
+		{name: "conditional include", command: "git config includeIf.gitdir:~/work/.path ~/.gitconfig.work"},
+		{name: "pager of a command", command: "git config pager.log less"},
+		{name: "core.editor", command: "git config core.editor vim"},
+		{name: "core.pager at global scope", command: "git config --global core.pager less"},
+		{name: "textconv of a diff driver", command: "git config diff.x.textconv 'git push'"},
+		{name: "mergetool command in another case", command: "git config MergeTool.x.CMD 'git push'"},
+		{name: "core.sshCommand", command: "git config core.sshCommand 'ssh -i key'"},
+		{name: "credential helper key in another case", command: "git config credential.HELPER '!x'"},
+		{name: "credential helper with ;", command: "git config credential.helper 'cache; touch x'"},
+		{name: "credential helper of a URL given as a path", command: "git config credential.https://h.helper /bin/x"},
+		{name: "difftool path", command: "git config difftool.x.path /bin/x"},
+		{name: "mergetool path", command: "git config mergetool.x.path /bin/x"},
+		{name: "rename into alias", command: "git config --rename-section team alias"},
+		{name: "rename into sequence", command: "git config rename-section team sequence"},
+		{name: "rename into the credentials of a URL", command: "git config --rename-section team credential.https://h"},
+		{name: "rename into a difftool", command: "git config --rename-section team difftool.x"},
+		{name: "prefix of --remove-section of alias", command: "git config --remove alias"},
 		{name: "--edit", command: "git config --edit"},
 		{name: "edit", command: "git config edit"},
 	})

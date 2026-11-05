@@ -45,8 +45,7 @@ func dataConsumers() map[string]bool {
 // generate` are not one, past any global option of go (`go -C dir run`): they start a program the
 // command does not hold, the one go run builds or those go generate finds in source files, with
 // their arguments. Nor is a go command whose subcommand word is not a literal, which covers a
-// non-literal word where go reads `-C`: either may be `run`, `generate`, or `-C=dir`. The commands
-// that the flags in goCommandFlags hand to go are read by goCommands.
+// non-literal word where go reads `-C`: either may be `run`, `generate`, or `-C=dir`.
 func isDataConsumer(words []Word) bool {
 	if isLookup(words) {
 		return true

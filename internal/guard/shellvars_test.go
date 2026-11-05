@@ -79,7 +79,6 @@ func TestParse_WhenAReadonlyMayNotGiveAVariableItsValue_ReadsItsExpansionUnknown
 		{name: "readonly after declare -r", command: "declare -r S=$(pwd); readonly S=/tmp/work; $S/run.sh"},
 		{name: "readonly after a readonly in an if body", command: "if test -d x; then readonly S=/srv; fi; readonly S=/tmp/work; $S/run.sh"},
 		{name: "readonly after a readonly an eval string runs", command: "eval 'readonly S=$(pwd)'; readonly S=/tmp/work; $S/run.sh"},
-		{name: "assignment to a name builtin readonly made readonly", command: "builtin readonly S=/srv; S=/tmp/work; $S/run.sh"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -147,6 +146,16 @@ func checkRunShReadUnknown(t *testing.T, command string, got []guard.Invocation)
 		assert.Check(t, !first.Literal || !strings.HasSuffix(first.Text, "run.sh"), "Parse(%q) reads %q", command, first.Text)
 	}
 	assert.Check(t, unread, "Parse(%q) = %v, want a command word read unknown", command, texts(got))
+}
+
+func TestJudge_AllowsAVariableAssignedALiteralAfterAWrappedOrZshNumberDeclaration(t *testing.T) {
+	t.Parallel()
+
+	checkAllowed(t, forgeCaller(t), []namedCommand{
+		{name: "zsh integer", command: "integer S; S=/tmp/work; $S/run.sh"},
+		{name: "readonly run through builtin", command: "builtin readonly S=/srv; S=/tmp/work; $S/run.sh"},
+		{name: "declare run through command", command: "command declare -u S; S=/tmp/work; $S/run.sh"},
+	})
 }
 
 func TestJudge_WhenAVariableTheCommandAssignedHoldsAGuardedWord_RefusesAsThatWord(t *testing.T) {

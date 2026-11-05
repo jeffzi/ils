@@ -364,10 +364,12 @@ func TestJudge_ReadsGhsCommandPastItsValueFlags(t *testing.T) {
 	})
 }
 
-func TestJudge_RefusesChangingGhAliases(t *testing.T) {
+func TestJudge_AllowsChangingGhAliases(t *testing.T) {
 	t.Parallel()
 
 	checkJudged(t, forgeCaller(t), []judged{
-		{name: "set", command: "gh alias set pm 'pr merge'", want: guard.Refuse, wantNamed: "gh alias set"},
+		{name: "set", command: "gh alias set co 'pr checkout'", want: guard.Allow},
+		{name: "import", command: "gh alias import aliases.yml", want: guard.Allow},
+		{name: "delete", command: "gh alias delete co", want: guard.Allow},
 	})
 }

@@ -24,17 +24,17 @@ func isShell(command Word) bool {
 	return shellNames()[programName(command)]
 }
 
-// scriptOf returns the string that the invocation of words, the words of call after any wrapper,
+// scriptOf returns the string that the invocation of stmt, whose words after any wrapper are words,
 // runs as commands of its own, when it is `eval` or a shell given `-c` or a heredoc, and reports
 // whether there is one. The mark names a string it runs that Parse cannot read.
-func scriptOf(stmt *syntax.Stmt, call *syntax.CallExpr, words []Word) (string, bool, MarkKind) {
+func scriptOf(stmt *syntax.Stmt, words []Word) (string, bool, MarkKind) {
 	switch {
 	case len(words) == 0 || !words[0].Literal:
 		return "", false, ""
 	case words[0].Text == "eval":
 		return evalScript(words[1:])
 	case isShell(words[0]):
-		return shellScript(stmt, programName(words[0]), words[1:], argsOf(call, words[1:]))
+		return shellScript(stmt, programName(words[0]), words[1:])
 	default:
 		return "", false, ""
 	}
@@ -52,15 +52,12 @@ func evalScript(args []Word) (string, bool, MarkKind) {
 	return strings.Join(wordTexts(args), " "), true, ""
 }
 
-// shellScript returns the script the shell named shell runs, given args, the words read from the
-// raw words raw: its `-c` string, or the heredoc on its standard input. A script file runs nothing the guard
-// reads, just as `./x.sh` does not; a process substitution as the file, a startup file, or any
-// other standard input is marked hidden.
-func shellScript(stmt *syntax.Stmt, shell string, args []Word, raw []*syntax.Word) (string, bool, MarkKind) {
+// shellScript returns the script the shell named shell runs, given args: its `-c` string, or the
+// heredoc on its standard input. A script file, a startup file, or any other standard input holds a
+// script the command does not, which the guard does not read, just as it does not read `./x.sh`.
+func shellScript(stmt *syntax.Stmt, shell string, args []Word) (string, bool, MarkKind) {
 	set := readShellOptions(shell, args)
 	switch {
-	case set.readsStartup:
-		return "", false, HiddenScript
 	case set.command && len(set.operands) == 0:
 		return "", false, ""
 	case set.command && !set.operands[0].Literal:
@@ -68,10 +65,6 @@ func shellScript(stmt *syntax.Stmt, shell string, args []Word, raw []*syntax.Wor
 	case set.command:
 		return set.operands[0].Text, true, ""
 	case len(set.operands) > 0 && !set.stdin:
-		if hidesScript(set.operands[0], raw[len(raw)-len(set.operands)]) {
-			return "", false, HiddenScript
-		}
-
 		return "", false, ""
 	default:
 		return heredocScript(stmt)
@@ -127,10 +120,9 @@ func bashLongOptions() map[string]bool {
 
 // shellOptions is what the options of a shell set, with the operands after them.
 type shellOptions struct {
-	operands  []Word
-	command   bool
-	stdin     bool
-	allexport bool
+	operands []Word
+	command  bool
+	stdin    bool
 	// readsStartup reports that the shell first reads a startup file the options name: bash given
 	// `--rcfile` or `--init-file` and `-i`. The `-i` of sh does not read it.
 	readsStartup bool
@@ -153,8 +145,6 @@ type optionReader struct {
 //     any position; to bash and dash past their leading run it is an error, so nothing runs.
 //   - A lone `-` ends the options of every one of them, like `--`: with `-c`, the word after it is
 //     the command string. A lone `+` does too in zsh; bash, sh and dash skip it and read on.
-//
-// A word that is not a literal ends the options and may turn on anything, allexport included.
 func readShellOptions(shell string, args []Word) shellOptions {
 	r := optionReader{shell: shell}
 	startup, i := false, 0
@@ -166,7 +156,6 @@ func readShellOptions(shell string, args []Word) shellOptions {
 		text := args[i].Text
 		switch {
 		case !args[i].Literal:
-			r.allexport = true
 			r.operands = args[i:]
 		case text == "-" || text == "--" || (text == "+" && shell == "zsh"):
 			r.operands = args[i+1:]
@@ -175,11 +164,6 @@ func readShellOptions(shell string, args []Word) shellOptions {
 		case len(text) < 2 || !startsWithSign(text):
 			r.operands = args[i:]
 		case strings.HasPrefix(text, "--"):
-			if shell == "zsh" {
-				name := Word{Text: strings.ReplaceAll(text[2:], "-", "_"), Literal: true}
-				r.allexport = zshOptionSetting(name, true, r.allexport)
-			}
-
 			continue
 		default:
 			i += r.bundle(args, i)
@@ -246,22 +230,22 @@ func (r *optionReader) bundle(args []Word, i int) int {
 			if r.shell != "zsh" {
 				taken++
 			}
-		default:
-			a := allexportReader{shell: r.shell, on: r.allexport}
-			takes, ends := a.letter(letter, letters[j+1:], enable, args[min(i+taken+1, len(args)):])
-			r.allexport = a.on
-			taken += takes
-			if ends {
+		case 'o':
+			// The `o` of zsh takes the rest of its bundle as the option name when there is any;
+			// every other `o` takes the next word.
+			if r.shell == "zsh" && j+1 < len(letters) {
 				return taken
 			}
+
+			taken++
 		}
 	}
 
 	return taken
 }
 
-// heredocScript returns the script on the standard input of stmt when it is a literal heredoc,
-// and marks any other standard input as hidden.
+// heredocScript returns the script on the standard input of stmt when it is a literal heredoc;
+// any other standard input holds no script the command holds.
 func heredocScript(stmt *syntax.Stmt) (string, bool, MarkKind) {
 	var input *syntax.Redirect
 	for _, r := range stmt.Redirs {
@@ -271,7 +255,7 @@ func heredocScript(stmt *syntax.Stmt) (string, bool, MarkKind) {
 	}
 
 	if input == nil || (input.Op != syntax.Hdoc && input.Op != syntax.DashHdoc) {
-		return "", false, HiddenScript
+		return "", false, ""
 	}
 
 	if input.Hdoc == nil {
@@ -334,100 +318,6 @@ func unescapeHeredoc(body string) string {
 }
 
 // ---------------------------------------------------------------------------
-// go command flags
-// ---------------------------------------------------------------------------
-
-// goCommandFlags are the flags of go whose value is a shell command go runs: `-toolexec` runs each
-// compiler tool through it, and `-exec` each test binary or program go builds.
-func goCommandFlags() []string {
-	return []string{"-toolexec", "--toolexec", "-exec", "--exec"}
-}
-
-// goCommand is one flag of goCommandFlags in a go invocation, with its value.
-type goCommand struct {
-	flag  string
-	value Word
-}
-
-// goCommandsOf returns each flag of goCommandFlags among words, the words of a go invocation, with
-// its value: the rest of the word after `=`, or the next word. A word that only starts as one of
-// the flags before an expansion has a value that is not a literal. A word that is not a literal and
-// whose literal text so far is a non-empty start of one of the flags may become one: it is returned
-// with the flag its text names, or with none, and a value that is not a literal. The word after a
-// flag that takes it as its value is that value, and is not read again as a flag.
-func goCommandsOf(words []Word) []goCommand {
-	if len(words) == 0 || words[0].Text != "go" {
-		return nil
-	}
-
-	var commands []goCommand
-	args := words[1:]
-	isValue := false
-	for i, arg := range args {
-		if isValue {
-			isValue = false
-
-			continue
-		}
-
-		flag, value, joined := strings.Cut(arg.Text, "=")
-		known := slices.Contains(goCommandFlags(), flag)
-		switch {
-		case !arg.Literal && !joined && startsCommandFlag(arg.Text):
-			if !known {
-				flag = ""
-			}
-
-			commands = append(commands, goCommand{flag: flag})
-		case !known:
-		case joined:
-			commands = append(commands, goCommand{flag: flag, value: Word{Text: value, Literal: arg.Literal}})
-		case arg.Literal && i+1 < len(args):
-			commands = append(commands, goCommand{flag: flag, value: args[i+1]})
-			isValue = true
-		}
-	}
-
-	return commands
-}
-
-// startsCommandFlag reports whether text, the literal start of a word the shell expands further, is
-// a non-empty start of one of goCommandFlags.
-func startsCommandFlag(text string) bool {
-	return text != "" &&
-		slices.ContainsFunc(goCommandFlags(), func(flag string) bool { return strings.HasPrefix(flag, text) })
-}
-
-// goCommands reads each command the go invocation inv runs through a flag of goCommandFlags, at
-// depth levels of nesting, and returns those to walk. It marks inv, naming the flag, or `go` alone
-// when the flag is unknown, for a command that is not a literal, that does not parse, or that would
-// nest past maxDepth.
-func goCommands(inv *Invocation, depth int) []*syntax.File {
-	var files []*syntax.File
-	for _, c := range goCommandsOf(inv.Words) {
-		form := strings.TrimSpace("go " + c.flag)
-		before := len(inv.Marks)
-		scripts := runnableScripts(inv, depth, []Word{c.value})
-		for k := before; k < len(inv.Marks); k++ {
-			inv.Marks[k].Name = form
-		}
-
-		for _, script := range scripts {
-			file, err := read(script)
-			if err != nil {
-				inv.Marks = append(inv.Marks, Mark{Kind: UnreadCommand, Name: form})
-
-				continue
-			}
-
-			files = append(files, file)
-		}
-	}
-
-	return files
-}
-
-// ---------------------------------------------------------------------------
 // Walking nested strings
 // ---------------------------------------------------------------------------
 
@@ -452,7 +342,6 @@ func (w *walker) script(script string, inv Invocation, sc *scope) {
 		inner.shell = programName(inv.Words[0])
 	}
 
-	inner.allexport = inner.allexport || startsAllexport(inv.Words)
 	file, err := w.walkString(script, &inner)
 	if err != nil {
 		w.err = fmt.Errorf("parse the string %q runs: %w", name, err)
@@ -465,7 +354,6 @@ func (w *walker) script(script string, inv Invocation, sc *scope) {
 	}
 
 	sc.functions = inner.functions
-	sc.allexport = inner.allexport
 
 	// A dry run of the string from the shell's own environment leaves each variable as the string
 	// sets it, or as the shell had it when the string does not touch it, other than those of the
@@ -479,7 +367,6 @@ func (w *walker) script(script string, inv Invocation, sc *scope) {
 	sc.physical = inner.physical
 	sc.env = after.env
 	sc.vars = after.vars
-	sc.redirects = restored(sc.redirects, inv.Redirects, inner.redirects)
 }
 
 // runScope returns the scope a string the invocation inv has run starts in, run from sc: the
@@ -495,10 +382,11 @@ func (sc *scope) runScope(inv Invocation) scope {
 	return inner
 }
 
-// commandVariables are the variables whose value git runs as a shell command: its own, and the
-// EDITOR, VISUAL, and PAGER it falls back to when neither its variable nor its config is set.
+// commandVariables are the editor variables whose value git runs as a shell command: its own, and
+// the EDITOR and VISUAL it falls back to when neither its variable nor its config is set. The pager
+// variables are left out: like `core.pager`, they are data.
 func commandVariables() []string {
-	return []string{"GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_PAGER", "EDITOR", "VISUAL", "PAGER"}
+	return []string{"GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "EDITOR", "VISUAL"}
 }
 
 // variableScripts returns the value of each of assignments that sets one of commandVariables, and
@@ -547,14 +435,4 @@ func (w *walker) walkString(script string, sc *scope) (*syntax.File, error) {
 	w.nested(file, sc)
 
 	return file, w.err
-}
-
-// startsAllexport reports whether words, the words of `bash`, `sh`, `zsh`, or `dash` running a
-// string, give the shell `-a` or `-o allexport`, which the string's commands run under.
-func startsAllexport(words []Word) bool {
-	if len(words) == 0 || !words[0].Literal || !isShell(words[0]) {
-		return false
-	}
-
-	return readShellOptions(programName(words[0]), words[1:]).allexport
 }

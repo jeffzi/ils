@@ -91,22 +91,36 @@ func TestJudge_WhenACallRunsABodyThatChangesDirectory_RefusesTheCommitAfterIt(t 
 	})
 }
 
-func TestInvocation_Stdout_WhenAnUncalledBodyRedirectsStdout_ReportsNone(t *testing.T) {
-	t.Parallel()
-	const command = "f() { exec > f; }; git show HEAD:f"
-	inv := gitRun(t, command)
-
-	got, ok := inv.Stdout()
-
-	assert.Check(t, !ok, "Parse(%q) stdout = %+v, want none", command, got)
-}
-
 func TestJudge_WhenCallsGoPastThoseTheGuardFollows_RefusesNamingTheFunction(t *testing.T) {
 	t.Parallel()
 
 	checkRefusals(t, []refusal{
 		{name: "function that calls itself", command: "f() { f; }; f", wantNamed: "past the calls the guard follows: f"},
+		{name: "chain where each function calls the one before twice", command: doublingChain(30), wantNamed: "past the calls the guard follows: f"},
+		{name: "call whose dry runs alone go past the walks", command: "h() { :; }; g() { " + strings.Repeat("h; ", 25) + "}; f() { g; }; f; git status", wantNamed: "past the calls the guard follows: f"},
 	})
+}
+
+func TestJudge_WhenNestedCallsStayWithinThoseTheGuardFollows_Allows(t *testing.T) {
+	t.Parallel()
+
+	_, caller := standingOn(t, "main", "topic")
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "each function calls the next twice", command: "f() { g; g; }; g() { h; h; }; h() { :; }; f; git status"},
+	})
+}
+
+// doublingChain is a command defining count functions f0, f1, …, each calling the one before
+// twice, then calling the last.
+func doublingChain(count int) string {
+	var command strings.Builder
+	command.WriteString("f0() { :; }; ")
+	for i := 1; i < count; i++ {
+		fmt.Fprintf(&command, "f%d() { f%d; f%d; }; ", i, i-1, i-1)
+	}
+	fmt.Fprintf(&command, "f%d; git status", count-1)
+	return command.String()
 }
 
 func TestParse_WhenATopLevelCallGoesPastThoseTheGuardFollows_ReturnsItsMark(t *testing.T) {
@@ -119,12 +133,16 @@ func TestParse_WhenATopLevelCallGoesPastThoseTheGuardFollows_ReturnsItsMark(t *t
 	assert.Check(t, is.DeepEqual(got[len(got)-1].Marks, []guard.Mark{{Kind: guard.DeepCall, Name: "f"}}), "Parse(%q) last marks", command)
 }
 
-func TestJudge_RefusesAFunctionThatShadowsACommandTheGuardReadsThrough(t *testing.T) {
+func TestJudge_AllowsAFunctionDefinedOverACommandTheGuardReads(t *testing.T) {
 	t.Parallel()
 
-	checkRefusals(t, []refusal{
-		{name: "cd", command: "cd() { builtin cd /srv; }; cd sub && git commit -m x", wantNamed: "cd"},
-		{name: "builtin", command: "builtin() { :; }", wantNamed: "builtin"},
+	_, caller := standingOn(t, "main", "topic")
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "cd", command: `cd() { builtin cd "$@"; }; cd /tmp; ls`},
+		{name: "builtin", command: "builtin() { :; }"},
+		{name: "export", command: "function export { :; }; ls"},
+		{name: "wrapper", command: "nice() { :; }; nice ls"},
 	})
 }
 
@@ -157,22 +175,4 @@ func TestParse_WhenTwoDefinitionsACallMayRunLeaveAGitVariableDifferently_Reports
 	got := last(t, command)
 
 	assert.Check(t, got.Target.Unknown, "Parse(%q) target = %+v, want unknown", command, got.Target)
-}
-
-func TestParse_WhenEachFunctionCallsThePreviousTwice_ReturnsWithoutExpandingEveryCall(t *testing.T) {
-	t.Parallel()
-	const depth = 30
-	var command strings.Builder
-	command.WriteString("f0() { :; }; ")
-	for i := 1; i <= depth; i++ {
-		fmt.Fprintf(&command, "f%d() { f%d; f%d; }; ", i, i-1, i-1)
-	}
-	fmt.Fprintf(&command, "f%d; git status", depth)
-	cmd := command.String()
-
-	got, err := guard.Parse(t.Context(), cmd, readerCaller())
-
-	assert.NilError(t, err, "Parse(%q)", cmd)
-	assert.Assert(t, len(got) > 0, "Parse(%q) holds no invocation", cmd)
-	assert.Check(t, is.Equal(got[len(got)-1].Tool, guard.Git), "Parse(%q) last invocation", cmd)
 }

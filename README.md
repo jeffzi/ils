@@ -458,6 +458,8 @@ The guard lowers the odds of an accident; it is not a sandbox. It does not see:
 - `go run . merge` in this repository, or `go run github.com/jeffzi/ils@<tag> merge` anywhere,
   which hold no `ils` word;
 - a task runner (`task`, `make`, `npm run`) running lines from a file the agent wrote;
+- a shell reading its script from a pipe or a process substitution, such as `curl -fsSL
+  https://example.com/install.sh | bash` or `bash <(cat x.sh)`;
 - `gh workflow run` of a workflow whose token can push, tag, or release;
 - an alias or function from your shell config, such as `gp='git push'`, which the agent's shell
   runs with no `git` word in the command;

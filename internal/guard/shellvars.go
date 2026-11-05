@@ -217,8 +217,8 @@ func startVars(env map[string]string, file *syntax.File) shellVars {
 // watched returns v once the guard has looked over file, a command or a string run in the shell,
 // anywhere in it: a name reference, or a declaration option the guard cannot read, which may be
 // one, or an assignment of IFS leaves v unread; a variable that `readonly` or a declaration with an
-// option names is held. A declaration run through `builtin` or `command`, and zsh's `integer` and
-// `float`, count as declarations.
+// option names is held. A declaration run through `builtin` or `command` counts only for the name
+// reference it may declare (see callDeclaration).
 func (v shellVars) watched(file *syntax.File) shellVars {
 	if assigns(file, "IFS") {
 		v.unread = true
@@ -248,9 +248,9 @@ func (v shellVars) watched(file *syntax.File) shellVars {
 	return v
 }
 
-// declarationHolds returns the variables decl makes readonly, gives an option, or gives an
-// attribute (see attributes), and reports whether it may declare a name reference: a `declare`,
-// `typeset`, or `local` given `-n`, or an option the guard cannot read.
+// declarationHolds returns the variables decl makes readonly or gives an option, and reports
+// whether it may declare a name reference: a `declare`, `typeset`, or `local` given `-n`, or an
+// option the guard cannot read.
 func declarationHolds(decl *syntax.DeclClause) ([]string, bool) {
 	variant := decl.Variant.Value
 	refers, options := false, false
@@ -273,26 +273,21 @@ func declarationHolds(decl *syntax.DeclClause) ([]string, bool) {
 		}
 	}
 
-	if !attributes()[variant] && !options {
+	if variant != "readonly" && !options {
 		names = nil
 	}
 
 	return names, refers
 }
 
-// attributes are the declaration words that give every name they name an attribute with no
-// option: `readonly`, and zsh's `integer` and `float`, which turn the value an assignment leaves
-// into a number.
-func attributes() map[string]bool {
-	return setOf("readonly", "integer", "float")
-}
-
-// callDeclaration returns call, a simple command, as the declaration it runs, and reports whether
-// it runs one: a declaration word the parser reads as one (`declare`, `local`, `export`,
-// `readonly`, `typeset`) run through `builtin` or `command`, with any options of `command`, or
-// zsh's `integer` or `float`, which the parser reads as a simple command. A word that is not a
-// literal is an option, which may be `-n`, and a literal word that is no option names the variable
-// before its `=` or `[`.
+// callDeclaration returns the options of the declaration call, a simple command, runs, and reports
+// whether it runs one: a declaration word the parser reads as one (`declare`, `local`, `export`,
+// `readonly`, `typeset`) run through `builtin` or `command`, with any options of `command`. A word
+// that is not a literal is an option, which may be `-n`.
+//
+// The names the declaration gives an attribute are left out, so none is held: an agent does not
+// run a declaration through `builtin` or `command`, or zsh's `integer` and `float`, to change what
+// a later assignment leaves, and the guard reads that assignment as written.
 func callDeclaration(call *syntax.CallExpr) (*syntax.DeclClause, bool) {
 	words, wrapped := call.Args, false
 	for len(words) > 0 && (words[0].Lit() == "builtin" || words[0].Lit() == "command") {
@@ -302,28 +297,20 @@ func callDeclaration(call *syntax.CallExpr) (*syntax.DeclClause, bool) {
 		}
 	}
 
-	if len(words) == 0 {
+	if !wrapped || len(words) == 0 {
 		return nil, false
 	}
 
 	variant := words[0].Lit()
-	parsed := setOf("declare", "local", "export", "readonly", "typeset")
-	if (!wrapped || !parsed[variant]) && variant != "integer" && variant != "float" {
+	if !setOf("declare", "local", "export", "readonly", "typeset")[variant] {
 		return nil, false
 	}
 
 	decl := &syntax.DeclClause{Variant: &syntax.Lit{Value: variant}}
 	for _, w := range words[1:] {
-		text := w.Lit()
-		if text == "" || startsWithSign(text) {
+		if text := w.Lit(); text == "" || startsWithSign(text) {
 			decl.Args = append(decl.Args, &syntax.Assign{Naked: true, Value: w})
-
-			continue
 		}
-
-		name, _, _ := strings.Cut(text, "=")
-		name, _, _ = strings.Cut(name, "[")
-		decl.Args = append(decl.Args, &syntax.Assign{Naked: !strings.Contains(text, "="), Name: &syntax.Lit{Value: name}})
 	}
 
 	return decl, true
@@ -486,39 +473,6 @@ func (sc *scope) assignVariables(call *syntax.CallExpr, inv Invocation) {
 	for i, a := range call.Assigns {
 		sc.vars = sc.vars.assigned(a, inv.Assignments[i].Value)
 	}
-}
-
-// arithmeticNames returns the variables an arithmetic expression in node assigns, as in `((n =
-// 1))`, `let n++`, or `$((n += 2))`. A command or process substitution, and a statement other than
-// node, run in a shell of their own or are walked apart, so what they assign is left out.
-func arithmeticNames(node syntax.Node) []string {
-	var names []string
-	syntax.Walk(node, func(n syntax.Node) bool {
-		var target syntax.ArithmExpr
-		switch n := n.(type) {
-		case *syntax.CmdSubst, *syntax.ProcSubst:
-			return false
-		case *syntax.Stmt:
-			return syntax.Node(n) == node
-		case *syntax.BinaryArithm:
-			if assignsArithmetic(n.Op) {
-				target = n.X
-			}
-		case *syntax.UnaryArithm:
-			if n.Op == syntax.Inc || n.Op == syntax.Dec {
-				target = n.X
-			}
-		}
-
-		if w, ok := target.(*syntax.Word); ok {
-			name, _, _ := strings.Cut(w.Lit(), "[")
-			names = append(names, name)
-		}
-
-		return true
-	})
-
-	return names
 }
 
 func assignsArithmetic(op syntax.BinAritOperator) bool {

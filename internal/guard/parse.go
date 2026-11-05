@@ -79,7 +79,7 @@ type Invocation struct {
 	// env is every change to the environment the command runs with, in the order bash makes them.
 	env []envChange
 	// enclosing are the redirects in effect on the shell's descriptors where the command runs:
-	// those of each compound command around it, and those of an earlier `exec` with no command.
+	// those of each compound command around it.
 	enclosing []Redirect
 	// pipedInto are the words, behind any wrapper, of the simple command of the pipe stage that
 	// reads the invocation's stdout; none when no such stage follows it.
@@ -103,9 +103,9 @@ type Invocation struct {
 	// HeadUnknown reports whether an invocation before it may have moved HEAD to a branch the guard
 	// cannot tell.
 	HeadUnknown bool
-	// racing reports whether the invocation runs beside the commands around it, in a background job
-	// or a stage of a pipe.
-	racing bool
+	// beside reports whether the invocation runs beside the commands around it, in a background job
+	// or a stage of a pipe, so a move of HEAD it makes is not followed.
+	beside bool
 	// atCall reports whether the invocation is a command of a function body walked where a call of
 	// the function stands, which Parse leaves out: the walk of the body where it is declared holds
 	// the same command.
@@ -131,9 +131,6 @@ type Mark struct {
 type MarkKind string
 
 const (
-	// ExtendedGlob is an extended glob such as `@(a|b)`, or zsh's `*(e:…:)` qualifier, which runs
-	// code. A zsh qualifier that runs nothing, such as `*(N)`, is not one.
-	ExtendedGlob MarkKind = "extended glob"
 	// DynamicCommand is a command word that is not a literal, so the program it runs is unknown.
 	DynamicCommand MarkKind = "command word that is not a literal"
 	// ToolArgument is a git, gh, ils, or shell word among the arguments of a command that may run
@@ -143,26 +140,11 @@ const (
 	DynamicScript MarkKind = "shell string that is not a literal"
 	// DeepScript is a shell string nested past the depth Parse follows.
 	DeepScript MarkKind = "shell string nested too deep"
-	// UnreadCommand is a string a command runs as a shell command, such as the value of go's
-	// `-exec`, that does not parse.
-	UnreadCommand MarkKind = "command string that does not parse"
-	// HiddenScript is a shell, or a `source` or `.`, that runs a script the command does not hold:
-	// standard input, a startup file, or a process substitution.
-	HiddenScript MarkKind = "shell running a script the command does not hold"
 	// GitVariable is an assignment or export of a GIT_* variable off the guard's allow list.
 	GitVariable MarkKind = "git variable off the allow list"
-	// DeepCall is a call of a function the command defines past the maxCalls calls Parse follows
-	// into the body they run, so the guard cannot tell where the commands of that body run.
+	// DeepCall is a call of a function the command defines whose body walks would take Parse past
+	// the maxCalls it makes, so the guard cannot tell where the commands of that body run.
 	DeepCall MarkKind = "call of a function past the calls the guard follows"
-	// ShadowingFunction is a function the command defines under the name of a command the guard
-	// reads, such as `cd`, a wrapper, or a declaration builtin like `export`, which every later call
-	// of that name runs instead.
-	ShadowingFunction MarkKind = "function defined over a command the guard reads"
-	// ToolAlias is an alias whose value may run git, gh, or ils, or that the guard cannot read.
-	ToolAlias MarkKind = "alias that may run git, gh, or ils"
-	// ReadCommandAlias is an alias whose value runs a command the guard reads, such as `cd` or a
-	// wrapper: a later command that names the alias runs it without the guard following it.
-	ReadCommandAlias MarkKind = "alias that runs a command the guard reads"
 )
 
 // maxDepth is how many levels of strings run by `bash -c`, `eval`, or a heredoc fed to a shell
@@ -230,9 +212,18 @@ func parse(ctx context.Context, command string, caller Caller) ([]Invocation, er
 }
 
 // isWhole reports whether the one invocation of file is the entire command: a single simple
-// statement with a bare command word and no wrapper.
+// statement with no assignment prefix, redirect, or background operator, a bare command word and no
+// wrapper.
 func isWhole(file *syntax.File, invocations []Invocation) bool {
-	return len(invocations) == 1 && len(file.Stmts) == 1 && alone(file.Stmts[0]) &&
+	if len(invocations) != 1 || len(file.Stmts) != 1 {
+		return false
+	}
+
+	stmt := file.Stmts[0]
+	call, ok := stmt.Cmd.(*syntax.CallExpr)
+
+	return ok && len(call.Args) > 0 && len(call.Assigns) == 0 && len(stmt.Redirs) == 0 &&
+		!stmt.Background && !stmt.Coprocess && !stmt.Disown &&
 		invocations[0].Bare && len(invocations[0].Wrappers) == 0
 }
 
@@ -270,25 +261,28 @@ type walker struct {
 	// pipes holds, for each statement that is a stage of a pipe, the stage after it.
 	pipes map[*syntax.Stmt]*syntax.Stmt
 	err   error
-	// dryRuns is shared by w and every walker it probes with; newWalker creates it.
-	dryRuns *dryRuns
 	// loopBodies counts the walks of `for` loop bodies the walk made once per value of the loop's
-	// list, dry runs included, which it stops doing past maxCalls, the bound it holds calls to as
-	// well. It is shared by w and every walker it probes or walks git's scripts with, so the bound
-	// holds for the whole command; newWalker creates it.
+	// list, dry runs included, which it stops doing past maxCalls, the bound bodies holds
+	// function-body walks to as well. It is shared by w and every walker it probes or walks git's
+	// scripts with, so the bound holds for the whole command; newWalker creates it.
 	loopBodies *int
+	// bodies counts the walks of function bodies the walk made, dry runs included, which it stops
+	// making past maxCalls. It is shared like loopBodies; newWalker creates it.
+	bodies *int
 	// walked holds every invocation the walk placed, in the order it walked them, those of dry runs
 	// included.
 	walked []Invocation
 	// kept holds the index in walked of each invocation Parse returns, in the order it returns them.
 	kept  []int
 	depth int
-	// calls counts the calls whose bodies the walk followed where the call stands, and calling
-	// those under way, inside which every invocation the walk keeps is atCall.
-	calls, calling int
+	// calling counts the calls whose bodies the walk is following where the call stands, inside
+	// which every invocation the walk keeps is atCall.
+	calling int
+	// beside counts the background jobs and pipe stages the walk is inside, in which every
+	// invocation the walk keeps is beside.
+	beside int
 	// probing reports whether the walk is a dry run, whose invocations are dropped once it ends: of
-	// a body that may repeat, of a background job or pipe stage, or of a function body or an alias
-	// string.
+	// a body that may repeat, or of a function body.
 	probing bool
 }
 
@@ -299,8 +293,8 @@ func newWalker(caller Caller, depth int) walker {
 		timed:      map[*syntax.Stmt]bool{},
 		pipes:      map[*syntax.Stmt]*syntax.Stmt{},
 		depth:      depth,
-		dryRuns:    &dryRuns{},
 		loopBodies: new(int),
+		bodies:     new(int),
 	}
 }
 
@@ -314,9 +308,8 @@ func (w *walker) simple(stmt *syntax.Stmt, sc *scope) bool {
 	}
 
 	// Each substitution runs before the command, in a subshell of the shell as it is then, so a
-	// HEAD move in one comes before the command; their invocations still follow its own. Their
-	// indices stay in w.kept while the command is walked, since a race the command reaches shifts
-	// every index there; they move behind the command's own once it is walked.
+	// HEAD move in one comes before the command; their invocations still follow its own, so they
+	// move behind the command's own once it is walked.
 	at := len(w.kept)
 	w.substitutions(stmt, sc)
 	held := len(w.kept) - at
@@ -359,12 +352,10 @@ func moveBehind[T any](s []T, at, mid int) []T {
 // when the guard cannot read the name.
 func declarationOf(stmt *syntax.Stmt, decl *syntax.DeclClause, ex expander) Invocation {
 	words := []Word{{Text: decl.Variant.Value, Literal: true}}
-	values := make([]*syntax.Word, 0, len(decl.Args))
 	var names []string
 	nameless := false
 	for _, a := range decl.Args {
 		words = append(words, declarationWord(a, ex))
-		values = append(values, a.Value)
 		if a.Name != nil {
 			names = append(names, a.Name.Value)
 
@@ -381,12 +372,7 @@ func declarationOf(stmt *syntax.Stmt, decl *syntax.DeclClause, ex expander) Invo
 		}
 	}
 
-	inv := Invocation{Words: words, Redirects: redirectsOf(stmt, ex), Bare: true}
-	if hasExtGlob(values, stmt) {
-		inv.Marks = []Mark{{Kind: ExtendedGlob}}
-	}
-
-	inv.Marks = append(inv.Marks, gitVariableMarks(names)...)
+	inv := Invocation{Words: words, Redirects: redirectsOf(stmt, ex), Bare: true, Marks: gitVariableMarks(names)}
 	if nameless {
 		inv.Marks = append(inv.Marks, Mark{Kind: GitVariable})
 	}
@@ -438,26 +424,20 @@ func (w *walker) add(stmt *syntax.Stmt, call *syntax.CallExpr, sc *scope) {
 	inv = w.placed(inv, sc)
 	inv.depth = w.depth
 	inv.pipedInto = w.pipedInto(stmt, sc)
-	script, runs, mark := scriptOf(stmt, call, inv.Words)
+	script, runs, mark := scriptOf(stmt, inv.Words)
 	runs, mark = capDepth(w.depth, runs, mark)
 
-	inv.Marks = append(w.aliasMarks(inv), marksOf(call, stmt, inv, w.reading(sc))...)
+	inv.Marks = marksOf(call, inv, w.reading(sc))
 	if mark != "" {
 		inv.Marks = append(inv.Marks, Mark{Kind: mark})
 	}
-
-	commands := goCommands(&inv, w.depth)
 
 	names := make([]string, 0, len(inv.Assignments))
 	for _, a := range inv.Assignments {
 		names = append(names, a.Name)
 	}
 
-	assigned := assignedNames(stmt, inv.Words)
-	sc.assignUnknown(assigned)
-	if sc.allexport {
-		names = append(names, assigned...)
-	}
+	sc.assignUnknown(assignedNames(stmt, inv.Words))
 
 	inv.Marks = append(inv.Marks, gitVariableMarks(names)...)
 	scripts := w.variableScripts(&inv, inv.Assignments)
@@ -474,12 +454,6 @@ func (w *walker) add(stmt *syntax.Stmt, call *syntax.CallExpr, sc *scope) {
 		w.script(script, inv, sc)
 	}
 
-	// go starts each command in a process of its own, so nothing it changes holds after it.
-	for _, file := range commands {
-		inner := sc.runScope(inv)
-		w.nested(file, &inner)
-	}
-
 	sc.assignVariables(call, inv)
 	if len(inv.Words) > 0 {
 		sc.vars = sc.vars.ran(inv, sc.functions)
@@ -491,17 +465,8 @@ func (w *walker) add(stmt *syntax.Stmt, call *syntax.CallExpr, sc *scope) {
 
 // marksOf returns what Parse cannot read in the invocation inv of call, apart from the string it
 // runs. ex reads its words.
-func marksOf(call *syntax.CallExpr, stmt *syntax.Stmt, inv Invocation, ex expander) []Mark {
-	words := slices.Clone(call.Args)
-	for _, a := range call.Assigns {
-		words = append(words, a.Value)
-	}
-
+func marksOf(call *syntax.CallExpr, inv Invocation, ex expander) []Mark {
 	var marks []Mark
-	if hasExtGlob(words, stmt) {
-		marks = append(marks, Mark{Kind: ExtendedGlob})
-	}
-
 	if len(inv.Words) == 0 {
 		return marks
 	}
@@ -510,9 +475,6 @@ func marksOf(call *syntax.CallExpr, stmt *syntax.Stmt, inv Invocation, ex expand
 	switch {
 	case !command.Literal:
 		marks = append(marks, Mark{Kind: DynamicCommand})
-	case (command.Text == "source" || command.Text == ".") && len(inv.Words) > 1 &&
-		hidesScript(inv.Words[1], argsOf(call, inv.Words[1:])[0]):
-		marks = append(marks, Mark{Kind: HiddenScript})
 	case isShell(command):
 		// A script file the shell runs gets its arguments as `./x.sh` does.
 		if file, ok := scriptFileWords(inv.Words); ok {
@@ -553,78 +515,8 @@ func (w *walker) pipedInto(stmt *syntax.Stmt, sc *scope) []Word {
 }
 
 // ---------------------------------------------------------------------------
-// Alias and assignment marks
+// Assignment marks
 // ---------------------------------------------------------------------------
-
-// aliasMarks marks each alias the `alias` invocation inv defines whose value takes a mark (see
-// aliasKind), or is a string the guard cannot read. A later command that names the alias runs its
-// value from wherever it stands.
-func (w *walker) aliasMarks(inv Invocation) []Mark {
-	if len(inv.Words) == 0 || !inv.Words[0].Literal || inv.Words[0].Text != "alias" {
-		return nil
-	}
-
-	var marks []Mark
-	for _, word := range inv.Words[1:] {
-		name, value, defines := strings.Cut(word.Text, "=")
-		if !word.Literal {
-			marks = append(marks, Mark{Kind: ToolAlias, Name: name})
-
-			continue
-		}
-
-		if !defines {
-			continue
-		}
-
-		kind, marked := w.aliasKind(value)
-		if !marked {
-			continue
-		}
-
-		marks = append(marks, Mark{Kind: kind, Name: name})
-	}
-
-	return marks
-}
-
-// aliasKind returns the mark an alias whose value is the shell string value takes, and false when
-// it takes none. The mark is ToolAlias when value holds an invocation of git, gh, or ils, or one
-// the guard marks, or when the guard cannot read it; it is ReadCommandAlias when value runs a
-// command the guard reads (see readsThrough), whose effect the guard never applies to the command
-// that names the alias.
-func (w *walker) aliasKind(value string) (MarkKind, bool) {
-	file, err := read(value)
-	if err != nil || w.depth == maxDepth {
-		return ToolAlias, true
-	}
-
-	sub := w.probe()
-	sc := laterScope()
-	sub.nested(file, &sc)
-
-	holdsTool := slices.ContainsFunc(sub.walked, func(inv Invocation) bool {
-		return inv.Tool != NoTool || len(inv.Marks) > 0
-	})
-	switch {
-	case sub.err != nil || holdsTool:
-		return ToolAlias, true
-	case slices.ContainsFunc(sub.walked, readsThrough):
-		return ReadCommandAlias, true
-	default:
-		return "", false
-	}
-}
-
-// readsThrough reports whether inv runs a command the guard reads: `cd`, `pushd`, `popd`, or a
-// wrapper it sees through, whether as the command word or in front of it.
-func readsThrough(inv Invocation) bool {
-	if len(inv.Wrappers) > 0 {
-		return true
-	}
-
-	return len(inv.Words) > 0 && inv.Words[0].Literal && readsCommand(inv.Words[0].Text)
-}
 
 // assignedNames returns the variables the simple command stmt, whose words are words, assigns
 // other than by an assignment: those `read`, `mapfile`, `readarray`, and `getopts` are given, the
@@ -668,15 +560,6 @@ func printfTarget(args []Word) []string {
 	}
 
 	return names
-}
-
-// alone reports whether stmt is a simple command with no assignment prefix, redirect, or
-// background operator.
-func alone(stmt *syntax.Stmt) bool {
-	call, ok := stmt.Cmd.(*syntax.CallExpr)
-
-	return ok && len(call.Args) > 0 && len(call.Assigns) == 0 && len(stmt.Redirs) == 0 &&
-		!stmt.Background && !stmt.Coprocess && !stmt.Disown
 }
 
 // invocationOf returns the invocation of call, whose words ex reads. The values of its assignment
@@ -729,35 +612,6 @@ func assignmentOf(a *syntax.Assign, ex expander) Assignment {
 	default:
 		return Assignment{Name: name, Value: readWord(a.Value, ex)}
 	}
-}
-
-// hasExtGlob reports whether any part of words, or of the redirect targets of stmt, is an extended
-// glob the guard cannot read. A nil word is skipped. A zsh glob qualifier that runs nothing, such
-// as the null glob `*(N)`, is read: see runsNoCode.
-func hasExtGlob(words []*syntax.Word, stmt *syntax.Stmt) bool {
-	words = slices.Clone(words)
-	for _, r := range stmt.Redirs {
-		words = append(words, r.Word)
-	}
-
-	return slices.ContainsFunc(words, func(w *syntax.Word) bool {
-		return w != nil && slices.ContainsFunc(w.Parts, func(part syntax.WordPart) bool {
-			glob, ok := part.(*syntax.ExtGlob)
-
-			return ok && !runsNoCode(glob)
-		})
-	})
-}
-
-// runsNoCode reports whether glob is a `*(…)` whose parentheses hold no `e`, `+`, `$`, backtick
-// or inner parenthesis: zsh's glob qualifier in a form that runs nothing (`*(N)`, `*(.)`,
-// `*(om[1])`). zsh runs the string of an `e` qualifier (`*(e:'git push':)`) and the function a `+`
-// names (`*(+f)`) as code, and the shell expands a substitution inside the parentheses
-// (`*($(git push)N)`, `*(<(git push)N)`) before it globs; the parser keeps the parentheses as raw
-// text, so the guard never walks one. Every other operator opens a bash or ksh extended glob, which
-// stays unread.
-func runsNoCode(glob *syntax.ExtGlob) bool {
-	return glob.Op == syntax.GlobZeroOrMore && !strings.ContainsAny(glob.Pattern.Value, "e+$`(")
 }
 
 // programName returns the basename of the command word, with a leading zsh `=` lookup removed.
