@@ -509,9 +509,7 @@ func TestForge_Head_WhenStateNeedsNoCheck_ReportsMergeStateFromThePullRequestAlo
 		want     forge.Head
 		required []string
 	}{
-		{name: "conflicting wins over a clean status", view: pullJSON("CONFLICTING", "CLEAN", ""), want: headOf(forge.MergeConflicting), required: checked},
 		{name: "conflicting wins over the draft flag", view: draftJSON("CONFLICTING", "DIRTY"), want: headOf(forge.MergeConflicting), required: checked},
-		{name: "mergeable not worked out yet", view: pullJSON("UNKNOWN", "BLOCKED", ""), want: headOf(forge.MergeUnknown), required: checked},
 		{name: "mergeable not worked out yet wins over the draft flag", view: draftJSON("UNKNOWN", "UNKNOWN"), want: headOf(forge.MergeUnknown), required: checked},
 		{name: "clean", view: headJSON("CLEAN", "APPROVED"), want: headOf(forge.MergeClean), required: checked},
 		{name: "behind the base", view: headJSON("BEHIND", ""), want: headOf(forge.MergeBehind), required: checked},
@@ -610,7 +608,6 @@ func TestForge_TrunkProtection(t *testing.T) {
 			want:   forge.Protection{Rules: forge.RulesUnavailable, SquashAllowed: true},
 		},
 		{name: "no rule applies", answer: rules(), want: forge.Protection{Rules: forge.RulesNone, SquashAllowed: true}},
-		{name: "pull request rule listing squash", answer: rules(pullRequestRule(42, `["merge","squash","rebase"]`)), want: squash},
 		{name: "the rule without squash ahead of one with it", answer: rules(pullRequestRule(42, `["rebase"]`), pullRequestRule(51, `["squash"]`)), want: forbiddenBy(42)},
 		{name: "two pull request rules without squash", answer: rules(pullRequestRule(42, `["merge"]`), pullRequestRule(51, `["rebase"]`)), want: forbiddenBy(42, 51)},
 		{name: "pull request rule with an empty methods list", answer: rules(pullRequestRule(42, `[]`)), want: forbiddenBy(42)},

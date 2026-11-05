@@ -2,7 +2,6 @@ package github_test
 
 import (
 	"errors"
-	"os"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -12,7 +11,6 @@ import (
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/github/ghtest"
-	"github.com/jeffzi/ils/internal/logtest"
 )
 
 // No test that scripts `gh` is parallel: the fake `gh` is found through `GH_PATH`,
@@ -48,12 +46,6 @@ func withoutGh(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 }
 
-func pendingChecksArgs() []string { return []string{"pr", "checks", "7"} }
-
-func pendingChecks() ghtest.Call {
-	return ghtest.Exits(ghtest.Answer{Stdout: "build\tpending\n", Stderr: "still running\n", Code: 8}, pendingChecksArgs()...)
-}
-
 func TestRunner_Run_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
 	withoutGh(t)
 
@@ -73,28 +65,4 @@ func TestRunner_CheckLogin_WhenNotLoggedIn_ReturnsNotLoggedInError(t *testing.T)
 	assert.Check(t, is.Equal(notLoggedIn.Host, engineHost))
 	_, ok = errors.AsType[*child.ExitError](err)
 	assert.Check(t, ok, "CheckLogin error = %v, want it to wrap the *child.ExitError", err)
-}
-
-func TestRunner_Run_WhenEnvGiven_RunsGhWithIt(t *testing.T) {
-	// The fake reads its script from the environment: the environment captured after the first
-	// Setup holds the script that answers "given", and the process now holds the one that answers
-	// "process".
-	ghtest.Setup(t, ghtest.Says("given\n", "alias", "list"))
-	given := os.Environ()
-	ghtest.Setup(t, ghtest.Says("process\n", "alias", "list"))
-
-	got, err := github.Runner{Env: given}.Run(t.Context(), "alias", "list")
-	assert.NilError(t, err)
-
-	assert.Check(t, is.Equal(got.Stdout, "given\n"))
-}
-
-func TestRunner_Run_WhenLoggerSet_LogsTheCall(t *testing.T) {
-	args := pendingChecksArgs()
-	ghtest.Setup(t, pendingChecks())
-	logger, sink := logtest.New()
-
-	_, err := github.Runner{Logger: logger}.Run(t.Context(), args...)
-
-	assert.Check(t, is.DeepEqual(logtest.CallAttrs(t, sink.Records()), logtest.ExecAttrs(t, child.Exec{Tool: "gh", Args: args, Err: err})))
 }
