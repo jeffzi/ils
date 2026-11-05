@@ -2,6 +2,7 @@ package github_test
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -11,10 +12,11 @@ import (
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/github/ghtest"
+	"github.com/jeffzi/ils/internal/gittest"
 )
 
 // No test that scripts `gh` is parallel: the fake `gh` is found through `GH_PATH`,
-// which `go-gh` reads from the environment of the whole process.
+// which the runner reads from the environment of the whole process.
 
 func TestVersionOf(t *testing.T) {
 	t.Parallel()
@@ -46,13 +48,69 @@ func withoutGh(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 }
 
+// assertToolMissing fails unless err is a *child.ToolMissingError.
+func assertToolMissing(t *testing.T, err error) {
+	t.Helper()
+
+	_, ok := errors.AsType[*child.ToolMissingError](err)
+	assert.Assert(t, ok, "Run(pr view) error = %v, want *child.ToolMissingError", err)
+}
+
 func TestRunner_Run_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
 	withoutGh(t)
 
 	_, err := github.Runner{}.Run(t.Context(), "pr", "view")
 
-	_, ok := errors.AsType[*child.ToolMissingError](err)
-	assert.Assert(t, ok, "Run(pr view) error = %v, want *child.ToolMissingError", err)
+	assertToolMissing(t, err)
+}
+
+func TestRunner_Run_WhenGhPathNamesNoFile_ReturnsToolMissingError(t *testing.T) {
+	withoutGh(t)
+	t.Setenv("GH_PATH", filepath.Join(t.TempDir(), "gh"))
+
+	_, err := github.Runner{}.Run(t.Context(), "pr", "view")
+
+	assertToolMissing(t, err)
+}
+
+func TestRunner_Run_WhenGhPathIsSet_RunsTheGhItNames(t *testing.T) {
+	ghtest.Setup(t, ghtest.Says("named\n", "pr", "view"))
+	t.Setenv("PATH", t.TempDir())
+
+	got, err := github.Runner{}.Run(t.Context(), "pr", "view")
+	assert.NilError(t, err, "Run(pr view)")
+
+	assert.Check(t, is.Equal(got.Stdout, "named\n"))
+}
+
+// onPath scripts the fake gh, then makes it findable only as the gh on PATH, with PATH set to
+// entry and the working directory to the fake's directory.
+func onPath(t *testing.T, entry func(dir string) string, script ...ghtest.Call) {
+	t.Helper()
+
+	ghtest.Setup(t, script...)
+	dir := t.TempDir()
+	gittest.Link(t, dir, github.Program)
+	t.Setenv("GH_PATH", "")
+	t.Setenv("PATH", entry(dir))
+	t.Chdir(dir)
+}
+
+func TestRunner_Run_WhenGhPathUnset_RunsTheGhOnPath(t *testing.T) {
+	onPath(t, func(dir string) string { return dir }, ghtest.Says("found\n", "pr", "view"))
+
+	got, err := github.Runner{}.Run(t.Context(), "pr", "view")
+	assert.NilError(t, err, "Run(pr view)")
+
+	assert.Check(t, is.Equal(got.Stdout, "found\n"))
+}
+
+func TestRunner_Run_WhenGhOnlyOnRelativePathEntry_ReturnsToolMissingError(t *testing.T) {
+	onPath(t, func(string) string { return "." }, ghtest.Says("found\n", "pr", "view"))
+
+	_, err := github.Runner{}.Run(t.Context(), "pr", "view")
+
+	assertToolMissing(t, err)
 }
 
 func TestRunner_CheckLogin_WhenNotLoggedIn_ReturnsNotLoggedInError(t *testing.T) {

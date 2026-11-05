@@ -18,7 +18,7 @@ import (
 	"github.com/jeffzi/ils/internal/github/ghtest"
 )
 
-// No test that scripts `gh` is parallel: the fake `gh` is found through `GH_PATH`, which `go-gh`
+// No test that scripts `gh` is parallel: the fake `gh` is found through `GH_PATH`, which the runner
 // reads from the environment of the whole process.
 
 func TestMain(m *testing.M) {

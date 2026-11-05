@@ -82,7 +82,7 @@ func commandLines(recorded [][]string) []string {
 }
 
 func TestApp_Run_WhenDebugIsOnDuringALanding_TracesTheLandingOnStderrAlone(t *testing.T) {
-	// Not parallel: the fake `gh` is found through `GH_PATH`, which `go-gh` reads from the
+	// Not parallel: the fake `gh` is found through `GH_PATH`, which the runner reads from the
 	// environment of the whole process.
 	repo := forge.Repo{Host: "github.com", Owner: "acme", Name: "widgets"}
 	f := gittest.New(t, trunk)

@@ -25,7 +25,7 @@ import (
 )
 
 // No test that scripts `gh` is parallel: the fake `gh` is found through `GH_PATH`,
-// which `go-gh` reads from the environment of the whole process.
+// which the runner reads from the environment of the whole process.
 
 // ---------------------------------------------------------------------------
 // Fixtures and helpers

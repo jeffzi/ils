@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"os/exec"
 	"strings"
-
-	gh "github.com/cli/go-gh/v2"
 
 	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
@@ -89,9 +89,13 @@ func (r Runner) Run(ctx context.Context, args ...string) (Result, error) {
 }
 
 // ghPath returns the gh to start, whatever name it is asked for: the one GH_PATH names, or else
-// the gh on PATH.
+// the gh on PATH, found as git is. A gh found only through a relative PATH entry is not found.
 func ghPath(string) (string, error) {
-	path, err := gh.Path()
+	if path := os.Getenv("GH_PATH"); path != "" {
+		return path, nil
+	}
+
+	path, err := exec.LookPath(Program)
 	if err != nil {
 		return "", fmt.Errorf("find %s: %w", Program, err)
 	}
