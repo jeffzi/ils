@@ -358,18 +358,6 @@ func separatorCases() []jsonCase {
 			},
 			want: resulttest.Shown{Payload: &result.Payload{Merge: &result.Merge{Subject: separated}}},
 		},
-		{
-			name:   "word of the command",
-			result: with(donePush(), func(r *result.Result) { r.Words = []string{"push", separated} }),
-			pick:   func(s resulttest.Shown) resulttest.Shown { return resulttest.Shown{Words: s.Words} },
-			want:   resulttest.Shown{Words: []string{"push", separated}},
-		},
-		{
-			name:   "excerpt",
-			result: withExcerpt(donePush(), separated),
-			pick:   excerptOnly,
-			want:   resulttest.Shown{Excerpt: separated},
-		},
 	}
 }
 

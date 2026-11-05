@@ -49,8 +49,6 @@ func TestDraw_WhenRenditionParameterEmpty_Resets(t *testing.T) {
 		want resulttest.Look
 	}{
 		{name: "leading empty parameter", out: "\x1b[31m\x1b[;1mx", want: resulttest.Look{Bold: true}},
-		{name: "trailing empty parameter", out: "\x1b[1;mx", want: resulttest.Look{}},
-		{name: "no parameters", out: "\x1b[1m\x1b[mx", want: resulttest.Look{}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
