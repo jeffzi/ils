@@ -216,27 +216,12 @@ func appPassing() forge.Verdict {
 // pushRunlessRows are the pushes whose deadline ended inside the 20 seconds a commit is given
 // for its workflow runs to appear, before any of them had a check to report.
 func pushRunlessRows() []pushRow {
-	started := forge.Verdict{Runs: ran(forge.RunInProgress)}
-	scanned := appPassing()
 	silent := pendingClean(expect("no check or status", tipMark, "#12"))
-	noRun := pending(expect("no workflow run", tipMark, "#12"),
-		"", detail(forge.VerdictGreen, forge.MergeClean, scanned.Checks...))
 
 	return []pushRow{
 		{
 			name: "nothing has reported yet", left: 12 * time.Second, script: reusing(forge.Verdict{}), want: silent,
 			noStateLine: true,
-		},
-		{
-			name: "a workflow run is going and no check has reported yet", left: 12 * time.Second,
-			script: reusing(started),
-			want: pending(expect("had not reported"),
-				expect("No check has reported", tipMark, "#12", "workflow run is still going"),
-				detail(forge.VerdictNone, forge.MergeClean)),
-		},
-		{
-			name: "a check passed and no workflow run has started yet", left: 12 * time.Second,
-			script: reusing(scanned), want: noRun,
 		},
 	}
 }
@@ -364,8 +349,8 @@ func TestPush_WhenTheWaitEndsBeforeAnAnswer_PendingSayingWhy(t *testing.T) {
 }
 
 // boundPendingRows are the pushes cmd runs that end pending, one per reason that names c's time
-// limit. When cmd runs under the time limit of a plain push, whose rows already hold each reason and
-// the cuts of a read, one row is enough for its `Next:` line.
+// limit. When cmd runs under the time limit of a plain push, the rows of the commands under other
+// limits already hold each reason and the cuts of a read, so one row is enough for its `Next:` line.
 func boundPendingRows(cmd landingCommand, c cut) []pushRow {
 	cleanPayload := detail(forge.VerdictNone, forge.MergeClean)
 

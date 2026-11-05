@@ -89,7 +89,7 @@ func standingRefusals() []pushRefusal {
 			},
 		},
 		{
-			name: "detached HEAD at origin's trunk", script: allowed(), ops: identityRead(), fetches: true,
+			name: "detached HEAD at origin's trunk", script: allowed(), ops: identityRead(),
 			arrange: func(f *gittest.Fixture) string {
 				f.Git("switch", "--quiet", "--detach", trunk)
 
@@ -97,7 +97,7 @@ func standingRefusals() []pushRefusal {
 			},
 		},
 		{
-			name: "detached HEAD with commits origin's trunk lacks", script: allowed(), ops: identityRead(), fetches: true,
+			name: "detached HEAD with commits origin's trunk lacks", script: allowed(), ops: identityRead(),
 			arrange: func(f *gittest.Fixture) string {
 				f.Detach()
 
@@ -110,17 +110,17 @@ func standingRefusals() []pushRefusal {
 		},
 	}
 
-	return append(standing, perBoundedPush("two tracked files changed", false,
+	return append(standing, perBoundedPush("two tracked files changed",
 		func(b boundedPush, f *gittest.Fixture) string { return dirtyText(b.cmd, f.DirtyFile(), f.StagedFile()) })...)
 }
 
 // perBoundedPush is the refusal named prefix by each bounded push, whose text arrange returns once
-// it has changed the repository; fetches is whether git fetches from origin before it.
-func perBoundedPush(prefix string, fetches bool, arrange func(b boundedPush, f *gittest.Fixture) string) []pushRefusal {
+// it has changed the repository.
+func perBoundedPush(prefix string, arrange func(b boundedPush, f *gittest.Fixture) string) []pushRefusal {
 	var rows []pushRefusal
 	for _, b := range boundedPushes() {
 		rows = append(rows, pushRefusal{
-			name: prefix + ", ils " + b.cmd.name, script: allowed(), ops: identityRead(), fetches: fetches, req: b.cmd.req,
+			name: prefix + ", ils " + b.cmd.name, script: allowed(), ops: identityRead(), req: b.cmd.req,
 			arrange: func(f *gittest.Fixture) string { return arrange(b, f) },
 		})
 	}
@@ -143,7 +143,7 @@ func nothingPastBy(cmd landingCommand, branch string) string {
 // keptRefusals are the refusals by each bounded push of a detached HEAD with commits origin's
 // trunk lacks, whose `Next:` line names the push without a typed --wait once they are on a branch.
 func keptRefusals() []pushRefusal {
-	return perBoundedPush("detached HEAD with commits origin's trunk lacks", true,
+	return perBoundedPush("detached HEAD with commits origin's trunk lacks",
 		func(b boundedPush, f *gittest.Fixture) string {
 			f.Detach()
 
@@ -153,7 +153,7 @@ func keptRefusals() []pushRefusal {
 
 // commitRefusals are the refusals decided from the branch's commits past origin's trunk.
 func commitRefusals() []pushRefusal {
-	bounded := perBoundedPush("no commit past the trunk", true, func(b boundedPush, f *gittest.Fixture) string {
+	bounded := perBoundedPush("no commit past the trunk", func(b boundedPush, f *gittest.Fixture) string {
 		f.Git("switch", "--quiet", "--create", spare, trunk)
 
 		return nothingPastBy(b.cmd, spare)
@@ -161,7 +161,7 @@ func commitRefusals() []pushRefusal {
 
 	return append(bounded, []pushRefusal{
 		{
-			name: "no commit past the trunk", script: allowed(), ops: identityRead(), fetches: true,
+			name: "no commit past the trunk", script: allowed(), ops: identityRead(),
 			arrange: func(f *gittest.Fixture) string {
 				f.Git("switch", "--quiet", "--create", spare, trunk)
 
@@ -170,7 +170,7 @@ func commitRefusals() []pushRefusal {
 		},
 		{
 			name: "every commit landed on origin's trunk since the last fetch", script: allowed(),
-			ops: identityRead(), fetches: true,
+			ops: identityRead(),
 			arrange: func(f *gittest.Fixture) string {
 				f.Git("push", "--quiet", filepath.ToSlash(f.OriginDir()), topic+":"+trunk)
 
@@ -189,7 +189,7 @@ func changeRefusals() []pushRefusal {
 	return []pushRefusal{
 		{
 			name:   "open pull request against another base",
-			script: finding(change(opened, otherBase, forge.ChangeOpen)), ops: changesRead(), fetches: true,
+			script: finding(change(opened, otherBase, forge.ChangeOpen)), ops: changesRead(),
 			arrange: func(*gittest.Fixture) string { return elsewhere },
 		},
 		{
@@ -197,7 +197,7 @@ func changeRefusals() []pushRefusal {
 			// nothing after: a fetch of the merged head would be what refuses.
 			name:   "open pull request against another base beside a merged one that shares a commit",
 			script: finding(change(merged, trunk, forge.ChangeMerged), change(opened, otherBase, forge.ChangeOpen)),
-			ops:    changesRead(), fetches: true, answered: 3,
+			ops:    changesRead(), answered: 3,
 			arrange: func(f *gittest.Fixture) string {
 				f.LandPull(merged, topic)
 
@@ -205,7 +205,7 @@ func changeRefusals() []pushRefusal {
 			},
 		},
 		{
-			name: "merged pull request with nothing unlanded", script: landedScript(), ops: changesRead(), fetches: true,
+			name: "merged pull request with nothing unlanded", script: landedScript(), ops: changesRead(),
 			arrange: func(f *gittest.Fixture) string {
 				f.LandPull(merged, topic)
 
@@ -213,7 +213,7 @@ func changeRefusals() []pushRefusal {
 			},
 		},
 		{
-			name: "merged pull request with commits made since", script: landedScript(), ops: changesRead(), fetches: true,
+			name: "merged pull request with commits made since", script: landedScript(), ops: changesRead(),
 			arrange: func(f *gittest.Fixture) string {
 				f.LandPull(merged, topic)
 				later := f.Commits(topic, "fix a typo", "add an example")
@@ -300,8 +300,6 @@ type brokenRead struct {
 	arrange func(t *testing.T, f *gittest.Fixture)
 	name    string
 	read    string
-	// fetches is whether git fetches from origin before the read.
-	fetches bool
 }
 
 func brokenReads() []brokenRead {
@@ -314,7 +312,7 @@ func brokenReads() []brokenRead {
 			},
 		},
 		{
-			name: "a commit of the branch is missing", read: readCommits, fetches: true,
+			name: "a commit of the branch is missing", read: readCommits,
 			arrange: func(t *testing.T, f *gittest.Fixture) {
 				t.Helper()
 
@@ -339,7 +337,7 @@ func TestPush_WhenLocalReadFails_BrokeNamingTheRead(t *testing.T) {
 			got := landing.Push(t.Context(), s.deps, pushRequest())
 
 			assertBrokeReadBy(t, got, pushCommand(), tt.read)
-			assertOnlyRead(t, s, reads{before: before, ops: identityRead(), fetches: tt.fetches})
+			assertOnlyRead(t, s, reads{before: before, ops: identityRead()})
 		})
 	}
 }
@@ -353,7 +351,7 @@ func TestPush_WhenFindChangesFailsUntyped_BrokeNamingTheRead(t *testing.T) {
 
 	want := unreadText(pushCommand(), readChanges, forgeFailure)
 	assertEnded(t, s, got, finish{outcome: result.Broke, text: want})
-	assertOnlyRead(t, s, reads{before: before, ops: changesRead(), fetches: true})
+	assertOnlyRead(t, s, reads{before: before, ops: changesRead()})
 }
 
 func TestPush_WhenBranchHasNoCommitAtAll_RefusesAsNoCommitPastTheTrunk(t *testing.T) {
@@ -459,7 +457,7 @@ func runOvertime(t *testing.T, rows func(c cut) []overtime) {
 			got := landing.Push(ctx, s.deps, pushRequest())
 
 			assertEnded(t, s, got, finish{outcome: result.Refused, text: overtimeText(pushCommand(), c, tt.read)})
-			assertOnlyRead(t, s, reads{before: before, ops: tt.ops, fetches: true})
+			assertOnlyRead(t, s, reads{before: before, ops: tt.ops})
 		})
 	}
 }

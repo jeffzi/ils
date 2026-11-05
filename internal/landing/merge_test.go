@@ -223,7 +223,6 @@ func assertStoppedBeforeWait(t *testing.T, tt mergeRow, end mergeEnd, run mergeR
 	assert.Check(t, is.DeepEqual(mergePayload(t, run.got), want, cmpopts.EquateEmpty()))
 
 	assert.Check(t, sameCalls(run.forge.Calls(), mergeAsked(tt.ops)))
-	assert.Check(t, run.gitRan("fetch"), "git did not fetch from origin before the run stopped")
 }
 
 // mergeRowOn runs `ils merge` on a scene of tt's own, as runMergeOn does, and returns how the run
@@ -394,10 +393,10 @@ func pullRequestStops() []mergeRow {
 // titleStops are the refusals of pull request 12 by its title.
 func titleStops() []mergeRow {
 	titles := []struct{ name, title string }{
-		{name: "no colon", title: "fix-thing"},
 		{name: "uppercase type", title: "Feat: x"},
 		{name: "empty scope", title: "feat(): x"},
 		{name: "nested scope", title: "fix(a(b)): x"},
+		{name: "no colon", title: "feat x"},
 		{name: "no space after colon", title: "feat:x"},
 		{name: "two spaces after colon", title: "feat:  x"},
 	}

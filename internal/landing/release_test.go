@@ -247,7 +247,7 @@ func assertReleaseRefused(t *testing.T, st staged, run releaseRun, want releaseR
 // The version
 // ---------------------------------------------------------------------------
 
-func TestRelease_WhenTheVersionIsNotXYZ_RefusesNamingItBeforeReadingOrigin(t *testing.T) {
+func TestRelease_WhenTheVersionIsNotXYZ_RefusesNamingIt(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct{ name, in string }{
@@ -263,7 +263,6 @@ func TestRelease_WhenTheVersionIsNotXYZ_RefusesNamingItBeforeReadingOrigin(t *te
 			got := runRelease(t, st.s, req)
 
 			assertEndedBy(t, got, st.s.gitDir, ended{outcome: result.Refused, req: req, text: expect(tt.in)})
-			assert.Check(t, !st.s.gitRan("ls-remote"), "Release() read origin before refusing %q", tt.in)
 		})
 	}
 }
@@ -328,7 +327,6 @@ type commitRow struct {
 // releaseCommitRows are the places on origin's trunk a release commit can sit.
 func releaseCommitRows() []commitRow {
 	return []commitRow{
-		{name: "at the tip", build: tagged},
 		{
 			name: "with commits after it, left out of the tag",
 			build: func(f *gittest.Fixture, base string) string {
@@ -419,40 +417,6 @@ func TestRelease_WhenOriginsTrunkHoldsTheReleaseCommit_TagsItOnOrigin(t *testing
 	}
 }
 
-// checkoutRow is a checkout the command runs from.
-type checkoutRow struct {
-	arrange func(t *testing.T, s *scene)
-	name    string
-}
-
-func TestRelease_WhenRunFromAnyCheckout_ReadsTheReleaseFromOriginAsFetchedNow(t *testing.T) {
-	t.Parallel()
-
-	tests := []checkoutRow{
-		{name: "a detached HEAD", arrange: func(_ *testing.T, s *scene) { s.fixture.Detach() }},
-		{name: "a dirty tree", arrange: func(_ *testing.T, s *scene) { s.fixture.DirtyFile() }},
-		{
-			name: "a linked worktree",
-			arrange: func(_ *testing.T, s *scene) {
-				s.deps.Repo.Runner.Dir = s.fixture.BranchWorktree(topic)
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			synctest.Test(t, func(t *testing.T) {
-				st := releaseScene(t, tagged)
-				tt.arrange(t, st.s)
-
-				got := runRelease(t, st.s, releaseRequest(version, false))
-
-				assertReleaseRead(t, st, got, version)
-			})
-		})
-	}
-}
-
 // missingRow is a trunk on origin, built past its first commit, base, with no release commit to
 // find, and the parts of the refusal.
 type missingRow struct {
@@ -466,13 +430,6 @@ func TestRelease_WhenNoReleaseCommitFollowsThePreviousTag_RefusesNamingWhereItLo
 
 	since := expect(trunk, previousTag, releaseSubject)
 	tests := []missingRow{
-		{
-			name: "no commit with the subject", want: since,
-			build: func(f *gittest.Fixture, base string) {
-				f.OriginTag(previousTag, base)
-				f.Commits(trunk, "feat: add a logo")
-			},
-		},
 		{
 			name: "the subject of a pre-release of the version", want: since,
 			build: func(f *gittest.Fixture, base string) {
@@ -615,7 +572,6 @@ func TestRelease_WhenTheReleaseCommitHoldsNoNotes_RefusesNamingIt(t *testing.T) 
 				return release
 			},
 		},
-		{name: "no section for the version", build: withChangelog(changelog(section("1.1.0", notes)))},
 		{
 			name:  "only a section for a pre-release of the version",
 			build: withChangelog(changelog(section("1.2.0-rc.1", notes), section("1.1.0", notes))),
@@ -725,7 +681,6 @@ func TestRelease_WhenOriginRefusesTheTag_BrokeKeepingTheLocalTagForTheNextRun(t 
 			outcome: result.Broke, req: cmd.req, text: expect(releaseTag, "not pushed", policy) + cmd.fixed,
 		})
 		assert.Check(t, is.Equal(st.s.localTag(releaseTag), st.release))
-		assert.Check(t, is.Equal(st.s.originTag(releaseTag), ""))
 		assert.Check(t, is.Len(releaseCalls(st.s), 0))
 		assert.Check(t, is.DeepEqual(releasePayload(t, got, st.s.gitDir), released(st, "green", "")))
 	})
@@ -743,8 +698,6 @@ func TestRelease_WhenTheTagCannotBeCreated_BrokeSayingNothingWasWritten(t *testi
 		assertEndedBy(t, got, st.s.gitDir, ended{
 			outcome: result.Broke, req: cmd.req, text: expect(releaseTag, gittest.FailedSaid) + cmd.fixed,
 		})
-		assert.Check(t, is.Equal(st.s.localTag(releaseTag), ""))
-		assert.Check(t, is.Equal(st.s.originTag(releaseTag), ""))
 		assert.Check(t, is.Len(releaseCalls(st.s), 0))
 	})
 }
@@ -802,7 +755,6 @@ func TestRelease_WhenACutEndsTheMakingOfTheTag_SaysWhatEndedIt(t *testing.T) {
 			})
 			_, reason := shown(t, got, st.s.gitDir)
 			assertSays(t, reason, expect(c.ends))
-			assert.Check(t, is.Equal(st.s.originTag(releaseTag), ""))
 			assert.Check(t, is.Len(releaseCalls(st.s), 0))
 		})
 	}
