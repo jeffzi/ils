@@ -8,11 +8,13 @@ each command is for. CI stands for continuous integration throughout.
 - [Commands](#commands)
   - [Flags](#flags)
   - [ils branch](#ils-branch)
+    - [Branch by hand](#branch-by-hand)
   - [ils push](#ils-push)
     - [After a green push](#after-a-green-push)
   - [ils merge](#ils-merge)
     - [How merge ends](#how-merge-ends)
     - [A merge made elsewhere](#a-merge-made-elsewhere)
+    - [Merge by hand](#merge-by-hand)
   - [ils status](#ils-status)
   - [ils release](#ils-release)
     - [Resume a broken release](#resume-a-broken-release)
@@ -49,29 +51,18 @@ each command is for. CI stands for continuous integration throughout.
 
 ### Flags
 
-```bash
-ils push          # push the branch, open its pull request on the first push, wait for the checks
-ils push --wait   # the same, waiting up to 15 minutes for the checks even off a terminal
-ils push --json   # the same result as one JSON object
-ils push --help   # usage of push
-ils push -d       # the same push, tracing each git and gh call and wait decision on stderr
-ils push --no-color  # the same push, with no color
-ils merge         # squash-merge the pull request once its checks are green
-ils merge --json  # the same result as one JSON object
-ils merge --wait  # the same, waiting up to 14 minutes 40 seconds for the checks even off a terminal
-ils branch fix-help  # start the branch fix-help from the default branch as origin has it
-ils status        # where the checkout stands, and what to run next
-ils release 1.2.0 # tag the release commit of v1.2.0 once its checks are green, then publish it
-ils release 1.2.0 --tag-only  # the same, stopping once the tag is on origin
-ils release 1.2.0 --wait=false  # the same, waiting at most 80 seconds even at a terminal
-ils help          # usage of ils and its commands
-ils help push     # the same as ils push --help
-ils --version     # print the version of ils
-```
+| Flag            | Commands                       | Effect                                                                                                                                                           |
+| --------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--json`        | all five                       | Prints the result as one JSON object; see [JSON output](#json-output). Takes `=true` or `=false`.                                                                |
+| `-d`, `--debug` | all five                       | Traces each `git` and `gh` call and each wait decision on stderr; see [Terminal output](#terminal-output).                                                       |
+| `--no-color`    | all five                       | Turns color and bold off on both streams.                                                                                                                        |
+| `--help`, `-h`  | all five                       | Prints the command's usage. `ils help <command>` does the same.                                                                                                  |
+| `--wait`        | `push`, `merge`, and `release` | Waits for the checks up to the long [time limit](#time-limits) even off a terminal. On by default at a terminal; `--wait=false` keeps the short limit there too. |
+| `--force`       | `release`                      | Skips the wait for the checks and says nothing verified the commit. Every other refusal still holds.                                                             |
+| `--tag-only`    | `release`                      | Stops once the tag is on origin, and creates no GitHub release.                                                                                                  |
 
-`push`, `merge`, `branch`, `status`, and `release` each take `--json`, `-d` or `--debug`,
-`--no-color`, and `--help` or `-h`. `push`, `merge`, and `release` also take `--wait`, and
-`release` alone `--force` and `--tag-only`.
+`ils help` prints the usage of `ils` and its commands, and `ils --version` prints the version of
+`ils`.
 
 ### ils branch
 
@@ -89,15 +80,17 @@ the local default branch. `ils branch` needs `git` alone: it runs without `gh`, 
 
 `ils branch --json` prints the [JSON object](#json-output) every command prints, with no payload.
 
-By hand, the same steps are:
+[What branch refuses](#what-branch-refuses) lists every refusal.
+
+#### Branch by hand
+
+The same steps, by hand, for a branch `fix-help` on `main`:
 
 ```bash
 git fetch origin main
 git ls-remote --heads origin   # no branch named fix-help, a path prefix of it, or under it
 git switch -c fix-help --no-track origin/main
 ```
-
-[What branch refuses](#what-branch-refuses) lists every refusal.
 
 ### ils push
 
@@ -143,12 +136,7 @@ When the pull request's merge state stands in the way, `Next:` names that step i
 - **A required check never reported on the head:** report that, and stop.
 - **Blocked by GitHub for another reason:** report that GitHub blocks the merge, and stop.
 
-To merge a pull request whose checks are red anyway, merge it by hand. `ils merge` never does:
-
-```bash
-gh pr merge --repo <host>/<owner>/<name> <N> --squash --delete-branch \
-  --match-head-commit <sha> --subject "<title> (#<N>)" --body "<body>"
-```
+To merge a pull request whose checks are red anyway, see [Merge by hand](#merge-by-hand).
 
 ### ils merge
 
@@ -201,6 +189,15 @@ origin if it is still there, then ends as [How merge ends](#how-merge-ends) desc
 covers a pull request that got an "Update branch" or a committed suggestion on the web before its
 merge. When the branch has commits the merge did not carry, `ils merge` refuses and lists them, and
 `Next:` says to start a new branch and cherry-pick them.
+
+#### Merge by hand
+
+To merge a pull request whose checks are red anyway, merge it by hand. `ils merge` never does:
+
+```bash
+gh pr merge --repo <host>/<owner>/<name> <N> --squash --delete-branch \
+  --match-head-commit <sha> --subject "<title> (#<N>)" --body "<body>"
+```
 
 ### ils status
 
@@ -632,7 +629,7 @@ The guard lowers the odds of an accident; it is not a sandbox. It does not see:
 - an interpreter that is not a shell, such as `python -c 'subprocess.run(["git", "push"])'`;
 - a command held in a variable and handed to a command the guard does not know, such as `su -c
   "$cmd"`;
-- `go run . merge` in this repository, or `go run github.com/jeffzi/ils@<tag> merge` anywhere,
+- `go run . merge` in a clone of `ils`, or `go run github.com/jeffzi/ils@<tag> merge` anywhere,
   which hold no `ils` word;
 - a task runner (`task`, `make`, `npm run`) running lines from a file the agent wrote;
 - a shell reading its script from a pipe or a process substitution, such as `curl -fsSL
@@ -640,8 +637,9 @@ The guard lowers the odds of an accident; it is not a sandbox. It does not see:
 - `gh workflow run` of a workflow whose token can push, tag, or release;
 - an alias or function from your shell config, such as `gp='git push'`, which the agent's shell
   runs with no `git` word in the command;
-- a construct whose only use is to hide a command, such as a name reference that writes `GIT_DIR`
-  or a tool name built by a glob. [Guard scope](guard-scope.md#accepted-limits) says why.
+- a construct whose only use is to hide a command, such as a name reference (`declare -n`) that
+  writes `GIT_DIR` or a tool name built by a glob. [Guard scope](guard-scope.md#accepted-limits)
+  says why.
 
 ### ils guard
 
