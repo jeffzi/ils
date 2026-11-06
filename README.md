@@ -70,18 +70,18 @@ branch that already merged. A red check, a conflict, or a required check that ne
 exit 5, never as green.
 
 [`ils merge`](docs/reference.md#ils-merge) squash-merges the pull request with its title and body
-as the commit message, deletes the branch, and leaves the default branch checked out and up to
-date. It never pushes and has no `--force`. It refuses a red or missing check, a draft, a review
+as the commit message, deletes the branch, and leaves the checkout on origin's default branch. It
+never pushes and has no `--force`. It refuses a red or missing check, a draft, a review
 still required, a commit not yet on the pull request, and a title that is not a conventional commit
 subject. After a merge done on the web, it finishes the local steps.
 
 [`ils status`](docs/reference.md#ils-status) says where the checkout stands and what to run next.
-It changes nothing and exits 0 whenever its arguments are valid.
+It fetches from origin, writes nothing of yours, and exits 0 whenever its arguments are valid.
 
 [`ils release <X.Y.Z>`](docs/reference.md#ils-release) finds the commit `chore: release v<X.Y.Z>`
 on origin's default branch, waits for its checks, tags it, pushes the tag, and creates the GitHub
 release from that version's section of `CHANGELOG.md`. It refuses a version that is not above every
-tag on origin, a missing changelog section, and a failed check.
+version tag on origin, a missing changelog section, and a failed check.
 
 Every command takes `--json`, `-d` for a trace of each `git` and `gh` call, and `--help`.
 [Flags](docs/reference.md#flags) lists them all.

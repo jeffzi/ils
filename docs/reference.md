@@ -1,9 +1,9 @@
 # ils reference
 
 This page is the full reference for `ils`: what each command does step by step, exit codes, time
-limits, every refusal, the JavaScript Object Notation (JSON) output, the guard, and the terminal
-output. The [README](../README.md) says why `ils` exists, how to install and set it up, and what
-each command is for. CI stands for continuous integration throughout.
+limits, stopping a run, every refusal, the JavaScript Object Notation (JSON) output, the guard, and
+the terminal output. The [README](../README.md) says why `ils` exists, how to install and set it
+up, and what each command is for. CI stands for continuous integration throughout.
 
 - [Commands](#commands)
   - [Flags](#flags)
