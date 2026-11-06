@@ -95,6 +95,30 @@ func moved(dir string, w Word) string {
 	return absolute(dir, w.Text)
 }
 
+// changedTo returns the directory that git's `-C` w moves to from dir, empty when the guard cannot
+// tell. git changes directory with chdir, which follows a symbolic link before a `..` after it steps
+// up, so a w holding `..` is resolved on disk, and is unknown when it cannot be. A w without `..`
+// keeps its spelling: it reaches the same directory either way.
+func changedTo(dir string, w Word) string {
+	to := moved(dir, w)
+	if to == "" || !slices.Contains(strings.Split(w.Text, "/"), "..") {
+		return to
+	}
+
+	path := w.Text
+	if !filepath.IsAbs(path) {
+		// Joined as text: filepath.Join would drop each `..` with the name before it, link or not.
+		path = dir + "/" + path
+	}
+
+	landed, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return ""
+	}
+
+	return landed
+}
+
 // absolute returns p made absolute against dir, empty when p is relative and dir is unknown.
 func absolute(dir, p string) string {
 	switch {
@@ -501,7 +525,7 @@ func (sc *scope) targetOf(inv Invocation) GitTarget {
 	for _, o := range inv.Git.Options {
 		switch o.Name {
 		case "-C":
-			dir = moved(dir, o.Value)
+			dir = changedTo(dir, o.Value)
 		case "--git-dir":
 			env.gitDir = valueOf(o.Value)
 		case "--work-tree":
