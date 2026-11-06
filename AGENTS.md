@@ -72,6 +72,20 @@ run passes on both legs: pushing the tag starts the Publish workflow. Once both 
 release with `ils release <X.Y.Z>`, which waits for the release commit's checks, pushes the tag,
 and creates the GitHub release.
 
+## Documentation
+
+Each document has one job, and a fact lives in one of them:
+
+- `README.md` is the user guide: why `ils` exists, what each command is for, the flow, typical
+  workflows, install, and setup.
+- `docs/reference.md` is the reference: each command's steps, flags, and by-hand equivalent, exit
+  codes, time limits, refusals, JSON output, the guard's rules and limits, and terminal output.
+- `docs/guard-scope.md` holds the rules for changing the guard.
+
+A change to a command's behavior, wording, or flags, or to a guard rule, updates
+`docs/reference.md`. It also updates the README where a command paragraph, a workflow, or the flow
+table states what changed.
+
 ## Changing the guard
 
 Before you add, change, or remove a refusal of the guard, read
