@@ -10,14 +10,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - Add `ils guard` and `ils parse`, which judge a shell command an agent is about to run against the
-  git, `gh`, and `ils` rules and show how the guard reads it.
+  `git`, `gh`, and `ils` rules and show how the guard reads it.
 - Add `ils hook claude` and the `ils` skill's `hook.sh`, which run the guard as Claude Code's
   `PreToolUse` hook and block every command when `ils` cannot answer.
-
-### Fixed
-
-- Count required checks that have not reported yet in the "N of M done" progress of a wait for a
-  pull request's checks, which showed every check done while one was still to come.
 
 ## [0.5.0] - 2026-10-31
 
