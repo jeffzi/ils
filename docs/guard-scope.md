@@ -1,6 +1,6 @@
 # Guard scope
 
-The guard reads an agent's shell command before it runs. It refuses the git, `gh`, and `ils` calls
+The guard reads an agent's shell command before it runs. It refuses the `git`, `gh`, and `ils` calls
 that destroy work, skip checks, push, or land a change. The rules on this page decide what the guard
 refuses and what it lets through. Apply them before you add, change, or remove a refusal.
 [What the guard refuses](reference.md#what-the-guard-refuses) lists the refusals they produce.
@@ -56,7 +56,7 @@ runs.
 
 ### 2. Refuse every direct operation
 
-Refuse a git, `gh`, or `ils` call that destroys work, skips checks, pushes, or lands a change,
+Refuse a `git`, `gh`, or `ils` call that destroys work, skips checks, pushes, or lands a change,
 however rare it is: `git repack -a -d` drops unreachable objects at once, the loss `git prune` is
 refused for.
 
@@ -98,8 +98,8 @@ A word the guard cannot read, such as `"$opt"`, refuses the command only when th
 it. That happens when the word is:
 
 - the command word;
-- a git or `gh` subcommand;
-- an argument where a guarded flag of git or `gh` can stand (`git clean "$opt"` could be `git clean
+- a `git` or `gh` subcommand;
+- an argument where a guarded flag of `git` or `gh` can stand (`git clean "$opt"` could be `git clean
   --force`);
 - a `-c` value;
 - the directory or git dir of a command that may land on the default branch (`git commit`, `git
@@ -185,10 +185,11 @@ Check every new refusal two ways before it lands:
 
 ## Accepted limits
 
-The guard does not see what a command runs from a file, or in a language other than shell. The
-[README](../README.md#the-guard) lists those limits. A construct whose only use is to hide a
-command is one more: [rule 3](#3-close-a-bypass-only-when-agents-write-it) gives examples and the
-test that tells it from an everyday spelling.
+The guard does not see what a command runs from a file, or in a language other than shell.
+[What the guard does not see](reference.md#what-the-guard-does-not-see) lists those limits. A
+construct whose only use is to hide a command is one more:
+[rule 3](#3-close-a-bypass-only-when-agents-write-it) gives examples and the test that tells it from
+an everyday spelling.
 
 These classes fail that test, so the guard lets them through:
 
@@ -201,13 +202,13 @@ These classes fail that test, so the guard lets them through:
   than git, or a `git switch` in a background job or a pipe stage, which runs beside the rest of
   the command. Agents switch branches with git, as a command of its own. Writing the HEAD file by
   hand, or racing a switch against a commit, only hides where the commit lands.
-- **An option, variable, or config key that runs a program, other than the editors the guard
-  reads where the command sets them, as [rule 2](#2-refuse-every-direct-operation) asks
-  (`core.editor` and `sequence.editor` given by `-c` or `--config-env`, `GIT_EDITOR`,
-  `GIT_SEQUENCE_EDITOR`, and the `EDITOR` and `VISUAL` git falls back to):** `core.pager`,
-  `GIT_PAGER`, `PAGER`, `core.sshCommand`, `credential.helper`, the command keys of diff, merge,
-  and tool drivers, `difftool -x`, and `go test -exec`. Agents set these to run a pager, an SSH
-  key, or a test runner. Reaching a push through one only hides the push.
+- **An option, variable, or config key that runs a program:** `core.pager`, `GIT_PAGER`, `PAGER`,
+  `core.sshCommand`, `credential.helper`, the command keys of diff, merge, and tool drivers,
+  `difftool -x`, and `go test -exec`. Agents set these to run a pager, an SSH key, or a test
+  runner. Reaching a push through one only hides the push. The editors are the exception: the
+  guard reads them where the command sets them, as [rule 2](#2-refuse-every-direct-operation)
+  asks. They are `core.editor` and `sequence.editor` given by `-c` or `--config-env`,
+  `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`, and the `EDITOR` and `VISUAL` `git` falls back to.
 - **Config the guard does not read written by `git config`:** an editor or any other key that
   runs a program (`git config core.editor vim`), and an `include.path` or `includeIf.*.path` whose
   file can set any key, `core.hooksPath` included. Agents set their editor and split their config
