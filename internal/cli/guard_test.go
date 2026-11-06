@@ -94,7 +94,7 @@ func TestApp_Run_WhenParseIsGivenACommandWithTheJSONFlag_PrintsEveryInvocation(t
 	want := &result.Parse{Invocations: []result.Invocation{
 		{
 			Tool: "git", Words: literals("git", "status", "-s"), Dir: f.Dir(),
-			Git: &result.GitCall{Subcommand: &result.Word{Text: "status", Literal: true}, Args: literals("-s"), GitDir: filepath.Join(f.Dir(), ".git")},
+			Git: &result.GitCall{Subcommand: &result.Word{Text: "status", Literal: true}, Args: literals("-s"), GitDir: filepath.Join(f.Dir(), ".git"), Dir: f.Dir()},
 		},
 		{Words: []result.Word{{Text: "echo", Literal: true}, {}}, Dir: f.Dir()},
 	}}
@@ -103,6 +103,36 @@ func TestApp_Run_WhenParseIsGivenACommandWithTheJSONFlag_PrintsEveryInvocation(t
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
 	assert.Check(t, is.DeepEqual(parsed(t, got.stdout), want, cmpopts.EquateEmpty()))
+}
+
+func TestApp_Run_WhenParseRunsWithTheJSONFlag_ReportsTheDirectoryGitRunsIn(t *testing.T) {
+	t.Parallel()
+
+	f := gittest.New(t, trunk)
+	assert.NilError(t, os.Mkdir(filepath.Join(f.Dir(), "sub"), 0o750))
+	tests := []struct {
+		name        string
+		command     string
+		wantDir     string
+		wantUnknown bool
+	}{
+		{name: "a -C moves git", command: "git -C sub status", wantDir: filepath.Join(f.Dir(), "sub")},
+		{name: "a cd that is not literal hides it", command: `cd "$x"; git status`, wantUnknown: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := launch(t, outsideWith(t, f.Env()), "parse", "--cwd", f.Dir(), "--json", "--", tt.command)
+
+			assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
+			invocations := parsed(t, got.stdout).Invocations
+			call := invocations[len(invocations)-1].Git
+			assert.Assert(t, call != nil, "invocations %+v end in no git call", invocations)
+			assert.Check(t, is.Equal(call.Dir, tt.wantDir))
+			assert.Check(t, is.Equal(call.DirUnknown, tt.wantUnknown))
+		})
+	}
 }
 
 func TestApp_Run_WhenParseRunsAsText_PrintsTheGitCallOfAGitInvocation(t *testing.T) {

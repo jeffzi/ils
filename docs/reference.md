@@ -750,7 +750,15 @@ The `git` object holds:
 - `subcommand`: a word, absent when git runs none;
 - `args`: an array of words;
 - `git_dir`: absent outside any repository, and when `git_dir_unknown` is true;
-- `git_dir_unknown`: whether the guard could not tell the git dir.
+- `git_dir_unknown`: whether the guard could not tell the git dir;
+- `dir`: the absolute directory git runs in, which pathspecs and relative paths such as
+  `commit -F msg.txt` resolve against. It is the invocation's own `dir` moved by each `-C` in
+  turn, with a symbolic link followed before a `..` after it, as the kernel does when git changes
+  directory. Absent when `dir_unknown` is true;
+- `dir_unknown`: whether the guard could not tell the directory git runs in: under a `-C` that
+  is not a literal (`-C "$d"`), after a `cd` it cannot follow (`cd "$d"`) unless an absolute `-C`
+  follows, under a `-C` holding `..` that does not exist, and when a git option has no value
+  (`git -C`).
 
 ## Terminal output
 

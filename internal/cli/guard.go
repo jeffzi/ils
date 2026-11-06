@@ -275,6 +275,8 @@ func invocationOf(inv guard.Invocation) result.Invocation {
 			Args:          wordsOf(inv.Git.Args),
 			GitDir:        inv.Git.GitDir,
 			GitDirUnknown: inv.Git.GitDirUnknown,
+			Dir:           inv.Target.Dir,
+			DirUnknown:    inv.Target.Dir == "",
 		}
 		if !inv.Git.NoSubcommand {
 			shown.Git.Subcommand = new(wordOf(inv.Git.Subcommand))
