@@ -377,15 +377,13 @@ type GitCall struct {
 	// repository or GitDirUnknown.
 	GitDir string `json:"git_dir,omitempty"`
 	// Dir is the absolute directory git runs in once the invocation's own -C options apply, unlike
-	// the invocation's Dir, which is the shell's; empty when DirUnknown.
+	// the invocation's Dir, which is the shell's; empty when it cannot be told.
 	Dir string `json:"dir,omitempty"`
 	// Subcommand is the command git runs once its aliases expand, and nil when git runs none.
 	Subcommand *Word  `json:"subcommand,omitempty"`
 	Args       []Word `json:"args"`
 	// GitDirUnknown is whether the git dir cannot be told before the command runs.
 	GitDirUnknown bool `json:"git_dir_unknown"`
-	// DirUnknown is whether the directory git runs in cannot be told before the command runs.
-	DirUnknown bool `json:"dir_unknown"`
 }
 
 // ReleaseVerdict is how the CI gate of a release ended.

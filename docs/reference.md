@@ -365,12 +365,14 @@ to read in one quoted word after `--`; no word, or more than one, is a refusal.
 ### ils parse
 
 `ils parse --cwd <dir> -- '<command>'` prints every invocation the command holds, one line each:
-its words, its directory, its marks, and, for `git`, the subcommand, its arguments, and the git
-dir it targets. A mark names a way the guard could not read the invocation safely.
+its words, its directory, its marks, and, for `git`, the subcommand, its arguments, the git dir it
+targets, and the directory it runs in. A mark names a way the guard could not read the invocation
+safely.
 
-A word that is not a literal prints `<not literal>`. A directory or git dir the guard cannot tell
-prints `unknown`. A git dir outside any repository prints `none`, as does an empty list of marks or
-arguments. A git invocation with no subcommand leaves out the subcommand part.
+A word that is not a literal prints `<not literal>`. A directory, git dir, or directory git runs in
+that the guard cannot tell prints `unknown`. A git dir outside any repository prints `none`, as
+does an empty list of marks or arguments. A git invocation with no subcommand leaves out the
+subcommand part.
 
 It gives no verdict. The rules for git operations, pushes, and `gh` leave no mark, so use `ils
 guard` for the verdict; `ils parse` exits 0 whatever it marks. It exits 1 when the command does not
@@ -753,12 +755,16 @@ The `git` object holds:
 - `git_dir_unknown`: whether the guard could not tell the git dir;
 - `dir`: the absolute directory git runs in, which pathspecs and relative paths such as
   `commit -F msg.txt` resolve against. It is the invocation's own `dir` moved by each `-C` in
-  turn, with a symbolic link followed before a `..` after it, as the kernel does when git changes
-  directory. Absent when `dir_unknown` is true;
-- `dir_unknown`: whether the guard could not tell the directory git runs in: under a `-C` that
-  is not a literal (`-C "$d"`), after a `cd` it cannot follow (`cd "$d"`) unless an absolute `-C`
-  follows, under a `-C` holding `..` that does not exist, and when a git option has no value
-  (`git -C`).
+  turn. When a `-C` holds `..`, the guard resolves the path it reaches on disk, every symbolic link
+  included, because the kernel follows a link before a `..` steps up from it. A `-C` without `..`
+  keeps its spelling. Absent when the guard cannot tell it: after a `-C` that is not a literal
+  (`-C "$d"`) and after a `-C` holding `..` whose directory does not exist. It is also absent after
+  a `popd`, a `source` or `.`, or a `cd` or `pushd` the guard cannot follow (`cd "$d"`). It is also
+  absent when any change of directory, even one the guard can follow, may or may not have run (in
+  an `if`, a `case`, a loop, an `&&` or `||` list, or a pipe), and after a call of a shell function
+  whose body may change directory. A later absolute `-C`, or an absolute `cd` or `pushd` without
+  `..`, gives the guard a known directory again. A git option with no value (`git -C`) leaves it
+  absent in every case.
 
 ## Terminal output
 

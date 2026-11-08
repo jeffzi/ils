@@ -276,7 +276,6 @@ func invocationOf(inv guard.Invocation) result.Invocation {
 			GitDir:        inv.Git.GitDir,
 			GitDirUnknown: inv.Git.GitDirUnknown,
 			Dir:           inv.Target.Dir,
-			DirUnknown:    inv.Target.Dir == "",
 		}
 		if !inv.Git.NoSubcommand {
 			shown.Git.Subcommand = new(wordOf(inv.Git.Subcommand))
@@ -300,8 +299,8 @@ func wordsOf(words []guard.Word) []result.Word {
 }
 
 // invocationLine returns the one line the text of a parse prints for inv: its words, its directory,
-// its marks, and for git the subcommand when git runs one, its arguments and the git dir it
-// targets.
+// its marks, and for git the subcommand when git runs one, its arguments, the git dir it targets
+// and the directory it runs in.
 func invocationLine(inv result.Invocation) result.Phrase {
 	dir := inv.Dir
 	if dir == "" {
@@ -328,7 +327,12 @@ func invocationLine(inv result.Invocation) result.Phrase {
 		gitDir = unknownText
 	}
 
-	gitPart := "arguments " + orNone(wordTexts(inv.Git.Args)) + "; git dir " + gitDir
+	runsIn := inv.Git.Dir
+	if runsIn == "" {
+		runsIn = unknownText
+	}
+
+	gitPart := "arguments " + orNone(wordTexts(inv.Git.Args)) + "; git dir " + gitDir + "; git runs in " + runsIn
 	if inv.Git.Subcommand != nil {
 		gitPart = "subcommand " + wordText(*inv.Git.Subcommand) + "; " + gitPart
 	}
