@@ -6,6 +6,7 @@ toolchain go1.27.1
 
 tool (
 	github.com/golangci/golangci-lint/v2/cmd/golangci-lint
+	github.com/jeffzi/ils
 	github.com/vladopajic/go-test-coverage/v2
 	golang.org/x/vuln/cmd/govulncheck
 )
@@ -13,14 +14,14 @@ tool (
 require (
 	charm.land/fang/v2 v2.0.1
 	github.com/charmbracelet/colorprofile v0.4.3
-	github.com/charmbracelet/x/ansi v0.11.8
+	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/google/go-cmp v0.7.0
 	github.com/spf13/cobra v1.10.2
-	github.com/spf13/pflag v1.0.10
-	go.yaml.in/yaml/v3 v3.0.5
-	golang.org/x/mod v0.42.0
-	golang.org/x/sys v0.48.0
+	github.com/spf13/pflag v1.1.0
+	go.yaml.in/yaml/v3 v3.0.6
+	golang.org/x/mod v0.43.0
+	golang.org/x/sys v0.50.0
 	gotest.tools/v3 v3.5.2
 	mvdan.cc/sh/v3 v3.14.1
 )
@@ -28,7 +29,7 @@ require (
 require (
 	4d63.com/gocheckcompilerdirectives v1.4.0 // indirect
 	4d63.com/gochecknoglobals v0.2.2 // indirect
-	charm.land/lipgloss/v2 v2.0.6 // indirect
+	charm.land/lipgloss/v2 v2.1.0 // indirect
 	codeberg.org/chavacava/garif v0.2.0 // indirect
 	codeberg.org/polyfloyd/go-errorlint v1.9.0 // indirect
 	dev.gaijin.team/go/exhaustruct/v4 v4.0.0 // indirect
@@ -83,8 +84,8 @@ require (
 	github.com/ccojocar/zxcvbn-go v1.0.4 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/charithe/durationcheck v0.0.11 // indirect
-	github.com/charmbracelet/ultraviolet v0.0.0-20260811164956-006e29f97886 // indirect
-	github.com/charmbracelet/x/exp/charmtone v0.0.0-20250603201427-c31516f43444 // indirect
+	github.com/charmbracelet/ultraviolet v0.0.0-20261023060817-a45b7c86333f // indirect
+	github.com/charmbracelet/x/exp/charmtone v0.1.1 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
 	github.com/ckaznocha/intrange v0.3.1 // indirect
@@ -168,16 +169,16 @@ require (
 	github.com/matoous/godox v1.1.0 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
-	github.com/mattn/go-runewidth v0.0.24 // indirect
+	github.com/mattn/go-runewidth v0.0.31 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.1 // indirect
 	github.com/mgechev/revive v1.15.0 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/moricho/tparallel v0.3.2 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
-	github.com/muesli/mango v0.1.0 // indirect
-	github.com/muesli/mango-cobra v1.2.0 // indirect
-	github.com/muesli/mango-pflag v0.1.0 // indirect
+	github.com/muesli/mango v0.2.0 // indirect
+	github.com/muesli/mango-cobra v1.3.0 // indirect
+	github.com/muesli/mango-pflag v0.2.0 // indirect
 	github.com/muesli/roff v0.1.0 // indirect
 	github.com/nakabonne/nestif v0.3.1 // indirect
 	github.com/narqo/go-badge v0.0.0-20230821190521-c9a75c019a59 // indirect
@@ -231,7 +232,7 @@ require (
 	github.com/uudashr/iface v1.5.1 // indirect
 	github.com/vladopajic/go-test-coverage/v2 v2.20.0 // indirect
 	github.com/xen0n/gosmopolitan v1.3.0 // indirect
-	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
+	github.com/xo/terminfo v1.3.1 // indirect
 	github.com/yagipy/maintidx v1.0.0 // indirect
 	github.com/yeya24/promlinter v0.3.0 // indirect
 	github.com/ykadowak/zerologlint v0.1.5 // indirect
@@ -244,10 +245,10 @@ require (
 	go.uber.org/zap v1.27.0 // indirect
 	golang.org/x/exp/typeparams v0.0.0-20260811152304-ee035b5b010f // indirect
 	golang.org/x/image v0.41.0 // indirect
-	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/telemetry v0.0.0-20260924152758-ed294f943157 // indirect
-	golang.org/x/text v0.41.0 // indirect
-	golang.org/x/tools v0.51.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
+	golang.org/x/telemetry v0.0.0-20261009151841-97e8ea77aa2a // indirect
+	golang.org/x/text v0.44.0 // indirect
+	golang.org/x/tools v0.52.0 // indirect
 	golang.org/x/vuln v1.8.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
