@@ -11,7 +11,7 @@ refuse() {
 }
 
 if ! command -v ils >/dev/null; then
-  refuse 'ils is not on PATH; install it with: ! go install github.com/jeffzi/ils@latest, or ! task install from a clone of ils'
+  refuse 'ils is not on PATH; install it with: ! go install github.com/jeffzi/ils@main, or ! task install from a clone of ils'
 fi
 
 main() {
@@ -20,7 +20,7 @@ main() {
 
   case "$code" in
   0 | 2) exit "$code" ;;
-  126 | 127) refuse "ils could not start (exit $code); install it again with: ! go install github.com/jeffzi/ils@latest, or ! task install from a clone of ils" ;;
+  126 | 127) refuse "ils could not start (exit $code); install it again with: ! go install github.com/jeffzi/ils@main, or ! task install from a clone of ils" ;;
   *) refuse "ils hook claude exited $code, so the command is refused" ;;
   esac
 }

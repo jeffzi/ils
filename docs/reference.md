@@ -834,7 +834,7 @@ word after the harness is a refusal.
 
 `skills/ils/hook.sh` fronts `ils hook claude`. It passes exit 0 and 2 through with the binary's
 output. Any other exit becomes exit 2, with a line on stderr naming the code. When `ils` is not
-on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/ils@latest`, and
+on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/ils@main`, and
 `! task install` from a clone of `ils`.
 
 ### What the guard refuses
