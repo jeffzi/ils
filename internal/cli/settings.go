@@ -10,10 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+
+	"mvdan.cc/sh/v3/syntax"
 
 	"github.com/jeffzi/ils/internal/result"
 )
@@ -59,9 +60,9 @@ var permissionLists = []struct {
 	{name: "deny", rules: []string{"Bash(git push)", "Bash(git push *)"}},
 }
 
-// guardHook matches the command of a hook that runs the guard's hook script of the ils skill,
-// with or without a leading bash, under any spelling of the directory above the skills.
-var guardHook = regexp.MustCompile(`^(?:bash\s+)?(?:\S*/)?skills/ils/hook\.sh"?$`)
+// guardScript is the ending of the path of the guard's hook script of the ils skill, whatever the
+// directory above the skills.
+const guardScript = "skills/ils/hook.sh"
 
 // shapeError is a settings file that `ils init claude` cannot edit: it is not valid JSON, or a
 // value it edits has the wrong type.
@@ -340,7 +341,9 @@ func fixHooks(hooks []jsontext.Value) (held, changed bool, err error) {
 	return held, changed, nil
 }
 
-// runsGuard reports whether hook runs the guard's hook script.
+// runsGuard reports whether hook runs the guard's hook script: its command, read as shell words
+// with their quotes removed, is the script's path alone, or bash then the path. Only the ending of
+// the path decides, so an expansion in it stays as written.
 func runsGuard(hook jsonObject) bool {
 	raw, found := hook.get(keyCommand)
 	if !found {
@@ -352,7 +355,90 @@ func runsGuard(hook jsonObject) bool {
 		return false
 	}
 
-	return guardHook.MatchString(strings.TrimSpace(command))
+	words, ok := commandWords(command)
+	if !ok {
+		return false
+	}
+
+	var path string
+	switch {
+	case len(words) == 1:
+		path = words[0]
+	case len(words) == 2 && words[0] == "bash":
+		path = words[1]
+	default:
+		return false
+	}
+
+	return path == guardScript || strings.HasSuffix(path, "/"+guardScript)
+}
+
+// commandWords returns the words of command after quote removal, with every expansion as written,
+// and reports false unless command is valid shell holding one simple command and nothing else: no
+// assignment, no redirection, no second command.
+func commandWords(command string) ([]string, bool) {
+	file, err := syntax.NewParser().Parse(strings.NewReader(command), "")
+	if err != nil || len(file.Stmts) != 1 {
+		return nil, false
+	}
+
+	stmt := file.Stmts[0]
+	call, ok := stmt.Cmd.(*syntax.CallExpr)
+	if !ok || stmt.Negated || stmt.Background || stmt.Coprocess || len(stmt.Redirs) > 0 || len(call.Assigns) > 0 {
+		return nil, false
+	}
+
+	words := make([]string, 0, len(call.Args))
+	for _, arg := range call.Args {
+		var b strings.Builder
+		writeUnquoted(&b, command, arg.Parts, false)
+		words = append(words, b.String())
+	}
+
+	return words, true
+}
+
+// writeUnquoted writes parts, the parts of a word of command, to b after quote removal, and every
+// expansion as command writes it. inDouble says whether parts sit inside double quotes, where a
+// backslash quotes only the characters that keep a meaning there.
+func writeUnquoted(b *strings.Builder, command string, parts []syntax.WordPart, inDouble bool) {
+	for _, part := range parts {
+		switch p := part.(type) {
+		case *syntax.Lit:
+			writeUnescaped(b, p.Value, inDouble)
+		case *syntax.SglQuoted:
+			b.WriteString(p.Value)
+		case *syntax.DblQuoted:
+			writeUnquoted(b, command, p.Parts, true)
+		default:
+			b.WriteString(command[part.Pos().Offset():part.End().Offset()])
+		}
+	}
+}
+
+// writeUnescaped writes the text raw to b with its quoting backslashes removed. Outside double
+// quotes a backslash quotes any character; inside them only $, `, ", \ and a newline, and a
+// backslash before anything else is kept. A backslash before a newline joins two lines and goes
+// with the newline.
+func writeUnescaped(b *strings.Builder, raw string, inDouble bool) {
+	for i := 0; i < len(raw); i++ {
+		if raw[i] != '\\' || i+1 == len(raw) {
+			b.WriteByte(raw[i])
+
+			continue
+		}
+
+		next := raw[i+1]
+		switch {
+		case next == '\n':
+			i++
+		case !inDouble || strings.IndexByte("$`\"\\", next) >= 0:
+			b.WriteByte(next)
+			i++
+		default:
+			b.WriteByte(raw[i])
+		}
+	}
 }
 
 // setValue sets the member name of o to want unless it already holds an equal value, and reports

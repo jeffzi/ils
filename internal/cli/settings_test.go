@@ -295,7 +295,18 @@ func TestApp_Run_WhenInitClaudeFindsTheHookInPlace_SetsItsTimeoutAndFailureWhere
 	}{
 		{name: "user scope", hook: map[string]any{"command": cli.UserHook}},
 		{name: "no leading bash", hook: map[string]any{"command": "~/.claude/skills/ils/hook.sh"}},
-		{name: "path in quotes", hook: map[string]any{"command": `bash "$HOME/.claude/skills/ils/hook.sh"`}},
+		{
+			name: "path in double quotes closed after its last slash",
+			hook: map[string]any{"command": `bash "/Users/Jane Doe/.claude/"skills/ils/hook.sh`},
+		},
+		{
+			name: "path in single quotes",
+			hook: map[string]any{"command": `bash '/Users/Jane Doe/.claude/skills/ils/hook.sh'`},
+		},
+		{
+			name: "path with escaped characters",
+			hook: map[string]any{"command": `bash /Users/Jane\ Doe/.claude/skills/ils/hook\.sh`},
+		},
 		{name: "project scope", hook: map[string]any{"command": cli.ProjectHook}},
 		{
 			name: "other timeout and failure",
@@ -336,19 +347,58 @@ func TestApp_Run_WhenInitClaudeFindsTheHookInPlace_SetsItsTimeoutAndFailureWhere
 func TestApp_Run_WhenInitClaudeFindsAHookOfAnotherSkill_AddsItsOwnGroup(t *testing.T) {
 	t.Parallel()
 
-	app, home := installing(t)
-	other := map[string]any{
-		"matcher": "Bash",
-		"hooks":   []any{commandHook("bash ~/.claude/skills/other/hook.sh")},
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{name: "path in the home directory", command: "bash ~/.claude/skills/other/hook.sh"},
+		{name: "skills directory under a longer name", command: "bash ~/.claude/my-skills/ils/hook.sh"},
 	}
-	path := withSettings(t, home, encodedJSON(t, map[string]any{
-		"hooks": map[string]any{"PreToolUse": []any{other}},
-	}))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	got := launch(t, app, "init", "claude")
+			app, home := installing(t)
+			other := map[string]any{"matcher": "Bash", "hooks": []any{commandHook(tt.command)}}
+			path := withSettings(t, home, encodedJSON(t, map[string]any{
+				"hooks": map[string]any{"PreToolUse": []any{other}},
+			}))
 
-	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	assert.Check(t, is.DeepEqual(preToolUse(t, path), []any{other, hookGroup(cli.UserHook)}))
+			got := launch(t, app, "init", "claude")
+
+			assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
+			assert.Check(t, is.DeepEqual(preToolUse(t, path), []any{other, hookGroup(cli.UserHook)}))
+		})
+	}
+}
+
+func TestApp_Run_WhenInitClaudeFindsTheHookRunOtherThanByBashAlone_AddsItsOwnGroup(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{name: "first word other than bash", command: "/bin/bash ~/.claude/skills/ils/hook.sh"},
+		{name: "more than two words", command: "/usr/bin/env bash ~/.claude/skills/ils/hook.sh"},
+		{name: "unbalanced quote", command: `bash "~/.claude/skills/ils/hook.sh`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			app, home := installing(t)
+			other := map[string]any{"matcher": "Bash", "hooks": []any{commandHook(tt.command)}}
+			path := withSettings(t, home, encodedJSON(t, map[string]any{
+				"hooks": map[string]any{"PreToolUse": []any{other}},
+			}))
+
+			got := launch(t, app, "init", "claude")
+
+			assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
+			assert.Check(t, is.DeepEqual(preToolUse(t, path), []any{other, hookGroup(cli.UserHook)}))
+		})
+	}
 }
 
 func TestApp_Run_WhenInitClaudeFindsHookEntriesThatAreNoObjects_LeavesThemWhereTheyAre(t *testing.T) {

@@ -333,9 +333,10 @@ The hook is a `PreToolUse` group with the matcher `Bash`, holding one hook:
 }
 ```
 
-A hook already in any `PreToolUse` group whose command runs `skills/ils/hook.sh`, with or without
-`bash` and under any path to the `skills/` directory, such as `~/.claude/`, `$HOME/.claude/`, or
-`"$CLAUDE_PROJECT_DIR"/.claude/`, counts as the guard's: no second one is added. It gets
+A hook already in any `PreToolUse` group whose command is the path of `skills/ils/hook.sh`, alone or
+after `bash`, counts as the guard's: no second one is added. The path may run under any directory
+above `skills/`, such as `~/.claude/`, `$HOME/.claude/`, or `"$CLAUDE_PROJECT_DIR"/.claude/`, and
+be quoted any way the shell reads, as a home directory with a space needs. It gets
 `timeout: 15` and `onFailure: block` when either is missing or different, and keeps its command and
 its place. These are the only values `ils init` changes rather than adds. Without
 `onFailure: block`, Claude Code runs a command whose hook could not run. `onFailure` needs Claude
