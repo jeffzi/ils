@@ -13,6 +13,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `git`, `gh`, and `ils` rules and show how the guard reads it.
 - Add `ils hook claude` and the `ils` skill's `hook.sh`, which run the guard as Claude Code's
   `PreToolUse` hook and block every command when `ils` cannot answer.
+- Add `ils init claude`, which installs the agent skills from the binary and adds the guard's hook
+  and the flow's permission rules to Claude Code's settings.
 
 ### Changed
 
