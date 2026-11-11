@@ -295,6 +295,18 @@ func TestApp_Run_WhenInitClaudeFindsTheHomeOfEveryPlatform_InstallsUnderTheHomeO
 	assertShippedUnder(t, home)
 }
 
+func TestApp_Run_WhenInitClaudeFindsAnEmptyClaudeConfigDirectory_InstallsUnderTheHome(t *testing.T) {
+	t.Parallel()
+
+	app, home := installing(t)
+	app.Environ = append(app.Environ, claudeConfigDir+"=")
+
+	got := launch(t, app, "init", "claude")
+
+	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
+	assertShippedUnder(t, home)
+}
+
 func TestApp_Run_WhenInitClaudeFindsNoUsableClaudeDirectory_ExitsTwoNamingTheVariable(t *testing.T) {
 	t.Parallel()
 

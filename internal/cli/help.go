@@ -233,8 +233,8 @@ ils hook claude < payload.json`
 	initLong  = `Set up a coding agent's harness for ils. The one harness is claude:
 the skills ils ships land in ~/.claude/skills/<name>, and the guard's
 hook and the permission rules of the flow go into
-~/.claude/settings.json. When CLAUDE_CONFIG_DIR is set, both go into
-that directory instead. With --project, both go into .claude/ at the
+~/.claude/settings.json. When CLAUDE_CONFIG_DIR is set and not empty,
+both go into that directory instead. With --project, both go into .claude/ at the
 top level of the repository the working directory is in.
 
 A skill file that already holds what ils ships is left as it is, a file
