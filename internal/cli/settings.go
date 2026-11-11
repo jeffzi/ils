@@ -60,10 +60,6 @@ var permissionLists = []struct {
 	{name: "deny", rules: []string{"Bash(git push)", "Bash(git push *)"}},
 }
 
-// guardScript is the ending of the path of the guard's hook script of the ils skill, whatever the
-// directory above the skills.
-const guardScript = "skills/ils/hook.sh"
-
 // shapeError is a settings file that `ils init claude` cannot edit: it is not valid JSON, or a
 // value it edits has the wrong type.
 type shapeError struct {

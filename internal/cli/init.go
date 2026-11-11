@@ -36,6 +36,13 @@ const (
 	// hookScript is the one shipped file Claude Code runs, and so the one written executable.
 	hookScript = "hook.sh"
 
+	// ilsSkill is the shipped skill that holds hookScript.
+	ilsSkill = "ils"
+
+	// guardScript is the ending of the path of the guard's hook script, whatever the directory
+	// above the skills.
+	guardScript = skillsDir + "/" + ilsSkill + "/" + hookScript
+
 	dirMode    = 0o750
 	fileMode   = 0o644
 	scriptMode = 0o755
@@ -45,8 +52,8 @@ const (
 
 	// userHook and projectHook are the commands the guard's hook runs, at user scope and at
 	// project scope.
-	userHook    = "bash ~/.claude/skills/ils/hook.sh"
-	projectHook = `bash "$CLAUDE_PROJECT_DIR"/.claude/skills/ils/hook.sh`
+	userHook    = "bash ~/" + claudeDir + "/" + guardScript
+	projectHook = `bash "$CLAUDE_PROJECT_DIR"/` + claudeDir + "/" + guardScript
 )
 
 // harnessFit is how the words typed after a command that takes one harness word and no other
