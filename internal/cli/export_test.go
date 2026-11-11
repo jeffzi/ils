@@ -2,6 +2,8 @@ package cli
 
 import (
 	"runtime/debug"
+	"slices"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -57,3 +59,42 @@ func (a *App) SetGuardSupported(supported bool) {
 
 // GuardUnsupported is guardUnsupported, for the tests of package cli_test.
 const GuardUnsupported = guardUnsupported
+
+// UserHook is userHook, for the tests of package cli_test.
+const UserHook = userHook
+
+// ProjectHook is projectHook, for the tests of package cli_test.
+const ProjectHook = projectHook
+
+// HookTimeout returns hookTimeout as the number a settings file holds, for the tests of package
+// cli_test.
+func HookTimeout() float64 {
+	timeout, err := strconv.ParseFloat(hookTimeout, 64)
+	if err != nil {
+		panic(err)
+	}
+
+	return timeout
+}
+
+// HookOnFailure returns hookOnFailure as the string a settings file holds, for the tests of package
+// cli_test.
+func HookOnFailure() string {
+	onFailure, err := strconv.Unquote(hookOnFailure)
+	if err != nil {
+		panic(err)
+	}
+
+	return onFailure
+}
+
+// PermissionRules returns the rules `ils init claude` adds to each permission list, by the name of
+// the list, for the tests of package cli_test.
+func PermissionRules() map[string][]string {
+	rules := map[string][]string{}
+	for _, list := range permissionLists {
+		rules[list.name] = slices.Clone(list.rules)
+	}
+
+	return rules
+}

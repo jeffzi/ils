@@ -36,11 +36,17 @@ const (
 	// hookScript is the one shipped file Claude Code runs, and so the one written executable.
 	hookScript = "hook.sh"
 
-	// dirMode is the mode of every directory the install creates.
-	dirMode = 0o750
-	// fileMode and scriptMode are the modes of a shipped file, and of hookScript.
+	dirMode    = 0o750
 	fileMode   = 0o644
 	scriptMode = 0o755
+
+	// guardUnsupported is the reason the guard refuses every run outside macOS and Linux.
+	guardUnsupported = "the guard runs on macOS and Linux"
+
+	// userHook and projectHook are the commands the guard's hook runs, at user scope and at
+	// project scope.
+	userHook    = "bash ~/.claude/skills/ils/hook.sh"
+	projectHook = `bash "$CLAUDE_PROJECT_DIR"/.claude/skills/ils/hook.sh`
 )
 
 // harnessFit is how the words typed after a command that takes one harness word and no other
@@ -106,7 +112,7 @@ func (p *parse) initCommand() *cobra.Command {
 		}
 	}
 	c.RunE = func(c *cobra.Command, _ []string) error {
-		ctx, cancel := p.fromLaunch(c.Context(), landing.TimeLimit)
+		ctx, cancel := p.underTimeLimit(c.Context())
 		defer cancel()
 
 		r := p.installClaude(ctx, bool(project))
@@ -133,7 +139,7 @@ func (p *parse) initCommand() *cobra.Command {
 func (p *parse) installClaude(ctx context.Context, project bool) result.Result {
 	req := landing.Request{Command: initWord, Words: p.words}
 
-	dir, refusal := p.claudeDir(ctx, req, project)
+	dir, refusal := p.installDir(ctx, req, project)
 	if refusal != nil {
 		return *refusal
 	}
@@ -183,13 +189,13 @@ func (p *parse) installClaude(ctx context.Context, project bool) result.Result {
 	return result.Result{Command: req.Command, Words: req.Words, Lines: lines, Next: result.NextNone(), Outcome: result.Done}
 }
 
-// claudeDir returns the Claude Code directory the install writes to: the one under HOME, or with
+// installDir returns the Claude Code directory the install writes to: the one under HOME, or with
 // project the one at the top level of the work tree the working directory lies in. It returns the
 // result that ends the run instead when HOME is not set or empty, when a project run is outside a
 // work tree, or when the read of git fails.
-func (p *parse) claudeDir(ctx context.Context, req landing.Request, project bool) (string, *result.Result) {
+func (p *parse) installDir(ctx context.Context, req landing.Request, project bool) (string, *result.Result) {
 	if !project {
-		home := environment(p.app.Environ)["HOME"]
+		home, _ := git.EnvValue(p.app.Environ, "HOME")
 		if home == "" {
 			return "", req.Refused(result.Say("HOME is not set, and the skills install under it"),
 				result.NextStep("set HOME, or run %s in a repository", result.Command(initWord+" "+harnessClaude+" "+flagProject)))
@@ -218,13 +224,8 @@ func (p *parse) claudeDir(ctx context.Context, req landing.Request, project bool
 // initBroke returns the broke result of req for reason, with fixing what it names and running the
 // same words again as the next step.
 func initBroke(req landing.Request, reason result.Phrase) result.Result {
-	return result.Result{
-		Command: req.Command,
-		Words:   req.Words,
-		Reason:  reason,
-		Next:    result.NextStep("fix what the reason names, then run %s again", result.Command(strings.Join(req.Words, " "))),
-		Outcome: result.Broke,
-	}
+	return *req.Broke(reason,
+		result.NextStep("fix what the reason names, then run %s again", result.Command(strings.Join(req.Words, " "))))
 }
 
 // installBroke returns the broke result of req for err, the failure of a step of the install.

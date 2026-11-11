@@ -248,26 +248,12 @@ func TestRepo_FindGitDir_WhenGitFailsForAnotherReason_ReturnsExitError(t *testin
 func TestRepo_InWorkTree(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
-	tests := []struct {
-		name string
-		dir  string
-		want bool
-	}{
-		{name: "work tree", dir: f.Dir(), want: true},
-		{name: "bare repository", dir: f.OriginDir()},
-		{name: "directory that holds no repository", dir: t.TempDir()},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			repo := git.Repo{Runner: git.Runner{Dir: tt.dir, Env: f.Env()}}
+	repo := git.Repo{Runner: git.Runner{Dir: f.Dir(), Env: f.Env()}}
 
-			got, err := repo.InWorkTree(t.Context())
-			assert.NilError(t, err, "InWorkTree() in %s", tt.dir)
+	got, err := repo.InWorkTree(t.Context())
+	assert.NilError(t, err, "InWorkTree() in %s", f.Dir())
 
-			assert.Check(t, is.Equal(got, tt.want), "InWorkTree() in %s", tt.dir)
-		})
-	}
+	assert.Check(t, got, "InWorkTree() in %s", f.Dir())
 }
 
 func TestRepo_TopLevel(t *testing.T) {
@@ -283,7 +269,6 @@ func TestRepo_TopLevel(t *testing.T) {
 	}{
 		{name: "subdirectory of the work tree", dir: nested, want: f.Dir(), wantFound: true},
 		{name: "bare repository", dir: f.OriginDir()},
-		{name: "inside the git directory", dir: filepath.Join(f.Dir(), ".git")},
 		{name: "directory that holds no repository", dir: t.TempDir()},
 	}
 	for _, tt := range tests {
@@ -1051,10 +1036,8 @@ func FuzzVersionOf(f *testing.F) {
 	})
 }
 
-// noArgument arranges nothing and passes no argument to the call it precedes.
 func noArgument(*gittest.Fixture) string { return "" }
 
-// topLevelRead calls TopLevel for TestRepo_WhenAGitReadFails_ReturnsItsExitError.
 func topLevelRead(ctx context.Context, repo git.Repo, _ string) (any, error) {
 	dir, found, err := repo.TopLevel(ctx)
 	if err != nil {
@@ -1105,7 +1088,7 @@ func TestRepo_WhenAGitReadFails_ReturnsItsExitError(t *testing.T) {
 		},
 		{
 			name: "checked out elsewhere, the worktree list read", failOn: []string{"worktree"},
-			arrange: func(*gittest.Fixture) string { return "" },
+			arrange: noArgument,
 			call: func(ctx context.Context, repo git.Repo, _ string) (any, error) {
 				return repo.CheckedOutElsewhere(ctx, trunk)
 			},

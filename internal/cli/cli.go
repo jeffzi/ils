@@ -751,6 +751,12 @@ func (p *parse) fromLaunch(ctx context.Context, limit time.Duration) (context.Co
 	return context.WithDeadline(ctx, p.app.Launch.Add(limit))
 }
 
+// underTimeLimit returns ctx with the deadline of a command from launch, which counts the time
+// limit from the launch of the app.
+func (p *parse) underTimeLimit(ctx context.Context) (context.Context, context.CancelFunc) {
+	return p.fromLaunch(ctx, landing.TimeLimit)
+}
+
 // land runs the landing command run for req against the repository ils runs in and its GitHub
 // origin, until req's time limit from launch, and keeps its result, the repository's git dir and
 // the step lines it printed. With debug on, the trace gets every git and gh call, the read of the
@@ -809,19 +815,6 @@ func unprinted(lines []result.Phrase, printed []string, gitDir string) []result.
 	}
 
 	return kept
-}
-
-// environment returns the variables of environ, each `NAME=value`, by name: a name set twice has
-// its last value, as bash and the commands it starts read it. An entry with no `=` names nothing.
-func environment(environ []string) map[string]string {
-	env := make(map[string]string, len(environ))
-	for _, entry := range environ {
-		if name, value, ok := strings.Cut(entry, "="); ok {
-			env[name] = value
-		}
-	}
-
-	return env
 }
 
 // print writes text to Stdout and returns code, or 1 when the write fails.

@@ -334,10 +334,12 @@ The hook is a `PreToolUse` group with the matcher `Bash`, holding one hook:
 ```
 
 A hook already in any `PreToolUse` group whose command runs `skills/ils/hook.sh`, with or without
-`bash` and under any spelling of the home directory, counts as the guard's: no second one is added.
-It gets `timeout: 15` and `onFailure: block` when either is missing or different, and keeps its
-command and its place. That is the one value `ils init` changes rather than adds: without
-`onFailure: block`, Claude Code runs a command whose hook could not run.
+`bash` and under any path to the `skills/` directory, such as `~/.claude/`, `$HOME/.claude/`, or
+`"$CLAUDE_PROJECT_DIR"/.claude/`, counts as the guard's: no second one is added. It gets
+`timeout: 15` and `onFailure: block` when either is missing or different, and keeps its command and
+its place. These are the only values `ils init` changes rather than adds. Without
+`onFailure: block`, Claude Code runs a command whose hook could not run. `onFailure` needs Claude
+Code 2.1.295 or later.
 
 Each rule lands in the list it belongs to:
 
@@ -403,18 +405,18 @@ Copy `skills/ils/` and `skills/write-release/` from a clone of `ils` at the vers
 }
 ```
 
-`onFailure` needs Claude Code 2.1.295 or later.
+`onFailure` needs Claude Code 2.1.295 or later, as [ils init](#ils-init) says.
 
 ## Exit codes
 
-| Exit | Means                | Reaction                                                                                                                                                                                                                                                                                                                                                                                                 |
-| ---- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | done                 | Push: the checks are green, or the repository has no CI and a line says nothing verified the commit; follow `Next:`. Merge: the pull request is merged and the branch deleted. Branch: the branch is started. Status: whatever it finds, once its words parse. Release: the tag is on origin, and the GitHub release exists unless `--tag-only`. Init: the skills, the hook, and the rules are in place. |
-| 1    | broke                | The output says what was done and what was not. Fix what failed, then follow `Next:`.                                                                                                                                                                                                                                                                                                                    |
-| 2    | refused              | Nothing was pushed, opened, merged, tagged, or set up, except by a push whose pull request's head moved during the wait. The reason says why; `Next:` says what to do.                                                                                                                                                                                                                                   |
-| 3    | ask                  | `ils guard` only: the command is one the user approves before it runs. See [ils guard](#ils-guard).                                                                                                                                                                                                                                                                                                      |
-| 4    | pending              | GitHub had not finished when the command stopped waiting, for example checks still running or not yet reported. Run the command that the `Next:` line names; [Time limits](#time-limits) says how long each command waits. After an `ils release`, run the same command again.                                                                                                                           |
-| 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                                                                                                                                                                                                   |
+| Exit | Means                | Reaction                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ---- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0    | done                 | Push: the checks are green, or the repository has no CI and a line says nothing verified the commit; follow `Next:`. Merge: the pull request is merged and the branch deleted. Branch: the branch is started. Status: whatever it finds, once its words parse. Release: the tag is on origin, and the GitHub release exists unless `--tag-only`. Init: the skills and the rules are in place, and the hook too where the guard runs (macOS and Linux). |
+| 1    | broke                | The output says what was done and what was not. Fix what failed, then follow `Next:`.                                                                                                                                                                                                                                                                                                                                                                  |
+| 2    | refused              | Nothing was pushed, opened, merged, tagged, or set up, except by a push whose pull request's head moved during the wait. The reason says why; `Next:` says what to do.                                                                                                                                                                                                                                                                                 |
+| 3    | ask                  | `ils guard` only: the command is one the user approves before it runs. See [ils guard](#ils-guard).                                                                                                                                                                                                                                                                                                                                                    |
+| 4    | pending              | GitHub had not finished when the command stopped waiting, for example checks still running or not yet reported. Run the command that the `Next:` line names; [Time limits](#time-limits) says how long each command waits. After an `ils release`, run the same command again.                                                                                                                                                                         |
+| 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                                                                                                                                                                                                                                                 |
 
 Every outcome but done prints its reason labeled by outcome: `Refused:`, `Broke:`, `Ask:`,
 `Pending:`, or `Delivered, not green:`. The reason sits on the line above `Next:`, except for a
@@ -448,8 +450,8 @@ when the command started. Stdout and `--wait` pick the limit:
 | `ils merge`   | 14 minutes 40 seconds           | 80 seconds                        |
 | `ils release` | 14 minutes 40 seconds           | 80 seconds                        |
 
-`ils branch`, `ils status`, `ils guard`, `ils parse`, and `ils hook` run under a limit of 100
-seconds, counted the same way. They take no `--wait`.
+`ils branch`, `ils status`, `ils guard`, `ils parse`, `ils hook`, and `ils init` run under a limit
+of 100 seconds, counted the same way. They take no `--wait`.
 
 `ils merge` and `ils release` stop waiting 20 seconds before the full limit of 15 minutes or 100
 seconds. Those 20 seconds are kept for the writes that follow. When fewer than 20 seconds are left,

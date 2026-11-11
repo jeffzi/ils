@@ -8,7 +8,8 @@ import (
 	"github.com/jeffzi/ils/internal/result"
 )
 
-// guardSupported reports false: outside Unix, the guard refuses every run.
+// guardSupported is false only outside the Unix build; installClaude adds no hook for the guard
+// where it is false.
 const guardSupported = false
 
 // parseCommand returns `ils parse`, which refuses every run: the guard runs on macOS and Linux.

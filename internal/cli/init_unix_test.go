@@ -9,6 +9,8 @@ import (
 
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
+
+	"github.com/jeffzi/ils/internal/cli"
 )
 
 func TestApp_Run_WhenInitClaudeWritesASkill_MakesTheHookScriptAloneExecutable(t *testing.T) {
@@ -21,28 +23,37 @@ func TestApp_Run_WhenInitClaudeWritesASkill_MakesTheHookScriptAloneExecutable(t 
 	}{
 		{name: ilsSkill + "/hook.sh", want: 0o755},
 		{name: ilsSkill + "/SKILL.md", want: 0o644},
-		{name: ilsSkill + "/references/reference.md", want: 0o644},
 	}
 
 	got := launch(t, app, "init", "claude")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
 	for _, tt := range tests {
-		info, err := os.Stat(shippedPath(skillsUnder(home), tt.name))
+		info, err := os.Stat(shippedPath(home, tt.name))
 		if assert.Check(t, err) {
 			assert.Check(t, is.Equal(info.Mode().Perm(), tt.want), "file %s", tt.name)
 		}
 	}
 }
 
-func TestApp_Run_WhenInitClaudeFindsASkillDirectoryThatIsALink_WritesNothingThroughIt(t *testing.T) {
-	t.Parallel()
+// linkedSkill returns the cli with the directory of the ils skill a link to an empty directory
+// elsewhere, then that directory.
+func linkedSkill(t *testing.T) (app cli.App, target string) {
+	t.Helper()
 
 	app, home := installing(t)
-	target := t.TempDir()
+	target = t.TempDir()
 	link := filepath.Join(skillsUnder(home), ilsSkill)
 	assert.NilError(t, os.MkdirAll(filepath.Dir(link), 0o750))
 	assert.NilError(t, os.Symlink(target, link))
+
+	return app, target
+}
+
+func TestApp_Run_WhenInitClaudeFindsASkillDirectoryThatIsALink_WritesNothingThroughIt(t *testing.T) {
+	t.Parallel()
+
+	app, target := linkedSkill(t)
 
 	got := launch(t, app, "init", "claude")
 
@@ -55,11 +66,7 @@ func TestApp_Run_WhenInitClaudeFindsASkillDirectoryThatIsALink_WritesNothingThro
 func TestApp_Run_WhenInitClaudeFindsASkillDirectoryThatIsALink_PrintsTheLinkTarget(t *testing.T) {
 	t.Parallel()
 
-	app, home := installing(t)
-	target := t.TempDir()
-	link := filepath.Join(skillsUnder(home), ilsSkill)
-	assert.NilError(t, os.MkdirAll(filepath.Dir(link), 0o750))
-	assert.NilError(t, os.Symlink(target, link))
+	app, target := linkedSkill(t)
 
 	got := launch(t, app, "init", "claude")
 
@@ -72,7 +79,7 @@ func TestApp_Run_WhenInitClaudeReplacesAHookScriptThatIsNotExecutable_MakesItExe
 
 	app, home := installing(t)
 	installed(t, app)
-	script := shippedPath(skillsUnder(home), ilsSkill+"/hook.sh")
+	script := shippedPath(home, ilsSkill+"/hook.sh")
 	assert.NilError(t, os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o600))
 	assert.NilError(t, os.Chmod(script, 0o600))
 

@@ -582,6 +582,11 @@ func (r Request) Refused(reason result.Phrase, next result.Next) *result.Result 
 	return r.ends(result.Refused, reason, next)
 }
 
+// Broke returns the result that ends the request as Broke, with reason and next, and no lines.
+func (r Request) Broke(reason result.Phrase, next result.Next) *result.Result {
+	return r.ends(result.Broke, reason, next)
+}
+
 // readEnding is what a reason for a read cut short says the run left behind.
 type readEnding int
 

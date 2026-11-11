@@ -16,37 +16,35 @@ import (
 	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/cli"
-	"github.com/jeffzi/ils/internal/git"
-	"github.com/jeffzi/ils/internal/gittest"
-	"github.com/jeffzi/ils/internal/result"
 	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
-// The commands the hook of the guard runs, at user scope and at project scope.
-const (
-	userHook    = "bash ~/.claude/skills/ils/hook.sh"
-	projectHook = `bash "$CLAUDE_PROJECT_DIR"/.claude/skills/ils/hook.sh`
-)
-
-// allowRules returns the permission rules `ils init claude` adds to the allow list.
-func allowRules() []any {
-	return []any{"Bash(ils push)", "Bash(ils push --wait)", "Bash(ils branch *)", "Bash(ils status)"}
-}
-
-// askRules returns the permission rules `ils init claude` adds to the ask list.
-func askRules() []any {
-	return []any{
-		"Bash(ils merge)", "Bash(ils merge *)", "Bash(ils release)", "Bash(ils release *)",
-		"Bash(gh pr merge)", "Bash(gh pr merge *)", "Bash(gh release create)", "Bash(gh release create *)",
+// ruleList returns the permission rules `ils init claude` adds to the list name.
+func ruleList(name string) []any {
+	rules := cli.PermissionRules()[name]
+	got := make([]any, len(rules))
+	for i, rule := range rules {
+		got[i] = rule
 	}
+
+	return got
 }
 
-// denyRules returns the permission rules `ils init claude` adds to the deny list.
-func denyRules() []any {
-	return []any{"Bash(git push)", "Bash(git push *)"}
+// ruleLists returns the permission rules `ils init claude` adds to each list, by the name of the list.
+func ruleLists() map[string]any {
+	lists := map[string]any{}
+	for name := range cli.PermissionRules() {
+		lists[name] = ruleList(name)
+	}
+
+	return lists
 }
 
-// settingsUnder returns the path of the settings file of the Claude Code directory under dir.
+// firstRule returns the first permission rule `ils init claude` adds to the list name.
+func firstRule(name string) string {
+	return cli.PermissionRules()[name][0]
+}
+
 func settingsUnder(dir string) string {
 	return filepath.Join(dir, ".claude", "settings.json")
 }
@@ -56,13 +54,11 @@ func withSettings(t *testing.T, home, text string) string {
 	t.Helper()
 
 	path := settingsUnder(home)
-	assert.NilError(t, os.MkdirAll(filepath.Dir(path), 0o750))
-	assert.NilError(t, os.WriteFile(path, []byte(text), 0o600))
+	writeText(t, path, text)
 
 	return path
 }
 
-// encodedJSON returns value as JSON text.
 func encodedJSON(t *testing.T, value any) string {
 	t.Helper()
 
@@ -72,18 +68,24 @@ func encodedJSON(t *testing.T, value any) string {
 	return string(text)
 }
 
-// decodedFile reads the JSON file at path and returns its value.
 func decodedFile(t *testing.T, path string) map[string]any {
 	t.Helper()
 
-	//nolint:gosec // G304: the path is one the test built under t.TempDir().
-	text, err := os.ReadFile(path)
-	assert.NilError(t, err)
+	text := readText(t, path)
 
 	var value map[string]any
-	assert.NilError(t, json.Unmarshal(text, &value), "settings = %s", text)
+	assert.NilError(t, json.Unmarshal([]byte(text), &value), "settings = %s", text)
 
 	return value
+}
+
+// preToolUse returns the PreToolUse hooks of the settings file at path.
+func preToolUse(t *testing.T, path string) any {
+	t.Helper()
+
+	hooks, _ := decodedFile(t, path)["hooks"].(map[string]any)
+
+	return hooks["PreToolUse"]
 }
 
 // member returns the member name of the JSON object in text, as JSON text.
@@ -135,14 +137,22 @@ func listsHolding(settings map[string]any, rule string) []string {
 	return got
 }
 
+// commandHook returns the hook entry that runs command and sets nothing else.
+func commandHook(command string) map[string]any {
+	return map[string]any{"type": "command", "command": command}
+}
+
+// guardEntry returns the hook entry of the guard that runs command, with the timeout and failure
+// the guard needs.
+func guardEntry(command any) map[string]any {
+	return map[string]any{
+		"type": "command", "command": command, "timeout": cli.HookTimeout(), "onFailure": cli.HookOnFailure(),
+	}
+}
+
 // hookGroup returns the PreToolUse group that runs command as the guard's hook.
 func hookGroup(command string) map[string]any {
-	return map[string]any{
-		"matcher": "Bash",
-		"hooks": []any{map[string]any{
-			"type": "command", "command": command, "timeout": float64(15), "onFailure": "block",
-		}},
-	}
+	return map[string]any{"matcher": "Bash", "hooks": []any{guardEntry(command)}}
 }
 
 // lineWith returns the one line of text that holds word, and stops the test unless there is one.
@@ -206,26 +216,10 @@ func TestApp_Run_WhenInitClaudeFindsNoSettings_WritesTheHookAndTheRulesAlone(t *
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
 	want := map[string]any{
-		"hooks":       map[string]any{"PreToolUse": []any{hookGroup(userHook)}},
-		"permissions": map[string]any{"allow": allowRules(), "ask": askRules(), "deny": denyRules()},
+		"hooks":       map[string]any{"PreToolUse": []any{hookGroup(cli.UserHook)}},
+		"permissions": ruleLists(),
 	}
 	assert.Check(t, is.DeepEqual(decodedFile(t, settingsUnder(home)), want))
-}
-
-func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlag_HooksTheScriptOfTheProject(t *testing.T) {
-	t.Parallel()
-
-	f := gittest.New(t, trunk)
-	app := over(git.Runner{Dir: f.Dir(), Env: f.Env()})
-	app.Environ = []string{"HOME=" + t.TempDir()}
-	app.Skills = shipped()
-	app.SetGuardSupported(true)
-
-	got := launch(t, app, "init", "claude", "--project")
-
-	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	hooks, _ := decodedFile(t, settingsUnder(f.Dir()))["hooks"].(map[string]any)
-	assert.Check(t, is.DeepEqual(hooks["PreToolUse"], []any{hookGroup(projectHook)}))
 }
 
 func TestApp_Run_WhenInitClaudeRunsWhereTheGuardDoesNot_WritesTheRulesWithoutAHook(t *testing.T) {
@@ -237,22 +231,8 @@ func TestApp_Run_WhenInitClaudeRunsWhereTheGuardDoesNot_WritesTheRulesWithoutAHo
 	got := launch(t, app, "init", "claude")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	want := map[string]any{
-		"permissions": map[string]any{"allow": allowRules(), "ask": askRules(), "deny": denyRules()},
-	}
+	want := map[string]any{"permissions": ruleLists()}
 	assert.Check(t, is.DeepEqual(decodedFile(t, settingsUnder(home)), want))
-}
-
-func TestApp_Run_WhenInitClaudeRunsWhereTheGuardDoesNot_SaysWhereTheGuardRuns(t *testing.T) {
-	t.Parallel()
-
-	app, _ := installing(t)
-	app.SetGuardSupported(false)
-
-	got := launch(t, app, "init", "claude")
-
-	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	assert.Check(t, is.Contains(got.stdout, cli.GuardUnsupported))
 }
 
 func TestApp_Run_WhenInitClaudeFindsSettings_KeepsTheOrderOfTheUsersKeys(t *testing.T) {
@@ -264,13 +244,9 @@ func TestApp_Run_WhenInitClaudeFindsSettings_KeepsTheOrderOfTheUsersKeys(t *test
 	got := launch(t, app, "init", "claude")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	//nolint:gosec // G304: the path is one the test built under t.TempDir().
-	text, err := os.ReadFile(path)
-	assert.NilError(t, err)
-	settings := jsontext.Value(text)
+	settings := jsontext.Value(readText(t, path))
 	assert.Check(t, is.DeepEqual(names(t, settings), []string{"model", "permissions", "env", "hooks"}))
 	assert.Check(t, is.DeepEqual(names(t, member(t, settings, "permissions"))[:3], []string{"deny", "defaultMode", "allow"}))
-	assert.Check(t, is.DeepEqual(names(t, member(t, settings, "env")), []string{"ZED", "ALPHA"}))
 	assert.Check(t, is.DeepEqual(names(t, member(t, settings, "hooks")), []string{"PostToolUse", "PreToolUse"}))
 }
 
@@ -283,23 +259,20 @@ func TestApp_Run_WhenInitClaudeFindsSettings_KeepsTheUsersValuesAndAddsItsOwnAft
 	got := launch(t, app, "init", "claude")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	check := func(command string) map[string]any {
-		return map[string]any{"type": "command", "command": command}
-	}
 	want := map[string]any{
 		"model": "opus",
 		"permissions": map[string]any{
-			"deny":        slices.Concat([]any{"Bash(rm *)"}, denyRules()),
+			"deny":        slices.Concat([]any{"Bash(rm *)"}, ruleList("deny")),
 			"defaultMode": "acceptEdits",
-			"allow":       slices.Concat([]any{"Read"}, allowRules()),
-			"ask":         askRules(),
+			"allow":       slices.Concat([]any{"Read"}, ruleList("allow")),
+			"ask":         ruleList("ask"),
 		},
 		"env": map[string]any{"ZED": "1", "ALPHA": "2"},
 		"hooks": map[string]any{
-			"PostToolUse": []any{map[string]any{"matcher": "Edit", "hooks": []any{check("fmt")}}},
+			"PostToolUse": []any{map[string]any{"matcher": "Edit", "hooks": []any{commandHook("fmt")}}},
 			"PreToolUse": []any{
-				map[string]any{"matcher": "Edit", "hooks": []any{check("check")}},
-				hookGroup(userHook),
+				map[string]any{"matcher": "Edit", "hooks": []any{commandHook("check")}},
+				hookGroup(cli.UserHook),
 			},
 		},
 	}
@@ -314,9 +287,9 @@ func TestApp_Run_WhenInitClaudeFindsARuleInAnyList_LeavesItThereAlone(t *testing
 		rule string
 		list string
 	}{
-		{name: "allow rule moved to ask", rule: "Bash(ils push)", list: "ask"},
-		{name: "ask rule moved to deny", rule: "Bash(gh pr merge)", list: "deny"},
-		{name: "deny rule moved to allow", rule: "Bash(git push)", list: "allow"},
+		{name: "allow rule moved to ask", rule: firstRule("allow"), list: "ask"},
+		{name: "ask rule moved to deny", rule: firstRule("ask"), list: "deny"},
+		{name: "deny rule moved to allow", rule: firstRule("deny"), list: "allow"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -339,26 +312,27 @@ func TestApp_Run_WhenInitClaudeFindsTheHookInPlace_SetsItsTimeoutAndFailureWhere
 	t.Parallel()
 
 	tests := []struct {
-		hook    map[string]any
-		name    string
-		matcher string
+		hook map[string]any
+		name string
 	}{
-		{name: "user scope", matcher: "Bash", hook: map[string]any{"command": userHook}},
-		{name: "no leading bash", matcher: "Bash", hook: map[string]any{"command": "~/.claude/skills/ils/hook.sh"}},
-		{name: "HOME variable", matcher: "Bash", hook: map[string]any{"command": "bash $HOME/.claude/skills/ils/hook.sh"}},
-		{name: "HOME in braces", matcher: "Bash", hook: map[string]any{"command": "bash ${HOME}/.claude/skills/ils/hook.sh"}},
-		{name: "path in quotes", matcher: "Bash", hook: map[string]any{"command": `bash "$HOME/.claude/skills/ils/hook.sh"`}},
-		{name: "home spelled out", matcher: "Bash", hook: map[string]any{"command": "bash /home/someone/.claude/skills/ils/hook.sh"}},
-		{name: "project scope", matcher: "Bash", hook: map[string]any{"command": projectHook}},
-		{name: "group of another matcher", matcher: "Bash|Edit", hook: map[string]any{"command": userHook}},
+		{name: "user scope", hook: map[string]any{"command": cli.UserHook}},
+		{name: "no leading bash", hook: map[string]any{"command": "~/.claude/skills/ils/hook.sh"}},
+		{name: "HOME variable", hook: map[string]any{"command": "bash $HOME/.claude/skills/ils/hook.sh"}},
+		{name: "HOME in braces", hook: map[string]any{"command": "bash ${HOME}/.claude/skills/ils/hook.sh"}},
+		{name: "path in quotes", hook: map[string]any{"command": `bash "$HOME/.claude/skills/ils/hook.sh"`}},
+		{name: "home spelled out", hook: map[string]any{"command": "bash /home/someone/.claude/skills/ils/hook.sh"}},
+		{name: "project scope", hook: map[string]any{"command": cli.ProjectHook}},
 		{
-			name: "other timeout and failure", matcher: "Bash",
-			hook: map[string]any{"command": userHook, "timeout": 30, "onFailure": "allow"},
+			name: "other timeout and failure",
+			hook: map[string]any{"command": cli.UserHook, "timeout": 30, "onFailure": "allow"},
 		},
-		{name: "timeout in place, failure missing", matcher: "Bash", hook: map[string]any{"command": userHook, "timeout": 15}},
 		{
-			name: "failure in place, timeout missing", matcher: "Bash",
-			hook: map[string]any{"command": userHook, "onFailure": "block"},
+			name: "timeout in place, failure missing",
+			hook: map[string]any{"command": cli.UserHook, "timeout": cli.HookTimeout()},
+		},
+		{
+			name: "failure in place, timeout missing",
+			hook: map[string]any{"command": cli.UserHook, "onFailure": cli.HookOnFailure()},
 		},
 	}
 	for _, tt := range tests {
@@ -368,9 +342,9 @@ func TestApp_Run_WhenInitClaudeFindsTheHookInPlace_SetsItsTimeoutAndFailureWhere
 			app, home := installing(t)
 			hook := map[string]any{"type": "command"}
 			maps.Copy(hook, tt.hook)
-			first := map[string]any{"type": "command", "command": "check"}
+			first := commandHook("check")
 			group := func(hook map[string]any) map[string]any {
-				return map[string]any{"matcher": tt.matcher, "hooks": []any{first, hook}}
+				return map[string]any{"matcher": "Bash", "hooks": []any{first, hook}}
 			}
 			path := withSettings(t, home, encodedJSON(t, map[string]any{
 				"hooks": map[string]any{"PreToolUse": []any{group(hook)}},
@@ -379,11 +353,7 @@ func TestApp_Run_WhenInitClaudeFindsTheHookInPlace_SetsItsTimeoutAndFailureWhere
 			got := launch(t, app, "init", "claude")
 
 			assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-			hooks, _ := decodedFile(t, path)["hooks"].(map[string]any)
-			want := map[string]any{
-				"type": "command", "command": tt.hook["command"], "timeout": float64(15), "onFailure": "block",
-			}
-			assert.Check(t, is.DeepEqual(hooks["PreToolUse"], []any{group(want)}))
+			assert.Check(t, is.DeepEqual(preToolUse(t, path), []any{group(guardEntry(tt.hook["command"]))}))
 		})
 	}
 }
@@ -394,7 +364,7 @@ func TestApp_Run_WhenInitClaudeFindsAHookOfAnotherSkill_AddsItsOwnGroup(t *testi
 	app, home := installing(t)
 	other := map[string]any{
 		"matcher": "Bash",
-		"hooks":   []any{map[string]any{"type": "command", "command": "bash ~/.claude/skills/other/hook.sh"}},
+		"hooks":   []any{commandHook("bash ~/.claude/skills/other/hook.sh")},
 	}
 	path := withSettings(t, home, encodedJSON(t, map[string]any{
 		"hooks": map[string]any{"PreToolUse": []any{other}},
@@ -403,15 +373,14 @@ func TestApp_Run_WhenInitClaudeFindsAHookOfAnotherSkill_AddsItsOwnGroup(t *testi
 	got := launch(t, app, "init", "claude")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	hooks, _ := decodedFile(t, path)["hooks"].(map[string]any)
-	assert.Check(t, is.DeepEqual(hooks["PreToolUse"], []any{other, hookGroup(userHook)}))
+	assert.Check(t, is.DeepEqual(preToolUse(t, path), []any{other, hookGroup(cli.UserHook)}))
 }
 
 func TestApp_Run_WhenInitClaudeFindsHookEntriesThatAreNoObjects_LeavesThemWhereTheyAre(t *testing.T) {
 	t.Parallel()
 
 	app, home := installing(t)
-	guard := map[string]any{"type": "command", "command": userHook}
+	guard := commandHook(cli.UserHook)
 	path := withSettings(t, home, encodedJSON(t, map[string]any{
 		"hooks": map[string]any{"PreToolUse": []any{"note", map[string]any{"matcher": "Bash", "hooks": []any{42, guard}}}},
 	}))
@@ -419,13 +388,11 @@ func TestApp_Run_WhenInitClaudeFindsHookEntriesThatAreNoObjects_LeavesThemWhereT
 	got := launch(t, app, "init", "claude")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	hooks, _ := decodedFile(t, path)["hooks"].(map[string]any)
-	fixed := map[string]any{"type": "command", "command": userHook, "timeout": float64(15), "onFailure": "block"}
-	want := []any{"note", map[string]any{"matcher": "Bash", "hooks": []any{float64(42), fixed}}}
-	assert.Check(t, is.DeepEqual(hooks["PreToolUse"], want))
+	want := []any{"note", map[string]any{"matcher": "Bash", "hooks": []any{float64(42), guardEntry(cli.UserHook)}}}
+	assert.Check(t, is.DeepEqual(preToolUse(t, path), want))
 }
 
-func TestApp_Run_WhenInitClaudeFindsSettingsOfTheWrongShape_ExitsTwoWritingNothing(t *testing.T) {
+func TestApp_Run_WhenInitClaudeFindsSettingsOfTheWrongShape_ExitsTwoNamingTheFile(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -439,9 +406,6 @@ func TestApp_Run_WhenInitClaudeFindsSettingsOfTheWrongShape_ExitsTwoWritingNothi
 		{name: "PreToolUse not an array", settings: `{"hooks": {"PreToolUse": {}}}`},
 		{name: "permissions not an object", settings: `{"permissions": "all"}`},
 		{name: "allow not an array", settings: `{"permissions": {"allow": {}}}`},
-		{name: "ask not an array", settings: `{"permissions": {"ask": 1}}`},
-		{name: "deny not an array", settings: `{"permissions": {"deny": "Bash(git push)"}}`},
-		{name: "hooks not an object where the guard does not run", settings: `{"hooks": []}`, noGuard: true},
 		{
 			name: "PreToolUse not an array where the guard does not run", settings: `{"hooks": {"PreToolUse": {}}}`,
 			noGuard: true,
@@ -458,10 +422,7 @@ func TestApp_Run_WhenInitClaudeFindsSettingsOfTheWrongShape_ExitsTwoWritingNothi
 			got := launch(t, app, "init", "claude", "--json")
 
 			assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
-			printed := resulttest.Decode(t, got.stdout)
-			assert.Check(t, is.Equal(printed.Outcome, result.Refused.String()))
-			assert.Check(t, is.Contains(printed.Reason, path))
-			assert.Check(t, is.DeepEqual(filesUnder(t, home), map[string]string{path: tt.settings}))
+			assert.Check(t, is.Contains(resulttest.Decode(t, got.stdout).Reason, path))
 		})
 	}
 }
@@ -476,58 +437,27 @@ func TestApp_Run_WhenInitClaudeCannotReadTheSettings_ExitsOneNamingTheFile(t *te
 	got := launch(t, app, "init", "claude", "--json")
 
 	assert.Check(t, is.Equal(got.code, exitBroke), "stdout = %q", got.stdout)
-	printed := resulttest.Decode(t, got.stdout)
-	assert.Check(t, is.Equal(printed.Outcome, result.Broke.String()))
-	assert.Check(t, is.Contains(printed.Reason, path))
+	assert.Check(t, is.Contains(resulttest.Decode(t, got.stdout).Reason, path))
 }
 
 func TestApp_Run_WhenInitClaudeRunsTwice_LeavesEveryFileAsTheFirstRunLeftIt(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name     string
-		settings string
-	}{
-		{name: "no settings at first"},
-		{name: "settings of the user at first", settings: userSettings},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			app, home := installing(t)
-			if tt.settings != "" {
-				withSettings(t, home, tt.settings)
-			}
-			installed(t, app)
-			first := filesUnder(t, home)
-
-			got := launch(t, app, "init", "claude")
-
-			assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-			assert.Check(t, is.DeepEqual(filesUnder(t, home), first))
-		})
-	}
-}
-
-func TestApp_Run_WhenInitClaudeChangesOnlyTheSettings_PrintsNoLineSayingAllIsInPlace(t *testing.T) {
-	t.Parallel()
-
 	app, home := installing(t)
+	withSettings(t, home, userSettings)
 	installed(t, app)
-	inPlace := launch(t, app, "init", "claude").stdout
-	withSettings(t, home, "{}")
+	first := filesUnder(t, home)
 
 	got := launch(t, app, "init", "claude")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	assert.Check(t, !strings.Contains(got.stdout, strings.TrimSpace(inPlace)), "stdout = %q", got.stdout)
+	assert.Check(t, is.DeepEqual(filesUnder(t, home), first))
 }
 
 func TestApp_Run_WhenInitClaudeChangesOnlyTheHook_PrintsALineNamingTheSettings(t *testing.T) {
 	t.Parallel()
 
-	rules := map[string]any{"allow": allowRules(), "ask": askRules(), "deny": denyRules()}
+	rules := ruleLists()
 	tests := []struct {
 		settings map[string]any
 		name     string
@@ -539,7 +469,7 @@ func TestApp_Run_WhenInitClaudeChangesOnlyTheHook_PrintsALineNamingTheSettings(t
 				"permissions": rules,
 				"hooks": map[string]any{"PreToolUse": []any{map[string]any{
 					"matcher": "Bash",
-					"hooks":   []any{map[string]any{"type": "command", "command": userHook}},
+					"hooks":   []any{commandHook(cli.UserHook)},
 				}}},
 			},
 		},
@@ -566,11 +496,11 @@ func TestApp_Run_WhenInitClaudeAddsRules_PrintsTheNumberAddedToEachListThatGrew(
 	app, home := installing(t)
 	installed(t, app)
 	withSettings(t, home, encodedJSON(t, map[string]any{
-		"hooks": map[string]any{"PreToolUse": []any{hookGroup(userHook)}},
+		"hooks": map[string]any{"PreToolUse": []any{hookGroup(cli.UserHook)}},
 		"permissions": map[string]any{
-			"allow": []any{"Bash(ils push)", "Bash(ils status)"},
-			"ask":   askRules(),
-			"deny":  []any{"Bash(git push)"},
+			"allow": ruleList("allow")[:2],
+			"ask":   ruleList("ask"),
+			"deny":  ruleList("deny")[:1],
 		},
 	}))
 

@@ -30,7 +30,8 @@ const (
 	// claudeDecisionAsk is the permissionDecision that has Claude Code ask the user first.
 	claudeDecisionAsk = "ask"
 
-	// guardSupported reports true: on Unix, the guard judges commands.
+	// guardSupported is true only in the Unix build; installClaude adds the guard's hook only where
+	// it is true.
 	guardSupported = true
 
 	// notLiteral stands, in the text of a parse, for a word whose text depends on what the shell
@@ -117,6 +118,19 @@ func (p *parse) caller(dir string) guard.Caller {
 	return guard.Caller{Dir: dir, Env: env, Home: env["HOME"], Git: p.loggedGit(logger), GH: github.Runner{Logger: logger}}
 }
 
+// environment returns the variables of environ, each `NAME=value`, by name: a name set twice has
+// its last value, as bash and the commands it starts read it. An entry with no `=` names nothing.
+func environment(environ []string) map[string]string {
+	env := make(map[string]string, len(environ))
+	for _, entry := range environ {
+		if name, value, ok := strings.Cut(entry, "="); ok {
+			env[name] = value
+		}
+	}
+
+	return env
+}
+
 // readCommand reads command as the guard does from cwd, made absolute, with the process environment
 // and its HOME, through the git of the app. It returns the result that shows every invocation, or,
 // when the command does not parse or a read of git fails, a broke result that says why.
@@ -159,13 +173,7 @@ func unparsed(req landing.Request, err error) result.Result {
 		reason = result.Say("the command does not parse: %s", err.Error())
 	}
 
-	return result.Result{
-		Command: req.Command,
-		Words:   req.Words,
-		Reason:  reason,
-		Next:    result.NextStep("fix what the reason names, then run %s again", result.Command(parseWord)),
-		Outcome: result.Broke,
-	}
+	return *req.Broke(reason, result.NextStep("fix what the reason names, then run %s again", result.Command(parseWord)))
 }
 
 // guardCommand returns `ils guard --cwd <dir> -- '<command>'`, which judges the command as the
@@ -222,12 +230,6 @@ func judged(req landing.Request, invocations []guard.Invocation, verdict guard.V
 	}
 
 	return r
-}
-
-// underTimeLimit returns ctx with the deadline of a command from launch, which counts the time
-// limit from the launch of the app.
-func (p *parse) underTimeLimit(ctx context.Context) (context.Context, context.CancelFunc) {
-	return p.fromLaunch(ctx, landing.TimeLimit)
 }
 
 // ---------------------------------------------------------------------------

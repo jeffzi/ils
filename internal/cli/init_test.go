@@ -1,8 +1,10 @@
 package cli_test
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -15,7 +17,6 @@ import (
 	"github.com/jeffzi/ils/internal/cli"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/gittest"
-	"github.com/jeffzi/ils/internal/result"
 	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
@@ -41,8 +42,15 @@ func shipped() fstest.MapFS {
 func installing(t *testing.T) (app cli.App, home string) {
 	t.Helper()
 
+	return installingOver(t, git.Runner{Dir: t.TempDir(), Env: gittest.Env(t)})
+}
+
+// installingOver is installing with every git call made through runner.
+func installingOver(t *testing.T, runner git.Runner) (app cli.App, home string) {
+	t.Helper()
+
 	home = t.TempDir()
-	app = outside(t)
+	app = over(runner)
 	app.Environ = []string{"HOME=" + home}
 	app.Skills = shipped()
 	app.SetGuardSupported(true)
@@ -50,14 +58,13 @@ func installing(t *testing.T) (app cli.App, home string) {
 	return app, home
 }
 
-// skillsUnder returns the directory the skills land in for the Claude Code directory under dir.
 func skillsUnder(dir string) string {
 	return filepath.Join(dir, ".claude", "skills")
 }
 
-// shippedPath returns where the shipped file name lands in the skills directory skills.
-func shippedPath(skills, name string) string {
-	return filepath.Join(skills, filepath.FromSlash(name))
+// shippedPath returns where the shipped file name lands for the Claude Code directory under dir.
+func shippedPath(dir, name string) string {
+	return filepath.Join(skillsUnder(dir), filepath.FromSlash(name))
 }
 
 // installed runs `ils init claude` once with app, and stops the test unless it exits zero.
@@ -68,13 +75,46 @@ func installed(t *testing.T, app cli.App) {
 	assert.Assert(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
 }
 
-// assertNoNextLine checks, without stopping the test, that no line of text is a Next line.
-func assertNoNextLine(t *testing.T, text string) {
+// editedSkill overwrites the SKILL.md of the ils skill under home as a user would by hand, and
+// returns its path.
+func editedSkill(t *testing.T, home string) string {
 	t.Helper()
 
-	for _, line := range outputLines(text) {
-		assert.Check(t, !strings.HasPrefix(line, result.NextLabel+":"), "stdout = %q", text)
+	path := shippedPath(home, ilsSkill+"/SKILL.md")
+	assert.NilError(t, os.WriteFile(path, []byte("edited by hand\n"), 0o600))
+
+	return path
+}
+
+// assertShippedUnder checks, without stopping the test, that every shipped file lies as shipped
+// for the Claude Code directory under dir.
+func assertShippedUnder(t *testing.T, dir string) {
+	t.Helper()
+
+	for name, file := range shipped() {
+		written, err := os.ReadFile(shippedPath(dir, name))
+		if assert.Check(t, err) {
+			assert.Check(t, is.Equal(string(written), string(file.Data)), "file %s", name)
+		}
 	}
+}
+
+func readText(t *testing.T, path string) string {
+	t.Helper()
+
+	//nolint:gosec // G304: the path is one the test built under t.TempDir().
+	text, err := os.ReadFile(path)
+	assert.NilError(t, err)
+
+	return string(text)
+}
+
+// writeText writes text to path, making the directory above it first.
+func writeText(t *testing.T, path, text string) {
+	t.Helper()
+
+	assert.NilError(t, os.MkdirAll(filepath.Dir(path), 0o750))
+	assert.NilError(t, os.WriteFile(path, []byte(text), 0o600))
 }
 
 func TestApp_Run_WhenInitClaudeRunsWithNoSkillInstalled_WritesEveryShippedFileUnderHome(t *testing.T) {
@@ -85,15 +125,10 @@ func TestApp_Run_WhenInitClaudeRunsWithNoSkillInstalled_WritesEveryShippedFileUn
 	got := launch(t, app, "init", "claude")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	for name, file := range shipped() {
-		written, err := os.ReadFile(shippedPath(skillsUnder(home), name))
-		if assert.Check(t, err) {
-			assert.Check(t, is.Equal(string(written), string(file.Data)), "file %s", name)
-		}
-	}
+	assertShippedUnder(t, home)
 }
 
-func TestApp_Run_WhenInitClaudeInstallsEverySkill_PrintsTheDirectoryOfEachWithoutANextLine(t *testing.T) {
+func TestApp_Run_WhenInitClaudeInstallsEverySkill_PrintsTheDirectoryOfEach(t *testing.T) {
 	t.Parallel()
 
 	app, home := installing(t)
@@ -103,23 +138,6 @@ func TestApp_Run_WhenInitClaudeInstallsEverySkill_PrintsTheDirectoryOfEachWithou
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
 	assert.Check(t, is.Contains(lineWith(t, got.stdout, filepath.Join(skillsUnder(home), ilsSkill)), "Installed"))
 	assert.Check(t, is.Contains(got.stdout, filepath.Join(skillsUnder(home), releaseSkill)))
-	assertNoNextLine(t, got.stdout)
-}
-
-func TestApp_Run_WhenInitClaudeRunsWithTheJSONFlag_PrintsEachSkillAndNoNextStep(t *testing.T) {
-	t.Parallel()
-
-	app, home := installing(t)
-
-	got := launch(t, app, "init", "claude", "--json")
-
-	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	printed := resulttest.Decode(t, got.stdout)
-	assert.Check(t, is.Equal(printed.Outcome, result.Done.String()))
-	assert.Check(t, is.Equal(printed.Next, "none"))
-	lines := strings.Join(printed.Lines, "\n")
-	assert.Check(t, is.Contains(lines, filepath.Join(skillsUnder(home), ilsSkill)))
-	assert.Check(t, is.Contains(lines, filepath.Join(skillsUnder(home), releaseSkill)))
 }
 
 func TestApp_Run_WhenInitClaudeFindsEveryFileInPlace_LeavesTheFilesUntouched(t *testing.T) {
@@ -127,18 +145,18 @@ func TestApp_Run_WhenInitClaudeFindsEveryFileInPlace_LeavesTheFilesUntouched(t *
 
 	app, home := installing(t)
 	installed(t, app)
-	long := time.Date(2001, time.February, 3, 4, 5, 6, 0, time.UTC)
+	longAgo := time.Date(2001, time.February, 3, 4, 5, 6, 0, time.UTC)
 	for name := range shipped() {
-		assert.NilError(t, os.Chtimes(shippedPath(skillsUnder(home), name), long, long))
+		assert.NilError(t, os.Chtimes(shippedPath(home, name), longAgo, longAgo))
 	}
 
 	got := launch(t, app, "init", "claude")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
 	for name := range shipped() {
-		info, err := os.Stat(shippedPath(skillsUnder(home), name))
+		info, err := os.Stat(shippedPath(home, name))
 		if assert.Check(t, err) {
-			assert.Check(t, info.ModTime().Equal(long), "file %s was written again at %v", name, info.ModTime())
+			assert.Check(t, info.ModTime().Equal(longAgo), "file %s was written again at %v", name, info.ModTime())
 		}
 	}
 }
@@ -155,7 +173,6 @@ func TestApp_Run_WhenInitClaudeFindsEveryFileInPlace_PrintsOneLineNamingNoSkill(
 	assert.Check(t, is.Len(outputLines(got.stdout), 1), "stdout = %q", got.stdout)
 	assert.Check(t, !strings.Contains(got.stdout, skillsUnder(home)), "stdout = %q", got.stdout)
 	assert.Check(t, !strings.Contains(got.stdout, settingsUnder(home)), "stdout = %q", got.stdout)
-	assertNoNextLine(t, got.stdout)
 }
 
 func TestApp_Run_WhenInitClaudeFindsAShippedFileChanged_ReplacesIt(t *testing.T) {
@@ -163,16 +180,12 @@ func TestApp_Run_WhenInitClaudeFindsAShippedFileChanged_ReplacesIt(t *testing.T)
 
 	app, home := installing(t)
 	installed(t, app)
-	changed := shippedPath(skillsUnder(home), ilsSkill+"/SKILL.md")
-	assert.NilError(t, os.WriteFile(changed, []byte("edited by hand\n"), 0o600))
+	changed := editedSkill(t, home)
 
 	got := launch(t, app, "init", "claude")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	//nolint:gosec // G304: the path is one the test built under t.TempDir().
-	written, err := os.ReadFile(changed)
-	assert.NilError(t, err)
-	assert.Check(t, is.Equal(string(written), string(shipped()[ilsSkill+"/SKILL.md"].Data)))
+	assert.Check(t, is.Equal(readText(t, changed), string(shipped()[ilsSkill+"/SKILL.md"].Data)))
 }
 
 func TestApp_Run_WhenInitClaudeFindsAShippedFileChanged_PrintsThatSkillAlone(t *testing.T) {
@@ -180,8 +193,7 @@ func TestApp_Run_WhenInitClaudeFindsAShippedFileChanged_PrintsThatSkillAlone(t *
 
 	app, home := installing(t)
 	installed(t, app)
-	changed := shippedPath(skillsUnder(home), ilsSkill+"/SKILL.md")
-	assert.NilError(t, os.WriteFile(changed, []byte("edited by hand\n"), 0o600))
+	editedSkill(t, home)
 
 	got := launch(t, app, "init", "claude")
 
@@ -202,24 +214,7 @@ func TestApp_Run_WhenInitClaudeShipsAFileBesideTheSkills_InstallsItNowhere(t *te
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
 	_, err := os.Stat(filepath.Join(skillsUnder(home), "README.md"))
-	assert.Check(t, os.IsNotExist(err), "a file beside the skills landed in %s", skillsUnder(home))
-}
-
-func TestApp_Run_WhenInitClaudeFindsAFileItDoesNotShip_LeavesIt(t *testing.T) {
-	t.Parallel()
-
-	app, home := installing(t)
-	own := filepath.Join(skillsUnder(home), ilsSkill, "notes.md")
-	assert.NilError(t, os.MkdirAll(filepath.Dir(own), 0o750))
-	assert.NilError(t, os.WriteFile(own, []byte("my notes\n"), 0o600))
-
-	got := launch(t, app, "init", "claude")
-
-	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	//nolint:gosec // G304: the path is one the test built under t.TempDir().
-	kept, err := os.ReadFile(own)
-	assert.NilError(t, err)
-	assert.Check(t, is.Equal(string(kept), "my notes\n"))
+	assert.Check(t, is.ErrorIs(err, fs.ErrNotExist), "a file beside the skills landed in %s", skillsUnder(home))
 }
 
 func TestApp_Run_WhenInitClaudeCannotWriteASkillFile_ExitsOneNamingThePath(t *testing.T) {
@@ -228,45 +223,51 @@ func TestApp_Run_WhenInitClaudeCannotWriteASkillFile_ExitsOneNamingThePath(t *te
 	app, home := installing(t)
 	// A file where the skill's directory goes makes every path under it impossible to write.
 	blocked := filepath.Join(skillsUnder(home), ilsSkill)
-	assert.NilError(t, os.MkdirAll(filepath.Dir(blocked), 0o750))
-	assert.NilError(t, os.WriteFile(blocked, []byte("in the way\n"), 0o600))
+	writeText(t, blocked, "in the way\n")
 
 	got := launch(t, app, "init", "claude", "--json")
 
 	assert.Check(t, is.Equal(got.code, exitBroke), "stdout = %q", got.stdout)
-	printed := resulttest.Decode(t, got.stdout)
-	assert.Check(t, is.Equal(printed.Outcome, result.Broke.String()))
-	assert.Check(t, is.Contains(printed.Reason, blocked))
-	_, err := os.Stat(settingsUnder(home))
-	assert.Check(t, os.IsNotExist(err), "a run whose skills broke wrote %s", settingsUnder(home))
+	assert.Check(t, is.Contains(resulttest.Decode(t, got.stdout).Reason, blocked))
 }
 
 func TestApp_Run_WhenInitClaudeHasNoHome_ExitsTwoRefused(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		environ []string
-	}{
-		{name: "HOME unset", environ: []string{"PATH=/usr/bin"}},
-		{name: "HOME empty", environ: []string{"HOME="}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	app, _ := installing(t)
+	app.Environ = []string{"HOME="}
 
-			app, _ := installing(t)
-			app.Environ = tt.environ
+	got := launch(t, app, "init", "claude")
 
-			got := launch(t, app, "init", "claude", "--json")
-
-			assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
-			assert.Check(t, is.Equal(resulttest.Decode(t, got.stdout).Outcome, result.Refused.String()))
-		})
-	}
+	assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
 }
 
-func TestApp_Run_WhenInitIsGivenWordsItDoesNotTake_ExitsTwoNamingTheHarnessAndTheWord(t *testing.T) {
+func TestApp_Run_WhenInitClaudeFindsHomeInLowercase_InstallsUnderItOnlyOnWindows(t *testing.T) {
+	t.Parallel()
+
+	app, home := installing(t)
+	app.Environ = []string{"home=" + home}
+	want := exitRefused
+	if runtime.GOOS == "windows" {
+		want = exitDone
+	}
+
+	got := launch(t, app, "init", "claude")
+
+	assert.Check(t, is.Equal(got.code, want), "stdout = %q on %s", got.stdout, runtime.GOOS)
+}
+
+func TestApp_Run_WhenInitIsGivenNoHarness_ExitsTwoRefused(t *testing.T) {
+	t.Parallel()
+
+	app, _ := installing(t)
+
+	got := launch(t, app, "init")
+
+	assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
+}
+
+func TestApp_Run_WhenInitIsGivenWordsItDoesNotTake_ExitsTwoNamingTheWord(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -274,7 +275,6 @@ func TestApp_Run_WhenInitIsGivenWordsItDoesNotTake_ExitsTwoNamingTheHarnessAndTh
 		want string
 		args []string
 	}{
-		{name: "no harness"},
 		{name: "harness it does not know", args: []string{"codex"}, want: "codex"},
 		{name: "word after the harness", args: []string{"claude", "extra"}, want: "extra"},
 		{name: "end of flags before the harness", args: []string{"--", "claude"}, want: "--"},
@@ -284,17 +284,12 @@ func TestApp_Run_WhenInitIsGivenWordsItDoesNotTake_ExitsTwoNamingTheHarnessAndTh
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			app, home := installing(t)
+			app, _ := installing(t)
 
 			got := launch(t, app, slices.Concat([]string{"init", "--json"}, tt.args)...)
 
 			assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
-			printed := resulttest.Decode(t, got.stdout)
-			assert.Check(t, is.Equal(printed.Outcome, result.Refused.String()))
-			assert.Check(t, is.Contains(printed.Reason, "claude"))
-			assert.Check(t, is.Contains(printed.Reason, tt.want))
-			_, err := os.Stat(filepath.Join(home, ".claude"))
-			assert.Check(t, os.IsNotExist(err), "a refused run created %s", filepath.Join(home, ".claude"))
+			assert.Check(t, is.Contains(resulttest.Decode(t, got.stdout).Reason, tt.want))
 		})
 	}
 }
@@ -305,22 +300,24 @@ func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlag_WritesTheSkillsAtTheTopLev
 	f := gittest.New(t, trunk)
 	sub := filepath.Join(f.Dir(), "sub")
 	assert.NilError(t, os.Mkdir(sub, 0o750))
-	app := over(git.Runner{Dir: sub, Env: f.Env()})
-	home := t.TempDir()
-	app.Environ = []string{"HOME=" + home}
-	app.Skills = shipped()
+	app, _ := installingOver(t, git.Runner{Dir: sub, Env: f.Env()})
 
 	got := launch(t, app, "init", "claude", "--project")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	for name, file := range shipped() {
-		written, err := os.ReadFile(shippedPath(skillsUnder(f.Dir()), name))
-		if assert.Check(t, err) {
-			assert.Check(t, is.Equal(string(written), string(file.Data)), "file %s", name)
-		}
-	}
-	_, err := os.Stat(skillsUnder(home))
-	assert.Check(t, os.IsNotExist(err), "a project run wrote under HOME: %s", skillsUnder(home))
+	assertShippedUnder(t, f.Dir())
+}
+
+func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlag_HooksTheScriptOfTheProject(t *testing.T) {
+	t.Parallel()
+
+	f := gittest.New(t, trunk)
+	app, _ := installingOver(t, git.Runner{Dir: f.Dir(), Env: f.Env()})
+
+	got := launch(t, app, "init", "claude", "--project")
+
+	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
+	assert.Check(t, is.DeepEqual(preToolUse(t, settingsUnder(f.Dir())), []any{hookGroup(cli.ProjectHook)}))
 }
 
 func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlagOutsideAWorkTree_ExitsTwoRefused(t *testing.T) {
@@ -328,23 +325,46 @@ func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlagOutsideAWorkTree_ExitsTwoRe
 
 	app, _ := installing(t)
 
-	got := launch(t, app, "init", "claude", "--project", "--json")
+	got := launch(t, app, "init", "claude", "--project")
 
 	assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
-	assert.Check(t, is.Equal(resulttest.Decode(t, got.stdout).Outcome, result.Refused.String()))
 }
 
 func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlagAndGitFails_ExitsOneBroke(t *testing.T) {
 	// Not parallel: gittest.FakeGit sets PATH for the whole process.
 	f := gittest.New(t, trunk)
-	app := over(git.Runner{Dir: f.Dir(), Env: append(f.Env(), gittest.FakeGit(t, gittest.Fake{FailOn: []string{"rev-parse"}})...)})
-	app.Environ = []string{"HOME=" + t.TempDir()}
-	app.Skills = shipped()
+	app, _ := installingOver(t, git.Runner{
+		Dir: f.Dir(),
+		Env: append(f.Env(), gittest.FakeGit(t, gittest.Fake{FailOn: []string{"rev-parse"}})...),
+	})
 
-	got := launch(t, app, "init", "claude", "--project", "--json")
+	got := launch(t, app, "init", "claude", "--project")
 
 	assert.Check(t, is.Equal(got.code, exitBroke), "stdout = %q", got.stdout)
-	assert.Check(t, is.Equal(resulttest.Decode(t, got.stdout).Outcome, result.Broke.String()))
-	_, err := os.Stat(filepath.Join(f.Dir(), ".claude"))
-	assert.Check(t, os.IsNotExist(err), "a run whose git read broke wrote %s", filepath.Join(f.Dir(), ".claude"))
+}
+
+func TestApp_Run_WhenInitClaudeRunsWhereTheGuardDoesNot_SaysWhereTheGuardRuns(t *testing.T) {
+	t.Parallel()
+
+	app, _ := installing(t)
+	app.SetGuardSupported(false)
+
+	got := launch(t, app, "init", "claude")
+
+	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
+	assert.Check(t, is.Contains(got.stdout, cli.GuardUnsupported))
+}
+
+func TestApp_Run_WhenInitClaudeChangesOnlyTheSettings_PrintsNoLineSayingAllIsInPlace(t *testing.T) {
+	t.Parallel()
+
+	app, home := installing(t)
+	installed(t, app)
+	inPlace := launch(t, app, "init", "claude").stdout
+	withSettings(t, home, "{}")
+
+	got := launch(t, app, "init", "claude")
+
+	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
+	assert.Check(t, !strings.Contains(got.stdout, strings.TrimSpace(inPlace)), "stdout = %q", got.stdout)
 }

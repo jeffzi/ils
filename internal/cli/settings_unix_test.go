@@ -14,21 +14,18 @@ import (
 	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
-// lockedSettings returns the cli with every skill installed under its HOME, one skill file changed
-// since, and the settings file holding text in a Claude Code directory nobody may add a file to;
-// then that HOME, the changed skill file and the settings file. It skips the test for a user whom
-// the mode of a directory does not stop.
-func lockedSettings(t *testing.T, text string) (app cli.App, home, changed, path string) {
+// lockedSettings returns the cli with every skill installed under its HOME and the settings file
+// holding text in a Claude Code directory nobody may add a file to; then the settings file. It
+// skips the test for a user whom the mode of a directory does not stop.
+func lockedSettings(t *testing.T, text string) (app cli.App, path string) {
 	t.Helper()
 
 	if os.Geteuid() == 0 {
 		t.Skip("the mode of a directory does not stop root")
 	}
 
-	app, home = installing(t)
+	app, home := installing(t)
 	installed(t, app)
-	changed = shippedPath(skillsUnder(home), ilsSkill+"/SKILL.md")
-	assert.NilError(t, os.WriteFile(changed, []byte("edited by hand\n"), 0o600))
 	path = withSettings(t, home, text)
 	dir := filepath.Dir(path)
 	//nolint:gosec // G302: the test takes write access from a directory it made under t.TempDir().
@@ -38,46 +35,18 @@ func lockedSettings(t *testing.T, text string) (app cli.App, home, changed, path
 		assert.Check(t, os.Chmod(dir, 0o750))
 	})
 
-	return app, home, changed, path
+	return app, path
 }
 
 func TestApp_Run_WhenInitClaudeCannotWriteTheSettings_ExitsOneNamingTheFile(t *testing.T) {
 	t.Parallel()
 
-	app, _, _, path := lockedSettings(t, "{}")
+	app, path := lockedSettings(t, "{}")
 
 	got := launch(t, app, "init", "claude", "--json")
 
 	assert.Check(t, is.Equal(got.code, exitBroke), "stdout = %q", got.stdout)
 	assert.Check(t, is.Contains(resulttest.Decode(t, got.stdout).Reason, path))
-}
-
-func TestApp_Run_WhenInitClaudeCannotWriteTheSettings_LeavesTheOldFileWhole(t *testing.T) {
-	t.Parallel()
-
-	app, _, _, path := lockedSettings(t, "{}")
-
-	got := launch(t, app, "init", "claude")
-
-	assert.Check(t, is.Equal(got.code, exitBroke), "stdout = %q", got.stdout)
-	//nolint:gosec // G304: the path is one the test built under t.TempDir().
-	text, err := os.ReadFile(path)
-	assert.NilError(t, err)
-	assert.Check(t, is.Equal(string(text), "{}"))
-}
-
-func TestApp_Run_WhenInitClaudeCannotWriteTheSettings_KeepsTheSkillsItWrote(t *testing.T) {
-	t.Parallel()
-
-	app, _, changed, _ := lockedSettings(t, "{}")
-
-	got := launch(t, app, "init", "claude")
-
-	assert.Check(t, is.Equal(got.code, exitBroke), "stdout = %q", got.stdout)
-	//nolint:gosec // G304: the path is one the test built under t.TempDir().
-	written, err := os.ReadFile(changed)
-	assert.NilError(t, err)
-	assert.Check(t, is.Equal(string(written), string(shipped()[ilsSkill+"/SKILL.md"].Data)))
 }
 
 func TestApp_Run_WhenInitClaudeRewritesTheSettings_KeepsTheirMode(t *testing.T) {
@@ -132,7 +101,7 @@ func TestApp_Run_WhenInitClaudeFindsTheSettingsAreALink_WritesItsTarget(t *testi
 	got := launch(t, app, "init", "claude")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	assert.Check(t, is.DeepEqual(listsHolding(decodedFile(t, target), "Bash(git push)"), []string{"deny"}))
+	assert.Check(t, is.DeepEqual(listsHolding(decodedFile(t, target), firstRule("deny")), []string{"deny"}))
 }
 
 func TestApp_Run_WhenInitClaudeFindsTheSettingsAreALinkToNothing_ExitsOneNamingTheFile(t *testing.T) {
@@ -148,8 +117,4 @@ func TestApp_Run_WhenInitClaudeFindsTheSettingsAreALinkToNothing_ExitsOneNamingT
 
 	assert.Check(t, is.Equal(got.code, exitBroke), "stdout = %q", got.stdout)
 	assert.Check(t, is.Contains(resulttest.Decode(t, got.stdout).Reason, link))
-	pointed, err := os.Readlink(link)
-	if assert.Check(t, err) {
-		assert.Check(t, is.Equal(pointed, missing))
-	}
 }

@@ -192,8 +192,7 @@ func (r Runner) inCLocale() Runner {
 // message untranslated.
 func (r Repo) FindGitDir(ctx context.Context, options ...string) (dir string, found bool, err error) {
 	dir, err = Repo{Runner: r.Runner.inCLocale()}.GitDir(ctx, options...)
-	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && exitErr.Code == fatalCode &&
-		strings.Contains(exitErr.Stderr, notRepositoryMessage) {
+	if fatalSaying(err, func(stderr string) bool { return strings.Contains(stderr, notRepositoryMessage) }) {
 		return "", false, nil
 	}
 
@@ -213,8 +212,9 @@ func (r Repo) FindGitDir(ctx context.Context, options ...string) (dir string, fo
 // untranslated.
 func (r Repo) TopLevel(ctx context.Context) (dir string, found bool, err error) {
 	dir, err = Repo{Runner: r.Runner.inCLocale()}.line(ctx, "rev-parse", "--show-toplevel")
-	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && exitErr.Code == fatalCode &&
-		(strings.Contains(exitErr.Stderr, notRepositoryMessage) || strings.Contains(exitErr.Stderr, noWorkTreeMessage)) {
+	if fatalSaying(err, func(stderr string) bool {
+		return strings.Contains(stderr, notRepositoryMessage) || strings.Contains(stderr, noWorkTreeMessage)
+	}) {
 		return "", false, nil
 	}
 

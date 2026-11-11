@@ -28,14 +28,6 @@ const (
 	// claudeShellTool is the tool_name of Claude Code's shell tool, the one tool the guard judges.
 	claudeShellTool = "Bash"
 
-	// guardUnsupported is the reason the guard refuses every run outside macOS and Linux.
-	guardUnsupported = "the guard runs on macOS and Linux"
-
-	// userHook and projectHook are the commands the guard's hook runs, at user scope and at
-	// project scope.
-	userHook    = "bash ~/.claude/skills/ils/hook.sh"
-	projectHook = `bash "$CLAUDE_PROJECT_DIR"/.claude/skills/ils/hook.sh`
-
 	// hookTimeout and hookOnFailure are the values the guard's hook needs: a timeout long enough
 	// for a guard that asks git, and a failure that blocks the command instead of letting it run.
 	hookTimeout   = "15"
@@ -210,41 +202,42 @@ func (e *settingsEdit) hookGroups(settings jsonObject) (jsonObject, []jsontext.V
 // member returns the member name of parent read as an object, an empty object when parent has
 // no such member, or a *shapeError naming where when it is no object.
 func (e *settingsEdit) member(parent jsonObject, name, where string) (jsonObject, error) {
-	raw, found := parent.get(name)
-	if !found {
-		return jsonObject{}, nil
-	}
-
-	child, ok, err := readObject(raw)
-	if err != nil {
-		return jsonObject{}, fmt.Errorf("read %s of %s: %w", where, e.file, err)
-	}
-
-	if !ok {
-		return jsonObject{}, &shapeError{problem: fmt.Sprintf("%s in %s is not an object", where, e.file)}
-	}
-
-	return child, nil
+	return memberType[jsonObject]{kind: "an object", read: readObject}.of(e, parent, name, where)
 }
 
 // list returns the member name of parent read as an array, none when parent has no such member,
 // or a *shapeError naming where when it is no array.
 func (e *settingsEdit) list(parent jsonObject, name, where string) ([]jsontext.Value, error) {
+	return memberType[[]jsontext.Value]{kind: "an array", read: readArray}.of(e, parent, name, where)
+}
+
+// memberType reads a settings member as a T. Its kind is the phrase a *shapeError uses to say
+// the member is not a T.
+type memberType[T any] struct {
+	read func(jsontext.Value) (T, bool, error)
+	kind string
+}
+
+// of returns the member name of parent as t.read decodes it, the zero T when parent has no such
+// member, or a *shapeError naming where and saying it is not t.kind when t.read finds another type.
+func (t memberType[T]) of(e *settingsEdit, parent jsonObject, name, where string) (T, error) {
+	var none T
+
 	raw, found := parent.get(name)
 	if !found {
-		return nil, nil
+		return none, nil
 	}
 
-	elems, ok, err := readArray(raw)
+	child, ok, err := t.read(raw)
 	if err != nil {
-		return nil, fmt.Errorf("read %s of %s: %w", where, e.file, err)
+		return none, fmt.Errorf("read %s of %s: %w", where, e.file, err)
 	}
 
 	if !ok {
-		return nil, &shapeError{problem: fmt.Sprintf("%s in %s is not an array", where, e.file)}
+		return none, &shapeError{problem: fmt.Sprintf("%s in %s is not %s", where, e.file, t.kind)}
 	}
 
-	return elems, nil
+	return child, nil
 }
 
 // addHook makes every hook of groups, the PreToolUse groups of hooks in settings, that runs the
@@ -652,51 +645,53 @@ func (o *jsonObject) set(name string, value jsontext.Value) {
 
 // value returns o as JSON text.
 func (o jsonObject) value() (jsontext.Value, error) {
-	var buf bytes.Buffer
-	enc := jsontext.NewEncoder(&buf)
+	return encodeComposite(jsontext.BeginObject, jsontext.EndObject, "an object", func(enc *jsontext.Encoder) error {
+		for i, name := range o.names {
+			if err := enc.WriteToken(jsontext.String(name)); err != nil {
+				return err
+			}
 
-	err := enc.WriteToken(jsontext.BeginObject)
-	for i, name := range o.names {
-		if err != nil {
-			break
+			if err := enc.WriteValue(o.values[i]); err != nil {
+				return err
+			}
 		}
 
-		if err = enc.WriteToken(jsontext.String(name)); err == nil {
-			err = enc.WriteValue(o.values[i])
-		}
-	}
-
-	if err == nil {
-		err = enc.WriteToken(jsontext.EndObject)
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("encode an object: %w", err)
-	}
-
-	return jsontext.Value(bytes.TrimSpace(buf.Bytes())), nil
+		return nil
+	})
 }
 
 // arrayValue returns elems as a JSON array.
 func arrayValue(elems []jsontext.Value) (jsontext.Value, error) {
+	return encodeComposite(jsontext.BeginArray, jsontext.EndArray, "an array", func(enc *jsontext.Encoder) error {
+		for _, elem := range elems {
+			if err := enc.WriteValue(elem); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+}
+
+// encodeComposite returns the JSON text that begin, what body writes, and end make up, stopping at
+// the first write that fails with an error saying it could not encode kind.
+func encodeComposite(
+	begin, end jsontext.Token, kind string, body func(*jsontext.Encoder) error,
+) (jsontext.Value, error) {
 	var buf bytes.Buffer
 	enc := jsontext.NewEncoder(&buf)
 
-	err := enc.WriteToken(jsontext.BeginArray)
-	for _, elem := range elems {
-		if err != nil {
-			break
-		}
-
-		err = enc.WriteValue(elem)
+	err := enc.WriteToken(begin)
+	if err == nil {
+		err = body(enc)
 	}
 
 	if err == nil {
-		err = enc.WriteToken(jsontext.EndArray)
+		err = enc.WriteToken(end)
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("encode an array: %w", err)
+		return nil, fmt.Errorf("encode %s: %w", kind, err)
 	}
 
 	return jsontext.Value(bytes.TrimSpace(buf.Bytes())), nil
