@@ -366,8 +366,8 @@ to read in one quoted word after `--`; no word, or more than one, is a refusal.
 
 `ils parse --cwd <dir> -- '<command>'` prints every invocation the command holds, one line each:
 its words, its directory, its marks, and, for `git`, the subcommand, its arguments, the git dir it
-targets, and the directory it runs in. A mark names a way the guard could not read the invocation
-safely.
+targets, and the directory git runs in once its `-C` options apply. A mark names a way the guard
+could not read the invocation safely.
 
 A word that is not a literal prints `<not literal>`. A directory, git dir, or directory git runs in
 that the guard cannot tell prints `unknown`. A git dir outside any repository prints `none`, as
@@ -719,6 +719,16 @@ payload. Each invocation has:
 | `marks` | array of objects | What the guard could not read safely in this invocation, as `kind` and, when it names one, `name`.    |
 | `git`   | object           | For a git invocation: the fields listed below. Absent otherwise.                                      |
 
+The invocation's `dir` is absent when the guard cannot tell the directory the shell is in:
+
+- after a `popd`, a `source` or `.`, or a `cd` or `pushd` the guard cannot follow (`cd "$d"`);
+- after any change of directory, even one the guard can follow, that may or may not have run (in an
+  `if`, a `case`, a loop, an `&&` or `||` list, or a pipe);
+- after a call of a shell function whose body may change directory.
+
+A later `cd` or `pushd` to an absolute path gives the guard a known directory again, unless it is
+given `-P` and the path holds `..`.
+
 A mark's `kind` is one of these 12 strings. This one names nothing:
 
 - `command word that is not a literal`
@@ -757,14 +767,14 @@ The `git` object holds:
   `commit -F msg.txt` resolve against. It is the invocation's own `dir` moved by each `-C` in
   turn. When a `-C` holds `..`, the guard resolves the path it reaches on disk, every symbolic link
   included, because the kernel follows a link before a `..` steps up from it. A `-C` without `..`
-  keeps its spelling. Absent when the guard cannot tell it: after a `-C` that is not a literal
-  (`-C "$d"`) and after a `-C` holding `..` whose directory does not exist. It is also absent after
-  a `popd`, a `source` or `.`, or a `cd` or `pushd` the guard cannot follow (`cd "$d"`). It is also
-  absent when any change of directory, even one the guard can follow, may or may not have run (in
-  an `if`, a `case`, a loop, an `&&` or `||` list, or a pipe), and after a call of a shell function
-  whose body may change directory. A later absolute `-C`, or an absolute `cd` or `pushd` without
-  `..`, gives the guard a known directory again. A git option with no value (`git -C`) leaves it
-  absent in every case.
+  keeps its spelling. Absent when the guard cannot tell it:
+  - after a `-C` that is not a literal (`-C "$d"`);
+  - after a `-C` holding `..` whose directory does not exist;
+  - when the invocation's own `dir` is absent;
+  - after a git option with no value (`git -C`), whatever else the command holds.
+
+  An absolute `-C` gives the guard a known directory again, unless it holds `..` and its directory
+  does not exist.
 
 ## Terminal output
 
