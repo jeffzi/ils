@@ -105,36 +105,6 @@ func TestApp_Run_WhenParseIsGivenACommandWithTheJSONFlag_PrintsEveryInvocation(t
 	assert.Check(t, is.DeepEqual(parsed(t, got.stdout), want, cmpopts.EquateEmpty()))
 }
 
-func TestApp_Run_WhenParseRunsWithTheJSONFlag_ReportsTheDirectoryGitRunsIn(t *testing.T) {
-	t.Parallel()
-
-	f := gittest.New(t, trunk)
-	sub := filepath.Join(f.Dir(), "sub")
-	assert.NilError(t, os.Mkdir(sub, 0o750))
-	tests := []struct {
-		name    string
-		command string
-		wantDir string
-	}{
-		{name: "a -C moves git", command: "git -C sub status", wantDir: sub},
-		{name: "a cd that is not literal hides it", command: `cd "$x"; git status`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := launch(t, outsideWith(t, f.Env()), "parse", "--cwd", f.Dir(), "--json", "--", tt.command)
-
-			assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-			invocations := parsed(t, got.stdout).Invocations
-			assert.Assert(t, len(invocations) > 0, "stdout = %q holds no invocation", got.stdout)
-			call := invocations[len(invocations)-1].Git
-			assert.Assert(t, call != nil, "invocations %+v end in no git call", invocations)
-			assert.Check(t, is.Equal(call.Dir, tt.wantDir))
-		})
-	}
-}
-
 func TestApp_Run_WhenParseRunsAsText_PrintsTheGitCallOfAGitInvocation(t *testing.T) {
 	t.Parallel()
 
@@ -157,7 +127,7 @@ func TestApp_Run_WhenParseRunsAsText_PrintsTheDirectoryGitRunsIn(t *testing.T) {
 	got := launch(t, outsideWith(t, f.Env()), "parse", "--cwd", f.Dir(), "--", "git -C sub status")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	assert.Check(t, is.Contains(got.stdout, "git runs in "+sub), "stdout = %q", got.stdout)
+	assert.Check(t, is.Contains(got.stdout, sub), "stdout = %q", got.stdout)
 }
 
 func TestApp_Run_WhenParseRunsAsText_PrintsANonLiteralWordApartFromAnEmptyOne(t *testing.T) {

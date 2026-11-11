@@ -302,10 +302,7 @@ func wordsOf(words []guard.Word) []result.Word {
 // its marks, and for git the subcommand when git runs one, its arguments, the git dir it targets
 // and the directory it runs in.
 func invocationLine(inv result.Invocation) result.Phrase {
-	dir := inv.Dir
-	if dir == "" {
-		dir = unknownText
-	}
+	dir := orUnknown(inv.Dir)
 
 	marks := make([]string, 0, len(inv.Marks))
 	for _, mark := range inv.Marks {
@@ -327,10 +324,7 @@ func invocationLine(inv result.Invocation) result.Phrase {
 		gitDir = unknownText
 	}
 
-	runsIn := inv.Git.Dir
-	if runsIn == "" {
-		runsIn = unknownText
-	}
+	runsIn := orUnknown(inv.Git.Dir)
 
 	gitPart := "arguments " + orNone(wordTexts(inv.Git.Args)) + "; git dir " + gitDir + "; git runs in " + runsIn
 	if inv.Git.Subcommand != nil {
@@ -360,6 +354,15 @@ func wordTexts(words []result.Word) string {
 func orNone(text string) string {
 	if text == "" {
 		return "none"
+	}
+
+	return text
+}
+
+// orUnknown returns text, or unknownText when text is empty.
+func orUnknown(text string) string {
+	if text == "" {
+		return unknownText
 	}
 
 	return text

@@ -98,10 +98,10 @@ func moved(dir string, w Word) string {
 // changedTo returns the directory that git's `-C` w moves to from dir, empty when the guard cannot
 // tell. git changes directory with chdir, which follows a symbolic link before a `..` after it steps
 // up, so a w holding `..` is resolved on disk, and is unknown when it cannot be. A w without `..`
-// keeps its spelling: it reaches the same directory either way.
+// keeps its spelling.
 func changedTo(dir string, w Word) string {
 	to := moved(dir, w)
-	if to == "" || !slices.Contains(strings.Split(w.Text, "/"), "..") {
+	if to == "" || !stepsUp(w.Text) {
 		return to
 	}
 
@@ -145,6 +145,12 @@ func opened(dir, p string) string {
 	}
 
 	return filepath.Join(dir, p)
+}
+
+// stepsUp reports whether p has a `..` element; a path without one reaches the same directory
+// whether or not links are followed.
+func stepsUp(p string) bool {
+	return slices.Contains(strings.Split(p, "/"), "..")
 }
 
 // ---------------------------------------------------------------------------
@@ -505,10 +511,9 @@ func cdOperands(args []Word) ([]Word, bool) {
 // leavesThroughLinks reports whether a `cd` to the literal target may land elsewhere than the
 // guard's text-only resolution of it, because a symlink on the way is followed: `..` after a
 // symlink goes to the link's parent when the `cd` is physical (`-P`), or when it is relative and
-// follows a physical one, whose directory the shell holds with the links resolved. A target
-// without `..` reaches the same directory either way.
+// follows a physical one, whose directory the shell holds with the links resolved.
 func leavesThroughLinks(target string, physical, afterPhysical bool) bool {
-	if !slices.Contains(strings.Split(target, "/"), "..") {
+	if !stepsUp(target) {
 		return false
 	}
 
