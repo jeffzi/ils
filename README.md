@@ -232,7 +232,7 @@ hook and these permission rules to `~/.claude/settings.json`:
 
 Your own keys, entries, and rules stay as they are, and a rule you already keep in another list
 stays where you put it. Running it again changes nothing that is already in place. With
-`ils init claude --project`, both Go into `.claude/` at the top level of the repository you are
+`ils init claude --project`, both land in `.claude/` at the top level of the repository you are
 in, for a setup you commit with the project. [ils init](docs/reference.md#ils-init) lists every
 step and the same setup by hand.
 

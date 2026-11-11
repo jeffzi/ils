@@ -19,6 +19,8 @@ up, and what each command is for. CI stands for continuous integration throughou
   - [ils release](#ils-release)
     - [Resume a broken release](#resume-a-broken-release)
     - [Release by hand](#release-by-hand)
+  - [ils init](#ils-init)
+    - [Init by hand](#init-by-hand)
 - [Exit codes](#exit-codes)
   - [When no check reports](#when-no-check-reports)
 - [Time limits](#time-limits)
@@ -29,11 +31,13 @@ up, and what each command is for. CI stands for continuous integration throughou
   - [What merge refuses](#what-merge-refuses)
   - [What status refuses](#what-status-refuses)
   - [What release refuses](#what-release-refuses)
+  - [What init refuses](#what-init-refuses)
 - [JSON output](#json-output)
   - [Push JSON output](#push-json-output)
   - [Merge JSON output](#merge-json-output)
   - [Status JSON output](#status-json-output)
   - [Release JSON output](#release-json-output)
+  - [Init JSON output](#init-json-output)
 - [The guard](#the-guard)
   - [What the guard does not see](#what-the-guard-does-not-see)
   - [ils guard](#ils-guard)
@@ -307,8 +311,8 @@ Run `ils init claude` once to set up Claude Code for `ils`, and again after you 
 `claude` is the one harness it knows. It writes under the Claude Code directory, `~/.claude/`,
 with the home directory read from `HOME`:
 
-1. It reads `settings.json` and checks its shape. A file that is not JSON, or whose `hooks`,
-   `hooks.PreToolUse`, `permissions`, `permissions.allow`, `permissions.ask`, or
+1. It reads `settings.json` and checks its shape. A file that is not JSON or not a JSON object, or
+   whose `hooks`, `hooks.PreToolUse`, `permissions`, `permissions.allow`, `permissions.ask`, or
    `permissions.deny` has the wrong type, is a refusal, and nothing is written.
 2. It installs the `ils` and `write-release` skills the binary ships in `skills/<name>/`. A file
    that already holds what `ils` ships is left as it is, and one that differs is replaced.
@@ -335,7 +339,7 @@ It gets `timeout: 15` and `onFailure: block` when either is missing or different
 command and its place. That is the one value `ils init` changes rather than adds: without
 `onFailure: block`, Claude Code runs a command whose hook could not run.
 
-The rules Go to the list each belongs to:
+Each rule lands in the list it belongs to:
 
 | List    | Rules                                                                                                                                                                                  |
 | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -356,7 +360,8 @@ line says the guard runs on macOS and Linux.
 It prints one line per change: each skill installed or updated, the hook added or updated, and the
 number of rules added to each list. A run that changes nothing prints `Everything was already in
 place.` It ends done with no `Next:` line. A settings file it cannot read or write, or a skill file
-it cannot write, ends the run broke, naming the file. Skills written before a failed settings
+it cannot write, ends the run broke, naming the file, and so does a git that fails to find the
+top level of the repository under `--project`. Skills written before a failed settings
 write stay, and running the command again finishes the job.
 
 #### Init by hand
@@ -639,9 +644,9 @@ When `ils init` refuses, it has written nothing. It refuses:
   `--no-color=<value>`, `--help=<value>`, or `-h=<value>` whose value is not `true` or `false`;
 - without `--project`, a `HOME` that is unset or empty;
 - with `--project`, a working directory outside the work tree of a repository;
-- a `settings.json` that is not JSON, or whose `hooks`, `hooks.PreToolUse`, `permissions`,
-  `permissions.allow`, `permissions.ask`, or `permissions.deny` has the wrong type: `Next:` names
-  the file to fix.
+- a `settings.json` that is not JSON or not a JSON object, or whose `hooks`, `hooks.PreToolUse`,
+  `permissions`, `permissions.allow`, `permissions.ask`, or `permissions.deny` has the wrong type:
+  `Next:` names the file to fix.
 
 ## JSON output
 

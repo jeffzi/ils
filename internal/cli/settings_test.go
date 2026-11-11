@@ -347,6 +347,7 @@ func TestApp_Run_WhenInitClaudeFindsTheHookInPlace_SetsItsTimeoutAndFailureWhere
 		{name: "no leading bash", matcher: "Bash", hook: map[string]any{"command": "~/.claude/skills/ils/hook.sh"}},
 		{name: "HOME variable", matcher: "Bash", hook: map[string]any{"command": "bash $HOME/.claude/skills/ils/hook.sh"}},
 		{name: "HOME in braces", matcher: "Bash", hook: map[string]any{"command": "bash ${HOME}/.claude/skills/ils/hook.sh"}},
+		{name: "path in quotes", matcher: "Bash", hook: map[string]any{"command": `bash "$HOME/.claude/skills/ils/hook.sh"`}},
 		{name: "home spelled out", matcher: "Bash", hook: map[string]any{"command": "bash /home/someone/.claude/skills/ils/hook.sh"}},
 		{name: "project scope", matcher: "Bash", hook: map[string]any{"command": projectHook}},
 		{name: "group of another matcher", matcher: "Bash|Edit", hook: map[string]any{"command": userHook}},
