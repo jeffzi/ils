@@ -470,19 +470,25 @@ func TestApp_Run_WhenInitClaudeAddsRules_PrintsTheNumberAddedToEachListThatGrew(
 
 	app, home := installing(t)
 	installed(t, app)
-	withSettings(t, home, encodedJSON(t, map[string]any{
+	path := withSettings(t, home, encodedJSON(t, map[string]any{
 		"hooks": map[string]any{"PreToolUse": []any{hookGroup(cli.UserHook)}},
 		"permissions": map[string]any{
-			"allow": ruleList("allow")[:2],
+			"allow": ruleList("allow")[:1],
 			"ask":   ruleList("ask"),
-			"deny":  ruleList("deny")[:1],
+			"deny":  []any{"Bash(rm *)"},
 		},
 	}))
 
 	got := launch(t, app, "init", "claude")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	assert.Check(t, is.Contains(lineWith(t, got.stdout, "allow"), "2"))
-	assert.Check(t, is.Contains(lineWith(t, got.stdout, "deny"), "1"))
+	assert.Check(t, is.Contains(wordsOutside(lineWith(t, got.stdout, "allow"), path), "3"))
+	assert.Check(t, is.Contains(wordsOutside(lineWith(t, got.stdout, "deny"), path), "2"))
 	assert.Check(t, !strings.Contains(got.stdout, "ask"), "stdout = %q", got.stdout)
+}
+
+// wordsOutside returns the words of line once path is taken out of it, so that no digit of the
+// path reads as a word of the line.
+func wordsOutside(line, path string) []string {
+	return strings.Fields(strings.ReplaceAll(line, path, ""))
 }
