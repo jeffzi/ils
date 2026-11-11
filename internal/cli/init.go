@@ -87,9 +87,6 @@ func (p *parse) initCommand() *cobra.Command {
 	var project strictBool
 
 	c := initHeader()
-	refuse := func(reason result.Phrase) error {
-		return p.refuseWith(reason, result.NextCommand("%s "+flagHelp, initWord))
-	}
 	extra := func(typed string) result.Phrase {
 		return result.Say("%s takes one harness, one of: %s, and no other word, and %s was given", initWord, harnessClaude, typed)
 	}
@@ -102,11 +99,11 @@ func (p *parse) initCommand() *cobra.Command {
 
 		switch fitHarness(typed) {
 		case harnessMissing:
-			return refuse(result.Say("%s takes the harness to set up, one of: %s", initWord, harnessClaude))
+			return p.refuseFor(initWord, result.Say("%s takes the harness to set up, one of: %s", initWord, harnessClaude))
 		case harnessUnknown:
-			return refuse(result.Say("%s takes the harness to set up, one of: %s, and %s was given", initWord, harnessClaude, typed[0]))
+			return p.refuseFor(initWord, result.Say("%s takes the harness to set up, one of: %s, and %s was given", initWord, harnessClaude, typed[0]))
 		case harnessFollowed:
-			return refuse(extra(typed[1]))
+			return p.refuseFor(initWord, extra(typed[1]))
 		default:
 			return nil
 		}

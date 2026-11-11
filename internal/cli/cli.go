@@ -339,6 +339,12 @@ func (p *parse) refuseWith(reason result.Phrase, next result.Next) error {
 	return &refusedError{result: *req.Refused(reason, next)}
 }
 
+// refuseFor refuses the words given for reason, with the help of the command word as the next
+// step.
+func (p *parse) refuseFor(word string, reason result.Phrase) error {
+	return p.refuseWith(reason, result.NextCommand("%s "+flagHelp, word))
+}
+
 func notCommand(word string) result.Phrase {
 	return result.Say("%s is not a command", word)
 }
@@ -352,10 +358,7 @@ func (p *parse) notRootCommand(root *cobra.Command, word string) error {
 		return p.refuse(notCommand(word))
 	}
 
-	return p.refuseWith(
-		result.Say("%s is not a command; did you mean %s?", word, suggested[0]),
-		result.NextCommand("%s "+flagHelp, suggested[0]),
-	)
+	return p.refuseFor(suggested[0], result.Say("%s is not a command; did you mean %s?", word, suggested[0]))
 }
 
 // firstWord returns the first word c was given: a leading `--` first, then the first word typed.

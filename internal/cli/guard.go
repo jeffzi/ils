@@ -64,9 +64,6 @@ func (p *parse) cwdCommand(
 ) *cobra.Command {
 	var cwd string
 
-	refuse := func(reason result.Phrase) error {
-		return p.refuseWith(reason, result.NextCommand("%s "+flagHelp, word))
-	}
 	oneWord := result.Say("%s takes the command after %s as one quoted word", word, wordDash)
 	given := func(typed string) result.Phrase {
 		return result.Say("%s takes %s and the command after %s as one quoted word, and %s was given",
@@ -75,11 +72,11 @@ func (p *parse) cwdCommand(
 
 	c.Args = func(c *cobra.Command, args []string) error {
 		if c.ArgsLenAtDash() != 0 || len(args) != 1 {
-			return refuse(oneWord)
+			return p.refuseFor(word, oneWord)
 		}
 
 		if cwd == "" {
-			return refuse(result.Say("%s takes the directory the command runs in as %s", word, flagCwd))
+			return p.refuseFor(word, result.Say("%s takes the directory the command runs in as %s", word, flagCwd))
 		}
 
 		return nil
@@ -100,7 +97,7 @@ func (p *parse) cwdCommand(
 	c.Flags().StringVar(&cwd, strings.TrimPrefix(flagCwd, "--"), "", cwdUsage)
 	c.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
 		if _, ok := errors.AsType[*pflag.ValueRequiredError](err); ok {
-			return refuse(result.Say("%s takes a directory, and none was given", flagCwd))
+			return p.refuseFor(word, result.Say("%s takes a directory, and none was given", flagCwd))
 		}
 
 		return p.flagRefusal(err, given)
