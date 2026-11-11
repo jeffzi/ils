@@ -309,7 +309,10 @@ gh release create v1.2.0 --repo <host>/<owner>/<name> --verify-tag --title v1.2.
 
 Run `ils init claude` once to set up Claude Code for `ils`, and again after you upgrade `ils`.
 `claude` is the one harness it knows. It writes under the Claude Code directory, `~/.claude/`,
-with the home directory read from `HOME`:
+with the home directory read from `HOME`, or from `USERPROFILE` on Windows. When
+`CLAUDE_CONFIG_DIR` is set and not empty, the Claude Code directory is that directory instead, as
+for Claude Code, and the hook's command is `bash` and the absolute path of the installed `hook.sh`,
+quoted for the shell:
 
 1. It reads `settings.json` and checks its shape. A file that is not JSON or not a JSON object, or
    whose `hooks`, `hooks.PreToolUse`, `permissions`, `permissions.allow`, `permissions.ask`, or
@@ -354,7 +357,8 @@ A rule already in any of the three lists is not added to another. Every other ke
 entry of `settings.json` stays, in its order. `ils init` removes nothing.
 
 With `--project`, it writes `.claude/skills/` and `.claude/settings.json` at the top level of the
-repository the working directory is in, and the hook's command is
+repository the working directory is in, whatever `CLAUDE_CONFIG_DIR` holds, and the hook's command
+is
 `bash "$CLAUDE_PROJECT_DIR"/.claude/skills/ils/hook.sh`.
 
 On Windows, where the guard does not run, it installs the skills and the rules and adds no hook: a
@@ -647,7 +651,8 @@ When `ils init` refuses, it has written nothing. It refuses:
 - any flag other than `--project`, `--json`, `-d` or `--debug`, `--no-color`, `--help`, or `-h`,
   and a `--project=<value>`, `--json=<value>`, `-d=<value>`, `--debug=<value>`,
   `--no-color=<value>`, `--help=<value>`, or `-h=<value>` whose value is not `true` or `false`;
-- without `--project`, a `HOME` that is unset or empty;
+- without `--project`, a `CLAUDE_CONFIG_DIR` that is set and not an absolute path, or, when it is
+  unset or empty, a `HOME` (`USERPROFILE` on Windows) that is unset or empty;
 - with `--project`, a working directory outside the work tree of a repository;
 - a `settings.json` that is not JSON or not a JSON object, or whose `hooks`, `hooks.PreToolUse`,
   `permissions`, `permissions.allow`, `permissions.ask`, or `permissions.deny` has the wrong type:

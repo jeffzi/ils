@@ -9,10 +9,12 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"mvdan.cc/sh/v3/syntax"
 
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/landing"
@@ -26,9 +28,13 @@ const (
 
 	flagProject = "--project"
 
-	// claudeDir is the directory Claude Code reads its settings and skills from, in HOME or at the
-	// top level of a repository.
+	// claudeDir is the directory Claude Code reads its settings and skills from, in the home
+	// directory or at the top level of a repository.
 	claudeDir = ".claude"
+
+	// claudeConfigDir is the variable that, set and not empty, names the Claude Code directory at
+	// user scope in place of claudeDir in the home directory.
+	claudeConfigDir = "CLAUDE_CONFIG_DIR"
 
 	// skillsDir is the directory under claudeDir that holds one directory per skill.
 	skillsDir = "skills"
@@ -87,7 +93,8 @@ func fitHarness(args []string) harnessFit {
 }
 
 // initCommand returns `ils init <harness>`, which installs the skills of the app for the harness:
-// under HOME, or with --project at the top level of the work tree the working directory lies in.
+// in the Claude Code directory at user scope (see userDir), or with --project at the top level of
+// the work tree the working directory lies in.
 // It refuses any words but one harness word, and keeps the result of the install, under the time
 // limit of a command from launch, as the result of the run.
 func (p *parse) initCommand() *cobra.Command {
@@ -125,25 +132,24 @@ func (p *parse) initCommand() *cobra.Command {
 		return nil
 	}
 	boolFlag(c.Flags(), &project, flagNames{long: flagProject},
-		"Set up .claude/ at the top level of the repository the working directory is in, not under HOME")
+		"Set up .claude/ at the top level of the repository the working directory is in, not your own Claude Code directory")
 	p.refuseFlags(c, extra)
 
 	return c
 }
 
-// installClaude installs every skill of the app in the Claude Code directory, the one under HOME,
-// or with project the one at the top level of the work tree, creating it when it is missing, then
-// adds the permission rules and, where the guard runs, its hook to the settings of that
-// directory. The settings are read and checked before any skill is written, and written after.
-// The result has one line per skill installed, updated, or left as it is because its directory is
-// a link, and one per change to the settings; or one line saying everything was in place. Where
-// the guard does not run, a last line says where it does. A HOME that is not set, a project run
-// outside a work tree, or settings it cannot edit is a refusal; a failed read of git or of the
+// installClaude installs every skill of the app in the Claude Code directory installDir returns,
+// creating it when it is missing, then adds the permission rules and, where the guard runs, its
+// hook to the settings of that directory. The settings are read and checked before any skill is
+// written, and written after. The result has one line per skill installed, updated, or left as it
+// is because its directory is a link, and one per change to the settings; or one line saying
+// everything was in place. Where the guard does not run, a last line says where it does. A
+// refusal of installDir, or settings it cannot edit, is a refusal; a failed read of git or of the
 // settings, or a failed write, ends the run broke.
 func (p *parse) installClaude(ctx context.Context, project bool) result.Result {
 	req := landing.Request{Command: initWord, Words: p.words}
 
-	dir, refusal := p.installDir(ctx, req, project)
+	dir, hook, refusal := p.installDir(ctx, req, project)
 	if refusal != nil {
 		return *refusal
 	}
@@ -153,13 +159,8 @@ func (p *parse) installClaude(ctx context.Context, project bool) result.Result {
 		guardRuns = *p.app.guardRuns
 	}
 
-	hook := ""
-	switch {
-	case !guardRuns:
-	case project:
-		hook = projectHook
-	default:
-		hook = userHook
+	if !guardRuns {
+		hook = ""
 	}
 
 	settings, err := planSettings(dir, hook)
@@ -193,19 +194,13 @@ func (p *parse) installClaude(ctx context.Context, project bool) result.Result {
 	return result.Result{Command: req.Command, Words: req.Words, Lines: lines, Next: result.NextNone(), Outcome: result.Done}
 }
 
-// installDir returns the Claude Code directory the install writes to: the one under HOME, or with
-// project the one at the top level of the work tree the working directory lies in. It returns the
-// result that ends the run instead when HOME is not set or empty, when a project run is outside a
-// work tree, or when the read of git fails.
-func (p *parse) installDir(ctx context.Context, req landing.Request, project bool) (string, *result.Result) {
+// installDir returns the Claude Code directory the install writes to and the command of the
+// guard's hook in it: the one at user scope (see userDir), or with project the one at the top level
+// of the work tree the working directory lies in. It returns the result that ends the run instead
+// when userDir refuses, when a project run is outside a work tree, or when the read of git fails.
+func (p *parse) installDir(ctx context.Context, req landing.Request, project bool) (dir, hook string, refusal *result.Result) {
 	if !project {
-		home, _ := git.EnvValue(p.app.Environ, "HOME")
-		if home == "" {
-			return "", req.Refused(result.Say("HOME is not set, and the skills install under it"),
-				result.NextStep("set HOME, or run %s in a repository", result.Command(initWord+" "+harnessClaude+" "+flagProject)))
-		}
-
-		return filepath.Join(home, claudeDir), nil
+		return userDir(req, p.app.Environ)
 	}
 
 	logger := p.logger(p.app.profile(p.app.StderrTerminal, p.noColor))
@@ -214,15 +209,52 @@ func (p *parse) installDir(ctx context.Context, req landing.Request, project boo
 	if err != nil {
 		broke := initBroke(req, result.Say("git could not find the top level of the repository: %s", err.Error()))
 
-		return "", &broke
+		return "", "", &broke
 	}
 
 	if !found {
-		return "", req.Refused(result.Say("%s installs in a repository, and the working directory is in none", flagProject),
+		return "", "", req.Refused(result.Say("%s installs in a repository, and the working directory is in none", flagProject),
 			result.NextStep("run it again from inside a repository, or without %s", flagProject))
 	}
 
-	return filepath.Join(top, claudeDir), nil
+	return filepath.Join(top, claudeDir), projectHook, nil
+}
+
+// userDir returns the Claude Code directory at user scope that environ names, and the command of
+// the guard's hook in it. CLAUDE_CONFIG_DIR, set and not empty, is that directory, and the hook
+// runs the script by its absolute path, quoted for bash. Otherwise it is claudeDir in the home
+// directory, which USERPROFILE names on Windows and HOME elsewhere; the other variable is never
+// read, so a HOME a Windows shell sets does not move the install. It returns the refusal of req
+// instead when CLAUDE_CONFIG_DIR is not an absolute path or holds a character bash cannot be given,
+// or when the home directory's variable is not set or empty.
+func userDir(req landing.Request, environ []string) (dir, hook string, refusal *result.Result) {
+	if config, _ := git.EnvValue(environ, claudeConfigDir); config != "" {
+		if !filepath.IsAbs(config) {
+			return "", "", req.Refused(result.Say("%s is %s, which is not an absolute path", claudeConfigDir, config),
+				result.NextStep("set %s to an absolute path, or unset it", claudeConfigDir))
+		}
+
+		script, err := syntax.Quote(filepath.Join(config, filepath.FromSlash(guardScript)), syntax.LangBash)
+		if err != nil {
+			return "", "", req.Refused(result.Say("%s is %s, which no bash command can name: %s", claudeConfigDir, config, err.Error()),
+				result.NextStep("set %s to another path, or unset it", claudeConfigDir))
+		}
+
+		return config, "bash " + script, nil
+	}
+
+	homeVariable := "HOME"
+	if runtime.GOOS == "windows" {
+		homeVariable = "USERPROFILE"
+	}
+
+	home, _ := git.EnvValue(environ, homeVariable)
+	if home == "" {
+		return "", "", req.Refused(result.Say("%s is not set, and the skills install under it", homeVariable),
+			result.NextStep("set %s, or run %s in a repository", homeVariable, result.Command(initWord+" "+harnessClaude+" "+flagProject)))
+	}
+
+	return filepath.Join(home, claudeDir), userHook, nil
 }
 
 // initBroke returns the broke result of req for reason, with fixing what it names and running the

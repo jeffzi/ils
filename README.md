@@ -232,7 +232,8 @@ ils init claude
 It installs the two agent skills that ship inside the binary into `~/.claude/skills/`: `ils`, which
 runs the binary, and `write-release`, which prepares the release commit. It also adds the guard's
 hook and these permission rules to `~/.claude/settings.json`. The hook is a `PreToolUse` hook on
-`Bash` that runs the `ils` skill's `hook.sh`. The rules are:
+`Bash` that runs the `ils` skill's `hook.sh`. When you set `CLAUDE_CONFIG_DIR` to move Claude Code's
+directory, both land in that directory instead. The rules are:
 
 - `allow`, the steps an agent runs on its own: `Bash(ils push)`, `Bash(ils push --wait)`,
   `Bash(ils branch *)`, and `Bash(ils status)`.

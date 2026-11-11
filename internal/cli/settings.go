@@ -337,7 +337,8 @@ func fixHooks(hooks []jsontext.Value) (held, changed bool, err error) {
 
 // runsGuard reports whether hook runs the guard's hook script: its command, read as shell words
 // with their quotes removed, is the script's path alone, or bash then the path. Only the ending of
-// the path decides, so an expansion in it stays as written.
+// the path decides, so an expansion in it stays as written; the separators of the system count as
+// slashes, as in the absolute path a CLAUDE_CONFIG_DIR on Windows gives the hook.
 func runsGuard(hook jsonObject) bool {
 	raw, found := hook.get(keyCommand)
 	if !found {
@@ -363,6 +364,8 @@ func runsGuard(hook jsonObject) bool {
 	default:
 		return false
 	}
+
+	path = filepath.ToSlash(path)
 
 	return path == guardScript || strings.HasSuffix(path, "/"+guardScript)
 }
