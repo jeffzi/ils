@@ -360,7 +360,9 @@ On Windows, where the guard does not run, it installs the skills and the rules a
 line says the guard runs on macOS and Linux.
 
 It prints one line per change: each skill installed or updated, the hook added or updated, and the
-number of rules added to each list. A run that changes nothing prints `Everything was already in
+number of rules added to each list. On every run, it also prints a line naming the target of each
+skill directory that is a symbolic link, and on Windows the line saying where the guard runs. A run
+that changes nothing, with no skill directory that is a link, prints `Everything was already in
 place.` It ends done with no `Next:` line. A settings file it cannot read or write, or a skill file
 it cannot write, ends the run broke, naming the file, and so does a git that fails to find the
 top level of the repository under `--project`. Skills written before a failed settings
@@ -745,7 +747,7 @@ origin's tags, no release commit, origin not answering) has no payload.
 ### Init JSON output
 
 `ils init --json` prints the [JSON object](#json-output) every command prints, with no payload.
-Its `lines` hold one line per change, as the text output does, and `next` is `none` once it is
+Its `lines` hold the lines the text output prints, and `next` is `none` once it is
 done.
 
 ## The guard
