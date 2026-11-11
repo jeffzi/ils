@@ -10,14 +10,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - Add `ils guard` and `ils parse`, which judge a shell command an agent is about to run against the
-  git, `gh`, and `ils` rules and show how the guard reads it.
+  `git`, `gh`, and `ils` rules and show how the guard reads it.
 - Add `ils hook claude` and the `ils` skill's `hook.sh`, which run the guard as Claude Code's
   `PreToolUse` hook and block every command when `ils` cannot answer.
 
+### Changed
+
+- Make the `ils` agent skill ask once where new work lands when the checkout is on a work branch,
+  instead of starting a new branch on its own.
+- Report a `gh` reachable only through a relative `PATH` entry as missing on every operating system.
+
 ### Fixed
 
-- Count required checks that have not reported yet in the "N of M done" progress of a wait for a
-  pull request's checks, which showed every check done while one was still to come.
+- Fix `ils merge` deleting a branch whose pull request merged into a base other than the default
+  branch, and `ils push` and `ils status` reading that pull request as landed.
+- Fix an `ils` run failing as if origin could not be reached while another run fetched the same
+  branch from another worktree.
+- Fix `ils status` naming `ils push` or the merge step next when those commands would refuse or
+  break on the same state.
+- Refuse a mistyped command name after `ils help` or beside `--help`, and a malformed flag such as
+  `---x`, instead of printing the root help or ending broke.
+- Fix `--json` output splitting in two for a reader that breaks lines at U+0085 (NEL).
+- Fix the `ils` agent skill leaving later commits out of the squash commit's message by rewriting
+  the pull request's title and body after every green push.
 
 ## [0.5.0] - 2026-10-31
 
@@ -60,12 +75,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Point `Next:` of a green `ils push` to a draft or blocked pull request at the step `ils merge`
   would ask for, instead of a merge it would refuse.
-- Fix `ils push` saying nothing was pushed when origin stopped answering or a signal killed `git`
-  mid-push, although the push may have reached origin.
+- Fix `ils push` reporting a push that may have reached origin as stopped when origin stopped
+  answering, a signal killed `git`, or a pre-push hook's last line lacked a newline, and dropping a
+  refused push's reason from the hook's stdout.
 - End `ils merge` pending while a required check still runs, with the new `merge_state`
   `blocked-by-running-check`, instead of refusing it for a branch rule `ils` cannot name.
-- Fix `ils push` losing a pre-push hook's stdout or its final line without a newline, so a push
-  that reached origin read as stopped, or a refused one lacked its reason.
 
 ## [0.3.0] - 2026-10-25
 
