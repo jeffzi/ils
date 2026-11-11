@@ -115,7 +115,7 @@ func (p *parse) initCommand() *cobra.Command {
 		return nil
 	}
 	boolFlag(c.Flags(), &project, flagNames{long: flagProject},
-		"Install at the top level of the repository the working directory is in, not under HOME")
+		"Set up .claude/ at the top level of the repository the working directory is in, not under HOME")
 	p.refuseFlags(c, extra)
 
 	return c
