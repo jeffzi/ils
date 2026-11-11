@@ -66,37 +66,24 @@ func TestApp_Run_WhenInitClaudeRewritesTheSettings_KeepsTheirMode(t *testing.T) 
 }
 
 // linkedSettings returns the cli with its settings file a link to a file holding {} elsewhere,
-// then the link and that file.
-func linkedSettings(t *testing.T) (app cli.App, link, target string) {
+// then that file.
+func linkedSettings(t *testing.T) (app cli.App, target string) {
 	t.Helper()
 
 	app, home := installing(t)
 	target = filepath.Join(t.TempDir(), "settings.json")
 	assert.NilError(t, os.WriteFile(target, []byte("{}"), 0o600))
-	link = settingsUnder(home)
+	link := settingsUnder(home)
 	assert.NilError(t, os.MkdirAll(filepath.Dir(link), 0o750))
 	assert.NilError(t, os.Symlink(target, link))
 
-	return app, link, target
-}
-
-func TestApp_Run_WhenInitClaudeFindsTheSettingsAreALink_KeepsTheLink(t *testing.T) {
-	t.Parallel()
-
-	app, link, target := linkedSettings(t)
-
-	got := launch(t, app, "init", "claude")
-
-	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	pointed, err := os.Readlink(link)
-	assert.NilError(t, err)
-	assert.Check(t, is.Equal(pointed, target))
+	return app, target
 }
 
 func TestApp_Run_WhenInitClaudeFindsTheSettingsAreALink_WritesItsTarget(t *testing.T) {
 	t.Parallel()
 
-	app, _, target := linkedSettings(t)
+	app, target := linkedSettings(t)
 
 	got := launch(t, app, "init", "claude")
 

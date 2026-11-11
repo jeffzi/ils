@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
-	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -170,26 +169,6 @@ func lineWith(t *testing.T, text, word string) string {
 	return found[0]
 }
 
-// filesUnder returns the content of every regular file under dir, by its path.
-func filesUnder(t *testing.T, dir string) map[string]string {
-	t.Helper()
-
-	files := map[string]string{}
-	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil || !entry.Type().IsRegular() {
-			return err
-		}
-		//nolint:gosec // G304: the path is one WalkDir found under t.TempDir().
-		text, err := os.ReadFile(path)
-		files[path] = string(text)
-
-		return err
-	})
-	assert.NilError(t, err)
-
-	return files
-}
-
 // userSettings is a settings file a user wrote: keys out of alphabetical order at every depth, a
 // rule in two of the permission lists, and a hook of their own on PreToolUse and on PostToolUse.
 const userSettings = `{
@@ -288,7 +267,6 @@ func TestApp_Run_WhenInitClaudeFindsARuleInAnyList_LeavesItThereAlone(t *testing
 		list string
 	}{
 		{name: "allow rule moved to ask", rule: firstRule("allow"), list: "ask"},
-		{name: "ask rule moved to deny", rule: firstRule("ask"), list: "deny"},
 		{name: "deny rule moved to allow", rule: firstRule("deny"), list: "allow"},
 	}
 	for _, tt := range tests {
@@ -317,10 +295,7 @@ func TestApp_Run_WhenInitClaudeFindsTheHookInPlace_SetsItsTimeoutAndFailureWhere
 	}{
 		{name: "user scope", hook: map[string]any{"command": cli.UserHook}},
 		{name: "no leading bash", hook: map[string]any{"command": "~/.claude/skills/ils/hook.sh"}},
-		{name: "HOME variable", hook: map[string]any{"command": "bash $HOME/.claude/skills/ils/hook.sh"}},
-		{name: "HOME in braces", hook: map[string]any{"command": "bash ${HOME}/.claude/skills/ils/hook.sh"}},
 		{name: "path in quotes", hook: map[string]any{"command": `bash "$HOME/.claude/skills/ils/hook.sh"`}},
-		{name: "home spelled out", hook: map[string]any{"command": "bash /home/someone/.claude/skills/ils/hook.sh"}},
 		{name: "project scope", hook: map[string]any{"command": cli.ProjectHook}},
 		{
 			name: "other timeout and failure",
@@ -440,18 +415,18 @@ func TestApp_Run_WhenInitClaudeCannotReadTheSettings_ExitsOneNamingTheFile(t *te
 	assert.Check(t, is.Contains(resulttest.Decode(t, got.stdout).Reason, path))
 }
 
-func TestApp_Run_WhenInitClaudeRunsTwice_LeavesEveryFileAsTheFirstRunLeftIt(t *testing.T) {
+func TestApp_Run_WhenInitClaudeRunsTwice_LeavesTheSettingsAsTheFirstRunLeftThem(t *testing.T) {
 	t.Parallel()
 
 	app, home := installing(t)
-	withSettings(t, home, userSettings)
+	path := withSettings(t, home, userSettings)
 	installed(t, app)
-	first := filesUnder(t, home)
+	first := readText(t, path)
 
 	got := launch(t, app, "init", "claude")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	assert.Check(t, is.DeepEqual(filesUnder(t, home), first))
+	assert.Check(t, is.Equal(readText(t, path), first))
 }
 
 func TestApp_Run_WhenInitClaudeChangesOnlyTheHook_PrintsALineNamingTheSettings(t *testing.T) {

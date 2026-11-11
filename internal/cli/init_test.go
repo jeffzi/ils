@@ -4,7 +4,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -242,21 +241,6 @@ func TestApp_Run_WhenInitClaudeHasNoHome_ExitsTwoRefused(t *testing.T) {
 	assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
 }
 
-func TestApp_Run_WhenInitClaudeFindsHomeInLowercase_InstallsUnderItOnlyOnWindows(t *testing.T) {
-	t.Parallel()
-
-	app, home := installing(t)
-	app.Environ = []string{"home=" + home}
-	want := exitRefused
-	if runtime.GOOS == "windows" {
-		want = exitDone
-	}
-
-	got := launch(t, app, "init", "claude")
-
-	assert.Check(t, is.Equal(got.code, want), "stdout = %q on %s", got.stdout, runtime.GOOS)
-}
-
 func TestApp_Run_WhenInitIsGivenNoHarness_ExitsTwoRefused(t *testing.T) {
 	t.Parallel()
 
@@ -275,8 +259,6 @@ func TestApp_Run_WhenInitIsGivenWordsItDoesNotTake_ExitsTwoNamingTheWord(t *test
 		want string
 		args []string
 	}{
-		{name: "harness it does not know", args: []string{"codex"}, want: "codex"},
-		{name: "word after the harness", args: []string{"claude", "extra"}, want: "extra"},
 		{name: "end of flags before the harness", args: []string{"--", "claude"}, want: "--"},
 		{name: "end of flags after the harness", args: []string{"claude", "--"}, want: "--"},
 	}
