@@ -223,18 +223,21 @@ type Request struct {
 	// Force and TagOnly are the --force and --tag-only flags of `ils release`.
 	Force   bool
 	TagOnly bool
+	// Project is the --project flag of `ils init`.
+	Project bool
 	// LongWait runs the push, the merge or the release under WaitTimeLimit instead of TimeLimit.
 	// The caller decides it, whether or not the user typed --wait.
 	LongWait bool
 }
 
-// FlagForce, FlagTagOnly and FlagWait are the words of the --force, --tag-only and --wait flags,
-// as the command line spells them. The command line the parser accepts and the one a next step
-// prints are built from them.
+// FlagForce, FlagTagOnly, FlagWait and FlagProject are the words of the --force, --tag-only,
+// --wait and --project flags, as the command line spells them. The command line the parser accepts
+// and the one a next step prints are built from them.
 const (
 	FlagForce   = "--force"
 	FlagTagOnly = "--tag-only"
 	FlagWait    = "--wait"
+	FlagProject = "--project"
 )
 
 // WaitFlag is which --wait flag the user typed to `ils push`, `ils merge` or `ils release`.
@@ -288,6 +291,10 @@ func (r Request) commandLine(keepWait bool) string {
 
 	if r.TagOnly {
 		words = append(words, FlagTagOnly)
+	}
+
+	if r.Project {
+		words = append(words, FlagProject)
 	}
 
 	switch {
@@ -385,12 +392,12 @@ func gitStanding(ctx context.Context, deps Deps, req Request) (git.Standing, *re
 			return git.Standing{}, stop
 		}
 
-		return git.Standing{}, req.unread(readGitVersion, err)
+		return git.Standing{}, req.Unread(readGitVersion, err)
 	}
 
 	standing, err := deps.Repo.Standing(ctx)
 	if err != nil {
-		return git.Standing{}, req.unread(readStanding, err)
+		return git.Standing{}, req.Unread(readStanding, err)
 	}
 
 	if standing.Kind == git.NoOrigin {
@@ -411,7 +418,7 @@ func originRepo(ctx context.Context, deps Deps, req Request) (forge.Repo, *resul
 
 	switch {
 	case err != nil:
-		return forge.Repo{}, req.unread(readURLs, err)
+		return forge.Repo{}, req.Unread(readURLs, err)
 	case !oneRepo:
 		return forge.Repo{}, req.twoRepositories(urls)
 	}
@@ -449,7 +456,7 @@ func (r Request) twoRepositories(urls git.OriginURLs) *result.Result {
 
 // identity returns origin with the forge's fork, can-push and squash-allowed flags, once the
 // forge's tool is installed, recent enough and logged in, the repository is not a fork, and the user
-// can push to it. A failed call is the refusal toolRefusal returns, and what unread returns for any
+// can push to it. A failed call is the refusal toolRefusal returns, and what Unread returns for any
 // other failure.
 func identity(ctx context.Context, deps Deps, req Request, origin forge.Repo) (forge.Repo, *result.Result) {
 	repo, err := deps.Forge.Identity(ctx, origin)
@@ -458,7 +465,7 @@ func identity(ctx context.Context, deps Deps, req Request, origin forge.Repo) (f
 			return forge.Repo{}, stop
 		}
 
-		return forge.Repo{}, req.unread(readIdentity, err)
+		return forge.Repo{}, req.Unread(readIdentity, err)
 	}
 
 	if stop := req.repoRefusal(repo); stop != nil {
@@ -612,10 +619,10 @@ func cutShortReading(byInterrupt bool, limit span, read string, ending readEndin
 	}
 }
 
-// unread returns the result for a read made before any write that failed with err: a refusal
+// Unread returns the result for a read made before any write that failed with err: a refusal
 // when the tool the read runs is not installed or the time limit or an interrupt cut the read
 // short, since nothing was written and running again is safe, and broke otherwise.
-func (r Request) unread(read string, err error) *result.Result {
+func (r Request) Unread(read string, err error) *result.Result {
 	if stop := r.notInstalled(err); stop != nil {
 		return stop
 	}
@@ -676,15 +683,15 @@ func (r Request) afterTimeLimit() result.Next {
 }
 
 // unreached returns the result for a call to origin that failed with err: the refusal reason
-// when origin did not answer, and what unread returns otherwise.
+// when origin did not answer, and what Unread returns otherwise.
 func (r Request) unreached(read string, err error, reason result.Phrase) *result.Result {
 	// The time limit and an interrupt are excluded: a call to origin that either cut short is also an
-	// ErrRemote failure of git, and unread words it as what cut it short.
+	// ErrRemote failure of git, and Unread words it as what cut it short.
 	if errors.Is(err, git.ErrRemote) && !endedEarly(err) {
 		return r.Refused(reason, r.again())
 	}
 
-	return r.unread(read, err)
+	return r.Unread(read, err)
 }
 
 // fetchPullHead fetches the head of pull request number from origin and returns its sha. A failed
@@ -726,7 +733,7 @@ func detachedWith(trunk string) result.Phrase {
 func (r Request) detachedKept(ctx context.Context, deps Deps, trunk string, reason result.Phrase) *result.Result {
 	own, err := deps.Repo.CommitsPast(ctx, "HEAD", trunk)
 	if err != nil {
-		return r.unread(readHeadCommits, err)
+		return r.Unread(readHeadCommits, err)
 	}
 
 	if len(own) == 0 {

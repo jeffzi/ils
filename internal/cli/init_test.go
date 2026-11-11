@@ -1,6 +1,7 @@
 package cli_test
 
 import (
+	"context"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"github.com/jeffzi/ils/internal/cli"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/gittest"
+	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
@@ -492,6 +494,9 @@ func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlagOutsideAWorkTree_ExitsTwoRe
 	assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
 }
 
+// initProject is the command line that runs `ils init claude --project` again.
+const initProject = "ils init claude --project"
+
 func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlagAndGitFails_ExitsOneBroke(t *testing.T) {
 	// Not parallel: gittest.FakeGit sets PATH for the whole process.
 	f := gittest.New(t, trunk)
@@ -503,6 +508,38 @@ func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlagAndGitFails_ExitsOneBroke(t
 	got := launch(t, app, "init", "claude", "--project")
 
 	assert.Check(t, is.Equal(got.code, exitBroke), "stdout = %q", got.stdout)
+}
+
+func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlagAndNoGit_ExitsTwoSayingToInstallGit(t *testing.T) {
+	// Not parallel: this empties PATH for the whole process while it runs.
+	f := gittest.New(t, trunk)
+	app, _ := installingOver(t, git.Runner{Dir: f.Dir(), Env: f.Env()})
+	t.Setenv("PATH", t.TempDir())
+
+	got := launch(t, app, "init", "claude", "--project", "--json")
+
+	assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
+
+	next := resulttest.Decode(t, got.stdout).Next
+	assert.Check(t, is.Contains(next, "install git"))
+	assert.Check(t, is.Contains(next, initProject))
+}
+
+func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlagPastTheTimeLimit_ExitsTwoNamingTheCommandToRunAgain(t *testing.T) {
+	t.Parallel()
+
+	f := gittest.New(t, trunk)
+	app, _ := installingOver(t, git.Runner{Dir: f.Dir(), Env: f.Env()})
+	ctx, cancel := context.WithDeadline(t.Context(), time.Unix(0, 0))
+	t.Cleanup(cancel)
+
+	got := launchUnder(ctx, t, app, "init", "claude", "--project", "--json")
+
+	assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
+
+	printed := resulttest.Decode(t, got.stdout)
+	assert.Check(t, is.Contains(printed.Reason, landing.Span(landing.TimeLimit)))
+	assert.Check(t, is.Equal(printed.Next, initProject))
 }
 
 func TestApp_Run_WhenInitClaudeRunsWhereTheGuardDoesNot_SaysWhereTheGuardRuns(t *testing.T) {

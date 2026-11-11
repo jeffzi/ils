@@ -107,7 +107,7 @@ func pushChecks(ctx context.Context, deps Deps, req Request, ready Ready) (pushR
 func cutFromTrunk(ctx context.Context, deps Deps, req Request, p pushReady) *result.Result {
 	stop, read, err := sharedFirstCommit(ctx, deps, req, p)
 	if err != nil {
-		return req.unread(read, err)
+		return req.Unread(read, err)
 	}
 
 	return stop
@@ -220,7 +220,7 @@ func originCopy(ctx context.Context, deps Deps, req Request, p pushReady) (their
 
 	apart, err := deps.Repo.Divergence(ctx, p.tip, theirs)
 	if err != nil {
-		return "", false, req.unread(readCopy, err)
+		return "", false, req.Unread(readCopy, err)
 	}
 
 	switch {

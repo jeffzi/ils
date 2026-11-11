@@ -268,7 +268,7 @@ func (rel *releasing) checkTags(ctx context.Context, deps Deps, req Request) *re
 
 	local, found, err := deps.Repo.LocalTag(ctx, rel.tag)
 	if err != nil {
-		return req.unread(readLocalTag, err)
+		return req.Unread(readLocalTag, err)
 	}
 
 	if !found || local == rel.commit {
@@ -287,7 +287,7 @@ func (rel *releasing) checkTags(ctx context.Context, deps Deps, req Request) *re
 func (rel *releasing) checkNotes(ctx context.Context, deps Deps, req Request) *result.Result {
 	content, found, err := deps.Repo.FileAt(ctx, rel.commit, changelogPath)
 	if err != nil {
-		return req.unread(readChangelog, err)
+		return req.Unread(readChangelog, err)
 	}
 
 	// Starting a changelog commits every later release to a section in it, so the user decides.
@@ -398,7 +398,7 @@ func (rel *releasing) gate(ctx context.Context, deps Deps, req Request) *result.
 
 	waited, err := rel.awaitChecks(waitCtx, deps)
 	if err != nil {
-		return req.unread(readReleaseChecks, err)
+		return req.Unread(readReleaseChecks, err)
 	}
 
 	switch waited.Outcome {
@@ -536,12 +536,12 @@ func (rel *releasing) unreported(ctx context.Context, deps Deps, req Request, wa
 
 	protection, err := deps.Forge.TrunkProtection(ctx, rel.Repo, rel.Trunk)
 	if err != nil {
-		return req.unread(readProtection, err)
+		return req.Unread(readProtection, err)
 	}
 
 	without, err := waited.trunkWithoutCI(ctx, deps, rel.Ready, protection.RequiredChecks)
 	if err != nil {
-		return req.unread(readCI, err)
+		return req.Unread(readCI, err)
 	}
 
 	if !without {

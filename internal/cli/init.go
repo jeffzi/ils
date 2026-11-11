@@ -26,7 +26,11 @@ const (
 	// know.
 	harnessClaude = "claude"
 
-	flagProject = "--project"
+	flagProject = landing.FlagProject
+
+	// readTopLevel names the read of the top level of the repository a --project run installs in,
+	// as it follows "read" in a result.
+	readTopLevel = "the top level of the repository"
 
 	// claudeDir is the directory Claude Code reads its settings and skills from, in the home
 	// directory or at the top level of a repository.
@@ -144,12 +148,12 @@ func (p *parse) initCommand() *cobra.Command {
 // written, and written after. The result has one line per skill installed, updated, or left as it
 // is because its directory is a link, and one per change to the settings; or one line saying
 // everything was in place. Where the guard does not run, a last line says where it does. A
-// refusal of installDir, or settings it cannot edit, is a refusal; a failed read of git or of the
+// result of installDir ends the run; settings it cannot edit are a refusal; a failed read of the
 // settings, or a failed write, ends the run broke.
 func (p *parse) installClaude(ctx context.Context, project bool) result.Result {
-	req := landing.Request{Command: initWord, Words: p.words}
+	req := landing.Request{Command: initWord, Words: p.words, Args: []string{harnessClaude}, Project: project}
 
-	dir, hook, refusal := p.installDir(ctx, req, project)
+	dir, hook, refusal := p.installDir(ctx, req)
 	if refusal != nil {
 		return *refusal
 	}
@@ -194,12 +198,14 @@ func (p *parse) installClaude(ctx context.Context, project bool) result.Result {
 	return result.Result{Command: req.Command, Words: req.Words, Lines: lines, Next: result.NextNone(), Outcome: result.Done}
 }
 
-// installDir returns the Claude Code directory the install writes to and the command of the
-// guard's hook in it: the one at user scope (see userDir), or with project the one at the top level
-// of the work tree the working directory lies in. It returns the result that ends the run instead
-// when userDir refuses, when a project run is outside a work tree, or when the read of git fails.
-func (p *parse) installDir(ctx context.Context, req landing.Request, project bool) (dir, hook string, refusal *result.Result) {
-	if !project {
+// installDir returns the Claude Code directory the install of req writes to and the command of the
+// guard's hook in it: the one at user scope (see userDir), or under --project the one at the top
+// level of the work tree the working directory lies in. It returns the result that ends the run
+// instead when userDir refuses, when a project run is outside a work tree, or when the read of the
+// top level fails, which ends as a landing command's read made before any write does (see
+// landing.Request.Unread).
+func (p *parse) installDir(ctx context.Context, req landing.Request) (dir, hook string, refusal *result.Result) {
+	if !req.Project {
 		return userDir(req, p.app.Environ)
 	}
 
@@ -207,9 +213,7 @@ func (p *parse) installDir(ctx context.Context, req landing.Request, project boo
 
 	top, found, err := git.Repo{Runner: p.loggedGit(logger)}.TopLevel(ctx)
 	if err != nil {
-		broke := initBroke(req, result.Say("git could not find the top level of the repository: %s", err.Error()))
-
-		return "", "", &broke
+		return "", "", req.Unread(readTopLevel, err)
 	}
 
 	if !found {
@@ -257,16 +261,11 @@ func userDir(req landing.Request, environ []string) (dir, hook string, refusal *
 	return filepath.Join(home, claudeDir), userHook, nil
 }
 
-// initBroke returns the broke result of req for reason, with fixing what it names and running the
-// same words again as the next step.
-func initBroke(req landing.Request, reason result.Phrase) result.Result {
-	return *req.Broke(reason,
-		result.NextStep("fix what the reason names, then run %s again", result.Command(strings.Join(req.Words, " "))))
-}
-
-// installBroke returns the broke result of req for err, the failure of a step of the install.
+// installBroke returns the broke result of req for err, the failure of a step of the install, with
+// fixing what the reason names and running the same words again as the next step.
 func installBroke(req landing.Request, err error) result.Result {
-	return initBroke(req, result.Say("the install broke: %s", err.Error()))
+	return *req.Broke(result.Say("the install broke: %s", err.Error()),
+		result.NextStep("fix what the reason names, then run %s again", result.Command(strings.Join(req.Words, " "))))
 }
 
 // installSkills writes each skill of shipped, a directory of its own at its root, to the directory

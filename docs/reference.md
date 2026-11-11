@@ -369,9 +369,12 @@ number of rules added to each list. On every run, it also prints a line naming t
 skill directory that is a symbolic link, and on Windows the line saying where the guard runs. A run
 that changes nothing, with no skill directory that is a link, prints `Everything was already in
 place.` It ends done with no `Next:` line. A settings file it cannot read or write, or a skill file
-it cannot write, ends the run broke, naming the file, and so does a git that fails to find the
-top level of the repository under `--project`. Skills written before a failed settings
-write stay, and running the command again finishes the job.
+it cannot write, ends the run broke, naming the file. Under `--project`, a read of the top level of
+the repository ends as a landing command's read before any write does: a missing `git`, or a read
+the time limit or an interrupt cuts short, is a refusal whose `Next:` runs
+`ils init claude --project` again, and any other failure ends the run broke with nothing written.
+Skills written before a failed settings write stay, and running the command again finishes the
+job.
 
 #### Init by hand
 
