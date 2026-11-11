@@ -3,6 +3,8 @@
 package guard_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -117,6 +119,8 @@ func TestParse_ReportsWhereEachGitInvocationPointsGit(t *testing.T) {
 		{name: "non-literal GIT_DIR", command: `GIT_DIR="$d" git status`, want: guard.GitTarget{Dir: start, Unknown: true}},
 		{name: "GIT_DIR given a variable the command assigned a literal", command: "S=/srv/repo.git; GIT_DIR=$S git status", want: guard.GitTarget{Dir: start, GitDir: "/srv/repo.git"}},
 		{name: "absolute cd after a source of a file, which may set GIT_DIR", command: "source env.sh; cd /srv/repo; git status", want: guard.GitTarget{Dir: "/srv/repo", Unknown: true}},
+		{name: "each -C relative to the one before", command: "git -C a -C b status", want: guard.GitTarget{Dir: start + "/a/b"}},
+		{name: "absolute -C after a cd the guard cannot follow", command: `cd "$x"; git -C /srv/repo status`, want: guard.GitTarget{Dir: "/srv/repo"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -125,6 +129,50 @@ func TestParse_ReportsWhereEachGitInvocationPointsGit(t *testing.T) {
 			got := lastWith(t, tt.command, guard.Caller{Home: home, Dir: start, Env: tt.env})
 
 			assert.Check(t, is.DeepEqual(got.Target, tt.want), "Parse(%q) target", tt.command)
+		})
+	}
+}
+
+// linkedTree returns a new directory where a `..` after a symbolic link lands elsewhere than a text
+// join puts it (start/link/.. is other), and where via reaches start through a link.
+func linkedTree(t *testing.T) string {
+	t.Helper()
+
+	root := outsideDir(t)
+	start := filepath.Join(root, "start")
+	target := filepath.Join(root, "other", "t")
+	assert.NilError(t, os.MkdirAll(start, 0o750))
+	assert.NilError(t, os.MkdirAll(target, 0o750))
+	assert.NilError(t, os.Symlink(target, filepath.Join(start, "link")))
+	assert.NilError(t, os.Symlink(start, filepath.Join(root, "via")))
+
+	return root
+}
+
+func TestParse_ReportsWhereEachCOptionLandsOnDisk(t *testing.T) {
+	t.Parallel()
+	root := linkedTree(t)
+	other := filepath.Join(root, "other")
+
+	tests := []struct {
+		name    string
+		dir     string
+		command string
+		want    string
+	}{
+		{name: "link then .. in one -C", dir: "start", command: "git -C link/.. status", want: other},
+		{name: "-C .. after a cd into a link", dir: "start", command: "cd link; git -C .. status", want: other},
+		{name: "absolute -C with link then ..", dir: "via", command: "git -C " + filepath.Join(root, "start", "link") + "/.. status", want: other},
+		{name: "-C .. under a directory that does not exist", dir: "start", command: "git -C missing/.. status", want: ""},
+		{name: "-C with no .. from a directory reached through a link", dir: "via", command: "git -C sub status", want: filepath.Join(root, "via", "sub")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := lastWith(t, tt.command, guard.Caller{Home: home, Dir: filepath.Join(root, tt.dir)})
+
+			assert.Check(t, is.Equal(got.Target.Dir, tt.want), "Parse(%q) target directory", tt.command)
 		})
 	}
 }

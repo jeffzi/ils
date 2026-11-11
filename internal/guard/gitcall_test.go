@@ -394,7 +394,7 @@ func TestParse_WhenAGlobalOptionLacksItsValue_ReportsNoSubcommandOrTarget(t *tes
 
 	assert.Check(t, got.Git.NoSubcommand, "Parse(%q) reports a subcommand %+v, want none", command, got.Git.Subcommand)
 	assert.Check(t, got.Git.GitDirUnknown, "Parse(%q) git dir = %q, want unknown", command, got.Git.GitDir)
-	assert.Check(t, got.Target.Unknown, "Parse(%q) target = %+v, want unknown", command, got.Target)
+	assert.Check(t, is.DeepEqual(got.Target, guard.GitTarget{Unknown: true}), "Parse(%q) target, want unknown with no directory", command)
 }
 
 func TestJudge_WhenAnAliasNamesACommandAnOlderGitLacks_RefusesNamingIt(t *testing.T) {

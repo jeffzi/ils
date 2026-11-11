@@ -94,7 +94,7 @@ func TestApp_Run_WhenParseIsGivenACommandWithTheJSONFlag_PrintsEveryInvocation(t
 	want := &result.Parse{Invocations: []result.Invocation{
 		{
 			Tool: "git", Words: literals("git", "status", "-s"), Dir: f.Dir(),
-			Git: &result.GitCall{Subcommand: &result.Word{Text: "status", Literal: true}, Args: literals("-s"), GitDir: filepath.Join(f.Dir(), ".git")},
+			Git: &result.GitCall{Subcommand: &result.Word{Text: "status", Literal: true}, Args: literals("-s"), GitDir: filepath.Join(f.Dir(), ".git"), Dir: f.Dir()},
 		},
 		{Words: []result.Word{{Text: "echo", Literal: true}, {}}, Dir: f.Dir()},
 	}}
@@ -115,6 +115,19 @@ func TestApp_Run_WhenParseRunsAsText_PrintsTheGitCallOfAGitInvocation(t *testing
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
 	assert.Check(t, is.Contains(got.stdout, "subcommand status"))
 	assert.Check(t, is.Contains(got.stdout, filepath.Join(f.Dir(), ".git")))
+}
+
+func TestApp_Run_WhenParseRunsAsText_PrintsTheDirectoryGitRunsIn(t *testing.T) {
+	t.Parallel()
+
+	f := gittest.New(t, trunk)
+	sub := filepath.Join(f.Dir(), "sub")
+	assert.NilError(t, os.Mkdir(sub, 0o750))
+
+	got := launch(t, outsideWith(t, f.Env()), "parse", "--cwd", f.Dir(), "--", "git -C sub status")
+
+	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
+	assert.Check(t, is.Contains(got.stdout, sub), "stdout = %q", got.stdout)
 }
 
 func TestApp_Run_WhenParseRunsAsText_PrintsANonLiteralWordApartFromAnEmptyOne(t *testing.T) {
@@ -154,6 +167,7 @@ func TestApp_Run_WhenParseRunsAsText_PrintsWhatItCannotPlace(t *testing.T) {
 	}{
 		{name: "directory after a cd that is not literal", dir: f.Dir(), command: `cd "$x"; echo hi`, want: "directory unknown"},
 		{name: "git dir after a cd that is not literal", dir: f.Dir(), command: `cd "$x"; git status`, want: "git dir unknown"},
+		{name: "directory git runs in after a cd that is not literal", dir: f.Dir(), command: `cd "$x"; git status`, want: "git runs in unknown"},
 		{name: "directory outside any repository", dir: t.TempDir(), command: "git status", want: "git dir none"},
 	}
 	for _, tt := range tests {

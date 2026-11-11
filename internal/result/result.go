@@ -376,6 +376,9 @@ type GitCall struct {
 	// GitDir is the absolute git dir the invocation targets, and empty when it targets no
 	// repository or GitDirUnknown.
 	GitDir string `json:"git_dir,omitempty"`
+	// Dir is the absolute directory git runs in once the invocation's own -C options apply, unlike
+	// the invocation's Dir, which is the shell's; empty when it cannot be told.
+	Dir string `json:"dir,omitempty"`
 	// Subcommand is the command git runs once its aliases expand, and nil when git runs none.
 	Subcommand *Word  `json:"subcommand,omitempty"`
 	Args       []Word `json:"args"`
