@@ -43,11 +43,17 @@ func linkedSkill(t *testing.T) (app cli.App, target string) {
 
 	app, home := installing(t)
 	target = t.TempDir()
-	link := filepath.Join(skillsUnder(home), ilsSkill)
-	assert.NilError(t, os.MkdirAll(filepath.Dir(link), 0o750))
-	assert.NilError(t, os.Symlink(target, link))
+	linkAt(t, target, filepath.Join(skillsUnder(home), ilsSkill))
 
 	return app, target
+}
+
+// linkAt makes link, with its parent directories, a symbolic link to target.
+func linkAt(t *testing.T, target, link string) {
+	t.Helper()
+
+	assert.NilError(t, os.MkdirAll(filepath.Dir(link), 0o750))
+	assert.NilError(t, os.Symlink(target, link))
 }
 
 func TestApp_Run_WhenInitClaudeFindsASkillDirectoryThatIsALink_WritesNothingThroughIt(t *testing.T) {

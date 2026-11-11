@@ -229,7 +229,7 @@ func TestApp_Run_WhenInitClaudeFindsSettings_KeepsTheOrderOfTheUsersKeys(t *test
 	assert.Check(t, is.DeepEqual(names(t, member(t, settings, "hooks")), []string{"PostToolUse", "PreToolUse"}))
 }
 
-func TestApp_Run_WhenInitClaudeFindsSettings_KeepsTheUsersValuesAndAddsItsOwnAfterThem(t *testing.T) {
+func TestApp_Run_WhenInitClaudeFindsSettings_AppendsItsOwnAfterTheUsersValues(t *testing.T) {
 	t.Parallel()
 
 	app, home := installing(t)

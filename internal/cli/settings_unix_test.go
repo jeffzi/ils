@@ -73,9 +73,7 @@ func linkedSettings(t *testing.T) (app cli.App, target string) {
 	app, home := installing(t)
 	target = filepath.Join(t.TempDir(), "settings.json")
 	assert.NilError(t, os.WriteFile(target, []byte("{}"), 0o600))
-	link := settingsUnder(home)
-	assert.NilError(t, os.MkdirAll(filepath.Dir(link), 0o750))
-	assert.NilError(t, os.Symlink(target, link))
+	linkAt(t, target, settingsUnder(home))
 
 	return app, target
 }
@@ -96,9 +94,7 @@ func TestApp_Run_WhenInitClaudeFindsTheSettingsAreALinkToNothing_ExitsOneNamingT
 
 	app, home := installing(t)
 	link := settingsUnder(home)
-	assert.NilError(t, os.MkdirAll(filepath.Dir(link), 0o750))
-	missing := filepath.Join(t.TempDir(), "settings.json")
-	assert.NilError(t, os.Symlink(missing, link))
+	linkAt(t, filepath.Join(t.TempDir(), "settings.json"), link)
 
 	got := launch(t, app, "init", "claude", "--json")
 
