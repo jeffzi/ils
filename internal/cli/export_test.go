@@ -3,7 +3,6 @@ package cli
 import (
 	"runtime/debug"
 	"slices"
-	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -66,27 +65,12 @@ const UserHook = userHook
 // ProjectHook is projectHook, for the tests of package cli_test.
 const ProjectHook = projectHook
 
-// HookTimeout returns hookTimeout as the number a settings file holds, for the tests of package
+// HookTimeout is hookTimeout as the number a decoded settings file holds, for the tests of package
 // cli_test.
-func HookTimeout() float64 {
-	timeout, err := strconv.ParseFloat(hookTimeout, 64)
-	if err != nil {
-		panic(err)
-	}
+const HookTimeout float64 = hookTimeout
 
-	return timeout
-}
-
-// HookOnFailure returns hookOnFailure as the string a settings file holds, for the tests of package
-// cli_test.
-func HookOnFailure() string {
-	onFailure, err := strconv.Unquote(hookOnFailure)
-	if err != nil {
-		panic(err)
-	}
-
-	return onFailure
-}
+// HookOnFailure is hookOnFailure, for the tests of package cli_test.
+const HookOnFailure = hookOnFailure
 
 // PermissionRules returns the rules `ils init claude` adds to each permission list, by the name of
 // the list, for the tests of package cli_test.

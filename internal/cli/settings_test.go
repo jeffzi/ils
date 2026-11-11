@@ -145,7 +145,7 @@ func commandHook(command string) map[string]any {
 // the guard needs.
 func guardEntry(command any) map[string]any {
 	return map[string]any{
-		"type": "command", "command": command, "timeout": cli.HookTimeout(), "onFailure": cli.HookOnFailure(),
+		"type": "command", "command": command, "timeout": cli.HookTimeout, "onFailure": cli.HookOnFailure,
 	}
 }
 
@@ -303,11 +303,11 @@ func TestApp_Run_WhenInitClaudeFindsTheHookInPlace_SetsItsTimeoutAndFailureWhere
 		},
 		{
 			name: "timeout in place, failure missing",
-			hook: map[string]any{"command": cli.UserHook, "timeout": cli.HookTimeout()},
+			hook: map[string]any{"command": cli.UserHook, "timeout": cli.HookTimeout},
 		},
 		{
 			name: "failure in place, timeout missing",
-			hook: map[string]any{"command": cli.UserHook, "onFailure": cli.HookOnFailure()},
+			hook: map[string]any{"command": cli.UserHook, "onFailure": cli.HookOnFailure},
 		},
 	}
 	for _, tt := range tests {

@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/jeffzi/ils/internal/result"
@@ -30,14 +31,13 @@ const (
 
 	// hookTimeout and hookOnFailure are the values the guard's hook needs: a timeout long enough
 	// for a guard that asks git, and a failure that blocks the command instead of letting it run.
-	hookTimeout   = "15"
-	hookOnFailure = `"block"`
+	hookTimeout   = 15
+	hookOnFailure = "block"
 )
 
 const (
 	keyHooks       = "hooks"
 	keyPermissions = "permissions"
-	keyMatcher     = "matcher"
 	keyCommand     = "command"
 	keyTimeout     = "timeout"
 	keyOnFailure   = "onFailure"
@@ -169,7 +169,12 @@ func settingsObject(file string, text []byte) (jsonObject, error) {
 // keeping a line for each change. The hooks are checked for their shape even when no hook is
 // added, so a file the guard's setup could not edit is refused wherever it runs.
 func (e *settingsEdit) apply(settings *jsonObject, hook string) error {
-	hooks, groups, err := e.hookGroups(*settings)
+	hooks, err := e.member(*settings, keyHooks, keyHooks)
+	if err != nil {
+		return err
+	}
+
+	groups, err := e.list(hooks, claudeEvent, keyHooks+"."+claudeEvent)
 	if err != nil {
 		return err
 	}
@@ -181,22 +186,6 @@ func (e *settingsEdit) apply(settings *jsonObject, hook string) error {
 	}
 
 	return e.addRules(settings)
-}
-
-// hookGroups returns the hooks of settings and its PreToolUse groups, or a *shapeError when
-// either has the wrong type.
-func (e *settingsEdit) hookGroups(settings jsonObject) (jsonObject, []jsontext.Value, error) {
-	hooks, err := e.member(settings, keyHooks, keyHooks)
-	if err != nil {
-		return jsonObject{}, nil, err
-	}
-
-	groups, err := e.list(hooks, claudeEvent, keyHooks+"."+claudeEvent)
-	if err != nil {
-		return jsonObject{}, nil, err
-	}
-
-	return hooks, groups, nil
 }
 
 // member returns the member name of parent read as an object, an empty object when parent has
@@ -284,9 +273,9 @@ func (e *settingsEdit) addHook(settings *jsonObject, hooks jsonObject, groups []
 
 // withArray returns parent as JSON text, with the array elems as its member name.
 func withArray(parent jsonObject, name string, elems []jsontext.Value) (jsontext.Value, error) {
-	array, err := arrayValue(elems)
+	array, err := json.Marshal(elems)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("encode an array: %w", err)
 	}
 
 	parent.set(name, array)
@@ -335,8 +324,8 @@ func fixHooks(hooks []jsontext.Value) (held, changed bool, err error) {
 		}
 
 		held = true
-		timed := setValue(&entry, keyTimeout, hookTimeout)
-		blocks := setValue(&entry, keyOnFailure, hookOnFailure)
+		timed := setValue(&entry, keyTimeout, jsontext.Value(strconv.Itoa(hookTimeout)))
+		blocks := setValue(&entry, keyOnFailure, jsonString(hookOnFailure))
 		if !timed && !blocks {
 			continue
 		}
@@ -366,14 +355,14 @@ func runsGuard(hook jsonObject) bool {
 	return guardHook.MatchString(strings.TrimSpace(command))
 }
 
-// setValue sets the member name of o to want, given as JSON text, unless it already holds an
-// equal value, and reports whether it changed.
-func setValue(o *jsonObject, name, want string) bool {
-	if have, found := o.get(name); found && sameJSON(have, jsontext.Value(want)) {
+// setValue sets the member name of o to want unless it already holds an equal value, and reports
+// whether it changed.
+func setValue(o *jsonObject, name string, want jsontext.Value) bool {
+	if have, found := o.get(name); found && sameJSON(have, want) {
 		return false
 	}
 
-	o.set(name, jsontext.Value(want))
+	o.set(name, want)
 
 	return true
 }
@@ -401,27 +390,28 @@ func jsonString(text string) jsontext.Value {
 
 // guardGroup returns the PreToolUse group on Bash whose one hook runs command.
 func guardGroup(command string) (jsontext.Value, error) {
-	hook := jsonObject{}
-	hook.set("type", jsonString("command"))
-	hook.set(keyCommand, jsonString(command))
-	hook.set(keyTimeout, jsontext.Value(hookTimeout))
-	hook.set(keyOnFailure, jsontext.Value(hookOnFailure))
-
-	entry, err := hook.value()
-	if err != nil {
-		return nil, err
+	//nolint:govet // The order of the fields is the order of the keys written, not a layout to pack.
+	type hook struct {
+		Type      string `json:"type"`
+		Command   string `json:"command"`
+		Timeout   int    `json:"timeout"`
+		OnFailure string `json:"onFailure"`
 	}
 
-	hooks, err := arrayValue([]jsontext.Value{entry})
-	if err != nil {
-		return nil, err
+	group := struct {
+		Matcher string `json:"matcher"`
+		Hooks   []hook `json:"hooks"`
+	}{
+		Matcher: claudeShellTool,
+		Hooks:   []hook{{Type: "command", Command: command, Timeout: hookTimeout, OnFailure: hookOnFailure}},
 	}
 
-	group := jsonObject{}
-	group.set(keyMatcher, jsonString(claudeShellTool))
-	group.set(keyHooks, hooks)
+	text, err := json.Marshal(group)
+	if err != nil {
+		return nil, fmt.Errorf("encode the guard's hook: %w", err)
+	}
 
-	return group.value()
+	return text, nil
 }
 
 // addRules adds to each permission list of settings the rules of it that none of the lists holds
@@ -447,9 +437,9 @@ func (e *settingsEdit) addRules(settings *jsonObject) error {
 			continue
 		}
 
-		array, arrayErr := arrayValue(slices.Concat(lists[i], added))
+		array, arrayErr := json.Marshal(slices.Concat(lists[i], added))
 		if arrayErr != nil {
-			return arrayErr
+			return fmt.Errorf("encode an array: %w", arrayErr)
 		}
 
 		permissions.set(list.name, array)
@@ -603,19 +593,9 @@ func readArray(text jsontext.Value) ([]jsontext.Value, bool, error) {
 		return nil, false, nil
 	}
 
-	dec := jsontext.NewDecoder(bytes.NewReader(text))
-	if _, err := dec.ReadToken(); err != nil {
-		return nil, false, fmt.Errorf("read an array: %w", err)
-	}
-
 	elems := []jsontext.Value{}
-	for dec.PeekKind() != ']' {
-		value, err := dec.ReadValue()
-		if err != nil {
-			return nil, false, fmt.Errorf("read an element: %w", err)
-		}
-
-		elems = append(elems, value.Clone())
+	if err := json.Unmarshal(text, &elems); err != nil {
+		return nil, false, fmt.Errorf("read an array: %w", err)
 	}
 
 	return elems, true, nil
@@ -645,53 +625,23 @@ func (o *jsonObject) set(name string, value jsontext.Value) {
 
 // value returns o as JSON text.
 func (o jsonObject) value() (jsontext.Value, error) {
-	return encodeComposite(jsontext.BeginObject, jsontext.EndObject, "an object", func(enc *jsontext.Encoder) error {
-		for i, name := range o.names {
-			if err := enc.WriteToken(jsontext.String(name)); err != nil {
-				return err
-			}
-
-			if err := enc.WriteValue(o.values[i]); err != nil {
-				return err
-			}
-		}
-
-		return nil
-	})
-}
-
-// arrayValue returns elems as a JSON array.
-func arrayValue(elems []jsontext.Value) (jsontext.Value, error) {
-	return encodeComposite(jsontext.BeginArray, jsontext.EndArray, "an array", func(enc *jsontext.Encoder) error {
-		for _, elem := range elems {
-			if err := enc.WriteValue(elem); err != nil {
-				return err
-			}
-		}
-
-		return nil
-	})
-}
-
-// encodeComposite returns the JSON text that begin, what body writes, and end make up, stopping at
-// the first write that fails with an error saying it could not encode kind.
-func encodeComposite(
-	begin, end jsontext.Token, kind string, body func(*jsontext.Encoder) error,
-) (jsontext.Value, error) {
 	var buf bytes.Buffer
 	enc := jsontext.NewEncoder(&buf)
 
-	err := enc.WriteToken(begin)
-	if err == nil {
-		err = body(enc)
+	err := enc.WriteToken(jsontext.BeginObject)
+	for i := 0; err == nil && i < len(o.names); i++ {
+		err = enc.WriteToken(jsontext.String(o.names[i]))
+		if err == nil {
+			err = enc.WriteValue(o.values[i])
+		}
 	}
 
 	if err == nil {
-		err = enc.WriteToken(end)
+		err = enc.WriteToken(jsontext.EndObject)
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("encode %s: %w", kind, err)
+		return nil, fmt.Errorf("encode an object: %w", err)
 	}
 
 	return jsontext.Value(bytes.TrimSpace(buf.Bytes())), nil
