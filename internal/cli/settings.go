@@ -90,14 +90,12 @@ func planSettings(dir, hook string) (settingsEdit, error) {
 	file := filepath.Join(dir, settingsFile)
 	edit := settingsEdit{file: file, target: file, mode: fileMode}
 
-	if info, err := os.Lstat(file); err == nil && info.Mode()&fs.ModeSymlink != 0 {
-		target, err := filepath.EvalSymlinks(file)
-		if err != nil {
-			return edit, fmt.Errorf("follow the link %s: %w", file, err)
-		}
-
-		edit.target = target
+	target, err := followLink(file)
+	if err != nil {
+		return edit, err
 	}
+
+	edit.target = target
 
 	//nolint:gosec // G304: the path is the settings file of the Claude Code directory.
 	text, err := os.ReadFile(edit.target)
@@ -579,31 +577,58 @@ func rulesLine(n int, list, file string) result.Phrase {
 	return result.Say("Added %s rules to the %s list of %s", n, list, file)
 }
 
-// write writes the new content of the settings, when there is one, to a file in the directory of
-// the target, and renames it over the target, so that a failed write leaves the old file whole.
-// The new file keeps the mode of the old one.
+// write writes the new content of the settings, when there is one, over the target with
+// replaceFile. The new file keeps the mode of the old one.
 func (e settingsEdit) write() error {
 	if e.text == nil {
 		return nil
 	}
 
-	dir := filepath.Dir(e.target)
+	if err := replaceFile(e.target, e.text, e.mode); err != nil {
+		return fmt.Errorf("write %s: %w", e.file, err)
+	}
+
+	return nil
+}
+
+// followLink returns the file path leads to when path is a link, and path itself otherwise, also
+// when it cannot be read: the write that follows says what is wrong with it. replaceFile takes
+// the result, not the link.
+func followLink(path string) (string, error) {
+	if info, err := os.Lstat(path); err == nil && info.Mode()&fs.ModeSymlink != 0 {
+		target, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return "", fmt.Errorf("follow the link %s: %w", path, err)
+		}
+
+		return target, nil
+	}
+
+	return path, nil
+}
+
+// replaceFile writes text with mode to a new file in the directory of target, making that
+// directory first, and renames it over target. A reader of target sees the old content or the
+// new one, never a part of either, and a failed write leaves the old file whole and removes the
+// new one. target must not be a link: the rename would replace the link, not the file it leads to.
+func replaceFile(target string, text []byte, mode fs.FileMode) error {
+	dir := filepath.Dir(target)
 	if err := os.MkdirAll(dir, dirMode); err != nil {
-		return fmt.Errorf("write %s: %w", e.file, err)
+		return err
 	}
 
-	temp, err := os.CreateTemp(dir, ".settings-*.json")
+	temp, err := os.CreateTemp(dir, "."+filepath.Base(target)+"-*")
 	if err != nil {
-		return fmt.Errorf("write %s: %w", e.file, err)
+		return err
 	}
 
-	err = writeTemp(temp, e.text, e.mode)
+	err = writeTemp(temp, text, mode)
 	if err == nil {
-		err = os.Rename(temp.Name(), e.target)
+		err = os.Rename(temp.Name(), target)
 	}
 
 	if err != nil {
-		return errors.Join(fmt.Errorf("write %s: %w", e.file, err), removeTemp(temp.Name()))
+		return errors.Join(err, removeTemp(temp.Name()))
 	}
 
 	return nil

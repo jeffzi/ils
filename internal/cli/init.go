@@ -317,8 +317,9 @@ func installSkill(shipped fs.FS, name, dest string) (*result.Phrase, error) {
 	}
 }
 
-// placeFile writes the shipped file to dest, with its parent directories, unless dest already
-// holds the same content, and reports whether it wrote. hookScript is written executable.
+// placeFile writes the shipped file to dest with replaceFile, unless dest already holds the same
+// content, and reports whether it wrote. hookScript is written executable, every other file not.
+// A dest that is a link stays one: the file it leads to is written.
 func placeFile(shipped fs.FS, file, dest string) (bool, error) {
 	want, err := fs.ReadFile(shipped, file)
 	if err != nil {
@@ -327,7 +328,7 @@ func placeFile(shipped fs.FS, file, dest string) (bool, error) {
 
 	// A dest that cannot be read is written over, and the write says what is wrong with it.
 	//nolint:gosec // G304: dest is the path of a shipped file under the Claude Code directory.
-	if have, err := os.ReadFile(dest); err == nil && bytes.Equal(have, want) {
+	if have, readErr := os.ReadFile(dest); readErr == nil && bytes.Equal(have, want) {
 		return false, nil
 	}
 
@@ -336,17 +337,13 @@ func placeFile(shipped fs.FS, file, dest string) (bool, error) {
 		mode = scriptMode
 	}
 
-	if err := os.MkdirAll(filepath.Dir(dest), dirMode); err != nil {
-		return false, fmt.Errorf("create the directory of %s: %w", dest, err)
+	target, err := followLink(dest)
+	if err != nil {
+		return false, err
 	}
 
-	if err := os.WriteFile(dest, want, mode); err != nil {
+	if err := replaceFile(target, want, mode); err != nil {
 		return false, fmt.Errorf("write %s: %w", dest, err)
-	}
-
-	// WriteFile keeps the mode of a file that exists, and the umask trims the mode of a new one.
-	if err := os.Chmod(dest, mode); err != nil {
-		return false, fmt.Errorf("set the mode of %s: %w", dest, err)
 	}
 
 	return true, nil
