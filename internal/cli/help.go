@@ -43,6 +43,17 @@ func hookHeader() *cobra.Command {
 	}
 }
 
+// initHeader returns the `ils init` command with its help, which initCommand completes with its
+// Args, RunE and flag.
+func initHeader() *cobra.Command {
+	return &cobra.Command{
+		Use:     initUse,
+		Short:   initShort,
+		Long:    initLong,
+		Example: initExamples,
+	}
+}
+
 // withTimeLimits returns text with each %[1]s set to the time limit and each %[2]s set to the time
 // limit of the long wait, as results name them, so that the help says the limits the command
 // enforces. A text that needs only the time limit leaves %[2]s out.
@@ -215,4 +226,23 @@ The guard runs on macOS and Linux.`
 
 	hookExamples = `# Judge a payload as Claude Code's PreToolUse hook
 ils hook claude < payload.json`
+
+	initWord  = "init"
+	initUse   = initWord + " <harness>"
+	initShort = "Install the skills of ils for a coding agent's harness"
+	initLong  = `Install the skills ils ships for a coding agent's harness. The one
+harness is claude: each skill lands in ~/.claude/skills/<name>, or with
+--project in .claude/skills/<name> at the top level of the repository
+the working directory is in.
+
+A file that already holds what ils ships is left as it is, a file ils
+does not ship stays, and a skill directory that is a link is not written
+to. It prints one line per change, and exits 0 once every skill is in
+place.`
+
+	initExamples = `# Install the skills for Claude Code under your home directory
+ils init claude
+
+# Install them in the repository you are in
+ils init claude --project`
 )

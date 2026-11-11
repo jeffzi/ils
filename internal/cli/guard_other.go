@@ -8,8 +8,8 @@ import (
 	"github.com/jeffzi/ils/internal/result"
 )
 
-// guardUnsupported is the reason every run of the guard commands is refused.
-const guardUnsupported = "the guard runs on macOS and Linux"
+// guardSupported reports false: outside Unix, the guard refuses every run.
+const guardSupported = false
 
 // parseCommand returns `ils parse`, which refuses every run: the guard runs on macOS and Linux.
 func (p *parse) parseCommand() *cobra.Command {

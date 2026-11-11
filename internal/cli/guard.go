@@ -27,17 +27,11 @@ const (
 
 	cwdUsage = "The directory the command runs in"
 
-	// harnessClaude is the harness word of Claude Code, the one harness `ils hook` knows.
-	harnessClaude = "claude"
-
-	// claudeEvent is the hookEventName of the answer Claude Code reads from a PreToolUse hook.
-	claudeEvent = "PreToolUse"
-
 	// claudeDecisionAsk is the permissionDecision that has Claude Code ask the user first.
 	claudeDecisionAsk = "ask"
 
-	// claudeShellTool is the tool_name of Claude Code's shell tool, the one tool the guard judges.
-	claudeShellTool = "Bash"
+	// guardSupported reports true: on Unix, the guard judges commands.
+	guardSupported = true
 
 	// notLiteral stands, in the text of a parse, for a word whose text depends on what the shell
 	// expands.
@@ -230,19 +224,6 @@ func judged(req landing.Request, invocations []guard.Invocation, verdict guard.V
 	return r
 }
 
-// environment returns the variables of environ, each `NAME=value`, by name: a name set twice has
-// its last value, as bash and the commands it starts read it. An entry with no `=` names nothing.
-func environment(environ []string) map[string]string {
-	env := make(map[string]string, len(environ))
-	for _, entry := range environ {
-		if name, value, ok := strings.Cut(entry, "="); ok {
-			env[name] = value
-		}
-	}
-
-	return env
-}
-
 // underTimeLimit returns ctx with the deadline of a command from launch, which counts the time
 // limit from the launch of the app.
 func (p *parse) underTimeLimit(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -388,12 +369,12 @@ func (p *parse) hookCommand() *cobra.Command {
 		refused := result.Refused.ExitCode()
 		harnesses := "the harness it runs under, one of: " + harnessClaude
 
-		switch {
-		case len(args) == 0:
+		switch fitHarness(args) {
+		case harnessMissing:
 			p.quit(refused, hookWord+" takes "+harnesses)
-		case args[0] != harnessClaude:
+		case harnessUnknown:
 			p.quit(refused, fmt.Sprintf("%s takes %s, and %s was given", hookWord, harnesses, args[0]))
-		case len(args) > 1:
+		case harnessFollowed:
 			p.quit(refused, fmt.Sprintf("%s takes one harness and no other word, and %s was given", hookWord, args[1]))
 		default:
 			p.hookClaude(c.Context())

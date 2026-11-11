@@ -48,3 +48,12 @@ const PendingHint = pendingHint
 func (a *App) Root() *cobra.Command {
 	return (&parse{app: *a}).root()
 }
+
+// SetGuardSupported makes `ils init claude` act as on a system where the guard runs when supported
+// is true, and as on one where the guard refuses every run otherwise.
+func (a *App) SetGuardSupported(supported bool) {
+	a.guardRuns = &supported
+}
+
+// GuardUnsupported is guardUnsupported, for the tests of package cli_test.
+const GuardUnsupported = guardUnsupported

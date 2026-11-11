@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"runtime/debug"
@@ -38,6 +39,11 @@ type App struct {
 	// Environ is the process environment, read for the color profile of each stream: NO_COLOR,
 	// CLICOLOR_FORCE and TERM among others.
 	Environ []string
+	// Skills holds the skills `ils init` installs, one directory per skill at its root.
+	Skills fs.FS
+	// guardRuns says whether `ils init` acts as on a system where the guard runs, and so adds its
+	// hook; nil acts as on the system ils was built for.
+	guardRuns *bool
 	// runPush runs `ils push`; nil runs landing.Push.
 	runPush Command
 	// runMerge runs `ils merge`; nil runs landing.Merge.
@@ -453,6 +459,7 @@ func (p *parse) root() *cobra.Command {
 		p.parseCommand(),
 		p.guardCommand(),
 		p.hookCommand(),
+		p.initCommand(),
 	)
 	p.judgeHelpWords(root)
 	addHelpFlags(root)
@@ -802,6 +809,19 @@ func unprinted(lines []result.Phrase, printed []string, gitDir string) []result.
 	}
 
 	return kept
+}
+
+// environment returns the variables of environ, each `NAME=value`, by name: a name set twice has
+// its last value, as bash and the commands it starts read it. An entry with no `=` names nothing.
+func environment(environ []string) map[string]string {
+	env := make(map[string]string, len(environ))
+	for _, entry := range environ {
+		if name, value, ok := strings.Cut(entry, "="); ok {
+			env[name] = value
+		}
+	}
+
+	return env
 }
 
 // print writes text to Stdout and returns code, or 1 when the write fails.
