@@ -24,6 +24,7 @@ func TestParse_WhenQuoteRemovalLeavesPlainText_ReportsALiteral(t *testing.T) {
 		{name: "quotes inside a word", word: `g"i"t`, want: "git"},
 		{name: "escaped dollar in double quotes", word: `"a\$x"`, want: "a$x"},
 		{name: "escaped glob character", word: `\*`, want: "*"},
+		{name: "trailing lone backslash", word: `a\`, want: `a\`},
 		{name: "quoted glob character", word: `"*.go"`, want: "*.go"},
 		{name: "bare tilde", word: `~`, want: home},
 		{name: "tilde path", word: `~/x`, want: home + "/x"},
