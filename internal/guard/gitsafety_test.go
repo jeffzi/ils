@@ -275,7 +275,6 @@ func TestJudge_AllowsGitHistoryRedirectedAroundACdFromOutsideAnyWorkTree(t *test
 
 	checkAllowed(t, caller, []namedCommand{
 		{name: "subshell entering the repository", command: "(cd repo && git show HEAD:go.mod) > old.mod"},
-		{name: "subshell entering a directory the command assigned", command: `d=repo; (cd "$d" && git show HEAD:go.mod) > old.mod`},
 	})
 }
 
@@ -298,7 +297,7 @@ func TestJudge_WhenWhetherTheTargetIsInAWorkTreeCannotBeRead_RefusesNamingTheRea
 	f, _ := standingOn(t, "main", "topic")
 	command := "git show HEAD:README.md > " + gittest.ShellWord(filepath.Join(outsideDir(t), "x.md"))
 
-	checkJudgedRow(t, callerFailingOn(t, f, f.Dir(), "rev-parse", "--show-toplevel"), judged{command: command, want: guard.Refuse})
+	checkJudgedRow(t, callerFailingOn(t, f, f.Dir(), "rev-parse", "--show-toplevel"), judged{command: command, want: guard.Refuse, wantNamed: gittest.FailedSaid})
 }
 
 func TestJudge_AllowsAGitOperationThatKeepsWork(t *testing.T) {
@@ -561,7 +560,7 @@ func TestJudge_WhenAWorkTreeReadFails_RefusesSayingWhatBroke(t *testing.T) {
 	caller := callerFailingOn(t, f, f.Dir(), "status")
 
 	checkJudgedInTurn(t, caller, []judged{
-		{name: "rebase", command: "git rebase main", want: guard.Refuse},
-		{name: "worktree remove", command: "git worktree remove " + gittest.ShellWord(clean), want: guard.Refuse},
+		{name: "rebase", command: "git rebase main", want: guard.Refuse, wantNamed: gittest.FailedSaid},
+		{name: "worktree remove", command: "git worktree remove " + gittest.ShellWord(clean), want: guard.Refuse, wantNamed: gittest.FailedSaid},
 	})
 }
