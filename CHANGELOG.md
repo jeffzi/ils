@@ -21,6 +21,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Make the `ils` agent skill ask once where new work lands when the checkout is on a work branch,
   instead of starting a new branch on its own.
 - Report a `gh` reachable only through a relative `PATH` entry as missing on every operating system.
+- Refuse `ils merge` on a default branch whose ruleset requires a merge queue.
+- Refuse `ils push`, `ils merge`, and `ils release` when any push URL of `origin` names another
+  repository than its fetch URL.
+- Make the guard read a trailing lone backslash in an unquoted word as bash does, keeping it.
 
 ### Fixed
 
@@ -36,6 +40,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Fix `ils release --debug` leaving the wait for the release commit's checks out of its trace.
 - Fix the `ils` agent skill leaving later commits out of the squash commit's message by rewriting
   the pull request's title and body after every green push.
+- Fix `ils merge --help` and `ils release --help` stating the full time limit as the wait for the
+  checks, which stops 20 seconds earlier.
+- Fix `ils init claude` calling a `settings.json` that holds a member twice or an escape that names
+  no character not JSON, instead of naming the problem.
+- Fix a second Ctrl-C on Windows ending `ils` with an exit code other than the console's, and the
+  terminal check misreading the foreground process group on big-endian systems.
+- Fix `ils merge` saying the branch could not be deleted on origin when the time limit cut the
+  delete short.
+- Fix the squash commit's body repeating trailers the pull request's body already holds.
+- Fix `ils push`, `ils merge`, and `ils status` losing a red verdict when the time limit cut the
+  read of the failed log short.
+- Fix `ils release` judging the checks of a workflow run created during its read as checks of no
+  workflow.
+- Fix `ils status` suggesting `ils push`, which then failed, when origin refuses the read of its
+  default branch.
+- Fix `ils status` reporting checks and a merge step for a pull request head other than the
+  branch's tip, and saying no check reported when a required check never reported.
+- Fix `ils push`, `ils merge`, and `ils release` reporting a push as done when one of several push
+  URLs refused it.
+- Fix the guard allowing `gh`'s own aliases, such as `gh pr co --force`, that the command they
+  name is refused for.
+- Fix the guard allowing `git mv --force`, `git submodule update --force`, and
+  `git submodule deinit --force`, which overwrite uncommitted work.
 
 ## [0.5.0] - 2026-10-31
 
