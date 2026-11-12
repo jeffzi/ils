@@ -821,3 +821,117 @@ func TestStatus_WhenOriginCannotBeReached_CountsAgainstTheLastFetch(t *testing.T
 	assert.Check(t, is.Len(got.status.Unread, 1))
 	assert.Check(t, hasUnread(got.status, "origin's trunk"), "unread %v, want an entry for origin's trunk", got.status.Unread)
 }
+
+// ---------------------------------------------------------------------------
+// Origin's trunk out of reach
+// ---------------------------------------------------------------------------
+
+// trunkMiss is one way origin keeps a status from learning its trunk: arrange changes the
+// repository before the scene is built, and keep, when set, changes how origin answers after.
+type trunkMiss struct {
+	arrange func(*gittest.Fixture)
+	keep    func(*scene, *testing.T)
+	name    string
+	offline bool
+}
+
+// lastFetched returns an arrange that runs stand, then records origin's trunk as the last fetch saw
+// it.
+func lastFetched(stand func(*gittest.Fixture)) func(*gittest.Fixture) {
+	return func(f *gittest.Fixture) {
+		f.Git("remote", "set-head", "origin", trunk)
+		stand(f)
+	}
+}
+
+// missedTrunk returns the scene of miss under the forge build.
+func missedTrunk(t *testing.T, miss trunkMiss, build forgeFor) *scene {
+	t.Helper()
+
+	s := statusSceneAt(t, miss.arrange, build, miss.offline)
+	if miss.keep != nil {
+		miss.keep(s, t)
+	}
+
+	return s
+}
+
+func TestStatus_WhenOriginsTrunkCannotBeReadOnAWorkBranch_EndsOnTheStepPushEndsOn(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		want string
+		miss trunkMiss
+	}{
+		{
+			miss: trunkMiss{name: "origin turns the caller away", arrange: lastFetched(publishTopic), keep: (*scene).refuse},
+			want: nextFixed(),
+		},
+		{miss: trunkMiss{name: "origin does not answer", arrange: lastFetched(publishTopic), offline: true}, want: nextPush()},
+		{
+			miss: trunkMiss{name: "origin's answer names no branch", arrange: func(f *gittest.Fixture) {
+				f.Publish(topic)
+				f.DetachOriginHead()
+			}},
+			want: nextPush(),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.miss.name, func(t *testing.T) {
+			t.Parallel()
+			s := missedTrunk(t, tt.miss, greenOpen())
+
+			got := seeStatus(t, s, (*testing.T).Context)
+
+			assertSays(t, "Next:"+nextOf(t, got.text), tt.want)
+		})
+	}
+}
+
+func TestStatus_WhenOriginsTrunkIsNotLearnedOnTheTrunk_StandsOnTheLastFetchedTrunk(t *testing.T) {
+	t.Parallel()
+
+	tests := []trunkMiss{
+		{name: "origin turns the caller away", arrange: lastFetched(standOnTrunk), keep: (*scene).refuse},
+		{name: "origin does not answer", arrange: lastFetched(standOnTrunk), offline: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := missedTrunk(t, tt, ruledBy(forge.RulesProtect))
+
+			got := seeStatus(t, s, (*testing.T).Context)
+
+			assert.Check(t, is.Equal(got.status.Standing, standingTrunk))
+			assert.Check(t, is.Equal(got.status.Trunk, trunk))
+			assertSays(t, nextOf(t, got.text), nextBranch())
+		})
+	}
+}
+
+func TestStatus_WhenTheReadOfOriginsURLsIsCutShortOnTheTrunk_StandsOnTheLastFetchedTrunk(t *testing.T) {
+	// Not parallel: stallingGit puts a git that stalls first on PATH with t.Setenv.
+	s := statusScene(t, lastFetched(standOnTrunk), ruledBy(forge.RulesProtect))
+	ctx := byTimeLimit().stallingGit([]string{"remote", "get-url", "--push"})(t, s)
+
+	got := seeStatus(t, s, func(*testing.T) context.Context { return ctx })
+
+	assert.Assert(t, hasUnread(got.status, readURLs), "unread %v, want %s listed", got.status.Unread, readURLs)
+	assert.Check(t, is.Equal(got.status.Standing, standingTrunk))
+	assert.Check(t, is.Equal(got.status.Trunk, trunk))
+	assertEndsOn(t, got, nextBranch())
+}
+
+func TestStatus_WhenNoTrunkNameCanBeLearned_LeavesWhereHEADStandsUnread(t *testing.T) {
+	t.Parallel()
+	s := statusScene(t, func(f *gittest.Fixture) {
+		standOnTrunk(f)
+		f.Git("remote", "set-head", "origin", "--delete")
+	}, ruledBy(forge.RulesProtect))
+	s.refuse(t)
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	assert.Check(t, is.Equal(got.status.Standing, result.Standing("")))
+	assertEndsOn(t, got, expect("fix what failed"))
+}

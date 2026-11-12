@@ -136,6 +136,13 @@ var ErrRemote = errors.New("origin could not be reached")
 // whose Stderr holds what origin and git said, is wrapped with it.
 var ErrRefused = errors.New("origin refused the call")
 
+// Unanswered reports whether err is the failure of a call to origin that got no answer to what it
+// asked: origin could not be reached (ErrRemote), or turned the caller away (ErrRefused). What the
+// clone last fetched from origin is then the only answer there is.
+func Unanswered(err error) bool {
+	return errors.Is(err, ErrRemote) || errors.Is(err, ErrRefused)
+}
+
 // PushError reports a push that git or origin refused for a ref: a non-fast-forward, a tag origin
 // already holds at another commit, a hook of origin that declined it, a ref origin hides, a pre-push
 // hook that failed. An origin that never answered, or that hung up before it reported on the ref, is
@@ -344,7 +351,7 @@ func (r Repo) TrunkOrLastFetched(ctx context.Context) (trunk string, found bool,
 		return trunk, true, nil
 	}
 
-	if !errors.Is(err, ErrRemote) && !errors.Is(err, ErrRefused) {
+	if !Unanswered(err) {
 		return "", false, err
 	}
 
