@@ -80,6 +80,10 @@ func discards() map[string]discard {
 			refuses: forced,
 			reason:  "git rm --force deletes files even when they hold uncommitted changes",
 		},
+		"mv": {
+			refuses: forced,
+			reason:  "git mv --force overwrites the file at the destination, uncommitted changes included",
+		},
 		"apply": {
 			refuses: func(o subcommandOptions) bool { return o.sets('R', "--reverse") },
 			reason:  "git apply --reverse undoes changes in the working tree",
@@ -91,6 +95,7 @@ func discards() map[string]discard {
 	}
 	maps.Copy(table, recoveryDiscards())
 	maps.Copy(table, plumbingDiscards())
+	maps.Copy(table, submoduleDiscards())
 
 	return table
 }
@@ -168,6 +173,21 @@ func plumbingDiscards() map[string]discard {
 	}
 }
 
+// submoduleDiscards returns the operations of discards that git submodule performs on the work
+// trees of the submodules.
+func submoduleDiscards() map[string]discard {
+	return map[string]discard{
+		"submodule update": {
+			refuses: forced,
+			reason:  "git submodule update --force checks out the recorded commits over the submodules' uncommitted changes",
+		},
+		"submodule deinit": {
+			refuses: forced,
+			reason:  "git submodule deinit --force removes the submodules' work trees even when they hold uncommitted changes",
+		},
+	}
+}
+
 // nullObjectID reports whether value is the all-zero object id, SHA-1 or SHA-256, which git reads
 // as a new value of `git update-ref` as the request to delete the ref.
 func nullObjectID(value string) bool {
@@ -191,7 +211,7 @@ func refuseDiscardingGit(ctx context.Context, caller Caller, inv Invocation) (Ve
 
 	table, name := discards(), ruleName(sub)
 	op, found := discard{}, false
-	if args := inv.Git.Args; len(args) > 0 {
+	if args := inv.Git.Args[operationAt(name, inv.Git.Args):]; len(args) > 0 {
 		if !args[0].Literal && hasOperations(table, name) {
 			return Verdict{}, &unreadArgumentError{sub: sub}
 		}
@@ -373,6 +393,23 @@ func judgeForcedBranchOverwrite(ctx context.Context, caller Caller, inv Invocati
 	}
 
 	return "", nil
+}
+
+// operationAt returns the index in args of the word that names the operation of the subcommand
+// sub, or len(args) when no word does: the first word, after the options git's submodule script
+// reads before its operation.
+func operationAt(sub string, args []Word) int {
+	if sub != "submodule" {
+		return 0
+	}
+
+	leading := []string{"-q", "--quiet", "--cached"}
+	at := slices.IndexFunc(args, func(w Word) bool { return !w.Literal || !slices.Contains(leading, w.Text) })
+	if at < 0 {
+		return len(args)
+	}
+
+	return at
 }
 
 // hasOperations reports whether table holds an operation of sub named by the word after it.

@@ -100,6 +100,8 @@ func TestJudge_AllowsEverydayCommandsOutsideAnyRepository(t *testing.T) {
 		{name: "script run through a variable the command assigned", command: "S=/tmp/work; mkdir -p $S && cd $S && $S/run.sh"},
 		{name: "redirected call of a function wrapping a test runner", command: `T() { uv run pytest -q "$@"; }; T -k x > out.txt`},
 		{name: "function declared and called in one and list", command: `mk() { echo "$1"; } && mk a && mk b`},
+		{name: "mv of a tracked file", command: "git mv old.go new.go"},
+		{name: "submodule update", command: "git submodule update"},
 	})
 }
 
@@ -155,6 +157,9 @@ func TestJudge_WhenAGitArgumentCannotBeRead_NamesDoubleDashWhereItLetsTheCommand
 		{name: "branch -d", command: `git branch -d "$b"`, wantNamed: "after `--`"},
 		{name: "commit", command: `git commit -m msg "$f"`, wantNamed: "after `--`"},
 		{name: "several unreadable arguments", command: `git branch -d "$a" "$b"`, wantNamed: "after `--`"},
+		{name: "mv", command: `git mv "$f" b`, wantNamed: "after `--`"},
+		{name: "submodule update", command: `git submodule update "$x"`, wantNamed: "after `--`"},
+		{name: "submodule deinit", command: `git submodule deinit "$x"`, wantNamed: "after `--`"},
 	})
 }
 

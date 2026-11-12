@@ -1179,6 +1179,8 @@ The guard refuses:
   exists in any letter case;
 - `restore` without `--staged` (or `-S`), or with `--worktree` (`-W`) beside it;
 - `rm --force`;
+- `mv --force` (`-f`);
+- `submodule update --force` (`-f`) and `submodule deinit --force` (`-f`);
 - `reflog expire`, `delete`, and `drop`;
 - `gc --prune=…`, and `gc` with `gc.pruneExpire` set through `-c` or `--config-env`;
 - `repack -a -d` without `-A`, `--cruft`, or `--keep-unreachable`, and `repack -d` with

@@ -80,9 +80,10 @@ type knownOptions struct {
 // subcommandOptionTable lists the options of the subcommands the guard knows, one paragraph per
 // subcommand: its name, then after `-` the short options that take a value, then its long
 // options. These are the options git 2.55 lists with `git <subcommand> --help-all`, and for
-// send-email those its script declares. A long option ending in `=` takes a value, and one
-// starting with `[no-]` has a negated form too, which takes none. An option that takes a value
-// only after `=` is listed as taking none.
+// send-email those its script declares. For submodule, whose script reads the options of each of
+// its operations apart, they are those of update and deinit, the operations the guard checks. A
+// long option ending in `=` takes a value, and one starting with `[no-]` has a negated form too,
+// which takes none. An option that takes a value only after `=` is listed as taking none.
 const subcommandOptionTable = `
 add -U
 	[no-]dry-run [no-]verbose [no-]interactive [no-]patch [no-]auto-advance unified=
@@ -204,6 +205,11 @@ send-email -v
 	[no-]to-cover dry-run [no-]thread [no-]validate novalidate [no-]mailmap [no-]use-mailmap [no-]format-patch
 	force [no-]xmailer git-completion-helper [no-]outlook-id-fix no-identity dump-aliases
 	translate-aliases
+
+submodule -j
+	quiet cached verbose progress init require-init remote no-fetch force rebase ref-format=
+	reference= dissociate merge recursive checkout [no-]recommend-shallow depth= jobs=
+	[no-]single-branch filter= all
 
 switch -cC
 	[no-]create= [no-]force-create= [no-]guess [no-]discard-changes [no-]quiet
