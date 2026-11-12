@@ -14,13 +14,15 @@ import (
 	"github.com/jeffzi/ils/internal/result"
 )
 
-// display shows how a landing command advances on the terminals ils prints to: one spinner line
-// for the running step on stderr, and each step line on stdout as soon as its step succeeds. A
-// stream that gets neither is left untouched. A failed write is not reported: the display never
-// changes the result or the exit code, and a step line that could not be written is not printed.
+// display shows how a command advances on the terminals ils prints to: one spinner line for the
+// running step on stderr, and each step line on stdout as soon as its step ends, behind the mark of
+// its kind. A stream that gets neither is left untouched. A failed write is not reported: the
+// display never changes the result or the exit code, and once a write on stdout fails, the display
+// writes nothing more on it.
 type display struct {
 	// stdout and stderr are nil when the stream gets no step line and no spinner. drop also sets
-	// stderr to nil, which keeps draw and clear silent once the spinner is gone for good.
+	// stderr to nil, which keeps draw and clear silent once the spinner is gone for good, and a
+	// failed write on stdout sets stdout to nil.
 	stdout, stderr io.Writer
 	width          func() int
 	foreground     func() bool
@@ -30,6 +32,8 @@ type display struct {
 	gitDir string
 	// label is the running step drawn for stderr, and empty while no step runs.
 	label string
+	// step is the label of the running step, and nil while no step runs.
+	step *result.Phrase
 	// printed are the plain texts of the step lines written on stdout.
 	printed                []string
 	frame, done, total     int
@@ -48,7 +52,73 @@ const (
 	fallbackWidth = 80
 )
 
-// display returns the display of a landing command run with the words typed, stderr drawn for
+// stepKind is how a step ended, which selects the mark its line prints behind on a terminal stdout.
+type stepKind int
+
+const (
+	// stepChanged is the zero value, so a line reported without a kind prints behind the green check.
+	stepChanged stepKind = iota
+	// stepUnchanged is a step skipped because it had nothing to do.
+	stepUnchanged
+	stepFailed
+)
+
+// mark returns the mark a line of k prints behind, and the style of the mark and of its time.
+func (k stepKind) mark() (string, ansi.Style) {
+	switch k {
+	case stepUnchanged:
+		return "–", result.YellowStyle()
+	case stepFailed:
+		return "✗", result.RedStyle()
+	case stepChanged:
+		fallthrough
+	default:
+		return "✓", result.GreenStyle()
+	}
+}
+
+// displayed builds the display of a command, stderr drawn for errProfile, has run run with it told
+// how the command advances, and keeps run's result, gitDir and the step lines the display printed.
+// When the command ends broke, refused or delivered but not green while a step runs, a terminal
+// stdout gets that step's line behind a cross before the result. The display is gone from the
+// terminal by the time displayed returns, or by the time an interrupt, a termination or a quit ends
+// the process, or the stop signal of a terminal stops it.
+func (p *parse) displayed(ctx context.Context, errProfile colorprofile.Profile, gitDir string, run func(*display) result.Result) {
+	shown := p.display(errProfile)
+	p.app.onStop(shown)
+
+	r := func() result.Result {
+		// The display is handed to the listener before it starts and taken back only after end has
+		// cleared its line, so that no signal in between ends ils with the cursor hidden.
+		defer p.signals.during(shown.drop)()
+
+		shown.start(ctx, gitDir)
+		defer shown.end()
+
+		ran := run(shown)
+		if endsBadly(ran.Outcome) {
+			shown.failRunning()
+		}
+
+		return ran
+	}()
+
+	p.result, p.gitDir, p.printed = &r, gitDir, shown.printed
+}
+
+// endsBadly reports whether a command that ends as o failed the step it ends in.
+func endsBadly(o result.Outcome) bool {
+	switch o {
+	case result.Broke, result.Refused, result.DeliveredNotGreen:
+		return true
+	case result.Done, result.Ask, result.Pending:
+		fallthrough
+	default:
+		return false
+	}
+}
+
+// display returns the display of a command run with the words typed, stderr drawn for
 // errProfile: the spinner on a terminal stderr unless debug is on, and the step lines on a terminal
 // stdout unless the result is JSON.
 func (p *parse) display(errProfile colorprofile.Profile) *display {
@@ -145,19 +215,25 @@ func (d *display) Started(label result.Phrase) {
 	// A label the wording check rejects is not drawn, and its error is dropped here: every label
 	// passed to Started must pass that check.
 	d.label, _ = renderLine(label, d.gitDir, d.errProfile)
+	d.step = &label
 	d.done, d.total, d.began = 0, 0, time.Now()
 	d.draw()
 }
 
-// Said takes the spinner line off stderr and prints line on stdout as the running step's line,
-// with the time since the last Started or Said, whichever came later, rounded to frameEvery; a step
-// that took less than frameEvery prints no time.
+// Said reports line as the line of a step that did its work.
 func (d *display) Said(line result.Phrase) {
+	d.report(stepChanged, line)
+}
+
+// report takes the spinner line off stderr, ends the running step, and prints line on stdout as
+// the line of a step of kind, with the time since the last Started or report, whichever came
+// later, rounded to frameEvery; a step that took less than frameEvery prints no time.
+func (d *display) report(kind stepKind, line result.Phrase) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	d.clear()
-	d.label = ""
+	d.label, d.step = "", nil
 
 	// A line said without a step started for it is timed from the line before it.
 	now := time.Now()
@@ -173,17 +249,45 @@ func (d *display) Said(line result.Phrase) {
 		return
 	}
 
+	mark, style := kind.mark()
 	pen := result.PenFor(d.outProfile)
-	green := result.GreenStyle()
-	step := pen.Styled(green, "✓") + " " + text
+	step := pen.Styled(style, mark) + " " + text
 	if took >= frameEvery {
-		step += " " + pen.Styled(green.Faint(), took.Round(frameEvery).String())
+		step += " " + pen.Styled(style.Faint(), took.Round(frameEvery).String())
 	}
 	step += "\n"
 
-	if _, err := io.WriteString(d.stdout, step); err == nil {
-		d.printed = append(d.printed, plainText(line, d.gitDir))
+	if _, err := io.WriteString(d.stdout, step); err != nil {
+		d.stdout = nil
+
+		return
 	}
+
+	d.printed = append(d.printed, plainText(line, d.gitDir))
+}
+
+// failRunning takes the spinner line off stderr and prints the label of the running step, if one
+// runs, on stdout behind the mark of a failed step. The label is not one of the result's lines, so
+// it is not kept among the printed ones.
+func (d *display) failRunning() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	step := d.step
+	d.clear()
+	d.label, d.step = "", nil
+
+	if step == nil || d.stdout == nil {
+		return
+	}
+
+	text, err := renderLine(*step, d.gitDir, d.outProfile)
+	if err != nil {
+		return
+	}
+
+	mark, style := stepFailed.mark()
+	_, _ = io.WriteString(d.stdout, result.PenFor(d.outProfile).Styled(style, mark)+" "+text+"\n")
 }
 
 // Counted redraws the spinner line with done of total checks concluded.

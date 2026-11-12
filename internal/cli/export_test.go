@@ -7,6 +7,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jeffzi/ils/internal/git"
+	"github.com/jeffzi/ils/internal/landing"
+	"github.com/jeffzi/ils/internal/result"
 )
 
 // SetPush makes a run `ils push` with run in place of landing.Push.
@@ -81,4 +83,19 @@ func PermissionRules() map[string][]string {
 	}
 
 	return rules
+}
+
+// StepKind is stepKind, for the tests of package cli_test.
+type StepKind = stepKind
+
+// StepUnchanged and StepFailed are stepUnchanged and stepFailed, for the tests of package cli_test.
+const (
+	StepUnchanged = stepUnchanged
+	StepFailed    = stepFailed
+)
+
+// Report has the display that progress is report line as a step of kind, as a command run under
+// the display reports it, for the tests of package cli_test.
+func Report(progress landing.Progress, kind StepKind, line result.Phrase) {
+	progress.(*display).report(kind, line)
 }

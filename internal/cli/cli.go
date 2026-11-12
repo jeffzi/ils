@@ -761,11 +761,8 @@ func (p *parse) underTimeLimit(ctx context.Context) (context.Context, context.Ca
 }
 
 // land runs the landing command run for req against the repository ils runs in and its GitHub
-// origin, until req's time limit from launch, and keeps its result, the repository's git dir and
-// the step lines it printed. With debug on, the trace gets every git and gh call, the read of the
-// git dir included, and every decision of the wait. The display is told how the command advances,
-// and is gone from the terminal by the time land returns, or by the time an interrupt, a
-// termination or a quit ends the process, or the stop signal of a terminal stops it.
+// origin, under the display, until req's time limit from launch. With debug on, the trace gets
+// every git and gh call, the read of the git dir included, and every decision of the wait.
 func (p *parse) land(ctx context.Context, run Command, req landing.Request) {
 	ctx, cancel := p.fromLaunch(ctx, req.Limit())
 	defer cancel()
@@ -778,23 +775,11 @@ func (p *parse) land(ctx context.Context, run Command, req landing.Request) {
 	// this read stops the command's own first read too, whose result says so.
 	gitDir, _ := repo.GitDir(ctx)
 
-	shown := p.display(errProfile)
-	deps := landing.Deps{Forge: &github.Forge{Logger: logger}, Repo: repo, Logger: logger, Progress: shown}
-
-	p.app.onStop(shown)
-
-	r := func() result.Result {
-		// The display is handed to the listener before it starts and taken back only after end has
-		// cleared its line, so that no signal in between ends ils with the cursor hidden.
-		defer p.signals.during(shown.drop)()
-
-		shown.start(ctx, gitDir)
-		defer shown.end()
+	p.displayed(ctx, errProfile, gitDir, func(shown *display) result.Result {
+		deps := landing.Deps{Forge: &github.Forge{Logger: logger}, Repo: repo, Logger: logger, Progress: shown}
 
 		return run(ctx, deps, req)
-	}()
-
-	p.result, p.gitDir, p.printed = &r, gitDir, shown.printed
+	})
 }
 
 // unprinted returns lines without the ones already printed: each text in printed takes out the

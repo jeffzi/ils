@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
@@ -628,7 +629,7 @@ func TestApp_Run_WhenStdoutAndStderrShareATerminalWithColorOff_PrintsEachStepLin
 	assert.Check(t, is.DeepEqual(seen[:2], []string{pushedStep, openedStep}))
 	assert.Check(t, regexp.MustCompile(`^\S+ Waiting for checks on #12 `).MatchString(seen[2]), "spinner line = %q", seen[2])
 	lines := pacedLines()
-	want := slices.Concat([]string{pushedStep, openedStep, lines[1], lines[3]}, pacedEnd())
+	want := slices.Concat([]string{pushedStep, openedStep, "✗ Waiting for checks on #12", lines[1], lines[3]}, pacedEnd())
 	assert.Check(t, is.DeepEqual(terminal.lines(), want))
 }
 
@@ -810,4 +811,197 @@ func TestApp_Run_WhenTheDisplayCannotBeWritten_EndsAsARunWithoutIt(t *testing.T)
 	assert.Check(t, is.Equal(got.code, exitDelivered))
 	printed := outputLines(stdout.buf.String())
 	assert.Check(t, is.DeepEqual(printed, slices.Concat(pacedLines(), pacedEnd())))
+}
+
+// reporting is a landing command that runs the step of pushingLabel for spun, reports pushedLine
+// as a step of kind, has peek read the screens, and ends broke with pushedLine and openedLine as
+// its lines.
+func reporting(kind cli.StepKind, peek func()) cli.Command {
+	return func(_ context.Context, deps landing.Deps, req landing.Request) result.Result {
+		deps.Progress.Started(pushingLabel())
+		elapse(spun)
+		cli.Report(deps.Progress, kind, pushedLine())
+		peek()
+
+		return result.Result{
+			Command: req.Command, Words: req.Words, Outcome: result.Broke,
+			Lines: []result.Phrase{pushedLine(), openedLine()}, Reason: stillRunning(), Next: result.NextCommand("push"),
+		}
+	}
+}
+
+// brokeEnd returns the reason and next that follow the lines of a reporting command.
+func brokeEnd() []string {
+	return []string{
+		resulttest.ReasonLine(result.Broke, "the checks of #12 are still running"),
+		resulttest.NextLine("ils push"),
+	}
+}
+
+func TestApp_Run_WhenASkippedOrFailedStepLineIsReportedOnATerminal_PrintsItOnceBehindItsMarkAndDuration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		mark string
+		kind cli.StepKind
+	}{
+		{name: "skipped", kind: cli.StepUnchanged, mark: "–"},
+		{name: "failed", kind: cli.StepFailed, mark: "✗"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			app, stdout := onStdoutScreen(t, []string{colorTerm, noColor})
+			var early []string
+			app.SetPush(reporting(tt.kind, func() { early = stdout.lines() }))
+
+			shown(t, app, "push")
+
+			step := tt.mark + " " + pushedText + " 3.3s"
+			assert.Check(t, is.DeepEqual(early, []string{step}))
+			assert.Check(t, is.DeepEqual(stdout.lines(), slices.Concat([]string{step, openedText}, brokeEnd())))
+			unstyled(t, "stdout", stdout.raw())
+		})
+	}
+}
+
+func TestApp_Run_WhenASkippedStepLinePrintsOnAColorTerminal_DrawsTheDashYellow(t *testing.T) {
+	t.Parallel()
+
+	app, stdout := onStdoutScreen(t, []string{colorTerm})
+	app.SetPush(reporting(cli.StepUnchanged, func() {}))
+
+	shown(t, app, "push")
+
+	step := "– " + pushedText
+	drawn := resulttest.Draw(t, stdout.styledRow(0))
+	assert.Check(t, is.Equal(drawn.LookOf(t, step, "–").Color, "yellow"), "step line = %q", drawn.String())
+}
+
+func TestApp_Run_WhenAFailedStepLinePrintsOnAColorTerminal_DrawsTheCrossAsTheBrokeLabelIsDrawn(t *testing.T) {
+	t.Parallel()
+
+	app, stdout := onStdoutScreen(t, []string{colorTerm})
+	app.SetPush(reporting(cli.StepFailed, func() {}))
+
+	shown(t, app, "push")
+
+	reason := brokeEnd()[0]
+	at := slices.Index(stdout.lines(), reason)
+	assert.Assert(t, at >= 0, "stdout showed %q", stdout.lines())
+	broke := resulttest.Draw(t, stdout.styledRow(at)).LookOf(t, reason, result.Broke.Label()+":")
+	assert.Assert(t, broke != resulttest.Look{}, "the Broke label is unstyled")
+	cross := resulttest.Draw(t, stdout.styledRow(0)).LookOf(t, "✗ "+pushedText, "✗")
+	assert.Check(t, is.Equal(cross, broke))
+}
+
+func TestApp_Run_WhenStepLinesAreReportedOffATerminalOrAsJSON_PrintsThemOnlyWithTheResultAndWithoutAMark(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		lines    func(t *testing.T, out string) []string
+		name     string
+		args     []string
+		want     []string
+		terminal bool
+	}{
+		{
+			name: "stdout no terminal", args: []string{"push"},
+			lines: func(_ *testing.T, out string) []string { return outputLines(out) },
+			want:  slices.Concat([]string{pushedText, openedText}, brokeEnd()),
+		},
+		{
+			name: "JSON on terminals", args: []string{"push", "--json"}, terminal: true,
+			lines: func(t *testing.T, out string) []string { return resulttest.Decode(t, out).Lines },
+			want:  []string{pushedText, openedText},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			app, stdout, _ := onTwoScreens(t, []string{colorTerm}, tt.terminal, tt.terminal)
+			var early string
+			app.SetPush(func(_ context.Context, deps landing.Deps, req landing.Request) result.Result {
+				deps.Progress.Started(pushingLabel())
+				cli.Report(deps.Progress, cli.StepUnchanged, pushedLine())
+				deps.Progress.Started(result.Say("Opening a pull request against %s", result.Branch(trunk)))
+				cli.Report(deps.Progress, cli.StepFailed, openedLine())
+				early = stdout.raw()
+
+				return result.Result{
+					Command: req.Command, Words: req.Words, Outcome: result.Broke,
+					Lines: []result.Phrase{pushedLine(), openedLine()}, Reason: stillRunning(), Next: result.NextCommand("push"),
+				}
+			})
+
+			shown(t, app, tt.args...)
+
+			assert.Check(t, is.Equal(early, ""))
+			assert.Check(t, is.DeepEqual(tt.lines(t, stdout.raw()), tt.want))
+		})
+	}
+}
+
+// endingWith is a landing command that starts the step of waitingLabel, says openedLine to end it
+// unless running, and ends as outcome with openedLine as its one line.
+func endingWith(outcome result.Outcome, running bool) cli.Command {
+	return func(_ context.Context, deps landing.Deps, req landing.Request) result.Result {
+		startedWaiting(deps.Progress)
+		if !running {
+			deps.Progress.Said(pushedLine())
+		}
+
+		return result.Result{
+			Command: req.Command, Words: req.Words, Outcome: outcome,
+			Lines: []result.Phrase{openedLine()}, Reason: stillRunning(), Next: result.NextCommand("push"),
+		}
+	}
+}
+
+func TestApp_Run_WhenACommandEndsWhileAStepRuns_CrossesTheStepBeforeTheResultOnlyWhenItEndsBadly(t *testing.T) {
+	t.Parallel()
+
+	var (
+		push    = (*cli.App).SetPush
+		merge   = (*cli.App).SetMerge
+		release = (*cli.App).SetRelease
+	)
+	const crossed = "✗ Waiting for checks on #12"
+	tests := []struct {
+		// stub makes the run take the command the row names in place of the real one.
+		stub    func(*cli.App, cli.Command)
+		name    string
+		args    []string
+		want    []string
+		outcome result.Outcome
+		running bool
+	}{
+		{name: "push broke", stub: push, args: []string{"push"}, outcome: result.Broke, running: true, want: []string{crossed}},
+		{name: "merge refused", stub: merge, args: []string{"merge"}, outcome: result.Refused, running: true, want: []string{crossed}},
+		{
+			name: "release delivered not green", stub: release, args: []string{"release", "1.2.0"},
+			outcome: result.DeliveredNotGreen, running: true, want: []string{crossed},
+		},
+		{name: "push done", stub: push, args: []string{"push"}, outcome: result.Done, running: true},
+		{name: "push pending", stub: push, args: []string{"push"}, outcome: result.Pending, running: true},
+		{name: "push broke with no step running", stub: push, args: []string{"push"}, outcome: result.Broke, want: []string{"✓ " + pushedText}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			app, stdout := onStdoutScreen(t, []string{colorTerm, noColor})
+			tt.stub(&app, endingWith(tt.outcome, tt.running))
+
+			shown(t, app, tt.args...)
+
+			lines := stdout.lines()
+			at := slices.Index(lines, openedText)
+			assert.Assert(t, at >= 0, "stdout showed %q", lines)
+			assert.Check(t, is.DeepEqual(lines[:at], tt.want, cmpopts.EquateEmpty()))
+		})
+	}
 }

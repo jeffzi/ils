@@ -96,7 +96,7 @@ func (o Outcome) Label() string {
 // label returns the word the reason line of o starts with, and its style:
 // yellow for a result that only needs another run, red for one that stopped.
 func (o Outcome) label() (string, ansi.Style) {
-	red := ansi.NewStyle().ForegroundColor(ansi.Red)
+	red := RedStyle()
 
 	switch o {
 	case Refused:
@@ -124,6 +124,11 @@ func GreenStyle() ansi.Style {
 // spinner and a pending result's label.
 func YellowStyle() ansi.Style {
 	return ansi.NewStyle().ForegroundColor(ansi.Yellow)
+}
+
+// RedStyle returns the style of what stopped, such as a broke result's label.
+func RedStyle() ansi.Style {
+	return ansi.NewStyle().ForegroundColor(ansi.Red)
 }
 
 // FaintStyle returns the style of what needs no attention, such as a SHA or a
