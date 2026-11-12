@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -50,6 +51,25 @@ func withTimeLimits(text string) string {
 	return fmt.Sprintf(text, landing.Span(landing.TimeLimit), landing.Span(landing.WaitTimeLimit))
 }
 
+// withCheckWaits returns text as withTimeLimits does, with each limit cut to how long `ils merge`
+// and `ils release` wait for the checks under it, so that their help does not promise the time
+// they keep for their writes.
+func withCheckWaits(text string) string {
+	return fmt.Sprintf(text, checkWait(landing.TimeLimit), checkWait(landing.WaitTimeLimit))
+}
+
+// checkWait returns the wait for the checks under limit, in the unit Span names limit in: in
+// seconds under a limit of seconds, "80 seconds", and in minutes, then the seconds left over, under
+// a limit of minutes, "14 minutes 40 seconds".
+func checkWait(limit time.Duration) string {
+	wait := landing.CheckWait(limit)
+	if limit%time.Minute != 0 || wait < time.Minute || wait%time.Minute == 0 {
+		return landing.Span(wait)
+	}
+
+	return landing.Span(wait.Truncate(time.Minute)) + " " + landing.Span(wait%time.Minute)
+}
+
 // The help says how to call a command and nothing else: what to do with an exit code and with
 // the next step is said by the result of each run.
 const (
@@ -87,8 +107,9 @@ ils push --json`
 
 	mergeShort = "Squash and merge the pull request once its checks are green"
 	mergeLong  = `Squash-merge the pull request of the current branch once its checks are
-green: within %[2]s of the launch when stdout is a terminal or
-with --wait, and within %[1]s otherwise or with --wait=false.
+green: within %[2]s of the launch when stdout is a
+terminal or with --wait, and within %[1]s otherwise or
+with --wait=false.
 
 It squash-merges the pull request once its checks are green, deletes the
 branch on origin and in the clone, and leaves the trunk checked out at
@@ -129,8 +150,9 @@ ils branch fix-help`
 origin's trunk since the previous version tag, and read the notes of
 <version> from the changelog at that commit. Wait for the commit's CI,
 then tag it, push the tag and create the GitHub release from those
-notes. It waits up to %[2]s when stdout is a terminal or with
---wait, and up to %[1]s otherwise or with --wait=false.
+notes. It waits up to %[2]s when stdout is a terminal
+or with --wait, and up to %[1]s otherwise or with
+--wait=false.
 
 --force tags the commit without waiting for its CI. --tag-only stops
 once the tag is pushed. Running it again resumes where the last run

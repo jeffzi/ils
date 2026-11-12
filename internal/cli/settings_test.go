@@ -325,6 +325,43 @@ func TestApp_Run_WhenInitClaudeFindsSettingsOfTheWrongShape_ExitsTwoNamingTheFil
 	}
 }
 
+// refusedSettings runs `ils init claude --json` over a settings file that holds text, written long
+// ago, and returns what it printed and the path of the file.
+func refusedSettings(t *testing.T, text string) (got ran, path string) {
+	t.Helper()
+
+	app, home := installing(t)
+	path = withSettings(t, home, text)
+	backdated(t, path)
+
+	return launch(t, app, "init", "claude", "--json"), path
+}
+
+func TestApp_Run_WhenInitClaudeFindsAMemberTwice_ExitsTwoNamingTheMember(t *testing.T) {
+	t.Parallel()
+
+	got, path := refusedSettings(t, `{"theme": "dark", "theme": "light"}`)
+
+	assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
+	refusal := resulttest.Decode(t, got.stdout)
+	assert.Check(t, is.Contains(withoutPath(refusal.Reason, path), "theme"))
+	assert.Check(t, is.Contains(refusal.Next, path))
+	assertUntouched(t, path)
+}
+
+func TestApp_Run_WhenInitClaudeFindsAnEscapeOfNoCharacter_ExitsTwoWithAnotherReasonThanNotJSON(t *testing.T) {
+	t.Parallel()
+
+	notJSON, notJSONPath := refusedSettings(t, `{"theme": `)
+
+	got, path := refusedSettings(t, `{"theme": "\q"}`)
+
+	assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
+	reason := withoutPath(resulttest.Decode(t, got.stdout).Reason, path)
+	assert.Check(t, reason != withoutPath(resulttest.Decode(t, notJSON.stdout).Reason, notJSONPath), "reason = %q", reason)
+	assertUntouched(t, path)
+}
+
 func TestApp_Run_WhenInitClaudeCannotReadTheSettings_ExitsOneNamingTheFile(t *testing.T) {
 	t.Parallel()
 

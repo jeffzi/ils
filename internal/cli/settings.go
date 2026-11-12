@@ -6,6 +6,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -143,8 +144,8 @@ func planSettings(dir, hook string) (settingsEdit, error) {
 // settingsObject returns text, the content of file, as an object, or a *shapeError when it is
 // not valid JSON or not an object.
 func settingsObject(file string, text []byte) (jsonObject, error) {
-	if !jsontext.Value(text).IsValid() {
-		return jsonObject{}, &shapeError{problem: fmt.Sprintf("%s is not valid JSON", file)}
+	if problem := jsonProblem(text); problem != "" {
+		return jsonObject{}, &shapeError{problem: fmt.Sprintf("%s %s", file, problem)}
 	}
 
 	settings, ok, err := readObject(text)
@@ -157,6 +158,44 @@ func settingsObject(file string, text []byte) (jsonObject, error) {
 	}
 
 	return settings, nil
+}
+
+// jsonProblem returns what keeps text from being one valid JSON value, as a refusal says it after
+// the name of the file, or "" when text is one: an object that holds a member name twice, an
+// escape in a string that names no character, and otherwise that it is not valid JSON.
+func jsonProblem(text []byte) string {
+	err := json.Unmarshal(text, new(jsontext.Value))
+	if err == nil {
+		return ""
+	}
+
+	syntax, ok := errors.AsType[*jsontext.SyntacticError](err)
+	switch {
+	case ok && errors.Is(err, jsontext.ErrDuplicateName):
+		return fmt.Sprintf("holds the member %s twice", syntax.JSONPointer.LastToken())
+	case ok && badEscapeAt(text, syntax.ByteOffset):
+		return "holds an escape that names no character"
+	default:
+		return "is not valid JSON"
+	}
+}
+
+// badEscapeAt reports whether the decoder stopped at offset of text on an escape that names no
+// character: a backslash inside a string the text goes on past. The decoder's error for such an
+// escape has no type of its own, so the backslash is checked to be inside a string by reading
+// the tokens of text up to the first that fails.
+func badEscapeAt(text []byte, offset int64) bool {
+	if offset >= int64(len(text)) || text[offset] != '\\' {
+		return false
+	}
+
+	dec := jsontext.NewDecoder(bytes.NewReader(text))
+	for {
+		inString := dec.PeekKind() == '"'
+		if _, err := dec.ReadToken(); err != nil {
+			return inString && !errors.Is(err, io.ErrUnexpectedEOF)
+		}
+	}
 }
 
 // apply adds the permission rules to settings, and with hook not empty the hook that runs hook,

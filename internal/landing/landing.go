@@ -100,6 +100,12 @@ const (
 // the writes of `ils release` do, and a write the deadline cuts short leaves the run halfway.
 const mergeReserve = 20 * time.Second
 
+// CheckWait is how long `ils merge` and `ils release` wait for the checks under limit: limit less
+// the time they keep for their writes.
+func CheckWait(limit time.Duration) time.Duration {
+	return limit - mergeReserve
+}
+
 // shortOfReserve returns the result that ends r pending with next when less than mergeReserve is
 // left before ctx's deadline, and nil otherwise. Its lines are said, then the line that says
 // nothing was written. purpose names what the reserve is for, after the clause that says it was

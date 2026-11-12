@@ -322,9 +322,11 @@ with the home directory read from `HOME`, or from `USERPROFILE` on Windows. When
 `CLAUDE_CONFIG_DIR` is set and not empty, the Claude Code directory is that directory instead, as
 for Claude Code. It runs these steps:
 
-1. It reads `settings.json` and checks its shape. A file that is not JSON or not a JSON object, or
-   whose `hooks`, `hooks.PreToolUse`, `permissions`, `permissions.allow`, `permissions.ask`, or
-   `permissions.deny` has the wrong type, is a refusal, and nothing is written.
+1. It reads `settings.json` and checks its shape. A file that is not JSON or not a JSON object, that
+   holds a member name twice in one object or a string escape that names no character, or whose
+   `hooks`, `hooks.PreToolUse`, `permissions`, `permissions.allow`, `permissions.ask`, or
+   `permissions.deny` has the wrong type, is a refusal, and nothing is written. The reason names
+   the duplicate member or the escape.
 2. It installs the `ils` and `write-release` skills the binary ships in `skills/<name>/`. A file
    that already holds what `ils` ships is left as it is, and one that differs is replaced.
    `hook.sh` is written executable. A file `ils` does not ship stays. A skill directory that is a
@@ -703,7 +705,8 @@ When `ils init` refuses, it has written nothing. It refuses:
 - without `--project`, a `CLAUDE_CONFIG_DIR` that is set and not an absolute path, or, when it is
   unset or empty, a `HOME` (`USERPROFILE` on Windows) that is unset or empty;
 - with `--project`, a working directory outside the work tree of a repository;
-- a `settings.json` that is not JSON or not a JSON object, or whose `hooks`, `hooks.PreToolUse`,
+- a `settings.json` that is not JSON or not a JSON object, that holds a member name twice in one
+  object or a string escape that names no character, or whose `hooks`, `hooks.PreToolUse`,
   `permissions`, `permissions.allow`, `permissions.ask`, or `permissions.deny` has the wrong type:
   `Next:` names the file to fix.
 
@@ -1270,6 +1273,10 @@ The guard refuses:
 - a `gh` alias whose expansion the guard cannot read, such as a `$2` left unfilled, or that expands
   to no `gh` command;
 - a `gh alias list` that fails.
+
+The guard judges an alias `gh` itself gives a subcommand as the command it names: `gh pr co` as
+`gh pr checkout`, `gh release new` as `gh release create`, and `gh repo new` as `gh repo create`.
+A refusal of one names the command it stands for.
 
 A read the guard needs that fails (a missing `git`, a `gh alias list` that errors, the read of
 `clean.requireForce` or of an alias) is a refusal that says what broke.
