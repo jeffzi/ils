@@ -356,15 +356,14 @@ func judgeForcedBranchOverwrite(ctx context.Context, caller Caller, inv Invocati
 
 	branch := strings.TrimSpace(expanded.Stdout)
 
-	listed, err := runner.Run(ctx, slices.Concat(targets, []string{"for-each-ref", "--format=%(refname)", git.BranchRefPrefix})...)
+	branches, err := git.Repo{Runner: runner}.LocalBranches(ctx, targets...)
 	if err != nil {
 		return "", fmt.Errorf("read whether git branch %s replaces %s: %w", flag, branch, err)
 	}
 
-	for ref := range strings.SplitSeq(listed.Stdout, "\n") {
-		existing, isBranch := strings.CutPrefix(ref, git.BranchRefPrefix)
+	for _, existing := range branches {
 		switch {
-		case !isBranch || !strings.EqualFold(existing, branch):
+		case !strings.EqualFold(existing, branch):
 		case existing == branch:
 			return fmt.Sprintf("git branch %s replaces the existing branch %s and its reflog", flag, branch), nil
 		default:
@@ -524,7 +523,7 @@ func refuseHistoryOverFile(ctx context.Context, caller Caller, inv Invocation) (
 		}
 
 		dir := nearestDirectory(path)
-		inside, err := git.Repo{Runner: targetRunner(caller.Git, dir, GitTarget{})}.InWorkTree(ctx)
+		_, inside, err := git.Repo{Runner: targetRunner(caller.Git, dir, GitTarget{})}.TopLevel(ctx)
 		if err != nil {
 			return Verdict{}, fmt.Errorf("read whether %s lies in a git work tree: %w", dir, err)
 		}
@@ -804,7 +803,7 @@ func refuseOriginRewrite(_ context.Context, _ Caller, inv Invocation) (Verdict, 
 		return Verdict{}, &unreadArgumentError{sub: sub}
 	}
 
-	if len(options.positional) == 0 || options.positional[0].Text != "origin" {
+	if len(options.positional) == 0 || options.positional[0].Text != git.OriginRemote {
 		return Verdict{Outcome: Allow}, nil
 	}
 

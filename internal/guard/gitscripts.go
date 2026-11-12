@@ -216,7 +216,7 @@ func shellCommandsOf(inv Invocation) []gitRun {
 	}
 
 	if sub, ok := subcommand(inv); ok && sub == "rebase" {
-		runs = append(runs, topRuns(inv.Git.Args, "rebase", "--exec")...)
+		runs = append(runs, topRuns(inv.Git.Args, "rebase")...)
 	}
 
 	return runs
@@ -335,18 +335,15 @@ func argumentRuns(inv Invocation) []gitRun {
 	return nil
 }
 
-// topRuns returns the value of each `-x` or long option among args, the arguments of the git
-// subcommand sub, the commands git runs at the top of the work tree: separate or attached, the long
-// option spelled as any prefix of long git could read as it, and `-x` in a short-flag bundle ahead
+// topRuns returns the value of each `-x` or `--exec` among args, the arguments of the git
+// subcommand sub, the commands git runs at the top of the work tree: separate or attached,
+// `--exec` spelled as any prefix of it git could read as it, and `-x` in a short-flag bundle ahead
 // of any other of the subcommand's short options that take a value, whose rest is then its value.
 // Each run's form is the option as written. A word the guard cannot read that git could read as
 // one of these options is a run the guard cannot read either, whose form is sub.
-func topRuns(args []Word, sub, long string) []gitRun {
-	valued := optionsOf(sub).valuedLetters
-	x := valuedOption{letter: 'x', valued: valued, long: long, shortest: len("--e")}
-
+func topRuns(args []Word, sub string) []gitRun {
 	var runs []gitRun
-	for _, v := range x.values(args, func(text string) bool { return couldBeXOption(text, long, valued) }) {
+	for _, v := range execValues(args, optionsOf(sub).valuedLetters) {
 		if v.unread {
 			runs = append(runs, gitRun{form: sub, start: startTop})
 
@@ -511,17 +508,7 @@ func forEachRepoRun(argv []Word) []gitRun {
 	return []gitRun{{form: "for-each-repo", script: script, start: startElsewhere}}
 }
 
-// valuedOption is an option that takes a value: the short option letter, read in a short-flag
-// bundle ahead of any other of valued, the command's short options that take a value, and the long
-// option long, read as any start of it at least shortest bytes long.
-type valuedOption struct {
-	valued   string
-	long     string
-	shortest int
-	letter   byte
-}
-
-// optionValue is a value of a valuedOption as values reads it from a command's arguments.
+// optionValue is a value of `-x` or `--exec` as execValues reads it from a command's arguments.
 type optionValue struct {
 	// form is the option as written up to its value, such as `-x`, `-ax` or `--ex`.
 	form     string
@@ -532,16 +519,20 @@ type optionValue struct {
 	unread bool
 }
 
-// values returns, in order, each value of o among args ahead of the first `--`: the rest of a
-// short-flag bundle or the next word, and after `=` or the next word for the long option. An empty
-// value after `=` is a value, and the next word stays an argument. The word an option takes as its
-// value is never read as an option or as `--`. A word that is not a literal and for which unread
-// holds is returned as unread and not read as an option either.
-func (o valuedOption) values(args []Word, unread func(text string) bool) []optionValue {
+// execValues returns, in order, each value of `-x` or `--exec` among args ahead of the first `--`:
+// the rest of a short-flag bundle, `-x` read ahead of any other of valued, the short options that
+// take a value, or the next word; and after `=` or the next word for `--exec`, read as any start
+// of it at least `--e` long. An empty value after `=` is a value, and the next word stays an
+// argument. The word an option takes as its value is never read as an option or as `--`. A word
+// that is not a literal and that could be one of these options is returned as unread and not read
+// as an option either.
+func execValues(args []Word, valued string) []optionValue {
+	const long = "--exec"
+
 	var found []optionValue
 	for i := 0; i < len(args); i++ {
 		text := args[i].Text
-		if !args[i].Literal && unread(text) {
+		if !args[i].Literal && couldBeXOption(text, long, valued) {
 			found = append(found, optionValue{value: args[i], unread: true})
 
 			continue
@@ -554,14 +545,14 @@ func (o valuedOption) values(args []Word, unread func(text string) bool) []optio
 		case strings.HasPrefix(text, "--"):
 			var value string
 			v.form, value, v.attached = strings.Cut(text, "=")
-			if !abbreviates(v.form, o.long, o.shortest) {
+			if !abbreviates(v.form, long, len("--e")) {
 				continue
 			}
 
 			v.value = Word{Text: value, Literal: args[i].Literal}
 		default:
 			var named bool
-			v.value, named, v.attached = shortValue(args[i], o.letter, o.valued)
+			v.value, named, v.attached = shortValue(args[i], 'x', valued)
 			if !named {
 				continue
 			}

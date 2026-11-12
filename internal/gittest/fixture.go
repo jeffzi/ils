@@ -21,7 +21,7 @@ const (
 	authorEmail = "fixture@example.com"
 
 	commitDate    = "2001-02-03T04:05:06Z"
-	origin        = "origin"
+	origin        = git.OriginRemote
 	dirtyPath     = "README.md"
 	stagedPath    = "LICENSE"
 	trunkOnlyPath = "trunk-only.txt"

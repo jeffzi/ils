@@ -184,7 +184,7 @@ func trapsOnlyAtEnd(args []string) bool {
 // or a command word that is not a literal, may write any variable, so every one is unknown after
 // it. When one of its words is not a literal or names IFS, it may also have written IFS, which
 // changes where every later expansion splits, so no variable is read after it.
-func (v shellVars) ran(inv Invocation, functions map[string]*function) shellVars {
+func (v shellVars) ran(inv Invocation, functions map[string][]*definition) shellVars {
 	word := inv.Words[0]
 	if word.Literal && (functions[word.Text] != nil || !shellBuiltins()[word.Text]) {
 		return v
@@ -432,7 +432,8 @@ func (v shellVars) forgetAssigned(assigns []*syntax.Assign) shellVars {
 // keeps what both know, holds what either holds, as many times as the one holding it more, is
 // unread if either is, and keeps v's function.
 func (v shellVars) merge(other shellVars) shellVars {
-	if v.equal(other) {
+	if maps.Equal(v.known, other.known) && maps.Equal(v.held, other.held) &&
+		v.unread == other.unread && v.function == other.function {
 		return v
 	}
 
@@ -450,9 +451,4 @@ func (v shellVars) merge(other shellVars) shellVars {
 	}
 
 	return shellVars{known: known, held: held, unread: v.unread || other.unread, function: v.function}
-}
-
-func (v shellVars) equal(other shellVars) bool {
-	return maps.Equal(v.known, other.known) && maps.Equal(v.held, other.held) &&
-		v.unread == other.unread && v.function == other.function
 }

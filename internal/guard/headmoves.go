@@ -22,7 +22,7 @@ type headClaim struct {
 // operands of the list run after its switch when it is a `git switch` switchedBranch reads. operand
 // must be that switch alone, with a result that is its own: not negated, not in the background,
 // holding no substitution, and no call of a function, which may switch nothing.
-func (w *walker) followSwitch(operand *syntax.Stmt, at int, functions map[string]*function, sc *scope) {
+func (w *walker) followSwitch(operand *syntax.Stmt, at int, functions map[string][]*definition, sc *scope) {
 	if _, ok := operand.Cmd.(*syntax.CallExpr); !ok || operand.Negated || runsAsJob(operand) ||
 		len(w.kept)-at != 1 {
 		return

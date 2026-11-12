@@ -88,10 +88,13 @@ func (r Runner) Run(ctx context.Context, args ...string) (Result, error) {
 	return program.Run(ctx)
 }
 
-// ghPath returns the gh to start, whatever name it is asked for: the one GH_PATH names, or else
+// PathVariable is the environment variable that names the gh to start ahead of the one on PATH.
+const PathVariable = "GH_PATH"
+
+// ghPath returns the gh to start, whatever name it is asked for: the one PathVariable names, or else
 // the gh on PATH, found as git is. A gh found only through a relative PATH entry is not found.
 func ghPath(string) (string, error) {
-	if path := os.Getenv("GH_PATH"); path != "" {
+	if path := os.Getenv(PathVariable); path != "" {
 		return path, nil
 	}
 

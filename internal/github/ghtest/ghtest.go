@@ -420,8 +420,8 @@ func Setup(tb testing.TB, script ...Call) *Fake {
 	holdAddr, holding := listenForHolds(tb, record, &fake.whileHeld)
 	fake.holding = holding
 
-	tb.Setenv("GORACE", gittest.RaceSetting())
-	tb.Setenv("GH_PATH", exe)
+	gittest.SetRace(tb)
+	tb.Setenv(github.PathVariable, exe)
 	tb.Setenv(scriptEnv, scriptPath)
 	tb.Setenv(recordEnv, fake.record)
 	tb.Setenv(holdEnv, holdAddr)

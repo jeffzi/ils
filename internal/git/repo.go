@@ -88,7 +88,7 @@ type Repo struct {
 //
 // A repository with no remote named origin is NoOrigin whatever HEAD is on.
 func (r Repo) Standing(ctx context.Context) (Standing, error) {
-	_, err := r.Runner.Run(ctx, "remote", "get-url", origin)
+	_, err := r.Runner.Run(ctx, "remote", "get-url", OriginRemote)
 	if exited(err, noRemoteCode) {
 		return Standing{Kind: NoOrigin}, nil
 	}
@@ -197,14 +197,6 @@ func (r Repo) TopLevel(ctx context.Context, options ...string) (dir string, foun
 	}
 
 	return filepath.FromSlash(dir), true, nil
-}
-
-// InWorkTree reports whether the runner's directory lies in the work tree of a repository: whether
-// TopLevel finds one, with TopLevel's errors.
-func (r Repo) InWorkTree(ctx context.Context) (bool, error) {
-	_, found, err := r.TopLevel(ctx)
-
-	return found, err
 }
 
 // Alias returns what the alias name expands to in the config git reads when given the global
@@ -354,7 +346,7 @@ func (r Repo) BranchesContaining(ctx context.Context, sha string) ([]string, err
 		return nil, err
 	}
 
-	containing, err := r.localBranches(ctx, "--contains", sha)
+	containing, err := r.localBranches(ctx, nil, "--contains", sha)
 	if err != nil {
 		return nil, err
 	}
@@ -723,12 +715,9 @@ func (r Repo) line(ctx context.Context, args ...string) (string, error) {
 
 // holds runs git with args and reports whether it succeeded; an exit of falseCode means no.
 func (r Repo) holds(ctx context.Context, args ...string) (bool, error) {
-	_, err := r.Runner.Run(ctx, args...)
-	if exited(err, falseCode) {
-		return false, nil
-	}
+	_, found, err := r.optionalLine(ctx, args...)
 
-	return err == nil, err
+	return found, err
 }
 
 // optionalLine runs git with args and returns its stdout without the trailing line break, as line
@@ -766,10 +755,16 @@ func (r Repo) symbolicRef(ctx context.Context, ref, prefix string) (name string,
 	return strings.TrimPrefix(target, prefix), true, nil
 }
 
-// localBranches returns the names of the local branches that git for-each-ref lists with filters,
-// such as `--contains <sha>`; it returns nil when there are none.
-func (r Repo) localBranches(ctx context.Context, filters ...string) ([]string, error) {
-	args := slices.Concat([]string{"for-each-ref", "--format=%(refname)", BranchRefPrefix}, filters)
+// LocalBranches returns the names of the local branches, read by git given options, the global
+// options that come before its subcommand, such as `-C <dir>`; it returns nil when there are none.
+func (r Repo) LocalBranches(ctx context.Context, options ...string) ([]string, error) {
+	return r.localBranches(ctx, options)
+}
+
+// localBranches returns the names of the local branches that git, given the global options,
+// for-each-ref lists with filters, such as `--contains <sha>`; it returns nil when there are none.
+func (r Repo) localBranches(ctx context.Context, options []string, filters ...string) ([]string, error) {
+	args := slices.Concat(options, []string{"for-each-ref", "--format=%(refname)", BranchRefPrefix}, filters)
 
 	result, err := r.Runner.Run(ctx, args...)
 	if err != nil {

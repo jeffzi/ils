@@ -188,11 +188,12 @@ func joinPresent(parts ...string) string {
 // ---------------------------------------------------------------------------
 
 const (
-	origin = "origin"
+	// OriginRemote is the name of the remote ils pushes to and fetches from.
+	OriginRemote = "origin"
 
 	// remotesRef prefixes the remote-tracking refs, where the clone keeps what it last fetched of
 	// origin's branches.
-	remotesRef = "refs/remotes/" + origin + "/"
+	remotesRef = "refs/remotes/" + OriginRemote + "/"
 
 	symrefLead = "ref: "
 	symrefTail = "\tHEAD"
@@ -225,12 +226,12 @@ type OriginURLs struct {
 // When the fetch and push URLs are the same, the URL is read once, so its failure is returned once;
 // when they differ, the error holds the failure of each side that failed.
 func (r Repo) OriginURLs(ctx context.Context) (OriginURLs, error) {
-	fetchURL, err := r.line(ctx, "remote", "get-url", origin)
+	fetchURL, err := r.line(ctx, "remote", "get-url", OriginRemote)
 	if err != nil {
 		return OriginURLs{}, err
 	}
 
-	pushURL, err := r.line(ctx, "remote", "get-url", "--push", origin)
+	pushURL, err := r.line(ctx, "remote", "get-url", "--push", OriginRemote)
 	if err != nil {
 		return OriginURLs{}, err
 	}
@@ -272,7 +273,7 @@ func (r Repo) parseOrigin(ctx context.Context, raw string) (Origin, error) {
 // An origin that does not answer is an ErrRemote failure, and an answer that names no branch is
 // ErrNoSymref.
 func (r Repo) Trunk(ctx context.Context) (string, error) {
-	args := []string{"ls-remote", "--symref", origin, "HEAD"}
+	args := []string{"ls-remote", "--symref", OriginRemote, "HEAD"}
 
 	result, err := r.remote(ctx, args...)
 	if err != nil {
@@ -304,7 +305,7 @@ func (r Repo) Trunk(ctx context.Context) (string, error) {
 func (r Repo) RemoteBranch(ctx context.Context, name string) (sha string, found bool, err error) {
 	ref := BranchRefPrefix + name
 
-	result, err := r.remote(ctx, "ls-remote", "--exit-code", origin, ref)
+	result, err := r.remote(ctx, "ls-remote", "--exit-code", OriginRemote, ref)
 	if exited(err, absentCode) {
 		return "", false, nil
 	}
@@ -365,12 +366,12 @@ func (r Repo) LastFetched(ctx context.Context, name string) (sha string, found b
 // does not take the name, and one pushed since the last fetch does. An origin that does not answer
 // is an ErrRemote failure, never an empty list.
 func (r Repo) BranchesTaking(ctx context.Context, name string) (local, onOrigin []string, err error) {
-	localBranches, err := r.localBranches(ctx)
+	localBranches, err := r.localBranches(ctx, nil)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	originRefs, err := r.remote(ctx, "ls-remote", "--heads", origin)
+	originRefs, err := r.remote(ctx, "ls-remote", "--heads", OriginRemote)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -415,7 +416,7 @@ type Tag struct {
 //
 // An origin that does not answer is an ErrRemote failure.
 func (r Repo) OriginTags(ctx context.Context) ([]Tag, error) {
-	result, err := r.remote(ctx, "ls-remote", "--tags", origin)
+	result, err := r.remote(ctx, "ls-remote", "--tags", OriginRemote)
 	if err != nil {
 		return nil, err
 	}
@@ -481,7 +482,7 @@ func (r Repo) Fetch(ctx context.Context, ref string) (string, error) {
 	// so a concurrent fetch of the same branch that moves it first fails this one.
 	var sha string
 
-	_, err := r.remote(ctx, "fetch", "--no-tags", "--refmap=", origin, "+"+ref+":"+fetched)
+	_, err := r.remote(ctx, "fetch", "--no-tags", "--refmap=", OriginRemote, "+"+ref+":"+fetched)
 	if err == nil {
 		sha, err = r.line(ctx, "rev-parse", "--verify", fetched)
 	}
@@ -579,7 +580,7 @@ func (r Repo) Push(ctx context.Context, name, sha string) error {
 // setUpstream sets origin's branch name as the upstream of the local branch name, as `git push -u`
 // does, which git skips for a push whose source is a commit rather than a branch.
 func (r Repo) setUpstream(ctx context.Context, name string) error {
-	for _, setting := range [][2]string{{"remote", origin}, {"merge", BranchRefPrefix + name}} {
+	for _, setting := range [][2]string{{"remote", OriginRemote}, {"merge", BranchRefPrefix + name}} {
 		if _, err := r.Runner.Run(ctx, "config", "branch."+name+"."+setting[0], setting[1]); err != nil {
 			return fmt.Errorf("set the upstream of %s: %w", name, err)
 		}
@@ -601,7 +602,7 @@ func (r Repo) PushTag(ctx context.Context, name string) error {
 // documents.
 func (r Repo) push(ctx context.Context, source, ref string, flags ...string) error {
 	spec := source + ":" + ref
-	args := slices.Concat([]string{"push", "--porcelain"}, flags, []string{origin, spec})
+	args := slices.Concat([]string{"push", "--porcelain"}, flags, []string{OriginRemote, spec})
 	result, err := r.Runner.Run(ctx, args...)
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)

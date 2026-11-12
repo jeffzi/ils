@@ -556,11 +556,7 @@ func (f *Forge) workflowFiles(ctx context.Context, repo forge.Repo, trunk string
 		return nil, nil
 	}
 
-	if err != nil {
-		return nil, err
-	}
-
-	return files, nil
+	return files, err
 }
 
 // ---------------------------------------------------------------------------
