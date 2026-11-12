@@ -14,10 +14,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Add `ils hook claude` and the `ils` skill's `hook.sh`, which run the guard as Claude Code's
   `PreToolUse` hook and block every command when `ils` cannot answer.
 - Add `ils init claude`, which installs the agent skills from the binary and adds the guard's hook
-  and the flow's permission rules to Claude Code's settings.
+  and the flow's permission rules to Claude Code's settings. Each step prints as it ends behind a
+  green `✓`, a yellow `–` when it had nothing to do, or a red `✗` when it failed. Every guard hook
+  in a group that runs on Bash becomes the entry `ils init` writes, and guard hooks in other groups
+  are removed. A skill directory that is a link to other files than the shipped skill ends the run
+  broke.
 
 ### Changed
 
+- Mark the step a failed `ils push`, `ils merge`, or `ils release` ends on with a red `✗` at a
+  terminal.
 - Make the `ils` agent skill ask once where new work lands when the checkout is on a work branch,
   instead of starting a new branch on its own.
 - Report a `gh` reachable only through a relative `PATH` entry as missing on every operating system.

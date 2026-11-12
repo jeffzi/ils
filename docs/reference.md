@@ -336,14 +336,32 @@ The hook is a `PreToolUse` group with the matcher `Bash`, holding one hook:
 }
 ```
 
-A hook already in any `PreToolUse` group whose command is the path of `skills/ils/hook.sh`, alone or
-after `bash`, counts as the guard's: no second one is added. The path may run under any directory
-above `skills/`, such as `~/.claude/`, `$HOME/.claude/`, or `"$CLAUDE_PROJECT_DIR"/.claude/`, and
-be quoted any way the shell reads, as a home directory with a space needs. It gets
-`timeout: 15` and `onFailure: block` when either is missing or different, and keeps its command and
-its place. These are the only values `ils init` changes rather than adds. Without
-`onFailure: block`, Claude Code runs a command whose hook could not run. `onFailure` needs Claude
-Code 2.1.295 or later.
+A hook whose command is the path of `skills/ils/hook.sh`, alone or after `bash`, is a guard entry.
+The path may run under any directory above `skills/`, such as `~/.claude/`, `$HOME/.claude/`, or
+`"$CLAUDE_PROJECT_DIR"/.claude/`, and be quoted any way the shell reads, as a home directory with a
+space needs. `ils init` makes every guard entry its own:
+
+- A guard entry in a `PreToolUse` group whose matcher covers `Bash` becomes, in its place, the
+  entry `ils init` writes for its scope: `type`, `command`, `timeout`, and `onFailure`, and no
+  other key. It drops `async` and `asyncRewake`, which run the hook in the background where it
+  cannot block, `if`, which narrows the commands it judges, `args`, and `statusMessage`. Several
+  guard entries in such groups each become that entry.
+- A guard entry in a group whose matcher does not cover `Bash` is removed, and so is a group it
+  leaves with no hooks.
+- When no group that covers `Bash` held a guard entry, a group with the matcher `Bash` holding the
+  entry is added at the end of `PreToolUse`.
+
+A matcher covers `Bash` the way Claude Code reads it:
+
+| Matcher                                               | Covers `Bash` when                                                                                                                                         |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Missing, empty, or `*`                                | Always.                                                                                                                                                    |
+| Only letters, digits, `_`, `-`, spaces, `,`, and `\|` | One of the names it separates with `\|` or `,`, without the spaces around it, is `Bash`: `Bash`, `Edit, Bash`, `Bash \| Edit`.                             |
+| Anything else                                         | As a regular expression, it matches anywhere in `Bash`: `.*`, `^Bash$`, `sh$`. One that Go's `regexp` cannot compile, such as a lookahead, covers nothing. |
+
+A group or hook that is not a JSON object, a group with no `hooks` array, and a group whose matcher
+is not a string are left as they are. Without `onFailure: block`, Claude Code runs a command whose
+hook could not run. `onFailure` needs Claude Code 2.1.295 or later.
 
 Each rule lands in the list it belongs to:
 
@@ -354,7 +372,7 @@ Each rule lands in the list it belongs to:
 | `deny`  | `Bash(git push)`, `Bash(git push *)`                                                                                                                                                   |
 
 A rule already in any of the three lists is not added to another. Every other key, value, and
-entry of `settings.json` stays, in its order. `ils init` removes nothing.
+entry of `settings.json` stays, in its order. A run that changes nothing leaves the file as it was.
 
 With `--project`, it writes `.claude/skills/` and `.claude/settings.json` at the top level of the
 repository the working directory is in, whatever `CLAUDE_CONFIG_DIR` holds, and the hook's command
@@ -364,12 +382,25 @@ is
 On Windows, where the guard does not run, it installs the skills and the rules and adds no hook: a
 line says the guard runs on macOS and Linux.
 
-It prints one line per change: each skill installed or updated, the hook added or updated, and the
-number of rules added to each list. On every run, it also prints a line naming the target of each
-skill directory that is a symbolic link, and on Windows the line saying where the guard runs. A run
-that changes nothing, with no skill directory that is a link, prints `Everything was already in
-place.` It ends done with no `Next:` line. A settings file it cannot read or write, or a skill file
-it cannot write, ends the run broke, naming the file. Under `--project`, a read of the top level of
+It prints one line per step, in this order: each skill, the hook, then the `allow`, `ask`, and
+`deny` lists. Each line is marked by what the step did (see [Terminal output](#terminal-output)):
+
+| Step  | `✓` changed                                     | `–` nothing to do                                                                                      | `✗` failed                                                       |
+| ----- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------- |
+| Skill | Installed or updated the skill at its directory | Every file is already up to date, or the directory is a link whose files match the shipped ones        | The directory is a link whose files differ from the shipped ones |
+| Hook  | Added the hook, or updated a guard entry        | Every guard entry is already the one `ils init` writes; on Windows, the line says where the guard runs | —                                                                |
+| Rules | Added the rules the list lacked                 | Every rule of the list is already in one of the three lists                                            | —                                                                |
+
+A skill directory that is a symbolic link is never written through. `ils init` reads each shipped
+file through it. When every file reads the same, the step names the link's target and has nothing
+to do. When a file differs, is missing behind the link, or the link leads nowhere, to a file, or
+to itself, the step fails naming the target: Claude Code would keep loading the files at the
+target. The run still writes the hook and the rules, then ends broke with a reason naming each such
+skill and `Next:` to remove the link or update its target, then run the same command again.
+
+A run with nothing to change ends done with no `Next:` line. A settings file it cannot read or
+write, a skill file it cannot write, or a skill directory it cannot read, ends the run broke,
+naming the file. Under `--project`, a read of the top level of
 the repository ends as a landing command's read before any write does: a missing `git`, or a read
 the time limit or an interrupt cuts short, is a refusal whose `Next:` runs
 `ils init claude --project` again, and any other failure ends the run broke with nothing written.
@@ -419,14 +450,14 @@ Copy `skills/ils/` and `skills/write-release/` from a clone of `ils` at the vers
 
 ## Exit codes
 
-| Exit | Means                | Reaction                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| ---- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 0    | done                 | Push: the checks are green, or the repository has no CI and a line says nothing verified the commit; follow `Next:`. Merge: the pull request is merged and the branch deleted. Branch: the branch is started. Status: whatever it finds, once its words parse. Release: the tag is on origin, and the GitHub release exists unless `--tag-only`. Init: the skills and the rules are in place, and the hook too where the guard runs (macOS and Linux). |
-| 1    | broke                | The output says what was done and what was not. Fix what failed, then follow `Next:`.                                                                                                                                                                                                                                                                                                                                                                  |
-| 2    | refused              | Nothing was pushed, opened, merged, tagged, or set up, except by a push whose pull request's head moved during the wait. The reason says why; `Next:` says what to do.                                                                                                                                                                                                                                                                                 |
-| 3    | ask                  | `ils guard` only: the command is one the user approves before it runs. See [ils guard](#ils-guard).                                                                                                                                                                                                                                                                                                                                                    |
-| 4    | pending              | GitHub had not finished when the command stopped waiting, for example checks still running or not yet reported. Run the command that the `Next:` line names; [Time limits](#time-limits) says how long each command waits. After an `ils release`, run the same command again.                                                                                                                                                                         |
-| 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                                                                                                                                                                                                                                                 |
+| Exit | Means                | Reaction                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ---- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | done                 | Push: the checks are green, or the repository has no CI and a line says nothing verified the commit; follow `Next:`. Merge: the pull request is merged and the branch deleted. Branch: the branch is started. Status: whatever it finds, once its words parse. Release: the tag is on origin, and the GitHub release exists unless `--tag-only`. Init: the skills and the rules are in place, and the hook too where the guard runs (macOS and Linux); a skill directory that is a link holds the shipped files. |
+| 1    | broke                | The output says what was done and what was not. Fix what failed, then follow `Next:`. Init also ends broke when a skill directory is a link whose files differ from the shipped ones, after writing the hook and the rules: `Next:` says to remove the link or update its target.                                                                                                                                                                                                                                |
+| 2    | refused              | Nothing was pushed, opened, merged, tagged, or set up, except by a push whose pull request's head moved during the wait. The reason says why; `Next:` says what to do.                                                                                                                                                                                                                                                                                                                                           |
+| 3    | ask                  | `ils guard` only: the command is one the user approves before it runs. See [ils guard](#ils-guard).                                                                                                                                                                                                                                                                                                                                                                                                              |
+| 4    | pending              | GitHub had not finished when the command stopped waiting, for example checks still running or not yet reported. Run the command that the `Next:` line names; [Time limits](#time-limits) says how long each command waits. After an `ils release`, run the same command again.                                                                                                                                                                                                                                   |
+| 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                                                                                                                                                                                                                                                                                                           |
 
 Every outcome but done prints its reason labeled by outcome: `Refused:`, `Broke:`, `Ask:`,
 `Pending:`, or `Delivered, not green:`. The reason sits on the line above `Next:`, except for a
@@ -1237,9 +1268,12 @@ At a terminal, every command shows its progress as it runs:
 
 - **Spinner:** when stderr is a terminal and `-d` is off, one line on stderr names the running
   step and how long it has run, and is erased before anything else prints.
-- **Step lines:** for `ils push`, `ils merge`, and `ils release`, when stdout is a terminal, each
-  step prints on stdout as soon as it succeeds, with a check mark and its duration. The result then
-  prints only its other lines, its excerpt, the reason, and `Next:`.
+- **Step lines:** for `ils push`, `ils merge`, `ils release`, and `ils init`, when stdout is a
+  terminal, each step prints on stdout as soon as it ends, with its duration and a mark: a green
+  `✓` when it did its work, a yellow `–` when it had nothing to do, and a red `✗` when it failed.
+  When a run ends broke, refused, or delivered, not green while a step is still running, that step
+  prints behind a red `✗`. The result then prints only its other lines, its excerpt, the reason,
+  and `Next:`.
 - **Color:** a stream that is a terminal gets color: outcome labels are red or yellow, and branch
   names, pull request numbers, and `ils` commands are bold blue.
 - **Pending hint:** when stdout is a terminal, the `Next:` line of a pending result ends with

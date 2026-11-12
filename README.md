@@ -242,9 +242,12 @@ directory, both land in that directory instead. The rules are:
   before every merge or release.
 - `deny`: `Bash(git push)` and `Bash(git push *)`.
 
-Your own keys, entries, and rules stay as they are, except that a guard hook already there gets the
-timeout and the failure the guard needs. A rule you already keep in another list stays where you put
-it. Running `ils init claude` again changes nothing that is already in place. After you upgrade
+Your own keys, entries, and rules stay as they are, except that a guard hook already there becomes
+the one `ils init` writes, so it blocks every Bash command it must. A rule you already keep in
+another list stays where you put it. Running `ils init claude` again changes nothing that is already
+in place. Each step prints as it ends, marked by whether it changed something, had nothing to do, or
+failed. A skill directory you linked elsewhere is left alone when it holds the shipped files; when it
+holds other files, the run ends broke and says to remove the link or update its target. After you upgrade
 `ils`, run it again to update the skills to the new binary's. With `ils init claude --project`, the
 skills and the settings land in `.claude/` at the top level of the repository you are in, for a
 setup you commit with the project. [ils init](docs/reference.md#ils-init) lists every step and the
