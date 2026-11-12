@@ -61,13 +61,13 @@ func TestRepo_Fetch_WhenTheFetchFailsAfterStoringTheRef_LeavesNoRefOfItsOwn(t *t
 	assert.Check(t, is.Equal(f.Git("for-each-ref", "refs/ils/"), ""), "refs under refs/ils/ after Fetch")
 }
 
-func TestRepo_Fetch_WhenAnotherRunHoldsTheLockOfTheOldFetchRef_ReturnsTheFetchedSHA(t *testing.T) {
+func TestRepo_Fetch_WhenAnotherRunHoldsTheLockOfAFixedFetchRefForTheBranch_ReturnsTheFetchedSHA(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
 	f.Commits(topic, "one")
 	f.Push(topic)
 	want := f.AdvanceOrigin(topic)
-	// Another run's fetch of the branch, under the one name a fetch had, holds its lock.
+	// Another run's fetch holds the lock of a fixed ref named for the branch under refs/ils/fetched/.
 	common := f.Git("rev-parse", "--path-format=absolute", "--git-common-dir")
 	lock := filepath.Join(common, "refs", "ils", "fetched", "heads", filepath.FromSlash(topic)+".lock")
 	assert.NilError(t, os.MkdirAll(filepath.Dir(lock), 0o750))

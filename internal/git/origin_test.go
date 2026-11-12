@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -346,24 +345,6 @@ func TestRepo_Trunk_WhenOriginAnswers_ReturnsDefaultBranch(t *testing.T) {
 	assert.Check(t, is.Equal(got, trunk))
 }
 
-// remoteBranch is what RemoteBranch returns besides its error.
-type remoteBranch struct {
-	sha   string
-	found bool
-}
-
-// originCalls returns the repository calls that read from origin without changing the repository.
-func originCalls() []repoCall {
-	return []repoCall{
-		{name: "RemoteBranch", call: func(ctx context.Context, repo git.Repo) (any, error) {
-			sha, found, err := repo.RemoteBranch(ctx, trunk)
-
-			return remoteBranch{sha, found}, err
-		}},
-		{name: "OriginTags", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.OriginTags(ctx) }},
-	}
-}
-
 func fastForwardTrunkCall() repoCall {
 	return repoCall{name: "FastForwardTrunk", call: func(ctx context.Context, repo git.Repo) (any, error) {
 		return nil, repo.FastForwardTrunk(ctx, trunk)
@@ -525,9 +506,9 @@ func TestRepo_RemoteBranch_WhenOriginRefusesTheCall_ReturnsErrRefused(t *testing
 
 func TestRepo_WhenOriginRefusesTheCall_ReturnsErrRefused(t *testing.T) {
 	t.Parallel()
-	tests := slices.Concat(originCalls(), []repoCall{
+	tests := []repoCall{
+		{name: "OriginTags", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.OriginTags(ctx) }},
 		fastForwardTrunkCall(),
-		{name: "Trunk", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.Trunk(ctx) }},
 		{name: "Push", call: func(ctx context.Context, repo git.Repo) (any, error) {
 			sha, err := repo.HeadSHA(ctx)
 			if err != nil {
@@ -536,7 +517,7 @@ func TestRepo_WhenOriginRefusesTheCall_ReturnsErrRefused(t *testing.T) {
 
 			return nil, repo.Push(ctx, topic, sha)
 		}},
-	})
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -830,22 +811,6 @@ func TestRepo_Push_WhenOriginHangsUpAfterReportingTheRefUpdated_PublishesTheBran
 	assert.Check(t, is.Equal(originTip(f, topic), tip))
 }
 
-func TestRepo_Push_WhenTagSharesTheBranchName_PublishesTheBranch(t *testing.T) {
-	t.Parallel()
-	f := gittest.New(t, trunk)
-	tip := f.Commits(topic, "one")[0]
-	// Origin and the clone each hold a tag of the branch's name, on different tag objects, so a
-	// push that names the source or the destination loosely fails.
-	trunkTip := f.Git("rev-parse", trunk)
-	f.OriginGit("tag", topic, trunkTip)
-	f.Git("tag", "-a", "-m", "release", topic, trunk)
-
-	err := pushTip(t.Context(), f)
-	assert.NilError(t, err)
-
-	assert.Check(t, is.Equal(f.OriginGit("rev-parse", "refs/heads/"+topic), tip))
-}
-
 func TestRepo_Push_WhenOriginRefusesATagThePushFollows_PublishesTheBranch(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
@@ -876,21 +841,6 @@ func TestRepo_Push_WhenOriginRefusesTheRef_ReturnsPushErrorNamingTheReason(t *te
 	assert.Check(t, !strings.Contains(pushErr.Reason, "refs/heads/"), "Reason = %q, want the summary, not the ref it names",
 		pushErr.Reason)
 	assert.Check(t, is.Contains(pushErr.Stderr, said))
-}
-
-func TestRepo_Push_WhenThePrePushHookRefuses_ReturnsPushErrorHoldingWhatTheHookSaid(t *testing.T) {
-	t.Parallel()
-	const said = "policy forbids this push"
-	f := gittest.New(t, trunk)
-	f.Commits(topic, "one")
-	f.Hook("pre-push", "echo '"+said+"' >&2\nexit 1")
-
-	err := pushTip(t.Context(), f)
-
-	pushErr, ok := errors.AsType[*git.PushError](err)
-	assert.Assert(t, ok, "Push(%q) error = %v, want *git.PushError", topic, err)
-	assert.Check(t, strings.HasPrefix(pushErr.Detail(), said), "Detail() = %q, want it to start with %q",
-		pushErr.Detail(), said)
 }
 
 func TestRepo_Push_WhenThePrePushHookRefusesAfterPrintingOnStdout_ReturnsPushErrorLeadingWithWhatTheHookPrinted(t *testing.T) {

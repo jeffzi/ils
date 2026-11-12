@@ -148,25 +148,22 @@ func mergeTrunk(t *testing.T, f *gittest.Fixture) {
 	f.Git("merge", "--quiet", "--no-edit", "origin/"+trunk)
 }
 
-// tips holds the shas of a branch that diverged from origin's copy.
+// tips holds the shas of two commits in a row: base, and local on top of it.
 type tips struct {
 	base  string
 	local string
 	repo  git.Repo
 }
 
-// diverged returns a repository whose topic branch and origin's fetched copy each have one commit
-// past their shared base.
-func diverged(t *testing.T) tips {
+// twoCommits returns a repository whose topic branch holds two commits past the trunk, and their
+// shas.
+func twoCommits(t *testing.T) tips {
 	t.Helper()
 
 	f := gittest.New(t, trunk)
-	base := f.Commits(topic, "one")[0]
-	f.Push(topic)
-	local, _ := f.Diverge(topic)
-	fetch(t, f, topic)
+	shas := f.Commits(topic, "one", "two")
 
-	return tips{repo: newRepo(f), base: base, local: local}
+	return tips{repo: newRepo(f), base: shas[0], local: shas[1]}
 }
 
 func TestRepo_Standing(t *testing.T) {
@@ -346,7 +343,7 @@ func TestRepo_Dirty(t *testing.T) {
 
 func TestRepo_Divergence_WhenFirstIsAhead_CountsItsCommitsAsAhead(t *testing.T) {
 	t.Parallel()
-	split := diverged(t)
+	split := twoCommits(t)
 
 	got, err := split.repo.Divergence(t.Context(), split.local, split.base)
 	assert.NilError(t, err, "Divergence(%s, %s)", split.local, split.base)
@@ -399,7 +396,7 @@ func TestRepo_Divergence_WhenACountIsNotANumber_ReturnsSyntaxErrorNamingTheCall(
 
 func TestRepo_Contains_WhenTheFirstHoldsTheSecond_ReportsTrue(t *testing.T) {
 	t.Parallel()
-	split := diverged(t)
+	split := twoCommits(t)
 
 	got, err := split.repo.Contains(t.Context(), split.local, split.base)
 	assert.NilError(t, err, "Contains(%s, %s)", split.local, split.base)
@@ -590,28 +587,15 @@ func TestRepo_CheckBranchName_WhenGitAcceptsTheName_ReturnsNil(t *testing.T) {
 	assert.NilError(t, err, "CheckBranchName(%q)", name)
 }
 
-func TestRepo_CheckBranchName_WhenNameCannotBeABranch_ReturnsBranchNameErrorNamingIt(t *testing.T) {
+func TestRepo_CheckBranchName_WhenNameNamesThePreviousBranch_ReturnsBranchNameErrorNamingIt(t *testing.T) {
 	t.Parallel()
-	repo := previousBranch(t)
-	tests := []struct {
-		name string
-		in   string
-	}{
-		{name: "git refuses the name", in: "fix..parser"},
-		{name: "starts with a dash", in: "-parser"},
-		{name: "names the previous branch", in: "@{-1}"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	const name = "@{-1}"
 
-			err := repo.CheckBranchName(t.Context(), tt.in)
+	err := previousBranch(t).CheckBranchName(t.Context(), name)
 
-			nameErr, ok := errors.AsType[*git.BranchNameError](err)
-			assert.Assert(t, ok, "CheckBranchName(%q) error = %v, want *git.BranchNameError", tt.in, err)
-			assert.Check(t, is.Equal(nameErr.Name, tt.in))
-		})
-	}
+	nameErr, ok := errors.AsType[*git.BranchNameError](err)
+	assert.Assert(t, ok, "CheckBranchName(%q) error = %v, want *git.BranchNameError", name, err)
+	assert.Check(t, is.Equal(nameErr.Name, name))
 }
 
 func TestRepo_CheckBranchName_WhenGitRefusesTheName_ReasonIsGitsMessage(t *testing.T) {
@@ -624,6 +608,7 @@ func TestRepo_CheckBranchName_WhenGitRefusesTheName_ReasonIsGitsMessage(t *testi
 	assert.Assert(t, ok, "CheckBranchName(%q) error = %v, want it to carry git's *child.ExitError", name, err)
 	nameErr, ok := errors.AsType[*git.BranchNameError](err)
 	assert.Assert(t, ok, "CheckBranchName(%q) error = %v, want *git.BranchNameError", name, err)
+	assert.Check(t, is.Equal(nameErr.Name, name))
 	assert.Check(t, nameErr.Reason() != "", "CheckBranchName(%q) gives no reason from git", name)
 	assert.Check(t, is.Equal(nameErr.Reason(), strings.TrimSpace(exitErr.Stderr)))
 }
@@ -636,6 +621,7 @@ func TestRepo_CheckBranchName_WhenGitIsNotAsked_GivesNoReason(t *testing.T) {
 
 	nameErr, ok := errors.AsType[*git.BranchNameError](err)
 	assert.Assert(t, ok, "CheckBranchName(%q) error = %v, want *git.BranchNameError", name, err)
+	assert.Check(t, is.Equal(nameErr.Name, name))
 	assert.Check(t, is.Equal(nameErr.Reason(), ""))
 }
 

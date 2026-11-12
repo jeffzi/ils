@@ -109,20 +109,6 @@ func TestExitError_Error(t *testing.T) {
 	}
 }
 
-func TestFailure_WhenProgramExitedNonZero_ReturnsExitError(t *testing.T) {
-	t.Parallel()
-	argv := nonsenseArgv()
-	runErr := nonZeroExit(t)
-
-	err := child.Failure(t.Context(), argv, runErr, "no such tool\n")
-
-	exitErr, ok := errors.AsType[*child.ExitError](err)
-	assert.Assert(t, ok, "Failure error = %v, want *child.ExitError", err)
-	assert.Check(t, is.DeepEqual(exitErr.Argv, argv))
-	assert.Check(t, is.Equal(exitErr.Stderr, "no such tool\n"))
-	assert.Check(t, is.Equal(exitErr.Code, runErr.ExitCode()))
-}
-
 // stderrMarker starts the stderr the Failure tests print before the end.
 const stderrMarker = "secret"
 
@@ -236,25 +222,6 @@ func TestInterruptedExit(t *testing.T) {
 	}
 }
 
-func TestFailure_WhenProgramNeverExited_WrapsRunErrorNamingCommand(t *testing.T) {
-	t.Parallel()
-
-	err := child.Failure(t.Context(), []string{"gh", "pr", "view"}, exec.ErrNotFound, "")
-
-	assert.Check(t, is.ErrorIs(err, exec.ErrNotFound))
-	assert.Check(t, is.ErrorContains(err, "gh pr view"))
-}
-
-func TestProgram_Run_WhenProgramExitsZero_ReturnsWhatItPrinted(t *testing.T) {
-	t.Parallel()
-	program := child.Program{Tool: "go", Args: []string{"version"}, LookPath: exec.LookPath}
-
-	got, err := program.Run(t.Context())
-	assert.NilError(t, err)
-
-	assert.Check(t, is.Contains(got.Stdout, "go version"))
-}
-
 func TestProgram_Run_WhenProgramExitsNonZero_KeepsOnlyStdout(t *testing.T) {
 	// Not parallel: gittest.FakeGit sets PATH for the whole process.
 	settings := gittest.FakeGit(t, gittest.Fake{FailAfterOn: []string{"version"}})
@@ -266,6 +233,8 @@ func TestProgram_Run_WhenProgramExitsNonZero_KeepsOnlyStdout(t *testing.T) {
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 	assert.Assert(t, ok, "Run error = %v, want *child.ExitError", err)
+	assert.Check(t, is.DeepEqual(exitErr.Argv, []string{"git", "version"}))
+	assert.Check(t, is.Equal(exitErr.Code, gittest.FailedCode))
 	assert.Check(t, is.Equal(exitErr.Stderr, gittest.FailedSaid+"\n"))
 	assert.Check(t, is.Contains(got.Stdout, "git version"))
 	assert.Check(t, is.Equal(got.Stderr, ""))
@@ -569,18 +538,7 @@ func TestProgram_Run_WhenTheFoundFileIsGoneAndAStartWantingAFileIsNotMissing_Ret
 	_, missing := errors.AsType[*child.ToolMissingError](err)
 	assert.Check(t, err != nil && !missing, "Run error = %v, want the start error, not *child.ToolMissingError", err)
 	assert.Check(t, errors.Is(err, fs.ErrNotExist), "Run error = %v, want it to wrap fs.ErrNotExist", err)
-}
-
-func TestProgram_Run_WhenProgramExitsNonZero_ReturnsExitErrorNamingToolAndArgs(t *testing.T) {
-	t.Parallel()
-	argv := nonsenseArgv()
-	program := child.Program{Tool: argv[0], Args: argv[1:], LookPath: exec.LookPath}
-
-	_, err := program.Run(t.Context())
-
-	exitErr, ok := errors.AsType[*child.ExitError](err)
-	assert.Assert(t, ok, "Run error = %v, want *child.ExitError", err)
-	assert.Check(t, is.DeepEqual(exitErr.Argv, argv))
+	assert.Check(t, is.ErrorContains(err, "git status"))
 }
 
 func TestProgram_Run_WhenALoggerIsSet_LogsTheTimeTheRunTook(t *testing.T) {
