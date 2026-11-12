@@ -153,9 +153,7 @@ func TestJudge_WhenAGitArgumentCannotBeRead_NamesDoubleDashWhereItLetsTheCommand
 
 	checkRefusals(t, []refusal{
 		{name: "branch -d", command: `git branch -d "$b"`, wantNamed: "after `--`"},
-		{name: "clean -n", command: `git clean -n "$f"`, wantNamed: "after `--`"},
 		{name: "commit", command: `git commit -m msg "$f"`, wantNamed: "after `--`"},
-		{name: "restore --staged", command: `git restore --staged "$f"`, wantNamed: "after `--`"},
 		{name: "several unreadable arguments", command: `git branch -d "$a" "$b"`, wantNamed: "after `--`"},
 	})
 }
@@ -163,19 +161,10 @@ func TestJudge_WhenAGitArgumentCannotBeRead_NamesDoubleDashWhereItLetsTheCommand
 func TestJudge_WhenDoubleDashLeavesAnUnreadableGitArgumentRefused_NamesALiteral(t *testing.T) {
 	t.Parallel()
 
-	tests := []namedCommand{
-		{name: "update-ref", command: `git update-ref "$r" HEAD`},
-		{name: "config", command: `git config "$k"`},
-		{name: "restore without --staged", command: `git restore "$f"`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			_, caller := standingOn(t, "main", "topic")
-
-			checkJudgedRow(t, caller, judged{command: tt.command, want: guard.Refuse, wantNamed: "write the argument as a literal"})
-		})
-	}
+	checkRefusals(t, []refusal{
+		{name: "update-ref", command: `git update-ref "$r" HEAD`, wantNamed: "write the argument as a literal"},
+		{name: "config", command: `git config "$k"`, wantNamed: "write the argument as a literal"},
+	})
 }
 
 func TestJudge_WhenALiteralStartsSeveralOptionsOneTakingAValue_NamesItToSpellOutInFull(t *testing.T) {

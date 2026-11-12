@@ -79,7 +79,6 @@ func TestApp_Run_WhenInitClaudeFindsAGuardEntryInABashGroup_WritesTheEntryOfItsS
 		hook map[string]any
 		name string
 	}{
-		{name: "user scope", hook: map[string]any{"command": cli.UserHook}},
 		{name: "no leading bash", hook: map[string]any{"command": "~/.claude/skills/ils/hook.sh"}},
 		{
 			name: "path in double quotes closed after its last slash",

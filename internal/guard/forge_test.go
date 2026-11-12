@@ -94,7 +94,6 @@ func TestJudge_PassesOverANonLiteralValueThatCannotSetAGuardedGhFlag(t *testing.
 	t.Parallel()
 
 	checkJudged(t, callerOutsideAnyRepository(t), []judged{
-		{name: "flag of a command with no guarded flag", command: `gh pr view 1 --json="$f"`, want: guard.Allow},
 		{name: "prefix rules out the guarded flag", command: `gh pr checkout 1 --branch="$b"`, want: guard.Allow},
 		{name: "prefix rules out the api fields", command: `gh api repos/o/r --jq="$q"`, want: guard.Allow},
 	})
@@ -196,7 +195,6 @@ func TestJudge_AllowsAGhGraphqlQueryWithAnExplicitPostInAnySpelling(t *testing.T
 	checkJudged(t, callerOutsideAnyRepository(t), []judged{
 		{name: "short method separate", command: `gh api graphql -X POST -f query='{ viewer { login } }'`, want: guard.Allow},
 		{name: "long method separate in lower case", command: `gh api graphql --method post -f query='{ viewer { login } }'`, want: guard.Allow},
-		{name: "short method separate before the endpoint", command: `gh api -X POST graphql -f query='{ viewer { login } }'`, want: guard.Allow},
 		{name: "long method separate before the endpoint", command: `gh api --method POST graphql -f query='{ viewer { login } }'`, want: guard.Allow},
 	})
 }

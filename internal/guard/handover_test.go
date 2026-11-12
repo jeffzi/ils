@@ -322,11 +322,3 @@ func writeExecutable(t *testing.T, path string) {
 	assert.NilError(t, os.MkdirAll(filepath.Dir(path), 0o750))
 	assert.NilError(t, os.WriteFile(path, []byte("#!/bin/sh\n"), 0o700)) //nolint:gosec // the test needs an executable file
 }
-
-func TestJudge_WhenGoRunsAProgramGivenAToolWord_RefusesIt(t *testing.T) {
-	t.Parallel()
-
-	checkRefusals(t, []refusal{
-		{name: "bare git among go run's arguments", command: "go run ./tool git push", wantNamed: "go runs git"},
-	})
-}

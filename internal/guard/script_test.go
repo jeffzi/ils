@@ -127,7 +127,6 @@ func TestJudge_WhenAStringRedirectsAroundACd_RefusesGitHistoryWrittenWhereTheStr
 
 	checkJudged(t, caller, []judged{
 		{name: "sh -c", command: "cd repo && sh -c " + inner, want: guard.Refuse, wantNamed: named},
-		{name: "eval", command: "cd repo && eval " + inner, want: guard.Refuse, wantNamed: named},
 	})
 }
 

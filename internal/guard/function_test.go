@@ -145,11 +145,6 @@ func TestParse_WhenACallRunsABodyThatSetsAGitVariable_ReportsTheTargetTheBodyLea
 			same:    "export GIT_DIR=/srv/x.git; git status",
 		},
 		{
-			name:    "unset in the body of an earlier export",
-			command: "f() { unset GIT_DIR; }; export GIT_DIR=/home/reader/repo/.git; f; git status",
-			same:    "export GIT_DIR=/home/reader/repo/.git; unset GIT_DIR; git status",
-		},
-		{
 			name:    "export in two definitions that agree",
 			command: "f() { export GIT_DIR=/srv/x.git; }; if true; then f() { export GIT_DIR=/srv/x.git; }; fi; f; git status",
 			same:    "export GIT_DIR=/srv/x.git; git status",

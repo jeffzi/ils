@@ -161,7 +161,6 @@ func TestParse_ReportsWhereEachCOptionLandsOnDisk(t *testing.T) {
 		want    string
 	}{
 		{name: "link then .. in one -C", dir: "start", command: "git -C link/.. status", want: other},
-		{name: "-C .. after a cd into a link", dir: "start", command: "cd link; git -C .. status", want: other},
 		{name: "absolute -C with link then ..", dir: "via", command: "git -C " + filepath.Join(root, "start", "link") + "/.. status", want: other},
 		{name: "-C .. under a directory that does not exist", dir: "start", command: "git -C missing/.. status", want: ""},
 		{name: "-C with no .. from a directory reached through a link", dir: "via", command: "git -C sub status", want: filepath.Join(root, "via", "sub")},

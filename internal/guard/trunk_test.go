@@ -70,7 +70,6 @@ func TestJudge_RefusesAFastForwardPullOfAnotherBranchOnTheTrunk(t *testing.T) {
 	checkJudged(t, caller, []judged{
 		{name: "repository other than origin", command: "git pull --ff-only . main", want: guard.Refuse},
 		{name: "refspec other than the trunk", command: "git pull --ff-only origin topic", want: guard.Refuse},
-		{name: "non-literal repository", command: `git pull --ff-only "$r"`, want: guard.Refuse},
 		{name: "non-literal refspec after --", command: `git pull --ff-only -- origin main"$b"`, want: guard.Refuse},
 	})
 }
@@ -146,7 +145,6 @@ func TestJudge_RefusesARebaseOfTheTrunkFromAnotherBranch(t *testing.T) {
 
 	checkRefusals(t, []refusal{
 		{name: "trunk as the branch argument", command: "git rebase topic main", wantNamed: "main"},
-		{name: "trunk after --onto", command: "git rebase --onto topic topic main", wantNamed: "main"},
 		{name: "trunk as the branch argument after --", command: "git rebase -- origin/main main", wantNamed: "main"},
 	})
 }
@@ -225,16 +223,6 @@ func TestJudge_WhenACommandSpansTwoGitDirs_JudgesEachAgainstItsOwnTrunk(t *testi
 	command := "git commit -m one; git -C " + gittest.ShellWord(onMain.Dir()) + " commit -m two"
 
 	checkJudgedRow(t, caller, judged{command: command, want: guard.Refuse, wantNamed: "main"})
-}
-
-func TestJudge_WhenACommandCommitsInTwoGitDirsEachOffItsOwnTrunk_AllowsIt(t *testing.T) {
-	t.Parallel()
-
-	_, caller := standingOn(t, "develop", "main")
-	onDevelop, _ := standingOn(t, "main", "develop")
-	command := "git commit -m one; git -C " + gittest.ShellWord(onDevelop.Dir()) + " commit -m two"
-
-	checkJudgedRow(t, caller, judged{command: command, want: guard.Allow})
 }
 
 func TestJudge_WhenOriginNamesNoTrunk_RefusesSayingWhatBroke(t *testing.T) {

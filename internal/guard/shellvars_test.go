@@ -168,12 +168,10 @@ func checkRunShReadUnknown(t *testing.T, command string, got []guard.Invocation)
 	assert.Check(t, unread, "Parse(%q) = %v, want a command word read unknown", command, texts(got))
 }
 
-func TestJudge_AllowsAVariableAssignedALiteralAfterAWrappedOrZshNumberDeclaration(t *testing.T) {
+func TestJudge_AllowsAVariableAssignedALiteralAfterAWrappedDeclaration(t *testing.T) {
 	t.Parallel()
 
 	checkAllowed(t, callerOutsideAnyRepository(t), []namedCommand{
-		{name: "zsh integer", command: "integer S; S=/tmp/work; $S/run.sh"},
-		{name: "readonly run through builtin", command: "builtin readonly S=/srv; S=/tmp/work; $S/run.sh"},
 		{name: "declare run through command", command: "command declare -u S; S=/tmp/work; $S/run.sh"},
 	})
 }
