@@ -124,6 +124,7 @@
     "rerere",
     "resulttest",
     "revive",
+    "rewake",
     "riscv",
     "semver",
     "setopt",

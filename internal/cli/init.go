@@ -147,7 +147,8 @@ func (p *parse) initCommand() *cobra.Command {
 // hook to the settings of that directory. The settings are read and checked before any skill is
 // written, and written after. The result has one line per skill installed, updated, or left as it
 // is because its directory is a link, and one per change to the settings; or one line saying
-// everything was in place. Where the guard does not run, a last line says where it does. A
+// everything was in place. Where the guard does not run, a line in the hook's place, before the
+// rule lines, says where it does. A
 // result of installDir ends the run; settings it cannot edit are a refusal; a failed read of the
 // settings, or a failed write, ends the run broke.
 func (p *parse) installClaude(ctx context.Context, project bool) result.Result {
@@ -186,13 +187,15 @@ func (p *parse) installClaude(ctx context.Context, project bool) result.Result {
 		return installBroke(req, err)
 	}
 
-	lines = append(lines, settings.lines...)
-	if len(lines) == 0 {
-		lines = []result.Phrase{result.Say("Everything was already in place.")}
+	changed := len(lines) > 0 || settings.changed()
+	for i, line := range settings.lines {
+		if line.kind == stepChanged || i == 0 && !guardRuns {
+			lines = append(lines, line.phrase)
+		}
 	}
 
-	if !guardRuns {
-		lines = append(lines, result.Say("Added no hook: "+guardUnsupported))
+	if !changed {
+		lines = append(lines, result.Say("Everything was already in place."))
 	}
 
 	return result.Result{Command: req.Command, Words: req.Words, Lines: lines, Next: result.NextNone(), Outcome: result.Done}
@@ -314,7 +317,8 @@ func installSkill(shipped fs.FS, name, dest string) (*result.Phrase, error) {
 			return nil, fmt.Errorf("read the link %s: %w", dest, linkErr)
 		}
 
-		line := result.Say("Left the %s skill at %s as it is: it is a link to %s", name, dest, target)
+		line := result.Say("Did not install the %s skill: %s is a link to %s, which Claude Code uses; remove the link to install the shipped skill",
+			name, dest, target)
 
 		return &line, nil
 	}

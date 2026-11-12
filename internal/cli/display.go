@@ -63,6 +63,12 @@ const (
 	stepFailed
 )
 
+// stepLine is a step's line with the kind that selects its mark.
+type stepLine struct {
+	phrase result.Phrase
+	kind   stepKind
+}
+
 // mark returns the mark a line of k prints behind, and the style of the mark and of its time.
 func (k stepKind) mark() (string, ansi.Style) {
 	switch k {

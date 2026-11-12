@@ -9,12 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
-	"strconv"
-	"strings"
-
-	"mvdan.cc/sh/v3/syntax"
 
 	"github.com/jeffzi/ils/internal/result"
 )
@@ -40,8 +35,6 @@ const (
 	keyHooks       = "hooks"
 	keyPermissions = "permissions"
 	keyCommand     = "command"
-	keyTimeout     = "timeout"
-	keyOnFailure   = "onFailure"
 )
 
 // permissionLists are the permission lists of the settings, each with the rules the guard's
@@ -77,9 +70,21 @@ type settingsEdit struct {
 	file   string
 	target string
 	// text is the new content of target, nil when nothing changes.
-	text  []byte
-	lines []result.Phrase
+	text []byte
+	// lines are the step lines of the edit: the hook's, then those of the allow, ask and deny
+	// lists.
+	lines []stepLine
 	mode  fs.FileMode
+}
+
+// report adds the line of a step that ended as kind.
+func (e *settingsEdit) report(kind stepKind, line result.Phrase) {
+	e.lines = append(e.lines, stepLine{phrase: line, kind: kind})
+}
+
+// changed reports whether a step of the edit changed the settings.
+func (e *settingsEdit) changed() bool {
+	return slices.ContainsFunc(e.lines, func(line stepLine) bool { return line.kind == stepChanged })
 }
 
 // planSettings reads the settings file under dir and returns what adding the permission rules,
@@ -122,7 +127,7 @@ func planSettings(dir, hook string) (settingsEdit, error) {
 		return edit, err
 	}
 
-	if len(edit.lines) == 0 {
+	if !edit.changed() {
 		return edit, nil
 	}
 
@@ -161,8 +166,9 @@ func settingsObject(file string, text []byte) (jsonObject, error) {
 }
 
 // apply adds the permission rules to settings, and with hook not empty the hook that runs hook,
-// keeping a line for each change. The hooks are checked for their shape even when no hook is
-// added, so a file the guard's setup could not edit is refused wherever it runs.
+// keeping a line for each step; with hook empty the hook's step is unchanged and says where the
+// guard runs. The hooks are checked for their shape even when no hook is added, so a file the
+// guard's setup could not edit is refused wherever it runs.
 func (e *settingsEdit) apply(settings *jsonObject, hook string) error {
 	hooks, err := e.member(*settings, keyHooks, keyHooks)
 	if err != nil {
@@ -174,10 +180,10 @@ func (e *settingsEdit) apply(settings *jsonObject, hook string) error {
 		return err
 	}
 
-	if hook != "" {
-		if err := e.addHook(settings, hooks, groups, hook); err != nil {
-			return err
-		}
+	if hook == "" {
+		e.report(stepUnchanged, result.Say("Added no hook: "+guardUnsupported))
+	} else if err := e.addHook(settings, hooks, groups, hook); err != nil {
+		return err
 	}
 
 	return e.addRules(settings)
@@ -224,242 +230,6 @@ func (t memberType[T]) of(e *settingsEdit, parent jsonObject, name, where string
 	return child, nil
 }
 
-// addHook makes every hook of groups, the PreToolUse groups of hooks in settings, that runs the
-// guard's hook script time out after hookTimeout seconds and block on failure, or adds a group on
-// Bash whose one hook runs command when no group holds one.
-func (e *settingsEdit) addHook(settings *jsonObject, hooks jsonObject, groups []jsontext.Value, command string) error {
-	found, updated := false, false
-	for i, group := range groups {
-		fixed, held, fixErr := fixGroup(group)
-		if fixErr != nil {
-			return fmt.Errorf("read the %s hooks of %s: %w", claudeEvent, e.file, fixErr)
-		}
-
-		found = found || held
-		if fixed != nil {
-			groups[i], updated = fixed, true
-		}
-	}
-
-	switch {
-	case !found:
-		group, groupErr := guardGroup(command)
-		if groupErr != nil {
-			return groupErr
-		}
-
-		groups = append(groups, group)
-		e.lines = append(e.lines, result.Say("Added the guard's hook to %s", e.file))
-	case updated:
-		e.lines = append(e.lines, result.Say("Set the timeout and the failure of the guard's hook in %s", e.file))
-	default:
-		return nil
-	}
-
-	whole, err := withArray(hooks, claudeEvent, groups)
-	if err != nil {
-		return err
-	}
-
-	settings.set(keyHooks, whole)
-
-	return nil
-}
-
-// withArray returns parent as JSON text, with the array elems as its member name.
-func withArray(parent jsonObject, name string, elems []jsontext.Value) (jsontext.Value, error) {
-	array, err := json.Marshal(elems)
-	if err != nil {
-		return nil, fmt.Errorf("encode an array: %w", err)
-	}
-
-	parent.set(name, array)
-
-	return parent.value()
-}
-
-// fixGroup reads group, a PreToolUse group, and reports whether it holds a hook that runs the
-// guard's hook script. When such a hook lacks the timeout or the failure the guard needs, it
-// returns the group with both set; otherwise a nil group. A group or a hook of another shape is
-// left as it is.
-func fixGroup(group jsontext.Value) (fixed jsontext.Value, held bool, err error) {
-	members, ok, err := readObject(group)
-	if err != nil || !ok {
-		return nil, false, err
-	}
-
-	raw, _ := members.get(keyHooks)
-	hooks, ok, err := readArray(raw)
-	if err != nil || !ok {
-		return nil, false, err
-	}
-
-	held, changed, err := fixHooks(hooks)
-	if err != nil || !changed {
-		return nil, held, err
-	}
-
-	fixed, err = withArray(members, keyHooks, hooks)
-
-	return fixed, held, err
-}
-
-// fixHooks sets every hook of hooks that runs the guard's hook script to time out after
-// hookTimeout seconds and block on failure, in its place, and reports whether hooks holds such a
-// hook and whether one changed.
-func fixHooks(hooks []jsontext.Value) (held, changed bool, err error) {
-	for i, hook := range hooks {
-		entry, ok, readErr := readObject(hook)
-		if readErr != nil {
-			return false, false, readErr
-		}
-
-		if !ok || !runsGuard(entry) {
-			continue
-		}
-
-		held = true
-		timed := setValue(&entry, keyTimeout, jsontext.Value(strconv.Itoa(hookTimeout)))
-		blocks := setValue(&entry, keyOnFailure, jsonString(hookOnFailure))
-		if !timed && !blocks {
-			continue
-		}
-
-		if hooks[i], err = entry.value(); err != nil {
-			return false, false, err
-		}
-
-		changed = true
-	}
-
-	return held, changed, nil
-}
-
-// runsGuard reports whether hook runs the guard's hook script: its command, read as shell words
-// with their quotes removed, is the script's path alone, or bash then the path. Only the ending of
-// the path decides, so an expansion in it stays as written; the separators of the system count as
-// slashes, as in the absolute path a CLAUDE_CONFIG_DIR on Windows gives the hook.
-func runsGuard(hook jsonObject) bool {
-	raw, found := hook.get(keyCommand)
-	if !found {
-		return false
-	}
-
-	var command string
-	if err := json.Unmarshal(raw, &command); err != nil {
-		return false
-	}
-
-	words, ok := commandWords(command)
-	if !ok {
-		return false
-	}
-
-	var path string
-	switch {
-	case len(words) == 1:
-		path = words[0]
-	case len(words) == 2 && words[0] == "bash":
-		path = words[1]
-	default:
-		return false
-	}
-
-	path = filepath.ToSlash(path)
-
-	return path == guardScript || strings.HasSuffix(path, "/"+guardScript)
-}
-
-// commandWords returns the words of command after quote removal, with every expansion as written,
-// and reports false unless command is valid shell holding one simple command and nothing else: no
-// assignment, no redirection, no second command.
-func commandWords(command string) ([]string, bool) {
-	file, err := syntax.NewParser().Parse(strings.NewReader(command), "")
-	if err != nil || len(file.Stmts) != 1 {
-		return nil, false
-	}
-
-	stmt := file.Stmts[0]
-	call, ok := stmt.Cmd.(*syntax.CallExpr)
-	if !ok || stmt.Negated || stmt.Background || stmt.Coprocess || len(stmt.Redirs) > 0 || len(call.Assigns) > 0 {
-		return nil, false
-	}
-
-	words := make([]string, 0, len(call.Args))
-	for _, arg := range call.Args {
-		var b strings.Builder
-		writeUnquoted(&b, command, arg.Parts, false)
-		words = append(words, b.String())
-	}
-
-	return words, true
-}
-
-// writeUnquoted writes parts, the parts of a word of command, to b after quote removal, and every
-// expansion as command writes it. inDouble says whether parts sit inside double quotes, where a
-// backslash quotes only the characters that keep a meaning there.
-func writeUnquoted(b *strings.Builder, command string, parts []syntax.WordPart, inDouble bool) {
-	for _, part := range parts {
-		switch p := part.(type) {
-		case *syntax.Lit:
-			writeUnescaped(b, p.Value, inDouble)
-		case *syntax.SglQuoted:
-			b.WriteString(p.Value)
-		case *syntax.DblQuoted:
-			writeUnquoted(b, command, p.Parts, true)
-		default:
-			b.WriteString(command[part.Pos().Offset():part.End().Offset()])
-		}
-	}
-}
-
-// writeUnescaped writes the text raw to b with its quoting backslashes removed. Outside double
-// quotes a backslash quotes any character; inside them only $, `, ", \ and a newline, and a
-// backslash before anything else is kept. A backslash before a newline joins two lines and goes
-// with the newline.
-func writeUnescaped(b *strings.Builder, raw string, inDouble bool) {
-	for i := 0; i < len(raw); i++ {
-		if raw[i] != '\\' || i+1 == len(raw) {
-			b.WriteByte(raw[i])
-
-			continue
-		}
-
-		next := raw[i+1]
-		switch {
-		case next == '\n':
-			i++
-		case !inDouble || strings.IndexByte("$`\"\\", next) >= 0:
-			b.WriteByte(next)
-			i++
-		default:
-			b.WriteByte(raw[i])
-		}
-	}
-}
-
-// setValue sets the member name of o to want unless it already holds an equal value, and reports
-// whether it changed.
-func setValue(o *jsonObject, name string, want jsontext.Value) bool {
-	if have, found := o.get(name); found && sameJSON(have, want) {
-		return false
-	}
-
-	o.set(name, want)
-
-	return true
-}
-
-// sameJSON reports whether a and b hold the same JSON value.
-func sameJSON(a, b jsontext.Value) bool {
-	var x, y any
-	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
-		return false
-	}
-
-	return reflect.DeepEqual(x, y)
-}
-
 // jsonString returns text as a JSON string.
 func jsonString(text string) jsontext.Value {
 	// Quoting fails only on invalid UTF-8, and every caller passes a constant of this package.
@@ -471,34 +241,8 @@ func jsonString(text string) jsontext.Value {
 	return quoted
 }
 
-// guardGroup returns the PreToolUse group on Bash whose one hook runs command.
-func guardGroup(command string) (jsontext.Value, error) {
-	//nolint:govet // The order of the fields is the order of the keys written, not a layout to pack.
-	type hook struct {
-		Type      string `json:"type"`
-		Command   string `json:"command"`
-		Timeout   int    `json:"timeout"`
-		OnFailure string `json:"onFailure"`
-	}
-
-	group := struct {
-		Matcher string `json:"matcher"`
-		Hooks   []hook `json:"hooks"`
-	}{
-		Matcher: claudeShellTool,
-		Hooks:   []hook{{Type: "command", Command: command, Timeout: hookTimeout, OnFailure: hookOnFailure}},
-	}
-
-	text, err := json.Marshal(group)
-	if err != nil {
-		return nil, fmt.Errorf("encode the guard's hook: %w", err)
-	}
-
-	return text, nil
-}
-
 // addRules adds to each permission list of settings the rules of it that none of the lists holds
-// yet, with a line for each list that grew.
+// yet, with a line for each list: changed when it grew, unchanged otherwise.
 func (e *settingsEdit) addRules(settings *jsonObject) error {
 	permissions, err := e.member(*settings, keyPermissions, keyPermissions)
 	if err != nil {
@@ -517,16 +261,18 @@ func (e *settingsEdit) addRules(settings *jsonObject) error {
 	for i, list := range permissionLists {
 		added := missingRules(list.rules, held)
 		if len(added) == 0 {
+			e.report(stepUnchanged, result.Say("The %s rules are already in %s", list.name, e.file))
+
 			continue
 		}
 
-		array, arrayErr := json.Marshal(slices.Concat(lists[i], added))
+		array, arrayErr := arrayValue(slices.Concat(lists[i], added))
 		if arrayErr != nil {
-			return fmt.Errorf("encode an array: %w", arrayErr)
+			return arrayErr
 		}
 
 		permissions.set(list.name, array)
-		e.lines = append(e.lines, rulesLine(len(added), list.name, e.file))
+		e.report(stepChanged, rulesLine(len(added), list.name, e.file))
 		grew = true
 	}
 

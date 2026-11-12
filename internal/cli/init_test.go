@@ -554,7 +554,7 @@ func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlagPastTheTimeLimit_ExitsTwoNa
 	assert.Check(t, is.Equal(printed.Next, initProject))
 }
 
-func TestApp_Run_WhenInitClaudeRunsWhereTheGuardDoesNot_SaysWhereTheGuardRuns(t *testing.T) {
+func TestApp_Run_WhenInitClaudeRunsWhereTheGuardDoesNot_SaysWhereTheGuardRunsBeforeTheRules(t *testing.T) {
 	t.Parallel()
 
 	app, _ := installing(t)
@@ -563,7 +563,11 @@ func TestApp_Run_WhenInitClaudeRunsWhereTheGuardDoesNot_SaysWhereTheGuardRuns(t 
 	got := launch(t, app, "init", "claude")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	assert.Check(t, is.Contains(got.stdout, cli.GuardUnsupported))
+	lines := strings.Split(got.stdout, "\n")
+	noHook := slices.IndexFunc(lines, func(line string) bool { return strings.Contains(line, cli.GuardUnsupported) })
+	allow := slices.IndexFunc(lines, func(line string) bool { return strings.Contains(line, "allow") })
+	assert.Assert(t, noHook >= 0 && allow >= 0, "stdout = %q", got.stdout)
+	assert.Check(t, noHook < allow, "stdout = %q", got.stdout)
 }
 
 func TestApp_Run_WhenInitClaudeChangesOnlyTheSettings_PrintsNoLineSayingAllIsInPlace(t *testing.T) {

@@ -88,11 +88,37 @@ func PermissionRules() map[string][]string {
 // StepKind is stepKind, for the tests of package cli_test.
 type StepKind = stepKind
 
-// StepUnchanged and StepFailed are stepUnchanged and stepFailed, for the tests of package cli_test.
+// StepChanged, StepUnchanged and StepFailed are stepChanged, stepUnchanged and stepFailed, for the
+// tests of package cli_test.
 const (
+	StepChanged   = stepChanged
 	StepUnchanged = stepUnchanged
 	StepFailed    = stepFailed
 )
+
+// SettingsStep is a step line the settings edit of `ils init claude` reports: its text as the text
+// renderer prints it, and its kind.
+type SettingsStep struct {
+	Text string
+	Kind StepKind
+}
+
+// SettingsSteps returns the step lines the settings edit of `ils init claude` reports for the Claude
+// Code directory dir, with hook the command of the guard's hook, or empty where the guard does not
+// run, for the tests of package cli_test.
+func SettingsSteps(dir, hook string) ([]SettingsStep, error) {
+	edit, err := planSettings(dir, hook)
+	if err != nil {
+		return nil, err
+	}
+
+	steps := make([]SettingsStep, len(edit.lines))
+	for i, line := range edit.lines {
+		steps[i] = SettingsStep{Text: plainText(line.phrase, ""), Kind: line.kind}
+	}
+
+	return steps, nil
+}
 
 // Report has the display that progress is report line as a step of kind, as a command run under
 // the display reports it, for the tests of package cli_test.
