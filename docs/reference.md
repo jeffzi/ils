@@ -385,11 +385,17 @@ line says the guard runs on macOS and Linux.
 It prints one line per step, in this order: each skill, the hook, then the `allow`, `ask`, and
 `deny` lists. Each line is marked by what the step did (see [Terminal output](#terminal-output)):
 
-| Step  | `✓` changed                                     | `–` nothing to do                                                                                                                                                                                                                                                   | `✗` failed                                                       |
-| ----- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| Skill | Installed or updated the skill at its directory | Every file is already up to date, or the directory is a link whose files match the shipped ones                                                                                                                                                                     | The directory is a link whose files differ from the shipped ones |
-| Hook  | Added the hook, or updated a guard entry        | A group that covers `Bash` holds a guard entry, every guard entry in a group that covers `Bash` is already the one `ils init` writes, and none sits in a group whose matcher is a string that does not cover `Bash`; on Windows, the line says where the guard runs | —                                                                |
-| Rules | Added the rules the list lacked                 | Every rule of the list is already in one of the three lists                                                                                                                                                                                                         | —                                                                |
+| Step  | `✓` changed                                     | `–` nothing to do                                                                                                 | `✗` failed                                                       |
+| ----- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| Skill | Installed or updated the skill at its directory | Every file is already up to date, or the directory is a link whose files match the shipped ones                   | The directory is a link whose files differ from the shipped ones |
+| Hook  | Added the hook, or updated a guard entry        | Every guard entry is already in place, as listed after this table; on Windows, the line says where the guard runs | —                                                                |
+| Rules | Added the rules the list lacked                 | Every rule of the list is already in one of the three lists                                                       | —                                                                |
+
+The hook step has nothing to do when all of these hold:
+
+- A group that covers `Bash` holds a guard entry.
+- Every guard entry in a group that covers `Bash` is already the one `ils init` writes.
+- No guard entry sits in a group whose matcher is a string that does not cover `Bash`.
 
 A skill directory that is a symbolic link is never written through. `ils init` reads each shipped
 file through it. When every file reads the same, the step names the link's target and has nothing
