@@ -335,8 +335,8 @@ func TestRenderJSON_WhenResultHasLinesExcerptReasonAndNext_CarriesWhatTheTextSho
 	resulttest.AssertCarried(t, text, result.DeliveredNotGreen, resulttest.Decode(t, out))
 }
 
-// nextLineSeparator is the Unicode next line character, which the renderer escapes in the JSON itself.
-const nextLineSeparator = "\u0085"
+// nel is NEL, the Unicode next line character, which the renderer escapes in the JSON itself.
+const nel = "\u0085"
 
 // subjectHolding is a done push whose merge subject is subject, picked back from the decoded JSON.
 func subjectHolding(name, subject string) jsonCase {
@@ -359,7 +359,7 @@ func separatorCases() []jsonCase {
 	}
 }
 
-func TestRenderJSON_WhenAStringHoldsUnicodeSeparators_WritesThemEscaped(t *testing.T) {
+func TestRenderJSON_WhenAStringHoldsTheNextLineCharacter_WritesItEscaped(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range separatorCases() {
@@ -370,7 +370,7 @@ func TestRenderJSON_WhenAStringHoldsUnicodeSeparators_WritesThemEscaped(t *testi
 			out, err := result.RenderJSON(tt.result, gitDir)
 			assert.NilError(t, err)
 
-			assert.Check(t, !strings.Contains(out, nextLineSeparator), "output holds a raw separator:\n%q", out)
+			assert.Check(t, !strings.Contains(out, nel), "output holds a raw separator:\n%q", out)
 			assert.Check(t, is.DeepEqual(tt.pick(resulttest.Decode(t, out)), tt.want))
 		})
 	}
@@ -710,17 +710,7 @@ func TestRenderStyled_WhenAReasonNamesAHook_ReturnsAWordingErrorNamingTheFilledI
 func TestRenderStyled_WhenOwnWordingOnlyResemblesHookOrGitDir_PrintsIt(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range exemptCases() {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			t.Logf("row: git dir %q, result %s", tt.gitDir, inputOf(tt.result))
-
-			got, err := result.RenderStyled(tt.result, tt.gitDir, colorprofile.NoTTY)
-			assert.NilError(t, err)
-
-			assert.Check(t, is.Equal(got, tt.wantText))
-		})
-	}
+	assertTexts(t, exemptCases())
 }
 
 func TestWordingError_Error_WhenBothFieldsSet_NamesBothFields(t *testing.T) {

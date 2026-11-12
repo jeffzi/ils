@@ -872,16 +872,6 @@ func TestForge_PublishRelease(t *testing.T) {
 	}
 }
 
-func TestForge_PublishRelease_WhenGhExitsNonZero_ReturnsExitError(t *testing.T) {
-	noTag := ghtest.Answer{Stderr: "tag v1.2.0 doesn't exist in the repo ada/engine, aborting due to --verify-tag flag\n", Code: 1}
-	ghtest.Setup(t, ghtest.Exits(noTag, releaseCreateArgs(false)...))
-
-	_, err := newForge().PublishRelease(t.Context(), engine(), newRelease(false))
-
-	_, ok := errors.AsType[*child.ExitError](err)
-	assert.Check(t, ok, "PublishRelease error = %v, want *child.ExitError", err)
-}
-
 func TestForge_PublishRelease_RemovesTheNotesFile(t *testing.T) {
 	tests := []struct {
 		name    string

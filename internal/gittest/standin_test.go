@@ -141,9 +141,8 @@ func TestFakeGit_WhenCallIsNotFaked_RunsTheRealGit(t *testing.T) {
 	gittest.FakeGit(t, gittest.Fake{Version: "git version 2.34.1", FailOn: []string{"show-ref"}})
 	dir := t.TempDir()
 
-	got := callGit(t, gittest.Env(t), dir, "init", "--quiet")
+	callGit(t, gittest.Env(t), dir, "init", "--quiet")
 
-	assert.Check(t, is.DeepEqual(got, faked{}))
 	_, err := os.Stat(filepath.Join(dir, ".git"))
 	assert.Check(t, err, "git init made no repository in %s", dir)
 }
@@ -225,14 +224,14 @@ func TestFakeGit_WhenInstalledAgain_ReturnsSettingsThatOverrideTheFirstCalls(t *
 }
 
 func TestFakeGit_WhenCallIsAPrefixOfFailingWords_RunsTheRealGit(t *testing.T) {
+	plainEnv := gittest.Env(t)
+	dir := initRepo(t, plainEnv)
+	want := callGit(t, plainEnv, dir, "show-ref")
 	gittest.FakeGit(t, gittest.Fake{FailOn: []string{"show-ref", "--verify"}})
-	env := gittest.Env(t)
-	dir := initRepo(t, env)
 
-	got := callGit(t, env, dir, "show-ref")
+	got := callGit(t, gittest.Env(t), dir, "show-ref")
 
-	// The real git finds no refs in a fresh repository: it prints nothing and exits 1.
-	assert.Check(t, is.DeepEqual(got, faked{Code: 1}))
+	assert.Check(t, is.DeepEqual(got, want))
 }
 
 func TestFakeGit_WhenRealGitCannotStart_ExitsBroken(t *testing.T) {

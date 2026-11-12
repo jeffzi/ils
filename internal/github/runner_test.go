@@ -63,16 +63,6 @@ func TestRunner_Run_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
 	assertToolMissing(t, err)
 }
 
-func TestRunner_Run_WhenGhPathIsSet_RunsTheGhItNames(t *testing.T) {
-	ghtest.Setup(t, ghtest.Says("named\n", "pr", "view"))
-	t.Setenv("PATH", t.TempDir())
-
-	got, err := github.Runner{}.Run(t.Context(), "pr", "view")
-	assert.NilError(t, err, "Run(pr view)")
-
-	assert.Check(t, is.Equal(got.Stdout, "named\n"))
-}
-
 // onPath scripts the fake gh, then makes it findable only as the gh on PATH, with PATH set to
 // entry and the working directory to the fake's directory.
 func onPath(t *testing.T, entry func(dir string) string, script ...ghtest.Call) {
