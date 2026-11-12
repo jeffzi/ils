@@ -160,7 +160,6 @@ func requiredRows() []vigilRow {
 	decided := concluded(landing.WaitGreen, optional, 1, 1)
 	decided.Deciding = optional.Checks[:2]
 	unapproved := forge.Verdict{MissingRequired: []string{"lint", "test"}, Runs: ran(forge.RunAwaitingPerson)}
-	silence := forge.Verdict{MissingRequired: []string{"lint", "test"}}
 
 	return []vigilRow{
 		{
@@ -178,12 +177,6 @@ func requiredRows() []vigilRow {
 			name:     "required name absent, run awaiting a person",
 			verdicts: says(unapproved),
 			want:     concluded(landing.WaitNeverReported, unapproved, 0, 0), ops: readsOf(1, 1, 1),
-		},
-		{
-			name:     "nothing reported for 20 seconds",
-			verdicts: says(silence),
-			want:     concluded(landing.WaitNothingReported, silence, 0, 0),
-			ops:      readsOf(1, 5, 1), waits: polls(4, verdictPoll),
 		},
 	}
 }

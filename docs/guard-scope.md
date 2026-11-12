@@ -185,15 +185,12 @@ Check every new refusal two ways before it lands:
 
 ## Accepted limits
 
-The guard does not see what a command runs from a file, or in a language other than shell.
-[What the guard does not see](reference.md#what-the-guard-does-not-see) lists those limits. A
-construct whose only use is to hide a command is one more:
-[rule 3](#3-close-a-bypass-only-when-agents-write-it) gives examples and the test that tells it from
-an everyday spelling.
-
-These classes fail that test, so the guard lets them through.
-[What the guard does not see](reference.md#what-the-guard-does-not-see) lists the commands,
-options, and keys each one covers.
+The guard does not see what a command runs from a file, in a language other than shell, or
+through a construct whose only use is to hide it:
+[What the guard does not see](reference.md#what-the-guard-does-not-see) lists each limit with the
+commands, options, and keys it covers. [Rule 3](#3-close-a-bypass-only-when-agents-write-it) gives
+examples and the test that tells a hiding construct from an everyday spelling. These classes fail
+that test, so the guard lets them through:
 
 - **A shell reading a script the command does not hold**, such as `curl … | bash`. Agents pipe an
   install script for what it installs, and that script holds no git operation. Writing a guarded

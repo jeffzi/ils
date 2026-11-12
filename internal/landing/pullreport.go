@@ -165,13 +165,23 @@ func (r *reading) readChecks(ctx context.Context) {
 	head, headErr := r.deps.Forge.Head(ctx, r.repo, forge.HeadQuery{Number: number, Required: required})
 	if headErr != nil {
 		r.failed(readMergeState, headErr)
-	} else {
-		r.waited.MergeState = head.MergeState
+		head = forge.Head{}
 	}
 
 	if r.cut {
 		return
 	}
+
+	// Checks of a commit other than the tip say nothing of the branch, so neither they nor a merge
+	// step are reported until GitHub shows the tip as the head.
+	if moved := r.otherHead(head.SHA); moved != "" {
+		r.say(result.Say("The head of pull request %s is %s and not the branch's tip %s, so its checks are not reported",
+			result.PullRequest(number), result.SHA(moved), result.SHA(r.on.tip)))
+
+		return
+	}
+
+	r.waited.MergeState = head.MergeState
 
 	verdict, err := r.deps.Forge.Verdict(ctx, r.repo, forge.VerdictQuery{SHA: r.open.HeadSHA, Number: number, Required: required})
 	if err != nil {
@@ -182,6 +192,22 @@ func (r *reading) readChecks(ctx context.Context) {
 
 	if headErr == nil {
 		r.say(r.waited.mergeStateLines()...)
+	}
+}
+
+// otherHead returns the commit that the listing of the branch's pull requests, or shown, the read
+// of the open one's head, names as its head when that is not the branch's tip. It returns "" when
+// both name the tip, when the tip is unknown, and for an empty shown, a head that was not read.
+func (r *reading) otherHead(shown string) string {
+	switch {
+	case r.on.tip == "":
+		return ""
+	case r.open.HeadSHA != r.on.tip:
+		return r.open.HeadSHA
+	case shown != "" && shown != r.on.tip:
+		return shown
+	default:
+		return ""
 	}
 }
 
@@ -222,6 +248,12 @@ func (r *reading) takeVerdict(verdict forge.Verdict, required []string) {
 	case r.running:
 		pending := verdict.Pending()
 		r.say(runningList(result.Say("Still running on %s (%s):", sha, nounCount(len(pending), "check")), pending, runningName)...)
+	case outcome == WaitNeverReported:
+		if len(w.Deciding) > 0 {
+			r.say(w.checksLine(r.open.HeadSHA))
+		}
+
+		r.say(w.neverReportedLine())
 	case verdict.State() == forge.VerdictNone:
 		r.say(result.Say("No check or status reported for %s", sha))
 	default:

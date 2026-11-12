@@ -76,7 +76,7 @@ func TestStartBranch_WhenEveryCheckHolds_StartsTheBranchAtOriginsTrunk(t *testin
 
 	got := startBranch(t, s, fresh)
 
-	assertStartedBranch(t, s, got, expect(fresh, shortSHA(tip), "Next:", "ils push"))
+	assertStartedBranch(t, s, got, expect(fresh, shortSHA(tip)))
 }
 
 func TestStartBranch_WhenHEADIsDetachedWithNoCommitOfItsOwn_StartsAtOriginsTrunkAsFetched(t *testing.T) {

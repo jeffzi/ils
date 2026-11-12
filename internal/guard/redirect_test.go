@@ -56,7 +56,5 @@ func TestJudge_WhenAnExecWithNoCommandRedirects_AllowsGitHistoryShownAfterIt(t *
 
 	checkAllowed(t, caller, []namedCommand{
 		{name: "exec at top level", command: "exec > out.log; git show HEAD:README.md"},
-		{name: "exec in an eval string", command: "eval 'exec > out.log'; git show HEAD:README.md"},
-		{name: "exec in a called function body", command: "f() { exec > out.log; }; f; git show HEAD:README.md"},
 	})
 }

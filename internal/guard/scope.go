@@ -42,9 +42,9 @@ type scope struct {
 	// redirects are the redirects in effect on the shell's own descriptors: those of each compound
 	// command the walk is inside, outermost first.
 	redirects []Redirect
-	// functions holds, by name, the functions a call may run. Copies of a scope share it, so a
-	// declaration replaces it rather than changing it in place.
-	functions map[string]*function
+	// functions holds, by name, each declaration of a function a call of that name may run.
+	// Copies of a scope share it, so a declaration replaces it rather than changing it in place.
+	functions map[string][]*definition
 	// head is the switch an earlier operand of the `&&` list being walked made, which every later
 	// operand runs after; nil outside such a list.
 	head *headClaim

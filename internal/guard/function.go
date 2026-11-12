@@ -9,12 +9,6 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
-// function is what the guard knows of a function the command may have declared under one name:
-// each declaration a call of it may run.
-type function struct {
-	definitions []*definition
-}
-
 // definition is one declaration of a function: its body, which the walk reads where it is
 // declared and again where each call of it stands.
 type definition struct {
@@ -24,32 +18,25 @@ type definition struct {
 	probing bool
 }
 
-// with returns the function that runs any of fn's definitions or of defs. A nil fn has none.
-func (fn *function) with(defs ...*definition) *function {
-	var all []*definition
-	if fn != nil {
-		all = slices.Clone(fn.definitions)
-	}
-
-	for _, d := range defs {
-		if !slices.ContainsFunc(all, func(other *definition) bool { return other.body == d.body }) {
-			all = append(all, d)
-		}
-	}
-
-	return &function{definitions: all}
-}
-
 // mergeFunctions returns the functions a call may run when the shell may hold the functions of a or
-// those of b: under each name, the definitions of both.
-func mergeFunctions(a, b map[string]*function) map[string]*function {
-	if maps.Equal(a, b) {
+// those of b: under each name, the definitions of both, each body once. A map of functions holds,
+// under each name the command may have declared a function under, each declaration a call of it
+// may run.
+func mergeFunctions(a, b map[string][]*definition) map[string][]*definition {
+	if maps.EqualFunc(a, b, slices.Equal) {
 		return a
 	}
 
 	merged := cloneOrEmpty(a)
-	for name, fn := range b {
-		merged[name] = merged[name].with(fn.definitions...)
+	for name, defs := range b {
+		all := slices.Clone(merged[name])
+		for _, d := range defs {
+			if !slices.ContainsFunc(all, func(other *definition) bool { return other.body == d.body }) {
+				all = append(all, d)
+			}
+		}
+
+		merged[name] = all
 	}
 
 	return merged
@@ -93,13 +80,13 @@ func (w *walker) declareFunction(decl *syntax.FuncDecl, sc *scope) {
 
 	name := decl.Name.Value
 	functions := cloneOrEmpty(sc.functions)
-	functions[name] = &function{definitions: []*definition{{body: decl.Body}}}
+	functions[name] = []*definition{{body: decl.Body}}
 	sc.functions = functions
 }
 
 // calledDefinitions returns the definitions among functions that inv's call may run. Only `time`
 // and zsh's modifiers run a function behind them; every other wrapper runs a program or a builtin.
-func calledDefinitions(inv Invocation, functions map[string]*function) []*definition {
+func calledDefinitions(inv Invocation, functions map[string][]*definition) []*definition {
 	if len(inv.Words) == 0 || !inv.Words[0].Literal {
 		return nil
 	}
@@ -110,12 +97,7 @@ func calledDefinitions(inv Invocation, functions map[string]*function) []*defini
 		}
 	}
 
-	fn := functions[inv.Words[0].Text]
-	if fn == nil {
-		return nil
-	}
-
-	return fn.definitions
+	return functions[inv.Words[0].Text]
 }
 
 // call changes sc the way inv's call of a function the command declares does, run from any of the
@@ -209,14 +191,6 @@ func declaredBody(body *syntax.Stmt) *syntax.Stmt {
 	}
 }
 
-// probe returns a walker that reads at w's depth and drops what it finds.
-func (w *walker) probe() walker {
-	sub := newWalker(w.caller, w.depth)
-	sub.probing, sub.loopBodies, sub.bodies = true, w.loopBodies, w.bodies
-
-	return sub
-}
-
 // dryRun returns the scope d's body leaves, run from sc in unmovedDir, and the carriedMarks of
 // its invocations. The run is walked apart and dropped: the walk of the body where it is declared
 // already holds its invocations, and the errors in reading them. A call of d from inside its own
@@ -235,7 +209,9 @@ func (w *walker) dryRun(d *definition, sc scope, name string) (scope, []Mark) {
 	*w.bodies++
 	sc.dir, sc.physical, sc.vars.function = unmovedDir, false, true
 	d.probing = true
-	sub := w.probe()
+	// The run reads at w's depth and drops what it finds.
+	sub := newWalker(w.caller, w.depth)
+	sub.probing, sub.loopBodies, sub.bodies = true, w.loopBodies, w.bodies
 	sub.stmt(d.body, &sc)
 	d.probing = false
 

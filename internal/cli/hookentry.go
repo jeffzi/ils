@@ -321,7 +321,7 @@ func writeUnquoted(b *strings.Builder, command string, parts []syntax.WordPart, 
 			if inDouble {
 				guard.WriteDoubleQuoted(b, p.Value)
 			} else {
-				writeUnescaped(b, p.Value)
+				guard.WriteUnquoted(b, p.Value)
 			}
 		case *syntax.SglQuoted:
 			b.WriteString(p.Value)
@@ -329,24 +329,6 @@ func writeUnquoted(b *strings.Builder, command string, parts []syntax.WordPart, 
 			writeUnquoted(b, command, p.Parts, true)
 		default:
 			b.WriteString(command[part.Pos().Offset():part.End().Offset()])
-		}
-	}
-}
-
-// writeUnescaped writes raw, text outside quotes, to b with its quoting backslashes removed: a
-// backslash quotes any character, and one before a newline joins two lines and goes with the
-// newline. A backslash at the end stays.
-func writeUnescaped(b *strings.Builder, raw string) {
-	for i := 0; i < len(raw); i++ {
-		if raw[i] != '\\' || i+1 == len(raw) {
-			b.WriteByte(raw[i])
-
-			continue
-		}
-
-		i++
-		if raw[i] != '\n' {
-			b.WriteByte(raw[i])
 		}
 	}
 }

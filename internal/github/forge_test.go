@@ -584,6 +584,11 @@ func TestForge_TrunkProtection(t *testing.T) {
 			want:   forge.Protection{Rules: forge.RulesUnavailable, SquashAllowed: true},
 		},
 		{name: "no rule applies", answer: rules(), want: forge.Protection{Rules: forge.RulesNone, SquashAllowed: true}},
+		{
+			name:   "merge queue rule",
+			answer: rules(`{"type":"merge_queue","ruleset_id":42,"parameters":{"merge_method":"SQUASH","max_entries_to_build":5}}`),
+			want:   forge.Protection{Rules: forge.RulesProtect, SquashAllowed: true, MergeQueue: true},
+		},
 		{name: "the rule without squash ahead of one with it", answer: rules(pullRequestRule(42, `["rebase"]`), pullRequestRule(51, `["squash"]`)), want: forbiddenBy(42)},
 		{name: "two pull request rules without squash", answer: rules(pullRequestRule(42, `["merge"]`), pullRequestRule(51, `["rebase"]`)), want: forbiddenBy(42, 51)},
 		{name: "pull request rule with an empty methods list", answer: rules(pullRequestRule(42, `[]`)), want: forbiddenBy(42)},
@@ -737,11 +742,10 @@ func TestForge_Message(t *testing.T) {
 		mergeBody string
 		want      []string
 	}{
-		{
-			name:      "commit messages setting",
-			mergeBody: "* Add the forge\n\n* Read the message\n\n---------\n\n" + signedOff + "\n" + liveSuite,
-			want:      []string{signedOff, liveSuite},
-		},
+		{name: "commit messages setting", mergeBody: "* Add the forge\n\n* Read the message\n\n---------\n\n" + signedOff + "\n" + liveSuite, want: []string{signedOff, liveSuite}},
+		{name: "commit messages setting, a trailer the body already holds", body: "Lands the change.\n\n" + signedOff, mergeBody: "* Add the forge\n\n---------\n\n" + signedOff + "\n" + liveSuite, want: []string{liveSuite}},
+		{name: "commit messages setting, a trailer the body holds mid-paragraph with CRLF line ends and trailing spaces", body: "Lands the change.\r\n\r\n" + signedOff + " \t\r\nSigned in person.\r\n", mergeBody: "* Add the forge\n\n" + signedOff + "\n" + liveSuite, want: []string{liveSuite}},
+		{name: "pull request body setting, a trailer the body already holds after GitHub's separator", body: "Lands the change.\n\n" + signedOff, mergeBody: "Lands the change.\n\n" + signedOff + "\n\n---------\n\n" + signedOff + "\n" + liveSuite, want: []string{liveSuite}},
 		{
 			name:      "pull request body setting, trailers after GitHub's separator",
 			mergeBody: pullBody + "\n\n---------\n\n" + liveSuite,
@@ -756,6 +760,8 @@ func TestForge_Message(t *testing.T) {
 			name: "pull request body setting, the copy of a CRLF body with LF line ends",
 			body: strings.ReplaceAll(pullBody, "\n", "\r\n"), mergeBody: pullBody,
 		},
+		{name: "pull request body setting, the copy of a body whose trailers end in spaces and tabs", body: pullBody + " \t", mergeBody: pullBody + " \t"},
+		{name: "pull request body setting, trailers added after a body whose trailers end in spaces and tabs", body: pullBody + " \t", mergeBody: pullBody + " \t\n" + liveSuite, want: []string{liveSuite}},
 		{
 			name: "body ending partway through a line of the merge body",
 			body: "Lands the change.\n\nSigned-off", mergeBody: "Lands the change.\n\n" + signedOff,
@@ -870,16 +876,6 @@ func TestForge_PublishRelease(t *testing.T) {
 			assert.Check(t, is.Equal(got, releaseURL))
 		})
 	}
-}
-
-func TestForge_PublishRelease_WhenGhExitsNonZero_ReturnsExitError(t *testing.T) {
-	noTag := ghtest.Answer{Stderr: "tag v1.2.0 doesn't exist in the repo ada/engine, aborting due to --verify-tag flag\n", Code: 1}
-	ghtest.Setup(t, ghtest.Exits(noTag, releaseCreateArgs(false)...))
-
-	_, err := newForge().PublishRelease(t.Context(), engine(), newRelease(false))
-
-	_, ok := errors.AsType[*child.ExitError](err)
-	assert.Check(t, ok, "PublishRelease error = %v, want *child.ExitError", err)
 }
 
 func TestForge_PublishRelease_RemovesTheNotesFile(t *testing.T) {

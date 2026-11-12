@@ -203,6 +203,12 @@ func findRealGit(tb testing.TB) string {
 	return realGit
 }
 
+// SetRace sets GORACE to RaceSetting for the rest of tb.
+func SetRace(tb testing.TB) {
+	tb.Helper()
+	tb.Setenv(raceEnv, RaceSetting())
+}
+
 // RaceSetting returns the value of GORACE that stops a binary built with -race from sleeping a
 // second before every exit, which each call of a fake that the test binary stands in for would pay.
 // It keeps the options the environment already holds.

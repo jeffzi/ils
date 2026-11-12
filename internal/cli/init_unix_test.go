@@ -250,10 +250,10 @@ func TestApp_Run_WhenInitClaudeFindsASkillDirectoryLinkedToOtherFiles_SaysToRunT
 // marked matches a line that starts with the mark of a step.
 var marked = regexp.MustCompile(`^[✓–✗] `)
 
-// linkedPiped runs `ils init claude` piped, with every setting in place and the directory of the
-// release skill a link to target; it returns the run, its lines, and a word each step line holds in
+// linkedPiped arranges `ils init claude` to run piped, with every setting in place and the directory
+// of the release skill a link to target; it returns the app, and a word each step line holds in
 // order: each skill, the hook, then each rule list.
-func linkedPiped(t *testing.T, target string) (got ran, lines, want []string) {
+func linkedPiped(t *testing.T, target string) (app cli.App, want []string) {
 	t.Helper()
 
 	app, home, _ := releaseLinked(t, target)
@@ -261,11 +261,9 @@ func linkedPiped(t *testing.T, target string) (got ran, lines, want []string) {
 		"hooks":       map[string]any{"PreToolUse": []any{hookGroup(cli.UserHook)}},
 		"permissions": ruleLists(),
 	}))
-	got = launch(t, app, "init", "claude")
-
 	settings := settingsUnder(home)
 
-	return got, outputLines(got.stdout), []string{filepath.Join(skillsUnder(home), ilsSkill), target, settings, settings, settings, settings}
+	return app, []string{filepath.Join(skillsUnder(home), ilsSkill), target, settings, settings, settings, settings}
 }
 
 // assertUnmarkedSteps checks that lines begin with one line per word of want, in order, each
@@ -283,8 +281,11 @@ func assertUnmarkedSteps(t *testing.T, lines, want []string) {
 func TestApp_Run_WhenInitClaudeFindsASkillDirectoryLinkedToTheShippedFilesOffATerminal_ReturnsEveryStepLineInOrderWithoutAMark(t *testing.T) {
 	t.Parallel()
 
-	got, lines, want := linkedPiped(t, shippedElsewhere(t, releaseSkill))
+	app, want := linkedPiped(t, shippedElsewhere(t, releaseSkill))
 
+	got := launch(t, app, "init", "claude")
+
+	lines := outputLines(got.stdout)
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
 	assert.Check(t, is.Len(lines, len(want)), "lines = %q", lines)
 	assertUnmarkedSteps(t, lines, want)
@@ -293,8 +294,11 @@ func TestApp_Run_WhenInitClaudeFindsASkillDirectoryLinkedToTheShippedFilesOffATe
 func TestApp_Run_WhenInitClaudeFindsASkillDirectoryLinkedToOtherFilesOffATerminal_ReturnsEveryStepLineInOrderWithoutAMark(t *testing.T) {
 	t.Parallel()
 
-	got, lines, want := linkedPiped(t, t.TempDir())
+	app, want := linkedPiped(t, t.TempDir())
 
+	got := launch(t, app, "init", "claude")
+
+	lines := outputLines(got.stdout)
 	assert.Check(t, is.Equal(got.code, exitBroke), "stdout = %q", got.stdout)
 	assertUnmarkedSteps(t, lines, want)
 }

@@ -57,10 +57,8 @@ func TestRecordsOf_WhenLogWritesTwice_ReturnsBothRecordsInOrder(t *testing.T) {
 func TestOnly_WhenOneRecord_ReturnsIt(t *testing.T) {
 	t.Parallel()
 	first := logtest.Record{Message: "first"}
-	spy := failtest.New(t)
-	var got logtest.Record
 
-	spy.Run(func() { got = logtest.Only(spy, []logtest.Record{first}) })
+	got := logtest.Only(t, []logtest.Record{first})
 
 	assert.Check(t, is.DeepEqual(got, first))
 }

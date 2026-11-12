@@ -367,7 +367,7 @@ func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 		return waited.unconfirmed(), StageVerdict, err
 	}
 
-	if ctxEnded(ctx) {
+	if ctx.Err() != nil || deadlinePassed(ctx) {
 		lost := cmp.Or(ctx.Err(), errOutOfTime)
 
 		return waited.unconfirmed(), lostStage(stillRunning, lost), lost
@@ -542,12 +542,7 @@ func (w waiter) unknownOnPushed(head forge.Head) bool {
 // with how they concluded, as awaitConcluded does. A read after the first keeps headReadReserve
 // for the read of the head that follows the checks, and so does each poll.
 func (w waiter) concluded(ctx context.Context, waited *Waited) (forge.Verdict, WaitOutcome, error) {
-	query := forge.VerdictQuery{SHA: w.pushed.SHA, Number: w.pushed.Number, Required: w.pushed.Required}
-	read := func(ctx context.Context, later bool) (forge.Verdict, error) {
-		return w.readVerdict(ctx, query, later)
-	}
-
-	return w.deps.awaitConcluded(ctx, waited, checkPoll{read: read, poll: pollVerdict, required: w.pushed.Required})
+	return w.deps.awaitConcluded(ctx, waited, checkPoll{read: w.readVerdict, poll: pollVerdict, required: w.pushed.Required})
 }
 
 // checkPoll is how a wait for the checks of a commit reads them and waits between two reads.
@@ -606,11 +601,12 @@ func (d Deps) awaitConcluded(ctx context.Context, waited *Waited, p checkPoll) (
 	}
 }
 
-// readVerdict reads the verdict under ctx. When later is true (a read after the first) and ctx
-// has a deadline, it reads under a deadline headReadReserve before ctx's, so that the read of the
-// head after the checks keeps its time whatever the read costs. It returns an error wrapping
-// errOutOfTime when that deadline, and not ctx ending, ended the read.
-func (w waiter) readVerdict(ctx context.Context, query forge.VerdictQuery, later bool) (forge.Verdict, error) {
+// readVerdict reads the verdict of the pushed commit under ctx. When later is true (a read after
+// the first) and ctx has a deadline, it reads under a deadline headReadReserve before ctx's, so that
+// the read of the head after the checks keeps its time whatever the read costs. It returns an error
+// wrapping errOutOfTime when that deadline, and not ctx ending, ended the read.
+func (w waiter) readVerdict(ctx context.Context, later bool) (forge.Verdict, error) {
+	query := forge.VerdictQuery{SHA: w.pushed.SHA, Number: w.pushed.Number, Required: w.pushed.Required}
 	if !later {
 		return w.deps.Forge.Verdict(ctx, w.pushed.Repo, query)
 	}
@@ -682,11 +678,6 @@ func beforeDeadline(ctx context.Context, reserve time.Duration) (context.Context
 	}
 
 	return context.WithDeadline(ctx, deadline.Add(-reserve))
-}
-
-// ctxEnded reports whether ctx has ended or its deadline is no longer ahead of the current time.
-func ctxEnded(ctx context.Context) bool {
-	return ctx.Err() != nil || deadlinePassed(ctx)
 }
 
 // deadlinePassed reports whether ctx has a deadline that is no longer ahead of the current time.

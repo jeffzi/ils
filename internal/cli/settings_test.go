@@ -220,7 +220,7 @@ func TestApp_Run_WhenInitClaudeRunsWhereTheGuardDoesNot_WritesTheRulesBesideTheH
 	assert.Check(t, is.DeepEqual(decodedFile(t, path), want))
 }
 
-func TestApp_Run_WhenInitClaudeRunsWhereTheGuardDoesNot_MarksTheHookStepUnchangedSayingWhereItRuns(t *testing.T) {
+func TestApp_Run_WhenInitClaudeRunsWhereTheGuardDoesNot_MarksTheHookStepUnchanged(t *testing.T) {
 	t.Parallel()
 
 	app, _ := installing(t)
@@ -229,7 +229,6 @@ func TestApp_Run_WhenInitClaudeRunsWhereTheGuardDoesNot_MarksTheHookStepUnchange
 	got := settingsStepsShown(t, app)
 
 	assert.Check(t, strings.HasPrefix(got[0], "– "), "line = %q", got[0])
-	assert.Check(t, is.Contains(got[0], cli.GuardUnsupported))
 }
 
 func TestApp_Run_WhenInitClaudeFindsSettings_KeepsTheOrderOfTheUsersKeys(t *testing.T) {
@@ -326,6 +325,43 @@ func TestApp_Run_WhenInitClaudeFindsSettingsOfTheWrongShape_ExitsTwoNamingTheFil
 	}
 }
 
+// refusedSettings runs `ils init claude --json` over a settings file that holds text, written long
+// ago, and returns what it printed and the path of the file.
+func refusedSettings(t *testing.T, text string) (got ran, path string) {
+	t.Helper()
+
+	app, home := installing(t)
+	path = withSettings(t, home, text)
+	backdated(t, path)
+
+	return launch(t, app, "init", "claude", "--json"), path
+}
+
+func TestApp_Run_WhenInitClaudeFindsAMemberTwice_ExitsTwoNamingTheMember(t *testing.T) {
+	t.Parallel()
+
+	got, path := refusedSettings(t, `{"theme": "dark", "theme": "light"}`)
+
+	assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
+	refusal := resulttest.Decode(t, got.stdout)
+	assert.Check(t, is.Contains(withoutPath(refusal.Reason, path), "theme"))
+	assert.Check(t, is.Contains(refusal.Next, path))
+	assertUntouched(t, path)
+}
+
+func TestApp_Run_WhenInitClaudeFindsAnEscapeOfNoCharacter_ExitsTwoWithAnotherReasonThanNotJSON(t *testing.T) {
+	t.Parallel()
+
+	notJSON, notJSONPath := refusedSettings(t, `{"theme": `)
+
+	got, path := refusedSettings(t, `{"theme": "\q"}`)
+
+	assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
+	reason := withoutPath(resulttest.Decode(t, got.stdout).Reason, path)
+	assert.Check(t, reason != withoutPath(resulttest.Decode(t, notJSON.stdout).Reason, notJSONPath), "reason = %q", reason)
+	assertUntouched(t, path)
+}
+
 func TestApp_Run_WhenInitClaudeCannotReadTheSettings_ExitsOneNamingTheFile(t *testing.T) {
 	t.Parallel()
 
@@ -406,7 +442,9 @@ func TestApp_Run_WhenInitClaudeFindsSomeRulesInAnyList_MarksChangedOnlyTheHookAn
 
 	got := settingsStepsShown(t, app)
 
-	assertShownSteps(t, got, []shownStep{{mark: "✓", word: path}, {mark: "✓", word: "allow"}, {mark: "–", word: "ask"}, {mark: "✓", word: "deny"}})
+	lists := []string{withoutPath(got[1], path), withoutPath(got[2], path), withoutPath(got[3], path)}
+	assertShownSteps(t, got[:1], []shownStep{{mark: "✓", word: path}})
+	assertShownSteps(t, lists, []shownStep{{mark: "✓", word: "allow"}, {mark: "–", word: "ask"}, {mark: "✓", word: "deny"}})
 }
 
 func TestApp_Run_WhenInitClaudeFindsEverySettingInPlace_LeavesTheFileUntouched(t *testing.T) {

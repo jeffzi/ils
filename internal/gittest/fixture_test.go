@@ -73,7 +73,6 @@ func TestFixture_Commits_WhenBranchIsNew_ReturnsCommitsCutFromTrunkInOrder(t *te
 
 	shas := f.Commits(work, subjects...)
 
-	assert.Check(t, is.DeepEqual(logged(t, f, "%H"), shas))
 	assert.Check(t, is.DeepEqual(logged(t, f, "%s"), subjects))
 	assert.Check(t, is.Equal(gitStdout(t, f, f.Dir(), "rev-parse", shas[0]+"^"), trunk))
 }

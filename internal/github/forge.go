@@ -279,9 +279,9 @@ func (f *Forge) requiredChecks(ctx context.Context, repo forge.Repo, query forge
 	return absent && !running, running, nil
 }
 
-// TrunkProtection returns whether rules apply to trunk, the status checks they require, and
-// whether they allow a squash merge: they do unless a pull_request rule names merge methods
-// without squash, whose ruleset it then names.
+// TrunkProtection returns whether rules apply to trunk, the status checks they require, whether
+// they allow a squash merge, and whether they require a merge queue. They allow a squash merge
+// unless a pull_request rule names merge methods without squash, whose ruleset it then names.
 //
 // A free private repository answers 403 with an upgrade message to the read: the plan does not
 // allow rules, so none applies and a squash merge is allowed. Any other 403 is an error.
@@ -302,8 +302,8 @@ func (f *Forge) TrunkProtection(ctx context.Context, repo forge.Repo, trunk stri
 }
 
 // protectionOf folds the rules on a branch into whether any applies, the checks they require, each
-// named once, and whether every pull_request rule allows a squash merge, with the rulesets of those
-// that do not.
+// named once, whether every pull_request rule allows a squash merge, with the rulesets of those
+// that do not, and whether a merge_queue rule applies. Rules of any other type change nothing.
 func protectionOf(rules []branchRule) forge.Protection {
 	protection := forge.Protection{Rules: forge.RulesNone, SquashAllowed: true}
 	if len(rules) > 0 {
@@ -317,6 +317,8 @@ func protectionOf(rules []branchRule) forge.Protection {
 				protection.SquashAllowed = false
 				protection.SquashForbiddenBy = append(protection.SquashForbiddenBy, rule.RulesetID)
 			}
+		case "merge_queue":
+			protection.MergeQueue = true
 		case "required_status_checks":
 			for _, check := range rule.Parameters.Required {
 				if !slices.Contains(protection.RequiredChecks, check.Context) {
@@ -370,8 +372,8 @@ func (f *Forge) HasTrunkCI(ctx context.Context, repo forge.Repo, trunk string) (
 // The block is the last paragraph of what GitHub appends after the pull request body in the body
 // it composes, taken only when every line of it is a trailer. Under every message setting GitHub
 // puts its trailers there; a last paragraph with any other line, such as a commit's subject, means
-// GitHub added no trailer. A trailer the pull request body itself ends with is not returned: the
-// squash body already carries it.
+// GitHub added no trailer. A trailer line the pull request body already holds is not returned:
+// the squash body already carries it.
 //
 // An answer that cannot be decoded, or that holds no pull request, is a *DecodeError.
 func (f *Forge) Message(ctx context.Context, repo forge.Repo, number int) (forge.Message, error) {
@@ -398,16 +400,21 @@ func (f *Forge) Message(ctx context.Context, repo forge.Repo, number int) (forge
 // trailersOf returns the lines of the last paragraph of what GitHub appended to body in
 // mergeBody when every one is a trailer, and nil otherwise. A mergeBody that does not start with
 // body, ending at a line, is all GitHub's own; the two are compared with LF line ends and without
-// the whitespace that closes body, which GitHub's copy of it may not keep. Trailers of body itself
-// are never returned: the squash body already carries body, and would carry them twice.
+// the whitespace that closes body, which GitHub's copy of it may keep or drop. A trailer that
+// body already holds as one of its lines, compared with LF line ends and without the spaces and
+// tabs that close a line, is never returned, whether or not mergeBody starts with body: the
+// squash body already carries body, and would carry it twice.
 func trailersOf(body, mergeBody string) []string {
 	appended := strings.ReplaceAll(mergeBody, "\r\n", "\n")
 	own := strings.TrimRight(strings.ReplaceAll(body, "\r\n", "\n"), " \t\n")
 	rest, cut := strings.CutPrefix(appended, own)
+	rest = strings.TrimLeft(rest, " \t")
 
 	endsAtLine := rest == "" || strings.HasPrefix(rest, "\n")
 	if cut && endsAtLine {
-		appended = rest
+		// The line break that closes body's last line is body's own: kept, it would open the
+		// lines GitHub appended to body's last paragraph with an empty one.
+		appended = strings.TrimPrefix(rest, "\n")
 	}
 
 	paragraphs := strings.Split(strings.TrimRight(appended, "\n"), "\n\n")
@@ -419,7 +426,12 @@ func trailersOf(body, mergeBody string) []string {
 		}
 	}
 
-	return lines
+	held := make(map[string]bool)
+	for line := range strings.SplitSeq(own, "\n") {
+		held[strings.TrimRight(line, " \t")] = true
+	}
+
+	return slices.DeleteFunc(lines, func(line string) bool { return held[strings.TrimRight(line, " \t")] })
 }
 
 // Land squash-merges the pull request with exactly the subject and body of landing, even an empty
@@ -556,11 +568,7 @@ func (f *Forge) workflowFiles(ctx context.Context, repo forge.Repo, trunk string
 		return nil, nil
 	}
 
-	if err != nil {
-		return nil, err
-	}
-
-	return files, nil
+	return files, err
 }
 
 // ---------------------------------------------------------------------------

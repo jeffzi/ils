@@ -393,11 +393,16 @@ func repeatsPlainPush(cmd landingCommand) bool {
 }
 
 // boundAfterWritesRows are the pushes cmd runs that a read after the writes, or the opening of the
-// pull request, ends, c naming the time limit.
+// pull request, ends, c naming the time limit. A push that repeats the plain push has none: the
+// plain push's rows cover it.
 func boundAfterWritesRows(cmd landingCommand, c cut) []pushRow {
+	if repeatsPlainPush(cmd) {
+		return nil
+	}
+
 	cutRules := expect(c.ends, readProtection, "nothing more will change")
 
-	rows := []pushRow{
+	return []pushRow{
 		{
 			name: c.name + " ends " + readProtection, script: opening(passing()).failingRules(c.of("gh")),
 			want: finish{
@@ -406,17 +411,12 @@ func boundAfterWritesRows(cmd landingCommand, c cut) []pushRow {
 				payload: detail(forge.VerdictNone, forge.MergeUnknown),
 			},
 		},
+		{
+			name:   c.name + " ends the opening of the pull request",
+			script: openFailing(c.of("gh pr create")),
+			want:   openCutShort(cmd, c),
+		},
 	}
-
-	if repeatsPlainPush(cmd) {
-		return rows
-	}
-
-	return append(rows, pushRow{
-		name:   c.name + " ends the opening of the pull request",
-		script: openFailing(c.of("gh pr create")),
-		want:   openCutShort(cmd, c),
-	})
 }
 
 // boundMovedRows are the pushes cmd runs that the head moving past the pushed commit, or a read of

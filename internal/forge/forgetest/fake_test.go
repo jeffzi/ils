@@ -96,23 +96,36 @@ func TestFake_WhenCalledPastTheLastStep_RepeatsTheLast(t *testing.T) {
 	assert.Check(t, is.DeepEqual(got, []forge.Head{stale, unknown, clean, clean}))
 }
 
-func TestFake_WhenOnReadIsSet_RunsItOncePerRead(t *testing.T) {
+func TestFake_WhenOnReadIsSet_RunsItOnARead(t *testing.T) {
 	t.Parallel()
 
 	var seen []forgetest.Op
 
 	fake := forgetest.New(t, forgetest.Script{
 		Head:   forgetest.Values(head()),
+		OnRead: func(call forgetest.Call) { seen = append(seen, call.Op) },
+	})
+
+	_, err := fake.Head(t.Context(), repo(), headQuery())
+	assert.NilError(t, err)
+
+	assert.Check(t, is.DeepEqual(seen, []forgetest.Op{forgetest.OpHead}))
+}
+
+func TestFake_WhenOnReadIsSet_SkipsItOnAWrite(t *testing.T) {
+	t.Parallel()
+
+	var seen []forgetest.Op
+
+	fake := forgetest.New(t, forgetest.Script{
 		Land:   []error{nil},
 		OnRead: func(call forgetest.Call) { seen = append(seen, call.Op) },
 	})
 
-	_, headErr := fake.Head(t.Context(), repo(), headQuery())
-	landErr := fake.Land(t.Context(), repo(), landing())
-	assert.NilError(t, headErr)
-	assert.NilError(t, landErr)
+	err := fake.Land(t.Context(), repo(), landing())
+	assert.NilError(t, err)
 
-	assert.Check(t, is.DeepEqual(seen, []forgetest.Op{forgetest.OpHead}))
+	assert.Check(t, is.Len(seen, 0))
 }
 
 func TestFake_Land_WhenCalledTwice_AdvancesItsErrorSequence(t *testing.T) {

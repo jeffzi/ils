@@ -34,10 +34,12 @@ const (
 	repoName = "Widgets"
 
 	// The two spellings name one repository: host, owner, and name differ in case and shape only.
-	fetchURL  = "ssh://git@github.com/Acme/Widgets.git"
-	pushURL   = "git@github.com:acme/widgets.git"
-	otherURL  = "git@github.com:acme/gadgets.git"
-	localPath = "/srv/project"
+	fetchURL = "ssh://git@github.com/Acme/Widgets.git"
+	pushURL  = "git@github.com:acme/widgets.git"
+	otherURL = "git@github.com:acme/gadgets.git"
+	// sameRepoURL is a third spelling of the repository fetchURL and pushURL name.
+	sameRepoURL = "https://github.com/acme/widgets"
+	localPath   = "/srv/project"
 
 	readGitVersion = "git's version"
 	readStanding   = "where HEAD stands"
@@ -685,6 +687,16 @@ func originRefusals() []refusal {
 			arrange: func(f *gittest.Fixture) { f.SetPushURL(otherURL) },
 			want:    mismatch(fetchURL, otherURL),
 		},
+		{
+			name:    "a later push URL names another repository",
+			arrange: func(f *gittest.Fixture) { f.AddPushURL(otherURL) },
+			want:    expect(otherURL),
+		},
+		{
+			name:    "a later push URL does not parse",
+			arrange: func(f *gittest.Fixture) { f.AddPushURL(localPath) },
+			want:    expect(localPath),
+		},
 	}
 }
 
@@ -761,6 +773,26 @@ func TestPreconditions_WhenAllHold_ReturnsReady(t *testing.T) {
 	got := ready(t, s)
 
 	assert.Check(t, is.DeepEqual(got, want))
+}
+
+func TestPreconditions_WhenEveryPushURLNamesTheFetchRepository_ReturnsReady(t *testing.T) {
+	t.Parallel()
+	s := newScene(t, func(f *gittest.Fixture) { f.AddPushURL(sameRepoURL) }, allowed(), false)
+
+	got := ready(t, s)
+
+	assert.Check(t, is.DeepEqual(got.Repo, widgets(false, true)))
+}
+
+func TestPreconditions_WhenThePushURLReadFails_BrokeNamingTheRead(t *testing.T) {
+	// Not parallel: failGit puts a git that fails first on PATH with t.Setenv.
+	s := newScene(t, nil, forgetest.Script{}, false)
+	failGit(t, s, []string{"remote", "get-url", "--push"})
+
+	_, stop := landing.Preconditions(t.Context(), s.deps, pushRequest())
+
+	got := stopped(t, stop, "a broke result")
+	assertBrokeRead(t, got, readURLs, gittest.FailedSaid)
 }
 
 func TestPreconditions_WhenSSHFails_BrokeNamingTheRead(t *testing.T) {

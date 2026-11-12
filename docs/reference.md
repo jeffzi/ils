@@ -159,7 +159,7 @@ Run `ils merge` on the branch whose pull request you want to land. It:
 1. checks every precondition before it writes anything, and refuses with a reason when one does
    not hold;
 2. waits for the checks of the pull request's head, as `ils push` does, until you stop it or it
-   reaches its [time limit](#time-limits), which keeps 20 seconds for the writes that follow;
+   reaches its [time limit](#time-limits);
 3. squash-merges the pull request, with its title plus `(#<N>)` as the subject and its body as
    the commit body. The trailer block GitHub adds (`Signed-off-by` and `Co-authored-by` lines)
    follows the body;
@@ -322,9 +322,11 @@ with the home directory read from `HOME`, or from `USERPROFILE` on Windows. When
 `CLAUDE_CONFIG_DIR` is set and not empty, the Claude Code directory is that directory instead, as
 for Claude Code. It runs these steps:
 
-1. It reads `settings.json` and checks its shape. A file that is not JSON or not a JSON object, or
-   whose `hooks`, `hooks.PreToolUse`, `permissions`, `permissions.allow`, `permissions.ask`, or
-   `permissions.deny` has the wrong type, is a refusal, and nothing is written.
+1. It reads `settings.json` and checks its shape. A file that is not JSON or not a JSON object, that
+   holds a member name twice in one object or a string escape that names no character, or whose
+   `hooks`, `hooks.PreToolUse`, `permissions`, `permissions.allow`, `permissions.ask`, or
+   `permissions.deny` has the wrong type, is a refusal, and nothing is written. The reason names
+   the member held twice, or says the escape names no character.
 2. It installs the `ils` and `write-release` skills the binary ships in `skills/<name>/`. A file
    that already holds what `ils` ships is left as it is, and one that differs is replaced.
    `hook.sh` is written executable. A file `ils` does not ship stays. A skill directory that is a
@@ -333,19 +335,10 @@ for Claude Code. It runs these steps:
    it is missing. It writes a new file beside the old one and renames it over, keeping the old
    file's mode, and writes through a `settings.json` that is a symbolic link to its target.
 
-The hook is a `PreToolUse` group with the matcher `Bash`, holding one hook:
-
-```json
-{
-  "type": "command",
-  "command": "bash ~/.claude/skills/ils/hook.sh",
-  "timeout": 15,
-  "onFailure": "block"
-}
-```
-
-When `CLAUDE_CONFIG_DIR` sets the Claude Code directory, the hook's command is `bash` and the
-absolute path of the installed `hook.sh`, quoted for the shell.
+The hook is a `PreToolUse` group with the matcher `Bash`, holding the one hook shown in
+[Init by hand](#init-by-hand). When `CLAUDE_CONFIG_DIR` sets the Claude Code directory, the hook's
+command is `bash` and the absolute path of the installed `hook.sh`, quoted for the shell. With
+`--project`, it is `bash "$CLAUDE_PROJECT_DIR"/.claude/skills/ils/hook.sh`.
 
 A hook whose command is the path of `skills/ils/hook.sh`, alone or after `bash`, is a guard entry.
 The path may run under any directory above `skills/`, such as `~/.claude/`, `$HOME/.claude/`, or
@@ -374,21 +367,12 @@ A group or hook that is not a JSON object, a group with no `hooks` array, and a 
 is not a string are left as they are. Without `onFailure: block`, Claude Code runs a command whose
 hook could not run. `onFailure` needs Claude Code 2.1.295 or later.
 
-Each rule lands in the list it belongs to:
-
-| List    | Rules                                                                                                                                                                                  |
-| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `allow` | `Bash(ils push)`, `Bash(ils push --wait)`, `Bash(ils branch *)`, `Bash(ils status)`                                                                                                    |
-| `ask`   | `Bash(ils merge)`, `Bash(ils merge *)`, `Bash(ils release)`, `Bash(ils release *)`, `Bash(gh pr merge)`, `Bash(gh pr merge *)`, `Bash(gh release create)`, `Bash(gh release create *)` |
-| `deny`  | `Bash(git push)`, `Bash(git push *)`                                                                                                                                                   |
-
+Each rule lands in the list the `permissions` object of [Init by hand](#init-by-hand) puts it in.
 A rule already in any of the three lists is not added to another. Every other key, value, and
 entry of `settings.json` stays, in its order. A run that changes nothing leaves the file as it was.
 
 With `--project`, it writes `.claude/skills/` and `.claude/settings.json` at the top level of the
-repository the working directory is in, whatever `CLAUDE_CONFIG_DIR` holds, and the hook's command
-is
-`bash "$CLAUDE_PROJECT_DIR"/.claude/skills/ils/hook.sh`.
+repository the working directory is in, whatever `CLAUDE_CONFIG_DIR` holds.
 
 On Windows, where the guard does not run, it installs the skills and the rules and adds no hook: a
 line says the guard runs on macOS and Linux.
@@ -475,11 +459,12 @@ Copy `skills/ils/` and `skills/write-release/` from a clone of `ils` at the vers
 | 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                                                                         |
 
 Every outcome but done prints its reason labeled by outcome: `Refused:`, `Broke:`, `Ask:`,
-`Pending:`, or `Delivered, not green:`. The reason sits on the line above `Next:`, except for a
-verdict of `ils guard`, which prints no `Next:` line. When `ils guard` refuses its own words (no
-`--cwd`, or not exactly one word after `--`), it prints `Next: ils guard --help`. A run stopped by
-Ctrl-C or SIGTERM (the signal `kill` sends by default) exits with the code of the result it
-prints; see [Stopping a run](#stopping-a-run).
+`Pending:`, or `Delivered, not green:`. The reason sits on the line above `Next:`, except in two
+results that print no `Next:` line (JSON `next: "none"`): a verdict of `ils guard`, and the refusal
+of `ils guard` and `ils parse` on Windows, where the guard does not run. When `ils guard` refuses
+its own words (no `--cwd`, or not exactly one word after `--`), it prints `Next: ils guard --help`.
+A run stopped by Ctrl-C or SIGTERM (the signal `kill` sends by default) exits with the code of the
+result it prints; see [Stopping a run](#stopping-a-run).
 
 ### Done and broke by command
 
@@ -566,8 +551,8 @@ written. If it is stopped while it makes the tag or looks up the GitHub release,
 was interrupted, or which time limit ran out, as it does for the push of the tag.
 
 A second Ctrl-C or SIGTERM ends `ils` at once, as that signal ends any program: no result is
-printed, and the exit status is the signal's (130 for Ctrl-C and 143 for SIGTERM in most shells),
-not one of the [exit codes](#exit-codes).
+printed, and the exit status is the signal's (130 for Ctrl-C and 143 for SIGTERM in most shells,
+and STATUS_CONTROL_C_EXIT, 0xC000013A, on Windows), not one of the [exit codes](#exit-codes).
 
 ## Refusals
 
@@ -623,8 +608,8 @@ this list, which `ils push` finds after the push. It refuses:
 - a branch whose pull request already merged into the default branch, or is open against another
   base;
 - a repository with no remote named `origin`, or an `origin` that cannot be reached;
-- an `origin` whose fetch and push URLs do not name one repository (they differ, or one is not an
-  `https://`, `ssh://git@`, or `git@host:` repository URL);
+- an `origin` whose fetch URL and every push URL do not all name one repository (one differs, or
+  one is not an `https://`, `ssh://git@`, or `git@host:` repository URL);
 - a missing `git` or `gh`;
 - a `git` older than 2.34.1, or one whose version `ils` cannot read;
 - a `gh` older than 2.73.0, or one whose version `ils` cannot read;
@@ -660,6 +645,7 @@ at most it has fetched from origin. It refuses everything `ils push` refuses abo
   with the scope and `!` optional);
 - a repository whose settings forbid squash merges, and a default branch whose ruleset forbids
   them;
+- a default branch whose ruleset requires a merge queue;
 - a red or canceled check, a required check that never reported, and a head no check reported for
   in a repository with CI;
 - a pull request that conflicts with or is behind the default branch, needs a review, lacks a
@@ -720,7 +706,8 @@ When `ils init` refuses, it has written nothing. It refuses:
 - without `--project`, a `CLAUDE_CONFIG_DIR` that is set and not an absolute path, or, when it is
   unset or empty, a `HOME` (`USERPROFILE` on Windows) that is unset or empty;
 - with `--project`, a working directory outside the work tree of a repository;
-- a `settings.json` that is not JSON or not a JSON object, or whose `hooks`, `hooks.PreToolUse`,
+- a `settings.json` that is not JSON or not a JSON object, that holds a member name twice in one
+  object or a string escape that names no character, or whose `hooks`, `hooks.PreToolUse`,
   `permissions`, `permissions.allow`, `permissions.ask`, or `permissions.deny` has the wrong type:
   `Next:` names the file to fix.
 
@@ -1193,6 +1180,8 @@ The guard refuses:
   exists in any letter case;
 - `restore` without `--staged` (or `-S`), or with `--worktree` (`-W`) beside it;
 - `rm --force`;
+- `mv --force` (`-f`);
+- `submodule update --force` (`-f`) and `submodule deinit --force` (`-f`);
 - `reflog expire`, `delete`, and `drop`;
 - `gc --prune=…`, and `gc` with `gc.pruneExpire` set through `-c` or `--config-env`;
 - `repack -a -d` without `-A`, `--cruft`, or `--keep-unreachable`, and `repack -d` with
@@ -1287,6 +1276,10 @@ The guard refuses:
 - a `gh` alias whose expansion the guard cannot read, such as a `$2` left unfilled, or that expands
   to no `gh` command;
 - a `gh alias list` that fails.
+
+The guard judges an alias `gh` itself gives a subcommand as the command it names: `gh pr co` as
+`gh pr checkout`, `gh release new` as `gh release create`, and `gh repo new` as `gh repo create`.
+A refusal of one names the command it stands for.
 
 A read the guard needs that fails (a missing `git`, a `gh alias list` that errors, the read of
 `clean.requireForce` or of an alias) is a refusal that says what broke.

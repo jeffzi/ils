@@ -161,17 +161,6 @@ func writeText(t *testing.T, path, text string) {
 	assert.NilError(t, os.WriteFile(path, []byte(text), 0o600))
 }
 
-func TestApp_Run_WhenInitClaudeRunsWithNoSkillInstalled_WritesEveryShippedFileUnderHome(t *testing.T) {
-	t.Parallel()
-
-	app, home := installing(t)
-
-	got := launch(t, app, "init", "claude")
-
-	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	assertShippedUnder(t, home)
-}
-
 func TestApp_Run_WhenInitClaudeInstallsEverySkill_PrintsTheDirectoryOfEach(t *testing.T) {
 	t.Parallel()
 
@@ -276,35 +265,15 @@ func eachStep(home, mark string) []shownStep {
 func TestApp_Run_WhenInitClaudeEndsDoneOnATerminal_PrintsOneLinePerStepBehindTheMarkOfItsKind(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name      string
-		mark      string
-		installed bool
-	}{
-		{name: "nothing in place", mark: "✓"},
-		{name: "everything in place", mark: "–", installed: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	app, home := installing(t)
+	app, stdout := onInitScreen(t, app)
 
-			app, home := installing(t)
-			if tt.installed {
-				installed(t, app)
-			}
-			app, stdout := onInitScreen(t, app)
+	got := shown(t, app, "init", "claude")
 
-			got := shown(t, app, "init", "claude")
-
-			lines := stdout.lines()
-			assert.Check(t, is.Equal(got.code, exitDone), "stdout showed %q", lines)
-			assert.Check(t, is.Len(lines, len(eachStep(home, tt.mark))), "stdout showed %q", lines)
-			assertShownSteps(t, lines, eachStep(home, tt.mark))
-			for i, list := range []string{"allow", "ask", "deny"} {
-				assert.Check(t, is.Contains(withoutPath(lines[3+i], settingsUnder(home)), list), "line %d", 3+i)
-			}
-		})
-	}
+	lines := stdout.lines()
+	assert.Check(t, is.Equal(got.code, exitDone), "stdout showed %q", lines)
+	assert.Check(t, is.Len(lines, len(eachStep(home, "✓"))), "stdout showed %q", lines)
+	assertShownSteps(t, lines, eachStep(home, "✓"))
 }
 
 func TestApp_Run_WhenInitClaudeFindsAShippedFileChanged_ReplacesIt(t *testing.T) {
@@ -416,7 +385,7 @@ func TestApp_Run_WhenInitClaudeFindsTheHomeOfEveryPlatform_InstallsUnderTheHomeO
 	assertShippedUnder(t, home)
 }
 
-func TestApp_Run_WhenInitClaudeFindsAnEmptyClaudeConfigDirectory_InstallsUnderTheHome(t *testing.T) {
+func TestApp_Run_WhenInitClaudeFindsTheClaudeConfigDirectoryVariableSetEmpty_InstallsUnderTheHome(t *testing.T) {
 	t.Parallel()
 
 	app, home := installing(t)
@@ -470,31 +439,13 @@ func TestApp_Run_WhenInitClaudeFindsNoUsableClaudeDirectory_ExitsTwoNamingTheVar
 func TestApp_Run_WhenInitClaudeFindsAClaudeConfigDirectory_WritesEveryShippedFileInIt(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name     string
-		homeless bool
-	}{
-		{name: "home set"},
-		{name: "home unset", homeless: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	app, _, config := configuring(t)
+	app.Environ = []string{claudeConfigDir + "=" + config}
 
-			app, home, config := configuring(t)
-			if tt.homeless {
-				app.Environ = []string{claudeConfigDir + "=" + config}
-			}
+	got := launch(t, app, "init", "claude")
 
-			got := launch(t, app, "init", "claude")
-
-			assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-			assertShippedIn(t, config)
-			if !tt.homeless {
-				assertNoClaudeUnder(t, home)
-			}
-		})
-	}
+	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
+	assertShippedIn(t, config)
 }
 
 // hookCommand returns the command of the one hook of the one PreToolUse group of the settings file

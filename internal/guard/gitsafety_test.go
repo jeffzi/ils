@@ -76,6 +76,16 @@ func TestJudge_RefusesAGitOperationThatDiscardsWork(t *testing.T) {
 		{name: "update-ref to the all-zero SHA-1 id", command: "git update-ref refs/heads/keep " + strings.Repeat("0", 40)},
 		{name: "update-ref to the all-zero SHA-256 id", command: "git update-ref refs/heads/keep " + strings.Repeat("0", 64)},
 		{name: "update-ref to a non-literal value", command: `git update-ref -- refs/heads/keep "$sha"`},
+		{name: "mv -f", command: "git mv -f a b"},
+		{name: "mv --force", command: "git mv --force a b"},
+		{name: "submodule update -f", command: "git submodule update -f"},
+		{name: "submodule update --force", command: "git submodule update --init --force lib"},
+		{name: "submodule deinit -f", command: "git submodule deinit -f lib"},
+		{name: "submodule deinit --force", command: "git submodule deinit --force lib"},
+		{name: "submodule update --force after a leading --quiet", command: "git submodule --quiet update --force"},
+		{name: "submodule deinit -f after a leading -q", command: "git submodule -q deinit -f lib"},
+		{name: "submodule foreach running reset --hard after a leading --quiet", command: "git submodule --quiet foreach 'git reset --hard'"},
+		{name: "submodule operation that cannot be read after a leading --quiet", command: `git submodule --quiet "$op" lib`},
 	})
 }
 
@@ -275,7 +285,6 @@ func TestJudge_AllowsGitHistoryRedirectedAroundACdFromOutsideAnyWorkTree(t *test
 
 	checkAllowed(t, caller, []namedCommand{
 		{name: "subshell entering the repository", command: "(cd repo && git show HEAD:go.mod) > old.mod"},
-		{name: "subshell entering a directory the command assigned", command: `d=repo; (cd "$d" && git show HEAD:go.mod) > old.mod`},
 	})
 }
 
@@ -298,7 +307,7 @@ func TestJudge_WhenWhetherTheTargetIsInAWorkTreeCannotBeRead_RefusesNamingTheRea
 	f, _ := standingOn(t, "main", "topic")
 	command := "git show HEAD:README.md > " + gittest.ShellWord(filepath.Join(outsideDir(t), "x.md"))
 
-	checkJudgedRow(t, callerFailingOn(t, f, f.Dir(), "rev-parse", "--show-toplevel"), judged{command: command, want: guard.Refuse})
+	checkJudgedRow(t, callerFailingOn(t, f, f.Dir(), "rev-parse", "--show-toplevel"), judged{command: command, want: guard.Refuse, wantNamed: gittest.FailedSaid})
 }
 
 func TestJudge_AllowsAGitOperationThatKeepsWork(t *testing.T) {
@@ -316,6 +325,17 @@ func TestJudge_AllowsAGitOperationThatKeepsWork(t *testing.T) {
 		{name: "plain apply", command: "git apply patch.diff"},
 		{name: "send-email --validate", command: "git send-email --validate x.patch"},
 		{name: "restore --staged after an attached --pathspec-from-file", command: "git restore --pathspec-from-file=x --staged f"},
+		{name: "plain mv", command: "git mv a b"},
+		{name: "mv of a non-literal path after --", command: `git mv -- "$f" b`},
+		{name: "plain submodule update", command: "git submodule update"},
+		{name: "submodule update --init --recursive", command: "git submodule update --init --recursive"},
+		{name: "submodule update of a non-literal path after --", command: `git submodule update -- "$x"`},
+		{name: "submodule update --reference holding a non-literal value", command: `git submodule update --reference "$r" lib`},
+		{name: "submodule update --depth holding a non-literal value", command: `git submodule update --depth "$n" lib`},
+		{name: "submodule update --jobs holding a non-literal value", command: `git submodule update --jobs "$n"`},
+		{name: "plain submodule deinit", command: "git submodule deinit lib"},
+		{name: "submodule update after a leading --quiet", command: "git submodule --quiet update"},
+		{name: "submodule foreach running a literal it allows after a leading --quiet", command: "git submodule --quiet foreach 'git status'"},
 	})
 }
 
@@ -561,7 +581,7 @@ func TestJudge_WhenAWorkTreeReadFails_RefusesSayingWhatBroke(t *testing.T) {
 	caller := callerFailingOn(t, f, f.Dir(), "status")
 
 	checkJudgedInTurn(t, caller, []judged{
-		{name: "rebase", command: "git rebase main", want: guard.Refuse},
-		{name: "worktree remove", command: "git worktree remove " + gittest.ShellWord(clean), want: guard.Refuse},
+		{name: "rebase", command: "git rebase main", want: guard.Refuse, wantNamed: gittest.FailedSaid},
+		{name: "worktree remove", command: "git worktree remove " + gittest.ShellWord(clean), want: guard.Refuse, wantNamed: gittest.FailedSaid},
 	})
 }

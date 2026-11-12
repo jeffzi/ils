@@ -152,25 +152,23 @@ func expandTilde(b *strings.Builder, raw string, alone bool, home string) (strin
 // no glob character. last says whether raw ends its word, since a `[` can be closed by a later
 // part.
 func readUnquoted(b *strings.Builder, raw string, last bool) bool {
+	// Globs are found before the backslashes go, since a backslash is what keeps `\*` from being one.
 	escaped := false
 	for i := range len(raw) {
 		c := raw[i]
 		switch {
 		case escaped:
 			escaped = false
-			if c != '\n' {
-				b.WriteByte(c)
-			}
 		case c == '\\':
 			escaped = true
-		case c == '*' || c == '?':
+		case c == '*' || c == '?', c == '[' && (!last || strings.Contains(raw[i+1:], "]")):
+			WriteUnquoted(b, raw[:i])
+
 			return false
-		case c == '[' && (!last || strings.Contains(raw[i+1:], "]")):
-			return false
-		default:
-			b.WriteByte(c)
 		}
 	}
+
+	WriteUnquoted(b, raw)
 
 	return true
 }

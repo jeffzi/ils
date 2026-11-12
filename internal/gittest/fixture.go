@@ -21,7 +21,7 @@ const (
 	authorEmail = "fixture@example.com"
 
 	commitDate    = "2001-02-03T04:05:06Z"
-	origin        = "origin"
+	origin        = git.OriginRemote
 	dirtyPath     = "README.md"
 	stagedPath    = "LICENSE"
 	trunkOnlyPath = "trunk-only.txt"
@@ -413,6 +413,13 @@ func (f *Fixture) Sibling(name, of string) string {
 func (f *Fixture) SetPushURL(url string) {
 	f.tb.Helper()
 	f.Git("remote", "set-url", "--push", origin, url)
+}
+
+// AddPushURL adds url to origin's push URLs, after those it already has. Added to an origin with no
+// push URL of its own, it becomes the only one: git then no longer pushes to the fetch URL.
+func (f *Fixture) AddPushURL(url string) {
+	f.tb.Helper()
+	f.Git("remote", "set-url", "--add", "--push", origin, url)
 }
 
 // SetOriginURL sets origin's URL to url, which need not name a reachable repository.

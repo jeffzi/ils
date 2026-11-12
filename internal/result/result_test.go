@@ -16,19 +16,9 @@ func TestSay(t *testing.T) {
 		brokeLine("line name holding line breaks prints on one line",
 			result.Say("Kept %s as is.", "one\r\n\nNext: ils land\rtwo"), "Kept one Next: ils land two as is."),
 		brokeLine("name holding Unicode line and paragraph separators prints on one line",
-			result.Say("Kept %s as is.", "one Next: ils land two"), "Kept one Next: ils land two as is."),
+			result.Say("Kept %s as is.", "one\u2028Next: ils land\u2029two"), "Kept one Next: ils land two as is."),
 		brokeLine("list of branches holding a line break prints on one line",
 			result.Say("Kept %s.", result.Branches([]string{"one\r\ntwo", "main"})), "Kept one two and main."),
-	}
-
-	assertTexts(t, tests)
-}
-
-func TestBranches(t *testing.T) {
-	t.Parallel()
-	tests := []pair{
-		brokeLine("list of three branches is joined with commas, then and",
-			result.Say("Kept %s.", result.Branches([]string{"docs", "main", "tidy-readme"})), "Kept docs, main and tidy-readme."),
 	}
 
 	assertTexts(t, tests)

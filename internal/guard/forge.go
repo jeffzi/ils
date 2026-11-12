@@ -198,7 +198,25 @@ func judgeGHCommand(inv Invocation, args []Word, at []int) Verdict {
 		return Verdict{Outcome: Allow}
 	}
 
-	return judgeGHSubcommand(inv, "gh "+group+" "+sub.Text, rest)
+	return judgeGHSubcommand(inv, "gh "+group+" "+ghSubcommand(group, sub.Text), rest)
+}
+
+// ghSubcommand returns the name of the subcommand sub of the gh command group, read through the
+// aliases gh itself gives its subcommands, so `pr co` is judged as `pr checkout`. The table holds
+// every such alias of a subcommand the guard judges or follows, up to the latest gh. An alias that
+// only a newer gh knows, as `pr co` is, fails on an older gh, so reading it as its command refuses
+// nothing that runs there.
+func ghSubcommand(group, sub string) string {
+	aliases := map[string]string{
+		"pr co":       "checkout",
+		"release new": "create",
+		"repo new":    "create",
+	}
+	if name, ok := aliases[group+" "+sub]; ok {
+		return name
+	}
+
+	return sub
 }
 
 // ghGuardedGroups are the gh command groups whose subcommands judgeGHSubcommand judges and

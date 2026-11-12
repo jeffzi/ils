@@ -60,8 +60,8 @@ func TestApp_Run_WhenStartedWithTheInterruptIgnored_GoesOnIgnoringIt(t *testing.
 	})
 
 	line, err := run.stdout.ReadString('\n')
-
 	assert.NilError(t, err)
+
 	assert.Check(t, is.Equal(line, interruptIgnored+"\n"), "ils listens for the interrupt it was started ignoring")
 }
 

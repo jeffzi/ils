@@ -117,7 +117,7 @@ func onTrunk(sub string, args []Word, trunk string) Verdict {
 			named[1] = strings.TrimPrefix(strings.TrimPrefix(named[1], "+"), git.BranchRefPrefix)
 		}
 
-		pullsTrunk := slices.Equal(named, []string{"origin"}) || slices.Equal(named, []string{"origin", trunk})
+		pullsTrunk := slices.Equal(named, []string{git.OriginRemote}) || slices.Equal(named, []string{git.OriginRemote, trunk})
 		if !options.opaque() && pullsTrunk {
 			return Verdict{Outcome: Allow}
 		}

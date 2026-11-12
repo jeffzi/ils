@@ -395,10 +395,12 @@ type Requirement struct {
 	InstallURL string
 }
 
-// check returns nil when version is valid semver without the leading v and is r.Minimum or
-// newer. Otherwise it returns a *ToolTooOldError for r.Tool, whose Version is empty when version
-// is not valid semver. line is the first line the tool printed for its version.
-func (r Requirement) check(line, version string) error {
+// CheckOutput returns nil when the version that versionOf reads from the VersionLine of stdout,
+// the whole output of the tool's --version, is r.Minimum or newer. Otherwise it returns a
+// *ToolTooOldError for that line, whose Version is empty when the line holds no valid semver.
+func (r Requirement) CheckOutput(stdout string, versionOf func(line string) string) error {
+	line := VersionLine(stdout)
+	version := versionOf(line)
 	tooOld := &ToolTooOldError{Tool: r.Tool, Line: line, Minimum: r.Minimum, InstallURL: r.InstallURL}
 
 	if !ValidVersion(version) {
@@ -411,15 +413,6 @@ func (r Requirement) check(line, version string) error {
 	}
 
 	return nil
-}
-
-// CheckOutput returns nil when the version that versionOf reads from the VersionLine of stdout,
-// the whole output of the tool's --version, is r.Minimum or newer. Otherwise it returns a
-// *ToolTooOldError for that line, whose Version is empty when the line holds no valid semver.
-func (r Requirement) CheckOutput(stdout string, versionOf func(line string) string) error {
-	line := VersionLine(stdout)
-
-	return r.check(line, versionOf(line))
 }
 
 // VersionLine returns the first line of stdout, the output of a tool's --version: the only line a

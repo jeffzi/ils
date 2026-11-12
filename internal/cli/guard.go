@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
@@ -298,7 +299,7 @@ func wordsOf(words []guard.Word) []result.Word {
 // its marks, and for git the subcommand when git runs one, its arguments, the git dir it targets
 // and the directory it runs in.
 func invocationLine(inv result.Invocation) result.Phrase {
-	dir := orUnknown(inv.Dir)
+	dir := cmp.Or(inv.Dir, unknownText)
 
 	marks := make([]string, 0, len(inv.Marks))
 	for _, mark := range inv.Marks {
@@ -310,19 +311,19 @@ func invocationLine(inv result.Invocation) result.Phrase {
 		marks = append(marks, text)
 	}
 
-	words, markList := wordTexts(inv.Words), orNone(strings.Join(marks, ", "))
+	words, markList := wordTexts(inv.Words), cmp.Or(strings.Join(marks, ", "), "none")
 	if inv.Git == nil {
 		return result.Say("%s; directory %s; marks %s", words, dir, markList)
 	}
 
-	gitDir := orNone(inv.Git.GitDir)
+	gitDir := cmp.Or(inv.Git.GitDir, "none")
 	if inv.Git.GitDirUnknown {
 		gitDir = unknownText
 	}
 
-	runsIn := orUnknown(inv.Git.Dir)
+	runsIn := cmp.Or(inv.Git.Dir, unknownText)
 
-	gitPart := "arguments " + orNone(wordTexts(inv.Git.Args)) + "; git dir " + gitDir + "; git runs in " + runsIn
+	gitPart := "arguments " + cmp.Or(wordTexts(inv.Git.Args), "none") + "; git dir " + gitDir + "; git runs in " + runsIn
 	if inv.Git.Subcommand != nil {
 		gitPart = "subcommand " + wordText(*inv.Git.Subcommand) + "; " + gitPart
 	}
@@ -345,22 +346,6 @@ func wordTexts(words []result.Word) string {
 	}
 
 	return strings.Join(texts, " ")
-}
-
-func orNone(text string) string {
-	if text == "" {
-		return "none"
-	}
-
-	return text
-}
-
-func orUnknown(text string) string {
-	if text == "" {
-		return unknownText
-	}
-
-	return text
 }
 
 // hookCommand returns `ils hook <harness>`, which reads the payload of the harness's pre-tool hook

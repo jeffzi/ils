@@ -359,11 +359,14 @@ func (r Repo) sshHostname(ctx context.Context, host string) (string, error) {
 		return "", err
 	}
 
-	if variant == variantPlain {
-		if missing := r.Runner.missingProgram(command); missing != nil {
+	// A GIT_SSH program that is not on the PATH git searches is named; a command line is not.
+	if variant == variantPlain && command.program != "" {
+		if missing := r.Runner.missingOn(command, command.program); missing != nil {
 			return "", missing
 		}
+	}
 
+	if variant == variantPlain {
 		return r.plainHostname(ctx, host)
 	}
 
@@ -489,16 +492,6 @@ func (r Runner) lookPath(name string) (string, error) {
 	}
 
 	return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
-}
-
-// missingProgram returns the *SSHCommandMissingError for the GIT_SSH program of command when it is
-// not found on the PATH git searches; otherwise, and for a command line, it returns nil.
-func (r Runner) missingProgram(command sshCommand) *SSHCommandMissingError {
-	if command.program == "" {
-		return nil
-	}
-
-	return r.missingOn(command, command.program)
 }
 
 // missingLineProgram returns the *SSHCommandMissingError for the program of command's line, which

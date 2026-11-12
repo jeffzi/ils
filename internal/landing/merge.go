@@ -230,6 +230,11 @@ func (m *mergeReady) pullChecks(ctx context.Context, deps Deps, req Request) *re
 		return req.Unread(readRules, err)
 	}
 
+	if protection.MergeQueue {
+		return req.Refused(result.Say("the default branch requires a merge queue"),
+			result.NextStep("add pull request %s to the merge queue on GitHub", result.PullRequest(m.pull.Number)))
+	}
+
 	if !protection.SquashAllowed {
 		return req.Refused(rulesetReason(protection.SquashForbiddenBy, m.Trunk),
 			result.NextStep("allow squash merges in the trunk's ruleset"+thenRunAgain, req.ilsCommand()))
@@ -400,7 +405,12 @@ func (m *mergeReady) verdictStop(req Request) *result.Result {
 		return nil
 	}
 
-	return m.reported(req, report, m.unverifiedLine())
+	var lead []result.Phrase
+	if m.unverified {
+		lead = []result.Phrase{noCI(m.Trunk, m.pull.HeadSHA)}
+	}
+
+	return m.reported(req, report, lead)
 }
 
 // settle reads the merge state again as the wait polls it while GitHub has not worked it out, and
@@ -535,14 +545,6 @@ func (m *mergeReady) summary() result.Phrase {
 	return m.waited.checksLine(m.pull.HeadSHA)
 }
 
-func (m *mergeReady) unverifiedLine() []result.Phrase {
-	if !m.unverified {
-		return nil
-	}
-
-	return []result.Phrase{noCI(m.Trunk, m.pull.HeadSHA)}
-}
-
 // reported returns the result report makes, pending or refused, with lead printed before its lines.
 func (m *mergeReady) reported(req Request, report waitReport, lead []result.Phrase) *result.Result {
 	ended := req.ends(report.outcome(result.Refused), report.reason, report.next)
@@ -644,8 +646,9 @@ func (m *mergeReady) merge(ctx context.Context, deps Deps, req Request) *result.
 }
 
 // deleteOnOrigin deletes the branch on origin. A delete that fails while origin no longer lists
-// the branch counts as done, since GitHub can delete a merged branch on its own. A delete an
-// interrupt cut short is broke without asking origin, since it may or may not have gone through.
+// the branch counts as done, since GitHub can delete a merged branch on its own. A delete the time
+// limit or an interrupt cut short is broke without asking origin, since it may or may not have gone
+// through.
 // When origin cannot be asked whether it still lists the branch, the result says why instead of
 // where the branch stands, naming the interrupt when one ended the question. On a resume, which
 // merged nothing, the delete is the first write: an interrupt before it ends the run pending, with
@@ -666,8 +669,8 @@ func (m *mergeReady) deleteOnOrigin(ctx context.Context, deps Deps, req Request)
 		return nil
 	}
 
-	if interrupted(err) {
-		line, reason := req.cutShortWriting(true,
+	if endedEarly(err) {
+		line, reason := req.cutShortWriting(interrupted(err),
 			result.Concat("the delete of the branch ", result.Branch(m.branch), " on origin"),
 			result.Concat("while deleting the branch on origin"), endsGoneThrough)
 
@@ -713,12 +716,7 @@ func (m *mergeReady) unfinished(ctx context.Context, req Request) *result.Result
 // broke returns the result of a write that failed: broke with reason and next, and the lines said
 // so far followed by lines.
 func (m *mergeReady) broke(req Request, reason result.Phrase, next result.Next, lines ...result.Phrase) *result.Result {
-	return m.stopped(req.ends(result.Broke, reason, next), lines...)
-}
-
-// stopped returns ended, the result that ends the run, with the lines said so far followed by
-// lines.
-func (m *mergeReady) stopped(ended *result.Result, lines ...result.Phrase) *result.Result {
+	ended := req.ends(result.Broke, reason, next)
 	ended.Lines = slices.Concat(m.lines, lines)
 
 	return m.carrying(ended)

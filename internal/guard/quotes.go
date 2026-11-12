@@ -31,3 +31,21 @@ func WriteDoubleQuoted(b *strings.Builder, text string) {
 		b.WriteByte('\\')
 	}
 }
+
+// WriteUnquoted writes text, text outside quotes, to b after quote removal. A backslash quotes any
+// character and drops before it; it and a newline after it both drop; at the end, it stays, as
+// bash keeps it.
+func WriteUnquoted(b *strings.Builder, text string) {
+	for i := 0; i < len(text); i++ {
+		if text[i] != '\\' || i+1 == len(text) {
+			b.WriteByte(text[i])
+
+			continue
+		}
+
+		i++
+		if text[i] != '\n' {
+			b.WriteByte(text[i])
+		}
+	}
+}

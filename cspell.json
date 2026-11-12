@@ -25,6 +25,7 @@
     "cvsexportcommit",
     "cvsimport",
     "cvsserver",
+    "deinit",
     "depguard",
     "difftool",
     "dprint",

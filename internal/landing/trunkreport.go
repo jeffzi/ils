@@ -83,7 +83,11 @@ func (r *reading) readLastTag(ctx context.Context) {
 // whether there is one. Only tags that are versions count.
 func (r *reading) lastTag(ctx context.Context, tags []git.Tag) (git.Tag, bool, error) {
 	for _, tag := range versionTags(tags) {
-		on, err := r.onOriginTrunk(ctx, tag)
+		// Fetching origin's trunk brought every commit on it, so a tag whose commit git lacks is not
+		// on it; the check fetches the tag as retryAfterTagFetch does.
+		on, err := retryAfterTagFetch(ctx, r.deps, tag.Name, func() (bool, error) {
+			return r.deps.Repo.Contains(ctx, r.trunkTip, tag.SHA)
+		})
 		if err != nil {
 			return git.Tag{}, false, err
 		}
@@ -94,15 +98,6 @@ func (r *reading) lastTag(ctx context.Context, tags []git.Tag) (git.Tag, bool, e
 	}
 
 	return git.Tag{}, false, nil
-}
-
-// onOriginTrunk reports whether tag's commit is on origin's trunk. Fetching origin's trunk brought
-// every commit on it, so a tag whose commit git lacks is not on it; the check fetches the tag as
-// retryAfterTagFetch does.
-func (r *reading) onOriginTrunk(ctx context.Context, tag git.Tag) (bool, error) {
-	return retryAfterTagFetch(ctx, r.deps, tag.Name, func() (bool, error) {
-		return r.deps.Repo.Contains(ctx, r.trunkTip, tag.SHA)
-	})
 }
 
 func (r *reading) readRelease(ctx context.Context) {

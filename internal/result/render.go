@@ -230,10 +230,6 @@ func shortSHAs(spans []span) []span {
 // break by the time it is rendered, and an excerpt keeps its lines. Bytes that
 // are not valid UTF-8 stay as they are too.
 func visible(text string) string {
-	if !strings.ContainsFunc(text, spelledOut) {
-		return text
-	}
-
 	var b strings.Builder
 	for rest := text; rest != ""; {
 		r, size := utf8.DecodeRuneInString(rest)
@@ -602,7 +598,7 @@ func namesGitDir(word string) bool {
 func endsInName(text string) bool {
 	last, _ := utf8.DecodeLastRuneInString(text)
 
-	return text != "" && (inName(last) || last == '.')
+	return inName(last) || last == '.'
 }
 
 // namesHook reports whether word holds a hook name, in any case.

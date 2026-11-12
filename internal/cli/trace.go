@@ -30,11 +30,15 @@ func (p *parse) logger() *slog.Logger {
 // of `exit <code>` for a call that did not exit; any other record reads its message, then each
 // attribute as key=value. When styled, the time and the duration are dim.
 type trace struct {
-	w      io.Writer
-	launch time.Time
+	w io.Writer
 	// mu keeps the lines of calls logged at once from interleaving.
-	mu    *sync.Mutex
-	attrs flatAttrs
+	mu     *sync.Mutex
+	launch time.Time
+	// prefix is the groups open now, each followed by a dot.
+	prefix string
+	// attrs are the attributes WithAttrs gave, in order, each key led by the groups open when it was
+	// added, as `group.key`. A derived handler holds a copy, so it shares nothing with its parent.
+	attrs []slog.Attr
 	pen   result.Pen
 }
 
@@ -45,7 +49,13 @@ func (trace) Enabled(context.Context, slog.Level) bool {
 
 // Handle writes r as one line, and returns the error of the write.
 func (h trace) Handle(_ context.Context, r slog.Record) error {
-	attrs := h.attrs.Of(r)
+	attrs := slices.Clone(h.attrs)
+	r.Attrs(func(attr slog.Attr) bool {
+		attr.Key = h.prefix + attr.Key
+		attrs = append(attrs, attr)
+
+		return true
+	})
 
 	body := r.Message
 	if call, ok := h.call(r.Message, attrs); ok {
@@ -116,64 +126,23 @@ func (h trace) dim(text string) string {
 
 // WithAttrs returns a handler that writes attrs on every line after the record's own message.
 func (h trace) WithAttrs(attrs []slog.Attr) slog.Handler {
-	h.attrs = h.attrs.With(attrs)
-
-	return h
-}
-
-// WithGroup returns a handler that writes the key of every attribute after it under name.
-func (h trace) WithGroup(name string) slog.Handler {
-	h.attrs = h.attrs.Group(name)
-
-	return h
-}
-
-// flatAttrs is what a slog.Handler was given through WithAttrs and WithGroup, kept flat: the
-// attributes in order, each key led by the groups open when it was added, as `group.key`, and the
-// groups open now. The zero value holds no attribute under no group. Its methods return copies, so a
-// handler that holds one by value derives handlers that share nothing with it.
-type flatAttrs struct {
-	prefix string
-	attrs  []slog.Attr
-}
-
-// With returns a copy of a with attrs added under the groups open now.
-func (a flatAttrs) With(attrs []slog.Attr) flatAttrs {
-	a.attrs = slices.Clone(a.attrs)
+	h.attrs = slices.Clone(h.attrs)
 	for _, attr := range attrs {
-		a.attrs = append(a.attrs, a.grouped(attr))
+		attr.Key = h.prefix + attr.Key
+		h.attrs = append(h.attrs, attr)
 	}
 
-	return a
+	return h
 }
 
-// Group returns a copy of a that adds every later attribute under name, or a itself when name is
-// empty, as slog.Handler asks of WithGroup.
-func (a flatAttrs) Group(name string) flatAttrs {
+// WithGroup returns a handler that writes the key of every attribute after it under name, or h
+// itself when name is empty, as slog.Handler asks.
+func (h trace) WithGroup(name string) slog.Handler {
 	if name == "" {
-		return a
+		return h
 	}
 
-	a.prefix += name + "."
+	h.prefix += name + "."
 
-	return a
-}
-
-// Of returns the attributes of a followed by those of record, each of record's under the groups
-// open now.
-func (a flatAttrs) Of(record slog.Record) []slog.Attr {
-	attrs := slices.Clone(a.attrs)
-	record.Attrs(func(attr slog.Attr) bool {
-		attrs = append(attrs, a.grouped(attr))
-
-		return true
-	})
-
-	return attrs
-}
-
-func (a flatAttrs) grouped(attr slog.Attr) slog.Attr {
-	attr.Key = a.prefix + attr.Key
-
-	return attr
+	return h
 }

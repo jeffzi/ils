@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
 	"sync"
 	"syscall"
 )
@@ -112,14 +113,25 @@ func nextSignal(signals <-chan os.Signal, done <-chan struct{}) (os.Signal, bool
 	}
 }
 
+// statusControlCExit is STATUS_CONTROL_C_EXIT, 0xC000013A, the exit status the Windows console's
+// default handler ends a process with on Ctrl-C, written as the int32 os.Exit passes on so that it
+// fits an int on every Windows architecture.
+const statusControlCExit = -(1<<32 - 0xC000013A)
+
 // die sends sig, which no channel is notified of any longer, to the process, so that it ends the
 // process as it would have had ils never listened for it; a process that ignored sig before ils
-// listened goes on ignoring it. Where sig cannot be sent, as on Windows, the process is killed.
+// listened goes on ignoring it. Windows cannot send sig, so there the process exits at once with
+// statusControlCExit, as the console's default handler ends it; on any other system where sig
+// cannot be sent, the process is killed.
 //
 // It panics when the process can be neither signaled nor killed.
 func die(sig os.Signal) {
 	self, err := os.FindProcess(os.Getpid())
 	if err == nil && self.Signal(sig) != nil {
+		if runtime.GOOS == "windows" {
+			os.Exit(statusControlCExit) //nolint:revive // deep-exit: die exists to end the process, as Kill does below
+		}
+
 		err = self.Kill()
 	}
 	if err != nil {

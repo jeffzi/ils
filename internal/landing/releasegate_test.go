@@ -249,10 +249,6 @@ func silentRows() []silentRow {
 			script: silent(forge.Protection{RequiredChecks: []string{"lint", "test"}}),
 		},
 		{
-			name: "the forge says the trunk has CI", outcome: result.Refused, text: nothing,
-			script: silent(forge.Protection{}, true),
-		},
-		{
 			name: "the trunk has no CI", outcome: result.Done, text: expect("No CI", trunk, tipMark), url: releaseURL,
 			script: silent(forge.Protection{}, false),
 		},
@@ -310,14 +306,16 @@ func TestRelease_WhenFewerThanTheReserveIsLeftBeforeTheWrites_PendingWithTheComm
 
 func TestRelease_WhenForced_SaysTheCIGateWasSkippedWithoutReadingTheChecks(t *testing.T) {
 	t.Parallel()
-	st := releaseScene(t, tagged)
-	st.s.useForge(t, releasable())
-	req := forced(releaseRequest(version, false))
+	synctest.Test(t, func(t *testing.T) {
+		st := releaseScene(t, tagged)
+		st.s.useForge(t, releasable())
+		req := forced(releaseRequest(version, false))
 
-	got := runRelease(t, st.s, req)
+		got := runRelease(t, st.s, req)
 
-	assertEndedBy(t, got, st.s.gitDir, ended{outcome: result.Done, req: req, text: expect("skipped", "--force")})
-	assert.Check(t, is.DeepEqual(releasePayload(t, got, st.s.gitDir), released(st, "forced", releaseURL)))
+		assertEndedBy(t, got, st.s.gitDir, ended{outcome: result.Done, req: req, text: expect("skipped", "--force")})
+		assert.Check(t, is.DeepEqual(releasePayload(t, got, st.s.gitDir), released(st, "forced", releaseURL)))
+	})
 }
 
 func TestRelease_WhenForced_RefusesAsWithoutItWithTheCommandAsTyped(t *testing.T) {

@@ -7,8 +7,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jeffzi/ils/internal/git"
-	"github.com/jeffzi/ils/internal/landing"
-	"github.com/jeffzi/ils/internal/result"
 )
 
 // SetPush makes a run `ils push` with run in place of landing.Push.
@@ -62,9 +60,6 @@ func (a *App) SetGuardSupported(supported bool) {
 // `ils parse` parse their flags only where the guard runs.
 const GuardParsesFlags = guardSupported
 
-// GuardUnsupported is guardUnsupported, for the tests of package cli_test.
-const GuardUnsupported = guardUnsupported
-
 // UserHook is userHook, for the tests of package cli_test.
 const UserHook = userHook
 
@@ -87,21 +82,4 @@ func PermissionRules() map[string][]string {
 	}
 
 	return rules
-}
-
-// StepKind is stepKind, for the tests of package cli_test.
-type StepKind = stepKind
-
-// StepChanged, StepUnchanged and StepFailed are stepChanged, stepUnchanged and stepFailed, for the
-// tests of package cli_test.
-const (
-	StepChanged   = stepChanged
-	StepUnchanged = stepUnchanged
-	StepFailed    = stepFailed
-)
-
-// Report has the display that progress is report line as a step of kind, as a command run under
-// the display reports it, for the tests of package cli_test.
-func Report(progress landing.Progress, kind StepKind, line result.Phrase) {
-	progress.(*display).report(kind, line)
 }

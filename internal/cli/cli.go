@@ -204,26 +204,24 @@ func (a App) profile(isTerminal, noColor bool) colorprofile.Profile {
 	return colorprofile.Detect(io.Discard, env)
 }
 
-// Version returns the version of the main module that info, the build info of the running binary,
-// names, without its leading v. It returns "(devel)" when ok is false, as [debug.ReadBuildInfo]
-// reports for a binary built without module support, and when info names no version.
-func Version(info *debug.BuildInfo, ok bool) string {
+// printedVersion returns the version that ils --version prints: the version of the main module
+// the build info of the running binary names, without its leading v. It returns "(devel)" when
+// there is no build info, as [debug.ReadBuildInfo] reports for a binary built without module
+// support, and when the build info names no version.
+func (a App) printedVersion() string {
 	const devel = "(devel)"
 
+	read := a.buildInfo
+	if read == nil {
+		read = debug.ReadBuildInfo
+	}
+
+	info, ok := read()
 	if !ok || info.Main.Version == "" || info.Main.Version == devel {
 		return devel
 	}
 
 	return strings.TrimPrefix(info.Main.Version, "v")
-}
-
-// printedVersion returns the version that ils --version prints: the version of the build info.
-func (a App) printedVersion() string {
-	if a.buildInfo == nil {
-		return Version(debug.ReadBuildInfo())
-	}
-
-	return Version(a.buildInfo())
 }
 
 // show prints r on Stdout as JSON, or as text drawn for profile, and returns the exit code of its
@@ -455,8 +453,8 @@ func (p *parse) root() *cobra.Command {
 	boolFlag(root.Flags(), &p.help, flagNames{long: flagHelp, short: flagHelpShort}, "help for ils")
 	p.refuseFlags(root, notCommand)
 	root.AddCommand(
-		p.waiting(landingHelp{word: landing.PushCommand, short: pushShort, long: pushLong, examples: pushExamples}, orDefault(p.app.runPush, landing.Push)),
-		p.waiting(landingHelp{word: landing.MergeCommand, short: mergeShort, long: mergeLong, examples: mergeExamples}, orDefault(p.app.runMerge, landing.Merge)),
+		p.waiting(landingHelp{word: landing.PushCommand, short: pushShort, long: pushLong, examples: pushExamples}, orDefault(p.app.runPush, landing.Push), withTimeLimits),
+		p.waiting(landingHelp{word: landing.MergeCommand, short: mergeShort, long: mergeLong, examples: mergeExamples}, orDefault(p.app.runMerge, landing.Merge), withCheckWaits),
 		p.landing(landingHelp{word: landing.StatusCommand, short: statusShort, long: statusLong, examples: statusExamples}, landing.Status, nil),
 		p.named(landingHelp{word: landing.BranchCommand, arg: "name", short: branchShort, long: branchLong, examples: branchExamples}, orDefault(p.app.runBranch, landing.StartBranch), nil),
 		p.release(),
@@ -659,19 +657,19 @@ func (p *parse) waitOn(c *cobra.Command, req *landing.Request) {
 	}
 }
 
-// addWaitFlag registers --wait on c, read by waitOn.
-func (p *parse) addWaitFlag(c *cobra.Command) {
-	boolFlag(c.Flags(), &p.wait, flagNames{long: flagWait}, withTimeLimits(waitUsage))
+// addWaitFlag registers --wait on c, read by waitOn, with limits applied to its usage.
+func (p *parse) addWaitFlag(c *cobra.Command, limits func(text string) string) {
+	boolFlag(c.Flags(), &p.wait, flagNames{long: flagWait}, limits(waitUsage))
 }
 
-// waiting returns the landing command help names, with the time limits added to its long help,
-// which runs run under the long wait when --wait is true, or when stdout is a terminal and no
-// --wait is typed; --wait=false runs it under the short one.
-func (p *parse) waiting(help landingHelp, run Command) *cobra.Command {
-	help.long = withTimeLimits(help.long)
+// waiting returns the landing command help names, with limits applied to its long help and to the
+// usage of --wait, which runs run under the long wait when --wait is true, or
+// when stdout is a terminal and no --wait is typed; --wait=false runs it under the short one.
+func (p *parse) waiting(help landingHelp, run Command, limits func(text string) string) *cobra.Command {
+	help.long = limits(help.long)
 	c := p.landing(help, run, p.waitOn)
 
-	p.addWaitFlag(c)
+	p.addWaitFlag(c, limits)
 
 	return c
 }
@@ -729,12 +727,12 @@ func (p *parse) release() *cobra.Command {
 
 	c := p.named(landingHelp{
 		word: landing.ReleaseCommand, arg: "version",
-		short: releaseShort, long: withTimeLimits(releaseLong), examples: releaseExamples,
+		short: releaseShort, long: withCheckWaits(releaseLong), examples: releaseExamples,
 	}, orDefault(p.app.runRelease, landing.Release), flags)
 
 	boolFlag(c.Flags(), &force, flagNames{long: flagForce}, "Tag the release commit without waiting for its CI")
 	boolFlag(c.Flags(), &tagOnly, flagNames{long: flagTagOnly}, "Stop once the tag is pushed, creating no GitHub release")
-	p.addWaitFlag(c)
+	p.addWaitFlag(c, withCheckWaits)
 
 	return c
 }

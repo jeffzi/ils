@@ -100,7 +100,7 @@ func Release(ctx context.Context, deps Deps, req Request) result.Result {
 		return *rel.carried(req, stop)
 	}
 
-	if stop := rel.reserved(ctx, req); stop != nil {
+	if stop := req.shortOfReserve(ctx, result.Concat("for the release"), req.again(), rel.said); stop != nil {
 		return *rel.carried(req, stop)
 	}
 
@@ -360,12 +360,6 @@ func releaseNotes(changelog, version string) string {
 	return strings.TrimSpace(strings.Join(lines, ""))
 }
 
-// reserved ends the release pending, with nothing written, when less than mergeReserve is left
-// before ctx's deadline.
-func (rel *releasing) reserved(ctx context.Context, req Request) *result.Result {
-	return req.shortOfReserve(ctx, result.Concat("for the release"), req.again(), rel.said)
-}
-
 // gate is the CI gate of the release: it waits for the checks of the release commit, every check
 // deciding, on a deadline mergeReserve before ctx's, and returns the result that stops the release,
 // or nil when it goes on. Green checks go on and are counted. A failed or canceled check is a
@@ -537,12 +531,10 @@ func (rel *releasing) unreported(ctx context.Context, deps Deps, req Request, wa
 // then ends done with --tag-only, and otherwise publishes the GitHub release of the tag. Each step
 // that ran says so in a line, and a write that fails is broke, saying what was written and what was
 // not. An interrupt that ended ctx before the first write ends the release pending with nothing
-// written, as too little time left does in reserved.
+// written, as too little time left does before it.
 func (rel *releasing) write(ctx context.Context, deps Deps, req Request) *result.Result {
 	if stop := req.interruptedBefore(ctx, result.Concat("the first write of the release"), req.again(), rel.said); stop != nil {
-		stop.Payload = rel.payload(req)
-
-		return stop
+		return rel.carried(req, stop)
 	}
 
 	if rel.resumed() {

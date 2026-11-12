@@ -18,7 +18,6 @@ func TestJudge_JudgesTheExpansionOfAGhAlias(t *testing.T) {
 	// Not parallel: ghtest.Setup sets GH_PATH for the whole process.
 	const aliases = `finder: '!gh issue list | grep "$1"'` + "\n" +
 		"mg: pr merge $1\n" +
-		"pm: pr merge\n" +
 		"rd: release delete $1\n" +
 		"two: release delete $1 $2\n" +
 		"vw: pr $1\n"

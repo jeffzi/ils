@@ -203,17 +203,6 @@ func (l *liveSuite) apiArgs(rest string, extra ...string) []string {
 	return append([]string{"api", "--hostname", l.origin.Host, "--paginate", l.apiPath(rest)}, extra...)
 }
 
-// remoteCommit is the commit ref stands on in the repository on GitHub, and empty when the ref is
-// missing.
-func (l *liveSuite) remoteCommit(t *testing.T, ref string) string {
-	t.Helper()
-
-	sha, err := l.remoteCommitIn(t.Context(), ref)
-	assert.NilError(t, err)
-
-	return sha
-}
-
 // remoteCommitIn is the commit ref stands on in the repository on GitHub, read under ctx, and empty
 // when the ref is missing.
 func (l *liveSuite) remoteCommitIn(ctx context.Context, ref string) (string, error) {
@@ -521,7 +510,10 @@ func (b *liveBranch) tip(t *testing.T) string {
 func (b *liveBranch) remoteTip(t *testing.T) string {
 	t.Helper()
 
-	return b.suite.remoteCommit(t, headRef(b.name))
+	sha, err := b.suite.remoteCommitIn(t.Context(), headRef(b.name))
+	assert.NilError(t, err)
+
+	return sha
 }
 
 // state is the state GitHub gives the pull request numbered number: OPEN, CLOSED or MERGED.

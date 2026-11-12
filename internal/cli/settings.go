@@ -6,6 +6,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -88,14 +89,13 @@ func (e *settingsEdit) changed() bool {
 // *shapeError; a file that cannot be read is any other error. A missing file starts empty.
 func planSettings(dir, hook string) (settingsEdit, error) {
 	file := filepath.Join(dir, settingsFile)
-	edit := settingsEdit{file: file, target: file, mode: fileMode}
 
 	target, err := followLink(file)
 	if err != nil {
-		return edit, err
+		return settingsEdit{}, err
 	}
 
-	edit.target = target
+	edit := settingsEdit{file: file, target: target, mode: fileMode}
 
 	//nolint:gosec // G304: the path is the settings file of the Claude Code directory.
 	text, err := os.ReadFile(edit.target)
@@ -144,8 +144,8 @@ func planSettings(dir, hook string) (settingsEdit, error) {
 // settingsObject returns text, the content of file, as an object, or a *shapeError when it is
 // not valid JSON or not an object.
 func settingsObject(file string, text []byte) (jsonObject, error) {
-	if !jsontext.Value(text).IsValid() {
-		return jsonObject{}, &shapeError{problem: fmt.Sprintf("%s is not valid JSON", file)}
+	if problem := jsonProblem(text); problem != "" {
+		return jsonObject{}, &shapeError{problem: fmt.Sprintf("%s %s", file, problem)}
 	}
 
 	settings, ok, err := readObject(text)
@@ -158,6 +158,44 @@ func settingsObject(file string, text []byte) (jsonObject, error) {
 	}
 
 	return settings, nil
+}
+
+// jsonProblem returns what keeps text from being one valid JSON value, as a refusal says it after
+// the name of the file, or "" when text is one: an object that holds a member name twice, an
+// escape in a string that names no character, and otherwise that it is not valid JSON.
+func jsonProblem(text []byte) string {
+	err := json.Unmarshal(text, new(jsontext.Value))
+	if err == nil {
+		return ""
+	}
+
+	syntax, ok := errors.AsType[*jsontext.SyntacticError](err)
+	switch {
+	case ok && errors.Is(err, jsontext.ErrDuplicateName):
+		return fmt.Sprintf("holds the member %s twice", syntax.JSONPointer.LastToken())
+	case ok && badEscapeAt(text, syntax.ByteOffset):
+		return "holds an escape that names no character"
+	default:
+		return "is not valid JSON"
+	}
+}
+
+// badEscapeAt reports whether the decoder stopped at offset of text on an escape that names no
+// character: a backslash inside a string the text goes on past. The decoder's error for such an
+// escape has no type of its own, so the backslash is checked to be inside a string by reading
+// the tokens of text up to the first that fails.
+func badEscapeAt(text []byte, offset int64) bool {
+	if offset >= int64(len(text)) || text[offset] != '\\' {
+		return false
+	}
+
+	dec := jsontext.NewDecoder(bytes.NewReader(text))
+	for {
+		inString := dec.PeekKind() == '"'
+		if _, err := dec.ReadToken(); err != nil {
+			return inString && !errors.Is(err, io.ErrUnexpectedEOF)
+		}
+	}
 }
 
 // apply adds the permission rules to settings, and with hook not empty the hook that runs hook,
@@ -436,28 +474,23 @@ func (o *jsonObject) set(name string, value jsontext.Value) {
 // encoder writes after it.
 func (o jsonObject) value() (jsontext.Value, error) {
 	var buf bytes.Buffer
-	if err := o.encode(jsontext.NewEncoder(&buf)); err != nil {
+
+	enc := jsontext.NewEncoder(&buf)
+	err := enc.WriteToken(jsontext.BeginObject)
+	for i := 0; err == nil && i < len(o.names); i++ {
+		err = enc.WriteToken(jsontext.String(o.names[i]))
+		if err == nil {
+			err = enc.WriteValue(o.values[i])
+		}
+	}
+
+	if err == nil {
+		err = enc.WriteToken(jsontext.EndObject)
+	}
+
+	if err != nil {
 		return nil, fmt.Errorf("encode an object: %w", err)
 	}
 
 	return jsontext.Value(bytes.TrimSpace(buf.Bytes())), nil
-}
-
-// encode writes o to enc as one object, its members in order.
-func (o jsonObject) encode(enc *jsontext.Encoder) error {
-	if err := enc.WriteToken(jsontext.BeginObject); err != nil {
-		return err
-	}
-
-	for i, name := range o.names {
-		if err := enc.WriteToken(jsontext.String(name)); err != nil {
-			return err
-		}
-
-		if err := enc.WriteValue(o.values[i]); err != nil {
-			return err
-		}
-	}
-
-	return enc.WriteToken(jsontext.EndObject)
 }

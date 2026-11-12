@@ -44,7 +44,10 @@ import (
 // A gh that cannot read origin's repository on GitHub, or a repository ils does not push to, is a
 // line naming the fix; what git alone tells is still reported, the reads of GitHub are left out, and
 // on a work branch `Next:` is the step push would refuse with. With origin unreachable, origin's
-// trunk and origin's copy of the branch are those of the last fetch, and a line says so.
+// trunk and origin's copy of the branch are those of the last fetch, and a line says so. With origin
+// turning the caller away, or the read of origin's URLs cut short, only the name of origin's trunk
+// is that of the last fetch, and on a work branch `Next:` is the step push ends on; when the last
+// fetch names no trunk either, where HEAD stands is unread, and `Next:` fixes what failed.
 func Status(ctx context.Context, deps Deps, req Request) result.Result {
 	deps.startChecking()
 
@@ -83,7 +86,8 @@ type reading struct {
 	// means it has none.
 	unreadPulls string
 	// refused is the step the shared preconditions of every landing command refuse with for git, or
-	// for the ssh origin's URLs need, which comes before any step the standing decides.
+	// for the ssh origin's URLs need, or end on for origin's trunk when where HEAD stands cannot be
+	// told without it, which comes before any step the standing decides.
 	refused  result.Next
 	waited   Waited
 	status   result.Status
@@ -95,6 +99,9 @@ type reading struct {
 	// origin's copy of it, of the working tree's changes, or of the local trunk failed other than by
 	// a cut: push or merge would end on the same failure, so no step past the fix can be told.
 	branchUnread bool
+	// noTrunk is set when origin turned away the read of its trunk and the last fetch names none
+	// either: HEAD's branch cannot be told from the trunk.
+	noTrunk bool
 }
 
 func (r *reading) say(lines ...result.Phrase) {
@@ -195,6 +202,17 @@ func (r *reading) readStanding(ctx context.Context) {
 	r.on.branch = standing.Branch
 	r.readOrigin(ctx)
 	r.readIdentity(ctx)
+
+	if r.noTrunk {
+		r.unread(result.Say("Could not read %s: neither origin nor its last fetch names origin's trunk", readStanding),
+			readStanding, "neither origin nor its last fetch names origin's trunk")
+
+		if r.refused.None() {
+			r.refused = r.req.onceFixed()
+		}
+
+		return
+	}
 
 	if standing.Branch == r.status.Trunk {
 		r.readOnTrunk(ctx)
@@ -323,7 +341,8 @@ func (r *reading) readDetached(ctx context.Context) {
 	}
 }
 
-// readOrigin reads the repository origin's URLs name and origin's trunk, and fetches that trunk.
+// readOrigin reads the repository origin's URLs name and origin's trunk, and fetches that trunk. A
+// read of the URLs cut short leaves only the trunk's name, as the clone last fetched it.
 func (r *reading) readOrigin(ctx context.Context) {
 	urls, repo, oneRepo, err := readOriginRepo(ctx, r.deps)
 
@@ -338,6 +357,8 @@ func (r *reading) readOrigin(ctx context.Context) {
 	}
 
 	if r.cut {
+		r.learnTrunk(ctx)
+
 		return
 	}
 
@@ -363,10 +384,27 @@ func (r *reading) readOrigin(ctx context.Context) {
 // readLastFetch settles a read of origin's trunk that failed with err. When origin could not be
 // reached, origin's trunk and its tip are those of the last fetch, and so is everything counted
 // against origin after them; a clone that never learned origin's trunk fails that read, yet still
-// counts the branch against origin's copy as last fetched. Anything else fails the read.
+// counts the branch against origin's copy as last fetched. When origin turned the caller away, the
+// read fails, push ends on it, and only the trunk's name is that of the last fetch. Anything else
+// fails the read.
 func (r *reading) readLastFetch(ctx context.Context, err error) {
-	if !errors.Is(err, git.ErrRemote) || endedEarly(err) {
+	if !git.Unanswered(err) || endedEarly(err) {
 		r.failed(readTrunk, err)
+
+		return
+	}
+
+	if errors.Is(err, git.ErrRefused) {
+		r.failed(readTrunk, err)
+
+		// Push reads origin's URLs and its repository on GitHub before its trunk, so a refusal of
+		// either comes first.
+		if r.blocked.None() {
+			r.blocked = Request{Command: PushCommand}.onceFixed()
+		}
+
+		r.learnTrunk(ctx)
+		r.noTrunk = r.status.Trunk == ""
 
 		return
 	}
@@ -395,6 +433,20 @@ func (r *reading) readLastFetch(ctx context.Context, err error) {
 
 	r.offline = true
 	r.say(result.Say("Origin could not be reached, so what is counted against origin is counted against the last fetch"))
+}
+
+// learnTrunk takes the name of origin's trunk as the clone last fetched it. It asks origin nothing,
+// so it runs past ctx's end: a cut that skipped the reads of origin still leaves HEAD's branch told
+// apart from the trunk.
+func (r *reading) learnTrunk(ctx context.Context) {
+	trunk, _, err := r.deps.Repo.LastFetchedTrunk(context.WithoutCancel(ctx))
+	if err != nil {
+		r.failed(readTrunk, err)
+
+		return
+	}
+
+	r.status.Trunk = trunk
 }
 
 // readIdentity reads origin's repository on GitHub, which every read of GitHub after it needs. A gh
@@ -632,9 +684,10 @@ func (r *reading) next() result.Next {
 	return r.pullNext()
 }
 
-// pullNext is the step the open pull request decides: its checks still running, red, the pull
-// request apart from the trunk, then the merge, once a review is in when it waits on one. Any
-// other state is left to `ils push`, which reports it.
+// pullNext is the step the open pull request decides: a head other than the branch's tip, or its
+// checks still running, both left to `ils push`; then red, the pull request apart from the trunk,
+// then the merge, once a review is in when it waits on one. Any other state is left to `ils push`,
+// which reports it.
 func (r *reading) pullNext() result.Next {
 	w := r.waited
 	state := w.MergeState

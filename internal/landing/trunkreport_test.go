@@ -85,7 +85,7 @@ func fetchTagWords(tag string) []string {
 	return []string{"fetch", "--no-tags", "--refmap=", "origin", "+refs/tags/" + tag + ":refs/ils/fetched/*"}
 }
 
-func TestStatus_WhenOnTheTrunkAndTheFetchOfAVersionTagFails_ReportsTheFetchAndTheTag(t *testing.T) {
+func TestStatus_WhenOnTheTrunkAndTheFetchOfAVersionTagFails_ListsTheFailedTagFetchAsUnread(t *testing.T) {
 	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
 	s := statusScene(t, tagPastTheTrunk, ruledBy(forge.RulesProtect))
 	failGit(t, s, fetchTagWords(strayTag))
@@ -93,7 +93,7 @@ func TestStatus_WhenOnTheTrunkAndTheFetchOfAVersionTagFails_ReportsTheFetchAndTh
 	got := seeStatus(t, s, (*testing.T).Context)
 
 	assert.Assert(t, is.Len(got.status.Unread, 1))
-	assertSays(t, got.status.Unread[0].Error, expect("fetch tag "+strayTag+": ", gittest.FailedSaid))
+	assertSays(t, got.status.Unread[0].Error, expect(strayTag, gittest.FailedSaid))
 }
 
 func TestStatus_WhenOnTheTrunkAndOriginHoldsOnlyATagThatIsNoVersion_SaysThereIsNone(t *testing.T) {

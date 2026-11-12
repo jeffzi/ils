@@ -3,7 +3,10 @@
 package guard_test
 
 import (
+	"path/filepath"
 	"testing"
+
+	"github.com/jeffzi/ils/internal/guard"
 )
 
 func TestJudge_RefusesAPrefixOfAGuardedLongOption(t *testing.T) {
@@ -61,8 +64,11 @@ func TestJudge_WhenAGitPathArgumentCanExpandToAnOption_RefusesNamingDoubleDash(t
 func TestJudge_RefusesAGlobWhereTheGuardNeedsALiteral(t *testing.T) {
 	t.Parallel()
 
-	checkRefusals(t, []refusal{
-		{name: "worktree remove path", command: "git worktree remove wt*"},
-		{name: "update-ref ref name", command: "git update-ref refs/heads/new* HEAD"},
+	f, caller := standingOn(t, "main", "topic")
+	addWorktree(t, f, filepath.Join(f.Dir(), "wt"))
+
+	checkJudged(t, caller, []judged{
+		{name: "worktree remove path", command: "git worktree remove wt*", want: guard.Refuse},
+		{name: "update-ref ref name", command: "git update-ref refs/heads/new* HEAD", want: guard.Refuse},
 	})
 }
