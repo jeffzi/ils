@@ -115,6 +115,7 @@ runs:
       env:
         PREFIX: ${{ steps.resolve.outputs.prefix }}
         VERSION: ${{ steps.resolve.outputs.version }}
+        REPOSITORY: ${{ github.server_url }}/${{ github.repository }}
       run: | # zizmor: ignore[github-env] — the entry is the prefix this action built under $HOME from a version read from kernel.org, not attacker-controlled input
         set -euo pipefail
         printed=$("$PREFIX/bin/git" --version)
@@ -122,10 +123,12 @@ runs:
           echo "the git built at $PREFIX prints $printed, want git version $VERSION" >&2
           exit 1
         fi
-        # Runs git-remote-https, which links libcurl and openssl, against kernel.org's git repository.
+        # Runs git-remote-https, which links libcurl and openssl, against the repository this workflow
+        # runs for: the job already reached it to check out, so a failure here is the transport, not
+        # the host. git.kernel.org is a third-party host that runners in some regions cannot connect to.
         # A dropped connection fails it the same way a broken transport does, so it gets five tries.
         attempt=1
-        until "$PREFIX/bin/git" ls-remote --exit-code https://git.kernel.org/pub/scm/git/git.git HEAD > /dev/null; do
+        until "$PREFIX/bin/git" ls-remote --exit-code "$REPOSITORY" HEAD > /dev/null; do
           if [ "$attempt" -ge 5 ]; then
             echo "the git built at $PREFIX cannot read a repository over HTTPS" >&2
             exit 1
