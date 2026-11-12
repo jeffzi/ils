@@ -50,6 +50,7 @@ func TestParse_ReportsWhetherHeadMayHaveMovedBeforeEachInvocation(t *testing.T) 
 		{name: "rebase --root naming no branch", command: "git rebase --root; git commit", want: []bool{false, false}},
 		{name: "rebase argument the guard cannot read", command: "git rebase --str main; git commit", want: []bool{false, true}},
 		{name: "gh pr checkout", command: "gh pr checkout 12; git commit", want: []bool{false, true}},
+		{name: "gh pr co, gh's own alias of checkout", command: "gh pr co 12; git commit", want: []bool{false, true}},
 		{name: "gh pr view", command: "gh pr view 12; git commit", want: []bool{false, false}},
 		{name: "gh command word gh does not ship", command: "gh co 12; git commit", want: []bool{false, true}},
 		{name: "branch --m too short to name --move", command: "git branch --m next; git commit", want: []bool{false, false}},

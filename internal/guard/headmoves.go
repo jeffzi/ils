@@ -176,10 +176,10 @@ func movesHead(inv Invocation) bool {
 	}
 }
 
-// ghMovesHead reports whether gh given args may move HEAD: `gh pr checkout`, and a first command
-// word that is none of gh's commands, since an alias or an extension may check out a branch. It
-// finds the command words the way Cobra does, past the values of flags; one that is not a literal
-// may be any of them.
+// ghMovesHead reports whether gh given args may move HEAD: `gh pr checkout` by any name gh gives
+// it, and a first command word that is none of gh's commands, since an alias or an extension may
+// check out a branch. It finds the command words the way Cobra does, past the values of flags; one
+// that is not a literal may be any of them.
 func ghMovesHead(args []Word) bool {
 	at := commandWords(args, ghSwitches())
 	if len(at) == 0 {
@@ -191,7 +191,13 @@ func ghMovesHead(args []Word) bool {
 		return true
 	}
 
-	return first.Text == "pr" && len(at) > 1 && (!args[at[1]].Literal || args[at[1]].Text == "checkout")
+	if first.Text != "pr" || len(at) < 2 {
+		return false
+	}
+
+	sub := args[at[1]]
+
+	return !sub.Literal || ghSubcommand("pr", sub.Text) == "checkout"
 }
 
 // isBranchMove reports whether `git branch` given args may rename or move a branch: its options,

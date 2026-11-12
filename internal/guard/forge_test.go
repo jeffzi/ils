@@ -270,6 +270,16 @@ func TestJudge_RefusesAGhPrCheckoutThatDiscardsWork(t *testing.T) {
 	})
 }
 
+func TestJudge_GivesAGhBuiltInAliasTheVerdictOfTheCommandItStandsFor(t *testing.T) {
+	t.Parallel()
+
+	checkJudged(t, callerOutsideAnyRepository(t), []judged{
+		{name: "pr co with force", command: "gh pr co --force 12", want: guard.Refuse},
+		{name: "release new", command: "gh release new v1.2.3", want: guard.Ask},
+		{name: "repo new with push", command: "gh repo new x --source=. --push", want: guard.Refuse},
+	})
+}
+
 func TestJudge_RefusesAGhConfigGetThatPrintsTheToken(t *testing.T) {
 	t.Parallel()
 
