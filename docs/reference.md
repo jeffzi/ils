@@ -549,8 +549,8 @@ written. If it is stopped while it makes the tag or looks up the GitHub release,
 was interrupted, or which time limit ran out, as it does for the push of the tag.
 
 A second Ctrl-C or SIGTERM ends `ils` at once, as that signal ends any program: no result is
-printed, and the exit status is the signal's (130 for Ctrl-C and 143 for SIGTERM in most shells),
-not one of the [exit codes](#exit-codes).
+printed, and the exit status is the signal's (130 for Ctrl-C and 143 for SIGTERM in most shells,
+and STATUS_CONTROL_C_EXIT, 0xC000013A, on Windows), not one of the [exit codes](#exit-codes).
 
 ## Refusals
 
