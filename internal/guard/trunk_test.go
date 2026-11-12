@@ -503,6 +503,14 @@ func TestJudge_WhenTheProtectionOfAGitHubTrunkCannotBeRead_RefusesSayingWhy(t *t
 			named: []string{"HTTP 500", "ils branch"},
 		},
 		{
+			name: "classic protection read fails",
+			setup: func(t *testing.T) {
+				t.Helper()
+				scriptProtection(t, githubHost, "main", protection{rules: rulesAnswer(), branch: ghtest.ServerError()})
+			},
+			named: []string{"branch protection", "HTTP 500", "ils branch"},
+		},
+		{
 			name: "reply that does not decode",
 			setup: func(t *testing.T) {
 				t.Helper()
@@ -554,29 +562,17 @@ func TestJudge_WhenOriginsSSHHostCannotBeResolved_RefusesACommitOnTheTrunk(t *te
 }
 
 func TestJudge_WhenACommandCommitsTwiceOnTheTrunk_ReadsEachProtectionOnce(t *testing.T) {
-	tests := []struct {
-		name string
-		read protection
-		want guard.Outcome
-	}{
-		{name: "read succeeds", read: unprotected(), want: guard.Allow},
-		{name: "read fails", read: failing(ghtest.ServerError()), want: guard.Refuse},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Not parallel: onGitHub sets GH_PATH for the whole process.
-			f, caller := standingOn(t, "main", "main")
-			fake := onGitHub(t, f, githubHost, tt.read)
-			const command = "git commit -m one; git commit -m two"
+	// Not parallel: onGitHub sets GH_PATH for the whole process.
+	f, caller := standingOn(t, "main", "main")
+	fake := onGitHub(t, f, githubHost, unprotected())
+	const command = "git commit -m one; git commit -m two"
 
-			got := guard.Judge(t.Context(), command, caller)
+	got := guard.Judge(t.Context(), command, caller)
 
-			calls := fake.Calls()
-			assert.Check(t, is.Equal(got.Outcome, tt.want), "Judge(%q) outcome, reason %q", command, got.Reason)
-			assert.Check(t, callsOf(calls, rulesArgs(githubHost, "main")) <= 1, "Judge(%q) gh calls %v", command, calls)
-			assert.Check(t, callsOf(calls, branchArgs(githubHost, "main")) <= 1, "Judge(%q) gh calls %v", command, calls)
-		})
-	}
+	calls := fake.Calls()
+	assert.Check(t, is.Equal(got.Outcome, guard.Allow), "Judge(%q) outcome, reason %q", command, got.Reason)
+	assert.Check(t, is.Equal(callsOf(calls, rulesArgs(githubHost, "main")), 1), "Judge(%q) gh calls %v", command, calls)
+	assert.Check(t, is.Equal(callsOf(calls, branchArgs(githubHost, "main")), 1), "Judge(%q) gh calls %v", command, calls)
 }
 
 func TestJudge_WhenTheProtectionReadSucceeds_ChecksNoLogin(t *testing.T) {
