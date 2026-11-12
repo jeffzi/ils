@@ -48,7 +48,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   terminal check misreading the foreground process group on big-endian systems.
 - Fix `ils merge` saying the branch could not be deleted on origin when the time limit cut the
   delete short.
-- Fix the squash commit's body repeating trailers the pull request's body already holds.
+- Fix `ils merge` repeating, in the squash commit's body, trailers the pull request's body already
+  holds.
 - Fix `ils push`, `ils merge`, and `ils status` losing a red verdict when the time limit cut the
   read of the failed log short.
 - Fix `ils release` judging the checks of a workflow run created during its read as checks of no
@@ -57,10 +58,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   default branch.
 - Fix `ils status` reporting checks and a merge step for a pull request head other than the
   branch's tip, and saying no check reported when a required check never reported.
-- Fix `ils push`, `ils merge`, and `ils release` reporting a push as done when one of several push
-  URLs refused it.
-- Fix the guard allowing `gh`'s own aliases, such as `gh pr co --force`, that the command they
-  name is refused for.
+- Fix `ils push` and `ils release` reporting a push as done when one of several push URLs refused
+  it.
+- Fix the guard allowing `gh`'s own aliases, such as `gh pr co --force`, without the refusal or
+  question the command they name gets.
 - Fix the guard allowing `git mv --force`, `git submodule update --force`, and
   `git submodule deinit --force`, which overwrite uncommitted work.
 

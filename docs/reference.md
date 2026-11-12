@@ -326,7 +326,7 @@ for Claude Code. It runs these steps:
    holds a member name twice in one object or a string escape that names no character, or whose
    `hooks`, `hooks.PreToolUse`, `permissions`, `permissions.allow`, `permissions.ask`, or
    `permissions.deny` has the wrong type, is a refusal, and nothing is written. The reason names
-   the duplicate member or the escape.
+   the member held twice, or says the escape names no character.
 2. It installs the `ils` and `write-release` skills the binary ships in `skills/<name>/`. A file
    that already holds what `ils` ships is left as it is, and one that differs is replaced.
    `hook.sh` is written executable. A file `ils` does not ship stays. A skill directory that is a
