@@ -25,6 +25,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Refuse `ils push`, `ils merge`, and `ils release` when any push URL of `origin` names another
   repository than its fetch URL.
 - Make the guard read a trailing lone backslash in an unquoted word as bash does, keeping it.
+- Refuse an agent's commit on the default branch only when a GitHub ruleset or classic branch
+  protection protects it.
 
 ### Fixed
 

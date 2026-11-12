@@ -60,6 +60,12 @@ Refuse a `git`, `gh`, or `ils` call that destroys work, skips checks, pushes, or
 however rare it is: `git repack -a -d` drops unreachable objects at once, the loss `git prune` is
 refused for.
 
+A commit lands a change only once it is pushed. An agent's push is what reaches origin and can
+start a deployment, so the guard refuses every agent push. A local commit on an unprotected default
+branch lands nothing: you push it yourself, and the guard lets the agent make it. On a default
+branch that GitHub protects, your own push is rejected too, so the guard refuses the commit before
+the work strands on a branch no one can push.
+
 Refuse it in every spelling the tool itself accepts:
 
 - an abbreviated long option, which git accepts;

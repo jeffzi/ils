@@ -135,9 +135,9 @@ release commit on origin's default branch even after later merges. The `write-re
 ## The guard
 
 The guard judges a shell command before an agent runs it, and answers allow, refuse, or ask. It
-refuses `git` operations that destroy work or skip the hooks, every `git push`, commits on the
-default branch, and `gh` calls that land or publish a change without the checks of `ils`. It asks
-you before `ils merge`, `ils release`, `gh pr merge`, and `gh release create`.
+refuses `git` operations that destroy work or skip the hooks, every `git push`, commits on a
+default branch that GitHub protects, and `gh` calls that land or publish a change without the
+checks of `ils`. It asks you before `ils merge`, `ils release`, `gh pr merge`, and `gh release create`.
 
 The guard runs on macOS and Linux.
 [Use with Claude Code](#use-with-claude-code) sets it up.
