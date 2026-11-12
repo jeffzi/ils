@@ -279,9 +279,9 @@ func (f *Forge) requiredChecks(ctx context.Context, repo forge.Repo, query forge
 	return absent && !running, running, nil
 }
 
-// TrunkProtection returns whether rules apply to trunk, the status checks they require, and
-// whether they allow a squash merge: they do unless a pull_request rule names merge methods
-// without squash, whose ruleset it then names.
+// TrunkProtection returns whether rules apply to trunk, the status checks they require, whether
+// they allow a squash merge, and whether they require a merge queue. They allow a squash merge
+// unless a pull_request rule names merge methods without squash, whose ruleset it then names.
 //
 // A free private repository answers 403 with an upgrade message to the read: the plan does not
 // allow rules, so none applies and a squash merge is allowed. Any other 403 is an error.
@@ -302,8 +302,8 @@ func (f *Forge) TrunkProtection(ctx context.Context, repo forge.Repo, trunk stri
 }
 
 // protectionOf folds the rules on a branch into whether any applies, the checks they require, each
-// named once, and whether every pull_request rule allows a squash merge, with the rulesets of those
-// that do not.
+// named once, whether every pull_request rule allows a squash merge, with the rulesets of those
+// that do not, and whether a merge_queue rule applies. Rules of any other type change nothing.
 func protectionOf(rules []branchRule) forge.Protection {
 	protection := forge.Protection{Rules: forge.RulesNone, SquashAllowed: true}
 	if len(rules) > 0 {
@@ -317,6 +317,8 @@ func protectionOf(rules []branchRule) forge.Protection {
 				protection.SquashAllowed = false
 				protection.SquashForbiddenBy = append(protection.SquashForbiddenBy, rule.RulesetID)
 			}
+		case "merge_queue":
+			protection.MergeQueue = true
 		case "required_status_checks":
 			for _, check := range rule.Parameters.Required {
 				if !slices.Contains(protection.RequiredChecks, check.Context) {

@@ -584,6 +584,11 @@ func TestForge_TrunkProtection(t *testing.T) {
 			want:   forge.Protection{Rules: forge.RulesUnavailable, SquashAllowed: true},
 		},
 		{name: "no rule applies", answer: rules(), want: forge.Protection{Rules: forge.RulesNone, SquashAllowed: true}},
+		{
+			name:   "merge queue rule",
+			answer: rules(`{"type":"merge_queue","ruleset_id":42,"parameters":{"merge_method":"SQUASH","max_entries_to_build":5}}`),
+			want:   forge.Protection{Rules: forge.RulesProtect, SquashAllowed: true, MergeQueue: true},
+		},
 		{name: "the rule without squash ahead of one with it", answer: rules(pullRequestRule(42, `["rebase"]`), pullRequestRule(51, `["squash"]`)), want: forbiddenBy(42)},
 		{name: "two pull request rules without squash", answer: rules(pullRequestRule(42, `["merge"]`), pullRequestRule(51, `["rebase"]`)), want: forbiddenBy(42, 51)},
 		{name: "pull request rule with an empty methods list", answer: rules(pullRequestRule(42, `[]`)), want: forbiddenBy(42)},

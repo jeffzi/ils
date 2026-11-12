@@ -132,6 +132,13 @@ func (build forgeFor) forbiddenByRuleset(ids ...int) forgeFor {
 	})
 }
 
+// queued returns build with a trunk that requires a merge queue and allows squash merges.
+func (build forgeFor) queued() forgeFor {
+	return build.with(func(script *forgetest.Script, _ string) {
+		script.TrunkProtection = forgetest.Values(forge.Protection{SquashAllowed: true, MergeQueue: true})
+	})
+}
+
 // mergeEnd is how a run of `ils merge` must end, as the arrange of a row works it out.
 type mergeEnd struct {
 	text string
@@ -375,6 +382,7 @@ func pullRequestStops() []mergeRow {
 		row("squash merges forbidden by two rulesets",
 			expect("rulesets 42, 51", trunk, "ils merge"),
 			merging().forbiddenByRuleset(42, 51), rulesRead()),
+		row("trunk requires a merge queue", expect("merge queue"), merging().queued(), rulesRead()),
 	}
 }
 

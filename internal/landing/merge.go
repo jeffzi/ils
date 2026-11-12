@@ -230,6 +230,11 @@ func (m *mergeReady) pullChecks(ctx context.Context, deps Deps, req Request) *re
 		return req.Unread(readRules, err)
 	}
 
+	if protection.MergeQueue {
+		return req.Refused(result.Say("the default branch requires a merge queue"),
+			result.NextStep("add pull request %s to the merge queue on GitHub", result.PullRequest(m.pull.Number)))
+	}
+
 	if !protection.SquashAllowed {
 		return req.Refused(rulesetReason(protection.SquashForbiddenBy, m.Trunk),
 			result.NextStep("allow squash merges in the trunk's ruleset"+thenRunAgain, req.ilsCommand()))

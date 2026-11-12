@@ -154,6 +154,9 @@ type Protection struct {
 	// SquashAllowed reports whether the rules on the trunk allow a squash merge. The repository's
 	// settings can still forbid one: see Repo.
 	SquashAllowed bool
+	// MergeQueue reports whether a rule on the trunk requires a merge queue, which lands a pull
+	// request in its own merge rather than through a direct merge.
+	MergeQueue bool
 }
 
 // ---------------------------------------------------------------------------

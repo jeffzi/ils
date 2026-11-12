@@ -645,6 +645,7 @@ at most it has fetched from origin. It refuses everything `ils push` refuses abo
   with the scope and `!` optional);
 - a repository whose settings forbid squash merges, and a default branch whose ruleset forbids
   them;
+- a default branch whose ruleset requires a merge queue;
 - a red or canceled check, a required check that never reported, and a head no check reported for
   in a repository with CI;
 - a pull request that conflicts with or is behind the default branch, needs a review, lacks a
