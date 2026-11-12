@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"runtime/debug"
@@ -38,6 +39,11 @@ type App struct {
 	// Environ is the process environment, read for the color profile of each stream: NO_COLOR,
 	// CLICOLOR_FORCE and TERM among others.
 	Environ []string
+	// Skills holds the skills `ils init` installs, one directory per skill at its root.
+	Skills fs.FS
+	// guardRuns says whether `ils init` acts as on a system where the guard runs, and so adds its
+	// hook; nil acts as on the system ils was built for.
+	guardRuns *bool
 	// runPush runs `ils push`; nil runs landing.Push.
 	runPush Command
 	// runMerge runs `ils merge`; nil runs landing.Merge.
@@ -333,6 +339,12 @@ func (p *parse) refuseWith(reason result.Phrase, next result.Next) error {
 	return &refusedError{result: *req.Refused(reason, next)}
 }
 
+// refuseFor refuses the words given for reason, with the help of the command word as the next
+// step.
+func (p *parse) refuseFor(word string, reason result.Phrase) error {
+	return p.refuseWith(reason, result.NextCommand("%s "+flagHelp, word))
+}
+
 func notCommand(word string) result.Phrase {
 	return result.Say("%s is not a command", word)
 }
@@ -346,10 +358,7 @@ func (p *parse) notRootCommand(root *cobra.Command, word string) error {
 		return p.refuse(notCommand(word))
 	}
 
-	return p.refuseWith(
-		result.Say("%s is not a command; did you mean %s?", word, suggested[0]),
-		result.NextCommand("%s "+flagHelp, suggested[0]),
-	)
+	return p.refuseFor(suggested[0], result.Say("%s is not a command; did you mean %s?", word, suggested[0]))
 }
 
 // firstWord returns the first word c was given: a leading `--` first, then the first word typed.
@@ -453,6 +462,7 @@ func (p *parse) root() *cobra.Command {
 		p.parseCommand(),
 		p.guardCommand(),
 		p.hookCommand(),
+		p.initCommand(),
 	)
 	p.judgeHelpWords(root)
 	addHelpFlags(root)
@@ -742,6 +752,12 @@ func (p *parse) loggedGit(logger *slog.Logger) git.Runner {
 // spent before a command starts counts against its limit.
 func (p *parse) fromLaunch(ctx context.Context, limit time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithDeadline(ctx, p.app.Launch.Add(limit))
+}
+
+// underTimeLimit returns ctx with the deadline of a command from launch, which counts the time
+// limit from the launch of the app.
+func (p *parse) underTimeLimit(ctx context.Context) (context.Context, context.CancelFunc) {
+	return p.fromLaunch(ctx, landing.TimeLimit)
 }
 
 // land runs the landing command run for req against the repository ils runs in and its GitHub

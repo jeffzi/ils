@@ -716,6 +716,11 @@ func TestRepo_OriginURLs_WhenLoggerAttachedAndSSHReadsHost_LogsEachSSHRun(t *tes
 
 func TestEnvValue(t *testing.T) {
 	t.Parallel()
+	onWindows := runtime.GOOS == "windows"
+	otherCase := ""
+	if onWindows {
+		otherCase = "/x"
+	}
 	tests := []struct {
 		name    string
 		key     string
@@ -726,6 +731,7 @@ func TestEnvValue(t *testing.T) {
 		{name: "set twice keeps the last", env: []string{"TERM=xterm", "TERM=dumb"}, key: "TERM", want: "dumb", wantSet: true},
 		{name: "set to nothing", env: []string{"NO_COLOR="}, key: "NO_COLOR", want: "", wantSet: true},
 		{name: "only a longer key set", env: []string{"TERMINAL=xterm"}, key: "TERM", wantSet: false},
+		{name: "key in another case set", env: []string{"home=/x"}, key: "HOME", want: otherCase, wantSet: onWindows},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

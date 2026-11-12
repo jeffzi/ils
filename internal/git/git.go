@@ -100,3 +100,10 @@ func exited(err error, code int) bool {
 
 	return ok && exitErr.Code == code
 }
+
+// fatalSaying reports whether err is git dying of a fatal error with a stderr that said accepts.
+func fatalSaying(err error, said func(stderr string) bool) bool {
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+
+	return ok && exitErr.Code == fatalCode && said(exitErr.Stderr)
+}

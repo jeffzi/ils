@@ -3,6 +3,9 @@ package main
 
 import (
 	"context"
+	"embed"
+	"fmt"
+	"io/fs"
 	"os"
 	"os/signal"
 	"time"
@@ -11,6 +14,11 @@ import (
 
 	"github.com/jeffzi/ils/internal/cli"
 )
+
+// shipped holds the skills `ils init` installs, under skills/.
+//
+//go:embed skills
+var shipped embed.FS
 
 func main() {
 	app := launched(os.Stdout, os.Stderr, terminal{IsTerminal: term.IsTerminal, Size: term.GetSize, Foreground: foreground})
@@ -49,5 +57,17 @@ func launched(stdout, stderr *os.File, tty terminal) cli.App {
 		StderrForeground: func() bool { return tty.Foreground(stderr.Fd()) },
 		Notify:           signal.Notify,
 		Launch:           time.Now(),
+		Skills:           skills(),
 	}
+}
+
+// skills returns the embedded skills with one directory per skill at its root.
+func skills() fs.FS {
+	tree, err := fs.Sub(shipped, "skills")
+	if err != nil {
+		// Sub fails only on a malformed directory name, and "skills" is a constant.
+		panic(fmt.Sprintf("ils: the embedded skills: %v", err))
+	}
+
+	return tree
 }

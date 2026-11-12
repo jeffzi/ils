@@ -248,12 +248,26 @@ func TestRepo_FindGitDir_WhenGitFailsForAnotherReason_ReturnsExitError(t *testin
 func TestRepo_InWorkTree(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
+	repo := git.Repo{Runner: git.Runner{Dir: f.Dir(), Env: f.Env()}}
+
+	got, err := repo.InWorkTree(t.Context())
+	assert.NilError(t, err, "InWorkTree() in %s", f.Dir())
+
+	assert.Check(t, got, "InWorkTree() in %s", f.Dir())
+}
+
+func TestRepo_TopLevel(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	nested := filepath.Join(f.Dir(), "docs", "guide")
+	assert.NilError(t, os.MkdirAll(nested, 0o750))
 	tests := []struct {
-		name string
-		dir  string
-		want bool
+		name      string
+		dir       string
+		want      string
+		wantFound bool
 	}{
-		{name: "work tree", dir: f.Dir(), want: true},
+		{name: "subdirectory of the work tree", dir: nested, want: f.Dir(), wantFound: true},
 		{name: "bare repository", dir: f.OriginDir()},
 		{name: "directory that holds no repository", dir: t.TempDir()},
 	}
@@ -262,10 +276,11 @@ func TestRepo_InWorkTree(t *testing.T) {
 			t.Parallel()
 			repo := git.Repo{Runner: git.Runner{Dir: tt.dir, Env: f.Env()}}
 
-			got, err := repo.InWorkTree(t.Context())
-			assert.NilError(t, err, "InWorkTree() in %s", tt.dir)
+			got, found, err := repo.TopLevel(t.Context())
+			assert.NilError(t, err, "TopLevel() in %s", tt.dir)
 
-			assert.Check(t, is.Equal(got, tt.want), "InWorkTree() in %s", tt.dir)
+			assert.Check(t, is.Equal(found, tt.wantFound), "TopLevel() in %s found", tt.dir)
+			assert.Check(t, is.Equal(got, tt.want), "TopLevel() in %s", tt.dir)
 		})
 	}
 }
@@ -1021,6 +1036,17 @@ func FuzzVersionOf(f *testing.F) {
 	})
 }
 
+func noArgument(*gittest.Fixture) string { return "" }
+
+func topLevelRead(ctx context.Context, repo git.Repo, _ string) (any, error) {
+	dir, found, err := repo.TopLevel(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return []any{dir, found}, nil
+}
+
 func TestRepo_WhenAGitReadFails_ReturnsItsExitError(t *testing.T) {
 	// Not parallel: gittest.FakeGit sets PATH for the whole process.
 	trunkAhead := func(f *gittest.Fixture) string {
@@ -1062,11 +1088,12 @@ func TestRepo_WhenAGitReadFails_ReturnsItsExitError(t *testing.T) {
 		},
 		{
 			name: "checked out elsewhere, the worktree list read", failOn: []string{"worktree"},
-			arrange: func(*gittest.Fixture) string { return "" },
+			arrange: noArgument,
 			call: func(ctx context.Context, repo git.Repo, _ string) (any, error) {
 				return repo.CheckedOutElsewhere(ctx, trunk)
 			},
 		},
+		{name: "top level, the work tree read", failOn: []string{"rev-parse"}, arrange: noArgument, call: topLevelRead},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

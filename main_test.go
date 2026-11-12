@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"debug/buildinfo"
+	"encoding/json/v2"
 	"errors"
 	"io"
 	"os"
@@ -204,6 +205,46 @@ func TestIls(t *testing.T) {
 
 		assert.Check(t, got.stderr != "", "stdout = %q", got.stdout)
 	})
+
+	t.Run("WhenInitClaudeRuns_HooksTheScriptItInstalled", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("the guard does not run on Windows, so init adds no hook")
+		}
+
+		home := t.TempDir()
+		env := append(gittest.Without(gittest.Without(os.Environ(), "HOME"), "CLAUDE_CONFIG_DIR"), "HOME="+home)
+
+		got := bin.launch(t, home, env, "init", "claude")
+
+		assert.Assert(t, is.Equal(got.code, 0), "stdout = %q, stderr = %q", got.stdout, got.stderr)
+		script, found := strings.CutPrefix(hookCommand(t, filepath.Join(home, ".claude", "settings.json")), "bash ~/")
+		assert.Assert(t, found, "the hook does not run bash on a path under ~/")
+		_, err := os.Stat(filepath.Join(home, filepath.FromSlash(script)))
+		assert.NilError(t, err, "the hook runs %s, which init did not install", script)
+	})
+}
+
+// hookCommand returns the command of the one PreToolUse hook of the settings file at path.
+func hookCommand(t *testing.T, path string) string {
+	t.Helper()
+
+	var settings struct {
+		Hooks struct {
+			PreToolUse []struct {
+				Hooks []struct {
+					Command string `json:"command"`
+				} `json:"hooks"`
+			} `json:"PreToolUse"`
+		} `json:"hooks"`
+	}
+	//nolint:gosec // G304: the path is the settings file init wrote under t.TempDir().
+	text, err := os.ReadFile(path)
+	assert.NilError(t, err)
+	assert.NilError(t, json.Unmarshal(text, &settings))
+	assert.Assert(t, is.Len(settings.Hooks.PreToolUse, 1))
+	assert.Assert(t, is.Len(settings.Hooks.PreToolUse[0].Hooks, 1))
+
+	return settings.Hooks.PreToolUse[0].Hooks[0].Command
 }
 
 // opened returns a file of its own under the test's temporary directory, closed at cleanup, so

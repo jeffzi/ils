@@ -19,6 +19,8 @@ up, and what each command is for. CI stands for continuous integration throughou
   - [ils release](#ils-release)
     - [Resume a broken release](#resume-a-broken-release)
     - [Release by hand](#release-by-hand)
+  - [ils init](#ils-init)
+    - [Init by hand](#init-by-hand)
 - [Exit codes](#exit-codes)
   - [When no check reports](#when-no-check-reports)
 - [Time limits](#time-limits)
@@ -29,11 +31,13 @@ up, and what each command is for. CI stands for continuous integration throughou
   - [What merge refuses](#what-merge-refuses)
   - [What status refuses](#what-status-refuses)
   - [What release refuses](#what-release-refuses)
+  - [What init refuses](#what-init-refuses)
 - [JSON output](#json-output)
   - [Push JSON output](#push-json-output)
   - [Merge JSON output](#merge-json-output)
   - [Status JSON output](#status-json-output)
   - [Release JSON output](#release-json-output)
+  - [Init JSON output](#init-json-output)
 - [The guard](#the-guard)
   - [What the guard does not see](#what-the-guard-does-not-see)
   - [ils guard](#ils-guard)
@@ -60,6 +64,7 @@ up, and what each command is for. CI stands for continuous integration throughou
 | `--wait`        | `push`, `merge`, and `release` | Waits for the checks up to the long [time limit](#time-limits) even off a terminal. On by default at a terminal; `--wait=false` keeps the short limit there too. |
 | `--force`       | `release`                      | Skips the wait for the checks and says nothing verified the commit. Every other refusal still holds.                                                             |
 | `--tag-only`    | `release`                      | Stops once the tag is on origin, and creates no GitHub release.                                                                                                  |
+| `--project`     | `init`                         | Sets up `.claude/` at the top level of the repository the working directory is in, instead of `~/.claude/`.                                                      |
 
 `ils guard` and `ils parse` also take `--cwd <dir>`; see [ils guard](#ils-guard). `ils help`
 prints the usage of `ils` and its commands, and `ils --version` prints the version of `ils`.
@@ -300,16 +305,128 @@ gh release create v1.2.0 --repo <host>/<owner>/<name> --verify-tag --title v1.2.
 
 `<notes>` is a file holding the `## [1.2.0]` section of `CHANGELOG.md` at the release commit.
 
+### ils init
+
+Run `ils init claude` once to set up Claude Code for `ils`, and again after you upgrade `ils`.
+`claude` is the one harness it knows. It writes under the Claude Code directory, `~/.claude/`,
+with the home directory read from `HOME`, or from `USERPROFILE` on Windows. When
+`CLAUDE_CONFIG_DIR` is set and not empty, the Claude Code directory is that directory instead, as
+for Claude Code, and the hook's command is `bash` and the absolute path of the installed `hook.sh`,
+quoted for the shell:
+
+1. It reads `settings.json` and checks its shape. A file that is not JSON or not a JSON object, or
+   whose `hooks`, `hooks.PreToolUse`, `permissions`, `permissions.allow`, `permissions.ask`, or
+   `permissions.deny` has the wrong type, is a refusal, and nothing is written.
+2. It installs the `ils` and `write-release` skills the binary ships in `skills/<name>/`. A file
+   that already holds what `ils` ships is left as it is, and one that differs is replaced.
+   `hook.sh` is written executable. A file `ils` does not ship stays. A skill directory that is a
+   symbolic link, such as a clone of `ils` linked in, is not written to: a line names its target.
+3. It adds the guard's hook and the permission rules to `settings.json`, and creates the file when
+   it is missing. It writes a new file beside the old one and renames it over, keeping the old
+   file's mode, and writes through a `settings.json` that is a symbolic link to its target.
+
+The hook is a `PreToolUse` group with the matcher `Bash`, holding one hook:
+
+```json
+{
+  "type": "command",
+  "command": "bash ~/.claude/skills/ils/hook.sh",
+  "timeout": 15,
+  "onFailure": "block"
+}
+```
+
+A hook already in any `PreToolUse` group whose command is the path of `skills/ils/hook.sh`, alone or
+after `bash`, counts as the guard's: no second one is added. The path may run under any directory
+above `skills/`, such as `~/.claude/`, `$HOME/.claude/`, or `"$CLAUDE_PROJECT_DIR"/.claude/`, and
+be quoted any way the shell reads, as a home directory with a space needs. It gets
+`timeout: 15` and `onFailure: block` when either is missing or different, and keeps its command and
+its place. These are the only values `ils init` changes rather than adds. Without
+`onFailure: block`, Claude Code runs a command whose hook could not run. `onFailure` needs Claude
+Code 2.1.295 or later.
+
+Each rule lands in the list it belongs to:
+
+| List    | Rules                                                                                                                                                                                  |
+| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allow` | `Bash(ils push)`, `Bash(ils push --wait)`, `Bash(ils branch *)`, `Bash(ils status)`                                                                                                    |
+| `ask`   | `Bash(ils merge)`, `Bash(ils merge *)`, `Bash(ils release)`, `Bash(ils release *)`, `Bash(gh pr merge)`, `Bash(gh pr merge *)`, `Bash(gh release create)`, `Bash(gh release create *)` |
+| `deny`  | `Bash(git push)`, `Bash(git push *)`                                                                                                                                                   |
+
+A rule already in any of the three lists is not added to another. Every other key, value, and
+entry of `settings.json` stays, in its order. `ils init` removes nothing.
+
+With `--project`, it writes `.claude/skills/` and `.claude/settings.json` at the top level of the
+repository the working directory is in, whatever `CLAUDE_CONFIG_DIR` holds, and the hook's command
+is
+`bash "$CLAUDE_PROJECT_DIR"/.claude/skills/ils/hook.sh`.
+
+On Windows, where the guard does not run, it installs the skills and the rules and adds no hook: a
+line says the guard runs on macOS and Linux.
+
+It prints one line per change: each skill installed or updated, the hook added or updated, and the
+number of rules added to each list. On every run, it also prints a line naming the target of each
+skill directory that is a symbolic link, and on Windows the line saying where the guard runs. A run
+that changes nothing, with no skill directory that is a link, prints `Everything was already in
+place.` It ends done with no `Next:` line. A settings file it cannot read or write, or a skill file
+it cannot write, ends the run broke, naming the file. Under `--project`, a read of the top level of
+the repository ends as a landing command's read before any write does: a missing `git`, or a read
+the time limit or an interrupt cuts short, is a refusal whose `Next:` runs
+`ils init claude --project` again, and any other failure ends the run broke with nothing written.
+Skills written before a failed settings write stay, and running the command again finishes the
+job.
+
+#### Init by hand
+
+Copy `skills/ils/` and `skills/write-release/` from a clone of `ils` at the version you run into
+`~/.claude/skills/`, then merge this into `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/skills/ils/hook.sh",
+            "timeout": 15,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": ["Bash(ils push)", "Bash(ils push --wait)", "Bash(ils branch *)", "Bash(ils status)"],
+    "ask": [
+      "Bash(ils merge)",
+      "Bash(ils merge *)",
+      "Bash(ils release)",
+      "Bash(ils release *)",
+      "Bash(gh pr merge)",
+      "Bash(gh pr merge *)",
+      "Bash(gh release create)",
+      "Bash(gh release create *)"
+    ],
+    "deny": ["Bash(git push)", "Bash(git push *)"]
+  }
+}
+```
+
+`onFailure` needs Claude Code 2.1.295 or later, as [ils init](#ils-init) says.
+
 ## Exit codes
 
-| Exit | Means                | Reaction                                                                                                                                                                                                                                                                                                                                         |
-| ---- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 0    | done                 | Push: the checks are green, or the repository has no CI and a line says nothing verified the commit; follow `Next:`. Merge: the pull request is merged and the branch deleted. Branch: the branch is started. Status: whatever it finds, once its words parse. Release: the tag is on origin, and the GitHub release exists unless `--tag-only`. |
-| 1    | broke                | The output says what was done and what was not. Fix what failed, then follow `Next:`.                                                                                                                                                                                                                                                            |
-| 2    | refused              | Nothing was pushed, opened, merged, or tagged, except by a push whose pull request's head moved during the wait. The reason says why; `Next:` says what to do.                                                                                                                                                                                   |
-| 3    | ask                  | `ils guard` only: the command is one the user approves before it runs. See [ils guard](#ils-guard).                                                                                                                                                                                                                                              |
-| 4    | pending              | GitHub had not finished when the command stopped waiting, for example checks still running or not yet reported. Run the command that the `Next:` line names; [Time limits](#time-limits) says how long each command waits. After an `ils release`, run the same command again.                                                                   |
-| 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                                                                                                                                           |
+| Exit | Means                | Reaction                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ---- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0    | done                 | Push: the checks are green, or the repository has no CI and a line says nothing verified the commit; follow `Next:`. Merge: the pull request is merged and the branch deleted. Branch: the branch is started. Status: whatever it finds, once its words parse. Release: the tag is on origin, and the GitHub release exists unless `--tag-only`. Init: the skills and the rules are in place, and the hook too where the guard runs (macOS and Linux). |
+| 1    | broke                | The output says what was done and what was not. Fix what failed, then follow `Next:`.                                                                                                                                                                                                                                                                                                                                                                  |
+| 2    | refused              | Nothing was pushed, opened, merged, tagged, or set up, except by a push whose pull request's head moved during the wait. The reason says why; `Next:` says what to do.                                                                                                                                                                                                                                                                                 |
+| 3    | ask                  | `ils guard` only: the command is one the user approves before it runs. See [ils guard](#ils-guard).                                                                                                                                                                                                                                                                                                                                                    |
+| 4    | pending              | GitHub had not finished when the command stopped waiting, for example checks still running or not yet reported. Run the command that the `Next:` line names; [Time limits](#time-limits) says how long each command waits. After an `ils release`, run the same command again.                                                                                                                                                                         |
+| 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                                                                                                                                                                                                                                                 |
 
 Every outcome but done prints its reason labeled by outcome: `Refused:`, `Broke:`, `Ask:`,
 `Pending:`, or `Delivered, not green:`. The reason sits on the line above `Next:`, except for a
@@ -343,8 +460,8 @@ when the command started. Stdout and `--wait` pick the limit:
 | `ils merge`   | 14 minutes 40 seconds           | 80 seconds                        |
 | `ils release` | 14 minutes 40 seconds           | 80 seconds                        |
 
-`ils branch`, `ils status`, `ils guard`, `ils parse`, and `ils hook` run under a limit of 100
-seconds, counted the same way. They take no `--wait`.
+`ils branch`, `ils status`, `ils guard`, `ils parse`, `ils hook`, and `ils init` run under a limit
+of 100 seconds, counted the same way. They take no `--wait`.
 
 `ils merge` and `ils release` stop waiting 20 seconds before the full limit of 15 minutes or 100
 seconds. Those 20 seconds are kept for the writes that follow. When fewer than 20 seconds are left,
@@ -529,6 +646,21 @@ the repository, and also:
 When `ils release` creates the GitHub release but cannot remove the notes file it wrote, it still
 ends done. The output gives the release's URL and a line naming the file left behind.
 
+### What init refuses
+
+When `ils init` refuses, it has written nothing. It refuses:
+
+- no harness, a harness other than `claude`, a second word, or `--`;
+- any flag other than `--project`, `--json`, `-d` or `--debug`, `--no-color`, `--help`, or `-h`,
+  and a `--project=<value>`, `--json=<value>`, `-d=<value>`, `--debug=<value>`,
+  `--no-color=<value>`, `--help=<value>`, or `-h=<value>` whose value is not `true` or `false`;
+- without `--project`, a `CLAUDE_CONFIG_DIR` that is set and not an absolute path, or, when it is
+  unset or empty, a `HOME` (`USERPROFILE` on Windows) that is unset or empty;
+- with `--project`, a working directory outside the work tree of a repository;
+- a `settings.json` that is not JSON or not a JSON object, or whose `hooks`, `hooks.PreToolUse`,
+  `permissions`, `permissions.allow`, `permissions.ask`, or `permissions.deny` has the wrong type:
+  `Next:` names the file to fix.
+
 ## JSON output
 
 With `--json`, a command prints one JSON object with these fields:
@@ -621,6 +753,12 @@ origin's tags, no release commit, origin not answering) has no payload.
 | `prerelease` | boolean | Whether the version has a pre-release part.                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `tag_only`   | boolean | Whether `--tag-only` was given.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
+### Init JSON output
+
+`ils init --json` prints the [JSON object](#json-output) every command prints, with no payload.
+Its `lines` hold the lines the text output prints, and `next` is `none` once it is
+done.
+
 ## The guard
 
 The guard judges an agent's shell command before it runs: `ils hook claude` is Claude Code's
@@ -680,8 +818,8 @@ the command word is missing.
 
 ### ils hook
 
-`ils hook claude` is Claude Code's `PreToolUse` hook. It reads the hook's JSON on stdin and judges
-`tool_input.command` from `cwd`:
+`ils hook claude` is Claude Code's `PreToolUse` hook, which [ils init](#ils-init) wires in. It
+reads the hook's JSON on stdin and judges `tool_input.command` from `cwd`:
 
 - allow: exit 0, nothing printed;
 - refuse: exit 2, the reason on stderr;
@@ -705,7 +843,7 @@ word after the harness is a refusal.
 
 `skills/ils/hook.sh` fronts `ils hook claude`. It passes exit 0 and 2 through with the binary's
 output. Any other exit becomes exit 2, with a line on stderr naming the code. When `ils` is not
-on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/ils@latest`, and
+on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/ils@main`, and
 `! task install` from a clone of `ils`.
 
 ### What the guard refuses

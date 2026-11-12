@@ -46,6 +46,13 @@ type ran struct {
 func launch(t *testing.T, app cli.App, args ...string) ran {
 	t.Helper()
 
+	return launchUnder(t.Context(), t, app, args...)
+}
+
+// launchUnder is launch with app run under ctx.
+func launchUnder(ctx context.Context, t *testing.T, app cli.App, args ...string) ran {
+	t.Helper()
+
 	var stdout, stderr bytes.Buffer
 
 	if app.Stderr == nil {
@@ -59,7 +66,7 @@ func launch(t *testing.T, app cli.App, args ...string) ran {
 		app.Launch = time.Now()
 	}
 
-	code := app.Run(t.Context(), args)
+	code := app.Run(ctx, args)
 
 	return ran{stdout: stdout.String(), stderr: stderr.String(), code: code}
 }

@@ -192,8 +192,7 @@ func (r Runner) inCLocale() Runner {
 // message untranslated.
 func (r Repo) FindGitDir(ctx context.Context, options ...string) (dir string, found bool, err error) {
 	dir, err = Repo{Runner: r.Runner.inCLocale()}.GitDir(ctx, options...)
-	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && exitErr.Code == fatalCode &&
-		strings.Contains(exitErr.Stderr, notRepositoryMessage) {
+	if fatalSaying(err, func(stderr string) bool { return strings.Contains(stderr, notRepositoryMessage) }) {
 		return "", false, nil
 	}
 
@@ -204,21 +203,34 @@ func (r Repo) FindGitDir(ctx context.Context, options ...string) (dir string, fo
 	return dir, true, nil
 }
 
-// InWorkTree reports whether the runner's directory lies in the work tree of a repository, and
-// false when git says there is no repository there, or one without a work tree: a bare repository,
-// or the inside of a git directory. Any other exit of git is git's *child.ExitError; a git missing
-// from PATH is a *child.ToolMissingError.
+// TopLevel returns the top-level directory of the work tree the runner's directory lies in, and
+// found false when git says there is no repository there, or one without a work tree: a bare
+// repository, or the inside of a git directory. Any other exit of git is git's *child.ExitError; a
+// git missing from PATH is a *child.ToolMissingError.
 //
 // Git tells these apart only by its message, so the call runs in the C locale to keep that message
 // untranslated.
-func (r Repo) InWorkTree(ctx context.Context) (bool, error) {
-	_, err := r.Runner.inCLocale().Run(ctx, "rev-parse", "--show-toplevel")
-	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && exitErr.Code == fatalCode &&
-		(strings.Contains(exitErr.Stderr, notRepositoryMessage) || strings.Contains(exitErr.Stderr, noWorkTreeMessage)) {
-		return false, nil
+func (r Repo) TopLevel(ctx context.Context) (dir string, found bool, err error) {
+	dir, err = Repo{Runner: r.Runner.inCLocale()}.line(ctx, "rev-parse", "--show-toplevel")
+	if fatalSaying(err, func(stderr string) bool {
+		return strings.Contains(stderr, notRepositoryMessage) || strings.Contains(stderr, noWorkTreeMessage)
+	}) {
+		return "", false, nil
 	}
 
-	return err == nil, err
+	if err != nil {
+		return "", false, err
+	}
+
+	return filepath.FromSlash(dir), true, nil
+}
+
+// InWorkTree reports whether the runner's directory lies in the work tree of a repository: whether
+// TopLevel finds one, with TopLevel's errors.
+func (r Repo) InWorkTree(ctx context.Context) (bool, error) {
+	_, found, err := r.TopLevel(ctx)
+
+	return found, err
 }
 
 // Alias returns what the alias name expands to in the config git reads when given the global

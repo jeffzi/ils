@@ -147,7 +147,7 @@ func mergeChecks(ctx context.Context, deps Deps, req Request, ready Ready) (merg
 
 	elsewhere, err := deps.Repo.CheckedOutElsewhere(ctx, ready.Trunk)
 	if err != nil {
-		return mergeReady{}, req.unread(readWorktrees, err)
+		return mergeReady{}, req.Unread(readWorktrees, err)
 	}
 
 	m.elsewhere = elsewhere
@@ -173,7 +173,7 @@ func mergeChecks(ctx context.Context, deps Deps, req Request, ready Ready) (merg
 func localTrunk(ctx context.Context, deps Deps, req Request, trunk string) *result.Result {
 	ahead, past, err := deps.Repo.LocalTrunkAhead(ctx, trunk)
 	if err != nil {
-		return req.unread(readLocalTrunk, err)
+		return req.Unread(readLocalTrunk, err)
 	}
 
 	if !ahead {
@@ -241,7 +241,7 @@ func (m *mergeReady) pullChecks(ctx context.Context, deps Deps, req Request) *re
 
 	protection, err := deps.Forge.TrunkProtection(ctx, m.Repo, m.Trunk)
 	if err != nil {
-		return req.unread(readRules, err)
+		return req.Unread(readRules, err)
 	}
 
 	if !protection.SquashAllowed {
@@ -300,7 +300,7 @@ func (m *mergeReady) atHead(ctx context.Context, deps Deps, req Request) *result
 
 	apart, err := deps.Repo.Divergence(ctx, m.tip, head)
 	if err != nil {
-		return req.unread(readHead, err)
+		return req.Unread(readHead, err)
 	}
 
 	if stop = m.apartFromHead(req, apart); stop != nil {
@@ -369,7 +369,7 @@ func (m *mergeReady) pushed() Pushed {
 func (m *mergeReady) wait(ctx context.Context, deps Deps, req Request) *result.Result {
 	waited, err := AwaitVerdict(ctx, deps, m.pushed())
 	if err != nil {
-		return m.carrying(req.unread(waitRead(err)))
+		return m.carrying(req.Unread(waitRead(err)))
 	}
 
 	m.waited = waited
@@ -388,7 +388,7 @@ func (m *mergeReady) withoutCI(ctx context.Context, deps Deps, req Request) *res
 	case endedEarly(err):
 		return m.reported(req, m.waited.ciCutShortReport(req.ending(), interrupted(err)), nil)
 	case err != nil:
-		return m.carrying(req.unread(readCI, err))
+		return m.carrying(req.Unread(readCI, err))
 	}
 
 	if without {
@@ -446,7 +446,7 @@ func (m *mergeReady) settle(ctx context.Context, deps Deps, req Request) *result
 		return m.reported(req, m.waited.pendingReport(req.ending(), m.pull.HeadSHA, m.pull.Number),
 			[]result.Phrase{m.summary()})
 	default:
-		return m.carrying(req.unread(readMergeState, err))
+		return m.carrying(req.Unread(readMergeState, err))
 	}
 }
 
@@ -500,7 +500,7 @@ func (m *mergeReady) missingLine() result.Phrase {
 func (m *mergeReady) compose(ctx context.Context, deps Deps, req Request) *result.Result {
 	message, err := deps.Forge.Message(ctx, m.Repo, m.pull.Number)
 	if err != nil {
-		return m.carrying(req.unread(readMessage, err))
+		return m.carrying(req.Unread(readMessage, err))
 	}
 
 	if !conventionalTitle.MatchString(message.Title) {
@@ -828,7 +828,7 @@ func (m *mergeReady) originCarried(ctx context.Context, deps Deps, req Request) 
 // unreadOnResume returns the result of a read of the resume, named read, that failed with err,
 // after the lines said so far.
 func (m *mergeReady) unreadOnResume(req Request, read string, err error) *result.Result {
-	stop := req.unread(read, err)
+	stop := req.Unread(read, err)
 	stop.Lines = slices.Concat(m.lines, stop.Lines)
 
 	return m.carrying(stop)
