@@ -37,7 +37,7 @@ func TestRepo_OriginURLs_WhenURLIsSSHWithAnAlias_ReturnsTheHostSSHConnectsTo(t *
 	assert.NilError(t, err, "OriginURLs() of %q", url)
 
 	named := ilsOrigin()
-	want := git.OriginURLs{Fetch: named, Push: named, FetchURL: url, PushURL: url}
+	want := git.OriginURLs{Fetch: named, FetchURL: url, Push: []git.PushURL{{Origin: named, URL: url}}}
 	assert.Check(t, is.DeepEqual(got, want), "OriginURLs() of %q", url)
 }
 

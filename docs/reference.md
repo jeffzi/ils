@@ -608,8 +608,8 @@ this list, which `ils push` finds after the push. It refuses:
 - a branch whose pull request already merged into the default branch, or is open against another
   base;
 - a repository with no remote named `origin`, or an `origin` that cannot be reached;
-- an `origin` whose fetch and push URLs do not name one repository (they differ, or one is not an
-  `https://`, `ssh://git@`, or `git@host:` repository URL);
+- an `origin` whose fetch URL and every push URL do not all name one repository (one differs, or
+  one is not an `https://`, `ssh://git@`, or `git@host:` repository URL);
 - a missing `git` or `gh`;
 - a `git` older than 2.34.1, or one whose version `ils` cannot read;
 - a `gh` older than 2.73.0, or one whose version `ils` cannot read;

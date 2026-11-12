@@ -476,8 +476,9 @@ func originRepo(ctx context.Context, deps Deps, req Request) (forge.Repo, *resul
 }
 
 // readOriginRepo reads origin's URLs and returns them with the repository they name, and whether
-// they name one: both URLs the same GitHub repository. A URL git's answer cannot be parsed into
-// names none rather than failing the read; err is a read of readURLs that failed.
+// they name one: the fetch URL and every push URL the same GitHub repository. A URL git's answer
+// cannot be parsed into names none rather than failing the read; err is a read of readURLs that
+// failed.
 func readOriginRepo(ctx context.Context, deps Deps) (urls git.OriginURLs, repo forge.Repo, oneRepo bool, err error) {
 	urls, err = deps.Repo.OriginURLs(ctx)
 	if _, unparsed := errors.AsType[*git.OriginError](err); unparsed {
@@ -488,19 +489,35 @@ func readOriginRepo(ctx context.Context, deps Deps) (urls git.OriginURLs, repo f
 		return urls, forge.Repo{}, false, err
 	}
 
-	if !urls.Fetch.Same(urls.Push) {
+	if _, stray := strayPushURL(urls); stray {
 		return urls, forge.Repo{}, false, nil
 	}
 
 	return urls, forge.Repo{Host: urls.Fetch.Host, Owner: urls.Fetch.Owner, Name: urls.Fetch.Name}, true, nil
 }
 
-// twoRepositories refuses origin's URLs urls, which do not name one GitHub repository.
+// strayPushURL returns the first push URL of urls that does not name the GitHub repository its
+// fetch URL names, and whether there is one. A URL that did not parse names no repository, so
+// every push URL is stray when the fetch URL did not parse.
+func strayPushURL(urls git.OriginURLs) (string, bool) {
+	for _, push := range urls.Push {
+		if urls.Fetch == (git.Origin{}) || !urls.Fetch.Same(push.Origin) {
+			return push.URL, true
+		}
+	}
+
+	return "", false
+}
+
+// twoRepositories refuses origin's URLs urls, which do not name one GitHub repository, naming the
+// fetch URL and the first push URL that does not name its repository.
 func (r Request) twoRepositories(urls git.OriginURLs) *result.Result {
+	stray, _ := strayPushURL(urls)
+
 	return r.Refused(
 		result.Say("origin's fetch URL %s and push URL %s do not name one GitHub repository",
-			result.URL(urls.FetchURL), result.URL(urls.PushURL)),
-		result.NextStep("point both of origin's URLs at one GitHub repository with `git remote set-url`, by hand"))
+			result.URL(urls.FetchURL), result.URL(stray)),
+		result.NextStep("point every one of origin's URLs at one GitHub repository with `git remote set-url`, by hand"))
 }
 
 // identity returns origin with the forge's fork, can-push and squash-allowed flags, once the

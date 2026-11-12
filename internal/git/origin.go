@@ -209,15 +209,22 @@ const (
 	absentCode = 2
 )
 
-// OriginURLs holds origin's fetch and push URLs, raw and parsed.
+// OriginURLs holds origin's fetch URL and every push URL, raw and parsed.
 type OriginURLs struct {
 	Fetch    Origin
-	Push     Origin
 	FetchURL string
-	PushURL  string
+	// Push lists the push URLs in the order git pushes to them: the fetch URL alone when origin has
+	// no push URL of its own. It is never empty.
+	Push []PushURL
 }
 
-// OriginURLs returns origin's fetch and push URLs, raw and parsed.
+// PushURL is one push URL of origin, raw and parsed.
+type PushURL struct {
+	Origin Origin
+	URL    string
+}
+
+// OriginURLs returns origin's fetch URL and every push URL, raw and parsed.
 //
 // The host of a URL that reaches origin over ssh is the host the ssh command git connects with
 // reaches for it, read as sshHostname reads it: a Host alias of an ssh config reads as the HostName
@@ -228,29 +235,43 @@ type OriginURLs struct {
 // *SSHCommandMissingError; a command line of variant plain is not checked, and plain ssh reads its
 // host. A plain ssh missing from PATH is a *child.ToolMissingError; an ssh that exits non-zero is a
 // *child.ExitError. A URL that does not parse, or an ssh URL whose host starts with a dash, which
-// git refuses to connect to, is an *OriginError, and both raw URLs are still returned.
+// git refuses to connect to, is an *OriginError, and every raw URL is still returned.
 //
-// When the fetch and push URLs are the same, the URL is read once, so its failure is returned once;
-// when they differ, the error holds the failure of each side that failed.
+// A URL listed more than once, such as a fetch URL that is also the push URL, is read once, so its
+// failure is returned once; the error holds the failure of each URL that failed.
 func (r Repo) OriginURLs(ctx context.Context) (OriginURLs, error) {
 	fetchURL, err := r.line(ctx, "remote", "get-url", OriginRemote)
 	if err != nil {
 		return OriginURLs{}, err
 	}
 
-	pushURL, err := r.line(ctx, "remote", "get-url", "--push", OriginRemote)
+	pushURLs, err := r.line(ctx, "remote", "get-url", "--push", "--all", OriginRemote)
 	if err != nil {
 		return OriginURLs{}, err
 	}
 
-	fetch, fetchErr := r.parseOrigin(ctx, fetchURL)
-	if pushURL == fetchURL {
-		return OriginURLs{Fetch: fetch, Push: fetch, FetchURL: fetchURL, PushURL: pushURL}, fetchErr
+	parsed := map[string]Origin{}
+
+	var errs []error
+
+	parse := func(raw string) Origin {
+		if origin, seen := parsed[raw]; seen {
+			return origin
+		}
+
+		origin, parseErr := r.parseOrigin(ctx, raw)
+		parsed[raw] = origin
+		errs = append(errs, parseErr)
+
+		return origin
 	}
 
-	push, pushErr := r.parseOrigin(ctx, pushURL)
+	urls := OriginURLs{Fetch: parse(fetchURL), FetchURL: fetchURL}
+	for raw := range strings.SplitSeq(pushURLs, "\n") {
+		urls.Push = append(urls.Push, PushURL{Origin: parse(raw), URL: raw})
+	}
 
-	return OriginURLs{Fetch: fetch, Push: push, FetchURL: fetchURL, PushURL: pushURL}, errors.Join(fetchErr, pushErr)
+	return urls, errors.Join(errs...)
 }
 
 // parseOrigin parses raw as ParseOrigin does, then replaces the host of an ssh URL with the host
@@ -567,9 +588,13 @@ func (r Repo) FastForwardTrunk(ctx context.Context, trunk string) error {
 // runs is never pushed in its place. It names origin's branch by its full ref, so a tag of the same
 // name is never updated in its place. It never forces.
 //
-// A git that exits non-zero is classed by the status it reports for the ref:
-//   - a ref git or origin refused is a *PushError naming git's reason;
-//   - a ref reported updated counts as pushed, though origin hung up afterwards;
+// Git pushes to each push URL of origin in turn and reports on each in a block of its own. A git
+// that exits non-zero is classed by the status those blocks report for the ref:
+//   - a ref git or origin refused, in any block, is a *PushError naming git's reason;
+//   - a ref reported updated in a lone block counts as pushed, though origin hung up afterwards;
+//   - a ref reported updated in several blocks did not reach a push URL git failed on after them:
+//     an ErrRemote failure when git died of a fatal error, and a *PushError with no reason
+//     otherwise;
 //   - a ref with no status, because origin never answered or hung up before its report, is an
 //     ErrRefused failure when origin turned the caller away, and an ErrRemote failure otherwise;
 //   - a ref with no status from a git that refused the push itself, such as for a pre-push hook
@@ -617,24 +642,20 @@ func (r Repo) push(ctx context.Context, source, ref string, flags ...string) err
 		return err
 	}
 
-	hook, status, reported := splitPushReport(result.Stdout, spec)
+	hook, report, _ := splitPushReport(result.Stdout, spec)
 
 	switch {
+	case report.status.flag == pushRejected:
+		return &PushError{Ref: ref, Reason: report.status.summary, Stdout: hook, Stderr: exitErr.Stderr, Err: err}
+	case report.blocks == 1:
+		return nil
 	// A push dies with fatalCode when it cannot reach origin, origin hangs up or origin turns the
 	// caller away; one git refuses before it talks to origin, such as for a pre-push hook that
 	// failed, exits 1.
-	case !reported && exitErr.Code == fatalCode:
+	case exitErr.Code == fatalCode:
 		return remoteFailure(err)
-	case !reported || status.flag == pushRejected:
-		return &PushError{
-			Ref:    ref,
-			Reason: status.summary,
-			Stdout: hook,
-			Stderr: exitErr.Stderr,
-			Err:    err,
-		}
 	default:
-		return nil
+		return &PushError{Ref: ref, Stdout: hook, Stderr: exitErr.Stderr, Err: err}
 	}
 }
 
@@ -647,68 +668,90 @@ type refStatus struct {
 	summary string
 }
 
+// pushReport is what the report of `git push --porcelain` says of one ref.
+type pushReport struct {
+	// status is the first status that refuses the ref, or else that of the first block.
+	status refStatus
+	// blocks counts the blocks of the report that give the ref a status.
+	blocks int
+}
+
 // reportLead starts the line of `git push --porcelain` that opens its report, naming the remote.
 const reportLead = "To "
 
-// reportEnd is the last line of the report of `git push --porcelain`, which git leaves out when
-// origin hung up after the report.
-const reportEnd = "Done"
-
 // splitPushReport splits the stdout of `git push --porcelain` for spec, the `<source>:<destination>`
-// pair of refs pushed, into what precedes the report git writes at its end once origin answered and
-// the status that report gives spec. The report is a `To <url>` line, then one status line (the
-// flag, the refs and the summary, separated by tabs) for each ref the push sent (spec, and any tag
-// that `push.followTags` adds), then `Done`, which git leaves out when origin hung up after its
-// report. The order of the status lines is not relied on: spec is looked up in every line after the
-// `To` line.
+// pair of refs pushed, into what precedes the report git writes once origin answered and what that
+// report says of spec, and reports whether any block of it gives spec a status.
 //
-// A pre-push hook runs before git talks to origin, so what precedes the report is the hook's; a
-// push git refused before it reached origin has no report, so all of its stdout is the hook's and
-// reported is false. The hook shares git's stdout, so when its output does not end in a newline,
-// the `To` line starts on the hook's last line, which is split there.
+// Git pushes to each push URL of origin in turn, and writes a block of the report for each one that
+// answered: a `To <url>` line, then one status line (the flag, the refs and the summary, separated
+// by tabs) for each ref the push sent (spec, and any tag that `push.followTags` adds), in no order
+// relied on here. A block's status line of spec counts once.
 //
-// The report starts at the last `To` that a status line of spec follows: a hook line shaped like a
-// line of the report, even the status line of spec itself, stays in hook and never decides the
-// status when no `To` precedes it, and a later line that only holds `To` does not hide the report.
-// Stdout alone cannot tell a block that a refusing hook printed last, a `To` line followed by the
-// status line of spec, from git's own report, so that one is read as git's.
-func splitPushReport(stdout, spec string) (hook string, status refStatus, reported bool) {
+// A pre-push hook runs before git talks to each push URL, so what precedes the first block is the
+// hook's; a push git refused before it reached origin has no report, so all of its stdout is the
+// hook's and reported is false. The hook shares git's stdout, so when its output does not end in a
+// newline, the `To` line starts on the hook's last line, which is split there.
+//
+// A block starts at a `To` that a status line of spec follows before the next `To`: a hook line
+// shaped like a line of the report, even the status line of spec itself, stays in hook and never
+// decides the status when no `To` precedes it, and a line that only holds `To` starts no block.
+// Stdout alone cannot tell a block that a hook printed, a `To` line followed by the status line of
+// spec, from git's own, so that one is read as git's.
+func splitPushReport(stdout, spec string) (hook string, report pushReport, reported bool) {
 	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
-	if lines[len(lines)-1] == reportEnd {
-		lines = lines[:len(lines)-1]
-	}
+	hook = stdout
+	// lead is the index of the line that opened the block being read, or -1 outside a block.
+	lead, leadStart := -1, 0
 
-	for leadAt, lead := range slices.Backward(lines) {
-		// A URL holding `To ` must not split a line git started itself.
-		hookEnd := 0
-		if !strings.HasPrefix(lead, reportLead) {
-			hookEnd = strings.LastIndex(lead, reportLead)
-		}
+	for at, line := range lines {
+		found, refs, isStatus := parseStatus(line)
+		// A `To` line git wrote stays one whatever tabs its URL holds.
+		if start := reportStart(line); start == 0 || start > 0 && !isStatus {
+			lead, leadStart = at, start
 
-		if hookEnd < 0 {
 			continue
 		}
 
-		for _, line := range lines[leadAt+1:] {
-			if status, reported = statusFor(line, spec); reported {
-				hook = strings.Join(append(lines[:leadAt:leadAt], lead[:hookEnd]), "\n")
-				return hook, status, true
-			}
+		if !isStatus || lead < 0 || refs != spec {
+			continue
 		}
+
+		if report.blocks == 0 {
+			hook = strings.Join(append(lines[:lead:lead], lines[lead][:leadStart]), "\n")
+		}
+
+		if report.blocks == 0 || found.flag == pushRejected && report.status.flag != pushRejected {
+			report.status = found
+		}
+
+		report.blocks++
+		lead = -1
 	}
 
-	return stdout, refStatus{}, false
+	return hook, report, report.blocks > 0
 }
 
-// statusFor returns the status that line reports for spec, and whether line is the status line
-// `git push --porcelain` gives spec: the flag, spec and the summary, separated by tabs.
-func statusFor(line, spec string) (refStatus, bool) {
-	fields := strings.Split(line, "\t")
-	if len(fields) != 3 || fields[0] == "" || fields[1] != spec {
-		return refStatus{}, false
+// reportStart returns where line starts a `To` line of the report, or -1 when it starts none. A
+// line git started itself starts there, whatever `To ` its URL holds; any other line starts at its
+// last `To `, which a hook's output with no final newline runs into.
+func reportStart(line string) int {
+	if strings.HasPrefix(line, reportLead) {
+		return 0
 	}
 
-	return refStatus{flag: fields[0], summary: fields[2]}, true
+	return strings.LastIndex(line, reportLead)
+}
+
+// parseStatus returns the status and the refs that line reports, and whether line is shaped as a
+// status line of `git push --porcelain`: the flag, the refs and the summary, separated by tabs.
+func parseStatus(line string) (status refStatus, refs string, ok bool) {
+	fields := strings.Split(line, "\t")
+	if len(fields) != 3 || fields[0] == "" {
+		return refStatus{}, "", false
+	}
+
+	return refStatus{flag: fields[0], summary: fields[2]}, fields[1], true
 }
 
 // remote runs a git call that talks to origin, whose failure is classed as remoteFailure classes it.
