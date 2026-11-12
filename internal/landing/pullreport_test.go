@@ -182,3 +182,81 @@ func TestStatus_WhenTheOnlyPullRequestWasMergedIntoAnotherBase_EndsOnTheStepOfMe
 	assert.Check(t, is.Equal(nextOf(t, got.text), nextOf(t, refused)))
 	assert.Check(t, is.Equal(got.next, decoded.Next))
 }
+
+// staleRow is one way the open pull request's head is a commit other than the branch's tip.
+type staleRow struct {
+	name string
+	// listedBehind is whether the listing of the branch's pull requests names the other commit as
+	// the head while the read of the head shows the tip, rather than the read of the head naming it.
+	listedBehind bool
+}
+
+func TestStatus_WhenThePullRequestsHeadIsNotTheTip_ReportsNoVerdictAndNoMerge(t *testing.T) {
+	t.Parallel()
+
+	tests := []staleRow{
+		{name: "GitHub lags a push", listedBehind: true},
+		{name: "the head moves during the read", listedBehind: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var other, tip string
+
+			build := greenOpen().with(func(script *forgetest.Script, _ string) {
+				shown := other
+				if tt.listedBehind {
+					shown = tip
+					script.FindChanges[0].Value[0].HeadSHA = other
+				}
+
+				script.Head = shows(forge.Head{SHA: shown, MergeState: forge.MergeClean})
+			})
+			s := statusScene(t, func(f *gittest.Fixture) {
+				f.Publish(topic)
+				other = f.Git("rev-parse", trunk)
+				tip = f.Git("rev-parse", topic)
+			}, build)
+
+			got := seeStatus(t, s, (*testing.T).Context)
+
+			assert.Assert(t, got.status.PullRequest != nil)
+			assert.Check(t, is.Equal(got.status.PullRequest.Verdict, forge.VerdictNone))
+			assert.Check(t, !strings.Contains(got.text, "ils merge"), "text %q, want no merge step", got.text)
+			assertSays(t, "Next:"+nextOf(t, got.text), nextPush())
+		})
+	}
+}
+
+func TestStatus_WhenOnlyACheckNotRequiredReported_NamesTheRequiredOneThatNeverReported(t *testing.T) {
+	t.Parallel()
+	aside := forge.Verdict{
+		Checks:          []forge.Check{forgetest.Check("docs", forge.BucketPass)},
+		MissingRequired: []string{"audit"}, Runs: ran(forge.RunCompleted),
+	}
+	build := viewing(inState(forge.MergeBlockedByMissingCheck), aside, standing()).requiring("audit")
+	s := statusScene(t, publishTopic, build)
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	assertSays(t, got.text, expect("never reported", "audit"))
+	assert.Check(t, !strings.Contains(got.text, "No check or status reported"),
+		"text %q, want no claim that nothing reported", got.text)
+}
+
+func TestStatus_WhenARequiredCheckNeverReportedBesideOneThatPassed_NamesItBesideTheTally(t *testing.T) {
+	t.Parallel()
+	never := forge.Verdict{
+		Checks:          []forge.Check{forgetest.RequiredCheck("lint", forge.BucketPass)},
+		MissingRequired: []string{"audit"}, Runs: ran(forge.RunCompleted),
+	}
+	build := viewing(inState(forge.MergeBlockedByMissingCheck), never, standing()).requiring("lint", "audit")
+	s := statusScene(t, publishTopic, build)
+	head := s.fixture.Git("rev-parse", "HEAD")
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	assertSays(t, got.text, expect("never reported", "audit"))
+	assertSays(t, got.text, expect(shortSHA(head), "1 passed"))
+}

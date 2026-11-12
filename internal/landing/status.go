@@ -684,9 +684,10 @@ func (r *reading) next() result.Next {
 	return r.pullNext()
 }
 
-// pullNext is the step the open pull request decides: its checks still running, red, the pull
-// request apart from the trunk, then the merge, once a review is in when it waits on one. Any
-// other state is left to `ils push`, which reports it.
+// pullNext is the step the open pull request decides: a head other than the branch's tip, or its
+// checks still running, both left to `ils push`; then red, the pull request apart from the trunk,
+// then the merge, once a review is in when it waits on one. Any other state is left to `ils push`,
+// which reports it.
 func (r *reading) pullNext() result.Next {
 	w := r.waited
 	state := w.MergeState

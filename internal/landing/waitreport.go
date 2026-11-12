@@ -117,9 +117,7 @@ func (w Waited) stopReport(end ending, sha, trunk string, number int) (waitRepor
 		return w.apartReport(end, sha, trunk, result.Say("the pull request is behind the trunk")), true
 	case WaitNeverReported:
 		return waitReport{
-			lines: append([]result.Phrase{
-				result.Say("Required and never reported: %s", strings.Join(w.Verdict.MissingRequired, ", ")),
-			}, w.mergeStateLines()...),
+			lines:  append([]result.Phrase{w.neverReportedLine()}, w.mergeStateLines()...),
 			reason: result.Say("a required check never reported"),
 			next:   result.NextStep("report that a required check never reported, and stop"),
 		}, true
@@ -132,6 +130,10 @@ func (w Waited) stopReport(end ending, sha, trunk string, number int) (waitRepor
 	default:
 		return w.pendingReport(end, sha, number), true
 	}
+}
+
+func (w Waited) neverReportedLine() result.Phrase {
+	return result.Say("Required and never reported: %s", strings.Join(w.Verdict.MissingRequired, ", "))
 }
 
 // redReport is a deciding check that failed or was canceled, with the end of its log as the
