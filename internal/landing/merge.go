@@ -646,8 +646,9 @@ func (m *mergeReady) merge(ctx context.Context, deps Deps, req Request) *result.
 }
 
 // deleteOnOrigin deletes the branch on origin. A delete that fails while origin no longer lists
-// the branch counts as done, since GitHub can delete a merged branch on its own. A delete an
-// interrupt cut short is broke without asking origin, since it may or may not have gone through.
+// the branch counts as done, since GitHub can delete a merged branch on its own. A delete the time
+// limit or an interrupt cut short is broke without asking origin, since it may or may not have gone
+// through.
 // When origin cannot be asked whether it still lists the branch, the result says why instead of
 // where the branch stands, naming the interrupt when one ended the question. On a resume, which
 // merged nothing, the delete is the first write: an interrupt before it ends the run pending, with
@@ -668,8 +669,8 @@ func (m *mergeReady) deleteOnOrigin(ctx context.Context, deps Deps, req Request)
 		return nil
 	}
 
-	if interrupted(err) {
-		line, reason := req.cutShortWriting(true,
+	if endedEarly(err) {
+		line, reason := req.cutShortWriting(interrupted(err),
 			result.Concat("the delete of the branch ", result.Branch(m.branch), " on origin"),
 			result.Concat("while deleting the branch on origin"), endsGoneThrough)
 

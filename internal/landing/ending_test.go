@@ -753,9 +753,14 @@ func writeStops() []landingRow {
 	interrupted := row("an interrupt ends the delete", toLand(nil, byInterrupt().of("gh")), result.Broke,
 		mergedLine()+expect("delete", topic, "interrupted", "may or may not have gone through", "interrupted",
 			"deleting the branch")+mergeCommand().again)
-	interrupted.set.runCtx = interruptOnStart(deletingStep())
+	interrupted.set.runCtx = byInterrupt().endOnStart(deletingStep())
+	limit := byTimeLimit()
+	ranOut := row("the time limit ends the delete", toLand(nil, limit.of("gh")), result.Broke,
+		mergedLine()+expect("delete", topic, limit.before, "may or may not have gone through", limit.before,
+			"deleting the branch")+mergeCommand().again)
+	ranOut.set.runCtx = limit.endOnStart(deletingStep())
 
-	return slices.Concat([]landingRow{refused}, cutRows, []landingRow{gone, listed, unasked, interrupted})
+	return slices.Concat([]landingRow{refused}, cutRows, []landingRow{gone, listed, unasked, interrupted, ranOut})
 }
 
 // stepHook is a progress hook that tells next everything it is told, and calls fire once the run
@@ -777,16 +782,16 @@ func (h stepHook) Started(label result.Phrase) {
 	}
 }
 
-// interruptOnStart returns the context of a run that an interrupt cancels once the run starts the
-// step whose start reads step as the watch tells it.
-func interruptOnStart(step string) func(t *testing.T, s *scene) context.Context {
+// endOnStart returns the context of a run that c ends once the run starts the step whose start
+// reads step as the watch tells it.
+func (c cut) endOnStart(step string) func(t *testing.T, s *scene) context.Context {
 	return func(t *testing.T, s *scene) context.Context {
 		t.Helper()
 
 		done := make(chan struct{})
 		s.deps.Progress = stepHook{Progress: s.deps.Progress, t: t, step: step, fire: sync.OnceFunc(func() { close(done) })}
 
-		return byInterrupt().once(t.Context(), done)
+		return c.once(t.Context(), done)
 	}
 }
 
@@ -796,7 +801,7 @@ func interruptedWrites() []landingRow {
 	return []landingRow{
 		{
 			name: "the merge", outcome: result.Pending, kept: true,
-			set: setting{script: toLand(nil, nil), runCtx: interruptOnStart(mergingStep())},
+			set: setting{script: toLand(nil, nil), runCtx: byInterrupt().endOnStart(mergingStep())},
 			text: countLine() + expect("interrupted before the merge", "interrupted before the merge") +
 				nextPush(),
 			payload: sent(landedBody, false, ""),
@@ -867,6 +872,52 @@ func TestMerge_WhenAWriteOnGitHubFails_SaysWhatWentThrough(t *testing.T) {
 	t.Parallel()
 
 	runLandings(t, writeStops())
+}
+
+func TestMerge_WhenTheDeleteOnOriginFails_AsksOriginForTheBranchUnlessCutShort(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		ending func(t *testing.T, s *scene) context.Context
+		remove error
+		name   string
+		asks   bool
+	}{
+		{name: "the delete fails", remove: errors.New(forgeFailure), asks: true},
+		{name: "an interrupt ends the delete", remove: byInterrupt().of("gh"), ending: byInterrupt().endOnStart(deletingStep())},
+		{name: "the time limit ends the delete", remove: byTimeLimit().of("gh"), ending: byTimeLimit().endOnStart(deletingStep())},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				var (
+					s      *scene
+					atLand int
+				)
+
+				run := runMergeOn(t, setting{
+					script: toLand(nil, tt.remove),
+					runCtx: func(t *testing.T, sc *scene) context.Context {
+						t.Helper()
+
+						s = sc
+						if tt.ending == nil {
+							return t.Context()
+						}
+
+						return tt.ending(t, sc)
+					},
+					landed: func(*testing.T, *gittest.Fixture) { atLand = len(s.recorder.Calls()) },
+				})
+
+				asked := slices.ContainsFunc(run.recorder.Calls()[atLand:], func(argv []string) bool {
+					return slices.Contains(argv, "ls-remote")
+				})
+				assert.Check(t, is.Equal(asked, tt.asks), "git ls-remote after the merge")
+			})
+		})
+	}
 }
 
 // landAndPublish lands the topic branch as pull request 7 and publishes it.
