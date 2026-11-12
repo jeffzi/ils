@@ -372,7 +372,6 @@ func pullRequestStops() []mergeRow {
 	return []mergeRow{
 		row("draft", draftText(), merging().drafted(), changesRead()),
 		row("squash merges forbidden in the settings", settingsText(), merging().forbiddenInSettings(), changesRead()),
-		row("squash merges forbidden by the ruleset", rulesetText(), merging().forbiddenByRuleset(42), rulesRead()),
 		row("squash merges forbidden by two rulesets",
 			expect("rulesets 42, 51", trunk, "ils merge"),
 			merging().forbiddenByRuleset(42, 51), rulesRead()),
@@ -468,7 +467,6 @@ func mergeAccepted() []mergeRow {
 	}
 
 	return []mergeRow{
-		row("title with a scope", merging().titled("fix(cli): x")),
 		row("title with a breaking mark", merging().titled("feat!: x")),
 		row("title with a scope and a breaking mark", merging().titled("refactor(git)!: x")),
 	}

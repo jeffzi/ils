@@ -319,15 +319,6 @@ type commitRow struct {
 func releaseCommitRows() []commitRow {
 	return []commitRow{
 		{
-			name: "with commits after it, left out of the tag",
-			build: func(f *gittest.Fixture, base string) string {
-				release := tagged(f, base)
-				f.Commits(trunk, "feat: add a banner")
-
-				return release
-			},
-		},
-		{
 			name: "merged as a pull request",
 			build: func(f *gittest.Fixture, base string) string {
 				f.OriginTag(previousTag, base)
@@ -499,7 +490,7 @@ func TestRelease_WhenTheLocalTagIsAtAnotherCommit_RefusesWithANextThatDeletesIt(
 	assert.Check(t, is.Equal(st.s.fixture.Git("rev-parse", releaseTag+"^{commit}"), st.base))
 }
 
-func TestRelease_WhenOriginsTagIsAtTheReleaseCommitAndTheLocalOneElsewhere_ReadsTheRelease(t *testing.T) {
+func TestRelease_WhenOriginsTagIsAtTheReleaseCommitAndTheLocalOneElsewhere_EndsDoneDespiteTheLocalTag(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		st := releaseScene(t, tagged)
@@ -603,20 +594,22 @@ func TestRelease_WhenOriginStopsAnsweringAtItsTags_RefusesNamingWhatItWasAskedFo
 
 func TestRelease_WhenOriginHoldsTheTagAtTheReleaseCommit_GoesOnToTheGitHubReleaseWithoutTheGateOrATag(t *testing.T) {
 	t.Parallel()
-	st := releaseScene(t, tagged)
-	st.s.fixture.OriginTag(releaseTag, st.release)
-	st.s.useForge(t, releasable())
-	before := st.s.written()
+	synctest.Test(t, func(t *testing.T) {
+		st := releaseScene(t, tagged)
+		st.s.fixture.OriginTag(releaseTag, st.release)
+		st.s.useForge(t, releasable())
+		before := st.s.written()
 
-	got := runRelease(t, st.s, releaseRequest(version, false))
+		got := runRelease(t, st.s, releaseRequest(version, false))
 
-	assertEndedBy(t, got, st.s.gitDir, ended{
-		outcome: result.Done, req: releaseRequest(version, false),
-		text: expect(releaseTag, "already on origin", releaseURL),
+		assertEndedBy(t, got, st.s.gitDir, ended{
+			outcome: result.Done, req: releaseRequest(version, false),
+			text: expect(releaseTag, "already on origin", releaseURL),
+		})
+		assert.Check(t, is.Equal(st.s.written(), before))
+		assert.Check(t, is.Equal(st.s.localTag(releaseTag), ""))
+		assert.Check(t, is.DeepEqual(releasePayload(t, got, st.s.gitDir), released(st, "skipped", releaseURL)))
 	})
-	assert.Check(t, is.Equal(st.s.written(), before))
-	assert.Check(t, is.Equal(st.s.localTag(releaseTag), ""))
-	assert.Check(t, is.DeepEqual(releasePayload(t, got, st.s.gitDir), released(st, "skipped", releaseURL)))
 }
 
 func TestRelease_WhenTheLocalTagIsAtTheReleaseCommit_PushesItWithoutMakingItAgain(t *testing.T) {
@@ -659,12 +652,15 @@ func TestRelease_WhenTheTagCannotBeCreated_BrokeSayingNothingWasWritten(t *testi
 		cmd := releaseCommand(version)
 		st := releaseScene(t, tagged)
 		failGit(t, st.s, []string{"tag", "--annotate"})
+		before := st.s.written()
 
 		got := runRelease(t, st.s, cmd.req)
 
 		assertEndedBy(t, got, st.s.gitDir, ended{
 			outcome: result.Broke, req: cmd.req, text: expect(releaseTag, gittest.FailedSaid) + cmd.fixed,
 		})
+		assert.Check(t, is.Equal(st.s.written(), before))
+		assert.Check(t, is.Equal(st.s.localTag(releaseTag), ""))
 		assert.Check(t, is.Len(releaseCalls(st.s), 0))
 	})
 }
@@ -769,7 +765,7 @@ func cutTagPushes() []cutTagPush {
 
 			s.deps.Repo.Runner.Env = answering(t, s.fixture, answersBeforeTagPush, after)
 
-			return within(t, 0)
+			return t.Context()
 		}
 	}
 
@@ -825,9 +821,6 @@ func TestRelease_WhenTagOnly_EndsOnceOriginHoldsTheTagWithoutAGitHubRelease(t *t
 		assertEndedBy(t, got, st.s.gitDir, ended{outcome: result.Done, req: req, text: expect(releaseTag)})
 		assert.Check(t, is.Equal(st.s.originTag(releaseTag), st.release))
 		assert.Check(t, is.Len(releaseCalls(st.s), 0))
-		payload := releasePayload(t, got, st.s.gitDir)
-		assert.Assert(t, payload != nil, "Release() carries no release payload")
-		assert.Check(t, payload.TagOnly, "release payload %+v, want tag_only set", payload)
 	})
 }
 

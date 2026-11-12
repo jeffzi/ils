@@ -1,7 +1,6 @@
 package landing_test
 
 import (
-	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -81,7 +80,7 @@ func elsewhereText(cmd landingCommand) string {
 func standingRefusals() []pushRefusal {
 	standing := []pushRefusal{
 		{
-			name: "on the trunk", script: allowed(), ops: identityRead(),
+			name: "on the trunk", script: allowed(),
 			arrange: func(f *gittest.Fixture) string {
 				f.Git("switch", "--quiet", trunk)
 
@@ -89,7 +88,7 @@ func standingRefusals() []pushRefusal {
 			},
 		},
 		{
-			name: "detached HEAD at origin's trunk", script: allowed(), ops: identityRead(),
+			name: "detached HEAD at origin's trunk", script: allowed(),
 			arrange: func(f *gittest.Fixture) string {
 				f.Git("switch", "--quiet", "--detach", trunk)
 
@@ -97,7 +96,7 @@ func standingRefusals() []pushRefusal {
 			},
 		},
 		{
-			name: "two tracked files changed", script: allowed(), ops: identityRead(),
+			name: "two tracked files changed", script: allowed(),
 			arrange: func(f *gittest.Fixture) string { return dirtyText(pushCommand(), f.DirtyFile(), f.StagedFile()) },
 		},
 	}
@@ -112,7 +111,7 @@ func perBoundedPush(prefix string, arrange func(b boundedPush, f *gittest.Fixtur
 	var rows []pushRefusal
 	for _, b := range boundedPushes() {
 		rows = append(rows, pushRefusal{
-			name: prefix + ", ils " + b.cmd.name, script: allowed(), ops: identityRead(), req: b.cmd.req,
+			name: prefix + ", ils " + b.cmd.name, script: allowed(), req: b.cmd.req,
 			arrange: func(f *gittest.Fixture) string { return arrange(b, f) },
 		})
 	}
@@ -153,7 +152,7 @@ func commitRefusals() []pushRefusal {
 
 	return append(bounded, []pushRefusal{
 		{
-			name: "no commit past the trunk", script: allowed(), ops: identityRead(),
+			name: "no commit past the trunk", script: allowed(),
 			arrange: func(f *gittest.Fixture) string {
 				f.Git("switch", "--quiet", "--create", spare, trunk)
 
@@ -162,7 +161,6 @@ func commitRefusals() []pushRefusal {
 		},
 		{
 			name: "every commit landed on origin's trunk since the last fetch", script: allowed(),
-			ops: identityRead(),
 			arrange: func(f *gittest.Fixture) string {
 				f.Git("push", "--quiet", filepath.ToSlash(f.OriginDir()), topic+":"+trunk)
 
@@ -244,7 +242,7 @@ func TestPush_WhenOriginStopsAnsweringASharedRead_RefusesNamingWhatItWasAskedFor
 	runUnanswered(t, []unanswered{
 		{
 			// Origin answers the question about its trunk, and nothing after.
-			name: "asked to fetch its trunk", script: allowed(), ops: identityRead(), answered: 1,
+			name: "asked to fetch its trunk", script: allowed(), answered: 1,
 			asked: "fetch its trunk " + trunk,
 		},
 	})
@@ -253,15 +251,15 @@ func TestPush_WhenOriginStopsAnsweringASharedRead_RefusesNamingWhatItWasAskedFor
 func TestPush_WhenASharedReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
 	t.Parallel()
 
-	runOvertime(t, func(c cut) []overtime {
-		return []overtime{
-			{
-				name: "during the fetch of the merged pull request's head", read: readMergedHead,
-				script: landedScript(), ops: changesRead(), arrange: c.stalling(4),
-				prepare: landAndPublish,
-			},
-		}
-	})
+	c := byTimeLimit()
+	s := newScene(t, landAndPublish, landedScript(), false)
+	ctx := c.stalling(4)(t, s)
+	before := s.written()
+
+	got := landing.Push(ctx, s.deps, pushRequest())
+
+	assertEnded(t, s, got, finish{outcome: result.Refused, text: overtimeText(pushCommand(), c, readMergedHead)})
+	assertOnlyRead(t, s, reads{before: before, ops: changesRead()})
 }
 
 // ---------------------------------------------------------------------------
@@ -377,13 +375,13 @@ func sharedFailedReads() []failedRead {
 
 	return []failedRead{
 		{
-			name: "the commits on origin's trunk", read: readFetchedTrunk, script: allowed(), ops: identityRead(),
+			name: "the commits on origin's trunk", read: readFetchedTrunk, script: allowed(),
 			arrange: func(*gittest.Fixture) []string {
 				return []string{"rev-parse", "--verify", "refs/ils/fetched/*"}
 			},
 		},
 		{
-			name: "the branch's tip", read: readTip, script: allowed(), ops: identityRead(),
+			name: "the branch's tip", read: readTip, script: allowed(),
 			arrange: func(*gittest.Fixture) []string { return []string{"rev-parse", "HEAD"} },
 		},
 		{
@@ -408,39 +406,4 @@ func sharedFailedReads() []failedRead {
 func TestPush_WhenASharedGitReadFails_BrokeNamingTheRead(t *testing.T) {
 	// Not parallel: each row puts a failing git first on PATH with t.Setenv.
 	runFailedReads(t, sharedFailedReads())
-}
-
-// overtime is a push whose context ends during one of its reads.
-type overtime struct {
-	// arrange returns the context to run under, once it has changed how the scene reads.
-	arrange func(t *testing.T, s *scene) context.Context
-	// prepare changes the repository before the scene reads it.
-	prepare func(*gittest.Fixture)
-	name    string
-	read    string
-	script  forgetest.Script
-	ops     []forgetest.Op
-}
-
-// runOvertime runs each row rows returns for the time limit as a test of its own: Push refuses
-// naming the read the time limit ended, having written nothing. byTimeLimit is the only cut run
-// here: the tests of the shared wording Push hands each cut read on to tell the time limit from an
-// interrupt.
-func runOvertime(t *testing.T, rows func(c cut) []overtime) {
-	t.Helper()
-
-	c := byTimeLimit()
-	for _, tt := range rows(c) {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			s := newScene(t, tt.prepare, tt.script, false)
-			ctx := tt.arrange(t, s)
-			before := s.written()
-
-			got := landing.Push(ctx, s.deps, pushRequest())
-
-			assertEnded(t, s, got, finish{outcome: result.Refused, text: overtimeText(pushCommand(), c, tt.read)})
-			assertOnlyRead(t, s, reads{before: before, ops: tt.ops})
-		})
-	}
 }

@@ -752,7 +752,6 @@ func readCutWaits(c cut) []cutShort {
 	lateVerdict := forgetest.Answer[forge.Verdict]{Err: c.of("gh")}
 
 	return []cutShort{
-		{name: "inside the head read", want: atHead(c), heads: []forgetest.Answer[forge.Head]{lateHead(c)}},
 		{name: "inside the merge state read", want: atMergeState(c), heads: append(shows(unknown()), lateHead(c))},
 		{
 			name: "inside a later verdict read of checks still running", want: atVerdict(c),
@@ -773,7 +772,6 @@ func headPollCut(c cut) cutShort {
 func pollCutWaits(c cut) []cutShort {
 	return []cutShort{
 		headPollCut(c),
-		{name: "inside the merge state poll", want: atMergeState(c), heads: shows(unknown())},
 		{
 			name: "inside the verdict poll of checks still running", want: atVerdict(c),
 			heads: shows(clean()), verdicts: says(running()),

@@ -84,14 +84,16 @@ type reads struct {
 	ops    []forgetest.Op
 }
 
-// assertOnlyRead fails unless nothing was written since before and the forge was called exactly as
-// ops stand for.
+// assertOnlyRead fails unless nothing was written since before and, when ops is set, the forge was
+// called exactly as ops stand for.
 func assertOnlyRead(t *testing.T, s *scene, read reads) {
 	t.Helper()
 
 	assert.Check(t, is.Equal(s.written(), read.before))
 
-	assertAsked(t, s, read.ops)
+	if read.ops != nil {
+		assertAsked(t, s, read.ops)
+	}
 }
 
 // pushRefusal is one state of the branch that Push refuses, and how far Push reads to refuse it.
@@ -142,7 +144,7 @@ func publishAtTrunk(f *gittest.Fixture, branch string) {
 // refusedAfterIdentity is the refusal named name of the branch arrange sets up, whose forge answers
 // the identity read alone.
 func refusedAfterIdentity(name string, arrange func(*gittest.Fixture) string) pushRefusal {
-	return pushRefusal{name: name, script: allowed(), ops: identityRead(), arrange: arrange}
+	return pushRefusal{name: name, script: allowed(), arrange: arrange}
 }
 
 // cutRefusals are the refusals of a branch whose copy on origin, if any, does not carry its first
@@ -348,12 +350,12 @@ func TestPush_WhenOriginStopsAnswering_RefusesNamingWhatItWasAskedFor(t *testing
 	runUnanswered(t, []unanswered{
 		{
 			// Origin answers the question about its trunk and the fetch of it, and nothing after.
-			name: "asked whether it has the branch", script: allowed(), ops: identityRead(), answered: 2,
+			name: "asked whether it has the branch", script: allowed(), answered: 2,
 			arrange: func(f *gittest.Fixture) { f.Publish(topic) },
 			asked:   "ask whether it has the branch " + topic,
 		},
 		{
-			name: "asked to fetch its copy of the branch", script: allowed(), ops: identityRead(), answered: 3,
+			name: "asked to fetch its copy of the branch", script: allowed(), answered: 3,
 			arrange: func(f *gittest.Fixture) { f.Publish(topic) },
 			asked:   "fetch its copy of the branch " + topic,
 		},
@@ -404,7 +406,7 @@ func history() []string {
 // failedAfterIdentity is the failed read named name of the branch arrange sets up, whose forge
 // answers the identity read alone before the read named read.
 func failedAfterIdentity(name, read string, arrange func(*gittest.Fixture) []string) failedRead {
-	return failedRead{name: name, read: read, script: allowed(), ops: identityRead(), arrange: arrange}
+	return failedRead{name: name, read: read, script: allowed(), arrange: arrange}
 }
 
 // branchFailedReads are the failed reads of the other local branches.

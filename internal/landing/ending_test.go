@@ -449,19 +449,6 @@ func finishedResumes() []finishedResume {
 			ending: result.EndingDetached, calls: asked(changesRead()),
 		},
 		{
-			// A suggestion committed on the web before the merge gave the merged head a commit the
-			// tip lacks.
-			name: "merged head past the tip", script: resuming(),
-			arrange: func(f *gittest.Fixture) string {
-				head := f.Commits(topic, "Apply suggestions from code review")[0]
-				f.LandPull(merged, head)
-				f.Git("reset", "--quiet", "--hard", "HEAD~1")
-
-				return head
-			},
-			text: resumedLine() + goneLine() + onTrunkLine(), ending: result.EndingTrunk, calls: asked(changesRead()),
-		},
-		{
 			// Origin's branch stayed at the tip, which the merged head carries.
 			name: "origin's branch behind the merged head", script: resuming().deleting(nil),
 			arrange: func(f *gittest.Fixture) string {

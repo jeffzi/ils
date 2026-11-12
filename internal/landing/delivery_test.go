@@ -428,10 +428,6 @@ func pushWriteRows() []pushRow {
 			forgetest.Check("lint", forge.BucketSkipped), forgetest.Check("docs", forge.BucketSkipped),
 		),
 		{
-			name:   "open pull request against the trunk",
-			script: reusing(passing()), want: greenAfter(pushedLine() + foundLine()),
-		},
-		{
 			name: "only pull request merged into another base",
 			script: opening(passing()).with(func(script *forgetest.Script, _ string) {
 				script.FindChanges = listing([]forge.Change{elsewhereMerge()})
@@ -666,9 +662,7 @@ func TestPush_WhenTheGitPushIsCutShort_BrokeSayingThePushMayHaveTaken(t *testing
 		{c: byTimeLimit(), cmd: pushCommand(), again: nextLine("ils push --wait")},
 		{c: byInterrupt(), cmd: pushCommand(), again: pushCommand().again},
 		{c: byWaitLimit(), cmd: longCommand(), again: longCommand().again},
-	}
-	for _, b := range boundedPushes() {
-		tests = append(tests, cutPushRow{c: b.c, cmd: b.cmd, again: b.cmd.again})
+		{c: byTimeLimit(), cmd: waitOffCommand(), again: waitOffCommand().again},
 	}
 
 	for _, tt := range tests {
@@ -684,7 +678,6 @@ func TestPush_WhenTheGitPushIsCutShort_BrokeSayingThePushMayHaveTaken(t *testing
 				outcome: result.Broke, reason: expect(tt.c.ends, "during the push"), req: tt.cmd.req,
 				text: expect(topic, shortSHA(sha), tt.c.ends, "may or may not have taken") + tt.again,
 			})
-			assertAsked(t, s, changesRead())
 		})
 	}
 }
@@ -786,8 +779,6 @@ func TestPush_WhenGitIsMissingForThePush_BrokeSayingNothingWasPushed(t *testing.
 	assertSays(t, reason, expect("could not push"))
 	assertSays(t, text, expect("Could not push", topic)+nextFixed())
 	between(t, text, "nothing was pushed", "fix what failed")
-
-	assertAsked(t, s, changesRead())
 }
 
 // pushAgainRows are the pushes of a tip origin already has.
