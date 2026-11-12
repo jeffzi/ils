@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"testing/synctest"
 	"time"
 
 	"gotest.tools/v3/assert"
@@ -205,18 +206,88 @@ func TestApp_Run_WhenInitClaudeFindsEveryFileInPlace_LeavesTheFilesUntouched(t *
 	}
 }
 
-func TestApp_Run_WhenInitClaudeFindsEveryFileInPlace_PrintsOneLineNamingNoSkill(t *testing.T) {
+// roomy is a terminal wide enough that no line of `ils init claude` wraps, whatever the length of
+// the temporary directories it names.
+const roomy = 4096
+
+// onInitScreen returns app with stdout a terminal without color that is the returned screen, roomy
+// columns wide, and stderr no terminal.
+func onInitScreen(t *testing.T, app cli.App) (cli.App, *screen) {
+	t.Helper()
+
+	stdout := newScreen(t, roomy)
+	app.Stdout = stdout
+	app.StdoutTerminal = true
+	app.Environ = append(slices.Clone(app.Environ), colorTerm, noColor)
+
+	return app, stdout
+}
+
+// shownStep is a step line as a terminal shows it: its mark, and a word the line holds.
+type shownStep struct {
+	mark string
+	word string
+}
+
+// assertShownSteps checks that lines begin with one line per step of want, in order, and stops the
+// test unless there are that many lines.
+func assertShownSteps(t *testing.T, lines []string, want []shownStep) {
+	t.Helper()
+
+	assert.Assert(t, len(lines) >= len(want), "stdout showed %q", lines)
+	for i, step := range want {
+		assert.Check(t, strings.HasPrefix(lines[i], step.mark+" "), "line %d = %q", i, lines[i])
+		assert.Check(t, is.Contains(lines[i], step.word), "line %d", i)
+	}
+}
+
+// eachStep returns the step lines `ils init claude` reports for the Claude Code directory under
+// home, each behind mark: each skill, the hook, then each rule list.
+func eachStep(home, mark string) []shownStep {
+	settings := settingsUnder(home)
+
+	return []shownStep{
+		{mark: mark, word: filepath.Join(skillsUnder(home), ilsSkill)},
+		{mark: mark, word: filepath.Join(skillsUnder(home), releaseSkill)},
+		{mark: mark, word: settings},
+		{mark: mark, word: settings},
+		{mark: mark, word: settings},
+		{mark: mark, word: settings},
+	}
+}
+
+func TestApp_Run_WhenInitClaudeEndsDoneOnATerminal_PrintsOneLinePerStepBehindTheMarkOfItsKind(t *testing.T) {
 	t.Parallel()
 
-	app, home := installing(t)
-	installed(t, app)
+	tests := []struct {
+		name      string
+		mark      string
+		installed bool
+	}{
+		{name: "nothing in place", mark: "✓"},
+		{name: "everything in place", mark: "–", installed: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	got := launch(t, app, "init", "claude")
+			app, home := installing(t)
+			if tt.installed {
+				installed(t, app)
+			}
+			app, stdout := onInitScreen(t, app)
 
-	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	assert.Check(t, is.Len(outputLines(got.stdout), 1), "stdout = %q", got.stdout)
-	assert.Check(t, !strings.Contains(got.stdout, skillsUnder(home)), "stdout = %q", got.stdout)
-	assert.Check(t, !strings.Contains(got.stdout, settingsUnder(home)), "stdout = %q", got.stdout)
+			got := shown(t, app, "init", "claude")
+
+			lines := stdout.lines()
+			assert.Check(t, is.Equal(got.code, exitDone), "stdout showed %q", lines)
+			assert.Check(t, is.Len(lines, len(eachStep(home, tt.mark))), "stdout showed %q", lines)
+			assertShownSteps(t, lines, eachStep(home, tt.mark))
+			for i, list := range []string{"allow", "ask", "deny"} {
+				assert.Check(t, is.Contains(withoutPath(lines[3+i], settingsUnder(home)), list), "line %d", 3+i)
+			}
+		})
+	}
 }
 
 func TestApp_Run_WhenInitClaudeFindsAShippedFileChanged_ReplacesIt(t *testing.T) {
@@ -232,18 +303,38 @@ func TestApp_Run_WhenInitClaudeFindsAShippedFileChanged_ReplacesIt(t *testing.T)
 	assert.Check(t, is.Equal(readText(t, changed), string(shipped()[ilsSkill+"/SKILL.md"].Data)))
 }
 
-func TestApp_Run_WhenInitClaudeFindsAShippedFileChanged_PrintsThatSkillAlone(t *testing.T) {
+func TestApp_Run_WhenInitClaudeFindsAShippedFileChanged_MarksThatSkillAloneChanged(t *testing.T) {
 	t.Parallel()
 
 	app, home := installing(t)
 	installed(t, app)
 	editedSkill(t, home)
+	app, stdout := onInitScreen(t, app)
 
-	got := launch(t, app, "init", "claude")
+	got := shown(t, app, "init", "claude")
 
-	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	assert.Check(t, is.Contains(lineWith(t, got.stdout, filepath.Join(skillsUnder(home), ilsSkill)), "Updated"))
-	assert.Check(t, !strings.Contains(got.stdout, filepath.Join(skillsUnder(home), releaseSkill)), "stdout = %q", got.stdout)
+	screenText := strings.Join(stdout.lines(), "\n")
+	assert.Check(t, is.Equal(got.code, exitDone), "stdout showed %q", screenText)
+	updated := lineWith(t, screenText, filepath.Join(skillsUnder(home), ilsSkill))
+	assert.Check(t, strings.HasPrefix(updated, "✓ "), "line = %q", updated)
+	assert.Check(t, is.Contains(updated, "Updated"))
+	kept := lineWith(t, screenText, filepath.Join(skillsUnder(home), releaseSkill))
+	assert.Check(t, strings.HasPrefix(kept, "– "), "line = %q", kept)
+}
+
+func TestApp_Run_WhenInitClaudeIsRefusedTheSettingsOnATerminal_CrossesTheReadOfTheFileBeforeAnySkillStep(t *testing.T) {
+	t.Parallel()
+
+	app, home := installing(t)
+	path := withSettings(t, home, `[]`)
+	app, stdout := onInitScreen(t, app)
+
+	got := shown(t, app, "init", "claude")
+
+	lines := stdout.lines()
+	assert.Check(t, is.Equal(got.code, exitRefused), "stdout showed %q", lines)
+	assertShownSteps(t, lines, []shownStep{{mark: "✗", word: path}})
+	assert.Check(t, !strings.Contains(strings.Join(lines, "\n"), skillsUnder(home)), "stdout showed %q", lines)
 }
 
 func TestApp_Run_WhenInitClaudeShipsAFileBesideTheSkills_InstallsItNowhere(t *testing.T) {
@@ -273,6 +364,19 @@ func TestApp_Run_WhenInitClaudeCannotWriteASkillFile_ExitsOneNamingThePath(t *te
 
 	assert.Check(t, is.Equal(got.code, exitBroke), "stdout = %q", got.stdout)
 	assert.Check(t, is.Contains(resulttest.Decode(t, got.stdout).Reason, blocked))
+}
+
+func TestApp_Run_WhenInitClaudeCannotLookAtASkillDirectory_ExitsOneNamingIt(t *testing.T) {
+	t.Parallel()
+
+	app, home := installing(t)
+	// A file where the skills directory goes makes the look at each skill's directory fail.
+	writeText(t, skillsUnder(home), "in the way\n")
+
+	got := launch(t, app, "init", "claude", "--json")
+
+	assert.Check(t, is.Equal(got.code, exitBroke), "stdout = %q", got.stdout)
+	assert.Check(t, is.Contains(resulttest.Decode(t, got.stdout).Reason, filepath.Join(skillsUnder(home), ilsSkill)))
 }
 
 // assertNoClaudeUnder checks, without stopping the test, that dir holds no Claude Code directory.
@@ -554,6 +658,26 @@ func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlagPastTheTimeLimit_ExitsTwoNa
 	assert.Check(t, is.Equal(printed.Next, initProject))
 }
 
+func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlagPastTheTimeLimitOnATerminal_CrossesTheReadOfTheTopLevelFirst(t *testing.T) {
+	t.Parallel()
+
+	f := gittest.New(t, trunk)
+	app, _ := installingOver(t, git.Runner{Dir: f.Dir(), Env: f.Env()})
+	app, stdout := onInitScreen(t, app)
+	var got ran
+
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithDeadline(t.Context(), time.Unix(0, 0))
+		defer cancel()
+		got = launchUnder(ctx, t, app, "init", "claude", "--project")
+	})
+
+	lines := stdout.lines()
+	assert.Check(t, is.Equal(got.code, exitRefused), "stdout showed %q", lines)
+	assert.Assert(t, len(lines) > 1, "stdout showed %q", lines)
+	assert.Check(t, strings.HasPrefix(lines[0], "✗ "), "line 0 = %q", lines[0])
+}
+
 func TestApp_Run_WhenInitClaudeRunsWhereTheGuardDoesNot_SaysWhereTheGuardRunsBeforeTheRules(t *testing.T) {
 	t.Parallel()
 
@@ -568,18 +692,4 @@ func TestApp_Run_WhenInitClaudeRunsWhereTheGuardDoesNot_SaysWhereTheGuardRunsBef
 	allow := slices.IndexFunc(lines, func(line string) bool { return strings.Contains(line, "allow") })
 	assert.Assert(t, noHook >= 0 && allow >= 0, "stdout = %q", got.stdout)
 	assert.Check(t, noHook < allow, "stdout = %q", got.stdout)
-}
-
-func TestApp_Run_WhenInitClaudeChangesOnlyTheSettings_PrintsNoLineSayingAllIsInPlace(t *testing.T) {
-	t.Parallel()
-
-	app, home := installing(t)
-	installed(t, app)
-	inPlace := launch(t, app, "init", "claude").stdout
-	withSettings(t, home, "{}")
-
-	got := launch(t, app, "init", "claude")
-
-	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	assert.Check(t, !strings.Contains(got.stdout, strings.TrimSpace(inPlace)), "stdout = %q", got.stdout)
 }

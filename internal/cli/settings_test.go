@@ -405,7 +405,6 @@ func TestApp_Run_WhenInitClaudeAddsRules_PrintsTheNumberAddedToEachListThatGrew(
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
 	assert.Check(t, is.Contains(wordsOutside(lineWith(t, got.stdout, "allow"), path), "3"))
 	assert.Check(t, is.Contains(wordsOutside(lineWith(t, got.stdout, "deny"), path), "2"))
-	assert.Check(t, !strings.Contains(got.stdout, "ask"), "stdout = %q", got.stdout)
 }
 
 // wordsOutside returns the words of line once path is taken out of it, so that no digit of the

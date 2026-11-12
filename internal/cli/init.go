@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 	"mvdan.cc/sh/v3/syntax"
@@ -99,8 +100,9 @@ func fitHarness(args []string) harnessFit {
 // initCommand returns `ils init <harness>`, which installs the skills of the app for the harness:
 // in the Claude Code directory at user scope (see userDir), or with --project at the top level of
 // the work tree the working directory lies in.
-// It refuses any words but one harness word, and keeps the result of the install, under the time
-// limit of a command from launch, as the result of the run.
+// It refuses any words but one harness word, and runs the install under the display and the time
+// limit of a command from launch. Outside --project there is no git dir, so the display checks the
+// lines against none.
 func (p *parse) initCommand() *cobra.Command {
 	var project strictBool
 
@@ -130,8 +132,9 @@ func (p *parse) initCommand() *cobra.Command {
 		ctx, cancel := p.underTimeLimit(c.Context())
 		defer cancel()
 
-		r := p.installClaude(ctx, bool(project))
-		p.result = &r
+		p.displayed(ctx, p.app.profile(p.app.StderrTerminal, p.noColor), "", func(shown *display) result.Result {
+			return p.installClaude(ctx, shown, bool(project))
+		})
 
 		return nil
 	}
@@ -145,60 +148,83 @@ func (p *parse) initCommand() *cobra.Command {
 // installClaude installs every skill of the app in the Claude Code directory installDir returns,
 // creating it when it is missing, then adds the permission rules and, where the guard runs, its
 // hook to the settings of that directory. The settings are read and checked before any skill is
-// written, and written after. The result has one line per skill installed, updated, or left as it
-// is because its directory is a link, and one per change to the settings; or one line saying
-// everything was in place. Where the guard does not run, a line in the hook's place, before the
-// rule lines, says where it does. A
-// result of installDir ends the run; settings it cannot edit are a refusal; a failed read of the
-// settings, or a failed write, ends the run broke.
-func (p *parse) installClaude(ctx context.Context, project bool) result.Result {
+// written, and written after. Each step reports its line to shown as it ends: each skill, then the
+// hook (or, where the guard does not run, the line that says where it does), then each rule list.
+// The settings lines describe a write, so they are reported only once it succeeds.
+//
+// The result holds every line reported, in order. A result of installDir ends the run; settings it
+// cannot edit are a refusal; a failed read of the settings, or a failed write, ends the run broke.
+// A skill directory that is a link that differs from the shipped skill does not stop the run, but
+// ends it broke once the settings are written.
+func (p *parse) installClaude(ctx context.Context, shown *display, project bool) result.Result {
 	req := landing.Request{Command: initWord, Words: p.words, Args: []string{harnessClaude}, Project: project}
 
-	dir, hook, refusal := p.installDir(ctx, req)
+	dir, hook, refusal := p.installDir(ctx, shown, req)
 	if refusal != nil {
 		return *refusal
 	}
 
-	guardRuns := guardSupported
-	if p.app.guardRuns != nil {
-		guardRuns = *p.app.guardRuns
-	}
-
-	if !guardRuns {
+	if !p.guardRuns() {
 		hook = ""
 	}
+
+	file := filepath.Join(dir, settingsFile)
+	shown.Started(result.Say("Reading %s", file))
 
 	settings, err := planSettings(dir, hook)
 	if shape, ok := errors.AsType[*shapeError](err); ok {
 		return *req.Refused(result.Say("%s, and the guard's setup edits it", shape.problem),
-			result.NextStep("fix %s, then run %s again", filepath.Join(dir, settingsFile), result.Command(strings.Join(req.Words, " "))))
+			result.NextStep("fix %s, then run %s again", file, result.Command(strings.Join(req.Words, " "))))
 	}
 
 	if err != nil {
-		return installBroke(req, err)
+		return installBroke(req, nil, err)
 	}
 
-	lines, err := installSkills(p.app.Skills, filepath.Join(dir, skillsDir))
+	lines, linked, err := installSkills(shown, p.app.Skills, filepath.Join(dir, skillsDir))
 	if err != nil {
-		return installBroke(req, err)
+		return installBroke(req, lines, err)
 	}
+
+	shown.Started(result.Say("Writing %s", file))
 
 	if err := settings.write(); err != nil {
-		return installBroke(req, err)
+		return installBroke(req, lines, err)
 	}
 
-	changed := len(lines) > 0 || settings.changed()
-	for i, line := range settings.lines {
-		if line.kind == stepChanged || i == 0 && !guardRuns {
-			lines = append(lines, line.phrase)
-		}
+	for _, line := range settings.lines {
+		shown.report(line.kind, line.phrase)
+		lines = append(lines, line.phrase)
 	}
 
-	if !changed {
-		lines = append(lines, result.Say("Everything was already in place."))
+	if len(linked) > 0 {
+		broke := req.Broke(linkedReason(linked),
+			result.NextStep("remove the link or update its target, then run %s again", result.Command(strings.Join(req.Words, " "))))
+		broke.Lines = lines
+
+		return *broke
 	}
 
 	return result.Result{Command: req.Command, Words: req.Words, Lines: lines, Next: result.NextNone(), Outcome: result.Done}
+}
+
+// guardRuns reports whether the guard runs on this system, or as the app says it does.
+func (p *parse) guardRuns() bool {
+	if p.app.guardRuns != nil {
+		return *p.app.guardRuns
+	}
+
+	return guardSupported
+}
+
+// linkedReason returns the reason of a run that found the directories of the skills names to be
+// links that differ from the shipped skills.
+func linkedReason(names []string) result.Phrase {
+	if len(names) == 1 {
+		return result.Say("the %s skill is a link that differs from the shipped skill", names[0])
+	}
+
+	return result.Say("the %s skills are links that differ from the shipped skills", strings.Join(names, ", "))
 }
 
 // installDir returns the Claude Code directory the install of req writes to and the command of the
@@ -206,13 +232,14 @@ func (p *parse) installClaude(ctx context.Context, project bool) result.Result {
 // level of the work tree the working directory lies in. It returns the result that ends the run
 // instead when userDir refuses, when a project run is outside a work tree, or when the read of the
 // top level fails, which ends as a landing command's read made before any write does (see
-// landing.Request.Unread).
-func (p *parse) installDir(ctx context.Context, req landing.Request) (dir, hook string, refusal *result.Result) {
+// landing.Request.Unread). The read of the top level is a step of shown.
+func (p *parse) installDir(ctx context.Context, shown *display, req landing.Request) (dir, hook string, refusal *result.Result) {
 	if !req.Project {
 		return userDir(req, p.app.Environ)
 	}
 
 	logger := p.logger(p.app.profile(p.app.StderrTerminal, p.noColor))
+	shown.Started(result.Say("Reading %s", readTopLevel))
 
 	top, found, err := git.Repo{Runner: p.loggedGit(logger)}.TopLevel(ctx)
 	if err != nil {
@@ -265,91 +292,152 @@ func userDir(req landing.Request, environ []string) (dir, hook string, refusal *
 }
 
 // installBroke returns the broke result of req for err, the failure of a step of the install, with
-// fixing what the reason names and running the same words again as the next step.
-func installBroke(req landing.Request, err error) result.Result {
-	return *req.Broke(result.Say("the install broke: %s", err.Error()),
+// lines, those of the steps done before it, and with fixing what the reason names and running the
+// same words again as the next step.
+func installBroke(req landing.Request, lines []result.Phrase, err error) result.Result {
+	broke := req.Broke(result.Say("the install broke: %s", err.Error()),
 		result.NextStep("fix what the reason names, then run %s again", result.Command(strings.Join(req.Words, " "))))
+	broke.Lines = lines
+
+	return *broke
 }
 
 // installSkills writes each skill of shipped, a directory of its own at its root, to the directory
-// of the same name under dir, creating the directories it needs, and returns one line per skill it
-// installed, updated, or left as it is because its directory is a link. It stops at the first
-// write that fails, with an error that names the path.
-func installSkills(shipped fs.FS, dir string) ([]result.Phrase, error) {
+// of the same name under dir, creating the directories it needs, each as a step of shown. It
+// returns the line of each skill, in order, and the names of the skills whose directory is a link
+// that differs from the shipped skill. It stops at the first step that fails otherwise, with the
+// lines of the skills before it and an error that names the path.
+func installSkills(shown *display, shipped fs.FS, dir string) (lines []result.Phrase, linked []string, err error) {
 	entries, err := fs.ReadDir(shipped, ".")
 	if err != nil {
-		return nil, fmt.Errorf("read the shipped skills: %w", err)
+		return nil, nil, fmt.Errorf("read the shipped skills: %w", err)
 	}
-
-	var lines []result.Phrase
 
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
 
-		line, err := installSkill(shipped, entry.Name(), filepath.Join(dir, entry.Name()))
+		name := entry.Name()
+		shown.Started(result.Say("Installing the %s skill", name))
+
+		line, err := installSkill(shipped, name, filepath.Join(dir, name))
 		if err != nil {
-			return nil, err
+			return lines, nil, err
 		}
 
-		if line != nil {
-			lines = append(lines, *line)
+		shown.report(line.kind, line.phrase)
+		lines = append(lines, line.phrase)
+
+		if line.kind == stepFailed {
+			linked = append(linked, name)
 		}
 	}
 
-	return lines, nil
+	return lines, linked, nil
 }
 
 // installSkill writes every file of the skill name in shipped to dest, and returns the line that
-// says it installed or updated the skill, or nil when every file was already in place. A dest
-// that is a link is left as it is, and the line names its target.
-func installSkill(shipped fs.FS, name, dest string) (*result.Phrase, error) {
+// says it installed or updated the skill, or that every file was already in place. A dest that is a
+// link is never written through: see linkedSkill.
+func installSkill(shipped fs.FS, name, dest string) (stepLine, error) {
 	info, err := os.Lstat(dest)
 	existed := err == nil
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("read %s: %w", dest, err)
+		return stepLine{}, fmt.Errorf("read %s: %w", dest, err)
 	}
 
 	if existed && info.Mode()&fs.ModeSymlink != 0 {
-		target, linkErr := os.Readlink(dest)
-		if linkErr != nil {
-			return nil, fmt.Errorf("read the link %s: %w", dest, linkErr)
-		}
-
-		line := result.Say("Did not install the %s skill: %s is a link to %s, which Claude Code uses; remove the link to install the shipped skill",
-			name, dest, target)
-
-		return &line, nil
+		return linkedSkill(shipped, name, dest)
 	}
 
 	changed := false
-	err = fs.WalkDir(shipped, name, func(file string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.IsDir() {
-			return err
-		}
-
-		wrote, err := placeFile(shipped, file, filepath.Join(dest, filepath.FromSlash(strings.TrimPrefix(file, name+"/"))))
+	err = walkShipped(shipped, name, dest, func(file, target string) error {
+		wrote, placeErr := placeFile(shipped, file, target)
 		changed = changed || wrote
 
-		return err
+		return placeErr
 	})
 	if err != nil {
-		return nil, fmt.Errorf("install the %s skill: %w", name, err)
+		return stepLine{}, fmt.Errorf("install the %s skill: %w", name, err)
 	}
 
 	switch {
 	case !changed:
-		return nil, nil
+		return stepLine{phrase: result.Say("The %s skill at %s is already up to date", name, dest), kind: stepUnchanged}, nil
 	case existed:
-		line := result.Say("Updated the %s skill at %s", name, dest)
-
-		return &line, nil
+		return stepLine{phrase: result.Say("Updated the %s skill at %s", name, dest)}, nil
 	default:
-		line := result.Say("Installed the %s skill at %s", name, dest)
-
-		return &line, nil
+		return stepLine{phrase: result.Say("Installed the %s skill at %s", name, dest)}, nil
 	}
+}
+
+// walkShipped calls visit with each file of the skill name in shipped and where it lands under dest,
+// the directory of the skill, and stops at the first error.
+func walkShipped(shipped fs.FS, name, dest string, visit func(file, target string) error) error {
+	return fs.WalkDir(shipped, name, func(file string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+
+		return visit(file, filepath.Join(dest, filepath.FromSlash(strings.TrimPrefix(file, name+"/"))))
+	})
+}
+
+// linkedSkill returns the line of the skill name whose directory dest is a link, naming its target:
+// unchanged when every shipped file reads the same through the link, failed otherwise. It writes
+// nothing.
+func linkedSkill(shipped fs.FS, name, dest string) (stepLine, error) {
+	target, err := os.Readlink(dest)
+	if err != nil {
+		return stepLine{}, fmt.Errorf("read the link %s: %w", dest, err)
+	}
+
+	same, err := matchesShipped(shipped, name, dest)
+	if err != nil {
+		return stepLine{}, err
+	}
+
+	if same {
+		return stepLine{
+			phrase: result.Say("The %s skill at %s is a link to %s, which matches the shipped skill", name, dest, target),
+			kind:   stepUnchanged,
+		}, nil
+	}
+
+	return stepLine{
+		phrase: result.Say("The %s skill at %s is a link to %s, which differs from the shipped skill", name, dest, target),
+		kind:   stepFailed,
+	}, nil
+}
+
+// matchesShipped reports whether every file of the skill name in shipped reads the same under
+// dest. A file that is missing, or that a link to nothing, a link to a file or a link loop keeps
+// from being read, does not match; any other failed read is an error that names the path.
+func matchesShipped(shipped fs.FS, name, dest string) (bool, error) {
+	same := true
+	err := walkShipped(shipped, name, dest, func(file, target string) error {
+		want, err := fs.ReadFile(shipped, file)
+		if err != nil {
+			return fmt.Errorf("read the shipped %s: %w", file, err)
+		}
+
+		//nolint:gosec // G304: target is the path of a shipped file under the Claude Code directory.
+		have, err := os.ReadFile(target)
+
+		switch {
+		case err == nil && bytes.Equal(have, want):
+			return nil
+		case err == nil, errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTDIR), errors.Is(err, syscall.ELOOP):
+			same = false
+
+			return fs.SkipAll
+		default:
+			return fmt.Errorf("read %s: %w", target, err)
+		}
+	})
+
+	return same, err
 }
 
 // placeFile writes the shipped file to dest with replaceFile, unless dest already holds the same
