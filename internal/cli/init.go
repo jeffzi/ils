@@ -102,7 +102,7 @@ func fitHarness(args []string) harnessFit {
 func (p *parse) initCommand() *cobra.Command {
 	var project strictBool
 
-	c := initHeader()
+	c := &cobra.Command{Use: initUse, Short: initShort, Long: initLong, Example: initExamples}
 	extra := func(typed string) result.Phrase {
 		return result.Say("%s takes one harness, one of: %s, and no other word, and %s was given", initWord, harnessClaude, typed)
 	}

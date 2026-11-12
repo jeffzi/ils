@@ -43,17 +43,6 @@ func hookHeader() *cobra.Command {
 	}
 }
 
-// initHeader returns the `ils init` command with its help, which initCommand completes with its
-// Args, RunE and flag.
-func initHeader() *cobra.Command {
-	return &cobra.Command{
-		Use:     initUse,
-		Short:   initShort,
-		Long:    initLong,
-		Example: initExamples,
-	}
-}
-
 // withTimeLimits returns text with each %[1]s set to the time limit and each %[2]s set to the time
 // limit of the long wait, as results name them, so that the help says the limits the command
 // enforces. A text that needs only the time limit leaves %[2]s out.

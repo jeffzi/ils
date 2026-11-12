@@ -204,26 +204,24 @@ func (a App) profile(isTerminal, noColor bool) colorprofile.Profile {
 	return colorprofile.Detect(io.Discard, env)
 }
 
-// Version returns the version of the main module that info, the build info of the running binary,
-// names, without its leading v. It returns "(devel)" when ok is false, as [debug.ReadBuildInfo]
-// reports for a binary built without module support, and when info names no version.
-func Version(info *debug.BuildInfo, ok bool) string {
+// printedVersion returns the version that ils --version prints: the version of the main module
+// the build info of the running binary names, without its leading v. It returns "(devel)" when
+// there is no build info, as [debug.ReadBuildInfo] reports for a binary built without module
+// support, and when the build info names no version.
+func (a App) printedVersion() string {
 	const devel = "(devel)"
 
+	read := a.buildInfo
+	if read == nil {
+		read = debug.ReadBuildInfo
+	}
+
+	info, ok := read()
 	if !ok || info.Main.Version == "" || info.Main.Version == devel {
 		return devel
 	}
 
 	return strings.TrimPrefix(info.Main.Version, "v")
-}
-
-// printedVersion returns the version that ils --version prints: the version of the build info.
-func (a App) printedVersion() string {
-	if a.buildInfo == nil {
-		return Version(debug.ReadBuildInfo())
-	}
-
-	return Version(a.buildInfo())
 }
 
 // show prints r on Stdout as JSON, or as text drawn for profile, and returns the exit code of its

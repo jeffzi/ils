@@ -42,33 +42,25 @@ func replaceFile(target string, text []byte, mode fs.FileMode) error {
 		return err
 	}
 
-	err = writeTemp(temp, text, mode)
-	if err == nil {
-		err = os.Rename(temp.Name(), target)
-	}
-
-	if err != nil {
-		return errors.Join(err, removeTemp(temp.Name()))
-	}
-
-	return nil
-}
-
-// writeTemp writes text to temp, sets its mode and closes it.
-func writeTemp(temp *os.File, text []byte, mode fs.FileMode) error {
-	_, err := temp.Write(text)
+	_, err = temp.Write(text)
 	if err == nil {
 		err = temp.Chmod(mode)
 	}
 
-	return errors.Join(err, temp.Close())
-}
-
-// removeTemp removes the temporary file name, which a failed write leaves behind.
-func removeTemp(name string) error {
-	if err := os.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("remove %s: %w", name, err)
+	err = errors.Join(err, temp.Close())
+	if err == nil {
+		err = os.Rename(temp.Name(), target)
 	}
 
-	return nil
+	if err == nil {
+		return nil
+	}
+
+	// A failed write leaves the temporary file behind.
+	var removeErr error
+	if rmErr := os.Remove(temp.Name()); rmErr != nil && !errors.Is(rmErr, fs.ErrNotExist) {
+		removeErr = fmt.Errorf("remove %s: %w", temp.Name(), rmErr)
+	}
+
+	return errors.Join(err, removeErr)
 }

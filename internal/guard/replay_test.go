@@ -207,8 +207,8 @@ func judgeAll(t *testing.T, calls []replayed) []guard.Verdict {
 
 	env := map[string]string{}
 	for _, entry := range os.Environ() {
-		if name, _, ok := strings.Cut(entry, "="); ok {
-			env[name], _ = git.EnvValue(os.Environ(), name)
+		if name, value, ok := strings.Cut(entry, "="); ok {
+			env[name] = value
 		}
 	}
 
