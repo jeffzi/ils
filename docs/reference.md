@@ -159,7 +159,7 @@ Run `ils merge` on the branch whose pull request you want to land. It:
 1. checks every precondition before it writes anything, and refuses with a reason when one does
    not hold;
 2. waits for the checks of the pull request's head, as `ils push` does, until you stop it or it
-   reaches its [time limit](#time-limits), which keeps 20 seconds for the writes that follow;
+   reaches its [time limit](#time-limits);
 3. squash-merges the pull request, with its title plus `(#<N>)` as the subject and its body as
    the commit body. The trailer block GitHub adds (`Signed-off-by` and `Co-authored-by` lines)
    follows the body;
@@ -333,19 +333,10 @@ for Claude Code. It runs these steps:
    it is missing. It writes a new file beside the old one and renames it over, keeping the old
    file's mode, and writes through a `settings.json` that is a symbolic link to its target.
 
-The hook is a `PreToolUse` group with the matcher `Bash`, holding one hook:
-
-```json
-{
-  "type": "command",
-  "command": "bash ~/.claude/skills/ils/hook.sh",
-  "timeout": 15,
-  "onFailure": "block"
-}
-```
-
-When `CLAUDE_CONFIG_DIR` sets the Claude Code directory, the hook's command is `bash` and the
-absolute path of the installed `hook.sh`, quoted for the shell.
+The hook is a `PreToolUse` group with the matcher `Bash`, holding the one hook shown in
+[Init by hand](#init-by-hand). When `CLAUDE_CONFIG_DIR` sets the Claude Code directory, the hook's
+command is `bash` and the absolute path of the installed `hook.sh`, quoted for the shell. With
+`--project`, it is `bash "$CLAUDE_PROJECT_DIR"/.claude/skills/ils/hook.sh`.
 
 A hook whose command is the path of `skills/ils/hook.sh`, alone or after `bash`, is a guard entry.
 The path may run under any directory above `skills/`, such as `~/.claude/`, `$HOME/.claude/`, or
@@ -374,21 +365,12 @@ A group or hook that is not a JSON object, a group with no `hooks` array, and a 
 is not a string are left as they are. Without `onFailure: block`, Claude Code runs a command whose
 hook could not run. `onFailure` needs Claude Code 2.1.295 or later.
 
-Each rule lands in the list it belongs to:
-
-| List    | Rules                                                                                                                                                                                  |
-| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `allow` | `Bash(ils push)`, `Bash(ils push --wait)`, `Bash(ils branch *)`, `Bash(ils status)`                                                                                                    |
-| `ask`   | `Bash(ils merge)`, `Bash(ils merge *)`, `Bash(ils release)`, `Bash(ils release *)`, `Bash(gh pr merge)`, `Bash(gh pr merge *)`, `Bash(gh release create)`, `Bash(gh release create *)` |
-| `deny`  | `Bash(git push)`, `Bash(git push *)`                                                                                                                                                   |
-
+Each rule lands in the list the `permissions` object of [Init by hand](#init-by-hand) puts it in.
 A rule already in any of the three lists is not added to another. Every other key, value, and
 entry of `settings.json` stays, in its order. A run that changes nothing leaves the file as it was.
 
 With `--project`, it writes `.claude/skills/` and `.claude/settings.json` at the top level of the
-repository the working directory is in, whatever `CLAUDE_CONFIG_DIR` holds, and the hook's command
-is
-`bash "$CLAUDE_PROJECT_DIR"/.claude/skills/ils/hook.sh`.
+repository the working directory is in, whatever `CLAUDE_CONFIG_DIR` holds.
 
 On Windows, where the guard does not run, it installs the skills and the rules and adds no hook: a
 line says the guard runs on macOS and Linux.
@@ -475,11 +457,12 @@ Copy `skills/ils/` and `skills/write-release/` from a clone of `ils` at the vers
 | 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                                                                         |
 
 Every outcome but done prints its reason labeled by outcome: `Refused:`, `Broke:`, `Ask:`,
-`Pending:`, or `Delivered, not green:`. The reason sits on the line above `Next:`, except for a
-verdict of `ils guard`, which prints no `Next:` line. When `ils guard` refuses its own words (no
-`--cwd`, or not exactly one word after `--`), it prints `Next: ils guard --help`. A run stopped by
-Ctrl-C or SIGTERM (the signal `kill` sends by default) exits with the code of the result it
-prints; see [Stopping a run](#stopping-a-run).
+`Pending:`, or `Delivered, not green:`. The reason sits on the line above `Next:`, except in two
+results that print no `Next:` line (JSON `next: "none"`): a verdict of `ils guard`, and the refusal
+of `ils guard` and `ils parse` on Windows, where the guard does not run. When `ils guard` refuses
+its own words (no `--cwd`, or not exactly one word after `--`), it prints `Next: ils guard --help`.
+A run stopped by Ctrl-C or SIGTERM (the signal `kill` sends by default) exits with the code of the
+result it prints; see [Stopping a run](#stopping-a-run).
 
 ### Done and broke by command
 

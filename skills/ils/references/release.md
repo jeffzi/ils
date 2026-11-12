@@ -6,7 +6,7 @@ defines the ask.
 ## Before you run it
 
 Run `ils release <X.Y.Z>` as the skill's "Run it" section says: bare, with the user's words. The
-version takes no leading `v`. Pass `--force` or `--tag-only` only when the user gave it.
+version takes no leading `v`.
 
 ## After it exits
 
@@ -25,6 +25,3 @@ The user's ask covers that one release until it exits 0, 1, or 2.
 - **Exit 4:** the checks of the release commit were still running, or the time limit left too little
   for the writes. Nothing was written. Run the command `Next:` names, which is the same command
   with the same flags, and keep going while it exits 4.
-
-`ils release` refuses a red release commit; a tag on red is the user's, with `--force`, which they
-give.
