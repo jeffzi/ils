@@ -742,11 +742,10 @@ func TestForge_Message(t *testing.T) {
 		mergeBody string
 		want      []string
 	}{
-		{
-			name:      "commit messages setting",
-			mergeBody: "* Add the forge\n\n* Read the message\n\n---------\n\n" + signedOff + "\n" + liveSuite,
-			want:      []string{signedOff, liveSuite},
-		},
+		{name: "commit messages setting", mergeBody: "* Add the forge\n\n* Read the message\n\n---------\n\n" + signedOff + "\n" + liveSuite, want: []string{signedOff, liveSuite}},
+		{name: "commit messages setting, a trailer the body already holds", body: "Lands the change.\n\n" + signedOff, mergeBody: "* Add the forge\n\n---------\n\n" + signedOff + "\n" + liveSuite, want: []string{liveSuite}},
+		{name: "commit messages setting, a trailer the body holds mid-paragraph with CRLF line ends and trailing spaces", body: "Lands the change.\r\n\r\n" + signedOff + " \t\r\nSigned in person.\r\n", mergeBody: "* Add the forge\n\n" + signedOff + "\n" + liveSuite, want: []string{liveSuite}},
+		{name: "pull request body setting, a trailer the body already holds after GitHub's separator", body: "Lands the change.\n\n" + signedOff, mergeBody: "Lands the change.\n\n" + signedOff + "\n\n---------\n\n" + signedOff + "\n" + liveSuite, want: []string{liveSuite}},
 		{
 			name:      "pull request body setting, trailers after GitHub's separator",
 			mergeBody: pullBody + "\n\n---------\n\n" + liveSuite,

@@ -372,8 +372,8 @@ func (f *Forge) HasTrunkCI(ctx context.Context, repo forge.Repo, trunk string) (
 // The block is the last paragraph of what GitHub appends after the pull request body in the body
 // it composes, taken only when every line of it is a trailer. Under every message setting GitHub
 // puts its trailers there; a last paragraph with any other line, such as a commit's subject, means
-// GitHub added no trailer. A trailer the pull request body itself ends with is not returned: the
-// squash body already carries it.
+// GitHub added no trailer. A trailer line the pull request body already holds is not returned:
+// the squash body already carries it.
 //
 // An answer that cannot be decoded, or that holds no pull request, is a *DecodeError.
 func (f *Forge) Message(ctx context.Context, repo forge.Repo, number int) (forge.Message, error) {
@@ -400,8 +400,10 @@ func (f *Forge) Message(ctx context.Context, repo forge.Repo, number int) (forge
 // trailersOf returns the lines of the last paragraph of what GitHub appended to body in
 // mergeBody when every one is a trailer, and nil otherwise. A mergeBody that does not start with
 // body, ending at a line, is all GitHub's own; the two are compared with LF line ends and without
-// the whitespace that closes body, which GitHub's copy of it may keep or drop. Trailers of body
-// itself are never returned: the squash body already carries body, and would carry them twice.
+// the whitespace that closes body, which GitHub's copy of it may keep or drop. A trailer that
+// body already holds as one of its lines, compared with LF line ends and without the spaces and
+// tabs that close a line, is never returned, whether or not mergeBody starts with body: the
+// squash body already carries body, and would carry it twice.
 func trailersOf(body, mergeBody string) []string {
 	appended := strings.ReplaceAll(mergeBody, "\r\n", "\n")
 	own := strings.TrimRight(strings.ReplaceAll(body, "\r\n", "\n"), " \t\n")
@@ -424,7 +426,12 @@ func trailersOf(body, mergeBody string) []string {
 		}
 	}
 
-	return lines
+	held := make(map[string]bool)
+	for line := range strings.SplitSeq(own, "\n") {
+		held[strings.TrimRight(line, " \t")] = true
+	}
+
+	return slices.DeleteFunc(lines, func(line string) bool { return held[strings.TrimRight(line, " \t")] })
 }
 
 // Land squash-merges the pull request with exactly the subject and body of landing, even an empty
