@@ -177,8 +177,9 @@ func runStatusOf(status string) forge.RunStatus {
 // that the named check and the log always belong together.
 //
 // A check with no Actions run behind it has no log, a run that has not completed
-// holds its log back, and a gh that cannot give the log for any other reason
-// leaves it unreadable: the verdict is red either way. A link that names no job
+// holds its log back, and a gh that cannot give the log for any other reason,
+// or a read of it that the time limit or an interrupt cuts short, leaves it
+// unreadable: the verdict is red either way. A link that names no job
 // leaves the log unreadable without a read: the run's failed log holds every
 // failed job of the run, and would be shown as this check's.
 //
@@ -214,14 +215,14 @@ func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Ve
 	}
 
 	if err != nil {
-		return forge.FailedLog{}, err
+		return cutLog(failed, err)
 	}
 
 	text := result.Stdout
 	if strings.TrimSpace(text) == "" {
 		text, err = f.jobLog(ctx, repo, jobID)
 		if err != nil {
-			return forge.FailedLog{}, err
+			return cutLog(failed, err)
 		}
 	}
 
@@ -230,6 +231,17 @@ func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Ve
 	}
 
 	return forge.FailedLog{Check: failed.Name, Text: text, State: forge.FailedLogRead}, nil
+}
+
+// cutLog returns the log of failed as unreadable when err is the time limit or an interrupt ending
+// the read of it: the check failed whatever its log says, so the verdict stays red without it. Any
+// other err is returned.
+func cutLog(failed forge.Check, err error) (forge.FailedLog, error) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return forge.FailedLog{Check: failed.Name, State: forge.FailedLogUnreadable}, nil
+	}
+
+	return forge.FailedLog{}, err
 }
 
 // jobLog reads the log of the Actions job numbered job. It returns an empty log, and no error,
@@ -297,12 +309,15 @@ type actionsRunsPage struct {
 // A check run is keyed by its workflow and name: when one is reported more than once, the most
 // recent one stands for it.
 func (f *Forge) CommitVerdict(ctx context.Context, repo forge.Repo, sha string) (forge.Verdict, error) {
-	runPages, err := readEachPage[actionsRunsPage](ctx, f.runner(), repoAPIArgs(repo, "actions/runs?head_sha="+sha, "--paginate"))
+	// The check runs are read before the Actions runs: a run created between the two reads then
+	// shows only as a run still going, while read the other way round its check runs would have no
+	// run behind them and would decide the verdict as checks of no workflow.
+	checkPages, err := readEachPage[checkRunsPage](ctx, f.runner(), repoAPIArgs(repo, "commits/"+sha+"/check-runs", "--paginate"))
 	if err != nil {
 		return forge.Verdict{}, err
 	}
 
-	checkPages, err := readEachPage[checkRunsPage](ctx, f.runner(), repoAPIArgs(repo, "commits/"+sha+"/check-runs", "--paginate"))
+	runPages, err := readEachPage[actionsRunsPage](ctx, f.runner(), repoAPIArgs(repo, "actions/runs?head_sha="+sha, "--paginate"))
 	if err != nil {
 		return forge.Verdict{}, err
 	}

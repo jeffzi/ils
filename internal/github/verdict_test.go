@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -14,6 +16,7 @@ import (
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/github/ghtest"
+	"github.com/jeffzi/ils/internal/gittest"
 )
 
 func checksArgs() []string { return ghtest.ChecksArgs(engineSlug, pullNumber) }
@@ -195,6 +198,35 @@ func TestForge_Verdict_FailedLog(t *testing.T) {
 			assert.NilError(t, err)
 
 			assert.Check(t, is.DeepEqual(got.FailedLog, tt.want))
+		})
+	}
+}
+
+func TestForge_Verdict_WhenACutEndsTheFailedLogRead_ReportsTheLogUnreadable(t *testing.T) {
+	tests := []struct {
+		err  error
+		name string
+	}{
+		{name: "the time limit", err: context.DeadlineExceeded},
+		{name: "an interrupt", err: context.Canceled},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			failing := ghtest.JSONArray(ghtest.CheckJSON("build", "fail", runLink))
+			// The log read holds its answer open far longer than the test runs: only the cut ends it.
+			held := ghtest.Answer{Delay: time.Hour}
+			fake := ghtest.Setup(t, ghtest.Says(failing, checksArgs()...), ghtest.Says("[]", runsArgs()...), ghtest.Exits(held, logArgs()...))
+			cut := make(chan struct{})
+			fake.WhileHolding(sync.OnceValue(func() error {
+				close(cut)
+				return nil
+			}))
+			ctx := gittest.Ending(t.Context(), cut, tt.err)
+
+			got, err := newForge().Verdict(ctx, engine(), verdictQuery())
+			assert.NilError(t, err)
+
+			assert.Check(t, is.DeepEqual(got.FailedLog, forge.FailedLog{Check: "build", State: forge.FailedLogUnreadable}))
 		})
 	}
 }
