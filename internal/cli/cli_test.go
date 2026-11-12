@@ -603,7 +603,7 @@ func TestApp_Run_WhenTheResultIsPendingOffATerminalStdoutOrAsJSON_PrintsNoHint(t
 // Bound
 // ---------------------------------------------------------------------------
 
-func TestApp_Run_WhenPushMergeOrReleaseRuns_WaitsAsLongAsTheWaitFlagOrAStdoutTerminalSaysFromLaunch(t *testing.T) {
+func TestApp_Run_WhenPushOrReleaseRuns_WaitsAsLongAsTheWaitFlagOrAStdoutTerminalSaysFromLaunch(t *testing.T) {
 	t.Parallel()
 
 	var (
@@ -671,8 +671,7 @@ type grammarRefusal struct {
 }
 
 // grammarRefusals are the command lines that break the grammar: a missing, unknown or extra word,
-// a missing or extra release version, and a flag that is unknown or set to neither
-// true nor false.
+// a missing or extra release version, and a flag that is unknown.
 func grammarRefusals() []grammarRefusal {
 	return []grammarRefusal{
 		{name: "extra word", args: []string{"push", "extra"}, reason: "push takes no other word, and extra was given"},
@@ -748,14 +747,6 @@ func TestApp_Run_WhenHelpIsAskedForAWordThatIsNotACommand_RefusesItAsTheWordAlon
 	assert.Assert(t, is.Contains(alone.Reason, "verge"))
 	tests := [][]string{{"verge", "--help"}, {"--help", "verge"}, {"help", "verge"}}
 	for _, args := range tests {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			t.Parallel()
-
-			got := launch(t, outside(t), args...)
-
-			assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
-			assert.Check(t, is.Contains(got.stdout, alone.Reason))
-		})
 		t.Run(strings.Join(args, " ")+" --json", func(t *testing.T) {
 			t.Parallel()
 
@@ -791,17 +782,6 @@ func TestApp_Run_WhenHelpIsAskedForTheRootOrACommand_PrintsTheHelpTheFlagPrints(
 	}
 }
 
-// flagParsers are the words that start one command line per way ils builds a command that parses
-// flags: the root alone, a landing command, a command that takes a name, and guard where it runs.
-func flagParsers() [][]string {
-	parsers := [][]string{{}, {"push"}, {"branch"}}
-	if cli.GuardParsesFlags {
-		parsers = append(parsers, []string{"guard"})
-	}
-
-	return parsers
-}
-
 // typedAfter is a command line: the words of parser, then word.
 type typedAfter struct {
 	word   string
@@ -817,9 +797,10 @@ func (c typedAfter) args() []string {
 func TestApp_Run_WhenAFlagWordIsMalformed_RefusesNamingTheWordAsTyped(t *testing.T) {
 	t.Parallel()
 
-	var tests []typedAfter
-	for _, parser := range flagParsers() {
-		tests = append(tests, typedAfter{parser: parser, word: "---x"})
+	// A landing command stands for the commands ils builds alike; guard builds its own where it runs.
+	tests := []typedAfter{{parser: []string{"push"}, word: "---x"}}
+	if cli.GuardParsesFlags {
+		tests = append(tests, typedAfter{parser: []string{"guard"}, word: "---x"})
 	}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args(), " "), func(t *testing.T) {

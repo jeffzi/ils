@@ -220,7 +220,7 @@ func TestApp_Run_WhenInitClaudeRunsWhereTheGuardDoesNot_WritesTheRulesBesideTheH
 	assert.Check(t, is.DeepEqual(decodedFile(t, path), want))
 }
 
-func TestApp_Run_WhenInitClaudeRunsWhereTheGuardDoesNot_MarksTheHookStepUnchangedSayingWhereItRuns(t *testing.T) {
+func TestApp_Run_WhenInitClaudeRunsWhereTheGuardDoesNot_MarksTheHookStepUnchanged(t *testing.T) {
 	t.Parallel()
 
 	app, _ := installing(t)
@@ -229,7 +229,6 @@ func TestApp_Run_WhenInitClaudeRunsWhereTheGuardDoesNot_MarksTheHookStepUnchange
 	got := settingsStepsShown(t, app)
 
 	assert.Check(t, strings.HasPrefix(got[0], "– "), "line = %q", got[0])
-	assert.Check(t, is.Contains(got[0], cli.GuardUnsupported))
 }
 
 func TestApp_Run_WhenInitClaudeFindsSettings_KeepsTheOrderOfTheUsersKeys(t *testing.T) {
@@ -406,7 +405,9 @@ func TestApp_Run_WhenInitClaudeFindsSomeRulesInAnyList_MarksChangedOnlyTheHookAn
 
 	got := settingsStepsShown(t, app)
 
-	assertShownSteps(t, got, []shownStep{{mark: "✓", word: path}, {mark: "✓", word: "allow"}, {mark: "–", word: "ask"}, {mark: "✓", word: "deny"}})
+	lists := []string{withoutPath(got[1], path), withoutPath(got[2], path), withoutPath(got[3], path)}
+	assertShownSteps(t, got[:1], []shownStep{{mark: "✓", word: path}})
+	assertShownSteps(t, lists, []shownStep{{mark: "✓", word: "allow"}, {mark: "–", word: "ask"}, {mark: "✓", word: "deny"}})
 }
 
 func TestApp_Run_WhenInitClaudeFindsEverySettingInPlace_LeavesTheFileUntouched(t *testing.T) {

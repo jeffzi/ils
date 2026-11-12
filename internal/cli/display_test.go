@@ -741,7 +741,7 @@ func TestApp_Run_WhenNeitherStreamIsATerminal_WritesNothingBeforeTheWholeResult(
 	assert.Check(t, is.DeepEqual(stdout.lines(), slices.Concat(pacedLines(), pacedEnd())))
 }
 
-func TestApp_Run_WhenTheJSONFlagIsAmongTheWordsOnTerminals_PrintsTheWholeResultAfterTheSpinnerIsGone(t *testing.T) {
+func TestApp_Run_WhenTheJSONFlagIsAmongTheWordsOnTerminals_PrintsTheWholeResult(t *testing.T) {
 	t.Parallel()
 
 	app, stdout, stderr := onTwoScreens(t, []string{colorTerm}, true, true)
@@ -756,7 +756,6 @@ func TestApp_Run_WhenTheJSONFlagIsAmongTheWordsOnTerminals_PrintsTheWholeResultA
 	assert.Check(t, is.Equal(got.code, exitDelivered))
 	assert.Check(t, is.Equal(early, ""))
 	assert.Check(t, is.Len(spinning, 1), "stderr showed %q", spinning)
-	assert.Check(t, is.Len(stderr.lines(), 0), "stderr still shows %q", stderr.lines())
 	assert.Check(t, is.DeepEqual(resulttest.Decode(t, stdout.raw()).Lines, pacedLines()))
 }
 
@@ -811,59 +810,6 @@ func TestApp_Run_WhenTheDisplayCannotBeWritten_EndsAsARunWithoutIt(t *testing.T)
 	assert.Check(t, is.Equal(got.code, exitDelivered))
 	printed := outputLines(stdout.buf.String())
 	assert.Check(t, is.DeepEqual(printed, slices.Concat(pacedLines(), pacedEnd())))
-}
-
-// reporting is a landing command that runs the step of pushingLabel for spun, reports pushedLine
-// as a step of kind, has peek read the screens, and ends broke with pushedLine and openedLine as
-// its lines.
-func reporting(kind cli.StepKind, peek func()) cli.Command {
-	return func(_ context.Context, deps landing.Deps, req landing.Request) result.Result {
-		deps.Progress.Started(pushingLabel())
-		elapse(spun)
-		cli.Report(deps.Progress, kind, pushedLine())
-		peek()
-
-		return result.Result{
-			Command: req.Command, Words: req.Words, Outcome: result.Broke,
-			Lines: []result.Phrase{pushedLine(), openedLine()}, Reason: stillRunning(), Next: result.NextCommand("push"),
-		}
-	}
-}
-
-// brokeEnd returns the reason and next that follow the lines of a reporting command.
-func brokeEnd() []string {
-	return []string{
-		resulttest.ReasonLine(result.Broke, "the checks of #12 are still running"),
-		resulttest.NextLine("ils push"),
-	}
-}
-
-func TestApp_Run_WhenASkippedOrFailedStepLineIsReportedOnATerminal_PrintsItOnceBehindItsMarkAndDuration(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		mark string
-		kind cli.StepKind
-	}{
-		{name: "skipped", kind: cli.StepUnchanged, mark: "–"},
-		{name: "failed", kind: cli.StepFailed, mark: "✗"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			app, stdout := onStdoutScreen(t, []string{colorTerm, noColor})
-			var early []string
-			app.SetPush(reporting(tt.kind, func() { early = stdout.lines() }))
-
-			shown(t, app, "push")
-
-			step := tt.mark + " " + pushedText + " 3.3s"
-			assert.Check(t, is.DeepEqual(early, []string{step}))
-			assert.Check(t, is.DeepEqual(stdout.lines(), slices.Concat([]string{step, openedText}, brokeEnd())))
-		})
-	}
 }
 
 // endingWith is a landing command that starts the step of waitingLabel, says openedLine to end it

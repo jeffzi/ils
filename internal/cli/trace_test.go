@@ -123,8 +123,6 @@ func TestApp_Run_WhenDebugIsOn_DrawsEachRecordTimedFromLaunchWithTimesDim(t *tes
 			return finished(req)
 		}
 		for _, record := range []slog.Record{
-			debugRecord(app.Launch.Add(1500*time.Millisecond), "wait",
-				slog.String("read", "merge-state"), slog.String("state", "unknown"), slog.Duration("window", 30*time.Second)),
 			debugRecord(app.Launch.Add(2250*time.Millisecond), child.ExecMessage,
 				slog.String(child.KeyTool, "gh"), slog.Any(child.KeyArgs, []string{"pr", "view", "12"}), slog.Int64(child.KeyExit, 0),
 				slog.Duration(child.KeyDuration, 1234*time.Millisecond)),
@@ -143,14 +141,13 @@ func TestApp_Run_WhenDebugIsOn_DrawsEachRecordTimedFromLaunchWithTimesDim(t *tes
 	drawn := resulttest.Draw(t, got.stderr)
 	lines := outputLines(drawn.String())
 	want := []string{
-		"+1.500s wait read=merge-state state=unknown window=30s",
 		"+2.250s gh pr view 12 exit 0 1.234s",
 		"+3.000s gh pr checks 12 signal: killed 30ms",
 	}
 	assert.Assert(t, len(lines) >= len(want), "stderr = %q", drawn.String())
 	assert.Check(t, is.DeepEqual(lines[len(lines)-len(want):], want))
-	assert.Check(t, is.Equal(drawn.LookOf(t, want[1], "+2.250s"), resulttest.Look{Dim: true}), "stderr = %q", drawn.String())
-	assert.Check(t, is.Equal(drawn.LookOf(t, want[1], "1.234s"), resulttest.Look{Dim: true}), "stderr = %q", drawn.String())
+	assert.Check(t, is.Equal(drawn.LookOf(t, want[0], "+2.250s"), resulttest.Look{Dim: true}), "stderr = %q", drawn.String())
+	assert.Check(t, is.Equal(drawn.LookOf(t, want[0], "1.234s"), resulttest.Look{Dim: true}), "stderr = %q", drawn.String())
 }
 
 func TestApp_Run_WhenDebugIsOnAndACallRecordHoldsAnAttributeOfAnotherType_DrawsItAsAnyRecord(t *testing.T) {
