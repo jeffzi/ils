@@ -188,6 +188,8 @@ func joinPresent(parts ...string) string {
 // ---------------------------------------------------------------------------
 
 const (
+	origin = "origin"
+
 	// remotesRef prefixes the remote-tracking refs, where the clone keeps what it last fetched of
 	// origin's branches.
 	remotesRef = "refs/remotes/" + origin + "/"
@@ -719,7 +721,7 @@ func remoteFailure(err error) error {
 		return err
 	}
 
-	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && exitErr.Code == fatalCode && refusal(exitErr.Stderr) {
+	if fatalSaying(err, refusal) {
 		return fmt.Errorf("%w: %w", ErrRefused, err)
 	}
 

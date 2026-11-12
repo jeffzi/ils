@@ -149,21 +149,19 @@ func ghConfigRunner(runner github.Runner, dir string, config ghConfig) (github.R
 		{name: ghConfigHomeVar, variable: config.configHome},
 		{name: ghHomeVar, variable: config.home},
 	} {
-		if named.variable.unknown {
-			return runner, named.name
-		}
-
-		if !named.variable.set {
-			continue
-		}
-
 		// gh reads an empty value as an unset one, so it is handed over as it is.
 		value := named.variable.value
-		if value != "" {
-			value = absolute(dir, value)
-			if value == "" {
+		if !named.variable.set || value != "" {
+			resolved, known := named.variable.resolve(dir)
+			if !known {
 				return runner, named.name
 			}
+
+			if !named.variable.set {
+				continue
+			}
+
+			value = resolved
 		}
 
 		env = append(git.WithoutKeys(env, named.name), named.name+"="+value)

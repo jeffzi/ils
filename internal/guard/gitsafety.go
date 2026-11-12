@@ -395,6 +395,8 @@ type unreadArgumentError struct {
 	sub string
 }
 
+// Error names the git subcommand and says that an argument it cannot read may hold an option the
+// guard checks for.
 func (e *unreadArgumentError) Error() string {
 	return fmt.Sprintf("git %s: the argument cannot be read, and it may hold an option the guard checks for", e.sub)
 }
@@ -581,15 +583,20 @@ func refuseRebaseOverChanges(ctx context.Context, caller Caller, inv Invocation)
 		return Verdict{Outcome: Allow}, nil
 	}
 
+	unknownRepository := refuse("git rebase: the guard cannot tell which repository it runs in; " + moveFirst)
 	if inv.Git.GitDirUnknown {
-		return refuse("git rebase: the guard cannot tell which repository it runs in; " + moveFirst), nil
+		return unknownRepository, nil
 	}
 
 	if inv.Git.GitDir == "" || keepsWorkTree(readArgs(inv.Git.Args, optionsOf(sub))) {
 		return Verdict{Outcome: Allow}, nil
 	}
 
-	options, _ := targetOptions(inv)
+	options, known := targetOptions(inv)
+	if !known {
+		return unknownRepository, nil
+	}
+
 	dirty, err := git.Repo{Runner: targetRunner(caller.Git, inv.Dir, inv.Target)}.Dirty(ctx, options...)
 	if err != nil {
 		return Verdict{}, fmt.Errorf("read whether git rebase runs over changes: %w", err)

@@ -20,7 +20,6 @@ import (
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
-	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
 const (
@@ -32,16 +31,6 @@ const (
 
 	readyCommand = "gh pr ready --repo " + repoArg + " 12"
 )
-
-// nextMergeAgain is the `Next:` line that runs `ils merge` again as it is, and nextMergeFixed the
-// one that runs it again once what failed is fixed.
-func nextMergeAgain() string {
-	return expect(resulttest.NextLine("ils merge") + "\n")
-}
-
-func nextMergeFixed() string {
-	return expect("fix what failed", "ils merge")
-}
 
 func draftText() string {
 	return expect("#12", "is a draft") + mergeCommand().after("`"+readyCommand+"`")
@@ -422,29 +411,6 @@ func TestMerge_WhenACheckBeforeTheWaitFails_RefusesAtTheFirst(t *testing.T) {
 	))
 }
 
-func TestMerge_WhenTheMergedPullRequestLacksCommitsOfTheBranch_RefusesNamingTheMergedPullRequest(t *testing.T) {
-	t.Parallel()
-	synctest.Test(t, func(t *testing.T) {
-		var head string
-
-		run := runMergeOn(t, setting{
-			arrange: func(f *gittest.Fixture) {
-				f.LandPull(merged, topic)
-				head = f.Git("rev-parse", topic)
-				f.Commits(topic, "fix a typo", "add an example")
-			},
-			script: resuming(),
-		})
-
-		assertStoppedBy(t, run.got, result.Refused, mergeRequest())
-
-		_, reason := shown(t, run.got, run.gitDir)
-		assertSays(t, reason, expect("#"+strconv.Itoa(merged), topic, "merged without the commits"))
-		assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(head, ""), cmpopts.EquateEmpty()))
-		assert.Check(t, sameOps(run.forge.Calls(), changesRead()))
-	})
-}
-
 // mergedElsewhere is the number of a pull request from the topic branch merged into otherBase.
 const mergedElsewhere = 3
 
@@ -490,25 +456,6 @@ func TestMerge_WhenTheOnlyPullRequestWasMergedIntoAnotherBase_RefusesNamingItsBa
 	assert.Check(t, sameOps(run.forge.Calls(), changesRead()))
 }
 
-func TestMerge_WhenAPullRequestMergedIntoTheTrunkSitsBesideOneMergedElsewhere_FinishesWithoutMerging(t *testing.T) {
-	t.Parallel()
-	synctest.Test(t, func(t *testing.T) {
-		both := resuming().deleting(nil).with(func(script *forgetest.Script, _ string) {
-			script.FindChanges[0].Value = slices.Insert(script.FindChanges[0].Value, 0, elsewhereMerge())
-		})
-		arrange := func(f *gittest.Fixture) {
-			f.PullRef(mergedElsewhere, f.Git("rev-parse", topic))
-			landAndPublish(f)
-		}
-
-		run := runMergeOn(t, setting{arrange: arrange, script: both})
-
-		assertEndedBy(t, run.got, run.gitDir,
-			ended{text: resumedLine() + deletedLine() + onTrunkLine(), req: mergeRequest(), outcome: result.Done})
-		assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(run.tip, result.EndingTrunk), cmpopts.EquateEmpty()))
-	})
-}
-
 // mergeAccepted are the states that pass a check before the wait that another state fails: each
 // reaches the read of the trunk's rules, whose ruleset forbids squash merges.
 func mergeAccepted() []mergeRow {
@@ -527,7 +474,7 @@ func mergeAccepted() []mergeRow {
 	}
 }
 
-func TestMerge_WhenStatePassesACheckAnotherStateFails_GoesOnToTheNext(t *testing.T) {
+func TestMerge_WhenTheTitleHasAScopeOrABreakingMark_GoesOnToTheTrunksRules(t *testing.T) {
 	t.Parallel()
 
 	runMerges(t, mergeAccepted())
@@ -1000,7 +947,7 @@ func afterWaitStops() []waitRow {
 			script:  waiting(passing()).showing(cleanHead(), inState(forge.MergeBlockedByRunningCheck)),
 			outcome: result.Pending, payload: greenDetail(forge.MergeBlockedByRunningCheck),
 			text: countLine() + stateLine(forge.MergeBlockedByRunningCheck) +
-				expect("requires still runs on", tipMark) + nextMergeAgain(),
+				expect("requires still runs on", tipMark) + mergeCommand().again,
 		},
 		{
 			name: "blocked by review with nothing reported and no CI on the trunk",

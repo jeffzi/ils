@@ -245,41 +245,43 @@ func TestFailure_WhenProgramNeverExited_WrapsRunErrorNamingCommand(t *testing.T)
 	assert.Check(t, is.ErrorContains(err, "gh pr view"))
 }
 
-// printedBoth returns what a run printed on both outputs, for the tests of Ended.
-func printedBoth() child.Output {
-	return child.Output{Stdout: "partial answer\n", Stderr: "no such tool\n"}
-}
-
-func TestEnded_WhenRunSucceeded_ReturnsWhatItPrinted(t *testing.T) {
+func TestProgram_Run_WhenProgramExitsZero_ReturnsWhatItPrinted(t *testing.T) {
 	t.Parallel()
+	program := child.Program{Tool: "go", Args: []string{"version"}, LookPath: exec.LookPath}
 
-	got, err := child.Ended(t.Context(), []string{"go", "version"}, nil, printedBoth())
+	got, err := program.Run(t.Context())
 	assert.NilError(t, err)
 
-	assert.Check(t, is.DeepEqual(got, printedBoth()))
+	assert.Check(t, is.Contains(got.Stdout, "go version"))
 }
 
-func TestEnded_WhenProgramExitedNonZero_KeepsOnlyStdout(t *testing.T) {
-	t.Parallel()
-	runErr := nonZeroExit(t)
+func TestProgram_Run_WhenProgramExitsNonZero_KeepsOnlyStdout(t *testing.T) {
+	// Not parallel: gittest.FakeGit sets PATH for the whole process.
+	settings := gittest.FakeGit(t, gittest.Fake{FailAfterOn: []string{"version"}})
+	program := child.Program{
+		Tool: "git", Args: []string{"version"}, LookPath: exec.LookPath, Env: append(os.Environ(), settings...),
+	}
 
-	got, err := child.Ended(t.Context(), nonsenseArgv(), runErr, printedBoth())
+	got, err := program.Run(t.Context())
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
-	assert.Assert(t, ok, "Ended error = %v, want *child.ExitError", err)
-	assert.Check(t, is.Equal(exitErr.Stderr, printedBoth().Stderr))
-	assert.Check(t, is.DeepEqual(got, child.Output{Stdout: printedBoth().Stdout}))
+	assert.Assert(t, ok, "Run error = %v, want *child.ExitError", err)
+	assert.Check(t, is.Equal(exitErr.Stderr, gittest.FailedSaid+"\n"))
+	assert.Check(t, is.Contains(got.Stdout, "git version"))
+	assert.Check(t, is.Equal(got.Stderr, ""))
 }
 
-func TestEnded_WhenContextEndedAfterNonZeroExit_ReturnsNoOutput(t *testing.T) {
+func TestProgram_Run_WhenASignalEndsTheProgramAfterItPrinted_ReturnsNoOutput(t *testing.T) {
 	t.Parallel()
-	runErr := nonZeroExit(t)
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no signal a process can kill itself with")
+	}
+	program := child.Program{Tool: "sh", Args: []string{"-c", "echo partial; kill -KILL $$"}, LookPath: exec.LookPath}
 
-	got, err := child.Ended(ctx, nonsenseArgv(), runErr, printedBoth())
+	got, err := program.Run(t.Context())
 
-	assert.Check(t, is.ErrorIs(err, context.Canceled))
+	_, killed := errors.AsType[*child.KilledError](err)
+	assert.Assert(t, killed, "Run error = %v, want *child.KilledError", err)
 	assert.Check(t, is.DeepEqual(got, child.Output{}))
 }
 
@@ -493,6 +495,7 @@ func runBounded(t *testing.T, program child.Program) (child.Output, error) {
 	}
 }
 
+// foundAt returns a LookPath that finds every tool at path.
 func foundAt(path string) func(string) (string, error) {
 	return func(string) (string, error) { return path, nil }
 }
@@ -588,9 +591,8 @@ func TestProgram_Run_WhenALoggerIsSet_LogsTheTimeTheRunTook(t *testing.T) {
 
 	_, _ = program.Run(t.Context())
 
-	records := sink.Records()
-	assert.Assert(t, is.Len(records, 1))
-	took, ok := records[0].Map()[child.KeyDuration].(time.Duration)
-	assert.Assert(t, ok, "duration attribute = %#v, want a time.Duration", records[0].Map()[child.KeyDuration])
+	record := logtest.Only(t, sink.Records())
+	took, ok := record.Map()[child.KeyDuration].(time.Duration)
+	assert.Assert(t, ok, "duration attribute = %#v, want a time.Duration", record.Map()[child.KeyDuration])
 	assert.Check(t, took > 0, "duration = %v, want above zero for a run that started a process", took)
 }

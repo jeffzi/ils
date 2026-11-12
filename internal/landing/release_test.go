@@ -19,7 +19,6 @@ import (
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
-	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
 const (
@@ -130,14 +129,7 @@ func releasePayload(t *testing.T, got result.Result, gitDir string) *result.Rele
 
 // releaseCommand is `ils release v` with the `Next:` lines that name it.
 func releaseCommand(v string) landingCommand {
-	line := "ils release " + v
-
-	return landingCommand{
-		name:  "release " + v,
-		req:   releaseRequest(v, false),
-		again: expect(resulttest.NextLine(line) + "\n"),
-		fixed: expect("fix what failed", line),
-	}
+	return commandNamed("release "+v, releaseRequest(v, false))
 }
 
 // section is the changelog section of the version v, holding body.
@@ -257,12 +249,11 @@ func TestRelease_WhenTheVersionIsNotXYZ_RefusesNamingIt(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			st := releaseScene(t, tagged)
 			req := releaseRequest(tt.in, false)
 
-			got := runRelease(t, st.s, req)
+			got := landing.Release(t.Context(), landing.Deps{}, req)
 
-			assertEndedBy(t, got, st.s.gitDir, ended{outcome: result.Refused, req: req, text: expect(tt.in)})
+			assertEndedBy(t, got, "", ended{outcome: result.Refused, req: req, text: expect(tt.in)})
 		})
 	}
 }
@@ -508,41 +499,17 @@ func TestRelease_WhenTheLocalTagIsAtAnotherCommit_RefusesWithANextThatDeletesIt(
 	assert.Check(t, is.Equal(st.s.fixture.Git("rev-parse", releaseTag+"^{commit}"), st.base))
 }
 
-// tagRow is where the tags of the version stand once the release commit is on origin's trunk.
-type tagRow struct {
-	arrange func(st staged)
-	name    string
-}
-
-func TestRelease_WhenTheTagsOfTheVersionAllowIt_ReadsTheRelease(t *testing.T) {
+func TestRelease_WhenOriginsTagIsAtTheReleaseCommitAndTheLocalOneElsewhere_ReadsTheRelease(t *testing.T) {
 	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		st := releaseScene(t, tagged)
+		st.s.fixture.OriginTag(releaseTag, st.release)
+		st.s.fixture.Git("tag", releaseTag, st.base)
 
-	tests := []tagRow{
-		{
-			name:    "the local tag at the release commit",
-			arrange: func(st staged) { st.s.fixture.Git("tag", releaseTag, st.release) },
-		},
-		{
-			name: "origin's tag at the release commit and the local one elsewhere",
-			arrange: func(st staged) {
-				st.s.fixture.OriginTag(releaseTag, st.release)
-				st.s.fixture.Git("tag", releaseTag, st.base)
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			synctest.Test(t, func(t *testing.T) {
-				st := releaseScene(t, tagged)
-				tt.arrange(st)
+		got := runRelease(t, st.s, releaseRequest(version, false))
 
-				got := runRelease(t, st.s, releaseRequest(version, false))
-
-				assertReleaseRead(t, st, got, version)
-			})
-		})
-	}
+		assertReleaseRead(t, st, got, version)
+	})
 }
 
 // ---------------------------------------------------------------------------

@@ -27,8 +27,6 @@ const (
 	// versionComponents counts the numeric components of a version: major, minor, patch.
 	versionComponents = 3
 
-	origin = "origin"
-
 	// noRemoteCode is the exit of `git remote get-url` for a remote that is not configured.
 	noRemoteCode = 2
 	// falseCode is the exit of `git symbolic-ref --quiet` on a detached HEAD, of
@@ -36,9 +34,6 @@ const (
 	// `git merge-base --is-ancestor` when the answer is no, and of `git config --get` for a key that
 	// is not set.
 	falseCode = 1
-	// fatalCode is the exit of a git command that died of a fatal error, and of git when it cannot
-	// start the program of a one-word command line, which it runs without a shell.
-	fatalCode = 128
 	// notRepositoryMessage is what git says, in the C locale, when it finds no repository where it
 	// looks.
 	notRepositoryMessage = "not a git repository"
@@ -145,19 +140,8 @@ func (r Repo) CheckRepository(ctx context.Context) error {
 }
 
 // ---------------------------------------------------------------------------
-// Commit and branch queries
+// Repository location and aliases
 // ---------------------------------------------------------------------------
-
-// HeadSHA returns the sha of the commit HEAD is on.
-func (r Repo) HeadSHA(ctx context.Context) (string, error) {
-	return r.line(ctx, "rev-parse", "HEAD")
-}
-
-// HasCommits reports whether the local branch has a commit; one made with `git switch --orphan`
-// has none until the first commit on it.
-func (r Repo) HasCommits(ctx context.Context, branch string) (bool, error) {
-	return r.holds(ctx, "show-ref", "--verify", "--quiet", BranchRefPrefix+branch)
-}
 
 // GitDir returns the absolute path of the git directory git finds when given the global options,
 // the repository's own when there are none.
@@ -170,19 +154,6 @@ func (r Repo) GitDir(ctx context.Context, options ...string) (string, error) {
 	return filepath.FromSlash(dir), nil
 }
 
-// Environ returns a copy of the environment git runs with: the runner's own Env, or the environment
-// of this process when it has none.
-func (r Runner) Environ() []string {
-	return child.Environ(r.Env)
-}
-
-// inCLocale returns a copy of r that runs git in the C locale, so that its messages are untranslated.
-func (r Runner) inCLocale() Runner {
-	r.Env = append(r.Environ(), "LC_ALL=C")
-
-	return r
-}
-
 // FindGitDir returns the absolute path of the git directory git finds when given the global
 // options, such as `-C` or `--git-dir`, from the runner's directory, and found false when git says
 // there is no repository there. Any other exit of git, such as for a `-C` directory that does not
@@ -192,8 +163,7 @@ func (r Runner) inCLocale() Runner {
 // message untranslated.
 func (r Repo) FindGitDir(ctx context.Context, options ...string) (dir string, found bool, err error) {
 	dir, err = Repo{Runner: r.Runner.inCLocale()}.GitDir(ctx, options...)
-	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && exitErr.Code == fatalCode &&
-		strings.Contains(exitErr.Stderr, notRepositoryMessage) {
+	if fatalSaying(err, func(stderr string) bool { return strings.Contains(stderr, notRepositoryMessage) }) {
 		return "", false, nil
 	}
 
@@ -204,28 +174,59 @@ func (r Repo) FindGitDir(ctx context.Context, options ...string) (dir string, fo
 	return dir, true, nil
 }
 
-// InWorkTree reports whether the runner's directory lies in the work tree of a repository, and
-// false when git says there is no repository there, or one without a work tree: a bare repository,
-// or the inside of a git directory. Any other exit of git is git's *child.ExitError; a git missing
-// from PATH is a *child.ToolMissingError.
+// TopLevel returns the top-level directory of the work tree git finds when given the global
+// options, such as `-C` or `--git-dir`, from the runner's directory, and found false when git says
+// there is no repository there, or one without a work tree: a bare repository, or the inside of a
+// git directory. Any other exit of git is git's *child.ExitError; a git missing from PATH is a
+// *child.ToolMissingError.
 //
 // Git tells these apart only by its message, so the call runs in the C locale to keep that message
 // untranslated.
-func (r Repo) InWorkTree(ctx context.Context) (bool, error) {
-	_, err := r.Runner.inCLocale().Run(ctx, "rev-parse", "--show-toplevel")
-	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && exitErr.Code == fatalCode &&
-		(strings.Contains(exitErr.Stderr, notRepositoryMessage) || strings.Contains(exitErr.Stderr, noWorkTreeMessage)) {
-		return false, nil
+func (r Repo) TopLevel(ctx context.Context, options ...string) (dir string, found bool, err error) {
+	args := append(slices.Clone(options), "rev-parse", "--show-toplevel")
+
+	dir, err = Repo{Runner: r.Runner.inCLocale()}.line(ctx, args...)
+	if fatalSaying(err, func(stderr string) bool {
+		return strings.Contains(stderr, notRepositoryMessage) || strings.Contains(stderr, noWorkTreeMessage)
+	}) {
+		return "", false, nil
 	}
 
-	return err == nil, err
+	if err != nil {
+		return "", false, err
+	}
+
+	return filepath.FromSlash(dir), true, nil
+}
+
+// InWorkTree reports whether the runner's directory lies in the work tree of a repository: whether
+// TopLevel finds one, with TopLevel's errors.
+func (r Repo) InWorkTree(ctx context.Context) (bool, error) {
+	_, found, err := r.TopLevel(ctx)
+
+	return found, err
 }
 
 // Alias returns what the alias name expands to in the config git reads when given the global
 // options, and set false when no such alias is set. A failure of git itself is an error, never an
 // alias that is not set.
 func (r Repo) Alias(ctx context.Context, name string, options ...string) (expansion string, set bool, err error) {
-	return r.optionalLine(ctx, append(slices.Clone(options), "config", "--get", "alias."+name)...)
+	return r.config(ctx, "alias."+name, options...)
+}
+
+// ---------------------------------------------------------------------------
+// Commit and branch queries
+// ---------------------------------------------------------------------------
+
+// HeadSHA returns the sha of the commit HEAD is on.
+func (r Repo) HeadSHA(ctx context.Context) (string, error) {
+	return r.line(ctx, "rev-parse", "HEAD")
+}
+
+// HasCommits reports whether the local branch has a commit; one made with `git switch --orphan`
+// has none until the first commit on it.
+func (r Repo) HasCommits(ctx context.Context, branch string) (bool, error) {
+	return r.holds(ctx, "show-ref", "--verify", "--quiet", BranchRefPrefix+branch)
 }
 
 // ChangedTrackedFiles returns the tracked files that differ from HEAD, staged or not. Untracked
@@ -697,6 +698,19 @@ func VersionOf(line string) string {
 // Runner helpers
 // ---------------------------------------------------------------------------
 
+// Environ returns a copy of the environment git runs with: the runner's own Env, or the environment
+// of this process when it has none.
+func (r Runner) Environ() []string {
+	return child.Environ(r.Env)
+}
+
+// inCLocale returns a copy of r that runs git in the C locale, so that its messages are untranslated.
+func (r Runner) inCLocale() Runner {
+	r.Env = append(r.Environ(), "LC_ALL=C")
+
+	return r
+}
+
 // line runs git with args and returns its stdout without the trailing line break.
 func (r Repo) line(ctx context.Context, args ...string) (string, error) {
 	result, err := r.Runner.Run(ctx, args...)
@@ -727,6 +741,13 @@ func (r Repo) optionalLine(ctx context.Context, args ...string) (value string, f
 	}
 
 	return value, err == nil, err
+}
+
+// config reads key from the config git reads when given the global options. A key that is not
+// set, which `git config --get` reports by exiting 1, is not an error: it returns an empty value
+// and set false, so a caller can tell it from a failure of git itself.
+func (r Repo) config(ctx context.Context, key string, options ...string) (value string, set bool, err error) {
+	return r.optionalLine(ctx, append(slices.Clone(options), "config", "--get", key)...)
 }
 
 // currentBranch returns the branch HEAD is on; onBranch is false on a detached HEAD.

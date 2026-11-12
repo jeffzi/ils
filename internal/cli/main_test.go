@@ -15,6 +15,7 @@ import (
 
 	"github.com/jeffzi/ils/internal/cli"
 	"github.com/jeffzi/ils/internal/github/ghtest"
+	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
 )
@@ -82,6 +83,9 @@ const (
 
 func TestMain(m *testing.M) {
 	if code, served := ghtest.Main(); served {
+		os.Exit(code)
+	}
+	if code, served := gittest.Main(); served {
 		os.Exit(code)
 	}
 	if way := os.Getenv(stuckRun); way != "" {

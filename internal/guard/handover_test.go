@@ -10,6 +10,7 @@ import (
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
+	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/guard"
 )
 
@@ -167,7 +168,7 @@ func TestParse_WhenARelativePathAfterACdIsNamedForATool_ReadsItWhereTheKernelOpe
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			command := "cd " + quotedPath(tt.dir(t)) + " && xargs ../bin/git push"
+			command := "cd " + gittest.ShellWord(tt.dir(t)) + " && xargs ../bin/git push"
 
 			got := last(t, command)
 
@@ -200,7 +201,7 @@ func checkHandedTool(t *testing.T, tests []handedTool) {
 func TestJudge_WhenFindRunsASedScriptThatNamesATool_AllowsIt(t *testing.T) {
 	t.Parallel()
 
-	checkAllowed(t, guard.Caller{Home: home, Dir: outsideDir(t)}, []namedCommand{
+	checkAllowed(t, callerOutsideAnyRepository(t), []namedCommand{
 		{name: "sed script behind find -exec", command: `find . -name '*.md' -exec sed -i 's/git push/ils push/' {} +`},
 	})
 }
@@ -208,7 +209,7 @@ func TestJudge_WhenFindRunsASedScriptThatNamesATool_AllowsIt(t *testing.T) {
 func TestJudge_WhenAShellScriptHandedToAnotherCommandRunsGit_Refuses(t *testing.T) {
 	t.Parallel()
 
-	caller := guard.Caller{Home: home, Dir: outsideDir(t)}
+	caller := callerOutsideAnyRepository(t)
 
 	checkJudged(t, caller, []judged{
 		{name: "interpreter arguments ssh hands to a shell", command: "ssh host sed 's/x/; git push/' f", want: guard.Refuse},
@@ -218,7 +219,7 @@ func TestJudge_WhenAShellScriptHandedToAnotherCommandRunsGit_Refuses(t *testing.
 func TestJudge_WhenACommandHandsAnotherCommandAShellWithNoScriptFile_Refuses(t *testing.T) {
 	t.Parallel()
 
-	caller := guard.Caller{Home: home, Dir: outsideDir(t)}
+	caller := callerOutsideAnyRepository(t)
 
 	checkJudged(t, caller, []judged{
 		{name: "shell reading /dev/stdin behind timeout", command: "timeout 60 bash /dev/stdin", wantNamed: "bash", want: guard.Refuse},
@@ -312,4 +313,20 @@ func TestParse_WhenAnArgumentIsARelativePathNamedForATool_ReadsItWhereTheInvocat
 			assert.Check(t, is.DeepEqual(kinds(xargs.Marks), kinds(tt.want)), "Parse(%q) marks", tt.command)
 		})
 	}
+}
+
+// writeExecutable writes an executable file at path, creating its directory.
+func writeExecutable(t *testing.T, path string) {
+	t.Helper()
+
+	assert.NilError(t, os.MkdirAll(filepath.Dir(path), 0o750))
+	assert.NilError(t, os.WriteFile(path, []byte("#!/bin/sh\n"), 0o700)) //nolint:gosec // the test needs an executable file
+}
+
+func TestJudge_WhenGoRunsAProgramGivenAToolWord_RefusesIt(t *testing.T) {
+	t.Parallel()
+
+	checkRefusals(t, []refusal{
+		{name: "bare git among go run's arguments", command: "go run ./tool git push", wantNamed: "go runs git"},
+	})
 }

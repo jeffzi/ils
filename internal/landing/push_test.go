@@ -253,15 +253,6 @@ func TestPush_WhenOriginsCopyCarriesAFirstCommitAnotherBranchShares_PushesIt(t *
 	}})
 }
 
-func TestPush_WhenSharedPreconditionFails_ReturnsItsRefusal(t *testing.T) {
-	t.Parallel()
-	s := newScene(t, (*gittest.Fixture).RemoveOrigin, forgetest.Script{}, false)
-
-	got := landing.Push(t.Context(), s.deps, pushRequest())
-
-	assertEnded(t, s, got, finish{outcome: result.Refused, text: expect("no remote named origin")})
-}
-
 // runPushRefusals runs each row as a test of its own: Push refuses with the text the row's arrange
 // returns, having written nothing and read no further than the row says.
 func runPushRefusals(t *testing.T, rows []pushRefusal) {

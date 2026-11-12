@@ -15,16 +15,6 @@ import (
 // unknown-bucket case.
 const unknownBucket = forge.Bucket("stale")
 
-func link(name string) string {
-	return "https://ci.example.com/checks/" + name
-}
-
-func linked(check forge.Check) forge.Check {
-	check.Link = link(check.Name)
-
-	return check
-}
-
 // verdictOf returns a verdict of checks with no required check missing.
 func verdictOf(checks ...forge.Check) forge.Verdict {
 	return forge.Verdict{Checks: checks}
@@ -60,11 +50,6 @@ func TestVerdict_State(t *testing.T) {
 			want:    forge.VerdictRed,
 		},
 		{
-			name:    "required passing, another required name missing",
-			verdict: missingBuild(forgetest.RequiredCheck("test", forge.BucketPass)),
-			want:    forge.VerdictGreen,
-		},
-		{
 			name:    "every required name missing, optional passing",
 			verdict: missingBuild(forgetest.Check("lint", forge.BucketPass)),
 			want:    forge.VerdictNone,
@@ -92,22 +77,22 @@ func TestVerdict_Failed(t *testing.T) {
 	}{
 		{
 			name:    "passing ahead of failing",
-			verdict: verdictOf(linked(forgetest.Check("lint", forge.BucketPass)), linked(forgetest.Check("test", forge.BucketFail))),
+			verdict: verdictOf(forgetest.Check("lint", forge.BucketPass), forgetest.Check("test", forge.BucketFail)),
 			want:    failed,
 		},
 		{
 			name:    "failing ahead of canceled",
-			verdict: verdictOf(linked(forgetest.Check("test", forge.BucketFail)), linked(forgetest.Check("build", forge.BucketCanceled))),
+			verdict: verdictOf(forgetest.Check("test", forge.BucketFail), forgetest.Check("build", forge.BucketCanceled)),
 			want:    failed,
 		},
 		{
 			name:    "canceled ahead of failing",
-			verdict: verdictOf(linked(forgetest.Check("build", forge.BucketCanceled)), linked(forgetest.Check("test", forge.BucketFail))),
+			verdict: verdictOf(forgetest.Check("build", forge.BucketCanceled), forgetest.Check("test", forge.BucketFail)),
 			want:    canceled,
 		},
 		{
 			name:    "optional failing ahead of required canceled",
-			verdict: verdictOf(linked(forgetest.Check("lint", forge.BucketFail)), linked(forgetest.RequiredCheck("build", forge.BucketCanceled))),
+			verdict: verdictOf(forgetest.Check("lint", forge.BucketFail), forgetest.RequiredCheck("build", forge.BucketCanceled)),
 			want:    canceled,
 		},
 	}

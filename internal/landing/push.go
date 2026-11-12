@@ -7,8 +7,8 @@ import (
 	"github.com/jeffzi/ils/internal/result"
 )
 
-// readBranches, readOnOrigin and readCopy name what push's own checks of the branch read, as a
-// result names them.
+// readBranches, readOnOrigin and readCopy name what a read of the branch's local and origin copies
+// covers, as a result names them.
 const (
 	readBranches = "the local branches"
 	readOnOrigin = "whether origin has the branch"
@@ -107,7 +107,7 @@ func pushChecks(ctx context.Context, deps Deps, req Request, ready Ready) (pushR
 func cutFromTrunk(ctx context.Context, deps Deps, req Request, p pushReady) *result.Result {
 	stop, read, err := sharedFirstCommit(ctx, deps, req, p)
 	if err != nil {
-		return req.unread(read, err)
+		return req.Unread(read, err)
 	}
 
 	return stop
@@ -220,7 +220,7 @@ func originCopy(ctx context.Context, deps Deps, req Request, p pushReady) (their
 
 	apart, err := deps.Repo.Divergence(ctx, p.tip, theirs)
 	if err != nil {
-		return "", false, req.unread(readCopy, err)
+		return "", false, req.Unread(readCopy, err)
 	}
 
 	switch {

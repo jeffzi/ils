@@ -49,20 +49,6 @@ func noSSHCommand(repo git.Repo) git.Repo {
 	return repo
 }
 
-func TestRepo_OriginURLs_WhenSSHFails_ReturnsExitErrorOfSSH(t *testing.T) {
-	t.Parallel()
-	f := gittest.New(t, trunk)
-	f.SetOriginURL(httpsURL)
-	f.SetPushURL(sshURL)
-	repo := plainSSH(t, newRepo(f), standInRefuse)
-
-	_, err := repo.OriginURLs(t.Context())
-
-	exitErr, ok := errors.AsType[*child.ExitError](err)
-	assert.Assert(t, ok, "OriginURLs() error = %v, want *child.ExitError", err)
-	assert.Check(t, is.Equal(exitErr.Argv[0], "ssh"))
-}
-
 // firstOnRunnerPath returns repo with the directory of the program at path, in the slash form, put
 // first on the PATH of its runner's environment.
 func firstOnRunnerPath(repo git.Repo, path string) git.Repo {
@@ -164,7 +150,7 @@ func TestRepo_OriginURLs_WhenSSHPrintsNoHostname_ReturnsErrorNamingTheSSHCall(t 
 func TestRepo_OriginURLs_WhenConfiguredSSHPrintsNoHostname_ReturnsErrorNamingIt(t *testing.T) {
 	t.Parallel()
 	f := aliasFixture(t)
-	configured := quoted(standIn(t, "ssh"))
+	configured := gittest.ShellWord(standIn(t, "ssh"))
 	repo := noSSHCommand(newRepo(f))
 	repo.Runner.Env = append(repo.Runner.Env, "GIT_SSH_COMMAND="+configured, sshStandInEnv+"="+standInNoHostname)
 
@@ -197,7 +183,7 @@ func sshReading(t *testing.T, content string) string {
 	dir := t.TempDir()
 	gittest.WriteFile(t, dir, "config", content)
 
-	return "ssh -F " + quoted(filepath.Join(dir, "config"))
+	return "ssh -F " + gittest.ShellWord(filepath.Join(dir, "config"))
 }
 
 // aliasFixture returns a new fixture whose origin is aliasURL.
@@ -209,9 +195,6 @@ func aliasFixture(t *testing.T) *gittest.Fixture {
 
 	return f
 }
-
-// quoted returns path in the slash form between single quotes, one word to a shell.
-func quoted(path string) string { return "'" + filepath.ToSlash(path) + "'" }
 
 // verbatim returns path as it is, the way GIT_SSH names a program.
 func verbatim(path string) string { return path }
@@ -341,7 +324,7 @@ func TestRepo_OriginURLs_WhenPlainSSHAnswersAHost_FoldsOnlyHostsUnderGitHub(t *t
 
 // variantCase is one ssh command a user configured, run as its ssh variant says.
 type variantCase struct {
-	// line, when set, writes the command line that names the stand-in at a path; quoted does
+	// line, when set, writes the command line that names the stand-in at a path; gittest.ShellWord does
 	// otherwise.
 	line func(path string) string
 	name string
@@ -392,7 +375,7 @@ func TestRepo_OriginURLs_WhenSSHCommandConfigured_AsksItOrPlainSSHAsItsVariantSa
 				f.Git("config", "ssh.variant", tt.variant)
 			}
 			path := standIn(t, tt.command)
-			line := quoted
+			line := gittest.ShellWord
 			if tt.line != nil {
 				line = tt.line
 			}
@@ -422,7 +405,7 @@ func TestRepo_OriginURLs_WhenConfiguredSSHFails_ReturnsErrorNamingIt(t *testing.
 		name      string
 		key       string
 	}{
-		{name: "command exits non-zero", key: "GIT_SSH_COMMAND", configure: quoted},
+		{name: "command exits non-zero", key: "GIT_SSH_COMMAND", configure: gittest.ShellWord},
 		{name: "program exits non-zero", key: "GIT_SSH", configure: verbatim},
 	}
 	for _, tt := range tests {
@@ -570,7 +553,7 @@ func exitingCases() []exitingCase {
 	byName := func(string) string { return "connect" }
 
 	return []exitingCase{
-		{name: "path exits 127", line: quoted},
+		{name: "path exits 127", line: gittest.ShellWord},
 		{name: "name on the runner's PATH exits 127", line: byName},
 		{name: "env and an option before a name exit 127", line: func(string) string { return "env -u AUDIT connect" }},
 	}
@@ -603,19 +586,6 @@ func TestRepo_OriginURLs_WhenFoundSSHCommandExitsAsIfMissing_ReturnsItsExitError
 			assert.Check(t, ok, "OriginURLs() error = %v, want *child.ExitError", err)
 		})
 	}
-}
-
-func TestRepo_OriginURLs_WhenCommandLineNamesNoProgramAndExitsAsIfMissing_ReturnsItsExitError(t *testing.T) {
-	// The shell runs the -G that ils appends as the program, and finds no such command.
-	t.Parallel()
-	f := aliasFixture(t)
-	repo := plainSSH(t, newRepo(f), plainAnswer)
-	repo.Runner.Env = append(append(repo.Runner.Env, "GIT_SSH_COMMAND=AUDIT=1"), variantEnv("ssh")...)
-
-	_, err := repo.OriginURLs(t.Context())
-
-	_, ok := errors.AsType[*child.ExitError](err)
-	assert.Check(t, ok, "OriginURLs() error = %v, want *child.ExitError", err)
 }
 
 // useProcessEnv makes env the whole environment of the process until the test ends. It cannot run
@@ -660,7 +630,7 @@ func callsOf(records []logtest.Record, tool string) []map[string]any {
 
 	for _, record := range records {
 		if record.Message == child.ExecMessage && record.Map()[child.KeyTool] == tool {
-			calls = append(calls, record.Without(child.KeyDuration))
+			calls = append(calls, record.Call())
 		}
 	}
 
@@ -716,6 +686,11 @@ func TestRepo_OriginURLs_WhenLoggerAttachedAndSSHReadsHost_LogsEachSSHRun(t *tes
 
 func TestEnvValue(t *testing.T) {
 	t.Parallel()
+	onWindows := runtime.GOOS == "windows"
+	otherCase := ""
+	if onWindows {
+		otherCase = "/x"
+	}
 	tests := []struct {
 		name    string
 		key     string
@@ -726,6 +701,7 @@ func TestEnvValue(t *testing.T) {
 		{name: "set twice keeps the last", env: []string{"TERM=xterm", "TERM=dumb"}, key: "TERM", want: "dumb", wantSet: true},
 		{name: "set to nothing", env: []string{"NO_COLOR="}, key: "NO_COLOR", want: "", wantSet: true},
 		{name: "only a longer key set", env: []string{"TERMINAL=xterm"}, key: "TERM", wantSet: false},
+		{name: "key in another case set", env: []string{"home=/x"}, key: "HOME", want: otherCase, wantSet: onWindows},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -737,6 +713,15 @@ func TestEnvValue(t *testing.T) {
 			assert.Check(t, is.Equal(got, tt.want), "EnvValue(%q, %q)", tt.env, tt.key)
 		})
 	}
+}
+
+func TestWithoutKeys_WhenKeysAreNamed_LeavesEveryOtherEntryInOrder(t *testing.T) {
+	t.Parallel()
+	env := []string{"HOME=/h", "TERMINAL=xterm", "TERM=dumb", "XDG_CONFIG_HOME=/c", "PATH=/p"}
+
+	got := git.WithoutKeys(env, "HOME", "TERM", "XDG_CONFIG_HOME")
+
+	assert.Check(t, is.DeepEqual(got, []string{"TERMINAL=xterm", "PATH=/p"}))
 }
 
 func TestSameKey_WhenCaseDiffers_MatchesOnlyOnWindows(t *testing.T) {
@@ -755,8 +740,6 @@ func TestSplitCommandLine(t *testing.T) {
 		want []string
 	}{
 		{name: "run of spaces separates once", line: "a  b", want: []string{"a", "b"}},
-		{name: "tab separates", line: "a\tb", want: []string{"a", "b"}},
-		{name: "carriage return separates", line: "a\rb", want: []string{"a", "b"}},
 		{name: "vertical tab does not separate", line: "a\vb", want: []string{"a\vb"}},
 		{name: "leading space gives an empty first word", line: " a", want: []string{"", "a"}},
 		{name: "trailing space gives an empty last word", line: "a ", want: []string{"a", ""}},

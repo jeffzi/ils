@@ -24,7 +24,7 @@ func TestSay(t *testing.T) {
 	assertTexts(t, tests)
 }
 
-func TestName(t *testing.T) {
+func TestBranches(t *testing.T) {
 	t.Parallel()
 	tests := []pair{
 		brokeLine("list of three branches is joined with commas, then and",
@@ -46,11 +46,10 @@ func builtCases() []styledCase {
 	}
 }
 
-// talliedChecks is a broke push with one more line that tallies passed and skipped checks, each
-// once with a count of zero and once without.
+// talliedChecks is a broke push with one more line that holds a passed tally above zero and one of
+// zero.
 func talliedChecks() result.Result {
-	return brokeWithLine(result.Say("Checks for %s: %s, %s, then %s, %s.", result.SHA("4f2a9c1"),
-		result.Passed(17), result.Skipped(0), result.Passed(0), result.Skipped(3)))
+	return brokeWithLine(result.Say("Checks: %s, then %s.", result.Passed(17), result.Passed(0)))
 }
 
 // joinedCommand is a broke push with one more line that names a git command whose argument is a

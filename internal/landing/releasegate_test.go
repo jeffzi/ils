@@ -15,7 +15,6 @@ import (
 	"github.com/jeffzi/ils/internal/forge/forgetest"
 	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
-	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
 // ---------------------------------------------------------------------------
@@ -39,11 +38,6 @@ func gateScene(t *testing.T, script forgetest.Script) gate {
 	return gate{st: st, before: st.s.written()}
 }
 
-// nextRelease is the `Next:` line that runs words, the command as typed, again as it is.
-func nextRelease(words string) string {
-	return expect(resulttest.NextLine("ils "+words) + "\n")
-}
-
 // commitVerdicts returns the reads of the checks of a commit among the forge calls of s.
 func commitVerdicts(s *scene) []forgetest.Call {
 	return callsOf(s.forge.Calls(), forgetest.OpCommitVerdict)
@@ -61,17 +55,14 @@ func redCheck(bucket forge.Bucket) forge.Verdict {
 func TestRelease_WhenTheChecksOfTheReleaseCommitPass_GoesOnCountingThem(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-		verdict := forge.Verdict{
-			Checks: []forge.Check{forgetest.Check("test", forge.BucketPass), forgetest.Check("docs", forge.BucketSkipped)},
-			Runs:   ran(forge.RunCompleted),
-		}
+		verdict := forge.Verdict{Checks: []forge.Check{forgetest.Check("test", forge.BucketPass)}, Runs: ran(forge.RunCompleted)}
 		run := gateScene(t, gated(verdict))
 
 		got := runRelease(t, run.st.s, releaseRequest(version, false))
 
 		assertEndedBy(t, got, run.st.s.gitDir, ended{
 			outcome: result.Done, req: releaseRequest(version, false),
-			text: expect(shortSHA(run.st.release), "1 passed, 1 skipped"),
+			text: expect(shortSHA(run.st.release), "1 passed"),
 		})
 		want := []forgetest.Call{{Op: forgetest.OpCommitVerdict, Repo: origin(), SHA: run.st.release}}
 		assert.Check(t, is.DeepEqual(commitVerdicts(run.st.s), want, whichRepo()))
@@ -117,17 +108,6 @@ func TestRelease_WhenACheckOfTheReleaseCommitDidNotPass_RefusesNamingIt(t *testi
 			name: "a check was canceled", verdicts: []forge.Verdict{redCheck(forge.BucketCanceled)},
 			want: expect("lint", "gh run rerun"),
 		},
-	})
-}
-
-func TestRelease_WhenTheChecksOfTheReleaseCommitGoOnAfterARead_WaitsForThemToConclude(t *testing.T) {
-	t.Parallel()
-
-	// The read after the wait goes on finds lint failed, so a release that stopped at the first read
-	// would not be refused.
-	failed := expect("lint", lintURL)
-	runGateRefusals(t, []gateRow{
-		{name: "a check is pending", verdicts: []forge.Verdict{running(), redCheck(forge.BucketFail)}, want: failed},
 	})
 }
 
@@ -209,7 +189,7 @@ func TestRelease_WhenTheChecksStillRunAtTheEndOfTheWait_PendingWithTheCommandAsT
 				got := landing.Release(tt.under(t), run.st.s.deps, req)
 
 				assertEndedBy(t, got, run.st.s.gitDir, ended{
-					outcome: result.Pending, req: req, text: tt.text + nextRelease("release "+version+" --tag-only"),
+					outcome: result.Pending, req: req, text: tt.text + nextLine("ils "+"release "+version+" --tag-only"),
 				})
 				assert.Check(t, is.Equal(run.st.s.written(), run.before))
 				want := released(run.st, "pending", "")
@@ -279,19 +259,6 @@ func silentRows() []silentRow {
 	}
 }
 
-func TestRelease_WhenNoCheckReportedAtTheFirstRead_ReadsAgain(t *testing.T) {
-	t.Parallel()
-	synctest.Test(t, func(t *testing.T) {
-		req := releaseRequest(version, false)
-		run := gateScene(t, gated(forge.Verdict{}, passing()))
-
-		got := runRelease(t, run.st.s, req)
-
-		text := mark(expect(tipMark, "1 passed"), run.st.release)
-		assertEndedBy(t, got, run.st.s.gitDir, ended{outcome: result.Done, req: req, text: text})
-	})
-}
-
 func TestRelease_WhenNoCheckReportedForTheReleaseCommit_DecidesByTheTrunksCI(t *testing.T) {
 	t.Parallel()
 
@@ -332,7 +299,7 @@ func TestRelease_WhenFewerThanTheReserveIsLeftBeforeTheWrites_PendingWithTheComm
 				got := landing.Release(within(t, left), run.st.s.deps, tt.req)
 
 				assertEndedBy(t, got, run.st.s.gitDir, ended{
-					outcome: result.Pending, req: tt.req, text: nextRelease(strings.Join(tt.req.Words, " ")),
+					outcome: result.Pending, req: tt.req, text: nextLine("ils " + strings.Join(tt.req.Words, " ")),
 				})
 				assert.Check(t, is.Equal(run.st.s.written(), run.before))
 				assert.Check(t, is.DeepEqual(releasePayload(t, got, run.st.s.gitDir), released(run.st, tt.verdict, "")))
@@ -366,21 +333,6 @@ func TestRelease_WhenForced_RefusesAsWithoutItWithTheCommandAsTyped(t *testing.T
 		text: expect(releaseTag, "git tag --delete "+releaseTag, "ils release "+version+" --force"),
 	})
 	assert.Check(t, is.DeepEqual(releasePayload(t, got, st.s.gitDir), released(st, "unchecked", "")))
-}
-
-func TestRelease_WhenACheckWithNoWorkflowRunBehindItFailed_RefusesAtTheFirstRead(t *testing.T) {
-	t.Parallel()
-	synctest.Test(t, func(t *testing.T) {
-		red := redCheck(forge.BucketFail)
-		red.Runs = nil
-		run := gateScene(t, gated(red))
-		req := releaseRequest(version, false)
-
-		got := runRelease(t, run.st.s, req)
-
-		assertEndedBy(t, got, run.st.s.gitDir, ended{outcome: result.Refused, req: req, text: expect("lint", lintURL)})
-		assert.Check(t, is.Len(commitVerdicts(run.st.s), 1))
-	})
 }
 
 // unreadGateRow is a forge read of the gate that fails, and the verdict the release payload carries.

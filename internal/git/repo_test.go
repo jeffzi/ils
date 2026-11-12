@@ -36,6 +36,16 @@ func newRepo(f *gittest.Fixture) git.Repo {
 	return git.Repo{Runner: git.Runner{Dir: f.Dir(), Env: f.Env()}}
 }
 
+// fakedRepo returns the repository of f, whose git is faked by fake. A test that calls it cannot
+// run in parallel: gittest.FakeGit sets PATH for the whole process.
+func fakedRepo(t *testing.T, f *gittest.Fixture, fake gittest.Fake) git.Repo {
+	t.Helper()
+	repo := newRepo(f)
+	repo.Runner.Env = append(repo.Runner.Env, gittest.FakeGit(t, fake)...)
+
+	return repo
+}
+
 // repoCall is one call on the repository, reduced to its result and its error.
 type repoCall struct {
 	call func(ctx context.Context, repo git.Repo) (any, error)
@@ -245,15 +255,18 @@ func TestRepo_FindGitDir_WhenGitFailsForAnotherReason_ReturnsExitError(t *testin
 	assert.Check(t, !found, "FindGitDir(%q) = %q, want not found", options, got)
 }
 
-func TestRepo_InWorkTree(t *testing.T) {
+func TestRepo_TopLevel(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
+	nested := filepath.Join(f.Dir(), "docs", "guide")
+	assert.NilError(t, os.MkdirAll(nested, 0o750))
 	tests := []struct {
-		name string
-		dir  string
-		want bool
+		name      string
+		dir       string
+		want      string
+		wantFound bool
 	}{
-		{name: "work tree", dir: f.Dir(), want: true},
+		{name: "subdirectory of the work tree", dir: nested, want: f.Dir(), wantFound: true},
 		{name: "bare repository", dir: f.OriginDir()},
 		{name: "directory that holds no repository", dir: t.TempDir()},
 	}
@@ -262,38 +275,25 @@ func TestRepo_InWorkTree(t *testing.T) {
 			t.Parallel()
 			repo := git.Repo{Runner: git.Runner{Dir: tt.dir, Env: f.Env()}}
 
-			got, err := repo.InWorkTree(t.Context())
-			assert.NilError(t, err, "InWorkTree() in %s", tt.dir)
+			got, found, err := repo.TopLevel(t.Context())
+			assert.NilError(t, err, "TopLevel() in %s", tt.dir)
 
-			assert.Check(t, is.Equal(got, tt.want), "InWorkTree() in %s", tt.dir)
+			assert.Check(t, is.Equal(found, tt.wantFound), "TopLevel() in %s found", tt.dir)
+			assert.Check(t, is.Equal(got, tt.want), "TopLevel() in %s", tt.dir)
 		})
 	}
 }
 
-func TestRepo_Alias(t *testing.T) {
+func TestRepo_Alias_WhenSetInTheRepository_ReturnsItsValue(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
 	f.Git("config", "--local", "alias.co", "checkout -b")
-	tests := []struct {
-		name    string
-		alias   string
-		want    string
-		wantSet bool
-	}{
-		{name: "alias set in the repository", alias: "co", want: "checkout -b", wantSet: true},
-		{name: "alias not set", alias: "ci"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 
-			got, set, err := outsideRepo(t).Alias(t.Context(), tt.alias, "-C", f.Dir())
-			assert.NilError(t, err, "Alias(%q)", tt.alias)
+	got, set, err := outsideRepo(t).Alias(t.Context(), "co", "-C", f.Dir())
+	assert.NilError(t, err, "Alias(%q)", "co")
 
-			assert.Check(t, is.Equal(set, tt.wantSet), "Alias(%q) set", tt.alias)
-			assert.Check(t, is.Equal(got, tt.want), "Alias(%q)", tt.alias)
-		})
-	}
+	assert.Check(t, set, "Alias(%q) set = false, want true", "co")
+	assert.Check(t, is.Equal(got, "checkout -b"), "Alias(%q)", "co")
 }
 
 func TestRepo_ChangedTrackedFiles_WhenStagedAndUnstagedChanges_ListsBoth(t *testing.T) {
@@ -397,28 +397,14 @@ func TestRepo_Divergence_WhenACountIsNotANumber_ReturnsSyntaxErrorNamingTheCall(
 	}
 }
 
-func TestRepo_Contains(t *testing.T) {
+func TestRepo_Contains_WhenTheFirstHoldsTheSecond_ReportsTrue(t *testing.T) {
 	t.Parallel()
 	split := diverged(t)
-	tests := []struct {
-		name string
-		a    string
-		b    string
-		want bool
-	}{
-		{name: "ahead", a: split.local, b: split.base, want: true},
-		{name: "behind", a: split.base, b: split.local, want: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 
-			got, err := split.repo.Contains(t.Context(), tt.a, tt.b)
-			assert.NilError(t, err, "Contains(%s, %s)", tt.a, tt.b)
+	got, err := split.repo.Contains(t.Context(), split.local, split.base)
+	assert.NilError(t, err, "Contains(%s, %s)", split.local, split.base)
 
-			assert.Check(t, is.Equal(got, tt.want), "Contains(%s, %s)", tt.a, tt.b)
-		})
-	}
+	assert.Check(t, got, "Contains(%s, %s) = false, want true", split.local, split.base)
 }
 
 func TestRepo_CommitsPast_WhenALocalBranchIsNamedLikeOriginsTrunk_ListsTheCommitsPastOriginsTrunk(t *testing.T) {
@@ -432,17 +418,6 @@ func TestRepo_CommitsPast_WhenALocalBranchIsNamedLikeOriginsTrunk_ListsTheCommit
 	assert.NilError(t, err)
 
 	assert.Check(t, is.DeepEqual(got, []git.Commit{{SHA: sha, Subject: "one"}}, cmpopts.EquateEmpty()))
-}
-
-func TestRepo_Subject_ReturnsTheFirstLineOfTheMessage(t *testing.T) {
-	t.Parallel()
-	f := gittest.New(t, trunk)
-	sha := f.Commits(topic, "one")[0]
-
-	got, err := newRepo(f).Subject(t.Context(), sha)
-	assert.NilError(t, err)
-
-	assert.Check(t, is.Equal(got, "one"))
 }
 
 func TestRepo_LocalTrunkAhead(t *testing.T) {
@@ -666,7 +641,7 @@ func TestRepo_CheckBranchName_WhenGitIsNotAsked_GivesNoReason(t *testing.T) {
 
 const freshBranch = "fix/parser"
 
-func TestRepo_CreateBranch_WhenOriginsTrunkIsFetched_SwitchesToABranchAtIt(t *testing.T) {
+func TestRepo_CreateBranch_WhenLocalRefsShadowOriginsTrunk_SwitchesToABranchAtItsLastFetchedTip(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
 	shadowTrunk(t, f, f.Commits(topic, "one")[0])
@@ -936,7 +911,10 @@ func TestRepo_FileAt_WhenTheCloneLacksTheCommit_ReturnsExitError(t *testing.T) {
 	assert.Check(t, !found && got == "", "FileAt(%s, %q) = %q, %t, want no result", unknownSHA, changelog, got, found)
 }
 
-const release = "v1.2.0"
+const (
+	release    = "v1.2.0"
+	releaseRef = "refs/tags/" + release
+)
 
 func TestRepo_LocalTag_WhenTheTagExists_ReturnsItsCommit(t *testing.T) {
 	t.Parallel()
@@ -1021,8 +999,19 @@ func FuzzVersionOf(f *testing.F) {
 	})
 }
 
+func noArgument(*gittest.Fixture) string { return "" }
+
+func topLevelRead(ctx context.Context, repo git.Repo, _ string) (any, error) {
+	dir, found, err := repo.TopLevel(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return []any{dir, found}, nil
+}
+
 func TestRepo_WhenAGitReadFails_ReturnsItsExitError(t *testing.T) {
-	// Not parallel: gittest.FakeGit sets PATH for the whole process.
+	// Not parallel: see fakedRepo.
 	trunkAhead := func(f *gittest.Fixture) string {
 		f.Commits(topic, "one")
 		f.AdvanceTrunk()
@@ -1062,18 +1051,18 @@ func TestRepo_WhenAGitReadFails_ReturnsItsExitError(t *testing.T) {
 		},
 		{
 			name: "checked out elsewhere, the worktree list read", failOn: []string{"worktree"},
-			arrange: func(*gittest.Fixture) string { return "" },
+			arrange: noArgument,
 			call: func(ctx context.Context, repo git.Repo, _ string) (any, error) {
 				return repo.CheckedOutElsewhere(ctx, trunk)
 			},
 		},
+		{name: "top level, the work tree read", failOn: []string{"rev-parse"}, arrange: noArgument, call: topLevelRead},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := gittest.New(t, trunk)
 			arg := tt.arrange(f)
-			repo := newRepo(f)
-			repo.Runner.Env = append(repo.Runner.Env, gittest.FakeGit(t, gittest.Fake{FailOn: tt.failOn})...)
+			repo := fakedRepo(t, f, gittest.Fake{FailOn: tt.failOn})
 
 			got, err := tt.call(t.Context(), repo, arg)
 

@@ -1,7 +1,5 @@
 //go:build unix
 
-// cspell:ignore Arithm Arit Assgn OLDPWD OPTARG OPTIND SRANDOM EPOCHSECONDS EPOCHREALTIME BASHPID EUID -- the shell parser's names for its arithmetic nodes, and variables the shell sets itself.
-
 package guard
 
 import (
@@ -18,8 +16,7 @@ import (
 // `printf -v`, `for NAME in`, `${NAME:=…}`, `unset`), or the assignment may not have run, or ran in
 // another shell.
 type shellVars struct {
-	// known holds the value of each variable the guard knows. Copies of a scope share it, so a
-	// change replaces it rather than changing it in place.
+	// Copies of a scope share known, so a change replaces it rather than changing it in place.
 	known map[string]string
 	// held counts, for each variable the command makes readonly or gives an option anywhere, such
 	// as `declare -u`, which changes the value an assignment leaves, the declarations that name it.
@@ -458,31 +455,4 @@ func (v shellVars) merge(other shellVars) shellVars {
 func (v shellVars) equal(other shellVars) bool {
 	return maps.Equal(v.known, other.known) && maps.Equal(v.held, other.held) &&
 		v.unread == other.unread && v.function == other.function
-}
-
-// assignVariables changes the shell variables of sc the way the simple command call, read as inv,
-// does with its assignment prefix. A command that only assigns leaves each variable as
-// shellVars.assigned says. One that runs a command gives them to that command alone, though a
-// special builtin or a function may leave them in the shell, so each is unknown after it.
-func (sc *scope) assignVariables(call *syntax.CallExpr, inv Invocation) {
-	if len(inv.Words) > 0 {
-		sc.vars = sc.vars.forgetAssigned(call.Assigns)
-
-		return
-	}
-
-	for i, a := range call.Assigns {
-		sc.vars = sc.vars.assigned(a, inv.Assignments[i].Value)
-	}
-}
-
-func assignsArithmetic(op syntax.BinAritOperator) bool {
-	switch op {
-	case syntax.Assgn, syntax.AddAssgn, syntax.SubAssgn, syntax.MulAssgn, syntax.QuoAssgn,
-		syntax.RemAssgn, syntax.AndAssgn, syntax.OrAssgn, syntax.XorAssgn, syntax.ShlAssgn,
-		syntax.ShrAssgn, syntax.AndBoolAssgn, syntax.OrBoolAssgn, syntax.XorBoolAssgn, syntax.PowAssgn:
-		return true
-	default:
-		return false
-	}
 }

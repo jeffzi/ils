@@ -7,7 +7,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"time"
 
 	"golang.org/x/mod/semver"
 
@@ -234,21 +233,34 @@ func (rel *releasing) findCommit(ctx context.Context, deps Deps, req Request) *r
 }
 
 // history returns, newest first, the first-parent history of tip since the previous version tag,
-// or all of it when there is none.
+// or all of it when there is none. The previous tag may be on a commit off the trunk that the
+// clone lacks, so the walk fetches the tag as retryAfterTagFetch does.
 func (rel *releasing) history(ctx context.Context, deps Deps, tip string) ([]git.Commit, error) {
-	history, err := deps.Repo.FirstParentHistory(ctx, tip, rel.previous.SHA)
-	if err == nil || endedEarly(err) || rel.previous.SHA == "" {
-		return history, err
+	walk := func() ([]git.Commit, error) { return deps.Repo.FirstParentHistory(ctx, tip, rel.previous.SHA) }
+	if rel.previous.SHA == "" {
+		return walk()
 	}
 
-	// The previous tag may be on a commit off the trunk that the clone lacks, and git fails a walk
-	// from a commit it lacks as it fails on a broken repository. Fetching the tag brings its commit,
-	// after which only a real failure fails the walk.
-	if _, err := deps.Repo.FetchTag(ctx, rel.previous.Name); err != nil {
-		return nil, fmt.Errorf("fetch tag %s: %w", rel.previous.Name, err)
+	return retryAfterTagFetch(ctx, deps, rel.previous.Name, walk)
+}
+
+// retryAfterTagFetch returns what read returns, after fetching the tag named tag and running read
+// again when its first run failed for any reason but the time limit or an interrupt. Git fails a
+// read of a commit it lacks as it fails on a broken repository, and fetching the tag brings its
+// commit, after which only a real failure fails the read.
+func retryAfterTagFetch[T any](ctx context.Context, deps Deps, tag string, read func() (T, error)) (T, error) {
+	got, err := read()
+	if err == nil || endedEarly(err) {
+		return got, err
 	}
 
-	return deps.Repo.FirstParentHistory(ctx, tip, rel.previous.SHA)
+	if _, err := deps.Repo.FetchTag(ctx, tag); err != nil {
+		var none T
+
+		return none, fmt.Errorf("fetch tag %s: %w", tag, err)
+	}
+
+	return read()
 }
 
 // checkTags refuses a tag of the version, on origin or local, at a commit other than the release
@@ -268,7 +280,7 @@ func (rel *releasing) checkTags(ctx context.Context, deps Deps, req Request) *re
 
 	local, found, err := deps.Repo.LocalTag(ctx, rel.tag)
 	if err != nil {
-		return req.unread(readLocalTag, err)
+		return req.Unread(readLocalTag, err)
 	}
 
 	if !found || local == rel.commit {
@@ -287,7 +299,7 @@ func (rel *releasing) checkTags(ctx context.Context, deps Deps, req Request) *re
 func (rel *releasing) checkNotes(ctx context.Context, deps Deps, req Request) *result.Result {
 	content, found, err := deps.Repo.FileAt(ctx, rel.commit, changelogPath)
 	if err != nil {
-		return req.unread(readChangelog, err)
+		return req.Unread(readChangelog, err)
 	}
 
 	// Starting a changelog commits every later release to a section in it, so the user decides.
@@ -351,18 +363,7 @@ func releaseNotes(changelog, version string) string {
 // reserved ends the release pending, with nothing written, when less than mergeReserve is left
 // before ctx's deadline.
 func (rel *releasing) reserved(ctx context.Context, req Request) *result.Result {
-	if !deadlineWithin(ctx, mergeReserve) {
-		return nil
-	}
-
-	stop := req.ends(result.Pending,
-		result.Say(fewerLeft+" for the release", span(mergeReserve), req.limitWords()),
-		req.again())
-	stop.Lines = slices.Concat(rel.said, []result.Phrase{result.Say(
-		fewerLeftCapital+" for the release, so nothing was written",
-		span(mergeReserve), req.limitWords())})
-
-	return stop
+	return req.shortOfReserve(ctx, result.Concat("for the release"), req.again(), rel.said)
 }
 
 // gate is the CI gate of the release: it waits for the checks of the release commit, every check
@@ -398,7 +399,7 @@ func (rel *releasing) gate(ctx context.Context, deps Deps, req Request) *result.
 
 	waited, err := rel.awaitChecks(waitCtx, deps)
 	if err != nil {
-		return req.unread(readReleaseChecks, err)
+		return req.Unread(readReleaseChecks, err)
 	}
 
 	switch waited.Outcome {
@@ -416,53 +417,31 @@ func (rel *releasing) gate(ctx context.Context, deps Deps, req Request) *result.
 	}
 }
 
-// awaitChecks reads the checks of the release commit every verdictPoll until they conclude, as the
-// wait for a pull request's checks does with every check deciding: while a check is pending, a
-// workflow run is still going, or for silentRetry while no run appeared. The deadline or an
-// interrupt ending the wait, in a read or a poll, is WaitPending with the last verdict read, but
-// for a red verdict still waiting for its failed log, which stays WaitRed. A read that fails for
-// any other reason is its error.
+// awaitChecks reads the checks of the release commit every verdictPoll until they conclude, as
+// awaitConcluded does with every check deciding, and logs how the wait ended. The deadline or an
+// interrupt ending the wait, in a read or a poll, is WaitPending with the last verdict read, but for
+// a red verdict still waiting for its failed log, which stays WaitRed. A read that fails for any
+// other reason is its error.
 func (rel *releasing) awaitChecks(ctx context.Context, deps Deps) (Waited, error) {
 	var waited Waited
 
-	began := time.Now()
-
-	for {
-		verdict, err := deps.Forge.CommitVerdict(ctx, rel.Repo, rel.commit)
-		if err != nil {
-			return waited.cutBy(err)
-		}
-
-		outcome, done := judge(verdict, nil)
-
-		waited = Waited{Since: began}
-		waited.take(verdict, outcome)
-		deps.counted(len(waited.Deciding)-len(verdict.Pending()), len(waited.Deciding))
-
-		// A failed check stays failed whatever runs start later.
-		if done && (outcome == WaitRed || !runsMayStillAppear(verdict, began)) {
-			return waited, nil
-		}
-
-		if err := pause(ctx, verdictPoll); err != nil {
-			return waited.cutBy(err)
-		}
+	read := func(ctx context.Context, _ bool) (forge.Verdict, error) {
+		return deps.Forge.CommitVerdict(ctx, rel.Repo, rel.commit)
 	}
-}
+	poll := func(ctx context.Context) error { return pause(ctx, verdictPoll) }
 
-// cutBy returns how a wait for the checks of a commit that err ended stands: a red verdict still
-// waiting for its failed log stays red, the deadline or an interrupt makes it WaitPending, and any
-// other error is returned.
-func (w Waited) cutBy(err error) (Waited, error) {
-	if _, cutErr := cutShort(w.Outcome, err); cutErr == nil {
-		return w, nil
+	verdict, outcome, err := deps.awaitConcluded(ctx, &waited, checkPoll{read: read, poll: poll})
+	waited.take(verdict, outcome)
+
+	if err != nil && !waited.endPending(StageVerdict, err) {
+		deps.logFailed(ctx, StageVerdict)
+
+		return Waited{}, err
 	}
 
-	if w.endPending(StageVerdict, err) {
-		return w, nil
-	}
+	deps.logEnd(ctx, waited)
 
-	return Waited{}, err
+	return waited, nil
 }
 
 // redStop refuses the release on the check of waited that failed or was canceled. A failed check
@@ -475,14 +454,14 @@ func (rel *releasing) redStop(req Request, waited Waited) *result.Result {
 	if failed.Bucket == forge.BucketCanceled {
 		stop := req.Refused(result.Say("the check %s of the release commit %s was canceled", failed.Name, commit),
 			result.NextStep("rerun the canceled check %s with `gh run rerun`"+thenRunAgain, failed.Name, req.ilsCommand()))
-		stop.Lines = []result.Phrase{result.Say("Check %s was canceled: %s", failed.Name, result.URL(failed.Link))}
+		stop.Lines = []result.Phrase{failedLine(failed)}
 
 		return stop
 	}
 
 	stop := req.Refused(result.Say("the check %s of the release commit %s failed", failed.Name, commit),
 		result.NextStep("fix the failing check, land a new release commit of %s"+thenRunAgain, rel.tag, req.ilsCommand()))
-	stop.Lines = []result.Phrase{result.Say("Check %s failed: %s", failed.Name, result.URL(failed.Link))}
+	stop.Lines = []result.Phrase{failedLine(failed)}
 	stop.Excerpt = waited.excerpt()
 
 	return stop
@@ -536,12 +515,12 @@ func (rel *releasing) unreported(ctx context.Context, deps Deps, req Request, wa
 
 	protection, err := deps.Forge.TrunkProtection(ctx, rel.Repo, rel.Trunk)
 	if err != nil {
-		return req.unread(readProtection, err)
+		return req.Unread(readProtection, err)
 	}
 
 	without, err := waited.trunkWithoutCI(ctx, deps, rel.Ready, protection.RequiredChecks)
 	if err != nil {
-		return req.unread(readCI, err)
+		return req.Unread(readCI, err)
 	}
 
 	if !without {
@@ -560,9 +539,10 @@ func (rel *releasing) unreported(ctx context.Context, deps Deps, req Request, wa
 // not. An interrupt that ended ctx before the first write ends the release pending with nothing
 // written, as too little time left does in reserved.
 func (rel *releasing) write(ctx context.Context, deps Deps, req Request) *result.Result {
-	if interrupted(ctx.Err()) {
-		return rel.ended(req, req.ends(result.Pending, result.Say(runInterrupted+" before the first write of the release"),
-			req.again()), result.Say(runInterrupted+" before the first write of the release, so nothing was written"))
+	if stop := req.interruptedBefore(ctx, result.Concat("the first write of the release"), req.again(), rel.said); stop != nil {
+		stop.Payload = rel.payload(req)
+
+		return stop
 	}
 
 	if rel.resumed() {
@@ -615,15 +595,17 @@ func (rel *releasing) pushTag(ctx context.Context, deps Deps, req Request) *resu
 func (rel *releasing) tagFailed(req Request, err error) *result.Result {
 	commit := result.SHA(rel.commit)
 
-	switch {
-	case interrupted(err):
-		return rel.broke(req, result.Say(runInterrupted+" while creating the tag %s", rel.tag), req.again(),
-			result.Say("Started creating the tag %s at %s when "+runInterrupted+mayHaveGoneThrough, rel.tag, commit))
-	case timedOut(err):
-		return rel.broke(req, result.Say(timeLimitEnded+" while creating the tag %s", req.limitWords(), rel.tag),
-			req.afterTimeLimit(),
-			result.Say("Started creating the tag %s at %s when "+timeLimitEnded+mayHaveGoneThrough,
-				rel.tag, commit, req.limitWords()))
+	if endedEarly(err) {
+		next := req.again()
+		if timedOut(err) {
+			next = req.afterTimeLimit()
+		}
+
+		line, reason := req.cutShortWriting(interrupted(err),
+			result.Concat("creating the tag ", rel.tag, " at ", commit), result.Concat("while creating the tag ", rel.tag),
+			endsGoneThrough)
+
+		return rel.broke(req, reason, next, line)
 	}
 
 	return rel.broke(req, result.Say("could not create the tag %s", rel.tag), req.onceFixed(),
@@ -641,15 +623,11 @@ func (rel *releasing) tagPushFailed(req Request, err error) *result.Result {
 	failure, next, refused := classifyPush(req, err)
 
 	switch failure {
-	case pushInterrupted:
-		return rel.broke(req, result.Say(runInterrupted+" during the push of the tag %s", rel.tag), next,
-			result.Say("Started the push of the tag %s at %s when "+runInterrupted+mayHaveTaken,
-				rel.tag, commit))
-	case pushTimedOut:
-		return rel.broke(req, result.Say(timeLimitEnded+" during the push of the tag %s", req.limitWords(), rel.tag),
-			next,
-			result.Say("Started the push of the tag %s at %s when "+timeLimitEnded+mayHaveTaken,
-				rel.tag, commit, req.limitWords()))
+	case pushInterrupted, pushTimedOut, pushUnanswered, pushKilled:
+		line, reason := req.pushMayHaveTaken(failure, result.Concat("the tag ", rel.tag, " at ", commit),
+			result.Concat("the push of the tag ", rel.tag), err)
+
+		return rel.broke(req, reason, next, line)
 	case pushRefusedByGit:
 		line := result.Say("Git refused the push of the tag %s, made locally, so it was not pushed", rel.tag)
 		if refused.Reason != "" {
@@ -660,14 +638,6 @@ func (rel *releasing) tagPushFailed(req Request, err error) *result.Result {
 		stop.Excerpt = lastLines(refused.Output())
 
 		return stop
-	case pushUnanswered:
-		return rel.broke(req, result.Say(originStopped+" during the push of the tag %s", rel.tag), next,
-			result.Say("Started the push of the tag %s at %s when "+originStopped+mayHaveTaken+": %s",
-				rel.tag, commit, err.Error()))
-	case pushKilled:
-		return rel.broke(req, result.Say("the push of the tag %s did not finish", rel.tag), next,
-			result.Say("The push of the tag %s at %s did not finish, so it may or may not have taken: %s",
-				rel.tag, commit, err.Error()))
 	default:
 		return rel.broke(req, result.Say("could not push the tag %s", rel.tag), next,
 			result.Say("The tag %s was made locally, and its push to origin failed: %s", rel.tag, err.Error()))
@@ -710,15 +680,12 @@ func (rel *releasing) publish(ctx context.Context, deps Deps, req Request) *resu
 		return nil
 	}
 
-	switch {
-	case interrupted(err):
-		return rel.broke(req, result.Say(runInterrupted+" while publishing the GitHub release of %s", rel.tag), req.again(),
-			result.Say("Started publishing the GitHub release of %s when "+runInterrupted+mayHaveGoneThrough, rel.tag))
-	case timedOut(err):
-		return rel.broke(req, result.Say(timeLimitEnded+" while publishing the GitHub release of %s", req.limitWords(), rel.tag),
-			req.again(),
-			result.Say("Started publishing the GitHub release of %s when "+timeLimitEnded+mayHaveGoneThrough,
-				rel.tag, req.limitWords()))
+	if endedEarly(err) {
+		line, reason := req.cutShortWriting(interrupted(err),
+			result.Concat("publishing the GitHub release of ", rel.tag),
+			result.Concat("while publishing the GitHub release of ", rel.tag), endsGoneThrough)
+
+		return rel.broke(req, reason, req.again(), line)
 	}
 
 	return rel.notCreated(req, err)

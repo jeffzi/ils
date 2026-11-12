@@ -164,7 +164,12 @@ func Environ(env []string) []string {
 	return slices.Clone(env)
 }
 
-// Run runs the program and returns what ended leaves to its caller.
+// Run runs the program and returns its stdout and stderr when it exits zero.
+//
+// A non-zero exit is an *ExitError, which holds the stderr, and Run still returns the stdout. A
+// program a signal ended is a *KilledError. A run that ctx ended, or that an interrupt of the
+// terminal ended, wraps the context's error, context.Canceled for an interrupt. Every failure but a
+// non-zero exit returns an empty Output, so that a half-written stdout is never read.
 //
 // A tool that cannot be found is a *ToolMissingError, and so is one that cannot be started for want
 // of a file when StartWantingAFileIsMissing is set. Run does
@@ -409,8 +414,8 @@ func (r Requirement) check(line, version string) error {
 }
 
 // CheckOutput returns nil when the version that versionOf reads from the VersionLine of stdout,
-// the whole output of the tool's --version, is r.Minimum or newer. Otherwise it returns the
-// *ToolTooOldError of check for that line.
+// the whole output of the tool's --version, is r.Minimum or newer. Otherwise it returns a
+// *ToolTooOldError for that line, whose Version is empty when the line holds no valid semver.
 func (r Requirement) CheckOutput(stdout string, versionOf func(line string) string) error {
 	line := VersionLine(stdout)
 

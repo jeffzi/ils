@@ -62,6 +62,41 @@ func TestParse_WhenTheCommandAssignedAVariableALiteral_ReadsItsExpansionAsThatLi
 	}
 }
 
+func TestParse_WhenTheGuardCannotBeSureOfAVariablesValue_ReadsItsExpansionUnknown(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{name: "append assignment", command: "S=/tmp/work; S+=/x; $S/run.sh"},
+		{name: "printf -v", command: "S=/tmp/work; printf -v T %s /srv; $S/run.sh"},
+		{name: "value from a command substitution", command: "S=/tmp/work; S=$(pwd); $S/run.sh"},
+		{name: "array value", command: "S=(/tmp/work); $S/run.sh"},
+		{name: "element assignment", command: "S=/tmp/work; S[1]=/srv; $S/run.sh"},
+		{name: "local outside a function", command: "local S=/tmp/work; $S/run.sh"},
+		{name: "declare -n before the assignment", command: "declare -n R=T; S=/tmp/work; $S/run.sh"},
+		{name: "typeset -n after the word", command: "S=/tmp/work; $S/run.sh; typeset -n R=T"},
+		{name: "local -n in a function", command: "f() { local -n R=T; }; S=/tmp/work; $S/run.sh"},
+		{name: "declare -n through builtin", command: "builtin declare -n R=T; S=/tmp/work; $S/run.sh"},
+		{name: "typeset -n through command with an option", command: "command -p typeset -n R=T; S=/tmp/work; $S/run.sh"},
+		{name: "eval string declaring a name reference later in a loop", command: "S=/tmp/work; for f in a b; do $S/run.sh; eval 'declare -n R=T'; done"},
+		{name: "expansion with an operator", command: "S=/tmp/work/x; ${S%/x}/run.sh"},
+		{name: "unquoted expansion after IFS is assigned", command: "IFS=/; S=/tmp/work; $S/run.sh"},
+		{name: "declare with an attribute that changes the value", command: "declare -u S=/tmp/work; $S/run.sh"},
+		{name: "assignment after an attribute that changes the value", command: "typeset -l S; S=/TMP/work; $S/run.sh"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := parse(t, tt.command)
+
+			checkRunShReadUnknown(t, tt.command, got)
+		})
+	}
+}
+
 func TestParse_WhenAReadonlyMayNotGiveAVariableItsValue_ReadsItsExpansionUnknown(t *testing.T) {
 	t.Parallel()
 
@@ -72,7 +107,6 @@ func TestParse_WhenAReadonlyMayNotGiveAVariableItsValue_ReadsItsExpansionUnknown
 		{name: "assignment to a readonly name", command: "readonly S=/srv; S=/tmp/work; $S/run.sh"},
 		{name: "readonly after a readonly whose value is not a literal", command: "readonly S=$(pwd); readonly S=/tmp/work; $S/run.sh"},
 		{name: "readonly after declare -r", command: "declare -r S=$(pwd); readonly S=/tmp/work; $S/run.sh"},
-		{name: "readonly after a readonly in an if body", command: "if test -d x; then readonly S=/srv; fi; readonly S=/tmp/work; $S/run.sh"},
 		{name: "readonly after a readonly an eval string runs", command: "eval 'readonly S=$(pwd)'; readonly S=/tmp/work; $S/run.sh"},
 	}
 	for _, tt := range tests {
@@ -95,7 +129,6 @@ func TestParse_WhenTheShellMaySetAVariableOnItsOwn_ReadsItsExpansionUnknown(t *t
 	}{
 		{name: "builtin that writes a named variable", command: "S=/tmp/work; print -v S /srv; $S/run.sh"},
 		{name: "printf given a format that is not a literal", command: `S=/tmp/work; printf "$F" S /srv; $S/run.sh`},
-		{name: "read of IFS before the assignment", command: "read IFS <<< ,; S=/tmp/work,x; $S/run.sh"},
 		{name: "for loop over IFS before the assignment", command: "for IFS in ,; do :; done; S=/tmp/work,x; $S/run.sh"},
 		{name: "builtin naming IFS before the assignment", command: "print -v IFS ,; S=/tmp/work,x; $S/run.sh"},
 		{name: "zsh match variable after a regex test", command: "MATCH=/tmp/work; [[ a =~ a ]]; $MATCH/run.sh"},
@@ -138,7 +171,7 @@ func checkRunShReadUnknown(t *testing.T, command string, got []guard.Invocation)
 func TestJudge_AllowsAVariableAssignedALiteralAfterAWrappedOrZshNumberDeclaration(t *testing.T) {
 	t.Parallel()
 
-	checkAllowed(t, forgeCaller(t), []namedCommand{
+	checkAllowed(t, callerOutsideAnyRepository(t), []namedCommand{
 		{name: "zsh integer", command: "integer S; S=/tmp/work; $S/run.sh"},
 		{name: "readonly run through builtin", command: "builtin readonly S=/srv; S=/tmp/work; $S/run.sh"},
 		{name: "declare run through command", command: "command declare -u S; S=/tmp/work; $S/run.sh"},

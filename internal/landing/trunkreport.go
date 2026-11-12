@@ -2,7 +2,6 @@ package landing
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/git"
@@ -40,18 +39,7 @@ func (r *reading) readTrunkApart(ctx context.Context) {
 		return
 	}
 
-	r.status.Ahead, r.status.Behind = apart.Ahead, apart.Behind
-
-	switch ahead, behind := nounCount(apart.Ahead, "commit"), nounCount(apart.Behind, "commit"); {
-	case apart.Ahead > 0 && apart.Behind > 0:
-		r.say(result.Say("The trunk and origin's trunk have diverged: %s ahead, %s behind", ahead, behind))
-	case apart.Ahead > 0:
-		r.say(result.Say("The trunk is ahead of origin's trunk by %s", ahead))
-	case apart.Behind > 0:
-		r.say(result.Say("The trunk is behind origin's trunk by %s", behind))
-	default:
-		r.say(result.Say("The trunk is up to date with origin's trunk"))
-	}
+	r.sayApart(apart, result.Concat("trunk"), result.Concat("origin's trunk"))
 }
 
 // readLastTag reads the last version tag on origin's trunk and counts the commits since it.
@@ -108,20 +96,13 @@ func (r *reading) lastTag(ctx context.Context, tags []git.Tag) (git.Tag, bool, e
 	return git.Tag{}, false, nil
 }
 
+// onOriginTrunk reports whether tag's commit is on origin's trunk. Fetching origin's trunk brought
+// every commit on it, so a tag whose commit git lacks is not on it; the check fetches the tag as
+// retryAfterTagFetch does.
 func (r *reading) onOriginTrunk(ctx context.Context, tag git.Tag) (bool, error) {
-	on, err := r.deps.Repo.Contains(ctx, r.trunkTip, tag.SHA)
-	if err == nil || endedEarly(err) {
-		return on, err
-	}
-
-	// Fetching origin's trunk brought every commit on it, so a tag whose commit git lacks is not on
-	// it, yet git fails the check of a commit it lacks as it fails on a broken repository. Fetching
-	// the tag brings its commit, after which only a real failure fails the check.
-	if _, err := r.deps.Repo.FetchTag(ctx, tag.Name); err != nil {
-		return false, fmt.Errorf("fetch tag %s: %w", tag.Name, err)
-	}
-
-	return r.deps.Repo.Contains(ctx, r.trunkTip, tag.SHA)
+	return retryAfterTagFetch(ctx, r.deps, tag.Name, func() (bool, error) {
+		return r.deps.Repo.Contains(ctx, r.trunkTip, tag.SHA)
+	})
 }
 
 func (r *reading) readRelease(ctx context.Context) {

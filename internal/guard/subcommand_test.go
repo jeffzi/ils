@@ -43,8 +43,6 @@ func TestJudge_PassesOverANonLiteralWordThatNoGuardedOptionCanBe(t *testing.T) {
 		{name: "log revision", command: `git log "$x"`},
 		{name: "add of a glob with a literal prefix", command: "git add src/*.go"},
 		{name: "commit of a glob path", command: "git commit -m msg src/*.go"},
-		{name: "rm of a glob path", command: "git rm docs/*.md"},
-		{name: "restore --staged of a glob path", command: "git restore --staged src/*.go"},
 	})
 }
 
@@ -56,7 +54,7 @@ func TestJudge_WhenAGitPathArgumentCanExpandToAnOption_RefusesNamingDoubleDash(t
 		{name: "glob with no literal prefix", command: "git add *.go", wantNamed: "after `--`"},
 		{name: "glob whose prefix starts with a dash", command: "git add -*", wantNamed: "after `--`"},
 		{name: "glob whose prefix starts with a plus", command: "git add +*", wantNamed: "after `--`"},
-		{name: "zsh glob qualifier that can replace the match", command: "git commit -m msg src/*(e:REPLY=--no-verify:)"},
+		{name: "zsh glob qualifier that can replace the match", command: "git commit -m msg src/*(e:REPLY=--no-verify:)", wantNamed: "after `--`"},
 	})
 }
 

@@ -29,24 +29,6 @@ const (
 	stderrFd = "2"
 )
 
-// Stdout returns the file the invocation's stdout is redirected to, and false when its redirects
-// leave stdout on a descriptor rather than a file. The redirects in effect where it runs come
-// before its own: those of each group or subshell around it. Each redirect applies in order, as in
-// the shell, so `2> f >&2` sends stdout to f, while `>&2 2> f` leaves it where stderr was.
-func (inv Invocation) Stdout() (Word, bool) {
-	opened, toFile := inv.stdoutFile()
-
-	return opened.Target, toFile
-}
-
-// stdoutFile returns the redirect that opened the file the invocation's stdout is on, with the
-// directory the shell opened it from, and false when stdout is on no file (see Stdout).
-func (inv Invocation) stdoutFile() (Redirect, bool) {
-	opened, toFile := filesOf(slices.Concat(inv.enclosing, inv.Redirects))[stdoutFd]
-
-	return opened, toFile
-}
-
 // openedIn returns a copy of redirects, each opened from dir.
 func openedIn(redirects []Redirect, dir string) []Redirect {
 	opened := slices.Clone(redirects)
@@ -55,6 +37,17 @@ func openedIn(redirects []Redirect, dir string) []Redirect {
 	}
 
 	return opened
+}
+
+// stdoutFile returns the redirect that opened the file the invocation's stdout is on, with the
+// directory the shell opened it from, and false when its redirects leave stdout on a descriptor
+// rather than a file. The redirects in effect where it runs come before its own: those of each
+// group or subshell around it. Each redirect applies in order, as in the shell, so `2> f >&2` sends
+// stdout to f, while `>&2 2> f` leaves it where stderr was.
+func (inv Invocation) stdoutFile() (Redirect, bool) {
+	opened, toFile := filesOf(slices.Concat(inv.enclosing, inv.Redirects))[stdoutFd]
+
+	return opened, toFile
 }
 
 // filesOf returns the redirect that opened the file each descriptor is on once redirects apply in

@@ -43,6 +43,17 @@ func hookHeader() *cobra.Command {
 	}
 }
 
+// initHeader returns the `ils init` command with its help, which initCommand completes with its
+// Args, RunE and flag.
+func initHeader() *cobra.Command {
+	return &cobra.Command{
+		Use:     initUse,
+		Short:   initShort,
+		Long:    initLong,
+		Example: initExamples,
+	}
+}
+
 // withTimeLimits returns text with each %[1]s set to the time limit and each %[2]s set to the time
 // limit of the long wait, as results name them, so that the help says the limits the command
 // enforces. A text that needs only the time limit leaves %[2]s out.
@@ -215,4 +226,27 @@ The guard runs on macOS and Linux.`
 
 	hookExamples = `# Judge a payload as Claude Code's PreToolUse hook
 ils hook claude < payload.json`
+
+	initWord  = "init"
+	initUse   = initWord + " <harness>"
+	initShort = "Set up a coding agent's harness: the skills, the guard's hook, the rules"
+	initLong  = `Set up a coding agent's harness for ils. The one harness is claude:
+the skills ils ships land in ~/.claude/skills/<name>, and the guard's
+hook and the permission rules of the flow go into
+~/.claude/settings.json. When CLAUDE_CONFIG_DIR is set and not empty,
+both go into that directory instead. With --project, both go into .claude/ at the
+top level of the repository the working directory is in.
+
+A skill file that already holds what ils ships is left as it is, a file
+ils does not ship stays, and a skill directory that is a link is not
+written to. The settings keep every key and entry they hold: ils adds
+the hook and each rule no list holds yet, and sets the timeout and the
+failure of a guard hook already there. It prints one line per change,
+and exits 0 once everything is in place.`
+
+	initExamples = `# Set up Claude Code under your home directory
+ils init claude
+
+# Set it up in the repository you are in
+ils init claude --project`
 )

@@ -109,7 +109,7 @@ func validName(ctx context.Context, deps Deps, req Request, name string) *result
 
 	bad, refused := errors.AsType[*git.BranchNameError](err)
 	if !refused {
-		return req.unread(readName, err)
+		return req.Unread(readName, err)
 	}
 
 	if reason := bad.Reason(); reason != "" {
@@ -147,7 +147,7 @@ func freeName(ctx context.Context, deps Deps, req Request, name string) *result.
 func aheadLines(ctx context.Context, deps Deps, req Request, trunk string) ([]result.Phrase, *result.Result) {
 	ahead, past, err := deps.Repo.LocalTrunkAhead(ctx, trunk)
 	if err != nil {
-		return nil, req.unread(readLocalTrunk, err)
+		return nil, req.Unread(readLocalTrunk, err)
 	}
 
 	if !ahead {

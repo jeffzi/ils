@@ -9,8 +9,3 @@ func InterruptedExit(code int) bool { return interruptedExit(code) }
 func Failure(ctx context.Context, argv []string, runErr error, stderr string) error {
 	return failure(ctx, argv, runErr, stderr)
 }
-
-// Ended is ended, for the tests of package child_test.
-func Ended(ctx context.Context, argv []string, runErr error, printed Output) (Output, error) {
-	return ended(ctx, argv, runErr, printed)
-}

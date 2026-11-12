@@ -53,6 +53,7 @@ ils push              # push the branch, open its pull request, wait for the che
 ils merge             # squash-merge the pull request once its checks are green
 ils status            # where the checkout stands, and what to run next
 ils release <X.Y.Z>   # tag the release commit once its checks are green, then publish it
+ils init claude       # install the skills and wire the guard into Claude Code
 ```
 
 [`ils branch <name>`](docs/reference.md#ils-branch) creates the branch at origin's copy of the
@@ -62,7 +63,7 @@ the new pull request.
 
 [`ils push`](docs/reference.md#ils-push) pushes the branch by name, never with a force flag, opens
 its pull request on the first push, and waits for the checks of the pushed commit. It refuses the
-default branch, uncommitted changes, a branch behind or diverged from its copy on origin, and a
+default branch, changes to tracked files, a branch behind or diverged from its copy on origin, and a
 branch that already merged. A red check, a conflict, or a required check that never ran ends at
 exit 5, never as green.
 
@@ -79,6 +80,11 @@ It fetches from origin, writes nothing of yours, and exits 0 whenever its argume
 on origin's default branch, waits for its checks, tags it, pushes the tag, and creates the GitHub
 release from that version's section of `CHANGELOG.md`. It refuses a version that is not above every
 version tag on origin, a missing changelog section, and a failed check.
+
+[`ils init claude`](docs/reference.md#ils-init) installs the agent skills that ship inside the
+binary and adds the guard's hook and the flow's permission rules to Claude Code's settings, under
+your home directory or, with `--project`, in the repository.
+[Use with Claude Code](#use-with-claude-code) walks through it.
 
 Each of these commands takes `--json`, `-d` for a trace of each `git` and `gh` call, and `--help`.
 [Flags](docs/reference.md#flags) lists them all, and [Exit codes](docs/reference.md#exit-codes)
@@ -134,7 +140,7 @@ default branch, and `gh` calls that land or publish a change without the checks 
 you before `ils merge`, `ils release`, `gh pr merge`, and `gh release create`.
 
 The guard runs on macOS and Linux.
-[Wire the guard into Claude Code](#wire-the-guard-into-claude-code) sets it up.
+[Use with Claude Code](#use-with-claude-code) sets it up.
 [The guard](docs/reference.md#the-guard) in the reference lists every rule, and
 [What the guard does not see](docs/reference.md#what-the-guard-does-not-see) lists what gets past
 it.
@@ -212,12 +218,33 @@ once, by hand:
 
 ### Use with Claude Code
 
-The repository ships two agent skills: `ils`, which runs the binary, and `write-release`, which
-prepares the release commit. Install them with [`skills`](https://github.com/vercel-labs/skills):
+`ils init claude` is not in a release yet: [CHANGELOG.md](CHANGELOG.md) lists it under Unreleased.
+Install `ils` from the main branch first, with `go install github.com/jeffzi/ils@main` or
+`task install` from a clone. The guard's hook needs Claude Code 2.1.295 or later to block a command
+when the hook cannot run.
+
+With the binary installed, set up Claude Code with one command:
 
 ```bash
-npx skills add jeffzi/ils
+ils init claude
 ```
+
+It installs the two agent skills that ship inside the binary into `~/.claude/skills/`: `ils`, which
+runs the binary, and `write-release`, which prepares the release commit. It also adds the guard's
+hook and the flow's permission rules to `~/.claude/settings.json`. The hook is a `PreToolUse` hook
+on `Bash` that runs the `ils` skill's `hook.sh`. When you set `CLAUDE_CONFIG_DIR` to move Claude
+Code's directory, both land in that directory instead.
+
+The rules allow the steps an agent runs on its own: `ils push`, `ils branch`, and `ils status`.
+They make Claude Code ask you before every `ils merge`, `ils release`, `gh pr merge`, and
+`gh release create`. They deny `git push`.
+
+Your own settings stay. `ils init` replaces any earlier guard hook with its own, and running it
+again changes nothing already in place. After you upgrade `ils`, run it again to update the skills
+to the new binary's. With `ils init claude --project`, the skills and the settings land in
+`.claude/` at the top level of the repository you are in, for a setup you commit with the project.
+[ils init](docs/reference.md#ils-init) lists every step, the exact rules, and the same setup by
+hand.
 
 With the skills installed, `/ils status`, `/ils branch <name>`, `/ils push`, `/ils merge`, and
 `/ils release <X.Y.Z>` run the binary and relay its output. The `ils` skill tells an agent how to
@@ -226,58 +253,14 @@ react to each exit code. The merge and the release stay the user's decision: the
 `write-release` to land the release commit through `ils branch`, `ils push`, and `ils merge`, then
 tells you to run `ils release <X.Y.Z>`.
 
-To make Claude Code ask you before every merge or release, add `ask` rules to your settings
-(`~/.claude/settings.json`, or the project's `.claude/settings.json`):
-
-```json
-{
-  "permissions": {
-    "ask": [
-      "Bash(ils merge:*)",
-      "Bash(ils release:*)",
-      "Bash(gh pr merge:*)",
-      "Bash(gh release create:*)"
-    ]
-  }
-}
-```
-
-### Wire the guard into Claude Code
-
-The guard is not in a release yet: [CHANGELOG.md](CHANGELOG.md) lists it under Unreleased. Install
-`ils` from the main branch first, with `go install github.com/jeffzi/ils@main` or `task install`
-from a clone.
-
-Add a `PreToolUse` hook on `Bash` that runs `hook.sh` from the installed `ils` skill, here at its
-global install path. `onFailure` needs Claude Code 2.1.295 or later:
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.claude/skills/ils/hook.sh",
-            "timeout": 15,
-            "onFailure": "block"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
+### Work with the guard in Claude Code
 
 A missing or broken binary blocks every command. Reinstall it from Claude Code's prompt with a `!`
 command, which skips the hook: `! go install github.com/jeffzi/ils@main`, or `! task install`
 from a clone of `ils`.
 
-Keep the four `ask` rules from [Use with Claude Code](#use-with-claude-code) beside it, and add
-`deny` rules for the commands you never want run, such as `Bash(git push:*)`
-and `Bash(gh auth token:*)`: the permission rules are the first layer and the guard the second.
+The permission rules are the first layer and the guard the second. Add `deny` rules for the other
+commands you never want run, such as `Bash(gh auth token *)`.
 
 In a repository made with `gh repo create --source . --push`, run
 `git remote set-head origin --auto` once, as a `!` command or outside the agent.
@@ -289,7 +272,7 @@ guard needs it.
 [docs/reference.md](docs/reference.md) holds the details a caller looks up:
 
 - [Commands](docs/reference.md#commands), each command's steps and flags, and the by-hand steps
-  for `ils branch`, a red merge, and `ils release`;
+  for `ils branch`, a red merge, `ils release`, and `ils init`;
 - [Exit codes](docs/reference.md#exit-codes), and what to do after each;
 - [Time limits](docs/reference.md#time-limits), how long each command waits for the checks;
 - [Stopping a run](docs/reference.md#stopping-a-run) with Ctrl-C or SIGTERM;

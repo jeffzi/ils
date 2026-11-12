@@ -67,6 +67,7 @@ func TestTool_Check_WhenFoundDoesNotSuitTarget_ReturnsError(t *testing.T) {
 	}
 }
 
+// hammerVersionOf reads the version from a `hammer <version>` line, and none from any other line.
 func hammerVersionOf(line string) string {
 	version, ok := strings.CutPrefix(line, "hammer ")
 	if !ok {

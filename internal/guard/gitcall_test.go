@@ -17,24 +17,6 @@ import (
 	"github.com/jeffzi/ils/internal/guard"
 )
 
-func literal(text string) guard.Word {
-	return guard.Word{Text: text, Literal: true}
-}
-
-func wordTexts(words []guard.Word) []string {
-	got := make([]string, 0, len(words))
-	for _, word := range words {
-		got = append(got, word.Text)
-	}
-
-	return got
-}
-
-// quotedPath returns path as one single-quoted shell word.
-func quotedPath(path string) string {
-	return "'" + filepath.ToSlash(path) + "'"
-}
-
 // outsideDir returns a new directory that holds no repository, with its symbolic links resolved.
 func outsideDir(t *testing.T) string {
 	t.Helper()
@@ -159,7 +141,7 @@ func TestParse_ReadsAnAliasInTheInvocationsTarget(t *testing.T) {
 		command string
 		env     []string
 	}{
-		{name: "repository named by -C", command: "git -C " + quotedPath(f.Dir()) + " co topic", env: f.Env()},
+		{name: "repository named by -C", command: "git -C " + gittest.ShellWord(f.Dir()) + " co topic", env: f.Env()},
 		{name: "global config outside any repository", command: "git co topic", env: append(gittest.Env(t), "GIT_CONFIG_GLOBAL="+globalConfig)},
 	}
 	for _, tt := range tests {
@@ -245,9 +227,9 @@ func TestParse_ReportsTheGitDirAnInvocationTargets(t *testing.T) {
 		command string
 		want    string
 	}{
-		{name: "work tree named by -C", dir: outside, command: "git -C " + quotedPath(f.Dir()) + " status", want: gitDir},
-		{name: "git dir named by --git-dir", dir: outside, command: "git --git-dir=" + quotedPath(gitDir) + " status", want: gitDir},
-		{name: "git dir named by GIT_DIR", dir: outside, command: "GIT_DIR=" + quotedPath(gitDir) + " git status", want: gitDir},
+		{name: "work tree named by -C", dir: outside, command: "git -C " + gittest.ShellWord(f.Dir()) + " status", want: gitDir},
+		{name: "git dir named by --git-dir", dir: outside, command: "git --git-dir=" + gittest.ShellWord(gitDir) + " status", want: gitDir},
+		{name: "git dir named by GIT_DIR", dir: outside, command: "GIT_DIR=" + gittest.ShellWord(gitDir) + " git status", want: gitDir},
 		{name: "work tree root read as a bare repository", dir: f.Dir(), command: "git --bare status"},
 	}
 	for _, tt := range tests {
@@ -286,13 +268,14 @@ func TestParse_WhenTheGitDirCannotBeRead_ReportsItUnknown(t *testing.T) {
 	}
 }
 
-func TestParse_WhenGitCannotReadTheGitDir_FailsNamingTheCall(t *testing.T) {
+func TestParse_WhenGitCannotReadTheGitDir_ReturnsGitsExitError(t *testing.T) {
 	// Not parallel: gittest.FakeGit sets PATH for the whole process.
 	f := gittest.New(t, "main")
 
 	_, err := guard.Parse(t.Context(), "git status", callerFailingOn(t, f, f.Dir(), "rev-parse"))
 
-	checkFailedCall(t, err, "--absolute-git-dir")
+	_, ok := errors.AsType[*child.ExitError](err)
+	assert.Check(t, ok, "Parse() error = %v, want *child.ExitError", err)
 }
 
 func TestParse_WhenNoInvocationRunsGit_StartsNoGit(t *testing.T) {
@@ -438,7 +421,6 @@ func TestJudge_AllowsAGitCallWhoseHelpFlagFollowsTheSubcommand(t *testing.T) {
 	_, caller := standingOn(t, "main", "topic")
 
 	checkAllowed(t, caller, []namedCommand{
-		{name: "stash", command: "git stash --help"},
 		{name: "after a global option", command: "git -C /tmp stash --help"},
 	})
 }

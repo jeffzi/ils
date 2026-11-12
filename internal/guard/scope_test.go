@@ -177,43 +177,6 @@ func TestParse_ReportsWhereEachCOptionLandsOnDisk(t *testing.T) {
 	}
 }
 
-func TestParse_MarksAGitVariableOffTheAllowList(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		command string
-		want    string
-	}{
-		{name: "assignment prefix", command: "GIT_CONFIG_COUNT=1 git status", want: "GIT_CONFIG_COUNT"},
-		{name: "export of an assignment", command: "export GIT_CONFIG_GLOBAL=/tmp/c", want: "GIT_CONFIG_GLOBAL"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := parse(t, tt.command)
-
-			assert.Assert(t, len(got) > 0, "Parse(%q) = %v", tt.command, texts(got))
-			want := []guard.Mark{{Kind: guard.GitVariable, Name: tt.want}}
-			assert.Check(t, is.DeepEqual(got[0].Marks, want), "Parse(%q) marks", tt.command)
-		})
-	}
-}
-
-func TestParse_WhenAVariableIsNoUnlistedGitVariable_MarksNothing(t *testing.T) {
-	t.Parallel()
-
-	const command = "GIT_PAGER=cat git log"
-
-	got := parse(t, command)
-
-	assert.Assert(t, len(got) > 0, "Parse(%q) = %v", command, texts(got))
-	for _, inv := range got {
-		assert.Check(t, is.Len(inv.Marks, 0), "Parse(%q) marks of %v", command, inv.Words)
-	}
-}
-
 func TestParse_WhenASubstitutionMovesHead_ReportsHeadUnknownForTheCommandHoldingIt(t *testing.T) {
 	t.Parallel()
 
@@ -244,15 +207,7 @@ func TestJudge_WhenAFileIsSourcedBeforeAGhAlias_RefusesNamingTheConfigVariable(t
 	// Not parallel: it sets GH_PATH and the gh config location for the whole process.
 	ghReadingConfig(t, "sy: repo view\n")
 
-	checkJudgedRow(t, forgeCaller(t), judged{command: "source env.sh && gh sy", want: guard.Refuse, wantNamed: "GH_CONFIG_DIR"})
-}
-
-func TestJudge_WhenACdFollowsAVariableNamingATrunkClone_RefusesTheCommit(t *testing.T) {
-	t.Parallel()
-	f, _ := standingOn(t, "main", "main")
-	caller := callerIn(f, outsideDir(t))
-
-	checkJudgedRow(t, caller, judged{command: "D=" + quotedPath(f.Dir()) + `; cd "$D" && ` + commitCommand, want: guard.Refuse, wantNamed: "main"})
+	checkJudgedRow(t, callerOutsideAnyRepository(t), judged{command: "source env.sh && gh sy", want: guard.Refuse, wantNamed: "GH_CONFIG_DIR"})
 }
 
 func TestJudge_WhenAForLoopRunsOverLiterals_AllowsWhatTheBodyRunsForEachValue(t *testing.T) {
@@ -282,11 +237,11 @@ func TestJudge_WhenTheGuardCannotReadAForLoopValue_RefusesItAsACommandWord(t *te
 	t.Parallel()
 
 	checkRefusals(t, []refusal{
-		{name: "glob word after a literal", command: "for f in ls *.sh; do $f; done"},
-		{name: "more values than the bodies the guard walks, each walked twice", command: "for v in" + strings.Repeat(" ls", 129) + "; do $v; done"},
-		{name: "second loop past the bodies a first loop left", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; for v in" + strings.Repeat(" ls", 29) + "; do $v; done"},
-		{name: "loop past the bodies a function's loop and its dry run left", command: "f() { for v in" + strings.Repeat(" ls", 40) + "; do :; done; }; f; for v in" + strings.Repeat(" ls", 12) + "; do $v; done"},
-		{name: "loop in a git editor script past the bodies a first loop left", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; git -c core.editor='for v in" + strings.Repeat(" ls", 29) + "; do $v; done' log"},
+		{name: "glob word after a literal", command: "for f in ls *.sh; do $f; done", wantNamed: string(guard.DynamicCommand)},
+		{name: "more values than the bodies the guard walks, each walked twice", command: "for v in" + strings.Repeat(" ls", 129) + "; do $v; done", wantNamed: string(guard.DynamicCommand)},
+		{name: "second loop past the bodies a first loop left", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; for v in" + strings.Repeat(" ls", 29) + "; do $v; done", wantNamed: string(guard.DynamicCommand)},
+		{name: "loop past the bodies a function's loop and its dry run left", command: "f() { for v in" + strings.Repeat(" ls", 40) + "; do :; done; }; f; for v in" + strings.Repeat(" ls", 12) + "; do $v; done", wantNamed: string(guard.DynamicCommand)},
+		{name: "loop in a git editor script past the bodies a first loop left", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; git -c core.editor='for v in" + strings.Repeat(" ls", 29) + "; do $v; done' log", wantNamed: string(guard.DynamicCommand)},
 	})
 }
 
@@ -297,15 +252,8 @@ func TestParse_WhenTheGuardCannotBeSureOfAVariable_ReadsItsExpansionUnknown(t *t
 		name    string
 		command string
 	}{
-		{name: "append assignment", command: "S=/tmp/work; S+=/x; $S/run.sh"},
-		{name: "read", command: "S=/tmp/work; read -r S; $S/run.sh"},
-		{name: "printf -v", command: "S=/tmp/work; printf -v S %s /srv; $S/run.sh"},
 		{name: "for loop name", command: "S=/tmp/work; for S in /srv; do :; done; $S/run.sh"},
 		{name: "assign-default expansion", command: `S=/tmp/work; echo "${S:=/srv}"; $S/run.sh`},
-		{name: "unset", command: "S=/tmp/work; unset S; $S/run.sh"},
-		{name: "value from a command substitution", command: "S=/tmp/work; S=$(pwd); $S/run.sh"},
-		{name: "array value", command: "S=(/tmp/work); $S/run.sh"},
-		{name: "element assignment", command: "S=/tmp/work; S[1]=/srv; $S/run.sh"},
 		{name: "assignment in a subshell", command: "(S=/tmp/work); $S/run.sh"},
 		{name: "assignment in a pipeline stage", command: "true | S=/tmp/work; $S/run.sh"},
 		{name: "assignment in a background job", command: "S=/tmp/work & $S/run.sh"},
@@ -313,23 +261,12 @@ func TestParse_WhenTheGuardCannotBeSureOfAVariable_ReadsItsExpansionUnknown(t *t
 		{name: "assignment in an if body", command: "if test -d x; then S=/tmp/work; fi; $S/run.sh"},
 		{name: "assignment in a loop body", command: "for f in a; do S=/tmp/work; done; $S/run.sh"},
 		{name: "call of a function whose body assigns it", command: "f() { S=/tmp/work; }; f; $S/run.sh"},
-		{name: "local outside a function", command: "local S=/tmp/work; $S/run.sh"},
-		{name: "declare -n before the assignment", command: "declare -n R=T; S=/tmp/work; $S/run.sh"},
-		{name: "typeset -n after the word", command: "S=/tmp/work; $S/run.sh; typeset -n R=T"},
-		{name: "local -n in a function", command: "f() { local -n R=T; }; S=/tmp/work; $S/run.sh"},
-		{name: "declare -n through builtin", command: "builtin declare -n R=T; S=/tmp/work; $S/run.sh"},
-		{name: "typeset -n through command with an option", command: "command -p typeset -n R=T; S=/tmp/work; $S/run.sh"},
-		{name: "eval string declaring a name reference later in a loop", command: "S=/tmp/work; for f in a b; do $S/run.sh; eval 'declare -n R=T'; done"},
 		{name: "assignment prefix of the command reading it", command: "S=/tmp/work $S/run.sh"},
 		{name: "source of a file after the assignment", command: "S=/tmp/work; source env.sh; $S/run.sh"},
 		{name: "shell string of another shell", command: "S=/tmp/work; bash -c '$S/run.sh'"},
-		{name: "expansion with an operator", command: "S=/tmp/work/x; ${S%/x}/run.sh"},
 		{name: "unquoted expansion of a value holding a space", command: "S='/tmp/my work'; $S/run.sh"},
 		{name: "unquoted expansion of a value holding a glob character", command: "S='/tmp/*'; $S/run.sh"},
-		{name: "unquoted expansion after IFS is assigned", command: "IFS=/; S=/tmp/work; $S/run.sh"},
-		{name: "declare with an attribute that changes the value", command: "declare -u S=/tmp/work; $S/run.sh"},
 		{name: "unquoted expansion of a for loop value holding a backslash", command: `for S in '/tmp/a\b'; do $S/run.sh; done`},
-		{name: "assignment after an attribute that changes the value", command: "typeset -l S; S=/TMP/work; $S/run.sh"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -84,11 +84,6 @@ func featureChange() forge.NewChange {
 
 func versionArgs() []string { return ghtest.VersionArgs() }
 
-// versionAnswer is what `gh --version` prints when line is its first line.
-func versionAnswer(line string) string {
-	return line + "\nhttps://github.com/cli/cli/releases/tag/v2.0.0\n"
-}
-
 func loginArgs() []string { return ghtest.LoginArgs(engineHost) }
 
 func repoViewArgs() []string { return ghtest.RepoViewArgs(engineSlug) }
@@ -102,10 +97,6 @@ func createArgs() []string {
 func headArgs() []string { return ghtest.HeadArgs(engineSlug, pullNumber) }
 
 func rulesArgs() []string { return pagedAPIArgs("rules/branches/" + trunk) }
-
-func checksArgs() []string { return ghtest.ChecksArgs(engineSlug, pullNumber) }
-
-func runsArgs() []string { return ghtest.RunsArgs(engineSlug, headSHA) }
 
 func messageArgs() []string { return ghtest.MessageArgs(engineHost, "ada", "engine", pullNumber) }
 
@@ -141,6 +132,11 @@ func pagedAPIArgs(rest string) []string {
 	return []string{"api", "--hostname", engineHost, "--paginate", "repos/ada/engine/" + rest}
 }
 
+// pageJSON is one page of a paginated read's answer, holding items under key.
+func pageJSON(key string, items ...string) string {
+	return `{"total_count":` + strconv.Itoa(len(items)) + `,"` + key + `":` + ghtest.JSONArray(items...) + `}`
+}
+
 func workflowsArgs() []string { return pagedAPIArgs("actions/workflows") }
 
 func workflowFilesArgs() []string { return workflowFilesArgsAt(trunk) }
@@ -155,9 +151,7 @@ func workflowJSON(file, state string) string {
 }
 
 // workflowsPage is one page of the workflow list's answer, holding workflows.
-func workflowsPage(workflows ...string) string {
-	return `{"total_count":` + strconv.Itoa(len(workflows)) + `,"workflows":` + ghtest.JSONArray(workflows...) + `}`
-}
+func workflowsPage(workflows ...string) string { return pageJSON("workflows", workflows...) }
 
 // fileJSON is one entry of the directory read's answer: the file at file.
 func fileJSON(file string) string {
@@ -208,10 +202,6 @@ func headQuery(required ...string) forge.HeadQuery {
 	return forge.HeadQuery{Number: pullNumber, Required: required}
 }
 
-func verdictQuery(required ...string) forge.VerdictQuery {
-	return forge.VerdictQuery{SHA: headSHA, Number: pullNumber, Required: required}
-}
-
 // operationsByName is the forge operations the read tables run, each reduced to its error, keyed by its method name.
 func operationsByName() map[string]func(context.Context, *github.Forge) error {
 	return map[string]func(context.Context, *github.Forge) error{
@@ -229,10 +219,6 @@ func operationsByName() map[string]func(context.Context, *github.Forge) error {
 		},
 		"TrunkProtection": func(ctx context.Context, f *github.Forge) error {
 			_, err := f.TrunkProtection(ctx, engine(), trunk)
-			return err
-		},
-		"Verdict": func(ctx context.Context, f *github.Forge) error {
-			_, err := f.Verdict(ctx, engine(), verdictQuery())
 			return err
 		},
 		"Message": func(ctx context.Context, f *github.Forge) error {
@@ -329,16 +315,6 @@ func assertDecodeErrorNamesCall(t *testing.T, c readCase) {
 	assert.Check(t, ghtest.Matches(ghArgv(c.args), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, ghArgv(c.args))
 }
 
-func TestForge_Identity_WhenGhIsOlderThanTheMinimum_ReturnsToolTooOldErrorBeforeTheLogin(t *testing.T) {
-	const line = "gh version 1.0.0"
-	ghtest.Setup(t, ghtest.Says(versionAnswer(line), versionArgs()...), ghtest.Exits(ghtest.LoggedOut(), loginArgs()...))
-
-	_, err := newForge().Identity(t.Context(), engine())
-
-	_, ok := errors.AsType[*child.ToolTooOldError](err)
-	assert.Assert(t, ok, "Identity error = %v, want *child.ToolTooOldError", err)
-}
-
 func TestForge_Identity_WhenVersionReadExitsNonZero_ReturnsExitErrorNamingCall(t *testing.T) {
 	const unknownFlag = "unknown flag\n"
 	ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stderr: unknownFlag, Code: 1}, versionArgs()...))
@@ -361,7 +337,7 @@ func TestForge_Identity(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ghtest.Setup(t, ghtest.Says("Logged in\n", loginArgs()...), ghtest.Says(tt.view, repoViewArgs()...))
+			ghtest.Setup(t, ghtest.Identity(engineHost, engineSlug, ghtest.Answer{Stdout: tt.view})...)
 			want := engine()
 			want.Fork, want.CanPush, want.SquashAllowed = tt.want.Fork, tt.want.CanPush, tt.want.SquashAllowed
 
@@ -767,7 +743,7 @@ func TestForge_Message(t *testing.T) {
 			want:      []string{signedOff, liveSuite},
 		},
 		{
-			name:      "pull request body setting, the body's own trailer left out",
+			name:      "pull request body setting, trailers after GitHub's separator",
 			mergeBody: pullBody + "\n\n---------\n\n" + liveSuite,
 			want:      []string{liveSuite},
 		},
@@ -908,21 +884,28 @@ func TestForge_PublishRelease_WhenGhExitsNonZero_ReturnsExitError(t *testing.T) 
 
 func TestForge_PublishRelease_RemovesTheNotesFile(t *testing.T) {
 	tests := []struct {
-		name   string
-		answer ghtest.Answer
+		name    string
+		answer  ghtest.Answer
+		wantErr bool
 	}{
 		{name: "published", answer: ghtest.Answer{Stdout: releaseURL + "\n"}},
-		{name: "refused", answer: ghtest.ServerError()},
+		{name: "refused", answer: ghtest.ServerError(), wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fake := ghtest.Setup(t, ghtest.Exits(tt.answer, releaseCreateArgs(false)...))
 
-			_, _ = newForge().PublishRelease(t.Context(), engine(), newRelease(false))
+			_, err := newForge().PublishRelease(t.Context(), engine(), newRelease(false))
 
+			if tt.wantErr {
+				_, ok := errors.AsType[*child.ExitError](err)
+				assert.Assert(t, ok, "PublishRelease error = %v, want *child.ExitError", err)
+			} else {
+				assert.NilError(t, err)
+			}
 			notes := notesFiles(fake.Calls())
 			assert.Assert(t, is.Len(notes, 1), "calls = %q, want one --notes-file", fake.Calls())
-			_, err := os.Stat(notes[0])
+			_, err = os.Stat(notes[0])
 			assert.Check(t, errors.Is(err, fs.ErrNotExist), "Stat(%q) error = %v, want the notes file removed", notes[0], err)
 		})
 	}

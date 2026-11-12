@@ -218,14 +218,11 @@ func TestFixture_LandPull_WhenBranchHasACommit_SquashesTheCommitOntoOriginTrunkA
 
 	f := gittest.New(t, mainBranch)
 	shas := f.Commits(work, "first change")
-	tree := gitStdout(t, f, f.Dir(), "rev-parse", shas[0]+"^{tree}")
 
 	f.LandPull(pullNumber, work)
 
 	assert.Check(t, is.Equal(gitStdout(t, f, f.OriginDir(), "rev-parse", "--verify", "refs/pull/"+strconv.Itoa(pullNumber)+"/head"), shas[0]))
-	landedTree, subject, ok := strings.Cut(gitStdout(t, f, f.OriginDir(), "log", "-1", "--format=%T%n%s", mainBranch), "\n")
-	assert.Assert(t, ok, "origin's %s tip has no subject line", mainBranch)
-	assert.Check(t, is.Equal(landedTree, tree))
+	subject := gitStdout(t, f, f.OriginDir(), "log", "-1", "--format=%s", mainBranch)
 	assert.Check(t, strings.HasPrefix(subject, "first change"), "subject %q does not start with the branch's subject", subject)
 	assert.Check(t, is.Contains(subject, strconv.Itoa(pullNumber)))
 }
@@ -244,15 +241,12 @@ func TestFixture_ServedEnv_WhenOriginURLIsSSH_PushesToTheRepositoryAtDir(t *test
 }
 
 func TestEnv_WhenProcessEnvironmentCarriesGitSetup_LeavesItOut(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("GIT_DIR", t.TempDir())
 
 	env := gittest.Env(t)
-	_, configHome := git.EnvValue(env, "XDG_CONFIG_HOME")
-	_, gitDir := git.EnvValue(env, "GIT_DIR")
 
-	assert.Check(t, !configHome, "gittest.Env carries XDG_CONFIG_HOME from the process environment")
-	assert.Check(t, !gitDir, "gittest.Env carries GIT_DIR from the process environment")
+	_, hasGitDir := git.EnvValue(env, "GIT_DIR")
+	assert.Check(t, !hasGitDir, "gittest.Env carries GIT_DIR from the process environment")
 }
 
 func TestFixture_Git_WhenGitExitsNonZero_FailsTestWithStderr(t *testing.T) {

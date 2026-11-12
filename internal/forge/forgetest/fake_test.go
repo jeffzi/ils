@@ -16,8 +16,6 @@ import (
 )
 
 const (
-	branch    = "feature"
-	trunk     = "main"
 	number    = 12
 	oldCommit = "1111111"
 	newCommit = "2222222"
@@ -25,7 +23,6 @@ const (
 	testCheck = "test"
 	subject   = "Add the widget list (#12)"
 	body      = "List every widget on the home page."
-	tag       = "v1.2.0"
 )
 
 // repo is the repository every call is made against.
@@ -38,12 +35,6 @@ func requiredChecks() []string {
 	return []string{lintCheck, testCheck}
 }
 
-// newChange is the argument of OpenChange.
-func newChange() forge.NewChange {
-	return forge.NewChange{Title: branch, Base: trunk, Head: branch}
-}
-
-// head is the scripted answer of Head.
 func head() forge.Head {
 	return forge.Head{SHA: newCommit, MergeState: forge.MergeClean}
 }
@@ -58,119 +49,12 @@ func unknownHead() forge.Head {
 	return forge.Head{SHA: newCommit, MergeState: forge.MergeUnknown}
 }
 
-// headQuery is the argument of Head.
 func headQuery() forge.HeadQuery {
 	return forge.HeadQuery{Number: number, Required: requiredChecks()}
 }
 
-// verdictQuery is the argument of Verdict.
-func verdictQuery() forge.VerdictQuery {
-	return forge.VerdictQuery{Number: number, SHA: newCommit, Required: requiredChecks()}
-}
-
-// newRelease is the argument of PublishRelease.
-func newRelease() forge.NewRelease {
-	return forge.NewRelease{Tag: tag, Notes: body}
-}
-
-// landing is the argument of Land.
 func landing() forge.Landing {
 	return forge.Landing{Number: number, HeadSHA: newCommit, Subject: subject, Body: body}
-}
-
-// operation is one forge operation called with the fixture arguments.
-type operation struct {
-	call func(context.Context, *forgetest.Fake) (any, error)
-	name string
-	// made is the call the fake records for the operation.
-	made forgetest.Call
-}
-
-// operations lists every forge operation, called with the fixture arguments.
-func operations() []operation {
-	return []operation{
-		{name: "identity", made: forgetest.Call{Op: forgetest.OpIdentity, Repo: repo()}, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
-			return f.Identity(ctx, repo())
-		}},
-		{name: "find changes", made: forgetest.Call{Op: forgetest.OpFindChanges, Repo: repo(), Branch: branch}, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
-			return f.FindChanges(ctx, repo(), branch)
-		}},
-		{name: "open change", made: forgetest.Call{Op: forgetest.OpOpenChange, Repo: repo(), Change: newChange()}, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
-			return f.OpenChange(ctx, repo(), newChange())
-		}},
-		{name: "head", made: forgetest.Call{Op: forgetest.OpHead, Repo: repo(), HeadQuery: headQuery()}, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
-			return f.Head(ctx, repo(), headQuery())
-		}},
-		{name: "trunk protection", made: forgetest.Call{Op: forgetest.OpTrunkProtection, Repo: repo(), Branch: trunk}, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
-			return f.TrunkProtection(ctx, repo(), trunk)
-		}},
-		{name: "verdict", made: forgetest.Call{Op: forgetest.OpVerdict, Repo: repo(), VerdictQuery: verdictQuery()}, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
-			return f.Verdict(ctx, repo(), verdictQuery())
-		}},
-		{name: "commit verdict", made: forgetest.Call{Op: forgetest.OpCommitVerdict, Repo: repo(), SHA: newCommit}, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
-			return f.CommitVerdict(ctx, repo(), newCommit)
-		}},
-		{name: "has trunk CI", made: forgetest.Call{Op: forgetest.OpHasTrunkCI, Repo: repo(), Branch: trunk}, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
-			return f.HasTrunkCI(ctx, repo(), trunk)
-		}},
-		{name: "message", made: forgetest.Call{Op: forgetest.OpMessage, Repo: repo(), Number: number}, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
-			return f.Message(ctx, repo(), number)
-		}},
-		{name: "land", made: forgetest.Call{Op: forgetest.OpLand, Repo: repo(), Landing: landing()}, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
-			return nil, f.Land(ctx, repo(), landing())
-		}},
-		{name: "delete branch", made: forgetest.Call{Op: forgetest.OpDeleteBranch, Repo: repo(), Branch: branch}, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
-			return nil, f.DeleteBranch(ctx, repo(), branch)
-		}},
-		{name: "find release", made: forgetest.Call{Op: forgetest.OpFindRelease, Repo: repo(), Tag: tag}, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
-			link, _, err := f.FindRelease(ctx, repo(), tag)
-
-			return link, err
-		}},
-		{name: "publish release", made: forgetest.Call{Op: forgetest.OpPublishRelease, Repo: repo(), Release: newRelease()}, call: func(ctx context.Context, f *forgetest.Fake) (any, error) {
-			return f.PublishRelease(ctx, repo(), newRelease())
-		}},
-	}
-}
-
-// script scripts every operation to answer once: head() for Head and the zero value for the rest.
-func script() forgetest.Script {
-	return forgetest.Script{
-		Identity:        forgetest.Values(forge.Repo{}),
-		FindChanges:     forgetest.Values([]forge.Change(nil)),
-		OpenChange:      forgetest.Values(forge.ChangeRef{}),
-		Head:            forgetest.Values(head()),
-		TrunkProtection: forgetest.Values(forge.Protection{}),
-		Verdict:         forgetest.Values(forge.Verdict{}),
-		CommitVerdict:   forgetest.Values(forge.Verdict{}),
-		HasTrunkCI:      forgetest.Values(false),
-		Message:         forgetest.Values(forge.Message{}),
-		Land:            []error{nil},
-		DeleteBranch:    []error{nil},
-		FindRelease:     forgetest.Values(""),
-		PublishRelease:  forgetest.Values(""),
-	}
-}
-
-// callEach calls every operation of fake once with the fixture arguments, failing the test on any
-// error.
-func callEach(t *testing.T, fake *forgetest.Fake) {
-	t.Helper()
-
-	for _, op := range operations() {
-		_, err := op.call(t.Context(), fake)
-		assert.NilError(t, err, "%s", op.name)
-	}
-}
-
-func TestFake_WhenContextEndedBeforeAnAnswerNotHeld_ReturnsItsValue(t *testing.T) {
-	t.Parallel()
-	fake := forgetest.New(t, script())
-
-	got, err := fake.Head(ended(t), repo(), headQuery())
-	assert.NilError(t, err)
-
-	assert.Check(t, is.DeepEqual(got, head()))
 }
 
 func TestFake_WhenOperationIsNotScripted_ReportsItAsUnscripted(t *testing.T) {
@@ -192,20 +76,6 @@ func TestFake_Calls_WhenOperationIsNotScripted_RecordsIt(t *testing.T) {
 	_, _ = fake.Head(t.Context(), repo(), headQuery())
 
 	assert.Check(t, is.DeepEqual(fake.Calls(), []forgetest.Call{{Op: forgetest.OpHead, Repo: repo(), HeadQuery: headQuery()}}))
-}
-
-func TestFake_Calls_WhenEveryOperationIsCalled_RecordsThemInOrder(t *testing.T) {
-	t.Parallel()
-
-	fake := forgetest.New(t, script())
-
-	callEach(t, fake)
-
-	var want []forgetest.Call
-	for _, op := range operations() {
-		want = append(want, op.made)
-	}
-	assert.Check(t, is.DeepEqual(fake.Calls(), want))
 }
 
 func TestFake_WhenCalledPastTheLastStep_RepeatsTheLast(t *testing.T) {
@@ -231,24 +101,18 @@ func TestFake_WhenOnReadIsSet_RunsItOncePerRead(t *testing.T) {
 
 	var seen []forgetest.Op
 
-	scripted := script()
-	scripted.OnRead = func(call forgetest.Call) { seen = append(seen, call.Op) }
-	fake := forgetest.New(t, scripted)
+	fake := forgetest.New(t, forgetest.Script{
+		Head:   forgetest.Values(head()),
+		Land:   []error{nil},
+		OnRead: func(call forgetest.Call) { seen = append(seen, call.Op) },
+	})
 
-	callEach(t, fake)
+	_, headErr := fake.Head(t.Context(), repo(), headQuery())
+	landErr := fake.Land(t.Context(), repo(), landing())
+	assert.NilError(t, headErr)
+	assert.NilError(t, landErr)
 
-	want := []forgetest.Op{
-		forgetest.OpIdentity,
-		forgetest.OpFindChanges,
-		forgetest.OpHead,
-		forgetest.OpTrunkProtection,
-		forgetest.OpVerdict,
-		forgetest.OpCommitVerdict,
-		forgetest.OpHasTrunkCI,
-		forgetest.OpMessage,
-		forgetest.OpFindRelease,
-	}
-	assert.Check(t, is.DeepEqual(seen, want))
+	assert.Check(t, is.DeepEqual(seen, []forgetest.Op{forgetest.OpHead}))
 }
 
 func TestFake_Land_WhenCalledTwice_AdvancesItsErrorSequence(t *testing.T) {

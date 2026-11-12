@@ -73,14 +73,6 @@ func TestParse_WhenANestedStringIsPastTheThirdLevel_MarksItUnparsed(t *testing.T
 	assert.Check(t, is.DeepEqual(got[3].Marks, []guard.Mark{{Kind: guard.DeepScript}}), "Parse(%q) marks", command)
 }
 
-func TestJudge_WhenGoRunsAProgramGivenAToolWord_RefusesIt(t *testing.T) {
-	t.Parallel()
-
-	checkRefusals(t, []refusal{
-		{name: "bare git among go run's arguments", command: "go run ./tool git push", wantNamed: "go runs git"},
-	})
-}
-
 func TestJudge_WhenAShellsOptionsRunAStringOrAFile_RefusesIt(t *testing.T) {
 	t.Parallel()
 
@@ -116,14 +108,6 @@ func TestJudge_WhenAShellReadsItsScriptFromOutsideTheCommand_AllowsIt(t *testing
 	})
 }
 
-func TestJudge_WhenGitRunsAfterASourceOfASubstitution_RefusesForTheUnknownDirectory(t *testing.T) {
-	t.Parallel()
-
-	checkRefusals(t, []refusal{
-		{name: "commit", command: "source <(echo x); git commit -m x", wantNamed: "cannot tell where the command runs"},
-	})
-}
-
 func TestJudge_WhenAShellGivesItsScriptFileAToolWord_RefusesIt(t *testing.T) {
 	t.Parallel()
 
@@ -156,50 +140,4 @@ func TestJudge_WhenAShellsOptionsRunNothingHidden_AllowsIt(t *testing.T) {
 		{name: "sh rcfile not read without -i", command: "sh -rcfile 'git push --force origin main' -c true"},
 		{name: "bash two-dash rcfile takes its value", command: "bash --rcfile x -c 'git status'"},
 	})
-}
-
-func TestParse_WhenAGitVariableNamesACommandGitRuns_ParsesItsCommands(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		command string
-		want    []string
-	}{
-		{name: "sequence editor as an assignment prefix", command: "GIT_SEQUENCE_EDITOR='git push origin main; true' git rebase -i HEAD~1", want: []string{"git", "push", "origin", "main"}},
-		{name: "editor exported earlier in the list", command: "export GIT_EDITOR='git push origin main'; git commit", want: []string{"git", "push", "origin", "main"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := parse(t, tt.command)
-
-			assert.Check(t, is.Contains(texts(got), tt.want), "Parse(%q)", tt.command)
-		})
-	}
-}
-
-func TestParse_WhenACommandAGitVariableNamesCannotBeRead_MarksIt(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		command string
-		want    guard.MarkKind
-		index   int
-	}{
-		{name: "non-literal editor", command: `GIT_EDITOR="$e" git commit`, want: guard.DynamicScript},
-		{name: "editor past the third level", command: "eval eval eval GIT_EDITOR=vim git commit", index: 3, want: guard.DeepScript},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := parse(t, tt.command)
-
-			assert.Assert(t, len(got) > tt.index, "Parse(%q) = %v", tt.command, texts(got))
-			assert.Check(t, is.DeepEqual(got[tt.index].Marks, []guard.Mark{{Kind: tt.want}}), "Parse(%q) marks", tt.command)
-		})
-	}
 }

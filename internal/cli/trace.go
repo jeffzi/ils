@@ -9,22 +9,20 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/colorprofile"
-
 	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/result"
 )
 
-// logger returns the logger of the debug trace on Stderr, drawn for profile, when the debug flag is
-// on, and nil when it is off.
-func (p *parse) logger(profile colorprofile.Profile) *slog.Logger {
+// logger returns the logger of the debug trace on Stderr, drawn for Stderr's color profile, when the
+// debug flag is on, and nil when it is off.
+func (p *parse) logger() *slog.Logger {
 	if !p.debug {
 		return nil
 	}
 
 	a := p.app
 
-	return slog.New(trace{w: a.Stderr, launch: a.Launch, pen: result.PenFor(profile), mu: &sync.Mutex{}})
+	return slog.New(trace{w: a.Stderr, launch: a.Launch, pen: result.PenFor(p.errProfile), mu: &sync.Mutex{}})
 }
 
 // trace is the log handler of the debug trace: it writes each record as one line on w, timed from

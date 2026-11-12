@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -428,11 +427,7 @@ func (r Repo) askSSH(ctx context.Context, command sshCommand, host string) (stri
 // getenv returns the value key has in the environment git runs with, and whether it is set, as
 // EnvValue reads it.
 func (r Runner) getenv(key string) (string, bool) {
-	if r.Env == nil {
-		return os.LookupEnv(key)
-	}
-
-	return EnvValue(r.Env, key)
+	return EnvValue(r.Environ(), key)
 }
 
 // SameKey reports whether name, the key of an environment entry, is key as the system matches
@@ -533,11 +528,4 @@ func (r Runner) missingOn(command sshCommand, program string) *SSHCommandMissing
 	}
 
 	return nil
-}
-
-// config reads key from the repository's config. A key that is not set, which `git config --get`
-// reports by exiting 1, is not an error: it returns an empty value and set false, so a caller can
-// tell it from a failure of git itself.
-func (r Repo) config(ctx context.Context, key string) (value string, set bool, err error) {
-	return r.optionalLine(ctx, "config", "--get", key)
 }

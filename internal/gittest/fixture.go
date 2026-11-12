@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -58,10 +57,7 @@ type Fixture struct {
 func New(tb testing.TB, trunk string) *Fixture {
 	tb.Helper()
 
-	gitPath, err := exec.LookPath("git")
-	if err != nil {
-		tb.Fatalf("gittest: find git: %v", err)
-	}
+	gitPath := findRealGit(tb)
 
 	// Resolved so that Dir matches what git prints for the repository, which follows symbolic links.
 	root, err := filepath.EvalSymlinks(tb.TempDir())
@@ -75,7 +71,7 @@ func New(tb testing.TB, trunk string) *Fixture {
 	sshConfig := filepath.Join(root, sshConfigName)
 	f := &Fixture{
 		tb:        tb,
-		env:       append(isolatedEnv(home), sshCommandVar+"=ssh -F '"+filepath.ToSlash(sshConfig)+"'"),
+		env:       append(isolatedEnv(home), sshCommandVar+"=ssh -F "+ShellWord(sshConfig)),
 		git:       gitPath,
 		root:      root,
 		dir:       filepath.Join(root, "repo"),
@@ -125,33 +121,20 @@ func Env(tb testing.TB) []string {
 	return isolatedEnv(tb.TempDir())
 }
 
-// NeedSignals skips the test on Windows, where a shell cannot end a git process by a signal.
-func NeedSignals(tb testing.TB) {
-	tb.Helper()
-
-	if runtime.GOOS == "windows" {
-		tb.Skip("Windows has no signals for a shell to end a git process with")
-	}
-}
-
 // isolatedEnv returns the process environment with everything that could bring in the user's git
 // setup replaced: no system or global config, a home under the fixture, and a fixed identity and date.
 func isolatedEnv(home string) []string {
 	// XDG_CONFIG_HOME goes too: git reads its default ignore file from there.
-	userDirKeys := []string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME"}
+	env := git.WithoutKeys(os.Environ(), "HOME", "USERPROFILE", "XDG_CONFIG_HOME")
 
-	env := slices.DeleteFunc(os.Environ(), func(entry string) bool {
+	env = slices.DeleteFunc(env, func(entry string) bool {
 		name, _, _ := strings.Cut(entry, "=")
 
 		const gitPrefix = "GIT_"
 
 		head := name[:min(len(name), len(gitPrefix))]
-		gitSetup := git.SameKey(head, gitPrefix)
-		userDir := slices.ContainsFunc(userDirKeys, func(key string) bool {
-			return git.SameKey(name, key)
-		})
 
-		return gitSetup || userDir
+		return git.SameKey(head, gitPrefix)
 	})
 
 	return append(env,
@@ -196,7 +179,11 @@ func WithoutSSH(tb testing.TB, env []string) []string {
 
 // Marking returns a command line that creates the file at marker when a shell runs it, whatever
 // arguments follow it.
-func Marking(marker string) string { return "echo ran > '" + filepath.ToSlash(marker) + "' #" }
+func Marking(marker string) string { return "echo ran > " + ShellWord(marker) + " #" }
+
+// ShellWord returns path in its slash form between single quotes, as one word to a shell. It does
+// not escape a single quote inside path.
+func ShellWord(path string) string { return "'" + filepath.ToSlash(path) + "'" }
 
 // WriteFile writes content to the file name in dir, and fails the test when it cannot.
 func WriteFile(tb testing.TB, dir, name, content string) {
@@ -618,7 +605,7 @@ func (f *Fixture) commitFile(dir, name, content, subject string) string {
 func Serving(dir string) string {
 	// Git passes the remote command last, after the options and the host, such as `git-upload-pack
 	// '<path>'`. The loop leaves the last argument in remote, and the service is its first word.
-	return `for remote do :; done; service="${remote%% *}"; git "${service#git-}" '` + filepath.ToSlash(dir) + `'`
+	return `for remote do :; done; service="${remote%% *}"; git "${service#git-}" ` + ShellWord(dir)
 }
 
 // ServedEnv returns the fixture's environment with ssh replaced by a stand-in that serves the
@@ -627,6 +614,20 @@ func (f *Fixture) ServedEnv(dir string) []string {
 	f.tb.Helper()
 
 	return f.ServedBy(Serving(dir))
+}
+
+// SSHDenied is what GitHub's ssh prints when it turns away a caller whose key it does not accept.
+// Keep the text as GitHub prints it: package git reads it as a refusal of the caller, and a different
+// text is no longer read that way.
+const SSHDenied = "git@github.com: Permission denied (password)."
+
+// DeniedEnv returns the fixture's environment with ssh replaced by a stand-in that turns every call
+// away as GitHub does a key it does not accept: it prints SSHDenied on stderr and exits 255, the code
+// ssh exits with when it fails itself.
+func (f *Fixture) DeniedEnv() []string {
+	f.tb.Helper()
+
+	return f.ServedBy("echo " + ShellWord(SSHDenied) + " >&2; exit 255")
 }
 
 // ServedBy returns the fixture's environment with ssh replaced by a stand-in that takes the
@@ -653,7 +654,7 @@ func (f *Fixture) standIn() string {
 	}
 
 	script := "for arg do\n" +
-		"\tif [ \"$arg\" = -G ]; then exec '" + filepath.ToSlash(ssh) + "' \"$@\"; fi\n" +
+		"\tif [ \"$arg\" = -G ]; then exec " + ShellWord(ssh) + " \"$@\"; fi\n" +
 		"done\n" +
 		"eval \"$" + servingEnv + "\"\n"
 

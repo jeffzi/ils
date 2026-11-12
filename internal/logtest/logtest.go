@@ -59,13 +59,18 @@ func Only(t testing.TB, records []Record) Record {
 	return records[0]
 }
 
-// CallAttrs returns the attributes, all but the duration, of the one record of records, and fails t
-// when there is not exactly one. It is how a logged call is compared with ExecAttrs, whose duration
-// can never match.
+// Call returns the attributes of r, all but the duration. It is how a logged call is compared with
+// ExecAttrs, whose duration can never match.
+func (r Record) Call() map[string]any {
+	return r.Without(child.KeyDuration)
+}
+
+// CallAttrs returns the attributes, all but the duration, of the one record of records, as Call
+// does, and fails t when there is not exactly one.
 func CallAttrs(t testing.TB, records []Record) map[string]any {
 	t.Helper()
 
-	return Only(t, records).Without(child.KeyDuration)
+	return Only(t, records).Call()
 }
 
 // ExecAttrs returns the attributes, all but the duration, of the one record run logs, and fails t

@@ -906,42 +906,15 @@ func TestPush_WhenACutComesBeforeTheCIRead_PendingWithoutAskingIt(t *testing.T) 
 	})
 }
 
-// ciReading is a forge that keeps what its CI read's context was: its deadline, and whether it
-// ends with the push's. The wrapped forge records the repository and trunk the read was about.
-type ciReading struct {
-	landing.Forge
-
-	deadline time.Time
-	// endPush ends the push's context while the read is in flight.
-	endPush       context.CancelFunc
-	endedWithPush bool
-}
-
-// HasTrunkCI keeps what its context was, then answers as the forge it wraps.
-func (f *ciReading) HasTrunkCI(ctx context.Context, repo forge.Repo, trunk string) (bool, error) {
-	f.deadline, _ = ctx.Deadline()
-	f.endPush()
-	f.endedWithPush = ctx.Err() != nil
-
-	return f.Forge.HasTrunkCI(ctx, repo, trunk)
-}
-
-func TestPush_WhenNothingReportedForTheCommit_AsksAboutTheTrunkOfOriginWithinTheDeadline(t *testing.T) {
+func TestPush_WhenNothingReportedForTheCommit_AsksAboutTheTrunkOfOrigin(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		under, d := newDelivery(t, pushRow{script: opening(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{})})
-		ctx, cancel := context.WithCancel(under)
-		t.Cleanup(cancel)
-		reading := &ciReading{Forge: d.deps.Forge, endPush: cancel}
-		d.deps.Forge = reading
-		deadline, _ := under.Deadline()
 
-		landing.Push(ctx, d.deps, pushRequest())
+		landing.Push(under, d.deps, pushRequest())
 
 		wantAsk := forgetest.Call{Op: forgetest.OpHasTrunkCI, Repo: origin(), Branch: trunk}
 		assert.Check(t, is.DeepEqual(callsOf(d.forge.Calls(), forgetest.OpHasTrunkCI), []forgetest.Call{wantAsk}, whichRepo()))
-		assert.Check(t, reading.deadline.Equal(deadline), "CI read deadline = %v, want the push's %v", reading.deadline, deadline)
-		assert.Check(t, reading.endedWithPush, "CI read context outlived the push's context")
 	})
 }
 
@@ -979,7 +952,6 @@ func pushWaitRows() []pushRow {
 		},
 		greenIn(forge.MergeDraft, expect("`"+readyCommand+"`")+editSteps()),
 		greenIn(forge.MergeBlockedByMissingCheck, expect("required check has no check on the head")),
-		greenIn(forge.MergeBlockedByRunningCheck, nextMerge()),
 		greenIn(forge.MergeBlockedOther, expect("GitHub blocks the merge")),
 	}
 

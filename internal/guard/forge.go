@@ -45,7 +45,7 @@ func judgeILS(inv Invocation) Verdict {
 		return notLiteralCommand("ils", "ils")
 	}
 
-	if asksForHelp(args, at[0]) {
+	if asksForHelp(args, at[0], commandline.FlagHelp) {
 		return Verdict{Outcome: Allow}
 	}
 
@@ -79,11 +79,11 @@ func aloneAndBare(inv Invocation, name string, whole Verdict) Verdict {
 		"with no wrapper, list, pipe, redirect, `&`, shell string, path, quote, or backslash", name, name))
 }
 
-// asksForHelp reports whether the word after the command word args[at] is a literal `--help`, which
-// makes Cobra print the command's help and run nothing. A `--help` further on may be the value of a
-// flag before it, so it is not read as one.
-func asksForHelp(args []Word, at int) bool {
-	return at+1 < len(args) && args[at+1] == Word{Text: "--help", Literal: true}
+// asksForHelp reports whether the word after the command word args[at] is a literal help, the help
+// flag of the tool, which makes Cobra print the command's help and run nothing. A help flag further
+// on may be the value of a flag before it, so it is not read as one.
+func asksForHelp(args []Word, at int, help string) bool {
+	return at+1 < len(args) && args[at+1] == Word{Text: help, Literal: true}
 }
 
 // ilsSwitches are the flags the root command of ils knows and that take no value. A test of
@@ -96,9 +96,11 @@ func ilsSwitches() map[string]bool {
 // Finding the gh command
 // ---------------------------------------------------------------------------
 
+const ghHelp = "--help"
+
 // ghSwitches are the flags gh and its command groups know and that take no value.
 func ghSwitches() map[string]bool {
-	return setOf("--help")
+	return setOf(ghHelp)
 }
 
 // ghCommands are the top-level commands of the oldest gh that ils accepts. A newer command is
@@ -192,7 +194,7 @@ func judgeGHCommand(inv Invocation, args []Word, at []int) Verdict {
 		return notLiteralCommand("gh "+group, "gh")
 	}
 
-	if asksForHelp(args, at[1]) {
+	if asksForHelp(args, at[1], ghHelp) {
 		return Verdict{Outcome: Allow}
 	}
 

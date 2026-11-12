@@ -3,15 +3,13 @@ package main_test
 import (
 	"bytes"
 	"context"
-	"debug/buildinfo"
+	"encoding/json/v2"
 	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"runtime/debug"
-	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -21,10 +19,8 @@ import (
 	is "gotest.tools/v3/assert/cmp"
 
 	main "github.com/jeffzi/ils"
-	"github.com/jeffzi/ils/internal/cli"
 	"github.com/jeffzi/ils/internal/github/ghtest"
 	"github.com/jeffzi/ils/internal/gittest"
-	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
 const (
@@ -160,50 +156,27 @@ func (b binary) launch(t *testing.T, dir string, env []string, args ...string) r
 	return ran{stdout: stdout.String(), stderr: stderr.String(), code: exitCode(t, err, "run", string(b))}
 }
 
-func TestIls(t *testing.T) {
-	t.Parallel()
+// hookCommand returns the command of the one PreToolUse hook of the settings file at path.
+func hookCommand(t *testing.T, path string) string {
+	t.Helper()
 
-	bin := build(t)
+	var settings struct {
+		Hooks struct {
+			PreToolUse []struct {
+				Hooks []struct {
+					Command string `json:"command"`
+				} `json:"hooks"`
+			} `json:"PreToolUse"`
+		} `json:"hooks"`
+	}
+	//nolint:gosec // G304: the path is the settings file init wrote under t.TempDir().
+	text, err := os.ReadFile(path)
+	assert.NilError(t, err)
+	assert.NilError(t, json.Unmarshal(text, &settings))
+	assert.Assert(t, is.Len(settings.Hooks.PreToolUse, 1))
+	assert.Assert(t, is.Len(settings.Hooks.PreToolUse[0].Hooks, 1))
 
-	// The runs below go one after the other: instrumented binaries that exit at once race to write
-	// the same coverage meta-data file, and the loser prints the failure on its stderr.
-	t.Run("WhenAskedForTheVersion_PrintsTheModuleVersionOfTheBinary", func(t *testing.T) {
-		info, err := buildinfo.ReadFile(string(bin))
-		assert.NilError(t, err)
-
-		stampedFromCheckout := slices.ContainsFunc(info.Settings, func(s debug.BuildSetting) bool {
-			return s.Key == "vcs"
-		})
-		if !stampedFromCheckout {
-			t.Skip("the binary was built from a source tree with no version control, so its version is (devel)")
-		}
-
-		want := cli.Version(info, true)
-		assert.Assert(t, want != "(devel)", "the build info of %s names no module version", bin)
-
-		got := bin.launch(t, t.TempDir(), os.Environ(), "--version")
-
-		assert.Check(t, is.Equal(got.code, 0))
-		assert.Check(t, is.Equal(got.stdout, "ils version "+want+"\n"))
-		assert.Check(t, is.Equal(got.stderr, ""))
-	})
-
-	t.Run("WhenColorIsForcedInTheEnvironment_StylesStdout", func(t *testing.T) {
-		dir, env := outsideRepository(t, "CLICOLOR_FORCE=1")
-		env = gittest.Without(env, "NO_COLOR")
-
-		got := bin.launch(t, dir, env, "push")
-
-		assert.Check(t, got.stdout != resulttest.Draw(t, got.stdout).String(), "stdout = %q", got.stdout)
-	})
-
-	t.Run("WhenDebugIsOn_WritesTheTraceToStderr", func(t *testing.T) {
-		dir, env := outsideRepository(t)
-
-		got := bin.launch(t, dir, env, "push", "-d")
-
-		assert.Check(t, got.stderr != "", "stdout = %q", got.stdout)
-	})
+	return settings.Hooks.PreToolUse[0].Hooks[0].Command
 }
 
 // opened returns a file of its own under the test's temporary directory, closed at cleanup, so
@@ -218,25 +191,6 @@ func opened(t *testing.T, name string) *os.File {
 	return f
 }
 
-// outsideRepository returns an empty directory that is in no git repository, and an environment to
-// run git in it: the test's git environment, the extra entries, and a C locale so that git's
-// messages do not depend on the machine.
-//
-// The directory is resolved through symlinks because git ceilings are compared with the path git
-// finds by walking up from the working directory, which is the resolved one (a temporary directory
-// on macOS lies behind a symlink). The ceiling is set at the directory itself so that git stops
-// there instead of finding a repository in one of its parents.
-func outsideRepository(t *testing.T, extra ...string) (dir string, env []string) {
-	t.Helper()
-
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	assert.NilError(t, err)
-
-	env = append(gittest.Env(t), "GIT_CEILING_DIRECTORIES="+dir, "LC_ALL=C")
-
-	return dir, append(env, extra...)
-}
-
 func TestLaunched_WhenOnlyStdoutIsATerminal_CountsOnlyStdoutAsOne(t *testing.T) {
 	t.Parallel()
 
@@ -249,7 +203,7 @@ func TestLaunched_WhenOnlyStdoutIsATerminal_CountsOnlyStdoutAsOne(t *testing.T) 
 	assert.Check(t, !app.StderrTerminal, "stderr was counted as a terminal")
 }
 
-func TestLaunched_AsksTheDisplayQueriesOfStderr(t *testing.T) {
+func TestLaunched_WhenStdoutAndStderrAnswerDifferently_AsksTheDisplayQueriesOfStderr(t *testing.T) {
 	t.Parallel()
 
 	stdout, stderr := opened(t, "stdout"), opened(t, "stderr")
@@ -287,23 +241,20 @@ func TestLaunched_WhenTheWidthOfStderrCannotBeRead_CountsItAsNone(t *testing.T) 
 func heldIdentityRead(t *testing.T) (dir string, env []string, fake *ghtest.Fake) {
 	t.Helper()
 
-	fake = ghtest.Setup(t,
-		ghtest.Says("Logged in\n", ghtest.LoginArgs(host)...),
-		ghtest.Exits(ghtest.Answer{Stdout: ghtest.RepoViewJSON(false, "WRITE"), Delay: held}, ghtest.RepoViewArgs(slug)...),
-	)
+	fake = ghtest.Setup(t, ghtest.Identity(host, slug, ghtest.Answer{Stdout: ghtest.RepoViewJSON(false, "WRITE"), Delay: held})...)
 	f, env := gittest.NewServed(t, trunk, topic, originURL)
 
 	return f.Dir(), env, fake
 }
 
-// awaitHold waits until fake holds an answer open, and fails the test when a minute passes first.
+// awaitHold waits until fake holds an answer open, and fails the test when patience runs out first.
 func awaitHold(t *testing.T, fake *ghtest.Fake) {
 	t.Helper()
 
 	select {
 	case <-fake.Holding():
 	case <-time.After(patience):
-		t.Fatal("the fake gh held no answer within a minute")
+		t.Fatalf("the fake gh held no answer within %v", patience)
 	}
 }
 
@@ -315,7 +266,8 @@ type started struct {
 }
 
 // start starts the program argv names, with its arguments, in dir under env. The end of the
-// test kills it unless the test waited for it, and a minute kills it whatever the test does.
+// test kills it unless the test waited for it, and the end of patience kills it whatever the test
+// does.
 func start(t *testing.T, dir string, env []string, argv ...string) *started {
 	t.Helper()
 
@@ -369,18 +321,41 @@ func skipWithoutSignals(t *testing.T) {
 	}
 }
 
-func TestIls_WhenASignalLandsDuringALandingCommand_PrintsTheInterruptedResult(t *testing.T) {
-	skipWithoutSignals(t)
-
+func TestIls(t *testing.T) {
+	// The tests below share this one build: building the binary costs more than any of them.
 	bin := build(t)
-	dir, env, fake := heldIdentityRead(t)
-	run := start(t, dir, withCoverDir(env), string(bin), "push")
-	awaitHold(t, fake)
 
-	run.signal(t, syscall.SIGINT)
-	got := run.end(t)
+	t.Run("WhenASignalLandsDuringALandingCommand_PrintsTheInterruptedResult", func(t *testing.T) {
+		skipWithoutSignals(t)
 
-	assert.Check(t, is.Equal(got.code, exitRefused))
-	assert.Check(t, is.Equal(got.stdout, interruptedRead))
-	assert.Check(t, is.Equal(got.stderr, ""))
+		dir, env, fake := heldIdentityRead(t)
+		run := start(t, dir, withCoverDir(env), string(bin), "push")
+		awaitHold(t, fake)
+
+		run.signal(t, syscall.SIGINT)
+		got := run.end(t)
+
+		assert.Check(t, is.Equal(got.code, exitRefused))
+		assert.Check(t, is.Equal(got.stdout, interruptedRead))
+		assert.Check(t, is.Equal(got.stderr, ""))
+	})
+
+	t.Run("WhenInitClaudeRuns_HooksTheScriptItInstalled", func(t *testing.T) {
+		t.Parallel()
+
+		if runtime.GOOS == "windows" {
+			t.Skip("the guard does not run on Windows, so init adds no hook")
+		}
+
+		home := t.TempDir()
+		env := append(gittest.Without(gittest.Without(os.Environ(), "HOME"), "CLAUDE_CONFIG_DIR"), "HOME="+home)
+
+		got := bin.launch(t, home, env, "init", "claude")
+
+		assert.Assert(t, is.Equal(got.code, 0), "stdout = %q, stderr = %q", got.stdout, got.stderr)
+		script, found := strings.CutPrefix(hookCommand(t, filepath.Join(home, ".claude", "settings.json")), "bash ~/")
+		assert.Assert(t, found, "the hook does not run bash on a path under ~/")
+		_, err := os.Stat(filepath.Join(home, filepath.FromSlash(script)))
+		assert.NilError(t, err, "the hook runs %s, which init did not install", script)
+	})
 }

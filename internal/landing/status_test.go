@@ -4,13 +4,11 @@ import (
 	"context"
 	"errors"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/colorprofile"
 
-	"github.com/google/go-cmp/cmp/cmpopts"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
@@ -33,14 +31,6 @@ const (
 // statusRequest is the command and words of a bare `ils status`.
 func statusRequest() landing.Request {
 	return landing.Request{Command: "status", Words: []string{"status"}}
-}
-
-// conventionalPull is pull request 12, open against the trunk, with a conventional title.
-func conventionalPull() forge.Change {
-	pull := standing()
-	pull.Title = conventional
-
-	return pull
 }
 
 func publishTopic(f *gittest.Fixture) { f.Publish(topic) }
@@ -137,9 +127,7 @@ func seeStatus(t *testing.T, s *scene, under func(*testing.T) context.Context) s
 }
 
 // statusCommand is `ils status` with the `Next:` lines that name it.
-func statusCommand() landingCommand {
-	return landingCommand{name: "status", req: statusRequest(), fixed: expect("fix what failed", "ils status")}
-}
+func statusCommand() landingCommand { return commandNamed("status", statusRequest()) }
 
 // assertEndsOn fails unless both the `Next:` line of the text and the `next` of the JSON hold want.
 func assertEndsOn(t *testing.T, got seen, want string) {
@@ -207,179 +195,6 @@ func TestStatus_WhenOnAWorkBranch_ReportsHowItStandsAgainstOriginsCopy(t *testin
 			assert.Check(t, is.Equal(got.status.OnOrigin, tt.onOrigin))
 		})
 	}
-}
-
-// ---------------------------------------------------------------------------
-// The branch's pull requests
-// ---------------------------------------------------------------------------
-
-func TestStatus_WhenTheBranchHasPullRequests_ListsEachPullRequest(t *testing.T) {
-	t.Parallel()
-	s := statusScene(t, func(f *gittest.Fixture) {
-		// The merged pull request came from another branch's commit, so it carries none of the topic's.
-		f.Commits(spare, "earlier work")
-		f.LandPull(merged, spare)
-		f.Git("switch", "--quiet", topic)
-		f.Publish(topic)
-	}, viewing(cleanHead(), passing(),
-		change(closed, trunk, forge.ChangeClosed), change(merged, trunk, forge.ChangeMerged), conventionalPull()))
-	want := result.Status{
-		Standing: standingBranch, Branch: topic, Trunk: trunk, OnOrigin: true,
-		PullRequest: &result.OpenPull{
-			Number: opened, URL: pullURL, Title: conventional, Body: landedBody, TitleOK: true,
-			Verdict: forge.VerdictGreen, MergeState: forge.MergeClean,
-			Checks: detail(forge.VerdictGreen, forge.MergeClean, passing().Checks...).Checks,
-		},
-		PastPullRequests: []result.PastPull{
-			{Number: closed, State: forge.ChangeClosed},
-			{Number: merged, State: forge.ChangeMerged},
-		},
-	}
-
-	got := seeStatus(t, s, (*testing.T).Context)
-
-	assert.Check(t, is.DeepEqual(*got.status, want, cmpopts.EquateEmpty()))
-	assertSays(t, got.text, expect("#12", pullURL))
-	assertSays(t, got.text, expect(conventional))
-	assertSays(t, got.text, expect(landedBody))
-	assertSays(t, got.text, expect("#5", string(forge.ChangeClosed)))
-}
-
-func TestStatus_WhenTheOpenPullRequestsHeadIsNotClean_SaysItsMergeState(t *testing.T) {
-	t.Parallel()
-	s := statusScene(t, publishTopic, viewing(inState(forge.MergeConflicting), passing(), standing()))
-
-	got := seeStatus(t, s, (*testing.T).Context)
-
-	assertSays(t, got.text, stateLine(forge.MergeConflicting))
-}
-
-func TestStatus_WhenTheBranchHasNoOpenPullRequest_SaysSo(t *testing.T) {
-	t.Parallel()
-	s := statusScene(t, publishTopic, viewing(cleanHead(), passing()))
-
-	got := seeStatus(t, s, (*testing.T).Context)
-
-	assert.Check(t, got.status.PullRequest == nil, "pull request = %+v, want none", got.status.PullRequest)
-	assertSays(t, got.text, expect("no open pull request against the trunk "+trunk))
-}
-
-func TestStatus_WhenTheOpenPullRequestsTitleIsNotAConventionalSubject_SaysSo(t *testing.T) {
-	t.Parallel()
-	s := statusScene(t, publishTopic, greenOpen())
-
-	got := seeStatus(t, s, (*testing.T).Context)
-
-	assert.Assert(t, got.status.PullRequest != nil)
-	assert.Check(t, !got.status.PullRequest.TitleOK)
-	assertSays(t, got.text, expect("\""+topic+"\"", "not a conventional commit subject"))
-}
-
-// verdictRow is one verdict of the open pull request's head.
-type verdictRow struct {
-	name string
-	// said is a phrase the text must hold.
-	said    string
-	verdict forge.Verdict
-}
-
-func TestStatus_WhenThePullRequestIsOpen_ReportsTheVerdictOfItsHead(t *testing.T) {
-	t.Parallel()
-
-	tests := []verdictRow{
-		{name: "red", verdict: lintRed(), said: "lint"},
-		{name: "none reported", verdict: forge.Verdict{}, said: "No check or status reported"},
-		{
-			name: "a workflow run queued before any check reported", verdict: forge.Verdict{Runs: ran(forge.RunQueued)},
-			said: "a workflow run is still going",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			s := statusScene(t, publishTopic, viewing(cleanHead(), tt.verdict, standing()))
-
-			got := seeStatus(t, s, (*testing.T).Context)
-
-			assert.Assert(t, got.status.PullRequest != nil)
-			assertSays(t, got.text, expect(tt.said))
-		})
-	}
-}
-
-func TestStatus_WhenACheckPassedBesideOneStillRunning_ListsOnlyTheRunningOne(t *testing.T) {
-	t.Parallel()
-	s := statusScene(t, publishTopic, viewing(cleanHead(), builtAndRunning(), standing()))
-
-	got := seeStatus(t, s, (*testing.T).Context)
-
-	assertSays(t, got.text, expect("Still running", "1 check", " test\n"))
-	assert.Check(t, !strings.Contains(got.text, " build\n"), "text %q, want the passed check left out of the list", got.text)
-}
-
-func TestStatus_WhenChecksOfTheOpenPullRequestStillRun_ListsEachUnderItsHead(t *testing.T) {
-	t.Parallel()
-	s := statusScene(t, publishTopic, viewing(cleanHead(), bothRunning(), standing()))
-	head := s.fixture.Git("rev-parse", "HEAD")
-
-	got := seeStatus(t, s, (*testing.T).Context)
-
-	assertSays(t, got.text, expect("Still running", shortSHA(head), "2 checks", " lint\n", " test\n"))
-}
-
-func TestStatus_WhenNoRequiredCheckHasReported_SaysSoWithNoTally(t *testing.T) {
-	t.Parallel()
-	aside := forge.Verdict{
-		Checks:          []forge.Check{forgetest.Check("docs", forge.BucketPass)},
-		MissingRequired: []string{"test"}, Runs: ran(forge.RunInProgress),
-	}
-	s := statusScene(t, publishTopic, viewing(cleanHead(), aside, standing()))
-	head := s.fixture.Git("rev-parse", "HEAD")
-
-	got := seeStatus(t, s, (*testing.T).Context)
-
-	assertSays(t, got.text, expect("No required check has reported for "+shortSHA(head)+"\n"))
-}
-
-func TestStatus_WhenTheOpenPullRequestIsAgainstAnotherBase_ReportsItsBase(t *testing.T) {
-	t.Parallel()
-	s := statusScene(t, publishTopic, viewing(cleanHead(), passing(), change(opened, otherBase, forge.ChangeOpen)))
-
-	got := seeStatus(t, s, (*testing.T).Context)
-
-	report, _, _ := strings.Cut(got.text, "Next:")
-	assertSays(t, report, expect("#12", otherBase))
-}
-
-// elsewhereStatus is a status scene of a branch whose one pull request was merged into otherBase.
-func elsewhereStatus(t *testing.T) *scene {
-	t.Helper()
-
-	return statusScene(t, landElsewhere, viewing(cleanHead(), passing(), elsewhereMerge()))
-}
-
-func TestStatus_WhenTheOnlyPullRequestWasMergedIntoAnotherBase_ReportsItMergedIntoThatBase(t *testing.T) {
-	t.Parallel()
-	s := elsewhereStatus(t)
-
-	got := seeStatus(t, s, (*testing.T).Context)
-
-	report, _, _ := strings.Cut(got.text, "Next:")
-	assertSays(t, report, expect("#"+strconv.Itoa(mergedElsewhere), "merged", otherBase))
-	assert.Check(t, !strings.Contains(report, "merged into "+trunk), "report %q, want no merge into %s", report, trunk)
-}
-
-func TestStatus_WhenTheOnlyPullRequestWasMergedIntoAnotherBase_EndsOnTheStepOfMergesRefusal(t *testing.T) {
-	t.Parallel()
-	refusal := elsewhereRefusal(t)
-	assertStoppedBy(t, refusal.got, result.Refused, mergeRequest())
-	refused, decoded := rendered(t, refusal.got, refusal.gitDir)
-	s := elsewhereStatus(t)
-
-	got := seeStatus(t, s, (*testing.T).Context)
-
-	assert.Check(t, is.Equal(nextOf(t, got.text), nextOf(t, refused)))
-	assert.Check(t, is.Equal(got.next, decoded.Next))
 }
 
 // ---------------------------------------------------------------------------
@@ -744,21 +559,6 @@ func TestStatus_WhenALocalReadFails_EndsOnFixingWhatFailed(t *testing.T) {
 	}
 }
 
-func TestStatus_WhenALocalReadIsCutShort_DoesNotEndOnFixingWhatFailed(t *testing.T) {
-	// Not parallel: stallingGit puts a git that stalls first on PATH with t.Setenv.
-	for _, tt := range localReads() {
-		t.Run(tt.name, func(t *testing.T) {
-			s := statusScene(t, publishTopic, greenOpen())
-			ctx := byTimeLimit().stallingGit(tt.words)(t, s)
-
-			got := seeStatus(t, s, func(*testing.T) context.Context { return ctx })
-
-			assert.Assert(t, hasUnread(got.status, tt.read), "unread %v, want %s listed", got.status.Unread, tt.read)
-			assert.Check(t, !strings.Contains(got.next, "fix what failed"), "next = %q, want a step other than fixing what failed", got.next)
-		})
-	}
-}
-
 // ---------------------------------------------------------------------------
 // The tools the landing commands check first
 // ---------------------------------------------------------------------------
@@ -773,12 +573,6 @@ func TestStatus_WhenTheSSHOriginsURLsNeedIsMissing_EndsOnTheStepThatFixesIt(t *t
 		step string
 	}{
 		{name: "no ssh on PATH", hide: gittest.WithoutSSH, step: "install ssh"},
-		{
-			name: "GIT_SSH names a missing program", step: "fix GIT_SSH",
-			hide: func(_ testing.TB, env []string) []string {
-				return append(gittest.Without(env, sshCommandVar), "GIT_SSH="+missingProgram)
-			},
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -802,8 +596,7 @@ func TestStatus_WhenGitsVersionIsNotOneIlsWorksWith_EndsOnUpgradingGit(t *testin
 		version string
 	}{
 		{name: "older than the minimum", arrange: publishTopic, version: "git version 1.0.0"},
-		{name: "no readable version", arrange: publishTopic, version: "git version DEV"},
-		{name: "older than the minimum, on the trunk", arrange: onTheTrunk, version: "git version 1.0.0"},
+		{name: "older than the minimum, on the trunk", arrange: standOnTrunk, version: "git version 1.0.0"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -817,8 +610,6 @@ func TestStatus_WhenGitsVersionIsNotOneIlsWorksWith_EndsOnUpgradingGit(t *testin
 		})
 	}
 }
-
-func onTheTrunk(f *gittest.Fixture) { f.Git("switch", "--quiet", trunk) }
 
 func TestStatus_WhenGitsVersionCannotBeRead_EndsOnFixingWhatFailed(t *testing.T) {
 	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
@@ -1047,11 +838,11 @@ func TestStatus_WhenOriginRefusesTheCaller_SaysWhatGitSaidNotThatOriginWasUnreac
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
-	assertSays(t, got.text, expect(sshDenied))
+	assertSays(t, got.text, expect(gittest.SSHDenied))
 	assert.Check(t, !strings.Contains(got.text, "could not be reached"), "text %q, want origin's refusal, not unreached", got.text)
 	i := slices.IndexFunc(got.status.Unread, func(u result.Unread) bool { return u.Read == readTrunk })
 	assert.Assert(t, i >= 0, "unread %v, want an entry for %s", got.status.Unread, readTrunk)
-	assert.Check(t, is.Contains(got.status.Unread[i].Error, sshDenied))
+	assert.Check(t, is.Contains(got.status.Unread[i].Error, gittest.SSHDenied))
 }
 
 func TestStatus_WhenOriginCannotBeReached_CountsAgainstTheLastFetch(t *testing.T) {

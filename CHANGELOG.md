@@ -13,6 +13,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `git`, `gh`, and `ils` rules and show how the guard reads it.
 - Add `ils hook claude` and the `ils` skill's `hook.sh`, which run the guard as Claude Code's
   `PreToolUse` hook and block every command when `ils` cannot answer.
+- Add `ils init claude`, which installs the agent skills from the binary and adds the guard's hook
+  and the flow's permission rules to Claude Code's settings.
 
 ### Changed
 
@@ -31,6 +33,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Refuse a mistyped command name after `ils help` or beside `--help`, and a malformed flag such as
   `---x`, instead of printing the root help or ending broke.
 - Fix `--json` output splitting in two for a reader that breaks lines at U+0085 (NEL).
+- Fix `ils release --debug` leaving the wait for the release commit's checks out of its trace.
 - Fix the `ils` agent skill leaving later commits out of the squash commit's message by rewriting
   the pull request's title and body after every green push.
 

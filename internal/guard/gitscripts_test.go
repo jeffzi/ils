@@ -197,7 +197,7 @@ func TestJudge_WhenARebaseExecRedirectsAroundACd_RefusesGitHistoryWrittenAtTheTo
 	caller := callerIn(f, subdirectory(t, f.Dir()))
 	command := "git rebase --exec '(cd " + filepath.ToSlash(outsideDir(t)) + " && git -C " + filepath.ToSlash(f.Dir()) + " show HEAD:go.mod) > go.mod' main"
 
-	checkJudgedRow(t, caller, judged{command: command, want: guard.Refuse, wantNamed: "writes over " + filepath.Join(f.Dir(), "go.mod")})
+	checkJudgedRow(t, caller, judged{command: command, want: guard.Refuse, wantNamed: filepath.Join(f.Dir(), "go.mod")})
 }
 
 func TestParse_WhenWhereGitRunsAScriptCannotBeTold_ReportsItsDirectoryUnknown(t *testing.T) {
@@ -208,7 +208,7 @@ func TestParse_WhenWhereGitRunsAScriptCannotBeTold_ReportsItsDirectoryUnknown(t 
 		name    string
 		command string
 	}{
-		{name: "rebase --exec in a bare repository", command: "git --git-dir=" + quotedPath(f.OriginDir()) + " rebase --exec 'git status' main"},
+		{name: "rebase --exec in a bare repository", command: "git --git-dir=" + gittest.ShellWord(f.OriginDir()) + " rebase --exec 'git status' main"},
 		{name: "rebase --exec in a target it cannot read", command: `GIT_DIR="$d" git rebase --exec 'git status' main`},
 		{name: "submodule foreach", command: "git submodule foreach 'git status'"},
 	}

@@ -185,8 +185,9 @@ func FakeGit(tb testing.TB, fake Fake) []string {
 	return settings
 }
 
-// findRealGit returns the path of the git a fake runs for the calls it does not fake: the one an
-// earlier FakeGit of the test recorded, or else the git first on PATH.
+// findRealGit returns the path of the real git, which a fake runs for the calls it does not fake
+// and a Fixture runs for its own setup: the one an earlier FakeGit of the test recorded, or else
+// the git first on PATH.
 func findRealGit(tb testing.TB) string {
 	tb.Helper()
 

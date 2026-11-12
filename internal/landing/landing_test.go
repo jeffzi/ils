@@ -68,16 +68,14 @@ func expect(parts ...string) string {
 
 // nextPush is the `Next:` line that runs `ils push` again as it is, and nextFixed the one that runs
 // it again once what failed is fixed.
-func nextPush() string { return nextLine("ils push") }
+func nextPush() string { return pushCommand().again }
 
 // nextLine is the `Next:` line that runs command.
 func nextLine(command string) string {
 	return expect(resulttest.NextLine(command) + "\n")
 }
 
-func nextFixed() string {
-	return expect("fix what failed", "ils push")
-}
+func nextFixed() string { return pushCommand().fixed }
 
 // ---------------------------------------------------------------------------
 // Scenes and assertions
@@ -161,7 +159,6 @@ func asked(ops []forgetest.Op) []forgetest.Call {
 	return calls
 }
 
-// opsOf returns the operations of calls, in order.
 func opsOf(calls []forgetest.Call) []forgetest.Op {
 	var ops []forgetest.Op
 	for _, call := range calls {
@@ -221,14 +218,12 @@ func (s *scene) stopAnswering(t *testing.T, times int) {
 	s.deps.Repo.Runner.Env = answering(t, s.fixture, times, "true")
 }
 
-// sshDenied is what GitHub's ssh prints when it turns away a caller whose key it does not accept.
-const sshDenied = "git@github.com: Permission denied (password)."
-
-// refuse makes origin turn away every call git makes to it, saying sshDenied.
+// refuse makes origin turn away every call git makes to it, as GitHub turns away a key it does not
+// accept.
 func (s *scene) refuse(t *testing.T) {
 	t.Helper()
 
-	s.deps.Repo.Runner.Env = answering(t, s.fixture, 0, "echo '"+sshDenied+"' >&2")
+	s.deps.Repo.Runner.Env = s.fixture.DeniedEnv()
 }
 
 // pushRequest is the command and words of a bare `ils push`.
@@ -257,7 +252,7 @@ func fails(err error) forgetest.Script {
 }
 
 // rendered renders r through both renderers and returns the text and the object the JSON decodes to.
-func rendered(t *testing.T, r result.Result, gitDir string) (text string, decoded resulttest.Shown) {
+func rendered(t *testing.T, r result.Result, gitDir string) (text string, decoded result.Object) {
 	t.Helper()
 
 	text, err := result.RenderStyled(r, gitDir, colorprofile.NoTTY)
@@ -466,10 +461,15 @@ func pushVariant(name string, req landing.Request, runAgain, change string) land
 	}
 }
 
-// pushCommand is `ils push` with the `Next:` lines that name it.
-func pushCommand() landingCommand {
-	return landingCommand{name: "push", req: pushRequest(), again: nextPush(), fixed: nextFixed()}
+// commandNamed is `ils <name>` running req, with the `Next:` lines that name it.
+func commandNamed(name string, req landing.Request) landingCommand {
+	line := "ils " + name
+
+	return landingCommand{name: name, req: req, again: nextLine(line), fixed: expect("fix what failed", line)}
 }
+
+// pushCommand is `ils push` with the `Next:` lines that name it.
+func pushCommand() landingCommand { return commandNamed("push", pushRequest()) }
 
 // waitRequest is the command and words of `ils push --wait`, which runs under the long time limit.
 func waitRequest() landing.Request {
@@ -535,9 +535,7 @@ func boundedPushes() []boundedPush {
 }
 
 // mergeCommand is `ils merge` with the `Next:` lines that name it.
-func mergeCommand() landingCommand {
-	return landingCommand{name: "merge", req: mergeRequest(), again: nextMergeAgain(), fixed: nextMergeFixed()}
-}
+func mergeCommand() landingCommand { return commandNamed("merge", mergeRequest()) }
 
 // unreached is the parts of cmd's refusal when origin stopped answering while it was asked to do
 // what.

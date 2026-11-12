@@ -65,13 +65,7 @@ func (l longOption) startsOf(long string) bool {
 	return strings.HasPrefix(long, l.name)
 }
 
-// abbreviates reports whether name is long or a start of it at least shortest bytes long, which git
-// reads as long.
-func abbreviates(name, long string, shortest int) bool {
-	return len(name) >= shortest && strings.HasPrefix(long, name)
-}
-
-// knownOptions is the options of a subcommand the guard knows. git reads the value of one that
+// knownOptions lists a subcommand's options by how git reads them: git reads the value of one that
 // takes a value as the rest of a short option bundle or as the next word, whatever it is spelled
 // like, and reads a start of a long option's name as that option when it starts no other.
 type knownOptions struct {
@@ -434,77 +428,6 @@ func shortValue(w Word, letter byte, valued string) (value Word, ok, attached bo
 	}
 
 	return Word{}, false, false
-}
-
-// valuedOption is an option that takes a value: the short option letter, read in a short-flag
-// bundle ahead of any other of valued, the command's short options that take a value, and the long
-// option long, read as any start of it at least shortest bytes long.
-type valuedOption struct {
-	valued   string
-	long     string
-	shortest int
-	letter   byte
-}
-
-// optionValue is a value of a valuedOption as values reads it from a command's arguments.
-type optionValue struct {
-	// form is the option as written up to its value, such as `-x`, `-ax` or `--ex`.
-	form     string
-	value    Word
-	attached bool
-	// unread marks a word that is not a literal and that the caller could not tell from the
-	// option; value is then the word itself and form is empty.
-	unread bool
-}
-
-// values returns, in order, each value of o among args ahead of the first `--`: the rest of a
-// short-flag bundle or the next word, and after `=` or the next word for the long option. An empty
-// value after `=` is a value, and the next word stays an argument. The word an option takes as its
-// value is never read as an option or as `--`. A word that is not a literal and for which unread
-// holds is returned as unread and not read as an option either.
-func (o valuedOption) values(args []Word, unread func(text string) bool) []optionValue {
-	var found []optionValue
-	for i := 0; i < len(args); i++ {
-		text := args[i].Text
-		if !args[i].Literal && unread(text) {
-			found = append(found, optionValue{value: args[i], unread: true})
-
-			continue
-		}
-
-		var v optionValue
-		switch {
-		case text == "--":
-			return found
-		case strings.HasPrefix(text, "--"):
-			var value string
-			v.form, value, v.attached = strings.Cut(text, "=")
-			if !abbreviates(v.form, o.long, o.shortest) {
-				continue
-			}
-
-			v.value = Word{Text: value, Literal: args[i].Literal}
-		default:
-			var named bool
-			v.value, named, v.attached = shortValue(args[i], o.letter, o.valued)
-			if !named {
-				continue
-			}
-
-			v.form = text[:len(text)-len(v.value.Text)]
-		}
-
-		switch {
-		case v.attached:
-			found = append(found, v)
-		case i+1 < len(args):
-			i++
-			v.value = args[i]
-			found = append(found, v)
-		}
-	}
-
-	return found
 }
 
 // rebaseBranch returns the branch operand of `git rebase` given args, the branch it switches to

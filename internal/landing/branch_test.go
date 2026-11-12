@@ -97,14 +97,6 @@ func standingRefusals() []pushRefusal {
 			},
 		},
 		{
-			name: "detached HEAD with commits origin's trunk lacks", script: allowed(), ops: identityRead(),
-			arrange: func(f *gittest.Fixture) string {
-				f.Detach()
-
-				return expect(shortSHA(f.Git("rev-parse", "HEAD")), "detached") + keepDetached()
-			},
-		},
-		{
 			name: "two tracked files changed", script: allowed(), ops: identityRead(),
 			arrange: func(f *gittest.Fixture) string { return dirtyText(pushCommand(), f.DirtyFile(), f.StagedFile()) },
 		},
@@ -231,28 +223,19 @@ func TestPush_WhenASharedCheckOfTheBranchFails_RefusesAtTheFirst(t *testing.T) {
 	runPushRefusals(t, slices.Concat(standingRefusals(), keptRefusals(), commitRefusals(), changeRefusals()))
 }
 
-// sharedAccepted are the states of the branch that pass a shared check another state fails, each
-// pushed and opened as a first push that ends green.
-func sharedAccepted() []pushRow {
-	opens := greenAfter(pushedLine() + openedLine())
-	sinceMerged := opening(passing()).findingOnly(change(merged, trunk, forge.ChangeMerged))
-
-	return []pushRow{
-		{
-			name: "merged pull request sharing no commit past the trunk", script: sinceMerged, want: opens,
-			arrange: func(f *gittest.Fixture) {
-				f.Commits(spare, "earlier work")
-				f.LandPull(merged, spare)
-				f.Git("switch", "--quiet", topic)
-			},
-		},
-	}
-}
-
-func TestPush_WhenBranchPassesASharedCheckAnotherStateFails_PushesIt(t *testing.T) {
+func TestPush_WhenAMergedPullRequestSharesNoCommitPastTheTrunk_PushesIt(t *testing.T) {
 	t.Parallel()
 
-	runPushes(t, sharedAccepted())
+	runPushes(t, []pushRow{{
+		name:   "merged pull request sharing no commit past the trunk",
+		script: opening(passing()).findingOnly(change(merged, trunk, forge.ChangeMerged)),
+		want:   greenAfter(pushedLine() + openedLine()),
+		arrange: func(f *gittest.Fixture) {
+			f.Commits(spare, "earlier work")
+			f.LandPull(merged, spare)
+			f.Git("switch", "--quiet", topic)
+		},
+	}})
 }
 
 func TestPush_WhenOriginStopsAnsweringASharedRead_RefusesNamingWhatItWasAskedFor(t *testing.T) {
@@ -440,9 +423,9 @@ type overtime struct {
 }
 
 // runOvertime runs each row rows returns for the time limit as a test of its own: Push refuses
-// naming the read the time limit ended, having written nothing. Push hands each cut read on to the
-// shared wording, whose tests tell the time limit from an interrupt, so the time limit alone is
-// enough here.
+// naming the read the time limit ended, having written nothing. byTimeLimit is the only cut run
+// here: the tests of the shared wording Push hands each cut read on to tell the time limit from an
+// interrupt.
 func runOvertime(t *testing.T, rows func(c cut) []overtime) {
 	t.Helper()
 

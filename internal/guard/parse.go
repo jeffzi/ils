@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path"
 	"slices"
 	"strings"
 
@@ -272,7 +271,8 @@ type walker struct {
 	// walked holds every invocation the walk placed, in the order it walked them, those of dry runs
 	// included.
 	walked []Invocation
-	// kept holds the index in walked of each invocation Parse returns, in the order it returns them.
+	// kept holds the index in walked of each invocation parse returns, in the order it returns them:
+	// those Parse returns, and those walked at a call site (atCall), which Parse drops.
 	kept  []int
 	depth int
 	// calling counts the calls whose bodies the walk is following where the call stands, inside
@@ -374,6 +374,19 @@ func declarationOf(stmt *syntax.Stmt, decl *syntax.DeclClause, ex expander) Invo
 	}
 
 	return inv
+}
+
+// declared returns the assignments the declaration decl, whose values ex reads, makes: each
+// `NAME=value` among its arguments.
+func declared(decl *syntax.DeclClause, ex expander) []Assignment {
+	var assignments []Assignment
+	for _, a := range decl.Args {
+		if a.Name != nil && !a.Naked {
+			assignments = append(assignments, assignmentOf(a, ex))
+		}
+	}
+
+	return assignments
 }
 
 // declarationWord returns the argument a of a declaration builtin as the word the shell reads:
@@ -510,10 +523,6 @@ func (w *walker) pipedInto(stmt *syntax.Stmt, sc *scope) []Word {
 	return invocationOf(next, stage, w.reading(sc)).Words
 }
 
-// ---------------------------------------------------------------------------
-// Assignment marks
-// ---------------------------------------------------------------------------
-
 // assignedNames returns the variables the simple command stmt, whose words are words, assigns
 // other than by an assignment: those `read`, `mapfile`, `readarray`, and `getopts` are given, the
 // one `printf -v` is given, and each one a `${NAME:=word}` or `${NAME=word}` in it assigns.
@@ -610,11 +619,6 @@ func assignmentOf(a *syntax.Assign, ex expander) Assignment {
 	}
 }
 
-// programName returns the basename of the command word, with a leading zsh `=` lookup removed.
-func programName(command Word) string {
-	return path.Base(strings.TrimPrefix(command.Text, "="))
-}
-
 func toolOf(command Word) Tool {
 	if !command.Literal {
 		return NoTool
@@ -639,4 +643,81 @@ func isBare(raw *syntax.Word, command Word) bool {
 
 	return ok && command.Literal && lit.Value == command.Text &&
 		!strings.Contains(command.Text, "/") && !strings.HasPrefix(command.Text, "=")
+}
+
+// allowedGitVariables is the list of GIT_* variables a command may set: those that point git at a
+// repository, which the guard follows, the GIT_* variables among commandVariables, whose scripts it
+// reads, and those that change no rule it judges by, GIT_PAGER among them.
+func allowedGitVariables() []string {
+	followed := slices.DeleteFunc(commandVariables(), func(name string) bool { return !strings.HasPrefix(name, "GIT_") })
+
+	return append(followed,
+		gitDirVar, gitWorkTreeVar,
+		"GIT_PAGER", "GIT_TERMINAL_PROMPT", "GIT_TRACE", "GIT_TRACE2", "GIT_ADVICE", "GIT_OPTIONAL_LOCKS",
+		"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
+		"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE",
+	)
+}
+
+// gitVariableMarks returns a GitVariable mark for each of the variable names that is a GIT_*
+// variable off the allow list.
+func gitVariableMarks(names []string) []Mark {
+	allowed := allowedGitVariables()
+	var marks []Mark
+	for _, name := range names {
+		if strings.HasPrefix(name, "GIT_") && !slices.Contains(allowed, name) {
+			marks = append(marks, Mark{Kind: GitVariable, Name: name})
+		}
+	}
+
+	return marks
+}
+
+// commandVariables are the editor variables whose value git runs as a shell command: its own, and
+// the EDITOR and VISUAL it falls back to when neither its variable nor its config is set. The pager
+// variables are left out: like `core.pager`, they are data.
+func commandVariables() []string {
+	return []string{"GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "EDITOR", "VISUAL"}
+}
+
+// variableScripts returns the value of each of assignments that sets one of commandVariables, and
+// marks inv instead when one is not a literal or would nest past maxDepth.
+func (w *walker) variableScripts(inv *Invocation, assignments []Assignment) []string {
+	var values []Word
+	for _, a := range assignments {
+		if slices.Contains(commandVariables(), a.Name) {
+			values = append(values, a.Value)
+		}
+	}
+
+	return runnableScripts(inv, w.depth, values)
+}
+
+// variableCommands walks scripts, the shell commands a variable git reads holds, one level deeper
+// from sc.
+func (w *walker) variableCommands(scripts []string, sc scope) {
+	for _, script := range scripts {
+		inner := sc
+		if _, err := w.walkString(script, &inner); err != nil {
+			w.err = fmt.Errorf("parse the string a git variable holds: %w", err)
+
+			return
+		}
+	}
+}
+
+// assignVariables changes the shell variables of sc the way the simple command call, read as inv,
+// does with its assignment prefix. A command that only assigns leaves each variable as
+// shellVars.assigned says. One that runs a command gives them to that command alone, though a
+// special builtin or a function may leave them in the shell, so each is unknown after it.
+func (sc *scope) assignVariables(call *syntax.CallExpr, inv Invocation) {
+	if len(inv.Words) > 0 {
+		sc.vars = sc.vars.forgetAssigned(call.Assigns)
+
+		return
+	}
+
+	for i, a := range call.Assigns {
+		sc.vars = sc.vars.assigned(a, inv.Assignments[i].Value)
+	}
 }

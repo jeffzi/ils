@@ -1,6 +1,7 @@
 //go:build unix
 
-// cspell:ignore Arithm -- the shell parser's names for its arithmetic nodes.
+// cspell:ignore Arithm Arit Assgn -- the shell parser's names for its arithmetic nodes and its
+// arithmetic assignment operators.
 
 package guard
 
@@ -84,6 +85,19 @@ func merge(a, b scope) scope {
 	}
 
 	return a
+}
+
+// runScope returns the scope a string the invocation inv has run starts in, run from sc: the
+// environment inv runs with, and its own redirects in effect after those of the shell. For a string
+// a shell of its own runs, the variables the guard follows are none, apart from whether the guard
+// may read any of them (unread); script replaces them for eval.
+func (sc *scope) runScope(inv Invocation) scope {
+	inner := *sc
+	inner.env = sc.commandEnv(inv)
+	inner.vars = shellVars{unread: sc.vars.unread}
+	inner.redirects = slices.Concat(sc.redirects, inv.Redirects)
+
+	return inner
 }
 
 // moved returns the directory that going to w from dir leads to, empty when the guard cannot tell.
@@ -559,38 +573,6 @@ func (w *walker) keep(inv Invocation) {
 }
 
 // ---------------------------------------------------------------------------
-// GIT_* variable marks
-// ---------------------------------------------------------------------------
-
-// allowedGitVariables is the list of GIT_* variables a command may set: those that point git at a
-// repository, which the guard follows, the GIT_* variables among commandVariables, whose scripts it
-// reads, and those that change no rule it judges by, GIT_PAGER among them.
-func allowedGitVariables() []string {
-	followed := slices.DeleteFunc(commandVariables(), func(name string) bool { return !strings.HasPrefix(name, "GIT_") })
-
-	return append(followed,
-		gitDirVar, gitWorkTreeVar,
-		"GIT_PAGER", "GIT_TERMINAL_PROMPT", "GIT_TRACE", "GIT_TRACE2", "GIT_ADVICE", "GIT_OPTIONAL_LOCKS",
-		"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
-		"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE",
-	)
-}
-
-// gitVariableMarks returns a GitVariable mark for each of the variable names that is a GIT_*
-// variable off the allow list.
-func gitVariableMarks(names []string) []Mark {
-	allowed := allowedGitVariables()
-	var marks []Mark
-	for _, name := range names {
-		if strings.HasPrefix(name, "GIT_") && !slices.Contains(allowed, name) {
-			marks = append(marks, Mark{Kind: GitVariable, Name: name})
-		}
-	}
-
-	return marks
-}
-
-// ---------------------------------------------------------------------------
 // Loops and variable assignment
 // ---------------------------------------------------------------------------
 
@@ -725,6 +707,17 @@ func arithmeticTarget(n syntax.Node) (string, bool) {
 	name, _, _ := strings.Cut(w.Lit(), "[")
 
 	return name, true
+}
+
+func assignsArithmetic(op syntax.BinAritOperator) bool {
+	switch op {
+	case syntax.Assgn, syntax.AddAssgn, syntax.SubAssgn, syntax.MulAssgn, syntax.QuoAssgn,
+		syntax.RemAssgn, syntax.AndAssgn, syntax.OrAssgn, syntax.XorAssgn, syntax.ShlAssgn,
+		syntax.ShrAssgn, syntax.AndBoolAssgn, syntax.OrBoolAssgn, syntax.XorBoolAssgn, syntax.PowAssgn:
+		return true
+	default:
+		return false
+	}
 }
 
 // assignsDefault reports whether p is a `${NAME:=word}` or `${NAME=word}`, which assigns NAME.

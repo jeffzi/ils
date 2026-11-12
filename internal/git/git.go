@@ -13,6 +13,9 @@ import (
 
 const (
 	program = "git"
+	// fatalCode is the exit of a git command that died of a fatal error, and of git when it cannot
+	// start the program of a one-word command line, which it runs without a shell.
+	fatalCode = 128
 	// installURL is the page git is installed from on every operating system.
 	installURL = "https://git-scm.com/downloads"
 )
@@ -99,4 +102,12 @@ func exited(err error, code int) bool {
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 
 	return ok && exitErr.Code == code
+}
+
+// fatalSaying reports whether err is git dying of a fatal error (fatalCode) with a stderr for
+// which said returns true.
+func fatalSaying(err error, said func(stderr string) bool) bool {
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+
+	return ok && exitErr.Code == fatalCode && said(exitErr.Stderr)
 }

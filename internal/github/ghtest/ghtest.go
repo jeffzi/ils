@@ -86,30 +86,62 @@ const fileHolding = "\x00file\x00"
 // content when the call is made: the file the code under test writes for gh to read, such as
 // release notes, whose path no test can know.
 //
-// The fake checks the file when it answers. Matched after the call, against a recorded argv,
-// it fails once the code under test has removed the file.
+// The fake checks the file when it answers, and exits broken, naming the file, when the file
+// exists but cannot be read. Matched after the call, against a recorded argv, it fails once the
+// code under test has removed the file.
 func FileHolding(content string) string {
 	return fileHolding + content
 }
 
 // Matches reports whether argv is a call pattern scripts: as long as pattern, and equal to it
 // wherever pattern does not hold Any or an argument FileHolding wrote, which matches the path of
-// a file holding its content.
+// a file holding its content. A file that cannot be read, for any reason, does not match.
 func Matches(pattern, argv []string) bool {
-	return slices.EqualFunc(pattern, argv, func(want, got string) bool {
-		if content, ok := strings.CutPrefix(want, fileHolding); ok {
-			return fileHolds(got, content)
-		}
+	matched, err := matchArgs(pattern, argv)
 
-		return want == Any || want == got
-	})
+	return err == nil && matched
 }
 
-func fileHolds(path, content string) bool {
+// matchArgs is Matches, returning the error of a file a FileHolding argument names that exists
+// but cannot be read.
+func matchArgs(pattern, argv []string) (bool, error) {
+	if len(pattern) != len(argv) {
+		return false, nil
+	}
+
+	for i, want := range pattern {
+		content, ok := strings.CutPrefix(want, fileHolding)
+		if !ok {
+			if want != Any && want != argv[i] {
+				return false, nil
+			}
+
+			continue
+		}
+
+		holds, err := fileHolds(argv[i], content)
+		if err != nil || !holds {
+			return false, err
+		}
+	}
+
+	return true, nil
+}
+
+// fileHolds reports whether the file at path holds exactly content; a file that does not exist
+// holds nothing, and any other failure to read it is an error.
+func fileHolds(path, content string) (bool, error) {
 	//nolint:gosec // G304: the path is one the code under test handed gh, read to check what it wrote.
 	held, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
 
-	return err == nil && string(held) == content
+	if err != nil {
+		return false, fmt.Errorf("read the file %s, which a scripted argument checks: %w", path, err)
+	}
+
+	return string(held) == content, nil
 }
 
 // Call scripts the answer to one argv, given to every call of it.
@@ -127,6 +159,12 @@ func Says(stdout string, args ...string) Call {
 // Exits scripts answer as the one answer to args.
 func Exits(answer Answer, args ...string) Call {
 	return Call{Args: args, Answer: answer}
+}
+
+// Identity scripts the gh calls of a Forge.Identity that gets past the login check: `gh auth
+// status` answers logged in for host, and the repository view of slug answers view.
+func Identity(host, slug string, view Answer) []Call {
+	return []Call{Says("Logged in\n", LoginArgs(host)...), Exits(view, RepoViewArgs(slug)...)}
 }
 
 // LoggedOut is what `gh auth status` answers when no host is logged in.
@@ -349,7 +387,9 @@ func Main() (code int, served bool) {
 
 	places := servePlaces{script: script, record: os.Getenv(recordEnv), holdAddr: os.Getenv(holdEnv)}
 
-	return serve(places, os.Args[1:]), true
+	// The fake is a child process with no caller to cancel it: the test process ends it by killing
+	// it, so its calls need no context of their own.
+	return serve(context.Background(), places, os.Args[1:]), true
 }
 
 // Setup points GH_PATH at the test binary for the rest of the test and scripts its answers.
@@ -533,7 +573,7 @@ type servePlaces struct {
 
 // serve answers one call of the fake and returns its exit code; before it holds an answer open,
 // it tells the test process at places.holdAddr and waits for its acknowledgement.
-func serve(places servePlaces, args []string) int {
+func serve(ctx context.Context, places servePlaces, args []string) int {
 	script, err := readScript(places.script)
 	if err != nil {
 		return broken(err)
@@ -544,29 +584,34 @@ func serve(places servePlaces, args []string) int {
 		return broken(err)
 	}
 
-	if err := appendRecord(places.record, args); err != nil {
+	if err = appendRecord(places.record, args); err != nil {
 		return broken(err)
 	}
 
 	// Last, so that a scripted answer to the version read is the one found.
 	script = append(script, Says(installed, VersionArgs()...))
 
-	index := slices.IndexFunc(script, func(call Call) bool { return Matches(call.Args, args) })
-	if index < 0 {
+	answer, found, err := scriptedAnswer(script, args)
+	if err != nil {
+		return broken(err)
+	}
+
+	if !found {
 		fmt.Fprintf(os.Stderr, "ghtest: no scripted answer for %s %s\n", github.Program, strings.Join(args, " "))
 
 		return UnscriptedCode
 	}
 
-	earlier := countOf(recorded, args)
-
-	answer := script[index].Answer
 	if answer.Delay > 0 {
-		if err := announceHold(places.holdAddr, hold{Args: args, Earlier: earlier}); err != nil {
+		if err := announceHold(ctx, places.holdAddr, hold{Args: args, Earlier: countOf(recorded, args)}); err != nil {
 			return broken(err)
 		}
 
-		time.Sleep(answer.Delay)
+		select {
+		case <-ctx.Done():
+			return broken(fmt.Errorf("hold the answer: %w", ctx.Err()))
+		case <-time.After(answer.Delay):
+		}
 	}
 
 	if _, err := os.Stdout.WriteString(answer.Stdout); err != nil {
@@ -580,10 +625,24 @@ func serve(places servePlaces, args []string) int {
 	return answer.Code
 }
 
+// scriptedAnswer returns the answer of the first call of script that matches args, and found
+// false when none does. It returns the error of a file a FileHolding argument names that exists
+// but cannot be read.
+func scriptedAnswer(script []Call, args []string) (answer Answer, found bool, err error) {
+	for _, call := range script {
+		matched, err := matchArgs(call.Args, args)
+		if err != nil || matched {
+			return call.Answer, matched, err
+		}
+	}
+
+	return Answer{}, false, nil
+}
+
 // announceHold tells the test process, listening at addr, that the fake is about to hold its
 // answer to held's call open, and returns once the test process has acknowledged it, with no
 // deadline.
-func announceHold(addr string, held hold) (err error) {
+func announceHold(ctx context.Context, addr string, held hold) (err error) {
 	line, err := json.Marshal(held)
 	if err != nil {
 		return fmt.Errorf("encode the held call: %w", err)
@@ -591,9 +650,7 @@ func announceHold(addr string, held hold) (err error) {
 
 	var dialer net.Dialer
 
-	// The fake is a child process with no caller to cancel it: the test process ends it by killing
-	// it, so the dial needs no context of its own.
-	conn, err := dialer.DialContext(context.Background(), "tcp", addr)
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("announce the held answer to %s: %w", addr, err)
 	}

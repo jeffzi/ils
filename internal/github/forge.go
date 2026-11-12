@@ -288,17 +288,12 @@ func (f *Forge) requiredChecks(ctx context.Context, repo forge.Repo, query forge
 func (f *Forge) TrunkProtection(ctx context.Context, repo forge.Repo, trunk string) (forge.Protection, error) {
 	args := repoAPIArgs(repo, "rules/branches/"+branchPath(trunk), "--paginate")
 
-	result, err := f.runner().Run(ctx, args...)
+	pages, err := readEachPage[[]branchRule](ctx, f.runner(), args)
 	if exitErr, ok := errors.AsType[*child.ExitError](err); ok &&
 		strings.Contains(exitErr.Stderr, forbiddenStatus) && strings.Contains(exitErr.Stderr, freePlanRefusal) {
 		return forge.Protection{Rules: forge.RulesUnavailable, SquashAllowed: true}, nil
 	}
 
-	if err != nil {
-		return forge.Protection{}, err
-	}
-
-	pages, err := decodeEachPage[[]branchRule](result.Stdout, args)
 	if err != nil {
 		return forge.Protection{}, err
 	}
@@ -556,7 +551,7 @@ func (f *Forge) activeWorkflows(ctx context.Context, repo forge.Repo) ([]string,
 func (f *Forge) workflowFiles(ctx context.Context, repo forge.Repo, trunk string) ([]repoFile, error) {
 	args := repoAPIArgs(repo, "contents/"+workflowsDir+"?ref="+url.QueryEscape(trunk))
 
-	result, err := f.runner().Run(ctx, args...)
+	files, err := runDecoded[[]repoFile](ctx, f.runner(), args...)
 	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && strings.Contains(exitErr.Stderr, pathNotFound) {
 		return nil, nil
 	}
@@ -565,7 +560,7 @@ func (f *Forge) workflowFiles(ctx context.Context, repo forge.Repo, trunk string
 		return nil, err
 	}
 
-	return decodeOutput[[]repoFile](result.Stdout, args)
+	return files, nil
 }
 
 // ---------------------------------------------------------------------------

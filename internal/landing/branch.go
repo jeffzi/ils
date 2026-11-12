@@ -86,7 +86,7 @@ func onWorkBranch(ctx context.Context, deps Deps, req Request, ready Ready) *res
 func cleanTree(ctx context.Context, deps Deps, req Request) *result.Result {
 	files, err := deps.Repo.ChangedTrackedFiles(ctx)
 	if err != nil {
-		return req.unread(readTree, err)
+		return req.Unread(readTree, err)
 	}
 
 	if len(files) > 0 {
@@ -115,14 +115,14 @@ func commitsPast(ctx context.Context, deps Deps, req Request, b onBranch) (tip s
 
 	switch {
 	case err != nil:
-		return "", nil, req.unread(readTip, err)
+		return "", nil, req.Unread(readTip, err)
 	case !committed:
 		return "", nil, req.nothingPast(b)
 	}
 
 	past, err = deps.Repo.CommitsPast(ctx, tip, b.Trunk)
 	if err != nil {
-		return "", nil, req.unread(readCommits, err)
+		return "", nil, req.Unread(readCommits, err)
 	}
 
 	if len(past) == 0 {
@@ -186,7 +186,7 @@ func firstPushStep() result.Next {
 func pullRequest(ctx context.Context, deps Deps, req Request, b onBranch) (open, landed *forge.Change, stop *result.Result) {
 	changes, err := deps.Forge.FindChanges(ctx, b.Repo, b.branch)
 	if err != nil {
-		return nil, nil, req.unread(readChanges, err)
+		return nil, nil, req.Unread(readChanges, err)
 	}
 
 	for _, change := range changes {
@@ -265,7 +265,7 @@ func (b onBranch) landedWith(ctx context.Context, deps Deps, req Request, change
 
 	shared, unlanded, read, err := b.carriedBy(ctx, deps, head)
 	if err != nil {
-		return "", false, req.unread(read, err)
+		return "", false, req.Unread(read, err)
 	}
 
 	if !shared {

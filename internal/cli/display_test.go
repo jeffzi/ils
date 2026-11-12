@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
@@ -628,7 +629,7 @@ func TestApp_Run_WhenStdoutAndStderrShareATerminalWithColorOff_PrintsEachStepLin
 	assert.Check(t, is.DeepEqual(seen[:2], []string{pushedStep, openedStep}))
 	assert.Check(t, regexp.MustCompile(`^\S+ Waiting for checks on #12 `).MatchString(seen[2]), "spinner line = %q", seen[2])
 	lines := pacedLines()
-	want := slices.Concat([]string{pushedStep, openedStep, lines[1], lines[3]}, pacedEnd())
+	want := slices.Concat([]string{pushedStep, openedStep, "✗ Waiting for checks on #12", lines[1], lines[3]}, pacedEnd())
 	assert.Check(t, is.DeepEqual(terminal.lines(), want))
 }
 
@@ -810,4 +811,104 @@ func TestApp_Run_WhenTheDisplayCannotBeWritten_EndsAsARunWithoutIt(t *testing.T)
 	assert.Check(t, is.Equal(got.code, exitDelivered))
 	printed := outputLines(stdout.buf.String())
 	assert.Check(t, is.DeepEqual(printed, slices.Concat(pacedLines(), pacedEnd())))
+}
+
+// reporting is a landing command that runs the step of pushingLabel for spun, reports pushedLine
+// as a step of kind, has peek read the screens, and ends broke with pushedLine and openedLine as
+// its lines.
+func reporting(kind cli.StepKind, peek func()) cli.Command {
+	return func(_ context.Context, deps landing.Deps, req landing.Request) result.Result {
+		deps.Progress.Started(pushingLabel())
+		elapse(spun)
+		cli.Report(deps.Progress, kind, pushedLine())
+		peek()
+
+		return result.Result{
+			Command: req.Command, Words: req.Words, Outcome: result.Broke,
+			Lines: []result.Phrase{pushedLine(), openedLine()}, Reason: stillRunning(), Next: result.NextCommand("push"),
+		}
+	}
+}
+
+// brokeEnd returns the reason and next that follow the lines of a reporting command.
+func brokeEnd() []string {
+	return []string{
+		resulttest.ReasonLine(result.Broke, "the checks of #12 are still running"),
+		resulttest.NextLine("ils push"),
+	}
+}
+
+func TestApp_Run_WhenASkippedOrFailedStepLineIsReportedOnATerminal_PrintsItOnceBehindItsMarkAndDuration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		mark string
+		kind cli.StepKind
+	}{
+		{name: "skipped", kind: cli.StepUnchanged, mark: "–"},
+		{name: "failed", kind: cli.StepFailed, mark: "✗"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			app, stdout := onStdoutScreen(t, []string{colorTerm, noColor})
+			var early []string
+			app.SetPush(reporting(tt.kind, func() { early = stdout.lines() }))
+
+			shown(t, app, "push")
+
+			step := tt.mark + " " + pushedText + " 3.3s"
+			assert.Check(t, is.DeepEqual(early, []string{step}))
+			assert.Check(t, is.DeepEqual(stdout.lines(), slices.Concat([]string{step, openedText}, brokeEnd())))
+		})
+	}
+}
+
+// endingWith is a landing command that starts the step of waitingLabel, says openedLine to end it
+// unless running, and ends as outcome with openedLine as its one line.
+func endingWith(outcome result.Outcome, running bool) cli.Command {
+	return func(_ context.Context, deps landing.Deps, req landing.Request) result.Result {
+		startedWaiting(deps.Progress)
+		if !running {
+			deps.Progress.Said(pushedLine())
+		}
+
+		return result.Result{
+			Command: req.Command, Words: req.Words, Outcome: outcome,
+			Lines: []result.Phrase{openedLine()}, Reason: stillRunning(), Next: result.NextCommand("push"),
+		}
+	}
+}
+
+func TestApp_Run_WhenACommandEndsWhileAStepRuns_CrossesTheStepBeforeTheResultOnlyWhenItEndsBadly(t *testing.T) {
+	t.Parallel()
+
+	const crossed = "✗ Waiting for checks on #12"
+	tests := []struct {
+		name    string
+		want    []string
+		outcome result.Outcome
+		running bool
+	}{
+		{name: "broke", outcome: result.Broke, running: true, want: []string{crossed}},
+		{name: "done", outcome: result.Done, running: true},
+		{name: "broke with no step running", outcome: result.Broke, want: []string{"✓ " + pushedText}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			app, stdout := onStdoutScreen(t, []string{colorTerm, noColor})
+			app.SetPush(endingWith(tt.outcome, tt.running))
+
+			shown(t, app, "push")
+
+			lines := stdout.lines()
+			at := slices.Index(lines, openedText)
+			assert.Assert(t, at >= 0, "stdout showed %q", lines)
+			assert.Check(t, is.DeepEqual(lines[:at], tt.want, cmpopts.EquateEmpty()))
+		})
+	}
 }

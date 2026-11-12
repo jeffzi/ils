@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -150,6 +151,19 @@ func (c *stuckChild) drain(t *testing.T) {
 	}
 }
 
+// end draws the rest of stderr onto the screen, reads the rest of stdout, and waits for the run to
+// end; it returns the rest of stdout and what waiting returned.
+func (c *stuckChild) end(t *testing.T) (stdout string, err error) {
+	t.Helper()
+
+	_, err = io.Copy(c.stderr, c.pipe)
+	assert.NilError(t, err)
+	rest, err := io.ReadAll(c.stdout)
+	assert.NilError(t, err)
+
+	return string(rest), c.cmd.Wait()
+}
+
 // readsStopDisposition reports whether ils reads the disposition of the stop signal on this system,
 // as the build constraints of suspend_bsd.go and suspend_linux.go select: the darwin constraint
 // also holds on ios, and the linux one on android. Elsewhere ils stops on the signal even when
@@ -230,8 +244,8 @@ func TestApp_Run_WhenStartedWithTheStopSignalIgnored_GoesOnIgnoringIt(t *testing
 	})
 
 	line, err := run.stdout.ReadString('\n')
-
 	assert.NilError(t, err)
+
 	assert.Check(t, is.Equal(line, stopIgnoredLine+"\n"), "ils listens for the stop signal it was started ignoring")
 }
 

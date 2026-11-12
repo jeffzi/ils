@@ -16,6 +16,20 @@ import (
 	"github.com/jeffzi/ils/internal/github/ghtest"
 )
 
+func checksArgs() []string { return ghtest.ChecksArgs(engineSlug, pullNumber) }
+
+func runsArgs() []string { return ghtest.RunsArgs(engineSlug, headSHA) }
+
+func verdictQuery(required ...string) forge.VerdictQuery {
+	return forge.VerdictQuery{SHA: headSHA, Number: pullNumber, Required: required}
+}
+
+// verdictRun reads the verdict of the head commit, reduced to its error.
+func verdictRun(ctx context.Context, f *github.Forge) error {
+	_, err := f.Verdict(ctx, engine(), verdictQuery())
+	return err
+}
+
 func TestForge_Verdict_WhenChecksAreReported_ReadsEachBucketWhateverGhExitsWith(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -187,12 +201,12 @@ func TestForge_Verdict_FailedLog(t *testing.T) {
 
 func TestForge_Verdict_WhenTheRunListExitsNonZero_ReturnsExitErrorNamingIt(t *testing.T) {
 	assertExitErrorNamesCall(t, readCase{
-		run: operationsByName()["Verdict"], args: runsArgs(), before: []ghtest.Call{ghtest.Says("[]", checksArgs()...)},
+		run: verdictRun, args: runsArgs(), before: []ghtest.Call{ghtest.Says("[]", checksArgs()...)},
 	})
 }
 
 func TestForge_Verdict_WhenChecksReadPrintsMalformedJSON_ReturnsDecodeErrorNamingIt(t *testing.T) {
-	assertDecodeErrorNamesCall(t, readCase{run: operationsByName()["Verdict"], args: checksArgs()})
+	assertDecodeErrorNamesCall(t, readCase{run: verdictRun, args: checksArgs()})
 }
 
 // ---------------------------------------------------------------------------
@@ -224,9 +238,7 @@ func checkRunJSON(id, suite int, name, conclusion string) string {
 		`","check_suite":{"id":` + strconv.Itoa(suite) + `}}`
 }
 
-func checkRunsPage(runs ...string) string {
-	return `{"total_count":` + strconv.Itoa(len(runs)) + `,"check_runs":` + ghtest.JSONArray(runs...) + `}`
-}
+func checkRunsPage(runs ...string) string { return pageJSON("check_runs", runs...) }
 
 // statusJSON is one commit status of the combined status read: the context name in state.
 func statusJSON(name, state string) string {
@@ -245,9 +257,7 @@ func workflowRunJSON(suite int, name, event, status string) string {
 		`","check_suite_id":` + strconv.Itoa(suite) + `}`
 }
 
-func workflowRunsPage(runs ...string) string {
-	return `{"total_count":` + strconv.Itoa(len(runs)) + `,"workflow_runs":` + ghtest.JSONArray(runs...) + `}`
-}
+func workflowRunsPage(runs ...string) string { return pageJSON("workflow_runs", runs...) }
 
 // commitVerdict reads the verdict of the head commit while gh answers the check-runs, combined
 // status and workflow-runs reads with checkRuns, statuses and runs.

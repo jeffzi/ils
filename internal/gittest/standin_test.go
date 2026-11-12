@@ -107,18 +107,22 @@ func TestFakeGit_WhenTheLastWordEndsInAStar_MatchesAnArgumentStartingWithWhatCom
 }
 
 func TestFakeGit_WhenTheLastWordEndsInAStar_RunsTheRealGitForAnArgumentStartingOtherwise(t *testing.T) {
-	gittest.FakeGit(t, gittest.Fake{FailOn: []string{"rev-parse", "--verify", "refs/ils/fetched/*"}})
+	base := gittest.Env(t)
+	dir := initRepo(t, base)
+	args := []string{"rev-parse", "--verify", "refs/heads/main"}
+	want := callGit(t, base, dir, args...)
+	settings := gittest.FakeGit(t, gittest.Fake{FailOn: []string{"rev-parse", "--verify", "refs/ils/fetched/*"}})
 
-	got := callGit(t, nil, t.TempDir(), "rev-parse", "--verify", "refs/heads/main")
+	got := callGit(t, slices.Concat(base, settings), dir, args...)
 
-	assert.Check(t, got.Stderr != gittest.FailedSaid+"\n", "stderr = %q, what a faked failure prints", got.Stderr)
+	assert.Check(t, is.DeepEqual(got, want))
 }
 
 func TestFakeGit_WhenCallStartsWithWordsThatFailAfterward_RunsTheRealGitThenFails(t *testing.T) {
 	f := gittest.New(t, "main")
-	gittest.FakeGit(t, gittest.Fake{FailAfterOn: []string{"update-ref"}})
+	settings := gittest.FakeGit(t, gittest.Fake{FailAfterOn: []string{"update-ref"}})
 
-	got := callGit(t, nil, f.Dir(), "update-ref", "refs/heads/kept", "HEAD")
+	got := callGit(t, slices.Concat(f.Env(), settings), f.Dir(), "update-ref", "refs/heads/kept", "HEAD")
 
 	want := faked{Stderr: gittest.FailedSaid + "\n", Code: gittest.FailedCode}
 	assert.Check(t, is.DeepEqual(got, want))
@@ -177,6 +181,14 @@ func firstFake(addr string) gittest.Fake {
 }
 
 func TestFakeGit_WhenInstalledAgain_StopsFakingWhatOnlyTheFirstCallFaked(t *testing.T) {
+	// The calls inherit this process's environment, which FakeGit's own settings are read from, so
+	// that environment is cut off from the developer's git setup first.
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	for _, key := range []string{"GIT_DIR", "GIT_WORK_TREE"} {
+		t.Setenv(key, "")
+		assert.NilError(t, os.Unsetenv(key))
+	}
 	for _, tt := range onlyFirstFakes() {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := initRepo(t, nil)

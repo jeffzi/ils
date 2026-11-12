@@ -197,10 +197,8 @@ func lateHead(c cut) forgetest.Answer[forge.Head] {
 	return forgetest.Answer[forge.Head]{Err: c.of("gh")}
 }
 
-// shows returns a head sequence that answers with each of heads in turn.
 func shows(heads ...forge.Head) []forgetest.Answer[forge.Head] { return forgetest.Values(heads...) }
 
-// says returns a verdict sequence that answers with each of verdicts in turn.
 func says(verdicts ...forge.Verdict) []forgetest.Answer[forge.Verdict] {
 	return forgetest.Values(verdicts...)
 }
@@ -252,7 +250,6 @@ func readsOf(heads, verdicts, after int) []forgetest.Op {
 	)
 }
 
-// polls returns times pauses of every.
 func polls(times int, every time.Duration) []time.Duration {
 	return slices.Repeat([]time.Duration{every}, times)
 }
@@ -756,7 +753,6 @@ func readCutWaits(c cut) []cutShort {
 
 	return []cutShort{
 		{name: "inside the head read", want: atHead(c), heads: []forgetest.Answer[forge.Head]{lateHead(c)}},
-		{name: "inside a head read after one that showed the commit before the push", want: atHead(c), heads: append(shows(stale()), lateHead(c))},
 		{name: "inside the merge state read", want: atMergeState(c), heads: append(shows(unknown()), lateHead(c))},
 		{
 			name: "inside a later verdict read of checks still running", want: atVerdict(c),

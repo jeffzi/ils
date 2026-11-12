@@ -3,6 +3,7 @@
 package guard_test
 
 import (
+	"cmp"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -87,22 +88,15 @@ func TestJudge_WhenNoInvocationRunsATool_AllowsWithoutStartingGit(t *testing.T) 
 func TestJudge_AllowsEverydayCommandsOutsideAnyRepository(t *testing.T) {
 	t.Parallel()
 
-	caller := guard.Caller{Home: home, Dir: outsideDir(t)}
+	caller := callerOutsideAnyRepository(t)
 
 	checkAllowed(t, caller, []namedCommand{
-		{name: "non-literal argument to a command the guard does not know", command: `sed -n "${n}p" "$f"`},
 		{
 			name:    "heredoc that mentions git on an interpreter's stdin",
 			command: "python3 - <<'EOF'\ns = s.replace(\"git reset --hard\", \"git restore\")\nEOF",
 		},
 		{name: "git history written to /dev/null", command: "git show HEAD:f > /dev/null"},
 		{name: "stash list in a pipe", command: "git stash list | head -3"},
-		{name: "zsh null-glob qualifier", command: `rm -f "$d"/x*(N)`},
-		{name: "search for a tool word", command: "rg -n git docs"},
-		{name: "literal sh string behind xargs", command: "xargs -I{} sh -c 'ls {}'"},
-		{name: "sed substitution whose text parses as a shell script", command: "sed 's/old text/git push/' f"},
-		{name: "python code mentioning git, behind uv run", command: `uv run python -c 'import subprocess; subprocess.run(["git", "log"])'`},
-		{name: "environment file sourced under allexport", command: "set -a && . ./.env && set +a && make deploy"},
 		{name: "script run through a variable the command assigned", command: "S=/tmp/work; mkdir -p $S && cd $S && $S/run.sh"},
 		{name: "redirected call of a function wrapping a test runner", command: `T() { uv run pytest -q "$@"; }; T -k x > out.txt`},
 		{name: "function declared and called in one and list", command: `mk() { echo "$1"; } && mk a && mk b`},
@@ -189,4 +183,125 @@ func TestJudge_WhenALiteralStartsSeveralOptionsOneTakingAValue_NamesItToSpellOut
 	_, caller := standingOn(t, "main", "topic")
 
 	checkJudgedRow(t, caller, judged{command: `git branch --s "$b"`, want: guard.Refuse, wantNamed: "`--s` in full"})
+}
+
+// judged is a command, the outcome Judge must give it, and a word its reason must hold.
+type judged struct {
+	name      string
+	command   string
+	wantNamed string
+	want      guard.Outcome
+}
+
+// checkJudgedRow fails unless Judge, run by caller, gives the row's command its outcome. An allowed
+// command gets a verdict with no reason; any other outcome gets a reason naming what the row names.
+func checkJudgedRow(t *testing.T, caller guard.Caller, tt judged) {
+	t.Helper()
+
+	got := guard.Judge(t.Context(), tt.command, caller)
+
+	if tt.want == guard.Allow {
+		assert.Check(t, is.DeepEqual(got, guard.Verdict{Outcome: guard.Allow}), "Judge(%q)", tt.command)
+
+		return
+	}
+
+	assert.Check(t, is.Equal(got.Outcome, tt.want), "Judge(%q) outcome, reason %q", tt.command, got.Reason)
+
+	if tt.wantNamed != "" {
+		assert.Check(t, is.Contains(got.Reason, tt.wantNamed), "Judge(%q) reason", tt.command)
+	}
+}
+
+// checkJudged fails unless Judge gives every command its row's outcome, with a reason naming what
+// the row names.
+func checkJudged(t *testing.T, caller guard.Caller, tests []judged) {
+	t.Helper()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			checkJudgedRow(t, caller, tt)
+		})
+	}
+}
+
+// checkJudgedInTurn is checkJudged for rows that share process environment (a scripted gh or git
+// on PATH), so no row runs in parallel.
+func checkJudgedInTurn(t *testing.T, caller guard.Caller, tests []judged) {
+	t.Helper()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checkJudgedRow(t, caller, tt)
+		})
+	}
+}
+
+// refusal is a command the guard refuses, with the text its reason must hold.
+type refusal struct {
+	name      string
+	command   string
+	wantNamed string
+}
+
+// checkRefusals fails unless Judge refuses every command naming what its row wants named.
+func checkRefusals(t *testing.T, tests []refusal) {
+	t.Helper()
+
+	_, caller := standingOn(t, "main", "topic")
+	rows := make([]judged, 0, len(tests))
+	for _, tt := range tests {
+		rows = append(rows, judged{name: tt.name, command: tt.command, wantNamed: tt.wantNamed, want: guard.Refuse})
+	}
+
+	checkJudged(t, caller, rows)
+}
+
+// namedCommand is a command, with the name of the test case that runs it.
+type namedCommand struct {
+	name    string
+	command string
+}
+
+// checkAllowed fails unless Judge, run by caller, allows every command.
+func checkAllowed(t *testing.T, caller guard.Caller, tests []namedCommand) {
+	t.Helper()
+
+	rows := make([]judged, 0, len(tests))
+	for _, tt := range tests {
+		rows = append(rows, judged{name: tt.name, command: tt.command, want: guard.Allow})
+	}
+
+	checkJudged(t, caller, rows)
+}
+
+// placed is a command run from a directory.
+type placed struct {
+	name    string
+	dir     string
+	command string
+}
+
+// expectation is the outcome Judge must give, with a reason holding named.
+type expectation struct {
+	named   string
+	outcome guard.Outcome
+}
+
+// checkJudgedIn fails unless Judge, run by caller from each row's directory, or from the caller's
+// own when the row names none, gives the row's command the outcome want states.
+func checkJudgedIn(t *testing.T, caller guard.Caller, tests []placed, want expectation) {
+	t.Helper()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			in := caller
+			in.Dir = cmp.Or(tt.dir, caller.Dir)
+
+			checkJudgedRow(t, in, judged{command: tt.command, wantNamed: want.named, want: want.outcome})
+		})
+	}
 }

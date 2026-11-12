@@ -3,6 +3,7 @@
 package guard
 
 import (
+	"path"
 	"slices"
 	"strings"
 
@@ -180,7 +181,7 @@ func readDoubleQuoted(b *strings.Builder, parts []syntax.WordPart, vars shellVar
 	for i, part := range parts {
 		switch p := part.(type) {
 		case *syntax.Lit:
-			writeDoubleQuotedText(b, p.Value)
+			WriteDoubleQuoted(b, p.Value)
 		case *syntax.ParamExp:
 			value, known := vars.expansion(p)
 			if !known || modifiedByZsh(p, nextPart(parts, i)) {
@@ -242,36 +243,6 @@ func nextPart(parts []syntax.WordPart, i int) syntax.WordPart {
 	return parts[i+1]
 }
 
-// writeDoubleQuotedText writes value, the text between double quotes, to b after quote removal. A
-// backslash drops before `$`, a backtick, a double quote, or a backslash; it and a newline after it
-// both drop; before any other character, or at the end, it stays.
-func writeDoubleQuotedText(b *strings.Builder, value string) {
-	escaped := false
-	for i := range len(value) {
-		c := value[i]
-		switch {
-		case escaped:
-			escaped = false
-			switch c {
-			case '$', '`', '"', '\\':
-				b.WriteByte(c)
-			case '\n':
-			default:
-				b.WriteByte('\\')
-				b.WriteByte(c)
-			}
-		case c == '\\':
-			escaped = true
-		default:
-			b.WriteByte(c)
-		}
-	}
-
-	if escaped {
-		b.WriteByte('\\')
-	}
-}
-
 func inTable(table map[string]bool, w Word) bool {
 	return w.Literal && table[w.Text]
 }
@@ -292,4 +263,9 @@ func literalWords(texts []string) []Word {
 	}
 
 	return words
+}
+
+// programName returns the basename of the command word, with a leading zsh `=` lookup removed.
+func programName(command Word) string {
+	return path.Base(strings.TrimPrefix(command.Text, "="))
 }

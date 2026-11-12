@@ -96,3 +96,16 @@ func TestParse_WhenAWordsOnlyUnreadablePartIsAGlob_ReportsAGlobWithItsLiteralPre
 		})
 	}
 }
+
+func literal(text string) guard.Word {
+	return guard.Word{Text: text, Literal: true}
+}
+
+func wordTexts(words []guard.Word) []string {
+	got := make([]string, 0, len(words))
+	for _, word := range words {
+		got = append(got, word.Text)
+	}
+
+	return got
+}

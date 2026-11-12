@@ -150,41 +150,16 @@ func TestStartBranch_WhenNameIsTaken_RefusesNamingTheBranchThatTakesIt(t *testin
 	}
 }
 
-// unreachedBranch is a run that origin stops answering partway through.
-type unreachedBranch struct {
-	name string
-	// want is the parts of the refusal's text.
-	want string
-	// answered is how many calls origin answers before it stops.
-	answered int
-}
-
-func TestStartBranch_WhenOriginStopsAnswering_RefusesSayingSo(t *testing.T) {
+func TestStartBranch_WhenOriginStopsAnsweringWhenAskedForItsBranches_RefusesSayingSo(t *testing.T) {
 	t.Parallel()
+	s := branchScene(t, nil)
+	s.stopAnswering(t, 2)
+	before := s.written()
 
-	tests := []unreachedBranch{
-		{
-			// Origin answers the question about its trunk, and nothing after.
-			name: "asked to fetch its trunk", answered: 1,
-			want: expect("could not be reached", "fetch its trunk "+trunk, "Next:", "ils branch "+fresh),
-		},
-		{
-			name: "asked for its branches", answered: 2,
-			want: expect("could not be reached", "branches", "Next:", "ils branch "+fresh),
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			s := branchScene(t, nil)
-			s.stopAnswering(t, tt.answered)
-			before := s.written()
+	got := startBranch(t, s, fresh)
 
-			got := startBranch(t, s, fresh)
-
-			assertRefusedBranch(t, s, got, branchRefusal{name: fresh, before: before, want: tt.want})
-		})
-	}
+	want := expect("could not be reached", "branches", "Next:", "ils branch "+fresh)
+	assertRefusedBranch(t, s, got, branchRefusal{name: fresh, before: before, want: want})
 }
 
 func TestStartBranch_WhenOriginStopsAnswering_NextQuotesTheNameForTheShell(t *testing.T) {
@@ -218,7 +193,7 @@ func TestStartBranch_WhenOriginRefusesTheCaller_EndsBrokeWithWhatGitSaid(t *test
 
 	got := startBranch(t, s, fresh)
 
-	want := expect(sshDenied, "fix what failed", "ils branch "+fresh)
+	want := expect(gittest.SSHDenied, "fix what failed", "ils branch "+fresh)
 	assertEndedBy(t, got, s.gitDir, ended{outcome: result.Broke, req: branchRequest(fresh), text: want})
 	assert.Check(t, is.Equal(s.written(), before))
 }

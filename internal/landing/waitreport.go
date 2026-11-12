@@ -139,20 +139,26 @@ func (w Waited) stopReport(end ending, sha, trunk string, number int) (waitRepor
 func (w Waited) redReport(end ending) waitReport {
 	failed, _ := w.Verdict.Failed()
 
-	line := result.Say("Check %s failed: %s", failed.Name, result.URL(failed.Link))
 	reason := result.Say("the check %s failed", failed.Name)
-
 	if failed.Bucket == forge.BucketCanceled {
-		line = result.Say("Check %s was canceled: %s", failed.Name, result.URL(failed.Link))
 		reason = result.Say("the check %s was canceled", failed.Name)
 	}
 
 	return waitReport{
-		lines:   append([]result.Phrase{line}, w.mergeStateLines()...),
+		lines:   append([]result.Phrase{failedLine(failed)}, w.mergeStateLines()...),
 		excerpt: w.excerpt(),
 		reason:  reason,
 		next:    result.NextStep("fix the failing check, commit, and run %s again", end.pushOfChange),
 	}
+}
+
+// failedLine says that failed, a check that failed or was canceled, did, with its link.
+func failedLine(failed forge.Check) result.Phrase {
+	if failed.Bucket == forge.BucketCanceled {
+		return result.Say("Check %s was canceled: %s", failed.Name, result.URL(failed.Link))
+	}
+
+	return result.Say("Check %s failed: %s", failed.Name, result.URL(failed.Link))
 }
 
 // apartReport is a pull request that cannot merge until the trunk is merged into the branch, whose
@@ -332,10 +338,6 @@ func runningList[T any](header result.Phrase, items []T, line func(T) result.Phr
 	}
 
 	return lines
-}
-
-func runningName(check forge.Check) result.Phrase {
-	return result.Say(pendingBullet+"%s", check.Name)
 }
 
 // runningAge is the line of a pending check that says how long it has run at now, from the time

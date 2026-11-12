@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"mvdan.cc/sh/v3/syntax"
 
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/guard"
@@ -27,17 +28,12 @@ const (
 
 	cwdUsage = "The directory the command runs in"
 
-	// harnessClaude is the harness word of Claude Code, the one harness `ils hook` knows.
-	harnessClaude = "claude"
-
-	// claudeEvent is the hookEventName of the answer Claude Code reads from a PreToolUse hook.
-	claudeEvent = "PreToolUse"
-
 	// claudeDecisionAsk is the permissionDecision that has Claude Code ask the user first.
 	claudeDecisionAsk = "ask"
 
-	// claudeShellTool is the tool_name of Claude Code's shell tool, the one tool the guard judges.
-	claudeShellTool = "Bash"
+	// guardSupported is true only in the Unix build; installClaude adds the guard's hook only where
+	// it is true.
+	guardSupported = true
 
 	// notLiteral stands, in the text of a parse, for a word whose text depends on what the shell
 	// expands.
@@ -46,10 +42,6 @@ const (
 	// unknownText stands, in the text of a parse, for a directory or git dir that is not known.
 	unknownText = "unknown"
 )
-
-// ---------------------------------------------------------------------------
-// The parse and guard commands
-// ---------------------------------------------------------------------------
 
 // parseCommand returns `ils parse --cwd <dir> -- '<command>'`, which reads the command as the
 // guard does and keeps every invocation it holds as the result. It refuses words that give no
@@ -69,9 +61,6 @@ func (p *parse) cwdCommand(
 ) *cobra.Command {
 	var cwd string
 
-	refuse := func(reason result.Phrase) error {
-		return p.refuseWith(reason, result.NextCommand("%s "+flagHelp, word))
-	}
 	oneWord := result.Say("%s takes the command after %s as one quoted word", word, wordDash)
 	given := func(typed string) result.Phrase {
 		return result.Say("%s takes %s and the command after %s as one quoted word, and %s was given",
@@ -80,11 +69,11 @@ func (p *parse) cwdCommand(
 
 	c.Args = func(c *cobra.Command, args []string) error {
 		if c.ArgsLenAtDash() != 0 || len(args) != 1 {
-			return refuse(oneWord)
+			return p.refuseFor(word, oneWord)
 		}
 
 		if cwd == "" {
-			return refuse(result.Say("%s takes the directory the command runs in as %s", word, flagCwd))
+			return p.refuseFor(word, result.Say("%s takes the directory the command runs in as %s", word, flagCwd))
 		}
 
 		return nil
@@ -105,7 +94,7 @@ func (p *parse) cwdCommand(
 	c.Flags().StringVar(&cwd, strings.TrimPrefix(flagCwd, "--"), "", cwdUsage)
 	c.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
 		if _, ok := errors.AsType[*pflag.ValueRequiredError](err); ok {
-			return refuse(result.Say("%s takes a directory, and none was given", flagCwd))
+			return p.refuseFor(word, result.Say("%s takes a directory, and none was given", flagCwd))
 		}
 
 		return p.flagRefusal(err, given)
@@ -118,9 +107,22 @@ func (p *parse) cwdCommand(
 // its HOME, and the git of the app.
 func (p *parse) caller(dir string) guard.Caller {
 	env := environment(p.app.Environ)
-	logger := p.logger(p.app.profile(p.app.StderrTerminal, p.noColor))
+	logger := p.logger()
 
 	return guard.Caller{Dir: dir, Env: env, Home: env["HOME"], Git: p.loggedGit(logger), GH: github.Runner{Logger: logger}}
+}
+
+// environment returns the variables of environ, each `NAME=value`, by name: a name set twice has
+// its last value, as bash and the commands it starts read it. An entry with no `=` names nothing.
+func environment(environ []string) map[string]string {
+	env := make(map[string]string, len(environ))
+	for _, entry := range environ {
+		if name, value, ok := strings.Cut(entry, "="); ok {
+			env[name] = value
+		}
+	}
+
+	return env
 }
 
 // readCommand reads command as the guard does from cwd, made absolute, with the process environment
@@ -136,7 +138,7 @@ func (p *parse) readCommand(ctx context.Context, cwd, command string) (result.Re
 
 	invocations, err := guard.Parse(ctx, command, p.caller(dir))
 	if err != nil {
-		return unparsed(req, err), nil
+		return unparsed(req, err)
 	}
 
 	payload := &result.Parse{Invocations: invocationsOf(invocations)}
@@ -158,20 +160,37 @@ func (p *parse) readCommand(ctx context.Context, cwd, command string) (result.Re
 
 // unparsed returns the broke result of a parse that failed with err: the command did not parse, or
 // a read of git it needs failed. The error's text, which may name a config key or a path under a git
-// dir, goes in as a name.
-func unparsed(req landing.Request, err error) result.Result {
+// dir, goes in as a name. The next step names the words req holds, quoted as typedCommand quotes
+// them, so that it runs the same parse again.
+func unparsed(req landing.Request, err error) (result.Result, error) {
 	reason := result.Say("a read of git the command needs failed: %s", err.Error())
 	if _, ok := errors.AsType[*guard.ParseError](err); ok {
 		reason = result.Say("the command does not parse: %s", err.Error())
 	}
 
-	return result.Result{
-		Command: req.Command,
-		Words:   req.Words,
-		Reason:  reason,
-		Next:    result.NextStep("fix what the reason names, then run %s again", result.Command(parseWord)),
-		Outcome: result.Broke,
+	typed, quoteErr := typedCommand(req.Words)
+	if quoteErr != nil {
+		return result.Result{}, quoteErr
 	}
+
+	return *req.Broke(reason, result.NextStep("fix what the reason names, then run %s again", result.Command(typed))), nil
+}
+
+// typedCommand returns words as one shell command line that reads back as the same words: each word
+// that the shell would split or expand is quoted. A word the shell cannot hold, one with a NUL
+// byte, is an error.
+func typedCommand(words []string) (string, error) {
+	quoted := make([]string, 0, len(words))
+	for _, word := range words {
+		q, err := syntax.Quote(word, syntax.LangBash)
+		if err != nil {
+			return "", fmt.Errorf("quote the word %q for the shell: %w", word, err)
+		}
+
+		quoted = append(quoted, q)
+	}
+
+	return strings.Join(quoted, " "), nil
 }
 
 // guardCommand returns `ils guard --cwd <dir> -- '<command>'`, which judges the command as the
@@ -229,29 +248,6 @@ func judged(req landing.Request, invocations []guard.Invocation, verdict guard.V
 
 	return r
 }
-
-// environment returns the variables of environ, each `NAME=value`, by name: a name set twice has
-// its last value, as bash and the commands it starts read it. An entry with no `=` names nothing.
-func environment(environ []string) map[string]string {
-	env := make(map[string]string, len(environ))
-	for _, entry := range environ {
-		if name, value, ok := strings.Cut(entry, "="); ok {
-			env[name] = value
-		}
-	}
-
-	return env
-}
-
-// underTimeLimit returns ctx with the deadline of a command from launch, which counts the time
-// limit from the launch of the app.
-func (p *parse) underTimeLimit(ctx context.Context) (context.Context, context.CancelFunc) {
-	return p.fromLaunch(ctx, landing.TimeLimit)
-}
-
-// ---------------------------------------------------------------------------
-// The payload and its text
-// ---------------------------------------------------------------------------
 
 // invocationsOf returns invocations as the payload shows them, never nil.
 func invocationsOf(invocations []guard.Invocation) []result.Invocation {
@@ -359,7 +355,6 @@ func orNone(text string) string {
 	return text
 }
 
-// orUnknown returns text, or unknownText when text is empty.
 func orUnknown(text string) string {
 	if text == "" {
 		return unknownText
@@ -367,10 +362,6 @@ func orUnknown(text string) string {
 
 	return text
 }
-
-// ---------------------------------------------------------------------------
-// The hook command and the Claude Code payload
-// ---------------------------------------------------------------------------
 
 // hookCommand returns `ils hook <harness>`, which reads the payload of the harness's pre-tool hook
 // on Stdin and answers it in the harness's terms. It never exits 1, since a harness may read 1 as
@@ -388,12 +379,12 @@ func (p *parse) hookCommand() *cobra.Command {
 		refused := result.Refused.ExitCode()
 		harnesses := "the harness it runs under, one of: " + harnessClaude
 
-		switch {
-		case len(args) == 0:
+		switch fitHarness(args) {
+		case harnessMissing:
 			p.quit(refused, hookWord+" takes "+harnesses)
-		case args[0] != harnessClaude:
+		case harnessUnknown:
 			p.quit(refused, fmt.Sprintf("%s takes %s, and %s was given", hookWord, harnesses, args[0]))
-		case len(args) > 1:
+		case harnessFollowed:
 			p.quit(refused, fmt.Sprintf("%s takes one harness and no other word, and %s was given", hookWord, args[1]))
 		default:
 			p.hookClaude(c.Context())

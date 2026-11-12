@@ -109,19 +109,6 @@ func TestApp_Run_WhenASecondSignalLands_DiesOfItWithTheDisplayEnded(t *testing.T
 	}
 }
 
-// end draws the rest of stderr onto the screen, reads the rest of stdout, and waits for the run to
-// end; it returns the rest of stdout and what waiting returned.
-func (c *stuckChild) end(t *testing.T) (stdout string, err error) {
-	t.Helper()
-
-	_, err = io.Copy(c.stderr, c.pipe)
-	assert.NilError(t, err)
-	rest, err := io.ReadAll(c.stdout)
-	assert.NilError(t, err)
-
-	return string(rest), c.cmd.Wait()
-}
-
 // diedOf fails the test unless err, what waiting for a run returned, says the run died of sig.
 func diedOf(t *testing.T, err error, sig syscall.Signal) {
 	t.Helper()

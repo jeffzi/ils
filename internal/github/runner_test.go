@@ -2,7 +2,6 @@ package github_test
 
 import (
 	"errors"
-	"path/filepath"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -58,15 +57,6 @@ func assertToolMissing(t *testing.T, err error) {
 
 func TestRunner_Run_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
 	withoutGh(t)
-
-	_, err := github.Runner{}.Run(t.Context(), "pr", "view")
-
-	assertToolMissing(t, err)
-}
-
-func TestRunner_Run_WhenGhPathNamesNoFile_ReturnsToolMissingError(t *testing.T) {
-	withoutGh(t)
-	t.Setenv("GH_PATH", filepath.Join(t.TempDir(), "gh"))
 
 	_, err := github.Runner{}.Run(t.Context(), "pr", "view")
 

@@ -2,10 +2,13 @@ package cli
 
 import (
 	"runtime/debug"
+	"slices"
 
 	"github.com/spf13/cobra"
 
 	"github.com/jeffzi/ils/internal/git"
+	"github.com/jeffzi/ils/internal/landing"
+	"github.com/jeffzi/ils/internal/result"
 )
 
 // SetPush makes a run `ils push` with run in place of landing.Push.
@@ -47,4 +50,58 @@ const PendingHint = pendingHint
 // Root returns the root command of ils, for the tests of package cli_test.
 func (a *App) Root() *cobra.Command {
 	return (&parse{app: *a}).root()
+}
+
+// SetGuardSupported makes `ils init claude` act as on a system where the guard runs when supported
+// is true, and as on one where the guard refuses every run otherwise.
+func (a *App) SetGuardSupported(supported bool) {
+	a.guardRuns = &supported
+}
+
+// GuardParsesFlags is guardSupported, for the tests of package cli_test: `ils guard` and
+// `ils parse` parse their flags only where the guard runs.
+const GuardParsesFlags = guardSupported
+
+// GuardUnsupported is guardUnsupported, for the tests of package cli_test.
+const GuardUnsupported = guardUnsupported
+
+// UserHook is userHook, for the tests of package cli_test.
+const UserHook = userHook
+
+// ProjectHook is projectHook, for the tests of package cli_test.
+const ProjectHook = projectHook
+
+// HookTimeout is hookTimeout as the number a decoded settings file holds, for the tests of package
+// cli_test.
+const HookTimeout float64 = hookTimeout
+
+// HookOnFailure is hookOnFailure, for the tests of package cli_test.
+const HookOnFailure = hookOnFailure
+
+// PermissionRules returns the rules `ils init claude` adds to each permission list, by the name of
+// the list, for the tests of package cli_test.
+func PermissionRules() map[string][]string {
+	rules := map[string][]string{}
+	for _, list := range permissionLists {
+		rules[list.name] = slices.Clone(list.rules)
+	}
+
+	return rules
+}
+
+// StepKind is stepKind, for the tests of package cli_test.
+type StepKind = stepKind
+
+// StepChanged, StepUnchanged and StepFailed are stepChanged, stepUnchanged and stepFailed, for the
+// tests of package cli_test.
+const (
+	StepChanged   = stepChanged
+	StepUnchanged = stepUnchanged
+	StepFailed    = stepFailed
+)
+
+// Report has the display that progress is report line as a step of kind, as a command run under
+// the display reports it, for the tests of package cli_test.
+func Report(progress landing.Progress, kind StepKind, line result.Phrase) {
+	progress.(*display).report(kind, line)
 }

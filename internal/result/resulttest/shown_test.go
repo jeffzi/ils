@@ -19,7 +19,7 @@ func TestAssertCarried(t *testing.T) {
 		pushed  = "Pushed the branch to origin."
 		excerpt = "first line of the log\nsecond line of the log"
 	)
-	carrier := resulttest.Shown{
+	carrier := result.Object{
 		Excerpt: excerpt,
 		Lines:   []string{pushed},
 		Reason:  reason,
@@ -66,7 +66,7 @@ func TestAssertCarried(t *testing.T) {
 func TestAssertCarried_WhenTheOutcomeDiffers_Fails(t *testing.T) {
 	t.Parallel()
 	const next = "ils push"
-	shown := resulttest.Shown{Outcome: result.Pending.String(), Reason: "checks still run", Next: next}
+	shown := result.Object{Outcome: result.Pending.String(), Reason: "checks still run", Next: next}
 	spy := failtest.New(t)
 
 	resulttest.AssertCarried(spy, resulttest.NextLine(next)+"\n", result.Refused, shown)

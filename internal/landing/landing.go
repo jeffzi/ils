@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -80,14 +81,56 @@ func nounCount(n int, noun string) string {
 // fewerLeft and fewerLeftCapital open the clause that says less than the reserve of the time limit
 // was left, in a reason and at the start of a line. Their two placeholders take the reserve and
 // the time limit as Request.limitWords says it.
+//
+// mayHaveGoneThrough ends a line that says a write was started when a cut came, and may not have
+// been done; mayHaveTaken ends one that says the same of a push.
 const (
-	timeLimitEnded   = "the time limit of %s ended"
-	runInterrupted   = "ils was interrupted"
-	timeLimitRanOut  = "when the time limit of %s ran out"
-	beforeTimeLimit  = "before the time limit of %s"
-	fewerLeft        = "fewer than %s of the time limit of %s were left"
-	fewerLeftCapital = "Fewer than %s of the time limit of %s were left"
+	timeLimitEnded     = "the time limit of %s ended"
+	runInterrupted     = "ils was interrupted"
+	timeLimitRanOut    = "when the time limit of %s ran out"
+	beforeTimeLimit    = "before the time limit of %s"
+	fewerLeft          = "fewer than %s of the time limit of %s were left"
+	fewerLeftCapital   = "Fewer than %s of the time limit of %s were left"
+	mayHaveGoneThrough = "; it may or may not have gone through"
+	mayHaveTaken       = "; it may or may not have taken"
 )
+
+// mergeReserve is the time the wait leaves before the command's deadline, and the least that must
+// be left at the first write: the merge, the delete on origin, and the local ending run in it, as
+// the writes of `ils release` do, and a write the deadline cuts short leaves the run halfway.
+const mergeReserve = 20 * time.Second
+
+// shortOfReserve returns the result that ends r pending with next when less than mergeReserve is
+// left before ctx's deadline, and nil otherwise. Its lines are said, then the line that says
+// nothing was written. purpose names what the reserve is for, after the clause that says it was
+// short ("for the merge").
+func (r Request) shortOfReserve(ctx context.Context, purpose result.Name, next result.Next, said []result.Phrase) *result.Result {
+	if !deadlineWithin(ctx, mergeReserve) {
+		return nil
+	}
+
+	stop := r.ends(result.Pending, result.Say(fewerLeft+" %s", span(mergeReserve), r.limitWords(), purpose), next)
+	stop.Lines = slices.Concat(said, []result.Phrase{
+		result.Say(fewerLeftCapital+" %s, so nothing was written", span(mergeReserve), r.limitWords(), purpose),
+	})
+
+	return stop
+}
+
+// interruptedBefore returns the result that ends r pending with next when an interrupt ended ctx
+// before the first write, named by act ("the merge"), and nil otherwise. A deadline that alone
+// ended ctx does not count: shortOfReserve checks it ahead. Its lines are said, then the line that
+// says nothing was written.
+func (r Request) interruptedBefore(ctx context.Context, act result.Name, next result.Next, said []result.Phrase) *result.Result {
+	if !interrupted(ctx.Err()) {
+		return nil
+	}
+
+	stop := r.ends(result.Pending, result.Say(runInterrupted+" before %s", act), next)
+	stop.Lines = slices.Concat(said, []result.Phrase{result.Say(runInterrupted+" before %s, so nothing was written", act)})
+
+	return stop
+}
 
 // interrupted reports whether err says an interrupt cut a call short. Only an interrupt cancels
 // the context a command runs under, so every cancellation is one.
@@ -223,18 +266,21 @@ type Request struct {
 	// Force and TagOnly are the --force and --tag-only flags of `ils release`.
 	Force   bool
 	TagOnly bool
+	// Project is the --project flag of `ils init`.
+	Project bool
 	// LongWait runs the push, the merge or the release under WaitTimeLimit instead of TimeLimit.
 	// The caller decides it, whether or not the user typed --wait.
 	LongWait bool
 }
 
-// FlagForce, FlagTagOnly and FlagWait are the words of the --force, --tag-only and --wait flags,
-// as the command line spells them. The command line the parser accepts and the one a next step
-// prints are built from them.
+// FlagForce, FlagTagOnly, FlagWait and FlagProject are the words of the --force, --tag-only,
+// --wait and --project flags, as the command line spells them. The command line the parser accepts
+// and the one a next step prints are built from them.
 const (
 	FlagForce   = "--force"
 	FlagTagOnly = "--tag-only"
 	FlagWait    = "--wait"
+	FlagProject = "--project"
 )
 
 // WaitFlag is which --wait flag the user typed to `ils push`, `ils merge` or `ils release`.
@@ -288,6 +334,10 @@ func (r Request) commandLine(keepWait bool) string {
 
 	if r.TagOnly {
 		words = append(words, FlagTagOnly)
+	}
+
+	if r.Project {
+		words = append(words, FlagProject)
 	}
 
 	switch {
@@ -385,12 +435,12 @@ func gitStanding(ctx context.Context, deps Deps, req Request) (git.Standing, *re
 			return git.Standing{}, stop
 		}
 
-		return git.Standing{}, req.unread(readGitVersion, err)
+		return git.Standing{}, req.Unread(readGitVersion, err)
 	}
 
 	standing, err := deps.Repo.Standing(ctx)
 	if err != nil {
-		return git.Standing{}, req.unread(readStanding, err)
+		return git.Standing{}, req.Unread(readStanding, err)
 	}
 
 	if standing.Kind == git.NoOrigin {
@@ -411,7 +461,7 @@ func originRepo(ctx context.Context, deps Deps, req Request) (forge.Repo, *resul
 
 	switch {
 	case err != nil:
-		return forge.Repo{}, req.unread(readURLs, err)
+		return forge.Repo{}, req.Unread(readURLs, err)
 	case !oneRepo:
 		return forge.Repo{}, req.twoRepositories(urls)
 	}
@@ -449,7 +499,7 @@ func (r Request) twoRepositories(urls git.OriginURLs) *result.Result {
 
 // identity returns origin with the forge's fork, can-push and squash-allowed flags, once the
 // forge's tool is installed, recent enough and logged in, the repository is not a fork, and the user
-// can push to it. A failed call is the refusal toolRefusal returns, and what unread returns for any
+// can push to it. A failed call is the refusal toolRefusal returns, and what Unread returns for any
 // other failure.
 func identity(ctx context.Context, deps Deps, req Request, origin forge.Repo) (forge.Repo, *result.Result) {
 	repo, err := deps.Forge.Identity(ctx, origin)
@@ -458,7 +508,7 @@ func identity(ctx context.Context, deps Deps, req Request, origin forge.Repo) (f
 			return forge.Repo{}, stop
 		}
 
-		return forge.Repo{}, req.unread(readIdentity, err)
+		return forge.Repo{}, req.Unread(readIdentity, err)
 	}
 
 	if stop := req.repoRefusal(repo); stop != nil {
@@ -582,11 +632,15 @@ func (r Request) Refused(reason result.Phrase, next result.Next) *result.Result 
 	return r.ends(result.Refused, reason, next)
 }
 
+// Broke returns the result that ends the request as Broke, with reason and next, and no lines.
+func (r Request) Broke(reason result.Phrase, next result.Next) *result.Result {
+	return r.ends(result.Broke, reason, next)
+}
+
 // readEnding is what a reason for a read cut short says the run left behind.
 type readEnding int
 
 const (
-	// nothingWritten says the run had written nothing.
 	nothingWritten readEnding = iota
 	// nothingMoreChanges says what the run wrote stays as it is.
 	nothingMoreChanges
@@ -607,10 +661,52 @@ func cutShortReading(byInterrupt bool, limit span, read string, ending readEndin
 	}
 }
 
-// unread returns the result for a read made before any write that failed with err: a refusal
+// writeEnding is what the line of a write cut short says may have come of it.
+type writeEnding int
+
+const (
+	// endsGoneThrough says the write may or may not have gone through.
+	endsGoneThrough writeEnding = iota
+	// endsTaken says the push may or may not have taken.
+	endsTaken
+	// endsOpened says the pull request may or may not have been opened.
+	endsOpened
+)
+
+// cutShortWriting returns the line and the reason that say r's time limit, or an interrupt when
+// byInterrupt is true, cut short a write the run had started. The line says the
+// run started the write and what ending says may have come of it; the reason says when the cut
+// came. started names the write after "Started" ("the merge of pull request #12"), and during
+// names when it came after the cut's clause ("during the merge").
+func (r Request) cutShortWriting(byInterrupt bool, started, during result.Name, ending writeEnding) (line, reason result.Phrase) {
+	if byInterrupt {
+		reason = result.Say(runInterrupted+" %s", during)
+	} else {
+		reason = result.Say(timeLimitEnded+" %s", r.limitWords(), during)
+	}
+
+	switch {
+	case byInterrupt && ending == endsTaken:
+		line = result.Say("Started %s when "+runInterrupted+mayHaveTaken, started)
+	case byInterrupt && ending == endsOpened:
+		line = result.Say("Started %s when "+runInterrupted+"; it may or may not have been opened", started)
+	case byInterrupt:
+		line = result.Say("Started %s when "+runInterrupted+mayHaveGoneThrough, started)
+	case ending == endsTaken:
+		line = result.Say("Started %s when "+timeLimitEnded+mayHaveTaken, started, r.limitWords())
+	case ending == endsOpened:
+		line = result.Say("Started %s when "+timeLimitEnded+"; it may or may not have been opened", started, r.limitWords())
+	default:
+		line = result.Say("Started %s when "+timeLimitEnded+mayHaveGoneThrough, started, r.limitWords())
+	}
+
+	return line, reason
+}
+
+// Unread returns the result for a read made before any write that failed with err: a refusal
 // when the tool the read runs is not installed or the time limit or an interrupt cut the read
 // short, since nothing was written and running again is safe, and broke otherwise.
-func (r Request) unread(read string, err error) *result.Result {
+func (r Request) Unread(read string, err error) *result.Result {
 	if stop := r.notInstalled(err); stop != nil {
 		return stop
 	}
@@ -671,15 +767,15 @@ func (r Request) afterTimeLimit() result.Next {
 }
 
 // unreached returns the result for a call to origin that failed with err: the refusal reason
-// when origin did not answer, and what unread returns otherwise.
+// when origin did not answer, and what Unread returns otherwise.
 func (r Request) unreached(read string, err error, reason result.Phrase) *result.Result {
 	// The time limit and an interrupt are excluded: a call to origin that either cut short is also an
-	// ErrRemote failure of git, and unread words it as what cut it short.
+	// ErrRemote failure of git, and Unread words it as what cut it short.
 	if errors.Is(err, git.ErrRemote) && !endedEarly(err) {
 		return r.Refused(reason, r.again())
 	}
 
-	return r.unread(read, err)
+	return r.Unread(read, err)
 }
 
 // fetchPullHead fetches the head of pull request number from origin and returns its sha. A failed
@@ -721,7 +817,7 @@ func detachedWith(trunk string) result.Phrase {
 func (r Request) detachedKept(ctx context.Context, deps Deps, trunk string, reason result.Phrase) *result.Result {
 	own, err := deps.Repo.CommitsPast(ctx, "HEAD", trunk)
 	if err != nil {
-		return r.unread(readHeadCommits, err)
+		return r.Unread(readHeadCommits, err)
 	}
 
 	if len(own) == 0 {

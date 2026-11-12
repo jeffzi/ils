@@ -11,6 +11,7 @@ import (
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
+	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/guard"
 )
 
@@ -23,20 +24,12 @@ func TestParse_WhenASubshellDefinesAFunction_CallsAfterItRunTheOuterBody(t *test
 	assert.Check(t, is.Equal(got.Dir, "/srv/repo"), "Parse(%q) directory of %v", command, got.Words)
 }
 
-func TestJudge_WhenACallCarriesARedirect_JudgesItsBodyUnderTheRedirect(t *testing.T) {
-	t.Parallel()
-
-	checkRefusals(t, []refusal{
-		{name: "git history onto a work tree file", command: "dump() { git show HEAD:README.md; }; dump > README.md", wantNamed: "git show"},
-	})
-}
-
 func TestJudge_WhenACallsRedirectLandsWhereTheCallRuns_RefusesGitHistoryTheBodyWritesFromElsewhere(t *testing.T) {
 	t.Parallel()
 
 	f, _ := standingOn(t, "main", "topic")
 	caller := callerIn(f, filepath.Dir(f.Dir()))
-	command := "dump() { cd " + quotedPath(outsideDir(t)) + " && git -C " + quotedPath(f.Dir()) + " show HEAD:go.mod; }; cd repo && dump > go.mod"
+	command := "dump() { cd " + gittest.ShellWord(outsideDir(t)) + " && git -C " + gittest.ShellWord(f.Dir()) + " show HEAD:go.mod; }; cd repo && dump > go.mod"
 
 	checkJudgedRow(t, caller, judged{command: command, want: guard.Refuse, wantNamed: "writes over " + filepath.Join(f.Dir(), "go.mod")})
 }
@@ -56,7 +49,7 @@ func TestJudge_WhenACallRunsABodyWhoseCommitLandsOnTheTrunk_RefusesNamingTheTrun
 
 	_, caller := standingOn(t, "main", "topic")
 	trunk, _ := standingOn(t, "main", "main")
-	toTrunk := "cd " + quotedPath(trunk.Dir())
+	toTrunk := "cd " + gittest.ShellWord(trunk.Dir())
 	const commits = "f() { git commit -am wip; }; "
 
 	checkJudgedIn(t, caller, []placed{
@@ -64,7 +57,7 @@ func TestJudge_WhenACallRunsABodyWhoseCommitLandsOnTheTrunk_RefusesNamingTheTrun
 		{name: "after a cd into a trunk checkout", command: commits + toTrunk + " && f"},
 		{
 			name:    "after an export of a trunk git dir",
-			command: commits + "export GIT_DIR=" + quotedPath(filepath.Join(trunk.Dir(), ".git")) + "; f",
+			command: commits + "export GIT_DIR=" + gittest.ShellWord(filepath.Join(trunk.Dir(), ".git")) + "; f",
 		},
 		{name: "inside a subshell", command: commits + "(" + toTrunk + " && f)"},
 		{name: "inside a loop", command: commits + "for x in a; do " + toTrunk + " && f; done"},

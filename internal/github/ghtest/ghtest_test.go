@@ -79,6 +79,18 @@ func TestFileHolding_WhenFileHoldsOtherContent_ExitsUnscripted(t *testing.T) {
 	assert.Check(t, is.Equal(exitErr.Code, ghtest.UnscriptedCode))
 }
 
+func TestFileHolding_WhenFileCannotBeRead_ExitsBrokenNamingIt(t *testing.T) {
+	dir := t.TempDir()
+	ghtest.Setup(t, ghtest.Says("scripted\n", "release", "create", "--notes-file", ghtest.FileHolding(scriptedNotes)))
+
+	_, err := github.Runner{}.Run(t.Context(), "release", "create", "--notes-file", dir)
+
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "Run error = %v, want *child.ExitError", err)
+	assert.Check(t, exitErr.Code != ghtest.UnscriptedCode, "Code = %d, want the code of a broken fake", exitErr.Code)
+	assert.Check(t, is.Contains(exitErr.Stderr, dir))
+}
+
 func TestFake_WhenAnswerIsDelayed_AnswersAfterTheDelay(t *testing.T) {
 	const delay = 300 * time.Millisecond
 	args := []string{"pr", "checks", "7"}
@@ -115,8 +127,9 @@ func TestFake_WhileHolding_WhenTheActionFails_FailsTheTestNamingTheError(t *test
 	fake := ghtest.Setup(spy, ghtest.Exits(ghtest.Answer{Stdout: "pass\n", Delay: time.Nanosecond}, args...))
 	fake.WhileHolding(func() error { return errors.New("notes file locked") })
 
-	_, _ = github.Runner{}.Run(t.Context(), args...)
+	_, err := github.Runner{}.Run(t.Context(), args...)
 
+	assert.NilError(t, err)
 	assert.Check(t, spy.Failed(), "WhileHolding action error left the test passing")
 	assert.Check(t, is.Contains(strings.Join(spy.Messages(), "\n"), "notes file locked"))
 }

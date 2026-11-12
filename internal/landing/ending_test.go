@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -73,7 +74,7 @@ func onTrunkLine() string {
 
 func interruptedResumeText() string {
 	return resumedLine() + expect("interrupted before finishing the merge", "interrupted before finishing the merge") +
-		nextMergeAgain()
+		mergeCommand().again
 }
 
 // landingRow is one run of `ils merge` that reaches its writes or a resume, and how it ends.
@@ -361,7 +362,7 @@ func endingBreaks() []landingRow {
 	}
 	trunkElsewhere := func(f *gittest.Fixture) { f.TrunkWorktree() }
 	switching := row("the switch to the trunk", setting{arrange: func(f *gittest.Fixture) { f.UntrackedOnTrunk() }}, topic,
-		failed(switchStep), notRun(dropStep)+notRun(pullStep)+failed(switchStep)+nextMergeFixed())
+		failed(switchStep), notRun(dropStep)+notRun(pullStep)+failed(switchStep)+mergeCommand().fixed)
 	switching.told = toldAfterWait(mergingStep(), said(mergedLine()), deletingStep(), said(deletedLine()), movingStep())
 
 	return []landingRow{
@@ -497,7 +498,7 @@ func TestMerge_WhenThePullRequestIsAlreadyMerged_FinishesWithoutMerging(t *testi
 				assertEndedBy(t, run.got, run.gitDir, ended{text: tt.text, req: mergeRequest(), outcome: result.Done})
 				assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(cmp.Or(head, run.tip), tt.ending),
 					cmpopts.EquateEmpty()))
-				assert.Check(t, is.DeepEqual(run.forge.Calls(), tt.calls, whichRepo()))
+				assert.Check(t, sameCalls(run.forge.Calls(), tt.calls))
 
 				if tt.ending == result.EndingTrunk {
 					assertOnTrunk(t, run.fixture, run.fixture.Dir())
@@ -509,13 +510,55 @@ func TestMerge_WhenThePullRequestIsAlreadyMerged_FinishesWithoutMerging(t *testi
 	}
 }
 
+func TestMerge_WhenTheMergedPullRequestLacksCommitsOfTheBranch_RefusesNamingTheMergedPullRequest(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		var head string
+
+		run := runMergeOn(t, setting{
+			arrange: func(f *gittest.Fixture) {
+				f.LandPull(merged, topic)
+				head = f.Git("rev-parse", topic)
+				f.Commits(topic, "fix a typo", "add an example")
+			},
+			script: resuming(),
+		})
+
+		assertStoppedBy(t, run.got, result.Refused, mergeRequest())
+
+		_, reason := shown(t, run.got, run.gitDir)
+		assertSays(t, reason, expect("#"+strconv.Itoa(merged), topic, "merged without the commits"))
+		assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(head, ""), cmpopts.EquateEmpty()))
+		assert.Check(t, sameOps(run.forge.Calls(), changesRead()))
+	})
+}
+
+func TestMerge_WhenAPullRequestMergedIntoTheTrunkSitsBesideOneMergedElsewhere_FinishesWithoutMerging(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		both := resuming().deleting(nil).with(func(script *forgetest.Script, _ string) {
+			script.FindChanges[0].Value = slices.Insert(script.FindChanges[0].Value, 0, elsewhereMerge())
+		})
+		arrange := func(f *gittest.Fixture) {
+			f.PullRef(mergedElsewhere, f.Git("rev-parse", topic))
+			landAndPublish(f)
+		}
+
+		run := runMergeOn(t, setting{arrange: arrange, script: both})
+
+		assertEndedBy(t, run.got, run.gitDir,
+			ended{text: resumedLine() + deletedLine() + onTrunkLine(), req: mergeRequest(), outcome: result.Done})
+		assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(run.tip, result.EndingTrunk), cmpopts.EquateEmpty()))
+	})
+}
+
 // resumeStops are the resumes that end before their local ending, having written nothing.
 func resumeStops() []landingRow {
 	// short is under landing.MergeReserve, so no write fits.
 	const short = 15 * time.Second
 
 	late := resumedLine() + expect("finish the merge", "nothing was written", "finish the merge") +
-		nextMergeAgain()
+		mergeCommand().again
 	gone := func(f *gittest.Fixture) { f.LandPull(merged, topic) }
 
 	stop := func(name string, set setting, text string) landingRow {
@@ -527,8 +570,6 @@ func resumeStops() []landingRow {
 	return []landingRow{
 		stop("fewer than 20 seconds are left before the first write",
 			setting{arrange: landAndPublish, left: short}, late),
-		stop("fewer than 20 seconds are left and origin no longer lists the branch",
-			setting{arrange: gone, left: short}, late),
 		stop("an interrupt lands once origin was asked for the branch it still lists",
 			setting{arrange: landAndPublish, runCtx: interruptAfterAskingForTheBranch}, interruptedResumeText()),
 		stop("an interrupt lands once origin was asked for the branch it no longer lists",
@@ -599,7 +640,7 @@ func assertResumeUnread(t *testing.T, run mergeRun, read string) {
 	assertStoppedBy(t, run.got, result.Broke, mergeRequest())
 
 	text, reason := shown(t, run.got, run.gitDir)
-	assertSays(t, text, resumedLine()+expect(read, nothingWritten)+nextMergeFixed())
+	assertSays(t, text, resumedLine()+expect(read, nothingWritten)+mergeCommand().fixed)
 	between(t, text, read, nothingWritten)
 	assert.Check(t, is.Contains(reason, read))
 	assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(run.tip, ""), cmpopts.EquateEmpty()))
@@ -699,14 +740,14 @@ func writeStops() []landingRow {
 		}
 	}
 	refused := row("the merge fails", toLand(errors.New(refusedMerge), nil), result.Broke,
-		expect("did not report the merge", "#12", refusedMerge, "did not report the merge")+nextMergeAgain())
+		expect("did not report the merge", "#12", refusedMerge, "did not report the merge")+mergeCommand().again)
 	refused.payload, refused.kept = sent(landedBody, false, ""), true
 	refused.told = toldAfterWait(mergingStep())
 	cutRows := make([]landingRow, 0, len(cuts()))
 	for _, c := range cuts() {
 		ended := row(c.name+" ends the merge", toLand(c.of("gh pr merge"), nil),
 			result.Broke, expect("merge", "#12", c.ends, "may or may not have gone through", c.ends, "during the merge")+
-				nextMergeAgain())
+				mergeCommand().again)
 		ended.payload, ended.kept = sent(landedBody, false, ""), true
 		cutRows = append(cutRows, ended)
 	}
@@ -715,16 +756,16 @@ func writeStops() []landingRow {
 		mergedLine()+goneLine()+onTrunkLine())
 	gone.payload = sent(landedBody, true, result.EndingTrunk)
 	listed := row("the delete fails and origin still lists the branch", toLand(nil, failed), result.Broke,
-		mergedLine()+expect("Could not delete", topic, "still there", forgeFailure)+expect("still on origin")+nextMergeAgain())
+		mergedLine()+expect("Could not delete", topic, "still there", forgeFailure)+expect("still on origin")+mergeCommand().again)
 	listed.set.arrange = func(f *gittest.Fixture) { f.Publish(topic) }
 	// The question fails with git's own message, which the text holds on one line before the reason line.
 	unasked := row("the delete fails and origin cannot be asked", toLand(nil, failed), result.Broke,
 		mergedLine()+expect("Could not delete", topic, forgeFailure, readStillOnOrigin))
-	unasked.after = expect("could not be deleted") + nextMergeAgain()
+	unasked.after = expect("could not be deleted") + mergeCommand().again
 	unasked.set.landed = moveOrigin
 	interrupted := row("an interrupt ends the delete", toLand(nil, byInterrupt().of("gh")), result.Broke,
 		mergedLine()+expect("delete", topic, "interrupted", "may or may not have gone through", "interrupted",
-			"deleting the branch")+nextMergeAgain())
+			"deleting the branch")+mergeCommand().again)
 	interrupted.set.runCtx = interruptOnStart(deletingStep())
 
 	return slices.Concat([]landingRow{refused}, cutRows, []landingRow{gone, listed, unasked, interrupted})

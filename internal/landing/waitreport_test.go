@@ -90,7 +90,7 @@ func pushRedRows() []pushRow {
 	}
 }
 
-func TestPush_WhenACheckFailed_ReportsTheExcerptOfItsLog(t *testing.T) {
+func TestPush_WhenADecidingCheckDidNotPass_ReportsItsLogOrWhyThereIsNone(t *testing.T) {
 	t.Parallel()
 
 	runPushes(t, pushRedRows())
@@ -198,15 +198,10 @@ func cutShortRowsBy(cmd landingCommand, c cut) []pushRow {
 	}
 }
 
-// pushCutShortRows are the pushes whose wait a cut ended inside a read or a poll, for each cut.
-func pushCutShortRows() []pushRow {
-	var rows []pushRow
-	for _, c := range cuts() {
-		rows = append(rows, cutShortRowsBy(pushCommand(), c)...)
-	}
-
-	return rows
-}
+// pushCutShortRows are the pushes whose wait an interrupt ended inside a read or a poll. The time
+// limit's cuts of the same reads are the bounded pushes' rows, which also name the limit they ran
+// under.
+func pushCutShortRows() []pushRow { return cutShortRowsBy(pushCommand(), byInterrupt()) }
 
 // appPassing is a verdict whose one check, of an app, passed: no workflow run stands behind it.
 func appPassing() forge.Verdict {
@@ -459,7 +454,6 @@ func boundChangeRows(cmd landingCommand) []pushRow {
 	}
 }
 
-// byPush returns rows with the name of the push cmd put before each row's name.
 func byPush(cmd landingCommand, rows []pushRow) []pushRow {
 	named := make([]pushRow, 0, len(rows))
 	for _, row := range rows {

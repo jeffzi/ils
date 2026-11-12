@@ -369,52 +369,6 @@ func (w *walker) script(script string, inv Invocation, sc *scope) {
 	sc.vars = after.vars
 }
 
-// runScope returns the scope a string the invocation inv has run starts in, run from sc: the
-// environment inv runs with, and its own redirects in effect after those of the shell. For a string
-// a shell of its own runs, the variables the guard follows are none, apart from whether the guard
-// may read any of them (unread); script replaces them for eval.
-func (sc *scope) runScope(inv Invocation) scope {
-	inner := *sc
-	inner.env = sc.commandEnv(inv)
-	inner.vars = shellVars{unread: sc.vars.unread}
-	inner.redirects = slices.Concat(sc.redirects, inv.Redirects)
-
-	return inner
-}
-
-// commandVariables are the editor variables whose value git runs as a shell command: its own, and
-// the EDITOR and VISUAL it falls back to when neither its variable nor its config is set. The pager
-// variables are left out: like `core.pager`, they are data.
-func commandVariables() []string {
-	return []string{"GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "EDITOR", "VISUAL"}
-}
-
-// variableScripts returns the value of each of assignments that sets one of commandVariables, and
-// marks inv instead when one is not a literal or would nest past maxDepth.
-func (w *walker) variableScripts(inv *Invocation, assignments []Assignment) []string {
-	var values []Word
-	for _, a := range assignments {
-		if slices.Contains(commandVariables(), a.Name) {
-			values = append(values, a.Value)
-		}
-	}
-
-	return runnableScripts(inv, w.depth, values)
-}
-
-// variableCommands walks scripts, the shell commands a variable git reads holds, one level deeper
-// from sc.
-func (w *walker) variableCommands(scripts []string, sc scope) {
-	for _, script := range scripts {
-		inner := sc
-		if _, err := w.walkString(script, &inner); err != nil {
-			w.err = fmt.Errorf("parse the string a git variable holds: %w", err)
-
-			return
-		}
-	}
-}
-
 // nested walks the commands of file, a string run one level deeper, from sc.
 func (w *walker) nested(file *syntax.File, sc *scope) {
 	sc.env.forgetCDPath(file)

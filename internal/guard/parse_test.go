@@ -5,14 +5,14 @@ package guard_test
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
+	"github.com/jeffzi/ils/internal/git"
+	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/guard"
 )
 
@@ -100,22 +100,6 @@ func checkMarkKind(t *testing.T, tests []markedCommand) {
 	}
 }
 
-// gitRun returns the one invocation of command that runs git, read by a caller in start whose
-// HOME is home.
-func gitRun(t *testing.T, command string) guard.Invocation {
-	t.Helper()
-
-	var runs []guard.Invocation
-	for _, inv := range parse(t, command) {
-		if inv.Tool == guard.Git {
-			runs = append(runs, inv)
-		}
-	}
-	assert.Assert(t, is.Len(runs, 1), "Parse(%q) runs git %d times, want once", command, len(runs))
-
-	return runs[0]
-}
-
 // last returns the last invocation of command, read by a caller in start whose HOME is home.
 func last(t *testing.T, command string) guard.Invocation {
 	t.Helper()
@@ -166,14 +150,6 @@ func wholes(invocations []guard.Invocation) []bool {
 	}
 
 	return got
-}
-
-// writeExecutable writes an executable file at path, creating its directory.
-func writeExecutable(t *testing.T, path string) {
-	t.Helper()
-
-	assert.NilError(t, os.MkdirAll(filepath.Dir(path), 0o750))
-	assert.NilError(t, os.WriteFile(path, []byte("#!/bin/sh\n"), 0o700)) //nolint:gosec // the test needs an executable file
 }
 
 func TestParse_WhenTheParserCannotReadTheCommand_ReturnsAParseError(t *testing.T) {
@@ -290,7 +266,6 @@ func TestParse_WhenALetClauseRuns_ReportsALetInvocation(t *testing.T) {
 	assert.Assert(t, is.Len(got, 2), "Parse(%q) = %v", command, texts(got))
 	assert.Assert(t, len(got[0].Words) > 0, "Parse(%q) let invocation has no words", command)
 	assert.Check(t, is.DeepEqual(got[0].Words[0], guard.Word{Text: "let", Literal: true}), "Parse(%q) let word", command)
-	assert.Check(t, is.DeepEqual(texts(got[1:]), [][]string{{"git", "push"}}), "Parse(%q)", command)
 }
 
 func TestParse_WhenTheCommandWordIsASubstitution_MarksADynamicCommand(t *testing.T) {
@@ -437,16 +412,6 @@ func TestJudge_AllowsACommandThatDefinesAnAlias(t *testing.T) {
 	})
 }
 
-func TestJudge_WhenAllexportIsOnAroundASource_AllowsGitStatus(t *testing.T) {
-	t.Parallel()
-
-	_, caller := standingOn(t, "main", "topic")
-
-	checkAllowed(t, caller, []namedCommand{
-		{name: "set -a around a source", command: "set -a; . ./.env; set +a; git status"},
-	})
-}
-
 func TestParse_WhenAllexportIsOn_MarksNoGitVariableABuiltinAssigns(t *testing.T) {
 	t.Parallel()
 
@@ -466,4 +431,119 @@ func TestParse_WhenAllexportIsOn_MarksNoGitVariableABuiltinAssigns(t *testing.T)
 			assert.Check(t, is.Len(marksOf(got), 0), "Parse(%q) marks", tt.command)
 		})
 	}
+}
+
+// callerOutsideAnyRepository returns a caller working in an empty directory that is no repository.
+func callerOutsideAnyRepository(t *testing.T) guard.Caller {
+	t.Helper()
+
+	return guard.Caller{Home: home, Dir: outsideDir(t)}
+}
+
+// standingOn returns a new repository whose trunk is trunk, with HEAD on branch, and a caller
+// working in it.
+func standingOn(t *testing.T, trunk, branch string) (*gittest.Fixture, guard.Caller) {
+	t.Helper()
+
+	f := gittest.New(t, trunk)
+	if branch != trunk {
+		f.Commits(branch)
+	}
+
+	return f, callerIn(f, f.Dir())
+}
+
+func callerIn(f *gittest.Fixture, dir string) guard.Caller {
+	return callerWithEnv(dir, f.Env())
+}
+
+// recordingCaller returns a caller working in dir whose git runs with the environment of f, and
+// the recorder that holds the git calls it makes.
+func recordingCaller(f *gittest.Fixture, dir string) (guard.Caller, *git.Recorder) {
+	recorder := &git.Recorder{}
+	caller := callerIn(f, dir)
+	caller.Git.Recorder = recorder
+
+	return caller, recorder
+}
+
+func callerWithEnv(dir string, env []string) guard.Caller {
+	return guard.Caller{Home: home, Dir: dir, Git: git.Runner{Env: env}}
+}
+
+// callerFailingOn returns a caller working in dir whose git runs with the environment of f and
+// fails on the given subcommands. The fake git sets PATH for the whole process, so the test is not
+// parallel.
+func callerFailingOn(t *testing.T, f *gittest.Fixture, dir string, subcommands ...string) guard.Caller {
+	t.Helper()
+
+	return callerWithEnv(dir, append(f.Env(), gittest.FakeGit(t, gittest.Fake{FailOn: subcommands})...))
+}
+
+func TestParse_MarksAGitVariableOffTheAllowList(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+		want    string
+	}{
+		{name: "assignment prefix", command: "GIT_CONFIG_COUNT=1 git status", want: "GIT_CONFIG_COUNT"},
+		{name: "export of an assignment", command: "export GIT_CONFIG_GLOBAL=/tmp/c", want: "GIT_CONFIG_GLOBAL"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := parse(t, tt.command)
+
+			assert.Assert(t, len(got) > 0, "Parse(%q) = %v", tt.command, texts(got))
+			want := []guard.Mark{{Kind: guard.GitVariable, Name: tt.want}}
+			assert.Check(t, is.DeepEqual(got[0].Marks, want), "Parse(%q) marks", tt.command)
+		})
+	}
+}
+
+func TestParse_WhenAVariableIsNoUnlistedGitVariable_MarksNothing(t *testing.T) {
+	t.Parallel()
+
+	const command = "GIT_PAGER=cat git log"
+
+	got := parse(t, command)
+
+	assert.Assert(t, len(got) > 0, "Parse(%q) = %v", command, texts(got))
+	for _, inv := range got {
+		assert.Check(t, is.Len(inv.Marks, 0), "Parse(%q) marks of %v", command, inv.Words)
+	}
+}
+
+func TestParse_WhenAGitVariableNamesACommandGitRuns_ParsesItsCommands(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+		want    []string
+	}{
+		{name: "sequence editor as an assignment prefix", command: "GIT_SEQUENCE_EDITOR='git push origin main; true' git rebase -i HEAD~1", want: []string{"git", "push", "origin", "main"}},
+		{name: "editor exported earlier in the list", command: "export GIT_EDITOR='git push origin main'; git commit", want: []string{"git", "push", "origin", "main"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := parse(t, tt.command)
+
+			assert.Check(t, is.Contains(texts(got), tt.want), "Parse(%q)", tt.command)
+		})
+	}
+}
+
+func TestParse_WhenACommandAGitVariableNamesCannotBeRead_MarksIt(t *testing.T) {
+	t.Parallel()
+
+	checkMarkKind(t, []markedCommand{
+		{name: "non-literal editor", command: `GIT_EDITOR="$e" git commit`, want: guard.DynamicScript},
+		{name: "editor past the third level", command: "eval eval eval GIT_EDITOR=vim git commit", index: 3, want: guard.DeepScript},
+	})
 }

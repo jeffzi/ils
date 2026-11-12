@@ -245,24 +245,29 @@ func AwaitVerdict(ctx context.Context, deps Deps, pushed Pushed) (Waited, error)
 
 	waited, stage, err := w.run(ctx)
 	if err == nil || waited.endPending(stage, err) {
-		w.logEnd(ctx, waited)
+		deps.logEnd(ctx, waited)
 
 		return waited, nil
 	}
 
-	deps.logWait(ctx, slog.String("ended", "failed"), slog.String("stage", string(stage)))
+	deps.logFailed(ctx, stage)
 
 	return Waited{}, &WaitError{Stage: stage, Err: err}
 }
 
-// logEnd logs how the wait ended: its outcome, and the stage a pending wait ended in.
-func (w waiter) logEnd(ctx context.Context, waited Waited) {
+// logEnd logs how a wait ended: its outcome, and the stage a pending wait ended in.
+func (d Deps) logEnd(ctx context.Context, waited Waited) {
 	attrs := []slog.Attr{slog.String("ended", string(waited.Outcome))}
 	if waited.Outcome == WaitPending {
 		attrs = append(attrs, slog.String("stage", string(waited.Stage)))
 	}
 
-	w.deps.logWait(ctx, attrs...)
+	d.logWait(ctx, attrs...)
+}
+
+// logFailed logs a wait that a read failed at stage ended.
+func (d Deps) logFailed(ctx context.Context, stage WaitStage) {
+	d.logWait(ctx, slog.String("ended", "failed"), slog.String("stage", string(stage)))
 }
 
 func (w waiter) startChecks() {
@@ -293,13 +298,13 @@ func (w waiter) logState(ctx context.Context, head forge.Head, window time.Durat
 // the verdict's state. It tells the progress hook the count, out of a total that also holds the
 // required checks that have not reported yet, so that a wait for one of them never shows every
 // check done.
-func (w waiter) logChecks(ctx context.Context, verdict forge.Verdict) {
+func (d Deps) logChecks(ctx context.Context, verdict forge.Verdict) {
 	deciding, pending := len(verdict.Deciding()), len(verdict.Pending())
 
 	done := deciding - pending
 
-	w.deps.counted(done, deciding+len(verdict.MissingRequired))
-	w.deps.logWait(ctx, slog.String("read", "checks"), slog.Int("done", done),
+	d.counted(done, deciding+len(verdict.MissingRequired))
+	d.logWait(ctx, slog.String("read", "checks"), slog.Int("done", done),
 		slog.Int("pending", pending), slog.String("verdict", string(verdict.State())))
 }
 
@@ -534,10 +539,36 @@ func (w waiter) unknownOnPushed(head forge.Head) bool {
 }
 
 // concluded polls the verdict until the checks conclude and returns the last verdict it read
-// with how they concluded. It sets waited.Since to when the wait began once the first verdict
-// read has completed, so that Since stays the zero time when no verdict was read.
+// with how they concluded, as awaitConcluded does. A read after the first keeps headReadReserve
+// for the read of the head that follows the checks, and so does each poll.
 func (w waiter) concluded(ctx context.Context, waited *Waited) (forge.Verdict, WaitOutcome, error) {
 	query := forge.VerdictQuery{SHA: w.pushed.SHA, Number: w.pushed.Number, Required: w.pushed.Required}
+	read := func(ctx context.Context, later bool) (forge.Verdict, error) {
+		return w.readVerdict(ctx, query, later)
+	}
+
+	return w.deps.awaitConcluded(ctx, waited, checkPoll{read: read, poll: pollVerdict, required: w.pushed.Required})
+}
+
+// checkPoll is how a wait for the checks of a commit reads them and waits between two reads.
+type checkPoll struct {
+	// read reads the checks; later is true for every read after the first.
+	read func(ctx context.Context, later bool) (forge.Verdict, error)
+	poll func(context.Context) error
+	// required names the checks that decide; when empty, every check decides.
+	required []string
+}
+
+// awaitConcluded reads the checks with p.read, then waits with p.poll and reads them again, until
+// they conclude as judge says with p.required deciding, and returns the last verdict read with how it
+// concluded. A failed check stays failed whatever runs start later; any other conclusion waits
+// while runsMayStillAppear. It sets waited.Since to when the wait began once the first read has
+// completed, so that Since stays the zero time when no verdict was read, and logs each read as
+// logChecks does.
+//
+// A read or a poll that fails ends the wait with its error, as cutShort leaves it: a red verdict
+// that the deadline or an interrupt cut short stays WaitRed with no error.
+func (d Deps) awaitConcluded(ctx context.Context, waited *Waited, p checkPoll) (forge.Verdict, WaitOutcome, error) {
 	began := time.Now()
 
 	var (
@@ -547,7 +578,7 @@ func (w waiter) concluded(ctx context.Context, waited *Waited) (forge.Verdict, W
 	)
 
 	for {
-		verdict, err := w.readVerdict(ctx, query, !waited.Since.IsZero())
+		verdict, err := p.read(ctx, !waited.Since.IsZero())
 		if err != nil {
 			outcome, err = cutShort(outcome, err)
 
@@ -556,10 +587,9 @@ func (w waiter) concluded(ctx context.Context, waited *Waited) (forge.Verdict, W
 
 		last = verdict
 		waited.Since = began
-		w.logChecks(ctx, verdict)
+		d.logChecks(ctx, verdict)
 
-		outcome, done = judge(verdict, w.pushed.Required)
-		// A failed check stays failed whatever runs start later.
+		outcome, done = judge(verdict, p.required)
 		if done && outcome != WaitRed && runsMayStillAppear(verdict, began) {
 			done = false
 		}
@@ -568,7 +598,7 @@ func (w waiter) concluded(ctx context.Context, waited *Waited) (forge.Verdict, W
 			return last, outcome, nil
 		}
 
-		if err = pollVerdict(ctx); err != nil {
+		if err = p.poll(ctx); err != nil {
 			outcome, err = cutShort(outcome, err)
 
 			return last, outcome, err

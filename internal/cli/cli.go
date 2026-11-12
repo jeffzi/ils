@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"runtime/debug"
@@ -38,6 +39,11 @@ type App struct {
 	// Environ is the process environment, read for the color profile of each stream: NO_COLOR,
 	// CLICOLOR_FORCE and TERM among others.
 	Environ []string
+	// Skills holds the skills `ils init` installs, one directory per skill at its root.
+	Skills fs.FS
+	// guardRuns says whether `ils init` acts as on a system where the guard runs, and so adds its
+	// hook; nil acts as on the system ils was built for.
+	guardRuns *bool
 	// runPush runs `ils push`; nil runs landing.Push.
 	runPush Command
 	// runMerge runs `ils merge`; nil runs landing.Merge.
@@ -96,6 +102,7 @@ func (a App) Run(ctx context.Context, args []string) int {
 		signals: signals,
 	}
 	p.outProfile = a.profile(a.StdoutTerminal, p.noColor)
+	p.errProfile = a.profile(a.StderrTerminal, p.noColor)
 
 	root := p.root()
 	// Cobra reads the words of the process itself when it is given none.
@@ -299,8 +306,8 @@ type parse struct {
 	// wait is the --wait flag of push, merge and release, the commands that register it and so the
 	// ones that may run under the long wait.
 	wait strictBool
-	// outProfile is the color profile of Stdout, read once per run.
-	outProfile colorprofile.Profile
+	// outProfile and errProfile are the color profiles of Stdout and Stderr, read once per run.
+	outProfile, errProfile colorprofile.Profile
 	// encoded is whether the words typed select the JSON renderer, and noColor whether they turn
 	// color off.
 	encoded, noColor bool
@@ -333,6 +340,12 @@ func (p *parse) refuseWith(reason result.Phrase, next result.Next) error {
 	return &refusedError{result: *req.Refused(reason, next)}
 }
 
+// refuseFor refuses the words given for reason, with the help of the command word as the next
+// step.
+func (p *parse) refuseFor(word string, reason result.Phrase) error {
+	return p.refuseWith(reason, result.NextCommand("%s "+flagHelp, word))
+}
+
 func notCommand(word string) result.Phrase {
 	return result.Say("%s is not a command", word)
 }
@@ -346,10 +359,7 @@ func (p *parse) notRootCommand(root *cobra.Command, word string) error {
 		return p.refuse(notCommand(word))
 	}
 
-	return p.refuseWith(
-		result.Say("%s is not a command; did you mean %s?", word, suggested[0]),
-		result.NextCommand("%s "+flagHelp, suggested[0]),
-	)
+	return p.refuseFor(suggested[0], result.Say("%s is not a command; did you mean %s?", word, suggested[0]))
 }
 
 // firstWord returns the first word c was given: a leading `--` first, then the first word typed.
@@ -453,6 +463,7 @@ func (p *parse) root() *cobra.Command {
 		p.parseCommand(),
 		p.guardCommand(),
 		p.hookCommand(),
+		p.initCommand(),
 	)
 	p.judgeHelpWords(root)
 	addHelpFlags(root)
@@ -505,7 +516,6 @@ func (p *parse) judgeHelpWords(root *cobra.Command) {
 	}
 }
 
-// printHelp prints the help of c.
 func printHelp(c *cobra.Command) error {
 	if err := c.Help(); err != nil {
 		return fmt.Errorf("print the help of %s: %w", c.CommandPath(), err)
@@ -582,7 +592,6 @@ type landingHelp struct {
 	word, arg, short, long, examples string
 }
 
-// orDefault returns run, or fallback when run is nil.
 func orDefault(run, fallback Command) Command {
 	if run == nil {
 		return fallback
@@ -730,7 +739,6 @@ func (p *parse) release() *cobra.Command {
 	return c
 }
 
-// loggedGit returns the git of the app, sending each call it runs to logger.
 func (p *parse) loggedGit(logger *slog.Logger) git.Runner {
 	runner := p.app.git
 	runner.Logger = logger
@@ -744,41 +752,31 @@ func (p *parse) fromLaunch(ctx context.Context, limit time.Duration) (context.Co
 	return context.WithDeadline(ctx, p.app.Launch.Add(limit))
 }
 
+// underTimeLimit returns ctx with the deadline of a command from launch, which counts the time
+// limit from the launch of the app.
+func (p *parse) underTimeLimit(ctx context.Context) (context.Context, context.CancelFunc) {
+	return p.fromLaunch(ctx, landing.TimeLimit)
+}
+
 // land runs the landing command run for req against the repository ils runs in and its GitHub
-// origin, until req's time limit from launch, and keeps its result, the repository's git dir and
-// the step lines it printed. With debug on, the trace gets every git and gh call, the read of the
-// git dir included, and every decision of the wait. The display is told how the command advances,
-// and is gone from the terminal by the time land returns, or by the time an interrupt, a
-// termination or a quit ends the process, or the stop signal of a terminal stops it.
+// origin, under the display, until req's time limit from launch. With debug on, the trace gets
+// every git and gh call, the read of the git dir included, and every decision of the wait.
 func (p *parse) land(ctx context.Context, run Command, req landing.Request) {
 	ctx, cancel := p.fromLaunch(ctx, req.Limit())
 	defer cancel()
 
-	errProfile := p.app.profile(p.app.StderrTerminal, p.noColor)
-	logger := p.logger(errProfile)
+	logger := p.logger()
 	repo := git.Repo{Runner: p.loggedGit(logger)}
 
 	// Outside a repository there is no git dir for a line to name, and whatever else stops
 	// this read stops the command's own first read too, whose result says so.
 	gitDir, _ := repo.GitDir(ctx)
 
-	shown := p.display(errProfile)
-	deps := landing.Deps{Forge: &github.Forge{Logger: logger}, Repo: repo, Logger: logger, Progress: shown}
-
-	p.app.onStop(shown)
-
-	r := func() result.Result {
-		// The display is handed to the listener before it starts and taken back only after end has
-		// cleared its line, so that no signal in between ends ils with the cursor hidden.
-		defer p.signals.during(shown.drop)()
-
-		shown.start(ctx, gitDir)
-		defer shown.end()
+	p.displayed(ctx, gitDir, func(shown *display) result.Result {
+		deps := landing.Deps{Forge: &github.Forge{Logger: logger}, Repo: repo, Logger: logger, Progress: shown}
 
 		return run(ctx, deps, req)
-	}()
-
-	p.result, p.gitDir, p.printed = &r, gitDir, shown.printed
+	})
 }
 
 // unprinted returns lines without the ones already printed: each text in printed takes out the

@@ -8,6 +8,7 @@ import (
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
+	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/guard"
 )
 
@@ -84,16 +85,6 @@ func TestParse_WhenAnInvocationMayMoveHeadThroughGitsAliases_ReportsHeadUnknownA
 	})
 }
 
-func TestJudge_WhenACommandWritesFilesWithoutGit_AllowsACommitAfterIt(t *testing.T) {
-	t.Parallel()
-
-	_, caller := standingOn(t, "main", "topic")
-
-	checkAllowed(t, caller, []namedCommand{
-		{name: "redirect to a target that is not a literal", command: `go test ./... > "$LOG"; git commit -m x`},
-	})
-}
-
 func TestJudge_WhenABackgroundJobSwitchesBranch_AllowsACommitAfterIt(t *testing.T) {
 	t.Parallel()
 
@@ -140,7 +131,7 @@ func TestJudge_WhenHeadMovesWhereTheGuardCannotFollowIt_RefusesALaterCommit(t *t
 		{name: "switch -c naming a non-literal", command: `git switch -c "$b" && ` + commitCommand},
 		{name: "switch to the previous branch", command: "git switch - && " + commitCommand},
 		{name: "switch to a branch the reflog names", command: "git switch @{-1} && " + commitCommand},
-		{name: "switch in another git dir", command: "git -C " + quotedPath(other.Dir()) + " switch -c topic && " + commitCommand},
+		{name: "switch in another git dir", command: "git -C " + gittest.ShellWord(other.Dir()) + " switch -c topic && " + commitCommand},
 		{name: "switch inside a function body", command: "f() { git switch topic && :; } && " + commitCommand},
 		{name: "switch inside a subshell", command: "(git switch topic && :) && " + commitCommand},
 		{name: "switch inside a loop", command: "for x in a; do git switch topic && :; done && " + commitCommand},

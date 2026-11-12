@@ -155,9 +155,9 @@ func (sc *scope) declare(decl *syntax.DeclClause, ex expander) {
 
 	for _, a := range decl.Args {
 		if a.Name == nil {
-			name, assigns := unsplitName(a, ex)
+			name, mayAssign := unsplitName(a, ex)
 			switch {
-			case !assigns:
+			case !mayAssign:
 			case name == "":
 				sc.env = unknownEnvironment()
 				sc.vars = sc.vars.forgetAll()
@@ -183,7 +183,7 @@ func (sc *scope) declare(decl *syntax.DeclClause, ex expander) {
 // unsplitName returns the variable the argument a of a declaration builtin names when the parser
 // did not split it into a name and a value, as in `export "NAME=value"` or `export "$v=value"`, and
 // reports whether a may assign one. The name is empty when the guard cannot read it.
-func unsplitName(a *syntax.Assign, ex expander) (name string, assigns bool) {
+func unsplitName(a *syntax.Assign, ex expander) (name string, mayAssign bool) {
 	if a.Name != nil || a.Value == nil {
 		return "", false
 	}
@@ -198,17 +198,4 @@ func unsplitName(a *syntax.Assign, ex expander) (name string, assigns bool) {
 	default:
 		return "", true
 	}
-}
-
-// declared returns the assignments the declaration decl, whose values ex reads, makes: each
-// `NAME=value` among its arguments.
-func declared(decl *syntax.DeclClause, ex expander) []Assignment {
-	var assignments []Assignment
-	for _, a := range decl.Args {
-		if a.Name != nil && !a.Naked {
-			assignments = append(assignments, assignmentOf(a, ex))
-		}
-	}
-
-	return assignments
 }

@@ -1,4 +1,3 @@
-// Package forgetest provides a scripted forge for the tests of packages that talk to one.
 package forgetest
 
 import (

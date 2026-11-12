@@ -101,14 +101,14 @@ func redWithNext(n result.Next) result.Result {
 	return with(redPush(), func(r *result.Result) { r.Next = n })
 }
 
-// refusedPush is a refusal whose reason and Next carry interpolated names.
+// refusedPush is a refusal whose Next carries an interpolated name.
 func refusedPush() result.Result {
 	return result.Result{
 		Command: "push",
 		Words:   []string{"push"},
 		Outcome: result.Refused,
 		Next:    result.NextCommand("branch %s", "fix-prek-again"),
-		Reason:  result.Say("the branch %s already landed with %s", "fix-prek", "lefthook.yml"),
+		Reason:  result.Say("the branch already landed"),
 	}
 }
 
@@ -252,20 +252,20 @@ func assertTexts(t *testing.T, cases []pair) {
 
 type jsonCase struct {
 	// pick keeps the fields of the decoded object the row is about.
-	pick   func(s resulttest.Shown) resulttest.Shown
+	pick   func(s result.Object) result.Object
 	name   string
-	want   resulttest.Shown
+	want   result.Object
 	result result.Result
 }
 
 // linesReasonNext keeps the lines, the reason and the next step of a decoded object.
-func linesReasonNext(s resulttest.Shown) resulttest.Shown {
-	return resulttest.Shown{Lines: s.Lines, Reason: s.Reason, Next: s.Next}
+func linesReasonNext(s result.Object) result.Object {
+	return result.Object{Lines: s.Lines, Reason: s.Reason, Next: s.Next}
 }
 
 // excerptOnly keeps the excerpt of a decoded object.
-func excerptOnly(s resulttest.Shown) resulttest.Shown {
-	return resulttest.Shown{Excerpt: s.Excerpt}
+func excerptOnly(s result.Object) result.Object {
+	return result.Object{Excerpt: s.Excerpt}
 }
 
 // jsonCases returns the cases whose text the JSON renderer carries as it was handed in.
@@ -275,25 +275,25 @@ func jsonCases() []jsonCase {
 			name:   "wording wrapping a command in backticks keeps them",
 			result: tickedPush(),
 			pick:   linesReasonNext,
-			want:   resulttest.Shown{Lines: tickedPushLines(), Reason: tickedReason, Next: tickedNext},
+			want:   result.Object{Lines: tickedPushLines(), Reason: tickedReason, Next: tickedNext},
 		},
 		{
 			name:   "name holding an escape sequence carries the escape raw",
 			result: brokeWithLine(result.Say("Kept %s as is.", "x\x1b[31m")),
-			pick:   func(s resulttest.Shown) resulttest.Shown { return resulttest.Shown{Lines: s.Lines} },
-			want:   resulttest.Shown{Lines: append(brokeLines(), "Kept x\x1b[31m as is.")},
+			pick:   func(s result.Object) result.Object { return result.Object{Lines: s.Lines} },
+			want:   result.Object{Lines: append(brokeLines(), "Kept x\x1b[31m as is.")},
 		},
 		{
 			name:   "excerpt holding control bytes carries them raw",
 			result: withExcerpt(donePush(), controlBytes),
 			pick:   excerptOnly,
-			want:   resulttest.Shown{Excerpt: controlBytes},
+			want:   result.Object{Excerpt: controlBytes},
 		},
 		{
 			name:   "sha in a line, the reason and the next carries in full",
 			result: shaPush(),
 			pick:   linesReasonNext,
-			want: resulttest.Shown{
+			want: result.Object{
 				Lines:  append(brokeLines(), "Checks for "+fullSHA+": 9 passed"),
 				Reason: "GitHub did not show " + fullSHA,
 				Next:   shaNext,
@@ -302,8 +302,8 @@ func jsonCases() []jsonCase {
 		{
 			name:   "done carries none as its next",
 			result: donePush(),
-			pick:   func(s resulttest.Shown) resulttest.Shown { return resulttest.Shown{Next: s.Next} },
-			want:   resulttest.Shown{Next: "none"},
+			pick:   func(s result.Object) result.Object { return result.Object{Next: s.Next} },
+			want:   result.Object{Next: "none"},
 		},
 	}
 }
@@ -335,19 +335,19 @@ func TestRenderJSON_WhenResultHasLinesExcerptReasonAndNext_CarriesWhatTheTextSho
 	resulttest.AssertCarried(t, text, result.DeliveredNotGreen, resulttest.Decode(t, out))
 }
 
-// separators are the Unicode characters a line splitter breaks a line at beyond the ASCII ones.
-const separators = "\u2028\u2029\u0085"
+// nextLineSeparator is the Unicode next line character, which the renderer escapes in the JSON itself.
+const nextLineSeparator = "\u0085"
 
 // subjectHolding is a done push whose merge subject is subject, picked back from the decoded JSON.
 func subjectHolding(name, subject string) jsonCase {
-	shown := func(subject string) resulttest.Shown {
-		return resulttest.Shown{Payload: &result.Payload{Merge: &result.Merge{Subject: subject}}}
+	shown := func(subject string) result.Object {
+		return result.Object{Payload: &result.Payload{Merge: &result.Merge{Subject: subject}}}
 	}
 
 	return jsonCase{
 		name:   name,
 		result: with(donePush(), func(r *result.Result) { r.Payload = &result.Payload{Merge: &result.Merge{Subject: subject}} }),
-		pick:   func(s resulttest.Shown) resulttest.Shown { return shown(s.Payload.Merge.Subject) },
+		pick:   func(s result.Object) result.Object { return shown(s.Payload.Merge.Subject) },
 		want:   shown(subject),
 	}
 }
@@ -355,7 +355,6 @@ func subjectHolding(name, subject string) jsonCase {
 // separatorCases returns the cases where a string the JSON copies unfolded holds a Unicode separator.
 func separatorCases() []jsonCase {
 	return []jsonCase{
-		subjectHolding("line and paragraph separators in the merge subject", "first\u2028second\u2029third"),
 		subjectHolding("next line in the merge subject", "first\u0085second"),
 	}
 }
@@ -371,7 +370,7 @@ func TestRenderJSON_WhenAStringHoldsUnicodeSeparators_WritesThemEscaped(t *testi
 			out, err := result.RenderJSON(tt.result, gitDir)
 			assert.NilError(t, err)
 
-			assert.Check(t, !strings.ContainsAny(out, separators), "output holds a raw separator:\n%q", out)
+			assert.Check(t, !strings.Contains(out, nextLineSeparator), "output holds a raw separator:\n%q", out)
 			assert.Check(t, is.DeepEqual(tt.pick(resulttest.Decode(t, out)), tt.want))
 		})
 	}

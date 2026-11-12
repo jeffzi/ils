@@ -3,17 +3,16 @@
 package guard_test
 
 import (
+	"path/filepath"
 	"testing"
-
-	"gotest.tools/v3/assert"
-	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/guard"
 )
 
-func TestInvocation_Stdout_WhenStdoutGoesToAFile_ReturnsItsTarget(t *testing.T) {
+func TestJudge_WhenGitHistoryGoesToAWorkTreeFileThroughStdout_RefusesNamingTheFile(t *testing.T) {
 	t.Parallel()
 
+	f, caller := standingOn(t, "main", "topic")
 	tests := []struct {
 		name    string
 		command string
@@ -27,46 +26,27 @@ func TestInvocation_Stdout_WhenStdoutGoesToAFile_ReturnsItsTarget(t *testing.T) 
 		{name: "stdout onto stderr after stderr goes to a file", command: "git show HEAD:f 2> f >&2"},
 		{name: "group inside a redirected subshell", command: "({ git show HEAD:f; }) > f"},
 	}
+	rows := make([]judged, 0, len(tests))
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			inv := gitRun(t, tt.command)
-
-			got, ok := inv.Stdout()
-
-			assert.Assert(t, ok, "Parse(%q) reports stdout not redirected", tt.command)
-			assert.Check(t, is.DeepEqual(got, guard.Word{Text: "f", Literal: true}), "Parse(%q) stdout", tt.command)
-		})
+		rows = append(rows, judged{name: tt.name, command: tt.command, want: guard.Refuse, wantNamed: filepath.Join(f.Dir(), "f")})
 	}
+
+	checkJudged(t, caller, rows)
 }
 
-func TestInvocation_Stdout_WhenStdoutIsNotRedirectedToAFile_ReportsNone(t *testing.T) {
+func TestJudge_WhenGitHistoryReachesNoFileThroughStdout_AllowsIt(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		command string
-	}{
-		{name: "no redirect", command: "git show HEAD:f"},
+	_, caller := standingOn(t, "main", "topic")
+
+	checkAllowed(t, caller, []namedCommand{
 		{name: "stderr only", command: "git show HEAD:f 2> err"},
 		{name: "input only", command: "git show HEAD:f < in"},
 		{name: "stdout duplicated onto stderr", command: "git show HEAD:f >&2"},
 		{name: "read-write on standard input", command: "git show HEAD:f <> f"},
 		{name: "stdout onto stderr before stderr goes to a file", command: "git show HEAD:f >&2 2> f"},
 		{name: "stdout onto stderr inside a redirected group", command: "{ git show HEAD:f >&2; } > f"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			inv := gitRun(t, tt.command)
-
-			got, ok := inv.Stdout()
-
-			assert.Check(t, !ok, "Parse(%q) stdout = %+v, want none", tt.command, got)
-		})
-	}
+	})
 }
 
 func TestJudge_WhenAnExecWithNoCommandRedirects_AllowsGitHistoryShownAfterIt(t *testing.T) {

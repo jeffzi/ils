@@ -191,42 +191,30 @@ construct whose only use is to hide a command is one more:
 [rule 3](#3-close-a-bypass-only-when-agents-write-it) gives examples and the test that tells it from
 an everyday spelling.
 
-These classes fail that test, so the guard lets them through:
+These classes fail that test, so the guard lets them through.
+[What the guard does not see](reference.md#what-the-guard-does-not-see) lists the commands,
+options, and keys each one covers.
 
-- **A shell reading a script the command does not hold:** `curl … | bash`, `bash < x.sh`,
-  `bash <(…)`, `bash -s`, or `source <(…)`, as the command itself. Agents pipe an install script
-  for what it installs, and that script holds no git operation. Writing a guarded command into a
-  script only to pipe it to a shell only hides it. Behind a command the guard does not know
-  (`timeout 60 bash <(…)`), such a shell is still refused as a shell word handed over.
-- **HEAD moved where the guard does not follow it:** a write to `.git/HEAD` by a command other
-  than git, or a `git switch` in a background job or a pipe stage, which runs beside the rest of
-  the command. Agents switch branches with git, as a command of its own. Writing the HEAD file by
-  hand, or racing a switch against a commit, only hides where the commit lands.
-- **An option, variable, or config key that runs a program:** `core.pager`, `GIT_PAGER`, `PAGER`,
-  `core.sshCommand`, `credential.helper`, the command keys of diff, merge, and tool drivers,
-  `difftool -x`, and `go test -exec`. Agents set these to run a pager, an SSH key, or a test
-  runner. Reaching a push through one only hides the push. The editors are the exception: the
-  guard reads them where the command sets them, as [rule 2](#2-refuse-every-direct-operation)
-  asks. They are `core.editor` and `sequence.editor` given by `-c` or `--config-env`,
-  `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`, and the `EDITOR` and `VISUAL` `git` falls back to.
-- **Config the guard does not read written by `git config`:** an editor or any other key that
-  runs a program (`git config core.editor vim`), and an `include.path` or `includeIf.*.path` whose
-  file can set any key, `core.hooksPath` included. Agents set their editor and split their config
+- **A shell reading a script the command does not hold**, such as `curl … | bash`. Agents pipe an
+  install script for what it installs, and that script holds no git operation. Writing a guarded
+  command into a script only to pipe it to a shell only hides it.
+- **HEAD moved where the guard does not follow it**, by a write to `.git/HEAD` or a `git switch`
+  in a background job or a pipe stage. Agents switch branches with git, as a command of its own.
+  Writing the HEAD file by hand, or racing a switch against a commit, only hides where the commit
+  lands.
+- **An option, variable, or config key that runs a program**, such as `core.pager`. Agents set
+  these to run a pager, an SSH key, or a test runner. Reaching a push through one only hides the
+  push. The editors are the exception: the guard reads them where the command sets them, as
+  [rule 2](#2-refuse-every-direct-operation) asks.
+- **Config the guard does not read written by `git config`**: an editor or any other key that
+  runs a program, and an included config file. Agents set their editor and split their config
   into included files. A later command runs what that config names from a file, which the guard
-  never reads; writing a guarded command or a hooks path there only hides it. `git config` of
-  `core.hooksPath`, `remote.*`, and `url.*` themselves stays refused.
-- **Aliases and shadowing functions defined in the command:** `alias g=git` and a `cd()` that
-  wraps `builtin cd`. Agents define them for convenience. A non-interactive bash expands no alias,
-  and the guard still judges each command of a function body. Using either to reach a guarded
-  operation only hides it.
-- **Exports through `set -a`:** `set -a; read -r GIT_DIR` exports a variable the guard never sees
-  assigned. Agents write `export GIT_DIR=…`, which the guard reads, and use `set -a` to load a
-  `.env` file of their own settings.
-- **A glob that runs code:** a zsh qualifier such as `*(e:'git push':)` or `*(+f)`, or a command
-  substitution inside the parentheses of an extended glob. Agents write `*(N)` or `@(a|b)` to
-  match files, and those run nothing. Putting a command inside a glob only hides it. A command word
-  written as a glob (`@(git) push`) stays refused.
-- **A redirect an earlier `exec` opens:** `exec > README.md; git show HEAD:README.md` writes
-  history over a tracked file that the history-over-file refusal never sees. Agents run
-  `exec > log` to capture a run's output. Opening a tracked file there first only hides the
-  overwrite. A redirect on `git show` itself stays refused.
+  never reads; writing a guarded command or a hooks path there only hides it.
+- **Aliases and shadowing functions defined in the command**, such as `alias g=git`. Agents define
+  them for convenience. Using either to reach a guarded operation only hides it.
+- **Exports through `set -a`.** Agents write `export GIT_DIR=…`, which the guard reads, and use
+  `set -a` to load a `.env` file of their own settings.
+- **A glob that runs code**, such as a zsh qualifier. Agents write `*(N)` or `@(a|b)` to match
+  files, and those run nothing. Putting a command inside a glob only hides it.
+- **A redirect an earlier `exec` opens.** Agents run `exec > log` to capture a run's output.
+  Opening a tracked file there first only hides the overwrite.

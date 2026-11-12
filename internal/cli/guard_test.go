@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -18,6 +19,7 @@ import (
 	"github.com/spf13/pflag"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
+	"mvdan.cc/sh/v3/shell"
 
 	"github.com/jeffzi/ils/internal/cli"
 	"github.com/jeffzi/ils/internal/git"
@@ -71,13 +73,6 @@ func literals(texts ...string) []result.Word {
 	}
 
 	return words
-}
-
-// outsideWith returns the cli in a directory that is no repository, with git's environment env.
-func outsideWith(t *testing.T, env []string) cli.App {
-	t.Helper()
-
-	return over(git.Runner{Dir: t.TempDir(), Env: env})
 }
 
 // judge returns the verdict of the guard on command in dir, with git's environment env.
@@ -160,14 +155,14 @@ func TestApp_Run_WhenParseRunsAsText_PrintsWhatItCannotPlace(t *testing.T) {
 
 	f := gittest.New(t, trunk)
 	tests := []struct {
-		name    string
-		dir     string
-		command string
-		want    string
+		name     string
+		dir      string
+		command  string
+		want     string
+		alsoWant string
 	}{
 		{name: "directory after a cd that is not literal", dir: f.Dir(), command: `cd "$x"; echo hi`, want: "directory unknown"},
-		{name: "git dir after a cd that is not literal", dir: f.Dir(), command: `cd "$x"; git status`, want: "git dir unknown"},
-		{name: "directory git runs in after a cd that is not literal", dir: f.Dir(), command: `cd "$x"; git status`, want: "git runs in unknown"},
+		{name: "git dir and directory git runs in after a cd that is not literal", dir: f.Dir(), command: `cd "$x"; git status`, want: "git dir unknown", alsoWant: "git runs in unknown"},
 		{name: "directory outside any repository", dir: t.TempDir(), command: "git status", want: "git dir none"},
 	}
 	for _, tt := range tests {
@@ -178,7 +173,11 @@ func TestApp_Run_WhenParseRunsAsText_PrintsWhatItCannotPlace(t *testing.T) {
 
 			assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
 			lines := outputLines(got.stdout)
-			assert.Check(t, is.Contains(lines[len(lines)-1], tt.want), "stdout = %q", got.stdout)
+			last := lines[len(lines)-1]
+			assert.Check(t, is.Contains(last, tt.want), "stdout = %q", got.stdout)
+			if tt.alsoWant != "" {
+				assert.Check(t, is.Contains(last, tt.alsoWant), "stdout = %q", got.stdout)
+			}
 		})
 	}
 }
@@ -252,6 +251,20 @@ func TestApp_Run_WhenParseCannotReadTheCommand_ExitsOneWithTheReason(t *testing.
 	assert.Check(t, is.Equal(got.code, exitBroke), "stdout = %q", got.stdout)
 	printed := resulttest.Decode(t, got.stdout)
 	assert.Check(t, is.Contains(printed.Reason, failure.Error()))
+}
+
+func TestApp_Run_WhenParseCannotReadTheCommand_NextNamesTheTypedCommandQuotedForTheShell(t *testing.T) {
+	f := gittest.New(t, trunk)
+	t.Chdir(f.Dir())
+
+	got := launch(t, outsideWith(t, f.Env()), "parse", "--cwd", ".", "--json", "--", `echo "x`)
+
+	words, err := shell.Fields(resulttest.Decode(t, got.stdout).Next, func(string) string { return "" })
+	assert.NilError(t, err)
+	want := []string{"ils", "parse", "--cwd", ".", "--", `echo "x`}
+	start := slices.Index(words, "ils")
+	assert.Assert(t, start >= 0 && len(words)-start >= len(want), "next words = %q", words)
+	assert.Check(t, is.DeepEqual(words[start:start+len(want)], want))
 }
 
 func TestApp_Run_WhenParseIsNotGivenADirectoryAndOneCommandWord_Refuses(t *testing.T) {
@@ -485,7 +498,7 @@ func TestApp_Run_WhenHookClaudeCannotReadThePayload_ExitsTwoSayingWhatBroke(t *t
 		name  string
 		want  string
 	}{
-		{name: "payload naming the tool twice", stdin: strings.NewReader(`{"tool_name":"Read","tool_name":"Bash"}`), want: "is not the JSON of a PreToolUse call"},
+		{name: "payload that is not JSON", stdin: strings.NewReader(`{"tool_name":`), want: "is not the JSON of a PreToolUse call"},
 		{name: "no tool name", stdin: strings.NewReader(encoded(t, toolUse{Input: map[string]string{"command": "echo hi"}, Cwd: dir})), want: "no tool_name"},
 		{name: "stdin that cannot be read", stdin: iotest.ErrReader(errReaderGone), want: errReaderGone.Error()},
 		{name: "command that is not a string", stdin: strings.NewReader(fmt.Sprintf(`{"tool_name":"Bash","cwd":%q,"tool_input":{"command":5}}`, dir)), want: "tool_input that is not the JSON of a Bash call"},

@@ -88,11 +88,12 @@ func switchName(args []Word) (name Word, ok bool) {
 	}
 }
 
-// returned returns the invocations Parse returns, each reporting whether an invocation walked
-// before it may move HEAD, and the branch a switch earlier in its `&&` list left HEAD on. It reads
-// each git invocation once its aliases expand, so it runs after resolveGit. The walk order is the
-// order the shell may run them in: the substitutions of a command come before it, and a dry run of
-// a body that may repeat before the body itself.
+// returned returns the invocations parse returns, those walked at a call site (atCall) included,
+// each reporting whether an invocation walked before it may move HEAD, and the branch a switch
+// earlier in its `&&` list left HEAD on. It reads each git invocation once its aliases expand, so
+// it runs after resolveGit. The walk order is the order the shell may run them in: the
+// substitutions of a command come before it, and a dry run of a body that may repeat before the
+// body itself.
 func (w *walker) returned() []Invocation {
 	markHeads(w.walked)
 

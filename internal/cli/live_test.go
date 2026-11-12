@@ -101,7 +101,7 @@ type liveBranch struct {
 type liveRun struct {
 	// raw is the JSON as printed, for failure messages.
 	raw   string
-	shown resulttest.Shown
+	shown result.Object
 	code  int
 }
 

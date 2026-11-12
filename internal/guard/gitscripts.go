@@ -4,15 +4,13 @@ package guard
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"path/filepath"
 	"slices"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
 
-	"github.com/jeffzi/ils/internal/child"
+	"github.com/jeffzi/ils/internal/git"
 )
 
 // resolveGit asks git, for each git invocation the walk placed, which git dir it targets and what
@@ -81,9 +79,9 @@ func (w *walker) gitScripts(ctx context.Context, i int) error {
 
 // topFor returns the top of the work tree of the git invocation inv when one of runs starts there,
 // which git moves to before it runs a subcommand that needs a work tree. It returns "" when none
-// starts there or the guard cannot tell where the top is: a target it cannot follow, or a call git
-// fails, as it does outside a work tree and in a bare repository. A failure to run git at all is an
-// error.
+// starts there or the guard cannot tell where the top is: a target it cannot follow, or a target
+// git finds no work tree in, as outside a repository and in a bare one. Any other failure of git is
+// an error, as git.Repo.TopLevel returns it.
 func (w *walker) topFor(ctx context.Context, inv Invocation, runs []gitRun) (string, error) {
 	if !slices.ContainsFunc(runs, func(run gitRun) bool { return run.start == startTop }) {
 		return "", nil
@@ -94,16 +92,12 @@ func (w *walker) topFor(ctx context.Context, inv Invocation, runs []gitRun) (str
 		return "", nil
 	}
 
-	result, err := targetRunner(w.caller.Git, inv.Dir, inv.Target).Run(ctx, append(options, "rev-parse", "--show-toplevel")...)
-	if _, failed := errors.AsType[*child.ExitError](err); failed {
-		return "", nil
-	}
-
+	top, _, err := git.Repo{Runner: targetRunner(w.caller.Git, inv.Dir, inv.Target)}.TopLevel(ctx, options...)
 	if err != nil {
 		return "", fmt.Errorf("read the top of the work tree of %q: %w", wordTexts(inv.Words), err)
 	}
 
-	return filepath.FromSlash(strings.TrimSpace(result.Stdout)), nil
+	return top, nil
 }
 
 // shellRuns returns the commands of shellCommandsOf that the guard walks, and marks inv when one of
@@ -284,10 +278,6 @@ func configCommands(inv Invocation) []Word {
 	}
 
 	return scripts
-}
-
-func containsFold(names []string, s string) bool {
-	return slices.ContainsFunc(names, func(name string) bool { return strings.EqualFold(name, s) })
 }
 
 // couldBeXOption reports whether a word that starts with text, the rest unknown, could be `-x` or
@@ -519,4 +509,81 @@ func forEachRepoRun(argv []Word) []gitRun {
 	}
 
 	return []gitRun{{form: "for-each-repo", script: script, start: startElsewhere}}
+}
+
+// valuedOption is an option that takes a value: the short option letter, read in a short-flag
+// bundle ahead of any other of valued, the command's short options that take a value, and the long
+// option long, read as any start of it at least shortest bytes long.
+type valuedOption struct {
+	valued   string
+	long     string
+	shortest int
+	letter   byte
+}
+
+// optionValue is a value of a valuedOption as values reads it from a command's arguments.
+type optionValue struct {
+	// form is the option as written up to its value, such as `-x`, `-ax` or `--ex`.
+	form     string
+	value    Word
+	attached bool
+	// unread marks a word that is not a literal and that the caller could not tell from the
+	// option; value is then the word itself and form is empty.
+	unread bool
+}
+
+// values returns, in order, each value of o among args ahead of the first `--`: the rest of a
+// short-flag bundle or the next word, and after `=` or the next word for the long option. An empty
+// value after `=` is a value, and the next word stays an argument. The word an option takes as its
+// value is never read as an option or as `--`. A word that is not a literal and for which unread
+// holds is returned as unread and not read as an option either.
+func (o valuedOption) values(args []Word, unread func(text string) bool) []optionValue {
+	var found []optionValue
+	for i := 0; i < len(args); i++ {
+		text := args[i].Text
+		if !args[i].Literal && unread(text) {
+			found = append(found, optionValue{value: args[i], unread: true})
+
+			continue
+		}
+
+		var v optionValue
+		switch {
+		case text == "--":
+			return found
+		case strings.HasPrefix(text, "--"):
+			var value string
+			v.form, value, v.attached = strings.Cut(text, "=")
+			if !abbreviates(v.form, o.long, o.shortest) {
+				continue
+			}
+
+			v.value = Word{Text: value, Literal: args[i].Literal}
+		default:
+			var named bool
+			v.value, named, v.attached = shortValue(args[i], o.letter, o.valued)
+			if !named {
+				continue
+			}
+
+			v.form = text[:len(text)-len(v.value.Text)]
+		}
+
+		switch {
+		case v.attached:
+			found = append(found, v)
+		case i+1 < len(args):
+			i++
+			v.value = args[i]
+			found = append(found, v)
+		}
+	}
+
+	return found
+}
+
+// abbreviates reports whether name is long or a start of it at least shortest bytes long, which git
+// reads as long.
+func abbreviates(name, long string, shortest int) bool {
+	return len(name) >= shortest && strings.HasPrefix(long, name)
 }

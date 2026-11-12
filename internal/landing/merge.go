@@ -6,15 +6,14 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/result"
 )
 
-// readLocalTrunk, readWorktrees, readRules, readMessage and readStillOnOrigin name what merge's own
-// checks read as each follows "read" in a result, so each stays a noun phrase.
+// readLocalTrunk, readWorktrees, readRules, readMessage and readStillOnOrigin name what a read
+// covers as each follows "read" in a result, so each stays a noun phrase.
 const (
 	readLocalTrunk    = "the local trunk"
 	readWorktrees     = "where the trunk is checked out"
@@ -22,19 +21,6 @@ const (
 	readMessage       = "the pull request's message"
 	readStillOnOrigin = "whether origin still has the branch"
 )
-
-// mergeReserve is the time the wait leaves before the command's deadline, and the least that must
-// be left at the first write: the merge, the delete on origin, and the local ending run in it, as
-// the writes of `ils release` do, and a write the deadline cuts short leaves the run halfway.
-const mergeReserve = 20 * time.Second
-
-// mayHaveGoneThrough ends a line that says a write was started when a cut came, and may not have
-// been done. It stays untyped so that result.Say accepts wording built on it.
-const mayHaveGoneThrough = "; it may or may not have gone through"
-
-// mayHaveTaken ends a line that says a push was started when a cut came, and may not have taken. It
-// stays untyped so that result.Say accepts wording built on it.
-const mayHaveTaken = "; it may or may not have taken"
 
 // conventionalTitle is a conventional commit subject, `<type>(<scope>)!: <summary>`: a type of
 // lowercase ASCII letters, an optional scope that is not empty and holds no parenthesis or line
@@ -147,7 +133,7 @@ func mergeChecks(ctx context.Context, deps Deps, req Request, ready Ready) (merg
 
 	elsewhere, err := deps.Repo.CheckedOutElsewhere(ctx, ready.Trunk)
 	if err != nil {
-		return mergeReady{}, req.unread(readWorktrees, err)
+		return mergeReady{}, req.Unread(readWorktrees, err)
 	}
 
 	m.elsewhere = elsewhere
@@ -173,7 +159,7 @@ func mergeChecks(ctx context.Context, deps Deps, req Request, ready Ready) (merg
 func localTrunk(ctx context.Context, deps Deps, req Request, trunk string) *result.Result {
 	ahead, past, err := deps.Repo.LocalTrunkAhead(ctx, trunk)
 	if err != nil {
-		return req.unread(readLocalTrunk, err)
+		return req.Unread(readLocalTrunk, err)
 	}
 
 	if !ahead {
@@ -241,7 +227,7 @@ func (m *mergeReady) pullChecks(ctx context.Context, deps Deps, req Request) *re
 
 	protection, err := deps.Forge.TrunkProtection(ctx, m.Repo, m.Trunk)
 	if err != nil {
-		return req.unread(readRules, err)
+		return req.Unread(readRules, err)
 	}
 
 	if !protection.SquashAllowed {
@@ -300,7 +286,7 @@ func (m *mergeReady) atHead(ctx context.Context, deps Deps, req Request) *result
 
 	apart, err := deps.Repo.Divergence(ctx, m.tip, head)
 	if err != nil {
-		return req.unread(readHead, err)
+		return req.Unread(readHead, err)
 	}
 
 	if stop = m.apartFromHead(req, apart); stop != nil {
@@ -369,7 +355,7 @@ func (m *mergeReady) pushed() Pushed {
 func (m *mergeReady) wait(ctx context.Context, deps Deps, req Request) *result.Result {
 	waited, err := AwaitVerdict(ctx, deps, m.pushed())
 	if err != nil {
-		return m.carrying(req.unread(waitRead(err)))
+		return m.carrying(req.Unread(waitRead(err)))
 	}
 
 	m.waited = waited
@@ -388,7 +374,7 @@ func (m *mergeReady) withoutCI(ctx context.Context, deps Deps, req Request) *res
 	case endedEarly(err):
 		return m.reported(req, m.waited.ciCutShortReport(req.ending(), interrupted(err)), nil)
 	case err != nil:
-		return m.carrying(req.unread(readCI, err))
+		return m.carrying(req.Unread(readCI, err))
 	}
 
 	if without {
@@ -446,7 +432,7 @@ func (m *mergeReady) settle(ctx context.Context, deps Deps, req Request) *result
 		return m.reported(req, m.waited.pendingReport(req.ending(), m.pull.HeadSHA, m.pull.Number),
 			[]result.Phrase{m.summary()})
 	default:
-		return m.carrying(req.unread(readMergeState, err))
+		return m.carrying(req.Unread(readMergeState, err))
 	}
 }
 
@@ -500,7 +486,7 @@ func (m *mergeReady) missingLine() result.Phrase {
 func (m *mergeReady) compose(ctx context.Context, deps Deps, req Request) *result.Result {
 	message, err := deps.Forge.Message(ctx, m.Repo, m.pull.Number)
 	if err != nil {
-		return m.carrying(req.unread(readMessage, err))
+		return m.carrying(req.Unread(readMessage, err))
 	}
 
 	if !conventionalTitle.MatchString(message.Title) {
@@ -532,19 +518,12 @@ func squashBody(message forge.Message) string {
 // reserved ends the merge pending, with nothing written, when less than mergeReserve is left
 // before ctx's deadline.
 func (m *mergeReady) reserved(ctx context.Context, req Request) *result.Result {
-	if !deadlineWithin(ctx, mergeReserve) {
-		return nil
+	said := slices.Concat([]result.Phrase{m.summary()}, m.waited.mergeStateLines())
+	if stop := req.shortOfReserve(ctx, result.Concat("for the merge"), pushAgain(), said); stop != nil {
+		return m.carrying(stop)
 	}
 
-	stop := req.ends(result.Pending,
-		result.Say(fewerLeft+" for the merge", span(mergeReserve), req.limitWords()),
-		pushAgain())
-	stop.Lines = slices.Concat([]result.Phrase{m.summary()}, m.waited.mergeStateLines(), []result.Phrase{
-		result.Say(fewerLeftCapital+" for the merge, so nothing was written",
-			span(mergeReserve), req.limitWords()),
-	})
-
-	return m.carrying(stop)
+	return nil
 }
 
 // summary says what let the merge go on: the head's checks, or no CI on the trunk.
@@ -639,10 +618,8 @@ func (m *mergeReady) merge(ctx context.Context, deps Deps, req Request) *result.
 
 	deps.started(result.Say("Merging %s", pull))
 
-	if interrupted(ctx.Err()) {
-		return m.stopped(
-			req.ends(result.Pending, result.Say(runInterrupted+" before the merge"), pushAgain()),
-			result.Say(runInterrupted+" before the merge, so nothing was written"))
+	if stop := req.interruptedBefore(ctx, result.Concat("the merge"), pushAgain(), m.lines); stop != nil {
+		return m.carrying(stop)
 	}
 
 	err := deps.Forge.Land(ctx, m.Repo, forge.Landing{
@@ -650,12 +627,11 @@ func (m *mergeReady) merge(ctx context.Context, deps Deps, req Request) *result.
 	})
 
 	switch {
-	case interrupted(err):
-		return m.broke(req, result.Say(runInterrupted+" during the merge"), req.again(),
-			result.Say("Started the merge of pull request %s when "+runInterrupted+mayHaveGoneThrough, pull))
-	case timedOut(err):
-		return m.broke(req, result.Say(timeLimitEnded+" during the merge", req.limitWords()), req.again(),
-			result.Say("Started the merge of pull request %s when "+timeLimitEnded+mayHaveGoneThrough, pull, req.limitWords()))
+	case endedEarly(err):
+		line, reason := req.cutShortWriting(interrupted(err),
+			result.Concat("the merge of pull request ", pull), result.Concat("during the merge"), endsGoneThrough)
+
+		return m.broke(req, reason, req.again(), line)
 	case err != nil:
 		return m.broke(req, result.Say("GitHub did not report the merge as done"), req.again(),
 			result.Say("GitHub did not report the merge of pull request %s as done: %s", pull, err.Error()))
@@ -691,9 +667,11 @@ func (m *mergeReady) deleteOnOrigin(ctx context.Context, deps Deps, req Request)
 	}
 
 	if interrupted(err) {
-		return m.broke(req, result.Say(runInterrupted+" while deleting the branch on origin"), req.again(),
-			result.Say("Started the delete of the branch %s on origin when "+runInterrupted+mayHaveGoneThrough,
-				result.Branch(m.branch)))
+		line, reason := req.cutShortWriting(true,
+			result.Concat("the delete of the branch ", result.Branch(m.branch), " on origin"),
+			result.Concat("while deleting the branch on origin"), endsGoneThrough)
+
+		return m.broke(req, reason, req.again(), line)
 	}
 
 	_, listed, askErr := deps.Repo.RemoteBranch(ctx, m.branch)
@@ -725,13 +703,11 @@ func (m *mergeReady) goneLine() result.Phrase {
 // interrupt ended ctx, and nil otherwise. A deadline that alone ended ctx does not count: the
 // deadline is checked ahead, against mergeReserve.
 func (m *mergeReady) unfinished(ctx context.Context, req Request) *result.Result {
-	if !interrupted(ctx.Err()) {
-		return nil
+	if stop := req.interruptedBefore(ctx, result.Concat("finishing the merge"), req.again(), m.lines); stop != nil {
+		return m.carrying(stop)
 	}
 
-	return m.stopped(
-		req.ends(result.Pending, result.Say(runInterrupted+" before finishing the merge"), req.again()),
-		result.Say(runInterrupted+" before finishing the merge, so nothing was written"))
+	return nil
 }
 
 // broke returns the result of a write that failed: broke with reason and next, and the lines said
@@ -771,15 +747,7 @@ func (m *mergeReady) resume(ctx context.Context, deps Deps, req Request) *result
 		}
 	}
 
-	if deadlineWithin(ctx, mergeReserve) {
-		stop := req.ends(result.Pending,
-			result.Say(fewerLeft+" to finish the merge", span(mergeReserve), req.limitWords()),
-			req.again())
-		stop.Lines = slices.Concat(m.lines, []result.Phrase{
-			result.Say(fewerLeftCapital+" to finish the merge, so nothing was written",
-				span(mergeReserve), req.limitWords()),
-		})
-
+	if stop := req.shortOfReserve(ctx, result.Concat("to finish the merge"), req.again(), m.lines); stop != nil {
 		return m.carrying(stop)
 	}
 
@@ -828,7 +796,7 @@ func (m *mergeReady) originCarried(ctx context.Context, deps Deps, req Request) 
 // unreadOnResume returns the result of a read of the resume, named read, that failed with err,
 // after the lines said so far.
 func (m *mergeReady) unreadOnResume(req Request, read string, err error) *result.Result {
-	stop := req.unread(read, err)
+	stop := req.Unread(read, err)
 	stop.Lines = slices.Concat(m.lines, stop.Lines)
 
 	return m.carrying(stop)

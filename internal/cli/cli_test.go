@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +47,13 @@ type ran struct {
 func launch(t *testing.T, app cli.App, args ...string) ran {
 	t.Helper()
 
+	return launchUnder(t.Context(), t, app, args...)
+}
+
+// launchUnder is launch with app run under ctx.
+func launchUnder(ctx context.Context, t *testing.T, app cli.App, args ...string) ran {
+	t.Helper()
+
 	var stdout, stderr bytes.Buffer
 
 	if app.Stderr == nil {
@@ -59,16 +67,23 @@ func launch(t *testing.T, app cli.App, args ...string) ran {
 		app.Launch = time.Now()
 	}
 
-	code := app.Run(t.Context(), args)
+	code := app.Run(ctx, args)
 
 	return ran{stdout: stdout.String(), stderr: stderr.String(), code: code}
+}
+
+// outsideWith returns the cli in a directory that is no repository, with git's environment env.
+func outsideWith(t *testing.T, env []string) cli.App {
+	t.Helper()
+
+	return over(git.Runner{Dir: t.TempDir(), Env: env})
 }
 
 // outside returns the cli in a directory that is no repository.
 func outside(t *testing.T) cli.App {
 	t.Helper()
 
-	return over(git.Runner{Dir: t.TempDir(), Env: gittest.Env(t)})
+	return outsideWith(t, gittest.Env(t))
 }
 
 // over returns the cli with every git call made through runner.
@@ -181,18 +196,18 @@ func built(version string) *debug.BuildInfo {
 func lost(t *testing.T) cli.App {
 	t.Helper()
 
-	return over(git.Runner{Dir: t.TempDir(), Env: append(gittest.Env(t), "LC_ALL=C")})
+	return outsideWith(t, append(gittest.Env(t), "LC_ALL=C"))
 }
 
 // refusal is the grammar refusal of the words typed as the JSON renderer shows it, all but its
 // reason and next step.
-func refusal(typed ...string) resulttest.Shown {
+func refusal(typed ...string) result.Object {
 	command := ""
 	if len(typed) > 0 {
 		command = typed[0]
 	}
 
-	return resulttest.Shown{Command: command, Words: typed, Outcome: "refused", ExitCode: exitRefused}
+	return result.Object{Command: command, Words: typed, Outcome: "refused", ExitCode: exitRefused}
 }
 
 // worded returns the phrase say builds from text as its own wording, for wording only a run
@@ -243,7 +258,7 @@ func TestApp_Run_WhenJSONFlagIsAmongTheWords_RendersJSONWithoutTheFlagInTheWords
 	tests := []struct {
 		name string
 		args []string
-		want resulttest.Shown
+		want result.Object
 	}{
 		{name: "flag set to neither, then set", args: []string{"push", "--json=maybe", "--json"}, want: refusal("push", "--json=maybe")},
 		{name: "flag set to true", args: []string{"--json=true", "pish"}, want: refusal("pish")},
@@ -259,7 +274,7 @@ func TestApp_Run_WhenJSONFlagIsAmongTheWords_RendersJSONWithoutTheFlagInTheWords
 			assert.Check(t, is.Equal(got.code, exitRefused))
 
 			printed := resulttest.Decode(t, got.stdout)
-			assert.Check(t, is.DeepEqual(printed, tt.want, cmpopts.EquateEmpty(), cmpopts.IgnoreFields(resulttest.Shown{}, "Reason", "Next")))
+			assert.Check(t, is.DeepEqual(printed, tt.want, cmpopts.EquateEmpty(), cmpopts.IgnoreFields(result.Object{}, "Reason", "Next")))
 		})
 	}
 }
@@ -593,7 +608,6 @@ func TestApp_Run_WhenPushMergeOrReleaseRuns_WaitsAsLongAsTheWaitFlagOrAStdoutTer
 
 	var (
 		push    = (*cli.App).SetPush
-		merge   = (*cli.App).SetMerge
 		release = (*cli.App).SetRelease
 	)
 	tests := []struct {
@@ -611,7 +625,7 @@ func TestApp_Run_WhenPushMergeOrReleaseRuns_WaitsAsLongAsTheWaitFlagOrAStdoutTer
 		{name: "push at a dumb terminal", stub: push, env: []string{dumbTerm}, args: []string{"push"}, stdout: true, limit: landing.TimeLimit},
 		{name: "push with the wait flag", stub: push, env: []string{colorTerm}, args: []string{"push", "--wait"}, limit: landing.WaitTimeLimit},
 		{name: "push with the wait flag set to false at a terminal", stub: push, env: []string{colorTerm}, args: []string{"push", "--wait=false"}, stdout: true, limit: landing.TimeLimit},
-		{name: "merge with the wait flag", stub: merge, env: []string{colorTerm}, args: []string{"merge", "--wait"}, limit: landing.WaitTimeLimit},
+
 		{name: "release with the wait flag", stub: release, env: []string{colorTerm}, args: []string{"release", "1.2.0", "--wait"}, limit: landing.WaitTimeLimit},
 	}
 	for _, tt := range tests {
@@ -642,9 +656,6 @@ func TestApp_Run_WhenPushMergeOrReleaseRuns_WaitsAsLongAsTheWaitFlagOrAStdoutTer
 // ---------------------------------------------------------------------------
 
 const (
-	// jsonNeither is the reason a JSON flag set to maybe is refused for.
-	jsonNeither = "--json takes true or false, and maybe was given"
-
 	// branchTakesOne opens the reason a word beyond the one name of branch is refused for.
 	branchTakesOne = "branch takes one name and no other word, and "
 
@@ -675,7 +686,6 @@ func grammarRefusals() []grammarRefusal {
 		{name: "version flag before an extra word", args: []string{"--version", "extra"}, reason: "extra is not a command"},
 		{name: "unknown flag after push", args: []string{"push", "--bogus"}, reason: "push takes no other word, and --bogus was given"},
 		{name: "group of short flags after push", args: []string{"push", "-xyz"}, reason: "push takes no other word, and -xyz was given"},
-		{name: "JSON flag after push set to maybe", args: []string{"push", "--json=maybe"}, reason: jsonNeither},
 	}
 }
 
@@ -741,20 +751,25 @@ func TestApp_Run_WhenHelpIsAskedForAWordThatIsNotACommand_RefusesItAsTheWordAlon
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			t.Parallel()
 
-			text := launch(t, outside(t), args...)
-			asJSON := launch(t, outside(t), append(args, "--json")...)
+			got := launch(t, outside(t), args...)
 
-			assert.Check(t, is.Equal(text.code, exitRefused), "stdout = %q", text.stdout)
-			assert.Check(t, is.Contains(text.stdout, alone.Reason))
-			assert.Check(t, is.Equal(asJSON.code, exitRefused), "stdout = %q", asJSON.stdout)
-			printed := resulttest.Decode(t, asJSON.stdout)
+			assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
+			assert.Check(t, is.Contains(got.stdout, alone.Reason))
+		})
+		t.Run(strings.Join(args, " ")+" --json", func(t *testing.T) {
+			t.Parallel()
+
+			got := launch(t, outside(t), append(slices.Clone(args), "--json")...)
+
+			assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
+			printed := resulttest.Decode(t, got.stdout)
 			assert.Check(t, is.Equal(printed.Reason, alone.Reason))
 			assert.Check(t, is.Equal(printed.Next, alone.Next))
 		})
 	}
 }
 
-func TestApp_Run_WhenHelpIsAskedForTheRootOrACommand_PrintsItAndExitsZero(t *testing.T) {
+func TestApp_Run_WhenHelpIsAskedForTheRootOrACommand_PrintsTheHelpTheFlagPrints(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct{ asked, flagged []string }{
@@ -776,13 +791,12 @@ func TestApp_Run_WhenHelpIsAskedForTheRootOrACommand_PrintsItAndExitsZero(t *tes
 	}
 }
 
-// flagParsers are the words that start each command line whose flags ils parses: the root alone,
-// then each command but hook, which takes its words as they are, and but guard and parse where
-// they refuse every run.
+// flagParsers are the words that start one command line per way ils builds a command that parses
+// flags: the root alone, a landing command, a command that takes a name, and guard where it runs.
 func flagParsers() [][]string {
-	parsers := [][]string{{}, {"branch"}, {"help"}, {"merge"}, {"push"}, {"release"}, {"status"}}
+	parsers := [][]string{{}, {"push"}, {"branch"}}
 	if cli.GuardParsesFlags {
-		parsers = append(parsers, []string{"guard"}, []string{"parse"})
+		parsers = append(parsers, []string{"guard"})
 	}
 
 	return parsers
@@ -807,7 +821,6 @@ func TestApp_Run_WhenAFlagWordIsMalformed_RefusesNamingTheWordAsTyped(t *testing
 	for _, parser := range flagParsers() {
 		tests = append(tests, typedAfter{parser: parser, word: "---x"})
 	}
-	tests = append(tests, typedAfter{parser: []string{"push"}, word: "--=x"})
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args(), " "), func(t *testing.T) {
 			t.Parallel()
@@ -817,26 +830,15 @@ func TestApp_Run_WhenAFlagWordIsMalformed_RefusesNamingTheWordAsTyped(t *testing
 			assert.Check(t, is.Equal(got.code, exitRefused), "stderr = %q", got.stderr)
 			assert.Check(t, is.Contains(got.stdout, tt.word))
 		})
-		t.Run(strings.Join(tt.args(), " ")+" --json", func(t *testing.T) {
-			t.Parallel()
-
-			got := launch(t, outside(t), append(tt.args(), "--json")...)
-
-			printed := resulttest.Decode(t, got.stdout)
-			assert.Check(t, is.Equal(printed.ExitCode, exitRefused))
-			assert.Check(t, is.Contains(printed.Reason, tt.word))
-		})
 	}
 }
 
 func TestApp_Run_WhenAHelpFlagIsSetToNeitherTrueNorFalse_RefusesNamingTheValue(t *testing.T) {
 	t.Parallel()
 
-	var tests []typedAfter
-	for _, parser := range flagParsers() {
-		tests = append(tests, typedAfter{parser: parser, word: "--help=1"})
-	}
-	tests = append(tests, typedAfter{parser: []string{"push"}, word: "-h=0"})
+	// The root registers its help flag apart from the commands, which share one loop: push stands for
+	// every command.
+	tests := []typedAfter{{parser: []string{}, word: "--help=1"}, {parser: []string{"push"}, word: "--help=1"}}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args(), " "), func(t *testing.T) {
 			t.Parallel()
@@ -848,17 +850,6 @@ func TestApp_Run_WhenAHelpFlagIsSetToNeitherTrueNorFalse_RefusesNamingTheValue(t
 			assert.Check(t, is.Contains(got.stdout, "--help takes true or false, and "+value+" was given"))
 		})
 	}
-}
-
-func TestApp_Run_WhenTheHelpFlagOfACommandIsSetToTrue_PrintsTheHelpTheBareFlagPrints(t *testing.T) {
-	t.Parallel()
-	want := launch(t, outside(t), "push", "--help")
-	assert.Assert(t, is.Equal(want.code, exitDone), "stdout = %q", want.stdout)
-
-	got := launch(t, outside(t), "push", "--help=true")
-
-	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	assert.Check(t, is.Equal(got.stdout, want.stdout))
 }
 
 func TestApp_Run_WhenWordsBreakTheGrammar_RefusesNamingWhatBreaksIt(t *testing.T) {
