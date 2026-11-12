@@ -299,3 +299,18 @@ func checkJudgedIn(t *testing.T, caller guard.Caller, tests []placed, want expec
 		})
 	}
 }
+
+// checkJudgedInInTurn is checkJudgedIn for rows that share process environment (a scripted gh on
+// GH_PATH), so no row runs in parallel.
+func checkJudgedInInTurn(t *testing.T, caller guard.Caller, tests []placed, want expectation) {
+	t.Helper()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := caller
+			in.Dir = cmp.Or(tt.dir, caller.Dir)
+
+			checkJudgedRow(t, in, judged{command: tt.command, wantNamed: want.named, want: want.outcome})
+		})
+	}
+}

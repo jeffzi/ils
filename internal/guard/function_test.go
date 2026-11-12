@@ -45,14 +45,14 @@ func TestJudge_WhenACallMayRunAnOuterBodyUnderARedirect_JudgesThatBodyUnderTheRe
 }
 
 func TestJudge_WhenACallRunsABodyWhoseCommitLandsOnTheTrunk_RefusesNamingTheTrunk(t *testing.T) {
-	t.Parallel()
-
-	_, caller := standingOn(t, "main", "topic")
+	// Not parallel: protectTrunk sets GH_PATH for the whole process.
+	f, caller := standingOn(t, "main", "topic")
 	trunk, _ := standingOn(t, "main", "main")
+	protectTrunk(t, "main", f, trunk)
 	toTrunk := "cd " + gittest.ShellWord(trunk.Dir())
 	const commits = "f() { git commit -am wip; }; "
 
-	checkJudgedIn(t, caller, []placed{
+	checkJudgedInInTurn(t, caller, []placed{
 		{name: "after a switch to the trunk", command: commits + "git switch main && f"},
 		{name: "after a cd into a trunk checkout", command: commits + toTrunk + " && f"},
 		{
@@ -66,12 +66,12 @@ func TestJudge_WhenACallRunsABodyWhoseCommitLandsOnTheTrunk_RefusesNamingTheTrun
 }
 
 func TestJudge_WhenACallRunsABodyOffTheTrunk_Allows(t *testing.T) {
-	t.Parallel()
+	// Not parallel: protectTrunk sets GH_PATH for the whole process.
+	f, caller := standingOn(t, "main", "topic")
+	protectTrunk(t, "main", f)
 
-	_, caller := standingOn(t, "main", "topic")
-
-	checkAllowed(t, caller, []namedCommand{
-		{name: "commit defined and called on a topic branch", command: "f() { git commit -m x; }; f"},
+	checkJudgedInTurn(t, caller, []judged{
+		{name: "commit defined and called on a topic branch", command: "f() { git commit -m x; }; f", want: guard.Allow},
 	})
 }
 
