@@ -51,14 +51,12 @@ func deliver(ctx context.Context, deps Deps, req Request, p pushReady) result.Re
 		return *d.unread(readProtection, err)
 	}
 
-	waited, err := AwaitVerdict(ctx, deps, Pushed{
+	d.waited, err = AwaitVerdict(ctx, deps, Pushed{
 		SHA: d.tip, Required: protection.RequiredChecks, Repo: d.Repo, Number: d.number,
 	})
 	if err != nil {
 		return *d.unread(waitRead(err))
 	}
-
-	d.waited = waited
 
 	if stop := d.withoutCI(ctx, deps, protection.RequiredChecks); stop != nil {
 		return *stop

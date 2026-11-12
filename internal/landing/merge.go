@@ -400,7 +400,12 @@ func (m *mergeReady) verdictStop(req Request) *result.Result {
 		return nil
 	}
 
-	return m.reported(req, report, m.unverifiedLine())
+	var lead []result.Phrase
+	if m.unverified {
+		lead = []result.Phrase{noCI(m.Trunk, m.pull.HeadSHA)}
+	}
+
+	return m.reported(req, report, lead)
 }
 
 // settle reads the merge state again as the wait polls it while GitHub has not worked it out, and
@@ -533,14 +538,6 @@ func (m *mergeReady) summary() result.Phrase {
 	}
 
 	return m.waited.checksLine(m.pull.HeadSHA)
-}
-
-func (m *mergeReady) unverifiedLine() []result.Phrase {
-	if !m.unverified {
-		return nil
-	}
-
-	return []result.Phrase{noCI(m.Trunk, m.pull.HeadSHA)}
 }
 
 // reported returns the result report makes, pending or refused, with lead printed before its lines.
@@ -713,12 +710,7 @@ func (m *mergeReady) unfinished(ctx context.Context, req Request) *result.Result
 // broke returns the result of a write that failed: broke with reason and next, and the lines said
 // so far followed by lines.
 func (m *mergeReady) broke(req Request, reason result.Phrase, next result.Next, lines ...result.Phrase) *result.Result {
-	return m.stopped(req.ends(result.Broke, reason, next), lines...)
-}
-
-// stopped returns ended, the result that ends the run, with the lines said so far followed by
-// lines.
-func (m *mergeReady) stopped(ended *result.Result, lines ...result.Phrase) *result.Result {
+	ended := req.ends(result.Broke, reason, next)
 	ended.Lines = slices.Concat(m.lines, lines)
 
 	return m.carrying(ended)

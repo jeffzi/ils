@@ -80,7 +80,13 @@ func pushChecks(ctx context.Context, deps Deps, req Request, ready Ready) (pushR
 		return pushReady{}, stop
 	}
 
-	if stop = cutFromTrunk(ctx, deps, req, p); stop != nil {
+	// A branch whose first commit past the trunk another local branch carries is refused.
+	stop, read, err := sharedFirstCommit(ctx, deps, req, p)
+	if err != nil {
+		return pushReady{}, req.Unread(read, err)
+	}
+
+	if stop != nil {
 		return pushReady{}, stop
 	}
 
@@ -98,23 +104,13 @@ func pushChecks(ctx context.Context, deps Deps, req Request, ready Ready) (pushR
 	return p, nil
 }
 
-// cutFromTrunk refuses a branch whose first commit past the trunk another local branch also
-// carries, and lists the commits none of those branches carry. Origin's copy of the branch, if
-// any, settles it when it carries that commit: the branch is already published with it, so
-// another branch that shares it does not stop the push. Without that, git cannot tell which
+// sharedFirstCommit returns the refusal of a branch whose first commit past the trunk another local
+// branch also carries, listing the commits none of those branches carry, or nil when that commit
+// does not stop the push; a read that fails is returned with the name of the read. Origin's copy of
+// the branch, if any, settles it when it carries that commit: the branch is already published with
+// it, so another branch that shares it does not stop the push. Without that, git cannot tell which
 // branch was cut from which, so the refusal names every way out: land the other branches first,
 // remove them, or start a new branch and bring this branch's own commits over.
-func cutFromTrunk(ctx context.Context, deps Deps, req Request, p pushReady) *result.Result {
-	stop, read, err := sharedFirstCommit(ctx, deps, req, p)
-	if err != nil {
-		return req.Unread(read, err)
-	}
-
-	return stop
-}
-
-// sharedFirstCommit returns the refusal cutFromTrunk ends on, or nil when the branch's first commit
-// past the trunk does not stop the push; a read that fails is returned with the name of the read.
 func sharedFirstCommit(ctx context.Context, deps Deps, req Request, p pushReady) (*result.Result, string, error) {
 	first := p.past[0].SHA
 
