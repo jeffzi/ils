@@ -109,7 +109,9 @@ it. That happens when the word is:
   --force`);
 - a `-c` value;
 - the directory or git dir of a command that may land on the default branch (`git commit`, `git
-  merge`).
+  merge`);
+- the `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, or `HOME` of such a command on the default branch, since
+  it decides which `gh` login reads whether the branch is protected.
 
 Anywhere else, the guard passes over the word: `python3 x.py "$f"` and `sed -n "${n}p" "$f"` run.
 
