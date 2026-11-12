@@ -398,16 +398,19 @@ func (f *Forge) Message(ctx context.Context, repo forge.Repo, number int) (forge
 // trailersOf returns the lines of the last paragraph of what GitHub appended to body in
 // mergeBody when every one is a trailer, and nil otherwise. A mergeBody that does not start with
 // body, ending at a line, is all GitHub's own; the two are compared with LF line ends and without
-// the whitespace that closes body, which GitHub's copy of it may not keep. Trailers of body itself
-// are never returned: the squash body already carries body, and would carry them twice.
+// the whitespace that closes body, which GitHub's copy of it may keep or drop. Trailers of body
+// itself are never returned: the squash body already carries body, and would carry them twice.
 func trailersOf(body, mergeBody string) []string {
 	appended := strings.ReplaceAll(mergeBody, "\r\n", "\n")
 	own := strings.TrimRight(strings.ReplaceAll(body, "\r\n", "\n"), " \t\n")
 	rest, cut := strings.CutPrefix(appended, own)
+	rest = strings.TrimLeft(rest, " \t")
 
 	endsAtLine := rest == "" || strings.HasPrefix(rest, "\n")
 	if cut && endsAtLine {
-		appended = rest
+		// The line break that closes body's last line is body's own: kept, it would open the
+		// lines GitHub appended to body's last paragraph with an empty one.
+		appended = strings.TrimPrefix(rest, "\n")
 	}
 
 	paragraphs := strings.Split(strings.TrimRight(appended, "\n"), "\n\n")

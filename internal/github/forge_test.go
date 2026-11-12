@@ -756,6 +756,8 @@ func TestForge_Message(t *testing.T) {
 			name: "pull request body setting, the copy of a CRLF body with LF line ends",
 			body: strings.ReplaceAll(pullBody, "\n", "\r\n"), mergeBody: pullBody,
 		},
+		{name: "pull request body setting, the copy of a body whose trailers end in spaces and tabs", body: pullBody + " \t", mergeBody: pullBody + " \t"},
+		{name: "pull request body setting, trailers added after a body whose trailers end in spaces and tabs", body: pullBody + " \t", mergeBody: pullBody + " \t\n" + liveSuite, want: []string{liveSuite}},
 		{
 			name: "body ending partway through a line of the merge body",
 			body: "Lands the change.\n\nSigned-off", mergeBody: "Lands the change.\n\n" + signedOff,
