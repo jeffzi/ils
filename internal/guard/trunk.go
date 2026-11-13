@@ -374,11 +374,13 @@ func unreadProtection(ctx context.Context, runner github.Runner, host string, er
 
 // verdict returns the verdict on the git subcommand sub run on trunk, given p: protectedVerdict, the
 // verdict on the trunk were it protected, when it is; an allow when it is not; and a refusal naming
-// what kept the guard from reading it otherwise.
+// what kept the guard from reading it otherwise. A state the switch does not name refuses.
 func (p protectionAnswer) verdict(sub, trunk string, protectedVerdict Verdict) Verdict {
 	unread := fmt.Sprintf("git %s on %s, the trunk", sub, trunk)
 
 	switch p.state {
+	case trunkUnprotected:
+		return Verdict{Outcome: Allow}
 	case trunkProtected:
 		return protectedVerdict
 	case ghMissing:
@@ -393,7 +395,7 @@ func (p protectionAnswer) verdict(sub, trunk string, protectedVerdict Verdict) V
 	case protectionUnread:
 		return refuse(fmt.Sprintf("%s: the guard could not read whether the trunk is protected: %s; %s",
 			unread, p.detail, branchAdvice))
-	default:
-		return Verdict{Outcome: Allow}
 	}
+
+	return refuse(fmt.Sprintf("%s: the guard could not read whether the trunk is protected; %s", unread, branchAdvice))
 }
