@@ -6,6 +6,8 @@ import (
 	"errors"
 	"slices"
 	"time"
+
+	"github.com/jeffzi/ils/internal/git"
 )
 
 // ---------------------------------------------------------------------------
@@ -23,6 +25,12 @@ type Repo struct {
 	// SquashAllowed reports whether the repository's settings allow squash merges. The rules on a
 	// branch can still forbid them: see Protection.
 	SquashAllowed bool
+}
+
+// RepoOf returns the repository o names, with every setting of the repository left at its zero
+// value.
+func RepoOf(o git.Origin) Repo {
+	return Repo{Host: o.Host, Owner: o.Owner, Name: o.Name}
 }
 
 // Slug names the repository as host/owner/name, the way gh's `--repo` takes it.

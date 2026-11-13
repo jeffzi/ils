@@ -135,8 +135,9 @@ func headBranch(standing git.Standing, inv Invocation) (string, bool) {
 	return standing.Branch, standing.Kind == git.OnBranch
 }
 
-// onTrunk returns the verdict on the trunk-judged git subcommand sub, given args, run on trunk. A
-// `git pull` that may only fast-forward is allowed when it names origin and the trunk alone; one
+// onTrunk returns the verdict on the trunk-judged git subcommand sub, given args, run on trunk,
+// assuming GitHub protects the trunk. protectionAnswer.verdict decides whether that verdict applies.
+// A `git pull` that may only fast-forward is allowed when it names origin and the trunk alone; one
 // that names any other repository or refspec, or one the guard cannot read, can fast-forward the
 // trunk to another branch.
 func onTrunk(sub string, args []Word, trunk string) Verdict {
@@ -159,11 +160,11 @@ func onTrunk(sub string, args []Word, trunk string) Verdict {
 			trunk, trunk))
 	}
 
-	return refuse(fmt.Sprintf("git %s on %s, the protected trunk: %s", sub, trunk, onBranch))
+	return refuse(fmt.Sprintf("git %s on %s, the protected trunk: %s", sub, trunk, branchAdvice))
 }
 
-// onBranch is where work goes instead of the trunk.
-const onBranch = "work goes on a branch, started with `ils branch <name>`"
+// branchAdvice is where work goes instead of the trunk.
+const branchAdvice = "work goes on a branch, started with `ils branch <name>`"
 
 // trunkOf returns the trunk of the repository at gitDir, asking origin only the first time.
 func (t trunks) trunkOf(ctx context.Context, repo git.Repo, gitDir string) (trunkAnswer, error) {
@@ -226,11 +227,6 @@ func rebasedBranch(sub string, args []Word) (Word, bool) {
 	return branch, named
 }
 
-// gitHubHost is the one host whose trunk the rule refuses work on when gh is missing or holds no
-// login for it. Any other host may be no GitHub at all, such as a GitLab server, which gh never
-// holds a login for.
-const gitHubHost = "github.com"
-
 // protectionState is what the trunk rule learned of whether GitHub protects origin's trunk.
 type protectionState int
 
@@ -288,7 +284,7 @@ func readProtection(ctx context.Context, caller Caller, call trunkCall, trunk st
 		return protectionAnswer{state: ghConfigUnknown, detail: unknown}
 	}
 
-	protected, err := isProtected(ctx, runner, forge.Repo{Host: origin.Host, Owner: origin.Owner, Name: origin.Name}, trunk)
+	protected, err := isProtected(ctx, runner, forge.RepoOf(origin), trunk)
 	if err != nil {
 		return unreadProtection(ctx, runner, origin.Host, err)
 	}
@@ -362,7 +358,10 @@ func unreadProtection(ctx context.Context, runner github.Runner, host string, er
 	}
 
 	switch {
-	case (missing || loggedOut) && host != gitHubHost:
+	// github.com is the one host whose trunk the rule refuses work on when gh is missing or holds no
+	// login for it. Any other host may be no GitHub at all, such as a GitLab server, which gh never
+	// holds a login for.
+	case (missing || loggedOut) && host != git.GitHubHost:
 		return protectionAnswer{state: trunkUnprotected}
 	case missing:
 		return protectionAnswer{state: ghMissing}
@@ -384,16 +383,16 @@ func (p protectionAnswer) verdict(sub, trunk string, protectedVerdict Verdict) V
 		return protectedVerdict
 	case ghMissing:
 		return refuse(fmt.Sprintf("%s: gh is missing, so the guard cannot read whether the trunk is protected; "+
-			"install gh, or %s", unread, onBranch))
+			"install gh, or %s", unread, branchAdvice))
 	case ghLoggedOut:
 		return refuse(fmt.Sprintf("%s: gh is not logged in to %s, so the guard cannot read whether the trunk is "+
-			"protected; run `! gh auth login --hostname %s`, or %s", unread, gitHubHost, gitHubHost, onBranch))
+			"protected; run `! gh auth login --hostname %s`, or %s", unread, git.GitHubHost, git.GitHubHost, branchAdvice))
 	case ghConfigUnknown:
 		return refuse(fmt.Sprintf("%s: the guard cannot tell the %s gh runs with, so it cannot read whether "+
-			"the trunk is protected; %s", unread, p.detail, onBranch))
+			"the trunk is protected; %s", unread, p.detail, branchAdvice))
 	case protectionUnread:
 		return refuse(fmt.Sprintf("%s: the guard could not read whether the trunk is protected: %s; %s",
-			unread, p.detail, onBranch))
+			unread, p.detail, branchAdvice))
 	default:
 		return Verdict{Outcome: Allow}
 	}

@@ -493,7 +493,7 @@ func readOriginRepo(ctx context.Context, deps Deps) (urls git.OriginURLs, repo f
 		return urls, forge.Repo{}, false, nil
 	}
 
-	return urls, forge.Repo{Host: urls.Fetch.Host, Owner: urls.Fetch.Owner, Name: urls.Fetch.Name}, true, nil
+	return urls, forge.RepoOf(urls.Fetch), true, nil
 }
 
 // strayPushURL returns the first push URL of urls that does not name the GitHub repository its

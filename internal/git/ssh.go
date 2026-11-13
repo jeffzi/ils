@@ -19,8 +19,6 @@ const (
 	sshInstallURL = "https://www.openssh.com"
 	// hostnameKey leads the line of `ssh -G` that names the host a connection goes to.
 	hostnameKey = "hostname "
-	// gitHubHost is the host gh files every host under it as.
-	gitHubHost = "github.com"
 
 	// sshAlias names the one-shot git alias that runs a configured ssh command line through the
 	// shell git itself uses. Git runs a program git-<name> found on PATH before an alias of that
@@ -37,6 +35,9 @@ const (
 	sshCommandKey    = "core.sshCommand"
 	gitSSHVar        = "GIT_SSH"
 )
+
+// GitHubHost is the host gh files every host under it as.
+const GitHubHost = "github.com"
 
 // ---------------------------------------------------------------------------
 // Hostname reading
@@ -75,8 +76,8 @@ func hostnameIn(stdout string, argv []string) (string, error) {
 // foldGitHubHost returns github.com for any host under it, such as ssh.github.com, matched without
 // regard to case. The dot in the suffix keeps lookalikes such as fake-github.com as they are.
 func foldGitHubHost(host string) string {
-	if strings.HasSuffix(strings.ToLower(host), "."+gitHubHost) {
-		return gitHubHost
+	if strings.HasSuffix(strings.ToLower(host), "."+GitHubHost) {
+		return GitHubHost
 	}
 
 	return host
