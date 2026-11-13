@@ -634,16 +634,16 @@ func TestForge_TrunkProtection_WhenRefusalIsNotTheFreePlans_ReturnsExitError(t *
 func TestForge_TrunkProtection_WhenTrunkNameHoldsPathSyntax_ReadsExactlyItsRules(t *testing.T) {
 	rules := `[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"build"}]}}]`
 	tests := []struct {
-		name   string
-		branch string
-		path   string
+		name       string
+		branch     string
+		branchPath string
 	}{
-		{name: "slash keeps separating segments", branch: "release/v1", path: "repos/ada/engine/rules/branches/release/v1"},
-		{name: "hash is escaped, not a fragment", branch: "release#1", path: "repos/ada/engine/rules/branches/release%231"},
+		{name: "slash keeps separating segments", branch: "release/v1", branchPath: "release/v1"},
+		{name: "hash is escaped, not a fragment", branch: "release#1", branchPath: "release%231"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			args := []string{"api", "--hostname", engineHost, "--paginate", tt.path}
+			args := ghtest.RulesArgs(engineHost, "ada/engine", tt.branchPath)
 			ghtest.Setup(t, ghtest.Says(rules, args...))
 
 			_, err := newForge().TrunkProtection(t.Context(), engine(), tt.branch)

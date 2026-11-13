@@ -113,7 +113,7 @@ func TestJudge_WhenAnAndListSwitchesToTheTrunk_RefusesACommitAfterIt(t *testing.
 	checkJudgedInInTurn(t, caller, []placed{
 		{name: "switch to the trunk", command: "git switch main && " + commitCommand},
 		{name: "later switch to the trunk", command: "git switch -c next && git switch main && " + commitCommand},
-	}, expectation{outcome: guard.Refuse, named: "main"})
+	}, expectation{outcome: guard.Refuse, named: protectedMain})
 }
 
 func TestJudge_WhenHeadMovesWhereTheGuardCannotFollowIt_RefusesALaterCommit(t *testing.T) {

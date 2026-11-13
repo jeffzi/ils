@@ -62,7 +62,7 @@ func TestJudge_WhenACallRunsABodyWhoseCommitLandsOnTheTrunk_RefusesNamingTheTrun
 		{name: "inside a subshell", command: commits + "(" + toTrunk + " && f)"},
 		{name: "inside a loop", command: commits + "for x in a; do " + toTrunk + " && f; done"},
 		{name: "inside another function's body", command: commits + "g() { f; }; " + toTrunk + " && g"},
-	}, expectation{outcome: guard.Refuse, named: "main"})
+	}, expectation{outcome: guard.Refuse, named: protectedMain})
 }
 
 func TestJudge_WhenACallRunsABodyOffTheTrunk_Allows(t *testing.T) {

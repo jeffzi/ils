@@ -40,10 +40,10 @@ func TestJudge_RefusesACommitCreatingSubcommandOnTheTrunk(t *testing.T) {
 	_, caller := standingOnProtected(t, "main", "main")
 
 	checkJudgedInTurn(t, caller, []judged{
-		{name: "commit", command: commitCommand, want: guard.Refuse, wantNamed: "main"},
-		{name: "rebase", command: "git rebase origin/main", want: guard.Refuse, wantNamed: "main"},
-		{name: "pull", command: "git pull", want: guard.Refuse, wantNamed: "main"},
-		{name: "pull whose last fast-forward option allows a merge", command: "git pull --ff-only --no-ff", want: guard.Refuse, wantNamed: "main"},
+		{name: "commit", command: commitCommand, want: guard.Refuse, wantNamed: protectedMain},
+		{name: "rebase", command: "git rebase origin/main", want: guard.Refuse, wantNamed: protectedMain},
+		{name: "pull", command: "git pull", want: guard.Refuse, wantNamed: protectedMain},
+		{name: "pull whose last fast-forward option allows a merge", command: "git pull --ff-only --no-ff", want: guard.Refuse, wantNamed: protectedMain},
 	})
 }
 
@@ -119,7 +119,7 @@ func TestJudge_RefusesACommitWhoseOwnTargetIsOnTheTrunk(t *testing.T) {
 			command: "git --git-dir=" + trunkGitDir + " --work-tree=" + trunkDir + " " + commitArgs,
 		},
 		{name: "GIT_DIR exported by an earlier eval string", dir: feature, command: `eval "export GIT_DIR=` + trunkGitDir + `"; git ` + commitArgs},
-	}, expectation{outcome: guard.Refuse, named: "main"})
+	}, expectation{outcome: guard.Refuse, named: protectedMain})
 }
 
 func TestJudge_RefusesATrunkJudgedInvocationThatRunsWhereItCannotTell(t *testing.T) {
@@ -143,8 +143,8 @@ func TestJudge_RefusesARebaseOfTheTrunkFromAnotherBranch(t *testing.T) {
 	_, caller := standingOnProtected(t, "main", "topic")
 
 	checkJudgedInTurn(t, caller, []judged{
-		{name: "trunk as the branch argument", command: "git rebase topic main", want: guard.Refuse, wantNamed: "main"},
-		{name: "trunk as the branch argument after --", command: "git rebase -- origin/main main", want: guard.Refuse, wantNamed: "main"},
+		{name: "trunk as the branch argument", command: "git rebase topic main", want: guard.Refuse, wantNamed: protectedMain},
+		{name: "trunk as the branch argument after --", command: "git rebase -- origin/main main", want: guard.Refuse, wantNamed: protectedMain},
 	})
 }
 
@@ -221,7 +221,7 @@ func TestJudge_WhenACommandSpansTwoGitDirs_JudgesEachAgainstItsOwnTrunk(t *testi
 	protectTrunk(t, "main", onMain)
 	command := "git commit -m one; git -C " + gittest.ShellWord(onMain.Dir()) + " commit -m two"
 
-	checkJudgedRow(t, caller, judged{command: command, want: guard.Refuse, wantNamed: "main"})
+	checkJudgedRow(t, caller, judged{command: command, want: guard.Refuse, wantNamed: protectedMain})
 }
 
 func TestJudge_WhenOriginNamesNoTrunk_RefusesSayingWhatBroke(t *testing.T) {
@@ -241,6 +241,8 @@ const (
 	// protectedTrunk is what only the refusal on a protected trunk says, never one whose protection
 	// the guard could not read.
 	protectedTrunk = "the protected trunk"
+	// protectedMain is what the refusal of a commit on main, the protected trunk, says.
+	protectedMain = "on main, " + protectedTrunk
 )
 
 // rulesArgs is the argv of the read of the ruleset rules that apply to trunk in originRepo on host.
