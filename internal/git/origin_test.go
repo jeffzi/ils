@@ -202,11 +202,15 @@ func TestRepo_OriginURLs_WhenSSHHostStartsWithDash_RefusesWithOriginError(t *tes
 	repo := plainSSH(t, newRepo(f), standInRefuse)
 	repo.Runner.Env = append(append(repo.Runner.Env, variantEnv("ssh")...), "GIT_SSH_COMMAND="+gittest.Marking(marker))
 
-	_, err := repo.OriginURLs(t.Context())
+	got, err := repo.OriginURLs(t.Context())
 
 	originErr, ok := errors.AsType[*git.OriginError](err)
 	assert.Assert(t, ok, "OriginURLs() of %q error = %v, want *git.OriginError", scpLike, err)
 	assert.Check(t, is.Equal(originErr.URL, scpLike))
+	assert.Assert(t, is.Len(got.Push, 1))
+	pushErr, ok := errors.AsType[*git.OriginError](got.Push[0].Err)
+	assert.Assert(t, ok, "PushURL %q Err = %v, want *git.OriginError", scpLike, got.Push[0].Err)
+	assert.Check(t, is.Equal(pushErr.URL, scpLike))
 	_, statErr := os.Stat(marker)
 	assert.Check(t, is.ErrorIs(statErr, fs.ErrNotExist), "OriginURLs() of %q ran the ssh command", scpLike)
 }
@@ -241,7 +245,7 @@ func TestRepo_OriginURLs_WhenURLDoesNotParse_ReturnsOriginErrorWithWhatParsed(t 
 			want: git.OriginURLs{
 				Fetch:    ilsOrigin(),
 				FetchURL: httpsURL,
-				Push:     []git.PushURL{{URL: localPath}},
+				Push:     []git.PushURL{{URL: localPath, Err: &git.OriginError{URL: localPath}}},
 			},
 		},
 		{
@@ -249,7 +253,7 @@ func TestRepo_OriginURLs_WhenURLDoesNotParse_ReturnsOriginErrorWithWhatParsed(t 
 			want: git.OriginURLs{
 				Fetch:    ilsOrigin(),
 				FetchURL: httpsURL,
-				Push:     []git.PushURL{{Origin: toolsOrigin(), URL: sshURL}, {URL: localPath}},
+				Push:     []git.PushURL{{Origin: toolsOrigin(), URL: sshURL}, {URL: localPath, Err: &git.OriginError{URL: localPath}}},
 			},
 		},
 	}
@@ -272,18 +276,37 @@ func TestRepo_OriginURLs_WhenURLDoesNotParse_ReturnsOriginErrorWithWhatParsed(t 
 	}
 }
 
-func TestRepo_OriginURLs_WhenFetchAndPushAreTheSameAndSSHFails_NamesTheFailureOnce(t *testing.T) {
+func TestRepo_OriginURLs_WhenSSHFailsForURLListedTwice_NamesTheFailureOnceAndOnEveryPushURL(t *testing.T) {
 	t.Parallel()
-	f := gittest.New(t, trunk)
-	f.SetOriginURL(sshURL)
-	f.SetPushURL(sshURL)
-	repo := plainSSH(t, newRepo(f), standInRefuse)
+	tests := []struct {
+		name  string
+		fetch string
+		push  []string
+	}{
+		{name: "fetch url is the push url", fetch: sshURL},
+		{name: "push url listed twice", fetch: httpsURL, push: []string{sshURL, sshURL}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := gittest.New(t, trunk)
+			f.SetOriginURL(tt.fetch)
+			for _, push := range tt.push {
+				f.AddPushURL(push)
+			}
+			repo := plainSSH(t, newRepo(f), standInRefuse)
 
-	_, err := repo.OriginURLs(t.Context())
+			got, err := repo.OriginURLs(t.Context())
 
-	exitErr, ok := errors.AsType[*child.ExitError](err)
-	assert.Assert(t, ok, "OriginURLs() error = %v, want *child.ExitError", err)
-	assert.Check(t, is.Equal(strings.Count(err.Error(), exitErr.Error()), 1), "OriginURLs() error = %q", err)
+			exitErr, ok := errors.AsType[*child.ExitError](err)
+			assert.Assert(t, ok, "OriginURLs() error = %v, want *child.ExitError", err)
+			assert.Check(t, is.Equal(strings.Count(err.Error(), exitErr.Error()), 1), "OriginURLs() error = %q", err)
+			assert.Check(t, is.Len(got.Push, max(len(tt.push), 1)))
+			for _, push := range got.Push {
+				assert.Check(t, is.ErrorIs(push.Err, exitErr), "PushURL %q Err = %v", push.URL, push.Err)
+			}
+		})
+	}
 }
 
 func TestRepo_OriginURLs_WhenFetchAndPushDifferAndSSHFailsForBoth_NamesBothFailures(t *testing.T) {

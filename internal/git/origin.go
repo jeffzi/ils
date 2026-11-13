@@ -218,9 +218,11 @@ type OriginURLs struct {
 	Push []PushURL
 }
 
-// PushURL is one push URL of origin, raw and parsed.
+// PushURL is one push URL of origin, raw and parsed. Err is why URL did not parse, or why the
+// host of an ssh URL could not be read, and nil when Origin holds what URL names.
 type PushURL struct {
 	Origin Origin
+	Err    error
 	URL    string
 }
 
@@ -235,10 +237,12 @@ type PushURL struct {
 // *SSHCommandMissingError; a command line of variant plain is not checked, and plain ssh reads its
 // host. A plain ssh missing from PATH is a *child.ToolMissingError; an ssh that exits non-zero is a
 // *child.ExitError. A URL that does not parse, or an ssh URL whose host starts with a dash, which
-// git refuses to connect to, is an *OriginError, and every raw URL is still returned.
+// git refuses to connect to, is an *OriginError, and every raw URL is still returned. The Err of
+// each PushURL holds that push URL's own failure, nil when it parsed and its host was read.
 //
 // A URL listed more than once, such as a fetch URL that is also the push URL, is read once, so its
-// failure is returned once; the error holds the failure of each URL that failed.
+// failure is returned once and every PushURL of it carries the same Err; the error holds the
+// failure of each URL that failed.
 func (r Repo) OriginURLs(ctx context.Context) (OriginURLs, error) {
 	fetchURL, err := r.line(ctx, "remote", "get-url", OriginRemote)
 	if err != nil {
@@ -250,25 +254,26 @@ func (r Repo) OriginURLs(ctx context.Context) (OriginURLs, error) {
 		return OriginURLs{}, err
 	}
 
-	parsed := map[string]Origin{}
+	parsed := map[string]PushURL{}
 
 	var errs []error
 
-	parse := func(raw string) Origin {
-		if origin, seen := parsed[raw]; seen {
-			return origin
+	parse := func(raw string) PushURL {
+		if read, seen := parsed[raw]; seen {
+			return read
 		}
 
 		origin, parseErr := r.parseOrigin(ctx, raw)
-		parsed[raw] = origin
+		read := PushURL{Origin: origin, URL: raw, Err: parseErr}
+		parsed[raw] = read
 		errs = append(errs, parseErr)
 
-		return origin
+		return read
 	}
 
-	urls := OriginURLs{Fetch: parse(fetchURL), FetchURL: fetchURL}
+	urls := OriginURLs{Fetch: parse(fetchURL).Origin, FetchURL: fetchURL}
 	for raw := range strings.SplitSeq(pushURLs, "\n") {
-		urls.Push = append(urls.Push, PushURL{Origin: parse(raw), URL: raw})
+		urls.Push = append(urls.Push, parse(raw))
 	}
 
 	return urls, errors.Join(errs...)
