@@ -200,10 +200,18 @@ func checkJudgedRow(t *testing.T, caller guard.Caller, tt judged) {
 		return
 	}
 
+	checkVerdict(t, tt, got, tt.wantNamed)
+}
+
+// checkVerdict fails unless got, Judge's verdict on the row's command, has the row's outcome and a
+// reason holding every one of named.
+func checkVerdict(t *testing.T, tt judged, got guard.Verdict, named ...string) {
+	t.Helper()
+
 	assert.Check(t, is.Equal(got.Outcome, tt.want), "Judge(%q) outcome, reason %q", tt.command, got.Reason)
 
-	if tt.wantNamed != "" {
-		assert.Check(t, is.Contains(got.Reason, tt.wantNamed), "Judge(%q) reason", tt.command)
+	for _, part := range named {
+		assert.Check(t, is.Contains(got.Reason, part), "Judge(%q) reason", tt.command)
 	}
 }
 
@@ -292,10 +300,8 @@ func checkJudgedIn(t *testing.T, caller guard.Caller, tests []placed, want expec
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			in := caller
-			in.Dir = cmp.Or(tt.dir, caller.Dir)
 
-			checkJudgedRow(t, in, judged{command: tt.command, wantNamed: want.named, want: want.outcome})
+			checkPlacedRow(t, caller, tt, want)
 		})
 	}
 }
@@ -307,10 +313,18 @@ func checkJudgedInInTurn(t *testing.T, caller guard.Caller, tests []placed, want
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			in := caller
-			in.Dir = cmp.Or(tt.dir, caller.Dir)
-
-			checkJudgedRow(t, in, judged{command: tt.command, wantNamed: want.named, want: want.outcome})
+			checkPlacedRow(t, caller, tt, want)
 		})
 	}
+}
+
+// checkPlacedRow fails unless Judge, run by caller from the row's directory, or from the caller's
+// own when the row names none, gives the row's command the outcome want states.
+func checkPlacedRow(t *testing.T, caller guard.Caller, tt placed, want expectation) {
+	t.Helper()
+
+	in := caller
+	in.Dir = cmp.Or(tt.dir, caller.Dir)
+
+	checkJudgedRow(t, in, judged{command: tt.command, wantNamed: want.named, want: want.outcome})
 }

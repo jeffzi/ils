@@ -164,7 +164,12 @@ func Exits(answer Answer, args ...string) Call {
 // Identity scripts the gh calls of a Forge.Identity that gets past the login check: `gh auth
 // status` answers logged in for host, and the repository view of slug answers view.
 func Identity(host, slug string, view Answer) []Call {
-	return []Call{Says("Logged in\n", LoginArgs(host)...), Exits(view, RepoViewArgs(slug)...)}
+	return []Call{Exits(LoggedIn(), LoginArgs(host)...), Exits(view, RepoViewArgs(slug)...)}
+}
+
+// LoggedIn is what `gh auth status` answers for a host it is logged in to.
+func LoggedIn() Answer {
+	return Answer{Stdout: "Logged in\n"}
 }
 
 // LoggedOut is what `gh auth status` answers when no host is logged in.
@@ -226,6 +231,13 @@ func LandArgs(slug string, landing forge.Landing) []string {
 // branchPath is the branch as it stands in a URL path, each of its segments escaped.
 func DeleteBranchArgs(host, repo, branchPath string) []string {
 	return []string{"api", "--hostname", host, "-X", "DELETE", "repos/" + repo + "/git/refs/heads/" + branchPath}
+}
+
+// RulesArgs is the argv of the read of the ruleset rules that apply to a branch of the repository
+// owner/name on host; branchPath is the branch as it stands in a URL path, each of its segments
+// escaped.
+func RulesArgs(host, repo, branchPath string) []string {
+	return []string{"api", "--hostname", host, "--paginate", "repos/" + repo + "/rules/branches/" + branchPath}
 }
 
 // ChecksArgs is the argv pattern of the read of pull request number's checks.

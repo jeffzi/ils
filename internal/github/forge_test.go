@@ -96,7 +96,7 @@ func createArgs() []string {
 
 func headArgs() []string { return ghtest.HeadArgs(engineSlug, pullNumber) }
 
-func rulesArgs() []string { return pagedAPIArgs("rules/branches/" + trunk) }
+func rulesArgs() []string { return ghtest.RulesArgs(engineHost, "ada/engine", trunk) }
 
 func messageArgs() []string { return ghtest.MessageArgs(engineHost, "ada", "engine", pullNumber) }
 

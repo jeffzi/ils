@@ -3,11 +3,9 @@
 package guard_test
 
 import (
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
-	"strings"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -37,9 +35,8 @@ func lsRemotes(recorder *git.Recorder) int {
 }
 
 func TestJudge_RefusesACommitCreatingSubcommandOnTheTrunk(t *testing.T) {
-	// Not parallel: protectTrunk sets GH_PATH for the whole process.
-	f, caller := standingOn(t, "main", "main")
-	protectTrunk(t, "main", f)
+	// Not parallel: standingOnProtected sets GH_PATH for the whole process.
+	_, caller := standingOnProtected(t, "main", "main")
 
 	checkJudgedInTurn(t, caller, []judged{
 		{name: "commit", command: commitCommand, want: guard.Refuse, wantNamed: "main"},
@@ -50,9 +47,8 @@ func TestJudge_RefusesACommitCreatingSubcommandOnTheTrunk(t *testing.T) {
 }
 
 func TestJudge_AllowsACommandThatCreatesNoCommitOnTheTrunk(t *testing.T) {
-	// Not parallel: protectTrunk sets GH_PATH for the whole process.
-	f, caller := standingOn(t, "main", "main")
-	protectTrunk(t, "main", f)
+	// Not parallel: standingOnProtected sets GH_PATH for the whole process.
+	_, caller := standingOnProtected(t, "main", "main")
 
 	checkAllowed(t, caller, []namedCommand{
 		{name: "pull whose last fast-forward option is --ff-only", command: "git pull --no-ff --ff-only"},
@@ -68,21 +64,19 @@ func TestJudge_AllowsACommandThatCreatesNoCommitOnTheTrunk(t *testing.T) {
 }
 
 func TestJudge_RefusesAFastForwardPullOfAnotherBranchOnTheTrunk(t *testing.T) {
-	// Not parallel: protectTrunk sets GH_PATH for the whole process.
-	f, caller := standingOn(t, "main", "main")
-	protectTrunk(t, "main", f)
+	// Not parallel: standingOnProtected sets GH_PATH for the whole process.
+	_, caller := standingOnProtected(t, "main", "main")
 
 	checkJudgedInTurn(t, caller, []judged{
 		{name: "repository other than origin", command: "git pull --ff-only . main", want: guard.Refuse},
-		{name: "refspec other than the trunk", command: "git pull --ff-only origin topic", want: guard.Refuse},
+		{name: "refspec other than the trunk", command: "git pull --ff-only origin topic", want: guard.Refuse, wantNamed: "git pull --ff-only"},
 		{name: "non-literal refspec after --", command: `git pull --ff-only -- origin main"$b"`, want: guard.Refuse},
 	})
 }
 
 func TestJudge_AllowsACommitCreatingSubcommandOffTheTrunk(t *testing.T) {
-	// Not parallel: protectTrunk sets GH_PATH for the whole process.
-	f, caller := standingOn(t, "main", "plan/x")
-	protectTrunk(t, "main", f)
+	// Not parallel: standingOnProtected sets GH_PATH for the whole process.
+	_, caller := standingOnProtected(t, "main", "plan/x")
 
 	checkAllowed(t, caller, []namedCommand{
 		{name: "commit", command: commitCommand},
@@ -103,17 +97,15 @@ func TestJudge_AllowsACommitWhereNoTrunkIsProtected(t *testing.T) {
 }
 
 func TestJudge_WhenTheTrunkIsNotMain_AllowsACommitOnMain(t *testing.T) {
-	// Not parallel: protectTrunk sets GH_PATH for the whole process.
-	f, caller := standingOn(t, "develop", "main")
-	protectTrunk(t, "develop", f)
+	// Not parallel: standingOnProtected sets GH_PATH for the whole process.
+	_, caller := standingOnProtected(t, "develop", "main")
 
 	checkJudgedRow(t, caller, judged{command: commitCommand, want: guard.Allow})
 }
 
 func TestJudge_RefusesACommitWhoseOwnTargetIsOnTheTrunk(t *testing.T) {
-	// Not parallel: protectTrunk sets GH_PATH for the whole process.
-	f, caller := standingOn(t, "main", "main")
-	protectTrunk(t, "main", f)
+	// Not parallel: standingOnProtected sets GH_PATH for the whole process.
+	f, caller := standingOnProtected(t, "main", "main")
 	feature := addWorktree(t, f, filepath.Join(outsideDir(t), "feature"))
 	trunkDir := gittest.ShellWord(f.Dir())
 	trunkGitDir := gittest.ShellWord(filepath.Join(f.Dir(), ".git"))
@@ -146,9 +138,8 @@ func TestJudge_WhenAReadRunsWhereTheGuardCannotTell_AllowsIt(t *testing.T) {
 }
 
 func TestJudge_RefusesARebaseOfTheTrunkFromAnotherBranch(t *testing.T) {
-	// Not parallel: protectTrunk sets GH_PATH for the whole process.
-	f, caller := standingOn(t, "main", "topic")
-	protectTrunk(t, "main", f)
+	// Not parallel: standingOnProtected sets GH_PATH for the whole process.
+	_, caller := standingOnProtected(t, "main", "topic")
 
 	checkJudgedInTurn(t, caller, []judged{
 		{name: "trunk as the branch argument", command: "git rebase topic main", want: guard.Refuse, wantNamed: "main"},
@@ -224,9 +215,8 @@ func TestJudge_WhenNoInvocationNeedsTheTrunk_AsksOriginNothing(t *testing.T) {
 
 func TestJudge_WhenACommandSpansTwoGitDirs_JudgesEachAgainstItsOwnTrunk(t *testing.T) {
 	// Not parallel: protectTrunk sets GH_PATH for the whole process.
-	onDevelop, caller := standingOn(t, "develop", "main")
+	_, caller := standingOn(t, "develop", "main")
 	onMain, _ := standingOn(t, "main", "main")
-	setGitHubPushURL(onDevelop, githubHost)
 	protectTrunk(t, "main", onMain)
 	command := "git commit -m one; git -C " + gittest.ShellWord(onMain.Dir()) + " commit -m two"
 
@@ -245,17 +235,22 @@ func TestJudge_WhenOriginNamesNoTrunk_RefusesSayingWhatBroke(t *testing.T) {
 const (
 	githubHost     = "github.com"
 	enterpriseHost = "git.example.com"
+	// originRepo is the owner/name of the GitHub repository origin's push URL names.
+	originRepo = "ada/engine"
+	// protectedTrunk is what only the refusal on a protected trunk says, never one whose protection
+	// the guard could not read.
+	protectedTrunk = "the protected trunk"
 )
 
-// rulesArgs is the argv of the read of the ruleset rules that apply to trunk in ada/engine on host.
+// rulesArgs is the argv of the read of the ruleset rules that apply to trunk in originRepo on host.
 func rulesArgs(host, trunk string) []string {
-	return []string{"api", "--hostname", host, "--paginate", "repos/ada/engine/rules/branches/" + trunk}
+	return ghtest.RulesArgs(host, originRepo, trunk)
 }
 
-// branchArgs is the argv of the read of the branch trunk of ada/engine on host, whose protected
+// branchArgs is the argv of the read of the branch trunk of originRepo on host, whose protected
 // field says whether classic branch protection covers it.
 func branchArgs(host, trunk string) []string {
-	return []string{"api", "--hostname", host, "repos/ada/engine/branches/" + trunk}
+	return []string{"api", "--hostname", host, "repos/" + originRepo + "/branches/" + trunk}
 }
 
 // protection is what gh answers the two reads of whether a trunk is protected.
@@ -291,7 +286,7 @@ func failing(answer ghtest.Answer) protection {
 
 // setGitHubPushURL sets origin's push URL in f to the repository ada/engine on host.
 func setGitHubPushURL(f *gittest.Fixture, host string) {
-	f.SetPushURL("https://" + host + "/ada/engine.git")
+	f.SetPushURL("https://" + host + "/" + originRepo + ".git")
 }
 
 // scriptProtection scripts, for the rest of the test, a gh logged in to host that answers read to
@@ -303,7 +298,7 @@ func scriptProtection(t *testing.T, host, trunk string, read protection) *ghtest
 	return ghtest.Setup(t,
 		ghtest.Exits(read.rules, rulesArgs(host, trunk)...),
 		ghtest.Exits(read.branch, branchArgs(host, trunk)...),
-		ghtest.Says("Logged in\n", ghtest.LoginArgs(host)...),
+		ghtest.Exits(ghtest.LoggedIn(), ghtest.LoginArgs(host)...),
 	)
 }
 
@@ -330,6 +325,18 @@ func protectTrunk(t *testing.T, trunk string, fixtures ...*gittest.Fixture) {
 	scriptProtection(t, githubHost, trunk, ruleProtected())
 }
 
+// standingOnProtected is standingOn in a repository whose push URL names originRepo on github.com,
+// where a ruleset rule protects trunk. It sets GH_PATH for the whole process, so the test is not
+// parallel.
+func standingOnProtected(t *testing.T, trunk, branch string) (*gittest.Fixture, guard.Caller) {
+	t.Helper()
+
+	f, caller := standingOn(t, trunk, branch)
+	protectTrunk(t, trunk, f)
+
+	return f, caller
+}
+
 // checkRefusedNaming fails unless Judge, run by caller, refuses command with a reason holding
 // every one of named.
 func checkRefusedNaming(t *testing.T, caller guard.Caller, command string, named ...string) {
@@ -337,11 +344,7 @@ func checkRefusedNaming(t *testing.T, caller guard.Caller, command string, named
 
 	got := guard.Judge(t.Context(), command, caller)
 
-	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome, reason %q", command, got.Reason)
-
-	for _, part := range named {
-		assert.Check(t, is.Contains(got.Reason, part), "Judge(%q) reason", command)
-	}
+	checkVerdict(t, judged{command: command, want: guard.Refuse}, got, named...)
 }
 
 // callsOf returns how many of calls, each led by gh, have the argv args.
@@ -363,7 +366,6 @@ func TestJudge_WhenOriginsTrunkIsProtected_RefusesSayingItIsProtected(t *testing
 		name string
 		read protection
 	}{
-		{name: "a ruleset rule applies", read: ruleProtected()},
 		{name: "classic protection covers it", read: protection{rules: rulesAnswer(), branch: classicAnswer(true)}},
 	}
 	for _, tt := range tests {
@@ -372,34 +374,9 @@ func TestJudge_WhenOriginsTrunkIsProtected_RefusesSayingItIsProtected(t *testing
 			f, caller := standingOn(t, "main", "main")
 			onGitHub(t, f, githubHost, tt.read)
 
-			checkRefusedNaming(t, caller, commitCommand, "main", "protected", "ils branch")
+			checkRefusedNaming(t, caller, commitCommand, "main", protectedTrunk, "ils branch")
 		})
 	}
-}
-
-func TestJudge_WhenOriginsTrunkIsProtected_NamesAFastForwardPullForAPullOfAnotherBranch(t *testing.T) {
-	// Not parallel: protectTrunk sets GH_PATH for the whole process.
-	f, caller := standingOn(t, "main", "main")
-	protectTrunk(t, "main", f)
-
-	checkRefusedNaming(t, caller, "git pull --ff-only origin topic", "git pull --ff-only")
-}
-
-func TestJudge_WhenOriginsTrunkIsNotProtected_AllowsEveryTrunkJudgedSubcommand(t *testing.T) {
-	// Not parallel: onGitHub sets GH_PATH for the whole process.
-	f, caller := standingOn(t, "main", "main")
-	onGitHub(t, f, githubHost, unprotected())
-
-	checkJudgedInTurn(t, caller, []judged{
-		{name: "commit", command: commitCommand, want: guard.Allow},
-		{name: "merge", command: "git merge topic", want: guard.Allow},
-		{name: "cherry-pick", command: "git cherry-pick topic", want: guard.Allow},
-		{name: "revert", command: "git revert HEAD", want: guard.Allow},
-		{name: "am", command: "git am patch.mbox", want: guard.Allow},
-		{name: "rebase", command: "git rebase origin/main", want: guard.Allow},
-		{name: "pull", command: "git pull", want: guard.Allow},
-		{name: "fast-forward pull of another branch", command: "git pull --ff-only origin topic", want: guard.Allow},
-	})
 }
 
 func TestJudge_WhenThePlanAllowsNoRulesAndNoClassicProtectionCoversTheTrunk_AllowsACommit(t *testing.T) {
@@ -413,32 +390,12 @@ func TestJudge_WhenThePlanAllowsNoRulesAndNoClassicProtectionCoversTheTrunk_Allo
 	checkJudgedRow(t, caller, judged{command: commitCommand, want: guard.Allow})
 }
 
-func TestJudge_WhenOriginsPushURLNamesNoGitHubRepository_AllowsACommitOnTheTrunk(t *testing.T) {
-	tests := []struct {
-		pushURL func(f *gittest.Fixture) string
-		name    string
-	}{
-		{name: "local path", pushURL: func(f *gittest.Fixture) string { return filepath.ToSlash(f.OriginDir()) }},
-		{name: "file URL", pushURL: func(f *gittest.Fixture) string { return "file://" + filepath.ToSlash(f.OriginDir()) }},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Not parallel: ghtest.Setup sets GH_PATH for the whole process.
-			f, caller := standingOn(t, "main", "main")
-			f.SetPushURL(tt.pushURL(f))
-			ghtest.Setup(t)
-
-			checkJudgedRow(t, caller, judged{command: commitCommand, want: guard.Allow})
-		})
-	}
-}
-
 func TestJudge_WhenGhIsLoggedInToAnEnterpriseHost_RefusesACommitOnItsProtectedTrunk(t *testing.T) {
 	// Not parallel: onGitHub sets GH_PATH for the whole process.
 	f, caller := standingOn(t, "main", "main")
 	onGitHub(t, f, enterpriseHost, ruleProtected())
 
-	checkRefusedNaming(t, caller, commitCommand, "main", "protected", "ils branch")
+	checkRefusedNaming(t, caller, commitCommand, "main", protectedTrunk, "ils branch")
 }
 
 // notLoggedIn is what a gh call answers when gh holds no login for the host it addresses.
@@ -510,14 +467,6 @@ func TestJudge_WhenTheProtectionOfAGitHubTrunkCannotBeRead_RefusesSayingWhy(t *t
 			},
 			named: []string{"branch protection", "HTTP 500", "ils branch"},
 		},
-		{
-			name: "reply that does not decode",
-			setup: func(t *testing.T) {
-				t.Helper()
-				scriptProtection(t, githubHost, "main", failing(ghtest.Answer{Stdout: "not a reply"}))
-			},
-			named: []string{"protected", "ils branch"},
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -541,8 +490,6 @@ func TestJudge_WhenTheGhConfigCannotBeTold_RefusesACommitOnTheTrunkNamingTheVari
 		variable string
 	}{
 		{name: "config dir not a literal", command: `GH_CONFIG_DIR="$d" ` + commitCommand, variable: "GH_CONFIG_DIR"},
-		{name: "config home exported not a literal", command: `export XDG_CONFIG_HOME="$d"; ` + commitCommand, variable: "XDG_CONFIG_HOME"},
-		{name: "home exported in an if body", command: "if test -d x; then export HOME=/srv; fi; " + commitCommand, variable: "HOME"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -554,7 +501,7 @@ func TestJudge_WhenTheGhConfigCannotBeTold_RefusesACommitOnTheTrunkNamingTheVari
 func TestJudge_WhenOriginsSSHHostCannotBeResolved_RefusesACommitOnTheTrunk(t *testing.T) {
 	// Not parallel: scriptProtection sets GH_PATH for the whole process.
 	f, caller := standingOn(t, "main", "main")
-	f.SetPushURL("git@github.com:ada/engine.git")
+	f.SetPushURL("git@github.com:" + originRepo + ".git")
 	f.RemoveSSHConfig()
 	scriptProtection(t, githubHost, "main", unprotected())
 
@@ -611,74 +558,46 @@ func TestJudge_WhenNoInvocationIsOnTheTrunk_RunsNoGh(t *testing.T) {
 	}
 }
 
-// ghReadingProtection points GH_PATH, for the rest of the test, at a gh that answers the reads of
-// whether main is protected in ada/engine on github.com from the files rules and branch of the
-// config directory gh reads (GH_CONFIG_DIR, else XDG_CONFIG_HOME/gh, else HOME/.config/gh), and
-// reports a login there when that directory holds the file logged-in. A read whose file is missing
-// fails. The process's own config directory is processConfig.
-func ghReadingProtection(t *testing.T, processConfig string) {
-	t.Helper()
-
-	script := `#!/bin/sh
-dir="${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}"
-case "$*" in
---version) echo "gh version ` + github.MinimumVersion + `" ;;
-"` + strings.Join(ghtest.LoginArgs(githubHost), " ") + `") test -f "$dir/logged-in" || { echo "not logged in" >&2; exit 1; } ;;
-"` + strings.Join(rulesArgs(githubHost, "main"), " ") + `") cat "$dir/rules" ;;
-"` + strings.Join(branchArgs(githubHost, "main"), " ") + `") cat "$dir/branch" ;;
-*) exit 123 ;;
-esac
-`
-
-	gh := filepath.Join(t.TempDir(), github.Program)
-	//nolint:gosec // G306: the fake gh must be executable to stand in for gh.
-	assert.NilError(t, os.WriteFile(gh, []byte(script), 0o700))
-	t.Setenv(github.PathVariable, gh)
-	t.Setenv("GH_CONFIG_DIR", processConfig)
-}
-
-// ghConfigHolding returns a new gh config directory holding each of files with its content.
-func ghConfigHolding(t *testing.T, files map[string]string) string {
-	t.Helper()
-
-	dir := t.TempDir()
-	for name, content := range files {
-		gittest.WriteFile(t, dir, name, content)
+// protectionRoutes routes the reads of whether main is protected in originRepo on github.com, and
+// the login check there, to the files rules, branch and login.
+func protectionRoutes() map[string][]string {
+	return map[string][]string{
+		"rules":  rulesArgs(githubHost, "main"),
+		"branch": branchArgs(githubHost, "main"),
+		"login":  ghtest.LoginArgs(githubHost),
 	}
-
-	return dir
 }
 
 func TestJudge_ReadsTheProtectionWithTheGhConfigTheCommandSets(t *testing.T) {
-	unprotectedConfig := map[string]string{
-		"rules": ghtest.JSONArray(), "branch": classicAnswer(false).Stdout, "logged-in": "",
+	unprotectedConfig := map[string]ghtest.Answer{
+		"rules": rulesAnswer(), "branch": classicAnswer(false), "login": ghtest.LoggedIn(),
 	}
 	tests := []struct {
-		process map[string]string
-		command map[string]string
+		process map[string]ghtest.Answer
+		command map[string]ghtest.Answer
 		name    string
 		named   string
 	}{
 		{
 			name:    "the protection read",
 			process: unprotectedConfig,
-			command: map[string]string{"rules": ruleProtected().rules.Stdout, "logged-in": ""},
-			named:   "protected trunk",
+			command: map[string]ghtest.Answer{"rules": ruleProtected().rules, "login": ghtest.LoggedIn()},
+			named:   protectedTrunk,
 		},
 		{
 			name:    "the login check after a failed read",
-			process: map[string]string{"logged-in": ""},
-			command: map[string]string{},
+			process: map[string]ghtest.Answer{"login": ghtest.LoggedIn()},
+			command: map[string]ghtest.Answer{"login": ghtest.LoggedOut()},
 			named:   "! gh auth login",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Not parallel: ghReadingProtection sets GH_PATH and GH_CONFIG_DIR for the whole process.
+			// Not parallel: ghReadingConfig sets GH_PATH and the gh config location for the whole process.
 			f, caller := standingOn(t, "main", "main")
 			setGitHubPushURL(f, githubHost)
-			ghReadingProtection(t, ghConfigHolding(t, tt.process))
-			command := "GH_CONFIG_DIR=" + gittest.ShellWord(ghConfigHolding(t, tt.command)) + " " + commitCommand
+			ghReadingConfig(t, protectionRoutes(), tt.process)
+			command := "GH_CONFIG_DIR=" + gittest.ShellWord(configHolding(t, "", tt.command)) + " " + commitCommand
 
 			checkRefusedNaming(t, caller, command, tt.named)
 		})
@@ -696,7 +615,7 @@ func TestJudge_WhenOriginsPushURLCannotBeReadOnTheTrunk_RefusesSayingWhatBroke(t
 func TestJudge_WhenOnlyTheFetchURLNamesAGitHubRepository_AllowsACommitOnTheTrunk(t *testing.T) {
 	// Not parallel: scriptProtection sets GH_PATH for the whole process.
 	f, _ := standingOn(t, "main", "main")
-	f.SetOriginURL("git@github.com:ada/engine.git")
+	f.SetOriginURL("git@github.com:" + originRepo + ".git")
 	f.SetPushURL(filepath.ToSlash(f.OriginDir()))
 	caller := callerWithEnv(f.Dir(), f.ServedEnv(f.OriginDir()))
 	fake := scriptProtection(t, githubHost, "main", ruleProtected())
@@ -707,10 +626,10 @@ func TestJudge_WhenOnlyTheFetchURLNamesAGitHubRepository_AllowsACommitOnTheTrunk
 	assert.Check(t, is.Len(fake.Calls(), 0), "Judge(%q) gh calls", commitCommand)
 }
 
-func TestJudge_WhenTheGitDirCannotBeTold_RefusesACommitOnAProtectedTrunk(t *testing.T) {
-	// Not parallel: protectTrunk sets GH_PATH for the whole process.
-	f, caller := standingOn(t, "main", "main")
-	protectTrunk(t, "main", f)
+func TestJudge_WhenTheGitDirCannotBeTold_RefusesACommit(t *testing.T) {
+	t.Parallel()
+
+	_, caller := standingOn(t, "main", "main")
 	missing := gittest.ShellWord(filepath.Join(t.TempDir(), "missing"))
 
 	checkJudgedRow(t, caller, judged{

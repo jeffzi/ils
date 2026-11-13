@@ -107,9 +107,8 @@ func TestJudge_WhenAnAndListSwitchesOffTheTrunk_AllowsWhatFollowsOnTheNamedBranc
 }
 
 func TestJudge_WhenAnAndListSwitchesToTheTrunk_RefusesACommitAfterIt(t *testing.T) {
-	// Not parallel: protectTrunk sets GH_PATH for the whole process.
-	f, caller := standingOn(t, "main", "topic")
-	protectTrunk(t, "main", f)
+	// Not parallel: standingOnProtected sets GH_PATH for the whole process.
+	_, caller := standingOnProtected(t, "main", "topic")
 
 	checkJudgedInInTurn(t, caller, []placed{
 		{name: "switch to the trunk", command: "git switch main && " + commitCommand},

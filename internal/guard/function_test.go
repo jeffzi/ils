@@ -66,12 +66,11 @@ func TestJudge_WhenACallRunsABodyWhoseCommitLandsOnTheTrunk_RefusesNamingTheTrun
 }
 
 func TestJudge_WhenACallRunsABodyOffTheTrunk_Allows(t *testing.T) {
-	// Not parallel: protectTrunk sets GH_PATH for the whole process.
-	f, caller := standingOn(t, "main", "topic")
-	protectTrunk(t, "main", f)
+	// Not parallel: standingOnProtected sets GH_PATH for the whole process.
+	_, caller := standingOnProtected(t, "main", "topic")
 
-	checkJudgedInTurn(t, caller, []judged{
-		{name: "commit defined and called on a topic branch", command: "f() { git commit -m x; }; f", want: guard.Allow},
+	checkAllowed(t, caller, []namedCommand{
+		{name: "commit defined and called on a topic branch", command: "f() { git commit -m x; }; f"},
 	})
 }
 
