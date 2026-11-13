@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"github.com/jeffzi/ils/internal/child"
@@ -26,10 +27,11 @@ func Argv(args []string) []string {
 
 const installURL = "https://cli.github.com"
 
-// MinimumVersion is the oldest release of gh that ils works with. Every older release fails
-// `gh pr edit` against GitHub, even with no project flag, because it still reads the Projects
-// (classic) fields that GitHub's GraphQL API now rejects.
-const MinimumVersion = "2.73.0"
+// MinimumVersion is the oldest release of gh that ils works with: the first whose `gh auth status`
+// prints JSON, which CheckLogin reads. Releases older than 2.73.0 also fail `gh pr edit` against
+// GitHub, even with no project flag, because they still read the Projects (classic) fields that
+// GitHub's GraphQL API now rejects.
+const MinimumVersion = "2.81.0"
 
 // versionPrefix is what the first line of `gh --version` reads ahead of the version.
 const versionPrefix = "gh version "
@@ -138,17 +140,49 @@ func VersionOf(line string) string {
 	return version
 }
 
-// CheckLogin reports whether gh is logged in to host.
+// loginStatus is the part of `gh auth status --json hosts` that CheckLogin reads: the accounts gh
+// holds a login for, by host.
+type loginStatus struct {
+	Hosts map[string][]loginAccount `json:"hosts"`
+}
+
+type loginAccount struct {
+	// State is "success" when gh's check of the account passed.
+	State string `json:"state"`
+	// Error is gh's text for a check that did not pass.
+	Error string `json:"error"`
+	// Active marks the account gh uses on the host.
+	Active bool `json:"active"`
+}
+
+// CheckLogin returns nil when the account gh uses on host passes gh's check of it.
 //
-// A gh that cannot be found is a *child.ToolMissingError and a gh that is not
-// logged in to host is a *forge.NotLoggedInError.
+// A gh that cannot be found is a *child.ToolMissingError, and one that lists no account for host
+// is a *forge.NotLoggedInError. Every other failure is an error that is not a
+// *forge.NotLoggedInError: a check of the active account that did not pass, holding gh's text for
+// it; accounts listed for host with none active; a non-zero exit of gh, such as one too old for
+// --json, wrapping the *child.ExitError; and stdout that does not decode, a *DecodeError.
 func (r Runner) CheckLogin(ctx context.Context, host string) error {
-	_, err := r.Run(ctx, "auth", "status", "--hostname", host)
-	if _, ok := errors.AsType[*child.ExitError](err); ok {
-		return &forge.NotLoggedInError{Host: host, Err: err}
+	status, err := runDecoded[loginStatus](ctx, r, "auth", "status", "--hostname", host, "--json", "hosts")
+	if err != nil {
+		return err
 	}
 
-	return err
+	accounts := status.Hosts[host]
+	if len(accounts) == 0 {
+		return &forge.NotLoggedInError{Host: host}
+	}
+
+	active := slices.IndexFunc(accounts, func(account loginAccount) bool { return account.Active })
+	if active < 0 {
+		return fmt.Errorf("check the login of %s to %s: no account is active", Program, host)
+	}
+
+	if account := accounts[active]; account.State != "success" {
+		return fmt.Errorf("check the login of %s to %s: %s", Program, host, account.Error)
+	}
+
+	return nil
 }
 
 // runDecoded runs gh with args and decodes its stdout into a T.

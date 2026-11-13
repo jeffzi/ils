@@ -135,9 +135,10 @@ release commit on origin's default branch even after later merges. The `write-re
 ## The guard
 
 The guard judges a shell command before an agent runs it, and answers allow, refuse, or ask. It
-refuses `git` operations that destroy work or skip the hooks, every `git push`, commits on the
-default branch, and `gh` calls that land or publish a change without the checks of `ils`. It asks
-you before `ils merge`, `ils release`, `gh pr merge`, and `gh release create`.
+refuses `git` operations that destroy work or skip the hooks, and every `git push`. It also refuses
+commits on a default branch that GitHub protects, and `gh` calls that land or publish a change
+without the checks of `ils`. It asks you before `ils merge`, `ils release`, `gh pr merge`, and
+`gh release create`.
 
 The guard runs on macOS and Linux.
 [Use with Claude Code](#use-with-claude-code) sets it up.
@@ -157,7 +158,7 @@ To build:
 To run:
 
 - [`git`](https://git-scm.com/downloads) 2.34.1 or later, on `PATH`.
-- [`gh`](https://cli.github.com) 2.73.0 or later, installed and logged in to the host of `origin`
+- [`gh`](https://cli.github.com) 2.81.0 or later, installed and logged in to the host of `origin`
   (`gh auth login --hostname <host>`). `ils` owns no token and no login flow.
 - A remote named `origin` on GitHub that you can push to and that is not a fork.
 

@@ -204,7 +204,7 @@ func TestJudge_WhenAFileIsSourced_AllowsWhatNeedsNoKnownDirectory(t *testing.T) 
 
 func TestJudge_WhenAFileIsSourcedBeforeAGhAlias_RefusesNamingTheConfigVariable(t *testing.T) {
 	// Not parallel: it sets GH_PATH and the gh config location for the whole process.
-	ghReadingConfig(t, "sy: repo view\n")
+	ghReadingConfig(t, aliasRoutes(), aliasesHolding("sy: repo view\n"))
 
 	checkJudgedRow(t, callerOutsideAnyRepository(t), judged{command: "source env.sh && gh sy", want: guard.Refuse, wantNamed: "GH_CONFIG_DIR"})
 }

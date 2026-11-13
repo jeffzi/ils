@@ -286,9 +286,14 @@ func (f *Forge) requiredChecks(ctx context.Context, repo forge.Repo, query forge
 // A free private repository answers 403 with an upgrade message to the read: the plan does not
 // allow rules, so none applies and a squash merge is allowed. Any other 403 is an error.
 func (f *Forge) TrunkProtection(ctx context.Context, repo forge.Repo, trunk string) (forge.Protection, error) {
+	return TrunkProtection(ctx, f.runner(), repo, trunk)
+}
+
+// TrunkProtection is Forge.TrunkProtection, with gh run by runner.
+func TrunkProtection(ctx context.Context, runner Runner, repo forge.Repo, trunk string) (forge.Protection, error) {
 	args := repoAPIArgs(repo, "rules/branches/"+branchPath(trunk), "--paginate")
 
-	pages, err := readEachPage[[]branchRule](ctx, f.runner(), args)
+	pages, err := readEachPage[[]branchRule](ctx, runner, args)
 	if exitErr, ok := errors.AsType[*child.ExitError](err); ok &&
 		strings.Contains(exitErr.Stderr, forbiddenStatus) && strings.Contains(exitErr.Stderr, freePlanRefusal) {
 		return forge.Protection{Rules: forge.RulesUnavailable, SquashAllowed: true}, nil
@@ -299,6 +304,22 @@ func (f *Forge) TrunkProtection(ctx context.Context, repo forge.Repo, trunk stri
 	}
 
 	return protectionOf(slices.Concat(pages...)), nil
+}
+
+// branchView is what GitHub's read of a branch tells of its classic branch protection.
+type branchView struct {
+	Protected bool `json:"protected"`
+}
+
+// ClassicProtected reports whether classic branch protection covers branch, with gh run by runner.
+// Rulesets are read apart, by TrunkProtection.
+func ClassicProtected(ctx context.Context, runner Runner, repo forge.Repo, branch string) (bool, error) {
+	view, err := runDecoded[branchView](ctx, runner, repoAPIArgs(repo, "branches/"+branchPath(branch))...)
+	if err != nil {
+		return false, err
+	}
+
+	return view.Protected, nil
 }
 
 // protectionOf folds the rules on a branch into whether any applies, the checks they require, each

@@ -60,6 +60,13 @@ Refuse a `git`, `gh`, or `ils` call that destroys work, skips checks, pushes, or
 however rare it is: `git repack -a -d` drops unreachable objects at once, the loss `git prune` is
 refused for.
 
+A commit lands a change only once it is pushed. An agent's push is what reaches origin and can
+start a deployment, so the guard refuses every agent push. A local commit on an unprotected default
+branch lands nothing: you push it yourself, and the guard lets the agent make it. On a default
+branch that GitHub protects, a rule such as a required pull request or required checks can reject
+your own push too. The guard refuses the commit on any protected default branch rather than judge
+which rules block a push.
+
 Refuse it in every spelling the tool itself accepts:
 
 - an abbreviated long option, which git accepts;
@@ -103,7 +110,9 @@ it. That happens when the word is:
   --force`);
 - a `-c` value;
 - the directory or git dir of a command that may land on the default branch (`git commit`, `git
-  merge`).
+  merge`);
+- the `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, or `HOME` of such a command on the default branch, since
+  it decides which `gh` login reads whether the branch is protected.
 
 Anywhere else, the guard passes over the word: `python3 x.py "$f"` and `sed -n "${n}p" "$f"` run.
 

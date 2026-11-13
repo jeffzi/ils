@@ -431,7 +431,8 @@ func (w *walker) placed(inv Invocation, sc *scope) Invocation {
 		inv.Target = sc.targetOf(inv)
 	}
 
-	if inv.Tool == GH {
+	// A git invocation's gh is the one the trunk rule reads the trunk's protection with.
+	if inv.Tool == GH || inv.Tool == Git {
 		inv.ghConfig = sc.commandEnv(inv).ghConfig
 	}
 

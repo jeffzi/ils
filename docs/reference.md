@@ -55,6 +55,7 @@ up, and what each command is for. CI stands for continuous integration throughou
       - [Git options and arguments](#git-options-and-arguments)
     - [Git operations that destroy work or skip checks](#git-operations-that-destroy-work-or-skip-checks)
     - [Pushes and the default branch](#pushes-and-the-default-branch)
+      - [Protection of the default branch](#protection-of-the-default-branch)
     - [ils and gh commands](#ils-and-gh-commands)
     - [ils and gh commands the guard allows or asks about](#ils-and-gh-commands-the-guard-allows-or-asks-about)
   - [Guard JSON output](#guard-json-output)
@@ -612,7 +613,7 @@ this list, which `ils push` finds after the push. It refuses:
   one is not an `https://`, `ssh://git@`, or `git@host:` repository URL);
 - a missing `git` or `gh`;
 - a `git` older than 2.34.1, or one whose version `ils` cannot read;
-- a `gh` older than 2.73.0, or one whose version `ils` cannot read;
+- a `gh` older than 2.81.0, or one whose version `ils` cannot read;
 - a `gh` not logged in to origin's host (this is also how `ils` refuses a host that is not GitHub);
 - a fork, or a repository you cannot push to;
 - any word after `push` other than `--wait`, `--json`, `-d` or `--debug`, `--no-color`, `--help`,
@@ -1124,8 +1125,8 @@ The guard refuses:
 - a command of a function body the command defines. The guard judges each one where the function
   is declared, and again at each call, in the directory, environment, redirects, and HEAD of the
   call. A declaration alone changes nothing for the commands after it:
-  `f() { git commit -am wip; }; git switch main && f` is refused as a commit on the default branch,
-  and
+  `f() { git commit -am wip; }; git switch main && f` is refused as a commit on a protected
+  default branch, and
   `T() { uv run pytest -q "$@"; }; T -k x > out.txt` passes. A call of one whose body may change
   directory leaves the directory unknown after it;
 - a call of a function the command defines past the 256 walks of function bodies the guard makes
@@ -1222,14 +1223,19 @@ The guard refuses:
 
 - every `git push`, `git send-pack`, and `git http-push`, in any repository: `ils push` is the way
   an agent pushes a branch;
-- in a repository with an `origin`, on its default branch: `commit`, `merge`, `cherry-pick`,
-  `revert`, `am`, `rebase`, `pull` without `--ff-only`, and `pull --ff-only` naming a repository or
-  branch other than `origin <default branch>`. The reason names `ils branch <name>`.
+- in a repository with an `origin`, on its default branch when GitHub protects that branch:
+  `commit`, `merge`, `cherry-pick`, `revert`, `am`, `rebase`, `pull` without `--ff-only`, and
+  `pull --ff-only` naming a repository or branch other than `origin <default branch>`. The reason
+  says the default branch is protected and names `ils branch <name>`. For a `pull --ff-only` that
+  names another repository or branch, or whose arguments the guard cannot read, the reason names
+  `git pull --ff-only` alone. It does not mention the protection.
   A `git rebase` naming the default branch as the branch to rebase counts as one on it. The guard
   asks origin for the default branch once per command and git dir, and falls back to the cached
   `refs/remotes/origin/HEAD`. With neither, it refuses and names
   `git remote set-head origin --auto`, which caches the head on any supported git. The guard
   refuses `set-head` on `origin` itself;
+- on that default branch, the same subcommands when the guard cannot read whether GitHub protects
+  it, as listed under [Protection of the default branch](#protection-of-the-default-branch);
 - one of those where the guard cannot tell the directory, the target, or HEAD: after `cd -`,
   `popd`, or a `cd` to a non-literal, and after a `git` or `gh` command that moves HEAD earlier in
   the list (`git switch main; git commit`). A HEAD move in a background job or a pipe stage, and a
@@ -1245,12 +1251,42 @@ The guard refuses:
   The guard judges the commands later in the same `&&` list that run in the same git dir on that
   branch. This lasts until a command that may move HEAD or a call of a function the command
   declares. The guard allows `git switch -c topic && git commit`, and refuses
-  `git switch main && git commit` as a commit on the default branch.
+  `git switch main && git commit` as a commit on a protected default branch.
 
   A switch with any other option (`-q`, `--detach`), with the name joined to its option
   (`--create=topic`), with a start point that is not a literal, to `-`, or to a name holding `@{`
   leaves HEAD unknown. The commands of a function body follow no switch where the function is
   declared; at a call, they follow the switch the call follows.
+
+##### Protection of the default branch
+
+The guard reads the protection only once HEAD is on the default branch, and at most once per
+command and git dir, failure included. It reads the repository that `origin`'s first push URL
+names, since the push is what the protection stops; the fetch URL plays no part. It runs `gh` with
+the `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, and `HOME` the command sets, so it reads with the login the
+agent's own `gh` would use. The default branch is protected when an active ruleset rule applies to
+it (`gh api repos/<owner>/<name>/rules/branches/<branch>`) or classic branch protection covers it
+(the `protected` field of `gh api repos/<owner>/<name>/branches/<branch>`).
+
+| Case                                                                                                      | Verdict                                                                                                 |
+| --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| A ruleset rule or classic protection covers the default branch                                            | Refused, with the reasons listed under [Pushes and the default branch](#pushes-and-the-default-branch). |
+| Neither covers it                                                                                         | Allowed.                                                                                                |
+| A free private repository, whose plan allows no rules, and no classic protection                          | Allowed.                                                                                                |
+| The push URL names no repository: a local path, `file://`, or an ssh host starting with `-`               | Allowed: no GitHub repository holds rules for it.                                                       |
+| A host other than `github.com`, and `gh` is missing or has no login there                                 | Allowed: the guard cannot tell it is GitHub, and `ils push` refuses that origin anyway.                 |
+| `github.com`, and `gh` is missing                                                                         | Refused; the reason says `gh` is missing and names `ils branch <name>`.                                 |
+| `github.com`, and `gh` has no login for it                                                                | Refused; the reason names `! gh auth login --hostname github.com` and `ils branch <name>`.              |
+| Any other failed read: no network, a host `gh` cannot reach, a server error, a reply that does not decode | Refused; the reason says the guard could not read the protection, and why.                              |
+| The guard cannot tell the `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, or `HOME` the agent's `gh` uses             | Refused; the reason names that variable and `ils branch <name>`.                                        |
+| `git` fails to read the push URL, or the host of an ssh URL                                               | Refused, as a failed read.                                                                              |
+
+`gh auth status --hostname <host> --json hosts` runs only after a protection read fails. It tells
+a `gh` that holds no login for the host from one whose login check failed, such as on a host `gh`
+cannot reach, which is a failed read. On the default branch a commit costs the `ls-remote` that
+finds the default branch, plus one `gh api` call when a ruleset protects it and two otherwise. Off
+the default branch, and in a repository with no `origin` or on a detached HEAD, the guard runs no
+`gh`.
 
 #### ils and gh commands
 

@@ -25,9 +25,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Refuse `ils push`, `ils merge`, and `ils release` when any push URL of `origin` names another
   repository than its fetch URL.
 - Make the guard read a trailing lone backslash in an unquoted word as bash does, keeping it.
+- **Breaking:** Require `gh` 2.81.0 or later, since `ils` reads `gh auth status --json` to tell a
+  missing login from a host `gh` cannot reach.
 
 ### Fixed
 
+- Fix `ils push`, `ils merge`, `ils release`, and `ils status` telling you to log in to `gh` when
+  `gh` cannot reach origin's host.
 - Fix `ils merge` deleting a branch whose pull request merged into a base other than the default
   branch, and `ils push` and `ils status` reading that pull request as landed.
 - Fix an `ils` run failing as if origin could not be reached while another run fetched the same

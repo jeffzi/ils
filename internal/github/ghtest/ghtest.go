@@ -164,12 +164,43 @@ func Exits(answer Answer, args ...string) Call {
 // Identity scripts the gh calls of a Forge.Identity that gets past the login check: `gh auth
 // status` answers logged in for host, and the repository view of slug answers view.
 func Identity(host, slug string, view Answer) []Call {
-	return []Call{Says("Logged in\n", LoginArgs(host)...), Exits(view, RepoViewArgs(slug)...)}
+	return []Call{Exits(LoggedIn(host), LoginArgs(host)...), Exits(view, RepoViewArgs(slug)...)}
 }
 
-// LoggedOut is what `gh auth status` answers when no host is logged in.
+// Account is one account that `gh auth status --json hosts` lists for a host.
+type Account struct {
+	// State is "success" when gh's check of the account passed, and "error" when it failed.
+	State string
+	// Error is gh's text for a check that failed.
+	Error string
+	// Active is whether the account is the one gh uses on the host.
+	Active bool
+}
+
+// LoginStatus is what `gh auth status --json hosts` answers when it lists accounts for host.
+func LoginStatus(host string, accounts ...Account) Answer {
+	listed := make([]string, len(accounts))
+	for i, account := range accounts {
+		entry := `{"state":` + quoted(account.State) + `,"active":` + strconv.FormatBool(account.Active)
+		if account.Error != "" {
+			entry += `,"error":` + quoted(account.Error)
+		}
+
+		listed[i] = entry + "}"
+	}
+
+	return Answer{Stdout: `{"hosts":{` + quoted(host) + `:[` + strings.Join(listed, ",") + "]}}\n"}
+}
+
+// LoggedIn is what `gh auth status --json hosts` answers for host when its active account there
+// passes gh's check.
+func LoggedIn(host string) Answer {
+	return LoginStatus(host, Account{State: "success", Active: true})
+}
+
+// LoggedOut is what `gh auth status --json hosts` answers for a host it holds no login for.
 func LoggedOut() Answer {
-	return Answer{Stderr: "You are not logged into any GitHub hosts.\n", Code: 1}
+	return Answer{Stdout: `{"hosts":{}}` + "\n"}
 }
 
 // ServerError is what a gh call answers when GitHub fails it with HTTP 500.
@@ -188,7 +219,7 @@ func VersionArgs() []string {
 
 // LoginArgs is the argv of the login check on host.
 func LoginArgs(host string) []string {
-	return []string{"auth", "status", "--hostname", host}
+	return []string{"auth", "status", "--hostname", host, "--json", "hosts"}
 }
 
 // RepoViewArgs is the argv pattern of the read of a repository's identity; slug is host/owner/name.
@@ -226,6 +257,13 @@ func LandArgs(slug string, landing forge.Landing) []string {
 // branchPath is the branch as it stands in a URL path, each of its segments escaped.
 func DeleteBranchArgs(host, repo, branchPath string) []string {
 	return []string{"api", "--hostname", host, "-X", "DELETE", "repos/" + repo + "/git/refs/heads/" + branchPath}
+}
+
+// RulesArgs is the argv of the read of the ruleset rules that apply to a branch of the repository
+// owner/name on host; branchPath is the branch as it stands in a URL path, each of its segments
+// escaped.
+func RulesArgs(host, repo, branchPath string) []string {
+	return []string{"api", "--hostname", host, "--paginate", "repos/" + repo + "/rules/branches/" + branchPath}
 }
 
 // ChecksArgs is the argv pattern of the read of pull request number's checks.

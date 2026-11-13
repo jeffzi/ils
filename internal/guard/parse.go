@@ -83,8 +83,8 @@ type Invocation struct {
 	// pipedInto are the words, behind any wrapper, of the simple command of the pipe stage that
 	// reads the invocation's stdout; none when no such stage follows it.
 	pipedInto []Word
-	// ghConfig is what the guard knows of where a gh invocation's gh reads its config; zero for
-	// any other tool.
+	// ghConfig is what the guard knows of where gh reads its config when run in the environment of
+	// a gh or git invocation; zero for any other tool.
 	ghConfig ghConfig
 	// Target is where a git invocation points git; zero for any other tool.
 	Target GitTarget
