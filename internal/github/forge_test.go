@@ -240,7 +240,7 @@ func readCases() []readCase {
 	}
 
 	return []readCase{
-		{name: "repo view", run: identity, args: repoViewArgs(), before: []ghtest.Call{ghtest.Says("", loginArgs()...)}},
+		{name: "repo view", run: identity, args: repoViewArgs(), before: []ghtest.Call{ghtest.Exits(ghtest.LoggedIn(engineHost), loginArgs()...)}},
 		{name: "pr list", run: find, args: listArgs()},
 		{name: "pr view", run: head, args: headArgs()},
 		{

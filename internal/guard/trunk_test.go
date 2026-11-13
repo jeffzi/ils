@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -298,7 +299,7 @@ func scriptProtection(t *testing.T, host, trunk string, read protection) *ghtest
 	return ghtest.Setup(t,
 		ghtest.Exits(read.rules, rulesArgs(host, trunk)...),
 		ghtest.Exits(read.branch, branchArgs(host, trunk)...),
-		ghtest.Exits(ghtest.LoggedIn(), ghtest.LoginArgs(host)...),
+		ghtest.Exits(ghtest.LoggedIn(host), ghtest.LoginArgs(host)...),
 	)
 }
 
@@ -480,6 +481,47 @@ func TestJudge_WhenTheProtectionOfAGitHubTrunkCannotBeRead_RefusesSayingWhy(t *t
 	}
 }
 
+// unreachableSaid is what gh says when it cannot reach the host a protection read addresses.
+const unreachableSaid = "error connecting to the host"
+
+// unreachable scripts, for the rest of the test, a gh logged in to host that cannot reach it: the
+// protection reads of trunk there fail, and the login check lists the active account as failing
+// gh's check.
+func unreachable(t *testing.T, host, trunk string) {
+	t.Helper()
+
+	failed := ghtest.Answer{Stderr: unreachableSaid + "\n", Code: 1}
+	account := ghtest.Account{State: "error", Error: "dial tcp: lookup " + host + ": no such host", Active: true}
+	ghtest.Setup(t,
+		ghtest.Exits(failed, rulesArgs(host, trunk)...),
+		ghtest.Exits(failed, branchArgs(host, trunk)...),
+		ghtest.Exits(ghtest.LoginStatus(host, account), ghtest.LoginArgs(host)...),
+	)
+}
+
+func TestJudge_WhenGhsLoginCheckFailsAfterAFailedRead_RefusesSayingTheProtectionCouldNotBeRead(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+	}{
+		{name: "enterprise host", host: enterpriseHost},
+		{name: "github.com", host: githubHost},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Not parallel: unreachable sets GH_PATH for the whole process.
+			f, caller := standingOn(t, "main", "main")
+			setGitHubPushURL(f, tt.host)
+			unreachable(t, tt.host, "main")
+
+			got := guard.Judge(t.Context(), commitCommand, caller)
+
+			checkVerdict(t, judged{command: commitCommand, want: guard.Refuse}, got, unreachableSaid, "ils branch")
+			assert.Check(t, !strings.Contains(got.Reason, "gh auth login"), "Judge(%q) reason %q", commitCommand, got.Reason)
+		})
+	}
+}
+
 func TestJudge_WhenTheGhConfigCannotBeTold_RefusesACommitOnTheTrunkNamingTheVariable(t *testing.T) {
 	// Not parallel: onGitHub sets GH_PATH for the whole process.
 	f, caller := standingOn(t, "main", "main")
@@ -570,7 +612,7 @@ func protectionRoutes() map[string][]string {
 
 func TestJudge_ReadsTheProtectionWithTheGhConfigTheCommandSets(t *testing.T) {
 	unprotectedConfig := map[string]ghtest.Answer{
-		"rules": rulesAnswer(), "branch": classicAnswer(false), "login": ghtest.LoggedIn(),
+		"rules": rulesAnswer(), "branch": classicAnswer(false), "login": ghtest.LoggedIn(githubHost),
 	}
 	tests := []struct {
 		process map[string]ghtest.Answer
@@ -581,12 +623,12 @@ func TestJudge_ReadsTheProtectionWithTheGhConfigTheCommandSets(t *testing.T) {
 		{
 			name:    "the protection read",
 			process: unprotectedConfig,
-			command: map[string]ghtest.Answer{"rules": ruleProtected().rules, "login": ghtest.LoggedIn()},
+			command: map[string]ghtest.Answer{"rules": ruleProtected().rules, "login": ghtest.LoggedIn(githubHost)},
 			named:   protectedTrunk,
 		},
 		{
 			name:    "the login check after a failed read",
-			process: map[string]ghtest.Answer{"login": ghtest.LoggedIn()},
+			process: map[string]ghtest.Answer{"login": ghtest.LoggedIn(githubHost)},
 			command: map[string]ghtest.Answer{"login": ghtest.LoggedOut()},
 			named:   "! gh auth login",
 		},
@@ -613,17 +655,28 @@ func TestJudge_WhenOriginsPushURLCannotBeReadOnTheTrunk_RefusesSayingWhatBroke(t
 }
 
 func TestJudge_WhenOnlyTheFetchURLNamesAGitHubRepository_AllowsACommitOnTheTrunk(t *testing.T) {
-	// Not parallel: scriptProtection sets GH_PATH for the whole process.
-	f, _ := standingOn(t, "main", "main")
-	f.SetOriginURL("git@github.com:" + originRepo + ".git")
-	f.SetPushURL(filepath.ToSlash(f.OriginDir()))
-	caller := callerWithEnv(f.Dir(), f.ServedEnv(f.OriginDir()))
-	fake := scriptProtection(t, githubHost, "main", ruleProtected())
+	tests := []struct {
+		pushURL func(f *gittest.Fixture) string
+		name    string
+	}{
+		{name: "local path push URL", pushURL: func(f *gittest.Fixture) string { return filepath.ToSlash(f.OriginDir()) }},
+		{name: "ssh push URL whose host starts with a dash", pushURL: func(*gittest.Fixture) string { return "git@-oProxyCommand=x:" + originRepo + ".git" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Not parallel: scriptProtection sets GH_PATH for the whole process.
+			f, _ := standingOn(t, "main", "main")
+			f.SetOriginURL("git@github.com:" + originRepo + ".git")
+			f.SetPushURL(tt.pushURL(f))
+			caller := callerWithEnv(f.Dir(), f.ServedEnv(f.OriginDir()))
+			fake := scriptProtection(t, githubHost, "main", ruleProtected())
 
-	got := guard.Judge(t.Context(), commitCommand, caller)
+			got := guard.Judge(t.Context(), commitCommand, caller)
 
-	assert.Check(t, is.DeepEqual(got, guard.Verdict{Outcome: guard.Allow}), "Judge(%q)", commitCommand)
-	assert.Check(t, is.Len(fake.Calls(), 0), "Judge(%q) gh calls", commitCommand)
+			assert.Check(t, is.DeepEqual(got, guard.Verdict{Outcome: guard.Allow}), "Judge(%q)", commitCommand)
+			assert.Check(t, is.Len(fake.Calls(), 0), "Judge(%q) gh calls", commitCommand)
+		})
+	}
 }
 
 func TestJudge_WhenTheGitDirCannotBeTold_RefusesACommit(t *testing.T) {

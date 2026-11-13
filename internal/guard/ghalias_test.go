@@ -89,12 +89,12 @@ func configHolding(t *testing.T, sub string, answers map[string]ghtest.Answer) s
 	return root
 }
 
-// aliasRoutes routes `gh alias list` to the file aliases.
 func aliasRoutes() map[string][]string {
 	return map[string][]string{"aliases": {"alias", "list"}}
 }
 
-// aliasesHolding is a gh config whose `gh alias list` answers aliases.
+// aliasesHolding is a gh config whose `gh alias list` answers aliases, held under the file name
+// aliasRoutes routes that call to.
 func aliasesHolding(aliases string) map[string]ghtest.Answer {
 	return map[string]ghtest.Answer{"aliases": {Stdout: aliases}}
 }

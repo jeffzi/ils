@@ -93,7 +93,30 @@ func TestRunner_Run_WhenGhOnlyOnRelativePathEntry_ReturnsToolMissingError(t *tes
 	assertToolMissing(t, err)
 }
 
-func TestRunner_CheckLogin_WhenNotLoggedIn_ReturnsNotLoggedInError(t *testing.T) {
+func TestRunner_CheckLogin_WhenActiveAccountPassesCheck_ReturnsNil(t *testing.T) {
+	failed := ghtest.Account{State: "error", Error: "token expired"}
+	tests := []struct {
+		name   string
+		answer ghtest.Answer
+	}{
+		{name: "the one account", answer: ghtest.LoggedIn(engineHost)},
+		{
+			name:   "an inactive account failed its check",
+			answer: ghtest.LoginStatus(engineHost, failed, ghtest.Account{State: "success", Active: true}),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ghtest.Setup(t, ghtest.Exits(tt.answer, ghtest.LoginArgs(engineHost)...))
+
+			err := github.Runner{}.CheckLogin(t.Context(), engineHost)
+
+			assert.Check(t, err, "CheckLogin(%q)", engineHost)
+		})
+	}
+}
+
+func TestRunner_CheckLogin_WhenNoAccountForHost_ReturnsNotLoggedInError(t *testing.T) {
 	ghtest.Setup(t, ghtest.Exits(ghtest.LoggedOut(), ghtest.LoginArgs(engineHost)...))
 
 	err := github.Runner{}.CheckLogin(t.Context(), engineHost)
@@ -101,6 +124,54 @@ func TestRunner_CheckLogin_WhenNotLoggedIn_ReturnsNotLoggedInError(t *testing.T)
 	notLoggedIn, ok := errors.AsType[*forge.NotLoggedInError](err)
 	assert.Assert(t, ok, "CheckLogin error = %v, want *forge.NotLoggedInError", err)
 	assert.Check(t, is.Equal(notLoggedIn.Host, engineHost))
-	_, ok = errors.AsType[*child.ExitError](err)
+}
+
+// assertCheckFailed fails unless err is an error other than a *forge.NotLoggedInError.
+func assertCheckFailed(t *testing.T, err error) {
+	t.Helper()
+
+	assert.Assert(t, err != nil, "CheckLogin error = nil, want the check to fail")
+	_, loggedOut := errors.AsType[*forge.NotLoggedInError](err)
+	assert.Check(t, !loggedOut, "CheckLogin error = %v, want an error other than *forge.NotLoggedInError", err)
+}
+
+func TestRunner_CheckLogin_WhenActiveAccountFailsCheck_ReturnsErrorHoldingGhText(t *testing.T) {
+	const ghText = `Get "https://git.example.com/api/v3/": dial tcp: lookup git.example.com: no such host`
+	failed := ghtest.Account{State: "error", Error: ghText, Active: true}
+	ghtest.Setup(t, ghtest.Exits(ghtest.LoginStatus(engineHost, failed), ghtest.LoginArgs(engineHost)...))
+
+	err := github.Runner{}.CheckLogin(t.Context(), engineHost)
+
+	assertCheckFailed(t, err)
+	assert.Check(t, is.Contains(err.Error(), ghText))
+}
+
+func TestRunner_CheckLogin_WhenNoAccountIsActive_ReturnsError(t *testing.T) {
+	inactive := ghtest.Account{State: "success"}
+	ghtest.Setup(t, ghtest.Exits(ghtest.LoginStatus(engineHost, inactive), ghtest.LoginArgs(engineHost)...))
+
+	err := github.Runner{}.CheckLogin(t.Context(), engineHost)
+
+	assertCheckFailed(t, err)
+}
+
+func TestRunner_CheckLogin_WhenGhExitsNonZero_ReturnsExitError(t *testing.T) {
+	tooOld := ghtest.Answer{Stderr: "unknown flag: --json\n", Code: 1}
+	ghtest.Setup(t, ghtest.Exits(tooOld, ghtest.LoginArgs(engineHost)...))
+
+	err := github.Runner{}.CheckLogin(t.Context(), engineHost)
+
+	assertCheckFailed(t, err)
+	_, ok := errors.AsType[*child.ExitError](err)
 	assert.Check(t, ok, "CheckLogin error = %v, want it to wrap the *child.ExitError", err)
+}
+
+func TestRunner_CheckLogin_WhenOutputDoesNotDecode_ReturnsDecodeError(t *testing.T) {
+	ghtest.Setup(t, ghtest.Says("Logged in\n", ghtest.LoginArgs(engineHost)...))
+
+	err := github.Runner{}.CheckLogin(t.Context(), engineHost)
+
+	assertCheckFailed(t, err)
+	_, ok := errors.AsType[*github.DecodeError](err)
+	assert.Check(t, ok, "CheckLogin error = %v, want *github.DecodeError", err)
 }
