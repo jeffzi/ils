@@ -1226,9 +1226,9 @@ The guard refuses:
 - in a repository with an `origin`, on its default branch when GitHub protects that branch:
   `commit`, `merge`, `cherry-pick`, `revert`, `am`, `rebase`, `pull` without `--ff-only`, and
   `pull --ff-only` naming a repository or branch other than `origin <default branch>`. The reason
-  says the default branch is protected and names `ils branch <name>`. The reason for that
-  `pull --ff-only`, or for one whose arguments the guard cannot read, names `git pull --ff-only`
-  alone and does not mention the protection.
+  says the default branch is protected and names `ils branch <name>`. For a `pull --ff-only` that
+  names another repository or branch, or whose arguments the guard cannot read, the reason names
+  `git pull --ff-only` alone. It does not mention the protection.
   A `git rebase` naming the default branch as the branch to rebase counts as one on it. The guard
   asks origin for the default branch once per command and git dir, and falls back to the cached
   `refs/remotes/origin/HEAD`. With neither, it refuses and names
@@ -1262,18 +1262,18 @@ The guard refuses:
 
 The guard reads the protection only once HEAD is on the default branch, and at most once per
 command and git dir, failure included. It reads the repository that `origin`'s first push URL
-names, since the push is what the protection stops; the fetch URL plays no part. It reads through
-the `gh` the agent's own `gh` would run, with the `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, and `HOME`
-the command sets. The default branch is protected when an active ruleset rule applies to it
-(`gh api repos/<owner>/<name>/rules/branches/<branch>`) or classic branch protection covers it (the
-`protected` field of `gh api repos/<owner>/<name>/branches/<branch>`).
+names, since the push is what the protection stops; the fetch URL plays no part. It runs `gh` with
+the `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, and `HOME` the command sets, so it reads with the login the
+agent's own `gh` would use. The default branch is protected when an active ruleset rule applies to
+it (`gh api repos/<owner>/<name>/rules/branches/<branch>`) or classic branch protection covers it
+(the `protected` field of `gh api repos/<owner>/<name>/branches/<branch>`).
 
 | Case                                                                                          | Verdict                                                                                                 |
 | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | A ruleset rule or classic protection covers the default branch                                | Refused, with the reasons listed under [Pushes and the default branch](#pushes-and-the-default-branch). |
 | Neither covers it                                                                             | Allowed.                                                                                                |
 | A free private repository, whose plan allows no rules, and no classic protection              | Allowed.                                                                                                |
-| The push URL is not a repository URL (a local path, `file://`)                                | Allowed: no forge holds rules for it.                                                                   |
+| The push URL is not a repository URL (a local path, `file://`)                                | Allowed: no GitHub repository holds rules for it.                                                       |
 | A host other than `github.com`, and `gh` is missing or has no login there                     | Allowed: the guard cannot tell it is GitHub, and `ils push` refuses that origin anyway.                 |
 | `github.com`, and `gh` is missing                                                             | Refused; the reason says `gh` is missing and names `ils branch <name>`.                                 |
 | `github.com`, and `gh` has no login for it                                                    | Refused; the reason names `! gh auth login --hostname github.com` and `ils branch <name>`.              |
