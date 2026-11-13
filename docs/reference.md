@@ -613,7 +613,7 @@ this list, which `ils push` finds after the push. It refuses:
   one is not an `https://`, `ssh://git@`, or `git@host:` repository URL);
 - a missing `git` or `gh`;
 - a `git` older than 2.34.1, or one whose version `ils` cannot read;
-- a `gh` older than 2.73.0, or one whose version `ils` cannot read;
+- a `gh` older than 2.81.0, or one whose version `ils` cannot read;
 - a `gh` not logged in to origin's host (this is also how `ils` refuses a host that is not GitHub);
 - a fork, or a repository you cannot push to;
 - any word after `push` other than `--wait`, `--json`, `-d` or `--debug`, `--no-color`, `--help`,
@@ -1268,23 +1268,25 @@ agent's own `gh` would use. The default branch is protected when an active rules
 it (`gh api repos/<owner>/<name>/rules/branches/<branch>`) or classic branch protection covers it
 (the `protected` field of `gh api repos/<owner>/<name>/branches/<branch>`).
 
-| Case                                                                                          | Verdict                                                                                                 |
-| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| A ruleset rule or classic protection covers the default branch                                | Refused, with the reasons listed under [Pushes and the default branch](#pushes-and-the-default-branch). |
-| Neither covers it                                                                             | Allowed.                                                                                                |
-| A free private repository, whose plan allows no rules, and no classic protection              | Allowed.                                                                                                |
-| The push URL is not a repository URL (a local path, `file://`)                                | Allowed: no GitHub repository holds rules for it.                                                       |
-| A host other than `github.com`, and `gh` is missing or has no login there                     | Allowed: the guard cannot tell it is GitHub, and `ils push` refuses that origin anyway.                 |
-| `github.com`, and `gh` is missing                                                             | Refused; the reason says `gh` is missing and names `ils branch <name>`.                                 |
-| `github.com`, and `gh` has no login for it                                                    | Refused; the reason names `! gh auth login --hostname github.com` and `ils branch <name>`.              |
-| Any other failed read: no network, a server error, a reply that does not decode               | Refused; the reason says the guard could not read the protection, and why.                              |
-| The guard cannot tell the `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, or `HOME` the agent's `gh` uses | Refused; the reason names that variable and `ils branch <name>`.                                        |
-| `git` fails to read the push URL, or the host of an ssh URL                                   | Refused, as a failed read.                                                                              |
+| Case                                                                                                      | Verdict                                                                                                 |
+| --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| A ruleset rule or classic protection covers the default branch                                            | Refused, with the reasons listed under [Pushes and the default branch](#pushes-and-the-default-branch). |
+| Neither covers it                                                                                         | Allowed.                                                                                                |
+| A free private repository, whose plan allows no rules, and no classic protection                          | Allowed.                                                                                                |
+| The push URL names no repository: a local path, `file://`, or an ssh host starting with `-`               | Allowed: no GitHub repository holds rules for it.                                                       |
+| A host other than `github.com`, and `gh` is missing or has no login there                                 | Allowed: the guard cannot tell it is GitHub, and `ils push` refuses that origin anyway.                 |
+| `github.com`, and `gh` is missing                                                                         | Refused; the reason says `gh` is missing and names `ils branch <name>`.                                 |
+| `github.com`, and `gh` has no login for it                                                                | Refused; the reason names `! gh auth login --hostname github.com` and `ils branch <name>`.              |
+| Any other failed read: no network, a host `gh` cannot reach, a server error, a reply that does not decode | Refused; the reason says the guard could not read the protection, and why.                              |
+| The guard cannot tell the `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, or `HOME` the agent's `gh` uses             | Refused; the reason names that variable and `ils branch <name>`.                                        |
+| `git` fails to read the push URL, or the host of an ssh URL                                               | Refused, as a failed read.                                                                              |
 
-`gh auth status` runs only after a protection read fails, to tell a `gh` with no login from other
-failures. On the default branch a commit costs the `ls-remote` that finds the default branch, plus
-one `gh api` call when a ruleset protects it and two otherwise. Off the default branch, and in a
-repository with no `origin` or on a detached HEAD, the guard runs no `gh`.
+`gh auth status --hostname <host> --json hosts` runs only after a protection read fails. It tells
+a `gh` that holds no login for the host from one whose login check failed, such as on a host `gh`
+cannot reach, which is a failed read. On the default branch a commit costs the `ls-remote` that
+finds the default branch, plus one `gh api` call when a ruleset protects it and two otherwise. Off
+the default branch, and in a repository with no `origin` or on a detached HEAD, the guard runs no
+`gh`.
 
 #### ils and gh commands
 

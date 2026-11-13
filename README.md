@@ -158,7 +158,7 @@ To build:
 To run:
 
 - [`git`](https://git-scm.com/downloads) 2.34.1 or later, on `PATH`.
-- [`gh`](https://cli.github.com) 2.73.0 or later, installed and logged in to the host of `origin`
+- [`gh`](https://cli.github.com) 2.81.0 or later, installed and logged in to the host of `origin`
   (`gh auth login --hostname <host>`). `ils` owns no token and no login flow.
 - A remote named `origin` on GitHub that you can push to and that is not a fork.
 
