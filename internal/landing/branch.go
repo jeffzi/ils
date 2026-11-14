@@ -40,8 +40,8 @@ type onBranch struct {
 }
 
 // branchChecks runs the checks push and merge both open with: on a work branch, then a clean tree,
-// then origin's trunk fetched. It returns the branch ready stands on, or the result of the first
-// that refuses.
+// then origin's trunk fetched, then a local trunk with no commit origin's trunk lacks. It returns
+// the branch ready stands on, or the result of the first that refuses.
 func branchChecks(ctx context.Context, deps Deps, req Request, ready Ready) (onBranch, *result.Result) {
 	if stop := onWorkBranch(ctx, deps, req, ready); stop != nil {
 		return onBranch{}, stop
@@ -55,17 +55,27 @@ func branchChecks(ctx context.Context, deps Deps, req Request, ready Ready) (onB
 		return onBranch{}, stop
 	}
 
+	stop, read, err := req.trunkAhead(ctx, deps, ready)
+	if err != nil {
+		return onBranch{}, req.Unread(read, err)
+	}
+
+	if stop != nil {
+		return onBranch{}, stop
+	}
+
 	return onBranch{Ready: ready, branch: ready.Standing.Branch}, nil
 }
 
 // onWorkBranch refuses a detached HEAD and the trunk. The way out is a new branch, except for a
 // detached HEAD with commits origin's trunk lacks, fetched first, which `ils branch` would refuse
-// in turn: those commits are listed, to keep on a branch of their own.
+// in turn: those commits are listed, to keep on a branch of their own. A trunk with commits
+// origin's trunk lacks, fetched first too, takes the fix aheadTrunk.fix gives, which `ils branch` would
+// refuse in turn, and lists them.
 func onWorkBranch(ctx context.Context, deps Deps, req Request, ready Ready) *result.Result {
 	if ready.Standing.Kind == git.OnBranch {
 		if ready.Standing.Branch == ready.Trunk {
-			return req.Refused(result.Say("HEAD is on the trunk %s, which ils never pushes", result.Branch(ready.Trunk)),
-				startBranchStep())
+			return onTrunk(ctx, deps, req, ready)
 		}
 
 		return nil
@@ -81,6 +91,27 @@ func onWorkBranch(ctx context.Context, deps Deps, req Request, ready Ready) *res
 	}
 
 	return req.Refused(reason, startBranchStep())
+}
+
+// onTrunk refuses HEAD on the trunk, naming the fix of a local trunk with commits origin's trunk
+// lacks when it has some, and a new branch otherwise.
+func onTrunk(ctx context.Context, deps Deps, req Request, ready Ready) *result.Result {
+	if _, stop := fetchTrunk(ctx, deps, req, ready.Trunk); stop != nil {
+		return stop
+	}
+
+	ahead, read, err := req.trunkAhead(ctx, deps, ready)
+	if err != nil {
+		return req.Unread(read, err)
+	}
+
+	stop := req.Refused(result.Say("HEAD is on the trunk %s, which ils never pushes", result.Branch(ready.Trunk)),
+		startBranchStep())
+	if ahead != nil {
+		stop.Next, stop.Lines = ahead.Next, ahead.Lines
+	}
+
+	return stop
 }
 
 func cleanTree(ctx context.Context, deps Deps, req Request) *result.Result {

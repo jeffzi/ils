@@ -79,9 +79,10 @@ type mergeReady struct {
 //
 // After the shared preconditions it checks, in this order and stopping at the first that fails:
 // HEAD is on a branch other than the trunk; no tracked file is changed; the local trunk, if any,
-// has no commit that origin's trunk, which it fetches, lacks; it reads whether another worktree
-// has the trunk checked out; the branch has a commit past origin's trunk; no open pull request
-// from the branch has a base other than the trunk; the branch has an open pull request against
+// has no commit that origin's trunk, which it fetches, lacks, whose refusal gives the fix
+// aheadTrunk.fix gives; it reads whether another worktree has the trunk checked out; the branch
+// has a commit past origin's trunk; no open pull request from the branch has a base other than
+// the trunk; the branch has an open pull request against
 // the trunk; the tip is that pull request's head; the pull request is not a draft; its title is a
 // conventional commit subject; the repository's settings and the trunk's rules allow a squash
 // merge. A check that fails, an origin that cannot be reached, and a read the context's deadline
@@ -127,10 +128,6 @@ func mergeChecks(ctx context.Context, deps Deps, req Request, ready Ready) (merg
 
 	m := mergeReady{onBranch: on}
 
-	if stop = localTrunk(ctx, deps, req, ready.Trunk); stop != nil {
-		return mergeReady{}, stop
-	}
-
 	elsewhere, err := deps.Repo.CheckedOutElsewhere(ctx, ready.Trunk)
 	if err != nil {
 		return mergeReady{}, req.Unread(readWorktrees, err)
@@ -152,21 +149,6 @@ func mergeChecks(ctx context.Context, deps Deps, req Request, ready Ready) (merg
 	}
 
 	return m, nil
-}
-
-// localTrunk refuses a local trunk with commits origin's trunk lacks, since the pull that ends a
-// merge could not fast-forward it. A local trunk that does not exist is not refused.
-func localTrunk(ctx context.Context, deps Deps, req Request, trunk string) *result.Result {
-	ahead, past, err := deps.Repo.LocalTrunkAhead(ctx, trunk)
-	if err != nil {
-		return req.Unread(readLocalTrunk, err)
-	}
-
-	if !ahead {
-		return nil
-	}
-
-	return req.trunkAhead(trunk, past)
 }
 
 // findPull finds the branch's open pull request against the trunk or, without one, the merged

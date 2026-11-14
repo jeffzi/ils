@@ -67,7 +67,7 @@ func titleText(title string) string {
 
 // trunkAheadText is the refusal of a local trunk whose one commit origin's trunk lacks is sha.
 func trunkAheadText(sha string) string {
-	return expect(shortSHA(sha), "local change on "+trunk, trunk, "ils merge")
+	return expect(shortSHA(sha), strayOnTrunk) + nextTrunkFix(fixNowhere, "ils merge")
 }
 
 // nothingPastMerge is the refusal by `ils merge` of a branch with no commit past origin's trunk. Its
@@ -562,7 +562,7 @@ func failedGitMerges() []failedGitRow {
 			name: "whether the local trunk exists", script: merging(), ops: identityRead(),
 			outcome: result.Broke,
 			arrange: func(*gittest.Fixture) mergeEnd {
-				return failedGitMerge("", []string{"show-ref", "--verify", "--quiet", "refs/heads/" + trunk})
+				return failedGitMerge("", localTrunkRead())
 			},
 		},
 		{

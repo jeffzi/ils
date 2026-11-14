@@ -29,14 +29,15 @@ type pushReady struct {
 // Push runs `ils push`: its preconditions, then its two writes, then the wait for the checks.
 //
 // After the shared preconditions it checks, in this order and stopping at the first that
-// fails: HEAD is on a branch other than the trunk; no tracked file is changed; the branch has
-// a commit past origin's trunk, which it fetches; the tip is not behind origin's copy of the
-// branch and has not diverged from it; unless origin's copy carries the branch's first commit
-// past the trunk, that commit is on no other local branch; no open pull request from the
-// branch has a base other than the trunk; no merged pull request from the branch already
-// carries its commits. A precondition that fails, an origin that cannot be reached, and a read
-// the context's deadline cut short are refusals; a read that fails for any other reason is
-// broke.
+// fails: HEAD is on a branch other than the trunk; no tracked file is changed; the local trunk,
+// if any, has no commit that origin's trunk, which it fetches, lacks; the branch has a commit
+// past origin's trunk; the tip is not behind origin's copy of the branch and has not diverged
+// from it; unless origin's copy carries the branch's first commit past the trunk, that commit is
+// on no other local branch; no open pull request from the branch has a base other than the
+// trunk; no merged pull request from the branch already carries its commits. A precondition that
+// fails, an origin that cannot be reached, and a read the context's deadline cut short are
+// refusals; a read that fails for any other reason is broke. A local trunk ahead of origin's is
+// refused with the fix aheadTrunk.fix gives, and so is HEAD on such a trunk.
 //
 // When all hold it pushes the branch to origin, unless origin's copy is already at the tip,
 // and opens the branch's pull request against the trunk, unless one is open. It then reads the

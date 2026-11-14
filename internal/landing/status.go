@@ -11,8 +11,9 @@ import (
 )
 
 // Status runs `ils status`: it reads where HEAD stands, how the branch stands against origin, and
-// the branch's pull requests on GitHub, then says what comes next. It never refuses and always ends
-// done.
+// the branch's pull requests on GitHub, then says what comes next. It never refuses, and it ends
+// done except when the local trunk cannot be read, which every landing command ends broke on: then
+// it ends broke, naming that read.
 //
 // Every read is best-effort. A read that fails becomes a line naming what could not be read and
 // why, and an entry of the payload's unread list; the reads that do not depend on it still run. A
@@ -26,16 +27,22 @@ import (
 // that step wherever HEAD stands.
 //
 // On a work branch `Next:` mirrors the order in which `ils push` refuses and ends, so that it never
-// names a command that would refuse: changed tracked files; then a read of the branch's tip, of its
-// commits past the trunk, or of origin's copy of it that failed other than by a cut, which push
-// would end on; then an open pull request against a base other than the trunk, unless the branch is
-// behind origin's copy or has no commit past the trunk, which push refuses first; then a merged
-// pull request that carries the branch's commits, then origin's copy of the branch, then the
-// branch's commits past the trunk, then the open pull request.
+// names a command that would refuse: changed tracked files; then a local trunk with commits
+// origin's trunk lacks, whose fix runs `ils push` there for a trunk checked out in another
+// worktree, and for one checked out nowhere runs `ils merge` after it on a green, mergeable pull
+// request and `ils push` otherwise; then a read of the branch's tip, of its commits past the
+// trunk, of origin's copy of it, or of the local trunk that failed other than by a cut, which push
+// would end on; then, unless the branch is behind origin's copy or has no commit past the trunk,
+// which push refuses first, a first commit past the trunk that another local branch also carries
+// and origin's copy lacks, and an open pull request against a base other than the trunk; then a
+// merged pull request that carries the branch's commits, then origin's copy of the branch, then
+// the branch's commits past the trunk, then the open pull request.
 //
-// On the trunk it reports how the trunk stands against origin's, the last version tag on origin's
-// trunk and the commits since it, whether origin's trunk tip is a release commit, and whether rules
-// protect the trunk; `Next:` starts a branch.
+// On the trunk it reports how the trunk stands against origin's, the commits it has that origin's
+// trunk lacks, the last version tag on origin's trunk and the commits since it, whether origin's
+// trunk tip is a release commit, and whether rules protect the trunk; `Next:` fixes what failed
+// when the local trunk could not be read, then fixes a local trunk ahead of origin's, and
+// otherwise starts a branch.
 //
 // On a detached HEAD it lists the commits origin's trunk lacks, and `Next:` keeps them on a branch,
 // or starts a branch when there are none. With no origin, `Next:` creates it on GitHub; outside a
@@ -55,11 +62,15 @@ func Status(ctx context.Context, deps Deps, req Request) result.Result {
 	r.readVersion(ctx)
 	r.readStanding(ctx)
 
-	done := req.ends(result.Done, result.Phrase{}, r.next())
-	done.Lines = r.lines
-	done.Payload = &result.Payload{Status: &r.status}
+	ended := req.ends(result.Done, result.Phrase{}, r.next())
+	if r.trunkUnread != "" {
+		ended.Outcome, ended.Reason = result.Broke, result.Say("could not read %s", r.trunkUnread)
+	}
 
-	return *done
+	ended.Lines = r.lines
+	ended.Payload = &result.Payload{Status: &r.status}
+
+	return *ended
 }
 
 // reading is a status being read: the facts found so far, the lines that say them, and whether a
@@ -76,15 +87,19 @@ type reading struct {
 	lines     []result.Phrase
 	unlanded  []git.Commit
 	blocked   result.Next
-	// dirty, shared and trunkAhead are the steps push and merge refuse with for changed tracked
-	// files, a first commit another local branch carries, and a local trunk ahead of origin's.
-	dirty, shared, trunkAhead result.Next
+	// dirty and shared are the steps push refuses with for changed tracked files and a first commit
+	// another local branch carries.
+	dirty, shared result.Next
+	ahead         *aheadTrunk
 	// copied is the commit origin's copy of the branch is on, as read; empty when origin has none.
 	copied string
 	// unreadPulls, when not empty, is why GitHub was not read for the branch's pull requests, which a
 	// work branch then lists as unread, so that a payload with no pull request and no such entry
 	// means it has none.
 	unreadPulls string
+	// trunkUnread names the read of the local trunk that failed other than by a cut, which ends the
+	// status broke; empty when none did.
+	trunkUnread string
 	// refused is the step the shared preconditions of every landing command refuse with for git, or
 	// for the ssh origin's URLs need, or end on for origin's trunk when where HEAD stands cannot be
 	// told without it, which comes before any step the standing decides.
@@ -108,11 +123,15 @@ func (r *reading) say(lines ...result.Phrase) {
 	r.lines = append(r.lines, lines...)
 }
 
-// failed records that the read named read failed with err. A cut ends every read after it.
+// failed records that the read named read failed with err. A cut ends every read after it; any
+// other failed read of the local trunk ends the status broke.
 func (r *reading) failed(read string, err error) {
 	if !endedEarly(err) {
 		line, _ := couldNotRead(read, err)
 		r.unread(line, read, err.Error())
+		if read == readLocalTrunk {
+			r.trunkUnread = read
+		}
 
 		return
 	}
@@ -227,7 +246,7 @@ func (r *reading) readStanding(ctx context.Context) {
 	r.readCommits(ctx)
 	r.readCopy(ctx)
 	r.readShared(ctx)
-	r.readLocalTrunk(ctx)
+	r.readLocalTrunk(ctx, false)
 	r.readPulls(ctx)
 }
 
@@ -266,19 +285,24 @@ func (r *reading) readShared(ctx context.Context) {
 	}
 }
 
-// readLocalTrunk reads whether the local trunk has commits origin's trunk lacks, which merge refuses.
-func (r *reading) readLocalTrunk(ctx context.Context) {
+// readLocalTrunk reads whether the local trunk has commits origin's trunk lacks, which every
+// landing command refuses, and says the refusal; here is whether HEAD is on the trunk.
+func (r *reading) readLocalTrunk(ctx context.Context, here bool) {
 	if r.cut || r.on.Trunk == "" {
 		return
 	}
 
-	ahead, past, err := r.deps.Repo.LocalTrunkAhead(ctx, r.on.Trunk)
+	ahead, read, err := readTrunkAhead(ctx, r.deps, r.on.Trunk, here)
 
 	switch {
 	case err != nil:
-		r.failedBranch(readLocalTrunk, err)
-	case ahead:
-		r.trunkAhead = r.refusal(Request{Command: MergeCommand}.trunkAhead(r.on.Trunk, past))
+		r.failedBranch(read, err)
+		if !r.cut {
+			r.trunkUnread = read
+		}
+	case ahead != nil:
+		r.ahead = ahead
+		r.refusal(ahead.refusal(Request{Command: PushCommand}, result.Command(PushCommand)))
 	}
 }
 
@@ -623,9 +647,9 @@ func (r *reading) copyTip(ctx context.Context) (theirs string, found bool, read 
 }
 
 // next is the step a status ends on: the step the shared preconditions refuse with, wherever HEAD
-// stands; otherwise on the trunk, start a branch; on a detached HEAD, keep its commits on a branch,
-// or start one when it has none; with no origin, create it; on a work branch, the first of the
-// steps below that holds, in the order push refuses and ends in, each built as push builds it.
+// stands; otherwise on the trunk, the step trunkNext names; on a detached HEAD, keep its commits
+// on a branch, or start one when it has none; with no origin, create it; on a work branch, the
+// step branchNext names.
 func (r *reading) next() result.Next {
 	if !r.refused.None() {
 		return r.refused
@@ -633,7 +657,7 @@ func (r *reading) next() result.Next {
 
 	switch r.status.Standing {
 	case result.StandingTrunk:
-		return startBranchStep()
+		return r.trunkNext()
 	case result.StandingDetached:
 		if len(r.status.Unlanded) > 0 {
 			return keepDetachedStep(result.Command(PushCommand))
@@ -647,12 +671,22 @@ func (r *reading) next() result.Next {
 		return result.NextNone()
 	}
 
+	return r.branchNext()
+}
+
+// branchNext is the step a status on a work branch ends on: the first of the steps below that
+// holds, in the order push refuses and ends in, each built as push builds it.
+func (r *reading) branchNext() result.Next {
 	if !r.blocked.None() {
 		return r.blocked
 	}
 
 	if !r.dirty.None() {
 		return r.dirty
+	}
+
+	if r.ahead != nil {
+		return r.ahead.fix(r.afterTrunkFix())
 	}
 
 	if r.branchUnread {
@@ -684,14 +718,44 @@ func (r *reading) next() result.Next {
 	return r.pullNext()
 }
 
+// trunkNext is the step a status on the trunk ends on: fix what failed when the local trunk could
+// not be read, as push ends on it, then the fix of a local trunk ahead of origin's, and otherwise
+// start a branch.
+func (r *reading) trunkNext() result.Next {
+	switch {
+	case r.branchUnread || r.trunkUnread != "":
+		return r.req.onceFixed()
+	case r.ahead != nil:
+		return r.ahead.fix(result.Command(PushCommand))
+	}
+
+	return startBranchStep()
+}
+
+// afterTrunkFix is the command the fix of a local trunk checked out nowhere runs next: `ils
+// merge` when the open pull request is green and mergeable, and `ils push` otherwise.
+func (r *reading) afterTrunkFix() result.Name {
+	if r.open != nil && r.mergeable() {
+		return result.Command(MergeCommand)
+	}
+
+	return result.Command(PushCommand)
+}
+
+// mergeable reports whether the wait found the head green and the pull request clean, or waiting
+// on a review alone.
+func (r *reading) mergeable() bool {
+	state := r.waited.MergeState
+
+	return r.waited.Outcome == WaitGreen && (state == forge.MergeClean || state == forge.MergeBlockedByReview)
+}
+
 // pullNext is the step the open pull request decides: a head other than the branch's tip, or its
 // checks still running, both left to `ils push`; then red, the pull request apart from the trunk,
 // then the merge, once a review is in when it waits on one. Any other state is left to `ils push`,
 // which reports it.
 func (r *reading) pullNext() result.Next {
 	w := r.waited
-	state := w.MergeState
-	mergeable := w.Outcome == WaitGreen && (state == forge.MergeClean || state == forge.MergeBlockedByReview)
 
 	switch {
 	case r.running:
@@ -700,10 +764,8 @@ func (r *reading) pullNext() result.Next {
 		report, _ := w.stopReport(r.req.ending(), r.open.HeadSHA, r.status.Trunk, r.open.Number)
 
 		return report.next
-	case mergeable && !r.trunkAhead.None():
-		return r.trunkAhead
-	case mergeable:
-		return mergeStep(r.repo, r.open.Number, state)
+	case r.mergeable():
+		return mergeStep(r.repo, r.open.Number, w.MergeState)
 	}
 
 	return pushAgain()

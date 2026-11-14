@@ -79,6 +79,24 @@ func nextLine(command string) string {
 
 func nextFixed() string { return pushCommand().fixed }
 
+// The fixes of a local trunk with commits origin's trunk lacks, which keep them on a branch of their
+// own and put the local trunk back at origin's: fixHere for a trunk checked out in a worktree, run
+// in that worktree, fixNowhere for one checked out in no worktree.
+const (
+	fixHere    = "! git switch -c <name> && git branch -f " + trunk + " origin/" + trunk
+	fixNowhere = "! git branch <name> " + trunk + " && git branch -f " + trunk + " origin/" + trunk
+)
+
+// nextTrunkFix is the `Next:` line that runs fix, then the command then.
+func nextTrunkFix(fix, then string) string {
+	return expect(resulttest.NextLine(""), fix, then)
+}
+
+// localTrunkRead is the arguments of the git call that asks whether the local trunk exists.
+func localTrunkRead() []string {
+	return []string{"show-ref", "--verify", "--quiet", "refs/heads/" + trunk}
+}
+
 // ---------------------------------------------------------------------------
 // Scenes and assertions
 // ---------------------------------------------------------------------------

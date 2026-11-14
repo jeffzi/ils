@@ -20,14 +20,14 @@ const (
 // puts HEAD on it, carrying uncommitted changes and untracked files. It needs git alone.
 //
 // After the git-only preconditions it checks, in this order and stopping at the first that fails:
-// git can hold the name as a branch; origin's trunk fetches; no branch takes the name, locally or on
-// origin; a detached HEAD has no commit origin's trunk lacks. A precondition that fails, an origin
-// that cannot be reached, and a read the context's deadline cut short are refusals; a read that
-// fails for any other reason is broke.
+// git can hold the name as a branch; origin's trunk fetches; the local trunk, if any, has no commit
+// origin's trunk lacks, whose refusal lists them and gives the fix aheadTrunk.fix gives; no branch
+// takes the name, locally or on origin; a detached HEAD has no commit origin's trunk lacks. A
+// precondition that fails, an origin that cannot be reached, and a read the context's deadline cut
+// short are refusals; a read that fails for any other reason is broke.
 //
 // The one write, the switch to the new branch, comes after every read. A file the switch would
-// overwrite is a refusal naming it, with nothing written. A local trunk with commits origin's trunk
-// lacks does not stop the command: a line names those commits, which stay on the local trunk.
+// overwrite is a refusal naming it, with nothing written.
 func StartBranch(ctx context.Context, deps Deps, req Request) result.Result {
 	deps.startChecking()
 
@@ -43,11 +43,6 @@ func StartBranch(ctx context.Context, deps Deps, req Request) result.Result {
 		return *stop
 	}
 
-	lines, stop := aheadLines(ctx, deps, req, ready.Trunk)
-	if stop != nil {
-		return *stop
-	}
-
 	if stop := n.create(ctx, deps, req); stop != nil {
 		return *stop
 	}
@@ -57,7 +52,7 @@ func StartBranch(ctx context.Context, deps Deps, req Request) result.Result {
 
 	done := req.ends(result.Done, result.Phrase{},
 		result.NextStep("do the work, commit it, then run %s", result.Command(PushCommand)))
-	done.Lines = append([]result.Phrase{started}, lines...)
+	done.Lines = []result.Phrase{started}
 
 	return *done
 }
@@ -77,6 +72,15 @@ func (n newBranch) checks(ctx context.Context, deps Deps, req Request) (string, 
 	}
 
 	start, stop := fetchTrunk(ctx, deps, req, n.Trunk)
+	if stop != nil {
+		return "", stop
+	}
+
+	stop, read, err := req.trunkAhead(ctx, deps, n.Ready)
+	if err != nil {
+		return "", req.Unread(read, err)
+	}
+
 	if stop != nil {
 		return "", stop
 	}
@@ -140,22 +144,6 @@ func freeName(ctx context.Context, deps Deps, req Request, name string) *result.
 	}
 
 	return nil
-}
-
-// aheadLines returns the lines that name the local trunk's commits origin's trunk lacks, which stay
-// on the local trunk, and none when it has none.
-func aheadLines(ctx context.Context, deps Deps, req Request, trunk string) ([]result.Phrase, *result.Result) {
-	ahead, past, err := deps.Repo.LocalTrunkAhead(ctx, trunk)
-	if err != nil {
-		return nil, req.Unread(readLocalTrunk, err)
-	}
-
-	if !ahead {
-		return nil, nil
-	}
-
-	return []result.Phrase{result.Say("The commits %s stay on the local trunk %s, which origin's trunk lacks",
-		shas(past), result.Branch(trunk))}, nil
 }
 
 // create creates the branch at origin's trunk and puts HEAD on it. A file the switch would

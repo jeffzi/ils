@@ -21,6 +21,7 @@ func (r *reading) readOnTrunk(ctx context.Context) {
 	r.say(result.Say("On the trunk %s", result.Branch(r.status.Trunk)))
 
 	r.readTrunkApart(ctx)
+	r.readLocalTrunk(ctx, true)
 	r.readLastTag(ctx)
 	r.readRelease(ctx)
 	r.readRules(ctx)
