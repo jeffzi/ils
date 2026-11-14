@@ -1,5 +1,3 @@
-//go:build unix
-
 package guard_test
 
 import (
@@ -194,7 +192,7 @@ func TestJudge_WhenARebaseExecRedirectsAroundACd_RefusesGitHistoryWrittenAtTheTo
 
 	f, _ := standingOn(t, "main", "topic")
 	caller := callerIn(f, subdirectory(t, f.Dir()))
-	command := "git rebase --exec '(cd " + filepath.ToSlash(outsideDir(t)) + " && git -C " + filepath.ToSlash(f.Dir()) + " show HEAD:go.mod) > go.mod' main"
+	command := "git rebase --exec '(cd " + outsideDir(t) + " && git -C " + f.Dir() + " show HEAD:go.mod) > go.mod' main"
 
 	checkJudgedRow(t, caller, judged{command: command, want: guard.Refuse, wantNamed: filepath.Join(f.Dir(), "go.mod")})
 }

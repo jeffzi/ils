@@ -1,5 +1,3 @@
-//go:build unix
-
 package guard
 
 import (
@@ -436,9 +434,9 @@ func configOptions(inv Invocation) ([]string, bool) {
 func setValue(inv Invocation, name string) (string, bool) {
 	for _, c := range slices.Backward(inv.env) {
 		switch {
-		case c.clear || git.SameKey(c.unset, name):
+		case c.clear || c.unset == name:
 			return "", false
-		case git.SameKey(c.assignment.Name, name):
+		case c.assignment.Name == name:
 			return c.assignment.Value.Text, c.assignment.Value.Literal
 		}
 	}

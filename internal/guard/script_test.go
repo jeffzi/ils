@@ -1,5 +1,3 @@
-//go:build unix
-
 package guard_test
 
 import (
@@ -122,7 +120,7 @@ func TestJudge_WhenAStringRedirectsAroundACd_RefusesGitHistoryWrittenWhereTheStr
 
 	f, _ := standingOn(t, "main", "topic")
 	caller := callerIn(f, filepath.Dir(f.Dir()))
-	inner := "'(cd " + filepath.ToSlash(outsideDir(t)) + " && git -C " + filepath.ToSlash(f.Dir()) + " show HEAD:go.mod) > go.mod'"
+	inner := "'(cd " + outsideDir(t) + " && git -C " + f.Dir() + " show HEAD:go.mod) > go.mod'"
 	named := "writes over " + filepath.Join(f.Dir(), "go.mod")
 
 	checkJudged(t, caller, []judged{

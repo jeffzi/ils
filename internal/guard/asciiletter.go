@@ -1,5 +1,3 @@
-//go:build unix
-
 package guard
 
 func isASCIILetter(c byte) bool {

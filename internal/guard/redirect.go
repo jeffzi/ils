@@ -1,5 +1,3 @@
-//go:build unix
-
 // cspell:ignore Clob -- the shell parser's name for its clobbering redirect operators.
 
 package guard

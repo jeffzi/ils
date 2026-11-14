@@ -1,5 +1,3 @@
-//go:build unix
-
 // cspell:ignore Arithm Arit Assgn -- the shell parser's names for its arithmetic nodes and its
 // arithmetic assignment operators.
 
