@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -65,12 +64,7 @@ type binary string
 func build(t *testing.T) binary {
 	t.Helper()
 
-	name := "ils"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-
-	bin := filepath.Join(t.TempDir(), name)
+	bin := filepath.Join(t.TempDir(), "ils")
 
 	args := []string{"build", "-o", bin}
 	if gittest.CoverSetting() != "" {
@@ -226,6 +220,14 @@ func TestLaunched_WhenTheWidthOfStderrCannotBeRead_CountsItAsNone(t *testing.T) 
 	assert.Check(t, is.Equal(app.StderrWidth(), 0))
 }
 
+func TestForeground_WhenTheDescriptorIsNoTerminal_CountsAsTheForegroundJob(t *testing.T) {
+	t.Parallel()
+
+	file := opened(t, "stderr")
+
+	assert.Check(t, main.Foreground(file.Fd()))
+}
+
 // heldIdentityRead returns a repository on the topic branch whose origin names acme/widgets on
 // GitHub, an environment to run ils in it, and a fake gh that holds the read of the repository's
 // identity open for held. The fake is set up first, so that the environment of the repository,
@@ -306,22 +308,11 @@ func (s *started) signal(t *testing.T, sig syscall.Signal) {
 	assert.NilError(t, s.cmd.Process.Signal(sig))
 }
 
-// skipWithoutSignals skips the test on Windows, where a signal cannot be sent to a program.
-func skipWithoutSignals(t *testing.T) {
-	t.Helper()
-
-	if runtime.GOOS == "windows" {
-		t.Skip("a signal cannot be sent to a program on Windows")
-	}
-}
-
 func TestIls(t *testing.T) {
 	// The tests below share this one build: building the binary costs more than any of them.
 	bin := build(t)
 
 	t.Run("WhenASignalLandsDuringALandingCommand_PrintsTheInterruptedResult", func(t *testing.T) {
-		skipWithoutSignals(t)
-
 		dir, env, fake := heldIdentityRead(t)
 		run := start(t, dir, withCoverDir(env), string(bin), "push")
 		awaitHold(t, fake)
@@ -337,10 +328,6 @@ func TestIls(t *testing.T) {
 	t.Run("WhenInitClaudeRuns_HooksTheScriptItInstalled", func(t *testing.T) {
 		t.Parallel()
 
-		if runtime.GOOS == "windows" {
-			t.Skip("the guard does not run on Windows, so init adds no hook")
-		}
-
 		home := t.TempDir()
 		env := append(gittest.Without(gittest.Without(os.Environ(), "HOME"), "CLAUDE_CONFIG_DIR"), "HOME="+home)
 
@@ -349,7 +336,7 @@ func TestIls(t *testing.T) {
 		assert.Assert(t, is.Equal(got.code, 0), "stdout = %q, stderr = %q", got.stdout, got.stderr)
 		script, found := strings.CutPrefix(hookCommand(t, filepath.Join(home, ".claude", "settings.json")), "bash ~/")
 		assert.Assert(t, found, "the hook does not run bash on a path under ~/")
-		_, err := os.Stat(filepath.Join(home, filepath.FromSlash(script)))
+		_, err := os.Stat(filepath.Join(home, script))
 		assert.NilError(t, err, "the hook runs %s, which init did not install", script)
 	})
 }

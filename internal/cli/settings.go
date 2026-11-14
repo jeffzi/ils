@@ -22,9 +22,6 @@ const (
 	// claudeEvent is the hook event Claude Code runs a hook on before a tool runs, and the
 	// hookEventName of the answer it reads from that hook.
 	claudeEvent = "PreToolUse"
-
-	// guardUnsupported is the reason the guard refuses every run outside macOS and Linux.
-	guardUnsupported = "the guard runs on macOS and Linux"
 )
 
 const (
@@ -91,10 +88,10 @@ func (e *settingsEdit) changed() bool {
 }
 
 // planSettings reads the settings file under dir and returns what adding the permission rules,
-// removing the ones ils init claude no longer adds, and with hook not empty the hook that runs
-// hook, changes in it. A file that is not valid JSON,
-// or whose hooks, PreToolUse, permissions, allow, ask or deny has the wrong type, is a
-// *shapeError; a file that cannot be read is any other error. A missing file starts empty.
+// removing the ones ils init claude no longer adds, and the hook that runs hook, changes in it. A
+// file that is not valid JSON, holds no JSON object, or whose hooks, PreToolUse, permissions,
+// allow, ask or deny has the wrong type, is a *shapeError; a file that cannot be read is any other
+// error. A missing file starts empty.
 func planSettings(dir, hook string) (settingsEdit, error) {
 	file := filepath.Join(dir, settingsFile)
 
@@ -207,10 +204,7 @@ func badEscapeAt(text []byte, offset int64) bool {
 }
 
 // apply adds the permission rules to settings, removing the ones ils init claude no longer adds,
-// and with hook not empty the hook that runs hook, keeping a line for each step; with hook empty
-// the hook's step is unchanged and says where the guard runs. The hooks are checked for their
-// shape even when no hook is added, so a file the guard's setup could not edit is refused wherever
-// it runs.
+// and the hook that runs hook, keeping a line for each step.
 func (e *settingsEdit) apply(settings *jsonObject, hook string) error {
 	hooks, err := e.member(*settings, keyHooks, keyHooks)
 	if err != nil {
@@ -222,9 +216,7 @@ func (e *settingsEdit) apply(settings *jsonObject, hook string) error {
 		return err
 	}
 
-	if hook == "" {
-		e.report(stepUnchanged, result.Say("Added no hook: "+guardUnsupported))
-	} else if err := e.addHook(settings, hooks, groups, hook); err != nil {
+	if err := e.addHook(settings, hooks, groups, hook); err != nil {
 		return err
 	}
 

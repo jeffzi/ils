@@ -9,7 +9,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -142,11 +141,10 @@ func (p *parse) initCommand() *cobra.Command {
 }
 
 // installClaude installs every skill of the app in the Claude Code directory installDir returns,
-// creating it when it is missing, then adds the permission rules and, where the guard runs, its
-// hook to the settings of that directory. The settings are read and checked before any skill is
-// written, and written after. Each step reports its line to shown as it ends: each skill, then the
-// hook (or, where the guard does not run, the line that says where it does), then each rule list.
-// The settings lines describe a write, so they are reported only once it succeeds.
+// creating it when it is missing, then adds the permission rules and the guard's hook to the
+// settings of that directory. The settings are read and checked before any skill is written, and
+// written after. Each step reports its line to shown as it ends: each skill, then the hook, then
+// each rule list. The settings lines describe a write, so they are reported only once it succeeds.
 //
 // The result holds every line reported, in order. A result of installDir ends the run; settings it
 // cannot edit are a refusal; a failed read of the settings, or a failed write, ends the run broke.
@@ -158,10 +156,6 @@ func (p *parse) installClaude(ctx context.Context, shown *display, project bool)
 	dir, hook, refusal := p.installDir(ctx, shown, req)
 	if refusal != nil {
 		return *refusal
-	}
-
-	if !p.guardRuns() {
-		hook = ""
 	}
 
 	file := filepath.Join(dir, settingsFile)
@@ -204,15 +198,6 @@ func (p *parse) installClaude(ctx context.Context, shown *display, project bool)
 	return result.Result{Command: req.Command, Words: req.Words, Lines: lines, Next: result.NextNone(), Outcome: result.Done}
 }
 
-// guardRuns reports whether the guard runs on this system, or as the app says it does.
-func (p *parse) guardRuns() bool {
-	if p.app.guardRuns != nil {
-		return *p.app.guardRuns
-	}
-
-	return guardSupported
-}
-
 // linkedReason returns the reason of a run that found the directories of the skills names to be
 // links that differ from the shipped skills.
 func linkedReason(names []string) result.Phrase {
@@ -253,10 +238,8 @@ func (p *parse) installDir(ctx context.Context, shown *display, req landing.Requ
 // userDir returns the Claude Code directory at user scope that environ names, and the command of
 // the guard's hook in it. CLAUDE_CONFIG_DIR, set and not empty, is that directory, and the hook
 // runs the script by its absolute path, quoted for bash. Otherwise it is claudeDir in the home
-// directory, which USERPROFILE names on Windows and HOME elsewhere; the other variable is never
-// read, so a HOME a Windows shell sets does not move the install. It returns the refusal of req
-// instead when CLAUDE_CONFIG_DIR is not an absolute path or holds a character bash cannot be given,
-// or when the home directory's variable is not set or empty.
+// directory, which HOME names. It returns the refusal of req instead when CLAUDE_CONFIG_DIR is not
+// an absolute path or holds a character bash cannot be given, or when HOME is not set or empty.
 func userDir(req landing.Request, environ []string) (dir, hook string, refusal *result.Result) {
 	if config, _ := git.EnvValue(environ, claudeConfigDir); config != "" {
 		if !filepath.IsAbs(config) {
@@ -264,7 +247,7 @@ func userDir(req landing.Request, environ []string) (dir, hook string, refusal *
 				result.NextStep("set %s to an absolute path, or unset it", claudeConfigDir))
 		}
 
-		script, err := syntax.Quote(filepath.Join(config, filepath.FromSlash(guardScript)), syntax.LangBash)
+		script, err := syntax.Quote(filepath.Join(config, guardScript), syntax.LangBash)
 		if err != nil {
 			return "", "", req.Refused(result.Say("%s is %s, which no bash command can name: %s", claudeConfigDir, config, err.Error()),
 				result.NextStep("set %s to another path, or unset it", claudeConfigDir))
@@ -273,15 +256,10 @@ func userDir(req landing.Request, environ []string) (dir, hook string, refusal *
 		return config, "bash " + script, nil
 	}
 
-	homeVariable := "HOME"
-	if runtime.GOOS == "windows" {
-		homeVariable = "USERPROFILE"
-	}
-
-	home, _ := git.EnvValue(environ, homeVariable)
+	home, _ := git.EnvValue(environ, "HOME")
 	if home == "" {
-		return "", "", req.Refused(result.Say("%s is not set, and the skills install under it", homeVariable),
-			result.NextStep("set %s, or run %s in a repository", homeVariable, result.Command(initWord+" "+harnessClaude+" "+flagProject)))
+		return "", "", req.Refused(result.Say("HOME is not set, and the skills install under it"),
+			result.NextStep("set HOME, or run %s in a repository", result.Command(initWord+" "+harnessClaude+" "+flagProject)))
 	}
 
 	return filepath.Join(home, claudeDir), userHook, nil
@@ -376,7 +354,7 @@ func walkShipped(shipped fs.FS, name, dest string, visit func(file, target strin
 			return err
 		}
 
-		return visit(file, filepath.Join(dest, filepath.FromSlash(strings.TrimPrefix(file, name+"/"))))
+		return visit(file, filepath.Join(dest, strings.TrimPrefix(file, name+"/")))
 	})
 }
 

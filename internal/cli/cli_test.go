@@ -797,11 +797,8 @@ func (c typedAfter) args() []string {
 func TestApp_Run_WhenAFlagWordIsMalformed_RefusesNamingTheWordAsTyped(t *testing.T) {
 	t.Parallel()
 
-	// A landing command stands for the commands ils builds alike; guard builds its own where it runs.
-	tests := []typedAfter{{parser: []string{"push"}, word: "---x"}}
-	if cli.GuardParsesFlags {
-		tests = append(tests, typedAfter{parser: []string{"guard"}, word: "---x"})
-	}
+	// A landing command stands for the commands ils builds alike; guard builds its own.
+	tests := []typedAfter{{parser: []string{"push"}, word: "---x"}, {parser: []string{"guard"}, word: "---x"}}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args(), " "), func(t *testing.T) {
 			t.Parallel()

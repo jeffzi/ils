@@ -1,5 +1,3 @@
-//go:build unix
-
 package cli
 
 import (
@@ -36,10 +34,6 @@ const (
 	// claudeDecisionAllow is the permissionDecision that has Claude Code run the tool without
 	// asking, whatever its allow rules say.
 	claudeDecisionAllow = "allow"
-
-	// guardSupported is true only in the Unix build; installClaude adds the guard's hook only where
-	// it is true.
-	guardSupported = true
 
 	// notLiteral stands, in the text of a parse, for a word whose text depends on what the shell
 	// expands.

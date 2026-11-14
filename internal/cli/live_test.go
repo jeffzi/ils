@@ -427,7 +427,7 @@ func liveCommit(t *testing.T, dir, message string, files map[string]string) {
 	t.Helper()
 
 	for path, content := range files {
-		full := filepath.Join(dir, filepath.FromSlash(path))
+		full := filepath.Join(dir, path)
 		assert.NilError(t, os.MkdirAll(filepath.Dir(full), 0o750))
 		assert.NilError(t, os.WriteFile(full, []byte(content), 0o600))
 	}
