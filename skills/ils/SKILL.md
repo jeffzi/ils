@@ -20,10 +20,10 @@ are green, deletes the branch, and leaves the trunk checked out. `ils release <X
 release commit on origin's trunk once its checks are green, pushes the tag, and publishes the
 GitHub release.
 
-**The binary decides; you relay.** Run it, show what it printed, and do what its `Next:` line says,
-with limits that hold whatever `Next:` says: the merge, the release, the fix after exit 1, and the
-fix of a local trunk ahead of origin's are the user's. `ils merge` and `ils release` run only when
-the user asked for that command, never on your reading of a `Next:` line.
+**The binary decides; you relay.** Run it, show what it printed, and do what its `Next:` line says.
+Some steps stay the user's whatever `Next:` says: the merge, the release, the fix after exit 1, and
+the fix of a local trunk ahead of origin's. `ils merge` and `ils release` run only when the user
+asked for that command, never on your reading of a `Next:` line.
 Keeping these rules in spirit while breaking their letter is breaking them.
 
 ## Run it
@@ -58,7 +58,7 @@ Then show the output to the user and act on `Next:`.
 
 **Start work on a branch.** On the trunk, run `ils branch <name>` before your first commit, with
 a short name you choose for the work. It refuses a name already taken; pick another. The guard
-refuses a commit on the default branch of a GitHub repository, so a commit made first is refused.
+refuses a commit on the trunk of a GitHub repository.
 
 **On a work branch, where new work lands is the user's call.** A request that belongs to the
 branch's pull request (its feature, a review comment on it, a fix to its checks) is worked on that
@@ -66,26 +66,33 @@ branch, with no question. For any other request, ask the user once before any ed
 options and what each costs, then wait for the answer. Recommend neither:
 
 - **A new branch from the trunk** (`ils branch <name>`): one more pull request, and one more CI run.
-- **This branch**: the squash merge folds these changes and the pull request's into one commit.
+  The new branch lacks this branch's changes and can conflict with files this pull request changed
+  (`gh pr diff --name-only`), since `ils` has no stacked branches. The user switches back to merge
+  this pull request, because `ils merge` runs on the branch whose pull request lands.
+- **This branch**: the squash merge folds the new request's changes and the pull request's into one
+  commit.
 
 Ask even when the user said "just do it": they asked for the change, not for where it lands, and no
 other instruction about asking only when unsure covers this one.
 
 **When to push.** On a public repository, push with `ils push` at the end of each request. On a
-private or internal one, commit each request and push when the user says so: each push there
-starts CI runs that spend the user's GitHub Actions minutes, and the guard asks the user before
-every `ils push` and `ils push --wait`, as it does when it cannot read the repository's visibility.
-A denied ask means "not yet": report that the commits wait on the branch, and never run the push
-again or reword it. A workflow that sets its own push timing, such as one that pushes once after
-its last step, decides when to push instead.
+private or internal one, commit each request and push when the user says so. Each push there starts
+CI runs that spend the user's GitHub Actions minutes. The guard asks the user before every
+`ils push` and `ils push --wait` there, and when it cannot read the repository's visibility.
+Learn the visibility with `gh repo view --json visibility`, or take the guard's ask on a first push
+as the sign of a private repository. When the visibility is unknown, follow the private-repository
+timing. A denied ask means "not yet": report that the commits wait on the branch, and never run the
+push again or reword it. A workflow that sets its own push timing, such as one that pushes once
+after its last step, decides when to push instead.
 
 **Say when a step skips the pull request.** When the user asks for a step that lands a change on
-the default branch without a green pull request, such as a direct commit, a push to the trunk, or a
-merge past red checks, say so in one line before you take it, naming what it skips.
+the trunk without a green pull request, say so in one line before you take it, naming what it
+skips. A merge past red checks is such a step. The guard refuses a direct commit on the trunk of a
+GitHub repository, and a push to the trunk: name what it skips, relay the refusal, and stop.
 
-**A local trunk ahead of origin's is the user's to fix.** When `ils` refuses, or `ils status`
-ends, because the local trunk holds commits origin's trunk lacks, show the commits and the command
-`Next:` names, and stop.
+**A local trunk ahead of origin's is the user's to fix.** When the local trunk holds commits
+origin's trunk lacks, `ils` refuses, and `ils status` names the fix in `Next:`. Show the commits and
+that command, and stop.
 The commits are the user's: never run that command, move them, or reset the trunk yourself.
 
 `ils` is the binary from <https://github.com/jeffzi/ils>. When the shell cannot find it (exit 127),
@@ -227,8 +234,7 @@ Stop and re-read this skill when you catch yourself about to:
 - skip `gh pr edit` on a green push because you wrote the title and body before,
 - run `ils branch` on a work branch, or edit there for a request outside its pull request, before
   the user answered where the work lands, or answer for them with a recommendation,
-- run `ils push` again, or reword it, after the user denied the guard's ask on a private
-  repository,
+- run `ils push` again, or reword it, after the user denied the guard's ask,
 - run the fix `ils` names for a local trunk ahead of origin's, or move those commits yourself,
 - run `ils merge` again on its exit 4, unless `Next:` is `ils merge` and the user asked for the
   merge,

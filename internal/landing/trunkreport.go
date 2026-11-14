@@ -21,7 +21,7 @@ func (r *reading) readOnTrunk(ctx context.Context) {
 	r.say(result.Say("On the trunk %s", result.Branch(r.status.Trunk)))
 
 	r.readTrunkApart(ctx)
-	r.readLocalTrunk(ctx, true)
+	r.readLocalTrunk(ctx)
 	r.readLastTag(ctx)
 	r.readRelease(ctx)
 	r.readRules(ctx)
@@ -35,7 +35,7 @@ func (r *reading) readTrunkApart(ctx context.Context) {
 
 	apart, err := r.deps.Repo.Divergence(ctx, "HEAD", r.trunkTip)
 	if err != nil {
-		r.failed(readLocalTrunk, err)
+		r.failedTrunk(readLocalTrunk, err)
 
 		return
 	}

@@ -55,12 +55,7 @@ func branchChecks(ctx context.Context, deps Deps, req Request, ready Ready) (onB
 		return onBranch{}, stop
 	}
 
-	stop, read, err := req.trunkAhead(ctx, deps, ready)
-	if err != nil {
-		return onBranch{}, req.Unread(read, err)
-	}
-
-	if stop != nil {
+	if stop := req.trunkAhead(ctx, deps, ready); stop != nil {
 		return onBranch{}, stop
 	}
 
@@ -100,15 +95,15 @@ func onTrunk(ctx context.Context, deps Deps, req Request, ready Ready) *result.R
 		return stop
 	}
 
-	ahead, read, err := req.trunkAhead(ctx, deps, ready)
+	a, read, err := readTrunkAhead(ctx, deps, ready.Trunk, true)
 	if err != nil {
 		return req.Unread(read, err)
 	}
 
 	stop := req.Refused(result.Say("HEAD is on the trunk %s, which ils never pushes", result.Branch(ready.Trunk)),
 		startBranchStep())
-	if ahead != nil {
-		stop.Next, stop.Lines = ahead.Next, ahead.Lines
+	if a != nil {
+		stop.Next, stop.Lines = a.fix(req.ilsCommand()), listed(a.past)
 	}
 
 	return stop

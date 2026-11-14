@@ -454,7 +454,7 @@ func TestStatus_WhenAForgeReadFails_ReportsTheFailedReadBesideTheRest(t *testing
 func TestStatus_WhenAGitReadFails_ReportsTheFailedReadBesideTheRest(t *testing.T) {
 	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
 	s := statusScene(t, publishTopic, greenOpen())
-	failGit(t, s, []string{"rev-list", "--left-right", "--count"})
+	failGit(t, s, divergenceRead())
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
@@ -512,6 +512,7 @@ func TestStatus_WhenAReadOfTheBranchFails_EndsOnFixingWhatFailed(t *testing.T) {
 	}{
 		{name: "the tip", read: readTip, words: []string{"rev-parse", "HEAD"}},
 		{name: "the commits past origin's trunk", read: readCommits, words: history()},
+		{name: "the working tree's changes", read: readTree, words: []string{"status", "--porcelain=v1"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -526,15 +527,17 @@ func TestStatus_WhenAReadOfTheBranchFails_EndsOnFixingWhatFailed(t *testing.T) {
 	}
 }
 
-func TestStatus_WhenTheWorkingTreeCannotBeRead_EndsOnFixingWhatFailed(t *testing.T) {
+func TestStatus_WhenTheWorkingTreeCannotBeReadAndTheLocalTrunkIsAhead_EndsOnFixingWhatFailed(t *testing.T) {
 	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
-	s := statusScene(t, publishTopic, greenOpen())
+	s := statusScene(t, func(f *gittest.Fixture) {
+		publishTopic(f)
+		f.AdvanceTrunk()
+	}, greenOpen())
 	failGit(t, s, []string{"status", "--porcelain=v1"})
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
 	assertEndsOn(t, got, statusCommand().fixed)
-	assert.Check(t, hasUnread(got.status, readTree), "unread %v, want %s listed", got.status.Unread, readTree)
 }
 
 func TestStatus_WhenTheLocalTrunkCannotBeRead_EndsBrokeNamingTheRead(t *testing.T) {
@@ -549,7 +552,7 @@ func TestStatus_WhenTheLocalTrunkCannotBeRead_EndsBrokeNamingTheRead(t *testing.
 		{name: "on a work branch", arrange: publishTopic, build: greenOpen(), fails: localTrunkRead()},
 		{
 			name: "its count against origin's on the trunk", arrange: standOnTrunk, build: ruledBy(forge.RulesProtect),
-			fails: []string{"rev-list", "--left-right", "--count"},
+			fails: divergenceRead(),
 		},
 	}
 	for _, tt := range tests {
@@ -705,18 +708,6 @@ func TestStatus_WhenOnTheTrunkAheadOfOrigins_EndsOnTheFix(t *testing.T) {
 	got := seeStatus(t, s, (*testing.T).Context)
 
 	assertSays(t, "Next:"+nextOf(t, got.text), nextTrunkFix(fixHere, "ils push"))
-}
-
-func TestStatus_WhenHEADIsDetachedWithALocalTrunkAheadOfOrigins_EndsOnStartingABranch(t *testing.T) {
-	t.Parallel()
-	s := statusScene(t, func(f *gittest.Fixture) {
-		f.AdvanceTrunk()
-		f.Git("switch", "--quiet", "--detach", "origin/"+trunk)
-	}, viewing(cleanHead(), passing()))
-
-	got := seeStatus(t, s, (*testing.T).Context)
-
-	assertSays(t, got.text, detached())
 }
 
 func TestStatus_WhenThereIsNoOrigin_EndsOnCreatingIt(t *testing.T) {

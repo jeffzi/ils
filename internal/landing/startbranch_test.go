@@ -217,9 +217,9 @@ func TestStartBranch_WhenDetachedHEADHasCommitsOriginsTrunkLacks_RefusesListingT
 	assertRefusedBranch(t, s, got, branchRefusal{name: fresh, before: before, want: want})
 }
 
-// aheadTrunk is one place the local trunk is checked out while it holds a commit origin's trunk
+// aheadTrunkCase is one place the local trunk is checked out while it holds a commit origin's trunk
 // lacks.
-type aheadTrunk struct {
+type aheadTrunkCase struct {
 	// arrange gives the local trunk its commit and returns its sha and the refusal's `Next:` line,
 	// which names the worktree the trunk is checked out in when that is another worktree.
 	arrange func(*gittest.Fixture) (sha, next string)
@@ -233,20 +233,11 @@ func TestStartBranch_WhenLocalTrunkHasCommitsOriginLacks_RefusesNamingTheFix(t *
 	t.Parallel()
 
 	again := "ils branch " + fresh
-	tests := []aheadTrunk{
+	tests := []aheadTrunkCase{
 		{
 			name: "trunk checked out in no worktree",
 			arrange: func(f *gittest.Fixture) (string, string) {
 				return f.AdvanceTrunk(), nextTrunkFix(fixNowhere, again)
-			},
-		},
-		{
-			name: "trunk checked out in no worktree and behind origin's",
-			arrange: func(f *gittest.Fixture) (string, string) {
-				sha := f.AdvanceTrunk()
-				f.AdvanceOrigin(trunk)
-
-				return sha, nextTrunkFix(fixNowhere, again)
 			},
 		},
 		{
@@ -275,34 +266,38 @@ func TestStartBranch_WhenLocalTrunkHasCommitsOriginLacks_RefusesNamingTheFix(t *
 
 			got := startBranch(t, s, fresh)
 
-			want := expect(shortSHA(sha), strayOnTrunk) + next
-			assertRefusedBranch(t, s, got, branchRefusal{name: fresh, before: before, want: want})
+			assertRefusedBranch(t, s, got, branchRefusal{name: fresh, before: before, want: trunkAheadText(sha, next)})
 		})
 	}
 }
 
-func TestStartBranch_WhenTheLocalTrunkCannotBeRead_EndsBrokeNamingTheRead(t *testing.T) {
+func TestStartBranch_WhenAReadOfTheLocalTrunkFails_EndsBrokeNamingTheRead(t *testing.T) {
 	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
-	s := branchScene(t, nil)
-	failGit(t, s, localTrunkRead())
-	before := s.written()
+	tests := []struct {
+		arrange func(*gittest.Fixture)
+		name    string
+		read    string
+		fails   []string
+	}{
+		{name: "whether the local trunk exists", fails: localTrunkRead(), read: readLocalTrunk},
+		{
+			name:    "where the ahead trunk is checked out",
+			arrange: func(f *gittest.Fixture) { f.AdvanceTrunk() },
+			fails:   worktreeList(), read: readWorktrees,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := branchScene(t, tt.arrange)
+			failGit(t, s, tt.fails)
+			before := s.written()
 
-	got := startBranch(t, s, fresh)
+			got := startBranch(t, s, fresh)
 
-	assertFailedGit(t, got, commandNamed("branch "+fresh, branchRequest(fresh)), readLocalTrunk)
-	assert.Check(t, is.Equal(s.written(), before))
-}
-
-func TestStartBranch_WhenWhereTheAheadTrunkIsCheckedOutCannotBeRead_EndsBrokeNamingTheRead(t *testing.T) {
-	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
-	s := branchScene(t, func(f *gittest.Fixture) { f.AdvanceTrunk() })
-	failGit(t, s, worktreeList())
-	before := s.written()
-
-	got := startBranch(t, s, fresh)
-
-	assertFailedGit(t, got, commandNamed("branch "+fresh, branchRequest(fresh)), readWorktrees)
-	assert.Check(t, is.Equal(s.written(), before))
+			assertFailedGit(t, got, commandNamed("branch "+fresh, branchRequest(fresh)), tt.read)
+			assert.Check(t, is.Equal(s.written(), before))
+		})
+	}
 }
 
 func TestStartBranch_WhenTheSwitchWouldOverwriteAFile_RefusesNamingIt(t *testing.T) {

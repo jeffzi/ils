@@ -821,17 +821,21 @@ func (r Request) dirtyTree(files []string) *result.Result {
 
 // trunkAhead returns the refusal of a local trunk with commits origin's trunk lacks, listing them,
 // whose next step is its fix, or nil when it has none or does not exist; a read that fails is
-// returned with the name of the read. It reads origin/<trunk>, so each command calls it right
+// the result r.Unread gives for it. It reads origin/<trunk>, so each command calls it right
 // after its own fetchTrunk.
-func (r Request) trunkAhead(ctx context.Context, deps Deps, ready Ready) (stop *result.Result, read string, err error) {
+func (r Request) trunkAhead(ctx context.Context, deps Deps, ready Ready) *result.Result {
 	here := ready.Standing.Kind == git.OnBranch && ready.Standing.Branch == ready.Trunk
 
 	ahead, read, err := readTrunkAhead(ctx, deps, ready.Trunk, here)
-	if err != nil || ahead == nil {
-		return nil, read, err
+	if err != nil {
+		return r.Unread(read, err)
 	}
 
-	return ahead.refusal(r, r.ilsCommand()), "", nil
+	if ahead == nil {
+		return nil
+	}
+
+	return ahead.refusal(r, r.ilsCommand())
 }
 
 // aheadTrunk is a local trunk with commits origin's trunk lacks, and where it is checked out.
@@ -875,24 +879,29 @@ func readTrunkAhead(ctx context.Context, deps Deps, trunk string, here bool) (*a
 // refusal is req's refusal of the local trunk, listing its commits, whose next step is fix with
 // again.
 func (a aheadTrunk) refusal(req Request, again result.Name) *result.Result {
-	stop := req.Refused(
-		result.Say("the local trunk %s has commits that origin's trunk lacks, listed here", result.Branch(a.trunk)), a.fix(again))
+	stop := req.Refused(a.reason(), a.fix(again))
 	stop.Lines = listed(a.past)
 
 	return stop
 }
 
-// keepOffTrunk and keepOffTrunkThere are the fixes of a local trunk with commits origin's trunk
-// lacks: each keeps them on a branch of their own and puts the local trunk back at origin's. A
-// trunk checked out in some worktree takes keepOffTrunk run there, since git moves no branch
-// checked out; one checked out nowhere takes keepOffTrunkThere, which switches nothing. Each name
-// is the trunk: twice for keepOffTrunk, three times for keepOffTrunkThere. They stay untyped
-// because result.NextStep accepts only constant expressions.
+// reason is the reason every landing command gives for refusing the local trunk.
+func (a aheadTrunk) reason() result.Phrase {
+	return result.Say("the local trunk %s has commits that origin's trunk lacks, listed here", result.Branch(a.trunk))
+}
+
+// keepOffTrunkHere and keepOffTrunkNowhere are the fixes of a local trunk with commits origin's
+// trunk lacks: each keeps them on a branch of their own and puts the local trunk back at origin's,
+// after the keepOff they share. A trunk checked out in some worktree takes keepOffTrunkHere run
+// there, since git moves no branch checked out; one checked out nowhere takes keepOffTrunkNowhere,
+// which switches nothing. Each name is the trunk: twice for keepOffTrunkHere, three times for
+// keepOffTrunkNowhere. They stay untyped because result.NextStep accepts only constant
+// expressions.
 const (
-	keepOffTrunk = "keep those commits on a branch of their own and put the local trunk back at " +
-		"origin's with `! git switch -c <name> && git branch -f %s origin/%s`"
-	keepOffTrunkThere = "keep those commits on a branch of their own and put the local trunk back at " +
-		"origin's with `! git branch <name> %s && git branch -f %s origin/%s`"
+	keepOff = "keep those commits on a branch of their own and put the local trunk back at " +
+		"origin's with "
+	keepOffTrunkHere    = keepOff + "`! git switch -c <name> && git branch -f %s origin/%s`"
+	keepOffTrunkNowhere = keepOff + "`! git branch <name> %s && git branch -f %s origin/%s`"
 )
 
 // fix is the next step of the local trunk, run where it is checked out: here when HEAD is on it,
@@ -904,12 +913,12 @@ func (a aheadTrunk) fix(again result.Name) result.Next {
 
 	switch {
 	case a.here:
-		return result.NextStep(keepOffTrunk+", then run %s", trunk, trunk, push)
+		return result.NextStep(keepOffTrunkHere+", then run %s", trunk, trunk, push)
 	case a.worktree != "":
-		return result.NextStep("in the worktree at %s, "+keepOffTrunk+", then run %s there", a.worktree, trunk, trunk, push)
+		return result.NextStep("in the worktree at %s, "+keepOffTrunkHere+", then run %s there", a.worktree, trunk, trunk, push)
 	}
 
-	return result.NextStep(keepOffTrunkThere+thenRunAgain, trunk, trunk, trunk, again)
+	return result.NextStep(keepOffTrunkNowhere+thenRunAgain, trunk, trunk, trunk, again)
 }
 
 // detachedWith says that HEAD is detached with commits origin's trunk lacks, listed after it.

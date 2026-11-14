@@ -27,7 +27,8 @@ import (
 // that step wherever HEAD stands.
 //
 // On a work branch `Next:` mirrors the order in which `ils push` refuses and ends, so that it never
-// names a command that would refuse: changed tracked files; then a local trunk with commits
+// names a command that would refuse: changed tracked files, or a read of them that failed other
+// than by a cut, which push would end on; then a local trunk with commits
 // origin's trunk lacks, whose fix runs `ils push` there for a trunk checked out in another
 // worktree, and for one checked out nowhere runs `ils merge` after it on a green, mergeable pull
 // request and `ils push` otherwise; then a read of the branch's tip, of its commits past the
@@ -63,8 +64,8 @@ func Status(ctx context.Context, deps Deps, req Request) result.Result {
 	r.readStanding(ctx)
 
 	ended := req.ends(result.Done, result.Phrase{}, r.next())
-	if r.trunkUnread != "" {
-		ended.Outcome, ended.Reason = result.Broke, result.Say("could not read %s", r.trunkUnread)
+	if r.trunkUnread != nil {
+		ended.Outcome, ended.Reason = result.Broke, *r.trunkUnread
 	}
 
 	ended.Lines = r.lines
@@ -97,9 +98,9 @@ type reading struct {
 	// work branch then lists as unread, so that a payload with no pull request and no such entry
 	// means it has none.
 	unreadPulls string
-	// trunkUnread names the read of the local trunk that failed other than by a cut, which ends the
-	// status broke; empty when none did.
-	trunkUnread string
+	// trunkUnread is the reason a read of the local trunk that failed other than by a cut gives,
+	// which ends the status broke; nil when no such read failed.
+	trunkUnread *result.Phrase
 	// refused is the step the shared preconditions of every landing command refuse with for git, or
 	// for the ssh origin's URLs need, or end on for origin's trunk when where HEAD stands cannot be
 	// told without it, which comes before any step the standing decides.
@@ -114,6 +115,9 @@ type reading struct {
 	// origin's copy of it, of the working tree's changes, or of the local trunk failed other than by
 	// a cut: push or merge would end on the same failure, so no step past the fix can be told.
 	branchUnread bool
+	// treeUnread is set when the read of the working tree's changes failed other than by a cut: push
+	// ends on it before it reads origin's trunk, so no step past the fix can be told.
+	treeUnread bool
 	// noTrunk is set when origin turned away the read of its trunk and the last fetch names none
 	// either: HEAD's branch cannot be told from the trunk.
 	noTrunk bool
@@ -123,15 +127,11 @@ func (r *reading) say(lines ...result.Phrase) {
 	r.lines = append(r.lines, lines...)
 }
 
-// failed records that the read named read failed with err. A cut ends every read after it; any
-// other failed read of the local trunk ends the status broke.
+// failed records that the read named read failed with err. A cut ends every read after it.
 func (r *reading) failed(read string, err error) {
 	if !endedEarly(err) {
 		line, _ := couldNotRead(read, err)
 		r.unread(line, read, err.Error())
-		if read == readLocalTrunk {
-			r.trunkUnread = read
-		}
 
 		return
 	}
@@ -246,7 +246,7 @@ func (r *reading) readStanding(ctx context.Context) {
 	r.readCommits(ctx)
 	r.readCopy(ctx)
 	r.readShared(ctx)
-	r.readLocalTrunk(ctx, false)
+	r.readLocalTrunk(ctx)
 	r.readPulls(ctx)
 }
 
@@ -259,6 +259,7 @@ func (r *reading) readTree(ctx context.Context) {
 	files, err := r.deps.Repo.ChangedTrackedFiles(ctx)
 	if err != nil {
 		r.failedBranch(readTree, err)
+		r.treeUnread = !r.cut
 
 		return
 	}
@@ -286,23 +287,32 @@ func (r *reading) readShared(ctx context.Context) {
 }
 
 // readLocalTrunk reads whether the local trunk has commits origin's trunk lacks, which every
-// landing command refuses, and says the refusal; here is whether HEAD is on the trunk.
-func (r *reading) readLocalTrunk(ctx context.Context, here bool) {
+// landing command refuses, and says the commits and the reason; next later names the fix.
+func (r *reading) readLocalTrunk(ctx context.Context) {
 	if r.cut || r.on.Trunk == "" {
 		return
 	}
 
+	here := r.status.Standing == result.StandingTrunk
 	ahead, read, err := readTrunkAhead(ctx, r.deps, r.on.Trunk, here)
 
 	switch {
 	case err != nil:
-		r.failedBranch(read, err)
-		if !r.cut {
-			r.trunkUnread = read
-		}
+		r.failedTrunk(read, err)
 	case ahead != nil:
 		r.ahead = ahead
-		r.refusal(ahead.refusal(Request{Command: PushCommand}, result.Command(PushCommand)))
+		r.say(listed(ahead.past)...)
+		r.say(ahead.reason())
+	}
+}
+
+// failedTrunk records that the read named read, a read of the local trunk, failed with err and,
+// unless a cut ended it, keeps the reason that ends the status broke.
+func (r *reading) failedTrunk(read string, err error) {
+	r.failedBranch(read, err)
+	if !r.cut {
+		_, reason := couldNotRead(read, err)
+		r.trunkUnread = &reason
 	}
 }
 
@@ -685,6 +695,10 @@ func (r *reading) branchNext() result.Next {
 		return r.dirty
 	}
 
+	if r.treeUnread {
+		return r.req.onceFixed()
+	}
+
 	if r.ahead != nil {
 		return r.ahead.fix(r.afterTrunkFix())
 	}
@@ -723,7 +737,7 @@ func (r *reading) branchNext() result.Next {
 // start a branch.
 func (r *reading) trunkNext() result.Next {
 	switch {
-	case r.branchUnread || r.trunkUnread != "":
+	case r.trunkUnread != nil:
 		return r.req.onceFixed()
 	case r.ahead != nil:
 		return r.ahead.fix(result.Command(PushCommand))

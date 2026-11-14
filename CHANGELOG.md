@@ -9,33 +9,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Add `ils guard` and `ils parse`, which judge a shell command an agent is about to run against the
-  `git`, `gh`, and `ils` rules and show how the guard reads it.
+- Add `ils guard`, which judges a shell command an agent is about to run against the `git`, `gh`,
+  and `ils` rules, refusing among others a commit on the default branch of a GitHub repository and
+  asking before `ils push` on a private or internal repository, and `ils parse`, which shows how the
+  guard reads a command.
 - Add `ils hook claude` and the `ils` skill's `hook.sh`, which run the guard as Claude Code's
   `PreToolUse` hook and block every command when `ils` cannot answer.
 - Add `ils init claude`, which installs the agent skills from the binary and adds the guard's hook
   and the flow's permission rules to Claude Code's settings.
-- Make the guard refuse a commit on the default branch of every GitHub repository, protected or
-  not, whatever `gh` can read.
-- Make the guard ask before `ils push` on a private or internal repository, whose CI runs spend
-  GitHub Actions minutes, and when it cannot read the repository's visibility.
 
 ### Changed
 
-- **Breaking:** Refuse `ils branch` and `ils push` while the local default branch holds commits
-  origin's lacks, naming the one command that moves them to a branch of their own. `ils merge`
-  and `ils status` name that command too.
-- **Breaking:** End `ils status` broke when it cannot read the local default branch, instead of
+- **Breaking:** Refuse `ils branch`, `ils push`, and `ils merge` while the local default branch holds
+  commits origin's lacks, and name the one command that moves them to a branch of their own, as
+  `ils status` now does.
+- **Breaking:** Make `ils status` exit 1 when it cannot read the local default branch, instead of
   exiting 0.
-- Make `ils init claude` remove the `Bash(ils push)` and `Bash(ils push --wait)` allow rules an
-  earlier run added, since the guard now answers `ils push` itself.
 - Make the `ils` agent skill ask once where new work lands when the checkout is on a work branch,
   instead of starting a new branch on its own.
 - Report a `gh` reachable only through a relative `PATH` entry as missing on every operating system.
 - Refuse `ils merge` on a default branch whose ruleset requires a merge queue.
 - Refuse `ils push`, `ils merge`, and `ils release` when any push URL of `origin` names another
   repository than its fetch URL.
-- Make the guard read a trailing lone backslash in an unquoted word as bash does, keeping it.
 - **Breaking:** Require `gh` 2.81.0 or later, since `ils` reads `gh auth status --json` to tell a
   missing login from a host `gh` cannot reach.
 
@@ -57,8 +52,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the pull request's title and body after every green push.
 - Fix `ils merge --help` and `ils release --help` stating the full time limit as the wait for the
   checks, which stops 20 seconds earlier.
-- Fix `ils init claude` calling a `settings.json` that holds a member twice or an escape that names
-  no character not JSON, instead of naming the problem.
 - Fix a second Ctrl-C on Windows ending `ils` with an exit code other than the console's, and the
   terminal check misreading the foreground process group on big-endian systems.
 - Fix `ils merge` saying the branch could not be deleted on origin when the time limit cut the
@@ -75,10 +68,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   branch's tip, and saying no check reported when a required check never reported.
 - Fix `ils push` and `ils release` reporting a push as done when one of several push URLs refused
   it.
-- Fix the guard allowing `gh`'s own aliases, such as `gh pr co --force`, without the refusal or
-  question the command they name gets.
-- Fix the guard allowing `git mv --force`, `git submodule update --force`, and
-  `git submodule deinit --force`, which overwrite uncommitted work.
 
 ## [0.5.0] - 2026-10-31
 

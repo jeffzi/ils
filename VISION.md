@@ -14,8 +14,7 @@ installed.
 ## The problem
 
 A developer can tell an agent how to land a change, but the agent follows prose loosely. It skips a
-step or paraphrases it. The result is a merge while a check is red, a push to the default branch, a
-force push over someone else's commits, or a stale run reported as green. Each of these reaches the
+step or paraphrases it. [README.md](README.md) lists what goes wrong, and each mistake reaches the
 branch everyone else builds on. A developer who checks every step has handed nothing over.
 
 ## Principles
@@ -25,15 +24,15 @@ The principles are ranked: when two conflict, the lower number wins.
 1. **The only path to the default branch is a green pull request.** Every change reaches it as one
    squash commit whose checks passed on its pull request. A broken commit followed by a fix is the
    failure `ils` exists to prevent. A small change takes the same branch and pull request as a
-   large one. Stacking follow-ups on the open branch cuts its cost; skipping the pull request never
+   large one. Adding a follow-up to the open branch cuts its cost; skipping the pull request never
    does. Closes: a direct-push mode for small fixes, a merge on pending or skipped checks.
 2. **The developer decides what other people see.** The merge and the release wait for the
    developer's word. The agent carries a change to a green pull request with its title and body
    written, then stops. On a private repository the push waits for the developer's word too, since
-   each push starts CI runs that spend their Actions minutes; a workflow that sets its own push
-   timing decides when it pushes. When the developer asks for a step that breaks #1, the agent says
-   so before taking it. Closes: a merge as soon as the checks pass, a release as soon as the
-   release commit lands.
+   each push starts CI runs that spend Actions minutes. A workflow that sets its own push timing,
+   such as one that pushes once after its last step, decides when it pushes. When the developer
+   asks for a step that breaks #1, the agent says so before taking it. Closes: a merge as soon as
+   the checks pass, a release as soon as the release commit lands.
 3. **Enforce, don't instruct.** A step that must not fail lives in the binary, which checks its
    preconditions and refuses with a reason. A command exists when it makes a mistake impossible,
    not when it saves typing. Closes: an `ils` command that wraps a `git` command and refuses
@@ -52,7 +51,7 @@ The principles are ranked: when two conflict, the lower number wins.
    repository is the developer's word under #2, not a prompt of `ils`. Closes: an interactive
    prompt from `ils` itself, an outcome stated only in prose.
 7. **Keep no state of its own.** `ils` reads only what git and GitHub hold: the branch, its pull
-   request, its checks, and the tags. A developer could do everything it does by hand. Closes: a
+   request, its checks, and the tags. Closes: a
    local database or cache of pull request state.
 
 ## Non-goals
@@ -72,10 +71,14 @@ The principles are ranked: when two conflict, the lower number wins.
 `ils` is the right choice when an agent writes code in a GitHub repository that runs CI, and every
 change should land as a pull request whose checks passed.
 
-It is the wrong choice when the developer pushes to the default branch by design, when the
-repository lives outside GitHub, when the work needs stacked pull requests, or when the agent
-should merge on its own (#2). A repository that pushes to the default branch is left out at
-install time: `ils init claude --project` installs the guard for one repository at a time.
+It is the wrong choice when:
+
+- the developer pushes to the default branch by design;
+- the repository lives outside GitHub;
+- the work needs stacked pull requests;
+- the agent should merge on its own (#2).
+
+[Use with Claude Code](README.md#use-with-claude-code) says how to leave a repository out.
 
 It works beside the alternatives a newcomer weighs it against:
 
@@ -89,7 +92,7 @@ It works beside the alternatives a newcomer weighs it against:
 
 One maintainer builds `ils`. In scope: landing a change on GitHub, from the branch to the release,
 and the guard that keeps an agent on that path. A change to the guard follows
-[guard scope](docs/guard-scope.md), including its replay measurement. A request outside this scope
-is closed by citing this page, not by judging its code.
+[guard scope](docs/guard-scope.md), including its replay measurement. The maintainer closes a
+request outside this scope by citing this page, not by judging its code.
 
-This page is revisited at each minor release.
+The maintainer revisits this page at each minor release.

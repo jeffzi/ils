@@ -76,12 +76,7 @@ func (n newBranch) checks(ctx context.Context, deps Deps, req Request) (string, 
 		return "", stop
 	}
 
-	stop, read, err := req.trunkAhead(ctx, deps, n.Ready)
-	if err != nil {
-		return "", req.Unread(read, err)
-	}
-
-	if stop != nil {
+	if stop := req.trunkAhead(ctx, deps, n.Ready); stop != nil {
 		return "", stop
 	}
 

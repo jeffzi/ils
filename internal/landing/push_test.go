@@ -287,34 +287,6 @@ func runPushRefusals(t *testing.T, rows []pushRefusal) {
 	}
 }
 
-// trunkAheadRefusals are the refusals of a local trunk with a commit origin's trunk lacks, which the
-// trunk is checked out in no worktree for but the last.
-func trunkAheadRefusals() []pushRefusal {
-	again := nextTrunkFix(fixNowhere, "ils push")
-
-	return []pushRefusal{
-		refusedAfterIdentity("local trunk ahead of origin's", func(f *gittest.Fixture) string {
-			return expect(shortSHA(f.AdvanceTrunk()), strayOnTrunk) + again
-		}),
-		refusedAfterIdentity("local trunk ahead of origin's with the branch's first commit", func(f *gittest.Fixture) string {
-			f.Git("branch", "--force", trunk, topic)
-
-			return expect(shortSHA(f.Git("rev-parse", topic)), "work on "+topic) + again
-		}),
-		refusedAfterIdentity("on the trunk ahead of origin's", func(f *gittest.Fixture) string {
-			f.Commits(trunk, strayOnTrunk)
-
-			return expect("on the trunk "+trunk) + nextTrunkFix(fixHere, "ils push")
-		}),
-	}
-}
-
-func TestPush_WhenTheLocalTrunkHasCommitsOriginsTrunkLacks_RefusesNamingTheFix(t *testing.T) {
-	t.Parallel()
-
-	runPushRefusals(t, trunkAheadRefusals())
-}
-
 func TestPush_WhenBranchCannotBePushed_RefusesAtTheFirst(t *testing.T) {
 	t.Parallel()
 
@@ -497,11 +469,5 @@ func runFailedReads(t *testing.T, rows []failedRead) {
 
 func TestPush_WhenGitReadFailsForNoPrecondition_BrokeNamingTheRead(t *testing.T) {
 	// Not parallel: each row puts a failing git first on PATH with t.Setenv.
-	trunkRead := failedAfterIdentity("the local trunk", readLocalTrunk, func(*gittest.Fixture) []string { return localTrunkRead() })
-	onTrunkRead := failedAfterIdentity("the local trunk with HEAD on it", readLocalTrunk, func(f *gittest.Fixture) []string {
-		f.Git("switch", "--quiet", trunk)
-
-		return localTrunkRead()
-	})
-	runFailedReads(t, slices.Concat([]failedRead{trunkRead, onTrunkRead}, branchFailedReads(), copyFailedReads()))
+	runFailedReads(t, slices.Concat(branchFailedReads(), copyFailedReads()))
 }

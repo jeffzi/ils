@@ -90,8 +90,8 @@ Run `ils branch <name>` before you start new work. It:
 
 The new branch starts at origin's default branch whatever you stand on. Another work branch's
 commits never ride along into the new pull request, and a stale local default branch never holds
-it back. When the local default branch has commits origin lacks, `ils branch` refuses and lists
-them, and `Next:` names the fix described under
+it back. When the local default branch has commits origin's default branch lacks, `ils branch`
+refuses and lists them, and `Next:` names the fix described under
 [A local default branch ahead of origin's](#a-local-default-branch-ahead-of-origins). `ils branch`
 needs `git` alone: it runs without `gh`, and with an `origin` that is not on GitHub.
 
@@ -116,8 +116,9 @@ origin's lacks, whether or not it is also behind origin's, and list those commit
 ends on the same step. A branch cut beside those commits would carry work no pull request lands,
 so `ils` stops until they are on a branch of their own. It never moves them itself: `Next:` names
 one command for you to run, which keeps them on a new branch and puts the local default branch back
-at origin's. `<name>` is the new branch's name, for you to choose, and `main` stands for the
-default branch:
+at origin's. A leading `!` means you run the command yourself from Claude Code's prompt, which
+skips the guard's hook. `<name>` is the new branch's name, for you to choose, and `main` stands for
+the default branch:
 
 | The local default branch is checked out | `Next:`                                                                                                        |
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
@@ -126,9 +127,9 @@ default branch:
 | Nowhere                                 | `! git branch <name> main && git branch -f main origin/main`, then the command again                           |
 
 The command again is the one that refused: `ils branch <name>`, `ils push`, or `ils merge`.
-`ils status` ends on `ils merge` there when the pull request is green and mergeable, and on
-`ils push` otherwise. A failed read of the local default branch ends each of these commands
-broke, naming the read.
+In the Nowhere row, `ils status` names `ils merge` as the command again when the pull request is
+green and mergeable, and `ils push` otherwise. A read of the local default branch that fails other
+than by the time limit or an interrupt ends each of these commands broke, naming the read.
 
 ### ils push
 
@@ -240,11 +241,11 @@ gh pr merge --repo <host>/<owner>/<name> <N> --squash --delete-branch \
 ### ils status
 
 Run `ils status` to learn where the checkout stands before you act. It exits 0 once its words
-parse: what it could not read is a line of its output, not a refusal. The one exception is a failed
-read of the local default branch, which ends it broke, naming the read, as it ends every landing
-command. It fetches what it reads from origin (the default branch, the branch's copy, a merged
-pull request's head, a version tag) and writes nothing of yours. When origin cannot be reached, it
-counts against the last fetch and says so.
+parse: what it could not read is a line of its output, not a refusal. The one exception is a read
+of the local default branch that fails other than by the time limit or an interrupt. That ends it
+broke, naming the read, as it ends every landing command. It fetches what it reads from origin (the
+default branch, the branch's copy, a merged pull request's head, a version tag) and writes nothing
+of yours. When origin cannot be reached, it counts against the last fetch and says so.
 
 What it reports depends on where HEAD stands:
 
@@ -259,17 +260,20 @@ What it reports depends on where HEAD stands:
 `Next:` names the first of these the state calls for, in the order `ils push` would refuse or end:
 
 1. the fix of a local default branch with commits origin's lacks (see
-   [A local default branch ahead of origin's](#a-local-default-branch-ahead-of-origins)). On a
-   work branch, a failed precondition, a refusal of the origin, of `gh`, or of the repository
-   (see [What push refuses](#what-push-refuses)), and changed tracked files come first. On the
-   default branch, only a failed precondition and a failed read of the local default branch come
-   first. A detached HEAD keeps its own step;
+   [A local default branch ahead of origin's](#a-local-default-branch-ahead-of-origins));
 2. start a branch with `ils branch <name>` once the work landed;
 3. bring in the branch's copy on origin when the branch is behind or diverged;
 4. `ils push` when there is work to push or checks to wait for;
 5. the fix for a red check or a conflict;
 6. a review to request;
 7. the pull request's title and body, then `ils merge`, when it is green and mergeable.
+
+Some states come before item 1. On a work branch, they are a failed precondition, a refusal of the
+origin, of `gh`, or of the repository (see [What push refuses](#what-push-refuses)), changed
+tracked files, and a failed read of the working tree's changes. On the default branch, they are a
+failed precondition and a failed read of the local default branch. A detached HEAD has no item 1:
+it ends on `git switch -c <name>`, then `ils push`, or on `ils branch <name>` when it has no
+commits origin's default branch lacks.
 
 With `gh` missing or logged out, it says so, names the fix, and still reports what `git` alone can
 tell.
@@ -402,9 +406,9 @@ Each rule lands in the list the `permissions` object of [Init by hand](#init-by-
 A rule already in any of the three lists is not added to another. No rule covers `ils push`: the
 guard [answers it itself](#ils-and-gh-commands-the-guard-allows-or-asks-about). `ils init` removes
 `Bash(ils push)` and `Bash(ils push --wait)` from the `allow` list, where an earlier `ils init`
-added them: Claude Code does not document whether a hook's `ask` overrides an allow rule, so such
-a rule could let a push to a private repository run unasked. Every other key, value, and entry of
-`settings.json` stays, in its order. A run that changes nothing leaves the file as it was.
+added them. Claude Code does not document whether a hook's `ask` overrides an allow rule. Such a
+rule could let a push to a private repository run without a prompt. Every other key, value, and
+entry of `settings.json` stays, in its order. A run that changes nothing leaves the file as it was.
 
 With `--project`, it writes `.claude/skills/` and `.claude/settings.json` at the top level of the
 repository the working directory is in, whatever `CLAUDE_CONFIG_DIR` holds.
@@ -511,8 +515,8 @@ Exit 0 means, for each command:
   commit; follow `Next:`.
 - **Merge:** the pull request is merged and the branch deleted.
 - **Branch:** the branch is started.
-- **Status:** whatever it finds, once its words parse, unless it cannot read the local default
-  branch, which ends it broke.
+- **Status:** whatever it finds, once its words parse. A read of the local default branch that
+  fails other than by the time limit or an interrupt ends it broke.
 - **Release:** the tag is on origin, and the GitHub release exists unless `--tag-only`.
 - **Init:** the skills and the rules are in place, and the hook too where the guard runs (macOS and
   Linux); a skill directory that is a link holds the shipped files.
@@ -1324,8 +1328,9 @@ regard to case, so `GitHub.com` is `github.com`.
 | `git` fails to read the push URL, or the host of an ssh URL                                                    | Refused, as a failed read.                                                              |
 
 For a host other than `github.com`, the guard checks the login with
-`gh auth status --hostname <host> --json hosts`, run with the `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`,
-and `HOME` the command sets, so it reads the login the agent's own `gh` would use. On the default
+`gh auth status --hostname <host> --json hosts`. It runs that check with the `GH_CONFIG_DIR`,
+`XDG_CONFIG_HOME`, and `HOME` the command sets, so it reads the login the agent's own `gh` would
+use. On the default
 branch a commit costs the `ls-remote` that finds the default branch, plus that one `gh` call on a
 host other than `github.com`. Off the default branch, and in a repository with no `origin` or on a
 detached HEAD, the guard runs no `gh`.
@@ -1383,17 +1388,17 @@ The guard allows or asks about these `ils` and `gh` calls only in the forms each
   permission rules decide those.
 - **`ils push` and `ils push --wait`, as the whole command:** the guard reads the visibility of the
   repository `origin`'s first push URL names, with `gh repo view <host>/<owner>/<name> --json
-  visibility` after `gh`'s login check for that host. It reads them where the command runs, with
-  the `GIT_DIR`, `GIT_WORK_TREE`, `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, and `HOME` the command runs
-  with, so a login for another host does not count.
+  visibility` after `gh`'s login check for that host. It runs `git` and `gh` where the command
+  runs, with the `GIT_DIR`, `GIT_WORK_TREE`, `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, and `HOME` the
+  command runs with. Only a `gh` login for the push URL's host counts.
 
-  | Case                                                                                           | Verdict                                                                                                        |
-  | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-  | A public repository                                                                            | Allowed on the guard's own word: [ils hook](#ils-hook) answers Claude Code with an explicit `allow`.           |
-  | A private or internal repository                                                               | Asks; the reason says the repository is private, so the push starts CI runs that spend GitHub Actions minutes. |
-  | `gh` missing or with no login for the host, a failed read, or a reply that names no visibility | Asks; the reason says why the guard could not read the visibility.                                             |
-  | A directory or git dir the guard cannot tell                                                   | Asks; the reason says the guard cannot tell where the command runs.                                            |
-  | No repository, no `origin`, or a push URL that names no repository                             | Allowed on the guard's own word: `ils push` refuses that origin itself.                                        |
+  | Case                                                                                           | Verdict                                                                                                           |
+  | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+  | A public repository                                                                            | Allowed on the guard's own word: [ils hook](#ils-hook) answers Claude Code with an explicit `allow`.              |
+  | A private or internal repository                                                               | Asks; the reason says the repository is not public, so the push starts CI runs that spend GitHub Actions minutes. |
+  | `gh` missing or with no login for the host, a failed read, or a reply that names no visibility | Asks; the reason says why the guard could not read the visibility.                                                |
+  | A directory or git dir the guard cannot tell                                                   | Asks; the reason says the guard cannot tell where the command runs.                                               |
+  | No repository, no `origin`, or a push URL that names no repository                             | Allowed on the guard's own word: `ils push` refuses that origin itself.                                           |
 
   Two limits come from Claude Code. Its documentation does not say whether a hook's `ask` still
   prompts in `bypassPermissions` mode. In a `claude -p` run, an `ask` that nobody answers ends as a
