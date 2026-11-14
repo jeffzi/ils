@@ -29,8 +29,13 @@ const (
 
 	cwdUsage = "The directory the command runs in"
 
-	// claudeDecisionAsk is the permissionDecision that has Claude Code ask the user first.
+	// claudeDecisionAsk is the permissionDecision that has Claude Code ask the user first, which a
+	// deny rule still overrides.
 	claudeDecisionAsk = "ask"
+
+	// claudeDecisionAllow is the permissionDecision that has Claude Code run the tool without
+	// asking, whatever its allow rules say.
+	claudeDecisionAllow = "allow"
 
 	// guardSupported is true only in the Unix build; installClaude adds the guard's hook only where
 	// it is true.
@@ -395,51 +400,63 @@ type claudeShellInput struct {
 	Command string `json:"command"`
 }
 
-// claudeAsk is the answer on stdout that has Claude Code ask the user before the tool runs.
-type claudeAsk struct {
+// claudeAnswer is the answer on stdout that hands Claude Code the hook's permission decision.
+type claudeAnswer struct {
 	HookSpecificOutput claudeDecision `json:"hookSpecificOutput"`
 }
 
 type claudeDecision struct {
 	HookEventName            string `json:"hookEventName"`
 	PermissionDecision       string `json:"permissionDecision"`
-	PermissionDecisionReason string `json:"permissionDecisionReason"`
+	PermissionDecisionReason string `json:"permissionDecisionReason,omitempty"`
 }
 
 // hookClaude answers the payload of Claude Code's PreToolUse hook on Stdin with the verdict of the
 // guard: allow is exit 0 with nothing printed, since Claude Code shows the stderr of exit 0 to no
-// one; refuse is exit 2 with the reason on Stderr, which Claude Code hands the model; ask is exit 0
-// with the ask as JSON on Stdout.
+// one, which leaves the decision to the permission rules; an explicit allow is exit 0 with an
+// allow as JSON on Stdout, which runs the command without asking; refuse is exit 2 with the reason
+// on Stderr, which Claude Code hands the model; ask is exit 0 with the ask as JSON on Stdout.
 func (p *parse) hookClaude(ctx context.Context) {
 	done, refused := result.Done.ExitCode(), result.Refused.ExitCode()
 	verdict := p.claudeVerdict(ctx)
 
 	switch verdict.Outcome {
 	case guard.Allow:
-		p.quit(done, "")
-	case guard.Ask:
-		out, err := json.Marshal(claudeAsk{HookSpecificOutput: claudeDecision{
-			HookEventName:            claudeEvent,
-			PermissionDecision:       claudeDecisionAsk,
-			PermissionDecisionReason: verdict.Reason,
-		}})
-		if err == nil {
-			_, err = p.app.Stdout.Write(append(out, '\n'))
-		}
-
-		if err != nil {
-			p.quit(refused, fmt.Sprintf("the hook could not write its ask: %v", err))
+		if verdict.Explicit {
+			p.answerClaude(claudeDecision{PermissionDecision: claudeDecisionAllow})
 
 			return
 		}
 
 		p.quit(done, "")
+	case guard.Ask:
+		p.answerClaude(claudeDecision{PermissionDecision: claudeDecisionAsk, PermissionDecisionReason: verdict.Reason})
 	case guard.Refuse:
 		fallthrough
 	default:
 		// A verdict outside the table is a defect, and a defect must not let the command run.
 		p.quit(refused, verdict.Reason)
 	}
+}
+
+// answerClaude prints decision on Stdout as the hook's answer to Claude Code and exits 0, or exits
+// 2 saying why when it cannot print it, so that a decision lost on the way never lets the command
+// run unasked.
+func (p *parse) answerClaude(decision claudeDecision) {
+	decision.HookEventName = claudeEvent
+
+	out, err := json.Marshal(claudeAnswer{HookSpecificOutput: decision})
+	if err == nil {
+		_, err = p.app.Stdout.Write(append(out, '\n'))
+	}
+
+	if err != nil {
+		p.quit(result.Refused.ExitCode(), fmt.Sprintf("the hook could not write its %s: %v", decision.PermissionDecision, err))
+
+		return
+	}
+
+	p.quit(result.Done.ExitCode(), "")
 }
 
 // cannotJudge returns the Refuse verdict of a failure that kept the guard from judging, which must not

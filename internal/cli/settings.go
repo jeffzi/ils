@@ -33,14 +33,21 @@ const (
 )
 
 // permissionLists are the permission lists of the settings, each with the rules the guard's
-// setup adds to it.
+// setup adds to it and those it removes from it.
 //
 //nolint:gochecknoglobals // A table of fixed rules, read only.
 var permissionLists = []struct {
 	name  string
 	rules []string
+	// dropped are the rules an earlier setup added to the list and this one removes. An allow rule
+	// for `ils push` must not stay: the guard asks before a push to a private repository, and Claude
+	// Code does not say that a hook's ask overrides an allow rule.
+	dropped []string
 }{
-	{name: "allow", rules: []string{"Bash(ils push)", "Bash(ils push --wait)", "Bash(ils branch *)", "Bash(ils status)"}},
+	{
+		name: "allow", rules: []string{"Bash(ils branch *)", "Bash(ils status)"},
+		dropped: []string{"Bash(ils push)", "Bash(ils push --wait)"},
+	},
 	{name: "ask", rules: []string{
 		"Bash(ils merge)", "Bash(ils merge *)", "Bash(ils release)", "Bash(ils release *)",
 		"Bash(gh pr merge)", "Bash(gh pr merge *)", "Bash(gh release create)", "Bash(gh release create *)",
@@ -84,7 +91,8 @@ func (e *settingsEdit) changed() bool {
 }
 
 // planSettings reads the settings file under dir and returns what adding the permission rules,
-// and with hook not empty the hook that runs hook, changes in it. A file that is not valid JSON,
+// removing the ones ils init claude no longer adds, and with hook not empty the hook that runs
+// hook, changes in it. A file that is not valid JSON,
 // or whose hooks, PreToolUse, permissions, allow, ask or deny has the wrong type, is a
 // *shapeError; a file that cannot be read is any other error. A missing file starts empty.
 func planSettings(dir, hook string) (settingsEdit, error) {
@@ -198,10 +206,11 @@ func badEscapeAt(text []byte, offset int64) bool {
 	}
 }
 
-// apply adds the permission rules to settings, and with hook not empty the hook that runs hook,
-// keeping a line for each step; with hook empty the hook's step is unchanged and says where the
-// guard runs. The hooks are checked for their shape even when no hook is added, so a file the
-// guard's setup could not edit is refused wherever it runs.
+// apply adds the permission rules to settings, removing the ones ils init claude no longer adds,
+// and with hook not empty the hook that runs hook, keeping a line for each step; with hook empty
+// the hook's step is unchanged and says where the guard runs. The hooks are checked for their
+// shape even when no hook is added, so a file the guard's setup could not edit is refused wherever
+// it runs.
 func (e *settingsEdit) apply(settings *jsonObject, hook string) error {
 	hooks, err := e.member(*settings, keyHooks, keyHooks)
 	if err != nil {
@@ -274,8 +283,9 @@ func jsonString(text string) jsontext.Value {
 	return quoted
 }
 
-// addRules adds to each permission list of settings the rules of it that none of the lists holds
-// yet, with a line for each list: changed when it grew, unchanged otherwise.
+// addRules removes from each permission list of settings the rules it drops, and adds to it the
+// rules of it that none of the lists holds yet, with a line for each list: changed when it lost or
+// gained a rule, unchanged otherwise.
 func (e *settingsEdit) addRules(settings *jsonObject) error {
 	permissions, err := e.member(*settings, keyPermissions, keyPermissions)
 	if err != nil {
@@ -294,26 +304,31 @@ func (e *settingsEdit) addRules(settings *jsonObject) error {
 		return err
 	}
 
-	grew := false
+	edited := false
 	for i, list := range permissionLists {
+		kept, removed, keepErr := withoutRules(lists[i], list.dropped)
+		if keepErr != nil {
+			return keepErr
+		}
+
 		added := missingRules(list.rules, held)
-		if len(added) == 0 {
+		if len(added) == 0 && removed == 0 {
 			e.report(stepUnchanged, result.Say("The %s rules are already in %s", list.name, e.file))
 
 			continue
 		}
 
-		array, arrayErr := arrayValue(slices.Concat(lists[i], added))
+		array, arrayErr := arrayValue(slices.Concat(kept, added))
 		if arrayErr != nil {
 			return arrayErr
 		}
 
 		permissions.set(list.name, array)
-		e.report(stepChanged, rulesLine(len(added), list.name, e.file))
-		grew = true
+		e.report(stepChanged, rulesLine(len(added), removed, list.name, e.file))
+		edited = true
 	}
 
-	if !grew {
+	if !edited {
 		return nil
 	}
 
@@ -345,29 +360,70 @@ func heldRules(lists [][]jsontext.Value) (map[string]bool, error) {
 	held := map[string]bool{}
 	for _, list := range lists {
 		for _, entry := range list {
-			if entry.Kind() != '"' {
-				continue
+			rule, isRule, err := ruleOf(entry)
+			if err != nil {
+				return nil, err
 			}
 
-			var rule string
-			if err := json.Unmarshal(entry, &rule); err != nil {
-				return nil, fmt.Errorf("read a permission rule: %w", err)
+			if isRule {
+				held[rule] = true
 			}
-
-			held[rule] = true
 		}
 	}
 
 	return held, nil
 }
 
-// rulesLine returns the line saying that n rules were added to the permission list of file.
-func rulesLine(n int, list, file string) result.Phrase {
-	if n == 1 {
-		return result.Say("Added 1 rule to the %s list of %s", list, file)
+// withoutRules returns the entries of list that are none of dropped, in their order, and how many
+// it took out. An entry that is not a string is kept, as heldRules keeps it.
+func withoutRules(list []jsontext.Value, dropped []string) (kept []jsontext.Value, removed int, err error) {
+	for _, entry := range list {
+		rule, isRule, ruleErr := ruleOf(entry)
+		if ruleErr != nil {
+			return nil, 0, ruleErr
+		}
+
+		if isRule && slices.Contains(dropped, rule) {
+			removed++
+
+			continue
+		}
+
+		kept = append(kept, entry)
 	}
 
-	return result.Say("Added %s rules to the %s list of %s", n, list, file)
+	return kept, removed, nil
+}
+
+// ruleOf returns the permission rule entry holds, and false when entry is not a string.
+func ruleOf(entry jsontext.Value) (rule string, isRule bool, err error) {
+	if entry.Kind() != '"' {
+		return "", false, nil
+	}
+
+	if err = json.Unmarshal(entry, &rule); err != nil {
+		return "", false, fmt.Errorf("read a permission rule: %w", err)
+	}
+
+	return rule, true, nil
+}
+
+// rulesLine returns the line saying that added rules were added to the permission list of file,
+// and removed rules, which ils no longer adds, removed from it.
+func rulesLine(added, removed int, list, file string) result.Phrase {
+	switch {
+	case removed == 0 && added == 1:
+		return result.Say("Added 1 rule to the %s list of %s", list, file)
+	case removed == 0:
+		return result.Say("Added %s rules to the %s list of %s", added, list, file)
+	case added == 0 && removed == 1:
+		return result.Say("Removed 1 rule ils no longer adds from the %s list of %s", list, file)
+	case added == 0:
+		return result.Say("Removed %s rules ils no longer adds from the %s list of %s", removed, list, file)
+	default:
+		return result.Say("Changed the %s list of %s: added %s and removed %s that ils no longer adds",
+			list, file, added, removed)
+	}
 }
 
 // write writes the new content of the settings, when there is one, over the target with

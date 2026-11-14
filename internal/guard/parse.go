@@ -43,9 +43,10 @@ type Caller struct {
 	// expand to. Parse runs each call from the invocation's directory, with the GIT_DIR and
 	// GIT_WORK_TREE it modeled for the invocation in place of those of Git's environment.
 	Git git.Runner
-	// GH runs the `gh alias list` calls that read what a gh alias expands to, with the
-	// GH_CONFIG_DIR, XDG_CONFIG_HOME and HOME modeled for the invocation in place of those of GH's
-	// environment.
+	// GH runs the gh calls of the guard, each with the GH_CONFIG_DIR, XDG_CONFIG_HOME and HOME
+	// modeled for the invocation in place of those of GH's environment: the `gh alias list` calls
+	// that read what a gh alias expands to, the trunk rule's check of the login to origin's host,
+	// and the read of the visibility of origin's repository before an `ils push`.
 	GH github.Runner
 }
 
@@ -84,9 +85,9 @@ type Invocation struct {
 	// reads the invocation's stdout; none when no such stage follows it.
 	pipedInto []Word
 	// ghConfig is what the guard knows of where gh reads its config when run in the environment of
-	// a gh or git invocation; zero for any other tool.
+	// a gh, git or ils invocation; zero for any other tool.
 	ghConfig ghConfig
-	// Target is where a git invocation points git; zero for any other tool.
+	// Target is where a git or ils invocation points git; zero for any other tool.
 	Target GitTarget
 	// Git is how git reads the words of a git invocation; zero for any other tool.
 	Git GitCall

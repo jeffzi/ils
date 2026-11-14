@@ -417,9 +417,9 @@ func hooking(t *testing.T, env []string, stdin io.Reader) cli.App {
 	return app
 }
 
-// hookAsk is what ils hook claude prints on stdout when it asks.
 type hookAsk struct {
 	HookSpecificOutput struct {
+		PermissionDecision       string `json:"permissionDecision"`
 		PermissionDecisionReason string `json:"permissionDecisionReason"`
 	} `json:"hookSpecificOutput"`
 }
@@ -435,6 +435,32 @@ func TestApp_Run_WhenHookClaudeIsGivenACommandTheGuardAllows_ExitsZeroPrintingNo
 	assert.Check(t, is.Equal(got.code, exitDone))
 	assert.Check(t, is.Equal(got.stdout, ""))
 	assert.Check(t, is.Equal(got.stderr, ""))
+}
+
+type hookDecision struct {
+	HookSpecificOutput struct {
+		HookEventName      string `json:"hookEventName"`
+		PermissionDecision string `json:"permissionDecision"`
+	} `json:"hookSpecificOutput"`
+}
+
+func TestApp_Run_WhenHookClaudeIsGivenACommandTheGuardAllowsExplicitly_ExitsZeroPrintingAnAllow(t *testing.T) {
+	t.Parallel()
+
+	dir, env := t.TempDir(), gittest.Env(t)
+	const command = "ils push"
+	verdict := judge(t, command, dir, env)
+	assert.Assert(t, verdict.Outcome == guard.Allow && verdict.Explicit, "Judge(%q) = %+v, want an explicit allow", command, verdict)
+	app := hooking(t, env, strings.NewReader(encoded(t, bash(command, dir))))
+
+	got := launch(t, app, "hook", "claude")
+
+	assert.Check(t, is.Equal(got.code, exitDone))
+	assert.Check(t, is.Equal(got.stderr, ""))
+	var printed hookDecision
+	assert.Assert(t, json.Unmarshal([]byte(got.stdout), &printed), "stdout = %q", got.stdout)
+	assert.Check(t, is.Equal(printed.HookSpecificOutput.HookEventName, "PreToolUse"))
+	assert.Check(t, is.Equal(printed.HookSpecificOutput.PermissionDecision, "allow"))
 }
 
 func TestApp_Run_WhenHookClaudeIsGivenACommandTheGuardRefuses_ExitsTwoWithTheReasonOnStderr(t *testing.T) {
@@ -467,6 +493,7 @@ func TestApp_Run_WhenHookClaudeIsGivenACommandTheGuardAsksAbout_ExitsZeroPrintin
 	assert.Check(t, is.Equal(got.stderr, ""))
 	var printed hookAsk
 	assert.Assert(t, json.Unmarshal([]byte(got.stdout), &printed), "stdout = %q", got.stdout)
+	assert.Check(t, is.Equal(printed.HookSpecificOutput.PermissionDecision, "ask"))
 	assert.Check(t, is.Equal(printed.HookSpecificOutput.PermissionDecisionReason, verdict.Reason))
 }
 

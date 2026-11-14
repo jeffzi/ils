@@ -55,6 +55,11 @@ type repoView struct {
 	Squash     bool   `json:"squashMergeAllowed"`
 }
 
+// repoVisibility is what `gh repo view --json visibility` prints.
+type repoVisibility struct {
+	Visibility string `json:"visibility"`
+}
+
 type pull struct {
 	URL     string `json:"url"`
 	Title   string `json:"title"`
@@ -160,6 +165,33 @@ func (f *Forge) Identity(ctx context.Context, repo forge.Repo) (forge.Repo, erro
 	repo.SquashAllowed = view.Squash
 
 	return repo, nil
+}
+
+// PublicRepo reports whether repo is public on GitHub, as the gh login r uses for the host of repo
+// sees it, after checking that login: a private or an internal repository is not public.
+//
+// It returns the errors of CheckLogin, so a host gh holds no login for is a
+// *forge.NotLoggedInError, and those of Run. A reply that names no visibility GitHub gives is a
+// *DecodeError.
+func (r Runner) PublicRepo(ctx context.Context, repo forge.Repo) (bool, error) {
+	if err := r.CheckLogin(ctx, repo.Host); err != nil {
+		return false, err
+	}
+
+	args := []string{"repo", "view", repo.Slug(), "--json", "visibility"}
+	view, err := runDecoded[repoVisibility](ctx, r, args...)
+	if err != nil {
+		return false, err
+	}
+
+	switch view.Visibility {
+	case "PUBLIC":
+		return true, nil
+	case "PRIVATE", "INTERNAL":
+		return false, nil
+	default:
+		return false, &DecodeError{Argv: Argv(args), Err: fmt.Errorf("visibility %q is not one GitHub gives", view.Visibility)}
+	}
 }
 
 // changesLimit is the most pull requests FindChanges asks gh for, far past what one branch ever
