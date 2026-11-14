@@ -338,42 +338,18 @@ func TestRenderJSON_WhenResultHasLinesExcerptReasonAndNext_CarriesWhatTheTextSho
 // nel is NEL, the Unicode next line character, which the renderer escapes in the JSON itself.
 const nel = "\u0085"
 
-// subjectHolding is a done push whose merge subject is subject, picked back from the decoded JSON.
-func subjectHolding(name, subject string) jsonCase {
-	shown := func(subject string) result.Object {
-		return result.Object{Payload: &result.Payload{Merge: &result.Merge{Subject: subject}}}
-	}
-
-	return jsonCase{
-		name:   name,
-		result: with(donePush(), func(r *result.Result) { r.Payload = &result.Payload{Merge: &result.Merge{Subject: subject}} }),
-		pick:   func(s result.Object) result.Object { return shown(s.Payload.Merge.Subject) },
-		want:   shown(subject),
-	}
-}
-
-// separatorCases returns the cases where a string the JSON copies unfolded holds a Unicode separator.
-func separatorCases() []jsonCase {
-	return []jsonCase{
-		subjectHolding("next line in the merge subject", "first\u0085second"),
-	}
-}
-
 func TestRenderJSON_WhenAStringHoldsTheNextLineCharacter_WritesItEscaped(t *testing.T) {
 	t.Parallel()
+	const subject = "first" + nel + "second"
+	done := with(donePush(), func(r *result.Result) { r.Payload = &result.Payload{Merge: &result.Merge{Subject: subject}} })
 
-	for _, tt := range separatorCases() {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			t.Logf("row: result %s", inputOf(tt.result))
+	out, err := result.RenderJSON(done, gitDir)
+	assert.NilError(t, err)
 
-			out, err := result.RenderJSON(tt.result, gitDir)
-			assert.NilError(t, err)
-
-			assert.Check(t, !strings.Contains(out, nel), "output holds a raw separator:\n%q", out)
-			assert.Check(t, is.DeepEqual(tt.pick(resulttest.Decode(t, out)), tt.want))
-		})
-	}
+	assert.Check(t, !strings.Contains(out, nel), "output holds a raw next line character:\n%q", out)
+	decoded := resulttest.Decode(t, out)
+	assert.Assert(t, decoded.Payload != nil && decoded.Payload.Merge != nil, "decoded JSON has no merge payload:\n%s", out)
+	assert.Check(t, is.Equal(decoded.Payload.Merge.Subject, subject))
 }
 
 // ---------------------------------------------------------------------------
