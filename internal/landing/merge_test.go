@@ -25,9 +25,8 @@ import (
 const (
 	conventional = "docs: tidy the readme"
 
-	readRules      = "the trunk's rules"
-	readLocalTrunk = "the local trunk"
-	readWorktrees  = "where the trunk is checked out"
+	readRules     = "the trunk's rules"
+	readWorktrees = "where the trunk is checked out"
 
 	readyCommand = "gh pr ready --repo " + repoArg + " 12"
 )
@@ -139,8 +138,6 @@ type mergeEnd struct {
 	text string
 	// head is the head of pull request 12, which the payload carries; empty is the tip of the branch.
 	head string
-	// from is the forge read from which on the git call fails; empty is the whole run.
-	from forgetest.Op
 	// failing is the arguments of a git call made to fail as gittest.FakeGit makes it; empty fails none.
 	failing []string
 }
@@ -233,13 +230,10 @@ func mergeRowOn(t *testing.T, tt mergeRow) (mergeEnd, mergeRun) {
 			return end.head
 		},
 		script: tt.script,
-		scripted: func(t *testing.T, s *scene, script *forgetest.Script) {
+		scripted: func(t *testing.T, s *scene, _ *forgetest.Script) {
 			t.Helper()
 
-			switch {
-			case end.from != "":
-				script.OnRead = failingFrom(t, s, end.failing, end.from)
-			case len(end.failing) > 0:
+			if len(end.failing) > 0 {
 				failGit(t, s, end.failing)
 			}
 		},
@@ -521,6 +515,9 @@ func failedGitMerge(head string, words []string) mergeEnd {
 	return mergeEnd{head: head, failing: words}
 }
 
+// identityRead is the forge operations a merge makes before it reads the branch's pull requests.
+func identityRead() []forgetest.Op { return []forgetest.Op{forgetest.OpIdentity} }
+
 // failedGitRow is one run of `ils merge` whose git read fails for a reason no refusal covers.
 type failedGitRow struct {
 	read string
@@ -530,17 +527,6 @@ type failedGitRow struct {
 // failedGitMerges are the runs of `ils merge` whose git read fails for a reason no refusal covers.
 func failedGitMerges() []failedGitRow {
 	return []failedGitRow{
-		{
-			read: readHead,
-			name: "what the fetch of the head of the pull request fetched", script: merging(), ops: changesRead(),
-			outcome: result.Broke, known: true,
-			arrange: func(f *gittest.Fixture) mergeEnd {
-				end := failedGitMerge(tipPastHead(f), []string{"rev-parse", "--verify", "refs/ils/fetched/*"})
-				end.from = forgetest.OpFindChanges
-
-				return end
-			},
-		},
 		{
 			read: readWorktrees,
 			name: "where the trunk is checked out", script: merging(), ops: identityRead(),
@@ -572,21 +558,6 @@ func TestMerge_WhenAGitReadBeforeTheWaitFails_BrokeNamingTheRead(t *testing.T) {
 			assertFailedGit(t, run.got, mergeCommand(), tt.read)
 			assertStoppedBeforeWait(t, tt.mergeRow, end, run)
 		})
-	}
-}
-
-// failingFrom returns a forge hook that makes the scene's git calls whose arguments start with words
-// fail as failGit makes them once the forge is asked op; every git call before then runs the real
-// git. It cannot run in a parallel test.
-func failingFrom(t *testing.T, s *scene, words []string, op forgetest.Op) func(forgetest.Call) {
-	t.Helper()
-
-	arm := armedLater(t, func() { failGit(t, s, words) })
-
-	return func(call forgetest.Call) {
-		if call.Op == op {
-			arm()
-		}
 	}
 }
 

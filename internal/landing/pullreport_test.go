@@ -191,7 +191,7 @@ type staleRow struct {
 	listedBehind bool
 }
 
-func TestStatus_WhenThePullRequestsHeadIsNotTheTip_ReportsNoVerdictAndNoMerge(t *testing.T) {
+func TestStatus_WhenThePullRequestsHeadIsNotTheTip_ReportsNoVerdictAndEndsOnAPush(t *testing.T) {
 	t.Parallel()
 
 	tests := []staleRow{

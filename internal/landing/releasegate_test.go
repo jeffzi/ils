@@ -3,6 +3,7 @@ package landing_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -16,6 +17,17 @@ import (
 	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
 )
+
+// readReleaseChecks is the read of the checks of the release commit, as a result names it.
+const readReleaseChecks = "the checks of the release commit"
+
+// forced returns req with --force typed after its other words.
+func forced(req landing.Request) landing.Request {
+	req.Words = append(slices.Clone(req.Words), "--force")
+	req.Force = true
+
+	return req
+}
 
 // ---------------------------------------------------------------------------
 // The CI gate
@@ -174,7 +186,7 @@ func stillRunningRows() []stillRunningRow {
 	}
 }
 
-func TestRelease_WhenTheChecksStillRunAtTheEndOfTheWait_PendingWithTheCommandAsTyped(t *testing.T) {
+func TestRelease_WhenTheWaitEndsBeforeTheChecksConclude_PendingWithNothingWrittenAndTagOnlyKept(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range stillRunningRows() {

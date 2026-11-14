@@ -45,6 +45,7 @@ const (
 	readIdentity   = "the repository's identity on GitHub"
 	readTrunk      = "origin's trunk"
 	readSinceTag   = "the commits on origin's trunk since its version tags"
+	readLocalTrunk = "the local trunk"
 
 	// forgeFailure is what a fake forge call fails saying, and what the text of the failure holds.
 	forgeFailure = "HTTP 502"
@@ -991,4 +992,73 @@ func TestSpan(t *testing.T) {
 			assert.Equal(t, got, tt.want)
 		})
 	}
+}
+
+// finding is allowed with a find-changes call that returns found.
+func finding(found ...forge.Change) forgetest.Script {
+	script := allowed()
+	script.FindChanges = forgetest.Values(found)
+
+	return script
+}
+
+// change returns the pull request numbered number from the topic branch against base.
+func change(number int, base string, state forge.ChangeState) forge.Change {
+	return forge.Change{Number: number, Base: base, State: state, Title: topic}
+}
+
+// changesRead is the forge operations a landing command makes up to its read of the branch's pull
+// requests.
+func changesRead() []forgetest.Op {
+	return []forgetest.Op{forgetest.OpIdentity, forgetest.OpFindChanges}
+}
+
+// answering returns the fixture's environment with ssh replaced by a command that serves origin
+// for the first times calls git makes to it, and then runs after instead. A read of ssh's config
+// never reaches that command, so it takes none of those turns.
+func answering(t *testing.T, f *gittest.Fixture, times int, after string) []string {
+	t.Helper()
+
+	tally := t.TempDir()
+
+	var counted strings.Builder
+	for i := range times {
+		// mkdir succeeds once per name, so each call to origin takes the next free one.
+		fmt.Fprintf(&counted, "mkdir '%s/%d' 2>/dev/null || ", tally, i)
+	}
+
+	serving := counted.String() + "{ " + after + "; exit 1; }; " + gittest.Serving(f.OriginDir())
+
+	return f.ServedBy(serving)
+}
+
+// assertFailedGit fails unless got is cmd's broke result on the read named read, carrying what the
+// git call failGit made fail said.
+func assertFailedGit(t *testing.T, got result.Result, cmd landingCommand, read string) {
+	t.Helper()
+
+	said := assertBrokeReadBy(t, got, cmd, read)
+	assert.Check(t, is.Contains(said, gittest.FailedSaid))
+}
+
+// assertReadsRequire fails unless calls hold reads of both the head and the verdict of pull request
+// 12, each asking for exactly the checks required, and each verdict asked for the commit tip.
+func assertReadsRequire(t *testing.T, calls []forgetest.Call, tip string, required []string) {
+	t.Helper()
+
+	var heads, verdicts int
+
+	for _, call := range calls {
+		if call.Op == forgetest.OpHead {
+			heads++
+			assert.Check(t, is.DeepEqual(call.HeadQuery, forge.HeadQuery{Number: opened, Required: required}))
+		}
+
+		if call.Op == forgetest.OpVerdict {
+			verdicts++
+			assert.Check(t, is.DeepEqual(call.VerdictQuery, forge.VerdictQuery{SHA: tip, Number: opened, Required: required}))
+		}
+	}
+
+	assert.Check(t, heads > 0 && verdicts > 0, "forge reads = %d heads and %d verdicts, want some of each", heads, verdicts)
 }
