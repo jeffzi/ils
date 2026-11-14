@@ -513,8 +513,8 @@ Exit 0 means, for each command:
 - **Status:** whatever it finds, once its words parse. A read of the local default branch that
   fails other than by the time limit or an interrupt ends it broke.
 - **Release:** the tag is on origin, and the GitHub release exists unless `--tag-only`.
-- **Init:** the skills and the rules are in place, and the hook too where the guard runs (macOS and
-  Linux); a skill directory that is a link holds the shipped files.
+- **Init:** the skills, the rules, and the hook are in place; a skill directory that is a link holds
+  the shipped files.
 
 Init also ends broke, at exit 1, when a skill directory is a link whose files differ from the
 shipped ones. It does so after writing the hook and the rules, and `Next:` says to remove the link

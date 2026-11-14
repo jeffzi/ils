@@ -10,8 +10,8 @@ import (
 	"github.com/jeffzi/ils/internal/landing"
 )
 
-// parseHeader returns the `ils parse` command with its help, which each build of the guard
-// completes with its own Args and RunE.
+// parseHeader returns the `ils parse` command with its help, which parseCommand completes with its
+// Args and RunE.
 func parseHeader() *cobra.Command {
 	return &cobra.Command{
 		Use:     parseUse,
@@ -21,8 +21,8 @@ func parseHeader() *cobra.Command {
 	}
 }
 
-// guardHeader returns the `ils guard` command with its help, which each build of the guard
-// completes with its own Args and RunE.
+// guardHeader returns the `ils guard` command with its help, which guardCommand completes with its
+// Args and RunE.
 func guardHeader() *cobra.Command {
 	return &cobra.Command{
 		Use:     guardUse,
@@ -32,8 +32,8 @@ func guardHeader() *cobra.Command {
 	}
 }
 
-// hookHeader returns the `ils hook` command with its help and flag parsing off, which each build
-// of the guard completes with its own RunE.
+// hookHeader returns the `ils hook` command with its help and flag parsing off, which hookCommand
+// completes with its RunE.
 func hookHeader() *cobra.Command {
 	return &cobra.Command{
 		Use:                hookUse,

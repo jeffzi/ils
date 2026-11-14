@@ -27,7 +27,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   exiting 0.
 - Make the `ils` agent skill ask once where new work lands when the checkout is on a work branch,
   instead of starting a new branch on its own.
-- Report a `gh` reachable only through a relative `PATH` entry as missing on every operating system.
+- Report a `gh` reachable only through a relative `PATH` entry as missing.
 - Refuse `ils merge` on a default branch whose ruleset requires a merge queue.
 - Refuse `ils push`, `ils merge`, and `ils release` when any push URL of `origin` names another
   repository than its fetch URL.
