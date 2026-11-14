@@ -34,6 +34,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Breaking:** Require `gh` 2.81.0 or later, since `ils` reads `gh auth status --json` to tell a
   missing login from a host `gh` cannot reach.
 
+### Removed
+
+- **Breaking:** Remove Windows support: `ils` builds and runs on macOS and Linux only.
+
 ### Fixed
 
 - Fix `ils push`, `ils merge`, `ils release`, and `ils status` telling you to log in to `gh` when
@@ -52,8 +56,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the pull request's title and body after every green push.
 - Fix `ils merge --help` and `ils release --help` stating the full time limit as the wait for the
   checks, which stops 20 seconds earlier.
-- Fix a second Ctrl-C on Windows ending `ils` with an exit code other than the console's, and the
-  terminal check misreading the foreground process group on big-endian systems.
+- Fix the terminal check misreading the foreground process group on big-endian systems.
 - Fix `ils merge` saying the branch could not be deleted on origin when the time limit cut the
   delete short.
 - Fix `ils merge` repeating, in the squash commit's body, trailers the pull request's body already
