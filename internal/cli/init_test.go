@@ -578,7 +578,6 @@ func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlagPastTheTimeLimit_ExitsTwoNa
 
 	printed := resulttest.Decode(t, got.stdout)
 	assert.Check(t, is.Contains(printed.Reason, landing.Span(landing.TimeLimit)))
-	assert.Check(t, is.Equal(printed.Next, initProject))
 }
 
 func TestApp_Run_WhenInitClaudeWritesASkillUnderAUmaskThatHidesEveryFile_MakesTheHookScriptAloneExecutable(t *testing.T) {

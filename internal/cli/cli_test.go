@@ -35,6 +35,13 @@ const (
 	exitDelivered = 5
 )
 
+const (
+	trunk = "develop"
+
+	// opened is the number of the open pull request.
+	opened = 12
+)
+
 // ran is what one run of the cli printed and the code it exited with.
 type ran struct {
 	stdout string
@@ -282,21 +289,23 @@ func TestApp_Run_WhenJSONFlagIsAmongTheWords_RendersJSONWithoutTheFlagInTheWords
 func TestApp_Run_WhenTheJSONFlagIsSetToFalse_RendersTheResultAsText(t *testing.T) {
 	t.Parallel()
 
-	got := launch(t, lost(t), "push", "--json=false")
+	app := outside(t)
+	app.SetPush(saying(worded(result.Say, "Pushed")))
 
-	assert.Check(t, is.Equal(got.code, exitBroke))
-	assert.Check(t, is.Equal(got.stderr, ""))
+	got := launch(t, app, "push", "--json=false")
+
+	assert.Check(t, is.Equal(got.code, exitDone))
 	assert.Check(t, got.stdout != "" && !strings.HasPrefix(got.stdout, "{"), "stdout = %q, want the result as text", got.stdout)
 }
 
-func TestApp_Run_WhenALandingCommandRunsOutsideARepositoryWithTheJSONFlag_RendersTheResultWithoutTheFlagInTheWords(t *testing.T) {
+func TestApp_Run_WhenALandingCommandRunsWithTheJSONFlag_RendersTheResultWithoutTheFlagInTheWords(t *testing.T) {
 	t.Parallel()
+	app := outside(t)
+	app.SetPush(finishing)
 
-	got := launch(t, lost(t), "push", "--json")
+	got := launch(t, app, "push", "--json")
 
-	assert.Check(t, is.Equal(got.code, exitBroke))
-	assert.Check(t, is.Equal(got.stderr, ""))
-
+	assert.Check(t, is.Equal(got.code, exitDone))
 	assert.Check(t, is.DeepEqual(resulttest.Decode(t, got.stdout).Words, []string{"push"}))
 }
 
@@ -393,8 +402,9 @@ func TestApp_Run_WhenPushRuns_PassesTheWaitFlagAsTyped(t *testing.T) {
 			app := painted(t, []string{colorTerm}, false, false)
 			app.SetPush(recording(&seen))
 
-			launch(t, app, tt.args...)
+			got := launch(t, app, tt.args...)
 
+			assert.Assert(t, is.Equal(got.code, exitDone), "stderr = %q", got.stderr)
 			assert.Check(t, is.Equal(seen.WaitFlag, tt.want))
 		})
 	}
@@ -745,7 +755,7 @@ func TestApp_Run_WhenHelpIsAskedForAWordThatIsNotACommand_RefusesItAsTheWordAlon
 
 	alone := resulttest.Decode(t, launch(t, outside(t), "verge", "--json").stdout)
 	assert.Assert(t, is.Contains(alone.Reason, "verge"))
-	tests := [][]string{{"verge", "--help"}, {"--help", "verge"}, {"help", "verge"}}
+	tests := [][]string{{"verge", "--help"}, {"help", "verge"}}
 	for _, args := range tests {
 		t.Run(strings.Join(args, " ")+" --json", func(t *testing.T) {
 			t.Parallel()

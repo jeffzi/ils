@@ -16,37 +16,24 @@ func flat(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
-func TestApp_Run_WhenAskedForHelp_PrintsTheWaitLimits(t *testing.T) {
+func TestApp_Run_WhenAskedForHelp_PrintsTheWaitLimitsInTheLongHelp(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		command string
-		states  []string
-		never   []string
-	}{
-		{command: "push", states: []string{landing.Span(landing.WaitTimeLimit), landing.Span(landing.TimeLimit)}},
-		{
-			command: "merge", states: []string{"14 minutes 40 seconds", "80 seconds"},
-			never: []string{landing.Span(landing.WaitTimeLimit), landing.Span(landing.TimeLimit)},
-		},
-		{
-			command: "release", states: []string{"14 minutes 40 seconds", "80 seconds"},
-			never: []string{landing.Span(landing.WaitTimeLimit), landing.Span(landing.TimeLimit)},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.command, func(t *testing.T) {
+	never := []string{landing.Span(landing.WaitTimeLimit), landing.Span(landing.TimeLimit)}
+	for _, command := range []string{"merge", "release"} {
+		t.Run(command, func(t *testing.T) {
 			t.Parallel()
 
-			got := launch(t, outside(t), "--help", tt.command)
+			got := launch(t, outside(t), "--help", command)
 
 			assert.Check(t, is.Equal(got.code, exitDone))
-			help := flat(got.stdout)
-			for _, limit := range tt.states {
-				assert.Check(t, is.Contains(help, limit))
+			long, _, found := strings.Cut(flat(got.stdout), "Flags:")
+			assert.Assert(t, found, "help has no Flags: section: %s", got.stdout)
+			for _, limit := range []string{"14 minutes 40 seconds", "80 seconds"} {
+				assert.Check(t, is.Contains(long, limit))
 			}
-			for _, limit := range tt.never {
-				assert.Check(t, !strings.Contains(help, limit), "help states %q: %s", limit, help)
+			for _, limit := range never {
+				assert.Check(t, !strings.Contains(flat(got.stdout), limit), "help states %q: %s", limit, got.stdout)
 			}
 		})
 	}

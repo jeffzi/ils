@@ -21,7 +21,16 @@ import (
 
 // ruleList returns the permission rules `ils init claude` adds to the list name.
 func ruleList(name string) []any {
-	rules := cli.PermissionRules()[name]
+	return asValues(cli.PermissionRules()[name])
+}
+
+// droppedAllow returns the allow rules an earlier `ils init claude` added and this one removes.
+func droppedAllow() []any {
+	return asValues(cli.DroppedRules()["allow"])
+}
+
+// asValues returns rules as the values a decoded JSON list holds.
+func asValues(rules []string) []any {
 	got := make([]any, len(rules))
 	for i, rule := range rules {
 		got[i] = rule
@@ -363,7 +372,6 @@ func TestApp_Run_WhenInitClaudeAddsRules_PrintsTheNumberAddedToEachListThatGrew(
 	t.Parallel()
 
 	app, home := installing(t)
-	installed(t, app)
 	path := withSettings(t, home, encodedJSON(t, map[string]any{
 		"hooks": map[string]any{"PreToolUse": []any{hookGroup(cli.UserHook)}},
 		"permissions": map[string]any{
@@ -435,7 +443,6 @@ func TestApp_Run_WhenInitClaudeFindsEverySettingInPlace_LeavesTheFileUntouched(t
 	t.Parallel()
 
 	app, home := installing(t)
-	installed(t, app)
 	path := withSettings(t, home,
 		fmt.Sprintf(`{"hooks": {"PreToolUse": [%s]}, "permissions": %s}`, inPlaceEntry(), encodedJSON(t, ruleLists())))
 	backdated(t, path)
@@ -450,8 +457,8 @@ func TestApp_Run_WhenInitClaudeFindsThePushRulesAnEarlierRunAdded_RemovesThemFro
 	t.Parallel()
 
 	app, home := installing(t)
-	installed(t, app)
-	allow := append([]any{"Bash(ils push)", "Read", "Bash(ils push --wait)"}, ruleList("allow")...)
+	dropped := droppedAllow()
+	allow := slices.Concat(dropped[:1], []any{"Read"}, dropped[1:], ruleList("allow"))
 	path := settingsWithAllow(t, home, allow)
 
 	got := launch(t, app, "init", "claude")
@@ -465,22 +472,23 @@ func TestApp_Run_WhenInitClaudeOnlyRemovesThePushRules_CountsTheRemovedRulesInTh
 	t.Parallel()
 
 	app, home := installing(t)
-	installed(t, app)
-	allow := append([]any{"Bash(ils push)", "Read", "Bash(ils push --wait)"}, ruleList("allow")...)
+	dropped := droppedAllow()
+	allow := slices.Concat(dropped, []any{"Read"}, ruleList("allow"))
 	path := settingsWithAllow(t, home, allow)
 
 	got := launch(t, app, "init", "claude")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	assert.Check(t, is.Contains(wordsOutside(lineWith(t, got.stdout, "allow"), path), "2"))
+	assert.Check(t, is.Contains(wordsOutside(lineWith(t, got.stdout, "allow"), path), strconv.Itoa(len(dropped))))
 }
 
 func TestApp_Run_WhenInitClaudeAddsARuleAndRemovesThePushRules_CountsBothInTheAllowStep(t *testing.T) {
 	t.Parallel()
 
 	app, home := installing(t)
-	installed(t, app)
-	allow := append([]any{"Bash(ils push)", "Bash(ils push --wait)"}, ruleList("allow")[1:]...)
+	dropped := droppedAllow()
+	missing := ruleList("allow")[:1]
+	allow := slices.Concat(dropped, ruleList("allow")[len(missing):])
 	path := settingsWithAllow(t, home, allow)
 
 	got := launch(t, app, "init", "claude")
@@ -490,7 +498,7 @@ func TestApp_Run_WhenInitClaudeAddsARuleAndRemovesThePushRules_CountsBothInTheAl
 		_, err := strconv.Atoi(word)
 		return err != nil
 	})
-	assert.Check(t, is.DeepEqual(counts, []string{"1", "2"}))
+	assert.Check(t, is.DeepEqual(counts, []string{strconv.Itoa(len(missing)), strconv.Itoa(len(dropped))}))
 }
 
 // lockedSettings returns the cli with every skill installed under its HOME and the settings file
