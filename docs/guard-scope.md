@@ -113,9 +113,9 @@ it. That happens when the word is:
   merge`);
 - the `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, or `HOME` of a command whose verdict turns on a `gh`
   login: such a command on the default branch of a host other than `github.com`, where the login
-  tells whether the host is GitHub; and a `gh` alias, whose expansion that config holds. For
-  `ils push`, where the login reads whether origin's repository is private, such a word makes the
-  guard ask instead of refuse.
+  tells whether the host is GitHub; and a `gh` alias, whose expansion that config holds. `ils push`
+  takes its gh config only from the environment it starts in: a prefix or an earlier statement
+  that sets one makes it other than the whole command, which the guard refuses.
 
 Anywhere else, the guard passes over the word: `python3 x.py "$f"` and `sed -n "${n}p" "$f"` run.
 
