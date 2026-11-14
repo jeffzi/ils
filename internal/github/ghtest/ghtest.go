@@ -521,7 +521,7 @@ func acknowledgeHold(tb testing.TB, conn net.Conn, record string, held func()) {
 	if err != nil {
 		// A fake killed after it dialed but before it finished its line never started holding, so
 		// there is no recorded call to check.
-		if errors.Is(err, io.EOF) || isReset(err) {
+		if errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET) {
 			return
 		}
 
@@ -540,11 +540,6 @@ func acknowledgeHold(tb testing.TB, conn net.Conn, record string, held func()) {
 	// acknowledgement reaches it was going to be killed anyway, and one still there that misses
 	// it exits broken on its own.
 	_, _ = conn.Write([]byte{acknowledgement})
-}
-
-// isReset reports whether err is a peer resetting the connection.
-func isReset(err error) bool {
-	return errors.Is(err, syscall.ECONNRESET)
 }
 
 // checkRecorded returns an error unless record holds the call that line, an encoded hold, names.

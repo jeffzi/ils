@@ -469,7 +469,8 @@ func EnvValue(env []string, key string) (string, bool) {
 // is this process's PATH.
 //
 // A name that holds a path separator is not searched for. Each absolute directory of PATH is tried
-// as exec.LookPath tries a path; a relative one is skipped, as exec.LookPath refuses a program it finds there.
+// as exec.LookPath tries a path; a relative one is skipped, as exec.LookPath refuses a program it
+// finds there.
 func (r Runner) lookPath(name string) (string, error) {
 	if r.Env == nil || filepath.Base(name) != name {
 		return exec.LookPath(name)

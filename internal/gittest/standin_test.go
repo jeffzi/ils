@@ -247,16 +247,20 @@ func TestFakeGit_WhenRealGitCannotStart_ExitsBroken(t *testing.T) {
 }
 
 func TestFakeGit_WhenCallStartsWithStallingWords_WaitsAtTheAddressUntilKilled(t *testing.T) {
+	// (*os.ProcessState).ExitCode reports -1 for a process a signal ended.
+	const killedBySignal = -1
+
 	addr, connected := gittest.SilentListener(t)
 	gittest.FakeGit(t, gittest.Fake{StallOn: []string{"show-ref", "--verify"}, StallAt: addr})
 	ctx := gittest.Ending(t.Context(), connected, context.Canceled)
 	cmd := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/main")
 	cmd.Dir = t.TempDir()
+
 	err := cmd.Run()
 
 	exitErr, ok := errors.AsType[*exec.ExitError](err)
 	assert.Assert(t, ok, "git show-ref ended with %v, want it killed while it waited", err)
-	assert.Check(t, is.Equal(exitErr.ExitCode(), -1), "git show-ref ended on its own, want it killed while it waited")
+	assert.Check(t, is.Equal(exitErr.ExitCode(), killedBySignal), "git show-ref ended on its own, want it killed while it waited")
 }
 
 func TestLinkAs(t *testing.T) {

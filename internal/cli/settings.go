@@ -206,17 +206,7 @@ func badEscapeAt(text []byte, offset int64) bool {
 // apply adds the permission rules to settings, removing the ones ils init claude no longer adds,
 // and the hook that runs hook, keeping a line for each step.
 func (e *settingsEdit) apply(settings *jsonObject, hook string) error {
-	hooks, err := e.member(*settings, keyHooks, keyHooks)
-	if err != nil {
-		return err
-	}
-
-	groups, err := e.list(hooks, claudeEvent, keyHooks+"."+claudeEvent)
-	if err != nil {
-		return err
-	}
-
-	if err := e.addHook(settings, hooks, groups, hook); err != nil {
+	if err := e.addHook(settings, hook); err != nil {
 		return err
 	}
 

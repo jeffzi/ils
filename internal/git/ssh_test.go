@@ -68,19 +68,6 @@ func plainSSH(t *testing.T, repo git.Repo, mode string) git.Repo {
 	return repo
 }
 
-// hideSSH returns repo with no ssh command, and an empty directory as the PATH of its runner's
-// environment, so that its next ssh call finds no ssh there while the process PATH still holds one.
-func hideSSH(t *testing.T, repo git.Repo) git.Repo {
-	t.Helper()
-
-	_, err := exec.LookPath("ssh")
-	assert.NilError(t, err, "the process PATH holds no ssh, so a lookup on it would find none either")
-
-	repo.Runner.Env = gittest.WithoutSSH(t, repo.Runner.Env)
-
-	return repo
-}
-
 // hideFromShell returns repo with no ssh command, and an empty directory as the PATH of its
 // runner's environment, so that a command line naming program finds no program of that name while
 // the process PATH still holds one.
@@ -99,7 +86,7 @@ func TestRepo_OriginURLs_WhenSSHMissingFromRunnerPath_ReturnsToolMissingError(t 
 	t.Parallel()
 	f := gittest.New(t, trunk)
 	f.SetOriginURL(sshURL)
-	repo := hideSSH(t, newRepo(f))
+	repo := hideFromShell(t, newRepo(f), "ssh")
 
 	_, err := repo.OriginURLs(t.Context())
 
@@ -469,10 +456,7 @@ func missingRepo(t *testing.T, tt missingCase) git.Repo {
 
 	f := aliasFixture(t)
 	repo := plainSSH(t, newRepo(f), plainAnswer)
-	switch {
-	case tt.hide && tt.setting == "GIT_SSH":
-		repo = hideSSH(t, repo)
-	case tt.hide:
+	if tt.hide {
 		repo = hideFromShell(t, repo, tt.program)
 	}
 	if tt.setting == "core.sshCommand" {

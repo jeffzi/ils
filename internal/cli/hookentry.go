@@ -29,12 +29,23 @@ const (
 	hookOnFailure = "block"
 )
 
-// addHook makes every guard entry of groups, the PreToolUse groups of hooks in settings, the entry
-// that runs command when its group covers Bash, and removes it otherwise, with every group it
-// leaves without a hook. When no group that covers Bash held a guard entry, it adds a group on Bash
-// holding the entry. It reports the hook step: added when no group held a guard entry, updated
-// when an entry was rewritten or removed, and unchanged otherwise.
-func (e *settingsEdit) addHook(settings *jsonObject, hooks jsonObject, groups []jsontext.Value, command string) error {
+// addHook makes every guard entry of the PreToolUse groups of settings the entry that runs command
+// when its group covers Bash, and removes it otherwise, with every group it leaves without a hook.
+// When no group that covers Bash held a guard entry, it adds a group on Bash holding the entry. It
+// reports the hook step: added when no group held a guard entry, updated when an entry was
+// rewritten or removed, and unchanged otherwise. Hooks or groups of the wrong shape return a
+// *shapeError.
+func (e *settingsEdit) addHook(settings *jsonObject, command string) error {
+	hooks, err := e.member(*settings, keyHooks, keyHooks)
+	if err != nil {
+		return err
+	}
+
+	groups, err := e.list(hooks, claudeEvent, keyHooks+"."+claudeEvent)
+	if err != nil {
+		return err
+	}
+
 	entry, err := guardEntry(command)
 	if err != nil {
 		return err

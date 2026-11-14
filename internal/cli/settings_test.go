@@ -59,6 +59,14 @@ func withSettings(t *testing.T, home, text string) string {
 	return path
 }
 
+// installedSettings returns every setting `ils init claude` writes to the user's settings file.
+func installedSettings() map[string]any {
+	return map[string]any{
+		"hooks":       map[string]any{"PreToolUse": []any{hookGroup(cli.UserHook)}},
+		"permissions": ruleLists(),
+	}
+}
+
 // settingsWithAllow writes the hook `ils init claude` installs, the ask and deny rules it adds, and
 // allow as the allow list as the settings file under home and returns its path.
 func settingsWithAllow(t *testing.T, home string, allow []any) string {
@@ -210,11 +218,7 @@ func TestApp_Run_WhenInitClaudeFindsNoSettings_WritesTheHookAndTheRulesAlone(t *
 	got := launch(t, app, "init", "claude")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	want := map[string]any{
-		"hooks":       map[string]any{"PreToolUse": []any{hookGroup(cli.UserHook)}},
-		"permissions": ruleLists(),
-	}
-	assert.Check(t, is.DeepEqual(decodedFile(t, settingsUnder(home)), want))
+	assert.Check(t, is.DeepEqual(decodedFile(t, settingsUnder(home)), installedSettings()))
 }
 
 func TestApp_Run_WhenInitClaudeFindsSettings_KeepsTheOrderOfTheUsersKeys(t *testing.T) {
@@ -495,13 +499,11 @@ func TestApp_Run_WhenInitClaudeAddsARuleAndRemovesThePushRules_CountsBothInTheAl
 func lockedSettings(t *testing.T, text string) (app cli.App, home, path string) {
 	t.Helper()
 
-	skipAsRoot(t)
-	app, home = installing(t)
-	installed(t, app)
-	path = withSettings(t, home, text)
-	lockDir(t, filepath.Dir(path))
+	return lockedBeside(t, func(t *testing.T, home string) string {
+		t.Helper()
 
-	return app, home, path
+		return withSettings(t, home, text)
+	})
 }
 
 func TestApp_Run_WhenInitClaudeCannotWriteTheSettings_ExitsOneNamingTheFile(t *testing.T) {
@@ -520,15 +522,16 @@ func TestApp_Run_WhenInitClaudeRewritesTheSettings_KeepsTheirMode(t *testing.T) 
 
 	app, home := installing(t)
 	path := withSettings(t, home, "{}")
+	const mode os.FileMode = 0o640
 	//nolint:gosec // G302: the test needs this mode on a file it made under t.TempDir(), to see it kept.
-	assert.NilError(t, os.Chmod(path, 0o640))
+	assert.NilError(t, os.Chmod(path, mode))
 
 	got := launch(t, app, "init", "claude")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
 	info, err := os.Stat(path)
 	assert.NilError(t, err)
-	assert.Check(t, is.Equal(info.Mode().Perm(), os.FileMode(0o640)))
+	assert.Check(t, is.Equal(info.Mode().Perm(), mode))
 }
 
 // linkedSettings returns the cli with its settings file a link to a file holding {} elsewhere,
@@ -538,7 +541,7 @@ func linkedSettings(t *testing.T) (app cli.App, target string) {
 
 	app, home := installing(t)
 	target = filepath.Join(t.TempDir(), "settings.json")
-	assert.NilError(t, os.WriteFile(target, []byte("{}"), 0o600))
+	writeText(t, target, "{}")
 	linkAt(t, target, settingsUnder(home))
 
 	return app, target

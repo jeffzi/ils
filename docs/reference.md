@@ -354,7 +354,8 @@ gh release create v1.2.0 --repo <host>/<owner>/<name> --verify-tag --title v1.2.
 Run `ils init claude` once to set up Claude Code for `ils`, and again after you upgrade `ils`.
 `claude` is the one harness it knows. It writes under the Claude Code directory, `~/.claude/`,
 with the home directory read from `HOME`. When `CLAUDE_CONFIG_DIR` is set and not empty, the
-Claude Code directory is that directory instead, as for Claude Code. It runs these steps:
+Claude Code directory is that directory instead, as Claude Code itself reads it. It runs these
+steps:
 
 1. It reads `settings.json` and checks its shape. A file that is not JSON or not a JSON object, that
    holds a member name twice in one object or a string escape that names no character, or whose
@@ -587,9 +588,9 @@ If it is stopped after its last read and before its first write, it ends pending
 written. If it is stopped while it makes the tag or looks up the GitHub release, it says that it
 was interrupted, or which time limit ran out, as it does for the push of the tag.
 
-A second Ctrl-C or SIGTERM ends `ils` at once, as that signal ends any program: no result is
-printed, and the exit status is the signal's (130 for Ctrl-C and 143 for SIGTERM in most shells),
-not one of the [exit codes](#exit-codes).
+A second Ctrl-C or SIGTERM ends `ils` at once, as that signal ends any program, and `ils` prints no
+result. The exit status is the signal's, not one of the [exit codes](#exit-codes): 130 for Ctrl-C
+and 143 for SIGTERM in most shells.
 
 ## Refusals
 

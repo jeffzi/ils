@@ -870,7 +870,6 @@ func TestApp_Run_WhenACommandEndsWhileAStepRuns_CrossesTheStepBeforeTheResultOnl
 // all it wrote before the stop: the bytes written before the stop are already in the pipe.
 const quiet = 200 * time.Millisecond
 
-// pipeBuffer is how many bytes of stderr one read of the pipe takes.
 const pipeBuffer = 4096
 
 // stuckChild is the test binary run as stuck runs, in a process group of its own so that a stop
@@ -893,11 +892,17 @@ func startStuck(t *testing.T, way string) *stuckChild {
 // startStuckIgnoring is startStuck, except that the run starts with signal ignored, as a
 // non-interactive shell ignores the interrupt of a background job: the shell ignores it, and the
 // ignore holds across its exec of the test binary. signal is a name trap takes, such as INT or
-// TSTP.
+// TSTP. The end of the test terminates the run and draws the rest of its output.
 func startStuckIgnoring(t *testing.T, way, signal string) *stuckChild {
 	t.Helper()
 
-	return startStuckBy(t, way, "sh", "-c", `trap "" `+signal+`; exec "$0"`, os.Args[0])
+	run := startStuckBy(t, way, "sh", "-c", `trap "" `+signal+`; exec "$0"`, os.Args[0])
+	t.Cleanup(func() {
+		assert.Check(t, run.cmd.Process.Signal(syscall.SIGTERM))
+		_, _ = run.end(t) // the run ends Stopped. on the termination; the line the test awaits is the check
+	})
+
+	return run
 }
 
 // startStuckBy is startStuck run through argv, whose run ends in an exec of the test binary.
@@ -941,15 +946,12 @@ func (c *stuckChild) await(t *testing.T, what string, done func() bool) {
 	}
 }
 
-// awaitReady waits for the landing command of the run to say on stdout that it runs.
 func (c *stuckChild) awaitReady(t *testing.T) {
 	t.Helper()
 
 	c.awaitLine(t, ready)
 }
 
-// awaitSpinning waits until the spinner line of the run shows and its landing command says on
-// stdout that it runs.
 func (c *stuckChild) awaitSpinning(t *testing.T) {
 	t.Helper()
 
@@ -957,32 +959,12 @@ func (c *stuckChild) awaitSpinning(t *testing.T) {
 	c.awaitReady(t)
 }
 
-// awaitLine reads the next line of stdout, and fails the test unless it is want.
 func (c *stuckChild) awaitLine(t *testing.T, want string) {
 	t.Helper()
 
 	line, err := c.stdout.ReadString('\n')
 	assert.NilError(t, err, "stdout ended before %q", want)
 	assert.Assert(t, line == want+"\n", "stdout = %q, want %q", line, want+"\n")
-}
-
-// drawRead reads what stderr holds into buf and draws it onto the screen, and reports whether the
-// read deadline passed, which clears the deadline. It fails the test on any other error, naming
-// what the run was while stderr ended: state.
-func (c *stuckChild) drawRead(t *testing.T, buf []byte, state string) (quietPassed bool) {
-	t.Helper()
-
-	n, err := c.pipe.Read(buf)
-	_, writeErr := c.stderr.Write(buf[:n])
-	assert.NilError(t, writeErr)
-	if errors.Is(err, os.ErrDeadlineExceeded) {
-		assert.NilError(t, c.pipe.SetReadDeadline(time.Time{}))
-
-		return true
-	}
-	assert.NilError(t, err, "stderr ended while the run was %s:\n%q", state, c.stderr.raw())
-
-	return false
 }
 
 // drain draws onto the screen everything stderr holds, which is all a stopped run wrote.
@@ -992,9 +974,15 @@ func (c *stuckChild) drain(t *testing.T) {
 	buf := make([]byte, pipeBuffer)
 	for {
 		assert.NilError(t, c.pipe.SetReadDeadline(time.Now().Add(quiet)))
-		if c.drawRead(t, buf, "stopped") {
+		n, err := c.pipe.Read(buf)
+		_, writeErr := c.stderr.Write(buf[:n])
+		assert.NilError(t, writeErr)
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			assert.NilError(t, c.pipe.SetReadDeadline(time.Time{}))
+
 			return
 		}
+		assert.NilError(t, err, "stderr ended while the run was %s:\n%q", "stopped", c.stderr.raw())
 	}
 }
 
@@ -1026,18 +1014,16 @@ func readsStopDisposition() bool {
 	}
 }
 
-// spinnerShows reports whether the screen shows a line with the cursor hidden.
 func (c *stuckChild) spinnerShows() bool {
 	return c.stderr.cursorHidden() && len(c.stderr.lines()) > 0
 }
 
-// cleared reports whether the screen shows nothing and its cursor.
 func (c *stuckChild) cleared() bool {
 	return !c.stderr.cursorHidden() && len(c.stderr.lines()) == 0
 }
 
 // suspend sends the run the stop signal of a terminal and returns its status once it stopped or
-// ended, without reaping it.
+// ended. A run that ended is reaped; a stopped one is not.
 func (c *stuckChild) suspend(t *testing.T) syscall.WaitStatus {
 	t.Helper()
 
@@ -1049,7 +1035,9 @@ func (c *stuckChild) suspend(t *testing.T) syscall.WaitStatus {
 	return status
 }
 
-// stopped reports whether status is that of a run that neither exited nor died of a signal.
+// stopped reports whether status is that of a run that neither exited nor died of a signal. Do not
+// swap in status.Stopped(): on macOS and the BSDs it reports false for a run stopped by SIGSTOP,
+// the signal ils stops itself with.
 func stopped(status syscall.WaitStatus) bool {
 	return !status.Exited() && !status.Signaled()
 }
@@ -1085,15 +1073,8 @@ func TestApp_Run_WhenStartedWithTheStopSignalIgnored_GoesOnIgnoringIt(t *testing
 	}
 
 	run := startStuckIgnoring(t, stuckTellingStop, "TSTP")
-	t.Cleanup(func() {
-		assert.Check(t, run.cmd.Process.Signal(syscall.SIGTERM))
-		_, _ = run.end(t) // the run ends Stopped. on the termination; the stop line is the check
-	})
 
-	line, err := run.stdout.ReadString('\n')
-	assert.NilError(t, err)
-
-	assert.Check(t, is.Equal(line, stopIgnoredLine+"\n"), "ils listens for the stop signal it was started ignoring")
+	run.awaitLine(t, stopIgnoredLine)
 }
 
 func TestApp_Run_WhenSuspendedAfterTheLandingCommandReturned_Stops(t *testing.T) {

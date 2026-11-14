@@ -620,6 +620,8 @@ func dirCases() []rejected {
 	return []rejected{
 		rejectedLine("handed-in dir differs in case", shoutedDir,
 			result.Say("Wrote /srv/store/meta/HEAD")).naming(shoutedDir),
+		rejectedLine("handed-in dir ends in a slash", gitDir+"/",
+			result.Say("Wrote /srv/store/meta/HEAD")).naming(gitDir + "/"),
 		rejectedLine("resolved git dir holding spaces", spacedDir,
 			result.Say("Wrote /srv/my store/meta dir/HEAD")).naming(spacedDir),
 		rejectedLine("wording naming a sibling before the git dir", gitDir,

@@ -146,12 +146,7 @@ func (r Repo) CheckRepository(ctx context.Context) error {
 // GitDir returns the absolute path of the git directory git finds when given the global options,
 // the repository's own when there are none.
 func (r Repo) GitDir(ctx context.Context, options ...string) (string, error) {
-	dir, err := r.line(ctx, append(slices.Clone(options), "rev-parse", "--absolute-git-dir")...)
-	if err != nil {
-		return "", err
-	}
-
-	return dir, nil
+	return r.line(ctx, append(slices.Clone(options), "rev-parse", "--absolute-git-dir")...)
 }
 
 // FindGitDir returns the absolute path of the git directory git finds when given the global
@@ -588,9 +583,9 @@ func (r Repo) CheckedOutElsewhere(ctx context.Context, branch string) (bool, err
 	return worktree != "", err
 }
 
-// WorktreeWith returns the path, in this system's separators, of a worktree other than the current
-// one that has branch checked out, and an empty path when none has. A worktree detached at the
-// branch's commit does not have it checked out.
+// WorktreeWith returns the path, as git prints it, of a worktree other than the current one that has
+// branch checked out, and an empty path when none has. A worktree detached at the branch's commit
+// does not have it checked out.
 func (r Repo) WorktreeWith(ctx context.Context, branch string) (string, error) {
 	current, err := r.line(ctx, "rev-parse", "--show-toplevel")
 	if err != nil {

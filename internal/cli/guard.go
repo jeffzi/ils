@@ -47,7 +47,14 @@ const (
 // guard does and keeps every invocation it holds as the result. It refuses words that give no
 // directory, or anything but one word after `--`; it never refuses what the command holds.
 func (p *parse) parseCommand() *cobra.Command {
-	return p.cwdCommand(parseHeader(), parseWord, p.readCommand)
+	c := &cobra.Command{
+		Use:     parseUse,
+		Short:   parseShort,
+		Long:    parseLong,
+		Example: parseExamples,
+	}
+
+	return p.cwdCommand(c, parseWord, p.readCommand)
 }
 
 // cwdCommand completes c as the command named word that takes `--cwd <dir> -- '<command>'`: it
@@ -198,7 +205,14 @@ func typedCommand(words []string) (string, error) {
 // it asks first, with every invocation it holds. It refuses words that give no directory, or
 // anything but one word after `--`.
 func (p *parse) guardCommand() *cobra.Command {
-	return p.cwdCommand(guardHeader(), guardWord, func(ctx context.Context, cwd, command string) (result.Result, error) {
+	c := &cobra.Command{
+		Use:     guardUse,
+		Short:   guardShort,
+		Long:    guardLong,
+		Example: guardExamples,
+	}
+
+	return p.cwdCommand(c, guardWord, func(ctx context.Context, cwd, command string) (result.Result, error) {
 		return p.judgeCommand(ctx, cwd, command), nil
 	})
 }
@@ -352,7 +366,13 @@ func wordTexts(words []result.Word) string {
 // letting the command run: words it does not take, and every error, end the run with exit 2 and
 // the reason on Stderr.
 func (p *parse) hookCommand() *cobra.Command {
-	c := hookHeader()
+	c := &cobra.Command{
+		Use:                hookUse,
+		Short:              hookShort,
+		Long:               hookLong,
+		Example:            hookExamples,
+		DisableFlagParsing: true,
+	}
 	// Cobra would refuse a flag through the result, which prints on Stdout; the words are read
 	// here instead, so that every refusal lands on Stderr.
 	c.RunE = func(c *cobra.Command, args []string) error {

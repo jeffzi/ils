@@ -225,7 +225,9 @@ func TestForeground_WhenTheDescriptorIsNoTerminal_CountsAsTheForegroundJob(t *te
 
 	file := opened(t, "stderr")
 
-	assert.Check(t, main.Foreground(file.Fd()))
+	got := main.Foreground(file.Fd())
+
+	assert.Check(t, got, "a descriptor that is no terminal was not counted as the foreground job")
 }
 
 // heldIdentityRead returns a repository on the topic branch whose origin names acme/widgets on

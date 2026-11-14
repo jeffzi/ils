@@ -65,7 +65,7 @@ func failure(ctx context.Context, argv []string, runErr error, stderr string) er
 		return named(runErr)
 	}
 
-	if interrupted(exitErr) {
+	if killedBy(exitErr, syscall.SIGINT) {
 		return named(context.Canceled)
 	}
 
@@ -240,12 +240,6 @@ func wantsAFile(startErr error) bool {
 // terminateGrace bounds how long failure waits for the context of a program that died of SIGTERM
 // to end. It only has to cover the scheduling of ils's own signal goroutine.
 const terminateGrace = 100 * time.Millisecond
-
-// interrupted reports whether the program exitErr reports on was ended by Ctrl-C: killed by
-// SIGINT.
-func interrupted(exitErr *exec.ExitError) bool {
-	return killedBy(exitErr, syscall.SIGINT)
-}
 
 func killedBy(exitErr *exec.ExitError, signal syscall.Signal) bool {
 	status, ok := exitErr.Sys().(syscall.WaitStatus)

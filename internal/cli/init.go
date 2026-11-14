@@ -40,6 +40,9 @@ const (
 	// user scope in place of claudeDir in the home directory.
 	claudeConfigDir = "CLAUDE_CONFIG_DIR"
 
+	// homeVariable is the variable that names the home directory.
+	homeVariable = "HOME"
+
 	// skillsDir is the directory under claudeDir that holds one directory per skill.
 	skillsDir = "skills"
 
@@ -256,10 +259,10 @@ func userDir(req landing.Request, environ []string) (dir, hook string, refusal *
 		return config, "bash " + script, nil
 	}
 
-	home, _ := git.EnvValue(environ, "HOME")
+	home, _ := git.EnvValue(environ, homeVariable)
 	if home == "" {
-		return "", "", req.Refused(result.Say("HOME is not set, and the skills install under it"),
-			result.NextStep("set HOME, or run %s in a repository", result.Command(initWord+" "+harnessClaude+" "+flagProject)))
+		return "", "", req.Refused(result.Say("%s is not set, and the skills install under it", homeVariable),
+			result.NextStep("set %s, or run %s in a repository", homeVariable, result.Command(initWord+" "+harnessClaude+" "+flagProject)))
 	}
 
 	return filepath.Join(home, claudeDir), userHook, nil

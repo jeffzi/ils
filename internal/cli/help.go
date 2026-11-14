@@ -4,45 +4,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/spf13/cobra"
-
 	"github.com/jeffzi/ils/internal/commandline"
 	"github.com/jeffzi/ils/internal/landing"
 )
-
-// parseHeader returns the `ils parse` command with its help, which parseCommand completes with its
-// Args and RunE.
-func parseHeader() *cobra.Command {
-	return &cobra.Command{
-		Use:     parseUse,
-		Short:   parseShort,
-		Long:    parseLong,
-		Example: parseExamples,
-	}
-}
-
-// guardHeader returns the `ils guard` command with its help, which guardCommand completes with its
-// Args and RunE.
-func guardHeader() *cobra.Command {
-	return &cobra.Command{
-		Use:     guardUse,
-		Short:   guardShort,
-		Long:    guardLong,
-		Example: guardExamples,
-	}
-}
-
-// hookHeader returns the `ils hook` command with its help and flag parsing off, which hookCommand
-// completes with its RunE.
-func hookHeader() *cobra.Command {
-	return &cobra.Command{
-		Use:                hookUse,
-		Short:              hookShort,
-		Long:               hookLong,
-		Example:            hookExamples,
-		DisableFlagParsing: true,
-	}
-}
 
 // withTimeLimits returns text with each %[1]s set to the time limit and each %[2]s set to the time
 // limit of the long wait, as results name them, so that the help says the limits the command
