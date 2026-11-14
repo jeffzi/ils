@@ -165,14 +165,9 @@ type PushError struct {
 }
 
 // Error names the refused ref, a branch by its short name and any other ref in full, followed by
-// its Detail.
+// git's reason and the Output, one per line, leaving out either when it is empty.
 func (e *PushError) Error() string {
-	return fmt.Sprintf("push of %s refused: %s", strings.TrimPrefix(e.Ref, BranchRefPrefix), e.Detail())
-}
-
-// Detail returns git's reason and the Output, one per line, leaving out either when it is empty.
-func (e *PushError) Detail() string {
-	return joinPresent(e.Reason, e.Output())
+	return fmt.Sprintf("push of %s refused: %s", strings.TrimPrefix(e.Ref, BranchRefPrefix), joinPresent(e.Reason, e.Output()))
 }
 
 // Output returns the trimmed Stdout and the trimmed Stderr, one per line, leaving out either when
@@ -648,7 +643,7 @@ func (r Repo) push(ctx context.Context, source, ref string, flags ...string) err
 		return err
 	}
 
-	hook, report, _ := splitPushReport(result.Stdout, spec)
+	hook, report := splitPushReport(result.Stdout, spec)
 
 	switch {
 	case report.status.flag == pushRejected:
@@ -687,7 +682,7 @@ const reportLead = "To "
 
 // splitPushReport splits the stdout of `git push --porcelain` for spec, the `<source>:<destination>`
 // pair of refs pushed, into what precedes the report git writes once origin answered and what that
-// report says of spec, and reports whether any block of it gives spec a status.
+// report says of spec; its blocks count those that give spec a status.
 //
 // Git pushes to each push URL of origin in turn, and writes a block of the report for each one that
 // answered: a `To <url>` line, then one status line (the flag, the refs and the summary, separated
@@ -696,7 +691,7 @@ const reportLead = "To "
 //
 // A pre-push hook runs before git talks to each push URL, so what precedes the first block is the
 // hook's; a push git refused before it reached origin has no report, so all of its stdout is the
-// hook's and reported is false. The hook shares git's stdout, so when its output does not end in a
+// hook's and no block counts. The hook shares git's stdout, so when its output does not end in a
 // newline, the `To` line starts on the hook's last line, which is split there.
 //
 // A block starts at a `To` that a status line of spec follows before the next `To`: a hook line
@@ -704,7 +699,7 @@ const reportLead = "To "
 // decides the status when no `To` precedes it, and a line that only holds `To` starts no block.
 // Stdout alone cannot tell a block that a hook printed, a `To` line followed by the status line of
 // spec, from git's own, so that one is read as git's.
-func splitPushReport(stdout, spec string) (hook string, report pushReport, reported bool) {
+func splitPushReport(stdout, spec string) (hook string, report pushReport) {
 	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
 	hook = stdout
 	// lead is the index of the line that opened the block being read, or -1 outside a block.
@@ -735,7 +730,7 @@ func splitPushReport(stdout, spec string) (hook string, report pushReport, repor
 		lead = -1
 	}
 
-	return hook, report, report.blocks > 0
+	return hook, report
 }
 
 // reportStart returns where line starts a `To` line of the report, or -1 when it starts none. A

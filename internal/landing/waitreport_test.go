@@ -34,7 +34,6 @@ func redRowBy(cmd landingCommand, bucket forge.Bucket, log forge.FailedLog, exce
 		said = "was canceled"
 	}
 
-	log.Check = "lint"
 	lint := lintFailed()
 	lint.Bucket = bucket
 	verdict := forge.Verdict{

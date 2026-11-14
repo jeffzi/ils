@@ -200,6 +200,17 @@ func TestProgram_Run_WhenProgramExitsNonZero_KeepsOnlyStdout(t *testing.T) {
 	assert.Check(t, is.Equal(got.Stderr, ""))
 }
 
+func TestProgram_Run_WhenAnArgumentHoldsShellSyntax_PassesItToTheProgramUnchanged(t *testing.T) {
+	t.Parallel()
+	const value = "first && second; $HOME `third` > fourth"
+	program := child.Program{Tool: "echo", Args: []string{value}, LookPath: exec.LookPath}
+
+	got, err := program.Run(t.Context())
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Equal(got.Stdout, value+"\n"))
+}
+
 func TestProgram_Run_WhenASignalEndsTheProgramAfterItPrinted_ReturnsNoOutput(t *testing.T) {
 	t.Parallel()
 	program := child.Program{Tool: "sh", Args: []string{"-c", "echo partial; kill -KILL $$"}, LookPath: exec.LookPath}

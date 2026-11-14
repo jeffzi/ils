@@ -128,12 +128,12 @@ func mergeChecks(ctx context.Context, deps Deps, req Request, ready Ready) (merg
 
 	m := mergeReady{onBranch: on}
 
-	elsewhere, err := deps.Repo.CheckedOutElsewhere(ctx, ready.Trunk)
+	worktree, err := deps.Repo.WorktreeWith(ctx, ready.Trunk)
 	if err != nil {
 		return mergeReady{}, req.Unread(readWorktrees, err)
 	}
 
-	m.elsewhere = elsewhere
+	m.elsewhere = worktree != ""
 
 	m.tip, m.past, stop = commitsPast(ctx, deps, req, m.onBranch)
 	if stop != nil {

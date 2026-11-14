@@ -185,6 +185,12 @@ func (p Program) Run(ctx context.Context) (Output, error) {
 	return output, err
 }
 
+// EndedEarly reports whether err says the run's context ended it: the time limit, or an interrupt,
+// which Run reports as context.Canceled.
+func EndedEarly(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+}
+
 // run is Run without the log record.
 func (p Program) run(ctx context.Context) (Output, error) {
 	path, err := p.LookPath(p.Tool)

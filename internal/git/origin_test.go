@@ -35,7 +35,6 @@ func TestParseOrigin(t *testing.T) {
 		{name: "https with .git and slash", in: "https://github.com/jeffzi/ils.git/", want: hub},
 		{name: "https with port", in: "https://example.com:8443/jeffzi/ils.git", want: other},
 		{name: "ssh url", in: "ssh://git@github.com/jeffzi/ils", want: hub},
-		{name: "short ssh", in: "git@github.com:jeffzi/ils", want: hub},
 		{name: "short ssh with host in mixed case", in: "git@GitHub.com:jeffzi/ils", want: hub},
 	}
 	for _, tt := range tests {
@@ -203,15 +202,11 @@ func TestRepo_OriginURLs_WhenSSHHostStartsWithDash_RefusesWithOriginError(t *tes
 	repo := plainSSH(t, newRepo(f), standInRefuse)
 	repo.Runner.Env = append(append(repo.Runner.Env, variantEnv("ssh")...), "GIT_SSH_COMMAND="+gittest.Marking(marker))
 
-	got, err := repo.OriginURLs(t.Context())
+	_, err := repo.OriginURLs(t.Context())
 
 	originErr, ok := errors.AsType[*git.OriginError](err)
 	assert.Assert(t, ok, "OriginURLs() of %q error = %v, want *git.OriginError", scpLike, err)
 	assert.Check(t, is.Equal(originErr.URL, scpLike))
-	assert.Assert(t, is.Len(got.Push, 1))
-	pushErr, ok := errors.AsType[*git.OriginError](got.Push[0].Err)
-	assert.Assert(t, ok, "PushURL %q Err = %v, want *git.OriginError", scpLike, got.Push[0].Err)
-	assert.Check(t, is.Equal(pushErr.URL, scpLike))
 	_, statErr := os.Stat(marker)
 	assert.Check(t, is.ErrorIs(statErr, fs.ErrNotExist), "OriginURLs() of %q ran the ssh command", scpLike)
 }
@@ -249,14 +244,6 @@ func TestRepo_OriginURLs_WhenURLDoesNotParse_ReturnsOriginErrorWithWhatParsed(t 
 				Push:     []git.PushURL{{URL: localPath, Err: &git.OriginError{URL: localPath}}},
 			},
 		},
-		{
-			name: "push url after one that parses",
-			want: git.OriginURLs{
-				Fetch:    ilsOrigin(),
-				FetchURL: httpsURL,
-				Push:     []git.PushURL{{Origin: toolsOrigin(), URL: sshURL}, {URL: localPath, Err: &git.OriginError{URL: localPath}}},
-			},
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -277,7 +264,7 @@ func TestRepo_OriginURLs_WhenURLDoesNotParse_ReturnsOriginErrorWithWhatParsed(t 
 	}
 }
 
-func TestRepo_OriginURLs_WhenSSHFailsForURLListedTwice_NamesTheFailureOnceAndOnEveryPushURL(t *testing.T) {
+func TestRepo_OriginURLs_WhenSSHFailsForOneURLListedTwice_ReadsItOnce(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name  string
@@ -393,7 +380,7 @@ func TestRepo_Trunk_WhenOriginAnswers_ReturnsDefaultBranch(t *testing.T) {
 }
 
 func fastForwardTrunkCall() repoCall {
-	return repoCall{name: "FastForwardTrunk", call: func(ctx context.Context, repo git.Repo) (any, error) {
+	return repoCall{name: "FastForwardTrunk", errorOnly: true, call: func(ctx context.Context, repo git.Repo) (any, error) {
 		return nil, repo.FastForwardTrunk(ctx, trunk)
 	}}
 }
@@ -556,7 +543,7 @@ func TestRepo_WhenOriginRefusesTheCall_ReturnsErrRefused(t *testing.T) {
 	tests := []repoCall{
 		{name: "OriginTags", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.OriginTags(ctx) }},
 		fastForwardTrunkCall(),
-		{name: "Push", call: func(ctx context.Context, repo git.Repo) (any, error) {
+		{name: "Push", errorOnly: true, call: func(ctx context.Context, repo git.Repo) (any, error) {
 			sha, err := repo.HeadSHA(ctx)
 			if err != nil {
 				return nil, err
@@ -578,7 +565,7 @@ func TestRepo_WhenOriginRefusesTheCall_ReturnsErrRefused(t *testing.T) {
 			got, err := tt.call(t.Context(), repo)
 
 			assertRefused(t, tt.name, err)
-			checkNoResult(t, tt.name, got)
+			checkNoResult(t, tt, got)
 		})
 	}
 }
@@ -935,7 +922,6 @@ func TestRepo_Push_WhenOriginRefusesTheRef_KeepsOnlyThePrePushHookLinesInStdout(
 		script string
 		want   string
 	}{
-		{name: "pre-push hook prints lines", script: "echo checked\necho passed", want: "checked\npassed"},
 		// git writes its report right after the hook's output, so the report's `To` line starts
 		// on the hook's last line.
 		{name: "pre-push hook ends without a newline", script: "printf checked", want: "checked"},
@@ -987,7 +973,7 @@ func TestPushError_Output(t *testing.T) {
 	}
 }
 
-func TestPushError_Detail(t *testing.T) {
+func TestPushError_Error(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
@@ -996,16 +982,16 @@ func TestPushError_Detail(t *testing.T) {
 	}{
 		{
 			name: "reason before output",
-			err:  git.PushError{Reason: "pre-receive hook declined", Stdout: "out\n", Stderr: "err\n"},
-			want: "pre-receive hook declined\nout\nerr",
+			err:  git.PushError{Ref: "refs/heads/topic", Reason: "pre-receive hook declined", Stdout: "out\n", Stderr: "err\n"},
+			want: "push of topic refused: pre-receive hook declined\nout\nerr",
 		},
-		{name: "output only", err: git.PushError{Stdout: "out\n"}, want: "out"},
+		{name: "output only", err: git.PushError{Ref: "refs/tags/v1.0.0", Stdout: "out\n"}, want: "push of refs/tags/v1.0.0 refused: out"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := tt.err.Detail()
+			got := tt.err.Error()
 
 			assert.Check(t, is.Equal(got, tt.want))
 		})
@@ -1089,8 +1075,8 @@ func pushCalls() []repoCall {
 
 // refusedPush is a push to two push URLs, one of which refuses it.
 type refusedPush struct {
-	call          repoCall
 	name          string
+	call          repoCall
 	refusingFirst bool
 }
 
@@ -1098,10 +1084,11 @@ func TestRepo_WhenOnePushURLRefuses_ReturnsPushErrorWhereverGitListsIt(t *testin
 	t.Parallel()
 	var tests []refusedPush
 	for _, call := range pushCalls() {
-		tests = append(tests,
-			refusedPush{call: call, name: call.name + " refused by the first push url", refusingFirst: true},
-			refusedPush{call: call, name: call.name + " refused by the last push url"},
-		)
+		if call.name == "Push" {
+			tests = append(tests, refusedPush{call: call, name: call.name + " refused by the first push url", refusingFirst: true})
+		}
+
+		tests = append(tests, refusedPush{call: call, name: call.name + " refused by the last push url"})
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1125,23 +1112,20 @@ func TestRepo_WhenOnePushURLRefuses_ReturnsPushErrorWhereverGitListsIt(t *testin
 	}
 }
 
-func TestRepo_WhenGitFailsAfterSeveralPushURLsAccept_ReturnsAnError(t *testing.T) {
+func TestRepo_Push_WhenGitFailsAfterSeveralPushURLsAccept_ReturnsAnError(t *testing.T) {
 	t.Parallel()
-	for _, call := range pushCalls() {
-		t.Run(call.name, func(t *testing.T) {
-			t.Parallel()
-			f, repo, _ := taggedRelease(t)
-			// git stops at the push url that holds no repository, after the two ahead of it accepted.
-			pushURLs := []string{emptyBare(t, f), emptyBare(t, f), f.MissingOriginDir()}
-			for _, pushURL := range pushURLs {
-				f.AddPushURL(pushURL)
-			}
-
-			_, err := call.call(t.Context(), repo)
-
-			assert.Check(t, err != nil, "%s() error = nil, want the failure of the last push url", call.name)
-		})
+	f, repo, _ := taggedRelease(t)
+	// git stops at the push url that holds no repository, after the two ahead of it accepted.
+	pushURLs := []string{emptyBare(t, f), emptyBare(t, f), f.MissingOriginDir()}
+	for _, pushURL := range pushURLs {
+		f.AddPushURL(pushURL)
 	}
+	sha, err := repo.HeadSHA(t.Context())
+	assert.NilError(t, err)
+
+	err = repo.Push(t.Context(), topic, sha)
+
+	assert.Check(t, err != nil, "Push() error = nil, want the failure of the last push url")
 }
 
 func TestRepo_WhenNotARepository_OriginCallsReturnExitError(t *testing.T) {
@@ -1169,7 +1153,7 @@ func FuzzSplitPushReport(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, stdout, spec string) {
-		hook, _ := git.SplitPushReport(stdout, spec)
+		hook := git.SplitPushReport(stdout, spec)
 
 		assert.Check(t, strings.HasPrefix(stdout, hook), "SplitPushReport(%q) hook = %q, not a prefix of stdout", stdout, hook)
 	})

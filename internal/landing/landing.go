@@ -151,7 +151,7 @@ func timedOut(err error) bool {
 
 // endedEarly reports whether err says the time limit or an interrupt cut a call short.
 func endedEarly(err error) bool {
-	return timedOut(err) || interrupted(err)
+	return child.EndedEarly(err)
 }
 
 // PushCommand, MergeCommand, StatusCommand, BranchCommand and ReleaseCommand are the command words

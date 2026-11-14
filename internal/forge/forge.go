@@ -243,8 +243,6 @@ const (
 // FailedLog is the log of the check Verdict.Failed names; it is the zero value
 // when the verdict is not red.
 type FailedLog struct {
-	// Check is the name of the check whose log was sought.
-	Check string
 	// Text is the whole log when State is FailedLogRead, and empty otherwise.
 	Text  string
 	State FailedLogState
@@ -372,17 +370,10 @@ var ErrChangeExists = errors.New("a change already exists for the branch")
 
 // NotLoggedInError reports that the user is not logged in to the forge's host.
 type NotLoggedInError struct {
-	// Err is the failed login check.
-	Err  error
 	Host string
 }
 
 // Error names the host the user is not logged in to.
 func (e *NotLoggedInError) Error() string {
 	return "not logged in to " + e.Host
-}
-
-// Unwrap returns the failed login check.
-func (e *NotLoggedInError) Unwrap() error {
-	return e.Err
 }

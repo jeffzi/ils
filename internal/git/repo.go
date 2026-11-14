@@ -575,14 +575,6 @@ func (r Repo) DeleteBranch(ctx context.Context, branch string) error {
 	return err
 }
 
-// CheckedOutElsewhere reports whether a worktree other than the current one has branch checked out,
-// as WorktreeWith finds it.
-func (r Repo) CheckedOutElsewhere(ctx context.Context, branch string) (bool, error) {
-	worktree, err := r.WorktreeWith(ctx, branch)
-
-	return worktree != "", err
-}
-
 // WorktreeWith returns the path, as git prints it, of a worktree other than the current one that has
 // branch checked out, and an empty path when none has. A worktree detached at the branch's commit
 // does not have it checked out.

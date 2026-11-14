@@ -274,27 +274,43 @@ func TestRepo_OriginURLs_WhenRunnerSetsNoEnvironment_ReadsTheProcessEnvironment(
 	assert.Check(t, is.Equal(got.Fetch.Host, "git.example.org"))
 }
 
-func TestRepo_OriginURLs_WhenPlainSSHAnswersAHost_LowersItAndFoldsHostsUnderGitHub(t *testing.T) {
+// plainSSHHost returns the host OriginURLs reads for origin's alias when plain ssh answers answer.
+func plainSSHHost(t *testing.T, answer string) string {
+	t.Helper()
+	f := aliasFixture(t)
+	repo := plainSSH(t, newRepo(f), standInAnswer+answer)
+
+	got, err := repo.OriginURLs(t.Context())
+	assert.NilError(t, err)
+
+	return got.Fetch.Host
+}
+
+func TestRepo_OriginURLs_WhenPlainSSHAnswersAHostInMixedCase_LowersIt(t *testing.T) {
+	t.Parallel()
+
+	got := plainSSHHost(t, "Git.Example.org")
+
+	assert.Check(t, is.Equal(got, "git.example.org"))
+}
+
+func TestRepo_OriginURLs_WhenPlainSSHAnswersAHost_FoldsOnlyHostsUnderGitHub(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name   string
 		answer string
 		want   string
 	}{
-		{name: "host under github.com in mixed case", answer: "SSH.GitHub.com", want: "github.com"},
+		{name: "host under github.com", answer: "SSH.GitHub.com", want: "github.com"},
 		{name: "lookalike host ending in github.com", answer: "fake-github.com", want: "fake-github.com"},
-		{name: "host outside github.com in mixed case", answer: "Git.Example.org", want: "git.example.org"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			f := aliasFixture(t)
-			repo := plainSSH(t, newRepo(f), standInAnswer+tt.answer)
 
-			got, err := repo.OriginURLs(t.Context())
-			assert.NilError(t, err)
+			got := plainSSHHost(t, tt.answer)
 
-			assert.Check(t, is.Equal(got.Fetch.Host, tt.want))
+			assert.Check(t, is.Equal(got, tt.want))
 		})
 	}
 }
@@ -443,6 +459,7 @@ func missingCases() []missingCase {
 			name: "core.sshCommand unrecognized name with an argument", setting: "core.sshCommand",
 			value: "no-such-wrapper -v", program: "no-such-wrapper",
 		},
+		{name: "GIT_SSH_COMMAND of one empty quoted word", setting: "GIT_SSH_COMMAND", value: "''", program: ""},
 		{name: "GIT_SSH path", setting: "GIT_SSH", value: "/no/such/ssh", program: "/no/such/ssh"},
 		{name: "GIT_SSH name found only on the process PATH", setting: "GIT_SSH", value: "ssh", program: "ssh", hide: true},
 		{name: "GIT_SSH path named plink", setting: "GIT_SSH", value: "/no/such/plink", program: "/no/such/plink"},
@@ -639,6 +656,7 @@ func TestEnvValue(t *testing.T) {
 		{name: "set to nothing", env: []string{"NO_COLOR="}, key: "NO_COLOR", want: "", wantSet: true},
 		{name: "only a longer key set", env: []string{"TERMINAL=xterm"}, key: "TERM", wantSet: false},
 		{name: "key in another case set", env: []string{"home=/x"}, key: "HOME", wantSet: false},
+		{name: "entry with no equals sign", env: []string{"TERM"}, key: "TERM", wantSet: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
