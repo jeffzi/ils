@@ -82,12 +82,12 @@ type mergeReady struct {
 // has no commit that origin's trunk, which it fetches, lacks, whose refusal gives the fix
 // aheadTrunk.fix gives; it reads whether another worktree has the trunk checked out; the branch
 // has a commit past origin's trunk; no open pull request from the branch has a base other than
-// the trunk; the branch has an open pull request against
-// the trunk; the tip is that pull request's head; the pull request is not a draft; its title is a
-// conventional commit subject; the repository's settings and the trunk's rules allow a squash
-// merge. A check that fails, an origin that cannot be reached, and a read the context's deadline
-// cut short are refusals; a read that fails for any other reason is broke. Once the pull request
-// is known, every result carries the merge payload.
+// the trunk; the branch has an open pull request against the trunk; the tip is that pull
+// request's head; the pull request is not a draft; its title is a conventional commit subject;
+// the repository's settings and the trunk's rules allow a squash merge. A check that fails, an
+// origin that cannot be reached, and a read the context's deadline cut short are refusals; a read
+// that fails for any other reason is broke. Once the pull request is known, every result carries
+// the merge payload.
 //
 // Then it waits for the head's checks as push does, on a deadline mergeReserve before ctx's, and
 // reads what lets the merge go on, as toWrite says. Then it writes, as land says.

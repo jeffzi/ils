@@ -224,7 +224,8 @@ func rebasedBranch(sub string, args []Word) (Word, bool) {
 // refuseOnGitHub returns refusal, the verdict on call run on its branch, the trunk, when origin's
 // first push URL names a repository on GitHub, since GitHub is where a default branch takes changes
 // only through a pull request. A repository on github.com gets refusal whatever gh holds there,
-// and one on another host gets it when githubHost takes that host for GitHub. A push URL that names no repository, such as a local path, gets an allow.
+// and one on another host gets it when githubHost takes that host for GitHub. A push URL that
+// names no repository, such as a local path, gets an allow.
 //
 // The guard checks the login with the gh config the command sets, so it uses the login the agent's
 // own gh would use, and refuses naming what kept it from telling. A failure to read the push URL,
