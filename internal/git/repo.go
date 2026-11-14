@@ -588,9 +588,9 @@ func (r Repo) CheckedOutElsewhere(ctx context.Context, branch string) (bool, err
 	return worktree != "", err
 }
 
-// WorktreeWith returns the path, as git prints it, of a worktree other than the current one that
-// has branch checked out, and an empty path when none has. A worktree detached at the branch's
-// commit does not have it checked out.
+// WorktreeWith returns the path, in this system's separators, of a worktree other than the current
+// one that has branch checked out, and an empty path when none has. A worktree detached at the
+// branch's commit does not have it checked out.
 func (r Repo) WorktreeWith(ctx context.Context, branch string) (string, error) {
 	current, err := r.line(ctx, "rev-parse", "--show-toplevel")
 	if err != nil {
@@ -621,7 +621,7 @@ func (r Repo) WorktreeWith(ctx context.Context, branch string) (string, error) {
 		}
 
 		if !same {
-			return worktree, nil
+			return filepath.FromSlash(worktree), nil
 		}
 	}
 
