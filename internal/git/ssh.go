@@ -73,10 +73,12 @@ func hostnameIn(stdout string, argv []string) (string, error) {
 	return "", fmt.Errorf("%s printed no hostname", child.CommandLine(argv))
 }
 
-// foldGitHubHost returns github.com for any host under it, such as ssh.github.com, matched without
-// regard to case. The dot in the suffix keeps lookalikes such as fake-github.com as they are.
+// foldGitHubHost returns host in lowercase, since a host name is the same in any case, and
+// github.com for any host under it, such as ssh.github.com. The dot in the suffix keeps lookalikes
+// such as fake-github.com as they are.
 func foldGitHubHost(host string) string {
-	if strings.HasSuffix(strings.ToLower(host), "."+GitHubHost) {
+	host = strings.ToLower(host)
+	if strings.HasSuffix(host, "."+GitHubHost) {
 		return GitHubHost
 	}
 

@@ -36,6 +36,8 @@ func TestParseOrigin(t *testing.T) {
 		{name: "https with port", in: "https://example.com:8443/jeffzi/ils.git", want: other},
 		{name: "ssh url", in: "ssh://git@github.com/jeffzi/ils", want: hub},
 		{name: "short ssh", in: "git@github.com:jeffzi/ils", want: hub},
+		{name: "https with host in mixed case", in: "https://GitHub.com/jeffzi/ils", want: hub},
+		{name: "short ssh with host in mixed case", in: "git@GitHub.com:jeffzi/ils", want: hub},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -307,6 +307,7 @@ func TestRepo_OriginURLs_WhenPlainSSHAnswersAHost_FoldsOnlyHostsUnderGitHub(t *t
 	}{
 		{name: "host under github.com in mixed case", answer: "SSH.GitHub.com", want: "github.com"},
 		{name: "lookalike host ending in github.com", answer: "fake-github.com", want: "fake-github.com"},
+		{name: "host outside github.com in mixed case", answer: "Git.Example.org", want: "git.example.org"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
