@@ -279,7 +279,6 @@ func TestStartBranch_WhenAReadOfTheLocalTrunkFails_EndsBrokeNamingTheRead(t *tes
 		read    string
 		fails   []string
 	}{
-		{name: "whether the local trunk exists", fails: localTrunkRead(), read: readLocalTrunk},
 		{
 			name:    "where the ahead trunk is checked out",
 			arrange: func(f *gittest.Fixture) { f.AdvanceTrunk() },

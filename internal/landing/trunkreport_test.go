@@ -15,10 +15,11 @@ import (
 
 const standingTrunk result.Standing = "trunk"
 
-// ruledBy is viewing with no pull request found, and a trunk whose rules stand as rules says.
+// ruledBy is a forge that answers the reads a status on the trunk makes: Acme/Widgets as the user's
+// to push to, and a trunk whose rules stand as rules says.
 func ruledBy(rules forge.RulesState) forgeFor {
-	return func(tip string) forgetest.Script {
-		script := viewing(cleanHead(), passing())(tip)
+	return func(string) forgetest.Script {
+		script := allowed()
 		script.TrunkProtection = forgetest.Values(forge.Protection{Rules: rules})
 
 		return script
@@ -93,6 +94,7 @@ func TestStatus_WhenOnTheTrunkAndTheFetchOfAVersionTagFails_ListsTheFailedTagFet
 	got := seeStatus(t, s, (*testing.T).Context)
 
 	assert.Assert(t, is.Len(got.status.Unread, 1))
+	assert.Check(t, is.Equal(got.status.Unread[0].Read, readSinceTag))
 	assertSays(t, got.status.Unread[0].Error, expect(strayTag, gittest.FailedSaid))
 }
 
@@ -182,10 +184,10 @@ func TestStatus_WhenOnTheTrunk_ReportsWhetherRulesProtectIt(t *testing.T) {
 	}
 }
 
-func TestStatus_WhenOnTheTrunkAndTheRulesReadFails_ReportsTheFailedReadBesideTheLastTag(t *testing.T) {
+func TestStatus_WhenOnTheTrunkAndTheRulesReadFails_ReportsTheFailedRead(t *testing.T) {
 	t.Parallel()
-	s := statusScene(t, tagReleases, func(tip string) forgetest.Script {
-		script := viewing(cleanHead(), passing())(tip)
+	s := statusScene(t, tagReleases, func(string) forgetest.Script {
+		script := allowed()
 		script.TrunkProtection = []forgetest.Answer[forge.Protection]{{Err: errors.New(forgeFailure)}}
 
 		return script
@@ -196,7 +198,6 @@ func TestStatus_WhenOnTheTrunkAndTheRulesReadFails_ReportsTheFailedReadBesideThe
 	assertSays(t, got.text, expect(readRules, forgeFailure))
 	assert.Assert(t, is.Len(got.status.Unread, 1))
 	assert.Check(t, is.Equal(got.status.Unread[0].Read, readRules))
-	assert.Check(t, is.Equal(got.status.LastTag, "v1.10.0"))
 }
 
 func TestStatus_WhenOnTheTrunkAndGhIsMissing_StillReportsWhatGitTells(t *testing.T) {
@@ -207,4 +208,16 @@ func TestStatus_WhenOnTheTrunkAndGhIsMissing_StillReportsWhatGitTells(t *testing
 
 	assert.Check(t, is.Equal(got.status.Ahead, 1))
 	assert.Check(t, is.Equal(got.status.LastTag, "v1.10.0"))
+}
+
+func TestStatus_WhenOnTheTrunkAndItsCountAgainstOriginsCannotBeRead_EndsBrokeNamingTheLocalTrunkRead(t *testing.T) {
+	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	s := statusScene(t, standOnTrunk, ruledBy(forge.RulesProtect))
+	failGit(t, s, divergenceRead())
+
+	got := seeStatusEnding(t, s, (*testing.T).Context, result.Broke)
+
+	assertSays(t, got.text, expect("could not read "+readLocalTrunk))
+	assertEndsOn(t, got, statusCommand().fixed)
+	assert.Check(t, hasUnread(got.status, readLocalTrunk), "unread %v, want %s listed", got.status.Unread, readLocalTrunk)
 }

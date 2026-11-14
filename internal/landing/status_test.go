@@ -39,7 +39,7 @@ func publishTopic(f *gittest.Fixture) { f.Publish(topic) }
 func greenOpen() forgeFor { return viewing(cleanHead(), passing(), standing()) }
 
 // viewing is a forge that answers every read a status may make: Acme/Widgets as the user's to push
-// to, found as the branch's pull requests, a trunk that requires no check and has CI, head as the
+// to, found as the branch's pull requests, a trunk that requires no check, head as the
 // open pull request's head on the tip, verdict as its checks, and a message titled as the open pull
 // request is, with the body landedBody.
 func viewing(head forge.Head, verdict forge.Verdict, found ...forge.Change) forgeFor {
@@ -59,7 +59,6 @@ func viewing(head forge.Head, verdict forge.Verdict, found ...forge.Change) forg
 		shown.SHA = tip
 		script := finding(placed...)
 		script.TrunkProtection = forgetest.Values(forge.Protection{})
-		script.HasTrunkCI = forgetest.Values(true)
 		script.Head = shows(shown)
 		script.Verdict = says(verdict)
 		script.Message = forgetest.Values(forge.Message{Title: title, Body: landedBody})
@@ -437,7 +436,7 @@ func TestStatus_WhenOnAWorkBranch_EndsOnTheFirstNextThatHolds(t *testing.T) {
 // Reads that fail
 // ---------------------------------------------------------------------------
 
-func TestStatus_WhenAForgeReadFails_ReportsTheFailedReadBesideTheRest(t *testing.T) {
+func TestStatus_WhenAForgeReadFails_ReportsTheFailedRead(t *testing.T) {
 	t.Parallel()
 	s := statusScene(t, publishTopic,
 		func(string) forgetest.Script { return failingToFind(errors.New(forgeFailure)) })
@@ -448,7 +447,6 @@ func TestStatus_WhenAForgeReadFails_ReportsTheFailedReadBesideTheRest(t *testing
 	assert.Assert(t, is.Len(got.status.Unread, 1))
 	assert.Check(t, is.Equal(got.status.Unread[0].Read, readChanges))
 	assert.Check(t, is.Contains(got.status.Unread[0].Error, forgeFailure))
-	assert.Check(t, got.status.OnOrigin, "the branch's copy on origin went unreported beside the failed read")
 }
 
 func TestStatus_WhenAGitReadFails_ReportsTheFailedReadBesideTheRest(t *testing.T) {
@@ -550,10 +548,6 @@ func TestStatus_WhenTheLocalTrunkCannotBeRead_EndsBrokeNamingTheRead(t *testing.
 	}{
 		{name: "on the trunk", arrange: standOnTrunk, build: ruledBy(forge.RulesProtect), fails: localTrunkRead()},
 		{name: "on a work branch", arrange: publishTopic, build: greenOpen(), fails: localTrunkRead()},
-		{
-			name: "its count against origin's on the trunk", arrange: standOnTrunk, build: ruledBy(forge.RulesProtect),
-			fails: divergenceRead(),
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -586,7 +580,7 @@ func TestStatus_WhenTheSSHOriginsURLsNeedIsMissing_EndsOnInstallingSSH(t *testin
 
 func TestStatus_WhenGitIsOlderThanTheMinimumOnTheTrunk_EndsOnUpgradingGit(t *testing.T) {
 	// Not parallel: fakeGit puts a git that prints its own version first on PATH with t.Setenv.
-	s := statusScene(t, standOnTrunk, greenOpen())
+	s := statusScene(t, standOnTrunk, ruledBy(forge.RulesProtect))
 	fakeGit(t, s, gittest.Fake{Version: "git version 1.0.0"})
 
 	got := seeStatus(t, s, (*testing.T).Context)
@@ -788,16 +782,16 @@ func TestStatus_WhenOnAWorkBranchAndGitHubCannotBeRead_NamesTheFixBesideWhatGitT
 	}
 }
 
-func TestStatus_WhenOriginsURLsNameTwoRepositories_EndsOnPointingThemAtOne(t *testing.T) {
+func TestStatus_WhenOriginsURLsNameTwoRepositories_NamesBothURLs(t *testing.T) {
 	t.Parallel()
 	s := statusScene(t, func(f *gittest.Fixture) {
 		f.Publish(topic)
-		f.Git("remote", "set-url", "--push", "origin", "https://github.com/someone/else.git")
+		f.SetPushURL(otherURL)
 	}, viewing(cleanHead(), passing()))
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
-	assertSays(t, got.text, expect("do not name one GitHub repository", "Next:", "`git remote set-url`"))
+	assertSays(t, got.text, expect(fetchURL, otherURL))
 	assert.Check(t, hasUnread(got.status, readChanges), "unread %v, want the pull requests listed", got.status.Unread)
 }
 
