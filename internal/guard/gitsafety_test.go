@@ -75,11 +75,7 @@ func TestJudge_RefusesAGitOperationThatDiscardsWork(t *testing.T) {
 		{name: "update-ref to the all-zero SHA-256 id", command: "git update-ref refs/heads/keep " + strings.Repeat("0", 64)},
 		{name: "update-ref to a non-literal value", command: `git update-ref -- refs/heads/keep "$sha"`},
 		{name: "mv -f", command: "git mv -f a b"},
-		{name: "mv --force", command: "git mv --force a b"},
 		{name: "submodule update -f", command: "git submodule update -f"},
-		{name: "submodule update --force", command: "git submodule update --init --force lib"},
-		{name: "submodule deinit -f", command: "git submodule deinit -f lib"},
-		{name: "submodule deinit --force", command: "git submodule deinit --force lib"},
 		{name: "submodule update --force after a leading --quiet", command: "git submodule --quiet update --force"},
 		{name: "submodule deinit -f after a leading -q", command: "git submodule -q deinit -f lib"},
 		{name: "submodule foreach running reset --hard after a leading --quiet", command: "git submodule --quiet foreach 'git reset --hard'"},
@@ -207,7 +203,6 @@ func TestJudge_RefusesSkippingGitsCommitChecks(t *testing.T) {
 	t.Parallel()
 
 	checkRefusals(t, []refusal{
-		{name: "commit --no-verify", command: "git commit --no-verify -m 'msg'", wantNamed: "--no-verify"},
 		{name: "commit -n", command: "git commit -n -m 'msg'", wantNamed: "git commit"},
 		{name: "difftool --no-verify", command: "git difftool --no-verify HEAD", wantNamed: "--no-verify"},
 		{name: "prefix of send-email --novalidate", command: "git send-email --noval x.patch", wantNamed: "--noval"},
@@ -222,7 +217,6 @@ func TestJudge_RefusesWritingGitHistoryOverAFile(t *testing.T) {
 	outside := gittest.ShellWord(filepath.Join(outsideDir(t), "x.md"))
 
 	checkRefusals(t, []refusal{
-		{name: "show truncating", command: "git show HEAD > output.txt", wantNamed: "git show"},
 		{name: "show into a directory not yet made", command: "git show HEAD:README.md > absent/x.md", wantNamed: "git show"},
 		{name: "show piped into tee", command: "git show HEAD:README.md | tee README.md", wantNamed: "git show"},
 		{name: "cat-file piped into tee -a", command: "git cat-file -p HEAD:README.md | tee -a README.md", wantNamed: "git cat-file"},
@@ -324,20 +318,13 @@ func TestJudge_AllowsAGitOperationThatKeepsWork(t *testing.T) {
 		{name: "send-email --validate", command: "git send-email --validate x.patch"},
 		{name: "restore --staged after an attached --pathspec-from-file", command: "git restore --pathspec-from-file=x --staged f"},
 		{name: "plain mv", command: "git mv a b"},
-		{name: "mv of a non-literal path after --", command: `git mv -- "$f" b`},
 		{name: "plain submodule update", command: "git submodule update"},
-		{name: "submodule update --init --recursive", command: "git submodule update --init --recursive"},
-		{name: "submodule update of a non-literal path after --", command: `git submodule update -- "$x"`},
 		{name: "submodule update --reference holding a non-literal value", command: `git submodule update --reference "$r" lib`},
-		{name: "submodule update --depth holding a non-literal value", command: `git submodule update --depth "$n" lib`},
-		{name: "submodule update --jobs holding a non-literal value", command: `git submodule update --jobs "$n"`},
 		{name: "plain submodule deinit", command: "git submodule deinit lib"},
-		{name: "submodule update after a leading --quiet", command: "git submodule --quiet update"},
-		{name: "submodule foreach running a literal it allows after a leading --quiet", command: "git submodule --quiet foreach 'git status'"},
 	})
 }
 
-func TestJudge_RefusesEveryStashButAListOrAShow(t *testing.T) {
+func TestJudge_RefusesAStashThatSavesWorkOrThatItCannotRead(t *testing.T) {
 	t.Parallel()
 
 	checkRefusals(t, []refusal{

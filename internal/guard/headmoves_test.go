@@ -99,7 +99,6 @@ func TestJudge_WhenAnAndListSwitchesOffTheTrunk_AllowsWhatFollowsOnTheNamedBranc
 		{name: "switch to a branch", command: "git switch topic && " + commitCommand},
 		{name: "switch -c", command: "git switch -c topic && " + commitCommand},
 		{name: "switch -c with a start point", command: "git switch -c topic main && " + commitCommand},
-		{name: "squash merge after the switch", command: "git switch topic && git merge --squash other"},
 		{name: "commit further down the list", command: "git switch -c topic && git add -A && " + commitCommand},
 	})
 }

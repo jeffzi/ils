@@ -156,12 +156,14 @@ func TestApp_Run_WhenParseRunsAsText_PrintsWhatItCannotPlace(t *testing.T) {
 		name    string
 		dir     string
 		command string
-		want    string
+		want    []string
 	}{
-		{name: "directory after a cd that is not literal", dir: f.Dir(), command: `cd "$x"; echo hi`, want: "directory unknown"},
-		{name: "git dir after a cd that is not literal", dir: f.Dir(), command: `cd "$x"; git status`, want: "git dir unknown"},
-		{name: "directory git runs in after a cd that is not literal", dir: f.Dir(), command: `cd "$x"; git status`, want: "git runs in unknown"},
-		{name: "directory outside any repository", dir: t.TempDir(), command: "git status", want: "git dir none"},
+		{name: "directory after a cd that is not literal", dir: f.Dir(), command: `cd "$x"; echo hi`, want: []string{"directory unknown"}},
+		{
+			name: "git dir and the directory git runs in after a cd that is not literal", dir: f.Dir(), command: `cd "$x"; git status`,
+			want: []string{"git dir unknown", "git runs in unknown"},
+		},
+		{name: "directory outside any repository", dir: t.TempDir(), command: "git status", want: []string{"git dir none"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -172,7 +174,9 @@ func TestApp_Run_WhenParseRunsAsText_PrintsWhatItCannotPlace(t *testing.T) {
 			assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
 			lines := outputLines(got.stdout)
 			last := lines[len(lines)-1]
-			assert.Check(t, is.Contains(last, tt.want), "stdout = %q", got.stdout)
+			for _, want := range tt.want {
+				assert.Check(t, is.Contains(last, want), "stdout = %q", got.stdout)
+			}
 		})
 	}
 }
@@ -446,6 +450,8 @@ func TestApp_Run_WhenHookClaudeIsGivenACommandTheGuardAllowsExplicitly_ExitsZero
 
 	got := launch(t, app, "hook", "claude")
 
+	assert.Check(t, is.Equal(got.code, exitDone), "stderr = %q", got.stderr)
+	assert.Check(t, is.Equal(got.stderr, ""))
 	var printed hookAsk
 	assert.Assert(t, json.Unmarshal([]byte(got.stdout), &printed), "stdout = %q", got.stdout)
 	assert.Check(t, is.Equal(printed.HookSpecificOutput.PermissionDecision, "allow"))
@@ -505,6 +511,7 @@ func TestApp_Run_WhenHookClaudeCannotReadThePayload_ExitsTwoSayingWhatBroke(t *t
 	assert.NilError(t, os.WriteFile(file, []byte("words"), 0o600))
 	// relative names a directory that exists from the package directory, where go test runs.
 	relative := filepath.Join("..", "cli")
+	errPayloadGone := errors.New("the payload stopped")
 	tests := []struct {
 		stdin io.Reader
 		name  string
@@ -512,7 +519,7 @@ func TestApp_Run_WhenHookClaudeCannotReadThePayload_ExitsTwoSayingWhatBroke(t *t
 	}{
 		{name: "payload that is not JSON", stdin: strings.NewReader(`{"tool_name":`)},
 		{name: "no tool name", stdin: strings.NewReader(encoded(t, toolUse{Input: map[string]string{"command": "echo hi"}, Cwd: dir}))},
-		{name: "stdin that cannot be read", stdin: iotest.ErrReader(errReaderGone), want: errReaderGone.Error()},
+		{name: "stdin that cannot be read", stdin: iotest.ErrReader(errPayloadGone), want: errPayloadGone.Error()},
 		{name: "command that is not a string", stdin: strings.NewReader(fmt.Sprintf(`{"tool_name":"Bash","cwd":%q,"tool_input":{"command":5}}`, dir))},
 		{name: "no command", stdin: strings.NewReader(encoded(t, toolUse{ToolName: "Bash", Input: map[string]string{}, Cwd: dir}))},
 		{name: "no directory", stdin: strings.NewReader(encoded(t, toolUse{ToolName: "Bash", Input: map[string]string{"command": "echo hi"}}))},

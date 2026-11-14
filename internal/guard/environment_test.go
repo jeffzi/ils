@@ -19,6 +19,7 @@ func TestParse_WhenTheGitTargetCannotBeFollowed_ReportsItUnknown(t *testing.T) {
 		{name: "unset of GIT_WORK_TREE", command: "unset GIT_WORK_TREE; git status"},
 		{name: "shell variable that may be exported", command: "GIT_DIR=/srv/repo.git; git status"},
 		{name: "export in an if body", command: "if test -d x; then export GIT_DIR=/srv/repo.git; fi; git status"},
+		{name: "read of GIT_DIR", command: "read -r GIT_DIR; git status"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

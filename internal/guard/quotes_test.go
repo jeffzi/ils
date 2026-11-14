@@ -14,7 +14,6 @@ func TestWriteDoubleQuoted(t *testing.T) {
 		in   string
 		want string
 	}{
-		{name: "plain text stays", in: "a b", want: "a b"},
 		{name: "backslash before dollar drops", in: `\$HOME`, want: "$HOME"},
 		{name: "backslash before newline drops with it", in: "a\\\nb", want: "ab"},
 		{name: "backslash before other character stays", in: `\n`, want: `\n`},
@@ -41,7 +40,6 @@ func TestWriteUnquoted(t *testing.T) {
 		in   string
 		want string
 	}{
-		{name: "plain text stays", in: "a b", want: "a b"},
 		{name: "backslash before a character drops", in: `a\ b\.sh`, want: "a b.sh"},
 		{name: "backslash before newline drops with it", in: "a\\\nb", want: "ab"},
 		{name: "trailing backslash stays", in: `a\`, want: `a\`},

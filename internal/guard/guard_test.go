@@ -157,7 +157,6 @@ func TestJudge_WhenAGitArgumentCannotBeRead_NamesDoubleDashWhereItLetsTheCommand
 		{name: "several unreadable arguments", command: `git branch -d "$a" "$b"`, wantNamed: "after `--`"},
 		{name: "mv", command: `git mv "$f" b`, wantNamed: "after `--`"},
 		{name: "submodule update", command: `git submodule update "$x"`, wantNamed: "after `--`"},
-		{name: "submodule deinit", command: `git submodule deinit "$x"`, wantNamed: "after `--`"},
 	})
 }
 

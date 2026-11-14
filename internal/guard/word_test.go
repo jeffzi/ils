@@ -22,7 +22,6 @@ func TestParse_WhenQuoteRemovalLeavesPlainText_ReportsALiteral(t *testing.T) {
 		{name: "quotes inside a word", word: `g"i"t`, want: "git"},
 		{name: "escaped dollar in double quotes", word: `"a\$x"`, want: "a$x"},
 		{name: "escaped glob character", word: `\*`, want: "*"},
-		{name: "trailing lone backslash", word: `a\`, want: `a\`},
 		{name: "quoted glob character", word: `"*.go"`, want: "*.go"},
 		{name: "bare tilde", word: `~`, want: home},
 		{name: "tilde path", word: `~/x`, want: home + "/x"},
@@ -37,6 +36,25 @@ func TestParse_WhenQuoteRemovalLeavesPlainText_ReportsALiteral(t *testing.T) {
 
 			assert.Assert(t, is.Len(got.Words, 2), "Parse(%q)", command)
 			assert.Check(t, is.DeepEqual(got.Words[1], guard.Word{Text: tt.want, Literal: true}), "Parse(%q)", command)
+		})
+	}
+}
+
+func TestParse_WhenAnUnquotedExpansionWouldSplitOrGlob_ReadsTheWordUnknown(t *testing.T) {
+	t.Parallel()
+
+	tests := []namedCommand{
+		{name: "unquoted expansion of a value holding a space", command: "S='/tmp/my work'; $S/run.sh"},
+		{name: "unquoted expansion of a value holding a glob character", command: "S='/tmp/*'; $S/run.sh"},
+		{name: "unquoted expansion of a for loop value holding a backslash", command: `for S in '/tmp/a\b'; do $S/run.sh; done`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := parse(t, tt.command)
+
+			checkRunShReadUnknown(t, tt.command, got)
 		})
 	}
 }

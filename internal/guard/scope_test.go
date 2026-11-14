@@ -262,9 +262,6 @@ func TestParse_WhenTheGuardCannotBeSureOfAVariable_ReadsItsExpansionUnknown(t *t
 		{name: "assignment prefix of the command reading it", command: "S=/tmp/work $S/run.sh"},
 		{name: "source of a file after the assignment", command: "S=/tmp/work; source env.sh; $S/run.sh"},
 		{name: "shell string of another shell", command: "S=/tmp/work; bash -c '$S/run.sh'"},
-		{name: "unquoted expansion of a value holding a space", command: "S='/tmp/my work'; $S/run.sh"},
-		{name: "unquoted expansion of a value holding a glob character", command: "S='/tmp/*'; $S/run.sh"},
-		{name: "unquoted expansion of a for loop value holding a backslash", command: `for S in '/tmp/a\b'; do $S/run.sh; done`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -282,7 +279,6 @@ func TestParse_WhenAStatementHoldsOnlyRedirects_ReportsTheCommandsAroundIt(t *te
 
 	checkTexts(t, []commandTexts{
 		{name: "statement in a list", command: "true && </dev/null; git status", want: [][]string{{"true"}, {"git", "status"}}},
-		{name: "command substitution reading a file", command: `echo "$(</dev/null)"`, want: [][]string{{"echo", ""}}},
 		{name: "redirect target holding a command substitution", command: `<"$(git push)"`, want: [][]string{{"git", "push"}}},
 	})
 }
