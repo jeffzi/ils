@@ -442,7 +442,6 @@ func Main() (code int, served bool) {
 func Setup(tb testing.TB, script ...Call) *Fake {
 	tb.Helper()
 
-	// os.Executable carries the .exe suffix on Windows, which GH_PATH needs there.
 	exe, err := os.Executable()
 	if err != nil {
 		tb.Fatalf("ghtest: find the test binary: %v", err)
@@ -543,19 +542,9 @@ func acknowledgeHold(tb testing.TB, conn net.Conn, record string, held func()) {
 	_, _ = conn.Write([]byte{acknowledgement})
 }
 
-// isReset reports whether err is a peer resetting the connection. On Windows a read from a killed
-// peer fails with either the connection-reset code Windows sockets use (Errno 10054) or the code for
-// a network name that no longer exists (Errno 64), and Errno.Is maps neither to Go's synthetic
-// ECONNRESET there, so all three are checked. Elsewhere both numbers are plain Errno values nothing
-// reports.
+// isReset reports whether err is a peer resetting the connection.
 func isReset(err error) bool {
-	const (
-		windowsReset    = syscall.Errno(10054)
-		windowsPeerGone = syscall.Errno(64)
-	)
-
-	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, windowsReset) ||
-		errors.Is(err, windowsPeerGone)
+	return errors.Is(err, syscall.ECONNRESET)
 }
 
 // checkRecorded returns an error unless record holds the call that line, an encoded hold, names.

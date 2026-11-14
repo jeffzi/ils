@@ -69,7 +69,7 @@ func TestRepo_Fetch_WhenAnotherRunHoldsTheLockOfAFixedFetchRefForTheBranch_Retur
 	want := f.AdvanceOrigin(topic)
 	// Another run's fetch holds the lock of a fixed ref named for the branch under refs/ils/fetched/.
 	common := f.Git("rev-parse", "--path-format=absolute", "--git-common-dir")
-	lock := filepath.Join(common, "refs", "ils", "fetched", "heads", filepath.FromSlash(topic)+".lock")
+	lock := filepath.Join(common, "refs", "ils", "fetched", "heads", topic+".lock")
 	assert.NilError(t, os.MkdirAll(filepath.Dir(lock), 0o750))
 	assert.NilError(t, os.WriteFile(lock, nil, 0o600))
 

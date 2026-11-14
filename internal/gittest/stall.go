@@ -69,9 +69,7 @@ func SilentListener(tb testing.TB) (addr string, connected <-chan struct{}) {
 	// Cleanups run last registered first, and the test's temporary directories are removed by a
 	// cleanup the first TempDir call registers. Making that call here, before the cleanups below,
 	// lets the held connection go before the directories are removed, whatever order the test
-	// asks for its directories in. A client still holding the connection may run in one of those
-	// directories or from a binary linked into one, and Windows refuses to remove either while it
-	// runs.
+	// asks for its directories in.
 	tb.TempDir()
 
 	addr = Serve(tb, func(conn net.Conn) {

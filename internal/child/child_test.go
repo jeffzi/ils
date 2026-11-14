@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -60,29 +59,10 @@ func nonZeroExit(t *testing.T) *exec.ExitError {
 func killedBy(t *testing.T, signal string) *exec.ExitError {
 	t.Helper()
 
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows has no signal a process can kill itself with")
-	}
-
 	//nolint:gosec // G204: the test names the shell and the signal; nothing here comes from outside the test.
 	cmd := exec.CommandContext(t.Context(), "sh", "-c", "kill -"+signal+" $$")
 
 	return exitErrorOf(t, "sh killed by "+signal, cmd)
-}
-
-// interruptedChild returns what exec reports for a child that Ctrl-C ended: on Windows a console
-// child that exits with STATUS_CONTROL_C_EXIT, elsewhere a shell that the interrupt signal killed.
-func interruptedChild(t *testing.T) *exec.ExitError {
-	t.Helper()
-
-	if runtime.GOOS != "windows" {
-		return killedBy(t, "INT")
-	}
-
-	// -1073741510 is STATUS_CONTROL_C_EXIT, 0xC000013A, as cmd reads a signed 32-bit exit code.
-	cmd := exec.CommandContext(t.Context(), "cmd", "/c", "exit", "-1073741510")
-
-	return exitErrorOf(t, "cmd exiting with STATUS_CONTROL_C_EXIT", cmd)
 }
 
 func TestExitError_Error(t *testing.T) {
@@ -134,7 +114,7 @@ func TestFailure_WhenContextEnded_ReturnsContextErrorWhateverTheExit(t *testing.
 
 func TestFailure_WhenProgramDiedOfTheInterruptBeforeContextEnded_ReturnsContextCanceled(t *testing.T) {
 	t.Parallel()
-	runErr := interruptedChild(t)
+	runErr := killedBy(t, "INT")
 
 	err := child.Failure(t.Context(), fetchArgv(), runErr, stderrMarker+" printed before the interrupt\n")
 
@@ -202,26 +182,6 @@ func TestFailure_WhenProgramDidNotDieOfTerminate_ReturnsWithoutWaitingForContext
 	}
 }
 
-func TestInterruptedExit(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		code int64
-	}{
-		{name: "STATUS_CONTROL_C_EXIT of a console child that Ctrl-C ended", code: 0xC000013A},
-		{name: "STATUS_CONTROL_C_EXIT as a 32-bit build reads it", code: -1073741510},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := child.InterruptedExit(int(tt.code))
-
-			assert.Check(t, got, "InterruptedExit(%#x) = false, want true", tt.code)
-		})
-	}
-}
-
 func TestProgram_Run_WhenProgramExitsNonZero_KeepsOnlyStdout(t *testing.T) {
 	// Not parallel: gittest.FakeGit sets PATH for the whole process.
 	settings := gittest.FakeGit(t, gittest.Fake{FailAfterOn: []string{"version"}})
@@ -242,9 +202,6 @@ func TestProgram_Run_WhenProgramExitsNonZero_KeepsOnlyStdout(t *testing.T) {
 
 func TestProgram_Run_WhenASignalEndsTheProgramAfterItPrinted_ReturnsNoOutput(t *testing.T) {
 	t.Parallel()
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows has no signal a process can kill itself with")
-	}
 	program := child.Program{Tool: "sh", Args: []string{"-c", "echo partial; kill -KILL $$"}, LookPath: exec.LookPath}
 
 	got, err := program.Run(t.Context())
@@ -526,11 +483,6 @@ func TestProgram_Run_WhenProgramCannotBeStarted_ReturnsToolMissingError(t *testi
 func TestProgram_Run_WhenTheFoundFileIsGoneAndAStartWantingAFileIsNotMissing_ReturnsTheStartError(t *testing.T) {
 	t.Parallel()
 	gone := filepath.Join(t.TempDir(), "git")
-	if runtime.GOOS == "windows" {
-		// A lookup on Windows finds a program with its executable suffix. Without one, exec searches
-		// the suffixes itself and fails with exec.ErrNotFound before it ever starts the program.
-		gone += ".exe"
-	}
 	program := child.Program{Tool: "git", Args: []string{"status"}, LookPath: foundAt(gone)}
 
 	_, err := program.Run(t.Context())

@@ -162,7 +162,7 @@ func commitRefusals() []pushRefusal {
 		{
 			name: "every commit landed on origin's trunk since the last fetch", script: allowed(),
 			arrange: func(f *gittest.Fixture) string {
-				f.Git("push", "--quiet", filepath.ToSlash(f.OriginDir()), topic+":"+trunk)
+				f.Git("push", "--quiet", f.OriginDir(), topic+":"+trunk)
 
 				return nothingPast(topic)
 			},

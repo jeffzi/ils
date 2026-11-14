@@ -613,16 +613,11 @@ func (r rejected) naming(word string) rejected {
 // git dir as it was handed in.
 func dirCases() []rejected {
 	const (
-		windowsDir = `C:\Work\Store\meta`
 		spacedDir  = "/srv/my store/meta dir"
 		shoutedDir = "/SRV/Store/Meta"
 	)
 
 	return []rejected{
-		rejectedLine("wording uses backslashes", gitDir,
-			result.Say(`Wrote \srv\store\meta\HEAD`)).naming(gitDir),
-		rejectedLine("handed-in dir uses backslashes and ends in one", windowsDir+`\`,
-			result.Say("Wrote C:/Work/Store/meta/HEAD")).naming(windowsDir + `\`),
 		rejectedLine("handed-in dir differs in case", shoutedDir,
 			result.Say("Wrote /srv/store/meta/HEAD")).naming(shoutedDir),
 		rejectedLine("resolved git dir holding spaces", spacedDir,
@@ -641,7 +636,6 @@ func lineCases() []rejected {
 	return []rejected{
 		line("git dir component in backticks", "`.git/config`", result.Say("Wrote `.git/config` today.")),
 		line("pre-commit, capital", "Pre-commit", result.Say("Pre-commit ran.")),
-		line("git dir component, backslash", `.git\config`, result.Say(`Wrote .git\config`)),
 		line("git dir component, nested", "work/.git/index.lock", result.Say("Removed work/.git/index.lock")),
 		line("git dir component ending a sentence", ".git.", result.Say("Nothing changed in .git.")),
 	}
