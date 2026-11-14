@@ -328,7 +328,13 @@ func (m *mergeReady) toWrite(ctx context.Context, deps Deps, req Request) *resul
 		return stop
 	}
 
-	return m.reserved(ctx, req)
+	// Less than mergeReserve left before ctx's deadline ends the merge pending, with nothing written.
+	said := slices.Concat([]result.Phrase{m.summary()}, m.waited.mergeStateLines())
+	if stop := req.shortOfReserve(ctx, result.Concat("for the merge"), pushAgain(), said); stop != nil {
+		return m.carrying(stop)
+	}
+
+	return nil
 }
 
 // pushed is the pull request's head as the wait for its checks reads it.
@@ -507,17 +513,6 @@ func squashBody(message forge.Message) string {
 	}
 }
 
-// reserved ends the merge pending, with nothing written, when less than mergeReserve is left
-// before ctx's deadline.
-func (m *mergeReady) reserved(ctx context.Context, req Request) *result.Result {
-	said := slices.Concat([]result.Phrase{m.summary()}, m.waited.mergeStateLines())
-	if stop := req.shortOfReserve(ctx, result.Concat("for the merge"), pushAgain(), said); stop != nil {
-		return m.carrying(stop)
-	}
-
-	return nil
-}
-
 // summary says what let the merge go on: the head's checks, or no CI on the trunk.
 func (m *mergeReady) summary() result.Phrase {
 	if m.unverified {
@@ -594,9 +589,9 @@ func (m *mergeReady) finish(ctx context.Context, deps Deps, req Request) *result
 
 // merge squash-merges the pull request with the composed message, at the head whose checks were
 // read. An interrupt that ended ctx before the merge is sent ends the run pending with nothing
-// written, as too little time left does in reserved. A merge that fails or that the time limit or
-// an interrupt cut short may still have gone through, so its next step is ils merge, whose run
-// resumes once it did.
+// written, as too little time left does at the end of toWrite. A merge that fails or that the time
+// limit or an interrupt cut short may still have gone through, so its next step is ils merge, whose
+// run resumes once it did.
 func (m *mergeReady) merge(ctx context.Context, deps Deps, req Request) *result.Result {
 	pull := result.PullRequest(m.pull.Number)
 

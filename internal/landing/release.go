@@ -70,7 +70,7 @@ func versionTags(tags []git.Tag) []git.Tag {
 // that commit; the changelog at that commit holds notes for the version. A check that fails, an
 // origin that cannot be reached, and a read the context's deadline cut short are refusals; a read
 // that fails for any other reason is broke, and nothing is written before the CI gate and the
-// reserve let the release go on, as gate and reserved say.
+// reserve let the release go on, as gate and the reserve check in Release say.
 //
 // The writes follow, as write says. Every result from the release commit found on carries the
 // release payload.

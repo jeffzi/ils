@@ -353,7 +353,10 @@ func (w waiter) run(ctx context.Context) (Waited, WaitStage, error) {
 		return waited, stage, err
 	}
 
-	verdict, outcome, err := w.concluded(ctx, &waited)
+	// A verdict read after the first keeps headReadReserve for the read of the head that follows
+	// the checks, and so does each poll.
+	verdict, outcome, err := w.deps.awaitConcluded(ctx, &waited,
+		checkPoll{read: w.readVerdict, poll: pollVerdict, required: w.pushed.Required})
 	waited.take(verdict, outcome)
 
 	stillRunning := errors.Is(err, errOutOfTime)
@@ -536,13 +539,6 @@ func (w waiter) mergeKnown(ctx context.Context, head forge.Head) (forge.Head, er
 
 func (w waiter) unknownOnPushed(head forge.Head) bool {
 	return head.MergeState == forge.MergeUnknown && head.SHA == w.pushed.SHA
-}
-
-// concluded polls the verdict until the checks conclude and returns the last verdict it read
-// with how they concluded, as awaitConcluded does. A read after the first keeps headReadReserve
-// for the read of the head that follows the checks, and so does each poll.
-func (w waiter) concluded(ctx context.Context, waited *Waited) (forge.Verdict, WaitOutcome, error) {
-	return w.deps.awaitConcluded(ctx, waited, checkPoll{read: w.readVerdict, poll: pollVerdict, required: w.pushed.Required})
 }
 
 // checkPoll is how a wait for the checks of a commit reads them and waits between two reads.

@@ -835,7 +835,10 @@ func (r Request) trunkAhead(ctx context.Context, deps Deps, ready Ready) *result
 		return nil
 	}
 
-	return ahead.refusal(r, r.ilsCommand())
+	stop := r.Refused(ahead.reason(), ahead.fix(r.ilsCommand()))
+	stop.Lines = listed(ahead.past)
+
+	return stop
 }
 
 // aheadTrunk is a local trunk with commits origin's trunk lacks, and where it is checked out.
@@ -874,15 +877,6 @@ func readTrunkAhead(ctx context.Context, deps Deps, trunk string, here bool) (*a
 	}
 
 	return a, "", nil
-}
-
-// refusal is req's refusal of the local trunk, listing its commits, whose next step is fix with
-// again.
-func (a aheadTrunk) refusal(req Request, again result.Name) *result.Result {
-	stop := req.Refused(a.reason(), a.fix(again))
-	stop.Lines = listed(a.past)
-
-	return stop
 }
 
 // reason is the reason every landing command gives for refusing the local trunk.
