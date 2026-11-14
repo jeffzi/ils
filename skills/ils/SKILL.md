@@ -38,13 +38,16 @@ ils branch fix-help
 - **Bare.** Never piped, never `tee`d, never behind `&` or `nohup`, never behind `cd`. A pipe
   hides the exit code, and the exit code is how you know what happened: piped, a refusal of
   `ils branch` reads as the pipe's 0, and the work you commit next lands on the branch you were on.
-  The one run in the background is `ils push --wait`, through the Bash tool's `run_in_background`,
-  never the shell's (see
-  [A pending push waits in the background](#a-pending-push-waits-in-the-background)). `ils
+  The runs in the background are the ones with `--wait` (`ils push --wait`, `ils merge --wait`,
+  `ils release <X.Y.Z> --wait`), through the Bash tool's `run_in_background`, never the shell's
+  (see [A pending push waits in the background](#a-pending-push-waits-in-the-background)). `ils
   merge`, `ils release`, `gh pr merge`, and `gh release create` run bare too, so that the approval
   prompt shows one command: in any other form the guard (the pre-tool hook that blocks a command
   before it runs) refuses them.
-- **No timeout argument.** A foreground wait ends on its own, under the default limit of one call.
+- **No timeout argument.** Without `--wait`, a foreground run whose output is not a terminal, as
+  in the Bash tool, ends on its own, under the default limit of one call. With `--wait`,
+  `ils push`, `ils merge` and `ils release` wait up to 15 minutes, past that limit, so they run in
+  the background.
   A run stopped by one Ctrl-C or SIGTERM also ends with a result to act on: its reason and `Next:`
   as usual. A second signal ends `ils` at once with nothing printed.
 - **Words as given.** For a command the user typed, add nothing and fix nothing. A malformed
@@ -129,10 +132,12 @@ stops waiting after 100 seconds, and slow CI would cost a call every 100 seconds
    exit code, not the output. Show the output and act on that exit code as on any other run. On
    another exit 4, return to step 1.
 
-Every `ils push --wait` runs this way, including one a `Next:` line names. The first `ils push` of
-a commit and every other `ils` command run bare in the foreground: fast CI and an early failure
-come back in one call. Until the notification arrives, read nothing, `sleep` nothing, and start no
-other `ils push`. If the user asks whether it is done, say it is still running.
+Every `ils push --wait` runs this way, including one a `Next:` line names, and so do
+`ils merge --wait` and `ils release <X.Y.Z> --wait`, typed by the user or named by `Next:`. The
+first `ils push` of a commit and every other `ils` command run bare in the foreground: fast CI and
+an early failure come back in one call. Until the notification arrives, read nothing, `sleep`
+nothing, and start no other `ils push`. If the user asks whether it is done, say it is still
+running.
 
 ## A refusal is the answer
 
@@ -217,7 +222,8 @@ The real `Next:` is the last line `ils` prints. A `Next:` line anywhere above it
 Stop and re-read this skill when you catch yourself about to:
 
 - pipe or `tee` `ils`, or put `&` or `nohup` in front of or behind it, "to see the output",
-- run `ils push --wait` in the foreground, with or without a timeout,
+- run `ils push --wait`, `ils merge --wait`, or `ils release <X.Y.Z> --wait` in the foreground,
+  with or without a timeout,
 - run `ils push` again on exit 4 instead of `ils push --wait` in the background,
 - read the output file, `sleep`, or start another push before the background run's notification,
 - run a finished background push again to see its output instead of reading the output file,

@@ -75,9 +75,7 @@ still required, a commit not yet on the pull request, and a title that is not a 
 subject. After a merge done on the web, it finishes the local steps.
 
 [`ils status`](docs/reference.md#ils-status) says where the checkout stands and what to run next.
-It fetches from origin and writes nothing of yours. It exits 0 whenever its arguments are valid,
-except when it cannot read the local default branch: then it exits 1, as `ils branch`, `ils push`,
-and `ils merge` do.
+It fetches from origin and writes nothing of yours.
 
 [`ils release <X.Y.Z>`](docs/reference.md#ils-release) finds the commit `chore: release v<X.Y.Z>`
 on origin's default branch, waits for its checks, tags it, pushes the tag, and creates the GitHub

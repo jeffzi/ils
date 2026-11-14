@@ -814,8 +814,8 @@ under `payload.status`:
 
 | Field                | Type             | Meaning                                                                                                                                                                              |
 | -------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `standing`           | string           | `branch`, `trunk`, `detached`, `no-origin`, or `no-repository`.                                                                                                                      |
-| `branch`             | string           | The branch HEAD is on; empty on a detached HEAD.                                                                                                                                     |
+| `standing`           | string           | `branch`, `trunk`, `detached`, `no-origin`, or `no-repository`; empty when where HEAD stands was not read, and `unread` then names the read that failed.                             |
+| `branch`             | string           | The branch HEAD is on when `standing` is `branch` or `trunk`; empty otherwise.                                                                                                       |
 | `trunk`              | string           | Origin's default branch; empty when it could not be learned.                                                                                                                         |
 | `ahead`, `behind`    | integer          | Commits ahead of and behind the branch's copy on origin, or origin's default branch on the default branch.                                                                           |
 | `on_origin`          | boolean          | Whether origin has a copy of the branch.                                                                                                                                             |
@@ -886,9 +886,10 @@ The guard lowers the odds of an accident; it is not a sandbox. It does not see:
   which hold no `ils` word;
 - a task runner (`task`, `make`, `npm run`) running lines from a file the agent wrote;
 - a shell reading a script the command does not hold, as the command itself: `curl -fsSL
-  https://example.com/install.sh | bash`, `bash < x.sh`, `bash <(cat x.sh)`, `bash -s`, or
-  `source <(…)`. Behind a command the guard does not know (`timeout 60 bash <(…)`), the guard
-  still refuses such a shell as a shell word handed over;
+  https://example.com/install.sh | bash`, `bash < x.sh`, `bash <(cat x.sh)`, `bash -s`, a
+  here-string such as `bash <<< 'git push'`, or `source <(…)`. Behind a command the guard does
+  not know (`timeout 60 bash <(…)`), the guard still refuses such a shell as a shell word handed
+  over;
 - `gh workflow run` of a workflow whose token can push, tag, or release;
 - an alias or function from your shell config, such as `gp='git push'`, which the agent's shell
   runs with no `git` word in the command;
