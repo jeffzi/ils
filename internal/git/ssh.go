@@ -61,22 +61,24 @@ func (r Repo) plainHostname(ctx context.Context, host string) (string, error) {
 	return hostnameIn(result.Stdout, child.Argv(sshProgram, args))
 }
 
-// hostnameIn returns the host the `ssh -G` output stdout names, read as foldGitHubHost reads it.
+// hostnameIn returns the host the `ssh -G` output stdout names, read as canonicalHost reads it.
 // Output with no hostname line is an error naming argv, the call that printed it, joined by spaces.
 func hostnameIn(stdout string, argv []string) (string, error) {
 	for line := range strings.SplitSeq(stdout, "\n") {
 		if name, found := strings.CutPrefix(line, hostnameKey); found {
-			return foldGitHubHost(strings.TrimSpace(name)), nil
+			return canonicalHost(strings.TrimSpace(name)), nil
 		}
 	}
 
 	return "", fmt.Errorf("%s printed no hostname", child.CommandLine(argv))
 }
 
-// foldGitHubHost returns github.com for any host under it, such as ssh.github.com, matched without
-// regard to case. The dot in the suffix keeps lookalikes such as fake-github.com as they are.
-func foldGitHubHost(host string) string {
-	if strings.HasSuffix(strings.ToLower(host), "."+GitHubHost) {
+// canonicalHost returns host in lowercase, since a host name is the same in any case, and
+// github.com for any host under it, such as ssh.github.com. The dot in the suffix keeps lookalikes
+// such as fake-github.com as they are.
+func canonicalHost(host string) string {
+	host = strings.ToLower(host)
+	if strings.HasSuffix(host, "."+GitHubHost) {
 		return GitHubHost
 	}
 

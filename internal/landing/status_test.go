@@ -106,11 +106,18 @@ type seen struct {
 func seeStatus(t *testing.T, s *scene, under func(*testing.T) context.Context) seen {
 	t.Helper()
 
+	return seeStatusEnding(t, s, under, result.Done)
+}
+
+// seeStatusEnding runs Status as seeStatus does, checking that it ends with want.
+func seeStatusEnding(t *testing.T, s *scene, under func(*testing.T) context.Context, want result.Outcome) seen {
+	t.Helper()
+
 	before := s.written()
 
 	got := landing.Status(under(t), s.deps, statusRequest())
 
-	assertStoppedBy(t, got, result.Done, statusRequest())
+	assertStoppedBy(t, got, want, statusRequest())
 	assert.Check(t, is.Equal(s.written(), before))
 
 	text, err := result.RenderStyled(got, s.gitDir, colorprofile.NoTTY)
@@ -383,7 +390,16 @@ func refusedSteps() []nextRow {
 				f.Publish(topic)
 				f.AdvanceTrunk()
 
-				return expect("move those commits off the local trunk by hand", "ils merge again")
+				return nextTrunkFix(fixNowhere, "ils merge")
+			},
+		},
+		{
+			name: "on origin with no open pull request and a local trunk ahead of origin's", script: viewing(cleanHead(), passing()),
+			arrange: func(f *gittest.Fixture) string {
+				f.Publish(topic)
+				f.AdvanceTrunk()
+
+				return nextTrunkFix(fixNowhere, "ils push")
 			},
 		},
 	}
@@ -438,7 +454,7 @@ func TestStatus_WhenAForgeReadFails_ReportsTheFailedReadBesideTheRest(t *testing
 func TestStatus_WhenAGitReadFails_ReportsTheFailedReadBesideTheRest(t *testing.T) {
 	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
 	s := statusScene(t, publishTopic, greenOpen())
-	failGit(t, s, []string{"rev-list", "--left-right", "--count"})
+	failGit(t, s, divergenceRead())
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
@@ -496,6 +512,7 @@ func TestStatus_WhenAReadOfTheBranchFails_EndsOnFixingWhatFailed(t *testing.T) {
 	}{
 		{name: "the tip", read: readTip, words: []string{"rev-parse", "HEAD"}},
 		{name: "the commits past origin's trunk", read: readCommits, words: history()},
+		{name: "the working tree's changes", read: readTree, words: []string{"status", "--porcelain=v1"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -510,33 +527,44 @@ func TestStatus_WhenAReadOfTheBranchFails_EndsOnFixingWhatFailed(t *testing.T) {
 	}
 }
 
-// localRead is one read of the repository's own state that a status makes on a work branch.
-type localRead struct {
-	name  string
-	read  string
-	words []string
-}
-
-// localReads are the reads of the working tree and of the local trunk, each with the arguments of
-// the git call that makes it.
-func localReads() []localRead {
-	return []localRead{
-		{name: "the working tree's changes", read: readTree, words: []string{"status", "--porcelain=v1"}},
-		{name: "the local trunk", read: readLocalTrunk, words: []string{"show-ref", "--verify", "--quiet", "refs/heads/" + trunk}},
-	}
-}
-
-func TestStatus_WhenALocalReadFails_EndsOnFixingWhatFailed(t *testing.T) {
+func TestStatus_WhenTheWorkingTreeCannotBeReadAndTheLocalTrunkIsAhead_EndsOnFixingWhatFailed(t *testing.T) {
 	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
-	for _, tt := range localReads() {
+	s := statusScene(t, func(f *gittest.Fixture) {
+		publishTopic(f)
+		f.AdvanceTrunk()
+	}, greenOpen())
+	failGit(t, s, []string{"status", "--porcelain=v1"})
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	assertEndsOn(t, got, statusCommand().fixed)
+}
+
+func TestStatus_WhenTheLocalTrunkCannotBeRead_EndsBrokeNamingTheRead(t *testing.T) {
+	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	tests := []struct {
+		arrange func(*gittest.Fixture)
+		build   forgeFor
+		name    string
+		fails   []string
+	}{
+		{name: "on the trunk", arrange: standOnTrunk, build: ruledBy(forge.RulesProtect), fails: localTrunkRead()},
+		{name: "on a work branch", arrange: publishTopic, build: greenOpen(), fails: localTrunkRead()},
+		{
+			name: "its count against origin's on the trunk", arrange: standOnTrunk, build: ruledBy(forge.RulesProtect),
+			fails: divergenceRead(),
+		},
+	}
+	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := statusScene(t, publishTopic, greenOpen())
-			failGit(t, s, tt.words)
+			s := statusScene(t, tt.arrange, tt.build)
+			failGit(t, s, tt.fails)
 
-			got := seeStatus(t, s, (*testing.T).Context)
+			got := seeStatusEnding(t, s, (*testing.T).Context, result.Broke)
 
+			assertSays(t, got.text, expect("could not read "+readLocalTrunk))
 			assertEndsOn(t, got, statusCommand().fixed)
-			assert.Check(t, hasUnread(got.status, tt.read), "unread %v, want %s listed", got.status.Unread, tt.read)
+			assert.Check(t, hasUnread(got.status, readLocalTrunk), "unread %v, want %s listed", got.status.Unread, readLocalTrunk)
 		})
 	}
 }
@@ -671,6 +699,15 @@ func TestStatus_WhenOnTheTrunk_EndsOnStartingABranch(t *testing.T) {
 	got := seeStatus(t, s, (*testing.T).Context)
 
 	assertSays(t, nextOf(t, got.text), nextBranch())
+}
+
+func TestStatus_WhenOnTheTrunkAheadOfOrigins_EndsOnTheFix(t *testing.T) {
+	t.Parallel()
+	s := statusScene(t, func(f *gittest.Fixture) { f.Commits(trunk, strayOnTrunk) }, ruledBy(forge.RulesProtect))
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	assertSays(t, "Next:"+nextOf(t, got.text), nextTrunkFix(fixHere, "ils push"))
 }
 
 func TestStatus_WhenThereIsNoOrigin_EndsOnCreatingIt(t *testing.T) {

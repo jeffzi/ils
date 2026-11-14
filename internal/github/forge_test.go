@@ -88,6 +88,9 @@ func loginArgs() []string { return ghtest.LoginArgs(engineHost) }
 
 func repoViewArgs() []string { return ghtest.RepoViewArgs(engineSlug) }
 
+// loggedInCall is the scripted login check that finds a login for the engine host.
+func loggedInCall() ghtest.Call { return ghtest.Exits(ghtest.LoggedIn(engineHost), loginArgs()...) }
+
 func listArgs() []string { return ghtest.ListArgs(engineSlug, featureBranch) }
 
 func createArgs() []string {
@@ -225,6 +228,10 @@ func operationsByName() map[string]func(context.Context, *github.Forge) error {
 			_, err := f.Message(ctx, engine(), pullNumber)
 			return err
 		},
+		"PublicRepo": func(ctx context.Context, _ *github.Forge) error {
+			_, err := github.Runner{}.PublicRepo(ctx, engine())
+			return err
+		},
 	}
 }
 
@@ -233,14 +240,14 @@ func readCases() []readCase {
 	byName := operationsByName()
 
 	identity, find, head, protection := byName["Identity"], byName["FindChanges"], byName["Head"], byName["TrunkProtection"]
-	message := byName["Message"]
+	message, public := byName["Message"], byName["PublicRepo"]
 	blocked := func(ctx context.Context, f *github.Forge) error {
 		_, err := f.Head(ctx, engine(), headQuery("build", "test"))
 		return err
 	}
 
 	return []readCase{
-		{name: "repo view", run: identity, args: repoViewArgs(), before: []ghtest.Call{ghtest.Exits(ghtest.LoggedIn(engineHost), loginArgs()...)}},
+		{name: "repo view", run: identity, args: repoViewArgs(), before: []ghtest.Call{loggedInCall()}},
 		{name: "pr list", run: find, args: listArgs()},
 		{name: "pr view", run: head, args: headArgs()},
 		{
@@ -249,6 +256,10 @@ func readCases() []readCase {
 		},
 		{name: "api rules", run: protection, args: rulesArgs()},
 		{name: "api graphql message", run: message, args: messageArgs()},
+		{
+			name: "repo view visibility", run: public, args: repoViewArgs(),
+			before: []ghtest.Call{loggedInCall()},
+		},
 	}
 }
 
@@ -347,6 +358,52 @@ func TestForge_Identity(t *testing.T) {
 			assert.Check(t, is.DeepEqual(got, want))
 		})
 	}
+}
+
+func TestRunner_PublicRepo(t *testing.T) {
+	tests := []struct {
+		visibility string
+		want       bool
+	}{
+		{visibility: "PUBLIC", want: true},
+		{visibility: "PRIVATE", want: false},
+		{visibility: "INTERNAL", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.visibility, func(t *testing.T) {
+			ghtest.Setup(t,
+				loggedInCall(),
+				ghtest.Exits(ghtest.Visibility(tt.visibility), repoViewArgs()...),
+			)
+
+			got, err := github.Runner{}.PublicRepo(t.Context(), engine())
+			assert.NilError(t, err)
+
+			assert.Check(t, is.Equal(got, tt.want))
+		})
+	}
+}
+
+func TestRunner_PublicRepo_WhenGhHoldsNoLoginForTheHost_ReturnsNotLoggedInError(t *testing.T) {
+	ghtest.Setup(t, ghtest.Exits(ghtest.LoggedOut(), loginArgs()...))
+
+	_, err := github.Runner{}.PublicRepo(t.Context(), engine())
+
+	_, ok := errors.AsType[*forge.NotLoggedInError](err)
+	assert.Assert(t, ok, "PublicRepo error = %v, want *forge.NotLoggedInError", err)
+}
+
+func TestRunner_PublicRepo_WhenTheReplyNamesNoVisibility_ReturnsDecodeErrorNamingCall(t *testing.T) {
+	ghtest.Setup(t,
+		loggedInCall(),
+		ghtest.Says(`{}`, repoViewArgs()...),
+	)
+
+	_, err := github.Runner{}.PublicRepo(t.Context(), engine())
+
+	decodeErr, ok := errors.AsType[*github.DecodeError](err)
+	assert.Assert(t, ok, "PublicRepo error = %v, want *github.DecodeError", err)
+	assert.Check(t, ghtest.Matches(ghArgv(repoViewArgs()), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, ghArgv(repoViewArgs()))
 }
 
 func TestForge_FindChanges(t *testing.T) {

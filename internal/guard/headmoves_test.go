@@ -107,13 +107,13 @@ func TestJudge_WhenAnAndListSwitchesOffTheTrunk_AllowsWhatFollowsOnTheNamedBranc
 }
 
 func TestJudge_WhenAnAndListSwitchesToTheTrunk_RefusesACommitAfterIt(t *testing.T) {
-	// Not parallel: standingOnProtected sets GH_PATH for the whole process.
-	_, caller := standingOnProtected(t, "main", "topic")
+	// Not parallel: standingOnGitHub sets GH_PATH for the whole process.
+	_, caller := standingOnGitHub(t, "main", "topic")
 
 	checkJudgedInInTurn(t, caller, []placed{
 		{name: "switch to the trunk", command: "git switch main && " + commitCommand},
 		{name: "later switch to the trunk", command: "git switch -c next && git switch main && " + commitCommand},
-	}, expectation{outcome: guard.Refuse, named: protectedMain})
+	}, expectation{outcome: guard.Refuse, named: onMain})
 }
 
 func TestJudge_WhenHeadMovesWhereTheGuardCannotFollowIt_RefusesALaterCommit(t *testing.T) {

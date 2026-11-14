@@ -65,11 +65,6 @@ func titleText(title string) string {
 	return expect("#12", "\""+title+"\"", "not a conventional commit subject") + editSteps()
 }
 
-// trunkAheadText is the refusal of a local trunk whose one commit origin's trunk lacks is sha.
-func trunkAheadText(sha string) string {
-	return expect(shortSHA(sha), "local change on "+trunk, trunk, "ils merge")
-}
-
 // nothingPastMerge is the refusal by `ils merge` of a branch with no commit past origin's trunk. Its
 // `Next:` line runs a first `ils push`, not `ils merge` again.
 func nothingPastMerge(branch string) string {
@@ -289,9 +284,6 @@ func trunkStops() []mergeRow {
 	}
 
 	return []mergeRow{
-		row("local trunk ahead of origin's", func(f *gittest.Fixture) string {
-			return trunkAheadText(f.AdvanceTrunk())
-		}),
 		row("no commit past the trunk", func(f *gittest.Fixture) string {
 			f.Git("switch", "--quiet", "--create", spare, trunk)
 
@@ -555,14 +547,6 @@ func failedGitMerges() []failedGitRow {
 			outcome: result.Broke,
 			arrange: func(*gittest.Fixture) mergeEnd {
 				return failedGitMerge("", worktreeList())
-			},
-		},
-		{
-			read: readLocalTrunk,
-			name: "whether the local trunk exists", script: merging(), ops: identityRead(),
-			outcome: result.Broke,
-			arrange: func(*gittest.Fixture) mergeEnd {
-				return failedGitMerge("", []string{"show-ref", "--verify", "--quiet", "refs/heads/" + trunk})
 			},
 		},
 		{

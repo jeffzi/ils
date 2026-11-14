@@ -580,17 +580,26 @@ func (r Repo) DeleteBranch(ctx context.Context, branch string) error {
 	return err
 }
 
-// CheckedOutElsewhere reports whether a worktree other than the current one has branch checked out.
-// A worktree detached at the branch's commit does not have it checked out.
+// CheckedOutElsewhere reports whether a worktree other than the current one has branch checked out,
+// as WorktreeWith finds it.
 func (r Repo) CheckedOutElsewhere(ctx context.Context, branch string) (bool, error) {
+	worktree, err := r.WorktreeWith(ctx, branch)
+
+	return worktree != "", err
+}
+
+// WorktreeWith returns the path, in this system's separators, of a worktree other than the current
+// one that has branch checked out, and an empty path when none has. A worktree detached at the
+// branch's commit does not have it checked out.
+func (r Repo) WorktreeWith(ctx context.Context, branch string) (string, error) {
 	current, err := r.line(ctx, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return false, err
+		return "", err
 	}
 
 	result, err := r.Runner.Run(ctx, "worktree", "list", "--porcelain")
 	if err != nil {
-		return false, err
+		return "", err
 	}
 
 	var worktree string
@@ -608,15 +617,15 @@ func (r Repo) CheckedOutElsewhere(ctx context.Context, branch string) (bool, err
 
 		same, err := sameDirectory(worktree, current)
 		if err != nil {
-			return false, err
+			return "", err
 		}
 
 		if !same {
-			return true, nil
+			return filepath.FromSlash(worktree), nil
 		}
 	}
 
-	return false, nil
+	return "", nil
 }
 
 // sameDirectory reports whether the worktree paths a and b, as git prints them, name one

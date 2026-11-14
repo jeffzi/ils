@@ -59,6 +59,21 @@ func withSettings(t *testing.T, home, text string) string {
 	return path
 }
 
+// settingsWithAllow writes the hook `ils init claude` installs, the ask and deny rules it adds, and
+// allow as the allow list as the settings file under home and returns its path.
+func settingsWithAllow(t *testing.T, home string, allow []any) string {
+	t.Helper()
+
+	return withSettings(t, home, encodedJSON(t, map[string]any{
+		"hooks": map[string]any{"PreToolUse": []any{hookGroup(cli.UserHook)}},
+		"permissions": map[string]any{
+			"allow": allow,
+			"ask":   ruleList("ask"),
+			"deny":  ruleList("deny"),
+		},
+	}))
+}
+
 func encodedJSON(t *testing.T, value any) string {
 	t.Helper()
 
@@ -460,4 +475,51 @@ func TestApp_Run_WhenInitClaudeFindsEverySettingInPlace_LeavesTheFileUntouched(t
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
 	assertUntouched(t, path)
+}
+
+func TestApp_Run_WhenInitClaudeFindsThePushRulesAnEarlierRunAdded_RemovesThemFromAllow(t *testing.T) {
+	t.Parallel()
+
+	app, home := installing(t)
+	installed(t, app)
+	allow := append([]any{"Bash(ils push)", "Read", "Bash(ils push --wait)"}, ruleList("allow")...)
+	path := settingsWithAllow(t, home, allow)
+
+	got := launch(t, app, "init", "claude")
+
+	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
+	permissions, _ := decodedFile(t, path)["permissions"].(map[string]any)
+	assert.Check(t, is.DeepEqual(permissions["allow"], append([]any{"Read"}, ruleList("allow")...)))
+}
+
+func TestApp_Run_WhenInitClaudeOnlyRemovesThePushRules_CountsTheRemovedRulesInTheAllowStep(t *testing.T) {
+	t.Parallel()
+
+	app, home := installing(t)
+	installed(t, app)
+	allow := append([]any{"Bash(ils push)", "Read", "Bash(ils push --wait)"}, ruleList("allow")...)
+	path := settingsWithAllow(t, home, allow)
+
+	got := launch(t, app, "init", "claude")
+
+	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
+	assert.Check(t, is.Contains(wordsOutside(lineWith(t, got.stdout, "allow"), path), "2"))
+}
+
+func TestApp_Run_WhenInitClaudeAddsARuleAndRemovesThePushRules_CountsBothInTheAllowStep(t *testing.T) {
+	t.Parallel()
+
+	app, home := installing(t)
+	installed(t, app)
+	allow := append([]any{"Bash(ils push)", "Bash(ils push --wait)"}, ruleList("allow")[1:]...)
+	path := settingsWithAllow(t, home, allow)
+
+	got := launch(t, app, "init", "claude")
+
+	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
+	counts := slices.DeleteFunc(wordsOutside(lineWith(t, got.stdout, "allow"), path), func(word string) bool {
+		_, err := strconv.Atoi(word)
+		return err != nil
+	})
+	assert.Check(t, is.DeepEqual(counts, []string{"1", "2"}))
 }

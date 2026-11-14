@@ -4,11 +4,14 @@ package guard
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/jeffzi/ils/internal/commandline"
+	"github.com/jeffzi/ils/internal/forge"
+	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/landing"
 )
 
@@ -22,7 +25,7 @@ import (
 func judgeForge(ctx context.Context, caller Caller, inv Invocation) (Verdict, error) {
 	switch inv.Tool {
 	case ILS:
-		return judgeILS(inv), nil
+		return judgeILS(ctx, caller, inv)
 	case GH:
 		return judgeGH(ctx, caller, inv)
 	default:
@@ -31,35 +34,126 @@ func judgeForge(ctx context.Context, caller Caller, inv Invocation) (Verdict, er
 }
 
 // judgeILS asks for `ils merge` and `ils release` and allows `ils push` and `ils branch`, each only
-// when it is the whole command; every other ils command is free in any form. The subcommand is
-// the first command word as Cobra finds it among ilsSwitches.
-func judgeILS(inv Invocation) Verdict {
+// when it is the whole command; every other ils command is free in any form. A whole `ils push` or
+// `ils push --wait` is judged by judgePush instead. The subcommand is the first command word as
+// Cobra finds it among ilsSwitches.
+func judgeILS(ctx context.Context, caller Caller, inv Invocation) (Verdict, error) {
 	args := inv.Words[1:]
 	at := commandWords(args, ilsSwitches())
 	if len(at) == 0 {
-		return Verdict{Outcome: Allow}
+		return Verdict{Outcome: Allow}, nil
 	}
 
 	sub := args[at[0]]
 	if !sub.Literal {
-		return notLiteralCommand("ils", "ils")
+		return notLiteralCommand("ils", "ils"), nil
 	}
 
 	if asksForHelp(args, at[0], commandline.FlagHelp) {
-		return Verdict{Outcome: Allow}
+		return Verdict{Outcome: Allow}, nil
+	}
+
+	if inv.Whole && isBarePush(args) {
+		return judgePush(ctx, caller, inv)
 	}
 
 	name := "ils " + sub.Text
 	switch sub.Text {
 	case landing.MergeCommand:
-		return aloneAndBare(inv, name, Verdict{Outcome: Ask, Reason: "ils merge lands the pull request on the trunk"})
+		return aloneAndBare(inv, name, Verdict{Outcome: Ask, Reason: "ils merge lands the pull request on the trunk"}), nil
 	case landing.ReleaseCommand:
-		return aloneAndBare(inv, name, Verdict{Outcome: Ask, Reason: "ils release tags and publishes a release"})
+		return aloneAndBare(inv, name, Verdict{Outcome: Ask, Reason: "ils release tags and publishes a release"}), nil
 	case landing.PushCommand, landing.BranchCommand:
-		return aloneAndBare(inv, name, Verdict{Outcome: Allow})
+		return aloneAndBare(inv, name, Verdict{Outcome: Allow}), nil
 	default:
-		return Verdict{Outcome: Allow}
+		return Verdict{Outcome: Allow}, nil
 	}
+}
+
+// isBarePush reports whether args, the words after ils, are `push` or `push --wait`, the pushes
+// the guard allows on its own word once origin's repository is public.
+func isBarePush(args []Word) bool {
+	push := Word{Text: landing.PushCommand, Literal: true}
+	wait := Word{Text: landing.FlagWait, Literal: true}
+
+	return slices.Equal(args, []Word{push}) || slices.Equal(args, []Word{push, wait})
+}
+
+// judgePush judges the whole `ils push` inv by the visibility of the repository origin's first push
+// URL names, read where inv points git with the GIT_DIR and GIT_WORK_TREE it runs with, as the gh
+// login for its host sees it with the gh config inv runs with: public is allowed on the guard's own
+// word, and private or internal asks, since the push starts CI runs that spend GitHub Actions
+// minutes. A visibility the guard cannot read, or a place it cannot tell, asks, saying why. No
+// repository, no origin, or a push URL that names no repository is allowed on the guard's own
+// word too: `ils push` refuses it itself. A failure to read the repository or origin from git is
+// an error.
+func judgePush(ctx context.Context, caller Caller, inv Invocation) (Verdict, error) {
+	allowed := Verdict{Outcome: Allow, Explicit: true}
+	if inv.Dir == "" || inv.Target.Unknown {
+		return Verdict{Outcome: Ask, Reason: "ils push: the guard cannot tell where the command runs, " +
+			"so it cannot read whether origin's repository is public"}, nil
+	}
+
+	origin, named, err := pushOrigin(ctx, targetRunner(caller.Git, inv.Target.Dir, inv.Target))
+	if err != nil {
+		return Verdict{}, err
+	}
+
+	if !named {
+		return allowed, nil
+	}
+
+	repo := forge.RepoOf(origin)
+	where := fmt.Sprintf("%s on %s, origin's repository,", repo.FullName(), repo.Host)
+	gh, unknown := ghConfigRunner(caller.GH, inv.Dir, inv.ghConfig)
+	if unknown != "" {
+		return Verdict{Outcome: Ask, Reason: fmt.Sprintf("ils push: the guard cannot tell the %s gh runs with, "+
+			"so it cannot read whether %s is public", unknown, where)}, nil
+	}
+
+	public, err := gh.PublicRepo(ctx, repo)
+	if err != nil {
+		return Verdict{Outcome: Ask, Reason: fmt.Sprintf("ils push: the guard cannot read whether %s "+
+			"is public: %s", where, err)}, nil
+	}
+
+	if !public {
+		return Verdict{Outcome: Ask, Reason: fmt.Sprintf("ils push: %s is not public, so "+
+			"the push starts CI runs that spend GitHub Actions minutes; the guard waits for your word", where)}, nil
+	}
+
+	return allowed, nil
+}
+
+// pushOrigin returns the repository origin's first push URL names for a git run by runner, placed
+// where `ils push` runs, and false when there is none to name: runner is in no repository, the
+// repository has no origin, or the push URL names no repository. A failure to read any of them
+// from git is an error.
+func pushOrigin(ctx context.Context, runner git.Runner) (git.Origin, bool, error) {
+	repo := git.Repo{Runner: runner}
+	if err := repo.CheckRepository(ctx); err != nil {
+		if _, none := errors.AsType[*git.NoRepositoryError](err); none {
+			return git.Origin{}, false, nil
+		}
+
+		return git.Origin{}, false, fmt.Errorf("find the repository ils push runs in: %w", err)
+	}
+
+	standing, err := repo.Standing(ctx)
+	if err != nil {
+		return git.Origin{}, false, fmt.Errorf("read the origin ils push runs with: %w", err)
+	}
+
+	if standing.Kind == git.NoOrigin {
+		return git.Origin{}, false, nil
+	}
+
+	origin, named, err := pushRepository(ctx, repo)
+	if err != nil {
+		return git.Origin{}, false, fmt.Errorf("read the push URL of the origin ils push runs with: %w", err)
+	}
+
+	return origin, named, nil
 }
 
 // notLiteralCommand refuses the invocation of tool whose command word, which command names as the

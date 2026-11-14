@@ -432,11 +432,18 @@ func (w *walker) placed(inv Invocation, sc *scope) Invocation {
 	inv.follows = sc.head
 	if inv.Tool == Git {
 		inv.Git = readGitCall(inv.Words)
+	}
+
+	// An ils invocation's git is the one judgePush reads origin's push URL with, so it points git
+	// where the command's own GIT_DIR and GIT_WORK_TREE do.
+	if inv.Tool == Git || inv.Tool == ILS {
 		inv.Target = sc.targetOf(inv)
 	}
 
-	// A git invocation's gh is the one the trunk rule reads the trunk's protection with.
-	if inv.Tool == GH || inv.Tool == Git {
+	// A git invocation's gh is the one the trunk rule checks the login to origin's host with, and an
+	// ils invocation's the one judgePush reads the visibility of origin's repository with; without
+	// it each would read the guard's own gh config instead of the one the command runs with.
+	if inv.Tool == GH || inv.Tool == Git || inv.Tool == ILS {
 		inv.ghConfig = sc.commandEnv(inv).ghConfig
 	}
 

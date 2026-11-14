@@ -215,10 +215,25 @@ func changeRefusals() []pushRefusal {
 	}
 }
 
+// trunkAheadRefusals are the refusals of a local trunk with a commit origin's trunk lacks, which the
+// trunk is checked out in no worktree for but the last.
+func trunkAheadRefusals() []pushRefusal {
+	return []pushRefusal{
+		refusedAfterIdentity("local trunk ahead of origin's", func(f *gittest.Fixture) string {
+			return trunkAheadText(f.AdvanceTrunk(), nextTrunkFix(fixNowhere, "ils push"))
+		}),
+		refusedAfterIdentity("on the trunk ahead of origin's", func(f *gittest.Fixture) string {
+			sha := f.Commits(trunk, strayOnTrunk)[0]
+
+			return expect(shortSHA(sha), strayOnTrunk, "on the trunk "+trunk) + nextTrunkFix(fixHere, "ils push")
+		}),
+	}
+}
+
 func TestPush_WhenASharedCheckOfTheBranchFails_RefusesAtTheFirst(t *testing.T) {
 	t.Parallel()
 
-	runPushRefusals(t, slices.Concat(standingRefusals(), keptRefusals(), commitRefusals(), changeRefusals()))
+	runPushRefusals(t, slices.Concat(standingRefusals(), keptRefusals(), commitRefusals(), trunkAheadRefusals(), changeRefusals()))
 }
 
 func TestPush_WhenAMergedPullRequestSharesNoCommitPastTheTrunk_PushesIt(t *testing.T) {
@@ -361,8 +376,8 @@ func TestPush_WhenTipAndBranchRefCannotBeRead_BrokeShowingBothFailures(t *testin
 	assertAsked(t, s, identityRead())
 }
 
-// sharedFailedReads are the failed reads of the commits on origin's trunk, of the branch's tip, and
-// of the commits a merged pull request from the branch already carries.
+// sharedFailedReads are the failed reads of the local trunk, of the commits on origin's trunk, of the
+// branch's tip, and of the commits a merged pull request from the branch already carries.
 func sharedFailedReads() []failedRead {
 	// since lands the branch as the merged pull request, adds a commit, and returns the pull
 	// request's head and the branch's tip.
@@ -374,6 +389,12 @@ func sharedFailedReads() []failedRead {
 	}
 
 	return []failedRead{
+		failedAfterIdentity("the local trunk", readLocalTrunk, func(*gittest.Fixture) []string { return localTrunkRead() }),
+		failedAfterIdentity("the local trunk with HEAD on it", readLocalTrunk, func(f *gittest.Fixture) []string {
+			f.Git("switch", "--quiet", trunk)
+
+			return localTrunkRead()
+		}),
 		{
 			name: "the commits on origin's trunk", read: readFetchedTrunk, script: allowed(),
 			arrange: func(*gittest.Fixture) []string {

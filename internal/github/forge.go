@@ -55,6 +55,11 @@ type repoView struct {
 	Squash     bool   `json:"squashMergeAllowed"`
 }
 
+// repoVisibility is what `gh repo view --json visibility` prints.
+type repoVisibility struct {
+	Visibility string `json:"visibility"`
+}
+
 type pull struct {
 	URL     string `json:"url"`
 	Title   string `json:"title"`
@@ -160,6 +165,33 @@ func (f *Forge) Identity(ctx context.Context, repo forge.Repo) (forge.Repo, erro
 	repo.SquashAllowed = view.Squash
 
 	return repo, nil
+}
+
+// PublicRepo reports whether repo is public on GitHub, as the gh login r uses for the host of repo
+// sees it, after checking that login: a private or an internal repository is not public.
+//
+// It returns the errors of CheckLogin, so a host gh holds no login for is a
+// *forge.NotLoggedInError, and those of Run. A reply that names no visibility GitHub gives is a
+// *DecodeError.
+func (r Runner) PublicRepo(ctx context.Context, repo forge.Repo) (bool, error) {
+	if err := r.CheckLogin(ctx, repo.Host); err != nil {
+		return false, err
+	}
+
+	args := []string{"repo", "view", repo.Slug(), "--json", "visibility"}
+	view, err := runDecoded[repoVisibility](ctx, r, args...)
+	if err != nil {
+		return false, err
+	}
+
+	switch view.Visibility {
+	case "PUBLIC":
+		return true, nil
+	case "PRIVATE", "INTERNAL":
+		return false, nil
+	default:
+		return false, &DecodeError{Argv: Argv(args), Err: fmt.Errorf("visibility %q is not one GitHub gives", view.Visibility)}
+	}
 }
 
 // changesLimit is the most pull requests FindChanges asks gh for, far past what one branch ever
@@ -286,14 +318,9 @@ func (f *Forge) requiredChecks(ctx context.Context, repo forge.Repo, query forge
 // A free private repository answers 403 with an upgrade message to the read: the plan does not
 // allow rules, so none applies and a squash merge is allowed. Any other 403 is an error.
 func (f *Forge) TrunkProtection(ctx context.Context, repo forge.Repo, trunk string) (forge.Protection, error) {
-	return TrunkProtection(ctx, f.runner(), repo, trunk)
-}
-
-// TrunkProtection is Forge.TrunkProtection, with gh run by runner.
-func TrunkProtection(ctx context.Context, runner Runner, repo forge.Repo, trunk string) (forge.Protection, error) {
 	args := repoAPIArgs(repo, "rules/branches/"+branchPath(trunk), "--paginate")
 
-	pages, err := readEachPage[[]branchRule](ctx, runner, args)
+	pages, err := readEachPage[[]branchRule](ctx, f.runner(), args)
 	if exitErr, ok := errors.AsType[*child.ExitError](err); ok &&
 		strings.Contains(exitErr.Stderr, forbiddenStatus) && strings.Contains(exitErr.Stderr, freePlanRefusal) {
 		return forge.Protection{Rules: forge.RulesUnavailable, SquashAllowed: true}, nil
@@ -304,22 +331,6 @@ func TrunkProtection(ctx context.Context, runner Runner, repo forge.Repo, trunk 
 	}
 
 	return protectionOf(slices.Concat(pages...)), nil
-}
-
-// branchView is what GitHub's read of a branch tells of its classic branch protection.
-type branchView struct {
-	Protected bool `json:"protected"`
-}
-
-// ClassicProtected reports whether classic branch protection covers branch, with gh run by runner.
-// Rulesets are read apart, by TrunkProtection.
-func ClassicProtected(ctx context.Context, runner Runner, repo forge.Repo, branch string) (bool, error) {
-	view, err := runDecoded[branchView](ctx, runner, repoAPIArgs(repo, "branches/"+branchPath(branch))...)
-	if err != nil {
-		return false, err
-	}
-
-	return view.Protected, nil
 }
 
 // protectionOf folds the rules on a branch into whether any applies, the checks they require, each

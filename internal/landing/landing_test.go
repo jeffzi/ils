@@ -79,6 +79,34 @@ func nextLine(command string) string {
 
 func nextFixed() string { return pushCommand().fixed }
 
+// The phrases that tell the two fixes of a local trunk with commits origin's trunk lacks apart:
+// fixHere for a trunk checked out in a worktree, run in that worktree, which switches to a new
+// branch, and fixNowhere for one checked out in no worktree, which branches off the trunk.
+const (
+	fixHere    = "git switch -c"
+	fixNowhere = "git branch <name> " + trunk
+)
+
+// nextTrunkFix is the `Next:` line that runs fix, which puts the trunk back at origin's trunk, then
+// the command then.
+func nextTrunkFix(fix, then string) string {
+	return expect(resulttest.NextLine(""), fix, "origin/"+trunk, then)
+}
+
+// trunkAheadText is the refusal of a local trunk whose one commit origin's trunk lacks is sha, which
+// ends on the `Next:` line next.
+func trunkAheadText(sha, next string) string {
+	return expect(shortSHA(sha), strayOnTrunk) + next
+}
+
+// localTrunkRead is the arguments of the git call that asks whether the local trunk exists.
+func localTrunkRead() []string {
+	return []string{"show-ref", "--verify", "--quiet", "refs/heads/" + trunk}
+}
+
+// divergenceRead is the arguments of the git call that counts the commits two refs each lack.
+func divergenceRead() []string { return []string{"rev-list", "--left-right", "--count"} }
+
 // ---------------------------------------------------------------------------
 // Scenes and assertions
 // ---------------------------------------------------------------------------

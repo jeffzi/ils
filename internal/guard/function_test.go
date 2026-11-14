@@ -45,10 +45,10 @@ func TestJudge_WhenACallMayRunAnOuterBodyUnderARedirect_JudgesThatBodyUnderTheRe
 }
 
 func TestJudge_WhenACallRunsABodyWhoseCommitLandsOnTheTrunk_RefusesNamingTheTrunk(t *testing.T) {
-	// Not parallel: protectTrunk sets GH_PATH for the whole process.
+	// Not parallel: onGitHubCom sets GH_PATH for the whole process.
 	f, caller := standingOn(t, "main", "topic")
 	trunk, _ := standingOn(t, "main", "main")
-	protectTrunk(t, "main", f, trunk)
+	onGitHubCom(t, f, trunk)
 	toTrunk := "cd " + gittest.ShellWord(trunk.Dir())
 	const commits = "f() { git commit -am wip; }; "
 
@@ -62,12 +62,12 @@ func TestJudge_WhenACallRunsABodyWhoseCommitLandsOnTheTrunk_RefusesNamingTheTrun
 		{name: "inside a subshell", command: commits + "(" + toTrunk + " && f)"},
 		{name: "inside a loop", command: commits + "for x in a; do " + toTrunk + " && f; done"},
 		{name: "inside another function's body", command: commits + "g() { f; }; " + toTrunk + " && g"},
-	}, expectation{outcome: guard.Refuse, named: protectedMain})
+	}, expectation{outcome: guard.Refuse, named: onMain})
 }
 
 func TestJudge_WhenACallRunsABodyOffTheTrunk_Allows(t *testing.T) {
-	// Not parallel: standingOnProtected sets GH_PATH for the whole process.
-	_, caller := standingOnProtected(t, "main", "topic")
+	// Not parallel: standingOnGitHub sets GH_PATH for the whole process.
+	_, caller := standingOnGitHub(t, "main", "topic")
 
 	checkAllowed(t, caller, []namedCommand{
 		{name: "commit defined and called on a topic branch", command: "f() { git commit -m x; }; f"},

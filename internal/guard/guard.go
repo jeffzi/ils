@@ -33,6 +33,9 @@ const (
 type Verdict struct {
 	Reason  string
 	Outcome Outcome
+	// Explicit marks an allowed command the guard lets run on its own word, so that a hook answers
+	// allow for it rather than leave the decision to the permission rules.
+	Explicit bool
 }
 
 func refuse(reason string) Verdict {
@@ -204,9 +207,14 @@ func argumentsAfterDoubleDash(inv Invocation) (moved Invocation, prefix string, 
 }
 
 // or returns v unless other is stricter, so that the first verdict of the strictest outcome wins.
+// Two allows are explicit when either is: the rules that find nothing to object to in an invocation
+// do not take back the allow another rule gives it on the guard's own word.
 func (v Verdict) or(other Verdict) Verdict {
-	if other.Outcome > v.Outcome {
+	switch {
+	case other.Outcome > v.Outcome:
 		return other
+	case v.Outcome == Allow && other.Outcome == Allow:
+		v.Explicit = v.Explicit || other.Explicit
 	}
 
 	return v

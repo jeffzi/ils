@@ -82,7 +82,8 @@ func parseRemote(raw string) (parsed Origin, overSSH bool, err error) {
 		return Origin{}, false, &OriginError{URL: raw}
 	}
 
-	return Origin{Host: host, Owner: owner, Name: name}, overSSH, nil
+	// A host name is the same in any case; owner and name keep the case the URL gives them.
+	return Origin{Host: strings.ToLower(host), Owner: owner, Name: name}, overSSH, nil
 }
 
 // splitOrigin returns the host and the owner/name path of a remote URL, and whether the URL reaches
