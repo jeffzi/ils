@@ -588,3 +588,13 @@ func TestJudge_WhenOriginNamesNoRepository_AllowsAnIlsPushExplicitly(t *testing.
 		})
 	}
 }
+
+func TestJudge_WhenOriginsPushURLCannotBeReadForAnIlsPush_RefusesSayingWhatBroke(t *testing.T) {
+	// Not parallel: gittest.FakeGit sets PATH for the whole process.
+	f, _ := standingOn(t, "main", "topic")
+	caller := callerFailingOn(t, f, f.Dir(), "remote", "get-url", "--push")
+
+	for _, command := range pushCommands() {
+		checkJudgedRow(t, caller, judged{command: command, wantNamed: gittest.FailedSaid, want: guard.Refuse})
+	}
+}
