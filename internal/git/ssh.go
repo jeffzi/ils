@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 
@@ -436,25 +435,19 @@ func (r Runner) getenv(key string) (string, bool) {
 	return EnvValue(r.Environ(), key)
 }
 
-// SameKey reports whether name, the key of an environment entry, is key as the system matches
-// keys: exactly, or without regard to case on Windows.
-func SameKey(name, key string) bool {
-	return name == key || (runtime.GOOS == "windows" && strings.EqualFold(name, key))
-}
-
 // WithoutKeys returns env, a list of key=value entries, without the entries whose key is one of
-// keys as SameKey matches them. It reuses env's storage, as slices.DeleteFunc does.
+// keys, matched exactly. It reuses env's storage, as slices.DeleteFunc does.
 func WithoutKeys(env []string, keys ...string) []string {
 	return slices.DeleteFunc(env, func(entry string) bool {
 		name, _, _ := strings.Cut(entry, "=")
 
-		return slices.ContainsFunc(keys, func(key string) bool { return SameKey(name, key) })
+		return slices.Contains(keys, name)
 	})
 }
 
 // EnvValue returns the value key has in env, a list of key=value entries, and whether env sets it.
-// A key set twice has its last value, as it does for a child started with env, and keys match as
-// SameKey matches them.
+// A key set twice has its last value, as it does for a child started with env, and keys match
+// exactly.
 func EnvValue(env []string, key string) (string, bool) {
 	var (
 		value string
@@ -463,7 +456,7 @@ func EnvValue(env []string, key string) (string, bool) {
 
 	for _, entry := range env {
 		name, entryValue, ok := strings.Cut(entry, "=")
-		if ok && SameKey(name, key) {
+		if ok && name == key {
 			value, set = entryValue, true
 		}
 	}
@@ -476,8 +469,8 @@ func EnvValue(env []string, key string) (string, bool) {
 // is this process's PATH.
 //
 // A name that holds a path separator is not searched for. Each absolute directory of PATH is tried
-// as exec.LookPath tries a path, which on Windows adds the extensions of the programs it runs; a
-// relative one is skipped, as exec.LookPath refuses a program it finds there.
+// as exec.LookPath tries a path; a relative one is skipped, as exec.LookPath refuses a program it
+// finds there.
 func (r Runner) lookPath(name string) (string, error) {
 	if r.Env == nil || filepath.Base(name) != name {
 		return exec.LookPath(name)

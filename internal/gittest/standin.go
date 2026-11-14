@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -245,8 +244,7 @@ func LinkAs(tb testing.TB, tool string) {
 	tb.Setenv("PATH", firstOnPath(dir, os.Getenv("PATH")))
 }
 
-// Link links the test binary into dir under the name of tool, with the .exe suffix Windows runs
-// programs by when tool has no extension, and returns the path of the link.
+// Link links the test binary into dir under the name of tool, and returns the path of the link.
 func Link(tb testing.TB, dir, tool string) string {
 	tb.Helper()
 
@@ -255,12 +253,7 @@ func Link(tb testing.TB, dir, tool string) string {
 		tb.Fatalf("gittest: find the test binary: %v", err)
 	}
 
-	name := tool
-	if runtime.GOOS == "windows" && filepath.Ext(name) == "" {
-		name += ".exe"
-	}
-
-	path := filepath.Join(dir, name)
+	path := filepath.Join(dir, tool)
 	if err := os.Link(self, path); err != nil {
 		tb.Fatalf("gittest: link the test binary as %s: %v", tool, err)
 	}

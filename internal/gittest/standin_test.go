@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"testing"
 
@@ -235,12 +234,8 @@ func TestFakeGit_WhenCallIsAPrefixOfFailingWords_RunsTheRealGit(t *testing.T) {
 }
 
 func TestFakeGit_WhenRealGitCannotStart_ExitsBroken(t *testing.T) {
-	name := "git"
-	if runtime.GOOS == "windows" {
-		name = "git.exe"
-	}
 	notRunnable := t.TempDir()
-	path := filepath.Join(notRunnable, name)
+	path := filepath.Join(notRunnable, "git")
 	assert.NilError(t, os.WriteFile(path, []byte("not a program\n"), 0o755)) //nolint:gosec // must be executable to be found as git
 	t.Setenv("PATH", notRunnable+string(os.PathListSeparator)+os.Getenv("PATH"))
 	gittest.FakeGit(t, gittest.Fake{FailOn: []string{"show-ref"}})
@@ -252,22 +247,20 @@ func TestFakeGit_WhenRealGitCannotStart_ExitsBroken(t *testing.T) {
 }
 
 func TestFakeGit_WhenCallStartsWithStallingWords_WaitsAtTheAddressUntilKilled(t *testing.T) {
+	// (*os.ProcessState).ExitCode reports -1 for a process a signal ended.
+	const killedBySignal = -1
+
 	addr, connected := gittest.SilentListener(t)
 	gittest.FakeGit(t, gittest.Fake{StallOn: []string{"show-ref", "--verify"}, StallAt: addr})
 	ctx := gittest.Ending(t.Context(), connected, context.Canceled)
 	cmd := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/main")
 	cmd.Dir = t.TempDir()
-	// A process killed by a signal reports -1 on Unix; on Windows, Kill terminates it with code 1.
-	killed := -1
-	if runtime.GOOS == "windows" {
-		killed = 1
-	}
 
 	err := cmd.Run()
 
 	exitErr, ok := errors.AsType[*exec.ExitError](err)
 	assert.Assert(t, ok, "git show-ref ended with %v, want it killed while it waited", err)
-	assert.Check(t, is.Equal(exitErr.ExitCode(), killed), "git show-ref ended on its own, want it killed while it waited")
+	assert.Check(t, is.Equal(exitErr.ExitCode(), killedBySignal), "git show-ref ended on its own, want it killed while it waited")
 }
 
 func TestLinkAs(t *testing.T) {

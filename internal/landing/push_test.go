@@ -2,7 +2,6 @@ package landing_test
 
 import (
 	"fmt"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -138,7 +137,7 @@ func shares(others, rest string) string {
 // publishAtTrunk sets branch on origin to the trunk's tip, pushing to origin's path rather than
 // the remote's name, so the clone's own refs, its tracking refs included, stay as they were.
 func publishAtTrunk(f *gittest.Fixture, branch string) {
-	f.Git("push", "--quiet", filepath.ToSlash(f.OriginDir()), trunk+":refs/heads/"+branch)
+	f.Git("push", "--quiet", f.OriginDir(), trunk+":refs/heads/"+branch)
 }
 
 // refusedAfterIdentity is the refusal named name of the branch arrange sets up, whose forge answers
@@ -299,7 +298,7 @@ func TestPush_WhenBranchCannotBePushed_RefusesAtTheFirst(t *testing.T) {
 func answering(t *testing.T, f *gittest.Fixture, times int, after string) []string {
 	t.Helper()
 
-	tally := filepath.ToSlash(t.TempDir())
+	tally := t.TempDir()
 
 	var counted strings.Builder
 	for i := range times {

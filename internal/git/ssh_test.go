@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -49,10 +48,10 @@ func noSSHCommand(repo git.Repo) git.Repo {
 	return repo
 }
 
-// firstOnRunnerPath returns repo with the directory of the program at path, in the slash form, put
-// first on the PATH of its runner's environment.
+// firstOnRunnerPath returns repo with the directory of the program at path put first on the PATH
+// of its runner's environment.
 func firstOnRunnerPath(repo git.Repo, path string) git.Repo {
-	repo.Runner.Env = gittest.FirstOnPath(repo.Runner.Env, filepath.Dir(filepath.FromSlash(path)))
+	repo.Runner.Env = gittest.FirstOnPath(repo.Runner.Env, filepath.Dir(path))
 
 	return repo
 }
@@ -69,39 +68,16 @@ func plainSSH(t *testing.T, repo git.Repo, mode string) git.Repo {
 	return repo
 }
 
-// hideSSH returns repo with no ssh command, and an empty directory as the PATH of its runner's
-// environment, so that its next ssh call finds no ssh there while the process PATH still holds one.
-func hideSSH(t *testing.T, repo git.Repo) git.Repo {
-	t.Helper()
-
-	_, err := exec.LookPath("ssh")
-	assert.NilError(t, err, "the process PATH holds no ssh, so a lookup on it would find none either")
-
-	repo.Runner.Env = gittest.WithoutSSH(t, repo.Runner.Env)
-
-	return repo
-}
-
-// hideFromShell returns repo with no ssh command, and as the PATH of its runner's environment an
-// empty directory and, on Windows, the directory of git's shell, so that a command line naming
-// program finds no program of that name while the process PATH still holds one. Git for Windows'
-// shell crashes when its PATH lacks its own directory, which also holds ssh, so program must be a
-// program found elsewhere.
+// hideFromShell returns repo with no ssh command, and an empty directory as the PATH of its
+// runner's environment, so that a command line naming program finds no program of that name while
+// the process PATH still holds one.
 func hideFromShell(t *testing.T, repo git.Repo, program string) git.Repo {
 	t.Helper()
 
 	_, err := exec.LookPath(program)
 	assert.NilError(t, err, "the process PATH holds no %s, so a lookup on it would find none either", program)
 
-	env := gittest.WithoutSSH(t, repo.Runner.Env)
-	if runtime.GOOS == "windows" {
-		shell, err := exec.LookPath("sh")
-		assert.NilError(t, err, "the process PATH holds no sh, so git's shell is not found")
-		env = gittest.FirstOnPath(env, filepath.Dir(shell))
-		_, err = exec.LookPath(filepath.Join(filepath.Dir(shell), program))
-		assert.Assert(t, err != nil, "the directory of git's shell holds %s, so the shell would find it", program)
-	}
-	repo.Runner.Env = env
+	repo.Runner.Env = gittest.WithoutSSH(t, repo.Runner.Env)
 
 	return repo
 }
@@ -110,7 +86,7 @@ func TestRepo_OriginURLs_WhenSSHMissingFromRunnerPath_ReturnsToolMissingError(t 
 	t.Parallel()
 	f := gittest.New(t, trunk)
 	f.SetOriginURL(sshURL)
-	repo := hideSSH(t, newRepo(f))
+	repo := hideFromShell(t, newRepo(f), "ssh")
 
 	_, err := repo.OriginURLs(t.Context())
 
@@ -209,14 +185,14 @@ const refusing = sshStandInEnv + "=" + standInRefuse
 func exiting(code int) string { return sshStandInEnv + "=" + standInExit + strconv.Itoa(code) }
 
 // standIn links the test binary under name into a directory of its own whose name holds a space,
-// and returns its path in the slash form, for an ssh command that answers as sshStandInEnv says.
+// and returns its path, for an ssh command that answers as sshStandInEnv says.
 func standIn(t *testing.T, name string) string {
 	t.Helper()
 
 	dir := filepath.Join(t.TempDir(), "stand in")
 	assert.NilError(t, os.Mkdir(dir, 0o700))
 
-	return filepath.ToSlash(gittest.Link(t, dir, name))
+	return gittest.Link(t, dir, name)
 }
 
 // gitSSHStandIn returns the setting that names the stand-in ssh as the program GIT_SSH runs.
@@ -480,10 +456,7 @@ func missingRepo(t *testing.T, tt missingCase) git.Repo {
 
 	f := aliasFixture(t)
 	repo := plainSSH(t, newRepo(f), plainAnswer)
-	switch {
-	case tt.hide && tt.setting == "GIT_SSH":
-		repo = hideSSH(t, repo)
-	case tt.hide:
+	if tt.hide {
 		repo = hideFromShell(t, repo, tt.program)
 	}
 	if tt.setting == "core.sshCommand" {
@@ -655,11 +628,6 @@ func TestRepo_OriginURLs_WhenLoggerAttachedAndSSHReadsHost_LogsEachSSHRun(t *tes
 
 func TestEnvValue(t *testing.T) {
 	t.Parallel()
-	onWindows := runtime.GOOS == "windows"
-	otherCase := ""
-	if onWindows {
-		otherCase = "/x"
-	}
 	tests := []struct {
 		name    string
 		key     string
@@ -670,7 +638,7 @@ func TestEnvValue(t *testing.T) {
 		{name: "set twice keeps the last", env: []string{"TERM=xterm", "TERM=dumb"}, key: "TERM", want: "dumb", wantSet: true},
 		{name: "set to nothing", env: []string{"NO_COLOR="}, key: "NO_COLOR", want: "", wantSet: true},
 		{name: "only a longer key set", env: []string{"TERMINAL=xterm"}, key: "TERM", wantSet: false},
-		{name: "key in another case set", env: []string{"home=/x"}, key: "HOME", want: otherCase, wantSet: onWindows},
+		{name: "key in another case set", env: []string{"home=/x"}, key: "HOME", wantSet: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -691,14 +659,6 @@ func TestWithoutKeys_WhenKeysAreNamed_LeavesEveryOtherEntryInOrder(t *testing.T)
 	got := git.WithoutKeys(env, "HOME", "TERM", "XDG_CONFIG_HOME")
 
 	assert.Check(t, is.DeepEqual(got, []string{"TERMINAL=xterm", "PATH=/p"}))
-}
-
-func TestSameKey_WhenCaseDiffers_MatchesOnlyOnWindows(t *testing.T) {
-	t.Parallel()
-
-	got := git.SameKey("Path", "PATH")
-
-	assert.Check(t, is.Equal(got, runtime.GOOS == "windows"), "SameKey(%q, %q) on %s", "Path", "PATH", runtime.GOOS)
 }
 
 func TestSplitCommandLine(t *testing.T) {

@@ -1,5 +1,3 @@
-//go:build unix
-
 package guard_test
 
 import (
@@ -511,7 +509,7 @@ func TestJudge_WhenOriginNamesNoRepository_AllowsAnIlsPushExplicitly(t *testing.
 		{
 			name: "push URL a local path",
 			arrange: func(_ *testing.T, f *gittest.Fixture) string {
-				f.SetPushURL(filepath.ToSlash(f.OriginDir()))
+				f.SetPushURL(f.OriginDir())
 				return f.Dir()
 			},
 		},

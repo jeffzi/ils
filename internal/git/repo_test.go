@@ -704,7 +704,7 @@ func linkedThroughSymlink(t *testing.T, f *gittest.Fixture) string {
 	}
 
 	admin := filepath.Join(f.Dir(), ".git", "worktrees", filepath.Base(dir))
-	gittest.WriteFile(t, admin, "gitdir", filepath.ToSlash(filepath.Join(link, filepath.Base(dir), ".git"))+"\n")
+	gittest.WriteFile(t, admin, "gitdir", filepath.Join(link, filepath.Base(dir), ".git")+"\n")
 
 	return dir
 }

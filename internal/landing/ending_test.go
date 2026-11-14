@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -316,7 +315,7 @@ func assertDetached(t *testing.T, f *gittest.Fixture, dir, was string) {
 func lockRef(ref string) func(*testing.T, *gittest.Fixture) {
 	return func(t *testing.T, f *gittest.Fixture) {
 		t.Helper()
-		gittest.WriteFile(t, f.Git("rev-parse", "--absolute-git-dir"), filepath.FromSlash(ref)+".lock", "")
+		gittest.WriteFile(t, f.Git("rev-parse", "--absolute-git-dir"), ref+".lock", "")
 	}
 }
 

@@ -776,12 +776,7 @@ func cutTagPushes() []cutTagPush {
 		},
 		cutTagPush{
 			name: "a signal kills the git push", reason: expect("did not finish"), again: again,
-			arrange: func(t *testing.T, s *scene) context.Context {
-				t.Helper()
-				gittest.NeedSignals(t)
-
-				return serving(killsGitPush)(t, s)
-			},
+			arrange: serving(killsGitPush),
 		},
 	)
 }

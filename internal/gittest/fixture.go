@@ -91,7 +91,7 @@ func New(tb testing.TB, trunk string) *Fixture {
 	f.Git("config", "--local", "user.name", authorName)
 	f.Git("config", "--local", "user.email", authorEmail)
 	f.Git("config", "--local", "commit.gpgsign", "false")
-	f.Git("remote", "add", origin, f.originURL())
+	f.Git("remote", "add", origin, f.originDir)
 	WriteFile(f.tb, f.dir, dirtyPath, "fixture\n")
 	WriteFile(f.tb, f.dir, stagedPath, "fixture\n")
 	f.Git("add", "--", dirtyPath, stagedPath)
@@ -125,23 +125,16 @@ func Env(tb testing.TB) []string {
 // setup replaced: no system or global config, a home under the fixture, and a fixed identity and date.
 func isolatedEnv(home string) []string {
 	// XDG_CONFIG_HOME goes too: git reads its default ignore file from there.
-	env := git.WithoutKeys(os.Environ(), "HOME", "USERPROFILE", "XDG_CONFIG_HOME")
+	env := git.WithoutKeys(os.Environ(), "HOME", "XDG_CONFIG_HOME")
 
 	env = slices.DeleteFunc(env, func(entry string) bool {
-		name, _, _ := strings.Cut(entry, "=")
-
-		const gitPrefix = "GIT_"
-
-		head := name[:min(len(name), len(gitPrefix))]
-
-		return git.SameKey(head, gitPrefix)
+		return strings.HasPrefix(entry, "GIT_")
 	})
 
 	return append(env,
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL="+os.DevNull,
 		"HOME="+home,
-		"USERPROFILE="+home,
 		"GIT_AUTHOR_NAME="+authorName,
 		"GIT_AUTHOR_EMAIL="+authorEmail,
 		"GIT_AUTHOR_DATE="+commitDate,
@@ -151,8 +144,7 @@ func isolatedEnv(home string) []string {
 	)
 }
 
-// Without returns a copy of env with every entry of key removed, matching the key as the system
-// does: exactly, or regardless of case on Windows.
+// Without returns a copy of env with every entry of key removed, matching the key exactly.
 func Without(env []string, key string) []string {
 	return git.WithoutKeys(slices.Clone(env), key)
 }
@@ -181,9 +173,9 @@ func WithoutSSH(tb testing.TB, env []string) []string {
 // arguments follow it.
 func Marking(marker string) string { return "echo ran > " + ShellWord(marker) + " #" }
 
-// ShellWord returns path in its slash form between single quotes, as one word to a shell. It does
+// ShellWord returns path between single quotes, as one word to a shell. It does
 // not escape a single quote inside path.
-func ShellWord(path string) string { return "'" + filepath.ToSlash(path) + "'" }
+func ShellWord(path string) string { return "'" + path + "'" }
 
 // WriteFile writes content to the file name in dir, and fails the test when it cannot.
 func WriteFile(tb testing.TB, dir, name, content string) {
@@ -240,9 +232,6 @@ func (f *Fixture) OriginGit(args ...string) string {
 
 	return f.run(f.originDir, args...)
 }
-
-// originURL returns the bare origin's location in the slash form git accepts on every platform.
-func (f *Fixture) originURL() string { return filepath.ToSlash(f.originDir) }
 
 func (f *Fixture) trunkRef() string { return git.BranchRefPrefix + f.trunk }
 
@@ -322,7 +311,7 @@ func (f *Fixture) AdvanceOrigin(branch string) string {
 
 	if f.peerDir == "" {
 		f.peerDir = filepath.Join(f.root, "peer")
-		f.run(f.root, "clone", "--quiet", f.originURL(), f.peerDir)
+		f.run(f.root, "clone", "--quiet", f.originDir, f.peerDir)
 	}
 
 	f.run(f.peerDir, "fetch", "--quiet", origin)
@@ -431,7 +420,7 @@ func (f *Fixture) SetOriginURL(url string) {
 // CutOffOrigin points origin at a location that holds no repository, so it never answers.
 func (f *Fixture) CutOffOrigin() {
 	f.tb.Helper()
-	f.SetOriginURL(filepath.ToSlash(f.MissingOriginDir()))
+	f.SetOriginURL(f.MissingOriginDir())
 }
 
 // RemoveOrigin removes the remote named origin from the working repository.
@@ -444,7 +433,7 @@ func (f *Fixture) RemoveOrigin() {
 // GitHub keeps for a pull request.
 func (f *Fixture) PullRef(number int, sha string) {
 	f.tb.Helper()
-	f.Git("push", "--quiet", f.originURL(), sha+":refs/pull/"+strconv.Itoa(number)+"/head")
+	f.Git("push", "--quiet", f.originDir, sha+":refs/pull/"+strconv.Itoa(number)+"/head")
 }
 
 // SquashOnOrigin adds a commit to origin's trunk whose tree is that of the local commit sha, as a
@@ -472,7 +461,7 @@ func (f *Fixture) SquashOnOrigin(sha, subject, body string) string {
 // there without creating a branch.
 func (f *Fixture) carryToOrigin(sha string) {
 	f.tb.Helper()
-	f.Git("push", "--quiet", "--force", f.originURL(), sha+":"+scratchRef)
+	f.Git("push", "--quiet", "--force", f.originDir, sha+":"+scratchRef)
 }
 
 // dropCarried deletes the scratch ref carryToOrigin made on origin.
@@ -494,7 +483,7 @@ func (f *Fixture) OriginTag(name, sha string) {
 // it whatever origin's URLs name.
 func (f *Fixture) Publish(branch string) {
 	f.tb.Helper()
-	f.Git("push", "--quiet", f.originURL(), branch)
+	f.Git("push", "--quiet", f.originDir, branch)
 }
 
 // LandPull lands the commit rev names on origin's trunk as the squash merge of pull request

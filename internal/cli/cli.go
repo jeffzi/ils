@@ -41,9 +41,6 @@ type App struct {
 	Environ []string
 	// Skills holds the skills `ils init` installs, one directory per skill at its root.
 	Skills fs.FS
-	// guardRuns says whether `ils init` acts as on a system where the guard runs, and so adds its
-	// hook; nil acts as on the system ils was built for.
-	guardRuns *bool
 	// runPush runs `ils push`; nil runs landing.Push.
 	runPush Command
 	// runMerge runs `ils merge`; nil runs landing.Merge.

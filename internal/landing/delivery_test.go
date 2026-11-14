@@ -732,8 +732,6 @@ const killsGitPush = `pid=$PPID; ` +
 func TestPush_WhenASignalKillsTheGitPush_BrokeSayingThePushMayHaveTaken(t *testing.T) {
 	t.Parallel()
 
-	gittest.NeedSignals(t)
-
 	s := newScene(t, nil, finding(), false)
 	s.deps.Repo.Runner.Env = answering(t, s.fixture, answersBeforePush, killsGitPush)
 	sha := s.fixture.Git("rev-parse", topic)

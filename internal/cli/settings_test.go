@@ -59,6 +59,14 @@ func withSettings(t *testing.T, home, text string) string {
 	return path
 }
 
+// installedSettings returns every setting `ils init claude` writes to the user's settings file.
+func installedSettings() map[string]any {
+	return map[string]any{
+		"hooks":       map[string]any{"PreToolUse": []any{hookGroup(cli.UserHook)}},
+		"permissions": ruleLists(),
+	}
+}
+
 // settingsWithAllow writes the hook `ils init claude` installs, the ask and deny rules it adds, and
 // allow as the allow list as the settings file under home and returns its path.
 func settingsWithAllow(t *testing.T, home string, allow []any) string {
@@ -210,40 +218,7 @@ func TestApp_Run_WhenInitClaudeFindsNoSettings_WritesTheHookAndTheRulesAlone(t *
 	got := launch(t, app, "init", "claude")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	want := map[string]any{
-		"hooks":       map[string]any{"PreToolUse": []any{hookGroup(cli.UserHook)}},
-		"permissions": ruleLists(),
-	}
-	assert.Check(t, is.DeepEqual(decodedFile(t, settingsUnder(home)), want))
-}
-
-func TestApp_Run_WhenInitClaudeRunsWhereTheGuardDoesNot_WritesTheRulesBesideTheHooksAsTheyAre(t *testing.T) {
-	t.Parallel()
-
-	app, home := installing(t)
-	app.SetGuardSupported(false)
-	groups := []any{
-		matcherGroup("Edit", commandHook(cli.UserHook)),
-		matcherGroup("Bash", map[string]any{"type": "command", "command": cli.ProjectHook, "async": true}),
-	}
-	path := withPreToolUse(t, home, groups...)
-
-	got := launch(t, app, "init", "claude")
-
-	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	want := map[string]any{"hooks": map[string]any{"PreToolUse": groups}, "permissions": ruleLists()}
-	assert.Check(t, is.DeepEqual(decodedFile(t, path), want))
-}
-
-func TestApp_Run_WhenInitClaudeRunsWhereTheGuardDoesNot_MarksTheHookStepUnchanged(t *testing.T) {
-	t.Parallel()
-
-	app, _ := installing(t)
-	app.SetGuardSupported(false)
-
-	got := settingsStepsShown(t, app)
-
-	assert.Check(t, strings.HasPrefix(got[0], "– "), "line = %q", got[0])
+	assert.Check(t, is.DeepEqual(decodedFile(t, settingsUnder(home)), installedSettings()))
 }
 
 func TestApp_Run_WhenInitClaudeFindsSettings_KeepsTheOrderOfTheUsersKeys(t *testing.T) {
@@ -311,7 +286,6 @@ func TestApp_Run_WhenInitClaudeFindsSettingsOfTheWrongShape_ExitsTwoNamingTheFil
 	tests := []struct {
 		name     string
 		settings string
-		noGuard  bool
 	}{
 		{name: "not JSON", settings: `{"model": `},
 		{name: "not an object", settings: `[]`},
@@ -319,17 +293,12 @@ func TestApp_Run_WhenInitClaudeFindsSettingsOfTheWrongShape_ExitsTwoNamingTheFil
 		{name: "PreToolUse not an array", settings: `{"hooks": {"PreToolUse": {}}}`},
 		{name: "permissions not an object", settings: `{"permissions": "all"}`},
 		{name: "allow not an array", settings: `{"permissions": {"allow": {}}}`},
-		{
-			name: "PreToolUse not an array where the guard does not run", settings: `{"hooks": {"PreToolUse": {}}}`,
-			noGuard: true,
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
 			app, home := installing(t)
-			app.SetGuardSupported(!tt.noGuard)
 			path := withSettings(t, home, tt.settings)
 
 			got := launch(t, app, "init", "claude", "--json")
@@ -522,4 +491,69 @@ func TestApp_Run_WhenInitClaudeAddsARuleAndRemovesThePushRules_CountsBothInTheAl
 		return err != nil
 	})
 	assert.Check(t, is.DeepEqual(counts, []string{"1", "2"}))
+}
+
+// lockedSettings returns the cli with every skill installed under its HOME and the settings file
+// holding text in a Claude Code directory nobody may add a file to; then that HOME and the settings
+// file. It skips the test for a user whom the mode of a directory does not stop.
+func lockedSettings(t *testing.T, text string) (app cli.App, home, path string) {
+	t.Helper()
+
+	return lockedBeside(t, func(t *testing.T, home string) string {
+		t.Helper()
+
+		return withSettings(t, home, text)
+	})
+}
+
+func TestApp_Run_WhenInitClaudeCannotWriteTheSettings_ExitsOneNamingTheFile(t *testing.T) {
+	t.Parallel()
+
+	app, _, path := lockedSettings(t, "{}")
+
+	got := launch(t, app, "init", "claude", "--json")
+
+	assert.Check(t, is.Equal(got.code, exitBroke), "stdout = %q", got.stdout)
+	assert.Check(t, is.Contains(resulttest.Decode(t, got.stdout).Reason, path))
+}
+
+func TestApp_Run_WhenInitClaudeRewritesTheSettings_KeepsTheirMode(t *testing.T) {
+	t.Parallel()
+
+	app, home := installing(t)
+	path := withSettings(t, home, "{}")
+	const mode os.FileMode = 0o640
+	//nolint:gosec // G302: the test needs this mode on a file it made under t.TempDir(), to see it kept.
+	assert.NilError(t, os.Chmod(path, mode))
+
+	got := launch(t, app, "init", "claude")
+
+	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
+	info, err := os.Stat(path)
+	assert.NilError(t, err)
+	assert.Check(t, is.Equal(info.Mode().Perm(), mode))
+}
+
+// linkedSettings returns the cli with its settings file a link to a file holding {} elsewhere,
+// then that file.
+func linkedSettings(t *testing.T) (app cli.App, target string) {
+	t.Helper()
+
+	app, home := installing(t)
+	target = filepath.Join(t.TempDir(), "settings.json")
+	writeText(t, target, "{}")
+	linkAt(t, target, settingsUnder(home))
+
+	return app, target
+}
+
+func TestApp_Run_WhenInitClaudeFindsTheSettingsAreALink_WritesItsTarget(t *testing.T) {
+	t.Parallel()
+
+	app, target := linkedSettings(t)
+
+	got := launch(t, app, "init", "claude")
+
+	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
+	assert.Check(t, is.DeepEqual(listsHolding(decodedFile(t, target), firstRule("deny")), []string{"deny"}))
 }

@@ -966,9 +966,7 @@ func TestForge_PublishRelease_RemovesTheNotesFile(t *testing.T) {
 
 func TestForge_PublishRelease_WhenTheNotesFileCannotBeRemoved_ReturnsTheURLWithTheRemoveError(t *testing.T) {
 	tmp := t.TempDir()
-	// os.TempDir reads TMP on Windows and TMPDIR everywhere else.
 	t.Setenv("TMPDIR", tmp)
-	t.Setenv("TMP", tmp)
 	created := ghtest.Answer{Stdout: releaseURL + "\n", Delay: time.Nanosecond}
 	fake := ghtest.Setup(t, ghtest.Exits(created, releaseCreateArgs(false)...))
 	fake.WhileHolding(func() error { return blockRemoval(tmp) })

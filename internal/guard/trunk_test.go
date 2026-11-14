@@ -1,5 +1,3 @@
-//go:build unix
-
 package guard_test
 
 import (
@@ -444,7 +442,7 @@ func TestJudge_WhenOnlyTheFetchURLNamesAGitHubRepository_AllowsACommitOnTheTrunk
 		pushURL func(f *gittest.Fixture) string
 		name    string
 	}{
-		{name: "local path push URL", pushURL: func(f *gittest.Fixture) string { return filepath.ToSlash(f.OriginDir()) }},
+		{name: "local path push URL", pushURL: func(f *gittest.Fixture) string { return f.OriginDir() }},
 		{name: "ssh push URL whose host starts with a dash", pushURL: func(*gittest.Fixture) string { return "git@-oProxyCommand=x:" + originRepo + ".git" }},
 	}
 	for _, tt := range tests {

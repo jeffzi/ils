@@ -27,12 +27,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   exiting 0.
 - Make the `ils` agent skill ask once where new work lands when the checkout is on a work branch,
   instead of starting a new branch on its own.
-- Report a `gh` reachable only through a relative `PATH` entry as missing on every operating system.
+- Report a `gh` reachable only through a relative `PATH` entry as missing.
 - Refuse `ils merge` on a default branch whose ruleset requires a merge queue.
 - Refuse `ils push`, `ils merge`, and `ils release` when any push URL of `origin` names another
   repository than its fetch URL.
 - **Breaking:** Require `gh` 2.81.0 or later, since `ils` reads `gh auth status --json` to tell a
   missing login from a host `gh` cannot reach.
+
+### Removed
+
+- **Breaking:** Remove Windows support: `ils` builds and runs on macOS and Linux only.
 
 ### Fixed
 
@@ -52,8 +56,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the pull request's title and body after every green push.
 - Fix `ils merge --help` and `ils release --help` stating the full time limit as the wait for the
   checks, which stops 20 seconds earlier.
-- Fix a second Ctrl-C on Windows ending `ils` with an exit code other than the console's, and the
-  terminal check misreading the foreground process group on big-endian systems.
 - Fix `ils merge` saying the branch could not be deleted on origin when the time limit cut the
   delete short.
 - Fix `ils merge` repeating, in the squash commit's body, trailers the pull request's body already

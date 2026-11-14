@@ -146,12 +146,7 @@ func (r Repo) CheckRepository(ctx context.Context) error {
 // GitDir returns the absolute path of the git directory git finds when given the global options,
 // the repository's own when there are none.
 func (r Repo) GitDir(ctx context.Context, options ...string) (string, error) {
-	dir, err := r.line(ctx, append(slices.Clone(options), "rev-parse", "--absolute-git-dir")...)
-	if err != nil {
-		return "", err
-	}
-
-	return filepath.FromSlash(dir), nil
+	return r.line(ctx, append(slices.Clone(options), "rev-parse", "--absolute-git-dir")...)
 }
 
 // FindGitDir returns the absolute path of the git directory git finds when given the global
@@ -196,7 +191,7 @@ func (r Repo) TopLevel(ctx context.Context, options ...string) (dir string, foun
 		return "", false, err
 	}
 
-	return filepath.FromSlash(dir), true, nil
+	return dir, true, nil
 }
 
 // Alias returns what the alias name expands to in the config git reads when given the global
@@ -588,9 +583,9 @@ func (r Repo) CheckedOutElsewhere(ctx context.Context, branch string) (bool, err
 	return worktree != "", err
 }
 
-// WorktreeWith returns the path, in this system's separators, of a worktree other than the current
-// one that has branch checked out, and an empty path when none has. A worktree detached at the
-// branch's commit does not have it checked out.
+// WorktreeWith returns the path, as git prints it, of a worktree other than the current one that has
+// branch checked out, and an empty path when none has. A worktree detached at the branch's commit
+// does not have it checked out.
 func (r Repo) WorktreeWith(ctx context.Context, branch string) (string, error) {
 	current, err := r.line(ctx, "rev-parse", "--show-toplevel")
 	if err != nil {
@@ -621,7 +616,7 @@ func (r Repo) WorktreeWith(ctx context.Context, branch string) (string, error) {
 		}
 
 		if !same {
-			return filepath.FromSlash(worktree), nil
+			return worktree, nil
 		}
 	}
 
@@ -629,11 +624,10 @@ func (r Repo) WorktreeWith(ctx context.Context, branch string) (string, error) {
 }
 
 // sameDirectory reports whether the worktree paths a and b, as git prints them, name one
-// directory. Both are compared with their symbolic links resolved, which also cleans them to this
-// system's separators: a temporary directory reaches git as /private/var/... on macOS, git prints
-// forward slashes on Windows, and a worktree recorded by another tool keeps the spelling it was
-// given. A path that cannot be resolved, such as a worktree whose directory was removed, is an
-// error naming it.
+// directory. Both are compared with their symbolic links resolved, which also cleans them: a
+// temporary directory reaches git as /private/var/... on macOS, and a worktree recorded by another
+// tool keeps the spelling it was given. A path that cannot be resolved, such as a worktree whose
+// directory was removed, is an error naming it.
 func sameDirectory(a, b string) (bool, error) {
 	resolvedA, errA := filepath.EvalSymlinks(a)
 	resolvedB, errB := filepath.EvalSymlinks(b)
@@ -669,7 +663,7 @@ func (r Repo) CheckVersion(ctx context.Context) error {
 // leading v, or "" when it names none or does not start with "git version ".
 //
 // The version is the first three numeric components. A release candidate's .rcN component becomes
-// the pre-release -rcN; any other trailing component, such as Git for Windows' .windows.N, is dropped.
+// the pre-release -rcN; any other trailing component is dropped.
 func VersionOf(line string) string {
 	rest, ok := strings.CutPrefix(line, versionPrefix)
 	if !ok {

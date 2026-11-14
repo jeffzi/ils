@@ -353,9 +353,9 @@ gh release create v1.2.0 --repo <host>/<owner>/<name> --verify-tag --title v1.2.
 
 Run `ils init claude` once to set up Claude Code for `ils`, and again after you upgrade `ils`.
 `claude` is the one harness it knows. It writes under the Claude Code directory, `~/.claude/`,
-with the home directory read from `HOME`, or from `USERPROFILE` on Windows. When
-`CLAUDE_CONFIG_DIR` is set and not empty, the Claude Code directory is that directory instead, as
-for Claude Code. It runs these steps:
+with the home directory read from `HOME`. When `CLAUDE_CONFIG_DIR` is set and not empty, the
+Claude Code directory is that directory instead, as Claude Code itself reads it. It runs these
+steps:
 
 1. It reads `settings.json` and checks its shape. A file that is not JSON or not a JSON object, that
    holds a member name twice in one object or a string escape that names no character, or whose
@@ -413,17 +413,14 @@ entry of `settings.json` stays, in its order. A run that changes nothing leaves 
 With `--project`, it writes `.claude/skills/` and `.claude/settings.json` at the top level of the
 repository the working directory is in, whatever `CLAUDE_CONFIG_DIR` holds.
 
-On Windows, where the guard does not run, it installs the skills and the rules and adds no hook: a
-line says the guard runs on macOS and Linux.
-
 It prints one line per step, in this order: each skill, the hook, then the `allow`, `ask`, and
 `deny` lists. Each line is marked by what the step did (see [Terminal output](#terminal-output)):
 
-| Step  | `✓` changed                                                                   | `–` nothing to do                                                                                                 | `✗` failed                                                       |
-| ----- | ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| Skill | Installed or updated the skill at its directory                               | Every file is already up to date, or the directory is a link whose files match the shipped ones                   | The directory is a link whose files differ from the shipped ones |
-| Hook  | Added the hook, or updated a guard entry                                      | Every guard entry is already in place, as listed after this table; on Windows, the line says where the guard runs | —                                                                |
-| Rules | Added the rules the list lacked, or removed the `ils push` rules from `allow` | Every rule of the list is already in one of the three lists, and `allow` holds no `ils push` rule                 | —                                                                |
+| Step  | `✓` changed                                                                   | `–` nothing to do                                                                                 | `✗` failed                                                       |
+| ----- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| Skill | Installed or updated the skill at its directory                               | Every file is already up to date, or the directory is a link whose files match the shipped ones   | The directory is a link whose files differ from the shipped ones |
+| Hook  | Added the hook, or updated a guard entry                                      | Every guard entry is already in place, as listed after this table                                 | —                                                                |
+| Rules | Added the rules the list lacked, or removed the `ils push` rules from `allow` | Every rule of the list is already in one of the three lists, and `allow` holds no `ils push` rule | —                                                                |
 
 The hook step has nothing to do when all of these hold:
 
@@ -500,9 +497,8 @@ there.
 | 5    | delivered, not green | Push only. The push happened; a check is red or missing, or the branch conflicts with or is behind the default branch. Follow `Next:`.                                                                                                                                         |
 
 Every outcome but done prints its reason labeled by outcome: `Refused:`, `Broke:`, `Ask:`,
-`Pending:`, or `Delivered, not green:`. The reason sits on the line above `Next:`, except in two
-results that print no `Next:` line (JSON `next: "none"`): a verdict of `ils guard`, and the refusal
-of `ils guard` and `ils parse` on Windows, where the guard does not run. When `ils guard` refuses
+`Pending:`, or `Delivered, not green:`. The reason sits on the line above `Next:`, except in a
+verdict of `ils guard`, which prints no `Next:` line (JSON `next: "none"`). When `ils guard` refuses
 its own words (no `--cwd`, or not exactly one word after `--`), it prints `Next: ils guard --help`.
 A run stopped by Ctrl-C or SIGTERM (the signal `kill` sends by default) exits with the code of the
 result it prints; see [Stopping a run](#stopping-a-run).
@@ -518,8 +514,8 @@ Exit 0 means, for each command:
 - **Status:** whatever it finds, once its words parse. A read of the local default branch that
   fails other than by the time limit or an interrupt ends it broke.
 - **Release:** the tag is on origin, and the GitHub release exists unless `--tag-only`.
-- **Init:** the skills and the rules are in place, and the hook too where the guard runs (macOS and
-  Linux); a skill directory that is a link holds the shipped files.
+- **Init:** the skills, the rules, and the hook are in place; a skill directory that is a link holds
+  the shipped files.
 
 Init also ends broke, at exit 1, when a skill directory is a link whose files differ from the
 shipped ones. It does so after writing the hook and the rules, and `Next:` says to remove the link
@@ -592,9 +588,9 @@ If it is stopped after its last read and before its first write, it ends pending
 written. If it is stopped while it makes the tag or looks up the GitHub release, it says that it
 was interrupted, or which time limit ran out, as it does for the push of the tag.
 
-A second Ctrl-C or SIGTERM ends `ils` at once, as that signal ends any program: no result is
-printed, and the exit status is the signal's (130 for Ctrl-C and 143 for SIGTERM in most shells,
-and STATUS_CONTROL_C_EXIT, 0xC000013A, on Windows), not one of the [exit codes](#exit-codes).
+A second Ctrl-C or SIGTERM ends `ils` at once, as that signal ends any program, and `ils` prints no
+result. The exit status is the signal's, not one of the [exit codes](#exit-codes): 130 for Ctrl-C
+and 143 for SIGTERM in most shells.
 
 ## Refusals
 
@@ -753,7 +749,7 @@ When `ils init` refuses, it has written nothing. It refuses:
   and a `--project=<value>`, `--json=<value>`, `-d=<value>`, `--debug=<value>`,
   `--no-color=<value>`, `--help=<value>`, or `-h=<value>` whose value is not `true` or `false`;
 - without `--project`, a `CLAUDE_CONFIG_DIR` that is set and not an absolute path, or, when it is
-  unset or empty, a `HOME` (`USERPROFILE` on Windows) that is unset or empty;
+  unset or empty, a `HOME` that is unset or empty;
 - with `--project`, a working directory outside the work tree of a repository;
 - a `settings.json` that is not JSON or not a JSON object, that holds a member name twice in one
   object or a string escape that names no character, or whose `hooks`, `hooks.PreToolUse`,
@@ -876,9 +872,8 @@ The guard judges an agent's shell command before it runs: `ils hook claude` is C
 guard reads a command. It parses the command with a bash parser, finds the `git`, `gh`, and `ils`
 calls in it, nested ones included, and answers allow, refuse, or ask.
 
-`ils guard`, `ils parse`, and `ils hook` run on macOS and Linux. On Windows each one refuses with
-exit 2 and says the guard runs on macOS and Linux. `ils guard` and `ils parse` take the command
-to read in one quoted word after `--`; no word, or more than one, is a refusal.
+`ils guard` and `ils parse` take the command to read in one quoted word after `--`; no word, or
+more than one, is a refusal.
 
 ### What the guard does not see
 

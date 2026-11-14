@@ -847,7 +847,6 @@ func originRefusing(t *testing.T, said string) *gittest.Fixture {
 
 func TestRepo_Push_WhenOriginHangsUpAfterReportingTheRefUpdated_PublishesTheBranch(t *testing.T) {
 	t.Parallel()
-	gittest.NeedSignals(t)
 	f := gittest.New(t, trunk)
 	tip := f.Commits(topic, "one")[0]
 	f.OriginHook("post-receive", killsReceivePack)
@@ -1060,12 +1059,11 @@ func TestRepo_PushTag_WhenOriginAccepts_PutsTheTagOnOrigin(t *testing.T) {
 	assert.Check(t, is.Equal(f.OriginGit("rev-parse", releaseRef+"^{commit}"), tip))
 }
 
-// emptyBare creates an empty bare repository and returns its location in the slash form git
-// accepts on every platform.
+// emptyBare creates an empty bare repository and returns its location.
 func emptyBare(t *testing.T, f *gittest.Fixture) string {
 	t.Helper()
 
-	dir := filepath.ToSlash(filepath.Join(t.TempDir(), "mirror.git"))
+	dir := filepath.Join(t.TempDir(), "mirror.git")
 	f.Git("init", "--quiet", "--bare", dir)
 
 	return dir
@@ -1110,7 +1108,7 @@ func TestRepo_WhenOnePushURLRefuses_ReturnsPushErrorWhereverGitListsIt(t *testin
 			t.Parallel()
 			f, repo, _ := taggedRelease(t)
 			f.OriginHook("pre-receive", "exit 1")
-			pushURLs := []string{filepath.ToSlash(f.OriginDir()), emptyBare(t, f)}
+			pushURLs := []string{f.OriginDir(), emptyBare(t, f)}
 			if !tt.refusingFirst {
 				slices.Reverse(pushURLs)
 			}
@@ -1134,7 +1132,7 @@ func TestRepo_WhenGitFailsAfterSeveralPushURLsAccept_ReturnsAnError(t *testing.T
 			t.Parallel()
 			f, repo, _ := taggedRelease(t)
 			// git stops at the push url that holds no repository, after the two ahead of it accepted.
-			pushURLs := []string{emptyBare(t, f), emptyBare(t, f), filepath.ToSlash(f.MissingOriginDir())}
+			pushURLs := []string{emptyBare(t, f), emptyBare(t, f), f.MissingOriginDir()}
 			for _, pushURL := range pushURLs {
 				f.AddPushURL(pushURL)
 			}

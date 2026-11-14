@@ -174,7 +174,7 @@ To run:
   (`gh auth login --hostname <host>`). `ils` owns no token and no login flow.
 - A remote named `origin` on GitHub that you can push to and that is not a fork.
 
-`ils` runs on macOS, Linux, and Windows.
+`ils` runs on macOS and Linux.
 
 ### Build the binary
 

@@ -1,7 +1,7 @@
 version: "3"
 
 vars:
-  BIN: bin/ils{{exeExt}}
+  BIN: bin/ils
   CLEAN_PATHS:
     - bin
     - coverage.out
@@ -47,35 +47,22 @@ tasks:
       INSTALL_TARGET:
         sh: go list -f '{{`{{.Target}}`}}' .
     cmds:
-      - cmd: |
-          target='{{.INSTALL_TARGET}}'
-          dir=$(dirname "$target")
-          mkdir -p "$dir"
-          cp {{.BIN}} "$target.new"
-          mv -f "$target.new" "$target"
-          echo "Installed $target"
-          if ! printf '%s' ":$PATH:" | sed 's|//*:|:|g' | grep -qF ":$dir:"; then
-            echo "warning: $dir is not on PATH" >&2
-          fi
-        platforms: [darwin, linux]
-      - cmd: >-
-          powershell -NoProfile -Command
-          "\$target = '{{.INSTALL_TARGET}}';
-          \$dir = Split-Path -Parent \$target;
-          New-Item -ItemType Directory -Force -Path \$dir | Out-Null;
-          Copy-Item -Force -Path '{{.BIN}}' -Destination (\$target + '.new');
-          Move-Item -Force -Path (\$target + '.new') -Destination \$target;
-          Write-Output ('Installed ' + \$target);
-          \$entries = \$env:PATH -split ';' | ForEach-Object { \$_.TrimEnd('\\', '/') };
-          if (-not (\$entries -eq \$dir))
-          { [Console]::Error.WriteLine('warning: ' + \$dir + ' is not on PATH') }"
-        platforms: [windows]
+      - |
+        target='{{.INSTALL_TARGET}}'
+        dir=$(dirname "$target")
+        mkdir -p "$dir"
+        cp {{.BIN}} "$target.new"
+        mv -f "$target.new" "$target"
+        echo "Installed $target"
+        if ! printf '%s' ":$PATH:" | sed 's|//*:|:|g' | grep -qF ":$dir:"; then
+          echo "warning: $dir is not on PATH" >&2
+        fi
     silent: true
 
   test:
     desc: "Run the test suite with coverage (extra args after -- skip coverage)"
     vars:
-      # The macOS, Linux, and Windows platforms the race detector supports, as Go's
+      # The macOS and Linux platforms the race detector supports, as Go's
       # internal/platform.RaceDetectorSupported lists them.
       RACE_PLATFORMS:
         - darwin/amd64
@@ -86,7 +73,6 @@ tasks:
         - linux/ppc64le
         - linux/riscv64
         - linux/s390x
-        - windows/amd64
     cmds:
       - go test {{if has (printf "%s/%s" OS ARCH) .RACE_PLATFORMS}}-race {{end}}{{if not .CLI_ARGS}}-coverprofile=coverage.out {{end}}./... {{.CLI_ARGS}}
       - "{{if not .CLI_ARGS}}go tool cover -html=coverage.out -o coverage.html{{end}}"

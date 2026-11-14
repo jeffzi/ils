@@ -50,16 +50,6 @@ func (a *App) Root() *cobra.Command {
 	return (&parse{app: *a}).root()
 }
 
-// SetGuardSupported makes `ils init claude` act as on a system where the guard runs when supported
-// is true, and as on one where the guard refuses every run otherwise.
-func (a *App) SetGuardSupported(supported bool) {
-	a.guardRuns = &supported
-}
-
-// GuardParsesFlags is guardSupported, for the tests of package cli_test: `ils guard` and
-// `ils parse` parse their flags only where the guard runs.
-const GuardParsesFlags = guardSupported
-
 // UserHook is userHook, for the tests of package cli_test.
 const UserHook = userHook
 
@@ -83,3 +73,6 @@ func PermissionRules() map[string][]string {
 
 	return rules
 }
+
+// StopIgnored is stopIgnored, for the tests of package cli_test.
+func StopIgnored() bool { return stopIgnored() }

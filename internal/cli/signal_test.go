@@ -1,5 +1,3 @@
-//go:build unix
-
 package cli_test
 
 import (
@@ -54,15 +52,8 @@ func TestApp_Run_WhenStartedWithTheInterruptIgnored_GoesOnIgnoringIt(t *testing.
 	t.Parallel()
 
 	run := startStuckIgnoring(t, stuckTelling, "INT")
-	t.Cleanup(func() {
-		assert.Check(t, run.cmd.Process.Signal(syscall.SIGTERM))
-		_, _ = run.end(t) // the run ends Stopped. on the termination; the interrupt line is the check
-	})
 
-	line, err := run.stdout.ReadString('\n')
-	assert.NilError(t, err)
-
-	assert.Check(t, is.Equal(line, interruptIgnored+"\n"), "ils listens for the interrupt it was started ignoring")
+	run.awaitLine(t, interruptIgnored)
 }
 
 func TestApp_Run_WhenASecondSignalLands_DiesOfItWithTheDisplayEnded(t *testing.T) {

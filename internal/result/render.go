@@ -534,7 +534,7 @@ func appendRun(spans []span, s span) []span {
 // names a git dir or a hook.
 func forbidden(ownWording, gitDir string) (string, bool) {
 	// The git dir is matched against the whole wording, since a path may hold spaces.
-	if dir := strings.TrimRight(folded(gitDir), "/"); dir != "" && namesPath(folded(ownWording), dir) {
+	if dir := strings.TrimRight(strings.ToLower(gitDir), "/"); dir != "" && namesPath(strings.ToLower(ownWording), dir) {
 		return gitDir, true
 	}
 
@@ -571,19 +571,12 @@ func inName(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-'
 }
 
-// folded returns path in the one spelling two paths are compared in:
-// lower case, with forward slashes.
-func folded(path string) string {
-	return strings.ReplaceAll(strings.ToLower(path), `\`, "/")
-}
-
 // sentenceEnd is the punctuation a sentence may end on the component with, as in "nothing in .git."
 const sentenceEnd = ".,;:!?)'\"`"
 
 // namesGitDir reports whether word has .git as a path component.
 func namesGitDir(word string) bool {
-	separator := func(r rune) bool { return r == '/' || r == '\\' }
-	for component := range strings.FieldsFuncSeq(word, separator) {
+	for component := range strings.SplitSeq(word, "/") {
 		before, found := strings.CutSuffix(strings.TrimRight(component, sentenceEnd), ".git")
 		if found && !endsInName(before) {
 			return true
