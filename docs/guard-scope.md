@@ -62,10 +62,13 @@ refused for.
 
 A commit lands a change only once it is pushed. An agent's push is what reaches origin and can
 start a deployment, so the guard refuses every agent push. A commit on the default branch of a
-GitHub repository is refused too, protected or not: on GitHub the default branch takes changes only
-through a green pull request, and a commit made there has no way to reach it. The guard does not
-read the branch's protection, so the verdict never depends on GitHub's settings or on reaching
-GitHub.
+GitHub repository is refused too, protected or not. In the flow `ils` enforces, that branch takes
+changes only through a green pull request. The guard refuses every agent push, so a commit made on
+it has no route to origin's default branch.
+
+The guard does not read the branch's protection, so the verdict never depends on GitHub's settings.
+On `github.com` it runs no `gh`. On another host it runs `gh`'s login check to tell whether the
+host is GitHub.
 
 Refuse it in every spelling the tool itself accepts:
 
@@ -111,11 +114,13 @@ it. That happens when the word is:
 - a `-c` value;
 - the directory or git dir of a command that may land on the default branch (`git commit`, `git
   merge`);
-- the `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, or `HOME` of a command whose verdict turns on a `gh`
-  login: such a command on the default branch of a host other than `github.com`, where the login
-  tells whether the host is GitHub; and a `gh` alias, whose expansion that config holds. `ils push`
-  takes its gh config only from the environment it starts in: a prefix or an earlier statement
-  that sets one makes it other than the whole command, which the guard refuses.
+- the `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, or `HOME` of a command on the default branch of a host
+  other than `github.com`, since the `gh` login they select tells whether the host is GitHub;
+- the same variables for a `gh` alias, since that config holds the alias's expansion.
+
+`ils push` reads its `gh` config only from the environment it starts in. The guard allows it only as
+a single statement with no prefix, so a prefix or an earlier statement that sets one of these
+variables gets it refused.
 
 Anywhere else, the guard passes over the word: `python3 x.py "$f"` and `sed -n "${n}p" "$f"` run.
 

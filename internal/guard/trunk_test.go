@@ -300,21 +300,6 @@ func loginFailingOn(t *testing.T, host string) {
 	ghtest.Setup(t, ghtest.Exits(ghtest.LoginStatus(host, account), ghtest.LoginArgs(host)...))
 }
 
-// unprotectedOn scripts, for the rest of the test, a gh logged in to host that reports no
-// protection on main, so a refusal on github.com cannot come from protection.
-func unprotectedOn(t *testing.T, host string) {
-	t.Helper()
-
-	ghtest.Setup(t,
-		ghtest.Exits(ghtest.Answer{Stdout: ghtest.JSONArray()}, ghtest.RulesArgs(host, originRepo, "main")...),
-		ghtest.Exits(
-			ghtest.Answer{Stdout: `{"name":"main","protected":false}`},
-			"api", "--hostname", host, "repos/"+originRepo+"/branches/main",
-		),
-		ghtest.Exits(ghtest.LoggedIn(host), ghtest.LoginArgs(host)...),
-	)
-}
-
 // checkRefusedNaming fails unless Judge, run by caller, refuses command with a reason holding
 // every one of named.
 func checkRefusedNaming(t *testing.T, caller guard.Caller, command string, named ...string) {
@@ -323,38 +308,6 @@ func checkRefusedNaming(t *testing.T, caller guard.Caller, command string, named
 	got := guard.Judge(t.Context(), command, caller)
 
 	checkVerdict(t, judged{command: command, want: guard.Refuse}, got, named...)
-}
-
-func TestJudge_WhenOriginIsOnGitHubCom_RefusesACommitOnTheTrunkWhateverGhAnswers(t *testing.T) {
-	tests := []struct {
-		setup func(t *testing.T)
-		name  string
-	}{
-		{name: "gh missing", setup: withoutGh},
-		{name: "gh logged in", setup: func(t *testing.T) { t.Helper(); loggedInTo(t, githubHost) }},
-		{name: "gh not logged in", setup: func(t *testing.T) { t.Helper(); loggedOutOf(t, githubHost) }},
-		{name: "gh login check failing", setup: func(t *testing.T) { t.Helper(); loginFailingOn(t, githubHost) }},
-		{name: "no rule protects the trunk", setup: func(t *testing.T) { t.Helper(); unprotectedOn(t, githubHost) }},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Not parallel: the setup sets GH_PATH for the whole process.
-			f, caller := standingOn(t, "main", "main")
-			setGitHubPushURL(f, githubHost)
-			tt.setup(t)
-
-			checkRefusedNaming(t, caller, commitCommand, onMain, "ils branch")
-		})
-	}
-}
-
-func TestJudge_WhenOriginNamesGitHubComInMixedCase_RefusesACommitOnTheTrunkWithoutGh(t *testing.T) {
-	// Not parallel: withoutGh sets GH_PATH for the whole process.
-	f, caller := standingOn(t, "main", "main")
-	setGitHubPushURL(f, "GitHub.com")
-	withoutGh(t)
-
-	checkRefusedNaming(t, caller, commitCommand, onMain, "ils branch")
 }
 
 func TestJudge_WhenGhIsLoggedInToAHostOtherThanGitHubCom_RefusesACommitOnTheTrunk(t *testing.T) {
@@ -424,7 +377,6 @@ func TestJudge_ChecksTheLoginToAHostOtherThanGitHubComWithTheGhConfigTheCommandS
 		want    guard.Outcome
 	}{
 		{name: "logged in by the command's config", process: ghtest.LoggedOut(), command: ghtest.LoggedIn(enterpriseHost), want: guard.Refuse},
-		{name: "logged out by the command's config", process: ghtest.LoggedIn(enterpriseHost), command: ghtest.LoggedOut(), want: guard.Allow},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

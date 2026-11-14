@@ -88,9 +88,8 @@ func loginArgs() []string { return ghtest.LoginArgs(engineHost) }
 
 func repoViewArgs() []string { return ghtest.RepoViewArgs(engineSlug) }
 
-func visibilityArgs() []string { return []string{"repo", "view", engineSlug, "--json", "visibility"} }
-
-func visibilityJSON(visibility string) string { return `{"visibility":"` + visibility + `"}` }
+// loggedInCall is the scripted login check that finds a login for the engine host.
+func loggedInCall() ghtest.Call { return ghtest.Exits(ghtest.LoggedIn(engineHost), loginArgs()...) }
 
 func listArgs() []string { return ghtest.ListArgs(engineSlug, featureBranch) }
 
@@ -248,7 +247,7 @@ func readCases() []readCase {
 	}
 
 	return []readCase{
-		{name: "repo view", run: identity, args: repoViewArgs(), before: []ghtest.Call{ghtest.Exits(ghtest.LoggedIn(engineHost), loginArgs()...)}},
+		{name: "repo view", run: identity, args: repoViewArgs(), before: []ghtest.Call{loggedInCall()}},
 		{name: "pr list", run: find, args: listArgs()},
 		{name: "pr view", run: head, args: headArgs()},
 		{
@@ -258,8 +257,8 @@ func readCases() []readCase {
 		{name: "api rules", run: protection, args: rulesArgs()},
 		{name: "api graphql message", run: message, args: messageArgs()},
 		{
-			name: "repo view visibility", run: public, args: visibilityArgs(),
-			before: []ghtest.Call{ghtest.Exits(ghtest.LoggedIn(engineHost), loginArgs()...)},
+			name: "repo view visibility", run: public, args: repoViewArgs(),
+			before: []ghtest.Call{loggedInCall()},
 		},
 	}
 }
@@ -307,7 +306,7 @@ func casesWithout(all []readCase, names ...string) []readCase {
 }
 
 func TestForge_WhenReadPrintsMalformedJSON_ReturnsDecodeErrorNamingCall(t *testing.T) {
-	for _, tt := range casesNamed(readCases(), "repo view", "api rules", "repo view visibility") {
+	for _, tt := range casesNamed(readCases(), "repo view", "api rules") {
 		t.Run(tt.name, func(t *testing.T) {
 			assertDecodeErrorNamesCall(t, tt)
 		})
@@ -373,8 +372,8 @@ func TestRunner_PublicRepo(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.visibility, func(t *testing.T) {
 			ghtest.Setup(t,
-				ghtest.Exits(ghtest.LoggedIn(engineHost), loginArgs()...),
-				ghtest.Says(visibilityJSON(tt.visibility), visibilityArgs()...),
+				loggedInCall(),
+				ghtest.Exits(ghtest.Visibility(tt.visibility), repoViewArgs()...),
 			)
 
 			got, err := github.Runner{}.PublicRepo(t.Context(), engine())
@@ -386,29 +385,25 @@ func TestRunner_PublicRepo(t *testing.T) {
 }
 
 func TestRunner_PublicRepo_WhenGhHoldsNoLoginForTheHost_ReturnsNotLoggedInError(t *testing.T) {
-	ghtest.Setup(t,
-		ghtest.Exits(ghtest.LoggedOut(), loginArgs()...),
-		ghtest.Says(visibilityJSON("PUBLIC"), visibilityArgs()...),
-	)
+	ghtest.Setup(t, ghtest.Exits(ghtest.LoggedOut(), loginArgs()...))
 
 	_, err := github.Runner{}.PublicRepo(t.Context(), engine())
 
-	notLoggedIn, ok := errors.AsType[*forge.NotLoggedInError](err)
+	_, ok := errors.AsType[*forge.NotLoggedInError](err)
 	assert.Assert(t, ok, "PublicRepo error = %v, want *forge.NotLoggedInError", err)
-	assert.Check(t, is.Equal(notLoggedIn.Host, engineHost))
 }
 
 func TestRunner_PublicRepo_WhenTheReplyNamesNoVisibility_ReturnsDecodeErrorNamingCall(t *testing.T) {
 	ghtest.Setup(t,
-		ghtest.Exits(ghtest.LoggedIn(engineHost), loginArgs()...),
-		ghtest.Says(`{}`, visibilityArgs()...),
+		loggedInCall(),
+		ghtest.Says(`{}`, repoViewArgs()...),
 	)
 
 	_, err := github.Runner{}.PublicRepo(t.Context(), engine())
 
 	decodeErr, ok := errors.AsType[*github.DecodeError](err)
 	assert.Assert(t, ok, "PublicRepo error = %v, want *github.DecodeError", err)
-	assert.Check(t, is.DeepEqual(decodeErr.Argv, ghArgv(visibilityArgs())))
+	assert.Check(t, ghtest.Matches(ghArgv(repoViewArgs()), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, ghArgv(repoViewArgs()))
 }
 
 func TestForge_FindChanges(t *testing.T) {

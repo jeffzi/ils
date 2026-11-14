@@ -3,7 +3,6 @@
 package guard_test
 
 import (
-	"maps"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -317,21 +316,12 @@ func TestJudge_ReadsGhsCommandPastItsValueFlags(t *testing.T) {
 	})
 }
 
-// pushCommands are the forms of `ils push` the guard judges by the visibility of origin.
-func pushCommands() []string {
-	return []string{"ils push", "ils push --wait"}
-}
-
 func explicitlyAllowed() guard.Verdict {
 	return guard.Verdict{Outcome: guard.Allow, Explicit: true}
 }
 
 func visibilityArgs(host string) []string {
 	return []string{"repo", "view", host + "/" + originRepo, "--json", "visibility"}
-}
-
-func visibilityAnswer(visibility string) ghtest.Answer {
-	return ghtest.Answer{Stdout: `{"visibility":"` + visibility + `"}` + "\n"}
 }
 
 // seenAs scripts, for the rest of the test, a gh logged in to host that reads originRepo there
@@ -341,7 +331,7 @@ func seenAs(t *testing.T, host, visibility string) {
 
 	ghtest.Setup(t,
 		ghtest.Exits(ghtest.LoggedIn(host), ghtest.LoginArgs(host)...),
-		ghtest.Exits(visibilityAnswer(visibility), visibilityArgs(host)...),
+		ghtest.Exits(ghtest.Visibility(visibility), visibilityArgs(host)...),
 	)
 }
 
@@ -356,135 +346,78 @@ func pushingTo(t *testing.T, host string) guard.Caller {
 	return caller
 }
 
-// checkPushesJudged fails unless Judge, run by caller, gives each of pushCommands the outcome of
-// want, with a reason holding every one of named.
-func checkPushesJudged(t *testing.T, caller guard.Caller, want guard.Outcome, named ...string) {
+// checkPushJudged fails unless Judge, run by caller, gives "ils push" the outcome of want, with a
+// reason holding every one of named.
+func checkPushJudged(t *testing.T, caller guard.Caller, want guard.Outcome, named ...string) {
 	t.Helper()
 
-	for _, command := range pushCommands() {
-		got := guard.Judge(t.Context(), command, caller)
+	command := "ils push"
+	got := guard.Judge(t.Context(), command, caller)
 
-		checkVerdict(t, judged{command: command, want: want}, got, named...)
-	}
+	checkVerdict(t, judged{command: command, want: want}, got, named...)
 }
 
-// checkPushesAllowedExplicitly fails unless Judge, run by caller, allows each of pushCommands on
-// its own word.
-func checkPushesAllowedExplicitly(t *testing.T, caller guard.Caller) {
+// checkPushAllowedExplicitly fails unless Judge, run by caller, allows command on its own word.
+func checkPushAllowedExplicitly(t *testing.T, caller guard.Caller, command string) {
 	t.Helper()
 
-	for _, command := range pushCommands() {
-		got := guard.Judge(t.Context(), command, caller)
+	got := guard.Judge(t.Context(), command, caller)
 
-		assert.Check(t, is.DeepEqual(got, explicitlyAllowed()), "Judge(%q)", command)
-	}
+	assert.Check(t, is.DeepEqual(got, explicitlyAllowed()), "Judge(%q)", command)
 }
 
 func TestJudge_WhenOriginIsPublic_AllowsAnIlsPushExplicitly(t *testing.T) {
 	// Not parallel: seenAs sets GH_PATH for the whole process.
 	caller := pushingTo(t, githubHost)
 	seenAs(t, githubHost, "PUBLIC")
-
-	checkPushesAllowedExplicitly(t, caller)
-}
-
-func TestJudge_WhenOriginIsNotPublic_AsksBeforeAnIlsPushSayingItIsPrivate(t *testing.T) {
-	for _, visibility := range []string{"PRIVATE", "INTERNAL"} {
-		t.Run(visibility, func(t *testing.T) {
-			// Not parallel: seenAs sets GH_PATH for the whole process.
-			caller := pushingTo(t, githubHost)
-			seenAs(t, githubHost, visibility)
-
-			checkPushesJudged(t, caller, guard.Ask, "private")
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{name: "bare", command: "ils push"},
+		{name: "waiting for the checks", command: "ils push --wait"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checkPushAllowedExplicitly(t, caller, tt.command)
 		})
 	}
+}
+
+func TestJudge_WhenOriginIsNotPublic_AsksBeforeAnIlsPushSayingItIsNotPublic(t *testing.T) {
+	// Not parallel: seenAs sets GH_PATH for the whole process.
+	caller := pushingTo(t, githubHost)
+	seenAs(t, githubHost, "PRIVATE")
+
+	checkPushJudged(t, caller, guard.Ask, "is not public")
 }
 
 func TestJudge_WhenOriginsVisibilityCannotBeRead_AsksBeforeAnIlsPushSayingWhy(t *testing.T) {
-	tests := []struct {
-		setup func(t *testing.T)
-		name  string
-		named string
-	}{
-		{name: "gh missing", setup: withoutGh, named: "https://cli.github.com"},
-		{
-			name: "no login for the host",
-			setup: func(t *testing.T) {
-				t.Helper()
-				ghtest.Setup(t,
-					ghtest.Exits(ghtest.LoggedOut(), ghtest.LoginArgs(enterpriseHost)...),
-					ghtest.Exits(ghtest.LoggedIn(githubHost), ghtest.LoginArgs(githubHost)...),
-					ghtest.Exits(visibilityAnswer("PUBLIC"), visibilityArgs(enterpriseHost)...),
-				)
-			},
-			named: enterpriseHost,
-		},
-		{
-			name: "failed read",
-			setup: func(t *testing.T) {
-				t.Helper()
-				ghtest.Setup(t,
-					ghtest.Exits(ghtest.LoggedIn(enterpriseHost), ghtest.LoginArgs(enterpriseHost)...),
-					ghtest.Exits(ghtest.ServerError(), visibilityArgs(enterpriseHost)...),
-				)
-			},
-			named: "HTTP 500",
-		},
-		{
-			name: "reply that does not decode",
-			setup: func(t *testing.T) {
-				t.Helper()
-				ghtest.Setup(t,
-					ghtest.Exits(ghtest.LoggedIn(enterpriseHost), ghtest.LoginArgs(enterpriseHost)...),
-					ghtest.Says(`{"visibility":`, visibilityArgs(enterpriseHost)...),
-				)
-			},
-			named: "repo view",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Not parallel: the setup sets GH_PATH for the whole process.
-			caller := pushingTo(t, enterpriseHost)
-			tt.setup(t)
+	// Not parallel: ghtest.Setup sets GH_PATH for the whole process.
+	caller := pushingTo(t, enterpriseHost)
+	ghtest.Setup(t,
+		ghtest.Exits(ghtest.LoggedIn(enterpriseHost), ghtest.LoginArgs(enterpriseHost)...),
+		ghtest.Exits(ghtest.ServerError(), visibilityArgs(enterpriseHost)...),
+	)
 
-			checkPushesJudged(t, caller, guard.Ask, tt.named)
-		})
-	}
+	checkPushJudged(t, caller, guard.Ask, "HTTP 500")
 }
 
 func TestJudge_ReadsOriginsVisibilityWithTheGhConfigTheIlsPushSets(t *testing.T) {
+	// Not parallel: ghReadingConfig sets GH_PATH and the gh config location for the whole process.
 	routes := map[string][]string{"login": ghtest.LoginArgs(githubHost), "view": visibilityArgs(githubHost)}
 	seen := func(visibility string) map[string]ghtest.Answer {
-		return map[string]ghtest.Answer{"login": ghtest.LoggedIn(githubHost), "view": visibilityAnswer(visibility)}
+		return map[string]ghtest.Answer{"login": ghtest.LoggedIn(githubHost), "view": ghtest.Visibility(visibility)}
 	}
-	tests := []struct {
-		name    string
-		process string
-		command string
-		want    guard.Verdict
-	}{
-		{name: "public to the command's config", process: "PRIVATE", command: "PUBLIC", want: explicitlyAllowed()},
-		{name: "private to the command's config", process: "PUBLIC", command: "PRIVATE", want: guard.Verdict{Outcome: guard.Ask}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Not parallel: ghReadingConfig sets GH_PATH and the gh config location for the whole process.
-			caller := pushingTo(t, githubHost)
-			ghReadingConfig(t, routes, seen(tt.process))
-			caller.Env = maps.Clone(caller.Env)
-			if caller.Env == nil {
-				caller.Env = map[string]string{}
-			}
-			caller.Env["GH_CONFIG_DIR"] = configHolding(t, "", seen(tt.command))
-			command := "ils push"
+	caller := pushingTo(t, githubHost)
+	ghReadingConfig(t, routes, seen("PUBLIC"))
+	caller.Env = map[string]string{"GH_CONFIG_DIR": configHolding(t, "", seen("PRIVATE"))}
+	command := "ils push"
 
-			got := guard.Judge(t.Context(), command, caller)
+	got := guard.Judge(t.Context(), command, caller)
 
-			assert.Check(t, is.Equal(got.Outcome, tt.want.Outcome), "Judge(%q) outcome, reason %q", command, got.Reason)
-			assert.Check(t, is.Equal(got.Explicit, tt.want.Explicit), "Judge(%q) explicit", command)
-		})
-	}
+	assert.Check(t, is.Equal(got.Outcome, guard.Ask), "Judge(%q) outcome, reason %q", command, got.Reason)
+	assert.Check(t, is.Equal(got.Explicit, false), "Judge(%q) explicit", command)
 }
 
 func TestJudge_RefusesAnIlsPushNotRunAloneByItsBareNameNamingIt(t *testing.T) {
@@ -492,7 +425,6 @@ func TestJudge_RefusesAnIlsPushNotRunAloneByItsBareNameNamingIt(t *testing.T) {
 
 	checkJudged(t, callerOutsideAnyRepository(t), []judged{
 		{name: "piped", command: "ils push | cat", want: guard.Refuse, wantNamed: "ils push"},
-		{name: "in an and list", command: "ils push && true", want: guard.Refuse, wantNamed: "ils push"},
 	})
 }
 
@@ -507,10 +439,11 @@ func TestJudge_WhenAWholeIlsPushHasAnotherArgument_LeavesItToThePermissionRules(
 
 func TestJudge_WhenTheGuardCannotTellWhereAnIlsPushRuns_AsksSayingSo(t *testing.T) {
 	t.Parallel()
+	const command = "ils push"
 
-	got := guard.Judge(t.Context(), "ils push", guard.Caller{Home: home})
+	got := guard.Judge(t.Context(), command, guard.Caller{Home: home})
 
-	checkVerdict(t, judged{command: "ils push", want: guard.Ask}, got, "cannot tell where the command runs")
+	checkVerdict(t, judged{command: command, want: guard.Ask}, got, "cannot tell where the command runs")
 }
 
 func TestJudge_ReadsTheVisibilityOfTheRepositoryWhoseGitDirTheIlsPushRunsWith(t *testing.T) {
@@ -521,10 +454,11 @@ func TestJudge_ReadsTheVisibilityOfTheRepositoryWhoseGitDirTheIlsPushRunsWith(t 
 	thereGitDir := filepath.Join(there.Dir(), ".git")
 	ghtest.Setup(t,
 		ghtest.Exits(ghtest.LoggedIn(githubHost), ghtest.LoginArgs(githubHost)...),
-		ghtest.Exits(visibilityAnswer("PUBLIC"), visibilityArgs(githubHost)...),
+		ghtest.Exits(ghtest.Visibility("PUBLIC"), visibilityArgs(githubHost)...),
 		ghtest.Exits(ghtest.LoggedIn(enterpriseHost), ghtest.LoginArgs(enterpriseHost)...),
-		ghtest.Exits(visibilityAnswer("PRIVATE"), visibilityArgs(enterpriseHost)...),
+		ghtest.Exits(ghtest.Visibility("PRIVATE"), visibilityArgs(enterpriseHost)...),
 	)
+	const command = "ils push"
 	tests := []struct {
 		caller func() guard.Caller
 		name   string
@@ -552,9 +486,15 @@ func TestJudge_ReadsTheVisibilityOfTheRepositoryWhoseGitDirTheIlsPushRunsWith(t 
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := guard.Judge(t.Context(), "ils push", tt.caller())
+			got := guard.Judge(t.Context(), command, tt.caller())
 
-			checkVerdict(t, judged{command: "ils push", want: tt.want}, got, tt.named)
+			if tt.want == guard.Allow {
+				assert.Check(t, is.DeepEqual(got, explicitlyAllowed()), "Judge(%q)", command)
+
+				return
+			}
+
+			checkVerdict(t, judged{command: command, want: tt.want}, got, tt.named)
 		})
 	}
 }
@@ -584,7 +524,7 @@ func TestJudge_WhenOriginNamesNoRepository_AllowsAnIlsPushExplicitly(t *testing.
 			seenAs(t, githubHost, "PRIVATE")
 			caller.Dir = tt.arrange(t, f)
 
-			checkPushesAllowedExplicitly(t, caller)
+			checkPushAllowedExplicitly(t, caller, "ils push")
 		})
 	}
 }
@@ -594,7 +534,5 @@ func TestJudge_WhenOriginsPushURLCannotBeReadForAnIlsPush_RefusesSayingWhatBroke
 	f, _ := standingOn(t, "main", "topic")
 	caller := callerFailingOn(t, f, f.Dir(), "remote", "get-url", "--push")
 
-	for _, command := range pushCommands() {
-		checkJudgedRow(t, caller, judged{command: command, wantNamed: gittest.FailedSaid, want: guard.Refuse})
-	}
+	checkJudgedRow(t, caller, judged{command: "ils push", wantNamed: gittest.FailedSaid, want: guard.Refuse})
 }

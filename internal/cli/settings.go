@@ -228,7 +228,7 @@ func (e *settingsEdit) apply(settings *jsonObject, hook string) error {
 		return err
 	}
 
-	return e.addRules(settings)
+	return e.editRules(settings)
 }
 
 // member returns the member name of parent read as an object, an empty object when parent has
@@ -283,10 +283,10 @@ func jsonString(text string) jsontext.Value {
 	return quoted
 }
 
-// addRules removes from each permission list of settings the rules it drops, and adds to it the
+// editRules removes from each permission list of settings the rules it drops, and adds to it the
 // rules of it that none of the lists holds yet, with a line for each list: changed when it lost or
 // gained a rule, unchanged otherwise.
-func (e *settingsEdit) addRules(settings *jsonObject) error {
+func (e *settingsEdit) editRules(settings *jsonObject) error {
 	permissions, err := e.member(*settings, keyPermissions, keyPermissions)
 	if err != nil {
 		return err

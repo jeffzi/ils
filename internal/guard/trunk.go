@@ -224,7 +224,7 @@ func rebasedBranch(sub string, args []Word) (Word, bool) {
 // refuseOnGitHub returns refusal, the verdict on call run on its branch, the trunk, when origin's
 // first push URL names a repository on GitHub, since GitHub is where a default branch takes changes
 // only through a pull request. A repository on github.com gets refusal whatever gh holds there,
-// and one on another host gets it when githubHost takes that host for GitHub. A push URL that
+// and one on another host gets it when isGitHubHost takes that host for GitHub. A push URL that
 // names no repository, such as a local path, gets an allow.
 //
 // The guard checks the login with the gh config the command sets, so it uses the login the agent's
@@ -252,7 +252,7 @@ func refuseOnGitHub(ctx context.Context, caller Caller, call trunkCall, refusal 
 			"is GitHub; %s", where, unknown, origin.Host, branchAdvice)), nil
 	}
 
-	onGitHub, err := githubHost(ctx, runner, origin.Host)
+	onGitHub, err := isGitHubHost(ctx, runner, origin.Host)
 	if err != nil {
 		return refuse(fmt.Sprintf("%s: the guard cannot tell whether %s is GitHub: %s; %s",
 			where, origin.Host, err, branchAdvice)), nil
@@ -265,34 +265,11 @@ func refuseOnGitHub(ctx context.Context, caller Caller, call trunkCall, refusal 
 	return refusal, nil
 }
 
-// pushRepository returns the repository origin's first push URL names, the one git pushes to
-// first, and false when that URL names no repository: a *git.OriginError, such as a local path or
-// an ssh URL whose host starts with a dash, which git refuses to connect to. The fetch URL plays
-// no part, so its failure is not returned. A failure to read the URLs from git, or to read the host
-// of an ssh push URL, is an error.
-func pushRepository(ctx context.Context, repo git.Repo) (git.Origin, bool, error) {
-	urls, err := repo.OriginURLs(ctx)
-	if len(urls.Push) == 0 {
-		return git.Origin{}, false, err
-	}
-
-	push := urls.Push[0]
-	if _, unnamed := errors.AsType[*git.OriginError](push.Err); unnamed {
-		return git.Origin{}, false, nil
-	}
-
-	if push.Err != nil {
-		return git.Origin{}, false, push.Err
-	}
-
-	return push.Origin, true, nil
-}
-
-// githubHost reports whether host, a host other than github.com, is GitHub: whether the gh that
+// isGitHubHost reports whether host, a host other than github.com, is GitHub: whether the gh that
 // runner runs holds a login there that passes gh's check. A missing gh, or one with no login for
 // host, reads as false: host may be no GitHub at all, such as a GitLab server, which gh never holds
 // a login for. Any other failure of the check is an error.
-func githubHost(ctx context.Context, runner github.Runner, host string) (bool, error) {
+func isGitHubHost(ctx context.Context, runner github.Runner, host string) (bool, error) {
 	err := runner.CheckLogin(ctx, host)
 	if err == nil {
 		return true, nil

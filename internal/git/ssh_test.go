@@ -298,7 +298,7 @@ func TestRepo_OriginURLs_WhenRunnerSetsNoEnvironment_ReadsTheProcessEnvironment(
 	assert.Check(t, is.Equal(got.Fetch.Host, "git.example.org"))
 }
 
-func TestRepo_OriginURLs_WhenPlainSSHAnswersAHost_FoldsOnlyHostsUnderGitHub(t *testing.T) {
+func TestRepo_OriginURLs_WhenPlainSSHAnswersAHost_LowersItAndFoldsHostsUnderGitHub(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name   string

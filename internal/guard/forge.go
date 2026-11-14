@@ -53,28 +53,26 @@ func judgeILS(ctx context.Context, caller Caller, inv Invocation) (Verdict, erro
 		return Verdict{Outcome: Allow}, nil
 	}
 
+	if inv.Whole && isBarePush(args) {
+		return judgePush(ctx, caller, inv)
+	}
+
 	name := "ils " + sub.Text
 	switch sub.Text {
 	case landing.MergeCommand:
 		return aloneAndBare(inv, name, Verdict{Outcome: Ask, Reason: "ils merge lands the pull request on the trunk"}), nil
 	case landing.ReleaseCommand:
 		return aloneAndBare(inv, name, Verdict{Outcome: Ask, Reason: "ils release tags and publishes a release"}), nil
-	case landing.PushCommand:
-		if inv.Whole && judgedPush(args) {
-			return judgePush(ctx, caller, inv)
-		}
-
-		return aloneAndBare(inv, name, Verdict{Outcome: Allow}), nil
-	case landing.BranchCommand:
+	case landing.PushCommand, landing.BranchCommand:
 		return aloneAndBare(inv, name, Verdict{Outcome: Allow}), nil
 	default:
 		return Verdict{Outcome: Allow}, nil
 	}
 }
 
-// judgedPush reports whether args, the words after ils, are `push` or `push --wait`, the pushes
+// isBarePush reports whether args, the words after ils, are `push` or `push --wait`, the pushes
 // the guard allows on its own word once origin's repository is public.
-func judgedPush(args []Word) bool {
+func isBarePush(args []Word) bool {
 	push := Word{Text: landing.PushCommand, Literal: true}
 	wait := Word{Text: landing.FlagWait, Literal: true}
 
@@ -106,21 +104,21 @@ func judgePush(ctx context.Context, caller Caller, inv Invocation) (Verdict, err
 	}
 
 	repo := forge.RepoOf(origin)
-	where := fmt.Sprintf("%s on %s", repo.FullName(), repo.Host)
+	where := fmt.Sprintf("%s on %s, origin's repository,", repo.FullName(), repo.Host)
 	gh, unknown := ghConfigRunner(caller.GH, inv.Dir, inv.ghConfig)
 	if unknown != "" {
 		return Verdict{Outcome: Ask, Reason: fmt.Sprintf("ils push: the guard cannot tell the %s gh runs with, "+
-			"so it cannot read whether %s, origin's repository, is public", unknown, where)}, nil
+			"so it cannot read whether %s is public", unknown, where)}, nil
 	}
 
 	public, err := gh.PublicRepo(ctx, repo)
 	if err != nil {
-		return Verdict{Outcome: Ask, Reason: fmt.Sprintf("ils push: the guard cannot read whether %s, "+
-			"origin's repository, is public: %s", where, err)}, nil
+		return Verdict{Outcome: Ask, Reason: fmt.Sprintf("ils push: the guard cannot read whether %s "+
+			"is public: %s", where, err)}, nil
 	}
 
 	if !public {
-		return Verdict{Outcome: Ask, Reason: fmt.Sprintf("ils push: %s, origin's repository, is private, so "+
+		return Verdict{Outcome: Ask, Reason: fmt.Sprintf("ils push: %s is not public, so "+
 			"the push starts CI runs that spend GitHub Actions minutes; the guard waits for your word", where)}, nil
 	}
 

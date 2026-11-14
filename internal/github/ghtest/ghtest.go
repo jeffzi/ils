@@ -203,6 +203,12 @@ func LoggedOut() Answer {
 	return Answer{Stdout: `{"hosts":{}}` + "\n"}
 }
 
+// Visibility is what `gh repo view --json visibility` answers for a repository whose visibility is
+// visibility, such as PUBLIC or PRIVATE.
+func Visibility(visibility string) Answer {
+	return Answer{Stdout: `{"visibility":"` + visibility + `"}` + "\n"}
+}
+
 // ServerError is what a gh call answers when GitHub fails it with HTTP 500.
 func ServerError() Answer {
 	return Answer{Stderr: "gh: Server Error (HTTP 500)\n", Code: 1}
