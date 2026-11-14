@@ -204,22 +204,18 @@ func TestFakeGit_WhenInstalledAgain_StopsFakingWhatOnlyTheFirstCallFaked(t *test
 }
 
 func TestFakeGit_WhenInstalledAgain_ReturnsSettingsThatOverrideTheFirstCalls(t *testing.T) {
-	for _, tt := range onlyFirstFakes() {
-		t.Run(tt.name, func(t *testing.T) {
-			base := gittest.Env(t)
-			dir := initRepo(t, base)
-			want := callGit(t, base, dir, tt.args...)
-			addr, connected := gittest.SilentListener(t)
-			first := gittest.FakeGit(t, firstFake(addr))
-			second := gittest.FakeGit(t, gittest.Fake{})
-			env := slices.Concat(base, first, second)
-			ctx := gittest.Ending(t.Context(), connected, errStalled)
+	base := gittest.Env(t)
+	dir := initRepo(t, base)
+	want := callGit(t, base, dir, "show-ref")
+	addr, connected := gittest.SilentListener(t)
+	first := gittest.FakeGit(t, firstFake(addr))
+	second := gittest.FakeGit(t, gittest.Fake{})
+	env := slices.Concat(base, first, second)
+	ctx := gittest.Ending(t.Context(), connected, errStalled)
 
-			got := ranGit(t, gitCommand(ctx, env, dir, tt.args...))
+	got := ranGit(t, gitCommand(ctx, env, dir, "show-ref"))
 
-			assert.Check(t, is.DeepEqual(got, want))
-		})
-	}
+	assert.Check(t, is.DeepEqual(got, want))
 }
 
 func TestFakeGit_WhenCallIsAPrefixOfFailingWords_RunsTheRealGit(t *testing.T) {

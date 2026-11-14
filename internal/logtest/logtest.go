@@ -28,16 +28,6 @@ func (r Record) Map() map[string]any {
 	return attrs
 }
 
-// Without returns the attributes of r by key, as Map does, all but those named by keys.
-func (r Record) Without(keys ...string) map[string]any {
-	attrs := r.Map()
-	for _, key := range keys {
-		delete(attrs, key)
-	}
-
-	return attrs
-}
-
 // RecordsOf returns every record log gives the logger it is handed, in order.
 func RecordsOf(log func(*slog.Logger)) []Record {
 	logger, sink := New()
@@ -52,8 +42,6 @@ func Only(t testing.TB, records []Record) Record {
 
 	if len(records) != 1 {
 		t.Fatalf("got %d records, want exactly one: %+v", len(records), records)
-
-		return Record{}
 	}
 
 	return records[0]
@@ -62,7 +50,10 @@ func Only(t testing.TB, records []Record) Record {
 // Call returns the attributes of r, all but the duration. It is how a logged call is compared with
 // ExecAttrs, whose duration can never match.
 func (r Record) Call() map[string]any {
-	return r.Without(child.KeyDuration)
+	attrs := r.Map()
+	delete(attrs, child.KeyDuration)
+
+	return attrs
 }
 
 // ExecAttrs returns the attributes, all but the duration, of the one record run logs, and fails t

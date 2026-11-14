@@ -429,11 +429,9 @@ func Main() (code int, served bool) {
 		return 0, false
 	}
 
-	places := servePlaces{script: script, record: os.Getenv(recordEnv), holdAddr: os.Getenv(holdEnv)}
-
 	// The fake is a child process with no caller to cancel it: the test process ends it by killing
 	// it, so its calls need no context of their own.
-	return serve(context.Background(), places, os.Args[1:]), true
+	return serve(context.Background(), script, os.Getenv(recordEnv), os.Getenv(holdEnv)), true
 }
 
 // Setup points GH_PATH at the test binary for the rest of the test and scripts its answers.
@@ -463,7 +461,7 @@ func Setup(tb testing.TB, script ...Call) *Fake {
 	holdAddr, holding := listenForHolds(tb, record, &fake.whileHeld)
 	fake.holding = holding
 
-	gittest.SetRace(tb)
+	tb.Setenv("GORACE", gittest.RaceSetting())
 	tb.Setenv(github.PathVariable, exe)
 	tb.Setenv(scriptEnv, scriptPath)
 	tb.Setenv(recordEnv, fake.record)
@@ -593,26 +591,23 @@ func (f *Fake) Calls() [][]string {
 	return calls
 }
 
-// servePlaces is where the fake finds its script and keeps its record, and the address of the test
-// process it tells of a hold.
-type servePlaces struct {
-	script, record, holdAddr string
-}
+// serve answers the call of the fake that the process's arguments name, from the script at
+// scriptPath, keeping its record at record, and returns its exit code; before it holds an answer
+// open, it tells the test process at holdAddr and waits for its acknowledgement.
+func serve(ctx context.Context, scriptPath, record, holdAddr string) int {
+	args := os.Args[1:]
 
-// serve answers one call of the fake and returns its exit code; before it holds an answer open,
-// it tells the test process at places.holdAddr and waits for its acknowledgement.
-func serve(ctx context.Context, places servePlaces, args []string) int {
-	script, err := readScript(places.script)
+	script, err := readScript(scriptPath)
 	if err != nil {
 		return broken(err)
 	}
 
-	recorded, err := readRecord(places.record)
+	recorded, err := readRecord(record)
 	if err != nil {
 		return broken(err)
 	}
 
-	if err = appendRecord(places.record, args); err != nil {
+	if err = appendRecord(record, args); err != nil {
 		return broken(err)
 	}
 
@@ -631,7 +626,7 @@ func serve(ctx context.Context, places servePlaces, args []string) int {
 	}
 
 	if answer.Delay > 0 {
-		if err := announceHold(ctx, places.holdAddr, hold{Args: args, Earlier: countOf(recorded, args)}); err != nil {
+		if err := announceHold(ctx, holdAddr, hold{Args: args, Earlier: countOf(recorded, args)}); err != nil {
 			return broken(err)
 		}
 
