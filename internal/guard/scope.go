@@ -221,8 +221,12 @@ func (w *walker) stmtInPlace(stmt *syntax.Stmt, sc *scope) {
 	sc.redirects = before
 }
 
+// compound walks the command of a statement, whose redirects stmtInPlace already walked.
 func (w *walker) compound(cmd syntax.Command, sc *scope) {
 	switch cmd := cmd.(type) {
+	case nil:
+		// A statement of redirects alone, such as `<file` or the one in `$(<file)`, starts no
+		// command.
 	case *syntax.Block:
 		w.list(cmd.Stmts, sc)
 	case *syntax.Subshell:

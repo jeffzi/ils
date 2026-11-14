@@ -277,3 +277,13 @@ func TestParse_WhenTheGuardCannotBeSureOfAVariable_ReadsItsExpansionUnknown(t *t
 		})
 	}
 }
+
+func TestParse_WhenAStatementHoldsOnlyRedirects_ReportsTheCommandsAroundIt(t *testing.T) {
+	t.Parallel()
+
+	checkTexts(t, []commandTexts{
+		{name: "statement in a list", command: "true && </dev/null; git status", want: [][]string{{"true"}, {"git", "status"}}},
+		{name: "command substitution reading a file", command: `echo "$(</dev/null)"`, want: [][]string{{"echo", ""}}},
+		{name: "redirect target holding a command substitution", command: `<"$(git push)"`, want: [][]string{{"git", "push"}}},
+	})
+}
