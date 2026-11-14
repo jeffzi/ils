@@ -1,6 +1,7 @@
 package guard_test
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,7 +82,7 @@ func TestParse_WhenTheDirectoryCannotBeFollowed_ReportsItUnknown(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := lastWith(t, tt.command, guard.Caller{Home: home, Dir: start, Env: tt.env})
+			got := lastWith(t, tt.command, guard.Caller{Env: homeIn(tt.env, home), Dir: start})
 
 			assert.Check(t, is.Equal(got.Dir, ""), "Parse(%q) directory of %v", tt.command, got.Words)
 		})
@@ -124,7 +125,7 @@ func TestParse_ReportsWhereEachGitInvocationPointsGit(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := lastWith(t, tt.command, guard.Caller{Home: home, Dir: start, Env: tt.env})
+			got := lastWith(t, tt.command, guard.Caller{Env: homeIn(tt.env, home), Dir: start})
 
 			assert.Check(t, is.DeepEqual(got.Target, tt.want), "Parse(%q) target", tt.command)
 		})
@@ -167,7 +168,7 @@ func TestParse_ReportsWhereEachCOptionLandsOnDisk(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := lastWith(t, tt.command, guard.Caller{Home: home, Dir: filepath.Join(root, tt.dir)})
+			got := lastWith(t, tt.command, guard.Caller{Env: map[string]string{"HOME": home}, Dir: filepath.Join(root, tt.dir)})
 
 			assert.Check(t, is.Equal(got.Target.Dir, tt.want), "Parse(%q) target directory", tt.command)
 		})
@@ -284,4 +285,16 @@ func TestParse_WhenAStatementHoldsOnlyRedirects_ReportsTheCommandsAroundIt(t *te
 		{name: "command substitution reading a file", command: `echo "$(</dev/null)"`, want: [][]string{{"echo", ""}}},
 		{name: "redirect target holding a command substitution", command: `<"$(git push)"`, want: [][]string{{"git", "push"}}},
 	})
+}
+
+// homeIn returns env with HOME set to home, leaving env as it is.
+func homeIn(env map[string]string, home string) map[string]string {
+	with := maps.Clone(env)
+	if with == nil {
+		with = map[string]string{}
+	}
+
+	with["HOME"] = home
+
+	return with
 }

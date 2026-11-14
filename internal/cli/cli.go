@@ -19,9 +19,9 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
-	"github.com/jeffzi/ils/internal/commandline"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/github"
+	"github.com/jeffzi/ils/internal/guard"
 	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
 )
@@ -827,14 +827,14 @@ func (a App) fail(err error) int {
 }
 
 const (
-	flagJSON      = commandline.FlagJSON
-	flagHelp      = commandline.FlagHelp
-	flagHelpShort = commandline.FlagHelpShort
-	flagVersion   = commandline.FlagVersion
+	flagJSON      = guard.FlagJSON
+	flagHelp      = guard.FlagHelp
+	flagHelpShort = guard.FlagHelpShort
+	flagVersion   = guard.FlagVersion
 
-	flagDebug      = commandline.FlagDebug
-	flagDebugShort = commandline.FlagDebugShort
-	flagNoColor    = commandline.FlagNoColor
+	flagDebug      = guard.FlagDebug
+	flagDebugShort = guard.FlagDebugShort
+	flagNoColor    = guard.FlagNoColor
 
 	flagForce   = landing.FlagForce
 	flagTagOnly = landing.FlagTagOnly

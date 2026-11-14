@@ -63,7 +63,7 @@ func TestJudge_WhenAToolWordIsHandedToAnotherCommand_RefusesNamingBoth(t *testin
 	writeExecutable(t, filepath.Join(callerDir, "bin", "git"))
 	const command = "xargs ./bin/git push"
 
-	got := guard.Judge(t.Context(), command, guard.Caller{Home: home, Dir: callerDir})
+	got := guard.Judge(t.Context(), command, guard.Caller{Env: map[string]string{"HOME": home}, Dir: callerDir})
 
 	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome", command)
 	assert.Check(t, is.Contains(got.Reason, "xargs"), "Judge(%q) reason", command)

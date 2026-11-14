@@ -116,7 +116,7 @@ func (p *parse) caller(dir string) guard.Caller {
 	env := environment(p.app.Environ)
 	logger := p.logger()
 
-	return guard.Caller{Dir: dir, Env: env, Home: env["HOME"], Git: p.loggedGit(logger), GH: github.Runner{Logger: logger}}
+	return guard.Caller{Dir: dir, Env: env, Git: p.loggedGit(logger), GH: github.Runner{Logger: logger}}
 }
 
 // environment returns the variables of environ, each `NAME=value`, by name: a name set twice has

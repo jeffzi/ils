@@ -31,10 +31,9 @@ const (
 // Caller is what Parse needs to know about the shell that would run the command.
 type Caller struct {
 	// Env is the environment the command would start with; Parse reads CDPATH, GIT_DIR,
-	// GIT_WORK_TREE, GH_CONFIG_DIR, XDG_CONFIG_HOME, HOME, and IFS from it.
+	// GIT_WORK_TREE, GH_CONFIG_DIR, XDG_CONFIG_HOME, HOME, and IFS from it. Its HOME is also the
+	// one `~` and `~/…` expand with.
 	Env map[string]string
-	// Home is the HOME that `~` and `~/…` expand with.
-	Home string
 	// Dir is the absolute directory the command starts in; empty when unknown.
 	Dir string
 	// Git runs the git calls that read where each git invocation points git and what its aliases
@@ -338,7 +337,7 @@ func (w *walker) simple(stmt *syntax.Stmt, sc *scope) bool {
 
 // reading returns the expander that reads the words of a command run from sc.
 func (w *walker) reading(sc *scope) expander {
-	return expander{vars: sc.vars, home: w.caller.Home}
+	return expander{vars: sc.vars, home: w.caller.Env["HOME"]}
 }
 
 // declarationOf returns the invocation of a declaration builtin such as `export` or `declare`: its

@@ -1,6 +1,4 @@
-// Package commandline names the command words and root flags that the command line registers and
-// the guard reads, so that both agree on what ils runs.
-package commandline
+package guard
 
 // ParseCommand, GuardCommand and HookCommand are the command words of `ils parse`, `ils guard` and
 // `ils hook`, the commands that read a command and change nothing.

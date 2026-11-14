@@ -218,7 +218,7 @@ func judgeAll(t *testing.T, calls []replayed) []guard.Verdict {
 	for range replayWorkers {
 		wg.Go(func() {
 			for i := range next {
-				caller := guard.Caller{Env: env, Home: env["HOME"], Dir: calls[i].dir, Git: git.Runner{}, GH: github.Runner{}}
+				caller := guard.Caller{Env: env, Dir: calls[i].dir, Git: git.Runner{}, GH: github.Runner{}}
 				verdicts[i] = guard.Judge(t.Context(), calls[i].command, caller)
 			}
 		})

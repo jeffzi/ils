@@ -306,7 +306,7 @@ func TestParse_WhenAnArgumentIsARelativePathNamedForATool_ReadsItWhereTheInvocat
 			callerDir := t.TempDir()
 			writeExecutable(t, filepath.Join(callerDir, "bin", "git"))
 
-			xargs := lastWith(t, tt.command, guard.Caller{Home: home, Dir: callerDir})
+			xargs := lastWith(t, tt.command, guard.Caller{Env: map[string]string{"HOME": home}, Dir: callerDir})
 
 			assert.Check(t, is.DeepEqual(kinds(xargs.Marks), kinds(tt.want)), "Parse(%q) marks", tt.command)
 		})

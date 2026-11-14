@@ -59,7 +59,15 @@ func (t trunks) refuseOnTrunk(ctx context.Context, caller Caller, inv Invocation
 	}
 
 	branch, headOnBranch := headBranch(standing, inv)
-	rebased, named := rebasedBranch(sub, inv.Git.Args)
+	// A rebase that names a branch switches to it before it rebases.
+	var (
+		rebased Word
+		named   bool
+	)
+	if sub == "rebase" {
+		rebased, named, _ = rebaseBranch(inv.Git.Args)
+	}
+
 	if named {
 		branch, headOnBranch = rebased.Text, true
 	}
@@ -205,18 +213,6 @@ func fastForwardsOnly(options []longOption) bool {
 	}
 
 	return only
-}
-
-// rebasedBranch returns the branch argument of `git rebase` with args, the branch it switches to
-// before it rebases, and false when sub is not rebase or names no branch.
-func rebasedBranch(sub string, args []Word) (Word, bool) {
-	if sub != "rebase" {
-		return Word{}, false
-	}
-
-	branch, named, _ := rebaseBranch(args)
-
-	return branch, named
 }
 
 // refuseOnGitHub returns refusal, the verdict on call run on its branch, the trunk, when origin's

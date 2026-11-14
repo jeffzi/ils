@@ -439,7 +439,7 @@ func TestJudge_WhenTheGuardCannotTellWhereAnIlsPushRuns_AsksSayingSo(t *testing.
 	t.Parallel()
 	const command = "ils push"
 
-	got := guard.Judge(t.Context(), command, guard.Caller{Home: home})
+	got := guard.Judge(t.Context(), command, guard.Caller{Env: map[string]string{"HOME": home}})
 
 	checkVerdict(t, judged{command: command, want: guard.Ask}, got, "cannot tell where the command runs")
 }

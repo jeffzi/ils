@@ -30,7 +30,7 @@ func marksOf(invocations []guard.Invocation) []guard.Mark {
 
 // readerCaller returns the caller in start whose HOME is home.
 func readerCaller() guard.Caller {
-	return guard.Caller{Home: home, Dir: start}
+	return guard.Caller{Env: map[string]string{"HOME": home}, Dir: start}
 }
 
 // parse returns the invocations of command, read by a caller in start whose HOME is home.
@@ -166,7 +166,7 @@ func TestParse_WhenTheParserCannotReadTheCommand_ReturnsAParseError(t *testing.T
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := guard.Parse(t.Context(), tt.command, guard.Caller{Home: home})
+			_, err := guard.Parse(t.Context(), tt.command, guard.Caller{Env: map[string]string{"HOME": home}})
 
 			failure, ok := errors.AsType[*guard.ParseError](err)
 			assert.Assert(t, ok, "Parse(%q) error = %v, want a *guard.ParseError", tt.command, err)
@@ -435,7 +435,7 @@ func TestParse_WhenAllexportIsOn_MarksNoGitVariableABuiltinAssigns(t *testing.T)
 func callerOutsideAnyRepository(t *testing.T) guard.Caller {
 	t.Helper()
 
-	return guard.Caller{Home: home, Dir: outsideDir(t)}
+	return guard.Caller{Env: map[string]string{"HOME": home}, Dir: outsideDir(t)}
 }
 
 // standingOn returns a new repository whose trunk is trunk, with HEAD on branch, and a caller
@@ -466,7 +466,7 @@ func recordingCaller(f *gittest.Fixture, dir string) (guard.Caller, *git.Recorde
 }
 
 func callerWithEnv(dir string, env []string) guard.Caller {
-	return guard.Caller{Home: home, Dir: dir, Git: git.Runner{Env: env}}
+	return guard.Caller{Env: map[string]string{"HOME": home}, Dir: dir, Git: git.Runner{Env: env}}
 }
 
 // callerFailingOn returns a caller working in dir whose git runs with the environment of f and
