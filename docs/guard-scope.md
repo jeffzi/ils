@@ -61,11 +61,11 @@ however rare it is: `git repack -a -d` drops unreachable objects at once, the lo
 refused for.
 
 A commit lands a change only once it is pushed. An agent's push is what reaches origin and can
-start a deployment, so the guard refuses every agent push. A local commit on an unprotected default
-branch lands nothing: you push it yourself, and the guard lets the agent make it. On a default
-branch that GitHub protects, a rule such as a required pull request or required checks can reject
-your own push too. The guard refuses the commit on any protected default branch rather than judge
-which rules block a push.
+start a deployment, so the guard refuses every agent push. A commit on the default branch of a
+GitHub repository is refused too, protected or not: on GitHub the default branch takes changes only
+through a green pull request, and a commit made there has no way to reach it. The guard does not
+read the branch's protection, so the verdict never depends on GitHub's settings or on reaching
+GitHub.
 
 Refuse it in every spelling the tool itself accepts:
 
@@ -111,8 +111,11 @@ it. That happens when the word is:
 - a `-c` value;
 - the directory or git dir of a command that may land on the default branch (`git commit`, `git
   merge`);
-- the `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, or `HOME` of such a command on the default branch, since
-  it decides which `gh` login reads whether the branch is protected.
+- the `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, or `HOME` of a command whose verdict turns on a `gh`
+  login: such a command on the default branch of a host other than `github.com`, where the login
+  tells whether the host is GitHub; and a `gh` alias, whose expansion that config holds. For
+  `ils push`, where the login reads whether origin's repository is private, such a word makes the
+  guard ask instead of refuse.
 
 Anywhere else, the guard passes over the word: `python3 x.py "$f"` and `sed -n "${n}p" "$f"` run.
 

@@ -15,9 +15,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `PreToolUse` hook and block every command when `ils` cannot answer.
 - Add `ils init claude`, which installs the agent skills from the binary and adds the guard's hook
   and the flow's permission rules to Claude Code's settings.
+- Make the guard refuse a commit on the default branch of every GitHub repository, protected or
+  not, whatever `gh` can read.
+- Make the guard ask before `ils push` on a private or internal repository, whose CI runs spend
+  GitHub Actions minutes, and when it cannot read the repository's visibility.
 
 ### Changed
 
+- **Breaking:** Refuse `ils branch` and `ils push` while the local default branch holds commits
+  origin's lacks, naming the one command that moves them to a branch of their own. `ils merge`
+  and `ils status` name that command too.
+- **Breaking:** End `ils status` broke when it cannot read the local default branch, instead of
+  exiting 0.
+- Make `ils init claude` remove the `Bash(ils push)` and `Bash(ils push --wait)` allow rules an
+  earlier run added, since the guard now answers `ils push` itself.
 - Make the `ils` agent skill ask once where new work lands when the checkout is on a work branch,
   instead of starting a new branch on its own.
 - Report a `gh` reachable only through a relative `PATH` entry as missing on every operating system.

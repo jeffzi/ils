@@ -81,6 +81,8 @@ Each document has one job, and a fact lives in one of them:
 - `docs/reference.md` is the reference: each command's steps, flags, and by-hand equivalent, exit
   codes, time limits, refusals, JSON output, the guard's rules and limits, and terminal output.
 - `docs/guard-scope.md` holds the rules for changing the guard.
+- `VISION.md` holds the goals of `ils`: the ranked principles that decide what it takes on, and
+  its non-goals.
 
 A change to a command's behavior, wording, or flags, or to a guard rule, updates
 `docs/reference.md`. It also updates the README where a command paragraph, a workflow, or the flow
