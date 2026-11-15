@@ -39,7 +39,8 @@ func (t trunks) refuseOnTrunk(ctx context.Context, caller Caller, inv Invocation
 		return Verdict{Outcome: Allow}, nil
 	}
 
-	placeUnknown := inv.Dir == "" || inv.Target.Dir == "" || inv.Target.Unknown || inv.Git.GitDirUnknown || inv.HeadUnknown
+	// A target the guard cannot follow, unknown or with no directory, leaves the git dir unknown.
+	placeUnknown := inv.Dir == "" || inv.Git.GitDirUnknown || inv.HeadUnknown
 	if placeUnknown {
 		reason := fmt.Sprintf("git %s: the guard cannot tell where the command runs, or which branch HEAD "+
 			"is on, so it cannot tell whether it lands on the trunk; %s", sub, moveFirst)
