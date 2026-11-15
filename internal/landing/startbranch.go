@@ -31,14 +31,16 @@ const (
 func StartBranch(ctx context.Context, deps Deps, req Request) result.Result {
 	deps.startChecking()
 
-	ready, stop := GitPreconditions(ctx, deps, req)
+	s := newSurvey(deps)
+
+	ready, stop := gitPreconditions(ctx, s, req)
 	if stop != nil {
 		return *stop
 	}
 
 	n := newBranch{Ready: ready, name: req.Args[0]}
 
-	start, stop := n.checks(ctx, deps, req)
+	start, stop := n.checks(ctx, s, req)
 	if stop != nil {
 		return *stop
 	}
@@ -66,27 +68,27 @@ type newBranch struct {
 
 // checks runs the checks of `ils branch` after the git-only preconditions, and returns the sha of
 // origin's trunk it fetched or the result of the first that refuses.
-func (n newBranch) checks(ctx context.Context, deps Deps, req Request) (string, *result.Result) {
-	if stop := validName(ctx, deps, req, n.name); stop != nil {
+func (n newBranch) checks(ctx context.Context, s *survey, req Request) (string, *result.Result) {
+	if stop := validName(ctx, s.deps, req, n.name); stop != nil {
 		return "", stop
 	}
 
-	start, stop := fetchTrunk(ctx, deps, req, n.Trunk)
+	start, stop := fetchTrunk(ctx, s, req, n.Trunk)
 	if stop != nil {
 		return "", stop
 	}
 
-	if stop := req.trunkAhead(ctx, deps, n.Ready); stop != nil {
+	if stop := req.trunkAhead(ctx, s); stop != nil {
 		return "", stop
 	}
 
-	if stop := freeName(ctx, deps, req, n.name); stop != nil {
+	if stop := freeName(ctx, s.deps, req, n.name); stop != nil {
 		return "", stop
 	}
 
 	if n.Standing.Kind == git.Detached {
 		// The switch would leave those commits on no branch.
-		if stop := req.detachedKept(ctx, deps, n.Trunk, detachedWith(n.Trunk)); stop != nil {
+		if stop := req.detachedKept(ctx, s, detachedWith(n.Trunk)); stop != nil {
 			return "", stop
 		}
 	}

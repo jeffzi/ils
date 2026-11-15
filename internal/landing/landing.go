@@ -393,22 +393,26 @@ type Ready struct {
 // a refusal for a precondition that fails or a read the context's deadline cut short, and broke
 // for a read that fails for any other reason.
 func Preconditions(ctx context.Context, deps Deps, req Request) (Ready, *result.Result) {
-	standing, stop := gitStanding(ctx, deps, req)
+	return preconditions(ctx, newSurvey(deps), req)
+}
+
+// preconditions checks what Preconditions checks, reading through the record s.
+func preconditions(ctx context.Context, s *survey, req Request) (Ready, *result.Result) {
+	standing, stop := gitStanding(ctx, s, req)
 	if stop != nil {
 		return Ready{}, stop
 	}
 
-	origin, stop := originRepo(ctx, deps, req)
+	if stop = originRepo(ctx, s, req); stop != nil {
+		return Ready{}, stop
+	}
+
+	repo, stop := identity(ctx, s, req)
 	if stop != nil {
 		return Ready{}, stop
 	}
 
-	repo, stop := identity(ctx, deps, req, origin)
-	if stop != nil {
-		return Ready{}, stop
-	}
-
-	trunk, stop := trunkOf(ctx, deps, req)
+	trunk, stop := trunkOf(ctx, s, req)
 	if stop != nil {
 		return Ready{}, stop
 	}
@@ -420,12 +424,17 @@ func Preconditions(ctx context.Context, deps Deps, req Request) (Ready, *result.
 // order and with the same results: git is installed and recent enough; there is an origin; origin
 // answers for its trunk. It never calls the forge, and the Ready it returns has no Repo.
 func GitPreconditions(ctx context.Context, deps Deps, req Request) (Ready, *result.Result) {
-	standing, stop := gitStanding(ctx, deps, req)
+	return gitPreconditions(ctx, newSurvey(deps), req)
+}
+
+// gitPreconditions checks what GitPreconditions checks, reading through the record s.
+func gitPreconditions(ctx context.Context, s *survey, req Request) (Ready, *result.Result) {
+	standing, stop := gitStanding(ctx, s, req)
 	if stop != nil {
 		return Ready{}, stop
 	}
 
-	trunk, stop := trunkOf(ctx, deps, req)
+	trunk, stop := trunkOf(ctx, s, req)
 	if stop != nil {
 		return Ready{}, stop
 	}
@@ -435,8 +444,8 @@ func GitPreconditions(ctx context.Context, deps Deps, req Request) (Ready, *resu
 
 // gitStanding returns where HEAD stands once git is installed and recent enough and there is an
 // origin.
-func gitStanding(ctx context.Context, deps Deps, req Request) (git.Standing, *result.Result) {
-	if err := deps.Repo.CheckVersion(ctx); err != nil {
+func gitStanding(ctx context.Context, s *survey, req Request) (git.Standing, *result.Result) {
+	if err := s.gitVersion(ctx); err != nil {
 		if stop := req.tooOld(err); stop != nil {
 			return git.Standing{}, stop
 		}
@@ -444,7 +453,7 @@ func gitStanding(ctx context.Context, deps Deps, req Request) (git.Standing, *re
 		return git.Standing{}, req.Unread(readGitVersion, err)
 	}
 
-	standing, err := deps.Repo.Standing(ctx)
+	standing, err := s.standing(ctx)
 	if err != nil {
 		return git.Standing{}, req.Unread(readStanding, err)
 	}
@@ -461,18 +470,18 @@ func createOriginStep() result.Next {
 	return result.NextStep("create the repository on GitHub and push to it with `gh repo create --source . --push`")
 }
 
-// originRepo returns the repository both of origin's URLs name.
-func originRepo(ctx context.Context, deps Deps, req Request) (forge.Repo, *result.Result) {
-	urls, repo, oneRepo, err := readOriginRepo(ctx, deps)
+// originRepo refuses origin's URLs unless both name one repository.
+func originRepo(ctx context.Context, s *survey, req Request) *result.Result {
+	origin, err := s.origin(ctx)
 
 	switch {
 	case err != nil:
-		return forge.Repo{}, req.Unread(readURLs, err)
-	case !oneRepo:
-		return forge.Repo{}, req.twoRepositories(urls)
+		return req.Unread(readURLs, err)
+	case !origin.oneRepo:
+		return req.twoRepositories(origin.urls)
 	}
 
-	return repo, nil
+	return nil
 }
 
 // readOriginRepo reads origin's URLs and returns them with the repository they name, and whether
@@ -520,12 +529,12 @@ func (r Request) twoRepositories(urls git.OriginURLs) *result.Result {
 		result.NextStep("point every one of origin's URLs at one GitHub repository with `git remote set-url`, by hand"))
 }
 
-// identity returns origin with the forge's fork, can-push and squash-allowed flags, once the
-// forge's tool is installed, recent enough and logged in, the repository is not a fork, and the user
-// can push to it. A failed call is the refusal toolRefusal returns, and what Unread returns for any
-// other failure.
-func identity(ctx context.Context, deps Deps, req Request, origin forge.Repo) (forge.Repo, *result.Result) {
-	repo, err := deps.Forge.Identity(ctx, origin)
+// identity returns the repository origin's URLs name with the forge's fork, can-push and
+// squash-allowed flags, once the forge's tool is installed, recent enough and logged in, the
+// repository is not a fork, and the user can push to it. A failed call is the refusal toolRefusal
+// returns, and what Unread returns for any other failure.
+func identity(ctx context.Context, s *survey, req Request) (forge.Repo, *result.Result) {
+	repo, err := s.identity(ctx)
 	if err != nil {
 		if stop := req.toolRefusal(err); stop != nil {
 			return forge.Repo{}, stop
@@ -562,8 +571,8 @@ func (r Request) repoRefusal(repo forge.Repo) *result.Result {
 }
 
 // trunkOf returns origin's default branch, asked of origin.
-func trunkOf(ctx context.Context, deps Deps, req Request) (string, *result.Result) {
-	trunk, err := deps.Repo.Trunk(ctx)
+func trunkOf(ctx context.Context, s *survey, req Request) (string, *result.Result) {
+	trunk, err := s.trunk(ctx)
 	if err == nil {
 		return trunk, nil
 	}
@@ -806,11 +815,17 @@ func (r Request) unreached(read string, err error, reason result.Phrase) *result
 func (r Request) fetchPullHead(ctx context.Context, deps Deps, number int, read string) (string, *result.Result) {
 	head, err := deps.Repo.FetchPullHead(ctx, number)
 	if err != nil {
-		return "", r.unreached(read, err,
-			result.Say("origin could not be reached to fetch the head of pull request %s", result.PullRequest(number)))
+		return "", r.pullHeadNotFetched(number, read, err)
 	}
 
 	return head, nil
+}
+
+// pullHeadNotFetched is the stop of read, a fetch of the head of pull request number that failed
+// with err: a refusal when origin could not be reached.
+func (r Request) pullHeadNotFetched(number int, read string, err error) *result.Result {
+	return r.unreached(read, err,
+		result.Say("origin could not be reached to fetch the head of pull request %s", result.PullRequest(number)))
 }
 
 func (r Request) dirtyTree(files []string) *result.Result {
@@ -823,10 +838,8 @@ func (r Request) dirtyTree(files []string) *result.Result {
 // whose next step is its fix, or nil when it has none or does not exist; a read that fails is
 // the result r.Unread gives for it. It reads origin/<trunk>, so each command calls it right
 // after its own fetchTrunk.
-func (r Request) trunkAhead(ctx context.Context, deps Deps, ready Ready) *result.Result {
-	here := ready.Standing.Kind == git.OnBranch && ready.Standing.Branch == ready.Trunk
-
-	ahead, read, err := readTrunkAhead(ctx, deps, ready.Trunk, here)
+func (r Request) trunkAhead(ctx context.Context, s *survey) *result.Result {
+	ahead, read, err := s.trunkAhead(ctx)
 	if err != nil {
 		return r.Unread(read, err)
 	}
@@ -922,8 +935,8 @@ func detachedWith(trunk string) result.Phrase {
 
 // detachedKept refuses a detached HEAD with commits origin's trunk lacks, for reason, and lists
 // them. It returns nil when HEAD has none.
-func (r Request) detachedKept(ctx context.Context, deps Deps, trunk string, reason result.Phrase) *result.Result {
-	own, err := deps.Repo.CommitsPast(ctx, "HEAD", trunk)
+func (r Request) detachedKept(ctx context.Context, s *survey, reason result.Phrase) *result.Result {
+	own, err := s.detached(ctx)
 	if err != nil {
 		return r.Unread(readHeadCommits, err)
 	}

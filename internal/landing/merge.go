@@ -97,12 +97,14 @@ type mergeReady struct {
 func Merge(ctx context.Context, deps Deps, req Request) result.Result {
 	deps.startChecking()
 
-	ready, stop := Preconditions(ctx, deps, req)
+	s := newSurvey(deps)
+
+	ready, stop := preconditions(ctx, s, req)
 	if stop != nil {
 		return *stop
 	}
 
-	m, refusal := mergeChecks(ctx, deps, req, ready)
+	m, refusal := mergeChecks(ctx, s, req, ready)
 	if refusal != nil {
 		return *refusal
 	}
@@ -120,31 +122,31 @@ func Merge(ctx context.Context, deps Deps, req Request) result.Result {
 
 // mergeChecks runs merge's checks after the shared preconditions, and returns what the sequence
 // needs or the result of the first that refuses.
-func mergeChecks(ctx context.Context, deps Deps, req Request, ready Ready) (mergeReady, *result.Result) {
-	on, stop := branchChecks(ctx, deps, req, ready)
+func mergeChecks(ctx context.Context, s *survey, req Request, ready Ready) (mergeReady, *result.Result) {
+	on, stop := branchChecks(ctx, s, req, ready)
 	if stop != nil {
 		return mergeReady{}, stop
 	}
 
 	m := mergeReady{onBranch: on}
 
-	worktree, err := deps.Repo.WorktreeWith(ctx, ready.Trunk)
+	worktree, err := s.deps.Repo.WorktreeWith(ctx, ready.Trunk)
 	if err != nil {
 		return mergeReady{}, req.Unread(readWorktrees, err)
 	}
 
 	m.elsewhere = worktree != ""
 
-	m.tip, m.past, stop = commitsPast(ctx, deps, req, m.onBranch)
+	m.tip, m.past, stop = commitsPast(ctx, s, req, m.onBranch)
 	if stop != nil {
 		return mergeReady{}, stop
 	}
 
-	if stop = m.findPull(ctx, deps, req); stop != nil || m.resumed {
+	if stop = m.findPull(ctx, s, req); stop != nil || m.resumed {
 		return m, stop
 	}
 
-	if stop = m.pullChecks(ctx, deps, req); stop != nil {
+	if stop = m.pullChecks(ctx, s.deps, req); stop != nil {
 		return mergeReady{}, m.carrying(stop)
 	}
 
@@ -157,10 +159,10 @@ func mergeChecks(ctx context.Context, deps Deps, req Request, ready Ready) (merg
 // that pull request in the payload. An open pull request beside a merged one that carries every
 // commit is refused as `ils push` refuses it, with no payload: the branch already landed, so
 // neither is a pull request the run takes.
-func (m *mergeReady) findPull(ctx context.Context, deps Deps, req Request) *result.Result {
-	deps.startFinding()
+func (m *mergeReady) findPull(ctx context.Context, s *survey, req Request) *result.Result {
+	s.deps.startFinding()
 
-	open, landed, stop := pullRequest(ctx, deps, req, m.onBranch)
+	open, landed, stop := pullRequest(ctx, s, req, m.onBranch)
 
 	switch {
 	case stop == nil && open != nil && landed != nil:
