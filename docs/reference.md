@@ -127,8 +127,9 @@ the default branch:
 | Nowhere                                 | `! git branch <name> main && git branch -f main origin/main`, then the command again                           |
 
 The command again is the one that refused: `ils branch <name>`, `ils push`, or `ils merge`.
-In the Nowhere row, `ils status` names `ils merge` as the command again when the pull request is
-green and mergeable, and `ils push` otherwise. A read of the local default branch that fails other
+In the Nowhere row, `ils status` on a work branch names `ils merge` as the command again when the
+pull request is green and mergeable, and `ils push` otherwise. On a detached HEAD it names
+`ils branch <name>`. A read of the local default branch that fails other
 than by the time limit or an interrupt ends each of these commands broke, naming the read.
 
 ### ils push
@@ -257,26 +258,43 @@ What it reports depends on where HEAD stands:
   is a release commit, and whether rules protect the branch.
 - **On a detached HEAD:** the commits origin lacks.
 
-`Next:` names the first of these the state calls for, in the order `ils push` would refuse or end:
+`Next:` is the step the command you would run next ends on, taken from that command's own checks
+run over what the status read. On a work branch it is the step `ils push` would end on. On the
+default branch and on a detached HEAD it is the step `ils branch <name>` would end on, leaving out
+its two checks of the name. It names the first of these the state calls for, in the order those
+checks run:
 
 1. the fix of a local default branch with commits origin's lacks (see
    [A local default branch ahead of origin's](#a-local-default-branch-ahead-of-origins));
-2. start a branch with `ils branch <name>` once the work landed;
-3. bring in the branch's copy on origin when the branch is behind or diverged;
+2. bring in the branch's copy on origin when the branch is behind or diverged;
+3. start a branch with `ils branch <name>` once the work landed;
 4. `ils push` when there is work to push or checks to wait for;
 5. the fix for a red check or a conflict;
 6. a review to request;
 7. the pull request's title and body, then `ils merge`, when it is green and mergeable.
 
-Some states come before item 1. On a work branch, they are a failed precondition, a refusal of the
-origin, of `gh`, or of the repository (see [What push refuses](#what-push-refuses)), changed
-tracked files, and a failed read of the working tree's changes. On the default branch, they are a
-failed precondition and a failed read of the local default branch. A detached HEAD has no item 1:
-it ends on `git switch -c <name>`, then `ils push`, or on `ils branch <name>` when it has no
-commits origin's default branch lacks.
+A check that refuses before item 1 ends on its own step: a git that is missing or too old, and on
+a work branch a refusal of the origin, of `gh`, or of the repository (see
+[What push refuses](#what-push-refuses)) and changed tracked files. Three steps are worded for a
+status:
+
+- A read that fails ends on the fix of what failed, then `ils status`.
+- A branch with no commit past origin's default branch ends on committing the work, then
+  `ils push`.
+- The fix of a local default branch ahead of origin's names `ils merge` after it only when the pull
+  request is green and mergeable.
+
+An origin that does not answer ends on running the command again, wherever HEAD stands: `ils push`
+on a work branch, `ils branch <name>` elsewhere. A green pull request that is a draft ends on
+marking it ready, then its title and body, then `ils merge`. One that GitHub blocks, or one whose
+required check never reported, ends on reporting it and stopping, as `ils push` ends its wait. On a
+detached HEAD with commits origin's default branch lacks, it ends on `git switch -c <name>`, then
+`ils push`. When neither origin nor the last fetch can tell the branch from the default branch,
+where HEAD stands goes unread, and it ends on the fix of what failed.
 
 With `gh` missing or logged out, it says so, names the fix, and still reports what `git` alone can
-tell.
+tell. Off a work branch, neither `gh` nor origin's URLs change `Next:`: `ils branch` needs `git`
+alone.
 
 [Status JSON output](#status-json-output) describes `ils status --json`.
 

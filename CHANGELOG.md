@@ -46,8 +46,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   branch, and `ils push` and `ils status` reading that pull request as landed.
 - Fix an `ils` run failing as if origin could not be reached while another run fetched the same
   branch from another worktree.
-- Fix `ils status` naming `ils push` or the merge step next when those commands would refuse or
-  break on the same state.
+- Fix `ils status` naming a step other than the one `ils push` or `ils branch` ends on, for a
+  branch behind or diverged from origin's copy, an origin that does not answer, a detached HEAD,
+  and a green pull request that is a draft or blocked.
 - Refuse a mistyped command name after `ils help` or beside `--help`, and a malformed flag such as
   `---x`, instead of printing the root help or ending broke.
 - Fix `--json` output splitting in two for a reader that breaks lines at U+0085 (NEL).
