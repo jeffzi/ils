@@ -1,16 +1,16 @@
 # ils
 
-`ils` (Instrument Landing System) lands a change on GitHub in fixed, checked steps: start a branch,
-push it and open its pull request, wait for the checks, squash-merge it, and tag a release. It is
-built for the large language model (LLM) agents that do this work for you.
+`ils` (Instrument Landing System) lands a change on GitHub in fixed, checked steps. It starts a
+branch, pushes it and opens its pull request, waits for the checks, squash-merges it, and tags a
+release. It is built for the large language model (LLM) agents that do this work for you.
 
-An agent lands code the way its instructions describe, and instructions written as prose get
-skipped or paraphrased. The result is a merge while a check is red, a push to the default branch, a
+An agent lands code the way its instructions describe, and it skips or paraphrases instructions
+written as prose. The result is a merge while a check is red, a push to the default branch, a
 force push over someone else's commits, or a stale run reported as green. `ils` moves the steps that
 must not fail out of the prose and into a binary. Each command checks its preconditions first
-and refuses, with a reason, what must not happen. Each one ends with a `Next:` line and an exit code
-that an agent can act on without reading the rest. A guard refuses the destructive `git` commands
-before they run.
+and refuses, with a reason, what must not happen. Each one ends with an exit code, and with a
+`Next:` line whenever a step follows, that an agent can act on without reading the rest. A guard
+refuses the destructive `git` commands before they run.
 
 Everything `ils` does, you could do by hand with `git` and `gh`: it adds the order and the
 refusals. [VISION.md](VISION.md) ranks the principles behind these choices.
@@ -63,28 +63,31 @@ them, and names the one command that moves them to a branch of their own. `ils p
 `ils merge` refuse the same way. `ils` never moves those commits itself.
 
 [`ils push`](docs/reference.md#ils-push) pushes the branch by name, never with a force flag, opens
-its pull request on the first push, and waits for the checks of the pushed commit. It refuses the
-default branch, changes to tracked files, a branch behind or diverged from its copy on origin, and a
-branch that already merged. A red check, a conflict, or a required check that never ran ends at
-exit 5, never as green.
+its pull request on the first push, and waits for the checks of the pushed commit. It refuses,
+among others, the default branch, changes to tracked files, a branch behind or diverged from its
+copy on origin, and a branch that already merged.
+[What push refuses](docs/reference.md#what-push-refuses) lists every refusal. A red check, a
+conflict, or a required check that never ran ends at exit 5, never as green.
 
 [`ils merge`](docs/reference.md#ils-merge) squash-merges the pull request with its title and body
 as the commit message, deletes the branch, and leaves the checkout on origin's default branch. It
-never pushes and has no `--force`. It refuses a red or missing check, a draft, a review
-still required, a commit not yet on the pull request, and a title that is not a conventional commit
-subject. After a merge done on the web, it finishes the local steps.
+never pushes and has no `--force`. It refuses, among others, a red or missing check, a draft, and a
+review still required. It also refuses a commit not yet on the pull request, and a title that is not
+a conventional commit subject. [What merge refuses](docs/reference.md#what-merge-refuses) lists
+every refusal. After a merge done on the web, it finishes the local steps.
 
 [`ils status`](docs/reference.md#ils-status) says where the checkout stands and what to run next.
 It fetches from origin and writes nothing of yours.
 
 [`ils release <X.Y.Z>`](docs/reference.md#ils-release) finds the commit `chore: release v<X.Y.Z>`
-on origin's default branch, waits for its checks, tags it, pushes the tag, and creates the GitHub
-release from that version's section of `CHANGELOG.md`. It refuses a version that is not above every
-version tag on origin, a missing changelog section, and a failed check.
+on origin's default branch, waits for its checks, tags it, and pushes the tag. It then creates the
+GitHub release from that version's section of `CHANGELOG.md`. It refuses, among others, a version
+that is not above every version tag on origin, a missing changelog section, and a failed check.
+[What release refuses](docs/reference.md#what-release-refuses) lists every refusal.
 
 [`ils init claude`](docs/reference.md#ils-init) installs the agent skills that ship inside the
-binary and adds the guard's hook and the flow's permission rules to Claude Code's settings, under
-your home directory or, with `--project`, in the repository.
+binary and adds the guard's hook and the flow's permission rules to Claude Code's settings. It
+writes them under your home directory or, with `--project`, in the repository.
 [Use with Claude Code](#use-with-claude-code) walks through it.
 
 Each of these commands takes `--json`, `-d` for a trace of each `git` and `gh` call, and `--help`.
@@ -93,20 +96,21 @@ lists what each exit means.
 
 ## The flow
 
-| Step | What happens                                                               | Command               | Who runs it                                     |
-| ---- | -------------------------------------------------------------------------- | --------------------- | ----------------------------------------------- |
-| 1    | Start a branch from origin's default branch                                | `ils branch <name>`   | the agent                                       |
-| 2    | Commit                                                                     | `git commit`          | the agent                                       |
-| 3    | Push, open the pull request, wait for the checks; again until green        | `ils push`            | the agent, on your word on a private repository |
-| 4    | Write the pull request's title and body, which become the squash's message | `gh pr edit`          | agent or you                                    |
-| 5    | Squash-merge the pull request and delete the branch                        | `ils merge`           | you                                             |
-| 6    | Tag and publish a release, when you want one                               | `ils release <X.Y.Z>` | you                                             |
+| Step | What happens                                                                      | Command               | Who runs it                                     |
+| ---- | --------------------------------------------------------------------------------- | --------------------- | ----------------------------------------------- |
+| 1    | Start a branch from origin's default branch                                       | `ils branch <name>`   | the agent                                       |
+| 2    | Commit                                                                            | `git commit`          | the agent                                       |
+| 3    | Push, open the pull request, wait for the checks; again until green               | `ils push`            | the agent, on your word on a private repository |
+| 4    | Write the pull request's title and body, which become the squash commit's message | `gh pr edit`          | agent or you                                    |
+| 5    | Squash-merge the pull request and delete the branch                               | `ils merge`           | you                                             |
+| 6    | Tag and publish a release, when you want one                                      | `ils release <X.Y.Z>` | you                                             |
 
 The agent runs steps 1 to 4 on its own, except the push on a private repository. The worst a push
 leaves behind is a pull request with red checks, so on a public repository the agent pushes at the
 end of each request. On a private one it commits each request and pushes when you say so, since
-each push starts CI runs that spend your GitHub Actions minutes. There, the guard asks you before
-every `ils push` and `ils push --wait`. The merge and the release change what other people see, so
+each push starts continuous integration (CI) runs that spend your GitHub Actions minutes. There,
+the guard asks you before every `ils push` and `ils push --wait`. The merge and the release change
+what other people see, so
 they wait for your word.
 [Use with Claude Code](#use-with-claude-code) shows how to make Claude Code ask you before each.
 
@@ -116,7 +120,7 @@ they wait for your word.
 it is green. Write the title and body with the `gh pr edit` command `Next:` prints, then
 `ils merge`.
 
-**Continuous integration (CI) is red.** `ils push` exits 5 and prints the failing check, its URL,
+**CI is red.** `ils push` exits 5 and prints the failing check, its URL,
 and the end of its log. Fix the cause on the same branch, commit, and run `ils push` again. For a
 conflict, or a branch behind the default branch, merge the default branch into the branch,
 resolve, commit, and run `ils push` again.
@@ -130,7 +134,7 @@ request is still open, the agent asks you where a request outside it lands:
   changes into one commit, and you or the agent write its title and body once, at merge time, for
   the whole branch.
 
-**A run was killed, or something was done on the web.** Run the same command again. `ils push`
+**A run was killed, or you acted on the web.** Run the same command again. `ils push`
 pushes nothing new and waits for the same commit's checks. `ils merge` finishes the local steps of
 a merge made on the web. `ils release` finishes a release whose tag push or GitHub release failed.
 
@@ -150,7 +154,6 @@ land or publish a change without the checks of `ils`. It asks you before `ils me
 `ils release`, `gh pr merge`, and `gh release create`, and before `ils push` on a private
 repository.
 
-The guard runs on macOS and Linux.
 [Use with Claude Code](#use-with-claude-code) sets it up.
 [The guard](docs/reference.md#the-guard) in the reference lists every rule, and
 [What the guard does not see](docs/reference.md#what-the-guard-does-not-see) lists what gets past
@@ -286,9 +289,9 @@ The permission rules are the first layer and the guard the second. Add `deny` ru
 commands you never want run, such as `Bash(gh auth token *)`.
 
 In a repository made with `gh repo create --source . --push`, run
-`git remote set-head origin --auto` once, as a `!` command or outside the agent.
-[Pushes and the default branch](docs/reference.md#pushes-and-the-default-branch) says why the
-guard needs it.
+`git remote set-head origin --auto` once, as a `!` command or outside the agent. The guard then
+knows the default branch when origin cannot be reached.
+[Pushes and the default branch](docs/reference.md#pushes-and-the-default-branch) has the details.
 
 ## Reference
 

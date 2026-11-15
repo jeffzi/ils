@@ -10,9 +10,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - Add `ils guard`, which judges a shell command an agent is about to run against the `git`, `gh`,
-  and `ils` rules, refusing among others a commit on the default branch of a GitHub repository and
-  asking before `ils push` on a private or internal repository, and `ils parse`, which shows how the
-  guard reads a command.
+  and `ils` rules.
+- Add `ils parse`, which shows how the guard reads a command.
 - Add `ils hook claude` and the `ils` skill's `hook.sh`, which run the guard as Claude Code's
   `PreToolUse` hook and block every command when `ils` cannot answer.
 - Add `ils init claude`, which installs the agent skills from the binary and adds the guard's hook
@@ -29,8 +28,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   instead of starting a new branch on its own.
 - Report a `gh` reachable only through a relative `PATH` entry as missing.
 - Refuse `ils merge` on a default branch whose ruleset requires a merge queue.
-- Quote the words of a `Next:` line as `ils parse` does, so a name holding a `'`, a newline, or an
-  `=` prints in the form bash would write.
+- Quote the words of a `Next:` line as `ils parse` does, so bash reads them as printed.
 - Refuse `ils push`, `ils merge`, and `ils release` when any push URL of `origin` names another
   repository than its fetch URL.
 - **Breaking:** Require `gh` 2.81.0 or later, since `ils` reads `gh auth status --json` to tell a
@@ -52,29 +50,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   moved origin's default branch in between.
 - Fix `ils push`, `ils merge`, `ils branch`, and `ils status` fetching another branch than the one
   named when a branch's name starts with `refs/`.
-- Fix `ils status` naming a step other than the one `ils push` or `ils branch` ends on, for a
-  branch behind or diverged from origin's copy, an origin that does not answer, a detached HEAD,
-  and a green pull request that is a draft or blocked.
+- Fix `ils status` naming a next step other than the one `ils push` or `ils branch` ends on, or
+  one that then fails.
 - Refuse a mistyped command name after `ils help` or beside `--help`, and a malformed flag such as
   `---x`, instead of printing the root help or ending broke.
 - Fix `--json` output splitting in two for a reader that breaks lines at U+0085 (NEL).
 - Fix `ils release --debug` leaving the wait for the release commit's checks out of its trace.
 - Fix the `ils` agent skill leaving later commits out of the squash commit's message by rewriting
   the pull request's title and body after every green push.
-- Fix `ils merge --help` and `ils release --help` stating the full time limit as the wait for the
-  checks, which stops 20 seconds earlier.
+- Fix `ils merge --help` and `ils release --help` misstating how long the wait for the checks
+  lasts.
 - Fix `ils merge` saying the branch could not be deleted on origin when the time limit cut the
   delete short.
 - Fix `ils merge` repeating, in the squash commit's body, trailers the pull request's body already
   holds.
-- Fix `ils push`, `ils merge`, and `ils status` losing a red verdict when the time limit cut the
-  read of the failed log short.
-- Fix `ils push` and `ils merge` waiting to the time limit for the log of a canceled check, which
-  never gets one, and then telling you to fix and commit code instead of rerunning the check.
+- Fix `ils push` and `ils merge` waiting to the time limit for a canceled check's log, which never
+  comes, instead of telling you to rerun the check, and losing a red verdict, as `ils status` did,
+  when the time limit cut the read of a failed check's log short.
 - Fix `ils release` judging the checks of a workflow run created during its read as checks of no
   workflow.
-- Fix `ils status` suggesting `ils push`, which then failed, when origin refuses the read of its
-  default branch.
 - Fix `ils status` reporting checks and a merge step for a pull request head other than the
   branch's tip, and saying no check reported when a required check never reported.
 - Fix `ils push` and `ils release` reporting a push as done when one of several push URLs refused
