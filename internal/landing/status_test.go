@@ -578,8 +578,8 @@ func aheadOfCopy(f *gittest.Fixture) {
 	f.Commits(topic, "fix a typo")
 }
 
-// failCopyFetch makes origin answer the questions about its trunk and whether it has the branch, and
-// fail the fetch of the branch's copy after them.
+// failCopyFetch makes origin answer the question about its trunk, the fetch of it, and whether it
+// has the branch, and fail the fetch of the branch's copy after them.
 func failCopyFetch(t *testing.T, s *scene) {
 	t.Helper()
 

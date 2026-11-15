@@ -2,6 +2,7 @@ package landing_test
 
 import (
 	"cmp"
+	"context"
 	"os"
 	"slices"
 	"strings"
@@ -31,8 +32,6 @@ const (
 
 	// landedBody is the body of the message of pull request 12 that toLand reads.
 	landedBody = "Tidy the readme."
-
-	refusedMerge = "HTTP 405: Head branch was modified"
 )
 
 func detachedLine() string {
@@ -370,4 +369,44 @@ func TestMerge_WhenAStepOfTheLocalEndingFails_SaysWhichStepsRan(t *testing.T) {
 	t.Parallel()
 
 	runLandings(t, endingBreaks())
+}
+
+// stallingAfterLand returns the arrange of a run whose git calls whose arguments start with words
+// stall, as stallingGit makes them, once the merge went through, and the hook that turns that on
+// as the merge lands. An interrupt ends the context once a stalled call is under way. It cannot run
+// in a parallel test.
+func stallingAfterLand(
+	words []string,
+) (runCtx func(*testing.T, *scene) context.Context, landed func(*testing.T, *gittest.Fixture)) {
+	var arm func()
+
+	runCtx = func(t *testing.T, s *scene) context.Context {
+		t.Helper()
+
+		var ctx context.Context
+		arm = armedLater(t, func() { ctx = byInterrupt().stallingGit(words)(t, s) })
+
+		return ctx
+	}
+	landed = func(t *testing.T, _ *gittest.Fixture) {
+		t.Helper()
+		arm()
+	}
+
+	return runCtx, landed
+}
+
+func TestMerge_WhenAnInterruptEndsTheFetchOfTheLocalEnding_BrokeNamingTheInterrupt(t *testing.T) {
+	// Not parallel: it puts a stalling git first on PATH with t.Setenv.
+	text := countLine() + mergedLine() + deletedLine() + expect("Ran", switchStep, "Ran", dropStep, pullStep,
+		"stopped", "interrupted", "interrupted", pullStep, pullStep, "by hand")
+	runCtx, landed := stallingAfterLand([]string{"fetch"})
+
+	run := runMergeOn(t, setting{script: toLand(nil, nil), runCtx: runCtx, landed: landed})
+
+	assertEndedBy(t, run.got, run.gitDir, ended{text: mark(text, run.tip), req: mergeRequest(), outcome: result.Broke})
+	want := sent(landedBody, true, "")
+	want.SHA = run.tip
+	assert.Check(t, is.DeepEqual(mergePayload(t, run.got), want, cmpopts.EquateEmpty()))
+	assert.Check(t, is.Equal(run.fixture.Git("rev-parse", "--abbrev-ref", "HEAD"), trunk))
 }
