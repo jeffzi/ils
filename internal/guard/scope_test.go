@@ -71,6 +71,13 @@ func TestParse_WhenTheDirectoryCannotBeFollowed_ReportsItUnknown(t *testing.T) {
 		{name: "move in a loop body", command: "while true; do cd sub; done; git commit"},
 		{name: "move in a case arm", command: "case x in y) cd sub;; esac; git commit"},
 		{name: "after an or list that may have moved", command: "true || cd sub; git commit"},
+		{name: "after an or list whose right side goes on", command: "cd sub || echo failed; git commit"},
+		{name: "after an or list whose right side returns at the top level", command: "cd sub || return; git commit"},
+		{name: "after an or list whose right side exits a subshell", command: "cd sub || ( exit ); git commit"},
+		{name: "after an or list whose right side is a group that may go on", command: "cd sub || { test -n x && exit; }; git commit"},
+		{name: "after an or list whose right side calls a function named exit", command: "exit() { :; }; cd sub || exit; git commit"},
+		{name: "after an or list whose right side exits with a redirect", command: "cd sub || exit 1 > out; git commit"},
+		{name: "after an or list whose right side exits as a job", command: "cd sub || { exit & }; git commit"},
 		{name: "cd -P through a link and back up", command: "cd -P link/..; git commit"},
 		{name: "cd .. after cd -P inside eval", command: "eval 'cd -P sub'; cd ..; git commit"},
 		{name: "move in a pipeline", command: "true | cd sub; git commit"},
@@ -85,6 +92,28 @@ func TestParse_WhenTheDirectoryCannotBeFollowed_ReportsItUnknown(t *testing.T) {
 			got := lastWith(t, tt.command, guard.Caller{Env: homeIn(tt.env, home), Dir: start})
 
 			assert.Check(t, is.Equal(got.Dir, ""), "Parse(%q) directory of %v", tt.command, got.Words)
+		})
+	}
+}
+
+func TestParse_WhenTheRightSideOfAnOrListEndsTheShell_ReportsTheDirectoryTheLeftSideLeft(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{name: "exit", command: "cd sub || exit; git commit"},
+		{name: "exit with a status", command: "cd sub || exit 1; git commit"},
+		{name: "group whose last command is exit", command: "cd sub || { echo failed >&2; exit 1; }; git commit"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := last(t, tt.command)
+
+			assert.Check(t, is.Equal(got.Dir, start+"/sub"), "Parse(%q) directory of git commit", tt.command)
 		})
 	}
 }

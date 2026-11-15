@@ -1443,7 +1443,10 @@ The invocation's `dir` is absent when the guard cannot tell the directory the sh
 
 - after a `popd`, a `source` or `.`, or a `cd` or `pushd` the guard cannot follow (`cd "$d"`);
 - after any change of directory, even one the guard can follow, that may or may not have run (in an
-  `if`, a `case`, a loop, an `&&` or `||` list, or a pipe);
+  `if`, a `case`, a loop, an `&&` or `||` list, or a pipe). An `||` list whose right side always
+  ends the shell, as `cd /repo || exit 1` or `cd /repo || { echo failed; exit 1; }` does, leaves
+  the directory its left side moved to. A right side of `return` does not count: outside a
+  function bash goes on after it;
 - after a call of a shell function whose body may change directory.
 
 A later `cd` or `pushd` to an absolute path gives the guard a known directory again, unless it is

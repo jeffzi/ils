@@ -265,12 +265,15 @@ func (w *walker) binary(cmd *syntax.BinaryCmd, sc *scope) {
 		w.andList(cmd, sc)
 	case syntax.OrStmt:
 		// The right side runs only once the left side failed, which may be before or after any
-		// change it makes.
+		// change it makes. A right side that always ends leaves only the left side's success to go
+		// on from.
 		before := *sc
 		w.stmt(cmd.X, sc)
 		other := merge(before, *sc)
 		w.stmt(cmd.Y, &other)
-		*sc = merge(*sc, other)
+		if !ends(cmd.Y, &other) {
+			*sc = merge(*sc, other)
+		}
 	default:
 		// bash runs each side of a pipe in a subshell, and zsh runs the last one in the shell
 		// itself, so a change either side makes may or may not hold after it.
@@ -288,6 +291,28 @@ func (w *walker) binary(cmd *syntax.BinaryCmd, sc *scope) {
 		w.stmt(cmd.Y, &right)
 		w.beside--
 		*sc = merge(merge(*sc, left), right)
+	}
+}
+
+// ends reports whether stmt, walked to sc, always ends the shell, so no command after it runs: an
+// `exit` no function of the command stands in for, or a `{ …; }` group whose last statement ends.
+// A statement with a redirect may fail to open it and go on without running, and one run as a job
+// ends only its own subshell.
+//
+// A `return` does not end: at the top level bash prints an error for it and goes on, and in a
+// function body the scope the walk carries past the body would lose the shell that returned early.
+func ends(stmt *syntax.Stmt, sc *scope) bool {
+	if runsAsJob(stmt) || len(stmt.Redirs) > 0 {
+		return false
+	}
+
+	switch cmd := stmt.Cmd.(type) {
+	case *syntax.Block:
+		return len(cmd.Stmts) > 0 && ends(cmd.Stmts[len(cmd.Stmts)-1], sc)
+	case *syntax.CallExpr:
+		return len(cmd.Args) > 0 && cmd.Args[0].Lit() == "exit" && sc.functions["exit"] == nil
+	default:
+		return false
 	}
 }
 
