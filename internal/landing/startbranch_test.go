@@ -95,15 +95,19 @@ func TestStartBranch_WhenHEADIsDetachedWithNoCommitOfItsOwn_StartsAtOriginsTrunk
 
 func TestStartBranch_WhenGitCannotHoldTheName_RefusesNamingIt(t *testing.T) {
 	t.Parallel()
-	const name = "logo..draft"
-	s := branchScene(t, nil)
-	before := s.written()
-	bad, ok := errors.AsType[*git.BranchNameError](s.deps.Repo.CheckBranchName(t.Context(), name))
-	assert.Assert(t, ok, "CheckBranchName(%q) gave no *git.BranchNameError", name)
+	for _, name := range []string{"logo..draft", ""} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			s := branchScene(t, nil)
+			before := s.written()
+			bad, ok := errors.AsType[*git.BranchNameError](s.deps.Repo.CheckBranchName(t.Context(), name))
+			assert.Assert(t, ok, "CheckBranchName(%q) gave no *git.BranchNameError", name)
 
-	got := startBranch(t, s, name)
+			got := startBranch(t, s, name)
 
-	assertRefusedBranch(t, s, got, branchRefusal{name: name, before: before, want: expect(name, bad.Reason())})
+			assertRefusedBranch(t, s, got, branchRefusal{name: name, before: before, want: expect(name, bad.Reason())})
+		})
+	}
 }
 
 // takenName is a branch that takes the name the command is given.

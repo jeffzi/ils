@@ -262,7 +262,12 @@ type Forge interface {
 // Request is the command a result is for and the words it was given.
 type Request struct {
 	Command string
-	Words   []string
+	// ChecksOf is set by `ils status` alone, to the command whose checks it runs to tell its `Next:`:
+	// PushCommand on a work branch, BranchCommand on the trunk or a detached HEAD, and empty where it
+	// runs none. A step that runs the checks again names that command, and `ils status` itself when
+	// it is empty. A command line never sets it.
+	ChecksOf string
+	Words    []string
 	// Args are the command's positional words, as typed: for `ils branch`, the name.
 	Args []string
 	// WaitFlag is the --wait flag the user typed to `ils push`, `ils merge` or `ils release`, which
@@ -320,10 +325,15 @@ func (r Request) limitWords() span {
 }
 
 // ilsCommand is the command that a step of the checks the user takes first (a fix of git or ssh, a
-// login to gh, a change to the branch) runs again: the request's own, as ownCommand prints it, and for a status a plain
-// `ils push`, whose checks a status runs to tell its `Next:`.
+// login to gh, a change to the branch) runs again: the request's own, as ownCommand prints it. For
+// a status it is the command whose checks the status runs to tell its `Next:`, as ChecksOf names
+// it: `ils branch <name>`, since a status has no name to print, or a plain `ils push`.
 func (r Request) ilsCommand() result.Name {
-	if r.Command == StatusCommand {
+	switch {
+	case r.Command != StatusCommand:
+	case r.ChecksOf == BranchCommand:
+		return result.Command(BranchCommand + " <name>")
+	case r.ChecksOf == PushCommand:
 		return result.Command(PushCommand)
 	}
 
@@ -797,10 +807,14 @@ func (r Request) pushOfChange() result.Name {
 }
 
 // again is the next step that runs the request's command again as it stands, with the --wait flag
-// the user typed, if any. For a status it is a plain `ils push`: a check it runs that ends there
-// is push's, so push's run is the one to make.
+// the user typed, if any. For a status it is the run of the command whose check ends there, as
+// ChecksOf names it: a branch started with `ils branch <name>`, or a plain `ils push`.
 func (r Request) again() result.Next {
-	if r.Command == StatusCommand {
+	switch {
+	case r.Command != StatusCommand:
+	case r.ChecksOf == BranchCommand:
+		return startBranchStep()
+	case r.ChecksOf == PushCommand:
 		return pushAgain()
 	}
 

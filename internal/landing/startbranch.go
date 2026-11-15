@@ -67,10 +67,16 @@ type newBranch struct {
 }
 
 // checks runs the checks of `ils branch` after the git-only preconditions, and returns the sha of
-// origin's trunk it fetched or the result of the first that refuses.
+// origin's trunk it fetched or the result of the first that refuses. A status, which has no name,
+// runs them leaving out the two checks of the name; `ils branch` runs them all, whatever name it
+// was given.
 func (n newBranch) checks(ctx context.Context, s *survey, req Request) (string, *result.Result) {
-	if stop := validName(ctx, s.deps, req, n.name); stop != nil {
-		return "", stop
+	named := req.Command != StatusCommand
+
+	if named {
+		if stop := validName(ctx, s.deps, req, n.name); stop != nil {
+			return "", stop
+		}
 	}
 
 	start, stop := fetchTrunk(ctx, s, req, n.Trunk)
@@ -82,8 +88,10 @@ func (n newBranch) checks(ctx context.Context, s *survey, req Request) (string, 
 		return "", stop
 	}
 
-	if stop := freeName(ctx, s.deps, req, n.name); stop != nil {
-		return "", stop
+	if named {
+		if stop := freeName(ctx, s.deps, req, n.name); stop != nil {
+			return "", stop
+		}
 	}
 
 	if n.Standing.Kind == git.Detached {
