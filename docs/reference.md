@@ -529,8 +529,9 @@ result it prints; see [Stopping a run](#stopping-a-run).
 A word on the `Next:` line that the shell would read otherwise is quoted as bash reads it: in
 single quotes, in double quotes when it holds a `'` (`"rock'n'roll"`), and as `$'…'` when it holds
 a control character such as a newline. A word holding `=` and a shell keyword such as `if` are
-quoted too. A word holding a `!` is put in single quotes even beside a `'`, since an interactive
-shell reads a bare or double-quoted `!` as a history expansion.
+quoted too. A word holding a `!` is put in single quotes even beside a `'`, or kept in `$'…'`
+beside a control character, since an interactive shell reads a bare or double-quoted `!` as a
+history expansion.
 
 ### Done and broke by command
 
@@ -588,8 +589,8 @@ from GitHub being slow: it waits until the time limit and ends pending, and the 
 writes nothing. The next `ils push` refuses the branch as behind its copy on origin.
 
 A failed check whose workflow run has not yet made its log available keeps the wait going until it
-does. A canceled check gets no log, so it ends the wait red at once, and the excerpt says it has no
-log.
+does. A canceled check gets no log, so it ends the wait red at once, the excerpt says it has no
+log, and `Next:` says to rerun it with `gh run rerun` before running the command again.
 
 When a pending `ils merge` names `ils push` on its `Next:` line, run that push with the same
 `--wait` as the merge, so that it takes the same column of the table above. If your script or

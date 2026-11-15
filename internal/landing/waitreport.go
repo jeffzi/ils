@@ -157,20 +157,23 @@ func (w Waited) neverReportedLine() result.Phrase {
 }
 
 // redReport is a deciding check that failed or was canceled, with the end of its log as the
-// excerpt, whose next step runs the push end names as pushOfChange once the check is fixed.
+// excerpt, whose next step runs the push end names as pushOfChange once the check is fixed, or
+// once a canceled check is rerun.
 func (w Waited) redReport(end ending) waitReport {
 	failed, _ := w.Verdict.Failed()
 
 	reason := result.Say("the check %s failed", failed.Name)
+	next := result.NextStep("fix the failing check, commit, and run %s again", end.pushOfChange)
 	if failed.Bucket == forge.BucketCanceled {
 		reason = result.Say("the check %s was canceled", failed.Name)
+		next = result.NextStep("rerun the canceled check %s with `gh run rerun`"+thenRunAgain, failed.Name, end.pushOfChange)
 	}
 
 	return waitReport{
 		lines:   append([]result.Phrase{failedLine(failed)}, w.mergeStateLines()...),
 		excerpt: w.excerpt(),
 		reason:  reason,
-		next:    result.NextStep("fix the failing check, commit, and run %s again", end.pushOfChange),
+		next:    next,
 	}
 }
 

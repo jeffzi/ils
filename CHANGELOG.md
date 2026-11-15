@@ -48,6 +48,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   branch, and `ils push` and `ils status` reading that pull request as landed.
 - Fix an `ils` run failing as if origin could not be reached while another run fetched the same
   branch from another worktree.
+- Fix `ils branch` starting the branch at a newer commit than the one it reports when another fetch
+  moved origin's default branch in between.
 - Fix `ils push`, `ils merge`, `ils branch`, and `ils status` fetching another branch than the one
   named when a branch's name starts with `refs/`.
 - Fix `ils status` naming a step other than the one `ils push` or `ils branch` ends on, for a
@@ -68,7 +70,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Fix `ils push`, `ils merge`, and `ils status` losing a red verdict when the time limit cut the
   read of the failed log short.
 - Fix `ils push` and `ils merge` waiting to the time limit for the log of a canceled check, which
-  never gets one, instead of ending red at once.
+  never gets one, and then telling you to fix and commit code instead of rerunning the check.
 - Fix `ils release` judging the checks of a workflow run created during its read as checks of no
   workflow.
 - Fix `ils status` suggesting `ils push`, which then failed, when origin refuses the read of its

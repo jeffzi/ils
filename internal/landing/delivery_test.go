@@ -102,6 +102,9 @@ func nextTrunk() string { return trunkNext(pushCommand()) }
 // redNext is the `Next:` line that fixes the failing check, then runs cmd again.
 func redNext(cmd landingCommand) string { return cmd.after("fix the failing check") }
 
+// rerunNext is the `Next:` line that reruns the canceled check lint, then runs cmd again.
+func rerunNext(cmd landingCommand) string { return expect("lint") + cmd.after("gh run rerun") }
+
 // trunkNext is the `Next:` line that merges the trunk into the branch and resolves the conflicts,
 // then runs cmd again.
 func trunkNext(cmd landingCommand) string {

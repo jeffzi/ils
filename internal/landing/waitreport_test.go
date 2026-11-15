@@ -26,11 +26,11 @@ func redRow(name string, bucket forge.Bucket, log forge.FailedLog, excerpt strin
 }
 
 // redRowBy is redRow, unnamed, for the push cmd, whose `Next:` line names cmd once the check is
-// fixed.
+// fixed, or once a canceled check is rerun.
 func redRowBy(cmd landingCommand, bucket forge.Bucket, log forge.FailedLog, excerpt string) pushRow {
-	said := "failed"
+	said, next := "failed", redNext(cmd)
 	if bucket == forge.BucketCanceled {
-		said = "was canceled"
+		said, next = "was canceled", rerunNext(cmd)
 	}
 
 	lint := lintFailed()
@@ -54,7 +54,7 @@ func redRowBy(cmd landingCommand, bucket forge.Bucket, log forge.FailedLog, exce
 		want: finish{
 			outcome: result.DeliveredNotGreen, reason: expect("lint", said), payload: payload, req: cmd.req,
 			text: pushedLine() + openedLine() + expect("lint", said, lintURL) +
-				state + excerpt + expect("lint", said) + redNext(cmd),
+				state + excerpt + expect("lint", said) + next,
 		},
 	}
 }
@@ -440,21 +440,25 @@ func boundMovedRows(cmd landingCommand) []pushRow {
 	}
 }
 
-// boundChangeRows are the pushes cmd runs that end asking for a change to the branch before cmd
-// runs again: a failed check, and a pull request that conflicts with the trunk. A push that
-// repeats the plain push has only the failed check, which pins its `Next:` line.
+// boundChangeRows are the pushes cmd runs that end asking for a step before cmd runs again: a
+// failed check, a canceled check, and a pull request that conflicts with the trunk. A push that
+// repeats the plain push has only the failed and the canceled check, which pin its `Next:` lines.
 func boundChangeRows(cmd landingCommand) []pushRow {
 	short := forge.FailedLog{Text: steps(1, 3), State: forge.FailedLogRead}
 
 	red := redRowBy(cmd, forge.BucketFail, short, steps(1, 3))
 	red.name = "a check failed"
 
+	canceled := redRowBy(cmd, forge.BucketCanceled, forge.FailedLog{}, expect("lint", "has no log"))
+	canceled.name = "a check was canceled"
+
 	if repeatsPlainPush(cmd) {
-		return []pushRow{red}
+		return []pushRow{red, canceled}
 	}
 
 	return []pushRow{
 		red,
+		canceled,
 		stoppedRowBy(cmd, forge.MergeConflicting, "conflicts with the trunk"),
 	}
 }
