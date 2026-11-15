@@ -46,6 +46,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   branch, and `ils push` and `ils status` reading that pull request as landed.
 - Fix an `ils` run failing as if origin could not be reached while another run fetched the same
   branch from another worktree.
+- Fix `ils push`, `ils merge`, `ils branch`, and `ils status` fetching another branch than the one
+  named when a branch's name starts with `refs/`.
 - Fix `ils status` naming a step other than the one `ils push` or `ils branch` ends on, for a
   branch behind or diverged from origin's copy, an origin that does not answer, a detached HEAD,
   and a green pull request that is a draft or blocked.

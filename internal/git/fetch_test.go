@@ -11,16 +11,52 @@ import (
 	"github.com/jeffzi/ils/internal/gittest"
 )
 
-func TestRepo_Fetch_WhenRefOnOrigin_ReturnsFetchedSHA(t *testing.T) {
+func TestRepo_FetchPullHead_WhenTheHeadIsOnOrigin_ReturnsFetchedSHA(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
 	want := f.Commits(topic, "one")[0]
 	f.PullRef(pullNumber, want)
 
-	got, err := newRepo(f).Fetch(t.Context(), pullRef)
-	assert.NilError(t, err, "Fetch(%q)", pullRef)
+	got, err := newRepo(f).FetchPullHead(t.Context(), pullNumber)
+	assert.NilError(t, err, "FetchPullHead(%d)", pullNumber)
 
-	assert.Check(t, is.Equal(got, want), "Fetch(%q)", pullRef)
+	assert.Check(t, is.Equal(got, want), "FetchPullHead(%d)", pullNumber)
+}
+
+// refNamedBranch puts on origin a branch literally named refs/heads/<topic> at another commit than
+// origin's topic, and returns that branch's name and tip.
+func refNamedBranch(t *testing.T, f *gittest.Fixture) (name, tip string) {
+	t.Helper()
+	tip = f.Commits(topic, "one")[0]
+	f.Push(topic)
+	f.AdvanceOrigin(topic)
+	name = "refs/heads/" + topic
+	f.OriginGit("update-ref", "refs/heads/"+name, tip)
+
+	return name, tip
+}
+
+func TestRepo_Fetch_WhenTheBranchNameStartsWithRefs_ReturnsTheTipOfTheBranchSoNamed(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	name, want := refNamedBranch(t, f)
+
+	got, err := newRepo(f).Fetch(t.Context(), name)
+	assert.NilError(t, err, "Fetch(%q)", name)
+
+	assert.Check(t, is.Equal(got, want), "Fetch(%q)", name)
+}
+
+func TestRepo_Fetch_WhenTheBranchNameStartsWithRefs_PutsTheTrackingRefOfTheBranchAtItsTip(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	name, want := refNamedBranch(t, f)
+
+	_, err := newRepo(f).Fetch(t.Context(), name)
+	assert.NilError(t, err, "Fetch(%q)", name)
+
+	tracking := "refs/remotes/origin/" + name
+	assert.Check(t, is.Equal(f.Git("for-each-ref", "--format=%(objectname)", tracking), want), tracking)
 }
 
 func TestRepo_Fetch_WhenItReturns_LeavesNoRefOfItsOwn(t *testing.T) {

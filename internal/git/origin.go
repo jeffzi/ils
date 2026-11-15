@@ -480,29 +480,43 @@ func (r Repo) OriginTags(ctx context.Context) ([]Tag, error) {
 const (
 	refsPrefix = "refs/"
 
-	// fetchedRefs prefixes the ref Fetch stores a fetch in until it has read it.
+	// fetchedRefs prefixes the ref fetchRef stores a fetch in until it has read it.
 	fetchedRefs = "refs/ils/fetched/"
 )
 
-// Fetch fetches one ref from origin, a branch name or a full ref, and returns the fetched sha.
+// Fetch fetches origin's branch named branch and returns the fetched sha.
 //
-// A branch name is fetched as the branch, never as a tag of the same name. The fetch is stored in a
-// ref under refs/ils/fetched/ named for this call alone, read back from there and deleted, whether
-// the fetch or the read succeeds or fails: FETCH_HEAD is shared with every other fetch in the
-// worktree, and any fixed name with every fetch in the repository, another ils run in another
-// worktree included, which can lock, rewrite or delete them before they are read. A fetch that
-// fails is an ErrRefused failure when origin turned the caller away, and an ErrRemote failure
-// otherwise.
+// The name is always that of a branch, even one that starts with refs/: a branch named
+// refs/heads/x is origin's refs/heads/refs/heads/x, never its branch x. It is never fetched as a
+// tag of the same name either. A failed fetch is an ErrRefused failure when origin turned the
+// caller away and an ErrRemote failure otherwise; a failed move of the remote-tracking ref returns
+// git's error.
 //
-// A fetched branch also moves its remote-tracking ref, refs/remotes/origin/<branch>, to the fetched
+// Fetch also moves the branch's remote-tracking ref, refs/remotes/origin/<branch>, to the fetched
 // sha, even when the clone's remote.origin.fetch leaves the branch out: every later read of origin's
-// branch goes through that ref, and must see the tip this fetch returned. The fetch itself moves no
-// remote-tracking ref.
-func (r Repo) Fetch(ctx context.Context, ref string) (string, error) {
-	if !strings.HasPrefix(ref, refsPrefix) {
-		ref = BranchRefPrefix + ref
+// branch goes through that ref, and must see the tip this fetch returned.
+func (r Repo) Fetch(ctx context.Context, branch string) (string, error) {
+	sha, err := r.fetchRef(ctx, BranchRefPrefix+branch)
+	if err != nil {
+		return "", err
 	}
 
+	if _, err := r.Runner.Run(ctx, "update-ref", remotesRef+branch, sha); err != nil {
+		return "", err
+	}
+
+	return sha, nil
+}
+
+// fetchRef fetches the full ref ref from origin and returns the fetched sha.
+//
+// The fetch is stored in a ref under refs/ils/fetched/ named for this call alone, read back from
+// there and deleted, whether the fetch or the read succeeds or fails: FETCH_HEAD is shared with
+// every other fetch in the worktree, and any fixed name with every fetch in the repository, another
+// ils run in another worktree included, which can lock, rewrite or delete them before they are
+// read. A fetch that fails is an ErrRefused failure when origin turned the caller away, and an
+// ErrRemote failure otherwise. The fetch moves no remote-tracking ref.
+func (r Repo) fetchRef(ctx context.Context, ref string) (string, error) {
 	fetched := fetchedRefs + rand.Text() + "/" + strings.TrimPrefix(ref, refsPrefix)
 
 	// --no-tags: a fetch that stores a ref also stores every tag of origin on the commits it brought,
@@ -525,27 +539,24 @@ func (r Repo) Fetch(ctx context.Context, ref string) (string, error) {
 		return "", err
 	}
 
-	if branch, isBranch := strings.CutPrefix(ref, BranchRefPrefix); isBranch {
-		if _, err := r.Runner.Run(ctx, "update-ref", remotesRef+branch, sha); err != nil {
-			return "", err
-		}
-	}
-
 	return sha, nil
 }
 
 // pullRefs prefixes the refs GitHub keeps on origin for its pull requests, each under its number.
 const pullRefs = "refs/pull/"
 
-// FetchPullHead fetches from origin the head GitHub keeps of the pull request numbered number, as
-// Fetch fetches a ref, and returns its sha.
+// FetchPullHead fetches from origin the head GitHub keeps of the pull request numbered number, and
+// returns its sha. It moves no remote-tracking ref. A failed fetch is an ErrRefused failure when
+// origin turned the caller away and an ErrRemote failure otherwise.
 func (r Repo) FetchPullHead(ctx context.Context, number int) (string, error) {
-	return r.Fetch(ctx, pullRefs+strconv.Itoa(number)+"/head")
+	return r.fetchRef(ctx, pullRefs+strconv.Itoa(number)+"/head")
 }
 
-// FetchTag fetches the tag name from origin, as Fetch fetches a ref, and returns its sha.
+// FetchTag fetches the tag name from origin and returns its sha. It moves no remote-tracking ref. A
+// failed fetch is an ErrRefused failure when origin turned the caller away and an ErrRemote
+// failure otherwise.
 func (r Repo) FetchTag(ctx context.Context, name string) (string, error) {
-	return r.Fetch(ctx, tagsRef+name)
+	return r.fetchRef(ctx, tagsRef+name)
 }
 
 // FastForwardTrunk moves the checked-out trunk to origin's tip of trunk, and leaves it where it is
