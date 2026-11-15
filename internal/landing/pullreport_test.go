@@ -185,7 +185,10 @@ func TestStatus_WhenTheOnlyPullRequestWasMergedIntoAnotherBase_EndsOnTheStepOfMe
 
 // staleRow is one way the open pull request's head is a commit other than the branch's tip.
 type staleRow struct {
-	name string
+	// heads returns the heads the reads of the head show in turn, given the branch's tip and the
+	// other commit.
+	heads func(tip, other string) []string
+	name  string
 	// listedBehind is whether the listing of the branch's pull requests names the other commit as
 	// the head while the read of the head shows the tip, rather than the read of the head naming it.
 	listedBehind bool
@@ -195,8 +198,18 @@ func TestStatus_WhenThePullRequestsHeadIsNotTheTip_ReportsNoVerdictAndEndsOnAPus
 	t.Parallel()
 
 	tests := []staleRow{
-		{name: "GitHub lags a push", listedBehind: true},
-		{name: "the head moves during the read", listedBehind: false},
+		{
+			name: "GitHub lags a push", listedBehind: true,
+			heads: func(tip, _ string) []string { return []string{tip} },
+		},
+		{
+			name:  "the head moves during the read",
+			heads: func(_, other string) []string { return []string{other} },
+		},
+		{
+			name:  "the head moves after the checks are read",
+			heads: func(tip, other string) []string { return []string{tip, other} },
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -205,13 +218,16 @@ func TestStatus_WhenThePullRequestsHeadIsNotTheTip_ReportsNoVerdictAndEndsOnAPus
 			var other, tip string
 
 			build := greenOpen().with(func(script *forgetest.Script, _ string) {
-				shown := other
 				if tt.listedBehind {
-					shown = tip
 					script.FindChanges[0].Value[0].HeadSHA = other
 				}
 
-				script.Head = shows(forge.Head{SHA: shown, MergeState: forge.MergeClean})
+				var heads []forge.Head
+				for _, sha := range tt.heads(tip, other) {
+					heads = append(heads, forge.Head{SHA: sha, MergeState: forge.MergeClean})
+				}
+
+				script.Head = shows(heads...)
 			})
 			s := statusScene(t, func(f *gittest.Fixture) {
 				f.Publish(topic)
@@ -227,6 +243,18 @@ func TestStatus_WhenThePullRequestsHeadIsNotTheTip_ReportsNoVerdictAndEndsOnAPus
 			assertSays(t, "Next:"+nextOf(t, got.text), nextPush())
 		})
 	}
+}
+
+func TestStatus_WhenThePullRequestsHeadStaysOnTheTip_KeepsTheVerdictWithTheMergeStateReadAfterTheChecks(t *testing.T) {
+	t.Parallel()
+	build := greenOpen().showing(cleanHead(), inState(forge.MergeConflicting))
+	s := statusScene(t, publishTopic, build)
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	assert.Assert(t, got.status.PullRequest != nil)
+	assert.Check(t, is.Equal(got.status.PullRequest.Verdict, forge.VerdictGreen))
+	assert.Check(t, is.Equal(got.status.PullRequest.MergeState, forge.MergeConflicting))
 }
 
 func TestStatus_WhenOnlyACheckNotRequiredReported_NamesTheRequiredOneThatNeverReported(t *testing.T) {

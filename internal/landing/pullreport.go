@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/jeffzi/ils/internal/forge"
+	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/result"
 )
 
@@ -23,7 +24,7 @@ func (r *reading) readPulls(ctx context.Context) {
 		return
 	}
 
-	changes, err := r.deps.Forge.FindChanges(ctx, r.repo, r.on.branch)
+	changes, err := r.survey.changes(ctx)
 	if err != nil {
 		r.failed(readChanges, err)
 
@@ -80,14 +81,7 @@ func (r *reading) readLanded(ctx context.Context, change forge.Change) {
 		return
 	}
 
-	head, err := r.deps.Repo.FetchPullHead(ctx, change.Number)
-	if err != nil {
-		r.failed(readMergedHead, err)
-
-		return
-	}
-
-	shared, unlanded, read, err := r.on.carriedBy(ctx, r.deps, head)
+	shared, unlanded, read, err := r.carried(ctx, change.Number)
 
 	switch pull := result.PullRequest(change.Number); {
 	case err != nil:
@@ -101,6 +95,22 @@ func (r *reading) readLanded(ctx context.Context, change forge.Change) {
 		r.say(result.Say("Pull request %s was merged without the commits listed here", pull))
 		r.say(listed(unlanded)...)
 	}
+}
+
+// carried fetches the head of the merged pull request number and reads whether it shares a commit
+// past the trunk with the branch, and the branch's commits it lacks, as push does, or against
+// origin's trunk as last fetched when origin did not answer.
+func (r *reading) carried(ctx context.Context, number int) (bool, []git.Commit, string, error) {
+	if !r.offline {
+		return r.survey.carried(ctx, number)
+	}
+
+	head, err := r.deps.Repo.FetchPullHead(ctx, number)
+	if err != nil {
+		return false, nil, readMergedHead, err
+	}
+
+	return r.on.carriedBy(ctx, r.deps, head)
 }
 
 // readOpen reads the open pull request: its title and body, the checks the trunk requires, its
@@ -147,7 +157,9 @@ func (r *reading) readBody(ctx context.Context, pull *result.OpenPull) {
 }
 
 // readChecks reads the checks the trunk requires, then the open pull request's merge state and the
-// verdict of its head's checks, both of which take those required checks.
+// verdict of its head's checks, both of which take those required checks. The head is read again
+// after the checks unless its first read failed or was cut short, and the merge state is taken from
+// the last read made.
 func (r *reading) readChecks(ctx context.Context) {
 	if r.cut {
 		return
@@ -161,38 +173,61 @@ func (r *reading) readChecks(ctx context.Context) {
 	}
 
 	required, number := protection.RequiredChecks, r.open.Number
+	query := forge.HeadQuery{Number: number, Required: required}
 
-	head, headErr := r.deps.Forge.Head(ctx, r.repo, forge.HeadQuery{Number: number, Required: required})
-	if headErr != nil {
-		r.failed(readMergeState, headErr)
-		head = forge.Head{}
-	}
-
-	if r.cut {
+	head, onTip, headErr := r.readHead(ctx, query)
+	if !onTip {
 		return
 	}
 
-	// Checks of a commit other than the tip say nothing of the branch, so neither they nor a merge
-	// step are reported until GitHub shows the tip as the head.
-	if moved := r.otherHead(head.SHA); moved != "" {
-		r.say(result.Say("The head of pull request %s is %s and not the branch's tip %s, so its checks are not reported",
-			result.PullRequest(number), result.SHA(moved), result.SHA(r.on.tip)))
+	verdict, verdictErr := r.deps.Forge.Verdict(ctx, r.repo, forge.VerdictQuery{SHA: r.open.HeadSHA, Number: number, Required: required})
+	if verdictErr != nil {
+		r.failed(readChecks, verdictErr)
+	}
 
-		return
+	// GitHub can move the head while the checks are read, and then the checks read may be the new
+	// head's: only a head still on the tip after them lets them stand for the branch.
+	if headErr == nil && !r.cut {
+		head, onTip, headErr = r.readHead(ctx, query)
+		if !onTip {
+			return
+		}
 	}
 
 	r.waited.MergeState = head.MergeState
 
-	verdict, err := r.deps.Forge.Verdict(ctx, r.repo, forge.VerdictQuery{SHA: r.open.HeadSHA, Number: number, Required: required})
-	if err != nil {
-		r.failed(readChecks, err)
-	} else {
+	if verdictErr == nil {
 		r.takeVerdict(verdict, required)
 	}
 
 	if headErr == nil {
 		r.say(r.waited.mergeStateLines()...)
 	}
+}
+
+// readHead reads the open pull request's head for query. A head that failed to read comes back
+// empty with its error. onTip is false when the read was cut, or when the head is a commit other
+// than the branch's tip, which it then says: checks of another commit say nothing of the branch,
+// so neither they nor a merge step are reported until GitHub shows the tip as the head.
+func (r *reading) readHead(ctx context.Context, query forge.HeadQuery) (head forge.Head, onTip bool, err error) {
+	head, err = r.deps.Forge.Head(ctx, r.repo, query)
+	if err != nil {
+		r.failed(readMergeState, err)
+		head = forge.Head{}
+	}
+
+	if r.cut {
+		return head, false, err
+	}
+
+	if moved := r.otherHead(head.SHA); moved != "" {
+		r.say(result.Say("The head of pull request %s is %s and not the branch's tip %s, so its checks are not reported",
+			result.PullRequest(query.Number), result.SHA(moved), result.SHA(r.on.tip)))
+
+		return head, false, err
+	}
+
+	return head, true, err
 }
 
 // otherHead returns the commit that the listing of the branch's pull requests, or shown, the read

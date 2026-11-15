@@ -108,22 +108,6 @@ func pushChecks(ctx context.Context, s *survey, req Request, ready Ready) (pushR
 	return p, nil
 }
 
-// sharedFirstCommit returns the refusal of a branch whose first commit past the trunk another local
-// branch also carries, listing the commits none of those branches carry, or nil when that commit
-// does not stop the push; a read that fails is returned with the name of the read. Origin's copy of
-// the branch, if any, settles it when it carries that commit: the branch is already published with
-// it, so another branch that shares it does not stop the push. Without that, git cannot tell which
-// branch was cut from which, so the refusal names every way out: land the other branches first,
-// remove them, or start a new branch and bring this branch's own commits over.
-func sharedFirstCommit(ctx context.Context, deps Deps, req Request, p pushReady) (*result.Result, string, error) {
-	shared, read, err := readFirstShared(ctx, deps, p)
-	if err != nil {
-		return nil, read, err
-	}
-
-	return shared.stop(req, p.branch), "", nil
-}
-
 // firstShared is what the read of the branch's first commit past the trunk found: the other local
 // branches that also carry it, none when it does not stop the push, and the branch's commits none
 // of them carry.
@@ -133,8 +117,12 @@ type firstShared struct {
 }
 
 // readFirstShared reads the other local branches that carry the first commit past the trunk of the
-// branch p stands on, as sharedFirstCommit judges them. A read that fails is returned with the name
-// of the read.
+// branch p stands on, as firstShared.stop judges them. A read that fails is returned with the name
+// of the read. Origin's copy of the branch, if any, settles it when it carries that commit: the
+// branch is already published with it, so another branch that shares it does not stop the push.
+// Without that, git cannot tell which branch was cut from which, so the refusal names every way
+// out: land the other branches first, remove them, or start a new branch and bring this branch's
+// own commits over.
 func readFirstShared(ctx context.Context, deps Deps, p pushReady) (firstShared, string, error) {
 	first := p.past[0].SHA
 
