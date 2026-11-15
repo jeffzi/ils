@@ -277,6 +277,10 @@ type Request struct {
 	// LongWait runs the push, the merge or the release under WaitTimeLimit instead of TimeLimit.
 	// The caller decides it, whether or not the user typed --wait.
 	LongWait bool
+	// MergeReady is set by `ils status` alone, on the request it runs push's checks with, when the
+	// branch's open pull request is green and mergeable: the fix of a local trunk ahead of origin's
+	// then runs `ils merge` after it. A command line never sets it.
+	MergeReady bool
 }
 
 // FlagForce, FlagTagOnly, FlagWait and FlagProject are the words of the --force, --tag-only,
@@ -315,12 +319,22 @@ func (r Request) limitWords() span {
 	return span(r.Limit())
 }
 
-// ilsCommand is the request's command line without a typed --wait, marked as an ils command, which
-// prints as "ils <command> <args> <flags>": the command that a step the user takes first (a login,
-// an install, an upgrade, a fix, a change to the branch) runs again. That run starts over, so it
-// does not ask for the long wait, and a fast failure comes back at once; a typed --wait=false,
-// which asks for the short one, stays.
+// ilsCommand is the command that a step of the checks the user takes first (a fix of git or ssh, a
+// login to gh, a change to the branch) runs again: the request's own, as ownCommand prints it, and for a status a plain
+// `ils push`, whose checks a status runs to tell its `Next:`.
 func (r Request) ilsCommand() result.Name {
+	if r.Command == StatusCommand {
+		return result.Command(PushCommand)
+	}
+
+	return r.ownCommand()
+}
+
+// ownCommand is the request's command line without a typed --wait, marked as an ils command, which
+// prints as "ils <command> <args> <flags>": the command that a fix of what failed runs again. That
+// run starts over, so it does not ask for the long wait, and a fast failure comes back at once; a
+// typed --wait=false, which asks for the short one, stays.
+func (r Request) ownCommand() result.Name {
 	return result.Command(r.commandLine(false))
 }
 
@@ -446,7 +460,7 @@ func gitPreconditions(ctx context.Context, s *survey, req Request) (Ready, *resu
 // origin.
 func gitStanding(ctx context.Context, s *survey, req Request) (git.Standing, *result.Result) {
 	if err := s.gitVersion(ctx); err != nil {
-		if stop := req.tooOld(err); stop != nil {
+		if stop := req.tooOld(err, req.ilsCommand()); stop != nil {
 			return git.Standing{}, stop
 		}
 
@@ -590,9 +604,12 @@ func trunkOf(ctx context.Context, s *survey, req Request) (string, *result.Resul
 // toolRefusal returns the refusal for a forge call that failed with err because of gh itself: the
 // refusal tooOld returns for a gh that is older than the minimum or names no readable version, a
 // refusal naming `gh auth login` for a host gh is not logged in to, and the refusal notInstalled
-// returns for a gh that is not installed. It returns nil for any other failure.
+// returns for a gh that is not installed, each running ilsCommand after the fix. It returns nil for
+// any other failure.
 func (r Request) toolRefusal(err error) *result.Result {
-	if stop := r.tooOld(err); stop != nil {
+	again := r.ilsCommand()
+
+	if stop := r.tooOld(err, again); stop != nil {
 		return stop
 	}
 
@@ -602,15 +619,16 @@ func (r Request) toolRefusal(err error) *result.Result {
 		return r.Refused(
 			result.Say("gh is not logged in to %s; log in with `gh auth login --hostname %s`, "+
 				"or push by hand if %s is not GitHub", host, host, host),
-			result.NextStep("log in to %s"+thenRunAgain, host, r.ilsCommand()))
+			result.NextStep("log in to %s"+thenRunAgain, host, again))
 	}
 
-	return r.notInstalled(err)
+	return r.notInstalled(err, again)
 }
 
 // tooOld returns the refusal for a tool whose version check failed with err because the tool
-// is older than the minimum or names no readable version, and nil for any other failure.
-func (r Request) tooOld(err error) *result.Result {
+// is older than the minimum or names no readable version, whose step upgrades it and runs again,
+// and nil for any other failure.
+func (r Request) tooOld(err error, again result.Name) *result.Result {
 	old, ok := errors.AsType[*child.ToolTooOldError](err)
 	if !ok {
 		return nil
@@ -623,17 +641,18 @@ func (r Request) tooOld(err error) *result.Result {
 			old.Tool, old.Line, old.Tool, old.Minimum, result.URL(old.InstallURL))
 	}
 
-	return r.Refused(reason, result.NextStep("upgrade %s"+thenRunAgain, old.Tool, r.ilsCommand()))
+	return r.Refused(reason, result.NextStep("upgrade %s"+thenRunAgain, old.Tool, again))
 }
 
 // notInstalled returns the refusal for a call that failed with err because the tool it runs is
-// not installed, and nil for any other failure. A tool the user configured git to run as its ssh
-// command is refused naming the setting to fix; any other tool, naming where to get it.
-func (r Request) notInstalled(err error) *result.Result {
+// not installed, whose step gets the tool and runs again, and nil for any other failure. A tool the
+// user configured git to run as its ssh command is refused naming the setting to fix; any other
+// tool, naming where to get it.
+func (r Request) notInstalled(err error, again result.Name) *result.Result {
 	if command, ok := errors.AsType[*git.SSHCommandMissingError](err); ok {
 		return r.Refused(
 			result.Say("%s, the ssh command %s names, is not found", command.Program, command.Setting),
-			result.NextStep("fix %s"+thenRunAgain, command.Setting, r.ilsCommand()))
+			result.NextStep("fix %s"+thenRunAgain, command.Setting, again))
 	}
 
 	missing, ok := errors.AsType[*child.ToolMissingError](err)
@@ -643,7 +662,7 @@ func (r Request) notInstalled(err error) *result.Result {
 
 	return r.Refused(
 		result.Say("%s is not installed; install it from %s", missing.Tool, result.URL(missing.InstallURL)),
-		result.NextStep("install %s"+thenRunAgain, missing.Tool, r.ilsCommand()))
+		result.NextStep("install %s"+thenRunAgain, missing.Tool, again))
 }
 
 // ends returns the result that ends the request as outcome, with reason and next and no lines
@@ -739,7 +758,7 @@ func (r Request) cutShortWriting(byInterrupt bool, started, during result.Name, 
 // when the tool the read runs is not installed or the time limit or an interrupt cut the read
 // short, since nothing was written and running again is safe, and broke otherwise.
 func (r Request) Unread(read string, err error) *result.Result {
-	if stop := r.notInstalled(err); stop != nil {
+	if stop := r.notInstalled(err, r.ilsCommand()); stop != nil {
 		return stop
 	}
 
@@ -761,9 +780,9 @@ func couldNotRead(read string, err error) (line, reason result.Phrase) {
 }
 
 // onceFixed is the judgment step after a failure the user has to look at, ending in the
-// request's command.
+// request's own command: a status reads again what failed.
 func (r Request) onceFixed() result.Next {
-	return result.NextStep("fix what failed"+thenRunAgain, r.ilsCommand())
+	return result.NextStep("fix what failed"+thenRunAgain, r.ownCommand())
 }
 
 // pushOfChange is the push a step that changes the branch first runs: a push names itself, keeping
@@ -778,8 +797,13 @@ func (r Request) pushOfChange() result.Name {
 }
 
 // again is the next step that runs the request's command again as it stands, with the --wait flag
-// the user typed, if any.
+// the user typed, if any. For a status it is a plain `ils push`: a check it runs that ends there
+// is push's, so push's run is the one to make.
 func (r Request) again() result.Next {
+	if r.Command == StatusCommand {
+		return pushAgain()
+	}
+
 	return result.NextCommand("%s", r.commandLine(true))
 }
 
@@ -848,10 +872,21 @@ func (r Request) trunkAhead(ctx context.Context, s *survey) *result.Result {
 		return nil
 	}
 
-	stop := r.Refused(ahead.reason(), ahead.fix(r.ilsCommand()))
+	stop := r.Refused(ahead.reason(), ahead.fix(r.afterTrunkFix()))
 	stop.Lines = listed(ahead.past)
 
 	return stop
+}
+
+// afterTrunkFix is the command the fix of a local trunk checked out nowhere runs after it: the one
+// ilsCommand names, except that a status names `ils merge` when its open pull request is green and
+// mergeable, which a push would go on to.
+func (r Request) afterTrunkFix() result.Name {
+	if r.Command == StatusCommand && r.MergeReady {
+		return result.Command(MergeCommand)
+	}
+
+	return r.ilsCommand()
 }
 
 // aheadTrunk is a local trunk with commits origin's trunk lacks, and where it is checked out.

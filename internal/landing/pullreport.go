@@ -36,7 +36,6 @@ func (r *reading) readPulls(ctx context.Context) {
 		case change.State == forge.ChangeOpen && r.status.Trunk != "" && change.Base == r.status.Trunk:
 			r.open = &change
 		case change.State == forge.ChangeOpen && r.status.Trunk != "":
-			r.elsewhere = &change
 			r.say(result.Say("Pull request %s is open against %s and not against the trunk %s",
 				result.PullRequest(change.Number), result.Branch(change.Base), result.Branch(r.status.Trunk)))
 		case change.State != forge.ChangeOpen:

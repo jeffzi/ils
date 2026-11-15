@@ -183,10 +183,10 @@ func (b onBranch) readTip(ctx context.Context, deps Deps) (tip string, committed
 
 // nothingPast refuses a branch with no commit that origin's trunk lacks. Its next step is the push
 // of the new work: for `ils push` the request's own command line, keeping a typed --wait=false,
-// and for `ils merge` a first push and not a run again.
+// and for `ils merge` and `ils status` a first push and not a run again.
 func (r Request) nothingPast(b onBranch) *result.Result {
 	next := result.NextStep("commit the work"+thenRunAgain, r.ilsCommand())
-	if r.Command == MergeCommand {
+	if r.Command == MergeCommand || r.Command == StatusCommand {
 		next = firstPushStep()
 	}
 

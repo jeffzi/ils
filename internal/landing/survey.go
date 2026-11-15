@@ -28,9 +28,16 @@ var errNoOneRepo = errors.New("origin's URLs do not name one GitHub repository")
 // what git and GitHub answer. The checks of a run ask in turn: the record is not safe for concurrent
 // use.
 type survey struct {
-	got  reads
-	deps Deps
+	// settled, once set, is the failure of every read the record has not made yet: settle sets it.
+	settled error
+	got     reads
+	deps    Deps
 }
+
+// settle makes every read the record has not made yet fail with err, making no call. A status
+// whose reads a cut ended settles its record with the cut's error before it runs the checks over
+// it, so that they ask git and GitHub nothing the report skipped.
+func (s *survey) settle(err error) { s.settled = err }
 
 // reads holds the answers of a survey, one per read, and one per pull request for the reads of a
 // merged pull request, keyed by its number.
@@ -63,9 +70,16 @@ type answer[T any] struct {
 	made  bool
 }
 
-// of returns the answer of the read, which read makes on the first ask only.
-func (a *answer[T]) of(read func() (T, error)) (T, error) {
+// of returns the answer of the read, which read makes on the first ask only. A read not made yet
+// fails with settled instead when settled is set, and stays unmade.
+func (a *answer[T]) of(settled error, read func() (T, error)) (T, error) {
 	if !a.made {
+		if settled != nil {
+			var none T
+
+			return none, settled
+		}
+
 		a.value, a.err = read()
 		a.made = true
 	}
@@ -135,7 +149,7 @@ type carriedRead struct {
 // gitVersion fails when git is not installed, is older than the minimum, or names no readable
 // version.
 func (s *survey) gitVersion(ctx context.Context) error {
-	_, err := s.got.gitVersion.of(func() (struct{}, error) {
+	_, err := s.got.gitVersion.of(s.settled, func() (struct{}, error) {
 		return struct{}{}, s.deps.Repo.CheckVersion(ctx)
 	})
 
@@ -143,12 +157,12 @@ func (s *survey) gitVersion(ctx context.Context) error {
 }
 
 func (s *survey) standing(ctx context.Context) (git.Standing, error) {
-	return s.got.standing.of(func() (git.Standing, error) { return s.deps.Repo.Standing(ctx) })
+	return s.got.standing.of(s.settled, func() (git.Standing, error) { return s.deps.Repo.Standing(ctx) })
 }
 
 // origin returns origin's URLs with the repository they name and whether they name one.
 func (s *survey) origin(ctx context.Context) (originRead, error) {
-	return s.got.origin.of(func() (originRead, error) {
+	return s.got.origin.of(s.settled, func() (originRead, error) {
 		urls, repo, oneRepo, err := readOriginRepo(ctx, s.deps)
 
 		return originRead{urls: urls, repo: repo, oneRepo: oneRepo}, err
@@ -158,7 +172,7 @@ func (s *survey) origin(ctx context.Context) (originRead, error) {
 // identity returns the repository origin's URLs name as GitHub describes it. URLs that do not name
 // one repository fail it with errNoOneRepo.
 func (s *survey) identity(ctx context.Context) (forge.Repo, error) {
-	return s.got.identity.of(func() (forge.Repo, error) {
+	return s.got.identity.of(s.settled, func() (forge.Repo, error) {
 		origin, err := s.origin(ctx)
 
 		switch {
@@ -173,11 +187,11 @@ func (s *survey) identity(ctx context.Context) (forge.Repo, error) {
 }
 
 func (s *survey) trunk(ctx context.Context) (string, error) {
-	return s.got.trunk.of(func() (string, error) { return s.deps.Repo.Trunk(ctx) })
+	return s.got.trunk.of(s.settled, func() (string, error) { return s.deps.Repo.Trunk(ctx) })
 }
 
 func (s *survey) trunkFetch(ctx context.Context) (string, error) {
-	return s.got.trunkFetch.of(func() (string, error) {
+	return s.got.trunkFetch.of(s.settled, func() (string, error) {
 		trunk, err := s.trunk(ctx)
 		if err != nil {
 			return "", err
@@ -188,13 +202,13 @@ func (s *survey) trunkFetch(ctx context.Context) (string, error) {
 }
 
 func (s *survey) changed(ctx context.Context) ([]string, error) {
-	return s.got.changed.of(func() ([]string, error) { return s.deps.Repo.ChangedTrackedFiles(ctx) })
+	return s.got.changed.of(s.settled, func() ([]string, error) { return s.deps.Repo.ChangedTrackedFiles(ctx) })
 }
 
 // trunkAhead returns the local trunk when it has commits origin's trunk lacks, as readTrunkAhead
 // does, and the name of the read that failed with its failure.
 func (s *survey) trunkAhead(ctx context.Context) (*aheadTrunk, string, error) {
-	got, err := s.got.trunkAhead.of(func() (trunkAheadRead, error) {
+	got, err := s.got.trunkAhead.of(s.settled, func() (trunkAheadRead, error) {
 		standing, err := s.standing(ctx)
 		if err != nil {
 			return trunkAheadRead{read: readStanding}, err
@@ -216,7 +230,7 @@ func (s *survey) trunkAhead(ctx context.Context) (*aheadTrunk, string, error) {
 
 // tip returns the sha of the branch's tip, as onBranch.readTip reads it.
 func (s *survey) tip(ctx context.Context) (tipRead, error) {
-	return s.got.tip.of(func() (tipRead, error) {
+	return s.got.tip.of(s.settled, func() (tipRead, error) {
 		standing, err := s.standing(ctx)
 		if err != nil {
 			return tipRead{}, err
@@ -231,7 +245,7 @@ func (s *survey) tip(ctx context.Context) (tipRead, error) {
 // past returns the branch's commits past origin's trunk, oldest first, and none for a branch with
 // no commit at all.
 func (s *survey) past(ctx context.Context) ([]git.Commit, error) {
-	return s.got.past.of(func() ([]git.Commit, error) {
+	return s.got.past.of(s.settled, func() ([]git.Commit, error) {
 		tip, err := s.tip(ctx)
 		if err != nil || !tip.committed {
 			return nil, err
@@ -277,7 +291,7 @@ func (s *survey) worked(ctx context.Context) (onBranch, string, error) {
 }
 
 func (s *survey) onOrigin(ctx context.Context) (bool, error) {
-	return s.got.onOrigin.of(func() (bool, error) {
+	return s.got.onOrigin.of(s.settled, func() (bool, error) {
 		standing, err := s.standing(ctx)
 		if err != nil {
 			return false, err
@@ -291,7 +305,7 @@ func (s *survey) onOrigin(ctx context.Context) (bool, error) {
 
 // copyFetch fetches origin's copy of the branch HEAD stands on, never of another branch.
 func (s *survey) copyFetch(ctx context.Context) (string, error) {
-	return s.got.copyFetch.of(func() (string, error) {
+	return s.got.copyFetch.of(s.settled, func() (string, error) {
 		standing, err := s.standing(ctx)
 		if err != nil {
 			return "", err
@@ -304,7 +318,7 @@ func (s *survey) copyFetch(ctx context.Context) (string, error) {
 // divergence returns how far the branch's tip and origin's fetched copy of it each are past the
 // other.
 func (s *survey) divergence(ctx context.Context) (git.Divergence, error) {
-	return s.got.divergence.of(func() (git.Divergence, error) {
+	return s.got.divergence.of(s.settled, func() (git.Divergence, error) {
 		tip, err := s.tip(ctx)
 		if err != nil {
 			return git.Divergence{}, err
@@ -324,7 +338,7 @@ func (s *survey) divergence(ctx context.Context) (git.Divergence, error) {
 // name of the read that failed with its failure. A branch with no commit past the trunk shares
 // none.
 func (s *survey) firstShared(ctx context.Context) (firstShared, string, error) {
-	got, err := s.got.firstShared.of(func() (firstSharedRead, error) {
+	got, err := s.got.firstShared.of(s.settled, func() (firstSharedRead, error) {
 		b, read, err := s.worked(ctx)
 		if err != nil || len(b.past) == 0 {
 			return firstSharedRead{read: read}, err
@@ -352,7 +366,7 @@ func (s *survey) firstShared(ctx context.Context) (firstShared, string, error) {
 
 // changes returns the branch's pull requests, asked of GitHub for the repository origin names.
 func (s *survey) changes(ctx context.Context) ([]forge.Change, error) {
-	return s.got.changes.of(func() ([]forge.Change, error) {
+	return s.got.changes.of(s.settled, func() ([]forge.Change, error) {
 		repo, err := s.identity(ctx)
 		if err != nil {
 			return nil, err
@@ -368,7 +382,7 @@ func (s *survey) changes(ctx context.Context) ([]forge.Change, error) {
 }
 
 func (s *survey) mergedHead(ctx context.Context, number int) (string, error) {
-	return answerFor(s.got.mergedHeads, number).of(func() (string, error) {
+	return answerFor(s.got.mergedHeads, number).of(s.settled, func() (string, error) {
 		return s.deps.Repo.FetchPullHead(ctx, number)
 	})
 }
@@ -377,7 +391,7 @@ func (s *survey) mergedHead(ctx context.Context, number int) (string, error) {
 // trunk with the branch, and the branch's commits it lacks, as onBranch.carriedBy reads them, with
 // the name of the read that failed and its failure.
 func (s *survey) carried(ctx context.Context, number int) (bool, []git.Commit, string, error) {
-	got, err := answerFor(s.got.carried, number).of(func() (carriedRead, error) {
+	got, err := answerFor(s.got.carried, number).of(s.settled, func() (carriedRead, error) {
 		head, err := s.mergedHead(ctx, number)
 		if err != nil {
 			return carriedRead{read: readMergedHead}, err
@@ -398,7 +412,7 @@ func (s *survey) carried(ctx context.Context, number int) (bool, []git.Commit, s
 
 // detached returns a detached HEAD's commits past origin's trunk, oldest first.
 func (s *survey) detached(ctx context.Context) ([]git.Commit, error) {
-	return s.got.detached.of(func() ([]git.Commit, error) {
+	return s.got.detached.of(s.settled, func() ([]git.Commit, error) {
 		trunk, err := s.trunk(ctx)
 		if err != nil {
 			return nil, err
