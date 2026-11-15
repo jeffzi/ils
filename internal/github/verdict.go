@@ -176,7 +176,9 @@ func runStatusOf(status string) forge.RunStatus {
 // failedLog reads the failed log of the check the verdict's Failed names, so
 // that the named check and the log always belong together.
 //
-// A check with no Actions run behind it has no log, a run that has not completed
+// A canceled check never gets a log, so none is read for it and the failed log
+// is the zero value: reading one would find it empty and wait for it to the
+// time limit. A check with no Actions run behind it has no log, a run that has not completed
 // holds its log back, and a gh that cannot give the log for any other reason,
 // or a read of it that the time limit or an interrupt cuts short, leaves it
 // unreadable: the verdict is red either way. A link that names no job
@@ -191,7 +193,7 @@ func runStatusOf(status string) forge.RunStatus {
 // still in progress, so that the wait keeps polling.
 func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Verdict) (forge.FailedLog, error) {
 	failed, ok := verdict.Failed()
-	if !ok {
+	if !ok || failed.Bucket == forge.BucketCanceled {
 		return forge.FailedLog{}, nil
 	}
 

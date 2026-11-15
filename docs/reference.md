@@ -581,6 +581,10 @@ push moves that head past the pushed commit before GitHub showed it, `ils` canno
 from GitHub being slow: it waits until the time limit and ends pending, and the wait itself
 writes nothing. The next `ils push` refuses the branch as behind its copy on origin.
 
+A failed check whose workflow run has not yet made its log available keeps the wait going until it
+does. A canceled check gets no log, so it ends the wait red at once, and the excerpt says it has no
+log.
+
 When a pending `ils merge` names `ils push` on its `Next:` line, run that push with the same
 `--wait` as the merge, so that it takes the same column of the table above. If your script or
 harness (the program that runs the agent's tool calls) gives `ils` a terminal but stops it on a

@@ -65,6 +65,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   holds.
 - Fix `ils push`, `ils merge`, and `ils status` losing a red verdict when the time limit cut the
   read of the failed log short.
+- Fix `ils push` and `ils merge` waiting to the time limit for the log of a canceled check, which
+  never gets one, instead of ending red at once.
 - Fix `ils release` judging the checks of a workflow run created during its read as checks of no
   workflow.
 - Fix `ils status` suggesting `ils push`, which then failed, when origin refuses the read of its

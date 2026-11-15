@@ -226,7 +226,8 @@ func (r Run) Going() bool {
 // FailedLogState is whether the log of a failing check was read, and why not when it was not.
 type FailedLogState string
 
-// The states of a failed log; the zero value belongs to a verdict that is not red.
+// The states of a failed log; the zero value belongs to a verdict that is not red, or to a
+// canceled check, which never gets a log.
 const (
 	// FailedLogRead is a log whose whole text was read.
 	FailedLogRead FailedLogState = "read"
@@ -241,7 +242,7 @@ const (
 )
 
 // FailedLog is the log of the check Verdict.Failed names; it is the zero value
-// when the verdict is not red.
+// when the verdict is not red, or when that check was canceled and so has no log.
 type FailedLog struct {
 	// Text is the whole log when State is FailedLogRead, and empty otherwise.
 	Text  string

@@ -402,10 +402,13 @@ func (w Waited) checksLine(sha string) result.Phrase {
 }
 
 // excerpt returns the last excerptLines lines of the failed log of the check that failed, or
-// one line saying why there is no log.
+// one line saying why there is no log, such as a canceled check, which never gets one.
 func (w Waited) excerpt() string {
 	failed, _ := w.Verdict.Failed()
 	check, log := failed.Name, w.Verdict.FailedLog
+	if failed.Bucket == forge.BucketCanceled && log.State == "" {
+		return "no log: " + check + " was canceled, so it has no log"
+	}
 
 	switch log.State {
 	case forge.FailedLogRead:

@@ -85,6 +85,7 @@ func pushRedRows() []pushRow {
 			forge.FailedLog{State: forge.FailedLogNoRun}, expect("lint", "not a workflow run")),
 		redRow("a check was canceled and its log cannot be read", forge.BucketCanceled,
 			forge.FailedLog{State: forge.FailedLogUnreadable}, expect("lint", "could not be read")),
+		redRow("a check was canceled, which leaves no log", forge.BucketCanceled, forge.FailedLog{}, expect("lint", "has no log")),
 	}
 }
 

@@ -186,6 +186,8 @@ func failedLogRows() []failedLogRow {
 		{name: "failed log empty and job log read fails", checks: failing, log: empty, jobLog: jobGone, want: inProgress},
 		{name: "link names no job", checks: ghtest.CheckJSON("build", "fail", runOnlyLink), log: logged, jobLog: jobLogged, want: unreadable},
 		{name: "check of a run still pending", checks: ghtest.CheckJSON("build", "pending", runLink), log: logged},
+		// A canceled check never gets a log: its empty log reads would otherwise count as one to come.
+		{name: "canceled check of a run reads no log", checks: ghtest.CheckJSON("build", "cancel", runLink), log: empty, jobLog: empty},
 	}
 }
 
