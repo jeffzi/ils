@@ -45,7 +45,7 @@ func StartBranch(ctx context.Context, deps Deps, req Request) result.Result {
 		return *stop
 	}
 
-	if stop := n.create(ctx, deps, req); stop != nil {
+	if stop := n.create(ctx, deps, req, start); stop != nil {
 		return *stop
 	}
 
@@ -151,10 +151,11 @@ func freeName(ctx context.Context, deps Deps, req Request, name string) *result.
 	return nil
 }
 
-// create creates the branch at origin's trunk and puts HEAD on it. A file the switch would
-// overwrite is a refusal naming it; any other failure is broke.
-func (n newBranch) create(ctx context.Context, deps Deps, req Request) *result.Result {
-	err := deps.Repo.CreateBranch(ctx, n.name, n.Trunk)
+// create creates the branch at start, the sha of origin's trunk the checks fetched and the result
+// names, and puts HEAD on it. A file the switch would overwrite is a refusal naming it; any other
+// failure is broke.
+func (n newBranch) create(ctx context.Context, deps Deps, req Request, start string) *result.Result {
+	err := deps.Repo.CreateBranch(ctx, n.name, start)
 	if err == nil {
 		return nil
 	}

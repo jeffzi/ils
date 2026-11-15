@@ -634,19 +634,19 @@ func TestRepo_CheckBranchName_WhenGitIsNotAsked_GivesNoReason(t *testing.T) {
 
 const freshBranch = "fix/parser"
 
-func TestRepo_CreateBranch_WhenLocalRefsShadowOriginsTrunk_SwitchesToABranchAtItsLastFetchedTip(t *testing.T) {
+func TestRepo_CreateBranch_WhenOriginsTrunkMovesPastTheCommit_SwitchesToABranchAtTheCommitWithNoUpstream(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
-	shadowTrunk(t, f, f.Commits(topic, "one")[0])
-	f.AdvanceTrunk()
+	start := f.Git("rev-parse", "refs/remotes/origin/"+trunk)
 	f.AdvanceOrigin(trunk)
-	want := f.Git("rev-parse", "refs/remotes/origin/"+trunk)
+	f.Git("fetch", "--quiet", "origin")
 
-	err := newRepo(f).CreateBranch(t.Context(), freshBranch, trunk)
-	assert.NilError(t, err, "CreateBranch(%q, %q)", freshBranch, trunk)
+	err := newRepo(f).CreateBranch(t.Context(), freshBranch, start)
+	assert.NilError(t, err, "CreateBranch(%q, %q)", freshBranch, start)
 
 	assert.Check(t, is.Equal(f.Git("symbolic-ref", "HEAD"), "refs/heads/"+freshBranch))
-	assert.Check(t, is.Equal(f.Git("rev-parse", "refs/heads/"+freshBranch), want))
+	assert.Check(t, is.Equal(f.Git("rev-parse", "refs/heads/"+freshBranch), start))
+	assert.Check(t, is.Equal(f.Git("for-each-ref", "--format=%(upstream)", "refs/heads/"+freshBranch), ""))
 }
 
 // changedOffTrunk commits a file to topic alone and changes it without committing, so that
@@ -668,11 +668,12 @@ func TestRepo_CreateBranch_WhenAFileWouldBeOverwritten_ReturnsOverwriteErrorNami
 	t.Parallel()
 	f := gittest.New(t, trunk)
 	path := changedOffTrunk(t, f)
+	start := f.Git("rev-parse", "refs/remotes/origin/"+trunk)
 
-	err := newRepo(f).CreateBranch(t.Context(), freshBranch, trunk)
+	err := newRepo(f).CreateBranch(t.Context(), freshBranch, start)
 
 	overwrite, ok := errors.AsType[*git.OverwriteError](err)
-	assert.Assert(t, ok, "CreateBranch(%q, %q) error = %v, want *git.OverwriteError", freshBranch, trunk, err)
+	assert.Assert(t, ok, "CreateBranch(%q, %q) error = %v, want *git.OverwriteError", freshBranch, start, err)
 	assert.Check(t, is.DeepEqual(overwrite.Files, []string{path}))
 }
 
