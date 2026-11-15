@@ -387,7 +387,11 @@ steps:
    symbolic link, such as a clone of `ils` linked in, is not written to: a line names its target.
 3. It adds the guard's hook and the permission rules to `settings.json`, and creates the file when
    it is missing. It writes a new file beside the old one and renames it over, keeping the old
-   file's mode, and writes through a `settings.json` that is a symbolic link to its target.
+   file's mode, and writes through a `settings.json` that is a symbolic link to its target. The
+   new file is flushed to disk before the rename and the directory after it, so a crash leaves
+   either the old `settings.json` or the new one. When the directory cannot be flushed, the new
+   settings are in place, the run exits 1 naming the directory, and running it again finishes it.
+   Step 2 flushes a skill file it replaces the same way.
 
 The hook is a `PreToolUse` group with the matcher `Bash`, holding the one hook shown in
 [Init by hand](#init-by-hand). When `CLAUDE_CONFIG_DIR` sets the Claude Code directory, the hook's
