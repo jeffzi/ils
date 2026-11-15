@@ -720,7 +720,7 @@ func (r *reading) branchNext(ctx context.Context) (result.Next, bool) {
 		return pushAgain(), true
 	}
 
-	return r.pullNext(), true
+	return r.pullNext(p), true
 }
 
 // startNext is the step a status on the trunk or a detached HEAD ends on: the step of the first of
@@ -750,23 +750,24 @@ func (r *reading) mergeable() bool {
 	return r.waited.Outcome == WaitGreen && (state == forge.MergeClean || state == forge.MergeBlockedByReview)
 }
 
-// pullNext is the step the open pull request decides: a head other than the branch's tip, or its
-// checks still running, both left to `ils push`; then red, the pull request apart from the trunk,
-// then the merge, once a review is in when it waits on one. Any other state is left to `ils push`,
-// which reports it.
-func (r *reading) pullNext() result.Next {
+// pullNext is the step the open pull request at the tip of p's branch decides: the step `ils push`
+// ends a wait on that found the same verdict and merge state. What one read cannot settle is left
+// to `ils push`: checks still running, a verdict or merge state not read, a merge state GitHub has
+// not decided on green checks, and nothing reported, where push's end turns on a read of the
+// trunk's CI that status does not make.
+func (r *reading) pullNext(p pushReady) result.Next {
 	w := r.waited
-
-	switch {
-	case r.running:
-		return pushAgain()
-	case w.Outcome == WaitRed || w.takeApart():
-		report, _ := w.stopReport(r.req.ending(), r.open.HeadSHA, r.status.Trunk, r.open.Number)
-
-		return report.next
-	case r.mergeable():
-		return mergeStep(r.repo, r.open.Number, w.MergeState)
+	// As in push's wait, the merge state read after green checks can find the pull request apart
+	// from the trunk.
+	if w.Outcome == WaitGreen {
+		w.takeApart()
 	}
 
-	return pushAgain()
+	unsettled := w.Outcome == "" || w.MergeState == "" || w.Outcome == WaitNothingReported ||
+		w.Outcome == WaitGreen && w.MergeState == forge.MergeUnknown
+	if unsettled {
+		return pushAgain()
+	}
+
+	return w.endReport(r.req.ending(), p, r.open.Number).next
 }

@@ -407,6 +407,24 @@ func refusedSteps() []nextRow {
 			},
 		},
 		{
+			name: "green and waiting on a review with a local trunk ahead of origin's", script: settledAt(forge.MergeBlockedByReview, passing()),
+			arrange: func(f *gittest.Fixture) string {
+				f.Publish(topic)
+				f.AdvanceTrunk()
+
+				return nextTrunkFix(fixNowhere, "ils merge")
+			},
+		},
+		{
+			name: "green on a draft with a local trunk ahead of origin's", script: settledAt(forge.MergeDraft, passing()).drafted(),
+			arrange: func(f *gittest.Fixture) string {
+				f.Publish(topic)
+				f.AdvanceTrunk()
+
+				return nextTrunkFix(fixNowhere, "ils push")
+			},
+		},
+		{
 			name: "on origin with no open pull request and a local trunk ahead of origin's", script: viewing(cleanHead(), passing()),
 			arrange: func(f *gittest.Fixture) string {
 				f.Publish(topic)

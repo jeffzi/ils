@@ -101,10 +101,30 @@ func (r waitReport) outcome(stopped result.Outcome) result.Outcome {
 	}
 }
 
+// endReport returns the report of a wait that ended as w on pull request number of p's branch,
+// for the run end says, with the step `ils push` ends that wait on: for green checks the step
+// mergeStep gives for the merge state, for nothing reported a report of that silence, which stops,
+// and stopReport's for any other outcome.
+func (w Waited) endReport(end ending, p pushReady, number int) waitReport {
+	switch w.Outcome {
+	case WaitGreen:
+		return waitReport{next: mergeStep(p.Repo, number, w.MergeState)}
+	case WaitNothingReported:
+		return waitReport{
+			lines: w.mergeStateLines(), reason: nothingReported(p.tip, number),
+			next: result.NextStep("report that no check or status reported for the pushed commit, and stop"),
+		}
+	default:
+		report, _ := w.stopReport(end, p.tip, p.Trunk, number)
+
+		return report
+	}
+}
+
 // stopReport returns the report of a wait that ended red, apart from the trunk, with a required
 // check that never reported, pending, or on a head that moved, about the commit sha of pull request
 // number, whose trunk is trunk, for the run end says. It returns false for green checks and for
-// nothing reported, which each command maps on its own.
+// nothing reported: endReport maps them for push and status, and merge maps them for itself.
 func (w Waited) stopReport(end ending, sha, trunk string, number int) (waitReport, bool) {
 	switch w.Outcome {
 	case WaitGreen, WaitNothingReported:
