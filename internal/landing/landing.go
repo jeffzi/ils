@@ -3,11 +3,14 @@ package landing
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"mvdan.cc/sh/v3/syntax"
 
 	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
@@ -351,11 +354,18 @@ func (r Request) ownCommand() result.Name {
 // commandLine is the request's command, its positional words, then the flags it was given, so that
 // running it again changes nothing the user chose: `release 1.2.0 --tag-only`. A typed
 // --wait=false is always among them, and a typed --wait only when keepWait is true. Each positional
-// word is quoted as shellWord quotes it, so that the line pasted into a shell runs the same command.
+// word is quoted as ShellWord quotes it, so that the line pasted into a shell runs the same command.
+// It panics on a positional word ShellWord cannot quote: they come from argv, which cannot hold a
+// NUL byte.
 func (r Request) commandLine(keepWait bool) string {
 	words := []string{r.Command}
 	for _, arg := range r.Args {
-		words = append(words, shellWord(arg))
+		quoted, err := ShellWord(arg)
+		if err != nil {
+			panic(err)
+		}
+
+		words = append(words, quoted)
 	}
 
 	if r.Force {
@@ -380,20 +390,25 @@ func (r Request) commandLine(keepWait bool) string {
 	return strings.Join(words, " ")
 }
 
-// shellSafe holds the characters a POSIX shell reads as part of a plain word, outside any quote.
-const shellSafe = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_@%+=:,./-"
-
-// shellWord returns word as a POSIX shell reads it back as one word: as it is when it holds only
-// shellSafe characters, and in single quotes otherwise, each single quote it holds closing the
-// quote, escaped, and reopening it:
+// ShellWord returns word as bash reads it back as one word, quoted as syntax.Quote quotes it for
+// bash: as it is when bash would neither split nor expand it, and quoted otherwise, a control
+// character such as a newline in $'…'. A word bash cannot hold, one with a NUL byte, is an error.
 //
-//	rock'n'roll  ->  'rock'\''n'\''roll'
-func shellWord(word string) string {
-	if word != "" && strings.Trim(word, shellSafe) == "" {
-		return word
+// syntax.Quote leaves a `!` bare or in double quotes, where an interactive bash or zsh reads it as
+// a history expansion, so a word holding one is put in single quotes instead, each `'` in it
+// closing them, escaped, and reopening them. A word in $'…' keeps that form: its quote already
+// stops the expansion.
+func ShellWord(word string) (string, error) {
+	quoted, err := syntax.Quote(word, syntax.LangBash)
+	if err != nil {
+		return "", fmt.Errorf("quote the word %q for the shell: %w", word, err)
 	}
 
-	return "'" + strings.ReplaceAll(word, "'", `'\''`) + "'"
+	if strings.ContainsRune(word, '!') && !strings.HasPrefix(quoted, "$'") {
+		return "'" + strings.ReplaceAll(word, "'", `'\''`) + "'", nil
+	}
+
+	return quoted, nil
 }
 
 // Ready is what the shared preconditions hand to the steps that follow them.
@@ -870,111 +885,6 @@ func (r Request) dirtyTree(files []string) *result.Result {
 	return r.Refused(
 		result.Say("tracked files have changes that are not committed: %s", strings.Join(files, ", ")),
 		result.NextStep("commit them"+thenRunAgain, r.ilsCommand()))
-}
-
-// trunkAhead returns the refusal of a local trunk with commits origin's trunk lacks, listing them,
-// whose next step is its fix, or nil when it has none or does not exist; a read that fails is
-// the result r.Unread gives for it. It reads origin/<trunk>, so each command calls it right
-// after its own fetchTrunk.
-func (r Request) trunkAhead(ctx context.Context, s *survey) *result.Result {
-	ahead, read, err := s.trunkAhead(ctx)
-	if err != nil {
-		return r.Unread(read, err)
-	}
-
-	if ahead == nil {
-		return nil
-	}
-
-	stop := r.Refused(ahead.reason(), ahead.fix(r.afterTrunkFix()))
-	stop.Lines = listed(ahead.past)
-
-	return stop
-}
-
-// afterTrunkFix is the command the fix of a local trunk checked out nowhere runs after it: the one
-// ilsCommand names, except that a status names `ils merge` when its open pull request is green and
-// mergeable, which a push would go on to.
-func (r Request) afterTrunkFix() result.Name {
-	if r.Command == StatusCommand && r.MergeReady {
-		return result.Command(MergeCommand)
-	}
-
-	return r.ilsCommand()
-}
-
-// aheadTrunk is a local trunk with commits origin's trunk lacks, and where it is checked out.
-type aheadTrunk struct {
-	trunk string
-	// worktree is the path of the other worktree that has the trunk checked out, empty when none
-	// does.
-	worktree string
-	// past are the trunk's commits that origin's trunk lacks, oldest first.
-	past []git.Commit
-	// here is whether HEAD is on the trunk.
-	here bool
-}
-
-// readTrunkAhead returns the local trunk as aheadTrunk reads it when it has commits origin's trunk
-// lacks, and nil when it has none or does not exist; here is whether HEAD is on it. A read that
-// fails is returned with the name of the read.
-func readTrunkAhead(ctx context.Context, deps Deps, trunk string, here bool) (*aheadTrunk, string, error) {
-	ahead, past, err := deps.Repo.LocalTrunkAhead(ctx, trunk)
-	if err != nil {
-		return nil, readLocalTrunk, err
-	}
-
-	if !ahead {
-		return nil, "", nil
-	}
-
-	a := &aheadTrunk{trunk: trunk, past: past, here: here}
-	if here {
-		return a, "", nil
-	}
-
-	a.worktree, err = deps.Repo.WorktreeWith(ctx, trunk)
-	if err != nil {
-		return nil, readWorktrees, err
-	}
-
-	return a, "", nil
-}
-
-// reason is the reason every landing command gives for refusing the local trunk.
-func (a aheadTrunk) reason() result.Phrase {
-	return result.Say("the local trunk %s has commits that origin's trunk lacks, listed here", result.Branch(a.trunk))
-}
-
-// keepOffTrunkHere and keepOffTrunkNowhere are the fixes of a local trunk with commits origin's
-// trunk lacks: each keeps them on a branch of their own and puts the local trunk back at origin's,
-// after the keepOff they share. A trunk checked out in some worktree takes keepOffTrunkHere run
-// there, since git moves no branch checked out; one checked out nowhere takes keepOffTrunkNowhere,
-// which switches nothing. Each name is the trunk: twice for keepOffTrunkHere, three times for
-// keepOffTrunkNowhere. They stay untyped because result.NextStep accepts only constant
-// expressions.
-const (
-	keepOff = "keep those commits on a branch of their own and put the local trunk back at " +
-		"origin's with "
-	keepOffTrunkHere    = keepOff + "`! git switch -c <name> && git branch -f %s origin/%s`"
-	keepOffTrunkNowhere = keepOff + "`! git branch <name> %s && git branch -f %s origin/%s`"
-)
-
-// fix is the next step of the local trunk, run where it is checked out: here when HEAD is on it,
-// then a push of the new branch; in the other worktree that has it checked out, named by its path,
-// then a push there; and, checked out nowhere, here, then again.
-func (a aheadTrunk) fix(again result.Name) result.Next {
-	trunk := result.Branch(a.trunk)
-	push := result.Command(PushCommand)
-
-	switch {
-	case a.here:
-		return result.NextStep(keepOffTrunkHere+", then run %s", trunk, trunk, push)
-	case a.worktree != "":
-		return result.NextStep("in the worktree at %s, "+keepOffTrunkHere+", then run %s there", a.worktree, trunk, trunk, push)
-	}
-
-	return result.NextStep(keepOffTrunkNowhere+thenRunAgain, trunk, trunk, trunk, again)
 }
 
 // detachedWith says that HEAD is detached with commits origin's trunk lacks, listed after it.

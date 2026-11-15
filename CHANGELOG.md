@@ -29,6 +29,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   instead of starting a new branch on its own.
 - Report a `gh` reachable only through a relative `PATH` entry as missing.
 - Refuse `ils merge` on a default branch whose ruleset requires a merge queue.
+- Quote the words of a `Next:` line as `ils parse` does, so a name holding a `'`, a newline, or an
+  `=` prints in the form bash would write.
 - Refuse `ils push`, `ils merge`, and `ils release` when any push URL of `origin` names another
   repository than its fetch URL.
 - **Breaking:** Require `gh` 2.81.0 or later, since `ils` reads `gh auth status --json` to tell a

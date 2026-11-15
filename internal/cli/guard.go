@@ -14,7 +14,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-	"mvdan.cc/sh/v3/syntax"
 
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/guard"
@@ -183,15 +182,15 @@ func unparsed(req landing.Request, err error) (result.Result, error) {
 	return *req.Broke(reason, result.NextStep("fix what the reason names, then run %s again", result.Command(typed))), nil
 }
 
-// typedCommand returns words as one shell command line that reads back as the same words: each word
-// that the shell would split or expand is quoted. A word the shell cannot hold, one with a NUL
-// byte, is an error.
+// typedCommand returns words as one shell command line that reads back as the same words, each
+// quoted as landing.ShellWord quotes it. A word the shell cannot hold, one with a NUL byte, is an
+// error.
 func typedCommand(words []string) (string, error) {
 	quoted := make([]string, 0, len(words))
 	for _, word := range words {
-		q, err := syntax.Quote(word, syntax.LangBash)
+		q, err := landing.ShellWord(word)
 		if err != nil {
-			return "", fmt.Errorf("quote the word %q for the shell: %w", word, err)
+			return "", err
 		}
 
 		quoted = append(quoted, q)

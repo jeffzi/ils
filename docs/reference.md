@@ -526,6 +526,12 @@ its own words (no `--cwd`, or not exactly one word after `--`), it prints `Next:
 A run stopped by Ctrl-C or SIGTERM (the signal `kill` sends by default) exits with the code of the
 result it prints; see [Stopping a run](#stopping-a-run).
 
+A word on the `Next:` line that the shell would read otherwise is quoted as bash reads it: in
+single quotes, in double quotes when it holds a `'` (`"rock'n'roll"`), and as `$'…'` when it holds
+a control character such as a newline. A word holding `=` and a shell keyword such as `if` are
+quoted too. A word holding a `!` is put in single quotes even beside a `'`, since an interactive
+shell reads a bare or double-quoted `!` as a history expansion.
+
 ### Done and broke by command
 
 Exit 0 means, for each command:

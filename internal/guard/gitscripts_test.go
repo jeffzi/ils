@@ -87,6 +87,18 @@ func TestParse_WhenAShellCommandGitRunsCannotBeRead_MarksIt(t *testing.T) {
 	}
 }
 
+func TestParse_WhenAnArgumentGitRunsHoldsANulByte_MarksItsScriptAsNotALiteral(t *testing.T) {
+	t.Parallel()
+	const command = "git bisect run echo ~/x"
+	caller := readerCaller()
+	caller.Env["HOME"] = "/a\x00b"
+
+	got := parseWith(t, command, caller)
+
+	assert.Assert(t, len(got) > 0, "Parse(%q) = %v", command, texts(got))
+	assert.Check(t, is.Contains(kinds(got[0].Marks), guard.DynamicScript), "Parse(%q) marks", command)
+}
+
 func TestParse_WhenAGitAliasOfRebaseIsGivenAnExec_ParsesTheExecCommand(t *testing.T) {
 	t.Parallel()
 	f := aliased(t)

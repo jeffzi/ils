@@ -1062,3 +1062,38 @@ func assertReadsRequire(t *testing.T, calls []forgetest.Call, tip string, requir
 
 	assert.Check(t, heads > 0 && verdicts > 0, "forge reads = %d heads and %d verdicts, want some of each", heads, verdicts)
 }
+
+func TestShellWord(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name, word, want string
+	}{
+		{name: "single quote spelled in double quotes", word: "rock'n'roll", want: `"rock'n'roll"`},
+		{name: "assignment quoted", word: "a=b", want: "'a=b'"},
+		{name: "shell keyword quoted", word: "if", want: "'if'"},
+		{name: "newline spelled as an escape", word: "a\nb", want: `$'a\nb'`},
+		{name: "history expansion mark in single quotes", word: "a!b", want: "'a!b'"},
+		{name: "history expansion mark beside a single quote", word: "it's!", want: `'it'\''s!'`},
+		{name: "history expansion mark beside a newline", word: "a!\nb", want: `$'a!\nb'`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := landing.ShellWord(tt.word)
+
+			assert.NilError(t, err, "ShellWord(%q)", tt.word)
+			assert.Check(t, is.Equal(got, tt.want), "ShellWord(%q)", tt.word)
+		})
+	}
+}
+
+func TestShellWord_WhenTheWordHoldsANulByte_ReturnsAnError(t *testing.T) {
+	t.Parallel()
+	const word = "a\x00b"
+
+	_, err := landing.ShellWord(word)
+
+	assert.Check(t, err != nil, "ShellWord(%q) error = nil, want an error", word)
+}

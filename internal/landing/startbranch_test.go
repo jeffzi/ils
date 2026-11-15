@@ -173,7 +173,7 @@ func TestStartBranch_WhenOriginStopsAnswering_NextQuotesTheNameForTheShell(t *te
 	tests := []struct {
 		name, given, quoted string
 	}{
-		{name: "name holds a single quote", given: "rock'n'roll", quoted: `'rock'\''n'\''roll'`},
+		{name: "name holds a single quote", given: "rock'n'roll", quoted: `"rock'n'roll"`},
 		{name: "name holds a shell operator", given: "fix;make", quoted: "'fix;make'"},
 	}
 	for _, tt := range tests {

@@ -6,9 +6,8 @@ import (
 	"slices"
 	"strings"
 
-	"mvdan.cc/sh/v3/syntax"
-
 	"github.com/jeffzi/ils/internal/git"
+	"github.com/jeffzi/ils/internal/landing"
 )
 
 // resolveGit asks git, for each git invocation the walk placed, which git dir it targets and what
@@ -354,8 +353,9 @@ func topRuns(args []Word, sub string) []gitRun {
 	return runs
 }
 
-// argvScript returns the shell command that runs words as one command, each word one argument; not
-// a literal when one of words is not, or holds what the shell cannot quote.
+// argvScript returns the shell command that runs words as one command, each word one argument
+// quoted as landing.ShellWord quotes it; not a literal when one of words is not, or holds what the
+// shell cannot quote.
 func argvScript(words []Word) Word {
 	quoted := make([]string, 0, len(words))
 	for _, w := range words {
@@ -363,7 +363,7 @@ func argvScript(words []Word) Word {
 			return Word{}
 		}
 
-		q, err := syntax.Quote(w.Text, syntax.LangBash)
+		q, err := landing.ShellWord(w.Text)
 		if err != nil {
 			return Word{}
 		}
