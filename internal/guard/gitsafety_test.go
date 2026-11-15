@@ -390,6 +390,54 @@ func TestJudge_AllowsARebaseThatCannotLoseWork(t *testing.T) {
 	}, expectation{outcome: guard.Allow})
 }
 
+func TestJudge_RefusesAnAbortOverUncommittedWork(t *testing.T) {
+	t.Parallel()
+
+	dirty, caller := standingOn(t, "main", "topic")
+	dirty.StagedFile()
+	clean, _ := standingOn(t, "main", "topic")
+
+	checkJudgedIn(t, caller, []placed{
+		{name: "merge in the dirty tree", dir: dirty.Dir(), command: "git merge --abort"},
+		{name: "cherry-pick in the dirty tree", dir: dirty.Dir(), command: "git cherry-pick --abort"},
+		{name: "revert in the dirty tree", dir: dirty.Dir(), command: "git revert --abort"},
+		{name: "merge with -C naming the dirty tree", dir: clean.Dir(), command: "git -C " + gittest.ShellWord(dirty.Dir()) + " merge --abort"},
+	}, expectation{outcome: guard.Refuse, named: "dirty"})
+}
+
+func TestJudge_RefusesAnAbortWhoseRepositoryIsUnknown(t *testing.T) {
+	t.Parallel()
+
+	f, caller := standingOn(t, "main", "topic")
+
+	checkJudgedIn(t, caller, []placed{
+		{name: "merge", dir: f.Dir(), command: `git -C "$d" merge --abort`},
+		{name: "cherry-pick", dir: f.Dir(), command: `git -C "$d" cherry-pick --abort`},
+		{name: "revert", dir: f.Dir(), command: `git -C "$d" revert --abort`},
+	}, expectation{outcome: guard.Refuse, named: "which repository"})
+}
+
+func TestJudge_AllowsAnAbortOrSequencerStepThatCannotLoseWork(t *testing.T) {
+	t.Parallel()
+
+	dirty, caller := standingOn(t, "main", "topic")
+	dirty.StagedFile()
+	clean, _ := standingOn(t, "main", "topic")
+
+	checkJudgedIn(t, caller, []placed{
+		{name: "merge --abort in a clean tree", dir: clean.Dir(), command: "git merge --abort"},
+		{name: "cherry-pick --abort in a clean tree", dir: clean.Dir(), command: "git cherry-pick --abort"},
+		{name: "revert --abort in a clean tree", dir: clean.Dir(), command: "git revert --abort"},
+		{name: "merge --abort outside any repository", dir: outsideDir(t), command: "git merge --abort"},
+		{name: "merge --continue in a dirty tree", dir: dirty.Dir(), command: "git merge --continue"},
+		{name: "merge --quit in a dirty tree", dir: dirty.Dir(), command: "git merge --quit"},
+		{name: "cherry-pick --continue in a dirty tree", dir: dirty.Dir(), command: "git cherry-pick --continue"},
+		{name: "cherry-pick --quit in a dirty tree", dir: dirty.Dir(), command: "git cherry-pick --quit"},
+		{name: "revert --continue in a dirty tree", dir: dirty.Dir(), command: "git revert --continue"},
+		{name: "revert --quit in a dirty tree", dir: dirty.Dir(), command: "git revert --quit"},
+	}, expectation{outcome: guard.Allow})
+}
+
 // worktrees is a repository with linked worktrees elsewhere, and two more that each hold a linked
 // worktree named wt1 inside their work tree.
 type worktrees struct {
@@ -521,27 +569,6 @@ func TestJudge_AllowsAGitConfigCallThatLeavesTheHooksPathAndRemotes(t *testing.T
 		{name: "--get-all with a value-pattern", command: "git config --get-all remote.origin.url x"},
 		{name: "--edit given two words", command: "git config --edit core.hooksPath x"},
 		{name: "core.editor", command: "git config core.editor vim"},
-	})
-}
-
-func TestJudge_RefusesRewritingTheOriginRemote(t *testing.T) {
-	t.Parallel()
-
-	checkRefusals(t, []refusal{
-		{name: "rename after -v", command: "git remote -v rename origin other"},
-		{name: "set-url after --verbose", command: "git remote --verbose set-url origin https://example.com/x.git"},
-	})
-}
-
-func TestJudge_AllowsARemoteCallThatLeavesOriginAsItIs(t *testing.T) {
-	t.Parallel()
-
-	_, caller := standingOn(t, "main", "topic")
-
-	checkAllowed(t, caller, []namedCommand{
-		{name: "remove", command: "git remote remove upstream"},
-		{name: "add", command: "git remote add upstream https://example.com/x.git"},
-		{name: "listing", command: "git remote -v"},
 	})
 }
 

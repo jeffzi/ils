@@ -1278,6 +1278,9 @@ The guard refuses:
 - `rebase` in a working tree with uncommitted changes or untracked files, or where the guard cannot
   tell the repository. In a dirty tree, `--continue`, `--edit-todo`, `--show-current-patch`, and
   `--quit` are allowed, since they leave the tree as it is; `--abort` and `--skip` are refused;
+- `merge --abort`, `cherry-pick --abort`, and `revert --abort` in a working tree with uncommitted
+  changes or untracked files, or where the guard cannot tell the repository: they reset the index
+  and the tree, staged changes included. `--continue` and `--quit` stay allowed;
 - `worktree remove --force`, and `worktree remove` of a worktree with changes or one the guard
   cannot find;
 - `git config` writing `remote.*`, `url.*`, or `core.hooksPath`, at any scope, and renaming or

@@ -52,7 +52,7 @@ type rule func(ctx context.Context, caller Caller, inv Invocation) (Verdict, err
 // guard cannot read changes its verdict, and its reason names the one way to push.
 func rules() []rule {
 	return []rule{
-		refusePush, refuseSkippedChecks, refuseDiscardingGit, refuseHistoryOverFile, refuseRebaseOverChanges,
+		refusePush, refuseSkippedChecks, refuseDiscardingGit, refuseHistoryOverFile, refuseDiscardOverChanges,
 		refuseRiskyWorktreeRemoval, refuseGuardedConfigWrite, refuseOriginRewrite,
 		trunks{}.refuseOnTrunk, judgeForge,
 	}
