@@ -65,6 +65,7 @@ func TestFake_WhenOperationIsNotScripted_ReportsItAsUnscripted(t *testing.T) {
 	_, err := fake.Head(t.Context(), repo(), headQuery())
 
 	assert.Check(t, is.ErrorIs(err, forgetest.ErrUnscripted))
+	assert.Check(t, stub.Failed(), "the fake did not fail the test")
 	assert.Assert(t, is.Len(stub.Messages(), 1))
 	assert.Check(t, is.Contains(stub.Messages()[0], string(forgetest.OpHead)))
 }

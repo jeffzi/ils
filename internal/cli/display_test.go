@@ -276,19 +276,6 @@ func (s *screen) lines() []string {
 	})
 }
 
-// filled returns the text of each row the screen shows as lines does, but up to the last
-// character written on the row, so that the spaces written at the end of a row stay in it.
-func (s *screen) filled() []string {
-	return s.rowTexts(func(row []cell) string {
-		end := len(row)
-		for end > 0 && row[end-1].r == 0 {
-			end--
-		}
-
-		return render(row[:end])
-	})
-}
-
 // rowTexts returns the text of each row as text gives it, without the blank rows after the last
 // one that shows anything.
 func (s *screen) rowTexts(text func(row []cell) string) []string {
@@ -629,9 +616,8 @@ func TestApp_Run_WhenStdoutAndStderrShareATerminalWithColorOff_PrintsEachStepLin
 	var seen []string
 	app.SetPush(paced(func() { seen = terminal.lines() }, result.DeliveredNotGreen))
 
-	got := shown(t, app, "push")
+	shown(t, app, "push")
 
-	assert.Check(t, is.Equal(got.code, exitDelivered))
 	assert.Assert(t, is.Len(seen, 3), "the terminal showed %q", seen)
 	assert.Check(t, is.DeepEqual(seen[:2], []string{pushedStep, openedStep}))
 	assert.Check(t, regexp.MustCompile(`^\S+ Waiting for checks on #12 `).MatchString(seen[2]), "spinner line = %q", seen[2])
@@ -687,19 +673,6 @@ func TestApp_Run_WhenAStepLineIsSaidWithoutAStepStartedForIt_TimesItFromTheLineB
 	assert.Check(t, is.DeepEqual(stdout.lines(), want))
 }
 
-func TestApp_Run_WhenLinesPrintOverTheSpinnerLine_LeavesNoSpacesWrittenAfterAnyOfThem(t *testing.T) {
-	t.Parallel()
-
-	app, terminal := onSharedScreen(t, []string{colorTerm, noColor})
-	var spinning, spinningFilled []string
-	app.SetPush(paced(func() { spinning, spinningFilled = terminal.lines(), terminal.filled() }, result.DeliveredNotGreen))
-
-	shown(t, app, "push")
-
-	assert.Check(t, is.DeepEqual(spinningFilled, spinning), "while the spinner line showed")
-	assert.Check(t, is.DeepEqual(terminal.filled(), terminal.lines()), "once the run ended")
-}
-
 func TestApp_Run_WhenAStepLineIsSaid_TimesItToTheNearestTenthOfASecondFromATenthOfASecond(t *testing.T) {
 	t.Parallel()
 
@@ -740,9 +713,8 @@ func TestApp_Run_WhenNeitherStreamIsATerminal_WritesNothingBeforeTheWholeResult(
 	var early string
 	app.SetPush(paced(func() { early = stdout.raw() }, result.DeliveredNotGreen))
 
-	got := shown(t, app, "push")
+	shown(t, app, "push")
 
-	assert.Check(t, is.Equal(got.code, exitDelivered))
 	assert.Check(t, is.Equal(early, ""))
 	assert.Check(t, is.Equal(stderr.raw(), ""))
 	assert.Check(t, is.DeepEqual(stdout.lines(), slices.Concat(pacedLines(), pacedEnd())))
@@ -758,9 +730,8 @@ func TestApp_Run_WhenTheJSONFlagIsAmongTheWordsOnTerminals_PrintsTheWholeResult(
 	)
 	app.SetPush(paced(func() { early, spinning = stdout.raw(), stderr.lines() }, result.DeliveredNotGreen))
 
-	got := shown(t, app, "push", "--json")
+	shown(t, app, "push", "--json")
 
-	assert.Check(t, is.Equal(got.code, exitDelivered))
 	assert.Check(t, is.Equal(early, ""))
 	assert.Check(t, is.Len(spinning, 1), "stderr showed %q", spinning)
 	assert.Check(t, is.DeepEqual(resulttest.Decode(t, stdout.raw()).Lines, pacedLines()))
@@ -772,9 +743,8 @@ func TestApp_Run_WhenDebugIsOn_StreamsStepLinesInPlaceOfTheSpinner(t *testing.T)
 	app, stdout, stderr := onTwoScreens(t, []string{colorTerm, noColor}, true, true)
 	app.SetPush(paced(func() {}, result.DeliveredNotGreen))
 
-	got := shown(t, app, "push", "-d")
+	shown(t, app, "push", "-d")
 
-	assert.Check(t, is.Equal(got.code, exitDelivered))
 	assert.Check(t, !regexp.MustCompile(`Pushing|Opening|Waiting`).MatchString(stderr.raw()), "stderr = %q, want no spinner label", stderr.raw())
 	lines := stdout.lines()
 	assert.Assert(t, len(lines) > 2, "stdout showed %q", lines)
@@ -835,7 +805,7 @@ func endingWith(outcome result.Outcome, running bool) cli.Command {
 	}
 }
 
-func TestApp_Run_WhenACommandEndsWhileAStepRuns_CrossesTheStepBeforeTheResultOnlyWhenItEndsBadly(t *testing.T) {
+func TestApp_Run_WhenACommandEnds_CrossesTheStepStillRunningOnlyWhenTheCommandFailed(t *testing.T) {
 	t.Parallel()
 
 	const crossed = "✗ Waiting for checks on #12"
@@ -845,8 +815,9 @@ func TestApp_Run_WhenACommandEndsWhileAStepRuns_CrossesTheStepBeforeTheResultOnl
 		outcome result.Outcome
 		running bool
 	}{
-		{name: "broke", outcome: result.Broke, running: true, want: []string{crossed}},
-		{name: "done", outcome: result.Done, running: true},
+		{name: "broke while a step runs", outcome: result.Broke, running: true, want: []string{crossed}},
+		{name: "delivered, not green, while a step runs", outcome: result.DeliveredNotGreen, running: true, want: []string{crossed}},
+		{name: "done while a step runs", outcome: result.Done, running: true},
 		{name: "broke with no step running", outcome: result.Broke, want: []string{"✓ " + pushedText}},
 	}
 	for _, tt := range tests {

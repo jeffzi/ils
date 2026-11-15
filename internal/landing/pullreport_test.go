@@ -1,9 +1,11 @@
 package landing_test
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"gotest.tools/v3/assert"
@@ -12,6 +14,7 @@ import (
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
 	"github.com/jeffzi/ils/internal/gittest"
+	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
 )
 
@@ -185,18 +188,31 @@ func TestStatus_WhenTheOnlyPullRequestWasMergedIntoAnotherBase_EndsOnTheStepOfMe
 
 // staleRow is one way the open pull request's head is a commit other than the branch's tip.
 type staleRow struct {
-	name string
+	// heads returns the heads the reads of the head show in turn, given the branch's tip and the
+	// other commit.
+	heads func(tip, other string) []string
+	name  string
 	// listedBehind is whether the listing of the branch's pull requests names the other commit as
 	// the head while the read of the head shows the tip, rather than the read of the head naming it.
 	listedBehind bool
 }
 
-func TestStatus_WhenThePullRequestsHeadIsNotTheTip_ReportsNoVerdictAndNoMerge(t *testing.T) {
+func TestStatus_WhenThePullRequestsHeadIsNotTheTip_ReportsNoVerdictAndEndsOnAPush(t *testing.T) {
 	t.Parallel()
 
 	tests := []staleRow{
-		{name: "GitHub lags a push", listedBehind: true},
-		{name: "the head moves during the read", listedBehind: false},
+		{
+			name: "GitHub lags a push", listedBehind: true,
+			heads: func(tip, _ string) []string { return []string{tip} },
+		},
+		{
+			name:  "the head moves during the read",
+			heads: func(_, other string) []string { return []string{other} },
+		},
+		{
+			name:  "the head moves after the checks are read",
+			heads: func(tip, other string) []string { return []string{tip, other} },
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -205,13 +221,16 @@ func TestStatus_WhenThePullRequestsHeadIsNotTheTip_ReportsNoVerdictAndNoMerge(t 
 			var other, tip string
 
 			build := greenOpen().with(func(script *forgetest.Script, _ string) {
-				shown := other
 				if tt.listedBehind {
-					shown = tip
 					script.FindChanges[0].Value[0].HeadSHA = other
 				}
 
-				script.Head = shows(forge.Head{SHA: shown, MergeState: forge.MergeClean})
+				var heads []forge.Head
+				for _, sha := range tt.heads(tip, other) {
+					heads = append(heads, forge.Head{SHA: sha, MergeState: forge.MergeClean})
+				}
+
+				script.Head = shows(heads...)
 			})
 			s := statusScene(t, func(f *gittest.Fixture) {
 				f.Publish(topic)
@@ -227,6 +246,18 @@ func TestStatus_WhenThePullRequestsHeadIsNotTheTip_ReportsNoVerdictAndNoMerge(t 
 			assertSays(t, "Next:"+nextOf(t, got.text), nextPush())
 		})
 	}
+}
+
+func TestStatus_WhenThePullRequestsHeadStaysOnTheTip_KeepsTheVerdictWithTheMergeStateReadAfterTheChecks(t *testing.T) {
+	t.Parallel()
+	build := greenOpen().showing(cleanHead(), inState(forge.MergeConflicting))
+	s := statusScene(t, publishTopic, build)
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	assert.Assert(t, got.status.PullRequest != nil)
+	assert.Check(t, is.Equal(got.status.PullRequest.Verdict, forge.VerdictGreen))
+	assert.Check(t, is.Equal(got.status.PullRequest.MergeState, forge.MergeConflicting))
 }
 
 func TestStatus_WhenOnlyACheckNotRequiredReported_NamesTheRequiredOneThatNeverReported(t *testing.T) {
@@ -259,4 +290,109 @@ func TestStatus_WhenARequiredCheckNeverReportedBesideOneThatPassed_NamesItBeside
 
 	assertSays(t, got.text, expect("never reported", "audit"))
 	assertSays(t, got.text, expect(shortSHA(head), "1 passed"))
+}
+
+// settledAt is a forge for the open pull request 12 whose checks say verdict, on a clean head
+// until they are read and in the merge state state after.
+func settledAt(state forge.MergeState, verdict forge.Verdict) forgeFor {
+	return viewing(cleanHead(), verdict, standing()).showing(cleanHead(), inState(state))
+}
+
+// pushEnd runs `ils push` to the end of its wait on the published topic branch, with a forge that
+// answers as build says, and returns its `Next:` line and the `next` of its JSON.
+func pushEnd(t *testing.T, build forgeFor) (text, next string) {
+	t.Helper()
+
+	synctest.Test(t, func(t *testing.T) {
+		ctx, d := newDelivery(t, pushRow{arrange: publishTopic, script: build})
+
+		got := landing.Push(ctx, d.deps, pushRequest())
+
+		shown, decoded := rendered(t, got, d.gitDir)
+		text, next = nextOf(t, shown), decoded.Next
+	})
+
+	return text, next
+}
+
+// settledRow is one verdict and merge state of the open pull request at the tip that the end of
+// push's wait settles.
+type settledRow struct {
+	build forgeFor
+	name  string
+}
+
+func TestStatus_WhenThePullRequestIsOpenAtTheTip_EndsOnTheStepPushEndsItsWaitOn(t *testing.T) {
+	t.Parallel()
+
+	lint := forgetest.RequiredCheck("lint", forge.BucketPass)
+	beside := forge.Verdict{Checks: []forge.Check{lint}, MissingRequired: []string{"test"}, Runs: ran(forge.RunCompleted)}
+	runOnly := forge.Verdict{MissingRequired: []string{"test"}, Runs: ran(forge.RunCompleted)}
+	tests := []settledRow{
+		{name: "green and clean", build: settledAt(forge.MergeClean, passing())},
+		{name: "green and waiting on a review", build: settledAt(forge.MergeBlockedByReview, passing())},
+		{name: "green on a draft", build: settledAt(forge.MergeDraft, passing()).drafted()},
+		{name: "green and blocked by a missing required check", build: settledAt(forge.MergeBlockedByMissingCheck, passing())},
+		{name: "green and blocked otherwise", build: settledAt(forge.MergeBlockedOther, passing())},
+		{name: "red", build: settledAt(forge.MergeBlockedOther, lintRed())},
+		{name: "in conflict with the trunk", build: settledAt(forge.MergeConflicting, passing())},
+		{name: "behind the trunk", build: settledAt(forge.MergeBehind, passing())},
+		{
+			name:  "a required check never reported beside one that passed",
+			build: settledAt(forge.MergeBlockedByMissingCheck, beside).requiring("lint", "test"),
+		},
+		{
+			name:  "a required check never reported beside a workflow run",
+			build: settledAt(forge.MergeBlockedByMissingCheck, runOnly).requiring("test"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			wantText, wantNext := pushEnd(t, tt.build)
+			s := statusScene(t, publishTopic, tt.build)
+
+			got := seeStatus(t, s, (*testing.T).Context)
+
+			assert.Check(t, is.Equal(nextOf(t, got.text), wantText))
+			assert.Check(t, is.Equal(got.next, wantNext))
+		})
+	}
+}
+
+func TestStatus_WhenOneReadOfThePullRequestAtTheTipSettlesNothing_EndsOnPush(t *testing.T) {
+	t.Parallel()
+
+	silent := forge.Verdict{MissingRequired: []string{"test"}}
+	tests := []settledRow{
+		{name: "checks still running", build: settledAt(forge.MergeClean, running())},
+		{name: "merge state unknown", build: settledAt(forge.MergeUnknown, passing())},
+		{name: "nothing reported and no check required", build: settledAt(forge.MergeClean, forge.Verdict{})},
+		{
+			name:  "nothing reported while the trunk requires a check",
+			build: settledAt(forge.MergeBlockedByMissingCheck, silent).requiring("test"),
+		},
+		{
+			name: "the head could not be read",
+			build: settledAt(forge.MergeClean, passing()).with(func(script *forgetest.Script, _ string) {
+				script.Head = []forgetest.Answer[forge.Head]{{Err: errors.New("gh: server error")}}
+			}),
+		},
+		{
+			name: "the verdict could not be read",
+			build: settledAt(forge.MergeClean, passing()).with(func(script *forgetest.Script, _ string) {
+				script.Verdict = []forgetest.Answer[forge.Verdict]{{Err: errors.New("gh: server error")}}
+			}),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := statusScene(t, publishTopic, tt.build)
+
+			got := seeStatus(t, s, (*testing.T).Context)
+
+			assertSays(t, "Next:"+nextOf(t, got.text), nextPush())
+		})
+	}
 }

@@ -1,7 +1,6 @@
 # Version files by ecosystem
 
-Step 2 of the release uses this table to know where to look first. `git grep -nF` on the current
-version still decides the bump list: a project often carries the version in more than one file.
+Step 2 of the release uses this table to know where to look first.
 
 | Ecosystem        | Version files                                  |
 | ---------------- | ---------------------------------------------- |

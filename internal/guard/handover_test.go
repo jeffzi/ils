@@ -22,7 +22,6 @@ func TestParse_WhenADataConsumerNamesATool_ReportsNoToolInvocationOrMark(t *test
 		{name: "command -v lookup", command: "command -v git"},
 		{name: "consumer behind a wrapper", command: "nice echo git push"},
 		{name: "go words that run nothing beside a non-literal package", command: `go build "$pkg" git push`},
-		{name: "search pattern that parses as a script", command: "rg 'git push' docs"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -306,7 +305,7 @@ func TestParse_WhenAnArgumentIsARelativePathNamedForATool_ReadsItWhereTheInvocat
 			callerDir := t.TempDir()
 			writeExecutable(t, filepath.Join(callerDir, "bin", "git"))
 
-			xargs := lastWith(t, tt.command, guard.Caller{Home: home, Dir: callerDir})
+			xargs := lastWith(t, tt.command, guard.Caller{Env: map[string]string{"HOME": home}, Dir: callerDir})
 
 			assert.Check(t, is.DeepEqual(kinds(xargs.Marks), kinds(tt.want)), "Parse(%q) marks", tt.command)
 		})

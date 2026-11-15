@@ -95,15 +95,19 @@ func TestStartBranch_WhenHEADIsDetachedWithNoCommitOfItsOwn_StartsAtOriginsTrunk
 
 func TestStartBranch_WhenGitCannotHoldTheName_RefusesNamingIt(t *testing.T) {
 	t.Parallel()
-	const name = "logo..draft"
-	s := branchScene(t, nil)
-	before := s.written()
-	bad, ok := errors.AsType[*git.BranchNameError](s.deps.Repo.CheckBranchName(t.Context(), name))
-	assert.Assert(t, ok, "CheckBranchName(%q) gave no *git.BranchNameError", name)
+	for _, name := range []string{"logo..draft", ""} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			s := branchScene(t, nil)
+			before := s.written()
+			bad, ok := errors.AsType[*git.BranchNameError](s.deps.Repo.CheckBranchName(t.Context(), name))
+			assert.Assert(t, ok, "CheckBranchName(%q) gave no *git.BranchNameError", name)
 
-	got := startBranch(t, s, name)
+			got := startBranch(t, s, name)
 
-	assertRefusedBranch(t, s, got, branchRefusal{name: name, before: before, want: expect(name, bad.Reason())})
+			assertRefusedBranch(t, s, got, branchRefusal{name: name, before: before, want: expect(name, bad.Reason())})
+		})
+	}
 }
 
 // takenName is a branch that takes the name the command is given.
@@ -169,7 +173,7 @@ func TestStartBranch_WhenOriginStopsAnswering_NextQuotesTheNameForTheShell(t *te
 	tests := []struct {
 		name, given, quoted string
 	}{
-		{name: "name holds a single quote", given: "rock'n'roll", quoted: `'rock'\''n'\''roll'`},
+		{name: "name holds a single quote", given: "rock'n'roll", quoted: `"rock'n'roll"`},
 		{name: "name holds a shell operator", given: "fix;make", quoted: "'fix;make'"},
 	}
 	for _, tt := range tests {
@@ -279,7 +283,6 @@ func TestStartBranch_WhenAReadOfTheLocalTrunkFails_EndsBrokeNamingTheRead(t *tes
 		read    string
 		fails   []string
 	}{
-		{name: "whether the local trunk exists", fails: localTrunkRead(), read: readLocalTrunk},
 		{
 			name:    "where the ahead trunk is checked out",
 			arrange: func(f *gittest.Fixture) { f.AdvanceTrunk() },

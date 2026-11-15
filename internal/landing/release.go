@@ -70,7 +70,7 @@ func versionTags(tags []git.Tag) []git.Tag {
 // that commit; the changelog at that commit holds notes for the version. A check that fails, an
 // origin that cannot be reached, and a read the context's deadline cut short are refusals; a read
 // that fails for any other reason is broke, and nothing is written before the CI gate and the
-// reserve let the release go on, as gate and reserved say.
+// reserve let the release go on, as gate and the reserve check in Release say.
 //
 // The writes follow, as write says. Every result from the release commit found on carries the
 // release payload.
@@ -85,14 +85,16 @@ func Release(ctx context.Context, deps Deps, req Request) result.Result {
 
 	deps.started(result.Say("Checking the release"))
 
-	ready, stop := Preconditions(ctx, deps, req)
+	s := newSurvey(deps)
+
+	ready, stop := preconditions(ctx, s, req)
 	if stop != nil {
 		return *stop
 	}
 
 	rel := releasing{Ready: ready, tag: tag}
 
-	if stop := rel.checks(ctx, deps, req); stop != nil {
+	if stop := rel.checks(ctx, s, req); stop != nil {
 		return *rel.carried(req, stop)
 	}
 
@@ -147,20 +149,20 @@ func (rel *releasing) prerelease() bool {
 
 // checks runs the checks of `ils release` after the shared preconditions, and returns the result
 // of the first that refuses, or nil when all hold.
-func (rel *releasing) checks(ctx context.Context, deps Deps, req Request) *result.Result {
-	if stop := rel.readTags(ctx, deps, req); stop != nil {
+func (rel *releasing) checks(ctx context.Context, s *survey, req Request) *result.Result {
+	if stop := rel.readTags(ctx, s.deps, req); stop != nil {
 		return stop
 	}
 
-	if stop := rel.findCommit(ctx, deps, req); stop != nil {
+	if stop := rel.findCommit(ctx, s, req); stop != nil {
 		return stop
 	}
 
-	if stop := rel.checkTags(ctx, deps, req); stop != nil {
+	if stop := rel.checkTags(ctx, s.deps, req); stop != nil {
 		return stop
 	}
 
-	return rel.checkNotes(ctx, deps, req)
+	return rel.checkNotes(ctx, s.deps, req)
 }
 
 // readTags reads origin's tags, refuses a version that is not above every other version tag
@@ -194,13 +196,13 @@ func (rel *releasing) readTags(ctx context.Context, deps Deps, req Request) *res
 // findCommit fetches origin's trunk and finds the release commit on it: the newest commit on its
 // first-parent history since the previous version tag whose subject is the version's release
 // subject.
-func (rel *releasing) findCommit(ctx context.Context, deps Deps, req Request) *result.Result {
-	tip, stop := fetchTrunk(ctx, deps, req, rel.Trunk)
+func (rel *releasing) findCommit(ctx context.Context, s *survey, req Request) *result.Result {
+	tip, stop := fetchTrunk(ctx, s, req, rel.Trunk)
 	if stop != nil {
 		return stop
 	}
 
-	history, err := rel.history(ctx, deps, tip)
+	history, err := rel.history(ctx, s.deps, tip)
 	if err != nil {
 		return req.unreached(readReleaseCommit, err,
 			result.Say("origin could not be reached to fetch its tag %s", rel.previous.Name))

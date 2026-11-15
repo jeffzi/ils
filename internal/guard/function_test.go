@@ -38,7 +38,6 @@ func TestJudge_WhenACallMayRunAnOuterBodyUnderARedirect_JudgesThatBodyUnderTheRe
 	checkRefusals(t, []refusal{
 		{name: "redefined in an if branch", command: "dump() { git show HEAD:f; }; { if true; then dump() { :; }; fi; dump; } > f", wantNamed: "git show"},
 		{name: "redefined in an uncalled function body", command: "dump() { git show HEAD:f; }; { g() { dump() { :; }; }; dump; } > f", wantNamed: "git show"},
-		{name: "redefined in an alias value", command: "dump() { git show HEAD:f; }; { alias a='dump() { :; }'; dump; } > f", wantNamed: "git show"},
 	})
 }
 

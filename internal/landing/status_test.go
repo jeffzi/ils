@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/charmbracelet/colorprofile"
@@ -39,7 +40,7 @@ func publishTopic(f *gittest.Fixture) { f.Publish(topic) }
 func greenOpen() forgeFor { return viewing(cleanHead(), passing(), standing()) }
 
 // viewing is a forge that answers every read a status may make: Acme/Widgets as the user's to push
-// to, found as the branch's pull requests, a trunk that requires no check and has CI, head as the
+// to, found as the branch's pull requests, a trunk that requires no check, head as the
 // open pull request's head on the tip, verdict as its checks, and a message titled as the open pull
 // request is, with the body landedBody.
 func viewing(head forge.Head, verdict forge.Verdict, found ...forge.Change) forgeFor {
@@ -59,7 +60,6 @@ func viewing(head forge.Head, verdict forge.Verdict, found ...forge.Change) forg
 		shown.SHA = tip
 		script := finding(placed...)
 		script.TrunkProtection = forgetest.Values(forge.Protection{})
-		script.HasTrunkCI = forgetest.Values(true)
 		script.Head = shows(shown)
 		script.Verdict = says(verdict)
 		script.Message = forgetest.Values(forge.Message{Title: title, Body: landedBody})
@@ -239,16 +239,6 @@ func landedSteps() []nextRow {
 			},
 		},
 		{
-			name: "merged pull request carries every commit while behind origin's copy", script: landed,
-			arrange: func(f *gittest.Fixture) string {
-				f.Publish(topic)
-				f.AdvanceOrigin(topic)
-				f.LandPull(merged, topic)
-
-				return nextBranch()
-			},
-		},
-		{
 			name: "merged pull request lacks a commit made since", script: landed,
 			arrange: func(f *gittest.Fixture) string {
 				f.LandPull(merged, topic)
@@ -260,9 +250,32 @@ func landedSteps() []nextRow {
 	}
 }
 
-// copySteps are the states whose `Next:` line origin's copy of the branch decides.
+// copySteps are the states whose `Next:` line origin's copy of the branch decides, ahead of a
+// merged pull request that carries all or some of the branch's commits.
 func copySteps() []nextRow {
+	landed := viewing(cleanHead(), passing(), change(merged, trunk, forge.ChangeMerged))
+
 	return []nextRow{
+		{
+			name: "behind origin's copy with a merged pull request that carries every commit", script: landed,
+			arrange: func(f *gittest.Fixture) string {
+				f.Publish(topic)
+				f.AdvanceOrigin(topic)
+				f.LandPull(merged, topic)
+
+				return pushCommand().after("`" + pullFrom(topic) + "`")
+			},
+		},
+		{
+			name: "diverged from origin's copy with a merged pull request that lacks a commit made since", script: landed,
+			arrange: func(f *gittest.Fixture) string {
+				f.Publish(topic)
+				f.LandPull(merged, topic)
+				f.Diverge(topic)
+
+				return pushCommand().after("`" + originMerge + topic + "`")
+			},
+		},
 		{
 			name: "behind origin's copy with a green pull request", script: greenOpen(),
 			arrange: func(f *gittest.Fixture) string {
@@ -362,8 +375,8 @@ func precedenceSteps() []nextRow {
 	}
 }
 
-// refusedSteps are the states in which push or merge would refuse a step the list above names, so
-// that status ends on the refusal's own step instead.
+// refusedSteps are the states in which one of push's checks stops with its own step, which status
+// ends on instead of the step the open pull request decides.
 func refusedSteps() []nextRow {
 	return []nextRow{
 		{
@@ -391,6 +404,24 @@ func refusedSteps() []nextRow {
 				f.AdvanceTrunk()
 
 				return nextTrunkFix(fixNowhere, "ils merge")
+			},
+		},
+		{
+			name: "green and waiting on a review with a local trunk ahead of origin's", script: settledAt(forge.MergeBlockedByReview, passing()),
+			arrange: func(f *gittest.Fixture) string {
+				f.Publish(topic)
+				f.AdvanceTrunk()
+
+				return nextTrunkFix(fixNowhere, "ils merge")
+			},
+		},
+		{
+			name: "green on a draft with a local trunk ahead of origin's", script: settledAt(forge.MergeDraft, passing()).drafted(),
+			arrange: func(f *gittest.Fixture) string {
+				f.Publish(topic)
+				f.AdvanceTrunk()
+
+				return nextTrunkFix(fixNowhere, "ils push")
 			},
 		},
 		{
@@ -434,10 +465,86 @@ func TestStatus_WhenOnAWorkBranch_EndsOnTheFirstNextThatHolds(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// What a status asks
+// ---------------------------------------------------------------------------
+
+// originAsks returns what each git call that reaches origin asked it: the arguments of a ls-remote,
+// and the source of a fetch's refspec, since its destination differs from run to run.
+func originAsks(calls [][]string) []string {
+	var asks []string
+
+	for _, argv := range calls {
+		switch {
+		case len(argv) < 2:
+		case argv[1] == "ls-remote":
+			asks = append(asks, strings.Join(argv[1:], " "))
+		case argv[1] == "fetch":
+			source, _, _ := strings.Cut(argv[len(argv)-1], ":")
+			asks = append(asks, "fetch "+source)
+		}
+	}
+
+	return asks
+}
+
+func TestStatus_OnAWorkBranch_AsksGitHubAndOriginEachThingOnce(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		arrange func(*gittest.Fixture)
+		script  forgeFor
+		name    string
+		// asks is how many different things origin is asked.
+		asks int
+	}{
+		// The checks read through to the pull request, ahead of the report.
+		{name: "ahead of origin's copy with a green pull request", arrange: aheadOfCopy, script: greenOpen(), asks: 4},
+		{
+			// The checks stop at origin's copy, and the report reads the merged pull request's head.
+			name: "behind origin's copy with a merged pull request", asks: 5,
+			script: viewing(cleanHead(), passing(), change(merged, trunk, forge.ChangeMerged)),
+			arrange: func(f *gittest.Fixture) {
+				f.Publish(topic)
+				f.AdvanceOrigin(topic)
+				f.LandPull(merged, topic)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := statusScene(t, tt.arrange, tt.script)
+
+			seeStatus(t, s, (*testing.T).Context)
+
+			asks := originAsks(s.recorder.Calls())
+			assert.Check(t, is.Len(asks, tt.asks), "origin was asked %q", asks)
+			assert.Check(t, is.Len(slices.Compact(slices.Sorted(slices.Values(asks))), tt.asks), "origin was asked %q", asks)
+			ops := opsOf(s.forge.Calls())
+			assert.Check(t, is.Equal(countOf(ops, forgetest.OpIdentity), 1), "forge reads = %v", ops)
+			assert.Check(t, is.Equal(countOf(ops, forgetest.OpFindChanges), 1), "forge reads = %v", ops)
+		})
+	}
+}
+
+// countOf returns how many entries of list are want.
+func countOf[T comparable](list []T, want T) int {
+	count := 0
+
+	for _, entry := range list {
+		if entry == want {
+			count++
+		}
+	}
+
+	return count
+}
+
+// ---------------------------------------------------------------------------
 // Reads that fail
 // ---------------------------------------------------------------------------
 
-func TestStatus_WhenAForgeReadFails_ReportsTheFailedReadBesideTheRest(t *testing.T) {
+func TestStatus_WhenAForgeReadFails_ReportsTheFailedRead(t *testing.T) {
 	t.Parallel()
 	s := statusScene(t, publishTopic,
 		func(string) forgetest.Script { return failingToFind(errors.New(forgeFailure)) })
@@ -448,7 +555,7 @@ func TestStatus_WhenAForgeReadFails_ReportsTheFailedReadBesideTheRest(t *testing
 	assert.Assert(t, is.Len(got.status.Unread, 1))
 	assert.Check(t, is.Equal(got.status.Unread[0].Read, readChanges))
 	assert.Check(t, is.Contains(got.status.Unread[0].Error, forgeFailure))
-	assert.Check(t, got.status.OnOrigin, "the branch's copy on origin went unreported beside the failed read")
+	assertEndsOn(t, got, statusCommand().fixed)
 }
 
 func TestStatus_WhenAGitReadFails_ReportsTheFailedReadBesideTheRest(t *testing.T) {
@@ -471,8 +578,8 @@ func aheadOfCopy(f *gittest.Fixture) {
 	f.Commits(topic, "fix a typo")
 }
 
-// failCopyFetch makes origin answer the questions about its trunk and whether it has the branch, and
-// fail the fetch of the branch's copy after them.
+// failCopyFetch makes origin answer the question about its trunk, the fetch of it, and whether it
+// has the branch, and fail the fetch of the branch's copy after them.
 func failCopyFetch(t *testing.T, s *scene) {
 	t.Helper()
 
@@ -489,7 +596,8 @@ func TestStatus_WhenTheFetchOfOriginsCopyFails_ListsTheReadWithoutCountingTheCop
 	assert.Check(t, hasUnread(got.status, readCopy), "unread %v, want %s listed", got.status.Unread, readCopy)
 	assert.Check(t, !got.status.OnOrigin, "status carries the copy on origin, %d ahead and %d behind, though its fetch failed",
 		got.status.Ahead, got.status.Behind)
-	assertEndsOn(t, got, statusCommand().fixed)
+	// Push refuses there as origin unreached, and names itself to run again.
+	assert.Check(t, is.Equal(got.next, "ils push"))
 }
 
 func TestStatus_WhenWhetherOriginsCopyCarriesTheFirstCommitCannotBeRead_EndsOnFixingWhatFailed(t *testing.T) {
@@ -527,6 +635,118 @@ func TestStatus_WhenAReadOfTheBranchFails_EndsOnFixingWhatFailed(t *testing.T) {
 	}
 }
 
+// trunkFetch is the arguments of the git call that fetches origin's trunk.
+func trunkFetch() []string {
+	return []string{"fetch", "--no-tags", "--refmap=", "origin", "+refs/heads/" + trunk + ":*"}
+}
+
+// fetchedRead is the arguments of the git call that reads what a fetch fetched.
+func fetchedRead() []string { return []string{"rev-parse", "--verify", "refs/ils/fetched/*"} }
+
+func TestStatus_WhenWhatTheFetchOfOriginsTrunkFetchedCannotBeReadOnAWorkBranch_EndsOnFixingWhatFailed(t *testing.T) {
+	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	// The branch has no copy on origin, so the fetch of origin's trunk is the only fetch.
+	s := statusScene(t, nil, greenOpen())
+	failGit(t, s, fetchedRead())
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	assertEndsOn(t, got, statusCommand().fixed)
+	assert.Check(t, hasUnread(got.status, readFetchedTrunk), "unread %v, want %s listed", got.status.Unread, readFetchedTrunk)
+}
+
+func TestStatus_WhenOriginCannotBeReachedOnAWorkBranch_EndsOnAPushAsThePushWould(t *testing.T) {
+	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	tests := []struct {
+		name  string
+		words []string
+	}{
+		{name: "to fetch its trunk", words: trunkFetch()},
+		// The fetch of the branch's copy fails too, after the one push stops at.
+		{name: "for every fetch", words: []string{"fetch"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := statusScene(t, publishTopic, greenOpen())
+			failGit(t, s, tt.words)
+
+			got := seeStatus(t, s, (*testing.T).Context)
+
+			next := nextOf(t, got.text)
+			assert.Check(t, is.Contains(next, "ils push"), "Next:%s", next)
+			assert.Check(t, !strings.Contains(next, "fix what failed"), "Next:%s", next)
+		})
+	}
+}
+
+func TestStatus_WhenAReadOfWhetherAnotherBranchCarriesTheWorkFails_EndsOnFixingWhatFailed(t *testing.T) {
+	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	for _, tt := range branchFailedReads() {
+		t.Run(tt.name, func(t *testing.T) {
+			var words []string
+
+			s := statusScene(t, func(f *gittest.Fixture) { words = tt.arrange(f) }, viewing(cleanHead(), passing()))
+			failGit(t, s, words)
+
+			got := seeStatus(t, s, (*testing.T).Context)
+
+			assertEndsOn(t, got, statusCommand().fixed)
+			assert.Check(t, hasUnread(got.status, tt.read), "unread %v, want %s listed", got.status.Unread, tt.read)
+		})
+	}
+}
+
+// rewritePublished publishes the topic branch, then rewrites its one commit, so that the branch and
+// origin's copy diverge and the copy lacks the branch's first commit past the trunk.
+func rewritePublished(f *gittest.Fixture) {
+	f.Publish(topic)
+	f.Git("commit", "--amend", "--quiet", "--message", "rewrite the readme")
+}
+
+func TestStatus_WhenAReadOfWhetherAnotherBranchCarriesTheWorkFailsOnADivergedBranch_EndsOnMergingOriginsCopy(t *testing.T) {
+	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	// Push refuses the diverged branch before it reads whether another branch carries the work.
+	tests := []struct {
+		// arrange changes the repository and returns the arguments of the git call that is made to fail.
+		arrange func(*gittest.Fixture) []string
+		name    string
+		read    string
+	}{
+		{
+			name: "the local branches that contain the first commit", read: readBranches,
+			arrange: func(f *gittest.Fixture) []string {
+				rewritePublished(f)
+
+				return []string{"for-each-ref", "--format=%(refname)", "refs/heads/", "--contains", f.Git("rev-parse", topic)}
+			},
+		},
+		{
+			name: "whether another branch carries a commit", read: readCommits,
+			arrange: func(f *gittest.Fixture) []string {
+				rewritePublished(f)
+				tip := f.Git("rev-parse", topic)
+				f.Sibling(side, topic)
+				f.Git("switch", "--quiet", topic)
+
+				return append(history(), tip, "^refs/remotes/origin/"+trunk, "^refs/heads/"+side)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var words []string
+
+			s := statusScene(t, func(f *gittest.Fixture) { words = tt.arrange(f) }, viewing(cleanHead(), passing()))
+			failGit(t, s, words)
+
+			got := seeStatus(t, s, (*testing.T).Context)
+
+			assertSays(t, "Next:"+nextOf(t, got.text), pushCommand().after("`"+originMerge+topic+"`"))
+			assert.Check(t, hasUnread(got.status, tt.read), "unread %v, want %s listed", got.status.Unread, tt.read)
+		})
+	}
+}
+
 func TestStatus_WhenTheWorkingTreeCannotBeReadAndTheLocalTrunkIsAhead_EndsOnFixingWhatFailed(t *testing.T) {
 	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
 	s := statusScene(t, func(f *gittest.Fixture) {
@@ -546,14 +766,22 @@ func TestStatus_WhenTheLocalTrunkCannotBeRead_EndsBrokeNamingTheRead(t *testing.
 		arrange func(*gittest.Fixture)
 		build   forgeFor
 		name    string
-		fails   []string
+		// want is the `Next:` step: fixing what failed, unless a check before the local trunk's
+		// stops first.
+		want  string
+		fails []string
 	}{
-		{name: "on the trunk", arrange: standOnTrunk, build: ruledBy(forge.RulesProtect), fails: localTrunkRead()},
-		{name: "on a work branch", arrange: publishTopic, build: greenOpen(), fails: localTrunkRead()},
+		{name: "on the trunk", arrange: standOnTrunk, build: ruledBy(forge.RulesProtect), fails: localTrunkRead(), want: statusCommand().fixed},
 		{
-			name: "its count against origin's on the trunk", arrange: standOnTrunk, build: ruledBy(forge.RulesProtect),
-			fails: divergenceRead(),
+			name: "on the trunk, counted against origin's", arrange: standOnTrunk, build: ruledBy(forge.RulesProtect), fails: divergenceRead(),
+			want: statusCommand().fixed,
 		},
+		{name: "on a work branch", arrange: publishTopic, build: greenOpen(), fails: localTrunkRead(), want: statusCommand().fixed},
+		{
+			name: "on a work branch with changed tracked files", arrange: dirtyPublished, build: greenOpen(), fails: localTrunkRead(),
+			want: pushCommand().after("commit them"),
+		},
+		{name: "on a detached HEAD", arrange: detachOnTrunk, build: viewing(cleanHead(), passing()), fails: localTrunkRead(), want: statusCommand().fixed},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -563,7 +791,7 @@ func TestStatus_WhenTheLocalTrunkCannotBeRead_EndsBrokeNamingTheRead(t *testing.
 			got := seeStatusEnding(t, s, (*testing.T).Context, result.Broke)
 
 			assertSays(t, got.text, expect("could not read "+readLocalTrunk))
-			assertEndsOn(t, got, statusCommand().fixed)
+			assertEndsOn(t, got, tt.want)
 			assert.Check(t, hasUnread(got.status, readLocalTrunk), "unread %v, want %s listed", got.status.Unread, readLocalTrunk)
 		})
 	}
@@ -580,19 +808,120 @@ func TestStatus_WhenTheSSHOriginsURLsNeedIsMissing_EndsOnInstallingSSH(t *testin
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
-	assertEndsOn(t, got, statusCommand().after("install ssh"))
+	assertEndsOn(t, got, pushCommand().after("install ssh"))
 	assert.Check(t, hasUnread(got.status, readURLs), "unread %v, want %s listed", got.status.Unread, readURLs)
 }
 
-func TestStatus_WhenGitIsOlderThanTheMinimumOnTheTrunk_EndsOnUpgradingGit(t *testing.T) {
-	// Not parallel: fakeGit puts a git that prints its own version first on PATH with t.Setenv.
-	s := statusScene(t, standOnTrunk, greenOpen())
-	fakeGit(t, s, gittest.Fake{Version: "git version 1.0.0"})
+func TestStatus_WhenAToolIsUnfitOffAWorkBranch_EndsOnTheStepBranchEndsOn(t *testing.T) {
+	// Not parallel: a row's fakeGit puts a git that prints its own version first on PATH with t.Setenv.
+	tests := []struct {
+		spoil   func(*testing.T, *scene)
+		arrange func(*gittest.Fixture)
+		build   forgeFor
+		name    string
+		// want is the `Next:` step, as expect builds it: branch refuses a git too old, and never
+		// reads origin's URLs, which alone need ssh.
+		want string
+		read string
+	}{
+		{
+			name: "git is older than the minimum on the trunk", arrange: standOnTrunk, build: ruledBy(forge.RulesProtect),
+			spoil: func(t *testing.T, s *scene) { fakeGit(t, s, gittest.Fake{Version: "git version 1.0.0"}) },
+			want:  expect("upgrade git", startCommand), read: readGitVersion,
+		},
+		{
+			name: "the ssh origin's URLs need is missing on a detached HEAD", arrange: detachOnTrunk, build: viewing(cleanHead(), passing()),
+			spoil: func(t *testing.T, s *scene) { s.deps.Repo.Runner.Env = gittest.WithoutSSH(t, s.deps.Repo.Runner.Env) },
+			want:  expect(startCommand), read: readURLs,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := statusScene(t, tt.arrange, tt.build)
+			tt.spoil(t, s)
+
+			got := seeStatus(t, s, (*testing.T).Context)
+
+			assertEndsOn(t, got, tt.want)
+			assert.Check(t, hasUnread(got.status, tt.read), "unread %v, want %s listed", got.status.Unread, tt.read)
+		})
+	}
+}
+
+// aheadOfTreeRow is a refusal of the checks push makes before it reads the working tree, and the
+// part of the step it ends on.
+type aheadOfTreeRow struct {
+	// spoil, when set, changes how the scene's git or ssh answer once it is built.
+	spoil   func(*testing.T, *scene)
+	arrange func(*gittest.Fixture)
+	script  forgeFor
+	name    string
+	// want is the `Next:` step the row ends on, as expect builds it.
+	want string
+}
+
+// scripted is a forge that answers every status read with script, whatever the tip.
+func scripted(script forgetest.Script) forgeFor {
+	return func(string) forgetest.Script { return script }
+}
+
+func aheadOfTreeRows() []aheadOfTreeRow {
+	const ghInstallURL = "https://cli.github.com"
+
+	outdated := child.ToolTooOldError{
+		Tool: "gh", Minimum: "2.50.0", InstallURL: ghInstallURL, Version: "2.49.0", Line: "gh version 2.49.0 (2024-05-13)",
+	}
+
+	return []aheadOfTreeRow{
+		{
+			name: "git is older than the minimum", script: greenOpen(), want: pushCommand().after("upgrade git"),
+			spoil: func(t *testing.T, s *scene) { fakeGit(t, s, gittest.Fake{Version: "git version 1.0.0"}) },
+		},
+		{
+			name: "the ssh origin's URLs need is missing", script: greenOpen(), want: pushCommand().after("install ssh"),
+			spoil: func(t *testing.T, s *scene) { s.deps.Repo.Runner.Env = gittest.WithoutSSH(t, s.deps.Repo.Runner.Env) },
+		},
+		{
+			name: "origin's URLs name two repositories", script: greenOpen(), want: expect("`git remote set-url`"),
+			arrange: func(f *gittest.Fixture) { f.SetPushURL(otherURL) },
+		},
+		{name: "gh is not installed", script: scripted(ghMissing()), want: pushCommand().after("install gh")},
+		{name: "gh is older than the minimum", script: scripted(fails(&outdated)), want: pushCommand().after("upgrade gh")},
+		{name: "gh is not logged in", script: scripted(fails(&forge.NotLoggedInError{Host: host})), want: pushCommand().after("log in to " + host)},
+		{name: "fork", script: scripted(answers(widgets(true, true))), want: expect("push by hand")},
+		{name: "no push permission", script: scripted(answers(widgets(false, false))), want: expect("push by hand")},
+	}
+}
+
+func TestStatus_WhenACheckBeforeTheWorkingTreeRefusesBesideChangedTrackedFiles_EndsOnItsStep(t *testing.T) {
+	// Not parallel: a row's fakeGit puts a git that prints its own version first on PATH with t.Setenv.
+	for _, tt := range aheadOfTreeRows() {
+		t.Run(tt.name, func(t *testing.T) {
+			s := statusScene(t, func(f *gittest.Fixture) {
+				dirtyPublished(f)
+
+				if tt.arrange != nil {
+					tt.arrange(f)
+				}
+			}, tt.script)
+			if tt.spoil != nil {
+				tt.spoil(t, s)
+			}
+
+			got := seeStatus(t, s, (*testing.T).Context)
+
+			assertSays(t, nextOf(t, got.text), tt.want)
+		})
+	}
+}
+
+func TestStatus_WhenTheBranchHasNoCommitPastTheTrunk_EndsOnAFirstPush(t *testing.T) {
+	t.Parallel()
+	s := statusScene(t, func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--create", spare, trunk) }, greenOpen())
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
-	assertEndsOn(t, got, statusCommand().after("upgrade git"))
-	assert.Check(t, hasUnread(got.status, readGitVersion), "unread %v, want %s listed", got.status.Unread, readGitVersion)
+	assert.Check(t, is.Equal(got.next, "commit the work, then run ils push"))
 }
 
 func TestStatus_WhenGitsVersionCannotBeRead_EndsOnFixingWhatFailed(t *testing.T) {
@@ -606,15 +935,70 @@ func TestStatus_WhenGitsVersionCannotBeRead_EndsOnFixingWhatFailed(t *testing.T)
 	assert.Check(t, hasUnread(got.status, readGitVersion), "unread %v, want %s listed", got.status.Unread, readGitVersion)
 }
 
-func TestStatus_WhenAReadOfTheBranchIsCutShort_EndsOnPush(t *testing.T) {
+func TestStatus_WhenAReadOfTheChecksIsCutShort_EndsOnPush(t *testing.T) {
 	// Not parallel: stallingGit puts a git that stalls first on PATH with t.Setenv.
-	s := statusScene(t, publishTopic, greenOpen())
-	ctx := byTimeLimit().stallingGit([]string{"rev-parse", "HEAD"})(t, s)
+	tests := []struct {
+		name  string
+		read  string
+		words []string
+		// asked is how many calls GitHub gets: the report's before the cut, none from the checks.
+		asked int
+	}{
+		{name: "the fetch of origin's trunk", read: readFetchedTrunk, words: trunkFetch()},
+		{name: "the working tree's changes", read: readTree, words: []string{"status", "--porcelain=v1"}, asked: 1},
+		{name: "the tip", read: readTip, words: []string{"rev-parse", "HEAD"}, asked: 1},
+		{name: "how the branch and origin's copy stand apart", read: readCopy, words: divergenceRead(), asked: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := statusScene(t, aheadOfCopy, greenOpen())
+			ctx := byTimeLimit().stallingGit(tt.words)(t, s)
 
-	got := seeStatus(t, s, func(*testing.T) context.Context { return ctx })
+			got := seeStatus(t, s, func(*testing.T) context.Context { return ctx })
 
-	assert.Assert(t, hasUnread(got.status, readTip), "unread %v, want %s listed", got.status.Unread, readTip)
-	assert.Check(t, is.Equal(got.next, "ils push"))
+			assert.Assert(t, hasUnread(got.status, tt.read), "unread %v, want %s listed", got.status.Unread, tt.read)
+			assert.Check(t, is.Equal(got.next, "ils push"))
+			assert.Check(t, is.Len(s.forge.Calls(), tt.asked), "GitHub was asked %v", s.forge.Calls())
+		})
+	}
+}
+
+// heldFinding is greenOpen with a read of the branch's pull requests that answers only once the
+// context of the run has ended, and the channel the read closes as it starts.
+func heldFinding() (forgeFor, <-chan struct{}) {
+	started := make(chan struct{})
+
+	var once sync.Once
+
+	return func(tip string) forgetest.Script {
+		script := greenOpen()(tip)
+		script.FindChanges = []forgetest.Answer[[]forge.Change]{{Hold: true}}
+		script.OnRead = func(call forgetest.Call) {
+			if call.Op == forgetest.OpFindChanges {
+				once.Do(func() { close(started) })
+			}
+		}
+
+		return script
+	}, started
+}
+
+func TestStatus_WhenTheReadOfThePullRequestsIsCutShort_EndsOnPush(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range cuts() {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			build, started := heldFinding()
+			s := statusScene(t, aheadOfCopy, build)
+			ctx := c.once(t.Context(), started)
+
+			got := seeStatus(t, s, func(*testing.T) context.Context { return ctx })
+
+			assert.Assert(t, hasUnread(got.status, readChanges), "unread %v, want %s listed", got.status.Unread, readChanges)
+			assert.Check(t, is.Equal(got.next, "ils push"))
+		})
+	}
 }
 
 func TestStatus_WhenTheFirstReadIsCutShort_EndsDoneSkippingEveryReadAfterIt(t *testing.T) {
@@ -629,6 +1013,7 @@ func TestStatus_WhenTheFirstReadIsCutShort_EndsDoneSkippingEveryReadAfterIt(t *t
 
 			assertSays(t, got.text, expect(c.ends))
 			assert.Check(t, is.Len(got.status.Unread, 1))
+			assert.Check(t, is.Equal(got.next, "none"))
 		})
 	}
 }
@@ -645,94 +1030,6 @@ func TestStatus_WhenAReadOfOriginIsCutShort_EndsDoneSkippingTheForgeReadsAfterIt
 	assertSays(t, got.text, expect(c.ends))
 	assert.Check(t, is.Len(got.status.Unread, 1))
 	assert.Check(t, !slices.Contains(opsOf(s.forge.Calls()), forgetest.OpFindChanges), "forge reads = %v, want no find-changes", opsOf(s.forge.Calls()))
-}
-
-// ---------------------------------------------------------------------------
-// Where HEAD stands outside a work branch or the trunk
-// ---------------------------------------------------------------------------
-
-const (
-	standingDetached     result.Standing = "detached"
-	standingNoOrigin     result.Standing = "no-origin"
-	standingNoRepository result.Standing = "no-repository"
-)
-
-// noForge is a forge with no answer, so that any call to it is unscripted.
-func noForge(string) forgetest.Script { return forgetest.Script{} }
-
-func TestStatus_WhenHEADIsDetachedWithNoCommitOfItsOwn_EndsOnStartingABranch(t *testing.T) {
-	t.Parallel()
-	s := statusScene(t, func(f *gittest.Fixture) {
-		f.Git("switch", "--quiet", "--detach", trunk)
-		f.AdvanceOrigin(trunk)
-	}, viewing(cleanHead(), passing()))
-
-	got := seeStatus(t, s, (*testing.T).Context)
-
-	assert.Check(t, is.Equal(got.status.Standing, standingDetached))
-	assert.Check(t, is.Len(got.status.Unlanded, 0))
-	assertSays(t, got.text, detached())
-}
-
-func TestStatus_WhenDetachedHEADHasCommitsOriginsTrunkLacks_ListsThemToKeepOnABranch(t *testing.T) {
-	t.Parallel()
-
-	var own []string
-
-	s := statusScene(t, func(f *gittest.Fixture) {
-		own = f.Commits(spare, sharpen)
-		f.Detach()
-		f.Git("branch", "--quiet", "--delete", "--force", spare)
-	}, viewing(cleanHead(), passing()))
-
-	got := seeStatus(t, s, (*testing.T).Context)
-
-	assert.Check(t, is.Equal(got.status.Standing, standingDetached))
-	assert.Check(t, is.DeepEqual(got.status.Unlanded, own))
-	assertSays(t, got.text, expect(shortSHA(own[0]), sharpen)+keepDetached())
-}
-
-func TestStatus_WhenOnTheTrunk_EndsOnStartingABranch(t *testing.T) {
-	t.Parallel()
-	s := statusScene(t, standOnTrunk, ruledBy(forge.RulesProtect))
-
-	got := seeStatus(t, s, (*testing.T).Context)
-
-	assertSays(t, nextOf(t, got.text), nextBranch())
-}
-
-func TestStatus_WhenOnTheTrunkAheadOfOrigins_EndsOnTheFix(t *testing.T) {
-	t.Parallel()
-	s := statusScene(t, func(f *gittest.Fixture) { f.Commits(trunk, strayOnTrunk) }, ruledBy(forge.RulesProtect))
-
-	got := seeStatus(t, s, (*testing.T).Context)
-
-	assertSays(t, "Next:"+nextOf(t, got.text), nextTrunkFix(fixHere, "ils push"))
-}
-
-func TestStatus_WhenThereIsNoOrigin_EndsOnCreatingIt(t *testing.T) {
-	t.Parallel()
-	s := statusScene(t, (*gittest.Fixture).RemoveOrigin, noForge)
-
-	got := seeStatus(t, s, (*testing.T).Context)
-
-	assert.Check(t, is.Equal(got.status.Standing, standingNoOrigin))
-
-	_, next, _ := strings.Cut(got.text, "Next:")
-	assertSays(t, next, expect("gh repo create --source . --push"))
-}
-
-func TestStatus_WhenOutsideAGitRepository_SaysSo(t *testing.T) {
-	t.Parallel()
-	s := statusScene(t, nil, noForge)
-	s.deps.Repo.Runner.Dir = t.TempDir()
-	missing := s.deps.Repo.CheckRepository(t.Context())
-	assert.Assert(t, missing != nil, "CheckRepository() = nil outside a repository")
-
-	got := seeStatus(t, s, (*testing.T).Context)
-
-	assert.Check(t, is.Equal(got.status.Standing, standingNoRepository))
-	assertSays(t, got.text, expect(missing.Error()))
 }
 
 // ---------------------------------------------------------------------------
@@ -788,16 +1085,75 @@ func TestStatus_WhenOnAWorkBranchAndGitHubCannotBeRead_NamesTheFixBesideWhatGitT
 	}
 }
 
-func TestStatus_WhenOriginsURLsNameTwoRepositories_EndsOnPointingThemAtOne(t *testing.T) {
+// ghRefusal is one way gh, or origin's URLs, keep a status off a work branch from reading GitHub,
+// with the parts of the line that names the fix.
+type ghRefusal struct {
+	arrange func(*gittest.Fixture)
+	name    string
+	said    string
+	script  forgetest.Script
+}
+
+// twoRepositories gives origin a push URL that names another repository than its fetch URL.
+func twoRepositories(f *gittest.Fixture) { f.SetPushURL(otherURL) }
+
+// ghRefusals are the ghRefusal rows, built afresh so that parallel tests share no script.
+func ghRefusals() []ghRefusal {
+	twoURLs := expect(fetchURL, otherURL)
+
+	return []ghRefusal{
+		{name: "gh is not installed on the trunk", arrange: standOnTrunk, script: ghMissing(), said: expect("gh", "https://cli.github.com")},
+		{name: "gh is not logged in on the trunk", arrange: standOnTrunk, script: fails(&forge.NotLoggedInError{Host: host}), said: expect(host)},
+		{name: "fork on the trunk", arrange: standOnTrunk, script: answers(widgets(true, true)), said: expect(owner+"/"+repoName, "is a fork")},
+		{
+			name: "origin's URLs name two repositories on the trunk", script: allowed(), said: twoURLs,
+			arrange: func(f *gittest.Fixture) {
+				standOnTrunk(f)
+				twoRepositories(f)
+			},
+		},
+		{name: "gh is not installed on a detached HEAD", arrange: detachOnTrunk, script: ghMissing(), said: expect("gh", "https://cli.github.com")},
+		{name: "gh is not logged in on a detached HEAD", arrange: detachOnTrunk, script: fails(&forge.NotLoggedInError{Host: host}), said: expect(host)},
+		{name: "fork on a detached HEAD", arrange: detachOnTrunk, script: answers(widgets(true, true)), said: expect(owner+"/"+repoName, "is a fork")},
+		{
+			name: "origin's URLs name two repositories on a detached HEAD", script: allowed(), said: twoURLs,
+			arrange: func(f *gittest.Fixture) {
+				detachOnTrunk(f)
+				twoRepositories(f)
+			},
+		},
+	}
+}
+
+func TestStatus_WhenGitHubCannotBeReadOffAWorkBranch_NamesTheFixBeforeEndingOnBranch(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range ghRefusals() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := tt.script
+			script.TrunkProtection = forgetest.Values(forge.Protection{Rules: forge.RulesProtect})
+			s := statusScene(t, tt.arrange, scripted(script))
+
+			got := seeStatus(t, s, (*testing.T).Context)
+
+			before, _, _ := strings.Cut(got.text, "Next:")
+			assertSays(t, before, tt.said)
+			assertEndsOn(t, got, nextBranch())
+		})
+	}
+}
+
+func TestStatus_WhenOriginsURLsNameTwoRepositories_NamesBothURLs(t *testing.T) {
 	t.Parallel()
 	s := statusScene(t, func(f *gittest.Fixture) {
 		f.Publish(topic)
-		f.Git("remote", "set-url", "--push", "origin", "https://github.com/someone/else.git")
+		f.SetPushURL(otherURL)
 	}, viewing(cleanHead(), passing()))
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
-	assertSays(t, got.text, expect("do not name one GitHub repository", "Next:", "`git remote set-url`"))
+	assertSays(t, got.text, expect(fetchURL, otherURL))
 	assert.Check(t, hasUnread(got.status, readChanges), "unread %v, want the pull requests listed", got.status.Unread)
 }
 
@@ -857,118 +1213,4 @@ func TestStatus_WhenOriginCannotBeReached_CountsAgainstTheLastFetch(t *testing.T
 	assertSays(t, got.text, expect("could not be reached"))
 	assert.Check(t, is.Len(got.status.Unread, 1))
 	assert.Check(t, hasUnread(got.status, "origin's trunk"), "unread %v, want an entry for origin's trunk", got.status.Unread)
-}
-
-// ---------------------------------------------------------------------------
-// Origin's trunk out of reach
-// ---------------------------------------------------------------------------
-
-// trunkMiss is one way origin keeps a status from learning its trunk: arrange changes the
-// repository before the scene is built, and keep, when set, changes how origin answers after.
-type trunkMiss struct {
-	arrange func(*gittest.Fixture)
-	keep    func(*scene, *testing.T)
-	name    string
-	offline bool
-}
-
-// lastFetched returns an arrange that runs stand, then records origin's trunk as the last fetch saw
-// it.
-func lastFetched(stand func(*gittest.Fixture)) func(*gittest.Fixture) {
-	return func(f *gittest.Fixture) {
-		f.Git("remote", "set-head", "origin", trunk)
-		stand(f)
-	}
-}
-
-// missedTrunk returns the scene of miss under the forge build.
-func missedTrunk(t *testing.T, miss trunkMiss, build forgeFor) *scene {
-	t.Helper()
-
-	s := statusSceneAt(t, miss.arrange, build, miss.offline)
-	if miss.keep != nil {
-		miss.keep(s, t)
-	}
-
-	return s
-}
-
-func TestStatus_WhenOriginsTrunkCannotBeReadOnAWorkBranch_EndsOnTheStepPushEndsOn(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		want string
-		miss trunkMiss
-	}{
-		{
-			miss: trunkMiss{name: "origin turns the caller away", arrange: lastFetched(publishTopic), keep: (*scene).refuse},
-			want: nextFixed(),
-		},
-		{miss: trunkMiss{name: "origin does not answer", arrange: lastFetched(publishTopic), offline: true}, want: nextPush()},
-		{
-			miss: trunkMiss{name: "origin's answer names no branch", arrange: func(f *gittest.Fixture) {
-				f.Publish(topic)
-				f.DetachOriginHead()
-			}},
-			want: nextPush(),
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.miss.name, func(t *testing.T) {
-			t.Parallel()
-			s := missedTrunk(t, tt.miss, greenOpen())
-
-			got := seeStatus(t, s, (*testing.T).Context)
-
-			assertSays(t, "Next:"+nextOf(t, got.text), tt.want)
-		})
-	}
-}
-
-func TestStatus_WhenOriginsTrunkIsNotLearnedOnTheTrunk_StandsOnTheLastFetchedTrunk(t *testing.T) {
-	t.Parallel()
-
-	tests := []trunkMiss{
-		{name: "origin turns the caller away", arrange: lastFetched(standOnTrunk), keep: (*scene).refuse},
-		{name: "origin does not answer", arrange: lastFetched(standOnTrunk), offline: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			s := missedTrunk(t, tt, ruledBy(forge.RulesProtect))
-
-			got := seeStatus(t, s, (*testing.T).Context)
-
-			assert.Check(t, is.Equal(got.status.Standing, standingTrunk))
-			assert.Check(t, is.Equal(got.status.Trunk, trunk))
-			assertSays(t, nextOf(t, got.text), nextBranch())
-		})
-	}
-}
-
-func TestStatus_WhenTheReadOfOriginsURLsIsCutShortOnTheTrunk_StandsOnTheLastFetchedTrunk(t *testing.T) {
-	// Not parallel: stallingGit puts a git that stalls first on PATH with t.Setenv.
-	s := statusScene(t, lastFetched(standOnTrunk), ruledBy(forge.RulesProtect))
-	ctx := byTimeLimit().stallingGit([]string{"remote", "get-url", "--push"})(t, s)
-
-	got := seeStatus(t, s, func(*testing.T) context.Context { return ctx })
-
-	assert.Assert(t, hasUnread(got.status, readURLs), "unread %v, want %s listed", got.status.Unread, readURLs)
-	assert.Check(t, is.Equal(got.status.Standing, standingTrunk))
-	assert.Check(t, is.Equal(got.status.Trunk, trunk))
-	assertEndsOn(t, got, nextBranch())
-}
-
-func TestStatus_WhenNoTrunkNameCanBeLearned_LeavesWhereHEADStandsUnread(t *testing.T) {
-	t.Parallel()
-	s := statusScene(t, func(f *gittest.Fixture) {
-		standOnTrunk(f)
-		f.Git("remote", "set-head", "origin", "--delete")
-	}, ruledBy(forge.RulesProtect))
-	s.refuse(t)
-
-	got := seeStatus(t, s, (*testing.T).Context)
-
-	assert.Check(t, is.Equal(got.status.Standing, result.Standing("")))
-	assertEndsOn(t, got, expect("fix what failed"))
 }

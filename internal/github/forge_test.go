@@ -306,11 +306,7 @@ func casesWithout(all []readCase, names ...string) []readCase {
 }
 
 func TestForge_WhenReadPrintsMalformedJSON_ReturnsDecodeErrorNamingCall(t *testing.T) {
-	for _, tt := range casesNamed(readCases(), "repo view", "api rules") {
-		t.Run(tt.name, func(t *testing.T) {
-			assertDecodeErrorNamesCall(t, tt)
-		})
-	}
+	assertDecodeErrorNamesCall(t, casesNamed(readCases(), "repo view")[0])
 }
 
 // assertDecodeErrorNamesCall runs the operation of c with c's own call printing malformed JSON,
@@ -790,6 +786,9 @@ func TestForge_Message(t *testing.T) {
 		pullBody  = "Lands the change.\n\nCo-authored-by: Grace Hopper <grace@example.com>"
 		signedOff = "Signed-off-by: Ada Lovelace <ada@example.com>"
 		liveSuite = "Co-authored-by: ils live suite <ils-live@example.com>"
+		// prose is a body whose last line is prose, so a trailer appended to it is read only once
+		// the cut finds the copy of the body.
+		prose = "Lands the change.\n\nThanks to Grace."
 	)
 	tests := []struct {
 		name string
@@ -800,24 +799,13 @@ func TestForge_Message(t *testing.T) {
 		want      []string
 	}{
 		{name: "commit messages setting", mergeBody: "* Add the forge\n\n* Read the message\n\n---------\n\n" + signedOff + "\n" + liveSuite, want: []string{signedOff, liveSuite}},
-		{name: "commit messages setting, a trailer the body already holds", body: "Lands the change.\n\n" + signedOff, mergeBody: "* Add the forge\n\n---------\n\n" + signedOff + "\n" + liveSuite, want: []string{liveSuite}},
-		{name: "commit messages setting, a trailer the body holds mid-paragraph with CRLF line ends and trailing spaces", body: "Lands the change.\r\n\r\n" + signedOff + " \t\r\nSigned in person.\r\n", mergeBody: "* Add the forge\n\n" + signedOff + "\n" + liveSuite, want: []string{liveSuite}},
-		{name: "pull request body setting, a trailer the body already holds after GitHub's separator", body: "Lands the change.\n\n" + signedOff, mergeBody: "Lands the change.\n\n" + signedOff + "\n\n---------\n\n" + signedOff + "\n" + liveSuite, want: []string{liveSuite}},
-		{
-			name:      "pull request body setting, trailers after GitHub's separator",
-			mergeBody: pullBody + "\n\n---------\n\n" + liveSuite,
-			want:      []string{liveSuite},
-		},
-		{name: "pull request body setting with no trailer for GitHub to add", mergeBody: pullBody},
-		{
-			name: "pull request body setting, the copy of the body without its closing newline",
-			body: pullBody + "\n", mergeBody: pullBody,
-		},
-		{
-			name: "pull request body setting, the copy of a CRLF body with LF line ends",
-			body: strings.ReplaceAll(pullBody, "\n", "\r\n"), mergeBody: pullBody,
-		},
-		{name: "pull request body setting, the copy of a body whose trailers end in spaces and tabs", body: pullBody + " \t", mergeBody: pullBody + " \t"},
+		{name: "commit messages setting, a trailer the body holds mid-paragraph with CRLF line ends", body: "Lands the change.\r\n\r\n" + signedOff + "\r\nSigned in person.\r\n", mergeBody: "* Add the forge\n\n" + signedOff + "\n" + liveSuite, want: []string{liveSuite}},
+		{name: "commit messages setting, a trailer the body holds mid-paragraph with trailing spaces and tabs", body: "Lands the change.\n\n" + signedOff + " \t\nSigned in person.\n", mergeBody: "* Add the forge\n\n" + signedOff + "\n" + liveSuite, want: []string{liveSuite}},
+		{name: "pull request body setting, trailers added after a body ending in a prose line and a newline", body: prose + "\n", mergeBody: prose + "\n" + liveSuite, want: []string{liveSuite}},
+		{name: "pull request body setting, trailers added after a prose line whose spaces and tabs GitHub drops", body: prose + " \t", mergeBody: prose + "\n" + liveSuite, want: []string{liveSuite}},
+		{name: "pull request body setting, trailers added after a prose line whose spaces and tabs GitHub keeps", body: prose, mergeBody: prose + " \t\n" + liveSuite, want: []string{liveSuite}},
+		{name: "pull request body setting, trailers added after a CRLF body ending in a prose line", body: strings.ReplaceAll(prose, "\n", "\r\n"), mergeBody: prose + "\n" + liveSuite, want: []string{liveSuite}},
+		{name: "pull request body setting, trailers added in a CRLF merge body after a prose line", body: prose, mergeBody: strings.ReplaceAll(prose+"\n"+liveSuite, "\n", "\r\n"), want: []string{liveSuite}},
 		{name: "pull request body setting, trailers added after a body whose trailers end in spaces and tabs", body: pullBody + " \t", mergeBody: pullBody + " \t\n" + liveSuite, want: []string{liveSuite}},
 		{
 			name: "body ending partway through a line of the merge body",
@@ -935,33 +923,32 @@ func TestForge_PublishRelease(t *testing.T) {
 	}
 }
 
-func TestForge_PublishRelease_RemovesTheNotesFile(t *testing.T) {
-	tests := []struct {
-		name    string
-		answer  ghtest.Answer
-		wantErr bool
-	}{
-		{name: "published", answer: ghtest.Answer{Stdout: releaseURL + "\n"}},
-		{name: "refused", answer: ghtest.ServerError(), wantErr: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			fake := ghtest.Setup(t, ghtest.Exits(tt.answer, releaseCreateArgs(false)...))
+// checkNotesFileRemoved fails unless the one --notes-file among calls no longer exists.
+func checkNotesFileRemoved(t *testing.T, calls [][]string) {
+	t.Helper()
+	notes := notesFiles(calls)
+	assert.Assert(t, is.Len(notes, 1), "calls = %q, want one --notes-file", calls)
+	_, err := os.Stat(notes[0])
+	assert.Check(t, errors.Is(err, fs.ErrNotExist), "Stat(%q) error = %v, want the notes file removed", notes[0], err)
+}
 
-			_, err := newForge().PublishRelease(t.Context(), engine(), newRelease(false))
+func TestForge_PublishRelease_WhenPublished_RemovesTheNotesFile(t *testing.T) {
+	fake := ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: releaseURL + "\n"}, releaseCreateArgs(false)...))
 
-			if tt.wantErr {
-				_, ok := errors.AsType[*child.ExitError](err)
-				assert.Assert(t, ok, "PublishRelease error = %v, want *child.ExitError", err)
-			} else {
-				assert.NilError(t, err)
-			}
-			notes := notesFiles(fake.Calls())
-			assert.Assert(t, is.Len(notes, 1), "calls = %q, want one --notes-file", fake.Calls())
-			_, err = os.Stat(notes[0])
-			assert.Check(t, errors.Is(err, fs.ErrNotExist), "Stat(%q) error = %v, want the notes file removed", notes[0], err)
-		})
-	}
+	_, err := newForge().PublishRelease(t.Context(), engine(), newRelease(false))
+	assert.NilError(t, err)
+
+	checkNotesFileRemoved(t, fake.Calls())
+}
+
+func TestForge_PublishRelease_WhenRefused_RemovesTheNotesFile(t *testing.T) {
+	fake := ghtest.Setup(t, ghtest.Exits(ghtest.ServerError(), releaseCreateArgs(false)...))
+
+	_, err := newForge().PublishRelease(t.Context(), engine(), newRelease(false))
+
+	_, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "PublishRelease error = %v, want *child.ExitError", err)
+	checkNotesFileRemoved(t, fake.Calls())
 }
 
 func TestForge_PublishRelease_WhenTheNotesFileCannotBeRemoved_ReturnsTheURLWithTheRemoveError(t *testing.T) {

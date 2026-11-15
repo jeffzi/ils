@@ -166,12 +166,10 @@ func TestRunner_CheckLogin_WhenGhExitsNonZero_ReturnsExitError(t *testing.T) {
 	assert.Check(t, ok, "CheckLogin error = %v, want it to wrap the *child.ExitError", err)
 }
 
-func TestRunner_CheckLogin_WhenOutputDoesNotDecode_ReturnsDecodeError(t *testing.T) {
-	ghtest.Setup(t, ghtest.Says("Logged in\n", ghtest.LoginArgs(engineHost)...))
+func TestDecodeError_Unwrap_ReachesTheDecodersError(t *testing.T) {
+	t.Parallel()
+	cause := errors.New("unexpected end of JSON input")
+	err := error(&github.DecodeError{Err: cause, Argv: []string{"gh", "auth", "status"}})
 
-	err := github.Runner{}.CheckLogin(t.Context(), engineHost)
-
-	assertCheckFailed(t, err)
-	_, ok := errors.AsType[*github.DecodeError](err)
-	assert.Check(t, ok, "CheckLogin error = %v, want *github.DecodeError", err)
+	assert.Check(t, is.ErrorIs(err, cause))
 }

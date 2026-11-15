@@ -176,7 +176,9 @@ func runStatusOf(status string) forge.RunStatus {
 // failedLog reads the failed log of the check the verdict's Failed names, so
 // that the named check and the log always belong together.
 //
-// A check with no Actions run behind it has no log, a run that has not completed
+// A canceled check never gets a log, so none is read for it and the failed log
+// is the zero value: reading one would find it empty and wait for it to the
+// time limit. A check with no Actions run behind it has no log, a run that has not completed
 // holds its log back, and a gh that cannot give the log for any other reason,
 // or a read of it that the time limit or an interrupt cuts short, leaves it
 // unreadable: the verdict is red either way. A link that names no job
@@ -191,54 +193,54 @@ func runStatusOf(status string) forge.RunStatus {
 // still in progress, so that the wait keeps polling.
 func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Verdict) (forge.FailedLog, error) {
 	failed, ok := verdict.Failed()
-	if !ok {
+	if !ok || failed.Bucket == forge.BucketCanceled {
 		return forge.FailedLog{}, nil
 	}
 
 	match := runOfLink.FindStringSubmatch(failed.Link)
 	if match == nil {
-		return forge.FailedLog{Check: failed.Name, State: forge.FailedLogNoRun}, nil
+		return forge.FailedLog{State: forge.FailedLogNoRun}, nil
 	}
 
 	runID, jobID := match[1], match[2]
 	if jobID == "" {
-		return forge.FailedLog{Check: failed.Name, State: forge.FailedLogUnreadable}, nil
+		return forge.FailedLog{State: forge.FailedLogUnreadable}, nil
 	}
 
 	result, err := f.runner().Run(ctx, "run", "view", "--repo", repo.Slug(), runID, "--log-failed", "--job", jobID)
 	if exitErr, exited := errors.AsType[*child.ExitError](err); exited {
 		if runUnfinished.MatchString(exitErr.Stderr) {
-			return forge.FailedLog{Check: failed.Name, State: forge.FailedLogInProgress}, nil
+			return forge.FailedLog{State: forge.FailedLogInProgress}, nil
 		}
 
-		return forge.FailedLog{Check: failed.Name, State: forge.FailedLogUnreadable}, nil
+		return forge.FailedLog{State: forge.FailedLogUnreadable}, nil
 	}
 
 	if err != nil {
-		return cutLog(failed, err)
+		return cutLog(err)
 	}
 
 	text := result.Stdout
 	if strings.TrimSpace(text) == "" {
 		text, err = f.jobLog(ctx, repo, jobID)
 		if err != nil {
-			return cutLog(failed, err)
+			return cutLog(err)
 		}
 	}
 
 	if strings.TrimSpace(text) == "" {
-		return forge.FailedLog{Check: failed.Name, State: forge.FailedLogInProgress}, nil
+		return forge.FailedLog{State: forge.FailedLogInProgress}, nil
 	}
 
-	return forge.FailedLog{Check: failed.Name, Text: text, State: forge.FailedLogRead}, nil
+	return forge.FailedLog{Text: text, State: forge.FailedLogRead}, nil
 }
 
-// cutLog returns the log of failed as unreadable when err is the time limit or an interrupt ending
-// the read of it: the check failed whatever its log says, so the verdict stays red without it. Any
-// other err is returned.
-func cutLog(failed forge.Check, err error) (forge.FailedLog, error) {
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return forge.FailedLog{Check: failed.Name, State: forge.FailedLogUnreadable}, nil
+// cutLog returns the log of the failed check as unreadable when err is the time limit or an
+// interrupt ending the read of it: the check failed whatever its log says, so the verdict stays red
+// without it. Any other err is returned.
+func cutLog(err error) (forge.FailedLog, error) {
+	if child.EndedEarly(err) {
+		return forge.FailedLog{State: forge.FailedLogUnreadable}, nil
 	}
 
 	return forge.FailedLog{}, err

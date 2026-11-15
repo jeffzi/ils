@@ -39,7 +39,8 @@ func (t trunks) refuseOnTrunk(ctx context.Context, caller Caller, inv Invocation
 		return Verdict{Outcome: Allow}, nil
 	}
 
-	placeUnknown := inv.Dir == "" || inv.Target.Dir == "" || inv.Target.Unknown || inv.Git.GitDirUnknown || inv.HeadUnknown
+	// A target the guard cannot follow, unknown or with no directory, leaves the git dir unknown.
+	placeUnknown := inv.Dir == "" || inv.Git.GitDirUnknown || inv.HeadUnknown
 	if placeUnknown {
 		reason := fmt.Sprintf("git %s: the guard cannot tell where the command runs, or which branch HEAD "+
 			"is on, so it cannot tell whether it lands on the trunk; %s", sub, moveFirst)
@@ -59,7 +60,15 @@ func (t trunks) refuseOnTrunk(ctx context.Context, caller Caller, inv Invocation
 	}
 
 	branch, headOnBranch := headBranch(standing, inv)
-	rebased, named := rebasedBranch(sub, inv.Git.Args)
+	// A rebase that names a branch switches to it before it rebases.
+	var (
+		rebased Word
+		named   bool
+	)
+	if sub == "rebase" {
+		rebased, named, _ = rebaseBranch(inv.Git.Args)
+	}
+
 	if named {
 		branch, headOnBranch = rebased.Text, true
 	}
@@ -205,18 +214,6 @@ func fastForwardsOnly(options []longOption) bool {
 	}
 
 	return only
-}
-
-// rebasedBranch returns the branch argument of `git rebase` with args, the branch it switches to
-// before it rebases, and false when sub is not rebase or names no branch.
-func rebasedBranch(sub string, args []Word) (Word, bool) {
-	if sub != "rebase" {
-		return Word{}, false
-	}
-
-	branch, named, _ := rebaseBranch(args)
-
-	return branch, named
 }
 
 // refuseOnGitHub returns refusal, the verdict on call run on its branch, the trunk, when origin's

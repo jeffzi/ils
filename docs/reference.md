@@ -127,8 +127,9 @@ the default branch:
 | Nowhere                                 | `! git branch <name> main && git branch -f main origin/main`, then the command again                           |
 
 The command again is the one that refused: `ils branch <name>`, `ils push`, or `ils merge`.
-In the Nowhere row, `ils status` names `ils merge` as the command again when the pull request is
-green and mergeable, and `ils push` otherwise. A read of the local default branch that fails other
+In the Nowhere row, `ils status` on a work branch names `ils merge` as the command again when the
+pull request is green and mergeable, and `ils push` otherwise. On a detached HEAD it names
+`ils branch <name>`. A read of the local default branch that fails other
 than by the time limit or an interrupt ends each of these commands broke, naming the read.
 
 ### ils push
@@ -257,26 +258,44 @@ What it reports depends on where HEAD stands:
   is a release commit, and whether rules protect the branch.
 - **On a detached HEAD:** the commits origin lacks.
 
-`Next:` names the first of these the state calls for, in the order `ils push` would refuse or end:
+`Next:` is the step the command you would run next ends on, taken from that command's own checks
+run over what the status read. On a work branch it is the step `ils push` would end on. On the
+default branch and on a detached HEAD it is the step `ils branch <name>` would end on, leaving out
+its two checks of the name. It names the first of these the state calls for, in the order those
+checks run:
 
 1. the fix of a local default branch with commits origin's lacks (see
    [A local default branch ahead of origin's](#a-local-default-branch-ahead-of-origins));
-2. start a branch with `ils branch <name>` once the work landed;
-3. bring in the branch's copy on origin when the branch is behind or diverged;
+2. bring in the branch's copy on origin when the branch is behind or diverged;
+3. start a branch with `ils branch <name>` once the work landed;
 4. `ils push` when there is work to push or checks to wait for;
 5. the fix for a red check or a conflict;
 6. a review to request;
 7. the pull request's title and body, then `ils merge`, when it is green and mergeable.
 
-Some states come before item 1. On a work branch, they are a failed precondition, a refusal of the
-origin, of `gh`, or of the repository (see [What push refuses](#what-push-refuses)), changed
-tracked files, and a failed read of the working tree's changes. On the default branch, they are a
-failed precondition and a failed read of the local default branch. A detached HEAD has no item 1:
-it ends on `git switch -c <name>`, then `ils push`, or on `ils branch <name>` when it has no
-commits origin's default branch lacks.
+A check that refuses before item 1 ends on its own step: a git that is missing or too old, and on
+a work branch a refusal of the origin, of `gh`, or of the repository (see
+[What push refuses](#what-push-refuses)) and changed tracked files. Three steps are worded for a
+status:
+
+- A read that fails ends on the fix of what failed, then `ils status`.
+- A branch with no commit past origin's default branch ends on committing the work, then
+  `ils push`.
+- The fix of a local default branch ahead of origin's names `ils merge` after it only when the pull
+  request is green and mergeable.
+
+An origin that does not answer ends on running the command again, wherever HEAD stands: `ils push`
+on a work branch, `ils branch <name>` elsewhere. A green pull request that is a draft ends on
+marking it ready, then its title and body, then `ils merge`. One that GitHub blocks, or one whose
+required check never reported, ends on reporting it and stopping, as `ils push` ends its wait.
+A read that finds no check reported yet ends on `ils push`, whose wait settles it. On a
+detached HEAD with commits origin's default branch lacks, it ends on `git switch -c <name>`, then
+`ils push`. When neither origin nor the last fetch can tell the branch from the default branch,
+where HEAD stands goes unread, and it ends on the fix of what failed.
 
 With `gh` missing or logged out, it says so, names the fix, and still reports what `git` alone can
-tell.
+tell. Off a work branch, neither `gh` nor origin's URLs change `Next:`: `ils branch` needs `git`
+alone.
 
 [Status JSON output](#status-json-output) describes `ils status --json`.
 
@@ -368,7 +387,11 @@ steps:
    symbolic link, such as a clone of `ils` linked in, is not written to: a line names its target.
 3. It adds the guard's hook and the permission rules to `settings.json`, and creates the file when
    it is missing. It writes a new file beside the old one and renames it over, keeping the old
-   file's mode, and writes through a `settings.json` that is a symbolic link to its target.
+   file's mode, and writes through a `settings.json` that is a symbolic link to its target. The
+   new file is flushed to disk before the rename and the directory after it, so a crash leaves
+   either the old `settings.json` or the new one. When the directory cannot be flushed, the new
+   settings are in place, the run exits 1 naming the directory, and running it again finishes it.
+   Step 2 flushes a skill file it replaces the same way.
 
 The hook is a `PreToolUse` group with the matcher `Bash`, holding the one hook shown in
 [Init by hand](#init-by-hand). When `CLAUDE_CONFIG_DIR` sets the Claude Code directory, the hook's
@@ -503,6 +526,13 @@ its own words (no `--cwd`, or not exactly one word after `--`), it prints `Next:
 A run stopped by Ctrl-C or SIGTERM (the signal `kill` sends by default) exits with the code of the
 result it prints; see [Stopping a run](#stopping-a-run).
 
+A word on the `Next:` line that the shell would read otherwise is quoted as bash reads it: in
+single quotes, in double quotes when it holds a `'` (`"rock'n'roll"`), and as `$'…'` when it holds
+a control character such as a newline. A word holding `=` and a shell keyword such as `if` are
+quoted too. A word holding a `!` is put in single quotes even beside a `'`, or kept in `$'…'`
+beside a control character, since an interactive shell reads a bare or double-quoted `!` as a
+history expansion.
+
 ### Done and broke by command
 
 Exit 0 means, for each command:
@@ -557,6 +587,10 @@ they end pending with nothing written.
 push moves that head past the pushed commit before GitHub showed it, `ils` cannot tell the move
 from GitHub being slow: it waits until the time limit and ends pending, and the wait itself
 writes nothing. The next `ils push` refuses the branch as behind its copy on origin.
+
+A failed check whose workflow run has not yet made its log available keeps the wait going until it
+does. A canceled check gets no log, so it ends the wait red at once, the excerpt says it has no
+log, and `Next:` says to rerun it with `gh run rerun` before running the command again.
 
 When a pending `ils merge` names `ils push` on its `Next:` line, run that push with the same
 `--wait` as the merge, so that it takes the same column of the table above. If your script or
@@ -814,8 +848,8 @@ under `payload.status`:
 
 | Field                | Type             | Meaning                                                                                                                                                                              |
 | -------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `standing`           | string           | `branch`, `trunk`, `detached`, `no-origin`, or `no-repository`.                                                                                                                      |
-| `branch`             | string           | The branch HEAD is on; empty on a detached HEAD.                                                                                                                                     |
+| `standing`           | string           | `branch`, `trunk`, `detached`, `no-origin`, or `no-repository`; empty when where HEAD stands was not read, and `unread` then names the read that failed.                             |
+| `branch`             | string           | The branch HEAD is on when `standing` is `branch` or `trunk`; empty otherwise.                                                                                                       |
 | `trunk`              | string           | Origin's default branch; empty when it could not be learned.                                                                                                                         |
 | `ahead`, `behind`    | integer          | Commits ahead of and behind the branch's copy on origin, or origin's default branch on the default branch.                                                                           |
 | `on_origin`          | boolean          | Whether origin has a copy of the branch.                                                                                                                                             |
@@ -886,9 +920,10 @@ The guard lowers the odds of an accident; it is not a sandbox. It does not see:
   which hold no `ils` word;
 - a task runner (`task`, `make`, `npm run`) running lines from a file the agent wrote;
 - a shell reading a script the command does not hold, as the command itself: `curl -fsSL
-  https://example.com/install.sh | bash`, `bash < x.sh`, `bash <(cat x.sh)`, `bash -s`, or
-  `source <(…)`. Behind a command the guard does not know (`timeout 60 bash <(…)`), the guard
-  still refuses such a shell as a shell word handed over;
+  https://example.com/install.sh | bash`, `bash < x.sh`, `bash <(cat x.sh)`, `bash -s`, a
+  here-string such as `bash <<< 'git push'`, or `source <(…)`. Behind a command the guard does
+  not know (`timeout 60 bash <(…)`), the guard still refuses such a shell as a shell word handed
+  over;
 - `gh workflow run` of a workflow whose token can push, tag, or release;
 - an alias or function from your shell config, such as `gp='git push'`, which the agent's shell
   runs with no `git` word in the command;
@@ -1173,8 +1208,10 @@ The guard refuses:
   call. A declaration alone changes nothing for the commands after it:
   `f() { git commit -am wip; }; git switch main && f` is refused as a commit on the default
   branch, and
-  `T() { uv run pytest -q "$@"; }; T -k x > out.txt` passes. A call of one whose body may change
-  directory leaves the directory unknown after it;
+  `T() { uv run pytest -q "$@"; }; T -k x > out.txt` passes. A switch of branch in a body holds
+  for the later commands of that body, and for the commands after the function only at a call:
+  `f() { git switch main; }; git commit -m x` is judged on the branch the command starts on. A
+  call of one whose body may change directory leaves the directory unknown after it;
 - a call of a function the command defines past the 256 walks of function bodies the guard makes
   for one command, dry runs included, as a function that calls itself makes.
 
@@ -1252,6 +1289,9 @@ The guard refuses:
 - `rebase` in a working tree with uncommitted changes or untracked files, or where the guard cannot
   tell the repository. In a dirty tree, `--continue`, `--edit-todo`, `--show-current-patch`, and
   `--quit` are allowed, since they leave the tree as it is; `--abort` and `--skip` are refused;
+- `merge --abort`, `cherry-pick --abort`, and `revert --abort` in a working tree with uncommitted
+  changes or untracked files, or where the guard cannot tell the repository: they reset the index
+  and the tree, staged changes included. `--continue` and `--quit` stay allowed;
 - `worktree remove --force`, and `worktree remove` of a worktree with changes or one the guard
   cannot find;
 - `git config` writing `remote.*`, `url.*`, or `core.hooksPath`, at any scope, and renaming or
@@ -1419,7 +1459,10 @@ The invocation's `dir` is absent when the guard cannot tell the directory the sh
 
 - after a `popd`, a `source` or `.`, or a `cd` or `pushd` the guard cannot follow (`cd "$d"`);
 - after any change of directory, even one the guard can follow, that may or may not have run (in an
-  `if`, a `case`, a loop, an `&&` or `||` list, or a pipe);
+  `if`, a `case`, a loop, an `&&` or `||` list, or a pipe). An `||` list whose right side always
+  ends the shell, as `cd /repo || exit 1` or `cd /repo || { echo failed; exit 1; }` does, leaves
+  the directory its left side moved to. A right side of `return` does not count: outside a
+  function bash goes on after it;
 - after a call of a shell function whose body may change directory.
 
 A later `cd` or `pushd` to an absolute path gives the guard a known directory again, unless it is

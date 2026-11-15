@@ -3,11 +3,14 @@ package landing
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"mvdan.cc/sh/v3/syntax"
 
 	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
@@ -151,7 +154,7 @@ func timedOut(err error) bool {
 
 // endedEarly reports whether err says the time limit or an interrupt cut a call short.
 func endedEarly(err error) bool {
-	return timedOut(err) || interrupted(err)
+	return child.EndedEarly(err)
 }
 
 // PushCommand, MergeCommand, StatusCommand, BranchCommand and ReleaseCommand are the command words
@@ -262,7 +265,12 @@ type Forge interface {
 // Request is the command a result is for and the words it was given.
 type Request struct {
 	Command string
-	Words   []string
+	// ChecksOf is set by `ils status` alone, to the command whose checks it runs to tell its `Next:`:
+	// PushCommand on a work branch, BranchCommand on the trunk or a detached HEAD, and empty where it
+	// runs none. A step that runs the checks again names that command, and `ils status` itself when
+	// it is empty. A command line never sets it.
+	ChecksOf string
+	Words    []string
 	// Args are the command's positional words, as typed: for `ils branch`, the name.
 	Args []string
 	// WaitFlag is the --wait flag the user typed to `ils push`, `ils merge` or `ils release`, which
@@ -277,6 +285,10 @@ type Request struct {
 	// LongWait runs the push, the merge or the release under WaitTimeLimit instead of TimeLimit.
 	// The caller decides it, whether or not the user typed --wait.
 	LongWait bool
+	// MergeReady is set by `ils status` alone, on the request it runs push's checks with, when the
+	// branch's open pull request is green and mergeable: the fix of a local trunk ahead of origin's
+	// then runs `ils merge` after it. A command line never sets it.
+	MergeReady bool
 }
 
 // FlagForce, FlagTagOnly, FlagWait and FlagProject are the words of the --force, --tag-only,
@@ -315,23 +327,45 @@ func (r Request) limitWords() span {
 	return span(r.Limit())
 }
 
-// ilsCommand is the request's command line without a typed --wait, marked as an ils command, which
-// prints as "ils <command> <args> <flags>": the command that a step the user takes first (a login,
-// an install, an upgrade, a fix, a change to the branch) runs again. That run starts over, so it
-// does not ask for the long wait, and a fast failure comes back at once; a typed --wait=false,
-// which asks for the short one, stays.
+// ilsCommand is the command that a step of the checks the user takes first (a fix of git or ssh, a
+// login to gh, a change to the branch) runs again: the request's own, as ownCommand prints it. For
+// a status it is the command whose checks the status runs to tell its `Next:`, as ChecksOf names
+// it: `ils branch <name>`, since a status has no name to print, or a plain `ils push`.
 func (r Request) ilsCommand() result.Name {
+	switch {
+	case r.Command != StatusCommand:
+	case r.ChecksOf == BranchCommand:
+		return result.Command(BranchCommand + " <name>")
+	case r.ChecksOf == PushCommand:
+		return result.Command(PushCommand)
+	}
+
+	return r.ownCommand()
+}
+
+// ownCommand is the request's command line without a typed --wait, marked as an ils command, which
+// prints as "ils <command> <args> <flags>": the command that a fix of what failed runs again. That
+// run starts over, so it does not ask for the long wait, and a fast failure comes back at once; a
+// typed --wait=false, which asks for the short one, stays.
+func (r Request) ownCommand() result.Name {
 	return result.Command(r.commandLine(false))
 }
 
 // commandLine is the request's command, its positional words, then the flags it was given, so that
 // running it again changes nothing the user chose: `release 1.2.0 --tag-only`. A typed
 // --wait=false is always among them, and a typed --wait only when keepWait is true. Each positional
-// word is quoted as shellWord quotes it, so that the line pasted into a shell runs the same command.
+// word is quoted as ShellWord quotes it, so that the line pasted into a shell runs the same command.
+// It panics on a positional word ShellWord cannot quote: they come from argv, which cannot hold a
+// NUL byte.
 func (r Request) commandLine(keepWait bool) string {
 	words := []string{r.Command}
 	for _, arg := range r.Args {
-		words = append(words, shellWord(arg))
+		quoted, err := ShellWord(arg)
+		if err != nil {
+			panic(err)
+		}
+
+		words = append(words, quoted)
 	}
 
 	if r.Force {
@@ -356,20 +390,25 @@ func (r Request) commandLine(keepWait bool) string {
 	return strings.Join(words, " ")
 }
 
-// shellSafe holds the characters a POSIX shell reads as part of a plain word, outside any quote.
-const shellSafe = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_@%+=:,./-"
-
-// shellWord returns word as a POSIX shell reads it back as one word: as it is when it holds only
-// shellSafe characters, and in single quotes otherwise, each single quote it holds closing the
-// quote, escaped, and reopening it:
+// ShellWord returns word as bash reads it back as one word, quoted as syntax.Quote quotes it for
+// bash: as it is when bash would neither split nor expand it, and quoted otherwise, a control
+// character such as a newline in $'…'. A word bash cannot hold, one with a NUL byte, is an error.
 //
-//	rock'n'roll  ->  'rock'\''n'\''roll'
-func shellWord(word string) string {
-	if word != "" && strings.Trim(word, shellSafe) == "" {
-		return word
+// syntax.Quote leaves a `!` bare or in double quotes, where an interactive bash or zsh reads it as
+// a history expansion, so a word holding one is put in single quotes instead, each `'` in it
+// closing them, escaped, and reopening them. A word in $'…' keeps that form: its quote already
+// stops the expansion.
+func ShellWord(word string) (string, error) {
+	quoted, err := syntax.Quote(word, syntax.LangBash)
+	if err != nil {
+		return "", fmt.Errorf("quote the word %q for the shell: %w", word, err)
 	}
 
-	return "'" + strings.ReplaceAll(word, "'", `'\''`) + "'"
+	if strings.ContainsRune(word, '!') && !strings.HasPrefix(quoted, "$'") {
+		return "'" + strings.ReplaceAll(word, "'", `'\''`) + "'", nil
+	}
+
+	return quoted, nil
 }
 
 // Ready is what the shared preconditions hand to the steps that follow them.
@@ -393,22 +432,26 @@ type Ready struct {
 // a refusal for a precondition that fails or a read the context's deadline cut short, and broke
 // for a read that fails for any other reason.
 func Preconditions(ctx context.Context, deps Deps, req Request) (Ready, *result.Result) {
-	standing, stop := gitStanding(ctx, deps, req)
+	return preconditions(ctx, newSurvey(deps), req)
+}
+
+// preconditions checks what Preconditions checks, reading through the record s.
+func preconditions(ctx context.Context, s *survey, req Request) (Ready, *result.Result) {
+	standing, stop := gitStanding(ctx, s, req)
 	if stop != nil {
 		return Ready{}, stop
 	}
 
-	origin, stop := originRepo(ctx, deps, req)
+	if stop = originRepo(ctx, s, req); stop != nil {
+		return Ready{}, stop
+	}
+
+	repo, stop := identity(ctx, s, req)
 	if stop != nil {
 		return Ready{}, stop
 	}
 
-	repo, stop := identity(ctx, deps, req, origin)
-	if stop != nil {
-		return Ready{}, stop
-	}
-
-	trunk, stop := trunkOf(ctx, deps, req)
+	trunk, stop := trunkOf(ctx, s, req)
 	if stop != nil {
 		return Ready{}, stop
 	}
@@ -420,12 +463,17 @@ func Preconditions(ctx context.Context, deps Deps, req Request) (Ready, *result.
 // order and with the same results: git is installed and recent enough; there is an origin; origin
 // answers for its trunk. It never calls the forge, and the Ready it returns has no Repo.
 func GitPreconditions(ctx context.Context, deps Deps, req Request) (Ready, *result.Result) {
-	standing, stop := gitStanding(ctx, deps, req)
+	return gitPreconditions(ctx, newSurvey(deps), req)
+}
+
+// gitPreconditions checks what GitPreconditions checks, reading through the record s.
+func gitPreconditions(ctx context.Context, s *survey, req Request) (Ready, *result.Result) {
+	standing, stop := gitStanding(ctx, s, req)
 	if stop != nil {
 		return Ready{}, stop
 	}
 
-	trunk, stop := trunkOf(ctx, deps, req)
+	trunk, stop := trunkOf(ctx, s, req)
 	if stop != nil {
 		return Ready{}, stop
 	}
@@ -435,16 +483,16 @@ func GitPreconditions(ctx context.Context, deps Deps, req Request) (Ready, *resu
 
 // gitStanding returns where HEAD stands once git is installed and recent enough and there is an
 // origin.
-func gitStanding(ctx context.Context, deps Deps, req Request) (git.Standing, *result.Result) {
-	if err := deps.Repo.CheckVersion(ctx); err != nil {
-		if stop := req.tooOld(err); stop != nil {
+func gitStanding(ctx context.Context, s *survey, req Request) (git.Standing, *result.Result) {
+	if err := s.gitVersion(ctx); err != nil {
+		if stop := req.tooOld(err, req.ilsCommand()); stop != nil {
 			return git.Standing{}, stop
 		}
 
 		return git.Standing{}, req.Unread(readGitVersion, err)
 	}
 
-	standing, err := deps.Repo.Standing(ctx)
+	standing, err := s.standing(ctx)
 	if err != nil {
 		return git.Standing{}, req.Unread(readStanding, err)
 	}
@@ -461,18 +509,18 @@ func createOriginStep() result.Next {
 	return result.NextStep("create the repository on GitHub and push to it with `gh repo create --source . --push`")
 }
 
-// originRepo returns the repository both of origin's URLs name.
-func originRepo(ctx context.Context, deps Deps, req Request) (forge.Repo, *result.Result) {
-	urls, repo, oneRepo, err := readOriginRepo(ctx, deps)
+// originRepo refuses origin's URLs unless both name one repository.
+func originRepo(ctx context.Context, s *survey, req Request) *result.Result {
+	origin, err := s.origin(ctx)
 
 	switch {
 	case err != nil:
-		return forge.Repo{}, req.Unread(readURLs, err)
-	case !oneRepo:
-		return forge.Repo{}, req.twoRepositories(urls)
+		return req.Unread(readURLs, err)
+	case !origin.oneRepo:
+		return req.twoRepositories(origin.urls)
 	}
 
-	return repo, nil
+	return nil
 }
 
 // readOriginRepo reads origin's URLs and returns them with the repository they name, and whether
@@ -520,12 +568,12 @@ func (r Request) twoRepositories(urls git.OriginURLs) *result.Result {
 		result.NextStep("point every one of origin's URLs at one GitHub repository with `git remote set-url`, by hand"))
 }
 
-// identity returns origin with the forge's fork, can-push and squash-allowed flags, once the
-// forge's tool is installed, recent enough and logged in, the repository is not a fork, and the user
-// can push to it. A failed call is the refusal toolRefusal returns, and what Unread returns for any
-// other failure.
-func identity(ctx context.Context, deps Deps, req Request, origin forge.Repo) (forge.Repo, *result.Result) {
-	repo, err := deps.Forge.Identity(ctx, origin)
+// identity returns the repository origin's URLs name with the forge's fork, can-push and
+// squash-allowed flags, once the forge's tool is installed, recent enough and logged in, the
+// repository is not a fork, and the user can push to it. A failed call is the refusal toolRefusal
+// returns, and what Unread returns for any other failure.
+func identity(ctx context.Context, s *survey, req Request) (forge.Repo, *result.Result) {
+	repo, err := s.identity(ctx)
 	if err != nil {
 		if stop := req.toolRefusal(err); stop != nil {
 			return forge.Repo{}, stop
@@ -562,8 +610,8 @@ func (r Request) repoRefusal(repo forge.Repo) *result.Result {
 }
 
 // trunkOf returns origin's default branch, asked of origin.
-func trunkOf(ctx context.Context, deps Deps, req Request) (string, *result.Result) {
-	trunk, err := deps.Repo.Trunk(ctx)
+func trunkOf(ctx context.Context, s *survey, req Request) (string, *result.Result) {
+	trunk, err := s.trunk(ctx)
 	if err == nil {
 		return trunk, nil
 	}
@@ -581,9 +629,12 @@ func trunkOf(ctx context.Context, deps Deps, req Request) (string, *result.Resul
 // toolRefusal returns the refusal for a forge call that failed with err because of gh itself: the
 // refusal tooOld returns for a gh that is older than the minimum or names no readable version, a
 // refusal naming `gh auth login` for a host gh is not logged in to, and the refusal notInstalled
-// returns for a gh that is not installed. It returns nil for any other failure.
+// returns for a gh that is not installed, each running ilsCommand after the fix. It returns nil for
+// any other failure.
 func (r Request) toolRefusal(err error) *result.Result {
-	if stop := r.tooOld(err); stop != nil {
+	again := r.ilsCommand()
+
+	if stop := r.tooOld(err, again); stop != nil {
 		return stop
 	}
 
@@ -593,15 +644,16 @@ func (r Request) toolRefusal(err error) *result.Result {
 		return r.Refused(
 			result.Say("gh is not logged in to %s; log in with `gh auth login --hostname %s`, "+
 				"or push by hand if %s is not GitHub", host, host, host),
-			result.NextStep("log in to %s"+thenRunAgain, host, r.ilsCommand()))
+			result.NextStep("log in to %s"+thenRunAgain, host, again))
 	}
 
-	return r.notInstalled(err)
+	return r.notInstalled(err, again)
 }
 
 // tooOld returns the refusal for a tool whose version check failed with err because the tool
-// is older than the minimum or names no readable version, and nil for any other failure.
-func (r Request) tooOld(err error) *result.Result {
+// is older than the minimum or names no readable version, whose step upgrades it and runs again,
+// and nil for any other failure.
+func (r Request) tooOld(err error, again result.Name) *result.Result {
 	old, ok := errors.AsType[*child.ToolTooOldError](err)
 	if !ok {
 		return nil
@@ -614,17 +666,18 @@ func (r Request) tooOld(err error) *result.Result {
 			old.Tool, old.Line, old.Tool, old.Minimum, result.URL(old.InstallURL))
 	}
 
-	return r.Refused(reason, result.NextStep("upgrade %s"+thenRunAgain, old.Tool, r.ilsCommand()))
+	return r.Refused(reason, result.NextStep("upgrade %s"+thenRunAgain, old.Tool, again))
 }
 
 // notInstalled returns the refusal for a call that failed with err because the tool it runs is
-// not installed, and nil for any other failure. A tool the user configured git to run as its ssh
-// command is refused naming the setting to fix; any other tool, naming where to get it.
-func (r Request) notInstalled(err error) *result.Result {
+// not installed, whose step gets the tool and runs again, and nil for any other failure. A tool the
+// user configured git to run as its ssh command is refused naming the setting to fix; any other
+// tool, naming where to get it.
+func (r Request) notInstalled(err error, again result.Name) *result.Result {
 	if command, ok := errors.AsType[*git.SSHCommandMissingError](err); ok {
 		return r.Refused(
 			result.Say("%s, the ssh command %s names, is not found", command.Program, command.Setting),
-			result.NextStep("fix %s"+thenRunAgain, command.Setting, r.ilsCommand()))
+			result.NextStep("fix %s"+thenRunAgain, command.Setting, again))
 	}
 
 	missing, ok := errors.AsType[*child.ToolMissingError](err)
@@ -634,7 +687,7 @@ func (r Request) notInstalled(err error) *result.Result {
 
 	return r.Refused(
 		result.Say("%s is not installed; install it from %s", missing.Tool, result.URL(missing.InstallURL)),
-		result.NextStep("install %s"+thenRunAgain, missing.Tool, r.ilsCommand()))
+		result.NextStep("install %s"+thenRunAgain, missing.Tool, again))
 }
 
 // ends returns the result that ends the request as outcome, with reason and next and no lines
@@ -730,7 +783,7 @@ func (r Request) cutShortWriting(byInterrupt bool, started, during result.Name, 
 // when the tool the read runs is not installed or the time limit or an interrupt cut the read
 // short, since nothing was written and running again is safe, and broke otherwise.
 func (r Request) Unread(read string, err error) *result.Result {
-	if stop := r.notInstalled(err); stop != nil {
+	if stop := r.notInstalled(err, r.ilsCommand()); stop != nil {
 		return stop
 	}
 
@@ -752,9 +805,9 @@ func couldNotRead(read string, err error) (line, reason result.Phrase) {
 }
 
 // onceFixed is the judgment step after a failure the user has to look at, ending in the
-// request's command.
+// request's own command: a status reads again what failed.
 func (r Request) onceFixed() result.Next {
-	return result.NextStep("fix what failed"+thenRunAgain, r.ilsCommand())
+	return result.NextStep("fix what failed"+thenRunAgain, r.ownCommand())
 }
 
 // pushOfChange is the push a step that changes the branch first runs: a push names itself, keeping
@@ -769,8 +822,17 @@ func (r Request) pushOfChange() result.Name {
 }
 
 // again is the next step that runs the request's command again as it stands, with the --wait flag
-// the user typed, if any.
+// the user typed, if any. For a status it is the run of the command whose check ends there, as
+// ChecksOf names it: a branch started with `ils branch <name>`, or a plain `ils push`.
 func (r Request) again() result.Next {
+	switch {
+	case r.Command != StatusCommand:
+	case r.ChecksOf == BranchCommand:
+		return startBranchStep()
+	case r.ChecksOf == PushCommand:
+		return pushAgain()
+	}
+
 	return result.NextCommand("%s", r.commandLine(true))
 }
 
@@ -806,119 +868,23 @@ func (r Request) unreached(read string, err error, reason result.Phrase) *result
 func (r Request) fetchPullHead(ctx context.Context, deps Deps, number int, read string) (string, *result.Result) {
 	head, err := deps.Repo.FetchPullHead(ctx, number)
 	if err != nil {
-		return "", r.unreached(read, err,
-			result.Say("origin could not be reached to fetch the head of pull request %s", result.PullRequest(number)))
+		return "", r.pullHeadNotFetched(number, read, err)
 	}
 
 	return head, nil
+}
+
+// pullHeadNotFetched is the stop of read, a fetch of the head of pull request number that failed
+// with err: a refusal when origin could not be reached.
+func (r Request) pullHeadNotFetched(number int, read string, err error) *result.Result {
+	return r.unreached(read, err,
+		result.Say("origin could not be reached to fetch the head of pull request %s", result.PullRequest(number)))
 }
 
 func (r Request) dirtyTree(files []string) *result.Result {
 	return r.Refused(
 		result.Say("tracked files have changes that are not committed: %s", strings.Join(files, ", ")),
 		result.NextStep("commit them"+thenRunAgain, r.ilsCommand()))
-}
-
-// trunkAhead returns the refusal of a local trunk with commits origin's trunk lacks, listing them,
-// whose next step is its fix, or nil when it has none or does not exist; a read that fails is
-// the result r.Unread gives for it. It reads origin/<trunk>, so each command calls it right
-// after its own fetchTrunk.
-func (r Request) trunkAhead(ctx context.Context, deps Deps, ready Ready) *result.Result {
-	here := ready.Standing.Kind == git.OnBranch && ready.Standing.Branch == ready.Trunk
-
-	ahead, read, err := readTrunkAhead(ctx, deps, ready.Trunk, here)
-	if err != nil {
-		return r.Unread(read, err)
-	}
-
-	if ahead == nil {
-		return nil
-	}
-
-	return ahead.refusal(r, r.ilsCommand())
-}
-
-// aheadTrunk is a local trunk with commits origin's trunk lacks, and where it is checked out.
-type aheadTrunk struct {
-	trunk string
-	// worktree is the path of the other worktree that has the trunk checked out, empty when none
-	// does.
-	worktree string
-	// past are the trunk's commits that origin's trunk lacks, oldest first.
-	past []git.Commit
-	// here is whether HEAD is on the trunk.
-	here bool
-}
-
-// readTrunkAhead returns the local trunk as aheadTrunk reads it when it has commits origin's trunk
-// lacks, and nil when it has none or does not exist; here is whether HEAD is on it. A read that
-// fails is returned with the name of the read.
-func readTrunkAhead(ctx context.Context, deps Deps, trunk string, here bool) (*aheadTrunk, string, error) {
-	ahead, past, err := deps.Repo.LocalTrunkAhead(ctx, trunk)
-	if err != nil {
-		return nil, readLocalTrunk, err
-	}
-
-	if !ahead {
-		return nil, "", nil
-	}
-
-	a := &aheadTrunk{trunk: trunk, past: past, here: here}
-	if here {
-		return a, "", nil
-	}
-
-	a.worktree, err = deps.Repo.WorktreeWith(ctx, trunk)
-	if err != nil {
-		return nil, readWorktrees, err
-	}
-
-	return a, "", nil
-}
-
-// refusal is req's refusal of the local trunk, listing its commits, whose next step is fix with
-// again.
-func (a aheadTrunk) refusal(req Request, again result.Name) *result.Result {
-	stop := req.Refused(a.reason(), a.fix(again))
-	stop.Lines = listed(a.past)
-
-	return stop
-}
-
-// reason is the reason every landing command gives for refusing the local trunk.
-func (a aheadTrunk) reason() result.Phrase {
-	return result.Say("the local trunk %s has commits that origin's trunk lacks, listed here", result.Branch(a.trunk))
-}
-
-// keepOffTrunkHere and keepOffTrunkNowhere are the fixes of a local trunk with commits origin's
-// trunk lacks: each keeps them on a branch of their own and puts the local trunk back at origin's,
-// after the keepOff they share. A trunk checked out in some worktree takes keepOffTrunkHere run
-// there, since git moves no branch checked out; one checked out nowhere takes keepOffTrunkNowhere,
-// which switches nothing. Each name is the trunk: twice for keepOffTrunkHere, three times for
-// keepOffTrunkNowhere. They stay untyped because result.NextStep accepts only constant
-// expressions.
-const (
-	keepOff = "keep those commits on a branch of their own and put the local trunk back at " +
-		"origin's with "
-	keepOffTrunkHere    = keepOff + "`! git switch -c <name> && git branch -f %s origin/%s`"
-	keepOffTrunkNowhere = keepOff + "`! git branch <name> %s && git branch -f %s origin/%s`"
-)
-
-// fix is the next step of the local trunk, run where it is checked out: here when HEAD is on it,
-// then a push of the new branch; in the other worktree that has it checked out, named by its path,
-// then a push there; and, checked out nowhere, here, then again.
-func (a aheadTrunk) fix(again result.Name) result.Next {
-	trunk := result.Branch(a.trunk)
-	push := result.Command(PushCommand)
-
-	switch {
-	case a.here:
-		return result.NextStep(keepOffTrunkHere+", then run %s", trunk, trunk, push)
-	case a.worktree != "":
-		return result.NextStep("in the worktree at %s, "+keepOffTrunkHere+", then run %s there", a.worktree, trunk, trunk, push)
-	}
-
-	return result.NextStep(keepOffTrunkNowhere+thenRunAgain, trunk, trunk, trunk, again)
 }
 
 // detachedWith says that HEAD is detached with commits origin's trunk lacks, listed after it.
@@ -928,8 +894,8 @@ func detachedWith(trunk string) result.Phrase {
 
 // detachedKept refuses a detached HEAD with commits origin's trunk lacks, for reason, and lists
 // them. It returns nil when HEAD has none.
-func (r Request) detachedKept(ctx context.Context, deps Deps, trunk string, reason result.Phrase) *result.Result {
-	own, err := deps.Repo.CommitsPast(ctx, "HEAD", trunk)
+func (r Request) detachedKept(ctx context.Context, s *survey, reason result.Phrase) *result.Result {
+	own, err := s.detached(ctx)
 	if err != nil {
 		return r.Unread(readHeadCommits, err)
 	}

@@ -7,6 +7,7 @@ import (
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
+	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/failtest"
 	"github.com/jeffzi/ils/internal/logtest"
 )
@@ -32,11 +33,11 @@ func TestRecord_Map_WhenAttributeIsLazy_HoldsItsResolvedValue(t *testing.T) {
 	assert.Check(t, is.DeepEqual(got, map[string]any{"state": "clean"}))
 }
 
-func TestRecord_Without_WhenKeysNamed_HoldsEveryOtherAttribute(t *testing.T) {
+func TestRecord_Call_HoldsEveryAttributeButTheDuration(t *testing.T) {
 	t.Parallel()
-	record := logtest.Record{Attrs: []slog.Attr{slog.String("state", "clean"), slog.Int("took", 3), slog.Int("run", 1)}}
+	record := logtest.Record{Attrs: []slog.Attr{slog.String("state", "clean"), slog.Int(child.KeyDuration, 3)}}
 
-	got := record.Without("took", "run")
+	got := record.Call()
 
 	assert.Check(t, is.DeepEqual(got, map[string]any{"state": "clean"}))
 }

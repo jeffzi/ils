@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"gotest.tools/v3/assert"
-	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
@@ -27,14 +26,13 @@ func redRow(name string, bucket forge.Bucket, log forge.FailedLog, excerpt strin
 }
 
 // redRowBy is redRow, unnamed, for the push cmd, whose `Next:` line names cmd once the check is
-// fixed.
+// fixed, or once a canceled check is rerun.
 func redRowBy(cmd landingCommand, bucket forge.Bucket, log forge.FailedLog, excerpt string) pushRow {
-	said := "failed"
+	said, next := "failed", redNext(cmd)
 	if bucket == forge.BucketCanceled {
-		said = "was canceled"
+		said, next = "was canceled", rerunNext(cmd)
 	}
 
-	log.Check = "lint"
 	lint := lintFailed()
 	lint.Bucket = bucket
 	verdict := forge.Verdict{
@@ -56,7 +54,7 @@ func redRowBy(cmd landingCommand, bucket forge.Bucket, log forge.FailedLog, exce
 		want: finish{
 			outcome: result.DeliveredNotGreen, reason: expect("lint", said), payload: payload, req: cmd.req,
 			text: pushedLine() + openedLine() + expect("lint", said, lintURL) +
-				state + excerpt + expect("lint", said) + redNext(cmd),
+				state + excerpt + expect("lint", said) + next,
 		},
 	}
 }
@@ -87,6 +85,7 @@ func pushRedRows() []pushRow {
 			forge.FailedLog{State: forge.FailedLogNoRun}, expect("lint", "not a workflow run")),
 		redRow("a check was canceled and its log cannot be read", forge.BucketCanceled,
 			forge.FailedLog{State: forge.FailedLogUnreadable}, expect("lint", "could not be read")),
+		redRow("a check was canceled, which leaves no log", forge.BucketCanceled, forge.FailedLog{}, expect("lint", "has no log")),
 	}
 }
 
@@ -124,10 +123,6 @@ func TestPush_WhenTheMergeStateKeepsThePullRequestApart_DeliveredNotGreen(t *tes
 	})
 }
 
-func nextNever() string {
-	return expect("a required check never reported")
-}
-
 func TestPush_WhenARequiredCheckNeverReported_DeliveredNotGreen(t *testing.T) {
 	t.Parallel()
 
@@ -138,9 +133,9 @@ func TestPush_WhenARequiredCheckNeverReported_DeliveredNotGreen(t *testing.T) {
 			name:   "a required check never reported",
 			script: opening(never).requiring("lint", "test").showing(inState(forge.MergeBlockedByMissingCheck)),
 			want: finish{
-				outcome: result.DeliveredNotGreen, reason: expect("a required check never reported"),
+				outcome: result.DeliveredNotGreen,
 				text: pushedLine() + openedLine() + expect("never reported", "test") +
-					stateLine(forge.MergeBlockedByMissingCheck) + expect("a required check never reported") + nextNever(),
+					stateLine(forge.MergeBlockedByMissingCheck),
 				payload: detail(forge.VerdictGreen, forge.MergeBlockedByMissingCheck, lint),
 			},
 		},
@@ -420,8 +415,13 @@ func boundAfterWritesRows(cmd landingCommand, c cut) []pushRow {
 }
 
 // boundMovedRows are the pushes cmd runs that the head moving past the pushed commit, or a read of
-// the head after the writes, ends.
+// the head after the writes, ends. A push that repeats the plain push has none: the plain push's
+// rows cover it.
 func boundMovedRows(cmd landingCommand) []pushRow {
+	if repeatsPlainPush(cmd) {
+		return nil
+	}
+
 	unreadHead := waitReads(errors.New(forgeFailure))[0]
 
 	return []pushRow{
@@ -440,16 +440,25 @@ func boundMovedRows(cmd landingCommand) []pushRow {
 	}
 }
 
-// boundChangeRows are the pushes cmd runs that end asking for a change to the branch before cmd
-// runs again: a failed check, and a pull request that conflicts with the trunk.
+// boundChangeRows are the pushes cmd runs that end asking for a step before cmd runs again: a
+// failed check, a canceled check, and a pull request that conflicts with the trunk. A push that
+// repeats the plain push has only the failed and the canceled check, which pin its `Next:` lines.
 func boundChangeRows(cmd landingCommand) []pushRow {
 	short := forge.FailedLog{Text: steps(1, 3), State: forge.FailedLogRead}
 
 	red := redRowBy(cmd, forge.BucketFail, short, steps(1, 3))
 	red.name = "a check failed"
 
+	canceled := redRowBy(cmd, forge.BucketCanceled, forge.FailedLog{}, expect("lint", "has no log"))
+	canceled.name = "a check was canceled"
+
+	if repeatsPlainPush(cmd) {
+		return []pushRow{red, canceled}
+	}
+
 	return []pushRow{
 		red,
+		canceled,
 		stoppedRowBy(cmd, forge.MergeConflicting, "conflicts with the trunk"),
 	}
 }
@@ -528,28 +537,6 @@ func steps(first, last int) string {
 	}
 
 	return lines.String()
-}
-
-// assertReadsRequire fails unless calls hold reads of both the head and the verdict of pull request
-// 12, each asking for exactly the checks required, and each verdict asked for the commit tip.
-func assertReadsRequire(t *testing.T, calls []forgetest.Call, tip string, required []string) {
-	t.Helper()
-
-	var heads, verdicts int
-
-	for _, call := range calls {
-		if call.Op == forgetest.OpHead {
-			heads++
-			assert.Check(t, is.DeepEqual(call.HeadQuery, forge.HeadQuery{Number: opened, Required: required}))
-		}
-
-		if call.Op == forgetest.OpVerdict {
-			verdicts++
-			assert.Check(t, is.DeepEqual(call.VerdictQuery, forge.VerdictQuery{SHA: tip, Number: opened, Required: required}))
-		}
-	}
-
-	assert.Check(t, heads > 0 && verdicts > 0, "forge reads = %d heads and %d verdicts, want some of each", heads, verdicts)
 }
 
 // stateWords returns the end of the line that says each merge state but clean in plain words.

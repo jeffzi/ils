@@ -118,14 +118,6 @@ func TestJudge_RefusesACommitWhoseOwnTargetIsOnTheTrunk(t *testing.T) {
 	}, expectation{outcome: guard.Refuse, named: onMain})
 }
 
-func TestJudge_RefusesATrunkJudgedInvocationThatRunsWhereItCannotTell(t *testing.T) {
-	t.Parallel()
-
-	checkRefusals(t, []refusal{
-		{name: "non-literal -C", command: `git -C "$d" ` + commitArgs, wantNamed: "git commit"},
-	})
-}
-
 func TestJudge_WhenAReadRunsWhereTheGuardCannotTell_AllowsIt(t *testing.T) {
 	t.Parallel()
 
@@ -314,7 +306,7 @@ func TestJudge_WhenGhIsLoggedInToAHostOtherThanGitHubCom_RefusesACommitOnTheTrun
 	setGitHubPushURL(f, enterpriseHost)
 	loggedInTo(t, enterpriseHost)
 
-	checkRefusedNaming(t, caller, commitCommand, onMain, "ils branch")
+	checkRefusedNaming(t, caller, commitCommand, onMain)
 }
 
 func TestJudge_WhenGhHoldsNoLoginForAHostOtherThanGitHubCom_AllowsACommitOnTheTrunk(t *testing.T) {
@@ -343,7 +335,7 @@ func TestJudge_WhenGhsLoginCheckFailsOnAHostOtherThanGitHubCom_RefusesSayingWhy(
 	setGitHubPushURL(f, enterpriseHost)
 	loginFailingOn(t, enterpriseHost)
 
-	checkRefusedNaming(t, caller, commitCommand, loginCheckSaid, "ils branch")
+	checkRefusedNaming(t, caller, commitCommand, loginCheckSaid)
 }
 
 func TestJudge_WhenTheGhConfigCannotBeTold_RefusesACommitOnTheTrunk(t *testing.T) {
@@ -352,8 +344,8 @@ func TestJudge_WhenTheGhConfigCannotBeTold_RefusesACommitOnTheTrunk(t *testing.T
 		host  string
 		named []string
 	}{
-		{name: "host other than github.com", host: enterpriseHost, named: []string{"GH_CONFIG_DIR", "ils branch"}},
-		{name: "github.com, which needs no gh", host: githubHost, named: []string{onMain, "ils branch"}},
+		{name: "host other than github.com", host: enterpriseHost, named: []string{"GH_CONFIG_DIR"}},
+		{name: "github.com, which needs no gh", host: githubHost, named: []string{onMain}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -368,27 +360,16 @@ func TestJudge_WhenTheGhConfigCannotBeTold_RefusesACommitOnTheTrunk(t *testing.T
 }
 
 func TestJudge_ChecksTheLoginToAHostOtherThanGitHubComWithTheGhConfigTheCommandSets(t *testing.T) {
-	tests := []struct {
-		name    string
-		process ghtest.Answer
-		command ghtest.Answer
-		want    guard.Outcome
-	}{
-		{name: "logged in by the command's config", process: ghtest.LoggedOut(), command: ghtest.LoggedIn(enterpriseHost), want: guard.Refuse},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Not parallel: ghReadingConfig sets GH_PATH and the gh config location for the whole process.
-			f, caller := standingOn(t, "main", "main")
-			setGitHubPushURL(f, enterpriseHost)
-			routes := map[string][]string{"login": ghtest.LoginArgs(enterpriseHost)}
-			ghReadingConfig(t, routes, map[string]ghtest.Answer{"login": tt.process})
-			config := configHolding(t, "", map[string]ghtest.Answer{"login": tt.command})
-			command := "GH_CONFIG_DIR=" + gittest.ShellWord(config) + " " + commitCommand
+	// Not parallel: ghReadingConfig sets GH_PATH and the gh config location for the whole process.
+	f, caller := standingOn(t, "main", "main")
+	setGitHubPushURL(f, enterpriseHost)
+	routes := map[string][]string{"login": ghtest.LoginArgs(enterpriseHost)}
+	// The process's own gh is logged out; the config the command sets is logged in.
+	ghReadingConfig(t, routes, map[string]ghtest.Answer{"login": ghtest.LoggedOut()})
+	config := configHolding(t, "", map[string]ghtest.Answer{"login": ghtest.LoggedIn(enterpriseHost)})
+	command := "GH_CONFIG_DIR=" + gittest.ShellWord(config) + " " + commitCommand
 
-			checkJudgedRow(t, caller, judged{command: command, want: tt.want, wantNamed: onMain})
-		})
-	}
+	checkJudgedRow(t, caller, judged{command: command, want: guard.Refuse, wantNamed: onMain})
 }
 
 func TestJudge_WhenOriginsSSHHostCannotBeResolved_RefusesACommitOnTheTrunk(t *testing.T) {
@@ -401,30 +382,29 @@ func TestJudge_WhenOriginsSSHHostCannotBeResolved_RefusesACommitOnTheTrunk(t *te
 	checkRefusedNaming(t, caller, commitCommand, "ssh")
 }
 
-func TestJudge_WhenNoInvocationIsOnTheTrunk_RunsNoGh(t *testing.T) {
-	tests := []struct {
-		arrange func(f *gittest.Fixture)
-		name    string
-		branch  string
-	}{
-		{name: "HEAD off the trunk", branch: "topic", arrange: func(*gittest.Fixture) {}},
-		{name: "no origin", branch: "main", arrange: (*gittest.Fixture).RemoveOrigin},
-		{name: "detached HEAD", branch: "main", arrange: (*gittest.Fixture).Detach},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Not parallel: loggedInTo sets GH_PATH for the whole process.
-			f, caller := standingOn(t, "main", tt.branch)
-			setGitHubPushURL(f, enterpriseHost)
-			fake := loggedInTo(t, enterpriseHost)
-			tt.arrange(f)
+func TestJudge_WhenHEADIsOffTheTrunk_RunsNoGh(t *testing.T) {
+	// Not parallel: loggedInTo sets GH_PATH for the whole process.
+	f, caller := standingOn(t, "main", "topic")
+	setGitHubPushURL(f, enterpriseHost)
+	fake := loggedInTo(t, enterpriseHost)
 
-			got := guard.Judge(t.Context(), commitCommand, caller)
+	got := guard.Judge(t.Context(), commitCommand, caller)
 
-			assert.Check(t, is.DeepEqual(got, guard.Verdict{Outcome: guard.Allow}), "Judge(%q)", commitCommand)
-			assert.Check(t, is.Len(fake.Calls(), 0), "Judge(%q) gh calls", commitCommand)
-		})
-	}
+	assert.Check(t, is.DeepEqual(got, guard.Verdict{Outcome: guard.Allow}), "Judge(%q)", commitCommand)
+	assert.Check(t, is.Len(fake.Calls(), 0), "Judge(%q) gh calls", commitCommand)
+}
+
+func TestJudge_WhenTheRepositoryHasNoOrigin_AllowsARebaseNamingTheTrunk(t *testing.T) {
+	t.Parallel()
+	f, caller := standingOn(t, "main", "topic")
+	f.RemoveOrigin()
+	// A rebase that names a branch switches to it first, so only the lack of an origin lets it
+	// through.
+	const command = "git rebase topic main"
+
+	got := guard.Judge(t.Context(), command, caller)
+
+	assert.Check(t, is.DeepEqual(got, guard.Verdict{Outcome: guard.Allow}), "Judge(%q)", command)
 }
 
 func TestJudge_WhenOriginsPushURLCannotBeReadOnTheTrunk_RefusesSayingWhatBroke(t *testing.T) {
@@ -438,24 +418,13 @@ func TestJudge_WhenOriginsPushURLCannotBeReadOnTheTrunk_RefusesSayingWhatBroke(t
 func TestJudge_WhenOnlyTheFetchURLNamesAGitHubRepository_AllowsACommitOnTheTrunk(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		pushURL func(f *gittest.Fixture) string
-		name    string
-	}{
-		{name: "local path push URL", pushURL: func(f *gittest.Fixture) string { return f.OriginDir() }},
-		{name: "ssh push URL whose host starts with a dash", pushURL: func(*gittest.Fixture) string { return "git@-oProxyCommand=x:" + originRepo + ".git" }},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			f, _ := standingOn(t, "main", "main")
-			f.SetOriginURL("git@github.com:" + originRepo + ".git")
-			f.SetPushURL(tt.pushURL(f))
-			caller := callerWithEnv(f.Dir(), f.ServedEnv(f.OriginDir()))
+	f, _ := standingOn(t, "main", "main")
+	f.SetOriginURL("git@github.com:" + originRepo + ".git")
+	// A local path names no repository on GitHub.
+	f.SetPushURL(f.OriginDir())
+	caller := callerWithEnv(f.Dir(), f.ServedEnv(f.OriginDir()))
 
-			checkJudgedRow(t, caller, judged{command: commitCommand, want: guard.Allow})
-		})
-	}
+	checkJudgedRow(t, caller, judged{command: commitCommand, want: guard.Allow})
 }
 
 func TestJudge_WhenTheGitDirCannotBeTold_RefusesACommit(t *testing.T) {

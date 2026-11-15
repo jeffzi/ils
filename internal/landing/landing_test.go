@@ -34,18 +34,18 @@ const (
 	repoName = "Widgets"
 
 	// The two spellings name one repository: host, owner, and name differ in case and shape only.
-	fetchURL = "ssh://git@github.com/Acme/Widgets.git"
-	pushURL  = "git@github.com:acme/widgets.git"
-	otherURL = "git@github.com:acme/gadgets.git"
-	// sameRepoURL is a third spelling of the repository fetchURL and pushURL name.
-	sameRepoURL = "https://github.com/acme/widgets"
-	localPath   = "/srv/project"
+	fetchURL  = "ssh://git@github.com/Acme/Widgets.git"
+	pushURL   = "git@github.com:acme/widgets.git"
+	otherURL  = "git@github.com:acme/gadgets.git"
+	localPath = "/srv/project"
 
 	readGitVersion = "git's version"
 	readStanding   = "where HEAD stands"
 	readURLs       = "origin's URLs"
 	readIdentity   = "the repository's identity on GitHub"
 	readTrunk      = "origin's trunk"
+	readSinceTag   = "the commits on origin's trunk since its version tags"
+	readLocalTrunk = "the local trunk"
 
 	// forgeFailure is what a fake forge call fails saying, and what the text of the failure holds.
 	forgeFailure = "HTTP 502"
@@ -68,8 +68,7 @@ func expect(parts ...string) string {
 	return text.String()
 }
 
-// nextPush is the `Next:` line that runs `ils push` again as it is, and nextFixed the one that runs
-// it again once what failed is fixed.
+// nextPush is the `Next:` line that runs `ils push` again as it is.
 func nextPush() string { return pushCommand().again }
 
 // nextLine is the `Next:` line that runs command.
@@ -77,6 +76,7 @@ func nextLine(command string) string {
 	return expect(resulttest.NextLine(command) + "\n")
 }
 
+// nextFixed is the `Next:` line that runs `ils push` again once what failed is fixed.
 func nextFixed() string { return pushCommand().fixed }
 
 // The phrases that tell the two fixes of a local trunk with commits origin's trunk lacks apart:
@@ -706,9 +706,14 @@ func originRefusals() []refusal {
 			want:    expect("no remote named origin"),
 		},
 		{
-			name:    "fetch URL does not parse",
-			arrange: func(f *gittest.Fixture) { f.SetOriginURL(localPath) },
-			want:    mismatch(localPath, pushURL),
+			// With no push URL of its own, origin pushes to its fetch URL, so both are the one URL
+			// that does not parse.
+			name: "fetch URL does not parse and origin has no push URL",
+			arrange: func(f *gittest.Fixture) {
+				f.SetOriginURL(localPath)
+				f.Git("remote", "set-url", "--delete", "--push", "origin", pushURL)
+			},
+			want: mismatch(localPath, localPath),
 		},
 		{
 			name:    "URLs name different repositories",
@@ -776,6 +781,16 @@ func trunkRefusals() []refusal {
 	}
 }
 
+func TestRequest_Unread_WhenTheRequestIsForTheProject_NamesItAgainWithProject(t *testing.T) {
+	t.Parallel()
+	req := landing.Request{Command: "init", Args: []string{"claude"}, Project: true}
+
+	stop := req.Unread("the settings", errors.New("the disk is full"))
+
+	_, got := rendered(t, *stop, t.TempDir())
+	assert.Check(t, is.Contains(got.Next, "init claude "+landing.FlagProject))
+}
+
 func TestPreconditions_WhenOneFails_RefusesAtTheFirst(t *testing.T) {
 	t.Parallel()
 
@@ -801,26 +816,6 @@ func TestPreconditions_WhenAllHold_ReturnsReady(t *testing.T) {
 	got := ready(t, s)
 
 	assert.Check(t, is.DeepEqual(got, want))
-}
-
-func TestPreconditions_WhenEveryPushURLNamesTheFetchRepository_ReturnsReady(t *testing.T) {
-	t.Parallel()
-	s := newScene(t, func(f *gittest.Fixture) { f.AddPushURL(sameRepoURL) }, allowed(), false)
-
-	got := ready(t, s)
-
-	assert.Check(t, is.DeepEqual(got.Repo, widgets(false, true)))
-}
-
-func TestPreconditions_WhenThePushURLReadFails_BrokeNamingTheRead(t *testing.T) {
-	// Not parallel: failGit puts a git that fails first on PATH with t.Setenv.
-	s := newScene(t, nil, forgetest.Script{}, false)
-	failGit(t, s, []string{"remote", "get-url", "--push"})
-
-	_, stop := landing.Preconditions(t.Context(), s.deps, pushRequest())
-
-	got := stopped(t, stop, "a broke result")
-	assertBrokeRead(t, got, readURLs, gittest.FailedSaid)
 }
 
 func TestPreconditions_WhenSSHFails_BrokeNamingTheRead(t *testing.T) {
@@ -997,4 +992,108 @@ func TestSpan(t *testing.T) {
 			assert.Equal(t, got, tt.want)
 		})
 	}
+}
+
+// finding is allowed with a find-changes call that returns found.
+func finding(found ...forge.Change) forgetest.Script {
+	script := allowed()
+	script.FindChanges = forgetest.Values(found)
+
+	return script
+}
+
+// change returns the pull request numbered number from the topic branch against base.
+func change(number int, base string, state forge.ChangeState) forge.Change {
+	return forge.Change{Number: number, Base: base, State: state, Title: topic}
+}
+
+// changesRead is the forge operations a landing command makes up to its read of the branch's pull
+// requests.
+func changesRead() []forgetest.Op {
+	return []forgetest.Op{forgetest.OpIdentity, forgetest.OpFindChanges}
+}
+
+// answering returns the fixture's environment with ssh replaced by a command that serves origin
+// for the first times calls git makes to it, and then runs after instead. A read of ssh's config
+// never reaches that command, so it takes none of those turns.
+func answering(t *testing.T, f *gittest.Fixture, times int, after string) []string {
+	t.Helper()
+
+	tally := t.TempDir()
+
+	var counted strings.Builder
+	for i := range times {
+		// mkdir succeeds once per name, so each call to origin takes the next free one.
+		fmt.Fprintf(&counted, "mkdir '%s/%d' 2>/dev/null || ", tally, i)
+	}
+
+	serving := counted.String() + "{ " + after + "; exit 1; }; " + gittest.Serving(f.OriginDir())
+
+	return f.ServedBy(serving)
+}
+
+// assertFailedGit fails unless got is cmd's broke result on the read named read, carrying what the
+// git call failGit made fail said.
+func assertFailedGit(t *testing.T, got result.Result, cmd landingCommand, read string) {
+	t.Helper()
+
+	said := assertBrokeReadBy(t, got, cmd, read)
+	assert.Check(t, is.Contains(said, gittest.FailedSaid))
+}
+
+// assertReadsRequire fails unless calls hold reads of both the head and the verdict of pull request
+// 12, each asking for exactly the checks required, and each verdict asked for the commit tip.
+func assertReadsRequire(t *testing.T, calls []forgetest.Call, tip string, required []string) {
+	t.Helper()
+
+	var heads, verdicts int
+
+	for _, call := range calls {
+		if call.Op == forgetest.OpHead {
+			heads++
+			assert.Check(t, is.DeepEqual(call.HeadQuery, forge.HeadQuery{Number: opened, Required: required}))
+		}
+
+		if call.Op == forgetest.OpVerdict {
+			verdicts++
+			assert.Check(t, is.DeepEqual(call.VerdictQuery, forge.VerdictQuery{SHA: tip, Number: opened, Required: required}))
+		}
+	}
+
+	assert.Check(t, heads > 0 && verdicts > 0, "forge reads = %d heads and %d verdicts, want some of each", heads, verdicts)
+}
+
+func TestShellWord(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name, word, want string
+	}{
+		{name: "single quote spelled in double quotes", word: "rock'n'roll", want: `"rock'n'roll"`},
+		{name: "assignment quoted", word: "a=b", want: "'a=b'"},
+		{name: "shell keyword quoted", word: "if", want: "'if'"},
+		{name: "newline spelled as an escape", word: "a\nb", want: `$'a\nb'`},
+		{name: "history expansion mark in single quotes", word: "a!b", want: "'a!b'"},
+		{name: "history expansion mark beside a single quote", word: "it's!", want: `'it'\''s!'`},
+		{name: "history expansion mark beside a newline", word: "a!\nb", want: `$'a!\nb'`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := landing.ShellWord(tt.word)
+
+			assert.NilError(t, err, "ShellWord(%q)", tt.word)
+			assert.Check(t, is.Equal(got, tt.want), "ShellWord(%q)", tt.word)
+		})
+	}
+}
+
+func TestShellWord_WhenTheWordHoldsANulByte_ReturnsAnError(t *testing.T) {
+	t.Parallel()
+	const word = "a\x00b"
+
+	_, err := landing.ShellWord(word)
+
+	assert.Check(t, err != nil, "ShellWord(%q) error = nil, want an error", word)
 }

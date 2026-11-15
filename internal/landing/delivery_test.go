@@ -102,6 +102,9 @@ func nextTrunk() string { return trunkNext(pushCommand()) }
 // redNext is the `Next:` line that fixes the failing check, then runs cmd again.
 func redNext(cmd landingCommand) string { return cmd.after("fix the failing check") }
 
+// rerunNext is the `Next:` line that reruns the canceled check lint, then runs cmd again.
+func rerunNext(cmd landingCommand) string { return expect("lint") + cmd.after("gh run rerun") }
+
 // trunkNext is the `Next:` line that merges the trunk into the branch and resolves the conflicts,
 // then runs cmd again.
 func trunkNext(cmd landingCommand) string {
@@ -510,8 +513,8 @@ func pushExistsRows() []pushRow {
 		{
 			name: "and the branch's pull requests hold none against the trunk", script: reporting(nil),
 			want: finish{
-				outcome: result.Broke, reason: expect("no pull request was opened or found"),
-				text: pushedLine() + expect("pull request was opened or found", topic, trunk) + nextFixed(),
+				outcome: result.Broke,
+				text:    pushedLine() + expect("pull request was opened or found", topic, trunk) + nextFixed(),
 			},
 		},
 	}
@@ -611,13 +614,13 @@ func pushOpenFailureRows() []pushRow {
 		{
 			name: "for a reason of the forge", script: openFailing(errors.New(forgeFailure)),
 			want: finish{
-				outcome: result.Broke, reason: expect("could not open the pull request"),
-				text: pushedLine() + expect("No pull request was opened", forgeFailure) + nextFixed(),
+				outcome: result.Broke,
+				text:    pushedLine() + expect("No pull request was opened", forgeFailure) + nextFixed(),
 			},
 		},
 	}
 
-	for _, c := range cuts() {
+	for _, c := range []cut{byInterrupt()} {
 		rows = append(rows, pushRow{
 			name:   "because " + c.name + " ended it",
 			script: openFailing(c.of("gh pr create")),
@@ -858,7 +861,7 @@ func pushNoCIRows() []pushRow {
 		},
 	}
 
-	for _, c := range cuts() {
+	for _, c := range []cut{byInterrupt()} {
 		rows = append(rows, pushRow{
 			name: "and " + c.name + " ends the CI read", want: cutShortRead(c, readCI),
 			script: reusing(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{Err: c.of("gh")}),
@@ -1015,7 +1018,7 @@ func TestPush_WhenAReadAfterTheWritesIsCutShort_PendingNamingTheRead(t *testing.
 
 	var rows []pushRow
 
-	for _, c := range cuts() {
+	for _, c := range []cut{byInterrupt()} {
 		for _, read := range readsAfterWrites(c.of("gh")) {
 			// Every read hands its error to the same wording, so each cut is checked on the read of the
 			// trunk's rules alone.

@@ -74,5 +74,16 @@ func PermissionRules() map[string][]string {
 	return rules
 }
 
+// DroppedRules returns the rules `ils init claude` removes from each permission list, by the name
+// of the list, for the tests of package cli_test.
+func DroppedRules() map[string][]string {
+	rules := map[string][]string{}
+	for _, list := range permissionLists {
+		rules[list.name] = slices.Clone(list.dropped)
+	}
+
+	return rules
+}
+
 // StopIgnored is stopIgnored, for the tests of package cli_test.
 func StopIgnored() bool { return stopIgnored() }

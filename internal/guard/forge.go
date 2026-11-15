@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jeffzi/ils/internal/commandline"
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/landing"
@@ -47,7 +46,7 @@ func judgeILS(ctx context.Context, caller Caller, inv Invocation) (Verdict, erro
 		return notLiteralCommand("ils", "ils"), nil
 	}
 
-	if asksForHelp(args, at[0], commandline.FlagHelp) {
+	if asksForHelp(args, at[0], FlagHelp) {
 		return Verdict{Outcome: Allow}, nil
 	}
 
@@ -179,9 +178,9 @@ func asksForHelp(args []Word, at int, help string) bool {
 }
 
 // ilsSwitches are the flags the root command of ils knows and that take no value. A test of
-// package cli fails when the root gains a switch commandline.RootSwitches lacks.
+// package cli fails when the root gains a switch RootSwitches lacks.
 func ilsSwitches() map[string]bool {
-	return setOf(commandline.RootSwitches()...)
+	return setOf(RootSwitches()...)
 }
 
 // ---------------------------------------------------------------------------

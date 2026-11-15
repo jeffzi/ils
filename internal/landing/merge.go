@@ -97,12 +97,14 @@ type mergeReady struct {
 func Merge(ctx context.Context, deps Deps, req Request) result.Result {
 	deps.startChecking()
 
-	ready, stop := Preconditions(ctx, deps, req)
+	s := newSurvey(deps)
+
+	ready, stop := preconditions(ctx, s, req)
 	if stop != nil {
 		return *stop
 	}
 
-	m, refusal := mergeChecks(ctx, deps, req, ready)
+	m, refusal := mergeChecks(ctx, s, req, ready)
 	if refusal != nil {
 		return *refusal
 	}
@@ -120,31 +122,31 @@ func Merge(ctx context.Context, deps Deps, req Request) result.Result {
 
 // mergeChecks runs merge's checks after the shared preconditions, and returns what the sequence
 // needs or the result of the first that refuses.
-func mergeChecks(ctx context.Context, deps Deps, req Request, ready Ready) (mergeReady, *result.Result) {
-	on, stop := branchChecks(ctx, deps, req, ready)
+func mergeChecks(ctx context.Context, s *survey, req Request, ready Ready) (mergeReady, *result.Result) {
+	on, stop := branchChecks(ctx, s, req, ready)
 	if stop != nil {
 		return mergeReady{}, stop
 	}
 
 	m := mergeReady{onBranch: on}
 
-	elsewhere, err := deps.Repo.CheckedOutElsewhere(ctx, ready.Trunk)
+	worktree, err := s.deps.Repo.WorktreeWith(ctx, ready.Trunk)
 	if err != nil {
 		return mergeReady{}, req.Unread(readWorktrees, err)
 	}
 
-	m.elsewhere = elsewhere
+	m.elsewhere = worktree != ""
 
-	m.tip, m.past, stop = commitsPast(ctx, deps, req, m.onBranch)
+	m.tip, m.past, stop = commitsPast(ctx, s, req, m.onBranch)
 	if stop != nil {
 		return mergeReady{}, stop
 	}
 
-	if stop = m.findPull(ctx, deps, req); stop != nil || m.resumed {
+	if stop = m.findPull(ctx, s, req); stop != nil || m.resumed {
 		return m, stop
 	}
 
-	if stop = m.pullChecks(ctx, deps, req); stop != nil {
+	if stop = m.pullChecks(ctx, s.deps, req); stop != nil {
 		return mergeReady{}, m.carrying(stop)
 	}
 
@@ -157,10 +159,10 @@ func mergeChecks(ctx context.Context, deps Deps, req Request, ready Ready) (merg
 // that pull request in the payload. An open pull request beside a merged one that carries every
 // commit is refused as `ils push` refuses it, with no payload: the branch already landed, so
 // neither is a pull request the run takes.
-func (m *mergeReady) findPull(ctx context.Context, deps Deps, req Request) *result.Result {
-	deps.startFinding()
+func (m *mergeReady) findPull(ctx context.Context, s *survey, req Request) *result.Result {
+	s.deps.startFinding()
 
-	open, landed, stop := pullRequest(ctx, deps, req, m.onBranch)
+	open, landed, stop := pullRequest(ctx, s, req, m.onBranch)
 
 	switch {
 	case stop == nil && open != nil && landed != nil:
@@ -328,7 +330,13 @@ func (m *mergeReady) toWrite(ctx context.Context, deps Deps, req Request) *resul
 		return stop
 	}
 
-	return m.reserved(ctx, req)
+	// Less than mergeReserve left before ctx's deadline ends the merge pending, with nothing written.
+	said := slices.Concat([]result.Phrase{m.summary()}, m.waited.mergeStateLines())
+	if stop := req.shortOfReserve(ctx, result.Concat("for the merge"), pushAgain(), said); stop != nil {
+		return m.carrying(stop)
+	}
+
+	return nil
 }
 
 // pushed is the pull request's head as the wait for its checks reads it.
@@ -507,17 +515,6 @@ func squashBody(message forge.Message) string {
 	}
 }
 
-// reserved ends the merge pending, with nothing written, when less than mergeReserve is left
-// before ctx's deadline.
-func (m *mergeReady) reserved(ctx context.Context, req Request) *result.Result {
-	said := slices.Concat([]result.Phrase{m.summary()}, m.waited.mergeStateLines())
-	if stop := req.shortOfReserve(ctx, result.Concat("for the merge"), pushAgain(), said); stop != nil {
-		return m.carrying(stop)
-	}
-
-	return nil
-}
-
 // summary says what let the merge go on: the head's checks, or no CI on the trunk.
 func (m *mergeReady) summary() result.Phrase {
 	if m.unverified {
@@ -594,9 +591,9 @@ func (m *mergeReady) finish(ctx context.Context, deps Deps, req Request) *result
 
 // merge squash-merges the pull request with the composed message, at the head whose checks were
 // read. An interrupt that ended ctx before the merge is sent ends the run pending with nothing
-// written, as too little time left does in reserved. A merge that fails or that the time limit or
-// an interrupt cut short may still have gone through, so its next step is ils merge, whose run
-// resumes once it did.
+// written, as too little time left does at the end of toWrite. A merge that fails or that the time
+// limit or an interrupt cut short may still have gone through, so its next step is ils merge, whose
+// run resumes once it did.
 func (m *mergeReady) merge(ctx context.Context, deps Deps, req Request) *result.Result {
 	pull := result.PullRequest(m.pull.Number)
 

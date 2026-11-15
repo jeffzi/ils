@@ -71,7 +71,7 @@ func TestParse_WhenANestedStringIsPastTheThirdLevel_MarksItUnparsed(t *testing.T
 	assert.Check(t, is.DeepEqual(got[3].Marks, []guard.Mark{{Kind: guard.DeepScript}}), "Parse(%q) marks", command)
 }
 
-func TestJudge_WhenAShellsOptionsRunAStringOrAFile_RefusesIt(t *testing.T) {
+func TestJudge_WhenAShellsOptionsComeBeforeItsCommandString_JudgesTheString(t *testing.T) {
 	t.Parallel()
 
 	checkRefusals(t, []refusal{

@@ -45,24 +45,17 @@ func TestApp_Run_WhenADebugLineCannotBeWritten_TheLoggerReturnsTheWriteError(t *
 	assert.Check(t, is.ErrorIs(err, errReaderGone))
 }
 
-var (
-	// execLine is a debug line of one git or gh call that exited: its time since launch, the call,
-	// its exit code and its duration.
-	execLine = regexp.MustCompile(`^\+\d+\.\d{3}s ((?:git|gh) .+) exit \d+ \S+$`)
-	// waitLine is a debug line of one decision of a wait.
-	waitLine = regexp.MustCompile(`^\+\d+\.\d{3}s wait \S+=\S+( \S+=\S+)*$`)
-)
+// execLine is a debug line of one git or gh call that exited: its time since launch, the call, its
+// exit code and its duration.
+var execLine = regexp.MustCompile(`^\+\d+\.\d{3}s ((?:git|gh) .+) exit \d+ \S+$`)
 
-// traced sorts the debug lines of stderr: the calls they trace, and the lines that are neither a
-// call nor a wait decision.
+// traced sorts the debug lines of stderr: the calls they trace, and the lines that are not a call.
 func traced(stderr string) (calls, unmatched []string) {
 	for line := range strings.Lines(stderr) {
 		line = strings.TrimSuffix(line, "\n")
-		switch m := execLine.FindStringSubmatch(line); {
-		case m != nil:
+		if m := execLine.FindStringSubmatch(line); m != nil {
 			calls = append(calls, m[1])
-		case waitLine.MatchString(line):
-		default:
+		} else {
 			unmatched = append(unmatched, line)
 		}
 	}
@@ -100,7 +93,7 @@ func TestApp_Run_WhenDebugIsOnDuringALanding_TracesTheLandingOnStderrAlone(t *te
 
 	calls, unmatched := traced(got.stderr)
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	assert.Check(t, is.Len(unmatched, 0), "lines that are neither a call nor a wait decision: %q", unmatched)
+	assert.Check(t, is.Len(unmatched, 0), "lines that are not a call: %q", unmatched)
 	assert.Check(t, is.DeepEqual(calls, commandLines(slices.Concat(recorder.Calls(), fake.Calls())), anyOrder()))
 }
 

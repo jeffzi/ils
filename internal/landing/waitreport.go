@@ -101,10 +101,30 @@ func (r waitReport) outcome(stopped result.Outcome) result.Outcome {
 	}
 }
 
+// endReport returns the report of a wait that ended as w on pull request number of p's branch,
+// for the run end says, with the step `ils push` ends that wait on: for green checks the step
+// mergeStep gives for the merge state, for nothing reported a report of that silence, which stops,
+// and stopReport's for any other outcome.
+func (w Waited) endReport(end ending, p pushReady, number int) waitReport {
+	switch w.Outcome {
+	case WaitGreen:
+		return waitReport{next: mergeStep(p.Repo, number, w.MergeState)}
+	case WaitNothingReported:
+		return waitReport{
+			lines: w.mergeStateLines(), reason: nothingReported(p.tip, number),
+			next: result.NextStep("report that no check or status reported for the pushed commit, and stop"),
+		}
+	default:
+		report, _ := w.stopReport(end, p.tip, p.Trunk, number)
+
+		return report
+	}
+}
+
 // stopReport returns the report of a wait that ended red, apart from the trunk, with a required
 // check that never reported, pending, or on a head that moved, about the commit sha of pull request
 // number, whose trunk is trunk, for the run end says. It returns false for green checks and for
-// nothing reported, which each command maps on its own.
+// nothing reported: endReport maps them for push and status, and merge maps them for itself.
 func (w Waited) stopReport(end ending, sha, trunk string, number int) (waitReport, bool) {
 	switch w.Outcome {
 	case WaitGreen, WaitNothingReported:
@@ -137,20 +157,23 @@ func (w Waited) neverReportedLine() result.Phrase {
 }
 
 // redReport is a deciding check that failed or was canceled, with the end of its log as the
-// excerpt, whose next step runs the push end names as pushOfChange once the check is fixed.
+// excerpt, whose next step runs the push end names as pushOfChange once the check is fixed, or
+// once a canceled check is rerun.
 func (w Waited) redReport(end ending) waitReport {
 	failed, _ := w.Verdict.Failed()
 
 	reason := result.Say("the check %s failed", failed.Name)
+	next := result.NextStep("fix the failing check, commit, and run %s again", end.pushOfChange)
 	if failed.Bucket == forge.BucketCanceled {
 		reason = result.Say("the check %s was canceled", failed.Name)
+		next = result.NextStep("rerun the canceled check %s with `gh run rerun`"+thenRunAgain, failed.Name, end.pushOfChange)
 	}
 
 	return waitReport{
 		lines:   append([]result.Phrase{failedLine(failed)}, w.mergeStateLines()...),
 		excerpt: w.excerpt(),
 		reason:  reason,
-		next:    result.NextStep("fix the failing check, commit, and run %s again", end.pushOfChange),
+		next:    next,
 	}
 }
 
@@ -382,10 +405,13 @@ func (w Waited) checksLine(sha string) result.Phrase {
 }
 
 // excerpt returns the last excerptLines lines of the failed log of the check that failed, or
-// one line saying why there is no log.
+// one line saying why there is no log, such as a canceled check, which never gets one.
 func (w Waited) excerpt() string {
 	failed, _ := w.Verdict.Failed()
 	check, log := failed.Name, w.Verdict.FailedLog
+	if failed.Bucket == forge.BucketCanceled && log.State == "" {
+		return "no log: " + check + " was canceled, so it has no log"
+	}
 
 	switch log.State {
 	case forge.FailedLogRead:

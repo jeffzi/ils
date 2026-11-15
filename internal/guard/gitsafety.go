@@ -605,19 +605,20 @@ func nearestDirectory(path string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Rebase, worktree, config, and remote rules
+// Rebase, abort, worktree, and config rules
 // ---------------------------------------------------------------------------
 
-// refuseRebaseOverChanges refuses `git rebase` in a work tree that holds uncommitted or
-// untracked changes, and one whose repository the guard cannot tell. Outside any repository there
-// is nothing for it to lose, and an action keepsWorkTree names leaves the work tree as it is.
-func refuseRebaseOverChanges(ctx context.Context, caller Caller, inv Invocation) (Verdict, error) {
+// refuseDiscardOverChanges refuses, in a work tree that holds uncommitted or untracked changes and
+// in one whose repository the guard cannot tell, every `git rebase` and the `--abort` of
+// `git merge`, `git cherry-pick`, and `git revert`. Outside any repository there is nothing for
+// them to lose, and an action keepsWorkTree names leaves the work tree as it is.
+func refuseDiscardOverChanges(ctx context.Context, caller Caller, inv Invocation) (Verdict, error) {
 	sub, ok := subcommand(inv)
-	if !ok || sub != "rebase" {
+	if !ok || !mayDiscardChanges(sub, inv.Git.Args) {
 		return Verdict{Outcome: Allow}, nil
 	}
 
-	unknownRepository := refuse("git rebase: the guard cannot tell which repository it runs in; " + moveFirst)
+	unknownRepository := refuse("git " + sub + ": the guard cannot tell which repository it runs in; " + moveFirst)
 	if inv.Git.GitDirUnknown {
 		return unknownRepository, nil
 	}
@@ -633,20 +634,35 @@ func refuseRebaseOverChanges(ctx context.Context, caller Caller, inv Invocation)
 
 	dirty, err := git.Repo{Runner: targetRunner(caller.Git, inv.Dir, inv.Target)}.Dirty(ctx, options...)
 	if err != nil {
-		return Verdict{}, fmt.Errorf("read whether git rebase runs over changes: %w", err)
+		return Verdict{}, fmt.Errorf("read whether git %s runs over changes: %w", sub, err)
 	}
 
 	if dirty {
-		return refuse("git rebase (dirty): the working tree holds uncommitted or untracked changes"), nil
+		return refuse("git " + sub + " (dirty): the working tree holds uncommitted or untracked changes"), nil
 	}
 
 	return Verdict{Outcome: Allow}, nil
 }
 
-// keepsWorkTree reports whether the readable `git rebase` options o set an action that discards
-// nothing in the work tree: --continue commits what is staged, and the others edit or show the
-// rebase's state, or drop it while leaving HEAD and the work tree where they are. git refuses an
-// action beside another, so one of these set means no other runs.
+// mayDiscardChanges reports whether the git subcommand sub, given its arguments args, can discard
+// the work tree's changes: any `git rebase`, and a `git merge`, `git cherry-pick`, or `git revert`
+// whose readable options set `--abort`, which resets the index and work tree to where the
+// operation started, staged changes included.
+func mayDiscardChanges(sub string, args []Word) bool {
+	switch sub {
+	case "rebase":
+		return true
+	case "merge", "cherry-pick", "revert":
+		return readArgs(args, optionsOf(sub)).sets(0, "--abort")
+	default:
+		return false
+	}
+}
+
+// keepsWorkTree reports whether the readable options o set an action that discards nothing in the
+// work tree: --continue commits what is staged, and the others edit or show the operation's state,
+// or drop it while leaving HEAD and the work tree where they are. git refuses an action beside
+// another, so one of these set means no other runs.
 func keepsWorkTree(o subcommandOptions) bool {
 	keeping := []string{"--continue", "--edit-todo", "--show-current-patch", "--quit"}
 
@@ -809,54 +825,4 @@ func guardedConfigName(name string) bool {
 
 	return containsFold(guardedSections(), section) || strings.EqualFold(name, hooksPathKey) ||
 		strings.EqualFold(name, hooksSection)
-}
-
-// refuseOriginRewrite refuses a `git remote` operation that removes or renames origin, or points it elsewhere.
-func refuseOriginRewrite(_ context.Context, _ Caller, inv Invocation) (Verdict, error) {
-	sub, ok := subcommand(inv)
-	if !ok || sub != "remote" {
-		return Verdict{Outcome: Allow}, nil
-	}
-
-	args := inv.Git.Args
-	for len(args) > 0 && args[0].Literal && remoteVerbosity(args[0].Text) {
-		args = args[1:]
-	}
-
-	if len(args) == 0 {
-		return Verdict{Outcome: Allow}, nil
-	}
-
-	op := args[0]
-	rewrites := slices.Contains([]string{"remove", "rm", "rename", "set-url", "set-head"}, op.Text)
-	if op.Literal && !rewrites {
-		return Verdict{Outcome: Allow}, nil
-	}
-
-	options := readArgs(args[1:], knownOptions{})
-	if !op.Literal || options.opaque() {
-		return Verdict{}, &unreadArgumentError{sub: sub}
-	}
-
-	if len(options.positional) == 0 || options.positional[0].Text != git.OriginRemote {
-		return Verdict{Outcome: Allow}, nil
-	}
-
-	reason := fmt.Sprintf("git remote %s origin changes the remote branches are pushed to and fetched from", op.Text)
-
-	return refuse(reason), nil
-}
-
-// remoteVerbosity reports whether word is the one option `git remote` takes before its own
-// subcommand: -v, bundled or not, or --verbose, --no-verbose or a start of either.
-func remoteVerbosity(word string) bool {
-	if name, ok := strings.CutPrefix(word, "--"); ok {
-		startsLong := func(long string) bool { return strings.HasPrefix(long, name) }
-
-		return name != "" && slices.ContainsFunc([]string{"verbose", "no-verbose"}, startsLong)
-	}
-
-	letters, ok := strings.CutPrefix(word, "-")
-
-	return ok && letters != "" && strings.Trim(letters, "v") == ""
 }

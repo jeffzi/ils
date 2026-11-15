@@ -170,11 +170,11 @@ func failedLogRows() []failedLogRow {
 	gone := ghtest.Answer{Stderr: "run " + runID + " not found\n", Code: 1}
 	// unfinished is what gh run view --log-failed says of a run that has not completed.
 	unfinished := ghtest.Answer{Stderr: "run " + runID + " is still in progress; logs will be available when it is complete\n", Code: 1}
-	read := forge.FailedLog{Check: "build", Text: logText, State: forge.FailedLogRead}
-	jobRead := forge.FailedLog{Check: "build", Text: jobText, State: forge.FailedLogRead}
-	noRun := forge.FailedLog{Check: "scan", State: forge.FailedLogNoRun}
-	unreadable := forge.FailedLog{Check: "build", State: forge.FailedLogUnreadable}
-	inProgress := forge.FailedLog{Check: "build", State: forge.FailedLogInProgress}
+	read := forge.FailedLog{Text: logText, State: forge.FailedLogRead}
+	jobRead := forge.FailedLog{Text: jobText, State: forge.FailedLogRead}
+	noRun := forge.FailedLog{State: forge.FailedLogNoRun}
+	unreadable := forge.FailedLog{State: forge.FailedLogUnreadable}
+	inProgress := forge.FailedLog{State: forge.FailedLogInProgress}
 
 	return []failedLogRow{
 		{name: "failing check of a run", checks: failing, log: logged, want: read},
@@ -186,6 +186,8 @@ func failedLogRows() []failedLogRow {
 		{name: "failed log empty and job log read fails", checks: failing, log: empty, jobLog: jobGone, want: inProgress},
 		{name: "link names no job", checks: ghtest.CheckJSON("build", "fail", runOnlyLink), log: logged, jobLog: jobLogged, want: unreadable},
 		{name: "check of a run still pending", checks: ghtest.CheckJSON("build", "pending", runLink), log: logged},
+		// A canceled check never gets a log: its empty log reads would otherwise count as one to come.
+		{name: "canceled check of a run reads no log", checks: ghtest.CheckJSON("build", "cancel", runLink), log: empty, jobLog: empty},
 	}
 }
 
@@ -226,7 +228,7 @@ func TestForge_Verdict_WhenACutEndsTheFailedLogRead_ReportsTheLogUnreadable(t *t
 			got, err := newForge().Verdict(ctx, engine(), verdictQuery())
 			assert.NilError(t, err)
 
-			assert.Check(t, is.DeepEqual(got.FailedLog, forge.FailedLog{Check: "build", State: forge.FailedLogUnreadable}))
+			assert.Check(t, is.DeepEqual(got.FailedLog, forge.FailedLog{State: forge.FailedLogUnreadable}))
 		})
 	}
 }

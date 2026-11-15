@@ -324,36 +324,33 @@ func (d *delivery) sayMergeState() {
 	d.lines = append(d.lines, d.waited.mergeStateLines()...)
 }
 
-// report returns the result the wait's outcome maps to, telling the progress hook the checks line
-// of green checks.
+// report returns the result the wait's outcome maps to, ending on the step endReport gives,
+// telling the progress hook the checks line of green checks.
 func (d *delivery) report(deps Deps) *result.Result {
-	switch d.waited.Outcome {
-	case WaitGreen:
+	report := d.waited.endReport(d.req.ending(), d.pushReady, d.number)
+
+	if d.waited.Outcome == WaitGreen {
 		deps.say(&d.lines, d.waited.checksLine(d.tip))
 
-		return d.doneMerging()
-	case WaitNothingReported:
-		return d.endNothingReported()
-	default:
-		report, _ := d.waited.stopReport(d.req.ending(), d.tip, d.Trunk, d.number)
-		d.lines = append(d.lines, report.lines...)
-
-		ended := d.ended(report.outcome(result.DeliveredNotGreen), report.reason, report.next)
-		ended.Excerpt = report.excerpt
-
-		return ended
+		return d.doneMerging(report.next)
 	}
+
+	d.lines = append(d.lines, report.lines...)
+
+	ended := d.ended(report.outcome(result.DeliveredNotGreen), report.reason, report.next)
+	ended.Excerpt = report.excerpt
+
+	return ended
 }
 
-// doneMerging ends the push done, with ils merge as the next step. A done push says its merge
-// state unless its next step already covers it, which only a review block does: mergeStep asks
-// for the review.
-func (d *delivery) doneMerging() *result.Result {
+// doneMerging ends the push done on next, the merge step. A done push says its merge state unless
+// its next step already covers it, which only a review block does: mergeStep asks for the review.
+func (d *delivery) doneMerging(next result.Next) *result.Result {
 	if d.waited.MergeState != forge.MergeBlockedByReview {
 		d.sayMergeState()
 	}
 
-	return d.ended(result.Done, result.Phrase{}, mergeStep(d.Repo, d.number, d.waited.MergeState))
+	return d.ended(result.Done, result.Phrase{}, next)
 }
 
 // mergeStep is the step once the checks of pull request number in repo are green and its merge
@@ -406,12 +403,5 @@ func (d *delivery) withoutCI(ctx context.Context, deps Deps, required []string) 
 		return d.report(deps)
 	}
 
-	return d.doneMerging()
-}
-
-func (d *delivery) endNothingReported() *result.Result {
-	d.sayMergeState()
-
-	return d.ended(result.DeliveredNotGreen, nothingReported(d.tip, d.number),
-		result.NextStep("report that no check or status reported for the pushed commit, and stop"))
+	return d.doneMerging(mergeStep(d.Repo, d.number, d.waited.MergeState))
 }

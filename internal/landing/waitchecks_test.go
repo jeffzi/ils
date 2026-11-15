@@ -46,7 +46,7 @@ func lintRed() forge.Verdict {
 	return forge.Verdict{
 		Checks:    []forge.Check{lintFailed(), forgetest.Check("test", forge.BucketPass)},
 		Runs:      ran(forge.RunCompleted),
-		FailedLog: forge.FailedLog{Check: "lint", Text: "lint: unused variable", State: forge.FailedLogRead},
+		FailedLog: forge.FailedLog{Text: "lint: unused variable", State: forge.FailedLogRead},
 	}
 }
 
@@ -56,7 +56,7 @@ func lintHeldBack() forge.Verdict {
 	return forge.Verdict{
 		Checks:    []forge.Check{lintFailed(), forgetest.Check("test", forge.BucketPending)},
 		Runs:      ran(forge.RunInProgress),
-		FailedLog: forge.FailedLog{Check: "lint", State: forge.FailedLogInProgress},
+		FailedLog: forge.FailedLog{State: forge.FailedLogInProgress},
 	}
 }
 
@@ -68,7 +68,7 @@ func redRows() []vigilRow {
 	gone := forge.Verdict{
 		Checks:    unfinished.Checks,
 		Runs:      ran(forge.RunInProgress),
-		FailedLog: forge.FailedLog{Check: "lint", State: forge.FailedLogUnreadable},
+		FailedLog: forge.FailedLog{State: forge.FailedLogUnreadable},
 	}
 
 	rows := []vigilRow{
@@ -130,7 +130,7 @@ func heldRows() []vigilRow {
 func earlyRows() []vigilRow {
 	refused := forge.Verdict{
 		Checks:    []forge.Check{{Name: "scan", Bucket: forge.BucketFail}},
-		FailedLog: forge.FailedLog{Check: "scan", State: forge.FailedLogUnreadable},
+		FailedLog: forge.FailedLog{State: forge.FailedLogUnreadable},
 	}
 
 	return []vigilRow{

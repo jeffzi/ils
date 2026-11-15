@@ -380,13 +380,14 @@ func (r Repo) Switch(ctx context.Context, branch string) error {
 	return err
 }
 
-// CreateBranch creates the branch name at origin's trunk as last fetched, with no upstream, and puts
-// HEAD on it, carrying uncommitted changes and untracked files.
+// CreateBranch creates the branch name at the commit start, with no upstream, and puts HEAD on it,
+// carrying uncommitted changes and untracked files. Taking the commit and not a ref keeps the
+// branch at the commit the caller read, whatever a fetch since then did to origin's trunk.
 //
 // A changed or untracked file the switch would overwrite is an *OverwriteError naming the files,
 // and leaves HEAD, the tree and the local branches as they were.
-func (r Repo) CreateBranch(ctx context.Context, name, trunk string) error {
-	_, err := r.Runner.Run(ctx, "switch", "--quiet", "--no-track", "--create", name, originTrunk(trunk))
+func (r Repo) CreateBranch(ctx context.Context, name, start string) error {
+	_, err := r.Runner.Run(ctx, "switch", "--quiet", "--no-track", "--create", name, start)
 	if exitErr, ok := errors.AsType[*child.ExitError](err); ok {
 		if files := overwritten(exitErr.Stderr); len(files) > 0 {
 			return &OverwriteError{Branch: name, Files: files, Err: err}
@@ -573,14 +574,6 @@ func (r Repo) DeleteBranch(ctx context.Context, branch string) error {
 	_, err := r.Runner.Run(ctx, "branch", "--quiet", "--delete", "--force", branch)
 
 	return err
-}
-
-// CheckedOutElsewhere reports whether a worktree other than the current one has branch checked out,
-// as WorktreeWith finds it.
-func (r Repo) CheckedOutElsewhere(ctx context.Context, branch string) (bool, error) {
-	worktree, err := r.WorktreeWith(ctx, branch)
-
-	return worktree != "", err
 }
 
 // WorktreeWith returns the path, as git prints it, of a worktree other than the current one that has

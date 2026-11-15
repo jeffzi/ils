@@ -31,10 +31,9 @@ const (
 // Caller is what Parse needs to know about the shell that would run the command.
 type Caller struct {
 	// Env is the environment the command would start with; Parse reads CDPATH, GIT_DIR,
-	// GIT_WORK_TREE, GH_CONFIG_DIR, XDG_CONFIG_HOME, HOME, and IFS from it.
+	// GIT_WORK_TREE, GH_CONFIG_DIR, XDG_CONFIG_HOME, HOME, and IFS from it. Its HOME is also the
+	// one `~` and `~/…` expand with.
 	Env map[string]string
-	// Home is the HOME that `~` and `~/…` expand with.
-	Home string
 	// Dir is the absolute directory the command starts in; empty when unknown.
 	Dir string
 	// Git runs the git calls that read where each git invocation points git and what its aliases
@@ -74,6 +73,9 @@ type Invocation struct {
 	follows *headClaim
 	// sets is the switch the invocation makes, when it is one followSwitch reads; nil otherwise.
 	sets *headClaim
+	// declaredIn is the innermost function body the invocation is walked in where the function is
+	// declared; nil outside every such walk.
+	declaredIn *bodyRegion
 	// env is every change to the environment the command runs with, in the order bash makes them.
 	env []envChange
 	// enclosing are the redirects in effect on the shell's descriptors where the command runs:
@@ -267,6 +269,13 @@ type walker struct {
 	// bodies counts the walks of function bodies the walk made, dry runs included, which it stops
 	// making past maxCalls. It is shared like loopBodies; newWalker creates it.
 	bodies *int
+	// region is the innermost function body the walk is in where the function is declared, which
+	// every invocation the walk keeps is declaredIn.
+	region *bodyRegion
+	// declaring is the statement a call runs of the function body the walk is about to walk where
+	// the function is declared, until the walk reaches it, and declaringIn the region of that walk.
+	declaring   *syntax.Stmt
+	declaringIn *bodyRegion
 	// walked holds every invocation the walk placed, in the order it walked them, those of dry runs
 	// included.
 	walked []Invocation
@@ -338,7 +347,7 @@ func (w *walker) simple(stmt *syntax.Stmt, sc *scope) bool {
 
 // reading returns the expander that reads the words of a command run from sc.
 func (w *walker) reading(sc *scope) expander {
-	return expander{vars: sc.vars, home: w.caller.Home}
+	return expander{vars: sc.vars, home: w.caller.Env["HOME"]}
 }
 
 // declarationOf returns the invocation of a declaration builtin such as `export` or `declare`: its

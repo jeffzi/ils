@@ -9,7 +9,6 @@ import (
 
 	"mvdan.cc/sh/v3/syntax"
 
-	"github.com/jeffzi/ils/internal/commandline"
 	"github.com/jeffzi/ils/internal/landing"
 )
 
@@ -418,6 +417,6 @@ func changesNothing(args []Word) bool {
 // which ils never declares.
 func readOnlyILSCommands() map[string]bool {
 	return setOf(
-		landing.StatusCommand, commandline.ParseCommand, commandline.GuardCommand, commandline.HookCommand, "help",
+		landing.StatusCommand, ParseCommand, GuardCommand, HookCommand, "help",
 	)
 }

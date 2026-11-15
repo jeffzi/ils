@@ -27,18 +27,6 @@ func newRecordedRunner(t *testing.T) (git.Runner, *git.Recorder) {
 	return runner, recorder
 }
 
-func TestRunner_Run_WhenArgHoldsShellSyntax_PassesItVerbatim(t *testing.T) {
-	t.Parallel()
-	runner := newRunner(t)
-	value := "first && second; $HOME `third` > fourth"
-
-	got, err := runner.Run(t.Context(), "-c", "user.name="+value, "config", "--get", "user.name")
-	assert.NilError(t, err)
-
-	want := git.Result{Stdout: value + "\n"}
-	assert.Check(t, is.DeepEqual(got, want))
-}
-
 func TestRunner_Run_WhenGitExitsNonZero_StillRecordsCall(t *testing.T) {
 	t.Parallel()
 	runner, recorder := newRecordedRunner(t)

@@ -1,15 +1,12 @@
 package landing_test
 
 import (
-	"fmt"
 	"slices"
-	"strings"
 	"testing"
 
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
-	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/landing"
@@ -28,26 +25,6 @@ const (
 	readCopy     = "origin's copy of the branch"
 	readBranches = "the local branches"
 )
-
-// finding is allowed with a find-changes call that returns found.
-func finding(found ...forge.Change) forgetest.Script {
-	script := allowed()
-	script.FindChanges = forgetest.Values(found)
-
-	return script
-}
-
-// change returns the pull request numbered number from the topic branch against base.
-func change(number int, base string, state forge.ChangeState) forge.Change {
-	return forge.Change{Number: number, Base: base, State: state, Title: topic}
-}
-
-// identityRead and changesRead are the forge operations Push makes up to each of its two reads.
-func identityRead() []forgetest.Op { return []forgetest.Op{forgetest.OpIdentity} }
-
-func changesRead() []forgetest.Op {
-	return []forgetest.Op{forgetest.OpIdentity, forgetest.OpFindChanges}
-}
 
 // finish is how a result must have ended: its outcome and the parts of its text, as expect builds
 // them. A result of the push sequence is also held to the parts of its reason and to its payload,
@@ -292,25 +269,6 @@ func TestPush_WhenBranchCannotBePushed_RefusesAtTheFirst(t *testing.T) {
 	runPushRefusals(t, slices.Concat(cutRefusals(), manyCutRefusals(), copyRefusals()))
 }
 
-// answering returns the fixture's environment with ssh replaced by a command that serves origin
-// for the first times calls git makes to it, and then runs after instead. A read of ssh's config
-// never reaches that command, so it takes none of those turns.
-func answering(t *testing.T, f *gittest.Fixture, times int, after string) []string {
-	t.Helper()
-
-	tally := t.TempDir()
-
-	var counted strings.Builder
-	for i := range times {
-		// mkdir succeeds once per name, so each call to origin takes the next free one.
-		fmt.Fprintf(&counted, "mkdir '%s/%d' 2>/dev/null || ", tally, i)
-	}
-
-	serving := counted.String() + "{ " + after + "; exit 1; }; " + gittest.Serving(f.OriginDir())
-
-	return f.ServedBy(serving)
-}
-
 // unanswered is a push that origin stops answering partway through.
 type unanswered struct {
 	arrange func(*gittest.Fixture)
@@ -375,15 +333,6 @@ func fakeGit(t *testing.T, s *scene, fake gittest.Fake) {
 	t.Helper()
 
 	s.deps.Repo.Runner.Env = append(s.deps.Repo.Runner.Env, gittest.FakeGit(t, fake)...)
-}
-
-// assertFailedGit fails unless got is cmd's broke result on the read named read, carrying what the
-// git call failGit made fail said.
-func assertFailedGit(t *testing.T, got result.Result, cmd landingCommand, read string) {
-	t.Helper()
-
-	said := assertBrokeReadBy(t, got, cmd, read)
-	assert.Check(t, is.Contains(said, gittest.FailedSaid))
 }
 
 // failedRead is one git read of Push that fails for a reason no precondition covers.

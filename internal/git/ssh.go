@@ -361,14 +361,11 @@ func (r Repo) sshHostname(ctx context.Context, host string) (string, error) {
 		return "", err
 	}
 
-	// A GIT_SSH program that is not on the PATH git searches is named; a command line is not.
-	if variant == variantPlain && command.program != "" {
-		if missing := r.Runner.missingOn(command, command.program); missing != nil {
+	if variant == variantPlain {
+		if missing := r.Runner.missingProgram(command); missing != nil {
 			return "", missing
 		}
-	}
 
-	if variant == variantPlain {
 		return r.plainHostname(ctx, host)
 	}
 
@@ -449,19 +446,14 @@ func WithoutKeys(env []string, keys ...string) []string {
 // A key set twice has its last value, as it does for a child started with env, and keys match
 // exactly.
 func EnvValue(env []string, key string) (string, bool) {
-	var (
-		value string
-		set   bool
-	)
-
-	for _, entry := range env {
-		name, entryValue, ok := strings.Cut(entry, "=")
+	for _, entry := range slices.Backward(env) {
+		name, value, ok := strings.Cut(entry, "=")
 		if ok && name == key {
-			value, set = entryValue, true
+			return value, true
 		}
 	}
 
-	return value, set
+	return "", false
 }
 
 // lookPath finds name as exec.LookPath does, on the PATH of the environment git runs with: the
@@ -507,6 +499,17 @@ func (r Runner) missingLineProgram(command sshCommand, exitErr *child.ExitError)
 	}
 
 	return r.missingOn(command, word)
+}
+
+// missingProgram returns the *SSHCommandMissingError for command's GIT_SSH program when it is not
+// found on the PATH git searches; otherwise it returns nil, as it does for a command line, which
+// names no such program.
+func (r Runner) missingProgram(command sshCommand) *SSHCommandMissingError {
+	if command.program == "" {
+		return nil
+	}
+
+	return r.missingOn(command, command.program)
 }
 
 // missingOn returns the *SSHCommandMissingError for program, a program of command, when it is not

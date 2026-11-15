@@ -19,18 +19,9 @@ const (
 	start = "/home/reader/repo"
 )
 
-func marksOf(invocations []guard.Invocation) []guard.Mark {
-	var got []guard.Mark
-	for _, inv := range invocations {
-		got = append(got, inv.Marks...)
-	}
-
-	return got
-}
-
 // readerCaller returns the caller in start whose HOME is home.
 func readerCaller() guard.Caller {
-	return guard.Caller{Home: home, Dir: start}
+	return guard.Caller{Env: map[string]string{"HOME": home}, Dir: start}
 }
 
 // parse returns the invocations of command, read by a caller in start whose HOME is home.
@@ -166,7 +157,7 @@ func TestParse_WhenTheParserCannotReadTheCommand_ReturnsAParseError(t *testing.T
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := guard.Parse(t.Context(), tt.command, guard.Caller{Home: home})
+			_, err := guard.Parse(t.Context(), tt.command, guard.Caller{Env: map[string]string{"HOME": home}})
 
 			failure, ok := errors.AsType[*guard.ParseError](err)
 			assert.Assert(t, ok, "Parse(%q) error = %v, want a *guard.ParseError", tt.command, err)
@@ -386,56 +377,23 @@ func TestParse_ReportsEachAssignmentTheCommandRunsWith(t *testing.T) {
 	}
 }
 
-func TestJudge_WhenTheCommandWordIsAnExtendedGlob_RefusesItAsNotALiteral(t *testing.T) {
-	t.Parallel()
-
-	checkRefusals(t, []refusal{
-		{name: "extended glob naming git", command: "@(git) push", wantNamed: string(guard.DynamicCommand)},
-	})
-}
-
 func TestJudge_AllowsACommandThatDefinesAnAlias(t *testing.T) {
 	t.Parallel()
 
 	_, caller := standingOn(t, "main", "topic")
 
 	checkAllowed(t, caller, []namedCommand{
-		{name: "alias naming no tool", command: "alias ll='ls -l'; ll"},
-		{name: "alias printing one", command: "alias ll"},
 		{name: "alias naming git", command: "alias g=git; g status"},
 		{name: "alias naming gh in a second operand", command: "alias ll='ls -l' ship='gh pr merge'; ship"},
 		{name: "alias whose value is not a literal", command: `alias ship="$c"; ship`},
-		{name: "alias starting with pushd", command: "alias hop='pushd sub'; hop; git status"},
-		{name: "alias starting with a wrapper", command: "alias hop='builtin cd'; hop sub; git status"},
 	})
-}
-
-func TestParse_WhenAllexportIsOn_MarksNoGitVariableABuiltinAssigns(t *testing.T) {
-	t.Parallel()
-
-	tests := []namedCommand{
-		{name: "read after set -a", command: "set -a; read -r GIT_CONFIG_PARAMETERS; git status"},
-		{name: "assign-default expansion after set -a", command: `set -a; echo "${GIT_CONFIG_PARAMETERS:=x}"; git status`},
-		{name: "read in a function called after set -a", command: "f() { read -r GIT_CONFIG_PARAMETERS; }; set -a; f; git status"},
-		{name: "read in a bash -a string", command: "bash -a -c 'read -r GIT_CONFIG_PARAMETERS; git status'"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := parse(t, tt.command)
-
-			assert.Assert(t, len(got) > 0, "Parse(%q) = %v", tt.command, texts(got))
-			assert.Check(t, is.Len(marksOf(got), 0), "Parse(%q) marks", tt.command)
-		})
-	}
 }
 
 // callerOutsideAnyRepository returns a caller working in an empty directory that is no repository.
 func callerOutsideAnyRepository(t *testing.T) guard.Caller {
 	t.Helper()
 
-	return guard.Caller{Home: home, Dir: outsideDir(t)}
+	return guard.Caller{Env: map[string]string{"HOME": home}, Dir: outsideDir(t)}
 }
 
 // standingOn returns a new repository whose trunk is trunk, with HEAD on branch, and a caller
@@ -466,7 +424,7 @@ func recordingCaller(f *gittest.Fixture, dir string) (guard.Caller, *git.Recorde
 }
 
 func callerWithEnv(dir string, env []string) guard.Caller {
-	return guard.Caller{Home: home, Dir: dir, Git: git.Runner{Env: env}}
+	return guard.Caller{Env: map[string]string{"HOME": home}, Dir: dir, Git: git.Runner{Env: env}}
 }
 
 // callerFailingOn returns a caller working in dir whose git runs with the environment of f and

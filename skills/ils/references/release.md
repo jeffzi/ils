@@ -6,7 +6,9 @@ defines the ask.
 ## Before you run it
 
 Run `ils release <X.Y.Z>` as the skill's "Run it" section says: bare, with the user's words. The
-version takes no leading `v`.
+version takes no leading `v`. With `--wait`, it waits up to 15 minutes: run it with the Bash
+tool's `run_in_background`, as SKILL.md's "A pending push waits in the background" runs
+`ils push --wait`, and read the output file its notification names.
 
 ## After it exits
 
@@ -21,7 +23,9 @@ The user's ask covers that one release until it exits 0, 1, or 2.
   the next `ils release` needs a new ask.
 - **Exit 1:** the output says what was written and what was not: a tag made locally whose push
   origin refused, or a tag on origin whose GitHub release was not created. Report it and stop.
-  Running the same command again resumes past what was written, once the user asks.
+  Running the command `Next:` names resumes past what was written, once the user asks; when it
+  carries `--wait`, it runs in the background, as above.
 - **Exit 4:** the checks of the release commit were still running, or the time limit left too little
   for the writes. Nothing was written. Run the command `Next:` names, which is the same command
-  with the same flags, and keep going while it exits 4.
+  with the same flags, and keep going while it exits 4. A command with `--wait` runs in the
+  background, as above.

@@ -6,7 +6,10 @@ Read this only after the user asked for the merge, as The merge in SKILL.md defi
 
 Run `ils status` on the branch, and show the user the title and body it prints for the open pull
 request. They become the squash commit's message, and the consent prompt shows only the command.
-Then run `ils merge` as the skill's "Run it" section says: bare, with the user's words.
+Then run `ils merge` as the skill's "Run it" section says: bare, with the user's words. With
+`--wait`, it waits up to 15 minutes: run it with the Bash tool's `run_in_background`, as SKILL.md's
+"A pending push waits in the background" runs `ils push --wait`, and read the output file its
+notification names. Every `ils merge --wait` below runs the same way.
 
 ## After it exits
 

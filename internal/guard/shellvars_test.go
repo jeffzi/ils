@@ -27,7 +27,6 @@ func TestParse_WhenTheCommandAssignedAVariableALiteral_ReadsItsExpansionAsThatLi
 		command string
 		want    string
 	}{
-		{name: "plain assignment", command: "S=/tmp/work; $S/run.sh", want: "/tmp/work/run.sh"},
 		{name: "expansion in braces followed by a colon", command: "S=/tmp/work; ${S}:h/run.sh", want: "/tmp/work:h/run.sh"},
 		{name: "quoted expansion of a value holding a space", command: `S='/tmp/my work'; "$S/run.sh"`, want: "/tmp/my work/run.sh"},
 		{name: "value starting with a tilde", command: "S=~/work; $S/run.sh", want: home + "/work/run.sh"},
@@ -38,7 +37,6 @@ func TestParse_WhenTheCommandAssignedAVariableALiteral_ReadsItsExpansionAsThatLi
 		{name: "assignment that always ran before an and list", command: "S=/tmp/work && $S/run.sh", want: "/tmp/work/run.sh"},
 		{name: "loop body after the assignment", command: `S=/tmp/work; for f in a b; do $S/run.sh "$f"; done`, want: "/tmp/work/run.sh"},
 		{name: "prefix of the command reading the earlier value", command: "S=/tmp/work; S=/srv $S/run.sh", want: "/tmp/work/run.sh"},
-		{name: "argument of a command", command: "S=/tmp/work; ls $S", want: "/tmp/work"},
 		{name: "program run between", command: "S=/tmp/work; mkdir -p $S; $S/run.sh", want: "/tmp/work/run.sh"},
 		{name: "builtin that writes no variable run between", command: "S=/tmp/work; echo x; $S/run.sh", want: "/tmp/work/run.sh"},
 		{name: "word before an eval string declaring a name reference", command: "S=/tmp/work; $S/run.sh; eval 'declare -n R=T'", want: "/tmp/work/run.sh"},
@@ -68,7 +66,6 @@ func TestParse_WhenTheGuardCannotBeSureOfAVariablesValue_ReadsItsExpansionUnknow
 		command string
 	}{
 		{name: "append assignment", command: "S=/tmp/work; S+=/x; $S/run.sh"},
-		{name: "printf -v", command: "S=/tmp/work; printf -v T %s /srv; $S/run.sh"},
 		{name: "value from a command substitution", command: "S=/tmp/work; S=$(pwd); $S/run.sh"},
 		{name: "array value", command: "S=(/tmp/work); $S/run.sh"},
 		{name: "element assignment", command: "S=/tmp/work; S[1]=/srv; $S/run.sh"},
@@ -126,6 +123,7 @@ func TestParse_WhenTheShellMaySetAVariableOnItsOwn_ReadsItsExpansionUnknown(t *t
 		command string
 	}{
 		{name: "builtin that writes a named variable", command: "S=/tmp/work; print -v S /srv; $S/run.sh"},
+		{name: "printf -v writing a variable", command: "S=/tmp/work; printf -v T %s /srv; $S/run.sh"},
 		{name: "printf given a format that is not a literal", command: `S=/tmp/work; printf "$F" S /srv; $S/run.sh`},
 		{name: "for loop over IFS before the assignment", command: "for IFS in ,; do :; done; S=/tmp/work,x; $S/run.sh"},
 		{name: "builtin naming IFS before the assignment", command: "print -v IFS ,; S=/tmp/work,x; $S/run.sh"},

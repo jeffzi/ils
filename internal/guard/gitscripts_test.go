@@ -53,22 +53,10 @@ func TestParse_WhenGitRunsAShellCommandItHolds_ParsesItsCommands(t *testing.T) {
 func TestParse_WhenAGitValueIsNoShellCommand_ParsesNothingMore(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		command string
-	}{
+	checkNoMarks(t, []namedCommand{
 		{name: "cherry-pick -x flag", command: "git cherry-pick -x abc123"},
 		{name: "-c key git does not run", command: "git -c user.name='git push origin main' log"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := only(t, tt.command)
-
-			assert.Check(t, is.Len(got.Marks, 0), "Parse(%q) marks", tt.command)
-		})
-	}
+	})
 }
 
 func TestParse_WhenAShellCommandGitRunsCannotBeRead_MarksIt(t *testing.T) {
@@ -97,6 +85,18 @@ func TestParse_WhenAShellCommandGitRunsCannotBeRead_MarksIt(t *testing.T) {
 			assert.Check(t, is.DeepEqual(got[tt.index].Marks, []guard.Mark{{Kind: tt.want}}), "Parse(%q) marks", tt.command)
 		})
 	}
+}
+
+func TestParse_WhenAnArgumentGitRunsHoldsANulByte_MarksItsScriptAsNotALiteral(t *testing.T) {
+	t.Parallel()
+	const command = "git bisect run echo ~/x"
+	caller := readerCaller()
+	caller.Env["HOME"] = "/a\x00b"
+
+	got := parseWith(t, command, caller)
+
+	assert.Assert(t, len(got) > 0, "Parse(%q) = %v", command, texts(got))
+	assert.Check(t, is.Contains(kinds(got[0].Marks), guard.DynamicScript), "Parse(%q) marks", command)
 }
 
 func TestParse_WhenAGitAliasOfRebaseIsGivenAnExec_ParsesTheExecCommand(t *testing.T) {
@@ -142,14 +142,6 @@ func TestJudge_AllowsAGitCommandWhoseConfigOrOptionValueItDoesNotReadAsAScript(t
 	})
 }
 
-func TestJudge_RefusesAGitCommandWhoseConfigTheGuardRefusesWhateverItsValue(t *testing.T) {
-	t.Parallel()
-
-	checkRefusals(t, []refusal{
-		{name: "alias given by -c that pushes", command: "git -c alias.p=push p", wantNamed: "push"},
-	})
-}
-
 // nestedRepositories returns a repository on main holding the nested repositories inner and
 // docs/inner, both cloned from its origin, and a caller working at its top.
 func nestedRepositories(t *testing.T) (*gittest.Fixture, guard.Caller) {
@@ -169,22 +161,13 @@ func TestParse_WhenGitRunsAScriptAtTheTopOfTheWorkTree_ReadsItsGitCommandsFromTh
 
 	f, caller := nestedRepositories(t)
 	want := filepath.Join(f.Dir(), "inner", ".git")
-	tests := []struct {
-		name    string
-		command string
-	}{
-		{name: "rebase --exec below the top by -C", command: "git -C docs rebase --exec " + innerCommit + " origin/main"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	// A rebase --exec run below the top by -C.
+	command := "git -C docs rebase --exec " + innerCommit + " origin/main"
 
-			got := lastWith(t, tt.command, caller).Git
+	got := lastWith(t, command, caller).Git
 
-			assert.Check(t, !got.GitDirUnknown, "Parse(%q) reports the git dir unknown", tt.command)
-			assert.Check(t, is.Equal(got.GitDir, want), "Parse(%q) git dir", tt.command)
-		})
-	}
+	assert.Check(t, !got.GitDirUnknown, "Parse(%q) reports the git dir unknown", command)
+	assert.Check(t, is.Equal(got.GitDir, want), "Parse(%q) git dir", command)
 }
 
 func TestJudge_WhenARebaseExecRedirectsAroundACd_RefusesGitHistoryWrittenAtTheTopOfTheWorkTree(t *testing.T) {

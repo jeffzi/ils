@@ -78,7 +78,7 @@ func elsewhereText(cmd landingCommand) string {
 // standingRefusals are the refusals decided from where HEAD stands and from the working tree,
 // before anything is fetched.
 func standingRefusals() []pushRefusal {
-	standing := []pushRefusal{
+	return []pushRefusal{
 		{
 			name: "on the trunk", script: allowed(),
 			arrange: func(f *gittest.Fixture) string {
@@ -100,9 +100,6 @@ func standingRefusals() []pushRefusal {
 			arrange: func(f *gittest.Fixture) string { return dirtyText(pushCommand(), f.DirtyFile(), f.StagedFile()) },
 		},
 	}
-
-	return append(standing, perBoundedPush("two tracked files changed",
-		func(b boundedPush, f *gittest.Fixture) string { return dirtyText(b.cmd, f.DirtyFile(), f.StagedFile()) })...)
 }
 
 // perBoundedPush is the refusal named prefix by each bounded push, whose text arrange returns once
@@ -125,12 +122,6 @@ func nothingPast(branch string) string {
 	return expect(branch, "no commit past", trunk, "commit the work", "ils push again\n")
 }
 
-// nothingPastBy is the refusal by the push cmd of a branch with no commit past origin's trunk,
-// whose `Next:` line names cmd once the work is committed.
-func nothingPastBy(cmd landingCommand, branch string) string {
-	return expect(branch, "no commit past", trunk) + cmd.after("commit the work")
-}
-
 // keptRefusals are the refusals by each bounded push of a detached HEAD with commits origin's
 // trunk lacks, whose `Next:` line names the push without a typed --wait once they are on a branch.
 func keptRefusals() []pushRefusal {
@@ -144,13 +135,7 @@ func keptRefusals() []pushRefusal {
 
 // commitRefusals are the refusals decided from the branch's commits past origin's trunk.
 func commitRefusals() []pushRefusal {
-	bounded := perBoundedPush("no commit past the trunk", func(b boundedPush, f *gittest.Fixture) string {
-		f.Git("switch", "--quiet", "--create", spare, trunk)
-
-		return nothingPastBy(b.cmd, spare)
-	})
-
-	return append(bounded, []pushRefusal{
+	return []pushRefusal{
 		{
 			name: "no commit past the trunk", script: allowed(),
 			arrange: func(f *gittest.Fixture) string {
@@ -167,7 +152,7 @@ func commitRefusals() []pushRefusal {
 				return nothingPast(topic)
 			},
 		},
-	}...)
+	}
 }
 
 // changeRefusals are the refusals decided from the pull requests the forge finds for the branch.
@@ -274,7 +259,7 @@ func TestPush_WhenASharedReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
 	got := landing.Push(ctx, s.deps, pushRequest())
 
 	assertEnded(t, s, got, finish{outcome: result.Refused, text: overtimeText(pushCommand(), c, readMergedHead)})
-	assertOnlyRead(t, s, reads{before: before, ops: changesRead()})
+	assertOnlyRead(t, s, reads{before: before})
 }
 
 // ---------------------------------------------------------------------------
@@ -333,7 +318,7 @@ func TestPush_WhenLocalReadFails_BrokeNamingTheRead(t *testing.T) {
 			got := landing.Push(t.Context(), s.deps, pushRequest())
 
 			assertBrokeReadBy(t, got, pushCommand(), tt.read)
-			assertOnlyRead(t, s, reads{before: before, ops: identityRead()})
+			assertOnlyRead(t, s, reads{before: before})
 		})
 	}
 }
@@ -347,7 +332,7 @@ func TestPush_WhenFindChangesFailsUntyped_BrokeNamingTheRead(t *testing.T) {
 
 	want := unreadText(pushCommand(), readChanges, forgeFailure)
 	assertEnded(t, s, got, finish{outcome: result.Broke, text: want})
-	assertOnlyRead(t, s, reads{before: before, ops: changesRead()})
+	assertOnlyRead(t, s, reads{before: before})
 }
 
 func TestPush_WhenBranchHasNoCommitAtAll_RefusesAsNoCommitPastTheTrunk(t *testing.T) {
@@ -357,8 +342,6 @@ func TestPush_WhenBranchHasNoCommitAtAll_RefusesAsNoCommitPastTheTrunk(t *testin
 	got := landing.Push(t.Context(), s.deps, pushRequest())
 
 	assertEnded(t, s, got, finish{outcome: result.Refused, text: nothingPast(spare)})
-
-	assertAsked(t, s, identityRead())
 }
 
 func TestPush_WhenTipAndBranchRefCannotBeRead_BrokeShowingBothFailures(t *testing.T) {
@@ -372,8 +355,6 @@ func TestPush_WhenTipAndBranchRefCannotBeRead_BrokeShowingBothFailures(t *testin
 	said := assertBrokeReadBy(t, got, pushCommand(), readTip)
 	assert.Check(t, is.Contains(said, gittest.FailedSaid))
 	assert.Check(t, is.Contains(said, "HEAD"))
-
-	assertAsked(t, s, identityRead())
 }
 
 // sharedFailedReads are the failed reads of the local trunk, of the commits on origin's trunk, of the

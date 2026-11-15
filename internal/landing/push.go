@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/jeffzi/ils/internal/forge"
+	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/result"
 )
 
@@ -48,12 +49,14 @@ type pushReady struct {
 func Push(ctx context.Context, deps Deps, req Request) result.Result {
 	deps.startChecking()
 
-	ready, stop := Preconditions(ctx, deps, req)
+	s := newSurvey(deps)
+
+	ready, stop := preconditions(ctx, s, req)
 	if stop != nil {
 		return *stop
 	}
 
-	p, refusal := pushChecks(ctx, deps, req, ready)
+	p, refusal := pushChecks(ctx, s, req, ready)
 	if refusal != nil {
 		return *refusal
 	}
@@ -63,37 +66,37 @@ func Push(ctx context.Context, deps Deps, req Request) result.Result {
 
 // pushChecks runs push's checks of the branch after the shared preconditions, and returns what
 // the sequence needs or the result of the first that refuses.
-func pushChecks(ctx context.Context, deps Deps, req Request, ready Ready) (pushReady, *result.Result) {
-	on, stop := branchChecks(ctx, deps, req, ready)
+func pushChecks(ctx context.Context, s *survey, req Request, ready Ready) (pushReady, *result.Result) {
+	on, stop := branchChecks(ctx, s, req, ready)
 	if stop != nil {
 		return pushReady{}, stop
 	}
 
 	p := pushReady{onBranch: on}
 
-	p.tip, p.past, stop = commitsPast(ctx, deps, req, p.onBranch)
+	p.tip, p.past, stop = commitsPast(ctx, s, req, p.onBranch)
 	if stop != nil {
 		return pushReady{}, stop
 	}
 
-	p.copied, p.onOrigin, stop = originCopy(ctx, deps, req, p)
+	p.copied, p.onOrigin, stop = originCopy(ctx, s, req, p.branch)
 	if stop != nil {
 		return pushReady{}, stop
 	}
 
 	// A branch whose first commit past the trunk another local branch carries is refused.
-	stop, read, err := sharedFirstCommit(ctx, deps, req, p)
+	shared, read, err := s.firstShared(ctx)
 	if err != nil {
 		return pushReady{}, req.Unread(read, err)
 	}
 
-	if stop != nil {
+	if stop = shared.stop(req, p.branch); stop != nil {
 		return pushReady{}, stop
 	}
 
 	var landed *forge.Change
 
-	p.open, landed, stop = pullRequest(ctx, deps, req, p.onBranch)
+	p.open, landed, stop = pullRequest(ctx, s, req, p.onBranch)
 	if stop != nil {
 		return pushReady{}, stop
 	}
@@ -105,45 +108,63 @@ func pushChecks(ctx context.Context, deps Deps, req Request, ready Ready) (pushR
 	return p, nil
 }
 
-// sharedFirstCommit returns the refusal of a branch whose first commit past the trunk another local
-// branch also carries, listing the commits none of those branches carry, or nil when that commit
-// does not stop the push; a read that fails is returned with the name of the read. Origin's copy of
-// the branch, if any, settles it when it carries that commit: the branch is already published with
-// it, so another branch that shares it does not stop the push. Without that, git cannot tell which
-// branch was cut from which, so the refusal names every way out: land the other branches first,
-// remove them, or start a new branch and bring this branch's own commits over.
-func sharedFirstCommit(ctx context.Context, deps Deps, req Request, p pushReady) (*result.Result, string, error) {
+// firstShared is what the read of the branch's first commit past the trunk found: the other local
+// branches that also carry it, none when it does not stop the push, and the branch's commits none
+// of them carry.
+type firstShared struct {
+	others []string
+	own    []git.Commit
+}
+
+// readFirstShared reads the other local branches that carry the first commit past the trunk of the
+// branch p stands on, as firstShared.stop judges them. A read that fails is returned with the name
+// of the read. Origin's copy of the branch, if any, settles it when it carries that commit: the
+// branch is already published with it, so another branch that shares it does not stop the push.
+// Without that, git cannot tell which branch was cut from which, so the refusal names every way
+// out: land the other branches first, remove them, or start a new branch and bring this branch's
+// own commits over.
+func readFirstShared(ctx context.Context, deps Deps, p pushReady) (firstShared, string, error) {
 	first := p.past[0].SHA
 
 	if p.copied != "" {
 		published, err := deps.Repo.Contains(ctx, p.copied, first)
 		if err != nil {
-			return nil, readCopy, err
+			return firstShared{}, readCopy, err
 		}
 
 		if published {
-			return nil, "", nil
+			return firstShared{}, "", nil
 		}
 	}
 
 	others, err := deps.Repo.BranchesContaining(ctx, first)
 	if err != nil {
-		return nil, readBranches, err
+		return firstShared{}, readBranches, err
 	}
 
 	if len(others) == 0 {
-		return nil, "", nil
+		return firstShared{}, "", nil
 	}
 
 	own, err := deps.Repo.OwnCommits(ctx, p.tip, p.Trunk, others)
 	if err != nil {
-		return nil, readCommits, err
+		return firstShared{}, readCommits, err
 	}
 
-	stop := req.Refused(sharedFirst(p.branch, others, len(own) > 0), eitherWayOut(len(others), req.ilsCommand()))
-	stop.Lines = listed(own)
+	return firstShared{others: others, own: own}, "", nil
+}
 
-	return stop, "", nil
+// stop returns the refusal of the branch named branch when other local branches carry its first
+// commit past the trunk, listing its commits none of them carry, and nil when none does.
+func (f firstShared) stop(req Request, branch string) *result.Result {
+	if len(f.others) == 0 {
+		return nil
+	}
+
+	stop := req.Refused(sharedFirst(branch, f.others, len(f.own) > 0), eitherWayOut(len(f.others), req.ilsCommand()))
+	stop.Lines = listed(f.own)
+
+	return stop
 }
 
 // eitherWayOut is the Next step of a branch that shares its first commit past the trunk with count
@@ -195,27 +216,27 @@ func sharedFirst(branch string, others []string, hasOwn bool) result.Phrase {
 	return result.Say(withMany+noOwn, own, named)
 }
 
-// originCopy asks origin whether it has the branch and returns the commit its fetched copy is
-// on, empty when origin has none, and whether that copy is at the tip. It refuses a tip that is
-// behind that copy or has diverged from it.
-func originCopy(ctx context.Context, deps Deps, req Request, p pushReady) (theirs string, atTip bool, stop *result.Result) {
-	_, found, err := deps.Repo.RemoteBranch(ctx, p.branch)
+// originCopy asks origin whether it has the branch named branch and returns the commit its fetched
+// copy is on, empty when origin has none, and whether that copy is at the tip. It refuses a tip that
+// is behind that copy or has diverged from it.
+func originCopy(ctx context.Context, s *survey, req Request, branch string) (theirs string, atTip bool, stop *result.Result) {
+	found, err := s.onOrigin(ctx)
 	if err != nil {
 		return "", false, req.unreached(readOnOrigin, err,
-			result.Say("origin could not be reached to ask whether it has the branch %s", result.Branch(p.branch)))
+			result.Say("origin could not be reached to ask whether it has the branch %s", result.Branch(branch)))
 	}
 
 	if !found {
 		return "", false, nil
 	}
 
-	theirs, err = deps.Repo.Fetch(ctx, p.branch)
+	theirs, err = s.copyFetch(ctx)
 	if err != nil {
 		return "", false, req.unreached(readCopy, err,
-			result.Say("origin could not be reached to fetch its copy of the branch %s", result.Branch(p.branch)))
+			result.Say("origin could not be reached to fetch its copy of the branch %s", result.Branch(branch)))
 	}
 
-	apart, err := deps.Repo.Divergence(ctx, p.tip, theirs)
+	apart, err := s.divergence(ctx)
 	if err != nil {
 		return "", false, req.Unread(readCopy, err)
 	}
@@ -223,13 +244,13 @@ func originCopy(ctx context.Context, deps Deps, req Request, p pushReady) (their
 	switch {
 	case apart.Behind > 0 && apart.Ahead > 0:
 		return "", false, req.Refused(
-			result.Say("the branch %s and origin's copy of it have diverged", result.Branch(p.branch)),
-			divergedStep(p.branch, req.ilsCommand()))
+			result.Say("the branch %s and origin's copy of it have diverged", result.Branch(branch)),
+			divergedStep(branch, req.ilsCommand()))
 
 	case apart.Behind > 0:
 		return "", false, req.Refused(
-			result.Say("the branch %s is behind origin's copy of it", result.Branch(p.branch)),
-			behindStep(p.branch, req.ilsCommand()))
+			result.Say("the branch %s is behind origin's copy of it", result.Branch(branch)),
+			behindStep(branch, req.ilsCommand()))
 
 	}
 

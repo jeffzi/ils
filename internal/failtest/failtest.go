@@ -5,6 +5,7 @@ package failtest
 import (
 	"fmt"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -59,7 +60,7 @@ func (s *TB) Messages() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return append([]string(nil), s.messages...)
+	return slices.Clone(s.messages)
 }
 
 // Helper marks nothing: the recorded calls report no position.
