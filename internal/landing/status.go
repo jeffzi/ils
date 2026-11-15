@@ -351,8 +351,10 @@ func (r *reading) readDetached(ctx context.Context) {
 
 	switch {
 	case r.cut:
-	case r.offline:
+	case r.offline && r.on.Trunk != "":
 		own, err = r.deps.Repo.CommitsPast(ctx, "HEAD", r.on.Trunk)
+	case r.offline:
+		// The last fetch named no trunk either, and that read has already said why.
 	case r.on.Trunk != "" || r.fetchUnanswered(ctx):
 		own, err = r.survey.detached(ctx)
 	default:

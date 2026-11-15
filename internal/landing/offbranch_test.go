@@ -171,4 +171,5 @@ func TestStatus_WhenOutsideAGitRepository_SaysSo(t *testing.T) {
 
 	assert.Check(t, is.Equal(got.status.Standing, standingNoRepository))
 	assertSays(t, got.text, expect(missing.Error()))
+	assert.Check(t, is.Equal(got.next, "none"))
 }

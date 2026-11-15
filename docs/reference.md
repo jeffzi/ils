@@ -287,7 +287,8 @@ status:
 An origin that does not answer ends on running the command again, wherever HEAD stands: `ils push`
 on a work branch, `ils branch <name>` elsewhere. A green pull request that is a draft ends on
 marking it ready, then its title and body, then `ils merge`. One that GitHub blocks, or one whose
-required check never reported, ends on reporting it and stopping, as `ils push` ends its wait. On a
+required check never reported, ends on reporting it and stopping, as `ils push` ends its wait.
+A read that finds no check reported yet ends on `ils push`, whose wait settles it. On a
 detached HEAD with commits origin's default branch lacks, it ends on `git switch -c <name>`, then
 `ils push`. When neither origin nor the last fetch can tell the branch from the default branch,
 where HEAD stands goes unread, and it ends on the fix of what failed.

@@ -158,6 +158,7 @@ func TestStatus_WhenOriginsTrunkCannotBeReadOnADetachedHEAD_EndsOnTheStepBranchE
 
 			assert.Check(t, is.Equal(got.status.Standing, standingDetached))
 			assertSays(t, "Next:"+nextOf(t, got.text), tt.want)
+			assert.Check(t, !hasUnread(got.status, "the commits on HEAD"), "unread %v, want no read of the commits on HEAD", got.status.Unread)
 		})
 	}
 }
