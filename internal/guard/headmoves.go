@@ -103,28 +103,85 @@ func (w *walker) returned() []Invocation {
 	return invocations
 }
 
+// bodyRegion is the walk of one function body where the function is declared, both passes of
+// it. The declaration runs nothing: a HEAD move in the body holds for the commands after it in the
+// body and in the bodies it declares, and not past the body. A call of the function walks the
+// body again where the call stands, outside the region.
+type bodyRegion struct {
+	parent *bodyRegion
+}
+
+// chain returns r and the regions around it, outermost first; none for nil.
+func (r *bodyRegion) chain() []*bodyRegion {
+	var regions []*bodyRegion
+	for ; r != nil; r = r.parent {
+		regions = append(regions, r)
+	}
+
+	slices.Reverse(regions)
+
+	return regions
+}
+
+// headState is what the invocations walked so far leave of HEAD: whether one may have moved it,
+// and the switch that moved it last, with the git dir that switch points git at.
+type headState struct {
+	last       *headClaim
+	lastGitDir string
+	moved      bool
+}
+
+// openBody is a region the walk is in, with the headState from before its first invocation.
+type openBody struct {
+	region *bodyRegion
+	before headState
+}
+
 // markHeads marks each invocation of walked, in walk order, with where HEAD is when it runs. HEAD
 // is unknown once an invocation before it may move HEAD, and on the branch of the switch it
 // follows when that switch is the last such invocation and points git at the same git dir. A move
 // in a background job or pipe stage is not followed: it may come between any two commands, and
-// no cooperative command moves HEAD there.
+// no cooperative command moves HEAD there. Nor is a move in a function body walked where the
+// function is declared, past that body.
 func markHeads(walked []Invocation) {
-	moved := false
-	var last *headClaim
-	lastGitDir := ""
+	var state headState
+	var open []openBody
 	for i := range walked {
 		inv := &walked[i]
-		inv.HeadUnknown = moved
-		onClaimedBranch := inv.follows != nil && inv.follows == last && lastGitDir != "" && inv.Git.GitDir == lastGitDir
+		state, open = enterRegion(inv.declaredIn, state, open)
+		inv.HeadUnknown = state.moved
+		onClaimedBranch := inv.follows != nil && inv.follows == state.last && state.lastGitDir != "" &&
+			inv.Git.GitDir == state.lastGitDir
 		if onClaimedBranch {
-			inv.HeadUnknown, inv.head = false, last.branch
+			inv.HeadUnknown, inv.head = false, state.last.branch
 		}
 
 		if !inv.beside && movesHead(*inv) {
-			moved = true
-			last, lastGitDir = inv.sets, inv.Git.GitDir
+			state = headState{moved: true, last: inv.sets, lastGitDir: inv.Git.GitDir}
 		}
 	}
+}
+
+// enterRegion returns state and open as they stand for an invocation walked in region, from those
+// of the invocation before it: each open region that does not hold region closes, state going back
+// to what it was before the outermost of them, and each region around region that is not open
+// opens.
+func enterRegion(region *bodyRegion, state headState, open []openBody) (headState, []openBody) {
+	chain := region.chain()
+	shared := 0
+	for shared < len(open) && shared < len(chain) && open[shared].region == chain[shared] {
+		shared++
+	}
+
+	if shared < len(open) {
+		state, open = open[shared].before, open[:shared]
+	}
+
+	for _, r := range chain[shared:] {
+		open = append(open, openBody{region: r, before: state})
+	}
+
+	return state, open
 }
 
 // movesHead reports whether the invocation inv may move HEAD, as a git invocation read by the

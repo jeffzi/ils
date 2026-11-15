@@ -50,22 +50,25 @@ const unmovedDir = "/\x00"
 // before the declaration hold in the body, which a call may run once HEAD moved again.
 //
 // The declaration runs nothing, and each call walks the body again where it stands (see call), so
-// sc is left as it was. The parser reads `f() { …; } && g` as a declaration whose body is the whole
-// list, while the rest of the list runs once, after the declaration, in the shell itself: the walk
-// cannot keep the changes of the rest apart from those of the body, so for such a declaration sc
-// is left as the shell may be after any number of runs of the whole list, the variables of sc
-// aside.
+// sc is left as it was, and a HEAD move in the body holds only in the body (see markHeads). The
+// parser reads `f() { …; } && g` as a declaration whose body is the whole list, while the rest of
+// the list runs once, after the declaration, in the shell itself: the walk cannot keep the changes
+// of the rest apart from those of the body, so for such a declaration sc is left as the shell may
+// be after any number of runs of the whole list, the variables of sc aside.
 func (w *walker) functionBody(body *syntax.Stmt, sc *scope) {
 	declared := *sc
+	region := &bodyRegion{parent: w.region}
+	ran := declaredBody(body)
 	w.repeated(&declared, func(s *scope) {
 		outer, head := s.vars, s.head
 		s.vars = shellVars{held: outer.held, unread: outer.unread, function: true}
 		s.head = nil
+		w.declaring, w.declaringIn = ran, region
 		w.stmt(body, s)
 		s.vars, s.head = outer, head
 	})
 
-	if declaredBody(body) != body {
+	if ran != body {
 		*sc = declared
 	}
 }

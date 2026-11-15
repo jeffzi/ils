@@ -113,6 +113,16 @@ func TestJudge_WhenAnAndListSwitchesToTheTrunk_RefusesACommitAfterIt(t *testing.
 	}, expectation{outcome: guard.Refuse, named: onMain})
 }
 
+func TestJudge_WhenAFunctionThatSwitchesBranchIsNeverCalled_JudgesACommitAfterItOnTheCurrentBranch(t *testing.T) {
+	// Not parallel: standingOnGitHub sets GH_PATH for the whole process.
+	_, caller := standingOnGitHub(t, "main", "topic")
+
+	checkAllowed(t, caller, []namedCommand{
+		{name: "body that switches to the trunk", command: "f() { git switch main; }; " + commitCommand},
+		{name: "declaration joined to the commit by &&", command: "f() { git switch topic && :; } && " + commitCommand},
+	})
+}
+
 func TestJudge_WhenHeadMovesWhereTheGuardCannotFollowIt_RefusesALaterCommit(t *testing.T) {
 	t.Parallel()
 
@@ -125,13 +135,14 @@ func TestJudge_WhenHeadMovesWhereTheGuardCannotFollowIt_RefusesALaterCommit(t *t
 		{name: "switch to the previous branch", command: "git switch - && " + commitCommand},
 		{name: "switch to a branch the reflog names", command: "git switch @{-1} && " + commitCommand},
 		{name: "switch in another git dir", command: "git -C " + gittest.ShellWord(other.Dir()) + " switch -c topic && " + commitCommand},
-		{name: "switch inside a function body", command: "f() { git switch topic && :; } && " + commitCommand},
 		{name: "switch inside a subshell", command: "(git switch topic && :) && " + commitCommand},
 		{name: "switch inside a loop", command: "for x in a; do git switch topic && :; done && " + commitCommand},
 		{name: "move after the switch", command: "git switch -c topic && gh pr checkout 12 && " + commitCommand},
 		{name: "bisect", command: "git bisect bad && " + commitCommand},
 		{name: "switch through a function named git", command: "git() { true; }; git switch -c topic && command " + commitCommand},
 		{name: "call of a function whose body moves HEAD", command: "f() { git switch main; }; git switch -c topic && f && " + commitCommand},
+		{name: "call of a function whose body moves HEAD, with no switch outside it", command: "f() { git switch main; }; f; " + commitCommand},
+		{name: "commit after a switch in the same uncalled body", command: "f() { git switch main; " + commitCommand + "; }"},
 		{name: "function declared after the switch", command: "git switch -c topic && f() { " + commitCommand + "; }"},
 	}, expectation{outcome: guard.Refuse, named: "cannot tell"})
 }

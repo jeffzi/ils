@@ -183,6 +183,16 @@ func (w *walker) list(stmts []*syntax.Stmt, sc *scope) {
 // stmt walks one statement. One run in the background runs in a subshell, so what it changes
 // stays in it, and beside the commands after it.
 func (w *walker) stmt(stmt *syntax.Stmt, sc *scope) {
+	if stmt == w.declaring {
+		w.declaring = nil
+		outer := w.region
+		w.region = w.declaringIn
+		w.stmt(stmt, sc)
+		w.region = outer
+
+		return
+	}
+
 	if runsAsJob(stmt) {
 		inner := *sc
 		w.beside++
@@ -603,6 +613,7 @@ func (sc *scope) targetOf(inv Invocation) GitTarget {
 func (w *walker) keep(inv Invocation) {
 	inv.atCall = inv.atCall || w.calling > 0
 	inv.beside = inv.beside || w.beside > 0
+	inv.declaredIn = w.region
 	w.kept = append(w.kept, len(w.walked))
 	w.walked = append(w.walked, inv)
 }

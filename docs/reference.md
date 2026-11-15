@@ -1197,8 +1197,10 @@ The guard refuses:
   call. A declaration alone changes nothing for the commands after it:
   `f() { git commit -am wip; }; git switch main && f` is refused as a commit on the default
   branch, and
-  `T() { uv run pytest -q "$@"; }; T -k x > out.txt` passes. A call of one whose body may change
-  directory leaves the directory unknown after it;
+  `T() { uv run pytest -q "$@"; }; T -k x > out.txt` passes. A switch of branch in a body holds
+  for the later commands of that body, and for the commands after the function only at a call:
+  `f() { git switch main; }; git commit -m x` is judged on the branch the command starts on. A
+  call of one whose body may change directory leaves the directory unknown after it;
 - a call of a function the command defines past the 256 walks of function bodies the guard makes
   for one command, dry runs included, as a function that calls itself makes.
 
