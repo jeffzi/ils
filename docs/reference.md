@@ -606,10 +606,12 @@ It ends pending, as `ils merge` does, when it was waiting for the checks or had 
 Stopped while it makes the tag or looks up the GitHub release, it says that it was interrupted,
 and the same command resumes as [Resume a broken release](#resume-a-broken-release) describes.
 
-When a time limit or a stop ends a run of git, `ils` ends the processes git started that are still
-running too, such as your pre-push hook and what the hook started, so that none goes on after
-`ils` reports. A program that exits by itself keeps the processes it started, such as an ssh
-connection it shares.
+When a time limit or a stop ends a run of git while git is still running, `ils` ends the processes
+git started that are still running too, such as your pre-push hook and what the hook started, so
+that none goes on after `ils` reports. A Ctrl-C at the terminal also reaches git and the hook
+directly; when it ends git before `ils` acts on it, a hook process that ignores Ctrl-C goes on
+running. A program that exits by itself keeps the processes it started, such as an ssh connection
+it shares.
 
 A second Ctrl-C or SIGTERM ends `ils` at once, with no result and none of the
 [exit codes](#exit-codes).

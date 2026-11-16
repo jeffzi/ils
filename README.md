@@ -234,7 +234,8 @@ once, by hand:
 
 GitHub closes an SSH connection that has been idle for 6 minutes, and git keeps origin's
 connection idle while your pre-push hook runs. `ils push` adds an ssh keep-alive to the push when
-you set no ssh command of your own and your ssh config sets no `ServerAliveInterval` for the host.
+you set no ssh command of your own and your ssh config sets no `ServerAliveInterval` above 0 for
+the host.
 If you set `GIT_SSH_COMMAND`, `core.sshCommand`, or `GIT_SSH`, add the keep-alive to
 `~/.ssh/config` yourself:
 
