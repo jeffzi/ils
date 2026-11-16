@@ -84,9 +84,11 @@ Each document has one job, and a fact lives in one of them:
 - `VISION.md` holds the goals of `ils`: the ranked principles that decide what it takes on, and
   its non-goals.
 
-A change to a command's behavior, wording, or flags, or to a guard rule, updates
+A change to a command's behavior, wording, or flags, or to a guard refusal, updates
 `docs/reference.md`. It also updates the README where a command paragraph, a workflow, or the flow
-table states what changed.
+table states what changed. How the guard reads a command is summarized there by group, with
+examples; the tests pin the details. A parser change updates the reference only when it changes a
+group's summary or makes one of its examples wrong.
 
 ## Changing the guard
 
