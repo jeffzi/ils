@@ -18,7 +18,7 @@ refuses and what it lets through. Apply them before you add, change, or remove a
   - [7. Refuse no form whose plain sibling runs](#7-refuse-no-form-whose-plain-sibling-runs)
   - [8. Treat code in another language as data](#8-treat-code-in-another-language-as-data)
 - [How a refusal reads](#how-a-refusal-reads)
-  - [9. Name a spelling that passes](#9-name-a-spelling-that-passes)
+  - [9. Name a spelling the guard allows](#9-name-a-spelling-the-guard-allows)
 - [Checking a change](#checking-a-change)
   - [10. Measure each new refusal on real commands](#10-measure-each-new-refusal-on-real-commands)
 - [Accepted limits](#accepted-limits)
@@ -63,12 +63,12 @@ refused for.
 A commit lands a change only once it is pushed. An agent's push is what reaches origin and can
 start a deployment, so the guard refuses every agent push. A commit on the default branch of a
 GitHub repository is refused too, protected or not. In the flow `ils` enforces, that branch takes
-changes only through a green pull request. The guard refuses every agent push, so a commit made on
-it has no route to origin's default branch.
+changes only through a green pull request. With every agent push refused, a commit made on it has
+no route to origin's default branch.
 
 The guard does not read the branch's protection, so the verdict never depends on GitHub's settings.
-On `github.com` it runs no `gh`. On another host it runs `gh`'s login check to tell whether the
-host is GitHub.
+[The default branch on GitHub](reference.md#the-default-branch-on-github) says how it tells a
+GitHub host.
 
 Refuse it in every spelling the tool itself accepts:
 
@@ -118,11 +118,11 @@ it. That happens when the word is:
   other than `github.com`, since the `gh` login they select tells whether the host is GitHub;
 - the same variables for a `gh` alias, since that config holds the alias's expansion.
 
-`ils push` reads its `gh` config only from the environment it starts in. The guard allows it only as
-a single statement with no prefix, so a prefix or an earlier statement that sets one of these
-variables gets it refused.
+The guard allows `ils push` only as the whole command
+([ils and gh commands the guard allows or asks about](reference.md#ils-and-gh-commands-the-guard-allows-or-asks-about)),
+so no prefix or earlier statement can set one of these variables for it.
 
-Anywhere else, the guard passes over the word: `python3 x.py "$f"` and `sed -n "${n}p" "$f"` run.
+Anywhere else, the guard ignores the word: `python3 x.py "$f"` and `sed -n "${n}p" "$f"` run.
 
 ## When to let a command through
 
@@ -176,11 +176,11 @@ So:
 
 ## How a refusal reads
 
-### 9. Name a spelling that passes
+### 9. Name a spelling the guard allows
 
 A refusal that fails closed on a word it cannot read names a spelling the guard allows. `git add
 $(git diff --name-only)` is refused because the list could hold `--force`. The reason says to put
-the paths after `--`, which the guard passes over.
+the paths after `--`, where the guard ignores them.
 
 Agents follow a reason that says what to do instead. A reason that does not leaves them looking for
 another tool.
