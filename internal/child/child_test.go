@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -516,4 +519,142 @@ func TestProgram_Run_WhenALoggerIsSet_LogsTheTimeTheRunTook(t *testing.T) {
 	took, ok := record.Map()[child.KeyDuration].(time.Duration)
 	assert.Assert(t, ok, "duration attribute = %#v, want a time.Duration", record.Map()[child.KeyDuration])
 	assert.Check(t, took > 0, "duration = %v, want above zero for a run that started a process", took)
+}
+
+// watchedHold returns the address of a local server that accepts one client and holds it until the
+// test ends, a channel that closes once the client has connected, and one that closes once the
+// client has gone before the test ended.
+func watchedHold(t *testing.T) (addr string, connected, gone <-chan struct{}) {
+	t.Helper()
+
+	reached := make(chan struct{})
+	left := make(chan struct{})
+	ended := t.Context()
+
+	var once sync.Once
+
+	addr = gittest.Serve(t, func(conn net.Conn) {
+		once.Do(func() { close(reached) })
+
+		stop := context.AfterFunc(ended, func() { _ = conn.Close() })
+
+		// The client never writes, so the copy returns only once it has gone or the test ended.
+		_, _ = io.Copy(io.Discard, conn)
+
+		if stop() {
+			close(left)
+
+			_ = conn.Close()
+		}
+	})
+
+	return addr, reached, left
+}
+
+func TestProgram_Run_WhenContextEndsWhileProgramRuns_EndsTheProcessesItStarted(t *testing.T) {
+	t.Parallel()
+	addr, connected, gone := watchedHold(t)
+	self, err := os.Executable()
+	assert.NilError(t, err)
+	program := child.Program{
+		Tool: "sh", Args: []string{"-c", `"$0"; exit $?`, self}, LookPath: exec.LookPath,
+		Env: append(os.Environ(), hookHoldsAtEnv+"="+addr),
+	}
+	ctx := gittest.Ending(t.Context(), connected, context.Canceled)
+
+	_, err = program.Run(ctx)
+
+	assert.Check(t, is.ErrorIs(err, context.Canceled))
+	select {
+	case <-gone:
+	case <-time.After(returnDeadline):
+		t.Error("the process the hook started still held its connection, want it ended with the run")
+	}
+}
+
+func TestKilledError_Error(t *testing.T) {
+	t.Parallel()
+	argv := []string{"git", "push"}
+	signal := errors.New("signal: terminated")
+	tests := []struct {
+		name   string
+		stderr string
+		want   string
+	}{
+		{name: "stderr is trimmed and appended", stderr: "  hook: tests failed\n", want: "git push: signal: terminated: hook: tests failed"},
+		{name: "blank stderr is left out", stderr: " \n", want: "git push: signal: terminated"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := &child.KilledError{Argv: argv, Err: signal, Stderr: tt.stderr}
+
+			got := err.Error()
+
+			assert.Check(t, is.Equal(got, tt.want))
+		})
+	}
+}
+
+func TestProgram_Run_WhenASignalEndsTheProgramAfterItPrintedToStderr_ReturnsKilledErrorCarryingIt(t *testing.T) {
+	t.Parallel()
+	program := child.Program{Tool: "sh", Args: []string{"-c", "echo dying >&2; kill -KILL $$"}, LookPath: exec.LookPath}
+
+	_, err := program.Run(t.Context())
+
+	killed, ok := errors.AsType[*child.KilledError](err)
+	assert.Assert(t, ok, "Run error = %v, want *child.KilledError", err)
+	assert.Check(t, is.Equal(killed.Stderr, "dying\n"))
+}
+
+func TestProgram_Run_WhenContextEndsAndTheProcessTableIsUnreadable_ReturnsContextError(t *testing.T) {
+	// Not parallel: an empty PATH leaves ps, which reads the process table, out of reach.
+	t.Setenv("PATH", t.TempDir())
+	addr, connected := gittest.SilentListener(t)
+	self, err := os.Executable()
+	assert.NilError(t, err)
+	program := child.Program{Tool: "hook", LookPath: foundAt(self), Env: append(os.Environ(), holdsAtEnv+"="+addr)}
+	ctx := gittest.Ending(t.Context(), connected, context.Canceled)
+	endedAt := make(chan time.Time, 1)
+	go func() {
+		<-connected
+		endedAt <- time.Now()
+	}()
+
+	_, err = program.Run(ctx)
+
+	assert.Check(t, is.ErrorIs(err, context.Canceled))
+	// The program holds its output open until it dies: past PipeGrace, it died of the pipe
+	// deadline, not of the cancel.
+	took := time.Since(<-endedAt)
+	assert.Check(t, took < child.PipeGrace, "Run returned %v after the context ended, want the program killed at once", took)
+}
+
+func TestStopDescendants_WhenADescendantStartsAnotherBetweenReads_StopsItToo(t *testing.T) {
+	t.Parallel()
+	tables := []map[int][]int{
+		{1: {2}},
+		{1: {2}, 2: {3}},
+		{1: {2}, 2: {3}},
+	}
+	read := func(context.Context) (map[int][]int, error) {
+		table := tables[0]
+		if len(tables) > 1 {
+			tables = tables[1:]
+		}
+
+		return table, nil
+	}
+	var stopped []int
+	stop := func(pid int) error {
+		stopped = append(stopped, pid)
+
+		return nil
+	}
+
+	found, err := child.StopDescendants(t.Context(), 1, read, stop)
+
+	assert.NilError(t, err)
+	assert.Check(t, is.DeepEqual(found, []int{2, 3}))
+	assert.Check(t, is.DeepEqual(stopped, []int{2, 3}))
 }
