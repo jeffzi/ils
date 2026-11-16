@@ -166,37 +166,20 @@ func (p *parse) readCommand(ctx context.Context, cwd, command string) (result.Re
 
 // unparsed returns the broke result of a parse that failed with err: the command did not parse, or
 // a read of git it needs failed. The error's text, which may name a config key or a path under a git
-// dir, goes in as a name. The next step names the words req holds, quoted as typedCommand quotes
-// them, so that it runs the same parse again.
+// dir, goes in as a name. The next step names the words req holds, quoted as landing.ShellLine
+// quotes them, so that it runs the same parse again.
 func unparsed(req landing.Request, err error) (result.Result, error) {
 	reason := result.Say("a read of git the command needs failed: %s", err.Error())
 	if _, ok := errors.AsType[*guard.ParseError](err); ok {
 		reason = result.Say("the command does not parse: %s", err.Error())
 	}
 
-	typed, quoteErr := typedCommand(req.Words)
+	typed, quoteErr := landing.ShellLine(req.Words)
 	if quoteErr != nil {
 		return result.Result{}, quoteErr
 	}
 
 	return *req.Broke(reason, result.NextStep("fix what the reason names, then run %s again", result.Command(typed))), nil
-}
-
-// typedCommand returns words as one shell command line that reads back as the same words, each
-// quoted as landing.ShellWord quotes it. A word the shell cannot hold, one with a NUL byte, is an
-// error.
-func typedCommand(words []string) (string, error) {
-	quoted := make([]string, 0, len(words))
-	for _, word := range words {
-		q, err := landing.ShellWord(word)
-		if err != nil {
-			return "", err
-		}
-
-		quoted = append(quoted, q)
-	}
-
-	return strings.Join(quoted, " "), nil
 }
 
 // guardCommand returns `ils guard --cwd <dir> -- '<command>'`, which judges the command as the

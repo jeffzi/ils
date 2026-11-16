@@ -354,18 +354,18 @@ func (r Request) ownCommand() result.Name {
 // commandLine is the request's command, its positional words, then the flags it was given, so that
 // running it again changes nothing the user chose: `release 1.2.0 --tag-only`. A typed
 // --wait=false is always among them, and a typed --wait only when keepWait is true. Each positional
-// word is quoted as ShellWord quotes it, so that the line pasted into a shell runs the same command.
-// It panics on a positional word ShellWord cannot quote: they come from argv, which cannot hold a
+// word is quoted as ShellLine quotes it, so that the line pasted into a shell runs the same command.
+// It panics on a positional word ShellLine cannot quote: they come from argv, which cannot hold a
 // NUL byte.
 func (r Request) commandLine(keepWait bool) string {
 	words := []string{r.Command}
-	for _, arg := range r.Args {
-		quoted, err := ShellWord(arg)
+	if len(r.Args) > 0 {
+		args, err := ShellLine(r.Args)
 		if err != nil {
 			panic(err)
 		}
 
-		words = append(words, quoted)
+		words = append(words, args)
 	}
 
 	if r.Force {
@@ -409,6 +409,23 @@ func ShellWord(word string) (string, error) {
 	}
 
 	return quoted, nil
+}
+
+// ShellLine returns words as one shell command line that reads back as the same words, each quoted
+// as ShellWord quotes it and joined by single spaces. A word the shell cannot hold, one with a NUL
+// byte, is ShellWord's error.
+func ShellLine(words []string) (string, error) {
+	quoted := make([]string, 0, len(words))
+	for _, word := range words {
+		q, err := ShellWord(word)
+		if err != nil {
+			return "", err
+		}
+
+		quoted = append(quoted, q)
+	}
+
+	return strings.Join(quoted, " "), nil
 }
 
 // Ready is what the shared preconditions hand to the steps that follow them.

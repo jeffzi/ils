@@ -354,24 +354,24 @@ func topRuns(args []Word, sub string) []gitRun {
 }
 
 // argvScript returns the shell command that runs words as one command, each word one argument
-// quoted as landing.ShellWord quotes it; not a literal when one of words is not, or holds what the
+// quoted as landing.ShellLine quotes it; not a literal when one of words is not, or holds what the
 // shell cannot quote.
 func argvScript(words []Word) Word {
-	quoted := make([]string, 0, len(words))
+	texts := make([]string, 0, len(words))
 	for _, w := range words {
 		if !w.Literal {
 			return Word{}
 		}
 
-		q, err := landing.ShellWord(w.Text)
-		if err != nil {
-			return Word{}
-		}
-
-		quoted = append(quoted, q)
+		texts = append(texts, w.Text)
 	}
 
-	return Word{Text: strings.Join(quoted, " "), Literal: true}
+	line, err := landing.ShellLine(texts)
+	if err != nil {
+		return Word{}
+	}
+
+	return Word{Text: line, Literal: true}
 }
 
 // bisectRuns returns the command of `git bisect run` among the arguments of `git bisect`, which git
