@@ -8,8 +8,6 @@ import (
 	"strconv"
 	"strings"
 
-	"go.yaml.in/yaml/v3"
-
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/github"
 )
@@ -50,9 +48,9 @@ func judgeGHAlias(ctx context.Context, caller Caller, inv Invocation, alias int)
 // that is no alias, a shell alias, a word filling a `$N` that is not a literal, and an expansion
 // the guard cannot read, such as one left holding a `$N`.
 func expandGHAlias(ctx context.Context, runner github.Runner, name string, rest []Word) (words []Word, refusal string, err error) {
-	expansion, found, err := ghAlias(ctx, runner, name)
+	expansion, found, err := runner.Alias(ctx, name)
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("read gh alias list: %w", err)
 	}
 
 	if !found {
@@ -88,24 +86,6 @@ func expandGHAlias(ctx context.Context, runner github.Runner, name string, rest 
 
 // placeholder matches a `$N` of a gh alias left unreplaced, which makes gh refuse the alias.
 var placeholder = regexp.MustCompile(`\$\d`)
-
-// ghAlias returns what `gh alias list`, run by runner, says the alias name expands to, and false
-// when gh holds no such alias.
-func ghAlias(ctx context.Context, runner github.Runner, name string) (expansion string, found bool, err error) {
-	out, err := runner.Run(ctx, "alias", "list")
-	if err != nil {
-		return "", false, fmt.Errorf("read gh alias list: %w", err)
-	}
-
-	var aliases map[string]string
-	if err := yaml.Unmarshal([]byte(out.Stdout), &aliases); err != nil {
-		return "", false, fmt.Errorf("read gh alias list: %w", err)
-	}
-
-	expansion, found = aliases[name]
-
-	return expansion, found, nil
-}
 
 // The variables that choose the config directory gh reads: GH_CONFIG_DIR, else
 // XDG_CONFIG_HOME/gh, else HOME/.config/gh.

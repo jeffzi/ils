@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 
+	"go.yaml.in/yaml/v3"
+
 	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
 )
@@ -183,6 +185,29 @@ func (r Runner) CheckLogin(ctx context.Context, host string) error {
 	}
 
 	return nil
+}
+
+// Alias returns what `gh alias list` says the alias name expands to, and ok false with an empty
+// expansion when gh holds no such alias.
+//
+// It returns the errors of Runner.Run, and a *DecodeError when stdout is not the YAML map of each
+// alias's name to its expansion that gh prints.
+func (r Runner) Alias(ctx context.Context, name string) (expansion string, ok bool, err error) {
+	args := []string{"alias", "list"}
+
+	result, err := r.Run(ctx, args...)
+	if err != nil {
+		return "", false, err
+	}
+
+	var aliases map[string]string
+	if err := yaml.Unmarshal([]byte(result.Stdout), &aliases); err != nil {
+		return "", false, &DecodeError{Argv: Argv(args), Err: err}
+	}
+
+	expansion, ok = aliases[name]
+
+	return expansion, ok, nil
 }
 
 // runDecoded runs gh with args and decodes its stdout into a T.

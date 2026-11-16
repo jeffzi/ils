@@ -166,6 +166,52 @@ func TestRunner_CheckLogin_WhenGhExitsNonZero_ReturnsExitError(t *testing.T) {
 	assert.Check(t, ok, "CheckLogin error = %v, want it to wrap the *child.ExitError", err)
 }
 
+func aliasListArgs() []string { return []string{"alias", "list"} }
+
+func TestRunner_Alias(t *testing.T) {
+	const aliases = "co: pr checkout\nmg: pr merge $1\n"
+	tests := []struct {
+		name          string
+		alias         string
+		wantExpansion string
+		wantOK        bool
+	}{
+		{name: "alias the list holds", alias: "mg", wantExpansion: "pr merge $1", wantOK: true},
+		{name: "name the list does not hold", alias: "vw"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ghtest.Setup(t, ghtest.Says(aliases, aliasListArgs()...))
+
+			expansion, ok, err := github.Runner{}.Alias(t.Context(), tt.alias)
+			assert.NilError(t, err, "Alias(%q)", tt.alias)
+
+			assert.Check(t, is.Equal(expansion, tt.wantExpansion), "Alias(%q) expansion", tt.alias)
+			assert.Check(t, is.Equal(ok, tt.wantOK), "Alias(%q) ok", tt.alias)
+		})
+	}
+}
+
+func TestRunner_Alias_WhenListIsNotANameToExpansionMap_ReturnsDecodeErrorNamingTheList(t *testing.T) {
+	ghtest.Setup(t, ghtest.Says("- pr checkout\n", aliasListArgs()...))
+
+	_, _, err := github.Runner{}.Alias(t.Context(), "co")
+
+	decodeErr, ok := errors.AsType[*github.DecodeError](err)
+	assert.Assert(t, ok, "Alias error = %v, want *github.DecodeError", err)
+	assert.Check(t, is.DeepEqual(decodeErr.Argv, ghArgv(aliasListArgs())))
+}
+
+func TestRunner_Alias_WhenListFails_ReturnsTheRunnersError(t *testing.T) {
+	ghtest.Setup(t, ghtest.Exits(ghtest.ServerError(), aliasListArgs()...))
+
+	_, _, err := github.Runner{}.Alias(t.Context(), "co")
+
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "Alias error = %v, want *child.ExitError", err)
+	assert.Check(t, is.DeepEqual(exitErr.Argv, ghArgv(aliasListArgs())))
+}
+
 func TestDecodeError_Unwrap_ReachesTheDecodersError(t *testing.T) {
 	t.Parallel()
 	cause := errors.New("unexpected end of JSON input")
