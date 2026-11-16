@@ -201,6 +201,27 @@ func (r Repo) Alias(ctx context.Context, name string, options ...string) (expans
 	return r.config(ctx, "alias."+name, options...)
 }
 
+// BoolConfig returns the value of key, read as a boolean by git, in the config git reads when
+// given the global options, or fallback when key is not set. A value git cannot read as a boolean
+// fails git, and so returns its *child.ExitError.
+func (r Repo) BoolConfig(ctx context.Context, key string, fallback bool, options ...string) (bool, error) {
+	// --default answers for an unset key, so git exits non-zero only on a failure: the exit-1 path
+	// of config would read as unset and hide the fallback.
+	args := slices.Concat(options, []string{"config", "--type=bool", "--default=" + strconv.FormatBool(fallback), "--get", key})
+
+	value, err := r.line(ctx, args...)
+	if err != nil {
+		return false, err
+	}
+
+	on, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("read %s as a boolean: %w", key, err)
+	}
+
+	return on, nil
+}
+
 // ---------------------------------------------------------------------------
 // Commit and branch queries
 // ---------------------------------------------------------------------------
@@ -461,6 +482,13 @@ func (e *BranchNameError) Reason() string {
 	return ""
 }
 
+// ExpandBranchName returns the branch name as git expands it in the repository git reads when given
+// the global options: @{-N} names the Nth branch checked out before, and any other name git accepts
+// is returned unchanged. A name git refuses returns git's *child.ExitError.
+func (r Repo) ExpandBranchName(ctx context.Context, name string, options ...string) (string, error) {
+	return r.line(ctx, slices.Concat(options, []string{"check-ref-format", "--branch", name})...)
+}
+
 // CheckBranchName returns nil when git can hold name as a branch, and a *BranchNameError when it
 // cannot. A name that starts with a dash is refused, which git would read as an option, and so is
 // one git reads as another branch's, such as @{-1} for the previous branch.
@@ -469,9 +497,7 @@ func (r Repo) CheckBranchName(ctx context.Context, name string) error {
 		return &BranchNameError{Name: name}
 	}
 
-	// --branch expands @{-N} to the name of the Nth branch checked out before, so an answer that
-	// differs from name means name is not a branch name of its own.
-	expanded, err := r.line(ctx, "check-ref-format", "--branch", name)
+	expanded, err := r.ExpandBranchName(ctx, name)
 	if _, refused := errors.AsType[*child.ExitError](err); refused {
 		return &BranchNameError{Name: name, Err: err}
 	}
@@ -480,6 +506,7 @@ func (r Repo) CheckBranchName(ctx context.Context, name string) error {
 		return err
 	}
 
+	// An expansion that differs from name means name is not a branch name of its own.
 	if expanded != name {
 		return &BranchNameError{Name: name}
 	}

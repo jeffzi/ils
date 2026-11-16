@@ -282,15 +282,14 @@ func judgeCleanWithoutForce(ctx context.Context, caller Caller, inv Invocation, 
 		return fmt.Sprintf("git clean: the guard cannot read %s, which lets it delete untracked files without --force", cleanForceKey), nil
 	}
 
-	// --default answers for an unset key, so git exits non-zero only on a failure.
-	args := slices.Concat(targets, config, []string{"config", "--type=bool", "--default=true", "--get", cleanForceKey})
+	repo := git.Repo{Runner: targetRunner(caller.Git, inv.Dir, inv.Target)}
 
-	result, err := targetRunner(caller.Git, inv.Dir, inv.Target).Run(ctx, args...)
+	requireForce, err := repo.BoolConfig(ctx, cleanForceKey, true, slices.Concat(targets, config)...)
 	if err != nil {
 		return "", fmt.Errorf("read %s for git clean: %w", cleanForceKey, err)
 	}
 
-	if strings.TrimSpace(result.Stdout) == "true" {
+	if requireForce {
 		return "", nil
 	}
 
@@ -364,17 +363,15 @@ func judgeForcedBranchOverwrite(ctx context.Context, caller Caller, inv Invocati
 		return fmt.Sprintf("git branch %s: the guard cannot tell which repository it runs in; %s", flag, moveFirst), nil
 	}
 
-	runner := targetRunner(caller.Git, inv.Dir, inv.Target)
+	repo := git.Repo{Runner: targetRunner(caller.Git, inv.Dir, inv.Target)}
 	name := last.Text
 
-	expanded, err := runner.Run(ctx, slices.Concat(targets, []string{"check-ref-format", "--branch", name})...)
+	branch, err := repo.ExpandBranchName(ctx, name, targets...)
 	if err != nil {
 		return "", fmt.Errorf("expand the branch name %s for git branch %s: %w", name, flag, err)
 	}
 
-	branch := strings.TrimSpace(expanded.Stdout)
-
-	branches, err := git.Repo{Runner: runner}.LocalBranches(ctx, targets...)
+	branches, err := repo.LocalBranches(ctx, targets...)
 	if err != nil {
 		return "", fmt.Errorf("read whether git branch %s replaces %s: %w", flag, branch, err)
 	}

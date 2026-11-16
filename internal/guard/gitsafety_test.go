@@ -122,6 +122,16 @@ func TestJudge_RefusesABranchRenameOntoAPackedBranchInAnotherCase(t *testing.T) 
 	})
 }
 
+func TestJudge_RefusesABranchRenameOrCopyOntoThePreviousBranch(t *testing.T) {
+	t.Parallel()
+	_, caller := standingOn(t, "main", "topic")
+
+	checkJudged(t, caller, []judged{
+		{name: "-M onto @{-1}", command: "git branch -M topic @{-1}", wantNamed: "main", want: guard.Refuse},
+		{name: "-C onto @{-1}", command: "git branch -C @{-1}", wantNamed: "main", want: guard.Refuse},
+	})
+}
+
 func TestJudge_AllowsAGitOperationThatLeavesWorkOnDisk(t *testing.T) {
 	t.Parallel()
 	_, caller := standingOn(t, "main", "topic")

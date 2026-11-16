@@ -632,6 +632,64 @@ func TestRepo_CheckBranchName_WhenGitIsNotAsked_GivesNoReason(t *testing.T) {
 	assert.Check(t, is.Equal(nameErr.Reason(), ""))
 }
 
+func TestRepo_ExpandBranchName_WhenNameIsThePreviousBranchOfTheRepositoryNamedByC_ReturnsThatBranch(t *testing.T) {
+	t.Parallel()
+	const name = "@{-1}"
+	options := []string{"-C", previousBranch(t).Runner.Dir}
+
+	got, err := outsideRepo(t).ExpandBranchName(t.Context(), name, options...)
+	assert.NilError(t, err, "ExpandBranchName(%q, %q)", name, options)
+
+	assert.Check(t, is.Equal(got, topic), "ExpandBranchName(%q, %q)", name, options)
+}
+
+func TestRepo_ExpandBranchName_WhenGitRefusesTheName_ReturnsExitError(t *testing.T) {
+	t.Parallel()
+	const name = "fix..parser"
+
+	got, err := previousBranch(t).ExpandBranchName(t.Context(), name)
+
+	_, ok := errors.AsType[*child.ExitError](err)
+	assert.Check(t, ok, "ExpandBranchName(%q) = %q, error = %v, want *child.ExitError", name, got, err)
+}
+
+const boolKey = "clean.requireForce"
+
+func TestRepo_BoolConfig(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		options  []string
+		fallback bool
+		want     bool
+	}{
+		{name: "value that reads false", options: []string{"-c", boolKey + "=off"}, fallback: true, want: false},
+		{name: "value that reads true", options: []string{"-c", boolKey + "=yes"}, fallback: false, want: true},
+		{name: "unset key, fallback true", fallback: true, want: true},
+		{name: "unset key, fallback false", fallback: false, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := outsideRepo(t).BoolConfig(t.Context(), boolKey, tt.fallback, tt.options...)
+			assert.NilError(t, err, "BoolConfig(%q, %t, %q)", boolKey, tt.fallback, tt.options)
+
+			assert.Check(t, is.Equal(got, tt.want), "BoolConfig(%q, %t, %q)", boolKey, tt.fallback, tt.options)
+		})
+	}
+}
+
+func TestRepo_BoolConfig_WhenGitCannotReadTheValueAsABoolean_ReturnsExitError(t *testing.T) {
+	t.Parallel()
+	options := []string{"-c", boolKey + "=sometimes"}
+
+	_, err := outsideRepo(t).BoolConfig(t.Context(), boolKey, true, options...)
+
+	_, ok := errors.AsType[*child.ExitError](err)
+	assert.Check(t, ok, "BoolConfig(%q, true, %q) error = %v, want *child.ExitError", boolKey, options, err)
+}
+
 const freshBranch = "fix/parser"
 
 func TestRepo_CreateBranch_WhenOriginsTrunkMovesPastTheCommit_SwitchesToABranchAtTheCommitWithNoUpstream(t *testing.T) {
