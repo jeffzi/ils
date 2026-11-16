@@ -145,9 +145,10 @@ func TestJudge_WhenTheRebasedBranchIsNotALiteral_RefusesNamingTheCommand(t *test
 }
 
 func TestJudge_WhenOriginsURLCannotBeRead_RefusesSayingWhatBroke(t *testing.T) {
-	// Not parallel: gittest.FakeGit sets PATH for the whole process.
+	t.Parallel()
+
 	f, _ := standingOn(t, "main", "topic")
-	caller := callerFailingOn(t, f, f.Dir(), "remote")
+	caller := callerFailingOn(f, f.Dir(), "remote")
 
 	checkJudgedRow(t, caller, judged{command: commitCommand, wantNamed: gittest.FailedSaid, want: guard.Refuse})
 }
@@ -266,28 +267,29 @@ func standingOnGitHub(t *testing.T, trunk, branch string) (*gittest.Fixture, gua
 	return f, caller
 }
 
-// loggedInTo scripts, for the rest of the test, a gh whose active account on host passes its login
-// check. It sets GH_PATH for the whole process, so the test is not parallel.
-func loggedInTo(t *testing.T, host string) *ghtest.Fake {
+// loggedInTo scripts, for the rest of the test, the gh that caller runs as one whose active
+// account on host passes its login check.
+func loggedInTo(t *testing.T, caller *guard.Caller, host string) *ghtest.Fake {
 	t.Helper()
 
-	return ghtest.Setup(t, ghtest.Exits(ghtest.LoggedIn(host), ghtest.LoginArgs(host)...))
+	return answeringGh(t, caller, ghtest.Exits(ghtest.LoggedIn(host), ghtest.LoginArgs(host)...))
 }
 
-// loggedOutOf scripts, for the rest of the test, a gh with no login for host.
-func loggedOutOf(t *testing.T, host string) {
+// loggedOutOf scripts, for the rest of the test, the gh that caller runs as one with no login for
+// host.
+func loggedOutOf(t *testing.T, caller *guard.Caller, host string) {
 	t.Helper()
 
-	ghtest.Setup(t, ghtest.Exits(ghtest.LoggedOut(), ghtest.LoginArgs(host)...))
+	answeringGh(t, caller, ghtest.Exits(ghtest.LoggedOut(), ghtest.LoginArgs(host)...))
 }
 
-// loginFailingOn scripts, for the rest of the test, a gh whose active account on host fails its
-// login check, saying loginCheckSaid.
-func loginFailingOn(t *testing.T, host string) {
+// loginFailingOn scripts, for the rest of the test, the gh that caller runs as one whose active
+// account on host fails its login check, saying loginCheckSaid.
+func loginFailingOn(t *testing.T, caller *guard.Caller, host string) {
 	t.Helper()
 
 	account := ghtest.Account{State: "error", Error: loginCheckSaid, Active: true}
-	ghtest.Setup(t, ghtest.Exits(ghtest.LoginStatus(host, account), ghtest.LoginArgs(host)...))
+	answeringGh(t, caller, ghtest.Exits(ghtest.LoginStatus(host, account), ghtest.LoginArgs(host)...))
 }
 
 // checkRefusedNaming fails unless Judge, run by caller, refuses command with a reason holding
@@ -301,28 +303,28 @@ func checkRefusedNaming(t *testing.T, caller guard.Caller, command string, named
 }
 
 func TestJudge_WhenGhIsLoggedInToAHostOtherThanGitHubCom_RefusesACommitOnTheTrunk(t *testing.T) {
-	// Not parallel: loggedInTo sets GH_PATH for the whole process.
+	t.Parallel()
 	f, caller := standingOn(t, "main", "main")
 	setGitHubPushURL(f, enterpriseHost)
-	loggedInTo(t, enterpriseHost)
+	loggedInTo(t, &caller, enterpriseHost)
 
 	checkRefusedNaming(t, caller, commitCommand, onMain)
 }
 
 func TestJudge_WhenGhHoldsNoLoginForAHostOtherThanGitHubCom_AllowsACommitOnTheTrunk(t *testing.T) {
 	tests := []struct {
-		setup func(t *testing.T)
+		setup func(t *testing.T, caller *guard.Caller)
 		name  string
 	}{
-		{name: "gh missing", setup: withoutGh},
-		{name: "gh not logged in to the host", setup: func(t *testing.T) { t.Helper(); loggedOutOf(t, enterpriseHost) }},
+		{name: "gh missing", setup: func(t *testing.T, _ *guard.Caller) { t.Helper(); withoutGh(t) }},
+		{name: "gh not logged in to the host", setup: func(t *testing.T, caller *guard.Caller) { t.Helper(); loggedOutOf(t, caller, enterpriseHost) }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Not parallel: the setup sets GH_PATH for the whole process.
+			// Not parallel: withoutGh sets GH_PATH for the whole process.
 			f, caller := standingOn(t, "main", "main")
 			setGitHubPushURL(f, enterpriseHost)
-			tt.setup(t)
+			tt.setup(t, &caller)
 
 			checkJudgedRow(t, caller, judged{command: commitCommand, want: guard.Allow})
 		})
@@ -330,15 +332,16 @@ func TestJudge_WhenGhHoldsNoLoginForAHostOtherThanGitHubCom_AllowsACommitOnTheTr
 }
 
 func TestJudge_WhenGhsLoginCheckFailsOnAHostOtherThanGitHubCom_RefusesSayingWhy(t *testing.T) {
-	// Not parallel: loginFailingOn sets GH_PATH for the whole process.
+	t.Parallel()
 	f, caller := standingOn(t, "main", "main")
 	setGitHubPushURL(f, enterpriseHost)
-	loginFailingOn(t, enterpriseHost)
+	loginFailingOn(t, &caller, enterpriseHost)
 
 	checkRefusedNaming(t, caller, commitCommand, loginCheckSaid)
 }
 
 func TestJudge_WhenTheGhConfigCannotBeTold_RefusesACommitOnTheTrunk(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		host  string
@@ -349,10 +352,10 @@ func TestJudge_WhenTheGhConfigCannotBeTold_RefusesACommitOnTheTrunk(t *testing.T
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Not parallel: loggedInTo sets GH_PATH for the whole process.
+			t.Parallel()
 			f, caller := standingOn(t, "main", "main")
 			setGitHubPushURL(f, tt.host)
-			loggedInTo(t, tt.host)
+			loggedInTo(t, &caller, tt.host)
 
 			checkRefusedNaming(t, caller, `GH_CONFIG_DIR="$d" `+commitCommand, tt.named...)
 		})
@@ -383,10 +386,10 @@ func TestJudge_WhenOriginsSSHHostCannotBeResolved_RefusesACommitOnTheTrunk(t *te
 }
 
 func TestJudge_WhenHEADIsOffTheTrunk_RunsNoGh(t *testing.T) {
-	// Not parallel: loggedInTo sets GH_PATH for the whole process.
+	t.Parallel()
 	f, caller := standingOn(t, "main", "topic")
 	setGitHubPushURL(f, enterpriseHost)
-	fake := loggedInTo(t, enterpriseHost)
+	fake := loggedInTo(t, &caller, enterpriseHost)
 
 	got := guard.Judge(t.Context(), commitCommand, caller)
 
@@ -408,9 +411,10 @@ func TestJudge_WhenTheRepositoryHasNoOrigin_AllowsARebaseNamingTheTrunk(t *testi
 }
 
 func TestJudge_WhenOriginsPushURLCannotBeReadOnTheTrunk_RefusesSayingWhatBroke(t *testing.T) {
-	// Not parallel: gittest.FakeGit sets PATH for the whole process.
+	t.Parallel()
+
 	f, _ := standingOn(t, "main", "main")
-	caller := callerFailingOn(t, f, f.Dir(), "remote", "get-url", "--push")
+	caller := callerFailingOn(f, f.Dir(), "remote", "get-url", "--push")
 
 	checkJudgedRow(t, caller, judged{command: commitCommand, wantNamed: gittest.FailedSaid, want: guard.Refuse})
 }

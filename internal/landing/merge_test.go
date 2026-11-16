@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -138,7 +140,7 @@ type mergeEnd struct {
 	text string
 	// head is the head of pull request 12, which the payload carries; empty is the tip of the branch.
 	head string
-	// failing is the arguments of a git call made to fail as gittest.FakeGit makes it; empty fails none.
+	// failing is the arguments of a git call made to fail as failGit makes it; empty fails none.
 	failing []string
 }
 
@@ -234,7 +236,7 @@ func mergeRowOn(t *testing.T, tt mergeRow) (mergeEnd, mergeRun) {
 			t.Helper()
 
 			if len(end.failing) > 0 {
-				failGit(t, s, end.failing)
+				failGit(s, end.failing)
 			}
 		},
 		rewire: func(t *testing.T, s *scene) {
@@ -550,9 +552,10 @@ func failedGitMerges() []failedGitRow {
 }
 
 func TestMerge_WhenAGitReadBeforeTheWaitFails_BrokeNamingTheRead(t *testing.T) {
-	// Not parallel: each row puts a failing git first on PATH with t.Setenv.
+	t.Parallel()
 	for _, tt := range failedGitMerges() {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			end, run := mergeRowOn(t, tt.mergeRow)
 
 			assertFailedGit(t, run.got, mergeCommand(), tt.read)
@@ -688,15 +691,18 @@ func squashOnLand(t *testing.T, f *gittest.Fixture, tip string, landed func(*tes
 	}
 }
 
-// armedLater runs install, which puts a fake git first on PATH, then puts the plain PATH back and
-// returns arm, which puts the fake git first again. It cannot run in a parallel test.
+// armedLater runs install, which fakes the scene's git, then takes the fake git that TestMain puts
+// first on PATH off the process PATH, so that git calls run the real git, and returns arm, which
+// puts the fake git first again. It cannot run in a parallel test.
 func armedLater(t *testing.T, install func()) (arm func()) {
 	t.Helper()
 
-	plain := os.Getenv("PATH")
 	install()
 	faked := os.Getenv("PATH")
-	t.Setenv("PATH", plain)
+	fake, err := exec.LookPath("git")
+	assert.NilError(t, err)
+	plain := slices.DeleteFunc(filepath.SplitList(faked), func(dir string) bool { return dir == filepath.Dir(fake) })
+	t.Setenv("PATH", strings.Join(plain, string(os.PathListSeparator)))
 
 	return func() { t.Setenv("PATH", faked) }
 }

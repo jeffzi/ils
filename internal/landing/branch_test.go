@@ -345,10 +345,10 @@ func TestPush_WhenBranchHasNoCommitAtAll_RefusesAsNoCommitPastTheTrunk(t *testin
 }
 
 func TestPush_WhenTipAndBranchRefCannotBeRead_BrokeShowingBothFailures(t *testing.T) {
-	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	t.Parallel()
 	words := []string{"show-ref", "--verify", "--quiet", "refs/heads/" + spare}
 	s := newScene(t, func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--orphan", spare) }, allowed(), false)
-	failGit(t, s, words)
+	failGit(s, words)
 
 	got := landing.Push(t.Context(), s.deps, pushRequest())
 
@@ -406,6 +406,6 @@ func sharedFailedReads() []failedRead {
 }
 
 func TestPush_WhenASharedGitReadFails_BrokeNamingTheRead(t *testing.T) {
-	// Not parallel: each row puts a failing git first on PATH with t.Setenv.
+	t.Parallel()
 	runFailedReads(t, sharedFailedReads())
 }

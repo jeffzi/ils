@@ -259,6 +259,117 @@ func TestFakeGit_WhenCallStartsWithStallingWords_WaitsAtTheAddressUntilKilled(t 
 	assert.Check(t, is.Equal(exitErr.ExitCode(), killedBySignal), "git show-ref ended on its own, want it killed while it waited")
 }
 
+// installFakeGit puts the shared fake git first on PATH for the rest of the test, which puts PATH
+// back even when the cleanup InstallFakeGit returns does not.
+func installFakeGit(t *testing.T) {
+	t.Helper()
+
+	t.Setenv("PATH", os.Getenv("PATH"))
+	cleanup, err := gittest.InstallFakeGit()
+	assert.NilError(t, err)
+	t.Cleanup(cleanup)
+}
+
+func TestInstallFakeGit_WhenSettingsFakeTheCall_AnswersAsTheySay(t *testing.T) {
+	installFakeGit(t)
+	tests := []struct {
+		fake gittest.Fake
+		want faked
+		name string
+		args []string
+	}{
+		{
+			name: "version",
+			fake: gittest.Fake{Version: "git version 2.34.1"},
+			args: []string{"--version"},
+			want: faked{Stdout: "git version 2.34.1\n"},
+		},
+		{
+			name: "fail",
+			fake: gittest.Fake{FailOn: []string{"show-ref", "--verify"}},
+			args: []string{"show-ref", "--verify", "refs/heads/main"},
+			want: faked{Stderr: gittest.FailedSaid + "\n", Code: gittest.FailedCode},
+		},
+		{
+			name: "answer",
+			fake: gittest.Fake{AnswerOn: []string{"rev-list"}, Answer: "not counts"},
+			args: []string{"rev-list", "--count", "HEAD"},
+			want: faked{Stdout: "not counts\n"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := slices.Concat(gittest.Env(t), tt.fake.Settings())
+
+			got := callGit(t, env, t.TempDir(), tt.args...)
+
+			assert.Check(t, is.DeepEqual(got, tt.want))
+		})
+	}
+}
+
+func TestInstallFakeGit_WhenTheCallIsNotFaked_RunsTheRealGit(t *testing.T) {
+	installFakeGit(t)
+	tests := []struct {
+		name     string
+		settings []string
+	}{
+		{name: "no settings", settings: nil},
+		{name: "settings that fake other calls", settings: gittest.Fake{FailOn: []string{"show-ref"}}.Settings()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+
+			callGit(t, slices.Concat(gittest.Env(t), tt.settings), dir, "init", "--quiet")
+
+			_, err := os.Stat(filepath.Join(dir, ".git"))
+			assert.Check(t, err, "git init made no repository in %s", dir)
+		})
+	}
+}
+
+func TestInstallFakeGit_WhenTheCallsPathHoldsNoGit_RunsTheRealGitFoundAtInstall(t *testing.T) {
+	installFakeGit(t)
+	dir := t.TempDir()
+
+	got := callGit(t, gittest.WithoutSSH(t, gittest.Env(t)), dir, "init", "--quiet")
+
+	assert.Check(t, is.DeepEqual(got, faked{}))
+	_, err := os.Stat(filepath.Join(dir, ".git"))
+	assert.Check(t, err, "git init made no repository in %s", dir)
+}
+
+// killsItsGit is a git alias that ends the first process named git above it with SIGTERM. Git
+// runs the alias through `sh -c`, so the script walks up from its parent rather than trusting
+// that the parent is git.
+const killsItsGit = `!pid=$PPID; ` +
+	`while [ "${pid:-0}" -gt 1 ] && [ "$(basename "$(ps -o comm= -p "$pid")")" != git ]; ` +
+	`do pid=$(ps -o ppid= -p "$pid" | tr -d ' '); done; ` +
+	`[ "${pid:-0}" -gt 1 ] && kill -TERM "$pid"`
+
+func TestInstallFakeGit_WhenASignalKillsTheRealGit_TheCallerSeesASignalDeath(t *testing.T) {
+	// (*os.ProcessState).ExitCode reports -1 for a process a signal ended.
+	const killedBySignal = -1
+
+	installFakeGit(t)
+
+	got := callGit(t, gittest.Env(t), t.TempDir(), "-c", "alias.die="+killsItsGit, "die")
+
+	assert.Check(t, is.Equal(got.Code, killedBySignal), "git die printed %+v", got)
+}
+
+func TestInstallFakeGit_WhenCleanedUp_PutsPathBack(t *testing.T) {
+	before := os.Getenv("PATH")
+	t.Setenv("PATH", before)
+	cleanup, err := gittest.InstallFakeGit()
+	assert.NilError(t, err)
+
+	cleanup()
+
+	assert.Check(t, is.Equal(os.Getenv("PATH"), before))
+}
+
 func TestLinkAs(t *testing.T) {
 	const tool = "linked-tool"
 

@@ -862,10 +862,10 @@ func TestPreconditions_WhenGitSSHRunsAMissingProgram_RefusesNamingIt(t *testing.
 // ---------------------------------------------------------------------------
 
 func TestPreconditions_WhenGitIsTooOld_RefusesNamingTheVersions(t *testing.T) {
-	// Not parallel: fakeGit puts a git that prints its own version first on PATH with t.Setenv.
+	t.Parallel()
 	cmd := pushCommand()
 	s := newScene(t, nil, forgetest.Script{}, false)
-	fakeGit(t, s, gittest.Fake{Version: "git version 1.0.0"})
+	fakeGit(s, gittest.Fake{Version: "git version 1.0.0"})
 
 	_, stop := landing.Preconditions(t.Context(), s.deps, cmd.req)
 
@@ -876,9 +876,9 @@ func TestPreconditions_WhenGitIsTooOld_RefusesNamingTheVersions(t *testing.T) {
 }
 
 func TestPreconditions_WhenGitVersionFails_BrokeNamingTheRead(t *testing.T) {
-	// Not parallel: failGit puts a git that fails first on PATH with t.Setenv.
+	t.Parallel()
 	s := newScene(t, nil, forgetest.Script{}, false)
-	failGit(t, s, []string{"--version"})
+	failGit(s, []string{"--version"})
 
 	_, stop := landing.Preconditions(t.Context(), s.deps, pushRequest())
 

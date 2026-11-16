@@ -276,7 +276,7 @@ func TestStartBranch_WhenLocalTrunkHasCommitsOriginLacks_RefusesNamingTheFix(t *
 }
 
 func TestStartBranch_WhenAReadOfTheLocalTrunkFails_EndsBrokeNamingTheRead(t *testing.T) {
-	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	t.Parallel()
 	tests := []struct {
 		arrange func(*gittest.Fixture)
 		name    string
@@ -291,8 +291,9 @@ func TestStartBranch_WhenAReadOfTheLocalTrunkFails_EndsBrokeNamingTheRead(t *tes
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			s := branchScene(t, tt.arrange)
-			failGit(t, s, tt.fails)
+			failGit(s, tt.fails)
 			before := s.written()
 
 			got := startBranch(t, s, fresh)
@@ -317,9 +318,9 @@ func TestStartBranch_WhenTheSwitchWouldOverwriteAFile_RefusesNamingIt(t *testing
 }
 
 func TestStartBranch_WhenTheSwitchFailsNamingNoFile_EndsBroke(t *testing.T) {
-	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	t.Parallel()
 	s := branchScene(t, nil)
-	failGit(t, s, []string{"switch"})
+	failGit(s, []string{"switch"})
 
 	got := startBranch(t, s, fresh)
 

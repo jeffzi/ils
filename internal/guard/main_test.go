@@ -1,6 +1,7 @@
 package guard_test
 
 import (
+	"fmt"
 	"os"
 	"testing"
 
@@ -9,13 +10,27 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	if code, served := gittest.Main(); served {
-		os.Exit(code)
-	}
+	os.Exit(run(m))
+}
 
-	if code, served := ghtest.Main(); served {
-		os.Exit(code)
-	}
+// run runs the tests with the fake git first on PATH and the fake gh on GH_PATH, both built
+// without the race detector, and returns their exit code.
+func run(m *testing.M) int {
+	cleanGit, err := gittest.InstallFakeGit()
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, err)
 
-	os.Exit(m.Run())
+		return 1
+	}
+	defer cleanGit()
+
+	cleanGh, err := ghtest.Install()
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, err)
+
+		return 1
+	}
+	defer cleanGh()
+
+	return m.Run()
 }

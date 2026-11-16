@@ -633,11 +633,11 @@ func TestRelease_WhenOriginRefusesTheTag_Broke(t *testing.T) {
 }
 
 func TestRelease_WhenTheTagCannotBeCreated_BrokeSayingNothingWasWritten(t *testing.T) {
-	// Not parallel: failGit puts a failing git first on the scene's PATH.
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		cmd := releaseCommand(version)
 		st := releaseScene(t, tagged)
-		failGit(t, st.s, []string{"tag", "--annotate"})
+		failGit(st.s, []string{"tag", "--annotate"})
 
 		got := runRelease(t, st.s, cmd.req)
 
@@ -687,9 +687,10 @@ func cutTagNext(c cut) string {
 }
 
 func TestRelease_WhenACutEndsTheMakingOfTheTag_SaysWhatEndedIt(t *testing.T) {
-	// Not parallel: stallingGit puts a stalling git first on PATH with t.Setenv.
+	t.Parallel()
 	for _, c := range cuts() {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			cmd := releaseCommand(version)
 			st := releaseScene(t, tagged)
 			ctx := c.stallingGit([]string{"tag", "--annotate"})(t, st.s)
@@ -1036,7 +1037,7 @@ type failedRelease struct {
 }
 
 func TestRelease_WhenAGitReadFailsForNoRefusal_BrokeNamingTheRead(t *testing.T) {
-	// Not parallel: each row puts a failing git first on PATH with t.Setenv.
+	t.Parallel()
 	firstParentLog := []string{"log", "--reverse", "--topo-order", "--format=%H %s", "--first-parent"}
 	tests := []failedRelease{
 		{name: "history since the previous tag", build: tagged, read: readHistory, words: firstParentLog},
@@ -1052,9 +1053,10 @@ func TestRelease_WhenAGitReadFailsForNoRefusal_BrokeNamingTheRead(t *testing.T) 
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			cmd := releaseCommand(version)
 			st := releaseScene(t, tt.build)
-			failGit(t, st.s, tt.words)
+			failGit(st.s, tt.words)
 			before := st.s.written()
 
 			got := runRelease(t, st.s, cmd.req)

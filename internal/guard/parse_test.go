@@ -3,6 +3,7 @@ package guard_test
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -10,6 +11,7 @@ import (
 	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/jeffzi/ils/internal/git"
+	"github.com/jeffzi/ils/internal/github/ghtest"
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/guard"
 )
@@ -428,12 +430,19 @@ func callerWithEnv(dir string, env []string) guard.Caller {
 }
 
 // callerFailingOn returns a caller working in dir whose git runs with the environment of f and
-// fails on the given subcommands. The fake git sets PATH for the whole process, so the test is not
-// parallel.
-func callerFailingOn(t *testing.T, f *gittest.Fixture, dir string, subcommands ...string) guard.Caller {
+// fails on the given subcommands.
+func callerFailingOn(f *gittest.Fixture, dir string, subcommands ...string) guard.Caller {
+	return callerWithEnv(dir, slices.Concat(f.Env(), gittest.Fake{FailOn: subcommands}.Settings()))
+}
+
+// answeringGh scripts, for the rest of the test, the gh that caller runs to answer as script says.
+func answeringGh(t *testing.T, caller *guard.Caller, script ...ghtest.Call) *ghtest.Fake {
 	t.Helper()
 
-	return callerWithEnv(dir, append(f.Env(), gittest.FakeGit(t, gittest.Fake{FailOn: subcommands})...))
+	fake := ghtest.Script(t, script...)
+	caller.GH.Env = slices.Concat(caller.GH.Environ(), fake.Settings())
+
+	return fake
 }
 
 func TestParse_MarksAGitVariableOffTheAllowList(t *testing.T) {

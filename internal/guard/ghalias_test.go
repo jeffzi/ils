@@ -15,15 +15,16 @@ import (
 )
 
 func TestJudge_JudgesTheExpansionOfAGhAlias(t *testing.T) {
-	// Not parallel: ghtest.Setup sets GH_PATH for the whole process.
+	t.Parallel()
 	const aliases = `finder: '!gh issue list | grep "$1"'` + "\n" +
 		"mg: pr merge $1\n" +
 		"rd: release delete $1\n" +
 		"two: release delete $1 $2\n" +
 		"vw: pr $1\n"
-	ghtest.Setup(t, ghtest.Says(aliases, "alias", "list"))
+	caller := callerOutsideAnyRepository(t)
+	answeringGh(t, &caller, ghtest.Says(aliases, "alias", "list"))
 
-	checkJudgedInTurn(t, callerOutsideAnyRepository(t), []judged{
+	checkJudged(t, caller, []judged{
 		{name: "shell alias", command: "gh finder bug", want: guard.Refuse, wantNamed: "finder"},
 		{name: "neither a command nor an alias", command: "gh copilot suggest", want: guard.Refuse, wantNamed: "copilot"},
 		{name: "argument put in place", command: "gh vw merge 3", want: guard.Ask},
@@ -124,8 +125,9 @@ func TestJudge_RefusesAGhAliasWhoseConfigTheGuardCannotReadNamingTheVariable(t *
 }
 
 func TestJudge_WhenGhAliasListFails_RefusesNamingTheRead(t *testing.T) {
-	// Not parallel: ghtest.Setup sets GH_PATH for the whole process.
-	ghtest.Setup(t, ghtest.Exits(ghtest.ServerError(), "alias", "list"))
+	t.Parallel()
+	caller := callerOutsideAnyRepository(t)
+	answeringGh(t, &caller, ghtest.Exits(ghtest.ServerError(), "alias", "list"))
 
-	checkJudgedRow(t, callerOutsideAnyRepository(t), judged{command: "gh pm 3", want: guard.Refuse, wantNamed: "alias list"})
+	checkJudgedRow(t, caller, judged{command: "gh pm 3", want: guard.Refuse, wantNamed: "alias list"})
 }

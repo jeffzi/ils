@@ -71,7 +71,7 @@ func TestStatus_WhenDetachedHEADStandsBesideALocalTrunkAheadOfOrigins_EndsOnItsF
 }
 
 func TestStatus_WhenTheCommitsOfADetachedHEADAreNotRead_EndsOnTheStepBranchEndsOn(t *testing.T) {
-	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	t.Parallel()
 	tests := []struct {
 		name  string
 		want  string
@@ -84,8 +84,9 @@ func TestStatus_WhenTheCommitsOfADetachedHEADAreNotRead_EndsOnTheStepBranchEndsO
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			s := statusScene(t, detachOnTrunk, viewing(cleanHead(), passing()))
-			failGit(t, s, tt.words)
+			failGit(s, tt.words)
 
 			got := seeStatus(t, s, (*testing.T).Context)
 
@@ -105,7 +106,7 @@ func TestStatus_WhenOnTheTrunk_EndsOnStartingABranch(t *testing.T) {
 }
 
 func TestStatus_WhenTheFetchOfOriginsTrunkFailsOnTheTrunk_EndsOnTheStepBranchEndsOn(t *testing.T) {
-	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	t.Parallel()
 	tests := []struct {
 		name  string
 		want  string
@@ -118,8 +119,9 @@ func TestStatus_WhenTheFetchOfOriginsTrunkFailsOnTheTrunk_EndsOnTheStepBranchEnd
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			s := statusScene(t, standOnTrunk, ruledBy(forge.RulesProtect))
-			failGit(t, s, tt.words)
+			failGit(s, tt.words)
 
 			got := seeStatus(t, s, (*testing.T).Context)
 
@@ -151,9 +153,9 @@ func TestStatus_WhenThereIsNoOrigin_EndsOnCreatingIt(t *testing.T) {
 }
 
 func TestStatus_WhenGitIsTooOldWithNoOrigin_EndsOnUpgradingItThenStatus(t *testing.T) {
-	// Not parallel: fakeGit puts a git that prints its own version first on PATH with t.Setenv.
+	t.Parallel()
 	s := statusScene(t, (*gittest.Fixture).RemoveOrigin, noForge)
-	fakeGit(t, s, gittest.Fake{Version: "git version 1.0.0"})
+	fakeGit(s, gittest.Fake{Version: "git version 1.0.0"})
 
 	got := seeStatus(t, s, (*testing.T).Context)
 

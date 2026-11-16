@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -35,6 +36,8 @@ const (
 	recordEnv = "ILS_GHTEST_RECORD"
 	// holdEnv names the local address the fake dials once it starts holding an answer open.
 	holdEnv = "ILS_GHTEST_HOLD"
+	// fakeGHPackage is the program Install builds.
+	fakeGHPackage = "github.com/jeffzi/ils/internal/github/ghtest/gh"
 
 	// acknowledgement is the byte the test process sends back once it has checked a hold; the fake
 	// waits for it before it holds its answer open.
@@ -45,8 +48,8 @@ const (
 // (0, 1, 2, 4 and 8), which internal/github reads as answers, nor one of gittest's, so a test can
 // tell a fake that failed from a gh that answered.
 const (
-	// brokenCode is the exit code of a fake that could not read its script or write its record.
-	brokenCode = 122
+	// BrokenCode is the exit code of a fake that could not read its script or write its record.
+	BrokenCode = 122
 	// UnscriptedCode is the exit code of a fake asked for an argv its script does not hold.
 	UnscriptedCode = 123
 )
@@ -417,6 +420,7 @@ type Fake struct {
 	// whileHeld is the action WhileHolding set, nil until it is called.
 	whileHeld atomic.Pointer[func() error]
 	record    string
+	settings  []string
 }
 
 // Main makes the test binary act as gh when Setup arranged for it, and reports whether it did.
@@ -445,6 +449,21 @@ func Setup(tb testing.TB, script ...Call) *Fake {
 		tb.Fatalf("ghtest: find the test binary: %v", err)
 	}
 
+	fake := Script(tb, script...)
+
+	tb.Setenv("GORACE", gittest.RaceSetting())
+	tb.Setenv(github.PathVariable, exe)
+	gittest.SetEnvEntries(tb, fake.settings)
+
+	return fake
+}
+
+// Script scripts the answers of a fake gh for the rest of the test without touching the process
+// environment: a gh runner reaches the fake by appending Settings to its environment, so the test
+// can be parallel. The gh it starts must be the one Install builds.
+func Script(tb testing.TB, script ...Call) *Fake {
+	tb.Helper()
+
 	encoded, err := json.Marshal(script, scriptFormat())
 	if err != nil {
 		tb.Fatalf("ghtest: encode the script: %v", err)
@@ -460,14 +479,50 @@ func Setup(tb testing.TB, script ...Call) *Fake {
 	fake := &Fake{tb: tb, record: record}
 	holdAddr, holding := listenForHolds(tb, record, &fake.whileHeld)
 	fake.holding = holding
-
-	tb.Setenv("GORACE", gittest.RaceSetting())
-	tb.Setenv(github.PathVariable, exe)
-	tb.Setenv(scriptEnv, scriptPath)
-	tb.Setenv(recordEnv, fake.record)
-	tb.Setenv(holdEnv, holdAddr)
+	fake.settings = []string{scriptEnv + "=" + scriptPath, recordEnv + "=" + record, holdEnv + "=" + holdAddr}
 
 	return fake
+}
+
+// Install builds the fake gh as a program of its own, without the race detector, into a new
+// temporary directory, points GH_PATH at it, and returns a cleanup that puts GH_PATH back and
+// removes the directory.
+//
+// A package's TestMain calls it once, before running its tests, and calls the cleanup after them.
+// The fake answers as the settings of Fake.Settings in the call's environment say, so a test
+// scripts gh with Script and can run in parallel; a package that does not call it keeps the test
+// binary as its gh, through Setup. The fake must be built from inside this module, where `go
+// build` finds its package.
+func Install() (cleanup func(), err error) {
+	dir, err := os.MkdirTemp("", "ils-fake-gh-")
+	if err != nil {
+		return nil, fmt.Errorf("make a directory for the fake gh: %w", err)
+	}
+
+	bin := filepath.Join(dir, github.Program)
+	//nolint:gosec // G204: the arguments are constants of this package and a path it made.
+	out, err := exec.CommandContext(context.Background(), "go", "build", "-o", bin, fakeGHPackage).CombinedOutput()
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("build the fake gh: %w\n%s", err, out), os.RemoveAll(dir))
+	}
+
+	before, hadPath := os.LookupEnv(github.PathVariable)
+	if err := os.Setenv(github.PathVariable, bin); err != nil {
+		return nil, errors.Join(fmt.Errorf("point %s at the fake gh: %w", github.PathVariable, err), os.RemoveAll(dir))
+	}
+
+	return func() {
+		restore := os.Unsetenv(github.PathVariable)
+		if hadPath {
+			restore = os.Setenv(github.PathVariable, before)
+		}
+
+		// The cleanup runs after the tests, when nothing is left to fail: printing is all that is
+		// left to report a directory left behind or a GH_PATH not put back.
+		if err := errors.Join(restore, os.RemoveAll(dir)); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "ghtest: clean up the fake gh: %v\n", err)
+		}
+	}, nil
 }
 
 // hold is what the fake sends the test process before it holds its answer to Args open.
@@ -572,6 +627,12 @@ func (f *Fake) Holding() <-chan struct{} {
 // however long it takes, and an error it returns fails the test. A later call replaces the action.
 func (f *Fake) WhileHolding(action func() error) {
 	f.whileHeld.Store(&action)
+}
+
+// Settings returns the environment entries that make the fake gh Install builds answer from f's
+// script, for a gh runner to append to its environment.
+func (f *Fake) Settings() []string {
+	return slices.Clone(f.settings)
 }
 
 // Calls returns every argv the fake received, each starting with gh, in order.
@@ -713,7 +774,7 @@ func countOf(recorded [][]string, args []string) int {
 func broken(err error) int {
 	fmt.Fprintf(os.Stderr, "ghtest: %v\n", err)
 
-	return brokenCode
+	return BrokenCode
 }
 
 func readScript(path string) ([]Call, error) {
