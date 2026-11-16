@@ -230,6 +230,19 @@ once, by hand:
    nothing stops a teammate from pushing to the default branch or merging red. The gates of `ils`
    hold only for your own agent.
 
+### A slow pre-push hook
+
+GitHub closes an SSH connection that has been idle for 6 minutes, and git keeps origin's
+connection idle while your pre-push hook runs. `ils push` adds an ssh keep-alive to the push when
+you set no ssh command of your own and your ssh config sets no `ServerAliveInterval` for the host.
+If you set `GIT_SSH_COMMAND`, `core.sshCommand`, or `GIT_SSH`, add the keep-alive to
+`~/.ssh/config` yourself:
+
+```text
+Host github.com
+  ServerAliveInterval 60
+```
+
 ### Use with Claude Code
 
 `ils init claude` is not in a release yet: [CHANGELOG.md](CHANGELOG.md) lists it under Unreleased.

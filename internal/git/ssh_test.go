@@ -3,6 +3,8 @@ package git_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -577,6 +579,216 @@ func TestRepo_OriginURLs_WhenFoundSSHCommandExitsAsIfMissing_ReturnsItsExitError
 			assert.Check(t, ok, "OriginURLs() error = %v, want *child.ExitError", err)
 		})
 	}
+}
+
+// keptAlive is the ServerAliveInterval, in seconds, a push gives git's ssh when nothing the user set
+// sends a keepalive.
+const keptAlive = "60"
+
+// serverAliveOption is the ssh option that gives the seconds ssh lets a connection stay silent.
+const serverAliveOption = "ServerAliveInterval"
+
+// sshHost is one host the stand-in of sshServing answers for.
+type sshHost struct {
+	// name is the host as origin's URL names it.
+	name string
+	// config is what the stand-in prints when asked for the host's config with -G; when empty, it
+	// exits non-zero instead.
+	config string
+	// dir is the repository a connection to the host serves.
+	dir string
+}
+
+// sshConfigOf returns an ssh config as `ssh -G` prints it for host, holding a ServerAliveInterval
+// of interval.
+func sshConfigOf(host, interval string) string {
+	return "hostname " + host + "\n" + strings.ToLower(serverAliveOption) + " " + interval + "\nport 22\n"
+}
+
+// sshServing writes a stand-in for ssh into a directory of its own and returns its path, with the
+// path of the file it records its connections in. Asked for the config of one of hosts with -G, it
+// prints that host's config. Any other call is a connection: it appends its arguments to the record,
+// joined by tabs on one line, and serves the repository of the host it connects to.
+func sshServing(t *testing.T, hosts ...sshHost) (path, record string) {
+	t.Helper()
+
+	var answers, served strings.Builder
+	for _, host := range hosts {
+		if host.config != "" {
+			fmt.Fprintf(&answers, "%s) printf '%%s' %s; exit 0;;\n", gittest.ShellWord(host.name), gittest.ShellWord(host.config))
+		}
+		fmt.Fprintf(&served, "*@%s) dir=%s;;\n", host.name, gittest.ShellWord(host.dir))
+	}
+
+	record = filepath.Join(t.TempDir(), "connections")
+	script := "#!/bin/sh\n" +
+		"asked=\n" +
+		"for arg do\n\tif [ \"$arg\" = -G ]; then asked=1; fi\n\thost=$last\n\tlast=$arg\ndone\n" +
+		"if [ -n \"$asked\" ]; then\n\tcase \"$last\" in\n" + answers.String() + "\tesac\n\texit 1\nfi\n" +
+		"printf '%s\\t' \"$@\" >> " + gittest.ShellWord(record) + "\n" +
+		"echo >> " + gittest.ShellWord(record) + "\n" +
+		"case \"$host\" in\n" + served.String() + "*) exit 1;;\nesac\n" +
+		"service=\"${last%% *}\"\n" +
+		"exec git \"${service#git-}\" \"$dir\"\n"
+
+	path = filepath.Join(t.TempDir(), "ssh")
+	//nolint:gosec // G306: git must be able to execute the stand-in.
+	assert.NilError(t, os.WriteFile(path, []byte(script), 0o700))
+
+	return path, record
+}
+
+// serverAliveInterval returns the ServerAliveInterval the arguments of an ssh call set with -o, or
+// nothing when they set none.
+func serverAliveInterval(args []string) string {
+	for i, arg := range args {
+		option, ok := strings.CutPrefix(arg, "-o")
+		if !ok {
+			continue
+		}
+
+		if option == "" && i+1 < len(args) {
+			option = args[i+1]
+		}
+
+		key, value, _ := strings.Cut(strings.Replace(option, " ", "=", 1), "=")
+		if strings.EqualFold(key, serverAliveOption) {
+			return value
+		}
+	}
+
+	return ""
+}
+
+// aliveIntervals returns the ServerAliveInterval each connection in record set, in the order they were
+// made.
+func aliveIntervals(t *testing.T, record string) []string {
+	t.Helper()
+
+	content, err := os.ReadFile(record) //nolint:gosec // G304: the path is one the test built under t.TempDir().
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+
+	assert.NilError(t, err)
+
+	var got []string
+	for line := range strings.Lines(string(content)) {
+		args := strings.Split(strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\t"), "\t")
+		got = append(got, serverAliveInterval(args))
+	}
+
+	return got
+}
+
+// overSSH returns repo with origin at sshURL, no ssh command, and the stand-in ssh at path first on
+// the PATH of its runner's environment.
+func overSSH(f *gittest.Fixture, repo git.Repo, path string) git.Repo {
+	f.SetOriginURL(sshURL)
+
+	return firstOnRunnerPath(noSSHCommand(repo), path)
+}
+
+func TestRepo_WhenPushingOverSSHAndNothingSetSendsAKeepalive_SendsOneEveryMinute(t *testing.T) {
+	t.Parallel()
+	for _, call := range pushCalls() {
+		t.Run(call.name, func(t *testing.T) {
+			t.Parallel()
+			f, repo, _ := taggedRelease(t)
+			path, record := sshServing(t, sshHost{name: "github.com", config: sshConfigOf("github.com", "0"), dir: f.OriginDir()})
+			repo = overSSH(f, repo, path)
+
+			_, err := call.call(t.Context(), repo)
+			assert.NilError(t, err, "%s()", call.name)
+
+			assert.Check(t, is.DeepEqual(aliveIntervals(t, record), []string{keptAlive}))
+		})
+	}
+}
+
+func TestRepo_Push_WhenTheUserSetsSSHOrItsConfigCannotBeRead_LeavesGitsSSHAsSet(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		// arrange returns the settings it adds to the runner's environment, given the stand-in's path.
+		arrange func(t *testing.T, f *gittest.Fixture, path string) []string
+		name    string
+		// config is what `ssh -G` prints for the host; when empty, it exits non-zero instead.
+		config string
+	}{
+		{name: "ssh config sets a keepalive", config: sshConfigOf("github.com", "30")},
+		{name: "ssh -G fails"},
+		{name: "ssh -G prints no ServerAliveInterval line", config: "hostname github.com\nport 22\n"},
+		{
+			name: "GIT_SSH_COMMAND names a command", config: sshConfigOf("github.com", "0"),
+			arrange: func(_ *testing.T, _ *gittest.Fixture, path string) []string {
+				return []string{"GIT_SSH_COMMAND=" + gittest.ShellWord(path)}
+			},
+		},
+		{
+			name: "core.sshCommand names a command", config: sshConfigOf("github.com", "0"),
+			arrange: func(_ *testing.T, f *gittest.Fixture, path string) []string {
+				f.Git("config", "core.sshCommand", gittest.ShellWord(path))
+
+				return nil
+			},
+		},
+		{
+			name: "GIT_SSH names a program", config: sshConfigOf("github.com", "0"),
+			arrange: func(_ *testing.T, _ *gittest.Fixture, path string) []string {
+				return []string{"GIT_SSH=" + path}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f, repo, _ := taggedRelease(t)
+			path, record := sshServing(t, sshHost{name: "github.com", config: tt.config, dir: f.OriginDir()})
+			repo = overSSH(f, repo, path)
+			if tt.arrange != nil {
+				repo.Runner.Env = append(repo.Runner.Env, tt.arrange(t, f, path)...)
+			}
+
+			err := repo.Push(t.Context(), topic, localTip(f))
+			assert.NilError(t, err)
+
+			assert.Check(t, is.DeepEqual(aliveIntervals(t, record), []string{""}))
+		})
+	}
+}
+
+func TestRepo_Push_WhenALaterSSHPushURLsConfigSetsAKeepalive_LeavesGitsSSHAsSetForEvery(t *testing.T) {
+	t.Parallel()
+	f, repo, _ := taggedRelease(t)
+	path, record := sshServing(t,
+		sshHost{name: "first.example", config: sshConfigOf("first.example", "0"), dir: f.OriginDir()},
+		sshHost{name: "second.example", config: sshConfigOf("second.example", "30"), dir: emptyBare(t, f)},
+	)
+	repo = overSSH(f, repo, path)
+	f.AddPushURL("git@first.example:jeffzi/tools.git")
+	f.AddPushURL("git@second.example:jeffzi/tools.git")
+
+	err := repo.Push(t.Context(), topic, localTip(f))
+	assert.NilError(t, err)
+
+	assert.Check(t, is.DeepEqual(aliveIntervals(t, record), []string{"", ""}))
+}
+
+func TestRepo_Push_WhenAPushURLsFormCannotBeRead_LeavesGitsSSHAsSetForEvery(t *testing.T) {
+	t.Parallel()
+	f, repo, _ := taggedRelease(t)
+	path, record := sshServing(t,
+		sshHost{name: "first.example", config: sshConfigOf("first.example", "0"), dir: f.OriginDir()},
+		sshHost{name: "second.example", config: sshConfigOf("second.example", "30"), dir: emptyBare(t, f)},
+	)
+	repo = overSSH(f, repo, path)
+	f.AddPushURL("git@first.example:jeffzi/tools.git")
+	f.AddPushURL("alice@second.example:jeffzi/tools.git")
+
+	err := repo.Push(t.Context(), topic, localTip(f))
+	assert.NilError(t, err)
+
+	assert.Check(t, is.DeepEqual(aliveIntervals(t, record), []string{"", ""}))
 }
 
 // useProcessEnv makes env the whole environment of the process until the test ends. It cannot run
