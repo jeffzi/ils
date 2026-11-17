@@ -465,13 +465,13 @@ func TestMerge_WhenAnInterruptLandsAsTheFirstWriteStarts_EndsPendingWithNothingW
 }
 
 // stallingGit returns a context that c ends once the scene's git call whose arguments start with
-// words is under way, a call that waits until the end kills it. It cannot run in a parallel test.
+// words is under way, a call that waits until the end kills it.
 func (c cut) stallingGit(words []string) func(t *testing.T, s *scene) context.Context {
 	return func(t *testing.T, s *scene) context.Context {
 		t.Helper()
 
 		addr, connected := gittest.SilentListener(t)
-		fakeGit(t, s, gittest.Fake{StallOn: words, StallAt: addr})
+		fakeGit(s, gittest.Fake{StallOn: words, StallAt: addr})
 
 		return c.once(t.Context(), connected)
 	}

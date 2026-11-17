@@ -205,10 +205,11 @@ func checkFailedCall(t *testing.T, err error, arg string) {
 }
 
 func TestParse_WhenAGitConfigReadFails_FailsNamingTheCall(t *testing.T) {
-	// Not parallel: gittest.FakeGit sets PATH for the whole process.
+	t.Parallel()
+
 	f := aliased(t)
 
-	_, err := guard.Parse(t.Context(), "git co topic", callerFailingOn(t, f, f.Dir(), "config"))
+	_, err := guard.Parse(t.Context(), "git co topic", callerFailingOn(f, f.Dir(), "config"))
 
 	checkFailedCall(t, err, "alias.co")
 }
@@ -267,10 +268,11 @@ func TestParse_WhenTheGitDirCannotBeRead_ReportsItUnknown(t *testing.T) {
 }
 
 func TestParse_WhenGitCannotReadTheGitDir_ReturnsGitsExitError(t *testing.T) {
-	// Not parallel: gittest.FakeGit sets PATH for the whole process.
+	t.Parallel()
+
 	f := gittest.New(t, "main")
 
-	_, err := guard.Parse(t.Context(), "git status", callerFailingOn(t, f, f.Dir(), "rev-parse"))
+	_, err := guard.Parse(t.Context(), "git status", callerFailingOn(f, f.Dir(), "rev-parse"))
 
 	_, ok := errors.AsType[*child.ExitError](err)
 	assert.Check(t, ok, "Parse() error = %v, want *child.ExitError", err)

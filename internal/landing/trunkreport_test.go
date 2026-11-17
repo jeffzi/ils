@@ -87,9 +87,9 @@ func fetchTagWords(tag string) []string {
 }
 
 func TestStatus_WhenOnTheTrunkAndTheFetchOfAVersionTagFails_ListsTheFailedTagFetchAsUnread(t *testing.T) {
-	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	t.Parallel()
 	s := statusScene(t, tagPastTheTrunk, ruledBy(forge.RulesProtect))
-	failGit(t, s, fetchTagWords(strayTag))
+	failGit(s, fetchTagWords(strayTag))
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
@@ -211,9 +211,9 @@ func TestStatus_WhenOnTheTrunkAndGhIsMissing_StillReportsWhatGitTells(t *testing
 }
 
 func TestStatus_WhenOnTheTrunkAndItsCountAgainstOriginsCannotBeRead_EndsBrokeNamingTheLocalTrunkRead(t *testing.T) {
-	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	t.Parallel()
 	s := statusScene(t, standOnTrunk, ruledBy(forge.RulesProtect))
-	failGit(t, s, divergenceRead())
+	failGit(s, divergenceRead())
 
 	got := seeStatusEnding(t, s, (*testing.T).Context, result.Broke)
 

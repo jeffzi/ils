@@ -231,7 +231,7 @@ func TestStatus_WhenOriginsTrunkIsNotLearnedOnTheTrunk_StandsOnTheLastFetchedTru
 }
 
 func TestStatus_WhenTheReadOfOriginsURLsIsCutShortOffAWorkBranch_EndsOnBranchWithoutAskingOrigin(t *testing.T) {
-	// Not parallel: stallingGit puts a git that stalls first on PATH with t.Setenv.
+	t.Parallel()
 	tests := []struct {
 		arrange  func(*gittest.Fixture)
 		build    forgeFor
@@ -243,6 +243,7 @@ func TestStatus_WhenTheReadOfOriginsURLsIsCutShortOffAWorkBranch_EndsOnBranchWit
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			s := statusScene(t, tt.arrange, tt.build)
 			ctx := byTimeLimit().stallingGit([]string{"remote", "get-url", "--push"})(t, s)
 
@@ -258,9 +259,10 @@ func TestStatus_WhenTheReadOfOriginsURLsIsCutShortOffAWorkBranch_EndsOnBranchWit
 }
 
 func TestStatus_WhenTheReadOfOriginsURLsIsCutShortWithNoTrunkFetched_EndsOnFixingWhatFailed(t *testing.T) {
-	// Not parallel: stallingGit puts a git that stalls first on PATH with t.Setenv.
+	t.Parallel()
 	for _, c := range cuts() {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			s := statusScene(t, func(f *gittest.Fixture) {
 				f.Publish(topic)
 				f.Git("remote", "set-head", "origin", "--delete")

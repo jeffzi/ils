@@ -643,10 +643,10 @@ func (r Repo) PushTag(ctx context.Context, name string) error {
 }
 
 // push pushes source to origin's ref with git's flags, classing a git that exits non-zero as Push
-// documents.
+// documents. Its ssh sends a keepalive as keepaliveConfig decides.
 func (r Repo) push(ctx context.Context, source, ref string, flags ...string) error {
 	spec := source + ":" + ref
-	args := slices.Concat([]string{"push", "--porcelain"}, flags, []string{OriginRemote, spec})
+	args := slices.Concat(r.keepaliveConfig(ctx), []string{"push", "--porcelain"}, flags, []string{OriginRemote, spec})
 	result, err := r.Runner.Run(ctx, args...)
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
@@ -669,6 +669,83 @@ func (r Repo) push(ctx context.Context, source, ref string, flags ...string) err
 	default:
 		return &PushError{Ref: ref, Stdout: hook, Stderr: exitErr.Stderr, Err: err}
 	}
+}
+
+const (
+	// keepaliveSSHCommand is the ssh command a push gives git when nothing the user set sends a
+	// keepalive. GitHub drops an ssh connection that stays silent for 360 s, as one does while a
+	// pre-push hook runs; a keepalive every 60 s keeps it open.
+	keepaliveSSHCommand = "ssh -o " + serverAliveOption + "=60"
+	// serverAliveOption is the ssh option that gives the seconds ssh lets a connection stay silent
+	// before it sends a keepalive; 0 sends none. `ssh -G` prints it in lowercase.
+	serverAliveOption = "ServerAliveInterval"
+)
+
+// keepaliveConfig returns the git options that make a push's ssh send a keepalive every 60 s, or
+// none to leave git's ssh as the user set it.
+//
+// It returns them only when origin has a push URL over ssh, no ssh command is configured, and
+// plain `ssh -G` reports a ServerAliveInterval of 0 for the host of every push URL over ssh: an
+// option on the command line would override the user's ssh config, which is why it is read first.
+// A push URL over https never runs git's ssh command, so it decides nothing. A push URL of a form
+// splitOrigin does not read returns none: it may reach its host over ssh with a ServerAliveInterval
+// of its own. A local path lands there too, and needs no keepalive.
+//
+// Any failure along the way, such as a configuration git cannot read or an ssh that is missing or
+// exits non-zero, returns none: the keepalive is never a reason for a push to fail, and the push
+// itself reports such a failure when it matters.
+func (r Repo) keepaliveConfig(ctx context.Context) []string {
+	command, err := r.configuredSSH(ctx)
+	if err != nil || command != (sshCommand{}) {
+		return nil
+	}
+
+	pushURLs, err := r.line(ctx, "remote", "get-url", "--push", "--all", OriginRemote)
+	if err != nil {
+		return nil
+	}
+
+	overSSH := false
+	for raw := range strings.SplitSeq(pushURLs, "\n") {
+		host, _, viaSSH, splitErr := splitOrigin(raw)
+		if splitErr != nil {
+			// A URL of a form ils does not read may still reach its host over ssh.
+			return nil
+		}
+
+		if !viaSSH {
+			continue
+		}
+
+		if !r.sendsNoKeepalive(ctx, host) {
+			return nil
+		}
+
+		overSSH = true
+	}
+
+	if !overSSH {
+		return nil
+	}
+
+	return []string{"-c", sshCommandKey + "=" + keepaliveSSHCommand}
+}
+
+// sendsNoKeepalive reports whether plain `ssh -G` says ssh sends no keepalive to host. An ssh that
+// fails, or that prints no ServerAliveInterval, reports false.
+func (r Repo) sendsNoKeepalive(ctx context.Context, host string) bool {
+	stdout, _, err := r.plainSSHConfig(ctx, host)
+	if err != nil {
+		return false
+	}
+
+	for line := range strings.SplitSeq(stdout, "\n") {
+		if key, interval, _ := strings.Cut(line, " "); strings.EqualFold(key, serverAliveOption) {
+			return strings.TrimSpace(interval) == "0"
+		}
+	}
+
+	return false
 }
 
 // pushRejected is the flag `git push --porcelain` gives a ref it did not update.

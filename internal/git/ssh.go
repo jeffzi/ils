@@ -49,15 +49,26 @@ const GitHubHost = "github.com"
 // An ssh missing from that PATH is a *child.ToolMissingError and a non-zero exit is a
 // *child.ExitError.
 func (r Repo) plainHostname(ctx context.Context, host string) (string, error) {
+	stdout, argv, err := r.plainSSHConfig(ctx, host)
+	if err != nil {
+		return "", err
+	}
+
+	return hostnameIn(stdout, argv)
+}
+
+// plainSSHConfig returns the config plain ssh connects to host with, as `ssh -G` prints it, and the
+// argv of that call. It finds and runs ssh as plainHostname does, and fails as it does.
+func (r Repo) plainSSHConfig(ctx context.Context, host string) (stdout string, argv []string, err error) {
 	// The host comes from a URL: after "--", one that starts with a dash is never read as an option.
 	args := []string{printConfigFlag, "--", host}
 
 	result, err := r.Runner.childProgram(sshProgram, sshInstallURL, args, r.Runner.lookPath).Run(ctx)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
-	return hostnameIn(result.Stdout, child.Argv(sshProgram, args))
+	return result.Stdout, child.Argv(sshProgram, args), nil
 }
 
 // hostnameIn returns the host the `ssh -G` output stdout names, read as canonicalHost reads it.

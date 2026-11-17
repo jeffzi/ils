@@ -319,20 +319,17 @@ func TestPush_WhenOriginStopsAnswering_RefusesNamingWhatItWasAskedFor(t *testing
 	})
 }
 
-// failGit makes the scene's git calls whose arguments start with words fail as gittest.FakeGit
-// makes them. It cannot run in a parallel test.
-func failGit(t *testing.T, s *scene, words []string) {
-	t.Helper()
-
-	fakeGit(t, s, gittest.Fake{FailOn: words})
+// failGit makes the scene's git calls whose arguments start with words fail as the fake git fails
+// them.
+func failGit(s *scene, words []string) {
+	fakeGit(s, gittest.Fake{FailOn: words})
 }
 
-// fakeGit puts a git first on PATH that answers the scene's git calls as fake says; every call it
-// does not fake runs the real git. It cannot run in a parallel test.
-func fakeGit(t *testing.T, s *scene, fake gittest.Fake) {
-	t.Helper()
-
-	s.deps.Repo.Runner.Env = append(s.deps.Repo.Runner.Env, gittest.FakeGit(t, fake)...)
+// fakeGit makes the fake git that TestMain puts first on PATH answer the scene's git calls as fake
+// says; every call it does not fake runs the real git. It changes only the scene's environment, so
+// tests that fake git differently can run in parallel.
+func fakeGit(s *scene, fake gittest.Fake) {
+	s.deps.Repo.Runner.Env = append(s.deps.Repo.Runner.Env, fake.Settings()...)
 }
 
 // failedRead is one git read of Push that fails for a reason no precondition covers.
@@ -395,16 +392,17 @@ func copyFailedReads() []failedRead {
 }
 
 // runFailedReads runs each row as a test of its own: Push ends broke on the row's read once the
-// git call the row names fails, having written nothing. It cannot run in a parallel test.
+// git call the row names fails, having written nothing.
 func runFailedReads(t *testing.T, rows []failedRead) {
 	t.Helper()
 
 	for _, tt := range rows {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			var words []string
 
 			s := newScene(t, func(f *gittest.Fixture) { words = tt.arrange(f) }, tt.script, false)
-			failGit(t, s, words)
+			failGit(s, words)
 			before := s.written()
 
 			got := landing.Push(t.Context(), s.deps, pushRequest())
@@ -416,6 +414,6 @@ func runFailedReads(t *testing.T, rows []failedRead) {
 }
 
 func TestPush_WhenGitReadFailsForNoPrecondition_BrokeNamingTheRead(t *testing.T) {
-	// Not parallel: each row puts a failing git first on PATH with t.Setenv.
+	t.Parallel()
 	runFailedReads(t, slices.Concat(branchFailedReads(), copyFailedReads()))
 }

@@ -135,7 +135,8 @@ Run `ils push` on a work branch with everything committed. It:
 
 1. checks every precondition before it pushes or opens anything, and refuses with a reason when
    one does not hold;
-2. pushes the branch by name, never with a force flag;
+2. pushes the branch by name, never with a force flag, with an ssh keep-alive when it applies (see
+   below);
 3. opens a pull request against origin's default branch when the branch has none, titled with the
    branch name and with an empty body;
 4. waits for the checks of the pushed commit until you stop it or its [time limit](#time-limits)
@@ -143,6 +144,25 @@ Run `ils push` on a work branch with everything committed. It:
 
 Run it again at any time: on a commit that is already pushed it pushes nothing and reports the
 verdict again.
+
+Git connects to origin before it runs your pre-push hook, and the connection sits idle while the
+hook runs. GitHub closes an SSH connection that has been idle for 6 minutes, so a slow hook would
+end the push. When origin is reached over SSH, `ils push` (and the tag push of `ils release`)
+therefore runs git with `-c core.sshCommand="ssh -o ServerAliveInterval=60"`, which makes ssh send
+a keep-alive every minute. It adds nothing when:
+
+- you set an ssh command of your own, in `GIT_SSH_COMMAND`, `core.sshCommand`, or `GIT_SSH`;
+- your ssh config sets a non-zero `ServerAliveInterval` for the host of one of origin's SSH push
+  URLs;
+- `ils` cannot read your ssh command, one of origin's push URLs, or run `ssh -G` on the host, or
+  `ssh -G` prints no `ServerAliveInterval` setting; the push then runs as git would run it.
+
+With an ssh command of your own, set the keep-alive in your ssh config instead:
+
+```text
+Host github.com
+  ServerAliveInterval 60
+```
 
 When another commit reaches the pull request while `ils push` waits, the checks GitHub reports are
 no longer those of the pushed commit. `ils push` then prints no verdict and ends
@@ -585,6 +605,13 @@ canceled:
 It ends pending, as `ils merge` does, when it was waiting for the checks or had finished reading.
 Stopped while it makes the tag or looks up the GitHub release, it says that it was interrupted,
 and the same command resumes as [Resume a broken release](#resume-a-broken-release) describes.
+
+When a time limit or a stop ends a run of git while git is still running, `ils` ends the processes
+git started that are still running too, such as your pre-push hook and what the hook started, so
+that none goes on after `ils` reports. A Ctrl-C at the terminal also reaches git and the hook
+directly; when it ends git before `ils` acts on it, a hook process that ignores Ctrl-C goes on
+running. A program that exits by itself keeps the processes it started, such as an ssh connection
+it shares.
 
 A second Ctrl-C or SIGTERM ends `ils` at once, with no result and none of the
 [exit codes](#exit-codes).

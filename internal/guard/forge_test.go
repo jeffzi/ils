@@ -310,12 +310,12 @@ func visibilityArgs(host string) []string {
 	return []string{"repo", "view", host + "/" + originRepo, "--json", "visibility"}
 }
 
-// seenAs scripts, for the rest of the test, a gh logged in to host that reads originRepo there
-// as visibility. It sets GH_PATH for the whole process, so the test is not parallel.
-func seenAs(t *testing.T, host, visibility string) {
+// seenAs scripts, for the rest of the test, the gh that caller runs as one logged in to host that
+// reads originRepo there as visibility.
+func seenAs(t *testing.T, caller *guard.Caller, host, visibility string) {
 	t.Helper()
 
-	ghtest.Setup(t,
+	answeringGh(t, caller,
 		ghtest.Exits(ghtest.LoggedIn(host), ghtest.LoginArgs(host)...),
 		ghtest.Exits(ghtest.Visibility(visibility), visibilityArgs(host)...),
 	)
@@ -353,9 +353,9 @@ func checkPushAllowedExplicitly(t *testing.T, caller guard.Caller, command strin
 }
 
 func TestJudge_WhenOriginIsPublic_AllowsAnIlsPushExplicitly(t *testing.T) {
-	// Not parallel: seenAs sets GH_PATH for the whole process.
+	t.Parallel()
 	caller := pushingTo(t, githubHost)
-	seenAs(t, githubHost, "PUBLIC")
+	seenAs(t, &caller, githubHost, "PUBLIC")
 	tests := []struct {
 		name    string
 		command string
@@ -365,23 +365,25 @@ func TestJudge_WhenOriginIsPublic_AllowsAnIlsPushExplicitly(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			checkPushAllowedExplicitly(t, caller, tt.command)
 		})
 	}
 }
 
 func TestJudge_WhenOriginIsNotPublic_AsksBeforeAnIlsPushSayingItIsNotPublic(t *testing.T) {
-	// Not parallel: seenAs sets GH_PATH for the whole process.
+	t.Parallel()
 	caller := pushingTo(t, githubHost)
-	seenAs(t, githubHost, "PRIVATE")
+	seenAs(t, &caller, githubHost, "PRIVATE")
 
 	checkPushJudged(t, caller, guard.Ask, "is not public")
 }
 
 func TestJudge_WhenOriginsVisibilityCannotBeRead_AsksBeforeAnIlsPushSayingWhy(t *testing.T) {
-	// Not parallel: ghtest.Setup sets GH_PATH for the whole process.
+	t.Parallel()
 	caller := pushingTo(t, enterpriseHost)
-	ghtest.Setup(t,
+	answeringGh(t, &caller,
 		ghtest.Exits(ghtest.LoggedIn(enterpriseHost), ghtest.LoginArgs(enterpriseHost)...),
 		ghtest.Exits(ghtest.ServerError(), visibilityArgs(enterpriseHost)...),
 	)
@@ -440,7 +442,7 @@ func pushingToTwo(t *testing.T) (here guard.Caller, thereGitDir string) {
 	here = pushingTo(t, githubHost)
 	there := gittest.New(t, "main")
 	setGitHubPushURL(there, enterpriseHost)
-	ghtest.Setup(t,
+	answeringGh(t, &here,
 		ghtest.Exits(ghtest.LoggedIn(githubHost), ghtest.LoginArgs(githubHost)...),
 		ghtest.Exits(ghtest.Visibility("PUBLIC"), visibilityArgs(githubHost)...),
 		ghtest.Exits(ghtest.LoggedIn(enterpriseHost), ghtest.LoginArgs(enterpriseHost)...),
@@ -451,7 +453,7 @@ func pushingToTwo(t *testing.T) (here guard.Caller, thereGitDir string) {
 }
 
 func TestJudge_WhenTheCommandSetsTheGitDirOfTheIlsPush_ReadsTheVisibilityOfThatRepository(t *testing.T) {
-	// Not parallel: ghtest.Setup sets GH_PATH for the whole process.
+	t.Parallel()
 	caller, thereGitDir := pushingToTwo(t)
 	caller.Env = map[string]string{"GIT_DIR": thereGitDir}
 	const command = "ils push"
@@ -462,7 +464,7 @@ func TestJudge_WhenTheCommandSetsTheGitDirOfTheIlsPush_ReadsTheVisibilityOfThatR
 }
 
 func TestJudge_WhenOnlyTheGuardsOwnGitEnvironmentSetsAGitDir_ReadsTheVisibilityOfTheRepositoryItRunsIn(t *testing.T) {
-	// Not parallel: ghtest.Setup sets GH_PATH for the whole process.
+	t.Parallel()
 	caller, thereGitDir := pushingToTwo(t)
 	caller.Git.Env = append(slices.Clone(caller.Git.Env), "GIT_DIR="+thereGitDir)
 	const command = "ils push"
@@ -473,6 +475,7 @@ func TestJudge_WhenOnlyTheGuardsOwnGitEnvironmentSetsAGitDir_ReadsTheVisibilityO
 }
 
 func TestJudge_WhenOriginNamesNoRepository_AllowsAnIlsPushExplicitly(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		arrange func(t *testing.T, f *gittest.Fixture) string
 		name    string
@@ -492,9 +495,9 @@ func TestJudge_WhenOriginNamesNoRepository_AllowsAnIlsPushExplicitly(t *testing.
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Not parallel: seenAs sets GH_PATH for the whole process.
+			t.Parallel()
 			f, caller := standingOn(t, "main", "topic")
-			seenAs(t, githubHost, "PRIVATE")
+			seenAs(t, &caller, githubHost, "PRIVATE")
 			caller.Dir = tt.arrange(t, f)
 
 			checkPushAllowedExplicitly(t, caller, "ils push")
@@ -503,9 +506,10 @@ func TestJudge_WhenOriginNamesNoRepository_AllowsAnIlsPushExplicitly(t *testing.
 }
 
 func TestJudge_WhenOriginsPushURLCannotBeReadForAnIlsPush_RefusesSayingWhatBroke(t *testing.T) {
-	// Not parallel: gittest.FakeGit sets PATH for the whole process.
+	t.Parallel()
+
 	f, _ := standingOn(t, "main", "topic")
-	caller := callerFailingOn(t, f, f.Dir(), "remote", "get-url", "--push")
+	caller := callerFailingOn(f, f.Dir(), "remote", "get-url", "--push")
 
 	checkJudgedRow(t, caller, judged{command: "ils push", wantNamed: gittest.FailedSaid, want: guard.Refuse})
 }

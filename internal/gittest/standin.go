@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -51,9 +52,20 @@ const (
 	// lingerAtEnv holds the address a spawner's lingering copy holds; its presence makes the test
 	// binary act as that copy.
 	lingerAtEnv = "ILS_GITTEST_LINGER_AT"
+	// gitName is the name a fake answers to as git, found on PATH under it.
+	gitName = "git"
+	// gittestPackage is the import path of this package, which names builtRealGit to the linker.
+	gittestPackage = "github.com/jeffzi/ils/internal/gittest"
+	// fakeGitPackage is the program InstallFakeGit builds.
+	fakeGitPackage = gittestPackage + "/git"
 )
 
-// Fake says how the git FakeGit puts on PATH answers. A call it does not fake runs the real git.
+// builtRealGit is the path of the real git, which InstallFakeGit sets when it builds the fake; it
+// is empty in every other build.
+var builtRealGit string //nolint:gochecknoglobals // the linker's -X sets only a package-level string
+
+// Fake says how the git FakeGit or InstallFakeGit puts on PATH answers. A call it does not fake
+// runs the real git.
 //
 // A call that more than one setting fakes gets the first that matches, in this order: Version,
 // FailOn, FailAfterOn, StallOn, AnswerOn.
@@ -84,7 +96,9 @@ type Fake struct {
 }
 
 // Main makes the test binary act as git when FakeGit arranged for it, or as a spawner or its
-// lingering copy when Spawner did, and reports whether it did.
+// lingering copy when Spawner did, and reports whether it did. Run under git's name with no real
+// git recorded in the environment, as the program InstallFakeGit builds always is, it acts as git
+// and runs the real git built into it for the calls it does not fake.
 //
 // A package's TestMain calls it before anything else and, when served is true, exits with code
 // without running a test.
@@ -102,10 +116,86 @@ func Main() (code int, served bool) {
 
 	realGit := os.Getenv(realGitEnv)
 	if realGit == "" {
-		return 0, false
+		if filepath.Base(os.Args[0]) != gitName {
+			return 0, false
+		}
+
+		if builtRealGit == "" {
+			return broken(errors.New("find the real git: none was built into the fake; build it with InstallFakeGit")), true
+		}
+
+		realGit = builtRealGit
 	}
 
 	return serveGit(ctx, realGit, os.Args[1:]), true
+}
+
+// InstallFakeGit builds the fake git as a program of its own, without the race detector, into a
+// new temporary directory, puts that directory first on the process PATH, and returns a cleanup
+// that puts PATH back and removes the directory.
+//
+// A package's TestMain calls it once, before running its tests, and calls the cleanup after them.
+// The fake answers a call as the settings of Fake.Settings in the call's environment say, and runs
+// the real git when the environment carries none, so a test fakes git without touching the process
+// environment and can run in parallel. The real git is the git first on PATH when InstallFakeGit
+// runs, built into the fake, so the fake finds it whatever PATH a call carries. The fake must run
+// from inside this module, where `go build` finds its package.
+func InstallFakeGit() (cleanup func(), err error) {
+	realGit, err := exec.LookPath(gitName)
+	if err != nil {
+		return nil, fmt.Errorf("find the real git: %w", err)
+	}
+
+	// `go build` splits -ldflags on spaces outside quotes and has no escape inside them.
+	if strings.ContainsRune(realGit, '\'') {
+		return nil, fmt.Errorf("build the real git %s into the fake: its path holds a single quote", realGit)
+	}
+
+	dir, err := os.MkdirTemp("", "ils-fake-git-")
+	if err != nil {
+		return nil, fmt.Errorf("make a directory for the fake git: %w", err)
+	}
+
+	bin := filepath.Join(dir, gitName)
+	ldflags := "-ldflags=-X '" + gittestPackage + ".builtRealGit=" + realGit + "'"
+	//nolint:gosec // G204: the arguments are constants of this package, a path it made, and the path of git.
+	out, err := exec.CommandContext(context.Background(), "go", "build", ldflags, "-o", bin, fakeGitPackage).CombinedOutput()
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("build the fake git: %w\n%s", err, out), os.RemoveAll(dir))
+	}
+
+	before, hadPath := os.LookupEnv("PATH")
+	if err := os.Setenv("PATH", firstOnPath(dir, before)); err != nil {
+		return nil, errors.Join(fmt.Errorf("put the fake git first on PATH: %w", err), os.RemoveAll(dir))
+	}
+
+	return func() {
+		restore := os.Unsetenv("PATH")
+		if hadPath {
+			restore = os.Setenv("PATH", before)
+		}
+
+		// The cleanup runs after the tests, when nothing is left to fail: printing is all that is
+		// left to report a directory left behind or a PATH not put back.
+		if err := errors.Join(restore, os.RemoveAll(dir)); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "gittest: clean up the fake git: %v\n", err)
+		}
+	}, nil
+}
+
+// Settings returns the environment entries that make the fake git answer as f says, for a git
+// runner to append to its environment. Every entry is present, empty when unused, so that they
+// replace the settings of an earlier Fake that the environment already carries.
+func (f Fake) Settings() []string {
+	return []string{
+		versionEnv + "=" + f.Version,
+		failOnEnv + "=" + strings.Join(f.FailOn, wordsSep),
+		failAfterOnEnv + "=" + strings.Join(f.FailAfterOn, wordsSep),
+		stallOnEnv + "=" + strings.Join(f.StallOn, wordsSep),
+		stallAtEnv + "=" + f.StallAt,
+		answerOnEnv + "=" + strings.Join(f.AnswerOn, wordsSep),
+		answerEnv + "=" + f.Answer,
+	}
 }
 
 // Linger makes the test binary act as the lingering copy StartLingerer starts, when it is one, and
@@ -159,29 +249,25 @@ func FakeGit(tb testing.TB, fake Fake) []string {
 
 	realGit := findRealGit(tb)
 
-	var settings []string
+	// Every setting is set, empty when unused, so that this call's settings replace an earlier
+	// call's in the process environment too.
+	settings := slices.Concat([]string{realGitEnv + "=" + realGit, raceEnv + "=" + RaceSetting()}, fake.Settings())
+	SetEnvEntries(tb, settings)
 
-	set := func(key, value string) {
-		tb.Setenv(key, value)
-
-		settings = append(settings, key+"="+value)
-	}
-
-	set(realGitEnv, realGit)
-	set(raceEnv, RaceSetting())
-	// Every variable is set, empty when unused, so that this call's settings replace an earlier
-	// call's both in the process environment and in a runner that appends both calls' settings.
-	set(versionEnv, fake.Version)
-	set(failOnEnv, strings.Join(fake.FailOn, wordsSep))
-	set(failAfterOnEnv, strings.Join(fake.FailAfterOn, wordsSep))
-	set(stallOnEnv, strings.Join(fake.StallOn, wordsSep))
-	set(stallAtEnv, fake.StallAt)
-	set(answerOnEnv, strings.Join(fake.AnswerOn, wordsSep))
-	set(answerEnv, fake.Answer)
-
-	LinkAs(tb, "git")
+	LinkAs(tb, gitName)
 
 	return settings
+}
+
+// SetEnvEntries sets each NAME=value entry in the process environment for the rest of the test, as
+// tb.Setenv does, so the test cannot be parallel.
+func SetEnvEntries(tb testing.TB, entries []string) {
+	tb.Helper()
+
+	for _, entry := range entries {
+		name, value, _ := strings.Cut(entry, "=")
+		tb.Setenv(name, value)
+	}
 }
 
 // findRealGit returns the path of the real git, which a fake runs for the calls it does not fake
@@ -292,7 +378,7 @@ func serveGit(ctx context.Context, realGit string, args []string) int {
 		return say(os.Stdout, os.Getenv(answerEnv), "the faked answer", 0)
 	}
 
-	return runRealGit(ctx, realGit, args)
+	return becomeRealGit(realGit, args)
 }
 
 // say prints line to w and returns code, or BrokenCode when the print fails; what names the line in
@@ -388,6 +474,17 @@ func runRealGit(ctx context.Context, realGit string, args []string) int {
 	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		return exitErr.ExitCode()
 	}
+
+	return broken(fmt.Errorf("start the real git: %w", err))
+}
+
+// becomeRealGit replaces the fake with the real git, run with args, the environment, and the
+// standard streams, so that the caller sees git's pid, and a signal that kills git or git's exit
+// status reaches it as with the real git. It returns, with BrokenCode, only when it cannot.
+func becomeRealGit(realGit string, args []string) int {
+	argv := append([]string{realGit}, args...)
+	//nolint:gosec // G204: the fake names the real git and passes on the arguments it was given.
+	err := syscall.Exec(realGit, argv, os.Environ())
 
 	return broken(fmt.Errorf("start the real git: %w", err))
 }

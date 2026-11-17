@@ -1,9 +1,11 @@
 package ghtest_test
 
 import (
+	"debug/buildinfo"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -146,4 +148,48 @@ func TestFake_Holding_WhenNoAnswerIsHeld_StaysOpen(t *testing.T) {
 		t.Error("Holding() closed, want it open since no answer was held")
 	default:
 	}
+}
+
+// install builds the fake gh for the rest of the test, which puts GH_PATH back even when the
+// cleanup Install returns does not.
+func install(t *testing.T) {
+	t.Helper()
+
+	t.Setenv(github.PathVariable, os.Getenv(github.PathVariable))
+	cleanup, err := ghtest.Install()
+	assert.NilError(t, err)
+	t.Cleanup(cleanup)
+}
+
+func TestInstall_WhenSettingsScriptTheCall_AnswersAsTheySay(t *testing.T) {
+	install(t)
+	args := []string{"pr", "view", "7"}
+	fake := ghtest.Script(t, ghtest.Says("scripted\n", args...))
+	runner := github.Runner{Env: slices.Concat(os.Environ(), fake.Settings())}
+
+	got, err := runner.Run(t.Context(), args...)
+	assert.NilError(t, err)
+
+	assert.Check(t, is.Equal(got.Stdout, "scripted\n"))
+	assert.Check(t, is.DeepEqual(fake.Calls(), [][]string{github.Argv(args)}))
+}
+
+func TestInstall_BuildsAGhWithoutTheRaceDetector(t *testing.T) {
+	install(t)
+
+	info, err := buildinfo.ReadFile(os.Getenv(github.PathVariable))
+	assert.NilError(t, err)
+
+	for _, setting := range info.Settings {
+		assert.Check(t, setting.Key != "-race" || setting.Value != "true", "the fake gh was built with -race")
+	}
+}
+
+func TestSetup_WhenNoFakeGhIsInstalled_RunsTheTestBinaryAsGh(t *testing.T) {
+	self, err := os.Executable()
+	assert.NilError(t, err)
+
+	ghtest.Setup(t, ghtest.Says("scripted\n", "pr", "view", "7"))
+
+	assert.Check(t, is.Equal(os.Getenv(github.PathVariable), self))
 }

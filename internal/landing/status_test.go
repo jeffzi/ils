@@ -559,9 +559,9 @@ func TestStatus_WhenAForgeReadFails_ReportsTheFailedRead(t *testing.T) {
 }
 
 func TestStatus_WhenAGitReadFails_ReportsTheFailedReadBesideTheRest(t *testing.T) {
-	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	t.Parallel()
 	s := statusScene(t, publishTopic, greenOpen())
-	failGit(t, s, divergenceRead())
+	failGit(s, divergenceRead())
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
@@ -601,9 +601,9 @@ func TestStatus_WhenTheFetchOfOriginsCopyFails_ListsTheReadWithoutCountingTheCop
 }
 
 func TestStatus_WhenWhetherOriginsCopyCarriesTheFirstCommitCannotBeRead_EndsOnFixingWhatFailed(t *testing.T) {
-	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	t.Parallel()
 	s := statusScene(t, aheadOfCopy, greenOpen())
-	failGit(t, s, []string{"merge-base", "--is-ancestor"})
+	failGit(s, []string{"merge-base", "--is-ancestor"})
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
@@ -612,7 +612,7 @@ func TestStatus_WhenWhetherOriginsCopyCarriesTheFirstCommitCannotBeRead_EndsOnFi
 }
 
 func TestStatus_WhenAReadOfTheBranchFails_EndsOnFixingWhatFailed(t *testing.T) {
-	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	t.Parallel()
 	tests := []struct {
 		name  string
 		read  string
@@ -624,8 +624,9 @@ func TestStatus_WhenAReadOfTheBranchFails_EndsOnFixingWhatFailed(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			s := statusScene(t, publishTopic, greenOpen())
-			failGit(t, s, tt.words)
+			failGit(s, tt.words)
 
 			got := seeStatus(t, s, (*testing.T).Context)
 
@@ -644,10 +645,10 @@ func trunkFetch() []string {
 func fetchedRead() []string { return []string{"rev-parse", "--verify", "refs/ils/fetched/*"} }
 
 func TestStatus_WhenWhatTheFetchOfOriginsTrunkFetchedCannotBeReadOnAWorkBranch_EndsOnFixingWhatFailed(t *testing.T) {
-	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	t.Parallel()
 	// The branch has no copy on origin, so the fetch of origin's trunk is the only fetch.
 	s := statusScene(t, nil, greenOpen())
-	failGit(t, s, fetchedRead())
+	failGit(s, fetchedRead())
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
@@ -656,7 +657,7 @@ func TestStatus_WhenWhatTheFetchOfOriginsTrunkFetchedCannotBeReadOnAWorkBranch_E
 }
 
 func TestStatus_WhenOriginCannotBeReachedOnAWorkBranch_EndsOnAPushAsThePushWould(t *testing.T) {
-	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	t.Parallel()
 	tests := []struct {
 		name  string
 		words []string
@@ -667,8 +668,9 @@ func TestStatus_WhenOriginCannotBeReachedOnAWorkBranch_EndsOnAPushAsThePushWould
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			s := statusScene(t, publishTopic, greenOpen())
-			failGit(t, s, tt.words)
+			failGit(s, tt.words)
 
 			got := seeStatus(t, s, (*testing.T).Context)
 
@@ -680,13 +682,14 @@ func TestStatus_WhenOriginCannotBeReachedOnAWorkBranch_EndsOnAPushAsThePushWould
 }
 
 func TestStatus_WhenAReadOfWhetherAnotherBranchCarriesTheWorkFails_EndsOnFixingWhatFailed(t *testing.T) {
-	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	t.Parallel()
 	for _, tt := range branchFailedReads() {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			var words []string
 
 			s := statusScene(t, func(f *gittest.Fixture) { words = tt.arrange(f) }, viewing(cleanHead(), passing()))
-			failGit(t, s, words)
+			failGit(s, words)
 
 			got := seeStatus(t, s, (*testing.T).Context)
 
@@ -704,7 +707,7 @@ func rewritePublished(f *gittest.Fixture) {
 }
 
 func TestStatus_WhenAReadOfWhetherAnotherBranchCarriesTheWorkFailsOnADivergedBranch_EndsOnMergingOriginsCopy(t *testing.T) {
-	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	t.Parallel()
 	// Push refuses the diverged branch before it reads whether another branch carries the work.
 	tests := []struct {
 		// arrange changes the repository and returns the arguments of the git call that is made to fail.
@@ -734,10 +737,11 @@ func TestStatus_WhenAReadOfWhetherAnotherBranchCarriesTheWorkFailsOnADivergedBra
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			var words []string
 
 			s := statusScene(t, func(f *gittest.Fixture) { words = tt.arrange(f) }, viewing(cleanHead(), passing()))
-			failGit(t, s, words)
+			failGit(s, words)
 
 			got := seeStatus(t, s, (*testing.T).Context)
 
@@ -748,12 +752,12 @@ func TestStatus_WhenAReadOfWhetherAnotherBranchCarriesTheWorkFailsOnADivergedBra
 }
 
 func TestStatus_WhenTheWorkingTreeCannotBeReadAndTheLocalTrunkIsAhead_EndsOnFixingWhatFailed(t *testing.T) {
-	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	t.Parallel()
 	s := statusScene(t, func(f *gittest.Fixture) {
 		publishTopic(f)
 		f.AdvanceTrunk()
 	}, greenOpen())
-	failGit(t, s, []string{"status", "--porcelain=v1"})
+	failGit(s, []string{"status", "--porcelain=v1"})
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
@@ -761,7 +765,7 @@ func TestStatus_WhenTheWorkingTreeCannotBeReadAndTheLocalTrunkIsAhead_EndsOnFixi
 }
 
 func TestStatus_WhenTheLocalTrunkCannotBeRead_EndsBrokeNamingTheRead(t *testing.T) {
-	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	t.Parallel()
 	tests := []struct {
 		arrange func(*gittest.Fixture)
 		build   forgeFor
@@ -785,8 +789,9 @@ func TestStatus_WhenTheLocalTrunkCannotBeRead_EndsBrokeNamingTheRead(t *testing.
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			s := statusScene(t, tt.arrange, tt.build)
-			failGit(t, s, tt.fails)
+			failGit(s, tt.fails)
 
 			got := seeStatusEnding(t, s, (*testing.T).Context, result.Broke)
 
@@ -813,7 +818,7 @@ func TestStatus_WhenTheSSHOriginsURLsNeedIsMissing_EndsOnInstallingSSH(t *testin
 }
 
 func TestStatus_WhenAToolIsUnfitOffAWorkBranch_EndsOnTheStepBranchEndsOn(t *testing.T) {
-	// Not parallel: a row's fakeGit puts a git that prints its own version first on PATH with t.Setenv.
+	t.Parallel()
 	tests := []struct {
 		spoil   func(*testing.T, *scene)
 		arrange func(*gittest.Fixture)
@@ -826,7 +831,7 @@ func TestStatus_WhenAToolIsUnfitOffAWorkBranch_EndsOnTheStepBranchEndsOn(t *test
 	}{
 		{
 			name: "git is older than the minimum on the trunk", arrange: standOnTrunk, build: ruledBy(forge.RulesProtect),
-			spoil: func(t *testing.T, s *scene) { fakeGit(t, s, gittest.Fake{Version: "git version 1.0.0"}) },
+			spoil: func(_ *testing.T, s *scene) { fakeGit(s, gittest.Fake{Version: "git version 1.0.0"}) },
 			want:  expect("upgrade git", startCommand), read: readGitVersion,
 		},
 		{
@@ -837,6 +842,7 @@ func TestStatus_WhenAToolIsUnfitOffAWorkBranch_EndsOnTheStepBranchEndsOn(t *test
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			s := statusScene(t, tt.arrange, tt.build)
 			tt.spoil(t, s)
 
@@ -875,7 +881,7 @@ func aheadOfTreeRows() []aheadOfTreeRow {
 	return []aheadOfTreeRow{
 		{
 			name: "git is older than the minimum", script: greenOpen(), want: pushCommand().after("upgrade git"),
-			spoil: func(t *testing.T, s *scene) { fakeGit(t, s, gittest.Fake{Version: "git version 1.0.0"}) },
+			spoil: func(_ *testing.T, s *scene) { fakeGit(s, gittest.Fake{Version: "git version 1.0.0"}) },
 		},
 		{
 			name: "the ssh origin's URLs need is missing", script: greenOpen(), want: pushCommand().after("install ssh"),
@@ -894,9 +900,10 @@ func aheadOfTreeRows() []aheadOfTreeRow {
 }
 
 func TestStatus_WhenACheckBeforeTheWorkingTreeRefusesBesideChangedTrackedFiles_EndsOnItsStep(t *testing.T) {
-	// Not parallel: a row's fakeGit puts a git that prints its own version first on PATH with t.Setenv.
+	t.Parallel()
 	for _, tt := range aheadOfTreeRows() {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			s := statusScene(t, func(f *gittest.Fixture) {
 				dirtyPublished(f)
 
@@ -925,9 +932,9 @@ func TestStatus_WhenTheBranchHasNoCommitPastTheTrunk_EndsOnAFirstPush(t *testing
 }
 
 func TestStatus_WhenGitsVersionCannotBeRead_EndsOnFixingWhatFailed(t *testing.T) {
-	// Not parallel: failGit puts a failing git first on PATH with t.Setenv.
+	t.Parallel()
 	s := statusScene(t, publishTopic, greenOpen())
-	failGit(t, s, []string{"--version"})
+	failGit(s, []string{"--version"})
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
@@ -936,7 +943,7 @@ func TestStatus_WhenGitsVersionCannotBeRead_EndsOnFixingWhatFailed(t *testing.T)
 }
 
 func TestStatus_WhenAReadOfTheChecksIsCutShort_EndsOnPush(t *testing.T) {
-	// Not parallel: stallingGit puts a git that stalls first on PATH with t.Setenv.
+	t.Parallel()
 	tests := []struct {
 		name  string
 		read  string
@@ -951,6 +958,7 @@ func TestStatus_WhenAReadOfTheChecksIsCutShort_EndsOnPush(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			s := statusScene(t, aheadOfCopy, greenOpen())
 			ctx := byTimeLimit().stallingGit(tt.words)(t, s)
 

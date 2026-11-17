@@ -184,11 +184,12 @@ func TestJudge_RefusesACleanWhereTheRepositoryLiftsTheForceRequirement(t *testin
 }
 
 func TestJudge_WhenTheCleanForceSettingCannotBeRead_RefusesNamingTheRead(t *testing.T) {
-	// Not parallel: gittest.FakeGit sets PATH for the whole process.
+	t.Parallel()
+
 	f, _ := standingOn(t, "main", "topic")
 	const command = "git clean -d"
 
-	checkJudgedRow(t, callerFailingOn(t, f, f.Dir(), "config"), judged{command: command, want: guard.Refuse, wantNamed: gittest.FailedSaid})
+	checkJudgedRow(t, callerFailingOn(f, f.Dir(), "config"), judged{command: command, want: guard.Refuse, wantNamed: gittest.FailedSaid})
 }
 
 func TestJudge_RefusesARestoreThatDiscardsWork(t *testing.T) {
@@ -305,11 +306,12 @@ func TestJudge_RefusesGitHistoryRedirectedAroundACdOntoAWorkTreeFile(t *testing.
 }
 
 func TestJudge_WhenWhetherTheTargetIsInAWorkTreeCannotBeRead_RefusesNamingTheRead(t *testing.T) {
-	// Not parallel: gittest.FakeGit sets PATH for the whole process.
+	t.Parallel()
+
 	f, _ := standingOn(t, "main", "topic")
 	command := "git show HEAD:README.md > " + gittest.ShellWord(filepath.Join(outsideDir(t), "x.md"))
 
-	checkJudgedRow(t, callerFailingOn(t, f, f.Dir(), "rev-parse", "--show-toplevel"), judged{command: command, want: guard.Refuse, wantNamed: gittest.FailedSaid})
+	checkJudgedRow(t, callerFailingOn(f, f.Dir(), "rev-parse", "--show-toplevel"), judged{command: command, want: guard.Refuse, wantNamed: gittest.FailedSaid})
 }
 
 func TestJudge_AllowsAGitOperationThatKeepsWork(t *testing.T) {
@@ -597,12 +599,13 @@ func TestJudge_RefusesANonLiteralArgumentAFlagCouldHideIn(t *testing.T) {
 }
 
 func TestJudge_WhenAWorkTreeReadFails_RefusesSayingWhatBroke(t *testing.T) {
-	// Not parallel: gittest.FakeGit sets PATH for the whole process.
+	t.Parallel()
+
 	f, _ := standingOn(t, "main", "topic")
 	clean := addWorktree(t, f, filepath.Join(outsideDir(t), "clean"))
-	caller := callerFailingOn(t, f, f.Dir(), "status")
+	caller := callerFailingOn(f, f.Dir(), "status")
 
-	checkJudgedInTurn(t, caller, []judged{
+	checkJudged(t, caller, []judged{
 		{name: "rebase", command: "git rebase main", want: guard.Refuse, wantNamed: gittest.FailedSaid},
 		{name: "worktree remove", command: "git worktree remove " + gittest.ShellWord(clean), want: guard.Refuse, wantNamed: gittest.FailedSaid},
 	})

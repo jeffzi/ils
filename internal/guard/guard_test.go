@@ -104,9 +104,10 @@ func TestJudge_AllowsEverydayCommandsOutsideAnyRepository(t *testing.T) {
 }
 
 func TestJudge_WhenAGitReadFails_RefusesSayingWhatBroke(t *testing.T) {
-	// Not parallel: gittest.FakeGit sets PATH for the whole process.
+	t.Parallel()
+
 	f := aliased(t)
-	caller := callerFailingOn(t, f, f.Dir(), "config")
+	caller := callerFailingOn(f, f.Dir(), "config")
 
 	checkJudgedRow(t, caller, judged{command: "git co topic", want: guard.Refuse, wantNamed: gittest.FailedSaid})
 }
@@ -226,8 +227,8 @@ func checkJudged(t *testing.T, caller guard.Caller, tests []judged) {
 	}
 }
 
-// checkJudgedInTurn is checkJudged for rows that share process environment (a scripted gh or git
-// on PATH), so no row runs in parallel.
+// checkJudgedInTurn is checkJudged for rows that share process environment (the gh GH_PATH
+// names), so no row runs in parallel.
 func checkJudgedInTurn(t *testing.T, caller guard.Caller, tests []judged) {
 	t.Helper()
 
@@ -303,8 +304,8 @@ func checkJudgedIn(t *testing.T, caller guard.Caller, tests []placed, want expec
 	}
 }
 
-// checkJudgedInInTurn is checkJudgedIn for rows that share process environment (a scripted gh on
-// GH_PATH), so no row runs in parallel.
+// checkJudgedInInTurn is checkJudgedIn for rows that share process environment (the gh GH_PATH
+// names), so no row runs in parallel.
 func checkJudgedInInTurn(t *testing.T, caller guard.Caller, tests []placed, want expectation) {
 	t.Helper()
 

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -28,9 +29,13 @@ type ExitError struct {
 
 // Error joins the argv, the exit status, and the trimmed stderr when there is any.
 func (e *ExitError) Error() string {
-	message := fmt.Sprintf("%s: exit status %d", CommandLine(e.Argv), e.Code)
-	if stderr := strings.TrimSpace(e.Stderr); stderr != "" {
-		message += ": " + stderr
+	return withStderr(fmt.Sprintf("%s: exit status %d", CommandLine(e.Argv), e.Code), e.Stderr)
+}
+
+// withStderr appends the trimmed stderr to message when there is any.
+func withStderr(message, stderr string) string {
+	if trimmed := strings.TrimSpace(stderr); trimmed != "" {
+		return message + ": " + trimmed
 	}
 
 	return message
@@ -79,20 +84,21 @@ func failure(ctx context.Context, argv []string, runErr error, stderr string) er
 		return &ExitError{Argv: argv, Code: exitErr.ExitCode(), Stderr: stderr}
 	}
 
-	return &KilledError{Argv: argv, Err: runErr}
+	return &KilledError{Argv: argv, Err: runErr, Stderr: stderr}
 }
 
 // KilledError reports a program that started and never exited: a signal ended it, after it may
 // have done part of its work.
 type KilledError struct {
 	// Err is the *exec.ExitError the run ended with.
-	Err  error
-	Argv []string
+	Err    error
+	Stderr string
+	Argv   []string
 }
 
-// Error names the command and the signal that ended it.
+// Error names the command, the signal that ended it, and the trimmed stderr when there is any.
 func (e *KilledError) Error() string {
-	return CommandLine(e.Argv) + ": " + e.Err.Error()
+	return withStderr(CommandLine(e.Argv)+": "+e.Err.Error(), e.Stderr)
 }
 
 // Unwrap returns the error the run ended with.
@@ -164,15 +170,21 @@ func Environ(env []string) []string {
 // Run runs the program and returns its stdout and stderr when it exits zero.
 //
 // A non-zero exit is an *ExitError, which holds the stderr, and Run still returns the stdout. A
-// program a signal ended is a *KilledError. A run that ctx ended, or that an interrupt of the
-// terminal ended, wraps the context's error, context.Canceled for an interrupt. Every failure but a
-// non-zero exit returns an empty Output, so that a half-written stdout is never read.
+// program a signal ended is a *KilledError, which holds the stderr too. A run that ctx ended, or
+// that an interrupt of the terminal ended, wraps the context's error, context.Canceled for an
+// interrupt. Every failure but a non-zero exit returns an empty Output, so that a half-written
+// stdout is never read.
 //
 // A tool that cannot be found is a *ToolMissingError, and so is one that cannot be started for want
 // of a file when StartWantingAFileIsMissing is set. Run does
 // not wait for a process the tool started and left behind: once the tool has exited or been
 // killed, output pipes still held open are closed after pipeGrace, and a tool that exited zero
 // still succeeds, its own output being complete.
+//
+// When ctx ends while the tool runs, Run kills the tool together with every process descended from
+// it that is still running, such as a hook git runs and what the hook started, so that none goes on
+// working after the run has ended. A tool that exits by itself leaves the processes it started
+// alone: an ssh connection it shares, or an agent, is meant to outlive it.
 //
 // When Logger is set, Run sends it the Exec record of the run once it has ended, whatever the run
 // ended with.
@@ -212,6 +224,7 @@ func (p Program) run(ctx context.Context) (Output, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	cmd.WaitDelay = pipeGrace
+	cmd.Cancel = func() error { return endTree(ctx, cmd.Process) }
 
 	if startErr := cmd.Start(); startErr != nil {
 		if p.StartWantingAFileIsMissing && wantsAFile(startErr) {
@@ -227,6 +240,130 @@ func (p Program) run(ctx context.Context) (Output, error) {
 	}
 
 	return ended(ctx, argv, runErr, Output{Stdout: stdout.String(), Stderr: stderr.String()})
+}
+
+// processTableLimit bounds one read of the process table, made once the run's context has ended.
+const processTableLimit = 5 * time.Second
+
+// endTree kills program together with every process descended from it, for a run whose context
+// ctx ended.
+//
+// It stops the program and each descendant it finds, so that none can start another process while
+// it reads the process table again, until a read finds no new one; then it kills them all. When
+// the table cannot be read, it kills the program and the descendants found so far.
+func endTree(ctx context.Context, program *os.Process) error {
+	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), processTableLimit)
+	defer cancel()
+
+	stopErr := program.Signal(syscall.SIGSTOP)
+	stop := func(pid int) error { return signalDescendant(pid, syscall.SIGSTOP) }
+	descendants, findErr := stopDescendants(readCtx, program.Pid, readProcessTable, stop)
+
+	errs := []error{program.Kill(), stopErr, findErr}
+	for _, pid := range descendants {
+		errs = append(errs, signalDescendant(pid, syscall.SIGKILL))
+	}
+
+	return errors.Join(errs...)
+}
+
+// stopDescendants stops, with stop, every process descended from root, reading the process table
+// with read again after each round of stops until a read finds no new one, and returns their
+// process ids. When a read fails, it returns the process ids stopped so far with the read's error.
+func stopDescendants(
+	ctx context.Context, root int, read func(context.Context) (map[int][]int, error), stop func(int) error,
+) ([]int, error) {
+	var (
+		found []int
+		errs  []error
+	)
+
+	known := map[int]bool{root: true}
+
+	for {
+		children, err := read(ctx)
+		if err != nil {
+			return found, errors.Join(append(errs, err)...)
+		}
+
+		fresh := newDescendants(children, root, known)
+		if len(fresh) == 0 {
+			return found, errors.Join(errs...)
+		}
+
+		for _, pid := range fresh {
+			errs = append(errs, stop(pid))
+		}
+
+		found = append(found, fresh...)
+	}
+}
+
+// newDescendants returns the processes descended from root that known does not hold yet, and adds
+// them to known. children holds the process ids of the children of every process, by the parent's
+// pid.
+func newDescendants(children map[int][]int, root int, known map[int]bool) []int {
+	var fresh []int
+
+	parents := []int{root}
+	for len(parents) > 0 {
+		parent := parents[0]
+		parents = parents[1:]
+
+		for _, pid := range children[parent] {
+			parents = append(parents, pid)
+
+			if !known[pid] {
+				known[pid] = true
+				fresh = append(fresh, pid)
+			}
+		}
+	}
+
+	return fresh
+}
+
+// signalDescendant sends signal to the process pid, and treats a process already gone as done.
+func signalDescendant(pid int, signal syscall.Signal) error {
+	err := syscall.Kill(pid, signal)
+	if err == nil || errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+
+	return fmt.Errorf("send %v to process %d: %w", signal, pid, err)
+}
+
+// readProcessTable reads the process table with ps and returns the process ids of the children of
+// every process, by the parent's pid.
+func readProcessTable(ctx context.Context) (map[int][]int, error) {
+	out, err := exec.CommandContext(ctx, "ps", "-A", "-o", "pid=,ppid=").Output()
+	if err != nil {
+		return nil, fmt.Errorf("read the process table: %w", err)
+	}
+
+	children := make(map[int][]int)
+
+	for line := range strings.Lines(string(out)) {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+
+		if len(fields) != 2 {
+			return nil, fmt.Errorf("read the process table: line %q is not a pid and a parent pid", line)
+		}
+
+		pid, pidErr := strconv.Atoi(fields[0])
+		ppid, ppidErr := strconv.Atoi(fields[1])
+
+		if parseErr := errors.Join(pidErr, ppidErr); parseErr != nil {
+			return nil, fmt.Errorf("read the process table line %q: %w", line, parseErr)
+		}
+
+		children[ppid] = append(children[ppid], pid)
+	}
+
+	return children, nil
 }
 
 func (p Program) missing(err error) *ToolMissingError {
