@@ -31,8 +31,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Quote the words of a `Next:` line as `ils parse` does, so bash reads them as printed.
 - Refuse `ils push`, `ils merge`, and `ils release` when any push URL of `origin` names another
   repository than its fetch URL.
-- **Breaking:** Require `gh` 2.81.0 or later, since `ils` reads `gh auth status --json` to tell a
-  missing login from a host `gh` cannot reach.
+- **Breaking:** Require `gh` 2.81.0 or later, so `ils` can tell a missing login from a host `gh`
+  cannot reach.
 
 ### Removed
 
@@ -52,8 +52,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   named when a branch's name starts with `refs/`.
 - Fix `ils status` naming a next step other than the one `ils push` or `ils branch` ends on, or
   one that then fails.
-- Refuse a mistyped command name after `ils help` or beside `--help`, and a malformed flag such as
-  `---x`, instead of printing the root help or ending broke.
+- Refuse a mistyped command name after `ils help` or beside `--help`, and a malformed flag, instead
+  of printing the root help or ending broke.
 - Fix `--json` output splitting in two for a reader that breaks lines at U+0085 (NEL).
 - Fix `ils release --debug` leaving the wait for the release commit's checks out of its trace.
 - Fix the `ils` agent skill leaving later commits out of the squash commit's message by rewriting
@@ -64,15 +64,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   delete short.
 - Fix `ils merge` repeating, in the squash commit's body, trailers the pull request's body already
   holds.
-- Fix `ils push` and `ils merge` waiting to the time limit for a canceled check's log, which never
-  comes, instead of telling you to rerun the check, and losing a red verdict, as `ils status` did,
-  when the time limit cut the read of a failed check's log short.
+- Fix `ils push` and `ils merge` waiting to the time limit for a canceled check's log instead of
+  telling you to rerun the check.
+- Fix `ils push`, `ils merge`, and `ils status` losing a red verdict when the time limit cut the
+  read of a failed check's log short.
 - Fix `ils release` judging the checks of a workflow run created during its read as checks of no
   workflow.
 - Fix `ils status` reporting checks and a merge step for a pull request head other than the
   branch's tip, and saying no check reported when a required check never reported.
 - Fix `ils push` and `ils release` reporting a push as done when one of several push URLs refused
   it.
+- Fix `ils push` failing over ssh when a pre-push hook runs longer than GitHub keeps an idle
+  connection open.
+- Fix a push stopped by the time limit, Ctrl-C, or SIGTERM leaving its pre-push hook running, and
+  dropping `git`'s message when a signal killed `git`.
 
 ## [0.5.0] - 2026-10-31
 
