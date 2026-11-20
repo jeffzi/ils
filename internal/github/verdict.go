@@ -16,9 +16,6 @@ import (
 // names one.
 var runOfLink = regexp.MustCompile(`/actions/runs/(\d+)(?:/job/(\d+))?`)
 
-// runUnfinished matches what `gh run view --log-failed` prints when the run has not completed.
-var runUnfinished = regexp.MustCompile(`run \d+ is still in progress; logs will be available when it is complete`)
-
 // Verdict returns every check on the commit the query names, whatever event started the run
 // behind it, the workflow runs on the commit, and the failed log of the check the verdict's Failed
 // names. A commit with no check yet has a verdict with no check and no error.
@@ -81,11 +78,13 @@ func runStatusOf(status string) forge.RunStatus {
 //
 // A canceled check never gets a log, so none is read for it and the failed log
 // is the zero value: reading one would find it empty and wait for it to the
-// time limit. A check with no Actions run behind it has no log, a run that has not completed
-// holds its log back, and a gh that cannot give the log for any other reason, or a read of it
-// that the time limit or an interrupt cuts short, leaves it unreadable: the verdict is red either
-// way. A link that names no job leaves the log unreadable without a read: the run's failed log
-// holds every failed job of the run, and would be shown as this check's.
+// time limit. A check with no Actions run behind it has no log. The run's status is read before
+// its log: a run that has not completed holds its log back, even when the check's own job has
+// completed, so the log is in progress; a status this version does not know counts as not
+// completed. A status that cannot be read, a gh that cannot give the log of a completed run, or a
+// read of either that the time limit or an interrupt cuts short, leaves the log unreadable: the
+// verdict is red either way. A link that names no job leaves the log unreadable without a read:
+// the run's failed log holds every failed job of the run, and would be shown as this check's.
 //
 // A failed log that is empty falls back to the log of the job the check's link
 // names: for a few seconds after a run completes, GitHub serves a log archive
@@ -109,12 +108,21 @@ func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Ve
 		return forge.FailedLog{State: forge.FailedLogUnreadable}, nil
 	}
 
-	result, err := f.runner().Run(ctx, "run", "view", "--repo", repo.Slug(), runID, "--log-failed", "--job", jobID)
-	if exitErr, exited := errors.AsType[*child.ExitError](err); exited {
-		if runUnfinished.MatchString(exitErr.Stderr) {
-			return forge.FailedLog{State: forge.FailedLogInProgress}, nil
-		}
+	completed, err := f.runCompleted(ctx, repo, runID)
+	if _, exited := errors.AsType[*child.ExitError](err); exited {
+		return forge.FailedLog{State: forge.FailedLogUnreadable}, nil
+	}
 
+	if err != nil {
+		return cutLog(err)
+	}
+
+	if !completed {
+		return forge.FailedLog{State: forge.FailedLogInProgress}, nil
+	}
+
+	result, err := f.runner().Run(ctx, "run", "view", "--repo", repo.Slug(), runID, "--log-failed", "--job", jobID)
+	if _, exited := errors.AsType[*child.ExitError](err); exited {
 		return forge.FailedLog{State: forge.FailedLogUnreadable}, nil
 	}
 
@@ -135,6 +143,17 @@ func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Ve
 	}
 
 	return forge.FailedLog{Text: text, State: forge.FailedLogRead}, nil
+}
+
+// runCompleted reads whether the Actions run numbered run has completed. It returns the errors of
+// Runner.Read, and a *DecodeError when the answer is not a run.
+func (f *Forge) runCompleted(ctx context.Context, repo forge.Repo, run string) (bool, error) {
+	got, err := readDecoded[actionsRun](ctx, f.runner(), repoAPIArgs(repo, "actions/runs/"+run)...)
+	if err != nil {
+		return false, err
+	}
+
+	return runStatusOf(got.Status) == forge.RunCompleted, nil
 }
 
 // cutLog returns the log of the failed check as unreadable when err is the time limit or an
@@ -193,8 +212,8 @@ type combinedStatusPage struct {
 	Statuses []commitStatus `json:"statuses"`
 }
 
-// actionsRun is one run of the REST read of the Actions runs on a commit; its check suite holds the
-// check runs of its jobs.
+// actionsRun is one Actions run as the REST API gives it; its check suite holds the check runs of
+// its jobs.
 type actionsRun struct {
 	Name       string `json:"name"`
 	Event      string `json:"event"`

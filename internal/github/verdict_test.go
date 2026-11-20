@@ -258,6 +258,13 @@ func TestForge_Verdict_WhenQueryNamesRequiredChecks_ListsRequiredChecksWithNoRep
 
 func logArgs() []string { return ghtest.LogArgs(engineSlug, runID, jobID) }
 
+func runStatusArgs() []string { return apiArgs("actions/runs/" + runID) }
+
+// runStatusAnswer is the run read's answer for the run the failing check belongs to, in status.
+func runStatusAnswer(status string) ghtest.Answer {
+	return ghtest.Answer{Stdout: `{"id":` + runID + `,"status":"` + status + `"}`}
+}
+
 func jobLogArgs() []string {
 	return []string{"api", "--hostname", engineHost, "repos/ada/engine/actions/jobs/" + jobID + "/logs"}
 }
@@ -270,7 +277,9 @@ type failedLogRow struct {
 	// statuses is the combined status read's answer; empty, it lists no status.
 	statuses string
 	want     forge.FailedLog
-	log      ghtest.Answer
+	// run is the answer to the read of the status of the run runLink names.
+	run ghtest.Answer
+	log ghtest.Answer
 	// jobLog is the answer to the read of the log of the job runLink names.
 	jobLog ghtest.Answer
 }
@@ -292,8 +301,7 @@ func failedLogRows() []failedLogRow {
 	jobLogged := ghtest.Answer{Stdout: jobText}
 	jobGone := notFoundAnswer()
 	gone := ghtest.Answer{Stderr: "run " + runID + " not found\n", Code: 1}
-	// unfinished is what gh run view --log-failed says of a run that has not completed.
-	unfinished := ghtest.Answer{Stderr: "run " + runID + " is still in progress; logs will be available when it is complete\n", Code: 1}
+	completed := runStatusAnswer("completed")
 	read := forge.FailedLog{Text: logText, State: forge.FailedLogRead}
 	jobRead := forge.FailedLog{Text: jobText, State: forge.FailedLogRead}
 	noRun := forge.FailedLog{State: forge.FailedLogNoRun}
@@ -301,14 +309,18 @@ func failedLogRows() []failedLogRow {
 	inProgress := forge.FailedLog{State: forge.FailedLogInProgress}
 
 	return []failedLogRow{
-		{name: "failing check of a run", checkRuns: failing, log: logged, want: read},
+		{name: "failing check of a completed run", checkRuns: failing, run: completed, log: logged, want: read},
 		{name: "failing status with no run", checkRuns: checkRunsPage(), statuses: statusPage(statusJSON("scan", "failure")), log: logged, want: noRun},
-		{name: "run view fails", checkRuns: failing, log: gone, want: unreadable},
-		{name: "run of the failing check still in progress", checkRuns: failing, log: unfinished, want: inProgress},
-		{name: "failed log only whitespace reads the job log", checkRuns: failing, log: blank, jobLog: jobLogged, want: jobRead},
-		{name: "failed log empty and job log only whitespace", checkRuns: failing, log: empty, jobLog: blank, want: inProgress},
-		{name: "failed log empty and job log read fails", checkRuns: failing, log: empty, jobLog: jobGone, want: inProgress},
-		{name: "link names no job", checkRuns: checkRunsPage(checkRunAt(checkRun{id: 1, suite: ciSuite, name: "build", conclusion: "failure", link: runOnlyLink})), log: logged, jobLog: jobLogged, want: unreadable},
+		{name: "run view fails for a completed run", checkRuns: failing, run: completed, log: gone, want: unreadable},
+		// The failing check's own job has completed while other jobs of its run still go.
+		{name: "run of the failing check not completed", checkRuns: failing, run: runStatusAnswer("in_progress"), log: logged, want: inProgress},
+		{name: "run status this version does not know", checkRuns: failing, run: runStatusAnswer("paused"), log: logged, want: inProgress},
+		{name: "run status read still failing after its re-reads", checkRuns: failing, run: ghtest.ServerError(), log: logged, want: unreadable},
+		{name: "run status read answered 4xx", checkRuns: failing, run: notFoundAnswer(), log: logged, want: unreadable},
+		{name: "failed log only whitespace reads the job log", checkRuns: failing, run: completed, log: blank, jobLog: jobLogged, want: jobRead},
+		{name: "failed log empty and job log only whitespace", checkRuns: failing, run: completed, log: empty, jobLog: blank, want: inProgress},
+		{name: "failed log empty and job log read fails", checkRuns: failing, run: completed, log: empty, jobLog: jobGone, want: inProgress},
+		{name: "link names no job", checkRuns: checkRunsPage(checkRunAt(checkRun{id: 1, suite: ciSuite, name: "build", conclusion: "failure", link: runOnlyLink})), run: completed, log: logged, jobLog: jobLogged, want: unreadable},
 		{name: "check of a run still pending", checkRuns: checkRunsPage(checkRunJSON(1, ciSuite, "build", "")), log: logged},
 		// A canceled check never gets a log: its empty log reads would otherwise count as one to come.
 		{name: "canceled check of a run reads no log", checkRuns: checkRunsPage(checkRunJSON(1, ciSuite, "build", "cancelled")), log: empty, jobLog: empty}, //nolint:misspell // GitHub's REST API spells the conclusion this way.
@@ -323,30 +335,40 @@ func TestForge_Verdict_FailedLog(t *testing.T) {
 				statuses = statusPage()
 			}
 
-			ghtest.Setup(t, append(commitReads(tt.checkRuns, statuses, pushCI()), ghtest.Exits(tt.log, logArgs()...), ghtest.Exits(tt.jobLog, jobLogArgs()...))...)
+			logReads := []ghtest.Call{ghtest.Exits(tt.run, runStatusArgs()...), ghtest.Exits(tt.log, logArgs()...), ghtest.Exits(tt.jobLog, jobLogArgs()...)}
+			ghtest.Setup(t, append(commitReads(tt.checkRuns, statuses, pushCI()), logReads...)...)
 
-			got, err := newForge().Verdict(t.Context(), engine(), verdictQuery())
-			assert.NilError(t, err)
+			synctest.Test(t, func(t *testing.T) {
+				got, err := newForge().Verdict(t.Context(), engine(), verdictQuery())
+				assert.NilError(t, err)
 
-			assert.Check(t, is.DeepEqual(got.FailedLog, tt.want))
+				assert.Check(t, is.DeepEqual(got.FailedLog, tt.want))
+			})
 		})
 	}
 }
 
 func TestForge_Verdict_WhenACutEndsTheFailedLogRead_ReportsTheLogUnreadable(t *testing.T) {
+	completedRun := ghtest.Exits(runStatusAnswer("completed"), runStatusArgs()...)
+	logged := ghtest.Says("build\tRun tests\tFAIL\n", logArgs()...)
 	tests := []struct {
 		err  error
 		name string
+		// held is the read whose answer the cut ends; other answers the other read of the failed log.
+		held  []string
+		other ghtest.Call
 	}{
-		{name: "the time limit", err: context.DeadlineExceeded},
-		{name: "an interrupt", err: context.Canceled},
+		{name: "the time limit during the run status read", err: context.DeadlineExceeded, held: runStatusArgs(), other: logged},
+		{name: "an interrupt during the run status read", err: context.Canceled, held: runStatusArgs(), other: logged},
+		{name: "the time limit during the log read", err: context.DeadlineExceeded, held: logArgs(), other: completedRun},
+		{name: "an interrupt during the log read", err: context.Canceled, held: logArgs(), other: completedRun},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			failing := failingBuild()
-			// The log read holds its answer open far longer than the test runs: only the cut ends it.
+			// The held read holds its answer open far longer than the test runs: only the cut ends it.
 			held := ghtest.Answer{Delay: time.Hour}
-			fake := ghtest.Setup(t, append(commitReads(failing, statusPage(), pushCI()), ghtest.Exits(held, logArgs()...))...)
+			fake := ghtest.Setup(t, append(commitReads(failing, statusPage(), pushCI()), tt.other, ghtest.Exits(held, tt.held...))...)
 			cut := make(chan struct{})
 			fake.WhileHolding(sync.OnceValue(func() error {
 				close(cut)
