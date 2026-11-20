@@ -333,16 +333,6 @@ func RulesArgs(host, repo, branchPath string) []string {
 	return []string{"api", "--include", "--hostname", host, "--paginate", "repos/" + repo + "/rules/branches/" + branchPath}
 }
 
-// ChecksArgs is the argv pattern of the read of pull request number's checks.
-func ChecksArgs(slug string, number int) []string {
-	return []string{"pr", "checks", "--repo", slug, strconv.Itoa(number), "--json", Any}
-}
-
-// RunsArgs is the argv pattern of the list of the workflow runs on the commit sha.
-func RunsArgs(slug, sha string) []string {
-	return []string{"run", "list", "--repo", slug, "--commit", sha, "--limit", Any, "--json", Any}
-}
-
 // LogArgs is the argv of the read of the failed log of the job numbered job in the workflow run
 // numbered run, as ils makes it: `gh run view --repo <slug> <run> --log-failed --job <job>`.
 func LogArgs(slug, run, job string) []string {
@@ -378,9 +368,6 @@ func MessageArgs(host, owner, name string, number int) []string {
 // ---------------------------------------------------------------------------
 // Canned JSON answers
 // ---------------------------------------------------------------------------
-
-// workflow is the workflow every scripted check and run belongs to.
-const workflow = "CI"
 
 // RepoViewJSON is `gh repo view`'s answer for a repository that is a fork or not, on which the
 // viewer holds permission, and whose settings allow squash merges.
@@ -450,19 +437,7 @@ func (h headAnswer) json() string {
 		quoted(h.status) + `,"isDraft":` + strconv.FormatBool(h.draft) + `,"reviewDecision":` + quoted(h.review) + `}`
 }
 
-// CheckJSON is one entry of `gh pr checks`'s answer, for a check of the workflow CI.
-func CheckJSON(name, bucket, link string) string {
-	return `{"name":` + quoted(name) + `,"bucket":` + quoted(bucket) + `,"workflow":` + quoted(workflow) +
-		`,"link":` + quoted(link) + `}`
-}
-
-// RunJSON is one entry of `gh run list`'s answer, for a run named name of the workflow CI.
-func RunJSON(status, name string) string {
-	return `{"status":` + quoted(status) + `,"name":` + quoted(name) + `,"workflowName":` + quoted(workflow) + `}`
-}
-
-// JSONArray is a JSON array of items, each already JSON, such as the entries ChangeJSON, CheckJSON
-// and RunJSON return.
+// JSONArray is a JSON array of items, each already JSON, such as the entries ChangeJSON returns.
 func JSONArray(items ...string) string {
 	return "[" + strings.Join(items, ",") + "]"
 }

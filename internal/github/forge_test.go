@@ -198,11 +198,6 @@ func headOf(state forge.MergeState) forge.Head {
 	return forge.Head{SHA: headSHA, MergeState: state}
 }
 
-// runJSON is one entry of the run list's answer: a run of the head commit in status.
-func runJSON(status string) string {
-	return ghtest.RunJSON(status, "Add the forge")
-}
-
 func headQuery(required ...string) forge.HeadQuery {
 	return forge.HeadQuery{Number: pullNumber, Required: required}
 }
@@ -253,8 +248,12 @@ func readCases() []readCase {
 		{name: "pr list", run: find, args: listArgs()},
 		{name: "pr view", run: head, args: headArgs()},
 		{
-			name: "pr checks behind a blocked head", run: blocked, args: checksArgs(),
-			before: []ghtest.Call{ghtest.Says(headJSON("BLOCKED", ""), headArgs()...)},
+			name: "check runs behind a blocked head", run: blocked, args: checkRunsArgs(),
+			before: []ghtest.Call{
+				ghtest.Says(headJSON("BLOCKED", ""), headArgs()...),
+				ghtest.Says(statusPage(), commitStatusArgs()...),
+				ghtest.Says(workflowRunsPage(), workflowRunsArgs()...),
+			},
 		},
 		{name: "api rules", run: protection, args: rulesArgs()},
 		{name: "api graphql message", run: message, args: messageArgs()},
@@ -275,7 +274,7 @@ func TestForge_WhenCallExitsNonZero_ReturnsExitErrorNamingCall(t *testing.T) {
 	// and TrunkProtection's through its own test of a refused read. FindRelease's and HasTrunkCI's
 	// reads are not cases: TestForge_FindRelease_WhenSomethingElseIsNotFound_ReturnsExitError and
 	// the HasTrunkCI tests of a refused read reach their exit errors. Verdict's propagation goes
-	// through "run list" in verdict_test.go.
+	// through its reads in verdict_test.go.
 	reads := casesWithout(readCases(), "repo view", "api rules")
 	for _, tt := range reads {
 		t.Run(tt.name, func(t *testing.T) {
@@ -567,36 +566,34 @@ func TestForge_Head_WhenStateNeedsNoCheck_ReportsMergeStateFromThePullRequestAlo
 }
 
 func TestForge_Head_WhenBlockedAndTrunkRequiresChecks_SaysWhetherARequiredCheckIsMissingOrRunning(t *testing.T) {
-	passing := ghtest.JSONArray(ghtest.CheckJSON("test", "pass", runLink))
-	completed := ghtest.JSONArray(runJSON("completed"))
+	passing := checkRunsPage(checkRunJSON(1, ciSuite, "test", "success"))
 	tests := []struct {
-		name   string
-		runs   string
-		want   forge.MergeState
-		checks ghtest.Answer
+		name      string
+		checkRuns string
+		runs      string
+		want      forge.MergeState
 	}{
-		{name: "required name absent, runs done", checks: ghtest.Answer{Stdout: passing}, runs: completed, want: forge.MergeBlockedByMissingCheck},
-		{name: "required name absent, run queued", checks: ghtest.Answer{Stdout: passing}, runs: ghtest.JSONArray(runJSON("queued")), want: forge.MergeBlockedByRunningCheck},
+		{name: "required name absent, runs done", checkRuns: passing, runs: pushCI(), want: forge.MergeBlockedByMissingCheck},
 		{
-			name:   "required name absent, other required check still running",
-			checks: ghtest.Answer{Stdout: ghtest.JSONArray(ghtest.CheckJSON("test", "pending", runLink)), Code: 8},
-			runs:   completed,
-			want:   forge.MergeBlockedByRunningCheck,
+			name: "required name absent, run queued", checkRuns: passing,
+			runs: workflowRunsPage(workflowRunJSON(ciSuite, "CI", "push", "queued")), want: forge.MergeBlockedByRunningCheck,
 		},
 		{
-			name:   "every required name has a check",
-			checks: ghtest.Answer{Stdout: ghtest.JSONArray(ghtest.CheckJSON("build", "pass", runLink), ghtest.CheckJSON("test", "fail", runLink)), Code: 1},
-			runs:   completed,
-			want:   forge.MergeBlockedOther,
+			name:      "required name absent, other required check still running",
+			checkRuns: checkRunsPage(checkRunJSON(1, ciSuite, "test", "")),
+			runs:      pushCI(),
+			want:      forge.MergeBlockedByRunningCheck,
+		},
+		{
+			name:      "every required name has a check",
+			checkRuns: checkRunsPage(checkRunJSON(1, ciSuite, "build", "success"), checkRunJSON(2, ciSuite, "test", "failure")),
+			runs:      pushCI(),
+			want:      forge.MergeBlockedOther,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ghtest.Setup(t,
-				ghtest.Says(headJSON("BLOCKED", "APPROVED"), headArgs()...),
-				ghtest.Exits(tt.checks, checksArgs()...),
-				ghtest.Says(tt.runs, runsArgs()...),
-			)
+			ghtest.Setup(t, append([]ghtest.Call{ghtest.Says(headJSON("BLOCKED", "APPROVED"), headArgs()...)}, commitReads(tt.checkRuns, statusPage(), tt.runs)...)...)
 
 			got, err := newForge().Head(t.Context(), engine(), headQuery("build", "test"))
 			assert.NilError(t, err)
