@@ -568,10 +568,13 @@ of 100 seconds, counted the same way. They take no `--wait`.
 seconds in all. A read cut short is a refusal that says what broke. Claude Code stops the hook
 after the 15-second `timeout` that `ils init` writes.
 
-A read of GitHub that fails is read again every 2 seconds, for up to 10 seconds from its first
-failure, before the command ends on it. A 4xx answer is GitHub's answer and is never read again,
-and neither are the guard's reads or any write. A read again still counts against the command's
-time limit.
+A read of GitHub that fails with `gh` exit 1 is read again every 2 seconds, for up to 10 seconds
+from its first failure, before the command ends on it. A 4xx answer to a read made with `gh api` is
+GitHub's answer and is never read again. The reads made with `gh repo view`, `gh pr list`, and
+`gh pr view` do not report GitHub's status, so each of their exit 1 failures is read again. No
+other exit of `gh` is read again, and neither are the check that `gh` is logged in, the reads of a
+failed check's log, the guard's reads, or any write. A read again still counts against the
+command's time limit.
 
 `ils merge` and `ils release` stop waiting 20 seconds before the full limit of 15 minutes or 100
 seconds. Those 20 seconds are kept for the writes that follow. When fewer than 20 seconds are left,
