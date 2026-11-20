@@ -568,6 +568,11 @@ of 100 seconds, counted the same way. They take no `--wait`.
 seconds in all. A read cut short is a refusal that says what broke. Claude Code stops the hook
 after the 15-second `timeout` that `ils init` writes.
 
+A read of GitHub that fails is read again every 2 seconds, for up to 10 seconds from its first
+failure, before the command ends on it. A 4xx answer is GitHub's answer and is never read again,
+and neither are the guard's reads or any write. A read again still counts against the command's
+time limit.
+
 `ils merge` and `ils release` stop waiting 20 seconds before the full limit of 15 minutes or 100
 seconds. Those 20 seconds are kept for the writes that follow. When fewer than 20 seconds are left,
 they end pending with nothing written.
@@ -829,7 +834,7 @@ under `payload.status`:
 | `last_tag`           | string           | On the default branch, the last version tag; empty when there is none.                                                                                                               |
 | `since_tag`          | integer          | On the default branch, the commits on origin's default branch since the last tag.                                                                                                    |
 | `release_commit`     | boolean          | On the default branch, whether origin's tip is a release commit (`chore: release v<X.Y.Z>`, with an optional pre-release part such as `-rc.1`, with or without a trailing `(#<N>)`). |
-| `protection`         | string           | On the default branch, `protected`, `none`, or `unavailable` (the plan does not allow rules).                                                                                        |
+| `protection`         | string           | On the default branch, `protected`, `none`, or `unavailable` (GitHub refused the rules read of a repository that is not public).                                                     |
 | `unlanded`           | array of strings | On a detached HEAD, the commits origin's default branch lacks.                                                                                                                       |
 | `unread`             | array of objects | One entry per read that failed: `read` names it and `error` says why. A null `pull_request` with an entry here means it was not read.                                                |
 
@@ -1293,6 +1298,6 @@ stays empty unless `-d` is on, or `ils` cannot print its result and reports that
 turns color on for a stream that is not a terminal; `NO_COLOR` and `--no-color` override it. None
 of the three changes how long `ils push`, `ils merge`, or `ils release` waits.
 
-`-d` (or `--debug`) prints one line on stderr for each `git` and `gh` call and each wait decision,
-timed from when the command started, in place of the spinner. It changes neither stdout nor the
-exit code.
+`-d` (or `--debug`) prints one line on stderr for each `git` and `gh` call, each wait decision, and
+each read of GitHub read again, timed from when the command started, in place of the spinner. It
+changes neither stdout nor the exit code.
