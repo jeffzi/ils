@@ -64,7 +64,9 @@ const statusLink = "https://ci.example.com/builds/15"
 
 func logArgs() []string { return ghtest.LogArgs(engineSlug, runID, jobID) }
 
-func jobLogArgs() []string { return apiArgs("actions/jobs/" + jobID + "/logs") }
+func jobLogArgs() []string {
+	return []string{"api", "--hostname", engineHost, "repos/ada/engine/actions/jobs/" + jobID + "/logs"}
+}
 
 func noChecksAnswer() ghtest.Answer {
 	return ghtest.Answer{Stderr: "no checks reported on the 'feature' branch\n", Code: 1}

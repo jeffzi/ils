@@ -155,7 +155,7 @@ func (f *Forge) Identity(ctx context.Context, repo forge.Repo) (forge.Repo, erro
 		return forge.Repo{}, err
 	}
 
-	view, err := runDecoded[repoView](ctx, f.runner(), "repo", "view", repo.Slug(), "--json", "isFork,viewerPermission,squashMergeAllowed")
+	view, err := readDecoded[repoView](ctx, f.runner(), "repo", "view", repo.Slug(), "--json", "isFork,viewerPermission,squashMergeAllowed")
 	if err != nil {
 		return forge.Repo{}, err
 	}
@@ -207,7 +207,7 @@ func (f *Forge) FindChanges(ctx context.Context, repo forge.Repo, branch string)
 		"--json", "number,url,title,baseRefName,headRefOid,isDraft,isCrossRepository,state",
 	}
 
-	pulls, err := runDecoded[[]pull](ctx, f.runner(), args...)
+	pulls, err := readDecoded[[]pull](ctx, f.runner(), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +272,7 @@ func (f *Forge) OpenChange(ctx context.Context, repo forge.Repo, change forge.Ne
 // GitHub's BLOCKED does not say what blocks, so for one that no review explains
 // Head also reads the checks on the head commit, when the query names required ones.
 func (f *Forge) Head(ctx context.Context, repo forge.Repo, query forge.HeadQuery) (forge.Head, error) {
-	view, err := runDecoded[pullHead](ctx, f.runner(),
+	view, err := readDecoded[pullHead](ctx, f.runner(),
 		"pr", "view", "--repo", repo.Slug(), strconv.Itoa(query.Number),
 		"--json", "headRefOid,mergeable,mergeStateStatus,isDraft,reviewDecision")
 	if err != nil {
@@ -409,13 +409,13 @@ func (f *Forge) HasTrunkCI(ctx context.Context, repo forge.Repo, trunk string) (
 //
 // An answer that cannot be decoded, or that holds no pull request, is a *DecodeError.
 func (f *Forge) Message(ctx context.Context, repo forge.Repo, number int) (forge.Message, error) {
-	args := []string{
+	args := withHeaders([]string{
 		"api", "graphql", "--hostname", repo.Host,
 		"-F", "number=" + strconv.Itoa(number), "-f", "owner=" + repo.Owner, "-f", "name=" + repo.Name,
 		"-f", "query=" + messageQuery,
-	}
+	})
 
-	answer, err := runDecoded[pullMessage](ctx, f.runner(), args...)
+	answer, err := readDecoded[pullMessage](ctx, f.runner(), args...)
 	if err != nil {
 		return forge.Message{}, err
 	}
@@ -595,7 +595,7 @@ func (f *Forge) activeWorkflows(ctx context.Context, repo forge.Repo) ([]string,
 func (f *Forge) workflowFiles(ctx context.Context, repo forge.Repo, trunk string) ([]repoFile, error) {
 	args := repoAPIArgs(repo, "contents/"+workflowsDir+"?ref="+url.QueryEscape(trunk))
 
-	files, err := runDecoded[[]repoFile](ctx, f.runner(), args...)
+	files, err := readDecoded[[]repoFile](ctx, f.runner(), args...)
 	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && strings.Contains(exitErr.Stderr, pathNotFound) {
 		return nil, nil
 	}

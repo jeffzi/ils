@@ -193,3 +193,47 @@ func TestSetup_WhenNoFakeGhIsInstalled_RunsTheTestBinaryAsGh(t *testing.T) {
 
 	assert.Check(t, is.Equal(os.Getenv(github.PathVariable), self))
 }
+
+func TestFake_WhenCallIsScriptedInTurn_AnswersEachCallInOrderThenRepeatsTheLast(t *testing.T) {
+	args := []string{"pr", "view", "7"}
+	ghtest.Setup(t, ghtest.InTurn(args, ghtest.Answer{Stdout: "first\n"}, ghtest.Answer{Stdout: "last\n"}))
+	var got []string
+
+	for range 3 {
+		out, err := github.Runner{}.Run(t.Context(), args...)
+		assert.NilError(t, err)
+
+		got = append(got, out.Stdout)
+	}
+
+	assert.Check(t, is.DeepEqual(got, []string{"first\n", "last\n", "last\n"}))
+}
+
+func TestFake_WhenAPIReadAsksForHeaders_PrintsTheStatusBlockBeforeTheBody(t *testing.T) {
+	included := []string{"api", "--include", "repos/ada/engine"}
+	tests := []struct {
+		name   string
+		want   string
+		args   []string
+		answer ghtest.Answer
+	}{
+		{name: "answered read", args: included, answer: ghtest.Answer{Stdout: "{}"}, want: "HTTP/2.0 200 OK\n\r\n{}"},
+		{
+			name: "refused read with headers", args: included,
+			answer: ghtest.Answer{Stdout: "{}", Status: 404, Headers: []string{"X-Ratelimit-Remaining: 0"}, Code: 1},
+			want:   "HTTP/2.0 404 Not Found\nX-Ratelimit-Remaining: 0\r\n\r\n{}",
+		},
+		{name: "read GitHub never answered", args: included, answer: ghtest.Answer{Code: 1}, want: ""},
+		{name: "read without headers asked", args: []string{"api", "repos/ada/engine"}, answer: ghtest.Answer{Stdout: "{}"}, want: "{}"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ghtest.Setup(t, ghtest.Exits(tt.answer, tt.args...))
+
+			// The exit is the scripted one; what the fake printed is what is checked.
+			got, _ := github.Runner{}.Run(t.Context(), tt.args...)
+
+			assert.Check(t, is.Equal(got.Stdout, tt.want))
+		})
+	}
+}

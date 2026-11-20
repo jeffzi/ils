@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -127,12 +128,12 @@ func pullRequestRule(id int, methods string) string {
 
 // apiArgs is the argv of the read of rest under the engine repository.
 func apiArgs(rest string) []string {
-	return []string{"api", "--hostname", engineHost, "repos/ada/engine/" + rest}
+	return []string{"api", "--include", "--hostname", engineHost, "repos/ada/engine/" + rest}
 }
 
 // pagedAPIArgs is the argv of the paginated read of rest under the engine repository.
 func pagedAPIArgs(rest string) []string {
-	return []string{"api", "--hostname", engineHost, "--paginate", "repos/ada/engine/" + rest}
+	return []string{"api", "--include", "--hostname", engineHost, "--paginate", "repos/ada/engine/" + rest}
 }
 
 // pageJSON is one page of a paginated read's answer, holding items under key.
@@ -173,6 +174,7 @@ func notFound404(message string) ghtest.Answer {
 	return ghtest.Answer{
 		Stdout: `{"message":"` + message + `","documentation_url":"https://docs.github.com/rest","status":"404"}`,
 		Stderr: "gh: " + message + " (HTTP 404)\n",
+		Status: 404,
 		Code:   1,
 	}
 }
@@ -283,16 +285,19 @@ func TestForge_WhenCallExitsNonZero_ReturnsExitErrorNamingCall(t *testing.T) {
 }
 
 // assertExitErrorNamesCall runs the operation of c with c's own call exiting non-zero, and checks
-// that the operation returns an exit error naming that call.
+// that the operation returns an exit error naming that call. The operation runs in a synctest
+// bubble, so that the pauses before each read again take no real time.
 func assertExitErrorNamesCall(t *testing.T, c readCase) {
 	t.Helper()
 	ghtest.Setup(t, append(c.before, ghtest.Exits(ghtest.ServerError(), c.args...))...)
 
-	err := c.run(t.Context(), newForge())
+	synctest.Test(t, func(t *testing.T) {
+		err := c.run(t.Context(), newForge())
 
-	exitErr, ok := errors.AsType[*child.ExitError](err)
-	assert.Assert(t, ok, "error = %v, want *child.ExitError", err)
-	assert.Check(t, ghtest.Matches(ghArgv(c.args), exitErr.Argv), "Argv = %q, want %q", exitErr.Argv, ghArgv(c.args))
+		exitErr, ok := errors.AsType[*child.ExitError](err)
+		assert.Assert(t, ok, "error = %v, want *child.ExitError", err)
+		assert.Check(t, ghtest.Matches(ghArgv(c.args), exitErr.Argv), "Argv = %q, want %q", exitErr.Argv, ghArgv(c.args))
+	})
 }
 
 // casesNamed is the cases of all whose name is among names, in the order of all.
@@ -633,7 +638,7 @@ func TestForge_TrunkProtection(t *testing.T) {
 		},
 		{
 			name:   "free private plan answers 403",
-			answer: ghtest.Answer{Stdout: `{"message":"Upgrade to GitHub Pro"}`, Stderr: "gh: Upgrade to GitHub Pro (HTTP 403)\n", Code: 1},
+			answer: ghtest.Answer{Stdout: `{"message":"Upgrade to GitHub Pro"}`, Stderr: "gh: Upgrade to GitHub Pro (HTTP 403)\n", Status: 403, Code: 1},
 			want:   forge.Protection{Rules: forge.RulesUnavailable, SquashAllowed: true},
 		},
 		{name: "no rule applies", answer: rules(), want: forge.Protection{Rules: forge.RulesNone, SquashAllowed: true}},
@@ -667,13 +672,14 @@ func TestForge_TrunkProtection_WhenRefusalIsNotTheFreePlans_ReturnsExitError(t *
 	tests := []struct {
 		name   string
 		stderr string
+		status int
 	}{
-		{name: "403 for another reason", stderr: "gh: Resource not accessible by integration (HTTP 403)\n"},
-		{name: "upgrade wording under another status", stderr: "gh: Upgrade to GitHub Pro (HTTP 404)\n"},
+		{name: "403 for another reason", stderr: "gh: Resource not accessible by integration (HTTP 403)\n", status: 403},
+		{name: "upgrade wording under another status", stderr: "gh: Upgrade to GitHub Pro (HTTP 404)\n", status: 404},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stderr: tt.stderr, Code: 1}, rulesArgs()...))
+			ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stderr: tt.stderr, Status: tt.status, Code: 1}, rulesArgs()...))
 
 			_, err := newForge().TrunkProtection(t.Context(), engine(), trunk)
 

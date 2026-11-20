@@ -143,7 +143,7 @@ func bucketOf(bucket string) forge.Bucket {
 
 // runs names a run by its workflow name, falling back to the run name when the workflow name is empty.
 func (f *Forge) runs(ctx context.Context, repo forge.Repo, sha string) ([]forge.Run, error) {
-	listed, err := runDecoded[[]workflowRun](ctx, f.runner(),
+	listed, err := readDecoded[[]workflowRun](ctx, f.runner(),
 		"run", "list", "--repo", repo.Slug(), "--commit", sha, "--limit", runListLimit,
 		"--json", "status,name,workflowName")
 	if err != nil {
