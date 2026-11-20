@@ -107,8 +107,13 @@ runs:
         sha256sum --check --strict "$archive.sha256"
         tar --extract --xz --file "$archive"
         cd "git-$VERSION"
-        make --jobs="$(nproc)" prefix="$PREFIX" NO_TCLTK=1 NO_GETTEXT=1 all
-        make prefix="$PREFIX" NO_TCLTK=1 NO_GETTEXT=1 install
+        # GCC 15 compiles C23 by default, where unreachable and thread_local are reserved names that
+        # older git releases, 2.34.1 and 2.43.0 among them, use as identifiers. Pinning C17 builds every release, old and new,
+        # on any compiler; the rest is git's own default CFLAGS. install gets the same flags, or
+        # git's Makefile sees them change and rebuilds.
+        build=(prefix="$PREFIX" NO_TCLTK=1 NO_GETTEXT=1 CFLAGS="-g -O2 -Wall -std=gnu17")
+        make --jobs="$(nproc)" "${build[@]}" all
+        make "${build[@]}" install
 
     - name: Put git first on PATH
       shell: bash
