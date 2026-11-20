@@ -33,9 +33,7 @@ func Argv(args []string) []string {
 const installURL = "https://cli.github.com"
 
 // MinimumVersion is the oldest release of gh that ils works with: the first whose `gh auth status`
-// prints JSON, which CheckLogin reads. Releases older than 2.73.0 also fail `gh pr edit` against
-// GitHub, even with no project flag, because they still read the Projects (classic) fields that
-// GitHub's GraphQL API now rejects.
+// prints JSON, which CheckLogin reads.
 const MinimumVersion = "2.81.0"
 
 // versionPrefix is what the first line of `gh --version` reads ahead of the version.
