@@ -120,7 +120,8 @@ type Reply struct {
 // Read runs gh with args, a read that changes nothing on GitHub, and reads it again while it fails
 // in a way that a later read can mend: gh exiting 1 with no 4xx answer from GitHub, which is what a
 // network failure, a 5xx, and a 2xx carrying GraphQL errors all exit with. A 4xx says the request
-// itself is wrong, so asking again gets the same answer.
+// itself is wrong, so asking again gets the same answer. Only a `gh api` read reports its status,
+// so every exit 1 of any other read is read again.
 //
 // Each read again comes rereadPause after the last failure, and none starts whose pause would end
 // more than rereadWindow after the first failure: the read then returns its last failure, as Run

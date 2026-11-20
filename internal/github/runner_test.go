@@ -416,6 +416,40 @@ func TestRunner_Read_WhenExitIsNot1_ReturnsItWithoutReadingAgain(t *testing.T) {
 	}
 }
 
+func TestRunner_Read_WhenALaterStatusBlockCannotBeRead_ReturnsDecodeError(t *testing.T) {
+	tests := []struct {
+		name  string
+		block string
+	}{
+		{name: "status line without a code", block: "HTTP/2.0\r\n\r\n[2]"},
+		{name: "status code that is not a number", block: "HTTP/2.0 OK\r\n\r\n[2]"},
+		{name: "header line without a colon", block: "HTTP/2.0 200 OK\nbroken\r\n\r\n[2]"},
+		{name: "headers that never end", block: "HTTP/2.0 200 OK\nX-Ratelimit-Remaining: 1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ghtest.Setup(t, ghtest.Says("[1]\n"+tt.block, pagedReadRun()...))
+
+			_, err := github.Runner{}.Read(t.Context(), pagedRead()...)
+
+			decodeErr, ok := errors.AsType[*github.DecodeError](err)
+			assert.Assert(t, ok, "Read error = %v, want *github.DecodeError", err)
+			assert.Check(t, is.DeepEqual(decodeErr.Argv, github.Argv(pagedReadRun())))
+		})
+	}
+}
+
+func TestRunner_Read_WhenGhFailedAndItsStatusBlockCannotBeRead_ReturnsGhsFailure(t *testing.T) {
+	refusal := ghtest.Answer{Stdout: "HTTP/2.0 OK\r\n\r\n{}", Stderr: "gh: Bad Gateway\n", Code: 1}
+	ghtest.Setup(t, ghtest.Exits(refusal, apiReadRun()...))
+
+	_, _, err := readTimed(t, github.Runner{}, apiRead()...)
+
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "Read error = %v, want *child.ExitError", err)
+	assert.Check(t, is.Equal(exitErr.Stderr, refusal.Stderr))
+}
+
 func TestRunner_Read_WhenGhMissing_ReturnsToolMissingErrorWithoutWaiting(t *testing.T) {
 	withoutGh(t)
 
