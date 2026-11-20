@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -20,7 +21,6 @@ import (
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
-	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/github"
@@ -333,7 +333,7 @@ func (l *liveSuite) checkRulesRead(t *testing.T) {
 	private := l.private(t)
 	rest := "rules/branches/" + l.trunk
 	path := l.apiPath(rest)
-	_, err := liveGh(t.Context(), l.apiArgs(rest)...)
+	reply, err := github.Runner{}.Read(t.Context(), l.apiArgs(rest)...)
 
 	if !private {
 		assert.NilError(t, err, "the read of %s on a public repository", path)
@@ -341,10 +341,9 @@ func (l *liveSuite) checkRulesRead(t *testing.T) {
 		return
 	}
 
-	exit, exited := errors.AsType[*child.ExitError](err)
-	assert.Assert(t, exited && strings.Contains(exit.Stderr, "HTTP 403"),
-		"the read of %s ended with %v, want a 403: the account's plan no longer refuses the rules read, "+
-			"so the suite no longer exercises what ils does with that refusal", path, err)
+	assert.Assert(t, reply.Status == http.StatusForbidden,
+		"the read of %s ended with status %d and %v, want a 403: the account's plan no longer refuses the rules read, "+
+			"so the suite no longer exercises what ils does with that refusal", path, reply.Status, err)
 }
 
 // private reports whether the repository is private, as GitHub shows its visibility.

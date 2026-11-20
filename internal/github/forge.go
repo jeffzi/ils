@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"os"
 	"regexp"
@@ -12,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
 )
 
@@ -32,25 +32,13 @@ func (f *Forge) runner() Runner {
 	return Runner{Logger: f.Logger}
 }
 
-// pullExists matches what `gh pr create` prints when the branch already has a pull request.
-var pullExists = regexp.MustCompile(`a pull request for branch "[^"\n]*" into branch "[^"\n]*" already exists`)
-
-// freePlanRefusal is the start of the message GitHub gives for rules on a private repository of a free plan.
-const freePlanRefusal = "Upgrade to GitHub Pro"
-
-// forbiddenStatus is the status line gh prints on stderr when GitHub answers 403.
-const forbiddenStatus = "HTTP 403"
-
-// pathNotFound is what gh prints on stderr when GitHub answers 404 for a path that does not exist
-// on a ref that does. A ref that does not exist also answers 404, with another message.
-const pathNotFound = "Not Found (HTTP 404)"
-
 // workflowsDir is the directory GitHub Actions reads workflow files from. GitHub lists its own
 // dynamic workflows (Dependabot, the dependency graph) under other paths, with no file behind them.
 const workflowsDir = ".github/workflows"
 
 type repoView struct {
 	Permission string `json:"viewerPermission"`
+	Visibility string `json:"visibility"`
 	Fork       bool   `json:"isFork"`
 	Squash     bool   `json:"squashMergeAllowed"`
 }
@@ -144,8 +132,9 @@ type repoFile struct {
 	Path string `json:"path"`
 }
 
-// Identity fills the fork, can-push and squash-allowed flags of repo, after checking that gh is no older than
-// MinimumVersion and then that it is logged in to the host of repo.
+// Identity fills the visibility and the fork, can-push and squash-allowed flags of repo, after
+// checking that gh is no older than MinimumVersion and then that it is logged in to the host of
+// repo. A visibility that is not one GitHub gives is a *DecodeError.
 func (f *Forge) Identity(ctx context.Context, repo forge.Repo) (forge.Repo, error) {
 	if err := f.runner().checkVersion(ctx); err != nil {
 		return forge.Repo{}, err
@@ -155,11 +144,19 @@ func (f *Forge) Identity(ctx context.Context, repo forge.Repo) (forge.Repo, erro
 		return forge.Repo{}, err
 	}
 
-	view, err := readDecoded[repoView](ctx, f.runner(), "repo", "view", repo.Slug(), "--json", "isFork,viewerPermission,squashMergeAllowed")
+	args := []string{"repo", "view", repo.Slug(), "--json", "isFork,viewerPermission,squashMergeAllowed,visibility"}
+
+	view, err := readDecoded[repoView](ctx, f.runner(), args...)
 	if err != nil {
 		return forge.Repo{}, err
 	}
 
+	visibility, err := visibilityOf(view.Visibility, args)
+	if err != nil {
+		return forge.Repo{}, err
+	}
+
+	repo.Visibility = visibility
 	repo.Fork = view.Fork
 	repo.CanPush = slices.Contains([]string{"WRITE", "MAINTAIN", "ADMIN"}, view.Permission)
 	repo.SquashAllowed = view.Squash
@@ -184,13 +181,26 @@ func (r Runner) PublicRepo(ctx context.Context, repo forge.Repo) (bool, error) {
 		return false, err
 	}
 
-	switch view.Visibility {
+	visibility, err := visibilityOf(view.Visibility, args)
+	if err != nil {
+		return false, err
+	}
+
+	return visibility == forge.VisibilityPublic, nil
+}
+
+// visibilityOf returns the visibility GitHub names, read with args; a name GitHub does not give is
+// a *DecodeError.
+func visibilityOf(name string, args []string) (forge.Visibility, error) {
+	switch name {
 	case "PUBLIC":
-		return true, nil
-	case "PRIVATE", "INTERNAL":
-		return false, nil
+		return forge.VisibilityPublic, nil
+	case "PRIVATE":
+		return forge.VisibilityPrivate, nil
+	case "INTERNAL":
+		return forge.VisibilityInternal, nil
 	default:
-		return false, &DecodeError{Argv: Argv(args), Err: fmt.Errorf("visibility %q is not one GitHub gives", view.Visibility)}
+		return "", &DecodeError{Argv: Argv(args), Err: fmt.Errorf("visibility %q is not one GitHub gives", name)}
 	}
 }
 
@@ -235,8 +245,9 @@ func (f *Forge) FindChanges(ctx context.Context, repo forge.Repo, branch string)
 
 // OpenChange opens a pull request with an empty body, ready for review.
 //
-// It returns forge.ErrChangeExists when gh says the branch already has one, and a *DecodeError
-// when gh's output names no pull request.
+// When the open fails, it reads the branch's pull requests again: if one is open from the branch
+// into the base, the failure comes back wrapped in forge.ErrChangeExists, and otherwise as gh
+// returned it. Output that names no pull request is a *DecodeError.
 func (f *Forge) OpenChange(ctx context.Context, repo forge.Repo, change forge.NewChange) (forge.ChangeRef, error) {
 	args := []string{
 		"pr", "create", "--repo", repo.Slug(), "--title", change.Title, "--body", "",
@@ -244,11 +255,11 @@ func (f *Forge) OpenChange(ctx context.Context, repo forge.Repo, change forge.Ne
 	}
 
 	result, err := f.runner().Run(ctx, args...)
-	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && pullExists.MatchString(exitErr.Stderr) {
-		return forge.ChangeRef{}, fmt.Errorf("%w: %w", forge.ErrChangeExists, err)
-	}
-
 	if err != nil {
+		if f.changeOpen(ctx, repo, change) {
+			return forge.ChangeRef{}, fmt.Errorf("%w: %w", forge.ErrChangeExists, err)
+		}
+
 		return forge.ChangeRef{}, err
 	}
 
@@ -265,6 +276,19 @@ func (f *Forge) OpenChange(ctx context.Context, repo forge.Repo, change forge.Ne
 	}
 
 	return forge.ChangeRef{Number: number, URL: link}, nil
+}
+
+// changeOpen reports whether a pull request is open from change.Head into change.Base. A read of
+// the pull requests that fails reports none: the open's own failure is then the one to return.
+func (f *Forge) changeOpen(ctx context.Context, repo forge.Repo, change forge.NewChange) bool {
+	changes, err := f.FindChanges(ctx, repo, change.Head)
+	if err != nil {
+		return false
+	}
+
+	return slices.ContainsFunc(changes, func(c forge.Change) bool {
+		return c.State == forge.ChangeOpen && c.Base == change.Base
+	})
 }
 
 // Head returns the pull request's head commit and whether GitHub can merge it.
@@ -315,22 +339,45 @@ func (f *Forge) requiredChecks(ctx context.Context, repo forge.Repo, query forge
 // they allow a squash merge, and whether they require a merge queue. They allow a squash merge
 // unless a pull_request rule names merge methods without squash, whose ruleset it then names.
 //
-// A free private repository answers 403 with an upgrade message to the read: the plan does not
-// allow rules, so none applies and a squash merge is allowed. Any other 403 is an error.
+// A repository that is not public answers 403 to the read when its plan does not allow rules: none
+// applies then, and a squash merge is allowed. See planRefusal for the 403 that is an error.
 func (f *Forge) TrunkProtection(ctx context.Context, repo forge.Repo, trunk string) (forge.Protection, error) {
 	args := repoAPIArgs(repo, "rules/branches/"+branchPath(trunk), "--paginate")
 
-	pages, err := readEachPage[[]branchRule](ctx, f.runner(), args)
-	if exitErr, ok := errors.AsType[*child.ExitError](err); ok &&
-		strings.Contains(exitErr.Stderr, forbiddenStatus) && strings.Contains(exitErr.Stderr, freePlanRefusal) {
-		return forge.Protection{Rules: forge.RulesUnavailable, SquashAllowed: true}, nil
+	reply, err := f.runner().Read(ctx, args...)
+	if err != nil {
+		if planRefusal(repo, reply) {
+			return forge.Protection{Rules: forge.RulesUnavailable, SquashAllowed: true}, nil
+		}
+
+		return forge.Protection{}, err
 	}
 
+	pages, err := decodeEachPage[[]branchRule](reply.Stdout, withHeaders(args))
 	if err != nil {
 		return forge.Protection{}, err
 	}
 
 	return protectionOf(slices.Concat(pages...)), nil
+}
+
+// planRefusal reports whether reply, a failed read of the rules on a branch of repo, is the 403 of
+// a plan that does not allow rules. Rules need a public repository or a paid plan, so a public
+// repository's 403 is never the plan's. Neither is one that carries a header naming another cause:
+// X-GitHub-SSO for a token not authorized for SAML single sign-on, Retry-After for a secondary rate
+// limit, and X-RateLimit-Remaining at 0 for a primary one.
+func planRefusal(repo forge.Repo, reply Reply) bool {
+	if reply.Status != http.StatusForbidden || repo.Visibility == forge.VisibilityPublic {
+		return false
+	}
+
+	for _, name := range []string{"X-GitHub-SSO", "Retry-After"} {
+		if len(reply.Header.Values(name)) > 0 {
+			return false
+		}
+	}
+
+	return reply.Header.Get("X-RateLimit-Remaining") != "0"
 }
 
 // protectionOf folds the rules on a branch into whether any applies, the checks they require, each
@@ -377,7 +424,8 @@ func branchPath(branch string) string {
 // HasTrunkCI reports whether a workflow that GitHub runs, one in the active state,
 // has its file under .github/workflows on trunk.
 //
-// A trunk with no .github/workflows directory has no CI; any other failure of a read is an error.
+// A trunk with no .github/workflows directory has no CI; any other failure of a read, a trunk
+// GitHub does not find among them, is an error.
 func (f *Forge) HasTrunkCI(ctx context.Context, repo forge.Repo, trunk string) (bool, error) {
 	active, err := f.activeWorkflows(ctx, repo)
 	if err != nil {
@@ -484,27 +532,42 @@ func (f *Forge) DeleteBranch(ctx context.Context, repo forge.Repo, branch string
 	return err
 }
 
-// releaseNotFound is all `gh release view` prints on stderr when the repository has no release
-// for the tag. Any other failure, a 404 for the repository among them, prints something else.
-const releaseNotFound = "release not found"
+// releaseQuery is the GraphQL query that reads the URL of the release of a tag, a draft included.
+// The repository and tag are variables, never spliced into the query.
+const releaseQuery = "query($owner: String!, $name: String!, $tagName: String!) { " +
+	"repository(owner: $owner, name: $name) { release(tagName: $tagName) { url } } }"
 
-type releaseView struct {
-	URL string `json:"url"`
+// releaseAnswer is the answer to releaseQuery; Release is nil when the tag has no release.
+type releaseAnswer struct {
+	Data struct {
+		Repository struct {
+			Release *struct {
+				URL string `json:"url"`
+			} `json:"release"`
+		} `json:"repository"`
+	} `json:"data"`
 }
 
-// FindRelease returns the URL of the GitHub release of tag, and found false with no error when
-// GitHub has no release for tag.
+// FindRelease returns the URL of the GitHub release of tag, a draft included, and found false with
+// no error when GitHub has no release for tag. An answer that cannot be decoded is a *DecodeError.
 func (f *Forge) FindRelease(ctx context.Context, repo forge.Repo, tag string) (link string, found bool, err error) {
-	view, err := runDecoded[releaseView](ctx, f.runner(), "release", "view", tag, "--repo", repo.Slug(), "--json", "url")
-	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && strings.TrimSpace(exitErr.Stderr) == releaseNotFound {
-		return "", false, nil
-	}
+	args := withHeaders([]string{
+		"api", "graphql", "--hostname", repo.Host,
+		"-f", "owner=" + repo.Owner, "-f", "name=" + repo.Name, "-f", "tagName=" + tag,
+		"-f", "query=" + releaseQuery,
+	})
 
+	answer, err := readDecoded[releaseAnswer](ctx, f.runner(), args...)
 	if err != nil {
 		return "", false, err
 	}
 
-	return view.URL, true, nil
+	release := answer.Data.Repository.Release
+	if release == nil {
+		return "", false, nil
+	}
+
+	return release.URL, true, nil
 }
 
 // PublishRelease creates the GitHub release of release.Tag titled with the tag, with
@@ -589,18 +652,40 @@ func (f *Forge) activeWorkflows(ctx context.Context, repo forge.Repo) ([]string,
 	return active, nil
 }
 
-// workflowFiles returns the entries of the .github/workflows directory on trunk; a trunk
-// without the directory, which GitHub answers 404 Not Found for, has none. A trunk that does not
-// exist is an error.
-func (f *Forge) workflowFiles(ctx context.Context, repo forge.Repo, trunk string) ([]repoFile, error) {
-	args := repoAPIArgs(repo, "contents/"+workflowsDir+"?ref="+url.QueryEscape(trunk))
+type branchView struct {
+	Commit struct {
+		SHA string `json:"sha"`
+	} `json:"commit"`
+}
 
-	files, err := readDecoded[[]repoFile](ctx, f.runner(), args...)
-	if exitErr, ok := errors.AsType[*child.ExitError](err); ok && strings.Contains(exitErr.Stderr, pathNotFound) {
-		return nil, nil
+// workflowFiles returns the entries of the .github/workflows directory on trunk. It reads trunk
+// first, so that a trunk that does not exist, which GitHub also answers 404 for, is an error, and
+// then reads the directory at the commit trunk stands on: a 404 there means no directory, and so no
+// entry.
+func (f *Forge) workflowFiles(ctx context.Context, repo forge.Repo, trunk string) ([]repoFile, error) {
+	branchArgs := repoAPIArgs(repo, "branches/"+branchPath(trunk))
+
+	branch, err := readDecoded[branchView](ctx, f.runner(), branchArgs...)
+	if err != nil {
+		return nil, err
 	}
 
-	return files, err
+	if branch.Commit.SHA == "" {
+		return nil, &DecodeError{Argv: Argv(withHeaders(branchArgs)), Err: errors.New("the branch holds no commit")}
+	}
+
+	args := repoAPIArgs(repo, "contents/"+workflowsDir+"?ref="+url.QueryEscape(branch.Commit.SHA))
+
+	reply, err := f.runner().Read(ctx, args...)
+	if err != nil {
+		if reply.Status == http.StatusNotFound {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	return decodeOutput[[]repoFile](reply.Stdout, withHeaders(args))
 }
 
 // ---------------------------------------------------------------------------

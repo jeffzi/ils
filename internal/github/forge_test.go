@@ -36,10 +36,12 @@ const (
 	engineHost = "git.example.com"
 	engineSlug = engineHost + "/ada/engine"
 	headSHA    = "4f2a9c1d7e3b5a6088c1d2e3f4a5b6c7d8e9f001"
-	pullURL    = "https://git.example.com/ada/engine/pull/7"
-	runID      = "9001"
-	jobID      = "42"
-	runLink    = "https://git.example.com/ada/engine/actions/runs/" + runID + "/job/" + jobID
+	// trunkSHA is the commit the default branch stands on.
+	trunkSHA = "b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6e7f80"
+	pullURL  = "https://git.example.com/ada/engine/pull/7"
+	runID    = "9001"
+	jobID    = "42"
+	runLink  = "https://git.example.com/ada/engine/actions/runs/" + runID + "/job/" + jobID
 
 	pullNumber    = 7
 	featureBranch = "feature"
@@ -70,6 +72,14 @@ type readCase struct {
 
 func engine() forge.Repo {
 	return forge.Repo{Host: engineHost, Owner: "ada", Name: "engine"}
+}
+
+// engineWith is the engine repository, whose visibility is visibility.
+func engineWith(visibility forge.Visibility) forge.Repo {
+	repo := engine()
+	repo.Visibility = visibility
+
+	return repo
 }
 
 func newForge() *github.Forge {
@@ -104,7 +114,12 @@ func rulesArgs() []string { return ghtest.RulesArgs(engineHost, "ada/engine", tr
 
 func messageArgs() []string { return ghtest.MessageArgs(engineHost, "ada", "engine", pullNumber) }
 
-func releaseViewArgs() []string { return ghtest.ReleaseViewArgs(engineSlug, releaseTag) }
+func releaseArgs() []string { return ghtest.ReleaseArgs(engineHost, "ada", "engine", releaseTag) }
+
+// releaseJSON is the release read's answer, holding release, a JSON object or null.
+func releaseJSON(release string) string {
+	return `{"data":{"repository":{"release":` + release + `}}}`
+}
 
 func releaseCreateArgs(prerelease bool) []string {
 	return ghtest.ReleaseCreateArgs(engineSlug, releaseTag, releaseNotes, prerelease)
@@ -143,11 +158,20 @@ func pageJSON(key string, items ...string) string {
 
 func workflowsArgs() []string { return pagedAPIArgs("actions/workflows") }
 
-func workflowFilesArgs() []string { return workflowFilesArgsAt(trunk) }
+// workflowFilesArgs is the argv of the read of the workflow folder at the default branch's commit.
+func workflowFilesArgs() []string { return apiArgs("contents/.github/workflows?ref=" + trunkSHA) }
 
-func workflowFilesArgsAt(ref string) []string {
-	return apiArgs("contents/.github/workflows?ref=" + ref)
+// branchArgs is the argv of the read of a branch; branchPath is the branch as it stands in a URL
+// path, each of its segments escaped.
+func branchArgs(branchPath string) []string { return apiArgs("branches/" + branchPath) }
+
+// trunkBranchJSON is the branch read's answer for the default branch, standing on trunkSHA.
+func trunkBranchJSON() string {
+	return `{"name":"` + trunk + `","commit":{"sha":"` + trunkSHA + `"}}`
 }
+
+// trunkRead scripts the read of the default branch, answering trunkBranchJSON.
+func trunkRead() ghtest.Call { return ghtest.Says(trunkBranchJSON(), branchArgs(trunk)...) }
 
 // workflowJSON is one entry of the workflow list's answer: the workflow at file, in state.
 func workflowJSON(file, state string) string {
@@ -165,6 +189,18 @@ func fileJSON(file string) string {
 func activeCIList() string { return workflowsPage(workflowJSON(ciFile, "active")) }
 
 func ciOnTrunkJSON() string { return ghtest.JSONArray(fileJSON(ciFile)) }
+
+// rules403 is GitHub's 403 to the rules read, explained with message and carrying headers, each a
+// `Name: value` line.
+func rules403(message string, headers ...string) ghtest.Answer {
+	return ghtest.Answer{
+		Stdout:  `{"message":"` + message + `","documentation_url":"https://docs.github.com/rest","status":"403"}`,
+		Stderr:  "gh: " + message + " (HTTP 403)\n",
+		Headers: headers,
+		Status:  403,
+		Code:    1,
+	}
+}
 
 // notFoundAnswer is what `gh api` says of a path GitHub does not find.
 func notFoundAnswer() ghtest.Answer { return notFound404("Not Found") }
@@ -225,6 +261,10 @@ func operationsByName() map[string]func(context.Context, *github.Forge) error {
 			_, err := f.Message(ctx, engine(), pullNumber)
 			return err
 		},
+		"FindRelease": func(ctx context.Context, f *github.Forge) error {
+			_, _, err := f.FindRelease(ctx, engine(), releaseTag)
+			return err
+		},
 		"PublicRepo": func(ctx context.Context, _ *github.Forge) error {
 			_, err := github.Runner{}.PublicRepo(ctx, engine())
 			return err
@@ -237,7 +277,7 @@ func readCases() []readCase {
 	byName := operationsByName()
 
 	identity, find, head, protection := byName["Identity"], byName["FindChanges"], byName["Head"], byName["TrunkProtection"]
-	message, public := byName["Message"], byName["PublicRepo"]
+	message, release, public := byName["Message"], byName["FindRelease"], byName["PublicRepo"]
 	blocked := func(ctx context.Context, f *github.Forge) error {
 		_, err := f.Head(ctx, engine(), headQuery("build", "test"))
 		return err
@@ -257,6 +297,7 @@ func readCases() []readCase {
 		},
 		{name: "api rules", run: protection, args: rulesArgs()},
 		{name: "api graphql message", run: message, args: messageArgs()},
+		{name: "api graphql release", run: release, args: releaseArgs()},
 		{
 			name: "repo view visibility", run: public, args: repoViewArgs(),
 			before: []ghtest.Call{loggedInCall()},
@@ -271,9 +312,8 @@ func readCases() []readCase {
 func TestForge_WhenCallExitsNonZero_ReturnsExitErrorNamingCall(t *testing.T) {
 	// Each read left out returns its exit error through a line another test already reaches:
 	// runDecoded's through "pr list", Identity's through the malformed "repo view",
-	// and TrunkProtection's through its own test of a refused read. FindRelease's and HasTrunkCI's
-	// reads are not cases: TestForge_FindRelease_WhenSomethingElseIsNotFound_ReturnsExitError and
-	// the HasTrunkCI tests of a refused read reach their exit errors. Verdict's propagation goes
+	// and TrunkProtection's through its own test of a refused read. HasTrunkCI's reads are not
+	// cases: its tests of a refused read reach their exit errors. Verdict's propagation goes
 	// through its reads in verdict_test.go.
 	reads := casesWithout(readCases(), "repo view", "api rules")
 	for _, tt := range reads {
@@ -310,7 +350,11 @@ func casesWithout(all []readCase, names ...string) []readCase {
 }
 
 func TestForge_WhenReadPrintsMalformedJSON_ReturnsDecodeErrorNamingCall(t *testing.T) {
-	assertDecodeErrorNamesCall(t, casesNamed(readCases(), "repo view")[0])
+	for _, tt := range casesNamed(readCases(), "repo view", "api graphql release") {
+		t.Run(tt.name, func(t *testing.T) {
+			assertDecodeErrorNamesCall(t, tt)
+		})
+	}
 }
 
 // assertDecodeErrorNamesCall runs the operation of c with c's own call printing malformed JSON,
@@ -343,14 +387,24 @@ func TestForge_Identity(t *testing.T) {
 		view string
 		want forge.Repo
 	}{
-		{name: "write may push", view: ghtest.RepoViewJSON(false, "WRITE"), want: forge.Repo{CanPush: true, SquashAllowed: true}},
-		{name: "fork that may not push", view: ghtest.RepoViewJSON(true, "READ"), want: forge.Repo{Fork: true, SquashAllowed: true}},
+		{
+			name: "public repository that may be pushed to", view: ghtest.RepoViewJSON(false, "WRITE", "PUBLIC"),
+			want: forge.Repo{CanPush: true, SquashAllowed: true, Visibility: forge.VisibilityPublic},
+		},
+		{
+			name: "private fork that may not be pushed to", view: ghtest.RepoViewJSON(true, "READ", "PRIVATE"),
+			want: forge.Repo{Fork: true, SquashAllowed: true, Visibility: forge.VisibilityPrivate},
+		},
+		{
+			name: "internal repository", view: ghtest.RepoViewJSON(false, "WRITE", "INTERNAL"),
+			want: forge.Repo{CanPush: true, SquashAllowed: true, Visibility: forge.VisibilityInternal},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ghtest.Setup(t, ghtest.Identity(engineHost, engineSlug, ghtest.Answer{Stdout: tt.view})...)
-			want := engine()
-			want.Fork, want.CanPush, want.SquashAllowed = tt.want.Fork, tt.want.CanPush, tt.want.SquashAllowed
+			want := tt.want
+			want.Host, want.Owner, want.Name = engineHost, "ada", "engine"
 
 			got, err := newForge().Identity(t.Context(), engine())
 			assert.NilError(t, err)
@@ -358,6 +412,16 @@ func TestForge_Identity(t *testing.T) {
 			assert.Check(t, is.DeepEqual(got, want))
 		})
 	}
+}
+
+func TestForge_Identity_WhenVisibilityIsNotOneGitHubGives_ReturnsDecodeErrorNamingCall(t *testing.T) {
+	ghtest.Setup(t, ghtest.Identity(engineHost, engineSlug, ghtest.Answer{Stdout: ghtest.RepoViewJSON(false, "WRITE", "SECRET")})...)
+
+	_, err := newForge().Identity(t.Context(), engine())
+
+	decodeErr, ok := errors.AsType[*github.DecodeError](err)
+	assert.Assert(t, ok, "Identity error = %v, want *github.DecodeError", err)
+	assert.Check(t, ghtest.Matches(ghArgv(repoViewArgs()), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, ghArgv(repoViewArgs()))
 }
 
 func TestRunner_PublicRepo(t *testing.T) {
@@ -501,35 +565,51 @@ func TestForge_OpenChange_WhenOutputNamesNoPullRequest_ReturnsDecodeErrorNamingC
 	}
 }
 
-func TestForge_OpenChange_WhenPullRequestExists_ReturnsErrChangeExists(t *testing.T) {
-	exists := ghtest.Answer{
-		Stderr: "a pull request for branch \"feature\" into branch \"main\" already exists:\n" + pullURL + "\n",
-		Code:   1,
-	}
-	ghtest.Setup(t, ghtest.Exits(exists, createArgs()...))
+// featurePull is a pull request from the feature branch into base, in state.
+func featurePull(base, state string) string {
+	return ghtest.ChangeJSON(ghtest.Change{Number: pullNumber, URL: pullURL, Title: featureTitle, Base: base, SHA: headSHA, State: state})
+}
+
+func TestForge_OpenChange_WhenOpenFailsAndAPullRequestIsOpenIntoTheBase_ReturnsErrChangeExistsWrappingTheFailure(t *testing.T) {
+	refused := ghtest.Answer{Stderr: "pull request create failed: GraphQL: was submitted too quickly (createPullRequest)\n", Code: 1}
+	pulls := ghtest.JSONArray(featurePull(trunk, "CLOSED"), featurePull(trunk, "OPEN"))
+	ghtest.Setup(t, ghtest.Exits(refused, createArgs()...), ghtest.Says(pulls, listArgs()...))
 
 	_, err := newForge().OpenChange(t.Context(), engine(), featureChange())
 
 	assert.Check(t, is.ErrorIs(err, forge.ErrChangeExists))
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "OpenChange error = %v, want it to wrap *child.ExitError", err)
+	assert.Check(t, is.DeepEqual(exitErr.Argv, ghArgv(createArgs())))
 }
 
-func TestForge_OpenChange_WhenGhFailsForAnotherReason_ReturnsExitError(t *testing.T) {
+func TestForge_OpenChange_WhenOpenFailsAndNoPullRequestIsOpenIntoTheBase_ReturnsTheFailure(t *testing.T) {
+	// refused holds gh's words for a pull request that is already open, so that only the list
+	// decides.
+	refused := ghtest.Answer{
+		Stderr: "a pull request for branch \"feature\" into branch \"main\" already exists:\n" + pullURL + "\n",
+		Code:   1,
+	}
 	tests := []struct {
-		name   string
-		stderr string
+		name string
+		list ghtest.Answer
 	}{
-		{name: "something else already exists", stderr: "error: remote ref already exists elsewhere\n"},
-		{name: "a pull request exists for another reason", stderr: "pull request create failed: a pull request exists but is locked\n"},
+		{name: "closed pull request into the base", list: ghtest.Answer{Stdout: ghtest.JSONArray(featurePull(trunk, "CLOSED"))}},
+		{name: "open pull request into another base", list: ghtest.Answer{Stdout: ghtest.JSONArray(featurePull("release", "OPEN"))}},
+		{name: "list read fails", list: ghtest.ServerError()},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stderr: tt.stderr, Code: 1}, createArgs()...))
+			ghtest.Setup(t, ghtest.Exits(refused, createArgs()...), ghtest.Exits(tt.list, listArgs()...))
 
-			_, err := newForge().OpenChange(t.Context(), engine(), featureChange())
+			synctest.Test(t, func(t *testing.T) {
+				_, err := newForge().OpenChange(t.Context(), engine(), featureChange())
 
-			assert.Assert(t, !errors.Is(err, forge.ErrChangeExists), "OpenChange error = %v, want an error other than forge.ErrChangeExists", err)
-			_, ok := errors.AsType[*child.ExitError](err)
-			assert.Check(t, ok, "OpenChange error = %v, want *child.ExitError", err)
+				assert.Assert(t, !errors.Is(err, forge.ErrChangeExists), "OpenChange error = %v, want an error other than forge.ErrChangeExists", err)
+				exitErr, ok := errors.AsType[*child.ExitError](err)
+				assert.Assert(t, ok, "OpenChange error = %v, want *child.ExitError", err)
+				assert.Check(t, is.DeepEqual(exitErr.Argv, ghArgv(createArgs())))
+			})
 		})
 	}
 }
@@ -633,11 +713,6 @@ func TestForge_TrunkProtection(t *testing.T) {
 				ghtest.JSONArray(pullRequestRule(51, `["rebase"]`))},
 			want: forge.Protection{Rules: forge.RulesProtect, RequiredChecks: []string{"build"}, SquashForbiddenBy: []int{51}},
 		},
-		{
-			name:   "free private plan answers 403",
-			answer: ghtest.Answer{Stdout: `{"message":"Upgrade to GitHub Pro"}`, Stderr: "gh: Upgrade to GitHub Pro (HTTP 403)\n", Status: 403, Code: 1},
-			want:   forge.Protection{Rules: forge.RulesUnavailable, SquashAllowed: true},
-		},
 		{name: "no rule applies", answer: rules(), want: forge.Protection{Rules: forge.RulesNone, SquashAllowed: true}},
 		{
 			name:   "merge queue rule",
@@ -665,20 +740,54 @@ func TestForge_TrunkProtection(t *testing.T) {
 	}
 }
 
-func TestForge_TrunkProtection_WhenRefusalIsNotTheFreePlans_ReturnsExitError(t *testing.T) {
+// upgrade is GitHub's message for a rules read the account's plan refuses.
+const upgrade = "Upgrade to GitHub Pro or make this repository public to enable this feature."
+
+func TestForge_TrunkProtection_WhenARepositoryThatIsNotPublicAnswers403_ReadsRulesUnavailable(t *testing.T) {
 	tests := []struct {
-		name   string
-		stderr string
-		status int
+		name       string
+		visibility forge.Visibility
+		answer     ghtest.Answer
 	}{
-		{name: "403 for another reason", stderr: "gh: Resource not accessible by integration (HTTP 403)\n", status: 403},
-		{name: "upgrade wording under another status", stderr: "gh: Upgrade to GitHub Pro (HTTP 404)\n", status: 404},
+		{name: "private repository", visibility: forge.VisibilityPrivate, answer: rules403(upgrade)},
+		{
+			name: "internal repository, rate limit left", visibility: forge.VisibilityInternal,
+			answer: rules403("Resource not accessible by integration", "X-Ratelimit-Remaining: 4999"),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stderr: tt.stderr, Status: tt.status, Code: 1}, rulesArgs()...))
+			ghtest.Setup(t, ghtest.Exits(tt.answer, rulesArgs()...))
 
-			_, err := newForge().TrunkProtection(t.Context(), engine(), trunk)
+			got, err := newForge().TrunkProtection(t.Context(), engineWith(tt.visibility), trunk)
+			assert.NilError(t, err)
+
+			want := forge.Protection{Rules: forge.RulesUnavailable, SquashAllowed: true}
+			assert.Check(t, is.DeepEqual(got, want, cmpopts.EquateEmpty()))
+		})
+	}
+}
+
+func TestForge_TrunkProtection_WhenRefusalIsNotThePlans_ReturnsExitError(t *testing.T) {
+	tests := []struct {
+		name       string
+		visibility forge.Visibility
+		answer     ghtest.Answer
+	}{
+		{name: "403 on a public repository", visibility: forge.VisibilityPublic, answer: rules403(upgrade)},
+		{
+			name: "403 of a token not authorized for single sign-on", visibility: forge.VisibilityPrivate,
+			answer: rules403(upgrade, "X-Github-Sso: required; url=https://git.example.com/orgs/ada/sso?authorization_request=1"),
+		},
+		{name: "403 that asks to retry later", visibility: forge.VisibilityPrivate, answer: rules403(upgrade, "Retry-After: 60")},
+		{name: "403 with no rate limit left", visibility: forge.VisibilityPrivate, answer: rules403(upgrade, "X-Ratelimit-Remaining: 0")},
+		{name: "another status", visibility: forge.VisibilityPrivate, answer: notFoundAnswer()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ghtest.Setup(t, ghtest.Exits(tt.answer, rulesArgs()...))
+
+			_, err := newForge().TrunkProtection(t.Context(), engineWith(tt.visibility), trunk)
 
 			exitErr, ok := errors.AsType[*child.ExitError](err)
 			assert.Assert(t, ok, "error = %v, want *child.ExitError", err)
@@ -732,7 +841,7 @@ func TestForge_HasTrunkCI(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ghtest.Setup(t, ghtest.Says(tt.workflows, workflowsArgs()...), ghtest.Exits(tt.files, workflowFilesArgs()...))
+			ghtest.Setup(t, ghtest.Says(tt.workflows, workflowsArgs()...), trunkRead(), ghtest.Exits(tt.files, workflowFilesArgs()...))
 
 			got, err := newForge().HasTrunkCI(t.Context(), engine(), trunk)
 			assert.NilError(t, err)
@@ -752,15 +861,32 @@ func TestForge_HasTrunkCI_WhenWorkflowListAnswers404_ReturnsExitError(t *testing
 	assert.Check(t, is.DeepEqual(exitErr.Argv, ghArgv(workflowsArgs())))
 }
 
-func TestForge_HasTrunkCI_WhenTrunkRefIsMissing_ReturnsExitError(t *testing.T) {
-	noCommit := notFound404("No commit found for the ref " + trunk)
-	ghtest.Setup(t, ghtest.Says(activeCIList(), workflowsArgs()...), ghtest.Exits(noCommit, workflowFilesArgs()...))
+func TestForge_HasTrunkCI_WhenAReadOfTheTrunkIsRefused_ReturnsExitError(t *testing.T) {
+	tests := []struct {
+		name   string
+		failed []string
+		script []ghtest.Call
+	}{
+		{
+			name: "default branch not found", failed: branchArgs(trunk),
+			script: []ghtest.Call{ghtest.Exits(notFound404("Branch not found"), branchArgs(trunk)...)},
+		},
+		{
+			name: "workflow folder refused", failed: workflowFilesArgs(),
+			script: []ghtest.Call{trunkRead(), ghtest.Exits(rules403("Resource not accessible by integration"), workflowFilesArgs()...)},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ghtest.Setup(t, append([]ghtest.Call{ghtest.Says(activeCIList(), workflowsArgs()...)}, tt.script...)...)
 
-	_, err := newForge().HasTrunkCI(t.Context(), engine(), trunk)
+			_, err := newForge().HasTrunkCI(t.Context(), engine(), trunk)
 
-	exitErr, ok := errors.AsType[*child.ExitError](err)
-	assert.Assert(t, ok, "HasTrunkCI error = %v, want *child.ExitError", err)
-	assert.Check(t, is.DeepEqual(exitErr.Argv, ghArgv(workflowFilesArgs())))
+			exitErr, ok := errors.AsType[*child.ExitError](err)
+			assert.Assert(t, ok, "HasTrunkCI error = %v, want *child.ExitError", err)
+			assert.Check(t, is.DeepEqual(exitErr.Argv, ghArgv(tt.failed)))
+		})
+	}
 }
 
 func TestForge_HasTrunkCI_WhenWorkflowListPrintsNothing_ReturnsDecodeError(t *testing.T) {
@@ -773,12 +899,24 @@ func TestForge_HasTrunkCI_WhenWorkflowListPrintsNothing_ReturnsDecodeError(t *te
 	assert.Check(t, is.DeepEqual(decodeErr.Argv, ghArgv(workflowsArgs())))
 }
 
-func TestForge_HasTrunkCI_WhenTrunkNameHoldsQuerySyntax_SendsItEscaped(t *testing.T) {
-	const release = "release/1.0+2"
-	escaped := workflowFilesArgsAt("release%2F1.0%2B2")
-	ghtest.Setup(t, ghtest.Says(activeCIList(), workflowsArgs()...), ghtest.Says(ciOnTrunkJSON(), escaped...))
+func TestForge_HasTrunkCI_WhenTheTrunkReadHoldsNoCommit_ReturnsDecodeError(t *testing.T) {
+	ghtest.Setup(t, ghtest.Says(activeCIList(), workflowsArgs()...), ghtest.Says(`{"name":"`+trunk+`"}`, branchArgs(trunk)...))
 
-	_, err := newForge().HasTrunkCI(t.Context(), engine(), release)
+	_, err := newForge().HasTrunkCI(t.Context(), engine(), trunk)
+
+	decodeErr, ok := errors.AsType[*github.DecodeError](err)
+	assert.Assert(t, ok, "HasTrunkCI error = %v, want *github.DecodeError", err)
+	assert.Check(t, is.DeepEqual(decodeErr.Argv, ghArgv(branchArgs(trunk))))
+}
+
+func TestForge_HasTrunkCI_WhenTrunkNameHoldsPathSyntax_ReadsExactlyThatBranch(t *testing.T) {
+	ghtest.Setup(t,
+		ghtest.Says(activeCIList(), workflowsArgs()...),
+		ghtest.Says(trunkBranchJSON(), branchArgs("release/1%232")...),
+		ghtest.Says(ciOnTrunkJSON(), workflowFilesArgs()...),
+	)
+
+	_, err := newForge().HasTrunkCI(t.Context(), engine(), "release/1#2")
 
 	assert.NilError(t, err)
 }
@@ -876,8 +1014,8 @@ func TestForge_DeleteBranch_WhenNameHoldsAHash_EscapesIt(t *testing.T) {
 	assert.NilError(t, err)
 }
 
-func TestForge_FindRelease_WhenReleaseExists_ReturnsItsURL(t *testing.T) {
-	ghtest.Setup(t, ghtest.Says(`{"url":"`+releaseURL+`"}`, releaseViewArgs()...))
+func TestForge_FindRelease_WhenTheAnswerHoldsARelease_ReturnsItsURL(t *testing.T) {
+	ghtest.Setup(t, ghtest.Says(releaseJSON(`{"url":"`+releaseURL+`"}`), releaseArgs()...))
 
 	url, found, err := newForge().FindRelease(t.Context(), engine(), releaseTag)
 	assert.NilError(t, err)
@@ -886,24 +1024,13 @@ func TestForge_FindRelease_WhenReleaseExists_ReturnsItsURL(t *testing.T) {
 	assert.Check(t, is.Equal(url, releaseURL))
 }
 
-func TestForge_FindRelease_WhenGitHubHasNoReleaseForTheTag_ReportsNoneWithoutError(t *testing.T) {
-	ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stderr: "release not found\n", Code: 1}, releaseViewArgs()...))
+func TestForge_FindRelease_WhenTheAnswerHoldsNoRelease_ReportsNoneWithoutError(t *testing.T) {
+	ghtest.Setup(t, ghtest.Says(releaseJSON("null"), releaseArgs()...))
 
 	url, found, err := newForge().FindRelease(t.Context(), engine(), releaseTag)
 	assert.NilError(t, err)
 
 	assert.Check(t, !found, "FindRelease found = true with URL %q, want none", url)
-}
-
-func TestForge_FindRelease_WhenSomethingElseIsNotFound_ReturnsExitError(t *testing.T) {
-	notFound := ghtest.Answer{Stderr: "HTTP 404: Not Found (https://api.git.example.com/repos/ada/engine/releases/tags/v1.2.0)\n", Code: 1}
-	ghtest.Setup(t, ghtest.Exits(notFound, releaseViewArgs()...))
-
-	_, _, err := newForge().FindRelease(t.Context(), engine(), releaseTag)
-
-	exitErr, ok := errors.AsType[*child.ExitError](err)
-	assert.Assert(t, ok, "FindRelease error = %v, want *child.ExitError", err)
-	assert.Check(t, ghtest.Matches(ghArgv(releaseViewArgs()), exitErr.Argv), "Argv = %q, want %q", exitErr.Argv, ghArgv(releaseViewArgs()))
 }
 
 func TestForge_PublishRelease(t *testing.T) {

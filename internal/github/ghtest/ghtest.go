@@ -339,9 +339,13 @@ func LogArgs(slug, run, job string) []string {
 	return []string{"run", "view", "--repo", slug, run, "--log-failed", "--job", job}
 }
 
-// ReleaseViewArgs is the argv pattern of the read of the GitHub release of tag.
-func ReleaseViewArgs(slug, tag string) []string {
-	return []string{"release", "view", tag, "--repo", slug, "--json", Any}
+// ReleaseArgs is the argv pattern of the GraphQL read of the GitHub release of tag, in the
+// repository owner/name on host.
+func ReleaseArgs(host, owner, name, tag string) []string {
+	return []string{
+		"api", "--include", "graphql", "--hostname", host,
+		"-f", "owner=" + owner, "-f", "name=" + name, "-f", "tagName=" + tag, "-f", Any,
+	}
 }
 
 // ReleaseCreateArgs is the argv pattern that publishes the GitHub release of tag, which origin
@@ -370,10 +374,11 @@ func MessageArgs(host, owner, name string, number int) []string {
 // ---------------------------------------------------------------------------
 
 // RepoViewJSON is `gh repo view`'s answer for a repository that is a fork or not, on which the
-// viewer holds permission, and whose settings allow squash merges.
-func RepoViewJSON(fork bool, permission string) string {
+// viewer holds permission, whose visibility is visibility, such as PUBLIC or PRIVATE, and whose
+// settings allow squash merges.
+func RepoViewJSON(fork bool, permission, visibility string) string {
 	return `{"isFork":` + strconv.FormatBool(fork) + `,"viewerPermission":` + quoted(permission) +
-		`,"squashMergeAllowed":true}`
+		`,"squashMergeAllowed":true,"visibility":` + quoted(visibility) + `}`
 }
 
 // MessageJSON is the message read's answer for a pull request titled title with body, for which

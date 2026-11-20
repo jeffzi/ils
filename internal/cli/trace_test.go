@@ -80,7 +80,7 @@ func TestApp_Run_WhenDebugIsOnDuringALanding_TracesTheLandingOnStderrAlone(t *te
 	f := gittest.New(t, trunk)
 	recorder := &git.Recorder{}
 	fake := ghtest.Setup(t,
-		ghtest.Identity(repo.Host, repo.Slug(), ghtest.Answer{Stdout: ghtest.RepoViewJSON(false, "WRITE")})...)
+		ghtest.Identity(repo.Host, repo.Slug(), ghtest.Answer{Stdout: ghtest.RepoViewJSON(false, "WRITE", "PUBLIC")})...)
 	app := over(git.Runner{Dir: f.Dir(), Env: f.Env(), Recorder: recorder})
 	app.SetPush(func(ctx context.Context, deps landing.Deps, req landing.Request) result.Result {
 		_, err := deps.Forge.Identity(ctx, repo)
