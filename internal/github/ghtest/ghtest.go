@@ -476,6 +476,18 @@ func Main() (code int, served bool) {
 	return serve(context.Background(), script, os.Getenv(recordEnv), os.Getenv(holdEnv)), true
 }
 
+// ProgramMain is the whole of the program Install builds: it acts as gh as Main does and returns
+// the exit code, or, run with no script in its environment, reports that on stderr and returns
+// BrokenCode.
+func ProgramMain() int {
+	code, served := Main()
+	if !served {
+		return broken(errors.New("the fake gh ran with no script, want the settings of ghtest.Fake.Settings in its environment"))
+	}
+
+	return code
+}
+
 // Setup points GH_PATH at the test binary for the rest of the test and scripts its answers.
 //
 // It sets process environment, so the test cannot be parallel.
@@ -524,14 +536,15 @@ func Script(tb testing.TB, script ...Call) *Fake {
 
 // Install builds the fake gh as a program of its own, without the race detector, into a new
 // temporary directory, points GH_PATH at it, and returns a cleanup that puts GH_PATH back and
-// removes the directory.
+// removes the directory. Canceling ctx stops the build; the cleanup returns what it could not
+// undo, for the caller to fail on.
 //
 // A package's TestMain calls it once, before running its tests, and calls the cleanup after them.
 // The fake answers as the settings of Fake.Settings in the call's environment say, so a test
 // scripts gh with Script and can run in parallel; a package that does not call it keeps the test
 // binary as its gh, through Setup. The fake must be built from inside this module, where `go
 // build` finds its package.
-func Install() (cleanup func(), err error) {
+func Install(ctx context.Context) (cleanup func() error, err error) {
 	dir, err := os.MkdirTemp("", "ils-fake-gh-")
 	if err != nil {
 		return nil, fmt.Errorf("make a directory for the fake gh: %w", err)
@@ -539,7 +552,7 @@ func Install() (cleanup func(), err error) {
 
 	bin := filepath.Join(dir, github.Program)
 	//nolint:gosec // G204: the arguments are constants of this package and a path it made.
-	out, err := exec.CommandContext(context.Background(), "go", "build", "-o", bin, fakeGHPackage).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "go", "build", "-o", bin, fakeGHPackage).CombinedOutput()
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("build the fake gh: %w\n%s", err, out), os.RemoveAll(dir))
 	}
@@ -549,17 +562,17 @@ func Install() (cleanup func(), err error) {
 		return nil, errors.Join(fmt.Errorf("point %s at the fake gh: %w", github.PathVariable, err), os.RemoveAll(dir))
 	}
 
-	return func() {
+	return func() error {
 		restore := os.Unsetenv(github.PathVariable)
 		if hadPath {
 			restore = os.Setenv(github.PathVariable, before)
 		}
 
-		// The cleanup runs after the tests, when nothing is left to fail: printing is all that is
-		// left to report a directory left behind or a GH_PATH not put back.
 		if err := errors.Join(restore, os.RemoveAll(dir)); err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "ghtest: clean up the fake gh: %v\n", err)
+			return fmt.Errorf("clean up the fake gh: %w", err)
 		}
+
+		return nil
 	}, nil
 }
 

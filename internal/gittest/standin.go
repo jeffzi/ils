@@ -130,9 +130,22 @@ func Main() (code int, served bool) {
 	return serveGit(ctx, realGit, os.Args[1:]), true
 }
 
+// ProgramMain is the whole of the program InstallFakeGit builds: it acts as git as Main does and
+// returns the exit code, or, run under another name, reports that on stderr and returns
+// BrokenCode.
+func ProgramMain() int {
+	code, served := Main()
+	if !served {
+		return broken(fmt.Errorf("run as %s, want it run under git's name", os.Args[0]))
+	}
+
+	return code
+}
+
 // InstallFakeGit builds the fake git as a program of its own, without the race detector, into a
 // new temporary directory, puts that directory first on the process PATH, and returns a cleanup
-// that puts PATH back and removes the directory.
+// that puts PATH back and removes the directory. Canceling ctx stops the build; the cleanup returns
+// what it could not undo, for the caller to fail on.
 //
 // A package's TestMain calls it once, before running its tests, and calls the cleanup after them.
 // The fake answers a call as the settings of Fake.Settings in the call's environment say, and runs
@@ -140,7 +153,7 @@ func Main() (code int, served bool) {
 // environment and can run in parallel. The real git is the git first on PATH when InstallFakeGit
 // runs, built into the fake, so the fake finds it whatever PATH a call carries. The fake must run
 // from inside this module, where `go build` finds its package.
-func InstallFakeGit() (cleanup func(), err error) {
+func InstallFakeGit(ctx context.Context) (cleanup func() error, err error) {
 	realGit, err := exec.LookPath(gitName)
 	if err != nil {
 		return nil, fmt.Errorf("find the real git: %w", err)
@@ -159,7 +172,7 @@ func InstallFakeGit() (cleanup func(), err error) {
 	bin := filepath.Join(dir, gitName)
 	ldflags := "-ldflags=-X '" + gittestPackage + ".builtRealGit=" + realGit + "'"
 	//nolint:gosec // G204: the arguments are constants of this package, a path it made, and the path of git.
-	out, err := exec.CommandContext(context.Background(), "go", "build", ldflags, "-o", bin, fakeGitPackage).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "go", "build", ldflags, "-o", bin, fakeGitPackage).CombinedOutput()
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("build the fake git: %w\n%s", err, out), os.RemoveAll(dir))
 	}
@@ -169,17 +182,17 @@ func InstallFakeGit() (cleanup func(), err error) {
 		return nil, errors.Join(fmt.Errorf("put the fake git first on PATH: %w", err), os.RemoveAll(dir))
 	}
 
-	return func() {
+	return func() error {
 		restore := os.Unsetenv("PATH")
 		if hadPath {
 			restore = os.Setenv("PATH", before)
 		}
 
-		// The cleanup runs after the tests, when nothing is left to fail: printing is all that is
-		// left to report a directory left behind or a PATH not put back.
 		if err := errors.Join(restore, os.RemoveAll(dir)); err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "gittest: clean up the fake git: %v\n", err)
+			return fmt.Errorf("clean up the fake git: %w", err)
 		}
+
+		return nil
 	}, nil
 }
 

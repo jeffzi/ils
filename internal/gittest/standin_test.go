@@ -251,9 +251,9 @@ func installFakeGit(t *testing.T) {
 	t.Helper()
 
 	t.Setenv("PATH", os.Getenv("PATH"))
-	cleanup, err := gittest.InstallFakeGit()
+	cleanup, err := gittest.InstallFakeGit(t.Context())
 	assert.NilError(t, err)
-	t.Cleanup(cleanup)
+	t.Cleanup(func() { assert.Check(t, cleanup()) })
 }
 
 func TestInstallFakeGit_WhenSettingsFakeTheCall_AnswersAsTheySay(t *testing.T) {
@@ -295,10 +295,10 @@ func TestInstallFakeGit_WhenASignalKillsTheRealGit_TheCallerSeesASignalDeath(t *
 func TestInstallFakeGit_WhenCleanedUp_PutsPathBack(t *testing.T) {
 	before := os.Getenv("PATH")
 	t.Setenv("PATH", before)
-	cleanup, err := gittest.InstallFakeGit()
+	cleanup, err := gittest.InstallFakeGit(t.Context())
 	assert.NilError(t, err)
 
-	cleanup()
+	assert.NilError(t, cleanup())
 
 	assert.Check(t, is.Equal(os.Getenv("PATH"), before))
 }

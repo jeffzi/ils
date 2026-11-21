@@ -165,9 +165,9 @@ func install(t *testing.T) {
 	t.Helper()
 
 	t.Setenv(github.PathVariable, os.Getenv(github.PathVariable))
-	cleanup, err := ghtest.Install()
+	cleanup, err := ghtest.Install(t.Context())
 	assert.NilError(t, err)
-	t.Cleanup(cleanup)
+	t.Cleanup(func() { assert.Check(t, cleanup()) })
 }
 
 func TestInstall_WhenSettingsScriptTheCall_AnswersAsTheySay(t *testing.T) {
@@ -206,11 +206,11 @@ func TestFake_APIRead(t *testing.T) {
 		args   []string
 		answer ghtest.Answer
 	}{
-		{name: "answered read", args: included, answer: ghtest.Answer{Stdout: "{}"}, want: "HTTP/2.0 200 OK\n\r\n{}"},
+		{name: "answered read", args: included, answer: ghtest.Answer{Stdout: "{}"}, want: ghtest.StatusBlock(200) + "{}"},
 		{
 			name: "refused read with headers", args: included,
 			answer: ghtest.Answer{Stdout: "{}", Status: 404, Headers: []string{"X-Ratelimit-Remaining: 0"}, Code: 1},
-			want:   "HTTP/2.0 404 Not Found\nX-Ratelimit-Remaining: 0\r\n\r\n{}",
+			want:   ghtest.StatusBlock(404, "X-Ratelimit-Remaining: 0") + "{}",
 		},
 		{name: "read GitHub never answered", args: included, answer: ghtest.Answer{Code: 1}, want: ""},
 		{name: "read without headers asked", args: []string{"api", "repos/ada/engine"}, answer: ghtest.Answer{Stdout: "{}"}, want: "{}"},
