@@ -28,6 +28,13 @@ func (f *Forge) Verdict(ctx context.Context, repo forge.Repo, query forge.Verdic
 		return forge.Verdict{}, err
 	}
 
+	return f.withFailedLog(ctx, repo, verdict)
+}
+
+// withFailedLog returns verdict with the failed log of the check its Failed names.
+func (f *Forge) withFailedLog(ctx context.Context, repo forge.Repo, verdict forge.Verdict) (forge.Verdict, error) {
+	var err error
+
 	verdict.FailedLog, err = f.failedLog(ctx, repo, verdict)
 	if err != nil {
 		return forge.Verdict{}, err
@@ -219,7 +226,8 @@ type actionsRunsPage struct {
 
 // CommitVerdict returns the verdict of the commit sha on its own, with no pull request involved:
 // every commit status, and every check run but those of an Actions run that judges something else
-// than the commit, with the Actions runs that judge it. Its FailedLog is always the zero value.
+// than the commit, with the Actions runs that judge it, and the failed log of the check the
+// verdict's Failed names, read as Verdict reads it.
 //
 // Only a push run judges the commit. Every other event, and one this version does not know, judges
 // something else that happens to stand on the same commit, as a scheduled, manual or Dependabot
@@ -227,7 +235,12 @@ type actionsRunsPage struct {
 // tip of the default branch whatever started the run it follows, and nothing in the run says what
 // that was.
 func (f *Forge) CommitVerdict(ctx context.Context, repo forge.Repo, sha string) (forge.Verdict, error) {
-	return f.commitChecks(ctx, repo, sha, fromPush)
+	verdict, err := f.commitChecks(ctx, repo, sha, fromPush)
+	if err != nil {
+		return forge.Verdict{}, err
+	}
+
+	return f.withFailedLog(ctx, repo, verdict)
 }
 
 func fromPush(event string) bool { return event == "push" }

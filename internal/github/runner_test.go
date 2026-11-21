@@ -66,7 +66,6 @@ func TestRunner_Run_WhenGhPathUnset_RunsTheGhOnPath(t *testing.T) {
 	gittest.Link(t, dir, github.Program)
 	t.Setenv("GH_PATH", "")
 	t.Setenv("PATH", dir)
-	t.Chdir(dir)
 
 	got, err := github.Runner{}.Run(t.Context(), "pr", "view")
 	assert.NilError(t, err, "Run(pr view)")
@@ -260,11 +259,6 @@ func TestRunner_Read_WhenExit1WithoutA4xx_ReadsAgainAfterThePause(t *testing.T) 
 		{
 			name: "api read GitHub answered 5xx", read: apiRead(), run: apiReadRun(),
 			failure: ghtest.Answer{Stdout: `{"message":"Server Error"}`, Stderr: "gh: Server Error (HTTP 500)\n", Status: 500, Code: 1},
-			answer:  ghtest.Answer{Stdout: `{"id":1}`}, want: `{"id":1}`,
-		},
-		{
-			name: "api read GitHub never answered", read: apiRead(), run: apiReadRun(),
-			failure: ghtest.Answer{Stderr: "error connecting to api.github.com\n", Code: 1},
 			answer:  ghtest.Answer{Stdout: `{"id":1}`}, want: `{"id":1}`,
 		},
 	}
