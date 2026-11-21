@@ -424,6 +424,6 @@ func changesNothing(args []Word) bool {
 // which ils never declares.
 func readOnlyILSCommands() map[string]bool {
 	return setOf(
-		landing.StatusCommand, ParseCommand, GuardCommand, HookCommand, "help",
+		landing.StatusCommand, ParseCommand, Command, HookCommand, "help",
 	)
 }

@@ -23,7 +23,7 @@ import (
 
 const (
 	parseWord = guard.ParseCommand
-	guardWord = guard.GuardCommand
+	guardWord = guard.Command
 	hookWord  = guard.HookCommand
 
 	flagCwd = "--cwd"
@@ -183,7 +183,7 @@ func unparsed(req landing.Request, err error) (result.Result, error) {
 
 	typed, quoteErr := landing.ShellLine(req.Words)
 	if quoteErr != nil {
-		return result.Result{}, quoteErr
+		return result.Result{}, fmt.Errorf("quote the command for the next step: %w", quoteErr)
 	}
 
 	return *req.Broke(reason, result.NextStep("fix what the reason names, then run %s again", result.Command(typed))), nil
