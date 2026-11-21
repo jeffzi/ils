@@ -167,6 +167,10 @@ Host github.com
   ServerAliveInterval 60
 ```
 
+`ils push` and the tag push of `ils release` run git with `LC_ALL=C`, so that `ils` can read git's
+errors whatever language your environment selects. Your pre-push hook inherits it: it runs in the C
+locale too.
+
 When another commit reaches the pull request while `ils push` waits, the checks GitHub reports are
 no longer those of the pushed commit. `ils push` then prints no verdict and ends
 [refused](#exit-codes), naming the pull request's new head. `Next:` says to pull the new commit,
@@ -1110,7 +1114,10 @@ The guard refuses:
   `ils branch <name>`. For a `pull --ff-only` that names another repository or branch, or whose
   arguments the guard cannot read, the reason names `git pull --ff-only` alone.
   [The default branch on GitHub](#the-default-branch-on-github) says when `origin` counts as on
-  GitHub. A `git rebase` naming the default branch as the branch to rebase counts as one on it. The
+  GitHub. A `git rebase` naming the default branch as the branch to rebase counts as one on it. A
+  `git rebase` whose upstream is a glob, or an unquoted expansion after `--`, with no branch after
+  it, counts as one on the branch HEAD is on, though that word may expand to both an upstream and
+  the default branch. The
   guard asks origin for the default branch once per command and git dir, and falls back to the
   cached `refs/remotes/origin/HEAD`. With neither, it refuses and names
   `git remote set-head origin --auto`, which caches the head on any supported git. The guard
@@ -1169,8 +1176,11 @@ The guard refuses:
 - `gh api` with a method other than `GET`, or with no method but a field or `--input`. A `gh api
   graphql` call whose `query` field is a literal document holding no mutation is a read. The guard
   allows it, with no method or with `POST` in any spelling (`-X POST`, `--method post`). A call
-  whose document holds a mutation is a write. The guard also refuses a call whose document it
-  cannot read (`-F query=@q.graphql`, `-f query="$q"`, `--input`) until the query is inline;
+  whose document holds a mutation is a write. The guard reads a block string (`"""…"""`) as ending
+  at the first `"""`, even after a backslash, so it reads a mutation that follows a block string
+  holding the escape `\"""` as part of a string, and allows the call. The guard also refuses a call
+  whose document it cannot read (`-F query=@q.graphql`, `-f query="$q"`, `--input`) until the query
+  is inline;
 - `gh repo sync`, `delete`, `edit`, and `create --push`;
 - `gh release delete`, `edit`, `upload`, and `delete-asset`;
 - `gh auth token`, `gh auth git-credential`, and `gh auth status --show-token`;

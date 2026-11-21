@@ -12,6 +12,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Fix a command failing on the first failed read of GitHub instead of reading it again.
 - Fix `ils` misreading `git`'s errors about origin when `git` prints them in a language other than
   English.
+- Fix the squash message dropping the `Co-authored-by` trailers GitHub adds after a blank line
+  below the pull request's description.
+- Fix `ils release` reporting a failed check of the release commit without the end of its log.
 
 ## [0.6.0] - 2026-11-17
 
