@@ -9,6 +9,15 @@ import (
 	"github.com/jeffzi/ils/internal/guard"
 )
 
+func TestParse_WhenExecRunsNoCommand_ReportsExecItself(t *testing.T) {
+	t.Parallel()
+
+	got := only(t, "exec > out.log")
+
+	assert.Check(t, is.DeepEqual(wordTexts(got.Words), []string{"exec"}))
+	assert.Check(t, is.Len(got.Wrappers, 0))
+}
+
 func TestParse_WhenAWrapperRunsACommand_ReportsTheCommandBehindIt(t *testing.T) {
 	t.Parallel()
 
