@@ -27,13 +27,6 @@ const (
 	// bound is the time a wait has left unless its test says otherwise.
 	bound = 100 * time.Second
 
-	headPoll    = 2 * time.Second
-	mergePoll   = 2 * time.Second
-	verdictPoll = 5 * time.Second
-
-	// headReadReserve is the time a wait keeps before its deadline for the head read after the checks.
-	headReadReserve = 3 * time.Second
-
 	// midPoll is how far into its first poll a wait is when its test ends the context: every
 	// poll lasts longer.
 	midPoll = time.Second
@@ -45,7 +38,7 @@ const (
 	// heldLeft is the time a wait has left when its first poll of the checks is reached: one poll
 	// fits with the 3 seconds kept for the head read after it, so the read after the poll begins
 	// 3.5 seconds before the deadline, and the reserve ends it heldRead in.
-	heldLeft = verdictPoll + headReadReserve + heldRead
+	heldLeft = landing.VerdictPoll + landing.HeadReadReserve + heldRead
 
 	// twoPollsLeft is a time limit a third poll would end a second past.
 	twoPollsLeft = 5 * time.Second
@@ -57,7 +50,7 @@ const (
 
 // heldPauses are the fake times a wait lets pass when the reserve ends the read after its first
 // poll of the checks: the poll, then the read.
-func heldPauses() []time.Duration { return []time.Duration{verdictPoll, heldRead} }
+func heldPauses() []time.Duration { return []time.Duration{landing.VerdictPoll, heldRead} }
 
 // ignoreSince leaves out the time the verdict wait began.
 func ignoreSince() cmp.Option {
@@ -360,13 +353,13 @@ func TestAwaitVerdict_WhenTheHeadIsNotYetThePushedCommit_ReadsNoCheck(t *testing
 		{
 			name:  "previous commit for two reads, then the pushed one",
 			heads: shows(stale(), stale(), clean()), verdicts: says(passing()),
-			want: green(), ops: readsOf(3, 1, 1), waits: polls(2, headPoll),
+			want: green(), ops: readsOf(3, 1, 1), waits: polls(2, landing.HeadPoll),
 		},
 		{
 			name:  "previous commit until the deadline",
 			heads: shows(stale()), left: twoPollsLeft,
 			want: landing.Waited{Outcome: landing.WaitPending, Stage: landing.StageHead},
-			ops:  readsOf(3, 0, 0), waits: polls(2, headPoll),
+			ops:  readsOf(3, 0, 0), waits: polls(2, landing.HeadPoll),
 		},
 	})
 }
@@ -384,18 +377,18 @@ func mergeRows() []vigilRow {
 		{
 			name:  "unknown then clean",
 			heads: shows(unknown(), clean()), verdicts: says(passing()),
-			want: green(), ops: readsOf(2, 1, 1), waits: polls(1, mergePoll),
+			want: green(), ops: readsOf(2, 1, 1), waits: polls(1, landing.MergePoll),
 			told: []string{waitingStep(), mergeStateStep(), waitingStep(), "count 1 of 1"},
 		},
 		{
 			name:  "unknown for 30 seconds",
 			heads: shows(unknown()),
-			want:  gaveUp, ops: readsOf(16, 0, 0), waits: polls(15, mergePoll),
+			want:  gaveUp, ops: readsOf(16, 0, 0), waits: polls(15, landing.MergePoll),
 		},
 		{
 			name:  "unknown with 5 seconds left",
 			heads: shows(unknown()), left: twoPollsLeft,
-			want: stillUnknown, ops: readsOf(3, 0, 0), waits: polls(2, mergePoll),
+			want: stillUnknown, ops: readsOf(3, 0, 0), waits: polls(2, landing.MergePoll),
 		},
 		{
 			name:  "conflicting",
@@ -445,7 +438,7 @@ func logRows() []logRow {
 			script: forgetest.Script{Head: shows(unknown(), clean()), Verdict: says(running(), passing())},
 			want: []string{
 				"DEBUG wait read=merge-state state=unknown window=" + landing.MergeWindow.String(),
-				"DEBUG wait read=merge-state state=clean window=" + (landing.MergeWindow - mergePoll).String(),
+				"DEBUG wait read=merge-state state=clean window=" + (landing.MergeWindow - landing.MergePoll).String(),
 				"DEBUG wait read=checks done=0 pending=1 verdict=pending",
 				"DEBUG wait read=checks done=1 pending=0 verdict=green",
 				"DEBUG wait read=merge-state state=clean",
@@ -555,9 +548,9 @@ func TestAwaitVerdict_WhenChecksStillRunAtTheDeadline_EndsPendingWithThem(t *tes
 			// One head poll, then two verdict polls; a third would leave too little time for the head
 			// read after it.
 			name:  "after a head poll and two verdict polls",
-			heads: shows(stale(), clean()), verdicts: says(running()), after: clean(), since: headPoll,
+			heads: shows(stale(), clean()), verdicts: says(running()), after: clean(), since: landing.HeadPoll,
 			left: 17 * time.Second,
-			ops:  readsOf(2, 3, 1), waits: slices.Concat(polls(1, headPoll), polls(2, verdictPoll)),
+			ops:  readsOf(2, 3, 1), waits: slices.Concat(polls(1, landing.HeadPoll), polls(2, landing.VerdictPoll)),
 		},
 		{
 			// A poll of five seconds fits in seven, but not with the head read after it.
@@ -569,7 +562,7 @@ func TestAwaitVerdict_WhenChecksStillRunAtTheDeadline_EndsPendingWithThem(t *tes
 			// Eight seconds hold one poll and the head read after it, and no more.
 			name:  "with eight seconds left",
 			heads: shows(clean(), reviewed), verdicts: says(running()), after: reviewed, left: 8 * time.Second,
-			ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
+			ops: readsOf(1, 2, 1), waits: polls(1, landing.VerdictPoll),
 		},
 		{
 			// The read after the poll lasts until its context ends, as a read that would answer green
@@ -651,7 +644,7 @@ func TestAwaitVerdict_WhenTheHeadAfterTheChecksIsNotRead_EndsPendingWithoutTheVe
 			verdicts: heldAfter(running()),
 			left:     heldLeft,
 			ops:      readsOf(1, 2, 1),
-			waits:    append(heldPauses(), headReadReserve),
+			waits:    append(heldPauses(), landing.HeadReadReserve),
 		},
 		{
 			name:     c.name + " ends the head read after green checks",
@@ -860,7 +853,7 @@ func TestAwaitVerdict_WhenContextIsCanceledDuringALaterVerdictRead_EndsPendingIn
 	t.Parallel()
 
 	synctest.Test(t, func(t *testing.T) {
-		after := verdictPoll + midPoll
+		after := landing.VerdictPoll + midPoll
 		v := newVigilOn(t, forgetest.Script{Head: shows(clean()), Verdict: heldAfter(running())},
 			func(context.Context) context.Context { return canceledAfter(t, after) })
 		began := time.Now()
@@ -973,16 +966,16 @@ func TestAwaitVerdict_WhenAnInterruptLandsAsTheHeadPollEnds_EndsPendingInterrupt
 	t.Parallel()
 
 	synctest.Test(t, func(t *testing.T) {
-		// The first head read is at once, so the poll after it ends headPoll from now. The script goes
+		// The first head read is at once, so the poll after it ends landing.HeadPoll from now. The script goes
 		// on to a green verdict, which is how a wait that missed the interrupt would end.
 		v := newVigilOn(t, forgetest.Script{Head: shows(stale(), clean()), Verdict: says(passing())},
-			func(context.Context) context.Context { return interruptIn(t, headPoll) })
+			func(context.Context) context.Context { return interruptIn(t, landing.HeadPoll) })
 		began := time.Now()
 
 		got := v.await(t)
 
 		assert.Check(t, is.DeepEqual(got, atHead(byInterrupt()), ignoreSince(), cmpopts.EquateEmpty()))
-		assert.Check(t, is.Equal(time.Since(began), headPoll))
+		assert.Check(t, is.Equal(time.Since(began), landing.HeadPoll))
 	})
 }
 
@@ -991,7 +984,7 @@ func TestAwaitVerdict_WhenAnInterruptLandsJustAfterThePollLooksAtTheContext_Ends
 
 	synctest.Test(t, func(t *testing.T) {
 		v := newVigilOn(t, forgetest.Script{Head: shows(stale(), clean()), Verdict: says(running())},
-			func(context.Context) context.Context { return interruptAfterLookIn(t, headPoll) })
+			func(context.Context) context.Context { return interruptAfterLookIn(t, landing.HeadPoll) })
 
 		got := v.await(t)
 

@@ -222,7 +222,7 @@ func TestRelease_WhenTheChecksNeverConclude_EndsTheWaitTheReserveBeforeTheDeadli
 		waited := time.Since(started)
 		latest := bound - landing.MergeReserve
 		// The last poll is the first that leaves less than a poll before the wait's deadline.
-		earliest := latest - 2*verdictPoll
+		earliest := latest - 2*landing.VerdictPoll
 
 		assertStoppedBy(t, got, result.Pending, releaseRequest(version, false))
 		assert.Check(t, waited <= latest, "the wait ended %s in, want at most %s", waited, latest)

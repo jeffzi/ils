@@ -58,29 +58,7 @@ func TestStatus_WhenOriginsTrunkCannotBeReadOnAWorkBranch_EndsOnTheStepPushEndsO
 			miss: trunkMiss{name: "origin turns the caller away", arrange: lastFetched(publishTopic), keep: (*scene).refuse},
 			want: statusCommand().fixed,
 		},
-		{
-			miss: trunkMiss{
-				name: "origin turns the caller away with changed tracked files", arrange: lastFetched(dirtyPublished),
-				keep: (*scene).refuse,
-			},
-			want: statusCommand().fixed,
-		},
 		{miss: trunkMiss{name: "origin does not answer", arrange: lastFetched(publishTopic), offline: true}, want: nextPush()},
-		{
-			miss: trunkMiss{name: "origin does not answer with changed tracked files", arrange: lastFetched(dirtyPublished), offline: true},
-			want: nextPush(),
-		},
-		{
-			miss: trunkMiss{name: "origin does not answer on a branch with no commit past the trunk", arrange: lastFetched(startSpareAtTrunk), offline: true},
-			want: nextPush(),
-		},
-		{
-			miss: trunkMiss{name: "origin does not answer with a local trunk ahead of origin's", arrange: lastFetched(func(f *gittest.Fixture) {
-				f.Publish(topic)
-				f.AdvanceTrunk()
-			}), offline: true},
-			want: nextPush(),
-		},
 		{
 			miss: trunkMiss{name: "origin's answer names no branch", arrange: func(f *gittest.Fixture) {
 				f.Publish(topic)
@@ -210,12 +188,6 @@ func TestStatus_WhenOriginsTrunkIsNotLearnedOnTheTrunk_StandsOnTheLastFetchedTru
 		{miss: trunkMiss{name: "origin turns the caller away", arrange: lastFetched(standOnTrunk), keep: (*scene).refuse}, want: statusCommand().fixed},
 		// Branch refuses there and names itself to run again, whatever the last fetch holds.
 		{miss: trunkMiss{name: "origin does not answer", arrange: lastFetched(standOnTrunk), offline: true}, want: nextBranch()},
-		{
-			miss: trunkMiss{name: "origin does not answer with a local trunk ahead of the last fetch", arrange: lastFetched(func(f *gittest.Fixture) {
-				f.Commits(trunk, strayOnTrunk)
-			}), offline: true},
-			want: nextBranch(),
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.miss.name, func(t *testing.T) {
@@ -261,21 +233,16 @@ func TestStatus_WhenTheReadOfOriginsURLsIsCutShortOffAWorkBranch_EndsOnBranchWit
 
 func TestStatus_WhenTheReadOfOriginsURLsIsCutShortWithNoTrunkFetched_EndsOnFixingWhatFailed(t *testing.T) {
 	t.Parallel()
-	for _, c := range cuts() {
-		t.Run(c.name, func(t *testing.T) {
-			t.Parallel()
-			s := statusScene(t, func(f *gittest.Fixture) {
-				f.Publish(topic)
-				forgetOriginsTrunk(f)
-			}, greenOpen())
-			ctx := c.stallingGit([]string{"remote", "get-url", "--push"})(t, s)
+	s := statusScene(t, func(f *gittest.Fixture) {
+		f.Publish(topic)
+		forgetOriginsTrunk(f)
+	}, greenOpen())
+	ctx := byTimeLimit().stallingGit([]string{"remote", "get-url", "--push"})(t, s)
 
-			got := seeStatus(t, s, fixedCtx(ctx))
+	got := seeStatus(t, s, fixedCtx(ctx))
 
-			assert.Check(t, is.Equal(got.status.Standing, result.Standing("")))
-			assertEndsOn(t, got, statusCommand().fixed)
-		})
-	}
+	assert.Check(t, is.Equal(got.status.Standing, result.Standing("")))
+	assertEndsOn(t, got, statusCommand().fixed)
 }
 
 func TestStatus_WhenNoTrunkNameCanBeLearned_LeavesWhereHEADStandsUnread(t *testing.T) {

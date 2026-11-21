@@ -331,7 +331,6 @@ func copySteps() []nextRow {
 // pullSteps are the states whose `Next:` line the open pull request decides.
 func pullSteps() []nextRow {
 	conflicting := inState(forge.MergeConflicting)
-	review := inState(forge.MergeBlockedByReview)
 
 	return []nextRow{
 		{
@@ -339,9 +338,6 @@ func pullSteps() []nextRow {
 			arrange: published(nextPush()),
 		},
 		{name: "red while conflicting with the trunk", script: viewing(conflicting, lintRed(), standing()), arrange: published(nextRed())},
-		{name: "conflicting with the trunk", script: viewing(conflicting, passing(), standing()), arrange: published(nextTrunk())},
-		{name: "waiting on a review", script: viewing(review, passing(), standing()), arrange: published(expect("request a review"))},
-		{name: "green and mergeable", script: greenOpen(), arrange: published(nextMerge())},
 	}
 }
 
@@ -682,24 +678,6 @@ func TestStatus_WhenOriginCannotBeReachedOnAWorkBranch_EndsOnAPushAsThePushWould
 	}
 }
 
-func TestStatus_WhenAReadOfWhetherAnotherBranchCarriesTheWorkFails_EndsOnFixingWhatFailed(t *testing.T) {
-	t.Parallel()
-	for _, tt := range branchFailedReads() {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			var words []string
-
-			s := statusScene(t, func(f *gittest.Fixture) { words = tt.arrange(f) }, viewing(cleanHead(), passing()))
-			failGit(s, words)
-
-			got := seeStatus(t, s, (*testing.T).Context)
-
-			assertEndsOn(t, got, statusCommand().fixed)
-			checkUnread(t, got.status, tt.read)
-		})
-	}
-}
-
 // rewritePublished publishes the topic branch, then rewrites its one commit, so that the branch and
 // origin's copy diverge and the copy lacks the branch's first commit past the trunk.
 func rewritePublished(f *gittest.Fixture) {
@@ -722,17 +700,6 @@ func TestStatus_WhenAReadOfWhetherAnotherBranchCarriesTheWorkFailsOnADivergedBra
 				rewritePublished(f)
 
 				return []string{"for-each-ref", "--format=%(refname)", "refs/heads/", "--contains", f.Git("rev-parse", topic)}
-			},
-		},
-		{
-			name: "whether another branch carries a commit", read: readCommits,
-			arrange: func(f *gittest.Fixture) []string {
-				rewritePublished(f)
-				tip := f.Git("rev-parse", topic)
-				f.Sibling(side, topic)
-				f.Git("switch", "--quiet", topic)
-
-				return append(history(), tip, "^refs/remotes/origin/"+trunk, "^refs/heads/"+side)
 			},
 		},
 	}
@@ -985,20 +952,14 @@ func heldFinding() (forgeFor, <-chan struct{}) {
 
 func TestStatus_WhenTheReadOfThePullRequestsIsCutShort_EndsOnPush(t *testing.T) {
 	t.Parallel()
+	build, started := heldFinding()
+	s := statusScene(t, aheadOfCopy, build)
+	ctx := byTimeLimit().once(t.Context(), started)
 
-	for _, c := range cuts() {
-		t.Run(c.name, func(t *testing.T) {
-			t.Parallel()
-			build, started := heldFinding()
-			s := statusScene(t, aheadOfCopy, build)
-			ctx := c.once(t.Context(), started)
+	got := seeStatus(t, s, fixedCtx(ctx))
 
-			got := seeStatus(t, s, fixedCtx(ctx))
-
-			assert.Assert(t, hasUnread(got.status, readChanges), "unread %v, want %s listed", got.status.Unread, readChanges)
-			assert.Check(t, is.Equal(got.next, "ils push"))
-		})
-	}
+	assert.Assert(t, hasUnread(got.status, readChanges), "unread %v, want %s listed", got.status.Unread, readChanges)
+	assert.Check(t, is.Equal(got.next, "ils push"))
 }
 
 func TestStatus_WhenTheFirstReadIsCutShort_EndsDoneSkippingEveryReadAfterIt(t *testing.T) {

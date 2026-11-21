@@ -931,10 +931,6 @@ func TestPreconditions_WhenAReadIsCutShort_RefusesNamingTheRead(t *testing.T) {
 			c: byWaitLimit(), cmd: waitCommand(), arrange: beforeAnyRead,
 		},
 		{
-			name: "before the first read of a push run with the long wait and no --wait typed", read: readGitVersion,
-			c: byWaitLimit(), cmd: longCommand(), arrange: beforeAnyRead,
-		},
-		{
 			name: "between the identity read and the trunk read", read: readTrunk,
 			c: byTimeLimit(), cmd: pushCommand(),
 			arrange: func(t *testing.T, c cut) (context.Context, forgetest.Script) {

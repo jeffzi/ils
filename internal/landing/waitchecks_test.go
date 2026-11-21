@@ -19,18 +19,18 @@ func everyCheckRows() []vigilRow {
 		{
 			name:     "a run in progress with no check yet keeps the wait past 20 seconds",
 			verdicts: says(started, started, started, started, started, started, passing()),
-			want:     green(), ops: readsOf(1, 7, 1), waits: polls(6, verdictPoll),
+			want:     green(), ops: readsOf(1, 7, 1), waits: polls(6, landing.VerdictPoll),
 		},
 		{
 			name:     "every check concluded while a run is in progress",
 			verdicts: says(finishing, passing()),
-			want:     green(), ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
+			want:     green(), ops: readsOf(1, 2, 1), waits: polls(1, landing.VerdictPoll),
 		},
 		{
 			name:     "nothing reported for 20 seconds",
 			verdicts: says(forge.Verdict{}),
 			want:     concluded(landing.WaitNothingReported, forge.Verdict{}, 0, 0),
-			ops:      readsOf(1, 5, 1), waits: polls(4, verdictPoll),
+			ops:      readsOf(1, 5, 1), waits: polls(4, landing.VerdictPoll),
 		},
 	}
 }
@@ -77,13 +77,13 @@ func redRows() []vigilRow {
 		{
 			name:     "a check failed while another runs, then its run completed",
 			verdicts: says(unfinished, completed),
-			want:     concluded(landing.WaitRed, completed, 1, 0), ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
+			want:     concluded(landing.WaitRed, completed, 1, 0), ops: readsOf(1, 2, 1), waits: polls(1, landing.VerdictPoll),
 		},
 		{
 			// A third poll would leave too little time for the head read after it.
 			name:     "a check failed and its run had not completed at the deadline",
 			verdicts: says(unfinished), left: 15 * time.Second,
-			want: concluded(landing.WaitRed, unfinished, 0, 0), ops: readsOf(1, 3, 1), waits: polls(2, verdictPoll),
+			want: concluded(landing.WaitRed, unfinished, 0, 0), ops: readsOf(1, 3, 1), waits: polls(2, landing.VerdictPoll),
 		},
 		{
 			name:     "a check failed and its log could not be read while its run goes on",
@@ -93,7 +93,7 @@ func redRows() []vigilRow {
 		{
 			name:     "a check failed and " + c.name + " ended inside the read after it",
 			verdicts: []forgetest.Answer[forge.Verdict]{{Value: unfinished}, {Err: c.of("gh")}},
-			want:     concluded(landing.WaitRed, unfinished, 0, 0), ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
+			want:     concluded(landing.WaitRed, unfinished, 0, 0), ops: readsOf(1, 2, 1), waits: polls(1, landing.VerdictPoll),
 		},
 	}
 }
@@ -114,13 +114,13 @@ func heldRows() []vigilRow {
 		{
 			name:     "a check pending after every run completed, then green",
 			verdicts: says(lingering, passing()),
-			want:     green(), ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
+			want:     green(), ops: readsOf(1, 2, 1), waits: polls(1, landing.VerdictPoll),
 		},
 		{
 			// deploy passes ten seconds in; no run ever starts, so the wait ends 20 seconds in.
 			name:     "a check pending that no run stands behind, then green once 20 seconds passed",
 			verdicts: says(external, external, deployed),
-			want:     concluded(landing.WaitGreen, deployed, 1, 0), ops: readsOf(1, 5, 1), waits: polls(4, verdictPoll),
+			want:     concluded(landing.WaitGreen, deployed, 1, 0), ops: readsOf(1, 5, 1), waits: polls(4, landing.VerdictPoll),
 		},
 	}
 }
@@ -164,7 +164,7 @@ func requiredRows() []vigilRow {
 		{
 			name:     "required name absent with a queued run, then concluded",
 			verdicts: says(absent, both),
-			want:     concluded(landing.WaitGreen, both, 2, 0), ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
+			want:     concluded(landing.WaitGreen, both, 2, 0), ops: readsOf(1, 2, 1), waits: polls(1, landing.VerdictPoll),
 			told: []string{waitingStep(), "count 1 of 2", "count 2 of 2"},
 		},
 		{
@@ -191,7 +191,7 @@ func runlessRequiredRows() []vigilRow {
 		{
 			name:     "required name absent beside a check that is not required, no run for 20 seconds",
 			verdicts: says(aside),
-			want:     unmet, ops: readsOf(1, 5, 1), waits: polls(4, verdictPoll),
+			want:     unmet, ops: readsOf(1, 5, 1), waits: polls(4, landing.VerdictPoll),
 		},
 	}
 }

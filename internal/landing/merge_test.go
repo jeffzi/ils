@@ -1047,7 +1047,7 @@ func TestMerge_WhenTheChecksNeverConclude_EndsTheWaitTheReserveBeforeTheDeadline
 		latest := bound - landing.MergeReserve
 		// The last poll is the first that leaves less than a poll and the head read's reserve before
 		// the wait's deadline, so the wait ends within that much of it.
-		earliest := latest - verdictPoll - headReadReserve
+		earliest := latest - landing.VerdictPoll - landing.HeadReadReserve
 
 		assertStoppedBy(t, run.got, result.Pending, mergeRequest())
 		assert.Check(t, waited <= latest, "the wait ended %s in, want at most %s", waited, latest)
