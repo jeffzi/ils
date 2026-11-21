@@ -1,9 +1,12 @@
 # ils reference
 
-This page is the full reference for `ils`: what each command does step by step, exit codes, time
-limits, stopping a run, every refusal, the JavaScript Object Notation (JSON) output, the guard, and
-the terminal output. The [README](../README.md) says why `ils` exists, how to install and set it
-up, and what each command is for. CI stands for continuous integration throughout.
+This page is the full reference for `ils`. It covers what each command does step by step, exit
+codes, time limits, stopping a run, every refusal, the JavaScript Object Notation (JSON) output, the
+guard, and the terminal output. The [README](../README.md) says why `ils` exists, how to install and
+set it up, and what each command is for. CI stands for continuous integration throughout.
+
+The outcome words (done, broke, refused, ask, pending, and delivered, not green) and the `Next:`
+line that the sections before [Exit codes](#exit-codes) use are defined there.
 
 - [Commands](#commands)
   - [Flags](#flags)
@@ -52,7 +55,7 @@ up, and what each command is for. CI stands for continuous integration throughou
     - [Pushes and the default branch](#pushes-and-the-default-branch)
     - [The default branch on GitHub](#the-default-branch-on-github)
     - [ils and gh commands](#ils-and-gh-commands)
-    - [ils and gh commands the guard allows or asks about](#ils-and-gh-commands-the-guard-allows-or-asks-about)
+  - [ils and gh commands the guard allows or asks about](#ils-and-gh-commands-the-guard-allows-or-asks-about)
   - [Guard JSON output](#guard-json-output)
 - [Terminal output](#terminal-output)
 
@@ -135,8 +138,8 @@ Run `ils push` on a work branch with everything committed. It:
 
 1. checks every precondition before it pushes or opens anything, and refuses with a reason when
    one does not hold;
-2. pushes the branch by name, never with a force flag, with an ssh keep-alive when it applies (see
-   below);
+2. pushes the branch by name, never with a force flag, with a Secure Shell (SSH) keep-alive when
+   it applies (see below);
 3. opens a pull request against origin's default branch when the branch has none, titled with the
    branch name and with an empty body;
 4. waits for the checks of the pushed commit until you stop it or its [time limit](#time-limits)
@@ -153,7 +156,7 @@ a keep-alive every minute. It adds nothing when:
 
 - you set an ssh command of your own, in `GIT_SSH_COMMAND`, `core.sshCommand`, or `GIT_SSH`;
 - your ssh config sets a non-zero `ServerAliveInterval` for the host of one of origin's SSH push
-  URLs;
+  Uniform Resource Locators (URLs);
 - `ils` cannot read your ssh command, one of origin's push URLs, or run `ssh -G` on the host, or
   `ssh -G` prints no `ServerAliveInterval` setting; the push then runs as git would run it.
 
@@ -452,13 +455,13 @@ The hook step has nothing to do when all of these hold:
 - Every guard entry in a group that covers `Bash` is already the one `ils init` writes.
 - No guard entry sits in a group whose matcher is a string that does not cover `Bash`.
 
-A run with nothing to change ends done with no `Next:` line. A settings file it cannot read or
-write, a skill file it cannot write, or a skill directory it cannot read, ends the run broke,
-naming the file. Under `--project`, `ils init` reads the top level of the repository before any
-write. A missing `git`, or a read the time limit or an interrupt cuts short, is a refusal whose
-`Next:` runs `ils init claude --project` again. Any other failure of that read ends the run broke
-with nothing written. Skills written before a failed settings write
-stay, and running the command again finishes the job.
+A run with nothing to change ends done with no `Next:` line. The run ends broke, naming the file,
+when it cannot read or write a settings file, cannot write a skill file, or cannot read a skill
+directory. Under `--project`, `ils init` reads the top level of the repository before any write.
+When `git` is missing, or the time limit or an interrupt cuts that read short, `ils init` refuses
+and its `Next:` runs `ils init claude --project` again. Any other failure of that read ends the run
+broke with nothing written. Skills written before a failed settings write stay, and running the
+command again finishes the job.
 
 #### Init by hand
 
@@ -507,7 +510,7 @@ there.
 | Exit | Means                | Reaction                                                                                                                                                                                                                                                                       |
 | ---- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 0    | done                 | The command finished its job; [Done and broke by command](#done-and-broke-by-command) says what that means for each. Follow `Next:` when there is one.                                                                                                                         |
-| 1    | broke                | The output says what was done and what was not. Fix what failed, then follow `Next:`. [Done and broke by command](#done-and-broke-by-command) names the broke ends of Status and Init.                                                                                         |
+| 1    | broke                | The output says what was done and what was not. Fix what failed, then follow `Next:`. [Done and broke by command](#done-and-broke-by-command) names the broke ends of Status, Parse, and Init.                                                                                 |
 | 2    | refused              | Nothing was pushed, opened, merged, tagged, or set up, except by a push whose pull request's head moved during the wait. The reason says why; `Next:` says what to do.                                                                                                         |
 | 3    | ask                  | `ils guard` only: the command is one the user approves before it runs. See [ils guard](#ils-guard).                                                                                                                                                                            |
 | 4    | pending              | GitHub had not finished when the command stopped waiting, for example checks still running or not yet reported. Run the command that the `Next:` line names; [Time limits](#time-limits) says how long each command waits. After an `ils release`, run the same command again. |
@@ -535,6 +538,12 @@ Exit 0 means, for each command:
 - **Init:** the skills, the rules, and the hook are in place; a skill directory that is a link holds
   the shipped files. When a linked skill directory's files differ from the shipped ones, init ends
   broke after writing the hook and the rules, as [ils init](#ils-init) says.
+- **Guard:** the command is allowed. A refusal exits 2 and an ask exits 3. The guard never ends
+  broke: an error that keeps it from judging is a refusal.
+- **Parse:** the invocations of the command are printed, whatever marks they carry. It ends broke
+  when the command does not parse or a state read fails.
+- **Hook:** the call is allowed or asked about, both exit 0. The hook never exits 1: a refusal or
+  an error exits 2.
 
 ### When no check reports
 
@@ -582,8 +591,8 @@ they end pending with nothing written.
 
 `ils push` waits until GitHub shows the pushed commit as the pull request's head. When another
 push moves that head past the pushed commit before GitHub showed it, `ils` cannot tell the move
-from GitHub being slow: it waits until the time limit and ends pending, and the wait itself
-writes nothing. The next `ils push` refuses the branch as behind its copy on origin.
+from GitHub being slow. It waits until the time limit and ends pending. The wait itself writes
+nothing. The next `ils push` refuses the branch as behind its copy on origin.
 
 A failed check whose workflow run has not yet made its log available keeps the wait going until it
 does. A canceled check gets no log, so it ends the wait red at once, the excerpt says it has no
@@ -939,11 +948,11 @@ The guard lowers the odds of an accident; it is not a sandbox. It does not see:
 
 `ils guard --cwd <dir> -- '<command>'` judges a shell command as if it ran in `<dir>`:
 
-| Exit | Verdict | Output                                                                                                                                        |
-| ---- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | allow   | `The guard allows the command.`                                                                                                               |
-| 2    | refuse  | `Refused:` and the reason. A command that does not parse, and any error that keeps the guard from judging, is a refusal that says what broke. |
-| 3    | ask     | `Ask:` and the reason: the command is one the user approves.                                                                                  |
+| Exit | Verdict | Output                                                                                                                                                    |
+| ---- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | allow   | `The guard allows the command.`                                                                                                                           |
+| 2    | refuse  | `Refused:` and the reason. The guard refuses a command that does not parse, and any error that keeps it from judging, with a reason that says what broke. |
+| 3    | ask     | `Ask:` and the reason: the command is one the user approves.                                                                                              |
 
 ### ils parse
 
@@ -1003,8 +1012,8 @@ read a command: each mark it prints names a way the guard could not read an invo
   `dash`, `eval`, `source`) handed to a command the guard does not know, such as
   `timeout 60 git status` or `xargs sh -c 'git status'`. The guard sees through `env`, `command`,
   `builtin`, `exec`, `nice`, `nohup`, `time`, `noglob`, and `nocorrect`. It takes the words of
-  readers, filters, file tools, and package managers as data (`echo git push` holds no `git` call),
-  and so is the code given to `sed`, `awk`, `perl`, `python`, `node`, or `ruby`. A shell given a
+  readers, filters, file tools, and package managers as data (`echo git push` holds no `git` call).
+  The code given to `sed`, `awk`, `perl`, `python`, `node`, or `ruby` is data too. A shell given a
   literal `-c` string or a script file hands over only what that string or file does:
   the guard allows `xargs sh -c 'ls "$1"' sh`. Behind a command it does not know, the guard allows
   `ils status`, `parse`, `guard`, `hook`, and `help`. It reads the words given to `ssh` or `su` as
@@ -1064,11 +1073,11 @@ The guard refuses:
 - `--no-verify` on any command, `commit -n`, `am -n`, `send-email --no-validate`, and
   `core.hooksPath` set through `-c` or `--config-env`;
 - `git show` or `git cat-file` with stdout redirected, or piped straight into `tee`, to a file in a
-  git working tree, or to a file whose name the guard cannot read. The guard allows output landing
-  in `/dev/null`, or in a file whose nearest existing directory is outside every working tree. A
-  `tee` that reads a group, a subshell, or a function call holding `git show` is not judged
-  ([rule 3](guard-scope.md#3-close-a-bypass-only-when-agents-write-it)), and neither is a file an
-  earlier `exec` opened (`exec > f; git show HEAD:f`,
+  git working tree. The same holds for a file whose name the guard cannot read. The guard allows
+  output landing in `/dev/null`, or in a file whose nearest existing directory is outside every
+  working tree. A `tee` that reads a group, a subshell, or a function call holding `git show` is not
+  judged ([rule 3](guard-scope.md#3-close-a-bypass-only-when-agents-write-it)), and neither is a
+  file an earlier `exec` opened (`exec > f; git show HEAD:f`,
   [accepted limits](guard-scope.md#accepted-limits));
 - `rebase` in a working tree with uncommitted changes or untracked files, or where the guard cannot
   tell the repository. In a dirty tree, `--continue`, `--edit-todo`, `--show-current-patch`, and
@@ -1094,9 +1103,10 @@ The guard refuses:
 - every `git push`, `git send-pack`, and `git http-push`, in any repository: `ils push` is the way
   an agent pushes a branch;
 - in a repository whose `origin` is on GitHub, on its default branch, protected or not:
-  `commit`, `merge`, `cherry-pick`, `revert`, `am`, `rebase`, `pull` without `--ff-only`, and
-  `pull --ff-only` naming a repository or branch other than `origin <default branch>`. The reason
-  says the default branch takes changes only through a pull request and names
+  `commit`, `merge`, `cherry-pick`, `revert`, `am`, and `rebase`. On that branch the guard also
+  refuses `pull` without `--ff-only`, and `pull --ff-only` naming a repository or branch other than
+  `origin <default branch>`. The reason says the default branch takes changes only through a pull
+  request and names
   `ils branch <name>`. For a `pull --ff-only` that names another repository or branch, or whose
   arguments the guard cannot read, the reason names `git pull --ff-only` alone.
   [The default branch on GitHub](#the-default-branch-on-github) says when `origin` counts as on
@@ -1157,10 +1167,10 @@ The guard refuses:
 
 - `gh pr merge --admin` in any form;
 - `gh api` with a method other than `GET`, or with no method but a field or `--input`. A `gh api
-  graphql` call whose `query` field is a literal document holding no mutation is a read, and the
-  guard allows it, with no method or with `POST` in any spelling (`-X POST`, `--method post`); one
-  whose document holds a mutation is a write, and one whose document the guard cannot read (`-F
-  query=@q.graphql`, `-f query="$q"`, `--input`) is refused until the query is passed inline;
+  graphql` call whose `query` field is a literal document holding no mutation is a read. The guard
+  allows it, with no method or with `POST` in any spelling (`-X POST`, `--method post`). A call
+  whose document holds a mutation is a write. The guard also refuses a call whose document it
+  cannot read (`-F query=@q.graphql`, `-f query="$q"`, `--input`) until the query is inline;
 - `gh repo sync`, `delete`, `edit`, and `create --push`;
 - `gh release delete`, `edit`, `upload`, and `delete-asset`;
 - `gh auth token`, `gh auth git-credential`, and `gh auth status --show-token`;
@@ -1180,10 +1190,10 @@ The guard judges an alias `gh` itself gives a subcommand as the command it names
 `gh pr checkout`, `gh release new` as `gh release create`, and `gh repo new` as `gh repo create`.
 A refusal of one names the command it stands for.
 
-A read the guard needs that fails (a missing `git`, a `gh alias list` that errors, the read of
-`clean.requireForce` or of an alias) is a refusal that says what broke.
+When a read the guard needs fails (a missing `git`, a `gh alias list` that errors, the read of
+`clean.requireForce` or of an alias), the guard refuses and says what broke.
 
-#### ils and gh commands the guard allows or asks about
+### ils and gh commands the guard allows or asks about
 
 The guard allows or asks about these `ils` and `gh` calls only in the forms each item names:
 

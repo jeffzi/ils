@@ -7,6 +7,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Fix a command failing on the first failed read of GitHub instead of reading it again.
+- Fix `ils` misreading `git`'s errors about origin when `git` prints them in a language other than
+  English.
+
 ## [0.6.0] - 2026-11-17
 
 ### Added
@@ -55,7 +61,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Fix `ils status` naming a next step other than the one `ils push` or `ils branch` ends on, or
   one that then fails.
 - Refuse a mistyped command name after `ils help` or beside `--help`, and a malformed flag, instead
-  of printing the root help or ending broke.
+  of printing the root help or exiting 1.
 - Fix `--json` output splitting in two for a reader that breaks lines at U+0085 (NEL).
 - Fix `ils release --debug` leaving the wait for the release commit's checks out of its trace.
 - Fix the `ils` agent skill leaving later commits out of the squash commit's message by rewriting
