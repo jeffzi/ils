@@ -2,11 +2,15 @@ package guard
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/jeffzi/ils/internal/git"
 )
@@ -742,7 +746,15 @@ func worktreePath(inv Invocation, options subcommandOptions) (path, why string) 
 		path = opened(inv.Target.Dir, path)
 	}
 
-	if !isDirectory(path) {
+	// Only a path that is missing or runs through a file is known not to be a directory; any other
+	// stat failure, such as a parent the user cannot search, leaves the worktree unread.
+	info, err := os.Stat(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
+		return "", path + " is not a directory"
+	case err != nil:
+		return "", err.Error()
+	case !info.IsDir():
 		return "", path + " is not a directory"
 	}
 

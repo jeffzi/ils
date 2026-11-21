@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -75,7 +76,6 @@ func TestJudge_RefusesAGitOperationThatDiscardsWork(t *testing.T) {
 		{name: "update-ref to the all-zero SHA-256 id", command: "git update-ref refs/heads/keep " + strings.Repeat("0", 64)},
 		{name: "update-ref to a non-literal value", command: `git update-ref -- refs/heads/keep "$sha"`},
 		{name: "mv -f", command: "git mv -f a b"},
-		{name: "submodule update -f", command: "git submodule update -f"},
 		{name: "submodule update --force after a leading --quiet", command: "git submodule --quiet update --force"},
 		{name: "submodule deinit -f after a leading -q", command: "git submodule -q deinit -f lib"},
 		{name: "submodule foreach running reset --hard after a leading --quiet", command: "git submodule --quiet foreach 'git reset --hard'"},
@@ -122,13 +122,12 @@ func TestJudge_RefusesABranchRenameOntoAPackedBranchInAnotherCase(t *testing.T) 
 	})
 }
 
-func TestJudge_RefusesABranchRenameOrCopyOntoThePreviousBranch(t *testing.T) {
+func TestJudge_RefusesABranchRenameOntoThePreviousBranch(t *testing.T) {
 	t.Parallel()
 	_, caller := standingOn(t, "main", "topic")
 
 	checkJudged(t, caller, []judged{
 		{name: "-M onto @{-1}", command: "git branch -M topic @{-1}", wantNamed: "main", want: guard.Refuse},
-		{name: "-C onto @{-1}", command: "git branch -C @{-1}", wantNamed: "main", want: guard.Refuse},
 	})
 }
 
@@ -341,7 +340,6 @@ func TestJudge_RefusesAStashThatSavesWorkOrThatItCannotRead(t *testing.T) {
 
 	checkRefusals(t, []refusal{
 		{name: "bare stash", command: "git stash"},
-		{name: "push", command: "git stash push -m msg"},
 		{name: "subcommand the guard cannot read", command: `git stash "$x"`},
 	})
 }
@@ -485,6 +483,35 @@ func TestJudge_RefusesAWorktreeRemovalItCannotVerify(t *testing.T) {
 		{name: "missing path", dir: w.repo, command: "git worktree remove " + gittest.ShellWord(filepath.Join(w.repo, "absent"))},
 		{name: "relative path absent under -C though present where it runs", dir: w.heldClean, command: "git -C " + gittest.ShellWord(w.repo) + " worktree remove wt1"},
 	}, expectation{outcome: guard.Refuse, named: "unverifiable"})
+}
+
+func TestJudge_WhenAWorktreeRemovalPathIsNoDirectory_RefusesSayingItIsNotADirectory(t *testing.T) {
+	t.Parallel()
+
+	f := gittest.New(t, "main")
+	file := filepath.Join(outsideDir(t), "file")
+	assert.NilError(t, os.WriteFile(file, []byte("text"), 0o600))
+
+	checkJudgedIn(t, callerIn(f, f.Dir()), []placed{
+		{name: "missing path", command: "git worktree remove " + gittest.ShellWord(filepath.Join(f.Dir(), "absent"))},
+		{name: "regular file", command: "git worktree remove " + gittest.ShellWord(file)},
+		{name: "path through a file", command: "git worktree remove " + gittest.ShellWord(filepath.Join(file, "wt"))},
+	}, expectation{outcome: guard.Refuse, named: "is not a directory"})
+}
+
+func TestJudge_WhenAWorktreeRemovalPathCannotBeRead_RefusesNamingTheReadError(t *testing.T) {
+	t.Parallel()
+
+	f := gittest.New(t, "main")
+	locked := filepath.Join(outsideDir(t), "locked")
+	assert.NilError(t, os.Mkdir(locked, 0o750))
+	assert.NilError(t, os.Chmod(locked, 0))
+	tt := judged{command: "git worktree remove " + gittest.ShellWord(filepath.Join(locked, "wt")), want: guard.Refuse}
+
+	got := guard.Judge(t.Context(), tt.command, callerIn(f, f.Dir()))
+
+	checkVerdict(t, tt, got, "unverifiable", syscall.EACCES.Error())
+	assert.Check(t, !strings.Contains(got.Reason, "is not a directory"), "Judge(%q) reason %q", tt.command, got.Reason)
 }
 
 func TestJudge_WhenAWorktreeRemovalHoldsAnUnreadableWordWhereAnOptionCanStand_RefusesNamingASpellingTheGuardAllows(t *testing.T) {

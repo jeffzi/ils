@@ -2,6 +2,7 @@ package guard
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"os"
 	"slices"
@@ -240,7 +241,7 @@ func resolveInvocation(ctx context.Context, runner git.Runner, inv *Invocation) 
 	if known {
 		gitDir, _, err := repo.FindGitDir(ctx, options...)
 		if err != nil {
-			return err
+			return fmt.Errorf("find the git dir the command targets: %w", err)
 		}
 
 		inv.Git.GitDir = gitDir
@@ -289,7 +290,8 @@ func targetOptions(inv Invocation) ([]string, bool) {
 	return options, true
 }
 
-// isDirectory reports whether dir is known and names a directory.
+// isDirectory reports whether dir is known and names a directory. Any stat error, permission denied
+// included, counts as not a directory.
 func isDirectory(dir string) bool {
 	if dir == "" {
 		return false
@@ -344,7 +346,7 @@ func expandAliases(ctx context.Context, repo git.Repo, options []string, inv *In
 
 		expansion, set, err := repo.Alias(ctx, sub.Text, options...)
 		if err != nil {
-			return Mark{}, err
+			return Mark{}, fmt.Errorf("read the alias %s: %w", sub.Text, err)
 		}
 
 		switch {
