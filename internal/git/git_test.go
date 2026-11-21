@@ -27,16 +27,6 @@ func newRecordedRunner(t *testing.T) (git.Runner, *git.Recorder) {
 	return runner, recorder
 }
 
-func TestRunner_Run_WhenGitExitsNonZero_StillRecordsCall(t *testing.T) {
-	t.Parallel()
-	runner, recorder := newRecordedRunner(t)
-
-	_, err := runner.Run(t.Context(), "nonsense")
-	assert.Assert(t, err != nil, "Run(nonsense) error = nil, want a failing call")
-
-	assert.Check(t, is.DeepEqual(recorder.Calls(), [][]string{{"git", "nonsense"}}))
-}
-
 func TestRecorder_Calls_WhenReturnedSliceMutated_LaterCallsUnchanged(t *testing.T) {
 	t.Parallel()
 	runner, recorder := newRecordedRunner(t)

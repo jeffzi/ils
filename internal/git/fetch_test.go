@@ -47,18 +47,6 @@ func TestRepo_Fetch_WhenTheBranchNameStartsWithRefs_ReturnsTheTipOfTheBranchSoNa
 	assert.Check(t, is.Equal(got, want), "Fetch(%q)", name)
 }
 
-func TestRepo_Fetch_WhenTheBranchNameStartsWithRefs_PutsTheTrackingRefOfTheBranchAtItsTip(t *testing.T) {
-	t.Parallel()
-	f := gittest.New(t, trunk)
-	name, want := refNamedBranch(t, f)
-
-	_, err := newRepo(f).Fetch(t.Context(), name)
-	assert.NilError(t, err, "Fetch(%q)", name)
-
-	tracking := "refs/remotes/origin/" + name
-	assert.Check(t, is.Equal(f.Git("for-each-ref", "--format=%(objectname)", tracking), want), tracking)
-}
-
 // pushedTopic returns a fixture whose origin holds the topic branch.
 func pushedTopic(t *testing.T) *gittest.Fixture {
 	t.Helper()

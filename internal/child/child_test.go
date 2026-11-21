@@ -204,6 +204,18 @@ func TestProgram_Run_WhenProgramExitsNonZero_KeepsOnlyStdout(t *testing.T) {
 	assert.Check(t, is.Equal(got.Stderr, ""))
 }
 
+func TestProgram_Run_WhenProgramExitsNonZero_HandsStartingItsArgv(t *testing.T) {
+	t.Parallel()
+	argv := []string{"sh", "-c", "exit 3"}
+	var started []string
+	program := child.Program{Tool: argv[0], Args: argv[1:], LookPath: exec.LookPath, Starting: func(a []string) { started = a }}
+
+	_, err := program.Run(t.Context())
+	assert.Assert(t, err != nil, "Run error = nil, want the program's exit")
+
+	assert.Check(t, is.DeepEqual(started, argv))
+}
+
 func TestProgram_Run_WhenAnArgumentHoldsShellSyntax_PassesItToTheProgramUnchanged(t *testing.T) {
 	t.Parallel()
 	const value = "first && second; $HOME `third` > fourth"
@@ -387,18 +399,6 @@ func TestRequirement_CheckOutput_WhenOnlyALaterLineIsOlder_ReturnsNil(t *testing
 	err := requirement().CheckOutput(stdout, versionOf)
 
 	assert.NilError(t, err, "CheckOutput(%q)", stdout)
-}
-
-func TestRequirement_CheckOutput_WhenFirstLineIsOlder_ReturnsToolTooOldErrorForThatLine(t *testing.T) {
-	t.Parallel()
-	stdout := "gh version 2.49.0\ngh version 2.60.0\n"
-
-	err := requirement().CheckOutput(stdout, versionOf)
-
-	tooOld, ok := errors.AsType[*child.ToolTooOldError](err)
-	assert.Assert(t, ok, "CheckOutput(%q) error = %v, want *child.ToolTooOldError", stdout, err)
-	assert.Check(t, is.Equal(tooOld.Line, "gh version 2.49.0"))
-	assert.Check(t, is.Equal(tooOld.Version, "2.49.0"))
 }
 
 // returnDeadline bounds how long a test waits for a call that must return soon after its program

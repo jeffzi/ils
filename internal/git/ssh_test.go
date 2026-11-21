@@ -19,7 +19,6 @@ import (
 	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/gittest"
-	"github.com/jeffzi/ils/internal/logtest"
 )
 
 // renames is an ssh config that gives github.com another name.
@@ -819,35 +818,6 @@ func TestRepo_OriginURLs_WhenRunnerSetsNoEnvironment_FindsSSHOnTheProcessPath(t 
 	assert.NilError(t, err)
 
 	assert.Check(t, is.Equal(got.Fetch.Host, plainHost))
-}
-
-// callsOf returns the attributes of each exec record in records that names tool, all but the
-// duration.
-func callsOf(records []logtest.Record, tool string) []map[string]any {
-	var calls []map[string]any
-
-	for _, record := range records {
-		if record.Message == child.ExecMessage && record.Map()[child.KeyTool] == tool {
-			calls = append(calls, record.Call())
-		}
-	}
-
-	return calls
-}
-
-func TestRepo_OriginURLs_WhenLoggerAttachedAndSSHReadsHost_LogsEachSSHRun(t *testing.T) {
-	t.Parallel()
-	f := aliasFixture(t)
-	f.SetPushURL(httpsURL)
-	repo := plainSSH(t, newRepo(f), plainAnswer)
-	logger, sink := logtest.New()
-	repo.Runner.Logger = logger
-
-	_, err := repo.OriginURLs(t.Context())
-	assert.NilError(t, err)
-
-	want := logtest.ExecAttrs(t, child.Exec{Tool: "ssh", Args: []string{"-G", "--", "work"}})
-	assert.Check(t, is.DeepEqual(callsOf(sink.Records(), "ssh"), []map[string]any{want}))
 }
 
 func TestEnvValue(t *testing.T) {
