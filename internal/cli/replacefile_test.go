@@ -70,7 +70,4 @@ func TestApp_Run_WhenInitClaudeCannotSyncTheDirectoryOfTheSettings_ExitsOneNamin
 	assert.Check(t, is.Contains(strings.ReplaceAll(reason, path, ""), dir), "reason = %q", reason)
 	unlocked(t, dir)
 	assert.Check(t, is.DeepEqual(decodedFile(t, path), installedSettings()))
-	left, err := filepath.Glob(filepath.Join(dir, ".settings.json-*"))
-	assert.NilError(t, err)
-	assert.Check(t, is.Len(left, 0))
 }

@@ -287,6 +287,8 @@ func (d *display) report(kind stepKind, line result.Phrase) {
 		return
 	}
 
+	// A line the renderer rejects is not printed here: it is also one of the result's lines, so the
+	// render of the result rejects it again and reports the error.
 	text, err := renderLine(line, d.gitDir, d.outProfile)
 	if err != nil {
 		return
@@ -319,6 +321,8 @@ func (d *display) failRunning() {
 		return
 	}
 
+	// A label the renderer rejects was dropped already when Started drew it: every label passed to
+	// Started must pass the wording check, and the label is not one of the result's lines.
 	text, err := renderLine(*step, d.gitDir, d.outProfile)
 	if err != nil {
 		return

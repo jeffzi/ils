@@ -281,9 +281,16 @@ func brokeWith(broke *result.Result, lines []result.Phrase) result.Result {
 	return *broke
 }
 
-// rerun returns the command that runs req's words again, joined by spaces and not quoted.
+// rerun returns the command that runs req's words again, each quoted as landing.ShellLine quotes
+// it. It panics on a word ShellLine cannot quote: the words come from argv, which cannot hold a NUL
+// byte.
 func rerun(req landing.Request) result.Name {
-	return result.Command(strings.Join(req.Words, " "))
+	line, err := landing.ShellLine(req.Words)
+	if err != nil {
+		panic(err)
+	}
+
+	return result.Command(line)
 }
 
 // installSkills writes each skill of shipped, a directory of its own at its root, to the directory
