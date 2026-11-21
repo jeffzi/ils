@@ -18,16 +18,9 @@ import (
 const (
 	// settingsFile is the file under claudeDir that Claude Code reads its settings from.
 	settingsFile = "settings.json"
-
-	// claudeEvent is the hook event Claude Code runs a hook on before a tool runs, and the
-	// hookEventName of the answer it reads from that hook.
-	claudeEvent = "PreToolUse"
 )
 
-const (
-	keyHooks       = "hooks"
-	keyPermissions = "permissions"
-)
+const keyPermissions = "permissions"
 
 // permissionLists are the permission lists of the settings, each with the rules the guard's
 // setup adds to it and those it removes from it.

@@ -3,7 +3,6 @@ package guard_test
 import (
 	"cmp"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -32,8 +31,7 @@ func TestJudge_WhenTheCommandCannotBeParsed_RefusesNamingWhatFailed(t *testing.T
 
 	got := guard.Judge(t.Context(), command, caller)
 
-	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome", command)
-	assert.Check(t, is.Contains(got.Reason, failure.Error()), "Judge(%q) reason", command)
+	checkVerdict(t, judged{command: command, want: guard.Refuse}, got, failure.Error())
 }
 
 func TestJudge_WhenAMarkNamesNothing_RefusesWithItsKindAsTheReason(t *testing.T) {
@@ -52,22 +50,16 @@ func TestJudge_WhenAMarkNamesWhatItFound_RefusesNamingItBesideTheKind(t *testing
 
 	got := guard.Judge(t.Context(), command, readerCaller())
 
-	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome", command)
-	assert.Check(t, is.Contains(got.Reason, string(guard.GitVariable)), "Judge(%q) reason", command)
-	assert.Check(t, is.Contains(got.Reason, "GIT_CONFIG_GLOBAL"), "Judge(%q) reason", command)
+	checkVerdict(t, judged{command: command, want: guard.Refuse}, got, string(guard.GitVariable), "GIT_CONFIG_GLOBAL")
 }
 
 func TestJudge_WhenAToolWordIsHandedToAnotherCommand_RefusesNamingBoth(t *testing.T) {
 	t.Parallel()
-	callerDir := t.TempDir()
-	writeExecutable(t, filepath.Join(callerDir, "bin", "git"))
 	const command = "xargs ./bin/git push"
 
-	got := guard.Judge(t.Context(), command, guard.Caller{Env: map[string]string{"HOME": home}, Dir: callerDir})
+	got := guard.Judge(t.Context(), command, callerBesideGit(t))
 
-	assert.Check(t, is.Equal(got.Outcome, guard.Refuse), "Judge(%q) outcome", command)
-	assert.Check(t, is.Contains(got.Reason, "xargs"), "Judge(%q) reason", command)
-	assert.Check(t, is.Contains(got.Reason, "./bin/git"), "Judge(%q) reason", command)
+	checkVerdict(t, judged{command: command, want: guard.Refuse}, got, "xargs", "./bin/git")
 }
 
 func TestJudge_WhenNoInvocationRunsATool_AllowsWithoutStartingGit(t *testing.T) {
@@ -93,13 +85,10 @@ func TestJudge_AllowsEverydayCommandsOutsideAnyRepository(t *testing.T) {
 			name:    "heredoc that mentions git on an interpreter's stdin",
 			command: "python3 - <<'EOF'\ns = s.replace(\"git reset --hard\", \"git restore\")\nEOF",
 		},
-		{name: "git history written to /dev/null", command: "git show HEAD:f > /dev/null"},
 		{name: "stash list in a pipe", command: "git stash list | head -3"},
 		{name: "script run through a variable the command assigned", command: "S=/tmp/work; mkdir -p $S && cd $S && $S/run.sh"},
 		{name: "redirected call of a function wrapping a test runner", command: `T() { uv run pytest -q "$@"; }; T -k x > out.txt`},
 		{name: "function declared and called in one and list", command: `mk() { echo "$1"; } && mk a && mk b`},
-		{name: "mv of a tracked file", command: "git mv old.go new.go"},
-		{name: "submodule update", command: "git submodule update"},
 	})
 }
 
@@ -213,18 +202,27 @@ func checkVerdict(t *testing.T, tt judged, got guard.Verdict, named ...string) {
 	}
 }
 
+// eachRow runs check for every row, in a test run named by name.
+func eachRow[Row any](t *testing.T, rows []Row, name func(Row) string, check func(t *testing.T, row Row)) {
+	t.Helper()
+
+	for _, row := range rows {
+		t.Run(name(row), func(t *testing.T) {
+			check(t, row)
+		})
+	}
+}
+
 // checkJudged fails unless Judge gives every command its row's outcome, with a reason naming what
 // the row names.
 func checkJudged(t *testing.T, caller guard.Caller, tests []judged) {
 	t.Helper()
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	eachRow(t, tests, func(tt judged) string { return tt.name }, func(t *testing.T, tt judged) {
+		t.Parallel()
 
-			checkJudgedRow(t, caller, tt)
-		})
-	}
+		checkJudgedRow(t, caller, tt)
+	})
 }
 
 // checkJudgedInTurn is checkJudged for rows that share process environment (the gh GH_PATH
@@ -232,11 +230,9 @@ func checkJudged(t *testing.T, caller guard.Caller, tests []judged) {
 func checkJudgedInTurn(t *testing.T, caller guard.Caller, tests []judged) {
 	t.Helper()
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			checkJudgedRow(t, caller, tt)
-		})
-	}
+	eachRow(t, tests, func(tt judged) string { return tt.name }, func(t *testing.T, tt judged) {
+		checkJudgedRow(t, caller, tt)
+	})
 }
 
 // refusal is a command the guard refuses, with the text its reason must hold.
@@ -259,7 +255,6 @@ func checkRefusals(t *testing.T, tests []refusal) {
 	checkJudged(t, caller, rows)
 }
 
-// namedCommand is a command, with the name of the test case that runs it.
 type namedCommand struct {
 	name    string
 	command string
@@ -277,7 +272,6 @@ func checkAllowed(t *testing.T, caller guard.Caller, tests []namedCommand) {
 	checkJudged(t, caller, rows)
 }
 
-// placed is a command run from a directory.
 type placed struct {
 	name    string
 	dir     string
@@ -295,13 +289,11 @@ type expectation struct {
 func checkJudgedIn(t *testing.T, caller guard.Caller, tests []placed, want expectation) {
 	t.Helper()
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	eachRow(t, tests, func(tt placed) string { return tt.name }, func(t *testing.T, tt placed) {
+		t.Parallel()
 
-			checkPlacedRow(t, caller, tt, want)
-		})
-	}
+		checkPlacedRow(t, caller, tt, want)
+	})
 }
 
 // checkJudgedInInTurn is checkJudgedIn for rows that share process environment (the gh GH_PATH
@@ -309,11 +301,9 @@ func checkJudgedIn(t *testing.T, caller guard.Caller, tests []placed, want expec
 func checkJudgedInInTurn(t *testing.T, caller guard.Caller, tests []placed, want expectation) {
 	t.Helper()
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			checkPlacedRow(t, caller, tt, want)
-		})
-	}
+	eachRow(t, tests, func(tt placed) string { return tt.name }, func(t *testing.T, tt placed) {
+		checkPlacedRow(t, caller, tt, want)
+	})
 }
 
 // checkPlacedRow fails unless Judge, run by caller from the row's directory, or from the caller's

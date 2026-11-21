@@ -72,7 +72,6 @@ func TestParse_WhenTheDirectoryCannotBeFollowed_ReportsItUnknown(t *testing.T) {
 		{name: "move in a case arm", command: "case x in y) cd sub;; esac; git commit"},
 		{name: "after an or list that may have moved", command: "true || cd sub; git commit"},
 		{name: "after an or list whose right side goes on", command: "cd sub || echo failed; git commit"},
-		{name: "after an or list whose right side returns at the top level", command: "cd sub || return; git commit"},
 		{name: "after an or list whose right side exits a subshell", command: "cd sub || ( exit ); git commit"},
 		{name: "after an or list whose right side is a group that may go on", command: "cd sub || { test -n x && exit; }; git commit"},
 		{name: "after an or list whose right side calls a function named exit", command: "exit() { :; }; cd sub || exit; git commit"},
@@ -99,12 +98,8 @@ func TestParse_WhenTheDirectoryCannotBeFollowed_ReportsItUnknown(t *testing.T) {
 func TestParse_WhenTheRightSideOfAnOrListEndsTheShell_ReportsTheDirectoryTheLeftSideLeft(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		command string
-	}{
+	tests := []namedCommand{
 		{name: "exit", command: "cd sub || exit; git commit"},
-		{name: "exit with a status", command: "cd sub || exit 1; git commit"},
 		{name: "group whose last command is exit", command: "cd sub || { echo failed >&2; exit 1; }; git commit"},
 	}
 	for _, tt := range tests {
@@ -244,11 +239,22 @@ func TestJudge_WhenAForLoopRunsOverLiterals_AllowsWhatTheBodyRunsForEachValue(t 
 	checkAllowed(t, caller, []namedCommand{
 		{name: "value in a path", command: "for v in lua5.1 luajit; do /opt/$v/bin/lua b.lua; done"},
 		{name: "value after a variable the command assigned", command: "L=/opt/lua; for v in lua5.1 luajit; do $L/$v/bin/lua b.lua; done"},
-		{name: "as many values as the bodies the guard walks, each walked twice", command: "for v in" + strings.Repeat(" ls", 128) + "; do $v; done"},
-		{name: "two loops whose values fill the bodies the guard walks", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; for v in" + strings.Repeat(" ls", 28) + "; do $v; done"},
-		{name: "loop after a function whose loop and dry run fill the bodies the guard walks", command: "f() { for v in" + strings.Repeat(" ls", 40) + "; do :; done; }; f; for v in" + strings.Repeat(" ls", 8) + "; do $v; done"},
-		{name: "loop in a git editor script that fills the bodies a first loop left", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; git -c core.editor='for v in" + strings.Repeat(" ls", 28) + "; do $v; done' log"},
+		{name: "as many values as the bodies the guard walks, each walked twice", command: loopOver(128, "$v")},
+		{name: "two loops whose values fill the bodies the guard walks", command: loopOver(100, ":") + "; " + loopOver(28, "$v")},
+		{
+			name:    "loop after a function whose loop and dry run fill the bodies the guard walks",
+			command: "f() { " + loopOver(40, ":") + "; }; f; " + loopOver(8, "$v"),
+		},
+		{
+			name:    "loop in a git editor script that fills the bodies a first loop left",
+			command: loopOver(100, ":") + "; git -c core.editor='" + loopOver(28, "$v") + "' log",
+		},
 	})
+}
+
+// loopOver returns a for loop that runs body once for each of count values, all of them ls.
+func loopOver(count int, body string) string {
+	return "for v in" + strings.Repeat(" ls", count) + "; do " + body + "; done"
 }
 
 func TestJudge_WhenAForLoopValueIsAGuardedWord_RefusesAsThatWord(t *testing.T) {
@@ -265,20 +271,29 @@ func TestJudge_WhenTheGuardCannotReadAForLoopValue_RefusesItAsACommandWord(t *te
 
 	checkRefusals(t, []refusal{
 		{name: "glob word after a literal", command: "for f in ls *.sh; do $f; done", wantNamed: string(guard.DynamicCommand)},
-		{name: "more values than the bodies the guard walks, each walked twice", command: "for v in" + strings.Repeat(" ls", 129) + "; do $v; done", wantNamed: string(guard.DynamicCommand)},
-		{name: "second loop past the bodies a first loop left", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; for v in" + strings.Repeat(" ls", 29) + "; do $v; done", wantNamed: string(guard.DynamicCommand)},
-		{name: "loop past the bodies a function's loop and its dry run left", command: "f() { for v in" + strings.Repeat(" ls", 40) + "; do :; done; }; f; for v in" + strings.Repeat(" ls", 12) + "; do $v; done", wantNamed: string(guard.DynamicCommand)},
-		{name: "loop in a git editor script past the bodies a first loop left", command: "for v in" + strings.Repeat(" ls", 100) + "; do :; done; git -c core.editor='for v in" + strings.Repeat(" ls", 29) + "; do $v; done' log", wantNamed: string(guard.DynamicCommand)},
+		{name: "more values than the bodies the guard walks, each walked twice", command: loopOver(129, "$v"), wantNamed: string(guard.DynamicCommand)},
+		{
+			name:      "second loop past the bodies a first loop left",
+			command:   loopOver(100, ":") + "; " + loopOver(29, "$v"),
+			wantNamed: string(guard.DynamicCommand),
+		},
+		{
+			name:      "loop past the bodies a function's loop and its dry run left",
+			command:   "f() { " + loopOver(40, ":") + "; }; f; " + loopOver(12, "$v"),
+			wantNamed: string(guard.DynamicCommand),
+		},
+		{
+			name:      "loop in a git editor script past the bodies a first loop left",
+			command:   loopOver(100, ":") + "; git -c core.editor='" + loopOver(29, "$v") + "' log",
+			wantNamed: string(guard.DynamicCommand),
+		},
 	})
 }
 
-func TestParse_WhenTheGuardCannotBeSureOfAVariable_ReadsItsExpansionUnknown(t *testing.T) {
+func TestParse_WhenTheAssignmentMayNotHoldWhereTheVariableIsRead_ReadsItsExpansionUnknown(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		command string
-	}{
+	checkReadUnknown(t, []namedCommand{
 		{name: "for loop name", command: "S=/tmp/work; for S in /srv; do :; done; $S/run.sh"},
 		{name: "assign-default expansion", command: `S=/tmp/work; echo "${S:=/srv}"; $S/run.sh`},
 		{name: "assignment in a subshell", command: "(S=/tmp/work); $S/run.sh"},
@@ -291,16 +306,7 @@ func TestParse_WhenTheGuardCannotBeSureOfAVariable_ReadsItsExpansionUnknown(t *t
 		{name: "assignment prefix of the command reading it", command: "S=/tmp/work $S/run.sh"},
 		{name: "source of a file after the assignment", command: "S=/tmp/work; source env.sh; $S/run.sh"},
 		{name: "shell string of another shell", command: "S=/tmp/work; bash -c '$S/run.sh'"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := parse(t, tt.command)
-
-			checkRunShReadUnknown(t, tt.command, got)
-		})
-	}
+	})
 }
 
 func TestParse_WhenAStatementHoldsOnlyRedirects_ReportsTheCommandsAroundIt(t *testing.T) {

@@ -6,6 +6,10 @@ import "context"
 // values the wait and the merge branch on, instead of copying them.
 const MergeWindow, MergeReserve = mergeWindow, mergeReserve
 
+// HeadPoll, MergePoll, VerdictPoll and HeadReadReserve let the tests build the times they expect
+// from the values the waits poll and reserve, instead of copying them.
+const HeadPoll, MergePoll, VerdictPoll, HeadReadReserve = headPoll, mergePoll, verdictPoll, headReadReserve
+
 // ExcerptLines lets the tests build a log longer than an excerpt holds, instead of copying its
 // length.
 const ExcerptLines = excerptLines

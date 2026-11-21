@@ -2,11 +2,15 @@ package guard
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/jeffzi/ils/internal/git"
 )
@@ -162,7 +166,7 @@ func plumbingDiscards() map[string]discard {
 				// A ref or new value that is not a literal, reachable only after `--`, may be the all-zero
 				// id, or may split into the ref and the all-zero id.
 				named := o.positional[:min(2, len(o.positional))]
-				unreadable := slices.ContainsFunc(named, func(w Word) bool { return !w.Literal })
+				unreadable := anyNotLiteral(named)
 
 				return deletes || unreadable || (len(o.positional) > 1 && nullObjectID(o.positional[1].Text))
 			},
@@ -282,7 +286,7 @@ func judgeCleanWithoutForce(ctx context.Context, caller Caller, inv Invocation, 
 		return fmt.Sprintf("git clean: the guard cannot read %s, which lets it delete untracked files without --force", cleanForceKey), nil
 	}
 
-	repo := git.Repo{Runner: targetRunner(caller.Git, inv.Dir, inv.Target)}
+	repo := invocationRepo(caller, inv)
 
 	requireForce, err := repo.BoolConfig(ctx, cleanForceKey, true, slices.Concat(targets, config)...)
 	if err != nil {
@@ -360,10 +364,10 @@ func judgeForcedBranchOverwrite(ctx context.Context, caller Caller, inv Invocati
 
 	targets, ok := targetOptions(inv)
 	if !ok {
-		return fmt.Sprintf("git branch %s: the guard cannot tell which repository it runs in; %s", flag, moveFirst), nil
+		return unknownRepositoryReason("git branch " + flag), nil
 	}
 
-	repo := git.Repo{Runner: targetRunner(caller.Git, inv.Dir, inv.Target)}
+	repo := invocationRepo(caller, inv)
 	name := last.Text
 
 	branch, err := repo.ExpandBranchName(ctx, name, targets...)
@@ -605,6 +609,18 @@ func nearestDirectory(path string) string {
 // Rebase, abort, worktree, and config rules
 // ---------------------------------------------------------------------------
 
+// invocationRepo returns the repository the git invocation inv runs in, read through the git of
+// caller.
+func invocationRepo(caller Caller, inv Invocation) git.Repo {
+	return git.Repo{Runner: targetRunner(caller.Git, inv.Dir, inv.Target)}
+}
+
+// unknownRepositoryReason returns the refusal reason of what, a command of git the guard cannot
+// place in a repository.
+func unknownRepositoryReason(what string) string {
+	return what + ": the guard cannot tell which repository it runs in; " + moveFirst
+}
+
 // refuseDiscardOverChanges refuses, in a work tree that holds uncommitted or untracked changes and
 // in one whose repository the guard cannot tell, every `git rebase` and the `--abort` of
 // `git merge`, `git cherry-pick`, and `git revert`. Outside any repository there is nothing for
@@ -615,7 +631,7 @@ func refuseDiscardOverChanges(ctx context.Context, caller Caller, inv Invocation
 		return Verdict{Outcome: Allow}, nil
 	}
 
-	unknownRepository := refuse("git " + sub + ": the guard cannot tell which repository it runs in; " + moveFirst)
+	unknownRepository := refuse(unknownRepositoryReason("git " + sub))
 	if inv.Git.GitDirUnknown {
 		return unknownRepository, nil
 	}
@@ -629,7 +645,7 @@ func refuseDiscardOverChanges(ctx context.Context, caller Caller, inv Invocation
 		return unknownRepository, nil
 	}
 
-	dirty, err := git.Repo{Runner: targetRunner(caller.Git, inv.Dir, inv.Target)}.Dirty(ctx, options...)
+	dirty, err := invocationRepo(caller, inv).Dirty(ctx, options...)
 	if err != nil {
 		return Verdict{}, fmt.Errorf("read whether git %s runs over changes: %w", sub, err)
 	}
@@ -730,7 +746,15 @@ func worktreePath(inv Invocation, options subcommandOptions) (path, why string) 
 		path = opened(inv.Target.Dir, path)
 	}
 
-	if !isDirectory(path) {
+	// Only a path that is missing or runs through a file is known not to be a directory; any other
+	// stat failure, such as a parent the user cannot search, leaves the worktree unread.
+	info, err := os.Stat(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
+		return "", path + " is not a directory"
+	case err != nil:
+		return "", err.Error()
+	case !info.IsDir():
 		return "", path + " is not a directory"
 	}
 

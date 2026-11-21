@@ -10,7 +10,8 @@ import (
 	"github.com/jeffzi/ils/internal/result"
 )
 
-// readProtection names the read of the trunk's required checks, as a result names it.
+// readProtection is the one name every read of the trunk's protection gives in the lines and
+// reasons of a result, so each result words that read alike.
 const readProtection = "the trunk's required checks"
 
 // writeThenMerge is the judgment step after a green push: writeMessage, then the merge. Its last
@@ -127,11 +128,18 @@ func classifyPush(req Request, err error) (failure pushFailure, next result.Next
 		return pushUnanswered, req.again(), nil
 	}
 
-	if _, ok := errors.AsType[*child.KilledError](err); ok {
+	if killed(err) {
 		return pushKilled, req.again(), nil
 	}
 
 	return pushNotStarted, req.onceFixed(), nil
+}
+
+// killed reports whether err says a signal killed the command.
+func killed(err error) bool {
+	_, ok := errors.AsType[*child.KilledError](err)
+
+	return ok
 }
 
 // pushFailed returns the result of a push that failed with err, worded for what err says about
@@ -220,7 +228,7 @@ func (d *delivery) findOrOpen(ctx context.Context, deps Deps) *result.Result {
 	}
 
 	// A signal can end gh after GitHub opened the pull request, so its failure says nothing either way.
-	if _, killed := errors.AsType[*child.KilledError](err); killed {
+	if killed(err) {
 		return d.endedSaying(
 			result.Say("Started opening the pull request, which did not finish; it may or may not have been opened: %s", err.Error()),
 			result.Say("opening the pull request did not finish"),
@@ -320,10 +328,6 @@ func (d *delivery) payload() *result.Push {
 	}
 }
 
-func (d *delivery) sayMergeState() {
-	d.lines = append(d.lines, d.waited.mergeStateLines()...)
-}
-
 // report returns the result the wait's outcome maps to, ending on the step endReport gives,
 // telling the progress hook the checks line of green checks.
 func (d *delivery) report(deps Deps) *result.Result {
@@ -347,7 +351,7 @@ func (d *delivery) report(deps Deps) *result.Result {
 // its next step already covers it, which only a review block does: mergeStep asks for the review.
 func (d *delivery) doneMerging(next result.Next) *result.Result {
 	if d.waited.MergeState != forge.MergeBlockedByReview {
-		d.sayMergeState()
+		d.lines = append(d.lines, d.waited.mergeStateLines()...)
 	}
 
 	return d.ended(result.Done, result.Phrase{}, next)

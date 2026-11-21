@@ -1,10 +1,10 @@
 package guard
 
-// ParseCommand, GuardCommand and HookCommand are the command words of `ils parse`, `ils guard` and
+// ParseCommand, Command and HookCommand are the command words of `ils parse`, `ils guard` and
 // `ils hook`, the commands that read a command and change nothing.
 const (
 	ParseCommand = "parse"
-	GuardCommand = "guard"
+	Command      = "guard"
 	HookCommand  = "hook"
 )
 

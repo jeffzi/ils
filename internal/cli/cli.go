@@ -545,7 +545,7 @@ func (p *parse) addOutputFlags(root *cobra.Command) {
 // strictBool is the value of a flag that takes no value but true and false.
 type strictBool bool
 
-// String returns "true" or "false".
+// String returns the text pflag shows for the current value of the flag.
 func (b *strictBool) String() string {
 	return fmt.Sprint(bool(*b))
 }
@@ -577,8 +577,13 @@ type flagNames struct {
 
 // boolFlag registers value on flags under names as a flag that stands alone for true.
 func boolFlag(flags *pflag.FlagSet, value pflag.Value, names flagNames, usage string) {
-	flag := flags.VarPF(value, strings.TrimPrefix(names.long, "--"), strings.TrimPrefix(names.short, "-"), usage)
+	flag := flags.VarPF(value, flagName(names.long), strings.TrimPrefix(names.short, "-"), usage)
 	flag.NoOptDefVal = "true"
+}
+
+// flagName returns the long flag spelling without its dashes, the name pflag registers it under.
+func flagName(spelling string) string {
+	return strings.TrimPrefix(spelling, "--")
 }
 
 // landingHelp is what the help says of a landing command; arg names the one word that follows
@@ -645,7 +650,7 @@ func (p *parse) refuseFlags(c *cobra.Command, unknown func(typed string) result.
 // when it was typed, and otherwise when stdout is a terminal.
 func (p *parse) waitOn(c *cobra.Command, req *landing.Request) {
 	switch {
-	case !c.Flags().Changed(strings.TrimPrefix(flagWait, "--")):
+	case !c.Flags().Changed(flagName(flagWait)):
 		req.LongWait = p.app.terminal(p.app.StdoutTerminal)
 	case bool(p.wait):
 		req.LongWait, req.WaitFlag = true, landing.WaitFlagTrue
@@ -811,19 +816,23 @@ func (a App) print(text string, code int) int {
 // says what it has to say itself, with no result.
 func (p *parse) quit(code int, text string) {
 	if text != "" {
-		// Nothing is left to report a failed write to Stderr on.
-		_, _ = fmt.Fprintf(p.app.Stderr, "ils: %s\n", text)
+		complain(p.app.Stderr, text)
 	}
 
 	p.exit = &code
 }
 
 func (a App) fail(err error) int {
-	// Nothing is left to report a failed write to Stderr on.
-	_, _ = fmt.Fprintf(a.Stderr, "ils: %v\n", err)
+	complain(a.Stderr, err)
 
 	// The result itself could not be printed.
 	return result.Broke.ExitCode()
+}
+
+// complain writes what to w as one "ils: " line.
+func complain(w io.Writer, what any) {
+	// Nothing is left to report a failed write to Stderr on.
+	_, _ = fmt.Fprintf(w, "ils: %v\n", what)
 }
 
 const (

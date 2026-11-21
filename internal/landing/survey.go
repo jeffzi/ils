@@ -99,7 +99,6 @@ func answerFor[K comparable, T any](answers map[K]*answer[T], key K) *answer[T] 
 	return a
 }
 
-// newSurvey returns a record of one run that has made no read yet and makes its reads with deps.
 func newSurvey(deps Deps) *survey {
 	return &survey{
 		deps: deps,
@@ -160,7 +159,6 @@ func (s *survey) standing(ctx context.Context) (git.Standing, error) {
 	return s.got.standing.of(s.settled, func() (git.Standing, error) { return s.deps.Repo.Standing(ctx) })
 }
 
-// origin returns origin's URLs with the repository they name and whether they name one.
 func (s *survey) origin(ctx context.Context) (originRead, error) {
 	return s.got.origin.of(s.settled, func() (originRead, error) {
 		urls, repo, oneRepo, err := readOriginRepo(ctx, s.deps)
@@ -228,7 +226,6 @@ func (s *survey) trunkAhead(ctx context.Context) (*aheadTrunk, string, error) {
 	return got.ahead, got.read, err
 }
 
-// tip returns the sha of the branch's tip, as onBranch.readTip reads it.
 func (s *survey) tip(ctx context.Context) (tipRead, error) {
 	return s.got.tip.of(s.settled, func() (tipRead, error) {
 		standing, err := s.standing(ctx)
@@ -364,7 +361,6 @@ func (s *survey) firstShared(ctx context.Context) (firstShared, string, error) {
 	return got.found, got.read, err
 }
 
-// changes returns the branch's pull requests, asked of GitHub for the repository origin names.
 func (s *survey) changes(ctx context.Context) ([]forge.Change, error) {
 	return s.got.changes.of(s.settled, func() ([]forge.Change, error) {
 		repo, err := s.identity(ctx)

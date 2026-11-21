@@ -274,9 +274,9 @@ func readableSpelling(inv Invocation, kind MarkKind) string {
 // literal one, and anything else on its own, by its bare name.
 func handedToolDetail(inv Invocation, tool string) string {
 	runner := inv.Words[0].Text
-	toolAt := 1 + slices.IndexFunc(inv.Words[1:], func(w Word) bool { return w.Literal && w.Text == tool })
-	if toolAt > 0 && isShell(inv.Words[toolAt]) {
-		set := readShellOptions(programName(inv.Words[toolAt]), inv.Words[toolAt+1:])
+	at := slices.IndexFunc(inv.Words[1:], func(w Word) bool { return w.Literal && w.Text == tool })
+	if at >= 0 && isShell(inv.Words[at+1]) {
+		set := readShellOptions(programName(inv.Words[at+1]), inv.Words[at+2:])
 		if set.command && len(set.operands) > 0 && !set.operands[0].Literal {
 			return fmt.Sprintf("%s runs %s with a -c string that is not a literal: write the -c string as a literal",
 				runner, tool)

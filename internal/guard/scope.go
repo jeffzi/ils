@@ -296,6 +296,10 @@ func (w *walker) binary(cmd *syntax.BinaryCmd, sc *scope) {
 
 		w.pipes[before] = cmd.Y
 		left, right := *sc, *sc
+		// The stdout of every stage but the last is the pipe, set up before the stage's own
+		// redirects, and not where a redirect around the pipe sends it. The walk records the pipe as
+		// stdout closed (`>&-`), which leaves it on no file.
+		left.redirects = slices.Concat(sc.redirects, []Redirect{{Op: syntax.DplOut, Target: Word{Text: "-", Literal: true}}})
 		w.beside++
 		w.stmt(cmd.X, &left)
 		w.stmt(cmd.Y, &right)

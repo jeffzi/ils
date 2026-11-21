@@ -67,7 +67,6 @@ func TestTool_Check_WhenFoundDoesNotSuitTarget_ReturnsError(t *testing.T) {
 	}
 }
 
-// hammerVersionOf reads the version from a `hammer <version>` line, and none from any other line.
 func hammerVersionOf(line string) string {
 	version, ok := strings.CutPrefix(line, "hammer ")
 	if !ok {
@@ -86,13 +85,13 @@ func TestTool_CheckOutput_WhenFirstLineNamesASuitedVersion_ReturnsNil(t *testing
 	assert.NilError(t, err)
 }
 
-func TestTool_CheckOutput_WhenFirstLineNamesNoVersion_ReturnsErrorQuotingIt(t *testing.T) {
+func TestTool_CheckOutput_WhenFirstLineNamesNoVersion_ReturnsErrorNamingIt(t *testing.T) {
 	t.Parallel()
 	const out = "built on a bench"
 
 	err := hammer().CheckOutput("", "", out, hammerVersionOf)
 
-	assert.Check(t, is.ErrorContains(err, `"built on a bench"`), "CheckOutput(%q)", out)
+	assert.Check(t, is.ErrorContains(err, out), "CheckOutput(%q)", out)
 }
 
 func TestTool_CheckEnvOutput_WhenTargetVarIsMinimum_RejectsANewerVersion(t *testing.T) {

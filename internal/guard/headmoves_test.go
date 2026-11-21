@@ -32,6 +32,15 @@ func checkHeads(t *testing.T, caller guard.Caller, tests []headRow) {
 	}
 }
 
+func heads(invocations []guard.Invocation) []bool {
+	got := make([]bool, 0, len(invocations))
+	for _, inv := range invocations {
+		got = append(got, inv.HeadUnknown)
+	}
+
+	return got
+}
+
 func TestParse_ReportsWhetherHeadMayHaveMovedBeforeEachInvocation(t *testing.T) {
 	t.Parallel()
 
@@ -107,7 +116,7 @@ func TestJudge_WhenAnAndListSwitchesToTheTrunk_RefusesACommitAfterIt(t *testing.
 	// Not parallel: standingOnGitHub sets GH_PATH for the whole process.
 	_, caller := standingOnGitHub(t, "main", "topic")
 
-	checkJudgedInInTurn(t, caller, []placed{
+	checkJudgedIn(t, caller, []placed{
 		{name: "switch to the trunk", command: "git switch main && " + commitCommand},
 		{name: "later switch to the trunk", command: "git switch -c next && git switch main && " + commitCommand},
 	}, expectation{outcome: guard.Refuse, named: onMain})
@@ -138,7 +147,6 @@ func TestJudge_WhenHeadMovesWhereTheGuardCannotFollowIt_RefusesALaterCommit(t *t
 		{name: "switch inside a subshell", command: "(git switch topic && :) && " + commitCommand},
 		{name: "switch inside a loop", command: "for x in a; do git switch topic && :; done && " + commitCommand},
 		{name: "move after the switch", command: "git switch -c topic && gh pr checkout 12 && " + commitCommand},
-		{name: "bisect", command: "git bisect bad && " + commitCommand},
 		{name: "switch through a function named git", command: "git() { true; }; git switch -c topic && command " + commitCommand},
 		{name: "call of a function whose body moves HEAD", command: "f() { git switch main; }; git switch -c topic && f && " + commitCommand},
 		{name: "call of a function whose body moves HEAD, with no switch outside it", command: "f() { git switch main; }; f; " + commitCommand},

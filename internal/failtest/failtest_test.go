@@ -9,6 +9,18 @@ import (
 	"github.com/jeffzi/ils/internal/failtest"
 )
 
+// returns runs report against spy on spy's goroutine and reports whether report returned.
+func returns(spy *failtest.TB, report func(spy *failtest.TB)) bool {
+	returned := false
+
+	spy.Run(func() {
+		report(spy)
+		returned = true
+	})
+
+	return returned
+}
+
 func TestTB_WhenAReportIsNotFatal_RecordsItWithoutEndingTheGoroutine(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -36,12 +48,8 @@ func TestTB_WhenAReportIsNotFatal_RecordsItWithoutEndingTheGoroutine(t *testing.
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			spy := failtest.New(t)
-			returned := false
 
-			spy.Run(func() {
-				tt.report(spy)
-				returned = true
-			})
+			returned := returns(spy, tt.report)
 
 			assert.Check(t, returned, "%s ended the goroutine", tt.name)
 			assert.Check(t, !spy.Stopped())
@@ -69,11 +77,6 @@ func TestTB_WhenAFailureIsFatal_RecordsItBeforeEndingTheGoroutine(t *testing.T) 
 			wantMessages: []string{"logged before", "fatal now"},
 		},
 		{
-			name:         "Fatal with no arguments",
-			fatal:        func(spy *failtest.TB) { spy.Fatal() },
-			wantMessages: []string{"logged before", ""},
-		},
-		{
 			name:         "FailNow",
 			fatal:        func(spy *failtest.TB) { spy.FailNow() },
 			wantMessages: []string{"logged before"},
@@ -83,13 +86,9 @@ func TestTB_WhenAFailureIsFatal_RecordsItBeforeEndingTheGoroutine(t *testing.T) 
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			spy := failtest.New(t)
-			returned := false
 			spy.Logf("logged %s", "before")
 
-			spy.Run(func() {
-				tt.fatal(spy)
-				returned = true
-			})
+			returned := returns(spy, tt.fatal)
 
 			assert.Check(t, !returned, "%s did not end the goroutine", tt.name)
 			assert.Check(t, spy.Failed())

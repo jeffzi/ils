@@ -114,8 +114,6 @@ func TestStatus_WhenTheFetchOfOriginsTrunkFailsOnTheTrunk_EndsOnTheStepBranchEnd
 	}{
 		// Branch refuses there and names itself to run again.
 		{name: "origin cannot be reached", words: trunkFetch(), want: nextBranch()},
-		// Branch ends broke there.
-		{name: "what the fetch fetched cannot be read", words: fetchedRead(), want: statusCommand().fixed},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

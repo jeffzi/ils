@@ -67,8 +67,7 @@ func redCheck(bucket forge.Bucket) forge.Verdict {
 func TestRelease_WhenTheChecksOfTheReleaseCommitPass_GoesOnCountingThem(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-		verdict := forge.Verdict{Checks: []forge.Check{forgetest.Check("test", forge.BucketPass)}, Runs: ran(forge.RunCompleted)}
-		run := gateScene(t, gated(verdict))
+		run := gateScene(t, gated(passing()))
 
 		got := runRelease(t, run.st.s, releaseRequest(version, false))
 
@@ -186,7 +185,7 @@ func stillRunningRows() []stillRunningRow {
 	}
 }
 
-func TestRelease_WhenTheWaitEndsBeforeTheChecksConclude_PendingWithNothingWrittenAndTagOnlyKept(t *testing.T) {
+func TestRelease_WhenTheWaitEndsBeforeTheChecksConclude_EndsPendingOnTheTagOnlyCommandWithNothingWritten(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range stillRunningRows() {
@@ -201,7 +200,7 @@ func TestRelease_WhenTheWaitEndsBeforeTheChecksConclude_PendingWithNothingWritte
 				got := landing.Release(tt.under(t), run.st.s.deps, req)
 
 				assertEndedBy(t, got, run.st.s.gitDir, ended{
-					outcome: result.Pending, req: req, text: tt.text + nextLine("ils "+"release "+version+" --tag-only"),
+					outcome: result.Pending, req: req, text: tt.text + nextLine("ils release "+version+" --tag-only"),
 				})
 				assert.Check(t, is.Equal(run.st.s.written(), run.before))
 				want := released(run.st, "pending", "")
@@ -223,7 +222,7 @@ func TestRelease_WhenTheChecksNeverConclude_EndsTheWaitTheReserveBeforeTheDeadli
 		waited := time.Since(started)
 		latest := bound - landing.MergeReserve
 		// The last poll is the first that leaves less than a poll before the wait's deadline.
-		earliest := latest - 2*verdictPoll
+		earliest := latest - 2*landing.VerdictPoll
 
 		assertStoppedBy(t, got, result.Pending, releaseRequest(version, false))
 		assert.Check(t, waited <= latest, "the wait ended %s in, want at most %s", waited, latest)
@@ -319,8 +318,7 @@ func TestRelease_WhenFewerThanTheReserveIsLeftBeforeTheWrites_PendingWithTheComm
 func TestRelease_WhenForced_SaysTheCIGateWasSkippedWithoutReadingTheChecks(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-		st := releaseScene(t, tagged)
-		st.s.useForge(t, releasable())
+		st := gateScene(t, releasable()).st
 		req := forced(releaseRequest(version, false))
 
 		got := runRelease(t, st.s, req)

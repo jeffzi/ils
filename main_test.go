@@ -239,7 +239,7 @@ func TestForeground_WhenTheDescriptorIsNoTerminal_CountsAsTheForegroundJob(t *te
 func heldIdentityRead(t *testing.T) (dir string, env []string, fake *ghtest.Fake) {
 	t.Helper()
 
-	fake = ghtest.Setup(t, ghtest.Identity(host, slug, ghtest.Answer{Stdout: ghtest.RepoViewJSON(false, "WRITE"), Delay: held})...)
+	fake = ghtest.Setup(t, ghtest.Identity(host, slug, ghtest.Answer{Stdout: ghtest.RepoViewJSON(false, "WRITE", "PUBLIC"), Delay: held})...)
 	f, env := gittest.NewServed(t, trunk, topic, originURL)
 
 	return f.Dir(), env, fake

@@ -38,12 +38,12 @@ func followLink(path string) (string, error) {
 func replaceFile(target string, text []byte, mode fs.FileMode) error {
 	dir := filepath.Dir(target)
 	if err := os.MkdirAll(dir, dirMode); err != nil {
-		return err
+		return fmt.Errorf("make the directory %s: %w", dir, err)
 	}
 
 	temp, err := os.CreateTemp(dir, "."+filepath.Base(target)+"-*")
 	if err != nil {
-		return err
+		return fmt.Errorf("create a new file in %s: %w", dir, err)
 	}
 
 	_, err = temp.Write(text)
@@ -56,8 +56,10 @@ func replaceFile(target string, text []byte, mode fs.FileMode) error {
 	}
 
 	err = errors.Join(err, temp.Close())
-	if err == nil {
-		err = os.Rename(temp.Name(), target)
+	if err != nil {
+		err = fmt.Errorf("write the new file %s: %w", temp.Name(), err)
+	} else if err = os.Rename(temp.Name(), target); err != nil {
+		err = fmt.Errorf("rename the new file over %s: %w", target, err)
 	}
 
 	if err != nil {

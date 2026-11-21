@@ -53,7 +53,7 @@ func listedBranches() result.Result {
 	return brokeWithLine(result.Say("Kept %s.", result.Branches([]string{"docs", "main", "tidy-readme"})))
 }
 
-func TestName_WhenDrawnInColor_DrawsEachBuiltPartInItsStyle(t *testing.T) {
+func TestSay_WhenDrawnInColor_DrawsEachBuiltPartInItsStyle(t *testing.T) {
 	t.Parallel()
 
 	assertLooks(t, builtCases())

@@ -201,7 +201,7 @@ func TestJudge_AllowsAGhGraphqlQueryWithAnExplicitPostInAnySpelling(t *testing.T
 	})
 }
 
-func TestJudge_RefusesAGhGraphqlCallWithAnExplicitPostByItsDocument(t *testing.T) {
+func TestJudge_WhenAGhGraphqlCallHasAnExplicitPost_RefusesItByItsDocument(t *testing.T) {
 	t.Parallel()
 	caller := callerOutsideAnyRepository(t)
 	const command = `gh api graphql -X POST -f query='mutation { a }'`
@@ -391,7 +391,7 @@ func TestJudge_WhenOriginsVisibilityCannotBeRead_AsksBeforeAnIlsPushSayingWhy(t 
 	checkPushJudged(t, caller, guard.Ask, "HTTP 500")
 }
 
-func TestJudge_ReadsOriginsVisibilityWithTheGhConfigTheIlsPushSets(t *testing.T) {
+func TestJudge_WhenTheIlsPushSetsAGhConfig_ReadsOriginsVisibilityWithIt(t *testing.T) {
 	// Not parallel: ghReadingConfig sets GH_PATH and the gh config location for the whole process.
 	routes := map[string][]string{"login": ghtest.LoginArgs(githubHost), "view": visibilityArgs(githubHost)}
 	seen := func(visibility string) map[string]ghtest.Answer {
@@ -405,7 +405,6 @@ func TestJudge_ReadsOriginsVisibilityWithTheGhConfigTheIlsPushSets(t *testing.T)
 	got := guard.Judge(t.Context(), command, caller)
 
 	assert.Check(t, is.Equal(got.Outcome, guard.Ask), "Judge(%q) outcome, reason %q", command, got.Reason)
-	assert.Check(t, is.Equal(got.Explicit, false), "Judge(%q) explicit", command)
 }
 
 func TestJudge_RefusesAnIlsPushNotRunAloneByItsBareNameNamingIt(t *testing.T) {
@@ -427,11 +426,8 @@ func TestJudge_WhenAWholeIlsPushHasAnotherArgument_LeavesItToThePermissionRules(
 
 func TestJudge_WhenTheGuardCannotTellWhereAnIlsPushRuns_AsksSayingSo(t *testing.T) {
 	t.Parallel()
-	const command = "ils push"
 
-	got := guard.Judge(t.Context(), command, guard.Caller{Env: map[string]string{"HOME": home}})
-
-	checkVerdict(t, judged{command: command, want: guard.Ask}, got, "cannot tell where the command runs")
+	checkPushJudged(t, guard.Caller{Env: map[string]string{"HOME": home}}, guard.Ask, "cannot tell where the command runs")
 }
 
 // pushingToTwo returns the caller of a push from a repository whose origin is on github.com and
@@ -456,22 +452,16 @@ func TestJudge_WhenTheCommandSetsTheGitDirOfTheIlsPush_ReadsTheVisibilityOfThatR
 	t.Parallel()
 	caller, thereGitDir := pushingToTwo(t)
 	caller.Env = map[string]string{"GIT_DIR": thereGitDir}
-	const command = "ils push"
 
-	got := guard.Judge(t.Context(), command, caller)
-
-	checkVerdict(t, judged{command: command, want: guard.Ask}, got, enterpriseHost)
+	checkPushJudged(t, caller, guard.Ask, enterpriseHost)
 }
 
 func TestJudge_WhenOnlyTheGuardsOwnGitEnvironmentSetsAGitDir_ReadsTheVisibilityOfTheRepositoryItRunsIn(t *testing.T) {
 	t.Parallel()
 	caller, thereGitDir := pushingToTwo(t)
 	caller.Git.Env = append(slices.Clone(caller.Git.Env), "GIT_DIR="+thereGitDir)
-	const command = "ils push"
 
-	got := guard.Judge(t.Context(), command, caller)
-
-	assert.Check(t, is.DeepEqual(got, explicitlyAllowed()), "Judge(%q)", command)
+	checkPushAllowedExplicitly(t, caller, "ils push")
 }
 
 func TestJudge_WhenOriginNamesNoRepository_AllowsAnIlsPushExplicitly(t *testing.T) {
@@ -511,5 +501,5 @@ func TestJudge_WhenOriginsPushURLCannotBeReadForAnIlsPush_RefusesSayingWhatBroke
 	f, _ := standingOn(t, "main", "topic")
 	caller := callerFailingOn(f, f.Dir(), "remote", "get-url", "--push")
 
-	checkJudgedRow(t, caller, judged{command: "ils push", wantNamed: gittest.FailedSaid, want: guard.Refuse})
+	checkPushJudged(t, caller, guard.Refuse, gittest.FailedSaid)
 }

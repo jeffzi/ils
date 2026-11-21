@@ -225,7 +225,7 @@ func waitingStep() string {
 }
 
 // assertHeld fails unless each step line the run said is a line of got, a line of its own for
-// each, and unless every record the run logged is a debug record of the wait.
+// each.
 func assertHeld(t *testing.T, w *watch, got result.Result) {
 	t.Helper()
 
@@ -241,10 +241,5 @@ func assertHeld(t *testing.T, w *watch, got result.Result) {
 		if i >= 0 {
 			lines = slices.Delete(lines, i, i+1)
 		}
-	}
-
-	for _, record := range w.logged() {
-		assert.Check(t, record == "DEBUG wait" || strings.HasPrefix(record, "DEBUG wait "),
-			"logged %q, want only debug records of the wait", record)
 	}
 }

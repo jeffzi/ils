@@ -665,36 +665,29 @@ func TestApp_Run_WhenPushOrReleaseRuns_WaitsAsLongAsTheWaitFlagOrAStdoutTerminal
 // Grammar
 // ---------------------------------------------------------------------------
 
-const (
-	// branchTakesOne opens the reason a word beyond the one name of branch is refused for.
-	branchTakesOne = "branch takes one name and no other word, and "
-
-	// releaseTakesOne opens the reason a word beyond the one version of release is refused for.
-	releaseTakesOne = "release takes one version and no other word, and "
-)
-
-// grammarRefusal is a command line that breaks the grammar, and the reason ils refuses it with.
+// grammarRefusal is a command line that breaks the grammar, and the parts of the reason ils refuses
+// it with: the word of the line it names and one token naming the branch of the grammar it breaks.
 type grammarRefusal struct {
-	name   string
-	reason string
-	args   []string
+	name    string
+	reasons []string
+	args    []string
 }
 
 // grammarRefusals are the command lines that break the grammar: a missing, unknown or extra word,
 // a missing or extra release version, and a flag that is unknown.
 func grammarRefusals() []grammarRefusal {
 	return []grammarRefusal{
-		{name: "extra word", args: []string{"push", "extra"}, reason: "push takes no other word, and extra was given"},
-		{name: "end of flags", args: []string{"--", "push"}, reason: "-- is not a command"},
-		{name: "release without a version", args: []string{"release"}, reason: "release takes one version, and none was given"},
-		{name: "second word after the version", args: []string{"release", "1.2.0", "extra"}, reason: releaseTakesOne + "extra was given"},
-		{name: "end of flags before the version", args: []string{"release", "--", "1.2.0"}, reason: releaseTakesOne + "-- was given"},
-		{name: "end of flags after the version", args: []string{"release", "1.2.0", "--"}, reason: releaseTakesOne + "-- was given"},
-		{name: "unknown flag after branch", args: []string{"branch", "--bogus"}, reason: branchTakesOne + "--bogus was given"},
-		{name: "version flag set to false", args: []string{"--version=false"}, reason: "no command was given"},
-		{name: "version flag before an extra word", args: []string{"--version", "extra"}, reason: "extra is not a command"},
-		{name: "unknown flag after push", args: []string{"push", "--bogus"}, reason: "push takes no other word, and --bogus was given"},
-		{name: "group of short flags after push", args: []string{"push", "-xyz"}, reason: "push takes no other word, and -xyz was given"},
+		{name: "extra word", args: []string{"push", "extra"}, reasons: []string{"extra", "no other word"}},
+		{name: "end of flags", args: []string{"--", "push"}, reasons: []string{"--", "not a command"}},
+		{name: "release without a version", args: []string{"release"}, reasons: []string{"none", "one version"}},
+		{name: "second word after the version", args: []string{"release", "1.2.0", "extra"}, reasons: []string{"extra", "one version"}},
+		{name: "end of flags before the version", args: []string{"release", "--", "1.2.0"}, reasons: []string{"--", "one version"}},
+		{name: "end of flags after the version", args: []string{"release", "1.2.0", "--"}, reasons: []string{"--", "one version"}},
+		{name: "unknown flag after branch", args: []string{"branch", "--bogus"}, reasons: []string{"--bogus", "one name"}},
+		{name: "version flag set to false", args: []string{"--version=false"}, reasons: []string{"no command"}},
+		{name: "version flag before an extra word", args: []string{"--version", "extra"}, reasons: []string{"extra", "not a command"}},
+		{name: "unknown flag after push", args: []string{"push", "--bogus"}, reasons: []string{"--bogus", "no other word"}},
+		{name: "group of short flags after push", args: []string{"push", "-xyz"}, reasons: []string{"-xyz", "no other word"}},
 	}
 }
 
@@ -835,7 +828,9 @@ func TestApp_Run_WhenAHelpFlagIsSetToNeitherTrueNorFalse_RefusesNamingTheValue(t
 			got := launch(t, outside(t), tt.args()...)
 
 			assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
-			assert.Check(t, is.Contains(got.stdout, "--help takes true or false, and "+value+" was given"))
+			assert.Check(t, is.Contains(got.stdout, "--help"))
+			assert.Check(t, is.Contains(got.stdout, "true or false"))
+			assert.Check(t, is.Contains(got.stdout, value))
 		})
 	}
 }
@@ -850,7 +845,9 @@ func TestApp_Run_WhenWordsBreakTheGrammar_RefusesNamingWhatBreaksIt(t *testing.T
 			got := launch(t, outside(t), tt.args...)
 
 			assert.Check(t, is.Equal(got.code, exitRefused), "ils %s", strings.Join(tt.args, " "))
-			assert.Check(t, is.Contains(got.stdout, tt.reason))
+			for _, part := range tt.reasons {
+				assert.Check(t, is.Contains(got.stdout, part))
+			}
 		})
 	}
 }

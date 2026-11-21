@@ -3,7 +3,6 @@ package guard_test
 import (
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -51,8 +50,6 @@ dir="${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}"
 answer() {
 	test -f "$dir/$1" || exit 1
 	cat "$dir/$1"
-	cat "$dir/$1.stderr" >&2
-	exit "$(cat "$dir/$1.code")"
 }
 case "$*" in
 --version) echo "gh version ` + github.MinimumVersion + `" ;;
@@ -79,23 +76,22 @@ func configHolding(t *testing.T, sub string, answers map[string]ghtest.Answer) s
 	assert.NilError(t, os.MkdirAll(dir, 0o700))
 
 	for name, answer := range answers {
-		files := map[string]string{name: answer.Stdout, name + ".stderr": answer.Stderr, name + ".code": strconv.Itoa(answer.Code)}
-		for file, content := range files {
-			assert.NilError(t, os.WriteFile(filepath.Join(dir, file), []byte(content), 0o600))
-		}
+		assert.NilError(t, os.WriteFile(filepath.Join(dir, name), []byte(answer.Stdout), 0o600))
 	}
 
 	return root
 }
 
+const aliasesFile = "aliases"
+
 func aliasRoutes() map[string][]string {
-	return map[string][]string{"aliases": {"alias", "list"}}
+	return map[string][]string{aliasesFile: {"alias", "list"}}
 }
 
 // aliasesHolding is a gh config whose `gh alias list` answers aliases, held under the file name
 // aliasRoutes routes that call to.
 func aliasesHolding(aliases string) map[string]ghtest.Answer {
-	return map[string]ghtest.Answer{"aliases": {Stdout: aliases}}
+	return map[string]ghtest.Answer{aliasesFile: {Stdout: aliases}}
 }
 
 func TestJudge_ExpandsAGhAliasFromTheConfigTheInvocationsGhReads(t *testing.T) {

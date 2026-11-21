@@ -27,14 +27,15 @@ type localEnding struct {
 // run done, with the lines said so far and where the checkout ended.
 func (m *mergeReady) end(ctx context.Context, deps Deps, req Request) *result.Result {
 	repo, trunk, branch := deps.Repo, m.Trunk, m.branch
-	deps.started(result.Say("Moving to origin's tip of %s", result.Branch(trunk)))
+	markedTrunk, markedBranch := result.Branch(trunk), result.Branch(branch)
+	deps.started(result.Say("Moving to origin's tip of %s", markedTrunk))
 	drop := endStep{
 		run:     func(ctx context.Context) error { return repo.DeleteBranch(ctx, branch) },
-		command: result.Concat("git branch -D ", result.Branch(branch)),
+		command: result.Concat("git branch -D ", markedBranch),
 	}
 
 	if m.elsewhere {
-		drop.next = result.NextStep("run `git branch -D %s` by hand", result.Branch(branch))
+		drop.next = result.NextStep("run `git branch -D %s` by hand", markedBranch)
 
 		return m.endSteps(ctx, deps, req, localEnding{ending: result.EndingDetached, steps: []endStep{
 			{
@@ -43,36 +44,36 @@ func (m *mergeReady) end(ctx context.Context, deps Deps, req Request) *result.Re
 
 					return err
 				},
-				command: result.Concat("git fetch origin ", result.Branch(trunk)), next: req.onceFixed(),
+				command: result.Concat("git fetch origin ", markedTrunk), next: req.onceFixed(),
 			},
 			{
 				run:     func(ctx context.Context) error { return repo.DetachAtOrigin(ctx, trunk) },
-				command: result.Concat("git switch --detach refs/remotes/origin/", result.Branch(trunk)), next: req.onceFixed(),
+				command: result.Concat("git switch --detach refs/remotes/origin/", markedTrunk), next: req.onceFixed(),
 			},
 			drop,
 		}, done: []result.Phrase{
-			result.Say("Detached at origin's tip of %s; deleted local %s", result.Branch(trunk), result.Branch(branch)),
+			result.Say("Detached at origin's tip of %s; deleted local %s", markedTrunk, markedBranch),
 			result.Say("The trunk %s is checked out in another worktree and updates there on its next "+
-				"`git pull --ff-only`", result.Branch(trunk)),
+				"`git pull --ff-only`", markedTrunk),
 		}})
 	}
 
 	drop.next = result.NextStep("run `git branch -D %s` and `git pull --ff-only origin %s` by hand",
-		result.Branch(branch), result.Branch(trunk))
+		markedBranch, markedTrunk)
 
 	return m.endSteps(ctx, deps, req, localEnding{ending: result.EndingTrunk, steps: []endStep{
 		{
 			run:     func(ctx context.Context) error { return repo.Switch(ctx, trunk) },
-			command: result.Concat("git switch ", result.Branch(trunk)), next: req.onceFixed(),
+			command: result.Concat("git switch ", markedTrunk), next: req.onceFixed(),
 		},
 		drop,
 		{
 			run:     func(ctx context.Context) error { return repo.FastForwardTrunk(ctx, trunk) },
-			command: result.Concat("git pull --ff-only origin ", result.Branch(trunk)),
-			next:    result.NextStep("run `git pull --ff-only origin %s` by hand", result.Branch(trunk)),
+			command: result.Concat("git pull --ff-only origin ", markedTrunk),
+			next:    result.NextStep("run `git pull --ff-only origin %s` by hand", markedTrunk),
 		},
 	}, done: []result.Phrase{
-		result.Say("Switched to %s at origin's tip; deleted local %s", result.Branch(trunk), result.Branch(branch)),
+		result.Say("Switched to %s at origin's tip; deleted local %s", markedTrunk, markedBranch),
 	}})
 }
 

@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,12 +60,51 @@ const (
 // ---------------------------------------------------------------------------
 
 // Answer is what the fake prints and the code it exits with.
+//
+// To a `gh api --include` call, the fake prints the status block of Status and Headers ahead of
+// Stdout, as gh does for a page GitHub answered: when Status is 0, the block of a 200 for an exit
+// 0, and none for any other exit, as for a call GitHub never answered.
 type Answer struct {
 	Stdout string
 	Stderr string
+	// Headers are the `Name: value` lines of the status block.
+	Headers []string
 	// Delay is how long the fake holds the call open before it prints and exits.
-	Delay time.Duration
-	Code  int
+	Delay  time.Duration
+	Code   int
+	Status int
+}
+
+// StatusBlock is what gh prints ahead of the body of a page GitHub answered with status and
+// headers, each a `Name: value` line, when asked to --include them.
+func StatusBlock(status int, headers ...string) string {
+	var block strings.Builder
+
+	block.WriteString("HTTP/2.0 " + strconv.Itoa(status) + " " + http.StatusText(status) + "\n")
+
+	for _, header := range headers {
+		block.WriteString(header + "\r\n")
+	}
+
+	block.WriteString("\r\n")
+
+	return block.String()
+}
+
+// printed is what the fake prints on stdout as its answer to args.
+func (a Answer) printed(args []string) string {
+	if len(args) == 0 || args[0] != "api" || !slices.Contains(args, "--include") {
+		return a.Stdout
+	}
+
+	switch {
+	case a.Status != 0:
+		return StatusBlock(a.Status, a.Headers...) + a.Stdout
+	case a.Code == 0:
+		return StatusBlock(http.StatusOK, a.Headers...) + a.Stdout
+	default:
+		return a.Stdout
+	}
 }
 
 // scriptFormat is the encoding option that writes and reads a Delay as integer nanoseconds.
@@ -147,11 +187,29 @@ func fileHolds(path, content string) (bool, error) {
 	return string(held) == content, nil
 }
 
-// Call scripts the answer to one argv, given to every call of it.
+// Call scripts the answer to one argv, given to every call of it, or the answers in turn.
 type Call struct {
 	// Args is the argv after gh, matched by Matches.
-	Args   []string
+	Args []string
+	// Later are the answers to the second call of Args and those after it, in order, the last
+	// answering every call past them; when empty, Answer answers every call.
+	Later  []Answer
 	Answer Answer
+}
+
+// InTurn scripts the answers to args in order, one per call, the last answering every call after
+// it.
+func InTurn(args []string, first Answer, later ...Answer) Call {
+	return Call{Args: args, Answer: first, Later: later}
+}
+
+// answerTo returns the answer to the call of c that comes after earlier calls of the same argv.
+func (c Call) answerTo(earlier int) Answer {
+	if earlier == 0 || len(c.Later) == 0 {
+		return c.Answer
+	}
+
+	return c.Later[min(earlier, len(c.Later))-1]
 }
 
 // Says scripts an exit 0 that prints stdout as the one answer to args.
@@ -272,17 +330,7 @@ func DeleteBranchArgs(host, repo, branchPath string) []string {
 // owner/name on host; branchPath is the branch as it stands in a URL path, each of its segments
 // escaped.
 func RulesArgs(host, repo, branchPath string) []string {
-	return []string{"api", "--hostname", host, "--paginate", "repos/" + repo + "/rules/branches/" + branchPath}
-}
-
-// ChecksArgs is the argv pattern of the read of pull request number's checks.
-func ChecksArgs(slug string, number int) []string {
-	return []string{"pr", "checks", "--repo", slug, strconv.Itoa(number), "--json", Any}
-}
-
-// RunsArgs is the argv pattern of the list of the workflow runs on the commit sha.
-func RunsArgs(slug, sha string) []string {
-	return []string{"run", "list", "--repo", slug, "--commit", sha, "--limit", Any, "--json", Any}
+	return []string{"api", "--include", "--hostname", host, "--paginate", "repos/" + repo + "/rules/branches/" + branchPath}
 }
 
 // LogArgs is the argv of the read of the failed log of the job numbered job in the workflow run
@@ -291,9 +339,13 @@ func LogArgs(slug, run, job string) []string {
 	return []string{"run", "view", "--repo", slug, run, "--log-failed", "--job", job}
 }
 
-// ReleaseViewArgs is the argv pattern of the read of the GitHub release of tag.
-func ReleaseViewArgs(slug, tag string) []string {
-	return []string{"release", "view", tag, "--repo", slug, "--json", Any}
+// ReleaseArgs is the argv pattern of the GraphQL read of the GitHub release of tag, in the
+// repository owner/name on host.
+func ReleaseArgs(host, owner, name, tag string) []string {
+	return []string{
+		"api", "--include", "graphql", "--hostname", host,
+		"-f", "owner=" + owner, "-f", "name=" + name, "-f", "tagName=" + tag, "-f", Any,
+	}
 }
 
 // ReleaseCreateArgs is the argv pattern that publishes the GitHub release of tag, which origin
@@ -312,7 +364,7 @@ func ReleaseCreateArgs(slug, tag, notes string, prerelease bool) []string {
 // would compose for its squash merge, in the repository owner/name on host.
 func MessageArgs(host, owner, name string, number int) []string {
 	return []string{
-		"api", "graphql", "--hostname", host,
+		"api", "--include", "graphql", "--hostname", host,
 		"-F", "number=" + strconv.Itoa(number), "-f", "owner=" + owner, "-f", "name=" + name, "-f", Any,
 	}
 }
@@ -321,14 +373,12 @@ func MessageArgs(host, owner, name string, number int) []string {
 // Canned JSON answers
 // ---------------------------------------------------------------------------
 
-// workflow is the workflow every scripted check and run belongs to.
-const workflow = "CI"
-
 // RepoViewJSON is `gh repo view`'s answer for a repository that is a fork or not, on which the
-// viewer holds permission, and whose settings allow squash merges.
-func RepoViewJSON(fork bool, permission string) string {
+// viewer holds permission, whose visibility is visibility, such as PUBLIC or PRIVATE, and whose
+// settings allow squash merges.
+func RepoViewJSON(fork bool, permission, visibility string) string {
 	return `{"isFork":` + strconv.FormatBool(fork) + `,"viewerPermission":` + quoted(permission) +
-		`,"squashMergeAllowed":true}`
+		`,"squashMergeAllowed":true,"visibility":` + quoted(visibility) + `}`
 }
 
 // MessageJSON is the message read's answer for a pull request titled title with body, for which
@@ -392,19 +442,7 @@ func (h headAnswer) json() string {
 		quoted(h.status) + `,"isDraft":` + strconv.FormatBool(h.draft) + `,"reviewDecision":` + quoted(h.review) + `}`
 }
 
-// CheckJSON is one entry of `gh pr checks`'s answer, for a check of the workflow CI.
-func CheckJSON(name, bucket, link string) string {
-	return `{"name":` + quoted(name) + `,"bucket":` + quoted(bucket) + `,"workflow":` + quoted(workflow) +
-		`,"link":` + quoted(link) + `}`
-}
-
-// RunJSON is one entry of `gh run list`'s answer, for a run named name of the workflow CI.
-func RunJSON(status, name string) string {
-	return `{"status":` + quoted(status) + `,"name":` + quoted(name) + `,"workflowName":` + quoted(workflow) + `}`
-}
-
-// JSONArray is a JSON array of items, each already JSON, such as the entries ChangeJSON, CheckJSON
-// and RunJSON return.
+// JSONArray is a JSON array of items, each already JSON, such as the entries ChangeJSON returns.
 func JSONArray(items ...string) string {
 	return "[" + strings.Join(items, ",") + "]"
 }
@@ -436,6 +474,18 @@ func Main() (code int, served bool) {
 	// The fake is a child process with no caller to cancel it: the test process ends it by killing
 	// it, so its calls need no context of their own.
 	return serve(context.Background(), script, os.Getenv(recordEnv), os.Getenv(holdEnv)), true
+}
+
+// ProgramMain is the whole of the program Install builds: it acts as gh as Main does and returns
+// the exit code, or, run with no script in its environment, reports that on stderr and returns
+// BrokenCode.
+func ProgramMain() int {
+	code, served := Main()
+	if !served {
+		return broken(errors.New("the fake gh ran with no script, want the settings of ghtest.Fake.Settings in its environment"))
+	}
+
+	return code
 }
 
 // Setup points GH_PATH at the test binary for the rest of the test and scripts its answers.
@@ -486,14 +536,15 @@ func Script(tb testing.TB, script ...Call) *Fake {
 
 // Install builds the fake gh as a program of its own, without the race detector, into a new
 // temporary directory, points GH_PATH at it, and returns a cleanup that puts GH_PATH back and
-// removes the directory.
+// removes the directory. Canceling ctx stops the build; the cleanup returns what it could not
+// undo, for the caller to fail on.
 //
 // A package's TestMain calls it once, before running its tests, and calls the cleanup after them.
 // The fake answers as the settings of Fake.Settings in the call's environment say, so a test
 // scripts gh with Script and can run in parallel; a package that does not call it keeps the test
 // binary as its gh, through Setup. The fake must be built from inside this module, where `go
 // build` finds its package.
-func Install() (cleanup func(), err error) {
+func Install(ctx context.Context) (cleanup func() error, err error) {
 	dir, err := os.MkdirTemp("", "ils-fake-gh-")
 	if err != nil {
 		return nil, fmt.Errorf("make a directory for the fake gh: %w", err)
@@ -501,7 +552,7 @@ func Install() (cleanup func(), err error) {
 
 	bin := filepath.Join(dir, github.Program)
 	//nolint:gosec // G204: the arguments are constants of this package and a path it made.
-	out, err := exec.CommandContext(context.Background(), "go", "build", "-o", bin, fakeGHPackage).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "go", "build", "-o", bin, fakeGHPackage).CombinedOutput()
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("build the fake gh: %w\n%s", err, out), os.RemoveAll(dir))
 	}
@@ -511,17 +562,17 @@ func Install() (cleanup func(), err error) {
 		return nil, errors.Join(fmt.Errorf("point %s at the fake gh: %w", github.PathVariable, err), os.RemoveAll(dir))
 	}
 
-	return func() {
+	return func() error {
 		restore := os.Unsetenv(github.PathVariable)
 		if hadPath {
 			restore = os.Setenv(github.PathVariable, before)
 		}
 
-		// The cleanup runs after the tests, when nothing is left to fail: printing is all that is
-		// left to report a directory left behind or a GH_PATH not put back.
 		if err := errors.Join(restore, os.RemoveAll(dir)); err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "ghtest: clean up the fake gh: %v\n", err)
+			return fmt.Errorf("clean up the fake gh: %w", err)
 		}
+
+		return nil
 	}, nil
 }
 
@@ -675,7 +726,7 @@ func serve(ctx context.Context, scriptPath, record, holdAddr string) int {
 	// Last, so that a scripted answer to the version read is the one found.
 	script = append(script, Says(installed, VersionArgs()...))
 
-	answer, found, err := scriptedAnswer(script, args)
+	call, found, err := scriptedCall(script, args)
 	if err != nil {
 		return broken(err)
 	}
@@ -686,8 +737,11 @@ func serve(ctx context.Context, scriptPath, record, holdAddr string) int {
 		return UnscriptedCode
 	}
 
+	earlier := countOf(recorded, args)
+	answer := call.answerTo(earlier)
+
 	if answer.Delay > 0 {
-		if err := announceHold(ctx, holdAddr, hold{Args: args, Earlier: countOf(recorded, args)}); err != nil {
+		if err := announceHold(ctx, holdAddr, hold{Args: args, Earlier: earlier}); err != nil {
 			return broken(err)
 		}
 
@@ -698,7 +752,7 @@ func serve(ctx context.Context, scriptPath, record, holdAddr string) int {
 		}
 	}
 
-	if _, err := os.Stdout.WriteString(answer.Stdout); err != nil {
+	if _, err := os.Stdout.WriteString(answer.printed(args)); err != nil {
 		return broken(fmt.Errorf("write stdout: %w", err))
 	}
 
@@ -709,18 +763,18 @@ func serve(ctx context.Context, scriptPath, record, holdAddr string) int {
 	return answer.Code
 }
 
-// scriptedAnswer returns the answer of the first call of script that matches args, and found
-// false when none does. It returns the error of a file a FileHolding argument names that exists
-// but cannot be read.
-func scriptedAnswer(script []Call, args []string) (answer Answer, found bool, err error) {
+// scriptedCall returns the first call of script that matches args, and found false when none
+// does. It returns the error of a file a FileHolding argument names that exists but cannot be
+// read.
+func scriptedCall(script []Call, args []string) (call Call, found bool, err error) {
 	for _, call := range script {
 		matched, err := matchArgs(call.Args, args)
 		if err != nil || matched {
-			return call.Answer, matched, err
+			return call, matched, err
 		}
 	}
 
-	return Answer{}, false, nil
+	return Call{}, false, nil
 }
 
 // announceHold tells the test process, listening at addr, that the fake is about to hold its

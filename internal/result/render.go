@@ -79,7 +79,7 @@ func RenderStyled(r Result, gitDir string, profile colorprofile.Profile) (string
 }
 
 // ---------------------------------------------------------------------------
-// Styles
+// Labels and styles
 // ---------------------------------------------------------------------------
 
 // NextLabel is the word the Next line starts with.
@@ -307,7 +307,7 @@ func RenderJSON(r Result, gitDir string) (string, error) {
 }
 
 // ---------------------------------------------------------------------------
-// Wording check
+// Checking and rendering phrases
 // ---------------------------------------------------------------------------
 
 // ErrNoReason reports a result that did not end as done and says no reason.
@@ -412,7 +412,7 @@ func joined(spans []span) string {
 // is drawn as the command, except the ticks of an inline command, which stay
 // ticks so a color pen can leave them out.
 func (n Next) spans() ([]span, error) {
-	if n.kind == nextNone {
+	if n.None() {
 		return []span{{text: "none", kind: kindWording}}, nil
 	}
 
@@ -534,7 +534,8 @@ func appendRun(spans []span, s span) []span {
 // names a git dir or a hook.
 func forbidden(ownWording, gitDir string) (string, bool) {
 	// The git dir is matched against the whole wording, since a path may hold spaces.
-	if dir := strings.TrimRight(strings.ToLower(gitDir), "/"); dir != "" && namesPath(strings.ToLower(ownWording), dir) {
+	dir := strings.TrimRight(strings.ToLower(gitDir), "/")
+	if dir != "" && namesPath(strings.ToLower(ownWording), dir) {
 		return gitDir, true
 	}
 

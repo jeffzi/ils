@@ -330,9 +330,7 @@ func (m *mergeReady) toWrite(ctx context.Context, deps Deps, req Request) *resul
 		return stop
 	}
 
-	// Less than mergeReserve left before ctx's deadline ends the merge pending, with nothing written.
-	said := slices.Concat([]result.Phrase{m.summary()}, m.waited.mergeStateLines())
-	if stop := req.shortOfReserve(ctx, result.Concat("for the merge"), pushAgain(), said); stop != nil {
+	if stop := req.shortOfReserve(ctx, result.Concat("for the merge"), pushAgain(), m.saidLines()); stop != nil {
 		return m.carrying(stop)
 	}
 
@@ -536,9 +534,14 @@ func (m *mergeReady) reported(req Request, report waitReport, lead []result.Phra
 // stated returns stop with the lines that say what let the merge go on, then lines, then the merge
 // state unless it is clean.
 func (m *mergeReady) stated(stop *result.Result, lines ...result.Phrase) *result.Result {
-	stop.Lines = slices.Concat([]result.Phrase{m.summary()}, lines, m.waited.mergeStateLines())
+	stop.Lines = m.saidLines(lines...)
 
 	return m.carrying(stop)
+}
+
+// saidLines returns the checks summary, then between, then the merge state unless it is clean.
+func (m *mergeReady) saidLines(between ...result.Phrase) []result.Phrase {
+	return slices.Concat([]result.Phrase{m.summary()}, between, m.waited.mergeStateLines())
 }
 
 // carrying returns ended with the merge payload of what the run has found and done so far.
@@ -565,11 +568,10 @@ func (m *mergeReady) carrying(ended *result.Result) *result.Result {
 // the one before it went through. A write that fails is broke, saying what went through. Every
 // result from here on holds the checks line, so it is the line the wait's step says.
 func (m *mergeReady) land(ctx context.Context, deps Deps, req Request) *result.Result {
-	summary := m.summary()
-	m.lines = append([]result.Phrase{summary}, m.waited.mergeStateLines()...)
+	m.lines = m.saidLines()
 
 	if !m.unverified {
-		deps.said(summary)
+		deps.said(m.summary())
 	}
 
 	if stop := m.merge(ctx, deps, req); stop != nil {

@@ -121,7 +121,8 @@ type Waited struct {
 	Deciding []forge.Check
 	// Verdict is the last verdict read; its Pending method returns the checks still running.
 	Verdict forge.Verdict
-	// Passed and Skipped count the deciding checks in each of those buckets.
+	// Passed and Skipped count the deciding checks in each of those buckets; canceled and failed
+	// checks count toward neither.
 	Passed  int
 	Skipped int
 	// Cutoff is what ended the wait when Outcome is WaitPending; the zero value is the deadline.

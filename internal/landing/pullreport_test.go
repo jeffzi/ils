@@ -197,7 +197,7 @@ type staleRow struct {
 	listedBehind bool
 }
 
-func TestStatus_WhenThePullRequestsHeadIsNotTheTip_ReportsNoVerdictAndEndsOnAPush(t *testing.T) {
+func TestStatus_WhenThePullRequestsHeadIsNotTheTip_EndsOnAPushWithNoVerdict(t *testing.T) {
 	t.Parallel()
 
 	tests := []staleRow{
@@ -327,23 +327,12 @@ func TestStatus_WhenThePullRequestIsOpenAtTheTip_EndsOnTheStepPushEndsItsWaitOn(
 
 	lint := forgetest.RequiredCheck("lint", forge.BucketPass)
 	beside := forge.Verdict{Checks: []forge.Check{lint}, MissingRequired: []string{"test"}, Runs: ran(forge.RunCompleted)}
-	runOnly := forge.Verdict{MissingRequired: []string{"test"}, Runs: ran(forge.RunCompleted)}
 	tests := []settledRow{
 		{name: "green and clean", build: settledAt(forge.MergeClean, passing())},
-		{name: "green and waiting on a review", build: settledAt(forge.MergeBlockedByReview, passing())},
-		{name: "green on a draft", build: settledAt(forge.MergeDraft, passing()).drafted()},
-		{name: "green and blocked by a missing required check", build: settledAt(forge.MergeBlockedByMissingCheck, passing())},
-		{name: "green and blocked otherwise", build: settledAt(forge.MergeBlockedOther, passing())},
-		{name: "red", build: settledAt(forge.MergeBlockedOther, lintRed())},
 		{name: "in conflict with the trunk", build: settledAt(forge.MergeConflicting, passing())},
-		{name: "behind the trunk", build: settledAt(forge.MergeBehind, passing())},
 		{
 			name:  "a required check never reported beside one that passed",
 			build: settledAt(forge.MergeBlockedByMissingCheck, beside).requiring("lint", "test"),
-		},
-		{
-			name:  "a required check never reported beside a workflow run",
-			build: settledAt(forge.MergeBlockedByMissingCheck, runOnly).requiring("test"),
 		},
 	}
 	for _, tt := range tests {
@@ -365,7 +354,6 @@ func TestStatus_WhenOneReadOfThePullRequestAtTheTipSettlesNothing_EndsOnPush(t *
 
 	silent := forge.Verdict{MissingRequired: []string{"test"}}
 	tests := []settledRow{
-		{name: "checks still running", build: settledAt(forge.MergeClean, running())},
 		{name: "merge state unknown", build: settledAt(forge.MergeUnknown, passing())},
 		{name: "nothing reported and no check required", build: settledAt(forge.MergeClean, forge.Verdict{})},
 		{

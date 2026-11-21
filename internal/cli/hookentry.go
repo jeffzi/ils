@@ -15,6 +15,12 @@ import (
 )
 
 const (
+	keyHooks = "hooks"
+
+	// claudeEvent is the hook event Claude Code runs a hook on before a tool runs, and the
+	// hookEventName of the answer it reads from that hook.
+	claudeEvent = "PreToolUse"
+
 	// keyMatcher is the member of a hook group that names the tools its hooks run for, and
 	// keyCommand the member of a hook entry that holds the command it runs.
 	keyMatcher = "matcher"
@@ -111,7 +117,7 @@ func fixGroups(groups []jsontext.Value, entry jsontext.Value) ([]jsontext.Value,
 		}
 
 		found.guarded = found.guarded || fix.guarded
-		found.onBash = found.onBash || fix.guarded && fix.onBash
+		found.onBash = found.onBash || fix.guardedOnBash()
 		found.changed = found.changed || fix.changed
 		if fixed != nil {
 			kept = append(kept, fixed)
@@ -125,6 +131,11 @@ func fixGroups(groups []jsontext.Value, entry jsontext.Value) ([]jsontext.Value,
 // its matcher covers Bash, and whether fixGroup changed it.
 type groupFix struct {
 	guarded, onBash, changed bool
+}
+
+// guardedOnBash reports whether the group held a guard entry and its matcher covers Bash.
+func (f groupFix) guardedOnBash() bool {
+	return f.guarded && f.onBash
 }
 
 // fixGroup reads group, a PreToolUse group, and returns it with every guard entry made entry when
@@ -362,12 +373,7 @@ func guardEntry(command string) (jsontext.Value, error) {
 		OnFailure string `json:"onFailure"`
 	}{Type: "command", Command: command, Timeout: hookTimeout, OnFailure: hookOnFailure}
 
-	text, err := json.Marshal(entry)
-	if err != nil {
-		return nil, fmt.Errorf("encode the guard's hook: %w", err)
-	}
-
-	return text, nil
+	return encodeHook(entry)
 }
 
 // guardGroup returns the PreToolUse group on Bash whose one hook is entry.
@@ -377,7 +383,12 @@ func guardGroup(entry jsontext.Value) (jsontext.Value, error) {
 		Hooks   []jsontext.Value `json:"hooks"`
 	}{Matcher: claudeShellTool, Hooks: []jsontext.Value{entry}}
 
-	text, err := json.Marshal(group)
+	return encodeHook(group)
+}
+
+// encodeHook returns v as JSON text, with an error that says the guard's hook failed to encode.
+func encodeHook(v any) (jsontext.Value, error) {
+	text, err := json.Marshal(v)
 	if err != nil {
 		return nil, fmt.Errorf("encode the guard's hook: %w", err)
 	}

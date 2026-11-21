@@ -55,7 +55,7 @@ func firstRule(name string) string {
 }
 
 func settingsUnder(dir string) string {
-	return filepath.Join(dir, ".claude", "settings.json")
+	return filepath.Join(dir, claudeDirName, settingsFileName)
 }
 
 // withSettings writes text as the settings file under home and returns its path.
@@ -68,10 +68,15 @@ func withSettings(t *testing.T, home, text string) string {
 	return path
 }
 
+// installedHooks returns the hooks `ils init claude` writes to the user's settings file.
+func installedHooks() map[string]any {
+	return map[string]any{"PreToolUse": []any{hookGroup(cli.UserHook)}}
+}
+
 // installedSettings returns every setting `ils init claude` writes to the user's settings file.
 func installedSettings() map[string]any {
 	return map[string]any{
-		"hooks":       map[string]any{"PreToolUse": []any{hookGroup(cli.UserHook)}},
+		"hooks":       installedHooks(),
 		"permissions": ruleLists(),
 	}
 }
@@ -82,7 +87,7 @@ func settingsWithAllow(t *testing.T, home string, allow []any) string {
 	t.Helper()
 
 	return withSettings(t, home, encodedJSON(t, map[string]any{
-		"hooks": map[string]any{"PreToolUse": []any{hookGroup(cli.UserHook)}},
+		"hooks": installedHooks(),
 		"permissions": map[string]any{
 			"allow": allow,
 			"ask":   ruleList("ask"),
@@ -111,7 +116,6 @@ func decodedFile(t *testing.T, path string) map[string]any {
 	return value
 }
 
-// preToolUse returns the PreToolUse hooks of the settings file at path.
 func preToolUse(t *testing.T, path string) any {
 	t.Helper()
 
@@ -338,7 +342,21 @@ func TestApp_Run_WhenInitClaudeFindsAMemberTwice_ExitsTwoNamingTheMember(t *test
 	assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
 	refusal := resulttest.Decode(t, got.stdout)
 	assert.Check(t, is.Contains(withoutPath(refusal.Reason, path), "theme"))
-	assert.Check(t, is.Contains(refusal.Next, path))
+}
+
+func TestApp_Run_WhenInitClaudeFindsAMemberTwice_NextNamesTheFile(t *testing.T) {
+	t.Parallel()
+
+	got, path := refusedSettings(t, `{"theme": "dark", "theme": "light"}`)
+
+	assert.Check(t, is.Contains(resulttest.Decode(t, got.stdout).Next, path))
+}
+
+func TestApp_Run_WhenInitClaudeFindsAMemberTwice_LeavesTheFileUntouched(t *testing.T) {
+	t.Parallel()
+
+	_, path := refusedSettings(t, `{"theme": "dark", "theme": "light"}`)
+
 	assertUntouched(t, path)
 }
 
@@ -352,7 +370,6 @@ func TestApp_Run_WhenInitClaudeFindsAnEscapeOfNoCharacter_ExitsTwoWithAnotherRea
 	assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
 	reason := withoutPath(resulttest.Decode(t, got.stdout).Reason, path)
 	assert.Check(t, reason != withoutPath(resulttest.Decode(t, notJSON.stdout).Reason, notJSONPath), "reason = %q", reason)
-	assertUntouched(t, path)
 }
 
 func TestApp_Run_WhenInitClaudeCannotReadTheSettings_ExitsOneNamingTheFile(t *testing.T) {
@@ -360,7 +377,7 @@ func TestApp_Run_WhenInitClaudeCannotReadTheSettings_ExitsOneNamingTheFile(t *te
 
 	app, home := installing(t)
 	path := settingsUnder(home)
-	assert.NilError(t, os.MkdirAll(path, 0o750))
+	assert.NilError(t, os.MkdirAll(path, testDirMode))
 
 	got := launch(t, app, "init", "claude", "--json")
 
@@ -373,7 +390,7 @@ func TestApp_Run_WhenInitClaudeAddsRules_PrintsTheNumberAddedToEachListThatGrew(
 
 	app, home := installing(t)
 	path := withSettings(t, home, encodedJSON(t, map[string]any{
-		"hooks": map[string]any{"PreToolUse": []any{hookGroup(cli.UserHook)}},
+		"hooks": installedHooks(),
 		"permissions": map[string]any{
 			"allow": ruleList("allow")[:1],
 			"ask":   ruleList("ask"),
@@ -392,7 +409,7 @@ func TestApp_Run_WhenInitClaudeAddsRules_PrintsTheNumberAddedToEachListThatGrew(
 // wordsOutside returns the words of line once path is taken out of it, so that no digit of the
 // path reads as a word of the line.
 func wordsOutside(line, path string) []string {
-	return strings.Fields(strings.ReplaceAll(line, path, ""))
+	return strings.Fields(withoutPath(line, path))
 }
 
 // withoutPath returns line once path is taken out of it, so that no word of the path reads as a
@@ -405,6 +422,10 @@ func withoutPath(line, path string) string {
 // one per shipped skill.
 const shippedSkills = 2
 
+// settingsSteps is the number of settings step lines `ils init claude` reports: the hook, then
+// allow, ask and deny.
+const settingsSteps = 4
+
 // settingsStepsShown runs `ils init claude` with app on a terminal, stops the test unless it ends
 // done with one step line per shipped skill, the hook and each permission list, and returns the
 // lines of the settings steps: the hook's, then those of allow, ask and deny.
@@ -416,7 +437,7 @@ func settingsStepsShown(t *testing.T, app cli.App) []string {
 
 	lines := stdout.lines()
 	assert.Assert(t, is.Equal(got.code, exitDone), "stdout showed %q", lines)
-	assert.Assert(t, is.Len(lines, shippedSkills+4), "stdout showed %q", lines)
+	assert.Assert(t, is.Len(lines, shippedSkills+settingsSteps), "stdout showed %q", lines)
 
 	return lines[shippedSkills:]
 }
@@ -435,8 +456,10 @@ func TestApp_Run_WhenInitClaudeFindsSomeRulesInAnyList_MarksChangedOnlyTheHookAn
 	got := settingsStepsShown(t, app)
 
 	lists := []string{withoutPath(got[1], path), withoutPath(got[2], path), withoutPath(got[3], path)}
-	assertShownSteps(t, got[:1], []shownStep{{mark: "✓", word: path}})
-	assertShownSteps(t, lists, []shownStep{{mark: "✓", word: "allow"}, {mark: "–", word: "ask"}, {mark: "✓", word: "deny"}})
+	assertShownSteps(t, got[:1], []shownStep{{mark: markChanged, word: path}})
+	assertShownSteps(t, lists, []shownStep{
+		{mark: markChanged, word: "allow"}, {mark: markUnchanged, word: "ask"}, {mark: markChanged, word: "deny"},
+	})
 }
 
 func TestApp_Run_WhenInitClaudeFindsEverySettingInPlace_LeavesTheFileUntouched(t *testing.T) {

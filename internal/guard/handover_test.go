@@ -139,25 +139,20 @@ func TestParse_WhenARelativePathAfterACdIsNamedForATool_ReadsItWhereTheKernelOpe
 	t.Parallel()
 
 	tests := []struct {
-		// dir returns the directory the command moves into before naming ../bin/git.
-		dir  func(t *testing.T) string
+		// dir returns the directory the command moves into before naming ../bin/git, given the root
+		// whose bin/git is the tool.
+		dir  func(t *testing.T, root string) string
 		name string
 	}{
 		{
 			name: "link whose target sits beside the tool",
-			dir: func(t *testing.T) string {
-				root := outsideDir(t)
-				writeExecutable(t, filepath.Join(root, "bin", "git"))
-
+			dir: func(t *testing.T, root string) string {
 				return linkTo(t, subdirectory(t, root))
 			},
 		},
 		{
 			name: "directory that does not exist, beside the tool",
-			dir: func(t *testing.T) string {
-				root := outsideDir(t)
-				writeExecutable(t, filepath.Join(root, "bin", "git"))
-
+			dir: func(_ *testing.T, root string) string {
 				return filepath.Join(root, "absent")
 			},
 		},
@@ -165,7 +160,9 @@ func TestParse_WhenARelativePathAfterACdIsNamedForATool_ReadsItWhereTheKernelOpe
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			command := "cd " + gittest.ShellWord(tt.dir(t)) + " && xargs ../bin/git push"
+			root := outsideDir(t)
+			writeExecutable(t, filepath.Join(root, "bin", "git"))
+			command := "cd " + gittest.ShellWord(tt.dir(t, root)) + " && xargs ../bin/git push"
 
 			got := last(t, command)
 
@@ -302,14 +299,21 @@ func TestParse_WhenAnArgumentIsARelativePathNamedForATool_ReadsItWhereTheInvocat
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			callerDir := t.TempDir()
-			writeExecutable(t, filepath.Join(callerDir, "bin", "git"))
-
-			xargs := lastWith(t, tt.command, guard.Caller{Env: map[string]string{"HOME": home}, Dir: callerDir})
+			xargs := lastWith(t, tt.command, callerBesideGit(t))
 
 			assert.Check(t, is.DeepEqual(kinds(xargs.Marks), kinds(tt.want)), "Parse(%q) marks", tt.command)
 		})
 	}
+}
+
+// callerBesideGit returns a caller working in a new directory that holds an executable bin/git.
+func callerBesideGit(t *testing.T) guard.Caller {
+	t.Helper()
+
+	dir := t.TempDir()
+	writeExecutable(t, filepath.Join(dir, "bin", "git"))
+
+	return callerWithEnv(dir, nil)
 }
 
 // writeExecutable writes an executable file at path, creating its directory.

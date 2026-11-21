@@ -121,12 +121,12 @@ func validName(ctx context.Context, deps Deps, req Request, name string) *result
 		return req.Unread(readName, err)
 	}
 
+	said := result.Say("git cannot hold %s as a branch name", result.Branch(name))
 	if reason := bad.Reason(); reason != "" {
-		return req.Refused(result.Say("git cannot hold %s as a branch name: %s", result.Branch(name), reason),
-			anotherName(req))
+		said = result.Say("git cannot hold %s as a branch name: %s", result.Branch(name), reason)
 	}
 
-	return req.Refused(result.Say("git cannot hold %s as a branch name", result.Branch(name)), anotherName(req))
+	return req.Refused(said, anotherName(req))
 }
 
 // freeName refuses a name a branch takes, locally first, then on origin, naming the first that does.

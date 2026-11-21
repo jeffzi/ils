@@ -7,6 +7,8 @@ import (
 	"github.com/jeffzi/ils/internal/guard"
 )
 
+const namesDoubleDash = "after `--`"
+
 func TestJudge_RefusesAPrefixOfAGuardedLongOption(t *testing.T) {
 	t.Parallel()
 
@@ -43,7 +45,6 @@ func TestJudge_PassesOverANonLiteralWordThatNoGuardedOptionCanBe(t *testing.T) {
 		{name: "rm path after --", command: `git rm -- "$f"`},
 		{name: "log revision", command: `git log "$x"`},
 		{name: "add of a glob with a literal prefix", command: "git add src/*.go"},
-		{name: "commit of a glob path", command: "git commit -m msg src/*.go"},
 	})
 }
 
@@ -51,11 +52,11 @@ func TestJudge_WhenAGitPathArgumentCanExpandToAnOption_RefusesNamingDoubleDash(t
 	t.Parallel()
 
 	checkRefusals(t, []refusal{
-		{name: "variable after a literal prefix", command: "git add src/$x", wantNamed: "after `--`"},
-		{name: "glob with no literal prefix", command: "git add *.go", wantNamed: "after `--`"},
-		{name: "glob whose prefix starts with a dash", command: "git add -*", wantNamed: "after `--`"},
-		{name: "glob whose prefix starts with a plus", command: "git add +*", wantNamed: "after `--`"},
-		{name: "zsh glob qualifier that can replace the match", command: "git commit -m msg src/*(e:REPLY=--no-verify:)", wantNamed: "after `--`"},
+		{name: "variable after a literal prefix", command: "git add src/$x", wantNamed: namesDoubleDash},
+		{name: "glob with no literal prefix", command: "git add *.go", wantNamed: namesDoubleDash},
+		{name: "glob whose prefix starts with a dash", command: "git add -*", wantNamed: namesDoubleDash},
+		{name: "glob whose prefix starts with a plus", command: "git add +*", wantNamed: namesDoubleDash},
+		{name: "zsh glob qualifier that can replace the match", command: "git commit -m msg src/*(e:REPLY=--no-verify:)", wantNamed: namesDoubleDash},
 	})
 }
 

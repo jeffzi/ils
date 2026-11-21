@@ -162,7 +162,7 @@ func FirstOnPath(env []string, dir string) []string {
 func WithoutSSH(tb testing.TB, env []string) []string {
 	tb.Helper()
 
-	return append(Without(Without(env, sshCommandVar), "PATH"), "PATH="+tb.TempDir())
+	return append(git.WithoutKeys(slices.Clone(env), sshCommandVar, "PATH"), "PATH="+tb.TempDir())
 }
 
 // ---------------------------------------------------------------------------
