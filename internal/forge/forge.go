@@ -11,7 +11,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Changes
+// Repositories, changes, and branch rules
 // ---------------------------------------------------------------------------
 
 // Repo identifies a repository on a forge.
@@ -19,13 +19,26 @@ type Repo struct {
 	Host  string
 	Owner string
 	Name  string
-	Fork  bool
+	// Visibility is empty until the forge has read the repository's settings.
+	Visibility Visibility
+	Fork       bool
 	// CanPush reports whether the logged-in user may push to the repository.
 	CanPush bool
 	// SquashAllowed reports whether the repository's settings allow squash merges. The rules on a
 	// branch can still forbid them: see Protection.
 	SquashAllowed bool
 }
+
+// Visibility says who may see a repository.
+type Visibility string
+
+// The visibilities of a repository.
+const (
+	VisibilityPublic  Visibility = "public"
+	VisibilityPrivate Visibility = "private"
+	// VisibilityInternal is a repository every member of its enterprise may see, and no one else.
+	VisibilityInternal Visibility = "internal"
+)
 
 // RepoOf returns the repository o names, with every setting of the repository left at its zero
 // value.

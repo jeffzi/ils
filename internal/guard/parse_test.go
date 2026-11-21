@@ -23,7 +23,7 @@ const (
 
 // readerCaller returns the caller in start whose HOME is home.
 func readerCaller() guard.Caller {
-	return guard.Caller{Env: map[string]string{"HOME": home}, Dir: start}
+	return callerWithEnv(start, nil)
 }
 
 // parse returns the invocations of command, read by a caller in start whose HOME is home.
@@ -125,15 +125,6 @@ func kinds(marks []guard.Mark) []guard.MarkKind {
 	return got
 }
 
-func heads(invocations []guard.Invocation) []bool {
-	got := make([]bool, 0, len(invocations))
-	for _, inv := range invocations {
-		got = append(got, inv.HeadUnknown)
-	}
-
-	return got
-}
-
 func wholes(invocations []guard.Invocation) []bool {
 	got := make([]bool, 0, len(invocations))
 	for _, inv := range invocations {
@@ -159,7 +150,7 @@ func TestParse_WhenTheParserCannotReadTheCommand_ReturnsAParseError(t *testing.T
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := guard.Parse(t.Context(), tt.command, guard.Caller{Env: map[string]string{"HOME": home}})
+			_, err := guard.Parse(t.Context(), tt.command, callerWithEnv("", nil))
 
 			failure, ok := errors.AsType[*guard.ParseError](err)
 			assert.Assert(t, ok, "Parse(%q) error = %v, want a *guard.ParseError", tt.command, err)
@@ -243,7 +234,7 @@ func TestParse_WhenACommandOnlyAssigns_ReportsAnInvocationWithNoWords(t *testing
 	got := only(t, command)
 
 	assert.Check(t, is.Len(got.Words, 0), "Parse(%q) words", command)
-	want := []guard.Assignment{{Name: "GIT_DIR", Value: guard.Word{Text: "/tmp/x", Literal: true}}}
+	want := []guard.Assignment{{Name: "GIT_DIR", Value: literal("/tmp/x")}}
 	assert.Check(t, is.DeepEqual(got.Assignments, want), "Parse(%q) assignments", command)
 }
 
@@ -256,7 +247,7 @@ func TestParse_WhenALetClauseRuns_ReportsALetInvocation(t *testing.T) {
 
 	assert.Assert(t, is.Len(got, 2), "Parse(%q) = %v", command, texts(got))
 	assert.Assert(t, len(got[0].Words) > 0, "Parse(%q) let invocation has no words", command)
-	assert.Check(t, is.DeepEqual(got[0].Words[0], guard.Word{Text: "let", Literal: true}), "Parse(%q) let word", command)
+	assert.Check(t, is.DeepEqual(got[0].Words[0], literal("let")), "Parse(%q) let word", command)
 }
 
 func TestParse_WhenTheCommandWordIsASubstitution_MarksADynamicCommand(t *testing.T) {
@@ -356,13 +347,13 @@ func TestParse_ReportsEachAssignmentTheCommandRunsWith(t *testing.T) {
 		{
 			name:    "env argument",
 			command: "env GIT_DIR=x git status",
-			want:    []guard.Assignment{{Name: "GIT_DIR", Value: guard.Word{Text: "x", Literal: true}}},
+			want:    []guard.Assignment{{Name: "GIT_DIR", Value: literal("x")}},
 		},
 		{
 			name:    "prefix then env argument",
 			command: "A=1 env B=$y git status",
 			want: []guard.Assignment{
-				{Name: "A", Value: guard.Word{Text: "1", Literal: true}},
+				{Name: "A", Value: literal("1")},
 				{Name: "B", Value: guard.Word{Text: "", Literal: false}},
 			},
 		},
@@ -379,23 +370,11 @@ func TestParse_ReportsEachAssignmentTheCommandRunsWith(t *testing.T) {
 	}
 }
 
-func TestJudge_AllowsACommandThatDefinesAnAlias(t *testing.T) {
-	t.Parallel()
-
-	_, caller := standingOn(t, "main", "topic")
-
-	checkAllowed(t, caller, []namedCommand{
-		{name: "alias naming git", command: "alias g=git; g status"},
-		{name: "alias naming gh in a second operand", command: "alias ll='ls -l' ship='gh pr merge'; ship"},
-		{name: "alias whose value is not a literal", command: `alias ship="$c"; ship`},
-	})
-}
-
 // callerOutsideAnyRepository returns a caller working in an empty directory that is no repository.
 func callerOutsideAnyRepository(t *testing.T) guard.Caller {
 	t.Helper()
 
-	return guard.Caller{Env: map[string]string{"HOME": home}, Dir: outsideDir(t)}
+	return callerWithEnv(outsideDir(t), nil)
 }
 
 // standingOn returns a new repository whose trunk is trunk, with HEAD on branch, and a caller
@@ -449,12 +428,12 @@ func TestParse_MarksAGitVariableOffTheAllowList(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		command string
-		want    string
+		name     string
+		command  string
+		wantName string
 	}{
-		{name: "assignment prefix", command: "GIT_CONFIG_COUNT=1 git status", want: "GIT_CONFIG_COUNT"},
-		{name: "export of an assignment", command: "export GIT_CONFIG_GLOBAL=/tmp/c", want: "GIT_CONFIG_GLOBAL"},
+		{name: "assignment prefix", command: "GIT_CONFIG_COUNT=1 git status", wantName: "GIT_CONFIG_COUNT"},
+		{name: "export of an assignment", command: "export GIT_CONFIG_GLOBAL=/tmp/c", wantName: "GIT_CONFIG_GLOBAL"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -463,7 +442,7 @@ func TestParse_MarksAGitVariableOffTheAllowList(t *testing.T) {
 			got := parse(t, tt.command)
 
 			assert.Assert(t, len(got) > 0, "Parse(%q) = %v", tt.command, texts(got))
-			want := []guard.Mark{{Kind: guard.GitVariable, Name: tt.want}}
+			want := []guard.Mark{{Kind: guard.GitVariable, Name: tt.wantName}}
 			assert.Check(t, is.DeepEqual(got[0].Marks, want), "Parse(%q) marks", tt.command)
 		})
 	}

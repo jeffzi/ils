@@ -22,6 +22,10 @@ import (
 )
 
 const (
+	parseWord = guard.ParseCommand
+	guardWord = guard.Command
+	hookWord  = guard.HookCommand
+
 	flagCwd = "--cwd"
 
 	cwdUsage = "The directory the command runs in"
@@ -40,6 +44,9 @@ const (
 
 	// unknownText stands, in the text of a parse, for a directory or git dir that is not known.
 	unknownText = "unknown"
+
+	// noneText stands, in the text of a parse, for a list or git dir that holds nothing.
+	noneText = "none"
 )
 
 // parseCommand returns `ils parse --cwd <dir> -- '<command>'`, which reads the command as the
@@ -97,7 +104,7 @@ func (p *parse) cwdCommand(
 
 		return nil
 	}
-	c.Flags().StringVar(&cwd, strings.TrimPrefix(flagCwd, "--"), "", cwdUsage)
+	c.Flags().StringVar(&cwd, flagName(flagCwd), "", cwdUsage)
 	c.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
 		if _, ok := errors.AsType[*pflag.ValueRequiredError](err); ok {
 			return p.refuseFor(word, result.Say("%s takes a directory, and none was given", flagCwd))
@@ -144,7 +151,7 @@ func (p *parse) readCommand(ctx context.Context, cwd, command string) (result.Re
 
 	invocations, err := guard.Parse(ctx, command, p.caller(dir))
 	if err != nil {
-		return unparsed(req, err)
+		return unparsed(req, err), nil
 	}
 
 	payload := &result.Parse{Invocations: invocationsOf(invocations)}
@@ -167,8 +174,9 @@ func (p *parse) readCommand(ctx context.Context, cwd, command string) (result.Re
 // unparsed returns the broke result of a parse that failed with err: the command did not parse, or
 // a read of git it needs failed. The error's text, which may name a config key or a path under a git
 // dir, goes in as a name. The next step names the words req holds, quoted as landing.ShellLine
-// quotes them, so that it runs the same parse again.
-func unparsed(req landing.Request, err error) (result.Result, error) {
+// quotes them, so that it runs the same parse again. It panics on a word ShellLine cannot quote: the
+// words come from argv, which cannot hold a NUL byte.
+func unparsed(req landing.Request, err error) result.Result {
 	reason := result.Say("a read of git the command needs failed: %s", err.Error())
 	if _, ok := errors.AsType[*guard.ParseError](err); ok {
 		reason = result.Say("the command does not parse: %s", err.Error())
@@ -176,10 +184,10 @@ func unparsed(req landing.Request, err error) (result.Result, error) {
 
 	typed, quoteErr := landing.ShellLine(req.Words)
 	if quoteErr != nil {
-		return result.Result{}, quoteErr
+		panic(quoteErr)
 	}
 
-	return *req.Broke(reason, result.NextStep("fix what the reason names, then run %s again", result.Command(typed))), nil
+	return *req.Broke(reason, result.NextStep("fix what the reason names, then run %s again", result.Command(typed)))
 }
 
 // guardCommand returns `ils guard --cwd <dir> -- '<command>'`, which judges the command as the
@@ -306,19 +314,19 @@ func invocationLine(inv result.Invocation) result.Phrase {
 		marks = append(marks, text)
 	}
 
-	words, markList := wordTexts(inv.Words), cmp.Or(strings.Join(marks, ", "), "none")
+	words, markList := wordTexts(inv.Words), cmp.Or(strings.Join(marks, ", "), noneText)
 	if inv.Git == nil {
 		return result.Say("%s; directory %s; marks %s", words, dir, markList)
 	}
 
-	gitDir := cmp.Or(inv.Git.GitDir, "none")
+	gitDir := cmp.Or(inv.Git.GitDir, noneText)
 	if inv.Git.GitDirUnknown {
 		gitDir = unknownText
 	}
 
 	runsIn := cmp.Or(inv.Git.Dir, unknownText)
 
-	gitPart := "arguments " + cmp.Or(wordTexts(inv.Git.Args), "none") + "; git dir " + gitDir + "; git runs in " + runsIn
+	gitPart := "arguments " + cmp.Or(wordTexts(inv.Git.Args), noneText) + "; git dir " + gitDir + "; git runs in " + runsIn
 	if inv.Git.Subcommand != nil {
 		gitPart = "subcommand " + wordText(*inv.Git.Subcommand) + "; " + gitPart
 	}

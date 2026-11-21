@@ -14,7 +14,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Invocation model
+// Invocations and parsing a command string
 // ---------------------------------------------------------------------------
 
 // Tool is the program a command word names, when it is one the guard judges.
@@ -221,10 +221,15 @@ func isWhole(file *syntax.File, invocations []Invocation) bool {
 
 	stmt := file.Stmts[0]
 	call, ok := stmt.Cmd.(*syntax.CallExpr)
+	if !ok || len(call.Args) == 0 || len(call.Assigns) > 0 || len(stmt.Redirs) > 0 {
+		return false
+	}
 
-	return ok && len(call.Args) > 0 && len(call.Assigns) == 0 && len(stmt.Redirs) == 0 &&
-		!stmt.Background && !stmt.Coprocess && !stmt.Disown &&
-		invocations[0].Bare && len(invocations[0].Wrappers) == 0
+	if stmt.Background || stmt.Coprocess || stmt.Disown {
+		return false
+	}
+
+	return invocations[0].Bare && len(invocations[0].Wrappers) == 0
 }
 
 // read parses command with bash's grammar. It returns a *ParseError when the parser cannot read it.
@@ -249,7 +254,7 @@ func read(command string) (*syntax.File, error) {
 }
 
 // ---------------------------------------------------------------------------
-// Walking a parse tree
+// Walking a parse tree into invocations
 // ---------------------------------------------------------------------------
 
 // walker collects the invocations of one parse tree and of the strings it runs, depth levels of
@@ -541,7 +546,7 @@ func assignedNames(stmt *syntax.Stmt, words []Word) []string {
 		case "read", "mapfile", "readarray", "getopts":
 			names = append(names, wordTexts(words[1:])...)
 		case "printf":
-			names = printfTarget(words[1:])
+			names = printfTargets(words[1:])
 		}
 	}
 
@@ -556,8 +561,8 @@ func assignedNames(stmt *syntax.Stmt, words []Word) []string {
 	return names
 }
 
-// printfTarget returns the variable each `-v` among args, the arguments of `printf`, assigns.
-func printfTarget(args []Word) []string {
+// printfTargets returns the variable each `-v` among args, the arguments of `printf`, assigns.
+func printfTargets(args []Word) []string {
 	var names []string
 	for i, arg := range args {
 		value, ok := strings.CutPrefix(arg.Text, "-v")

@@ -49,12 +49,18 @@ func isDataConsumer(words []Word) bool {
 	}
 
 	if words[0].Text == "go" {
-		if sub, ok := goSubcommand(words[1:]); ok && (!sub.Literal || sub.Text == "run" || sub.Text == "generate") {
+		if sub, ok := goSubcommand(words[1:]); ok && startsProgram(sub) {
 			return false
 		}
 	}
 
 	return dataConsumers()[words[0].Text]
+}
+
+// startsProgram reports whether sub, the subcommand word of a go command, may start a program: it
+// is `run` or `generate`, or it is not a literal and may be either.
+func startsProgram(sub Word) bool {
+	return !sub.Literal || sub.Text == "run" || sub.Text == "generate"
 }
 
 // goSubcommand returns the subcommand word among args, the words after a go command word, past
@@ -193,9 +199,10 @@ func shellWords(words []Word, args []*syntax.Word) int {
 func handedBy(words []Word, args []*syntax.Word, dir string, ex expander) (string, bool) {
 	toShell := words[0].Literal && shellHandovers()[programName(words[0])]
 	readsScripts := !isInterpreter(words[0])
-	for i, w := range words[1:] {
+	for i := 1; i < len(words); i++ {
+		w := words[i]
 		if isToolWord(w, dir) {
-			if toolOf(w) == ILS && changesNothing(words[i+2:]) {
+			if toolOf(w) == ILS && changesNothing(words[i+1:]) {
 				continue
 			}
 
@@ -210,7 +217,7 @@ func handedBy(words []Word, args []*syntax.Word, dir string, ex expander) (strin
 			continue
 		}
 
-		if name, ok := scriptTool(scriptText(args[i+1], ex), ex.home); ok {
+		if name, ok := scriptTool(scriptText(args[i], ex), ex.home); ok {
 			return name, true
 		}
 	}
@@ -417,6 +424,6 @@ func changesNothing(args []Word) bool {
 // which ils never declares.
 func readOnlyILSCommands() map[string]bool {
 	return setOf(
-		landing.StatusCommand, ParseCommand, GuardCommand, HookCommand, "help",
+		landing.StatusCommand, ParseCommand, Command, HookCommand, "help",
 	)
 }

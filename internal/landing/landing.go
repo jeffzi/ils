@@ -242,7 +242,7 @@ type Forge interface {
 	TrunkProtection(ctx context.Context, repo forge.Repo, trunk string) (forge.Protection, error)
 	Verdict(ctx context.Context, repo forge.Repo, query forge.VerdictQuery) (forge.Verdict, error)
 	// CommitVerdict returns what the CI of the commit sha says of it on its own, with no change
-	// involved and no failed log read.
+	// involved; a failed check's log is read as Verdict reads it.
 	CommitVerdict(ctx context.Context, repo forge.Repo, sha string) (forge.Verdict, error)
 	// HasTrunkCI reports whether the repository runs CI on the trunk: a workflow the forge runs
 	// whose file is on the trunk. A trunk with no workflow file has none; it is not an error.

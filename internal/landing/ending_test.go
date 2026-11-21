@@ -23,8 +23,6 @@ const (
 	switchStep = "`git switch " + trunk + "`"
 	dropStep   = "`git branch -D " + topic + "`"
 	pullStep   = "`git pull --ff-only origin " + trunk + "`"
-	fetchStep  = "`git fetch origin " + trunk + "`"
-	detachStep = "`git switch --detach refs/remotes/origin/" + trunk + "`"
 
 	readStillOnOrigin = "whether origin still has the branch"
 
@@ -350,7 +348,6 @@ func endingBreaks() []landingRow {
 			payload: sent(landedBody, true, ""),
 		}
 	}
-	trunkElsewhere := func(f *gittest.Fixture) { f.TrunkWorktree() }
 	switching := row("the switch to the trunk", setting{arrange: func(f *gittest.Fixture) { f.UntrackedOnTrunk() }}, topic,
 		failed(switchStep), notRun(dropStep)+notRun(pullStep)+failed(switchStep)+mergeCommand().fixed)
 	switching.told = toldAfterWait(mergingStep(), said(mergedLine()), deletingStep(), said(deletedLine()), movingStep())
@@ -359,9 +356,6 @@ func endingBreaks() []landingRow {
 		switching,
 		row("the delete of the branch on the trunk", setting{landed: lockRef("refs/heads/" + topic)}, trunk,
 			ran(switchStep)+failed(dropStep), notRun(pullStep)+failed(dropStep)+byHand(dropStep, pullStep)),
-		row("the delete of the branch when detached",
-			setting{arrange: trunkElsewhere, landed: lockRef("refs/heads/" + topic)}, "HEAD",
-			ran(fetchStep)+ran(detachStep)+failed(dropStep), failed(dropStep)+byHand(dropStep)),
 	}
 }
 

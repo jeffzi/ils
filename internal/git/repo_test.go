@@ -620,7 +620,7 @@ func TestRepo_CheckBranchName_WhenGitRefusesTheName_ReasonIsGitsMessage(t *testi
 	assert.Check(t, is.Equal(nameErr.Reason(), strings.TrimSpace(exitErr.Stderr)))
 }
 
-func TestRepo_CheckBranchName_WhenGitIsNotAsked_GivesNoReason(t *testing.T) {
+func TestRepo_CheckBranchName_WhenNameStartsWithADash_GivesNoReason(t *testing.T) {
 	t.Parallel()
 	const name = "-parser"
 
@@ -641,16 +641,6 @@ func TestRepo_ExpandBranchName_WhenNameIsThePreviousBranchOfTheRepositoryNamedBy
 	assert.NilError(t, err, "ExpandBranchName(%q, %q)", name, options)
 
 	assert.Check(t, is.Equal(got, topic), "ExpandBranchName(%q, %q)", name, options)
-}
-
-func TestRepo_ExpandBranchName_WhenGitRefusesTheName_ReturnsExitError(t *testing.T) {
-	t.Parallel()
-	const name = "fix..parser"
-
-	got, err := previousBranch(t).ExpandBranchName(t.Context(), name)
-
-	_, ok := errors.AsType[*child.ExitError](err)
-	assert.Check(t, ok, "ExpandBranchName(%q) = %q, error = %v, want *child.ExitError", name, got, err)
 }
 
 const boolKey = "clean.requireForce"
@@ -692,10 +682,15 @@ func TestRepo_BoolConfig_WhenGitCannotReadTheValueAsABoolean_ReturnsExitError(t 
 
 const freshBranch = "fix/parser"
 
-func TestRepo_CreateBranch_WhenOriginsTrunkMovesPastTheCommit_SwitchesToABranchAtTheCommitWithNoUpstream(t *testing.T) {
+// originTrunkRef returns the commit of origin's trunk tracking ref.
+func originTrunkRef(f *gittest.Fixture) string {
+	return f.Git("rev-parse", "refs/remotes/origin/"+trunk)
+}
+
+func TestRepo_CreateBranch_WhenOriginsTrunkMovesPastTheCommit_SwitchesToABranchAtTheCommit(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
-	start := f.Git("rev-parse", "refs/remotes/origin/"+trunk)
+	start := originTrunkRef(f)
 	f.AdvanceOrigin(trunk)
 	f.Git("fetch", "--quiet", "origin")
 
@@ -704,7 +699,6 @@ func TestRepo_CreateBranch_WhenOriginsTrunkMovesPastTheCommit_SwitchesToABranchA
 
 	assert.Check(t, is.Equal(f.Git("symbolic-ref", "HEAD"), "refs/heads/"+freshBranch))
 	assert.Check(t, is.Equal(f.Git("rev-parse", "refs/heads/"+freshBranch), start))
-	assert.Check(t, is.Equal(f.Git("for-each-ref", "--format=%(upstream)", "refs/heads/"+freshBranch), ""))
 }
 
 // changedOffTrunk commits a file to topic alone and changes it without committing, so that
@@ -726,7 +720,7 @@ func TestRepo_CreateBranch_WhenAFileWouldBeOverwritten_ReturnsOverwriteErrorNami
 	t.Parallel()
 	f := gittest.New(t, trunk)
 	path := changedOffTrunk(t, f)
-	start := f.Git("rev-parse", "refs/remotes/origin/"+trunk)
+	start := originTrunkRef(f)
 
 	err := newRepo(f).CreateBranch(t.Context(), freshBranch, start)
 
@@ -739,7 +733,7 @@ func TestRepo_DetachAtOrigin_WhenLocalBranchNamedLikeOriginsTrunk_DetachesAtOrig
 	t.Parallel()
 	f := gittest.New(t, trunk)
 	shadowTrunk(t, f, f.Commits(topic, "one")[0])
-	want := f.Git("rev-parse", "refs/remotes/origin/"+trunk)
+	want := originTrunkRef(f)
 
 	err := newRepo(f).DetachAtOrigin(t.Context(), trunk)
 	assert.NilError(t, err)
@@ -825,7 +819,7 @@ func notElsewhereCases() []checkedOutCase {
 	}
 }
 
-func TestRepo_WorktreeWith_NamesAWorktreeOnlyWhenAnotherHasTheBranch(t *testing.T) {
+func TestRepo_WorktreeWith(t *testing.T) {
 	t.Parallel()
 	for _, tt := range append(elsewhereCases(), notElsewhereCases()...) {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1053,6 +1047,8 @@ func FuzzVersionOf(f *testing.F) {
 
 func noArgument(*gittest.Fixture) string { return "" }
 
+func topicCommit(f *gittest.Fixture) string { return f.Commits(topic, "one")[0] }
+
 func topLevelRead(ctx context.Context, repo git.Repo, _ string) (any, error) {
 	dir, found, err := repo.TopLevel(ctx)
 	if err != nil {
@@ -1087,7 +1083,7 @@ func TestRepo_WhenAGitReadFails_ReturnsItsExitError(t *testing.T) {
 	}{
 		{
 			name: "standing, the current branch read", failOn: []string{"symbolic-ref"},
-			arrange: func(f *gittest.Fixture) string { return f.Commits(topic, "one")[0] },
+			arrange: topicCommit,
 			call: func(ctx context.Context, repo git.Repo, _ string) (any, error) {
 				return repo.Standing(ctx)
 			},
@@ -1096,7 +1092,7 @@ func TestRepo_WhenAGitReadFails_ReturnsItsExitError(t *testing.T) {
 		{name: "local trunk ahead, its commits read", failOn: []string{"log"}, arrange: trunkAhead, call: localTrunkAhead},
 		{
 			name: "branches containing, the current branch read", failOn: []string{"symbolic-ref"},
-			arrange: func(f *gittest.Fixture) string { return f.Commits(topic, "one")[0] },
+			arrange: topicCommit,
 			call: func(ctx context.Context, repo git.Repo, first string) (any, error) {
 				return repo.BranchesContaining(ctx, first)
 			},

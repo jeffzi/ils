@@ -1,7 +1,7 @@
 # Guard scope
 
 The guard reads an agent's shell command before it runs. It refuses the `git`, `gh`, and `ils` calls
-that destroy work, skip checks, push, or land a change. The rules on this page decide what the guard
+that destroy work, skip hooks, push, or land a change. The rules on this page decide what the guard
 refuses and what it lets through. Apply them before you add, change, or remove a refusal.
 [What the guard refuses](reference.md#what-the-guard-refuses) lists the refusals they produce.
 
@@ -37,8 +37,9 @@ real work:
   the agent complied, dropped the refused part, or switched to a plain tool: `rm` for `git rm`,
   `| tee file` for `> file`, and git plumbing for `git restore`. None of the retries hid the
   command.
-- When these rules were written, the guard refused 2.5% of the 25,000 distinct commands. Most of
-  those refusals hit ordinary work, such as `git stash list` or a script run through a variable.
+- When these rules were written, the guard refused 2.5% of the 25,000 distinct commands in that
+  replay. Most of those refusals hit ordinary work, such as `git stash list` or a script run through
+  a variable.
 - Two proposed refusals aimed at hidden commands would have refused one command in 13.
 
 ## Who the guard stops
@@ -56,15 +57,15 @@ runs.
 
 ### 2. Refuse every direct operation
 
-Refuse a `git`, `gh`, or `ils` call that destroys work, skips checks, pushes, or lands a change,
-however rare it is: `git repack -a -d` drops unreachable objects at once, the loss `git prune` is
-refused for.
+Refuse a `git`, `gh`, or `ils` call that destroys work, skips hooks, pushes, or lands a change,
+however rare it is. `git repack -a -d` drops unreachable objects at once, the loss for which the
+guard refuses `git prune`.
 
 A commit lands a change only once it is pushed. An agent's push is what reaches origin and can
-start a deployment, so the guard refuses every agent push. A commit on the default branch of a
-GitHub repository is refused too, protected or not. In the flow `ils` enforces, that branch takes
-changes only through a green pull request. With every agent push refused, a commit made on it has
-no route to origin's default branch.
+start a deployment, so the guard refuses every agent push. The guard also refuses a commit on the
+default branch of a GitHub repository, protected or not. In the flow `ils` enforces, that branch
+takes changes only through a green pull request. With every agent push refused, a commit made on it
+has no route to origin's default branch.
 
 The guard does not read the branch's protection, so the verdict never depends on GitHub's settings.
 [The default branch on GitHub](reference.md#the-default-branch-on-github) says how it tells a
@@ -153,7 +154,7 @@ nothing. It costs the agent a turn and moves it sideways. `bash x.sh` and `./x.s
 file, and the guard can never refuse `./x.sh`, so it allows `bash x.sh` too.
 
 A `source` or `.` of a file runs in the current shell and may change its directory or variables.
-The guard leaves the directory and the git variables unknown after it, instead of refusing it.
+The guard leaves the directory and every variable unknown after it, instead of refusing it.
 
 ### 8. Treat code in another language as data
 
@@ -164,9 +165,9 @@ README.md`, or a Python script that edits a file about git.
 
 So:
 
-- An interpreter's arguments are never read as a shell script, even when they happen to parse as
-  one (`sed 's/old text/git push/' f`), except behind `ssh` or `su` as the command word, which hand
-  every word to a shell.
+- The guard never reads an interpreter's arguments as a shell script, even when they happen to parse
+  as one (`sed 's/old text/git push/' f`). The exception is `ssh` or `su` as the command word,
+  which hand every word to a shell.
 - A string that does not parse as shell is data, whatever command it goes to.
 - A heredoc body on an interpreter's stdin is not read.
 - A bare `git`, `gh`, `ils`, or shell word among an interpreter's arguments still counts as handed
@@ -178,9 +179,9 @@ So:
 
 ### 9. Name a spelling the guard allows
 
-A refusal that fails closed on a word it cannot read names a spelling the guard allows. `git add
-$(git diff --name-only)` is refused because the list could hold `--force`. The reason says to put
-the paths after `--`, where the guard ignores them.
+A refusal that fails closed on a word it cannot read names a spelling the guard allows. The guard
+refuses `git add $(git diff --name-only)` because the list could hold `--force`. The reason says to
+put the paths after `--`, where the guard ignores them.
 
 Agents follow a reason that says what to do instead. A reason that does not leaves them looking for
 another tool.
@@ -197,13 +198,13 @@ Check every new refusal two ways before it lands:
 - A replay judges every shell command in your local Claude Code transcripts and counts the
   refusals by reason: run `task test:replay`. A change that adds a refusal states how many replayed
   commands it refuses. More than 1 in 1,000 needs a narrower trigger, unless the commands it
-  refuses do what [rule 2](#2-refuse-every-direct-operation) refuses: destroy work, skip checks,
+  refuses do what [rule 2](#2-refuse-every-direct-operation) refuses: destroy work, skip hooks,
   push, or land a change.
 
 ## Accepted limits
 
 The guard does not see what a command runs from a file, in a language other than shell, or
-through a construct whose only use is to hide it:
+through a construct whose only use is to hide it.
 [What the guard does not see](reference.md#what-the-guard-does-not-see) lists each limit with the
 commands, options, and keys it covers. [Rule 3](#3-close-a-bypass-only-when-agents-write-it) gives
 examples and the test that tells a hiding construct from an everyday spelling. These classes fail

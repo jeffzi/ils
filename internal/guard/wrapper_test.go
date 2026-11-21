@@ -9,6 +9,15 @@ import (
 	"github.com/jeffzi/ils/internal/guard"
 )
 
+func TestParse_WhenExecRunsNoCommand_ReportsExecItself(t *testing.T) {
+	t.Parallel()
+
+	got := only(t, "exec > out.log")
+
+	assert.Check(t, is.DeepEqual(wordTexts(got.Words), []string{"exec"}))
+	assert.Check(t, is.Len(got.Wrappers, 0))
+}
+
 func TestParse_WhenAWrapperRunsACommand_ReportsTheCommandBehindIt(t *testing.T) {
 	t.Parallel()
 
@@ -51,19 +60,19 @@ func TestParse_WhenAnEnvArgumentIsAQuotedAssignment_ReadsItAsAnAssignment(t *tes
 		{
 			name:            "whole word in double quotes",
 			command:         `env "GIT_DIR=/x" git commit`,
-			wantAssignments: []guard.Assignment{{Name: "GIT_DIR", Value: guard.Word{Text: "/x", Literal: true}}},
+			wantAssignments: []guard.Assignment{{Name: "GIT_DIR", Value: literal("/x")}},
 			wantWords:       []string{"git", "commit"},
 		},
 		{
 			name:            "whole word in single quotes",
 			command:         `env 'FOO=bar baz' make`,
-			wantAssignments: []guard.Assignment{{Name: "FOO", Value: guard.Word{Text: "bar baz", Literal: true}}},
+			wantAssignments: []guard.Assignment{{Name: "FOO", Value: literal("bar baz")}},
 			wantWords:       []string{"make"},
 		},
 		{
 			name:            "name alone in quotes",
 			command:         `env "GIT_TRACE"=1 git status`,
-			wantAssignments: []guard.Assignment{{Name: "GIT_TRACE", Value: guard.Word{Text: "1", Literal: true}}},
+			wantAssignments: []guard.Assignment{{Name: "GIT_TRACE", Value: literal("1")}},
 			wantWords:       []string{"git", "status"},
 		},
 		{

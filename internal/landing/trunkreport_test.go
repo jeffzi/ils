@@ -15,6 +15,9 @@ import (
 
 const standingTrunk result.Standing = "trunk"
 
+// lastTag is the version tag tagReleases puts on origin's trunk that no other tag there outranks.
+const lastTag = "v1.10.0"
+
 // ruledBy is a forge that answers the reads a status on the trunk makes: Acme/Widgets as the user's
 // to push to, and a trunk whose rules stand as rules says.
 func ruledBy(rules forge.RulesState) forgeFor {
@@ -43,7 +46,7 @@ func tagReleases(f *gittest.Fixture) {
 	f.Publish(trunk)
 	f.Publish(topic)
 	f.OriginGit("tag", "v1.9.0", first)
-	f.OriginGit("tag", "v1.10.0", tagged)
+	f.OriginGit("tag", lastTag, tagged)
 	f.OriginGit("tag", "v3.0.0", f.Git("rev-parse", topic))
 	f.OriginGit("tag", "vintage", f.Git("rev-parse", trunk))
 	f.Commits(trunk, "wip: local work")
@@ -55,10 +58,9 @@ func TestStatus_WhenOnTheTrunk_ReportsTheLastVersionTagOnOriginsTrunk(t *testing
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
-	assert.Check(t, is.Equal(got.status.Standing, standingTrunk))
-	assert.Check(t, is.Equal(got.status.LastTag, "v1.10.0"))
+	assert.Check(t, is.Equal(got.status.LastTag, lastTag))
 	assert.Check(t, is.Equal(got.status.SinceTag, 2))
-	assertSays(t, got.text, expect("v1.10.0"))
+	assertSays(t, got.text, expect(lastTag))
 }
 
 // strayTag is the version tag tagPastTheTrunk puts on a commit only origin holds.
@@ -77,7 +79,7 @@ func TestStatus_WhenOnTheTrunkAndAHigherTagIsOnACommitOnlyOriginHolds_ReportsThe
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
-	assert.Check(t, is.Equal(got.status.LastTag, "v1.10.0"))
+	assert.Check(t, is.Equal(got.status.LastTag, lastTag))
 	assert.Check(t, is.Len(got.status.Unread, 0))
 }
 
@@ -207,7 +209,7 @@ func TestStatus_WhenOnTheTrunkAndGhIsMissing_StillReportsWhatGitTells(t *testing
 	got := seeStatus(t, s, (*testing.T).Context)
 
 	assert.Check(t, is.Equal(got.status.Ahead, 1))
-	assert.Check(t, is.Equal(got.status.LastTag, "v1.10.0"))
+	assert.Check(t, is.Equal(got.status.LastTag, lastTag))
 }
 
 func TestStatus_WhenOnTheTrunkAndItsCountAgainstOriginsCannotBeRead_EndsBrokeNamingTheLocalTrunkRead(t *testing.T) {

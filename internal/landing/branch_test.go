@@ -335,9 +335,12 @@ func TestPush_WhenFindChangesFailsUntyped_BrokeNamingTheRead(t *testing.T) {
 	assertOnlyRead(t, s, reads{before: before})
 }
 
+// onOrphan arranges the checkout of a branch with no commit.
+func onOrphan(f *gittest.Fixture) { f.Git("switch", "--quiet", "--orphan", spare) }
+
 func TestPush_WhenBranchHasNoCommitAtAll_RefusesAsNoCommitPastTheTrunk(t *testing.T) {
 	t.Parallel()
-	s := newScene(t, func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--orphan", spare) }, allowed(), false)
+	s := newScene(t, onOrphan, allowed(), false)
 
 	got := landing.Push(t.Context(), s.deps, pushRequest())
 
@@ -347,7 +350,7 @@ func TestPush_WhenBranchHasNoCommitAtAll_RefusesAsNoCommitPastTheTrunk(t *testin
 func TestPush_WhenTipAndBranchRefCannotBeRead_BrokeShowingBothFailures(t *testing.T) {
 	t.Parallel()
 	words := []string{"show-ref", "--verify", "--quiet", "refs/heads/" + spare}
-	s := newScene(t, func(f *gittest.Fixture) { f.Git("switch", "--quiet", "--orphan", spare) }, allowed(), false)
+	s := newScene(t, onOrphan, allowed(), false)
 	failGit(s, words)
 
 	got := landing.Push(t.Context(), s.deps, pushRequest())

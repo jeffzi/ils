@@ -34,13 +34,10 @@ const (
 	// before it, so that later sessions add no commands. Each is still judged against its
 	// repository as it is now.
 	replayBeforeVar = "ILS_REPLAY_BEFORE"
-	// replayWorkers is how many commands the replay judges at a time.
-	replayWorkers = 8
-	// replaySamples is how many commands the replay prints for each reason.
-	replaySamples = 3
+	replayWorkers   = 8
+	replaySamples   = 3
 )
 
-// replayed is one distinct Bash command and the directory it ran in.
 type replayed struct {
 	command string
 	dir     string

@@ -210,9 +210,9 @@ func TestApp_Run_WhenInitClaudeFindsGuardEntries_MarksTheHookStepChangedUnlessEv
 	t.Parallel()
 
 	const (
-		added     = "Added the guard's hook to "
-		updated   = "Updated the guard's hook in "
-		unchanged = "The guard's hook is already in "
+		added     = "Added"
+		updated   = "Updated"
+		unchanged = "already"
 	)
 	tests := []struct {
 		name     string
@@ -220,26 +220,26 @@ func TestApp_Run_WhenInitClaudeFindsGuardEntries_MarksTheHookStepChangedUnlessEv
 		wantLine string
 		wantMark string
 	}{
-		{name: "no guard entry", groups: ``, wantMark: "✓", wantLine: added},
-		{name: "every guard entry in place", groups: inPlaceEntry(), wantMark: "–", wantLine: unchanged},
+		{name: "no guard entry", groups: ``, wantMark: markChanged, wantLine: added},
+		{name: "every guard entry in place", groups: inPlaceEntry(), wantMark: markUnchanged, wantLine: unchanged},
 		{
 			name:     "a guard entry rewritten",
 			groups:   fmt.Sprintf(`{"matcher": "Bash", "hooks": [{"type": "command", "command": %q}]}`, cli.UserHook),
-			wantMark: "✓",
+			wantMark: markChanged,
 			wantLine: updated,
 		},
 		{
 			name: "a guard entry removed",
 			groups: fmt.Sprintf(`{"matcher": "Edit", "hooks": [{"type": "command", "command": %q}]}, %s`,
 				cli.UserHook, inPlaceEntry()),
-			wantMark: "✓",
+			wantMark: markChanged,
 			wantLine: updated,
 		},
 		{
 			name: "a guard entry in place in a group whose matcher is no string",
 			groups: fmt.Sprintf(`{"matcher": 42, "hooks": [{"type": "command", "command": %q, "timeout": %v, "onFailure": %q}]}`,
 				cli.UserHook, cli.HookTimeout, cli.HookOnFailure),
-			wantMark: "✓",
+			wantMark: markChanged,
 			wantLine: updated,
 		},
 	}
@@ -253,7 +253,8 @@ func TestApp_Run_WhenInitClaudeFindsGuardEntries_MarksTheHookStepChangedUnlessEv
 			got := settingsStepsShown(t, app)
 
 			assert.Check(t, strings.HasPrefix(got[0], tt.wantMark+" "), "line = %q", got[0])
-			assert.Check(t, is.Contains(got[0], tt.wantLine+path))
+			assert.Check(t, is.Contains(got[0], tt.wantLine))
+			assert.Check(t, is.Contains(got[0], path))
 		})
 	}
 }

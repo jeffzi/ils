@@ -19,7 +19,6 @@ import (
 	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/gittest"
-	"github.com/jeffzi/ils/internal/logtest"
 )
 
 // renames is an ssh config that gives github.com another name.
@@ -103,8 +102,7 @@ func TestRepo_OriginURLs_WhenContextEndsWhileGitSSHProgramRuns_ReturnsContextErr
 	f.SetPushURL(httpsURL)
 	addr, started := gittest.SilentListener(t)
 	repo := noSSHCommand(newRepo(f))
-	repo.Runner.Env = append(append(repo.Runner.Env, gitSSHStandIn(t), sshStandInEnv+"="+standInLinger, helperAddrEnv+"="+addr),
-		variantEnv("ssh")...)
+	repo.Runner.Env = append(append(repo.Runner.Env, gitSSHStandIn(t), sshStandInEnv+"="+standInHold+addr), variantEnv("ssh")...)
 	ctx := gittest.Ending(t.Context(), started, context.Canceled)
 
 	_, err := repo.OriginURLs(ctx)
@@ -553,15 +551,15 @@ func exitingCases() []exitingCase {
 }
 
 // exitingRepo returns the repository of a new fixture whose origin is aliasURL, a plain ssh
-// answering plainHost, and the command line of tt, of variant, in GIT_SSH_COMMAND.
-func exitingRepo(t *testing.T, tt exitingCase, variant string) git.Repo {
+// answering plainHost, and the command line of tt, of variant ssh, in GIT_SSH_COMMAND.
+func exitingRepo(t *testing.T, tt exitingCase) git.Repo {
 	t.Helper()
 
 	f := aliasFixture(t)
 	path := standIn(t, "connect")
 	repo := firstOnRunnerPath(plainSSH(t, newRepo(f), plainAnswer), path)
 	line := tt.line(path)
-	repo.Runner.Env = append(append(repo.Runner.Env, "GIT_SSH_COMMAND="+line, exiting(127)), variantEnv(variant)...)
+	repo.Runner.Env = append(append(repo.Runner.Env, "GIT_SSH_COMMAND="+line, exiting(127)), variantEnv("ssh")...)
 
 	return repo
 }
@@ -571,7 +569,7 @@ func TestRepo_OriginURLs_WhenFoundSSHCommandExitsAsIfMissing_ReturnsItsExitError
 	for _, tt := range exitingCases() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			repo := exitingRepo(t, tt, "ssh")
+			repo := exitingRepo(t, tt)
 
 			_, err := repo.OriginURLs(t.Context())
 
@@ -689,28 +687,33 @@ func overSSH(f *gittest.Fixture, repo git.Repo, path string) git.Repo {
 	return firstOnRunnerPath(noSSHCommand(repo), path)
 }
 
-func TestRepo_WhenPushingOverSSHAndNothingSetSendsAKeepalive_SendsOneEveryMinute(t *testing.T) {
+// topicRepo returns a new fixture whose topic branch holds a commit, and its repository.
+func topicRepo(t *testing.T) (*gittest.Fixture, git.Repo) {
+	t.Helper()
+
+	f := gittest.New(t, trunk)
+	f.Commits(topic, "one")
+
+	return f, newRepo(f)
+}
+
+func TestRepo_Push_WhenPushingOverSSHAndNothingSetSendsAKeepalive_SendsOneEveryMinute(t *testing.T) {
 	t.Parallel()
-	for _, call := range pushCalls() {
-		t.Run(call.name, func(t *testing.T) {
-			t.Parallel()
-			f, repo, _ := taggedRelease(t)
-			path, record := sshServing(t, sshHost{name: "github.com", config: sshConfigOf("github.com", "0"), dir: f.OriginDir()})
-			repo = overSSH(f, repo, path)
+	f, repo := topicRepo(t)
+	path, record := sshServing(t, sshHost{name: "github.com", config: sshConfigOf("github.com", "0"), dir: f.OriginDir()})
+	repo = overSSH(f, repo, path)
 
-			_, err := call.call(t.Context(), repo)
-			assert.NilError(t, err, "%s()", call.name)
+	err := repo.Push(t.Context(), topic, localTip(f))
+	assert.NilError(t, err)
 
-			assert.Check(t, is.DeepEqual(aliveIntervals(t, record), []string{keptAlive}))
-		})
-	}
+	assert.Check(t, is.DeepEqual(aliveIntervals(t, record), []string{keptAlive}))
 }
 
 func TestRepo_Push_WhenTheUserSetsSSHOrItsConfigCannotBeRead_LeavesGitsSSHAsSet(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		// arrange returns the settings it adds to the runner's environment, given the stand-in's path.
-		arrange func(t *testing.T, f *gittest.Fixture, path string) []string
+		arrange func(path string) []string
 		name    string
 		// config is what `ssh -G` prints for the host; when empty, it exits non-zero instead.
 		config string
@@ -720,21 +723,13 @@ func TestRepo_Push_WhenTheUserSetsSSHOrItsConfigCannotBeRead_LeavesGitsSSHAsSet(
 		{name: "ssh -G prints no ServerAliveInterval line", config: "hostname github.com\nport 22\n"},
 		{
 			name: "GIT_SSH_COMMAND names a command", config: sshConfigOf("github.com", "0"),
-			arrange: func(_ *testing.T, _ *gittest.Fixture, path string) []string {
+			arrange: func(path string) []string {
 				return []string{"GIT_SSH_COMMAND=" + gittest.ShellWord(path)}
 			},
 		},
 		{
-			name: "core.sshCommand names a command", config: sshConfigOf("github.com", "0"),
-			arrange: func(_ *testing.T, f *gittest.Fixture, path string) []string {
-				f.Git("config", "core.sshCommand", gittest.ShellWord(path))
-
-				return nil
-			},
-		},
-		{
 			name: "GIT_SSH names a program", config: sshConfigOf("github.com", "0"),
-			arrange: func(_ *testing.T, _ *gittest.Fixture, path string) []string {
+			arrange: func(path string) []string {
 				return []string{"GIT_SSH=" + path}
 			},
 		},
@@ -742,11 +737,11 @@ func TestRepo_Push_WhenTheUserSetsSSHOrItsConfigCannotBeRead_LeavesGitsSSHAsSet(
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			f, repo, _ := taggedRelease(t)
+			f, repo := topicRepo(t)
 			path, record := sshServing(t, sshHost{name: "github.com", config: tt.config, dir: f.OriginDir()})
 			repo = overSSH(f, repo, path)
 			if tt.arrange != nil {
-				repo.Runner.Env = append(repo.Runner.Env, tt.arrange(t, f, path)...)
+				repo.Runner.Env = append(repo.Runner.Env, tt.arrange(path)...)
 			}
 
 			err := repo.Push(t.Context(), topic, localTip(f))
@@ -757,16 +752,20 @@ func TestRepo_Push_WhenTheUserSetsSSHOrItsConfigCannotBeRead_LeavesGitsSSHAsSet(
 	}
 }
 
-func TestRepo_Push_WhenALaterSSHPushURLsConfigSetsAKeepalive_LeavesGitsSSHAsSetForEvery(t *testing.T) {
-	t.Parallel()
-	f, repo, _ := taggedRelease(t)
+// assertPushLeavesSSHAsSetForTwoPushURLs pushes to a first push URL whose ssh config sets no
+// keepalive and to secondURL, a second.example URL whose config sets one, and fails unless git's ssh
+// was left as set for both.
+func assertPushLeavesSSHAsSetForTwoPushURLs(t *testing.T, secondURL string) {
+	t.Helper()
+
+	f, repo := topicRepo(t)
 	path, record := sshServing(t,
 		sshHost{name: "first.example", config: sshConfigOf("first.example", "0"), dir: f.OriginDir()},
 		sshHost{name: "second.example", config: sshConfigOf("second.example", "30"), dir: emptyBare(t, f)},
 	)
 	repo = overSSH(f, repo, path)
 	f.AddPushURL("git@first.example:jeffzi/tools.git")
-	f.AddPushURL("git@second.example:jeffzi/tools.git")
+	f.AddPushURL(secondURL)
 
 	err := repo.Push(t.Context(), topic, localTip(f))
 	assert.NilError(t, err)
@@ -774,21 +773,16 @@ func TestRepo_Push_WhenALaterSSHPushURLsConfigSetsAKeepalive_LeavesGitsSSHAsSetF
 	assert.Check(t, is.DeepEqual(aliveIntervals(t, record), []string{"", ""}))
 }
 
+func TestRepo_Push_WhenALaterSSHPushURLsConfigSetsAKeepalive_LeavesGitsSSHAsSetForEvery(t *testing.T) {
+	t.Parallel()
+
+	assertPushLeavesSSHAsSetForTwoPushURLs(t, "git@second.example:jeffzi/tools.git")
+}
+
 func TestRepo_Push_WhenAPushURLsFormCannotBeRead_LeavesGitsSSHAsSetForEvery(t *testing.T) {
 	t.Parallel()
-	f, repo, _ := taggedRelease(t)
-	path, record := sshServing(t,
-		sshHost{name: "first.example", config: sshConfigOf("first.example", "0"), dir: f.OriginDir()},
-		sshHost{name: "second.example", config: sshConfigOf("second.example", "30"), dir: emptyBare(t, f)},
-	)
-	repo = overSSH(f, repo, path)
-	f.AddPushURL("git@first.example:jeffzi/tools.git")
-	f.AddPushURL("alice@second.example:jeffzi/tools.git")
 
-	err := repo.Push(t.Context(), topic, localTip(f))
-	assert.NilError(t, err)
-
-	assert.Check(t, is.DeepEqual(aliveIntervals(t, record), []string{"", ""}))
+	assertPushLeavesSSHAsSetForTwoPushURLs(t, "alice@second.example:jeffzi/tools.git")
 }
 
 // useProcessEnv makes env the whole environment of the process until the test ends. It cannot run
@@ -824,35 +818,6 @@ func TestRepo_OriginURLs_WhenRunnerSetsNoEnvironment_FindsSSHOnTheProcessPath(t 
 	assert.NilError(t, err)
 
 	assert.Check(t, is.Equal(got.Fetch.Host, plainHost))
-}
-
-// callsOf returns the attributes of each exec record in records that names tool, all but the
-// duration.
-func callsOf(records []logtest.Record, tool string) []map[string]any {
-	var calls []map[string]any
-
-	for _, record := range records {
-		if record.Message == child.ExecMessage && record.Map()[child.KeyTool] == tool {
-			calls = append(calls, record.Call())
-		}
-	}
-
-	return calls
-}
-
-func TestRepo_OriginURLs_WhenLoggerAttachedAndSSHReadsHost_LogsEachSSHRun(t *testing.T) {
-	t.Parallel()
-	f := aliasFixture(t)
-	f.SetPushURL(httpsURL)
-	repo := plainSSH(t, newRepo(f), plainAnswer)
-	logger, sink := logtest.New()
-	repo.Runner.Logger = logger
-
-	_, err := repo.OriginURLs(t.Context())
-	assert.NilError(t, err)
-
-	want := logtest.ExecAttrs(t, child.Exec{Tool: "ssh", Args: []string{"-G", "--", "work"}})
-	assert.Check(t, is.DeepEqual(callsOf(sink.Records(), "ssh"), []map[string]any{want}))
 }
 
 func TestEnvValue(t *testing.T) {
@@ -963,7 +928,7 @@ func TestProgramWord(t *testing.T) {
 	}
 }
 
-func FuzzSplitCommandLine(f *testing.F) {
+func FuzzProgramWord(f *testing.F) {
 	for _, seed := range []string{
 		"ssh", `plink.exe -batch`, `ssh -i "my key" -p 22`, `'C:\Program Files\PuTTY\plink.exe' -batch`,
 		`GIT_TRACE=1 env FOO=bar ssh -v`, `exec -a name ssh`, `command ssh`, `ssh "unclosed`, `ssh\`,

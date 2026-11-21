@@ -51,8 +51,7 @@ func (trace) Enabled(context.Context, slog.Level) bool {
 func (h trace) Handle(_ context.Context, r slog.Record) error {
 	attrs := slices.Clone(h.attrs)
 	r.Attrs(func(attr slog.Attr) bool {
-		attr.Key = h.prefix + attr.Key
-		attrs = append(attrs, attr)
+		attrs = h.appendLed(attrs, attr)
 
 		return true
 	})
@@ -128,11 +127,17 @@ func (h trace) dim(text string) string {
 func (h trace) WithAttrs(attrs []slog.Attr) slog.Handler {
 	h.attrs = slices.Clone(h.attrs)
 	for _, attr := range attrs {
-		attr.Key = h.prefix + attr.Key
-		h.attrs = append(h.attrs, attr)
+		h.attrs = h.appendLed(h.attrs, attr)
 	}
 
 	return h
+}
+
+// appendLed returns attrs with attr added, its key led by the groups open now.
+func (h trace) appendLed(attrs []slog.Attr, attr slog.Attr) []slog.Attr {
+	attr.Key = h.prefix + attr.Key
+
+	return append(attrs, attr)
 }
 
 // WithGroup returns a handler that writes the key of every attribute after it under name, or h

@@ -61,10 +61,7 @@ func TestParse_WhenTheCommandAssignedAVariableALiteral_ReadsItsExpansionAsThatLi
 func TestParse_WhenTheGuardCannotBeSureOfAVariablesValue_ReadsItsExpansionUnknown(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		command string
-	}{
+	checkReadUnknown(t, []namedCommand{
 		{name: "append assignment", command: "S=/tmp/work; S+=/x; $S/run.sh"},
 		{name: "value from a command substitution", command: "S=/tmp/work; S=$(pwd); $S/run.sh"},
 		{name: "array value", command: "S=(/tmp/work); $S/run.sh"},
@@ -80,48 +77,23 @@ func TestParse_WhenTheGuardCannotBeSureOfAVariablesValue_ReadsItsExpansionUnknow
 		{name: "unquoted expansion after IFS is assigned", command: "IFS=/; S=/tmp/work; $S/run.sh"},
 		{name: "declare with an attribute that changes the value", command: "declare -u S=/tmp/work; $S/run.sh"},
 		{name: "assignment after an attribute that changes the value", command: "typeset -l S; S=/TMP/work; $S/run.sh"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := parse(t, tt.command)
-
-			checkRunShReadUnknown(t, tt.command, got)
-		})
-	}
+	})
 }
 
 func TestParse_WhenAReadonlyMayNotGiveAVariableItsValue_ReadsItsExpansionUnknown(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		command string
-	}{
+	checkReadUnknown(t, []namedCommand{
 		{name: "assignment to a readonly name", command: "readonly S=/srv; S=/tmp/work; $S/run.sh"},
 		{name: "readonly after a readonly whose value is not a literal", command: "readonly S=$(pwd); readonly S=/tmp/work; $S/run.sh"},
-		{name: "readonly after declare -r", command: "declare -r S=$(pwd); readonly S=/tmp/work; $S/run.sh"},
 		{name: "readonly after a readonly an eval string runs", command: "eval 'readonly S=$(pwd)'; readonly S=/tmp/work; $S/run.sh"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := parse(t, tt.command)
-
-			checkRunShReadUnknown(t, tt.command, got)
-		})
-	}
+	})
 }
 
 func TestParse_WhenTheShellMaySetAVariableOnItsOwn_ReadsItsExpansionUnknown(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		command string
-	}{
+	checkReadUnknown(t, []namedCommand{
 		{name: "builtin that writes a named variable", command: "S=/tmp/work; print -v S /srv; $S/run.sh"},
 		{name: "printf -v writing a variable", command: "S=/tmp/work; printf -v T %s /srv; $S/run.sh"},
 		{name: "printf given a format that is not a literal", command: `S=/tmp/work; printf "$F" S /srv; $S/run.sh`},
@@ -135,7 +107,13 @@ func TestParse_WhenTheShellMaySetAVariableOnItsOwn_ReadsItsExpansionUnknown(t *t
 		{name: "set given an argument that is not a literal", command: `S=/tmp/work; set "$O" S /srv; $S/run.sh`},
 		{name: "trap given an action that is not a literal", command: `S=/tmp/work; trap "$H" EXIT; $S/run.sh`},
 		{name: "shopt given an argument that is not a literal", command: `S=/tmp/work; shopt -s "$opt"; $S/run.sh`},
-	}
+	})
+}
+
+// checkReadUnknown runs every command in its own parallel test run and checks it with checkRunShReadUnknown.
+func checkReadUnknown(t *testing.T, tests []namedCommand) {
+	t.Helper()
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()

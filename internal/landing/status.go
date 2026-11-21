@@ -142,7 +142,6 @@ func (r *reading) failed(read string, err error) {
 		read, fmt.Sprintf(timeLimitEnded, r.req.limitWords()))
 }
 
-// unread says line and lists the read named read as unread, for the reason given.
 func (r *reading) unread(line result.Phrase, read, reason string) {
 	r.say(line)
 	r.markUnread(read, reason)
@@ -312,7 +311,6 @@ func (r *reading) failedTrunk(read string, err error) {
 	}
 }
 
-// sayRefusal says the lines and reason of stop, a refusal push would end on.
 func (r *reading) sayRefusal(stop *result.Result) {
 	r.say(stop.Lines...)
 	r.say(stop.Reason)
@@ -539,7 +537,6 @@ func (r *reading) readCommits(ctx context.Context) {
 	}
 
 	got, err := r.survey.tip(ctx)
-	tip := got.tip
 
 	switch {
 	case err != nil:
@@ -553,7 +550,7 @@ func (r *reading) readCommits(ctx context.Context) {
 		return
 	}
 
-	r.on.tip = tip
+	r.on.tip = got.tip
 
 	if r.on.Trunk == "" {
 		return

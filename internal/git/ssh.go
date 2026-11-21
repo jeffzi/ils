@@ -434,7 +434,7 @@ func (r Repo) askSSH(ctx context.Context, command sshCommand, host string) (stri
 }
 
 // ---------------------------------------------------------------------------
-// Environment lookup
+// Environment entries
 // ---------------------------------------------------------------------------
 
 // getenv returns the value key has in the environment git runs with, and whether it is set, as

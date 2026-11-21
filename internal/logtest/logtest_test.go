@@ -33,7 +33,7 @@ func TestRecord_Map_WhenAttributeIsLazy_HoldsItsResolvedValue(t *testing.T) {
 	assert.Check(t, is.DeepEqual(got, map[string]any{"state": "clean"}))
 }
 
-func TestRecord_Call_HoldsEveryAttributeButTheDuration(t *testing.T) {
+func TestRecord_Call_WhenRecordHasADuration_HoldsEveryOtherAttribute(t *testing.T) {
 	t.Parallel()
 	record := logtest.Record{Attrs: []slog.Attr{slog.String("state", "clean"), slog.Int(child.KeyDuration, 3)}}
 

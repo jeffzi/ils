@@ -197,10 +197,7 @@ func movesHead(inv Invocation) bool {
 		return false
 	}
 
-	if slices.ContainsFunc(inv.Marks, func(m Mark) bool {
-		return m.Kind == ShellAlias || m.Kind == UnknownSubcommand || m.Kind == DeepAlias ||
-			m.Kind == UnreadableAlias
-	}) {
+	if slices.ContainsFunc(inv.Marks, leavesSubcommandUnknown) {
 		return true
 	}
 
@@ -226,6 +223,17 @@ func movesHead(inv Invocation) bool {
 		_, named, unreadable := rebaseBranch(args)
 
 		return named || unreadable
+	default:
+		return false
+	}
+}
+
+// leavesSubcommandUnknown reports whether m marks a git invocation whose subcommand Parse could not
+// resolve.
+func leavesSubcommandUnknown(m Mark) bool {
+	switch m.Kind {
+	case ShellAlias, UnknownSubcommand, DeepAlias, UnreadableAlias:
+		return true
 	default:
 		return false
 	}

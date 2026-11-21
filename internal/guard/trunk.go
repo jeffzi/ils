@@ -29,7 +29,10 @@ type trunks map[string]trunkAnswer
 // switch earlier in its `&&` list left HEAD on, when that branch is the trunk of a repository whose
 // origin is on GitHub, as refuseOnGitHub tells it, and one whose directory, target, or HEAD the guard
 // cannot tell. A `git rebase` whose branch argument is the trunk is judged as a rebase on the trunk, and
-// one whose branch argument the guard cannot read is refused, since that branch may be the trunk.
+// one whose branch argument the guard cannot read is refused, since that branch may be the trunk. A
+// word in the upstream position that may expand to several words, with no branch argument after it,
+// is not judged as a branch: a glob, or an unquoted expansion after `--`. The guard judges the
+// branch HEAD is on, though the word may expand to both an upstream and a branch.
 //
 // It reads origin and HEAD locally before it asks origin for the trunk, so a repository with no
 // origin or a detached HEAD starts no call to origin, and it runs no gh off the trunk.
@@ -175,7 +178,7 @@ func (t trunks) trunkOf(ctx context.Context, repo git.Repo, gitDir string) (trun
 
 	trunk, found, err := repo.TrunkOrLastFetched(ctx)
 	if err != nil {
-		return trunkAnswer{}, err
+		return trunkAnswer{}, fmt.Errorf("ask origin for the default branch of %s, or its last fetch: %w", gitDir, err)
 	}
 
 	answer := trunkAnswer{trunk: trunk, found: found}

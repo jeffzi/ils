@@ -620,13 +620,12 @@ func pushOpenFailureRows() []pushRow {
 		},
 	}
 
-	for _, c := range []cut{byInterrupt()} {
-		rows = append(rows, pushRow{
-			name:   "because " + c.name + " ended it",
-			script: openFailing(c.of("gh pr create")),
-			want:   openCutShort(pushCommand(), c),
-		})
-	}
+	interrupt := byInterrupt()
+	rows = append(rows, pushRow{
+		name:   "because " + interrupt.name + " ended it",
+		script: openFailing(interrupt.of("gh pr create")),
+		want:   openCutShort(pushCommand(), interrupt),
+	})
 
 	// A signal can end gh after GitHub opened the pull request, before gh said so.
 	killed := &child.KilledError{Argv: []string{"gh", "pr", "create"}, Err: errors.New("signal: terminated")}
@@ -861,14 +860,12 @@ func pushNoCIRows() []pushRow {
 		},
 	}
 
-	for _, c := range []cut{byInterrupt()} {
-		rows = append(rows, pushRow{
-			name: "and " + c.name + " ends the CI read", want: cutShortRead(c, readCI),
-			script: reusing(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{Err: c.of("gh")}),
-		})
-	}
+	interrupt := byInterrupt()
 
-	return rows
+	return append(rows, pushRow{
+		name: "and " + interrupt.name + " ends the CI read", want: cutShortRead(interrupt, readCI),
+		script: reusing(forge.Verdict{}).answeringCI(forgetest.Answer[bool]{Err: interrupt.of("gh")}),
+	})
 }
 
 func TestPush_WhenNothingReportedForTheCommit_EndsByWhatTheCIReadAnswers(t *testing.T) {
@@ -1018,22 +1015,22 @@ func TestPush_WhenAReadAfterTheWritesIsCutShort_PendingNamingTheRead(t *testing.
 
 	var rows []pushRow
 
-	for _, c := range []cut{byInterrupt()} {
-		for _, read := range readsAfterWrites(c.of("gh")) {
-			// Every read hands its error to the same wording, so each cut is checked on the read of the
-			// trunk's rules alone.
-			if read.name == readChanges {
-				continue
-			}
+	interrupt := byInterrupt()
 
-			reason := expect(c.ends, read.name, "nothing more will change")
-			row := read.row(finish{
-				outcome: result.Pending, reason: reason,
-				text: read.before + reason + nextPush(),
-			})
-			row.name = c.name + " ends " + row.name
-			rows = append(rows, row)
+	for _, read := range readsAfterWrites(interrupt.of("gh")) {
+		// Every read hands its error to the same wording, so each cut is checked on the read of the
+		// trunk's rules alone.
+		if read.name == readChanges {
+			continue
 		}
+
+		reason := expect(interrupt.ends, read.name, "nothing more will change")
+		row := read.row(finish{
+			outcome: result.Pending, reason: reason,
+			text: read.before + reason + nextPush(),
+		})
+		row.name = interrupt.name + " ends " + row.name
+		rows = append(rows, row)
 	}
 
 	runPushes(t, rows)

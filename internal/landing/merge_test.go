@@ -272,19 +272,15 @@ func rulesRead() []forgetest.Op {
 // trunkStops are the refusals of `ils merge` decided from the local trunk and from the branch's
 // commits past origin's trunk, once the trunk is fetched.
 func trunkStops() []mergeRow {
-	row := func(name string, arrange func(*gittest.Fixture) string) mergeRow {
-		return mergeRow{
-			name: name, script: merging(), ops: identityRead(), outcome: result.Refused,
-			arrange: func(f *gittest.Fixture) mergeEnd { return ending(arrange(f)) },
-		}
-	}
-
 	return []mergeRow{
-		row("no commit past the trunk", func(f *gittest.Fixture) string {
-			f.Git("switch", "--quiet", "--create", spare, trunk)
+		{
+			name: "no commit past the trunk", script: merging(), ops: identityRead(), outcome: result.Refused,
+			arrange: func(f *gittest.Fixture) mergeEnd {
+				f.Git("switch", "--quiet", "--create", spare, trunk)
 
-			return nothingPastMerge(spare)
-		}),
+				return ending(nothingPastMerge(spare))
+			},
+		},
 	}
 }
 
@@ -474,11 +470,6 @@ func TestMerge_WhenTheTitleHasAScopeOrABreakingMark_GoesOnToTheTrunksRules(t *te
 	runMerges(t, mergeAccepted())
 }
 
-// pastHead is the arrange of a tip past the head of pull request 12 whose run ends as text says.
-func pastHead(text string) func(*gittest.Fixture) mergeEnd {
-	return func(f *gittest.Fixture) mergeEnd { return mergeEnd{text: text, head: tipPastHead(f)} }
-}
-
 // unansweredMerges are the runs of `ils merge` that origin stops answering partway through.
 func unansweredMerges() []mergeRow {
 	return []mergeRow{
@@ -486,7 +477,9 @@ func unansweredMerges() []mergeRow {
 			// Origin answers about its trunk and the fetch of it, and nothing after.
 			name: "asked to fetch the head of the pull request", script: merging(), ops: changesRead(), answered: 2,
 			outcome: result.Refused, known: true,
-			arrange: pastHead(unreached(mergeCommand(), "fetch the head of pull request #12")),
+			arrange: func(f *gittest.Fixture) mergeEnd {
+				return mergeEnd{text: unreached(mergeCommand(), "fetch the head of pull request #12"), head: tipPastHead(f)}
+			},
 		},
 	}
 }
@@ -1054,7 +1047,7 @@ func TestMerge_WhenTheChecksNeverConclude_EndsTheWaitTheReserveBeforeTheDeadline
 		latest := bound - landing.MergeReserve
 		// The last poll is the first that leaves less than a poll and the head read's reserve before
 		// the wait's deadline, so the wait ends within that much of it.
-		earliest := latest - verdictPoll - headReadReserve
+		earliest := latest - landing.VerdictPoll - landing.HeadReadReserve
 
 		assertStoppedBy(t, run.got, result.Pending, mergeRequest())
 		assert.Check(t, waited <= latest, "the wait ended %s in, want at most %s", waited, latest)

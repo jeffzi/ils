@@ -132,7 +132,7 @@ func argumentsWriteNoVariable(name string, args []Word) bool {
 	case "wait":
 		writes = func(arg string) bool { return strings.HasPrefix(arg, "-") && strings.Contains(arg, "p") }
 	case "trap":
-		return !slices.ContainsFunc(args, func(w Word) bool { return !w.Literal }) && trapsOnlyAtEnd(wordTexts(args))
+		return !anyNotLiteral(args) && trapsOnlyAtEnd(wordTexts(args))
 	case "shopt":
 		writes = func(string) bool { return false }
 	default:
@@ -150,6 +150,11 @@ func trapSignalsAfterAll() []string {
 	return []string{"EXIT", "0", "INT", "TERM", "HUP"}
 }
 
+// cspell:enable
+
+// signalPrefix is the optional prefix of a signal name.
+const signalPrefix = "SIG"
+
 // trapsOnlyAtEnd reports whether `trap` with the literal arguments args sets or resets traps only
 // on trapSignalsAfterAll, in any letter case and with or without a `SIG` prefix. A `-p`, `-l` or
 // `-P` option only lists traps. With one argument, that argument is the signal to reset; with
@@ -166,15 +171,13 @@ func trapsOnlyAtEnd(args []string) bool {
 
 	return !slices.ContainsFunc(signals, func(signal string) bool {
 		name := signal
-		if len(name) > len("SIG") && strings.EqualFold(name[:len("SIG")], "SIG") {
-			name = name[len("SIG"):]
+		if len(name) > len(signalPrefix) && strings.EqualFold(name[:len(signalPrefix)], signalPrefix) {
+			name = name[len(signalPrefix):]
 		}
 
 		return !containsFold(trapSignalsAfterAll(), name)
 	})
 }
-
-// cspell:enable
 
 // ran returns v once inv, a simple command with a command word, has run in the shell. A program
 // changes no variable of the shell, and a function call is applied by the walk of its body; a
@@ -337,11 +340,17 @@ func (v shellVars) assigned(a *syntax.Assign, value Word) shellVars {
 	}
 
 	name := a.Name.Value
-	if a.Append || a.Index != nil || a.Array != nil || !value.Literal || v.held[name] > 0 {
+	if !assignsWholeLiteral(a, value) || v.held[name] > 0 {
 		return v.forget(name)
 	}
 
 	return v.holding(name, value.Text)
+}
+
+// assignsWholeLiteral reports whether the assignment a, whose value reads as value, gives its
+// variable the literal value whole: not an append, an element or an array, and a literal.
+func assignsWholeLiteral(a *syntax.Assign, value Word) bool {
+	return !a.Append && a.Index == nil && a.Array == nil && value.Literal
 }
 
 // declared returns v once the declaration decl, whose values ex reads, has run. A variable it
@@ -361,7 +370,7 @@ func (v shellVars) declared(decl *syntax.DeclClause, ex expander) shellVars {
 		switch {
 		case options, a.Naked, variant == "local" && !v.function, variant == "readonly" && v.held[name] > 1:
 			v = v.forget(name)
-		case variant == "readonly" && !a.Append && a.Index == nil && a.Array == nil && value.Literal:
+		case variant == "readonly" && assignsWholeLiteral(a, value):
 			v = v.holding(name, value.Text)
 		default:
 			v = v.assigned(a, value)

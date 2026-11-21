@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jeffzi/ils/internal/guard"
 	"github.com/jeffzi/ils/internal/landing"
 )
 
@@ -149,7 +148,6 @@ ils status
 # The same result as one JSON object
 ils status --json`
 
-	parseWord  = guard.ParseCommand
 	parseUse   = parseWord + " --cwd <dir> -- '<command>'"
 	parseShort = "Show how the guard reads a shell command"
 	parseLong  = `Read a shell command as the guard does, as run from <dir>, and show every
@@ -167,7 +165,6 @@ ils parse --cwd . -- 'git switch main && git pull'
 # The same as one JSON object, for a filter such as jq
 ils parse --cwd . --json -- 'git push'`
 
-	guardWord  = guard.GuardCommand
 	guardUse   = guardWord + " --cwd <dir> -- '<command>'"
 	guardShort = "Judge a shell command as the guard does"
 	guardLong  = `Read a shell command as the guard does, as run from <dir>, and judge
@@ -185,7 +182,6 @@ ils guard --cwd . -- 'git push --force'
 # The verdict, its reason and every command, as one JSON object
 ils guard --cwd . --json -- 'ils merge'`
 
-	hookWord  = guard.HookCommand
 	hookUse   = hookWord + " <harness>"
 	hookShort = "Judge a coding agent's shell command as its pre-tool hook"
 	hookLong  = `Read the payload a coding agent's harness hands its pre-tool hook on
@@ -202,7 +198,6 @@ The guard runs on macOS and Linux.`
 	hookExamples = `# Judge a payload as Claude Code's PreToolUse hook
 ils hook claude < payload.json`
 
-	initWord  = "init"
 	initUse   = initWord + " <harness>"
 	initShort = "Set up a coding agent's harness: the skills, the guard's hook, the rules"
 	initLong  = `Set up a coding agent's harness for ils. The one harness is claude:

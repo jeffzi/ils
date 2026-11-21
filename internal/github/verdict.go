@@ -1,12 +1,10 @@
 package github
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -18,32 +16,9 @@ import (
 // names one.
 var runOfLink = regexp.MustCompile(`/actions/runs/(\d+)(?:/job/(\d+))?`)
 
-// runUnfinished matches what `gh run view --log-failed` prints when the run has not completed.
-var runUnfinished = regexp.MustCompile(`run \d+ is still in progress; logs will be available when it is complete`)
-
-// noChecksReported is what gh prints on stderr when a pull request has no checks.
-const noChecksReported = "no checks reported"
-
-// runListLimit overrides gh's default page size of 20 runs, far below the runs one commit can have.
-const runListLimit = "1000"
-
-type pullCheck struct {
-	// StartedAt is the zero time for a check GitHub has not started.
-	StartedAt time.Time `json:"startedAt"`
-	Name      string    `json:"name"`
-	Bucket    string    `json:"bucket"`
-	Workflow  string    `json:"workflow"`
-	Link      string    `json:"link"`
-}
-
-type workflowRun struct {
-	Status   string `json:"status"`
-	Name     string `json:"name"`
-	Workflow string `json:"workflowName"`
-}
-
-// Verdict returns every check of the pull request, the workflow runs on the
-// commit, and the failed log of the check the verdict's Failed names.
+// Verdict returns every check on the commit the query names, whatever event started the run
+// behind it, the workflow runs on the commit, and the failed log of the check the verdict's Failed
+// names. A commit with no check yet has a verdict with no check and no error.
 //
 // A check the query requires carries Required, so that the others are reported
 // without deciding.
@@ -52,6 +27,13 @@ func (f *Forge) Verdict(ctx context.Context, repo forge.Repo, query forge.Verdic
 	if err != nil {
 		return forge.Verdict{}, err
 	}
+
+	return f.withFailedLog(ctx, repo, verdict)
+}
+
+// withFailedLog returns verdict with the failed log of the check its Failed names.
+func (f *Forge) withFailedLog(ctx context.Context, repo forge.Repo, verdict forge.Verdict) (forge.Verdict, error) {
+	var err error
 
 	verdict.FailedLog, err = f.failedLog(ctx, repo, verdict)
 	if err != nil {
@@ -63,17 +45,12 @@ func (f *Forge) Verdict(ctx context.Context, repo forge.Repo, query forge.Verdic
 
 // checksAndRuns is the verdict without its failed log.
 func (f *Forge) checksAndRuns(ctx context.Context, repo forge.Repo, query forge.VerdictQuery) (forge.Verdict, error) {
-	checks, err := f.checks(ctx, repo, query.Number)
+	verdict, err := f.commitChecks(ctx, repo, query.SHA, anyEvent)
 	if err != nil {
 		return forge.Verdict{}, err
 	}
 
-	runs, err := f.runs(ctx, repo, query.SHA)
-	if err != nil {
-		return forge.Verdict{}, err
-	}
-
-	verdict := forge.Verdict{Checks: checks, Runs: runs}
+	checks := verdict.Checks
 	for i := range checks {
 		checks[i].Required = slices.Contains(query.Required, checks[i].Name)
 	}
@@ -86,76 +63,6 @@ func (f *Forge) checksAndRuns(ctx context.Context, repo forge.Repo, query forge.
 	}
 
 	return verdict, nil
-}
-
-// checks ignores gh's exit code once it printed JSON: it exits 8 while a check is
-// pending, 1 when one failed, and 0 for a canceled one. A pull request gh says has
-// no checks reported yields no checks and no error.
-func (f *Forge) checks(ctx context.Context, repo forge.Repo, number int) ([]forge.Check, error) {
-	args := []string{
-		"pr", "checks", "--repo", repo.Slug(), strconv.Itoa(number),
-		"--json", "name,bucket,workflow,link,startedAt",
-	}
-
-	result, err := f.runner().Run(ctx, args...)
-	exitErr, exited := errors.AsType[*child.ExitError](err)
-	printedJSON := exited && strings.TrimSpace(result.Stdout) != ""
-
-	if exited && !printedJSON && strings.Contains(exitErr.Stderr, noChecksReported) {
-		return nil, nil
-	}
-
-	if err != nil && !printedJSON {
-		return nil, err
-	}
-
-	reported, err := decodeOutput[[]pullCheck](result.Stdout, args)
-	if err != nil {
-		return nil, err
-	}
-
-	checks := make([]forge.Check, len(reported))
-	for i, check := range reported {
-		checks[i] = forge.Check{
-			Name: check.Name, Bucket: bucketOf(check.Bucket), Workflow: check.Workflow, Link: check.Link,
-			StartedAt: check.StartedAt,
-		}
-	}
-
-	return checks, nil
-}
-
-// bucketOf returns BucketPending for a bucket it does not know, so that it never reads as a passed check.
-func bucketOf(bucket string) forge.Bucket {
-	switch bucket {
-	case "pass":
-		return forge.BucketPass
-	case "fail":
-		return forge.BucketFail
-	case "skipping":
-		return forge.BucketSkipped
-	case "cancel":
-		return forge.BucketCanceled
-	default:
-		return forge.BucketPending
-	}
-}
-
-// runs names a run by its workflow name, falling back to the run name when the workflow name is empty.
-func (f *Forge) runs(ctx context.Context, repo forge.Repo, sha string) ([]forge.Run, error) {
-	listed, err := runDecoded[[]workflowRun](ctx, f.runner(),
-		"run", "list", "--repo", repo.Slug(), "--commit", sha, "--limit", runListLimit,
-		"--json", "status,name,workflowName")
-	if err != nil {
-		return nil, err
-	}
-
-	runs := make([]forge.Run, len(listed))
-	for i, run := range listed {
-		runs[i] = forge.Run{Name: cmp.Or(run.Workflow, run.Name), Status: runStatusOf(run.Status)}
-	}
-
-	return runs, nil
 }
 
 // runStatusOf returns RunInProgress for a status it does not know, so that the
@@ -178,12 +85,13 @@ func runStatusOf(status string) forge.RunStatus {
 //
 // A canceled check never gets a log, so none is read for it and the failed log
 // is the zero value: reading one would find it empty and wait for it to the
-// time limit. A check with no Actions run behind it has no log, a run that has not completed
-// holds its log back, and a gh that cannot give the log for any other reason,
-// or a read of it that the time limit or an interrupt cuts short, leaves it
-// unreadable: the verdict is red either way. A link that names no job
-// leaves the log unreadable without a read: the run's failed log holds every
-// failed job of the run, and would be shown as this check's.
+// time limit. A check with no Actions run behind it has no log. The run's status is read before
+// its log: a run that has not completed holds its log back, even when the check's own job has
+// completed, so the log is in progress; a status this version does not know counts as not
+// completed. A status that cannot be read, a gh that cannot give the log of a completed run, or a
+// read of either that the time limit or an interrupt cuts short, leaves the log unreadable: the
+// verdict is red either way. A link that names no job leaves the log unreadable without a read:
+// the run's failed log holds every failed job of the run, and would be shown as this check's.
 //
 // A failed log that is empty falls back to the log of the job the check's link
 // names: for a few seconds after a run completes, GitHub serves a log archive
@@ -207,15 +115,16 @@ func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Ve
 		return forge.FailedLog{State: forge.FailedLogUnreadable}, nil
 	}
 
-	result, err := f.runner().Run(ctx, "run", "view", "--repo", repo.Slug(), runID, "--log-failed", "--job", jobID)
-	if exitErr, exited := errors.AsType[*child.ExitError](err); exited {
-		if runUnfinished.MatchString(exitErr.Stderr) {
-			return forge.FailedLog{State: forge.FailedLogInProgress}, nil
-		}
-
-		return forge.FailedLog{State: forge.FailedLogUnreadable}, nil
+	completed, err := f.runCompleted(ctx, repo, runID)
+	if err != nil {
+		return cutLog(err)
 	}
 
+	if !completed {
+		return forge.FailedLog{State: forge.FailedLogInProgress}, nil
+	}
+
+	result, err := f.runner().Run(ctx, "run", "view", "--repo", repo.Slug(), runID, "--log-failed", "--job", jobID)
 	if err != nil {
 		return cutLog(err)
 	}
@@ -235,11 +144,22 @@ func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Ve
 	return forge.FailedLog{Text: text, State: forge.FailedLogRead}, nil
 }
 
-// cutLog returns the log of the failed check as unreadable when err is the time limit or an
-// interrupt ending the read of it: the check failed whatever its log says, so the verdict stays red
-// without it. Any other err is returned.
+// runCompleted reads whether the Actions run numbered run has completed. It returns the errors of
+// Runner.Read, and a *DecodeError when the answer is not a run.
+func (f *Forge) runCompleted(ctx context.Context, repo forge.Repo, run string) (bool, error) {
+	got, err := readDecoded[actionsRun](ctx, f.runner(), repoAPIArgs(repo, "actions/runs/"+run)...)
+	if err != nil {
+		return false, err
+	}
+
+	return runStatusOf(got.Status) == forge.RunCompleted, nil
+}
+
+// cutLog returns the log of the failed check as unreadable when err is gh exiting non-zero, the
+// time limit or an interrupt ending the read of it: the check failed whatever its log says, so the
+// verdict stays red without it. Any other err is returned.
 func cutLog(err error) (forge.FailedLog, error) {
-	if child.EndedEarly(err) {
+	if _, exited := errors.AsType[*child.ExitError](err); exited || child.EndedEarly(err) {
 		return forge.FailedLog{State: forge.FailedLogUnreadable}, nil
 	}
 
@@ -291,8 +211,8 @@ type combinedStatusPage struct {
 	Statuses []commitStatus `json:"statuses"`
 }
 
-// actionsRun is one run of the REST read of the Actions runs on a commit; its check suite holds the
-// check runs of its jobs.
+// actionsRun is one Actions run as the REST API gives it; its check suite holds the check runs of
+// its jobs.
 type actionsRun struct {
 	Name       string `json:"name"`
 	Event      string `json:"event"`
@@ -306,11 +226,34 @@ type actionsRunsPage struct {
 
 // CommitVerdict returns the verdict of the commit sha on its own, with no pull request involved:
 // every commit status, and every check run but those of an Actions run that judges something else
-// than the commit, with the Actions runs that judge it. Its FailedLog is always the zero value.
+// than the commit, with the Actions runs that judge it, and the failed log of the check the
+// verdict's Failed names, read as Verdict reads it.
 //
-// A check run is keyed by its workflow and name: when one is reported more than once, the most
-// recent one stands for it.
+// Only a push run judges the commit. Every other event, and one this version does not know, judges
+// something else that happens to stand on the same commit, as a scheduled, manual or Dependabot
+// run does. A run another run started (`workflow_run`) is one of them: GitHub files it under the
+// tip of the default branch whatever started the run it follows, and nothing in the run says what
+// that was.
 func (f *Forge) CommitVerdict(ctx context.Context, repo forge.Repo, sha string) (forge.Verdict, error) {
+	verdict, err := f.commitChecks(ctx, repo, sha, fromPush)
+	if err != nil {
+		return forge.Verdict{}, err
+	}
+
+	return f.withFailedLog(ctx, repo, verdict)
+}
+
+func fromPush(event string) bool { return event == "push" }
+
+func anyEvent(string) bool { return true }
+
+// commitChecks returns every commit status of the commit sha, and every check run but those of an
+// Actions run whose event judges says does not judge the commit, with the Actions runs it says do.
+// Its FailedLog is always the zero value.
+//
+// A check run is keyed by its workflow, the event of its run and its name: when one is reported
+// more than once, the most recent one stands for it.
+func (f *Forge) commitChecks(ctx context.Context, repo forge.Repo, sha string, judges func(event string) bool) (forge.Verdict, error) {
 	// The check runs are read before the Actions runs: a run created between the two reads then
 	// shows only as a run still going, while read the other way round its check runs would have no
 	// run behind them and would decide the verdict as checks of no workflow.
@@ -329,7 +272,7 @@ func (f *Forge) CommitVerdict(ctx context.Context, repo forge.Repo, sha string) 
 		return forge.Verdict{}, err
 	}
 
-	suites := suitesOf(runPages)
+	suites := suitesOf(runPages, judges)
 	verdict := forge.Verdict{Checks: latestCheckRuns(checkPages, suites), Runs: suites.runs}
 
 	for _, page := range statusPages {
@@ -343,35 +286,37 @@ func (f *Forge) CommitVerdict(ctx context.Context, repo forge.Repo, sha string) 
 	return verdict, nil
 }
 
+// suiteRun is the Actions run behind a check suite.
+type suiteRun struct {
+	workflow string
+	event    string
+}
+
 // commitSuites sorts the check suites of a commit's Actions runs by whether their run judges the
 // commit.
 type commitSuites struct {
-	// workflowOf names the workflow of each check suite whose run judges the commit.
-	workflowOf map[int64]string
+	// runOf holds the run of each check suite whose run judges the commit.
+	runOf map[int64]suiteRun
 	// elsewhere holds the check suites of the runs that judge something else.
 	elsewhere map[int64]bool
 	// runs are the runs that judge the commit.
 	runs []forge.Run
 }
 
-// suitesOf judges each run by its event: a push judges the commit. Every other event, and one this
-// version does not know, judges something else that happens to stand on the same commit, as a
-// scheduled, manual or Dependabot run does.
-//
-// A run another run started (`workflow_run`) is one of them: GitHub files it under the tip of the
-// default branch whatever started the run it follows, and nothing in the run says what that was.
-func suitesOf(pages []actionsRunsPage) commitSuites {
-	suites := commitSuites{workflowOf: map[int64]string{}, elsewhere: map[int64]bool{}}
+// suitesOf sorts the check suites of the runs of pages by whether judges says the event of their
+// run judges the commit.
+func suitesOf(pages []actionsRunsPage, judges func(event string) bool) commitSuites {
+	suites := commitSuites{runOf: map[int64]suiteRun{}, elsewhere: map[int64]bool{}}
 
 	for _, page := range pages {
 		for _, run := range page.Runs {
-			if run.Event != "push" {
+			if !judges(run.Event) {
 				suites.elsewhere[run.CheckSuite] = true
 
 				continue
 			}
 
-			suites.workflowOf[run.CheckSuite] = run.Name
+			suites.runOf[run.CheckSuite] = suiteRun{workflow: run.Name, event: run.Event}
 			suites.runs = append(suites.runs, forge.Run{Name: run.Name, Status: runStatusOf(run.Status)})
 		}
 	}
@@ -379,15 +324,9 @@ func suitesOf(pages []actionsRunsPage) commitSuites {
 	return suites
 }
 
-// checkKey is what makes two check runs the same check.
-type checkKey struct {
-	workflow string
-	name     string
-}
-
-// latestCheckRuns returns a check for each workflow and name, from the check run of it GitHub
-// created last, leaving out the check runs of suites that judge something else. A check run with
-// no Actions run behind it, such as one a GitHub App reports, has no workflow.
+// latestCheckRuns returns a check for each workflow, event and name, from the check run of it
+// GitHub created last, leaving out the check runs of suites that judge something else. A check run
+// with no Actions run behind it, such as one a GitHub App reports, has no workflow and no event.
 func latestCheckRuns(pages []checkRunsPage, suites commitSuites) []forge.Check {
 	var kept []commitCheckRun
 
@@ -399,7 +338,7 @@ func latestCheckRuns(pages []checkRunsPage, suites commitSuites) []forge.Check {
 				continue
 			}
 
-			key := checkKey{workflow: suites.workflowOf[run.CheckSuite.ID], name: run.Name}
+			key := checkKey{run: suites.runOf[run.CheckSuite.ID], name: run.Name}
 
 			i, seen := at[key]
 			if !seen {
@@ -419,11 +358,17 @@ func latestCheckRuns(pages []checkRunsPage, suites commitSuites) []forge.Check {
 	for i, run := range kept {
 		checks[i] = forge.Check{
 			Name: run.Name, Bucket: checkRunBucketOf(run.Status, run.Conclusion),
-			Workflow: suites.workflowOf[run.CheckSuite.ID], Link: run.Link, StartedAt: run.StartedAt,
+			Workflow: suites.runOf[run.CheckSuite.ID].workflow, Link: run.Link, StartedAt: run.StartedAt,
 		}
 	}
 
 	return checks
+}
+
+// checkKey is what makes two check runs the same check.
+type checkKey struct {
+	run  suiteRun
+	name string
 }
 
 // checkRunBucketOf returns BucketPending for a check run not completed, and for a conclusion it
