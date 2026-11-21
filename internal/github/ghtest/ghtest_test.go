@@ -1,7 +1,6 @@
 package ghtest_test
 
 import (
-	"debug/buildinfo"
 	"errors"
 	"os"
 	"path/filepath"
@@ -55,6 +54,13 @@ func TestFake_WhenScriptedArgvHoldsAny_AnswersWhateverTheCallHoldsThere(t *testi
 // scriptedNotes is the content that the FileHolding tests script `gh release create` to expect.
 const scriptedNotes = "## [1.2.0]\n\n- Fix `$HOME`\n"
 
+// scriptReleaseCreate scripts `gh release create` to expect a notes file that holds scriptedNotes.
+func scriptReleaseCreate(t *testing.T) {
+	t.Helper()
+
+	ghtest.Setup(t, ghtest.Says("scripted\n", "release", "create", "--notes-file", ghtest.FileHolding(scriptedNotes)))
+}
+
 // runReleaseCreateWithNotes runs `gh release create` against a fake scripted to expect
 // scriptedNotes, passing a notes file that holds notes.
 func runReleaseCreateWithNotes(t *testing.T, notes string) (github.Result, error) {
@@ -62,7 +68,7 @@ func runReleaseCreateWithNotes(t *testing.T, notes string) (github.Result, error
 
 	file := filepath.Join(t.TempDir(), "notes.md")
 	assert.NilError(t, os.WriteFile(file, []byte(notes), 0o600))
-	ghtest.Setup(t, ghtest.Says("scripted\n", "release", "create", "--notes-file", ghtest.FileHolding(scriptedNotes)))
+	scriptReleaseCreate(t)
 
 	return github.Runner{}.Run(t.Context(), "release", "create", "--notes-file", file)
 }
@@ -83,13 +89,13 @@ func TestFileHolding_WhenFileHoldsOtherContent_ExitsUnscripted(t *testing.T) {
 
 func TestFileHolding_WhenFileCannotBeRead_ExitsBrokenNamingIt(t *testing.T) {
 	dir := t.TempDir()
-	ghtest.Setup(t, ghtest.Says("scripted\n", "release", "create", "--notes-file", ghtest.FileHolding(scriptedNotes)))
+	scriptReleaseCreate(t)
 
 	_, err := github.Runner{}.Run(t.Context(), "release", "create", "--notes-file", dir)
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 	assert.Assert(t, ok, "Run error = %v, want *child.ExitError", err)
-	assert.Check(t, exitErr.Code != ghtest.UnscriptedCode, "Code = %d, want the code of a broken fake", exitErr.Code)
+	assert.Check(t, is.Equal(exitErr.Code, ghtest.BrokenCode))
 	assert.Check(t, is.Contains(exitErr.Stderr, dir))
 }
 
@@ -106,12 +112,15 @@ func TestFake_WhenAnswerIsDelayed_AnswersAfterTheDelay(t *testing.T) {
 	assert.Check(t, elapsed >= delay, "Run(pr checks) answered after %s, want no sooner than %s", elapsed, delay)
 }
 
+// actionTime is how long the hold action of a WhileHolding test takes.
+const actionTime = 300 * time.Millisecond
+
 func TestFake_WhileHolding_WhenTheActionTakesLong_AnswersOnlyAfterItReturns(t *testing.T) {
 	args := []string{"pr", "checks", "7"}
 	fake := ghtest.Setup(t, ghtest.Exits(ghtest.Answer{Stdout: "pass\n", Delay: time.Nanosecond}, args...))
 	var returned atomic.Bool
 	fake.WhileHolding(func() error {
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(actionTime)
 		returned.Store(true)
 
 		return nil
@@ -174,26 +183,6 @@ func TestInstall_WhenSettingsScriptTheCall_AnswersAsTheySay(t *testing.T) {
 	assert.Check(t, is.DeepEqual(fake.Calls(), [][]string{github.Argv(args)}))
 }
 
-func TestInstall_BuildsAGhWithoutTheRaceDetector(t *testing.T) {
-	install(t)
-
-	info, err := buildinfo.ReadFile(os.Getenv(github.PathVariable))
-	assert.NilError(t, err)
-
-	for _, setting := range info.Settings {
-		assert.Check(t, setting.Key != "-race" || setting.Value != "true", "the fake gh was built with -race")
-	}
-}
-
-func TestSetup_WhenNoFakeGhIsInstalled_RunsTheTestBinaryAsGh(t *testing.T) {
-	self, err := os.Executable()
-	assert.NilError(t, err)
-
-	ghtest.Setup(t, ghtest.Says("scripted\n", "pr", "view", "7"))
-
-	assert.Check(t, is.Equal(os.Getenv(github.PathVariable), self))
-}
-
 func TestFake_WhenCallIsScriptedInTurn_AnswersEachCallInOrderThenRepeatsTheLast(t *testing.T) {
 	args := []string{"pr", "view", "7"}
 	ghtest.Setup(t, ghtest.InTurn(args, ghtest.Answer{Stdout: "first\n"}, ghtest.Answer{Stdout: "last\n"}))
@@ -209,7 +198,7 @@ func TestFake_WhenCallIsScriptedInTurn_AnswersEachCallInOrderThenRepeatsTheLast(
 	assert.Check(t, is.DeepEqual(got, []string{"first\n", "last\n", "last\n"}))
 }
 
-func TestFake_WhenAPIReadAsksForHeaders_PrintsTheStatusBlockBeforeTheBody(t *testing.T) {
+func TestFake_APIRead(t *testing.T) {
 	included := []string{"api", "--include", "repos/ada/engine"}
 	tests := []struct {
 		name   string

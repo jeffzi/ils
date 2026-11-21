@@ -11,7 +11,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Changes
+// Repositories, changes, and branch rules
 // ---------------------------------------------------------------------------
 
 // Repo identifies a repository on a forge.

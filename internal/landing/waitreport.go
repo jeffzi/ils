@@ -404,23 +404,25 @@ func (w Waited) checksLine(sha string) result.Phrase {
 	}
 }
 
+const noLogPrefix = "no log: "
+
 // excerpt returns the last excerptLines lines of the failed log of the check that failed, or
 // one line saying why there is no log, such as a canceled check, which never gets one.
 func (w Waited) excerpt() string {
 	failed, _ := w.Verdict.Failed()
-	check, log := failed.Name, w.Verdict.FailedLog
+	name, log := failed.Name, w.Verdict.FailedLog
 	if failed.Bucket == forge.BucketCanceled && log.State == "" {
-		return "no log: " + check + " was canceled, so it has no log"
+		return noLogPrefix + name + " was canceled, so it has no log"
 	}
 
 	switch log.State {
 	case forge.FailedLogRead:
 		return lastLines(log.Text)
 	case forge.FailedLogNoRun:
-		return "no log: " + check + " is not a workflow run"
+		return noLogPrefix + name + " is not a workflow run"
 	case forge.FailedLogInProgress:
-		return "no log: the log of " + check + " was not available yet"
+		return noLogPrefix + "the log of " + name + " was not available yet"
 	default:
-		return "no log: the log of " + check + " could not be read"
+		return noLogPrefix + "the log of " + name + " could not be read"
 	}
 }

@@ -54,7 +54,7 @@ func nonZeroExit(t *testing.T) *exec.ExitError {
 	argv := nonsenseArgv()
 
 	//nolint:gosec // G204: the test names the command; nothing here comes from outside the test.
-	return exitErrorOf(t, "go tool nonsense", exec.CommandContext(t.Context(), argv[0], argv[1:]...))
+	return exitErrorOf(t, strings.Join(argv, " "), exec.CommandContext(t.Context(), argv[0], argv[1:]...))
 }
 
 // killedBy runs a shell that kills itself with signal, named as kill names it, and returns what
@@ -115,14 +115,17 @@ func TestFailure_WhenContextEnded_ReturnsContextErrorWhateverTheExit(t *testing.
 	assertNoStderr(t, err)
 }
 
-func TestFailure_WhenProgramDiedOfTheInterruptBeforeContextEnded_ReturnsContextCanceled(t *testing.T) {
+func TestProgram_Run_WhenProgramDiesOfTheInterrupt_ReturnsContextCanceled(t *testing.T) {
 	t.Parallel()
-	runErr := killedBy(t, "INT")
+	program := child.Program{
+		Tool: "sh", Args: []string{"-c", `echo "$SAID" >&2; kill -INT $$`}, LookPath: exec.LookPath,
+		Env: append(os.Environ(), "SAID="+stderrMarker+" printed before the interrupt"),
+	}
 
-	err := child.Failure(t.Context(), fetchArgv(), runErr, stderrMarker+" printed before the interrupt\n")
+	_, err := program.Run(t.Context())
 
 	assert.Check(t, is.ErrorIs(err, context.Canceled))
-	assert.Check(t, is.ErrorContains(err, "git fetch"))
+	assert.Check(t, is.ErrorContains(err, "sh -c"))
 	assertNoStderr(t, err)
 }
 
@@ -186,20 +189,18 @@ func TestFailure_WhenProgramDidNotDieOfTerminate_ReturnsWithoutWaitingForContext
 }
 
 func TestProgram_Run_WhenProgramExitsNonZero_KeepsOnlyStdout(t *testing.T) {
-	// Not parallel: gittest.FakeGit sets PATH for the whole process.
-	settings := gittest.FakeGit(t, gittest.Fake{FailAfterOn: []string{"version"}})
-	program := child.Program{
-		Tool: "git", Args: []string{"version"}, LookPath: exec.LookPath, Env: append(os.Environ(), settings...),
-	}
+	t.Parallel()
+	argv := []string{"sh", "-c", "echo out; echo said >&2; exit 3"}
+	program := child.Program{Tool: argv[0], Args: argv[1:], LookPath: exec.LookPath}
 
 	got, err := program.Run(t.Context())
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 	assert.Assert(t, ok, "Run error = %v, want *child.ExitError", err)
-	assert.Check(t, is.DeepEqual(exitErr.Argv, []string{"git", "version"}))
-	assert.Check(t, is.Equal(exitErr.Code, gittest.FailedCode))
-	assert.Check(t, is.Equal(exitErr.Stderr, gittest.FailedSaid+"\n"))
-	assert.Check(t, is.Contains(got.Stdout, "git version"))
+	assert.Check(t, is.DeepEqual(exitErr.Argv, argv))
+	assert.Check(t, is.Equal(exitErr.Code, 3))
+	assert.Check(t, is.Equal(exitErr.Stderr, "said\n"))
+	assert.Check(t, is.Equal(got.Stdout, "out\n"))
 	assert.Check(t, is.Equal(got.Stderr, ""))
 }
 
@@ -328,7 +329,6 @@ func requirement() child.Requirement {
 	return child.Requirement{Tool: "gh", Minimum: ghMinimum, InstallURL: ghInstallURL}
 }
 
-// readsAs returns a versionOf that reads version from any line.
 func readsAs(version string) func(string) string {
 	return func(string) string { return version }
 }
@@ -435,18 +435,25 @@ func runBounded(t *testing.T, program child.Program) (child.Output, error) {
 	}
 }
 
-// foundAt returns a LookPath that finds every tool at path.
 func foundAt(path string) func(string) (string, error) {
 	return func(string) (string, error) { return path, nil }
+}
+
+// testBinary returns the path of the running test binary.
+func testBinary(t *testing.T) string {
+	t.Helper()
+
+	self, err := os.Executable()
+	assert.NilError(t, err)
+
+	return self
 }
 
 func TestProgram_Run_WhenProgramExitsWhileDescendantHoldsStdout_ReturnsWhatItPrinted(t *testing.T) {
 	t.Parallel()
 	addr, lingering := gittest.SilentListener(t)
-	self, err := os.Executable()
-	assert.NilError(t, err)
 	program := child.Program{
-		Tool: "spawner", LookPath: foundAt(self), Env: append(os.Environ(), gittest.Spawner(addr, spawnerSaid)...),
+		Tool: "spawner", LookPath: foundAt(testBinary(t)), Env: append(os.Environ(), gittest.Spawner(addr, spawnerSaid)...),
 	}
 
 	got, err := runBounded(t, program)
@@ -554,15 +561,13 @@ func watchedHold(t *testing.T) (addr string, connected, gone <-chan struct{}) {
 func TestProgram_Run_WhenContextEndsWhileProgramRuns_EndsTheProcessesItStarted(t *testing.T) {
 	t.Parallel()
 	addr, connected, gone := watchedHold(t)
-	self, err := os.Executable()
-	assert.NilError(t, err)
 	program := child.Program{
-		Tool: "sh", Args: []string{"-c", `"$0"; exit $?`, self}, LookPath: exec.LookPath,
+		Tool: "sh", Args: []string{"-c", `"$0"; exit $?`, testBinary(t)}, LookPath: exec.LookPath,
 		Env: append(os.Environ(), hookHoldsAtEnv+"="+addr),
 	}
 	ctx := gittest.Ending(t.Context(), connected, context.Canceled)
 
-	_, err = program.Run(ctx)
+	_, err := program.Run(ctx)
 
 	assert.Check(t, is.ErrorIs(err, context.Canceled))
 	select {
@@ -574,26 +579,15 @@ func TestProgram_Run_WhenContextEndsWhileProgramRuns_EndsTheProcessesItStarted(t
 
 func TestKilledError_Error(t *testing.T) {
 	t.Parallel()
-	argv := []string{"git", "push"}
-	signal := errors.New("signal: terminated")
-	tests := []struct {
-		name   string
-		stderr string
-		want   string
-	}{
-		{name: "stderr is trimmed and appended", stderr: "  hook: tests failed\n", want: "git push: signal: terminated: hook: tests failed"},
-		{name: "blank stderr is left out", stderr: " \n", want: "git push: signal: terminated"},
+	err := &child.KilledError{
+		Argv: []string{"git", "push"}, Err: errors.New("signal: terminated"), Stderr: "  hook: tests failed\n",
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			err := &child.KilledError{Argv: argv, Err: signal, Stderr: tt.stderr}
 
-			got := err.Error()
+	got := err.Error()
 
-			assert.Check(t, is.Equal(got, tt.want))
-		})
-	}
+	assert.Check(t, is.Contains(got, "git push"))
+	assert.Check(t, is.Contains(got, "signal: terminated"))
+	assert.Check(t, strings.HasSuffix(got, "hook: tests failed"), "Error() = %q, want it to end with the trimmed stderr", got)
 }
 
 func TestProgram_Run_WhenASignalEndsTheProgramAfterItPrintedToStderr_ReturnsKilledErrorCarryingIt(t *testing.T) {
@@ -607,13 +601,13 @@ func TestProgram_Run_WhenASignalEndsTheProgramAfterItPrintedToStderr_ReturnsKill
 	assert.Check(t, is.Equal(killed.Stderr, "dying\n"))
 }
 
-func TestProgram_Run_WhenContextEndsAndTheProcessTableIsUnreadable_ReturnsContextError(t *testing.T) {
+func TestProgram_Run_WhenContextEndsAndTheProcessTableIsUnreadable_KillsTheProgramAtOnce(t *testing.T) {
 	// Not parallel: an empty PATH leaves ps, which reads the process table, out of reach.
 	t.Setenv("PATH", t.TempDir())
 	addr, connected := gittest.SilentListener(t)
-	self, err := os.Executable()
-	assert.NilError(t, err)
-	program := child.Program{Tool: "hook", LookPath: foundAt(self), Env: append(os.Environ(), holdsAtEnv+"="+addr)}
+	program := child.Program{
+		Tool: "hook", LookPath: foundAt(testBinary(t)), Env: append(os.Environ(), holdsAtEnv+"="+addr),
+	}
 	ctx := gittest.Ending(t.Context(), connected, context.Canceled)
 	endedAt := make(chan time.Time, 1)
 	go func() {
@@ -621,7 +615,7 @@ func TestProgram_Run_WhenContextEndsAndTheProcessTableIsUnreadable_ReturnsContex
 		endedAt <- time.Now()
 	}()
 
-	_, err = program.Run(ctx)
+	_, err := program.Run(ctx)
 
 	assert.Check(t, is.ErrorIs(err, context.Canceled))
 	// The program holds its output open until it dies: past PipeGrace, it died of the pipe

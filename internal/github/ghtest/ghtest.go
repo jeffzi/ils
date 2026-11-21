@@ -718,16 +718,17 @@ func serve(ctx context.Context, scriptPath, record, holdAddr string) int {
 		return broken(err)
 	}
 
-	answer := call.answerTo(countOf(recorded, args))
-
 	if !found {
 		fmt.Fprintf(os.Stderr, "ghtest: no scripted answer for %s %s\n", github.Program, strings.Join(args, " "))
 
 		return UnscriptedCode
 	}
 
+	earlier := countOf(recorded, args)
+	answer := call.answerTo(earlier)
+
 	if answer.Delay > 0 {
-		if err := announceHold(ctx, holdAddr, hold{Args: args, Earlier: countOf(recorded, args)}); err != nil {
+		if err := announceHold(ctx, holdAddr, hold{Args: args, Earlier: earlier}); err != nil {
 			return broken(err)
 		}
 

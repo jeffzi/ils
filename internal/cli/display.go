@@ -276,8 +276,7 @@ func (d *display) report(kind stepKind, line result.Phrase) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	d.clear()
-	d.label, d.step = "", nil
+	d.endStep()
 
 	// A line said without a step started for it is timed from the line before it.
 	now := time.Now()
@@ -293,11 +292,9 @@ func (d *display) report(kind stepKind, line result.Phrase) {
 		return
 	}
 
-	mark, style := kind.mark()
-	pen := result.PenFor(d.outProfile)
-	step := pen.Styled(style, mark) + " " + text
+	step, style := d.marked(kind, text)
 	if took >= frameEvery {
-		step += " " + pen.Styled(style.Faint(), took.Round(frameEvery).String())
+		step += " " + result.PenFor(d.outProfile).Styled(style.Faint(), took.Round(frameEvery).String())
 	}
 	step += "\n"
 
@@ -317,10 +314,7 @@ func (d *display) failRunning() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	step := d.step
-	d.clear()
-	d.label, d.step = "", nil
-
+	step := d.endStep()
 	if step == nil || d.stdout == nil {
 		return
 	}
@@ -330,8 +324,25 @@ func (d *display) failRunning() {
 		return
 	}
 
-	mark, style := stepFailed.mark()
-	_, _ = io.WriteString(d.stdout, result.PenFor(d.outProfile).Styled(style, mark)+" "+text+"\n")
+	line, _ := d.marked(stepFailed, text)
+	_, _ = io.WriteString(d.stdout, line+"\n")
+}
+
+// endStep takes the spinner line off stderr and ends the running step, and returns that step, or nil
+// when none ran. The caller holds mu.
+func (d *display) endStep() *result.Phrase {
+	step := d.step
+	d.clear()
+	d.label, d.step = "", nil
+
+	return step
+}
+
+// marked returns text behind the mark of a step of kind, drawn for stdout, and the style of the mark.
+func (d *display) marked(kind stepKind, text string) (string, ansi.Style) {
+	mark, style := kind.mark()
+
+	return result.PenFor(d.outProfile).Styled(style, mark) + " " + text, style
 }
 
 // Counted redraws the spinner line with done of total checks concluded.

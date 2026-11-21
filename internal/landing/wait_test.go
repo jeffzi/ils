@@ -64,21 +64,16 @@ func ignoreSince() cmp.Option {
 	return cmpopts.IgnoreFields(landing.Waited{}, "Since")
 }
 
-// orBound returns left, or the whole bound when left is zero.
-func orBound(left time.Duration) time.Duration {
-	if left == 0 {
-		return bound
-	}
-
-	return left
-}
-
 // within returns the test's context with a deadline left away from now, or the whole bound when
 // left is zero; it is canceled when the test ends.
 func within(t *testing.T, left time.Duration) context.Context {
 	t.Helper()
 
-	ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(orBound(left)))
+	if left == 0 {
+		left = bound
+	}
+
+	ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(left))
 	t.Cleanup(cancel)
 
 	return ctx
@@ -806,10 +801,11 @@ func TestAwaitVerdict_WhenACutEndsAPoll_EndsPendingAtThatStageMidPoll(t *testing
 		tt cutShort
 	}
 	var tests []pollCut
-	for _, tt := range pollCutWaits(byTimeLimit()) {
-		tests = append(tests, pollCut{c: byTimeLimit(), tt: tt})
+	limit, interrupt := byTimeLimit(), byInterrupt()
+	for _, tt := range pollCutWaits(limit) {
+		tests = append(tests, pollCut{c: limit, tt: tt})
 	}
-	tests = append(tests, pollCut{c: byInterrupt(), tt: headPollCut(byInterrupt())})
+	tests = append(tests, pollCut{c: interrupt, tt: headPollCut(interrupt)})
 	for _, pc := range tests {
 		c, tt := pc.c, pc.tt
 		t.Run(c.name+"/"+tt.name, func(t *testing.T) {
@@ -844,28 +840,20 @@ func TestAwaitVerdict_WhenTheDeadlineEndsTheFirstVerdictRead_EndsPendingWithoutR
 	})
 }
 
-// canceledAfter returns a context canceled after the given time, at once when it is zero, and
-// bounded by a deadline left away when left is not zero.
-func canceledAfter(t *testing.T, after, left time.Duration) context.Context {
+// canceledAfter returns a context canceled after the given time, and bounded by a deadline of
+// the whole bound.
+func canceledAfter(t *testing.T, after time.Duration) context.Context {
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 
-	if left > 0 {
-		bounded, stop := context.WithDeadline(ctx, time.Now().Add(left))
-		t.Cleanup(stop)
+	bounded, stop := context.WithDeadline(ctx, time.Now().Add(bound))
+	t.Cleanup(stop)
 
-		ctx = bounded
-	}
+	time.AfterFunc(after, cancel)
 
-	if after == 0 {
-		cancel()
-	} else {
-		time.AfterFunc(after, cancel)
-	}
-
-	return ctx
+	return bounded
 }
 
 func TestAwaitVerdict_WhenContextIsCanceledDuringALaterVerdictRead_EndsPendingInterruptedAtTheVerdict(t *testing.T) {
@@ -874,7 +862,7 @@ func TestAwaitVerdict_WhenContextIsCanceledDuringALaterVerdictRead_EndsPendingIn
 	synctest.Test(t, func(t *testing.T) {
 		after := verdictPoll + midPoll
 		v := newVigilOn(t, forgetest.Script{Head: shows(clean()), Verdict: heldAfter(running())},
-			func(context.Context) context.Context { return canceledAfter(t, after, bound) })
+			func(context.Context) context.Context { return canceledAfter(t, after) })
 		began := time.Now()
 
 		got := v.await(t)

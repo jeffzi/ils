@@ -51,19 +51,19 @@ func TestParse_WhenAnEnvArgumentIsAQuotedAssignment_ReadsItAsAnAssignment(t *tes
 		{
 			name:            "whole word in double quotes",
 			command:         `env "GIT_DIR=/x" git commit`,
-			wantAssignments: []guard.Assignment{{Name: "GIT_DIR", Value: guard.Word{Text: "/x", Literal: true}}},
+			wantAssignments: []guard.Assignment{{Name: "GIT_DIR", Value: literal("/x")}},
 			wantWords:       []string{"git", "commit"},
 		},
 		{
 			name:            "whole word in single quotes",
 			command:         `env 'FOO=bar baz' make`,
-			wantAssignments: []guard.Assignment{{Name: "FOO", Value: guard.Word{Text: "bar baz", Literal: true}}},
+			wantAssignments: []guard.Assignment{{Name: "FOO", Value: literal("bar baz")}},
 			wantWords:       []string{"make"},
 		},
 		{
 			name:            "name alone in quotes",
 			command:         `env "GIT_TRACE"=1 git status`,
-			wantAssignments: []guard.Assignment{{Name: "GIT_TRACE", Value: guard.Word{Text: "1", Literal: true}}},
+			wantAssignments: []guard.Assignment{{Name: "GIT_TRACE", Value: literal("1")}},
 			wantWords:       []string{"git", "status"},
 		},
 		{

@@ -168,6 +168,11 @@ func TestFixture_ServedBy_WhenAskedForConfig_AnswersFromTheSSHConfigWithoutServi
 	assert.Check(t, is.ErrorIs(statErr, fs.ErrNotExist), "the serving script ran for a config read")
 }
 
+const (
+	squashSubject = "squash of work"
+	squashBody    = "first paragraph\n\nsecond paragraph"
+)
+
 func TestFixture_SquashOnOrigin_WhenBodyIsGiven_AddsTrunkCommitOnOrigin(t *testing.T) {
 	t.Parallel()
 
@@ -176,12 +181,12 @@ func TestFixture_SquashOnOrigin_WhenBodyIsGiven_AddsTrunkCommitOnOrigin(t *testi
 	shas := f.Commits(work, "first change", "second change")
 	tree := gitStdout(t, f, f.Dir(), "rev-parse", shas[1]+"^{tree}")
 
-	squash := f.SquashOnOrigin(shas[1], "squash of work", "first paragraph\n\nsecond paragraph")
+	squash := f.SquashOnOrigin(shas[1], squashSubject, squashBody)
 
 	assert.Check(t, is.Equal(originBranch(t, f, mainBranch), squash))
-	want := trunk + " " + tree + " squash of work"
+	want := trunk + " " + tree + " " + squashSubject
 	assert.Check(t, is.Equal(gitStdout(t, f, f.OriginDir(), "log", "-1", "--format=%P %T %s", squash), want))
-	assert.Check(t, is.Equal(gitStdout(t, f, f.OriginDir(), "log", "-1", "--format=%b", squash), "first paragraph\n\nsecond paragraph"))
+	assert.Check(t, is.Equal(gitStdout(t, f, f.OriginDir(), "log", "-1", "--format=%b", squash), squashBody))
 }
 
 func TestFixture_SquashOnOrigin_WhenBodyIsEmpty_WritesSubjectAlone(t *testing.T) {
@@ -190,12 +195,12 @@ func TestFixture_SquashOnOrigin_WhenBodyIsEmpty_WritesSubjectAlone(t *testing.T)
 	f := gittest.New(t, mainBranch)
 	shas := f.Commits(work, "first change")
 
-	squash := f.SquashOnOrigin(shas[0], "squash of work", "")
+	squash := f.SquashOnOrigin(shas[0], squashSubject, "")
 
 	raw := callGit(t, f.Env(), f.OriginDir(), "cat-file", "commit", squash)
 	assert.Equal(t, raw.Code, 0, "git cat-file commit, stderr: %s", raw.Stderr)
 	_, message, _ := strings.Cut(raw.Stdout, "\n\n")
-	assert.Check(t, is.Equal(message, "squash of work\n"))
+	assert.Check(t, is.Equal(message, squashSubject+"\n"))
 }
 
 func TestFixture_AdvanceTrunk_WhenOnABranch_AddsALocalTrunkCommitWithoutSwitchingToIt(t *testing.T) {

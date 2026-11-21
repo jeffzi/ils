@@ -43,7 +43,7 @@ func evalScript(args []Word) (string, bool, MarkKind) {
 		return "", false, ""
 	}
 
-	if slices.ContainsFunc(args, func(arg Word) bool { return !arg.Literal }) {
+	if anyNotLiteral(args) {
 		return "", false, DynamicScript
 	}
 

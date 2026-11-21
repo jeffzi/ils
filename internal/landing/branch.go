@@ -137,12 +137,12 @@ func fetchTrunk(ctx context.Context, s *survey, req Request, trunk string) (stri
 // commitsPast returns the branch's tip and its commits past origin's trunk, which fetchTrunk
 // must have fetched, refusing a branch that has none or has no commit at all.
 func commitsPast(ctx context.Context, s *survey, req Request, b onBranch) (tip string, past []git.Commit, stop *result.Result) {
-	read, err := s.tip(ctx)
+	found, err := s.tip(ctx)
 
 	switch {
 	case err != nil:
 		return "", nil, req.Unread(readTip, err)
-	case !read.committed:
+	case !found.committed:
 		return "", nil, req.nothingPast(b)
 	}
 
@@ -155,7 +155,7 @@ func commitsPast(ctx context.Context, s *survey, req Request, b onBranch) (tip s
 		return "", nil, req.nothingPast(b)
 	}
 
-	return read.tip, past, nil
+	return found.tip, past, nil
 }
 
 // readTip reads the sha of the branch's tip, and whether the branch has a commit at all; a branch

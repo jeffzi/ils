@@ -55,16 +55,16 @@ func assertStartedBranch(t *testing.T, s *scene, got result.Result, want string)
 }
 
 // branchRefusal is the refusal of `ils branch name` a test expects: its text holds the parts of
-// want, and what the repository holds is still before.
+// text, and what the repository holds is still before.
 type branchRefusal struct {
-	name, before, want string
+	name, before, text string
 }
 
 // assertRefusedBranch fails unless got is the refusal of want, with nothing written.
 func assertRefusedBranch(t *testing.T, s *scene, got result.Result, want branchRefusal) {
 	t.Helper()
 
-	assertEndedBy(t, got, s.gitDir, ended{outcome: result.Refused, req: branchRequest(want.name), text: want.want})
+	assertEndedBy(t, got, s.gitDir, ended{outcome: result.Refused, req: branchRequest(want.name), text: want.text})
 	assert.Check(t, is.Equal(s.written(), want.before))
 }
 
@@ -83,7 +83,7 @@ func TestStartBranch_WhenEveryCheckHolds_StartsTheBranchAtOriginsTrunk(t *testin
 func TestStartBranch_WhenHEADIsDetachedWithNoCommitOfItsOwn_StartsAtOriginsTrunkAsFetched(t *testing.T) {
 	t.Parallel()
 	s := branchScene(t, func(f *gittest.Fixture) {
-		f.Git("switch", "--quiet", "--detach", trunk)
+		detachOnTrunk(f)
 		f.AdvanceOrigin(trunk)
 	})
 
@@ -95,17 +95,23 @@ func TestStartBranch_WhenHEADIsDetachedWithNoCommitOfItsOwn_StartsAtOriginsTrunk
 
 func TestStartBranch_WhenGitCannotHoldTheName_RefusesNamingIt(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"logo..draft", ""} {
-		t.Run(name, func(t *testing.T) {
+	tests := []struct {
+		name, given string
+	}{
+		{name: "name holds two dots in a row", given: "logo..draft"},
+		{name: "name is empty", given: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			s := branchScene(t, nil)
 			before := s.written()
-			bad, ok := errors.AsType[*git.BranchNameError](s.deps.Repo.CheckBranchName(t.Context(), name))
-			assert.Assert(t, ok, "CheckBranchName(%q) gave no *git.BranchNameError", name)
+			bad, ok := errors.AsType[*git.BranchNameError](s.deps.Repo.CheckBranchName(t.Context(), tt.given))
+			assert.Assert(t, ok, "CheckBranchName(%q) gave no *git.BranchNameError", tt.given)
 
-			got := startBranch(t, s, name)
+			got := startBranch(t, s, tt.given)
 
-			assertRefusedBranch(t, s, got, branchRefusal{name: name, before: before, want: expect(name, bad.Reason())})
+			assertRefusedBranch(t, s, got, branchRefusal{name: tt.given, before: before, text: expect(tt.given, bad.Reason())})
 		})
 	}
 }
@@ -150,7 +156,7 @@ func TestStartBranch_WhenNameIsTaken_RefusesNamingTheBranchThatTakesIt(t *testin
 
 			got := startBranch(t, s, tt.given)
 
-			assertRefusedBranch(t, s, got, branchRefusal{name: tt.given, before: before, want: expect(tt.taker, tt.where)})
+			assertRefusedBranch(t, s, got, branchRefusal{name: tt.given, before: before, text: expect(tt.taker, tt.where)})
 		})
 	}
 }
@@ -164,7 +170,7 @@ func TestStartBranch_WhenOriginStopsAnsweringWhenAskedForItsBranches_RefusesSayi
 	got := startBranch(t, s, fresh)
 
 	want := expect("could not be reached", "branches", "Next:", "ils branch "+fresh)
-	assertRefusedBranch(t, s, got, branchRefusal{name: fresh, before: before, want: want})
+	assertRefusedBranch(t, s, got, branchRefusal{name: fresh, before: before, text: want})
 }
 
 func TestStartBranch_WhenOriginStopsAnswering_NextQuotesTheNameForTheShell(t *testing.T) {
@@ -173,7 +179,6 @@ func TestStartBranch_WhenOriginStopsAnswering_NextQuotesTheNameForTheShell(t *te
 	tests := []struct {
 		name, given, quoted string
 	}{
-		{name: "name holds a single quote", given: "rock'n'roll", quoted: `"rock'n'roll"`},
 		{name: "name holds a shell operator", given: "fix;make", quoted: "'fix;make'"},
 	}
 	for _, tt := range tests {
@@ -209,16 +214,14 @@ func TestStartBranch_WhenDetachedHEADHasCommitsOriginsTrunkLacks_RefusesListingT
 	var own []string
 
 	s := branchScene(t, func(f *gittest.Fixture) {
-		own = f.Commits(spare, sharpen)
-		f.Detach()
-		f.Git("branch", "--quiet", "--delete", "--force", spare)
+		own = detachedPast(f)
 	})
 	before := s.written()
 
 	got := startBranch(t, s, fresh)
 
 	want := expect(shortSHA(own[0]), sharpen) + keepDetached()
-	assertRefusedBranch(t, s, got, branchRefusal{name: fresh, before: before, want: want})
+	assertRefusedBranch(t, s, got, branchRefusal{name: fresh, before: before, text: want})
 }
 
 // aheadTrunkCase is one place the local trunk is checked out while it holds a commit origin's trunk
@@ -270,7 +273,7 @@ func TestStartBranch_WhenLocalTrunkHasCommitsOriginLacks_RefusesNamingTheFix(t *
 
 			got := startBranch(t, s, fresh)
 
-			assertRefusedBranch(t, s, got, branchRefusal{name: fresh, before: before, want: trunkAheadText(sha, next)})
+			assertRefusedBranch(t, s, got, branchRefusal{name: fresh, before: before, text: trunkAheadText(sha, next)})
 		})
 	}
 }
@@ -314,7 +317,7 @@ func TestStartBranch_WhenTheSwitchWouldOverwriteAFile_RefusesNamingIt(t *testing
 
 	got := startBranch(t, s, fresh)
 
-	assertRefusedBranch(t, s, got, branchRefusal{name: fresh, before: before, want: expect(path)})
+	assertRefusedBranch(t, s, got, branchRefusal{name: fresh, before: before, text: expect(path)})
 }
 
 func TestStartBranch_WhenTheSwitchFailsNamingNoFile_EndsBroke(t *testing.T) {

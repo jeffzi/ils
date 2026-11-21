@@ -216,6 +216,15 @@ type releaseRun struct {
 	got    result.Result
 }
 
+// refusalRun runs req on st's scene and returns the run with what the scene had written before it.
+func refusalRun(t *testing.T, st staged, req landing.Request) releaseRun {
+	t.Helper()
+
+	before := st.s.written()
+
+	return releaseRun{req, before, runRelease(t, st.s, req)}
+}
+
 // assertReleaseRefused fails unless run ends refused as want says, and wrote nothing.
 func assertReleaseRefused(t *testing.T, st staged, run releaseRun, want releaseRefusal) {
 	t.Helper()
@@ -261,7 +270,7 @@ type orderRow struct {
 func (row orderRow) build(f *gittest.Fixture, base string) string {
 	row.arrange(f, base)
 
-	return releaseOf(f, version, "chore: release v"+version)
+	return releaseCommit(f)
 }
 
 func TestRelease_WhenOriginHoldsAVersionTagNotBelowIt_RefusesNamingTheHighest(t *testing.T) {
@@ -284,12 +293,10 @@ func TestRelease_WhenOriginHoldsAVersionTagNotBelowIt_RefusesNamingTheHighest(t 
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			st := releaseScene(t, tt.build)
-			req := releaseRequest(version, false)
-			before := st.s.written()
 
-			got := runRelease(t, st.s, req)
+			got := refusalRun(t, st, releaseRequest(version, false))
 
-			assertReleaseRefused(t, st, releaseRun{req, before, got}, releaseRefusal{text: expect(tt.highest)})
+			assertReleaseRefused(t, st, got, releaseRefusal{text: expect(tt.highest)})
 		})
 	}
 }
@@ -436,12 +443,10 @@ func TestRelease_WhenNoReleaseCommitFollowsThePreviousTag_RefusesNamingWhereItLo
 
 				return ""
 			})
-			req := releaseRequest(version, false)
-			before := st.s.written()
 
-			got := runRelease(t, st.s, req)
+			got := refusalRun(t, st, releaseRequest(version, false))
 
-			assertReleaseRefused(t, st, releaseRun{req, before, got}, releaseRefusal{text: tt.want})
+			assertReleaseRefused(t, st, got, releaseRefusal{text: tt.want})
 		})
 	}
 }
@@ -454,12 +459,10 @@ func TestRelease_WhenOriginsTagIsAtAnotherCommit_RefusesNamingIt(t *testing.T) {
 	t.Parallel()
 	st := releaseScene(t, tagged)
 	st.s.fixture.OriginTag(releaseTag, st.base)
-	req := releaseRequest(version, false)
-	before := st.s.written()
 
-	got := runRelease(t, st.s, req)
+	got := refusalRun(t, st, releaseRequest(version, false))
 
-	assertReleaseRefused(t, st, releaseRun{req, before, got}, releaseRefusal{
+	assertReleaseRefused(t, st, got, releaseRefusal{
 		text: expect(releaseTag, shortSHA(st.base)), payload: released(st, "unchecked", ""),
 	})
 }
@@ -468,12 +471,10 @@ func TestRelease_WhenTheLocalTagIsAtAnotherCommit_RefusesWithANextThatDeletesIt(
 	t.Parallel()
 	st := releaseScene(t, tagged)
 	st.s.fixture.Git("tag", releaseTag, st.base)
-	req := releaseRequest(version, false)
-	before := st.s.written()
 
-	got := runRelease(t, st.s, req)
+	got := refusalRun(t, st, releaseRequest(version, false))
 
-	assertReleaseRefused(t, st, releaseRun{req, before, got}, releaseRefusal{
+	assertReleaseRefused(t, st, got, releaseRefusal{
 		text:    expect(releaseTag, shortSHA(st.base), "Next:", "git tag --delete "+releaseTag, "ils release "+version),
 		payload: released(st, "unchecked", ""),
 	})
@@ -547,12 +548,9 @@ func TestRelease_WhenTheReleaseCommitHoldsNoNotes_RefusesNamingIt(t *testing.T) 
 				return tt.build(f)
 			})
 
-			req := releaseRequest(version, false)
-			before := st.s.written()
+			got := refusalRun(t, st, releaseRequest(version, false))
 
-			got := runRelease(t, st.s, req)
-
-			assertReleaseRefused(t, st, releaseRun{req, before, got}, releaseRefusal{
+			assertReleaseRefused(t, st, got, releaseRefusal{
 				text: expect(shortSHA(st.release)), payload: released(st, "unchecked", ""),
 			})
 		})
@@ -570,11 +568,9 @@ func TestRelease_WhenOriginStopsAnsweringAtItsTags_RefusesNamingWhatItWasAskedFo
 	// Origin answers the question about its trunk, and nothing after.
 	st.s.stopAnswering(t, 1)
 
-	before := st.s.written()
+	got := refusalRun(t, st, cmd.req)
 
-	got := runRelease(t, st.s, cmd.req)
-
-	assertReleaseRefused(t, st, releaseRun{cmd.req, before, got}, releaseRefusal{text: unreached(cmd, "ask for its tags")})
+	assertReleaseRefused(t, st, got, releaseRefusal{text: unreached(cmd, "ask for its tags")})
 }
 
 // ---------------------------------------------------------------------------
@@ -730,18 +726,13 @@ func cutTagPushes() []cutTagPush {
 	// dropped is what the ssh of the push prints when origin stops answering.
 	const dropped = "Connection closed by remote host."
 	again := releaseCommand(version).again
-	cutBy := func(c cut, next string) cutTagPush {
+	cutBy := func(c cut) cutTagPush {
 		return cutTagPush{
 			name: "because " + c.name + " ended it", arrange: c.stalling(answersBeforeTagPush),
-			said: expect(c.ends), reason: expect(c.ends), again: next,
+			said: expect(c.ends), reason: expect(c.ends), again: cutTagNext(c),
 		}
 	}
-	// The short time limit names the long wait, since a push whose hooks outlast 100 seconds ends
-	// the same way every time under it.
-	rows := []cutTagPush{
-		cutBy(byTimeLimit(), nextLine("ils release "+version+" --wait")),
-		cutBy(byInterrupt(), again),
-	}
+	rows := []cutTagPush{cutBy(byTimeLimit()), cutBy(byInterrupt())}
 
 	serving := func(after string) func(t *testing.T, s *scene) context.Context {
 		return func(t *testing.T, s *scene) context.Context {
@@ -1077,9 +1068,8 @@ func TestRelease_WhenOriginStopsAnsweringAtThePreviousTag_RefusesNamingTheTag(t 
 	const answersBeforeTagFetch = 3
 	st := releaseScene(t, pastATagTheCloneLacks)
 	st.s.stopAnswering(t, answersBeforeTagFetch)
-	before := st.s.written()
 
-	got := runRelease(t, st.s, cmd.req)
+	got := refusalRun(t, st, cmd.req)
 
-	assertReleaseRefused(t, st, releaseRun{cmd.req, before, got}, releaseRefusal{text: expect("could not be reached", previousTag) + cmd.again})
+	assertReleaseRefused(t, st, got, releaseRefusal{text: expect("could not be reached", previousTag) + cmd.again})
 }

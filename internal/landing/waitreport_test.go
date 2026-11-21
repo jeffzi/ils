@@ -128,6 +128,7 @@ func TestPush_WhenARequiredCheckNeverReported_DeliveredNotGreen(t *testing.T) {
 
 	lint := forgetest.RequiredCheck("lint", forge.BucketPass)
 	never := forge.Verdict{Checks: []forge.Check{lint}, MissingRequired: []string{"test"}, Runs: ran(forge.RunCompleted)}
+
 	runPushes(t, []pushRow{
 		{
 			name:   "a required check never reported",

@@ -19,8 +19,6 @@ const (
 	number    = 12
 	oldCommit = "1111111"
 	newCommit = "2222222"
-	lintCheck = "lint"
-	testCheck = "test"
 	subject   = "Add the widget list (#12)"
 	body      = "List every widget on the home page."
 )
@@ -30,12 +28,8 @@ func repo() forge.Repo {
 	return forge.Repo{Host: "example.com", Owner: "acme", Name: "widgets"}
 }
 
-// requiredChecks returns a fresh list of the checks the fixtures require.
-func requiredChecks() []string {
-	return []string{lintCheck, testCheck}
-}
-
-func head() forge.Head {
+// cleanHead is a clean answer of Head for the new commit.
+func cleanHead() forge.Head {
 	return forge.Head{SHA: newCommit, MergeState: forge.MergeClean}
 }
 
@@ -49,10 +43,12 @@ func unknownHead() forge.Head {
 	return forge.Head{SHA: newCommit, MergeState: forge.MergeUnknown}
 }
 
+// headQuery asks for the head of the pull request, requiring the lint and test checks.
 func headQuery() forge.HeadQuery {
-	return forge.HeadQuery{Number: number, Required: requiredChecks()}
+	return forge.HeadQuery{Number: number, Required: []string{"lint", "test"}}
 }
 
+// landing lands the new commit of the pull request with its subject and body.
 func landing() forge.Landing {
 	return forge.Landing{Number: number, HeadSHA: newCommit, Subject: subject, Body: body}
 }
@@ -62,12 +58,12 @@ func TestFake_WhenOperationIsNotScripted_ReportsItAsUnscripted(t *testing.T) {
 	stub := failtest.New(t)
 	fake := forgetest.New(stub, forgetest.Script{})
 
-	_, err := fake.Head(t.Context(), repo(), headQuery())
+	_, err := fake.Identity(t.Context(), repo())
 
 	assert.Check(t, is.ErrorIs(err, forgetest.ErrUnscripted))
 	assert.Check(t, stub.Failed(), "the fake did not fail the test")
 	assert.Assert(t, is.Len(stub.Messages(), 1))
-	assert.Check(t, is.Contains(stub.Messages()[0], string(forgetest.OpHead)))
+	assert.Check(t, is.Contains(stub.Messages()[0], string(forgetest.OpIdentity)))
 }
 
 func TestFake_Calls_WhenOperationIsNotScripted_RecordsIt(t *testing.T) {
@@ -82,7 +78,7 @@ func TestFake_Calls_WhenOperationIsNotScripted_RecordsIt(t *testing.T) {
 func TestFake_WhenCalledPastTheLastStep_RepeatsTheLast(t *testing.T) {
 	t.Parallel()
 
-	stale, unknown, clean := staleHead(), unknownHead(), head()
+	stale, unknown, clean := staleHead(), unknownHead(), cleanHead()
 	fake := forgetest.New(t, forgetest.Script{Head: forgetest.Values(stale, unknown, clean)})
 
 	const calls = 4 // one past the three scripted steps
@@ -103,7 +99,7 @@ func TestFake_WhenOnReadIsSet_RunsItOnARead(t *testing.T) {
 	var seen []forgetest.Op
 
 	fake := forgetest.New(t, forgetest.Script{
-		Head:   forgetest.Values(head()),
+		Head:   forgetest.Values(cleanHead()),
 		OnRead: func(call forgetest.Call) { seen = append(seen, call.Op) },
 	})
 
@@ -157,13 +153,12 @@ func TestFake_Land_WhenOnLandIsSet_RunsItOnAnUnscriptedLandingToo(t *testing.T) 
 
 // heldScript scripts Head to hold its read until the context ends.
 func heldScript() forgetest.Script {
-	return forgetest.Script{Head: []forgetest.Answer[forge.Head]{{Value: head(), Hold: true}}}
+	return forgetest.Script{Head: []forgetest.Answer[forge.Head]{{Value: cleanHead(), Hold: true}}}
 }
 
 // wait is how long a read's context lives before it ends, when it does not end before the read.
 const wait = 10 * time.Second
 
-// ended returns a context canceled before it is returned.
 func ended(t *testing.T) context.Context {
 	t.Helper()
 
@@ -217,14 +212,14 @@ func TestFake_WhenAnswerIsHeld_TakesOneStep(t *testing.T) {
 		next := staleHead()
 		last := unknownHead()
 		fake := forgetest.New(t, forgetest.Script{
-			Head: []forgetest.Answer[forge.Head]{{Value: head(), Hold: true}, {Value: next}, {Value: last}},
+			Head: []forgetest.Answer[forge.Head]{{Value: cleanHead(), Hold: true}, {Value: next}, {Value: last}},
 		})
-
 		_, heldErr := fake.Head(ended(t), repo(), headQuery())
+		assert.Assert(t, is.ErrorIs(heldErr, context.Canceled), "the answer was not held")
+
 		got, err := fake.Head(t.Context(), repo(), headQuery())
 		assert.NilError(t, err)
 
-		assert.Check(t, is.ErrorIs(heldErr, context.Canceled))
 		assert.Check(t, is.DeepEqual(got, next))
 	})
 }

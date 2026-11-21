@@ -5,7 +5,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -30,6 +29,26 @@ const (
 	releaseSkill = "write-release"
 )
 
+// ilsSkillFile names the SKILL.md of the ils skill among the shipped files.
+const ilsSkillFile = ilsSkill + "/SKILL.md"
+
+// The names that lead from a directory to the Claude Code settings file and skills.
+const (
+	claudeDirName    = ".claude"
+	skillsDirName    = "skills"
+	settingsFileName = "settings.json"
+)
+
+// The mark a step line shows on a terminal, by the kind of step.
+const (
+	markChanged   = "✓"
+	markUnchanged = "–"
+	markFailed    = "✗"
+)
+
+// testDirMode is the mode of a directory the tests make.
+const testDirMode os.FileMode = 0o750
+
 // claudeConfigDir is the variable that names the Claude Code directory in place of the one under
 // the home directory.
 const claudeConfigDir = "CLAUDE_CONFIG_DIR"
@@ -43,7 +62,7 @@ const handEdit = "edited by hand\n"
 // hook script and a file in a directory of its own.
 func shipped() fstest.MapFS {
 	return fstest.MapFS{
-		ilsSkill + "/SKILL.md":                {Data: []byte("the ils skill\n")},
+		ilsSkillFile:                          {Data: []byte("the ils skill\n")},
 		ilsSkill + "/hook.sh":                 {Data: []byte("#!/bin/sh\nexec ils hook claude\n")},
 		ilsSkill + "/references/reference.md": {Data: []byte("the ils reference\n")},
 		releaseSkill + "/SKILL.md":            {Data: []byte("the release skill\n")},
@@ -74,8 +93,19 @@ func installingOver(t *testing.T, runner git.Runner) (app cli.App, home string) 
 	return app, home
 }
 
+// installingInRepo is installingOver with the work tree of a new repository, and returns that
+// repository too.
+func installingInRepo(t *testing.T) (app cli.App, f *gittest.Fixture) {
+	t.Helper()
+
+	f = gittest.New(t, trunk)
+	app, _ = installingOver(t, git.Runner{Dir: f.Dir(), Env: f.Env()})
+
+	return app, f
+}
+
 func skillsUnder(dir string) string {
-	return filepath.Join(dir, ".claude", "skills")
+	return filepath.Join(dir, claudeDirName, skillsDirName)
 }
 
 // shippedPath returns where the shipped file or directory name lands for the Claude Code directory under dir.
@@ -96,7 +126,7 @@ func installed(t *testing.T, app cli.App) {
 func editedSkill(t *testing.T, home string) string {
 	t.Helper()
 
-	path := shippedPath(home, ilsSkill+"/SKILL.md")
+	path := shippedPath(home, ilsSkillFile)
 	writeText(t, path, handEdit)
 
 	return path
@@ -119,7 +149,7 @@ func configuring(t *testing.T) (app cli.App, home, config string) {
 func assertShippedUnder(t *testing.T, dir string) {
 	t.Helper()
 
-	assertShippedIn(t, filepath.Join(dir, ".claude"))
+	assertShippedIn(t, filepath.Join(dir, claudeDirName))
 }
 
 // assertShippedIn checks, without stopping the test, that every shipped file lies as shipped for
@@ -129,7 +159,7 @@ func assertShippedIn(t *testing.T, claude string) {
 
 	for name, file := range shipped() {
 		//nolint:gosec // G304: the path is a shipped file under the Claude Code directory of the test.
-		written, err := os.ReadFile(filepath.Join(claude, "skills", name))
+		written, err := os.ReadFile(filepath.Join(claude, skillsDirName, name))
 		if assert.Check(t, err) {
 			assert.Check(t, is.Equal(string(written), string(file.Data)), "file %s", name)
 		}
@@ -150,7 +180,7 @@ func readText(t *testing.T, path string) string {
 func writeText(t *testing.T, path, text string) {
 	t.Helper()
 
-	assert.NilError(t, os.MkdirAll(filepath.Dir(path), 0o750))
+	assert.NilError(t, os.MkdirAll(filepath.Dir(path), testDirMode))
 	assert.NilError(t, os.WriteFile(path, []byte(text), 0o600))
 }
 
@@ -264,9 +294,10 @@ func TestApp_Run_WhenInitClaudeEndsDoneOnATerminal_PrintsOneLinePerStepBehindThe
 	got := shown(t, app, "init", "claude")
 
 	lines := stdout.lines()
+	want := eachStep(home, markChanged)
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout showed %q", lines)
-	assert.Check(t, is.Len(lines, len(eachStep(home, "✓"))), "stdout showed %q", lines)
-	assertShownSteps(t, lines, eachStep(home, "✓"))
+	assert.Check(t, is.Len(lines, len(want)), "stdout showed %q", lines)
+	assertShownSteps(t, lines, want)
 }
 
 func TestApp_Run_WhenInitClaudeFindsAShippedFileChanged_ReplacesIt(t *testing.T) {
@@ -279,7 +310,7 @@ func TestApp_Run_WhenInitClaudeFindsAShippedFileChanged_ReplacesIt(t *testing.T)
 	got := launch(t, app, "init", "claude")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	assert.Check(t, is.Equal(readText(t, changed), string(shipped()[ilsSkill+"/SKILL.md"].Data)))
+	assert.Check(t, is.Equal(readText(t, changed), shippedText(ilsSkillFile)))
 }
 
 func TestApp_Run_WhenInitClaudeFindsAShippedFileChanged_MarksThatSkillAloneChanged(t *testing.T) {
@@ -295,10 +326,10 @@ func TestApp_Run_WhenInitClaudeFindsAShippedFileChanged_MarksThatSkillAloneChang
 	screenText := strings.Join(stdout.lines(), "\n")
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout showed %q", screenText)
 	updated := lineWith(t, screenText, shippedPath(home, ilsSkill))
-	assert.Check(t, strings.HasPrefix(updated, "✓ "), "line = %q", updated)
+	assert.Check(t, strings.HasPrefix(updated, markChanged+" "), "line = %q", updated)
 	assert.Check(t, is.Contains(updated, "Updated"))
 	kept := lineWith(t, screenText, shippedPath(home, releaseSkill))
-	assert.Check(t, strings.HasPrefix(kept, "– "), "line = %q", kept)
+	assert.Check(t, strings.HasPrefix(kept, markUnchanged+" "), "line = %q", kept)
 }
 
 func TestApp_Run_WhenInitClaudeIsRefusedTheSettingsOnATerminal_CrossesTheReadOfTheFileBeforeAnySkillStep(t *testing.T) {
@@ -312,7 +343,7 @@ func TestApp_Run_WhenInitClaudeIsRefusedTheSettingsOnATerminal_CrossesTheReadOfT
 
 	lines := stdout.lines()
 	assert.Check(t, is.Equal(got.code, exitRefused), "stdout showed %q", lines)
-	assertShownSteps(t, lines, []shownStep{{mark: "✗", word: path}})
+	assertShownSteps(t, lines, []shownStep{{mark: markFailed, word: path}})
 	assert.Check(t, !strings.Contains(strings.Join(lines, "\n"), skillsUnder(home)), "stdout showed %q", lines)
 }
 
@@ -362,7 +393,7 @@ func TestApp_Run_WhenInitClaudeCannotLookAtASkillDirectory_ExitsOneNamingIt(t *t
 func assertNoClaudeUnder(t *testing.T, dir string) {
 	t.Helper()
 
-	_, err := os.Stat(filepath.Join(dir, ".claude"))
+	_, err := os.Stat(filepath.Join(dir, claudeDirName))
 	assert.Check(t, is.ErrorIs(err, fs.ErrNotExist), "a Claude Code directory landed in %s", dir)
 }
 
@@ -454,9 +485,9 @@ func TestApp_Run_WhenInitClaudeFindsAClaudeConfigDirectory_HooksTheInstalledScri
 	got := launch(t, app, "init", "claude")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	words, err := shell.Fields(hookCommand(t, filepath.Join(config, "settings.json")), func(string) string { return "" })
+	words, err := shell.Fields(hookCommand(t, filepath.Join(config, settingsFileName)), func(string) string { return "" })
 	assert.NilError(t, err)
-	assert.Check(t, is.DeepEqual(words, []string{"bash", filepath.Join(config, "skills", ilsSkill, "hook.sh")}))
+	assert.Check(t, is.DeepEqual(words, []string{"bash", filepath.Join(config, skillsDirName, ilsSkill, "hook.sh")}))
 }
 
 func TestApp_Run_WhenInitClaudeRunsTwiceWithAClaudeConfigDirectory_LeavesTheSettingsAsTheFirstRunLeftThem(t *testing.T) {
@@ -464,7 +495,7 @@ func TestApp_Run_WhenInitClaudeRunsTwiceWithAClaudeConfigDirectory_LeavesTheSett
 
 	app, _, config := configuring(t)
 	installed(t, app)
-	path := filepath.Join(config, "settings.json")
+	path := filepath.Join(config, settingsFileName)
 	first := readText(t, path)
 
 	got := launch(t, app, "init", "claude")
@@ -513,7 +544,7 @@ func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlag_WritesTheSkillsAtTheTopLev
 
 	f := gittest.New(t, trunk)
 	sub := filepath.Join(f.Dir(), "sub")
-	assert.NilError(t, os.Mkdir(sub, 0o750))
+	assert.NilError(t, os.Mkdir(sub, testDirMode))
 	app, _ := installingOver(t, git.Runner{Dir: sub, Env: f.Env()})
 
 	got := launch(t, app, "init", "claude", "--project")
@@ -525,8 +556,7 @@ func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlag_WritesTheSkillsAtTheTopLev
 func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlag_HooksTheScriptOfTheProject(t *testing.T) {
 	t.Parallel()
 
-	f := gittest.New(t, trunk)
-	app, _ := installingOver(t, git.Runner{Dir: f.Dir(), Env: f.Env()})
+	app, f := installingInRepo(t)
 
 	got := launch(t, app, "init", "claude", "--project")
 
@@ -537,8 +567,7 @@ func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlag_HooksTheScriptOfTheProject
 func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlag_WritesNothingInTheClaudeConfigDirectory(t *testing.T) {
 	t.Parallel()
 
-	f := gittest.New(t, trunk)
-	app, _ := installingOver(t, git.Runner{Dir: f.Dir(), Env: f.Env()})
+	app, f := installingInRepo(t)
 	config := t.TempDir()
 	app.Environ = append(app.Environ, claudeConfigDir+"="+config)
 
@@ -567,8 +596,7 @@ const initProject = "ils init claude --project"
 func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlagPastTheTimeLimit_ExitsTwoNamingTheCommandToRunAgain(t *testing.T) {
 	t.Parallel()
 
-	f := gittest.New(t, trunk)
-	app, _ := installingOver(t, git.Runner{Dir: f.Dir(), Env: f.Env()})
+	app, _ := installingInRepo(t)
 	ctx, cancel := context.WithDeadline(t.Context(), time.Unix(0, 0))
 	t.Cleanup(cancel)
 
@@ -586,8 +614,8 @@ func TestApp_Run_WhenInitClaudeWritesASkillUnderAUmaskThatHidesEveryFile_MakesTh
 	t.Cleanup(func() { unix.Umask(previous) })
 	app, home := installing(t)
 	wantModes := map[string]os.FileMode{
-		ilsSkill + "/hook.sh":  0o755,
-		ilsSkill + "/SKILL.md": 0o644,
+		ilsSkill + "/hook.sh": 0o755,
+		ilsSkillFile:          0o644,
 	}
 
 	got := launch(t, app, "init", "claude")
@@ -604,7 +632,7 @@ func TestApp_Run_WhenInitClaudeWritesASkillUnderAUmaskThatHidesEveryFile_MakesTh
 func linkAt(t *testing.T, target, link string) {
 	t.Helper()
 
-	assert.NilError(t, os.MkdirAll(filepath.Dir(link), 0o750))
+	assert.NilError(t, os.MkdirAll(filepath.Dir(link), testDirMode))
 	assert.NilError(t, os.Symlink(target, link))
 }
 
@@ -701,7 +729,7 @@ func TestApp_Run_WhenInitClaudeFindsASkillDirectoryLinkedToTheShippedFiles_Marks
 	screenText := strings.Join(stdout.lines(), "\n")
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout showed %q", screenText)
 	line := lineWith(t, screenText, target)
-	assert.Check(t, strings.HasPrefix(line, "– "), "line = %q", line)
+	assert.Check(t, strings.HasPrefix(line, markUnchanged+" "), "line = %q", line)
 }
 
 func TestApp_Run_WhenInitClaudeFindsASkillDirectoryLinkedToOtherFiles_ExitsOneCrossingItsStepNamingTheTarget(t *testing.T) {
@@ -721,14 +749,14 @@ func TestApp_Run_WhenInitClaudeFindsASkillDirectoryLinkedToOtherFiles_ExitsOneCr
 
 			lines := stdout.lines()
 			assert.Check(t, is.Equal(got.code, exitBroke), "stdout showed %q", lines)
-			crossed := linesStartingWith(lines, "✗ ")
+			crossed := linesStartingWith(lines, markFailed+" ")
 			assert.Assert(t, is.Len(crossed, 1), "stdout showed %q", lines)
 			assert.Check(t, is.Contains(crossed[0], target))
 		})
 	}
 }
 
-func TestApp_Run_WhenInitClaudeFindsASkillDirectoryLinkedToOtherFiles_WritesTheHookAndTheRules(t *testing.T) {
+func TestApp_Run_WhenInitClaudeFindsASkillDirectoryLinkedToOtherFiles_StillWritesTheSettings(t *testing.T) {
 	t.Parallel()
 
 	app, home, _ := releaseLinked(t, t.TempDir())
@@ -762,8 +790,7 @@ func TestApp_Run_WhenInitClaudeFindsSkillDirectoriesLinkedToOtherFiles_NamesEach
 func TestApp_Run_WhenInitClaudeFindsASkillDirectoryLinkedToOtherFiles_SaysToRunTheSameWordsAgain(t *testing.T) {
 	t.Parallel()
 
-	f := gittest.New(t, trunk)
-	app, _ := installingOver(t, git.Runner{Dir: f.Dir(), Env: f.Env()})
+	app, f := installingInRepo(t)
 	linkAt(t, t.TempDir(), shippedPath(f.Dir(), releaseSkill))
 
 	got := launch(t, app, "init", "claude", "--project", "--json")
@@ -771,9 +798,6 @@ func TestApp_Run_WhenInitClaudeFindsASkillDirectoryLinkedToOtherFiles_SaysToRunT
 	assert.Check(t, is.Equal(got.code, exitBroke), "stdout = %q", got.stdout)
 	assert.Check(t, is.Contains(resulttest.Decode(t, got.stdout).Next, initProject))
 }
-
-// marked matches a line that starts with the mark of a step.
-var marked = regexp.MustCompile(`^[✓–✗] `)
 
 // linkedPiped arranges `ils init claude` to run piped, with every setting in place and the directory
 // of the release skill a link to target; it returns the app, and a word each step line holds in
@@ -788,19 +812,18 @@ func linkedPiped(t *testing.T, target string) (app cli.App, want []string) {
 	return app, []string{shippedPath(home, ilsSkill), target, settings, settings, settings, settings}
 }
 
-// assertUnmarkedSteps checks that lines begin with one line per word of want, in order, each
-// holding its word behind no mark, and stops the test unless there are that many lines.
-func assertUnmarkedSteps(t *testing.T, lines, want []string) {
+// assertStepWords checks that lines begin with one line per word of want, in order, each holding
+// its word, and stops the test unless there are that many lines.
+func assertStepWords(t *testing.T, lines, want []string) {
 	t.Helper()
 
 	assert.Assert(t, len(lines) >= len(want), "lines = %q", lines)
 	for i, word := range want {
 		assert.Check(t, is.Contains(lines[i], word), "line %d", i)
-		assert.Check(t, !marked.MatchString(lines[i]), "line %d = %q", i, lines[i])
 	}
 }
 
-func TestApp_Run_WhenInitClaudeFindsASkillDirectoryLinkedToOtherFilesOffATerminal_ReturnsEveryStepLineInOrderWithoutAMark(t *testing.T) {
+func TestApp_Run_WhenInitClaudeFindsASkillDirectoryLinkedToOtherFilesOffATerminal_ReturnsEveryStepLineInOrder(t *testing.T) {
 	t.Parallel()
 
 	app, want := linkedPiped(t, t.TempDir())
@@ -809,7 +832,7 @@ func TestApp_Run_WhenInitClaudeFindsASkillDirectoryLinkedToOtherFilesOffATermina
 
 	lines := outputLines(got.stdout)
 	assert.Check(t, is.Equal(got.code, exitBroke), "stdout = %q", got.stdout)
-	assertUnmarkedSteps(t, lines, want)
+	assertStepWords(t, lines, want)
 }
 
 func TestApp_Run_WhenInitClaudeCannotReadThroughASkillDirectoryLink_ExitsOneNamingTheLinkBeforeWritingTheSettings(t *testing.T) {
@@ -834,12 +857,12 @@ func TestApp_Run_WhenInitClaudeFindsASkillFileThatIsALink_WritesItsTarget(t *tes
 	app, home := installing(t)
 	target := filepath.Join(t.TempDir(), "SKILL.md")
 	writeText(t, target, handEdit)
-	linkAt(t, target, shippedPath(home, ilsSkill+"/SKILL.md"))
+	linkAt(t, target, shippedPath(home, ilsSkillFile))
 
 	got := launch(t, app, "init", "claude")
 
 	assert.Check(t, is.Equal(got.code, exitDone), "stdout = %q", got.stdout)
-	assert.Check(t, is.Equal(readText(t, target), shippedText(ilsSkill+"/SKILL.md")))
+	assert.Check(t, is.Equal(readText(t, target), shippedText(ilsSkillFile)))
 }
 
 // skipAsRoot skips the test for a user whom the mode of a directory does not stop.
@@ -860,7 +883,7 @@ func lockDir(t *testing.T, dir string, mode os.FileMode) {
 	assert.NilError(t, os.Chmod(dir, mode))
 	t.Cleanup(func() {
 		//nolint:gosec // G302: the directory is one the test made under t.TempDir().
-		assert.Check(t, os.Chmod(dir, 0o750))
+		assert.Check(t, os.Chmod(dir, testDirMode))
 	})
 }
 
@@ -900,6 +923,6 @@ func TestApp_Run_WhenInitClaudeCannotWriteTheSettingsOnATerminal_CrossesTheWrite
 
 	lines := stdout.lines()
 	assert.Check(t, is.Equal(got.code, exitBroke), "stdout showed %q", lines)
-	assertShownSteps(t, lines, slices.Concat(eachStep(home, "–")[:2], []shownStep{{mark: "✗", word: path}}))
-	assert.Check(t, is.Len(linesStartingWith(lines, "✓ "), 0), "stdout showed %q", lines)
+	assertShownSteps(t, lines, slices.Concat(eachStep(home, markUnchanged)[:2], []shownStep{{mark: markFailed, word: path}}))
+	assert.Check(t, is.Len(linesStartingWith(lines, markChanged+" "), 0), "stdout showed %q", lines)
 }

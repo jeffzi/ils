@@ -5,6 +5,9 @@ import (
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
+
+	"github.com/jeffzi/ils/internal/git"
+	"github.com/jeffzi/ils/internal/github"
 )
 
 // The variables the guard follows to tell where git runs.
@@ -23,6 +26,68 @@ type environment struct {
 	workTree variable
 	cdPath   variable
 	ghConfig ghConfig
+}
+
+// The variables that choose the config directory gh reads: GH_CONFIG_DIR, else
+// XDG_CONFIG_HOME/gh, else HOME/.config/gh.
+const (
+	ghConfigDirVar  = "GH_CONFIG_DIR"
+	ghConfigHomeVar = "XDG_CONFIG_HOME"
+	ghHomeVar       = "HOME"
+)
+
+// ghConfig is what the guard knows of the variables that choose the config directory gh reads,
+// and with it the aliases gh expands. A variable neither set nor unknown keeps the value of the
+// gh runner's environment.
+type ghConfig struct {
+	configDir  variable
+	configHome variable
+	home       variable
+}
+
+// or returns the config that either c or other may be: what they agree on, and unknown elsewhere.
+func (c ghConfig) or(other ghConfig) ghConfig {
+	return ghConfig{
+		configDir:  c.configDir.or(other.configDir),
+		configHome: c.configHome.or(other.configHome),
+		home:       c.home.or(other.home),
+	}
+}
+
+// ghConfigRunner returns runner with each variable config sets in place of its own, a relative
+// path made absolute against dir, where the invocation runs. It returns the name of the first
+// variable whose value the guard cannot tell instead: one that is unknown, or a relative path in a
+// directory the guard cannot follow.
+func ghConfigRunner(runner github.Runner, dir string, config ghConfig) (github.Runner, string) {
+	env := runner.Environ()
+	for _, named := range []struct {
+		name     string
+		variable variable
+	}{
+		{name: ghConfigDirVar, variable: config.configDir},
+		{name: ghConfigHomeVar, variable: config.configHome},
+		{name: ghHomeVar, variable: config.home},
+	} {
+		value := named.variable.value
+		resolved, known := named.variable.resolve(dir)
+
+		switch {
+		case named.variable.set && value == "":
+			// gh reads an empty value as an unset one, so it is handed over as it is.
+		case !known:
+			return runner, named.name
+		case !named.variable.set:
+			continue
+		default:
+			value = resolved
+		}
+
+		env = append(git.WithoutKeys(env, named.name), named.name+"="+value)
+	}
+
+	runner.Env = env
+
+	return runner, ""
 }
 
 func unknownEnvironment() environment {
@@ -149,7 +214,8 @@ func (sc *scope) commandEnv(inv Invocation) environment {
 // parser did not split into a name and a value (`export "$v=x"`) makes the variable it names
 // unknown, and every variable when the guard cannot read the name.
 func (sc *scope) declare(decl *syntax.DeclClause, ex expander) {
-	plain := decl.Variant.Value == "export" && !slices.ContainsFunc(decl.Args, func(a *syntax.Assign) bool { return a.Name == nil })
+	hasUnsplit := slices.ContainsFunc(decl.Args, func(a *syntax.Assign) bool { return a.Name == nil })
+	plain := decl.Variant.Value == "export" && !hasUnsplit
 
 	for _, a := range decl.Args {
 		if a.Name == nil {

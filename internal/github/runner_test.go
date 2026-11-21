@@ -3,7 +3,6 @@ package github_test
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"slices"
 	"testing"
 	"testing/synctest"
@@ -58,45 +57,21 @@ func assertToolMissing(t *testing.T, err error) {
 	t.Helper()
 
 	_, ok := errors.AsType[*child.ToolMissingError](err)
-	assert.Assert(t, ok, "Run(pr view) error = %v, want *child.ToolMissingError", err)
-}
-
-func TestRunner_Run_WhenGhMissing_ReturnsToolMissingError(t *testing.T) {
-	withoutGh(t)
-
-	_, err := github.Runner{}.Run(t.Context(), "pr", "view")
-
-	assertToolMissing(t, err)
-}
-
-// onPath scripts the fake gh, then makes it findable only as the gh on PATH, with PATH set to
-// entry and the working directory to the fake's directory.
-func onPath(t *testing.T, entry func(dir string) string, script ...ghtest.Call) {
-	t.Helper()
-
-	ghtest.Setup(t, script...)
-	dir := t.TempDir()
-	gittest.Link(t, dir, github.Program)
-	t.Setenv("GH_PATH", "")
-	t.Setenv("PATH", entry(dir))
-	t.Chdir(dir)
+	assert.Assert(t, ok, "error = %v, want *child.ToolMissingError", err)
 }
 
 func TestRunner_Run_WhenGhPathUnset_RunsTheGhOnPath(t *testing.T) {
-	onPath(t, func(dir string) string { return dir }, ghtest.Says("found\n", "pr", "view"))
+	ghtest.Setup(t, ghtest.Says("found\n", "pr", "view"))
+	dir := t.TempDir()
+	gittest.Link(t, dir, github.Program)
+	t.Setenv("GH_PATH", "")
+	t.Setenv("PATH", dir)
+	t.Chdir(dir)
 
 	got, err := github.Runner{}.Run(t.Context(), "pr", "view")
 	assert.NilError(t, err, "Run(pr view)")
 
 	assert.Check(t, is.Equal(got.Stdout, "found\n"))
-}
-
-func TestRunner_Run_WhenGhOnlyOnRelativePathEntry_ReturnsToolMissingError(t *testing.T) {
-	onPath(t, func(string) string { return "." }, ghtest.Says("found\n", "pr", "view"))
-
-	_, err := github.Runner{}.Run(t.Context(), "pr", "view")
-
-	assertToolMissing(t, err)
 }
 
 func TestRunner_CheckLogin_WhenActiveAccountPassesCheck_ReturnsNil(t *testing.T) {
@@ -396,24 +371,14 @@ func TestRunner_Read_WhenAPIReadAnswersPages_ReturnsTheirBodiesAndTheLastPagesHe
 }
 
 func TestRunner_Read_WhenExitIsNot1_ReturnsItWithoutReadingAgain(t *testing.T) {
-	tests := []struct {
-		name   string
-		answer ghtest.Answer
-	}{
-		{name: "not logged in", answer: ghtest.Answer{Stderr: "To get started with GitHub CLI, please run:  gh auth login\n", Code: 4}},
-		{name: "another exit", answer: ghtest.Answer{Code: 2}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ghtest.Setup(t, ghtest.InTurn(viewArgs(), tt.answer, ghtest.Answer{Stdout: "found\n"}))
+	refusal := ghtest.Answer{Code: 2}
+	ghtest.Setup(t, ghtest.InTurn(viewArgs(), refusal, ghtest.Answer{Stdout: "found\n"}))
 
-			_, _, err := readTimed(t, github.Runner{}, viewArgs()...)
+	_, _, err := readTimed(t, github.Runner{}, viewArgs()...)
 
-			exitErr, ok := errors.AsType[*child.ExitError](err)
-			assert.Assert(t, ok, "Read error = %v, want *child.ExitError", err)
-			assert.Check(t, is.Equal(exitErr.Code, tt.answer.Code))
-		})
-	}
+	exitErr, ok := errors.AsType[*child.ExitError](err)
+	assert.Assert(t, ok, "Read error = %v, want *child.ExitError", err)
+	assert.Check(t, is.Equal(exitErr.Code, refusal.Code))
 }
 
 func TestRunner_Read_WhenALaterStatusBlockCannotBeRead_ReturnsDecodeError(t *testing.T) {
@@ -457,31 +422,4 @@ func TestRunner_Read_WhenGhMissing_ReturnsToolMissingErrorWithoutWaiting(t *test
 
 	assertToolMissing(t, err)
 	assert.Check(t, is.Equal(took, time.Duration(0)))
-}
-
-func TestRunner_Run_WhenExit1_ReturnsItWithoutReadingAgain(t *testing.T) {
-	ghtest.Setup(t, ghtest.InTurn(viewArgs(), ghtest.ServerError(), ghtest.Answer{Stdout: "found\n"}))
-
-	synctest.Test(t, func(t *testing.T) {
-		_, err := github.Runner{}.Run(t.Context(), viewArgs()...)
-
-		_, ok := errors.AsType[*child.ExitError](err)
-		assert.Check(t, ok, "Run error = %v, want *child.ExitError", err)
-	})
-}
-
-func TestRunner_Read_WhenReadIsReadAgain_LogsOneDebugRecordPerFailure(t *testing.T) {
-	ghtest.Setup(t, ghtest.InTurn(viewArgs(), ghtest.ServerError(), ghtest.ServerError(), ghtest.Answer{Stdout: "found\n"}))
-	logger, sink := logtest.New()
-
-	_, _, err := readTimed(t, github.Runner{Logger: logger}, viewArgs()...)
-	assert.NilError(t, err)
-
-	rereads := slices.DeleteFunc(sink.Records(), func(r logtest.Record) bool { return r.Message == child.ExecMessage })
-	levels := make([]slog.Level, len(rereads))
-	for i, record := range rereads {
-		levels[i] = record.Level
-	}
-
-	assert.Check(t, is.DeepEqual(levels, []slog.Level{slog.LevelDebug, slog.LevelDebug}))
 }

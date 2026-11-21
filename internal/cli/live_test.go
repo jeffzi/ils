@@ -346,7 +346,7 @@ func (l *liveSuite) checkRulesRead(t *testing.T) {
 			"so the suite no longer exercises what ils does with that refusal", path, reply.Status, err)
 }
 
-// private reports whether the repository is private, as GitHub shows its visibility.
+// private reports whether GitHub's visibility field reads PRIVATE.
 func (l *liveSuite) private(t *testing.T) bool {
 	t.Helper()
 
@@ -657,7 +657,7 @@ func liveGreen(t *testing.T, l *liveSuite) {
 	assert.Equal(t, got.code, exitDone, "%s", got.raw)
 
 	pull := b.checkFreshPull(t, b.tip(t))
-	assert.Check(t, is.Equal(got.check("pass").Name, liveJob), "no passed check named %s in:\n%s", liveJob, got.raw)
+	assert.Check(t, is.Equal(got.check(forge.BucketPass).Name, liveJob), "no passed check named %s in:\n%s", liveJob, got.raw)
 	checkMergeNext(t, l, got, pull.Number)
 }
 
@@ -691,7 +691,7 @@ func liveRed(t *testing.T, l *liveSuite) {
 
 	assert.Equal(t, got.code, exitDelivered, "%s", got.raw)
 
-	failed := got.check("fail")
+	failed := got.check(forge.BucketFail)
 	assert.Assert(t, failed.Name != "" && failed.Link != "", "no failing check with a link in:\n%s", got.raw)
 	assert.Check(t, is.Equal(failed.Name, liveJob))
 	assert.Check(t, is.Contains(got.shown.Reason, liveJob))

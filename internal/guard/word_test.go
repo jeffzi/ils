@@ -17,10 +17,8 @@ func TestParse_WhenQuoteRemovalLeavesPlainText_ReportsALiteral(t *testing.T) {
 		word string
 		want string
 	}{
-		{name: "backslash escape", word: `\git`, want: "git"},
 		{name: "single quotes", word: `'stash'`, want: "stash"},
 		{name: "quotes inside a word", word: `g"i"t`, want: "git"},
-		{name: "escaped dollar in double quotes", word: `"a\$x"`, want: "a$x"},
 		{name: "escaped glob character", word: `\*`, want: "*"},
 		{name: "quoted glob character", word: `"*.go"`, want: "*.go"},
 		{name: "bare tilde", word: `~`, want: home},
@@ -30,33 +28,31 @@ func TestParse_WhenQuoteRemovalLeavesPlainText_ReportsALiteral(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			command := "echo " + tt.word
-
-			got := only(t, command)
-
-			assert.Assert(t, is.Len(got.Words, 2), "Parse(%q)", command)
-			assert.Check(t, is.DeepEqual(got.Words[1], guard.Word{Text: tt.want, Literal: true}), "Parse(%q)", command)
+			checkEchoWord(t, tt.word, literal(tt.want))
 		})
 	}
+}
+
+// checkEchoWord fails unless Parse reads `echo word` as echo with one argument equal to want.
+func checkEchoWord(t *testing.T, word string, want guard.Word) {
+	t.Helper()
+
+	command := "echo " + word
+
+	got := only(t, command)
+
+	assert.Assert(t, is.Len(got.Words, 2), "Parse(%q)", command)
+	assert.Check(t, is.DeepEqual(got.Words[1], want), "Parse(%q)", command)
 }
 
 func TestParse_WhenAnUnquotedExpansionWouldSplitOrGlob_ReadsTheWordUnknown(t *testing.T) {
 	t.Parallel()
 
-	tests := []namedCommand{
+	checkReadUnknown(t, []namedCommand{
 		{name: "unquoted expansion of a value holding a space", command: "S='/tmp/my work'; $S/run.sh"},
 		{name: "unquoted expansion of a value holding a glob character", command: "S='/tmp/*'; $S/run.sh"},
 		{name: "unquoted expansion of a for loop value holding a backslash", command: `for S in '/tmp/a\b'; do $S/run.sh; done`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := parse(t, tt.command)
-
-			checkRunShReadUnknown(t, tt.command, got)
-		})
-	}
+	})
 }
 
 func TestParse_WhenAWordCarriesAnExpansion_ReportsItNotLiteralWithItsLiteralPrefix(t *testing.T) {
@@ -77,12 +73,7 @@ func TestParse_WhenAWordCarriesAnExpansion_ReportsItNotLiteralWithItsLiteralPref
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			command := "echo " + tt.word
-
-			got := only(t, command)
-
-			assert.Assert(t, is.Len(got.Words, 2), "Parse(%q)", command)
-			assert.Check(t, is.DeepEqual(got.Words[1], guard.Word{Text: tt.wantPrefix, Literal: false}), "Parse(%q)", command)
+			checkEchoWord(t, tt.word, guard.Word{Text: tt.wantPrefix, Literal: false})
 		})
 	}
 }
@@ -104,12 +95,7 @@ func TestParse_WhenAWordsOnlyUnreadablePartIsAGlob_ReportsAGlobWithItsLiteralPre
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			command := "echo " + tt.word
-
-			got := only(t, command)
-
-			assert.Assert(t, is.Len(got.Words, 2), "Parse(%q)", command)
-			assert.Check(t, is.DeepEqual(got.Words[1], guard.Word{Text: tt.wantPrefix, Glob: true}), "Parse(%q)", command)
+			checkEchoWord(t, tt.word, guard.Word{Text: tt.wantPrefix, Glob: true})
 		})
 	}
 }

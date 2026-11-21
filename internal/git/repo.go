@@ -158,15 +158,8 @@ func (r Repo) GitDir(ctx context.Context, options ...string) (string, error) {
 // message untranslated.
 func (r Repo) FindGitDir(ctx context.Context, options ...string) (dir string, found bool, err error) {
 	dir, err = Repo{Runner: r.Runner.inCLocale()}.GitDir(ctx, options...)
-	if fatalSaying(err, func(stderr string) bool { return strings.Contains(stderr, notRepositoryMessage) }) {
-		return "", false, nil
-	}
 
-	if err != nil {
-		return "", false, err
-	}
-
-	return dir, true, nil
+	return foundUnless(dir, err, func(stderr string) bool { return strings.Contains(stderr, notRepositoryMessage) })
 }
 
 // TopLevel returns the top-level directory of the work tree git finds when given the global
@@ -181,9 +174,16 @@ func (r Repo) TopLevel(ctx context.Context, options ...string) (dir string, foun
 	args := append(slices.Clone(options), "rev-parse", "--show-toplevel")
 
 	dir, err = Repo{Runner: r.Runner.inCLocale()}.line(ctx, args...)
-	if fatalSaying(err, func(stderr string) bool {
+
+	return foundUnless(dir, err, func(stderr string) bool {
 		return strings.Contains(stderr, notRepositoryMessage) || strings.Contains(stderr, noWorkTreeMessage)
-	}) {
+	})
+}
+
+// foundUnless returns dir and found true when err is nil, found false with no error when err is git
+// dying of a fatal error that said reads as the absence of a repository, and err otherwise.
+func foundUnless(dir string, err error, said func(stderr string) bool) (string, bool, error) {
+	if fatalSaying(err, said) {
 		return "", false, nil
 	}
 
@@ -660,7 +660,7 @@ func sameDirectory(a, b string) (bool, error) {
 }
 
 // ---------------------------------------------------------------------------
-// Version parsing
+// Version check and parsing
 // ---------------------------------------------------------------------------
 
 // CheckVersion returns nil when git is MinimumVersion or newer.
@@ -710,21 +710,8 @@ func VersionOf(line string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Runner helpers
+// Repo call helpers
 // ---------------------------------------------------------------------------
-
-// Environ returns a copy of the environment git runs with: the runner's own Env, or the environment
-// of this process when it has none.
-func (r Runner) Environ() []string {
-	return child.Environ(r.Env)
-}
-
-// inCLocale returns a copy of r that runs git in the C locale, so that its messages are untranslated.
-func (r Runner) inCLocale() Runner {
-	r.Env = append(r.Environ(), "LC_ALL=C")
-
-	return r
-}
 
 // line runs git with args and returns its stdout without the trailing line break.
 func (r Repo) line(ctx context.Context, args ...string) (string, error) {

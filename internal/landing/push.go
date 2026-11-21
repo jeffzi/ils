@@ -84,7 +84,6 @@ func pushChecks(ctx context.Context, s *survey, req Request, ready Ready) (pushR
 		return pushReady{}, stop
 	}
 
-	// A branch whose first commit past the trunk another local branch carries is refused.
 	shared, read, err := s.firstShared(ctx)
 	if err != nil {
 		return pushReady{}, req.Unread(read, err)

@@ -280,7 +280,7 @@ func findRealGit(tb testing.TB) string {
 		return realGit
 	}
 
-	realGit, err := exec.LookPath("git")
+	realGit, err := exec.LookPath(gitName)
 	if err != nil {
 		tb.Fatalf("gittest: find the real git: %v", err)
 	}

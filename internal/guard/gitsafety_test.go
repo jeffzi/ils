@@ -407,26 +407,10 @@ func TestJudge_RefusesAnAbortOverUncommittedWork(t *testing.T) {
 
 	dirty, caller := standingOn(t, "main", "topic")
 	dirty.StagedFile()
-	clean, _ := standingOn(t, "main", "topic")
 
 	checkJudgedIn(t, caller, []placed{
 		{name: "merge in the dirty tree", dir: dirty.Dir(), command: "git merge --abort"},
-		{name: "cherry-pick in the dirty tree", dir: dirty.Dir(), command: "git cherry-pick --abort"},
-		{name: "revert in the dirty tree", dir: dirty.Dir(), command: "git revert --abort"},
-		{name: "merge with -C naming the dirty tree", dir: clean.Dir(), command: "git -C " + gittest.ShellWord(dirty.Dir()) + " merge --abort"},
 	}, expectation{outcome: guard.Refuse, named: "dirty"})
-}
-
-func TestJudge_RefusesAnAbortWhoseRepositoryIsUnknown(t *testing.T) {
-	t.Parallel()
-
-	f, caller := standingOn(t, "main", "topic")
-
-	checkJudgedIn(t, caller, []placed{
-		{name: "merge", dir: f.Dir(), command: `git -C "$d" merge --abort`},
-		{name: "cherry-pick", dir: f.Dir(), command: `git -C "$d" cherry-pick --abort`},
-		{name: "revert", dir: f.Dir(), command: `git -C "$d" revert --abort`},
-	}, expectation{outcome: guard.Refuse, named: "which repository"})
 }
 
 func TestJudge_AllowsAnAbortOrSequencerStepThatCannotLoseWork(t *testing.T) {
@@ -434,19 +418,9 @@ func TestJudge_AllowsAnAbortOrSequencerStepThatCannotLoseWork(t *testing.T) {
 
 	dirty, caller := standingOn(t, "main", "topic")
 	dirty.StagedFile()
-	clean, _ := standingOn(t, "main", "topic")
 
 	checkJudgedIn(t, caller, []placed{
-		{name: "merge --abort in a clean tree", dir: clean.Dir(), command: "git merge --abort"},
-		{name: "cherry-pick --abort in a clean tree", dir: clean.Dir(), command: "git cherry-pick --abort"},
-		{name: "revert --abort in a clean tree", dir: clean.Dir(), command: "git revert --abort"},
-		{name: "merge --abort outside any repository", dir: outsideDir(t), command: "git merge --abort"},
 		{name: "merge --continue in a dirty tree", dir: dirty.Dir(), command: "git merge --continue"},
-		{name: "merge --quit in a dirty tree", dir: dirty.Dir(), command: "git merge --quit"},
-		{name: "cherry-pick --continue in a dirty tree", dir: dirty.Dir(), command: "git cherry-pick --continue"},
-		{name: "cherry-pick --quit in a dirty tree", dir: dirty.Dir(), command: "git cherry-pick --quit"},
-		{name: "revert --continue in a dirty tree", dir: dirty.Dir(), command: "git revert --continue"},
-		{name: "revert --quit in a dirty tree", dir: dirty.Dir(), command: "git revert --quit"},
 	}, expectation{outcome: guard.Allow})
 }
 

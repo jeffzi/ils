@@ -61,7 +61,9 @@ func (r Record) Call() map[string]any {
 func ExecAttrs(t testing.TB, run child.Exec) map[string]any {
 	t.Helper()
 
-	return Only(t, RecordsOf(func(logger *slog.Logger) { run.Log(t.Context(), logger) })).Call()
+	records := RecordsOf(func(logger *slog.Logger) { run.Log(t.Context(), logger) })
+
+	return Only(t, records).Call()
 }
 
 // Sink keeps every record the logger built with it is given, at any level, safe for concurrent use.

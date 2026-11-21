@@ -252,20 +252,20 @@ func assertTexts(t *testing.T, cases []pair) {
 
 type jsonCase struct {
 	// pick keeps the fields of the decoded object the row is about.
-	pick   func(s result.Object) result.Object
+	pick   func(decoded result.Object) result.Object
 	name   string
 	want   result.Object
 	result result.Result
 }
 
 // linesReasonNext keeps the lines, the reason and the next step of a decoded object.
-func linesReasonNext(s result.Object) result.Object {
-	return result.Object{Lines: s.Lines, Reason: s.Reason, Next: s.Next}
+func linesReasonNext(decoded result.Object) result.Object {
+	return result.Object{Lines: decoded.Lines, Reason: decoded.Reason, Next: decoded.Next}
 }
 
 // excerptOnly keeps the excerpt of a decoded object.
-func excerptOnly(s result.Object) result.Object {
-	return result.Object{Excerpt: s.Excerpt}
+func excerptOnly(decoded result.Object) result.Object {
+	return result.Object{Excerpt: decoded.Excerpt}
 }
 
 // jsonCases returns the cases whose text the JSON renderer carries as it was handed in.
@@ -280,7 +280,7 @@ func jsonCases() []jsonCase {
 		{
 			name:   "name holding an escape sequence carries the escape raw",
 			result: brokeWithLine(result.Say("Kept %s as is.", "x\x1b[31m")),
-			pick:   func(s result.Object) result.Object { return result.Object{Lines: s.Lines} },
+			pick:   func(decoded result.Object) result.Object { return result.Object{Lines: decoded.Lines} },
 			want:   result.Object{Lines: append(brokeLines(), "Kept x\x1b[31m as is.")},
 		},
 		{
@@ -302,7 +302,7 @@ func jsonCases() []jsonCase {
 		{
 			name:   "done carries none as its next",
 			result: donePush(),
-			pick:   func(s result.Object) result.Object { return result.Object{Next: s.Next} },
+			pick:   func(decoded result.Object) result.Object { return result.Object{Next: decoded.Next} },
 			want:   result.Object{Next: "none"},
 		},
 	}
@@ -569,19 +569,13 @@ type rejected struct {
 
 // rejectedLine is a broke push with one more line, whose wording must be
 // rejected against the resolved git dir.
-func rejectedLine(name, dir string, p result.Phrase) rejected {
+func rejectedLine(name, dir, wantWord string, p result.Phrase) rejected {
 	return rejected{
-		name:   name,
-		gitDir: dir,
-		result: brokeWithLine(p),
+		name:     name,
+		gitDir:   dir,
+		wantWord: wantWord,
+		result:   brokeWithLine(p),
 	}
-}
-
-// naming returns r with word as the word that must break the rule.
-func (r rejected) naming(word string) rejected {
-	r.wantWord = word
-
-	return r
 }
 
 // dirCases returns results whose wording names the resolved git dir in a
@@ -594,21 +588,21 @@ func dirCases() []rejected {
 	)
 
 	return []rejected{
-		rejectedLine("handed-in dir differs in case", shoutedDir,
-			result.Say("Wrote /srv/store/meta/HEAD")).naming(shoutedDir),
-		rejectedLine("handed-in dir ends in a slash", gitDir+"/",
-			result.Say("Wrote /srv/store/meta/HEAD")).naming(gitDir + "/"),
-		rejectedLine("resolved git dir holding spaces", spacedDir,
-			result.Say("Wrote /srv/my store/meta dir/HEAD")).naming(spacedDir),
-		rejectedLine("wording naming a sibling before the git dir", gitDir,
-			result.Say("Wrote /srv/store/metadata and /srv/store/meta/HEAD")).naming(gitDir),
+		rejectedLine("handed-in dir differs in case", shoutedDir, shoutedDir,
+			result.Say("Wrote /srv/store/meta/HEAD")),
+		rejectedLine("handed-in dir ends in a slash", gitDir+"/", gitDir+"/",
+			result.Say("Wrote /srv/store/meta/HEAD")),
+		rejectedLine("resolved git dir holding spaces", spacedDir, spacedDir,
+			result.Say("Wrote /srv/my store/meta dir/HEAD")),
+		rejectedLine("wording naming a sibling before the git dir", gitDir, gitDir,
+			result.Say("Wrote /srv/store/metadata and /srv/store/meta/HEAD")),
 	}
 }
 
 // lineCases returns results whose offending wording sits in a line.
 func lineCases() []rejected {
 	line := func(name, wantWord string, p result.Phrase) rejected {
-		return rejectedLine(name, gitDir, p).naming(wantWord)
+		return rejectedLine(name, gitDir, wantWord, p)
 	}
 
 	return []rejected{

@@ -76,6 +76,19 @@ func (r Runner) Run(ctx context.Context, args ...string) (Result, error) {
 	return r.childProgram(program, installURL, args, exec.LookPath).Run(ctx)
 }
 
+// Environ returns a copy of the environment git runs with: the runner's own Env, or the environment
+// of this process when it has none.
+func (r Runner) Environ() []string {
+	return child.Environ(r.Env)
+}
+
+// inCLocale returns a copy of r that runs git in the C locale, so that its messages are untranslated.
+func (r Runner) inCLocale() Runner {
+	r.Env = append(r.Environ(), "LC_ALL=C")
+
+	return r
+}
+
 // childProgram returns the run of tool with args on the runner's behalf: from its directory, with
 // its environment, recorded by its recorder and logged by its logger, the tool found by lookPath.
 // Every program the package runs for a runner starts from here, so that no run drops a field of

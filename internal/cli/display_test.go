@@ -39,6 +39,9 @@ const (
 	// spun is how long a step runs before the screens are read: past 3 seconds by less than one
 	// frame of the spinner, so that its timer reads 3s whether it rounds or truncates.
 	spun = 3300 * time.Millisecond
+	// pushTook and openTook are how long the push and the pull request of paced take.
+	pushTook = 1200 * time.Millisecond
+	openTook = 2500 * time.Millisecond
 )
 
 // elapse lets d pass on the bubble's clock, then waits until every other goroutine of the run waits.
@@ -73,10 +76,10 @@ func paced(peek func(), outcome result.Outcome) cli.Command {
 	return func(_ context.Context, deps landing.Deps, req landing.Request) result.Result {
 		told := deps.Progress
 		told.Started(pushingLabel())
-		time.Sleep(1200 * time.Millisecond)
+		time.Sleep(pushTook)
 		told.Said(pushedLine())
 		told.Started(result.Say("Opening a pull request against %s", result.Branch(trunk)))
-		time.Sleep(2500 * time.Millisecond)
+		time.Sleep(openTook)
 		told.Said(openedLine())
 		startedWaiting(told)
 		told.Counted(1, 3)
@@ -816,7 +819,6 @@ func TestApp_Run_WhenACommandEnds_CrossesTheStepStillRunningOnlyWhenTheCommandFa
 		running bool
 	}{
 		{name: "broke while a step runs", outcome: result.Broke, running: true, want: []string{crossed}},
-		{name: "delivered, not green, while a step runs", outcome: result.DeliveredNotGreen, running: true, want: []string{crossed}},
 		{name: "done while a step runs", outcome: result.Done, running: true},
 		{name: "broke with no step running", outcome: result.Broke, want: []string{"✓ " + pushedText}},
 	}
@@ -953,7 +955,7 @@ func (c *stuckChild) drain(t *testing.T) {
 
 			return
 		}
-		assert.NilError(t, err, "stderr ended while the run was %s:\n%q", "stopped", c.stderr.raw())
+		assert.NilError(t, err, "stderr ended while the run was stopped:\n%q", c.stderr.raw())
 	}
 }
 

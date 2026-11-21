@@ -71,7 +71,9 @@ func redRows() []vigilRow {
 		FailedLog: forge.FailedLog{State: forge.FailedLogUnreadable},
 	}
 
-	rows := []vigilRow{
+	c := byTimeLimit()
+
+	return []vigilRow{
 		{
 			name:     "a check failed while another runs, then its run completed",
 			verdicts: says(unfinished, completed),
@@ -88,18 +90,15 @@ func redRows() []vigilRow {
 			verdicts: says(gone),
 			want:     concluded(landing.WaitRed, gone, 0, 0), ops: readsOf(1, 1, 1),
 		},
+		{
+			name:     "a check failed and " + c.name + " ended inside the read after it",
+			verdicts: []forgetest.Answer[forge.Verdict]{{Value: unfinished}, {Err: c.of("gh")}},
+			want:     concluded(landing.WaitRed, unfinished, 0, 0), ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
+		},
 	}
-
-	c := byTimeLimit()
-
-	return append(rows, vigilRow{
-		name:     "a check failed and " + c.name + " ended inside the read after it",
-		verdicts: []forgetest.Answer[forge.Verdict]{{Value: unfinished}, {Err: c.of("gh")}},
-		want:     concluded(landing.WaitRed, unfinished, 0, 0), ops: readsOf(1, 2, 1), waits: polls(1, verdictPoll),
-	})
 }
 
-func TestAwaitVerdict_WhenACheckFailed_EndsRedOnceItsLogIsSettled(t *testing.T) {
+func TestAwaitVerdict_WhenACheckFailed_EndsRedOnceItsLogIsSettledOrTheWaitIsCut(t *testing.T) {
 	t.Parallel()
 
 	runVigils(t, onCleanHead(redRows()))

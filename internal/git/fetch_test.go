@@ -59,49 +59,56 @@ func TestRepo_Fetch_WhenTheBranchNameStartsWithRefs_PutsTheTrackingRefOfTheBranc
 	assert.Check(t, is.Equal(f.Git("for-each-ref", "--format=%(objectname)", tracking), want), tracking)
 }
 
-func TestRepo_Fetch_WhenItReturns_LeavesNoRefOfItsOwn(t *testing.T) {
-	t.Parallel()
+// pushedTopic returns a fixture whose origin holds the topic branch.
+func pushedTopic(t *testing.T) *gittest.Fixture {
+	t.Helper()
 	f := gittest.New(t, trunk)
 	f.Commits(topic, "one")
 	f.Push(topic)
+
+	return f
+}
+
+func assertNoOwnRefs(t *testing.T, f *gittest.Fixture) {
+	t.Helper()
+	assert.Check(t, is.Equal(f.Git("for-each-ref", "refs/ils/"), ""), "refs under refs/ils/ after Fetch")
+}
+
+func TestRepo_Fetch_WhenTheFetchSucceeds_LeavesNoRefOfItsOwn(t *testing.T) {
+	t.Parallel()
+	f := pushedTopic(t)
 
 	_, err := newRepo(f).Fetch(t.Context(), topic)
 	assert.NilError(t, err, "Fetch(%q)", topic)
 
-	assert.Check(t, is.Equal(f.Git("for-each-ref", "refs/ils/"), ""), "refs under refs/ils/ after Fetch")
+	assertNoOwnRefs(t, f)
 }
 
 func TestRepo_Fetch_WhenTheReadFails_LeavesNoRefOfItsOwn(t *testing.T) {
 	// Not parallel: see fakedRepo.
-	f := gittest.New(t, trunk)
-	f.Commits(topic, "one")
-	f.Push(topic)
+	f := pushedTopic(t)
 	repo := fakedRepo(t, f, gittest.Fake{FailOn: []string{"rev-parse"}})
 
 	got, err := repo.Fetch(t.Context(), topic)
 	assert.Assert(t, err != nil, "Fetch(%q) = %q, error = nil, want the failed read", topic, got)
 
-	assert.Check(t, is.Equal(f.Git("for-each-ref", "refs/ils/"), ""), "refs under refs/ils/ after Fetch")
+	assertNoOwnRefs(t, f)
 }
 
 func TestRepo_Fetch_WhenTheFetchFailsAfterStoringTheRef_LeavesNoRefOfItsOwn(t *testing.T) {
 	// Not parallel: see fakedRepo.
-	f := gittest.New(t, trunk)
-	f.Commits(topic, "one")
-	f.Push(topic)
+	f := pushedTopic(t)
 	repo := fakedRepo(t, f, gittest.Fake{FailAfterOn: []string{"fetch"}})
 
 	got, err := repo.Fetch(t.Context(), topic)
 	assert.Assert(t, err != nil, "Fetch(%q) = %q, error = nil, want the failed fetch", topic, got)
 
-	assert.Check(t, is.Equal(f.Git("for-each-ref", "refs/ils/"), ""), "refs under refs/ils/ after Fetch")
+	assertNoOwnRefs(t, f)
 }
 
 func TestRepo_Fetch_WhenAnotherRunHoldsTheLockOfAFixedFetchRefForTheBranch_ReturnsTheFetchedSHA(t *testing.T) {
 	t.Parallel()
-	f := gittest.New(t, trunk)
-	f.Commits(topic, "one")
-	f.Push(topic)
+	f := pushedTopic(t)
 	want := f.AdvanceOrigin(topic)
 	// Another run's fetch holds the lock of a fixed ref named for the branch under refs/ils/fetched/.
 	common := f.Git("rev-parse", "--path-format=absolute", "--git-common-dir")

@@ -27,9 +27,12 @@ const (
 // changelogPath is the file, at the root of the release commit, that holds the release's notes.
 const changelogPath = "CHANGELOG.md"
 
+// releasePrefix opens the subject of a release commit; the version tag follows it.
+const releasePrefix = "chore: release "
+
 // releaseSubject matches the subject of a release commit, as squashed from its pull request or not.
 // Its one group is the version tag the subject names, which releasedTag holds to a version.
-var releaseSubject = regexp.MustCompile(`^chore: release (v\S+?)(?: \(#\d+\))?$`)
+var releaseSubject = regexp.MustCompile(`^` + regexp.QuoteMeta(releasePrefix) + `(v\S+?)(?: \(#\d+\))?$`)
 
 // linkReference matches a line of the link reference definitions that end a changelog.
 var linkReference = regexp.MustCompile(`^\[[^\]]+\]:\s`)
@@ -173,11 +176,13 @@ func (rel *releasing) readTags(ctx context.Context, deps Deps, req Request) *res
 		return req.unreached(readOriginTags, err, result.Say("origin could not be reached to ask for its tags"))
 	}
 
-	if i := slices.IndexFunc(tags, func(tag git.Tag) bool { return tag.Name == rel.tag }); i >= 0 {
+	isVersion := func(tag git.Tag) bool { return tag.Name == rel.tag }
+
+	if i := slices.IndexFunc(tags, isVersion); i >= 0 {
 		rel.onOrigin = tags[i]
 	}
 
-	others := slices.DeleteFunc(versionTags(tags), func(tag git.Tag) bool { return tag.Name == rel.tag })
+	others := slices.DeleteFunc(versionTags(tags), isVersion)
 	if len(others) == 0 {
 		return nil
 	}
@@ -216,7 +221,7 @@ func (rel *releasing) findCommit(ctx context.Context, s *survey, req Request) *r
 		}
 	}
 
-	subject := "chore: release " + rel.tag
+	subject := releasePrefix + rel.tag
 	next := result.NextStep("land the release commit of %s on %s"+thenRunAgain,
 		rel.tag, result.Branch(rel.Trunk), req.ilsCommand())
 

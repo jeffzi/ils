@@ -27,13 +27,14 @@ func TestApp_Run_WhenAskedForHelp_PrintsTheWaitLimitsInTheLongHelp(t *testing.T)
 			got := launch(t, outside(t), "--help", command)
 
 			assert.Check(t, is.Equal(got.code, exitDone))
-			long, _, found := strings.Cut(flat(got.stdout), "Flags:")
+			help := flat(got.stdout)
+			long, _, found := strings.Cut(help, "Flags:")
 			assert.Assert(t, found, "help has no Flags: section: %s", got.stdout)
 			for _, limit := range []string{"14 minutes 40 seconds", "80 seconds"} {
 				assert.Check(t, is.Contains(long, limit))
 			}
 			for _, limit := range never {
-				assert.Check(t, !strings.Contains(flat(got.stdout), limit), "help states %q: %s", limit, got.stdout)
+				assert.Check(t, !strings.Contains(help, limit), "help states %q: %s", limit, got.stdout)
 			}
 		})
 	}

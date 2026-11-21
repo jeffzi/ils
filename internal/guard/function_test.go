@@ -121,9 +121,12 @@ func doublingChain(count int) string {
 	return command.String()
 }
 
+// pastFollowedCalls is how many top-level calls one definition takes past the walks the guard makes.
+const pastFollowedCalls = 257
+
 func TestParse_WhenATopLevelCallGoesPastThoseTheGuardFollows_ReturnsItsMark(t *testing.T) {
 	t.Parallel()
-	command := "f() { :; }" + strings.Repeat("; f", 257)
+	command := "f() { :; }" + strings.Repeat("; f", pastFollowedCalls)
 
 	got := parse(t, command)
 

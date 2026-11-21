@@ -6,29 +6,22 @@ import "strings"
 // backslash drops before `$`, a backtick, a double quote, or a backslash; it and a newline after it
 // both drop; before any other character, or at the end, it stays.
 func WriteDoubleQuoted(b *strings.Builder, text string) {
-	escaped := false
-	for i := range len(text) {
-		c := text[i]
-		switch {
-		case escaped:
-			escaped = false
-			switch c {
-			case '$', '`', '"', '\\':
-				b.WriteByte(c)
-			case '\n':
-			default:
-				b.WriteByte('\\')
-				b.WriteByte(c)
-			}
-		case c == '\\':
-			escaped = true
-		default:
-			b.WriteByte(c)
-		}
-	}
+	for i := 0; i < len(text); i++ {
+		if text[i] != '\\' || i+1 == len(text) {
+			b.WriteByte(text[i])
 
-	if escaped {
-		b.WriteByte('\\')
+			continue
+		}
+
+		i++
+		switch text[i] {
+		case '$', '`', '"', '\\':
+			b.WriteByte(text[i])
+		case '\n':
+		default:
+			b.WriteByte('\\')
+			b.WriteByte(text[i])
+		}
 	}
 }
 

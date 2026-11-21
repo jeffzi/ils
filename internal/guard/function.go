@@ -93,12 +93,17 @@ func calledDefinitions(inv Invocation, functions map[string][]*definition) []*de
 	}
 
 	for _, wrapper := range inv.Wrappers {
-		if !slices.Contains([]string{"time", "noglob", "nocorrect"}, wrapper) {
+		if !functionWrappers()[wrapper] {
 			return nil
 		}
 	}
 
 	return functions[inv.Words[0].Text]
+}
+
+// functionWrappers are the wrappers that run a function behind them.
+func functionWrappers() map[string]bool {
+	return setOf("time", "noglob", "nocorrect")
 }
 
 // call changes sc the way inv's call of a function the command declares does, run from any of the

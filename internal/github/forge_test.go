@@ -217,12 +217,7 @@ func notFound404(message string) ghtest.Answer {
 
 // headJSON is `gh pr view`'s answer for a mergeable pull request in the given state.
 func headJSON(status, review string) string {
-	return pullJSON("MERGEABLE", status, review)
-}
-
-// pullJSON is `gh pr view`'s answer for a pull request at the head commit that is not a draft.
-func pullJSON(mergeable, status, review string) string {
-	return ghtest.HeadJSON(headSHA, mergeable, status, review)
+	return ghtest.HeadJSON(headSHA, "MERGEABLE", status, review)
 }
 
 // draftJSON is `gh pr view`'s answer for a draft pull request at the head commit, with no review asked.
@@ -253,10 +248,6 @@ func operationsByName() map[string]func(context.Context, *github.Forge) error {
 			_, err := f.Head(ctx, engine(), headQuery())
 			return err
 		},
-		"TrunkProtection": func(ctx context.Context, f *github.Forge) error {
-			_, err := f.TrunkProtection(ctx, engine(), trunk)
-			return err
-		},
 		"Message": func(ctx context.Context, f *github.Forge) error {
 			_, err := f.Message(ctx, engine(), pullNumber)
 			return err
@@ -276,7 +267,7 @@ func operationsByName() map[string]func(context.Context, *github.Forge) error {
 func readCases() []readCase {
 	byName := operationsByName()
 
-	identity, find, head, protection := byName["Identity"], byName["FindChanges"], byName["Head"], byName["TrunkProtection"]
+	identity, find, head := byName["Identity"], byName["FindChanges"], byName["Head"]
 	message, release, public := byName["Message"], byName["FindRelease"], byName["PublicRepo"]
 	blocked := func(ctx context.Context, f *github.Forge) error {
 		_, err := f.Head(ctx, engine(), headQuery("build", "test"))
@@ -295,7 +286,6 @@ func readCases() []readCase {
 				ghtest.Says(workflowRunsPage(), workflowRunsArgs()...),
 			},
 		},
-		{name: "api rules", run: protection, args: rulesArgs()},
 		{name: "api graphql message", run: message, args: messageArgs()},
 		{name: "api graphql release", run: release, args: releaseArgs()},
 		{
@@ -315,7 +305,7 @@ func TestForge_WhenCallExitsNonZero_ReturnsExitErrorNamingCall(t *testing.T) {
 	// and TrunkProtection's through its own test of a refused read. HasTrunkCI's reads are not
 	// cases: its tests of a refused read reach their exit errors. Verdict's propagation goes
 	// through its reads in verdict_test.go.
-	reads := casesWithout(readCases(), "repo view", "api rules")
+	reads := casesWithout(readCases(), "repo view")
 	for _, tt := range reads {
 		t.Run(tt.name, func(t *testing.T) {
 			assertExitErrorNamesCall(t, tt)
@@ -365,9 +355,16 @@ func assertDecodeErrorNamesCall(t *testing.T, c readCase) {
 
 	err := c.run(t.Context(), newForge())
 
+	checkDecodeErrorNames(t, err, c.args)
+}
+
+// checkDecodeErrorNames fails unless err is a *github.DecodeError naming the `gh` call with args.
+func checkDecodeErrorNames(t *testing.T, err error, args []string) {
+	t.Helper()
+
 	decodeErr, ok := errors.AsType[*github.DecodeError](err)
 	assert.Assert(t, ok, "error = %v, want *github.DecodeError", err)
-	assert.Check(t, ghtest.Matches(ghArgv(c.args), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, ghArgv(c.args))
+	assert.Check(t, ghtest.Matches(ghArgv(args), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, ghArgv(args))
 }
 
 func TestForge_Identity_WhenVersionReadExitsNonZero_ReturnsExitErrorNamingCall(t *testing.T) {
@@ -419,9 +416,7 @@ func TestForge_Identity_WhenVisibilityIsNotOneGitHubGives_ReturnsDecodeErrorNami
 
 	_, err := newForge().Identity(t.Context(), engine())
 
-	decodeErr, ok := errors.AsType[*github.DecodeError](err)
-	assert.Assert(t, ok, "Identity error = %v, want *github.DecodeError", err)
-	assert.Check(t, ghtest.Matches(ghArgv(repoViewArgs()), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, ghArgv(repoViewArgs()))
+	checkDecodeErrorNames(t, err, repoViewArgs())
 }
 
 func TestRunner_PublicRepo(t *testing.T) {
@@ -465,9 +460,7 @@ func TestRunner_PublicRepo_WhenTheReplyNamesNoVisibility_ReturnsDecodeErrorNamin
 
 	_, err := github.Runner{}.PublicRepo(t.Context(), engine())
 
-	decodeErr, ok := errors.AsType[*github.DecodeError](err)
-	assert.Assert(t, ok, "PublicRepo error = %v, want *github.DecodeError", err)
-	assert.Check(t, ghtest.Matches(ghArgv(repoViewArgs()), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, ghArgv(repoViewArgs()))
+	checkDecodeErrorNames(t, err, repoViewArgs())
 }
 
 func TestForge_FindChanges(t *testing.T) {
@@ -529,9 +522,7 @@ func TestForge_FindChanges_WhenStateIsUnknown_ReturnsDecodeError(t *testing.T) {
 
 	_, err := newForge().FindChanges(t.Context(), engine(), featureBranch)
 
-	decodeErr, ok := errors.AsType[*github.DecodeError](err)
-	assert.Assert(t, ok, "FindChanges error = %v, want *github.DecodeError", err)
-	assert.Check(t, ghtest.Matches(ghArgv(listArgs()), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, ghArgv(listArgs()))
+	checkDecodeErrorNames(t, err, listArgs())
 }
 
 func TestForge_OpenChange_WhenCreated_ReturnsNumberAndURL(t *testing.T) {
@@ -947,7 +938,6 @@ func TestForge_Message(t *testing.T) {
 		{name: "pull request body setting, trailers added after a prose line whose spaces and tabs GitHub keeps", body: prose, mergeBody: prose + " \t\n" + liveSuite, want: []string{liveSuite}},
 		{name: "pull request body setting, trailers added after a CRLF body ending in a prose line", body: strings.ReplaceAll(prose, "\n", "\r\n"), mergeBody: prose + "\n" + liveSuite, want: []string{liveSuite}},
 		{name: "pull request body setting, trailers added in a CRLF merge body after a prose line", body: prose, mergeBody: strings.ReplaceAll(prose+"\n"+liveSuite, "\n", "\r\n"), want: []string{liveSuite}},
-		{name: "pull request body setting, trailers added after a body whose trailers end in spaces and tabs", body: pullBody + " \t", mergeBody: pullBody + " \t\n" + liveSuite, want: []string{liveSuite}},
 		{
 			name: "body ending partway through a line of the merge body",
 			body: "Lands the change.\n\nSigned-off", mergeBody: "Lands the change.\n\n" + signedOff,
@@ -990,9 +980,7 @@ func TestForge_Message_WhenAnswerHoldsNoPullRequest_ReturnsDecodeError(t *testin
 
 			_, err := newForge().Message(t.Context(), engine(), pullNumber)
 
-			decodeErr, ok := errors.AsType[*github.DecodeError](err)
-			assert.Assert(t, ok, "error = %v, want *github.DecodeError", err)
-			assert.Check(t, ghtest.Matches(ghArgv(messageArgs()), decodeErr.Argv), "Argv = %q, want %q", decodeErr.Argv, ghArgv(messageArgs()))
+			checkDecodeErrorNames(t, err, messageArgs())
 		})
 	}
 }

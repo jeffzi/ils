@@ -26,6 +26,8 @@ const (
 	// know.
 	harnessClaude = "claude"
 
+	initWord = "init"
+
 	flagProject = landing.FlagProject
 
 	// readTopLevel names the read of the top level of the repository a --project run installs in,
@@ -40,7 +42,6 @@ const (
 	// user scope in place of claudeDir in the home directory.
 	claudeConfigDir = "CLAUDE_CONFIG_DIR"
 
-	// homeVariable is the variable that names the home directory.
 	homeVariable = "HOME"
 
 	// skillsDir is the directory under claudeDir that holds one directory per skill.
@@ -167,7 +168,7 @@ func (p *parse) installClaude(ctx context.Context, shown *display, project bool)
 	settings, err := planSettings(dir, hook)
 	if shape, ok := errors.AsType[*shapeError](err); ok {
 		return *req.Refused(result.Say("%s, and the guard's setup edits it", shape.problem),
-			result.NextStep("fix %s, then run %s again", file, result.Command(strings.Join(req.Words, " "))))
+			result.NextStep("fix %s, then run %s again", file, rerun(req)))
 	}
 
 	if err != nil {
@@ -191,11 +192,8 @@ func (p *parse) installClaude(ctx context.Context, shown *display, project bool)
 	}
 
 	if len(linked) > 0 {
-		broke := req.Broke(linkedReason(linked),
-			result.NextStep("remove the link or update its target, then run %s again", result.Command(strings.Join(req.Words, " "))))
-		broke.Lines = lines
-
-		return *broke
+		return brokeWith(req.Broke(linkedReason(linked),
+			result.NextStep("remove the link or update its target, then run %s again", rerun(req))), lines)
 	}
 
 	return result.Result{Command: req.Command, Words: req.Words, Lines: lines, Next: result.NextNone(), Outcome: result.Done}
@@ -272,11 +270,20 @@ func userDir(req landing.Request, environ []string) (dir, hook string, refusal *
 // lines, those of the steps done before it, and with fixing what the reason names and running the
 // same words again as the next step.
 func installBroke(req landing.Request, lines []result.Phrase, err error) result.Result {
-	broke := req.Broke(result.Say("the install broke: %s", err.Error()),
-		result.NextStep("fix what the reason names, then run %s again", result.Command(strings.Join(req.Words, " "))))
+	return brokeWith(req.Broke(result.Say("the install broke: %s", err.Error()),
+		result.NextStep("fix what the reason names, then run %s again", rerun(req))), lines)
+}
+
+// brokeWith returns broke as a value, with lines as its lines.
+func brokeWith(broke *result.Result, lines []result.Phrase) result.Result {
 	broke.Lines = lines
 
 	return *broke
+}
+
+// rerun returns the command that runs req's words again, joined by spaces and not quoted.
+func rerun(req landing.Request) result.Name {
+	return result.Command(strings.Join(req.Words, " "))
 }
 
 // installSkills writes each skill of shipped, a directory of its own at its root, to the directory
@@ -394,9 +401,9 @@ func linkedSkill(shipped fs.FS, name, dest string) (stepLine, error) {
 func matchesShipped(shipped fs.FS, name, dest string) (bool, error) {
 	same := true
 	err := walkShipped(shipped, name, dest, func(file, target string) error {
-		want, err := fs.ReadFile(shipped, file)
+		want, err := readShipped(shipped, file)
 		if err != nil {
-			return fmt.Errorf("read the shipped %s: %w", file, err)
+			return err
 		}
 
 		//nolint:gosec // G304: target is the path of a shipped file under the Claude Code directory.
@@ -417,13 +424,23 @@ func matchesShipped(shipped fs.FS, name, dest string) (bool, error) {
 	return same, err
 }
 
+// readShipped returns the content of file in shipped, with an error that names the shipped file.
+func readShipped(shipped fs.FS, file string) ([]byte, error) {
+	want, err := fs.ReadFile(shipped, file)
+	if err != nil {
+		return nil, fmt.Errorf("read the shipped %s: %w", file, err)
+	}
+
+	return want, nil
+}
+
 // placeFile writes the shipped file to dest with replaceFile, unless dest already holds the same
 // content, and reports whether it wrote. hookScript is written executable, every other file not.
 // A dest that is a link stays one: the file it leads to is written.
 func placeFile(shipped fs.FS, file, dest string) (bool, error) {
-	want, err := fs.ReadFile(shipped, file)
+	want, err := readShipped(shipped, file)
 	if err != nil {
-		return false, fmt.Errorf("read the shipped %s: %w", file, err)
+		return false, err
 	}
 
 	// A dest that cannot be read is written over, and the write says what is wrong with it.

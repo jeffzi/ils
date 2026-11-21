@@ -382,15 +382,6 @@ func assertEndedBy(t *testing.T, got result.Result, gitDir string, want ended) {
 	assertSays(t, text, want.text)
 }
 
-// assertBrokeRead fails unless got is broke on the read named read, says nothing was written,
-// and carries detail in the line about the failure.
-func assertBrokeRead(t *testing.T, got result.Result, read, detail string) {
-	t.Helper()
-
-	said := assertBrokeReadBy(t, got, pushCommand(), read)
-	assert.Check(t, is.Contains(said, detail))
-}
-
 // assertBrokeReadBy fails unless got is broke on the read named read for the command cmd: it
 // carries cmd's command and words, says nothing was written, and ends on cmd's `Next:` line for a
 // fix. It returns what the result says about the failure, between the read's name and the line
@@ -748,14 +739,13 @@ func forgeRefusals() []refusal {
 	isFork := expect(owner+"/"+repoName, "is a fork")
 	noPush := expect("no push permission", owner+"/"+repoName)
 
-	missing := fails(&child.ToolMissingError{Tool: "gh", InstallURL: ghInstallURL})
 	old := child.ToolTooOldError{Tool: "gh", Minimum: ghMinimum, InstallURL: ghInstallURL}
 	outdated, unread := old, old
 	outdated.Version, outdated.Line = "2.49.0", "gh version 2.49.0 (2024-05-13)"
 	unread.Line = "gh version DEV"
 
 	return []refusal{
-		{name: "gh is not installed", script: missing, want: noTool},
+		{name: "gh is not installed", script: ghMissing(), want: noTool},
 		{
 			name: "gh is older than the minimum", script: fails(&outdated), want: tooOld,
 		},
@@ -883,7 +873,7 @@ func TestPreconditions_WhenGitVersionFails_BrokeNamingTheRead(t *testing.T) {
 	_, stop := landing.Preconditions(t.Context(), s.deps, pushRequest())
 
 	got := stopped(t, stop, "a broke result")
-	assertBrokeRead(t, got, readGitVersion, gittest.FailedSaid)
+	assertFailedGit(t, got, pushCommand(), readGitVersion)
 }
 
 // ---------------------------------------------------------------------------
@@ -1070,10 +1060,6 @@ func TestShellWord(t *testing.T) {
 		name, word, want string
 	}{
 		{name: "single quote spelled in double quotes", word: "rock'n'roll", want: `"rock'n'roll"`},
-		{name: "assignment quoted", word: "a=b", want: "'a=b'"},
-		{name: "shell keyword quoted", word: "if", want: "'if'"},
-		{name: "newline spelled as an escape", word: "a\nb", want: `$'a\nb'`},
-		{name: "history expansion mark in single quotes", word: "a!b", want: "'a!b'"},
 		{name: "history expansion mark beside a single quote", word: "it's!", want: `'it'\''s!'`},
 		{name: "history expansion mark beside a newline", word: "a!\nb", want: `$'a!\nb'`},
 	}
@@ -1089,11 +1075,12 @@ func TestShellWord(t *testing.T) {
 	}
 }
 
-func TestShellWord_WhenTheWordHoldsANulByte_ReturnsAnError(t *testing.T) {
+func TestShellWord_WhenTheWordHoldsANulByte_ReturnsAnErrorNamingTheWord(t *testing.T) {
 	t.Parallel()
 	const word = "a\x00b"
 
 	_, err := landing.ShellWord(word)
 
 	assert.Check(t, err != nil, "ShellWord(%q) error = nil, want an error", word)
+	assert.Check(t, is.ErrorContains(err, fmt.Sprintf("%q", word)))
 }

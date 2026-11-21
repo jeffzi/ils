@@ -87,8 +87,8 @@ func isBarePush(args []Word) bool {
 func judgePush(ctx context.Context, caller Caller, inv Invocation) (Verdict, error) {
 	allowed := Verdict{Outcome: Allow, Explicit: true}
 	if inv.Dir == "" || inv.Target.Unknown {
-		return Verdict{Outcome: Ask, Reason: "ils push: the guard cannot tell where the command runs, " +
-			"so it cannot read whether origin's repository is public"}, nil
+		return askBeforePush("the guard cannot tell where the command runs, " +
+			"so it cannot read whether origin's repository is public"), nil
 	}
 
 	origin, named, err := pushOrigin(ctx, targetRunner(caller.Git, inv.Target.Dir, inv.Target))
@@ -104,22 +104,27 @@ func judgePush(ctx context.Context, caller Caller, inv Invocation) (Verdict, err
 	where := fmt.Sprintf("%s on %s, origin's repository,", repo.FullName(), repo.Host)
 	gh, unknown := ghConfigRunner(caller.GH, inv.Dir, inv.ghConfig)
 	if unknown != "" {
-		return Verdict{Outcome: Ask, Reason: fmt.Sprintf("ils push: the guard cannot tell the %s gh runs with, "+
-			"so it cannot read whether %s is public", unknown, where)}, nil
+		return askBeforePush(fmt.Sprintf("the guard cannot tell the %s gh runs with, "+
+			"so it cannot read whether %s is public", unknown, where)), nil
 	}
 
 	public, err := gh.PublicRepo(ctx, repo)
 	if err != nil {
-		return Verdict{Outcome: Ask, Reason: fmt.Sprintf("ils push: the guard cannot read whether %s "+
-			"is public: %s", where, err)}, nil
+		return askBeforePush(fmt.Sprintf("the guard cannot read whether %s "+
+			"is public: %s", where, err)), nil
 	}
 
 	if !public {
-		return Verdict{Outcome: Ask, Reason: fmt.Sprintf("ils push: %s is not public, so "+
-			"the push starts CI runs that spend GitHub Actions minutes; the guard waits for your word", where)}, nil
+		return askBeforePush(fmt.Sprintf("%s is not public, so "+
+			"the push starts CI runs that spend GitHub Actions minutes; the guard waits for your word", where)), nil
 	}
 
 	return allowed, nil
+}
+
+// askBeforePush asks about the `ils push` judged by judgePush, giving reason after the command's name.
+func askBeforePush(reason string) Verdict {
+	return Verdict{Outcome: Ask, Reason: "ils push: " + reason}
 }
 
 // pushOrigin returns the repository origin's first push URL names for a git run by runner, placed
@@ -348,23 +353,8 @@ func ghGuardedFlags() map[string]ghGuardedFlag {
 
 // judgeGHSubcommand judges the gh subcommand name, such as `gh pr merge`, given its words rest.
 func judgeGHSubcommand(inv Invocation, name string, rest []Word) Verdict {
-	if flag, ok := ghGuardedFlags()[name]; ok {
-		takesNext := func(w Word) bool { return mayTakeValue(w, flag.valued) }
-		switch ghFlag(rest, flag, takesNext) {
-		case flagUnset:
-		case flagValueNotLiteral:
-			return refuse(fmt.Sprintf("%s; the guard reads %s with a value that is not a literal as set: write the value as a literal, or leave the flag out",
-				flag.reason, flag.long))
-		case flagMaybeSet:
-			spelling := "write it as a literal"
-			if ghFlag(beforeFirstMaybeFlag(rest, flag), flag, takesNext) == flagUnset {
-				spelling += ", or put it after `--`"
-			}
-
-			return refuse(fmt.Sprintf("%s; a word that is not a literal may be %s: %s", flag.reason, flag.long, spelling))
-		default:
-			return refuse(flag.reason)
-		}
+	if refusal, refused := guardedFlagRefusal(name, rest); refused {
+		return refusal
 	}
 
 	switch name {
@@ -384,6 +374,33 @@ func judgeGHSubcommand(inv Invocation, name string, rest []Word) Verdict {
 	}
 
 	return Verdict{Outcome: Allow}
+}
+
+// guardedFlagRefusal returns the refusal for the gh subcommand name when rest sets, or may set, the
+// flag ghGuardedFlags names for it, and false when it names none or the flag is unset.
+func guardedFlagRefusal(name string, rest []Word) (Verdict, bool) {
+	flag, ok := ghGuardedFlags()[name]
+	if !ok {
+		return Verdict{}, false
+	}
+
+	takesNext := func(w Word) bool { return mayTakeValue(w, flag.valued) }
+	switch ghFlag(rest, flag, takesNext) {
+	case flagUnset:
+		return Verdict{}, false
+	case flagValueNotLiteral:
+		return refuse(fmt.Sprintf("%s; the guard reads %s with a value that is not a literal as set: write the value as a literal, or leave the flag out",
+			flag.reason, flag.long)), true
+	case flagMaybeSet:
+		spelling := "write it as a literal"
+		if ghFlag(beforeFirstMaybeFlag(rest, flag), flag, takesNext) == flagUnset {
+			spelling += ", or put it after `--`"
+		}
+
+		return refuse(fmt.Sprintf("%s; a word that is not a literal may be %s: %s", flag.reason, flag.long, spelling)), true
+	default:
+		return refuse(flag.reason), true
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -427,14 +444,23 @@ func judgeAPI(rest []Word) Verdict {
 // --field, which reads a value starting with `@` from a file.
 func apiFields() []ghGuardedFlag {
 	return []ghGuardedFlag{
-		{long: "--raw-field", short: 'f', valued: apiValued},
-		{long: "--field", short: 'F', valued: apiValued},
+		{long: apiRawFieldFlag, short: 'f', valued: apiValued},
+		{long: apiFieldFlag, short: fieldShort, valued: apiValued},
 	}
+}
+
+// fieldShort is the shorthand of `gh api --field`, the field flag that reads a value starting with
+// `@` from a file.
+const fieldShort byte = 'F'
+
+// readsFile reports whether the value document of the field flag makes gh read it from a file.
+func readsFile(flag ghGuardedFlag, document string) bool {
+	return flag.short == fieldShort && strings.HasPrefix(document, "@")
 }
 
 // apiInput returns the flag that gives `gh api` its request body.
 func apiInput() ghGuardedFlag {
-	return ghGuardedFlag{long: "--input", valued: apiValued}
+	return ghGuardedFlag{long: apiInputFlag, valued: apiValued}
 }
 
 // apiEndpoint returns the endpoint of `gh api`: its first word that is neither a flag nor a flag's
@@ -496,7 +522,7 @@ func judgeGraphQL(rest []Word) Verdict {
 				return refuse(unreadableGraphQL)
 			case name != queryField || !named:
 				continue
-			case !v.Literal || flag.short == 'F' && strings.HasPrefix(document, "@"):
+			case !v.Literal || readsFile(flag, document):
 				return refuse(unreadableGraphQL)
 			}
 
@@ -587,7 +613,7 @@ func holdsMutation(document string) bool {
 			depth--
 		case isNameStart(c):
 			end := i + 1
-			for end < len(document) && (isNameStart(document[end]) || '0' <= document[end] && document[end] <= '9') {
+			for end < len(document) && isNameContinue(document[end]) {
 				end++
 			}
 
@@ -632,6 +658,10 @@ func isNameStart(c byte) bool {
 	return c == '_' || isASCIILetter(c)
 }
 
+func isNameContinue(c byte) bool {
+	return isNameStart(c) || '0' <= c && c <= '9'
+}
+
 // apiValued holds the shorthands of `gh api` that take a value.
 //
 // cspell:disable-next-line -- a set of option letters, not a word.
@@ -640,8 +670,19 @@ const apiValued = "XfFHpqt"
 // apiValuedLong returns the long flags of `gh api` that take a value, as the next word when none
 // is attached with `=`.
 func apiValuedLong() []string {
-	return []string{"--method", "--raw-field", "--field", "--header", "--preview", "--jq", "--template", "--input", "--hostname", "--cache"}
+	return []string{
+		apiMethodFlag, apiRawFieldFlag, apiFieldFlag, "--header", "--preview", "--jq", "--template", apiInputFlag,
+		"--hostname", "--cache",
+	}
 }
+
+// The long flags of `gh api` that the guard reads by name.
+const (
+	apiMethodFlag   = "--method"
+	apiRawFieldFlag = "--raw-field"
+	apiFieldFlag    = "--field"
+	apiInputFlag    = "--input"
+)
 
 // takesValueWord reports whether the literal word w is a flag of `gh api` that takes the next word
 // as its value: a long flag in apiValuedLong with no `=`, or a bundle of shorthands whose first
@@ -691,7 +732,7 @@ func apiMethod(rest []Word) (method Word, given bool) {
 // value when the flag takes the next word. A word that is not a literal and may be the flag gives
 // a method that is not a literal.
 func methodFlag(w, next Word) (method Word, ok, takesNext bool) {
-	flag := ghGuardedFlag{long: "--method", short: 'X', valued: apiValued}
+	flag := ghGuardedFlag{long: apiMethodFlag, short: 'X', valued: apiValued}
 	if value, found, attached := flagValue(w, flag); found {
 		if attached {
 			return value, true, false

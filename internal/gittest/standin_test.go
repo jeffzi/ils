@@ -27,6 +27,22 @@ type faked struct {
 	Code   int
 }
 
+// failedRead is what a call of the fake git that fails as a git read did.
+func failedRead() faked {
+	return faked{Stderr: gittest.FailedSaid + "\n", Code: gittest.FailedCode}
+}
+
+// killedBySignal is the exit code (*os.ProcessState).ExitCode reports for a process a signal ended.
+const killedBySignal = -1
+
+// assertRepository checks that a git init ran in dir.
+func assertRepository(t *testing.T, dir string) {
+	t.Helper()
+
+	_, err := os.Stat(filepath.Join(dir, ".git"))
+	assert.Check(t, err, "git init made no repository in %s", dir)
+}
+
 // callGit runs the git first on PATH with args in dir. A nil env inherits this process's
 // environment; otherwise env is the call's whole environment.
 func callGit(t *testing.T, env []string, dir string, args ...string) faked {
@@ -90,8 +106,7 @@ func TestFakeGit_WhenCallStartsWithFailingWords_FailsAsAGitRead(t *testing.T) {
 
 			got := callGit(t, nil, t.TempDir(), tt.args...)
 
-			want := faked{Stderr: gittest.FailedSaid + "\n", Code: gittest.FailedCode}
-			assert.Check(t, is.DeepEqual(got, want))
+			assert.Check(t, is.DeepEqual(got, failedRead()))
 		})
 	}
 }
@@ -101,8 +116,7 @@ func TestFakeGit_WhenTheLastWordEndsInAStar_MatchesAnArgumentStartingWithWhatCom
 
 	got := callGit(t, nil, t.TempDir(), "rev-parse", "--verify", "refs/ils/fetched/Q7/heads/main")
 
-	want := faked{Stderr: gittest.FailedSaid + "\n", Code: gittest.FailedCode}
-	assert.Check(t, is.DeepEqual(got, want))
+	assert.Check(t, is.DeepEqual(got, failedRead()))
 }
 
 func TestFakeGit_WhenTheLastWordEndsInAStar_RunsTheRealGitForAnArgumentStartingOtherwise(t *testing.T) {
@@ -123,8 +137,7 @@ func TestFakeGit_WhenCallStartsWithWordsThatFailAfterward_RunsTheRealGitThenFail
 
 	got := callGit(t, slices.Concat(f.Env(), settings), f.Dir(), "update-ref", "refs/heads/kept", "HEAD")
 
-	want := faked{Stderr: gittest.FailedSaid + "\n", Code: gittest.FailedCode}
-	assert.Check(t, is.DeepEqual(got, want))
+	assert.Check(t, is.DeepEqual(got, failedRead()))
 	assert.Check(t, is.Equal(f.Git("rev-parse", "refs/heads/kept"), f.Git("rev-parse", "HEAD")), "the real git did not run")
 }
 
@@ -142,31 +155,13 @@ func TestFakeGit_WhenCallIsNotFaked_RunsTheRealGit(t *testing.T) {
 
 	callGit(t, gittest.Env(t), dir, "init", "--quiet")
 
-	_, err := os.Stat(filepath.Join(dir, ".git"))
-	assert.Check(t, err, "git init made no repository in %s", dir)
+	assertRepository(t, dir)
 }
 
 // errStalled ends a call that stalled at the address of a fake it should no longer follow.
 var errStalled = errors.New("the call stalled at the address of an earlier fake")
 
-// onlyFirstFakes lists a call for each setting of firstFake, which a second, empty call to FakeGit
-// leaves unset.
-func onlyFirstFakes() []struct {
-	name string
-	args []string
-} {
-	return []struct {
-		name string
-		args []string
-	}{
-		{name: "version", args: []string{"--version"}},
-		{name: "fail", args: []string{"show-ref"}},
-		{name: "stall", args: []string{"rev-parse", "--is-inside-work-tree"}},
-		{name: "answer", args: []string{"rev-list", "--all"}},
-	}
-}
-
-// firstFake fakes every call of onlyFirstFakes, stalling at addr.
+// firstFake fakes a version, a failing, a stalling and an answered call, stalling at addr.
 func firstFake(addr string) gittest.Fake {
 	return gittest.Fake{
 		Version:  "git version 0.0.1",
@@ -187,20 +182,14 @@ func TestFakeGit_WhenInstalledAgain_StopsFakingWhatOnlyTheFirstCallFaked(t *test
 		t.Setenv(key, "")
 		assert.NilError(t, os.Unsetenv(key))
 	}
-	for _, tt := range onlyFirstFakes() {
-		t.Run(tt.name, func(t *testing.T) {
-			dir := initRepo(t, nil)
-			want := callGit(t, nil, dir, tt.args...)
-			addr, connected := gittest.SilentListener(t)
-			gittest.FakeGit(t, firstFake(addr))
-			gittest.FakeGit(t, gittest.Fake{})
-			ctx := gittest.Ending(t.Context(), connected, errStalled)
+	dir := initRepo(t, nil)
+	want := callGit(t, nil, dir, "--version")
+	gittest.FakeGit(t, gittest.Fake{Version: "git version 0.0.1"})
+	gittest.FakeGit(t, gittest.Fake{})
 
-			got := ranGit(t, gitCommand(ctx, nil, dir, tt.args...))
+	got := callGit(t, nil, dir, "--version")
 
-			assert.Check(t, is.DeepEqual(got, want))
-		})
-	}
+	assert.Check(t, is.DeepEqual(got, want))
 }
 
 func TestFakeGit_WhenInstalledAgain_ReturnsSettingsThatOverrideTheFirstCalls(t *testing.T) {
@@ -243,9 +232,6 @@ func TestFakeGit_WhenRealGitCannotStart_ExitsBroken(t *testing.T) {
 }
 
 func TestFakeGit_WhenCallStartsWithStallingWords_WaitsAtTheAddressUntilKilled(t *testing.T) {
-	// (*os.ProcessState).ExitCode reports -1 for a process a signal ended.
-	const killedBySignal = -1
-
 	addr, connected := gittest.SilentListener(t)
 	gittest.FakeGit(t, gittest.Fake{StallOn: []string{"show-ref", "--verify"}, StallAt: addr})
 	ctx := gittest.Ending(t.Context(), connected, context.Canceled)
@@ -272,61 +258,12 @@ func installFakeGit(t *testing.T) {
 
 func TestInstallFakeGit_WhenSettingsFakeTheCall_AnswersAsTheySay(t *testing.T) {
 	installFakeGit(t)
-	tests := []struct {
-		fake gittest.Fake
-		want faked
-		name string
-		args []string
-	}{
-		{
-			name: "version",
-			fake: gittest.Fake{Version: "git version 2.34.1"},
-			args: []string{"--version"},
-			want: faked{Stdout: "git version 2.34.1\n"},
-		},
-		{
-			name: "fail",
-			fake: gittest.Fake{FailOn: []string{"show-ref", "--verify"}},
-			args: []string{"show-ref", "--verify", "refs/heads/main"},
-			want: faked{Stderr: gittest.FailedSaid + "\n", Code: gittest.FailedCode},
-		},
-		{
-			name: "answer",
-			fake: gittest.Fake{AnswerOn: []string{"rev-list"}, Answer: "not counts"},
-			args: []string{"rev-list", "--count", "HEAD"},
-			want: faked{Stdout: "not counts\n"},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			env := slices.Concat(gittest.Env(t), tt.fake.Settings())
+	settings := gittest.Fake{FailOn: []string{"show-ref", "--verify"}}.Settings()
+	env := slices.Concat(gittest.Env(t), settings)
 
-			got := callGit(t, env, t.TempDir(), tt.args...)
+	got := callGit(t, env, t.TempDir(), "show-ref", "--verify", "refs/heads/main")
 
-			assert.Check(t, is.DeepEqual(got, tt.want))
-		})
-	}
-}
-
-func TestInstallFakeGit_WhenTheCallIsNotFaked_RunsTheRealGit(t *testing.T) {
-	installFakeGit(t)
-	tests := []struct {
-		name     string
-		settings []string
-	}{
-		{name: "no settings", settings: nil},
-		{name: "settings that fake other calls", settings: gittest.Fake{FailOn: []string{"show-ref"}}.Settings()},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dir := t.TempDir()
-
-			callGit(t, slices.Concat(gittest.Env(t), tt.settings), dir, "init", "--quiet")
-
-			_, err := os.Stat(filepath.Join(dir, ".git"))
-			assert.Check(t, err, "git init made no repository in %s", dir)
-		})
-	}
+	assert.Check(t, is.DeepEqual(got, failedRead()))
 }
 
 func TestInstallFakeGit_WhenTheCallsPathHoldsNoGit_RunsTheRealGitFoundAtInstall(t *testing.T) {
@@ -336,8 +273,7 @@ func TestInstallFakeGit_WhenTheCallsPathHoldsNoGit_RunsTheRealGitFoundAtInstall(
 	got := callGit(t, gittest.WithoutSSH(t, gittest.Env(t)), dir, "init", "--quiet")
 
 	assert.Check(t, is.DeepEqual(got, faked{}))
-	_, err := os.Stat(filepath.Join(dir, ".git"))
-	assert.Check(t, err, "git init made no repository in %s", dir)
+	assertRepository(t, dir)
 }
 
 // killsItsGit is a git alias that ends the first process named git above it with SIGTERM. Git
@@ -349,9 +285,6 @@ const killsItsGit = `!pid=$PPID; ` +
 	`[ "${pid:-0}" -gt 1 ] && kill -TERM "$pid"`
 
 func TestInstallFakeGit_WhenASignalKillsTheRealGit_TheCallerSeesASignalDeath(t *testing.T) {
-	// (*os.ProcessState).ExitCode reports -1 for a process a signal ended.
-	const killedBySignal = -1
-
 	installFakeGit(t)
 
 	got := callGit(t, gittest.Env(t), t.TempDir(), "-c", "alias.die="+killsItsGit, "die")

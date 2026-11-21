@@ -490,7 +490,7 @@ func (o subcommandOptions) setsLast(letter byte, long, negation string) bool {
 // opaque reports whether the options hold an argument the guard cannot read: one outside a value
 // slot that is not a literal, or a positional argument that is not.
 func (o subcommandOptions) opaque() bool {
-	return o.unreadable || slices.ContainsFunc(o.positional, func(w Word) bool { return !w.Literal })
+	return o.unreadable || anyNotLiteral(o.positional)
 }
 
 // attaches reports whether the options hold long, or a start of it, with a value attached.

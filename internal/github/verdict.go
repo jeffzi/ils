@@ -109,10 +109,6 @@ func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Ve
 	}
 
 	completed, err := f.runCompleted(ctx, repo, runID)
-	if _, exited := errors.AsType[*child.ExitError](err); exited {
-		return forge.FailedLog{State: forge.FailedLogUnreadable}, nil
-	}
-
 	if err != nil {
 		return cutLog(err)
 	}
@@ -122,10 +118,6 @@ func (f *Forge) failedLog(ctx context.Context, repo forge.Repo, verdict forge.Ve
 	}
 
 	result, err := f.runner().Run(ctx, "run", "view", "--repo", repo.Slug(), runID, "--log-failed", "--job", jobID)
-	if _, exited := errors.AsType[*child.ExitError](err); exited {
-		return forge.FailedLog{State: forge.FailedLogUnreadable}, nil
-	}
-
 	if err != nil {
 		return cutLog(err)
 	}
@@ -156,11 +148,11 @@ func (f *Forge) runCompleted(ctx context.Context, repo forge.Repo, run string) (
 	return runStatusOf(got.Status) == forge.RunCompleted, nil
 }
 
-// cutLog returns the log of the failed check as unreadable when err is the time limit or an
-// interrupt ending the read of it: the check failed whatever its log says, so the verdict stays red
-// without it. Any other err is returned.
+// cutLog returns the log of the failed check as unreadable when err is gh exiting non-zero, the
+// time limit or an interrupt ending the read of it: the check failed whatever its log says, so the
+// verdict stays red without it. Any other err is returned.
 func cutLog(err error) (forge.FailedLog, error) {
-	if child.EndedEarly(err) {
+	if _, exited := errors.AsType[*child.ExitError](err); exited || child.EndedEarly(err) {
 		return forge.FailedLog{State: forge.FailedLogUnreadable}, nil
 	}
 

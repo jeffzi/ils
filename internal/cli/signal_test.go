@@ -45,7 +45,7 @@ func TestApp_Run_WhenASignalLandsWhileTheSpinnerLineShows_PrintsTheResultWithThe
 
 	assert.Check(t, err, "the run did not end with the result of its landing command")
 	assert.Check(t, is.Equal(stdout, "Stopped.\n"), "the run did not print its result")
-	assert.Check(t, run.cleared(), "stderr does not end as a normal end leaves it:\n%q", run.stderr.raw())
+	checkCleared(t, run)
 }
 
 func TestApp_Run_WhenStartedWithTheInterruptIgnored_GoesOnIgnoringIt(t *testing.T) {
@@ -95,9 +95,16 @@ func TestApp_Run_WhenASecondSignalLands_DiesOfItWithTheDisplayEnded(t *testing.T
 			_, err := run.end(t)
 
 			diedOf(t, err, syscall.SIGINT)
-			assert.Check(t, run.cleared(), "stderr does not end as a normal end leaves it:\n%q", run.stderr.raw())
+			checkCleared(t, run)
 		})
 	}
+}
+
+// checkCleared checks, without stopping the test, that stderr of run ends as a normal end leaves it.
+func checkCleared(t *testing.T, run *stuckChild) {
+	t.Helper()
+
+	assert.Check(t, run.cleared(), "stderr does not end as a normal end leaves it:\n%q", run.stderr.raw())
 }
 
 // diedOf fails the test unless err, what waiting for a run returned, says the run died of sig.

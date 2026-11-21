@@ -22,6 +22,10 @@ import (
 )
 
 const (
+	parseWord = guard.ParseCommand
+	guardWord = guard.GuardCommand
+	hookWord  = guard.HookCommand
+
 	flagCwd = "--cwd"
 
 	cwdUsage = "The directory the command runs in"
@@ -40,6 +44,9 @@ const (
 
 	// unknownText stands, in the text of a parse, for a directory or git dir that is not known.
 	unknownText = "unknown"
+
+	// noneText stands, in the text of a parse, for a list or git dir that holds nothing.
+	noneText = "none"
 )
 
 // parseCommand returns `ils parse --cwd <dir> -- '<command>'`, which reads the command as the
@@ -97,7 +104,7 @@ func (p *parse) cwdCommand(
 
 		return nil
 	}
-	c.Flags().StringVar(&cwd, strings.TrimPrefix(flagCwd, "--"), "", cwdUsage)
+	c.Flags().StringVar(&cwd, flagName(flagCwd), "", cwdUsage)
 	c.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
 		if _, ok := errors.AsType[*pflag.ValueRequiredError](err); ok {
 			return p.refuseFor(word, result.Say("%s takes a directory, and none was given", flagCwd))
@@ -306,19 +313,19 @@ func invocationLine(inv result.Invocation) result.Phrase {
 		marks = append(marks, text)
 	}
 
-	words, markList := wordTexts(inv.Words), cmp.Or(strings.Join(marks, ", "), "none")
+	words, markList := wordTexts(inv.Words), cmp.Or(strings.Join(marks, ", "), noneText)
 	if inv.Git == nil {
 		return result.Say("%s; directory %s; marks %s", words, dir, markList)
 	}
 
-	gitDir := cmp.Or(inv.Git.GitDir, "none")
+	gitDir := cmp.Or(inv.Git.GitDir, noneText)
 	if inv.Git.GitDirUnknown {
 		gitDir = unknownText
 	}
 
 	runsIn := cmp.Or(inv.Git.Dir, unknownText)
 
-	gitPart := "arguments " + cmp.Or(wordTexts(inv.Git.Args), "none") + "; git dir " + gitDir + "; git runs in " + runsIn
+	gitPart := "arguments " + cmp.Or(wordTexts(inv.Git.Args), noneText) + "; git dir " + gitDir + "; git runs in " + runsIn
 	if inv.Git.Subcommand != nil {
 		gitPart = "subcommand " + wordText(*inv.Git.Subcommand) + "; " + gitPart
 	}

@@ -77,22 +77,22 @@ func TestVerdict_Failed(t *testing.T) {
 	}{
 		{
 			name:    "passing ahead of failing",
-			verdict: verdictOf(forgetest.Check("lint", forge.BucketPass), forgetest.Check("test", forge.BucketFail)),
+			verdict: verdictOf(forgetest.Check("lint", forge.BucketPass), forgetest.Check(failed, forge.BucketFail)),
 			want:    failed,
 		},
 		{
 			name:    "failing ahead of canceled",
-			verdict: verdictOf(forgetest.Check("test", forge.BucketFail), forgetest.Check("build", forge.BucketCanceled)),
+			verdict: verdictOf(forgetest.Check(failed, forge.BucketFail), forgetest.Check(canceled, forge.BucketCanceled)),
 			want:    failed,
 		},
 		{
 			name:    "canceled ahead of failing",
-			verdict: verdictOf(forgetest.Check("build", forge.BucketCanceled), forgetest.Check("test", forge.BucketFail)),
+			verdict: verdictOf(forgetest.Check(canceled, forge.BucketCanceled), forgetest.Check(failed, forge.BucketFail)),
 			want:    canceled,
 		},
 		{
 			name:    "optional failing ahead of required canceled",
-			verdict: verdictOf(forgetest.Check("lint", forge.BucketFail), forgetest.RequiredCheck("build", forge.BucketCanceled)),
+			verdict: verdictOf(forgetest.Check("lint", forge.BucketFail), forgetest.RequiredCheck(canceled, forge.BucketCanceled)),
 			want:    canceled,
 		},
 	}

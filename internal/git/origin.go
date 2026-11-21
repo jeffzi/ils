@@ -121,7 +121,7 @@ func (o Origin) Same(other Origin) bool {
 }
 
 // ---------------------------------------------------------------------------
-// Errors
+// Origin and push failures
 // ---------------------------------------------------------------------------
 
 // ErrNoSymref reports an answer from origin that names no default branch: no `ref:` line for HEAD.
@@ -245,7 +245,7 @@ func (r Repo) OriginURLs(ctx context.Context) (OriginURLs, error) {
 		return OriginURLs{}, err
 	}
 
-	pushURLs, err := r.line(ctx, "remote", "get-url", "--push", "--all", OriginRemote)
+	pushURLs, err := r.pushURLs(ctx)
 	if err != nil {
 		return OriginURLs{}, err
 	}
@@ -273,6 +273,11 @@ func (r Repo) OriginURLs(ctx context.Context) (OriginURLs, error) {
 	}
 
 	return urls, errors.Join(errs...)
+}
+
+// pushURLs returns the push URLs of origin in the order git pushes to them, one per line.
+func (r Repo) pushURLs(ctx context.Context) (string, error) {
+	return r.line(ctx, "remote", "get-url", "--push", "--all", OriginRemote)
 }
 
 // parseOrigin parses raw as ParseOrigin does, then replaces the host of an ssh URL with the host
@@ -700,20 +705,20 @@ func (r Repo) keepaliveConfig(ctx context.Context) []string {
 		return nil
 	}
 
-	pushURLs, err := r.line(ctx, "remote", "get-url", "--push", "--all", OriginRemote)
+	pushURLs, err := r.pushURLs(ctx)
 	if err != nil {
 		return nil
 	}
 
-	overSSH := false
+	anyOverSSH := false
 	for raw := range strings.SplitSeq(pushURLs, "\n") {
-		host, _, viaSSH, splitErr := splitOrigin(raw)
+		host, _, overSSH, splitErr := splitOrigin(raw)
 		if splitErr != nil {
 			// A URL of a form ils does not read may still reach its host over ssh.
 			return nil
 		}
 
-		if !viaSSH {
+		if !overSSH {
 			continue
 		}
 
@@ -721,10 +726,10 @@ func (r Repo) keepaliveConfig(ctx context.Context) []string {
 			return nil
 		}
 
-		overSSH = true
+		anyOverSSH = true
 	}
 
-	if !overSSH {
+	if !anyOverSSH {
 		return nil
 	}
 
@@ -795,8 +800,12 @@ func splitPushReport(stdout, spec string) (hook string, report pushReport) {
 
 	for at, line := range lines {
 		found, refs, isStatus := parseStatus(line)
+		start := reportStart(line)
 		// A `To` line git wrote stays one whatever tabs its URL holds.
-		if start := reportStart(line); start == 0 || start > 0 && !isStatus {
+		gitWroteTo := start == 0
+		hookRanIntoTo := start > 0 && !isStatus
+
+		if gitWroteTo || hookRanIntoTo {
 			lead, leadStart = at, start
 
 			continue
@@ -806,11 +815,13 @@ func splitPushReport(stdout, spec string) (hook string, report pushReport) {
 			continue
 		}
 
-		if report.blocks == 0 {
+		firstBlock := report.blocks == 0
+		if firstBlock {
 			hook = strings.Join(append(lines[:lead:lead], lines[lead][:leadStart]), "\n")
 		}
 
-		if report.blocks == 0 || found.flag == pushRejected && report.status.flag != pushRejected {
+		refusesWhatWasAccepted := found.flag == pushRejected && report.status.flag != pushRejected
+		if firstBlock || refusesWhatWasAccepted {
 			report.status = found
 		}
 

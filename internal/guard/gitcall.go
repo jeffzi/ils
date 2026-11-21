@@ -69,12 +69,10 @@ const (
 	// UnknownSubcommand is a subcommand word that is neither one of git's commands nor an alias the
 	// guard can read.
 	UnknownSubcommand MarkKind = "git word that is neither a command nor an alias"
-	// DeepAlias is an alias nested past the depth Parse expands.
-	DeepAlias MarkKind = "git alias nested too deep"
+	DeepAlias         MarkKind = "git alias nested too deep"
 	// UnreadableAlias is an alias Parse cannot read as git would: its value does not split into
 	// words, or the invocation's `-c` or `--config-env` options give config the guard cannot follow.
 	UnreadableAlias MarkKind = "git alias the guard cannot read"
-	// MissingGitValue is a global option that ends the git invocation without the value it takes.
 	MissingGitValue MarkKind = "git option missing its value"
 	// OlderCommandAlias is an alias named like one of git's commands that an older git ils supports
 	// may not have, which that git runs in place of the command.

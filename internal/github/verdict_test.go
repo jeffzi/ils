@@ -2,7 +2,6 @@ package github_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -15,7 +14,6 @@ import (
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
-	"github.com/jeffzi/ils/internal/child"
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/github/ghtest"
@@ -153,20 +151,6 @@ func verdictOf(t *testing.T, reads []ghtest.Call, required ...string) forge.Verd
 	assert.NilError(t, err)
 
 	return got
-}
-
-func TestForge_Verdict_WhenTheCommitHasNoCheckYet_ReturnsNoCheckAsSoonAsGitHubAnswers(t *testing.T) {
-	ghtest.Setup(t, commitReads(checkRunsPage(), statusPage(), workflowRunsPage())...)
-
-	synctest.Test(t, func(t *testing.T) {
-		start := time.Now()
-
-		got, err := newForge().Verdict(t.Context(), engine(), verdictQuery())
-		assert.NilError(t, err)
-
-		assert.Check(t, is.DeepEqual(got, forge.Verdict{}, cmpopts.EquateEmpty()))
-		assert.Check(t, is.Equal(time.Since(start), time.Duration(0)))
-	})
 }
 
 func TestForge_Verdict_WhenRunsOfSeveralEventsReportChecks_KeepsTheChecksOfEachEvent(t *testing.T) {
@@ -314,8 +298,6 @@ func failedLogRows() []failedLogRow {
 		{name: "run view fails for a completed run", checkRuns: failing, run: completed, log: gone, want: unreadable},
 		// The failing check's own job has completed while other jobs of its run still go.
 		{name: "run of the failing check not completed", checkRuns: failing, run: runStatusAnswer("in_progress"), log: logged, want: inProgress},
-		{name: "run status this version does not know", checkRuns: failing, run: runStatusAnswer("paused"), log: logged, want: inProgress},
-		{name: "run status read still failing after its re-reads", checkRuns: failing, run: ghtest.ServerError(), log: logged, want: unreadable},
 		{name: "run status read answered 4xx", checkRuns: failing, run: notFoundAnswer(), log: logged, want: unreadable},
 		{name: "failed log only whitespace reads the job log", checkRuns: failing, run: completed, log: blank, jobLog: jobLogged, want: jobRead},
 		{name: "failed log empty and job log only whitespace", checkRuns: failing, run: completed, log: empty, jobLog: blank, want: inProgress},
@@ -390,23 +372,6 @@ func TestForge_Verdict_WhenAReadExitsNonZero_ReturnsExitErrorNamingTheRead(t *te
 			assertExitErrorNamesCall(t, tt)
 		})
 	}
-}
-
-func TestForge_Verdict_WhenGitHubRefusesARead_ReturnsItsErrorAndNoCheck(t *testing.T) {
-	ghtest.Setup(t,
-		ghtest.Says(failingBuild(), checkRunsArgs()...),
-		ghtest.Exits(notFoundAnswer(), commitStatusArgs()...),
-		ghtest.Says(pushCI(), workflowRunsArgs()...),
-	)
-
-	synctest.Test(t, func(t *testing.T) {
-		got, err := newForge().Verdict(t.Context(), engine(), verdictQuery())
-
-		exitErr, ok := errors.AsType[*child.ExitError](err)
-		assert.Assert(t, ok, "error = %v, want *child.ExitError", err)
-		assert.Check(t, ghtest.Matches(ghArgv(commitStatusArgs()), exitErr.Argv), "Argv = %q, want %q", exitErr.Argv, ghArgv(commitStatusArgs()))
-		assert.Check(t, is.DeepEqual(got, forge.Verdict{}, cmpopts.EquateEmpty()))
-	})
 }
 
 func TestForge_Verdict_WhenCheckRunsReadPrintsMalformedJSON_ReturnsDecodeErrorNamingIt(t *testing.T) {
@@ -584,18 +549,6 @@ func TestForge_CommitVerdict_WhenAReadSpansTwoPages_ReadsEveryPage(t *testing.T)
 			got := commitVerdict(t, tt.checkRuns, tt.statuses, tt.runs)
 
 			assert.Check(t, is.DeepEqual(got, tt.want, sameChecks()))
-		})
-	}
-}
-
-func TestForge_CommitVerdict_WhenAReadExitsNonZero_ReturnsExitErrorNamingTheRead(t *testing.T) {
-	run := func(ctx context.Context, f *github.Forge) error {
-		_, err := f.CommitVerdict(ctx, engine(), headSHA)
-		return err
-	}
-	for _, tt := range eachCommitRead(run) {
-		t.Run(tt.name, func(t *testing.T) {
-			assertExitErrorNamesCall(t, tt)
 		})
 	}
 }

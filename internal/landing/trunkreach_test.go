@@ -1,7 +1,6 @@
 package landing_test
 
 import (
-	"context"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -72,9 +71,7 @@ func TestStatus_WhenOriginsTrunkCannotBeReadOnAWorkBranch_EndsOnTheStepPushEndsO
 			want: nextPush(),
 		},
 		{
-			miss: trunkMiss{name: "origin does not answer on a branch with no commit past the trunk", arrange: lastFetched(func(f *gittest.Fixture) {
-				f.Git("switch", "--quiet", "--create", spare, trunk)
-			}), offline: true},
+			miss: trunkMiss{name: "origin does not answer on a branch with no commit past the trunk", arrange: lastFetched(startSpareAtTrunk), offline: true},
 			want: nextPush(),
 		},
 		{
@@ -107,12 +104,24 @@ func TestStatus_WhenOriginsTrunkCannotBeReadOnAWorkBranch_EndsOnTheStepPushEndsO
 // detachOnTrunk detaches HEAD on the trunk, with no commit of its own.
 func detachOnTrunk(f *gittest.Fixture) { f.Git("switch", "--quiet", "--detach", trunk) }
 
-// detachPastTrunk detaches HEAD on a commit of its own past the trunk, which no branch carries.
-func detachPastTrunk(f *gittest.Fixture) {
-	f.Commits(spare, sharpen)
+// detachedPast detaches HEAD on a commit of its own past the trunk, which no branch carries, and
+// returns the commits past the trunk.
+func detachedPast(f *gittest.Fixture) []string {
+	own := f.Commits(spare, sharpen)
 	f.Detach()
 	f.Git("branch", "--quiet", "--delete", "--force", spare)
+
+	return own
 }
+
+// detachPastTrunk is detachedPast for an arrange that has no use for the commits.
+func detachPastTrunk(f *gittest.Fixture) { detachedPast(f) }
+
+// forgetOriginsTrunk removes the name of its trunk that the last fetch recorded for origin.
+func forgetOriginsTrunk(f *gittest.Fixture) { f.Git("remote", "set-head", "origin", "--delete") }
+
+// startSpareAtTrunk switches to a new branch at the trunk, which has no commit past it.
+func startSpareAtTrunk(f *gittest.Fixture) { f.Git("switch", "--quiet", "--create", spare, trunk) }
 
 func TestStatus_WhenOriginsTrunkCannotBeReadOnADetachedHEAD_EndsOnTheStepBranchEndsOn(t *testing.T) {
 	t.Parallel()
@@ -136,7 +145,7 @@ func TestStatus_WhenOriginsTrunkCannotBeReadOnADetachedHEAD_EndsOnTheStepBranchE
 		{
 			miss: trunkMiss{name: "origin does not answer and no fetch named its trunk", arrange: func(f *gittest.Fixture) {
 				detachPastTrunk(f)
-				f.Git("remote", "set-head", "origin", "--delete")
+				forgetOriginsTrunk(f)
 			}, offline: true},
 			want: nextBranch(),
 		},
@@ -168,11 +177,7 @@ func TestStatus_WhenOriginDoesNotAnswerOnADetachedHEAD_ListsItsCommitsAgainstThe
 
 	var own []string
 
-	s := offlineStatusScene(t, lastFetched(func(f *gittest.Fixture) {
-		own = f.Commits(spare, sharpen)
-		f.Detach()
-		f.Git("branch", "--quiet", "--delete", "--force", spare)
-	}), viewing(cleanHead(), passing()))
+	s := offlineStatusScene(t, lastFetched(func(f *gittest.Fixture) { own = detachedPast(f) }), viewing(cleanHead(), passing()))
 
 	got := seeStatus(t, s, (*testing.T).Context)
 
@@ -184,11 +189,7 @@ func TestStatus_WhenOriginDoesNotAnswerTheFetchOnADetachedHEAD_ListsItsCommitsAg
 
 	var own []string
 
-	s := statusScene(t, func(f *gittest.Fixture) {
-		own = f.Commits(spare, sharpen)
-		f.Detach()
-		f.Git("branch", "--quiet", "--delete", "--force", spare)
-	}, viewing(cleanHead(), passing()))
+	s := statusScene(t, func(f *gittest.Fixture) { own = detachedPast(f) }, viewing(cleanHead(), passing()))
 	// Origin answers the question about its trunk and stops before the fetch of it.
 	s.stopAnswering(t, 1)
 
@@ -247,7 +248,7 @@ func TestStatus_WhenTheReadOfOriginsURLsIsCutShortOffAWorkBranch_EndsOnBranchWit
 			s := statusScene(t, tt.arrange, tt.build)
 			ctx := byTimeLimit().stallingGit([]string{"remote", "get-url", "--push"})(t, s)
 
-			got := seeStatus(t, s, func(*testing.T) context.Context { return ctx })
+			got := seeStatus(t, s, fixedCtx(ctx))
 
 			assert.Assert(t, hasUnread(got.status, readURLs), "unread %v, want %s listed", got.status.Unread, readURLs)
 			assert.Check(t, is.Equal(got.status.Standing, tt.standing))
@@ -265,11 +266,11 @@ func TestStatus_WhenTheReadOfOriginsURLsIsCutShortWithNoTrunkFetched_EndsOnFixin
 			t.Parallel()
 			s := statusScene(t, func(f *gittest.Fixture) {
 				f.Publish(topic)
-				f.Git("remote", "set-head", "origin", "--delete")
+				forgetOriginsTrunk(f)
 			}, greenOpen())
 			ctx := c.stallingGit([]string{"remote", "get-url", "--push"})(t, s)
 
-			got := seeStatus(t, s, func(*testing.T) context.Context { return ctx })
+			got := seeStatus(t, s, fixedCtx(ctx))
 
 			assert.Check(t, is.Equal(got.status.Standing, result.Standing("")))
 			assertEndsOn(t, got, statusCommand().fixed)
@@ -281,7 +282,7 @@ func TestStatus_WhenNoTrunkNameCanBeLearned_LeavesWhereHEADStandsUnread(t *testi
 	t.Parallel()
 	s := statusScene(t, func(f *gittest.Fixture) {
 		standOnTrunk(f)
-		f.Git("remote", "set-head", "origin", "--delete")
+		forgetOriginsTrunk(f)
 	}, ruledBy(forge.RulesProtect))
 	s.refuse(t)
 

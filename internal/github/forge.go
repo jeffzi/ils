@@ -506,12 +506,14 @@ func trailersOf(body, mergeBody string) []string {
 		}
 	}
 
+	lineKey := func(line string) string { return strings.TrimRight(line, " \t") }
+
 	held := make(map[string]bool)
 	for line := range strings.SplitSeq(own, "\n") {
-		held[strings.TrimRight(line, " \t")] = true
+		held[lineKey(line)] = true
 	}
 
-	return slices.DeleteFunc(lines, func(line string) bool { return held[strings.TrimRight(line, " \t")] })
+	return slices.DeleteFunc(lines, func(line string) bool { return held[lineKey(line)] })
 }
 
 // Land squash-merges the pull request with exactly the subject and body of landing, even an empty

@@ -159,7 +159,7 @@ func readUnquoted(b *strings.Builder, raw string, last bool) bool {
 			escaped = false
 		case c == '\\':
 			escaped = true
-		case c == '*' || c == '?', c == '[' && (!last || strings.Contains(raw[i+1:], "]")):
+		case c == '*', c == '?', c == '[' && (!last || strings.Contains(raw[i+1:], "]")):
 			WriteUnquoted(b, raw[:i])
 
 			return false
@@ -237,6 +237,11 @@ func nextPart(parts []syntax.WordPart, i int) syntax.WordPart {
 	}
 
 	return parts[i+1]
+}
+
+// anyNotLiteral reports whether any of words is not a literal.
+func anyNotLiteral(words []Word) bool {
+	return slices.ContainsFunc(words, func(w Word) bool { return !w.Literal })
 }
 
 func inTable(table map[string]bool, w Word) bool {

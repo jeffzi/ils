@@ -68,6 +68,12 @@ type finishedResume struct {
 	calls   []forgetest.Call
 }
 
+// deleted returns the forge calls of a resume that read the pull requests and deleted the branch on
+// origin.
+func deleted() []forgetest.Call {
+	return append(asked(changesRead()), forgetest.Call{Op: forgetest.OpDeleteBranch, Repo: origin(), Branch: topic})
+}
+
 // finishedResumes are the resumes that run to their end, done.
 func finishedResumes() []finishedResume {
 	return []finishedResume{
@@ -79,7 +85,7 @@ func finishedResumes() []finishedResume {
 				return ""
 			},
 			text: resumedLine() + deletedLine() + onTrunkLine(), ending: result.EndingTrunk,
-			calls: append(asked(changesRead()), forgetest.Call{Op: forgetest.OpDeleteBranch, Repo: origin(), Branch: topic}),
+			calls: deleted(),
 		},
 		{
 			name: "branch gone from origin and the trunk in a linked worktree", script: resuming(),
@@ -104,7 +110,7 @@ func finishedResumes() []finishedResume {
 				return head
 			},
 			text: resumedLine() + deletedLine() + onTrunkLine(), ending: result.EndingTrunk,
-			calls: append(asked(changesRead()), forgetest.Call{Op: forgetest.OpDeleteBranch, Repo: origin(), Branch: topic}),
+			calls: deleted(),
 		},
 	}
 }
