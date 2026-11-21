@@ -15,6 +15,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Fix the squash message dropping the `Co-authored-by` trailers GitHub adds after a blank line
   below the pull request's description.
 - Fix `ils release` reporting a failed check of the release commit without the end of its log.
+- Fix the guard judging a `git show` pipe inside a redirected group or function call by that
+  redirect, which let through a pipe that overwrites a file from history and refused a harmless one.
 
 ## [0.6.0] - 2026-11-17
 
