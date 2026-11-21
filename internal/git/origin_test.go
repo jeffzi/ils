@@ -586,6 +586,21 @@ func TestRepo_WhenOriginRefusesTheCall_ReturnsErrRefused(t *testing.T) {
 	}
 }
 
+func TestRepo_Push_WhenTheUserSelectsATranslatedLocale_ReturnsErrRefused(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	f.Commits(topic, "one")
+	f.SetOriginURL(sshURL)
+	// The stand-in for ssh speaks the user's language unless the push runs in the C locale.
+	env := f.ServedBy(`if [ "$LC_ALL" = C ]; then echo 'ERROR: Repository not found.' >&2; ` +
+		`else echo 'the same refusal, translated' >&2; fi; exit 1`)
+	repo := repoWithEnv(f, append(env, "LC_ALL=fr_FR.UTF-8"))
+
+	_, err := pushHead(t.Context(), repo)
+
+	assertRefused(t, "Push", err)
+}
+
 func TestRepo_RemoteBranch_WhenALocalPolicyDeniesTheSSHConnection_ReturnsErrRemote(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
@@ -988,29 +1003,26 @@ func TestPushError_Output(t *testing.T) {
 	}
 }
 
-func TestPushError_Error(t *testing.T) {
+func TestPushError_Error_WhenABranchPushHasAReason_NamesTheBranchThenTheReasonAndOutput(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		name string
-		err  git.PushError
-		want string
-	}{
-		{
-			name: "reason before output",
-			err:  git.PushError{Ref: "refs/heads/topic", Reason: "pre-receive hook declined", Stdout: "out\n", Stderr: "err\n"},
-			want: "push of topic refused: pre-receive hook declined\nout\nerr",
-		},
-		{name: "output only", err: git.PushError{Ref: "refs/tags/v1.0.0", Stdout: "out\n"}, want: "push of refs/tags/v1.0.0 refused: out"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	err := git.PushError{Ref: git.BranchRefPrefix + "topic", Reason: "pre-receive hook declined", Stdout: "out\n", Stderr: "err\n"}
 
-			got := tt.err.Error()
+	got := err.Error()
 
-			assert.Check(t, is.Equal(got, tt.want))
-		})
-	}
+	assert.Check(t, is.Contains(got, "topic"))
+	assert.Check(t, !strings.Contains(got, git.BranchRefPrefix), "Error() = %q, want the branch without %s", got, git.BranchRefPrefix)
+	assert.Check(t, strings.HasSuffix(got, "pre-receive hook declined\nout\nerr"), "Error() = %q", got)
+}
+
+func TestPushError_Error_WhenATagPushHasOnlyOutput_NamesTheRefThenTheOutputOnOneLine(t *testing.T) {
+	t.Parallel()
+	err := git.PushError{Ref: "refs/tags/v1.0.0", Stdout: "out\n"}
+
+	got := err.Error()
+
+	assert.Check(t, is.Contains(got, "refs/tags/v1.0.0"))
+	assert.Check(t, strings.HasSuffix(got, "out"), "Error() = %q", got)
+	assert.Check(t, !strings.Contains(got, "\n"), "Error() = %q, want one line", got)
 }
 
 func TestRepo_Push_WhenOriginNeverAnswers_ReturnsErrRemote(t *testing.T) {

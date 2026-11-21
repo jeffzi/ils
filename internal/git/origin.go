@@ -649,10 +649,13 @@ func (r Repo) PushTag(ctx context.Context, name string) error {
 
 // push pushes source to origin's ref with git's flags, classing a git that exits non-zero as Push
 // documents. Its ssh sends a keepalive as keepaliveConfig decides.
+//
+// It runs git in the C locale, and with it the pre-push hooks git runs: remoteFailure reads git's
+// own words, which git translates.
 func (r Repo) push(ctx context.Context, source, ref string, flags ...string) error {
 	spec := source + ":" + ref
 	args := slices.Concat(r.keepaliveConfig(ctx), []string{"push", "--porcelain"}, flags, []string{OriginRemote, spec})
-	result, err := r.Runner.Run(ctx, args...)
+	result, err := r.Runner.inCLocale().Run(ctx, args...)
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 	if !ok {
