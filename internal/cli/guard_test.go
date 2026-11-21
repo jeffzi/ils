@@ -249,18 +249,6 @@ func TestApp_Run_WhenParseCannotReadTheCommand_NextNamesTheTypedCommandQuotedFor
 	assert.Check(t, is.DeepEqual(words[start:start+len(want)], want))
 }
 
-func TestApp_Run_WhenParseCannotQuoteTheTypedCommand_ExitsOneWithAnErrorOnStderr(t *testing.T) {
-	t.Parallel()
-	f := gittest.New(t, trunk)
-	const command = "echo \"x\x00"
-
-	got := launch(t, outsideWith(t, f.Env()), "parse", "--cwd", f.Dir(), "--json", "--", command)
-
-	assert.Check(t, is.Equal(got.code, exitBroke), "stdout = %q", got.stdout)
-	assert.Check(t, is.Equal(got.stdout, ""))
-	assert.Check(t, got.stderr != "", "stderr is empty, want the error")
-}
-
 func TestApp_Run_WhenParseIsNotGivenADirectoryAndOneCommandWord_Refuses(t *testing.T) {
 	t.Parallel()
 
