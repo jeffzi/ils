@@ -492,9 +492,10 @@ func trailersOf(body, mergeBody string) []string {
 
 	endsAtLine := rest == "" || strings.HasPrefix(rest, "\n")
 	if cut && endsAtLine {
-		// The line break that closes body's last line is body's own: kept, it would open the
-		// lines GitHub appended to body's last paragraph with an empty one.
-		appended = strings.TrimPrefix(rest, "\n")
+		// The line break that closes body's last line is body's own, and any blank line after it
+		// only separates body from what GitHub appended: kept, they would open the lines GitHub
+		// appended with an empty one.
+		appended = strings.TrimLeft(rest, "\n")
 	}
 
 	paragraphs := strings.Split(strings.TrimRight(appended, "\n"), "\n\n")

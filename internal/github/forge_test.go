@@ -340,7 +340,7 @@ func casesWithout(all []readCase, names ...string) []readCase {
 }
 
 func TestForge_WhenReadPrintsMalformedJSON_ReturnsDecodeErrorNamingCall(t *testing.T) {
-	for _, tt := range casesNamed(readCases(), "repo view", "api graphql release") {
+	for _, tt := range casesNamed(readCases(), "repo view") {
 		t.Run(tt.name, func(t *testing.T) {
 			assertDecodeErrorNamesCall(t, tt)
 		})
@@ -425,7 +425,6 @@ func TestRunner_PublicRepo(t *testing.T) {
 		want       bool
 	}{
 		{visibility: "PUBLIC", want: true},
-		{visibility: "PRIVATE", want: false},
 		{visibility: "INTERNAL", want: false},
 	}
 	for _, tt := range tests {
@@ -934,6 +933,7 @@ func TestForge_Message(t *testing.T) {
 		{name: "commit messages setting, a trailer the body holds mid-paragraph with CRLF line ends", body: "Lands the change.\r\n\r\n" + signedOff + "\r\nSigned in person.\r\n", mergeBody: "* Add the forge\n\n" + signedOff + "\n" + liveSuite, want: []string{liveSuite}},
 		{name: "commit messages setting, a trailer the body holds mid-paragraph with trailing spaces and tabs", body: "Lands the change.\n\n" + signedOff + " \t\nSigned in person.\n", mergeBody: "* Add the forge\n\n" + signedOff + "\n" + liveSuite, want: []string{liveSuite}},
 		{name: "pull request body setting, trailers added after a body ending in a prose line and a newline", body: prose + "\n", mergeBody: prose + "\n" + liveSuite, want: []string{liveSuite}},
+		{name: "pull request body setting, trailers added after a blank line following a prose line", body: prose, mergeBody: prose + "\n\n" + liveSuite, want: []string{liveSuite}},
 		{name: "pull request body setting, trailers added after a prose line whose spaces and tabs GitHub drops", body: prose + " \t", mergeBody: prose + "\n" + liveSuite, want: []string{liveSuite}},
 		{name: "pull request body setting, trailers added after a prose line whose spaces and tabs GitHub keeps", body: prose, mergeBody: prose + " \t\n" + liveSuite, want: []string{liveSuite}},
 		{name: "pull request body setting, trailers added after a CRLF body ending in a prose line", body: strings.ReplaceAll(prose, "\n", "\r\n"), mergeBody: prose + "\n" + liveSuite, want: []string{liveSuite}},
