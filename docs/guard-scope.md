@@ -1,7 +1,7 @@
 # Guard scope
 
 The guard reads an agent's shell command before it runs. It refuses the `git`, `gh`, and `ils` calls
-that destroy work, skip checks, push, or land a change. The rules on this page decide what the guard
+that destroy work, skip hooks, push, or land a change. The rules on this page decide what the guard
 refuses and what it lets through. Apply them before you add, change, or remove a refusal.
 [What the guard refuses](reference.md#what-the-guard-refuses) lists the refusals they produce.
 
@@ -57,7 +57,7 @@ runs.
 
 ### 2. Refuse every direct operation
 
-Refuse a `git`, `gh`, or `ils` call that destroys work, skips checks, pushes, or lands a change,
+Refuse a `git`, `gh`, or `ils` call that destroys work, skips hooks, pushes, or lands a change,
 however rare it is. `git repack -a -d` drops unreachable objects at once, the loss for which the
 guard refuses `git prune`.
 
@@ -198,7 +198,7 @@ Check every new refusal two ways before it lands:
 - A replay judges every shell command in your local Claude Code transcripts and counts the
   refusals by reason: run `task test:replay`. A change that adds a refusal states how many replayed
   commands it refuses. More than 1 in 1,000 needs a narrower trigger, unless the commands it
-  refuses do what [rule 2](#2-refuse-every-direct-operation) refuses: destroy work, skip checks,
+  refuses do what [rule 2](#2-refuse-every-direct-operation) refuses: destroy work, skip hooks,
   push, or land a change.
 
 ## Accepted limits

@@ -120,8 +120,8 @@ they wait for your word.
 it is green. Write the title and body with the `gh pr edit` command `Next:` prints, then
 `ils merge`.
 
-**CI is red.** `ils push` exits 5 and prints the failing check, its URL,
-and the end of its log. Fix the cause on the same branch, commit, and run `ils push` again. For a
+**CI is red.** `ils push` exits 5 and prints the failing check, its web address (URL), and the end
+of its log. Fix the cause on the same branch, commit, and run `ils push` again. For a
 conflict, or a branch behind the default branch, merge the default branch into the branch,
 resolve, commit, and run `ils push` again.
 
@@ -153,6 +153,14 @@ commits on the default branch of every GitHub repository, protected or not, and 
 land or publish a change without the checks of `ils`. It asks you before `ils merge`,
 `ils release`, `gh pr merge`, and `gh release create`, and before `ils push` on a private
 repository.
+
+Three commands run the guard:
+
+- [`ils guard`](docs/reference.md#ils-guard) judges a shell command as if it ran in a given
+  directory, and prints the verdict and its reason.
+- [`ils parse`](docs/reference.md#ils-parse) shows how the guard reads a command, with no verdict.
+- [`ils hook claude`](docs/reference.md#ils-hook) is the Claude Code hook that `ils init` wires in:
+  it judges each Bash call before Claude Code runs it.
 
 [Use with Claude Code](#use-with-claude-code) sets it up.
 [The guard](docs/reference.md#the-guard) in the reference lists every rule, and
@@ -309,7 +317,7 @@ knows the default branch when origin cannot be reached.
 [docs/reference.md](docs/reference.md) holds the details a caller looks up:
 
 - [Commands](docs/reference.md#commands), each command's steps and flags, and the by-hand steps
-  for `ils branch`, a red merge, `ils release`, and `ils init`;
+  for `ils branch`, `ils push`, a red merge, `ils release`, and `ils init`;
 - [Exit codes](docs/reference.md#exit-codes), and what to do after each;
 - [Time limits](docs/reference.md#time-limits), how long each command waits for the checks;
 - [Stopping a run](docs/reference.md#stopping-a-run) with Ctrl-C or SIGTERM;

@@ -5,8 +5,8 @@ codes, time limits, stopping a run, every refusal, the JavaScript Object Notatio
 guard, and the terminal output. The [README](../README.md) says why `ils` exists, how to install and
 set it up, and what each command is for. CI stands for continuous integration throughout.
 
-The outcome words (done, broke, refused, ask, pending, and delivered, not green) and the `Next:`
-line that the sections before [Exit codes](#exit-codes) use are defined there.
+[Exit codes](#exit-codes) defines the outcome words (done, broke, refused, ask, pending, and
+delivered, not green) and the `Next:` line, which the sections before it already use.
 
 - [Commands](#commands)
   - [Flags](#flags)
@@ -38,6 +38,7 @@ line that the sections before [Exit codes](#exit-codes) use are defined there.
   - [What status refuses](#what-status-refuses)
   - [What release refuses](#what-release-refuses)
   - [What init refuses](#what-init-refuses)
+  - [What guard, parse, and hook refuse](#what-guard-parse-and-hook-refuse)
 - [JSON output](#json-output)
   - [Push JSON output](#push-json-output)
   - [Merge JSON output](#merge-json-output)
@@ -51,10 +52,10 @@ line that the sections before [Exit codes](#exit-codes) use are defined there.
   - [ils hook](#ils-hook)
   - [What the guard refuses](#what-the-guard-refuses)
     - [How the guard reads a command](#how-the-guard-reads-a-command)
-    - [Git operations that destroy work or skip checks](#git-operations-that-destroy-work-or-skip-checks)
+    - [Git operations that destroy work or skip hooks](#git-operations-that-destroy-work-or-skip-hooks)
     - [Pushes and the default branch](#pushes-and-the-default-branch)
     - [The default branch on GitHub](#the-default-branch-on-github)
-    - [ils and gh commands](#ils-and-gh-commands)
+    - [gh and ils calls the guard refuses](#gh-and-ils-calls-the-guard-refuses)
   - [ils and gh commands the guard allows or asks about](#ils-and-gh-commands-the-guard-allows-or-asks-about)
   - [Guard JSON output](#guard-json-output)
 - [Terminal output](#terminal-output)
@@ -160,12 +161,8 @@ a keep-alive every minute. It adds nothing when:
 - `ils` cannot read your ssh command, one of origin's push URLs, or run `ssh -G` on the host, or
   `ssh -G` prints no `ServerAliveInterval` setting; the push then runs as git would run it.
 
-With an ssh command of your own, set the keep-alive in your ssh config instead:
-
-```text
-Host github.com
-  ServerAliveInterval 60
-```
+With an ssh command of your own, set the keep-alive in your ssh config, as
+[A slow pre-push hook](../README.md#a-slow-pre-push-hook) shows.
 
 `ils push` and the tag push of `ils release` run git with `LC_ALL=C`, so that `ils` can read git's
 errors whatever language your environment selects. Your pre-push hook inherits it: it runs in the C
@@ -390,9 +387,9 @@ Claude Code itself reads it. It runs these steps:
    that already holds what `ils` ships is left as it is, and one that differs is replaced.
    `hook.sh` is written executable. A file `ils` does not ship stays. A skill directory that is a
    symbolic link, such as a clone of `ils` linked in, is never written through. When every shipped
-   file reads the same through it, the step names the link's target and has nothing to do. When a
-   file differs, is missing behind the link, or the link leads nowhere, to a file, or to itself,
-   the step fails naming the target, since Claude Code would keep loading the files at the target.
+   file reads the same through it, the step names the link's target and has nothing to do. The
+   step fails naming the target when a file differs, is missing behind the link, or the link leads
+   nowhere, to a file, or to itself. Claude Code would keep loading the files at the target.
    The run still writes the hook and the rules, then ends broke naming each such skill, and
    `Next:` says to remove the link or update its target, then run the same command again.
 3. It adds the guard's hook and the permission rules to `settings.json`, and creates the file when
@@ -431,7 +428,8 @@ A matcher covers `Bash` the way Claude Code reads it:
 
 A group or hook that is not a JSON object, a group with no `hooks` array, and a group whose matcher
 is not a string are left as they are. Without `onFailure: block`, Claude Code runs a command whose
-hook could not run. `onFailure` needs Claude Code 2.1.295 or later.
+hook could not run. `onFailure` needs the Claude Code version
+[Use with Claude Code](../README.md#use-with-claude-code) names.
 
 Each rule lands in the list the `permissions` object of [Init by hand](#init-by-hand) puts it in.
 A rule already in any of the three lists is not added to another. No rule covers `ils push`: the
@@ -646,7 +644,7 @@ is an `ils push` whose pull request's head moved during the wait. That push has 
 An `origin` can answer and still turn the call away, for a failed sign-in, a missing permission, or
 a repository it cannot find. That is not a refusal. A command whose call to origin is turned away
 before it lands anything ends broke with git's message and `Next: fix what failed, then run
-<command> again`, and `ils status` lists the read as failed. The steps `ils merge` runs after the
+<command> again`. `ils status` lists the read as failed. The steps `ils merge` runs after the
 squash merge keep the `Next:` each gives for any failure, since the merge itself is done. Only an
 `origin` that cannot be reached at all is a refusal (exit 2).
 
@@ -781,6 +779,12 @@ When `ils init` refuses, it has written nothing. It refuses:
   Ctrl-C, or SIGTERM cut short: `Next:` runs `ils init claude --project` again;
 - a `settings.json` whose shape step 1 of [ils init](#ils-init) refuses: `Next:` names the file to
   fix.
+
+### What guard, parse, and hook refuse
+
+- `ils guard` and `ils parse` refuse a missing `--cwd`, and anything but exactly one word after
+  `--`. [ils guard](#ils-guard) says what a guard verdict of refuse means.
+- `ils hook` takes no flag: [ils hook](#ils-hook) says what it does with `--help` or `-h`.
 
 ## JSON output
 
@@ -946,7 +950,8 @@ The guard lowers the odds of an accident; it is not a sandbox. It does not see:
 - a construct whose only use is to hide a command, such as a name reference (`declare -n`) that
   writes `GIT_DIR` or a tool name built by a glob.
 
-[Guard scope](guard-scope.md#accepted-limits) says why the guard lets each of these through.
+[Guard scope](guard-scope.md#accepted-limits) says why the guard lets these through. It gives no
+reason for three of them: a command handed to `su -c`, `go run` of `ils`, and `gh workflow run`.
 
 ### ils guard
 
@@ -972,8 +977,8 @@ subcommand part.
 
 It gives no verdict. The rules for git operations, pushes, and `gh` leave no mark, so use `ils
 guard` for the verdict; `ils parse` exits 0 whatever it marks. It exits 1 when the command does not
-parse or a state read fails (a `git config` read of an alias, the git dir), and 2 when `--cwd` or
-the command word is missing.
+parse or a state read fails (a `git config` read of an alias, the git dir), and 2 when `--cwd` is
+missing or `--` is not followed by exactly one word.
 
 ### ils hook
 
@@ -1045,7 +1050,7 @@ read a command: each mark it prints names a way the guard could not read an invo
   `git add *.go`. `git <sub> --help`, with `--help` the first word after the subcommand, reads as
   `git help <sub>`.
 
-#### Git operations that destroy work or skip checks
+#### Git operations that destroy work or skip hooks
 
 The guard refuses:
 
@@ -1114,12 +1119,12 @@ The guard refuses:
   `ils branch <name>`. For a `pull --ff-only` that names another repository or branch, or whose
   arguments the guard cannot read, the reason names `git pull --ff-only` alone.
   [The default branch on GitHub](#the-default-branch-on-github) says when `origin` counts as on
-  GitHub. A `git rebase` naming the default branch as the branch to rebase counts as one on it. A
-  `git rebase` whose upstream is a glob, or an unquoted expansion after `--`, with no branch after
-  it, counts as one on the branch HEAD is on, though that word may expand to both an upstream and
-  the default branch. The
-  guard asks origin for the default branch once per command and git dir, and falls back to the
-  cached `refs/remotes/origin/HEAD`. With neither, it refuses and names
+  GitHub. A `git rebase` naming the default branch as the branch to rebase counts as one on it.
+  The guard judges some `git rebase` commands as run on the branch HEAD is on. This covers a
+  rebase whose upstream is a glob, or an unquoted expansion after `--`, with no branch after it.
+  That word may still expand to both an upstream and the default branch. The guard asks origin
+  for the default branch once per command and git dir, and falls back to the cached
+  `refs/remotes/origin/HEAD`. With neither, it refuses and names
   `git remote set-head origin --auto`, which caches the head on any supported git. The guard
   refuses `set-head` on `origin` itself;
 - on that default branch, the same subcommands when the guard cannot tell whether `origin` is on
@@ -1168,7 +1173,7 @@ For a host other than `github.com`, the guard checks the login with
 `XDG_CONFIG_HOME`, and `HOME` the command sets, so it reads the login the agent's own `gh` would
 use.
 
-#### ils and gh commands
+#### gh and ils calls the guard refuses
 
 The guard refuses:
 
@@ -1177,10 +1182,10 @@ The guard refuses:
   graphql` call whose `query` field is a literal document holding no mutation is a read. The guard
   allows it, with no method or with `POST` in any spelling (`-X POST`, `--method post`). A call
   whose document holds a mutation is a write. The guard reads a block string (`"""…"""`) as ending
-  at the first `"""`, even after a backslash, so it reads a mutation that follows a block string
-  holding the escape `\"""` as part of a string, and allows the call. The guard also refuses a call
-  whose document it cannot read (`-F query=@q.graphql`, `-f query="$q"`, `--input`) until the query
-  is inline;
+  at the first `"""`, even after a backslash. It therefore reads a mutation that follows a block
+  string holding the escape `\"""` as part of a string, and allows the call. The guard also
+  refuses a call whose document it cannot read (`-F query=@q.graphql`, `-f query="$q"`,
+  `--input`) until the query is inline;
 - `gh repo sync`, `delete`, `edit`, and `create --push`;
 - `gh release delete`, `edit`, `upload`, and `delete-asset`;
 - `gh auth token`, `gh auth git-credential`, and `gh auth status --show-token`;
