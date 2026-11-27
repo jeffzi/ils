@@ -349,6 +349,18 @@ func TestStatus_WhenThePullRequestIsOpenAtTheTip_EndsOnTheStepPushEndsItsWaitOn(
 	}
 }
 
+func TestStatus_WhenTheVerdictCannotBeRead_ListsTheChecksAsUnread(t *testing.T) {
+	t.Parallel()
+	build := settledAt(forge.MergeClean, passing()).with(func(script *forgetest.Script, _ string) {
+		script.Verdict = []forgetest.Answer[forge.Verdict]{{Err: errors.New("gh: server error")}}
+	})
+	s := statusScene(t, publishTopic, build)
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	checkUnread(t, got.status, readChecks)
+}
+
 func TestStatus_WhenOneReadOfThePullRequestAtTheTipSettlesNothing_EndsOnPush(t *testing.T) {
 	t.Parallel()
 
@@ -364,12 +376,6 @@ func TestStatus_WhenOneReadOfThePullRequestAtTheTipSettlesNothing_EndsOnPush(t *
 			name: "the head could not be read",
 			build: settledAt(forge.MergeClean, passing()).with(func(script *forgetest.Script, _ string) {
 				script.Head = []forgetest.Answer[forge.Head]{{Err: errors.New("gh: server error")}}
-			}),
-		},
-		{
-			name: "the verdict could not be read",
-			build: settledAt(forge.MergeClean, passing()).with(func(script *forgetest.Script, _ string) {
-				script.Verdict = []forgetest.Answer[forge.Verdict]{{Err: errors.New("gh: server error")}}
 			}),
 		},
 	}

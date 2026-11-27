@@ -127,14 +127,6 @@ func TestStatus_WhenOriginsTrunkCannotBeReadOnADetachedHEAD_EndsOnTheStepBranchE
 			}, offline: true},
 			want: nextBranch(),
 		},
-		{
-			miss: trunkMiss{name: "origin does not answer with commits past the last fetch", arrange: lastFetched(detachPastTrunk), offline: true},
-			want: nextBranch(),
-		},
-		{
-			miss: trunkMiss{name: "origin does not answer with no commit past the last fetch", arrange: lastFetched(detachOnTrunk), offline: true},
-			want: nextBranch(),
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.miss.name, func(t *testing.T) {

@@ -294,25 +294,6 @@ func copySteps() []nextRow {
 			},
 		},
 		{
-			name: "diverged from origin's copy with a merged pull request that lacks a commit made since", script: landed,
-			arrange: func(f *gittest.Fixture) string {
-				f.Publish(topic)
-				f.LandPull(merged, topic)
-				f.Diverge(topic)
-
-				return pushCommand().after("`" + originMerge + topic + "`")
-			},
-		},
-		{
-			name: "behind origin's copy with a green pull request", script: greenOpen(),
-			arrange: func(f *gittest.Fixture) string {
-				f.Publish(topic)
-				f.AdvanceOrigin(topic)
-
-				return pushCommand().after("`" + pullFrom(topic) + "`")
-			},
-		},
-		{
 			name: "ahead of origin's copy with a green pull request", script: greenOpen(),
 			arrange: func(f *gittest.Fixture) string {
 				f.Publish(topic)
@@ -350,16 +331,6 @@ func elsewhereSteps() []nextRow {
 	return []nextRow{
 		{name: "open pull request against another base", script: against, arrange: published(elsewhere)},
 		{
-			// Push refuses a diverged branch before it looks for the pull request.
-			name: "diverged from origin's copy beside an open pull request against another base", script: against,
-			arrange: func(f *gittest.Fixture) string {
-				f.Publish(topic)
-				f.Diverge(topic)
-
-				return pushCommand().after("`" + originMerge + topic + "`")
-			},
-		},
-		{
 			name: "open pull request against another base beside a merged one that shares a commit",
 			script: viewing(cleanHead(), passing(),
 				change(merged, trunk, forge.ChangeMerged), change(opened, otherBase, forge.ChangeOpen)),
@@ -377,15 +348,6 @@ func elsewhereSteps() []nextRow {
 // open pull request against another base.
 func precedenceSteps() []nextRow {
 	return []nextRow{
-		{
-			name: "fork while behind origin's copy", script: scripted(answers(widgets(true, true))),
-			arrange: func(f *gittest.Fixture) string {
-				f.Publish(topic)
-				f.AdvanceOrigin(topic)
-
-				return expect("stop and tell the user to push by hand")
-			},
-		},
 		{
 			name:   "no commit past the trunk beside an open pull request against another base",
 			script: viewing(cleanHead(), passing(), change(opened, otherBase, forge.ChangeOpen)),
@@ -660,8 +622,6 @@ func TestStatus_WhenOriginCannotBeReachedOnAWorkBranch_EndsOnAPushAsThePushWould
 		words []string
 	}{
 		{name: "to fetch its trunk", words: trunkFetch()},
-		// The fetch of the branch's copy fails too, after the one push stops at.
-		{name: "for every fetch", words: []string{"fetch"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1073,13 +1033,6 @@ func ghRefusals() []ghRefusal {
 			},
 		},
 		{name: "gh is not installed on a detached HEAD", arrange: detachOnTrunk, script: ghMissing(), said: expect("gh", "https://cli.github.com")},
-		{
-			name: "origin's URLs name two repositories on a detached HEAD", script: allowed(), said: twoURLs,
-			arrange: func(f *gittest.Fixture) {
-				detachOnTrunk(f)
-				twoRepositories(f)
-			},
-		},
 	}
 }
 

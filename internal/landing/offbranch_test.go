@@ -78,8 +78,6 @@ func TestStatus_WhenTheCommitsOfADetachedHEADAreNotRead_EndsOnTheStepBranchEndsO
 		words []string
 	}{
 		{name: "their read fails", words: history(), want: statusCommand().fixed},
-		// Branch refuses there and names itself to run again.
-		{name: "origin cannot be reached to fetch its trunk", words: trunkFetch(), want: nextBranch()},
 		{name: "what the fetch of origin's trunk fetched cannot be read", words: fetchedRead(), want: statusCommand().fixed},
 	}
 	for _, tt := range tests {

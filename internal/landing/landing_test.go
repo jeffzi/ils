@@ -781,6 +781,16 @@ func TestRequest_Unread_WhenTheRequestIsForTheProject_NamesItAgainWithProject(t 
 	assert.Check(t, is.Contains(got.Next, "init claude "+landing.FlagProject))
 }
 
+func TestRequest_Unread_WhenTheBranchNameHoldsAShellOperator_NamesItQuotedForTheShell(t *testing.T) {
+	t.Parallel()
+	req := landing.Request{Command: landing.BranchCommand, Args: []string{"fix;make"}}
+
+	stop := req.Unread("the branches", errors.New("origin stopped answering"))
+
+	_, got := rendered(t, *stop, t.TempDir())
+	assert.Check(t, is.Contains(got.Next, "branch 'fix;make'"))
+}
+
 func TestPreconditions_WhenOneFails_RefusesAtTheFirst(t *testing.T) {
 	t.Parallel()
 
@@ -1077,6 +1087,5 @@ func TestShellWord_WhenTheWordHoldsANulByte_ReturnsAnErrorNamingTheWord(t *testi
 
 	_, err := landing.ShellWord(word)
 
-	assert.Check(t, err != nil, "ShellWord(%q) error = nil, want an error", word)
 	assert.Check(t, is.ErrorContains(err, fmt.Sprintf("%q", word)))
 }

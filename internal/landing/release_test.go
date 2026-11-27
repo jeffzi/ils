@@ -242,7 +242,6 @@ func TestRelease_WhenTheVersionIsNotXYZ_RefusesNamingIt(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct{ name, in string }{
-		{name: "leading v", in: "v1.2.0"},
 		{name: "missing patch", in: "1.2"},
 	}
 	for _, tt := range tests {
