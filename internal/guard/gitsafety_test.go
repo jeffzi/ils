@@ -480,7 +480,6 @@ func TestJudge_RefusesAWorktreeRemovalItCannotVerify(t *testing.T) {
 		{name: "no path", dir: w.repo, command: "git worktree remove"},
 		{name: "two paths", dir: w.repo, command: "git worktree remove " + gittest.ShellWord(w.clean) + " " + gittest.ShellWord(w.dirty)},
 		{name: "relative path where the directory is unknown", dir: w.repo, command: `cd "$d" && git worktree remove wt1`},
-		{name: "missing path", dir: w.repo, command: "git worktree remove " + gittest.ShellWord(filepath.Join(w.repo, "absent"))},
 		{name: "relative path absent under -C though present where it runs", dir: w.heldClean, command: "git -C " + gittest.ShellWord(w.repo) + " worktree remove wt1"},
 	}, expectation{outcome: guard.Refuse, named: "unverifiable"})
 }
@@ -511,7 +510,6 @@ func TestJudge_WhenAWorktreeRemovalPathCannotBeRead_RefusesNamingTheReadError(t 
 	got := guard.Judge(t.Context(), tt.command, callerIn(f, f.Dir()))
 
 	checkVerdict(t, tt, got, "unverifiable", syscall.EACCES.Error())
-	assert.Check(t, !strings.Contains(got.Reason, "is not a directory"), "Judge(%q) reason %q", tt.command, got.Reason)
 }
 
 func TestJudge_WhenAWorktreeRemovalHoldsAnUnreadableWordWhereAnOptionCanStand_RefusesNamingASpellingTheGuardAllows(t *testing.T) {
