@@ -275,11 +275,12 @@ func rulesRead() []forgetest.Op {
 func trunkStops() []mergeRow {
 	return []mergeRow{
 		{
-			name: "no commit past the trunk", script: merging(), ops: identityRead(), outcome: result.Refused,
+			// The branch's pull requests are read for one merged at the tip, which would finish the merge.
+			name: "no commit past the trunk", script: merging(), ops: changesRead(), outcome: result.Refused,
 			arrange: func(f *gittest.Fixture) mergeEnd {
-				f.Git("switch", "--quiet", "--create", spare, trunk)
+				f.Git("reset", "--quiet", "--hard", trunk)
 
-				return ending(nothingPastMerge(spare))
+				return ending(nothingPastMerge(topic))
 			},
 		},
 	}

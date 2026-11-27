@@ -264,7 +264,9 @@ When the branch's pull request is already merged into the default branch, on the
 of `ils merge` that was cut short, `ils merge` merges nothing and reads no check. It deletes the
 branch on origin if it is still there, then ends as [How merge ends](#how-merge-ends) describes.
 This also covers a pull request that got an "Update branch" or a committed suggestion on the web
-before its merge. When the branch has commits the merge did not carry, `ils merge` refuses and
+before its merge, and one merged on the web with a merge commit, which leaves the branch with no
+commit past the default branch: `ils merge` resumes it when the merged pull request's head is the
+branch's tip. When the branch has commits the merge did not carry, `ils merge` refuses and
 lists them, and `Next:` says to start a new branch and cherry-pick them.
 
 #### Merge by hand
@@ -723,7 +725,9 @@ at most it has fetched from origin. It refuses everything `ils push` refuses abo
 - the default branch, a detached HEAD, and a tracked file with uncommitted changes;
 - a local default branch with commits that origin's lacks (see
   [A local default branch ahead of origin's](#a-local-default-branch-ahead-of-origins));
-- a branch with no commit past origin's default branch, or with no open pull request against it;
+- a branch with no commit past origin's default branch, unless a pull request of it merged into the
+  default branch with the branch's tip as its head (see
+  [A merge made elsewhere](#a-merge-made-elsewhere)), or with no open pull request against it;
 - a branch whose tip is behind, past, or diverged from the head of its pull request;
 - a pull request that is a draft, or open against another base;
 - a branch whose only pull request merged into another base: that never lands it, and `Next:` says

@@ -32,6 +32,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Fix the guard letting `git cherry-pick` and `git revert` run with an argument it cannot read over
   uncommitted work, which the argument could discard as an `--abort`.
 - Fix `ils merge` deleting a commit made on the branch while it waited for the checks.
+- Fix `ils merge` refusing a branch whose pull request was merged on the web with a merge commit,
+  and saying to commit work that had already landed; it now finishes the merge.
 
 ## [0.6.0] - 2026-11-17
 

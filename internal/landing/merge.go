@@ -92,7 +92,9 @@ type mergeReady struct {
 // reads what lets the merge go on, as toWrite says. Then it writes, as land says.
 //
 // A branch with no open pull request against the trunk, whose merged pull request carries every
-// commit of the branch, is finished without a merge, as resume says.
+// commit of the branch, is finished without a merge, as resume says. So is a branch with no commit
+// past origin's trunk whose pull request merged into the trunk has the tip as its head, as a merge
+// commit made on the web leaves it.
 func Merge(ctx context.Context, deps Deps, req Request) result.Result {
 	deps.startChecking()
 
@@ -136,9 +138,17 @@ func mergeChecks(ctx context.Context, s *survey, req Request, ready Ready) (merg
 
 	m.elsewhere = worktree != ""
 
-	m.tip, m.past, stop = commitsPast(ctx, s, req, m.onBranch)
+	var landed *forge.Change
+
+	m.tip, m.past, landed, stop = commitsPast(ctx, s, req, m.onBranch)
 	if stop != nil {
 		return mergeReady{}, stop
+	}
+
+	if landed != nil {
+		m.pull, m.resumed = *landed, true
+
+		return m, nil
 	}
 
 	if stop = m.findPull(ctx, s, req); stop != nil || m.resumed {
