@@ -46,6 +46,7 @@ func TestParse_WhenTheCommandAssignedAVariableALiteral_ReadsItsExpansionAsThatLi
 		{name: "wait for a job run between", command: "S=/tmp/work; wait %1; $S/run.sh", want: "/tmp/work/run.sh"},
 		{name: "trap on exit and interrupt signals run between", command: "S=/tmp/work; trap 'rm -f t' EXIT SIGINT term HUP 0; $S/run.sh", want: "/tmp/work/run.sh"},
 		{name: "trap listing its traps run between", command: "S=/tmp/work; trap -p; $S/run.sh", want: "/tmp/work/run.sh"},
+		{name: "declaration run through command before the assignment", command: "command declare -u S; S=/tmp/work; $S/run.sh", want: "/tmp/work/run.sh"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -140,14 +141,6 @@ func checkRunShReadUnknown(t *testing.T, command string, got []guard.Invocation)
 		assert.Check(t, !first.Literal || !strings.HasSuffix(first.Text, "run.sh"), "Parse(%q) reads %q", command, first.Text)
 	}
 	assert.Check(t, unread, "Parse(%q) = %v, want a command word read unknown", command, texts(got))
-}
-
-func TestJudge_AllowsAVariableAssignedALiteralAfterAWrappedDeclaration(t *testing.T) {
-	t.Parallel()
-
-	checkAllowed(t, callerOutsideAnyRepository(t), []namedCommand{
-		{name: "declare run through command", command: "command declare -u S; S=/tmp/work; $S/run.sh"},
-	})
 }
 
 func TestJudge_WhenAVariableTheCommandAssignedHoldsAGuardedWord_RefusesAsThatWord(t *testing.T) {

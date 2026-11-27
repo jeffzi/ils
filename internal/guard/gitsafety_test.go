@@ -131,35 +131,6 @@ func TestJudge_RefusesABranchRenameOntoThePreviousBranch(t *testing.T) {
 	})
 }
 
-func TestJudge_AllowsAGitOperationThatLeavesWorkOnDisk(t *testing.T) {
-	t.Parallel()
-	_, caller := standingOn(t, "main", "topic")
-
-	checkAllowed(t, caller, []namedCommand{
-		{name: "clean under -c keeping the force requirement", command: "git -c clean.requireForce=true clean -d"},
-		{name: "clean --no-dry-run then -n under -c lifting the force requirement", command: "git -c clean.requireForce=false clean --no-dry-run -n -d"},
-		{name: "clean bundle holding a dry run beside force", command: "git clean -nfd"},
-		{name: "clean --dry-run after -f -d", command: "git clean -f -d --dry-run"},
-		{name: "checkout-index without force", command: "git checkout-index -a"},
-		{name: "update-ref setting a ref", command: "git update-ref refs/heads/new HEAD"},
-		{name: "branch -M onto a new name", command: "git branch -M topic other"},
-		{name: "read-tree --dry-run", command: "git read-tree --dry-run HEAD"},
-		{name: "read-tree --index-output", command: "git read-tree --index-output=other.idx -m HEAD"},
-		{name: "read-tree --prefix", command: "git read-tree --prefix=vendor/lib/ HEAD"},
-		{name: "repack -a", command: "git repack -a"},
-		{name: "repack -d", command: "git repack -d"},
-		{name: "repack -a -A -d", command: "git repack -a -A -d"},
-		{name: "repack -a -d --cruft", command: "git repack -a -d --cruft"},
-		{name: "repack -a -d --keep-unreachable", command: "git repack -a -d --keep-unreachable"},
-		{name: "repack -d with an expiry but no -A", command: "git repack -d --unpack-unreachable=now"},
-		{name: "repack -d with a cruft expiry but no --cruft", command: "git repack -d --cruft-expiration=now"},
-		{
-			name:    "repack -A -d with the expiry turned off again",
-			command: "git repack -A -d --unpack-unreachable=now --no-unpack-unreachable",
-		},
-	})
-}
-
 // liftingForce returns a repository whose local config lifts the force requirement of git clean.
 func liftingForce(t *testing.T) *gittest.Fixture {
 	t.Helper()
@@ -332,6 +303,27 @@ func TestJudge_AllowsAGitOperationThatKeepsWork(t *testing.T) {
 		{name: "plain submodule update", command: "git submodule update"},
 		{name: "submodule update --reference holding a non-literal value", command: `git submodule update --reference "$r" lib`},
 		{name: "plain submodule deinit", command: "git submodule deinit lib"},
+		{name: "clean under -c keeping the force requirement", command: "git -c clean.requireForce=true clean -d"},
+		{name: "clean --no-dry-run then -n under -c lifting the force requirement", command: "git -c clean.requireForce=false clean --no-dry-run -n -d"},
+		{name: "clean bundle holding a dry run beside force", command: "git clean -nfd"},
+		{name: "clean --dry-run after -f -d", command: "git clean -f -d --dry-run"},
+		{name: "checkout-index without force", command: "git checkout-index -a"},
+		{name: "update-ref setting a ref", command: "git update-ref refs/heads/new HEAD"},
+		{name: "branch -M onto a new name", command: "git branch -M topic other"},
+		{name: "read-tree --dry-run", command: "git read-tree --dry-run HEAD"},
+		{name: "read-tree --index-output", command: "git read-tree --index-output=other.idx -m HEAD"},
+		{name: "read-tree --prefix", command: "git read-tree --prefix=vendor/lib/ HEAD"},
+		{name: "repack -a", command: "git repack -a"},
+		{name: "repack -d", command: "git repack -d"},
+		{name: "repack -a -A -d", command: "git repack -a -A -d"},
+		{name: "repack -a -d --cruft", command: "git repack -a -d --cruft"},
+		{name: "repack -a -d --keep-unreachable", command: "git repack -a -d --keep-unreachable"},
+		{name: "repack -d with an expiry but no -A", command: "git repack -d --unpack-unreachable=now"},
+		{name: "repack -d with a cruft expiry but no --cruft", command: "git repack -d --cruft-expiration=now"},
+		{
+			name:    "repack -A -d with the expiry turned off again",
+			command: "git repack -A -d --unpack-unreachable=now --no-unpack-unreachable",
+		},
 	})
 }
 

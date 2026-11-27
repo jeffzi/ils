@@ -389,6 +389,7 @@ func standingOn(t *testing.T, trunk, branch string) (*gittest.Fixture, guard.Cal
 	return f, callerIn(f, f.Dir())
 }
 
+// callerIn returns a caller working in dir whose git runs with the environment of f.
 func callerIn(f *gittest.Fixture, dir string) guard.Caller {
 	return callerWithEnv(dir, f.Env())
 }
@@ -403,6 +404,7 @@ func recordingCaller(f *gittest.Fixture, dir string) (guard.Caller, *git.Recorde
 	return caller, recorder
 }
 
+// callerWithEnv returns a caller working in dir, with home as HOME, whose git runs with env.
 func callerWithEnv(dir string, env []string) guard.Caller {
 	return guard.Caller{Env: map[string]string{"HOME": home}, Dir: dir, Git: git.Runner{Env: env}}
 }
