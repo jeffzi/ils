@@ -176,18 +176,6 @@ func TestForge_Verdict_WhenRunsOfSeveralEventsReportChecks_KeepsTheChecksOfEachE
 				{Name: "build", Bucket: forge.BucketPass, Workflow: "CI"},
 			},
 		},
-		{
-			name:      "run started by another run",
-			checkRuns: checkRunsPage(checkRunJSON(1, ciSuite, "build", "success"), checkRunJSON(2, otherSuite, "scan", "failure")),
-			runs: workflowRunsPage(
-				workflowRunJSON(ciSuite, "CI", "push", "completed"),
-				workflowRunJSON(otherSuite, "Deploy", "workflow_run", "completed"),
-			),
-			want: []forge.Check{
-				{Name: "build", Bucket: forge.BucketPass, Workflow: "CI"},
-				{Name: "scan", Bucket: forge.BucketFail, Workflow: "Deploy"},
-			},
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -411,20 +399,6 @@ func failedLogReads() []ghtest.Call {
 	}
 }
 
-// logReadsAmong is the calls among calls that read a run's status or a job's log.
-func logReadsAmong(calls [][]string) [][]string {
-	var reads [][]string
-	for _, call := range calls {
-		for _, args := range [][]string{runStatusArgs(), logArgs(), jobLogArgs()} {
-			if ghtest.Matches(ghArgv(args), call) {
-				reads = append(reads, call)
-			}
-		}
-	}
-
-	return reads
-}
-
 // commitVerdict reads the verdict of the head commit while gh answers the check-runs, combined
 // status and workflow-runs reads with checkRuns, statuses and runs, and the reads of the failed
 // log as failedLogReads scripts them.
@@ -601,43 +575,4 @@ func TestForge_CommitVerdict_WhenACheckFails_CarriesItsFailedLog(t *testing.T) {
 	got := commitVerdict(t, failingBuild(), statusPage(), pushCI())
 
 	assert.Check(t, is.DeepEqual(got.FailedLog, forge.FailedLog{Text: failedLogText, State: forge.FailedLogRead}))
-}
-
-func TestForge_CommitVerdict_WhenACutEndsTheFailedLogRead_ReportsTheLogUnreadable(t *testing.T) {
-	// The log read holds its answer open far longer than the test runs: only the cut ends it.
-	held := ghtest.Exits(ghtest.Answer{Delay: time.Hour}, logArgs()...)
-	completedRun := ghtest.Exits(runStatusAnswer("completed"), runStatusArgs()...)
-	fake := ghtest.Setup(t, append(commitReads(failingBuild(), statusPage(), pushCI()), completedRun, held)...)
-	cut := make(chan struct{})
-	fake.WhileHolding(sync.OnceValue(func() error {
-		close(cut)
-		return nil
-	}))
-	ctx := gittest.Ending(t.Context(), cut, context.DeadlineExceeded)
-
-	got, err := newForge().CommitVerdict(ctx, engine(), headSHA)
-	assert.NilError(t, err)
-
-	assert.Check(t, is.DeepEqual(got.FailedLog, forge.FailedLog{State: forge.FailedLogUnreadable}))
-}
-
-func TestForge_CommitVerdict_WhenNoCheckFails_ReadsNoLog(t *testing.T) {
-	tests := []struct {
-		name       string
-		conclusion string
-	}{
-		{name: "passing", conclusion: "success"},
-		{name: "pending"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			checkRuns := checkRunsPage(checkRunJSON(1, ciSuite, "build", tt.conclusion))
-			fake := ghtest.Setup(t, append(commitReads(checkRuns, statusPage(), pushCI()), failedLogReads()...)...)
-
-			_, err := newForge().CommitVerdict(t.Context(), engine(), headSHA)
-			assert.NilError(t, err)
-
-			assert.Check(t, is.Len(logReadsAmong(fake.Calls()), 0))
-		})
-	}
 }

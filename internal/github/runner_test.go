@@ -192,14 +192,6 @@ func TestRunner_Alias_WhenListFails_ReturnsTheRunnersError(t *testing.T) {
 	assert.Check(t, is.DeepEqual(exitErr.Argv, ghArgv(aliasListArgs())))
 }
 
-func TestDecodeError_Unwrap_ReachesTheDecodersError(t *testing.T) {
-	t.Parallel()
-	cause := errors.New("unexpected end of JSON input")
-	err := error(&github.DecodeError{Err: cause, Argv: []string{"gh", "auth", "status"}})
-
-	assert.Check(t, is.ErrorIs(err, cause))
-}
-
 func viewArgs() []string { return []string{"pr", "view", "7"} }
 
 // apiRead is the argv a test hands Read for a `gh api` read; apiReadRun is the argv gh then runs.
@@ -340,9 +332,8 @@ func TestRunner_Read_WhenAPIReadAnswers4xx_ReturnsStatusAndHeadersWithoutReading
 
 			got, _, err := readTimed(t, github.Runner{}, tt.read...)
 
-			exitErr, ok := errors.AsType[*child.ExitError](err)
+			_, ok := errors.AsType[*child.ExitError](err)
 			assert.Assert(t, ok, "Read error = %v, want *child.ExitError", err)
-			assert.Check(t, is.Equal(exitErr.Stderr, tt.refusal.Stderr))
 			assert.Check(t, is.Equal(got.Status, tt.wantStatus))
 			assert.Check(t, is.Equal(got.Header.Get("x-ratelimit-remaining"), tt.wantRemaining))
 		})

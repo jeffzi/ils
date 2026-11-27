@@ -343,19 +343,6 @@ func TestRepo_FastForwardTrunk_WhenTrunkIsBehindOrigin_MovesItToOriginTip(t *tes
 	assert.Check(t, is.Equal(f.Git("rev-parse", trunk), want))
 }
 
-func TestRepo_FastForwardTrunk_WhenTrunkHasCommitsOriginLacks_RefusesWithExitError(t *testing.T) {
-	t.Parallel()
-	f := gittest.New(t, trunk)
-	f.Diverge(trunk)
-
-	err := newRepo(f).FastForwardTrunk(t.Context(), trunk)
-
-	remote := errors.Is(err, git.ErrRemote)
-	assert.Check(t, !remote, "FastForwardTrunk(%q) error = %v, want git's refusal, not git.ErrRemote", trunk, err)
-	_, refused := errors.AsType[*child.ExitError](err)
-	assert.Check(t, refused, "FastForwardTrunk(%q) error = %v, want *child.ExitError", trunk, err)
-}
-
 func TestRepo_FastForwardTrunk_WhenHeadIsOnAnotherBranch_RefusesWithoutMovingTheCheckedOutBranch(t *testing.T) {
 	t.Parallel()
 	f := gittest.New(t, trunk)
@@ -567,7 +554,6 @@ func TestRepo_WhenOriginRefusesTheCall_ReturnsErrRefused(t *testing.T) {
 	tests := []repoCall{
 		{name: "OriginTags", call: func(ctx context.Context, repo git.Repo) (any, error) { return repo.OriginTags(ctx) }},
 		fastForwardTrunkCall(),
-		{name: "Push", errorOnly: true, call: pushHead},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

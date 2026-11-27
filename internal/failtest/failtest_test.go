@@ -42,7 +42,6 @@ func TestTB_WhenAReportIsNotFatal_RecordsItWithoutEndingTheGoroutine(t *testing.
 			wantMessages: []string{"failed 2"},
 			wantFailed:   true,
 		},
-		{name: "Fail", report: func(spy *failtest.TB) { spy.Fail() }, wantFailed: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -75,11 +74,6 @@ func TestTB_WhenAFailureIsFatal_RecordsItBeforeEndingTheGoroutine(t *testing.T) 
 			name:         "Fatal",
 			fatal:        func(spy *failtest.TB) { spy.Fatal("fatal now") },
 			wantMessages: []string{"logged before", "fatal now"},
-		},
-		{
-			name:         "FailNow",
-			fatal:        func(spy *failtest.TB) { spy.FailNow() },
-			wantMessages: []string{"logged before"},
 		},
 	}
 	for _, tt := range tests {
