@@ -49,8 +49,8 @@ import (
 // line naming the fix; what git alone tells is still reported, and the reads of GitHub are left
 // out. With origin unreachable, origin's trunk and origin's copy of the branch are those of the
 // last fetch, and a line says so. With origin turning the caller away, or the read of origin's URLs
-// cut short, only the name of origin's trunk is that of the last fetch; when the last fetch names no
-// trunk either, where HEAD stands is unread.
+// or of its trunk cut short, only the name of origin's trunk is that of the last fetch; when the
+// last fetch names no trunk either, where HEAD stands is unread.
 func Status(ctx context.Context, deps Deps, req Request) result.Result {
 	deps.startChecking()
 
@@ -111,8 +111,8 @@ type reading struct {
 	cut      bool
 	offline  bool
 	// noTrunk is set when origin turned away the read of its trunk, or a cut ended the read of
-	// origin's URLs, and the last fetch names no trunk either: HEAD's branch cannot be told from the
-	// trunk, so where HEAD stands is unread.
+	// origin's URLs or of its trunk, and the last fetch names no trunk either: HEAD's branch cannot be
+	// told from the trunk, so where HEAD stands is unread.
 	noTrunk bool
 }
 
@@ -432,17 +432,17 @@ func (r *reading) readOrigin(ctx context.Context) {
 // against origin after them; a clone that never learned origin's trunk fails that read, yet still
 // counts the branch against origin's copy as last fetched. When origin turned the caller away, the
 // read fails, the checks of the command that would run end on it, and only the trunk's name is that
-// of the last fetch. Anything else fails the read.
+// of the last fetch; so too when a cut ended the read. Anything else fails the read.
 func (r *reading) readLastFetch(ctx context.Context, err error) {
-	if !git.Unanswered(err) || endedEarly(err) {
+	if endedEarly(err) || errors.Is(err, git.ErrRefused) {
 		r.failed(readTrunk, err)
+		r.learnTrunk(ctx)
 
 		return
 	}
 
-	if errors.Is(err, git.ErrRefused) {
+	if !git.Unanswered(err) {
 		r.failed(readTrunk, err)
-		r.learnTrunk(ctx)
 
 		return
 	}

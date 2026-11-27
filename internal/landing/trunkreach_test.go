@@ -206,6 +206,45 @@ func TestStatus_WhenOriginsTrunkIsNotLearnedOnTheTrunk_StandsOnTheLastFetchedTru
 	}
 }
 
+func TestStatus_WhenTheReadOfOriginsTrunkIsCutShortOnTheTrunk_EndsOnTheStepBranchEndsOn(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range cuts() {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			s := statusScene(t, lastFetched(standOnTrunk), ruledBy(forge.RulesProtect))
+			ctx := c.stalling(0)(t, s)
+
+			got := seeStatus(t, s, fixedCtx(ctx))
+
+			assert.Check(t, is.Equal(got.status.Standing, standingTrunk))
+			assert.Check(t, is.Equal(got.status.Trunk, trunk))
+			checkUnread(t, got.status, readTrunk)
+			assertEndsOn(t, got, nextBranch())
+		})
+	}
+}
+
+func TestStatus_WhenTheReadOfOriginsTrunkIsCutShortWithNoTrunkFetched_LeavesWhereHEADStandsUnread(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range cuts() {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			s := statusScene(t, func(f *gittest.Fixture) {
+				standOnTrunk(f)
+				forgetOriginsTrunk(f)
+			}, ruledBy(forge.RulesProtect))
+			ctx := c.stalling(0)(t, s)
+
+			got := seeStatus(t, s, fixedCtx(ctx))
+
+			assert.Check(t, is.Equal(got.status.Standing, result.Standing("")))
+			checkUnread(t, got.status, readStanding)
+		})
+	}
+}
+
 func TestStatus_WhenTheReadOfOriginsURLsIsCutShortOffAWorkBranch_EndsOnBranchWithoutAskingOrigin(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
