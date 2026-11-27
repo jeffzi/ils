@@ -64,6 +64,7 @@ func guarded(t *testing.T, out string) *result.Guard {
 	return printed.Payload.Guard
 }
 
+// literals returns texts as literal words.
 func literals(texts ...string) []result.Word {
 	words := make([]result.Word, 0, len(texts))
 	for _, text := range texts {
@@ -281,6 +282,7 @@ type verdictCase struct {
 	code    int
 }
 
+// verdicts are a command the guard allows, one it refuses and one it asks about, with each exit code.
 func verdicts() []verdictCase {
 	return []verdictCase{
 		{name: "allowed", command: allowedCommand, code: exitDone},
@@ -378,6 +380,7 @@ type toolUse struct {
 	Cwd      string            `json:"cwd,omitempty"`
 }
 
+// bash is the payload of a Bash call that runs command in cwd.
 func bash(command, cwd string) toolUse {
 	return toolUse{ToolName: "Bash", Input: map[string]string{"command": command}, Cwd: cwd}
 }
@@ -399,6 +402,7 @@ func bashStdin(t *testing.T, command, cwd string) io.Reader {
 	return strings.NewReader(encoded(t, bash(command, cwd)))
 }
 
+// hooking returns the cli outside any repository, with env, reading its payload from stdin.
 func hooking(t *testing.T, env []string, stdin io.Reader) cli.App {
 	t.Helper()
 
@@ -506,13 +510,25 @@ func TestApp_Run_WhenHookClaudeCannotReadThePayload_ExitsTwoSayingWhatBroke(t *t
 		name  string
 		want  string
 	}{
-		{name: "payload that is not JSON", stdin: strings.NewReader(`{"tool_name":`)},
-		{name: "no tool name", stdin: strings.NewReader(encoded(t, toolUse{Input: map[string]string{"command": "echo hi"}, Cwd: dir}))},
+		{name: "payload that is not JSON", stdin: strings.NewReader(`{"tool_name":`), want: "not the JSON of a PreToolUse call"},
+		{
+			name:  "no tool name",
+			stdin: strings.NewReader(encoded(t, toolUse{Input: map[string]string{"command": "echo hi"}, Cwd: dir})), want: "no tool_name",
+		},
 		{name: "stdin that cannot be read", stdin: iotest.ErrReader(errPayloadGone), want: errPayloadGone.Error()},
-		{name: "command that is not a string", stdin: strings.NewReader(fmt.Sprintf(`{"tool_name":"Bash","cwd":%q,"tool_input":{"command":5}}`, dir))},
-		{name: "no command", stdin: strings.NewReader(encoded(t, toolUse{ToolName: "Bash", Input: map[string]string{}, Cwd: dir}))},
-		{name: "no directory", stdin: strings.NewReader(encoded(t, toolUse{ToolName: "Bash", Input: map[string]string{"command": "echo hi"}}))},
-		{name: "directory that does not exist", stdin: bashStdin(t, "echo hi", gone), want: gone},
+		{
+			name:  "command that is not a string",
+			stdin: strings.NewReader(fmt.Sprintf(`{"tool_name":"Bash","cwd":%q,"tool_input":{"command":5}}`, dir)), want: "not the JSON of a Bash call",
+		},
+		{
+			name:  "no command",
+			stdin: strings.NewReader(encoded(t, toolUse{ToolName: "Bash", Input: map[string]string{}, Cwd: dir})), want: "no tool_input.command",
+		},
+		{
+			name:  "no directory",
+			stdin: strings.NewReader(encoded(t, toolUse{ToolName: "Bash", Input: map[string]string{"command": "echo hi"}})), want: "no cwd",
+		},
+		{name: "directory that does not exist", stdin: bashStdin(t, "echo hi", gone), want: "cannot read the directory"},
 		{name: "directory that is relative", stdin: bashStdin(t, "echo hi", relative), want: relative},
 		{name: "directory that is a file", stdin: bashStdin(t, "echo hi", file), want: file},
 	}
@@ -523,7 +539,6 @@ func TestApp_Run_WhenHookClaudeCannotReadThePayload_ExitsTwoSayingWhatBroke(t *t
 			got := launch(t, hooking(t, gittest.Env(t), tt.stdin), "hook", "claude")
 
 			assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
-			assert.Check(t, got.stderr != "", "stderr is empty")
 			assert.Check(t, is.Contains(got.stderr, tt.want))
 		})
 	}
@@ -551,7 +566,7 @@ func TestApp_Run_WhenHookIsGivenWordsItDoesNotTake_ExitsTwoNamingThemOnStderr(t 
 		args []string
 	}{
 		{name: "no harness", args: []string{"hook"}},
-		{name: "harness it does not know", args: []string{"hook", "codex"}, want: "codex"},
+		{name: "harness it does not know", args: []string{"hook", "codex"}, want: "codex was given"},
 		{name: "word after the harness", args: []string{"hook", "claude", "extra"}, want: "extra"},
 	}
 	for _, tt := range tests {
@@ -565,7 +580,9 @@ func TestApp_Run_WhenHookIsGivenWordsItDoesNotTake_ExitsTwoNamingThemOnStderr(t 
 
 			assert.Check(t, is.Equal(got.code, exitRefused), "ils %s: stdout = %q", strings.Join(tt.args, " "), got.stdout)
 			assert.Check(t, got.stderr != "", "stderr is empty")
-			assert.Check(t, is.Contains(got.stderr, tt.want))
+			if tt.want != "" {
+				assert.Check(t, is.Contains(got.stderr, tt.want))
+			}
 		})
 	}
 }

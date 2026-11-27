@@ -206,8 +206,8 @@ func lineWith(t *testing.T, text, word string) string {
 	return found[0]
 }
 
-// userSettings is a settings file a user wrote: keys out of alphabetical order at every depth, a
-// rule in two of the permission lists, and a hook of their own on PreToolUse and on PostToolUse.
+// userSettings is a settings file a user wrote: keys out of alphabetical order at every depth, and
+// a hook of their own on PreToolUse and on PostToolUse.
 const userSettings = `{
   "model": "opus",
   "permissions": {
@@ -217,8 +217,8 @@ const userSettings = `{
   },
   "env": {"ZED": "1", "ALPHA": "2"},
   "hooks": {
-    "PostToolUse": [{"matcher": "Edit", "hooks": [{"type": "command", "command": "fmt"}]}],
-    "PreToolUse": [{"matcher": "Edit", "hooks": [{"type": "command", "command": "check"}]}]
+    "PreToolUse": [{"matcher": "Edit", "hooks": [{"type": "command", "command": "check"}]}],
+    "PostToolUse": [{"matcher": "Edit", "hooks": [{"type": "command", "command": "fmt"}]}]
   }
 }
 `
@@ -246,7 +246,7 @@ func TestApp_Run_WhenInitClaudeFindsSettings_KeepsTheOrderOfTheUsersKeys(t *test
 	settings := jsontext.Value(readText(t, path))
 	assert.Check(t, is.DeepEqual(names(t, settings), []string{"model", "permissions", "env", "hooks"}))
 	assert.Check(t, is.DeepEqual(names(t, member(t, settings, "permissions"))[:3], []string{"deny", "defaultMode", "allow"}))
-	assert.Check(t, is.DeepEqual(names(t, member(t, settings, "hooks")), []string{"PostToolUse", "PreToolUse"}))
+	assert.Check(t, is.DeepEqual(names(t, member(t, settings, "hooks")), []string{"PreToolUse", "PostToolUse"}))
 }
 
 func TestApp_Run_WhenInitClaudeFindsSettings_AppendsItsOwnAfterTheUsersValues(t *testing.T) {

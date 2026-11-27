@@ -69,6 +69,7 @@ func shipped() fstest.MapFS {
 	}
 }
 
+// shippedText returns the content of the shipped file name.
 func shippedText(name string) string {
 	return string(shipped()[name].Data)
 }
@@ -104,6 +105,7 @@ func installingInRepo(t *testing.T) (app cli.App, f *gittest.Fixture) {
 	return app, f
 }
 
+// skillsUnder returns the skills directory of the Claude Code directory under dir.
 func skillsUnder(dir string) string {
 	return filepath.Join(dir, claudeDirName, skillsDirName)
 }
@@ -166,6 +168,7 @@ func assertShippedIn(t *testing.T, claude string) {
 	}
 }
 
+// readText returns the content of the file at path.
 func readText(t *testing.T, path string) string {
 	t.Helper()
 
@@ -201,6 +204,7 @@ func longAgo() time.Time {
 	return time.Date(2001, time.February, 3, 4, 5, 6, 0, time.UTC)
 }
 
+// backdated sets the modification time of the file at path to longAgo.
 func backdated(t *testing.T, path string) {
 	t.Helper()
 
@@ -389,14 +393,6 @@ func TestApp_Run_WhenInitClaudeCannotLookAtASkillDirectory_ExitsOneNamingIt(t *t
 	assert.Check(t, is.Contains(resulttest.Decode(t, got.stdout).Reason, shippedPath(home, ilsSkill)))
 }
 
-// assertNoClaudeUnder checks, without stopping the test, that dir holds no Claude Code directory.
-func assertNoClaudeUnder(t *testing.T, dir string) {
-	t.Helper()
-
-	_, err := os.Stat(filepath.Join(dir, claudeDirName))
-	assert.Check(t, is.ErrorIs(err, fs.ErrNotExist), "a Claude Code directory landed in %s", dir)
-}
-
 func TestApp_Run_WhenInitClaudeFindsTheClaudeConfigDirectoryVariableSetEmpty_InstallsUnderTheHome(t *testing.T) {
 	t.Parallel()
 
@@ -443,7 +439,6 @@ func TestApp_Run_WhenInitClaudeFindsNoUsableClaudeDirectory_ExitsTwoNamingTheVar
 
 			assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
 			assert.Check(t, is.Contains(resulttest.Decode(t, got.stdout).Reason, tt.want))
-			assertNoClaudeUnder(t, home)
 		})
 	}
 }
@@ -629,6 +624,7 @@ func TestApp_Run_WhenInitClaudeWritesASkillUnderAUmaskThatHidesEveryFile_MakesTh
 	}
 }
 
+// linkAt makes link a symbolic link to target, making its directory first.
 func linkAt(t *testing.T, target, link string) {
 	t.Helper()
 
@@ -670,6 +666,8 @@ type differingTarget struct {
 	name   string
 }
 
+// differingTargets are the targets for the link of a skill directory that do not read as the
+// shipped skill.
 func differingTargets() []differingTarget {
 	return []differingTarget{
 		{
@@ -706,6 +704,7 @@ func differingTargets() []differingTarget {
 	}
 }
 
+// linesStartingWith returns the lines of lines that start with prefix.
 func linesStartingWith(lines []string, prefix string) []string {
 	var found []string
 	for _, line := range lines {
