@@ -61,6 +61,7 @@ type transcriptEntry struct {
 }
 
 func TestJudge_WhenReplayingTheLocalTranscripts_LogsTheVerdictsByReason(t *testing.T) {
+	useUsersGH(t)
 	dir := replayDir(t)
 	before := replayBefore(t)
 
@@ -71,6 +72,20 @@ func TestJudge_WhenReplayingTheLocalTranscripts_LogsTheVerdictsByReason(t *testi
 	t.Logf("commands read: %d, distinct: %d, judged: %d, skipped (directory gone): %d",
 		read, len(distinct), len(judged), skipped)
 	logByReason(t, judged, verdicts)
+}
+
+// useUsersGH puts back, for the rest of the test, the GH_PATH this process started with, so the
+// replay judges with the gh the user has: the one GH_PATH names, or the one on PATH when it names
+// none. A user with no gh, or one not logged in, gets the verdicts the guard gives them then.
+func useUsersGH(t *testing.T) {
+	t.Helper()
+
+	t.Setenv(github.PathVariable, usersGH.path)
+	if !usersGH.set {
+		if err := os.Unsetenv(github.PathVariable); err != nil {
+			t.Fatalf("unset %s: %v", github.PathVariable, err)
+		}
+	}
 }
 
 // replayDir returns the directory the replay reads, from replayDirVar or ~/.claude/projects.

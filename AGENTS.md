@@ -40,7 +40,8 @@ manage flags and tool invocations.
 - `task test:replay` — Judge every Bash command of your local Claude Code transcripts with the
   guard, in the directory each one ran in, and print the number of commands read, judged and
   skipped, then each refusal and ask reason with its count and up to three commands. Never fails on
-  the counts. It reads:
+  the counts. It judges with your `gh`: the one `GH_PATH` names, else the one on `PATH`. With no
+  `gh`, or one not logged in, each command gets the verdict the guard gives you then. It reads:
   - `ILS_REPLAY_DIR` — the directory of transcripts to read, subagent transcripts included. Unset,
     the task reads `~/.claude/projects`.
   - `ILS_REPLAY_BEFORE` — when set, an RFC 3339 time: only calls recorded before it are read, so

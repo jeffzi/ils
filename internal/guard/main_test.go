@@ -6,11 +6,22 @@ import (
 	"os"
 	"testing"
 
+	"github.com/jeffzi/ils/internal/github"
 	"github.com/jeffzi/ils/internal/github/ghtest"
 	"github.com/jeffzi/ils/internal/gittest"
 )
 
+// usersGH is the GH_PATH this process started with, before the fake gh took its place, and whether
+// it was set: the replay judges with the gh the user has.
+//
+//nolint:gochecknoglobals // set once by TestMain before any test runs, and read only after.
+var usersGH struct {
+	path string
+	set  bool
+}
+
 func TestMain(m *testing.M) {
+	usersGH.path, usersGH.set = os.LookupEnv(github.PathVariable)
 	os.Exit(run(m))
 }
 
