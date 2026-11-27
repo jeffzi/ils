@@ -29,7 +29,8 @@ const (
 
 	// realGitEnv holds the path of the real git; its presence makes the test binary act as git.
 	realGitEnv = "ILS_GITTEST_REAL_GIT"
-	raceEnv    = "GORACE"
+	// RaceEnv is the variable that holds the options of the race detector.
+	RaceEnv    = "GORACE"
 	versionEnv = "ILS_GITTEST_VERSION"
 	// failOnEnv holds the words a failing call starts with, separated by wordsSep.
 	failOnEnv = "ILS_GITTEST_FAIL_ON"
@@ -164,32 +165,58 @@ func InstallFakeGit(ctx context.Context) (cleanup func() error, err error) {
 		return nil, fmt.Errorf("build the real git %s into the fake: its path holds a single quote", realGit)
 	}
 
-	dir, err := os.MkdirTemp("", "ils-fake-git-")
+	return InstallProgram(ctx, Program{
+		Name: gitName, Package: fakeGitPackage, Variable: "PATH",
+		Flags: []string{"-ldflags=-X '" + gittestPackage + ".builtRealGit=" + realGit + "'"},
+		Value: func(bin, before string) string { return firstOnPath(filepath.Dir(bin), before) },
+	})
+}
+
+// Program is a fake for InstallProgram to build and point a variable at.
+type Program struct {
+	// Value returns the value of Variable that points at bin, the path of the program, from the
+	// variable's value before, empty when unset.
+	Value func(bin, before string) string
+	// Name is the file name of the built program, the name of the tool it fakes.
+	Name string
+	// Package is the import path `go build` builds, and Flags the flags it is given ahead of it.
+	Package string
+	// Variable is the environment variable pointed at the program.
+	Variable string
+	Flags    []string
+}
+
+// InstallProgram builds p, without the race detector, into a new temporary directory, sets p's
+// variable to point at it, and returns a cleanup that puts the variable back and removes the
+// directory. Canceling ctx stops the build; the cleanup returns what it could not undo, for the
+// caller to fail on.
+func InstallProgram(ctx context.Context, p Program) (cleanup func() error, err error) {
+	dir, err := os.MkdirTemp("", "ils-fake-"+p.Name+"-")
 	if err != nil {
-		return nil, fmt.Errorf("make a directory for the fake git: %w", err)
+		return nil, fmt.Errorf("make a directory for the fake %s: %w", p.Name, err)
 	}
 
-	bin := filepath.Join(dir, gitName)
-	ldflags := "-ldflags=-X '" + gittestPackage + ".builtRealGit=" + realGit + "'"
-	//nolint:gosec // G204: the arguments are constants of this package, a path it made, and the path of git.
-	out, err := exec.CommandContext(ctx, "go", "build", ldflags, "-o", bin, fakeGitPackage).CombinedOutput()
+	bin := filepath.Join(dir, p.Name)
+	args := slices.Concat([]string{"build"}, p.Flags, []string{"-o", bin, p.Package})
+	//nolint:gosec // G204: the arguments are the caller's constants and a path this function made.
+	out, err := exec.CommandContext(ctx, "go", args...).CombinedOutput()
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("build the fake git: %w\n%s", err, out), os.RemoveAll(dir))
+		return nil, errors.Join(fmt.Errorf("build the fake %s: %w\n%s", p.Name, err, out), os.RemoveAll(dir))
 	}
 
-	before, hadPath := os.LookupEnv("PATH")
-	if err := os.Setenv("PATH", firstOnPath(dir, before)); err != nil {
-		return nil, errors.Join(fmt.Errorf("put the fake git first on PATH: %w", err), os.RemoveAll(dir))
+	before, had := os.LookupEnv(p.Variable)
+	if err := os.Setenv(p.Variable, p.Value(bin, before)); err != nil {
+		return nil, errors.Join(fmt.Errorf("point %s at the fake %s: %w", p.Variable, p.Name, err), os.RemoveAll(dir))
 	}
 
 	return func() error {
-		restore := os.Unsetenv("PATH")
-		if hadPath {
-			restore = os.Setenv("PATH", before)
+		restore := os.Unsetenv(p.Variable)
+		if had {
+			restore = os.Setenv(p.Variable, before)
 		}
 
 		if err := errors.Join(restore, os.RemoveAll(dir)); err != nil {
-			return fmt.Errorf("clean up the fake git: %w", err)
+			return fmt.Errorf("clean up the fake %s: %w", p.Name, err)
 		}
 
 		return nil
@@ -264,7 +291,7 @@ func FakeGit(tb testing.TB, fake Fake) []string {
 
 	// Every setting is set, empty when unused, so that this call's settings replace an earlier
 	// call's in the process environment too.
-	settings := slices.Concat([]string{realGitEnv + "=" + realGit, raceEnv + "=" + RaceSetting()}, fake.Settings())
+	settings := slices.Concat([]string{realGitEnv + "=" + realGit, RaceEnv + "=" + RaceSetting()}, fake.Settings())
 	SetEnvEntries(tb, settings)
 
 	LinkAs(tb, gitName)
@@ -305,7 +332,7 @@ func findRealGit(tb testing.TB) string {
 // second before every exit, which each call of a fake that the test binary stands in for would pay.
 // It keeps the options the environment already holds.
 func RaceSetting() string {
-	return strings.TrimSpace(os.Getenv(raceEnv) + " atexit_sleep_ms=0")
+	return strings.TrimSpace(os.Getenv(RaceEnv) + " atexit_sleep_ms=0")
 }
 
 // CoverSetting returns the GOCOVERDIR=<dir> entry that makes a child built for coverage write its
@@ -453,7 +480,7 @@ func Hold(ctx context.Context, addr string) int {
 // The package's TestMain must call Main. A test that hands in the address of a SilentListener
 // learns when the copy has started.
 func Spawner(addr, said string) []string {
-	return []string{spawnAtEnv + "=" + addr, spawnSaysEnv + "=" + said, raceEnv + "=" + RaceSetting()}
+	return []string{spawnAtEnv + "=" + addr, spawnSaysEnv + "=" + said, RaceEnv + "=" + RaceSetting()}
 }
 
 // spawn prints said, starts a copy of the test binary that inherits this process's output and

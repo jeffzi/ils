@@ -7,8 +7,6 @@ import (
 	"slices"
 	"sync"
 	"testing"
-
-	"github.com/jeffzi/ils/internal/child"
 )
 
 // Record is one record a logger was given: its level, its message, and its attributes in order.
@@ -45,25 +43,6 @@ func Only(t testing.TB, records []Record) Record {
 	}
 
 	return records[0]
-}
-
-// Call returns the attributes of r, all but the duration. It is how a logged call is compared with
-// ExecAttrs, whose duration can never match.
-func (r Record) Call() map[string]any {
-	attrs := r.Map()
-	delete(attrs, child.KeyDuration)
-
-	return attrs
-}
-
-// ExecAttrs returns the attributes, all but the duration, of the one record run logs, and fails t
-// when run logs other than one record.
-func ExecAttrs(t testing.TB, run child.Exec) map[string]any {
-	t.Helper()
-
-	records := RecordsOf(func(logger *slog.Logger) { run.Log(t.Context(), logger) })
-
-	return Only(t, records).Call()
 }
 
 // Sink keeps every record the logger built with it is given, at any level, safe for concurrent use.
