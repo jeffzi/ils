@@ -367,15 +367,7 @@ func (r Repo) BranchesContaining(ctx context.Context, sha string) ([]string, err
 		return nil, err
 	}
 
-	var branches []string
-
-	for _, branch := range containing {
-		if branch != current {
-			branches = append(branches, branch)
-		}
-	}
-
-	return branches, nil
+	return slices.DeleteFunc(containing, func(branch string) bool { return branch == current }), nil
 }
 
 // Unlanded returns the commits on tip whose patch neither the merged head nor origin's trunk

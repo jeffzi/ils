@@ -340,7 +340,9 @@ func casesWithout(all []readCase, names ...string) []readCase {
 }
 
 func TestForge_WhenReadPrintsMalformedJSON_ReturnsDecodeErrorNamingCall(t *testing.T) {
-	for _, tt := range casesNamed(readCases(), "repo view") {
+	// "api graphql release" reads through Runner.Read, whose decode names the call with the
+	// --include it added.
+	for _, tt := range casesNamed(readCases(), "repo view", "api graphql release") {
 		t.Run(tt.name, func(t *testing.T) {
 			assertDecodeErrorNamesCall(t, tt)
 		})

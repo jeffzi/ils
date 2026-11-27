@@ -859,10 +859,10 @@ func parseStatus(line string) (status refStatus, refs string, ok bool) {
 
 // remote runs a git call that reads origin, whose failure is classed as remoteFailure classes it.
 // It runs git in the C locale: remoteFailure reads git's own words, which git translates.
-func (r Repo) remote(ctx context.Context, args ...string) (Result, error) {
+func (r Repo) remote(ctx context.Context, args ...string) (child.Output, error) {
 	result, err := r.Runner.inCLocale().Run(ctx, args...)
 	if err != nil {
-		return Result{}, remoteFailure(err)
+		return child.Output{}, remoteFailure(err)
 	}
 
 	return result, nil
