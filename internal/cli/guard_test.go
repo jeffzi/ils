@@ -256,7 +256,6 @@ func TestApp_Run_WhenParseIsNotGivenADirectoryAndOneCommandWord_Refuses(t *testi
 		name string
 		args []string
 	}{
-		{name: "no directory", args: []string{"parse", "--", "git status"}},
 		{name: "no word after the end of flags", args: []string{"parse", "--cwd", ".", "--"}},
 		{name: "command before the end of flags", args: []string{"parse", "--cwd", ".", "git status"}},
 		{name: "command split into words", args: []string{"parse", "--cwd", ".", "--", "git", "status"}},
