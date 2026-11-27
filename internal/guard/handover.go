@@ -230,12 +230,15 @@ func handedBy(words []Word, args []*syntax.Word, dir string, ex expander) (strin
 // against dir. A path whose stat fails for any reason other than its absence counts as one, and so
 // does a relative path when dir is empty, since the guard cannot rule it out.
 //
+// A word that starts with `-` is not counted, whatever it ends in: it is an option the command
+// reads (`--conditions=@scope/source`, `-I/opt/bash`), never a program it runs.
+//
 // `.` is not counted: as an argument it names the current directory far more often (`find .`,
 // `docker build .`) than it runs a script.
 func isToolWord(w Word, dir string) bool {
 	program := programName(w)
 	runner := toolOf(w) != NoTool || isShell(w) || program == "eval" || program == "source"
-	if !w.Literal || !runner {
+	if !w.Literal || !runner || strings.HasPrefix(w.Text, "-") {
 		return false
 	}
 

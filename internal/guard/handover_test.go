@@ -73,6 +73,8 @@ func TestParse_WhenAToolIsHandedToAnotherCommand_NamesItOnTheMark(t *testing.T) 
 		{name: "bare tool word among the positional parameters of a shell string, behind xargs", command: `xargs sh -c 'ls "$1"' sh git push`, want: "git"},
 		{name: "code for a python3 word with no minor", command: "python3. -c 'import git'", want: "git"},
 		{name: "code for a python3 word whose minor is not a number", command: "python3.x -c 'import git'", want: "git"},
+		{name: "relative path named for a tool in a shell string behind xargs", command: "xargs sh -c 'npx tsx lib/git x'", want: "lib/git"},
+		{name: "scoped path named for a tool in a shell string behind xargs", command: "xargs sh -c 'npx tsx @scope/source x'", want: "@scope/source"},
 	})
 }
 
@@ -97,6 +99,8 @@ func TestParse_WhenAShellStringHandedToAnotherCommandHandsNoTool_MarksNothing(t 
 	checkNoMarks(t, []namedCommand{
 		{name: "sh string behind xargs", command: "xargs -I{} sh -c 'ls {}'"},
 		{name: "shell named as the zero argument of a sh string behind xargs", command: `xargs sh -c 'ls "$1"' sh`},
+		{name: "joined option ending in a tool name, in a string handed to a command the guard does not know", command: "mise exec -- task cdk -- synth --app 'npx tsx --conditions=@scope/source bin/boundary.ts'"},
+		{name: "short option ending in a tool name, in a sh string behind xargs", command: "xargs sh -c 'npx tsx -I/opt/bash x'"},
 	})
 }
 
