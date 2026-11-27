@@ -117,7 +117,7 @@ func fixGroups(groups []jsontext.Value, entry jsontext.Value) ([]jsontext.Value,
 		}
 
 		found.guarded = found.guarded || fix.guarded
-		found.onBash = found.onBash || fix.guardedOnBash()
+		found.onBash = found.onBash || (fix.guarded && fix.onBash)
 		found.changed = found.changed || fix.changed
 		if fixed != nil {
 			kept = append(kept, fixed)
@@ -133,11 +133,6 @@ type groupFix struct {
 	guarded, onBash, changed bool
 }
 
-// guardedOnBash reports whether the group held a guard entry and its matcher covers Bash.
-func (f groupFix) guardedOnBash() bool {
-	return f.guarded && f.onBash
-}
-
 // fixGroup reads group, a PreToolUse group, and returns it with every guard entry made entry when
 // its matcher covers Bash, and removed otherwise; nil when that leaves it without a hook. A group
 // or a hook of another shape, and a group whose matcher is no string, are returned as they are; the
@@ -149,13 +144,14 @@ func fixGroup(group, entry jsontext.Value) (jsontext.Value, groupFix, error) {
 	}
 
 	fix := groupFix{onBash: true}
-	if matcher, found := members.get(keyMatcher); found {
-		if matcher.Kind() != '"' {
-			guarded, guardErr := holdsGuard(members)
+	matcher, found := members.get(keyMatcher)
+	asIs := found && matcher.Kind() != '"'
 
-			return group, groupFix{guarded: guarded}, guardErr
-		}
-
+	switch {
+	case asIs:
+		// The group stays as it is: fixHooks only finds its guard entries.
+		fix.onBash = false
+	case found:
 		var name string
 		if err = json.Unmarshal(matcher, &name); err != nil {
 			return nil, groupFix{}, fmt.Errorf("read a matcher: %w", err)
@@ -176,6 +172,8 @@ func fixGroup(group, entry jsontext.Value) (jsontext.Value, groupFix, error) {
 	}
 
 	switch {
+	case asIs:
+		return group, groupFix{guarded: fix.guarded}, nil
 	case !fix.changed:
 		return group, fix, nil
 	case len(kept) == 0:
@@ -185,29 +183,6 @@ func fixGroup(group, entry jsontext.Value) (jsontext.Value, groupFix, error) {
 	fixed, err := withArray(members, keyHooks, kept)
 
 	return fixed, fix, err
-}
-
-// holdsGuard reports whether the hooks of group, a PreToolUse group read as an object, hold a guard
-// entry. A group with no hooks array holds none.
-func holdsGuard(group jsonObject) (bool, error) {
-	raw, _ := group.get(keyHooks)
-	hooks, ok, err := readArray(raw)
-	if err != nil || !ok {
-		return false, err
-	}
-
-	for _, hook := range hooks {
-		held, isObject, readErr := readObject(hook)
-		if readErr != nil {
-			return false, readErr
-		}
-
-		if isObject && runsGuard(held) {
-			return true, nil
-		}
-	}
-
-	return false, nil
 }
 
 // fixHooks returns hooks, the hooks of a group, with every guard entry made entry when fix says

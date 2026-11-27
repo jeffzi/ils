@@ -1,5 +1,3 @@
-//go:build darwin || dragonfly || freebsd
-
 package cli
 
 import (

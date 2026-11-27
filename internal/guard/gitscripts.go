@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/landing"
 )
 
@@ -89,7 +88,7 @@ func (w *walker) topFor(ctx context.Context, inv Invocation, runs []gitRun) (str
 		return "", nil
 	}
 
-	top, _, err := git.Repo{Runner: targetRunner(w.caller.Git, inv.Dir, inv.Target)}.TopLevel(ctx, options...)
+	top, _, err := invocationRepo(w.caller, inv).TopLevel(ctx, options...)
 	if err != nil {
 		return "", fmt.Errorf("read the top of the work tree of %q: %w", wordTexts(inv.Words), err)
 	}
@@ -213,7 +212,7 @@ func shellCommandsOf(inv Invocation) []gitRun {
 	}
 
 	if sub, ok := subcommand(inv); ok && sub == "rebase" {
-		runs = append(runs, topRuns(inv.Git.Args, "rebase")...)
+		runs = append(runs, topRuns(inv.Git.Args)...)
 	}
 
 	return runs
@@ -332,13 +331,15 @@ func argumentRuns(inv Invocation) []gitRun {
 	return nil
 }
 
-// topRuns returns the value of each `-x` or `--exec` among args, the arguments of the git
-// subcommand sub, the commands git runs at the top of the work tree: separate or attached,
-// `--exec` spelled as any prefix of it git could read as it, and `-x` in a short-flag bundle ahead
-// of any other of the subcommand's short options that take a value, whose rest is then its value.
-// Each run's form is the option as written. A word the guard cannot read that git could read as
-// one of these options is a run the guard cannot read either, whose form is sub.
-func topRuns(args []Word, sub string) []gitRun {
+// topRuns returns the value of each `-x` or `--exec` among args, the arguments of `git rebase`,
+// the commands git runs at the top of the work tree: separate or attached, `--exec` spelled as any
+// prefix of it git could read as it, and `-x` in a short-flag bundle ahead of any other of
+// rebase's short options that take a value, whose rest is then its value. Each run's form is the
+// option as written. A word the guard cannot read that git could read as one of these options is
+// a run the guard cannot read either, whose form is rebase.
+func topRuns(args []Word) []gitRun {
+	const sub = "rebase"
+
 	var runs []gitRun
 	for _, v := range execValues(args, optionsOf(sub).valuedLetters) {
 		if v.unread {

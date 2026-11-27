@@ -132,14 +132,7 @@ func (a App) onStop(shown *display) {
 		return
 	}
 
-	stop := func() error {
-		self, err := os.FindProcess(os.Getpid())
-		if err != nil {
-			return err
-		}
-
-		return self.Signal(syscall.SIGSTOP)
-	}
+	stop := func() error { return syscall.Kill(os.Getpid(), syscall.SIGSTOP) }
 
 	stops := make(chan os.Signal, 1)
 	a.Notify(stops, syscall.SIGTSTP)

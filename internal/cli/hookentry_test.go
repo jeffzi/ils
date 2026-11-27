@@ -242,6 +242,13 @@ func TestApp_Run_WhenInitClaudeFindsGuardEntries_MarksTheHookStepChangedUnlessEv
 			wantMark: markChanged,
 			wantLine: updated,
 		},
+		{
+			name: "a guard entry in a group whose matcher is no string, beside one in place",
+			groups: fmt.Sprintf(`{"matcher": 42, "hooks": [{"type": "command", "command": %q}]}, %s`,
+				cli.UserHook, inPlaceEntry()),
+			wantMark: markUnchanged,
+			wantLine: unchanged,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

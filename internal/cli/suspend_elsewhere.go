@@ -1,4 +1,4 @@
-//go:build !darwin && !dragonfly && !freebsd && !(linux && !mips && !mipsle && !mips64 && !mips64le)
+//go:build !darwin && !(linux && !mips && !mipsle && !mips64 && !mips64le)
 
 package cli
 

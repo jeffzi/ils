@@ -182,12 +182,6 @@ func asksForHelp(args []Word, at int, help string) bool {
 	return at+1 < len(args) && args[at+1] == Word{Text: help, Literal: true}
 }
 
-// ilsSwitches are the flags the root command of ils knows and that take no value. A test of
-// package cli fails when the root gains a switch RootSwitches lacks.
-func ilsSwitches() map[string]bool {
-	return setOf(RootSwitches()...)
-}
-
 // ---------------------------------------------------------------------------
 // Finding the gh command
 // ---------------------------------------------------------------------------

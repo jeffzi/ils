@@ -609,12 +609,6 @@ func nearestDirectory(path string) string {
 // Rebase, abort, worktree, and config rules
 // ---------------------------------------------------------------------------
 
-// invocationRepo returns the repository the git invocation inv runs in, read through the git of
-// caller.
-func invocationRepo(caller Caller, inv Invocation) git.Repo {
-	return git.Repo{Runner: targetRunner(caller.Git, inv.Dir, inv.Target)}
-}
-
 // unknownRepositoryReason returns the refusal reason of what, a command of git the guard cannot
 // place in a repository.
 func unknownRepositoryReason(what string) string {

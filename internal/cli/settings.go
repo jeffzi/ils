@@ -116,7 +116,11 @@ func planSettings(dir, hook string) (settingsEdit, error) {
 		return edit, err
 	}
 
-	if err = edit.apply(&settings, hook); err != nil {
+	if err = edit.addHook(&settings, hook); err != nil {
+		return edit, err
+	}
+
+	if err = edit.editRules(&settings); err != nil {
 		return edit, err
 	}
 
@@ -133,8 +137,7 @@ func planSettings(dir, hook string) (settingsEdit, error) {
 		return edit, fmt.Errorf("encode %s: %w", file, err)
 	}
 
-	whole = append(whole, '\n')
-	edit.text = whole
+	edit.text = append([]byte(whole), '\n')
 
 	return edit, nil
 }
@@ -194,16 +197,6 @@ func badEscapeAt(text []byte, offset int64) bool {
 			return inString && !errors.Is(err, io.ErrUnexpectedEOF)
 		}
 	}
-}
-
-// apply adds the permission rules to settings, removing the ones ils init claude no longer adds,
-// and the hook that runs hook, keeping a line for each step.
-func (e *settingsEdit) apply(settings *jsonObject, hook string) error {
-	if err := e.addHook(settings, hook); err != nil {
-		return err
-	}
-
-	return e.editRules(settings)
 }
 
 // member returns the member name of parent read as an object, an empty object when parent has

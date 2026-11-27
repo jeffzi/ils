@@ -112,6 +112,12 @@ type Invocation struct {
 	atCall bool
 }
 
+// invocationRepo returns the repository the git invocation inv runs in, read through the git of
+// caller.
+func invocationRepo(caller Caller, inv Invocation) git.Repo {
+	return git.Repo{Runner: targetRunner(caller.Git, inv.Dir, inv.Target)}
+}
+
 // Assignment is one variable a command runs with.
 type Assignment struct {
 	Name  string
