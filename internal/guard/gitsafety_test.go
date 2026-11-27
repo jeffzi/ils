@@ -419,6 +419,61 @@ func TestJudge_AllowsAnAbortOrSequencerStepThatCannotLoseWork(t *testing.T) {
 	}, expectation{outcome: guard.Allow})
 }
 
+// dirtyTrees returns a repository with a staged change, one with an unstaged change, and one with
+// an untracked file, each on a branch past its trunk, with a caller working in the first.
+func dirtyTrees(t *testing.T) (staged, unstaged, untracked string, caller guard.Caller) {
+	t.Helper()
+
+	withStaged, caller := standingOn(t, "main", "topic")
+	withStaged.StagedFile()
+	withUnstaged, _ := standingOn(t, "main", "topic")
+	withUnstaged.DirtyFile()
+	withUntracked, _ := standingOn(t, "main", "topic")
+	gittest.WriteFile(t, withUntracked.Dir(), "notes.txt", "notes\n")
+
+	return withStaged.Dir(), withUnstaged.Dir(), withUntracked.Dir(), caller
+}
+
+func TestJudge_RefusesAnArgumentThatMayBeAnAbortOverUncommittedWork(t *testing.T) {
+	t.Parallel()
+
+	staged, unstaged, untracked, caller := dirtyTrees(t)
+
+	checkJudgedIn(t, caller, []placed{
+		{name: "cherry-pick over a staged change", dir: staged, command: `git cherry-pick "$x"`},
+		{name: "cherry-pick over an unstaged change", dir: unstaged, command: `git cherry-pick "$x"`},
+		{name: "cherry-pick over an untracked file", dir: untracked, command: `git cherry-pick "$x"`},
+		{name: "revert over a staged change", dir: staged, command: `git revert "$x"`},
+		{name: "revert over an unstaged change", dir: unstaged, command: `git revert "$x"`},
+		{name: "revert over an untracked file", dir: untracked, command: `git revert "$x"`},
+		{name: "merge over an unstaged change", dir: unstaged, command: `git merge "$x"`},
+		{name: "merge over an untracked file", dir: untracked, command: `git merge "$x"`},
+	}, expectation{outcome: guard.Refuse, named: "the argument cannot be read"})
+}
+
+func TestJudge_WhenACherryPickOfAnArgumentItCannotReadRunsWhereItCannotTell_RefusesAsTheTrunkRuleDoes(t *testing.T) {
+	t.Parallel()
+
+	f, caller := standingOn(t, "main", "topic")
+
+	checkJudgedIn(t, caller, []placed{
+		{name: "cherry-pick under a non-literal -C", dir: f.Dir(), command: `git -C "$d" cherry-pick "$x"`},
+	}, expectation{outcome: guard.Refuse, named: "cannot tell where the command runs"})
+}
+
+func TestJudge_AllowsACherryPickOrRevertThatCannotDiscardWork(t *testing.T) {
+	t.Parallel()
+
+	staged, _, _, caller := dirtyTrees(t)
+	clean, _ := standingOn(t, "main", "topic")
+
+	checkJudgedIn(t, caller, []placed{
+		{name: "cherry-pick of an argument it cannot read in a clean tree", dir: clean.Dir(), command: `git cherry-pick "$x"`},
+		{name: "revert of an argument it cannot read in a clean tree", dir: clean.Dir(), command: `git revert "$x"`},
+		{name: "cherry-pick of a literal commit in a dirty tree", dir: staged, command: "git cherry-pick abc123"},
+	}, expectation{outcome: guard.Allow})
+}
+
 // worktrees is a repository with linked worktrees elsewhere, and two more that each hold a linked
 // worktree named wt1 inside their work tree.
 type worktrees struct {

@@ -617,20 +617,29 @@ func unknownRepositoryReason(what string) string {
 
 // refuseDiscardOverChanges refuses, in a work tree that holds uncommitted or untracked changes and
 // in one whose repository the guard cannot tell, every `git rebase` and the `--abort` of
-// `git merge`, `git cherry-pick`, and `git revert`. Outside any repository there is nothing for
-// them to lose, and an action keepsWorkTree names leaves the work tree as it is.
+// `git merge`, `git cherry-pick`, and `git revert`. One of those three holding an argument the
+// guard cannot read may be an `--abort`: in a dirty work tree it returns an *unreadArgumentError.
+// Where the guard cannot tell the repository it leaves such a command to refuseOnTrunk, which
+// refuses each of the three there. Outside any repository there is nothing for them to lose, and
+// an action keepsWorkTree names leaves the work tree as it is.
 func refuseDiscardOverChanges(ctx context.Context, caller Caller, inv Invocation) (Verdict, error) {
 	sub, ok := subcommand(inv)
 	if !ok || !mayDiscardChanges(sub, inv.Git.Args) {
 		return Verdict{Outcome: Allow}, nil
 	}
 
-	unknownRepository := refuse(unknownRepositoryReason("git " + sub))
+	read := readArgs(inv.Git.Args, optionsOf(sub))
+	discards := sub == "rebase" || read.sets(0, "--abort")
+	unknownRepository := Verdict{Outcome: Allow}
+	if discards {
+		unknownRepository = refuse(unknownRepositoryReason("git " + sub))
+	}
+
 	if inv.Git.GitDirUnknown {
 		return unknownRepository, nil
 	}
 
-	if inv.Git.GitDir == "" || keepsWorkTree(readArgs(inv.Git.Args, optionsOf(sub))) {
+	if inv.Git.GitDir == "" || keepsWorkTree(read) {
 		return Verdict{Outcome: Allow}, nil
 	}
 
@@ -644,23 +653,29 @@ func refuseDiscardOverChanges(ctx context.Context, caller Caller, inv Invocation
 		return Verdict{}, fmt.Errorf("read whether git %s runs over changes: %w", sub, err)
 	}
 
-	if dirty {
-		return refuse("git " + sub + " (dirty): the working tree holds uncommitted or untracked changes"), nil
+	switch {
+	case !dirty:
+		return Verdict{Outcome: Allow}, nil
+	case !discards:
+		return Verdict{}, &unreadArgumentError{sub: sub}
 	}
 
-	return Verdict{Outcome: Allow}, nil
+	return refuse("git " + sub + " (dirty): the working tree holds uncommitted or untracked changes"), nil
 }
 
 // mayDiscardChanges reports whether the git subcommand sub, given its arguments args, can discard
 // the work tree's changes: any `git rebase`, and a `git merge`, `git cherry-pick`, or `git revert`
-// whose readable options set `--abort`, which resets the index and work tree to where the
-// operation started, staged changes included.
+// whose options set `--abort`, or that holds an argument the guard cannot read, which may be
+// `--abort`. `--abort` resets the index and work tree to where the operation started, staged
+// changes included.
 func mayDiscardChanges(sub string, args []Word) bool {
 	switch sub {
 	case "rebase":
 		return true
 	case "merge", "cherry-pick", "revert":
-		return readArgs(args, optionsOf(sub)).sets(0, "--abort")
+		options := readArgs(args, optionsOf(sub))
+
+		return options.unreadable || options.sets(0, "--abort")
 	default:
 		return false
 	}
