@@ -158,11 +158,11 @@ func commitsPast(ctx context.Context, s *survey, req Request, b onBranch) (tip s
 	return found.tip, past, nil
 }
 
-// readTip reads the sha of the branch's tip, and whether the branch has a commit at all; a branch
-// with none reads as no tip and no error. When the tip cannot be read on a branch that has
-// commits, err is that failure and committed is true; when the read of the branch's ref fails
-// too, err joins both failures.
-func (b onBranch) readTip(ctx context.Context, deps Deps) (tip string, committed bool, err error) {
+// readBranchTip reads the sha of the tip of branch, the branch HEAD is on, and whether branch has a
+// commit at all; a branch with none reads as no tip and no error. When the tip cannot be read on a
+// branch that has commits, err is that failure and committed is true; when the read of the
+// branch's ref fails too, err joins both failures.
+func readBranchTip(ctx context.Context, deps Deps, branch string) (tip string, committed bool, err error) {
 	tip, err = deps.Repo.HeadSHA(ctx)
 	if err == nil {
 		return tip, true, nil
@@ -170,7 +170,7 @@ func (b onBranch) readTip(ctx context.Context, deps Deps) (tip string, committed
 
 	// The read of the tip fails on a branch with no commit as it does on a broken repository, so
 	// only the branch's ref tells the two apart.
-	committed, refErr := deps.Repo.HasCommits(ctx, b.branch)
+	committed, refErr := deps.Repo.HasCommits(ctx, branch)
 	switch {
 	case refErr != nil:
 		return "", false, errors.Join(err, refErr)
@@ -187,17 +187,11 @@ func (b onBranch) readTip(ctx context.Context, deps Deps) (tip string, committed
 func (r Request) nothingPast(b onBranch) *result.Result {
 	next := result.NextStep("commit the work"+thenRunAgain, r.ilsCommand())
 	if r.Command == MergeCommand || r.Command == StatusCommand {
-		next = firstPushStep()
+		next = result.NextStep("commit the work, then run %s", result.Command(PushCommand))
 	}
 
 	return r.Refused(
 		result.Say("the branch %s has no commit past origin's trunk %s", result.Branch(b.branch), result.Branch(b.Trunk)), next)
-}
-
-// firstPushStep is the next step of a branch with no commit past origin's trunk, for a command
-// other than push: commit the work, then push it for the first time.
-func firstPushStep() result.Next {
-	return result.NextStep("commit the work, then run %s", result.Command(PushCommand))
 }
 
 // pullRequest returns the branch's open pull request against the trunk, nil when it has none,

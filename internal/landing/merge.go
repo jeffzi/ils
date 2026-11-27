@@ -12,10 +12,9 @@ import (
 	"github.com/jeffzi/ils/internal/result"
 )
 
-// readLocalTrunk, readWorktrees, readRules, readMessage and readStillOnOrigin name what a read
-// covers as each follows "read" in a result, so each stays a noun phrase.
+// readWorktrees, readRules, readMessage and readStillOnOrigin name what a read covers as each
+// follows "read" in a result, so each stays a noun phrase.
 const (
-	readLocalTrunk    = "the local trunk"
 	readWorktrees     = "where the trunk is checked out"
 	readRules         = "the trunk's rules"
 	readMessage       = "the pull request's message"
@@ -268,9 +267,9 @@ func (m *mergeReady) atHead(ctx context.Context, deps Deps, req Request) *result
 		return nil
 	}
 
-	head, stop := req.fetchPullHead(ctx, deps, m.pull.Number, readHead)
-	if stop != nil {
-		return stop
+	head, err := deps.Repo.FetchPullHead(ctx, m.pull.Number)
+	if err != nil {
+		return req.pullHeadNotFetched(m.pull.Number, readHead, err)
 	}
 
 	apart, err := deps.Repo.Divergence(ctx, m.tip, head)
@@ -278,7 +277,7 @@ func (m *mergeReady) atHead(ctx context.Context, deps Deps, req Request) *result
 		return req.Unread(readHead, err)
 	}
 
-	if stop = m.apartFromHead(req, apart); stop != nil {
+	if stop := m.apartFromHead(req, apart); stop != nil {
 		return stop
 	}
 

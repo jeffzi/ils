@@ -1,6 +1,7 @@
 package landing
 
 import (
+	"cmp"
 	"errors"
 	"slices"
 	"strings"
@@ -156,6 +157,12 @@ func (w Waited) neverReportedLine() result.Phrase {
 	return result.Say("Required and never reported: %s", strings.Join(w.Verdict.MissingRequired, ", "))
 }
 
+// rerunCanceledStep is the next step of a canceled check: rerun it with `gh run rerun`, then run
+// again.
+func rerunCanceledStep(check string, again result.Name) result.Next {
+	return result.NextStep("rerun the canceled check %s with `gh run rerun`"+thenRunAgain, check, again)
+}
+
 // redReport is a deciding check that failed or was canceled, with the end of its log as the
 // excerpt, whose next step runs the push end names as pushOfChange once the check is fixed, or
 // once a canceled check is rerun.
@@ -166,7 +173,7 @@ func (w Waited) redReport(end ending) waitReport {
 	next := result.NextStep("fix the failing check, commit, and run %s again", end.pushOfChange)
 	if failed.Bucket == forge.BucketCanceled {
 		reason = result.Say("the check %s was canceled", failed.Name)
-		next = result.NextStep("rerun the canceled check %s with `gh run rerun`"+thenRunAgain, failed.Name, end.pushOfChange)
+		next = rerunCanceledStep(failed.Name, end.pushOfChange)
 	}
 
 	return waitReport{
@@ -304,10 +311,7 @@ func noCI(trunk, sha string) result.Phrase {
 // payloadFields returns the verdict state, the merge state and the deciding checks as the push
 // and merge payloads carry them; the merge state is unknown until the wait has read one.
 func (w Waited) payloadFields() (verdict forge.VerdictState, mergeState forge.MergeState, checks []result.Check) {
-	state := w.MergeState
-	if state == "" {
-		state = forge.MergeUnknown
-	}
+	state := cmp.Or(w.MergeState, forge.MergeUnknown)
 
 	checks = make([]result.Check, 0, len(w.Deciding))
 	for _, check := range w.Deciding {

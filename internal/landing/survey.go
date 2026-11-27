@@ -123,8 +123,8 @@ type trunkAheadRead struct {
 	read  string
 }
 
-// tipRead is the branch's tip and whether the branch has a commit at all, as onBranch.readTip
-// returns them.
+// tipRead is the branch's tip and whether the branch has a commit at all, as readBranchTip returns
+// them.
 type tipRead struct {
 	tip       string
 	committed bool
@@ -160,11 +160,7 @@ func (s *survey) standing(ctx context.Context) (git.Standing, error) {
 }
 
 func (s *survey) origin(ctx context.Context) (originRead, error) {
-	return s.got.origin.of(s.settled, func() (originRead, error) {
-		urls, repo, oneRepo, err := readOriginRepo(ctx, s.deps)
-
-		return originRead{urls: urls, repo: repo, oneRepo: oneRepo}, err
-	})
+	return s.got.origin.of(s.settled, func() (originRead, error) { return readOriginRepo(ctx, s.deps) })
 }
 
 // identity returns the repository origin's URLs name as GitHub describes it. URLs that do not name
@@ -233,7 +229,7 @@ func (s *survey) tip(ctx context.Context) (tipRead, error) {
 			return tipRead{}, err
 		}
 
-		tip, committed, err := onBranch{branch: standing.Branch}.readTip(ctx, s.deps)
+		tip, committed, err := readBranchTip(ctx, s.deps, standing.Branch)
 
 		return tipRead{tip: tip, committed: committed}, err
 	})

@@ -454,7 +454,7 @@ func (rel *releasing) redStop(req Request, waited Waited) *result.Result {
 
 	if failed.Bucket == forge.BucketCanceled {
 		stop := req.Refused(result.Say("the check %s of the release commit %s was canceled", failed.Name, commit),
-			result.NextStep("rerun the canceled check %s with `gh run rerun`"+thenRunAgain, failed.Name, req.ilsCommand()))
+			rerunCanceledStep(failed.Name, req.ilsCommand()))
 		stop.Lines = []result.Phrase{failedLine(failed)}
 
 		return stop

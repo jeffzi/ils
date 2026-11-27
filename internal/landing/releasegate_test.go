@@ -117,7 +117,7 @@ func TestRelease_WhenACheckOfTheReleaseCommitDidNotPass_RefusesNamingIt(t *testi
 		{name: "a check failed", verdicts: []forge.Verdict{redCheck(forge.BucketFail)}, want: expect("lint", lintURL)},
 		{
 			name: "a check was canceled", verdicts: []forge.Verdict{redCheck(forge.BucketCanceled)},
-			want: expect("lint", "gh run rerun"),
+			want: expect("lint") + releaseCommand(version).after("gh run rerun"),
 		},
 	})
 }
