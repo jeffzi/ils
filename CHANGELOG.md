@@ -7,6 +7,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Name `ils init` by its canonical command line in every `Next:` that says to run it again,
+  whatever order the words were typed in.
+
 ### Fixed
 
 - Fix a command failing on the first failed read of GitHub instead of reading it again.

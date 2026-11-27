@@ -168,7 +168,7 @@ func (p *parse) installClaude(ctx context.Context, shown *display, project bool)
 	settings, err := planSettings(dir, hook)
 	if shape, ok := errors.AsType[*shapeError](err); ok {
 		return *req.Refused(result.Say("%s, and the guard's setup edits it", shape.problem),
-			result.NextStep("fix %s, then run %s again", file, rerun(req)))
+			result.NextStep("fix %s, then run %s again", file, req.OwnCommand()))
 	}
 
 	if err != nil {
@@ -193,7 +193,7 @@ func (p *parse) installClaude(ctx context.Context, shown *display, project bool)
 
 	if len(linked) > 0 {
 		return brokeWith(req.Broke(linkedReason(linked),
-			result.NextStep("remove the link or update its target, then run %s again", rerun(req))), lines)
+			result.NextStep("remove the link or update its target, then run %s again", req.OwnCommand())), lines)
 	}
 
 	return result.Result{Command: req.Command, Words: req.Words, Lines: lines, Next: result.NextNone(), Outcome: result.Done}
@@ -229,8 +229,11 @@ func (p *parse) installDir(ctx context.Context, shown *display, req landing.Requ
 	}
 
 	if !found {
+		user := req
+		user.Project = false
+
 		return "", "", req.Refused(result.Say("%s installs in a repository, and the working directory is in none", flagProject),
-			result.NextStep("run it again from inside a repository, or without %s", flagProject))
+			result.NextStep("run %s from inside a repository, or run %s", req.OwnCommand(), user.OwnCommand()))
 	}
 
 	return filepath.Join(top, claudeDir), projectHook, nil
@@ -267,11 +270,10 @@ func userDir(req landing.Request, environ []string) (dir, hook string, refusal *
 }
 
 // installBroke returns the broke result of req for err, the failure of a step of the install, with
-// lines, those of the steps done before it, and with fixing what the reason names and running the
-// same words again as the next step.
+// lines, those of the steps done before it, and with fixing what the reason names and running req's
+// command line again as the next step.
 func installBroke(req landing.Request, lines []result.Phrase, err error) result.Result {
-	return brokeWith(req.Broke(result.Say("the install broke: %s", err.Error()),
-		result.NextStep("fix what the reason names, then run %s again", rerun(req))), lines)
+	return brokeWith(req.Broke(result.Say("the install broke: %s", err.Error()), fixThenRunAgain(req.OwnCommand())), lines)
 }
 
 // brokeWith returns broke as a value, with lines as its lines.
@@ -279,18 +281,6 @@ func brokeWith(broke *result.Result, lines []result.Phrase) result.Result {
 	broke.Lines = lines
 
 	return *broke
-}
-
-// rerun returns the command that runs req's words again, each quoted as landing.ShellLine quotes
-// it. It panics on a word ShellLine cannot quote: the words come from argv, which cannot hold a NUL
-// byte.
-func rerun(req landing.Request) result.Name {
-	line, err := landing.ShellLine(req.Words)
-	if err != nil {
-		panic(err)
-	}
-
-	return result.Command(line)
 }
 
 // installSkills writes each skill of shipped, a directory of its own at its root, to the directory

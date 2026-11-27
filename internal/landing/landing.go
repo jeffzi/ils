@@ -328,7 +328,7 @@ func (r Request) limitWords() span {
 }
 
 // ilsCommand is the command that a step of the checks the user takes first (a fix of git or ssh, a
-// login to gh, a change to the branch) runs again: the request's own, as ownCommand prints it. For
+// login to gh, a change to the branch) runs again: the request's own, as OwnCommand prints it. For
 // a status it is the command whose checks the status runs to tell its `Next:`, as ChecksOf names
 // it: `ils branch <name>`, since a status has no name to print, or a plain `ils push`.
 func (r Request) ilsCommand() result.Name {
@@ -340,14 +340,14 @@ func (r Request) ilsCommand() result.Name {
 		return result.Command(PushCommand)
 	}
 
-	return r.ownCommand()
+	return r.OwnCommand()
 }
 
-// ownCommand is the request's command line without a typed --wait, marked as an ils command, which
+// OwnCommand is the request's command line without a typed --wait, marked as an ils command, which
 // prints as "ils <command> <args> <flags>": the command that a fix of what failed runs again. That
 // run starts over, so it does not ask for the long wait, and a fast failure comes back at once; a
 // typed --wait=false, which asks for the short one, stays.
-func (r Request) ownCommand() result.Name {
+func (r Request) OwnCommand() result.Name {
 	return result.Command(r.commandLine(false))
 }
 
@@ -816,7 +816,7 @@ func couldNotRead(read string, err error) (line, reason result.Phrase) {
 // onceFixed is the judgment step after a failure the user has to look at, ending in the
 // request's own command: a status reads again what failed.
 func (r Request) onceFixed() result.Next {
-	return result.NextStep("fix what failed"+thenRunAgain, r.ownCommand())
+	return result.NextStep("fix what failed"+thenRunAgain, r.OwnCommand())
 }
 
 // pushOfChange is the push a step that changes the branch first runs: a push names itself, keeping

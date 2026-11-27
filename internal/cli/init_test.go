@@ -575,18 +575,25 @@ func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlag_WritesNothingInTheClaudeCo
 	assert.Check(t, is.Len(entries, 0), "the run wrote into %s", config)
 }
 
-func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlagOutsideAWorkTree_ExitsTwoRefused(t *testing.T) {
+func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlagOutsideAWorkTree_RefusesNamingTheCanonicalCommandWithAndWithoutIt(t *testing.T) {
 	t.Parallel()
 
 	app, _ := installing(t)
 
-	got := launch(t, app, "init", "claude", "--project")
+	got := launch(t, app, "init", "--project=true", "claude", "--json")
 
 	assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
+	next := resulttest.Decode(t, got.stdout).Next
+	assert.Check(t, is.Equal(strings.Count(next, initProject), 1), "Next = %q", next)
+	assert.Check(t, is.Equal(strings.Count(next, initUser), 2), "Next = %q", next)
 }
 
-// initProject is the command line that runs `ils init claude --project` again.
-const initProject = "ils init claude --project"
+// initProject is the command line that runs `ils init claude --project` again, and initUser the
+// one that runs `ils init claude`, which initProject starts with.
+const (
+	initProject = "ils init claude --project"
+	initUser    = "ils init claude"
+)
 
 func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlagPastTheTimeLimit_ExitsTwoNamingTheCommandToRunAgain(t *testing.T) {
 	t.Parallel()
@@ -595,12 +602,13 @@ func TestApp_Run_WhenInitClaudeRunsWithTheProjectFlagPastTheTimeLimit_ExitsTwoNa
 	ctx, cancel := context.WithDeadline(t.Context(), time.Unix(0, 0))
 	t.Cleanup(cancel)
 
-	got := launchUnder(ctx, t, app, "init", "claude", "--project", "--json")
+	got := launchUnder(ctx, t, app, "init", "--project=true", "claude", "--json")
 
 	assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
 
 	printed := resulttest.Decode(t, got.stdout)
 	assert.Check(t, is.Contains(printed.Reason, landing.Span(landing.TimeLimit)))
+	assert.Check(t, is.Contains(printed.Next, initProject))
 }
 
 func TestApp_Run_WhenInitClaudeWritesASkillUnderAUmaskThatHidesEveryFile_MakesTheHookScriptAloneExecutable(t *testing.T) {
@@ -786,16 +794,65 @@ func TestApp_Run_WhenInitClaudeFindsSkillDirectoriesLinkedToOtherFiles_NamesEach
 	assert.Check(t, is.Contains(reason, reviewSkill))
 }
 
-func TestApp_Run_WhenInitClaudeFindsASkillDirectoryLinkedToOtherFiles_SaysToRunTheSameWordsAgain(t *testing.T) {
+func TestApp_Run_WhenInitClaudeTypedOutOfOrderEndsShort_NamesTheCanonicalCommandToRunAgain(t *testing.T) {
 	t.Parallel()
 
-	app, f := installingInRepo(t)
-	linkAt(t, t.TempDir(), shippedPath(f.Dir(), releaseSkill))
+	tests := []struct {
+		// arrange puts the failure in place in dir, the work tree the run writes under.
+		arrange func(t *testing.T, app cli.App, dir string)
+		name    string
+		outcome int
+	}{
+		{arrange: linkSkillDirectory, name: "a skill directory linked to other files", outcome: exitBroke},
+		{arrange: shapeSettingsWrong, name: "settings of the wrong shape", outcome: exitRefused},
+		{arrange: blockSettingsRead, name: "settings that cannot be read", outcome: exitBroke},
+		{arrange: blockSkillWrite, name: "a skill file that cannot be written", outcome: exitBroke},
+		{arrange: blockSettingsWrite, name: "settings that cannot be written", outcome: exitBroke},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	got := launch(t, app, "init", "claude", "--project", "--json")
+			app, f := installingInRepo(t)
+			tt.arrange(t, app, f.Dir())
 
-	assert.Check(t, is.Equal(got.code, exitBroke), "stdout = %q", got.stdout)
-	assert.Check(t, is.Contains(resulttest.Decode(t, got.stdout).Next, initProject))
+			got := launch(t, app, "init", "--project=true", "claude", "--json")
+
+			assert.Check(t, is.Equal(got.code, tt.outcome), "stdout = %q", got.stdout)
+			assert.Check(t, is.Contains(resulttest.Decode(t, got.stdout).Next, initProject))
+		})
+	}
+}
+
+func linkSkillDirectory(t *testing.T, _ cli.App, dir string) {
+	t.Helper()
+	linkAt(t, t.TempDir(), shippedPath(dir, releaseSkill))
+}
+
+func shapeSettingsWrong(t *testing.T, _ cli.App, dir string) {
+	t.Helper()
+	withSettings(t, dir, `[]`)
+}
+
+func blockSettingsRead(t *testing.T, _ cli.App, dir string) {
+	t.Helper()
+	assert.NilError(t, os.MkdirAll(settingsUnder(dir), testDirMode))
+}
+
+func blockSkillWrite(t *testing.T, _ cli.App, dir string) {
+	t.Helper()
+	writeText(t, shippedPath(dir, ilsSkill), "in the way\n")
+}
+
+// blockSettingsWrite installs once, then locks the settings directory so the next run cannot
+// write its settings.
+func blockSettingsWrite(t *testing.T, app cli.App, dir string) {
+	t.Helper()
+	skipAsRoot(t)
+	first := launch(t, app, "init", "claude", "--project")
+	assert.Assert(t, is.Equal(first.code, exitDone), "stdout = %q", first.stdout)
+	path := withSettings(t, dir, "{}")
+	lockDir(t, filepath.Dir(path), 0o500)
 }
 
 // linkedPiped arranges `ils init claude` to run piped, with every setting in place and the directory
