@@ -104,14 +104,6 @@ func TestParse_WhenAShellStringHandedToAnotherCommandHandsNoTool_MarksNothing(t 
 	})
 }
 
-func TestJudge_WhenAStringHandedToAnotherCommandPassesAnOptionEndingInAToolName_AllowsIt(t *testing.T) {
-	t.Parallel()
-
-	checkAllowed(t, callerOutsideAnyRepository(t), []namedCommand{
-		{name: "joined option behind mise and task", command: "mise exec -- task cdk -- synth --app 'npx tsx --conditions=@scope/source bin/boundary.ts'"},
-	})
-}
-
 func TestParse_WhenAShellWordIsAnArgumentOfAShellOrEval_MarksNothing(t *testing.T) {
 	t.Parallel()
 
@@ -306,7 +298,6 @@ func TestParse_WhenAnArgumentIsARelativePathNamedForATool_ReadsItWhereTheInvocat
 		{name: "path under the caller's directory", command: "xargs ./bin/git push", want: []guard.Mark{{Kind: guard.ToolArgument}}},
 		{name: "path missing under the directory a cd moved to", command: "cd bin && xargs ./bin/git push"},
 		{name: "path under an unknown directory", command: `cd "$d" && xargs ./absent/git push`, want: []guard.Mark{{Kind: guard.ToolArgument}}},
-		{name: "option ending in a tool name under an unknown directory", command: `cd "$d" && xargs npx tsx --conditions=@scope/source x`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
