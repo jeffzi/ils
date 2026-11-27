@@ -246,9 +246,17 @@ alone. It detaches the current worktree at origin's default branch instead, dele
 branch, and says that the other worktree updates on its next `git pull --ff-only`.
 
 When a step of that local ending fails, the output lists the steps that ran, the one that failed
-with git's message, and the steps not run. `Next:` gives what is left to run. When the delete on
-origin fails and origin still lists the branch, the output says the merge went through and the
-branch is still on origin, and `Next:` is `ils merge`.
+with git's message, and the steps not run. `Next:` gives what is left to run.
+
+`ils merge` deletes the local branch only while it still points at the commit it merged. When a
+commit landed on the branch during the wait, it keeps the branch, lists the delete and the steps
+after it as not run, and ends broke. `Next:` says to keep the new commits on a branch with
+`git branch <name> <branch>`, then delete the old branch with `git branch -D`. The delete removes
+the branch's settings with it; when only that removal fails, the output lists the delete as run and
+the removal, `git config --local --remove-section branch.<branch>`, as the step that failed.
+
+When the delete on origin fails and origin still lists the branch, the output says the merge went
+through and the branch is still on origin, and `Next:` is `ils merge`.
 
 #### A merge made elsewhere
 
@@ -1094,7 +1102,9 @@ The guard refuses:
   `--quit` are allowed, since they leave the tree as it is; `--abort` and `--skip` are refused;
 - `merge --abort`, `cherry-pick --abort`, and `revert --abort` in a working tree with uncommitted
   changes or untracked files, or where the guard cannot tell the repository: they reset the index
-  and the tree, staged changes included. `--continue` and `--quit` stay allowed;
+  and the tree, staged changes included. In such a working tree it also refuses `merge`,
+  `cherry-pick`, and `revert` with an argument it cannot read (`git cherry-pick "$x"`), which may be
+  `--abort`. `--continue` and `--quit` stay allowed;
 - `worktree remove --force`, and `worktree remove` of a worktree with changes or one the guard
   cannot find;
 - `git config` writing `remote.*`, `url.*`, or `core.hooksPath`, at any scope, and renaming or

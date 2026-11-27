@@ -24,6 +24,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   limit or an interrupt cut the read of origin's trunk short.
 - Fix `ils` exiting with the code of a refusal when Ctrl-\ ends it, even after it had pushed, merged
   or tagged; it now ends by the signal itself.
+- Fix the guard letting `git cherry-pick` and `git revert` run with an argument it cannot read over
+  uncommitted work, which the argument could discard as an `--abort`.
+- Fix `ils merge` deleting a commit made on the branch while it waited for the checks.
 
 ## [0.6.0] - 2026-11-17
 

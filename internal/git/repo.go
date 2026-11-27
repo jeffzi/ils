@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -586,11 +587,61 @@ func (r Repo) DetachAtOrigin(ctx context.Context, trunk string) error {
 	return err
 }
 
-// DeleteBranch deletes the local branch even when nothing has merged it, as a squash leaves it.
+// ErrBranchMoved is wrapped by DeleteBranch when the branch no longer points at the commit it was
+// to be deleted at.
+var ErrBranchMoved = errors.New("branch moved")
+
+// ErrSettingsKept is wrapped by DeleteBranch when it deleted the branch but could not remove the
+// branch's settings.
+var ErrSettingsKept = errors.New("branch deleted, its settings kept")
+
+// DeleteBranch deletes the local branch even when nothing has merged it, as a squash leaves it, but
+// only while it still points at the commit at: a commit added since is never dropped. It removes
+// the branch's settings with it, as `git branch -D` does.
 //
-// Deleting the branch HEAD is on is a *child.ExitError that carries git's message.
-func (r Repo) DeleteBranch(ctx context.Context, branch string) error {
-	_, err := r.Runner.Run(ctx, "branch", "--quiet", "--delete", "--force", branch)
+// A branch that moved past at is kept, and the error wraps ErrBranchMoved. A deleted branch whose
+// settings could not be removed returns an error that wraps ErrSettingsKept and the cause. Any
+// other failure, a branch already gone included, is a *child.ExitError that carries git's message.
+func (r Repo) DeleteBranch(ctx context.Context, branch, at string) error {
+	ref := BranchRefPrefix + branch
+
+	_, err := r.Runner.Run(ctx, "update-ref", "-d", ref, at)
+	if err == nil {
+		if removeErr := r.removeBranchSettings(ctx, branch); removeErr != nil {
+			return fmt.Errorf("%w: %w", ErrSettingsKept, removeErr)
+		}
+
+		return nil
+	}
+
+	if ctx.Err() != nil {
+		return err
+	}
+
+	// Git refuses a moved branch and a lock it cannot take alike; only the branch's commit tells
+	// them apart.
+	now, found, readErr := r.optionalLine(ctx, "rev-parse", "--verify", "--quiet", ref)
+	if readErr != nil {
+		return errors.Join(err, readErr)
+	}
+
+	if found && now != at {
+		return fmt.Errorf("delete %s: %w from %s to %s", branch, ErrBranchMoved, at, now)
+	}
+
+	return err
+}
+
+// removeBranchSettings removes the branch.<branch> section of the repository's settings, when it
+// holds one.
+func (r Repo) removeBranchSettings(ctx context.Context, branch string) error {
+	section := "branch." + branch
+	held, err := r.holds(ctx, "config", "--local", "--get-regexp", "^"+regexp.QuoteMeta(section)+`\.`)
+	if err != nil || !held {
+		return err
+	}
+
+	_, err = r.Runner.Run(ctx, "config", "--local", "--remove-section", section)
 
 	return err
 }

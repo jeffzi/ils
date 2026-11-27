@@ -741,6 +741,72 @@ func TestRepo_DetachAtOrigin_WhenLocalBranchNamedLikeOriginsTrunk_DetachesAtOrig
 	assert.Check(t, is.Equal(f.Git("rev-parse", "HEAD"), want))
 }
 
+func TestRepo_DeleteBranch_WhenTheBranchIsAtTheCommit_DeletesIt(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	at := f.Commits(topic, "one")[0]
+	f.Git("switch", "--quiet", trunk)
+
+	err := newRepo(f).DeleteBranch(t.Context(), topic, at)
+	assert.NilError(t, err, "DeleteBranch(%q, %q)", topic, at)
+
+	assert.Check(t, is.Equal(f.Git("branch", "--list", topic), ""))
+}
+
+func TestRepo_DeleteBranch_WhenTheBranchHasSettings_RemovesThemWithIt(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	at := f.Commits(topic, "one")[0]
+	f.Git("switch", "--quiet", trunk)
+	f.Git("config", "branch."+topic+".remote", "origin")
+
+	err := newRepo(f).DeleteBranch(t.Context(), topic, at)
+	assert.NilError(t, err, "DeleteBranch(%q, %q)", topic, at)
+
+	settings := f.Git("config", "--local", "--list")
+	assert.Check(t, !strings.Contains(settings, "branch."+topic+"."), "settings left after the delete:\n%s", settings)
+}
+
+func TestRepo_DeleteBranch_WhenItsSettingsCannotBeRemoved_DeletesTheBranchAndReturnsErrSettingsKept(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	at := f.Commits(topic, "one")[0]
+	f.Git("switch", "--quiet", trunk)
+	f.Git("config", "branch."+topic+".remote", "origin")
+	gittest.WriteFile(t, f.Git("rev-parse", "--absolute-git-dir"), "config.lock", "")
+
+	err := newRepo(f).DeleteBranch(t.Context(), topic, at)
+
+	assert.Check(t, errors.Is(err, git.ErrSettingsKept), "DeleteBranch(%q, %q) error = %v, want ErrSettingsKept", topic, at, err)
+	assert.Check(t, is.Equal(f.Git("branch", "--list", topic), ""))
+}
+
+func TestRepo_DeleteBranch_WhenTheBranchMovedPastTheCommit_ReturnsErrBranchMovedAndKeepsIt(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	at := f.Commits(topic, "one")[0]
+	moved := f.Commits(topic, "two")[0]
+	f.Git("switch", "--quiet", trunk)
+
+	err := newRepo(f).DeleteBranch(t.Context(), topic, at)
+
+	assert.Check(t, errors.Is(err, git.ErrBranchMoved), "DeleteBranch(%q, %q) error = %v, want ErrBranchMoved", topic, at, err)
+	assert.Check(t, is.Equal(f.Git("rev-parse", topic), moved))
+}
+
+func TestRepo_DeleteBranch_WhenTheBranchIsGone_ReturnsAnErrorOtherThanErrBranchMoved(t *testing.T) {
+	t.Parallel()
+	f := gittest.New(t, trunk)
+	at := f.Commits(topic, "one")[0]
+	f.Git("switch", "--quiet", trunk)
+	f.Git("branch", "--quiet", "-D", topic)
+
+	err := newRepo(f).DeleteBranch(t.Context(), topic, at)
+
+	assert.Assert(t, err != nil, "DeleteBranch(%q, %q) error = nil, want an error", topic, at)
+	assert.Check(t, !errors.Is(err, git.ErrBranchMoved), "DeleteBranch(%q, %q) error = %v, want one other than ErrBranchMoved", topic, at, err)
+}
+
 // checkedOutCase is a layout of worktrees and the worktree other than the one read from that has
 // the trunk checked out, if any.
 type checkedOutCase struct {
