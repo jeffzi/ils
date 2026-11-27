@@ -68,6 +68,9 @@ func (l longOption) startsOf(long string) bool {
 // like, and reads a start of a long option's name as that option when it starts no other.
 type knownOptions struct {
 	valuedLetters string
+	// optionalLetters holds the letters of the short options whose value is optional and attached:
+	// git reads the rest of the bundle as the value, and never the next word.
+	optionalLetters string
 	// values and flags hold the names of the long options that take a value and of those that
 	// take none, without the leading `--`.
 	values, flags []string
@@ -76,12 +79,13 @@ type knownOptions struct {
 // cspell:disable -- the table spells git's option names as git does.
 
 // subcommandOptionTable lists the options of the subcommands the guard knows, one paragraph per
-// subcommand: its name, then after `-` the short options that take a value, then its long
-// options. These are the options git 2.55 lists with `git <subcommand> --help-all`, and for
-// send-email those its script declares. For submodule, whose script reads the options of each of
-// its operations apart, they are those of update and deinit, the operations the guard checks. A
-// long option ending in `=` takes a value, and one starting with `[no-]` has a negated form too,
-// which takes none. An option that takes a value only after `=` is listed as taking none.
+// subcommand: its name, then after `-` the short options that take a value, followed in brackets
+// by those whose value is optional and attached only, then its long options. These are the
+// options git 2.55 lists with `git <subcommand> --help-all`, and for send-email those its script
+// declares. For submodule, whose script reads the options of each of its operations apart, they
+// are those of update and deinit, the operations the guard checks. A long option ending in `=`
+// takes a value, and one starting with `[no-]` has a negated form too, which takes none. An
+// option that takes a value only after `=` is listed as taking none.
 const subcommandOptionTable = `
 add -U
 	[no-]dry-run [no-]verbose [no-]interactive [no-]patch [no-]auto-advance unified=
@@ -114,7 +118,7 @@ branch -u
 clean -e
 	[no-]quiet [no-]dry-run [no-]force [no-]interactive exclude=
 
-commit -FmcCtU
+commit -FmcCtU[uS]
 	[no-]quiet [no-]verbose [no-]file= [no-]author= [no-]date= [no-]message= [no-]reedit-message=
 	[no-]reuse-message= [no-]fixup= [no-]squash= [no-]reset-author [no-]trailer= [no-]signoff
 	[no-]template= [no-]edit [no-]cleanup= [no-]status [no-]gpg-sign [no-]all [no-]include
@@ -245,11 +249,14 @@ func optionsOf(sub string) knownOptions {
 }
 
 // add records one word of a subcommandOptionTable paragraph. A word led by `-` gives the letters
-// of the short options that take a value. Any other word is a long option, which takes a value when
-// it ends in `=`; one led by `[no-]` also records its `no-` form as an option that takes none.
+// of the short options that take a value, then in brackets those whose value is optional and
+// attached only. Any other word is a long option, which takes a value when it ends in `=`;
+// one led by `[no-]` also records its `no-` form as an option that takes none.
 func (k *knownOptions) add(word string) {
 	if letters, ok := strings.CutPrefix(word, "-"); ok {
-		k.valuedLetters = letters
+		valued, optional, _ := strings.Cut(letters, "[")
+		k.valuedLetters = valued
+		k.optionalLetters = strings.TrimSuffix(optional, "]")
 
 		return
 	}
@@ -327,7 +334,7 @@ func readArgs(args []Word, known knownOptions) subcommandOptions {
 				i++
 			}
 		case isShortBundle(text):
-			takes, next := o.readBundle(text[1:], w.Literal, known.valuedLetters)
+			takes, next := o.readBundle(text[1:], w.Literal, known)
 			opaqueBundle := !w.Literal && !takes
 			o.unreadable = o.unreadable || opaqueBundle
 			if next {
@@ -369,13 +376,18 @@ func (o *subcommandOptions) readLong(w Word, known knownOptions) (next bool) {
 }
 
 // readBundle records the short options of the bundle letters up to the first that takes a value,
-// whose value is the rest of the bundle. It reports whether one takes a value, and whether that
-// value is the next word: the letter ends a bundle that is literal.
-func (o *subcommandOptions) readBundle(letters string, literal bool, valuedLetters string) (takes, next bool) {
+// optional or not, whose value is the rest of the bundle. It reports whether one takes a value, and
+// whether that value is the next word: a letter whose value is not optional ends a bundle that is
+// literal.
+func (o *subcommandOptions) readBundle(letters string, literal bool, known knownOptions) (takes, next bool) {
 	for j := range len(letters) {
 		o.letters += letters[j : j+1]
-		if strings.IndexByte(valuedLetters, letters[j]) >= 0 {
+		if strings.IndexByte(known.valuedLetters, letters[j]) >= 0 {
 			return true, literal && j == len(letters)-1
+		}
+
+		if strings.IndexByte(known.optionalLetters, letters[j]) >= 0 {
+			return true, false
 		}
 	}
 

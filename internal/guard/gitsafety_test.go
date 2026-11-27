@@ -185,6 +185,8 @@ func TestJudge_RefusesSkippingGitsCommitChecks(t *testing.T) {
 
 	checkRefusals(t, []refusal{
 		{name: "commit -n", command: "git commit -n -m 'msg'", wantNamed: "git commit"},
+		{name: "commit bundle ending in -n", command: "git commit -an -m wip", wantNamed: "git commit"},
+		{name: "commit -n after a -u with no value", command: "git commit -u -n -m wip", wantNamed: "git commit"},
 		{name: "difftool --no-verify", command: "git difftool --no-verify HEAD", wantNamed: "--no-verify"},
 		{name: "prefix of send-email --novalidate", command: "git send-email --noval x.patch", wantNamed: "--noval"},
 		{name: "-c in another case", command: "git -c Core.HooksPATH=x commit -m msg"},
@@ -294,6 +296,9 @@ func TestJudge_AllowsAGitOperationThatKeepsWork(t *testing.T) {
 		{name: "restore -S", command: "git restore -S file"},
 		{name: "rm of a path spelled like a flag", command: "git rm -- -f"},
 		{name: "-c of another key", command: "git -c core.pager=cat commit -m msg"},
+		{name: "commit -u with an attached value holding an n", command: "git commit -uno -m wip"},
+		// cspell:disable-next-line -- git reads -u with its mode attached; the test needs that spelling.
+		{name: "commit -u with an attached value spelling normal", command: "git commit -unormal -m wip"},
 		{name: "plain gc", command: "git gc"},
 		{name: "show writing to the terminal", command: "git show HEAD:f"},
 		{name: "plain apply", command: "git apply patch.diff"},

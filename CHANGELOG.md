@@ -19,6 +19,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   redirect, which let through a pipe that overwrites a file from history and refused a harmless one.
 - Fix the guard refusing a command because an option ended in the name of a program it watches, as
   if the option handed that program to another command.
+- Fix the guard refusing `git commit -uno` as if it skipped the checks set up to run before a commit.
+- Fix `ils status` on the trunk saying it stands on a branch and pointing at `ils push` when the time
+  limit or an interrupt cut the read of origin's trunk short.
+- Fix `ils` exiting with the code of a refusal when Ctrl-\ ends it, even after it had pushed, merged
+  or tagged; it now ends by the signal itself.
 
 ## [0.6.0] - 2026-11-17
 
