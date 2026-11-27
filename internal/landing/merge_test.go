@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -1101,4 +1102,128 @@ func TestMerge_WhenTrunkRequiresChecks_WaitsForThoseOfTheHead(t *testing.T) {
 
 		assertReadsRequire(t, run.forge.Calls(), run.tip, required)
 	})
+}
+
+// sent returns the payload of a green run on a clean pull request 12 that sent its merge with a
+// body of body, made the merge when merged says so, and ended the checkout at ending.
+func sent(body string, merged bool, ending result.Ending) *result.Merge {
+	payload := composed(squashSubject, body)
+	payload.Merged = merged
+	payload.Ending = ending
+
+	return payload
+}
+
+// toLand is a forge on which pull request 12 is green and clean at the tip, its message is titled
+// worded with the body landedBody, and its landing and branch delete answer as land and remove do.
+func toLand(land, remove error) forgeFor {
+	return waiting(passing()).saying(titledAfter(landedBody)).landing(land, remove)
+}
+
+// refusedMerge is what GitHub answers a merge of a pull request whose head moved.
+const refusedMerge = "HTTP 405: Head branch was modified"
+
+// writeStops are the runs of `ils merge` whose merge, or whose delete of the branch on origin,
+// does not go as asked.
+func writeStops() []landingRow {
+	failed := errors.New(forgeFailure)
+	lead := countLine()
+	row := func(name string, script forgeFor, outcome result.Outcome, text string) landingRow {
+		return landingRow{
+			name: name, set: setting{script: script}, outcome: outcome, text: lead + text,
+			payload: sent(landedBody, true, ""),
+		}
+	}
+	refused := row("the merge fails", toLand(errors.New(refusedMerge), nil), result.Broke,
+		expect("did not report the merge", "#12", refusedMerge))
+	refused.payload, refused.kept = sent(landedBody, false, ""), true
+	refused.told = toldAfterWait(mergingStep())
+	cutRows := make([]landingRow, 0, len(cuts()))
+	for _, c := range cuts() {
+		ended := row(c.name+" ends the merge", toLand(c.of("gh pr merge"), nil),
+			result.Broke, expect("merge", "#12", c.ends, "may or may not have gone through", c.ends, "during the merge")+
+				mergeCommand().again)
+		ended.payload, ended.kept = sent(landedBody, false, ""), true
+		cutRows = append(cutRows, ended)
+	}
+
+	gone := row("the delete fails and origin no longer lists the branch", toLand(nil, failed), result.Done,
+		mergedLine()+goneLine()+onTrunkLine())
+	gone.payload = sent(landedBody, true, result.EndingTrunk)
+	listed := row("the delete fails and origin still lists the branch", toLand(nil, failed), result.Broke,
+		mergedLine()+expect("Could not delete", topic, "still there", forgeFailure)+expect("still on origin")+mergeCommand().again)
+	listed.set.arrange = func(f *gittest.Fixture) { f.Publish(topic) }
+	// The question fails with git's own message, which the text holds on one line before the reason line.
+	unasked := row("the delete fails and origin cannot be asked", toLand(nil, failed), result.Broke,
+		mergedLine()+expect("Could not delete", topic, forgeFailure, readStillOnOrigin))
+	unasked.set.landed = moveOrigin
+	interrupted := row("an interrupt ends the delete", toLand(nil, byInterrupt().of("gh")), result.Broke,
+		mergedLine()+expect("delete", topic, "interrupted", "may or may not have gone through", "interrupted",
+			"deleting the branch")+mergeCommand().again)
+	interrupted.set.runCtx = byInterrupt().endOnStart(deletingStep())
+	limit := byTimeLimit()
+	ranOut := row("the time limit ends the delete", toLand(nil, limit.of("gh")), result.Broke,
+		mergedLine()+expect("delete", topic, limit.before, "may or may not have gone through", limit.before,
+			"deleting the branch")+mergeCommand().again)
+	ranOut.set.runCtx = limit.endOnStart(deletingStep())
+
+	return slices.Concat([]landingRow{refused}, cutRows, []landingRow{gone, listed, unasked, interrupted, ranOut})
+}
+
+// stepHook is a progress hook that tells next everything it is told, and calls fire once the run
+// starts the step whose start reads step as the watch tells it.
+type stepHook struct {
+	landing.Progress
+
+	t    *testing.T
+	fire func()
+	step string
+}
+
+// Started tells the step to next, then calls fire when it is the step of the hook.
+func (h stepHook) Started(label result.Phrase) {
+	h.Progress.Started(label)
+
+	if holds("start "+plainText(h.t, label), h.step) {
+		h.fire()
+	}
+}
+
+// endOnStart returns the context of a run that c ends once the run starts the step whose start
+// reads step as the watch tells it.
+func (c cut) endOnStart(step string) func(t *testing.T, s *scene) context.Context {
+	return func(t *testing.T, s *scene) context.Context {
+		t.Helper()
+
+		done := make(chan struct{})
+		s.deps.Progress = stepHook{Progress: s.deps.Progress, t: t, step: step, fire: sync.OnceFunc(func() { close(done) })}
+
+		return c.once(t.Context(), done)
+	}
+}
+
+// interruptedWrites are the runs of `ils merge` that an interrupt reaches as the first write
+// starts, and which end as the time limit ends them when it leaves too little time for that write.
+func interruptedWrites() []landingRow {
+	return []landingRow{
+		{
+			name: "the merge", outcome: result.Pending, kept: true,
+			set: setting{script: toLand(nil, nil), runCtx: byInterrupt().endOnStart(mergingStep())},
+			text: countLine() + expect("interrupted before the merge", "interrupted before the merge") +
+				nextPush(),
+			payload: sent(landedBody, false, ""),
+		},
+	}
+}
+
+func TestMerge_WhenAnInterruptLandsAsTheFirstWriteStarts_EndsPendingWithNothingWritten(t *testing.T) {
+	t.Parallel()
+
+	runLandings(t, interruptedWrites())
+}
+
+func TestMerge_WhenAWriteOnGitHubFails_SaysWhatWentThrough(t *testing.T) {
+	t.Parallel()
+
+	runLandings(t, writeStops())
 }

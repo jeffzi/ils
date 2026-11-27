@@ -645,38 +645,21 @@ func rewritePublished(f *gittest.Fixture) {
 	f.Git("commit", "--amend", "--quiet", "--message", "rewrite the readme")
 }
 
-func TestStatus_WhenAReadOfWhetherAnotherBranchCarriesTheWorkFailsOnADivergedBranch_EndsOnMergingOriginsCopy(t *testing.T) {
+func TestStatus_WhenTheReadOfTheLocalBranchesThatContainTheFirstCommitFailsOnADivergedBranch_EndsOnMergingOriginsCopy(t *testing.T) {
 	t.Parallel()
 	// Push refuses the diverged branch before it reads whether another branch carries the work.
-	tests := []struct {
-		// arrange changes the repository and returns the arguments of the git call that is made to fail.
-		arrange func(*gittest.Fixture) []string
-		name    string
-		read    string
-	}{
-		{
-			name: "the local branches that contain the first commit", read: readBranches,
-			arrange: func(f *gittest.Fixture) []string {
-				rewritePublished(f)
+	var words []string
 
-				return []string{"for-each-ref", "--format=%(refname)", "refs/heads/", "--contains", f.Git("rev-parse", topic)}
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			var words []string
+	s := statusScene(t, func(f *gittest.Fixture) {
+		rewritePublished(f)
+		words = []string{"for-each-ref", "--format=%(refname)", "refs/heads/", "--contains", f.Git("rev-parse", topic)}
+	}, viewing(cleanHead(), passing()))
+	failGit(s, words)
 
-			s := statusScene(t, func(f *gittest.Fixture) { words = tt.arrange(f) }, viewing(cleanHead(), passing()))
-			failGit(s, words)
+	got := seeStatus(t, s, (*testing.T).Context)
 
-			got := seeStatus(t, s, (*testing.T).Context)
-
-			assertSays(t, "Next:"+nextOf(t, got.text), pushCommand().after("`"+originMerge+topic+"`"))
-			checkUnread(t, got.status, tt.read)
-		})
-	}
+	assertSays(t, "Next:"+nextOf(t, got.text), pushCommand().after("`"+originMerge+topic+"`"))
+	checkUnread(t, got.status, readBranches)
 }
 
 func TestStatus_WhenTheWorkingTreeCannotBeReadAndTheLocalTrunkIsAhead_EndsOnFixingWhatFailed(t *testing.T) {
@@ -1126,5 +1109,5 @@ func TestStatus_WhenOriginCannotBeReached_CountsAgainstTheLastFetch(t *testing.T
 	assert.Check(t, got.status.OnOrigin)
 	assertSays(t, got.text, expect("could not be reached"))
 	assert.Check(t, is.Len(got.status.Unread, 1))
-	assert.Check(t, hasUnread(got.status, "origin's trunk"), "unread %v, want an entry for origin's trunk", got.status.Unread)
+	assert.Check(t, hasUnread(got.status, readTrunk), "unread %v, want an entry for %s", got.status.Unread, readTrunk)
 }

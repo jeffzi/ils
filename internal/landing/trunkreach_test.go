@@ -137,9 +137,20 @@ func TestStatus_WhenOriginsTrunkCannotBeReadOnADetachedHEAD_EndsOnTheStepBranchE
 
 			assert.Check(t, is.Equal(got.status.Standing, standingDetached))
 			assertSays(t, "Next:"+nextOf(t, got.text), tt.want)
-			assert.Check(t, !hasUnread(got.status, "the commits on HEAD"), "unread %v, want no read of the commits on HEAD", got.status.Unread)
+			assert.Check(t, !hasUnread(got.status, readHeadCommits), "unread %v, want no read of %s", got.status.Unread, readHeadCommits)
 		})
 	}
+}
+
+func TestStatus_WhenTheCommitsOnADetachedHEADCannotBeRead_ListsThemAsUnread(t *testing.T) {
+	t.Parallel()
+	s := statusScene(t, detachPastTrunk, viewing(cleanHead(), passing()))
+	// The read of the local trunk is a log too, of the trunk and not of HEAD.
+	failGit(s, []string{"log", "--reverse", "--topo-order", "--format=%H %s", "--no-merges", "HEAD"})
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	checkUnread(t, got.status, readHeadCommits)
 }
 
 func TestStatus_WhenOriginDoesNotAnswerOnADetachedHEAD_ListsItsCommitsAgainstTheLastFetch(t *testing.T) {

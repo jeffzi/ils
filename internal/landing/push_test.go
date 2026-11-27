@@ -319,19 +319,6 @@ func TestPush_WhenOriginStopsAnswering_RefusesNamingWhatItWasAskedFor(t *testing
 	})
 }
 
-// failGit makes the scene's git calls whose arguments start with words fail as the fake git fails
-// them.
-func failGit(s *scene, words []string) {
-	fakeGit(s, gittest.Fake{FailOn: words})
-}
-
-// fakeGit makes the fake git that TestMain puts first on PATH answer the scene's git calls as fake
-// says; every call it does not fake runs the real git. It changes only the scene's environment, so
-// tests that fake git differently can run in parallel.
-func fakeGit(s *scene, fake gittest.Fake) {
-	s.deps.Repo.Runner.Env = append(s.deps.Repo.Runner.Env, fake.Settings()...)
-}
-
 // failedRead is one git read of Push that fails for a reason no precondition covers.
 type failedRead struct {
 	// arrange changes the repository and returns the arguments of the git call that is made to fail.
