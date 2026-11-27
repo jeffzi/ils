@@ -17,6 +17,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Fix `ils release` reporting a failed check of the release commit without the end of its log.
 - Fix the guard judging a `git show` pipe inside a redirected group or function call by that
   redirect, which let through a pipe that overwrites a file from history and refused a harmless one.
+- Fix the guard refusing a command whose option word ends in the name of a tool, such as
+  `--conditions=@scope/source` inside a quoted command, by reading it as that tool handed over.
 
 ## [0.6.0] - 2026-11-17
 
