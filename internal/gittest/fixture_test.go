@@ -142,10 +142,10 @@ func hostnameIn(config string) string {
 
 func TestMarking_WhenAShellRunsIt_CreatesTheMarkerWhateverArgumentsFollow(t *testing.T) {
 	t.Parallel()
-	f := gittest.New(t, mainBranch)
 	marker := filepath.Join(t.TempDir(), "ran")
 
-	f.Git("-c", "alias.mark=!"+gittest.Marking(marker), "mark", "-G", "--", sshHost)
+	got := callGit(t, gittest.Env(t), t.TempDir(), "-c", "alias.mark=!"+gittest.Marking(marker), "mark", "-G", "--", sshHost)
+	assert.Equal(t, got.Code, 0, "stderr: %s", got.Stderr)
 
 	_, err := os.Stat(marker)
 	assert.NilError(t, err)

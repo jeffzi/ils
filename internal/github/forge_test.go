@@ -301,7 +301,7 @@ func readCases() []readCase {
 
 func TestForge_WhenCallExitsNonZero_ReturnsExitErrorNamingCall(t *testing.T) {
 	// Each read left out returns its exit error through a line another test already reaches:
-	// runDecoded's through "pr list", Identity's through the malformed "repo view",
+	// readDecoded's through "pr list", Identity's through the malformed "repo view",
 	// and TrunkProtection's through its own test of a refused read. HasTrunkCI's reads are not
 	// cases: its tests of a refused read reach their exit errors. Verdict's propagation goes
 	// through its reads in verdict_test.go.

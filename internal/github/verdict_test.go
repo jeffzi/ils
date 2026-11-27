@@ -297,7 +297,7 @@ func failedLogRows() []failedLogRow {
 	}
 }
 
-func TestForge_Verdict_FailedLog(t *testing.T) {
+func TestForge_Verdict_WhenACheckFailed_CarriesItsFailedLogAsTheRunAndLogReadsGive(t *testing.T) {
 	for _, tt := range failedLogRows() {
 		t.Run(tt.name, func(t *testing.T) {
 			statuses := tt.statuses

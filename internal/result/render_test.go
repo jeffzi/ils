@@ -40,14 +40,18 @@ const (
 	shaNext = "check out " + fullSHA + ", then run ils push again"
 )
 
+// redReason is the reason line of redPush.
 func redReason() string { return labeled(result.DeliveredNotGreen, "the check prek is red") }
 
+// brokeEnd is the reason and Next lines of brokePush.
 func brokeEnd() string { return labeled(result.Broke, "GitHub did not answer") + nextLine("ils push") }
 
+// labeled is the reason line of a result that ends as outcome for reason.
 func labeled(outcome result.Outcome, reason string) string {
 	return resulttest.ReasonLine(outcome, reason) + "\n"
 }
 
+// nextLine is the Next line that names next.
 func nextLine(next string) string {
 	return resulttest.NextLine(next) + "\n"
 }
@@ -81,22 +85,27 @@ func brokePush() result.Result {
 	}
 }
 
+// brokeLines are the lines brokePush prints before its reason.
 func brokeLines() []string {
 	return strings.Split(strings.TrimSuffix(brokeBody, "\n"), "\n")
 }
 
+// brokeWithLine is brokePush with p as one more line.
 func brokeWithLine(p result.Phrase) result.Result {
 	return with(brokePush(), func(r *result.Result) { r.Lines = append(r.Lines, p) })
 }
 
+// withExcerpt is base carrying text as its excerpt.
 func withExcerpt(base result.Result, text string) result.Result {
 	return with(base, func(r *result.Result) { r.Excerpt = text })
 }
 
+// refusedWithReason is refusedPush with p as its reason.
 func refusedWithReason(p result.Phrase) result.Result {
 	return with(refusedPush(), func(r *result.Result) { r.Reason = p })
 }
 
+// redWithNext is redPush with n as its Next.
 func redWithNext(n result.Next) result.Result {
 	return with(redPush(), func(r *result.Result) { r.Next = n })
 }
@@ -394,7 +403,7 @@ func redThen(name string, n result.Next, want string) pair {
 }
 
 // controlCases returns results whose third-party text holds control bytes, which the text prints as
-// visible escapes.
+// visible escapes, all but a tab and invalid UTF-8, which it prints unchanged.
 func controlCases() []pair {
 	return []pair{
 		brokeLine("name holding a tab prints it as it is",

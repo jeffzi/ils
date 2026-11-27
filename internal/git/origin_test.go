@@ -268,8 +268,11 @@ func TestRepo_OriginURLs_WhenURLDoesNotParse_ReturnsOriginErrorWithWhatParsed(t 
 func joinedExitErrors(t *testing.T, err error) []*child.ExitError {
 	t.Helper()
 
-	var joined interface{ Unwrap() []error }
-	assert.Assert(t, errors.As(err, &joined), "error = %v, want errors joined", err)
+	joined, ok := errors.AsType[interface {
+		error
+		Unwrap() []error
+	}](err)
+	assert.Assert(t, ok, "error = %v, want errors joined", err)
 
 	var exitErrs []*child.ExitError
 	for _, each := range joined.Unwrap() {

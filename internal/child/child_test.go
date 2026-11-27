@@ -135,7 +135,7 @@ func TestFailure_WhenProgramDiedOfTerminateAndContextEndsWithinGrace_ReturnsCont
 
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), time.Nanosecond)
-		defer cancel()
+		t.Cleanup(cancel)
 
 		err := child.Failure(ctx, fetchArgv(), runErr, stderrMarker+" printed before the signal\n")
 
@@ -178,7 +178,7 @@ func TestFailure_WhenProgramDidNotDieOfTerminate_ReturnsWithoutWaitingForContext
 
 			synctest.Test(t, func(t *testing.T) {
 				ctx, cancel := context.WithTimeout(t.Context(), time.Nanosecond)
-				defer cancel()
+				t.Cleanup(cancel)
 
 				err := child.Failure(ctx, fetchArgv(), runErr, "")
 
@@ -577,7 +577,7 @@ func TestProgram_Run_WhenContextEndsWhileProgramRuns_EndsTheProcessesItStarted(t
 	}
 }
 
-func TestKilledError_Error(t *testing.T) {
+func TestKilledError_Error_WhenTheProgramPrintedToStderr_NamesTheCallTheSignalAndTheTrimmedStderr(t *testing.T) {
 	t.Parallel()
 	err := &child.KilledError{
 		Argv: []string{"git", "push"}, Err: errors.New("signal: terminated"), Stderr: "  hook: tests failed\n",
@@ -618,9 +618,15 @@ func TestProgram_Run_WhenContextEndsAndTheProcessTableIsUnreadable_KillsTheProgr
 	_, err := program.Run(ctx)
 
 	assert.Check(t, is.ErrorIs(err, context.Canceled))
+	var took time.Duration
+	select {
+	case ended := <-endedAt:
+		took = time.Since(ended)
+	case <-time.After(returnDeadline):
+		t.Fatalf("the program did not connect within %v", returnDeadline)
+	}
 	// The program holds its output open until it dies: past PipeGrace, it died of the pipe
 	// deadline, not of the cancel.
-	took := time.Since(<-endedAt)
 	assert.Check(t, took < child.PipeGrace, "Run returned %v after the context ended, want the program killed at once", took)
 }
 
@@ -628,7 +634,6 @@ func TestStopDescendants_WhenADescendantStartsAnotherBetweenReads_StopsItToo(t *
 	t.Parallel()
 	tables := []map[int][]int{
 		{1: {2}},
-		{1: {2}, 2: {3}},
 		{1: {2}, 2: {3}},
 	}
 	read := func(context.Context) (map[int][]int, error) {

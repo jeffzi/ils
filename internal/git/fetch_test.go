@@ -8,6 +8,7 @@ import (
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
+	"github.com/jeffzi/ils/internal/git"
 	"github.com/jeffzi/ils/internal/gittest"
 )
 
@@ -59,7 +60,7 @@ func pushedTopic(t *testing.T) *gittest.Fixture {
 
 func assertNoOwnRefs(t *testing.T, f *gittest.Fixture) {
 	t.Helper()
-	assert.Check(t, is.Equal(f.Git("for-each-ref", "refs/ils/"), ""), "refs under refs/ils/ after Fetch")
+	assert.Check(t, is.Equal(f.Git("for-each-ref", git.FetchedRefs), ""), "refs under %s after Fetch", git.FetchedRefs)
 }
 
 func TestRepo_Fetch_WhenTheFetchSucceeds_LeavesNoRefOfItsOwn(t *testing.T) {
@@ -98,9 +99,9 @@ func TestRepo_Fetch_WhenAnotherRunHoldsTheLockOfAFixedFetchRefForTheBranch_Retur
 	t.Parallel()
 	f := pushedTopic(t)
 	want := f.AdvanceOrigin(topic)
-	// Another run's fetch holds the lock of a fixed ref named for the branch under refs/ils/fetched/.
+	// Another run's fetch holds the lock of a fixed ref named for the branch under git.FetchedRefs.
 	common := f.Git("rev-parse", "--path-format=absolute", "--git-common-dir")
-	lock := filepath.Join(common, "refs", "ils", "fetched", "heads", topic+".lock")
+	lock := filepath.Join(common, filepath.FromSlash(git.FetchedRefs), "heads", topic+".lock")
 	assert.NilError(t, os.MkdirAll(filepath.Dir(lock), 0o750))
 	assert.NilError(t, os.WriteFile(lock, nil, 0o600))
 

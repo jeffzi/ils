@@ -270,17 +270,26 @@ func TestRunner_Read_WhenExit1WithoutA4xx_ReadsAgainAfterThePause(t *testing.T) 
 func TestRunner_Read_WhenStillFailingWhenTheWindowEnds_ReturnsTheLastFailure(t *testing.T) {
 	badGateway := ghtest.Answer{Stderr: "gh: Bad Gateway (HTTP 502)\n", Code: 1}
 	fake := ghtest.Setup(t, ghtest.InTurn(viewArgs(), ghtest.ServerError(), badGateway))
-	logger, sink := logtest.New()
 
-	_, took, err := readTimed(t, github.Runner{Logger: logger}, viewArgs()...)
+	_, took, err := readTimed(t, github.Runner{}, viewArgs()...)
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 	assert.Assert(t, ok, "Read error = %v, want *child.ExitError", err)
 	assert.Check(t, is.Equal(exitErr.Stderr, badGateway.Stderr))
 	assert.Check(t, is.Len(fake.Calls(), 6))
 	assert.Check(t, is.Equal(took, 10*time.Second))
+}
+
+func TestRunner_Read_WhenReadingAgain_LogsOneRecordPerFailureReadAgainNoneForTheLast(t *testing.T) {
+	ghtest.Setup(t, ghtest.Exits(ghtest.ServerError(), viewArgs()...))
+	logger, sink := logtest.New()
+
+	_, _, err := readTimed(t, github.Runner{Logger: logger}, viewArgs()...)
+	assert.Assert(t, err != nil, "Read returned no error, want the last failure")
+
 	rereads := slices.DeleteFunc(sink.Records(), func(r logtest.Record) bool { return r.Message == child.ExecMessage })
-	assert.Check(t, is.Len(rereads, 5), "one record per failure read again, none for the last")
+	assert.Assert(t, is.Len(rereads, 5))
+	assert.Check(t, is.DeepEqual(rereads[0].Map(), map[string]any{"command": "gh pr view 7", "pause": 2 * time.Second}))
 }
 
 func TestRunner_Read_WhenContextEndsDuringThePause_ReturnsTheContextError(t *testing.T) {
