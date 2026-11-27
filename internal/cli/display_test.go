@@ -984,9 +984,9 @@ func (c *stuckChild) end(t *testing.T) (stdout string, err error) {
 }
 
 // readsStopDisposition reports whether ils reads the disposition of the stop signal on this system,
-// as the build constraints of suspend_darwin.go and suspend_linux.go select: the darwin constraint
-// also holds on ios, and the linux one on android. Elsewhere ils stops on the signal even when
-// started with it ignored.
+// and can set a signal's, as the build constraints of disposition_darwin.go and disposition_linux.go
+// select: the darwin constraint also holds on ios, and the linux one on android. Elsewhere ils
+// stops on the signal even when started with it ignored.
 func readsStopDisposition() bool {
 	switch runtime.GOOS {
 	case "darwin", "ios":

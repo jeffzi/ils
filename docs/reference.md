@@ -633,7 +633,8 @@ running. A program that exits by itself keeps the processes it started, such as 
 it shares.
 
 A second Ctrl-C or SIGTERM ends `ils` at once, with no result and none of the
-[exit codes](#exit-codes).
+[exit codes](#exit-codes). Ctrl-\ (SIGQUIT) ends `ils` at once too: it shows the cursor again,
+then ends by the signal itself, with no result and none of the exit codes.
 
 ## Refusals
 

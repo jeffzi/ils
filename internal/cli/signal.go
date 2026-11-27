@@ -21,7 +21,8 @@ type endSignals struct {
 // termination and the quit of the process until the returned stop is called. The first interrupt
 // or termination calls interrupt, which ends the run, so that ils prints the result of the step it
 // stopped. Every other of these signals calls the leave of the display that runs, if one does,
-// then ends the process as the signal would have had ils never listened.
+// then ends the process through die: by the signal under its default action where ils sets one,
+// and as the Go runtime ends it elsewhere.
 //
 // A process that started with the interrupt ignored, as a background job of a non-interactive
 // shell does, is not listened to for it: Notify would take the ignore back, so the interrupt is
@@ -112,12 +113,21 @@ func nextSignal(signals <-chan os.Signal, done <-chan struct{}) (os.Signal, bool
 	}
 }
 
-// die sends sig, which no channel is notified of any longer, to the process, so that it ends the
-// process as it would have had ils never listened for it. When sig cannot be sent, the process is
-// killed.
+// die gives sig, which no channel is notified of any longer, its default action and sends it to the
+// process, so that the process ends by the signal and gives none of the exit codes: a quit then
+// ends it as the kernel ends one, not with the goroutine dump and exit code 2 of the Go runtime.
+// Where ils sets no disposition (setDefault), the Go runtime ends the process on sig. When sig
+// cannot be sent, the process is killed.
 //
-// It panics when the process can be neither signaled nor killed.
+// It panics when the default action cannot be set, or the process can be neither signaled nor
+// killed.
 func die(sig os.Signal) {
+	if s, ok := sig.(syscall.Signal); ok {
+		if err := setDefault(s); err != nil {
+			panic(fmt.Sprintf("end ils on %v: %v", sig, err))
+		}
+	}
+
 	self, err := os.FindProcess(os.Getpid())
 	if err == nil && self.Signal(sig) != nil {
 		err = self.Kill()
