@@ -9,8 +9,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- Name `ils init` by its canonical command line in every `Next:` that says to run it again,
-  whatever order the words were typed in.
+- Run the pushes of `ils push` and `ils release` with `LC_ALL=C`, so the pre-push hooks they start
+  run in the C locale.
 
 ### Fixed
 
@@ -25,8 +25,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Fix the guard refusing a command because an option ended in the name of a program it watches, as
   if the option handed that program to another command.
 - Fix the guard refusing `git commit -uno` as if it skipped the checks set up to run before a commit.
-- Fix `ils status` on the trunk saying it stands on a branch and pointing at `ils push` when the time
-  limit or an interrupt cut the read of origin's trunk short.
+- Fix `ils status` on the default branch saying it stands on a work branch and pointing at
+  `ils push` when the time limit or an interrupt cut short the read of origin's default branch.
 - Fix `ils` exiting with the code of a refusal when Ctrl-\ ends it, even after it had pushed, merged
   or tagged; it now ends by the signal itself.
 - Fix the guard letting `git cherry-pick` and `git revert` run with an argument it cannot read over
