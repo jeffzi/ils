@@ -333,6 +333,23 @@ func TestApp_Run_WhenGuardIsNotGivenADirectory_RefusesPointingAtItsHelp(t *testi
 	assert.Check(t, is.Equal(resulttest.Decode(t, got.stdout).Next, "ils guard --help"))
 }
 
+func TestApp_Run_WhenTheDirectoryFlagEndsTheWords_RefusesNamingItAndPointingAtTheHelp(t *testing.T) {
+	t.Parallel()
+
+	for _, command := range []string{"parse", "guard"} {
+		t.Run(command, func(t *testing.T) {
+			t.Parallel()
+
+			got := launch(t, outside(t), command, "--json", "--cwd")
+
+			assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
+			printed := resulttest.Decode(t, got.stdout)
+			assert.Check(t, is.Contains(printed.Reason, "--cwd takes a directory"))
+			assert.Check(t, is.Equal(printed.Next, "ils "+command+" --help"))
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // The root switches the guard reads
 // ---------------------------------------------------------------------------
