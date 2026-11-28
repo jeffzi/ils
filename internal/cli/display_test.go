@@ -992,7 +992,7 @@ func readsStopDisposition() bool {
 	case "darwin", "ios":
 		return true
 	case "linux", "android":
-		return !strings.HasPrefix(runtime.GOARCH, "mips")
+		return true
 	default:
 		return false
 	}

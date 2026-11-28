@@ -1,5 +1,3 @@
-//go:build linux && !mips && !mipsle && !mips64 && !mips64le
-
 package cli
 
 import (
@@ -9,9 +7,6 @@ import (
 
 	"golang.org/x/sys/unix"
 )
-
-// signalSetSize is the size in bytes of the kernel's signal set, which rt_sigaction checks.
-const signalSetSize = 8
 
 // stopIgnored reports whether the process ignores SIGTSTP, as the kernel holds it: the Go runtime
 // keeps no record of a stop signal ignored from the start, so signal.Ignored reports false for it.
@@ -55,10 +50,3 @@ const (
 	sigDefault = 0
 	sigIgnore  = 1
 )
-
-// disposition is the kernel's struct sigaction, whose handler comes first on every architecture
-// but MIPS; rest holds the fields after it, with room to spare.
-type disposition struct {
-	handler uintptr
-	rest    [32]byte
-}
