@@ -254,10 +254,6 @@ func checkNames(checks []forge.Check) string {
 	return strings.Join(names, ", ")
 }
 
-func runningName(check forge.Check) result.Phrase {
-	return result.Say(pendingBullet+"%s", check.Name)
-}
-
 // takeVerdict records how verdict, read once and judged as the wait judges each read, stands, and
 // says it.
 func (r *reading) takeVerdict(verdict forge.Verdict, required []string) {
@@ -281,7 +277,8 @@ func (r *reading) takeVerdict(verdict forge.Verdict, required []string) {
 		r.say(result.Say("A workflow run on %s is still going, so more checks may report", sha))
 	case r.running:
 		pending := verdict.Pending()
-		r.say(runningList(result.Say("Still running on %s (%s):", sha, nounCount(len(pending), "check")), pending, runningName)...)
+		r.say(runningList(result.Say("Still running on %s (%s):", sha, nounCount(len(pending), "check")), pending,
+			func(check forge.Check) result.Phrase { return result.Say(pendingBullet+"%s", check.Name) })...)
 	case outcome == WaitNeverReported:
 		if len(w.Deciding) > 0 {
 			r.say(w.checksLine(r.open.HeadSHA))

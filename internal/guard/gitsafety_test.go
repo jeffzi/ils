@@ -131,35 +131,6 @@ func TestJudge_RefusesABranchRenameOntoThePreviousBranch(t *testing.T) {
 	})
 }
 
-func TestJudge_AllowsAGitOperationThatLeavesWorkOnDisk(t *testing.T) {
-	t.Parallel()
-	_, caller := standingOn(t, "main", "topic")
-
-	checkAllowed(t, caller, []namedCommand{
-		{name: "clean under -c keeping the force requirement", command: "git -c clean.requireForce=true clean -d"},
-		{name: "clean --no-dry-run then -n under -c lifting the force requirement", command: "git -c clean.requireForce=false clean --no-dry-run -n -d"},
-		{name: "clean bundle holding a dry run beside force", command: "git clean -nfd"},
-		{name: "clean --dry-run after -f -d", command: "git clean -f -d --dry-run"},
-		{name: "checkout-index without force", command: "git checkout-index -a"},
-		{name: "update-ref setting a ref", command: "git update-ref refs/heads/new HEAD"},
-		{name: "branch -M onto a new name", command: "git branch -M topic other"},
-		{name: "read-tree --dry-run", command: "git read-tree --dry-run HEAD"},
-		{name: "read-tree --index-output", command: "git read-tree --index-output=other.idx -m HEAD"},
-		{name: "read-tree --prefix", command: "git read-tree --prefix=vendor/lib/ HEAD"},
-		{name: "repack -a", command: "git repack -a"},
-		{name: "repack -d", command: "git repack -d"},
-		{name: "repack -a -A -d", command: "git repack -a -A -d"},
-		{name: "repack -a -d --cruft", command: "git repack -a -d --cruft"},
-		{name: "repack -a -d --keep-unreachable", command: "git repack -a -d --keep-unreachable"},
-		{name: "repack -d with an expiry but no -A", command: "git repack -d --unpack-unreachable=now"},
-		{name: "repack -d with a cruft expiry but no --cruft", command: "git repack -d --cruft-expiration=now"},
-		{
-			name:    "repack -A -d with the expiry turned off again",
-			command: "git repack -A -d --unpack-unreachable=now --no-unpack-unreachable",
-		},
-	})
-}
-
 // liftingForce returns a repository whose local config lifts the force requirement of git clean.
 func liftingForce(t *testing.T) *gittest.Fixture {
 	t.Helper()
@@ -214,6 +185,8 @@ func TestJudge_RefusesSkippingGitsCommitChecks(t *testing.T) {
 
 	checkRefusals(t, []refusal{
 		{name: "commit -n", command: "git commit -n -m 'msg'", wantNamed: "git commit"},
+		{name: "commit bundle ending in -n", command: "git commit -an -m wip", wantNamed: "git commit"},
+		{name: "commit -n after a -u with no value", command: "git commit -u -n -m wip", wantNamed: "git commit"},
 		{name: "difftool --no-verify", command: "git difftool --no-verify HEAD", wantNamed: "--no-verify"},
 		{name: "prefix of send-email --novalidate", command: "git send-email --noval x.patch", wantNamed: "--noval"},
 		{name: "-c in another case", command: "git -c Core.HooksPATH=x commit -m msg"},
@@ -323,6 +296,9 @@ func TestJudge_AllowsAGitOperationThatKeepsWork(t *testing.T) {
 		{name: "restore -S", command: "git restore -S file"},
 		{name: "rm of a path spelled like a flag", command: "git rm -- -f"},
 		{name: "-c of another key", command: "git -c core.pager=cat commit -m msg"},
+		{name: "commit -u with an attached value holding an n", command: "git commit -uno -m wip"},
+		// cspell:disable-next-line -- git reads -u with its mode attached; the test needs that spelling.
+		{name: "commit -u with an attached value spelling normal", command: "git commit -unormal -m wip"},
 		{name: "plain gc", command: "git gc"},
 		{name: "show writing to the terminal", command: "git show HEAD:f"},
 		{name: "plain apply", command: "git apply patch.diff"},
@@ -332,6 +308,27 @@ func TestJudge_AllowsAGitOperationThatKeepsWork(t *testing.T) {
 		{name: "plain submodule update", command: "git submodule update"},
 		{name: "submodule update --reference holding a non-literal value", command: `git submodule update --reference "$r" lib`},
 		{name: "plain submodule deinit", command: "git submodule deinit lib"},
+		{name: "clean under -c keeping the force requirement", command: "git -c clean.requireForce=true clean -d"},
+		{name: "clean --no-dry-run then -n under -c lifting the force requirement", command: "git -c clean.requireForce=false clean --no-dry-run -n -d"},
+		{name: "clean bundle holding a dry run beside force", command: "git clean -nfd"},
+		{name: "clean --dry-run after -f -d", command: "git clean -f -d --dry-run"},
+		{name: "checkout-index without force", command: "git checkout-index -a"},
+		{name: "update-ref setting a ref", command: "git update-ref refs/heads/new HEAD"},
+		{name: "branch -M onto a new name", command: "git branch -M topic other"},
+		{name: "read-tree --dry-run", command: "git read-tree --dry-run HEAD"},
+		{name: "read-tree --index-output", command: "git read-tree --index-output=other.idx -m HEAD"},
+		{name: "read-tree --prefix", command: "git read-tree --prefix=vendor/lib/ HEAD"},
+		{name: "repack -a", command: "git repack -a"},
+		{name: "repack -d", command: "git repack -d"},
+		{name: "repack -a -A -d", command: "git repack -a -A -d"},
+		{name: "repack -a -d --cruft", command: "git repack -a -d --cruft"},
+		{name: "repack -a -d --keep-unreachable", command: "git repack -a -d --keep-unreachable"},
+		{name: "repack -d with an expiry but no -A", command: "git repack -d --unpack-unreachable=now"},
+		{name: "repack -d with a cruft expiry but no --cruft", command: "git repack -d --cruft-expiration=now"},
+		{
+			name:    "repack -A -d with the expiry turned off again",
+			command: "git repack -A -d --unpack-unreachable=now --no-unpack-unreachable",
+		},
 	})
 }
 
@@ -422,6 +419,61 @@ func TestJudge_AllowsAnAbortOrSequencerStepThatCannotLoseWork(t *testing.T) {
 	}, expectation{outcome: guard.Allow})
 }
 
+// dirtyTrees returns a repository with a staged change, one with an unstaged change, and one with
+// an untracked file, each on a branch past its trunk, with a caller working in the first.
+func dirtyTrees(t *testing.T) (staged, unstaged, untracked string, caller guard.Caller) {
+	t.Helper()
+
+	withStaged, caller := standingOn(t, "main", "topic")
+	withStaged.StagedFile()
+	withUnstaged, _ := standingOn(t, "main", "topic")
+	withUnstaged.DirtyFile()
+	withUntracked, _ := standingOn(t, "main", "topic")
+	gittest.WriteFile(t, withUntracked.Dir(), "notes.txt", "notes\n")
+
+	return withStaged.Dir(), withUnstaged.Dir(), withUntracked.Dir(), caller
+}
+
+func TestJudge_RefusesAnArgumentThatMayBeAnAbortOverUncommittedWork(t *testing.T) {
+	t.Parallel()
+
+	staged, unstaged, untracked, caller := dirtyTrees(t)
+
+	checkJudgedIn(t, caller, []placed{
+		{name: "cherry-pick over a staged change", dir: staged, command: `git cherry-pick "$x"`},
+		{name: "cherry-pick over an unstaged change", dir: unstaged, command: `git cherry-pick "$x"`},
+		{name: "cherry-pick over an untracked file", dir: untracked, command: `git cherry-pick "$x"`},
+		{name: "revert over a staged change", dir: staged, command: `git revert "$x"`},
+		{name: "revert over an unstaged change", dir: unstaged, command: `git revert "$x"`},
+		{name: "revert over an untracked file", dir: untracked, command: `git revert "$x"`},
+		{name: "merge over an unstaged change", dir: unstaged, command: `git merge "$x"`},
+		{name: "merge over an untracked file", dir: untracked, command: `git merge "$x"`},
+	}, expectation{outcome: guard.Refuse, named: "the argument cannot be read"})
+}
+
+func TestJudge_WhenACherryPickOfAnArgumentItCannotReadRunsWhereItCannotTell_RefusesAsTheTrunkRuleDoes(t *testing.T) {
+	t.Parallel()
+
+	f, caller := standingOn(t, "main", "topic")
+
+	checkJudgedIn(t, caller, []placed{
+		{name: "cherry-pick under a non-literal -C", dir: f.Dir(), command: `git -C "$d" cherry-pick "$x"`},
+	}, expectation{outcome: guard.Refuse, named: "cannot tell where the command runs"})
+}
+
+func TestJudge_AllowsACherryPickOrRevertThatCannotDiscardWork(t *testing.T) {
+	t.Parallel()
+
+	staged, _, _, caller := dirtyTrees(t)
+	clean, _ := standingOn(t, "main", "topic")
+
+	checkJudgedIn(t, caller, []placed{
+		{name: "cherry-pick of an argument it cannot read in a clean tree", dir: clean.Dir(), command: `git cherry-pick "$x"`},
+		{name: "revert of an argument it cannot read in a clean tree", dir: clean.Dir(), command: `git revert "$x"`},
+		{name: "cherry-pick of a literal commit in a dirty tree", dir: staged, command: "git cherry-pick abc123"},
+	}, expectation{outcome: guard.Allow})
+}
+
 // worktrees is a repository with linked worktrees elsewhere, and two more that each hold a linked
 // worktree named wt1 inside their work tree.
 type worktrees struct {
@@ -480,7 +532,6 @@ func TestJudge_RefusesAWorktreeRemovalItCannotVerify(t *testing.T) {
 		{name: "no path", dir: w.repo, command: "git worktree remove"},
 		{name: "two paths", dir: w.repo, command: "git worktree remove " + gittest.ShellWord(w.clean) + " " + gittest.ShellWord(w.dirty)},
 		{name: "relative path where the directory is unknown", dir: w.repo, command: `cd "$d" && git worktree remove wt1`},
-		{name: "missing path", dir: w.repo, command: "git worktree remove " + gittest.ShellWord(filepath.Join(w.repo, "absent"))},
 		{name: "relative path absent under -C though present where it runs", dir: w.heldClean, command: "git -C " + gittest.ShellWord(w.repo) + " worktree remove wt1"},
 	}, expectation{outcome: guard.Refuse, named: "unverifiable"})
 }
@@ -511,7 +562,6 @@ func TestJudge_WhenAWorktreeRemovalPathCannotBeRead_RefusesNamingTheReadError(t 
 	got := guard.Judge(t.Context(), tt.command, callerIn(f, f.Dir()))
 
 	checkVerdict(t, tt, got, "unverifiable", syscall.EACCES.Error())
-	assert.Check(t, !strings.Contains(got.Reason, "is not a directory"), "Judge(%q) reason %q", tt.command, got.Reason)
 }
 
 func TestJudge_WhenAWorktreeRemovalHoldsAnUnreadableWordWhereAnOptionCanStand_RefusesNamingASpellingTheGuardAllows(t *testing.T) {

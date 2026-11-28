@@ -12,10 +12,9 @@ import (
 	"github.com/jeffzi/ils/internal/result"
 )
 
-// readLocalTrunk, readWorktrees, readRules, readMessage and readStillOnOrigin name what a read
-// covers as each follows "read" in a result, so each stays a noun phrase.
+// readWorktrees, readRules, readMessage and readStillOnOrigin name what a read covers as each
+// follows "read" in a result, so each stays a noun phrase.
 const (
-	readLocalTrunk    = "the local trunk"
 	readWorktrees     = "where the trunk is checked out"
 	readRules         = "the trunk's rules"
 	readMessage       = "the pull request's message"
@@ -93,7 +92,9 @@ type mergeReady struct {
 // reads what lets the merge go on, as toWrite says. Then it writes, as land says.
 //
 // A branch with no open pull request against the trunk, whose merged pull request carries every
-// commit of the branch, is finished without a merge, as resume says.
+// commit of the branch, is finished without a merge, as resume says. So is a branch with no commit
+// past origin's trunk whose pull request merged into the trunk has the tip as its head, as a merge
+// commit made on the web leaves it.
 func Merge(ctx context.Context, deps Deps, req Request) result.Result {
 	deps.startChecking()
 
@@ -137,9 +138,17 @@ func mergeChecks(ctx context.Context, s *survey, req Request, ready Ready) (merg
 
 	m.elsewhere = worktree != ""
 
-	m.tip, m.past, stop = commitsPast(ctx, s, req, m.onBranch)
+	var landed *forge.Change
+
+	m.tip, m.past, landed, stop = commitsPast(ctx, s, req, m.onBranch)
 	if stop != nil {
 		return mergeReady{}, stop
+	}
+
+	if landed != nil {
+		m.pull, m.resumed = *landed, true
+
+		return m, nil
 	}
 
 	if stop = m.findPull(ctx, s, req); stop != nil || m.resumed {
@@ -268,9 +277,9 @@ func (m *mergeReady) atHead(ctx context.Context, deps Deps, req Request) *result
 		return nil
 	}
 
-	head, stop := req.fetchPullHead(ctx, deps, m.pull.Number, readHead)
-	if stop != nil {
-		return stop
+	head, err := deps.Repo.FetchPullHead(ctx, m.pull.Number)
+	if err != nil {
+		return req.pullHeadNotFetched(m.pull.Number, readHead, err)
 	}
 
 	apart, err := deps.Repo.Divergence(ctx, m.tip, head)
@@ -278,7 +287,7 @@ func (m *mergeReady) atHead(ctx context.Context, deps Deps, req Request) *result
 		return req.Unread(readHead, err)
 	}
 
-	if stop = m.apartFromHead(req, apart); stop != nil {
+	if stop := m.apartFromHead(req, apart); stop != nil {
 		return stop
 	}
 

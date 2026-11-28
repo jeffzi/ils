@@ -341,6 +341,12 @@ func (p *parse) refuseFor(word string, reason result.Phrase) error {
 	return p.refuseWith(reason, result.NextCommand("%s "+flagHelp, word))
 }
 
+// fixThenRunAgain is the next step of a run that broke for a reason the user can fix: fix it, then
+// run again, the command to run.
+func fixThenRunAgain(again result.Name) result.Next {
+	return result.NextStep("fix what the reason names, then run %s again", again)
+}
+
 func notCommand(word string) result.Phrase {
 	return result.Say("%s is not a command", word)
 }

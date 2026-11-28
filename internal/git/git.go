@@ -58,20 +58,17 @@ type Runner struct {
 	Env []string
 }
 
-// Result is what a call left behind, as child.Output holds it.
-type Result = child.Output
-
 // Run runs git with args and returns its output once it has exited zero.
 //
 // A git missing from PATH is a *child.ToolMissingError and a non-zero exit is a
 // *child.ExitError, returned with what git printed on stdout so that a caller can read the output
-// of a failed call. Every other failure returns an empty Result: when ctx ends before git does,
-// the error is the context's, so a half-written stdout is never read.
+// of a failed call. Every other failure returns an empty child.Output: when ctx ends before git
+// does, the error is the context's, so a half-written stdout is never read.
 //
 // Run does not wait for a process git started and left behind: once git has
 // exited or been killed, output pipes still held open are closed after a short
 // grace, so a context that ended never turns into a hang.
-func (r Runner) Run(ctx context.Context, args ...string) (Result, error) {
+func (r Runner) Run(ctx context.Context, args ...string) (child.Output, error) {
 	// Git itself is found on this process's PATH, whatever the runner's environment holds.
 	return r.childProgram(program, installURL, args, exec.LookPath).Run(ctx)
 }

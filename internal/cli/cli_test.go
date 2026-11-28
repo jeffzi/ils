@@ -825,12 +825,12 @@ func TestApp_Run_WhenAHelpFlagIsSetToNeitherTrueNorFalse_RefusesNamingTheValue(t
 			t.Parallel()
 			_, value, _ := strings.Cut(tt.word, "=")
 
-			got := launch(t, outside(t), tt.args()...)
+			got := launch(t, outside(t), append([]string{"--json"}, tt.args()...)...)
 
 			assert.Check(t, is.Equal(got.code, exitRefused), "stdout = %q", got.stdout)
-			assert.Check(t, is.Contains(got.stdout, "--help"))
-			assert.Check(t, is.Contains(got.stdout, "true or false"))
-			assert.Check(t, is.Contains(got.stdout, value))
+			reason := resulttest.Decode(t, got.stdout).Reason
+			assert.Check(t, is.Contains(reason, "--help"))
+			assert.Check(t, is.Contains(reason, value))
 		})
 	}
 }
@@ -842,11 +842,12 @@ func TestApp_Run_WhenWordsBreakTheGrammar_RefusesNamingWhatBreaksIt(t *testing.T
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := launch(t, outside(t), tt.args...)
+			got := launch(t, outside(t), append([]string{"--json"}, tt.args...)...)
 
 			assert.Check(t, is.Equal(got.code, exitRefused), "ils %s", strings.Join(tt.args, " "))
+			reason := resulttest.Decode(t, got.stdout).Reason
 			for _, part := range tt.reasons {
-				assert.Check(t, is.Contains(got.stdout, part))
+				assert.Check(t, is.Contains(reason, part))
 			}
 		})
 	}

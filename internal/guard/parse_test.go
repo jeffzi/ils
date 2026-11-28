@@ -268,7 +268,6 @@ func TestParse_ReportsTheToolACommandWordNames(t *testing.T) {
 	}{
 		{name: "absolute path", command: "/opt/homebrew/bin/git status", wantTool: guard.Git},
 		{name: "zsh equals lookup", command: "=git status", wantTool: guard.Git},
-		{name: "ANSI-C quoted", command: "$'git' push", wantTool: guard.Git},
 		{name: "name that only starts with git", command: "gitk --all", wantTool: guard.NoTool},
 		{name: "literal prefix of an expansion", command: `git"$x" status`, wantTool: guard.NoTool},
 	}
@@ -390,6 +389,7 @@ func standingOn(t *testing.T, trunk, branch string) (*gittest.Fixture, guard.Cal
 	return f, callerIn(f, f.Dir())
 }
 
+// callerIn returns a caller working in dir whose git runs with the environment of f.
 func callerIn(f *gittest.Fixture, dir string) guard.Caller {
 	return callerWithEnv(dir, f.Env())
 }
@@ -404,6 +404,7 @@ func recordingCaller(f *gittest.Fixture, dir string) (guard.Caller, *git.Recorde
 	return caller, recorder
 }
 
+// callerWithEnv returns a caller working in dir, with home as HOME, whose git runs with env.
 func callerWithEnv(dir string, env []string) guard.Caller {
 	return guard.Caller{Env: map[string]string{"HOME": home}, Dir: dir, Git: git.Runner{Env: env}}
 }

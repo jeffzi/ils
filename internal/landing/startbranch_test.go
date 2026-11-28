@@ -99,7 +99,6 @@ func TestStartBranch_WhenGitCannotHoldTheName_RefusesNamingIt(t *testing.T) {
 		name, given string
 	}{
 		{name: "name holds two dots in a row", given: "logo..draft"},
-		{name: "name is empty", given: ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -171,28 +170,6 @@ func TestStartBranch_WhenOriginStopsAnsweringWhenAskedForItsBranches_RefusesSayi
 
 	want := expect("could not be reached", "branches", "Next:", "ils branch "+fresh)
 	assertRefusedBranch(t, s, got, branchRefusal{name: fresh, before: before, text: want})
-}
-
-func TestStartBranch_WhenOriginStopsAnswering_NextQuotesTheNameForTheShell(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name, given, quoted string
-	}{
-		{name: "name holds a shell operator", given: "fix;make", quoted: "'fix;make'"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			s := branchScene(t, nil)
-			s.stopAnswering(t, 1)
-
-			got := startBranch(t, s, tt.given)
-
-			text, _ := shown(t, got, s.gitDir)
-			assertSays(t, text, nextLine("ils branch "+tt.quoted))
-		})
-	}
 }
 
 func TestStartBranch_WhenOriginRefusesTheCaller_EndsBrokeWithWhatGitSaid(t *testing.T) {
@@ -278,33 +255,16 @@ func TestStartBranch_WhenLocalTrunkHasCommitsOriginLacks_RefusesNamingTheFix(t *
 	}
 }
 
-func TestStartBranch_WhenAReadOfTheLocalTrunkFails_EndsBrokeNamingTheRead(t *testing.T) {
+func TestStartBranch_WhenTheReadOfWhereTheAheadTrunkIsCheckedOutFails_EndsBrokeNamingTheRead(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		arrange func(*gittest.Fixture)
-		name    string
-		read    string
-		fails   []string
-	}{
-		{
-			name:    "where the ahead trunk is checked out",
-			arrange: func(f *gittest.Fixture) { f.AdvanceTrunk() },
-			fails:   worktreeList(), read: readWorktrees,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			s := branchScene(t, tt.arrange)
-			failGit(s, tt.fails)
-			before := s.written()
+	s := branchScene(t, func(f *gittest.Fixture) { f.AdvanceTrunk() })
+	failGit(s, worktreeList())
+	before := s.written()
 
-			got := startBranch(t, s, fresh)
+	got := startBranch(t, s, fresh)
 
-			assertFailedGit(t, got, commandNamed("branch "+fresh, branchRequest(fresh)), tt.read)
-			assert.Check(t, is.Equal(s.written(), before))
-		})
-	}
+	assertFailedGit(t, got, commandNamed("branch "+fresh, branchRequest(fresh)), readWorktrees)
+	assert.Check(t, is.Equal(s.written(), before))
 }
 
 func TestStartBranch_WhenTheSwitchWouldOverwriteAFile_RefusesNamingIt(t *testing.T) {

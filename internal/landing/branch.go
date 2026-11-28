@@ -136,33 +136,76 @@ func fetchTrunk(ctx context.Context, s *survey, req Request, trunk string) (stri
 
 // commitsPast returns the branch's tip and its commits past origin's trunk, which fetchTrunk
 // must have fetched, refusing a branch that has none or has no commit at all.
-func commitsPast(ctx context.Context, s *survey, req Request, b onBranch) (tip string, past []git.Commit, stop *result.Result) {
+//
+// On `ils merge`, a branch whose commits are all on origin's trunk is first looked up for a pull
+// request merged into the trunk at its tip, as a merge commit made on the web leaves it: landed is
+// that pull request, past is empty, and the branch is not refused. landed is nil on every other
+// command.
+func commitsPast(ctx context.Context, s *survey, req Request, b onBranch) (tip string, past []git.Commit, landed *forge.Change, stop *result.Result) {
 	found, err := s.tip(ctx)
 
 	switch {
 	case err != nil:
-		return "", nil, req.Unread(readTip, err)
+		return "", nil, nil, req.Unread(readTip, err)
 	case !found.committed:
-		return "", nil, req.nothingPast(b)
+		return "", nil, nil, req.nothingPast(b)
 	}
 
 	past, err = s.past(ctx)
 	if err != nil {
-		return "", nil, req.Unread(readCommits, err)
+		return "", nil, nil, req.Unread(readCommits, err)
 	}
 
-	if len(past) == 0 {
-		return "", nil, req.nothingPast(b)
+	if len(past) > 0 {
+		return found.tip, past, nil, nil
 	}
 
-	return found.tip, past, nil
+	if req.Command == MergeCommand {
+		landed, stop = b.mergedAt(ctx, s, req, found.tip)
+		if landed != nil || stop != nil {
+			return found.tip, nil, landed, stop
+		}
+	}
+
+	return "", nil, nil, req.nothingPast(b)
 }
 
-// readTip reads the sha of the branch's tip, and whether the branch has a commit at all; a branch
-// with none reads as no tip and no error. When the tip cannot be read on a branch that has
-// commits, err is that failure and committed is true; when the read of the branch's ref fails
-// too, err joins both failures.
-func (b onBranch) readTip(ctx context.Context, deps Deps) (tip string, committed bool, err error) {
+// mergedAt returns the first pull request merged from the branch into the trunk whose head,
+// fetched from origin, is tip, with its HeadSHA that head, and nil when none is. A read of the
+// pull requests or a fetch of a merged head that fails stops the run, as pullRequest's reads do.
+func (b onBranch) mergedAt(ctx context.Context, s *survey, req Request, tip string) (*forge.Change, *result.Result) {
+	s.deps.startFinding()
+
+	changes, err := s.changes(ctx)
+	if err != nil {
+		return nil, req.Unread(readChanges, err)
+	}
+
+	for _, change := range changes {
+		if change.State != forge.ChangeMerged || change.Base != b.Trunk {
+			continue
+		}
+
+		head, err := s.mergedHead(ctx, change.Number)
+		if err != nil {
+			return nil, req.pullHeadNotFetched(change.Number, readMergedHead, err)
+		}
+
+		if head == tip {
+			change.HeadSHA = head
+
+			return &change, nil
+		}
+	}
+
+	return nil, nil
+}
+
+// readBranchTip reads the sha of the tip of branch, the branch HEAD is on, and whether branch has a
+// commit at all; a branch with none reads as no tip and no error. When the tip cannot be read on a
+// branch that has commits, err is that failure and committed is true; when the read of the
+// branch's ref fails too, err joins both failures.
+func readBranchTip(ctx context.Context, deps Deps, branch string) (tip string, committed bool, err error) {
 	tip, err = deps.Repo.HeadSHA(ctx)
 	if err == nil {
 		return tip, true, nil
@@ -170,7 +213,7 @@ func (b onBranch) readTip(ctx context.Context, deps Deps) (tip string, committed
 
 	// The read of the tip fails on a branch with no commit as it does on a broken repository, so
 	// only the branch's ref tells the two apart.
-	committed, refErr := deps.Repo.HasCommits(ctx, b.branch)
+	committed, refErr := deps.Repo.HasCommits(ctx, branch)
 	switch {
 	case refErr != nil:
 		return "", false, errors.Join(err, refErr)
@@ -187,17 +230,11 @@ func (b onBranch) readTip(ctx context.Context, deps Deps) (tip string, committed
 func (r Request) nothingPast(b onBranch) *result.Result {
 	next := result.NextStep("commit the work"+thenRunAgain, r.ilsCommand())
 	if r.Command == MergeCommand || r.Command == StatusCommand {
-		next = firstPushStep()
+		next = result.NextStep("commit the work, then run %s", result.Command(PushCommand))
 	}
 
 	return r.Refused(
 		result.Say("the branch %s has no commit past origin's trunk %s", result.Branch(b.branch), result.Branch(b.Trunk)), next)
-}
-
-// firstPushStep is the next step of a branch with no commit past origin's trunk, for a command
-// other than push: commit the work, then push it for the first time.
-func firstPushStep() result.Next {
-	return result.NextStep("commit the work, then run %s", result.Command(PushCommand))
 }
 
 // pullRequest returns the branch's open pull request against the trunk, nil when it has none,

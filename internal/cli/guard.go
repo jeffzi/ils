@@ -187,7 +187,7 @@ func unparsed(req landing.Request, err error) result.Result {
 		panic(quoteErr)
 	}
 
-	return *req.Broke(reason, result.NextStep("fix what the reason names, then run %s again", result.Command(typed)))
+	return *req.Broke(reason, fixThenRunAgain(result.Command(typed)))
 }
 
 // guardCommand returns `ils guard --cwd <dir> -- '<command>'`, which judges the command as the

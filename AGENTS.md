@@ -40,7 +40,8 @@ manage flags and tool invocations.
 - `task test:replay` — Judge every Bash command of your local Claude Code transcripts with the
   guard, in the directory each one ran in, and print the number of commands read, judged and
   skipped, then each refusal and ask reason with its count and up to three commands. Never fails on
-  the counts. It reads:
+  the counts. It judges with your `gh`: the one `GH_PATH` names, else the one on `PATH`. With no
+  `gh`, or one not logged in, each command gets the verdict the guard gives you then. It reads:
   - `ILS_REPLAY_DIR` — the directory of transcripts to read, subagent transcripts included. Unset,
     the task reads `~/.claude/projects`.
   - `ILS_REPLAY_BEFORE` — when set, an RFC 3339 time: only calls recorded before it are read, so
@@ -84,9 +85,30 @@ Each document has one job, and a fact lives in one of them:
 - `VISION.md` holds the goals of `ils`: the ranked principles that decide what it takes on, and
   its non-goals.
 
-A change to a command's behavior, wording, or flags, or to a guard refusal, updates
-`docs/reference.md`. It also updates the README where a command paragraph, a workflow, or the flow
-table states what changed. How the guard reads a command is summarized there by group, with
+### What the reference holds
+
+The reference is the contract of `ils`: what a caller can rely on without reading the source. Its
+reader comes with one question, reads one section, and leaves. A sentence belongs there when a
+caller can observe what it states and would act differently for knowing it: what a command changes
+in the clone or on GitHub, the state it requires, how it ends (outcome, exit code, JSON), how long
+it waits, and what the guard refuses.
+
+A change to a command's behavior, wording, or flags, or to a guard refusal, updates the reference
+in two cases only: it makes a sentence there wrong, or it adds a fact that passes that test. State
+the fact once, as the condition and the outcome: "keeps the branch and ends broke". These stay out:
+
+- **How `ils` gets there:** the calls it makes, what it tries again, how often and for how long,
+  how it writes a file or ends a process. The tests pin that.
+- **What `ils` prints:** the words of a reason, a `Next:` line, or a step line, and which step a
+  failure is listed under. The command says them when they matter; the reference quotes output
+  only where a caller parses it.
+
+"The change alters the command's steps, its timing, or its `Next:` line, and the reference owns
+those" is not a reason to add. The reference owns what a caller relies on, not what a commit
+changed.
+
+A change also updates the README where a command paragraph, a workflow, or the flow table states
+what changed. How the guard reads a command is summarized in the reference by group, with
 examples; the tests pin the details. A parser change updates the reference only when it changes a
 group's summary or makes one of its examples wrong.
 

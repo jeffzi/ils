@@ -206,7 +206,7 @@ func TestJudge_WhenAGhGraphqlCallHasAnExplicitPost_RefusesItByItsDocument(t *tes
 	caller := callerOutsideAnyRepository(t)
 	const command = `gh api graphql -X POST -f query='mutation { a }'`
 
-	checkRefusedOmitting(t, caller, omitting{command: command, named: "mutation", omitted: "POST"})
+	checkJudgedRow(t, caller, judged{command: command, wantNamed: "mutation", want: guard.Refuse})
 }
 
 func TestJudge_ReadsTheIlsCommandAsCobraFindsIt(t *testing.T) {

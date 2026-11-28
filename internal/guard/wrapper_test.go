@@ -12,10 +12,12 @@ import (
 func TestParse_WhenExecRunsNoCommand_ReportsExecItself(t *testing.T) {
 	t.Parallel()
 
-	got := only(t, "exec > out.log")
+	const command = "exec > out.log"
 
-	assert.Check(t, is.DeepEqual(wordTexts(got.Words), []string{"exec"}))
-	assert.Check(t, is.Len(got.Wrappers, 0))
+	got := only(t, command)
+
+	assert.Check(t, is.DeepEqual(wordTexts(got.Words), []string{"exec"}), "Parse(%q) words", command)
+	assert.Check(t, is.Len(got.Wrappers, 0), "Parse(%q) wrappers", command)
 }
 
 func TestParse_WhenAWrapperRunsACommand_ReportsTheCommandBehindIt(t *testing.T) {
@@ -108,6 +110,39 @@ func TestParse_WhenAQuotedEnvArgumentHasNoLiteralName_ReadsItAsTheCommand(t *tes
 
 			assert.Check(t, is.Len(got.Assignments, 0), "Parse(%q) assignments", tt.command)
 			assert.Check(t, is.DeepEqual(wordTexts(got.Words), []string{"", "make"}), "Parse(%q) words", tt.command)
+		})
+	}
+}
+
+func TestParse_WhenAWrapperIsGivenAWordItCannotRead_ReadsTheWordAsTheCommandBehindIt(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		command     string
+		wrapper     string
+		wantWords   []string
+		wantLiteral bool
+	}{
+		{
+			name: "option the wrapper does not take", command: "nice -z git push", wrapper: "nice",
+			wantWords: []string{"-z", "git", "push"}, wantLiteral: true,
+		},
+		{name: "non-literal option", command: `env -"$o" git push`, wrapper: "env", wantWords: []string{"-", "git", "push"}},
+		{
+			name: "non-literal word with an option's prefix", command: `nice -n"$x" git push`, wrapper: "nice",
+			wantWords: []string{"-n", "git", "push"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := only(t, tt.command)
+
+			assert.Assert(t, is.DeepEqual(wordTexts(got.Words), tt.wantWords), "Parse(%q) words", tt.command)
+			assert.Check(t, is.DeepEqual(got.Wrappers, []string{tt.wrapper}), "Parse(%q) wrappers", tt.command)
+			assert.Check(t, is.Equal(got.Words[0].Literal, tt.wantLiteral), "Parse(%q) command word", tt.command)
 		})
 	}
 }

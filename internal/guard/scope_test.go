@@ -82,6 +82,7 @@ func TestParse_WhenTheDirectoryCannotBeFollowed_ReportsItUnknown(t *testing.T) {
 		{name: "move in a pipeline", command: "true | cd sub; git commit"},
 		{name: "relative cd in a shell string given CDPATH by a prefix", command: "CDPATH=/srv bash -c 'cd sub && git commit'"},
 		{name: "after a source of a file", command: "source env.sh && git commit"},
+		{name: "after a source of a file by its dot name", command: ". env.sh && git commit"},
 		{name: "relative cd after a source of a file, which may set CDPATH", command: "source env.sh; cd /srv; cd sub; git commit"},
 	}
 	for _, tt := range tests {

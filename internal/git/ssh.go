@@ -398,7 +398,7 @@ func (r Repo) sshHostname(ctx context.Context, host string) (string, error) {
 // command as configured.
 func (r Repo) askSSH(ctx context.Context, command sshCommand, host string) (string, error) {
 	var (
-		result Result
+		result child.Output
 		err    error
 	)
 

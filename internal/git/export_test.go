@@ -1,5 +1,8 @@
 package git
 
+// FetchedRefs is fetchedRefs, for the tests of package git_test.
+const FetchedRefs = fetchedRefs
+
 // ProgramWord is programWord, for the tests of package git_test.
 func ProgramWord(line string) (string, bool) { return programWord(line) }
 

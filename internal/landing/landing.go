@@ -328,7 +328,7 @@ func (r Request) limitWords() span {
 }
 
 // ilsCommand is the command that a step of the checks the user takes first (a fix of git or ssh, a
-// login to gh, a change to the branch) runs again: the request's own, as ownCommand prints it. For
+// login to gh, a change to the branch) runs again: the request's own, as OwnCommand prints it. For
 // a status it is the command whose checks the status runs to tell its `Next:`, as ChecksOf names
 // it: `ils branch <name>`, since a status has no name to print, or a plain `ils push`.
 func (r Request) ilsCommand() result.Name {
@@ -340,14 +340,14 @@ func (r Request) ilsCommand() result.Name {
 		return result.Command(PushCommand)
 	}
 
-	return r.ownCommand()
+	return r.OwnCommand()
 }
 
-// ownCommand is the request's command line without a typed --wait, marked as an ils command, which
+// OwnCommand is the request's command line without a typed --wait, marked as an ils command, which
 // prints as "ils <command> <args> <flags>": the command that a fix of what failed runs again. That
 // run starts over, so it does not ask for the long wait, and a fast failure comes back at once; a
 // typed --wait=false, which asks for the short one, stays.
-func (r Request) ownCommand() result.Name {
+func (r Request) OwnCommand() result.Name {
 	return result.Command(r.commandLine(false))
 }
 
@@ -435,7 +435,7 @@ type Ready struct {
 	// Standing is the branch the command stands on, or a detached HEAD.
 	Standing git.Standing
 	// Repo is the repository origin names, with the forge's fork, can-push and squash-allowed flags.
-	// GitPreconditions leaves it empty.
+	// gitPreconditions leaves it empty.
 	Repo forge.Repo
 }
 
@@ -476,14 +476,10 @@ func preconditions(ctx context.Context, s *survey, req Request) (Ready, *result.
 	return Ready{Trunk: trunk, Standing: standing, Repo: repo}, nil
 }
 
-// GitPreconditions checks the preconditions of Preconditions that need git alone, in the same
-// order and with the same results: git is installed and recent enough; there is an origin; origin
-// answers for its trunk. It never calls the forge, and the Ready it returns has no Repo.
-func GitPreconditions(ctx context.Context, deps Deps, req Request) (Ready, *result.Result) {
-	return gitPreconditions(ctx, newSurvey(deps), req)
-}
-
-// gitPreconditions checks what GitPreconditions checks, reading through the record s.
+// gitPreconditions checks the preconditions of Preconditions that need git alone, in the same
+// order and with the same results, reading through the record s: git is installed and recent
+// enough; there is an origin; origin answers for its trunk. It never calls the forge, and the
+// Ready it returns has no Repo.
 func gitPreconditions(ctx context.Context, s *survey, req Request) (Ready, *result.Result) {
 	standing, stop := gitStanding(ctx, s, req)
 	if stop != nil {
@@ -515,15 +511,11 @@ func gitStanding(ctx context.Context, s *survey, req Request) (git.Standing, *re
 	}
 
 	if standing.Kind == git.NoOrigin {
-		return git.Standing{}, req.Refused(result.Say("this repository has no remote named origin"), createOriginStep())
+		return git.Standing{}, req.Refused(result.Say("this repository has no remote named origin"),
+			result.NextStep("create the repository on GitHub and push to it with `gh repo create --source . --push`"))
 	}
 
 	return standing, nil
-}
-
-// createOriginStep is the next step of a repository with no origin: create it on GitHub.
-func createOriginStep() result.Next {
-	return result.NextStep("create the repository on GitHub and push to it with `gh repo create --source . --push`")
 }
 
 // originRepo refuses origin's URLs unless both name one repository.
@@ -544,21 +536,21 @@ func originRepo(ctx context.Context, s *survey, req Request) *result.Result {
 // they name one: the fetch URL and every push URL the same GitHub repository. A URL git's answer
 // cannot be parsed into names none rather than failing the read; err is a read of readURLs that
 // failed.
-func readOriginRepo(ctx context.Context, deps Deps) (urls git.OriginURLs, repo forge.Repo, oneRepo bool, err error) {
-	urls, err = deps.Repo.OriginURLs(ctx)
+func readOriginRepo(ctx context.Context, deps Deps) (originRead, error) {
+	urls, err := deps.Repo.OriginURLs(ctx)
 	if _, unparsed := errors.AsType[*git.OriginError](err); unparsed {
-		return urls, forge.Repo{}, false, nil
+		return originRead{urls: urls}, nil
 	}
 
 	if err != nil {
-		return urls, forge.Repo{}, false, err
+		return originRead{urls: urls}, err
 	}
 
 	if _, stray := strayPushURL(urls); stray {
-		return urls, forge.Repo{}, false, nil
+		return originRead{urls: urls}, nil
 	}
 
-	return urls, forge.RepoOf(urls.Fetch), true, nil
+	return originRead{urls: urls, repo: forge.RepoOf(urls.Fetch), oneRepo: true}, nil
 }
 
 // strayPushURL returns the first push URL of urls that does not name the GitHub repository its
@@ -824,7 +816,7 @@ func couldNotRead(read string, err error) (line, reason result.Phrase) {
 // onceFixed is the judgment step after a failure the user has to look at, ending in the
 // request's own command: a status reads again what failed.
 func (r Request) onceFixed() result.Next {
-	return result.NextStep("fix what failed"+thenRunAgain, r.ownCommand())
+	return result.NextStep("fix what failed"+thenRunAgain, r.OwnCommand())
 }
 
 // pushOfChange is the push a step that changes the branch first runs: a push names itself, keeping
@@ -880,17 +872,6 @@ func (r Request) unreached(read string, err error, reason result.Phrase) *result
 	return r.Unread(read, err)
 }
 
-// fetchPullHead fetches the head of pull request number from origin and returns its sha. A failed
-// fetch is the stop of read, a refusal when origin could not be reached.
-func (r Request) fetchPullHead(ctx context.Context, deps Deps, number int, read string) (string, *result.Result) {
-	head, err := deps.Repo.FetchPullHead(ctx, number)
-	if err != nil {
-		return "", r.pullHeadNotFetched(number, read, err)
-	}
-
-	return head, nil
-}
-
 // pullHeadNotFetched is the stop of read, a fetch of the head of pull request number that failed
 // with err: a refusal when origin could not be reached.
 func (r Request) pullHeadNotFetched(number int, read string, err error) *result.Result {
@@ -921,14 +902,8 @@ func (r Request) detachedKept(ctx context.Context, s *survey, reason result.Phra
 		return nil
 	}
 
-	stop := r.Refused(reason, keepDetachedStep(r.pushOfChange()))
+	stop := r.Refused(reason, result.NextStep("keep them on a branch with `git switch -c <name>`, then run %s", r.pushOfChange()))
 	stop.Lines = listed(own)
 
 	return stop
-}
-
-// keepDetachedStep is the next step of a detached HEAD with commits origin's trunk lacks: keep them
-// on a branch, then push it with push.
-func keepDetachedStep(push result.Name) result.Next {
-	return result.NextStep("keep them on a branch with `git switch -c <name>`, then run %s", push)
 }

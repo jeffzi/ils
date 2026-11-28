@@ -67,9 +67,9 @@ default branch of a GitHub repository, protected or not. In the flow `ils` enfor
 takes changes only through a green pull request. With every agent push refused, a commit made on it
 has no route to origin's default branch.
 
-The guard does not read the branch's protection, so the verdict never depends on GitHub's settings.
-[The default branch on GitHub](reference.md#the-default-branch-on-github) says how it tells a
-GitHub host.
+Never make a verdict depend on the branch's protection or any other GitHub setting.
+[The default branch on GitHub](reference.md#the-default-branch-on-github) says how the guard tells
+a GitHub host.
 
 Refuse it in every spelling the tool itself accepts:
 
@@ -173,7 +173,9 @@ So:
 - A bare `git`, `gh`, `ils`, or shell word among an interpreter's arguments still counts as handed
   over (`python3 tool.py git push`), as it does for any command the guard does not know.
 - Shell stays shell. The guard reads and judges `bash -c` and `eval` strings, a string for `su -c`,
-  `ssh host`, or `docker run … sh -c`, and a heredoc fed to a shell.
+  `ssh host`, or `docker run … sh -c`, and a heredoc fed to a shell. In a string for `su` or
+  `ssh`, it judges only the words it can read: one it cannot read passes, as
+  [Accepted limits](#accepted-limits) says.
 
 ## How a refusal reads
 
@@ -218,9 +220,9 @@ that test, so the guard lets them through:
   Writing the HEAD file by hand, or racing a switch against a commit, only hides where the commit
   lands.
 - **An option, variable, or config key that runs a program**, such as `core.pager`. Agents set
-  these to run a pager, an SSH key, or a test runner. Reaching a push through one only hides the
-  push. The editors are the exception: the guard reads them where the command sets them, as
-  [rule 2](#2-refuse-every-direct-operation) asks.
+  these to run a pager, a Secure Shell (SSH) key, or a test runner. Reaching a push through one
+  only hides the push. The editors are the exception: the guard reads them where the command sets
+  them, as [rule 2](#2-refuse-every-direct-operation) asks.
 - **Config the guard does not read written by `git config`**: an editor or any other key that
   runs a program, and an included config file. Agents set their editor and split their config
   into included files. A later command runs what that config names from a file, which the guard
@@ -233,3 +235,12 @@ that test, so the guard lets them through:
   files, and those run nothing. Putting a command inside a glob only hides it.
 - **A redirect an earlier `exec` opens.** Agents run `exec > log` to capture a run's output.
   Opening a tracked file there first only hides the overwrite.
+- **A word the guard cannot read in a string for `su` or `ssh`**, such as `su -c "$cmd"` or
+  `su -c '$g git push'`. Agents run neither: no replayed command does. Holding a guarded command in
+  a variable for either only hides it.
+- **`ils` run from its source**, such as `go run . merge` in a clone of `ils`. Agents run the source
+  to read its help while they work on `ils`. Running it to merge or release only hides the `ils`
+  word.
+- **`gh workflow run`.** Agents start workflows in ordinary work, such as the live suite before a
+  release. What a run does lives in the workflow file, which the guard does not read
+  ([rule 8](#8-treat-code-in-another-language-as-data)). Refusing every run refuses that work.

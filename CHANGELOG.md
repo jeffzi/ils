@@ -7,6 +7,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Run the pushes of `ils push` and `ils release` with `LC_ALL=C`, so the pre-push hooks they start
+  run in the C locale.
+
 ### Fixed
 
 - Fix a command failing on the first failed read of GitHub instead of reading it again.
@@ -19,6 +24,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   redirect, which let through a pipe that overwrites a file from history and refused a harmless one.
 - Fix the guard refusing a command because an option ended in the name of a program it watches, as
   if the option handed that program to another command.
+- Fix the guard refusing `git commit -uno` as if it skipped the checks set up to run before a commit.
+- Fix `ils status` on the default branch saying it stands on a work branch and pointing at
+  `ils push` when the time limit or an interrupt cut short the read of origin's default branch.
+- Fix `ils` exiting with the code of a refusal when Ctrl-\ ends it, even after it had pushed, merged
+  or tagged; it now ends by the signal itself.
+- Fix the guard letting `git cherry-pick` and `git revert` run with an argument it cannot read over
+  uncommitted work, which the argument could discard as an `--abort`.
+- Fix `ils merge` deleting a commit made on the branch while it waited for the checks.
+- Fix `ils merge` refusing a branch whose pull request was merged on the web with a merge commit,
+  and saying to commit work that had already landed; it now finishes the merge.
 
 ## [0.6.0] - 2026-11-17
 

@@ -323,17 +323,15 @@ func (f *Fixture) AdvanceOrigin(branch string) string {
 	return sha
 }
 
-// Diverge gives the local branch and origin's copy one commit each that the other lacks, and
-// returns both shas. The branch must already be on origin.
-func (f *Fixture) Diverge(branch string) (local, remote string) {
+// Diverge gives the local branch and origin's copy one commit each that the other lacks. The
+// branch must already be on origin.
+func (f *Fixture) Diverge(branch string) {
 	f.tb.Helper()
 
-	remote = f.AdvanceOrigin(branch)
+	f.AdvanceOrigin(branch)
 
 	f.Git("switch", "--quiet", branch)
-	local = f.commit(f.dir, "local change on "+branch)
-
-	return local, remote
+	f.commit(f.dir, "local change on "+branch)
 }
 
 // Detach detaches HEAD at the commit it is on.

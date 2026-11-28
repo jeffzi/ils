@@ -2,9 +2,7 @@ package cli_test
 
 import (
 	"errors"
-	"io"
 	"os/exec"
-	"strings"
 	"syscall"
 	"testing"
 
@@ -12,26 +10,20 @@ import (
 	is "gotest.tools/v3/assert/cmp"
 )
 
-// goQuit opens what Go writes on stderr when a quit signal ends a program: the name of the signal,
-// then the dump of every goroutine.
-const goQuit = "SIGQUIT: quit\n"
-
-func TestApp_Run_WhenQuitWhileTheSpinnerLineShows_EndsAsGoEndsAQuitWithTheCursorShown(t *testing.T) {
+func TestApp_Run_WhenQuitWhileTheSpinnerLineShows_DiesOfItWithTheCursorShown(t *testing.T) {
 	t.Parallel()
+	if !readsStopDisposition() {
+		t.Skip("ils sets no signal disposition on this system; Go's own quit ends the run")
+	}
 
 	run := startStuck(t, stuckSpinning)
-	run.await(t, "the spinner line showed", run.spinnerShows)
+	run.awaitSpinning(t)
 
 	assert.NilError(t, run.cmd.Process.Signal(syscall.SIGQUIT))
-	rest, err := io.ReadAll(run.pipe)
-	assert.NilError(t, err)
-	_ = run.cmd.Wait() // Go exits non-zero on a quit; the goroutine dump checked below is what proves it
+	_, err := run.end(t)
 
-	drawn, dump, quit := strings.Cut(string(rest), goQuit)
-	_, writeErr := run.stderr.Write([]byte(drawn))
-	assert.NilError(t, writeErr)
-	assert.Check(t, !run.stderr.cursorHidden(), "the cursor is still hidden when Go dumps its goroutines:\n%q", run.stderr.raw())
-	assert.Check(t, quit && strings.Contains(dump, "goroutine "), "stderr ends with no goroutine dump:\n%q", rest)
+	diedOf(t, err, syscall.SIGQUIT)
+	assert.Check(t, !run.stderr.cursorHidden(), "the cursor is still hidden when the run dies:\n%q", run.stderr.raw())
 }
 
 func TestApp_Run_WhenASignalLandsWhileTheSpinnerLineShows_PrintsTheResultWithTheDisplayEnded(t *testing.T) {

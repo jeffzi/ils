@@ -14,7 +14,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -501,7 +500,7 @@ func Setup(tb testing.TB, script ...Call) *Fake {
 
 	fake := Script(tb, script...)
 
-	tb.Setenv("GORACE", gittest.RaceSetting())
+	tb.Setenv(gittest.RaceEnv, gittest.RaceSetting())
 	tb.Setenv(github.PathVariable, exe)
 	gittest.SetEnvEntries(tb, fake.settings)
 
@@ -545,35 +544,10 @@ func Script(tb testing.TB, script ...Call) *Fake {
 // binary as its gh, through Setup. The fake must be built from inside this module, where `go
 // build` finds its package.
 func Install(ctx context.Context) (cleanup func() error, err error) {
-	dir, err := os.MkdirTemp("", "ils-fake-gh-")
-	if err != nil {
-		return nil, fmt.Errorf("make a directory for the fake gh: %w", err)
-	}
-
-	bin := filepath.Join(dir, github.Program)
-	//nolint:gosec // G204: the arguments are constants of this package and a path it made.
-	out, err := exec.CommandContext(ctx, "go", "build", "-o", bin, fakeGHPackage).CombinedOutput()
-	if err != nil {
-		return nil, errors.Join(fmt.Errorf("build the fake gh: %w\n%s", err, out), os.RemoveAll(dir))
-	}
-
-	before, hadPath := os.LookupEnv(github.PathVariable)
-	if err := os.Setenv(github.PathVariable, bin); err != nil {
-		return nil, errors.Join(fmt.Errorf("point %s at the fake gh: %w", github.PathVariable, err), os.RemoveAll(dir))
-	}
-
-	return func() error {
-		restore := os.Unsetenv(github.PathVariable)
-		if hadPath {
-			restore = os.Setenv(github.PathVariable, before)
-		}
-
-		if err := errors.Join(restore, os.RemoveAll(dir)); err != nil {
-			return fmt.Errorf("clean up the fake gh: %w", err)
-		}
-
-		return nil
-	}, nil
+	return gittest.InstallProgram(ctx, gittest.Program{
+		Name: github.Program, Package: fakeGHPackage, Variable: github.PathVariable,
+		Value: func(bin, _ string) string { return bin },
+	})
 }
 
 // hold is what the fake sends the test process before it holds its answer to Args open.

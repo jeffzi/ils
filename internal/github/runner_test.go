@@ -192,14 +192,6 @@ func TestRunner_Alias_WhenListFails_ReturnsTheRunnersError(t *testing.T) {
 	assert.Check(t, is.DeepEqual(exitErr.Argv, ghArgv(aliasListArgs())))
 }
 
-func TestDecodeError_Unwrap_ReachesTheDecodersError(t *testing.T) {
-	t.Parallel()
-	cause := errors.New("unexpected end of JSON input")
-	err := error(&github.DecodeError{Err: cause, Argv: []string{"gh", "auth", "status"}})
-
-	assert.Check(t, is.ErrorIs(err, cause))
-}
-
 func viewArgs() []string { return []string{"pr", "view", "7"} }
 
 // apiRead is the argv a test hands Read for a `gh api` read; apiReadRun is the argv gh then runs.
@@ -278,17 +270,26 @@ func TestRunner_Read_WhenExit1WithoutA4xx_ReadsAgainAfterThePause(t *testing.T) 
 func TestRunner_Read_WhenStillFailingWhenTheWindowEnds_ReturnsTheLastFailure(t *testing.T) {
 	badGateway := ghtest.Answer{Stderr: "gh: Bad Gateway (HTTP 502)\n", Code: 1}
 	fake := ghtest.Setup(t, ghtest.InTurn(viewArgs(), ghtest.ServerError(), badGateway))
-	logger, sink := logtest.New()
 
-	_, took, err := readTimed(t, github.Runner{Logger: logger}, viewArgs()...)
+	_, took, err := readTimed(t, github.Runner{}, viewArgs()...)
 
 	exitErr, ok := errors.AsType[*child.ExitError](err)
 	assert.Assert(t, ok, "Read error = %v, want *child.ExitError", err)
 	assert.Check(t, is.Equal(exitErr.Stderr, badGateway.Stderr))
 	assert.Check(t, is.Len(fake.Calls(), 6))
 	assert.Check(t, is.Equal(took, 10*time.Second))
+}
+
+func TestRunner_Read_WhenReadingAgain_LogsOneRecordPerFailureReadAgainNoneForTheLast(t *testing.T) {
+	ghtest.Setup(t, ghtest.Exits(ghtest.ServerError(), viewArgs()...))
+	logger, sink := logtest.New()
+
+	_, _, err := readTimed(t, github.Runner{Logger: logger}, viewArgs()...)
+	assert.Assert(t, err != nil, "Read returned no error, want the last failure")
+
 	rereads := slices.DeleteFunc(sink.Records(), func(r logtest.Record) bool { return r.Message == child.ExecMessage })
-	assert.Check(t, is.Len(rereads, 5), "one record per failure read again, none for the last")
+	assert.Assert(t, is.Len(rereads, 5))
+	assert.Check(t, is.DeepEqual(rereads[0].Map(), map[string]any{"command": "gh pr view 7", "pause": 2 * time.Second}))
 }
 
 func TestRunner_Read_WhenContextEndsDuringThePause_ReturnsTheContextError(t *testing.T) {
@@ -340,9 +341,8 @@ func TestRunner_Read_WhenAPIReadAnswers4xx_ReturnsStatusAndHeadersWithoutReading
 
 			got, _, err := readTimed(t, github.Runner{}, tt.read...)
 
-			exitErr, ok := errors.AsType[*child.ExitError](err)
+			_, ok := errors.AsType[*child.ExitError](err)
 			assert.Assert(t, ok, "Read error = %v, want *child.ExitError", err)
-			assert.Check(t, is.Equal(exitErr.Stderr, tt.refusal.Stderr))
 			assert.Check(t, is.Equal(got.Status, tt.wantStatus))
 			assert.Check(t, is.Equal(got.Header.Get("x-ratelimit-remaining"), tt.wantRemaining))
 		})

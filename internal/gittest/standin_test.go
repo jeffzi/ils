@@ -158,21 +158,6 @@ func TestFakeGit_WhenCallIsNotFaked_RunsTheRealGit(t *testing.T) {
 	assertRepository(t, dir)
 }
 
-// errStalled ends a call that stalled at the address of a fake it should no longer follow.
-var errStalled = errors.New("the call stalled at the address of an earlier fake")
-
-// firstFake fakes a version, a failing, a stalling and an answered call, stalling at addr.
-func firstFake(addr string) gittest.Fake {
-	return gittest.Fake{
-		Version:  "git version 0.0.1",
-		FailOn:   []string{"show-ref"},
-		StallOn:  []string{"rev-parse"},
-		StallAt:  addr,
-		AnswerOn: []string{"rev-list"},
-		Answer:   "not counts",
-	}
-}
-
 func TestFakeGit_WhenInstalledAgain_StopsFakingWhatOnlyTheFirstCallFaked(t *testing.T) {
 	// The calls inherit this process's environment, which FakeGit's own settings are read from, so
 	// that environment is cut off from the developer's git setup first.
@@ -188,21 +173,6 @@ func TestFakeGit_WhenInstalledAgain_StopsFakingWhatOnlyTheFirstCallFaked(t *test
 	gittest.FakeGit(t, gittest.Fake{})
 
 	got := callGit(t, nil, dir, "--version")
-
-	assert.Check(t, is.DeepEqual(got, want))
-}
-
-func TestFakeGit_WhenInstalledAgain_ReturnsSettingsThatOverrideTheFirstCalls(t *testing.T) {
-	base := gittest.Env(t)
-	dir := initRepo(t, base)
-	want := callGit(t, base, dir, "show-ref")
-	addr, connected := gittest.SilentListener(t)
-	first := gittest.FakeGit(t, firstFake(addr))
-	second := gittest.FakeGit(t, gittest.Fake{})
-	env := slices.Concat(base, first, second)
-	ctx := gittest.Ending(t.Context(), connected, errStalled)
-
-	got := ranGit(t, gitCommand(ctx, env, dir, "show-ref"))
 
 	assert.Check(t, is.DeepEqual(got, want))
 }
@@ -301,6 +271,22 @@ func TestInstallFakeGit_WhenCleanedUp_PutsPathBack(t *testing.T) {
 	assert.NilError(t, cleanup())
 
 	assert.Check(t, is.Equal(os.Getenv("PATH"), before))
+}
+
+func TestInstallProgram_WhenTheVariableWasUnset_LeavesItUnsetAfterTheCleanup(t *testing.T) {
+	const variable = "ILS_GITTEST_INSTALLED"
+	t.Setenv(variable, "")
+	assert.NilError(t, os.Unsetenv(variable))
+	cleanup, err := gittest.InstallProgram(t.Context(), gittest.Program{
+		Name: "git", Package: "github.com/jeffzi/ils/internal/gittest/git", Variable: variable,
+		Value: func(bin, _ string) string { return bin },
+	})
+	assert.NilError(t, err)
+
+	assert.NilError(t, cleanup())
+
+	_, set := os.LookupEnv(variable)
+	assert.Check(t, !set, "%s is set after the cleanup, want it unset as before the install", variable)
 }
 
 func TestLinkAs(t *testing.T) {

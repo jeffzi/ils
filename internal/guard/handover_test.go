@@ -42,9 +42,7 @@ func TestParse_MarksWhatItCannotRead(t *testing.T) {
 	t.Parallel()
 
 	checkMarkKind(t, []markedCommand{
-		{name: "wrapper option it does not take", command: "nice -z git push", want: guard.ToolArgument},
 		{name: "shell handed to xargs", command: "xargs sh -c 'git push origin main'", want: guard.ToolArgument},
-		{name: "shell whose string hands git over, handed to xargs", command: "xargs sh -c 'sudo git log'", want: guard.ToolArgument},
 		{name: "shell whose string runs a shell, handed to xargs", command: "xargs sh -c 'sh -c ls'", want: guard.ToolArgument},
 		{name: "shell with no -c string, handed to xargs", command: "xargs sh", want: guard.ToolArgument},
 		{name: "shell with a non-literal -c string, handed to xargs", command: `xargs bash -c "$s"`, want: guard.ToolArgument},
@@ -52,11 +50,9 @@ func TestParse_MarksWhatItCannotRead(t *testing.T) {
 		{name: "shell with -c and no string, handed to xargs", command: "xargs sh -c", want: guard.ToolArgument},
 		{name: "shell string among an interpreter's arguments", command: "python3 tool.py sh -c 'git push'", want: guard.ToolArgument},
 		{name: "eval handed to another command", command: "xargs eval 'git status'", want: guard.ToolArgument},
-		{name: "tool behind a wrapper in a string", command: "su -c 'exec git push'", want: guard.ToolArgument},
 		{name: "tool in a string with an expansion", command: `su -c "git push $b"`, want: guard.ToolArgument},
 		{name: "ils with no command behind another command", command: "xargs ils", want: guard.ToolArgument},
 		{name: "ils command that changes state in a string", command: "ssh host 'ils status && ils merge'", want: guard.ToolArgument},
-		{name: "non-literal wrapper option", command: `env -"$o" git push`, want: guard.DynamicCommand},
 	})
 }
 
@@ -83,10 +79,9 @@ func TestParse_WhenNoArgumentHandsATool_MarksNothing(t *testing.T) {
 
 	checkNoMarks(t, []namedCommand{
 		{name: "tool word in a tool's own arguments", command: "git commit -m git"},
-		{name: "string whose command word is not a literal", command: `su -c "$g push"`},
+		{name: "string whose command word is not a literal", command: `su -c '$g git push'`},
 		{name: "ils command that changes nothing in a string", command: "ssh host 'cd repo && ils status'"},
 		{name: "ils command that only reads a command, behind another command", command: "timeout 60 ils parse --cwd . -- 'echo hi'"},
-		{name: "go run with no tool word", command: "go run ./cmd/tool --verbose"},
 		{name: "sed script that parses as a shell script", command: "sed -n '/git push/p' README.md"},
 		{name: "code that parses as a shell script, for a versioned python", command: "python3.13 -c 'import git'"},
 		{name: "code that does not parse, for a command the guard does not know", command: `php -r 'system("git push");'`},

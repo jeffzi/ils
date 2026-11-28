@@ -74,7 +74,7 @@ func pushChecks(ctx context.Context, s *survey, req Request, ready Ready) (pushR
 
 	p := pushReady{onBranch: on}
 
-	p.tip, p.past, stop = commitsPast(ctx, s, req, p.onBranch)
+	p.tip, p.past, _, stop = commitsPast(ctx, s, req, p.onBranch)
 	if stop != nil {
 		return pushReady{}, stop
 	}

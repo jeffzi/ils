@@ -21,7 +21,6 @@ import (
 	"github.com/jeffzi/ils/internal/forge"
 	"github.com/jeffzi/ils/internal/forge/forgetest"
 	"github.com/jeffzi/ils/internal/gittest"
-	"github.com/jeffzi/ils/internal/landing"
 	"github.com/jeffzi/ils/internal/result"
 )
 
@@ -108,6 +107,17 @@ func finishedResumes() []finishedResume {
 				f.Git("reset", "--quiet", "--hard", "HEAD~1")
 
 				return head
+			},
+			text: resumedLine() + deletedLine() + onTrunkLine(), ending: result.EndingTrunk,
+			calls: deleted(),
+		},
+		{
+			// The merge commit puts the tip on origin's trunk, so the branch has no commit past it.
+			name: "merged on the web with a merge commit", script: resuming().deleting(nil),
+			arrange: func(f *gittest.Fixture) string {
+				mergeOnWebAndPublish(f)
+
+				return ""
 			},
 			text: resumedLine() + deletedLine() + onTrunkLine(), ending: result.EndingTrunk,
 			calls: deleted(),
@@ -213,6 +223,10 @@ func resumeStops() []landingRow {
 			setting{arrange: landAndPublish, runCtx: interruptAfterAskingForTheBranch}, interruptedResumeText()),
 		stop("an interrupt lands once origin was asked for the branch it no longer lists",
 			setting{arrange: gone, runCtx: interruptAfterAskingForTheBranch}, interruptedResumeText()),
+		stop("fewer than 20 seconds are left after a merge with a merge commit",
+			setting{arrange: mergeOnWebAndPublish, left: short}, late),
+		stop("an interrupt lands once origin was asked for the branch merged with a merge commit",
+			setting{arrange: mergeOnWebAndPublish, runCtx: interruptAfterAskingForTheBranch}, interruptedResumeText()),
 	}
 }
 
@@ -304,34 +318,39 @@ func TestMerge_WhenTheResumeCannotAskOriginForTheBranch_BrokeNamingTheRead(t *te
 
 func TestMerge_WhenOriginsBranchHoldsCommitsTheMergedHeadLacks_RefusesListingThem(t *testing.T) {
 	t.Parallel()
-	synctest.Test(t, func(t *testing.T) {
-		var pushed string
+	tests := []struct {
+		publish func(*gittest.Fixture)
+		name    string
+	}{
+		{name: "squash merge", publish: landAndPublish},
+		{name: "merge commit", publish: mergeOnWebAndPublish},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				var pushed string
 
-		run := runMergeOn(t, setting{
-			arrange: func(f *gittest.Fixture) {
-				landAndPublish(f)
-				pushed = f.AdvanceOrigin(topic)
-			},
-			script: resuming(),
+				run := runMergeOn(t, setting{
+					arrange: func(f *gittest.Fixture) {
+						tt.publish(f)
+						pushed = f.AdvanceOrigin(topic)
+					},
+					script: resuming(),
+				})
+
+				assertStoppedBy(t, run.got, result.Refused, mergeRequest())
+
+				text, reason := shown(t, run.got, run.gitDir)
+				assertSays(t, text, expect(shortSHA(pushed), "origin change on "+topic))
+				assertSays(t, reason, expect(topic))
+				assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(run.tip, ""), cmpopts.EquateEmpty()))
+				assert.Check(t, sameOps(run.forge.Calls(), changesRead()))
+				assert.Check(t, is.Equal(run.written(), run.before))
+			})
 		})
-
-		assertStoppedBy(t, run.got, result.Refused, mergeRequest())
-
-		text, reason := shown(t, run.got, run.gitDir)
-		assertSays(t, text, expect(shortSHA(pushed), "origin change on "+topic))
-		assertSays(t, reason, expect(topic))
-		assert.Check(t, is.DeepEqual(mergePayload(t, run.got), resumed(run.tip, ""), cmpopts.EquateEmpty()))
-		assert.Check(t, sameOps(run.forge.Calls(), changesRead()))
-		assert.Check(t, is.Equal(run.written(), run.before))
-	})
+	}
 }
-
-// readBranchOnOrigin is the read of the commits origin's copy of the branch holds.
-const (
-	readBranchOnOrigin = "origin's copy of the branch"
-
-	refusedMerge = "HTTP 405: Head branch was modified"
-)
 
 func TestMerge_WhenTheResumeCannotReadOriginsBranch_BrokeNamingTheRead(t *testing.T) {
 	t.Parallel()
@@ -350,147 +369,138 @@ func TestMerge_WhenTheResumeCannotReadOriginsBranch_BrokeNamingTheRead(t *testin
 		},
 	})
 
-	assertResumeUnread(t, run, readBranchOnOrigin)
+	assertResumeUnread(t, run, readCopy)
 	assert.Check(t, sameOps(run.forge.Calls(), changesRead()))
 	assert.Check(t, is.Equal(run.written(), run.before))
-}
-
-// sent returns the payload of a green run on a clean pull request 12 that sent its merge with a
-// body of body, made the merge when merged says so, and ended the checkout at ending.
-func sent(body string, merged bool, ending result.Ending) *result.Merge {
-	payload := composed(squashSubject, body)
-	payload.Merged = merged
-	payload.Ending = ending
-
-	return payload
-}
-
-// toLand is a forge on which pull request 12 is green and clean at the tip, its message is titled
-// worded with the body landedBody, and its landing and branch delete answer as land and remove do.
-func toLand(land, remove error) forgeFor {
-	return waiting(passing()).saying(titledAfter(landedBody)).landing(land, remove)
-}
-
-// writeStops are the runs of `ils merge` whose merge, or whose delete of the branch on origin,
-// does not go as asked.
-func writeStops() []landingRow {
-	failed := errors.New(forgeFailure)
-	lead := countLine()
-	row := func(name string, script forgeFor, outcome result.Outcome, text string) landingRow {
-		return landingRow{
-			name: name, set: setting{script: script}, outcome: outcome, text: lead + text,
-			payload: sent(landedBody, true, ""),
-		}
-	}
-	refused := row("the merge fails", toLand(errors.New(refusedMerge), nil), result.Broke,
-		expect("did not report the merge", "#12", refusedMerge))
-	refused.payload, refused.kept = sent(landedBody, false, ""), true
-	refused.told = toldAfterWait(mergingStep())
-	cutRows := make([]landingRow, 0, len(cuts()))
-	for _, c := range cuts() {
-		ended := row(c.name+" ends the merge", toLand(c.of("gh pr merge"), nil),
-			result.Broke, expect("merge", "#12", c.ends, "may or may not have gone through", c.ends, "during the merge")+
-				mergeCommand().again)
-		ended.payload, ended.kept = sent(landedBody, false, ""), true
-		cutRows = append(cutRows, ended)
-	}
-
-	gone := row("the delete fails and origin no longer lists the branch", toLand(nil, failed), result.Done,
-		mergedLine()+goneLine()+onTrunkLine())
-	gone.payload = sent(landedBody, true, result.EndingTrunk)
-	listed := row("the delete fails and origin still lists the branch", toLand(nil, failed), result.Broke,
-		mergedLine()+expect("Could not delete", topic, "still there", forgeFailure)+expect("still on origin")+mergeCommand().again)
-	listed.set.arrange = func(f *gittest.Fixture) { f.Publish(topic) }
-	// The question fails with git's own message, which the text holds on one line before the reason line.
-	unasked := row("the delete fails and origin cannot be asked", toLand(nil, failed), result.Broke,
-		mergedLine()+expect("Could not delete", topic, forgeFailure, readStillOnOrigin))
-	unasked.set.landed = moveOrigin
-	interrupted := row("an interrupt ends the delete", toLand(nil, byInterrupt().of("gh")), result.Broke,
-		mergedLine()+expect("delete", topic, "interrupted", "may or may not have gone through", "interrupted",
-			"deleting the branch")+mergeCommand().again)
-	interrupted.set.runCtx = byInterrupt().endOnStart(deletingStep())
-	limit := byTimeLimit()
-	ranOut := row("the time limit ends the delete", toLand(nil, limit.of("gh")), result.Broke,
-		mergedLine()+expect("delete", topic, limit.before, "may or may not have gone through", limit.before,
-			"deleting the branch")+mergeCommand().again)
-	ranOut.set.runCtx = limit.endOnStart(deletingStep())
-
-	return slices.Concat([]landingRow{refused}, cutRows, []landingRow{gone, listed, unasked, interrupted, ranOut})
-}
-
-// stepHook is a progress hook that tells next everything it is told, and calls fire once the run
-// starts the step whose start reads step as the watch tells it.
-type stepHook struct {
-	landing.Progress
-
-	t    *testing.T
-	fire func()
-	step string
-}
-
-// Started tells the step to next, then calls fire when it is the step of the hook.
-func (h stepHook) Started(label result.Phrase) {
-	h.Progress.Started(label)
-
-	if holds("start "+plainText(h.t, label), h.step) {
-		h.fire()
-	}
-}
-
-// endOnStart returns the context of a run that c ends once the run starts the step whose start
-// reads step as the watch tells it.
-func (c cut) endOnStart(step string) func(t *testing.T, s *scene) context.Context {
-	return func(t *testing.T, s *scene) context.Context {
-		t.Helper()
-
-		done := make(chan struct{})
-		s.deps.Progress = stepHook{Progress: s.deps.Progress, t: t, step: step, fire: sync.OnceFunc(func() { close(done) })}
-
-		return c.once(t.Context(), done)
-	}
-}
-
-// interruptedWrites are the runs of `ils merge` that an interrupt reaches as the first write
-// starts, and which end as the time limit ends them when it leaves too little time for that write.
-func interruptedWrites() []landingRow {
-	return []landingRow{
-		{
-			name: "the merge", outcome: result.Pending, kept: true,
-			set: setting{script: toLand(nil, nil), runCtx: byInterrupt().endOnStart(mergingStep())},
-			text: countLine() + expect("interrupted before the merge", "interrupted before the merge") +
-				nextPush(),
-			payload: sent(landedBody, false, ""),
-		},
-	}
-}
-
-func TestMerge_WhenAnInterruptLandsAsTheFirstWriteStarts_EndsPendingWithNothingWritten(t *testing.T) {
-	t.Parallel()
-
-	runLandings(t, interruptedWrites())
-}
-
-// stallingGit returns a context that c ends once the scene's git call whose arguments start with
-// words is under way, a call that waits until the end kills it.
-func (c cut) stallingGit(words []string) func(t *testing.T, s *scene) context.Context {
-	return func(t *testing.T, s *scene) context.Context {
-		t.Helper()
-
-		addr, connected := gittest.SilentListener(t)
-		fakeGit(s, gittest.Fake{StallOn: words, StallAt: addr})
-
-		return c.once(t.Context(), connected)
-	}
-}
-
-func TestMerge_WhenAWriteOnGitHubFails_SaysWhatWentThrough(t *testing.T) {
-	t.Parallel()
-
-	runLandings(t, writeStops())
 }
 
 // landAndPublish lands the topic branch as pull request 7 and publishes it.
 func landAndPublish(f *gittest.Fixture) {
 	f.LandPull(merged, topic)
 	f.Publish(topic)
+}
+
+// mergeOnWeb keeps the commit rev names as the head of pull request 7 and merges it into origin's
+// trunk with a merge commit, as GitHub's web merge button does. The working repository does not
+// fetch it, and the trunk must not have moved since the branch was cut.
+func mergeOnWeb(f *gittest.Fixture, rev string) {
+	head := f.Git("rev-parse", rev)
+	f.PullRef(merged, head)
+
+	trunkRef := "refs/heads/" + trunk
+	parent := f.OriginGit("rev-parse", "--verify", trunkRef)
+	commit := f.OriginGit("commit-tree", head+"^{tree}", "-p", parent, "-p", head,
+		"-m", "Merge pull request #"+strconv.Itoa(merged)+" from "+owner+"/"+topic)
+	f.OriginGit("update-ref", trunkRef, commit, parent)
+}
+
+// mergeOnWebAndPublish merges the topic branch's tip as pull request 7 with a merge commit and
+// publishes the branch.
+func mergeOnWebAndPublish(f *gittest.Fixture) {
+	mergeOnWeb(f, topic)
+	f.Publish(topic)
+}
+
+func TestMerge_WhenThePullRequestIsMergedWithAMergeCommitAtAnotherHead_RefusesAsNothingPastTheTrunk(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		run := runMergeOn(t, setting{
+			arrange: func(f *gittest.Fixture) {
+				head := f.Commits(topic, "Apply suggestions from code review")[0]
+				mergeOnWeb(f, head)
+				f.Git("reset", "--quiet", "--hard", "HEAD~1")
+			},
+			script: resuming(),
+		})
+
+		assertEndedBy(t, run.got, run.gitDir, ended{text: nothingPastMerge(topic), req: mergeRequest(), outcome: result.Refused})
+		assert.Check(t, sameOps(run.forge.Calls(), changesRead()))
+		assert.Check(t, is.Equal(run.written(), run.before))
+	})
+}
+
+func TestMerge_WhenThePullRequestsOfABranchMergedWithAMergeCommitCannotBeRead_BrokeNamingTheRead(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		failing := resuming().with(func(script *forgetest.Script, _ string) {
+			script.FindChanges = []forgetest.Answer[[]forge.Change]{{Err: errors.New(forgeFailure)}}
+		})
+
+		run := runMergeOn(t, setting{arrange: mergeOnWebAndPublish, script: failing})
+
+		assertBrokeReadBy(t, run.got, mergeCommand(), readChanges)
+		assert.Check(t, is.Nil(mergePayload(t, run.got)))
+		assert.Check(t, sameOps(run.forge.Calls(), changesRead()))
+		assert.Check(t, is.Equal(run.written(), run.before))
+	})
+}
+
+// cutOnFind returns a run context that c ends once the forge is asked for the branch's pull
+// requests, which the forge of build holds until then.
+func cutOnFind(c cut, build forgeFor) (forgeFor, func(t *testing.T, s *scene) context.Context) {
+	done := make(chan struct{})
+	asked := sync.OnceFunc(func() { close(done) })
+	held := build.with(func(script *forgetest.Script, _ string) {
+		script.FindChanges = []forgetest.Answer[[]forge.Change]{{Hold: true}}
+		script.OnRead = func(call forgetest.Call) {
+			if call.Op == forgetest.OpFindChanges {
+				asked()
+			}
+		}
+	})
+
+	return held, func(t *testing.T, _ *scene) context.Context {
+		t.Helper()
+
+		return c.once(t.Context(), done)
+	}
+}
+
+func TestMerge_WhenAReadOfABranchMergedWithAMergeCommitIsCutShort_RefusesNamingTheRead(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range cuts() {
+		t.Run(c.name+" ends the read of the pull requests", func(t *testing.T) {
+			t.Parallel()
+			script, runCtx := cutOnFind(c, resuming())
+
+			run := runMergeOn(t, setting{arrange: mergeOnWebAndPublish, script: script, runCtx: runCtx})
+
+			assertEndedBy(t, run.got, run.gitDir,
+				ended{text: overtimeText(mergeCommand(), c, readChanges), req: mergeRequest(), outcome: result.Refused})
+			assert.Check(t, is.Equal(run.written(), run.before))
+		})
+		t.Run(c.name+" ends the fetch of the merged head", func(t *testing.T) {
+			t.Parallel()
+
+			// Origin answers about its trunk and the fetch of it, and the fetch of the merged head
+			// reaches a server that never answers.
+			run := runMergeOn(t, setting{arrange: mergeOnWebAndPublish, script: resuming(), runCtx: c.stalling(2)})
+
+			assertEndedBy(t, run.got, run.gitDir,
+				ended{text: overtimeText(mergeCommand(), c, readMergedHead), req: mergeRequest(), outcome: result.Refused})
+			assert.Check(t, sameOps(run.forge.Calls(), changesRead()))
+			assert.Check(t, is.Equal(run.written(), run.before))
+		})
+	}
+}
+
+func TestMerge_WhenOriginStopsAnsweringTheFetchOfTheHeadOfAPullRequestMergedWithAMergeCommit_RefusesNamingIt(t *testing.T) {
+	t.Parallel()
+
+	run := runMergeOn(t, setting{
+		arrange: mergeOnWebAndPublish, script: resuming(), unbounded: true,
+		rewire: func(t *testing.T, s *scene) {
+			t.Helper()
+			// Origin answers about its trunk and the fetch of it, and not the fetch of the merged head.
+			s.stopAnswering(t, 2)
+		},
+	})
+
+	assertEndedBy(t, run.got, run.gitDir, ended{
+		text: expect("could not be reached", "#"+strconv.Itoa(merged)) + mergeCommand().again,
+		req:  mergeRequest(), outcome: result.Refused,
+	})
+	assert.Check(t, sameOps(run.forge.Calls(), changesRead()))
+	assert.Check(t, is.Equal(run.written(), run.before))
 }

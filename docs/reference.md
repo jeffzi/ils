@@ -5,9 +5,6 @@ codes, time limits, stopping a run, every refusal, the JavaScript Object Notatio
 guard, and the terminal output. The [README](../README.md) says why `ils` exists, how to install and
 set it up, and what each command is for. CI stands for continuous integration throughout.
 
-[Exit codes](#exit-codes) defines the outcome words (done, broke, refused, ask, pending, and
-delivered, not green) and the `Next:` line, which the sections before it already use.
-
 - [Commands](#commands)
   - [Flags](#flags)
   - [ils branch](#ils-branch)
@@ -38,7 +35,6 @@ delivered, not green) and the `Next:` line, which the sections before it already
   - [What status refuses](#what-status-refuses)
   - [What release refuses](#what-release-refuses)
   - [What init refuses](#what-init-refuses)
-  - [What guard, parse, and hook refuse](#what-guard-parse-and-hook-refuse)
 - [JSON output](#json-output)
   - [Push JSON output](#push-json-output)
   - [Merge JSON output](#merge-json-output)
@@ -92,9 +88,9 @@ Run `ils branch <name>` before you start new work. It:
 The new branch starts at origin's default branch whatever you stand on. Another work branch's
 commits never ride along into the new pull request, and a stale local default branch never holds
 it back. When the local default branch has commits origin's default branch lacks, `ils branch`
-refuses and lists them, and `Next:` names the fix described under
-[A local default branch ahead of origin's](#a-local-default-branch-ahead-of-origins). `ils branch`
-needs `git` alone: it runs without `gh`, and with an `origin` that is not on GitHub.
+refuses, as [A local default branch ahead of origin's](#a-local-default-branch-ahead-of-origins)
+describes. `ils branch` needs `git` alone: it runs without `gh`, and with an `origin` that is not
+on GitHub.
 
 `ils branch --json` prints the [JSON object](#json-output) every command prints, with no payload.
 
@@ -113,25 +109,14 @@ git switch -c fix-help --no-track origin/main
 #### A local default branch ahead of origin's
 
 `ils branch`, `ils push`, and `ils merge` refuse while the local default branch holds commits that
-origin's lacks, whether or not it is also behind origin's, and list those commits. `ils status`
-ends on the same step. A branch cut beside those commits would carry work no pull request lands,
-so `ils` stops until they are on a branch of their own. It never moves them itself: `Next:` names
-one command for you to run, which keeps them on a new branch and puts the local default branch back
-at origin's. A leading `!` means you run the command yourself from Claude Code's prompt, which
-skips the guard's hook. `<name>` is the new branch's name, for you to choose, and `main` stands for
-the default branch:
+origin's lacks, whether or not it is also behind origin's. `ils status` ends on the same step.
+`ils` stops until those commits are on a branch of their own, and never moves them itself:
+`Next:` names one command for you to run, which keeps them on a new branch and puts the local
+default branch back at origin's. A leading `!` there means you run the command yourself from
+Claude Code's prompt, which skips the guard's hook.
 
-| The local default branch is checked out | `Next:`                                                                                                        |
-| --------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| Here                                    | `! git switch -c <name> && git branch -f main origin/main`, then `ils push`                                    |
-| In another worktree                     | In the worktree at `<path>`, `! git switch -c <name> && git branch -f main origin/main`, then `ils push` there |
-| Nowhere                                 | `! git branch <name> main && git branch -f main origin/main`, then the command again                           |
-
-The command again is the one that refused: `ils branch <name>`, `ils push`, or `ils merge`.
-In the Nowhere row, `ils status` on a work branch names `ils merge` as the command again when the
-pull request is green and mergeable, and `ils push` otherwise. On a detached HEAD it names
-`ils branch <name>`. A read of the local default branch that fails other
-than by the time limit or an interrupt ends each of these commands broke, naming the read.
+A read of the local default branch that fails other than by the time limit or an interrupt ends
+each of these commands [broke](#exit-codes).
 
 ### ils push
 
@@ -139,8 +124,7 @@ Run `ils push` on a work branch with everything committed. It:
 
 1. checks every precondition before it pushes or opens anything, and refuses with a reason when
    one does not hold;
-2. pushes the branch by name, never with a force flag, with a Secure Shell (SSH) keep-alive when
-   it applies (see below);
+2. pushes the branch by name, never with a force flag;
 3. opens a pull request against origin's default branch when the branch has none, titled with the
    branch name and with an empty body;
 4. waits for the checks of the pushed commit until you stop it or its [time limit](#time-limits)
@@ -149,30 +133,15 @@ Run `ils push` on a work branch with everything committed. It:
 Run it again at any time: on a commit that is already pushed it pushes nothing and reports the
 verdict again.
 
-Git connects to origin before it runs your pre-push hook, and the connection sits idle while the
-hook runs. GitHub closes an SSH connection that has been idle for 6 minutes, so a slow hook would
-end the push. When origin is reached over SSH, `ils push` (and the tag push of `ils release`)
-therefore runs git with `-c core.sshCommand="ssh -o ServerAliveInterval=60"`, which makes ssh send
-a keep-alive every minute. It adds nothing when:
-
-- you set an ssh command of your own, in `GIT_SSH_COMMAND`, `core.sshCommand`, or `GIT_SSH`;
-- your ssh config sets a non-zero `ServerAliveInterval` for the host of one of origin's SSH push
-  Uniform Resource Locators (URLs);
-- `ils` cannot read your ssh command, one of origin's push URLs, or run `ssh -G` on the host, or
-  `ssh -G` prints no `ServerAliveInterval` setting; the push then runs as git would run it.
-
-With an ssh command of your own, set the keep-alive in your ssh config, as
-[A slow pre-push hook](../README.md#a-slow-pre-push-hook) shows.
-
-`ils push` and the tag push of `ils release` run git with `LC_ALL=C`, so that `ils` can read git's
-errors whatever language your environment selects. Your pre-push hook inherits it: it runs in the C
-locale too.
+Over Secure Shell (SSH), `ils push` and the tag push of `ils release` add a keep-alive to the
+push, so that a slow pre-push hook does not lose the connection.
+[A slow pre-push hook](../README.md#a-slow-pre-push-hook) says when they add it, and when you set
+it yourself. Both run git with `LC_ALL=C`, so your pre-push hook runs in the C locale too.
 
 When another commit reaches the pull request while `ils push` waits, the checks GitHub reports are
 no longer those of the pushed commit. `ils push` then prints no verdict and ends
-[refused](#exit-codes), naming the pull request's new head. `Next:` says to pull the new commit,
-then run `ils push` again, or `ils push --wait=false` if you gave `--wait=false`. The push itself
-already happened.
+[refused](#exit-codes), naming the pull request's new head. The push itself already happened: pull
+the new commit, then run `ils push` again.
 
 [What push refuses](#what-push-refuses) lists every refusal, and
 [Push JSON output](#push-json-output) describes `ils push --json`.
@@ -186,16 +155,9 @@ title must be a conventional commit subject, such as `fix(cli): reject an empty 
 gh pr edit --repo <host>/<owner>/<name> <N> --title "<title>" --body "<body>"
 ```
 
-Then run `ils merge`. `ils push` prints the `gh pr edit` command on its `Next:` line with the
-repository and number filled in; the title and body stay placeholders for you to write.
-
-When the pull request's merge state stands in the way, `Next:` names that step instead:
-
-- **Needs a review:** request a review first, then write the title and body and run `ils merge`.
-- **Draft:** mark it ready with `gh pr ready --repo <host>/<owner>/<name> <N>`, then write the
-  title and body and run `ils merge`.
-- **A required check never reported on the head:** report that, and stop.
-- **Blocked by GitHub for another reason:** report that GitHub blocks the merge, and stop.
+Then run `ils merge`. When the pull request is a draft, needs a review, or is blocked,
+[ils merge refuses it](#what-merge-refuses), and the `Next:` line of `ils push` names the step to
+take first.
 
 To merge a pull request whose checks are red anyway, see [Merge by hand](#merge-by-hand).
 
@@ -226,29 +188,24 @@ Run `ils merge` on the branch whose pull request you want to land. It:
 
 `ils merge` never pushes and has no `--force`. It refuses a commit that is not on the pull request
 yet: push it with `ils push` first. When the checks are still running, or fewer than 20
-seconds are left for the merge, `ils merge` ends pending with nothing written, and `Next:` says to
-run `ils push`, which waits for the checks and then names `ils merge` again. When GitHub reports
-that a check the default branch requires still runs, `ils merge` also ends pending with nothing
-written, and `Next:` names `ils merge`. A pending `ils merge` that GitHub already merged, stopped
-by the time limit or an interrupt before it finished, names `ils merge` too.
+seconds are left for the merge, `ils merge` ends [pending](#exit-codes) with nothing written.
 
 [What merge refuses](#what-merge-refuses) lists every refusal, and
 [Merge JSON output](#merge-json-output) describes `ils merge --json`.
 
 #### How merge ends
 
-After the merge, `ils merge` deletes the branch on origin. It then switches to the default branch,
-deletes the local branch, and fast-forwards the default branch to origin's tip: a fetch, then
-`git merge --ff-only`.
+Three cases end otherwise than step 4 of [ils merge](#ils-merge).
 
 When the default branch is checked out in another worktree, `ils merge` leaves that worktree
-alone. It detaches the current worktree at origin's default branch instead, deletes the local
-branch, and says that the other worktree updates on its next `git pull --ff-only`.
+alone. It detaches the current worktree at origin's default branch instead, and deletes the local
+branch.
 
-When a step of that local ending fails, the output lists the steps that ran, the one that failed
-with git's message, and the steps not run. `Next:` gives what is left to run. When the delete on
-origin fails and origin still lists the branch, the output says the merge went through and the
-branch is still on origin, and `Next:` is `ils merge`.
+`ils merge` deletes the local branch only while it still points at the commit it merged. When a
+commit landed on the branch during the wait, it keeps the branch and ends broke.
+
+When a step after the merge fails, the delete on origin included, `ils merge` ends broke with the
+pull request merged, and `Next:` gives what is left to run.
 
 #### A merge made elsewhere
 
@@ -256,8 +213,10 @@ When the branch's pull request is already merged into the default branch, on the
 of `ils merge` that was cut short, `ils merge` merges nothing and reads no check. It deletes the
 branch on origin if it is still there, then ends as [How merge ends](#how-merge-ends) describes.
 This also covers a pull request that got an "Update branch" or a committed suggestion on the web
-before its merge. When the branch has commits the merge did not carry, `ils merge` refuses and
-lists them, and `Next:` says to start a new branch and cherry-pick them.
+before its merge. It covers one merged on the web with a merge commit too, which leaves the branch
+with no commit past the default branch. `ils merge` resumes it when the merged pull request's head
+is the branch's tip. When the branch has commits the merge did not carry, `ils merge` refuses and
+deletes nothing.
 
 #### Merge by hand
 
@@ -272,7 +231,7 @@ gh pr merge --repo <host>/<owner>/<name> <N> --squash --delete-branch \
 
 Run `ils status` to learn where the checkout stands before you act. It exits 0 once its words
 parse: what it could not read is a line of its output, not a refusal. The one exception is a failed
-read of the local default branch, which ends it broke as
+read of the local default branch, which ends it [broke](#exit-codes) as
 [A local default branch ahead of origin's](#a-local-default-branch-ahead-of-origins) says. It
 fetches what it reads from origin (the default branch, the branch's copy, a merged pull request's
 head, a version tag) and writes nothing of yours. When origin cannot be reached, it counts against
@@ -288,14 +247,11 @@ What it reports depends on where HEAD stands:
   is a release commit, and whether rules protect the branch.
 - **On a detached HEAD:** the commits origin lacks.
 
-`Next:` is the step the command you would run next ends on, taken from that command's own checks
-run over what the status read. On a work branch it is the step `ils push` would end on. On the
-default branch and on a detached HEAD it is the step `ils branch <name>` would end on. A read that
-fails ends on the fix of what failed, then `ils status`.
+`Next:` is the step the command you would run next would end on, taken from that command's own
+checks run over what the status read: `ils push` on a work branch, and `ils branch <name>` on the
+default branch and on a detached HEAD.
 
-With `gh` missing or logged out, it says so, names the fix, and still reports what `git` alone can
-tell. Off a work branch, neither `gh` nor origin's URLs change `Next:`: `ils branch` needs `git`
-alone.
+With `gh` missing or logged out, it says so and still reports what `git` alone can tell.
 
 [Status JSON output](#status-json-output) describes `ils status --json`.
 
@@ -315,19 +271,16 @@ leading `v`, and may carry a pre-release part, such as `1.2.0-rc.1`. It:
 4. waits for the checks of the release commit, as `ils merge` does, until you stop it or it
    reaches its [time limit](#time-limits). It counts the runs a push started on the release
    commit. It leaves out the runs that judge something else: a run another workflow started
-   (`workflow_run`), a scheduled or manual run, and a Dependabot run. GitHub files a `workflow_run`
-   run under the default branch's tip whatever started it, pull request CI included;
+   (`workflow_run`), a scheduled or manual run, and a Dependabot run;
 5. tags the release commit `v<X.Y.Z>` with an annotated tag and pushes the tag to origin;
 6. creates the GitHub release of the tag, titled with the tag and with the notes as its body, and
    marked as a pre-release when the version has a pre-release part.
 
-`--force` skips the wait for the checks: the output says the CI gate was skipped and nothing
-verified the commit. Every other refusal still holds. `--tag-only` ends once the tag is on origin,
-and creates no GitHub release.
+[Flags](#flags) describes `--force` and `--tag-only`.
 
 When the checks are still running, or fewer than 20 seconds are left for the writes, `ils release`
-ends pending with nothing written, and `Next:` is the same command, flags included. A repository
-with no CI on its default branch goes on, and a line says nothing verified the commit.
+ends [pending](#exit-codes) with nothing written. A repository with no CI on its default branch
+goes on, and a line says nothing verified the commit.
 
 [What release refuses](#what-release-refuses) lists every refusal, and
 [Release JSON output](#release-json-output) describes `ils release --json`.
@@ -340,12 +293,12 @@ Each step first looks at what is already there, so a run that broke resumes wher
 - a local tag `v<X.Y.Z>` already at the release commit is kept, not made again;
 - a tag `v<X.Y.Z>` already on origin at the release commit means the release was tagged before: the
   run reads no check and pushes nothing, and goes on to the GitHub release;
-- a GitHub release that already exists for the tag is left as it is, and its URL is reported.
+- a GitHub release that already exists for the tag is left as it is, and its web address (URL) is
+  reported.
 
-When origin refuses the tag push, `ils release` ends broke: the tag was made locally, and the
-output gives what `git` and the hooks printed. When the GitHub release cannot be created, it ends
-broke with the tag already on origin. Either way, `Next:` says to run the same command again, after
-the fix when there is one.
+When origin refuses the tag push, `ils release` ends broke with the tag made locally. When the
+GitHub release cannot be created, it ends broke with the tag already on origin. Either way, the
+same command resumes, after the fix when there is one.
 
 #### Release by hand
 
@@ -372,98 +325,50 @@ gh release create v1.2.0 --repo <host>/<owner>/<name> --verify-tag --title v1.2.
 
 Run `ils init claude` once to set up Claude Code for `ils`, and again after you upgrade `ils`.
 `claude` is the one harness (the program that runs the agent's tool calls) it knows. It writes
-under the Claude Code directory, `~/.claude/`, with the home directory read from `HOME`. When
-`CLAUDE_CONFIG_DIR` is set and not empty, the Claude Code directory is that directory instead, as
-Claude Code itself reads it. It runs these steps:
+under the Claude Code directory: `~/.claude/`, or the directory `CLAUDE_CONFIG_DIR` names when it
+is set and not empty, as Claude Code itself reads it. With `--project`, it writes `.claude/` at the
+top level of the repository the working directory is in, whatever `CLAUDE_CONFIG_DIR` holds. It:
 
-1. It reads `settings.json` and checks its shape. It refuses these shapes, and writes nothing:
+1. reads `settings.json` and refuses a shape it does not recognize, before it writes anything: a
+   file that is not JSON, or not a JSON object, a member name held twice in one object, a string
+   escape that names no character, or a wrong type for `hooks`, `hooks.PreToolUse`, `permissions`,
+   `permissions.allow`, `permissions.ask`, or `permissions.deny`;
+2. installs the `ils` and `write-release` skills the binary ships, in `skills/<name>/`. It
+   replaces a shipped file that differs, and leaves a file it does not ship;
+3. adds the guard's hook and the permission rules to `settings.json`, and creates the file when
+   it is missing, so that it holds what [Init by hand](#init-by-hand) shows.
 
-   - a file that is not JSON, or not a JSON object;
-   - a member name held twice in one object, which the reason names;
-   - a string escape that names no character, which the reason says;
-   - a wrong type for `hooks`, `hooks.PreToolUse`, `permissions`, `permissions.allow`,
-     `permissions.ask`, or `permissions.deny`.
-2. It installs the `ils` and `write-release` skills the binary ships in `skills/<name>/`. A file
-   that already holds what `ils` ships is left as it is, and one that differs is replaced.
-   `hook.sh` is written executable. A file `ils` does not ship stays. A skill directory that is a
-   symbolic link, such as a clone of `ils` linked in, is never written through. When every shipped
-   file reads the same through it, the step names the link's target and has nothing to do. The
-   step fails naming the target when a file differs, is missing behind the link, or the link leads
-   nowhere, to a file, or to itself. Claude Code would keep loading the files at the target.
-   The run still writes the hook and the rules, then ends broke naming each such skill, and
-   `Next:` says to remove the link or update its target, then run the same command again.
-3. It adds the guard's hook and the permission rules to `settings.json`, and creates the file when
-   it is missing. A `settings.json` that is a symbolic link is written through to its target. A
-   crash leaves either the old `settings.json` or the new one, as it leaves a skill file step 2
-   replaces. When the directory cannot be flushed to disk, the new settings are already in place:
-   the run exits 1 naming the directory, and running it again finishes it.
+`ils init` never writes through a skill directory that is a symbolic link, such as a clone of
+`ils` linked in. When the files behind the link are the shipped ones, the step has nothing to do.
+Otherwise the run still does step 3, then ends [broke](#exit-codes), naming the skill. A
+`settings.json` that is a symbolic link is written through to its target.
 
-The hook is a `PreToolUse` group with the matcher `Bash`, holding the one hook shown in
-[Init by hand](#init-by-hand). When `CLAUDE_CONFIG_DIR` sets the Claude Code directory, the hook's
-command is `bash` and the absolute path of the installed `hook.sh`, quoted for the shell. With
-`--project`, it is `bash "$CLAUDE_PROJECT_DIR"/.claude/skills/ils/hook.sh`.
+The hook's command runs the installed `hook.sh`: `bash ~/.claude/skills/ils/hook.sh`, the
+absolute path instead when `CLAUDE_CONFIG_DIR` sets the directory, and
+`bash "$CLAUDE_PROJECT_DIR"/.claude/skills/ils/hook.sh` with `--project`. Without
+`onFailure: block`, Claude Code runs a command whose hook could not run. `onFailure` needs the
+Claude Code version [Use with Claude Code](../README.md#use-with-claude-code) names.
 
-A hook whose command is the path of `skills/ils/hook.sh`, alone or after `bash`, is a guard entry.
-The path may run under any directory above `skills/`, such as `~/.claude/`, `$HOME/.claude/`, or
-`"$CLAUDE_PROJECT_DIR"/.claude/`, and be quoted any way the shell reads, as a home directory with a
-space needs. `ils init` makes every guard entry its own:
+A hook whose command runs `skills/ils/hook.sh`, under any directory, is a guard entry. In
+`settings.json`, `ils init` changes only these:
 
-- A guard entry in a `PreToolUse` group whose matcher covers `Bash` becomes, in its place, the
-  entry `ils init` writes for its scope: `type`, `command`, `timeout`, and `onFailure`, and no
-  other key. It drops `async` and `asyncRewake`, which run the hook in the background where it
-  cannot block, `if`, which narrows the commands it judges, `args`, and `statusMessage`. Several
-  guard entries in such groups each become that entry.
-- A guard entry in a group whose matcher does not cover `Bash` is removed, and so is a group it
-  leaves with no hooks.
-- When no group that covers `Bash` held a guard entry, a group with the matcher `Bash` holding the
-  entry is added at the end of `PreToolUse`.
+- **Guard entries:** `ils init` replaces each one in a `PreToolUse` group whose matcher covers
+  `Bash` (as Claude Code reads it) with the hook it writes, with no other key. One in a group whose
+  matcher does not cover `Bash` is removed, and so is a group that leaves with no hooks. When no
+  group that covers `Bash` held one, a group with the matcher `Bash` is added at the end of
+  `PreToolUse`.
+- **Permission rules:** each rule lands in the list [Init by hand](#init-by-hand) puts it in,
+  unless one of the three lists already holds it. No rule covers `ils push`: the guard
+  [answers it itself](#ils-and-gh-commands-the-guard-allows-or-asks-about). `ils init` removes
+  `Bash(ils push)` and `Bash(ils push --wait)` from `allow`, where an earlier `ils init` added
+  them.
 
-A matcher covers `Bash` the way Claude Code reads it:
+Every other key, value, and entry of `settings.json` stays, in its order, and a run that changes
+nothing leaves the file as it was.
 
-| Matcher                                               | Covers `Bash` when                                                                                                                                         |
-| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Missing, empty, or `*`                                | Always.                                                                                                                                                    |
-| Only letters, digits, `_`, `-`, spaces, `,`, and `\|` | One of the names it separates with `\|` or `,`, without the spaces around it, is `Bash`: `Bash`, `Edit, Bash`, `Bash \| Edit`.                             |
-| Anything else                                         | As a regular expression, it matches anywhere in `Bash`: `.*`, `^Bash$`, `sh$`. One that Go's `regexp` cannot compile, such as a lookahead, covers nothing. |
-
-A group or hook that is not a JSON object, a group with no `hooks` array, and a group whose matcher
-is not a string are left as they are. Without `onFailure: block`, Claude Code runs a command whose
-hook could not run. `onFailure` needs the Claude Code version
-[Use with Claude Code](../README.md#use-with-claude-code) names.
-
-Each rule lands in the list the `permissions` object of [Init by hand](#init-by-hand) puts it in.
-A rule already in any of the three lists is not added to another. No rule covers `ils push`: the
-guard [answers it itself](#ils-and-gh-commands-the-guard-allows-or-asks-about). `ils init` removes
-`Bash(ils push)` and `Bash(ils push --wait)` from the `allow` list, where an earlier `ils init`
-added them. Claude Code does not document whether a hook's `ask` overrides an allow rule. Such a
-rule could let a push to a private repository run without a prompt. Every other key, value, and
-entry of `settings.json` stays, in its order. A run that changes nothing leaves the file as it was.
-
-With `--project`, it writes `.claude/skills/` and `.claude/settings.json` at the top level of the
-repository the working directory is in, whatever `CLAUDE_CONFIG_DIR` holds.
-
-It prints one line per step, in this order: each skill, the hook, then the `allow`, `ask`, and
-`deny` lists. Each line is marked by what the step did (see [Terminal output](#terminal-output)):
-
-| Step  | `✓` changed                                                                   | `–` nothing to do                                                                                 | `✗` failed                                                       |
-| ----- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| Skill | Installed or updated the skill at its directory                               | Every file is already up to date, or the directory is a link whose files match the shipped ones   | The directory is a link whose files differ from the shipped ones |
-| Hook  | Added the hook, or updated a guard entry                                      | Every guard entry is already in place, as listed after this table                                 | —                                                                |
-| Rules | Added the rules the list lacked, or removed the `ils push` rules from `allow` | Every rule of the list is already in one of the three lists, and `allow` holds no `ils push` rule | —                                                                |
-
-The hook step has nothing to do when all of these hold:
-
-- A group that covers `Bash` holds a guard entry.
-- Every guard entry in a group that covers `Bash` is already the one `ils init` writes.
-- No guard entry sits in a group whose matcher is a string that does not cover `Bash`.
-
-A run with nothing to change ends done with no `Next:` line. The run ends broke, naming the file,
-when it cannot read or write a settings file, cannot write a skill file, or cannot read a skill
-directory. Under `--project`, `ils init` reads the top level of the repository before any write.
-When `git` is missing, or the time limit or an interrupt cuts that read short, `ils init` refuses
-and its `Next:` runs `ils init claude --project` again. Any other failure of that read ends the run
-broke with nothing written. Skills written before a failed settings write stay, and running the
-command again finishes the job.
+A run with nothing to change ends done with no `Next:` line. A run that cannot read or write a
+settings file or a skill file ends broke, naming the file. Skills written before a failed settings
+write stay, and running the command again finishes the job.
 
 #### Init by hand
 
@@ -512,7 +417,7 @@ there.
 | Exit | Means                | Reaction                                                                                                                                                                                                                                                                       |
 | ---- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 0    | done                 | The command finished its job; [Done and broke by command](#done-and-broke-by-command) says what that means for each. Follow `Next:` when there is one.                                                                                                                         |
-| 1    | broke                | The output says what was done and what was not. Fix what failed, then follow `Next:`. [Done and broke by command](#done-and-broke-by-command) names the broke ends of Status, Parse, and Init.                                                                                 |
+| 1    | broke                | The output says what was done and what was not. Fix what failed, then follow `Next:`.                                                                                                                                                                                          |
 | 2    | refused              | Nothing was pushed, opened, merged, tagged, or set up, except by a push whose pull request's head moved during the wait. The reason says why; `Next:` says what to do.                                                                                                         |
 | 3    | ask                  | `ils guard` only: the command is one the user approves before it runs. See [ils guard](#ils-guard).                                                                                                                                                                            |
 | 4    | pending              | GitHub had not finished when the command stopped waiting, for example checks still running or not yet reported. Run the command that the `Next:` line names; [Time limits](#time-limits) says how long each command waits. After an `ils release`, run the same command again. |
@@ -520,8 +425,7 @@ there.
 
 Every outcome but done prints its reason labeled by outcome: `Refused:`, `Broke:`, `Ask:`,
 `Pending:`, or `Delivered, not green:`. The reason sits on the line above `Next:`, except in a
-verdict of `ils guard`, which prints no `Next:` line (JSON `next: "none"`). When `ils guard` refuses
-its own words (no `--cwd`, or not exactly one word after `--`), it prints `Next: ils guard --help`.
+verdict of `ils guard`, which prints no `Next:` line (JSON `next: "none"`).
 A run stopped by Ctrl-C or SIGTERM (the signal `kill` sends by default) exits with the code of
 the result it prints; see
 [Stopping a run](#stopping-a-run).
@@ -537,15 +441,9 @@ Exit 0 means, for each command:
 - **Status:** whatever it finds, once its words parse. A failed read of the local default branch
   ends it broke.
 - **Release:** the tag is on origin, and the GitHub release exists unless `--tag-only`.
-- **Init:** the skills, the rules, and the hook are in place; a skill directory that is a link holds
-  the shipped files. When a linked skill directory's files differ from the shipped ones, init ends
-  broke after writing the hook and the rules, as [ils init](#ils-init) says.
-- **Guard:** the command is allowed. A refusal exits 2 and an ask exits 3. The guard never ends
-  broke: an error that keeps it from judging is a refusal.
-- **Parse:** the invocations of the command are printed, whatever marks they carry. It ends broke
-  when the command does not parse or a state read fails.
-- **Hook:** the call is allowed or asked about, both exit 0. The hook never exits 1: a refusal or
-  an error exits 2.
+- **Init:** the skills, the rules, and the hook are in place.
+- **Guard, Parse, and Hook:** [ils guard](#ils-guard), [ils parse](#ils-parse), and
+  [ils hook](#ils-hook) give their exits.
 
 ### When no check reports
 
@@ -579,26 +477,16 @@ of 100 seconds, counted the same way. They take no `--wait`.
 seconds in all. A read cut short is a refusal that says what broke. Claude Code stops the hook
 after the 15-second `timeout` that `ils init` writes.
 
-A read of GitHub that fails with `gh` exit 1 is read again every 2 seconds, for up to 10 seconds
-from its first failure, before the command ends on it. A 4xx answer to a read made with `gh api` is
-GitHub's answer and is never read again. The reads made with `gh repo view`, `gh pr list`, and
-`gh pr view` do not report GitHub's status, so each of their exit 1 failures is read again. No
-other exit of `gh` is read again, and neither are the check that `gh` is logged in, the reads of a
-failed check's log, the guard's reads, or any write. A read again still counts against the
-command's time limit.
-
 `ils merge` and `ils release` stop waiting 20 seconds before the full limit of 15 minutes or 100
 seconds. Those 20 seconds are kept for the writes that follow. When fewer than 20 seconds are left,
 they end pending with nothing written.
 
 `ils push` waits until GitHub shows the pushed commit as the pull request's head. When another
-push moves that head past the pushed commit before GitHub showed it, `ils` cannot tell the move
-from GitHub being slow. It waits until the time limit and ends pending. The wait itself writes
-nothing. The next `ils push` refuses the branch as behind its copy on origin.
+push moves that head past the pushed commit before GitHub showed it, `ils push` waits until the
+time limit and ends pending. The next `ils push` refuses the branch as behind its copy on origin.
 
-A failed check whose workflow run has not yet made its log available keeps the wait going until it
-does. A canceled check gets no log, so it ends the wait red at once, the excerpt says it has no
-log, and `Next:` says to rerun it with `gh run rerun` before running the command again.
+A failed check keeps the wait going until its log is available. A canceled check gets no log, so
+it ends the wait red at once.
 
 When a pending `ils merge` names `ils push` on its `Next:` line, run that push with the same
 `--wait` as the merge, so that it takes the same column of the table above. If your script or
@@ -610,43 +498,27 @@ between two of its writes continues on the next run.
 
 Ctrl-C or SIGTERM during `ils push`, `ils merge`, or `ils release` stops the step in progress.
 `ils` then prints the result of that step, as text or as JSON per `--json`, and exits with that
-result's code. The output says that `ils` was interrupted, and `Next:` says what to run. As at a
-normal end, the spinner line is erased before the result prints; see
-[Terminal output](#terminal-output).
+result's code.
 
-An `ils release` stopped before its first write has written nothing. It refuses when the stop cut
-short one of these reads, or when a check of the release commit had already failed or been
-canceled:
+An `ils release` stopped before its first write has written nothing. Stopped while it makes the tag
+or looks up the GitHub release, the same command resumes as
+[Resume a broken release](#resume-a-broken-release) describes.
 
-- the repository, origin, or the default branch;
-- when no check reported, the default branch's rules and whether the repository has CI.
+When a time limit or a stop ends a run of git, `ils` also ends the processes git started, such as
+your pre-push hook and what the hook started.
 
-It ends pending, as `ils merge` does, when it was waiting for the checks or had finished reading.
-Stopped while it makes the tag or looks up the GitHub release, it says that it was interrupted,
-and the same command resumes as [Resume a broken release](#resume-a-broken-release) describes.
-
-When a time limit or a stop ends a run of git while git is still running, `ils` ends the processes
-git started that are still running too, such as your pre-push hook and what the hook started, so
-that none goes on after `ils` reports. A Ctrl-C at the terminal also reaches git and the hook
-directly; when it ends git before `ils` acts on it, a hook process that ignores Ctrl-C goes on
-running. A program that exits by itself keeps the processes it started, such as an ssh connection
-it shares.
-
-A second Ctrl-C or SIGTERM ends `ils` at once, with no result and none of the
-[exit codes](#exit-codes).
+A second Ctrl-C or SIGTERM, or a Ctrl-\ (SIGQUIT), ends `ils` at once, with no result and none of
+the [exit codes](#exit-codes).
 
 ## Refusals
 
 A refusal ends with exit 2: the command wrote nothing, and the reason says why. The one exception
-is an `ils push` whose pull request's head moved during the wait. That push has already pushed, as
-[What push refuses](#what-push-refuses) says.
+is the moved head at the end of [What push refuses](#what-push-refuses).
 
 An `origin` can answer and still turn the call away, for a failed sign-in, a missing permission, or
 a repository it cannot find. That is not a refusal. A command whose call to origin is turned away
-before it lands anything ends broke with git's message and `Next: fix what failed, then run
-<command> again`. `ils status` lists the read as failed. The steps `ils merge` runs after the
-squash merge keep the `Next:` each gives for any failure, since the merge itself is done. Only an
-`origin` that cannot be reached at all is a refusal (exit 2).
+before it lands anything ends broke with git's message, and `ils status` lists the read as failed.
+Only an `origin` that cannot be reached at all is a refusal (exit 2).
 
 `ils branch`, `ils push`, `ils merge`, and `ils release` also refuse a flag [Flags](#flags) does not
 list for them, and a precondition read that the time limit, Ctrl-C, or SIGTERM cut short: run the
@@ -666,10 +538,8 @@ from origin. It refuses:
   last fetch counts and one deleted on origin does not;
 - a local default branch with commits origin's lacks (see
   [A local default branch ahead of origin's](#a-local-default-branch-ahead-of-origins));
-- a detached HEAD with commits origin's default branch lacks: it lists them, and `Next:` says to
-  keep them on a branch with `git switch -c <name>`, then run `ils push`;
-- a switch git refuses because a changed or untracked file would be overwritten: it names the
-  files;
+- a detached HEAD with commits origin's default branch lacks;
+- a switch git refuses because a changed or untracked file would be overwritten;
 - a missing `git`, a `git` older than 2.34.1 or one whose version `ils` cannot read, a missing
   `origin`, and an `origin` that cannot be reached.
 
@@ -686,10 +556,7 @@ this list, which `ils push` finds after the push. It refuses:
 - a branch with no commit past origin's default branch;
 - a branch that is behind, or has diverged from, its copy on origin;
 - a branch whose first commit past the default branch is also on another local branch, unless its
-  copy on origin already carries that commit. `ils` cannot tell which branch was cut from which. It
-  tells you to land each branch that shares the commit first, or to remove each one that was cut
-  from this branch. `ils` reads the copy on origin first, so a branch that is also behind or
-  diverged from that copy gets that refusal instead;
+  copy on origin already carries that commit: `ils` cannot tell which branch was cut from which;
 - a branch whose pull request already merged into the default branch, or is open against another
   base;
 - a repository with no remote named `origin`, or an `origin` that cannot be reached;
@@ -701,8 +568,8 @@ this list, which `ils push` finds after the push. It refuses:
 - a `gh` not logged in to origin's host (this is also how `ils` refuses a host that is not GitHub);
 - a fork, or a repository you cannot push to;
 - any word after `push` that is not one of its flags;
-- a pull request whose head moved to another commit while `ils push` waited for its checks:
-  `Next:` says to pull the new commit, then run `ils push` again.
+- a pull request whose head moved to another commit while `ils push` waited for its checks, as
+  [ils push](#ils-push) describes.
 
 ### What merge refuses
 
@@ -714,11 +581,13 @@ at most it has fetched from origin. It refuses everything `ils push` refuses abo
 - the default branch, a detached HEAD, and a tracked file with uncommitted changes;
 - a local default branch with commits that origin's lacks (see
   [A local default branch ahead of origin's](#a-local-default-branch-ahead-of-origins));
-- a branch with no commit past origin's default branch, or with no open pull request against it;
+- a branch with no commit past origin's default branch, unless a pull request of it merged into the
+  default branch with the branch's tip as its head (see
+  [A merge made elsewhere](#a-merge-made-elsewhere));
+- a branch with no open pull request against the default branch;
 - a branch whose tip is behind, past, or diverged from the head of its pull request;
 - a pull request that is a draft, or open against another base;
-- a branch whose only pull request merged into another base: that never lands it, and `Next:` says
-  to run `ils push`, which opens one against the default branch;
+- a branch whose only pull request merged into another base, which never lands it;
 - a pull request whose title is not a conventional commit subject (`<type>(<scope>)!: <summary>`,
   with the scope and `!` optional);
 - a repository whose settings forbid squash merges, and a default branch whose ruleset forbids
@@ -728,11 +597,9 @@ at most it has fetched from origin. It refuses everything `ils push` refuses abo
   in a repository with CI;
 - a pull request that conflicts with or is behind the default branch, needs a review, lacks a
   required check, or that GitHub blocks for another reason;
-- a pull request whose head moved to another commit while `ils merge` waited for its checks:
-  `Next:` says to pull the new commit, then run `ils merge` again;
+- a pull request whose head moved to another commit while `ils merge` waited for its checks;
 - on a run that finishes a pull request already merged, a branch on origin that holds commits the
-  merged head does not carry: it lists them and deletes nothing, and `Next:` says to start a branch
-  and cherry-pick them.
+  merged head does not carry.
 
 ### What status refuses
 
@@ -750,20 +617,16 @@ the repository, and also:
 - no version, a second word, or `--`;
 - a version that is not `X.Y.Z` with an optional pre-release part: it refuses `v1.2.0`, `1.2`,
   `1.2.0+build`, and `latest`;
-- a version that is not above every other version tag origin holds, naming the highest. Only
-  origin's tags count, not the clone's;
+- a version that is not above every other version tag origin holds. Only origin's tags count, not
+  the clone's;
 - no release commit for the version on origin's default branch since the previous version tag;
 - a tag `v<X.Y.Z>` on origin at another commit;
 - a local tag `v<X.Y.Z>` at another commit, unless origin already holds the tag at the release
-  commit: `Next:` says to delete it by hand with `git tag --delete v<X.Y.Z>`;
+  commit;
 - a release commit with no `CHANGELOG.md`, no section for the version, or an empty section, with
-  `--tag-only` too. With no `CHANGELOG.md`, `Next:` says to stop and ask the user to start one,
-  since `ils release` then requires a section in it for every later release;
+  `--tag-only` too;
 - a failed or canceled check of the release commit, and a release commit no check reported for in
   a repository with CI.
-
-When `ils release` creates the GitHub release but cannot remove the notes file it wrote, it still
-ends done. The output gives the release's URL and a line naming the file left behind.
 
 ### What init refuses
 
@@ -776,15 +639,8 @@ When `ils init` refuses, it has written nothing. It refuses:
 - without `--project`, when `CLAUDE_CONFIG_DIR` is unset or empty, a `HOME` that is unset or empty;
 - with `--project`, a working directory outside the work tree of a repository;
 - with `--project`, a missing `git`, or a read of the repository's top level that the time limit,
-  Ctrl-C, or SIGTERM cut short: `Next:` runs `ils init claude --project` again;
-- a `settings.json` whose shape step 1 of [ils init](#ils-init) refuses: `Next:` names the file to
-  fix.
-
-### What guard, parse, and hook refuse
-
-- `ils guard` and `ils parse` refuse a missing `--cwd`, and anything but exactly one word after
-  `--`. [ils guard](#ils-guard) says what a guard verdict of refuse means.
-- `ils hook` takes no flag: [ils hook](#ils-hook) says what it does with `--help` or `-h`.
+  Ctrl-C, or SIGTERM cut short;
+- a `settings.json` whose shape step 1 of [ils init](#ils-init) refuses.
 
 ## JSON output
 
@@ -902,16 +758,16 @@ The guard judges an agent's shell command before it runs: `ils hook claude` is C
 guard reads a command. It parses the command with a bash parser, finds the `git`, `gh`, and `ils`
 calls in it, nested ones included, and answers allow, refuse, or ask.
 
-`ils guard` and `ils parse` take the command to read in one quoted word after `--`; no word, or
-more than one, is a refusal.
+`ils guard` and `ils parse` take `--cwd <dir>` and the command to read in one quoted word after
+`--`; a missing `--cwd`, no word, or more than one word is a refusal.
 
 ### What the guard does not see
 
 The guard lowers the odds of an accident; it is not a sandbox. It does not see:
 
 - an interpreter that is not a shell, such as `python -c 'subprocess.run(["git", "push"])'`;
-- a command held in a variable and handed to a command the guard does not know, such as `su -c
-  "$cmd"`;
+- a word the guard cannot read in a string for `su` or `ssh`, such as `su -c "$cmd"`,
+  `su -c '$g git push'`, or `ssh host "$cmd"`;
 - `go run . merge` in a clone of `ils`, or `go run github.com/jeffzi/ils@<tag> merge` anywhere,
   which hold no `ils` word;
 - a task runner (`task`, `make`, `npm run`) running lines from a file the agent wrote;
@@ -950,8 +806,7 @@ The guard lowers the odds of an accident; it is not a sandbox. It does not see:
 - a construct whose only use is to hide a command, such as a name reference (`declare -n`) that
   writes `GIT_DIR` or a tool name built by a glob.
 
-[Guard scope](guard-scope.md#accepted-limits) says why the guard lets these through. It gives no
-reason for three of them: a command handed to `su -c`, `go run` of `ils`, and `gh workflow run`.
+[Guard scope](guard-scope.md#accepted-limits) says why the guard lets these through.
 
 ### ils guard
 
@@ -959,7 +814,7 @@ reason for three of them: a command handed to `su -c`, `go run` of `ils`, and `g
 
 | Exit | Verdict | Output                                                                                                                                                    |
 | ---- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | allow   | `The guard allows the command.`                                                                                                                           |
+| 0    | allow   | One line saying so.                                                                                                                                       |
 | 2    | refuse  | `Refused:` and the reason. The guard refuses a command that does not parse, and any error that keeps it from judging, with a reason that says what broke. |
 | 3    | ask     | `Ask:` and the reason: the command is one the user approves.                                                                                              |
 
@@ -969,11 +824,6 @@ reason for three of them: a command handed to `su -c`, `go run` of `ils`, and `g
 its words, its directory, its marks, and, for `git`, the subcommand, its arguments, the git dir it
 targets, and the directory git runs in once its `-C` options apply. A mark names a way the guard
 could not read the invocation safely.
-
-A word that is not a literal prints `<not literal>`. A directory, git dir, or directory git runs in
-that the guard cannot tell prints `unknown`. A git dir outside any repository prints `none`, as
-does an empty list of marks or arguments. A git invocation with no subcommand leaves out the
-subcommand part.
 
 It gives no verdict. The rules for git operations, pushes, and `gh` leave no mark, so use `ils
 guard` for the verdict; `ils parse` exits 0 whatever it marks. It exits 1 when the command does not
@@ -992,12 +842,11 @@ judges each Bash call Claude Code is about to run, and lets every other tool thr
 - **Refuse:** Claude Code blocks the call and shows the agent the reason. A payload the hook cannot
   read, and any internal error, blocks the call the same way.
 
-`ils hook` takes no flag. Only `ils hook --help` or `ils hook -h`, alone, prints its usage.
+`ils hook` exits 0 when it allows or asks, and 2 when it refuses or fails, never 1. It takes no
+flag. Only `ils hook --help` or `ils hook -h`, alone, prints its usage.
 
 `skills/ils/hook.sh` fronts `ils hook claude`. It passes exit 0 and 2 through with the binary's
-output. Any other exit becomes exit 2, with a line on stderr naming the code. When `ils` is not
-on `PATH` or cannot start, it exits 2 and names `! go install github.com/jeffzi/ils@main`, and
-`! task install` from a clone of `ils`.
+output. Any other exit becomes exit 2, and so does an `ils` that is not on `PATH` or cannot start.
 
 ### What the guard refuses
 
@@ -1013,8 +862,8 @@ read a command: each mark it prints names a way the guard could not read an invo
   before the word, reads as that literal, and so does the variable of a `for` loop over literal
   words. The guard allows `S=/tmp/work; $S/run.sh`, and refuses `G=git; $G push` as `git push`.
   Any other write (`read`, `+=`, `source`, an `IFS` change, a name reference), an assignment that
-  may not have run, and a value holding a space or a glob character leave the variable unknown,
-  and a word holding an unknown variable is not a literal. The guard also refuses an assignment or
+  may not have run, and a value holding a space or a glob character leave the variable unknown. A
+  word holding an unknown variable is not a literal. The guard also refuses an assignment or
   `export` of a `GIT_*` variable off the allow list (`GIT_CONFIG_COUNT`, `GIT_EXEC_PATH`, and the
   like).
 - **Commands handed to another command:** a `git`, `gh`, `ils`, or shell word (`bash`, `sh`, `zsh`,
@@ -1036,8 +885,7 @@ read a command: each mark it prints names a way the guard could not read an invo
   `source env.sh && git commit -m x`: it cannot tell where the commit runs.
 - **Functions:** the guard judges each command of a function body the command defines at every
   call, in the directory, environment, and branch of the call, so it refuses
-  `f() { git commit -am wip; }; git switch main && f` as a commit on the default branch. It walks
-  at most 256 function bodies for one command.
+  `f() { git commit -am wip; }; git switch main && f` as a commit on the default branch.
 - **Aliases:** a git word that is neither a command nor an alias, a `!` alias, an alias nested more
   than three deep, and an alias the guard cannot read. It also refuses an alias named for a git
   command that git 2.34.1 does not build in: one newer than it (`replay`), or one packaging ships
@@ -1045,10 +893,10 @@ read a command: each mark it prints names a way the guard could not read an invo
 - **Git options and arguments:** a git option with no value at the end of the command (`git -C`); a
   `-c` key or `--config-env` value that is not a literal, since the key may be `core.hooksPath`;
   and an argument that is not a literal to a git command the guard checks for flags
-  (`git clean "$opt"`). A commit message, the directory of `-C`, and a path glob whose literal
-  prefix does not start with `-` or `+` are exempt: the guard allows `git add src/*.go`, and refuses
-  `git add *.go`. `git <sub> --help`, with `--help` the first word after the subcommand, reads as
-  `git help <sub>`.
+  (`git clean "$opt"`). A commit message, the directory of `-C`, and a path glob with a non-empty
+  literal prefix that does not start with `-` or `+` are exempt: the guard allows
+  `git add src/*.go`, and refuses `git add *.go`. `git <sub> --help`, with `--help` the first word
+  after the subcommand, reads as `git help <sub>`.
 
 #### Git operations that destroy work or skip hooks
 
@@ -1085,9 +933,7 @@ The guard refuses:
   git working tree. The same holds for a file whose name the guard cannot read. The guard allows
   output landing in `/dev/null`, or in a file whose nearest existing directory is outside every
   working tree. A `tee` that reads a group, a subshell, or a function call holding `git show` is not
-  judged ([rule 3](guard-scope.md#3-close-a-bypass-only-when-agents-write-it)), and neither is a
-  file an earlier `exec` opened (`exec > f; git show HEAD:f`,
-  [accepted limits](guard-scope.md#accepted-limits));
+  judged ([rule 3](guard-scope.md#3-close-a-bypass-only-when-agents-write-it));
 - `rebase` in a working tree with uncommitted changes or untracked files, or where the guard cannot
   tell the repository. In a dirty tree, `--continue`, `--edit-todo`, `--show-current-patch`, and
   `--quit` are allowed, since they leave the tree as it is; `--abort` and `--skip` are refused;
@@ -1114,42 +960,22 @@ The guard refuses:
 - in a repository whose `origin` is on GitHub, on its default branch, protected or not:
   `commit`, `merge`, `cherry-pick`, `revert`, `am`, and `rebase`. On that branch the guard also
   refuses `pull` without `--ff-only`, and `pull --ff-only` naming a repository or branch other than
-  `origin <default branch>`. The reason says the default branch takes changes only through a pull
-  request and names
-  `ils branch <name>`. For a `pull --ff-only` that names another repository or branch, or whose
-  arguments the guard cannot read, the reason names `git pull --ff-only` alone.
+  `origin <default branch>`.
   [The default branch on GitHub](#the-default-branch-on-github) says when `origin` counts as on
   GitHub. A `git rebase` naming the default branch as the branch to rebase counts as one on it.
-  The guard judges some `git rebase` commands as run on the branch HEAD is on. This covers a
-  rebase whose upstream is a glob, or an unquoted expansion after `--`, with no branch after it.
-  That word may still expand to both an upstream and the default branch. The guard asks origin
-  for the default branch once per command and git dir, and falls back to the cached
-  `refs/remotes/origin/HEAD`. With neither, it refuses and names
-  `git remote set-head origin --auto`, which caches the head on any supported git. The guard
-  refuses `set-head` on `origin` itself;
+  When the guard can learn the default branch neither from origin nor from the cached
+  `refs/remotes/origin/HEAD`, it refuses;
 - on that default branch, the same subcommands when the guard cannot tell whether `origin` is on
   GitHub, as listed under [The default branch on GitHub](#the-default-branch-on-github);
 - one of those where the guard cannot tell the directory, the target, or HEAD. That happens after
   `cd -`, `popd`, or a `cd` to a non-literal. It also happens after a `git` or `gh` command earlier
-  in the list moves HEAD (`git switch main; git commit`). A HEAD move in a background job or a
-  pipe stage, and a write to the `HEAD` file by any command other than git, are not followed
-  ([accepted limits](guard-scope.md#accepted-limits)).
-  The guard follows a `git switch` run as a git command of its own (no wrapper, alias, shell
-  function, `!`, or command substitution) in one of two forms:
-
-  - it names one literal branch and takes no option;
-  - it takes `-c`, `--create`, `-C`, or `--force-create` followed by a literal name as a word of
-    its own, and at most a literal start point.
-
-  The guard judges the commands later in the same `&&` list that run in the same git dir on that
-  branch. This lasts until a command that may move HEAD or a call of a function the command
-  declares. The guard allows `git switch -c topic && git commit`, and refuses
-  `git switch main && git commit` as a commit on the default branch.
-
-  A switch with any other option (`-q`, `--detach`), with the name joined to its option
-  (`--create=topic`), with a start point that is not a literal, to `-`, or to a name holding `@{`
-  leaves HEAD unknown. The commands of a function body follow no switch where the function is
-  declared; at a call, they follow the switch the call follows.
+  in the list moves HEAD (`git switch main; git commit`).
+  The guard follows a `git switch` written as a git command of its own that names one literal
+  branch with no option, or creates one with `-c` or `-C` and a literal name. It judges the
+  commands after it in the same `&&` list on that branch: it allows
+  `git switch -c topic && git commit`, and refuses `git switch main && git commit` as a commit on
+  the default branch. A switch in any other form (`-q`, `--detach`, `--create=topic`, `-`) leaves
+  HEAD unknown.
 
 #### The default branch on GitHub
 
@@ -1160,18 +986,16 @@ regard to case, so `GitHub.com` is `github.com`.
 
 | Case                                                                                                           | Verdict                                                                                 |
 | -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| The push URL names a repository on `github.com`                                                                | Refused, whatever `gh` holds or can reach. The guard runs no `gh`.                      |
+| The push URL names a repository on `github.com`                                                                | Refused, whatever `gh` holds or can reach.                                              |
 | A host other than `github.com`, and `gh` holds a login there that passes its check                             | Refused: `gh` takes the host for GitHub, such as a GitHub Enterprise Server.            |
 | A host other than `github.com`, and `gh` is missing or has no login there                                      | Allowed: the guard cannot tell it is GitHub, and `ils push` refuses that origin anyway. |
-| A host other than `github.com`, and `gh`'s login check fails for another reason                                | Refused; the reason says the guard cannot tell whether the host is GitHub, and why.     |
-| The guard cannot tell the `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, or `HOME` the agent's `gh` uses                  | Refused, on a host other than `github.com`; the reason names that variable.             |
+| A host other than `github.com`, and `gh`'s login check fails for another reason                                | Refused: the guard cannot tell whether the host is GitHub.                              |
+| The guard cannot tell the `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, or `HOME` the agent's `gh` uses                  | Refused, on a host other than `github.com`.                                             |
 | No `origin`, or a push URL that names no repository: a local path, `file://`, or an ssh host starting with `-` | Allowed: no GitHub repository takes its changes.                                        |
 | `git` fails to read the push URL, or the host of an ssh URL                                                    | Refused, as a failed read.                                                              |
 
-For a host other than `github.com`, the guard checks the login with
-`gh auth status --hostname <host> --json hosts`. It runs that check with the `GH_CONFIG_DIR`,
-`XDG_CONFIG_HOME`, and `HOME` the command sets, so it reads the login the agent's own `gh` would
-use.
+For a host other than `github.com`, the guard reads the login the agent's own `gh` would use: the
+one under the `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, and `HOME` the command sets.
 
 #### gh and ils calls the guard refuses
 
@@ -1181,11 +1005,8 @@ The guard refuses:
 - `gh api` with a method other than `GET`, or with no method but a field or `--input`. A `gh api
   graphql` call whose `query` field is a literal document holding no mutation is a read. The guard
   allows it, with no method or with `POST` in any spelling (`-X POST`, `--method post`). A call
-  whose document holds a mutation is a write. The guard reads a block string (`"""…"""`) as ending
-  at the first `"""`, even after a backslash. It therefore reads a mutation that follows a block
-  string holding the escape `\"""` as part of a string, and allows the call. The guard also
-  refuses a call whose document it cannot read (`-F query=@q.graphql`, `-f query="$q"`,
-  `--input`) until the query is inline;
+  whose document holds a mutation is a write. The guard also refuses a call whose document it
+  cannot read (`-F query=@q.graphql`, `-f query="$q"`, `--input`) until the query is inline;
 - `gh repo sync`, `delete`, `edit`, and `create --push`;
 - `gh release delete`, `edit`, `upload`, and `delete-asset`;
 - `gh auth token`, `gh auth git-credential`, and `gh auth status --show-token`;
@@ -1203,7 +1024,6 @@ The guard refuses:
 
 The guard judges an alias `gh` itself gives a subcommand as the command it names: `gh pr co` as
 `gh pr checkout`, `gh release new` as `gh release create`, and `gh repo new` as `gh repo create`.
-A refusal of one names the command it stands for.
 
 When a read the guard needs fails (a missing `git`, a `gh alias list` that errors, the read of
 `clean.requireForce` or of an alias), the guard refuses and says what broke.
@@ -1227,19 +1047,18 @@ The guard allows or asks about these `ils` and `gh` calls only in the forms each
   their bare name, piped or `tee`d included. As the whole command, `ils branch` is allowed, and so
   is an `ils push` with words other than `--wait`, such as `ils push --json`: Claude Code's
   permission rules decide those.
-- **`ils push` and `ils push --wait`, as the whole command:** the guard reads the visibility of the
-  repository `origin`'s first push URL names, with `gh repo view <host>/<owner>/<name> --json
-  visibility` after `gh`'s login check for that host. It runs `git` and `gh` where the command
-  runs, with the `GIT_DIR`, `GIT_WORK_TREE`, `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, and `HOME` the
-  command runs with. Only a `gh` login for the push URL's host counts.
+- **`ils push` and `ils push --wait`, as the whole command:** the verdict turns on the visibility
+  of the repository `origin`'s first push URL names. The guard reads it where the command runs,
+  with the `GIT_DIR`, `GIT_WORK_TREE`, `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, and `HOME` the command
+  runs with. Only a `gh` login for the push URL's host counts.
 
-  | Case                                                                                           | Verdict                                                                                                           |
-  | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-  | A public repository                                                                            | Allowed on the guard's own word: [ils hook](#ils-hook) answers Claude Code with an explicit `allow`.              |
-  | A private or internal repository                                                               | Asks; the reason says the repository is not public, so the push starts CI runs that spend GitHub Actions minutes. |
-  | `gh` missing or with no login for the host, a failed read, or a reply that names no visibility | Asks; the reason says why the guard could not read the visibility.                                                |
-  | A directory or git dir the guard cannot tell                                                   | Asks; the reason says the guard cannot tell where the command runs.                                               |
-  | No repository, no `origin`, or a push URL that names no repository                             | Allowed on the guard's own word: `ils push` refuses that origin itself.                                           |
+  | Case                                                                                           | Verdict                                                                                              |
+  | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+  | A public repository                                                                            | Allowed on the guard's own word: [ils hook](#ils-hook) answers Claude Code with an explicit `allow`. |
+  | A private or internal repository                                                               | Asks: the push starts CI runs that spend GitHub Actions minutes.                                     |
+  | `gh` missing or with no login for the host, a failed read, or a reply that names no visibility | Asks.                                                                                                |
+  | A directory or git dir the guard cannot tell                                                   | Asks.                                                                                                |
+  | No repository, no `origin`, or a push URL that names no repository                             | Allowed on the guard's own word: `ils push` refuses that origin itself.                              |
 
   Two limits come from Claude Code. Its documentation does not say whether a hook's `ask` still
   prompts in `bypassPermissions` mode. In a `claude -p` run, an `ask` that nobody answers ends as a
@@ -1286,9 +1105,6 @@ These nine carry a `name`:
 - `git option missing its value`: the option;
 - `git alias of a command an older git lacks`: the alias.
 
-A mark is not a verdict. The rules for git operations, pushes, and `gh` leave no mark, so use `ils
-guard` for the verdict.
-
 The `git` object holds:
 
 - `subcommand`: a word, absent when git runs none;
@@ -1308,13 +1124,7 @@ At a terminal, every command shows its progress as it runs:
 - **Step lines:** for `ils push`, `ils merge`, `ils release`, and `ils init`, when stdout is a
   terminal, each step prints on stdout as soon as it ends, with its duration and a mark: a green
   `✓` when it did its work, a yellow `–` when it had nothing to do, and a red `✗` when it failed.
-  When a run ends broke, refused, or delivered, not green while a step is still running, that step
-  prints behind a red `✗`. The result then prints only its other lines, its excerpt, the reason,
-  and `Next:`.
-- **Color:** a stream that is a terminal gets color: outcome labels are red or yellow, and branch
-  names, pull request numbers, and `ils` commands are bold blue.
-- **Pending hint:** when stdout is a terminal, the `Next:` line of a pending result ends with
-  `# waits again; nothing to fix`.
+- **Color:** a stream that is a terminal gets color and bold.
 
 A stream that is not a terminal gets none of this. Stdout prints the whole result at the end. Stderr
 stays empty unless `-d` is on, or `ils` cannot print its result and reports that failure there.
@@ -1326,6 +1136,6 @@ stays empty unless `-d` is on, or `ils` cannot print its result and reports that
 turns color on for a stream that is not a terminal; `NO_COLOR` and `--no-color` override it. None
 of the three changes how long `ils push`, `ils merge`, or `ils release` waits.
 
-`-d` (or `--debug`) prints one line on stderr for each `git` and `gh` call, each wait decision, and
-each read of GitHub read again, timed from when the command started, in place of the spinner. It
-changes neither stdout nor the exit code.
+`-d` (or `--debug`) prints one line on stderr for each `git` and `gh` call and each wait decision,
+timed from when the command started, in place of the spinner. It changes neither stdout nor the
+exit code.

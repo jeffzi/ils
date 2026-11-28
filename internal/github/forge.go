@@ -43,11 +43,6 @@ type repoView struct {
 	Squash     bool   `json:"squashMergeAllowed"`
 }
 
-// repoVisibility is what `gh repo view --json visibility` prints.
-type repoVisibility struct {
-	Visibility string `json:"visibility"`
-}
-
 type pull struct {
 	URL     string `json:"url"`
 	Title   string `json:"title"`
@@ -176,7 +171,7 @@ func (r Runner) PublicRepo(ctx context.Context, repo forge.Repo) (bool, error) {
 	}
 
 	args := []string{"repo", "view", repo.Slug(), "--json", "visibility"}
-	view, err := runDecoded[repoVisibility](ctx, r, args...)
+	view, err := runDecoded[repoView](ctx, r, args...)
 	if err != nil {
 		return false, err
 	}
@@ -554,11 +549,11 @@ type releaseAnswer struct {
 // FindRelease returns the URL of the GitHub release of tag, a draft included, and found false with
 // no error when GitHub has no release for tag. An answer that cannot be decoded is a *DecodeError.
 func (f *Forge) FindRelease(ctx context.Context, repo forge.Repo, tag string) (link string, found bool, err error) {
-	args := withHeaders([]string{
+	args := []string{
 		"api", "graphql", "--hostname", repo.Host,
 		"-f", "owner=" + repo.Owner, "-f", "name=" + repo.Name, "-f", "tagName=" + tag,
 		"-f", "query=" + releaseQuery,
-	})
+	}
 
 	answer, err := readDecoded[releaseAnswer](ctx, f.runner(), args...)
 	if err != nil {

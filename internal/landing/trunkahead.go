@@ -7,6 +7,10 @@ import (
 	"github.com/jeffzi/ils/internal/result"
 )
 
+// readLocalTrunk names what the read of the local trunk covers as it follows "read" in a result,
+// so it stays a noun phrase.
+const readLocalTrunk = "the local trunk"
+
 // trunkAhead returns the refusal of a local trunk with commits origin's trunk lacks, listing them,
 // whose next step is its fix, or nil when it has none or does not exist; a read that fails is
 // the result r.Unread gives for it. It reads origin/<trunk>, so each command calls it right

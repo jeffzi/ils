@@ -19,6 +19,7 @@ func TestParse_WhenQuoteRemovalLeavesPlainText_ReportsALiteral(t *testing.T) {
 		want string
 	}{
 		{name: "single quotes", word: `'stash'`, want: "stash"},
+		{name: "ANSI-C quotes", word: `$'stash'`, want: "stash"},
 		{name: "quotes inside a word", word: `g"i"t`, want: "git"},
 		{name: "escaped glob character", word: `\*`, want: "*"},
 		{name: "quoted glob character", word: `"*.go"`, want: "*.go"},

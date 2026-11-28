@@ -29,7 +29,7 @@ func TestMain(m *testing.M) {
 	}
 
 	if addr := os.Getenv(hookHoldsAtEnv); addr != "" {
-		os.Exit(hookHolding(addr))
+		os.Exit(hookHolding(context.Background(), addr))
 	}
 
 	if code, served := gittest.Main(); served {
@@ -41,8 +41,8 @@ func TestMain(m *testing.M) {
 
 // hookHolding starts a lingering copy of the test binary that inherits this process's output and
 // holds addr, and waits for it, so that this process is still running while the copy holds addr.
-func hookHolding(addr string) int {
-	lingerer, err := gittest.StartLingerer(context.Background(), addr)
+func hookHolding(ctx context.Context, addr string) int {
+	lingerer, err := gittest.StartLingerer(ctx, addr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hook stand-in: %v\n", err)
 

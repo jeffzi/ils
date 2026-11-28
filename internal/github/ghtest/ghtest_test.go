@@ -198,7 +198,7 @@ func TestFake_WhenCallIsScriptedInTurn_AnswersEachCallInOrderThenRepeatsTheLast(
 	assert.Check(t, is.DeepEqual(got, []string{"first\n", "last\n", "last\n"}))
 }
 
-func TestFake_APIRead(t *testing.T) {
+func TestFake_WhenAnAPIReadIsAnswered_PrintsTheStatusBlockOnlyWhenHeadersAreAsked(t *testing.T) {
 	included := []string{"api", "--include", "repos/ada/engine"}
 	tests := []struct {
 		name   string

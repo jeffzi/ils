@@ -127,14 +127,6 @@ func TestStatus_WhenOriginsTrunkCannotBeReadOnADetachedHEAD_EndsOnTheStepBranchE
 			}, offline: true},
 			want: nextBranch(),
 		},
-		{
-			miss: trunkMiss{name: "origin does not answer with commits past the last fetch", arrange: lastFetched(detachPastTrunk), offline: true},
-			want: nextBranch(),
-		},
-		{
-			miss: trunkMiss{name: "origin does not answer with no commit past the last fetch", arrange: lastFetched(detachOnTrunk), offline: true},
-			want: nextBranch(),
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.miss.name, func(t *testing.T) {
@@ -145,9 +137,20 @@ func TestStatus_WhenOriginsTrunkCannotBeReadOnADetachedHEAD_EndsOnTheStepBranchE
 
 			assert.Check(t, is.Equal(got.status.Standing, standingDetached))
 			assertSays(t, "Next:"+nextOf(t, got.text), tt.want)
-			assert.Check(t, !hasUnread(got.status, "the commits on HEAD"), "unread %v, want no read of the commits on HEAD", got.status.Unread)
+			assert.Check(t, !hasUnread(got.status, readHeadCommits), "unread %v, want no read of %s", got.status.Unread, readHeadCommits)
 		})
 	}
+}
+
+func TestStatus_WhenTheCommitsOnADetachedHEADCannotBeRead_ListsThemAsUnread(t *testing.T) {
+	t.Parallel()
+	s := statusScene(t, detachPastTrunk, viewing(cleanHead(), passing()))
+	// The read of the local trunk is a log too, of the trunk and not of HEAD.
+	failGit(s, []string{"log", "--reverse", "--topo-order", "--format=%H %s", "--no-merges", "HEAD"})
+
+	got := seeStatus(t, s, (*testing.T).Context)
+
+	checkUnread(t, got.status, readHeadCommits)
 }
 
 func TestStatus_WhenOriginDoesNotAnswerOnADetachedHEAD_ListsItsCommitsAgainstTheLastFetch(t *testing.T) {
@@ -199,6 +202,45 @@ func TestStatus_WhenOriginsTrunkIsNotLearnedOnTheTrunk_StandsOnTheLastFetchedTru
 			assert.Check(t, is.Equal(got.status.Standing, standingTrunk))
 			assert.Check(t, is.Equal(got.status.Trunk, trunk))
 			assertSays(t, "Next:"+nextOf(t, got.text), tt.want)
+		})
+	}
+}
+
+func TestStatus_WhenTheReadOfOriginsTrunkIsCutShortOnTheTrunk_EndsOnTheStepBranchEndsOn(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range cuts() {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			s := statusScene(t, lastFetched(standOnTrunk), ruledBy(forge.RulesProtect))
+			ctx := c.stalling(0)(t, s)
+
+			got := seeStatus(t, s, fixedCtx(ctx))
+
+			assert.Check(t, is.Equal(got.status.Standing, standingTrunk))
+			assert.Check(t, is.Equal(got.status.Trunk, trunk))
+			checkUnread(t, got.status, readTrunk)
+			assertEndsOn(t, got, nextBranch())
+		})
+	}
+}
+
+func TestStatus_WhenTheReadOfOriginsTrunkIsCutShortWithNoTrunkFetched_LeavesWhereHEADStandsUnread(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range cuts() {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			s := statusScene(t, func(f *gittest.Fixture) {
+				standOnTrunk(f)
+				forgetOriginsTrunk(f)
+			}, ruledBy(forge.RulesProtect))
+			ctx := c.stalling(0)(t, s)
+
+			got := seeStatus(t, s, fixedCtx(ctx))
+
+			assert.Check(t, is.Equal(got.status.Standing, result.Standing("")))
+			checkUnread(t, got.status, readStanding)
 		})
 	}
 }

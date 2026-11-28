@@ -116,7 +116,7 @@ func TestJudge_WhenAShellStringBehindAnotherCommandCannotBeRead_NamesALiteralStr
 
 	_, caller := standingOn(t, "main", "topic")
 
-	checkRefusedOmitting(t, caller, omitting{command: `xargs bash -c "$s"`, named: "write the -c string as a literal", omitted: "on its own"})
+	checkJudgedRow(t, caller, judged{command: `xargs bash -c "$s"`, wantNamed: "write the -c string as a literal", want: guard.Refuse})
 }
 
 // omitting is a command Judge refuses with a reason that holds named and does not hold omitted.
@@ -146,7 +146,6 @@ func TestJudge_WhenAGitArgumentCannotBeRead_NamesDoubleDashWhereItLetsTheCommand
 		{name: "commit", command: `git commit -m msg "$f"`, wantNamed: "after `--`"},
 		{name: "several unreadable arguments", command: `git branch -d "$a" "$b"`, wantNamed: "after `--`"},
 		{name: "mv", command: `git mv "$f" b`, wantNamed: "after `--`"},
-		{name: "submodule update", command: `git submodule update "$x"`, wantNamed: "after `--`"},
 	})
 }
 

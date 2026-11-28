@@ -57,16 +57,20 @@ func pacedLines() []string {
 	}
 }
 
+// pushedLine is the line that says topic was pushed.
 func pushedLine() result.Phrase { return result.Say("Pushed %s to origin.", result.Branch(topic)) }
 
+// openedLine is the line that says the pull request was opened.
 func openedLine() result.Phrase {
 	return result.Say("Opened pull request %s.", result.PullRequest(opened))
 }
 
+// waitingLabel is the label of the step that waits for the pull request's checks.
 func waitingLabel() result.Phrase {
 	return result.Say("Waiting for checks on %s", result.PullRequest(opened))
 }
 
+// pushingLabel is the label of the step that pushes topic.
 func pushingLabel() result.Phrase { return result.Say("Pushing %s", result.Branch(topic)) }
 
 // paced is a landing command that pushes for 1.2s and opens a pull request for 2.5s, saying the
@@ -130,6 +134,7 @@ func onStdoutScreen(t *testing.T, env []string) (cli.App, *screen) {
 	return app, stdout
 }
 
+// startedWaiting starts the step of waitingLabel on p.
 func startedWaiting(p landing.Progress) { p.Started(waitingLabel()) }
 
 // cell is one character of a screen and the select graphic rendition sequences it is drawn with.
@@ -154,6 +159,7 @@ type screen struct {
 	hidden  bool
 }
 
+// newScreen returns an empty screen of width columns.
 func newScreen(tb testing.TB, width int) *screen {
 	return &screen{tb: tb, width: width}
 }
@@ -322,6 +328,7 @@ func (s *screen) styledRow(i int) string {
 	return b.String()
 }
 
+// raw returns every byte written to s, as written.
 func (s *screen) raw() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -329,6 +336,7 @@ func (s *screen) raw() string {
 	return s.written.String()
 }
 
+// cursorHidden reports whether the last cursor sequence written to s hid the cursor.
 func (s *screen) cursorHidden() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -792,7 +800,7 @@ func TestApp_Run_WhenTheDisplayCannotBeWritten_EndsAsARunWithoutIt(t *testing.T)
 	assert.Check(t, is.DeepEqual(printed, slices.Concat(pacedLines(), pacedEnd())))
 }
 
-// endingWith is a landing command that starts the step of waitingLabel, says openedLine to end it
+// endingWith is a landing command that starts the step of waitingLabel, says pushedLine to end it
 // unless running, and ends as outcome with openedLine as its one line.
 func endingWith(outcome result.Outcome, running bool) cli.Command {
 	return func(_ context.Context, deps landing.Deps, req landing.Request) result.Result {
@@ -919,12 +927,14 @@ func (c *stuckChild) await(t *testing.T, what string, done func() bool) {
 	}
 }
 
+// awaitReady waits for the child to say it is ready on stdout.
 func (c *stuckChild) awaitReady(t *testing.T) {
 	t.Helper()
 
 	c.awaitLine(t, ready)
 }
 
+// awaitSpinning waits for the child's spinner line to show, then for the child to be ready.
 func (c *stuckChild) awaitSpinning(t *testing.T) {
 	t.Helper()
 
@@ -932,6 +942,7 @@ func (c *stuckChild) awaitSpinning(t *testing.T) {
 	c.awaitReady(t)
 }
 
+// awaitLine reads the child's next stdout line and fails the test unless it is want.
 func (c *stuckChild) awaitLine(t *testing.T, want string) {
 	t.Helper()
 
@@ -973,24 +984,26 @@ func (c *stuckChild) end(t *testing.T) (stdout string, err error) {
 }
 
 // readsStopDisposition reports whether ils reads the disposition of the stop signal on this system,
-// as the build constraints of suspend_bsd.go and suspend_linux.go select: the darwin constraint
-// also holds on ios, and the linux one on android. Elsewhere ils stops on the signal even when
-// started with it ignored.
+// and can set a signal's, as the build constraints of disposition_darwin.go and disposition_linux.go
+// select: the darwin constraint also holds on ios, and the linux one on android. Elsewhere ils
+// stops on the signal even when started with it ignored.
 func readsStopDisposition() bool {
 	switch runtime.GOOS {
-	case "darwin", "ios", "dragonfly", "freebsd":
+	case "darwin", "ios":
 		return true
 	case "linux", "android":
-		return !strings.HasPrefix(runtime.GOARCH, "mips")
+		return true
 	default:
 		return false
 	}
 }
 
+// spinnerShows reports whether the child's stderr shows a line with the cursor hidden.
 func (c *stuckChild) spinnerShows() bool {
 	return c.stderr.cursorHidden() && len(c.stderr.lines()) > 0
 }
 
+// cleared reports whether the child's stderr shows no line and the cursor again.
 func (c *stuckChild) cleared() bool {
 	return !c.stderr.cursorHidden() && len(c.stderr.lines()) == 0
 }

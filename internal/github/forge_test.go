@@ -301,7 +301,7 @@ func readCases() []readCase {
 
 func TestForge_WhenCallExitsNonZero_ReturnsExitErrorNamingCall(t *testing.T) {
 	// Each read left out returns its exit error through a line another test already reaches:
-	// runDecoded's through "pr list", Identity's through the malformed "repo view",
+	// readDecoded's through "pr list", Identity's through the malformed "repo view",
 	// and TrunkProtection's through its own test of a refused read. HasTrunkCI's reads are not
 	// cases: its tests of a refused read reach their exit errors. Verdict's propagation goes
 	// through its reads in verdict_test.go.
@@ -340,7 +340,9 @@ func casesWithout(all []readCase, names ...string) []readCase {
 }
 
 func TestForge_WhenReadPrintsMalformedJSON_ReturnsDecodeErrorNamingCall(t *testing.T) {
-	for _, tt := range casesNamed(readCases(), "repo view") {
+	// "api graphql release" reads through Runner.Read, whose decode names the call with the
+	// --include it added.
+	for _, tt := range casesNamed(readCases(), "repo view", "api graphql release") {
 		t.Run(tt.name, func(t *testing.T) {
 			assertDecodeErrorNamesCall(t, tt)
 		})

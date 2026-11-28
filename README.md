@@ -141,9 +141,10 @@ a merge made on the web. `ils release` finishes a release whose tag push or GitH
 **Cutting a release.** Releases are optional: `ils branch`, `ils push`, and `ils merge` never read
 a version, a tag, or a changelog. To release 1.2.0, land a commit titled `chore: release v1.2.0`
 through `ils branch`, `ils push`, and `ils merge`. The commit bumps the version and adds the
-`## [1.2.0]` section to `CHANGELOG.md`. Then run `ils release 1.2.0`. It needs no checkout, and
-finds the release commit on origin's default branch even after later merges. The `write-release`
-skill (see [Use with Claude Code](#use-with-claude-code)) prepares that commit.
+`## [1.2.0]` section to `CHANGELOG.md`. Then run `ils release 1.2.0`. It reads the release from
+origin whatever is checked out, and finds the release commit on origin's default branch even after
+later merges. The `write-release` skill (see [Use with Claude Code](#use-with-claude-code))
+prepares that commit.
 
 ## The guard
 
@@ -241,10 +242,10 @@ once, by hand:
 ### A slow pre-push hook
 
 GitHub closes a Secure Shell (SSH) connection that has been idle for 6 minutes, and `git` keeps
-origin's connection idle while your pre-push hook runs. `ils push` adds an ssh keep-alive to the
-push when `git` runs its default ssh command and your ssh config leaves `ServerAliveInterval`
-unset or at 0 for the host. If you set `GIT_SSH_COMMAND`, `core.sshCommand`, or `GIT_SSH`, add the
-keep-alive to `~/.ssh/config` yourself:
+origin's connection idle while your pre-push hook runs. `ils push` and the tag push of
+`ils release` add an ssh keep-alive to the push when `git` runs its default ssh command and your
+ssh config leaves `ServerAliveInterval` unset or at 0 for the host. If you set `GIT_SSH_COMMAND`,
+`core.sshCommand`, or `GIT_SSH`, add the keep-alive to `~/.ssh/config` yourself:
 
 ```text
 Host github.com

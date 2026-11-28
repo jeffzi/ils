@@ -39,13 +39,14 @@ const (
 	otherURL  = "git@github.com:acme/gadgets.git"
 	localPath = "/srv/project"
 
-	readGitVersion = "git's version"
-	readStanding   = "where HEAD stands"
-	readURLs       = "origin's URLs"
-	readIdentity   = "the repository's identity on GitHub"
-	readTrunk      = "origin's trunk"
-	readSinceTag   = "the commits on origin's trunk since its version tags"
-	readLocalTrunk = "the local trunk"
+	readGitVersion  = "git's version"
+	readStanding    = "where HEAD stands"
+	readURLs        = "origin's URLs"
+	readIdentity    = "the repository's identity on GitHub"
+	readTrunk       = "origin's trunk"
+	readSinceTag    = "the commits on origin's trunk since its version tags"
+	readLocalTrunk  = "the local trunk"
+	readHeadCommits = "the commits on HEAD"
 
 	// forgeFailure is what a fake forge call fails saying, and what the text of the failure holds.
 	forgeFailure = "HTTP 502"
@@ -254,6 +255,19 @@ func (s *scene) refuse(t *testing.T) {
 	t.Helper()
 
 	s.deps.Repo.Runner.Env = s.fixture.DeniedEnv()
+}
+
+// failGit makes the scene's git calls whose arguments start with words fail as the fake git fails
+// them.
+func failGit(s *scene, words []string) {
+	fakeGit(s, gittest.Fake{FailOn: words})
+}
+
+// fakeGit makes the fake git that TestMain puts first on PATH answer the scene's git calls as fake
+// says; every call it does not fake runs the real git. It changes only the scene's environment, so
+// tests that fake git differently can run in parallel.
+func fakeGit(s *scene, fake gittest.Fake) {
+	s.deps.Repo.Runner.Env = append(s.deps.Repo.Runner.Env, fake.Settings()...)
 }
 
 // pushRequest is the command and words of a bare `ils push`.
@@ -658,6 +672,19 @@ func (c cut) stalling(answered int) func(t *testing.T, s *scene) context.Context
 	}
 }
 
+// stallingGit returns a context that c ends once the scene's git call whose arguments start with
+// words is under way, a call that waits until the end kills it.
+func (c cut) stallingGit(words []string) func(t *testing.T, s *scene) context.Context {
+	return func(t *testing.T, s *scene) context.Context {
+		t.Helper()
+
+		addr, connected := gittest.SilentListener(t)
+		fakeGit(s, gittest.Fake{StallOn: words, StallAt: addr})
+
+		return c.once(t.Context(), connected)
+	}
+}
+
 // overtimeText is the parts of cmd's refusal when c ended the read named read.
 func overtimeText(cmd landingCommand, c cut, read string) string {
 	return expect(c.ends, read, "nothing was written") + cmd.again
@@ -779,6 +806,16 @@ func TestRequest_Unread_WhenTheRequestIsForTheProject_NamesItAgainWithProject(t 
 
 	_, got := rendered(t, *stop, t.TempDir())
 	assert.Check(t, is.Contains(got.Next, "init claude "+landing.FlagProject))
+}
+
+func TestRequest_Unread_WhenTheBranchNameHoldsAShellOperator_NamesItQuotedForTheShell(t *testing.T) {
+	t.Parallel()
+	req := landing.Request{Command: landing.BranchCommand, Args: []string{"fix;make"}}
+
+	stop := req.Unread("the branches", errors.New("origin stopped answering"))
+
+	_, got := rendered(t, *stop, t.TempDir())
+	assert.Check(t, is.Contains(got.Next, "branch 'fix;make'"))
 }
 
 func TestPreconditions_WhenOneFails_RefusesAtTheFirst(t *testing.T) {
@@ -1077,6 +1114,5 @@ func TestShellWord_WhenTheWordHoldsANulByte_ReturnsAnErrorNamingTheWord(t *testi
 
 	_, err := landing.ShellWord(word)
 
-	assert.Check(t, err != nil, "ShellWord(%q) error = nil, want an error", word)
 	assert.Check(t, is.ErrorContains(err, fmt.Sprintf("%q", word)))
 }

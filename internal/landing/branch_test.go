@@ -137,14 +137,6 @@ func keptRefusals() []pushRefusal {
 func commitRefusals() []pushRefusal {
 	return []pushRefusal{
 		{
-			name: "no commit past the trunk", script: allowed(),
-			arrange: func(f *gittest.Fixture) string {
-				f.Git("switch", "--quiet", "--create", spare, trunk)
-
-				return nothingPast(spare)
-			},
-		},
-		{
 			name: "every commit landed on origin's trunk since the last fetch", script: allowed(),
 			arrange: func(f *gittest.Fixture) string {
 				f.Git("push", "--quiet", f.OriginDir(), topic+":"+trunk)

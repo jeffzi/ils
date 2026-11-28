@@ -17,12 +17,14 @@ import (
 	"github.com/jeffzi/ils/internal/forge/forgetest"
 	"github.com/jeffzi/ils/internal/gittest"
 	"github.com/jeffzi/ils/internal/result"
+	"github.com/jeffzi/ils/internal/result/resulttest"
 )
 
 const (
 	switchStep = "`git switch " + trunk + "`"
 	dropStep   = "`git branch -D " + topic + "`"
 	pullStep   = "`git pull --ff-only origin " + trunk + "`"
+	unsetStep  = "`git config --local --remove-section branch." + topic + "`"
 
 	readStillOnOrigin = "whether origin still has the branch"
 
@@ -356,13 +358,104 @@ func endingBreaks() []landingRow {
 		switching,
 		row("the delete of the branch on the trunk", setting{landed: lockRef("refs/heads/" + topic)}, trunk,
 			ran(switchStep)+failed(dropStep), notRun(pullStep)+failed(dropStep)+byHand(dropStep, pullStep)),
+		row("the removal of the deleted branch's settings", setting{landed: lockSettings}, trunk,
+			ran(switchStep)+ran(dropStep)+failed(unsetStep), notRun(pullStep)+failed(unsetStep)+byHand(unsetStep, pullStep)),
 	}
+}
+
+// lockSettings gives the topic branch a setting, then leaves the lock file git takes to write the
+// repository's settings, so that git can delete the branch but not remove its settings.
+func lockSettings(t *testing.T, f *gittest.Fixture) {
+	t.Helper()
+	f.Git("config", "branch."+topic+".remote", "origin")
+	lockRef("config")(t, f)
 }
 
 func TestMerge_WhenAStepOfTheLocalEndingFails_SaysWhichStepsRan(t *testing.T) {
 	t.Parallel()
 
 	runLandings(t, endingBreaks())
+}
+
+// committingForge is the scene's fake forge, with a commit added to the topic branch as the run asks
+// origin to delete the branch: after the checks of `ils merge`, before its local ending.
+type committingForge struct {
+	*forgetest.Fake
+	fixture *gittest.Fixture
+	// moved is the commit added, once the delete was asked for.
+	moved *string
+}
+
+func (c committingForge) DeleteBranch(ctx context.Context, repo forge.Repo, branch string) error {
+	*c.moved = c.fixture.Commits(topic, "add a late fix")[0]
+
+	return c.Fake.DeleteBranch(ctx, repo, branch)
+}
+
+// movedRow is one run of `ils merge` whose branch moves past the tip it checked before its local
+// ending.
+type movedRow struct {
+	payload *result.Merge
+	name    string
+	// text is the parts of the result's text, with tipMark where the sha of the tip is printed.
+	text string
+	// on is where the run leaves HEAD: the name of the branch it is on, or HEAD when it is detached.
+	on  string
+	set setting
+}
+
+// movedRows are the runs whose branch moves before their local ending: both endings of a merge, and
+// a resume.
+func movedRows() []movedRow {
+	dropped := expect("Not run", dropStep)
+	keep := expect(resulttest.NextLine(""), "git branch <name> "+topic, "git branch -D "+topic)
+	kept := dropped + keep
+	merged := countLine() + mergedLine() + deletedLine()
+
+	return []movedRow{
+		{
+			name: "on the trunk", set: setting{script: toLand(nil, nil)}, on: trunk,
+			text:    merged + expect("Ran", switchStep) + dropped + expect("Not run", pullStep) + keep,
+			payload: sent(landedBody, true, ""),
+		},
+		{
+			name: "detached while another worktree holds the trunk", on: "HEAD",
+			set:  setting{arrange: func(f *gittest.Fixture) { f.TrunkWorktree() }, script: toLand(nil, nil)},
+			text: merged + kept, payload: sent(landedBody, true, ""),
+		},
+		{
+			name: "on a resume", set: setting{arrange: landAndPublish, script: resuming().deleting(nil)}, on: trunk,
+			text: resumedLine() + deletedLine() + expect("Ran", switchStep) + kept, payload: resumed("", ""),
+		},
+	}
+}
+
+func TestMerge_WhenTheBranchMovesBeforeTheLocalEnding_KeepsItAndEndsBroke(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range movedRows() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				var moved string
+
+				set := tt.set
+				set.rewire = func(_ *testing.T, s *scene) {
+					s.deps.Forge = committingForge{Fake: s.forge, fixture: s.fixture, moved: &moved}
+				}
+
+				run := runMergeOn(t, set)
+
+				assertEndedBy(t, run.got, run.gitDir, ended{text: mark(tt.text, run.tip), req: mergeRequest(), outcome: result.Broke})
+
+				want := *tt.payload
+				want.SHA = run.tip
+				assert.Check(t, is.DeepEqual(mergePayload(t, run.got), &want, cmpopts.EquateEmpty()))
+				assert.Check(t, is.Equal(run.fixture.Git("rev-parse", "--abbrev-ref", "HEAD"), tt.on))
+				assert.Check(t, is.Equal(run.fixture.Git("rev-parse", topic), moved))
+			})
+		})
+	}
 }
 
 // stallingAfterLand returns the arrange of a run whose git calls whose arguments start with words
